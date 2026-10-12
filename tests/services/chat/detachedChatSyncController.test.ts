@@ -624,3 +624,14 @@ describe('detached chat sync controller', () => {
     warning.mockRestore();
   });
 });
+
+it('includes bounded reasoning and independent errors in main-window snapshots and patches', () => {
+  arrangeDetachedState();
+  useAppStore.setState({ messages: [{ id: 'reasoning-msg', conversationId: 'conversation-1', role: 'assistant', content: 'partial answer', status: 'streaming', timestamp: 1, reasoning: 'sanitized summary', responseError: 'network error' }] });
+  const first = buildDetachedChatSnapshot(useAppStore.getState());
+  expect(first.messages[0]).toMatchObject({ reasoning: 'sanitized summary', responseError: 'network error' });
+  useAppStore.getState().updateMessageTransient('reasoning-msg', { reasoning: 'updated summary', activity: 'compressing' });
+  const next = buildDetachedChatSnapshot(useAppStore.getState());
+  const patch = createChatStatePatch(first, next);
+  expect(applyChatStatePatch(first, patch).messages[0]).toMatchObject({ reasoning: 'updated summary', content: 'partial answer', activity: 'compressing' });
+});

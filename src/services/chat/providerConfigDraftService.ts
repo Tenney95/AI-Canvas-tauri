@@ -17,6 +17,7 @@ import type {
   VideoGenerationInputMode,
   VideoGenerationOperation,
   VideoModelCapability,
+  ImageModelCapability,
 } from '../../types/aiTypes';
 import {
   analyzeModelProtocolExamples,
@@ -40,6 +41,7 @@ import {
   CHAT_API_PROTOCOL_LABELS,
   resolveChatApiProtocol,
 } from '../ai/chatApiProtocol';
+import { assertModelCapabilityProtocol, describeModelParameterGaps } from '../ai/modelCapabilityValidation';
 import { assertVideoModelCapability } from '../ai/videoRequestResolver';
 import {
   resolveSeedanceAutoTemplate,
@@ -118,6 +120,7 @@ export interface ProviderConfigModelExamples extends Partial<ModelProtocolExampl
   contextWindow?: number;
   imageReferenceRequestMode?: ImageReferenceRequestMode;
   videoCapability?: VideoModelCapability;
+  imageCapability?: ImageModelCapability;
 }
 
 export interface ProviderConfigDraftInput {
@@ -844,6 +847,11 @@ function createModelSelection(
   if (contextWindow && category !== 'text') {
     throw new Error(`模型“${displayName || result.modelId}”只有文本分类可以声明 contextWindow`);
   }
+  if (examples.imageCapability && category !== 'image') {
+    throw new Error(`模型“${displayName}”只有图片分类可以声明 imageCapability`);
+  }
+  assertModelCapabilityProtocol({ id: result.modelId, name: displayName, category, provider: connectionId,
+    executionProfile, imageReferenceRequestMode, videoCapability, imageCapability: examples.imageCapability });
   const updateFields: Array<keyof ProviderModelSelection> = ['provider', 'executionProfile'];
   if (examples.name?.trim()) updateFields.push('name');
   if (examples.category || templateMatch) updateFields.push('category', 'categoryManual');
@@ -852,6 +860,7 @@ function createModelSelection(
   if (contextWindow) updateFields.push('contextWindow');
   if (examples.imageReferenceRequestMode) updateFields.push('imageReferenceRequestMode');
   if (videoCapability) updateFields.push('videoCapability');
+  if (examples.imageCapability) updateFields.push('imageCapability');
   return {
     baseUrl: normalizeBaseUrl(result.baseUrl, chatApiProtocol),
     updateFields,
@@ -868,6 +877,7 @@ function createModelSelection(
       ...(contextWindow ? { contextWindow } : {}),
       ...(imageReferenceRequestMode ? { imageReferenceRequestMode } : {}),
       ...(videoCapability ? { videoCapability } : {}),
+      ...(examples.imageCapability ? { imageCapability: structuredClone(examples.imageCapability) } : {}),
     },
   };
 }
@@ -978,8 +988,13 @@ export function mergeProviderModels(
       unchangedIds.push(model.id);
       return model;
     }
+    const mergedModel = { ...model, ...patch };
+    if (updated.some((field) => ['executionProfile', 'imageCapability', 'videoCapability', 'imageReferenceRequestMode'].includes(field))) {
+      // 协议更新可能保留旧能力；必须核对合并后的实际配置，不能只校验本轮字段。
+      assertModelCapabilityProtocol(mergedModel);
+    }
     updatedIds.push(model.id);
-    return { ...model, ...patch };
+    return mergedModel;
   });
   const addedIds: string[] = [];
   for (const model of draftModels) {
@@ -1054,6 +1069,8 @@ export function summarizeProviderConfigDraft(draft: ProviderConfigDraft): string
         ? `，参考图：${referenceModeLabels[model.imageReferenceRequestMode]}`
         : ''}${describeReferenceGap(model)}）`
     )).join('、')}`,
+    ...models.filter((model) => describeModelParameterGaps(model)).map((model) =>
+      `参数 ${model.name}：${describeModelParameterGaps(model)}`),
     '不会写入 API Key：新连接保持空白，已有连接保留原值',
   ].join('\n');
 }

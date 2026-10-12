@@ -10,6 +10,7 @@ vi.mock('../../src/services/rasterImageDimensions', () => ({
 
 type Acquire = typeof import('../../src/components/nodes/shared/image/canvasImagePreviewCache').acquireCanvasImagePreview;
 let acquire: Acquire;
+let mode: typeof import('../../src/services/performanceModeRuntime');
 let interacting = false;
 let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
 let bitmapMock: ReturnType<typeof vi.fn<typeof createImageBitmap>>;
@@ -82,16 +83,53 @@ beforeEach(async () => {
   let sequence = 0;
   createUrl = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:preview-${++sequence}`);
   revokeUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+  mode = await import('../../src/services/performanceModeRuntime');
   acquire = (await import('../../src/components/nodes/shared/image/canvasImagePreviewCache')).acquireCanvasImagePreview;
 });
 
 afterEach(() => {
+  mode.syncPerformanceModeRuntime(false);
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 describe('canvas image preview cache', () => {
+  it('tightens only idle memory on a mode switch while preserving active and reusable recent previews', async () => {
+    dimensions.height = 4096;
+    const active = await lease('asset://localhost/live.png', 1024);
+    const idle: CanvasImagePreviewLease[] = [];
+    for (let index = 0; index < 3; index++) {
+      const item = await lease(`asset://localhost/idle-${index}.png`, 1024);
+      idle.push(item); item.release();
+    }
+    expect(revokeUrl).not.toHaveBeenCalled();
+    mode.syncPerformanceModeRuntime(true);
+    expect(revokeUrl).toHaveBeenCalledExactlyOnceWith(idle[0].src);
+    expect(revokeUrl).not.toHaveBeenCalledWith(active.src);
+    const recent = await lease('asset://localhost/idle-2.png', 1024);
+    expect(recent.src).toBe(idle[2].src);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    recent.release(); active.release();
+  });
+
+  it('bounds small idle entries in performance mode without shortening the return-to-viewport grace period', async () => {
+    mode.syncPerformanceModeRuntime(true);
+    const active = await lease('asset://localhost/active-small.png', 64);
+    const idle: CanvasImagePreviewLease[] = [];
+    for (let index = 0; index < 33; index++) {
+      const item = await lease(`asset://localhost/small-${index}.png`, 64);
+      idle.push(item); item.release();
+    }
+    expect(revokeUrl).toHaveBeenCalledExactlyOnceWith(idle[0].src);
+    expect(revokeUrl).not.toHaveBeenCalledWith(active.src);
+    await vi.advanceTimersByTimeAsync(20_000);
+    const recent = await lease('asset://localhost/small-32.png', 64);
+    expect(recent.src).toBe(idle[32].src);
+    expect(fetchMock).toHaveBeenCalledTimes(34);
+    recent.release(); active.release();
+  });
+
   it('shows previews and continues deriving while a background disk write is pending', async () => {
     let finishWrite!: () => void;
     const writing = new Promise<void>((resolve) => { finishWrite = resolve; });

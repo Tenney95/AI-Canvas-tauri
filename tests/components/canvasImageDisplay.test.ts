@@ -96,7 +96,7 @@ describe('canvas image display transitions', () => {
     expect(f.prepare).toHaveBeenCalledOnce();
     expect(originalSignal.aborted).toBe(false);
     f.queue.interaction(false); await f.settle();
-    expect(f.prepare.mock.calls[1][1]).toBe(1024);
+    expect(f.prepare.mock.calls[1][1]).toBe(512);
     expect(originalSignal.aborted).toBe(false);
     f.display.committed(f.publish.mock.calls[1][0]);
     expect(originalSignal.aborted).toBe(true);
@@ -110,15 +110,30 @@ describe('canvas image display transitions', () => {
 
   it('keeps small tiers and error fallback in performance mode, cancelling obsolete mode changes', async () => {
     const f = fixture();
-    for (const [zoom, edge] of [[0.2, 256], [0.4, 512], [0.8, 1024]]) {
+    for (const [zoom, edge] of [[0.2, 256], [0.4, 512], [0.8, 512]]) {
       f.display.viewport(zoom, 512, 288, 2, true); await f.settle();
       expect(f.prepare.mock.lastCall?.[1]).toBe(edge);
     }
     f.display.viewport(3, 512, 288, 2, false);
     f.display.viewport(3, 512, 288, 2, true);
-    await f.settle(); expect(f.prepare).toHaveBeenCalledTimes(3);
+    await f.settle(); expect(f.prepare).toHaveBeenCalledTimes(2);
     f.display.original(); await f.settle();
     expect(f.prepare.mock.lastCall?.[1]).toBe(0);
+    f.display.dispose();
+  });
+
+  it('caps the 1024 tier as well as automatic original resolution without rejecting an explicit original request', async () => {
+    const f = fixture();
+    for (const screenEdge of [600, 1024, 1800]) {
+      f.display.viewport(1, screenEdge, 300, 1, true);
+      await f.settle();
+      expect(f.prepare.mock.lastCall?.[1]).toBe(512);
+    }
+    expect(f.prepare).toHaveBeenCalledOnce();
+    f.display.original(); await f.settle();
+    expect(f.prepare.mock.lastCall?.[1]).toBe(0);
+    f.display.viewport(1, 600, 300, 1, false); await f.settle();
+    expect(f.prepare.mock.lastCall?.[1]).toBe(1024);
     f.display.dispose();
   });
 

@@ -269,6 +269,8 @@ function getTransportCapability(
   transport: SeedanceQuickAdaptTransport,
 ): VideoModelCapability {
   const capability = getOfficialSeedanceCapability(model);
+  // Lec 文档未提供生成音频开关；参考音频能力仍由原合同声明。
+  if (transport === 'lec') delete capability.supportsAudio;
   if (transport !== 'apimart') return capability;
 
   capability.allowFrameAndReferenceMix = false;

@@ -4,6 +4,7 @@
 import type { AgentMode, AgentToolDisplaySnapshot } from '../../types/agent';
 import type { ProposedToolCall, ToolResultSummary, WebSource } from '../../types/chat';
 import type { McpContent } from '../../types/mcp';
+import type { SkillReadBudget } from './skillReadService';
 import {
   validateAgentToolInput,
   type AgentToolSchema,
@@ -30,6 +31,8 @@ export interface AgentToolContext {
   toolAllowlist?: string[];
   /** 工具提案时的画布修订号；写工具执行前必须复核。 */
   baseRevision?: number;
+  /** Runtime-only, shared across concurrent Skill reads; never persisted. */
+  skillReadBudget?: SkillReadBudget;
   signal: AbortSignal;
 }
 

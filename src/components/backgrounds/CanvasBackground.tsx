@@ -34,8 +34,10 @@ export default function CanvasBackground() {
     backgroundKind === 'solar-system'
     || backgroundKind === 'nebula'
     || backgroundKind === 'frosted-glass'
+    || backgroundKind === 'custom'
+    || backgroundKind === 'image'
   )) {
-    return null;
+    return <div className="absolute inset-0 z-0 pointer-events-none bg-canvas-bg" />;
   }
 
   switch (backgroundKind) {

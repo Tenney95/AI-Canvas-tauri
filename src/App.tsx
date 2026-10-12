@@ -5,6 +5,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { MotionConfig, motion, useReducedMotion } from 'framer-motion';
+import { Bot, Check, Download, Ellipsis, TriangleAlert } from 'lucide-react';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
 import SessionProjectTabs from './components/SessionProjectTabs';
@@ -28,6 +29,7 @@ import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './ser
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 import UpdateBubble from './components/shared/mascot/UpdateBubble';
 import HiddenFilmSet from './components/shared/mascot/HiddenFilmSet';
+import { openDetachedChatWindow } from './services/chat/chatWindowLifecycle';
 import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
 import ModalOverlay from './components/shared/ModalOverlay';
 import { useMascotStatus } from './hooks/useMascotStatus';
@@ -423,14 +425,11 @@ export default function App() {
         store.showToast('独立窗口功能需要 Tauri 环境', 'info');
         return;
       }
-      const wasDetached = store.chatPanelDetached;
-      // 独立窗口首帧请求快照前置位，复用现有主窗口同步协议。
-      if (!wasDetached) store.setChatPanelDetached(true);
       try {
-        await invoke('open_chat_window');
-      } catch {
-        if (!wasDetached) store.setChatPanelDetached(false);
-        store.showToast('打开独立窗口失败', 'error');
+        await openDetachedChatWindow();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : '';
+        store.showToast(`打开独立窗口失败${detail ? `：${detail}` : ''}`, 'error');
       }
       return;
     }
@@ -449,8 +448,28 @@ export default function App() {
   const mascotStatus = useMascotStatus();
   // 播放句柄：窗口失焦、待审批任务等事件通过它触发一次性动画片段
   const mascotHandleRef = useRef<MascotHandle | null>(null);
-  // 下载更新时显示的是吃豆人吉祥物，生命周期片段对不上，先停掉
-  useMascotLifecycle(mascotHandleRef, Boolean(mascotVisible) && !updating);
+  // 性能模式仅保留静态助手入口，不挂载 WebGL 吉祥物或调度生命周期动画。
+  useMascotLifecycle(mascotHandleRef, Boolean(mascotVisible) && !updating && !performanceMode);
+  const mascotFeedback = updating
+    ? t('正在下载更新')
+    : mascotLoading
+      ? t('生成中')
+      : mascotStatus === 'thinking'
+        ? t('处理中')
+        : mascotStatus === 'success'
+          ? t('已完成')
+          : mascotStatus === 'error'
+            ? t('失败')
+            : t('画布助手');
+  const StaticMascotIcon = updating
+    ? Download
+    : mascotStatus === 'success'
+      ? Check
+      : mascotStatus === 'error'
+        ? TriangleAlert
+        : mascotLoading || mascotStatus === 'thinking'
+          ? Ellipsis
+          : Bot;
   const effectiveTheme = resolveAppearanceMode(appearance?.mode ?? configTheme);
   const managedCanvasBackground = Boolean((appearancePreview ?? appearance)?.canvas);
   const nativeCursor = useAppStore((s) => s.config.customCursor === false);
@@ -626,10 +645,10 @@ export default function App() {
                 animate={mascotShrink
                   ? { scale: reduceMotion ? 1 : 0.94, opacity: 0 }
                   : { scale: 1, opacity: 1 }}
-                transition={{ duration: reduceMotion ? 0.12 : 0.18, ease: [0.23, 1, 0.32, 1] }}
+                transition={{ duration: performanceMode ? 0 : reduceMotion ? 0.12 : 0.18, ease: [0.23, 1, 0.32, 1] }}
               >
                 <HiddenFilmSet
-                  available={!mascotShrink && !updating && !mascotLoading && mascotStatus === 'idle'}
+                  available={!performanceMode && !mascotShrink && !updating && !mascotLoading && mascotStatus === 'idle'}
                   reduceMotion={performanceMode || Boolean(reduceMotion)}
                   mascotHandleRef={mascotHandleRef}
                   consumeDragClick={consumeMascotDragClick}
@@ -642,48 +661,69 @@ export default function App() {
                     void handleMascotActivate(true);
                   }}
                   disabled={mascotShrink}
-                  aria-label={mascotStatus === 'thinking'
-                    ? '打开画布助手，正在思考'
-                    : mascotStatus === 'success'
-                      ? '打开画布助手，任务已完成'
-                      : mascotStatus === 'error'
-                        ? '打开画布助手，任务失败'
-                        : '打开画布助手'}
-                  data-tooltip={mascotStatus === 'thinking'
-                    ? '画布助手：思考中'
-                    : mascotStatus === 'success'
-                      ? '画布助手：已完成'
-                      : mascotStatus === 'error'
-                        ? '画布助手：任务失败'
-                        : '打开画布助手'}
+                  aria-label={updating
+                    ? '打开画布助手，正在下载更新'
+                    : mascotLoading
+                      ? '打开画布助手，正在生成'
+                      : mascotStatus === 'thinking'
+                        ? '打开画布助手，正在思考'
+                        : mascotStatus === 'success'
+                          ? '打开画布助手，任务已完成'
+                          : mascotStatus === 'error'
+                            ? '打开画布助手，任务失败'
+                            : '打开画布助手'}
+                  data-tooltip={updating
+                    ? t('正在下载更新')
+                    : mascotLoading
+                      ? t('生成中')
+                      : mascotStatus === 'thinking'
+                        ? '画布助手：思考中'
+                        : mascotStatus === 'success'
+                          ? '画布助手：已完成'
+                          : mascotStatus === 'error'
+                            ? '画布助手：任务失败'
+                            : '打开画布助手'}
                 >
-                  <Suspense
-                    fallback={(
-                      <div
-                        className="flex h-full w-full items-center justify-center"
-                        role="status"
-                        aria-label="正在加载吉祥物"
-                      >
-                        <span
-                          className="h-5 w-5 animate-spin rounded-full border-2 border-canvas-border border-t-canvas-text-secondary motion-reduce:animate-none"
-                          aria-hidden="true"
-                        />
-                      </div>
-                    )}
-                  >
-                    {updating ? (
-                      <PacmanMascot />
-                    ) : (
-                      <Mascot
-                        loading={mascotLoading}
-                        status={mascotStatus}
-                        theme={effectiveTheme}
-                        reduceMotion={performanceMode || Boolean(reduceMotion)}
-                        getDragForce={getMascotDragForce}
-                        handleRef={mascotHandleRef}
+                  {performanceMode ? (
+                    <span className="ui-card flex h-full w-full flex-col items-center justify-center gap-1 p-2">
+                      <StaticMascotIcon
+                        size={32}
+                        className={mascotStatus === 'error' ? 'text-danger-light' : mascotStatus === 'success' ? 'text-success-light' : 'text-brand-light'}
+                        aria-hidden="true"
                       />
-                    )}
-                  </Suspense>
+                      <span role="status" aria-live="polite" className="max-w-full truncate text-xs text-canvas-text-secondary">
+                        {mascotFeedback}
+                      </span>
+                    </span>
+                  ) : (
+                    <Suspense
+                      fallback={(
+                        <div
+                          className="flex h-full w-full items-center justify-center"
+                          role="status"
+                          aria-label="正在加载吉祥物"
+                        >
+                          <span
+                            className="h-5 w-5 animate-spin rounded-full border-2 border-canvas-border border-t-canvas-text-secondary motion-reduce:animate-none"
+                            aria-hidden="true"
+                          />
+                        </div>
+                      )}
+                    >
+                      {updating ? (
+                        <PacmanMascot />
+                      ) : (
+                        <Mascot
+                          loading={mascotLoading}
+                          status={mascotStatus}
+                          theme={effectiveTheme}
+                          reduceMotion={performanceMode || Boolean(reduceMotion)}
+                          getDragForce={getMascotDragForce}
+                          handleRef={mascotHandleRef}
+                        />
+                      )}
+                    </Suspense>
+                  )}
                 </HiddenFilmSet>
               </motion.div>
             </motion.div>

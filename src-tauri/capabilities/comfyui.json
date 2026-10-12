@@ -1,6 +1,7 @@
 {
   "identifier": "comfyui-window-capability",
   "description": "Register the loopback ComfyUI window without exposing Tauri IPC commands",
+  "local": false,
   "windows": ["comfyui"],
   "remote": {
     "urls": [

@@ -4,7 +4,7 @@
 .ai-dialog-float {
   position: fixed;
   z-index: 200;
-  width: 540px;
+  width: 640px;
   max-width: calc(100vw - 32px);
   background:
     linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
@@ -121,10 +121,11 @@
 }
 .ai-dialog-float .prompt-panel {
   border-top: none;
+  container: ai-prompt / inline-size;
 }
 .ai-dialog-float .prompt-editor {
-  min-height: 80px;
-  max-height: 140px;
+  min-height: 112px;
+  max-height: min(200px, 40vh);
   font-size: 14px;
   padding: 0;
   border-radius: 0;

@@ -1,5 +1,4 @@
 import { memo, useEffect, useMemo, useState } from 'react';
-import { useReactFlow } from '@xyflow/react';
 import { CheckCircle2, LayoutGrid, ListVideo, Play } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
@@ -23,7 +22,6 @@ function EpisodeWorkbench() {
   const batchesByProject = useAppStore((s) => s.videoBatches);
   const busy = useAppStore((s) => s.videoBatchBusy);
   const loadBatches = useAppStore((s) => s.loadVideoBatches);
-  const { fitView } = useReactFlow();
   const [scope, setScope] = useState<VideoBatchScope>('episode');
   const [columns, setColumns] = useState(3);
   const [checking, setChecking] = useState(false);
@@ -45,7 +43,9 @@ function EpisodeWorkbench() {
 
   const focus = (ids: string[]) => {
     setPanel(null);
-    void fitView({ nodes: ids.map((id) => ({ id })), padding: 0.3, duration: 250, maxZoom: 0.9 });
+    window.dispatchEvent(new CustomEvent('canvas-focus-nodes', {
+      detail: { nodeIds: ids, padding: 0.3, duration: 250, maxZoom: 0.9 },
+    }));
   };
 
   const inspect = async (ids?: string[]) => {

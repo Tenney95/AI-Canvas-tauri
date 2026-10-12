@@ -467,13 +467,14 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
         '文本模型的文档若写明支持图片/多模态输入，把 inputModalities 设为 ["text","image"]，画布才允许把图片连进该模型；只支持纯文本就不要填。',
         '文档写明上下文窗口时把 token 数填进 contextWindow（如 128000）；中转站的自定义模型名推断不出窗口大小，不填会按 32000 保守压缩上下文。',
         'submitRequest 必须来自文档的真实请求示例或参数表；不要补充文档没有列出的字段，多余字段会让接口返回 400 unsupported field。',
+        '每个选中模型都必须逐一核对参数能力及默认值，不能只适配第一个型号；图片用 imageCapability（resolutions/defaultResolution、ratios/defaultRatio、supportsBatch/maxBatchCount、supportsImageReference/maxImageReferences），视频用 videoCapability。未公布的选项明确在 description 标注待确认；不要用全局默认值冒充官方能力。多选分辨率、比例、时长、帧率、张数必须动态映射到提交协议，固定字段不能承接界面多选。',
         '视频模型必须把文档写明的能力填进 videoCapability，且 operations 必须非空；不要从请求字段名猜能力：用 operations 声明 text-to-video/image-to-video/video-to-video；离散时长用 durations，固定时长用单元素 durations；帧率用 frameRates；参考数量用 max*References；首尾帧不能和普通参考模式混用时设置 allowFrameAndReferenceMix:false。',
         '若 text/keyframe/reference/mixed 的比例规则不同，用 inputModeCapabilities 分别声明 ratios/defaultRatio/requiresRatio；多个参考视频或音频还有总时长限制时，用 inputConstraints.referenceVideo.totalDurationSeconds 或 referenceAudio.totalDurationSeconds，不能拿单文件 durationSeconds 代替总和。',
         '异步 pollRequest 必须通过 path、query 或 body 动态引用 submitResponse 的任务 ID；不得照抄文档中的固定示例任务号。媒体字段若是 image_url:{url:...} 等嵌套对象，必须保留对象包装。',
         'docs、developer 等文档站地址不能作为 baseUrl；必须使用用户实际调用模型的 API 网关地址。',
         '当文档示例使用 loading、example 等占位主机时，通过 baseUrl 提供文档或用户明确声明的实际接口地址。',
         '所有模型必须属于同一个 HTTPS Base URL。不得传入 API Key、Token、Authorization 值或其他真实凭据。',
-        '该工具只生成临时草稿，不写入设置；普通对话必须在同一任务中使用，MCP 可在同一项目的控制会话中继续调用 provider_config_apply。',
+        '该工具只生成临时草稿，不写入设置；普通对话必须在同一任务中使用，MCP 可在同一全局模型设置控制会话中继续调用 provider_config_apply；不要求打开项目。',
       ].join(''),
       inputSchema: {
         type: 'object',
@@ -524,6 +525,21 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
                 imageReferenceRequestMode: {
                   type: 'string',
                   enum: IMAGE_REFERENCE_REQUEST_MODES,
+                },
+                imageCapability: {
+                  type: 'object', additionalProperties: false,
+                  description: '逐模型图片参数能力；按文档填写分辨率、比例、数量及参考图，未确认字段留空。多选项必须与提交协议的动态变量一致。',
+                  properties: {
+                    resolutions: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', minLength: 1, maxLength: 40 } },
+                    defaultResolution: { type: 'string', minLength: 1, maxLength: 40 },
+                    ratios: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 40 } },
+                    defaultRatio: { type: 'string', minLength: 1, maxLength: 40 },
+                    supportsBatch: { type: 'boolean' },
+                    maxBatchCount: { type: 'integer', minimum: 1, maximum: 64 },
+                    supportsImageReference: { type: 'boolean' },
+                    maxImageReferences: { type: 'integer', minimum: 0, maximum: 128 },
+                    supportsDataUrlReference: { type: 'boolean' },
+                  },
                 },
                 videoCapability: {
                   type: 'object',

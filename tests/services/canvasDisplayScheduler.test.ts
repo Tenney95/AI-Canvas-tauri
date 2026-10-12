@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCanvasDisplayScheduler } from '../../src/services/canvasDisplayScheduler';
+import { getPerformanceModeBudget, type CanvasDisplayBudget } from '../../src/services/performanceModeRuntime';
 
-function fixture() {
+function fixture(budget?: CanvasDisplayBudget) {
   let id = 0;
   const frames = new Map<number, () => void>();
   const queue = createCanvasDisplayScheduler({
     now: () => Date.now(), frame: (f) => { frames.set(++id, f); return id; },
     cancelFrame: (id) => { frames.delete(id); }, delay: (f, ms) => setTimeout(f, ms), cancelDelay: clearTimeout,
-  });
+  }, budget);
   const tick = async (ms = 16) => {
     await vi.advanceTimersByTimeAsync(ms);
     const batch = [...frames.values()]; frames.clear(); batch.forEach((f) => f());
@@ -19,6 +20,73 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('shared canvas display budget', () => {
+  it('uses the performance preparation and display limits and a smaller synchronous work budget', async () => {
+    const budget = getPerformanceModeBudget(true).display;
+    const { queue, tick } = fixture(budget);
+    const starts = vi.fn(); const commits = vi.fn();
+    for (let i = 0; i < 6; i++) queue.prepare({}, async () => { starts(); await new Promise(() => {}); });
+    for (let i = 0; i < 6; i++) queue.enqueue({}, commits);
+    await tick();
+    expect(starts).toHaveBeenCalledTimes(1); expect(commits).toHaveBeenCalledTimes(2);
+    queue.deactivate();
+    const limited = fixture(budget);
+    const slow = vi.fn(() => vi.setSystemTime(Date.now() + 2));
+    for (let i = 0; i < 4; i++) limited.queue.enqueue({}, slow);
+    await limited.tick(); expect(slow).toHaveBeenCalledTimes(1);
+    limited.queue.deactivate();
+  });
+
+  it('preserves in-flight preparation when tightening the budget and lets display work continue', async () => {
+    const { queue, tick, frames } = fixture();
+    const starts = vi.fn(); const commits = vi.fn(); const finish: Array<() => void> = [];
+    for (let i = 0; i < 5; i++) queue.prepare({}, async () => {
+      starts(); await new Promise<void>((resolve) => finish.push(resolve));
+    });
+    await tick(); expect(starts).toHaveBeenCalledTimes(3);
+    queue.setBudget(getPerformanceModeBudget(true).display);
+    for (let i = 0; i < 5; i++) queue.enqueue({}, commits);
+    await tick(); expect(commits).toHaveBeenCalledTimes(2);
+    finish[0](); await tick(); expect(starts).toHaveBeenCalledTimes(3);
+    finish[1](); await tick(); expect(starts).toHaveBeenCalledTimes(3);
+    finish[2](); await tick(); expect(starts).toHaveBeenCalledTimes(4);
+    expect(commits).toHaveBeenCalledTimes(5); expect(frames.size).toBe(0);
+    finish[3](); await tick(); expect(starts).toHaveBeenCalledTimes(5);
+    finish[4](); await tick(); expect(frames.size).toBe(0);
+    queue.deactivate();
+  });
+
+  it('wakes preparations blocked by the old budget when returning to normal mode', async () => {
+    const { queue, tick, frames } = fixture(getPerformanceModeBudget(true).display);
+    const starts = vi.fn(); const finish: Array<() => void> = [];
+    for (let i = 0; i < 5; i++) queue.prepare({}, async () => {
+      starts(); await new Promise<void>((resolve) => finish.push(resolve));
+    });
+    await tick(); expect(starts).toHaveBeenCalledTimes(1); expect(frames.size).toBe(0);
+    queue.setBudget(getPerformanceModeBudget(false).display);
+    await tick(); expect(starts).toHaveBeenCalledTimes(3); expect(frames.size).toBe(0);
+    finish.splice(0).forEach((resolve) => resolve());
+    await tick(); expect(starts).toHaveBeenCalledTimes(5);
+    finish.splice(0).forEach((resolve) => resolve()); await tick();
+    expect(frames.size).toBe(0);
+    queue.deactivate();
+  });
+
+  it('switches the queued frame limit without dropping work or bypassing the quiet interval', async () => {
+    const { queue, tick, frames } = fixture(); const commits = vi.fn();
+    for (let i = 0; i < 12; i++) queue.enqueue({}, commits);
+    await tick(); expect(commits).toHaveBeenCalledTimes(4);
+    queue.interaction(true); queue.setBudget(getPerformanceModeBudget(true).display);
+    await tick(1000); expect(commits).toHaveBeenCalledTimes(4);
+    queue.interaction(false); await tick(179); expect(commits).toHaveBeenCalledTimes(4);
+    await tick(1); expect(commits).toHaveBeenCalledTimes(6);
+    while (frames.size) {
+      const previous = commits.mock.calls.length; await tick();
+      expect(commits.mock.calls.length - previous).toBeLessThanOrEqual(2);
+    }
+    expect(commits).toHaveBeenCalledTimes(12);
+    queue.deactivate();
+  });
+
   it('coalesces keys, preserves a replacement against stale cancellation, and prioritizes work', async () => {
     const { queue, tick } = fixture(); const calls: string[] = []; const key = {};
     const cancel = queue.enqueue(key, () => calls.push('stale'));

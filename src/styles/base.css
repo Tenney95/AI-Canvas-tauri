@@ -1020,8 +1020,8 @@ textarea:focus {
   outline: none;
 }
 
-/* Native selects keep their platform popup, while the closed control matches the app UI. */
-select:not([multiple]):not([size]) {
+/* Native selects keep their platform popup; custom Select's hidden native fallback stays hidden. */
+select:not(.ui-select__native):not([multiple]):not([size]) {
   -webkit-appearance: none;
   appearance: none;
   padding-inline-end: 30px;
@@ -1038,7 +1038,7 @@ select:not([multiple]):not([size]) {
   text-overflow: ellipsis;
 }
 
-select:not([multiple]):not([size]):disabled {
+select:not(.ui-select__native):not([multiple]):not([size]):disabled {
   cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.55;
 }
@@ -1059,7 +1059,7 @@ select option:disabled {
 }
 
 @media (forced-colors: active) {
-  select:not([multiple]):not([size]) {
+  select:not(.ui-select__native):not([multiple]):not([size]) {
     -webkit-appearance: auto;
     appearance: auto;
     padding-inline-end: revert;

@@ -37,6 +37,8 @@ export interface UISlice {
   settingsInitialTab: SettingsTab | null;
   /** 打开 API Key 设置后要自动打开的连接 id；NEW_API_KEY_CONNECTION_ID 表示直接打开新建连接弹窗 */
   pendingApiKeyConnectionId: string | null;
+  /** 连接弹窗内要展开的模型参数；仅当前运行期使用，不持久化。 */
+  pendingApiKeyModelId: string | null;
   nodeMenuVisible: boolean;
   nodeMenuPosition: { x: number; y: number };
   nodePickerOpen: boolean;
@@ -79,8 +81,8 @@ export interface UISlice {
   comfyNodeProgress: Record<string, ComfyNodeProgress>;
   setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
   setSettingsInitialTab: (tab: SettingsTab | null) => void;
-  /** 打开设置的 API Key 页，并自动打开指定连接的编辑框；不传连接 id 时直接打开新建连接弹窗 */
-  openApiKeySettings: (connectionId?: string) => void;
+  /** 打开 API Key 页的指定连接，可同时展开模型参数；不传连接 id 时打开新建弹窗。 */
+  openApiKeySettings: (connectionId?: string, modelId?: string) => void;
   setPendingApiKeyConnectionId: (id: string | null) => void;
   showNodeMenu: (position: { x: number; y: number }) => void;
   hideNodeMenu: () => void;
@@ -132,6 +134,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   settingsOpen: false,
   settingsInitialTab: null,
   pendingApiKeyConnectionId: null,
+  pendingApiKeyModelId: null,
   nodeMenuVisible: false,
   nodeMenuPosition: { x: 0, y: 0 },
   nodePickerOpen: false,
@@ -163,19 +166,20 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
         dramaAssetsPanelOpen: false,
         chatOpen: false,
       }
-    : { settingsOpen: false, settingsInitialTab: null, pendingApiKeyConnectionId: null }),
+    : { settingsOpen: false, settingsInitialTab: null, pendingApiKeyConnectionId: null, pendingApiKeyModelId: null }),
   setSettingsInitialTab: (tab) => set({ settingsInitialTab: tab }),
-  openApiKeySettings: (connectionId) => set({
+  openApiKeySettings: (connectionId, modelId) => set({
     settingsOpen: true,
     settingsInitialTab: 'api',
     pendingApiKeyConnectionId: connectionId ?? NEW_API_KEY_CONNECTION_ID,
+    pendingApiKeyModelId: connectionId ? modelId ?? null : null,
     assetsPanelOpen: false,
     characterLibraryOpen: false,
     historyPanelOpen: false,
     dramaAssetsPanelOpen: false,
     chatOpen: false,
   }),
-  setPendingApiKeyConnectionId: (id) => set({ pendingApiKeyConnectionId: id }),
+  setPendingApiKeyConnectionId: (id) => set({ pendingApiKeyConnectionId: id, pendingApiKeyModelId: null }),
   showNodeMenu: (position) => set({ nodeMenuVisible: true, nodeMenuPosition: position }),
   hideNodeMenu: () => set({ nodeMenuVisible: false }),
   openNodePicker: () => set({ nodePickerOpen: true, avatarMenuOpen: false }),

@@ -19,6 +19,7 @@ import {
 } from './modelProtocol';
 import { REFERENCE_PROTOCOL_VARIABLES } from './modelProtocolVariables';
 import { readModelProtocolPathValues } from './modelProtocolResponse';
+import { readGoogleImagePartsReferenceUrls } from './imageModelTemplates';
 
 interface RunConfiguredModelProtocolOptions {
   model: GeneralModelConfig;
@@ -38,7 +39,7 @@ const REFERENCE_MEDIA_GROUPS = [
   {
     kind: '参考图',
     example: '"images": "{{imageUrls}}"',
-    variables: ['seedanceContent', 'imageWithRoles', 'firstImage', 'lastImage', 'referenceImageUrls', 'imageUrls'],
+    variables: ['seedanceContent', 'imageWithRoles', 'firstImage', 'lastImage', 'referenceImageUrls', 'imageUrls', 'googleImageParts'],
   },
   {
     kind: '参考视频',
@@ -62,7 +63,7 @@ const REFERENCE_DELIVERY_HINTS: Record<string, { kind: string; example: string }
 
 const CONTROL_TEMPLATE_KEYS = new Set(['$whenPresent', '$forEach']);
 const GENERIC_REFERENCE_ALIAS_ROOTS = new Set([
-  'seedanceContent', 'imageWithRoles', 'referenceUrls', 'inlineReferences',
+  'seedanceContent', 'imageWithRoles', 'referenceUrls', 'inlineReferences', 'googleImageParts',
 ]);
 
 interface ReferenceDeliveryRule {
@@ -123,11 +124,21 @@ function readReferenceStrings(value: unknown): string[] {
   return Object.values(value).flatMap(readReferenceStrings);
 }
 
+function referenceTransportValue(name: string, value: unknown): unknown {
+  if (name === 'googleImageParts') return readGoogleImagePartsReferenceUrls(value);
+  if (name !== 'seedanceContent' || !Array.isArray(value)) return value;
+  // 类型、角色和提示词不是素材；保持原下标，让子路径与真实请求使用同一索引。
+  return value.map((item) => {
+    if (!isRecord(item)) return undefined;
+    const field = item.type;
+    return field === 'image_url' || field === 'video_url' || field === 'audio_url'
+      ? { [field]: item[field] }
+      : undefined;
+  });
+}
+
 function readProtocolReferenceStrings(name: string, value: unknown): string[] {
-  if (name !== 'seedanceContent' || !Array.isArray(value)) return readReferenceStrings(value);
-  return value.flatMap((item) => (
-    isRecord(item) && item.type === 'text' ? [] : readReferenceStrings(item)
-  ));
+  return readReferenceStrings(referenceTransportValue(name, value));
 }
 
 function containsAllValues(available: readonly string[], expected: readonly string[]): boolean {
@@ -166,7 +177,7 @@ function collectTemplateTransportUsages(
 ): TemplateTransportUsage[] {
   return collectTransportTemplatePaths(extractSubmitValue(protocolSource)).flatMap((path) => {
     const root = path.split('.')[0];
-    const sourceValue = variables[root];
+    const sourceValue = referenceTransportValue(root, variables[root]);
     if (sourceValue === undefined) return [];
     const resolved = path === root
       ? [sourceValue]
@@ -191,8 +202,8 @@ function fallbackDeliveryRule(name: string): ReferenceDeliveryRule {
   if (name === 'imageUrls') {
     return {
       name,
-      roots: ['imageUrls', 'imageWithRoles', 'referenceUrls', 'inlineReferences'],
-      collectionRoots: ['imageUrls', 'imageWithRoles', 'referenceUrls', 'inlineReferences'],
+      roots: ['imageUrls', 'imageWithRoles', 'referenceUrls', 'inlineReferences', 'googleImageParts'],
+      collectionRoots: ['imageUrls', 'imageWithRoles', 'referenceUrls', 'inlineReferences', 'googleImageParts'],
     };
   }
   if (name === 'videoUrls' || name === 'referenceVideoUrl') {

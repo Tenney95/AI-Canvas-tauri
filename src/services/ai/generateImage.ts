@@ -33,8 +33,10 @@ import { generateVolcengineImagesBatch } from './providers/volcengineImage';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import { mediaProviderRegistry } from './mediaProviderRegistry';
 import { executeModelProtocol, modelProtocolUsesVariable, resolveModelExecutionProfile } from './modelProtocol';
+import { assertConfiguredImageReferences, assertModelCapabilityProtocol, resolveConfiguredImageParameters } from './modelCapabilityValidation';
 import { getProviderDefinition } from './providerCatalogService';
 import { resolveBuiltInImageRequestContract, validateBuiltInImageResponse } from './imageRequestContracts';
+import { buildGoogleImageParts, resolveImageTemplateDimensions } from './imageModelTemplates';
 
 function hasReferenceImageFile(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
@@ -124,7 +126,9 @@ export async function generateImagesBatch(
   signal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
-  const { prompt: rawPrompt, model, provider, imageSize = '2K', aspectRatio = '1:1' } = params;
+  const { prompt: rawPrompt, model, provider } = params;
+  let imageSize = params.imageSize ?? '2K';
+  let aspectRatio = params.aspectRatio ?? '1:1';
 
   const generalModel = provider === 'general' ? resolveGeneralModel(model) : undefined;
   if (provider === 'general' && !generalModel) {
@@ -143,6 +147,14 @@ export async function generateImagesBatch(
   // 已确认的内置合同优先，未知模型、自定义连接与工作流保持自己的协议。
   const builtInContract = params.workflowId ? undefined
     : resolveBuiltInImageRequestContract(providerDefinition, modelName, imageSize, aspectRatio);
+  const configuredCapability = !params.workflowId && !builtInContract ? generalModel?.imageCapability : undefined;
+  if (configuredCapability && generalModel) {
+    assertModelCapabilityProtocol({ id: generalModel.modelId, name: generalModel.name, category: 'image',
+      provider: connectionId, executionProfile: generalModel.executionProfile,
+      imageReferenceRequestMode: generalModel.imageReferenceRequestMode, imageCapability: configuredCapability });
+    ({ imageSize, aspectRatio } = resolveConfiguredImageParameters(configuredCapability,
+      { imageSize: params.imageSize, aspectRatio: params.aspectRatio, count: requestedCount }));
+  }
   const executionProfile = builtInContract ? undefined : generalModel?.executionProfile;
   const usesStandardImageRequest = !executionProfile
     || executionProfile.preset === 'openai-image'
@@ -250,6 +262,7 @@ export async function generateImagesBatch(
   // 参考图传输格式由模型显式配置或已确认的厂商目录决定。
   const referenceMedia = provider === 'runninghub' ? mergeMediaReferences(collectPromptNodeMediaUrls(rawPrompt).references, collectConnectedReferenceMedia(params.nodeId).references) : undefined;
   if (referenceMedia) allImageUrls = mergeImageUrls(allImageUrls, getMediaReferenceUrls(referenceMedia, 'image', 'local'));
+  if (configuredCapability) assertConfiguredImageReferences(configuredCapability, allImageUrls.length);
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
   allImageUrls = provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
     ? await resolveImageDataUrlArray(allImageUrls, signal)
@@ -307,7 +320,7 @@ export async function generateImagesBatch(
       const connection = resolveGeneralModelConnection(model);
       if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
       if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-      const dimensions = mapImageDimensions(imageSize, aspectRatio);
+      const dimensions = resolveImageTemplateDimensions(configuredCapability, imageSize, aspectRatio);
       const hasExplicitStandardRequestMode = allImageUrls.length > 0
         && imageReferenceRequestMode !== undefined
         && usesStandardImageRequest;
@@ -328,6 +341,8 @@ export async function generateImagesBatch(
             n: requestedCount,
             batchCount: requestedCount,
             imageUrls: allImageUrls,
+            ...(customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts')
+              ? { googleImageParts: buildGoogleImageParts(prompt, allImageUrls) } : {}),
           },
         });
         const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions }));

@@ -2,15 +2,23 @@
  * 注册项目管理工具；只编排现有 Project Store Action，不复制持久化与清理事务。
  */
 import { useAppStore } from '../../../store/useAppStore';
+import { resolveOpenTargetId, seriesOwnerId } from '../../../store/store.utils';
 import type { CanvasProject, ProjectSettings } from '../../../types';
+import { isMcpGlobalToolContext } from '../../mcp/mcpSettingsScope';
 import type { AgentToolSchema } from '../agentToolSchemas';
 import {
   registerAgentTool,
+  type AgentToolContext,
   type AgentToolExecutionResult,
 } from '../toolRegistry';
 
 interface ProjectIdInput {
   projectId: string;
+}
+
+interface ProjectListInput {
+  limit?: number;
+  offset?: number;
 }
 
 interface ProjectCreateInput {
@@ -44,8 +52,6 @@ interface ProjectSettingsPatch {
 interface ProjectUpdateSettingsInput {
   settings: ProjectSettingsPatch;
 }
-
-const MCP_CONVERSATION_PREFIX = 'mcp-control-';
 
 const emptySchema: AgentToolSchema = {
   type: 'object',
@@ -118,8 +124,8 @@ const projectSettingsSchema: AgentToolSchema = {
   },
 };
 
-function isMcpControlContext(context: { conversationId: string }) {
-  return context.conversationId.startsWith(MCP_CONVERSATION_PREFIX);
+function isMcpControlContext(context: { projectId: string; conversationId: string }) {
+  return context.conversationId === `mcp-control-${context.projectId}`;
 }
 
 function authorizeCurrentProject(context: { projectId: string; conversationId: string }) {
@@ -132,6 +138,19 @@ function authorizeCurrentProject(context: { projectId: string; conversationId: s
   };
 }
 
+function authorizeProjectNavigation(context: Omit<AgentToolContext, 'signal'>, toolName: string) {
+  return isMcpGlobalToolContext(context, toolName)
+    ? { allowed: true }
+    : authorizeCurrentProject(context);
+}
+
+function resolveNavigationTarget(projects: CanvasProject[], requestedId: string, currentId: string | null) {
+  // 与项目库一致：再次打开正在编辑的剧集时，保留当前分集。
+  return currentId && projects.some((project) => project.id === currentId)
+    && seriesOwnerId(projects, currentId) === requestedId
+    ? currentId : resolveOpenTargetId(projects, requestedId);
+}
+
 function projectKind(project: CanvasProject, projects: CanvasProject[]) {
   if (project.parentId) return 'episode';
   return projects.some((candidate) => candidate.parentId === project.id)
@@ -142,9 +161,12 @@ function projectKind(project: CanvasProject, projects: CanvasProject[]) {
 function safeProjectSummary(project: CanvasProject, projects: CanvasProject[], currentProjectId: string | null) {
   return {
     id: project.id,
-    name: project.name,
+    name: project.name.slice(0, 240),
     kind: projectKind(project, projects),
     current: project.id === currentProjectId,
+    opened: project.id === currentProjectId
+      || Boolean(currentProjectId && project.id === seriesOwnerId(projects, currentProjectId)),
+    openTargetId: resolveNavigationTarget(projects, project.id, currentProjectId),
     parentId: project.parentId,
     episodeNo: project.episodeNo,
     createdAt: project.createdAt,
@@ -195,6 +217,55 @@ function failure(summary: string, errorCode: string): AgentToolExecutionResult {
   };
 }
 
+function projectListUnavailable(): AgentToolExecutionResult | undefined {
+  const store = useAppStore.getState();
+  if (store.projectLoadStatus === 'loading') return failure('项目列表尚在加载，请稍后重新读取', 'PROJECT_LIST_LOADING');
+  if (store.projectLoadStatus === 'error' && store.projects.length === 0) {
+    return failure('项目列表读取失败，请在应用中检查存储状态', 'PROJECT_LIST_UNAVAILABLE');
+  }
+}
+
+async function openProject(context: AgentToolContext, input: ProjectIdInput): Promise<AgentToolExecutionResult> {
+  if (context.signal.aborted) return failure('项目打开请求已取消', 'PROJECT_OPEN_CANCELLED');
+  const store = useAppStore.getState();
+  if (store.projectLoadStatus === 'loading' || store.isCreatingProject || store.isReturningToStartPage
+    || store.switchingProjectName !== null) {
+    return failure('项目正在加载、创建或切换，请等待完成后再操作', 'PROJECT_NAVIGATION_BUSY');
+  }
+  const project = store.projects.find((candidate) => candidate.id === input.projectId);
+  if (!project) return failure('项目不存在，请重新读取 project_list', 'PROJECT_NOT_FOUND');
+  const targetId = resolveNavigationTarget(store.projects, project.id, store.currentProjectId);
+  const previousProjectId = store.currentProjectId;
+  const alreadyOpen = previousProjectId === targetId && store.projectLoadStatus === 'ready';
+  if (!alreadyOpen) {
+    try {
+      const openedId = await store.switchProject(targetId, { captureSnapshot: false, signal: context.signal });
+      if (context.signal.aborted) return failure('项目打开请求已取消', 'PROJECT_OPEN_CANCELLED');
+      const current = useAppStore.getState();
+      if (openedId !== targetId || current.currentProjectId !== targetId || current.projectLoadStatus !== 'ready'
+        || current.switchingProjectName !== null) {
+        return failure('项目打开未完成，可能保存或加载失败，或已被其他切换接管；请重新读取项目列表', 'PROJECT_OPEN_FAILED');
+      }
+    } catch {
+      return failure('项目打开失败，请在应用中检查存储状态后重新读取项目列表', 'PROJECT_OPEN_FAILED');
+    }
+  }
+  const current = useAppStore.getState();
+  // 只有成功后才收起项目库，失败时保留当前界面和画布。
+  current.setProjectLibraryOpen(false);
+  return success(alreadyOpen ? `项目“${project.name}”已打开` : `已打开项目“${project.name}”`, {
+    requestedProjectId: input.projectId,
+    previousProjectId,
+    currentProjectId: current.currentProjectId,
+    alreadyOpen,
+    project: safeProjectSummary(
+      current.projects.find((candidate) => candidate.id === targetId) ?? project,
+      current.projects,
+      current.currentProjectId,
+    ),
+  });
+}
+
 function mergeProjectSettings(
   current: ProjectSettings | undefined,
   patch: ProjectSettingsPatch,
@@ -220,22 +291,42 @@ function mergeProjectSettings(
 
 export function registerProjectAgentTools(): Array<() => void> {
   return [
-    registerAgentTool<Record<string, never>>({
+    registerAgentTool<ProjectListInput>({
       id: 'project_list',
       title: '列出项目',
-      description: '列出项目、剧集与分集的脱敏摘要，不返回目录、路径、快照或正文。',
-      inputSchema: emptySchema,
+      description: '启动页或画布中分页读取项目、剧集与分集列表，返回项目 ID、名称、当前打开状态与打开目标 ID；不返回目录、路径、快照或正文。用返回的 ID 调用 project_open 或 project_switch。',
+      inputSchema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 100, description: '每页条数，默认 50。' },
+          offset: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: '默认 0；使用上次 nextOffset 继续。列表随项目增删变化。' },
+        },
+      },
       effect: 'read',
       isAvailable: isMcpControlContext,
-      authorize: authorizeCurrentProject,
-      execute: async () => {
+      authorize: (context) => authorizeProjectNavigation(context, 'project_list'),
+      execute: async (_context, input) => {
+        const unavailable = projectListUnavailable();
+        if (unavailable) return unavailable;
         const store = useAppStore.getState();
-        return success(`已列出 ${store.projects.length} 个项目记录`, {
+        const page = store.projects.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 50));
+        const nextOffset = (input.offset ?? 0) + page.length;
+        const content = {
           currentProjectId: store.currentProjectId,
-          projects: store.projects.map((project) => (
+          currentRootProjectId: store.currentProjectId ? seriesOwnerId(store.projects, store.currentProjectId) : null,
+          total: store.projects.length,
+          returned: page.length,
+          hasMore: nextOffset < store.projects.length,
+          ...(nextOffset < store.projects.length ? { nextOffset } : {}),
+          projects: page.map((project) => (
             safeProjectSummary(project, store.projects, store.currentProjectId)
           )),
-        });
+        };
+        return {
+          ...success(`已列出 ${page.length} 个项目记录，共 ${store.projects.length} 个`, content),
+          // 分页 JSON 通过瞬时通道返回，避免通用模型文本裁剪截断列表。
+          mcpContent: [{ type: 'text', text: JSON.stringify(content) }],
+        };
       },
     }),
     registerAgentTool<ProjectIdInput>({
@@ -246,7 +337,7 @@ export function registerProjectAgentTools(): Array<() => void> {
       effect: 'read',
       isAvailable: isMcpControlContext,
       authorize: (context, input) => {
-        const current = authorizeCurrentProject(context);
+        const current = authorizeProjectNavigation(context, 'project_get');
         if (!current.allowed) return current;
         return {
           allowed: useAppStore.getState().projects.some((project) => project.id === input.projectId),
@@ -255,6 +346,8 @@ export function registerProjectAgentTools(): Array<() => void> {
       },
       summarizeInput: (input) => `读取项目 ${input.projectId}`,
       execute: async (_context, input) => {
+        const unavailable = projectListUnavailable();
+        if (unavailable) return unavailable;
         const store = useAppStore.getState();
         const project = store.projects.find((candidate) => candidate.id === input.projectId);
         if (!project) return failure('项目不存在', 'PROJECT_NOT_FOUND');
@@ -324,25 +417,26 @@ export function registerProjectAgentTools(): Array<() => void> {
       },
     }),
     registerAgentTool<ProjectIdInput>({
-      id: 'project_switch',
-      title: '切换项目',
-      description: '保存当前项目并切换到指定项目；剧集根项目会按既有规则打开第一集。',
+      id: 'project_open',
+      title: '打开项目',
+      description: '从启动页或画布打开指定项目 ID，切走前保存当前项目；剧集默认打开第一集，再次打开当前剧集保留当前分集。返回实际打开的项目 ID，失败不会报告成功。',
       inputSchema: projectIdSchema,
       effect: 'canvas_write',
       isAvailable: isMcpControlContext,
-      authorize: authorizeCurrentProject,
+      authorize: (context) => authorizeProjectNavigation(context, 'project_open'),
+      summarizeInput: (input) => `打开项目 ${input.projectId}`,
+      execute: openProject,
+    }),
+    registerAgentTool<ProjectIdInput>({
+      id: 'project_switch',
+      title: '切换项目',
+      description: '按项目 ID 切换当前项目，与 project_open 共用保存和加载流程，启动页也可使用；剧集默认打开第一集，再次打开当前剧集保留当前分集。',
+      inputSchema: projectIdSchema,
+      effect: 'canvas_write',
+      isAvailable: isMcpControlContext,
+      authorize: (context) => authorizeProjectNavigation(context, 'project_switch'),
       summarizeInput: (input) => `切换到项目 ${input.projectId}`,
-      execute: async (_context, input) => {
-        const store = useAppStore.getState();
-        const project = store.projects.find((candidate) => candidate.id === input.projectId);
-        if (!project) return failure('项目不存在', 'PROJECT_NOT_FOUND');
-        await store.switchProject(input.projectId, { captureSnapshot: false });
-        const currentProjectId = useAppStore.getState().currentProjectId;
-        return success(`已切换到项目“${project.name}”`, {
-          requestedProjectId: input.projectId,
-          currentProjectId,
-        });
-      },
+      execute: openProject,
     }),
     registerAgentTool<ProjectUpdateSettingsInput>({
       id: 'project_update_settings',

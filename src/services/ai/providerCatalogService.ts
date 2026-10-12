@@ -585,6 +585,27 @@ function parseVideoCapability(
   return Object.values(capability).some((value) => value !== undefined) ? capability : undefined;
 }
 
+function parseImageCapability(record: Record<string, unknown>, category: GeneralModelCategory): ProviderModelSelection['imageCapability'] {
+  if (category !== 'image') return undefined;
+  const declared = readRecord(record.imageCapability ?? record.image_capability) ?? record;
+  const limit = readRecord(declared.reference_limits ?? declared.referenceLimits);
+  const boolean = (value: unknown) => typeof value === 'boolean' ? value : undefined;
+  const capability: NonNullable<ProviderModelSelection['imageCapability']> = {
+    resolutions: readStringArray(declared.resolutions),
+    defaultResolution: typeof (declared.defaultResolution ?? declared.default_resolution) === 'string'
+      ? String(declared.defaultResolution ?? declared.default_resolution) : undefined,
+    ratios: readStringArray(declared.ratios ?? declared.aspect_ratios ?? declared.aspectRatios),
+    defaultRatio: typeof (declared.defaultRatio ?? declared.default_aspect_ratio) === 'string'
+      ? String(declared.defaultRatio ?? declared.default_aspect_ratio) : undefined,
+    supportsBatch: boolean(declared.supportsBatch ?? declared.supports_batch),
+    maxBatchCount: readFiniteNumber(declared.maxBatchCount ?? declared.max_batch_count),
+    supportsImageReference: boolean(declared.supportsImageReference ?? declared.supports_image_reference),
+    maxImageReferences: readFiniteNumber(declared.maxImageReferences ?? limit?.image),
+    supportsDataUrlReference: boolean(declared.supportsDataUrlReference ?? declared.supports_data_url_reference),
+  };
+  return Object.values(capability).some((value) => value !== undefined) ? capability : undefined;
+}
+
 function parseCatalogItem(
   item: unknown,
   providerId: string,
@@ -616,6 +637,7 @@ function parseCatalogItem(
     provider: providerId,
     inputModalities: supportsImageInput ? ['text', 'image'] : undefined,
     videoCapability: parseVideoCapability(record, category),
+    imageCapability: parseImageCapability(record, category),
   };
 }
 
@@ -655,6 +677,7 @@ function mergeRemoteCatalogMetadata(
       executionProfile: remote.executionProfile ?? fallback.executionProfile,
       imageReferenceRequestMode: remote.imageReferenceRequestMode
         ?? fallback.imageReferenceRequestMode,
+      imageCapability: remote.imageCapability ?? fallback.imageCapability,
       videoCapability: remote.videoCapability || fallback.videoCapability
         ? { ...fallback.videoCapability, ...remote.videoCapability }
         : undefined,

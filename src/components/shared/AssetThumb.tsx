@@ -2,12 +2,13 @@
  * AssetThumb — 资产缩略图外壳（AssetsPanel / AssetSearchWindow 卡片共用）
  * 统一图片/图标展示 + 体积角标 + 来源角标 + 操作按钮插槽，消除两处卡片的视觉重复。
  */
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useSyncExternalStore, type ReactNode } from 'react';
 import type { FileCategory } from '../../services/fileService';
 import { readTextFilePreview, getCachedTextPreview, ASSET_TEXT_UPDATED_EVENT } from '../../services/fileService';
 import { CATEGORY_ICONS, formatSize } from '../../utils/assetFormat';
 import ViewportImage from './ViewportImage';
 import ResourceVideoPreview from './ResourceVideoPreview';
+import { getPerformanceModeBudget, getPerformanceModeEnabled, subscribePerformanceMode } from '../../services/performanceModeRuntime';
 
 interface AssetThumbProps {
   assetUrl?: string;
@@ -124,6 +125,8 @@ export default function AssetThumb({
   showNativeTooltip = true,
   textPreview,
 }: AssetThumbProps) {
+  const performanceMode = useSyncExternalStore(subscribePerformanceMode, getPerformanceModeEnabled, getPerformanceModeEnabled);
+  const previewMaxEdge = category === 'image' ? getPerformanceModeBudget(performanceMode).imagePreviewMaxEdge : 0;
   if (category === 'video') {
     return (
       <div className="assets-card-img-wrap assets-card-video-wrap">
@@ -156,7 +159,8 @@ export default function AssetThumb({
   if (assetUrl) {
     return (
       <div className="assets-card-img-wrap">
-        <ViewportImage src={assetUrl} alt={name} className="assets-card-img" draggable={false} />
+        <ViewportImage src={assetUrl} alt={name} className="assets-card-img" draggable={false}
+          previewMaxEdge={previewMaxEdge || undefined} projectId={videoProjectId} />
         {category === 'image' && onImagePreview && (
           <button
             type="button"

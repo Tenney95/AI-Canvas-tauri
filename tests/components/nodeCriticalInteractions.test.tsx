@@ -1062,6 +1062,16 @@ describe('critical canvas node interactions', () => {
     changePrompt('正在编辑的内容', 'old prompt');
     expect(store.nodes[0].data.prompt).toBe('正在编辑的内容 @{image:新参考图} @{audio:新声音}');
     (promptPanel.props.onContinuousEditEnd as () => void)();
+    expect(store.commitToHistory).not.toHaveBeenCalled();
+    store.updateNodeDataTransient('video-node', { workflowInputs: { panelInput: '保留的面板参数' } });
+    changePrompt('@wf{57:27|提示词|prompt}(修改后的内容)');
+    expect(store.nodes[0].data.workflowInputs).toEqual({ panelInput: '保留的面板参数', '57:27': '修改后的内容' });
+    // 编辑器撤销标签内容时，正文与工作流参数一起恢复；面板输入保留。
+    changePrompt('@wf{57:27|提示词|prompt}(原文)', '@wf{57:27|提示词|prompt}(修改后的内容)');
+    expect(store.nodes[0].data.workflowInputs).toEqual({ panelInput: '保留的面板参数', '57:27': '原文' });
+    changePrompt('删除工作流标签');
+    expect(store.nodes[0].data.workflowInputs).toEqual({ panelInput: '保留的面板参数' });
+    expect(store.commitToHistory).not.toHaveBeenCalled();
     const editWrites = store.updateNodeDataTransient.mock.calls.length;
     store.currentProjectId = 'project-b';
     changePrompt('旧项目迟到的输入', '正在编辑的内容');

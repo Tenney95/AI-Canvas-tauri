@@ -1,7 +1,7 @@
 # ComfyUI 工作流集成说明
 
 > 本文档描述 AI Canvas 如何导入、管理和执行 ComfyUI 工作流，包括 IO 节点识别、内容与参数注入规则、结果取回和编辑回写链路。
-> 最后更新：2026-10-07。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)、[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)和[打开与编辑体验](./plans/2026-09-08-comfyui-editor-experience.md)。
+> 最后更新：2026-10-11。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)、[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)、[打开与编辑体验](./plans/2026-09-08-comfyui-editor-experience.md)和[独立管理窗口](./plans/2026-10-11-comfyui-management.md)。
 
 ## 1. 概览
 
@@ -28,7 +28,9 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 - **服务地址**：默认 `http://127.0.0.1:8188`，存在 `config.comfyUIUrl`。未配置时执行会直接抛「未配置 ComfyUI 服务地址」。
 - **额外服务器**：`config.comfyServers` 保存服务器名称和 URL；工作流通过 `serverId` 绑定。未绑定或服务器记录已删除时回落到默认地址；可用性灯通过 `/system_stats` 探测。
-- **本地安装目录**：存在 `config.comfyUIPath`，配好后可以一键启动本地 ComfyUI（Tauri 命令 `launch_comfyui`，固定使用 `--listen 127.0.0.1 --enable-cors-header`）。当前本地启动尚未关联自定义端口。
+- **本地安装目录**：通过主窗口原生选择器保存到用途专属的私有安装授权；`config.comfyUIPath` 仅作显示镜像。私有存储由 fs 插件之后注册的隐私插件在 `Builder::build` 初始化时隔离，早于配置窗口/Renderer 创建，初始隔离失败则终止应用启动；每次读写仍复核。启动与管理恢复原生记录，正常重启无需重新选址；旧配置首次使用可原生确认一次已有目录。取消或保存失败保留旧选择，更换前需关闭管理窗口；目录离线、链接替换或记录损坏时拒绝，不改用镜像授权。
+- **本地启动**：`launch_comfyui` 固定使用 `--listen 127.0.0.1 --enable-cors-header`。端口及常用参数由原生启动设置提供，按实际安装的 CLI 声明校验；通过设置页启动时，主窗口同步默认服务地址到该回环端口。源码只从所选根内的固定候选识别；Comfy Desktop 源码在 Electron 目录同级时应选包含源码的基目录。无根内源码的 Windows 安装仅支持固定启动器的默认启动兜底，不能越界进行源码/API 模式或版本管理。
+- **独立管理窗口**：启动与打开页面之间的「设置」按钮打开单例 Tauri 管理窗口，提供内核标签/提交/分支、已装插件启停/更新/切换版本/可恢复卸载、官方 Git 节点目录与仓库 URL 安装，以及常用启动设置。主窗口先授权安装并由 Rust 绑定会话；窗口只获取精简外观信息，不读取全量配置或凭据。Git 节点下载后默认停用，依赖安装另经原生信任确认，不执行 `install.py`；非 Git 内核不支持版本写入。已实现，待用户验证，本次未运行测试；范围、限制与桌面验收见[专项计划](./plans/2026-10-11-comfyui-management.md)。
 - **显存与缓存**：设置页可按服务器读取 `/system_stats`，并手动调用 `/free` 的“卸载模型”或“完全释放”。默认策略为“保留智能缓存”；只有用户显式选择时，任务终态后才会在队列空闲时自动释放，而且自动策略仅作用于 `localhost`、`127.0.0.1` 和 `::1`，不会清理远程或共享服务器。
 
 请求通过 [comfyPolling.ts](../src/services/comfyPolling.ts) 的 `comfyFetch`，出口按环境分流：

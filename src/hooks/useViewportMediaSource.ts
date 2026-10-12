@@ -1,4 +1,5 @@
 import { useEffect, useState, type RefObject } from 'react';
+import { getPerformanceModeBudget, getPerformanceModeEnabled, subscribePerformanceMode } from '../services/performanceModeRuntime';
 
 interface ObserverPool {
   observer: IntersectionObserver;
@@ -53,11 +54,15 @@ export function useViewportMediaSource<T extends Element>(
   elementRef: RefObject<T | null>,
   {
     eager = false,
-    rootMargin = '800px 0px',
-    unloadDelayMs = 2_000,
+    rootMargin,
+    unloadDelayMs,
   }: ViewportMediaSourceOptions = {},
 ): string | undefined {
   const [observedSource, setObservedSource] = useState<string>();
+  const [performanceMode, setPerformanceMode] = useState(getPerformanceModeEnabled);
+  const budget = getPerformanceModeBudget(performanceMode);
+  const effectiveRootMargin = rootMargin ?? budget.mediaRootMargin;
+  const effectiveUnloadDelay = unloadDelayMs ?? budget.mediaUnloadDelayMs;
   const nearViewport = eager || observerUnavailable() || observedSource === source;
 
   useEffect(() => {
@@ -67,7 +72,7 @@ export function useViewportMediaSource<T extends Element>(
     if (!element) return undefined;
 
     let unloadTimer: ReturnType<typeof setTimeout> | undefined;
-    const stopObserving = observeNearViewport(element, rootMargin, (isIntersecting) => {
+    const stopObserving = observeNearViewport(element, effectiveRootMargin, (isIntersecting) => {
       if (isIntersecting) {
         if (unloadTimer !== undefined) clearTimeout(unloadTimer);
         unloadTimer = undefined;
@@ -78,14 +83,21 @@ export function useViewportMediaSource<T extends Element>(
       unloadTimer = setTimeout(() => {
         setObservedSource(undefined);
         unloadTimer = undefined;
-      }, unloadDelayMs);
+      }, effectiveUnloadDelay);
     });
 
     return () => {
       stopObserving();
       if (unloadTimer !== undefined) clearTimeout(unloadTimer);
     };
-  }, [eager, elementRef, rootMargin, source, unloadDelayMs]);
+  }, [eager, elementRef, effectiveRootMargin, source, effectiveUnloadDelay]);
+
+  useEffect(() => {
+    const refresh = () => setPerformanceMode(getPerformanceModeEnabled());
+    const unsubscribe = subscribePerformanceMode(refresh);
+    refresh();
+    return unsubscribe;
+  }, []);
 
   return nearViewport ? source : undefined;
 }

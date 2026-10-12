@@ -1,0 +1,9 @@
+{
+  "identifier": "comfyui-settings-capability",
+  "description": "Local ComfyUI settings window with installation-scoped management only",
+  "windows": ["comfyui-settings"],
+  "permissions": [
+    "allow-comfyui-management",
+    "core:window:allow-close"
+  ]
+}

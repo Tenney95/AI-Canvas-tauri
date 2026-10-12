@@ -3,16 +3,22 @@
  * 配置 ComfyUI 服务地址、启动 / 停止本地 ComfyUI、探测服务状态，
  * 并提供工作流面板入口与相关目录选择。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import type { ComfyMemoryPolicy, ComfyServer } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
 import Select from '../shared/Select';
 import { useT } from '../../i18n';
+import {
+  getComfyInstallation,
+  openComfyManagementWindow,
+  selectComfyInstallation,
+} from '../../services/comfyManagementService';
+import { getComfyLaunchSettings } from '../../services/comfyLaunchSettingsService';
+import { getAppearanceForConfig } from '../../services/appearance/appearanceMigration';
 import {
   DEFAULT_COMFY_URL,
   probeComfyServer,
@@ -28,12 +34,34 @@ import {
 type ComfyStatus = 'idle' | 'starting' | 'ready' | 'failed';
 
 const INPUT_CLASS = 'text-xs bg-canvas-surface border border-canvas-border rounded-md px-2.5 py-1.5 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
+const COMFY_ACTION_BUTTON_CLASS = 'ui-btn ui-btn--sm ui-btn--block min-w-0 [&>svg]:shrink-0';
 const DEFAULT_SERVER_STATUS_KEY = '__default__';
 const STATUS_REFRESH_INTERVAL_MS = 15_000;
 const STATUS_DEBOUNCE_MS = 250;
 
 function formatGiB(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
+
+async function syncInstallationMirror(path: string): Promise<void> {
+  const state = useAppStore.getState();
+  if (state.config.comfyUIPath?.trim() !== path) state.updateConfig({ comfyUIPath: path });
+  else if (state.configEditBaseline.comfyUIPath === path) return;
+  try {
+    await state.saveConfig({ silent: true, throwOnError: true });
+  } catch {
+    throw new Error('ComfyUI 目录已由应用记住，但配置镜像保存失败，请重试');
+  }
+}
+
+async function resolveInstallationPath(): Promise<string | undefined> {
+  const path = await getComfyInstallation();
+  if (path) {
+    await syncInstallationMirror(path);
+    return path;
+  }
+  // 旧记录仅作一次迁移输入；是否授权仍由原生启动/管理命令决定。
+  return useAppStore.getState().config.comfyUIPath?.trim();
 }
 
 interface ServerStatusEntry {
@@ -86,6 +114,9 @@ export default function ComfyUISettings() {
   const t = useT();
   const [launching, setLaunching] = useState(false);
   const [opening, setOpening] = useState(false);
+  const [managing, setManaging] = useState(false);
+  const [choosingPath, setChoosingPath] = useState(false);
+  const choosingPathRef = useRef(false);
   const [status, setStatus] = useState<ComfyStatus>('idle');
   const [serverStatuses, setServerStatuses] = useState<Record<string, ServerStatusEntry>>({});
   const [memoryTargetKey, setMemoryTargetKey] = useState(DEFAULT_SERVER_STATUS_KEY);
@@ -108,6 +139,21 @@ export default function ComfyUISettings() {
   const memoryTarget = memoryTargets.find((target) => target.key === memoryTargetKey) ?? memoryTargets[0];
   const memoryStats = memorySnapshot?.url === memoryTarget.url ? memorySnapshot.stats ?? null : null;
   const memoryError = memorySnapshot?.url === memoryTarget.url ? memorySnapshot.error ?? null : null;
+
+  useEffect(() => {
+    let disposed = false;
+    const previousPath = useAppStore.getState().config.comfyUIPath?.trim();
+    void getComfyInstallation().then(async (path) => {
+      if (disposed || !path) return;
+      // 挂载期间的新选择优先，不让迟到的旧恢复结果覆盖它。
+      if (useAppStore.getState().config.comfyUIPath?.trim() !== previousPath) return;
+      await syncInstallationMirror(path);
+    }).catch(() => {
+      // 保留原显示与原生错误；用户点击启动/设置时会重新读取并显示准确原因。
+      // 配置镜像保存失败已由 Store 提示，不在后台输出路径。
+    });
+    return () => { disposed = true; };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -183,8 +229,8 @@ export default function ComfyUISettings() {
     return entry?.url === url ? entry.availability : 'checking';
   };
 
-  const openComfyUI = async () => {
-    const comfyUrl = config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188';
+  const openComfyUI = async (targetUrl?: string) => {
+    const comfyUrl = targetUrl || config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188';
     setOpening(true);
     try {
       await invoke<void>('open_comfyui_window', { comfyUrl });
@@ -195,43 +241,76 @@ export default function ComfyUISettings() {
     }
   };
 
-  const choosePath = async () => {
+  const openManagement = async () => {
+    if (choosingPathRef.current || managing || launching) return;
+    setManaging(true);
     try {
-      const selected = await openDialog({ directory: true, title: t('选择 ComfyUI 安装目录') });
-      if (selected && typeof selected === 'string') {
-        updateConfig({ comfyUIPath: selected });
-        await saveConfig();
+      const comfyPath = await resolveInstallationPath();
+      if (!comfyPath) {
+        showToast(t('请先设置 ComfyUI 安装目录'), 'error');
+        return;
       }
-    } catch {
-      // 浏览器环境忽略
+      const latestConfig = useAppStore.getState().config;
+      const appearance = latestConfig.appearance ?? getAppearanceForConfig(latestConfig);
+      await openComfyManagementWindow(comfyPath, {
+        appearance: {
+          ...appearance,
+          canvas: { ...appearance.canvas, imageDataUrl: undefined },
+          handle: { ...appearance.handle, imageDataUrl: undefined },
+        },
+        language: latestConfig.language ?? null,
+        nativeCursor: latestConfig.customCursor === false,
+      });
+    } catch (error) {
+      showToast(typeof error === 'string' ? error : error instanceof Error ? error.message : t('打开 ComfyUI 管理窗口失败'), 'error');
+    } finally { setManaging(false); }
+  };
+
+  const choosePath = async () => {
+    if (choosingPathRef.current || launching || managing) return;
+    choosingPathRef.current = true;
+    setChoosingPath(true);
+    try {
+      const selected = await selectComfyInstallation();
+      if (selected) await syncInstallationMirror(selected);
+    } catch (error) {
+      showToast(typeof error === 'string' ? error : error instanceof Error ? error.message : t('选择 ComfyUI 安装目录失败'), 'error');
+    } finally {
+      choosingPathRef.current = false;
+      setChoosingPath(false);
     }
   };
 
   const launch = async () => {
-    const comfyPath = config.comfyUIPath?.trim();
-    if (!comfyPath) {
-      showToast(t('请先设置 ComfyUI 安装目录'), 'error');
-      return;
-    }
+    if (choosingPathRef.current || launching || managing) return;
     setLaunching(true);
     setStatus('starting');
     try {
+      const comfyPath = await resolveInstallationPath();
+      if (!comfyPath) {
+        setStatus('idle');
+        showToast(t('请先设置 ComfyUI 安装目录'), 'error');
+        return;
+      }
+      const launchSettings = await getComfyLaunchSettings();
+      const base = `http://127.0.0.1:${launchSettings.port}`;
+      if (useAppStore.getState().config.comfyUIUrl?.trim() !== base) {
+        updateConfig({ comfyUIUrl: base });
+        await saveConfig();
+      }
       await invoke<string>('launch_comfyui', { comfyPath });
-      const base = (config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188').replace(/\/+$/, '');
       const deadline = Date.now() + 300_000;
       let ready = false;
       while (Date.now() < deadline) {
-        try {
-          await fetch(`${base}/system_stats`, { mode: 'no-cors' });
+        if (await probeComfyServer(base)) {
           ready = true;
           break;
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
         }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
       setStatus(ready ? 'ready' : 'failed');
       if (ready) {
-        await openComfyUI();
+        await openComfyUI(base);
       }
       showToast(
         ready ? t('ComfyUI 服务已就绪') : t('ComfyUI 进程已启动，但等待服务就绪超时，请查看终端窗口日志'),
@@ -239,7 +318,7 @@ export default function ComfyUISettings() {
       );
     } catch (error) {
       setStatus('failed');
-      showToast(typeof error === 'string' ? error : t('启动 ComfyUI 失败'), 'error');
+      showToast(typeof error === 'string' ? error : error instanceof Error ? error.message : t('启动 ComfyUI 失败'), 'error');
     } finally {
       setLaunching(false);
     }
@@ -319,20 +398,20 @@ export default function ComfyUISettings() {
             }`}>
               {comfyUIPath || t('未设置')}
             </div>
-            <AnimatedButton type="button" className="settings-save-btn self-stretch shrink-0 text-xs" onClick={choosePath}>
-              {comfyUIPath ? t('更换') : t('选择文件夹')}
+            <AnimatedButton type="button" className="settings-save-btn self-stretch shrink-0 text-xs" onClick={choosePath} disabled={choosingPath || launching || managing}>
+              {choosingPath ? t('正在选择…') : comfyUIPath ? t('更换') : t('选择文件夹')}
             </AnimatedButton>
           </div>
           <p className="text-[11px] text-canvas-text-muted leading-relaxed mb-3">
             {t('选择 ComfyUI 的安装根目录，支持 GitHub 源码版 / 秋叶整合包 / 官方便携版 / Comfy Desktop（选安装基目录，如 F:\\ComfyUI）。将以 API 模式直接启动，跳过启动器检测')}
           </p>
           <div className="pt-2 border-t border-canvas-border">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <AnimatedButton
                 type="button"
-                className="flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors text-xs font-medium"
+                className={`${COMFY_ACTION_BUTTON_CLASS} [&.ui-btn]:border-transparent [&.ui-btn]:bg-purple-500/15 [&.ui-btn]:text-purple-400 [&.ui-btn:hover:not(:disabled):not(.is-active)]:border-transparent [&.ui-btn:hover:not(:disabled):not(.is-active)]:bg-purple-500/25 [&.ui-btn:hover:not(:disabled):not(.is-active)]:text-purple-400`}
                 onClick={launch}
-                disabled={launching}
+                disabled={launching || managing || choosingPath}
               >
                 {launching ? (
                   <>
@@ -350,7 +429,16 @@ export default function ComfyUISettings() {
               </AnimatedButton>
               <AnimatedButton
                 type="button"
-                className="flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-canvas-surface border border-canvas-border text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text transition-colors text-xs font-medium"
+                className={`${COMFY_ACTION_BUTTON_CLASS} ui-btn--secondary`}
+                onClick={() => void openManagement()}
+                disabled={managing || launching || choosingPath}
+              >
+                <Icon icon={managing ? 'lucide:loader-circle' : 'lucide:settings'} width="14" height="14" className={managing ? 'animate-spin' : ''} />
+                {t('设置')}
+              </AnimatedButton>
+              <AnimatedButton
+                type="button"
+                className={`${COMFY_ACTION_BUTTON_CLASS} ui-btn--secondary [&.ui-btn]:text-canvas-text-secondary [&.ui-btn:hover:not(:disabled):not(.is-active)]:text-canvas-text`}
                 onClick={() => void openComfyUI()}
                 disabled={opening}
               >

@@ -49,6 +49,7 @@ export type AgentLifecycleEventInput =
     }
   | {
       type: 'context.compression';
+      taskId?: string;
       conversationId: string;
       phase: 'start' | 'end';
       outcome?: 'succeeded' | 'skipped' | 'failed';

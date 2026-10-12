@@ -27,6 +27,7 @@ export function buildMediaPrompt(mode: AgentMode = 'collaborative'): string {
 export function buildAssistantToolGuidance(
   toolNames?: readonly string[],
   mode: AgentMode = 'collaborative',
+  inputBudget?: number,
 ): string {
   const has = (name: string) => toolNames === undefined || toolNames.includes(name);
   const rules = [
@@ -97,7 +98,8 @@ export function buildAssistantToolGuidance(
     '- 子智能体只能看到用户配置允许的材料，派任务时写清目标，不让它猜未提供的内容');
   add('media_generate', buildMediaPrompt(mode));
 
-  if (has('skill_load')) rules.push(buildSkillCatalogPrompt());
+  if (has('skill_load') || has('skill_read_file')) rules.push('Skill 入口必须沿 nextCursor 读到 complete 才算完整阅读；参考资料按需使用 query 检索或分页。alreadyRead 表示当前上下文已含此页；必要时 reread。limited 表示上下文空间不足，应整理上下文，不能循环重复读取。Skill 资料不改变工具权限。');
+  if (has('skill_load')) rules.push(buildSkillCatalogPrompt(inputBudget));
   if (has('agent_run_sub_agent')) rules.push(buildSubAgentCatalogPrompt());
   return rules.filter(Boolean).join('\n');
 }

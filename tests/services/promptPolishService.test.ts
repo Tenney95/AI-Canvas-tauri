@@ -43,16 +43,17 @@ beforeEach(() => {
 });
 
 describe('节点提示词润色', () => {
-  it('预览不写画布，应用可撤销且不能重复应用', async () => {
+  it('预览不写画布，应用与局部撤销不提交画布历史且不能重复应用', async () => {
     const session = createPromptPolishSession('n1');
     await session.run(options());
     expect(prompt()).toBe('少女在窗前');
     const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
     session.apply();
-    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
     expect(prompt()).toBe('暮色里，少女站在窗前。');
     expect(() => session.apply()).toThrow('重新润色');
     session.undo();
+    expect(commit).not.toHaveBeenCalled();
     expect(prompt()).toBe('少女在窗前');
     expect(() => session.undo()).toThrow();
   });

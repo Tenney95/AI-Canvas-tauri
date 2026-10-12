@@ -1217,6 +1217,63 @@ function FeedbackSection() {
   );
 }
 
+function ScrollbarsSection() {
+  return (
+    <Section
+      id="sg-scrollbars"
+      title="覆盖式滚动条"
+      desc={'公用样式位于 ui-kit.css；纵向容器使用 ui-scroll，双轴加 ui-scroll--both。应用根视图自动挂载浮层，无须手动插入浮层或单独引入样式；data-overlay-scrollbar="off" 可显式退出接管。'}
+    >
+      <Demo label="嵌套滚动、双轴与可变尺寸" code={'<div className="ui-scroll h-80">内容</div>\n<div className="ui-scroll ui-scroll--both h-40">内容</div>'}>
+        <p className="ui-hint mb-2">先滚动子容器，在滚动条仍可见时滚动父容器，观察位置同步与边缘裁剪；悬停或拖拽应保持可见。编辑右侧文本、拖动右下角改变高度，再切换明暗主题检查。</p>
+        <div
+          role="region"
+          aria-label="滚动条父容器"
+          tabIndex={0}
+          className="ui-scroll h-80 rounded-lg border border-canvas-border bg-canvas-surface p-3 focus-visible:outline focus-visible:outline-1 focus-visible:outline-brand"
+        >
+          <div className="ui-stack">
+            <p className="m-0 text-xs text-canvas-text-secondary">父容器上沿 · 从两侧留白处滚动父容器</p>
+            <div className="grid min-w-0 gap-3 md:grid-cols-2">
+              <div className="ui-field min-w-0">
+                <span className="ui-label">子容器 · 水平与垂直滚动</span>
+                <div
+                  role="region"
+                  aria-label="双轴滚动子容器"
+                  tabIndex={0}
+                  className="ui-scroll ui-scroll--both h-40 rounded-md border border-canvas-border bg-canvas-bg p-2 focus-visible:outline focus-visible:outline-1 focus-visible:outline-brand"
+                >
+                  <div className="ui-list min-w-[640px]">
+                    {Array.from({ length: 14 }, (_, index) => (
+                      <div key={index} className="ui-list__item whitespace-nowrap">
+                        {String(index + 1).padStart(2, '0')} · 嵌套内容 · 横向滚动后仍应贴合容器边缘，父容器滚动时随内容移动
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="ui-field min-w-0">
+                <label className="ui-label" htmlFor="sg-scrollbar-textarea">文本编辑 · 可纵向拉伸</label>
+                <textarea
+                  id="sg-scrollbar-textarea"
+                  className="ui-textarea"
+                  rows={7}
+                  wrap="off"
+                  defaultValue={Array.from({ length: 18 }, (_, index) => `${String(index + 1).padStart(2, '0')} · 这是一行较长的可编辑文本，用于检查内容变化、双轴溢出和尺寸调整后的滚动条。`).join('\n')}
+                />
+              </div>
+            </div>
+            <div className="ui-stack h-56 justify-between rounded-md border border-canvas-border p-2">
+              <p className="m-0 text-xs text-canvas-text-secondary">继续滚动父容器：子容器逐渐离开可见区域时，滚动条也应同步裁剪。</p>
+              <p className="m-0 text-xs text-canvas-text-muted">父容器下沿 · 滚回顶部可再次检查子容器</p>
+            </div>
+          </div>
+        </div>
+      </Demo>
+    </Section>
+  );
+}
+
 function LayoutSection() {
   return (
     <Section
@@ -1377,6 +1434,7 @@ export function StyleGuideContent({ theme }: { theme: 'dark' | 'light' }) {
       <DropzoneSection />
       <SelectionSection />
       <TabsSection />
+      <ScrollbarsSection />
       <CardsSection />
       <BadgesSection />
       <FeedbackSection />

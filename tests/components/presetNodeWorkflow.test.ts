@@ -24,9 +24,10 @@ it('双面部特写预设沿用原快捷指令 ID，并将横版源图切换为 
   expect(action!.filledPrompt).toContain('上二下三的两排布局');
   expect(action!.filledPrompt).toContain('正面面部特写、侧面面部特写');
   expect(action!.filledPrompt).toContain('正面身体图、90度侧面身体图、背面身体图');
-  expect(action!.filledPrompt).toContain('下排三张只展示肩部到脚底');
-  expect(action!.filledPrompt).toContain('整个头部置于各自画框之外');
-  expect(action!.filledPrompt).not.toContain('头顶到脚底完整入画');
+  expect(action!.filledPrompt).toContain('下排左列（正面）：只展示颈部到脚底');
+  expect(action!.filledPrompt).toContain('下排中列（侧面）：90度正侧面，同样只展示颈部到脚底');
+  expect(action!.filledPrompt).toContain('下排右列（背面）：背面保留完整头部，头顶到脚底完整入画');
+  expect(action!.filledPrompt).not.toContain('下排三张只展示肩部到脚底');
   expect(action!.filledPrompt).toContain('参考人物穿棕色外套');
   const { node, edge } = createPresetNode(source({
     model: 'gpt-image-2', provider: 'apimart', aspectRatio: '16:9', imageSize: '2K',

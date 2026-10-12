@@ -2211,6 +2211,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows only scoped local ComfyUI management commands.",
+          "type": "string",
+          "const": "allow-comfyui-management",
+          "markdownDescription": "Allows only scoped local ComfyUI management commands."
+        },
+        {
           "description": "Allows registered AI Canvas application commands for trusted first-party windows.",
           "type": "string",
           "const": "allow-first-party-app-commands",

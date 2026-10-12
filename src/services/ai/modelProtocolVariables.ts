@@ -231,6 +231,9 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
     fields: ['references', 'inlinereferences'],
   },
 
+  // Google 原生图片块由运行时准备；不把通用 parts 字段自动猜成图片请求。
+  { name: 'googleImageParts', supplied: IMAGE, reference: true, categories: IMAGE },
+
   // 运行时提供但没有对应请求字段名的别名变量，仍允许模板直接引用
   { name: 'batchCount', supplied: MEDIA },
   { name: 'frames', supplied: VIDEO },
@@ -292,6 +295,7 @@ const PROTOCOL_VARIABLE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   audioUrl: '第一条输入音频 URL',
   referenceAudioUrls: '参考音频 URL 数组',
   imageUrls: '输入或参考图片 URL 数组',
+  googleImageParts: 'Google 原生图片 parts：提示词与 Base64 inlineData 参考图，由运行时完整生成',
   referenceUrls: '所有 HTTP(S) 参考素材 URL 数组',
   inlineReferences: '所有 data: 内联参考素材数组',
   batchCount: '批量生成数量，与 n 的值相同',

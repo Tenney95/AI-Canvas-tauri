@@ -51,6 +51,17 @@ const canvas = {
 
   // ── CanvasToolbar ──
   '画布缩放比例': 'Canvas zoom',
+  '自动适配画布': 'Auto-fit canvas',
+  '适配': 'Fit',
+  '自动适配窗口；手动移动或缩放后退出（F）': 'Fit to window; moving or zooming manually turns it off (F)',
+  '锁定当前缩放比例': 'Lock current zoom',
+  '解锁画布缩放': 'Unlock canvas zoom',
+  '放大画布': 'Zoom in',
+  '缩小画布': 'Zoom out',
+  '放大画布（+）': 'Zoom in (+)',
+  '缩小画布（-）': 'Zoom out (-)',
+  '放大 / 缩小画布': 'Zoom canvas in / out',
+  '锁定 / 解锁画布缩放': 'Lock / unlock canvas zoom',
   '隐藏背景网格': 'Hide background grid',
   '显示背景网格': 'Show background grid',
   '切换为曲线连线': 'Switch to curved edges',

@@ -3,7 +3,7 @@
  * 节点输出另存为、系统文件管理器定位。基础设施见 ./fs/core，删除域见 ./fs/trash，
  * 全局资产库见 ./fs/assetLibrary（均通过本模块统一对外导出）。
  */
-import { exists, writeFile, readFile as tauriReadFile, stat, lstat, rename, mkdir } from '@tauri-apps/plugin-fs';
+import { exists, writeFile, readFile as tauriReadFile, readDir, stat, lstat, rename, mkdir } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -11,7 +11,7 @@ import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils
 import { identifyAsset, getRelativeAssetPath } from './fs/assetIndex';
 import { readAssetTextFile } from './fs/assetTextFiles';
 import { walkDirectoryFiles } from './fs/assetLibrary';
-import { completeMediaRelocation, persistMediaRelocation, type MediaRelocation } from './indexedDb/mediaRelocations';
+import { completeMediaRelocation, mediaFileAllocationKey, persistMediaRelocation, retiredMediaPaths, type MediaRelocation } from './indexedDb/mediaRelocations';
 import {
   decodeDataUrlBytesAsync,
   MEDIA_DATA_URL_BYTE_LIMITS,
@@ -50,7 +50,7 @@ export interface FileTransferOptions {
   /** Agent/MCP 导入不把调用方的本地路径或原生错误写入控制台。 */
   redactErrors?: boolean;
   onProgress?: (progress: FileTransferProgress) => void;
-  /** Data URL 按内容摘要复用确定路径，供持久化迁移重试使用。 */
+  /** 内嵌媒体按名称和内容摘要复用已有文件，供持久化迁移重试使用。 */
   deduplicateByContent?: boolean;
   /** 持久化入口需要接收底层异常，再转换为不含路径、链接或凭据的错误。 */
   throwOnError?: boolean;
@@ -341,7 +341,9 @@ async function withDownloadDestinationLock<T>(
   fileName: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const lockKey = `${dataDir}\n${sanitizeFileName(fileName)}`;
+  const normalizedDir = stripVerbatimPrefix(dataDir).replace(/\\/g, '/').replace(/\/+$/, '');
+  const identity = `${normalizedDir}\n${sanitizeFileName(fileName)}`;
+  const lockKey = mediaFileAllocationKey(identity);
   const previous = downloadDestinationQueues.get(lockKey);
   const waitForTurn = previous?.catch(() => undefined) ?? Promise.resolve();
   let release: () => void = () => undefined;
@@ -472,6 +474,7 @@ export * from './fs/assetLibrary';
 export * from './fs/assetFileMove';
 export * from './fs/skillFiles';
 export * from './fs/externalEditors';
+export * from './fs/jsonFileTransfer';
 
 /**
  * 同步用户明确选择的文件目录白名单。
@@ -673,17 +676,70 @@ export async function readFileToDataUrl(
 // Project data files — 项目媒体文件读写
 // ============================================
 
-async function resolveContentAddressedProjectPath(
+/** 去重摘要只用于校验内容，不再拼到用户可见的文件名中。 */
+async function saveProjectBytes(
   dataDir: string,
   fileName: string,
   bytes: Uint8Array,
+  deduplicateByContent = false,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const digest = await sha256BytesHex(bytes);
-  const normalizedName = sanitizeFileName(fileName);
-  const dotIndex = normalizedName.lastIndexOf('.');
-  const stem = dotIndex > 0 ? normalizedName.slice(0, dotIndex) : normalizedName;
-  const extension = dotIndex > 0 ? normalizedName.slice(dotIndex) : '';
-  return joinPath(dataDir, `${stem}-${digest.slice(0, 20)}${extension}`);
+  const save = async () => {
+    throwIfMediaReadAborted(signal);
+    if (deduplicateByContent) {
+      const digest = await sha256BytesHex(bytes);
+      const normalizedName = sanitizeFileName(fileName);
+      const dotIndex = normalizedName.lastIndexOf('.');
+      const stem = sanitizeFileName((dotIndex > 0 ? normalizedName.slice(0, dotIndex) : normalizedName).replace(/--[a-f0-9]{32}$/i, '')) || 'file';
+      const extension = dotIndex > 0 ? normalizedName.slice(dotIndex) : '';
+      const numberedStem = stem.replace(/_[1-9]\d*$/, '') || stem;
+      const prefix = `${mediaFileAllocationKey(dataDir)}/`;
+      const nameKey = (name: string) => mediaFileAllocationKey(`${prefix}${name}`).slice(prefix.length);
+      const base = nameKey(stem);
+      const family = nameKey(numberedStem);
+      const ext = nameKey(extension);
+      const retired = await retiredMediaPaths();
+      const entries = await readDir(dataDir);
+      for (const entry of entries) {
+        throwIfMediaReadAborted(signal);
+        if (!entry.isFile || entry.isSymlink) continue;
+        const name = nameKey(entry.name);
+        if (ext && !name.endsWith(ext)) continue;
+        const entryStem = ext ? name.slice(0, -ext.length) : name;
+        const sequence = entryStem.startsWith(`${family}_`) ? entryStem.slice(family.length + 1) : '';
+        // 同时兼容以前的内容摘要文件，但不重命名已有文件。
+        if (entryStem !== base && !/^[1-9]\d*$/.test(sequence)
+          && entryStem !== `${base}-${digest.slice(0, 20)}`) continue;
+        const path = joinPath(dataDir, entry.name);
+        if (retired.has(mediaFileAllocationKey(path))) continue;
+        let matches: boolean;
+        try {
+          const info = await lstat(path);
+          if (!info.isFile || info.isSymlink || info.size !== bytes.byteLength) continue;
+          matches = await sha256BytesHex(await tauriReadFile(path)) === digest;
+        } catch (error) {
+          // readDir 之后分组迁移可能已清理此文件；只跳过不存在，不吞权限和读取错误。
+          const message = error instanceof Error ? error.message : String(error);
+          if (/no such file|path not found|找不到指定|ENOENT|os error [23]\b/i.test(message)) continue;
+          throw error;
+        }
+        throwIfMediaReadAborted(signal);
+        if (matches) {
+          const latestRetired = await retiredMediaPaths();
+          throwIfMediaReadAborted(signal);
+          if (!latestRetired.has(mediaFileAllocationKey(path))) return path;
+        }
+      }
+    }
+    throwIfMediaReadAborted(signal);
+    const destPath = await resolveUniqueDestPath(dataDir, fileName, true);
+    throwIfMediaReadAborted(signal);
+    await writeFile(destPath, bytes, { createNew: true });
+    notifyProjectDiskChanged();
+    return destPath;
+  };
+  // 去重查询与写入属于同一临界区，并发的同内容重试也只创建一份文件。
+  return deduplicateByContent ? withDownloadDestinationLock(dataDir, fileName, save) : save();
 }
 
 /**
@@ -705,9 +761,9 @@ export async function copyFileToProjectData(
   }
 
   const fileName = sourcePath.split(/[/\\]/).pop() || 'file';
-  const destPath = await resolveUniqueDestPath(dataDir, fileName, true);
-
+  let destPath: string;
   try {
+    destPath = await resolveUniqueDestPath(dataDir, fileName, true);
     await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath }, options);
     notifyProjectDiskChanged();
   } catch (err) {
@@ -718,12 +774,13 @@ export async function copyFileToProjectData(
   }
 
   const convertFileSrc = await getConvertFileSrc();
+  const savedFileName = destPath.split(/[/\\]/).pop() || fileName;
   if (!convertFileSrc) {
     // If convertFileSrc unavailable, still return the path
-    return { filePath: destPath, assetUrl: '', fileName };
+    return { filePath: destPath, assetUrl: '', fileName: savedFileName };
   }
 
-  return { filePath: destPath, assetUrl: convertFileSrc(destPath), fileName };
+  return { filePath: destPath, assetUrl: convertFileSrc(destPath), fileName: savedFileName };
 }
 
 /**
@@ -750,16 +807,7 @@ export async function saveDataUrlToProjectData(
       label: fileName,
     });
 
-    let destPath: string;
-    if (options.deduplicateByContent) {
-      destPath = await resolveContentAddressedProjectPath(dataDir, fileName, bytes);
-    } else {
-      destPath = await resolveUniqueDestPath(dataDir, fileName, true);
-    }
-    if (!options.deduplicateByContent || !await exists(destPath)) {
-      await writeFile(destPath, bytes, { createNew: true });
-      notifyProjectDiskChanged();
-    }
+    const destPath = await saveProjectBytes(dataDir, fileName, bytes, options.deduplicateByContent);
 
     const convertFileSrc = await getConvertFileSrc();
     const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
@@ -787,14 +835,14 @@ export async function saveBinaryToProjectData(
   const dataDir = await ensureProjectDataDir(projectId, { throwOnError: options.throwOnError });
   if (!dataDir) return null;
 
-  const destPath = await resolveUniqueDestPath(dataDir, fileName, true);
-
+  let destPath: string;
   try {
+    destPath = await resolveUniqueDestPath(dataDir, fileName, true);
     await writeFile(destPath, data, { createNew: true });
     notifyProjectDiskChanged();
   } catch (err) {
     if (options.throwOnError) throw err;
-    console.error('Failed to save binary to project data:', destPath, err);
+    console.error('Failed to save binary to project data:', fileName, err);
     return null;
   }
 
@@ -995,12 +1043,8 @@ export async function downloadUrlAndSave(
       if (options?.deduplicateByContent) {
         const dataDir = await ensureProjectDataDir(projectId, { throwOnError: options.throwOnError });
         if (!dataDir) return null;
-        const destPath = await resolveContentAddressedProjectPath(dataDir, fileName, bytes);
-        if (!await exists(destPath)) {
-          throwIfMediaReadAborted(options?.signal);
-          await writeFile(destPath, bytes, { createNew: true });
-          notifyProjectDiskChanged();
-        }
+        throwIfMediaReadAborted(options?.signal);
+        const destPath = await saveProjectBytes(dataDir, fileName, bytes, true, options?.signal);
         const convertFileSrc = await getConvertFileSrc();
         return {
           filePath: destPath,

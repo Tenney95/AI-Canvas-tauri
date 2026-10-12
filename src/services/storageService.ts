@@ -235,8 +235,10 @@ async function serializeAssetReference<T extends AssetReferenceLike>(
   projectId: string,
   projectDir: string,
 ): Promise<T> {
-  if (!data.filePath) return data;
-  const normalizedPath = data.filePath.replace(/\\/g, '/');
+  // 参考角色/参考帧的旧记录只有 URL；同样收敛为本地身份，避免目录变化后仍读取旧地址。
+  const filePath = data.filePath ?? assetUrlToPath(data.imageUrl || data.videoUrl || data.audioUrl || data.url);
+  if (!filePath) return data;
+  const normalizedPath = filePath.replace(/\\/g, '/');
   const normalizedDir = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
   if (!normalizedPath.toLowerCase().startsWith(`${normalizedDir.toLowerCase()}/`)) return data;
   if (!await exists(normalizedPath).catch(() => false)) return data;
@@ -542,6 +544,61 @@ function nodeAssetReferences(node: PersistedNodeLike): AssetReferenceLike[] {
   return [node.data, ...overrides, ...frames, ...videoReferences] as AssetReferenceLike[];
 }
 
+/** 旧视频引用按同一素材 URL 补齐身份，不按角色当前主图或文件名替换已选素材。 */
+async function recoverVideoReferenceIdentities(
+  nodes: unknown,
+  library?: DramaAssetLibrary,
+  ownerId?: string,
+): Promise<unknown> {
+  if (!Array.isArray(nodes)) return nodes;
+  const typedNodes = nodes as PersistedNodeLike[];
+  const hasLegacyReference = typedNodes.some((node) => Array.isArray(node.data?.videoReferences)
+    && node.data.videoReferences.some((reference) => {
+      const existing = reference as typeof reference & AssetReferenceLike;
+      return existing && !existing.assetId && !existing.relativePath
+        && typeof existing.url === 'string' && isTauriAssetUrl(existing.url);
+    }));
+  if (!hasLegacyReference) return nodes;
+  if (!library && ownerId) {
+    try {
+      const owner = await getProjectById(ownerId) as ProjectSaveData | undefined;
+      library = owner?.dramaAssets;
+    } catch {
+      console.warn('[项目加载] 共享角色引用身份恢复失败，已保留原引用', { projectId: ownerId });
+    }
+  }
+  const sources = typedNodes.flatMap(nodeAssetReferences);
+  for (const character of library?.characters ?? []) {
+    sources.push(character, ...(character.referenceImages ?? []), ...(character.voiceClips ?? []));
+  }
+  const identities = new Map<string, AssetReferenceLike>();
+  for (const source of sources) {
+    if (!source || (!source.assetId && !source.relativePath)) continue;
+    for (const key of ASSET_REFERENCE_URL_KEYS) {
+      const url = source[key];
+      if (typeof url === 'string' && isTauriAssetUrl(url) && !identities.has(url.trim())) identities.set(url.trim(), source);
+    }
+  }
+  return typedNodes.map((node) => {
+    const originalReferences = node.data?.videoReferences;
+    if (!Array.isArray(originalReferences) || !originalReferences.length) return node;
+    const videoReferences = originalReferences.map((reference) => {
+      const existing = reference as typeof reference & AssetReferenceLike;
+      if (!existing || existing.assetId || existing.relativePath || typeof reference.url !== 'string') return reference;
+      const source = identities.get(reference.url.trim());
+      if (!source) return reference;
+      return {
+        ...reference,
+        assetId: source.assetId,
+        relativePath: source.relativePath,
+        ...(source.filePath && !existing.filePath ? { filePath: source.filePath } : {}),
+      };
+    });
+    return videoReferences.some((reference, index) => reference !== originalReferences[index])
+      ? { ...node, data: { ...node.data, videoReferences } } : node;
+  });
+}
+
 function hasUnresolvedAsset(node: PersistedNodeLike): boolean {
   return nodeAssetReferences(node).some((reference) => (
     Boolean(reference && !reference.filePath && (reference.assetId || reference.relativePath))
@@ -666,7 +723,8 @@ async function serializeProjectRecord(data: ProjectSaveData): Promise<ProjectSav
     projectDir,
     cache: new Map(),
   };
-  const nodes = await serializeProjectNodes(data.nodes, context);
+  const referencedNodes = await recoverVideoReferenceIdentities(data.nodes, data.dramaAssets, data.parentId);
+  const nodes = await serializeProjectNodes(referencedNodes, context);
   const settings = await serializeProjectSettings(data.settings, context);
   const dramaAssets = await serializeProjectDramaAssets(data.dramaAssets, context);
   return { ...data, nodes, settings, dramaAssets };
@@ -775,6 +833,7 @@ export async function loadProjectData(id: string): Promise<ProjectSaveData | nul
     }
     let nodes = persistedRecord.nodes;
     try {
+      nodes = await recoverVideoReferenceIdentities(nodes, persistedRecord.dramaAssets, persistedRecord.parentId);
       nodes = await restoreProjectNodes(nodes, id);
     } catch {
       console.warn('[项目加载] 资产恢复未完成，已使用原始画布数据', { projectId: id });

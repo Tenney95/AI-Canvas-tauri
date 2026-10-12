@@ -1,0 +1,15 @@
+/* 原生滚动条隐藏策略：保持入口末尾加载；覆盖式滚动条视觉样式统一在 ui-kit.css。 */
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar,
+[data-overlay-scrollbar][data-overlay-scrollbar]::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+[data-overlay-scrollbar][data-overlay-scrollbar] {
+  scrollbar-width: none;
+}

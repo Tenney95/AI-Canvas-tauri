@@ -555,6 +555,18 @@ export function resolveImageParameterCapability(
       ?? (model.startsWith(`${connectionId}/`) ? model.slice(connectionId.length + 1) : model);
     return getImageCapability(modelId.startsWith('grsai/') ? modelId : `grsai/${modelId}`);
   }
+  if (generalModel) {
+    // 自定义网关的同名模型不能继承其他厂商能力。
+    const declared = generalModel.imageCapability
+      ?? config.providers[generalModel.providerConfigId]?.selectedModels?.find((item) => item.id === generalModel.modelId)?.imageCapability;
+    if (!declared && getProviderDefinition(generalModel.providerConfigId,
+      config.providers[generalModel.providerConfigId])?.id !== 'custom-openai') {
+      const definition = getProviderDefinition(generalModel.providerConfigId, config.providers[generalModel.providerConfigId]);
+      return getImageCapability(`${definition?.id}/${generalModel.modelId}`) ?? getImageCapability(model);
+    }
+    return { modelId: generalModel.modelId, resolutionStyle: 'none',
+      ...declared, resolutions: declared?.resolutions ?? [], ratios: declared?.ratios ?? [] };
+  }
   return getImageCapability(model);
 }
 

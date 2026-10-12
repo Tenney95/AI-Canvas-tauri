@@ -25,8 +25,10 @@ import {
 import { setLocale } from '../i18n';
 import { applyConfigPatch, ConfigConflictError, configValuesEqual, configWithoutSecrets, createConfigPatch } from '../services/configPatch';
 import { areSettingsMutationsFrozen, registerSettingsPersistence } from '../services/configPersistenceQueue';
+import { getCanvasZoomRange, MAX_CANVAS_ZOOM, MIN_CANVAS_ZOOM, normalizeCanvasZoom } from '../utils/canvasViewportPreferences';
 import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from '../services/appearance/appearanceDefaults';
 import { migrateLegacyAppearance } from '../services/appearance/appearanceMigration';
+import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
 
 const defaultConfig: AppConfig = {
   providers: {},
@@ -39,6 +41,10 @@ const defaultConfig: AppConfig = {
   generalModels: [],
   mascotVisible: false,
   interactionMode: 'default',
+  canvasViewportMode: 'auto',
+  canvasViewportZoom: 1,
+  canvasViewportMinZoom: MIN_CANVAS_ZOOM,
+  canvasViewportMaxZoom: MAX_CANVAS_ZOOM,
   nodeToolbarMode: 'icons',
   nodeLabelVisible: true,
   startupView: 'project-library',
@@ -59,6 +65,7 @@ function syncNodeLabelVisible(visible: AppConfig['nodeLabelVisible']): void {
 }
 
 function syncPerformanceMode(enabled: AppConfig['performanceMode']): void {
+  syncPerformanceModeRuntime(enabled === true);
   if (typeof document === 'undefined') return;
   document.documentElement.toggleAttribute('data-performance-mode', enabled === true);
 }
@@ -146,6 +153,7 @@ function syncProviderModels(
       imageReferenceRequestMode: model.imageReferenceRequestMode
         ?? existing?.imageReferenceRequestMode,
       videoCapability: model.videoCapability,
+      imageCapability: model.imageCapability ?? existing?.imageCapability,
     } satisfies GeneralModelConfig;
   });
   return [...otherModels, ...selectedModels];
@@ -283,6 +291,7 @@ function sanitizeGeneralModel(
     executionProfile: model.executionProfile,
     imageReferenceRequestMode: model.imageReferenceRequestMode,
     videoCapability: model.videoCapability,
+    imageCapability: model.imageCapability,
   };
 }
 
@@ -415,7 +424,16 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
 
   updateConfig: (partial) => {
     if (areSettingsMutationsFrozen()) return;
-    set((state) => ({ config: { ...state.config, ...partial } }));
+    set((state) => {
+      const config = { ...state.config, ...partial };
+      if ('canvasViewportMinZoom' in partial || 'canvasViewportMaxZoom' in partial || 'canvasViewportZoom' in partial) {
+        const { minZoom, maxZoom } = getCanvasZoomRange(config);
+        config.canvasViewportMinZoom = minZoom;
+        config.canvasViewportMaxZoom = maxZoom;
+        config.canvasViewportZoom = normalizeCanvasZoom(config.canvasViewportZoom, config);
+      }
+      return { config };
+    });
     if ('baseDataDir' in partial && partial.baseDataDir !== undefined) {
       setBaseDataDir(partial.baseDataDir);
     }

@@ -9,6 +9,7 @@ import { useTooltipAutoPlacement } from '../../hooks/useTooltipAutoPlacement';
 import { loadConfigWithoutSecrets } from '../../services/fileService';
 import { applyAppearanceTheme, installSystemAppearanceListener } from '../../services/appearance/appearanceRuntime';
 import { getAppearanceForConfig } from '../../services/appearance/appearanceMigration';
+import { syncPerformanceModeRuntime } from '../../services/performanceModeRuntime';
 import { useAppStore } from '../../store/useAppStore';
 import { emptyDramaAssetLibrary } from '../../types/dramaAssets';
 import type { AppConfig } from '../../types';
@@ -76,6 +77,9 @@ export default function ChatWindow() {
         removeSystemListener();
         removeSystemListener = installSystemAppearanceListener(() => applyAppearanceTheme(theme));
         document.documentElement.toggleAttribute('data-native-cursor', config?.customCursor === false);
+        const performanceMode = (config?.performanceMode ?? config?.graphicsCompatibilityMode) === true;
+        syncPerformanceModeRuntime(performanceMode);
+        document.documentElement.toggleAttribute('data-performance-mode', performanceMode);
         setLocale(config?.language);
       }).catch(() => {
         // 读取失败时保留当前主题；下次聚焦窗口会重新读取。

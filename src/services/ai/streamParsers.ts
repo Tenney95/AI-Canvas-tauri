@@ -87,6 +87,8 @@ interface OpenAiChunk {
     delta?: {
       role?: string;
       content?: string;
+      reasoning_content?: string;
+      reasoning?: string;
       tool_calls?: OpenAiToolCallDelta[];
     };
     finish_reason?: string | null;
@@ -132,6 +134,9 @@ function parseOpenAiChunk(json: OpenAiChunk, requestId: string, modelId: string)
   if (content) {
     events.push({ type: 'text.delta', delta: content });
   }
+
+  const reasoning = json.choices?.[0]?.delta?.reasoning_content ?? json.choices?.[0]?.delta?.reasoning;
+  if (reasoning) events.push({ type: 'reasoning.delta', delta: reasoning, source: 'openai-compatible' });
 
   // finish reason
   const finishReason = json.choices?.[0]?.finish_reason;
@@ -327,6 +332,7 @@ export async function parseStream(
       const block = payload.content_block && typeof payload.content_block === 'object'
         ? payload.content_block as Record<string, unknown>
         : {};
+      if (block.type === 'thinking' && typeof block.thinking === 'string') onEvent({ type: 'reasoning.delta', delta: block.thinking, source: 'anthropic-compatible' });
       if (block.type === 'text' && typeof block.text === 'string') emitText(block.text);
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         anthropicToolCallBuffer.set(index, {
@@ -343,6 +349,7 @@ export async function parseStream(
       const delta = payload.delta && typeof payload.delta === 'object'
         ? payload.delta as Record<string, unknown>
         : {};
+      if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') onEvent({ type: 'reasoning.delta', delta: delta.thinking, source: 'anthropic-compatible' });
       if (delta.type === 'text_delta' && typeof delta.text === 'string') emitText(delta.text);
       if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
         const current = anthropicToolCallBuffer.get(index) ?? {
@@ -399,7 +406,10 @@ export async function parseStream(
     for (const [index, item] of parts.entries()) {
       if (!item || typeof item !== 'object') continue;
       const part = item as Record<string, unknown>;
-      if (typeof part.text === 'string') emitText(part.text);
+      if (typeof part.text === 'string') {
+        if (part.thought === true) onEvent({ type: 'reasoning.delta', delta: part.text, source: 'gemini-native' });
+        else emitText(part.text);
+      }
       const call = part.functionCall && typeof part.functionCall === 'object'
         ? part.functionCall as Record<string, unknown>
         : undefined;
@@ -546,6 +556,7 @@ export async function parseNonStream(
   const parsed = parseChatApiResponse(payload, options.protocol);
   assertAssistantOutput(parsed.text, parsed.toolCalls.length);
   // Agent 与对话消息通过事件累计正文，不能只返回字符串而不通知消息消费者。
+  if (parsed.reasoning) onEvent({ type: 'reasoning.delta', delta: parsed.reasoning, source: options.protocol ?? 'openai-compatible' });
   if (parsed.text) onEvent({ type: 'text.delta', delta: parsed.text });
   for (const call of parsed.toolCalls) onEvent({ type: 'tool.call.final', call });
   if (parsed.inputTokens !== undefined || parsed.outputTokens !== undefined) {

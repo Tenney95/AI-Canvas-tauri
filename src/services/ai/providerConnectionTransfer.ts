@@ -44,7 +44,7 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-/** 序列化一个连接（不含凭据），用于复制到剪贴板分享。 */
+/** 序列化一个连接（不含凭据），用于 JSON 文件或剪贴板分享。 */
 export function serializeConnection(config: ApiProviderConfig, workflows: WorkflowDefinition[] = []): string {
   const customWorkflow = ['workflow-api', 'autodl-workflow'].includes(config.catalogId ?? '');
   const workflowApis = customWorkflow ? workflows.filter((workflow) => workflow.adapterType === 'workflow-api').map((workflow) => {
@@ -101,6 +101,9 @@ function parseModel(value: unknown): ProviderModelSelection | null {
   if (isRecord(value.videoCapability)) {
     model.videoCapability = value.videoCapability as ProviderModelSelection['videoCapability'];
   }
+  if (isRecord(value.imageCapability)) {
+    model.imageCapability = value.imageCapability as ProviderModelSelection['imageCapability'];
+  }
   if (IMAGE_REFERENCE_MODES.includes(value.imageReferenceRequestMode as ImageReferenceRequestMode)) {
     model.imageReferenceRequestMode = value.imageReferenceRequestMode as ImageReferenceRequestMode;
   }
@@ -135,7 +138,7 @@ export interface ParsedConnectionShare {
   workflowApiDrafts?: WorkflowApiDraft[];
 }
 
-/** 解析剪贴板里的连接 JSON；格式不符返回 null。 */
+/** 解析连接 JSON；格式不符返回 null。 */
 export function parseConnectionShare(text: string): ParsedConnectionShare | null {
   let payload: unknown;
   try {

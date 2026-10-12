@@ -46,8 +46,10 @@ async function applyInitialChatWindowTheme() {
 async function mountRoot() {
   initializeIconCache()
   await applyInitialChatWindowTheme()
-  const { installMcpScreenshotResponder } = await import('./services/mcp/mcpUiRuntimeService')
-  void installMcpScreenshotResponder()
+  if (view !== 'comfyui-settings') {
+    const { installMcpScreenshotResponder } = await import('./services/mcp/mcpUiRuntimeService')
+    void installMcpScreenshotResponder()
+  }
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <RootView view={view} />

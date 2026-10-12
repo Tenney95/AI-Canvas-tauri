@@ -9,7 +9,10 @@ import {
   stopConversationAgentTasks,
   stopProjectAgentTasks,
   validateTaskResumable,
+  waitForAgentApproval,
+  resolveAgentApproval,
 } from '../../../src/services/chat/agentTaskControl';
+import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_TOOL_NAMES } from '../../../src/services/mcp/mcpSettingsScope';
 import { DEFAULT_AGENT_TASK_BUDGET } from '../../../src/types/agent';
 import {
   getConversationAgentQueueTaskIds,
@@ -84,6 +87,25 @@ function arrangeTask(task: AgentTask): AgentTask {
 function readTask(id: string): AgentTask {
   return useAppStore.getState().agentTasks.find((task) => task.id === id)!;
 }
+
+it('allows global settings choices only from their active conversation and approved tool scope', async () => {
+  const task = { ...createTask('global-choice', MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_CONVERSATION_ID, 'waiting_approval'),
+    toolAllowlist: [...MCP_SETTINGS_TOOL_NAMES], steps: [{
+      id: 'choice-step', taskId: 'global-choice', index: 0, kind: 'tool' as const, title: 'Choose', status: 'waiting_approval' as const,
+      createdAt: 1, updatedAt: 1, approval: { id: 'global-approval', kind: 'user_choice' as const, status: 'pending' as const, summary: 'Choose', requestedAt: 1 },
+      toolCall: { callId: 'choice', toolId: 'provider_models_select', effect: 'user_choice' as const, inputSummary: 'Choose', retryCount: 0 },
+    }] };
+  useAppStore.setState({ currentProjectId: null, activeConversationId: 'other-conversation', agentTasks: [task] });
+  const controller = new AbortController();
+  const pending = waitForAgentApproval('global-approval', controller.signal);
+  expect(resolveAgentApproval('global-approval', { approved: true })).toBe(false);
+  useAppStore.setState({ activeConversationId: MCP_SETTINGS_CONVERSATION_ID });
+  useAppStore.getState().updateAgentTask(task.id, { toolAllowlist: [...MCP_SETTINGS_TOOL_NAMES, 'canvas_update'] });
+  expect(resolveAgentApproval('global-approval', { approved: true })).toBe(false);
+  useAppStore.getState().updateAgentTask(task.id, { toolAllowlist: [...MCP_SETTINGS_TOOL_NAMES] });
+  expect(resolveAgentApproval('global-approval', { approved: true })).toBe(true);
+  await expect(pending).resolves.toEqual({ approved: true });
+});
 
 describe('agent replan requests', () => {
   it('keeps the replan request until the runtime consumes it', () => {

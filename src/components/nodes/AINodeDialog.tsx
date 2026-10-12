@@ -325,7 +325,7 @@ function AINodeDialog() {
       const nextValue = previousValue === undefined ? value
         : mergeAppendedNodeMentions(previousValue, value, current.prompt ?? '');
       if (isCloudWorkflow(state.workflows.find((item) => item.id === current.workflowId))) {
-        updateContinuousNodeData({ prompt: nextValue }); return;
+        updateNodeDataTransient(activeNodeId!, { prompt: nextValue }); return;
       }
       // Extract workflow IO node assignments from the prompt string
       // Format: @wf{ioNodeId|title|type}(value content)
@@ -343,9 +343,10 @@ function AINodeDialog() {
         const valueText = match[4].replace(/\n$/, '');
         workflowInputs[ioNodeId] = valueText;
       }
-      updateContinuousNodeData({ prompt: nextValue, workflowInputs: Object.keys(workflowInputs).length > 0 ? workflowInputs : undefined });
+      // 提示词及其芯片赋值实时保存，撤销由编辑器的临时历史负责。
+      updateNodeDataTransient(activeNodeId!, { prompt: nextValue, workflowInputs: Object.keys(workflowInputs).length > 0 ? workflowInputs : undefined });
     },
-    [activeNodeId, currentProjectId, updateContinuousNodeData]
+    [activeNodeId, currentProjectId, updateNodeDataTransient]
   );
 
   // 调用选中模型生成（文本 or 图片）
@@ -1078,7 +1079,7 @@ function AINodeDialog() {
     const liveData = useAppStore.getState().nodes.find((n) => n.id === activeNodeId)?.data;
     const currentPrompt = ((liveData?.prompt ?? data.prompt) as string) || '';
     const newPrompt = currentPrompt ? `${currentPrompt} ${mentionStr}` : mentionStr;
-    updateContinuousNodeData({ prompt: newPrompt });
+    onPromptChange(newPrompt);
   };
 
   return (

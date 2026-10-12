@@ -11,6 +11,7 @@
  */
 import { startDrag } from '@crabnebula/tauri-plugin-drag';
 import { ensureBinaryFile, joinPath, type AssetFileEntry } from '../services/fileService';
+import { getPerformanceModeEnabled } from '../services/performanceModeRuntime';
 
 /** 1x1 透明 PNG —— 非图片文件拖拽时的占位预览图（startDrag 的 icon 必填） */
 const FALLBACK_ICON_B64 =
@@ -38,6 +39,8 @@ function thumbnailIcon(image: HTMLImageElement): string | undefined {
 /** 加载时准备占位图；悬停时提前解码图片，使系统拖拽同步使用小缩略图。 */
 export async function prepareDragIcon(file?: AssetFileEntry): Promise<void> {
   if (file?.category === 'image' && file.assetUrl) {
+    // 性能模式由同步拖拽入口复用已展示的小图或占位，不因悬停另解码原图。
+    if (getPerformanceModeEnabled()) return;
     const key = file.assetUrl;
     if (imageIcons.has(key) || pendingIcons.has(key)) return;
     pendingIcons.add(key);

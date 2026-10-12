@@ -361,7 +361,22 @@ export function useKeyboardShortcuts() {
 
       // F: Fit view
       if (e.key === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        window.dispatchEvent(new CustomEvent('canvas-fit-view'));
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('canvas-fit-view', { detail: { source: 'user' } }));
+        return;
+      }
+
+      // 显示比例快捷键；编辑器、菜单与弹窗仍由上面的焦点守卫处理。
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && ['+', '=', '-', '_'].includes(e.key)) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('canvas-zoom-step', {
+          detail: { direction: e.key === '+' || e.key === '=' ? 1 : -1 },
+        }));
+        return;
+      }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey && e.code === 'KeyL') {
+        e.preventDefault();
+        if (!e.repeat) window.dispatchEvent(new Event('canvas-toggle-zoom-lock'));
         return;
       }
 

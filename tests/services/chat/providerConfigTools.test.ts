@@ -143,6 +143,15 @@ afterEach(() => {
 });
 
 describe('provider config agent tools', () => {
+  it('exposes image capability parameters in the same import schema as video models', () => {
+    const model = previewInput().models[0];
+    const prepared = prepareAgentToolCall({ callId: 'image-parameters', toolId: 'provider_config_preview', input: {
+      ...previewInput(), models: [{ ...model, imageCapability: { resolutions: ['1K'], defaultResolution: '1K',
+        ratios: ['1:1'], defaultRatio: '1:1', supportsBatch: false, supportsImageReference: false } }],
+    } }, context);
+    expect(prepared.ok).toBe(true);
+    expect(getAgentTool('provider_config_preview')?.description).toContain('每个选中模型');
+  });
   it.each(['plan', 'collaborative', 'autonomous'] as const)('keeps preview instructions aligned with %s policy', async (mode) => {
     const preview = await getAgentTool('provider_config_preview')!.execute({ ...context, mode }, previewInput());
     expect(preview.status).toBe('success');

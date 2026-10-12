@@ -2,6 +2,7 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import Select from '../../shared/Select';
+import AnimatedButton from '../../shared/AnimatedButton';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import LazyLoadBoundary from '../../shared/LazyLoadBoundary';
@@ -28,9 +29,9 @@ import type {
   NodeType,
   PromptSubmitShortcut,
   UserPreset,
-  UserSkill,
   WorkflowDefinition,
 } from '../../../types';
+import type { SkillPickerOption } from '../../../types/agentPackage';
 import { ANIMATION_ACTION_LABELS } from '../../../types';
 import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
 import type { PresetOverride } from './SlashCommandMenu';
@@ -51,6 +52,7 @@ import SlashCommandMenu from './SlashCommandMenu';
 import PresetManager from './PresetManager';
 import SkillManager from './SkillManager';
 import { expandSkillReferences } from '../../../services/skillPromptService';
+import { listRuntimeSkills, projectSkillPickerOptions } from '../../../services/chat/skillCatalog';
 import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
 import type { AudioOutputFormat, AudioSpeechSettings, AudioSpeechReference, AudioTtsVoice, VideoReferenceItem } from '../../../types/aiTypes';
 import type { AudioGenerationPurpose } from '../../../types/media';
@@ -58,6 +60,7 @@ import { useT } from '../../../i18n';
 import WorkflowApiParameterFields from './WorkflowApiParameterFields';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../../services/ai/dreaminaModels';
 import { resolveImageParameterCapability } from '../../../services/ai/mediaModelCapabilities';
+import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
 import { calcAnchoredPosition } from '../../../utils/popupPosition';
 import { getPromptSubmitShortcutHint, normalizePromptSubmitShortcut, PROMPT_SUBMIT_SHORTCUT_OPTIONS } from '../../../utils/promptSubmitShortcut';
 
@@ -257,7 +260,7 @@ function CameraSettingsSelector({
     <div ref={rootRef} className="relative shrink-0">
       <button
         type="button"
-        className={`prompt-btn${activeCount > 0 ? ' text-indigo-400 bg-indigo-500/10' : ''}`}
+        className={`prompt-btn${activeCount > 0 ? ' is-configured' : ''}`}
         aria-label={activeCount > 0 ? t('摄影参数：已设置 {count} 项', { count: activeCount }) : t('选择摄影参数')}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -547,6 +550,22 @@ export default function PromptPanel({
     ? resolveImageParameterCapability(selectedModel, selectedProvider, imageModelConfig)
     : undefined;
   const imageResolutions = dreaminaImageModel?.resolutions ?? imageCapability?.resolutions;
+  const imageGeneralModel = selectedProvider === 'general'
+    ? imageModelConfig.generalModels?.find((model) => model.id === selectedModel?.replace(/^general\//, ''))
+    : undefined;
+  const imageConnectionId = imageGeneralModel?.providerConfigId ?? selectedProvider;
+  const imageConnection = imageConnectionId ? imageModelConfig.providers[imageConnectionId] : undefined;
+  const imageModelId = imageGeneralModel?.modelId
+    ?? (imageConnectionId && selectedModel?.startsWith(`${imageConnectionId}/`)
+      ? selectedModel.slice(imageConnectionId.length + 1) : selectedModel);
+  const imageSettingsModel = imageConnectionId && imageConnection
+    && getProviderDefinition(imageConnectionId, imageConnection)?.id === 'custom-openai'
+    ? imageConnection.selectedModels?.find((model) => model.id === imageModelId && model.category === 'image')
+    : undefined;
+  const imageNeedsParameterSettings = !!imageSettingsModel && (
+    !imageCapability?.ratios?.length
+    || (imageCapability?.hasResolutionField !== false && !imageResolutions?.length)
+  );
   const imageRatioValues = useMemo<readonly string[] | undefined>(() => (
     dreaminaImageModel
       ? DREAMINA_IMAGE_RATIOS
@@ -559,27 +578,28 @@ export default function PromptPanel({
   );
 
   useEffect(() => {
-    if (!imageResolutions?.length || !imageRatioValues?.length) return;
+    if (nodeType !== 'ai-image') return;
     const normalizedSize = imageSize?.toLowerCase();
-    const supportedSize = imageResolutions.some(
+    const supportedSize = imageResolutions?.some(
       (size) => size.toLowerCase() === normalizedSize,
     );
-    if (!supportedSize) {
+    if (imageResolutions?.length && !supportedSize) {
       const fallback = imageCapability?.defaultResolution
         ?? imageResolutions.find((size) => size.toLowerCase() === '2k')
         ?? imageResolutions[0];
       onChangeImageSize?.(fallback);
     }
     const normalizedRatio = aspectRatio === '自适应' ? 'auto' : aspectRatio;
-    const supportedRatios: readonly string[] = imageCapability?.ratios ?? imageRatioValues;
-    if (!normalizedRatio || !supportedRatios.includes(normalizedRatio)) {
+    const supportedRatios: readonly string[] = imageCapability?.ratios ?? imageRatioValues ?? [];
+    if (supportedRatios.length && (!normalizedRatio || !supportedRatios.includes(normalizedRatio))) {
       const fallback = imageCapability?.defaultRatio === 'auto'
         ? '自适应'
-        : (imageCapability?.defaultRatio ?? '16:9');
+        : (imageCapability?.defaultRatio ?? supportedRatios[0]);
       onChangeAspectRatio?.(fallback);
     }
   }, [
     aspectRatio,
+    nodeType,
     imageCapability,
     imageRatioValues,
     imageResolutions,
@@ -591,6 +611,11 @@ export default function PromptPanel({
   const performanceMode = useAppStore((s) => s.config.performanceMode === true);
   const userPresets = useAppStore((s) => s.userPresets);
   const userSkills = useAppStore((s) => s.userSkills);
+  const agentPackageSkills = useAppStore((s) => s.agentPackageSkills);
+  const skillOptions = useMemo(
+    () => projectSkillPickerOptions(userSkills, agentPackageSkills),
+    [userSkills, agentPackageSkills],
+  );
   const uploadSkill = useAppStore((s) => s.uploadSkill);
   const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
   const setPresetRunRequest = useAppStore((s) => s.setPresetRunRequest);
@@ -600,8 +625,8 @@ export default function PromptPanel({
 
   const handleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
     const sourcePrompt = overridePrompt ?? prompt;
-    onSubmit(expandSkillReferences(sourcePrompt, userSkills), postProcess);
-  }, [onSubmit, prompt, userSkills]);
+    onSubmit(expandSkillReferences(sourcePrompt, listRuntimeSkills()), postProcess);
+  }, [onSubmit, prompt]);
 
   const handleSingleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
     onChangeBatchCount?.(1);
@@ -617,7 +642,11 @@ export default function PromptPanel({
   }, []);
 
   const hasGenerationInput = !!prompt.trim() || selectedProvider === 'runninghub' || selectedProvider === 'runninghubwf' || selectedProvider === 'workflow-api';
-  const batchSupported = nodeType === 'ai-image'
+  const imageBatchMaximum = imageCapability?.supportsBatch === false
+    ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, imageCapability?.maxBatchCount ?? MAX_IMAGE_BATCH_COUNT);
+  const imageBatchCounts = IMAGE_BATCH_COUNTS.filter((count) => count <= imageBatchMaximum);
+  const batchSupported = (selectedProvider !== 'general' || imageCapability?.supportsBatch === true)
+    && imageBatchMaximum > 1 && nodeType === 'ai-image'
     && Boolean(onChangeBatchCount)
     && selectedProvider !== 'dreamina'
     && !selectedWorkflowId;
@@ -776,7 +805,7 @@ export default function PromptPanel({
     setSkillManagerOpen(true);
   }, []);
 
-  const handleSkillSelect = useCallback((skill: UserSkill) => {
+  const handleSkillSelect = useCallback((skill: SkillPickerOption) => {
     setSlashOpen(false);
     const token = `@skill{${skill.id}|${encodeURIComponent(skill.name)}}`;
     const spacer = prompt && !/\s$/.test(prompt) ? ' ' : '';
@@ -1008,18 +1037,31 @@ export default function PromptPanel({
           )}
 
           {nodeType === 'ai-image' && !runninghubWorkflow && !runninghubModel && !workflowApi && (
-            <QualityRatioSelector
-              imageSize={imageSize}
-              aspectRatio={aspectRatio}
-              onChangeImageSize={onChangeImageSize || (() => {})}
-              onChangeAspectRatio={onChangeAspectRatio || (() => {})}
-              imageSizes={imageResolutions}
-              showAdaptive={imageSupportsAdaptive}
-              ratios={imageRatioValues?.map((value) => ({
-                value,
-                className: getImageRatioClassName(value),
-              }))}
-            />
+            imageNeedsParameterSettings && imageSettingsModel ? (
+              <AnimatedButton type="button" className="img-pill-btn" disabled={isGenerating}
+                aria-label={t('打开 {name} 图片参数设置', { name: imageSettingsModel.name })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  useAppStore.getState().openApiKeySettings(imageConnectionId, imageSettingsModel.id);
+                }}>
+                <Icon icon="lucide:sliders-horizontal" width="16" />
+                <span>{t('参数')}</span>
+              </AnimatedButton>
+            ) : (
+              <QualityRatioSelector
+                imageSize={imageResolutions?.length === 0 ? t('未声明') : imageSize}
+                aspectRatio={imageRatioValues?.length === 0 && !imageSupportsAdaptive ? t('比例待确认') : aspectRatio}
+                onChangeImageSize={onChangeImageSize || (() => {})}
+                onChangeAspectRatio={onChangeAspectRatio || (() => {})}
+                showImageSize={imageResolutions === undefined || imageResolutions.length > 0}
+                imageSizes={imageResolutions}
+                showAdaptive={imageSupportsAdaptive}
+                ratios={imageRatioValues?.map((value) => ({
+                  value,
+                  className: getImageRatioClassName(value),
+                }))}
+              />
+            )
           )}
 
           {nodeType === 'ai-panorama' && (
@@ -1189,7 +1231,7 @@ export default function PromptPanel({
                       aria-label={t('选择批量生成数量')}
                       aria-hidden={!batchMenuOpen}
                     >
-                      {IMAGE_BATCH_COUNTS.map((count) => (
+                      {imageBatchCounts.map((count) => (
                         <button
                           key={count}
                           type="button"
@@ -1252,7 +1294,7 @@ export default function PromptPanel({
         currentPrompt={prompt}
         anchorEl={slashAnchor}
         userPresets={userPresets}
-        userSkills={userSkills}
+        skillOptions={skillOptions}
         onSelect={handleSlashSelect}
         onRunAdvancedPreset={handleRunAdvancedPreset}
         onSelectSkill={handleSkillSelect}

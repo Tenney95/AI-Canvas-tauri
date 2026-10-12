@@ -1823,6 +1823,111 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
   overscroll-behavior: contain;
 }
 
+.ui-scroll--both { overflow: auto; }
+
+/* ==========================================================================
+   Scrollbars / 覆盖式滚动条
+   业务容器使用 .ui-scroll（纵向）或 .ui-scroll.ui-scroll--both（双轴）。
+   .ui-scrollbar 与 .ui-scrollbar__thumb 由 OverlayScrollbarLayer 自动生成；
+   不手动插入浮层，也不单独引入样式。data-overlay-scrollbar='off' 显式退出托管。
+   全局原生滚动条隐藏策略位于 overlay-scrollbar.css，保持入口末尾加载。
+   ========================================================================== */
+.ui-scrollbar {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(
+    var(--overlay-scrollbar-clip-top, 0px)
+    var(--overlay-scrollbar-clip-right, 0px)
+    var(--overlay-scrollbar-clip-bottom, 0px)
+    var(--overlay-scrollbar-clip-left, 0px)
+  );
+  pointer-events: none;
+}
+
+.ui-scrollbar--root {
+  position: fixed;
+}
+
+.ui-scrollbar__thumb {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    var(--overlay-scrollbar-x, -100px),
+    var(--overlay-scrollbar-y, -100px),
+    0
+  );
+  transition: opacity var(--transition-smooth);
+  cursor: var(--cursor-grab, grab);
+  touch-action: none;
+}
+
+.ui-scrollbar__thumb::before {
+  position: absolute;
+  border-radius: 9999px;
+  background: var(--scrollbar-thumb);
+  content: '';
+  transition: width var(--transition-base), height var(--transition-base), background var(--transition-base);
+}
+
+.ui-scrollbar__thumb.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 目标离开裁剪区或不再溢出时立即隐藏，避免淡出留在过期坐标。 */
+.ui-scrollbar__thumb.is-unavailable {
+  visibility: hidden;
+}
+
+.ui-scrollbar__thumb:hover::before {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.ui-scrollbar__thumb.is-dragging {
+  cursor: var(--cursor-grabbing, grabbing);
+}
+
+.ui-scrollbar__thumb.is-dragging::before {
+  background: var(--scrollbar-thumb-active);
+}
+
+.ui-scrollbar__thumb--vertical {
+  width: var(--overlay-scrollbar-hit-size, 8px);
+  height: var(--overlay-scrollbar-size, 36px);
+}
+
+.ui-scrollbar__thumb--vertical::before {
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+}
+
+.ui-scrollbar__thumb--vertical:hover::before,
+.ui-scrollbar__thumb--vertical.is-dragging::before {
+  width: 6px;
+}
+
+.ui-scrollbar__thumb--horizontal {
+  width: var(--overlay-scrollbar-size, 36px);
+  height: var(--overlay-scrollbar-hit-size, 8px);
+}
+
+.ui-scrollbar__thumb--horizontal::before {
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 4px;
+}
+
+.ui-scrollbar__thumb--horizontal:hover::before,
+.ui-scrollbar__thumb--horizontal.is-dragging::before {
+  height: 6px;
+}
+
 /* 文本层级：弹窗/面板的标题与说明统一走这三个类 */
 .ui-title {
   margin: 0;
@@ -2077,7 +2182,9 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
   .ui-segmented__item,
   .ui-tabs__item,
   .ui-slider::-webkit-slider-thumb,
-  .ui-progress__bar {
+  .ui-progress__bar,
+  .ui-scrollbar__thumb,
+  .ui-scrollbar__thumb::before {
     transition: none;
   }
   .ui-btn:active:not(:disabled),

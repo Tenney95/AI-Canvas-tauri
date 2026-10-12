@@ -17,6 +17,7 @@ import { Icon } from '@iconify/react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { BaseNodeData, ShotFrameCandidate, ShotlistColumnKey, ShotRow } from '../../types';
 import { confirmAction } from '../../services/confirmDialog';
+import { getCanvasLockedZoom, normalizeCanvasZoom } from '../../utils/canvasViewportPreferences';
 import {
   SHOT_CAMERA_OPTIONS,
   SHOT_SIZE_OPTIONS,
@@ -384,7 +385,12 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       if (!target) return;
       const width = (target.measured?.width ?? 200) / 2;
       const height = (target.measured?.height ?? 200) / 2;
-      setCenter(target.position.x + width, target.position.y + height, { zoom: 1, duration: 400 });
+      const config = useAppStore.getState().config;
+      void setCenter(target.position.x + width, target.position.y + height, {
+        zoom: getCanvasLockedZoom(config) ?? normalizeCanvasZoom(1, config),
+        duration: 400,
+        interpolate: 'linear',
+      });
       setSelectedNodeIds([nodeId]);
     },
     [getNode, setCenter, setSelectedNodeIds],

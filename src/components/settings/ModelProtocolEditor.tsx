@@ -45,6 +45,7 @@ import PopupCloseButton from '../shared/PopupCloseButton';
 import { describeProtocolTestRunBlocker, resolveProtocolTestRunDraft, type ProtocolChoice } from './modelProtocolTestRun';
 import { useT } from '../../i18n';
 import { copyText } from '../../services/clipboardService';
+import { buildGoogleImageParts, resolveImageTemplateDimensions } from '../../services/ai/imageModelTemplates';
 import {
   buildChatApiRequest,
   isNativeTextProtocolPreset,
@@ -142,16 +143,22 @@ function createPreviewVariables(model: ProviderModelSelection): ModelProtocolVar
     };
   }
   if (model.category === 'image') {
+    const imageSize = model.imageCapability?.defaultResolution ?? model.imageCapability?.resolutions?.[0] ?? '1K';
+    const aspectRatio = model.imageCapability?.defaultRatio ?? model.imageCapability?.ratios?.[0] ?? '1:1';
+    const imageUrls = ['data:image/png;base64,iVBORw0KGgo='];
+    // 未完成的编辑草稿不能让整个设置窗口加载失败；真实发送仍严格校验尺寸。
+    let dimensions = { width: 1024, height: 1024 };
+    try { dimensions = resolveImageTemplateDimensions(model.imageCapability, imageSize, aspectRatio); } catch { /* 保留预览占位 */ }
     return {
       ...common,
-      imageSize: '1K',
-      aspectRatio: '1:1',
-      size: '1024x1024',
-      width: 1024,
-      height: 1024,
+      imageSize,
+      aspectRatio,
+      size: `${dimensions.width}x${dimensions.height}`,
+      ...dimensions,
       n: 1,
       batchCount: 1,
-      imageUrls: ['data:image/png;base64,iVBORw0KGgo='],
+      imageUrls,
+      googleImageParts: buildGoogleImageParts(common.prompt, imageUrls),
     };
   }
   if (model.category === 'video') {
@@ -1543,7 +1550,7 @@ export default function ModelProtocolEditor({
 
       {preset === 'custom' && (simpleEditor || view === 'json') ? (
         <div className="min-w-0 space-y-3">
-          <div className="grid min-w-0 grid-cols-[minmax(200px,0.75fr)_minmax(0,1.5fr)] items-start gap-3 max-[700px]:grid-cols-1">
+          <div className="grid min-w-0 grid-cols-[minmax(200px,0.75fr)_minmax(0,1.5fr)] items-stretch gap-3 max-[700px]:grid-cols-1">
             <aside className="provider-protocol-json-variables" aria-label={t('当前模型可用变量')}>
               <div className="provider-protocol-json-guide-title">
                 <Icon icon="mdi:code-braces" width="13" />
@@ -1594,8 +1601,9 @@ export default function ModelProtocolEditor({
               <textarea
                 ref={protocolTextareaRef}
                 id={protocolJsonId}
+                className="flex-auto"
                 value={protocolJson}
-                rows={24}
+                rows={26}
                 spellCheck={false}
                 aria-invalid={!!error}
                 aria-describedby={protocolJsonHelpId}
@@ -1673,6 +1681,7 @@ export default function ModelProtocolEditor({
                 </label>
                 <textarea
                   id={previewVariablesId}
+                  className="flex-1"
                   value={previewVariablesJson}
                   rows={10}
                   spellCheck={false}

@@ -273,6 +273,8 @@ function getTransportCapability(
   transport: H3QuickAdaptTransport,
 ): VideoModelCapability {
   const capability = getOfficialH3Capability(model);
+  // 快速模板未映射音频开关；能力表保留原生能力，模板只声明实际可提交的参数。
+  capability.supportsAudio = undefined;
   if (transport !== 'apimart') return capability;
   capability.ratios = [...FIXED_RATIOS];
   capability.defaultRatio = '16:9';

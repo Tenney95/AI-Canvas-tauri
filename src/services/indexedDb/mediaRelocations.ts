@@ -18,9 +18,18 @@ const JOURNAL_ID = 'media-relocations';
 const STORES = ['projects', 'history', 'chatMessages', 'assetIndex', 'assetMeta', 'assetMetaV2',
   'globalCharacters', 'videoEditorProjects', 'agentTasks', 'workflows', 'presets'];
 const pathKey = (path: string) => {
-  const normalized = path.replace(/^\\\\\?\\/, '').replace(/\\/g, '/');
+  const normalized = path.replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\//, '');
   return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
 };
+
+/** 新文件占位使用保守身份；不改变已有大小写敏感文件的引用迁移语义。 */
+export function mediaFileAllocationKey(path: string): string {
+  const normalized = pathKey(path);
+  const platform = typeof navigator === 'undefined' ? '' : navigator.platform || '';
+  // macOS 默认卷忽略大小写及 Unicode 规范形式；只规范查重键，磁盘名称保持原样。
+  if (/^(?:mac|darwin)/i.test(platform)) return normalized.normalize('NFC').toLowerCase();
+  return /^win/i.test(platform) ? normalized.toLowerCase() : normalized;
+}
 
 /** Rewrite exact file references only; prompts and arbitrary embedded text are not rewritten. */
 export function relocateMediaReferences<T>(value: T, moves: readonly MediaRelocation[]): T {
@@ -216,6 +225,27 @@ export async function pendingMediaRelocations(projectId: string): Promise<MediaR
     const request = db.transaction(STORE_METADATA).objectStore(STORE_METADATA).get(JOURNAL_ID);
     request.onsuccess = () => resolve((request.result?.pending ?? []).filter((move: MediaRelocation) => move.projectId === projectId));
     request.onerror = () => reject(request.error);
+  });
+}
+
+/** 旧路径仍用于修复迟到的保存，不能再分配给另一份项目文件。 */
+export async function retiredMediaPaths(): Promise<ReadonlySet<string>> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_METADATA);
+    const request = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
+    const paths = new Set<string>();
+    request.onsuccess = () => {
+      const moves: unknown = request.result === undefined ? [] : request.result?.moves;
+      if (!Array.isArray(moves) || moves.some((move) => !move || typeof move.oldPath !== 'string' || !move.oldPath.trim())) {
+        reject(new Error('文件引用迁移记录损坏，停止分配文件名'));
+        tx.abort();
+        return;
+      }
+      for (const move of moves) paths.add(mediaFileAllocationKey(move.oldPath));
+    };
+    tx.oncomplete = () => resolve(paths);
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('读取文件引用迁移记录失败'));
   });
 }
 

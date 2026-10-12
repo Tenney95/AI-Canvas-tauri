@@ -6,6 +6,7 @@
  */
 import type { ApiProviderConfig, ProviderModelSelection } from '../../../types';
 import type { VideoModelCapability } from '../../../types/aiTypes';
+import { assertModelCapabilityProtocol } from '../../../services/ai/modelCapabilityValidation';
 import { assertVideoModelCapability } from '../../../services/ai/videoRequestResolver';
 
 /** Fold the previous connection-level image default into selected models when editing it. */
@@ -51,6 +52,9 @@ export function mergeModels(
         : model.inputModalities ?? existing?.inputModalities,
       inputModalitiesManual: existing?.inputModalitiesManual ?? model.inputModalitiesManual,
       categoryManual: existing?.categoryManual ?? model.categoryManual,
+      imageCapability: existing?.imageCapability ?? model.imageCapability,
+      videoCapability: existing?.videoCapability ?? model.videoCapability,
+      executionProfile: existing?.executionProfile ?? model.executionProfile,
     });
   }
   return [...models.values()];
@@ -91,12 +95,12 @@ export function assertProviderModelsVideoCapabilities(
   models: readonly ProviderModelSelection[],
 ): void {
   for (const model of models) {
-    if (model.category !== 'video' || !model.videoCapability) continue;
     try {
-      assertVideoModelCapability(model.videoCapability);
+      if (model.category === 'video' && model.videoCapability) assertVideoModelCapability(model.videoCapability);
+      assertModelCapabilityProtocol(model);
     } catch (error) {
       const detail = error instanceof Error ? error.message : '能力声明无效';
-      throw new Error(`视频模型“${model.name}”的能力配置无效：${detail}`, { cause: error });
+      throw new Error(`模型“${model.name}”的能力配置无效：${detail}`, { cause: error });
     }
   }
 }

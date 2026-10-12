@@ -1,0 +1,31 @@
+/* 视口工具栏复用 UI Kit；活动态由主题变量保持深浅主题一致。 */
+.canvas-viewport-toolbar {
+  max-width: calc(100vw - 32px);
+  flex-wrap: wrap;
+}
+.canvas-viewport-toolbar .ui-btn.is-active,
+.canvas-viewport-toolbar .canvas-zoom-lock.is-active {
+  color: var(--brand-light);
+  background: var(--brand-alpha-12);
+}
+
+.canvas-zoom-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--ui-control-h-sm);
+  font-size: var(--ui-font-sm);
+  font-weight: 500;
+  line-height: 1;
+  color: var(--theme-text);
+}
+
+.canvas-viewport-toolbar .canvas-zoom-select.ui-select--custom .ui-select__trigger {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.canvas-viewport-toolbar .canvas-zoom-select.ui-select--custom .ui-select__trigger:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}

@@ -14,7 +14,6 @@ import type {
   SkillPickerOption,
 } from '../../types/agentPackage';
 import { isAgentPackageSkill } from '../../types/agentPackage';
-import { SKILL_CONTENT_LIMITS } from '../skillPromptService';
 import { estimateTokens } from './tokenEstimate';
 
 export const SKILL_CATALOG_LIMITS = {
@@ -26,10 +25,6 @@ export const SKILL_CATALOG_LIMITS = {
   indexTokenBudget: 500,
   /** 单个任务可加载的不同 Skill 数量上限。 */
   maxTaskSkillLoads: 4,
-  /** 单个任务的 Skill 内容累计字符上限。 */
-  taskContentChars: 24000,
-  /** 单个附属文件返回的字符上限。 */
-  resourceFileChars: 20000,
   /** 附属资料清单的最大条目数。 */
   maxResourceFiles: 60,
 } as const;
@@ -40,19 +35,14 @@ const CATALOG_HEADER = [
 
 interface SkillCatalogTaskState {
   loadedSkillIds: Set<string>;
-  usedChars: number;
 }
-
-export type SkillContentBudgetResult =
-  | { ok: true; allowedChars: number }
-  | { ok: false; reason: string };
 
 const taskStates = new Map<string, SkillCatalogTaskState>();
 
 function taskState(taskId: string): SkillCatalogTaskState {
   const existing = taskStates.get(taskId);
   if (existing) return existing;
-  const created: SkillCatalogTaskState = { loadedSkillIds: new Set(), usedChars: 0 };
+  const created: SkillCatalogTaskState = { loadedSkillIds: new Set() };
   taskStates.set(taskId, created);
   return created;
 }
@@ -185,7 +175,8 @@ function skillPurpose(skill: RuntimeSkill): string {
 }
 
 /** 构建注入系统提示词的 Skill 索引；没有可见 Skill 时返回空串，不产生空标题。 */
-export function buildSkillCatalogPrompt(): string {
+export function buildSkillCatalogPrompt(inputBudget?: number): string {
+  const indexBudget = inputBudget === undefined ? SKILL_CATALOG_LIMITS.indexTokenBudget : Math.max(100, Math.min(2000, Math.floor(inputBudget * 0.02)));
   const allSkills = listModelInvocableSkills();
   const skills = allSkills.slice(0, SKILL_CATALOG_LIMITS.maxIndexEntries);
   if (skills.length === 0) return '';
@@ -200,7 +191,7 @@ export function buildSkillCatalogPrompt(): string {
       : '';
     const entry = `- ${name}（skillId: ${skill.id}${origin}）：${purpose || '（未声明用途）'}`;
     const entryTokens = estimateTokens(entry);
-    if (usedTokens + entryTokens > SKILL_CATALOG_LIMITS.indexTokenBudget) break;
+    if (usedTokens + entryTokens > indexBudget) break;
     usedTokens += entryTokens;
     entries.push(entry);
   }
@@ -212,41 +203,18 @@ export function buildSkillCatalogPrompt(): string {
   return [CATALOG_HEADER, ...entries, searchNotice].filter(Boolean).join('\n');
 }
 
-/**
- * 申请任务级 Skill 内容额度。
- *
- * 同一 Skill 的重复读取不额外占用数量配额；额度不足时按剩余量收窄，
- * 完全耗尽时返回可回传给模型的中文原因，不抛错中断任务。
- */
-export function consumeSkillContentBudget(
-  taskId: string,
-  skillId: string,
-  requestedChars: number,
-): SkillContentBudgetResult {
-  const state = taskState(taskId);
-  if (
-    !state.loadedSkillIds.has(skillId)
-    && state.loadedSkillIds.size >= SKILL_CATALOG_LIMITS.maxTaskSkillLoads
-  ) {
-    return {
-      ok: false,
-      reason: `本次任务加载的 Skill 数量已达上限（${SKILL_CATALOG_LIMITS.maxTaskSkillLoads} 个）`,
-    };
-  }
-
-  const remaining = SKILL_CATALOG_LIMITS.taskContentChars - state.usedChars;
-  if (remaining < SKILL_CONTENT_LIMITS.minUsefulChars) {
-    return { ok: false, reason: '本次任务的 Skill 内容预算已用尽' };
-  }
-
-  const allowedChars = Math.min(Math.max(0, requestedChars), remaining);
-  state.loadedSkillIds.add(skillId);
-  state.usedChars += allowedChars;
-  return { ok: true, allowedChars };
-}
-
 export function clearSkillCatalogTask(taskId: string): void {
   taskStates.delete(taskId);
+}
+
+/** Only the distinct Skill count is task-wide; body space belongs to the current context. */
+export function claimTaskSkill(taskId: string, skillId: string): string | undefined {
+  const state = taskState(taskId);
+  if (!state.loadedSkillIds.has(skillId) && state.loadedSkillIds.size >= SKILL_CATALOG_LIMITS.maxTaskSkillLoads) {
+    return `本次任务加载的 Skill 数量已达上限（${SKILL_CATALOG_LIMITS.maxTaskSkillLoads} 个）`;
+  }
+  state.loadedSkillIds.add(skillId);
+  return undefined;
 }
 
 export function clearSkillCatalogForTests(): void {

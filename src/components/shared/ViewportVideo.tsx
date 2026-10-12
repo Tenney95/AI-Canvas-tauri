@@ -27,8 +27,8 @@ function assignForwardedRef(
 const ViewportVideo = forwardRef<HTMLVideoElement, ViewportVideoProps>(function ViewportVideo({
   src,
   eager = false,
-  rootMargin = '800px 0px',
-  unloadDelayMs = 2_000,
+  rootMargin,
+  unloadDelayMs,
   preload = 'metadata',
   ...videoProps
 }, forwardedRef) {

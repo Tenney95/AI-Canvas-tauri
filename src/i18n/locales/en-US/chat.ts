@@ -2,6 +2,14 @@
  * 对话面板（chat）
  */
 const chat = {
+  '正在连接模型': 'Connecting to model',
+  '模型推理摘要': 'Provider reasoning summary',
+  '由模型接口返回，仅供参考；工具权限和执行依据由应用独立判定。': 'Returned by the model API, for reference only; the app independently decides tool permissions and execution evidence.',
+  '推理内容过长，展示已截断。': 'Reasoning is too long; the display was truncated.',
+  '正在压缩上下文': 'Compressing context',
+  '正在加载 Skill': 'Loading Skill',
+  '正在读取 Skill 资料': 'Reading Skill reference',
+
   // ── ChatHeader ──
   '返回会话列表': 'Back to conversation list',
   'AI 助手': 'AI Assistant',

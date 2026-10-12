@@ -65,8 +65,8 @@ function policyDetail(
   if (decision === 'require_approval') {
     switch (effect) {
       case 'canvas_write': return '画布修改需要根据当前协作模式由用户确认。';
-      case 'media_generation': return '付费媒体生成每次都需要用户确认。';
-      case 'file_write': return '本地文件写入始终需要用户确认。';
+      case 'media_generation': return '当前协作模式下，付费媒体生成需要用户确认。';
+      case 'file_write': return '当前协作模式下，本地文件写入需要用户确认。';
       case 'permanent_delete': return '永久删除始终需要用户二次确认。';
       case 'memory_write': return '项目记忆必须由用户确认后保存。';
       case 'config_write': return '厂商配置写入必须由用户确认。';

@@ -19,6 +19,7 @@ import { compactAgentMessages } from './contextCompressionService';
 import { evaluateAgentLifetimeUsage } from './agentBudgetService';
 import { clearProviderDocsTask } from './providerDocsGrantService';
 import { clearWebAccessTask } from './webAccessGrantService';
+import { clearSkillReadTask, takeSkillCompactionRequest } from './skillReadService';
 import { clearSkillCatalogTask } from './skillCatalog';
 import { clearProviderModelCatalogsForTask } from './providerModelCatalogService';
 import {
@@ -117,13 +118,16 @@ export async function runAgentLoop({
   let fullText = '';
   let totalToolResultChars = 0;
 
+  clearSkillReadTask(taskId);
   openAgentInterjectionBuffer(taskId);
   try {
     while (!signal.aborted) {
       const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
       if (task && task.modelRounds < task.budget.maxModelRounds && !evaluateAgentLifetimeUsage(task).exceeded) {
         try {
-          await compactAgentMessages(taskId, messages, currentUserMessage, signal);
+          const before = [...messages];
+          await compactAgentMessages(taskId, messages, currentUserMessage, signal, takeSkillCompactionRequest(taskId));
+          if (before.length !== messages.length || before.some((message, index) => message !== messages[index])) clearSkillReadTask(taskId);
         } catch (error) {
           if (signal.aborted || !(error instanceof ContextBudgetError)) throw error;
           transitionAgentTask(taskId, 'paused', { pausedReason: 'context_compression_failed', errorCode: error.code });
@@ -151,6 +155,7 @@ export async function runAgentLoop({
     clearProviderDocsTask(taskId);
     clearWebAccessTask(taskId);
     clearSkillCatalogTask(taskId);
+    clearSkillReadTask(taskId);
     clearProviderModelCatalogsForTask(taskId);
   }
 }

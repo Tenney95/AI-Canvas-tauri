@@ -10,7 +10,7 @@
  *  - 内存缓存：同一进程内即时复用
  *  - localStorage 持久化缓存：跨进程/Session 复用，2.5 小时过期后自动重传
  */
-import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils/mediaUrl';
+import { isLocalMediaUrl, isRemoteMediaUrl, isTauriAssetUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 import { useAppStore } from '../store/useAppStore';
 import { APIMART_BASE_URL } from '../constants/api';
 import { bytePartsToBase64Async, getAssetUrlFromPath, isTauriEnv } from './fs/core';
@@ -319,11 +319,13 @@ async function fetchUrlToBlob(
   label: string,
   signal?: AbortSignal,
 ): Promise<{ blob: Blob; ext: string }> {
-  const localPath = localMediaUrlToPath(url);
+  // 已有 asset URL 与界面使用同一地址，保留协议、编码和查询参数；仅 file URL 需要转换。
+  const localPath = isTauriAssetUrl(url) ? undefined : localMediaUrlToPath(url);
   const readUrl = localPath && isTauriEnv() ? await getAssetUrlFromPath(localPath) : url;
   const response = await fetch(readUrl, { signal });
   if (!response.ok) {
-    throw new Error(`获取本地${label}失败 (${response.status})`);
+    const hint = response.status === 404 ? '，参考素材已失效或文件不可访问，请重新选择或导入素材' : '';
+    throw new Error(`获取本地${label}失败 (${response.status})${hint}`);
   }
   const contentLength = Number(response.headers.get('Content-Length'));
   if (Number.isFinite(contentLength) && contentLength >= 0) {

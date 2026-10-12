@@ -213,6 +213,7 @@ export async function runAssistantPipeline(
 export interface StreamingPipelineCallbacks {
   /** 每次接收文本增量 */
   onTextDelta: (delta: string) => void;
+  onReasoningDelta?: (delta: string) => void;
   /** 流结束，传入完整文本和执行结果 */
   onComplete: (fullText: string, results: CommandResult[], pendingIntents?: CommandIntent[]) => void;
   /** 出错 */
@@ -315,6 +316,9 @@ export async function runStreamingPipeline(
           case 'text.delta':
             fullContent += event.delta;
             callbacks.onTextDelta(event.delta);
+            break;
+          case 'reasoning.delta':
+            callbacks.onReasoningDelta?.(event.delta);
             break;
           case 'error':
             callbacks.onError(event.message);

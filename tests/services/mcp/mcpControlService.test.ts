@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   handleMcpBridgeRequest,
+  initMcpControlService,
   listMcpTools,
 } from '../../../src/services/mcp/mcpControlService';
 import {
@@ -25,6 +26,13 @@ import { buildDirectorSceneRelativePath } from '../../../src/services/directorSc
 import { resetDirectorNodeOperationsForTests } from '../../../src/services/directorNodeOperationService';
 import type { AgentToolDefinition } from '../../../src/services/chat/toolRegistry';
 import type { McpToolCallResult, McpToolCatalogResult } from '../../../src/types/mcp';
+import { resolveAgentApproval } from '../../../src/services/chat/agentTaskControl';
+import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../../../src/services/mcp/mcpSettingsScope';
+import * as chatHistory from '../../../src/services/chat/chatHistoryService';
+import * as mcpBridge from '../../../src/services/mcp/mcpBridgeService';
+
+const { getChatWindow } = vi.hoisted(() => ({ getChatWindow: vi.fn() }));
+vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: getChatWindow } }));
 
 function packageSkill(partial: Partial<AgentPackageSkill> = {}): AgentPackageSkill {
   return {
@@ -94,6 +102,7 @@ function packageInstallation(
 }
 
 beforeEach(() => {
+  getChatWindow.mockReset();
   resetAgentToolsRegistrationForTests();
   clearAgentToolRegistryForTests();
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -139,6 +148,34 @@ function registerDispatchProbe(partial: Partial<AgentToolDefinition> = {}) {
 }
 
 describe('MCP on-demand discovery', () => {
+  it('restores the global audit and repairs interrupted tasks once before listening', async () => {
+    const repairTasks = vi.fn(async () => ['old-task']);
+    const repairMessages = vi.fn(async () => undefined);
+    useAppStore.setState({ currentProjectId: null,
+      repairInterruptedAgentTasksForProject: repairTasks, repairInterruptedForProject: repairMessages });
+    const saved = { id: MCP_SETTINGS_CONVERSATION_ID, projectId: MCP_SETTINGS_SCOPE_ID,
+      title: 'MCP 全局模型设置', titleSource: 'user' as const, pinned: true, archived: false, agentMode: 'autonomous' as const,
+      createdAt: 1, updatedAt: 2, messageCount: 4 };
+    const load = vi.spyOn(chatHistory, 'loadProjectConversations').mockResolvedValue([saved]);
+    const unlisten = vi.fn();
+    const listen = vi.spyOn(mcpBridge, 'listenForMcpBridgeRequests').mockImplementation(async () => {
+      expect(repairTasks).toHaveBeenCalledWith(MCP_SETTINGS_SCOPE_ID);
+      expect(useAppStore.getState().conversations).toContainEqual(saved);
+      return unlisten;
+    });
+    const cleanups: Array<() => void> = [];
+    try {
+      cleanups.push(await initMcpControlService(), await initMcpControlService());
+      expect(repairTasks).toHaveBeenCalledOnce();
+      expect(repairMessages).toHaveBeenCalledOnce();
+      expect(load).toHaveBeenCalledWith(MCP_SETTINGS_SCOPE_ID);
+      expect(useAppStore.getState().currentProjectId).toBeNull();
+    } finally {
+      cleanups.forEach((cleanup) => cleanup());
+      listen.mockRestore(); load.mockRestore();
+    }
+  });
+
   it('exposes image uploads only to MCP and omits uploaded bytes from messages and task audit', async () => {
     vi.stubGlobal('window', { __TAURI__: {} });
     const data = Buffer.from('private-image-byte-marker-for-upload-audit').toString('base64');
@@ -163,8 +200,141 @@ describe('MCP on-demand discovery', () => {
     expect((await listMcpTools()).at(-1)?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
     useAppStore.setState({ currentProjectId: null });
     expect((await listMcpTools()).map((tool) => tool.name)).toEqual(names);
-    expect(await mcpCall('tools_search', {})).toMatchObject({ isError: true });
-    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+    expect(await mcpCall('tools_search', {})).toMatchObject({ isError: false });
+    expect(useAppStore.getState().agentTasks[0].projectId).toBe(MCP_SETTINGS_SCOPE_ID);
+  });
+
+  it('discovers provider settings and project navigation without a project, including full exposure', async () => {
+    useAppStore.setState({ currentProjectId: null, configHydrated: true });
+    const listed = await listMcpTools('full');
+    expect(listed.some((tool) => tool.name === 'provider_config_preview')).toBe(true);
+    expect(listed.map((tool) => tool.name)).toEqual(expect.arrayContaining(['project_list', 'project_get', 'project_open', 'project_switch']));
+    expect(listed.every((tool) => tool.name.startsWith('provider_') || ['project_list', 'project_get', 'project_open', 'project_switch'].includes(tool.name))).toBe(true);
+    expect(await mcpCall('tools_describe', { names: ['canvas_query'] })).toMatchObject({ isError: true });
+    expect(await mcpCall('tools_describe', { names: ['project_delete'] })).toMatchObject({ isError: true });
+    const navigation = catalogResult(await mcpCall('tools_search', { category: 'project', detail: 'schema' }, 'startup-project-search'));
+    expect(navigation.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['project_list', 'project_open', 'project_switch']));
+  });
+
+  it('lists, opens and switches projects from startup through global audit tasks', async () => {
+    const switchProject = vi.fn(async (id: string) => {
+      useAppStore.setState({ currentProjectId: id, projectName: id, projectLoadStatus: 'ready' });
+      return id;
+    });
+    useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready', switchProject, projects: [
+      { id: 'project-a', name: '重名项目', createdAt: 1, updatedAt: 1 },
+      { id: 'project-b', name: '重名项目', createdAt: 2, updatedAt: 2 },
+    ] });
+    const first = await mcpCall('tools_call', { name: 'project_list', arguments: {} }, 'startup-list');
+    expect(first.isError).toBe(false);
+    expect(JSON.parse((first.content[0] as { text: string }).text)).toMatchObject({ currentProjectId: null,
+      projects: [{ id: 'project-a', name: '重名项目' }, { id: 'project-b', name: '重名项目' }] });
+    const opened = await mcpCall('tools_call', { name: 'project_open', arguments: { projectId: 'project-a' } }, 'startup-open');
+    expect(opened.isError).toBe(false);
+    const switched = await mcpCall('project_switch', { projectId: 'project-b' }, 'project-switch');
+    expect(switched.isError).toBe(false);
+    expect(JSON.parse((switched.content[0] as { text: string }).text)).toMatchObject({ previousProjectId: 'project-a', currentProjectId: 'project-b' });
+    const repeated = await mcpCall('project_open', { projectId: 'project-b' }, 'project-repeat');
+    expect(JSON.parse((repeated.content[0] as { text: string }).text)).toMatchObject({ alreadyOpen: true });
+    expect(switchProject).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().agentTasks).toHaveLength(4);
+    expect(useAppStore.getState().agentTasks.every((task) => task.projectId === MCP_SETTINGS_SCOPE_ID
+      && task.conversationId === MCP_SETTINGS_CONVERSATION_ID && task.status === 'completed')).toBe(true);
+    expect((await listMcpTools('full')).some((tool) => tool.name === 'canvas_query')).toBe(true);
+    expect(await mcpCall('canvas_query', {}, 'after-open-query')).toMatchObject({ isError: false });
+    expect(useAppStore.getState().agentTasks.at(-1)?.projectId).toBe('project-b');
+  });
+
+  it('returns project pages above the generic result limit without leaking them into audit', async () => {
+    useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready', projects: Array.from({ length: 100 }, (_, index) => ({
+      id: `project-${index}`, name: `project-list-private-marker-${index}` + '名'.repeat(210), createdAt: 1, updatedAt: 2,
+      dataFolder: 'secret-folder', snapshot: 'data:image/png;base64,secret',
+    })) });
+    const result = await mcpCall('project_list', { limit: 100 }, 'large-project-list');
+    expect(result.isError).toBe(false);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.length).toBeGreaterThan(20_000);
+    expect(JSON.parse(text)).toMatchObject({ total: 100, returned: 100, hasMore: false });
+    expect(text).not.toContain('secret-folder');
+    expect(text).not.toContain('base64');
+    expect(JSON.stringify([useAppStore.getState().agentTasks, useAppStore.getState().messages])).not.toContain('project-list-private-marker');
+  });
+
+  it('reports failed project loads and rejects unavailable navigation parameters', async () => {
+    const switchProject = vi.fn(async () => undefined);
+    useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready', switchProject });
+    expect(await mcpCall('project_open', { projectId: 'project-mcp' }, 'failed-open')).toMatchObject({ isError: true });
+    expect(await mcpCall('project_switch', { projectId: 'missing' }, 'missing-open')).toMatchObject({ isError: true });
+    expect(await mcpCall('project_open', { projectId: 'project-mcp', toolAllowlist: ['canvas_query'] }, 'invalid-open'))
+      .toMatchObject({ isError: true });
+    expect(switchProject).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().currentProjectId).toBeNull();
+  });
+
+  it('rejects overlapping navigation and preserves cancellation on the original request', async () => {
+    let finishSwitch: (() => void) | undefined;
+    const switchProject = vi.fn(async () => {
+      useAppStore.setState({ switchingProjectName: 'MCP project' });
+      await new Promise<void>((resolve) => { finishSwitch = resolve; });
+      useAppStore.setState({ switchingProjectName: null });
+      return undefined;
+    });
+    useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready', switchProject });
+    const pending = mcpCall('tools_call', { name: 'project_open', arguments: { projectId: 'project-mcp' } }, 'pending-project-open');
+    try {
+      await vi.waitFor(() => expect(switchProject).toHaveBeenCalledOnce());
+      expect(await mcpCall('project_switch', { projectId: 'project-mcp' }, 'overlapping-open')).toMatchObject({ isError: true, summary: expect.stringContaining('等待') });
+      expect(await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-project-open', method: 'requests/cancel',
+        params: { requestId: 'pending-project-open' } })).toEqual({ cancelled: true });
+    } finally {
+      finishSwitch?.();
+      expect(await pending).toMatchObject({ isError: true });
+    }
+    expect(useAppStore.getState().currentProjectId).toBeNull();
+    expect(switchProject).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().agentTasks.find((task) => task.steps[0]?.toolCall?.callId === 'pending-project-open')?.status).toBe('stopped');
+  });
+
+  it('previews and saves global image settings across project changes through the audited runtime', async () => {
+    const saveConfig = vi.fn(async () => undefined);
+    useAppStore.setState({ currentProjectId: null, configHydrated: true, saveConfig });
+    const preview = await mcpCall('tools_call', { name: 'provider_config_preview', arguments: {
+      connectionName: 'Global Images', baseUrl: 'https://gateway.example/v1', models: [{
+        modelId: 'global-image', category: 'image', protocolSource: 'declarative',
+        imageCapability: { resolutions: ['1K'], defaultResolution: '1K', ratios: ['1:1'], supportsBatch: false, supportsImageReference: false },
+        executionProtocol: { version: 2, mode: 'sync', auth: { type: 'bearer' },
+          submit: { method: 'POST', path: '/images/generations', body: { model: '{{model}}', prompt: '{{prompt}}', size: '{{size}}' } },
+          response: { type: 'json', result: { urlPath: 'data.0.url' } } },
+      }],
+    } }, 'global-preview');
+    expect(preview.isError).toBe(false);
+    const text = preview.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n');
+    const draftId = /draftId: (provider-draft-[\w-]+)/.exec(text)?.[1];
+    expect(draftId).toBeTruthy();
+    useAppStore.setState({ currentProjectId: 'another-project' });
+    expect(await mcpCall('tools_call', { name: 'provider_config_apply', arguments: { draftId } }, 'global-apply')).toMatchObject({ isError: false });
+    expect(saveConfig).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().config.generalModels?.[0].imageCapability?.resolutions).toEqual(['1K']);
+    expect(useAppStore.getState().agentTasks.every((task) => task.projectId === MCP_SETTINGS_SCOPE_ID)).toBe(true);
+    expect(useAppStore.getState().currentProjectId).toBe('another-project');
+  });
+
+  it('opens the global choice card without a project and accepts the user after switching projects', async () => {
+    useAppStore.setState({ currentProjectId: null, chatOpen: false });
+    const pending = mcpCall('tools_call', { name: 'provider_models_select', arguments: {
+      models: [{ id: 'image', name: 'Image', category: 'image' }],
+    } }, 'global-choice');
+    try {
+      await vi.waitFor(() => expect(useAppStore.getState().agentTasks[0]?.status).toBe('waiting_approval'));
+      expect(useAppStore.getState()).toMatchObject({ chatOpen: true, activeConversationId: MCP_SETTINGS_CONVERSATION_ID });
+      const approval = useAppStore.getState().agentTasks[0].steps[0].approval!;
+      useAppStore.setState({ currentProjectId: 'another-project' });
+      expect(resolveAgentApproval(approval.id, { approved: true, inputValues: { selectedModelIds: ['image'] } })).toBe(true);
+      expect(await pending).toMatchObject({ isError: false });
+    } finally {
+      await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-global-choice', method: 'requests/cancel', params: { requestId: 'global-choice' } });
+      await pending;
+    }
   });
 
   it('honors the saved exposure mode and keeps internal assistant tools unchanged', async () => {
@@ -261,11 +431,16 @@ describe('MCP on-demand discovery', () => {
   });
 
   it('keeps user_choice waiting and cancels it through the original request ID', async () => {
+    useAppStore.setState({ chatOpen: false, chatPanelView: 'tasks', activeConversationId: 'other-chat' });
     const execute = registerDispatchProbe({ effect: 'user_choice' });
     const pending = mcpCall('tools_call', { name: 'mcp_dispatch_probe', arguments: { value: 'ok' } }, 'session:choice');
     try {
       await vi.waitFor(() => expect(useAppStore.getState().agentTasks[0]?.status).toBe('waiting_approval'));
+      expect(useAppStore.getState()).toMatchObject({
+        chatOpen: true, chatPanelView: 'chat', activeConversationId: 'mcp-control-project-mcp',
+      });
       expect(execute).not.toHaveBeenCalled();
+      expect(getChatWindow).not.toHaveBeenCalled();
     } finally {
       await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-choice', method: 'requests/cancel', params: { requestId: 'session:choice' } });
       await pending;
@@ -273,6 +448,69 @@ describe('MCP on-demand discovery', () => {
     expect(useAppStore.getState().agentTasks).toHaveLength(1);
     expect(useAppStore.getState().agentTasks[0].status).toBe('stopped');
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('reveals an existing detached assistant for user_choice without recreating it', async () => {
+    const detached = { unminimize: vi.fn().mockResolvedValue(undefined), show: vi.fn().mockResolvedValue(undefined), setFocus: vi.fn().mockResolvedValue(undefined) };
+    getChatWindow.mockResolvedValue(detached);
+    useAppStore.setState({ chatOpen: false, chatPanelDetached: true, chatPanelView: 'list' });
+    const execute = registerDispatchProbe({ effect: 'user_choice' });
+    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:detached-choice');
+    try {
+      await vi.waitFor(() => expect(detached.setFocus).toHaveBeenCalledOnce());
+      expect(getChatWindow).toHaveBeenCalledWith('chat-assistant');
+      expect(detached.unminimize).toHaveBeenCalledOnce();
+      expect(detached.show).toHaveBeenCalledOnce();
+      expect(useAppStore.getState()).toMatchObject({
+        chatPanelDetached: true, chatPanelView: 'chat', activeConversationId: 'mcp-control-project-mcp',
+      });
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-detached-choice', method: 'requests/cancel', params: { requestId: 'session:detached-choice' } });
+      await pending;
+    }
+  });
+
+  it('falls back to the main panel if the detached assistant is unavailable', async () => {
+    getChatWindow.mockResolvedValue(null);
+    useAppStore.setState({ chatOpen: false, chatPanelDetached: true });
+    registerDispatchProbe({ effect: 'user_choice' });
+    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:missing-choice');
+    try {
+      await vi.waitFor(() => expect(useAppStore.getState().chatPanelDetached).toBe(false));
+      expect(useAppStore.getState()).toMatchObject({ chatOpen: true, chatPanelView: 'chat' });
+    } finally {
+      await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-missing-choice', method: 'requests/cancel', params: { requestId: 'session:missing-choice' } });
+      await pending;
+    }
+  });
+
+  it('does not focus a detached assistant after the user switches projects', async () => {
+    let resolveWindow!: (value: { unminimize: ReturnType<typeof vi.fn> }) => void;
+    getChatWindow.mockReturnValue(new Promise((resolve) => { resolveWindow = resolve; }));
+    useAppStore.setState({ chatPanelDetached: true });
+    registerDispatchProbe({ effect: 'user_choice' });
+    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:stale-choice');
+    const detached = { unminimize: vi.fn() };
+    try {
+      await vi.waitFor(() => expect(getChatWindow).toHaveBeenCalledOnce());
+      useAppStore.setState({ currentProjectId: 'other-project', activeConversationId: 'other-chat', chatOpen: false });
+      resolveWindow(detached);
+      await Promise.resolve();
+      expect(detached.unminimize).not.toHaveBeenCalled();
+      expect(useAppStore.getState()).toMatchObject({ chatOpen: false, activeConversationId: 'other-chat' });
+    } finally {
+      await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-stale-choice', method: 'requests/cancel', params: { requestId: 'session:stale-choice' } });
+      await pending;
+    }
+  });
+
+  it('keeps background calls from opening or switching the assistant', async () => {
+    useAppStore.setState({ chatOpen: false, chatPanelView: 'tasks', activeConversationId: 'other-chat' });
+    registerDispatchProbe({ effect: 'read' });
+    expect(await mcpCall('mcp_dispatch_probe', { value: 'ok' })).toMatchObject({ isError: false });
+    expect(useAppStore.getState()).toMatchObject({ chatOpen: false, chatPanelView: 'tasks', activeConversationId: 'other-chat' });
+    expect(getChatWindow).not.toHaveBeenCalled();
   });
 
   it('forwards cancellation to an executing target', async () => {

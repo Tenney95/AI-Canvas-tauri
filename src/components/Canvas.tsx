@@ -5,7 +5,6 @@ import { lazy, Suspense, useCallback, useState, useEffect, useMemo, useRef } fro
 import { createPortal } from 'react-dom';
 import { ReactFlow,
   Background,
-  Controls,
   BackgroundVariant,
   ConnectionMode,
   SelectionMode,
@@ -36,6 +35,7 @@ import NodeRenderBoundary from './nodes/shared/NodeRenderBoundary';
 import CanvasNodeLodBoundary from './nodes/shared/CanvasNodeLodBoundary';
 import { CanvasNodeLodContext } from '../hooks/useCanvasNodeLod';
 import { createCanvasNodeLodRuntime } from '../services/canvasNodeLodRuntime';
+import { getPerformanceModeEnabled, subscribePerformanceMode } from '../services/performanceModeRuntime';
 import { waitForCanvasFirstPaint } from '../services/canvasReadyService';
 import { isEditableTarget } from '../utils/textSelection';
 import { playNodeFocusPulse } from '../utils/nodeAnimations';
@@ -76,6 +76,8 @@ import {
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import { useCanvasDrawing } from '../hooks/useCanvasDrawing';
 import { useCanvasWheelZoom } from '../hooks/useCanvasWheelZoom';
+import { useCanvasViewportPreferences } from '../hooks/useCanvasViewportPreferences';
+import { getCanvasLockedZoom, normalizeCanvasZoom } from '../utils/canvasViewportPreferences';
 import type { BaseNodeData } from '../types';
 import { SHOTLIST_FRAME_SOURCE_TYPES, STORYBOARD_CELL_SOURCE_TYPES } from '../types';
 import type { Node as RFNode, NodeProps, NodeTypes, OnMove } from '@xyflow/react';
@@ -160,7 +162,6 @@ const edgeTypes: EdgeTypes = {
 
 // ── Stable ReactFlow props (hoisted to avoid new identities every render,
 //    which makes React Flow re-run internal effects and drop frames on drag) ──
-const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1 };
 const PRO_OPTIONS = { hideAttribution: true };
 const PAN_ON_DRAG_DEFAULT = [1, 2]; // 默认交互：右键(2) + 中键(1) 拖拽平移
 const PAN_ON_DRAG_CLASSIC = [0];    // 传统交互：左键(0) 拖拽平移
@@ -172,13 +173,13 @@ const shouldUseMacTrackpadPan = isTauri && isMacOS;
 const easeOutCubic = (progress: number) => 1 - (1 - progress) ** 3;
 const CANVAS_INTERACTING_CLASS = 'canvas-interacting';
 type CanvasInteractionKind = 'node' | 'viewport' | 'wheel';
-const MIN_CANVAS_ZOOM = 0.1;
-const MAX_CANVAS_ZOOM = 5;
 const NODE_TOOLBAR_MIN_SCREEN_SCALE = 0.8;
 const NODE_TOOLBAR_MAX_SCREEN_SCALE = 1.25;
 const NODE_TOOLBAR_SCALE_EPSILON = 0.0005;
 const VISIBLE_NODE_TOOLBARS = '.node-toolbar-shell.is-visible .node-floating-toolbar, .node:hover .node-floating-toolbar, .node.selected .node-floating-toolbar';
 const VISIBLE_GOOEY_BUTTONS = '.react-flow__node:hover .gooey-btn-wrapper, .react-flow__node.selected .gooey-btn-wrapper, .node-handle:hover .gooey-btn-wrapper';
+const ZOOM_TARGET_STRUCTURE = '.react-flow__node, .node, .node-toolbar-shell, .node-floating-toolbar, .node-handle, .gooey-btn-wrapper';
+const ZOOM_POINTER_CONTEXT = '.node-toolbar-shell, .node-handle, .node, .react-flow__node';
 
 // ── 交互模式预设（冻结对象，避免每次 render 产生新身份，导致 React Flow 内部 effect 重跑、拖拽掉帧）──
 const DEFAULT_INTERACTION = Object.freeze({
@@ -459,6 +460,15 @@ function CanvasInner({ onReady }: CanvasProps) {
   }, [nodes]);
   const reactFlowInstance = useReactFlow();
   const flowStore = useStoreApi();
+  const wheelZoomCancelRef = useRef<(() => void) | null>(null);
+  const canvasRootRef = useRef<HTMLDivElement>(null);
+  const viewportPreferences = useCanvasViewportPreferences(canvasRootRef, wheelZoomCancelRef);
+  const {
+    fitView: fitCanvasView,
+    autoFit: autoFitCanvas,
+    beginUserMove,
+    endUserMove,
+  } = viewportPreferences;
   const readyProjectRef = useRef<string | null>(null);
   const hasRenderableNodes = renderableGraph.nodes.some((node) => !node.hidden);
   useEffect(() => {
@@ -466,25 +476,21 @@ function CanvasInner({ onReady }: CanvasProps) {
       || !reactFlowInstance.viewportInitialized) return;
     // 不依赖节点数组：测量写回会持续替换数组，不能反复取消、重启首帧等待。
     return waitForCanvasFirstPaint(
-      () => hasRenderableNodes ? reactFlowInstance.fitView(FIT_VIEW_OPTIONS) : Promise.resolve(false),
+      () => hasRenderableNodes ? fitCanvasView({ padding: 0.2 }, true) : Promise.resolve(false),
       () => {
         readyProjectRef.current = currentProjectId;
         onReady(currentProjectId);
       },
     );
-  }, [currentProjectId, hasRenderableNodes, onReady, reactFlowInstance]);
+  }, [currentProjectId, hasRenderableNodes, onReady, reactFlowInstance, fitCanvasView]);
   const lodSession = useMemo(() => ({
     projectId: currentProjectId,
-    runtime: createCanvasNodeLodRuntime(reactFlowInstance.getViewport().zoom, undefined, useAppStore.getState().config.performanceMode === true),
+    runtime: createCanvasNodeLodRuntime(reactFlowInstance.getViewport().zoom, undefined, getPerformanceModeEnabled()),
   }), [currentProjectId, reactFlowInstance]);
   const nodeLodRuntime = lodSession.runtime;
   useEffect(() => {
-    nodeLodRuntime.setPerformanceMode(useAppStore.getState().config.performanceMode === true);
-    return useAppStore.subscribe((state, previous) => {
-      if (state.config.performanceMode !== previous.config.performanceMode) {
-        nodeLodRuntime.setPerformanceMode(state.config.performanceMode === true);
-      }
-    });
+    nodeLodRuntime.setPerformanceMode(getPerformanceModeEnabled());
+    return subscribePerformanceMode(() => nodeLodRuntime.setPerformanceMode(getPerformanceModeEnabled()));
   }, [nodeLodRuntime]);
   useEffect(() => {
     nodeLodRuntime.activate();
@@ -494,7 +500,6 @@ function CanvasInner({ onReady }: CanvasProps) {
     nodeLodRuntime.interaction(activeInteractionsRef.current.size > 0);
     return () => nodeLodRuntime.deactivate();
   }, [nodeLodRuntime, reactFlowInstance, flowStore]);
-  const wheelZoomCancelRef = useRef<(() => void) | null>(null);
   const activeCanvasPanRef = useRef<{
     startX: number;
     startY: number;
@@ -521,7 +526,9 @@ function CanvasInner({ onReady }: CanvasProps) {
     },
     setViewport: async (viewport, duration = 0) => {
       wheelZoomCancelRef.current?.();
-      await reactFlowInstance.setViewport(viewport, { duration });
+      const config = useAppStore.getState().config;
+      const zoom = getCanvasLockedZoom(config) ?? normalizeCanvasZoom(viewport.zoom, config);
+      await reactFlowInstance.setViewport({ ...viewport, zoom }, { duration, interpolate: 'linear' });
     },
     fitView: async (options = {}) => {
       wheelZoomCancelRef.current?.();
@@ -529,14 +536,13 @@ function CanvasInner({ onReady }: CanvasProps) {
       const nodes = ids
         ? reactFlowInstance.getNodes().filter((node) => ids.has(node.id))
         : undefined;
-      await reactFlowInstance.fitView({
+      await fitCanvasView({
         nodes,
         padding: options.padding ?? 0.25,
         duration: options.duration ?? 0,
       });
     },
-  }), [reactFlowInstance]);
-  const canvasRootRef = useRef<HTMLDivElement>(null);
+  }), [reactFlowInstance, fitCanvasView]);
   const activeInteractionsRef = useRef(new Set<CanvasInteractionKind>());
   const interactionReleaseFramesRef = useRef<Record<CanvasInteractionKind, number>>({
     node: 0,
@@ -551,6 +557,7 @@ function CanvasInner({ onReady }: CanvasProps) {
   const localGooeyButtonsRef = useRef(new Set<HTMLElement>());
   const cachedZoomTargetsRef = useRef(new WeakSet<Set<HTMLElement>>());
   const zoomTargetsObserverRef = useRef<MutationObserver | null>(null);
+  const zoomTargetsRefreshFrameRef = useRef(0);
 
   const clearLocalZoomCompensation = useCallback(() => {
     localToolbarsRef.current.forEach((element) => element.style.removeProperty('--toolbar-zoom-compensation'));
@@ -579,7 +586,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       const updateLocal = (selector: string, elements: Set<HTMLElement>, property: string, value: number) => {
         // 性能模式只在首次使用、挂载/可见状态变化时搜索；空结果也缓存。
         // 普通模式保持原有查询路径，开关切换不影响控件的缩放补偿。
-        if (useAppStore.getState().config.performanceMode !== true || refreshTargets || !cachedZoomTargetsRef.current.has(elements)) {
+        if (!getPerformanceModeEnabled() || refreshTargets || !cachedZoomTargetsRef.current.has(elements)) {
           canvasRoot.querySelectorAll<HTMLElement>(selector).forEach((element) => elements.add(element));
           cachedZoomTargetsRef.current.add(elements);
         }
@@ -616,17 +623,36 @@ function CanvasInner({ onReady }: CanvasProps) {
   }, [clearLocalZoomCompensation]);
 
   const refreshLocalZoomTargets = useCallback(() => {
-    if (activeInteractionsRef.current.size > 0) {
+    if (activeInteractionsRef.current.size === 0) return;
+    if (!getPerformanceModeEnabled()) {
       updateNodeZoomCompensation(latestCanvasZoomRef.current, true);
+      return;
     }
+    if (zoomTargetsRefreshFrameRef.current) return;
+    // 同帧的节点挂载、选中变化与指针穿越共用一次查询，不在每个子元素事件中扫描。
+    zoomTargetsRefreshFrameRef.current = requestAnimationFrame(() => {
+      zoomTargetsRefreshFrameRef.current = 0;
+      if (activeInteractionsRef.current.size > 0) updateNodeZoomCompensation(latestCanvasZoomRef.current, true);
+    });
   }, [updateNodeZoomCompensation]);
 
+  const handleZoomTargetPointer = useCallback((event: PointerEvent) => {
+    if (getPerformanceModeEnabled()) {
+      const target = event.target instanceof Element ? event.target.closest(ZOOM_POINTER_CONTEXT) : null;
+      const previous = event.relatedTarget instanceof Element ? event.relatedTarget.closest(ZOOM_POINTER_CONTEXT) : null;
+      if (target === previous) return;
+    }
+    refreshLocalZoomTargets();
+  }, [refreshLocalZoomTargets]);
+
   const stopObservingZoomTargets = useCallback(() => {
+    if (zoomTargetsRefreshFrameRef.current) cancelAnimationFrame(zoomTargetsRefreshFrameRef.current);
+    zoomTargetsRefreshFrameRef.current = 0;
     zoomTargetsObserverRef.current?.disconnect();
     zoomTargetsObserverRef.current = null;
-    canvasRootRef.current?.removeEventListener('pointerover', refreshLocalZoomTargets);
-    canvasRootRef.current?.removeEventListener('pointerout', refreshLocalZoomTargets);
-  }, [refreshLocalZoomTargets]);
+    canvasRootRef.current?.removeEventListener('pointerover', handleZoomTargetPointer);
+    canvasRootRef.current?.removeEventListener('pointerout', handleZoomTargetPointer);
+  }, [handleZoomTargetPointer]);
 
   useEffect(() => {
     updateNodeZoomCompensation(reactFlowInstance.getViewport().zoom);
@@ -644,22 +670,31 @@ function CanvasInner({ onReady }: CanvasProps) {
       if (canvasRoot) {
         // 只在交互期间监听挂载/选中与 hover；不读取布局，也不监听自身的 style 写入。
         const observer = new MutationObserver((records) => {
-          if (records.some((record) => record.type === 'childList'
-            || (record.target instanceof Element && record.target.matches('.react-flow__node, .node, .node-toolbar-shell')))) {
+          const performanceMode = getPerformanceModeEnabled();
+          if (records.some((record) => {
+            if (record.type === 'attributes') {
+              return record.target instanceof Element && record.target.matches('.react-flow__node, .node, .node-toolbar-shell');
+            }
+            if (!performanceMode) return true;
+            // 图片加载、文本/图标更新不影响可见工具栏目标；只处理相关结构的新增与移除。
+            const affectsTargets = (node: Node) => node instanceof Element
+              && (node.matches(ZOOM_TARGET_STRUCTURE) || node.querySelector(ZOOM_TARGET_STRUCTURE) !== null);
+            return Array.from(record.addedNodes).some(affectsTargets) || Array.from(record.removedNodes).some(affectsTargets);
+          })) {
             refreshLocalZoomTargets();
           }
         });
         zoomTargetsObserverRef.current = observer;
         observer.observe(canvasRoot, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-        canvasRoot.addEventListener('pointerover', refreshLocalZoomTargets, { passive: true });
-        canvasRoot.addEventListener('pointerout', refreshLocalZoomTargets, { passive: true });
+        canvasRoot.addEventListener('pointerover', handleZoomTargetPointer, { passive: true });
+        canvasRoot.addEventListener('pointerout', handleZoomTargetPointer, { passive: true });
       }
     } else {
       stopObservingZoomTargets();
       updateNodeZoomCompensation(reactFlowInstance.getViewport().zoom);
     }
     document.documentElement.classList.toggle(CANVAS_INTERACTING_CLASS, interacting);
-  }, [nodeLodRuntime, reactFlowInstance, refreshLocalZoomTargets, stopObservingZoomTargets, updateNodeZoomCompensation]);
+  }, [handleZoomTargetPointer, nodeLodRuntime, reactFlowInstance, refreshLocalZoomTargets, stopObservingZoomTargets, updateNodeZoomCompensation]);
 
   const beginCanvasInteraction = useCallback((kind: CanvasInteractionKind) => {
     const pendingFrame = interactionReleaseFramesRef.current[kind];
@@ -710,20 +745,34 @@ function CanvasInner({ onReady }: CanvasProps) {
     document.documentElement.classList.remove(CANVAS_INTERACTING_CLASS);
   }, [clearLocalZoomCompensation, stopObservingZoomTargets]);
 
-  const handleCanvasViewportMoveStart = useCallback<OnMove>(() => {
+  const handleCanvasViewportMoveStart = useCallback<OnMove>((event) => {
+    if (event) beginUserMove();
     beginCanvasInteraction('viewport');
-  }, [beginCanvasInteraction]);
+  }, [beginCanvasInteraction, beginUserMove]);
 
   const handleCanvasViewportMoveEnd = useCallback<OnMove>(() => {
     if (activeInteractionsRef.current.has('wheel')) {
       setCanvasInteraction('viewport', false);
       return;
     }
+    endUserMove();
     endCanvasInteraction('viewport');
-  }, [endCanvasInteraction, setCanvasInteraction]);
+  }, [endCanvasInteraction, endUserMove, setCanvasInteraction]);
 
   const handleCanvasViewportMove = useCallback<OnMove>((_, viewport) => {
     const { width, height } = flowStore.getState();
+    const config = useAppStore.getState().config;
+    const zoom = getCanvasLockedZoom(config) ?? normalizeCanvasZoom(viewport.zoom, config);
+    if (zoom !== viewport.zoom) {
+      // 配置可能在旧镜头动画或手势进行中变化；以画布中心纠正迟到的越界视口。
+      const ratio = zoom / viewport.zoom;
+      void reactFlowInstance.setViewport({
+        x: width / 2 + (viewport.x - width / 2) * ratio,
+        y: height / 2 + (viewport.y - height / 2) * ratio,
+        zoom,
+      });
+      return;
+    }
     nodeLodRuntime.viewport(viewport.zoom, (width / 2 - viewport.x) / viewport.zoom, (height / 2 - viewport.y) / viewport.zoom);
     updateNodeZoomCompensation(viewport.zoom);
     const activePan = activeCanvasPanRef.current;
@@ -732,25 +781,29 @@ function CanvasInner({ onReady }: CanvasProps) {
       deltaX: viewport.x - activePan.startX,
       deltaY: viewport.y - activePan.startY,
     });
-  }, [flowStore, nodeLodRuntime, updateNodeZoomCompensation]);
+  }, [flowStore, nodeLodRuntime, reactFlowInstance, updateNodeZoomCompensation]);
 
-  const handleWheelZoomStart = useCallback(() => beginCanvasInteraction('wheel'), [beginCanvasInteraction]);
+  const handleWheelZoomStart = useCallback(() => {
+    beginUserMove();
+    beginCanvasInteraction('wheel');
+  }, [beginCanvasInteraction, beginUserMove]);
   const handleWheelZoomEnd = useCallback((interrupted: boolean) => {
+    endUserMove();
     if (interrupted) setCanvasInteraction('wheel', false);
     else endCanvasInteraction('wheel');
-  }, [endCanvasInteraction, setCanvasInteraction]);
+  }, [endCanvasInteraction, endUserMove, setCanvasInteraction]);
   useCanvasWheelZoom({
     rootRef: canvasRootRef,
     cancelRef: wheelZoomCancelRef,
-    enabled: interactionMode === 'default',
+    enabled: interactionMode === 'default' && !viewportPreferences.locked,
     nativeMouseWheel: shouldUseMacTrackpadPan,
     projectId: currentProjectId,
     getViewport: reactFlowInstance.getViewport,
     setViewport: reactFlowInstance.setViewport,
     onStart: handleWheelZoomStart,
     onEnd: handleWheelZoomEnd,
-    minZoom: MIN_CANVAS_ZOOM,
-    maxZoom: MAX_CANVAS_ZOOM,
+    minZoom: viewportPreferences.minZoom,
+    maxZoom: viewportPreferences.maxZoom,
   });
 
   const {
@@ -958,16 +1011,23 @@ function CanvasInner({ onReady }: CanvasProps) {
 
   // ── Fit view event (project switch / F key) ──
   useEffect(() => {
-    const handler = () => {
+    let frame = 0;
+    const handler = (event: Event) => {
       wheelZoomCancelRef.current?.();
       // Wait one frame for React to finish rendering new nodes/edges
-      requestAnimationFrame(() => {
-        void reactFlowInstance.fitView(FIT_VIEW_OPTIONS);
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const source = (event as CustomEvent<{ source?: string }>).detail?.source;
+        if (source === 'user') autoFitCanvas();
+        else void fitCanvasView({ padding: 0.2 }, true);
       });
     };
     window.addEventListener('canvas-fit-view', handler);
-    return () => window.removeEventListener('canvas-fit-view', handler);
-  }, [reactFlowInstance]);
+    return () => {
+      window.removeEventListener('canvas-fit-view', handler);
+      cancelAnimationFrame(frame);
+    };
+  }, [autoFitCanvas, fitCanvasView]);
 
   // ── Keep anchored overlays visible by panning the whole canvas ──
   useEffect(() => {
@@ -1037,7 +1097,7 @@ function CanvasInner({ onReady }: CanvasProps) {
           if (targetNodes.length === 0) return;
           const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
           const duration = reduceMotion ? 0 : (options?.duration ?? 420);
-          void reactFlowInstance.fitView({
+          void fitCanvasView({
             nodes: targetNodes,
             padding: options?.padding ?? (targetNodes.length === 1 ? 0.45 : 0.3),
             minZoom: targetNodes.length > 6 ? 0.18 : 0.28,
@@ -1081,7 +1141,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       for (const frameId of scheduledFrames) cancelAnimationFrame(frameId);
       for (const timerId of scheduledTimers) window.clearTimeout(timerId);
     };
-  }, [reactFlowInstance]);
+  }, [reactFlowInstance, fitCanvasView]);
 
   // ── Node click → AI dialog ──
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
@@ -1540,12 +1600,16 @@ function CanvasInner({ onReady }: CanvasProps) {
         connectionRadius={64}
         onlyRenderVisibleElements
         fitView
-        fitViewOptions={FIT_VIEW_OPTIONS}
-        minZoom={MIN_CANVAS_ZOOM}
-        maxZoom={MAX_CANVAS_ZOOM}
+        fitViewOptions={viewportPreferences.initialFitOptions}
+        minZoom={viewportPreferences.minZoom}
+        maxZoom={viewportPreferences.maxZoom}
         defaultEdgeOptions={defaultEdgeOptions}
         proOptions={PRO_OPTIONS}
         {...drawingInteraction}
+        zoomOnScroll={!viewportPreferences.locked && interaction.zoomOnScroll}
+        zoomOnPinch={!viewportPreferences.locked}
+        zoomOnDoubleClick={!viewportPreferences.locked && interactionMode !== 'classic'}
+        zoomActivationKeyCode={viewportPreferences.locked ? null : interactionMode === 'classic' ? 'Control' : 'Meta'}
         onContextMenu={(e) => e.preventDefault()}
         onMove={handleCanvasViewportMove}
         onMoveStart={handleCanvasViewportMoveStart}
@@ -1572,12 +1636,6 @@ function CanvasInner({ onReady }: CanvasProps) {
             <RoundedMiniMapMask />
           </>
         )}
-
-        {/* Canvas Controls */}
-        <Controls
-          className="canvas-controls !bg-canvas-card !border-canvas-border !shadow-lg !rounded-xl overflow-hidden"
-          showInteractive={false}
-        />
 
         {/* 操作记录 — 撤销 / 还原 + 可回溯的操作列表 */}
         <Panel position="top-right" className="canvas-history-slot">
@@ -1620,6 +1678,14 @@ function CanvasInner({ onReady }: CanvasProps) {
             smoothLine={smoothLine}
             onToggleGrid={toggleGrid}
             onToggleLine={() => setSmoothLine((v) => !v)}
+            mode={viewportPreferences.mode}
+            disabled={!viewportPreferences.hydrated}
+            minZoom={viewportPreferences.minZoom}
+            maxZoom={viewportPreferences.maxZoom}
+            onAutoFit={autoFitCanvas}
+            onZoomChange={viewportPreferences.setZoom}
+            onStepZoom={viewportPreferences.stepZoom}
+            onToggleLock={viewportPreferences.toggleLock}
           />
         </Panel>
 

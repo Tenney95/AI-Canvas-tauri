@@ -1,3 +1,5 @@
+import { getPerformanceModeBudget, type CanvasDisplayBudget } from './performanceModeRuntime';
+
 export interface CanvasDisplayClock {
   now: () => number;
   frame: (callback: () => void) => number;
@@ -6,7 +8,7 @@ export interface CanvasDisplayClock {
   cancelDelay: (id: ReturnType<typeof setTimeout>) => void;
 }
 
-export const CANVAS_DISPLAY_BUDGET = { maxPreparing: 3, maxPerFrame: 4, workMs: 3, idleMs: 180 } as const;
+export const CANVAS_DISPLAY_BUDGET = getPerformanceModeBudget(false).display;
 
 interface Job {
   key: object;
@@ -23,7 +25,7 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
   cancelFrame: (id) => cancelAnimationFrame(id),
   delay: (callback, ms) => setTimeout(callback, ms),
   cancelDelay: (id) => clearTimeout(id),
-}) {
+}, initialBudget: CanvasDisplayBudget = CANVAS_DISPLAY_BUDGET) {
   const jobs = new Map<object, Job>();
   let active = true;
   let interacting = false;
@@ -37,14 +39,15 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
   let dirty = false;
   let lastFrame: number | undefined;
   let frameInterval = 1000 / 60;
-  let batchSize: number = CANVAS_DISPLAY_BUDGET.maxPerFrame;
+  let budget = initialBudget;
+  let batchSize = budget.maxPerFrame;
   let healthyFrames = 0;
   let preparing = 0;
 
   function refreshDue() {
     nextDue = Infinity;
     for (const job of jobs.values()) {
-      if (!job.preparation || preparing < CANVAS_DISPLAY_BUDGET.maxPreparing) nextDue = Math.min(nextDue, job.due);
+      if (!job.preparation || preparing < budget.maxPreparing) nextDue = Math.min(nextDue, job.due);
     }
   }
 
@@ -89,7 +92,7 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
         batchSize = Math.max(1, Math.floor(batchSize / 2));
         healthyFrames = 0;
       } else if (++healthyFrames >= 4) {
-        batchSize = Math.min(CANVAS_DISPLAY_BUDGET.maxPerFrame, batchSize + 1);
+        batchSize = Math.min(budget.maxPerFrame, batchSize + 1);
         healthyFrames = 0;
       }
     }
@@ -105,10 +108,10 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
     let worked = false;
     try {
       while (active && !interacting && cursor < ordered.length && committed < batchSize) {
-        if (worked && clock.now() - start >= CANVAS_DISPLAY_BUDGET.workMs) break;
+        if (worked && clock.now() - start >= budget.workMs) break;
         const job = ordered[cursor++];
         if (jobs.get(job.key) !== job) continue;
-        if (job.preparation && preparing >= CANVAS_DISPLAY_BUDGET.maxPreparing) continue;
+        if (job.preparation && preparing >= budget.maxPreparing) continue;
         jobs.delete(job.key);
         // 异步准备只占并发槽位和同步时间预算，不挤占 React/DOM 的提交名额。
         if (!job.preparation) committed++;
@@ -125,7 +128,7 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
   function enqueue(key: object, commit: () => void, priority: () => number = () => 0, delayMs = 0, preparation = false) {
     const job = { key, commit, priority, due: clock.now() + Math.max(0, delayMs), preparation };
     jobs.set(key, job);
-    if (!preparation || preparing < CANVAS_DISPLAY_BUDGET.maxPreparing) nextDue = Math.min(nextDue, job.due);
+    if (!preparation || preparing < budget.maxPreparing) nextDue = Math.min(nextDue, job.due);
     dirty = true;
     schedule();
     return () => {
@@ -136,6 +139,16 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
   }
   return {
     enqueue,
+    setBudget(next: CanvasDisplayBudget) {
+      if (budget === next) return;
+      budget = next;
+      batchSize = Math.min(batchSize, budget.maxPerFrame);
+      healthyFrames = 0;
+      // 已开始的解码保留；新任务按当前槽位入场。预算扩大也要唤醒原先睡眠的队列。
+      dirty = true;
+      refreshDue();
+      schedule();
+    },
     prepare(key: object, work: () => Promise<void>, priority: () => number = () => 0, delayMs = 0) {
       return enqueue(key, () => {
         preparing++;
@@ -151,7 +164,7 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
       if (interacting === value) return;
       interacting = value;
       stop();
-      if (!value) { quietUntil = clock.now() + CANVAS_DISPLAY_BUDGET.idleMs; dirty = true; schedule(); }
+      if (!value) { quietUntil = clock.now() + budget.idleMs; dirty = true; schedule(); }
     },
     activate() { active = true; schedule(); },
     deactivate() { active = false; stop(); },

@@ -13,7 +13,7 @@ import type {
   ImageReferenceRequestMode,
   ProviderModelSelection,
 } from '../../../types';
-import type { VideoModelCapability } from '../../../types/aiTypes';
+import type { ImageModelCapability, VideoModelCapability } from '../../../types/aiTypes';
 import type { ModelProtocolImportResult } from '../../../services/ai/modelProtocolImport';
 import type { ProviderDefinition } from '../../../services/ai/providerCatalogService';
 import { normalizeBaseUrl } from '../../../services/ai/providerBaseUrl';
@@ -24,6 +24,8 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import ModelProtocolEditor from '../ModelProtocolEditor';
 import ProtocolImportPanel from '../ProtocolImportPanel';
 import VideoCapabilityEditor from './VideoCapabilityEditor';
+import ImageCapabilityEditor from './ImageCapabilityEditor';
+import { describeModelParameterGaps } from '../../../services/ai/modelCapabilityValidation';
 import { CATEGORY_ORDER, type CatalogStatus, type ProtocolImportSnapshot } from './providerConnectionShared';
 
 interface ProviderModelSectionProps {
@@ -47,6 +49,10 @@ interface ProviderModelSectionProps {
   setProtocolImportOpen: Dispatch<SetStateAction<boolean>>;
   protocolImportSnapshot: ProtocolImportSnapshot | null;
   protocolModel: ProviderModelSelection | undefined;
+  imageCapabilityModel: ProviderModelSelection | undefined;
+  setImageCapabilityModelId: Dispatch<SetStateAction<string | null>>;
+  onUpdateImageCapability: (modelId: string, capability: ImageModelCapability) => void;
+  onApplyImageTemplate: (modelId: string, templateId: string) => void;
   videoCapabilityModel: ProviderModelSelection | undefined;
   setProtocolModelId: Dispatch<SetStateAction<string | null>>;
   setVideoCapabilityModelId: Dispatch<SetStateAction<string | null>>;
@@ -100,6 +106,10 @@ export default function ProviderModelSection({
   setProtocolImportOpen,
   protocolImportSnapshot,
   protocolModel,
+  imageCapabilityModel,
+  setImageCapabilityModelId,
+  onUpdateImageCapability,
+  onApplyImageTemplate,
   videoCapabilityModel,
   setProtocolModelId,
   setVideoCapabilityModelId,
@@ -156,9 +166,10 @@ export default function ProviderModelSection({
 
   const protocolSettingsId = protocolModel?.id;
   const videoSettingsId = videoCapabilityModel?.id;
+  const imageSettingsId = imageCapabilityModel?.id;
   useEffect(() => {
-    if (protocolSettingsId || videoSettingsId) scrollToSettings();
-  }, [protocolSettingsId, videoSettingsId, scrollToSettings]);
+    if (protocolSettingsId || videoSettingsId || imageSettingsId) scrollToSettings();
+  }, [protocolSettingsId, videoSettingsId, imageSettingsId, scrollToSettings]);
 
   return (
     <section className="provider-model-section">
@@ -328,18 +339,32 @@ export default function ProviderModelSection({
                   <span className="provider-model-copy">
                     <strong>{model.name}</strong>
                     <small>{model.id}</small>
+                    {definition.id === 'custom-openai' && describeModelParameterGaps(model) ?
+                      <small>{describeModelParameterGaps(model)}</small> : null}
                   </span>
                 </label>
                 {definition.id === 'custom-openai' && selectedIds.has(model.id) ? (
                   <>
+                    {model.category === 'image' ? (
+                      <AnimatedButton type="button"
+                        className={`ui-btn ui-icon-btn ui-icon-btn--sm${imageSettingsId === model.id ? ' is-active' : ''}`}
+                        aria-label={`配置 ${model.name} 图片参数能力`} title="图片参数能力"
+                        aria-pressed={imageSettingsId === model.id}
+                        onClick={() => {
+                          setImageCapabilityModelId(model.id); setVideoCapabilityModelId(null);
+                          setProtocolModelId(null); setProtocolValid(true); scrollToSettings();
+                        }}><Icon icon="lucide:image" width="16" /></AnimatedButton>
+                    ) : null}
                     {model.category === 'video' ? (
                       <AnimatedButton
                         type="button"
-                        className={`provider-model-protocol-btn ${model.videoCapability ? 'is-configured' : ''}`}
+                        className={`ui-btn ui-icon-btn ui-icon-btn--sm${videoSettingsId === model.id ? ' is-active' : ''}`}
                         aria-label={`配置 ${model.name} 视频参数能力`}
                         title="视频参数能力"
+                        aria-pressed={videoSettingsId === model.id}
                         onClick={() => {
                           setVideoCapabilityModelId(model.id);
+                          setImageCapabilityModelId(null);
                           setProtocolModelId(null);
                           setProtocolValid(true);
                           scrollToSettings();
@@ -350,17 +375,19 @@ export default function ProviderModelSection({
                     ) : null}
                     <AnimatedButton
                       type="button"
-                      className={`provider-model-protocol-btn ${model.executionProfile ? 'is-configured' : ''}`}
+                      className={`ui-btn ui-icon-btn ui-icon-btn--sm${protocolSettingsId === model.id ? ' is-active' : ''}`}
                       aria-label={`配置 ${model.name} 调用协议`}
                       title="调用协议"
+                      aria-pressed={protocolSettingsId === model.id}
                       onClick={() => {
                         setProtocolModelId(model.id);
+                        setImageCapabilityModelId(null);
                         setVideoCapabilityModelId(null);
                         setProtocolValid(true);
                         scrollToSettings();
                       }}
                     >
-                      <Icon icon="mdi:tune-variant" width="15" />
+                      <Icon icon="lucide:sliders-horizontal" width="16" />
                     </AnimatedButton>
                   </>
                   ) : null}
@@ -432,6 +459,13 @@ export default function ProviderModelSection({
           </div>
 
           <div ref={settingsRef} className="scroll-mt-3">
+            {definition.id === 'custom-openai' && imageCapabilityModel?.category === 'image'
+              && selectedIds.has(imageCapabilityModel.id) ? (
+                <ImageCapabilityEditor key={imageCapabilityModel.id} model={imageCapabilityModel}
+                  onChange={(capability) => onUpdateImageCapability(imageCapabilityModel.id, capability)}
+                  onApplyTemplate={(templateId) => onApplyImageTemplate(imageCapabilityModel.id, templateId)}
+                  onClose={() => setImageCapabilityModelId(null)} />
+              ) : null}
             {definition.id === 'custom-openai'
               && videoCapabilityModel
               && videoCapabilityModel.category === 'video'

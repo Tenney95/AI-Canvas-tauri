@@ -346,6 +346,8 @@ export interface ImageModelCapability {
   resolutionField?: string;
   /** 是否在请求体中输出分辨率字段（部分模型如 Imagen 4.0 / Grok 无 resolution）。 */
   hasResolutionField?: boolean;
+  /** 显式尺寸映射：分辨率 → 比例 → [宽, 高]；用于要求精确像素的图片接口。 */
+  dimensionPresets?: Record<string, Record<string, readonly [number, number]>>;
 }
 
 /**

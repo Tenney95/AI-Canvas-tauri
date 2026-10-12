@@ -387,8 +387,8 @@ export interface ProjectSlice {
   /** 复制项目（含分集、对话与素材），复制完不切画布。 */
   duplicateProject: (id: string) => Promise<string | undefined>;
   deleteProject: (id: string) => Promise<void>;
-  /** captureSnapshot：切走前给当前画布重拍缩略图，只有项目库弹窗需要（拍一张要跑一轮位图合成） */
-  switchProject: (id: string, options?: { captureSnapshot?: boolean }) => void;
+  /** 成功返回实际打开的项目 ID；captureSnapshot 仅项目库使用，signal 只在本次加载内存中保留。 */
+  switchProject: (id: string, options?: { captureSnapshot?: boolean; signal?: AbortSignal }) => Promise<string | undefined>;
   /** 保存当前画布后返回启动页；保存失败不卸载当前画布。 */
   returnToStartPage: () => Promise<boolean>;
   saveCurrentProject: () => Promise<string | undefined>;
@@ -1278,13 +1278,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   switchProject: async (requestedId, options) => {
-    if (get().isReturningToStartPage) return;
+    if (options?.signal?.aborted || get().isReturningToStartPage || get().isCreatingProject
+      || get().projectLoadStatus === 'loading') return;
     if (!get().projects.some((project) => project.id === requestedId)) return;
     // 剧集项目自身没有画布，点它等于打开它的分集。
     // ponytail: 固定开第一集；要「回到上次打开的那集」再往剧集记录里存一个 lastEpisodeId。
     const id = resolveOpenTargetId(get().projects, requestedId);
     const switchSequence = ++projectSwitchSequence;
-    const isLatestSwitch = () => switchSequence === projectSwitchSequence;
+    const isLatestSwitch = () => switchSequence === projectSwitchSequence && !options?.signal?.aborted;
     const currentProjectId = get().currentProjectId;
     const previousOwnerId = currentProjectId
       ? seriesOwnerId(get().projects, currentProjectId)
@@ -1303,7 +1304,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             persistRecord: snapshotRecord,
           });
         }
-        await get().saveCurrentProject();
+        const savedId = await get().saveCurrentProject();
+        if (!isLatestSwitch()) return;
+        if (currentProjectId && savedId !== currentProjectId) {
+          get().showToast('当前项目保存失败，已取消项目切换', 'error');
+          return;
+        }
       }
       if (!isLatestSwitch()) return;
       // Clean up undo-trash dirs from the old project before switching
@@ -1359,8 +1365,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       get().loadProjectMemoriesForProject(ownerId).catch((e) => console.warn('[切换项目] 加载项目记忆失败:', e));
 
       setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
+      return id;
     } finally {
-      if (isLatestSwitch()) set({ switchingProjectName: null });
+      if (switchSequence === projectSwitchSequence) set({ switchingProjectName: null });
     }
   },
 

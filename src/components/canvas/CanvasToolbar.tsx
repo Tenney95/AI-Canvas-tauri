@@ -1,58 +1,28 @@
 ﻿/**
  * CanvasToolbar 画布工具栏 — 画布右下角浮动工具条，控制网格显隐、连线样式、缩放比例
  */
-import { memo, useCallback } from 'react';
-import { useReactFlow, useStore, type ReactFlowState } from '@xyflow/react';
+import { memo } from 'react';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
+import CanvasZoomControl, { type CanvasZoomControlProps } from './CanvasZoomControl';
 
-interface CanvasToolbarProps {
+interface CanvasToolbarProps extends CanvasZoomControlProps {
   showGrid: boolean;
   smoothLine: boolean;
   onToggleGrid: () => void;
   onToggleLine: () => void;
 }
 
-const selectZoomPercent = (state: ReactFlowState) => Math.round(state.transform[2] * 100);
-
-const ZoomControl = memo(function ZoomControl() {
-  const t = useT();
-  const zoomPercent = useStore(selectZoomPercent);
-  const { zoomTo } = useReactFlow();
-
-  const handleZoomChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      zoomTo(Number(e.target.value) / 100);
-    },
-    [zoomTo],
-  );
-
-  return (
-    <>
-      <input
-        type="range"
-        min="10"
-        max="200"
-        value={zoomPercent}
-        onChange={handleZoomChange}
-        aria-label={t('画布缩放比例')}
-        aria-valuetext={`${zoomPercent}%`}
-        className="canvas-zoom-slider"
-      />
-      <span className="text-xs text-canvas-text-secondary w-10 tabular-nums">{zoomPercent}%</span>
-    </>
-  );
-});
-
 function CanvasToolbar({
   showGrid,
   smoothLine,
   onToggleGrid,
   onToggleLine,
+  ...zoomProps
 }: CanvasToolbarProps) {
   const t = useT();
   return (
-    <div className="footer-toolbar flex items-center gap-2 border border-canvas-border backdrop-blur-xl rounded-xl shadow-lg">
+    <div className="footer-toolbar canvas-viewport-toolbar flex items-center gap-1 border border-canvas-border backdrop-blur-xl rounded-xl shadow-lg">
       <AnimatedButton
         type="button"
         aria-label={showGrid ? t('隐藏背景网格') : t('显示背景网格')}
@@ -88,7 +58,7 @@ function CanvasToolbar({
         )}
       </AnimatedButton>
       <div className="w-px h-4 bg-[var(--separator-color)] mx-0.5" />
-      <ZoomControl />
+      <CanvasZoomControl {...zoomProps} />
     </div>
   );
 }

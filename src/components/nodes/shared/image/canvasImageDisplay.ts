@@ -1,4 +1,5 @@
 import { acquireCanvasImagePreview } from './canvasImagePreviewCache';
+import { getPerformanceModeBudget } from '../../../../services/performanceModeRuntime';
 
 export interface DisplayQueue {
   enqueue: (key: object, commit: () => void, delayMs?: number) => () => void;
@@ -132,7 +133,8 @@ export function createCanvasImageDisplay(options: {
       if (!Number.isFinite(zoom) || zoom <= 0) return;
       const tier = canvasImageTier(Math.max(width, height) * zoom * pixelRatio, target);
       // 只限制画布预览的自动档位；原图查看和加载失败回退仍保留。
-      request(performanceMode && tier === 0 ? 1024 : tier);
+      const cap = getPerformanceModeBudget(performanceMode).imagePreviewMaxEdge;
+      request(cap > 0 ? (tier === 0 ? cap : Math.min(tier, cap)) : tier);
     },
     original() { request(0, true); },
     committed(lease: DisplayImageLease) {

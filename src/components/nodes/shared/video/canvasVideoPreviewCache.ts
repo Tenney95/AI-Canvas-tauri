@@ -1,9 +1,7 @@
 import { afterVideoFramePresented } from '../../../../utils/videoSeek';
+import { getPerformanceModeBudget, subscribePerformanceMode } from '../../../../services/performanceModeRuntime';
 
 const MAX_EDGE = 640;
-const MAX_IDLE_BYTES = 32 * 1024 * 1024;
-const MAX_IDLE_ENTRIES = 64;
-const IDLE_TTL_MS = 30_000;
 const LOAD_TIMEOUT_MS = 15_000;
 
 export interface CanvasVideoPoster {
@@ -32,6 +30,13 @@ const entries = new Map<string, Entry>();
 let running = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let scheduledAt = Infinity;
+let unsubscribePerformanceMode: (() => void) | undefined;
+
+function releaseModeSubscriptionIfEmpty(): void {
+  if (entries.size !== 0) return;
+  unsubscribePerformanceMode?.();
+  unsubscribePerformanceMode = undefined;
+}
 
 export function releaseCanvasVideo(video: HTMLVideoElement | null): void {
   if (!video) return;
@@ -153,17 +158,19 @@ async function derive(entry: Entry): Promise<Preview | undefined> {
 function discard(entry: Entry): void {
   if (entries.get(entry.source) !== entry) return;
   entries.delete(entry.source);
+  releaseModeSubscriptionIfEmpty();
   entry.controller.abort();
   if (entry.preview) URL.revokeObjectURL(entry.preview.src);
 }
 
 function prune(): void {
+  const budget = getPerformanceModeBudget();
   const idle = [...entries.values()].filter((entry) => entry.state === 'ready' && entry.users === 0)
     .sort((a, b) => a.idleSince - b.idleSince);
   let bytes = idle.reduce((total, entry) => total + (entry.preview?.bytes ?? 0), 0);
   let count = idle.length;
   for (const entry of idle) {
-    if (Date.now() - entry.idleSince < IDLE_TTL_MS && bytes <= MAX_IDLE_BYTES && count <= MAX_IDLE_ENTRIES) break;
+    if (Date.now() - entry.idleSince < budget.previewIdleMs && bytes <= budget.videoIdleBytes && count <= budget.videoIdleEntries) break;
     bytes -= entry.preview?.bytes ?? 0;
     count--;
     discard(entry);
@@ -188,7 +195,7 @@ function lease(entry: Entry): CanvasVideoPoster | null {
     entry.users--;
     entry.idleSince = Date.now();
     prune();
-    schedule(IDLE_TTL_MS);
+    schedule(getPerformanceModeBudget().previewIdleMs);
   } };
 }
 
@@ -198,7 +205,7 @@ async function pump(): Promise<void> {
   const entry = [...entries.values()].find((candidate) => candidate.state === 'queued');
   if (!entry) {
     const idle = [...entries.values()].filter((candidate) => candidate.state === 'ready' && candidate.users === 0);
-    if (idle.length > 0) schedule(Math.max(1, Math.min(...idle.map((candidate) => candidate.idleSince + IDLE_TTL_MS - Date.now()))));
+    if (idle.length > 0) schedule(Math.max(1, Math.min(...idle.map((candidate) => candidate.idleSince + getPerformanceModeBudget().previewIdleMs - Date.now()))));
     return;
   }
   if (document.documentElement.classList.contains('canvas-interacting')) { schedule(80); return; }
@@ -208,6 +215,7 @@ async function pump(): Promise<void> {
     for (const client of entry.clients) client.deliver(null);
     entry.clients.clear();
     if (entries.get(entry.source) === entry) entries.delete(entry.source);
+    releaseModeSubscriptionIfEmpty();
   };
   entry.controller.signal.addEventListener('abort', cancelClients, { once: true });
   const preview = await derive(entry);
@@ -238,6 +246,7 @@ export function acquireCanvasVideoPoster(source: string, signal: AbortSignal): P
   if (!entry) {
     entry = { source, clients: new Set(), controller: new AbortController(), state: 'queued', users: 0, idleSince: 0 };
     entries.set(source, entry);
+    unsubscribePerformanceMode ??= subscribePerformanceMode(prune);
   }
   if (entry.state === 'ready') return Promise.resolve(lease(entry));
   const target = entry;

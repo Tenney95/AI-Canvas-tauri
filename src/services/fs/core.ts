@@ -20,6 +20,7 @@ import {
 } from '@tauri-apps/plugin-fs';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { appDataDir, executableDir } from '@tauri-apps/api/path';
+import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 
 /** 检测是否运行在 Tauri 桌面环境中 */
 export function isTauriEnv(): boolean {
@@ -310,12 +311,14 @@ export function fileUriToPath(uri: string): string {
 }
 
 /** Characters illegal in filenames. Windows is stricter; Unix only forbids / and \0. */
-const IS_WINDOWS = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || '');
+const IS_WINDOWS = typeof navigator !== 'undefined' && /^win/i.test(navigator.platform || '');
 const FILENAME_ILLEGAL_CHARS = IS_WINDOWS ? /[<>:"|?*]/g : /[/]/g;
 
 /** Sanitize a filename for the current platform */
 export function sanitizeFileName(name: string): string {
-  return name.replace(FILENAME_ILLEGAL_CHARS, '_');
+  const clean = name.replace(FILENAME_ILLEGAL_CHARS, '_');
+  // 随机后缀取消后，用户标题可能直接成为 Windows 保留设备名。
+  return IS_WINDOWS && /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(clean) ? `_${clean}` : clean;
 }
 
 /**
@@ -669,30 +672,46 @@ export async function revertProjectDataDirRename(
   }
 }
 
+// 项目输出路径也可能交给稍后才写入的原生处理器；当次会话中不重复分配这些身份。
+const allocatedMediaPaths = new Set<string>();
+
 /**
  * 在目标目录中为文件名找到不冲突的完整路径，冲突时在主名后追加 _1、_2 …
- * 媒体写入可要求随机身份，避免跨生成、复制和分组任务抢用同一个候选名。
+ * 项目媒体同时占用会话内已分配的名字与引用迁移旧路径，避免并发写入和旧引用串联。
  * 查重失败必须终止，不能继续写入未经确认的路径。
  */
-export async function resolveUniqueDestPath(dataDir: string, fileName: string, uniqueIdentity = false): Promise<string> {
+export async function resolveUniqueDestPath(dataDir: string, fileName: string, reserveIdentity = false): Promise<string> {
   const sanitized = sanitizeFileName(fileName);
   const dotIndex = sanitized.lastIndexOf('.');
   const rawBase = dotIndex > 0 ? sanitized.slice(0, dotIndex) : sanitized;
-  const baseName = uniqueIdentity ? rawBase.replace(/--[a-f0-9]{32}$/i, '') : rawBase;
+  const baseName = reserveIdentity ? sanitizeFileName(rawBase.replace(/--[a-f0-9]{32}$/i, '')) || 'file' : rawBase;
   const ext = dotIndex > 0 ? sanitized.slice(dotIndex) : '';
-  let destPath = joinPath(dataDir, sanitized);
-  if (uniqueIdentity) {
-    do {
-      destPath = joinPath(dataDir, `${baseName}--${crypto.randomUUID().replace(/-/g, '')}${ext}`);
-    } while (await exists(destPath));
-  } else {
-    let counter = 1;
-    while (await exists(destPath)) {
-      destPath = joinPath(dataDir, `${baseName}_${counter}${ext}`);
-      counter++;
+  const retired = reserveIdentity ? await retiredMediaPaths() : new Set<string>();
+  // 已带自动序号的文件发生冲突时继续递增，避免生成 _1_1。
+  const suffix = /^(.*)_([1-9]\d*)$/.exec(baseName);
+  const numbered = suffix && Number.isSafeInteger(Number(suffix[2])) && Number(suffix[2]) < Number.MAX_SAFE_INTEGER ? suffix : null;
+  const stem = numbered ? numbered[1] : baseName;
+  let counter = numbered ? Number(numbered[2]) + 1 : 1;
+  let destPath = joinPath(dataDir, `${baseName}${ext}`);
+  while (true) {
+    const key = mediaFileAllocationKey(destPath);
+    if (!allocatedMediaPaths.has(key) && !retired.has(key) && !await exists(destPath)
+      // exists 是异步的；等待期间可能有另一位写入方已经占用这个名字。
+      && !allocatedMediaPaths.has(key)) {
+      if (!reserveIdentity) return destPath;
+      allocatedMediaPaths.add(key);
+      try {
+        // 文件查重期间分组迁移可能刚提交日志；占位后复核，不能复用刚清空的旧位置。
+        if (!(await retiredMediaPaths()).has(key)) return destPath;
+      } catch (error) {
+        allocatedMediaPaths.delete(key);
+        throw error;
+      }
+      allocatedMediaPaths.delete(key);
     }
+    destPath = joinPath(dataDir, `${stem}_${counter}${ext}`);
+    counter++;
   }
-  return destPath;
 }
 
 /**
@@ -701,8 +720,9 @@ export async function resolveUniqueDestPath(dataDir: string, fileName: string, u
  */
 export function buildNodeFileName(label: string | undefined, ext: string, fallback: string): string {
   const hasLabel = !!(label && label.trim());
-  const base = hasLabel ? sanitizeFolderName(label) : sanitizeFolderName(fallback);
+  let base = hasLabel ? sanitizeFolderName(label) : sanitizeFolderName(fallback);
   const dottedExt = ext ? (ext.startsWith('.') ? ext : `.${ext}`) : '';
+  if (dottedExt && base.toLowerCase().endsWith(dottedExt.toLowerCase())) base = base.slice(0, -dottedExt.length) || 'file';
   return `${base}${dottedExt}`;
 }
 

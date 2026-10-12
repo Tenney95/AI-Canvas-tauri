@@ -1,4 +1,5 @@
 /** MCP 专用的只读发现能力，业务执行仍由 MCP 控制层分发至真实 Registry 工具。 */
+import { isMcpGlobalContext } from '../../mcp/mcpSettingsScope';
 import { useAppStore } from '../../../store/useAppStore';
 import type { McpToolDescribeInput, McpToolSearchInput } from '../../../types/mcp';
 import {
@@ -16,8 +17,9 @@ function isMcpContext(context: Omit<AgentToolContext, 'signal'>): boolean {
 
 function authorize(context: Omit<AgentToolContext, 'signal'>) {
   return {
-    allowed: isMcpContext(context) && useAppStore.getState().currentProjectId === context.projectId,
-    reason: '工具发现仅允许当前项目的 MCP 控制会话调用',
+    allowed: isMcpGlobalContext(context)
+      || (isMcpContext(context) && useAppStore.getState().currentProjectId === context.projectId),
+    reason: '工具发现仅允许当前项目或全局控制的 MCP 会话调用',
   };
 }
 

@@ -22,7 +22,7 @@ import { emitAgentLifecycleEvent } from './agentLifecycle';
 import { evaluateAgentGroupUsage } from './agentBudgetService';
 import { executeAgentRound, type AgentRoundResult } from './agentRoundExecutor';
 import { buildSubAgentMaterials } from './subAgentMaterials';
-import { sanitizeSkillLabel } from './skillCatalog';
+import { resolveSkillForSurface, sanitizeSkillLabel } from './skillCatalog';
 import { stripSkillFrontmatter } from './skillManifest';
 import { truncateSkillContent } from '../skillPromptService';
 import type { AssistantModelMessage } from '../ai/assistantStream';
@@ -82,7 +82,7 @@ function updateChildTask(taskId: string, partial: Partial<AgentTask>): AgentTask
 /** 角色说明书：优先取绑定 Skill 的正文，其次取内联提示词。 */
 function resolveRoleInstructions(profile: SubAgentProfile): string {
   if (profile.skillId) {
-    const skill = useAppStore.getState().userSkills.find((item) => item.id === profile.skillId);
+    const skill = resolveSkillForSurface(profile.skillId, 'assistant-user');
     if (skill) {
       return truncateSkillContent(
         stripSkillFrontmatter(skill.content),
@@ -93,7 +93,7 @@ function resolveRoleInstructions(profile: SubAgentProfile): string {
   if (profile.instructions) return profile.instructions;
   throw new SubAgentError(
     'SUB_AGENT_ROLE_UNAVAILABLE',
-    '子智能体绑定的 Skill 已被删除，且没有可用的角色提示词',
+    '子智能体绑定的 Skill 已被删除或不可用，且没有可用的角色提示词',
   );
 }
 

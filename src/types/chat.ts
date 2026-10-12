@@ -103,6 +103,7 @@ export type FinishReason = 'stop' | 'length' | 'canceled' | 'error';
 export type AssistantStreamEvent =
   | { type: 'start'; requestId: string; modelId: string }
   | { type: 'text.delta'; delta: string }
+  | { type: 'reasoning.delta'; delta: string; source: 'openai-compatible' | 'anthropic-compatible' | 'gemini-native' }
   | { type: 'status'; phase: StreamPhase; message?: string }
   | { type: 'conversation.title'; title: string }
   | { type: 'tool.call.delta'; callId: string; delta: string }
@@ -252,6 +253,12 @@ export type ChatMessageStatus =
 // ============================================
 
 export interface ChatMessage {
+  /** Bounded, sanitized provider-returned reasoning; transient, excluded from model history. */
+  reasoning?: string;
+  reasoningTruncated?: boolean;
+  responseError?: string;
+  activity?: 'connecting' | 'responding' | 'planning' | 'compressing';
+  activityStartedAt?: number;
   id: string;
   /** 所属会话 ID */
   conversationId: string;

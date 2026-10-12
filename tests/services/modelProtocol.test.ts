@@ -21,6 +21,7 @@ import {
 import { useAppStore } from '../../src/store/useAppStore';
 import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
 import { readModelProtocolPathValues } from '../../src/services/ai/modelProtocolResponse';
+import { buildGeneralVideoProtocolVariables } from '../../src/services/ai/generateVideo';
 
 const jsonResponse = (
   payload: unknown,
@@ -1733,6 +1734,110 @@ describe('declarative model execution protocol', () => {
 });
 
 describe('reference media coverage in custom protocols', () => {
+  const buildVideoReferences = (withOtherMedia = false, inline = false) => {
+    const imageUrls = inline
+      ? ['data:image/png;base64,AAAA', 'data:image/png;base64,BBBB']
+      : ['https://cdn.example/a.png', 'https://cdn.example/b.png'];
+    return buildGeneralVideoProtocolVariables(
+      'seedance2.5 超特价10图3视3音',
+      { model: 'general/video', provider: 'general', prompt: imageUrls[0] },
+      {
+        prompt: imageUrls[0], imageUrls,
+        videoUrls: withOtherMedia ? ['https://cdn.example/reference.mp4'] : [],
+        audioUrls: withOtherMedia ? ['https://cdn.example/reference.mp3'] : [],
+        operation: withOtherMedia ? 'video-to-video' : 'image-to-video',
+      },
+    );
+  };
+
+  it.each([
+    { images: '{{imageUrls}}', videos: '{{videoUrls}}', audios: '{{audioUrls}}' },
+    { images: '{{referenceImageUrls}}', videos: '{{referenceVideoUrls}}', audios: '{{referenceAudioUrls}}' },
+    { image_with_roles: '{{imageWithRoles}}', videos: '{{videoUrls}}', audios: '{{audioUrls}}' },
+    { content: '{{seedanceContent}}' },
+    { references: '{{referenceUrls}}' },
+  ])('accepts all runtime aliases when the real media are delivered by %j', (body) => {
+    expect(findUnusedReferenceVariables(JSON.stringify({ submit: { body } }),
+      buildVideoReferences(true))).toEqual([]);
+  });
+
+  it.each([false, true])('accepts two connected images without inventing video/audio gaps (inline=%s)', (inline) => {
+    expect(findUnusedReferenceVariables(JSON.stringify({
+      submit: { body: { images: '{{imageUrls}}', videos: '{{videoUrls}}', audios: '{{audioUrls}}' } },
+    }), buildVideoReferences(false, inline))).toEqual([]);
+  });
+
+  it('ignores Seedance prompt, type and role metadata when checking transport paths', () => {
+    const variables = buildVideoReferences();
+    for (const path of ['seedanceContent.0.text', 'seedanceContent.1.type', 'seedanceContent.1.role']) {
+      expect(findUnusedReferenceVariables(JSON.stringify({
+        submit: { body: { metadata: `{{${path}}}` } },
+      }), variables)).toEqual(['referenceImageUrls']);
+    }
+  });
+
+  it('preserves Seedance indexes and still requires all images for indexed transport', () => {
+    const variables = buildVideoReferences();
+    const source = (path: string) => JSON.stringify({ submit: { body: { images: `{{${path}}}` } } });
+    expect(findUnusedReferenceVariables(source('seedanceContent.1.image_url.url'), variables))
+      .toEqual(['referenceImageUrls']);
+    expect(findUnusedReferenceVariables(source('seedanceContent.1'), variables))
+      .toEqual(['referenceImageUrls']);
+    expect(findUnusedReferenceVariables(JSON.stringify({ submit: { body: {
+      first: '{{seedanceContent.1.image_url.url}}', second: '{{seedanceContent.2.image_url.url}}',
+    } } }), variables)).toEqual([]);
+  });
+
+  it('reports only missing media types even when every compatibility alias is present', () => {
+    expect(findUnusedReferenceVariables(JSON.stringify({
+      submit: { body: { images: '{{imageUrls}}' } },
+    }), buildVideoReferences(true)).sort()).toEqual(['referenceAudioUrls', 'referenceVideoUrls']);
+  });
+
+  it('submits the configured video arrays, polls and downloads with actual runtime variables', async () => {
+    const protocol: ModelExecutionProtocol = {
+      version: 2, mode: 'async',
+      submit: { method: 'POST', path: '/v1/videos', pathMode: 'origin', body: {
+        model: '{{model}}', prompt: '{{prompt}}',
+        images: '{{imageUrls}}', videos: '{{videoUrls}}', audios: '{{audioUrls}}',
+      } },
+      response: { type: 'json', taskIdPath: 'id' },
+      poll: { method: 'GET', path: '/v1/videos/{{submit.id}}', pathMode: 'origin', response: {
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'],
+        result: { download: { method: 'GET', path: '/v1/videos/{{submit.id}}/content', pathMode: 'origin' } },
+      } },
+    };
+    useAppStore.setState({ configHydrated: true, config: {
+      ...useAppStore.getState().config,
+      providers: { 'custom-reference-fixture': {
+        apiKey: 'fixture-key', baseUrl: 'https://gateway.example/v1',
+      } },
+    } } as never);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ id: 'video-fixture', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'video-fixture', status: 'completed' }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), {
+        headers: { 'Content-Type': 'video/mp4' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const variables = buildVideoReferences(true);
+    await expect(runConfiguredModelProtocol({
+      category: 'video', variables, model: {
+        id: 'reference-fixture', name: 'seedance2.5 超特价10图3视3音',
+        modelId: 'seedance2.5 超特价10图3视3音', category: 'video',
+        providerConfigId: 'custom-reference-fixture', executionProfile: { preset: 'custom', protocol },
+      },
+    })).resolves.toEqual(['data:video/mp4;base64,AQID']);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      model: variables.model, prompt: variables.prompt,
+      images: variables.imageUrls, videos: variables.videoUrls, audios: variables.audioUrls,
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://gateway.example/v1/videos', 'https://gateway.example/v1/videos/video-fixture',
+      'https://gateway.example/v1/videos/video-fixture/content',
+    ]);
+  });
+
   it('flags reference media that the protocol has no field for', () => {
     const withImageField = JSON.stringify({ submit: { body: { image_urls: '{{imageUrls}}' } } });
     const textOnly = JSON.stringify({ submit: { body: { model: '{{model}}', prompt: '{{prompt}}' } } });

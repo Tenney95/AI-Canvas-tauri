@@ -89,13 +89,8 @@ fn apply_window_preference(config: &mut tauri::utils::config::WindowConfig, enab
         return;
     }
     config.transparent = false;
-    let arguments = config
-        .additional_browser_args
-        .get_or_insert_with(String::new);
-    if !arguments.is_empty() {
-        arguments.push(' ');
-    }
-    arguments.push_str(GPU_MEMORY_ARGUMENT);
+    // 同一 profile 的 WebView2 必须使用相同的 EnvironmentOptions。
+    // GPU 参数统一通过进程环境设置，不能只覆盖主窗口的 Wry 默认参数。
 }
 
 /// Tauri 自动窗口早于 app.setup 创建；只延后 Windows 主窗口，确保先读启动开关。
@@ -129,7 +124,7 @@ pub fn create_main_window(
         .unwrap_or(false);
     apply_window_preference(&mut config, enabled);
     if enabled {
-        // 环境变量可能覆盖 additionalBrowserArgs；两处都使用同一固定参数。
+        // 所有自有窗口沿用 Wry 的默认 EnvironmentOptions，共享这一固定参数。
         let mut arguments =
             std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
         arguments.push(' ');
@@ -188,11 +183,18 @@ mod tests {
         assert!(!normal.transparent);
         assert_eq!(
             normal.additional_browser_args.as_deref(),
-            Some("--test-existing --force-gpu-mem-available-mb=4096")
+            Some("--test-existing")
         );
         normal.transparent = true;
         normal.additional_browser_args = Some("--test-existing".into());
         assert_eq!(serde_json::to_value(&normal).unwrap(), before);
+    }
+    #[test]
+    fn performance_keeps_default_webview_environment_options() {
+        let mut config = tauri::utils::config::WindowConfig::default();
+        apply_window_preference(&mut config, true);
+        assert!(config.additional_browser_args.is_none());
+        assert!(!config.transparent);
     }
     #[test]
     fn preference_round_trip_missing_corrupt_and_bounded_read() {

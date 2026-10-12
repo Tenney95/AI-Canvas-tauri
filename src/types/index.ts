@@ -1,7 +1,7 @@
 /**
  * types 全局类型定义 — 定义 NodeType、BaseNodeData、CanvasProject、AppConfig、ModelOption、WorkflowDefinition 等核心类型
  */
-import type { AudioOutputFormat, AudioSpeechSettings, AudioTtsVoice, ModelExecutionProfile, VideoModelCapability, VideoReferenceItem } from './aiTypes';
+import type { AudioOutputFormat, AudioSpeechSettings, AudioTtsVoice, ModelExecutionProfile, ImageModelCapability, VideoModelCapability, VideoReferenceItem } from './aiTypes';
 import type { AudioGenerationPurpose } from './media';
 import type { ImageAnnotationLayer } from '@tenney95/xiaoluo-image-editor';
 import type { CanvasNoteData } from './canvasNote';
@@ -510,6 +510,8 @@ export interface ProviderModelSelection {
   imageReferenceRequestMode?: ImageReferenceRequestMode;
   /** 视频模型的参数能力声明（时长/分辨率/比例/参考素材等），缺省走通用兜底。 */
   videoCapability?: VideoModelCapability;
+  /** 图片模型的参数能力；未声明字段不代表已确认支持。 */
+  imageCapability?: ImageModelCapability;
 }
 
 export interface ApiProviderConfig {
@@ -714,6 +716,7 @@ export interface CanvasQuickAction {
 }
 
 export type PromptSubmitShortcut = 'enter' | 'shift-enter' | 'ctrl-enter' | 'alt-enter';
+export type CanvasViewportMode = 'auto' | 'manual' | 'locked';
 
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;
@@ -727,6 +730,10 @@ export interface AppConfig {
   defaultDarkBackgroundShade?: number; // 默认暗色背景灰度，0-58；未设置时为 20
   offWhiteBackgroundColor?: string; // 米白浅色背景颜色；未设置时沿用原有 #F4F6FB
   interactionMode?: InteractionMode; // 画布交互模式，默认 'default'
+  canvasViewportMode?: CanvasViewportMode; // 自动适配窗口 / 手动 / 锁定比例，默认 auto
+  canvasViewportZoom?: number; // 手动或锁定模式的全局比例，受自定义范围约束
+  canvasViewportMinZoom?: number; // 画布最小比例，默认 0.1；常规设置按百分比输入
+  canvasViewportMaxZoom?: number; // 画布最大比例，默认 5；允许与最小比例相同
   nodeToolbarMode?: NodeToolbarMode; // 节点顶部工具栏显示方式，默认 'icons'
   nodeLabelVisible?: boolean; // 是否显示节点顶部标题标签，默认 true
   canvasNoteToolbarVisible?: boolean; // 是否显示画布笔记工具栏，默认 true
@@ -790,6 +797,8 @@ export interface GeneralModelConfig {
   imageReferenceRequestMode?: ImageReferenceRequestMode;
   /** 视频模型的参数能力声明（时长/分辨率/比例/参考素材等），缺省走通用兜底。 */
   videoCapability?: VideoModelCapability;
+  /** 图片模型的参数能力；未声明字段不代表已确认支持。 */
+  imageCapability?: ImageModelCapability;
 }
 
 export const GENERAL_MODEL_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {

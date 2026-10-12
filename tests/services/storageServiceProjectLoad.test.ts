@@ -35,7 +35,7 @@ import {
   saveProjectToDb,
   setLastActiveProjectId,
 } from '../../src/services/indexedDbService';
-import { loadProjectData, saveProject } from '../../src/services/storageService';
+import { loadProjectData, saveProject, type ProjectSaveData } from '../../src/services/storageService';
 
 describe('project loading tolerates asset recovery failures', () => {
   beforeEach(() => {
@@ -149,6 +149,88 @@ describe('project loading tolerates asset recovery failures', () => {
       audioUrl: 'asset:///project/data/character/shenyan.mp3',
     }));
     expect(character?.imageUrl).toBe('asset:///project/data/character/shenyan.png');
+  });
+
+  it('persists URL-only video references with local identities and restores them in the new directory', async () => {
+    mocks.identifyAsset.mockResolvedValue({ assetId: 'asset-hero-image', relativePath: 'character/hero.png' });
+    const projectId = `project-video-reference-save-${Date.now()}`;
+    const localUrl = 'http://asset.localhost/%2Fproject%2Fdata%2Fcharacter%2Fhero.png';
+    const references = [
+      { id: 'character:hero', kind: 'character', role: 'reference', url: localUrl },
+      { id: 'volcengine-asset:remote-hero', kind: 'volcengine-asset', role: 'reference',
+        provider: 'volcengine', assetId: 'remote-hero', url: 'asset://remote-hero' },
+      { id: 'remote-image', kind: 'frame', role: 'last_frame', url: 'https://cdn.example/frame.png' },
+    ];
+    await saveProject({
+      id: projectId, name: 'Video references', createdAt: 1, updatedAt: 2,
+      nodes: [{ id: 'video', data: { type: 'ai-video', videoReferences: references } }], edges: [],
+    });
+    const stored = await getProjectById(projectId) as { nodes: Array<{ data: {
+      videoReferences: Array<Record<string, unknown>>;
+    } }> };
+    expect(stored.nodes[0].data.videoReferences[0]).toMatchObject({
+      url: localUrl, assetId: 'asset-hero-image', relativePath: 'character/hero.png',
+    });
+    expect(stored.nodes[0].data.videoReferences[0]).not.toHaveProperty('filePath');
+    expect(stored.nodes[0].data.videoReferences.slice(1)).toEqual(references.slice(1));
+    expect(references[0]).not.toHaveProperty('assetId');
+
+    mocks.getProjectDataDir.mockResolvedValue('/project/moved');
+    const loaded = await loadProjectData(projectId);
+    const restored = loaded?.nodes as typeof stored.nodes;
+    expect(restored[0].data.videoReferences[0]).toMatchObject({
+      url: 'asset:///project/moved/character/hero.png', filePath: '/project/moved/character/hero.png',
+    });
+    expect(restored[0].data.videoReferences.slice(1)).toEqual(references.slice(1));
+  });
+
+  it.each([false, true])('recovers legacy character media by exact URLs (shared library: %s)', async (sharedLibrary) => {
+    const projectId = `project-video-reference-legacy-${Date.now()}`;
+    const imageUrl = 'http://asset.localhost/%2Fold-project%2Fcharacter%2Fhero.png';
+    const audioUrl = 'http://asset.localhost/%2Fold-project%2Fcharacter%2Fhero.wav';
+    const unmatchedUrl = 'http://asset.localhost/%2Fold-project%2Fcharacter%2Fdeleted.png';
+    const input: ProjectSaveData = {
+      id: projectId, name: 'Legacy references', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'video', data: { type: 'ai-video', videoReferences: [
+        { id: 'character:hero', kind: 'character', role: 'reference', url: imageUrl },
+        { id: 'character:hero:voice', kind: 'character', mediaKind: 'audio', role: 'reference_audio', url: audioUrl },
+        { id: 'character:deleted', kind: 'character', role: 'reference', url: unmatchedUrl },
+      ] } }],
+      dramaAssets: {
+        version: 2, scenes: [], props: [], characters: [{
+          id: 'hero', kind: 'character', name: '主角', key: 'hero', identity: '', summary: '', visualNotes: '',
+          importance: 'main', confirmed: true, createdAt: 1, updatedAt: 2, source: 'manual',
+          primaryReferenceImageId: 'new-primary',
+          referenceImages: [
+            { id: 'original', kind: 'primary', assetId: 'asset-hero-image', relativePath: 'character/hero.png',
+              imageUrl, prompt: '', createdAt: 1, updatedAt: 2 },
+            { id: 'new-primary', kind: 'primary', assetId: 'asset-new-image', relativePath: 'character/new.png',
+              imageUrl: 'http://asset.localhost/%2Fold-project%2Fcharacter%2Fnew.png', prompt: '', createdAt: 1, updatedAt: 2 },
+          ],
+          voiceClips: [{ id: 'voice', kind: 'timbre', assetId: 'asset-hero-voice', relativePath: 'character/hero.wav',
+            audioUrl, transcript: '', createdAt: 1, updatedAt: 2 }],
+        }],
+      },
+    };
+    const ownerId = `${projectId}-series`;
+    if (sharedLibrary) await saveProjectToDb({ ...input, id: ownerId, nodes: [] });
+    const episodeInput: ProjectSaveData = {
+      ...input, parentId: sharedLibrary ? ownerId : undefined,
+      dramaAssets: sharedLibrary ? undefined : input.dramaAssets,
+    };
+    await saveProjectToDb(episodeInput);
+    const loaded = await loadProjectData(projectId);
+    const restored = loaded?.nodes as Array<{ data: { videoReferences: Array<Record<string, unknown>> } }>;
+    expect(restored[0].data.videoReferences[0]).toMatchObject({
+      url: 'asset:///project/data/character/hero.png', assetId: 'asset-hero-image',
+    });
+    expect(restored[0].data.videoReferences[1]).toMatchObject({
+      url: 'asset:///project/data/character/hero.wav', assetId: 'asset-hero-voice', role: 'reference_audio',
+    });
+    expect(restored[0].data.videoReferences[2].url).toBe(unmatchedUrl);
+    const stored = await getProjectById(projectId) as { nodes: typeof restored };
+    expect(stored.nodes[0].data.videoReferences[0].url).toBe(imageUrl);
+    expect(stored.nodes[0].data.videoReferences[0]).not.toHaveProperty('assetId');
   });
 
   it('collapses character media file paths into asset ids when saving', async () => {

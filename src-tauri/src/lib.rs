@@ -166,6 +166,7 @@ mod sprite_processing;
 static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);
 static CHAT_WINDOW_LOCK_OFFSET: Mutex<(i32, i32)> = Mutex::new((0, 0));
 static CHAT_WINDOW_SIZE_SAVE_VERSION: AtomicU64 = AtomicU64::new(0);
+static CHAT_WINDOW_LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static PROXY_FETCH_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 const CHAT_WINDOW_DEFAULT_SIZE: (f64, f64) = (480.0, 720.0);
@@ -940,13 +941,21 @@ async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
 /// 打开独立的 AI 对话助手窗口
 #[tauri::command]
 async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
-    CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
-
-    // 先关闭可能残留的历史窗口
-    if let Some(old) = app.get_webview_window("chat-assistant") {
-        persist_current_chat_window_size(&old);
-        let _ = old.close();
+    let _guard = CHAT_WINDOW_LIFECYCLE_LOCK.lock().await;
+    // 复用当前窗口，保留输入、同步握手及位置锁；close 是异步事件，不能同名立即重建。
+    if let Some(window) = app.get_webview_window("chat-assistant") {
+        window
+            .unminimize()
+            .map_err(|e| format!("恢复对话窗口失败: {e}"))?;
+        window
+            .show()
+            .map_err(|e| format!("显示对话窗口失败: {e}"))?;
+        window
+            .set_focus()
+            .map_err(|e| format!("聚焦对话窗口失败: {e}"))?;
+        return Ok(());
     }
+    CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
 
     #[cfg(debug_assertions)]
     let url = WebviewUrl::External(
@@ -1016,6 +1025,9 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     chat_window
         .show()
         .map_err(|e| format!("显示对话窗口失败: {e}"))?;
+    chat_window
+        .set_focus()
+        .map_err(|e| format!("聚焦对话窗口失败: {e}"))?;
 
     Ok(())
 }
@@ -1023,12 +1035,21 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 /// 关闭独立的 AI 对话助手窗口
 #[tauri::command]
 async fn close_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+    let _guard = CHAT_WINDOW_LIFECYCLE_LOCK.lock().await;
     CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("chat-assistant") {
         persist_current_chat_window_size(&window);
         window
             .close()
             .map_err(|e| format!("关闭对话窗口失败: {e}"))?;
+        // 等注册表释放标签后再允许下一次打开，防止快速收回/重开命中旧窗口。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while app.get_webview_window("chat-assistant").is_some() {
+            if tokio::time::Instant::now() >= deadline {
+                return Err("对话窗口尚未完成关闭，请稍后重试".to_string());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
     Ok(())
 }
@@ -1148,6 +1169,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(native_rendering::NativeRenderingState::default())
         .manage(proxy_http_state)
+        .manage(comfyui::management::ManagementState::default())
         .manage(blender_runtime::BlenderRuntimeState::default())
         .manage(blender_runtime::ProjectGrantState::default())
         .manage(blender_runtime::production_blender_job_core())
@@ -1158,6 +1180,7 @@ pub fn run() {
         .register_uri_scheme_protocol("plugin-ui", plugin_ui::handle_protocol)
         .register_uri_scheme_protocol("plugin-window", plugin_window::handle_protocol)
         .plugin(tauri_plugin_fs::init())
+        .plugin(comfyui::installation::privacy_plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
@@ -1230,8 +1253,19 @@ pub fn run() {
             native_rendering::sync_native_performance_mode,
             sync_authorized_directories,
             comfyui::launch_comfyui,
+            comfyui::installation::select_comfyui_installation,
+            comfyui::installation::get_comfyui_installation,
             comfyui::open_comfyui_window,
             comfyui::complete_comfyui_workflow_save,
+            comfyui::management::open_comfyui_settings_window,
+            comfyui::management::get_comfyui_management_snapshot,
+            comfyui::management::list_comfyui_versions,
+            comfyui::management::apply_comfyui_repository_action,
+            comfyui::management::list_comfyui_catalog,
+            comfyui::management::install_comfyui_extension,
+            comfyui::management::install_comfyui_dependencies,
+            comfyui::launch_settings::get_comfyui_launch_settings,
+            comfyui::launch_settings::save_comfyui_launch_settings,
             onnx::get_models_dir,
             onnx::check_model_exists,
             onnx::list_onnx_models,

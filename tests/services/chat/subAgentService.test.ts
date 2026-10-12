@@ -15,6 +15,48 @@ import {
 import { SUB_AGENT_LIMITS, type SubAgentProfile } from '../../../src/types/subAgent';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
 import { emptyDramaAssetLibrary } from '../../../src/types/dramaAssets';
+import type { UserSkill } from '../../../src/types';
+import type { AgentPackageSkill } from '../../../src/types/agentPackage';
+
+function uploadedSkill(partial: Partial<UserSkill> = {}): UserSkill {
+  return {
+    id: 'skill-1',
+    name: '剧本 Skill',
+    description: '',
+    fileName: 'SKILL.md',
+    content: '---\nname: 剧本\n---\n按三幕结构分析。',
+    sourceType: 'file',
+    createdAt: 1,
+    ...partial,
+  };
+}
+
+function packageSkill(partial: Partial<AgentPackageSkill> = {}): AgentPackageSkill {
+  return {
+    id: 'ap-skill-1',
+    name: '包内剧本 Skill',
+    description: '分析剧本',
+    fileName: 'SKILL.md',
+    content: '---\nname: 包内剧本\n---\n包内角色正文：检查人物动机。',
+    sourceType: 'agent-package',
+    createdAt: 1,
+    installationId: 'installation-1',
+    packageId: 'drama-package',
+    packageName: '剧本知识库',
+    packageVersion: '1.0.0',
+    packageContentHash: 'a'.repeat(64),
+    sourceId: 'source-1',
+    entryPath: 'skills/drama/SKILL.md',
+    skillRoot: 'skills/drama',
+    contentHash: 'b'.repeat(64),
+    branch: 'shared',
+    packageUserInvocable: true,
+    packageAutoInvoke: false,
+    mcpSkillReadEnabled: false,
+    readOnly: true,
+    ...partial,
+  };
+}
 
 function profile(partial: Partial<SubAgentProfile> = {}): SubAgentProfile {
   return {
@@ -71,6 +113,8 @@ beforeEach(() => {
     }] as never,
     dramaAssets: emptyDramaAssetLibrary(),
     userSkills: [],
+    agentPackages: [],
+    agentPackageSkills: [],
     currentProjectId: 'project-1',
   });
 });
@@ -144,20 +188,52 @@ describe('隔离上下文', () => {
 
   it('角色说明书优先取绑定 Skill 的正文', async () => {
     useAppStore.setState({
-      userSkills: [{
-        id: 'skill-1',
-        name: '剧本 Skill',
-        description: '',
-        fileName: 'SKILL.md',
-        content: '---\nname: 剧本\n---\n按三幕结构分析。',
-        sourceType: 'file',
-        createdAt: 1,
-      }] as never,
+      userSkills: [uploadedSkill()],
     });
     await runSubAgent('parent-1', profile({ skillId: 'skill-1' }), '分析', signal());
     const system = executeAgentRoundMock.mock.calls[0][0].messages[0].content;
     expect(system).toContain('按三幕结构分析。');
     expect(system).not.toContain('name: 剧本');
+  });
+
+  it('从共享目录读取绑定的智能体包 Skill，显式绑定不依赖自动调用开关', async () => {
+    useAppStore.setState({
+      agentPackageSkills: [packageSkill({ manifest: { disableModelInvocation: true } })],
+    });
+    await runSubAgent('parent-1', profile({ skillId: 'ap-skill-1' }), '分析', signal());
+    const system = executeAgentRoundMock.mock.calls[0][0].messages[0].content;
+    expect(system).toContain('包内角色正文：检查人物动机。');
+    expect(system).not.toContain('name: 包内剧本');
+    expect(system).not.toContain('分析剧本结构。');
+  });
+
+  it.each<[string, AgentPackageSkill]>([
+    ['Skill 文档声明', packageSkill({ manifest: { userInvocable: false } })],
+    ['智能体包路由', packageSkill({ packageUserInvocable: false })],
+  ])('%s禁止显式调用时回退到内联角色提示词', async (_label, skill) => {
+    useAppStore.setState({ agentPackageSkills: [skill] });
+    await runSubAgent('parent-1', profile({ skillId: skill.id }), '分析', signal());
+    const system = executeAgentRoundMock.mock.calls[0][0].messages[0].content;
+    expect(system).toContain('分析剧本结构。');
+    expect(system).not.toContain('包内角色正文');
+  });
+
+  it('手动上传的 Skill 也遵守共享目录的显式调用规则', async () => {
+    useAppStore.setState({ userSkills: [uploadedSkill({ manifest: { userInvocable: false } })] });
+    await expect(runSubAgent(
+      'parent-1', profile({ skillId: 'skill-1', instructions: undefined }), '分析', signal(),
+    )).rejects.toThrow('不可用');
+    expect(executeAgentRoundMock).not.toHaveBeenCalled();
+  });
+
+  it('包内 Skill 从共享目录撤下后，下次执行不使用之前的正文', async () => {
+    useAppStore.setState({ agentPackageSkills: [packageSkill()] });
+    await runSubAgent('parent-1', profile({ skillId: 'ap-skill-1' }), '分析', signal());
+    useAppStore.setState({ agentPackageSkills: [] });
+    await runSubAgent('parent-1', profile({ skillId: 'ap-skill-1' }), '再分析', signal());
+    const system = executeAgentRoundMock.mock.calls[1][0].messages[0].content;
+    expect(system).toContain('分析剧本结构。');
+    expect(system).not.toContain('包内角色正文');
   });
 
   it('绑定的 Skill 被删除且没有内联提示词时报错', async () => {

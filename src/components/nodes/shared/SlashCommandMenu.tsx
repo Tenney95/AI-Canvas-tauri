@@ -5,7 +5,8 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
-import type { ImagePostProcess, NodeType, UserPreset, UserSkill } from '../../../types';
+import type { ImagePostProcess, NodeType, UserPreset } from '../../../types';
+import type { SkillPickerOption } from '../../../types/agentPackage';
 
 export interface PresetOverride {
   model?: string;
@@ -18,7 +19,6 @@ import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
 import { calcFixedPosition, calcSubmenuPosition } from '../../../utils/popupPosition';
 import { isAdvancedPreset } from '../../../services/presetSequenceService';
-import { isSkillUserInvocable } from '../../../services/skillPromptService';
 
 const SKILL_PARENT_ID = '__skills__';
 
@@ -27,10 +27,10 @@ interface SlashCommandMenuProps {
   currentPrompt: string;
   anchorEl: HTMLElement | null;
   userPresets: UserPreset[];
-  userSkills: UserSkill[];
+  skillOptions: SkillPickerOption[];
   onSelect: (prompt: string, shouldTrigger: boolean, preset?: PresetOverride) => void;
   onRunAdvancedPreset: (preset: UserPreset) => void;
-  onSelectSkill: (skill: UserSkill) => void;
+  onSelectSkill: (skill: SkillPickerOption) => void;
   onUploadSkill: (source: 'file' | 'folder') => void | Promise<void>;
   onManageSkills: () => void;
   onClose: () => void;
@@ -42,7 +42,7 @@ export default function SlashCommandMenu({
   currentPrompt,
   anchorEl,
   userPresets,
-  userSkills,
+  skillOptions,
   onSelect,
   onRunAdvancedPreset,
   onSelectSkill,
@@ -51,10 +51,7 @@ export default function SlashCommandMenu({
   onClose,
   onManagePresets,
 }: SlashCommandMenuProps) {
-  const invocableSkills = useMemo(
-    () => userSkills.filter(isSkillUserInvocable),
-    [userSkills],
-  );
+  const invocableSkills = skillOptions;
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null);
   const [submenuPos, setSubmenuPos] = useState<{ left: number; top: number; direction: 'left' | 'right' }>({ left: 0, top: 0, direction: 'right' });
@@ -159,7 +156,7 @@ export default function SlashCommandMenu({
     onClose();
   }, [currentPrompt, onSelect, onRunAdvancedPreset, onClose]);
 
-  const handleSkillSelect = useCallback((skill: UserSkill) => {
+  const handleSkillSelect = useCallback((skill: SkillPickerOption) => {
     onSelectSkill(skill);
     onClose();
   }, [onSelectSkill, onClose]);
@@ -331,7 +328,10 @@ export default function SlashCommandMenu({
             >
               <div className="slash-command-text">
                 <span className="slash-command-title">{skill.name}</span>
-                <span className="slash-command-desc">{skill.description || skill.fileName}</span>
+                <span className="slash-command-desc">
+                  {skill.sourceKind === 'agent-package' ? `${skill.sourceLabel} · ` : ''}
+                  {skill.description || skill.fileName}
+                </span>
               </div>
               <span className="slash-command-badge">调用</span>
             </div>

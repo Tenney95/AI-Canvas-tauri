@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useAppStore } from '../../store/useAppStore';
+import { projectSkillPickerOptions } from '../../services/chat/skillCatalog';
 import {
   duplicateProfileAsDraft,
   mergeSubAgentProfiles,
@@ -122,6 +123,11 @@ export default function SubAgentSettings({ hideHeading }: SubAgentSettingsProps 
   const t = useT();
   const subAgentProfiles = useAppStore((state) => state.subAgentProfiles);
   const userSkills = useAppStore((state) => state.userSkills);
+  const agentPackageSkills = useAppStore((state) => state.agentPackageSkills);
+  const skillOptions = useMemo(
+    () => projectSkillPickerOptions(userSkills, agentPackageSkills),
+    [userSkills, agentPackageSkills],
+  );
   const createSubAgentProfile = useAppStore((state) => state.createSubAgentProfile);
   const updateSubAgentProfile = useAppStore((state) => state.updateSubAgentProfile);
   const deleteSubAgentProfile = useAppStore((state) => state.deleteSubAgentProfile);
@@ -271,8 +277,10 @@ export default function SubAgentSettings({ hideHeading }: SubAgentSettingsProps 
               className="min-w-0 w-full"
             >
               <option value="">{t('不绑定，使用下方提示词')}</option>
-              {userSkills.map((skill) => (
-                <option key={skill.id} value={skill.id}>{skill.name}</option>
+              {skillOptions.map((skill) => (
+                <option key={skill.id} value={skill.id}>
+                  {skill.name}{skill.sourceKind === 'agent-package' ? ` · ${skill.sourceLabel}` : ''}
+                </option>
               ))}
             </Select>
           </label>

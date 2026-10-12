@@ -23,6 +23,39 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('canvas node LOD scheduling', () => {
+  it('progressively mounts the initial performance near view and keeps protected nodes immediate', () => {
+    const { runtime, tick, frames } = fixture(1, true);
+    const restored: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      runtime.subscribe(String(i), () => { if (runtime.getSnapshot(String(i))) restored.push(i); });
+      runtime.position(String(i), i * 10, 0);
+      expect(runtime.getSnapshot(String(i))).toBe(false);
+    }
+    const protectedChange = vi.fn(); runtime.subscribe('editing', protectedChange);
+    const unpin = runtime.pin('editing');
+    expect(runtime.getSnapshot('editing')).toBe(true); expect(protectedChange).toHaveBeenCalledTimes(1);
+    runtime.viewport(1, 60, 0); tick();
+    expect(restored).toEqual([6, 5]);
+    while (frames.size) {
+      const before = restored.length; tick(); expect(restored.length - before).toBeLessThanOrEqual(2);
+    }
+    expect(restored).toHaveLength(7);
+    unpin(); runtime.deactivate();
+  });
+
+  it('applies the smaller budget to newly visible near nodes after a live mode change', () => {
+    const { runtime, tick } = fixture(1);
+    runtime.subscribe('existing', vi.fn()); runtime.setPerformanceMode(true);
+    const restored = vi.fn();
+    for (const id of ['first', 'second', 'third']) {
+      runtime.subscribe(id, restored); expect(runtime.getSnapshot(id)).toBe(false);
+    }
+    expect(runtime.getSnapshot('existing')).toBe(true);
+    tick(); expect(restored).toHaveBeenCalledTimes(2);
+    runtime.setPerformanceMode(false); tick(); expect(restored).toHaveBeenCalledTimes(3);
+    runtime.deactivate();
+  });
+
   it('only simplifies medium zoom in performance mode and uses separate hysteresis', () => {
     const normal = fixture(0.4);
     const fast = fixture(0.4, true);

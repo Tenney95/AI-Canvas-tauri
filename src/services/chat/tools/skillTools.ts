@@ -1,3 +1,4 @@
+import { estimateTokens } from '../tokenEstimate';
 /**
  * 注册 Skill 的发现、按需加载与附属资料受限读取工具。
  *
@@ -5,7 +6,7 @@
  * - 普通 Agent 只能看到 assistant-model surface；MCP 只能看到宿主明确授权的 mcp surface；
  * - 用户 Skill 与智能体包 Skill 都是不可信资料，不改变任务工具权限或 Policy；
  * - 智能体包只通过专用只读 service 读取，绝不向模型或 MCP 返回 sourceId、entryPath 或本地路径；
- * - 加载量受 skillCatalog 的任务级预算约束，耗尽后返回可回传的中文原因而不是抛错。
+ * - 入口和参考资料分页，当前上下文预算约束每轮返回量；数量仍按任务限制。
  */
 import { listSkillResourceFiles, readSkillResourceFile } from '../../fileService';
 import {
@@ -15,10 +16,10 @@ import {
 import { useAppStore } from '../../../store/useAppStore';
 import { isAgentPackageSkill, type RuntimeSkill } from '../../../types/agentPackage';
 import { isTauriEnv } from '../../fs/core';
-import { SKILL_CONTENT_LIMITS, truncateSkillContent } from '../../skillPromptService';
+import { readSkillPage, type SkillReadInput } from '../skillReadService';
 import { stripSkillFrontmatter } from '../skillManifest';
 import {
-  consumeSkillContentBudget,
+  claimTaskSkill,
   listMcpReadableSkills,
   listModelInvocableSkills,
   listSkillsForSurface,
@@ -117,6 +118,45 @@ async function listReadableResources(skill: RuntimeSkill): Promise<string[]> {
   return listSkillResourceFiles(skill.storagePath, SKILL_CATALOG_LIMITS.maxResourceFiles);
 }
 
+const pageProperties = {
+  cursor: { type: 'string' as const, maxLength: 100 },
+  maxChars: { type: 'integer' as const, minimum: 256, maximum: 8000 },
+  query: { type: 'string' as const, minLength: 1, maxLength: 100 },
+  reread: { type: 'boolean' as const },
+};
+
+function pagedResult(context: AgentToolContext, skill: RuntimeSkill, resource: string, content: string, input: SkillReadInput, resources: string[] = [], includeMetadata = false): AgentToolExecutionResult {
+  const reason = claimTaskSkill(context.taskId, skill.id);
+  if (reason) return toolError(reason, 'SKILL_COUNT_EXHAUSTED');
+  const metadata = includeMetadata ? safeSkillMetadata(skill) : { id: skill.id, name: sanitizeSkillLabel(skill.name, 40) };
+  // Keep even a limited response bounded when descriptions/manifests or resource lists are long.
+  const metadataTruncated = estimateTokens(JSON.stringify(metadata)) > 512;
+  const boundedMetadata = metadataTruncated ? { id: skill.id, name: sanitizeSkillLabel(skill.name, 40), description: sanitizeSkillLabel(skill.description, 120) } : metadata;
+  const boundedResources: string[] = [];
+  for (const path of resources) {
+    if (estimateTokens(JSON.stringify([...boundedResources, path])) > 512) break;
+    boundedResources.push(path);
+  }
+  const serialize = (page: ReturnType<typeof readSkillPage>) => {
+    const { content: body, ...pagination } = page;
+    return JSON.stringify({
+      untrusted: true, notice: UNTRUSTED_PREFIX,
+      budgetKind: context.skillReadBudget ? 'model-context' : 'response-page',
+      skill: { ...boundedMetadata, content: body },
+      metadataTruncated,
+      resource, resources: boundedResources, resourcesTruncated: boundedResources.length < resources.length, ...pagination,
+      hint: page.limited ? context.skillReadBudget ? '上下文读取空间不足，请整理上下文后继续；不要循环重试同一受限读取。' : '本页响应预算已达上限，可用 nextCursor 继续读取；客户端剩余上下文未知。' : page.alreadyRead ? '此页仍在当前上下文中；需要重读时设置 reread。' : page.nextCursor ? '用 nextCursor 继续读取；尚未读完整。' : '读取完成。',
+    });
+  };
+  try {
+    const page = readSkillPage(context.taskId, isAgentPackageSkill(skill) ? `${resource}@${skill.packageContentHash}` : resource, content, input, context.skillReadBudget, serialize);
+    return { status: 'success', summary: page.limited ? 'Skill 读取受上下文预算限制' : page.alreadyRead ? 'Skill 页面已在上下文中' : `已读取 Skill「${sanitizeSkillLabel(skill.name, 40)}」`,
+      truncated: !page.complete, modelContent: serialize(page) };
+  } catch {
+    return toolError('Skill 游标已失效或不属于当前资料，请从头读取或重新检索', 'SKILL_CURSOR_INVALID');
+  }
+}
+
 function packageSkillById(skillId: string): RuntimeSkill | undefined {
   return useAppStore.getState().agentPackageSkills.find((skill) => skill.id === skillId);
 }
@@ -158,7 +198,7 @@ export function registerSkillAgentTools(): Array<() => void> {
         };
       },
     }),
-    registerAgentTool<{ skillId: string }>({
+    registerAgentTool<SkillReadInput>({
       id: 'skill_load',
       title: '加载 Skill',
       description: '按 skillId 加载当前调用面可读取的 Skill 正文与附属资料清单，用于按其流程完成任务。',
@@ -168,6 +208,7 @@ export function registerSkillAgentTools(): Array<() => void> {
         additionalProperties: false,
         properties: {
           skillId: { type: 'string', minLength: 1, maxLength: 160 },
+          ...pageProperties,
         },
       },
       effect: 'read',
@@ -184,15 +225,6 @@ export function registerSkillAgentTools(): Array<() => void> {
         }
 
         const content = stripSkillFrontmatter(skill.content);
-        const budget = consumeSkillContentBudget(
-          context.taskId,
-          skill.id,
-          Math.min(content.length, SKILL_CONTENT_LIMITS.singleSkillChars),
-        );
-        if (!budget.ok) return toolError(budget.reason, 'SKILL_BUDGET_EXHAUSTED');
-
-        const bounded = truncateSkillContent(content, budget.allowedChars);
-        const label = sanitizeSkillLabel(skill.name, 40);
         let resources: string[] = [];
         try {
           resources = await listReadableResources(skill);
@@ -200,24 +232,10 @@ export function registerSkillAgentTools(): Array<() => void> {
           // 正文仍可使用；资源枚举失败不应泄露内部来源或使整个 Skill 加载失败。
         }
 
-        return {
-          status: 'success',
-          summary: `已加载 Skill「${label}」`,
-          truncated: bounded.truncated,
-          modelContent: [
-            UNTRUSTED_PREFIX,
-            `Skill: ${label}（skillId: ${skill.id}）`,
-            '--- Skill 内容开始 ---',
-            bounded.content,
-            '--- Skill 内容结束 ---',
-            resources.length > 0
-              ? `附属资料相对路径（需要时用 skill_read_file 读取）: ${JSON.stringify(resources)}`
-              : '',
-          ].filter(Boolean).join('\n'),
-        };
+        return pagedResult(context, skill, 'SKILL.md', content, input, resources);
       },
     }),
-    registerAgentTool<{ skillId: string; path: string }>({
+    registerAgentTool<SkillReadInput & { path: string }>({
       id: 'skill_read_file',
       title: '读取 Skill 资料',
       description: '按 Skill 内相对路径读取该 Skill 自带的资料文件。不能使用本地路径。',
@@ -227,6 +245,7 @@ export function registerSkillAgentTools(): Array<() => void> {
         additionalProperties: false,
         properties: {
           skillId: { type: 'string', minLength: 1, maxLength: 160 },
+          ...pageProperties,
           path: { type: 'string', minLength: 1, maxLength: 300 },
         },
       },
@@ -269,27 +288,7 @@ export function registerSkillAgentTools(): Array<() => void> {
           return toolError(message, 'SKILL_RESOURCE_REJECTED');
         }
 
-        const budget = consumeSkillContentBudget(
-          context.taskId,
-          skill.id,
-          Math.min(raw.length, SKILL_CATALOG_LIMITS.resourceFileChars),
-        );
-        if (!budget.ok) return toolError(budget.reason, 'SKILL_BUDGET_EXHAUSTED');
-
-        const bounded = truncateSkillContent(raw, budget.allowedChars);
-        const safePath = sanitizeSkillLabel(input.path, 120);
-        return {
-          status: 'success',
-          summary: `已读取 Skill 资料 ${safePath}`,
-          truncated: bounded.truncated,
-          modelContent: [
-            UNTRUSTED_PREFIX,
-            `Skill 资料: ${safePath}（skillId: ${skill.id}）`,
-            '--- Skill 内容开始 ---',
-            bounded.content,
-            '--- Skill 内容结束 ---',
-          ].join('\n'),
-        };
+        return pagedResult(context, skill, input.path, raw, input);
       },
     }),
     registerAgentTool<Record<string, never>>({
@@ -313,36 +312,19 @@ export function registerSkillAgentTools(): Array<() => void> {
         };
       },
     }),
-    registerAgentTool<{ skillId: string }>({
+    registerAgentTool<SkillReadInput>({
       id: 'skill_get',
       title: '读取 Skill 定义',
       description: '读取 MCP 当前获准访问的 Skill Manifest 和有界入口正文；不返回任何来源路径。',
       effect: 'read',
-      inputSchema: { type: 'object', required: ['skillId'], additionalProperties: false, properties: { skillId: { type: 'string', minLength: 1, maxLength: 160 } } },
+      inputSchema: { type: 'object', required: ['skillId'], additionalProperties: false, properties: { skillId: { type: 'string', minLength: 1, maxLength: 160 }, ...pageProperties } },
       isAvailable: (context) => isMcpContext(context),
       authorize: (context) => ({ allowed: isMcpContext(context), reason: 'Skill 管理只允许 MCP 控制会话调用' }),
       execute: async (context, input) => {
         const skill = resolveSkillForSurface(input.skillId, 'mcp');
         if (!skill) return toolError('Skill 不存在或未授权 MCP 只读访问', 'SKILL_NOT_FOUND');
         const content = stripSkillFrontmatter(skill.content);
-        const budget = consumeSkillContentBudget(
-          context.taskId,
-          skill.id,
-          Math.min(content.length, SKILL_CONTENT_LIMITS.singleSkillChars),
-        );
-        if (!budget.ok) return toolError(budget.reason, 'SKILL_BUDGET_EXHAUSTED');
-        const bounded = truncateSkillContent(content, budget.allowedChars);
-        return {
-          status: 'success',
-          summary: `已读取 Skill「${sanitizeSkillLabel(skill.name, 40)}」`,
-          truncated: bounded.truncated,
-          modelContent: JSON.stringify({
-            untrusted: true,
-            notice: UNTRUSTED_PREFIX,
-            skill: { ...safeSkillMetadata(skill), content: bounded.content },
-            truncated: bounded.truncated,
-          }),
-        };
+        return pagedResult(context, skill, 'SKILL.md', content, input, [], true);
       },
     }),
     registerAgentTool<{ fileName: string; content: string }>({
@@ -365,7 +347,8 @@ export function registerSkillAgentTools(): Array<() => void> {
       title: '更新 Skill',
       description: '更新一个用户单文件 Skill；文件夹型或智能体包 Skill 均为只读。',
       effect: 'file_write',
-      inputSchema: { type: 'object', required: ['skillId', 'content'], additionalProperties: false, properties: { skillId: { type: 'string', minLength: 1, maxLength: 160 }, content: { type: 'string', minLength: 1, maxLength: 200_000 } } },
+      inputSchema: { type: 'object', required: ['skillId', 'content'], additionalProperties: false, properties: { skillId: { type: 'string', minLength: 1, maxLength: 160 },
+          ...pageProperties, content: { type: 'string', minLength: 1, maxLength: 200_000 } } },
       isAvailable: (context) => isMcpContext(context),
       authorize: (context, input) => {
         if (!isMcpContext(context)) return { allowed: false, reason: 'Skill 管理只允许 MCP 控制会话调用' };
@@ -382,12 +365,12 @@ export function registerSkillAgentTools(): Array<() => void> {
         return { status: 'success', summary: `已更新 Skill「${sanitizeSkillLabel(skill.name, 40)}」`, modelContent: JSON.stringify({ skillId: skill.id, name: skill.name, manifest: skill.manifest }) };
       },
     }),
-    registerAgentTool<{ skillId: string }>({
+    registerAgentTool<SkillReadInput>({
       id: 'skill_delete',
       title: '删除 Skill',
       description: '永久删除一个用户 Skill；智能体包 Skill 为只读，不能通过此工具删除。',
       effect: 'permanent_delete',
-      inputSchema: { type: 'object', required: ['skillId'], additionalProperties: false, properties: { skillId: { type: 'string', minLength: 1, maxLength: 160 } } },
+      inputSchema: { type: 'object', required: ['skillId'], additionalProperties: false, properties: { skillId: { type: 'string', minLength: 1, maxLength: 160 }, ...pageProperties } },
       isAvailable: (context) => isMcpContext(context),
       authorize: (context, input) => {
         if (!isMcpContext(context)) return { allowed: false, reason: 'Skill 管理只允许 MCP 控制会话调用' };

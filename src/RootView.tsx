@@ -12,6 +12,7 @@ const ChatWindow = lazy(() => import('./components/chat/ChatWindow'));
 const VideoEditorWindow = lazy(() => import('./components/videoEditor/VideoEditorWindow'));
 // 懒加载：样式预览只在开发者/设计手动唤起时用到，不进主窗口首屏
 const StyleGuideWindow = lazy(() => import('./components/styleGuide/StyleGuideWindow'));
+const ComfyManagementWindow = lazy(() => import('./components/comfyui/ComfyManagementWindow'));
 
 interface RootViewProps {
   view: string | null;
@@ -22,6 +23,7 @@ const VIEW_LABELS: Record<string, string> = {
   chat: '独立聊天窗口',
   'video-editor': '视频编辑器窗口',
   'style-guide': '样式预览窗口',
+  'comfyui-settings': 'ComfyUI 管理窗口',
 };
 
 export default function RootView({ view }: RootViewProps) {
@@ -39,7 +41,9 @@ export default function RootView({ view }: RootViewProps) {
                 ? <VideoEditorWindow />
                 : view === 'style-guide'
                   ? <StyleGuideWindow />
-                  : <App />}
+                  : view === 'comfyui-settings'
+                    ? <ComfyManagementWindow />
+                    : <App />}
         </Suspense>
       </LazyLoadBoundary>
       <OverlayScrollbarLayer />

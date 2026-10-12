@@ -87,6 +87,7 @@ describe('conversation execution controller', () => {
     { body: '{"choices":[{"message":{"content":"已收到你的要求"},"finish_reason":"stop"}]}', contentType: 'application/json', status: 'completed', messageStatus: 'done', text: '已收到你的要求' },
     { body: 'data:{"choices":[{"delta":{"content":"已收到你的要求"},"finish_reason":"stop"}]}\n\n', contentType: 'text/event-stream', status: 'completed', messageStatus: 'done', text: '已收到你的要求' },
     { body: 'data:{"choices":[{"delta":{"content":"尚未完成的回复"},"finish_reason":"length"}]}\n\n', contentType: 'text/event-stream', status: 'paused', messageStatus: 'partial', text: '尚未完成的回复' },
+    { body: 'data:{"choices":[{"delta":{"reasoning_content":"api_key=secret-only C:\\\\private\\\\file inspect"}}]}\n\ndata:{"choices":[{"delta":{"content":"已经收到的正文"}}]}\n\ndata:{"error":{"message":"network interrupted"}}\n\n', contentType: 'text/event-stream', status: 'failed', messageStatus: 'error', text: '已经收到的正文' },
   ])('keeps a visible final message for $body', async ({ body, contentType, status, messageStatus, text }) => {
     useAppStore.setState((state) => ({
       config: {
@@ -116,6 +117,13 @@ describe('conversation execution controller', () => {
       content: expect.stringContaining(text),
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    if (body.includes('network interrupted')) {
+      const reply = state.messages.find((message) => message.id === result.assistantMessageId)!;
+      expect(reply.responseError).toContain('network interrupted');
+      expect(reply.reasoning).toContain('[已脱敏凭据]');
+      expect(reply.reasoning).not.toContain('secret-only');
+      expect(reply.reasoning).not.toContain('C:');
+    }
     if (status === 'paused') {
       expect(state.agentTasks.find((task) => task.id === result.taskId)?.pausedReason).toBe('model_output_truncated');
       expect(state.messages.find((message) => message.id === result.assistantMessageId)?.finishReason).toBe('length');

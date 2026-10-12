@@ -47,6 +47,20 @@ beforeEach(() => {
 });
 
 describe('config hydration guard', () => {
+  it('keeps each image model capability through provider synchronization and reload', async () => {
+    fileMocks.loadConfig.mockResolvedValue({ providers: {} });
+    await useAppStore.getState().loadConfig();
+    const capability = { resolutions: ['1K', '2K'], defaultResolution: '1K', ratios: ['1:1'], supportsBatch: false };
+    useAppStore.getState().saveProviderConfig('custom-images', { name: 'Images', apiKey: '', catalogId: 'custom-openai',
+      selectedModels: [{ id: 'image-a', name: 'Image A', category: 'image', provider: 'custom-images', imageCapability: capability }] });
+    expect(useAppStore.getState().config.generalModels?.[0].imageCapability).toEqual(capability);
+    await useAppStore.getState().saveConfig({ silent: true });
+    const saved = fileMocks.saveConfig.mock.calls.at(-1)?.[0] as AppConfig;
+    fileMocks.loadConfig.mockResolvedValue(saved);
+    useAppStore.setState(useAppStore.getInitialState(), true);
+    await useAppStore.getState().loadConfig();
+    expect(useAppStore.getState().config.generalModels?.[0].imageCapability).toEqual(capability);
+  });
   it.each(['enter', 'shift-enter', 'ctrl-enter', 'alt-enter'] as const)('发送快捷键 %s 通过现有配置保存并在重新加载后恢复', async (shortcut) => {
     fileMocks.loadConfig.mockResolvedValue({ providers: {}, theme: 'dark' });
     await useAppStore.getState().loadConfig();

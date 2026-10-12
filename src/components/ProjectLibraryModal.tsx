@@ -842,7 +842,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
         >
           {!isMacOS && (
             <div data-tauri-drag-region className="flex items-center gap-2">
-              <img src="/favicon.svg" alt="" draggable={false} className="h-6 w-6 shrink-0" />
+              <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" draggable={false} className="h-6 w-6 shrink-0" />
               <span data-tauri-drag-region className="text-sm font-semibold text-canvas-text">AI Canvas</span>
             </div>
           )}

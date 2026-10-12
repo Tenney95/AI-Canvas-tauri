@@ -20,6 +20,7 @@ import { getProviderDefinition } from '../../src/services/ai/providerCatalogServ
 import { generateImageStandard } from '../../src/services/ai/providers/standardImage';
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
 import { useAppStore } from '../../src/store/useAppStore';
+import { createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelTemplates';
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -37,7 +38,135 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('image quick template request transport', () => {
+  function configureTemplate(templateId: string) {
+    useAppStore.getState().saveProviderConfig('custom-template', {
+      name: 'Custom images', catalogId: 'custom-openai', apiKey: 'template-fixture', baseUrl: 'https://images.example/v1',
+      selectedModels: [{ id: 'actual-model-id', name: 'User model name', category: 'image', provider: 'custom-template',
+        ...createImageQuickAdaptTemplate(templateId) }],
+    });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'custom-template')!;
+    return { provider: 'general', model: `general/${model.id}`, prompt: 'Edit the reference images' };
+  }
+
+  it.each([
+    { id: 'banana-pro:google', path: '/v1/models/actual-model-id:generateContent', auth: { 'x-goog-api-key': 'template-fixture' }, field: 'responseFormat' },
+    { id: 'banana-pro:gemini-relay', path: '/v1beta/models/actual-model-id:generateContent', auth: { Authorization: 'Bearer template-fixture' }, field: 'imageConfig' },
+  ])('sends every prepared reference in the selected $id native contract', async ({ id, path, auth, field }) => {
+    const params = configureTemplate(id);
+    const references = ['data:image/png;base64,YQ==', 'data:image/png;base64,Yg==', 'data:image/png;base64,Yw=='];
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ candidates: [{ content: { parts: [
+      { text: 'Description' }, { inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } },
+    ] } }] }));
+    const result = await generateImagesBatch({ ...params, image_urls: references, imageSize: '2K', aspectRatio: '16:9' }, 1);
+    expect(result.results[0].url).toBe('data:image/png;base64,aW1hZ2U=');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe(`https://images.example${path}`);
+    expect(init.headers).toMatchObject(auth);
+    const body = JSON.parse(String(init.body));
+    expect(body.contents[0].parts[0].text).toContain(params.prompt);
+    expect(body.contents[0].parts[0].text).toContain('3 张参考图');
+    expect(body.contents[0].parts[0].text).toContain('16:9');
+    expect(body.contents[0].parts).toEqual([{ text: expect.any(String) }, ...references.map((reference) => ({
+      inlineData: { mimeType: 'image/png', data: reference.split(',')[1] },
+    }))]);
+    expect(body.generationConfig[field]).toEqual(field === 'imageConfig'
+      ? { aspectRatio: '16:9', imageSize: '2K' } : { image: { aspectRatio: '16:9', imageSize: '2K' } });
+  });
+
+  it('blocks references beyond the visible native transport budget before reading or submitting', async () => {
+    const params = configureTemplate('banana-pro:google');
+    await expect(generateImagesBatch({ ...params, image_urls: Array.from({ length: 7 }, (_, index) =>
+      `https://cdn.example/reference-${index}.png`) }, 1)).rejects.toThrow('最多支持 6');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it('replaces an older native reference mode when saving a URL-based gateway template', async () => {
+    configureTemplate('banana-pro:google');
+    const params = configureTemplate('gpt-2:images-json');
+    expect(useAppStore.getState().config.generalModels!.find((model) => model.providerConfigId === 'custom-template')!
+      .imageReferenceRequestMode).toBe('generation-json-image-urls');
+    const references = Array.from({ length: 7 }, (_, index) => `https://cdn.example/reference-${index}.png`);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/result.png' }] }));
+    await generateImagesBatch({ ...params, image_urls: references }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body)).images).toEqual(references);
+  });
+
+  it.each(['gpt-2:openai', 'gpt-2.5:images-json'])('uses explicit 4K pixels and numeric counts for %s', async (id) => {
+    const params = configureTemplate(id);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [
+      { url: 'https://cdn.example/result-one.png' }, { url: 'https://cdn.example/result-two.png' },
+    ] }));
+    const result = await generateImagesBatch({ ...params, imageSize: '4K', aspectRatio: '16:9' }, 2);
+    expect(result.results).toHaveLength(2);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe('https://images.example/v1/images/generations');
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'actual-model-id', size: '3840x2160', n: 2 });
+    await expect(generateImagesBatch({ ...params, imageSize: '4K', aspectRatio: '8:1' }, 1)).rejects.toThrow('不支持比例');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses official multipart edits with the same selected pixel table', async () => {
+    const params = configureTemplate('gpt-2:openai');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('reference', { headers: { 'Content-Type': 'image/png' } }));
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ b64_json: 'aW1hZ2U=' }] }));
+    await generateImagesBatch({ ...params, image_urls: ['data:image/png;base64,YQ=='], imageSize: '1K', aspectRatio: '3:2' }, 1);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe('https://images.example/v1/images/edits');
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.body.get('size')).toBe('1536x1024');
+    expect(init.body.getAll('image[]')).toHaveLength(1);
+  });
+
+  it('submits APIMart once, then queries the returned task with the connection key', async () => {
+    const params = configureTemplate('gpt-2.5:apimart');
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ data: [{ task_id: 'task-123', status: 'submitted' }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: { status: 'completed', progress: 100,
+        result: { images: [{ url: ['https://cdn.example/result.png'] }] } } }));
+    const result = await generateImagesBatch({ ...params, imageSize: '2k', aspectRatio: '3:2',
+      image_urls: ['https://cdn.example/reference.png'] }, 1);
+    expect(result.results[0].url).toBe('https://cdn.example/result.png');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
+    const [submitUrl, submit] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(submitUrl).toBe('https://images.example/v1/images/generations');
+    const submitted = JSON.parse(String(submit.body));
+    expect(submitted.prompt).toContain(params.prompt);
+    expect(submitted.prompt).toContain('1 张参考图');
+    expect(submitted.prompt).toContain('3:2');
+    expect(submitted).toEqual({ model: 'actual-model-id', prompt: expect.any(String),
+      size: '3:2', resolution: '2k', n: 1, image_urls: ['https://cdn.example/reference.png'] });
+    const [pollUrl, poll] = transportMocks.corsSafeFetch.mock.calls[1];
+    expect(pollUrl).toBe('https://images.example/v1/tasks/task-123');
+    expect(poll.headers).toMatchObject({ Authorization: 'Bearer template-fixture' });
+  });
+});
+
 describe('model request transport boundary', () => {
+  it('uses custom image defaults and blocks unsupported tiers before submission', async () => {
+    useAppStore.getState().saveProviderConfig('custom-image-parameters', {
+      name: 'Images', catalogId: 'custom-openai', apiKey: 'fixture', baseUrl: 'https://gateway.example/v1',
+      selectedModels: [{ id: 'image', name: 'Image', category: 'image', provider: 'custom-image-parameters',
+        imageCapability: { resolutions: ['1K'], defaultResolution: '1K', ratios: ['1:1'], defaultRatio: '1:1',
+          supportsBatch: true, maxBatchCount: 2, supportsImageReference: false },
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync', auth: { type: 'bearer' },
+          submit: { method: 'POST', path: '/images/generations', body: { model: '{{model}}', prompt: '{{prompt}}', size: '{{size}}', n: '{{n}}' } },
+          response: { type: 'json', result: { urlPath: 'data.0.url' } } } },
+      }],
+    });
+    const model = useAppStore.getState().config.generalModels![0];
+    const params = { provider: 'general', model: `general/${model.id}`, prompt: 'cat' };
+    for (const invalid of [{ imageSize: '4K' }, { aspectRatio: '16:9' }, { image_urls: ['https://cdn.example/ref.png'] }]) {
+      await expect(generateImagesBatch({ ...params, ...invalid }, 1)).rejects.toThrow();
+    }
+    await expect(generateImagesBatch(params, 3)).rejects.toThrow('最多生成 2');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    transportMocks.corsSafeFetch.mockResolvedValue(jsonResponse({ data: [{ url: 'https://cdn.example/result.png' }] }));
+    await generateImagesBatch(params, 1);
+    expect(JSON.parse(transportMocks.corsSafeFetch.mock.calls[0][1].body)).toMatchObject({ size: '1024x1024', n: 1 });
+  });
   it.each([undefined, '   ', 'https://custom.example/v1/'])('reverses images and chats with the selected CCC group when its address is %s', async (baseUrl) => {
     for (const group of ['pro', 'discount']) useAppStore.getState().saveProviderConfig(`cccapi-${group}`, {
       name: 'CCC', catalogId: 'cccapi', cccGroup: group, apiKey: `${group}-fixture`, baseUrl,

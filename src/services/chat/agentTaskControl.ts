@@ -1,6 +1,7 @@
 /**
  * 管理 AgentTask 状态机、运行时取消控制器和审批 Promise，统一约束任务状态迁移。
  */
+import { isMcpSettingsToolContext } from '../mcp/mcpSettingsScope';
 import { useAppStore } from '../../store/useAppStore';
 import {
   AGENT_TERMINAL_STATUSES,
@@ -279,7 +280,10 @@ export function resolveAgentApproval(
   if (
     !task
     || store.activeConversationId !== task.conversationId
-    || store.currentProjectId !== task.projectId
+    || (store.currentProjectId !== task.projectId
+      && !task.steps.some((step) => step.approval?.id === approvalId
+        && step.approval.kind === 'user_choice'
+        && isMcpSettingsToolContext(task, step.toolCall?.toolId ?? '')))
   ) {
     return false;
   }

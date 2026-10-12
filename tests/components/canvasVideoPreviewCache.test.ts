@@ -24,6 +24,7 @@ class FakeVideo extends EventTarget {
 
 type Poster = import('../../src/components/nodes/shared/video/canvasVideoPreviewCache').CanvasVideoPoster;
 let cache: typeof import('../../src/components/nodes/shared/video/canvasVideoPreviewCache');
+let mode: typeof import('../../src/services/performanceModeRuntime');
 let videos: FakeVideo[];
 let canvases: Array<{ width: number; height: number }>;
 let interacting: boolean;
@@ -90,10 +91,12 @@ beforeEach(async () => {
       return canvas;
     },
   });
+  mode = await import('../../src/services/performanceModeRuntime');
   cache = await import('../../src/components/nodes/shared/video/canvasVideoPreviewCache');
 });
 
 afterEach(async () => {
+  mode.syncPerformanceModeRuntime(false);
   controllers.forEach((controller) => controller.abort());
   leases.forEach((poster) => poster.release());
   pendingEncoder?.(null);
@@ -104,6 +107,48 @@ afterEach(async () => {
 });
 
 describe('canvas video poster scheduling and ownership', () => {
+  it('prunes idle poster memory on a mode switch while keeping playback leases and recent cached frames', async () => {
+    const makePoster = async (source: string) => {
+      const request = acquire(source); await start();
+      const video = videos[videos.length - 1];
+      video.videoWidth = video.videoHeight = 4096;
+      await finish(video);
+      return (await request.promise)!;
+    };
+    const active = await makePoster('asset://active.mp4');
+    const idle: Poster[] = [];
+    for (let index = 0; index < 6; index++) {
+      const poster = await makePoster(`asset://idle-${index}.mp4`);
+      idle.push(poster); poster.release();
+    }
+    expect(revokeUrl).not.toHaveBeenCalled();
+    mode.syncPerformanceModeRuntime(true);
+    expect(revokeUrl).toHaveBeenCalledExactlyOnceWith(idle[0].src);
+    expect(revokeUrl).not.toHaveBeenCalledWith(active.src);
+    await vi.advanceTimersByTimeAsync(20_000);
+    const recent = await acquire('asset://idle-5.mp4').promise;
+    expect(recent?.src).toBe(idle[5].src);
+    expect(videos).toHaveLength(7);
+  });
+
+  it('bounds idle failure entries in performance mode while retaining recent failed sources for the existing grace period', async () => {
+    mode.syncPerformanceModeRuntime(true);
+    failDrawing = true;
+    for (let index = 0; index < 17; index++) {
+      const request = acquire(`asset://unsupported-${index}.mp4`);
+      await start(); await finish();
+      expect(await request.promise).toBeNull();
+    }
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await acquire('asset://unsupported-16.mp4').promise).toBeNull();
+    expect(videos).toHaveLength(17);
+    const oldest = acquire('asset://unsupported-0.mp4');
+    await start();
+    expect(videos).toHaveLength(18);
+    oldest.controller.abort();
+    expect(await oldest.promise).toBeNull();
+  });
+
   it('shares one decode and keeps the original metadata while bounding the poster footprint', async () => {
     const first = acquire('asset://same.mp4');
     const second = acquire('asset://same.mp4');

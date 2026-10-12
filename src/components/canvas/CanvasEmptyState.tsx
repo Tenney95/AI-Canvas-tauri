@@ -24,7 +24,7 @@ function CanvasEmptyState() {
     <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
       <div className="flex flex-col items-center gap-4 opacity-50">
         <img
-          src="/favicon.svg"
+          src={`${import.meta.env.BASE_URL}favicon.svg`}
           alt=""
           aria-hidden="true"
           draggable={false}

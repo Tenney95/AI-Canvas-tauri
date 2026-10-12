@@ -31,3 +31,12 @@
 ## 回滚
 
 仅撤销本次双窗口协议、Store、界面和对应测试改动。无依赖、数据库迁移或原生权限变化；保留其他阶段已有的 Agent 优化。
+
+## 2026-10-12 打开失败补丁
+
+- 吉祥物、侧栏与助手标题栏统一经 `chatWindowLifecycle.ts` 打开；同一时间只提交一次原生命令。失败恢复内嵌助手，保留会话、草稿与当前视图，并展示有界、脱敏的原生错误。
+- `lib.rs` 对打开/关闭串行处理；存在助手窗口时恢复、显示并聚焦，保留窗口和同步状态。关闭等待标签释放后才允许重开，不再关闭后立即同名重建。
+- `native_rendering.rs` 的性能参数仅经进程环境应用，保留 Wry 默认 EnvironmentOptions。此前仅主窗口覆盖 `additionalBrowserArgs` 会使共享 profile 的窗口参数不一致；[WebView2 文档](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2420.47#CreateCoreWebView2EnvironmentWithOptions) 说明这种情况会导致 `ERROR_INVALID_STATE`。需完整重启应用。
+- 已通过：窗口生命周期/监听/同步 3 个 Vitest 文件共 21 项，定向 ESLint、测试类型检查、`cargo check --lib`、`cargo test --lib --no-default-features native_rendering::tests` 共 4 项。未进行原生双窗口实机验收；截图只提供通用失败提示，不能据此断言实际命中了哪条路径。
+
+桌面验收：分别关闭/开启性能模式并完整重启，双击吉祥物首次打开；输入草稿后重复双击，应只聚焦同一窗口；最小化后重开应恢复；快速收回/重开、关闭后重开应成功并保留草稿。标题栏、侧栏与吉祥物三入口均检查。若仍失败，记录新提示里的具体错误；内嵌助手应仍可使用。原有任务、审批、模型目录与跨会话草稿同步作为回归项。

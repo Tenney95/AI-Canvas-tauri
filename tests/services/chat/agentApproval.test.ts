@@ -36,6 +36,7 @@ import { registerProviderConfigAgentTools } from '../../../src/services/chat/too
 import { getAgentTool } from '../../../src/services/chat/toolRegistry';
 import { clearProviderModelCatalogsForTests, createProviderModelCatalog } from '../../../src/services/chat/providerModelCatalogService';
 import { handleMcpBridgeRequest } from '../../../src/services/mcp/mcpControlService';
+import { MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_CONVERSATION_ID } from '../../../src/services/mcp/mcpSettingsScope';
 
 function createTask(): AgentTask {
   const now = Date.now();
@@ -155,7 +156,7 @@ describe('Agent approval lifecycle', () => {
 
   it.each(['approve', 'reject', 'cancel'] as const)('waits for real user approval through the MCP bridge: %s', async (action) => {
     registerProviderConfigAgentTools();
-    const scope = { projectId: 'project-approval', conversationId: 'mcp-control-project-approval', taskId: 'catalog-loader' };
+    const scope = { projectId: MCP_SETTINGS_SCOPE_ID, conversationId: MCP_SETTINGS_CONVERSATION_ID, taskId: 'catalog-loader' };
     const catalog = createProviderModelCatalog(scope, choices);
     const execute = vi.spyOn(getAgentTool('provider_models_select')!, 'execute');
     const request: McpBridgeRequestEvent = { sessionId: 'test-session', requestId: `provider-${action}`, method: 'tools/call',
@@ -166,12 +167,14 @@ describe('Agent approval lifecycle', () => {
     await vi.waitFor(() => expect(pending()).toBeDefined());
     const approval = pending()!.steps[0].approval!;
     expect(approval.inputRequest?.kind).toBe('provider_models');
+    expect(useAppStore.getState().activeConversationId).toBe(scope.conversationId);
     expect(finished).toBe(false);
     expect(execute).not.toHaveBeenCalled();
     // The bridge exposes no resolution method; spoofed MCP attempts cannot release the wait.
     await expect(handleMcpBridgeRequest({ ...request, method: 'approval/resolve' as McpBridgeRequestEvent['method'],
       params: { approvalId: approval.id, approved: true, selectedModelIds: ['one'] } })).rejects.toThrow('不支持');
     expect(finished).toBe(false);
+    useAppStore.setState({ activeConversationId: 'conversation-approval' });
     expect(resolveAgentApproval(approval.id, { approved: true, inputValues: { selectedModelIds: ['one'] } })).toBe(false);
     useAppStore.setState({ activeConversationId: scope.conversationId });
     if (action === 'cancel') {

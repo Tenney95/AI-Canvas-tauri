@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentApprovalResolution, AgentMode, AgentTask } from '../../../src/types/agent';
 import type { ProposedToolCall, ToolResultSummary } from '../../../src/types/chat';
+import { executeRegisteredAgentToolCall } from '../../../src/services/chat/agentToolExecution';
+import { MCP_GLOBAL_TOOL_NAMES, MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_TOOL_NAMES } from '../../../src/services/mcp/mcpSettingsScope';
 
 const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
 const executeGenerationMock = vi.hoisted(() => vi.fn(async () => ({ success: true })));
@@ -169,6 +171,42 @@ function arrangeCalls(calls: ProposedToolCall[], duringStream?: () => void) {
     calls.forEach((call) => onEvent({ type: 'tool.call.final', call }));
   });
 }
+
+it.each([false, true])('executes application settings without a project only under the closed allowlist (invalid %s)', async (invalid) => {
+  const execute = vi.fn(async () => ({ status: 'success' as const, summary: 'preview', modelContent: 'preview' }));
+  registerAgentTool({ id: 'provider_config_preview', title: 'Preview', description: 'Preview', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  useAppStore.setState({ currentProjectId: null, agentTasks: [{ ...createTask(),
+    projectId: MCP_SETTINGS_SCOPE_ID, conversationId: MCP_SETTINGS_CONVERSATION_ID,
+    toolAllowlist: [...MCP_SETTINGS_TOOL_NAMES, ...(invalid ? ['canvas_update'] : [])],
+  }] });
+  const result = await executeRegisteredAgentToolCall({ taskId: 'task-round',
+    call: { callId: 'preview', toolId: 'provider_config_preview', input: {} }, signal: new AbortController().signal,
+    transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }),
+  });
+  expect(result.summary.status).toBe(invalid ? 'denied' : 'success');
+  expect(execute).toHaveBeenCalledTimes(invalid ? 0 : 1);
+});
+
+it.each(['valid', 'wrong-conversation', 'extra-tool', 'no-allowlist'])('guards project navigation outside a canvas context (%s)', async (variant) => {
+  const execute = vi.fn(async () => {
+    useAppStore.setState({ currentProjectId: 'opened-project', historyIndex: 2 });
+    return { status: 'success' as const, summary: 'opened', modelContent: 'opened' };
+  });
+  registerAgentTool({ id: 'project_open', title: 'Open', description: 'Open', effect: 'canvas_write',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  useAppStore.setState({ currentProjectId: null, agentTasks: [{ ...createTask(), projectId: MCP_SETTINGS_SCOPE_ID,
+    conversationId: variant === 'wrong-conversation' ? 'forged' : MCP_SETTINGS_CONVERSATION_ID,
+    toolAllowlist: variant === 'no-allowlist' ? undefined : [...MCP_GLOBAL_TOOL_NAMES, ...(variant === 'extra-tool' ? ['canvas_update'] : [])],
+  }] });
+  const result = await executeRegisteredAgentToolCall({ taskId: 'task-round',
+    call: { callId: 'project-open', toolId: 'project_open', input: {} }, signal: new AbortController().signal,
+    transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }),
+  });
+  expect(result.summary.status).toBe(variant === 'valid' ? 'success' : 'denied');
+  expect(execute).toHaveBeenCalledTimes(variant === 'valid' ? 1 : 0);
+  expect(useAppStore.getState().agentTasks[0].steps[0]?.toolCall?.canvasCheckpoint).toBeUndefined();
+});
 
 function runRound(
   controller = new AbortController(),

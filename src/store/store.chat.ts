@@ -2,6 +2,7 @@
  * Chat Slice — 对话助手状态管理
  * 管理聊天面板开关、会话列表、消息流、操作日志和 revision 计数
  */
+import { MCP_SETTINGS_CONVERSATION_ID } from '../services/mcp/mcpSettingsScope';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type {
@@ -400,11 +401,14 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     try {
       // 会话按剧集项目归属：分集共用剧集的会话（seriesOwnerId 对普通项目是恒等）
       const ownerId = seriesOwnerId(get().projects, projectId);
-      const conversations = await chatHistoryService.loadProjectConversations(ownerId);
+      const projectConversations = await chatHistoryService.loadProjectConversations(ownerId);
+      const settingsConversations = get().conversations.filter((conversation) => conversation.id === MCP_SETTINGS_CONVERSATION_ID);
+      const conversations = [...settingsConversations, ...projectConversations];
       if (get().currentProjectId !== projectId) return;
       const persistedId = readPersistedActiveConversation(ownerId);
-      const restoredConversation = conversations.find((conversation) =>
-        conversation.id === persistedId) ?? conversations[0];
+      const settingsActive = get().activeConversationId === MCP_SETTINGS_CONVERSATION_ID;
+      const restoredConversation = (settingsActive ? settingsConversations[0] : undefined)
+        ?? projectConversations.find((conversation) => conversation.id === persistedId) ?? projectConversations[0];
       set((state) => ({
         conversations,
         activeConversationId: restoredConversation?.id ?? null,
@@ -413,7 +417,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
         operationLogs: [],
       }));
       if (restoredConversation) {
-        persistActiveConversation(ownerId, restoredConversation.id);
+        if (!settingsActive) persistActiveConversation(ownerId, restoredConversation.id);
         await get().loadConversationMessages(restoredConversation.id);
       }
     } catch (e) {

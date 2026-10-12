@@ -1,7 +1,9 @@
+import { estimateTokens } from './tokenEstimate';
 /**
  * 执行 Agent 的单个模型轮次，串联上下文、流式响应、工具提案与执行结果。
  * 任务预算、审批等待和步骤快照在此轮次边界内统一更新。
  */
+import { isMcpGlobalToolContext } from '../mcp/mcpSettingsScope';
 import { useAppStore } from '../../store/useAppStore';
 import { getPreparedProviderCatalogApproval, MAX_PROVIDER_MODEL_SELECTION, validateProviderModelSelection } from './providerModelCatalogService';
 import {
@@ -52,6 +54,7 @@ import {
   fingerprintToolInput,
 } from './agentCheckpointService';
 import { emitAgentLifecycleEvent } from './agentLifecycle';
+import { createSkillReadBudget } from './skillReadService';
 
 // 每次 runAgentLoop 都创建自己的 messages 数组；恢复候选跨只读轮次保留，
 // 不包含当前执行段新完成的步骤，也不写入 Store/IndexedDB。数组释放后自动回收。
@@ -60,6 +63,7 @@ const toolGuidanceMessages = new WeakMap<AssistantModelMessage[], AssistantModel
 
 export interface AgentRoundCallbacks {
   onTextDelta?: (delta: string) => void;
+  onReasoningDelta?: (delta: string) => void;
   onComplete?: (fullText: string) => void;
   onToolResult?: (result: ToolResultSummary) => void;
   onApprovalRequired?: (step: AgentStep) => void;
@@ -347,7 +351,10 @@ export async function executePreparedToolCall(
     const executionContext = { ...context, mode: resolveAgentExecutionMode(currentTask, policyMode) };
     const policy = evaluateAgentToolPolicy(prepared.definition, prepared.input, executionContext);
     const currentStep = currentTask.steps.find((item) => item.id === step.id);
-    const reverifyReason = useAppStore.getState().currentProjectId !== context.projectId
+    const globalScopeActive = isMcpGlobalToolContext(executionContext, prepared.definition.id)
+      && isMcpGlobalToolContext(currentTask, prepared.definition.id);
+    const reverifyReason = !globalScopeActive
+      && useAppStore.getState().currentProjectId !== context.projectId
       ? '目标项目已切换，已取消该工具执行'
       : policy.outcome === 'deny'
         ? policy.reason
@@ -394,7 +401,7 @@ export async function executePreparedToolCall(
       }
     }
     if (retryCount === 0) {
-      checkpointBefore = prepared.definition.effect === 'canvas_write'
+      checkpointBefore = prepared.definition.effect === 'canvas_write' && !globalScopeActive
         ? { historyIndex: useAppStore.getState().historyIndex, revision: useAppStore.getState().getCurrentRevision() }
         : undefined;
       appendAgentEvent(taskId, 'tool_start', { toolId: call.toolId, callId: call.callId, effect: prepared.definition.effect });
@@ -733,10 +740,11 @@ export async function executeAgentRound({
   // 模型流式返回和逐个工具审批都可能耗时较久，其间用户可能下调模式；
   // 每次策略判定前重新读取当前会话模式，确保降级（如切到 B / Plan）立即生效。
   const readCurrentMode = () => resolveAgentExecutionMode(getTask(taskId));
-  const roundContext = {
+  const roundContext: Omit<AgentToolContext, 'signal'> = {
     ...contextBase,
     mode: readCurrentMode(),
     baseRevision: useAppStore.getState().getCurrentRevision(),
+
   };
   let checkpointReplayStepIds = checkpointReplayCandidates.get(messages);
   if (!checkpointReplayStepIds) {
@@ -784,8 +792,9 @@ export async function executeAgentRound({
     return { outcome: 'paused', fullText, totalToolResultChars };
   }
 
+  const contextSpec = resolveAssistantContextSpec(task.projectId);
   const tools = buildAssistantFunctionTools(roundContext);
-  const toolGuidance = buildAssistantToolGuidance(tools.map((tool) => tool.function.name), roundContext.mode);
+  const toolGuidance = buildAssistantToolGuidance(tools.map((tool) => tool.function.name), roundContext.mode, contextSpec.inputBudget);
   let guidanceMessage = toolGuidanceMessages.get(messages);
   if (!guidanceMessage) {
     guidanceMessage = { role: 'system', content: toolGuidance };
@@ -796,7 +805,6 @@ export async function executeAgentRound({
   }
 
   // 每轮请求前按当前模型上限复核（工具 Observation 会持续增大上下文；模型可能中途切换）
-  const contextSpec = resolveAssistantContextSpec(task.projectId);
   if (estimateModelMessagesTokens(messages) > contextSpec.inputBudget) {
     transitionTask(taskId, 'paused', {
       pausedReason: 'context_budget_exhausted',
@@ -839,6 +847,8 @@ export async function executeAgentRound({
           roundText += event.delta;
           fullText += event.delta;
           callbacks.onTextDelta?.(event.delta);
+        } else if (event.type === 'reasoning.delta') {
+          callbacks.onReasoningDelta?.(event.delta);
         } else if (event.type === 'tool.call.final') {
           proposedCalls.push(event.call);
         } else if (event.type === 'done') {
@@ -924,6 +934,9 @@ export async function executeAgentRound({
     })),
   });
 
+  // Measure after the assistant proposal; parallel reads reserve from the same pool.
+  roundContext.skillReadBudget = createSkillReadBudget(Math.max(0,
+    contextSpec.inputBudget - estimateModelMessagesTokens(messages) - estimateTokens(JSON.stringify(tools)) - Math.max(256, Math.min(2048, Math.floor(contextSpec.inputBudget * 0.08)))));
   const results = new Map<string, ExecutedToolCall>();
   const allowedCalls: Array<{
     call: ProposedToolCall;

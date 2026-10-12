@@ -16,6 +16,7 @@ import OnnxModelStorageManager from './settings/OnnxModelStorageManager';
 import McpControlSettings from './settings/McpControlSettings';
 import SettingsNavigation from './settings/SettingsNavigation';
 import ShortcutSettings from './settings/ShortcutSettings';
+import CanvasZoomRangeSettings from './settings/CanvasZoomRangeSettings';
 import ComfyUISettings from './settings/ComfyUISettings';
 import FileAppSettings from './settings/FileAppSettings';
 import PluginSettings from './settings/PluginSettings';
@@ -859,6 +860,8 @@ export default function SettingsPanel() {
                 </section>
                 )}
 
+                <CanvasZoomRangeSettings onPersist={persist} />
+
                 {/* 节点顶部工具栏显示方式 */}
                 <section>
                   <h3 className="text-sm font-medium text-canvas-text mb-2">{t('节点工具栏')}</h3>
@@ -1087,12 +1090,12 @@ export default function SettingsPanel() {
                       <div className="flex flex-wrap items-center gap-1.5">
                         <div className="sidebar-pref-title">{t('性能模式')}</div>
                         <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium leading-none text-amber-300">
-                          {t('卡顿或页面显示不全时开启')}
+                          {t('低配置省内存，界面闪烁时可开启')}
                         </span>
                       </div>
                       <div className="sidebar-pref-desc">
                         {performanceMode
-                          ? t('已关闭毛玻璃、自定义圆角、玻璃外框和装饰动画，保留 Windows 默认圆角')
+                          ? t('使用轻量媒体预览和较小缓存，释放离屏媒体；关闭图片与动态背景、3D 吉祥物和装饰动画')
                           : t('保留完整视觉效果与界面动画')}
                       </div>
                     </div>
@@ -1101,6 +1104,9 @@ export default function SettingsPanel() {
                       <span />
                     </div>
                   </button>
+                  <div className="mt-2 text-xs text-canvas-text-secondary">
+                    {t('关闭后恢复原有背景与视觉设置，原图与生成内容不变。')}
+                  </div>
                   {isNativePerformanceModeSupported() && (
                     <div className="mt-2 text-xs text-canvas-text-secondary">
                       {t('开启后将保存并自动重启，正在运行的任务会中断；关闭后下次启动恢复原生图形设置。')}

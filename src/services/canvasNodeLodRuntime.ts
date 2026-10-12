@@ -1,4 +1,5 @@
 import { CANVAS_DISPLAY_BUDGET, createCanvasDisplayScheduler, type CanvasDisplayClock } from './canvasDisplayScheduler';
+import { getPerformanceModeBudget } from './performanceModeRuntime';
 
 /** 画布会话内的显示调度；不修改节点、历史或持久化状态。 */
 export const CANVAS_NODE_LOD = {
@@ -16,11 +17,12 @@ interface Entry {
 }
 
 export function createCanvasNodeLodRuntime(initialZoom = 1, clock?: CanvasDisplayClock, performanceMode = false) {
-  const display = createCanvasDisplayScheduler(clock);
+  const display = createCanvasDisplayScheduler(clock, getPerformanceModeBudget(performanceMode).display);
   let thresholds = performanceMode ? PERFORMANCE_NODE_LOD : CANVAS_NODE_LOD;
   let latestZoom = initialZoom;
   let far = initialZoom < thresholds.enter;
-  let progressive = far;
+  // 低配置设备初次进入近景也经显示预算恢复，不一次挂载所有完整媒体组件。
+  let progressive = far || performanceMode;
   let interacting = false;
   let center = { x: 0, y: 0 };
   const entries = new Map<string, Entry>();
@@ -102,9 +104,11 @@ export function createCanvasNodeLodRuntime(initialZoom = 1, clock?: CanvasDispla
       updateFar(far ? zoom < thresholds.exit : zoom < thresholds.enter);
     },
     setPerformanceMode(enabled: boolean) {
+      display.setBudget(getPerformanceModeBudget(enabled).display);
       const next = enabled ? PERFORMANCE_NODE_LOD : CANVAS_NODE_LOD;
       if (thresholds === next) return;
       thresholds = next;
+      if (enabled) progressive = true;
       // 模式切换按新模式的入口阈值重新判断，不继承另一模式的滞回区间。
       updateFar(latestZoom < thresholds.enter);
     },

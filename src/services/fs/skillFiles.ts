@@ -120,6 +120,8 @@ async function uploadSkillFolder(): Promise<UploadedSkillFile | null> {
   const selected = await open({
     directory: true,
     multiple: false,
+    // 导入会读取多级附属资料；授权范围仅限用户选中的目录子树。
+    recursive: true,
     title: '上传 Skill 文件夹',
   });
   if (!selected || Array.isArray(selected)) return null;
@@ -200,8 +202,12 @@ export async function uploadSkillFile(source: SkillUploadSource = 'folder'): Pro
     if (!file) return null;
     return { fileName: file.name, content: await file.text(), sourceType: 'file', entryFileName: file.name };
   } catch (error) {
-    console.error('Upload skill failed:', error);
-    throw error;
+    // Tauri 错误可能是带绝对路径的字符串，不直接写入日志或展示。
+    console.error('[Skill 上传] 导入失败');
+    if (error instanceof Error) throw error;
+    throw new Error(source === 'folder'
+      ? 'Skill 文件夹导入失败，请重新选择文件夹并检查读取权限'
+      : 'Skill 文件导入失败，请重新选择文件并检查读取权限', { cause: error });
   }
 }
 

@@ -183,7 +183,7 @@ export default function CanvasRadialMenu({ position, onClose }: CanvasRadialMenu
           setCharacterActionLibraryOpen(true);
           break;
         case 'fit-view':
-          window.dispatchEvent(new Event('canvas-fit-view'));
+          window.dispatchEvent(new CustomEvent('canvas-fit-view', { detail: { source: 'user' } }));
           break;
         case 'custom-url':
           if (!action.url?.trim()) throw new Error(t('请先填写网页地址'));

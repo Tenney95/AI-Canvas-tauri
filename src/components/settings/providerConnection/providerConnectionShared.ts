@@ -80,6 +80,8 @@ export interface ProviderConnectionDialogProps {
   isOpen: boolean;
   connectionId?: string;
   initialConfig?: ApiProviderConfig;
+  /** 打开连接时直接展开这个已启用模型的参数编辑器。 */
+  initialModelId?: string;
   providerConfigs: Record<string, ApiProviderConfig>;
   connectedProviderIds: string[];
   fallbackModels: Record<string, ProviderModelSelection[]>;

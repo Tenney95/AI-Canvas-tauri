@@ -1,17 +1,16 @@
 import { readRasterImageDimensions } from '../../../../services/rasterImageDimensions';
 import { prepareProjectThumbnail } from '../../../../services/fs/thumbnailCache';
 import { assertEditorSourceBudget } from './imageResourceBudget';
+import { getPerformanceModeBudget, subscribePerformanceMode } from '../../../../services/performanceModeRuntime';
 
 const MAX_ENCODED_BYTES = 32 * 1024 * 1024;
-const MAX_IDLE_RGBA_BYTES = 32 * 1024 * 1024;
-const MAX_IDLE_ENTRIES = 128;
-const IDLE_TTL_MS = 30_000;
 const INTERACTION_POLL_MS = 80;
 const DERIVATION_TIMEOUT_MS = 10_000;
 const entries = new Map<string, Entry>();
 let running = false;
 let pumpTimer: ReturnType<typeof setTimeout> | undefined;
 let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+let unsubscribePerformanceMode: (() => void) | undefined;
 
 export interface CanvasImagePreviewLease {
   src: string;
@@ -42,6 +41,10 @@ interface Entry {
 
 function discard(entry: Entry): void {
   if (entries.get(entry.key) === entry) entries.delete(entry.key);
+  if (entries.size === 0) {
+    unsubscribePerformanceMode?.();
+    unsubscribePerformanceMode = undefined;
+  }
   entry.controller.abort();
   if (entry.preview) URL.revokeObjectURL(entry.preview.src);
   entry.preview = undefined;
@@ -51,18 +54,19 @@ function pruneIdle(): void {
   if (expiryTimer !== undefined) clearTimeout(expiryTimer);
   expiryTimer = undefined;
   const now = Date.now();
+  const budget = getPerformanceModeBudget();
   const idle = [...entries.values()]
     .filter((entry) => entry.state === 'ready' && entry.clients.size === 0)
     .sort((a, b) => a.idleSince - b.idleSince);
   let bytes = idle.reduce((total, entry) => total + (entry.preview?.rgbaBytes ?? 0), 0);
   let count = idle.length;
   for (const entry of idle) {
-    if (now - entry.idleSince >= IDLE_TTL_MS || bytes > MAX_IDLE_RGBA_BYTES || count > MAX_IDLE_ENTRIES) {
+    if (now - entry.idleSince >= budget.previewIdleMs || bytes > budget.imageIdleBytes || count > budget.imageIdleEntries) {
       bytes -= entry.preview?.rgbaBytes ?? 0;
       count--;
       discard(entry);
     } else {
-      expiryTimer = setTimeout(pruneIdle, Math.max(1, IDLE_TTL_MS - (now - entry.idleSince)));
+      expiryTimer = setTimeout(pruneIdle, Math.max(1, budget.previewIdleMs - (now - entry.idleSince)));
       break;
     }
   }
@@ -242,6 +246,7 @@ export function acquireCanvasImagePreview(
       controller: new AbortController(), idleSince: 0,
     };
     entries.set(key, entry);
+    unsubscribePerformanceMode ??= subscribePerformanceMode(pruneIdle);
   }
   const current = entry;
   return new Promise((resolve) => {

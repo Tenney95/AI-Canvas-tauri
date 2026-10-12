@@ -28,10 +28,10 @@ const KIND_ICONS: Record<AgentRationaleKind, string> = {
 };
 
 const TONE_CLASSES: Record<AgentRationaleTone, string> = {
-  active: 'text-indigo-300 bg-indigo-500/10',
-  success: 'text-emerald-400 bg-emerald-500/10',
-  warning: 'text-amber-400 bg-amber-500/10',
-  error: 'text-red-400 bg-red-500/10',
+  active: 'text-brand-light bg-indigo-500/10',
+  success: 'text-success-text bg-emerald-500/10',
+  warning: 'text-warning-light bg-amber-500/10',
+  error: 'text-danger-light bg-red-500/10',
   muted: 'text-canvas-text-muted bg-canvas-hover/60',
 };
 
@@ -50,7 +50,7 @@ export default function AgentExecutionRationale({ task }: AgentExecutionRational
         onClick={() => setExpanded((value) => !value)}
         className="flex min-h-8 w-full items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-canvas-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
       >
-        <Icon icon="mdi:timeline-text-outline" width="14" className="shrink-0 text-indigo-300/90" />
+        <Icon icon="mdi:timeline-text-outline" width="14" className="shrink-0 text-brand-light" />
         <span className="shrink-0 text-[11px] font-medium text-canvas-text-secondary">{t('执行依据')}</span>
         <span className="min-w-0 truncate text-[10px] text-canvas-text-muted">{latest?.title}</span>
         <span className="ml-auto shrink-0 text-[10px] text-canvas-text-muted">{t('{count} 项', { count: entries.length })}</span>

@@ -703,6 +703,7 @@ export default function VideoParamSelector({
         <AnimatedButton
           type="button"
           className="img-pill-btn ui-schema-menu-trigger"
+          title={triggerLabel}
           onClick={(e) => { e.stopPropagation(); if (open) closePopup(); else setOpen(true); }}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

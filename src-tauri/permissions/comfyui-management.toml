@@ -1,0 +1,13 @@
+[[permission]]
+identifier = "allow-comfyui-management"
+description = "Allows only scoped local ComfyUI management commands."
+commands.allow = [
+  "get_comfyui_management_snapshot",
+  "list_comfyui_versions",
+  "apply_comfyui_repository_action",
+  "list_comfyui_catalog",
+  "install_comfyui_extension",
+  "install_comfyui_dependencies",
+  "get_comfyui_launch_settings",
+  "save_comfyui_launch_settings",
+]

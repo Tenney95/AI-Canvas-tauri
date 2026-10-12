@@ -532,11 +532,11 @@ export default function ChatInput({
       ? `chat-skill-suggestion-${resolvedActiveSuggestionIndex}`
       : undefined;
 
-  const handleUploadSkill = useCallback(async () => {
+  const handleUploadSkill = useCallback(async (source: 'file' | 'folder') => {
     if (skillUploading) return;
     setSkillUploading(true);
     try {
-      await uploadSkill('file');
+      await uploadSkill(source);
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('上传 Skill 失败'), 'error');
     } finally {
@@ -696,22 +696,25 @@ export default function ChatInput({
                 <span>Skill</span>
                 <span className="flex items-center gap-2">
                   <span>{filteredSkills.length}</span>
-                  {allowSkillUpload && (
-                  <button
-                    type="button"
-                    disabled={skillUploading}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleUploadSkill();
-                    }}
-                    aria-label={t('上传 Skill')}
-                    title={t('上传 Skill 文件')}
-                    className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 disabled:cursor-wait disabled:opacity-50"
-                  >
-                    <Icon icon={skillUploading ? 'mdi:loading' : 'mdi:plus'} width="15" className={skillUploading ? 'animate-spin' : ''} />
-                  </button>
-                  )}
+                  {allowSkillUpload && ([
+                    { source: 'folder', label: '上传 Skill 文件夹', icon: 'mdi:folder-plus-outline' },
+                    { source: 'file', label: '上传 Skill 文件', icon: 'mdi:file-plus-outline' },
+                  ] as const).map((upload) => (
+                    <button
+                      key={upload.source}
+                      type="button"
+                      disabled={skillUploading}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleUploadSkill(upload.source);
+                      }}
+                      aria-label={t(upload.label)}
+                      title={t(upload.label)}
+                      className="ui-btn ui-btn--ghost ui-btn--sm"
+                    >
+                      <Icon icon={skillUploading ? 'mdi:loading' : upload.icon} width="15" className={skillUploading ? 'animate-spin' : ''} />
+                    </button>
+                  ))}
                 </span>
               </div>
               <div className="px-1 pb-1">

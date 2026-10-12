@@ -89,6 +89,42 @@ const IMAGE_RESPONSE = `{
   "data": [{"url": "https://cdn.example.com/image.png"}]
 }`;
 
+describe('media parameters in each imported model', () => {
+  it('keeps different image tiers per model and reports undeclared parameters', () => {
+    const draft = createProviderConfigDraft('image-parameters', { connectionName: 'Relay', models: [
+      { modelId: 'image-pro', category: 'image', submitRequest: IMAGE_REQUEST, submitResponse: IMAGE_RESPONSE,
+        imageCapability: { resolutions: ['1K'], defaultResolution: '1K', ratios: ['1:1'], defaultRatio: '1:1', supportsBatch: false } },
+      { modelId: 'image-hd', category: 'image', submitRequest: IMAGE_REQUEST.replaceAll('image-pro', 'image-hd'), submitResponse: IMAGE_RESPONSE,
+        imageCapability: { resolutions: ['1K', '2K'], ratios: ['1:1', '16:9'] } },
+    ] });
+    expect(draft.config.selectedModels?.map((model) => model.imageCapability?.resolutions)).toEqual([['1K'], ['1K', '2K']]);
+    expect(draft.summary).toContain('参考图待确认');
+  });
+
+  it('rejects adjustable options that a fixed request would silently ignore', () => {
+    expect(() => createProviderConfigDraft('fixed-image', { connectionName: 'Relay', baseUrl: 'https://gateway.example.com/v1', models: [{
+      modelId: 'fixed-image', category: 'image', protocolSource: 'declarative',
+      imageCapability: { resolutions: ['1K', '2K'] },
+      executionProtocol: { version: 2, mode: 'sync', auth: { type: 'bearer' },
+        submit: { method: 'POST', path: '/images/generations', body: { model: '{{model}}', prompt: '{{prompt}}', size: '1024x1024' } },
+        response: { type: 'json', result: { urlPath: 'data.0.url' } } },
+    }] })).toThrow('可调分辨率');
+  });
+
+  it('checks preserved image capabilities when replacing only the protocol', () => {
+    const model: ProviderModelSelection = { id: 'image', name: 'Image', category: 'image', provider: 'custom',
+      imageCapability: { resolutions: ['1K', '2K'] },
+    };
+    const protocol: ModelExecutionProtocol = { version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/images/generations', body: { prompt: '{{prompt}}', size: '1024x1024' } },
+      response: { type: 'json', result: { urlPath: 'data.0.url' } },
+    };
+    expect(() => mergeProviderModels([model], [{ id: model.id, name: model.name, category: 'image', provider: 'custom',
+      executionProfile: { preset: 'custom', protocol },
+    }], { image: ['executionProfile'] })).toThrow('可调分辨率');
+  });
+});
+
 const VIDEO_REQUEST = `
 curl https://gateway.example.com/v1/videos \\
   -H "Authorization: Bearer <token>" \\
@@ -1009,6 +1045,7 @@ curl https://gateway.example.com/v1/videos \
       models: [{
         ...VIDEO_MODEL,
         videoCapability: capability,
+        submitRequest: `curl https://gateway.example.com/v1/videos -d '{"model":"lec-seed-2-0-900","prompt":"cat","duration":15,"aspect_ratio":"16:9","resolution":"720p","fps":24,"generate_audio":true,"images":["https://cdn.example.com/ref.png"],"videos":["https://cdn.example.com/ref.mp4"],"audios":["https://cdn.example.com/ref.mp3"]}'`,
       }],
     });
     expect(draft.config.selectedModels?.[0].videoCapability).toEqual(capability);
@@ -1052,6 +1089,16 @@ curl https://gateway.example.com/v1/videos \
 });
 
 describe('Seedance built-in provider templates', () => {
+  it('keeps the Lec audio toggle undeclared while retaining supported reference audio', () => {
+    const draft = createProviderConfigDraft('lec-audio-parameters', {
+      connectionName: 'Lec', baseUrl: 'https://gateway.example.com/v1',
+      models: [{ modelId: 'private-seedance-2.5', templateId: '2.5:lec' }],
+    });
+    const model = draft.config.selectedModels![0];
+    expect(model.videoCapability?.supportsAudio).toBeUndefined();
+    expect(model.videoCapability?.maxAudioReferences).toBeGreaterThan(0);
+    expect(model.executionProfile?.protocol?.submit.body).toMatchObject({ audios: '{{audioUrls}}' });
+  });
   it('auto-matches a verified relay from baseUrl and exact model id', () => {
     const draft = createProviderConfigDraft('task-seedance-lec', {
       connectionName: 'Lec Seedance',
@@ -1116,6 +1163,16 @@ describe('Seedance built-in provider templates', () => {
       baseUrl: 'https://unknown.example.com',
       models: [{ modelId: 'doubao-seedance-2-5-pro' }],
     })).toThrow('examples 模式必须提供 submitRequest');
+  });
+
+  it.each(['h3-standard', 'h3-max'] as const)('H3 %s quick templates declare only mapped audio controls', (variant) => {
+    for (const transport of ['minimax', 'apimart', 'aiping'] as const) {
+      const draft = createProviderConfigDraft(`task-${variant}-${transport}`, {
+        connectionName: 'H3 template fixture', baseUrl: 'https://example.test',
+        models: [{ modelId: variant, templateId: `${variant}:${transport}` }],
+      });
+      expect(draft.config.selectedModels?.[0].videoCapability?.supportsAudio).toBeUndefined();
+    }
   });
 
   it('creates an H3 draft from a verified AI Ping template', () => {

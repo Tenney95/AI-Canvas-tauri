@@ -185,75 +185,77 @@ export default function VideoCapabilityEditor({
       </div>
 
       <div className="space-y-4">
-        <section className="rounded-lg border border-indigo-400/25 bg-indigo-400/[0.06] p-3">
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="min-w-56 flex-1 space-y-1 text-[10px] text-canvas-text-secondary">
-              <span className="font-medium text-canvas-text">Seedance 快速适配</span>
-              <Select
-                fixedMenu
-                className="w-full"
-                size="sm"
-                value={seedanceTemplateId}
-                onChange={setSeedanceTemplateId}
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+          <section className="ui-card min-w-0 p-2">
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="min-w-0 flex-1 space-y-1 text-[10px] text-canvas-text-secondary">
+                <span className="font-medium text-canvas-text">Seedance 快速适配</span>
+                <Select
+                  fixedMenu
+                  className="w-full"
+                  size="sm"
+                  value={seedanceTemplateId}
+                  onChange={setSeedanceTemplateId}
+                >
+                  {SEEDANCE_QUICK_ADAPT_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
+                </Select>
+              </label>
+              <button
+                type="button"
+                className="ui-btn ui-btn--secondary ui-btn--sm shrink-0"
+                onClick={() => {
+                  const [seedanceModel, transport] = seedanceTemplateId.split(':') as [
+                    SeedanceModelVariant,
+                    SeedanceQuickAdaptTransport,
+                  ];
+                  onApplySeedanceTemplate(seedanceModel, transport);
+                }}
               >
-                {SEEDANCE_QUICK_ADAPT_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>{option.label}</option>
-                ))}
-              </Select>
-            </label>
-            <button
-              type="button"
-              className="provider-secondary-btn min-h-8 px-3 text-[11px]"
-              onClick={() => {
-                const [seedanceModel, transport] = seedanceTemplateId.split(':') as [
-                  SeedanceModelVariant,
-                  SeedanceQuickAdaptTransport,
-                ];
-                onApplySeedanceTemplate(seedanceModel, transport);
-              }}
-            >
-              应用模板
-            </button>
-          </div>
-          <p className="mt-2 text-[10px] leading-4 text-canvas-text-muted">
-            会同时覆盖当前模型的视频能力与提交/轮询协议。不会根据模型名称自动猜测；应用后仍可继续手动调整。
-          </p>
-        </section>
+                应用模板
+              </button>
+            </div>
+            <p className="mt-1 text-[10px] leading-4 text-canvas-text-muted">
+              会同时覆盖当前模型的视频能力与提交/轮询协议。不会根据模型名称自动猜测；应用后仍可继续手动调整。
+            </p>
+          </section>
 
-        <section className="rounded-lg border border-blue-400/25 bg-blue-400/[0.06] p-3">
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="min-w-56 flex-1 space-y-1 text-[10px] text-canvas-text-secondary">
-              <span className="font-medium text-canvas-text">MiniMax H3 快速适配</span>
-              <Select
-                fixedMenu
-                className="w-full"
-                size="sm"
-                value={h3TemplateId}
-                onChange={setH3TemplateId}
+          <section className="ui-card min-w-0 p-2">
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="min-w-0 flex-1 space-y-1 text-[10px] text-canvas-text-secondary">
+                <span className="font-medium text-canvas-text">MiniMax H3 快速适配</span>
+                <Select
+                  fixedMenu
+                  className="w-full"
+                  size="sm"
+                  value={h3TemplateId}
+                  onChange={setH3TemplateId}
+                >
+                  {H3_QUICK_ADAPT_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
+                </Select>
+              </label>
+              <button
+                type="button"
+                className="ui-btn ui-btn--secondary ui-btn--sm shrink-0"
+                onClick={() => {
+                  const [h3Model, transport] = h3TemplateId.split(':') as [
+                    H3ModelVariant,
+                    H3QuickAdaptTransport,
+                  ];
+                  onApplyH3Template(h3Model, transport);
+                }}
               >
-                {H3_QUICK_ADAPT_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>{option.label}</option>
-                ))}
-              </Select>
-            </label>
-            <button
-              type="button"
-              className="provider-secondary-btn min-h-8 px-3 text-[11px]"
-              onClick={() => {
-                const [h3Model, transport] = h3TemplateId.split(':') as [
-                  H3ModelVariant,
-                  H3QuickAdaptTransport,
-                ];
-                onApplyH3Template(h3Model, transport);
-              }}
-            >
-              应用模板
-            </button>
-          </div>
-          <p className="mt-2 text-[10px] leading-4 text-canvas-text-muted">
-            支持 MiniMax 官方、APIMart 和 AI Ping。Context-IR 与 Regeneration 不属于普通视频生成模板。
-          </p>
-        </section>
+                应用模板
+              </button>
+            </div>
+            <p className="mt-1 text-[10px] leading-4 text-canvas-text-muted">
+              支持 MiniMax 官方、APIMart 和 AI Ping。Context-IR 与 Regeneration 不属于普通视频生成模板。
+            </p>
+          </section>
+        </div>
 
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">

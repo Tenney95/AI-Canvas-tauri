@@ -4,7 +4,7 @@ import {
   buildSkillCatalogPrompt,
   clearSkillCatalogForTests,
   clearSkillCatalogTask,
-  consumeSkillContentBudget,
+  claimTaskSkill,
   isSkillModelInvocable,
   listMcpReadableSkills,
   listModelInvocableSkills,
@@ -245,49 +245,15 @@ describe('buildSkillCatalogPrompt', () => {
   });
 });
 
-describe('任务级加载预算', () => {
-  it('允许在配额内加载并累计字符', () => {
-    const first = consumeSkillContentBudget('task-1', 'skill-1', 100);
-    expect(first).toEqual({ ok: true, allowedChars: 100 });
-    expect(consumeSkillContentBudget('task-1', 'skill-1', 50))
-      .toEqual({ ok: true, allowedChars: 50 });
+describe('任务级 Skill 数量', () => {
+  it('重复读取不占用新的数量配额', () => {
+    for (let i = 0; i < 30; i++) expect(claimTaskSkill('task-1', 'skill-1')).toBeUndefined();
   });
-
-  it('同一 Skill 的重复读取不额外占用 Skill 数量配额', () => {
-    for (let index = 0; index < SKILL_CATALOG_LIMITS.maxTaskSkillLoads + 3; index += 1) {
-      expect(consumeSkillContentBudget('task-1', 'skill-1', 10).ok).toBe(true);
-    }
-  });
-
-  it('超过 Skill 数量上限后返回中文拒绝原因而不是抛错', () => {
-    for (let index = 0; index < SKILL_CATALOG_LIMITS.maxTaskSkillLoads; index += 1) {
-      expect(consumeSkillContentBudget('task-1', `skill-${index}`, 10).ok).toBe(true);
-    }
-    const result = consumeSkillContentBudget('task-1', 'skill-extra', 10);
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toContain('数量');
-  });
-
-  it('字符预算耗尽后拒绝，并按剩余额度收窄', () => {
-    const nearlyAll = SKILL_CATALOG_LIMITS.taskContentChars - 200;
-    expect(consumeSkillContentBudget('task-1', 'skill-1', nearlyAll))
-      .toEqual({ ok: true, allowedChars: nearlyAll });
-    const result = consumeSkillContentBudget('task-1', 'skill-1', 1000);
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toContain('预算');
-  });
-
-  it('按剩余额度收窄单次返回长度', () => {
-    const used = SKILL_CATALOG_LIMITS.taskContentChars - 3000;
-    consumeSkillContentBudget('task-1', 'skill-1', used);
-    expect(consumeSkillContentBudget('task-1', 'skill-1', 99999))
-      .toEqual({ ok: true, allowedChars: 3000 });
-  });
-
-  it('任务之间预算互相隔离，清理后重置', () => {
-    consumeSkillContentBudget('task-1', 'skill-1', SKILL_CATALOG_LIMITS.taskContentChars);
-    expect(consumeSkillContentBudget('task-2', 'skill-1', 100).ok).toBe(true);
+  it('不同 Skill 达到上限后拒绝，任务隔离和清理仍有效', () => {
+    for (let i = 0; i < 4; i++) expect(claimTaskSkill('task-1', `skill-${i}`)).toBeUndefined();
+    expect(claimTaskSkill('task-1', 'extra')).toContain('数量');
+    expect(claimTaskSkill('task-2', 'extra')).toBeUndefined();
     clearSkillCatalogTask('task-1');
-    expect(consumeSkillContentBudget('task-1', 'skill-1', 100).ok).toBe(true);
+    expect(claimTaskSkill('task-1', 'extra')).toBeUndefined();
   });
 });

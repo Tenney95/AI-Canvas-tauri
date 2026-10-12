@@ -10,6 +10,7 @@ import type { ToolbarButtonDef, NodeType } from '../../../../types';
 import type { UseToolbarEditReturn } from '../../../../hooks/useToolbarEdit';
 import { getSlashCommands } from '../slashCommands';
 import { useAppStore } from '../../../../store/useAppStore';
+import { getCanvasLockedZoom, normalizeCanvasZoom } from '../../../../utils/canvasViewportPreferences';
 
 interface ToolbarEditorProps {
   edit: UseToolbarEditReturn;
@@ -147,9 +148,12 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
     const originalViewport = originalViewportRef.current;
     if (!originalViewport) return;
     originalViewportRef.current = null;
-    void setViewport(originalViewport, {
+    const config = useAppStore.getState().config;
+    const zoom = getCanvasLockedZoom(config) ?? normalizeCanvasZoom(originalViewport.zoom, config);
+    void setViewport({ ...originalViewport, zoom }, {
       duration: VIEWPORT_TRANSITION_DURATION_MS,
       ease: easeOutCubic,
+      interpolate: 'linear',
     });
   }, [setViewport]);
 
@@ -174,7 +178,7 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
     };
   }, [restoreOriginalViewport]);
 
-  // 编辑框完成首次布局后，将其平滑移动到画布可视区域中央并缩放至 120%。
+  // 编辑框完成首次布局后居中；锁定画布时沿用用户比例。
   useEffect(() => {
     if (!edit.isEditing) return;
     originalViewportRef.current ??= getViewport();
@@ -187,14 +191,16 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
       const editorCenterX = editorRect.left + editorRect.width / 2;
       const editorCenterY = editorRect.top + editorRect.height / 2;
       const editorFlowCenter = screenToFlowPosition({ x: editorCenterX, y: editorCenterY });
+      const config = useAppStore.getState().config;
 
       void setCenter(
         editorFlowCenter.x,
         editorFlowCenter.y,
         {
-          zoom: EDITOR_TARGET_ZOOM,
+          zoom: getCanvasLockedZoom(config) ?? normalizeCanvasZoom(EDITOR_TARGET_ZOOM, config),
           duration: VIEWPORT_TRANSITION_DURATION_MS,
           ease: easeOutCubic,
+          interpolate: 'linear',
         },
       );
     });

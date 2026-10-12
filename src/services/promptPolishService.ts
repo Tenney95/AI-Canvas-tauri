@@ -206,7 +206,7 @@ export function createPromptPolishSession(nodeId: string) {
     apply() {
       if (result === null || !fresh()) throw new Error('原文或画布已变化，请重新润色后再应用。');
       if (!packageCurrent()) throw new Error('所选上传智能体已不可用，请重新润色后再应用。');
-      useAppStore.getState().updateNodeData(nodeId, { prompt: result });
+      useAppStore.getState().updateNodeDataTransient(nodeId, { prompt: result });
       completeCanvasDerivation(guard);
       undoGuard = registerCanvasDerivation(useAppStore.getState(), nodeId, { onCancel: () => controller.abort() });
     },
@@ -216,7 +216,7 @@ export function createPromptPolishSession(nodeId: string) {
         || current.activeNodeId !== nodeId || current.nodes.find((item) => item.id === nodeId)?.data.prompt !== result) {
         throw new Error('提示词或画布已变化，不能撤销本次润色。');
       }
-      current.updateNodeData(nodeId, { prompt: original });
+      current.updateNodeDataTransient(nodeId, { prompt: original });
       completeCanvasDerivation(undoGuard);
       undoGuard = null;
     },

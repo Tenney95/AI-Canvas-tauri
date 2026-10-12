@@ -41,6 +41,7 @@ function SelectedNodeFlowEdge({
   type,
 }: EdgeProps) {
   const onEdgesChange = useAppStore((state) => state.onEdgesChange);
+  const performanceMode = useAppStore((state) => state.config.performanceMode === true);
   const { screenToFlowPosition } = useReactFlow();
   const [showDeleteButton, setShowDeleteButton] = useState(false);
   const [deleteButtonPosition, setDeleteButtonPosition] = useState({ x: 0, y: 0 });
@@ -123,7 +124,7 @@ function SelectedNodeFlowEdge({
           labelBgBorderRadius={labelBgBorderRadius}
         />
       </g>
-      {type === 'selected-node-flow' && (
+      {type === 'selected-node-flow' && !performanceMode && (
         <g className="selected-node-edge-flow-group" aria-hidden="true">
           <defs>
             <linearGradient

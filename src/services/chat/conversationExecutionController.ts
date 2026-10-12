@@ -1,3 +1,5 @@
+import { sanitizeDomainText } from './subAgentMaterials';
+import { subscribeAgentLifecycle } from './agentLifecycle';
 /**
  * 对话提交与恢复的统一控制层，按会话模式分派普通回复、Agent 任务和显式媒体生成。
  * 组件只调用本模块，不直接拼接运行时、调度器或审批流程。
@@ -58,6 +60,7 @@ const STREAMING_UI_FLUSH_INTERVAL_MS = 50;
 
 interface StreamingMessageBuffer {
   append: (delta: string) => void;
+  appendReasoning: (delta: string) => void;
   flush: () => void;
   cancel: () => void;
 }
@@ -100,20 +103,27 @@ function createStreamingMessageBuffer(
   onProgress?: () => void,
 ): StreamingMessageBuffer {
   let pendingText = '';
+  let reasoning = '';
+  let reasoningDirty = false;
+  let closed = false;
+  const original = useAppStore.getState().messages.find((item) => item.id === messageId);
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const flushPending = () => {
     flushTimer = null;
-    if (!pendingText) return;
+    if (closed || (!pendingText && !reasoningDirty)) return;
     const delta = pendingText;
     pendingText = '';
     const store = useAppStore.getState();
     const message = store.messages.find((item) => item.id === messageId);
-    if (!message) return;
+    if (!message || message.conversationId !== original?.conversationId || message.agentTaskId !== original?.agentTaskId) return;
     store.updateMessageTransient(messageId, {
       content: (message.content || '') + delta,
+      ...(reasoningDirty ? { reasoning: sanitizeDomainText(reasoning).replace(/\b(?:sk|key|token)-[A-Za-z0-9_-]*/gi, '[已脱敏密钥]'), reasoningTruncated: reasoning.length >= 12000 } : {}),
       status: 'streaming',
+      activity: delta ? 'responding' : 'planning',
     });
+    reasoningDirty = false;
     onProgress?.();
   };
 
@@ -125,11 +135,17 @@ function createStreamingMessageBuffer(
 
   return {
     append: (delta) => {
-      if (!delta) return;
+      if (closed || !delta) return;
       pendingText += delta;
       if (!flushTimer) {
         flushTimer = setTimeout(flushPending, STREAMING_UI_FLUSH_INTERVAL_MS);
       }
+    },
+    appendReasoning: (delta) => {
+      if (closed || !delta) return;
+      reasoning = (reasoning + delta).slice(0, 12000);
+      reasoningDirty = true;
+      if (!flushTimer) flushTimer = setTimeout(flushPending, STREAMING_UI_FLUSH_INTERVAL_MS);
     },
     flush: () => {
       clearFlushTimer();
@@ -138,6 +154,8 @@ function createStreamingMessageBuffer(
     cancel: () => {
       clearFlushTimer();
       pendingText = '';
+      reasoningDirty = false;
+      closed = true;
     },
   };
 }
@@ -371,118 +389,153 @@ function driveAgentTask(
 
     if (resolveAssistantModel(projectId)) {
       const streamingMessage = createStreamingMessageBuffer(assistantMessageId, onProgress);
-      const availableTools = getAvailableAgentTools({
-        taskId,
-        projectId,
-        conversationId,
-        mode,
-        toolAllowlist: task.toolAllowlist,
-      });
-      if (
-        availableTools.length > 0
-        || mode === 'plan'
-        || task.toolAllowlist !== undefined
-      ) {
-        const outcome = await runAgentLoop({
-          taskId,
-          systemPrompt: buildAssistantSystemPrompt({
-            agentTools: true,
-            includeToolGuidance: false,
-            projectId,
-            includeCanvasContext: useAppStore.getState().currentProjectId === projectId,
-          }),
-          userMessage: task.skillBindings === undefined
-            ? expandSkillReferences(text, [...store.userSkills, ...store.agentPackageSkills])
-            : expandSkillBindings(text, task.skillBindings),
-          excludeMessageIds: [userMessageId, assistantMessageId],
-          signal,
-          callbacks: {
-            onTextDelta: streamingMessage.append,
-            onComplete: (fullText) => {
-              streamingMessage.cancel();
-              useAppStore.getState().updateMessage(assistantMessageId, {
-                content: fullText,
-                status: 'done',
-              });
-              onProgress?.();
-            },
-            onApprovalRequired: (step) => {
-              streamingMessage.flush();
-              const currentStore = useAppStore.getState();
-              const message = currentStore.messages.find(
-                (item) => item.id === assistantMessageId,
-              );
-              currentStore.updateMessage(assistantMessageId, {
-                content: message?.content || `等待确认：${step.title}`,
-                status: 'preview',
-              });
-            },
-            onToolResult: (result) => {
-              if (!result.sources?.length) return;
-              const currentStore = useAppStore.getState();
-              const message = currentStore.messages.find(
-                (item) => item.id === assistantMessageId,
-              );
-              const sources = [...(message?.sources ?? [])];
-              for (const source of result.sources) {
-                if (!sources.some((item) => item.url === source.url)) sources.push(source);
-              }
-              currentStore.updateMessage(assistantMessageId, { sources });
-              onProgress?.();
-            },
-            onError: (error) => {
-              streamingMessage.cancel();
-              failed = true;
-              useAppStore.getState().updateMessage(assistantMessageId, {
-                content: `处理失败: ${error}`,
-                status: 'error',
-                finishReason: 'error',
-              });
-            },
-          },
-        });
-        if (outcome === 'paused' && useAppStore.getState().agentTasks.find(
-          (item) => item.id === taskId,
-        )?.pausedReason === 'model_output_truncated') {
-          streamingMessage.flush();
-          streamingMessage.cancel();
-          const current = useAppStore.getState().messages.find((item) => item.id === assistantMessageId);
-          useAppStore.getState().updateMessage(assistantMessageId, {
-            content: current?.content || '模型回复达到输出上限，本轮工具提案未执行，可继续任务。',
-            status: 'partial',
-            finishReason: 'length',
-          });
-          onProgress?.();
+      useAppStore.getState().updateMessageTransient(assistantMessageId, { reasoning: undefined, reasoningTruncated: undefined, responseError: undefined, activity: 'connecting', activityStartedAt: Date.now() });
+      const unsubscribe = subscribeAgentLifecycle((event) => {
+        if (signal.aborted) return;
+        if (event.type === 'context.compression' && event.conversationId === conversationId && (!event.taskId || event.taskId === taskId)) {
+          useAppStore.getState().updateMessageTransient(assistantMessageId, { activity: event.phase === 'start' ? 'compressing' : 'planning', activityStartedAt: event.timestamp });
+        } else if (event.type === 'model.round' && event.taskId === taskId && event.phase === 'start') {
+          useAppStore.getState().updateMessageTransient(assistantMessageId, { activity: 'planning', activityStartedAt: event.timestamp });
         }
-        return outcome;
-      }
+      });
+      try {
+        const availableTools = getAvailableAgentTools({
+          taskId,
+          projectId,
+          conversationId,
+          mode,
+          toolAllowlist: task.toolAllowlist,
+        });
+        if (
+          availableTools.length > 0
+          || mode === 'plan'
+          || task.toolAllowlist !== undefined
+        ) {
+          const outcome = await runAgentLoop({
+            taskId,
+            systemPrompt: buildAssistantSystemPrompt({
+              agentTools: true,
+              includeToolGuidance: false,
+              projectId,
+              includeCanvasContext: useAppStore.getState().currentProjectId === projectId,
+            }),
+            userMessage: task.skillBindings === undefined
+              ? expandSkillReferences(text, [...store.userSkills, ...store.agentPackageSkills])
+              : expandSkillBindings(text, task.skillBindings),
+            excludeMessageIds: [userMessageId, assistantMessageId],
+            signal,
+            callbacks: {
+              onTextDelta: streamingMessage.append,
+          onReasoningDelta: streamingMessage.appendReasoning,
+              onComplete: (fullText) => {
+                streamingMessage.flush();
+                streamingMessage.cancel();
+                useAppStore.getState().updateMessage(assistantMessageId, {
+                  content: fullText,
+                  status: 'done',
+                });
+                onProgress?.();
+              },
+              onApprovalRequired: (step) => {
+                streamingMessage.flush();
+                const currentStore = useAppStore.getState();
+                const message = currentStore.messages.find(
+                  (item) => item.id === assistantMessageId,
+                );
+                currentStore.updateMessage(assistantMessageId, {
+                  content: message?.content || `等待确认：${step.title}`,
+                  status: 'preview',
+                });
+              },
+              onToolResult: (result) => {
+                if (!result.sources?.length) return;
+                const currentStore = useAppStore.getState();
+                const message = currentStore.messages.find(
+                  (item) => item.id === assistantMessageId,
+                );
+                const sources = [...(message?.sources ?? [])];
+                for (const source of result.sources) {
+                  if (!sources.some((item) => item.url === source.url)) sources.push(source);
+                }
+                currentStore.updateMessage(assistantMessageId, { sources });
+                onProgress?.();
+              },
+              onError: (error) => {
+                if (signal.aborted) return;
+                streamingMessage.flush();
+                streamingMessage.cancel();
+                failed = true;
+                useAppStore.getState().updateMessage(assistantMessageId, {
+                  content: useAppStore.getState().messages.find((item) => item.id === assistantMessageId)?.content || `处理失败: ${error}`,
+              responseError: sanitizeDomainText(error).slice(0, 1000),
+                  status: useAppStore.getState().agentTasks.find((item) => item.id === taskId)?.status === 'paused' ? 'interrupted' : 'error',
+                  finishReason: 'error',
+                });
+              },
+            },
+          });
+          if (outcome === 'paused' && useAppStore.getState().agentTasks.find(
+            (item) => item.id === taskId,
+          )?.pausedReason === 'model_output_truncated') {
+            streamingMessage.flush();
+            streamingMessage.cancel();
+            const current = useAppStore.getState().messages.find((item) => item.id === assistantMessageId);
+            useAppStore.getState().updateMessage(assistantMessageId, {
+              content: current?.content || '模型回复达到输出上限，本轮工具提案未执行，可继续任务。',
+              status: 'partial',
+              finishReason: 'length',
+            });
+            onProgress?.();
+          }
+          return outcome;
+        }
 
-      await runStreamingPipeline(text, conversationId, {
-        onTextDelta: streamingMessage.append,
-        onComplete: (fullText, results) => {
-          streamingMessage.cancel();
-          useAppStore.getState().updateMessage(assistantMessageId, {
-            content: fullText,
-            status: 'done',
-            executionResults: results.length > 0 ? results : undefined,
+        await runStreamingPipeline(text, conversationId, {
+          onTextDelta: streamingMessage.append,
+          onReasoningDelta: streamingMessage.appendReasoning,
+          onComplete: (fullText, results) => {
+            streamingMessage.flush();
+            streamingMessage.cancel();
+            useAppStore.getState().updateMessage(assistantMessageId, {
+              content: fullText,
+              status: 'done',
+              executionResults: results.length > 0 ? results : undefined,
+            });
+            onProgress?.();
+          },
+          onError: (error) => {
+            if (signal.aborted) return;
+            streamingMessage.flush();
+            streamingMessage.cancel();
+            failed = true;
+            useAppStore.getState().updateMessage(assistantMessageId, {
+              content: useAppStore.getState().messages.find((item) => item.id === assistantMessageId)?.content || `处理失败: ${error}`,
+              responseError: sanitizeDomainText(error).slice(0, 1000),
+              status: 'error',
+              finishReason: 'error',
+            });
+          },
+          onMediaIntent: (intent) => {
+            void triggerMediaGeneration(assistantMessageId, intent);
+          },
+          signal,
+        }, projectId);
+        return failed ? 'failed' : 'completed';
+      } finally {
+        streamingMessage.flush();
+        streamingMessage.cancel();
+        unsubscribe();
+        const currentStore = useAppStore.getState();
+        const currentMessage = currentStore.messages.find((item) => item.id === assistantMessageId);
+        const currentTask = currentStore.agentTasks.find((item) => item.id === taskId);
+        if (currentMessage?.status === 'streaming' && (signal.aborted || currentTask?.status === 'paused')) {
+          currentStore.updateMessage(assistantMessageId, {
+            status: currentTask?.status === 'stopped' ? 'canceled' : 'interrupted',
+            finishReason: signal.aborted ? 'canceled' : currentMessage.finishReason,
           });
-          onProgress?.();
-        },
-        onError: (error) => {
-          streamingMessage.cancel();
-          failed = true;
-          useAppStore.getState().updateMessage(assistantMessageId, {
-            content: `处理失败: ${error}`,
-            status: 'error',
-            finishReason: 'error',
-          });
-        },
-        onMediaIntent: (intent) => {
-          void triggerMediaGeneration(assistantMessageId, intent);
-        },
-        signal,
-      }, projectId);
-      return failed ? 'failed' : 'completed';
+        }
+        useAppStore.getState().updateMessageTransient(assistantMessageId, { activity: undefined, activityStartedAt: undefined });
+      }
     }
 
     if (mode === 'plan' || task.toolAllowlist !== undefined) {

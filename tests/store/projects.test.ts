@@ -188,6 +188,55 @@ describe('project creation', () => {
 });
 
 describe('project switching', () => {
+  it('keeps unsaved canvas data and reports no opened project when saving before switching fails', async () => {
+    const showToast = vi.fn();
+    const saveCurrentProject = vi.fn(async () => undefined);
+    useAppStore.setState({ projects: [
+      { id: 'project-old', name: 'Old', createdAt: 1, updatedAt: 1 },
+      { id: 'project-new', name: 'New', createdAt: 2, updatedAt: 2 },
+    ], currentProjectId: 'project-old', nodes: [{ id: 'unsaved', type: 'ai-text', position: { x: 0, y: 0 },
+      data: { label: 'unsaved', type: 'ai-text' } }], saveCurrentProject, showToast });
+    await expect(useAppStore.getState().switchProject('project-new')).resolves.toBeUndefined();
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'project-old', switchingProjectName: null,
+      nodes: [{ id: 'unsaved' }] });
+    expect(fileMocks.loadProjectData).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith('当前项目保存失败，已取消项目切换', 'error');
+  });
+
+  it('opens a saved project from startup and returns the actual opened id', async () => {
+    stubInitializationActions();
+    useAppStore.setState({ currentProjectId: null, projects: [
+      { id: 'startup-project', name: 'Startup', createdAt: 1, updatedAt: 1 },
+    ] });
+    fileMocks.loadProjectData.mockResolvedValue({ id: 'startup-project', name: 'Startup', nodes: [], edges: [], groups: [] });
+    await expect(useAppStore.getState().switchProject('startup-project')).resolves.toBe('startup-project');
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'startup-project', projectLoadStatus: 'ready' });
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+    expect(useAppStore.getState().loadConversationsForProject).toHaveBeenCalledWith('startup-project');
+  });
+
+  it('does not apply a project load after the navigation signal is cancelled and clears the overlay', async () => {
+    stubInitializationActions();
+    let finishLoad: ((data: unknown) => void) | undefined;
+    fileMocks.loadProjectData.mockImplementation(() => new Promise((resolve) => { finishLoad = resolve; }));
+    const saveCurrentProject = vi.fn(async () => 'project-old');
+    useAppStore.setState({ projects: [
+      { id: 'project-old', name: 'Old', createdAt: 1, updatedAt: 1 },
+      { id: 'project-new', name: 'New', createdAt: 2, updatedAt: 2 },
+    ], currentProjectId: 'project-old', saveCurrentProject });
+    const controller = new AbortController();
+    const pending = useAppStore.getState().switchProject('project-new', { signal: controller.signal });
+    await vi.waitFor(() => expect(finishLoad).toBeDefined());
+    controller.abort();
+    finishLoad?.({ id: 'project-new', name: 'New', nodes: [], edges: [], groups: [] });
+    await expect(pending).resolves.toBeUndefined();
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'project-old', switchingProjectName: null });
+    expect(useAppStore.getState().loadConversationsForProject).not.toHaveBeenCalled();
+    fileMocks.loadProjectData.mockClear();
+    await expect(useAppStore.getState().switchProject('project-new', { signal: controller.signal })).resolves.toBeUndefined();
+    expect(fileMocks.loadProjectData).not.toHaveBeenCalled();
+  });
+
   it('saves the current project before loading and isolates target project state', async () => {
     const saveCurrentProject = vi.fn(async () => 'project-old');
     const loadConversationsForProject = vi.fn(async () => undefined);

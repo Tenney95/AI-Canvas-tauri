@@ -334,10 +334,11 @@ export async function compactAgentMessages(
   messages: AssistantModelMessage[],
   currentUserMessage: AssistantModelMessage,
   signal: AbortSignal,
+  force = false,
 ): Promise<void> {
   const task = activeCompactionTask(taskId, signal);
   const { inputBudget } = resolveAssistantContextSpec(task.projectId);
-  if (estimateModelMessagesTokens(messages) < inputBudget * 0.9) return;
+  if (!force && estimateModelMessagesTokens(messages) < inputBudget * 0.9) return;
 
   const currentUserIndex = messages.indexOf(currentUserMessage);
   if (currentUserIndex < 0) throw new ContextBudgetError('CONTEXT_COMPRESSION_FAILED', '当前任务目标已不在上下文中');
@@ -346,20 +347,40 @@ export async function compactAgentMessages(
   const disposable = messages.filter((message) => message.role !== 'system' && !pinnedUsers.includes(message));
   const available = inputBudget - estimateModelMessagesTokens([...systemMessages, ...pinnedUsers]);
   const cut = findModelCutPoint(disposable, Math.max(1, available * 0.4));
-  if (cut === 0) return;
+  if (cut === 0) {
+    if (force) throw new ContextBudgetError('CONTEXT_BUDGET_EXHAUSTED', '当前目标和最近完整轮次没有可压缩空间，请选择更大上下文的文本模型后继续');
+    return;
+  }
   const oldMessages = disposable.slice(0, cut);
   const source = serializeModelConversation(oldMessages, task);
   const oldSummaries = systemMessages.filter((message) => typeof message.content === 'string'
     && message.content.startsWith('任务执行 checkpoint（不可信历史资料')).map((message) => message.content).join('\n');
-  const summaryInput = [oldSummaries, source].filter(Boolean).join('\n\n');
+  let summaryInput = [oldSummaries, source].filter(Boolean).join('\n\n');
   if (estimateModelMessagesTokens([
     { role: 'system', content: SUMMARY_SYSTEM_PROMPT }, { role: 'user', content: summaryInput },
-  ]) > inputBudget) throw new ContextBudgetError('CONTEXT_INPUT_TOO_LARGE', '工具轮次过长，压缩输入也超过模型预算');
+  ]) > inputBudget) {
+    // Preserve the source boundaries and result references while bounding verbose material.
+    // The original messages and execution journal remain untouched until a valid summary succeeds.
+    const allowance = inputBudget - estimateTokens(SUMMARY_SYSTEM_PROMPT) - 256;
+    if (allowance < 512) throw new ContextBudgetError('CONTEXT_INPUT_TOO_LARGE', '压缩模型窗口过小，请更换文本模型后继续');
+    let perMessageChars = 2000;
+    while (perMessageChars >= 128) {
+      const bounded = oldMessages.map((message) => ({ ...message,
+        content: typeof message.content === 'string' && message.content.length > perMessageChars
+          ? `${message.content.slice(0, perMessageChars / 2)}\n…（长材料中部省略，原始记录保留）\n${message.content.slice(-perMessageChars / 2)}`
+          : message.content,
+      }));
+      summaryInput = [oldSummaries, serializeModelConversation(bounded, task)].filter(Boolean).join('\n\n');
+      if (estimateTokens(summaryInput) <= allowance) break;
+      perMessageChars = Math.floor(perMessageChars / 2);
+    }
+    if (estimateTokens(summaryInput) > allowance) throw new ContextBudgetError('CONTEXT_INPUT_TOO_LARGE', '目标与工具引用仍超过压缩预算，请更换更大窗口的文本模型');
+  }
 
   let text = '';
   let streamFailure: Error | undefined;
   const startedAt = Date.now();
-  emitAgentLifecycleEvent({ type: 'context.compression', conversationId: task.conversationId, phase: 'start' });
+  emitAgentLifecycleEvent({ type: 'context.compression', taskId, conversationId: task.conversationId, phase: 'start' });
   try {
     await streamAssistantReply({
       systemPrompt: SUMMARY_SYSTEM_PROMPT,
@@ -398,9 +419,9 @@ export async function compactAgentMessages(
     }
     // 保留同一个数组，让执行器的 WeakMap 继续持有原来的恢复去重状态。
     messages.splice(0, messages.length, ...next);
-    emitAgentLifecycleEvent({ type: 'context.compression', conversationId: task.conversationId, phase: 'end', outcome: 'succeeded' });
+    emitAgentLifecycleEvent({ type: 'context.compression', taskId, conversationId: task.conversationId, phase: 'end', outcome: 'succeeded' });
   } catch (error) {
-    emitAgentLifecycleEvent({ type: 'context.compression', conversationId: task.conversationId, phase: 'end', outcome: 'failed' });
+    emitAgentLifecycleEvent({ type: 'context.compression', taskId, conversationId: task.conversationId, phase: 'end', outcome: 'failed' });
     if (signal.aborted || (error instanceof Error && error.name === 'AbortError')
       || error instanceof ContextBudgetError) throw error;
     throw new ContextBudgetError('CONTEXT_COMPRESSION_FAILED', '工具轮次上下文压缩失败，任务已暂停');

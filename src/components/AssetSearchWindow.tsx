@@ -36,6 +36,7 @@ import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
 import { distributeToColumns } from './assets/waterfallColumns';
 import { applyAppearanceTheme } from '../services/appearance/appearanceRuntime';
 import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
+import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
 
 /** 单页渲染数量（增量加载步长）*/
 const PAGE_SIZE = 60;
@@ -72,6 +73,9 @@ export default function AssetSearchWindow() {
       // 独立窗口需自行应用完整外观
       applyAppearanceTheme(cfg?.appearance ?? getAppearanceForConfig(cfg));
       document.documentElement.toggleAttribute('data-native-cursor', cfg?.customCursor === false);
+      const performanceMode = (cfg?.performanceMode ?? cfg?.graphicsCompatibilityMode) === true;
+      syncPerformanceModeRuntime(performanceMode);
+      document.documentElement.toggleAttribute('data-performance-mode', performanceMode);
       setLocale(cfg?.language);
       // 同步用户自定义数据根目录到 fileService
       setBaseDataDir(cfg?.baseDataDir);

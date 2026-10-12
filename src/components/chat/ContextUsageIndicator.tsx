@@ -22,11 +22,7 @@ export default function ContextUsageIndicator({ usage }: ContextUsageIndicatorPr
 
   const ratio = Math.min(1, Math.max(0, usage.ratio));
   const percent = Math.round(usage.ratio * 100);
-  const color = usage.ratio >= 0.9
-    ? '#f87171' // red-400
-    : usage.ratio >= 0.75
-      ? '#fbbf24' // amber-400
-      : '#818cf8'; // indigo-400
+  const colorClass = usage.ratio >= 0.9 ? 'text-danger-light' : usage.ratio >= 0.75 ? 'text-warning-light' : 'text-brand-light';
 
   const windowSourceLabel = usage.source === 'declared'
     ? t('模型配置声明')
@@ -62,7 +58,8 @@ export default function ContextUsageIndicator({ usage }: ContextUsageIndicatorPr
           cy={SIZE / 2}
           r={R}
           fill="none"
-          stroke={color}
+          stroke="currentColor"
+          className={colorClass}
           strokeWidth={STROKE}
           strokeLinecap="round"
           strokeDasharray={CIRC}

@@ -36,6 +36,8 @@ function getShortcutList(t: ReturnType<typeof useT>): { action: string; key: str
     { action: '锁定比例缩放', key: `缩放时按住 ${shift}` },
     { action: '关闭菜单 / 设置', key: 'Escape' },
     { action: '画布复位', key: 'F' },
+    { action: '放大 / 缩小画布', key: '+ / -' },
+    { action: '锁定 / 解锁画布缩放', key: `${shift} + L` },
     { action: '小地图', key: 'M' },
     { action: '资产库', key: 'Tab' },
     { action: '资源搜索窗口', key: `${alt} + Space  /  ${ctrl} + ${shift} + Space` },

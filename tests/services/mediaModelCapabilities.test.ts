@@ -1,6 +1,50 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSeedreamSize } from '../../src/services/ai/helpers';
 import { buildImageCapabilityRequest, getImageCapability, resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
+import { assertConfiguredImageReferences, assertImageModelCapability, assertModelCapabilityProtocol, resolveConfiguredImageParameters } from '../../src/services/ai/modelCapabilityValidation';
+
+describe('custom image parameter declarations', () => {
+  it('resolves a gateway model using its own saved tiers instead of a same-name provider', () => {
+    const config = { providers: { custom: { name: 'Custom', apiKey: '', catalogId: 'custom-openai' } },
+      generalModels: [{ id: 'image', name: 'Image', modelId: 'gpt-image-2.5', category: 'image' as const, providerConfigId: 'custom',
+        imageCapability: { resolutions: ['1K'], defaultResolution: '1K', ratios: ['1:1'], defaultRatio: '1:1' } }] };
+    expect(resolveImageParameterCapability('general/image', 'general', config)?.resolutions).toEqual(['1K']);
+    expect(resolveImageParameterCapability('general/image', 'general', { ...config,
+      generalModels: [{ ...config.generalModels[0], imageCapability: undefined }] })?.resolutions).toEqual([]);
+  });
+
+  it('uses declared defaults and rejects unsupported parameters and references', () => {
+    const capability = { resolutions: ['1K'], defaultResolution: '1K', ratios: ['16:9'], defaultRatio: '16:9',
+      supportsBatch: true, maxBatchCount: 2, supportsImageReference: false };
+    expect(resolveConfiguredImageParameters(capability, { count: 1 })).toEqual({ imageSize: '1K', aspectRatio: '16:9' });
+    expect(() => resolveConfiguredImageParameters(capability, { imageSize: '4K', count: 1 })).toThrow('分辨率');
+    expect(() => resolveConfiguredImageParameters(capability, { count: 3 })).toThrow('最多生成 2');
+    expect(() => assertConfiguredImageReferences(capability, 1)).toThrow('不支持参考图');
+    expect(() => assertImageModelCapability({ resolutions: ['1K'], defaultResolution: '2K' })).toThrow('defaultResolution');
+  });
+
+  it('does not accept an audio toggle without a request mapping', () => {
+    expect(() => assertModelCapabilityProtocol({ id: 'video', name: 'Video', category: 'video', provider: 'custom',
+      videoCapability: { supportsAudio: true }, executionProfile: { preset: 'custom', protocol: {
+        version: 2, mode: 'sync', submit: { method: 'POST', path: '/videos', body: { prompt: '{{prompt}}' } },
+        response: { type: 'json', result: { urlPath: 'url' } },
+      } } })).toThrow('音频开关');
+  });
+
+  it('rejects image reference declarations that their transport cannot honor', () => {
+    const model = { id: 'image', name: 'Image', category: 'image' as const, provider: 'custom',
+      imageCapability: { supportsImageReference: true, supportsDataUrlReference: false },
+      executionProfile: { preset: 'custom' as const, protocol: {
+        version: 2 as const, mode: 'sync' as const, submit: { method: 'POST' as const, path: '/images', body: { prompt: '{{prompt}}' } },
+        response: { type: 'json' as const, result: { urlPath: 'url' } },
+      } },
+    };
+    expect(() => assertModelCapabilityProtocol({ ...model,
+      imageReferenceRequestMode: 'generation-json-image-urls' })).toThrow('参考图');
+    expect(() => assertModelCapabilityProtocol({ ...model,
+      imageReferenceRequestMode: 'generation-json-image-data-urls' })).toThrow('Base64');
+  });
+});
 import { resolveBuiltInImageRequestContract } from '../../src/services/ai/imageRequestContracts';
 import { getProviderDefinition } from '../../src/services/ai/providerCatalogService';
 import type { AppConfig } from '../../src/types';

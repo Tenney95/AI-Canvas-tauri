@@ -12,6 +12,7 @@ import AgentTaskTimeline, { type AgentTaskControls } from './AgentTaskTimeline';
 import ChatReferenceText, { type ChatReferenceHandlers } from './ChatReferenceText';
 import ChatMarkdown from './ChatMarkdown';
 import SourceList from './SourceList';
+import ReasoningPanel from './ReasoningPanel';
 import { useT } from '../../i18n';
 import ViewportImage from '../shared/ViewportImage';
 import ViewportVideo from '../shared/ViewportVideo';
@@ -138,9 +139,12 @@ function MessageBubble({
               width="15"
               className="shrink-0 animate-spin text-canvas-text-muted motion-reduce:animate-none"
             />
-            <span>{t('正在分析请求')}</span>
+            <span>{t(message.activity === 'connecting' ? '正在连接模型' : '正在分析请求')}</span>
           </div>
         )}
+        {!isUser && message.reasoning && <ReasoningPanel content={message.reasoning} truncated={message.reasoningTruncated} />}
+        {!isUser && message.activity === 'compressing' && !showTimeline && <p role="status" className="py-2 text-xs text-canvas-text-secondary">{t('正在压缩上下文')}</p>}
+        {!isUser && message.responseError && <div role="alert" className="ui-alert ui-alert--danger mb-2 break-words">{message.responseError}</div>}
         {message.content && (isUser ? (
           <div className="whitespace-pre-wrap break-words">
             <ChatReferenceText
@@ -163,7 +167,7 @@ function MessageBubble({
         ))}
 
         {showTimeline && agentTask && agentControls && (
-          <AgentTaskTimeline task={agentTask} {...agentControls} />
+          <AgentTaskTimeline task={agentTask} {...agentControls} activity={message.activity} activityStartedAt={message.activityStartedAt} />
         )}
 
         {/* ── 生成中状态 ── */}

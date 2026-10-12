@@ -34,6 +34,8 @@ vi.mock('react', async () => {
   return { ...await vi.importActual<typeof import('react')>('react'),
     useMemo: memo,
     useCallback: <T,>(callback: T, deps: readonly unknown[]) => memo(() => callback, deps),
+    // Direct component harnesses read the external-store snapshot without a React dispatcher.
+    useSyncExternalStore: <T,>(_subscribe: (notify: () => void) => () => void, getSnapshot: () => T) => getSnapshot(),
     useState: <T,>(initial: T | (() => T)) => {
       const scope = driver.current!; const index = scope.stateIndex++;
       if (!(index in scope.states)) scope.states[index] = typeof initial === 'function' ? (initial as () => T)() : initial;

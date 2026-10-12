@@ -322,6 +322,45 @@
   margin-left: auto;
   justify-content: flex-end;
 }
+/* 浮动输入栏优先保持一行；长名称让出空间，不挤走参数和发送按钮。 */
+.ai-dialog-float .prompt-footer {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+.ai-dialog-float .prompt-footer > .model-selector--pill {
+  flex: 0 1 auto;
+  min-width: 80px;
+  max-width: 200px;
+}
+.ai-dialog-float .prompt-footer-tools.ui-row {
+  flex-wrap: nowrap;
+}
+.ai-dialog-float .prompt-footer-tools .img-pill-btn {
+  min-width: 0;
+  white-space: nowrap;
+}
+.ai-dialog-float .prompt-footer-tools .img-pill-btn > svg {
+  flex-shrink: 0;
+}
+.ai-dialog-float .prompt-footer-tools .ui-schema-pill-label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 批量发送展开时额外占宽，保留换行空间，避免挤出面板。 */
+.ai-dialog-float .prompt-footer:has(.batch-open),
+.ai-dialog-float .prompt-footer-tools.ui-row:has(.batch-open) {
+  flex-wrap: wrap;
+}
+@container ai-prompt (max-width: 560px) {
+  .ai-dialog-float .prompt-footer { flex-wrap: wrap; }
+  .ai-dialog-float .prompt-footer-tools.ui-row {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+}
 .prompt-actions {
   display: flex;
   align-items: center;
@@ -871,8 +910,15 @@
 .style-selector-btn {
   flex-shrink: 0;
 }
+.prompt-btn.is-configured,
 .style-selector-btn.has-style {
-  color: var(--brand);
+  color: var(--brand-light);
+  background: var(--brand-alpha-15);
+}
+.prompt-btn.is-configured:hover,
+.style-selector-btn.has-style:hover {
+  color: var(--brand-light);
+  background: var(--brand-alpha-30);
 }
 .style-selector-btn.style-active {
   color: var(--brand-light);

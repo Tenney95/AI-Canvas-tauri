@@ -1,8 +1,14 @@
 # 对话助手 Agent 能力实施方案
 
-> 范围：应用内部对话助手与 Agent。最后更新：2026-10-03。
+> 范围：应用内部对话助手与 Agent。最后更新：2026-10-12。
 > 产品设计：[对话式画布助手功能方案](./对话式画布助手-功能方案.md)。其他模块见[文档导航](./文档导航.md)。
 > 历史阶段表沿用当时记录，不代表重新执行了功能验收。原阶段详情和测试证据见[历史归档](./history/2026-09-07-跨模块实施记录归档.md)；新增上下文改动见下方专项计划。
+
+## Codex 机制对照改进
+
+2026-10-12 已实现 Skill 按当前上下文分页读取、关键词检索、游标失效和去重重置；公开推理字段与回答正文分开，采用有界脱敏的临时展示，不保存正文到推理元数据或回传模型。流式失败保留已收到回答，压缩显示独立活动与耗时，折叠步骤后仍可恢复任务。权限、成功写操作去重、原生来源授权和最近完整轮次的边界保持由宿主控制。
+
+范围、回滚与桌面验收步骤见[Codex 对照专项](./plans/2026-10-11-agent-codex-alignment.md)。定向检查与发布门禁的实际结果见[0.10.5 发布专项](./plans/2026-10-11-release-0.10.5.md)；真实模型、Tauri 文件来源与双窗口实机项待用户验收。
 
 ## 职责与边界
 
@@ -83,13 +89,20 @@ A–D 历史联合复核未覆盖真实桌面 WebView、双窗口审批、真实
 - 状态：已实现。定向 ESLint、应用/测试类型检查及面板、安装目录、Skill 服务回归通过；实际组件的隔离浏览器检查通过默认折叠、鼠标/键盘操作、长名称、320/400/600px 宽度和明暗主题。真实 Tauri 安装包目录尚未进行界面验收。
 - 回滚：撤销本次面板与对应测试改动即可，不涉及存储格式、原生权限或依赖变化。
 
+## Skill 共享目录与导入
+
+- 节点 `/` 菜单、主窗口和独立窗口助手、提示词润色、子智能体绑定共用手动上传和智能体包的 Skill 目录，以同一 Skill ID 调用。显式调用遵守 `user-invocable` 和包路由声明，自动发现沿用既有开关。
+- 节点提交和子智能体执行从当前共享目录读取正文；来源停用、删除或目录刷新后不从组件旧快照读取。子智能体绑定不可用时，有内联角色提示词则回退，否则明确报错。
+- 主窗口助手提供单文件与文件夹上传，复用已有 Store Action；文件夹导入授权所选目录的多级附属资料。Skill 管理展示两种来源，包内 Skill 保持只读并由智能体中心管理。
+- 状态：已实现，待用户验收。本次未运行测试；回归用例已补充。范围、Tauri 桌面验收顺序和回滚见 [Skill 全软件统一调用计划](./plans/2026-10-11-unified-skill-access.md)。
+
 ## 验证入口
 
 - Agent Package 归档预览与导入支持全局 PAX 元数据，局部 PAX 的实际路径仍经过原生校验；异常导入保留可读错误详情，元数据不作为文件或脚本执行。前端回归入口为 [agentPackageImportService.test.ts](../tests/services/agentPackageImportService.test.ts)，原生回归位于 `agent_package::tests`；具体导入健康与权限边界仍以当前源码为准。
 
 - 权限：[policyEngine.test.ts](../tests/services/chat/policyEngine.test.ts)；控制与预算：[agentTaskControl.test.ts](../tests/services/chat/agentTaskControl.test.ts)、[agentBudgetService.test.ts](../tests/services/chat/agentBudgetService.test.ts)。
 - 执行诊断：[agentRuntimeDiagnostics.test.ts](../tests/services/chat/agentRuntimeDiagnostics.test.ts)；Agent Package：[Store 测试](../tests/store/agentPackages.test.ts)、[Skill 接入测试](../tests/services/agentPackageSkillService.test.ts)。
-- 代码变更按范围运行定向 Vitest、ESLint、应用/测试类型检查；涉及原生网页或包读取时补充对应 Rust 检查。
+- 代码变更由用户按范围运行定向 Vitest、ESLint、应用/测试类型检查；涉及原生网页或包读取时补充对应 Rust 检查。助手仅在用户明确授权对应检查时执行。
 - 实机验收至少覆盖所改链路的审批、停止、切项目、双窗口同步与重启恢复。记录实际通过项和未覆盖项；文档整理只验证内容、链接、编码与差异。
 
 ## 后续维护

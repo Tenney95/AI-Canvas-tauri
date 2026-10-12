@@ -10,9 +10,13 @@
 //!  · 官方 Comfy Desktop（v0.20+）：<base>/ComfyUI-Installs/ComfyUI/ComfyUI/main.py，
 //!    venv 在同目录 .venv/；用户可能选 <base> 或 <base>/Comfy Desktop（Electron 安装目录）
 //!
-//! 启动参数：--listen 开放 HTTP API；--enable-cors-header 允许跨源（本应用打包后
-//! 从 tauri://localhost 直连 ComfyUI 必需）。GPU 无需参数——CUDA 可用时默认启用，
-//! 三种发行版的 Python 环境都自带 CUDA 版 torch（兜底 bat 亦优先 run_nvidia_gpu.bat）。
+//! 启动参数固定绑定回环 HTTP API，并按已保存的白名单设置覆盖端口、显存、
+//! 扩散模型精度、注意力与预览。默认 GPU 选择由 ComfyUI 自行决定。
+pub mod installation;
+pub mod launch_settings;
+pub mod management;
+
+use launch_settings::ComfyUILaunchSettings;
 use serde::{Deserialize, Serialize};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -43,6 +47,13 @@ const COMFY_ARGS: &[&str] = &[
 ];
 const COMFYUI_WINDOW_LABEL: &str = "comfyui";
 const FAST_DISK_MARKER: &str = ".ai-canvas-fast-disk";
+#[cfg(windows)]
+const FALLBACK_SCRIPTS: [&str; 3] = ["run_nvidia_gpu.bat", "run.bat", "run_cpu.bat"];
+#[cfg(windows)]
+const FALLBACK_LAUNCHERS: [&str; 5] = [
+    "ComfyUi.exe", "A启动器.exe", "启动器.exe", "Comfy Desktop.exe",
+    ".launcher/StableDiffusionWebUILauncher.exe",
+];
 const COMFYUI_BRIDGE_SCRIPT: &str = include_str!("bridge.js");
 const MAX_WORKFLOW_JSON_LENGTH: usize = 16 * 1024 * 1024;
 const COMFYUI_ACTION_PATH: &str = "/__ai_canvas_comfy_action__";
@@ -464,14 +475,15 @@ fn find_main_py(root: &Path) -> Option<PathBuf> {
         root.join("ComfyUI-Installs")
             .join("ComfyUI")
             .join("ComfyUI"),
-        // Comfy Desktop v0.20+：用户选择了 Electron 安装目录（如 F:\ComfyUI\Comfy Desktop）
+        // Desktop 目录提示；后面仍限定在所选安装根内，不跟随根外的同级源码。
         root.parent()
             .map(|p| p.join("ComfyUI-Installs").join("ComfyUI").join("ComfyUI"))
             .unwrap_or_default(),
         // 旧版 Comfy Desktop（≤v0.4）：源码打包在 resources 下
         root.join("resources").join("ComfyUI"),
     ];
-    candidates.into_iter().find(|d| d.join("main.py").is_file())
+    candidates.into_iter().filter(|candidate| candidate.starts_with(root))
+        .find(|directory| directory.join("main.py").is_file())
 }
 
 /// 查找与安装配套的 Python 解释器
@@ -540,37 +552,55 @@ fn find_comfy_desktop_shared_model_paths(root: &Path, working_dir: &Path) -> Opt
         .filter(|p| p.is_file())
 }
 
-fn build_comfy_args(root: &Path, working_dir: &Path) -> Vec<String> {
+fn build_comfy_args(
+    root: &Path,
+    working_dir: &Path,
+    settings: &ComfyUILaunchSettings,
+) -> Result<Vec<String>, String> {
     let mut args: Vec<String> = COMFY_ARGS.iter().map(|arg| (*arg).to_string()).collect();
+    let declared_args = std::fs::read_to_string(working_dir.join("comfy/cli_args.py"))
+        .map_err(|_| {
+            "无法读取 ComfyUI 启动参数声明，请检查安装目录中的 comfy/cli_args.py".to_string()
+        })?;
+    for flag in ["--listen", "--enable-cors-header"] {
+        if !launch_settings::declares_cli_flag(&declared_args, flag) {
+            return Err(format!("当前 ComfyUI 版本不支持 API 启动参数 {flag}"));
+        }
+    }
+    settings.append_args(&mut args, &declared_args)?;
 
     // fast-disk can avoid Windows page-file thrashing for models larger than system RAM.
     // Keep it opt-in per ComfyUI installation because it can be slower on mechanical disks,
     // and only pass the flag when the installed ComfyUI version actually declares it.
     let fast_disk_enabled =
         root.join(FAST_DISK_MARKER).is_file() || working_dir.join(FAST_DISK_MARKER).is_file();
-    let fast_disk_supported = std::fs::read_to_string(working_dir.join("comfy/cli_args.py"))
-        .is_ok_and(|contents| contents.contains("--fast-disk"));
+    let fast_disk_supported = launch_settings::declares_cli_flag(&declared_args, "--fast-disk");
     if fast_disk_enabled && fast_disk_supported {
         args.push("--fast-disk".to_string());
     }
 
     if let Some(shared_model_paths) = find_comfy_desktop_shared_model_paths(root, working_dir) {
-        args.push("--extra-model-paths-config".to_string());
-        args.push(shared_model_paths.to_string_lossy().into_owned());
+        launch_settings::append_supported_arg(
+            &mut args,
+            &declared_args,
+            "--extra-model-paths-config",
+            Some(shared_model_paths.to_string_lossy().as_ref()),
+        )?;
     }
 
-    args
+    Ok(args)
 }
 
 /// 在 Windows 新终端窗口中启动 ComfyUI
 #[cfg(windows)]
-fn launch_windows(comfy_path: &str) -> Result<String, String> {
+fn launch_windows(app: &tauri::AppHandle, comfy_path: &str, settings: &ComfyUILaunchSettings) -> Result<String, String> {
     let root = Path::new(comfy_path);
 
     // 1) 首选：直接启动 main.py —— 可注入 API/CORS 参数，跳过启动器的 custom_nodes 检测
     if let Some(working_dir) = find_main_py(root) {
+        crate::path_policy::validate_comfyui_installation_file(app, &working_dir.join("main.py"), root)?;
         if let Some(python) = find_python(&working_dir, root) {
-            let args = build_comfy_args(root, &working_dir);
+            let args = build_comfy_args(root, &working_dir, settings)?;
             spawn_new_console(&python, &args, &working_dir)?;
             return Ok(format!(
                 "ComfyUI 已启动（API 模式）\n{}",
@@ -579,26 +609,25 @@ fn launch_windows(comfy_path: &str) -> Result<String, String> {
         }
     }
 
+    if settings.requires_direct_launch() {
+        return Err("当前安装只能使用启动器或批处理启动，无法应用已保存的启动设置；请补齐 main.py 与配套 Python，或先恢复默认设置".to_string());
+    }
+
     // 2) 兜底：便携版 bat（GPU 优先）
-    for script in &["run_nvidia_gpu.bat", "run.bat", "run_cpu.bat"] {
+    for script in &FALLBACK_SCRIPTS {
         let script_path = root.join(script);
         if script_path.is_file() {
+            crate::path_policy::validate_comfyui_installation_file(app, &script_path, root)?;
             return run_bat_script(&script_path);
         }
     }
 
     // 3) 兜底：启动器 exe（秋叶启动器 / Comfy Desktop Electron）
-    let launchers = [
-        root.join("ComfyUi.exe"),
-        root.join("A启动器.exe"),
-        root.join("启动器.exe"),
-        root.join("Comfy Desktop.exe"),
-        root.join(".launcher")
-            .join("StableDiffusionWebUILauncher.exe"),
-    ];
-    for launcher_path in &launchers {
+    for launcher in &FALLBACK_LAUNCHERS {
+        let launcher_path = root.join(launcher);
         if launcher_path.is_file() {
-            return run_exe_new_console(launcher_path);
+            crate::path_policy::validate_comfyui_installation_file(app, &launcher_path, root)?;
+            return run_exe_new_console(&launcher_path);
         }
     }
 
@@ -685,15 +714,16 @@ fn quote_cmd_arg(arg: &str) -> String {
 
 /// 非 Windows 系统
 #[cfg(not(windows))]
-fn launch_unix(comfy_path: &str) -> Result<String, String> {
+fn launch_unix(app: &tauri::AppHandle, comfy_path: &str, settings: &ComfyUILaunchSettings) -> Result<String, String> {
     let root = Path::new(comfy_path);
 
     let working_dir =
         find_main_py(root).ok_or_else(|| format!("在目录 {} 中未找到 main.py。", comfy_path))?;
+    crate::path_policy::validate_comfyui_installation_file(app, &working_dir.join("main.py"), root)?;
 
     let python = find_python(&working_dir, root).unwrap_or_else(|| "python3".to_string());
 
-    let args = build_comfy_args(root, &working_dir);
+    let args = build_comfy_args(root, &working_dir, settings)?;
 
     Command::new(&python)
         .args(args)
@@ -706,23 +736,28 @@ fn launch_unix(comfy_path: &str) -> Result<String, String> {
 
 /// Tauri command: 启动 ComfyUI
 #[tauri::command]
-pub async fn launch_comfyui(webview: tauri::Webview, comfy_path: String) -> Result<String, String> {
+pub async fn launch_comfyui(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    comfy_path: String,
+) -> Result<String, String> {
     // 只有自有本地窗口能触发进程启动；目录内容仍由下面的已知文件名探测约束。
     crate::path_policy::ensure_trusted_caller(&webview)?;
-    let path = Path::new(&comfy_path);
-    if !path.exists() || !path.is_dir() {
-        return Err(format!("ComfyUI 目录不存在: {}", comfy_path));
-    }
+    let _operation_guard = management::lock_operations().await;
+    let path = installation::authorize_installation(&app, &comfy_path).await?;
+    let settings = launch_settings::load_settings(&app)?;
+    let comfy_path = path.to_string_lossy();
 
     #[cfg(windows)]
-    {
-        launch_windows(&comfy_path)
-    }
+    let result = launch_windows(&app, &comfy_path, &settings);
 
     #[cfg(not(windows))]
-    {
-        launch_unix(&comfy_path)
+    let result = launch_unix(&app, &comfy_path, &settings);
+
+    if result.is_ok() {
+        launch_settings::record_launch_port(settings.port);
     }
+    result
 }
 
 /// 把下载结果告诉 ComfyUI 页面。wry 默认把下载标记为已处理，WebView2 既不弹「另存为」
@@ -927,6 +962,7 @@ pub async fn open_comfyui_window(
 
 #[cfg(test)]
 mod tests {
+    use super::launch_settings::ComfyUILaunchSettings;
     use super::{
         build_comfy_args, build_editor_script, comfyui_socket_endpoint,
         ensure_local_comfyui_reachable, is_local_comfyui_url, is_same_comfyui_origin,
@@ -1251,16 +1287,27 @@ mod tests {
         fs::create_dir_all(&comfy_dir).unwrap();
         fs::write(
             comfy_dir.join("cli_args.py"),
-            "parser.add_argument('--fast-disk')",
+            "parser.add_argument('--listen')\nparser.add_argument('--enable-cors-header')\nparser.add_argument('--port')\nparser.add_argument('--fast-disk')",
         )
         .unwrap();
 
-        assert!(!build_comfy_args(&root, &root).contains(&"--fast-disk".to_string()));
+        let settings = ComfyUILaunchSettings::default();
+        assert!(!build_comfy_args(&root, &root, &settings)
+            .unwrap()
+            .contains(&"--fast-disk".to_string()));
         fs::write(root.join(FAST_DISK_MARKER), "enabled\n").unwrap();
-        assert!(build_comfy_args(&root, &root).contains(&"--fast-disk".to_string()));
+        assert!(build_comfy_args(&root, &root, &settings)
+            .unwrap()
+            .contains(&"--fast-disk".to_string()));
 
-        fs::write(comfy_dir.join("cli_args.py"), "parser.parse_args()").unwrap();
-        assert!(!build_comfy_args(&root, &root).contains(&"--fast-disk".to_string()));
+        fs::write(
+            comfy_dir.join("cli_args.py"),
+            "parser.add_argument('--listen')\nparser.add_argument('--enable-cors-header')\nparser.add_argument('--port')",
+        )
+        .unwrap();
+        assert!(!build_comfy_args(&root, &root, &settings)
+            .unwrap()
+            .contains(&"--fast-disk".to_string()));
         fs::remove_dir_all(root).unwrap();
     }
 }
