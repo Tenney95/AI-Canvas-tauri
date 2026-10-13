@@ -1442,7 +1442,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         }}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
-        onPointerDown={handleChipPointerDown}
+        onPointerDown={(event) => {
+          handleChipPointerDown(event);
+          event.stopPropagation();
+        }}
         onPointerDownCapture={() => {
           historyRef.current.endGroup();
           if (editorRef.current) historyRef.current.updateSelection(captureMentionEditorSelection(editorRef.current));
@@ -1463,7 +1466,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           if (wasComposing) setCompositionRevision((revision) => revision + 1);
           onBlur?.();
         }}
-        onPointerDown={(event) => event.stopPropagation()}
         spellCheck={false}
       />
 
