@@ -5,7 +5,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
-import type { ImagePostProcess, NodeType, UserPreset } from '../../../types';
+import type { ImagePostProcess, NodeType, PresetFolder, UserPreset } from '../../../types';
 import type { SkillPickerOption } from '../../../types/agentPackage';
 
 export interface PresetOverride {
@@ -19,14 +19,17 @@ import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
 import { calcFixedPosition, calcSubmenuPosition } from '../../../utils/popupPosition';
 import { isAdvancedPreset } from '../../../services/presetSequenceService';
+import { groupPresetsByFolder, UNGROUPED_PRESET_FOLDER_ID } from '../../../utils/presetFolders';
 
 const SKILL_PARENT_ID = '__skills__';
+const USER_PRESETS_PARENT_ID = '__user_presets__';
 
 interface SlashCommandMenuProps {
   nodeType: NodeType;
   currentPrompt: string;
   anchorEl: HTMLElement | null;
   userPresets: UserPreset[];
+  presetFolders?: PresetFolder[];
   skillOptions: SkillPickerOption[];
   onSelect: (prompt: string, shouldTrigger: boolean, preset?: PresetOverride) => void;
   onRunAdvancedPreset: (preset: UserPreset) => void;
@@ -42,6 +45,7 @@ export default function SlashCommandMenu({
   currentPrompt,
   anchorEl,
   userPresets,
+  presetFolders = [],
   skillOptions,
   onSelect,
   onRunAdvancedPreset,
@@ -61,7 +65,10 @@ export default function SlashCommandMenu({
   const commands = getSlashCommands(nodeType);
 
   // Filter user presets for current node type
-  const matchingPresets = userPresets.filter((p) => p.nodeType === nodeType);
+  const presetGroups = groupPresetsByFolder(nodeType, userPresets, presetFolders)
+    .filter((group) => group.id !== UNGROUPED_PRESET_FOLDER_ID || group.presets.length > 0);
+  const presetMenuActive = activeParentId === USER_PRESETS_PARENT_ID;
+  const presetCount = presetGroups.reduce((count, group) => count + group.presets.length, 0);
 
   // Close on outside click
   const handleClickOutside = useCallback((e: MouseEvent) => {
@@ -92,11 +99,11 @@ export default function SlashCommandMenu({
   };
 
   const itemCount = commands.length
-    + matchingPresets.length
+    + (presetGroups.length > 0 ? 1 : 0)
     + 1 /* skill submenu */
     + 1 /* manage */
     + (commands.length > 0 ? 1 : 0) /* header */
-    + (matchingPresets.length > 0 ? 2 : 0) /* header+divider */
+    + (commands.length > 0 && presetGroups.length > 0 ? 1 : 0) /* divider */
     + 2 /* skill divider + action divider */;
 
   const menuPos = useMemo(() => {
@@ -117,11 +124,11 @@ export default function SlashCommandMenu({
   const activeParent = commands.find(c => c.id === activeParentId);
   const skillMenuActive = activeParentId === SKILL_PARENT_ID;
 
-  const updateSubmenuPositionByCount = useCallback((itemCountForSubmenu: number) => {
+  const updateSubmenuPositionByCount = useCallback((itemCountForSubmenu: number, anchor?: HTMLElement, rowHeight = 48) => {
     if (!menuRef.current) return;
-    const parentRect = menuRef.current.getBoundingClientRect();
-    const subW = 268;
-    const subH = itemCountForSubmenu * 48 + 16;
+    const parentRect = (anchor ?? menuRef.current).getBoundingClientRect();
+    const subW = 280;
+    const subH = Math.min(itemCountForSubmenu * rowHeight + 16, 440);
 
     setSubmenuPos(calcSubmenuPosition(parentRect, subW, subH));
   }, []);
@@ -177,6 +184,13 @@ export default function SlashCommandMenu({
     updateSubmenuPositionByCount(invocableSkills.length + 3);
   }, [invocableSkills.length, updateSubmenuPositionByCount]);
 
+  const openPresetMenu = (anchor: HTMLElement) => {
+    setActiveParentId(USER_PRESETS_PARENT_ID);
+    const rows = presetGroups.reduce((count, group) => count + Math.max(group.presets.length, 1)
+      + (group.id === UNGROUPED_PRESET_FOLDER_ID ? 0 : 1), 1);
+    updateSubmenuPositionByCount(rows, anchor, 36);
+  };
+
   return createPortal(
     <>
       {/* Main menu */}
@@ -219,32 +233,35 @@ export default function SlashCommandMenu({
         )}
 
         {/* User presets */}
-        {matchingPresets.length > 0 && (
+        {presetGroups.length > 0 && (
           <>
             {commands.length > 0 && <div className="slash-command-divider" />}
-            <div className="slash-command-header slash-command-header--user">快捷指令</div>
-            {matchingPresets.map((preset) => (
-              <div
-                key={preset.id}
-                className="slash-command-item has-trigger slash-command-user-preset"
-                onClick={() => handlePresetSelect(preset)}
-              >
-                {renderIcon(preset.icon || 'mdi:star')}
-                <div className="slash-command-text">
-                  <span className="slash-command-title">{preset.name}</span>
-                  <span className="slash-command-desc">{preset.description || '点击调用这个快捷指令'}</span>
-                </div>
-                <span className="slash-command-badge">
-                  {isAdvancedPreset(preset)
-                    ? '顺序执行'
-                    : preset.triggerMode === 'direct' ? '直接触发' : '加入提示词'}
-                </span>
-              </div>
-            ))}
+            <button
+              type="button"
+              className={`ui-menu__item slash-command-item has-submenu${presetMenuActive ? ' active' : ''}`}
+              data-item-id={USER_PRESETS_PARENT_ID}
+              aria-haspopup="menu"
+              aria-expanded={presetMenuActive}
+              onMouseEnter={(event) => openPresetMenu(event.currentTarget)}
+              onFocus={(event) => openPresetMenu(event.currentTarget)}
+              onClick={(event) => openPresetMenu(event.currentTarget)}
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                event.stopPropagation();
+                openPresetMenu(event.currentTarget);
+                requestAnimationFrame(() => submenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus());
+              }}
+            >
+              {renderIcon('mdi:star-outline')}
+              <span className="min-w-0 flex-1 truncate">快捷指令</span>
+              <span className="ui-menu__shortcut">{presetCount}</span>
+              <span className="slash-command-arrow" aria-hidden="true">›</span>
+            </button>
           </>
         )}
 
-        {(commands.length > 0 || matchingPresets.length > 0) && <div className="slash-command-divider" />}
+        {(commands.length > 0 || presetGroups.length > 0) && <div className="slash-command-divider" />}
         <div
           className={`slash-command-item has-submenu${skillMenuActive ? ' active' : ''}`}
           data-item-id={SKILL_PARENT_ID}
@@ -305,6 +322,51 @@ export default function SlashCommandMenu({
                 <span className="slash-command-desc">{child.description}</span>
               </div>
               <span className="slash-command-badge">直接触发</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {presetMenuActive && presetGroups.length > 0 && (
+        <div
+          ref={submenuRef}
+          className="slash-command-submenu"
+          role="menu"
+          aria-label="快捷指令"
+          style={{ left: submenuPos.left, top: submenuPos.top }}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft') return;
+            event.preventDefault();
+            event.stopPropagation();
+            const parent = menuRef.current?.querySelector<HTMLButtonElement>(`[data-item-id="${USER_PRESETS_PARENT_ID}"]`);
+            parent?.focus();
+            setActiveParentId(null);
+          }}
+        >
+          <div className="ui-menu__label">快捷指令</div>
+          {presetGroups.map((group, index) => (
+            <div key={group.id} role="group" aria-label={group.id === UNGROUPED_PRESET_FOLDER_ID ? undefined : group.name}>
+              {index > 0 && <div className="ui-menu__sep" />}
+              {group.id !== UNGROUPED_PRESET_FOLDER_ID && <div className="ui-menu__label truncate" title={group.name}>{group.name}</div>}
+              {group.presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  role="menuitem"
+                  className="ui-menu__item slash-command-user-preset"
+                  title={preset.description?.trim() || preset.name}
+                  onClick={() => handlePresetSelect(preset)}
+                >
+                  {renderIcon(preset.icon || 'mdi:star-outline')}
+                  <span className="min-w-0 flex-1 truncate">{preset.name}</span>
+                  <span className="ui-badge ui-badge--success shrink-0">
+                    {isAdvancedPreset(preset) ? '顺序执行' : preset.triggerMode === 'direct' ? '直接触发' : '加入提示词'}
+                  </span>
+                </button>
+              ))}
+              {group.presets.length === 0 && (
+                <div className="p-2 text-xs text-canvas-text-muted" role="status">暂无快捷指令</div>
+              )}
             </div>
           ))}
         </div>

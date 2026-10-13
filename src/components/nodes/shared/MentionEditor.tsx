@@ -1426,7 +1426,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         role="textbox"
         aria-multiline="true"
         tabIndex={0}
-        className={`prompt-editor nodrag nowheel${!prompt ? ' is-empty' : ''}`}
+        className={`ui-ai-input__editor prompt-editor nodrag nowheel${!prompt ? ' is-empty' : ''}`}
         data-placeholder={placeholder}
         onInput={handleInput}
         onCompositionStart={() => {

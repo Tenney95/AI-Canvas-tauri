@@ -44,6 +44,8 @@ import { applyNativePerformanceMode, registerPerformanceRestartHost } from './se
 import { t } from './i18n';
 import { applyAppearanceTheme, installSystemAppearanceListener, resolveAppearanceMode } from './services/appearance/appearanceRuntime';
 import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from './services/appearance/appearanceDefaults';
+import { getAppearanceForConfig } from './services/appearance/appearanceMigration';
+import { installStyleGuideAppearanceSource } from './services/appearance/appearanceWindowSync';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -473,6 +475,17 @@ export default function App() {
   const effectiveTheme = resolveAppearanceMode(appearance?.mode ?? configTheme);
   const managedCanvasBackground = Boolean((appearancePreview ?? appearance)?.canvas);
   const nativeCursor = useAppStore((s) => s.config.customCursor === false);
+  useEffect(() => installStyleGuideAppearanceSource(
+    () => {
+      const state = useAppStore.getState();
+      return state.appearancePreview ?? getAppearanceForConfig(state.config);
+    },
+    (onChange) => useAppStore.subscribe((state, previous) => {
+      if (state.appearancePreview !== previous.appearancePreview
+        || state.config.appearance !== previous.config.appearance
+        || state.config.theme !== previous.config.theme) onChange();
+    }),
+  ), []);
   useEffect(() => {
     const theme = appearancePreview ?? (appearance
       ? normalizeAppearanceTheme(appearance)

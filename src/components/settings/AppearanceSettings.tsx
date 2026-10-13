@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import { useAppStore } from '../../store/useAppStore';
-import { getNodeTypeConfig, type AppearanceTheme, type BaseNodeData } from '../../types';
+import { getNodeTypeConfig, type AppearanceBackgroundImage, type AppearanceTheme, type BaseNodeData } from '../../types';
 import type { Node } from '@xyflow/react';
 import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from '../../services/appearance/appearanceDefaults';
-import { isTransparentColor, resolveAppearanceMode, resolveAppearanceTheme } from '../../services/appearance/appearanceRuntime';
-import { exportAppearanceTheme, importAppearanceTheme } from '../../services/appearance/appearanceThemeService';
+import { contrastColor, isTransparentColor, resolveAppearanceBackground, resolveAppearanceMode, resolveAppearanceTheme } from '../../services/appearance/appearanceRuntime';
+import { exportAppearanceTheme, importAppearanceTheme, MAX_APPEARANCE_THEME_BYTES } from '../../services/appearance/appearanceThemeService';
 import { saveBinaryToLocalFile } from '../../services/fileService';
 import { isTauriEnv } from '../../services/fs/core';
 import { registerSettingsProducer } from '../../services/configPersistenceQueue';
@@ -34,13 +34,27 @@ const SOLAR_SYSTEM_PLANETS = [
   { id: 'neptune', name: '海王星', image: neptuneImg },
 ];
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
+async function readFileAsDataUrl(file: File): Promise<string> {
+  const declaredType = file.type.split(';')[0].trim().toLowerCase();
+  const mimeType = (!declaredType || declaredType === 'application/octet-stream') && /\.svg$/i.test(file.name)
+    ? 'image/svg+xml' : declaredType;
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'].includes(mimeType)) throw new Error('请选择 PNG、JPG、WebP 或 SVG 图片');
+  if (file.size > 5 * 1024 * 1024) throw new Error('背景图片不能超过 5MB');
+  const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(new Error('图片读取失败'));
-    reader.readAsDataURL(file);
+    reader.onabort = () => reject(new Error('图片读取已取消'));
+    // 某些系统未识别 SVG MIME；统一为图片类型后再进入已有图片解码与保存流程。
+    reader.readAsDataURL(file.type === mimeType ? file : new Blob([file], { type: mimeType }));
   });
+  await new Promise<void>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => image.naturalWidth && image.naturalHeight ? resolve() : reject(new Error('图片内容无效'));
+    image.onerror = () => reject(new Error('图片内容无效'));
+    image.src = dataUrl;
+  });
+  return dataUrl;
 }
 
 const DARK_THEME_COLOR_SWATCHES = [
@@ -249,9 +263,9 @@ function PresetSingleNodePreview({
       <div
         className="relative p-2 shadow-xs transition-all flex flex-col justify-between"
         style={{
-          backgroundColor: isTransparentColor(themeResolved.node.background)
+          background: resolveAppearanceBackground(isTransparentColor(themeResolved.node.background)
             ? 'transparent'
-            : themeResolved.node.background,
+            : themeResolved.node.background, themeResolved.node.backgroundImage),
           borderColor: isTransparentColor(themeResolved.node.border)
             ? 'transparent'
             : themeResolved.node.border,
@@ -468,8 +482,66 @@ function PresetSingleNodePreview({
 
 function imagePreviewStyle(imageDataUrl: string | undefined, size: CSSProperties['backgroundSize'] = 'cover'): CSSProperties | undefined {
   return imageDataUrl
-    ? { backgroundImage: `url(${imageDataUrl})`, backgroundPosition: 'center', backgroundSize: size === 'fill' ? '100% 100%' : size }
+    ? { backgroundImage: `url(${imageDataUrl})`, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: size === 'fill' ? '100% 100%' : size }
     : undefined;
+}
+
+function BackgroundImageControls({ label, image, onChange }: {
+  label: string;
+  image: AppearanceBackgroundImage;
+  onChange: (image: AppearanceBackgroundImage) => void;
+}) {
+  const t = useT();
+  const showToast = useAppStore((state) => state.showToast);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const requestRef = useRef(0);
+  const latestRef = useRef({ image, onChange });
+  const [loading, setLoading] = useState(false);
+  useEffect(() => { latestRef.current = { image, onChange }; }, [image, onChange]);
+  useEffect(() => () => { requestRef.current += 1; }, []);
+
+  const upload = async (file: File) => {
+    const request = ++requestRef.current;
+    setLoading(true);
+    try {
+      const imageDataUrl = await readFileAsDataUrl(file);
+      if (request !== requestRef.current) return;
+      const latest = latestRef.current;
+      latest.onChange({ ...latest.image, kind: 'image', imageDataUrl });
+    } catch (error) {
+      if (request === requestRef.current) showToast(error instanceof Error ? error.message : t('图片读取失败'), 'error');
+    } finally {
+      if (request === requestRef.current) setLoading(false);
+    }
+  };
+
+  return (
+    <div className="ui-stack">
+      <div className="ui-card h-20 bg-no-repeat" role="img" aria-label={`${label}图片预览`} style={imagePreviewStyle(image.imageDataUrl, image.imageFit)}>
+        {!image.imageDataUrl && <span className="flex h-full items-center justify-center ui-hint">{t('未选图片')}</span>}
+      </div>
+      <div className="ui-row ui-row--tight">
+        <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={loading} onClick={() => inputRef.current?.click()}>
+          {loading ? t('读取中…') : image.imageDataUrl ? t('替换图片') : t('上传图片')}
+        </button>
+        {image.imageDataUrl && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={loading}
+          onClick={() => onChange({ ...image, kind: 'color', imageDataUrl: undefined })}>{t('移除图片')}</button>}
+        <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg" className="hidden" aria-label={`${label}上传图片`}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.currentTarget.value = '';
+            if (file) void upload(file);
+          }} />
+      </div>
+      <Select aria-label={`${label}图片铺放方式`} value={image.imageFit}
+        onChange={(value) => onChange({ ...image, imageFit: value as AppearanceBackgroundImage['imageFit'] })}>
+        <option value="cover">{t('覆盖填满')}</option>
+        <option value="contain">{t('完整显示')}</option>
+        <option value="fill">{t('拉伸填满')}</option>
+      </Select>
+      <p className="ui-hint">{t('PNG / JPG / WebP / SVG，最大 5MB；透明或未铺满的区域沿用底色。')}</p>
+    </div>
+  );
 }
 
 function ColorCardInput({
@@ -478,48 +550,71 @@ function ColorCardInput({
   onChange,
   allowNone = true,
   fallbackColor = '#6366f1',
+  followThemeVar,
+  image,
+  onImageChange,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   allowNone?: boolean;
   fallbackColor?: string;
+  followThemeVar?: string;
+  image?: AppearanceBackgroundImage;
+  onImageChange?: (image: AppearanceBackgroundImage) => void;
 }) {
+  const t = useT();
+  const isAuto = Boolean(followThemeVar) && value === 'auto';
   const isNone = isTransparentColor(value);
   const safeHex = /^#[0-9a-f]{6}$/i.test(value) ? value : fallbackColor;
+  const imageConfig: AppearanceBackgroundImage = image ?? { kind: 'color', imageFit: 'cover' };
+  const stacked = Boolean(followThemeVar || onImageChange);
 
   return (
-    <div className="p-3 settings-sub-card rounded-xl flex items-center justify-between transition-colors">
-      <span className="text-xs font-semibold text-canvas-text">{label}</span>
-      <div className="flex items-center space-x-1.5 settings-sub-card-inner px-2 py-1.5 rounded-lg shadow-2xs">
+    <div className={`p-3 settings-sub-card rounded-xl transition-colors ${stacked ? 'ui-field' : 'flex items-center justify-between'}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className={`text-xs font-semibold text-canvas-text ${stacked ? 'whitespace-nowrap' : ''}`}>{label}</span>
+        {onImageChange && <Select aria-label={`${label}背景类型`} value={imageConfig.kind} className="shrink-0 w-24" size="sm"
+          onChange={(kind) => onImageChange({ ...imageConfig, kind: kind as AppearanceBackgroundImage['kind'] })}>
+          <option value="color">{t('纯色')}</option>
+          <option value="image">{t('上传图片')}</option>
+        </Select>}
+      </div>
+      {onImageChange && imageConfig.kind === 'image' ? <BackgroundImageControls label={label} image={imageConfig} onChange={onImageChange} /> : (
+      <div className={`flex items-center space-x-1.5 settings-sub-card-inner px-2 py-1.5 rounded-lg shadow-2xs ${stacked ? 'min-w-0 max-w-full' : ''}`}>
         <label
           className="relative w-6 h-5 rounded cursor-pointer block border border-black/10 shrink-0 overflow-hidden shadow-2xs"
           style={
-            isNone
+            isAuto
+              ? { background: `var(${followThemeVar})` }
+              : isNone
               ? {
                   background:
                     'linear-gradient(to top right, transparent calc(50% - 1px), #ef4444 calc(50% - 1px), #ef4444 calc(50% + 1px), transparent calc(50% + 1px)), #ffffff',
                 }
               : { backgroundColor: safeHex }
           }
-          title={isNone ? '无颜色（点击选择颜色）' : '点击选择颜色'}
+          title={isAuto ? t('当前跟随主题，点击选择自定义颜色') : isNone ? '无颜色（点击选择颜色）' : '点击选择颜色'}
         >
           <input
             className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
             type="color"
+            aria-label={t(`${label}选择颜色`)}
             value={safeHex}
             onChange={(e) => onChange(e.target.value)}
           />
         </label>
         <input
           className={`w-16 text-xs font-medium bg-transparent border-none p-0 focus:ring-0 uppercase focus:outline-none ${
-            isNone ? 'text-canvas-text-muted font-sans' : 'text-canvas-text font-mono'
-          }`}
+            isNone || isAuto ? 'text-canvas-text-muted font-sans' : 'text-canvas-text font-mono'
+          } ${followThemeVar ? 'min-w-0 flex-1' : ''}`}
           type="text"
-          value={isNone ? '无' : value}
+          value={isAuto ? '' : isNone ? '无' : value}
           onChange={(e) => {
             const raw = e.target.value;
-            if (isTransparentColor(raw) || raw.trim() === '') {
+            if (followThemeVar && (raw.trim() === '' || raw.trim().toLowerCase() === 'auto')) {
+              onChange('auto');
+            } else if (isTransparentColor(raw) || raw.trim() === '') {
               onChange('transparent');
             } else if (/^#?[0-9a-f]{6}$/i.test(raw.trim())) {
               onChange(raw.trim().startsWith('#') ? raw.trim() : `#${raw.trim()}`);
@@ -527,14 +622,26 @@ function ColorCardInput({
               onChange(raw);
             }
           }}
-          placeholder={isNone ? '无' : '#HEX'}
+          placeholder={isAuto ? t('跟随') : isNone ? '无' : '#HEX'}
           aria-label={`${label}颜色值`}
         />
+        {followThemeVar && (
+          <button
+            type="button"
+            onClick={() => onChange('auto')}
+            className={`shrink-0 whitespace-nowrap text-[11px] px-1.5 py-0.5 rounded transition-colors ${isAuto ? 'text-brand-light bg-brand/15' : 'text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover'}`}
+            aria-label={t(`${label}恢复跟随主题`)}
+            aria-pressed={isAuto}
+            title={t('恢复跟随主题配色')}
+          >
+            {t('跟随')}
+          </button>
+        )}
         {allowNone && (
           <button
             type="button"
             onClick={() => onChange(isNone ? safeHex : 'transparent')}
-            className={`text-[11px] px-1.5 py-0.5 rounded transition-all select-none ${
+            className={`shrink-0 whitespace-nowrap text-[11px] px-1.5 py-0.5 rounded transition-all select-none ${
               isNone
                 ? 'bg-brand/15 text-brand-light font-bold ring-1 ring-brand/30'
                 : 'text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover'
@@ -545,6 +652,7 @@ function ColorCardInput({
           </button>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -657,7 +765,6 @@ export default function AppearanceSettings() {
   const [solarPlanetIndex] = useState(() => Math.floor(Math.random() * SOLAR_SYSTEM_PLANETS.length));
 
   const importRef = useRef<HTMLInputElement>(null);
-  const canvasImageRef = useRef<HTMLInputElement>(null);
   const handleImageRef = useRef<HTMLInputElement>(null);
 
   const [draft, setDraft] = useState<AppearanceTheme | null>(null);
@@ -684,13 +791,33 @@ export default function AppearanceSettings() {
     if (useAppStore.getState().appearancePreview) clearPreview();
   }, [clearPreview]);
 
-  const update = (patch: (theme: AppearanceTheme) => AppearanceTheme) => {
-    const editable = structuredClone(draft ?? savedActive);
-    const next = normalizeAppearanceTheme(patch(editable));
+  const update = (patch: (theme: AppearanceTheme) => AppearanceTheme | null) => {
+    // 图片读取是异步的；使用最新草稿，避免完成上传时覆盖其间的其他编辑。
+    const editable = structuredClone(draftRef.current ?? normalizeAppearanceTheme(useAppStore.getState().config.appearance ?? savedActive));
+    const patched = patch(editable);
+    if (!patched) return;
+    const next = normalizeAppearanceTheme(patched);
     draftRef.current = next;
     setDraft(next);
     setAutoSaveStatus('saving');
     preview(next);
+  };
+
+  const updateImage = (patch: (theme: AppearanceTheme) => AppearanceTheme) => {
+    try {
+      update((theme) => {
+        // 切换预设后，不将旧上传任务应用到新主题。
+        if (theme.id !== active.id) return null;
+        const next = patch(theme);
+        const size = new Blob([JSON.stringify(next, null, 2)]).size;
+        if (size > MAX_APPEARANCE_THEME_BYTES && size > new Blob([JSON.stringify(theme, null, 2)]).size) {
+          throw new Error('图片使主题文件超过 8MB，请换用较小图片或移除其他背景图片');
+        }
+        return next;
+      });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('背景图片设置失败'), 'error');
+    }
   };
 
   const flushDraft = useCallback(async () => {
@@ -736,7 +863,7 @@ export default function AppearanceSettings() {
   const canvasStyle = resolved.canvas.kind === 'color'
     ? { backgroundColor: resolved.canvas.color }
     : resolved.canvas.kind === 'image'
-      ? imagePreviewStyle(resolved.canvas.imageDataUrl)
+      ? imagePreviewStyle(resolved.canvas.imageDataUrl, resolved.canvas.imageFit)
       : { backgroundColor: resolved.ui.background };
 
   const updateMode = async (mode: AppearanceTheme['mode']) => {
@@ -790,14 +917,13 @@ export default function AppearanceSettings() {
     }
   };
 
-  const setCanvasImage = async (file: File) => {
-    const imageDataUrl = await readFileAsDataUrl(file);
-    update((theme) => ({ ...theme, canvas: { ...theme.canvas, kind: 'image', imageDataUrl } }));
-  };
-
   const setHandleImage = async (file: File) => {
-    const imageDataUrl = await readFileAsDataUrl(file);
-    update((theme) => ({ ...theme, handle: { ...theme.handle, kind: 'image', imageDataUrl } }));
+    try {
+      const imageDataUrl = await readFileAsDataUrl(file);
+      updateImage((theme) => ({ ...theme, handle: { ...theme.handle, kind: 'image', imageDataUrl } }));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('图片读取失败'), 'error');
+    }
   };
 
   const savePreset = async () => {
@@ -1389,8 +1515,11 @@ export default function AppearanceSettings() {
             onChange={(value) => update((theme) => ({ ...theme, ui: { ...theme.ui, background: value } }))}
           />
           <ColorCardInput
-            label={t('窗口背景')}
+            key={`${active.id}:surface-background`}
+            label={t('窗口 / 弹窗背景')}
             value={active.ui.surface}
+            image={active.ui.surfaceImage}
+            onImageChange={(surfaceImage) => updateImage((theme) => ({ ...theme, ui: { ...theme.ui, surfaceImage } }))}
             fallbackColor={active.mode === 'light' ? '#FFFFFF' : '#14141c'}
             onChange={(value) => update((theme) => ({ ...theme, ui: { ...theme.ui, surface: value } }))}
           />
@@ -1463,6 +1592,183 @@ export default function AppearanceSettings() {
         </div>
       </SectionCard>
       {/* END: SplineConnectionLinesSection */}
+
+      {/* BEGIN: Canvas & Node Appearance Section */}
+      <SectionCard
+        title={t('画布与节点外观')}
+        description={t('配置画布背景纹理与节点通用样式')}
+        icon={
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <rect width="18" height="18" x="3" y="3" rx="2" />
+            <path d="M3 9h18M9 21V9" />
+          </svg>
+        }
+        dataPurpose="canvas-and-nodes-styling"
+      >
+        <div className="space-y-4">
+          {/* Canvas Background Settings */}
+          <div className="p-4 settings-sub-card rounded-xl space-y-3">
+            <div className="flex items-center justify-between pb-1 border-b settings-h-divider">
+              <span className="text-xs font-bold text-canvas-text">{t('画布背景')}</span>
+              <span className="text-[11px] text-canvas-text-muted">{t('背景类型与网格')}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-canvas-text-secondary">{t('背景类型')}</span>
+              <Select
+                fixedMenu
+                size="sm"
+                value={active.canvas.kind}
+                onChange={(val) =>
+                  update((theme) => ({
+                    ...theme,
+                    canvas: { ...theme.canvas, kind: val as AppearanceTheme['canvas']['kind'] },
+                  }))
+                }
+              >
+                <option value="color">{t('纯色')}</option>
+                <option value="image">{t('图片')}</option>
+                <option value="solar-system">{t('太阳系')}</option>
+                <option value="frosted-glass">{t('磨砂暖光')}</option>
+              </Select>
+            </div>
+
+            {active.canvas.kind === 'color' && (
+              <div className="space-y-2">
+                <ColorCardInput
+                  label={t('画布背景颜色')}
+                  value={active.canvas.color}
+                  fallbackColor={active.mode === 'light' ? '#F4F6FB' : '#0a0a0f'}
+                  onChange={(value) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, color: value, kind: 'color' } }))}
+                />
+                <QuickSwatches
+                  colors={active.mode === 'light' ? LIGHT_CANVAS_COLOR_SWATCHES : DARK_CANVAS_COLOR_SWATCHES}
+                  value={active.canvas.color}
+                  onChange={(value) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, color: value, kind: 'color' } }))}
+                  title={t('画布底色预设')}
+                />
+              </div>
+            )}
+
+            {active.canvas.kind === 'image' && (
+              <div className="p-3 settings-sub-card rounded-lg">
+                <BackgroundImageControls
+                  key={`${active.id}:canvas-background`}
+                  label={t('画布背景')}
+                  image={{ kind: 'image', imageDataUrl: active.canvas.imageDataUrl, imageFit: active.canvas.imageFit }}
+                  onChange={({ kind, imageDataUrl, imageFit }) => updateImage((theme) => ({
+                    ...theme, canvas: { ...theme.canvas, kind, imageDataUrl, imageFit },
+                  }))}
+                />
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div className="p-3 settings-sub-card rounded-xl flex items-center justify-between">
+                <label className="text-xs font-semibold text-canvas-text cursor-pointer select-none" htmlFor="canvasGridCheckbox">
+                  {t('显示网格')}
+                </label>
+                <input
+                  id="canvasGridCheckbox"
+                  type="checkbox"
+                  checked={active.canvas.gridVisible}
+                  onChange={(e) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, gridVisible: e.target.checked } }))}
+                  className="w-4 h-4 text-brand rounded border-canvas-border focus:ring-brand cursor-pointer"
+                />
+              </div>
+              <ColorCardInput
+                label={t('网格颜色')}
+                value={active.canvas.gridColor}
+                fallbackColor={active.mode === 'light' ? '#B1B1B7' : '#585868'}
+                onChange={(value) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, gridColor: value } }))}
+              />
+            </div>
+          </div>
+
+          {/* Node Appearance Settings */}
+          <div className="p-4 settings-sub-card rounded-xl space-y-3">
+            <div className="flex items-center justify-between pb-1 border-b settings-h-divider">
+              <span className="text-xs font-bold text-canvas-text">{t('节点外观')}</span>
+              <span className="text-[11px] text-canvas-text-muted">{t('所有节点共用样式')}</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <ColorCardInput
+                key={`${active.id}:node-background`}
+                label={t('节点底色')}
+                value={active.node.background}
+                image={active.node.backgroundImage}
+                onImageChange={(backgroundImage) => updateImage((theme) => ({ ...theme, node: { ...theme.node, backgroundImage } }))}
+                fallbackColor={active.mode === 'light' ? '#FFFFFF' : '#14141c'}
+                onChange={(value) => update((theme) => ({ ...theme, node: { ...theme.node, background: value } }))}
+              />
+              <ColorCardInput
+                label={t('节点边框')}
+                value={active.node.border}
+                fallbackColor={active.mode === 'light' ? '#E4E8F2' : '#2a2a3a'}
+                onChange={(value) => update((theme) => ({ ...theme, node: { ...theme.node, border: value } }))}
+              />
+              <ColorCardInput
+                label={t('选中边框')}
+                value={active.node.selectedBorder}
+                fallbackColor={active.mode === 'light' ? '#7280E4' : '#6366f1'}
+                onChange={(value) => update((theme) => ({ ...theme, node: { ...theme.node, selectedBorder: value } }))}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-2">
+              <div className="p-3 settings-sub-card rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-canvas-text">{t('节点圆角')}</span>
+                  <NumberStepper
+                    value={active.node.radius}
+                    min={0}
+                    max={24}
+                    step={1}
+                    unit="px"
+                    size="sm"
+                    onChange={(radius) => update((theme) => ({ ...theme, node: { ...theme.node, radius } }))}
+                  />
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={24}
+                  value={active.node.radius}
+                  onChange={(e) => update((theme) => ({ ...theme, node: { ...theme.node, radius: Number(e.target.value) } }))}
+                  className="w-full accent-brand cursor-pointer"
+                />
+              </div>
+
+              <div className="p-3 settings-sub-card rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-canvas-text">{t('节点边框宽度')}</span>
+                  <NumberStepper
+                    value={active.node.borderWidth}
+                    min={0}
+                    max={3}
+                    step={0.5}
+                    precision={1}
+                    unit="px"
+                    size="sm"
+                    onChange={(borderWidth) => update((theme) => ({ ...theme, node: { ...theme.node, borderWidth } }))}
+                  />
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={3}
+                  step={0.5}
+                  value={active.node.borderWidth}
+                  onChange={(e) => update((theme) => ({ ...theme, node: { ...theme.node, borderWidth: Number(e.target.value) } }))}
+                  className="w-full accent-brand cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </SectionCard>
+      {/* END: Canvas & Node Appearance Section */}
 
       {/* BEGIN: ConnectionPortsSection */}
       <SectionCard
@@ -1571,7 +1877,7 @@ export default function AppearanceSettings() {
                     <input
                       ref={handleImageRef}
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg"
                       className="hidden"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
@@ -1659,210 +1965,113 @@ export default function AppearanceSettings() {
       </SectionCard>
       {/* END: ConnectionPortsSection */}
 
-      {/* BEGIN: Canvas & Node Appearance Section */}
       <SectionCard
-        title={t('画布与节点外观')}
-        description={t('配置画布背景纹理与节点通用样式')}
-        icon={
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <rect width="18" height="18" x="3" y="3" rx="2" />
-            <path d="M3 9h18M9 21V9" />
-          </svg>
-        }
-        dataPurpose="canvas-and-nodes-styling"
+        title={t('按钮外观')}
+        description={t('普通按钮和主按钮分别设置纯色或图片背景，默认跟随主题')}
+        icon={<Icon icon="lucide:mouse-pointer-2" className="w-4 h-4" aria-hidden="true" />}
+        dataPurpose="button-appearance-settings"
       >
-        <div className="space-y-4">
-          {/* Canvas Background Settings */}
-          <div className="p-4 settings-sub-card rounded-xl space-y-3">
-            <div className="flex items-center justify-between pb-1 border-b settings-h-divider">
-              <span className="text-xs font-bold text-canvas-text">{t('画布背景')}</span>
-              <span className="text-[11px] text-canvas-text-muted">{t('背景类型与网格')}</span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-canvas-text-secondary">{t('背景类型')}</span>
-              <Select
-                fixedMenu
-                size="sm"
-                value={active.canvas.kind}
-                onChange={(val) =>
-                  update((theme) => ({
-                    ...theme,
-                    canvas: { ...theme.canvas, kind: val as AppearanceTheme['canvas']['kind'] },
-                  }))
-                }
-              >
-                <option value="color">{t('纯色')}</option>
-                <option value="image">{t('图片')}</option>
-                <option value="solar-system">{t('太阳系')}</option>
-                <option value="frosted-glass">{t('磨砂暖光')}</option>
-              </Select>
-            </div>
-
-            {active.canvas.kind === 'color' && (
-              <div className="space-y-2">
-                <ColorCardInput
-                  label={t('画布背景颜色')}
-                  value={active.canvas.color}
-                  fallbackColor={active.mode === 'light' ? '#F4F6FB' : '#0a0a0f'}
-                  onChange={(value) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, color: value, kind: 'color' } }))}
-                />
-                <QuickSwatches
-                  colors={active.mode === 'light' ? LIGHT_CANVAS_COLOR_SWATCHES : DARK_CANVAS_COLOR_SWATCHES}
-                  value={active.canvas.color}
-                  onChange={(value) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, color: value, kind: 'color' } }))}
-                  title={t('画布底色预设')}
-                />
-              </div>
-            )}
-
-            {active.canvas.kind === 'image' && (
-              <div className="flex items-center space-x-3 p-3 settings-sub-card rounded-lg">
-                <div
-                  className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-canvas-border bg-canvas-card bg-cover bg-center"
-                  style={imagePreviewStyle(active.canvas.imageDataUrl)}
-                >
-                  {!active.canvas.imageDataUrl && (
-                    <span className="flex h-full items-center justify-center text-[10px] text-canvas-text-muted text-center px-1">
-                      {t('未选图片')}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center space-x-2">
-                  <button
-                    type="button"
-                    onClick={() => canvasImageRef.current?.click()}
-                    className="px-3 py-1.5 text-xs font-medium bg-canvas-card border border-canvas-border rounded-lg text-canvas-text hover:bg-canvas-hover"
-                  >
-                    {t('选择画布图片')}
-                  </button>
-                  {active.canvas.imageDataUrl && (
-                    <button
-                      type="button"
-                      onClick={() => update((theme) => ({ ...theme, canvas: { ...theme.canvas, imageDataUrl: undefined } }))}
-                      className="px-3 py-1.5 text-xs font-medium text-danger hover:bg-danger/10 rounded-lg"
-                    >
-                      {t('移除图片')}
-                    </button>
-                  )}
-                  <input
-                    ref={canvasImageRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) void setCanvasImage(file);
-                      e.currentTarget.value = '';
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-              <div className="p-3 settings-sub-card rounded-xl flex items-center justify-between">
-                <label className="text-xs font-semibold text-canvas-text cursor-pointer select-none" htmlFor="canvasGridCheckbox">
-                  {t('显示网格')}
-                </label>
-                <input
-                  id="canvasGridCheckbox"
-                  type="checkbox"
-                  checked={active.canvas.gridVisible}
-                  onChange={(e) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, gridVisible: e.target.checked } }))}
-                  className="w-4 h-4 text-brand rounded border-canvas-border focus:ring-brand cursor-pointer"
-                />
-              </div>
-              <ColorCardInput
-                label={t('网格颜色')}
-                value={active.canvas.gridColor}
-                fallbackColor={active.mode === 'light' ? '#B1B1B7' : '#585868'}
-                onChange={(value) => update((theme) => ({ ...theme, canvas: { ...theme.canvas, gridColor: value } }))}
-              />
-            </div>
-          </div>
-
-          {/* Node Appearance Settings */}
-          <div className="p-4 settings-sub-card rounded-xl space-y-3">
-            <div className="flex items-center justify-between pb-1 border-b settings-h-divider">
-              <span className="text-xs font-bold text-canvas-text">{t('节点外观')}</span>
-              <span className="text-[11px] text-canvas-text-muted">{t('所有节点共用样式')}</span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              <ColorCardInput
-                label={t('节点底色')}
-                value={active.node.background}
-                fallbackColor={active.mode === 'light' ? '#FFFFFF' : '#14141c'}
-                onChange={(value) => update((theme) => ({ ...theme, node: { ...theme.node, background: value } }))}
-              />
-              <ColorCardInput
-                label={t('节点边框')}
-                value={active.node.border}
-                fallbackColor={active.mode === 'light' ? '#E4E8F2' : '#2a2a3a'}
-                onChange={(value) => update((theme) => ({ ...theme, node: { ...theme.node, border: value } }))}
-              />
-              <ColorCardInput
-                label={t('选中边框')}
-                value={active.node.selectedBorder}
-                fallbackColor={active.mode === 'light' ? '#7280E4' : '#6366f1'}
-                onChange={(value) => update((theme) => ({ ...theme, node: { ...theme.node, selectedBorder: value } }))}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-2">
-              <div className="p-3 settings-sub-card rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-canvas-text">{t('节点圆角')}</span>
-                  <NumberStepper
-                    value={active.node.radius}
-                    min={0}
-                    max={24}
-                    step={1}
-                    unit="px"
-                    size="sm"
-                    onChange={(radius) => update((theme) => ({ ...theme, node: { ...theme.node, radius } }))}
-                  />
-                </div>
-                <input
-                  type="range"
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3">
+          {([
+            { key: 'radius', label: '按钮圆角', max: 24, step: 1, precision: 0 },
+            { key: 'borderWidth', label: '按钮边框宽度', max: 3, step: 0.5, precision: 1 },
+          ] as const).map(({ key, label, max, step, precision }) => (
+            <div key={key} className="p-3 settings-sub-card rounded-xl space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor={`appearance-button-${key}`} className="text-xs font-semibold text-canvas-text">{t(label)}</label>
+                <NumberStepper
+                  aria-label={t(label)}
+                  value={active.ui.button[key]}
                   min={0}
-                  max={24}
-                  value={active.node.radius}
-                  onChange={(e) => update((theme) => ({ ...theme, node: { ...theme.node, radius: Number(e.target.value) } }))}
-                  className="w-full accent-brand cursor-pointer"
+                  max={max}
+                  step={step}
+                  precision={precision}
+                  unit="px"
+                  size="sm"
+                  onChange={(value) => update((theme) => ({ ...theme, ui: { ...theme.ui, button: { ...theme.ui.button, [key]: value } } }))}
                 />
               </div>
-
-              <div className="p-3 settings-sub-card rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-canvas-text">{t('节点边框宽度')}</span>
-                  <NumberStepper
-                    value={active.node.borderWidth}
-                    min={0}
-                    max={3}
-                    step={0.5}
-                    precision={1}
-                    unit="px"
-                    size="sm"
-                    onChange={(borderWidth) => update((theme) => ({ ...theme, node: { ...theme.node, borderWidth } }))}
-                  />
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={3}
-                  step={0.5}
-                  value={active.node.borderWidth}
-                  onChange={(e) => update((theme) => ({ ...theme, node: { ...theme.node, borderWidth: Number(e.target.value) } }))}
-                  className="w-full accent-brand cursor-pointer"
-                />
-              </div>
+              <input
+                id={`appearance-button-${key}`}
+                type="range"
+                min={0}
+                max={max}
+                step={step}
+                value={active.ui.button[key]}
+                onChange={(event) => update((theme) => ({ ...theme, ui: { ...theme.ui, button: { ...theme.ui.button, [key]: Number(event.target.value) } } }))}
+                className="ui-slider w-full"
+              />
             </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] gap-3 mt-3">
+          {([
+            { key: 'normal', title: '普通按钮', prefix: '--button' },
+            { key: 'primary', title: '主按钮', prefix: '--button-primary' },
+          ] as const).map((variant) => {
+            const fallback = variant.key === 'normal'
+              ? { background: resolved.ui.card, hoverBackground: resolved.ui.hover, text: resolved.ui.text, border: resolved.ui.border }
+              : {
+                background: resolved.ui.accent,
+                hoverBackground: resolved.ui.accentStrong,
+                text: contrastColor(resolved.ui.button.primary.background === 'auto' ? resolved.ui.accent : resolved.ui.button.primary.background),
+                border: resolved.ui.accent,
+              };
+            return (
+              <div key={variant.key} className="space-y-2">
+                <h4 className="text-xs font-semibold text-canvas-text-secondary">{t(variant.title)}</h4>
+                {([
+                  { key: 'background', label: '背景', token: 'bg', allowNone: true },
+                  { key: 'hoverBackground', label: '悬停背景', token: 'hover-bg', allowNone: true },
+                  { key: 'text', label: '文字', token: 'text', allowNone: false },
+                  { key: 'border', label: '边框', token: 'border', allowNone: true },
+                ] as const).map((field) => {
+                  const imageField = field.key === 'background' ? 'backgroundImage'
+                    : field.key === 'hoverBackground' ? 'hoverBackgroundImage' : undefined;
+                  const colors = active.ui.button[variant.key];
+                  return (
+                    <ColorCardInput
+                      key={`${active.id}:${field.key}`}
+                      label={t(`${variant.title}${field.label}`)}
+                      value={active.ui.button[variant.key][field.key]}
+                      image={imageField === 'hoverBackgroundImage' ? colors.hoverBackgroundImage ?? colors.backgroundImage : colors.backgroundImage}
+                      onImageChange={imageField ? (image) => updateImage((theme) => ({
+                        ...theme,
+                        ui: { ...theme.ui, button: { ...theme.ui.button, [variant.key]: { ...theme.ui.button[variant.key], [imageField]: image } } },
+                      })) : undefined}
+                      fallbackColor={fallback[field.key]}
+                      followThemeVar={`${variant.prefix}-${field.token}`}
+                      allowNone={field.allowNone}
+                      onChange={(value) => update((theme) => ({
+                        ...theme,
+                        ui: { ...theme.ui, button: { ...theme.ui.button, [variant.key]: { ...theme.ui.button[variant.key], [field.key]: value } } },
+                      }))}
+                    />
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+        <div className="p-3 settings-sub-card rounded-xl mt-3 space-y-2">
+          <p className="text-xs text-canvas-text-secondary">{t('预览，悬停查看效果；小号和大号按钮圆角按比例调整')}</p>
+          <div className="ui-row ui-row--loose">
+            <button type="button" className="ui-btn">{t('普通按钮')}</button>
+            <button type="button" className="ui-btn ui-btn--secondary">{t('次级按钮')}</button>
+            <button type="button" className="ui-btn ui-btn--primary">{t('主按钮')}</button>
+            <button type="button" className="ui-btn" disabled>{t('禁用')}</button>
           </div>
         </div>
+        <div className="flex justify-end mt-3">
+          <button
+            type="button"
+            className="ui-btn ui-btn--ghost ui-btn--sm"
+            onClick={() => update((theme) => ({ ...theme, ui: { ...theme.ui, button: getBuiltinAppearanceTheme('standard-dark').ui.button } }))}
+          >
+            {t('恢复按钮默认')}
+          </button>
+        </div>
       </SectionCard>
-      {/* END: Canvas & Node Appearance Section */}
 
       {/* BEGIN: CursorSection */}
       <section data-purpose="cursor-styling">

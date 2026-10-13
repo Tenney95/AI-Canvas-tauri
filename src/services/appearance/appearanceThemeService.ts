@@ -6,6 +6,8 @@ import {
   saveAppearanceThemeToDb,
 } from '../indexedDb/catalogRepository';
 
+export const MAX_APPEARANCE_THEME_BYTES = 8 * 1024 * 1024;
+
 export async function loadAppearanceThemes(): Promise<AppearanceTheme[]> {
   return getAllAppearanceThemes();
 }
@@ -22,7 +24,7 @@ export function exportAppearanceTheme(theme: AppearanceTheme): Blob {
 }
 
 export async function importAppearanceTheme(file: File): Promise<AppearanceTheme> {
-  if (file.size > 8 * 1024 * 1024) throw new Error('主题文件不能超过 8MB');
+  if (file.size > MAX_APPEARANCE_THEME_BYTES) throw new Error('主题文件不能超过 8MB');
   const raw = JSON.parse(await file.text()) as Partial<AppearanceTheme>;
   if (raw.schemaVersion !== 1 || !raw.ui || !raw.canvas || !raw.node || !raw.edge || !raw.handle || !raw.motion) {
     throw new Error('主题文件格式不受支持');

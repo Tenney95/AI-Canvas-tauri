@@ -33,7 +33,7 @@ import {
   warnIfTooManyReferences,
 } from './connectedReferenceMedia';
 import { getApimartSeedanceCapability, type ApimartSeedanceCapability } from './apimartVideoModels';
-import { pollTask } from '../pollTask';
+import { pollTask, PollTimeoutError } from '../pollTask';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import {
   getModelProtocolPresetVideoCapability,
@@ -47,7 +47,7 @@ import {
   resolveVideoDurationSeconds,
   videoFramesFromDuration,
 } from '../aiDimensions';
-import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
+import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling, pauseVideoNodeTaskOnTimeout, VIDEO_POLL_MAX_DURATION_MS } from '../pollManager';
 import { corsSafeFetch } from './httpTransport';
 import { resolveImageUrlArray } from './imageUtils';
 import { resolveMediaReferenceUrl } from '../uploadService';
@@ -927,7 +927,6 @@ async function generateVolcengineVideo(
   let requestSent = false;
   let remoteFailed = false;
   let remoteCancelled = false;
-  let keepPending = false;
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
   const signal = nodeSignal && externalSignal
     ? AbortSignal.any([nodeSignal, externalSignal])
@@ -1012,12 +1011,12 @@ async function generateVolcengineVideo(
       throw new Error('火山方舟视频生成提交失败: 未返回任务 ID');
     }
     submittedTaskId = taskId;
-    billingRun = await updateBillingRun(billingRun, { status: 'running', taskId });
 
     // 回填 taskId
     if (nodeId) {
       updatePendingTask(nodeId, { taskId, submitted: true });
     }
+    billingRun = await updateBillingRun(billingRun, { status: 'running', taskId });
 
     // 轮询
     const completed = await pollTask<Record<string, unknown>, { url: string; completionTokens?: number }>({
@@ -1026,6 +1025,7 @@ async function generateVolcengineVideo(
           headers: { Authorization: `Bearer ${apiKey}` },
           signal,
         });
+        if ([408, 504].includes(pollResp.status)) throw new PollTimeoutError();
         if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
         return (await pollResp.json()) as Record<string, unknown>;
       },
@@ -1051,6 +1051,7 @@ async function generateVolcengineVideo(
         return null;
       },
       interval: 3000,
+      maxDuration: VIDEO_POLL_MAX_DURATION_MS,
       signal,
     });
 
@@ -1073,12 +1074,12 @@ async function generateVolcengineVideo(
       amountConfidence: remoteFailed || !requestSent ? 'calculated' : 'unknown',
       errorMessage: error instanceof Error ? error.message.slice(0, 500) : '视频请求失败',
     });
-    keepPending = Boolean(submittedTaskId && !remoteFailed);
+    const paused = pauseVideoNodeTaskOnTimeout(nodeId, error, submittedTaskId);
+    if (paused) throw paused;
     throw error;
   } finally {
-    if (nodeId) {
-      cleanupNodePolling(nodeId);
-      if (!keepPending) removePendingTask(nodeId);
+    if (nodeId && cleanupNodePolling(nodeId, nodeSignal)) {
+      if (!submittedTaskId || remoteFailed) removePendingTask(nodeId, submittedTaskId || undefined);
     }
   }
 }

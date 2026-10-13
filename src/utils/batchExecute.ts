@@ -26,6 +26,7 @@ import { resolveVideoSubmissionControls } from '../services/ai/videoRequestResol
 import { persistMediaUrlToProjectData } from '../services/fileService';
 import { animationProcessing, animationResultPatch } from '../services/animationService';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation, type CanvasDerivationGuard } from '../services/canvasDerivationGuard';
+import { completeVideoNodeTask, getPendingTasksForProject, pauseVideoNodeTask, prepareVideoNodeGeneration, VideoPollingPausedError } from '../services/pollManager';
 
 export interface BatchContext {
   commitToHistory: () => void;
@@ -55,21 +56,30 @@ const EXECUTABLE_NODE_TYPES = new Set<AINodeType>([
 ]);
 
 // ── 执行单个节点 ──
-async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Promise<boolean> {
+async function executeOneNode(
+  node: Node<BaseNodeData>,
+  ctx: BatchContext,
+  useAppStore: typeof import('../store/useAppStore').useAppStore,
+): Promise<boolean> {
   const d = node.data!;
   if (d.provider === 'workflow-api') {
-    const { useAppStore } = await import('../store/useAppStore');
     if (useAppStore.getState().currentProjectId !== ctx.currentProjectId) return false;
     const { executeGeneration } = await import('../services/generationService');
     if (useAppStore.getState().currentProjectId !== ctx.currentProjectId) return false;
     return (await executeGeneration(node.id)).success;
   }
   const nt = d.type as AINodeType;
+  if (nt === 'ai-video') {
+    if (useAppStore.getState().currentProjectId !== ctx.currentProjectId) return false;
+    try { prepareVideoNodeGeneration(node.id); }
+    catch { return false; }
+  }
   const prompt = (d.prompt as string) || '';
+  let videoResultReceived = false;
+  let videoTaskId: string | undefined;
   let animationGuard: CanvasDerivationGuard | null = null;
-  const guarded = nt === 'ai-animation' && !!ctx.currentProjectId;
+  const guarded = ['ai-animation', 'ai-video'].includes(nt) && !!ctx.currentProjectId;
   if (guarded) {
-    const { useAppStore } = await import('../store/useAppStore');
     const state = useAppStore.getState();
     if (state.currentProjectId !== ctx.currentProjectId) return false;
     animationGuard = registerCanvasDerivation(state, node.id);
@@ -77,11 +87,10 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
   }
   const isFresh = async () => {
     if (!guarded) return true;
-    const { useAppStore } = await import('../store/useAppStore');
     return !!animationGuard && isCanvasDerivationFresh(animationGuard, useAppStore.getState());
   };
 
-  ctx.updateNodeDataTransient(node.id, { status: 'loading', error: undefined });
+  ctx.updateNodeDataTransient(node.id, { status: 'loading', error: undefined, videoTaskState: undefined });
   try {
     if (nt === 'ai-text') {
       const result = await generateText({ prompt, model: d.model!, provider: d.provider! });
@@ -100,7 +109,6 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         status: 'success',
       });
       if (processed.ok && processed.parsed) {
-        const { useAppStore } = await import('../store/useAppStore');
         useAppStore.getState().mergeDramaExtract(processed.parsed, {
           sourceNodeId: node.id,
           modelId: d.model,
@@ -146,7 +154,6 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         ...(isAnimation ? { aspectRatio, ...animationResultPatch(d) } : {}),
       });
       {
-        const { useAppStore } = await import('../store/useAppStore');
         useAppStore.getState().syncDramaAssetImageFromNode?.(node.id, mediaUrl);
       }
       ctx.recordOutputHistory(node.id, {
@@ -240,9 +247,19 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         workflowInputs: d.workflowInputs,
         nodeId: node.id,
       });
+      videoResultReceived = true;
+      videoTaskId = ctx.currentProjectId ? getPendingTasksForProject(ctx.currentProjectId).find((task) => task.nodeId === node.id)?.taskId : undefined;
+      if (!await isFresh()) {
+        if (videoTaskId) pauseVideoNodeTask(node.id, videoTaskId);
+        return false;
+      }
       const persisted = ctx.currentProjectId
         ? await persistMediaUrlToProjectData(result.url, ctx.currentProjectId, 'ai-video', d.label)
         : { mediaUrl: result.url, sourceUrl: result.url };
+      if (!await isFresh()) {
+        if (videoTaskId) pauseVideoNodeTask(node.id, videoTaskId);
+        return false;
+      }
       const mediaUrl = persisted.mediaUrl;
       ctx.updateNodeDataTransient(node.id, {
         videoUrl: mediaUrl,
@@ -251,7 +268,9 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         thumbnailUrl: mediaUrl,
         output: persisted.sourceUrl,
         status: 'success',
+        videoTaskState: undefined,
       });
+      completeVideoNodeTask(node.id, videoTaskId);
       ctx.recordOutputHistory(node.id, {
         nodeId: node.id,
         nodeLabel: d.label,
@@ -326,6 +345,8 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
     }
     return true;
   } catch (err) {
+    if (err instanceof VideoPollingPausedError) return false;
+    if (videoResultReceived && videoTaskId && pauseVideoNodeTask(node.id, videoTaskId)) return false;
     if (!await isFresh()) return false;
     const msg = err instanceof Error ? err.message : typeof err === 'string' && err.trim() ? err : '生成失败';
     ctx.updateNodeDataTransient(node.id, { status: 'error', error: msg });
@@ -488,6 +509,7 @@ export async function batchExecuteNodes(
   const toRun = executable.map((node) => node.data.workflowId ? workflows[workflowIndex++] : node);
   if (toRun.length === 0) return { ok: 0, fail: 0 };
   ctx.commitToHistory();
+  const { useAppStore } = await import('../store/useAppStore');
 
   // 仅在调度图添加串行约束，不修改画布连线。复用现有依赖排序，避免
   // 将工作流拆出独立队列后，与其普通上游/下游节点同时执行。
@@ -524,14 +546,14 @@ export async function batchExecuteNodes(
 
   const runConnected = async () => {
     for (const node of orderedConnected) {
-      const success = await executeOneNode(node, ctx);
+      const success = await executeOneNode(node, ctx, useAppStore);
       if (success) ok++;
       else fail++;
     }
   };
 
   const runIsolated = async () => {
-    const results = await Promise.all(isolatedNodes.map((n) => executeOneNode(n, ctx)));
+    const results = await Promise.all(isolatedNodes.map((n) => executeOneNode(n, ctx, useAppStore)));
     for (const r of results) {
       if (r) ok++;
       else fail++;

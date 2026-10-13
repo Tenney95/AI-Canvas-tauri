@@ -52,7 +52,12 @@ vi.mock('../../src/services/fs/assetImageMetadata', () => ({ fingerprintAssetIma
 vi.mock('../../src/services/fs/assetIndex', async (original) => ({
   ...await original<typeof import('../../src/services/fs/assetIndex')>(), identifyAsset: mocks.identify,
 }));
-vi.mock('../../src/services/indexedDbService', () => ({ getAssetIndexById: mocks.index, getAssetIndexByPath: mocks.index }));
+vi.mock('../../src/services/indexedDbService', () => ({
+  getAssetIndexById: mocks.index, getAssetIndexByPath: mocks.index,
+  savePresetFolderToDb: vi.fn().mockResolvedValue(undefined),
+  loadPresetFoldersFromDb: vi.fn().mockResolvedValue([]),
+  deletePresetFolderFromDb: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../../src/services/indexedDb/mediaRelocations', async (original) => ({
   ...await original<typeof import('../../src/services/indexedDb/mediaRelocations')>(),
   persistMediaRelocation: mocks.persist, completeMediaRelocation: mocks.complete,

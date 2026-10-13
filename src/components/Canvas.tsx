@@ -1733,8 +1733,8 @@ function CanvasInner({ onReady }: CanvasProps) {
         connectionMenuMap={connectionMenuMap}
       />
 
-      {/* Context menu */}
-      <CanvasContextMenu
+      {/* 挂到 body，避免画布的 contain: paint 将右键菜单压在节点对话框下方。 */}
+      {createPortal(<CanvasContextMenu
         visible={ctxMenu.visible}
         position={ctxMenu.position}
         hoverMenu={ctxMenu.hoverMenu}
@@ -1754,10 +1754,10 @@ function CanvasInner({ onReady }: CanvasProps) {
         onOpenProjectDir={handleCtxOpenProjectDir}
         onShowSubmenu={showSubmenu}
         onHideSubmenu={hideSubmenu}
-      />
+      />, document.body)}
 
       {/* Node context menu */}
-      <NodeContextMenu
+      {createPortal(<NodeContextMenu
         visible={nodeCtxMenu.visible}
         position={nodeCtxMenu.position}
         menuRef={nodeCtxMenuRef}
@@ -1786,7 +1786,7 @@ function CanvasInner({ onReady }: CanvasProps) {
         copyMediaLabel={copyMediaLabel}
         pluginTools={pluginTools}
         onPluginTool={handlePluginTool}
-      />
+      />, document.body)}
 
       {pendingPluginTool ? (
         <NodePluginToolDialog

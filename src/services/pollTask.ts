@@ -5,6 +5,32 @@
  * 消除 while(true) + setTimeout 重复样板代码。
  */
 
+/** 本地等待预算耗尽，与上游明确失败分开处理。 */
+export class PollTimeoutError extends Error {
+  constructor(message = '任务轮询超时') {
+    super(message);
+    this.name = 'PollTimeoutError';
+  }
+}
+
+export class PollTaskFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PollTaskFailedError';
+  }
+}
+
+export function isPollTimeoutError(error: unknown): boolean {
+  if (error instanceof PollTaskFailedError) return false;
+  if (error instanceof Error && error.name === 'ModelProtocolHttpError') {
+    return [408, 504].includes((error as Error & { status: number }).status);
+  }
+  return error instanceof PollTimeoutError
+    || (error instanceof Error && error.name === 'TimeoutError')
+    // Rust proxy_transport_error 的固定脱敏类别；不按任意上游文案猜测超时。
+    || (error instanceof Error && error.name === 'Error' && /^请求失败：网络请求超时/.test(error.message));
+}
+
 export interface PollTaskOptions<TRaw, TResult> {
   /** 每次轮询调用此函数获取最新状态（应返回原始 JSON 或结构化数据） */
   fetchState: () => Promise<TRaw>;
@@ -111,7 +137,7 @@ export async function pollTask<TRaw = unknown, TResult = unknown>(
 
     // 检查时长限制
     if (Date.now() - startTime >= maxDuration) {
-      throw new Error(timeoutMsg);
+      throw new PollTimeoutError(timeoutMsg);
     }
 
     // 执行一次状态查询
@@ -119,14 +145,16 @@ export async function pollTask<TRaw = unknown, TResult = unknown>(
     try {
       state = await fetchState();
     } catch (err) {
+      if (signal?.aborted || err instanceof PollTimeoutError) throw err;
       if (onFetchError === 'continue') continue;
       throw err;
     }
+    if (signal?.aborted) throw new Error('任务已被取消');
 
     // 检查是否失败
     if (isFailed) {
       const errorMsg = isFailed(state);
-      if (errorMsg) throw new Error(errorMsg);
+      if (errorMsg) throw new PollTaskFailedError(errorMsg);
     }
 
     // 检查是否完成
@@ -146,5 +174,5 @@ export async function pollTask<TRaw = unknown, TResult = unknown>(
     }
   }
 
-  throw new Error(timeoutMsg);
+  throw new PollTimeoutError(timeoutMsg);
 }

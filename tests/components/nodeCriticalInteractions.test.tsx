@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { HistoryRecord } from '../../src/services/indexedDbService';
 
 interface ElementLike {
   type: unknown;
@@ -187,6 +188,138 @@ function installCommonNodeMocks() {
     useSourceFileUpload: () => ({ isUploading: false, handleUpload: vi.fn() }),
   }));
 }
+
+async function setupImageHistoryApplication(currentPath = 'C:/project/current.png', status = 'success') {
+  const entry: HistoryRecord = {
+    id: 'history-image', projectId: 'project-a', nodeId: 'image-node', nodeLabel: '图片',
+    timestamp: 100, prompt: '历史提示词', output: 'https://example.com/history.png',
+    mediaUrl: 'https://example.com/history.png', filePath: 'C:/project/history.png',
+    nodeType: 'ai-image', model: 'history-model', provider: 'history-provider', status: 'success',
+  };
+  const effects: Array<() => void | (() => void)> = [];
+  await installReactHookDriver((initial, index) => index % 9 === 0 ? [entry] : index % 9 === 1 ? 'project-a' : initial, effects);
+  let revision = 1;
+  const store = createStore([{
+    id: 'image-node', type: 'ai-image', position: { x: 0, y: 0 },
+    data: { filePath: currentPath, imageUrl: `asset://localhost/${encodeURIComponent(currentPath)}`,
+      prompt: '当前提示词', model: 'current-model', status, nodeWidth: 360, mediaVersion: 5,
+      annotation: 'old-annotation', mattingMask: 'old-mask', artifactId: 'old-artifact' },
+  }], () => revision);
+  installStoreMock(store);
+  vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+  vi.doMock('react-dom', () => ({ createPortal: (children: unknown) => children }));
+  vi.doMock('@tauri-apps/api/core', () => ({ convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}` }));
+  vi.doMock('../../src/services/indexedDbService', () => ({ getNodeHistoryEntries: vi.fn(async () => [entry]) }));
+  vi.doMock('../../src/components/shared/ModalOverlay', () => ({ default: function ModalOverlayMock() { return null; } }));
+  vi.doMock('../../src/components/shared/PopupCloseButton', () => ({ default: function PopupCloseButtonMock() { return null; } }));
+  vi.doMock('../../src/components/shared/FullscreenOverlay', () => ({ default: () => null }));
+  vi.doMock('../../src/components/shared/ZoomableImage', () => ({ default: () => null }));
+  vi.doMock('../../src/components/shared/ViewportImage', () => ({ default: () => null }));
+  const size = { imageWidth: 1024, imageHeight: 512, nodeWidth: 280, nodeHeight: 142 };
+  const dimensions = vi.fn<typeof import('../../src/components/nodes/shared/image/imageUtils').computeImageNodeDimensions>()
+    .mockResolvedValue(size);
+  vi.doMock('../../src/components/nodes/shared/image/imageUtils', () => ({ computeImageNodeDimensions: dimensions }));
+  vi.stubGlobal('document', { body: {} });
+  const Dialog = (await import('../../src/components/nodes/shared/image/ImageGenerationHistoryDialog')).default;
+  const render = () => Dialog({ isOpen: true, nodeId: 'image-node', onClose: vi.fn() });
+  const tree = render();
+  const button = findElement(tree, (element) => element.type === 'button'
+    && Array.isArray(element.props.children) && ['应用', '当前使用'].includes(element.props.children[1] as string));
+  return { store, dimensions, size, tree, button, render, effects, changeRevision: () => { revision += 1; },
+    click: () => (button.props.onClick as () => void)() };
+}
+
+describe('image generation history application', () => {
+  afterEach(() => {
+    vi.doUnmock('../../src/i18n');
+    vi.doUnmock('react-dom');
+    vi.doUnmock('@tauri-apps/api/core');
+    vi.doUnmock('../../src/services/indexedDbService');
+    vi.doUnmock('../../src/components/shared/ModalOverlay');
+    vi.doUnmock('../../src/components/shared/PopupCloseButton');
+    vi.doUnmock('../../src/components/shared/FullscreenOverlay');
+    vi.doUnmock('../../src/components/shared/ZoomableImage');
+    vi.doUnmock('../../src/components/shared/ViewportImage');
+    vi.doUnmock('../../src/components/nodes/shared/image/imageUtils');
+  });
+
+  it('applies a historical image through the Store action while retaining generation settings', async () => {
+    const setup = await setupImageHistoryApplication();
+    setup.click();
+    await vi.waitFor(() => expect(setup.store.updateNodeData).toHaveBeenCalledTimes(1));
+    expect(setup.store.nodes[0].data).toMatchObject({
+      imageUrl: 'asset://localhost/C%3A%2Fproject%2Fhistory.png',
+      thumbnailUrl: 'asset://localhost/C%3A%2Fproject%2Fhistory.png', filePath: 'C:/project/history.png',
+      prompt: '当前提示词', model: 'current-model', imageWidth: 1024, imageHeight: 512,
+      nodeWidth: 360, nodeHeight: 182, mediaVersion: 6,
+      annotation: undefined, mattingMask: undefined, artifactId: undefined,
+    });
+    const currentButton = findElement(setup.render(), (element) => element.type === 'button'
+      && Array.isArray(element.props.children) && element.props.children[1] === '当前使用');
+    expect(currentButton.props.disabled).toBe(true);
+  });
+
+  it('recognizes the current Windows path despite slash and case differences', async () => {
+    const setup = await setupImageHistoryApplication('c:\\PROJECT\\history.png');
+    expect(setup.button.props.disabled).toBe(true);
+    setup.click();
+    expect(setup.dimensions).not.toHaveBeenCalled();
+    expect(setup.store.updateNodeData).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the media link without retaining an unavailable local file', async () => {
+    const setup = await setupImageHistoryApplication();
+    setup.dimensions.mockResolvedValueOnce({ nodeWidth: 280, nodeHeight: 158 });
+    setup.click();
+    await vi.waitFor(() => expect(setup.store.updateNodeData).toHaveBeenCalledTimes(1));
+    expect(setup.dimensions).toHaveBeenNthCalledWith(2, 'https://example.com/history.png');
+    expect(setup.store.nodes[0].data).toMatchObject({
+      imageUrl: 'https://example.com/history.png', filePath: undefined, fileName: undefined,
+    });
+  });
+
+  it('retains the current result when both image sources fail', async () => {
+    const setup = await setupImageHistoryApplication();
+    setup.dimensions.mockResolvedValue({ nodeWidth: 280, nodeHeight: 158 });
+    setup.click();
+    await vi.waitFor(() => expect(setup.store.showToast).toHaveBeenCalledWith('图片加载失败', 'error'));
+    expect(setup.store.updateNodeData).not.toHaveBeenCalled();
+    expect(setup.store.nodes[0].data.filePath).toBe('C:/project/current.png');
+  });
+
+  it.each(['project', 'revision', 'node', 'close', 'unmount'] as const)('rejects a late image after %s changes', async (change) => {
+    const setup = await setupImageHistoryApplication();
+    const pending = deferred<typeof setup.size>();
+    setup.dimensions.mockReturnValueOnce(pending.promise);
+    setup.click();
+    setup.click();
+    expect(setup.dimensions).toHaveBeenCalledTimes(1);
+    if (change === 'project') setup.store.currentProjectId = 'project-b';
+    if (change === 'revision') setup.changeRevision();
+    if (change === 'node') setup.store.nodes = [];
+    if (change === 'close') {
+      const modal = findElement(setup.tree, (element) => componentName(element) === 'ModalOverlayMock');
+      (modal.props.onClose as () => void)();
+    }
+    if (change === 'unmount') {
+      const cleanup = setup.effects[0]();
+      if (typeof cleanup !== 'function') throw new Error('Missing application cleanup');
+      cleanup();
+    }
+    pending.resolve(setup.size);
+    await pending.promise;
+    expect(setup.store.updateNodeData).not.toHaveBeenCalled();
+    expect(setup.store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('does not replace a result while the node is generating', async () => {
+    const setup = await setupImageHistoryApplication(undefined, 'loading');
+    expect(setup.button.props.disabled).toBe(true);
+    setup.click();
+    expect(setup.dimensions).not.toHaveBeenCalled();
+    expect(setup.store.updateNodeData).not.toHaveBeenCalled();
+  });
+});
 
 async function setupShotlistWidths(
   widths?: Record<string, number>, rows: Record<string, unknown>[] = [], dragRowId?: string,
@@ -1052,6 +1185,11 @@ describe('critical canvas node interactions', () => {
       requestCanvasPanBy: vi.fn(),
     }));
     vi.doMock('../../src/services/projectSettingsService', () => ({ resolveProjectGenerationPrompt }));
+    vi.doMock('../../src/services/pollManager', () => ({
+      getPendingTasksForProject: () => [],
+      prepareVideoNodeGeneration: vi.fn(), completeVideoNodeTask: vi.fn(), pauseVideoNodeTask: vi.fn(),
+      VideoPollingPausedError: class extends Error {},
+    }));
 
     const AINodeDialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
     const tree = AINodeDialog();

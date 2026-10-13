@@ -9,6 +9,8 @@ import {
   useRef,
 } from 'react';
 import { useT } from '../../i18n';
+import type { PromptSubmitShortcut } from '../../types';
+import { resolvePromptEnterAction } from '../../utils/promptSubmitShortcut';
 
 export type ChatComposerReference =
   | { kind: 'node'; id: string; label: string; displayId?: number }
@@ -26,6 +28,7 @@ interface ChatComposerEditorProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  submitShortcut?: PromptSubmitShortcut;
   nodeDisplayIds: ReadonlyMap<string, number | undefined>;
   onMentionQueryChange: (query: string | null) => void;
   onSlashQueryChange: (query: string | null) => void;
@@ -256,6 +259,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
   value,
   onChange,
   onSubmit,
+  submitShortcut = 'enter',
   nodeDisplayIds,
   onMentionQueryChange,
   onSlashQueryChange,
@@ -409,15 +413,17 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
   }, [emitValue]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.nativeEvent.isComposing) return;
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if (onSuggestionKeyDown?.(event)) return;
-    if (event.key === 'Enter' && !event.shiftKey) {
+    const action = resolvePromptEnterAction(event.nativeEvent, submitShortcut);
+    if (action === 'submit') {
       event.preventDefault();
       if (!disabled && value.trim()) onSubmit();
       return;
     }
-    if (event.key === 'Enter' && event.shiftKey) {
+    if (event.key === 'Enter') {
       event.preventDefault();
+      if (action !== 'newline') return;
       const selection = window.getSelection();
       if (!selection?.rangeCount) return;
       const range = selection.getRangeAt(0);
@@ -435,7 +441,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
     }
     if (event.key === 'Backspace' && removeAdjacentReference('before')) event.preventDefault();
     if (event.key === 'Delete' && removeAdjacentReference('after')) event.preventDefault();
-  }, [disabled, emitValue, onSubmit, onSuggestionKeyDown, removeAdjacentReference, value]);
+  }, [disabled, emitValue, onSubmit, onSuggestionKeyDown, removeAdjacentReference, submitShortcut, value]);
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -453,17 +459,13 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
   }, [handleInput]);
 
   return (
-    <div className="relative min-h-[64px] max-h-[160px]">
-      {!value && (
-        <span className="pointer-events-none absolute inset-x-0 top-0 text-[13px] leading-5 text-canvas-text-muted">
-          {placeholder}
-        </span>
-      )}
+    <div className="ui-ai-input__editor-wrap">
       <div
         ref={editorRef}
         role="textbox"
         aria-label={t('对话消息')}
         aria-multiline="true"
+        aria-disabled={disabled}
         aria-autocomplete="list"
         aria-controls={suggestionsOpen ? suggestionListId : undefined}
         aria-activedescendant={suggestionsOpen ? activeSuggestionId : undefined}
@@ -477,9 +479,8 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
         onMouseUp={captureSelection}
         onPaste={handlePaste}
         onBlur={emitValue}
-        className={`chat-panel-textarea relative z-10 block w-full min-h-[64px] max-h-[160px]
-          overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-5 text-canvas-text
-          outline-none selection:bg-indigo-400/25 rounded-[8px] ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+        className={`ui-ai-input__editor chat-panel-textarea${!value ? ' is-empty' : ''}`}
+        data-placeholder={placeholder}
       />
     </div>
   );

@@ -60,6 +60,8 @@ interface ModelSelectorProps {
   nodeType: NodeType;
   /** 节点提示词栏用紧凑透明入口展示当前模型。 */
   appearance?: 'default' | 'pill';
+  /** 独立窗口使用自身已应用的主题；省略时沿用主窗口配置。 */
+  theme?: 'dark' | 'light';
   selectedModel?: string;
   selectedProvider?: string;
   selectedWorkflowId?: string;
@@ -79,6 +81,7 @@ interface ModelSelectorProps {
 export default function ModelSelector({
   nodeType,
   appearance = 'default',
+  theme,
   selectedModel,
   selectedWorkflowId,
   onSelect,
@@ -279,7 +282,7 @@ export default function ModelSelector({
         fallbackBadge={group.badgeText}
         size={size}
         appearance={badgeAppearance}
-        theme={resolveAppearanceMode(config.appearance?.mode ?? config.theme)}
+        theme={theme ?? resolveAppearanceMode(config.appearance?.mode ?? config.theme)}
       />
     );
   };

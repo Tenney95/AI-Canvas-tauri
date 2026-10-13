@@ -25,8 +25,16 @@ vi.mock('../../src/services/ai/providers/runninghubWorkflow', () => ({ completeR
 vi.mock('../../src/services/canvasDerivationGuard', () => ({ registerCanvasDerivation: () => ({ key: 'guard' }),
   isCanvasDerivationFresh: () => mocks.guardFresh, completeCanvasDerivation: mocks.completeGuard }));
 vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint: () => 'video-fingerprint' }));
+vi.mock('../../src/services/pollManager', () => ({
+  prepareVideoNodeGeneration: vi.fn(), completeVideoNodeTask: vi.fn(), pauseVideoNodeTask: vi.fn(),
+  getPendingTasksForProject: () => [],
+  VideoPollingPausedError: class extends Error {
+    constructor() { super('视频查询已暂停'); }
+  },
+}));
 
 import { executeGeneration, type GenerationLease } from '../../src/services/generationService';
+import { VideoPollingPausedError } from '../../src/services/pollManager';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -53,6 +61,13 @@ beforeEach(() => {
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it('leaves a paused query out of failed output history and error toasts', async () => {
+    mocks.generate.mockRejectedValueOnce(new VideoPollingPausedError());
+    expect(await run()).toEqual({ success: false, message: '视频查询已暂停' });
+    expectNoCommit();
+    expect(mocks.store.showToast).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
   it('rejects an expired lease at entry before changing node state or submitting a paid request', async () => {
     const assertFresh = vi.fn(() => { throw new Error('plugin revision changed'); });
     expect(await run({ assertFresh })).toEqual(cancelled);

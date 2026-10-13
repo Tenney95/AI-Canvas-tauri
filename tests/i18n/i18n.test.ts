@@ -77,11 +77,16 @@ describe('locale dictionaries', () => {
 
   it('has no entry whose Chinese source text disappeared from the codebase', () => {
     const sources = collectSources(SRC).join('\n');
+    // 多个字典共用大量 key，每个唯一 key 只扫描一次源码，保留逐字典的完整断言。
+    const keys = new Set(Object.values(DICTS).flatMap((dict) => Object.keys(dict)));
+    // 含反斜杠或换行的 key 会被 TS 转义改写，源码原始文本与运行时字符串值不一致，
+    // 无法可靠比对，跳过这类 key 的孤儿检测。
+    const missingKeys = new Set([...keys].filter(
+      (key) => !key.includes('\\') && !key.includes('\n') && !sources.includes(key),
+    ));
     for (const [name, dict] of Object.entries(DICTS)) {
-      // 含反斜杠或换行的 key 会被 TS 转义改写，源码原始文本与运行时字符串值不一致，
-      // 无法可靠比对，跳过这类 key 的孤儿检测。
       const orphans = Object.keys(dict).filter(
-        (key) => !key.includes('\\') && !key.includes('\n') && !sources.includes(key),
+        (key) => missingKeys.has(key),
       );
       expect(orphans, `${name} 存在源码中已消失的孤儿词条`).toEqual([]);
     }

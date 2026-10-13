@@ -51,6 +51,7 @@ import {
 } from '../../services/videoEditorAiTransitionService';
 import { useT } from '../../i18n';
 import NodeGenerationProgress from './shared/NodeGenerationProgress';
+import VideoTaskStatus from './shared/VideoTaskStatus';
 
 const DEFAULT_VIDEO_NODE_WIDTH = 280;
 const DEFAULT_VIDEO_NODE_HEIGHT = 158;
@@ -987,6 +988,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onError={() => { if (suppliedCover) setFailedCover(suppliedCover); }} />
           )}
         </div>
+        {data.videoTaskState === 'paused' && <VideoTaskStatus nodeId={id} />}
         {data.error && <NodeError nodeId={id} message={data.error} />}
         <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-video" >
           <GooeyBtn className="gooey-btn-left" hue={217} />

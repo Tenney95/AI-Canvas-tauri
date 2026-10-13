@@ -482,58 +482,9 @@
 }
 
 /* ============================================
-   Chat Panel — Compact Model Selector
-   直接复用节点 ModelSelector 组件，通过父选择器缩小尺寸。
-   不影响节点对话框中的 ModelSelector 样式。
+   Chat Panel — Model Menu
+   输入栏触发器共用节点的 pill 外观；这里只保留助手菜单的紧凑排版。
    ============================================ */
-
-/* 外层容器：聊天输入栏直接复用 ModelSelector */
-.chat-panel-input-toolbar .model-selector {
-  flex-shrink: 0;
-  min-width: 0;
-}
-
-/* 触发按钮保持紧凑，同时保留稳定命中区 */
-.chat-panel-input-toolbar .model-selector-trigger {
-  gap: 2px;
-  padding: 0 6px;
-  border-radius: 6px;
-  font-size: 11px;
-  height: 28px;
-}
-
-/* caret 箭头缩小 */
-.chat-panel-input-toolbar .model-selector-trigger .caret {
-  width: 8px;
-  height: 8px;
-}
-
-/* 图标缩小 */
-.chat-panel-input-toolbar .model-selector-icon {
-  width: 14px;
-  height: 14px;
-  font-size: 9px;
-}
-
-/* badge 图标缩到匹配 16px 高度 */
-.chat-panel-input-toolbar .text-model-icon-mini {
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  font-size: 9px;
-  line-height: 14px;
-}
-
-/* 标签：单行截断 */
-.chat-panel-input-toolbar .model-selector-label {
-  font-size: 11px;
-  max-width: 72px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1;
-  margin-left: 4px;
-}
 
 /* 对话菜单沿用横向列表宽度，仅限制高度。 */
 .chat-panel-input-toolbar .model-dropdown {

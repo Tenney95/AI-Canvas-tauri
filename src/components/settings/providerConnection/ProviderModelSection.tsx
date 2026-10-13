@@ -2,7 +2,7 @@
  * settings/providerConnection/ProviderModelSection — 启用模型区块。
  *
  * 承载模型清单的搜索 / 分类筛选 / 勾选 / 分类修正 / 协议与视频能力入口，
- * 以及自定义连接专属的文档导入与手动添加模型。
+ * 以及自定义连接专属的手动添加模型。
  */
 import Select from '../../shared/Select';
 import { Icon } from '@iconify/react';
@@ -14,7 +14,6 @@ import type {
   ProviderModelSelection,
 } from '../../../types';
 import type { ImageModelCapability, VideoModelCapability } from '../../../types/aiTypes';
-import type { ModelProtocolImportResult } from '../../../services/ai/modelProtocolImport';
 import type { ProviderDefinition } from '../../../services/ai/providerCatalogService';
 import { normalizeBaseUrl } from '../../../services/ai/providerBaseUrl';
 import { createSeedanceQuickAdaptTemplate } from '../../../services/ai/seedanceModelCapabilities';
@@ -22,11 +21,10 @@ import { createH3QuickAdaptTemplate } from '../../../services/ai/h3ModelCapabili
 import { useT } from '../../../i18n';
 import AnimatedButton from '../../shared/AnimatedButton';
 import ModelProtocolEditor from '../ModelProtocolEditor';
-import ProtocolImportPanel from '../ProtocolImportPanel';
 import VideoCapabilityEditor from './VideoCapabilityEditor';
 import ImageCapabilityEditor from './ImageCapabilityEditor';
 import { describeModelParameterGaps } from '../../../services/ai/modelCapabilityValidation';
-import { CATEGORY_ORDER, type CatalogStatus, type ProtocolImportSnapshot } from './providerConnectionShared';
+import { CATEGORY_ORDER, type CatalogStatus } from './providerConnectionShared';
 
 interface ProviderModelSectionProps {
   definition: ProviderDefinition;
@@ -45,9 +43,6 @@ interface ProviderModelSectionProps {
   apiKey: string;
   baseUrl: string;
   setProtocolValid: Dispatch<SetStateAction<boolean>>;
-  protocolImportOpen: boolean;
-  setProtocolImportOpen: Dispatch<SetStateAction<boolean>>;
-  protocolImportSnapshot: ProtocolImportSnapshot | null;
   protocolModel: ProviderModelSelection | undefined;
   imageCapabilityModel: ProviderModelSelection | undefined;
   setImageCapabilityModelId: Dispatch<SetStateAction<string | null>>;
@@ -80,8 +75,6 @@ interface ProviderModelSectionProps {
   onUpdateVideoCapability: (modelId: string, capability: VideoModelCapability | undefined) => void;
   onUpdateImageReferenceRequestMode: (modelId: string, mode: ImageReferenceRequestMode | undefined) => void;
   onCloseProtocolEditor: () => void;
-  onApplyProtocolImport: (result: ModelProtocolImportResult) => void;
-  onUndoProtocolImport: () => void;
   onFetchModels: () => void;
 }
 
@@ -102,9 +95,6 @@ export default function ProviderModelSection({
   apiKey,
   baseUrl,
   setProtocolValid,
-  protocolImportOpen,
-  setProtocolImportOpen,
-  protocolImportSnapshot,
   protocolModel,
   imageCapabilityModel,
   setImageCapabilityModelId,
@@ -134,8 +124,6 @@ export default function ProviderModelSection({
   onUpdateVideoCapability,
   onUpdateImageReferenceRequestMode,
   onCloseProtocolEditor,
-  onApplyProtocolImport,
-  onUndoProtocolImport,
   onFetchModels,
 }: ProviderModelSectionProps) {
   const t = useT();
@@ -179,29 +167,6 @@ export default function ProviderModelSection({
           <p>{t('仅勾选会在应用中使用的模型')}</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          {definition.id === 'custom-openai' ? (
-            <>
-              {protocolImportSnapshot ? (
-                <AnimatedButton
-                  type="button"
-                  className="provider-text-btn h-7"
-                  onClick={onUndoProtocolImport}
-                >
-                  <Icon icon="mdi:undo-variant" width="14" />
-                  {t('撤销导入')}
-                </AnimatedButton>
-              ) : null}
-              <AnimatedButton
-                type="button"
-                className="provider-secondary-btn h-7"
-                aria-expanded={protocolImportOpen}
-                onClick={() => setProtocolImportOpen((open) => !open)}
-              >
-                <Icon icon="mdi:file-import-outline" width="14" />
-                {t('导入文档')}
-              </AnimatedButton>
-            </>
-          ) : null}
           <AnimatedButton
             type="button"
             className="provider-fetch-btn"
@@ -217,13 +182,6 @@ export default function ProviderModelSection({
           </AnimatedButton>
         </div>
       </div>
-
-      {definition.id === 'custom-openai' && protocolImportOpen ? (
-        <ProtocolImportPanel
-          onApply={onApplyProtocolImport}
-          onClose={() => setProtocolImportOpen(false)}
-        />
-      ) : null}
 
       <div className="mb-3 flex min-h-8 items-center justify-between gap-3 rounded-md border border-canvas-border bg-white/[0.03] px-2.5 py-1.5">
         <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-canvas-text-secondary">

@@ -18,6 +18,7 @@ import {
   buildDetachedChatSnapshot,
   buildChatModelCatalog,
   createDetachedChatSyncController,
+  handleDetachedChatAction,
   projectChatNodes,
 } from '../../../src/services/chat/detachedChatSyncController';
 import { applyChatStatePatch, createChatStatePatch, receiveChatStateSync, type ChatStateSync, type ChatWindowState } from '../../../src/services/chat/chatWindowService';
@@ -64,6 +65,54 @@ beforeEach(() => {
 });
 
 describe('detached chat sync controller', () => {
+  it('synchronizes submit shortcuts after config hydration and saves detached changes in the main store', async () => {
+    const saveConfig = vi.fn(async () => undefined);
+    useAppStore.setState((state) => ({
+      config: { ...state.config, promptSubmitShortcut: 'alt-enter' },
+      saveConfig,
+    }));
+    let mirror: ChatWindowState | null = null;
+    const readMirror = (): ChatWindowState | null => mirror;
+    let onAction!: (action: ChatAction) => void;
+    const controller = createDetachedChatSyncController({
+      enabled: true, syncIntervalMs: 0,
+      emitSync: async (sync) => { mirror = receiveChatStateSync(mirror, structuredClone(sync)); },
+      initListener: async (handler) => { onAction = handler; return () => undefined; },
+    });
+    await controller.start();
+    try {
+      await vi.waitFor(() => expect(readMirror()).not.toBeNull());
+      expect(readMirror()?.snapshot.promptSubmitShortcut).toBeUndefined();
+      useAppStore.setState({ configHydrated: true });
+      await vi.waitFor(() => expect(readMirror()?.snapshot.promptSubmitShortcut).toBe('alt-enter'));
+
+      onAction({ type: 'set_prompt_submit_shortcut', shortcut: 'ctrl-enter' });
+      expect(useAppStore.getState().config.promptSubmitShortcut).toBe('ctrl-enter');
+      expect(saveConfig).toHaveBeenCalledWith({ silent: true });
+      await vi.waitFor(() => expect(readMirror()?.snapshot.promptSubmitShortcut).toBe('ctrl-enter'));
+
+      useAppStore.setState({ configHydrated: false });
+      await vi.waitFor(() => expect(readMirror()?.snapshot.promptSubmitShortcut).toBeUndefined());
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('rejects shortcut changes before config hydration and rejects unsupported event values', () => {
+    const saveConfig = vi.fn(async () => undefined);
+    const requestSync = vi.fn();
+    useAppStore.setState({ saveConfig });
+    const originalConfig = useAppStore.getState().config;
+    handleDetachedChatAction({ type: 'set_prompt_submit_shortcut', shortcut: 'alt-enter' }, requestSync);
+    expect(useAppStore.getState().config).toBe(originalConfig);
+
+    useAppStore.setState({ configHydrated: true });
+    handleDetachedChatAction({ type: 'set_prompt_submit_shortcut', shortcut: 'meta-enter' } as unknown as ChatAction, requestSync);
+    expect(useAppStore.getState().config).toBe(originalConfig);
+    expect(saveConfig).not.toHaveBeenCalled();
+    expect(requestSync).not.toHaveBeenCalled();
+  });
+
   it('uses the same branded and visible model options as the embedded chat, including workflows', () => {
     useAppStore.setState((state) => ({
       config: { ...state.config, providers: {

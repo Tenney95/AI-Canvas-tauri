@@ -4,7 +4,7 @@
  * 轮询请求同样强制同源（调用方传入 allowedBaseUrl 时再校验一次），
  * 只对瞬时网络错误与可重试 HTTP 状态码退避重试，避免把业务错误也重放一遍。
  */
-import { pollTask } from '../pollTask';
+import { pollTask, PollTimeoutError } from '../pollTask';
 import type {
   ModelProtocolAuthConfig,
   ModelProtocolPollRetryConfig,
@@ -231,7 +231,7 @@ export async function pollResolvedModelProtocol(
       if (pendingExtraDelayMs > 0) {
         const maxDurationMs = poll.maxDurationMs ?? Infinity;
         if (Date.now() - pollStartedAt + pendingExtraDelayMs >= maxDurationMs) {
-          throw new Error('模型任务轮询超时');
+          throw new PollTimeoutError('模型任务轮询超时');
         }
         const delayMs = pendingExtraDelayMs;
         pendingExtraDelayMs = 0;

@@ -1,7 +1,7 @@
 /** GRSAI H3 复用声明式提交、轮询与恢复；生成提交不重试。 */
 import { GRSAI_BASE_URL } from '../../../constants/api';
 import { useAppStore } from '../../../store/useAppStore';
-import { cleanupNodePolling, registerNodePolling, removePendingTask, savePendingTask } from '../../pollManager';
+import { captureVideoTaskGeneration, cleanupNodePolling, pauseVideoNodeTaskOnTimeout, registerNodePolling, removePendingTask, savePendingTask } from '../../pollManager';
 import { resolveMediaReferenceUrl } from '../../uploadService';
 import { getMediaReferenceUrl } from '../connectedReferenceMedia';
 import { getGrsaiVideoCapability, GRSAI_H3_PROTOCOL } from '../grsaiModels';
@@ -35,6 +35,10 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
       throw new Error(`GRSAI H3 ${resolution} 时长仅支持 1–${capability.maxDuration} 秒`);
     }
     const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+    const projectId = useAppStore.getState().currentProjectId;
+    const videoGeneration = captureVideoTaskGeneration(params.nodeId);
+    let submittedTaskId: string | undefined;
+    let keepPending = false;
     const signal = nodeSignal && externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal ?? externalSignal;
     try {
       signal?.throwIfAborted();
@@ -54,16 +58,21 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
         },
       });
       if (!submitted.taskId || !submitted.poll) throw new Error('GRSAI H3 未返回任务 ID');
-      const projectId = useAppStore.getState().currentProjectId;
+      submittedTaskId = submitted.taskId;
       if (params.nodeId && projectId) savePendingTask({ nodeId: params.nodeId, projectId, nodeType: 'ai-video',
         provider: 'grsai', providerConfigId: 'grsai', taskId: submitted.taskId, taskType: 'custom-protocol',
-        protocolPoll: submitted.poll, submitted: true });
+        protocolPoll: submitted.poll, videoGeneration, submitted: true });
       const result = await pollResolvedModelProtocol(submitted.poll, provider.apiKey, signal, baseUrl);
       const url = result.urls?.[0];
       if (!url) throw new Error('GRSAI H3 完成但没有返回视频');
+      keepPending = true;
       return { url };
+    } catch (error) {
+      const paused = pauseVideoNodeTaskOnTimeout(params.nodeId, error, submittedTaskId);
+      if (paused) { keepPending = true; throw paused; }
+      throw error;
     } finally {
-      if (params.nodeId) { cleanupNodePolling(params.nodeId); removePendingTask(params.nodeId); }
+      if (params.nodeId && cleanupNodePolling(params.nodeId, nodeSignal) && !keepPending) removePendingTask(params.nodeId, submittedTaskId);
     }
   },
 };

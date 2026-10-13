@@ -509,35 +509,7 @@ const settings = {
   '仅桌面版可查看本地模型': 'Local models are available in the desktop app',
   '已删除 ONNX 模型文件': 'Deleted ONNX model file',
 
-  // ── ProtocolImportPanel ──
-  '接口文档解析失败': 'Failed to parse the API documentation',
-  '从接口文档导入': 'Import from API documentation',
-  '分别粘贴文档中的请求代码和响应 JSON，支持 Fetch、Axios、cURL、Python、Raw HTTP 与 OpenAPI JSON。':
-    'Paste the request code and response JSON from the documentation. Supports Fetch, Axios, cURL, Python, Raw HTTP and OpenAPI JSON.',
-  '关闭接口文档导入': 'Close API documentation import',
-  '提交阶段': 'Submit stage',
-  '请求与响应均必填': 'Both request and response are required',
-  '提交请求示例': 'Submit request example',
-  '粘贴 Fetch、cURL、Python 或 Raw HTTP 请求...': 'Paste a Fetch, cURL, Python or Raw HTTP request…',
-  '提交响应示例': 'Submit response example',
-  '粘贴提交接口返回的 JSON...': 'Paste the JSON returned by the submit endpoint…',
-  '包含异步轮询': 'Include async polling',
-  '轮询请求示例': 'Poll request example',
-  '粘贴查询任务状态的请求代码...': 'Paste the request code for querying task status…',
-  '轮询响应示例': 'Poll response example',
-  '粘贴任务完成时返回的 JSON...': 'Paste the JSON returned when the task completes…',
-  '只在本地静态解析，不执行代码、不请求接口、不导入密钥':
-    'Parsed locally and statically only — no code execution, no requests, no key import',
-  '识别文档': 'Analyze documentation',
-  '高置信度': 'High confidence',
-  '需要检查': 'Needs review',
-  '低置信度': 'Low confidence',
   '模型分类': 'Model category',
-  '我已检查低置信度字段，确认将识别结果应用到当前草稿':
-    'I have reviewed the low-confidence fields and confirm applying the result to the current draft',
-  '应用后仍需保存厂商设置；现有 API Key 不会被覆盖':
-    'You still need to save the provider settings after applying; existing API keys are not overwritten',
-  '应用识别结果': 'Apply the recognized result',
 
   // ── ModelProtocolEditor ──
   '自动兼容（旧方式）': 'Auto-compat (legacy)',
@@ -704,8 +676,6 @@ const settings = {
   'API Key 已配置': 'API key configured',
   '启用模型': 'Enable models',
   '仅勾选会在应用中使用的模型': 'Only select the models you will use in the app',
-  '撤销导入': 'Undo import',
-  '导入文档': 'Import docs',
   '拉取中': 'Fetching',
   '拉取模型': 'Fetch models',
   '是否在对应类型节点中显示': 'Show in nodes of the corresponding type',
@@ -723,8 +693,6 @@ const settings = {
   '正在验证 {name} 连接...': 'Verifying the {name} connection…',
   '{name} 连接验证成功': '{name} connection verified',
   '{name} 连接验证失败': '{name} connection verification failed',
-  '已从接口文档导入模型 {id}，保存前请检查调用协议并逐模型补齐参数能力':
-    'Imported model {id} from API docs; review the call protocol and configure each model’s parameter capabilities before saving',
   '连接配置已复制（不含 API Key）': 'Connection config copied (API key excluded)',
   '文件里没有有效的连接配置': 'The file contains no valid connection configuration',
   '连接配置已导出（不含 API Key）': 'Connection exported (API key excluded)',

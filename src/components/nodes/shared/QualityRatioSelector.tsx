@@ -121,7 +121,7 @@ export default function QualityRatioSelector({
                     <AnimatedButton
                       key={size}
                       type="button"
-                      className={`img-rp-quality-item ui-schema-option ${imageSize === size ? 'active' : ''}`}
+                      className={`img-rp-quality-item ui-schema-option ${imageSize.toLowerCase() === size.toLowerCase() ? 'active' : ''}`}
                       data-ui-schema-value={size}
                       data-ui-schema-option-label={size}
                       onClick={() => onChangeImageSize?.(size)}

@@ -5,18 +5,20 @@
  * 同时作为写新界面时的样式模板（配套样式见 src/styles/ui-kit.css）。
  *
  * 运行在独立 Tauri WebviewWindow 中，不依赖主窗口的 zustand store：
- * 独立窗口需自行应用 data-theme，见下方 useEffect。
+ * 通过只读 UI 快照跟随主窗口外观，不接收完整配置或凭据。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppConfig } from '../../types';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { AppConfig, AppearanceUiSnapshot } from '../../types';
 import { loadConfigWithoutSecrets } from '../../services/fileService';
 import { setLocale, useT } from '../../i18n';
 import { StyleGuideContent } from './StyleGuideSections';
-import { applyAppearanceTheme, resolveAppearanceMode } from '../../services/appearance/appearanceRuntime';
-import { getBuiltinAppearanceTheme } from '../../services/appearance/appearanceDefaults';
+import { applyAppearanceTheme, installSystemAppearanceListener, resolveAppearanceMode, resolveAppearanceTheme } from '../../services/appearance/appearanceRuntime';
+import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from '../../services/appearance/appearanceDefaults';
 import { getAppearanceForConfig } from '../../services/appearance/appearanceMigration';
+import { createAppearanceUiSnapshot, listenForStyleGuideAppearance, requestStyleGuideAppearance } from '../../services/appearance/appearanceWindowSync';
 
 type GuideTheme = 'dark' | 'light';
+type GuidePreviewMode = 'follow' | GuideTheme;
 
 interface GuideSection {
   id: string;
@@ -38,6 +40,8 @@ const SECTIONS: GuideSection[] = [
   { id: 'sg-cards', title: '卡片' },
   { id: 'sg-badges', title: '徽标与表格' },
   { id: 'sg-feedback', title: '反馈与状态' },
+  { id: 'sg-toast', title: '吐司提示' },
+  { id: 'sg-dialogs', title: '弹窗' },
   { id: 'sg-generation-effects', title: '生成特效' },
   { id: 'sg-video-player', title: '视频播放器' },
   { id: 'sg-markdown-editor', title: 'Markdown 编辑器' },
@@ -45,42 +49,86 @@ const SECTIONS: GuideSection[] = [
   { id: 'sg-layout', title: '布局辅助' },
 ];
 
-/** 主题切换只在当前窗口生效，不写回配置，避免影响主窗口 */
-function resolveTheme(config: AppConfig | null): GuideTheme {
-  return resolveAppearanceMode(config?.appearance?.mode ?? config?.theme);
-}
+const getSystemMode = () => resolveAppearanceMode('system');
+const getServerMode = (): GuideTheme => 'dark';
 
 export default function StyleGuideWindow() {
   const t = useT();
-  const [theme, setTheme] = useState<GuideTheme>('dark');
+  const systemMode = useSyncExternalStore(installSystemAppearanceListener, getSystemMode, getServerMode);
+  const [appearance, setAppearance] = useState<AppearanceUiSnapshot>(() => createAppearanceUiSnapshot(getBuiltinAppearanceTheme('standard-dark')));
+  const [previewMode, setPreviewMode] = useState<GuidePreviewMode>('follow');
   const [activeId, setActiveId] = useState(SECTIONS[0]?.id ?? '');
   const mainRef = useRef<HTMLElement>(null);
 
-  // 独立窗口自行应用主题与语言（主窗口的 Store 在这里不可用）
+  // 持久化配置用于首次加载和 Web 回退；实时快照优先，避免慢读取覆盖最新草稿。
   useEffect(() => {
     document.title = '样式预览 · UI Kit';
-    let cancelled = false;
-    (async () => {
+    let disposed = false;
+    let receivedLiveTheme = false;
+    let readVersion = 0;
+    let unlisten = () => {};
+    const syncConfig = async () => {
+      const version = ++readVersion;
       try {
         // 只读主题/语言这类非凭据字段，不触碰 Rust 凭据存储（同 main.tsx 的独立聊天窗口）
         const cfg = (await loadConfigWithoutSecrets()) as AppConfig | null;
-        if (cancelled) return;
-        const nextTheme = resolveTheme(cfg);
-        setTheme(nextTheme);
-        applyAppearanceTheme(cfg?.appearance ?? getAppearanceForConfig(cfg));
+        if (disposed || version !== readVersion) return;
+        if (!receivedLiveTheme) setAppearance(createAppearanceUiSnapshot(getAppearanceForConfig(cfg)));
         document.documentElement.toggleAttribute('data-native-cursor', cfg?.customCursor === false);
         setLocale(cfg?.language);
-      } catch (error) {
-        console.warn('[StyleGuideWindow] 读取配置失败，回退暗色主题:', error);
+      } catch {
+        if (!disposed) console.warn('[StyleGuideWindow] 配置读取失败，已保留当前外观');
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    void listenForStyleGuideAppearance((next) => {
+      if (disposed) return;
+      receivedLiveTheme = true;
+      setAppearance(createAppearanceUiSnapshot(normalizeAppearanceTheme(next)));
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => console.warn('[StyleGuideWindow] 实时外观同步不可用，将在聚焦时读取配置'));
+
+    const syncOnFocus = () => {
+      void syncConfig();
+      void requestStyleGuideAppearance().catch(() => {});
+    };
+    void syncConfig();
+    window.addEventListener('focus', syncOnFocus);
+    return () => {
+      disposed = true;
+      unlisten();
+      window.removeEventListener('focus', syncOnFocus);
+    };
   }, []);
 
-  const applyTheme = useCallback((next: GuideTheme) => {
-    setTheme(next);
-    applyAppearanceTheme({ ...getBuiltinAppearanceTheme(`standard-${next}`), mode: next });
-  }, []);
+  const preview = useMemo(() => {
+    const current = normalizeAppearanceTheme(appearance);
+    // 系统偏好更新时重新解析完整预设；本窗口没有独立的持久化外观状态。
+    const resolved = resolveAppearanceTheme(current);
+    if (previewMode === 'follow') return { ...resolved, mode: current.mode === 'system' ? systemMode : current.mode };
+    const base = getBuiltinAppearanceTheme(`standard-${previewMode}`);
+    // 明暗预览只调整本窗口的基础层次，继续展示当前自定义主题色和状态色。
+    return {
+      ...base,
+      ui: {
+        ...base.ui,
+        accent: resolved.ui.accent,
+        accentStrong: resolved.ui.accentStrong,
+        accentSoft: resolved.ui.accentSoft,
+        focus: resolved.ui.focus,
+        success: resolved.ui.success,
+        warning: resolved.ui.warning,
+        danger: resolved.ui.danger,
+        info: resolved.ui.info,
+        button: resolved.ui.button,
+        surfaceImage: resolved.ui.surfaceImage,
+      },
+    };
+  }, [appearance, previewMode, systemMode]);
+  const theme: GuideTheme = preview.mode === 'system' ? systemMode : preview.mode;
+
+  useEffect(() => applyAppearanceTheme(preview), [preview]);
 
   const scrollToSection = useCallback((id: string) => {
     const container = mainRef.current;
@@ -118,19 +166,29 @@ export default function StyleGuideWindow() {
         className="flex h-11 shrink-0 items-center gap-3 px-3 select-none"
       >
         <h1 className="m-0 text-[15px] font-semibold text-canvas-text">样式预览 · UI Kit</h1>
-        <span className="text-[11px] text-canvas-text-muted">
+        <span className="hidden text-[11px] text-canvas-text-muted lg:inline">
           公用控件与类名模板 · 点击代码块可复制
         </span>
 
         <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            className="ui-btn ui-btn--ghost ui-btn--sm"
-            onClick={() => applyTheme(theme === 'dark' ? 'light' : 'dark')}
-            data-tooltip={t('切换明暗主题，仅在本窗口生效')}
-          >
-            {theme === 'dark' ? '暗色' : '浅色'}
-          </button>
+          <div className="ui-segmented" role="group" aria-label={t('预览主题')}>
+            {([
+              { mode: 'follow', label: '跟随外观', hint: '实时同步外观设置的全部界面颜色' },
+              { mode: 'dark', label: '暗色', hint: '暗色预览，仅在本窗口生效，保留自定义主题色' },
+              { mode: 'light', label: '浅色', hint: '浅色预览，仅在本窗口生效，保留自定义主题色' },
+            ] as const).map(({ mode, label, hint }) => (
+              <button
+                key={mode}
+                type="button"
+                className={`ui-segmented__item ${previewMode === mode ? 'is-active' : ''}`}
+                onClick={() => setPreviewMode(mode)}
+                aria-pressed={previewMode === mode}
+                data-tooltip={t(hint)}
+              >
+                {t(label)}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             className="ui-icon-btn"

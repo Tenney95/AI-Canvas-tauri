@@ -2,6 +2,9 @@
  * 节点与画布节点组件（nodes）
  */
 const nodes = {
+  '查询已暂停，任务已保留': 'Query paused; task retained',
+  '重试查询视频任务': 'Retry video task query',
+  '暂时无法继续查询，请检查连接配置': 'Unable to resume the query. Check the connection settings.',
   // ── NodeLabel ──
   '双击重命名': 'Double-click to rename',
 

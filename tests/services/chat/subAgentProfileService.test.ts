@@ -5,6 +5,9 @@ const getAllMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const deleteMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock('../../../src/services/indexedDbService', () => ({
+  savePresetFolderToDb: vi.fn().mockResolvedValue(undefined),
+  loadPresetFoldersFromDb: vi.fn().mockResolvedValue([]),
+  deletePresetFolderFromDb: vi.fn().mockResolvedValue(undefined),
   saveSubAgentProfileToDb: saveMock,
   getAllSubAgentProfiles: getAllMock,
   deleteSubAgentProfileFromDb: deleteMock,

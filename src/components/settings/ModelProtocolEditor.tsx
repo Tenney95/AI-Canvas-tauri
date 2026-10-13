@@ -81,6 +81,7 @@ interface JsonDraftFieldProps {
   value: ProtocolJsonValue | Record<string, string> | undefined;
   kind?: JsonFieldKind;
   rows?: number;
+  variables?: readonly string[];
   onChange: (value: ProtocolJsonValue | undefined) => void;
   onValidityChange: (fieldId: string, error?: string) => void;
 }
@@ -128,6 +129,39 @@ const SUBMIT_TASK_ID_DESCRIPTION = '仅用于轮询请求：提交响应中解�
 
 function getVariableTooltip(variable: string): string {
   return getProtocolVariableDescription(variable) ?? '调用时替换为节点中的实际值';
+}
+
+const PROTOCOL_JSON_EDITOR_LAYOUT = 'grid min-w-0 grid-cols-[minmax(200px,0.75fr)_minmax(0,1.5fr)] items-stretch gap-3 max-[700px]:grid-cols-1';
+
+function ProtocolVariablePanel({ variables, textareaId, onInsert, t, submitTaskIdVariable }: {
+  variables: readonly string[];
+  textareaId: string;
+  onInsert: (variable: string) => void;
+  t: ReturnType<typeof useT>;
+  submitTaskIdVariable?: string;
+}) {
+  return <aside className="provider-protocol-json-variables" aria-label={t('当前模型可用变量')}>
+    <div className="provider-protocol-json-guide-title">
+      <Icon icon="mdi:code-braces" width="13" />
+      <strong>{t('可用变量')}</strong>
+      <span>{t('点击插入，悬浮查看说明')}</span>
+    </div>
+    <p className="m-0 text-xs leading-relaxed text-canvas-text-muted">
+      {t('在 JSON 中定位光标，再点击变量插入；选中内容会被替换。')}
+    </p>
+    <div className="flex max-h-96 flex-wrap items-start gap-1 overflow-y-auto max-[700px]:max-h-48">
+      {variables.map((variable) => <button
+        key={variable}
+        type="button"
+        className="ui-chip min-h-5 max-w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-canvas-text-muted"
+        aria-label={`${t('插入变量')} {{${variable}}}`}
+        aria-controls={textareaId}
+        data-tooltip={t(variable === submitTaskIdVariable ? SUBMIT_TASK_ID_DESCRIPTION : getVariableTooltip(variable))}
+        onMouseDown={(event) => { if (event.button === 0) event.preventDefault(); }}
+        onClick={() => onInsert(variable)}
+      ><code className="font-mono">{`{{${variable}}}`}</code></button>)}
+    </div>
+  </aside>;
 }
 
 function createPreviewVariables(model: ProviderModelSelection): ModelProtocolVariables {
@@ -268,11 +302,28 @@ function JsonDraftField({
   value,
   kind = 'object',
   rows = 4,
+  variables,
   onChange,
   onValidityChange,
 }: JsonDraftFieldProps) {
+  const t = useT();
+  const textareaId = useId();
+  const errorId = `${textareaId}-error`;
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const selectionRef = useRef<{ start: number; end: number } | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
   const [draft, setDraft] = useState(() => serializeJson(value));
   const [error, setError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    const caret = pendingCaretRef.current;
+    const textarea = textareaRef.current;
+    if (caret === null || !textarea) return;
+    pendingCaretRef.current = null;
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(caret, caret);
+    selectionRef.current = { start: caret, end: caret };
+  }, [draft]);
 
   const updateDraft = (nextDraft: string) => {
     setDraft(nextDraft);
@@ -291,19 +342,55 @@ function JsonDraftField({
     }
   };
 
-  return (
-    <label className="provider-protocol-field provider-protocol-json-field">
+  const rememberSelection = (textarea: HTMLTextAreaElement) => {
+    selectionRef.current = { start: textarea.selectionStart, end: textarea.selectionEnd };
+  };
+  const insertVariable = (variable: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const selection = selectionRef.current;
+    const start = Math.min(selection?.start ?? draft.length, draft.length);
+    const end = Math.max(start, Math.min(selection?.end ?? start, draft.length));
+    const token = `{{${variable}}}`;
+    const nextDraft = draft.slice(0, start) + token + draft.slice(end);
+    const caret = start + token.length;
+    if (nextDraft === draft) {
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(caret, caret);
+      selectionRef.current = { start: caret, end: caret };
+      return;
+    }
+    pendingCaretRef.current = caret;
+    updateDraft(nextDraft);
+  };
+
+  const editor = (
+    <label htmlFor={textareaId} className={`provider-protocol-field provider-protocol-json-field${variables ? ' provider-protocol-full-json' : ''}`}>
       <span>{label}</span>
       <textarea
+        ref={textareaRef}
+        id={textareaId}
+        className={variables ? 'flex-auto' : undefined}
         value={draft}
         rows={rows}
         spellCheck={false}
         aria-invalid={!!error}
-        onChange={(event) => updateDraft(event.target.value)}
+        aria-describedby={error ? errorId : undefined}
+        onFocus={(event) => rememberSelection(event.currentTarget)}
+        onSelect={(event) => rememberSelection(event.currentTarget)}
+        onBlur={(event) => rememberSelection(event.currentTarget)}
+        onChange={(event) => {
+          rememberSelection(event.currentTarget);
+          updateDraft(event.target.value);
+        }}
       />
-      {error ? <small role="alert">{error}</small> : null}
+      {error ? <small id={errorId} role="alert">{error}</small> : null}
     </label>
   );
+  return variables ? <div className={PROTOCOL_JSON_EDITOR_LAYOUT}>
+    <ProtocolVariablePanel variables={variables} textareaId={textareaId} onInsert={insertVariable} t={t} />
+    {editor}
+  </div> : editor;
 }
 
 function createDefaultPoll(category: GeneralModelCategory): ModelProtocolPollTemplate {
@@ -1179,7 +1266,8 @@ export default function ModelProtocolEditor({
               label={t('请求体 JSON')}
               value={protocol.submit.body}
               kind="value"
-              rows={8}
+              rows={16}
+              variables={availableVariables}
               onValidityChange={updateFormValidity}
               onChange={(value) => updateSubmit({ body: value })}
             />
@@ -1550,33 +1638,11 @@ export default function ModelProtocolEditor({
 
       {preset === 'custom' && (simpleEditor || view === 'json') ? (
         <div className="min-w-0 space-y-3">
-          <div className="grid min-w-0 grid-cols-[minmax(200px,0.75fr)_minmax(0,1.5fr)] items-stretch gap-3 max-[700px]:grid-cols-1">
-            <aside className="provider-protocol-json-variables" aria-label={t('当前模型可用变量')}>
-              <div className="provider-protocol-json-guide-title">
-                <Icon icon="mdi:code-braces" width="13" />
-                <strong>{t('可用变量')}</strong>
-                <span>{t('点击插入，悬浮查看说明')}</span>
-              </div>
-              <p className="m-0 text-xs leading-relaxed text-canvas-text-muted">
-                {t('在 JSON 中定位光标，再点击变量插入；选中内容会被替换。')}
-              </p>
-              <div className="flex max-h-96 flex-wrap items-start gap-1 overflow-y-auto max-[700px]:max-h-48">
-                {[...availableVariables, ...(protocol.mode === 'async' ? [submitTaskIdVariable] : [])].map((variable) => (
-                  <button
-                    key={variable}
-                    type="button"
-                    className="ui-chip min-h-5 max-w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-canvas-text-muted"
-                    aria-label={`${t('插入变量')} {{${variable}}}`}
-                    aria-controls={protocolJsonId}
-                    data-tooltip={t(variable === submitTaskIdVariable ? SUBMIT_TASK_ID_DESCRIPTION : getVariableTooltip(variable))}
-                    onMouseDown={(event) => { if (event.button === 0) event.preventDefault(); }}
-                    onClick={() => insertProtocolVariable(variable)}
-                  >
-                    <code className="font-mono">{`{{${variable}}}`}</code>
-                  </button>
-                ))}
-              </div>
-            </aside>
+          <div className={PROTOCOL_JSON_EDITOR_LAYOUT}>
+            <ProtocolVariablePanel
+              variables={[...availableVariables, ...(protocol.mode === 'async' ? [submitTaskIdVariable] : [])]}
+              textareaId={protocolJsonId} onInsert={insertProtocolVariable} t={t} submitTaskIdVariable={submitTaskIdVariable}
+            />
             <div className="provider-protocol-field provider-protocol-full-json">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label htmlFor={protocolJsonId} className="text-xs text-canvas-text-secondary">{t('声明式协议 JSON')}</label>

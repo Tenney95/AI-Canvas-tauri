@@ -19,7 +19,7 @@
 import type { Node } from '@xyflow/react';
 import type { ChatConversation, ChatMessage, ChatPanelView } from '../../types/chat';
 import type { MediaModelOption } from '../../components/nodes/shared/defaultModels';
-import type { BaseNodeData, GeneralModelConfig, ModelGroup } from '../../types';
+import type { BaseNodeData, GeneralModelConfig, ModelGroup, PromptSubmitShortcut } from '../../types';
 import type { SkillPickerOption } from '../../types/agentPackage';
 import type { DramaAssetLibrary } from '../../types/dramaAssets';
 import type {
@@ -63,6 +63,8 @@ export interface ChatStateSnapshot {
   composerDraft: string;
   composerDrafts: Record<string, string>;
   panelView: ChatPanelView;
+  /** 与节点共用的发送快捷键；缺省表示主窗口配置尚未完成加载。 */
+  promptSubmitShortcut?: PromptSubmitShortcut;
 }
 
 interface ChatEntityPatch<T> {
@@ -93,6 +95,7 @@ export interface ChatStatePatch {
     composerDraft: string;
     composerDrafts: Record<string, string>;
     panelView: ChatPanelView;
+    promptSubmitShortcut: PromptSubmitShortcut | null;
   }>;
 }
 
@@ -203,6 +206,7 @@ export function createChatStatePatch(
   setChangedField(fields, 'composerDraft', previous.composerDraft, next.composerDraft);
   setChangedField(fields, 'composerDrafts', previous.composerDrafts, next.composerDrafts);
   setChangedField(fields, 'panelView', previous.panelView, next.panelView);
+  setChangedField(fields, 'promptSubmitShortcut', previous.promptSubmitShortcut, next.promptSubmitShortcut);
 
   return {
     conversations: createEntityPatch(previous.conversations, next.conversations),
@@ -250,6 +254,9 @@ export function applyChatStatePatch(
     dramaAssets: fields.dramaAssets ?? current.dramaAssets,
     skillOptions: fields.skillOptions ?? current.skillOptions,
     composerDraft: fields.composerDraft ?? current.composerDraft,
+    promptSubmitShortcut: fields.promptSubmitShortcut === null
+      ? undefined
+      : (fields.promptSubmitShortcut ?? current.promptSubmitShortcut),
     conversations: applyEntityPatch(current.conversations, patch.conversations),
     messages: applyEntityPatch(current.messages, patch.messages),
     agentTasks: applyEntityPatch(current.agentTasks, patch.agentTasks),
@@ -292,6 +299,7 @@ export type ChatAction =
   | { type: 'set_hovered_node'; nodeId: string | null }
   | { type: 'set_composer_draft'; draft: string; conversationId?: string | null }
   | { type: 'set_panel_view'; view: ChatPanelView }
+  | { type: 'set_prompt_submit_shortcut'; shortcut: PromptSubmitShortcut }
   | { type: 'dock_window'; composerDraft?: ChatComposerHandoff }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }

@@ -17,6 +17,9 @@ import {
   savePresetToDb,
   getAllPresets,
   deletePresetFromDb,
+  savePresetFolderToDb,
+  loadPresetFoldersFromDb,
+  deletePresetFolderFromDb,
   saveSkillToDb,
   getAllSkills,
   deleteSkillFromDb,
@@ -1240,7 +1243,7 @@ export async function loadPresets(): Promise<PresetRecord[]> {
     return await getAllPresets();
   } catch (error) {
     console.error('Load presets failed:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -1253,6 +1256,10 @@ export async function deletePreset(id: string): Promise<void> {
     throw error;
   }
 }
+
+export const savePresetFolder = savePresetFolderToDb;
+export const loadPresetFolders = loadPresetFoldersFromDb;
+export const deletePresetFolder = deletePresetFolderFromDb;
 
 // ── Uploaded Skills ──
 

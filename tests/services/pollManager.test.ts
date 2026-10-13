@@ -5,7 +5,12 @@ import {
   getPendingTasksForProject,
   resumePendingTasks,
   savePendingTask,
+  pauseVideoNodeTaskOnTimeout,
+  prepareVideoNodeGeneration,
+  resumeVideoNodeTask,
+  type PendingTask,
 } from '../../src/services/pollManager';
+import { PollTimeoutError, PollTaskFailedError } from '../../src/services/pollTask';
 import { useAppStore } from '../../src/store/useAppStore';
 import * as fileService from '../../src/services/fileService';
 
@@ -16,6 +21,124 @@ beforeEach(() => {
 });
 
 describe('pending generation task recovery', () => {
+  function pausedVideo() {
+    useAppStore.setState((state) => ({
+      config: { ...state.config, providers: { ...state.config.providers,
+        'slow-provider': { name: 'Slow provider', apiKey: 'current-key', baseUrl: 'https://gateway.example/v1' } } },
+      nodes: [{ id: 'slow-node', type: 'ai-video', position: { x: 0, y: 0 },
+        data: { type: 'ai-video', label: 'Slow video', prompt: 'original prompt', model: 'original-model',
+          provider: 'general', status: 'loading' } satisfies BaseNodeData }],
+    }));
+    const task: PendingTask = { nodeId: 'slow-node', projectId: 'project-1', nodeType: 'ai-video',
+      provider: 'general', providerConfigId: 'slow-provider', taskId: 'remote-video', taskType: 'custom-protocol', submitted: true,
+      protocolPoll: { method: 'GET', url: 'https://gateway.example/v1/videos/remote-video', intervalMs: 1,
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url', maxAttempts: 1 } };
+    savePendingTask(task);
+    pauseVideoNodeTaskOnTimeout(task.nodeId, new PollTimeoutError(), task.taskId);
+    return task;
+  }
+
+  it('keeps a paused task through project reload without querying or recording an error', async () => {
+    pausedVideo();
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    await resumePendingTasks('project-1');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ taskId: 'remote-video', videoRecoveryState: 'paused' });
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', videoTaskState: 'paused', error: undefined });
+  });
+
+  it('queries an existing task once for repeated retry clicks and saves its result locally', async () => {
+    pausedVideo();
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockResolvedValue({
+      mediaUrl: 'asset://video.mp4', sourceUrl: 'https://cdn.example/video.mp4' });
+    let finish!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const first = resumeVideoNodeTask('slow-node');
+    const duplicate = resumeVideoNodeTask('slow-node');
+    expect(duplicate).toBe(first);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    finish(new Response(JSON.stringify({ status: 'completed', url: 'https://cdn.example/video.mp4' })));
+    await first;
+    expect(fetchMock).toHaveBeenCalledWith('https://gateway.example/v1/videos/remote-video',
+      expect.objectContaining({ method: 'GET', headers: { Authorization: 'Bearer current-key' } }));
+    expect(persist).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: 'asset://video.mp4', videoTaskState: undefined });
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
+  it('returns to paused when retry times out and also retains completed tasks whose local save fails', async () => {
+    pausedVideo();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'queued' })));
+    vi.stubGlobal('fetch', fetchMock);
+    await resumeVideoNodeTask('slow-node');
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', videoTaskState: 'paused', error: undefined });
+    expect(getPendingTasksForProject('project-1')).toHaveLength(1);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ status: 'completed', url: 'https://cdn.example/video.mp4' })));
+    vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockRejectedValue(new Error('disk unavailable'));
+    await resumeVideoNodeTask('slow-node');
+    expect(getPendingTasksForProject('project-1')[0].taskId).toBe('remote-video');
+    expect(useAppStore.getState().nodes[0].data.videoTaskState).toBe('paused');
+  });
+
+  it('shows actual remote failure even if its message mentions a timeout', async () => {
+    const task = pausedVideo();
+    expect(pauseVideoNodeTaskOnTimeout(task.nodeId, new PollTaskFailedError('upstream timeout'), task.taskId)).toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'failed' }))));
+    await resumeVideoNodeTask(task.nodeId);
+    expect(useAppStore.getState().nodes[0].data.status).toBe('error');
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
+  it('moves an old task to a recovery node with original inputs before a fresh generation', async () => {
+    pausedVideo();
+    useAppStore.getState().updateNodeDataTransient('slow-node', { prompt: 'new prompt', model: 'new-model', videoUrl: 'new-video.mp4' });
+    prepareVideoNodeGeneration('slow-node');
+    const state = useAppStore.getState();
+    const recovery = state.nodes.find((node) => node.id !== 'slow-node')!;
+    expect(recovery.data).toMatchObject({ prompt: 'original prompt', model: 'original-model', videoTaskState: 'paused' });
+    expect(recovery.data.videoUrl).toBeUndefined();
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ nodeId: recovery.id, taskId: 'remote-video' });
+    vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockResolvedValue({ mediaUrl: 'old-video.mp4', sourceUrl: 'old-video.mp4' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'completed', url: 'old-video.mp4' }))));
+    await resumeVideoNodeTask(recovery.id);
+    expect(useAppStore.getState().nodes.find((node) => node.id === 'slow-node')?.data.videoUrl).toBe('new-video.mp4');
+    expect(useAppStore.getState().nodes.find((node) => node.id === recovery.id)?.data.videoUrl).toBe('old-video.mp4');
+    expect(JSON.stringify(getPendingTasksForProject('project-1'))).not.toContain('current-key');
+  });
+
+  it('does not write a query result into a different project after switching', async () => {
+    pausedVideo();
+    let finish!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData');
+    vi.stubGlobal('fetch', fetchMock);
+    const pending = resumeVideoNodeTask('slow-node');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    useAppStore.setState({ currentProjectId: 'project-2', nodes: [] });
+    finish(new Response(JSON.stringify({ status: 'completed', url: 'old-video.mp4' })));
+    await pending;
+    expect(persist).not.toHaveBeenCalled();
+    expect(getPendingTasksForProject('project-1')).toHaveLength(1);
+  });
+
+  it('keeps the original task association when creating its recovery node fails', () => {
+    pausedVideo();
+    vi.spyOn(useAppStore.getState(), 'addNodesTransient').mockImplementationOnce(() => {
+      throw new Error('canvas write unavailable');
+    });
+    expect(() => prepareVideoNodeGeneration('slow-node')).toThrow('canvas write unavailable');
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ nodeId: 'slow-node', taskId: 'remote-video', videoRecoveryState: 'paused' });
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    expect(useAppStore.getState().nodes[0].data.videoTaskState).toBe('paused');
+  });
+
+  it('does not convert submission timeouts without a task ID into resumable polling', () => {
+    const task = pausedVideo();
+    expect(pauseVideoNodeTaskOnTimeout(task.nodeId, new PollTimeoutError())).toBeUndefined();
+    expect(pauseVideoNodeTaskOnTimeout(task.nodeId, new PollTimeoutError(), 'newer-task')).toBeUndefined();
+  });
+
   it('resumes binary result downloads without submitting another generation', async () => {
     const persistMedia = vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockResolvedValue({
       mediaUrl: 'asset://recovered-video.mp4', sourceUrl: 'asset://recovered-video.mp4',

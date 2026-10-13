@@ -2,8 +2,8 @@
  * ai/apimartGen — APIMart 图片/视频生成 + 通用异步任务执行器
  */
 import { useAppStore } from '../../store/useAppStore';
-import { pollTask } from '../pollTask';
-import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
+import { pollTask, PollTimeoutError } from '../pollTask';
+import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling, pauseVideoNodeTaskOnTimeout, VIDEO_POLL_MAX_DURATION_MS } from '../pollManager';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './helpers';
 import type { BatchImageResult } from '../../types/aiTypes';
 import {
@@ -67,6 +67,8 @@ export async function executeGeneralAsyncTask(
   externalSignal?: AbortSignal,
   requestBody?: Record<string, unknown>,
 ): Promise<{ url: string }> {
+  let submittedTaskId: string | undefined;
+  let keepPending = false;
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
   const signal = nodeSignal && externalSignal
     ? AbortSignal.any([nodeSignal, externalSignal])
@@ -118,17 +120,19 @@ export async function executeGeneralAsyncTask(
     }
 
     // 回填 taskId，标记为已提交
+    submittedTaskId = taskId;
     if (nodeId) {
       updatePendingTask(nodeId, { taskId, submitted: true });
     }
 
-    // 轮询直到任务完成/失败（不设超时，仅 ComfyUI 才设超时）
-    return await pollTask<Record<string, unknown>, { url: string }>({
+    // 视频达到本地等待预算后暂停，用户续查时不会再次提交。
+    const result = await pollTask<Record<string, unknown>, { url: string }>({
       fetchState: async () => {
         const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
           headers: { Authorization: `Bearer ${apiKey}` },
           signal,
         });
+        if (resultField === 'videos' && [408, 504].includes(pollResp.status)) throw new PollTimeoutError();
         if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
         return (await pollResp.json()) as Record<string, unknown>;
       },
@@ -147,12 +151,18 @@ export async function executeGeneralAsyncTask(
           ? `任务失败: ${task.status}` : null;
       },
       interval: 3000,
+      maxDuration: resultField === 'videos' ? VIDEO_POLL_MAX_DURATION_MS : undefined,
       signal,
     });
+    keepPending = resultField === 'videos';
+    return result;
+  } catch (error) {
+    const paused = resultField === 'videos' ? pauseVideoNodeTaskOnTimeout(nodeId, error, submittedTaskId) : undefined;
+    if (paused) { keepPending = true; throw paused; }
+    throw error;
   } finally {
-    if (nodeId) {
-      cleanupNodePolling(nodeId);
-      removePendingTask(nodeId);
+    if (nodeId && cleanupNodePolling(nodeId, nodeSignal) && !keepPending) {
+      removePendingTask(nodeId, submittedTaskId);
     }
   }
 }
@@ -315,12 +325,14 @@ export async function fetchApimartTask<TResult = Record<string, unknown>>(
   baseUrl: string,
   taskId: string,
   signal?: AbortSignal,
+  timeoutAsPause = false,
 ): Promise<ApimartTaskResult<TResult>> {
   const resp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   });
   if (!resp.ok) {
+    if (timeoutAsPause && [408, 504].includes(resp.status)) throw new PollTimeoutError('APIMart 任务查询超时');
     const errBody = await resp.text().catch(() => '');
     throw new Error(`APIMart 任务查询失败 (${resp.status}): ${errBody.slice(0, 200)}`);
   }
@@ -349,6 +361,8 @@ export async function generateApimartVideo(
   params: ApimartSeedanceRequestParams = {},
   externalSignal?: AbortSignal,
 ): Promise<{ url: string }> {
+  let submittedTaskId: string | undefined;
+  let keepPending = false;
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
   const signal = nodeSignal && externalSignal
     ? AbortSignal.any([nodeSignal, externalSignal])
@@ -406,12 +420,13 @@ export async function generateApimartVideo(
       updatePendingTask(nodeId, { taskId, submitted: true });
     }
 
-    // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
-    return await pollTask<
+    submittedTaskId = taskId;
+    // 步骤 2: 限制本地等待时间，不取消上游生成。
+    const result = await pollTask<
       ApimartTaskResult<{ images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
       { url: string }
     >({
-      fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId, signal),
+      fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId, signal, true),
       isComplete: (task) => {
         if (task.status === 'completed') {
           const videoUrls = task.result?.videos?.flatMap((v) => splitCommaSeparatedUrls(v.url)) ?? [];
@@ -424,12 +439,18 @@ export async function generateApimartVideo(
       },
       isFailed: (task) => getApimartFailureMessage(task, 'APIMart 视频生成失败'),
       interval: 3000,
+      maxDuration: VIDEO_POLL_MAX_DURATION_MS,
       signal,
     });
+    keepPending = true;
+    return result;
+  } catch (error) {
+    const paused = pauseVideoNodeTaskOnTimeout(nodeId, error, submittedTaskId);
+    if (paused) { keepPending = true; throw paused; }
+    throw error;
   } finally {
-    if (nodeId) {
-      cleanupNodePolling(nodeId);
-      removePendingTask(nodeId);
+    if (nodeId && cleanupNodePolling(nodeId, nodeSignal) && !keepPending) {
+      removePendingTask(nodeId, submittedTaskId);
     }
   }
 }

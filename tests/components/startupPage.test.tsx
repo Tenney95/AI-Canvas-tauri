@@ -147,13 +147,13 @@ describe('project startup page', () => {
   });
 
   it('waits for project loading and closes only after the selected project is ready', async () => {
-    let finish: (() => void) | undefined;
-    driver.state.switchProject = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    let finish: ((id: string) => void) | undefined;
+    driver.state.switchProject = vi.fn(() => new Promise<string | undefined>((resolve) => { finish = resolve; }));
     const pending = click(button(render(), '打开项目 示例项目'));
     expect(onClose).not.toHaveBeenCalled();
     expect(button(render(), '打开项目 示例项目').props.disabled).toBe(true);
     driver.state.currentProjectId = 'p1';
-    finish?.();
+    finish?.('p1');
     await pending;
     expect(onClose).toHaveBeenCalledOnce();
     expect(driver.state.switchProject).toHaveBeenCalledWith('p1', { captureSnapshot: false });
@@ -204,6 +204,7 @@ describe('project startup page', () => {
     driver.state.switchProject = vi.fn(async () => {
       driver.state.currentProjectId = 'p1';
       driver.state.projectLoadStatus = 'ready';
+      return 'p1';
     });
     await click(button(render(), '打开项目 示例项目'));
     expect(onClose).toHaveBeenCalledOnce();

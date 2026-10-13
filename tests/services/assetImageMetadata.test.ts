@@ -22,6 +22,9 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('../../src/services/fileService', () => ({ copyAssetImageReference: driver.copy }));
 vi.mock('../../src/services/indexedDbService', () => ({
+  savePresetFolderToDb: vi.fn().mockResolvedValue(undefined),
+  loadPresetFoldersFromDb: vi.fn().mockResolvedValue([]),
+  deletePresetFolderFromDb: vi.fn().mockResolvedValue(undefined),
   getAssetImageRecords: async () => driver.records,
   getAssetIndexById: async (id: string) => driver.indexes.has(id) ? { path: driver.indexes.get(id) } : null,
   putAssetImageRecord: driver.put,

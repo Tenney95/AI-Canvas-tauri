@@ -223,6 +223,8 @@ export interface BaseNodeData {
   prompt?: string;           // 提示词
   output?: string;            // 输出结果（文本/URL等）
   status?: 'idle' | 'loading' | 'success' | 'error';
+  /** 已提交的视频任务暂停本地查询，仍可续查或提交新的生成。 */
+  videoTaskState?: 'paused';
   model?: string;             // 模型 ID；空字符串表示主动清除，不回填偏好或项目默认模型
   provider?: string;          // 选择的供应商 ID（如 apimart）
   workflowId?: string;        // 选择的工作流 ID
@@ -581,9 +583,35 @@ export type AppearanceMode = 'dark' | 'light' | 'system';
 
 export type AppearanceCanvasKind = CanvasBackground | 'color' | 'image';
 
+/** 底色保留为颜色令牌，图片独立叠加，切回纯色时恢复原配色。 */
+export interface AppearanceBackgroundImage {
+  kind: 'color' | 'image';
+  imageDataUrl?: string;
+  imageFit: 'cover' | 'contain' | 'fill';
+}
+
+/** auto 表示跟随当前主题，其他值为用户自定义颜色。 */
+export interface AppearanceButtonColors {
+  background: string;
+  hoverBackground: string;
+  backgroundImage?: AppearanceBackgroundImage;
+  /** 未单独配置时沿用普通状态的背景图片。 */
+  hoverBackgroundImage?: AppearanceBackgroundImage;
+  text: string;
+  border: string;
+}
+
+export interface AppearanceButtonTokens {
+  radius: number;
+  borderWidth: number;
+  normal: AppearanceButtonColors;
+  primary: AppearanceButtonColors;
+}
+
 export interface AppearanceUiTokens {
   background: string;
   surface: string;
+  surfaceImage?: AppearanceBackgroundImage;
   card: string;
   hover: string;
   border: string;
@@ -604,6 +632,7 @@ export interface AppearanceUiTokens {
   glassBlur: number;
   scrollbar: string;
   scrollbarHover: string;
+  button: AppearanceButtonTokens;
 }
 
 export interface AppearanceCanvasConfig {
@@ -620,6 +649,7 @@ export interface AppearanceCanvasConfig {
 
 export interface AppearanceNodeConfig {
   background: string;
+  backgroundImage?: AppearanceBackgroundImage;
   backgroundOpacity: number;
   border: string;
   borderWidth: number;
@@ -674,6 +704,9 @@ export interface AppearanceTheme {
   createdAt: number;
   updatedAt: number;
 }
+
+/** 独立 UI Kit 窗口的 UI 令牌及内嵌背景图片投影，不携带画布图片、文件引用或应用配置。 */
+export type AppearanceUiSnapshot = Pick<AppearanceTheme, 'id' | 'name' | 'mode' | 'ui'>;
 
 /** 画布交互模式：default = Figma 风格（左键框选 / 右键·中键平移 / 滚轮缩放）；classic = 传统（左键平移 / Shift+拖动框选 / 滚轮纵横平移 / Ctrl+滚轮缩放） */
 export type InteractionMode = 'default' | 'classic';
@@ -738,7 +771,7 @@ export interface AppConfig {
   nodeLabelVisible?: boolean; // 是否显示节点顶部标题标签，默认 true
   canvasNoteToolbarVisible?: boolean; // 是否显示画布笔记工具栏，默认 true
   autoMentionOnConnect?: boolean; // 连线后自动在生成节点提示词中 @ 上游素材，默认 true
-  promptSubmitShortcut?: PromptSubmitShortcut; // 节点提示词发送快捷键，未设置时为 Shift+Enter
+  promptSubmitShortcut?: PromptSubmitShortcut; // 节点与助手输入框共用的发送快捷键，未设置时为 Shift+Enter
   canvasHistoryPinned?: boolean; // 操作记录浮层是否锁定常显（默认悬浮才显示）
   outputHistoryPinned?: boolean; // 输出历史面板是否固定常驻（固定后跳转节点不关闭面板）
   canvasQuickActions?: CanvasQuickAction[]; // 画布空白处长按圆环，最多 6 个槽位
@@ -1014,6 +1047,13 @@ export interface CustomStyle {
   createdAt: number;
 }
 
+/** 快捷指令的一层逻辑分类，不对应磁盘目录。 */
+export interface PresetFolder {
+  id: string;
+  nodeType: PresetNodeType;
+  name: string;
+}
+
 export interface UserPreset {
   id: string;
   nodeType: PresetNodeType;
@@ -1023,6 +1063,8 @@ export interface UserPreset {
   icon?: string;              // iconify icon name (e.g. 'mdi:star'), for Toolbar display
   thumbnail?: string;        // base64 data URL
   triggerMode: PresetTriggerMode;  // direct=替换全文, insertPrompt=追加到提示词
+  /** 缺省或文件夹失效时展示在“未分组”。 */
+  folderId?: string;
   // 可选：预设绑定的模型和尺寸，选择后生图时覆盖节点设置
   model?: string;
   provider?: string;

@@ -2,54 +2,7 @@
    Prompt Panel
    ============================================ */
 .prompt-panel {
-  border-top: 1px solid var(--theme-border);
   flex-shrink: 0;
-  transition: border-color var(--transition-smooth);
-}
-.prompt-panel:not(.focused):has(.prompt-editor:hover) {
-  background: linear-gradient(to bottom, var(--white-alpha-03), transparent);
-}
-.prompt-panel.focused {
-  border-top-color: var(--brand);
-  background: linear-gradient(to bottom, var(--brand-alpha-12), transparent);
-}
-.prompt-panel.focused .prompt-editor,
-.prompt-panel .prompt-editor:hover {
-  background-color: transparent;
-}
-.prompt-input-wrap {
-  position: relative;
-  padding: 8px 8px 2px;
-  min-width: 0;
-}
-/* ── Contenteditable editor (replaces textarea + backdrop) ── */
-.prompt-editor {
-  width: 100%;
-  min-height: 80px;
-  max-height: min(50vh, 600px);
-  overflow-y: auto;
-  background: transparent;
-  border: none;
-  border-radius: 10px;
-  outline: none;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--theme-text);
-  caret-color: var(--brand);
-  font-family: inherit;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-}
-.prompt-editor.is-empty::before {
-  content: attr(data-placeholder);
-  color: var(--theme-text-muted);
-  pointer-events: none;
-  display: block;
-  white-space: pre-wrap;
-}
-.prompt-editor::selection {
-  background: var(--brand-alpha-30);
 }
 
 /* @mention chip token */
@@ -308,33 +261,7 @@
   width: 4px;
 }
 
-/* Prompt Footer */
-.prompt-footer {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 2px 8px 4px;
-  gap: 8px;
-}
-.prompt-footer-tools {
-  min-width: 0;
-  max-width: 100%;
-  margin-left: auto;
-  justify-content: flex-end;
-}
-/* 浮动输入栏优先保持一行；长名称让出空间，不挤走参数和发送按钮。 */
-.ai-dialog-float .prompt-footer {
-  flex-wrap: nowrap;
-  gap: 4px;
-}
-.ai-dialog-float .prompt-footer > .model-selector--pill {
-  flex: 0 1 auto;
-  min-width: 80px;
-  max-width: 200px;
-}
-.ai-dialog-float .prompt-footer-tools.ui-row {
-  flex-wrap: nowrap;
-}
+/* 节点专用参数与批量菜单；输入框基础布局见 UI Kit。 */
 .ai-dialog-float .prompt-footer-tools .img-pill-btn {
   min-width: 0;
   white-space: nowrap;
@@ -351,21 +278,8 @@
 }
 /* 批量发送展开时额外占宽，保留换行空间，避免挤出面板。 */
 .ai-dialog-float .prompt-footer:has(.batch-open),
-.ai-dialog-float .prompt-footer-tools.ui-row:has(.batch-open) {
+.ai-dialog-float .prompt-footer-tools:has(.batch-open) {
   flex-wrap: wrap;
-}
-@container ai-prompt (max-width: 560px) {
-  .ai-dialog-float .prompt-footer { flex-wrap: wrap; }
-  .ai-dialog-float .prompt-footer-tools.ui-row {
-    flex: 1 1 100%;
-    flex-wrap: wrap;
-  }
-}
-.prompt-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
 }
 .prompt-submit-wrap {
   position: relative;
@@ -474,51 +388,6 @@
     transition-duration: 0.01ms;
     transition-delay: 0ms;
   }
-}
-.prompt-btn {
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  border-radius: 6px;
-  cursor: var(--cursor-pointer, pointer);
-  transition: color var(--transition-base), background var(--transition-base);
-  padding: 0;
-}
-.prompt-btn:hover {
-  color: var(--theme-text);
-  background: var(--theme-hover);
-}
-.prompt-submit-btn {
-  width: 30px;
-  height: 30px;
-  border: 2px solid var(--theme-text-secondary);
-  border-radius: 50%;
-  color: var(--theme-text);
-  background: var(--theme-hover);
-  background-clip: padding-box;
-}
-.prompt-submit-btn:hover {
-  color: var(--theme-text);
-  background-color: var(--theme-card);
-  background-clip: padding-box;
-}
-.prompt-send-metal { flex: 0 0 30px; border-radius: 50%; background: var(--theme-hover); }
-.prompt-send-metal .prompt-submit-btn { border-color: transparent; background: transparent; }
-.prompt-submit-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
-[data-theme='light'] .prompt-send-metal .metal-fx-canvas { filter: saturate(0.2); }
-.prompt-submit-btn.disabled {
-  color: var(--text-disabled);
-  cursor: var(--cursor-not-allowed, not-allowed);
-}
-.prompt-submit-btn.disabled:hover {
-  background: transparent;
-  color: var(--text-disabled);
 }
 .prompt-submit-btn.is-generating,
 .prompt-submit-btn.is-generating.disabled {
@@ -911,11 +780,13 @@
   flex-shrink: 0;
 }
 .prompt-btn.is-configured,
+.prompt-btn.is-configured:hover {
+  color: var(--brand-light);
+}
 .style-selector-btn.has-style {
   color: var(--brand-light);
   background: var(--brand-alpha-15);
 }
-.prompt-btn.is-configured:hover,
 .style-selector-btn.has-style:hover {
   color: var(--brand-light);
   background: var(--brand-alpha-30);

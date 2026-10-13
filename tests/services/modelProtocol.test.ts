@@ -22,6 +22,7 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
 import { readModelProtocolPathValues } from '../../src/services/ai/modelProtocolResponse';
 import { buildGeneralVideoProtocolVariables } from '../../src/services/ai/generateVideo';
+import { getPendingTasksForProject, VideoPollingPausedError } from '../../src/services/pollManager';
 
 const jsonResponse = (
   payload: unknown,
@@ -37,6 +38,31 @@ beforeEach(() => {
 });
 
 describe('declarative model execution protocol', () => {
+  it('retains an async video query descriptor when the declared polling budget expires', async () => {
+    localStorage.clear();
+    useAppStore.setState((state) => ({ currentProjectId: 'slow-project',
+      nodes: [{ id: 'slow-protocol', type: 'ai-video', position: { x: 0, y: 0 },
+        data: { type: 'ai-video', label: 'Slow', prompt: 'video', status: 'loading' } }],
+      config: { ...state.config, providers: { ...state.config.providers,
+        slow: { name: 'Slow', apiKey: 'fixture-key', baseUrl: 'https://gateway.example/v1' } } } }));
+    const protocol: ModelExecutionProtocol = { version: 2, mode: 'async', auth: { type: 'bearer' },
+      submit: { method: 'POST', path: '/videos', body: { model: '{{model}}', prompt: '{{prompt}}' } },
+      response: { type: 'json', taskIdPath: 'id' }, poll: { method: 'GET', path: '/videos/{{submit.id}}',
+        intervalMs: 1000, maxAttempts: 1, response: { statusPath: 'status', successValues: ['completed'],
+          failureValues: ['failed'], result: { urlPath: 'url' } } } };
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 'task-retained' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'queued' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(runConfiguredModelProtocol({ nodeId: 'slow-protocol', category: 'video',
+      model: { id: 'slow', name: 'Slow', modelId: 'slow', category: 'video', providerConfigId: 'slow',
+        executionProfile: { preset: 'custom', protocol } }, variables: { model: 'slow', prompt: 'video' } }))
+      .rejects.toBeInstanceOf(VideoPollingPausedError);
+    expect(getPendingTasksForProject('slow-project')[0]).toMatchObject({ taskId: 'task-retained',
+      videoRecoveryState: 'paused', protocolPoll: { url: 'https://gateway.example/v1/videos/task-retained' } });
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', videoTaskState: 'paused', error: undefined });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    localStorage.clear();
+  });
   it.each([
     ['data.results.0.url', ['https://cdn.example/first.mp4']],
     ['data.results[0].url', ['https://cdn.example/first.mp4']],

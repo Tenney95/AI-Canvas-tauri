@@ -4,6 +4,9 @@ import type { GeneralModelCategory, GeneralModelConfig, NodeType } from '../../t
 import type { ProtocolJsonValue, VideoModelCapability } from '../../types/aiTypes';
 import {
   cleanupNodePolling,
+  captureVideoTaskGeneration,
+  pauseVideoNodeTaskOnTimeout,
+  VIDEO_POLL_MAX_DURATION_MS,
   registerNodePolling,
   removePendingTask,
   savePendingTask,
@@ -385,6 +388,10 @@ export async function runConfiguredModelProtocol(
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
   assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
 
+  const projectId = useAppStore.getState().currentProjectId;
+  const videoGeneration = options.category === 'video' ? captureVideoTaskGeneration(options.nodeId) : undefined;
+  let submittedTaskId: string | undefined;
+  let keepPending = false;
   const nodeSignal = options.nodeId ? registerNodePolling(options.nodeId) : undefined;
   const signal = nodeSignal && options.signal
     ? AbortSignal.any([nodeSignal, options.signal])
@@ -399,8 +406,9 @@ export async function runConfiguredModelProtocol(
     });
     if (submitted.urls) return submitted.urls;
     if (!submitted.poll || !submitted.taskId) throw new Error('异步调用协议未返回轮询配置');
-
-    const projectId = useAppStore.getState().currentProjectId;
+    submittedTaskId = submitted.taskId;
+    const poll = options.category === 'video'
+      ? { ...submitted.poll, maxDurationMs: submitted.poll.maxDurationMs ?? VIDEO_POLL_MAX_DURATION_MS } : submitted.poll;
     const canPersist = !!options.nodeId && !!projectId;
     if (canPersist) {
       savePendingTask({
@@ -411,24 +419,31 @@ export async function runConfiguredModelProtocol(
         providerConfigId: options.model.providerConfigId,
         taskId: submitted.taskId,
         taskType: 'custom-protocol',
-        protocolPoll: submitted.poll,
+        protocolPoll: poll,
+        videoGeneration,
         batchCount: readBatchCount(options.variables.n),
         submitted: true,
       });
     }
 
     const result = await pollResolvedModelProtocol(
-      submitted.poll,
+      poll,
       provider.apiKey || '',
       signal,
       baseUrl,
     );
     if (!result.urls) throw new Error('媒体模型任务完成但未返回结果 URL');
+    // 视频交付由节点入口确认，本地保存失败时仍能下载同一个任务。
+    keepPending = options.category === 'video';
     return result.urls;
+  } catch (error) {
+    const paused = options.category === 'video'
+      ? pauseVideoNodeTaskOnTimeout(options.nodeId, error, submittedTaskId) : undefined;
+    if (paused) { keepPending = true; throw paused; }
+    throw error;
   } finally {
-    if (options.nodeId) {
-      cleanupNodePolling(options.nodeId);
-      removePendingTask(options.nodeId);
+    if (options.nodeId && cleanupNodePolling(options.nodeId, nodeSignal) && !keepPending) {
+      removePendingTask(options.nodeId, submittedTaskId);
     }
   }
 }

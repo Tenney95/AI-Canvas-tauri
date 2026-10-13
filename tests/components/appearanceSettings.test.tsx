@@ -22,6 +22,10 @@ describe('appearance settings rendering', () => {
     const markup = renderToStaticMarkup(<AppearanceSettings />);
     expect(markup).toContain('appearance-settings-view');
     expect(markup).toContain('connection-handles-settings');
+    expect(markup).toContain('button-appearance-settings');
+    expect(markup).toContain('恢复按钮默认');
+    expect(markup).toContain('aria-label="普通按钮背景恢复跟随主题" aria-pressed="true"');
+    expect(markup).toContain('aria-label="主按钮背景恢复跟随主题" aria-pressed="true"');
     for (const preset of createBuiltinAppearanceThemes()) {
       expect(markup).toContain(`aria-label="外观预设：${preset.name}" aria-pressed="${preset.id === theme.id}"`);
     }

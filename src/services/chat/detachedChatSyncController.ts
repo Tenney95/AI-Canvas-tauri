@@ -51,6 +51,7 @@ import {
 } from './chatWindowService';
 import { getAssistantTextModelCandidates } from '../projectSettingsService';
 import { projectSkillPickerOptions } from './skillCatalog';
+import { normalizePromptSubmitShortcut, PROMPT_SUBMIT_SHORTCUT_OPTIONS } from '../../utils/promptSubmitShortcut';
 
 const DEFAULT_SYNC_INTERVAL_MS = 150;
 const MAX_SYNC_RETRY_DELAY_MS = 5_000;
@@ -83,6 +84,7 @@ interface DetachedSnapshotSource {
   currentProjectId: string | null;
   projects: AppState['projects'];
   config: AppState['config'];
+  configHydrated: boolean;
   chatPanelDetached: boolean;
   nodes: AppState['nodes'];
   dramaAssets: AppState['dramaAssets'];
@@ -275,6 +277,7 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
     composerDraft: state.activeConversationId ? state.chatComposerDrafts[state.activeConversationId] ?? '' : state.chatComposerLiveDraft,
     composerDrafts: state.chatComposerDrafts,
     panelView: state.chatPanelView,
+    promptSubmitShortcut: state.configHydrated ? normalizePromptSubmitShortcut(state.config.promptSubmitShortcut) : undefined,
   };
 }
 
@@ -290,6 +293,7 @@ function detachedSnapshotSourceChanged(
     || current.currentProjectId !== previous.currentProjectId
     || current.projects !== previous.projects
     || current.config !== previous.config
+    || current.configHydrated !== previous.configHydrated
     || current.nodes !== previous.nodes
     || current.dramaAssets !== previous.dramaAssets
     || current.userSkills !== previous.userSkills
@@ -482,6 +486,13 @@ export function handleDetachedChatAction(
 
     case 'set_panel_view':
       store.setChatPanelView(action.view);
+      break;
+
+    case 'set_prompt_submit_shortcut':
+      if (!store.configHydrated || !PROMPT_SUBMIT_SHORTCUT_OPTIONS.some((option) => option.value === action.shortcut)) break;
+      store.updateConfig({ promptSubmitShortcut: action.shortcut });
+      void store.saveConfig({ silent: true }).catch(() => {});
+      requestSync(true);
       break;
 
     case 'dock_window':

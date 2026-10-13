@@ -46,7 +46,7 @@ describe('项目默认的视频画面比例', () => {
     expect(applied.seedanceRatio).toBe('21:9');
   });
 
-  it('不把项目视频默认值注入 direct general 自定义模型', () => {
+  it('项目视频默认值也用于 direct general 自定义模型', () => {
     const settings: ProjectSettings = {
       defaultModels: { video: 'general/custom-video' },
       generation: {
@@ -62,9 +62,9 @@ describe('项目默认的视频画面比例', () => {
       model: 'general/custom-video',
       provider: 'general',
     });
-    expect(applied.seedanceRatio).toBeUndefined();
-    expect(applied.seedanceResolution).toBeUndefined();
-    expect(applied.seedanceDuration).toBeUndefined();
+    expect(applied.seedanceRatio).toBe('9:16');
+    expect(applied.seedanceResolution).toBe('1080p');
+    expect(applied.seedanceDuration).toBe(10);
   });
 
   it('只作用于视频节点', () => {

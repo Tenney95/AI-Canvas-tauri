@@ -20,7 +20,7 @@
 }
 
 .canvas-node-lod-preview {
-  background: var(--theme-surface);
+  background: var(--appearance-node-background, var(--theme-surface));
   box-shadow: inset 0 0 0 1px var(--canvas-edge);
   border-radius: var(--appearance-node-radius, 12px);
 }
@@ -1087,7 +1087,7 @@
   max-height: 92vh;
   display: flex;
   flex-direction: column;
-  background: var(--glass-bg);
+  background: var(--appearance-surface-image, none), var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;

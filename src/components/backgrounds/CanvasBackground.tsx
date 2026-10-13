@@ -73,7 +73,7 @@ export default function CanvasBackground() {
           className="absolute inset-0 z-0"
           style={{
             backgroundImage: `url(${backgroundImage})`,
-            backgroundSize: resolvedAppearance?.canvas?.imageFit ?? 'cover',
+            backgroundSize: resolvedAppearance?.canvas?.imageFit === 'fill' ? '100% 100%' : resolvedAppearance?.canvas?.imageFit ?? 'cover',
             backgroundPosition: resolvedAppearance?.canvas?.imagePosition ?? 'center',
             backgroundRepeat: 'no-repeat',
             opacity: backgroundOpacity ?? 0.3,

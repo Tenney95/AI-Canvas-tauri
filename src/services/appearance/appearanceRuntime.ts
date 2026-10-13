@@ -1,5 +1,5 @@
-import type { AppearanceMode, AppearanceTheme } from '../../types';
-import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from './appearanceDefaults';
+import type { AppearanceBackgroundImage, AppearanceMode, AppearanceTheme } from '../../types';
+import { getBuiltinAppearanceTheme, normalizeAppearanceBackgroundImage, normalizeAppearanceTheme } from './appearanceDefaults';
 
 export function resolveAppearanceMode(mode: AppearanceMode | undefined): 'dark' | 'light' {
   if (mode === 'dark' || mode === 'light') return mode;
@@ -10,7 +10,13 @@ export function resolveAppearanceMode(mode: AppearanceMode | undefined): 'dark' 
 export function resolveAppearanceTheme(theme: AppearanceTheme): AppearanceTheme {
   const normalized = normalizeAppearanceTheme(theme);
   if (normalized.mode === 'system' && (normalized.id === 'standard-dark' || normalized.id === 'standard-light')) {
-    return getBuiltinAppearanceTheme(`standard-${resolveAppearanceMode('system')}`);
+    const systemTheme = getBuiltinAppearanceTheme(`standard-${resolveAppearanceMode('system')}`);
+    return {
+      ...systemTheme,
+      ui: { ...systemTheme.ui, button: normalized.ui.button, surfaceImage: normalized.ui.surfaceImage },
+      node: { ...systemTheme.node, backgroundImage: normalized.node.backgroundImage },
+      canvas: normalized.canvas.kind === 'image' ? normalized.canvas : systemTheme.canvas,
+    };
   }
   return normalized;
 }
@@ -29,6 +35,76 @@ export function isTransparentColor(val: string | undefined | null): boolean {
 
 function setVar(root: HTMLElement, name: string, value: string | number): void {
   root.style.setProperty(name, String(value));
+}
+
+function resolveButtonColor(color: string, fallback: string): string {
+  return color === 'auto' ? fallback : isTransparentColor(color) ? 'transparent' : color;
+}
+
+const runtimeImageUrls = new WeakMap<HTMLElement, Map<string, string>>();
+// Chromium 的 CSS 变量上限为 2MiB；提前将大图转为短 URL，留出变量组合的余量。
+const INLINE_IMAGE_LIMIT = 1024 * 1024;
+
+function createRuntimeImageResolver(root: HTMLElement) {
+  let urls = runtimeImageUrls.get(root);
+  if (!urls) {
+    urls = new Map<string, string>();
+    runtimeImageUrls.set(root, urls);
+  }
+  const cache = urls;
+  const used = new Set<string>();
+  return {
+    resolve(dataUrl: string): string | undefined {
+      if (dataUrl.length <= INLINE_IMAGE_LIMIT) return dataUrl;
+      const cached = cache.get(dataUrl);
+      if (cached) {
+        used.add(dataUrl);
+        return cached;
+      }
+      const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/]+={0,2})$/i.exec(dataUrl);
+      if (!match || typeof URL.createObjectURL !== 'function') return undefined;
+      try {
+        const binary = atob(match[2]);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        const url = URL.createObjectURL(new Blob([bytes], { type: match[1] }));
+        cache.set(dataUrl, url);
+        used.add(dataUrl);
+        return url;
+      } catch {
+        return undefined;
+      }
+    },
+    releaseUnused() {
+      for (const [dataUrl, url] of cache) {
+        if (used.has(dataUrl)) continue;
+        URL.revokeObjectURL(url);
+        cache.delete(dataUrl);
+      }
+    },
+  };
+}
+
+function appearanceImageLayer(
+  image: AppearanceBackgroundImage | undefined,
+  resolveImageUrl: (dataUrl: string) => string | undefined = (dataUrl) => dataUrl,
+): string {
+  const safe = normalizeAppearanceBackgroundImage(image);
+  if (safe?.kind !== 'image' || !safe.imageDataUrl) return 'none';
+  const imageUrl = resolveImageUrl(safe.imageDataUrl);
+  if (!imageUrl) return 'none';
+  const size = safe.imageFit === 'fill' ? '100% 100%' : safe.imageFit;
+  return `url("${imageUrl}") center / ${size} no-repeat`;
+}
+
+/** 图片只替换底色的视觉来源，不改变文字、边框、子控件或交互透明度。 */
+export function resolveAppearanceBackground(
+  color: string,
+  image?: AppearanceBackgroundImage,
+  resolveImageUrl?: (dataUrl: string) => string | undefined,
+): string {
+  const layer = appearanceImageLayer(image, resolveImageUrl);
+  return layer === 'none' ? color : `${layer}, linear-gradient(${color}, ${color})`;
 }
 
 function brandAlphaVars(accent: string): Record<string, string> {
@@ -66,7 +142,7 @@ function hexToRgb(value: string): [number, number, number] | null {
   ];
 }
 
-function contrastColor(value: string): string {
+export function contrastColor(value: string): string {
   const rgb = hexToRgb(value);
   if (!rgb) return '#ffffff';
   const channels = rgb.map((channel) => {
@@ -120,6 +196,10 @@ export function applyAppearanceTheme(theme: AppearanceTheme | null | undefined):
   const mode = resolveAppearanceMode(theme.mode);
   const resolvedTheme = resolveAppearanceTheme(theme);
   const { ui, node, edge, handle } = resolvedTheme;
+  const { button } = ui;
+  // URL 仅属于当前窗口的显示运行时；原始数据仍随主题持久化及跨窗口同步。
+  const imageUrls = createRuntimeImageResolver(root);
+  const background = (color: string, image?: AppearanceBackgroundImage) => resolveAppearanceBackground(color, image, imageUrls.resolve);
   // 背景、面板、卡片和边框保持预设原值；主题色只用于选中态和强调控件。
   const themeBackground = isTransparentColor(ui.background) ? 'transparent' : ui.background;
   const themeSurface = isTransparentColor(ui.surface) ? 'transparent' : ui.surface;
@@ -160,18 +240,41 @@ export function applyAppearanceTheme(theme: AppearanceTheme | null | undefined):
     '--brand-hover': ui.accentStrong,
     '--brand-pale': ui.accentSoft,
     '--brand-contrast': contrastColor(ui.accent),
+    '--button-radius': `${button.radius}px`,
+    '--button-radius-sm': `${Math.round(button.radius * 6 / 7)}px`,
+    '--button-radius-lg': `${Math.round(button.radius * 12 / 7)}px`,
+    '--button-border-width': `${button.borderWidth}px`,
+    '--button-bg': background(resolveButtonColor(button.normal.background, 'var(--white-alpha-04)'), button.normal.backgroundImage),
+    '--button-hover-bg': background(resolveButtonColor(button.normal.hoverBackground, 'var(--white-alpha-08)'), button.normal.hoverBackgroundImage ?? button.normal.backgroundImage),
+    '--button-text': resolveButtonColor(button.normal.text, 'var(--theme-text)'),
+    '--button-border': resolveButtonColor(button.normal.border, 'var(--white-alpha-08)'),
+    '--button-hover-border': resolveButtonColor(button.normal.border, 'var(--white-alpha-12)'),
+    '--button-secondary-bg': background(resolveButtonColor(button.normal.background, 'var(--theme-surface)'), button.normal.backgroundImage),
+    '--button-secondary-hover-bg': background(resolveButtonColor(button.normal.hoverBackground, 'var(--theme-hover)'), button.normal.hoverBackgroundImage ?? button.normal.backgroundImage),
+    '--button-secondary-border': resolveButtonColor(button.normal.border, 'var(--theme-border)'),
+    '--button-secondary-hover-border': resolveButtonColor(button.normal.border, 'var(--border-secondary)'),
+    '--button-primary-bg': background(resolveButtonColor(button.primary.background, 'var(--brand)'), button.primary.backgroundImage),
+    '--button-primary-hover-bg': background(resolveButtonColor(button.primary.hoverBackground, 'var(--brand-hover)'), button.primary.hoverBackgroundImage ?? button.primary.backgroundImage),
+    '--button-primary-text': resolveButtonColor(button.primary.text, contrastColor(button.primary.background === 'auto' ? ui.accent : button.primary.background)),
+    '--button-primary-border': resolveButtonColor(button.primary.border, 'color-mix(in srgb, var(--brand) 80%, var(--theme-text))'),
+    '--button-primary-hover-border': resolveButtonColor(button.primary.border, 'var(--brand-hover)'),
     ...brandAlphaVars(ui.accent),
     ...themeAlphaVars(ui.text, mode),
     '--border-focus': `color-mix(in srgb, ${ui.focus} 55%, transparent)`,
     '--success': ui.success,
     '--success-light': ui.success,
     '--success-text': ui.success,
+    '--success-bg': `color-mix(in srgb, ${ui.success} ${mode === 'light' ? 20 : 15}%, transparent)`,
     '--warning': ui.warning,
     '--warning-light': ui.warning,
+    '--warning-bg': `color-mix(in srgb, ${ui.warning} ${mode === 'light' ? 22 : 15}%, transparent)`,
     '--danger': ui.danger,
     '--danger-light': ui.danger,
+    '--danger-pale': mixHex(ui.danger, mode === 'light' ? '#000000' : '#ffffff', mode === 'light' ? 0.18 : 0.34),
+    '--danger-bg': `color-mix(in srgb, ${ui.danger} ${mode === 'light' ? 18 : 15}%, transparent)`,
     '--info': ui.info,
     '--info-light': ui.info,
+    '--info-bg': `color-mix(in srgb, ${ui.info} ${mode === 'light' ? 20 : 15}%, transparent)`,
     '--canvas-edge': isTransparentColor(edge.color) ? 'transparent' : edge.color,
     '--appearance-edge-color': isTransparentColor(edge.color) ? 'transparent' : edge.color,
     '--appearance-edge-selected': isTransparentColor(edge.selectedColor) ? 'transparent' : edge.selectedColor,
@@ -179,9 +282,9 @@ export function applyAppearanceTheme(theme: AppearanceTheme | null | undefined):
     '--appearance-edge-preview': isTransparentColor(edge.previewColor) ? 'transparent' : edge.previewColor,
     '--appearance-edge-width': edge.width,
     '--appearance-edge-selected-width': edge.selectedWidth,
-    '--appearance-node-background': isTransparentColor(node.background)
+    '--appearance-node-background': background(isTransparentColor(node.background)
       ? 'transparent'
-      : `color-mix(in srgb, ${node.background} ${Math.round(node.backgroundOpacity * 100)}%, transparent)`,
+      : `color-mix(in srgb, ${node.background} ${Math.round(node.backgroundOpacity * 100)}%, transparent)`, node.backgroundImage),
     '--appearance-node-border': isTransparentColor(node.border) ? 'transparent' : node.border,
     '--appearance-node-header': isTransparentColor(node.headerBackground) ? 'transparent' : node.headerBackground,
     '--appearance-node-text': node.text,
@@ -199,6 +302,7 @@ export function applyAppearanceTheme(theme: AppearanceTheme | null | undefined):
     '--appearance-glass-blur': `${ui.glassBlur}px`,
     '--glass-bg': glassSurface,
     '--glass-panel-bg': glassSurface,
+    '--appearance-surface-image': appearanceImageLayer(ui.surfaceImage, imageUrls.resolve),
     '--glass-bg-light': solarGlass ? `color-mix(in srgb, ${themeSurface} 45%, transparent)` : themeSurface,
     '--glass-bg-node': solarGlass
       ? `color-mix(in srgb, ${themeCard} ${Math.round(ui.glassOpacity * 100)}%, transparent)`
@@ -218,8 +322,9 @@ export function applyAppearanceTheme(theme: AppearanceTheme | null | undefined):
   };
   for (const [name, value] of Object.entries(vars)) setVar(root, name, value);
   applyAccentScale(root, ui.accent, mode);
-  const useHandleImage = handle.kind === 'image' && Boolean(handle.imageDataUrl);
-  setVar(root, '--appearance-handle-image', useHandleImage ? `url("${handle.imageDataUrl}")` : 'none');
+  const handleImageUrl = handle.kind === 'image' && handle.imageDataUrl ? imageUrls.resolve(handle.imageDataUrl) : undefined;
+  const useHandleImage = Boolean(handleImageUrl);
+  setVar(root, '--appearance-handle-image', useHandleImage ? `url("${handleImageUrl}")` : 'none');
   setVar(root, '--appearance-handle-image-opacity', useHandleImage ? handle.opacity : 0);
   setVar(root, '--appearance-handle-image-fit', handle.imageFit === 'fill' ? '100% 100%' : handle.imageFit);
 
@@ -232,6 +337,8 @@ export function applyAppearanceTheme(theme: AppearanceTheme | null | undefined):
     root.style.removeProperty(`--node-${prefix}-light`);
     root.style.removeProperty(`--node-${prefix}-bg`);
   }
+  // 所有变量更新后再撤销旧 URL，切换纯色或预设时释放不再使用的图片。
+  imageUrls.releaseUnused();
 }
 
 export function installSystemAppearanceListener(onChange: () => void): () => void {

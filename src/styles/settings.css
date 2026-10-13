@@ -59,6 +59,7 @@
 .glass-panel.settings-modal-shell,
 .settings-modal-shell {
   background:
+    var(--appearance-surface-image, none) padding-box,
     linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
     var(--glass-bevel-border) border-box;
   border-color: transparent;
@@ -66,7 +67,10 @@
 }
 [data-theme='light'] .glass-panel.settings-modal-shell,
 [data-theme='light'] .settings-modal-shell {
-  background: #ffffff;
+  background:
+    var(--appearance-surface-image, none) padding-box,
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   border-color: rgba(226, 232, 240, 0.8);
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
 }

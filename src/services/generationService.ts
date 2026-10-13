@@ -29,6 +29,7 @@ import { completeWorkflowApiNodeTask } from './workflowApi/workflowApiAdapter';
 import { completeRunningHubNodeTask } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
 import { videoInputFingerprint } from './videoBatchPlanning';
+import { completeVideoNodeTask, getPendingTasksForProject, pauseVideoNodeTask, prepareVideoNodeGeneration, VideoPollingPausedError } from './pollManager';
 
 export interface GenerationResult {
   success: boolean;
@@ -143,6 +144,14 @@ export async function executeGeneration(
   }
 
   const submittingProjectId = store.currentProjectId;
+  if (nodeType === 'ai-video') {
+    try { prepareVideoNodeGeneration(nodeId); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : '暂时无法保留旧任务，请稍后再生成';
+      store.showToast(message, 'error');
+      return { success: false, message };
+    }
+  }
   const runningHubTask = cloudWorkflow || data.provider === 'runninghub';
   const guardedSubmission = runningHubTask || nodeType === 'ai-video';
   let cloudGuard = guardedSubmission ? registerCanvasDerivation(store, nodeId) : null;
@@ -155,8 +164,10 @@ export async function executeGeneration(
       && (!guardedSubmission || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, s)));
   };
 
-  store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined });
+  store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined });
   let batchNodeIds: string[] | undefined;
+  let videoResultReceived = false;
+  let videoTaskId: string | undefined;
 
   try {
     if (nodeType === 'ai-image') {
@@ -306,19 +317,28 @@ export async function executeGeneration(
         if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       }
       const result = lease ? await generateVideo(videoOptions, lease.signal, assertLease) : await generateVideo(videoOptions);
+      videoResultReceived = true;
+      videoTaskId = submittingProjectId ? getPendingTasksForProject(submittingProjectId).find((task) => task.nodeId === nodeId)?.taskId : undefined;
       if (lease) await assertLease();
-      if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
+      if (!isStillCurrentSubmission()) {
+        if (videoTaskId) pauseVideoNodeTask(nodeId, videoTaskId);
+        return { success: false, message: '任务已取消' };
+      }
       const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
         ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-video', data.label)
         : { mediaUrl: result.url, sourceUrl: result.url });
       if (lease) await assertLease();
-      if (!isStillCurrentSubmission()) return { success: false, message: lease ? '任务已取消' : '画布已变化，任务已保留' };
+      if (!isStillCurrentSubmission()) {
+        if (videoTaskId) pauseVideoNodeTask(nodeId, videoTaskId);
+        return { success: false, message: lease ? '任务已取消' : '画布已变化，任务已保留' };
+      }
       if (lease) await assertLease();
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       store.updateNodeData(nodeId, {
         videoUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
-        thumbnailUrl: persisted.mediaUrl, output: persisted.sourceUrl, status: 'success', videoBatchFingerprint: videoFingerprint,
+        thumbnailUrl: persisted.mediaUrl, output: persisted.sourceUrl, status: 'success', videoBatchFingerprint: videoFingerprint, videoTaskState: undefined,
       });
+      completeVideoNodeTask(nodeId, videoTaskId);
       if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       if (runningHubTask) completeRunningHubNodeTask(nodeId);
       if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
@@ -410,6 +430,10 @@ export async function executeGeneration(
     if (runningHubTask && isStillCurrentSubmission()) completeRunningHubNodeTask(nodeId);
     return { success: true };
   } catch (err) {
+    if (err instanceof VideoPollingPausedError) return { success: false, message: err.message };
+    if (videoResultReceived && videoTaskId && pauseVideoNodeTask(nodeId, videoTaskId)) {
+      return { success: false, message: '视频保存暂未完成，任务已保留，可重试下载' };
+    }
     if (lease) {
       try { await assertLease(); } catch { return { success: false, message: '任务已取消' }; }
     }

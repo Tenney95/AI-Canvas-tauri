@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIVideoGenParams, VideoGenerationReferenceInput } from '../../src/types/aiTypes';
 
 const mocks = vi.hoisted(() => ({
-  fetch: vi.fn(), savePendingTask: vi.fn(), removePendingTask: vi.fn(), cleanupNodePolling: vi.fn(),
+  fetch: vi.fn(), savePendingTask: vi.fn(), removePendingTask: vi.fn(), cleanupNodePolling: vi.fn(() => true),
+  captureVideoTaskGeneration: vi.fn(),
+  pauseVideoNodeTaskOnTimeout: vi.fn((nodeId: string | undefined, error: unknown, taskId?: string) => {
+    if (!nodeId || !taskId || !(error instanceof Error) || error.name !== 'ModelProtocolHttpError') return undefined;
+    return Object.assign(new Error('视频查询已暂停'), { name: 'VideoPollingPausedError' });
+  }),
   registerNodePolling: vi.fn(() => new AbortController().signal),
   images: vi.fn(async (urls: string[]) => urls.map((url) => url.replace('asset://', 'https://uploads.example/'))),
   media: vi.fn(async (url: string) => url.replace('asset://', 'https://uploads.example/')),
@@ -28,6 +33,16 @@ beforeEach(() => { vi.clearAllMocks(); mocks.fetch.mockReset(); mocks.state.conf
 afterEach(() => { vi.useRealTimers(); });
 
 describe('GRSAI H3 独立视频合同', () => {
+  it('keeps the H3 query descriptor after a gateway timeout without resubmitting', async () => {
+    vi.useFakeTimers();
+    mocks.fetch.mockResolvedValueOnce(json({ id: 'slow-h3', status: 'running' })).mockResolvedValue(json({}, 504));
+    const rejected = expect(generate()).rejects.toMatchObject({ name: 'VideoPollingPausedError' });
+    await vi.runAllTimersAsync();
+    await rejected;
+    expect(mocks.savePendingTask).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'slow-h3', submitted: true }));
+    expect(mocks.removePendingTask).not.toHaveBeenCalled();
+    expect(mocks.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
   it('declares only GRSAI supported controls and validates the resumable protocol', () => {
     expect(validateModelExecutionProtocol(GRSAI_H3_PROTOCOL)).toEqual([]);
     expect(getGrsaiVideoCapability('grsai/minimax-h3', '1080p')).toMatchObject({ minDuration: 1, maxDuration: 10, maxImageReferences: 9, maxVideoReferences: 0, maxAudioReferences: 3 });
@@ -45,7 +60,7 @@ describe('GRSAI H3 独立视频合同', () => {
     const saved = mocks.savePendingTask.mock.calls[0][0];
     expect(saved).toMatchObject({ taskType: 'custom-protocol', taskId: 'h3-task', providerConfigId: 'grsai' });
     expect(JSON.stringify(saved)).not.toContain('fixture-key');
-    expect(mocks.removePendingTask).toHaveBeenCalledWith('node');
+    expect(mocks.removePendingTask).not.toHaveBeenCalled();
   });
 
   it('keeps nine image and three audio references in order, preferring local references for upload', async () => {

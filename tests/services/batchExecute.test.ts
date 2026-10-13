@@ -37,6 +37,13 @@ vi.mock('../../src/services/ai/generateAudio', () => ({
 vi.mock('../../src/services/fileService', () => ({
   persistMediaUrlToProjectData: mocks.persistMediaUrlToProjectData,
 }));
+vi.mock('../../src/services/pollManager', () => ({
+  prepareVideoNodeGeneration: vi.fn(), completeVideoNodeTask: vi.fn(), pauseVideoNodeTask: vi.fn(),
+  getPendingTasksForProject: () => [],
+  VideoPollingPausedError: class extends Error {
+    constructor() { super('视频查询已暂停'); }
+  },
+}));
 
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: {
@@ -49,6 +56,7 @@ vi.mock('../../src/store/useAppStore', () => ({
 }));
 
 import { batchExecuteNodes } from '../../src/utils/batchExecute';
+import { VideoPollingPausedError } from '../../src/services/pollManager';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -106,6 +114,15 @@ beforeEach(() => {
 });
 
 describe('batchExecuteNodes', () => {
+  it('does not mark a paused video query as a failed node or resubmit it', async () => {
+    mocks.generateVideo.mockRejectedValueOnce(new VideoPollingPausedError());
+    const node = createNode('slow-video', 'ai-video');
+    const ctx = createContext();
+    await batchExecuteNodes([node.id], [node], [], ctx);
+    expect(mocks.generateVideo).toHaveBeenCalledOnce();
+    expect(ctx.recordOutputHistory).not.toHaveBeenCalled();
+    expect(ctx.updateNodeDataTransient).not.toHaveBeenCalledWith(node.id, expect.objectContaining({ status: 'error' }));
+  });
   it('queues workflows by display number and waits for generation and saving before starting the next', async () => {
     const generated = deferred<{ url: string }>();
     const saved = deferred<{ mediaUrl: string; sourceUrl: string }>();
@@ -122,8 +139,9 @@ describe('batchExecuteNodes', () => {
     ];
     const ctx = createContext();
     ctx.currentProjectId = 'project';
+    mocks.liveState = { currentProjectId: 'project', nodes, revision: 0 };
     const execution = batchExecuteNodes(nodes.map((node) => node.id), nodes, [], ctx);
-    expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId)).toEqual(['random-z', 'ordinary']);
+    await vi.waitFor(() => expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId)).toEqual(['random-z', 'ordinary']));
     generated.resolve({ url: 'first.mp4' });
     await vi.waitFor(() => expect(mocks.persistMediaUrlToProjectData).toHaveBeenCalledWith(
       'first.mp4', 'project', 'ai-video', 'random-z',
@@ -196,7 +214,7 @@ describe('batchExecuteNodes', () => {
     const ctx = createContext();
     const execution = batchExecuteNodes(nodes.map((node) => node.id), nodes, edges, ctx);
 
-    expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId)).toEqual(['a', 'c']);
+    await vi.waitFor(() => expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId)).toEqual(['a', 'c']));
 
     pending.get('c')!.resolve({ url: 'https://example.com/c.png', width: 64, height: 64 });
     pending.get('a')!.resolve({ url: 'https://example.com/a.png', width: 64, height: 64 });

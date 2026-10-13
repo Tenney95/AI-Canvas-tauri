@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.10.6 操作说明书：AI 应用节点的创建、使用、状态保存与 MCP 动作，自定义接口 JSON 编辑、视频预设、图片批量反推，附首次生成、资源整理、工作流及逐镜制作教程。">
-<title>AI Canvas 0.10.6 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.10.7 操作说明书：AI 应用节点的创建、使用、状态保存与 MCP 动作，自定义接口 JSON 编辑、视频预设、图片批量反推，附首次生成、资源整理、工作流及逐镜制作教程。">
+<title>AI Canvas 0.10.7 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -34,7 +34,7 @@ dialog .character-actions-shot{width:1912px}
 <body>
 <a class="skip" href="#main">跳到正文</a>
 <nav class="toc" aria-label="说明书目录">
-<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.6 · 操作说明书<br>从素材整理到逐镜制作</small>
+<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.7 · 操作说明书<br>从素材整理到逐镜制作</small>
 <a class="back" href="index.html">← 返回软件首页</a>
 <label for="search">查找章节或操作</label><input id="search" type="search" placeholder="如：文件夹、回收站、视频批次" autocomplete="off" aria-describedby="search-status" aria-controls="search-results toc-links">
 <p id="search-status" class="search-status" role="status">支持空格分隔关键词；Ctrl + F 查找全文。</p>
@@ -44,7 +44,7 @@ dialog .character-actions-shot{width:1912px}
 <a href="#reading">按需求选择阅读路线</a>
 <a href="#map">00 · 界面位置图</a><a href="#project-settings">01 · 创作前先配好项目设置</a><a href="#quick">02 · 先跑通一次生成</a><a href="#projects">03 · 启动页、项目与分集</a><a href="#canvas">04 · 画布、节点与连线</a><a href="#media">05 · 文本、图像、视频与音频</a>
 <div class="group">自定义接口 · 详细配置</div>
-<a href="#connection">06 · 添加厂商与模型</a><a href="#import">07 · 从接口文档导入</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
+<a href="#connection">06 · 添加厂商与模型</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
 </div>
@@ -54,10 +54,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.10.6 说明书</span><span class="badge">2026-10-12 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.10.7 说明书</span><span class="badge">2026-10-13 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
-<aside class="tip"><b>0.10.6 补充：</b>性能模式收紧闲置媒体缓存并渐进恢复画布媒体，独立资源搜索与助手窗口同步开关；保留 Windows 现有抗闪烁配置。生成文件使用普通名称，同名顺延序号。修复独立助手窗口打开，提示词编辑使用独立临时撤销历史，优化输入栏布局与参数状态。<b>0.10.5 补充：</b>助手按当前上下文预算分页读取 Skill，支持参考资料关键词检索。模型接口返回的推理内容单独折叠展示；它是当前会话的临时参考信息，不进入续聊摘要。回复失败保留已收到正文，暂停/失败的继续按钮在收起步骤后仍可见。压缩有独立状态与计时。<b>0.10.4 补充：</b>逐模型图片/视频参数能力、完整参考素材协议校验、无项目 MCP 厂商设置、CCC 全部分组删除、共享 Skill 目录与自定义画布缩放范围。模型参数编辑后需先保存连接，再复制配置；复制不携带 API Key。<b>0.10.3 补充：</b><a href="#prompt-input-updates">节点发送快捷键、模型清除与完整素材引用</a>。0.10.2 已补充：<a href="#ccc-group-keys">CCC 统一管理与分组 Key 自动匹配</a>。此前已补充：<a href="#ai-app">由 Agent / MCP 创建的 AI 应用节点</a>与<a href="#mcp-ai-app">无界面动作调用</a>。0.10.2 说明另含<a href="#protocol-json-editor">JSON 变量插入与共用预览</a>、<a href="#protocol-video-presets">视频协议预设</a>、<a href="#async-download">完成后下载文件</a>、<a href="#asset-image-reverse">单图反推与标签</a>、<a href="#asset-image-batch-reverse">批量反推</a>、<a href="#provider-model-updates">内置模型更新</a>；版本与核对范围见<a href="#about">文末说明</a>。</aside>
+<aside class="tip"><b>0.10.7 源码补充：</b>视频查询超时后可继续查询同一个远端任务，重启后保留恢复记录；图片/视频新建节点继承同模型参数，项目输出默认值优先，切换模型后重置。历史图片可以应用并撤销；快捷指令支持文件夹。节点与助手统一输入布局和发送快捷键，发送按钮右键可调整；MCP 在启动页也能查询、打开和切换项目。自定义接口表单与 JSON 使用一致变量布局，原接口文档导入界面已移除，改用手动接口配置。<b>0.10.6 补充：</b>性能模式收紧闲置媒体缓存并渐进恢复画布媒体，独立资源搜索与助手窗口同步开关；保留 Windows 现有抗闪烁配置。生成文件使用普通名称，同名顺延序号。修复独立助手窗口打开，提示词编辑使用独立临时撤销历史，优化输入栏布局与参数状态。<b>0.10.5 补充：</b>助手按当前上下文预算分页读取 Skill，支持参考资料关键词检索。模型接口返回的推理内容单独折叠展示；它是当前会话的临时参考信息，不进入续聊摘要。回复失败保留已收到正文，暂停/失败的继续按钮在收起步骤后仍可见。压缩有独立状态与计时。<b>0.10.4 补充：</b>逐模型图片/视频参数能力、完整参考素材协议校验、无项目 MCP 厂商设置、CCC 全部分组删除、共享 Skill 目录与自定义画布缩放范围。模型参数编辑后需先保存连接，再复制配置；复制不携带 API Key。<b>0.10.3 补充：</b><a href="#prompt-input-updates">节点发送快捷键、模型清除与完整素材引用</a>。0.10.2 已补充：<a href="#ccc-group-keys">CCC 统一管理与分组 Key 自动匹配</a>。此前已补充：<a href="#ai-app">由 Agent / MCP 创建的 AI 应用节点</a>与<a href="#mcp-ai-app">无界面动作调用</a>。0.10.2 说明另含<a href="#protocol-json-editor">JSON 变量插入与共用预览</a>、<a href="#protocol-video-presets">视频协议预设</a>、<a href="#async-download">完成后下载文件</a>、<a href="#asset-image-reverse">单图反推与标签</a>、<a href="#asset-image-batch-reverse">批量反推</a>、<a href="#provider-model-updates">内置模型更新</a>；版本与核对范围见<a href="#about">文末说明</a>。</aside>
 
 <section id="reading" class="reading-routes" aria-label="按需求阅读"><h2>先找到你要做的事</h2>
 <p class="small">第一次使用可走第一条路线。每章保留原有编号，旧链接仍可直接定位。</p>
@@ -260,12 +260,10 @@ dialog .character-actions-shot{width:1912px}
 <p class="small">接口地址失焦时会清理首尾空格、末尾斜杠及部分误贴的完整接口后缀；验证或拉取模型后也可能更正地址。操作后应再次检查界面中最终保存的基础地址。</p>
 </section>
 
-<section id="import"><h2>07 · 自定义接口：从文档导入</h2>
-<p>已经拿到厂商调用示例时，可以先让软件识别，减少手填字段。支持 Fetch、Axios、cURL、Python、Raw HTTP 和 OpenAPI JSON 格式。</p>
-<ol class="steps"><li>在厂商连接的模型区域点击<b>导入文档</b>。</li><li>将调用代码粘贴到<b>提交请求示例</b>；将对应接口的返回 JSON 粘贴到<b>提交响应示例</b>。优先使用完整示例，包括 URL、请求方法、请求体和响应结构。</li><li>如果提交只返回任务 ID，开启<b>包含异步轮询</b>，再提供<b>轮询请求示例</b>和<b>任务完成时的轮询响应示例</b>。仅提供“处理中”的响应，通常无法确定最终视频或图片的结果路径。</li><li>点击<b>识别文档</b>。核对识别出的基础地址、模型 ID、分类、提交路径、轮询路径，以及提示的警告。分类错误时可以修改后重新识别。</li><li>确认结果后点击<b>应用配置</b>。低可信结果需要按界面提示确认；要恢复本次导入前的内容，可用<b>撤销导入</b>。</li><li>进入该模型的<b>调用协议</b>，按后续章节检查请求预览和响应路径匹配，最后<b>保存厂商设置</b>。</li></ol>
-<aside class="tip"><b>识别文档在本地静态完成：</b>不会执行粘贴的示例代码，不会调用生成接口，也不会导入示例中的密钥或覆盖已有 API Key。密钥仍在 API Key 输入框中单独配置。</aside>
-<aside class="hold"><b>应用前检查当前连接：</b>文档导入会更新正在编辑的连接地址；遇到相同模型 ID，也会更新其分类和调用协议。编辑已有连接时，先确认这些变化确实属于这个厂商。</aside>
-<h3>也可以让 AI 助手协助整理</h3><p>可以把厂商接口说明交给助手，请它核对提交、任务查询和结果字段，并预览配置草稿。描述任务时说明需要哪类模型、是否包含参考素材。仍按本章清单核对草稿；规划模式只读取资料，协作模式的配置写入需确认，自主模式会自动执行已授权配置写入。</p>
+<section id="import"><h2>07 · 自定义接口：接口说明与手动配置</h2>
+<p>0.10.7 已移除自定义连接的“导入文档”界面。拿到厂商调用示例后，在连接中手动添加模型，再进入该模型的<b>调用协议</b>配置提交与轮询；旧章节链接继续定位到这里。</p>
+<ol class="steps"><li>从厂商说明确认基础地址、模型 ID、模型分类和鉴权方式，API Key 仍单独填写。</li><li>在该模型的<b>调用协议</b>选择匹配的接口格式；复杂接口使用高级自定义 JSON。</li><li>对照调用示例填写提交路径、请求体和响应结果路径，使用变量面板插入提示词、尺寸、参考素材等动态参数。</li><li>异步接口还要配置任务 ID、查询路径及完成/失败判断，并使用已完成响应核对最终素材路径。</li><li>先检查脱敏请求预览和响应路径，再保存厂商设置。试跑可能产生实际模型费用。</li></ol>
+<h3>也可以让 AI 助手协助整理</h3><p>可以把厂商接口说明交给助手，请它核对提交、任务查询和结果字段，并预览配置草稿。说明模型分类及参考素材要求；规划模式只读取资料，协作模式的配置写入需确认，自主模式沿用既有配置工具权限。</p>
 </section>
 
 <section id="protocol"><h2>08 · 自定义接口：手动配置调用协议</h2>
@@ -482,7 +480,7 @@ dialog .character-actions-shot{width:1912px}
 
 <section id="api-check"><h2>12 · 自定义接口：验证与排错</h2>
 <h3>五种操作，不是同一个“测试”</h3>
-<div class="table-scroll"><table><thead><tr><th>按钮 / 区域</th><th>实际作用</th><th>是否向服务发请求</th></tr></thead><tbody><tr><td>识别文档</td><td>从调用代码和响应示例生成配置草稿。</td><td>否，本地静态解析。</td></tr><tr><td>本地请求预览</td><td>显示变量替换后的方法、相对路径、Headers、Body；密钥显示掩码。真实连接地址需单独核对。</td><td>否。</td></tr><tr><td>响应示例与路径校验</td><td>用你粘贴的响应 JSON 检查路径是否能匹配结果。</td><td>否。</td></tr><tr><td>验证连接 / 拉取模型</td><td>检查服务连通性或获取模型列表。</td><td>是；不证明某个生成接口一定可用。</td></tr><tr><td>试跑</td><td>使用当前凭据和示例变量真实请求；异步接口继续轮询。</td><td><b>是，可能产生费用。</b></td></tr></tbody></table></div>
+<div class="table-scroll"><table><thead><tr><th>按钮 / 区域</th><th>实际作用</th><th>是否向服务发请求</th></tr></thead><tbody><tr><td>本地请求预览</td><td>显示变量替换后的方法、相对路径、Headers、Body；密钥显示掩码。真实连接地址需单独核对。</td><td>否。</td></tr><tr><td>响应示例与路径校验</td><td>用你粘贴的响应 JSON 检查路径是否能匹配结果。</td><td>否。</td></tr><tr><td>验证连接 / 拉取模型</td><td>检查服务连通性或获取模型列表。</td><td>是；不证明某个生成接口一定可用。</td></tr><tr><td>试跑</td><td>使用当前凭据和示例变量真实请求；异步接口继续轮询。</td><td><b>是，可能产生费用。</b></td></tr></tbody></table></div>
 <h3 id="protocol-test-run">试跑前后逐项检查</h3>
 <ol class="steps"><li>先修正<b>当前协议草稿</b>中的 JSON 和字段错误，包括表单里的 Header、Query、Body 子项；有错时试跑不可用，软件不会退回旧草稿替你执行。</li><li>填写真实基础地址与 API Key。<b>自动兼容</b>预设不走声明式协议，不能在此试跑；缺地址、缺密钥或当前草稿无效时，先处理按钮旁的提示。</li><li>在<b>示例变量 JSON</b>里填写真实模型 ID、短提示词、最小受支持时长 / 数量，以及服务能读取的参考素材。默认的 example 地址是占位值，不能用于真实参考图测试。</li><li>先看本地请求预览与响应路径匹配，再点一次<b>试跑</b>。它使用当前草稿、当前连接凭据与示例变量发送真实请求，可能计费；异步接口会继续轮询，下载模式还会取得文件，可点取消停止本地等待。</li><li>查看试跑详情，核对解析出的结果地址、文本、任务 ID；“调用成功，但没有解析出结果”不代表素材已交付。确认后保存厂商设置，再在实际节点中生成并验证文件可预览。</li></ol>
 <p class="small">试跑成功不会自动保存连接，也不会把示例提示词写入画布节点。配置预览、真实接口响应和最终媒体保存需要分别检查。</p>
@@ -904,14 +902,14 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书版本为 <b>0.10.6</b>，<b>2026-10-12</b> 按源码增量核对性能模式、文件重名保护、独立助手窗口与提示词编辑；同日核对 Skill 分页、推理展示、压缩状态和失败恢复；<b>2026-10-11</b> 按源码增量核对逐模型参数、CCC 整体删除、Skill 目录及画布缩放；<b>2026-10-10</b> 按源码增量核对节点发送快捷键、模型清除与素材引用；<b>2026-10-09</b> 增量核对 CCC 统一管理与自动匹配分组 Key；主体内容沿用 <b>2026-10-07</b> 的源码与可运行界面核对；<b>2026-10-08</b> 根据当前源码补充 AI 应用节点与 MCP 动作、图片反推成功后自动保存，以及资源库图片改名同步画布节点标题和已保存项目。原有说明包括自定义协议 JSON 变量插入与共用预览、视频预设、草稿试跑、异步完成后下载与模型更新。说明书版本不代表已发布安装包的版本；看不到入口时核对实际构建。操作说明以桌面版为主，Web 端主要用于演示。</p>
+<p>本说明书版本为 <b>0.10.7</b>，<b>2026-10-13</b> 按源码增量核对视频查询恢复、节点参数偏好、历史图片应用、快捷指令文件夹、统一输入与发送快捷键、启动页 MCP 项目控制及自定义接口编辑；<b>2026-10-12</b> 按源码增量核对性能模式、文件重名保护、独立助手窗口与提示词编辑；同日核对 Skill 分页、推理展示、压缩状态和失败恢复；<b>2026-10-11</b> 按源码增量核对逐模型参数、CCC 整体删除、Skill 目录及画布缩放；<b>2026-10-10</b> 按源码增量核对节点发送快捷键、模型清除与素材引用；<b>2026-10-09</b> 增量核对 CCC 统一管理与自动匹配分组 Key；主体内容沿用 <b>2026-10-07</b> 的源码与可运行界面核对；<b>2026-10-08</b> 根据当前源码补充 AI 应用节点与 MCP 动作、图片反推成功后自动保存，以及资源库图片改名同步画布节点标题和已保存项目。原有说明包括自定义协议 JSON 变量插入与共用预览、视频预设、草稿试跑、异步完成后下载与模型更新。说明书版本不代表已发布安装包的版本；看不到入口时核对实际构建。操作说明以桌面版为主，Web 端主要用于演示。</p>
 <p>本次发布同步检查文案、UTF-8 编码、内联脚本语法、内部链接与内嵌截图完整性；既有离线阅读交互记录不代表本次重新验收。未重新执行真实模型生成、资源库改名的桌面操作、文件移动 / 回收站、声音克隆、官方费用对账或桌面多窗口验收。内置工作流表示已有配置模板，不代表本机已安装依赖或所有声音效果已验收；本地费用核算不等于官方扣费。</p>
 <p>AI 应用节点当前为首版，只读绑定材料并保存自身状态；画布写入、结果节点及模型 / 文件编排仍待后续实现。已有 macOS 桌面核心验收记录，Windows / Linux 原生界面和真实外部 MCP 客户端联调仍待补充；本次说明书更新不扩大功能验收范围。</p>
 <p>共十一张内嵌截图：保留原有九张界面示意，新增当前构建的自定义视频协议 JSON 编辑器和批量反推窗口。新增截图只展示未保存的示例草稿与待执行队列，没有启动模型调用。旧截图来自此前构建，用于位置与空状态示意；按钮可用性仍取决于资料、分集和模型配置。</p>
 <p>内容依据当前版本的启动页、资源库、设置界面、应用帮助与相关操作实现核对。接口示例用于本地配置校验，<b>未调用真实厂商接口</b>；所有 example.com 地址与示例模型 ID 均为占位内容。按钮准备草稿、创建节点、实际模型生成和媒体保存是不同步骤，请按各章检查实际结果。</p>
 <p class="small">页面所需样式、脚本和十一张截图均在当前 HTML 内，无外部字体或 CDN 依赖。可直接双击离线打开；点击“返回软件首页”需同时保留 site 目录中的首页。打印按钮使用浏览器打印功能，可选择保存为 PDF。</p>
 </section>
-<footer>AI Canvas · 0.10.6 操作说明书 · 2026-10-12 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
+<footer>AI Canvas · 0.10.7 操作说明书 · 2026-10-13 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
 </main>
 <dialog id="zoom" aria-label="放大界面截图"><button class="action" id="zoom-close" type="button">关闭放大图（Esc）</button><div class="zoom-box"></div></dialog>
 <script>

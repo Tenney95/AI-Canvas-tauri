@@ -40,6 +40,137 @@
   --ui-pad: 12px;
 }
 
+/* AI 输入框 / 节点提示词与对话助手共用
+   ui-ai-input > ui-ai-input__body > ui-ai-input__editor
+               + ui-ai-input__footer > 模型入口 + ui-ai-input__tools
+   编辑器、模型及发送行为由宿主组件提供；这里只管理外观与布局。 */
+.ui-ai-input {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  container: ui-ai-input / inline-size;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-xl);
+  background:
+    var(--appearance-surface-image, none) padding-box,
+    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
+    var(--glass-bevel-border) border-box;
+  backdrop-filter: blur(var(--glass-blur-md));
+  box-shadow: var(--glass-shadow-panel);
+  transition: background var(--transition-base);
+}
+.ui-ai-input:not(:focus-within):has(.ui-ai-input__editor:hover) {
+  background:
+    linear-gradient(to bottom, var(--white-alpha-03), transparent) padding-box,
+    var(--appearance-surface-image, none) padding-box,
+    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
+    var(--glass-bevel-border) border-box;
+}
+.ui-ai-input:has(.ui-ai-input__editor:focus) {
+  background:
+    linear-gradient(to bottom, var(--brand-alpha-12), transparent) padding-box,
+    var(--appearance-surface-image, none) padding-box,
+    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
+    var(--glass-bevel-border) border-box;
+}
+.ui-ai-input__body { position: relative; min-width: 0; padding: 8px 8px 2px; }
+.ui-ai-input__editor-wrap { min-width: 0; }
+.ui-ai-input__editor {
+  display: block;
+  width: 100%;
+  min-height: 112px;
+  max-height: min(200px, 40vh);
+  overflow-y: auto;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  outline: none;
+  color: var(--theme-text);
+  caret-color: var(--brand);
+  font-family: inherit;
+  font-size: var(--ui-font-lg);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.ui-ai-input .ui-ai-input__editor:hover,
+.ui-ai-input .ui-ai-input__editor:focus { outline: none; background: transparent; }
+.ui-ai-input__editor.is-empty::before {
+  content: attr(data-placeholder);
+  display: block;
+  pointer-events: none;
+  color: var(--theme-text-muted);
+  white-space: pre-wrap;
+}
+.ui-ai-input__editor::placeholder { color: var(--theme-text-muted); opacity: 1; }
+.ui-ai-input__editor::selection { background: var(--brand-alpha-30); }
+.ui-ai-input__editor[aria-disabled='true'] { cursor: var(--cursor-not-allowed, not-allowed); opacity: 0.5; }
+.ui-ai-input__footer { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; padding: 2px 8px 4px; }
+.ui-ai-input__footer > .model-selector--pill { flex: 0 1 auto; min-width: 80px; max-width: 200px; }
+.ui-ai-input__tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 4px; min-width: 0; max-width: 100%; margin-left: auto; }
+.ui-ai-input__actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+/* prompt-btn 是既有节点选择器的兼容别名，基础定义仍只保留一处。 */
+.ui-ai-input__icon-btn,
+.prompt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: var(--cursor-pointer, pointer);
+  transition: color var(--transition-base), background var(--transition-base);
+}
+.ui-ai-input__icon-btn:hover:not(:disabled),
+.prompt-btn:hover { color: var(--theme-text); background: var(--theme-hover); }
+.ui-ai-input__icon-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.ui-ai-input__icon-btn.is-active { color: var(--brand-light); background: var(--brand-alpha-15); }
+.ui-ai-input__submit {
+  width: 30px;
+  height: 30px;
+  border: 2px solid var(--theme-text-secondary);
+  border-radius: 50%;
+  color: var(--theme-text);
+  background: var(--theme-hover);
+  background-clip: padding-box;
+}
+.ui-ai-input__submit:hover:not(:disabled) { color: var(--theme-text); background-color: var(--theme-card); background-clip: padding-box; }
+.ui-ai-input__submit:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
+.ui-ai-input__submit:disabled { color: var(--text-disabled); cursor: var(--cursor-not-allowed, not-allowed); }
+.ui-ai-input__submit:disabled:hover { color: var(--text-disabled); background: transparent; }
+.ui-ai-input__send-metal { flex: 0 0 30px; border-radius: 50%; background: var(--theme-hover); }
+.ui-ai-input__send-metal .ui-ai-input__submit { border-color: transparent; background: transparent; }
+[data-theme='light'] .ui-ai-input__send-metal .metal-fx-canvas { filter: saturate(0.2); }
+@container ui-ai-input (max-width: 560px) {
+  .ui-ai-input__footer { flex-wrap: wrap; }
+  .ui-ai-input__tools { flex: 1 1 100%; flex-wrap: wrap; }
+}
+/* 助手等固定单排入口：模型名称让出空间，操作按钮保持完整命中区。 */
+.ui-ai-input__footer.ui-ai-input__footer--single-row { flex-wrap: nowrap; }
+.ui-ai-input__footer--single-row > .model-selector--pill { flex: 0 1 200px; min-width: 0; flex-wrap: nowrap; }
+.ui-ai-input__footer--single-row > .model-selector--pill > .model-selector-trigger.prompt-btn { width: 100%; }
+.ui-ai-input__footer--single-row .ui-model-pill__label { flex: 1; }
+.ui-ai-input__footer--single-row > .ui-ai-input__tools { flex: 0 0 auto; flex-wrap: nowrap; }
+.ui-ai-input__shortcut-hint { flex-shrink: 0; white-space: nowrap; }
+@container ui-ai-input (max-width: 400px) {
+  .ui-ai-input__footer--single-row .ui-ai-input__shortcut-hint { display: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .ui-ai-input { background: var(--appearance-surface-image, none), var(--glass-bg); backdrop-filter: none; }
+  .ui-ai-input:not(:focus-within):has(.ui-ai-input__editor:hover),
+  .ui-ai-input:has(.ui-ai-input__editor:focus) { background: var(--appearance-surface-image, none), var(--glass-bg); }
+}
+@media (prefers-contrast: more) {
+  .ui-ai-input { border-color: var(--border-secondary); }
+}
+
 /* MarkdownEditor / 受控文档编辑器（资源与节点共用） */
 .ui-markdown-editor {
   display: flex;
@@ -113,10 +244,10 @@
   gap: 6px;
   height: var(--ui-control-h);
   padding: 0 12px;
-  border: 1px solid var(--white-alpha-08);
-  border-radius: var(--ui-radius-md);
-  background: var(--white-alpha-04);
-  color: var(--theme-text);
+  border: var(--button-border-width) solid var(--button-border);
+  border-radius: var(--button-radius);
+  background: var(--button-bg);
+  color: var(--button-text);
   font-family: inherit;
   font-size: var(--ui-font);
   font-weight: 500;
@@ -130,10 +261,10 @@
     color var(--transition-base),
     transform var(--transition-base);
 }
-.ui-btn:hover:not(:disabled):not(.is-active) {
-  background: var(--white-alpha-08);
-  border-color: var(--white-alpha-12);
-  color: var(--theme-text);
+.ui-btn:hover:where(:not(:disabled):not(.is-active)) {
+  background: var(--button-hover-bg);
+  border-color: var(--button-hover-border);
+  color: var(--button-text);
 }
 .ui-btn:active:not(:disabled) { transform: scale(0.97); }
 .ui-btn:focus-visible {
@@ -145,23 +276,25 @@
 .ui-btn:empty { padding: 0; width: var(--ui-control-h); }
 
 .ui-btn--primary {
-  background: var(--brand);
-  border-color: color-mix(in srgb, var(--brand) 80%, var(--theme-text));
-  color: #fff;
+  background: var(--button-primary-bg);
+  border-color: var(--button-primary-border);
+  color: var(--button-primary-text);
 }
-.ui-btn--primary:hover:not(:disabled) {
-  background: var(--brand-hover);
-  border-color: var(--brand-hover);
+.ui-btn--primary:hover:not(:disabled):not(.is-active) {
+  background: var(--button-primary-hover-bg);
+  border-color: var(--button-primary-hover-border);
+  color: var(--button-primary-text);
 }
 
 .ui-btn--secondary {
-  background: var(--theme-surface);
-  border-color: var(--theme-border);
-  color: var(--theme-text);
+  background: var(--button-secondary-bg);
+  border-color: var(--button-secondary-border);
+  color: var(--button-text);
 }
-.ui-btn--secondary:hover:not(:disabled) {
-  background: var(--theme-hover);
-  border-color: var(--border-secondary);
+.ui-btn--secondary:hover:not(:disabled):not(.is-active) {
+  background: var(--button-secondary-hover-bg);
+  border-color: var(--button-secondary-hover-border);
+  color: var(--button-text);
 }
 
 .ui-btn--ghost {
@@ -169,7 +302,7 @@
   border-color: transparent;
   color: var(--theme-text-secondary);
 }
-.ui-btn--ghost:hover:not(:disabled) {
+.ui-btn--ghost:hover:not(:disabled):not(.is-active) {
   background: var(--white-alpha-06);
   border-color: var(--white-alpha-10);
   color: var(--theme-text);
@@ -180,9 +313,10 @@
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger-light);
 }
-.ui-btn--danger:hover:not(:disabled) {
+.ui-btn--danger:hover:not(:disabled):not(.is-active) {
   background: color-mix(in srgb, var(--danger) 20%, transparent);
   border-color: var(--danger);
+  color: var(--danger-light);
 }
 
 /* 无边框的文字按钮，用于行内次要操作 */
@@ -195,6 +329,8 @@
 }
 .ui-btn--link:hover:not(:disabled) {
   color: var(--brand-pale);
+  background: transparent;
+  border-color: transparent;
   text-decoration: underline;
 }
 
@@ -202,7 +338,7 @@
   height: var(--ui-control-h-sm);
   padding: 0 8px;
   font-size: var(--ui-font-sm);
-  border-radius: var(--ui-radius-sm);
+  border-radius: var(--button-radius-sm);
 }
 .ui-btn--sm:empty { width: var(--ui-control-h-sm); }
 
@@ -210,7 +346,7 @@
   height: var(--ui-control-h-lg);
   padding: 0 18px;
   font-size: var(--ui-font-lg);
-  border-radius: var(--ui-radius-lg);
+  border-radius: var(--button-radius-lg);
 }
 .ui-btn--lg:empty { width: var(--ui-control-h-lg); }
 
@@ -410,14 +546,14 @@
 }
 .ui-btn-group > .ui-btn {
   border-radius: 0;
-  margin-left: -1px;
+  margin-left: calc(-1 * var(--button-border-width));
 }
 .ui-btn-group > .ui-btn:first-child {
   margin-left: 0;
-  border-radius: var(--ui-radius-md) 0 0 var(--ui-radius-md);
+  border-radius: var(--button-radius) 0 0 var(--button-radius);
 }
 .ui-btn-group > .ui-btn:last-child {
-  border-radius: 0 var(--ui-radius-md) var(--ui-radius-md) 0;
+  border-radius: 0 var(--button-radius) var(--button-radius) 0;
 }
 
 /* 加载态：文字前转圈（配合 .ui-spinner 使用） */
@@ -2168,6 +2304,9 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
    Reduced Motion / 尊重系统「减少动效」
    ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
+  .ui-ai-input,
+  .ui-ai-input__icon-btn,
+  .prompt-btn,
   .ui-btn,
   .ui-icon-btn,
   .ui-close-btn,

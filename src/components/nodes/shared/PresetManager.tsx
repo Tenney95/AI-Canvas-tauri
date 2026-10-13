@@ -7,6 +7,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
+import { Icon } from '@iconify/react';
 import { useAppStore } from '../../../store/useAppStore';
 import { generateId } from '../../../store/store.utils';
 import type {
@@ -24,10 +25,12 @@ import {
 } from '../../../types';
 import AnimatedButton from '../../shared/AnimatedButton';
 import PopupCloseButton from '../../shared/PopupCloseButton';
+import Select from '../../shared/Select';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 import PresetAdvancedEditor from './PresetAdvancedEditor';
 import { validatePresetAdvancedConfig } from '../../../services/presetTemplateService';
+import { groupPresetsByFolder, resolvePresetFolderId, UNGROUPED_PRESET_FOLDER_ID } from '../../../utils/presetFolders';
 
 const PLACEHOLDER_MARKER = '\u200B'; // zero-width space as placeholder pill
 
@@ -128,26 +131,40 @@ export default function PresetManager() {
   // 只订阅用到的字段：面板常驻在节点对话框内，避免被无关的 store 变更带着重渲染
   const {
     userPresets,
+    presetFolders,
     presetManagerOpen,
     setPresetManagerOpen,
     addUserPreset,
     updateUserPreset,
     deleteUserPreset,
+    addPresetFolder,
+    renamePresetFolder,
+    deletePresetFolder,
     showToast,
   } = useAppStore(
     useShallow((s) => ({
       userPresets: s.userPresets,
+      presetFolders: s.presetFolders,
       presetManagerOpen: s.presetManagerOpen,
       setPresetManagerOpen: s.setPresetManagerOpen,
       addUserPreset: s.addUserPreset,
       updateUserPreset: s.updateUserPreset,
       deleteUserPreset: s.deleteUserPreset,
+      addPresetFolder: s.addPresetFolder,
+      renamePresetFolder: s.renamePresetFolder,
+      deletePresetFolder: s.deletePresetFolder,
       showToast: s.showToast,
     })),
   );
 
   const [activeTab, setActiveTab] = useState<PresetNodeType>('ai-text');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [activeFolderId, setActiveFolderId] = useState(UNGROUPED_PRESET_FOLDER_ID);
+  const [folderId, setFolderId] = useState('');
+  const [folderEditor, setFolderEditor] = useState<{ id?: string; name: string } | null>(null);
+  const [folderToDelete, setFolderToDelete] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [folderBusy, setFolderBusy] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [template, setTemplate] = useState('');
@@ -167,6 +184,7 @@ export default function PresetManager() {
   const [sizeOverrideActive, setSizeOverrideActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  const loadedPresetRef = useRef<UserPreset | null>(null);
   // 判断当前标签是否支持尺寸选择
   const showSizeSelector = activeTab === 'ai-image';
 
@@ -174,6 +192,8 @@ export default function PresetManager() {
     () => userPresets.filter((p) => p.nodeType === activeTab),
     [activeTab, userPresets],
   );
+  const folderGroups = useMemo(() => groupPresetsByFolder(activeTab, userPresets, presetFolders), [activeTab, userPresets, presetFolders]);
+  const selectedPreset = userPresets.find((preset) => preset.id === selectedId && preset.nodeType === activeTab);
 
   // 高级模式的结构错误实时算，编辑器里已经列出来了，这里只用来锁保存
   const advancedError = useMemo(
@@ -183,13 +203,20 @@ export default function PresetManager() {
 
   // Load selected preset
   useEffect(() => {
-    if (!presetManagerOpen) return;
+    if (!presetManagerOpen) {
+      loadedPresetRef.current = null;
+      return;
+    }
 
+    let cancelled = false;
     queueMicrotask(() => {
+      if (cancelled) return;
       if (!selectedId) {
+        loadedPresetRef.current = null;
         setName('');
         setDescription('');
         setTemplate('');
+        setFolderId('');
         setTriggerMode('direct');
         setPresetMode('basic');
         setAdvancedConfig(createDefaultAdvancedConfig(activeTab));
@@ -203,11 +230,20 @@ export default function PresetManager() {
         if (editorRef.current) editorRef.current.innerHTML = '';
         return;
       }
-      const preset = userPresets.find((p) => p.id === selectedId);
+      const preset = selectedPreset;
       if (preset) {
+        const previous = loadedPresetRef.current;
+        loadedPresetRef.current = preset;
+        // 分类变化不重载正文，保留尚未保存的名称、模板和模型草稿。
+        const keys = Object.keys({ ...previous, ...preset }) as Array<keyof UserPreset>;
+        if (previous && keys.every((key) => key === 'folderId' || previous[key] === preset[key])) {
+          setFolderId((current) => resolvePresetFolderId({ nodeType: activeTab, folderId: current }, presetFolders) || '');
+          return;
+        }
         setName(preset.name);
         setDescription(preset.description);
         setTemplate(preset.promptTemplate);
+        setFolderId(preset.folderId || '');
         setTriggerMode(preset.triggerMode);
         setPresetMode(preset.mode === 'advanced' ? 'advanced' : 'basic');
         setAdvancedConfig(preset.advanced ?? createDefaultAdvancedConfig(preset.nodeType));
@@ -223,15 +259,30 @@ export default function PresetManager() {
         }
       }
     });
-  }, [activeTab, presetManagerOpen, selectedId, userPresets]);
+    return () => { cancelled = true; };
+  }, [activeTab, presetManagerOpen, selectedId, selectedPreset, presetFolders]);
 
   // When switching tabs, select first preset
   useEffect(() => {
+    if (selectedId && filteredPresets.some((preset) => preset.id === selectedId)) return;
     const first = filteredPresets[0];
-    queueMicrotask(() => setSelectedId(first?.id ?? null));
-  }, [activeTab, filteredPresets]);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSelectedId(first?.id ?? null);
+      setActiveFolderId(first?.folderId || UNGROUPED_PRESET_FOLDER_ID);
+    });
+    return () => { cancelled = true; };
+  }, [activeTab, filteredPresets, selectedId]);
 
-  const handleNew = useCallback(() => {
+  useEffect(() => {
+    if (folderGroups.some((group) => group.id === activeFolderId)) return;
+    queueMicrotask(() => setActiveFolderId(UNGROUPED_PRESET_FOLDER_ID));
+  }, [activeFolderId, folderGroups]);
+
+  const handleNew = useCallback(async () => {
+    if (saving || folderBusy) return;
+    setSaving(true);
     const newId = generateId();
     const newPreset: UserPreset = {
       id: newId,
@@ -241,28 +292,38 @@ export default function PresetManager() {
       promptTemplate: '',
       triggerMode: 'direct',
       mode: 'basic',
+      folderId: activeFolderId === UNGROUPED_PRESET_FOLDER_ID ? undefined : activeFolderId,
       advanced: createDefaultAdvancedConfig(activeTab),
     };
-    addUserPreset(newPreset);
-    setSelectedId(newId);
-  }, [activeTab, addUserPreset]);
+    try {
+      await addUserPreset(newPreset);
+      setSelectedId(newId);
+    } catch (error) { showToast(error instanceof Error ? error.message : '新建快捷指令失败', 'error'); }
+    finally { setSaving(false); }
+  }, [activeTab, activeFolderId, addUserPreset, saving, folderBusy, showToast]);
 
   const handleDelete = useCallback(
-    (id: string) => {
-      deleteUserPreset(id);
-      if (selectedId === id) {
-        const remaining = userPresets.filter(
-          (p) => p.id !== id && p.nodeType === activeTab,
-        );
-        setSelectedId(remaining[0]?.id ?? null);
-      }
-      showToast('快捷指令已删除');
+    async (id: string) => {
+      if (saving || folderBusy) return;
+      setSaving(true);
+      try {
+        await deleteUserPreset(id);
+        if (selectedId === id) {
+          const remaining = userPresets.filter(
+            (p) => p.id !== id && p.nodeType === activeTab,
+          );
+          setSelectedId(remaining[0]?.id ?? null);
+          setActiveFolderId(remaining[0]?.folderId || UNGROUPED_PRESET_FOLDER_ID);
+        }
+        showToast('快捷指令已删除');
+      } catch (error) { showToast(error instanceof Error ? error.message : '删除快捷指令失败', 'error'); }
+      finally { setSaving(false); }
     },
-    [deleteUserPreset, selectedId, userPresets, activeTab, showToast],
+    [deleteUserPreset, selectedId, userPresets, activeTab, showToast, saving, folderBusy],
   );
 
-  const handleSave = useCallback(() => {
-    if (!selectedId || !name.trim()) return;
+  const handleSave = useCallback(async () => {
+    if (!selectedId || !name.trim() || saving || folderBusy) return;
     if (presetMode === 'advanced') {
       const advancedErrors = validatePresetAdvancedConfig(advancedConfig);
       if (advancedErrors[0]) {
@@ -273,21 +334,55 @@ export default function PresetManager() {
     const templateFromEditor = presetMode === 'basic' && editorRef.current
       ? serializePresetEditor(editorRef.current)
       : template;
-    updateUserPreset(selectedId, {
-      name: name.trim(),
-      description: description.trim(),
-      promptTemplate: templateFromEditor,
-      triggerMode,
-      thumbnail,
-      model: modelOverrideActive ? (presetModel || undefined) : undefined,
-      provider: modelOverrideActive ? (presetProvider || undefined) : undefined,
-      imageSize: sizeOverrideActive ? (presetImageSize || undefined) : undefined,
-      aspectRatio: sizeOverrideActive ? (presetAspectRatio || undefined) : undefined,
-      mode: presetMode,
-      advanced: advancedConfig,
-    });
-    showToast('快捷指令已保存');
-  }, [selectedId, name, description, template, triggerMode, thumbnail, presetModel, presetProvider, presetImageSize, presetAspectRatio, modelOverrideActive, sizeOverrideActive, presetMode, advancedConfig, updateUserPreset, showToast]);
+    setSaving(true);
+    try {
+      const savedFolderId = resolvePresetFolderId({ nodeType: activeTab, folderId: folderId || undefined }, presetFolders);
+      await updateUserPreset(selectedId, {
+        name: name.trim(),
+        description: description.trim(),
+        promptTemplate: templateFromEditor,
+        triggerMode,
+        folderId: savedFolderId,
+        thumbnail,
+        model: modelOverrideActive ? (presetModel || undefined) : undefined,
+        provider: modelOverrideActive ? (presetProvider || undefined) : undefined,
+        imageSize: sizeOverrideActive ? (presetImageSize || undefined) : undefined,
+        aspectRatio: sizeOverrideActive ? (presetAspectRatio || undefined) : undefined,
+        mode: presetMode,
+        advanced: advancedConfig,
+      });
+      showToast('快捷指令已保存');
+      setActiveFolderId(savedFolderId || UNGROUPED_PRESET_FOLDER_ID);
+    } catch (error) { showToast(error instanceof Error ? error.message : '保存失败，编辑内容已保留', 'error'); }
+    finally { setSaving(false); }
+  }, [selectedId, name, description, template, triggerMode, folderId, activeTab, presetFolders, thumbnail, presetModel, presetProvider, presetImageSize, presetAspectRatio, modelOverrideActive, sizeOverrideActive, presetMode, advancedConfig, updateUserPreset, showToast, saving, folderBusy]);
+
+  const handleFolderSave = async () => {
+    if (!folderEditor || folderBusy || saving) return;
+    setFolderBusy(true);
+    try {
+      if (folderEditor.id) await renamePresetFolder(folderEditor.id, folderEditor.name);
+      else {
+        const folder = await addPresetFolder(activeTab, folderEditor.name);
+        setActiveFolderId(folder.id);
+      }
+      setFolderEditor(null);
+    } catch (error) { showToast(error instanceof Error ? error.message : '文件夹保存失败', 'error'); }
+    finally { setFolderBusy(false); }
+  };
+
+  const handleFolderDelete = async () => {
+    if (!folderToDelete || folderBusy || saving) return;
+    setFolderBusy(true);
+    try {
+      await deletePresetFolder(folderToDelete);
+      if (folderId === folderToDelete) setFolderId('');
+      setActiveFolderId(UNGROUPED_PRESET_FOLDER_ID);
+      setFolderToDelete(null);
+      showToast('文件夹已移除，快捷指令保留并直接显示');
+    } catch (error) { showToast(error instanceof Error ? error.message : '移除文件夹失败', 'error'); }
+    finally { setFolderBusy(false); }
+  };
 
   const handlePresetModeChange = useCallback((mode: UserPresetMode) => {
     setPresetMode(mode);
@@ -406,7 +501,8 @@ export default function PresetManager() {
               className={`preset-manager-tab${activeTab === nt ? ' is-active' : ''}`}
               role="tab"
               aria-selected={activeTab === nt}
-              onClick={() => setActiveTab(nt)}
+              disabled={saving || folderBusy}
+              onClick={() => { setActiveTab(nt); setFolderEditor(null); setFolderToDelete(null); }}
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
             >
@@ -456,73 +552,131 @@ export default function PresetManager() {
         {/* Body: sidebar + detail */}
         <div className="preset-manager-shell">
           <div className="preset-manager-sidebar">
-            <AnimatedButton type="button" className="preset-manager-new-btn" onClick={handleNew}>
+            <AnimatedButton type="button" className="preset-manager-new-btn" onClick={handleNew} disabled={saving || folderBusy}>
               新建
             </AnimatedButton>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--block" disabled={saving || folderBusy}
+              onClick={() => { setFolderToDelete(null); setFolderEditor({ name: '' }); }}>
+              <Icon icon="mdi:folder-plus-outline" width={16} /> 新建文件夹
+            </button>
+            {folderEditor && <form className="space-y-2 rounded border border-canvas-border p-2" onSubmit={(event) => { event.preventDefault(); void handleFolderSave(); }}>
+              <input className="ui-input ui-input--sm w-full" aria-label="文件夹名称" placeholder="文件夹名称" maxLength={80}
+                autoFocus value={folderEditor.name} disabled={saving || folderBusy}
+                onChange={(event) => setFolderEditor({ ...folderEditor, name: event.target.value })} />
+              <div className="flex justify-end gap-1">
+                <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={saving || folderBusy} onClick={() => setFolderEditor(null)}>取消</button>
+                <button type="submit" className="ui-btn ui-btn--primary ui-btn--sm" disabled={saving || folderBusy || !folderEditor.name.trim()}>保存</button>
+              </div>
+            </form>}
+            {folderToDelete && <div className="space-y-2 rounded border border-canvas-border p-2" role="group" aria-label="移除文件夹确认">
+              <p className="m-0 text-xs text-canvas-text-secondary">移除文件夹后，指令会直接显示，内容保留。</p>
+              <div className="flex justify-end gap-1">
+                <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={saving || folderBusy} onClick={() => setFolderToDelete(null)}>取消</button>
+                <button type="button" className="ui-btn ui-btn--danger ui-btn--sm" disabled={saving || folderBusy} onClick={handleFolderDelete}>移除</button>
+              </div>
+            </div>}
             <div className="preset-manager-list">
-              {filteredPresets.map((preset) => (
-                <div
-                  key={preset.id}
-                  role="button"
-                  tabIndex={0}
-                  className={`preset-manager-list-item${selectedId === preset.id ? ' is-active' : ''}`}
-                  onClick={() => setSelectedId(preset.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') setSelectedId(preset.id);
-                  }}
-                >
-                  <label
-                    className="preset-manager-list-thumb"
-                    data-tooltip="上传缩略图"
-                    data-tooltip-source="native-title"
-                    data-native-title="上传缩略图"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {preset.thumbnail ? (
-                      <img
-                        className="preset-manager-list-thumb-img"
-                        src={preset.thumbnail}
-                        alt=""
-                      />
-                    ) : (
-                      <span className="preset-manager-list-thumb-plus">+</span>
-                    )}
-                    <input
-                      className="preset-manager-thumb-input"
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => {
-                        if (selectedId === preset.id) {
-                          handleThumbnailUpload(e);
-                        } else {
-                          // If another preset is selected, select this one first then upload
-                          setSelectedId(preset.id);
-                          // Need to defer the upload since setSelectedId is async
-                          setTimeout(() => handleThumbnailUpload(e), 0);
-                        }
-                      }}
-                      ref={selectedId === preset.id ? fileInputRef : undefined}
-                    />
-                  </label>
-                  <span className="preset-manager-list-text">
-                    <span className="preset-manager-list-title">{preset.name}</span>
-                    <span className="preset-manager-list-desc">
-                      {preset.description || '输入说明与提示词模板'}
-                    </span>
-                  </span>
-                  <AnimatedButton
-                    type="button"
-                    className="preset-manager-list-delete"
-                    aria-label={`删除 ${preset.name}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(preset.id);
-                    }}
-                  >
-                    ×
-                  </AnimatedButton>
-                </div>
-              ))}
+              {folderGroups.map((group) => {
+                const isUngrouped = group.id === UNGROUPED_PRESET_FOLDER_ID;
+                if (isUngrouped && group.presets.length === 0) return null;
+                return (
+                  <section key={group.id} className="min-w-0">
+                    {!isUngrouped && <div className="flex items-center gap-1">
+                      <button type="button" className={`ui-menu__item min-w-0 flex-1${activeFolderId === group.id ? ' is-active' : ''}`}
+                        aria-expanded={activeFolderId === group.id} disabled={saving || folderBusy}
+                        onClick={() => setActiveFolderId(group.id)}>
+                        <Icon icon={activeFolderId === group.id ? 'mdi:folder-open-outline' : 'mdi:folder-outline'} width={16} className="shrink-0" />
+                        <span className="min-w-0 flex-1 truncate" title={group.name}>{group.name}</span>
+                        <span className="ui-menu__shortcut">{group.presets.length}</span>
+                      </button>
+                        <button type="button" className="ui-icon-btn ui-icon-btn--sm ui-icon-btn--ghost" aria-label={`重命名文件夹 ${group.name}`}
+                          disabled={saving || folderBusy} onClick={() => { setFolderToDelete(null); setFolderEditor({ id: group.id, name: group.name }); }}>
+                          <Icon icon="mdi:pencil-outline" width={14} />
+                        </button>
+                        <button type="button" className="ui-icon-btn ui-icon-btn--sm ui-icon-btn--ghost ui-icon-btn--danger" aria-label={`移除文件夹 ${group.name}`}
+                          disabled={saving || folderBusy} onClick={() => { setFolderEditor(null); setFolderToDelete(group.id); }}>
+                          <Icon icon="mdi:folder-remove-outline" width={14} />
+                        </button>
+                    </div>}
+                    {(isUngrouped || activeFolderId === group.id) && <div className={isUngrouped ? undefined : 'ml-2 border-l border-canvas-border pl-1'}>
+                      {group.presets.map((preset) => (
+                        <div
+                          key={preset.id}
+                          role="button"
+                          tabIndex={0}
+                          className={`preset-manager-list-item${selectedId === preset.id ? ' is-active' : ''}`}
+                          title={preset.description || preset.name}
+                          aria-disabled={saving || folderBusy}
+                          onClick={() => {
+                            if (saving || folderBusy) return;
+                            setSelectedId(preset.id);
+                            setActiveFolderId(group.id);
+                          }}
+                          onKeyDown={(e) => {
+                            if (!saving && !folderBusy && (e.key === 'Enter' || e.key === ' ')) {
+                              e.preventDefault();
+                              setSelectedId(preset.id);
+                              setActiveFolderId(group.id);
+                            }
+                          }}
+                        >
+                          <label
+                            className="preset-manager-list-thumb"
+                            data-tooltip="上传缩略图"
+                            data-tooltip-source="native-title"
+                            data-native-title="上传缩略图"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {preset.thumbnail ? (
+                              <img
+                                className="preset-manager-list-thumb-img"
+                                src={preset.thumbnail}
+                                alt=""
+                              />
+                            ) : (
+                              <span className="preset-manager-list-thumb-plus">+</span>
+                            )}
+                            <input
+                              className="preset-manager-thumb-input"
+                              type="file"
+                              accept="image/*"
+                              disabled={saving || folderBusy}
+                              onChange={(e) => {
+                                setActiveFolderId(group.id);
+                                if (selectedId === preset.id) {
+                                  handleThumbnailUpload(e);
+                                } else {
+                                  // If another preset is selected, select this one first then upload
+                                  setSelectedId(preset.id);
+                                  // Need to defer the upload since setSelectedId is async
+                                  setTimeout(() => handleThumbnailUpload(e), 0);
+                                }
+                              }}
+                              ref={selectedId === preset.id ? fileInputRef : undefined}
+                            />
+                          </label>
+                          <span className="preset-manager-list-text">
+                            <span className="preset-manager-list-title">{preset.name}</span>
+                          </span>
+                          <AnimatedButton
+                            type="button"
+                            className="preset-manager-list-delete"
+                            disabled={saving || folderBusy}
+                            aria-label={`删除 ${preset.name}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDelete(preset.id);
+                            }}
+                          >
+                            ×
+                          </AnimatedButton>
+                        </div>
+                      ))}
+                      {group.presets.length === 0 && <div className="p-2 text-xs text-canvas-text-muted">此文件夹暂无快捷指令</div>}
+                    </div>}
+                  </section>
+                );
+              })}
               {filteredPresets.length === 0 && (
                 <div className="preset-manager-list-empty">
                   暂无快捷指令，点击「新建」创建
@@ -534,7 +688,7 @@ export default function PresetManager() {
           {/* Detail pane */}
           <div className="preset-manager-detail-pane">
             {selectedId ? (
-              <div className="preset-manager-detail">
+              <fieldset className="preset-manager-detail m-0 min-w-0 border-0 p-0" disabled={saving || folderBusy}>
                 <label className="preset-manager-field">
                   <span className="preset-manager-label">名字</span>
                   <input
@@ -545,6 +699,13 @@ export default function PresetManager() {
                     onChange={(e) => setName(e.target.value)}
                   />
                 </label>
+                {folderGroups.length > 1 && <label className="preset-manager-field">
+                  <span className="preset-manager-label">所属文件夹</span>
+                  <Select fixedMenu className="w-full" value={folderId} onChange={setFolderId}>
+                    <option value="">无文件夹</option>
+                    {presetFolders.filter((folder) => folder.nodeType === activeTab).map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                  </Select>
+                </label>}
                 <label className="preset-manager-field">
                   <span className="preset-manager-label">说明</span>
                   <input
@@ -599,7 +760,7 @@ export default function PresetManager() {
                   <div
                     ref={editorRef}
                     className="preset-manager-textarea preset-manager-editor"
-                    contentEditable
+                    contentEditable={!saving && !folderBusy}
                     suppressContentEditableWarning
                     spellCheck={false}
                     onInput={handleEditorInput}
@@ -696,7 +857,7 @@ export default function PresetManager() {
                     onChange={setAdvancedConfig}
                   />
                 )}
-              </div>
+              </fieldset>
             ) : (
               <div className="preset-manager-detail-empty">
                 选择一个快捷指令或新建一个
@@ -715,6 +876,7 @@ export default function PresetManager() {
                 className={`preset-manager-trigger-mode${triggerMode === 'direct' ? ' is-active' : ''}`}
                 data-trigger-mode="direct"
                 aria-pressed={triggerMode === 'direct'}
+                disabled={saving || folderBusy}
                 onClick={() => setTriggerMode('direct')}
               >
                 直接触发
@@ -724,6 +886,7 @@ export default function PresetManager() {
                 className={`preset-manager-trigger-mode${triggerMode === 'insertPrompt' ? ' is-active' : ''}`}
                 data-trigger-mode="insertPrompt"
                 aria-pressed={triggerMode === 'insertPrompt'}
+                disabled={saving || folderBusy}
                 onClick={() => setTriggerMode('insertPrompt')}
               >
                 加入提示词
@@ -739,7 +902,7 @@ export default function PresetManager() {
             type="button"
             className="preset-modal-btn-primary"
             onClick={handleSave}
-            disabled={!!advancedError}
+            disabled={saving || folderBusy || !selectedId || !name.trim() || !!advancedError}
             title={advancedError}
           >
             保存

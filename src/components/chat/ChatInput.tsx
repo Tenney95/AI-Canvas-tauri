@@ -3,18 +3,19 @@
  *
  * 常驻对话模型选择器；媒体模型通过轻量 @model mention 按轮覆盖。
  */
-import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { lazy, Suspense, useRef, useEffect, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import AnimatedButton from '../shared/AnimatedButton';
+import LazyLoadBoundary from '../shared/LazyLoadBoundary';
+import SendShortcutMenu from '../shared/SendShortcutMenu';
 import ModelSelector from '../nodes/shared/ModelSelector';
 import ContextUsageIndicator from './ContextUsageIndicator';
 import ChatComposerEditor, { type ChatComposerEditorHandle } from './ChatComposerEditor';
 import MentionPicker, { type MentionPickerItem } from '../shared/MentionPicker';
 import { resolveDramaMentionItems } from '../nodes/shared/mentionEditorSources';
 import { bestNodeThumb } from '../nodes/shared/mentionEditorDom';
-import type { BaseNodeData, GeneralModelConfig, ModelGroup, ModelOption } from '../../types';
+import type { BaseNodeData, GeneralModelConfig, ModelGroup, ModelOption, PromptSubmitShortcut } from '../../types';
 import type { SkillPickerOption } from '../../types/agentPackage';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
@@ -24,6 +25,17 @@ import {
   type MediaModelOption,
 } from '../nodes/shared/defaultModels';
 import type { LocalFileGrantSummary } from '../../services/chat/fileGrantService';
+import { getPerformanceModeEnabled, subscribePerformanceMode } from '../../services/performanceModeRuntime';
+import { getPromptSubmitShortcutHint, PROMPT_SUBMIT_SHORTCUT_OPTIONS } from '../../utils/promptSubmitShortcut';
+
+const MetalFx = lazy(() => import('../nodes/shared/PolishMetalFx'));
+// 独立窗口的外观由窗口运行时投影到 DOM，不从本窗口默认 Store 配置推断。
+const getInputTheme = (): 'dark' | 'light' => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+function subscribeInputTheme(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  return () => observer.disconnect();
+}
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 type ReferenceScope = 'all' | 'nodes' | 'models' | 'assets';
@@ -156,6 +168,9 @@ interface ChatInputProps {
   inputValue: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
+  submitShortcut?: PromptSubmitShortcut;
+  onSubmitShortcutChange?: (value: PromptSubmitShortcut) => void;
+  shortcutSettingsDisabled?: boolean;
   hasActiveTask?: boolean;
   onInterject?: () => void;
   localFileGrants?: LocalFileGrantSummary[];
@@ -180,6 +195,9 @@ export default function ChatInput({
   inputValue,
   onInputChange,
   onSend,
+  submitShortcut = 'enter',
+  onSubmitShortcutChange,
+  shortcutSettingsDisabled = false,
   hasActiveTask = false,
   onInterject,
   localFileGrants = [],
@@ -193,6 +211,11 @@ export default function ChatInput({
   const t = useT();
   const inputRef = useRef<ChatComposerEditorHandle>(null);
   const reduceMotion = useReducedMotion();
+  const performanceMode = useSyncExternalStore(subscribePerformanceMode, getPerformanceModeEnabled, getPerformanceModeEnabled);
+  const appearanceMode = useSyncExternalStore(subscribeInputTheme, getInputTheme, getInputTheme);
+  const [shortcutMenuAnchor, setShortcutMenuAnchor] = useState<HTMLElement | null>(null);
+  const closeShortcutMenu = useCallback(() => setShortcutMenuAnchor(null), []);
+  const shortcutLabel = PROMPT_SUBMIT_SHORTCUT_OPTIONS.find((option) => option.value === submitShortcut)?.label;
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
   const [pickerTab, setPickerTab] = useState<PickerTab>('nodes');
@@ -566,73 +589,82 @@ export default function ChatInput({
     return () => window.removeEventListener('chat-open-reference-menu', openModelReferences);
   }, []);
 
+  const sendDisabled = !inputValue.trim() || disabled;
+  const sendButton = (
+    <button type="button" disabled={sendDisabled} onClick={onSend}
+      className="ui-ai-input__icon-btn ui-ai-input__submit chat-panel-send-btn"
+      aria-haspopup="menu" aria-expanded={!!shortcutMenuAnchor}
+      aria-label={hasActiveTask ? t('将消息加入队列') : t('发送消息')}
+      title={`${hasActiveTask ? t('当前任务完成后发送') : t('发送消息')} · ${t('右键设置发送快捷键')}`}>
+      <Icon icon={hasActiveTask ? 'mdi:playlist-plus' : 'lucide:arrow-up'} width={16} height={16} aria-hidden="true" />
+    </button>
+  );
+
   return (
     <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2">
-      <div
-        className="chat-panel-input-box relative flex flex-col bg-canvas-card border border-canvas-border
-                    rounded-[14px] transition-[border-color,box-shadow] duration-200
-                    focus-within:border-brand-light focus-within:ring-2 focus-within:ring-brand/15
-                    px-1.5 py-1.5"
-      >
-        {localFileGrants.length > 0 && (
-          <div className="mb-2 flex max-h-16 flex-wrap gap-1.5 overflow-y-auto">
-            {localFileGrants.map((grant) => (
-              <span
-                key={grant.id}
-                title={`${grant.displayName} · ${Math.ceil(grant.size / 1024)} KB`}
-                className="inline-flex items-center gap-1 rounded-full border border-canvas-border/60
-                           bg-canvas-hover/70 py-1 pl-2.5 pr-1 text-[11px] leading-none text-canvas-text-secondary"
-              >
-                <Icon icon="mdi:file-document-outline" width="12" className="shrink-0 text-canvas-text-muted/80" />
-                <span className="max-w-[100px] truncate">{grant.displayName}</span>
-                {onRevokeLocalFile && (
-                  <button
-                    type="button"
-                    aria-label={t('撤销 {name} 的读取授权', { name: grant.displayName })}
-                    onClick={() => onRevokeLocalFile(grant.id)}
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-canvas-text-muted transition-colors
-                               hover:bg-red-500/15 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
-                  >
-                    <Icon icon="mdi:close" width="11" />
-                  </button>
-                )}
-              </span>
-            ))}
-          </div>
-        )}
-        <ChatComposerEditor
-          ref={inputRef}
-          value={inputValue}
-          onChange={onInputChange}
-          onSubmit={onSend}
-          nodeDisplayIds={nodeDisplayIds}
-          onMentionQueryChange={(query) => {
-            setModelMenuOpen(query != null);
-            setActiveSuggestionIndex(0);
-            const parsedQuery = parseReferenceQuery(query ?? '');
-            // @n / @a / @m 直接落到对应 Tab；关闭时归位到「节点」
-            if (query == null || parsedQuery.scope === 'nodes') setPickerTab('nodes');
-            else if (parsedQuery.scope === 'assets') setPickerTab('assets');
-            else if (parsedQuery.scope === 'models') setPickerTab('models');
-            if (query == null) { setMediaKind('all'); setAssetKind('all'); }
-            setModelQuery(parsedQuery.query);
-            if (query != null) setSkillMenuOpen(false);
-          }}
-          onSlashQueryChange={(query) => {
-            setSkillMenuOpen(query != null);
-            setActiveSuggestionIndex(0);
-            setSkillQuery(query ?? '');
-            if (query != null) setModelMenuOpen(false);
-          }}
-          onSuggestionKeyDown={handleSuggestionKeyDown}
-          suggestionListId={modelMenuOpen ? REFERENCE_SUGGESTION_LIST_ID : SKILL_SUGGESTION_LIST_ID}
-          activeSuggestionId={activeSuggestionId}
-          suggestionsOpen={modelMenuOpen || skillMenuOpen}
-          placeholder={t('输入消息，@n 节点 · @a 资产 · @m 模型 · / 调用 Skill')}
-          disabled={disabled}
-        />
+      <div className="ui-ai-input chat-panel-input-box">
+        <div className="ui-ai-input__body">
+          {localFileGrants.length > 0 && (
+            <div className="mb-2 flex max-h-16 flex-wrap gap-1.5 overflow-y-auto">
+              {localFileGrants.map((grant) => (
+                <span
+                  key={grant.id}
+                  title={`${grant.displayName} · ${Math.ceil(grant.size / 1024)} KB`}
+                  className="inline-flex items-center gap-1 rounded-full border border-canvas-border/60
+                             bg-canvas-hover/70 py-1 pl-2.5 pr-1 text-[11px] leading-none text-canvas-text-secondary"
+                >
+                  <Icon icon="mdi:file-document-outline" width="12" className="shrink-0 text-canvas-text-muted/80" />
+                  <span className="max-w-[100px] truncate">{grant.displayName}</span>
+                  {onRevokeLocalFile && (
+                    <button
+                      type="button"
+                      aria-label={t('撤销 {name} 的读取授权', { name: grant.displayName })}
+                      onClick={() => onRevokeLocalFile(grant.id)}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-canvas-text-muted transition-colors
+                                 hover:bg-red-500/15 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
+                    >
+                      <Icon icon="mdi:close" width="11" />
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+          <ChatComposerEditor
+            ref={inputRef}
+            value={inputValue}
+            onChange={onInputChange}
+            onSubmit={onSend}
+            submitShortcut={submitShortcut}
+            nodeDisplayIds={nodeDisplayIds}
+            onMentionQueryChange={(query) => {
+              setModelMenuOpen(query != null);
+              setActiveSuggestionIndex(0);
+              const parsedQuery = parseReferenceQuery(query ?? '');
+              // @n / @a / @m 直接落到对应 Tab；关闭时归位到「节点」
+              if (query == null || parsedQuery.scope === 'nodes') setPickerTab('nodes');
+              else if (parsedQuery.scope === 'assets') setPickerTab('assets');
+              else if (parsedQuery.scope === 'models') setPickerTab('models');
+              if (query == null) { setMediaKind('all'); setAssetKind('all'); }
+              setModelQuery(parsedQuery.query);
+              if (query != null) setSkillMenuOpen(false);
+            }}
+            onSlashQueryChange={(query) => {
+              setSkillMenuOpen(query != null);
+              setActiveSuggestionIndex(0);
+              setSkillQuery(query ?? '');
+              if (query != null) setModelMenuOpen(false);
+            }}
+            onSuggestionKeyDown={handleSuggestionKeyDown}
+            suggestionListId={modelMenuOpen ? REFERENCE_SUGGESTION_LIST_ID : SKILL_SUGGESTION_LIST_ID}
+            activeSuggestionId={activeSuggestionId}
+            suggestionsOpen={modelMenuOpen || skillMenuOpen}
+            placeholder={`${t('输入消息，@n 节点 · @a 资产 · @m 模型 · / 调用 Skill')}\n${getPromptSubmitShortcutHint(submitShortcut)}`}
+            disabled={disabled}
+          />
+        </div>
 
-        <div className="chat-panel-input-toolbar flex items-end justify-between gap-3">
+        <div className="ui-ai-input__footer ui-ai-input__footer--single-row chat-panel-input-toolbar">
           <AnimatePresence>
             {modelMenuOpen && (
             <motion.div
@@ -763,19 +795,19 @@ export default function ChatInput({
           )}
           </AnimatePresence>
 
-          <div className="flex items-center gap-1.5 min-w-0">
-            <ModelSelector
-              nodeType="ai-text"
-              selectedModel={selectedTextModel}
-              onSelect={handleTextModelSelect}
-              configuredGroupsOverride={assistantModelGroups}
-              generalModelsOverride={assistantModelGroups ? [] : mediaModels}
-              groupAvailability={modelGroupAvailability}
-            />
-          </div>
+          <ModelSelector
+            appearance="pill"
+            theme={appearanceMode}
+            nodeType="ai-text"
+            selectedModel={selectedTextModel}
+            onSelect={handleTextModelSelect}
+            configuredGroupsOverride={assistantModelGroups}
+            generalModelsOverride={assistantModelGroups ? [] : mediaModels}
+            groupAvailability={modelGroupAvailability}
+          />
 
-          <div className="flex items-end gap-1.5 shrink-0">
-            <div className="flex items-center gap-px">
+          <div className="ui-ai-input__tools">
+            <div className="ui-ai-input__actions">
               <button
                 type="button"
                 onClick={() => {
@@ -789,16 +821,10 @@ export default function ChatInput({
                 }}
                 aria-label={t('引用画布节点或媒体模型')}
                 title={t('引用画布节点或媒体模型')}
-                className={`flex h-7 w-7 items-center justify-center rounded-md transition-[color,background-color,box-shadow]
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50
-                  ${modelMenuOpen
-                    ? 'bg-brand/15 text-brand-light'
-                    : 'text-canvas-text-secondary hover:bg-canvas-surface hover:text-canvas-text'
-                  }`}
+                className={`ui-ai-input__icon-btn${modelMenuOpen ? ' is-active' : ''}`}
               >
                 <Icon icon="mdi:at" width="14" />
               </button>
-              <span className="w-px h-3.5 bg-canvas-border/50" aria-hidden="true" />
               <button
                 type="button"
                 onClick={() => {
@@ -810,35 +836,25 @@ export default function ChatInput({
                 }}
                 aria-label={t('调用 Skill')}
                 title={t('调用 Skill')}
-                className={`flex h-7 w-7 items-center justify-center rounded-md transition-[color,background-color,box-shadow]
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50
-                  ${skillMenuOpen
-                    ? 'bg-brand/15 text-brand-light'
-                    : 'text-canvas-text-secondary hover:bg-canvas-surface hover:text-canvas-text'
-                  }`}
+                className={`ui-ai-input__icon-btn${skillMenuOpen ? ' is-active' : ''}`}
               >
                 <Icon icon="mdi:slash-forward" width="14" />
               </button>
               {onAuthorizeLocalFiles && (
-                <>
-                  <span className="w-px h-3.5 bg-canvas-border/50" aria-hidden="true" />
-                  <button
-                    type="button"
-                    onClick={onAuthorizeLocalFiles}
-                    aria-label={t('授权当前对话读取本地文件')}
-                    title={t('选择文本文件；授权仅在当前对话和本次运行期间有效')}
-                    className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-secondary
-                               hover:bg-canvas-surface hover:text-canvas-text transition-[color,background-color,box-shadow]
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
-                  >
-                    <Icon icon="mdi:paperclip" width="14" />
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={onAuthorizeLocalFiles}
+                  aria-label={t('授权当前对话读取本地文件')}
+                  title={t('选择文本文件；授权仅在当前对话和本次运行期间有效')}
+                  className="ui-ai-input__icon-btn"
+                >
+                  <Icon icon="mdi:paperclip" width="14" />
+                </button>
               )}
             </div>
             {inputValue.trim() && !disabled && (
-              <span className="hidden sm:inline text-[11px] text-canvas-text-muted/60 tabular-nums select-none">
-                ↵ Enter
+              <span className="ui-ai-input__shortcut-hint hidden sm:inline text-[11px] text-canvas-text-muted/60 tabular-nums select-none">
+                {shortcutLabel}
               </span>
             )}
             <div className="flex h-7 w-7 items-center justify-center">
@@ -851,37 +867,40 @@ export default function ChatInput({
                 onClick={onInterject}
                 aria-label={t('调整当前任务')}
                 title={t('在下一个安全步骤调整当前任务')}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-canvas-border
-                           bg-canvas-surface text-canvas-text-secondary transition-[color,background-color,border-color]
-                           hover:border-brand/40 hover:bg-brand/10 hover:text-brand-light
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300/70"
+                className="ui-ai-input__icon-btn"
               >
                 <Icon icon="mdi:source-branch-sync" width="16" height="16" />
               </button>
             )}
 
-            <AnimatedButton
-              scale={1.05}
-              disabled={!inputValue.trim() || disabled}
-              aria-label={hasActiveTask ? t('将消息加入队列') : t('发送消息')}
-              title={hasActiveTask ? t('当前任务完成后发送') : t('发送消息')}
-              className={`chat-panel-send-btn flex shrink-0 items-center justify-center h-8 w-8 rounded-full
-                          transition-[color,background-color,box-shadow,opacity,transform] duration-200 active:scale-95
-                          motion-reduce:transform-none
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300/70
-                          ${inputValue.trim() && !disabled
-                            ? 'bg-brand text-white hover:bg-brand-light shadow-lg shadow-brand/30'
-                            : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
-                          }`}
-              onClick={onSend}
-            >
-              <Icon icon={hasActiveTask ? 'mdi:playlist-plus' : 'mdi:arrow-up'} width="18" height="18" />
-            </AnimatedButton>
+            <div className="inline-flex shrink-0" onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setModelMenuOpen(false);
+              setSkillMenuOpen(false);
+              setShortcutMenuAnchor(event.currentTarget);
+            }}>
+              {performanceMode || reduceMotion ? sendButton : (
+                <LazyLoadBoundary label="助手发送按钮特效" errorFallback={sendButton}>
+                  <Suspense fallback={sendButton}>
+                    <MetalFx className="ui-ai-input__send-metal" variant="circle"
+                      preset={appearanceMode === 'light' ? 'silver' : 'chromatic'} theme={appearanceMode}
+                      strength={appearanceMode === 'light' ? 0.65 : 0.81} paused={sendDisabled}
+                      normalizeHostStyles={false} innerShadow>
+                      {sendButton}
+                    </MetalFx>
+                  </Suspense>
+                </LazyLoadBoundary>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Disclaimer */}
+      {shortcutMenuAnchor && <SendShortcutMenu anchor={shortcutMenuAnchor} value={submitShortcut}
+        onChange={(shortcut) => onSubmitShortcutChange?.(shortcut)} onClose={closeShortcutMenu}
+        disabled={shortcutSettingsDisabled || !onSubmitShortcutChange} />}
       <div className="flex min-h-5 items-center justify-center">
         <p className="chat-panel-disclaimer text-[11px] text-canvas-text-muted/75">
           {t('重要操作执行前会请求确认')}

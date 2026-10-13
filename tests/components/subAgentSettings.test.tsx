@@ -2,6 +2,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/services/indexedDbService', () => ({
+  savePresetFolderToDb: vi.fn().mockResolvedValue(undefined),
+  loadPresetFoldersFromDb: vi.fn().mockResolvedValue([]),
+  deletePresetFolderFromDb: vi.fn().mockResolvedValue(undefined),
   saveSubAgentProfileToDb: vi.fn().mockResolvedValue(undefined),
   getAllSubAgentProfiles: vi.fn().mockResolvedValue([]),
   deleteSubAgentProfileFromDb: vi.fn().mockResolvedValue(undefined),

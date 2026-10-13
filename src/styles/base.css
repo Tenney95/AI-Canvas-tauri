@@ -19,6 +19,7 @@
 
   --theme-bg: #0a0a0f;
   --theme-surface: #14141c;
+  --appearance-surface-image: none;
   --theme-card: #1a1a26;
   --theme-border: #2a2a3a;
   --theme-hover: #252535;
@@ -43,6 +44,26 @@
   --brand-alpha-20: rgba(99, 102, 241, 0.20);
   --brand-alpha-25: rgba(99, 102, 241, 0.25);
   --brand-alpha-30: rgba(99, 102, 241, 0.30);
+
+  /* Button component tokens / 按钮令牌；默认配色随主题，自定义由外观运行时覆盖。 */
+  --button-radius: 7px;
+  --button-radius-sm: 6px;
+  --button-radius-lg: 12px;
+  --button-border-width: 1px;
+  --button-bg: var(--white-alpha-04);
+  --button-hover-bg: var(--white-alpha-08);
+  --button-text: var(--theme-text);
+  --button-border: var(--white-alpha-08);
+  --button-hover-border: var(--white-alpha-12);
+  --button-secondary-bg: var(--theme-surface);
+  --button-secondary-hover-bg: var(--theme-hover);
+  --button-secondary-border: var(--theme-border);
+  --button-secondary-hover-border: var(--border-secondary);
+  --button-primary-bg: var(--brand);
+  --button-primary-hover-bg: var(--brand-hover);
+  --button-primary-text: var(--brand-contrast);
+  --button-primary-border: color-mix(in srgb, var(--brand) 80%, var(--theme-text));
+  --button-primary-hover-border: var(--brand-hover);
 
   /* Node Type Colors / 节点类型颜色 ── */
   --node-text: #6366f1;
@@ -803,7 +824,7 @@ body {
 .app-shell {
   --app-shell-inset: 0px;
   /* 内置聊天助手面板尺寸；操作记录浮层按此让位 */
-  --chat-panel-width: 400px;
+  --chat-panel-width: 480px;
   --chat-panel-inset: 12px;
   --app-shell-content-radius: 16px;
   isolation: isolate;

@@ -23,6 +23,9 @@ vi.mock('@tauri-apps/plugin-fs', async (importOriginal) => ({
   exists: async (path: string) => mocks.directories.has(path) || mocks.sizes.has(path),
 }));
 vi.mock('../../src/services/indexedDbService', () => ({
+  savePresetFolderToDb: vi.fn().mockResolvedValue(undefined),
+  loadPresetFoldersFromDb: vi.fn().mockResolvedValue([]),
+  deletePresetFolderFromDb: vi.fn().mockResolvedValue(undefined),
   getHistoryEntriesPage: mocks.getHistoryEntriesPage,
   getProjectConversations: mocks.getProjectConversations,
   getConversationMessages: mocks.getConversationMessages,

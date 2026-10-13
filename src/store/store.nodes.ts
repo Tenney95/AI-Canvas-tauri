@@ -19,6 +19,7 @@ import type {
   CanvasNotePatch,
   CharacterLibraryNodeLink,
   NodeGroup,
+  ProjectSettings,
   ShotRow,
   StoryboardCellOverride,
 } from '../types';
@@ -30,7 +31,7 @@ import { BATCH_NODE_LIMIT } from './store.chat';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
-import { applyProjectDefaultsToNodeData } from '../services/projectSettingsService';
+import { applyProjectDefaultsToNodeData, getImageNodeDimensionsForAspectRatio } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { resolveDirectorRuntime } from '../services/directorRuntimeRegistry';
 import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../services/nodeMediaCopy';
@@ -302,10 +303,110 @@ function insertNodeInGroup(state: Pick<AppState, 'nodes' | 'groups'>, node: Node
   };
 }
 
+const MEDIA_PARAMETER_PREF_KEY = 'canvas-media-parameter-prefs';
+const MEDIA_PARAMETER_TYPES = {
+  'ai-image': { imageSize: 'string', aspectRatio: 'string' },
+  'ai-video': {
+    videoResolution: 'number', videoFps: 'number', videoFrames: 'number',
+    seedanceResolution: 'string', seedanceRatio: 'string', seedanceDuration: 'number',
+    generateAudio: 'boolean',
+  },
+} as const;
+const MEDIA_PARAMETER_UPDATE_KEYS = new Set([
+  'model', 'provider', 'workflowId',
+  ...Object.keys(MEDIA_PARAMETER_TYPES['ai-image']), ...Object.keys(MEDIA_PARAMETER_TYPES['ai-video']),
+]);
+type MediaParameters = Pick<BaseNodeData,
+  keyof (typeof MEDIA_PARAMETER_TYPES)['ai-image'] | keyof (typeof MEDIA_PARAMETER_TYPES)['ai-video']>;
+
+function mediaParameterTypes(type: BaseNodeData['type']): Record<string, string> {
+  return type === 'ai-image' || type === 'ai-video' ? MEDIA_PARAMETER_TYPES[type] : {};
+}
+
+function readMediaParameterPreferences(): Record<string, unknown> {
+  try {
+    const raw = globalThis.localStorage?.getItem(MEDIA_PARAMETER_PREF_KEY);
+    const value: unknown = raw ? JSON.parse(raw) : undefined;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 只保存参数原始值，保留 false/自动时长，不带素材、提示词或凭据。 */
+function pickMediaParameters(type: BaseNodeData['type'], value: Record<string, unknown>): MediaParameters {
+  return Object.fromEntries(Object.entries(mediaParameterTypes(type)).flatMap(([key, valueType]) => {
+    const parameter = value[key];
+    if (typeof parameter !== valueType
+      || (typeof parameter === 'number' && !Number.isFinite(parameter))
+      || (typeof parameter === 'string' && parameter.length > 64)) return [];
+    return [[key, parameter]];
+  }));
+}
+
+function rememberMediaParameterUpdate(state: AppState, nodeId: string, patch: Partial<BaseNodeData>): void {
+  // 仅当前参数编辑入口更新偏好；后台生成和其他节点回写不改变新建默认值。
+  if (state.activeNodeId !== nodeId || 'status' in patch
+    || !Object.keys(patch).some((key) => MEDIA_PARAMETER_UPDATE_KEYS.has(key))) return;
+  const data = state.nodes.find((node) => node.id === nodeId)?.data;
+  if (!data || (data.type !== 'ai-image' && data.type !== 'ai-video')) return;
+  if (!['model', 'provider', 'workflowId', ...Object.keys(mediaParameterTypes(data.type))]
+    .some((key) => key in patch)) return;
+  try {
+    const preferences = readMediaParameterPreferences();
+    if (!data.model || !data.provider || data.workflowId) delete preferences[data.type];
+    else preferences[data.type] = {
+      model: data.model, provider: data.provider, parameters: pickMediaParameters(data.type, data),
+    };
+    globalThis.localStorage?.setItem(MEDIA_PARAMETER_PREF_KEY, JSON.stringify(preferences));
+  } catch {
+    // 本地偏好不可用时继续编辑，已有节点参数仍按项目正常保存。
+  }
+}
+
+function applyRememberedMediaParameters(data: BaseNodeData, settings: ProjectSettings | undefined): BaseNodeData {
+  if ((data.type !== 'ai-image' && data.type !== 'ai-video') || data.role === 'source'
+    || data.displayId !== undefined || data.prompt?.trim() || data.workflowId
+    || (data.status && data.status !== 'idle') || hasMaterializedNodeOutput(data, data.type)) return data;
+  // 工具栏新建尚未写入模型时，补齐与模型选择器相同的偏好身份。
+  if (data.model === undefined) {
+    try {
+      const raw = globalThis.localStorage?.getItem('canvas-model-prefs');
+      const model: unknown = raw ? JSON.parse(raw)?.[data.type] : undefined;
+      if (typeof model === 'string' && model.indexOf('/') > 0) {
+        data = { ...data, model, provider: model.slice(0, model.indexOf('/')) };
+      }
+    } catch { /* 缺失或损坏的模型偏好沿用原默认行为。 */ }
+  }
+  const preference = readMediaParameterPreferences()[data.type];
+  if (!preference || typeof preference !== 'object' || Array.isArray(preference)) return data;
+  const entry = preference as Record<string, unknown>;
+  if (!data.model || entry.model !== data.model || entry.provider !== data.provider
+    || !entry.parameters || typeof entry.parameters !== 'object' || Array.isArray(entry.parameters)) return data;
+  const parameters = pickMediaParameters(data.type, entry.parameters as Record<string, unknown>);
+  // 项目明确设置的参数优先于全局最近使用偏好。
+  const generation = settings?.generation;
+  if (data.type === 'ai-image') {
+    if (generation?.imageSize) delete parameters.imageSize;
+    if (generation?.imageAspectRatio) delete parameters.aspectRatio;
+  } else {
+    if (generation?.videoResolution) delete parameters.seedanceResolution;
+    if (generation?.videoAspectRatio) delete parameters.seedanceRatio;
+    if (generation?.videoDuration) delete parameters.seedanceDuration;
+  }
+  const next = { ...data, ...parameters };
+  if (data.type === 'ai-image' && parameters.aspectRatio) {
+    const dimensions = getImageNodeDimensionsForAspectRatio(parameters.aspectRatio);
+    if (dimensions) Object.assign(next, dimensions);
+  }
+  return next;
+}
+
 function insertPreparedNode(state: AppState, node: Node<BaseNodeData>) {
   const displayId = getNextDisplayId(state.nodes);
   const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
-  const data = applyProjectDefaultsToNodeData(node.data, settings);
+  const data = applyRememberedMediaParameters(applyProjectDefaultsToNodeData(node.data, settings), settings);
   return insertNodeInGroup(state, prepareNodeForInsertion(node, data, displayId));
 }
 
@@ -854,12 +955,14 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const nodes = mergeNodeDataWithShotDurations(get().nodes, new Set([nodeId]), data);
     get().commitToHistory();
     set({ nodes });
+    rememberMediaParameterUpdate(get(), nodeId, data);
   },
 
   updateNodeDataTransient: (nodeId, data) => {
     set((state) => ({
       nodes: mergeNodeDataWithShotDurations(state.nodes, new Set([nodeId]), data),
     }));
+    rememberMediaParameterUpdate(get(), nodeId, data);
   },
 
   updateNodePositionTransient: (nodeId, position) => {

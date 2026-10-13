@@ -77,10 +77,12 @@ import {
 } from '../../services/chat/fileGrantService';
 import { getAssistantTextModelCandidates } from '../../services/projectSettingsService';
 import { useT } from '../../i18n';
+import type { PromptSubmitShortcut } from '../../types';
+import { normalizePromptSubmitShortcut } from '../../utils/promptSubmitShortcut';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 const DRAFT_SYNC_DEBOUNCE_MS = 300;
-const CHAT_PANEL_DEFAULT_WIDTH = 400;
+const CHAT_PANEL_DEFAULT_WIDTH = 480;
 const CHAT_PANEL_MIN_WIDTH = 320;
 const CHAT_PANEL_MAX_WIDTH = 720;
 const CHAT_PANEL_VIEWPORT_GUTTER = 64;
@@ -132,6 +134,7 @@ export default function ChatPanel({
     assistantModelId,
     generalModels,
     config,
+    configHydrated,
     workflows,
     updateConfig,
     saveConfig,
@@ -164,6 +167,7 @@ export default function ChatPanel({
       assistantModelId: s.config.assistantModelId,
       generalModels: s.config.generalModels ?? [],
       config: s.config,
+      configHydrated: s.configHydrated,
       workflows: s.workflows,
       updateConfig: s.updateConfig,
       saveConfig: s.saveConfig,
@@ -193,6 +197,17 @@ export default function ChatPanel({
     () => detached ? (detachedSnapshot?.generalModels ?? []) : generalModels,
     [detached, detachedSnapshot?.generalModels, generalModels],
   );
+  const effectiveSubmitShortcut = normalizePromptSubmitShortcut(detached ? detachedSnapshot?.promptSubmitShortcut : config.promptSubmitShortcut);
+  const submitShortcutSettingsDisabled = detached ? detachedSnapshot?.promptSubmitShortcut === undefined : !configHydrated;
+  const handleSubmitShortcutChange = useCallback((shortcut: PromptSubmitShortcut) => {
+    if (detached) {
+      void emitAction({ type: 'set_prompt_submit_shortcut', shortcut });
+      return;
+    }
+    if (!configHydrated) return;
+    updateConfig({ promptSubmitShortcut: shortcut });
+    void saveConfig({ silent: true }).catch(() => {});
+  }, [configHydrated, detached, saveConfig, updateConfig]);
   const localModelCatalog = useMemo(() => buildChatModelCatalog({ config, workflows }), [config, workflows]);
   const effectiveAssistantModelGroups = detached
     ? (detachedSnapshot?.assistantModelGroups ?? [])
@@ -979,6 +994,9 @@ export default function ChatPanel({
                       inputValue={inputValue}
                       onInputChange={updateInputDraft}
                       onSend={handleSend}
+                      submitShortcut={effectiveSubmitShortcut}
+                      onSubmitShortcutChange={handleSubmitShortcutChange}
+                      shortcutSettingsDisabled={submitShortcutSettingsDisabled}
                       hasActiveTask={hasActiveConversationTask}
                       onInterject={handleInterject}
                       localFileGrants={effectiveLocalFileGrants}

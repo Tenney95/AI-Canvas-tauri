@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const pollingMocks = vi.hoisted(() => ({
-  cleanupNodePolling: vi.fn(),
+  cleanupNodePolling: vi.fn(() => true),
+  VIDEO_POLL_MAX_DURATION_MS: 30 * 60 * 1000,
+  pauseVideoNodeTaskOnTimeout: vi.fn((nodeId: string | undefined, error: unknown, taskId?: string) => {
+    if (!nodeId || !taskId || !(error instanceof Error) || error.name !== 'PollTimeoutError') return undefined;
+    return Object.assign(new Error('视频查询已暂停'), { name: 'VideoPollingPausedError' });
+  }),
   registerNodePolling: vi.fn(() => new AbortController().signal),
   removePendingTask: vi.fn(),
   savePendingTask: vi.fn(),
@@ -151,7 +156,7 @@ describe('APIMart Omni 视频合同', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     controller.abort();
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
-    expect(pollingMocks.cleanupNodePolling).toHaveBeenCalledWith('node-omni');
+    expect(pollingMocks.cleanupNodePolling).toHaveBeenCalledWith('node-omni', expect.any(AbortSignal));
   });
 
   it.each([
@@ -858,6 +863,26 @@ describe('APIMart MiniMax-H3 video', () => {
 });
 
 describe('legacy general media requests', () => {
+  it('retains a known video task on query HTTP 504 without sending another POST', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ task_id: 'slow-task' }))
+      .mockResolvedValueOnce(new Response('', { status: 504 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(executeGeneralAsyncTask('key', 'https://api.example/v1', 'video', 'prompt', 'videos', 'custom', 'node'))
+      .rejects.toMatchObject({ name: 'VideoPollingPausedError' });
+    expect(pollingMocks.updatePendingTask).toHaveBeenCalledWith('node', { taskId: 'slow-task', submitted: true });
+    expect(pollingMocks.removePendingTask).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('retains an APIMart task when its query times out', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ data: [{ task_id: 'apimart-slow' }] }))
+      .mockResolvedValueOnce(new Response('', { status: 504 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(generateApimartVideo('key', 'https://api.example/v1', 'wan3.0-video', 'prompt', 'node'))
+      .rejects.toMatchObject({ name: 'VideoPollingPausedError' });
+    expect(pollingMocks.removePendingTask).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();

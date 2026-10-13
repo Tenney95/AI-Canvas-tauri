@@ -1,6 +1,6 @@
 /**
  * settings/providerConnection/providerConnectionShared — 厂商连接弹窗的常量、类型与共用助手。
- * 分类顺序、能力预设、厂商控制台链接、导入快照结构集中在这里，供弹窗与各子区块共用。
+ * 分类顺序、能力预设、厂商控制台链接集中在这里，供弹窗与各子区块共用。
  */
 import type {
   ApiProviderConfig,
@@ -63,18 +63,6 @@ export function buildRelayAssistantPrompt(
 }
 
 export type CatalogStatus = 'idle' | 'loading' | 'ready' | 'warning' | 'error';
-
-export interface ProtocolImportSnapshot {
-  baseUrl: string;
-  models: ProviderModelSelection[];
-  selectedIds: Set<string>;
-  visibleModelCategories: Set<GeneralModelCategory>;
-  category: GeneralModelCategory | 'all';
-  protocolModelId: string | null;
-  protocolValid: boolean;
-  catalogStatus: CatalogStatus;
-  catalogMessage: string;
-}
 
 export interface ProviderConnectionDialogProps {
   isOpen: boolean;

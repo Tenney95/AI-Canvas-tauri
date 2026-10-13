@@ -3,6 +3,8 @@
  * 提供这些常驻对象的读写 CRUD，统一走 schema.ts 声明的 object store，是 catalog 类数据的单一入口。
  */
 import type { AppearanceTheme, PresetAdvancedConfig, SkillManifest, UserPresetMode, WorkflowDefinition } from '../../types';
+import { PRESET_NODE_TYPES, type PresetFolder } from '../../types';
+import { normalizePresetFolderName, UNGROUPED_PRESET_FOLDER_ID } from '../../utils/presetFolders';
 import { withRelocatedMedia } from './mediaRelocations';
 import type { InstalledPlugin } from '../../types/plugin';
 import {
@@ -60,6 +62,7 @@ export interface PresetRecord {
   promptTemplate: string;
   thumbnail?: string;
   triggerMode: string;
+  folderId?: string;
   icon?: string;
   model?: string;
   provider?: string;
@@ -217,6 +220,82 @@ export const getAllPresets = (): Promise<PresetRecord[]> =>
 
 export const deletePresetFromDb = (id: string): Promise<void> =>
   deleteRecord(STORE_PRESETS, id);
+
+const PRESET_FOLDERS_KEY = 'preset-folders';
+
+function readPresetFolderRecord(record: { folders?: PresetFolder[] } | undefined): PresetFolder[] {
+  if (!record) return [];
+  if (!Array.isArray(record.folders)) throw new Error('快捷指令文件夹记录异常');
+  const ids = new Set<string>();
+  return record.folders.map((folder) => {
+    if (!folder || typeof folder.id !== 'string' || !folder.id || folder.id === UNGROUPED_PRESET_FOLDER_ID
+      || ids.has(folder.id) || !PRESET_NODE_TYPES.includes(folder.nodeType) || typeof folder.name !== 'string') {
+      throw new Error('快捷指令文件夹记录异常');
+    }
+    ids.add(folder.id);
+    return { id: folder.id, nodeType: folder.nodeType, name: normalizePresetFolderName(folder.name) };
+  });
+}
+
+export async function loadPresetFoldersFromDb(): Promise<PresetFolder[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE_METADATA, 'readonly').objectStore(STORE_METADATA).get(PRESET_FOLDERS_KEY);
+    request.onsuccess = () => {
+      try { resolve(readPresetFolderRecord(request.result)); }
+      catch (error) { reject(error); }
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** 使用同一事务读改写分类；删除时原子解除全部关联，不删除指令。 */
+async function mutatePresetFolders(change: (folders: PresetFolder[], tx: IDBTransaction) => PresetFolder[]): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_METADATA, STORE_PRESETS], 'readwrite');
+    let failure: unknown;
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => { failure ??= tx.error; };
+    tx.onabort = () => reject(failure ?? tx.error ?? new DOMException('文件夹保存已中止', 'AbortError'));
+    const metadata = tx.objectStore(STORE_METADATA);
+    const request = metadata.get(PRESET_FOLDERS_KEY);
+    request.onsuccess = () => {
+      try {
+        const folders = change(readPresetFolderRecord(request.result), tx);
+        metadata.put({ id: PRESET_FOLDERS_KEY, folders });
+      } catch (error) { failure = error; tx.abort(); }
+    };
+  });
+}
+
+export function savePresetFolderToDb(folder: PresetFolder): Promise<void> {
+  return mutatePresetFolders((folders) => {
+    const checked = readPresetFolderRecord({ folders: [folder] })[0];
+    if (folders.some((item) => item.id !== checked.id && item.nodeType === checked.nodeType
+      && item.name.toLocaleLowerCase() === checked.name.toLocaleLowerCase())) {
+      throw new Error('当前类型已有同名文件夹');
+    }
+    const existing = folders.find((item) => item.id === checked.id);
+    if (existing && existing.nodeType !== checked.nodeType) throw new Error('不能修改文件夹所属类型');
+    return existing ? folders.map((item) => item.id === checked.id ? checked : item) : [...folders, checked];
+  });
+}
+
+export function deletePresetFolderFromDb(id: string): Promise<void> {
+  return mutatePresetFolders((folders, tx) => {
+    const presets = tx.objectStore(STORE_PRESETS);
+    const cursorRequest = presets.openCursor();
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      const preset = cursor.value as PresetRecord;
+      if (preset.folderId === id) cursor.update({ ...preset, folderId: undefined });
+      cursor.continue();
+    };
+    return folders.filter((folder) => folder.id !== id);
+  });
+}
 
 export const saveAppearanceThemeToDb = (theme: AppearanceTheme): Promise<void> =>
   putRecord(STORE_APPEARANCE_THEMES, theme);

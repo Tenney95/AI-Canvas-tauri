@@ -43,6 +43,11 @@ function elements(value: unknown): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!value || typeof value !== 'object' || !('props' in value)) return [];
   const element = value as Element;
+  // 浅渲染驱动展开共用的纯展示变量面板，沿用真实按钮及插入回调。
+  if (typeof element.type === 'function' && element.type.name === 'ProtocolVariablePanel') {
+    const renderPanel = element.type as (props: Element['props']) => unknown;
+    return [element, ...elements(renderPanel(element.props))];
+  }
   return [element, ...elements(element.props.children)];
 }
 function find(predicate: (element: Element) => boolean): Element {

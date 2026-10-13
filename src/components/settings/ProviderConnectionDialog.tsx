@@ -1,7 +1,7 @@
 /**
  * ProviderConnectionDialog — add/edit one provider connection and choose its enabled models.
  *
- * 本组件只负责弹窗级状态与编排：凭证、模型清单、协议导入快照和各区块的联动。
+ * 本组件只负责弹窗级状态与编排：凭证、模型清单和各区块的联动。
  * 连接信息、联网搜索切换、模型清单三个区块分别拆到 ./providerConnection/* 子组件。
  */
 import { Icon } from '@iconify/react';
@@ -36,7 +36,6 @@ import {
   type ProviderDefinition,
 } from '../../services/ai/providerCatalogService';
 import { normalizeBaseUrl } from '../../services/ai/providerBaseUrl';
-import type { ModelProtocolImportResult } from '../../services/ai/modelProtocolImport';
 import { emitCloseChatWindow } from '../../services/chat/chatWindowService';
 import { testProviderConnection } from '../../services/testConnection';
 import { useAppStore } from '../../store/useAppStore';
@@ -61,7 +60,6 @@ import {
   CATEGORY_ORDER,
   buildRelayAssistantPrompt,
   type CatalogStatus,
-  type ProtocolImportSnapshot,
   type ProviderConnectionDialogProps,
 } from './providerConnection/providerConnectionShared';
 
@@ -153,8 +151,6 @@ export default function ProviderConnectionDialog({
     () => initialModel && initialModel.category !== 'image' && initialModel.category !== 'video' ? initialModel.id : null,
   );
   const [protocolValid, setProtocolValid] = useState(true);
-  const [protocolImportOpen, setProtocolImportOpen] = useState(false);
-  const [protocolImportSnapshot, setProtocolImportSnapshot] = useState<ProtocolImportSnapshot | null>(null);
   const [categoryEditModelId, setCategoryEditModelId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -262,8 +258,6 @@ export default function ProviderConnectionDialog({
     setVideoCapabilityModelId(null);
     setProtocolModelId(null);
     setProtocolValid(true);
-    setProtocolImportOpen(false);
-    setProtocolImportSnapshot(null);
     setCategoryEditModelId(null);
   };
 
@@ -560,82 +554,13 @@ export default function ProviderConnectionDialog({
     ));
   };
 
-  const applyProtocolImport = (result: ModelProtocolImportResult) => {
-    if (
-      definition?.id !== 'custom-openai'
-      || !result.baseUrl
-      || !result.modelId
-      || !result.category
-      || !result.protocol
-    ) return;
-    setProtocolImportSnapshot({
-      baseUrl,
-      models: structuredClone(models),
-      selectedIds: new Set(selectedIds),
-      visibleModelCategories: new Set(visibleModelCategories),
-      category,
-      protocolModelId,
-      protocolValid,
-      catalogStatus,
-      catalogMessage,
-    });
-    const modelId = result.modelId;
-    const importedModel: ProviderModelSelection = {
-      id: modelId,
-      name: models.find((model) => model.id === modelId)?.name || modelId,
-      category: result.category,
-      provider: connectionId || definition.id,
-      executionProfile: { preset: 'custom', protocol: result.protocol },
-      imageReferenceRequestMode: result.imageReferenceRequestMode,
-      categoryManual: true,
-    };
-    setBaseUrl(result.baseUrl);
-    setModels((current) => {
-      const existing = current.find((model) => model.id === modelId);
-      if (!existing) return [...current, importedModel];
-      return current.map((model) => model.id === modelId
-        ? { ...model, category: importedModel.category, executionProfile: importedModel.executionProfile,
-            imageReferenceRequestMode: importedModel.imageReferenceRequestMode, categoryManual: true }
-        : model);
-    });
-    setSelectedIds((current) => new Set(current).add(modelId));
-    setVisibleModelCategories((current) => new Set(current).add(importedModel.category));
-    setCategory('all');
-    setImageCapabilityModelId(null);
-    setVideoCapabilityModelId(null);
-    setProtocolModelId(modelId);
-    setProtocolValid(true);
-    setCatalogStatus('ready');
-    setCatalogMessage(t('已从接口文档导入模型 {id}，保存前请检查调用协议并逐模型补齐参数能力', { id: modelId }));
-    setProtocolImportOpen(false);
-  };
-
-  const undoProtocolImport = () => {
-    if (!protocolImportSnapshot) return;
-    setBaseUrl(protocolImportSnapshot.baseUrl);
-    setModels(protocolImportSnapshot.models);
-    setSelectedIds(protocolImportSnapshot.selectedIds);
-    setVisibleModelCategories(protocolImportSnapshot.visibleModelCategories);
-    setCategory(protocolImportSnapshot.category);
-    setProtocolModelId(protocolImportSnapshot.protocolModelId);
-    setProtocolValid(protocolImportSnapshot.protocolValid);
-    setCatalogStatus(protocolImportSnapshot.catalogStatus);
-    setCatalogMessage(protocolImportSnapshot.catalogMessage);
-    setProtocolImportSnapshot(null);
-    setProtocolImportOpen(false);
-  };
-
   const closeDialog = () => {
     abortRef.current?.abort();
-    setProtocolImportOpen(false);
-    setProtocolImportSnapshot(null);
     onClose();
   };
 
   const returnToDefinitionPicker = () => {
     abortRef.current?.abort();
-    setProtocolImportOpen(false);
-    setProtocolImportSnapshot(null);
     setDefinitionId('');
   };
 
@@ -839,9 +764,6 @@ export default function ProviderConnectionDialog({
                 apiKey={apiKey}
                 baseUrl={baseUrl}
                 setProtocolValid={setProtocolValid}
-                protocolImportOpen={protocolImportOpen}
-                setProtocolImportOpen={setProtocolImportOpen}
-                protocolImportSnapshot={protocolImportSnapshot}
                 protocolModel={protocolModel}
                 imageCapabilityModel={imageCapabilityModel}
                 setImageCapabilityModelId={setImageCapabilityModelId}
@@ -871,8 +793,6 @@ export default function ProviderConnectionDialog({
                 onUpdateVideoCapability={updateVideoCapability}
                 onUpdateImageReferenceRequestMode={updateImageReferenceRequestMode}
                 onCloseProtocolEditor={closeProtocolEditor}
-                onApplyProtocolImport={applyProtocolImport}
-                onUndoProtocolImport={undoProtocolImport}
                 onFetchModels={handleFetchModels}
               />
             )}

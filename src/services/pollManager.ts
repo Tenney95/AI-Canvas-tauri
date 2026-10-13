@@ -7,7 +7,9 @@
  *
  * 存储结构按 projectId 隔离，每个节点最多一条待续记录。
  */
-import { pollTask } from './pollTask';
+import { isPollTimeoutError, pollTask, PollTaskFailedError, PollTimeoutError } from './pollTask';
+import { derivedNodePlacement, generateId, getNextDisplayId } from '../store/store.utils';
+import { corsSafeFetch } from './ai/httpTransport';
 import { useAppStore } from '../store/useAppStore';
 import { persistMediaUrlToProjectData } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
@@ -39,6 +41,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 // ═══════════════════════════════════════════
 
 const abortControllers = new Map<string, AbortController>();
+const videoResumePromises = new Map<string, Promise<void>>();
 const runninghubMessageWaiters = new Map<string, () => void>();
 const workflowApiMessageWaiters = new Map<string, () => void>();
 
@@ -104,6 +107,11 @@ export interface PendingTask {
   protocolPoll?: ResolvedModelProtocolPoll;
   /** 任务是否已向远端提交（false 表示仅预设了 status=loading 但还未拿到 taskId） */
   submitted: boolean;
+  /** 本地查询暂停，重启后等待用户手动继续。 */
+  videoRecoveryState?: 'paused';
+  /** 只保存生成输入标量，不包含参考素材路径、请求正文或凭据。 */
+  videoGeneration?: Pick<BaseNodeData, 'prompt' | 'model' | 'provider' | 'seedanceResolution'
+    | 'seedanceRatio' | 'seedanceDuration' | 'generateAudio' | 'videoResolution' | 'videoFrames' | 'videoFps'>;
   /** ComfyUI 远端终态尚未确认，保留任务并提供续查/再次取消。 */
   comfyRecoveryState?: 'disconnected' | 'cancel_pending';
 }
@@ -113,6 +121,104 @@ export interface PendingTask {
 // ═══════════════════════════════════════════
 
 const STORAGE_KEY = 'ai_canvas_pending_tasks';
+
+/** 无显式等待预算的云视频查询，每轮最多等待 30 分钟，随后可手动续查。 */
+export const VIDEO_POLL_MAX_DURATION_MS = 30 * 60 * 1000;
+
+const RECOVERABLE_VIDEO_TASK_TYPES: PendingTask['taskType'][] = ['custom-protocol', 'general', 'apimart', 'volcengine'];
+
+export class VideoPollingPausedError extends Error {
+  constructor() {
+    super('视频查询超时或中断，任务已保留，可点击重试继续查询');
+    this.name = 'VideoPollingPausedError';
+  }
+}
+
+function isRecoverableVideoTask(task: PendingTask): boolean {
+  return task.nodeType === 'ai-video' && task.submitted && !!task.taskId
+    && RECOVERABLE_VIDEO_TASK_TYPES.includes(task.taskType);
+}
+
+export function captureVideoTaskGeneration(nodeId?: string): PendingTask['videoGeneration'] {
+  const data = useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data;
+  if (!data) return undefined;
+  const { prompt, model, provider, seedanceResolution, seedanceRatio, seedanceDuration,
+    generateAudio, videoResolution, videoFrames, videoFps } = data;
+  return { prompt, model, provider, seedanceResolution, seedanceRatio, seedanceDuration,
+    generateAudio, videoResolution, videoFrames, videoFps };
+}
+
+function isCurrentVideoTask(task: PendingTask, signal?: AbortSignal): boolean {
+  const store = useAppStore.getState();
+  return !signal?.aborted && store.currentProjectId === task.projectId
+    && store.nodes.some((node) => node.id === task.nodeId)
+    && loadAll().some((item) => item.nodeId === task.nodeId && item.projectId === task.projectId && item.taskId === task.taskId);
+}
+
+function guardVideoTaskQuery(task: PendingTask, signal: AbortSignal) {
+  const guard = isRecoverableVideoTask(task) ? registerCanvasDerivation(useAppStore.getState(), task.nodeId) : null;
+  return {
+    isCurrent: isRecoverableVideoTask(task)
+      ? () => isCurrentVideoTask(task, signal) && !!guard && isCanvasDerivationFresh(guard, useAppStore.getState()) : undefined,
+    complete: () => { if (guard) completeCanvasDerivation(guard); },
+  };
+}
+
+/** 保留远端身份；旧请求、删除节点和切换后的回调不能改写当前节点。 */
+export function pauseVideoNodeTask(nodeId: string, expectedTaskId?: string): VideoPollingPausedError | undefined {
+  const task = loadAll().find((item) => item.nodeId === nodeId);
+  if (!task || !isRecoverableVideoTask(task) || (expectedTaskId !== undefined && task.taskId !== expectedTaskId)) return undefined;
+  updatePendingTask(nodeId, { videoRecoveryState: 'paused' }, task.taskId);
+  if (isCurrentVideoTask(task)) {
+    useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'idle', error: undefined, videoTaskState: 'paused' });
+  }
+  return new VideoPollingPausedError();
+}
+
+/** 仅在已取得任务 ID 的查询超时时转换控制状态；提交超时和远端失败不能冒充可恢复任务。 */
+export function pauseVideoNodeTaskOnTimeout(nodeId: string | undefined, error: unknown, taskId?: string): VideoPollingPausedError | undefined {
+  return nodeId && taskId && isPollTimeoutError(error) ? pauseVideoNodeTask(nodeId, taskId) : undefined;
+}
+
+export function completeVideoNodeTask(nodeId: string, expectedTaskId?: string): void {
+  const task = loadAll().find((item) => item.nodeId === nodeId);
+  if (task && isRecoverableVideoTask(task) && isCurrentVideoTask(task)
+    && (expectedTaskId === undefined || task.taskId === expectedTaskId)) removePendingTask(nodeId, task.taskId);
+}
+
+/** 新生成前将暂停任务移到恢复节点，保持每个节点一个任务的既有存储语义。 */
+export function prepareVideoNodeGeneration(nodeId: string): void {
+  const store = useAppStore.getState();
+  const task = loadAll().find((item) => item.nodeId === nodeId && item.projectId === store.currentProjectId);
+  if (!task || !isRecoverableVideoTask(task) || task.videoRecoveryState !== 'paused') return;
+  const source = store.nodes.find((node) => node.id === nodeId);
+  if (!source || abortControllers.has(nodeId) || videoResumePromises.has(nodeId)) throw new Error('视频任务正在查询，请等待查询结束');
+  const recoveryNodeId = generateId();
+  const placement = derivedNodePlacement(source);
+  // 同一源节点可以保留多个旧任务，避免恢复卡片完全重叠。
+  while (store.nodes.some((node) => node.parentId === placement.parentId
+    && Math.abs(node.position.x - placement.position.x) < 20 && Math.abs(node.position.y - placement.position.y) < 20)) {
+    placement.position.y += (Number(source.data.nodeHeight) || 158) + 40;
+  }
+  const { nodeWidth, nodeHeight } = source.data;
+  const originalTasks = loadAll();
+  const tasks = originalTasks.map((item) => item.nodeId === nodeId ? { ...item, nodeId: recoveryNodeId } : item);
+  // 先确保任务身份可持久化，再进行一次画布历史写入。
+  saveAll(tasks);
+  try {
+    store.commitToHistory();
+    store.addNodesTransient([{
+      id: recoveryNodeId, type: 'ai-video', ...placement,
+      data: { type: 'ai-video', role: 'generator', label: `${source.data.label} · 待恢复`,
+        displayId: getNextDisplayId(store.nodes), nodeWidth, nodeHeight,
+        ...(task.videoGeneration ?? captureVideoTaskGeneration(nodeId)), status: 'idle', videoTaskState: 'paused' },
+    }]);
+  } catch (error) {
+    saveAll(originalTasks);
+    throw error;
+  }
+  store.updateNodeDataTransient(nodeId, { videoTaskState: undefined, error: undefined });
+}
 
 interface LegacyPendingTask extends PendingTask {
   apiKey?: string;
@@ -192,7 +298,8 @@ function resolveProviderTaskConfig(
 /** 保存一条待续任务（同一 nodeId 会覆盖旧记录） */
 export function savePendingTask(task: PendingTask): void {
   const tasks = loadAll().filter((t) => t.nodeId !== task.nodeId);
-  tasks.push(task);
+  tasks.push(task.nodeType === 'ai-video'
+    ? { ...task, videoGeneration: task.videoGeneration ?? captureVideoTaskGeneration(task.nodeId) } : task);
   saveAll(tasks);
 }
 
@@ -247,6 +354,7 @@ async function applyNodeResult(
   nodeLabel: string,
   isCurrent?: () => boolean,
   savedOutput?: { mediaUrl: string; sourceUrl: string; filePath?: string },
+  generation?: PendingTask['videoGeneration'],
 ): Promise<void> {
   if (isCurrent && !isCurrent()) throw new ComfyPendingError('任务结果已保留，请回到原项目继续查询');
   const store = useAppStore.getState();
@@ -277,6 +385,8 @@ async function applyNodeResult(
     filePath: persisted.filePath,
     thumbnailUrl: mediaUrl,
     status: 'success',
+    error: undefined,
+    videoTaskState: undefined,
   };
 
   if (nodeType === 'ai-image' || nodeType === 'ai-panorama' || nodeType === 'ai-animation') {
@@ -296,11 +406,11 @@ async function applyNodeResult(
     nodeId,
     nodeLabel,
     timestamp: Date.now(),
-    prompt: (data.prompt as string) || '',
+    prompt: generation?.prompt ?? data.prompt ?? '',
     output: persisted.sourceUrl,
     nodeType,
-    model: (data.model as string) || '',
-    provider: (data.provider as string) || '',
+    model: generation?.model ?? data.model ?? '',
+    provider: generation?.provider ?? data.provider ?? '',
     status: 'success',
     mediaUrl,
     filePath: persisted.filePath,
@@ -324,7 +434,18 @@ function getBatchTaskNodeIds(
 async function handleResumeError(
   task: PendingTask,
   err: unknown,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (isRecoverableVideoTask(task)) {
+    if (signal?.aborted || !isCurrentVideoTask(task, signal)) {
+      if (!(err instanceof PollTaskFailedError)) pauseVideoNodeTask(task.nodeId, task.taskId);
+      return;
+    }
+    if (!(err instanceof PollTaskFailedError)) {
+      pauseVideoNodeTask(task.nodeId, task.taskId);
+      return;
+    }
+  }
   const msg = err instanceof Error ? err.message : String(err || '任务恢复失败');
   const store = useAppStore.getState();
   const nodeIds = new Set(getBatchTaskNodeIds(task, store.nodes));
@@ -333,8 +454,8 @@ async function handleResumeError(
       store.updateNodeDataTransient(node.id, { status: 'error', error: msg });
     }
   }
-  cleanupNodePolling(task.nodeId);
-  removePendingTask(task.nodeId);
+  cleanupNodePolling(task.nodeId, signal);
+  removePendingTask(task.nodeId, task.taskId);
 }
 
 // ═══════════════════════════════════════════
@@ -355,11 +476,13 @@ async function fetchApimartTask(
   baseUrl: string,
   taskId: string,
   signal?: AbortSignal,
+  timeoutAsPause = false,
 ): Promise<ApimartTaskResult> {
-  const resp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+  const resp = await (timeoutAsPause ? corsSafeFetch : fetch)(`${baseUrl}/tasks/${taskId}?language=zh`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   });
+  if (timeoutAsPause && [408, 504].includes(resp.status)) throw new PollTimeoutError();
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const raw = (await resp.json()) as Record<string, unknown>;
   if (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data)) {
@@ -415,11 +538,15 @@ async function resumeApimart(task: PendingTask): Promise<void> {
   const label = nodeData?.label || '';
 
   const signal = registerNodePolling(nodeId);
+  const query = guardVideoTaskQuery(task, signal);
 
   try {
     const settled = await Promise.allSettled(taskIds.map((taskId) => (
       pollTask<ApimartTaskResult, string[]>({
-        fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId, signal),
+        fetchState: async () => {
+          try { return await fetchApimartTask(apiKey, baseUrl, taskId, signal, nodeType === 'ai-video'); }
+          catch (error) { if (nodeType === 'ai-video' && isPollTimeoutError(error)) throw new PollTimeoutError(); throw error; }
+        },
         isComplete: (t) => {
           if (t.status !== 'completed') return null;
           const resolved = extractApimartUrls(t.result, nodeType);
@@ -427,8 +554,9 @@ async function resumeApimart(task: PendingTask): Promise<void> {
           return resolved;
         },
         isFailed: (t) =>
-          t.status === 'failed' || t.status === 'error' ? `任务失败: ${t.status}` : null,
+          t.status === 'failed' || t.status === 'error' || t.status === 'cancelled' ? `任务失败: ${t.status}` : null,
         interval: 3000,
+        maxDuration: nodeType === 'ai-video' ? VIDEO_POLL_MAX_DURATION_MS : undefined,
         onFetchError: 'continue',
         signal,
       })
@@ -457,13 +585,14 @@ async function resumeApimart(task: PendingTask): Promise<void> {
         aspectRatio,
       });
     } else {
-      await applyNodeResult(nodeId, urls[0], label);
+      await applyNodeResult(nodeId, urls[0], label, query.isCurrent, undefined, task.videoGeneration);
     }
-    removePendingTask(nodeId);
+    removePendingTask(nodeId, task.taskId);
   } catch (err) {
-    await handleResumeError(task, err);
+    await handleResumeError(task, err, signal);
   } finally {
-    cleanupNodePolling(nodeId);
+    cleanupNodePolling(nodeId, signal);
+    query.complete();
   }
 }
 
@@ -803,13 +932,16 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
     nodeType === 'ai-video' ? 'videos' : nodeType === 'ai-audio' ? 'audios' : 'images';
 
   const signal = registerNodePolling(nodeId);
+  const query = guardVideoTaskQuery(task, signal);
 
   try {
     const { url } = await pollTask<Record<string, unknown>, { url: string }>({
       fetchState: async () => {
-        const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+        const pollResp = await (nodeType === 'ai-video' ? corsSafeFetch : fetch)(`${baseUrl}/tasks/${taskId}?language=zh`, {
           headers: { Authorization: `Bearer ${apiKey}` },
+          signal,
         });
+        if (nodeType === 'ai-video' && [408, 504].includes(pollResp.status)) throw new PollTimeoutError();
         if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
         return (await pollResp.json()) as Record<string, unknown>;
       },
@@ -827,20 +959,22 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
       },
       isFailed: (raw) => {
         const t = (raw.data ?? raw) as Record<string, unknown>;
-        return t.status === 'failed' || t.status === 'error'
+        return t.status === 'failed' || t.status === 'error' || t.status === 'cancelled'
           ? `任务失败: ${t.status}`
           : null;
       },
       interval: 3000,
-      onFetchError: 'continue',
+      maxDuration: nodeType === 'ai-video' ? VIDEO_POLL_MAX_DURATION_MS : undefined,
+      onFetchError: nodeType === 'ai-video' ? 'throw' : 'continue',
       signal,
     });
-    await applyNodeResult(nodeId, url, label);
-    removePendingTask(nodeId);
+    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration);
+    removePendingTask(nodeId, taskId);
   } catch (err) {
-    await handleResumeError(task, err);
+    await handleResumeError(task, err, signal);
   } finally {
-    cleanupNodePolling(nodeId);
+    cleanupNodePolling(nodeId, signal);
+    query.complete();
   }
 }
 
@@ -862,9 +996,10 @@ async function resumeCustomProtocol(task: PendingTask): Promise<void> {
   }
 
   const signal = registerNodePolling(nodeId);
+  const query = guardVideoTaskQuery(task, signal);
   try {
     const result = await pollResolvedModelProtocol(
-      protocolPoll,
+      nodeType === 'ai-video' ? { ...protocolPoll, maxDurationMs: protocolPoll.maxDurationMs ?? VIDEO_POLL_MAX_DURATION_MS } : protocolPoll,
       providerConfig.apiKey,
       signal,
       providerConfig.baseUrl,
@@ -892,13 +1027,14 @@ async function resumeCustomProtocol(task: PendingTask): Promise<void> {
     } else {
       const url = urls[0];
       if (!url) throw new Error('任务完成但未返回结果 URL');
-      await applyNodeResult(nodeId, url, nodeData.label || '');
+      await applyNodeResult(nodeId, url, nodeData.label || '', query.isCurrent, undefined, task.videoGeneration);
     }
-    removePendingTask(nodeId);
+    removePendingTask(nodeId, task.taskId);
   } catch (error) {
-    await handleResumeError(task, error);
+    await handleResumeError(task, error, signal);
   } finally {
-    cleanupNodePolling(nodeId);
+    cleanupNodePolling(nodeId, signal);
+    query.complete();
   }
 }
 
@@ -912,7 +1048,7 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
   const providerConfig = resolveProviderTaskConfig(task, 'volcengine', VOLCENGINE_BASE_URL);
   if (!providerConfig) {
     await updateBillingRun(run, { status: 'unknown', errorMessage: '缺少 API 配置，任务待恢复查询' });
-    useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '缺少方舟 API 配置，任务 ID 已保留' });
+    pauseVideoNodeTask(nodeId, taskId);
     return;
   }
   const { apiKey, baseUrl } = providerConfig;
@@ -920,6 +1056,7 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
   const label = (node?.data as BaseNodeData | undefined)?.label || '';
 
   const signal = registerNodePolling(nodeId);
+  const query = guardVideoTaskQuery(task, signal);
   let remoteFailed = false;
   let remoteCancelled = false;
   let remoteSucceeded = false;
@@ -927,9 +1064,11 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
   try {
     const { url, completionTokens } = await pollTask<Record<string, unknown>, { url: string; completionTokens?: number }>({
       fetchState: async () => {
-        const resp = await fetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
+        const resp = await corsSafeFetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
           headers: { Authorization: `Bearer ${apiKey}` },
+          signal,
         });
+        if ([408, 504].includes(resp.status)) throw new PollTimeoutError();
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         return (await resp.json()) as Record<string, unknown>;
       },
@@ -955,7 +1094,8 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
         return null;
       },
       interval: 3000,
-      onFetchError: 'continue',
+      maxDuration: VIDEO_POLL_MAX_DURATION_MS,
+      onFetchError: 'throw',
       signal,
     });
     if (run) {
@@ -971,8 +1111,8 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
         inputJson: JSON.stringify({ ...input, completionTokens: completionTokens ?? null }) });
     }
     remoteSucceeded = true;
-    await applyNodeResult(nodeId, url, label);
-    removePendingTask(nodeId);
+    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration);
+    removePendingTask(nodeId, taskId);
   } catch (err) {
     if (!remoteSucceeded) await updateBillingRun(run, {
       status: remoteCancelled ? 'cancelled' : remoteFailed ? 'failed' : 'unknown', finishedAt: Date.now(),
@@ -980,12 +1120,13 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
       errorMessage: err instanceof Error ? err.message : '恢复查询失败',
     });
     if (remoteFailed) {
-      await handleResumeError(task, err);
+      await handleResumeError(task, err, signal);
     } else {
-      useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '方舟任务状态暂无法确认，可重启后继续查询' });
+      if (isCurrentVideoTask(task, signal)) pauseVideoNodeTask(nodeId, taskId);
     }
   } finally {
-    cleanupNodePolling(nodeId);
+    cleanupNodePolling(nodeId, signal);
+    query.complete();
   }
 }
 
@@ -1266,6 +1407,30 @@ const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask) => Promise
   'workflow-api': resumeWorkflowApi,
 };
 
+/** 用户重试只执行已保存任务的查询 / 下载，不走生成提交。 */
+export function resumeVideoNodeTask(nodeId: string): Promise<void> {
+  const existing = videoResumePromises.get(nodeId);
+  if (existing) return existing;
+  const store = useAppStore.getState();
+  const task = loadAll().find((item) => item.nodeId === nodeId && item.projectId === store.currentProjectId);
+  if (!task || !isRecoverableVideoTask(task) || !store.nodes.some((node) => node.id === nodeId)) {
+    return Promise.reject(new Error('没有可恢复的视频任务'));
+  }
+  if (abortControllers.has(nodeId)) return Promise.resolve();
+  // 保留 paused 标记直到交付成功；在查询中退出应用也不会自动重提或自动续查。
+  try {
+    updatePendingTask(nodeId, { videoRecoveryState: 'paused' }, task.taskId);
+    store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined });
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  const promise = Promise.resolve().then(() => RESUME_MAP[task.taskType](task)).finally(() => {
+    if (videoResumePromises.get(nodeId) === promise) videoResumePromises.delete(nodeId);
+  });
+  videoResumePromises.set(nodeId, promise);
+  return promise;
+}
+
 function isCancellationErrorMessage(message?: string): boolean {
   return message === '任务已被取消';
 }
@@ -1345,6 +1510,13 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
     if (!node) {
       // 节点不存在或状态不为 loading，清理过期记录
       removePendingTask(task.nodeId);
+      continue;
+    }
+
+    if (isRecoverableVideoTask(task) && task.videoRecoveryState === 'paused') {
+      if (!abortControllers.has(task.nodeId) && !videoResumePromises.has(task.nodeId)) {
+        store.updateNodeDataTransient(task.nodeId, { status: 'idle', error: undefined, videoTaskState: 'paused' });
+      }
       continue;
     }
 

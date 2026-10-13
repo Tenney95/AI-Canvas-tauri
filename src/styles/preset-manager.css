@@ -22,6 +22,7 @@
 
 .preset-modal {
   background:
+    var(--appearance-surface-image, none) padding-box,
     linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
     var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
