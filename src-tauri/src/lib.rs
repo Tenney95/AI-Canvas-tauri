@@ -39,6 +39,8 @@ mod dreamina;
 mod file_transfer;
 #[path = "files/thumbnail_cache.rs"]
 mod thumbnail_cache;
+#[path = "files/theme_assets.rs"]
+mod theme_assets;
 #[path = "media/local_fonts.rs"]
 mod local_fonts;
 #[path = "mcp/bridge.rs"]
@@ -1179,6 +1181,7 @@ pub fn run() {
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .register_uri_scheme_protocol("plugin-ui", plugin_ui::handle_protocol)
         .register_uri_scheme_protocol("plugin-window", plugin_window::handle_protocol)
+        .register_uri_scheme_protocol("theme-image", theme_assets::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(comfyui::installation::privacy_plugin())
         .plugin(tauri_plugin_dialog::init())
@@ -1189,6 +1192,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(canvas_input::init())
         .invoke_handler(tauri::generate_handler![
+            theme_assets::store_theme_image,
             billing::billing_upsert,
             billing::billing_query,
             billing::billing_get_by_task,

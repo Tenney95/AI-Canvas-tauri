@@ -1,5 +1,6 @@
 import type { AppearanceBackgroundImage, AppearanceMode, AppearanceTheme } from '../../types';
 import { getBuiltinAppearanceTheme, normalizeAppearanceBackgroundImage, normalizeAppearanceTheme } from './appearanceDefaults';
+import { resolveThemeImageSource } from '../fs/themeAssets';
 
 export function resolveAppearanceMode(mode: AppearanceMode | undefined): 'dark' | 'light' {
   if (mode === 'dark' || mode === 'light') return mode;
@@ -55,7 +56,7 @@ function createRuntimeImageResolver(root: HTMLElement) {
   const used = new Set<string>();
   return {
     resolve(dataUrl: string): string | undefined {
-      if (dataUrl.length <= INLINE_IMAGE_LIMIT) return dataUrl;
+      if (dataUrl.length <= INLINE_IMAGE_LIMIT) return resolveThemeImageSource(dataUrl);
       const cached = cache.get(dataUrl);
       if (cached) {
         used.add(dataUrl);
@@ -87,7 +88,7 @@ function createRuntimeImageResolver(root: HTMLElement) {
 
 function appearanceImageLayer(
   image: AppearanceBackgroundImage | undefined,
-  resolveImageUrl: (dataUrl: string) => string | undefined = (dataUrl) => dataUrl,
+  resolveImageUrl: (dataUrl: string) => string | undefined = resolveThemeImageSource,
 ): string {
   const safe = normalizeAppearanceBackgroundImage(image);
   if (safe?.kind !== 'image' || !safe.imageDataUrl) return 'none';

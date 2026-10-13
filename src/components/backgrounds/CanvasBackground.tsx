@@ -4,6 +4,7 @@
 import { lazy, Suspense, useSyncExternalStore } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { installSystemAppearanceListener, resolveAppearanceMode, resolveAppearanceTheme } from '../../services/appearance/appearanceRuntime';
+import { resolveThemeImageSource } from '../../services/fs/themeAssets';
 
 // 懒加载：两个主题背景引入 three / postprocessing（体积大户），仅在选中对应主题时才加载
 const SolarSystemBackground = lazy(() => import('./SolarSystemBackground'));
@@ -27,7 +28,7 @@ export default function CanvasBackground() {
   const resolvedAppearance = currentAppearance ? resolveAppearanceTheme(currentAppearance) : undefined;
   const backgroundKind = resolvedAppearance?.canvas?.kind ?? canvasBackground ?? 'default';
   const backgroundColor = resolvedAppearance?.canvas?.color ?? offWhiteBackgroundColor;
-  const backgroundImage = resolvedAppearance?.canvas?.imageDataUrl ?? customBgUrl;
+  const backgroundImage = resolveThemeImageSource(resolvedAppearance?.canvas?.imageDataUrl ?? customBgUrl);
   const backgroundOpacity = resolvedAppearance?.canvas?.imageOpacity ?? customBgOpacity;
 
   if (performanceMode && (

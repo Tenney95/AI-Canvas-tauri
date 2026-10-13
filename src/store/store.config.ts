@@ -677,6 +677,12 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         setBaseDataDir(merged.baseDataDir);
         await syncAuthorizedDirectories(merged);
         directoriesSynced = true;
+        try {
+          await import('../services/billing/volcengineBillingService')
+            .then(({ syncBillingStoragePath }) => syncBillingStoragePath(merged));
+        } catch {
+          get().showToast('设置已保存，但火山方舟账本目录未能同步，原账本已保留；请检查目录权限或同名账本冲突', 'error');
+        }
         if (committedFailure !== undefined) throw committedFailure;
         if (unstored.length) throw new Error('配置已保存，但凭据存储不可用，API Key 仅本次会话有效');
         rawSet({ configSaveStatus: get().configDirty ? 'dirty' : 'saved', configSaveError: null });
@@ -765,10 +771,11 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     try {
       setBaseDataDir(merged.baseDataDir);
       await syncAuthorizedDirectories(merged);
-      if (merged.volcengineBillingPath) {
+      try {
         await import('../services/billing/volcengineBillingService')
-          .then(({ setBillingStoragePath }) => setBillingStoragePath(merged.volcengineBillingPath!))
-          .catch(() => {});
+          .then(({ syncBillingStoragePath }) => syncBillingStoragePath(merged));
+      } catch {
+        get().showToast('火山方舟账本目录未能同步，原账本已保留；请检查保存根目录或单独设置的账本目录', 'error');
       }
     } catch {
       get().showToast('配置已加载，但文件目录授权同步失败', 'error');

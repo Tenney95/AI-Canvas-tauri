@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import { isTauriEnv } from '../fs/core';
+import { mkdir } from '@tauri-apps/plugin-fs';
+import { getBaseDir, isTauriEnv, joinPath } from '../fs/core';
 import { useAppStore } from '../../store/useAppStore';
+import type { AppConfig } from '../../types';
 import type { PriceQuote } from './volcenginePricing';
 
 export type BillingStatus = 'submitting' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
@@ -40,9 +42,32 @@ export interface BillingFilter {
 
 export interface BillingPage { items: BillingRun[]; total: number; estimatedMicros: number; calculatedMicros: number }
 
+export const BILLING_STORAGE_CHANGED_EVENT = 'billing-storage-changed';
+let synchronizedDirectory: string | null = null;
+
 export async function setBillingStoragePath(path: string): Promise<string> {
   if (!isTauriEnv() || !path.trim()) return '';
-  return invoke<string>('billing_set_storage_path', { path: path.trim() });
+  try {
+    const directory = path.trim();
+    const result = await invoke<string>('billing_set_storage_path', { path: directory });
+    synchronizedDirectory = directory;
+    window.dispatchEvent(new Event(BILLING_STORAGE_CHANGED_EVENT));
+    return result;
+  } catch (error) {
+    throw new Error(typeof error === 'string' ? error : '账本目录切换失败，原账本已保留', { cause: error });
+  }
+}
+
+/** 配置与目录授权完成后同步；未单独设置账本目录时，跟随文件保存根目录。 */
+export async function syncBillingStoragePath(config: Pick<AppConfig, 'volcengineBillingPath'>): Promise<void> {
+  if (!isTauriEnv()) return;
+  const customDirectory = config.volcengineBillingPath?.trim();
+  const root = customDirectory ? null : await getBaseDir();
+  const directory = customDirectory || (root ? joinPath(root, 'billing') : null);
+  if (!directory) throw new Error('无法确定账本的文件保存根目录');
+  if (synchronizedDirectory === directory) return;
+  if (!customDirectory) await mkdir(directory, { recursive: true });
+  await setBillingStoragePath(directory);
 }
 
 export const getBillingStoragePath = () =>

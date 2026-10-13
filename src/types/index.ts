@@ -586,6 +586,7 @@ export type AppearanceCanvasKind = CanvasBackground | 'color' | 'image';
 /** 底色保留为颜色令牌，图片独立叠加，切回纯色时恢复原配色。 */
 export interface AppearanceBackgroundImage {
   kind: 'color' | 'image';
+  /** 桌面端为 theme-asset:摘要.扩展名；兼容旧版内嵌 Data URL，字段名保留以兼容旧预设。 */
   imageDataUrl?: string;
   imageFit: 'cover' | 'contain' | 'fill';
 }
@@ -638,6 +639,7 @@ export interface AppearanceUiTokens {
 export interface AppearanceCanvasConfig {
   kind: AppearanceCanvasKind;
   color: string;
+  /** 固定 theme 目录相对引用；旧版 Data URL 在桌面端加载时迁移。 */
   imageDataUrl?: string;
   imageFit: 'cover' | 'contain' | 'fill';
   imagePosition: string;
@@ -678,6 +680,7 @@ export interface AppearanceHandleConfig {
   color: string;
   hoverColor: string;
   size: number;
+  /** 固定 theme 目录相对引用；旧版 Data URL 在桌面端加载时迁移。 */
   imageDataUrl?: string;
   imageFit: 'contain' | 'cover' | 'fill';
   opacity: number;
@@ -705,7 +708,7 @@ export interface AppearanceTheme {
   updatedAt: number;
 }
 
-/** 独立 UI Kit 窗口的 UI 令牌及内嵌背景图片投影，不携带画布图片、文件引用或应用配置。 */
+/** 独立 UI Kit 窗口的 UI 令牌及主题图片相对引用，不携带画布图片、绝对路径或应用配置。 */
 export type AppearanceUiSnapshot = Pick<AppearanceTheme, 'id' | 'name' | 'mode' | 'ui'>;
 
 /** 画布交互模式：default = Figma 风格（左键框选 / 右键·中键平移 / 滚轮缩放）；classic = 传统（左键平移 / Shift+拖动框选 / 滚轮纵横平移 / Ctrl+滚轮缩放） */

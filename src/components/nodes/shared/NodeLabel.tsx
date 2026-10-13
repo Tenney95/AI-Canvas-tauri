@@ -69,12 +69,14 @@ export default function NodeLabel({ kind, label, displayId, isBeta, nodeId: _nod
       {isEditing ? (
         <input
           ref={inputRef}
-          className="node-label-input flex-1 min-w-0 bg-canvas-bg text-xs font-medium text-canvas-text border border-canvas-border rounded px-1 py-0.5 outline-none focus:border-indigo-500"
+          className="node-label-input nodrag nopan select-text cursor-text flex-1 min-w-0 bg-canvas-bg text-xs font-medium text-canvas-text border border-canvas-border rounded px-1 py-0.5 outline-none focus:border-indigo-500"
           value={editText}
           onChange={(e) => setEditText(e.target.value)}
           onBlur={handleSave}
           onKeyDown={handleKeyDown}
           onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
         />
       ) : (
         <span

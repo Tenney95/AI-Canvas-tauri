@@ -1,4 +1,5 @@
 import type { AppearanceTheme, AppearanceMode, AppearanceButtonColors, AppearanceBackgroundImage } from '../../types';
+import { isEmbeddedThemeImage, isThemeImageReference } from '../fs/themeAssets';
 
 const BUTTON_UI = {
   radius: 7,
@@ -151,9 +152,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function normalizeAppearanceBackgroundImage(input: unknown): AppearanceBackgroundImage | undefined {
   if (!isRecord(input)) return undefined;
-  // 仅接受随主题携带的图片，不把外部 URL、文件路径或 CSS 片段交给背景样式；SVG 仅作图片加载。
-  const imageDataUrl = typeof input.imageDataUrl === 'string'
-    && /^data:image\/(?:png|jpeg|webp|svg\+xml);base64,[a-z0-9+/]+={0,2}$/i.test(input.imageDataUrl)
+  // 仅接受固定主题目录的相对引用或旧内嵌图片；不接受绝对路径、外部 URL 或 CSS 片段。
+  const imageDataUrl = isThemeImageReference(input.imageDataUrl) || isEmbeddedThemeImage(input.imageDataUrl)
     ? input.imageDataUrl : undefined;
   return {
     kind: input.kind === 'image' ? 'image' : 'color',
@@ -190,6 +190,8 @@ export function normalizeAppearanceTheme(input: unknown): AppearanceTheme {
   const edge = isRecord(source.edge) ? source.edge : {};
   const handle = isRecord(source.handle) ? source.handle : {};
   const motion = isRecord(source.motion) ? source.motion : {};
+  const canvasImage = Object.hasOwn(canvas, 'imageDataUrl') ? canvas.imageDataUrl : base.canvas.imageDataUrl;
+  const handleImage = Object.hasOwn(handle, 'imageDataUrl') ? handle.imageDataUrl : base.handle.imageDataUrl;
   return {
     ...base,
     ...source,
@@ -211,12 +213,13 @@ export function normalizeAppearanceTheme(input: unknown): AppearanceTheme {
         primary: normalizeButtonColors(button.primary),
       },
     },
-    canvas: { ...base.canvas, ...canvas },
+    canvas: { ...base.canvas, ...canvas, imageDataUrl: isEmbeddedThemeImage(canvasImage) || isThemeImageReference(canvasImage) ? canvasImage : undefined },
     node: { ...base.node, ...node, backgroundImage: normalizeAppearanceBackgroundImage(node.backgroundImage) },
     edge: { ...base.edge, ...edge },
     handle: {
       ...base.handle,
       ...handle,
+      imageDataUrl: isEmbeddedThemeImage(handleImage) || isThemeImageReference(handleImage) ? handleImage : undefined,
       kind: handle.kind === 'image' || handle.kind === 'color'
         ? handle.kind
         : typeof handle.imageDataUrl === 'string' && handle.imageDataUrl.length > 0 ? 'image' : base.handle.kind,
