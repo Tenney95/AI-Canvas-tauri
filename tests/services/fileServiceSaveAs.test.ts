@@ -46,6 +46,7 @@ const MAC_ASSET_URL = 'asset://localhost/%2FUsers%2Fme%2FLibrary%2Fout.png';
 describe('saveNodeOutputToFile', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.readFile.mockReset();
     mocks.save.mockResolvedValue('/Users/me/Desktop/out.png');
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       // 只有原样的 asset URL 才可读；被 convertFileSrc 二次编码后取不到文件
@@ -85,5 +86,76 @@ describe('saveNodeOutputToFile', () => {
     await expect(
       saveNodeOutputToFile({ filePath: '/gone/out.png', nodeType: 'ai-image' }),
     ).rejects.toThrow('ENOENT');
+  });
+
+  it.each(['wav', 'mp3', 'ogg', 'flac', 'aac', 'm4a', 'wma', 'opus'])(
+    '上传的 %s 音频另存为保留原扩展名和文件字节',
+    async (extension) => {
+      const bytes = new Uint8Array([82, 73, 70, 70, 0, 255, 87, 65, 86, 69]);
+      const filePath = `C:\\project.v1\\录音.${extension.toUpperCase()}`;
+      const destPath = `/Users/me/Desktop/录音.${extension}`;
+      mocks.readFile.mockResolvedValue(bytes);
+      mocks.save.mockResolvedValue(destPath);
+
+      const dest = await saveNodeOutputToFile({
+        filePath,
+        fileName: `录音.${extension.toUpperCase()}`,
+        nodeType: 'ai-audio',
+      });
+
+      expect(dest).toBe(destPath);
+      expect(mocks.save).toHaveBeenCalledWith({
+        defaultPath: `录音.${extension}`,
+        filters: [{ name: '音频文件', extensions: [extension] }, { name: '所有文件', extensions: ['*'] }],
+      });
+      expect(mocks.readFile).toHaveBeenCalledWith(filePath);
+      expect(mocks.writeFile).toHaveBeenCalledWith(dest, bytes);
+    },
+  );
+
+  it('音频本地文件的格式优先于展示文件名', async () => {
+    mocks.readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    await saveNodeOutputToFile({
+      filePath: '/project/录音.wav',
+      fileName: '已改名.mp3',
+      nodeType: 'source-audio',
+    });
+
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: '已改名.wav' }));
+  });
+
+  it.each([
+    { fileName: '录音.flac', mediaUrl: 'data:application/octet-stream;base64,AQID', defaultPath: '录音.flac' },
+    { mediaUrl: 'data:audio/x-wav;base64,AQID', defaultPath: 'output.wav' },
+    { mediaUrl: 'data:audio/flac;base64,AQID', defaultPath: 'output.flac' },
+    { mediaUrl: 'data:audio/mp4;base64,AQID', defaultPath: 'output.m4a' },
+    { mediaUrl: MAC_ASSET_URL.replace('out.png', '录音.wav'), defaultPath: 'output.wav' },
+    { mediaUrl: 'https://example.com/view?filename=录音.ogg', defaultPath: 'output.ogg' },
+  ])('无本地路径时从文件名或媒体格式推断 $defaultPath', async ({ defaultPath, ...source }) => {
+    const destPath = `/Users/me/Desktop/${defaultPath}`;
+    mocks.save.mockResolvedValue(destPath);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    } as Response);
+
+    await saveNodeOutputToFile({ ...source, nodeType: 'ai-audio' });
+
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({
+      defaultPath,
+      filters: [{ name: '音频文件', extensions: [defaultPath.split('.').pop()] }, { name: '所有文件', extensions: ['*'] }],
+    }));
+    expect(mocks.writeFile).toHaveBeenCalledWith(destPath, new Uint8Array([1, 2, 3]));
+  });
+
+  it('取消音频另存为不读取或写入文件', async () => {
+    mocks.save.mockResolvedValue(null);
+    await expect(saveNodeOutputToFile({
+      filePath: '/project/录音.wav',
+      fileName: '录音.wav',
+      nodeType: 'ai-audio',
+    })).resolves.toBeNull();
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 });

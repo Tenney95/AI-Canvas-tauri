@@ -908,7 +908,12 @@ function extractFileNameFromUrl(url: string, fallbackPrefix: string): string {
 const MIME_TO_EXT: Record<string, string> = {
   'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
   'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
-  'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg', 'audio/aac': '.aac',
+  'audio/mpeg': '.mp3', 'audio/mp3': '.mp3',
+  'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/wave': '.wav',
+  'audio/ogg': '.ogg', 'audio/aac': '.aac',
+  'audio/flac': '.flac', 'audio/x-flac': '.flac',
+  'audio/mp4': '.m4a', 'audio/x-m4a': '.m4a',
+  'audio/opus': '.opus', 'audio/x-ms-wma': '.wma',
 };
 
 /** 从 URL 路径或 MIME 推断文件扩展名（带点），都失败时按 fallbackPrefix 给默认值 */
@@ -1498,8 +1503,18 @@ function getDefaultExtension(nodeType: string): string {
   }
 }
 
+/** 音频另存为只复制原始字节，扩展名沿用本地文件，再回退到文件名、URL 或 MIME。 */
+function getAudioSaveExtension(filePath?: string, fileName?: string, mediaUrl?: string): string {
+  for (const source of [filePath, fileName, localMediaUrlToPath(mediaUrl)]) {
+    const extension = source?.split(/[\\/]/).pop()?.match(/\.[^.]+$/)?.[0];
+    if (extension) return extension.toLowerCase();
+  }
+  const mime = /^data:([^;,]+)/i.exec(mediaUrl || '')?.[1]?.toLowerCase();
+  return guessExtension(mediaUrl || '', mime, 'audio');
+}
+
 /** 根据节点类型和默认扩展名生成文件过滤器 */
-function getSaveFilter(nodeType: string): { name: string; extensions: string[] }[] {
+function getSaveFilter(nodeType: string, defaultExtension: string): { name: string; extensions: string[] }[] {
   switch (nodeType) {
     case 'ai-text':      return [{ name: '文本文件', extensions: ['txt'] }, { name: '所有文件', extensions: ['*'] }];
     case 'ai-markdown':  return [{ name: 'Markdown 文件', extensions: ['md'] }, { name: '所有文件', extensions: ['*'] }];
@@ -1509,7 +1524,7 @@ function getSaveFilter(nodeType: string): { name: string; extensions: string[] }
     case 'ai-video':
     case 'source-video': return [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov'] }, { name: '所有文件', extensions: ['*'] }];
     case 'ai-audio':
-    case 'source-audio': return [{ name: '音频文件', extensions: ['mp3', 'wav', 'ogg'] }, { name: '所有文件', extensions: ['*'] }];
+    case 'source-audio': return [{ name: '音频文件', extensions: [defaultExtension.slice(1)] }, { name: '所有文件', extensions: ['*'] }];
     default:             return [{ name: '所有文件', extensions: ['*'] }];
   }
 }
@@ -1530,7 +1545,9 @@ export async function saveNodeOutputToFile(opts: {
   fileName?: string;
 }): Promise<string | null> {
   const { filePath, mediaUrl, textOutput, nodeType, fileName } = opts;
-  const defExt = getDefaultExtension(nodeType);
+  const defExt = nodeType === 'ai-audio' || nodeType === 'source-audio'
+    ? getAudioSaveExtension(filePath, fileName, mediaUrl)
+    : getDefaultExtension(nodeType);
 
   if (!isTauriEnv()) {
     console.warn('[fileService] saveNodeOutputToFile: 仅 Tauri 桌面环境支持');
@@ -1545,7 +1562,7 @@ export async function saveNodeOutputToFile(opts: {
   defaultName += defExt;
 
   // Open save dialog
-  const filters = getSaveFilter(nodeType);
+  const filters = getSaveFilter(nodeType, defExt);
   const destPath = await save({
     defaultPath: defaultName,
     filters,

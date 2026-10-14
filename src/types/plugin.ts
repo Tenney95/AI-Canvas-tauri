@@ -431,12 +431,23 @@ export interface AvailablePluginNode {
   permissions: PluginPermission[];
 }
 
+/** 仅供选择器展示的分组白名单，不参与模型执行或厂商路由。 */
+export interface PluginModelGroupSummary {
+  id: string;
+  name: string;
+  description?: string;
+  badgeText?: string;
+  tone?: 'brand' | 'success' | 'info' | 'danger' | 'warning';
+}
+
 export interface PluginModelSummary {
   id: string;
   name: string;
   provider: string;
   category: GeneralModelCategory;
   description?: string;
+  /** 与宿主模型菜单一致的展示分组；旧宿主缺省时可按 provider 展示。 */
+  group?: PluginModelGroupSummary;
   inputModalities?: Array<'text' | 'image'>;
   /** 脱敏参数能力；不包含协议、服务地址或凭据。 */
   videoCapability?: VideoModelCapability;

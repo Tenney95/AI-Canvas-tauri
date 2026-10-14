@@ -17,6 +17,13 @@ declare global {
 export type * from '../src/types/plugin';
 
 /**
+ * 模型目录可附带 group 展示白名单（id/name/description/badgeText/tone）。
+ * 使用 UI Kit 共用模型选择器按 group 分组，旧宿主缺省时按 provider 兼容展示。
+ * group 不代表执行厂商；模型调用始终提交原始 id，不能据此改写 provider 或生成请求。
+ * 目录不包含 API Key、服务地址、厂商配置或 ComfyUI 工作流正文。
+ */
+
+/**
  * video.replicaPipeline：runEffect(video.replicaJob.start) 接受整个本地视频任务。
  * 模型目录 videoCapability 用于分段预览；宿主按实际配置再次预检。
  * 接受后只用返回 jobId 查询/停止；不得沿用 UI resourceId 或引用 token 执行后台步骤。

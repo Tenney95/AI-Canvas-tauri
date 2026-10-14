@@ -20,6 +20,7 @@ import {
 import { useAppStore } from '../../../store/useAppStore';
 import { useT } from '../../../i18n';
 import ProviderBadge from '../../shared/ProviderBadge';
+import { ModelMenu, type ModelPickerGroup } from '../../shared/ModelPicker';
 import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL, probeComfyServer } from '../../../services/comfyServers';
 
@@ -375,6 +376,51 @@ export default function ModelSelector({
     });
   };
 
+  // 业务目录、凭据可用性与模型偏好留在宿主，公用菜单只接收展示条目。
+  const workflowGroupId = '__workflows';
+  const menuGroups: ModelPickerGroup[] = filteredGroups.map((group) => ({
+    id: group.id,
+    label: group.name,
+    description: group.description,
+    icon: renderProviderBadge(group, undefined, 'small'),
+    disabled: !isGroupAvailable(group.id),
+    disabledReason: isGroupAvailable(group.id) ? undefined : t('请先在设置中配置 {name} API Key', { name: group.name }),
+    items: group.models.map((model) => ({ value: model.value, label: model.label, description: model.description })),
+  }));
+  if (targetCategory && onWorkflowSelect && visibleWorkflows.length > 0) {
+    menuGroups.push({
+      id: workflowGroupId,
+      label: t('工作流'),
+      description: t('ComfyUI、RunningHub 与工作流 API'),
+      badgeText: 'WF',
+      className: 'model-group-wf',
+      items: visibleWorkflows.map((workflow) => ({
+        value: `workflow:${workflow.id}`, label: workflow.name, description: workflow.fileName,
+        icon: <span className="text-model-icon text-model-icon-mini wf-dot" />,
+      })),
+    });
+  }
+  const expandedGroupIds = [
+    ...filteredGroups.filter((group) => !collapsedGroups.has(group.id)).map((group) => group.id),
+    ...(!workflowsCollapsed ? [workflowGroupId] : []),
+  ];
+  const selectMenuItem = (value: string) => {
+    const group = filteredGroups.find((candidate) => candidate.models.some((model) => model.value === value));
+    const model = group?.models.find((candidate) => candidate.value === value);
+    if (group && model && isGroupAvailable(group.id)) {
+      saveModelPref(nodeType, model.value);
+      onSelect(model);
+      onWorkflowSelect?.(undefined);
+      setOpen(false);
+      return;
+    }
+    const workflow = visibleWorkflows.find((candidate) => `workflow:${candidate.id}` === value);
+    if (workflow && onWorkflowSelect) {
+      onWorkflowSelect(workflow.id);
+      setOpen(false);
+    }
+  };
+
   return (
     <div className={`model-selector${appearance === 'pill' ? ' model-selector--pill' : ''}`} ref={ref}>
       <button
@@ -459,137 +505,20 @@ export default function ModelSelector({
           ref={dropdownRef}
           className={`model-dropdown${dropdownDir === 'down' ? ' drop-down' : ''}${dropdownAlignRight ? ' drop-align-right' : ''}`}
         >
-          {/* 模型供应商分组 */}
-          {filteredGroups.map((group) => {
-            const isCollapsed = collapsedGroups.has(group.id);
-            const hasActiveModel = group.models.some((m) => m.value === effectiveModel);
-            const groupAvailable = isGroupAvailable(group.id);
-            return (
-              <div key={group.id} className={`model-group${hasActiveModel ? ' has-active' : ''}`}>
-                <button
-                  type="button"
-                  className={`model-group-header${groupAvailable ? '' : ' disabled'}`}
-                  data-tooltip={groupAvailable ? undefined : t('请先在设置中配置 {name} API Key', { name: group.name })}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleGroup(group.id);
-                  }}
-                >
-                  {renderProviderBadge(group, undefined, 'small')}
-                  <div className="model-group-info">
-                    <div className="model-group-name">{group.name}</div>
-                    <div className="model-group-desc">{group.description}</div>
-                  </div>
-                  {groupAvailable ? (
-                    <svg
-                      className={`model-group-chevron${isCollapsed ? ' collapsed' : ''}`}
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <polyline points="6 9 12 15 18 9" />
-                    </svg>
-                  ) : (
-                    <svg className="model-lock-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </svg>
-                  )}
-                </button>
-                <div className={`model-group-items model-group-items-models${isCollapsed ? ' collapsed' : ''}`}>
-                  {group.models.map((model) => (
-                    <button
-                      key={model.value}
-                      type="button"
-                      className={`model-item model-item-model${effectiveModel === model.value ? ' active' : ''}${groupAvailable ? '' : ' disabled'}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!groupAvailable) return;
-                        saveModelPref(nodeType, model.value);
-                        onSelect(model);
-                        onWorkflowSelect?.(undefined);
-                        setOpen(false);
-                      }}
-                    >
-                      <div className="model-item-info">
-                        <div className="model-item-name" title={model.label}>{model.label}</div>
-                        {model.description && (
-                          <div className="model-item-desc" title={model.description}>{model.description}</div>
-                        )}
-                      </div>
-                      <span className="model-item-status" aria-hidden="true">
-                        {effectiveModel === model.value && (
-                          <svg className="model-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                            <polyline points="20 6 9 17 4 12" />
-                          </svg>
-                        )}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-
-          {/* ComfyUI 工作流区域 */}
-          {targetCategory && onWorkflowSelect && visibleWorkflows.length > 0 && (
-            <div className="model-group model-group-wf">
-              <button
-                type="button"
-                className="model-group-header"
-                aria-expanded={!workflowsCollapsed}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setWorkflowsCollapsed((collapsed) => !collapsed);
-                }}
-              >
-                <span className="text-model-icon text-model-icon-wf">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-                  </svg>
-                </span>
-                <div className="model-group-info">
-                  <div className="model-group-name">{t('工作流')}</div>
-                  <div className="model-group-desc">{t('ComfyUI、RunningHub 与工作流 API')}</div>
-                </div>
-                <svg className={`model-group-chevron${workflowsCollapsed ? ' collapsed' : ''}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
-              <div className={`model-group-items${workflowsCollapsed ? ' collapsed' : ''}`} inert={workflowsCollapsed}>
-                {/* 各匹配工作流 */}
-                {visibleWorkflows.map((wf) => (
-                  <button
-                    key={wf.id}
-                    type="button"
-                    className={`model-item${selectedWorkflowId === wf.id ? ' active' : ''}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onWorkflowSelect(wf.id);
-                      setOpen(false);
-                    }}
-                  >
-                    <span className="text-model-icon text-model-icon-mini wf-dot" />
-                    <div className="model-item-info">
-                      <div className="model-item-name">{wf.name}</div>
-                      {wf.fileName && (
-                        <div className="model-item-desc">{wf.fileName}</div>
-                      )}
-                    </div>
-                    {selectedWorkflowId === wf.id && (
-                      <svg className="model-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          <ModelMenu
+            groups={menuGroups}
+            value={selectedWorkflowId ? `workflow:${selectedWorkflowId}` : effectiveModel}
+            onChange={selectMenuItem}
+            onClose={() => {
+              setOpen(false);
+              ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger')?.focus({ preventScroll: true });
+            }}
+            expandedGroupIds={expandedGroupIds}
+            onGroupToggle={(groupId) => {
+              if (groupId === workflowGroupId) setWorkflowsCollapsed((collapsed) => !collapsed);
+              else toggleGroup(groupId);
+            }}
+          />
         </div>
       )}
     </div>

@@ -1,14 +1,14 @@
 /**
  * MentionEditor @提及编辑器 — 支持 @引用其他节点输出的富文本输入框，实时渲染为彩色标签芯片
  */
-import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useId, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import type { PromptSubmitShortcut, WorkflowIONodeType } from '../../../types';
 import { resolvePromptEnterAction } from '../../../utils/promptSubmitShortcut';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../../store/useAppStore';
 import { Icon } from '@iconify/react';
-import { listGlobalFiles, listExternalFolderFiles, type AssetFileEntry } from '../../../services/fileService';
+import { listGlobalFolderContents, listExternalFolderContents, type AssetFileEntry } from '../../../services/fileService';
 import { getAllAssetMeta } from '../../../services/indexedDbService';
 import { springSmooth, fadeFast } from '../../../utils/motion';
 import { calcAnchoredPosition, calcFixedPosition } from '../../../utils/popupPosition';
@@ -32,7 +32,7 @@ import {
 } from '../../../types/dramaAssets';
 import type { CharacterReferenceImage } from '../../../types/dramaAssets';
 import { AVATAR_ASPECT, CHARACTER_REFERENCE_KIND_LABELS } from '../../character/characterReferencePresentation';
-import { resolveDramaActionMediaRef, resolveDramaVoiceRef } from '../../../services/dramaAssetPrompt';
+import { findDramaAsset, resolveDramaActionMediaRef, resolveDramaVoiceRef } from '../../../services/dramaAssetPrompt';
 import {
   bestNodeThumb,
   buildAssetChipEl,
@@ -46,10 +46,12 @@ import {
   normalizeChipSlots,
   renderPromptToNodes,
   serializeDOM,
+  syncGlobalCharacterReferenceChips,
   syncImageReferenceLabels,
   ZWSP,
 } from './mentionEditorDom';
 import {
+  matchesMentionQuery,
   resolveCanvasMentionNodes,
   resolveDramaMentionItems,
   resolveWorkflowMentionNodes,
@@ -63,6 +65,7 @@ const MEDIA_ICONS: Record<'image' | 'video' | 'audio' | 'text', string> = {
   text: 'mdi:text-box-outline',
 };
 const DRAMA_KIND_LABELS: Record<string, string> = { character: '角色', scene: '场景', prop: '道具' };
+const SEARCH_PAGE_SIZE = 60;
 
 // ── Props ──
 export interface MentionEditorProps {
@@ -108,9 +111,18 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   // ── @ Mention state ──
   const [showMention, setShowMention] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
+  // 弹窗搜索独立于提示词中的 @ 查询，不能把搜索内容写进正文。
+  const [resourceSearchExpanded, setResourceSearchExpanded] = useState(false);
+  const [resourceSearchQuery, setResourceSearchQuery] = useState('');
+  const [resourceSearchVisible, setResourceSearchVisible] = useState(SEARCH_PAGE_SIZE);
+  const [resourceSearchActiveKey, setResourceSearchActiveKey] = useState<string | null>(null);
+  const resourceSearchListId = useId();
+  const globalCharactersRequestedRef = useRef(false);
   const mentionEditorWrapRef = useRef<HTMLDivElement>(null);
   const mentionDropdownRef = useRef<HTMLDivElement>(null);
   const [mentionDropdownPosition, setMentionDropdownPosition] = useState({ left: 12, top: 0 });
+  const mentionDropdownHeightRef = useRef<number | null>(null);
+  const [mentionDropdownResizing, setMentionDropdownResizing] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
   const historyRef = useRef(new MentionEditorHistory());
   const syncedPromptRef = useRef(prompt);
@@ -120,12 +132,14 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const selectFirstMentionRef = useRef<(() => void) | null>(null);
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
   const cancelChipDragRef = useRef<(() => void) | null>(null);
-  const { nodes, edges, workflows, dramaAssets, currentProjectId } = useAppStore(
+  const { nodes, edges, workflows, dramaAssets, globalCharacters, globalCharactersLoading, currentProjectId } = useAppStore(
     useShallow((state) => ({
       nodes: state.nodes,
       edges: state.edges,
       workflows: state.workflows,
       dramaAssets: state.dramaAssets,
+      globalCharacters: state.globalCharacters,
+      globalCharactersLoading: state.globalCharactersLoading,
       currentProjectId: state.currentProjectId,
     })),
   );
@@ -145,6 +159,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const [assetList, setAssetList] = useState<AssetFileEntry[]>([]);
   const [assetTagMap, setAssetTagMap] = useState<Record<string, string[]>>({});
   const [assetLoading, setAssetLoading] = useState(false);
+  const [assetLoadError, setAssetLoadError] = useState(false);
+  const [assetScanTruncated, setAssetScanTruncated] = useState(false);
+  const [assetLoadRevision, setAssetLoadRevision] = useState(0);
   const [assetSearch, setAssetSearch] = useState('');
   const [activeAssetTag, setActiveAssetTag] = useState<string | null>(null);
   const [assetVisible, setAssetVisible] = useState(40);
@@ -171,11 +188,18 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     const ownerChanged = owner.projectId !== currentProjectId || owner.nodeId !== nodeId;
     if (ownerChanged) {
       composingRef.current = false;
+      savedMentionRangeRef.current = null;
+      setShowMention(false);
+      setShowAssetPicker(false);
+      setMentionQuery('');
+      setAssetList([]);
+      setAssetTagMap({});
       editorOwnerRef.current = { projectId: currentProjectId, nodeId };
       historyRef.current.clear();
     }
     // IME 组合输入期间保留浏览器的文本节点，结束后再通过输入基线合并新引用。
     if (composingRef.current) return;
+    syncGlobalCharacterReferenceChips(el);
     syncImageReferenceLabels(el, nodeMetaMap);
     const previousPrompt = syncedPromptRef.current;
     syncedPromptRef.current = prompt;
@@ -215,7 +239,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     syncImageReferenceLabels(el, nodeMetaMap);
     if (cursorOffset !== null) restoreCursor(el, cursorOffset);
     syncHistory();
-  }, [compositionRevision, currentProjectId, nodeId, prompt, nodeMetaMap]);
+  }, [compositionRevision, currentProjectId, nodeId, prompt, nodeMetaMap, globalCharacters]);
 
   // ── Cursor save/restore ──
   const saveCursor = (root: HTMLElement): number => {
@@ -292,6 +316,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const emitDOM = useCallback((group: string | null = null) => {
     const el = editorRef.current;
     if (!el) return;
+    syncGlobalCharacterReferenceChips(el);
     syncImageReferenceLabels(el, nodeMetaMap);
     const nextPrompt = serializeDOM(el);
     const previousPrompt = syncedPromptRef.current;
@@ -311,6 +336,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     if (!snapshot) return;
     const previousPrompt = syncedPromptRef.current;
     restoreMentionEditorSnapshot(el, snapshot);
+    syncGlobalCharacterReferenceChips(el);
     syncImageReferenceLabels(el, nodeMetaMap);
     syncedPromptRef.current = snapshot.prompt;
     lastFocusedWfValueRef.current = (document.activeElement as HTMLElement | null)?.closest<HTMLSpanElement>('.prompt-chip-wf-value') ?? null;
@@ -346,10 +372,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   );
 
   const filteredCanvasMentions = mentionQuery
-    ? canvasMentionNodes.filter((n) => n.label.toLowerCase().includes(mentionQuery.toLowerCase()))
+    ? canvasMentionNodes.filter((n) => matchesMentionQuery(mentionQuery, n.searchValues ?? [n.id, n.label, n.displayId, n.displayId != null ? `#${n.displayId}` : undefined]))
     : canvasMentionNodes;
   const filteredWorkflowMentions = mentionQuery
-    ? workflowMentionNodes.filter((n) => n.label.toLowerCase().includes(mentionQuery.toLowerCase()))
+    ? workflowMentionNodes.filter((n) => matchesMentionQuery(mentionQuery, [n.id, n._ioNodeId, n.label]))
     : workflowMentionNodes;
 
   const currentNodeType = nodes.find((node) => node.id === nodeId)?.data.type;
@@ -359,6 +385,23 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     if (!showMention) return [];
     return resolveDramaMentionItems(dramaAssets, mentionQuery, currentNodeType);
   }, [showMention, dramaAssets, mentionQuery, currentNodeType]);
+  const allDramaMentionItems = useMemo(
+    () => showMention ? resolveDramaMentionItems(dramaAssets, '', currentNodeType, globalCharacters) : [],
+    [showMention, dramaAssets, currentNodeType, globalCharacters],
+  );
+  const projectMentionNodes = useMemo(
+    () => showMention && resourceSearchExpanded ? resolveCanvasMentionNodes(nodeId, nodes, edges, 'project') : [],
+    [showMention, resourceSearchExpanded, nodeId, nodes, edges],
+  );
+  const hasGlobalCharacterReference = prompt.includes('@drama{global/');
+  useEffect(() => {
+    const searching = showMention && resourceSearchExpanded;
+    if (!searching && (!hasGlobalCharacterReference || globalCharactersRequestedRef.current)) return;
+    const state = useAppStore.getState();
+    // 全局角色按需加载，不依赖用户先打开角色库；读取失败由现有 Action 提示。
+    globalCharactersRequestedRef.current = true;
+    if (!state.globalCharactersLoading) void state.loadGlobalCharacters();
+  }, [showMention, resourceSearchExpanded, hasGlobalCharacterReference]);
 
   // 角色参考图 / 动作列表 / 单个动作的素材选择。
   const [dramaRefPickerId, setDramaRefPickerId] = useState<string | null>(null);
@@ -370,6 +413,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const [dramaKind, setDramaKind] = useState<string>('all');
   useEffect(() => {
     if (!showMention) {
+      setResourceSearchExpanded(false);
+      setResourceSearchQuery('');
+      setResourceSearchVisible(SEARCH_PAGE_SIZE);
+      setResourceSearchActiveKey(null);
       setDramaRefPickerId(null);
       setDramaVoicePicker(false);
       setDramaActionPicker(false);
@@ -550,6 +597,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   // ── Mention selection handlers ──
   const handleSelectCanvasMention = useCallback(
     (refNodeId: string, refLabel: string) => {
+      if (useAppStore.getState().currentProjectId !== currentProjectId) return;
       // Focus the editor FIRST so the selection we restore below
       // survives across the contentEditable boundary (workflow chip value area).
       const el = editorRef.current;
@@ -568,11 +616,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       setShowMention(false);
       setMentionQuery('');
     },
-    [deleteAtChar, insertChipAtCursor],
+    [currentProjectId, deleteAtChar, insertChipAtCursor],
   );
 
   const handleSelectWorkflowMention = useCallback(
     (ioNodeId: string, ioNodeTitle: string, ioNodeType: WorkflowIONodeType) => {
+      if (useAppStore.getState().currentProjectId !== currentProjectId) return;
       // Focus the editor FIRST so the selection we restore below
       // survives across the contentEditable boundary (workflow chip value area).
       const el = editorRef.current;
@@ -591,7 +640,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       setShowMention(false);
       setMentionQuery('');
     },
-    [deleteAtChar, insertWorkflowChipAtCursor],
+    [currentProjectId, deleteAtChar, insertWorkflowChipAtCursor],
   );
 
   const insertDramaChipAtCursor = useCallback(
@@ -631,6 +680,17 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     }
   }, []);
 
+  // 收起搜索时返回提示词光标，仍保留 @ 范围供下一次选择使用。
+  const focusMentionCursor = useCallback(() => {
+    const editor = editorRef.current;
+    const saved = savedMentionRangeRef.current;
+    editor?.focus({ preventScroll: true });
+    if (!editor || !saved || !editor.contains(saved.startContainer) || !editor.contains(saved.endContainer)) return;
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(saved.cloneRange());
+  }, []);
+
   /** 二级菜单：引用角色的某一张参考图，或把全部参考图拼成一张 */
   const handleSelectDramaReference = useCallback(
     (
@@ -638,6 +698,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       pick: string,
       thumb?: string,
     ) => {
+      if (useAppStore.getState().currentProjectId !== currentProjectId) return;
       restoreMentionCursor();
       deleteAtChar();
       insertDramaChipAtCursor(
@@ -650,13 +711,14 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       setMentionQuery('');
       setDramaRefPickerId(null);
     },
-    [restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
+    [currentProjectId, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
   );
 
   const handleSelectDramaMention = useCallback(
-    (item: { id: string; name: string; kind: string; imageNodeId?: string; imageUrl?: string }) => {
+    (item: ReturnType<typeof resolveDramaMentionItems>[number]) => {
+      if (useAppStore.getState().currentProjectId !== currentProjectId) return;
       // 仅当绑图节点上已有真实图片时，才 @ 图像节点；否则始终 @drama 芯片（解析时展开单条简介）
-      if (item.imageNodeId) {
+      if (item.imageNodeId && !item.id.startsWith('global/')) {
         const imgNode = nodes.find((n) => n.id === item.imageNodeId);
         const hasImage = !!(
           (imgNode?.data?.imageUrl as string | undefined)
@@ -671,17 +733,17 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       restoreMentionCursor();
       deleteAtChar();
       let thumb: string | undefined;
-      if (item.imageNodeId) {
+      if (item.imageNodeId && !item.id.startsWith('global/')) {
         const n = nodes.find((x) => x.id === item.imageNodeId);
         thumb = bestNodeThumb(n?.data ?? {}) || item.imageUrl;
       } else {
-        thumb = item.imageUrl;
+        thumb = item.imageUrl || item.referenceImages?.find((reference) => reference.imageUrl)?.imageUrl;
       }
       insertDramaChipAtCursor(item.id, item.name, item.kind, thumb);
       setShowMention(false);
       setMentionQuery('');
     },
-    [nodes, handleSelectCanvasMention, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
+    [currentProjectId, nodes, handleSelectCanvasMention, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
   );
 
   // ── Insert an asset reference chip ──
@@ -723,15 +785,22 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     return () => document.removeEventListener('keydown', onKey, true);
   }, [showAssetPicker]);
 
-  // 弹窗打开时加载：全局永久资产 + 登记的外部文件夹（去重）+ 标签元数据
+  // 只在搜索/资产弹窗打开时读取目录；键入关键词只过滤本轮缓存。
+  const shouldLoadAssets = showAssetPicker || (showMention && resourceSearchExpanded);
   useEffect(() => {
-    if (!showAssetPicker) return;
+    if (!shouldLoadAssets) return;
     let alive = true;
+    setAssetList([]);
+    setAssetTagMap({});
     setAssetLoading(true);
-    Promise.all([listGlobalFiles(), listExternalFolderFiles(assetFolders ?? [])])
-      .then(async ([globalFiles, folderFiles]) => {
-        const metas = await getAllAssetMeta().catch(() => []);
-        if (!alive) return;
+    setAssetLoadError(false);
+    setAssetScanTruncated(false);
+    void Promise.allSettled([listGlobalFolderContents(), listExternalFolderContents(assetFolders ?? [], { maxFilesPerFolder: 3000 }), getAllAssetMeta()])
+      .then(([globalResult, folderResult, metaResult]) => {
+        if (!alive || useAppStore.getState().currentProjectId !== currentProjectId) return;
+        const globalFiles = globalResult.status === 'fulfilled' ? globalResult.value.files : [];
+        const folderFiles = folderResult.status === 'fulfilled' ? folderResult.value.files : [];
+        const metas = metaResult.status === 'fulfilled' ? metaResult.value : [];
         const seen = new Set<string>();
         const merged: AssetFileEntry[] = [];
         for (const f of [...globalFiles, ...folderFiles]) {
@@ -743,14 +812,20 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         for (const m of metas) if (m.tags?.length) tagMap[m.assetId] = m.tags;
         setAssetList(merged);
         setAssetTagMap(tagMap);
+        setAssetLoadError(globalResult.status === 'rejected' || folderResult.status === 'rejected'
+          || (globalResult.status === 'fulfilled' && globalResult.value.folders.some((folder) => folder.availability === 'offline'))
+          || (folderResult.status === 'fulfilled' && folderResult.value.folders.some((folder) => folder.availability === 'offline')));
+        setAssetScanTruncated((globalResult.status === 'fulfilled' && globalResult.value.truncated)
+          || (folderResult.status === 'fulfilled' && folderResult.value.truncated));
       })
-      .catch(() => { if (alive) { setAssetList([]); setAssetTagMap({}); } })
-      .finally(() => { if (alive) setAssetLoading(false); });
+      .catch(() => { if (alive && useAppStore.getState().currentProjectId === currentProjectId) setAssetLoadError(true); })
+      .finally(() => { if (alive && useAppStore.getState().currentProjectId === currentProjectId) setAssetLoading(false); });
     return () => { alive = false; };
-  }, [showAssetPicker, assetFolders]);
+  }, [shouldLoadAssets, assetFolders, assetLoadRevision, currentProjectId, nodeId]);
 
   const handleSelectAsset = useCallback(
     (file: AssetFileEntry) => {
+      if (useAppStore.getState().currentProjectId !== currentProjectId) return;
       const el = editorRef.current;
       if (el) el.focus();
       const saved = savedMentionRangeRef.current;
@@ -762,9 +837,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       deleteAtChar();
       insertAssetChipAtCursor(file.path, file.assetUrl);
       setShowAssetPicker(false);
+      setShowMention(false);
       setMentionQuery('');
     },
-    [deleteAtChar, insertAssetChipAtCursor],
+    [currentProjectId, deleteAtChar, insertAssetChipAtCursor],
   );
 
   // 标签合并 + 派生标签 chip
@@ -1164,8 +1240,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   }, [nodeId, handleEditorMouseLeave]);
 
   // ── @ 面板数据：输入图（画布节点） / 资产库（短剧资产） / ComfyUI 节点（工作流 IO） ──
-  const dramaThumbOf = useCallback((item: { imageNodeId?: string; imageUrl?: string }) => {
-    if (!item.imageNodeId) return item.imageUrl;
+  const dramaThumbOf = useCallback((item: { imageNodeId?: string; imageUrl?: string; referenceImages?: CharacterReferenceImage[] }) => {
+    if (!item.imageNodeId) return item.imageUrl || item.referenceImages?.find((reference) => reference.imageUrl)?.imageUrl;
     const n = nodes.find((x) => x.id === item.imageNodeId);
     return bestNodeThumb(n?.data ?? {}) || item.imageUrl;
   }, [nodes]);
@@ -1189,11 +1265,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   }));
 
   const drillItem = !isAudioNode && dramaRefPickerId
-    ? dramaMentionItems.find((item) => item.id === dramaRefPickerId)
+    ? allDramaMentionItems.find((item) => item.id === dramaRefPickerId)
     : undefined;
   const drillRefs: CharacterReferenceImage[] = (drillItem?.referenceImages ?? [])
     .filter((reference) => !!reference.imageUrl);
-  const drillCharacter = dramaAssets.characters.find((character) => character.id === drillItem?.id);
+  const drillAsset = drillItem ? findDramaAsset(dramaAssets, drillItem.id, globalCharacters) : undefined;
+  const drillCharacter = drillAsset?.kind === 'character' ? drillAsset : undefined;
   const drillActions = drillCharacter?.actions ?? [];
   const drillAction = drillActions.find((action) => action.id === dramaActionId);
 
@@ -1208,6 +1285,61 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     ];
   })();
 
+  // 默认资产页和全局搜索共用选中逻辑，角色的参考图、动作、声音仍可继续下钻。
+  const buildDramaPickerItem = (item: ReturnType<typeof resolveDramaMentionItems>[number]): MentionPickerItem => {
+    const references = (item.referenceImages ?? []).filter((reference) => !!reference.imageUrl);
+    const multiRef = references.length > 1;
+    const asset = findDramaAsset(dramaAssets, item.id, globalCharacters);
+    const character = asset?.kind === 'character' ? asset : undefined;
+    const hasActions = !!character?.actions?.length;
+    const avatarReference = character?.referenceImages?.find((reference) => reference.id === character.avatarReferenceImageId)
+      ?? character?.referenceImages?.find((reference) => reference.id === character.primaryReferenceImageId)
+      ?? character?.referenceImages?.[0];
+    const avatarCrop = avatarReference?.imageUrl && avatarReference.id === character?.avatarReferenceImageId
+      ? character?.avatarCrop
+      : undefined;
+    const thumb = dramaThumbOf(item) || references[0]?.imageUrl;
+    const hasUsableAction = character?.actions?.some((action) =>
+      action.media?.some((media) => !!resolveDramaActionMediaRef(character, action.id, media.id)),
+    );
+    const hasUsableVoice = isVideoNode && character?.voiceClips?.some((clip) =>
+      !!resolveDramaVoiceRef(character, clip.id),
+    );
+    const emptyCharacter = !!character && !isAudioNode && !thumb && !hasUsableAction && !hasUsableVoice;
+    return {
+      key: `drama:${item.id}`,
+      label: item.name,
+      thumbnailUrl: avatarReference?.imageUrl || thumb,
+      thumbnailCrop: avatarCrop,
+      disabled: emptyCharacter,
+      title: emptyCharacter ? '该角色暂无可引用的素材' : undefined,
+      icon: isAudioNode ? MEDIA_ICONS.audio : item.kind === 'scene' ? 'lucide:mountain' : item.kind === 'prop' ? 'lucide:box' : 'mdi:account-box-outline',
+      badge: isAudioNode ? '音频' : multiRef ? `${references.length} 图` : thumb ? undefined : '简介',
+      onSelect: () => {
+        if (emptyCharacter || useAppStore.getState().currentProjectId !== currentProjectId) return;
+        if (isAudioNode) {
+          if (!item.voice) return;
+          restoreMentionCursor();
+          deleteAtChar();
+          insertDramaChipAtCursor(buildDramaVoiceMentionId(item.id, item.voice.id), item.voice.label, 'voice');
+          setShowMention(false);
+          setMentionQuery('');
+          return;
+        }
+        if (multiRef || hasActions || (isVideoNode && character?.voiceClips?.length)) {
+          setResourceSearchExpanded(false);
+          setResourceSearchQuery('');
+          setPickerTab('assets');
+          setDramaRefPickerId(item.id);
+          setDramaVoicePicker(false);
+          setDramaActionPicker(false);
+          setDramaActionId(null);
+          focusMentionCursor();
+        } else handleSelectDramaMention(item);
+      },
+    };
+  };
+
   const assetTabItems: MentionPickerItem[] = drillItem && drillCharacter && isVideoNode && dramaVoicePicker
     ? (drillCharacter.voiceClips ?? []).map((clip) => ({
       key: `drama-voice:${clip.id}`,
@@ -1216,6 +1348,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       icon: MEDIA_ICONS.audio,
       disabled: !resolveDramaVoiceRef(drillCharacter, clip.id),
       onSelect: () => {
+        if (useAppStore.getState().currentProjectId !== currentProjectId) return;
         const voice = resolveDramaVoiceRef(drillCharacter, clip.id);
         if (!voice) return;
         restoreMentionCursor();
@@ -1235,6 +1368,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         badge: media.kind === 'video' ? '视频' : media.kind === 'gif' ? 'GIF' : '图片',
         disabled: !resolveDramaActionMediaRef(drillCharacter, drillAction.id, media.id),
         onSelect: () => {
+          if (useAppStore.getState().currentProjectId !== currentProjectId) return;
           const selected = resolveDramaActionMediaRef(drillCharacter, drillAction.id, media.id);
           if (!selected) return;
           restoreMentionCursor();
@@ -1280,57 +1414,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     ]
     : dramaMentionItems
       .filter((item) => dramaKind === 'all' || item.kind === dramaKind)
-      .map((item) => {
-        const references = (item.referenceImages ?? []).filter((reference) => !!reference.imageUrl);
-        const multiRef = references.length > 1;
-        const character = item.kind === 'character'
-          ? dramaAssets.characters.find((candidate) => candidate.id === item.id)
-          : undefined;
-        const hasActions = !!character?.actions?.length;
-        const avatarReference = character?.referenceImages?.find((reference) => reference.id === character.avatarReferenceImageId)
-          ?? character?.referenceImages?.find((reference) => reference.id === character.primaryReferenceImageId)
-          ?? character?.referenceImages?.[0];
-        const avatarCrop = avatarReference?.imageUrl && avatarReference.id === character?.avatarReferenceImageId
-          ? character?.avatarCrop
-          : undefined;
-        const thumb = dramaThumbOf(item) || references[0]?.imageUrl;
-        const hasUsableAction = character?.actions?.some((action) =>
-          action.media?.some((media) => !!resolveDramaActionMediaRef(character, action.id, media.id)),
-        );
-        const hasUsableVoice = isVideoNode && character?.voiceClips?.some((clip) =>
-          !!resolveDramaVoiceRef(character, clip.id),
-        );
-        const emptyCharacter = !!character && !isAudioNode && !thumb && !hasUsableAction && !hasUsableVoice;
-        return {
-          key: `drama:${item.id}`,
-          label: item.name,
-          thumbnailUrl: avatarReference?.imageUrl || thumb,
-          thumbnailCrop: avatarCrop,
-          disabled: emptyCharacter,
-          title: emptyCharacter ? '该角色暂无可引用的素材' : undefined,
-          icon: isAudioNode ? MEDIA_ICONS.audio : 'mdi:account-box-outline',
-          badge: isAudioNode ? '音频' : multiRef ? `${references.length} 图` : thumb ? undefined : '简介',
-          onSelect: () => {
-            if (emptyCharacter) return;
-            if (isAudioNode) {
-              if (!item.voice) return;
-              restoreMentionCursor();
-              deleteAtChar();
-              insertDramaChipAtCursor(buildDramaVoiceMentionId(item.id, item.voice.id), item.voice.label, 'voice');
-              setShowMention(false);
-              setMentionQuery('');
-              return;
-            }
-            // 单图或无图但有动作、视频可用声音的角色也能进入素材选择。
-            if (multiRef || hasActions || (isVideoNode && character?.voiceClips?.length)) {
-              setDramaRefPickerId(item.id);
-              setDramaVoicePicker(false);
-              setDramaActionPicker(false);
-              setDramaActionId(null);
-            } else handleSelectDramaMention(item);
-          },
-        };
-      });
+      .map(buildDramaPickerItem);
 
   // 首次打开优先展示有内容的分类；手动切换后保留选择，工作流取消时回到普通分类。
   const defaultTab = nodeTabItems.length > 0 ? 'nodes'
@@ -1341,6 +1425,80 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       : pickerTab ?? defaultTab;
   const activeTabItems = effectiveTab === 'assets' ? assetTabItems
     : effectiveTab === 'workflow' ? workflowTabItems : nodeTabItems;
+
+  const resourceSearchCandidates = useMemo(() => {
+    if (!showMention || !resourceSearchExpanded) return [];
+    const query = resourceSearchQuery;
+    return [
+      ...projectMentionNodes
+        .filter((item) => matchesMentionQuery(query, item.searchValues ?? [item.id, item.label, item.displayId]))
+        .map((item) => ({ source: 'node' as const, item })),
+      ...allDramaMentionItems
+        .filter((item) => matchesMentionQuery(query, [item.id, item.name, DRAMA_KIND_LABELS[item.kind], ...(item.aliases ?? [])]))
+        .map((item) => ({ source: 'drama' as const, item })),
+      ...taggedAssets
+        .filter((item) => item.category === 'image' && matchesMentionQuery(query, [item.name, item.assetId, ...(item.tags ?? [])]))
+        .map((item) => ({ source: 'file' as const, item })),
+      ...workflowMentionNodes
+        .filter((item) => matchesMentionQuery(query, [item.id, item._ioNodeId, item.label]))
+        .map((item) => ({ source: 'workflow' as const, item })),
+    ];
+  }, [showMention, resourceSearchExpanded, resourceSearchQuery, projectMentionNodes, allDramaMentionItems, taggedAssets, workflowMentionNodes]);
+
+  // 在映射卡片之前分批，目录中的大量图片不同时创建 DOM 和缩略图请求。
+  const resourceSearchItems: MentionPickerItem[] = resourceSearchCandidates.slice(0, resourceSearchVisible).map((candidate, index) => {
+    let item: MentionPickerItem;
+    if (candidate.source === 'node') {
+      const node = candidate.item;
+      item = {
+        key: `node:${node.id}`, label: node.label, thumbnailUrl: node.thumbnailUrl,
+        icon: MEDIA_ICONS[node.outputType],
+        badge: node.isSelf ? '自身' : node.displayId != null ? `#${node.displayId}` : '节点',
+        onSelect: () => handleSelectCanvasMention(node.id, node.label),
+      };
+    } else if (candidate.source === 'drama') {
+      item = buildDramaPickerItem(candidate.item);
+      item.badge = candidate.item.id.startsWith('global/') ? '全局角色' : DRAMA_KIND_LABELS[candidate.item.kind];
+    } else if (candidate.source === 'file') {
+      const file = candidate.item;
+      item = {
+        key: `file:${file.path}`, label: file.name, thumbnailUrl: file.assetUrl,
+        icon: MEDIA_ICONS.image, badge: file.source === 'folder' ? '目录图片' : '全局图片',
+        disabled: file.availability === 'offline',
+        title: file.availability === 'offline' ? `${file.name} · 文件当前不可用` : file.name,
+        onSelect: () => handleSelectAsset(file),
+      };
+    } else {
+      const workflowNode = candidate.item;
+      item = {
+        key: `wf:${workflowNode.id}`, label: workflowNode.label, badge: '工作流',
+        icon: MEDIA_ICONS[workflowNode._ioType === 'image' || workflowNode._ioType === 'video' || workflowNode._ioType === 'audio' ? workflowNode._ioType : 'text'],
+        onSelect: () => handleSelectWorkflowMention(workflowNode._ioNodeId, workflowNode.label, workflowNode._ioType),
+      };
+    }
+    return { ...item, domId: `${resourceSearchListId}-item-${index}` };
+  });
+  const activeSearchItem = resourceSearchItems.find((item) => item.key === resourceSearchActiveKey && !item.disabled)
+    ?? resourceSearchItems.find((item) => !item.disabled);
+  const resourceSearchLoading = assetLoading || globalCharactersLoading;
+
+  const handleResourceSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // Enter 只选择搜索结果，不能冒泡成为节点生成或弹窗快捷键。
+    event.stopPropagation();
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (!event.repeat) activeSearchItem?.onSelect();
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const enabled = resourceSearchItems.filter((item) => !item.disabled);
+    if (!enabled.length) return;
+    const currentIndex = enabled.findIndex((item) => item.key === activeSearchItem?.key);
+    const nextIndex = Math.max(0, Math.min(enabled.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1)));
+    setResourceSearchActiveKey(enabled[nextIndex].key);
+  };
 
   // 回车与鼠标始终选当前页面中的条目，包括动作及素材下钻页。
   useLayoutEffect(() => {
@@ -1363,7 +1521,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     const safePosition = calcAnchoredPosition(
       caretRect,
       dropdown.offsetWidth,
-      dropdown.offsetHeight,
+      mentionDropdownHeightRef.current ?? dropdown.offsetHeight,
       8,
       12,
     );
@@ -1376,8 +1534,16 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     ));
   }, []);
 
+  const handleMentionHeightChange = useCallback((height: number, animated: boolean) => {
+    mentionDropdownHeightRef.current = height;
+    setMentionDropdownResizing(animated);
+    updateMentionDropdownPosition();
+  }, [updateMentionDropdownPosition]);
+
   useLayoutEffect(() => {
     if (!showMention) {
+      mentionDropdownHeightRef.current = null;
+      setMentionDropdownResizing(false);
       setMentionDropdownPosition({ left: 12, top: 0 });
       return undefined;
     }
@@ -1402,6 +1568,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     drillItem?.id,
     effectiveTab,
     mentionQuery,
+    resourceSearchExpanded,
+    resourceSearchItems.length,
     nodeTabItems.length,
     showMention,
     updateMentionDropdownPosition,
@@ -1513,11 +1681,38 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       {showMention && (
         <div
           ref={mentionDropdownRef}
-          className="mention-dropdown absolute w-[336px] max-w-[calc(100vw-24px)] z-50 [&>.mention-picker]:max-h-[calc(100vh-24px)] [&>.mention-picker]:overflow-hidden [&_.mention-picker-grid]:min-h-0"
+          className={`mention-dropdown${mentionDropdownResizing ? ' is-resizing' : ''} absolute w-[336px] max-w-[calc(100vw-24px)] z-50 [&>.mention-picker]:max-h-[calc(100vh-24px)] [&>.mention-picker]:overflow-hidden [&_.mention-picker-grid]:min-h-0`}
           style={{ left: mentionDropdownPosition.left, top: mentionDropdownPosition.top }}
         >
           <MentionPicker
             ariaLabel="引用节点或资产"
+            onHeightChange={handleMentionHeightChange}
+            search={{
+              expanded: resourceSearchExpanded,
+              onExpandedChange: (expanded) => {
+                setResourceSearchExpanded(expanded);
+                if (expanded) {
+                  setResourceSearchQuery(mentionQuery);
+                  setResourceSearchVisible(SEARCH_PAGE_SIZE);
+                  setResourceSearchActiveKey(null);
+                }
+              },
+              value: resourceSearchQuery,
+              onChange: (query) => {
+                setResourceSearchQuery(query);
+                setResourceSearchVisible(SEARCH_PAGE_SIZE);
+                setResourceSearchActiveKey(null);
+              },
+              label: '搜索全局资源',
+              placeholder: '节点 ID、#编号、文件名、角色或道具',
+              onKeyDown: handleResourceSearchKeyDown,
+              listId: resourceSearchListId,
+              activeDescendant: activeSearchItem?.domId,
+              onCollapse: focusMentionCursor,
+            }}
+            listId={resourceSearchExpanded ? resourceSearchListId : undefined}
+            activeKey={resourceSearchExpanded ? activeSearchItem?.key : undefined}
+            onItemHover={resourceSearchExpanded ? setResourceSearchActiveKey : undefined}
             tabs={[
               { id: 'nodes', label: isAudioNode ? '输入音频' : '输入图', icon: isAudioNode ? MEDIA_ICONS.audio : 'mdi:image-multiple-outline' },
               { id: 'assets', label: '资产库', icon: 'mdi:bookshelf' },
@@ -1530,10 +1725,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
               setDramaActionPicker(false);
               setDramaActionId(null);
             }}
-            chips={effectiveTab === 'assets' ? dramaKindChips : undefined}
+            chips={!resourceSearchExpanded && effectiveTab === 'assets' ? dramaKindChips : undefined}
             activeChip={dramaKind}
             onChipChange={setDramaKind}
-            leading={effectiveTab === 'assets' && drillItem ? (
+            leading={!resourceSearchExpanded && effectiveTab === 'assets' && drillItem ? (
               <>
                 <button
                   type="button"
@@ -1589,17 +1784,41 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                 )}
               </>
             ) : undefined}
-            items={activeTabItems}
-            mediaAspectRatio={effectiveTab === 'assets' ? AVATAR_ASPECT : undefined}
-            emptyText={effectiveTab === 'assets' && drillItem && dramaVoicePicker
+            items={resourceSearchExpanded ? resourceSearchItems : activeTabItems}
+            mediaAspectRatio={!resourceSearchExpanded && effectiveTab === 'assets' ? AVATAR_ASPECT : undefined}
+            emptyText={resourceSearchExpanded ? resourceSearchLoading ? '正在读取资源…' : assetLoadError ? '暂无匹配结果，部分图片目录读取失败' : '没有匹配的资源'
+              : effectiveTab === 'assets' && drillItem && dramaVoicePicker
               ? '该角色暂无声音，请先在角色库中添加'
               : effectiveTab === 'assets' && drillItem && dramaActionPicker
               ? drillAction ? '该动作暂无图片、GIF 或视频素材' : '该角色暂无动作，请先在角色库中添加'
               : mentionQuery ? '无匹配节点或资产' : effectiveTab === 'workflow' ? '当前工作流暂无可引用的节点' : effectiveTab === 'assets' ? isAudioNode ? '暂无带音频的角色，请先在角色库中添加音频' : '暂无短剧资产' : '暂无可引用的输入'}
             footer={(
+              <>
+              {resourceSearchExpanded && ((assetLoadError && !assetLoading)
+                || resourceSearchVisible < resourceSearchCandidates.length || assetScanTruncated) && (
+                <div className="flex flex-wrap items-center gap-2 px-2 py-1 text-xs text-canvas-text-secondary">
+                  {assetLoadError && !assetLoading && (
+                    <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm"
+                      title="部分图片目录读取失败，点击重试"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => setAssetLoadRevision((revision) => revision + 1)}>
+                      重试
+                    </button>
+                  )}
+                  {resourceSearchVisible < resourceSearchCandidates.length && (
+                    <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm ml-auto"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => setResourceSearchVisible((count) => count + SEARCH_PAGE_SIZE)}>
+                      加载更多
+                    </button>
+                  )}
+                  {assetScanTruncated && <span>目录文件过多，部分资源未纳入搜索</span>}
+                </div>
+              )}
               <button
                 type="button"
-                onMouseDown={(e) => { e.preventDefault(); openAssetPicker(); }}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={openAssetPicker}
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-canvas-hover"
               >
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-indigo-500/15 text-indigo-300">
@@ -1608,6 +1827,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                 <span className="text-xs text-canvas-text">引用资产</span>
                 <span className="ml-auto text-[10px] text-canvas-text-muted">全局资产</span>
               </button>
+              </>
             )}
           />
         </div>

@@ -17,6 +17,8 @@ export interface CanvasMentionItem {
   outputType: 'image' | 'video' | 'audio' | 'text';
   thumbnailUrl: string | undefined;
   isSelf: boolean;
+  /** 仅用于候选匹配；文件只保留名称，不暴露完整路径。 */
+  searchValues?: Array<string | number | undefined | null>;
 }
 
 export interface WorkflowMentionItem {
@@ -26,12 +28,36 @@ export interface WorkflowMentionItem {
   _ioType: WorkflowIONodeType;
 }
 
+/** 每个查询词可匹配不同字段，兼容全角字符与节点编号。 */
+export function matchesMentionQuery(
+  query: string,
+  values: Array<string | number | undefined | null>,
+): boolean {
+  const normalize = (value: string) => value.normalize('NFKC').toLocaleLowerCase();
+  const terms = normalize(query).trim().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  const haystacks = values.filter((value) => value != null).map((value) => normalize(String(value)));
+  return terms.every((term) => haystacks.some((value) => value.includes(term)));
+}
+
+function nodeSearchValues(id: string, data: BaseNodeData): CanvasMentionItem['searchValues'] {
+  return [
+    id,
+    data.label,
+    data.displayId,
+    data.displayId == null ? undefined : `#${data.displayId}`,
+    data.fileName,
+    data.filePath?.split(/[\\/]/).pop(),
+  ];
+}
+
 export function resolveCanvasMentionNodes(
   nodeId: string | undefined,
   nodes: AppState['nodes'],
   edges: AppState['edges'],
+  scope: 'connected' | 'project' = 'connected',
 ): CanvasMentionItem[] {
-  if (!nodeId) return [];
+  if (!nodeId && scope === 'connected') return [];
   const currentNode = nodes.find((node) => node.id === nodeId);
   const rawSourceIds = new Set(edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source));
   if (currentNode?.parentId) {
@@ -51,7 +77,10 @@ export function resolveCanvasMentionNodes(
   }
 
   const list: CanvasMentionItem[] = nodes
-    .filter((node) => node.id !== nodeId && node.type !== 'group' && sourceNodeIds.has(node.id))
+    .filter((node) => node.id !== nodeId && node.type !== 'group'
+      && (scope === 'project'
+        ? !!node.data.type && node.data.type !== 'canvas-note' && !node.data.hiddenByCharacterLibrary
+        : sourceNodeIds.has(node.id)))
     .map((node) => ({
       id: node.id,
       label: (node.data.label as string) || '节点',
@@ -61,6 +90,7 @@ export function resolveCanvasMentionNodes(
       outputType: node.data.imageUrl ? 'image' : node.data.videoUrl ? 'video' : node.data.audioUrl ? 'audio' : 'text',
       thumbnailUrl: bestNodeThumb(node.data),
       isSelf: false,
+      searchValues: nodeSearchValues(node.id, node.data),
     }));
 
   const expanded: CanvasMentionItem[] = [];
@@ -87,12 +117,15 @@ export function resolveCanvasMentionNodes(
           outputType: 'image',
           thumbnailUrl: (overrides[index] as StoryboardCellOverride | null)?.url || data.imageUrl,
           isSelf: false,
+          searchValues: [...(item.searchValues ?? []), `${item.id}/cell/${index}`, `第${row + 1}行${column + 1}列`],
         });
       }
     }
   }
 
-  if (currentNode && currentNode.type !== 'group') {
+  if (currentNode && currentNode.type !== 'group'
+    && (scope !== 'project'
+      || (!!currentNode.data.type && currentNode.data.type !== 'canvas-note' && !currentNode.data.hiddenByCharacterLibrary))) {
     const { output, imageUrl, videoUrl, audioUrl } = currentNode.data;
     if ((typeof output === 'string' && output.trim()) || imageUrl || videoUrl || audioUrl) {
       expanded.unshift({
@@ -104,6 +137,7 @@ export function resolveCanvasMentionNodes(
         outputType: imageUrl ? 'image' : videoUrl ? 'video' : audioUrl ? 'audio' : 'text',
         thumbnailUrl: bestNodeThumb(currentNode.data),
         isSelf: true,
+        searchValues: nodeSearchValues(currentNode.id, currentNode.data),
       });
     }
   }
@@ -127,11 +161,16 @@ export function resolveDramaMentionItems(
   dramaAssets: AppState['dramaAssets'],
   query: string,
   nodeType?: NodeType,
+  globalCharacters: AppState['globalCharacters'] = [],
 ) {
   const items = [
-    ...dramaAssets.characters.map((asset) => ({
+    ...[
+      ...dramaAssets.characters,
+      ...globalCharacters.map((asset) => ({ ...asset, id: `global/${asset.id}` })),
+    ].map((asset) => ({
       id: asset.id,
       name: asset.name,
+      aliases: asset.aliases,
       kind: asset.kind as string,
       imageNodeId: asset.imageNodeId,
       imageUrl: asset.imageUrl,
@@ -141,6 +180,7 @@ export function resolveDramaMentionItems(
     ...dramaAssets.scenes.map((asset) => ({
       id: asset.id,
       name: asset.name,
+      aliases: undefined,
       kind: asset.kind as string,
       imageNodeId: asset.imageNodeId,
       imageUrl: asset.imageUrl,
@@ -150,6 +190,7 @@ export function resolveDramaMentionItems(
     ...dramaAssets.props.map((asset) => ({
       id: asset.id,
       name: asset.name,
+      aliases: undefined,
       kind: asset.kind as string,
       imageNodeId: asset.imageNodeId,
       imageUrl: asset.imageUrl,
@@ -160,6 +201,5 @@ export function resolveDramaMentionItems(
   const candidates = nodeType === 'ai-audio' ? items.filter((item) => item.voice) : items;
   // 分类数量和筛选共用完整候选，不能提前截断而丢失排在后面的场景或道具。
   if (!query) return candidates;
-  const normalizedQuery = query.toLowerCase();
-  return candidates.filter((asset) => asset.name.toLowerCase().includes(normalizedQuery));
+  return candidates.filter((asset) => matchesMentionQuery(query, [asset.name, asset.id, ...(asset.aliases ?? [])]));
 }

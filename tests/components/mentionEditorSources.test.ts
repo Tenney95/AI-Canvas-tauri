@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../src/types';
-import type { DramaAssetBase, DramaAssetLibrary } from '../../src/types/dramaAssets';
+import type { DramaAssetBase, DramaAssetLibrary, DramaCharacter } from '../../src/types/dramaAssets';
 import {
+  matchesMentionQuery,
   resolveCanvasMentionNodes,
   resolveDramaMentionItems,
   resolveWorkflowMentionNodes,
@@ -24,6 +25,76 @@ function node(
 }
 
 describe('mentionEditorSources', () => {
+  it('按节点编号、实际 ID 和文件名分词匹配，兼容全角与大小写', () => {
+    const values = ['node-uuid-39', '角色参考', 39, '#39', '角色形象.PNG'];
+    expect(matchesMentionQuery('  ＃３９  形象.png  ', values)).toBe(true);
+    expect(matchesMentionQuery('UUID 参考', values)).toBe(true);
+    expect(matchesMentionQuery('39 不存在', values)).toBe(false);
+    expect(matchesMentionQuery('   ', [null, undefined])).toBe(true);
+    expect(matchesMentionQuery('39', [null, undefined])).toBe(false);
+  });
+
+  it('全局搜索可找到未连线节点，普通候选仍只含连线与自身', () => {
+    const nodes = [
+      node('connected', 'ai-image', { imageUrl: 'asset://connected.png' }),
+      node('unconnected', 'ai-image', { imageUrl: 'asset://other.png' }),
+      node('hidden', 'ai-image', { imageUrl: 'asset://hidden.png', hiddenByCharacterLibrary: true }),
+      { ...node('group', 'comment'), type: 'group' },
+      node('note', 'canvas-note'),
+      node('empty', 'ai-text'),
+      node('target', 'ai-video', { videoUrl: 'asset://target.mp4' }),
+    ];
+    const edges: Edge[] = [{ id: 'connected-target', source: 'connected', target: 'target' }];
+
+    expect(resolveCanvasMentionNodes('target', nodes, edges).map((item) => item.id))
+      .toEqual(['target', 'connected']);
+    expect(resolveCanvasMentionNodes('target', nodes, edges, 'project').map((item) => item.id))
+      .toEqual(['target', 'connected', 'unconnected', 'empty']);
+    expect(resolveCanvasMentionNodes(undefined, nodes, edges)).toEqual([]);
+    expect(resolveCanvasMentionNodes(undefined, nodes, edges, 'project').map((item) => item.id))
+      .toEqual(['connected', 'unconnected', 'empty', 'target']);
+  });
+
+  it('节点搜索包含真实文件名，但不匹配或展示完整本地路径', () => {
+    const candidates = resolveCanvasMentionNodes('target', [
+      node('image-node', 'ai-image', {
+        label: '画布展示标题', displayId: 39, fileName: '上传参考.PNG',
+        filePath: 'C:\\private-directory\\archive\\实际文件.jpg', imageUrl: 'asset://image.png',
+      }),
+      node('target', 'ai-image'),
+    ], [], 'project');
+    expect(candidates[0].label).toBe('画布展示标题');
+    expect(matchesMentionQuery('#39 上传参考', candidates[0].searchValues ?? [])).toBe(true);
+    expect(matchesMentionQuery('实际文件.JPG', candidates[0].searchValues ?? [])).toBe(true);
+    expect(matchesMentionQuery('private-directory', candidates[0].searchValues ?? [])).toBe(false);
+  });
+
+  it('全局角色保留独立身份，可按名称、别名与 ID 搜索，默认不混入', () => {
+    const character: DramaCharacter = {
+      id: 'hero-id', key: 'hero', name: '水行女侠', aliases: ['银发女性'], kind: 'character', identity: '',
+      summary: '', visualNotes: '', importance: 'main', confirmed: true,
+      createdAt: 0, updatedAt: 0, source: 'manual', imageUrl: 'asset://global.png',
+    };
+    const library: DramaAssetLibrary = {
+      version: 2, characters: [{ ...character, name: '项目角色' }], scenes: [], props: [],
+    };
+
+    expect(resolveDramaMentionItems(library, '').map((item) => item.id)).toEqual(['hero-id']);
+    expect(resolveDramaMentionItems(library, '', 'ai-image', [character]).map((item) => item.id))
+      .toEqual(['hero-id', 'global/hero-id']);
+    expect(resolveDramaMentionItems(library, '水行 银发', 'ai-image', [character]))
+      .toMatchObject([{ id: 'global/hero-id', name: '水行女侠' }]);
+    expect(resolveDramaMentionItems(library, 'GLOBAL/hero-id', 'ai-image', [character]))
+      .toMatchObject([{ id: 'global/hero-id' }]);
+    expect(resolveDramaMentionItems(library, '', 'ai-audio', [character])).toEqual([]);
+
+    const voicedCharacter: DramaCharacter = { ...character, voiceClips: [{
+      id: 'voice-id', kind: 'timbre', audioUrl: 'asset://voice.wav', transcript: '', createdAt: 0, updatedAt: 0,
+    }] };
+    expect(resolveDramaMentionItems(library, '水行', 'ai-audio', [voicedCharacter]))
+      .toMatchObject([{ id: 'global/hero-id', voice: { id: 'voice-id', url: 'asset://voice.wav' } }]);
+  });
+
   it('完整保留 9 个角色、10 个场景、9 个道具，空搜索和同名搜索均不截断候选', () => {
     const base: Omit<DramaAssetBase, 'id' | 'key' | 'name'> = {
       summary: '', visualNotes: '', importance: 'supporting', confirmed: true,

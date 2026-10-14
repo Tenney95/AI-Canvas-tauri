@@ -9,15 +9,78 @@
   min-height: 0;
   max-height: calc(100vh - 24px);
   overflow: hidden;
-  gap: 8px;
-  padding: 8px;
   background: var(--theme-surface);
   border: 1px solid var(--theme-border);
   border-radius: 16px;
   box-shadow: 0 20px 48px var(--black-alpha-50);
+  transition: height var(--transition-smooth);
+}
+.mention-picker-content {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 0;
+  min-height: 0;
+  max-height: calc(100vh - 26px);
+  gap: 8px;
+  padding: 8px;
+}
+/* 定位采用内容目标高度，与外框高度同速过渡，避免逐帧重新翻转弹出方向。 */
+.mention-dropdown.is-resizing {
+  transition: top var(--transition-smooth);
 }
 
 /* 分段 Tab */
+.mention-picker-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: var(--ui-control-h);
+  flex-shrink: 0;
+}
+.mention-picker-header .mention-picker-tabs {
+  min-width: 0;
+  flex: 1;
+  transition: opacity var(--transition-smooth), transform var(--transition-smooth), visibility var(--transition-smooth);
+}
+.mention-picker-header.has-search {
+  overflow: hidden;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
+  border-radius: var(--ui-radius-lg);
+  transition: border-color var(--transition-base);
+}
+.mention-picker-header.has-search:focus-within {
+  border-color: var(--border-focus);
+}
+.mention-picker-header.has-search .mention-picker-tabs {
+  margin-inline-end: calc(var(--ui-control-h) + 4px);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.mention-picker-header.is-searching .mention-picker-tabs {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-100%);
+}
+.mention-picker-header .mention-picker-search {
+  position: absolute;
+  inline-size: auto;
+  inset-inline: 4px;
+  inset-block: 0;
+}
+.mention-picker-header.has-search .ui-expandable-search__field {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.mention-picker-header.has-search .ui-expandable-search__trigger {
+  inset-block: 0;
+  margin-block: auto;
+}
 .mention-picker-tabs {
   display: flex;
   gap: 6px;
@@ -29,6 +92,7 @@
 }
 .mention-picker-tab {
   flex: 1;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -44,11 +108,21 @@
   white-space: nowrap;
   transition: background var(--transition-base), color var(--transition-base);
 }
+.mention-picker-tab > svg { flex-shrink: 0; }
+.mention-picker-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mention-picker-tab:hover { color: var(--theme-text); }
 .mention-picker-tab.active {
   background: var(--theme-text);
   color: var(--theme-bg);
   font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mention-picker,
+  .mention-dropdown.is-resizing,
+  .mention-picker-header.has-search,
+  .mention-picker-header .mention-picker-tabs { transition: none; }
+  .mention-picker-header.is-searching .mention-picker-tabs { transform: none; }
 }
 
 /* 筛选芯片 */

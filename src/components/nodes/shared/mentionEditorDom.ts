@@ -10,7 +10,8 @@ import type { AppState } from '../../../store/useAppStore';
 import { useAppStore } from '../../../store/useAppStore';
 import { getFileCategory } from '../../../services/fileService';
 import { parseDramaMentionId } from '../../../types/dramaAssets';
-import { resolveDramaActionMediaRef } from '../../../services/dramaAssetPrompt';
+import { findDramaAsset, resolveDramaActionMediaRef, resolveDramaAssetImageRef } from '../../../services/dramaAssetPrompt';
+import { buildReferenceChipEl } from '../../shared/referenceChipDom';
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const ZWSP = '\u200B';
@@ -32,23 +33,6 @@ const NODE_CHIP_ICON_PATHS: Record<string, string> = {
 export function getNodeChipIconPath(nodeType: string): string | undefined {
   const type = nodeType === 'ai-markdown' ? 'ai-text' : nodeType.replace(/^source-/, 'ai-');
   return NODE_CHIP_ICON_PATHS[type];
-}
-
-function buildNodeChipIconEl(iconPath: string): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('width', '12');
-  svg.setAttribute('height', '12');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('stroke', 'currentColor');
-  svg.setAttribute('stroke-width', '1.8');
-  svg.setAttribute('stroke-linecap', 'round');
-  svg.setAttribute('stroke-linejoin', 'round');
-  svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', iconPath);
-  svg.appendChild(path);
-  return svg;
 }
 
 const WF_IO_STYLE: Record<string, string> = {
@@ -198,7 +182,7 @@ export function numberMediaReferenceLabels(references: Array<NodeMeta['mediaRefe
 }
 
 export function syncMediaReferenceLabels(root: HTMLElement, metaMap: Map<string, NodeMeta>): void {
-  const chips = Array.from(root.querySelectorAll<HTMLElement>('[data-ref-id],[data-image-ref-key],[data-media-ref-key]'));
+  const chips = Array.from(root.querySelectorAll<HTMLElement>('[data-ref-id],[data-drama-id],[data-image-ref-key],[data-media-ref-key]'));
   const references = chips.map((chip): NodeMeta['mediaReference'] => {
     const nodeId = chip.getAttribute('data-ref-id');
     if (nodeId) {
@@ -271,42 +255,17 @@ export function buildChipEl(
 ): HTMLSpanElement {
   const meta = metaMap.get(nodeId);
   const nodeType = meta?.type || 'ai-text';
-  const span = document.createElement('span');
-  span.className = `prompt-chip prompt-chip-node ${CHIP_STYLE[nodeType] || CHIP_STYLE['ai-text']}`;
-  span.contentEditable = 'false';
+  const span = buildReferenceChipEl(document, {
+    label,
+    kind: (CHIP_STYLE[nodeType] || CHIP_STYLE['ai-text']).replace('chip-', '') as 'text' | 'image' | 'video' | 'audio' | 'markdown',
+    badge: meta?.displayId != null ? `#${meta.displayId}` : undefined,
+    iconPath: getNodeChipIconPath(nodeType),
+    thumbnailUrl: ['ai-image', 'ai-video', 'ai-storyboard'].includes(nodeType) ? meta?.thumbnailUrl : undefined,
+  });
   span.setAttribute('data-ref-id', nodeId);
   span.setAttribute('data-ref-label', label);
   span.title = meta?.displayId != null ? `${label} (#${meta.displayId})` : label;
 
-  const icon = document.createElement('span');
-  icon.className = 'prompt-chip-icon';
-  icon.setAttribute('aria-hidden', 'true');
-  const iconPath = getNodeChipIconPath(nodeType);
-  const isMedia = nodeType === 'ai-image' || nodeType === 'ai-video' || nodeType === 'ai-storyboard';
-  if (iconPath) {
-    icon.appendChild(buildNodeChipIconEl(iconPath));
-  } else if (isMedia && meta?.thumbnailUrl) {
-    icon.classList.add('has-thumbnail');
-    const image = document.createElement('img');
-    image.src = meta.thumbnailUrl;
-    image.className = 'prompt-chip-thumb';
-    image.alt = '';
-    icon.appendChild(image);
-  } else {
-    icon.textContent = '@';
-  }
-  span.appendChild(icon);
-  if (meta?.displayId != null) {
-    const displayId = document.createElement('span');
-    displayId.className = 'prompt-chip-id';
-    displayId.textContent = `#${meta.displayId}`;
-    span.appendChild(displayId);
-  } else if (label) {
-    const displayId = document.createElement('span');
-    displayId.className = 'prompt-chip-id';
-    displayId.textContent = label;
-    span.appendChild(displayId);
-  }
   return span;
 }
 
@@ -366,6 +325,77 @@ export function buildDramaChipEl(dramaId: string, name: string, kind: string, th
   label.textContent = name.length > 16 ? `${name.slice(0, 14)}…` : name;
   span.appendChild(label);
   return span;
+}
+
+function resolveDramaChipPresentation(dramaId: string): { kind: string; thumb?: string; hasAsset: boolean } {
+  let kind = 'character';
+  let thumb: string | undefined;
+  let hasAsset = false;
+  try {
+    const store = useAppStore.getState();
+    const { assetId, referenceImageId, actionId, actionMediaId, voiceClipId } = parseDramaMentionId(dramaId);
+    const found = findDramaAsset(store.dramaAssets, assetId, store.globalCharacters);
+    hasAsset = !!found;
+    if (voiceClipId !== undefined) {
+      kind = 'voice';
+    } else if (actionId !== undefined) {
+      const media = resolveDramaActionMediaRef(found, actionId, actionMediaId);
+      kind = media?.kind === 'video' ? 'action-video' : 'action-image';
+      thumb = media && media.kind !== 'video' ? media.url : undefined;
+    } else if (found) {
+      kind = found.kind;
+      const picked = referenceImageId && found.kind === 'character'
+        ? found.referenceImages?.find((image) => image.id === referenceImageId)
+        : undefined;
+      if (assetId.startsWith('global/')) {
+        thumb = resolveDramaAssetImageRef(found, store.nodes, referenceImageId)?.imageUrl;
+      } else if (picked) {
+        thumb = picked.imageUrl;
+      } else if (found.imageNodeId) {
+        const node = store.nodes.find((candidate) => candidate.id === found.imageNodeId);
+        thumb = bestNodeThumb(node?.data ?? {}) || found.imageUrl;
+      } else {
+        thumb = found.imageUrl;
+      }
+    }
+  } catch {
+    // 资产未加载或渲染失败时保留引用身份和无缩略图芯片。
+  }
+  return { kind, thumb, hasAsset };
+}
+
+/** 全局角色目录异步加载后只刷新胶囊展示，不改正文、标签或光标所在的外层节点。 */
+export function syncGlobalCharacterReferenceChips(root: HTMLElement): void {
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('[data-drama-id^="global/"]'))) {
+    const id = chip.getAttribute('data-drama-id') || '';
+    const name = chip.getAttribute('data-drama-label') || '';
+    const presentation = resolveDramaChipPresentation(id);
+    const next = buildDramaChipEl(id, name, presentation.kind, presentation.thumb);
+    const currentIcon = chip.querySelector<HTMLElement>('.prompt-chip-icon');
+    const nextIcon = next.querySelector<HTMLElement>('.prompt-chip-icon');
+    if (nextIcon) {
+      if (!currentIcon) chip.insertBefore(nextIcon, chip.firstChild);
+      else {
+        const currentImage = currentIcon.querySelector('img');
+        const nextImage = nextIcon.querySelector('img');
+        const sameImage = !!currentImage && !!nextImage
+          && currentImage.getAttribute('src') === nextImage.getAttribute('src');
+        const sameText = !currentImage && !nextImage && currentIcon.textContent === nextIcon.textContent;
+        if (!sameImage && !sameText) currentIcon.replaceChildren(...Array.from(nextIcon.childNodes));
+      }
+    }
+    for (const className of ['chip-image', 'chip-video', 'chip-audio']) {
+      chip.classList.toggle(className, next.classList.contains(className));
+    }
+    if (chip.getAttribute('data-drama-kind') !== presentation.kind) {
+      chip.setAttribute('data-drama-kind', presentation.kind);
+    }
+    for (const attribute of ['data-image-ref-key', 'data-media-ref-key', 'data-media-ref-kind']) {
+      const value = presentation.hasAsset ? next.getAttribute(attribute) : null;
+      if (value === null) chip.removeAttribute(attribute);
+      else if (chip.getAttribute(attribute) !== value) chip.setAttribute(attribute, value);
+    }
+  }
 }
 
 export function buildSkillChipEl(skillId: string, skillName: string): HTMLSpanElement {
@@ -465,37 +495,7 @@ export function renderPromptToNodes(text: string, metaMap: Map<string, NodeMeta>
     } else if (match[2] !== undefined) {
       const dramaId = match[2];
       const dramaName = match[3];
-      let kind = 'character';
-      let thumb: string | undefined;
-      try {
-        const store = useAppStore.getState();
-        const { assetId, referenceImageId, actionId, actionMediaId, voiceClipId } = parseDramaMentionId(dramaId);
-        const found = store.dramaAssets.characters.find((asset) => asset.id === assetId)
-          || store.dramaAssets.scenes.find((asset) => asset.id === assetId)
-          || store.dramaAssets.props.find((asset) => asset.id === assetId);
-        if (voiceClipId !== undefined) {
-          kind = 'voice';
-        } else if (actionId !== undefined) {
-          const media = resolveDramaActionMediaRef(found, actionId, actionMediaId);
-          kind = media?.kind === 'video' ? 'action-video' : 'action-image';
-          thumb = media && media.kind !== 'video' ? media.url : undefined;
-        } else if (found) {
-          kind = found.kind;
-          const picked = referenceImageId && found.kind === 'character'
-            ? found.referenceImages?.find((image) => image.id === referenceImageId)
-            : undefined;
-          if (picked) {
-            thumb = picked.imageUrl;
-          } else if (found.imageNodeId) {
-            const node = store.nodes.find((candidate) => candidate.id === found.imageNodeId);
-            thumb = bestNodeThumb(node?.data ?? {}) || found.imageUrl;
-          } else {
-            thumb = found.imageUrl;
-          }
-        }
-      } catch {
-        // 渲染失败时保留无缩略图芯片
-      }
+      const { kind, thumb } = resolveDramaChipPresentation(dramaId);
       pushChip(buildDramaChipEl(dramaId, dramaName, kind, thumb));
       lastIndex = regex.lastIndex;
     } else if (match[4] !== undefined) {

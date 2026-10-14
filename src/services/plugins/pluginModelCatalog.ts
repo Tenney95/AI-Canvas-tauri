@@ -1,16 +1,17 @@
 /**
  * plugins/pluginModelCatalog — 插件可见的可调用模型目录。
  *
- * 只输出模型身份、分类与能力，不含 API Key、接口地址或任何厂商凭据。
+ * 只输出模型身份、分类、能力与展示分组，不含 API Key、接口地址或任何厂商凭据。
  * 自定义节点与节点工具共用同一份枚举逻辑，避免两处各自维护导致目录漂移。
  */
 import { useAppStore } from '../../store/useAppStore';
-import type { GeneralModelCategory, NodeType, WorkflowDefinition } from '../../types';
-import type { PluginModelSummary } from '../../types/plugin';
+import type { GeneralModelCategory, ModelGroup, NodeType, WorkflowDefinition } from '../../types';
+import type { PluginModelGroupSummary, PluginModelSummary } from '../../types/plugin';
 import { resolveVideoModelCapability } from '../ai/videoModelCapabilityResolver';
 import {
   defaultModelGroups,
   getConfiguredModelGroups,
+  getGeneralModelGroups,
   getMediaModelOptions,
   hasVisionInputCapability,
   isProviderCategoryVisible,
@@ -26,6 +27,24 @@ const CATEGORY_NODE_TYPES: Record<GeneralModelCategory, NodeType> = {
 };
 
 export const ALL_MODEL_CATEGORIES: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
+
+const GROUP_TONES: Record<string, PluginModelGroupSummary['tone']> = {
+  apimart: 'success',
+  volcengine: 'info',
+  grsai: 'danger',
+  dreamina: 'warning',
+};
+
+/** 显式挑选展示字段，不能把分组源码、连接配置或工作流详情整体交给插件。 */
+function groupSummary(group: ModelGroup): PluginModelGroupSummary {
+  return {
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    badgeText: group.badgeText,
+    tone: GROUP_TONES[group.id] ?? 'brand',
+  };
+}
 
 function videoCapabilitySummary(category: GeneralModelCategory, modelId: string, config: AppConfig): Pick<PluginModelSummary, 'videoCapability'> {
   const capability = category === 'video' ? resolveVideoModelCapability(modelId, config) : undefined;
@@ -71,24 +90,34 @@ export function buildPluginModelCatalog(
       provider: model.provider,
       category,
       description: model.description,
+      group: groupSummary(group),
       inputModalities: resolvePluginModelInputModalities(category, model.value, model.inputModalities),
       ...videoCapabilitySummary(category, model.value, config),
     })));
-    const general = (config.generalModels ?? [])
+    const callableGeneralModels = (config.generalModels ?? [])
       .filter((model) => (
         model.category === category
         && !!config.providers[model.providerConfigId]?.apiKey
         && isProviderCategoryVisible(config, model.providerConfigId, category)
-      ))
-      .map((model) => ({
+      ));
+    const generalPresentations = new Map(getGeneralModelGroups(
+      callableGeneralModels,
+      config,
+      CATEGORY_NODE_TYPES[category],
+    ).flatMap((group) => group.models.map((model) => [model.value, { model, group: groupSummary(group) }] as const)));
+    const general = callableGeneralModels.map((model) => {
+      const presentation = generalPresentations.get(`general/${model.id}`);
+      return {
         id: `general/${model.id}`,
-        name: model.name,
+        name: presentation?.model.label ?? model.name,
         provider: 'general',
         category,
-        description: model.description || `ID: ${model.modelId}`,
+        description: presentation?.model.description ?? (model.description || `ID: ${model.modelId}`),
+        ...(presentation ? { group: presentation.group } : {}),
         inputModalities: resolvePluginModelInputModalities(category, model.modelId, model.inputModalities),
         ...videoCapabilitySummary(category, `general/${model.id}`, config),
-      }));
+      };
+    });
     return [...builtIn, ...general];
   });
   const videoWorkflows = categories.includes('video') ? workflows.filter((workflow) => {
@@ -98,6 +127,13 @@ export function buildPluginModelCatalog(
   }) : [];
   const workflowModels: PluginModelSummary[] = getMediaModelOptions([], config, videoWorkflows)
     .filter((option) => !!option.workflowId && option.provider === 'comfyui')
-    .map((option) => ({ id: option.value, name: option.label, provider: 'comfyui', category: 'video', description: 'ComfyUI 工作流' }));
+    .map((option) => ({
+      id: option.value,
+      name: option.label,
+      provider: 'comfyui',
+      category: 'video',
+      description: 'ComfyUI 工作流',
+      group: { id: 'comfyui', name: 'ComfyUI', description: 'ComfyUI 视频工作流', badgeText: 'CF', tone: 'brand' },
+    }));
   return [...new Map([...models, ...workflowModels].map((model) => [model.id, model])).values()];
 }
