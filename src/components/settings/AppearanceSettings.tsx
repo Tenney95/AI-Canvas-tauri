@@ -5,9 +5,10 @@ import { getNodeTypeConfig, type AppearanceBackgroundImage, type AppearanceTheme
 import type { Node } from '@xyflow/react';
 import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from '../../services/appearance/appearanceDefaults';
 import { contrastColor, isTransparentColor, resolveAppearanceBackground, resolveAppearanceMode, resolveAppearanceTheme } from '../../services/appearance/appearanceRuntime';
-import { exportAppearanceTheme, importAppearanceTheme, MAX_APPEARANCE_THEME_BYTES } from '../../services/appearance/appearanceThemeService';
+import { exportAppearanceTheme, importAppearanceTheme } from '../../services/appearance/appearanceThemeService';
+import { resolveThemeImageSource, storeThemeImage } from '../../services/fs/themeAssets';
 import { saveBinaryToLocalFile } from '../../services/fileService';
-import { isTauriEnv } from '../../services/fs/core';
+import { isTauriEnv, sanitizeFileName } from '../../services/fs/core';
 import { registerSettingsProducer } from '../../services/configPersistenceQueue';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -34,27 +35,12 @@ const SOLAR_SYSTEM_PLANETS = [
   { id: 'neptune', name: '海王星', image: neptuneImg },
 ];
 
-async function readFileAsDataUrl(file: File): Promise<string> {
+async function uploadThemeImage(file: File): Promise<string> {
   const declaredType = file.type.split(';')[0].trim().toLowerCase();
   const mimeType = (!declaredType || declaredType === 'application/octet-stream') && /\.svg$/i.test(file.name)
     ? 'image/svg+xml' : declaredType;
   if (!['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'].includes(mimeType)) throw new Error('请选择 PNG、JPG、WebP 或 SVG 图片');
-  if (file.size > 5 * 1024 * 1024) throw new Error('背景图片不能超过 5MB');
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('图片读取失败'));
-    reader.onabort = () => reject(new Error('图片读取已取消'));
-    // 某些系统未识别 SVG MIME；统一为图片类型后再进入已有图片解码与保存流程。
-    reader.readAsDataURL(file.type === mimeType ? file : new Blob([file], { type: mimeType }));
-  });
-  await new Promise<void>((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => image.naturalWidth && image.naturalHeight ? resolve() : reject(new Error('图片内容无效'));
-    image.onerror = () => reject(new Error('图片内容无效'));
-    image.src = dataUrl;
-  });
-  return dataUrl;
+  return storeThemeImage(file.type === mimeType ? file : new Blob([file], { type: mimeType }));
 }
 
 const DARK_THEME_COLOR_SWATCHES = [
@@ -481,8 +467,9 @@ function PresetSingleNodePreview({
 }
 
 function imagePreviewStyle(imageDataUrl: string | undefined, size: CSSProperties['backgroundSize'] = 'cover'): CSSProperties | undefined {
-  return imageDataUrl
-    ? { backgroundImage: `url(${imageDataUrl})`, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: size === 'fill' ? '100% 100%' : size }
+  const source = resolveThemeImageSource(imageDataUrl);
+  return source
+    ? { backgroundImage: `url(${source})`, backgroundPosition: 'center', backgroundRepeat: 'no-repeat', backgroundSize: size === 'fill' ? '100% 100%' : size }
     : undefined;
 }
 
@@ -504,7 +491,7 @@ function BackgroundImageControls({ label, image, onChange }: {
     const request = ++requestRef.current;
     setLoading(true);
     try {
-      const imageDataUrl = await readFileAsDataUrl(file);
+      const imageDataUrl = await uploadThemeImage(file);
       if (request !== requestRef.current) return;
       const latest = latestRef.current;
       latest.onChange({ ...latest.image, kind: 'image', imageDataUrl });
@@ -777,6 +764,19 @@ export default function AppearanceSettings() {
   const [editingPresetName, setEditingPresetName] = useState('');
   const [confirmation, setConfirmation] = useState<{ kind: 'delete' | 'overwrite'; theme: AppearanceTheme } | null>(null);
   const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [presetOperation, setPresetOperation] = useState<'import' | 'export' | 'save' | 'overwrite' | 'delete' | 'activate' | 'rename' | null>(null);
+  const presetOperationRef = useRef(false);
+
+  const beginPresetOperation = (operation: NonNullable<typeof presetOperation>) => {
+    if (presetOperationRef.current) return false;
+    presetOperationRef.current = true;
+    setPresetOperation(operation);
+    return true;
+  };
+  const endPresetOperation = () => {
+    presetOperationRef.current = false;
+    setPresetOperation(null);
+  };
 
   const persistedTheme = config.appearance
     ? normalizeAppearanceTheme(config.appearance)
@@ -792,6 +792,7 @@ export default function AppearanceSettings() {
   }, [clearPreview]);
 
   const update = (patch: (theme: AppearanceTheme) => AppearanceTheme | null) => {
+    if (presetOperationRef.current) return;
     // 图片读取是异步的；使用最新草稿，避免完成上传时覆盖其间的其他编辑。
     const editable = structuredClone(draftRef.current ?? normalizeAppearanceTheme(useAppStore.getState().config.appearance ?? savedActive));
     const patched = patch(editable);
@@ -808,12 +809,7 @@ export default function AppearanceSettings() {
       update((theme) => {
         // 切换预设后，不将旧上传任务应用到新主题。
         if (theme.id !== active.id) return null;
-        const next = patch(theme);
-        const size = new Blob([JSON.stringify(next, null, 2)]).size;
-        if (size > MAX_APPEARANCE_THEME_BYTES && size > new Blob([JSON.stringify(theme, null, 2)]).size) {
-          throw new Error('图片使主题文件超过 8MB，请换用较小图片或移除其他背景图片');
-        }
-        return next;
+        return patch(theme);
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('背景图片设置失败'), 'error');
@@ -866,17 +862,31 @@ export default function AppearanceSettings() {
       ? imagePreviewStyle(resolved.canvas.imageDataUrl, resolved.canvas.imageFit)
       : { backgroundColor: resolved.ui.background };
 
+  const selectPreset = async (theme: AppearanceTheme) => {
+    if (!beginPresetOperation('activate')) return;
+    try {
+      await flushDraft();
+      await activate(theme);
+      draftRef.current = null;
+      setDraft(null);
+      setAutoSaveStatus('saved');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('外观切换失败'), 'error');
+    } finally {
+      endPresetOperation();
+    }
+  };
+
   const updateMode = async (mode: AppearanceTheme['mode']) => {
     const resolvedMode = resolveAppearanceMode(mode);
     const base = getBuiltinAppearanceTheme(`standard-${resolvedMode}`);
-    draftRef.current = null;
-    setDraft(null);
-    setAutoSaveStatus('idle');
-    await activate({ ...base, mode });
+    await selectPreset({ ...base, mode });
   };
 
   const importTheme = async (file: File) => {
+    if (!beginPresetOperation('import')) return;
     try {
+      await flushDraft();
       const theme = await importAppearanceTheme(file);
       await saveTheme(theme);
       draftRef.current = null;
@@ -885,13 +895,18 @@ export default function AppearanceSettings() {
       showToast(t('主题已导入'), 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('主题导入失败'), 'error');
+    } finally {
+      endPresetOperation();
     }
   };
 
   const exportTheme = async () => {
-    const fileName = `${active.name || 'ai-canvas-theme'}.aicanvas-theme`;
-    const blob = exportAppearanceTheme(active);
+    if (!beginPresetOperation('export')) return;
     try {
+      const snapshot = draftRef.current ?? active;
+      await flushDraft();
+      const fileName = `${sanitizeFileName(snapshot.name || 'ai-canvas-theme')}.aicanvas-theme`;
+      const blob = await exportAppearanceTheme(snapshot);
       if (isTauriEnv()) {
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const savedPath = await saveBinaryToLocalFile(bytes, fileName, [
@@ -914,12 +929,14 @@ export default function AppearanceSettings() {
       showToast(t('主题已导出'), 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('主题导出失败'), 'error');
+    } finally {
+      endPresetOperation();
     }
   };
 
   const setHandleImage = async (file: File) => {
     try {
-      const imageDataUrl = await readFileAsDataUrl(file);
+      const imageDataUrl = await uploadThemeImage(file);
       updateImage((theme) => ({ ...theme, handle: { ...theme.handle, kind: 'image', imageDataUrl } }));
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('图片读取失败'), 'error');
@@ -932,15 +949,21 @@ export default function AppearanceSettings() {
       showToast(t('请输入预设名称'), 'info');
       return;
     }
+    if (!beginPresetOperation('save')) return;
     try {
-      await duplicateTheme(active, name);
+      const snapshot = draftRef.current ?? active;
+      await flushDraft();
+      await duplicateTheme(snapshot, name);
       setPresetName('');
       setIsNamingPreset(false);
       draftRef.current = null;
       setDraft(null);
+      setAutoSaveStatus('saved');
       showToast(t('预设已保存'), 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('预设保存失败'), 'error');
+    } finally {
+      endPresetOperation();
     }
   };
 
@@ -949,18 +972,25 @@ export default function AppearanceSettings() {
     const name = editingPresetName.trim();
     setEditingPresetId(null);
     if (!name || name === theme.name || theme.builtin) return;
+    if (!beginPresetOperation('rename')) return;
     try {
+      await flushDraft();
       await renameTheme(theme.id, name);
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('预设重命名失败'), 'error');
+    } finally {
+      endPresetOperation();
     }
   };
 
   const confirmPresetAction = async () => {
     const pending = confirmation;
     if (!pending) return;
+    if (!beginPresetOperation(pending.kind)) return;
     setConfirmation(null);
     try {
+      const snapshot = draftRef.current ?? active;
+      await flushDraft();
       if (pending.kind === 'delete') {
         if (pending.theme.id === savedActive.id) {
           draftRef.current = null;
@@ -971,11 +1001,10 @@ export default function AppearanceSettings() {
         return;
       }
       await saveTheme({
-        ...active,
+        ...snapshot,
         id: pending.theme.id,
         name: pending.theme.name,
         builtin: false,
-        updatedAt: Date.now(),
       });
       draftRef.current = null;
       setDraft(null);
@@ -984,11 +1013,14 @@ export default function AppearanceSettings() {
     } catch (error) {
       setAutoSaveStatus('error');
       showToast(error instanceof Error ? error.message : t('预设操作失败'), 'error');
+    } finally {
+      endPresetOperation();
     }
   };
 
   return (
-    <main className="flex-1 overflow-y-auto px-6 sm:px-6 py-6 space-y-6 settings-appearance-view" data-purpose="appearance-settings-view">
+    <main className="flex-1 overflow-y-auto px-6 sm:px-6 py-6 settings-appearance-view" data-purpose="appearance-settings-view" aria-busy={presetOperation !== null}>
+      <fieldset disabled={presetOperation !== null} className="min-w-0 m-0 border-0 p-0 space-y-6" aria-label={t('外观设置')}>
       {/* Top Header & Primary Action Bar */}
       <div className="space-y-4 pb-2">
         <div className="flex items-start justify-between">
@@ -1005,7 +1037,7 @@ export default function AppearanceSettings() {
                   {active.mode === 'dark' ? t('深色') : active.mode === 'light' ? t('浅色') : t('跟随系统')}
                 </span>
               </div>
-              <p className="text-xs text-canvas-text-muted mt-1">{t('外观预设包含画布、节点、连接线、连接手柄和所有页面配色')}</p>
+              <p className="text-xs text-canvas-text-muted mt-1">{t('外观预设包含画布、节点、按钮、弹窗、连接线和连接手柄的配色与背景图片')}</p>
             </div>
           </div>
 
@@ -1019,31 +1051,33 @@ export default function AppearanceSettings() {
         </div>
 
         {/* Action buttons group */}
-        <div className="flex items-center justify-between pt-1">
-          <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => importRef.current?.click()}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded-lg settings-action-btn transition-all shadow-xs"
+              title={t('导入完整外观预设，背景图片会自动保存到本地')}
+              className="ui-btn ui-btn--secondary ui-btn--sm"
             >
               <svg className="w-3.5 h-3.5 text-canvas-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
               </svg>
-              <span>{t('导入')}</span>
+              <span>{presetOperation === 'import' ? t('导入中…') : t('导入')}</span>
             </button>
             <button
               type="button"
               onClick={() => void exportTheme()}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded-lg settings-action-btn transition-all shadow-xs"
+              title={t('导出当前外观和全部背景图片，可在其他设备导入')}
+              className="ui-btn ui-btn--secondary ui-btn--sm"
             >
               <svg className="w-3.5 h-3.5 text-canvas-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
               </svg>
-              <span>{t('导出')}</span>
+              <span>{presetOperation === 'export' ? t('导出中…') : t('导出')}</span>
             </button>
 
             {isNamingPreset ? (
-              <div className="flex items-center space-x-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <input
                   autoFocus
                   value={presetName}
@@ -1056,14 +1090,15 @@ export default function AppearanceSettings() {
                     }
                   }}
                   placeholder={t('输入预设名称')}
-                  className="px-2.5 py-1 text-xs bg-canvas-surface border border-brand rounded-lg text-canvas-text focus:outline-none w-36"
+                  aria-label={t('预设名称')}
+                  className="ui-input ui-input--sm w-36"
                 />
                 <button
                   type="button"
                   onClick={() => void savePreset()}
-                  className="px-2.5 py-1 text-xs font-medium text-white bg-brand rounded-lg hover:opacity-90"
+                  className="ui-btn ui-btn--primary ui-btn--sm"
                 >
-                  {t('确定')}
+                  {presetOperation === 'save' ? t('保存中…') : t('确定')}
                 </button>
                 <button
                   type="button"
@@ -1071,7 +1106,7 @@ export default function AppearanceSettings() {
                     setPresetName('');
                     setIsNamingPreset(false);
                   }}
-                  className="px-2.5 py-1 text-xs font-medium text-canvas-text-muted hover:text-canvas-text"
+                  className="ui-btn ui-btn--ghost ui-btn--sm"
                 >
                   {t('取消')}
                 </button>
@@ -1080,7 +1115,8 @@ export default function AppearanceSettings() {
               <button
                 type="button"
                 onClick={() => setIsNamingPreset(true)}
-                className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded-lg settings-action-btn transition-all shadow-xs"
+                title={t('将当前外观保存为新的本地预设，图片按引用保存')}
+                className="ui-btn ui-btn--secondary ui-btn--sm"
               >
                 <svg className="w-3.5 h-3.5 text-canvas-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
@@ -1092,6 +1128,7 @@ export default function AppearanceSettings() {
               ref={importRef}
               type="file"
               accept=".aicanvas-theme,.json,application/json"
+            aria-label={t('导入外观预设文件')}
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -1110,7 +1147,7 @@ export default function AppearanceSettings() {
                 setConfirmation({ kind: 'overwrite', theme: currentPreset });
               }
             }}
-            className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded-lg settings-overwrite-btn disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="ui-btn ui-btn--secondary ui-btn--sm"
           >
             <svg className="w-3.5 h-3.5 text-canvas-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
@@ -1118,6 +1155,13 @@ export default function AppearanceSettings() {
             <span>{t('覆盖当前预设')}</span>
           </button>
         </div>
+        <p className="ui-hint" role="status" aria-live="polite">
+          {presetOperation === 'import' ? t('正在校验并恢复预设图片…')
+            : presetOperation === 'export' ? t('正在打包当前外观和背景图片…')
+            : presetOperation === 'save' || presetOperation === 'overwrite' ? t('正在保存外观预设…')
+            : isTauriEnv() ? t('图片保存在安装目录的 theme 文件夹；保存预设复用图片，导出包含完整图片。')
+            : t('Web 演示使用内嵌图片；本地图片目录功能请使用桌面端。')}
+        </p>
       </div>
 
       {/* BEGIN: LiveCanvasPreviewCard */}
@@ -1302,12 +1346,7 @@ export default function AppearanceSettings() {
                   aria-label={`${t('外观预设')}：${theme.name}`}
                   aria-pressed={isCurrent}
                   className="absolute inset-0 z-20 rounded-2xl border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand"
-                  onClick={() => {
-                    draftRef.current = null;
-                    setDraft(null);
-                    setAutoSaveStatus('idle');
-                    void activate(theme);
-                  }}
+                  onClick={() => void selectPreset(theme)}
                 />
                 {/* Solar system background elements */}
                 {isSolarSystem && solarPlanet && (
@@ -2152,6 +2191,7 @@ export default function AppearanceSettings() {
           </AnimatedButton>
         </div>
       </ModalOverlay>
+      </fieldset>
     </main>
   );
 }

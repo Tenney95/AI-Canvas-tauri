@@ -28,6 +28,55 @@ pub enum PathAccess {
     Write,
 }
 
+/// 外观图片唯一授权根：可执行文件旁的 theme，不接受 Renderer 提交目录。
+pub(crate) fn authorize_theme_asset_file<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+    create_directory: bool,
+) -> Result<PathBuf, String> {
+    if !is_theme_asset_name(name) {
+        return Err("主题图片引用无效".into());
+    }
+    let executable = std::env::current_exe().map_err(|_| "无法定位应用安装目录")?;
+    let install = canonicalize_simplified(executable.parent().ok_or("无法定位应用安装目录")?)
+        .map_err(|_| "无法解析应用安装目录")?;
+    let directory = install.join("theme");
+    if create_directory && !directory.exists() {
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(_) => return Err("安装目录的 theme 文件夹不可写，请检查安装目录权限".into()),
+        }
+    }
+    let metadata = std::fs::symlink_metadata(&directory).map_err(|_| "主题图片目录不存在或不可访问")?;
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+        return Err("主题图片目录不能是符号链接或目录联接".into());
+    }
+    let root = canonicalize_simplified(&directory).map_err(|_| "无法解析主题图片目录")?;
+    if root != directory || overlaps_private_app_path(app, &root) {
+        return Err("主题图片目录超出安装目录或与私有目录重叠".into());
+    }
+    let target = root.join(name);
+    match std::fs::symlink_metadata(&target) {
+        Ok(metadata) => {
+            if !metadata.is_file() || is_link_or_reparse(&metadata)
+                || canonicalize_simplified(&target).map_err(|_| "主题图片不可访问")? != target
+            {
+                return Err("主题图片必须是安装目录中的普通文件".into());
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_directory => {},
+        Err(_) => return Err("主题图片不存在或不可访问".into()),
+    }
+    Ok(target)
+}
+
+pub(crate) fn is_theme_asset_name(name: &str) -> bool {
+    let Some((digest, extension)) = name.split_once('.') else { return false; };
+    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && matches!(extension, "png" | "jpg" | "webp" | "svg")
+}
+
 /// 校验命令来自自有本地窗口，而不是远程页面或第三方运行时窗口。
 pub fn ensure_trusted_caller<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
     let label = webview.label();

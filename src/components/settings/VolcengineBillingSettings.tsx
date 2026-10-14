@@ -7,6 +7,7 @@ import { isTauriEnv } from '../../services/fs/core';
 import {
   clearBillingRuns, exportBillingRuns, previewBillingClear, queryBillingRuns,
   getBillingStoragePath, setBillingStoragePath,
+  BILLING_STORAGE_CHANGED_EVENT,
   type BillingFilter, type BillingPage, type BillingRun,
 } from '../../services/billing/volcengineBillingService';
 import { formatCny } from '../../services/billing/volcenginePricing';
@@ -30,6 +31,7 @@ function parseDetails(raw: string): Record<string, unknown> {
 export default function VolcengineBillingSettings() {
   const projects = useAppStore((state) => state.projects);
   const currentProjectId = useAppStore((state) => state.currentProjectId);
+  const customStorageDirectory = useAppStore((state) => state.config.volcengineBillingPath?.trim());
   const [view, setView] = useState<'records' | 'clear'>('records');
   const [filter, setFilter] = useState<BillingFilter>(() => ({ appProjectId: currentProjectId || undefined,
     from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime() }));
@@ -51,10 +53,10 @@ export default function VolcengineBillingSettings() {
     const currentRequest = ++requestId.current;
     setBusy(true); setError('');
     try {
-      const [next, nextPreview] = await Promise.all([
-        queryBillingRuns(filter, page, PAGE_SIZE), previewBillingClear(filter),
+      const [next, nextPreview, nextStoragePath] = await Promise.all([
+        queryBillingRuns(filter, page, PAGE_SIZE), previewBillingClear(filter), getBillingStoragePath(),
       ]);
-      if (requestId.current === currentRequest) { setData(next); setPreview(nextPreview); }
+      if (requestId.current === currentRequest) { setData(next); setPreview(nextPreview); setStoragePath(nextStoragePath); }
     } catch (cause) { if (requestId.current === currentRequest) setError(cause instanceof Error ? cause.message : '读取费用记录失败'); }
     finally { if (requestId.current === currentRequest) setBusy(false); }
   }, [filter, page]);
@@ -65,8 +67,10 @@ export default function VolcengineBillingSettings() {
   }, [refresh]);
 
   useEffect(() => {
-    void getBillingStoragePath().then(setStoragePath).catch(() => {});
-  }, []);
+    const onStorageChanged = () => { void refresh(); };
+    window.addEventListener(BILLING_STORAGE_CHANGED_EVENT, onStorageChanged);
+    return () => window.removeEventListener(BILLING_STORAGE_CHANGED_EVENT, onStorageChanged);
+  }, [refresh]);
 
   const changeFilter = (patch: Partial<BillingFilter>) => {
     setPage(1); setConfirmation(''); setFilter((previous) => ({ ...previous, ...patch }));
@@ -125,7 +129,7 @@ export default function VolcengineBillingSettings() {
       </div>
     </div>
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-canvas-border bg-canvas-card px-5 py-2.5 text-xs">
-      <div className="min-w-0"><span className="text-canvas-text-secondary">账本存储位置：</span><span className="break-all font-mono font-medium text-canvas-text">{storagePath || '加载中…'}</span></div>
+      <div className="min-w-0"><span className="text-canvas-text-secondary">账本存储位置：</span><span className="break-all font-mono font-medium text-canvas-text">{storagePath || '加载中…'}</span><p className="ui-hint mt-1">{customStorageDirectory ? '使用单独设置的账本目录' : '默认跟随“文件与应用”中的保存根目录，存放在 billing 文件夹'}</p></div>
       <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary shrink-0" disabled={busy} onClick={() => void chooseStorageDirectory()}><Icon icon="lucide:folder-cog" />更换目录</button>
     </div>
 

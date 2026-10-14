@@ -3,7 +3,7 @@ import type { AppConfig, AppearanceTheme } from '../types';
 import type { AppState } from './useAppStore';
 import { cloneAppearanceTheme, createBuiltinAppearanceThemes, getBuiltinAppearanceTheme, normalizeAppearanceTheme } from '../services/appearance/appearanceDefaults';
 import { migrateLegacyAppearance } from '../services/appearance/appearanceMigration';
-import { deleteAppearanceTheme, loadAppearanceThemes, saveAppearanceTheme } from '../services/appearance/appearanceThemeService';
+import { deleteAppearanceTheme, loadAppearanceThemes, persistAppearanceImages, saveAppearanceTheme } from '../services/appearance/appearanceThemeService';
 import { applyAppearanceTheme } from '../services/appearance/appearanceRuntime';
 
 function withLegacyConfig(theme: AppearanceTheme): Partial<AppConfig> {
@@ -42,17 +42,31 @@ export const createAppearanceSlice: StateCreator<AppState, [], [], AppearanceSli
 
   loadAppearanceThemes: async () => {
     const stored = await loadAppearanceThemes();
-    const builtins = createBuiltinAppearanceThemes();
-    const custom = stored.filter((theme) => !theme.builtin).map(normalizeAppearanceTheme);
-    const state = get();
-    const active = normalizeAppearanceTheme(state.config.appearance ?? migrateLegacyAppearance(state.config));
-    const activeId = custom.some((theme) => theme.id === active.id) || builtins.some((theme) => theme.id === active.id)
-      ? active.id
-      : active.id;
-    if (!state.config.appearance || state.config.appearance.id !== activeId) {
-      state.updateConfig(withLegacyConfig(active));
+    const themes = [...createBuiltinAppearanceThemes(), ...stored.filter((theme) => !theme.builtin).map(normalizeAppearanceTheme)];
+    let migrationFailed = false;
+    for (let index = 0; index < themes.length; index += 1) {
+      const theme = themes[index];
+      try {
+        const next = await persistAppearanceImages(theme);
+        if (next !== theme && !theme.builtin) await saveAppearanceTheme(next);
+        themes[index] = next;
+      } catch {
+        migrationFailed = true;
+      }
     }
-    set({ appearanceThemes: [...builtins, ...custom], appearanceHydrated: true });
+    set({ appearanceThemes: themes, appearanceHydrated: true });
+    // 配置读取后再迁移当前外观；迁移期间的新编辑不能被旧快照覆盖。
+    const source = get().config.appearance;
+    const active = normalizeAppearanceTheme(source ?? migrateLegacyAppearance(get().config));
+    try {
+      const migrated = await persistAppearanceImages(active);
+      if (get().config.appearance === source && !get().appearancePreview && (migrated !== active || !source)) {
+        await get().activateAppearanceTheme(migrated);
+      }
+    } catch {
+      migrationFailed = true;
+    }
+    if (migrationFailed) get().showToast('部分外观图片未能迁移到安装目录的 theme 文件夹，原配置已保留；请检查目录权限后重新加载', 'error');
   },
 
   previewAppearanceTheme: (theme) => {
@@ -64,24 +78,24 @@ export const createAppearanceSlice: StateCreator<AppState, [], [], AppearanceSli
   clearAppearancePreview: () => set({ appearancePreview: null }),
 
   activateAppearanceTheme: async (theme) => {
-    const next = normalizeAppearanceTheme(theme);
+    const next = await persistAppearanceImages(normalizeAppearanceTheme(theme));
     get().updateConfig(withLegacyConfig(next));
     set({ appearancePreview: null });
     await get().saveConfig({ silent: true });
   },
 
   saveAppearanceTheme: async (theme) => {
-    const next = { ...normalizeAppearanceTheme(theme), builtin: false, updatedAt: Date.now() };
+    // 先持久化预设，再发布到列表；写入失败不得留下看似已保存的预设。
+    const next = await saveAppearanceTheme({ ...normalizeAppearanceTheme(theme), builtin: false, updatedAt: Date.now() });
     set({ appearanceThemes: get().appearanceThemes.some((item) => item.id === next.id)
       ? get().appearanceThemes.map((item) => item.id === next.id ? next : item)
       : [...get().appearanceThemes, next] });
-    await saveAppearanceTheme(next);
     await get().activateAppearanceTheme(next);
   },
 
   duplicateAppearanceTheme: async (theme, name) => {
-    const id = `theme-${Date.now().toString(36)}`;
-    const next = cloneAppearanceTheme(theme, id, name?.trim() || `${theme.name}（自定义）`);
+    const id = `theme-${crypto.randomUUID()}`;
+    const next = await persistAppearanceImages(cloneAppearanceTheme(theme, id, name?.trim() || `${theme.name}（自定义）`));
     await get().saveAppearanceTheme(next);
     return next;
   },
@@ -90,10 +104,10 @@ export const createAppearanceSlice: StateCreator<AppState, [], [], AppearanceSli
     const item = get().appearanceThemes.find((theme) => theme.id === id);
     const trimmed = name.trim();
     if (!item || item.builtin || !trimmed || trimmed === item.name) return;
-    const next = { ...item, name: trimmed, updatedAt: Date.now(), builtin: false };
+    const next = await saveAppearanceTheme({ ...item, name: trimmed, updatedAt: Date.now(), builtin: false });
     set({ appearanceThemes: get().appearanceThemes.map((theme) => theme.id === id ? next : theme) });
-    await saveAppearanceTheme(next);
-    if (get().config.appearance?.id === id) await get().activateAppearanceTheme(next);
+    const current = get().config.appearance;
+    if (current?.id === id) await get().activateAppearanceTheme({ ...current, name: trimmed });
   },
 
   deleteAppearanceTheme: async (id) => {

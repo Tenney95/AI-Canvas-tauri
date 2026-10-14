@@ -1,13 +1,21 @@
-use rusqlite::{params, params_from_iter, types::Value, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OpenFlags};
 use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::{Path, PathBuf}, sync::Mutex, time::Duration};
+use std::{fs, path::{Path, PathBuf}, sync::{Mutex, MutexGuard}, time::Duration};
 use tauri::{Manager, Webview};
 
-use crate::path_policy::{authorize_existing_plain_directory, ensure_trusted_caller};
+use crate::path_policy::{authorize_existing_plain_directory, authorize_existing_plain_file, ensure_trusted_caller};
 
 #[derive(Default)]
 pub struct BillingStoragePath(pub Mutex<Option<PathBuf>>);
+
+// 迁移快照与账本读写串行，防止迁移完成后仍有写入落到旧库。
+static BILLING_OPERATIONS: Mutex<()> = Mutex::new(());
+const DATABASE_FILE: &str = "volcengine-usage.sqlite";
+
+fn lock_operations() -> Result<MutexGuard<'static, ()>, String> {
+    BILLING_OPERATIONS.lock().map_err(|_| "账本存储服务不可用".into())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,49 +63,86 @@ pub struct BillingPage {
     pub calculated_micros: i64,
 }
 
-fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let directory = app.state::<BillingStoragePath>().0.lock().map_err(|_| "账本路径状态不可用")?.clone()
-        .unwrap_or(app.path().app_data_dir().map_err(|e| e.to_string())?.join("billing"));
-    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    Ok(directory.join("volcengine-usage.sqlite"))
+fn selected_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app.state::<BillingStoragePath>().0.lock().map_err(|_| "账本路径状态不可用")?.clone()
+        .unwrap_or(app.path().app_data_dir().map_err(|_| "无法确定原账本目录")?.join("billing")))
 }
 
-fn checkpoint_and_close(path: &Path) -> Result<(), String> {
-    if !path.exists() { return Ok(()); }
-    let connection = Connection::open(path).map_err(|e| e.to_string())?;
-    connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| e.to_string())
+fn checked_database_path(app: &tauri::AppHandle, directory: &Path) -> Result<PathBuf, String> {
+    let directory = authorize_existing_plain_directory(app, &directory.to_string_lossy())?;
+    // SQLite 也可能读取/写入 WAL 与 SHM；不允许借附属文件链接跨出授权目录。
+    for name in [DATABASE_FILE.to_string(), format!("{DATABASE_FILE}-wal"), format!("{DATABASE_FILE}-shm")] {
+        let file = directory.join(name);
+        match fs::symlink_metadata(&file) {
+            Ok(_) => { authorize_existing_plain_file(app, &file.to_string_lossy())?; },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return Err("账本文件不可访问".into()),
+        }
+    }
+    Ok(directory.join(DATABASE_FILE))
+}
+
+fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let directory = selected_directory(app)?;
+    fs::create_dir_all(&directory).map_err(|_| "账本目录不可创建，请检查目录权限")?;
+    checked_database_path(app, &directory)
+}
+
+fn verify_database(path: &Path) -> Result<(), String> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| "账本文件无法读取")?;
+    connection.busy_timeout(Duration::from_secs(5)).map_err(|_| "账本校验初始化失败")?;
+    let integrity: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|_| "账本完整性校验失败")?;
+    if integrity != "ok" { return Err("账本文件已损坏，原账本已保留".into()); }
+    let foreign_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'billing_runs'", [], |row| row.get(0),
+    ).map_err(|_| "账本结构校验失败")?;
+    if foreign_tables > 0 { return Err("目标文件不是支持的火山方舟账本".into()); }
+    Ok(())
+}
+
+fn prepare_database(previous: &Path, target: &Path, restore_existing: bool) -> Result<(), String> {
+    if target.exists() {
+        if !restore_existing { return Err("目标目录中已存在火山方舟账本，请先选择其他目录".into()); }
+        return verify_database(target);
+    }
+    // 独占预留空文件，失败只清理本次创建的目标，不覆盖已有账本。
+    fs::OpenOptions::new().write(true).create_new(true).open(target)
+        .map_err(|_| "账本目录不可写或目标文件已存在，原账本已保留")?;
+    let result = (|| {
+        if previous.exists() {
+            let connection = Connection::open_with_flags(previous, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|_| "原账本无法读取")?;
+            connection.busy_timeout(Duration::from_secs(5)).map_err(|_| "账本迁移初始化失败")?;
+            // VACUUM INTO 包含 WAL 中的已提交记录，生成一致快照；不改写原库。
+            connection.execute("VACUUM INTO ?1", [target.to_str().ok_or("账本路径编码无效")?])
+                .map_err(|_| "账本迁移失败，请检查磁盘空间和目录权限；原账本已保留")?;
+        } else {
+            drop(Connection::open(target).map_err(|_| "账本初始化失败")?);
+        }
+        verify_database(target)
+    })();
+    if result.is_err() { let _ = fs::remove_file(target); }
+    result
 }
 
 #[tauri::command]
 pub fn billing_set_storage_path(webview: Webview, app: tauri::AppHandle, path: String) -> Result<String, String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     let directory = authorize_existing_plain_directory(&app, &path)?;
-    let target = directory.join("volcengine-usage.sqlite");
-    let previous = database_path(&app)?;
+    let target = checked_database_path(&app, &directory)?;
+    let previous_directory = selected_directory(&app)?;
+    let previous = if previous_directory.exists() {
+        checked_database_path(&app, &previous_directory)?
+    } else { previous_directory.join(DATABASE_FILE) };
     if previous == target {
+        *app.state::<BillingStoragePath>().0.lock().map_err(|_| "账本路径状态不可用")? = Some(directory);
         return Ok(target.to_string_lossy().into_owned());
     }
-    checkpoint_and_close(&previous)?;
-    if target.exists() {
-        return Err("目标目录中已存在火山方舟账本，请先选择其他目录".into());
-    }
-    if previous.exists() {
-        fs::copy(&previous, &target).map_err(|e| format!("复制账本失败：{e}"))?;
-        for suffix in ["-wal", "-shm"] {
-            let source = PathBuf::from(format!("{}{}", previous.display(), suffix));
-            if source.exists() {
-                let destination = PathBuf::from(format!("{}{}", target.display(), suffix));
-                if let Err(error) = fs::copy(&source, &destination) {
-                    let _ = fs::remove_file(&target);
-                    return Err(format!("复制账本附属文件失败：{error}"));
-                }
-            }
-        }
-    }
-    let connection = Connection::open(&target).map_err(|e| e.to_string())?;
-    connection.busy_timeout(Duration::from_secs(5)).map_err(|e| e.to_string())?;
-    connection.execute_batch("PRAGMA integrity_check;").map_err(|e| e.to_string())?;
-    drop(connection);
+    let restoring = app.state::<BillingStoragePath>().0.lock().map_err(|_| "账本路径状态不可用")?.is_none();
+    prepare_database(&previous, &target, restoring)?;
     *app.state::<BillingStoragePath>().0.lock().map_err(|_| "账本路径状态不可用")? = Some(directory);
     Ok(target.to_string_lossy().into_owned())
 }
@@ -105,6 +150,7 @@ pub fn billing_set_storage_path(webview: Webview, app: tauri::AppHandle, path: S
 #[tauri::command]
 pub fn billing_get_storage_path(webview: Webview, app: tauri::AppHandle) -> Result<String, String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     Ok(database_path(&app)?.to_string_lossy().into_owned())
 }
 
@@ -168,6 +214,7 @@ fn validate(run: &BillingRun) -> Result<(), String> {
 #[tauri::command]
 pub fn billing_upsert(webview: Webview, app: tauri::AppHandle, run: BillingRun) -> Result<(), String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     validate(&run)?;
     let connection = open(&app)?;
     connection.execute(
@@ -243,12 +290,14 @@ fn query(connection: &Connection, filter: &BillingFilter, page: u32, page_size: 
 #[tauri::command]
 pub fn billing_query(webview: Webview, app: tauri::AppHandle, filter: BillingFilter, page: u32, page_size: u32) -> Result<BillingPage, String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     query(&open(&app)?, &filter, page, page_size)
 }
 
 #[tauri::command]
 pub fn billing_get_by_task(webview: Webview, app: tauri::AppHandle, task_id: String, app_project_id: String) -> Result<Option<BillingRun>, String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     if task_id.is_empty() || task_id.len() > 256 { return Err("任务 ID 无效".into()); }
     let connection = open(&app)?;
     let mut statement = connection.prepare(&format!("SELECT {COLUMNS} FROM billing_runs WHERE task_id=?1 AND app_project_id=?2 ORDER BY submitted_at DESC LIMIT 1")).map_err(|e| e.to_string())?;
@@ -259,6 +308,7 @@ pub fn billing_get_by_task(webview: Webview, app: tauri::AppHandle, task_id: Str
 #[tauri::command]
 pub fn billing_clear(webview: Webview, app: tauri::AppHandle, filter: BillingFilter, expected_count: i64) -> Result<usize, String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     let mut connection = open(&app)?;
     let (condition, values) = where_clause(&filter);
     let safe_condition = format!("{condition} AND status NOT IN ('submitting','running','unknown')");
@@ -276,6 +326,7 @@ pub fn billing_clear(webview: Webview, app: tauri::AppHandle, filter: BillingFil
 #[tauri::command]
 pub fn billing_clear_preview(webview: Webview, app: tauri::AppHandle, filter: BillingFilter) -> Result<BillingPage, String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     let filter = filter;
     if let Some(status) = filter.status.as_deref() {
         if ["submitting", "running", "unknown"].contains(&status) { return Ok(BillingPage { items: Vec::new(), total: 0, estimated_micros: 0, calculated_micros: 0 }); }
@@ -298,6 +349,7 @@ pub fn billing_clear_preview(webview: Webview, app: tauri::AppHandle, filter: Bi
 #[tauri::command]
 pub fn billing_export(webview: Webview, app: tauri::AppHandle, filter: BillingFilter, include_prompts: bool) -> Result<Vec<u8>, String> {
     ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
     let connection = open(&app)?;
     connection.execute_batch("BEGIN DEFERRED").map_err(|e| e.to_string())?;
     let total = query(&connection, &filter, 1, 1)?.total;
@@ -400,5 +452,48 @@ mod tests {
         let names = statement.query_map([], |row| row.get::<_, String>(1)).unwrap()
             .collect::<rusqlite::Result<Vec<_>>>().unwrap();
         assert!(!names.contains(&"ark_project_name".to_string()));
+    }
+
+    #[test]
+    fn storage_migration_includes_wal_and_restores_target_without_overwriting_it() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("ai-canvas-billing-{}-{unique}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let previous = directory.join("previous.sqlite");
+        let target = directory.join(DATABASE_FILE);
+        let source = Connection::open(&previous).unwrap();
+        source.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+            CREATE TABLE billing_runs (id TEXT PRIMARY KEY, calculated_micros INTEGER);
+            INSERT INTO billing_runs VALUES ('run-1', 420000);").unwrap();
+        prepare_database(&previous, &target, false).unwrap();
+        let restored = Connection::open(&target).unwrap();
+        let amount: i64 = restored.query_row("SELECT calculated_micros FROM billing_runs WHERE id='run-1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(amount, 420000);
+        source.execute("INSERT INTO billing_runs VALUES ('run-2', 120000)", []).unwrap();
+        assert!(prepare_database(&previous, &target, false).is_err());
+        prepare_database(&previous, &target, true).unwrap();
+        let count: i64 = restored.query_row("SELECT COUNT(*) FROM billing_runs", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1);
+        assert!(previous.exists());
+        drop(restored);
+        drop(source);
+        for file in fs::read_dir(&directory).unwrap() { fs::remove_file(file.unwrap().path()).unwrap(); }
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn storage_restore_rejects_an_unrelated_database() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("ai-canvas-billing-foreign-{}-{unique}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let target = directory.join(DATABASE_FILE);
+        let connection = Connection::open(&target).unwrap();
+        connection.execute_batch("CREATE TABLE unrelated (value TEXT); INSERT INTO unrelated VALUES ('保留');").unwrap();
+        assert!(prepare_database(&directory.join("absent.sqlite"), &target, true).is_err());
+        let value: String = connection.query_row("SELECT value FROM unrelated", [], |row| row.get(0)).unwrap();
+        assert_eq!(value, "保留");
+        drop(connection);
+        fs::remove_file(target).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }

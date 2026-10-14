@@ -20,7 +20,9 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_fs::FsExt;
 
 const REGISTRY_SCHEMA_VERSION: u32 = 1;
-const PRIVATE_DIR_NAME: &str = "plugin-private";
+const PRIVATE_DIR_NAME: &str = "Plugin";
+const LEGACY_PRIVATE_DIR_NAME: &str = "plugin-private";
+const MIGRATION_DIR_NAME: &str = "Plugin.installing";
 const REGISTRY_FILE_NAME: &str = "registry.json";
 const REGISTRY_TEMP_FILE_NAME: &str = "registry.json.tmp";
 const REGISTRY_BACKUP_FILE_NAME: &str = "registry.json.bak";
@@ -60,6 +62,7 @@ const SUPPORTED_PERMISSIONS: [&str; 12] = [
 ];
 
 static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
+static STORAGE_MIGRATION_LOCK: Mutex<()> = Mutex::new(());
 
 // 这里只缓存校验过的不可变字节，不缓存权限；每次分段读取仍先检查活动 revision。
 const MAX_VERIFIED_RESOURCE_CACHE_BYTES: usize = 32 * 1024 * 1024;
@@ -1083,11 +1086,150 @@ async fn request_registry_repair_approval(app: &AppHandle) -> Result<bool, Strin
     .map_err(|_| "无法显示插件信任注册表修复确认".to_string())
 }
 
-pub(crate) fn plugin_private_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+fn installed_plugin_dir() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|_| "无法定位应用安装目录")?;
+    let directory = executable.parent().ok_or("无法定位应用安装目录")?;
+    let directory = directory
+        .canonicalize()
+        .map_err(|_| "无法解析应用安装目录")?;
+    Ok(simplify_verbatim(directory).join(PRIVATE_DIR_NAME))
+}
+
+fn legacy_plugin_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
-        .map(|directory| directory.join(PRIVATE_DIR_NAME))
+        .map(|directory| directory.join(LEGACY_PRIVATE_DIR_NAME))
         .map_err(|_| "无法定位插件私有数据目录".to_string())
+}
+
+/// 所有运行入口共用新目录；迁移不与安装事务交错，也不回退旧目录执行。
+pub(crate) fn plugin_private_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let directory = installed_plugin_dir()?;
+    let _guard = STORAGE_MIGRATION_LOCK
+        .lock()
+        .map_err(|_| "插件目录迁移锁异常")?;
+    if !private_directory_exists(&directory)? {
+        migrate_legacy_plugin_directory_at(&legacy_plugin_dir(app)?, &directory)?;
+    }
+    Ok(directory)
+}
+
+/// 路径保护使用纯定位，不触发迁移或获取注册表锁。
+fn plugin_private_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(directory) = installed_plugin_dir() {
+        roots.push(directory.with_file_name(MIGRATION_DIR_NAME));
+        roots.push(directory);
+    }
+    if let Ok(directory) = legacy_plugin_dir(app) {
+        roots.push(directory);
+    }
+    roots
+}
+
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
+fn private_directory_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_dir() || is_link_or_reparse(&metadata) => {
+            Err("插件私有目录必须是普通目录，不能使用符号链接或目录联接".into())
+        }
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("插件私有目录不可访问，请检查目录权限".into()),
+    }
+}
+
+fn copy_legacy_plugin_entry(
+    source: &Path,
+    target: &Path,
+    depth: usize,
+    remaining_entries: &mut usize,
+) -> Result<(), String> {
+    if depth > 4 || *remaining_entries == 0 {
+        return Err("旧插件数据的目录深度或文件数量超过迁移限制".into());
+    }
+    *remaining_entries -= 1;
+    let metadata = fs::symlink_metadata(source).map_err(|_| "无法读取旧插件迁移数据")?;
+    if is_link_or_reparse(&metadata) {
+        return Err("旧插件迁移数据不能包含符号链接或目录联接".into());
+    }
+    if metadata.is_dir() {
+        fs::create_dir(target).map_err(|_| "无法创建插件迁移子目录，请检查安装目录权限")?;
+        for entry in fs::read_dir(source).map_err(|_| "无法读取旧插件迁移目录")? {
+            let entry = entry.map_err(|_| "无法读取旧插件迁移目录项")?;
+            copy_legacy_plugin_entry(
+                &entry.path(),
+                &target.join(entry.file_name()),
+                depth + 1,
+                remaining_entries,
+            )?;
+        }
+    } else if metadata.is_file() && metadata.len() <= MAX_PACKAGE_RESOURCE_BYTES as u64 {
+        let bytes = fs::copy(source, target).map_err(|_| "无法复制插件数据，请检查安装目录权限")?;
+        if bytes != metadata.len() {
+            return Err("旧插件数据在迁移期间发生变化，请重试".into());
+        }
+    } else {
+        return Err("旧插件迁移数据不是普通文件或超过大小限制".into());
+    }
+    Ok(())
+}
+
+fn migrate_legacy_plugin_directory_at(legacy: &Path, target: &Path) -> Result<bool, String> {
+    if private_directory_exists(target)? || !private_directory_exists(legacy)? {
+        return Ok(false);
+    }
+    // 与最终目录同卷暂存，再原子发布；旧目录保留为备份，兼容跨盘安装。
+    let staging_root = target.with_file_name(MIGRATION_DIR_NAME);
+    ensure_private_directory(&staging_root)?;
+    let staging = staging_root.join(format!(
+        "stage-{}-{}",
+        std::process::id(),
+        unix_now_millis(),
+    ));
+    fs::create_dir(&staging).map_err(|_| "无法创建插件迁移目录，请检查安装目录权限")?;
+    let result = (|| {
+        let mut remaining_entries = MAX_PLUGIN_REGISTRATIONS * (3 * (MAX_PACKAGE_RESOURCES + 5) + 4);
+        for name in [
+            REGISTRY_FILE_NAME,
+            REGISTRY_BACKUP_FILE_NAME,
+            REVISIONS_DIR_NAME,
+            UI_REVISIONS_DIR_NAME,
+            "settings",
+        ] {
+            let source = legacy.join(name);
+            match fs::symlink_metadata(&source) {
+                Ok(_) => copy_legacy_plugin_entry(
+                    &source,
+                    &staging.join(name),
+                    0,
+                    &mut remaining_entries,
+                )?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err("旧插件数据不可访问，迁移未完成".to_string()),
+            }
+        }
+        if private_directory_exists(target)? {
+            return Err("Plugin 目录在迁移期间已创建，未覆盖已有数据".into());
+        }
+        fs::rename(&staging, target).map_err(|_| "无法提交插件目录迁移，请检查安装目录权限")?;
+        Ok(true)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    let _ = fs::remove_dir(&staging_root);
+    result
 }
 
 fn simplify_verbatim(path: PathBuf) -> PathBuf {
@@ -1128,25 +1270,25 @@ fn plugin_private_paths_overlap(private_dir: &Path, resolved: &Path) -> bool {
 }
 
 pub fn is_plugin_private_path<R: Runtime>(app: &AppHandle<R>, resolved: &Path) -> bool {
-    plugin_private_dir(app)
-        .map(|directory| is_under_plugin_private_dir(&directory, resolved))
-        .unwrap_or(false)
+    plugin_private_roots(app)
+        .iter()
+        .any(|directory| is_under_plugin_private_dir(directory, resolved))
 }
 
 pub(crate) fn is_plugin_private_path_overlap<R: Runtime>(
     app: &AppHandle<R>,
     resolved: &Path,
 ) -> bool {
-    plugin_private_dir(app)
-        .map(|directory| plugin_private_paths_overlap(&directory, resolved))
-        .unwrap_or(false)
+    plugin_private_roots(app)
+        .iter()
+        .any(|directory| plugin_private_paths_overlap(directory, resolved))
 }
 
 fn ensure_private_directory(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|_| "无法创建插件私有数据目录".to_string())?;
-    let metadata = fs::symlink_metadata(path).map_err(|_| "插件私有数据目录不可用".to_string())?;
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err("插件私有数据目录不安全".to_string());
+    fs::create_dir_all(path)
+        .map_err(|_| "无法创建插件私有数据目录，请检查安装目录 Plugin 的写入权限".to_string())?;
+    if !private_directory_exists(path)? {
+        return Err("插件私有数据目录不存在".into());
     }
     Ok(())
 }
@@ -2249,17 +2391,16 @@ fn stage_revision_at(
 
 /// 把插件注册表和源码快照从 Renderer 的 fs / asset scope 中移除。
 pub fn deny_plugin_private_dir_access<R: Runtime>(app: &AppHandle<R>) {
-    let Ok(directory) = plugin_private_dir(app) else {
-        return;
-    };
-    if let Err(error) = app.fs_scope().forbid_directory(&directory, true) {
-        eprintln!("[plugin-registry] 无法从 fs scope 拒绝插件私有目录: {error}");
-    }
-    if let Err(error) = app
-        .asset_protocol_scope()
-        .forbid_directory(&directory, true)
-    {
-        eprintln!("[plugin-registry] 无法从 asset scope 拒绝插件私有目录: {error}");
+    for directory in plugin_private_roots(app) {
+        let normalized = normalized_for_compare(&directory);
+        for path in [&directory, &normalized] {
+            if app.fs_scope().forbid_directory(path, true).is_err() {
+                eprintln!("[plugin-registry] 无法从 fs scope 拒绝插件私有目录");
+            }
+            if app.asset_protocol_scope().forbid_directory(path, true).is_err() {
+                eprintln!("[plugin-registry] 无法从 asset scope 拒绝插件私有目录");
+            }
+        }
     }
 }
 
@@ -3950,7 +4091,7 @@ mod tests {
 
     #[test]
     fn private_path_helper_rejects_only_its_subtree() {
-        let root = PathBuf::from("plugin-private");
+        let root = PathBuf::from(PRIVATE_DIR_NAME);
         assert!(is_under_plugin_private_dir(
             &root,
             &root.join("revisions/example.plugin")
@@ -3959,6 +4100,168 @@ mod tests {
             &root,
             &PathBuf::from("plugin-public")
         ));
+    }
+
+    #[test]
+    fn plugin_storage_migration_preserves_registration_and_persistent_files() {
+        let directory = temporary_directory("storage-migration");
+        let legacy = directory.join(LEGACY_PRIVATE_DIR_NAME);
+        let target = directory.join(PRIVATE_DIR_NAME);
+        let source = "definePlugin({ tools: {} }); // 中文源码\n";
+        let ui_source = "globalThis.FrameReview = () => '界面';";
+        let resource_bytes = vec![0, 128, 255];
+        let payloads = vec![PluginPackageResourcePayload {
+            id: "image".into(),
+            bytes: resource_bytes.clone(),
+        }];
+        let mut value = manifest("javascript");
+        value["permissions"] = json!(["node.read", "node.write", "ui.custom", "plugin.resources.read"]);
+        value["ui"] = json!({
+            "entry": "ui.js", "integrity": source_digest(ui_source),
+            "exports": { "frameReview": "FrameReview" }
+        });
+        value["resources"] = json!([{
+            "id": "image", "path": "resources/image.bin",
+            "integrity": format!("{:x}", Sha256::digest(&resource_bytes)),
+            "mediaType": "application/octet-stream", "bytes": resource_bytes.len()
+        }]);
+        let (id, mut revision) =
+            parse_revision_with_resources(&value, source, Some(ui_source), &payloads).unwrap();
+        assert!(apply_native_stage_approval(&mut revision, Some(true)));
+        stage_revision_with_resources_at(
+            &legacy, id.clone(), revision.clone(), source, Some(ui_source), &payloads,
+        ).unwrap();
+        let mut registry = read_registry_at(&legacy).unwrap();
+        let record = registry.plugins.get_mut(&id).unwrap();
+        record.active = record.staged.take();
+        record.enabled = true;
+        write_registry_at(&legacy, &registry).unwrap();
+        ensure_private_directory(&legacy.join("settings")).unwrap();
+        fs::write(
+            legacy.join("settings/example.plugin.json"),
+            br#"{"language":"zh-CN"}"#,
+        ).unwrap();
+        ensure_private_directory(&legacy.join("window-profiles")).unwrap();
+        ensure_private_directory(&legacy.join("media-jobs")).unwrap();
+
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).unwrap());
+        let migrated = read_registry_at(&target).unwrap();
+        assert_eq!(migrated.plugins, registry.plugins);
+        assert_eq!(
+            read_verified_source_at(&target, &id, &revision).unwrap(),
+            source,
+        );
+        assert_eq!(
+            fs::read(target.join("settings/example.plugin.json")).unwrap().as_slice(),
+            br#"{"language":"zh-CN"}"#,
+        );
+        assert_eq!(
+            read_verified_resource_at(&target, &id, &revision, "image").unwrap(),
+            resource_bytes,
+        );
+        assert_eq!(
+            read_verified_ui_source_at(&target, &id, &revision).unwrap().as_deref(),
+            Some(ui_source),
+        );
+        assert!(!target.join("window-profiles").exists());
+        assert!(!target.join("media-jobs").exists());
+        assert!(legacy.exists());
+        assert!(plugin_private_paths_overlap(&target, &directory));
+        assert!(!plugin_private_paths_overlap(&target, &directory.join("theme")));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn plugin_storage_migration_never_overwrites_or_reimports_existing_storage() {
+        let directory = temporary_directory("storage-existing");
+        let legacy = directory.join(LEGACY_PRIVATE_DIR_NAME);
+        let target = directory.join(PRIVATE_DIR_NAME);
+        ensure_private_directory(&legacy).unwrap();
+        ensure_private_directory(&target).unwrap();
+        fs::write(registry_file(&legacy), "legacy").unwrap();
+        fs::write(registry_file(&target), "current").unwrap();
+        assert!(!migrate_legacy_plugin_directory_at(&legacy, &target).unwrap());
+        assert_eq!(fs::read_to_string(registry_file(&target)).unwrap(), "current");
+        fs::remove_file(registry_file(&target)).unwrap();
+        assert!(!migrate_legacy_plugin_directory_at(&legacy, &target).unwrap());
+        assert!(!registry_file(&target).exists());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn plugin_storage_migration_retains_corrupt_registry_for_explicit_repair() {
+        let directory = temporary_directory("storage-corrupt");
+        let legacy = directory.join(LEGACY_PRIVATE_DIR_NAME);
+        let target = directory.join(PRIVATE_DIR_NAME);
+        ensure_private_directory(&legacy).unwrap();
+        fs::write(registry_file(&legacy), "corrupt registry").unwrap();
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).unwrap());
+        assert!(is_repairable_registry_error(
+            &read_registry_at(&target).unwrap_err(),
+        ));
+        assert_eq!(
+            fs::read_to_string(registry_file(&legacy)).unwrap(),
+            "corrupt registry",
+        );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn plugin_storage_migration_keeps_legacy_data_after_failure_and_can_retry() {
+        let directory = temporary_directory("storage-retry");
+        let legacy = directory.join(LEGACY_PRIVATE_DIR_NAME);
+        let target = directory.join(PRIVATE_DIR_NAME);
+        ensure_private_directory(&legacy).unwrap();
+        fs::write(registry_file(&legacy), "legacy registry").unwrap();
+        let oversized = fs::File::create(legacy.join(REGISTRY_BACKUP_FILE_NAME)).unwrap();
+        oversized.set_len(MAX_PACKAGE_RESOURCE_BYTES as u64 + 1).unwrap();
+        drop(oversized);
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).is_err());
+        assert!(!target.exists());
+        assert!(registry_file(&legacy).exists());
+        assert!(!directory.join(MIGRATION_DIR_NAME).exists());
+        fs::remove_file(legacy.join(REGISTRY_BACKUP_FILE_NAME)).unwrap();
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).unwrap());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn plugin_storage_migration_requires_plain_directories() {
+        let directory = temporary_directory("storage-path-type");
+        ensure_private_directory(&directory).unwrap();
+        let legacy = directory.join(LEGACY_PRIVATE_DIR_NAME);
+        let target = directory.join(PRIVATE_DIR_NAME);
+        assert!(!migrate_legacy_plugin_directory_at(&legacy, &target).unwrap());
+        assert!(!target.exists());
+        fs::write(&target, "occupied").unwrap();
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "occupied");
+        fs::remove_file(&target).unwrap();
+        fs::write(&legacy, "occupied").unwrap();
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).is_err());
+        assert!(!target.exists());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_storage_migration_rejects_links_and_preserves_their_targets() {
+        use std::os::unix::fs::symlink;
+        let directory = temporary_directory("storage-links");
+        let legacy = directory.join(LEGACY_PRIVATE_DIR_NAME);
+        let target = directory.join(PRIVATE_DIR_NAME);
+        let external = directory.join("external");
+        ensure_private_directory(&legacy).unwrap();
+        ensure_private_directory(&external).unwrap();
+        fs::write(external.join("keep.txt"), "keep").unwrap();
+        symlink(&external, &target).unwrap();
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).is_err());
+        fs::remove_file(&target).unwrap();
+        symlink(&external, legacy.join(REVISIONS_DIR_NAME)).unwrap();
+        assert!(migrate_legacy_plugin_directory_at(&legacy, &target).is_err());
+        assert!(!target.exists());
+        assert_eq!(fs::read_to_string(external.join("keep.txt")).unwrap(), "keep");
+        fs::remove_dir_all(directory).ok();
     }
 
     #[cfg(windows)]
