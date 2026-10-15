@@ -10,6 +10,7 @@ import {
 import { buildGeneralVideoProtocolVariables } from '../../src/services/ai/generateVideo';
 import { buildModelProtocolRequest } from '../../src/services/ai/modelProtocol';
 import type { VideoModelCapability } from '../../src/types/aiTypes';
+import type { ProviderModelSelection } from '../../src/types';
 
 describe('MiniMax H3 capability templates', () => {
   it('separates H3 and H3-Max official capability limits', () => {
@@ -113,7 +114,7 @@ describe('MiniMax H3 capability templates', () => {
     });
   });
 
-  it('matches verified gateways while leaving unknown relays capability-only', () => {
+  it('matches verified gateways', () => {
     expect(resolveH3AutoTemplate({
       modelId: 'MiniMax-H3-Max',
       baseUrl: 'https://api.aiping.cn/v1',
@@ -122,12 +123,71 @@ describe('MiniMax H3 capability templates', () => {
       templateId: 'h3-max:aiping',
       executionProfile: { preset: 'custom' },
     });
-    const unknown = resolveH3AutoTemplate({
-      modelId: 'MiniMax-H3',
-      baseUrl: 'https://relay.example.com/v1',
+  });
+
+  it.each([undefined, 'https://relay.example.com/v1', 'invalid-url'])(
+    'does not infer capabilities or a protocol for an unverified relay: %s', (baseUrl) => {
+      expect(resolveH3AutoTemplate({ modelId: 'MiniMax-H3', baseUrl })).toBeUndefined();
+      const input: ProviderModelSelection = {
+        id: 'MiniMax-H3', name: 'H3', provider: 'custom-test', category: 'video',
+      };
+      expect(applyH3TemplateDefaults(input, baseUrl)).toBe(input);
+    },
+  );
+
+  it('uses an explicit template for an unverified relay and clones explicit capabilities', () => {
+    const capability: VideoModelCapability = { operations: ['text-to-video'], durations: [8] };
+    const before = structuredClone(capability);
+    const match = resolveH3AutoTemplate({
+      modelId: 'MiniMax-H3', baseUrl: 'https://relay.example.com/v1',
+      templateId: 'h3-standard:minimax', capability,
     });
-    expect(unknown?.capability.resolutions).toEqual(['768P', '2K']);
-    expect(unknown?.executionProfile).toBeUndefined();
+    expect(match?.templateId).toBe('h3-standard:minimax');
+    expect(match?.executionProfile?.protocol?.submit.path).toBe('/v2/video_generation');
+    expect(match?.capability).toEqual(capability);
+    expect(match?.capability).not.toBe(capability);
+    expect(capability).toEqual(before);
+  });
+
+  it('fills capabilities together with a verified transport when no protocol was configured', () => {
+    const model = applyH3TemplateDefaults({
+      id: 'MiniMax-H3', name: 'H3', provider: 'custom-test', category: 'video',
+    }, 'https://api.minimax.io');
+    expect(model.videoCapability?.resolutions).toEqual(['768P', '2K']);
+    expect(model.videoCapability?.supportsAudio).toBeUndefined();
+    expect(model.executionProfile?.protocol?.submit.path).toBe('/v2/video_generation');
+  });
+
+  it.each([undefined, true, false])(
+    'does not mix capabilities into an existing protocol or mutate an explicit audio value: %s', (supportsAudio) => {
+      const input: ProviderModelSelection = {
+        id: 'MiniMax-H3', name: 'H3', provider: 'custom-test', category: 'video',
+        executionProfile: { preset: 'custom', protocol: {
+          version: 2, mode: 'sync', submit: { method: 'POST', path: '/private/video' },
+          response: { type: 'json', result: { urlPath: 'url' } },
+        } },
+        ...(supportsAudio === undefined ? {} : { videoCapability: { supportsAudio } }),
+      };
+      const before = structuredClone(input);
+      const model = applyH3TemplateDefaults(input, 'https://api.minimax.io');
+      expect(model.videoCapability).toBe(input.videoCapability);
+      expect(model.executionProfile).toBe(input.executionProfile);
+      expect(input).toEqual(before);
+    },
+  );
+
+  it('respects an explicit non-video manual category', () => {
+    const input: ProviderModelSelection = {
+      id: 'MiniMax-H3', name: 'Not a video model here', provider: 'custom-test',
+      category: 'text', categoryManual: true,
+    };
+    expect(applyH3TemplateDefaults(input, 'https://api.minimax.io')).toBe(input);
+  });
+
+  it('does not accept an invalid explicit template as evidence of an unknown transport', () => {
+    expect(resolveH3AutoTemplate({
+      modelId: 'MiniMax-H3', baseUrl: 'https://relay.example.com/v1', templateId: 'invalid-template',
+    })).toBeUndefined();
   });
 
   it('does not treat Context-IR or Regeneration as ordinary video generation', () => {

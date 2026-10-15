@@ -11,11 +11,12 @@ import {
   pluginMarketplaceKey,
   resolveGithubPlugin,
 } from '../../services/plugins/pluginMarketplace';
-import type { PluginMarketplaceItem } from '../../services/plugins/pluginMarketplace';
+import type { PluginMarketplaceDownloadProgress, PluginMarketplaceItem } from '../../services/plugins/pluginMarketplace';
 import { parsePluginManifest } from '../../services/plugins/pluginManifest';
 import { getPythonPluginRuntimeStatus } from '../../services/plugins/pluginRuntime';
 import { useAppStore } from '../../store/useAppStore';
 import { isExternalDropCaptured, setExternalDropCaptured } from '../../utils/dropCapture';
+import { formatSize } from '../../utils/assetFormat';
 import { getNodeTypeConfig } from '../../types';
 import type {
   PluginCategory,
@@ -27,6 +28,7 @@ import ChatMarkdown from '../chat/ChatMarkdown';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
+import DownloadProgress from '../shared/DownloadProgress';
 
 const CATEGORY_LABELS: Record<PluginCategory, string> = {
   content: '内容处理',
@@ -357,6 +359,7 @@ export default function PluginSettings() {
   const inputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
+  const marketplaceRequestRef = useRef(0);
   // 目录授权只用于当前面板的开发重载，不写入插件记录或普通配置。
   const [localDirectories, setLocalDirectories] = useState<Record<string, string>>({});
   const plugins = useAppStore((state) => state.installedPlugins);
@@ -372,6 +375,8 @@ export default function PluginSettings() {
   const [marketplaceItems, setMarketplaceItems] = useState<PluginMarketplaceItem[]>([]);
   const [marketplaceLoading, setMarketplaceLoading] = useState(true);
   const [marketplaceError, setMarketplaceError] = useState('');
+  const [marketplaceProgress, setMarketplaceProgress] = useState<PluginMarketplaceDownloadProgress | null>(null);
+  const [repositoryProgress, setRepositoryProgress] = useState<PluginMarketplaceDownloadProgress | null>(null);
   const [marketplaceQuery, setMarketplaceQuery] = useState('');
   const [repositoryInput, setRepositoryInput] = useState('');
   const [installingRepository, setInstallingRepository] = useState('');
@@ -384,14 +389,29 @@ export default function PluginSettings() {
   );
 
   const refreshMarketplace = useCallback(async (force = false) => {
+    const requestId = ++marketplaceRequestRef.current;
+    let active = true;
     setMarketplaceLoading(true);
     setMarketplaceError('');
+    setMarketplaceProgress(null);
     try {
-      setMarketplaceItems(await loadPluginMarketplace(installedRepositories, { force }));
+      const items = await loadPluginMarketplace(installedRepositories, {
+        force,
+        onProgress: (progress) => {
+          if (active && marketplaceRequestRef.current === requestId) setMarketplaceProgress(progress);
+        },
+      });
+      if (marketplaceRequestRef.current === requestId) setMarketplaceItems(items);
     } catch (error) {
-      setMarketplaceError(error instanceof Error ? error.message : '插件市场加载失败');
+      if (marketplaceRequestRef.current === requestId) {
+        setMarketplaceError(error instanceof Error ? error.message : '插件市场加载失败');
+      }
     } finally {
-      setMarketplaceLoading(false);
+      active = false;
+      if (marketplaceRequestRef.current === requestId) {
+        setMarketplaceLoading(false);
+        setMarketplaceProgress(null);
+      }
     }
   }, [installedRepositories]);
 
@@ -415,7 +435,10 @@ export default function PluginSettings() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refreshMarketplace(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      marketplaceRequestRef.current += 1;
+    };
   }, [refreshMarketplace]);
 
   useEffect(() => {
@@ -441,10 +464,17 @@ export default function PluginSettings() {
   const installGithubPlugin = async (repository: string, item?: PluginMarketplaceItem) => {
     if (!repository.trim() || installingRepository) return;
     setInstallingRepository(item ? pluginMarketplaceKey(item) : repository);
+    setRepositoryProgress(null);
+    let downloading = true;
     try {
       const plugin = item?.status === 'ready'
         ? item
-        : await resolveGithubPlugin(repository, { force: true });
+        : await resolveGithubPlugin(repository, {
+          force: true,
+          onProgress: (progress) => { if (downloading) setRepositoryProgress(progress); },
+        });
+      downloading = false;
+      setRepositoryProgress(null);
       const action = plugins.some((installed) => installed.id === plugin.manifest.id) ? '更新' : '安装';
       const sourceDigest = await reviewPluginInstall(plugin.manifest, plugin.source, action, plugin.repository);
       if (!sourceDigest) return;
@@ -459,7 +489,9 @@ export default function PluginSettings() {
     } catch (error) {
       showToast(pluginOperationErrorMessage(error, 'GitHub 插件安装失败'), 'error');
     } finally {
+      downloading = false;
       setInstallingRepository('');
+      setRepositoryProgress(null);
     }
   };
 
@@ -823,6 +855,19 @@ export default function PluginSettings() {
           </AnimatedButton>
         </div>
 
+        {marketplaceLoading && (
+          <div className="mt-3 space-y-2">
+            <DownloadProgress
+              downloadedBytes={marketplaceProgress?.currentFileDownloadedBytes ?? 0}
+              totalBytes={marketplaceProgress?.currentFileTotalBytes}
+              label={marketplaceProgress ? `当前文件 · ${marketplaceProgress.fileName}` : '正在连接插件市场…'}
+            />
+            {marketplaceProgress && (
+              <p className="text-xs text-canvas-text-muted tabular-nums">本次累计已下载 {formatSize(marketplaceProgress.downloadedBytes)}</p>
+            )}
+          </div>
+        )}
+
         <div className="mt-3 flex gap-2">
           <input
             value={repositoryInput}
@@ -843,6 +888,15 @@ export default function PluginSettings() {
             {installingRepository === repositoryInput ? '读取中…' : '从仓库安装'}
           </AnimatedButton>
         </div>
+
+        {repositoryProgress && (
+          <DownloadProgress
+            downloadedBytes={repositoryProgress.downloadedBytes}
+            totalBytes={repositoryProgress.totalBytes}
+            label={`当前文件 · ${repositoryProgress.fileName}`}
+            className="mt-3"
+          />
+        )}
 
         {(marketplaceItems.length > 0 || marketplaceQuery) && (
           <div className="relative mt-3">

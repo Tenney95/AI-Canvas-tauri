@@ -46,8 +46,11 @@ import {
   mintPluginInvocationResources,
   readPluginDerivedResourceForOutput,
   readPluginResourceRange,
+  readPluginPlaybackRange,
   readPluginResourceText,
   registerPluginDerivedResource,
+  getPluginPlaybackResource,
+  registerPluginPlaybackResource,
   replacePluginDerivedResources,
   resolvePluginResourceHostUrl,
   resolvePluginMediaWorkspaceInputs,
@@ -150,6 +153,38 @@ describe('pluginResourceService', () => {
     const context = { ...readContext(state), permissions: ['files.connected.read', 'files.output.create'] as const };
     return { state, setRevision, resources, context };
   }
+
+  it('binds one playback preview to its source without exposing it as an output image', async () => {
+    const { resources, context } = await workspaceSetup();
+    const sourceId = resources.self[0].resourceId;
+    const preview = { bytes: new Uint8Array([1, 2, 3]), duration: 12, hasAudio: true };
+    const first = registerPluginPlaybackResource(context, sourceId, preview);
+    expect(getPluginPlaybackResource(context, sourceId)).toEqual({ resource: first, duration: 12, hasAudio: true });
+    expect(resources.derived).toEqual([]);
+    expect(() => readPluginDerivedResourceForOutput(context, first.resourceId)).toThrow();
+    const read = await readPluginPlaybackRange(context, first.resourceId, 0, 3);
+    expect(read.base64Chunks).toEqual(['AQID']);
+    await expect(readPluginPlaybackRange(context, first.resourceId, 0, 3)).rejects.toThrow('顺序');
+    const second = registerPluginPlaybackResource(context, sourceId, preview);
+    await expect(readPluginResourceRange(context, first.resourceId, 0, 1)).rejects.toThrow();
+    clearPluginInvocationResources(context.invocationId);
+    await expect(readPluginResourceRange(context, second.resourceId, 0, 1)).rejects.toThrow();
+  });
+
+  it('accepts previews above 12 MiB and rejects wrong ownership, changed source files and stale revisions', async () => {
+    const { resources, context, setRevision } = await workspaceSetup();
+    const sourceId = resources.self[0].resourceId;
+    const preview = { bytes: new Uint8Array([1]), duration: 12, hasAudio: false };
+    expect(() => registerPluginPlaybackResource(context, sourceId, { ...preview, bytes: new Uint8Array(20 * 1024 * 1024) })).not.toThrow();
+    expect(() => registerPluginPlaybackResource(context, sourceId, { ...preview, bytes: new Uint8Array() })).toThrow();
+    expect(() => registerPluginPlaybackResource({ ...context, invocationId: 'other' }, sourceId, preview)).toThrow();
+    expect(() => registerPluginPlaybackResource({ ...context, permissions: ['files.connected.read'] }, sourceId, preview)).toThrow();
+    const ref = registerPluginPlaybackResource(context, sourceId, preview);
+    mocks.lstat.mockResolvedValue({ isDirectory: false, isFile: true, isSymlink: false, size: 12, mtime: new Date(2_000) });
+    await expect(readPluginResourceRange(context, ref.resourceId, 0, 1)).rejects.toThrow();
+    setRevision(8);
+    expect(() => getPluginPlaybackResource(context, sourceId)).toThrow();
+  });
 
   it('resolves an authorized self video path only for the native workspace bridge', async () => {
     const { resources, context } = await workspaceSetup();

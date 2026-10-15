@@ -267,6 +267,9 @@ pub async fn download_onnx_model(
     let download = match first {
         Ok(result) => result,
         Err(error) => {
+            if error == "文件传输已取消" {
+                return Err(error);
+            }
             let Some(flipped) = crate::model_mirror::alternate(resolved.source) else {
                 return Err(error);
             };

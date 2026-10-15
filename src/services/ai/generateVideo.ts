@@ -899,10 +899,23 @@ export async function generateVideo(
       if (!url) throw new Error('视频生成完成但未返回结果');
       return { url };
     }
-    throw new Error(
-      `视频模型“${gm.name}”未配置可执行的提交/轮询协议，请在自定义 API 设置中重新导入并确认接口文档。`
-      + '系统不会再猜测 /videos/generations 等通用视频端点。',
-    );
+    const connectionName = connection.provider.name.trim() || connection.providerConfigId;
+    const preset = gm.executionProfile?.preset;
+    const textPreset = preset === 'anthropic-chat'
+      ? 'Anthropic Messages'
+      : preset === 'gemini-chat' ? 'Google Gemini generateContent' : undefined;
+    const reason = textPreset
+      ? `“协议预设”误选为文本对话协议“${textPreset}”，不能用于视频生成。`
+      : '尚未配置“模型调用协议”；仅添加模型或填写参数能力不会生成调用协议。';
+    throw new Error([
+      textPreset ? '视频生成已拦截：调用协议类型不适用。' : '视频生成已拦截：模型调用协议未配置。',
+      `连接：${connectionName}`,
+      `模型：${gm.name}（模型 ID：${gm.modelId}）`,
+      `原因：${reason}`,
+      `修改位置：设置 → API Key → 编辑“${connectionName}” → 启用模型 → 此模型右侧“调用协议”（滑杆图标）。`,
+      '处理：选择“高级自定义 JSON”，按渠道文档配置提交请求和结果解析；异步接口还需配置任务 ID 与轮询。也可在“视频参数能力”中应用匹配渠道的模板。',
+      '最后点击“保存更改”，再重试生成。本次尚未提交视频生成请求。',
+    ].join('\n'));
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置

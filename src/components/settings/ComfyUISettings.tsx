@@ -17,7 +17,8 @@ import {
   openComfyManagementWindow,
   selectComfyInstallation,
 } from '../../services/comfyManagementService';
-import { getComfyLaunchSettings } from '../../services/comfyLaunchSettingsService';
+import { getComfyUIRuntimeStatus, launchComfyUI } from '../../services/comfyRuntimeService';
+import { syncComfyRuntimeUrl } from '../../services/comfyRuntimeHostSync';
 import { getAppearanceForConfig } from '../../services/appearance/appearanceMigration';
 import {
   DEFAULT_COMFY_URL,
@@ -220,7 +221,7 @@ export default function ComfyUISettings() {
 
   const statusLabel = (availability: ComfyServerAvailability) => {
     if (availability === 'available') return t('ComfyUI 服务已就绪');
-    if (availability === 'unavailable') return t('服务未就绪，请查看弹出的终端窗口中的日志');
+    if (availability === 'unavailable') return t('服务未就绪，可在设置与管理的运行输出中查看日志');
     return t('正在等待 ComfyUI 服务就绪，首次启动可能需要几分钟时间…');
   };
 
@@ -242,7 +243,7 @@ export default function ComfyUISettings() {
   };
 
   const openManagement = async () => {
-    if (choosingPathRef.current || managing || launching) return;
+    if (choosingPathRef.current || managing) return;
     setManaging(true);
     try {
       const comfyPath = await resolveInstallationPath();
@@ -292,16 +293,23 @@ export default function ComfyUISettings() {
         showToast(t('请先设置 ComfyUI 安装目录'), 'error');
         return;
       }
-      const launchSettings = await getComfyLaunchSettings();
-      const base = `http://127.0.0.1:${launchSettings.port}`;
-      if (useAppStore.getState().config.comfyUIUrl?.trim() !== base) {
-        updateConfig({ comfyUIUrl: base });
-        await saveConfig();
-      }
-      await invoke<string>('launch_comfyui', { comfyPath });
+      const runtime = await launchComfyUI(comfyPath);
+      if (runtime.status === 'failed' || runtime.status === 'exited') throw new Error(runtime.message);
+      await syncComfyRuntimeUrl(runtime.port, comfyPath);
+      const base = `http://127.0.0.1:${runtime.port}`;
       const deadline = Date.now() + 300_000;
       let ready = false;
       while (Date.now() < deadline) {
+        if (useAppStore.getState().config.comfyUIPath?.trim() !== comfyPath) {
+          throw new Error(t('ComfyUI 安装目录已变更，请在设置与管理中查看当前运行状态'));
+        }
+        if (runtime.runId && runtime.status !== 'external') {
+          const current = await getComfyUIRuntimeStatus();
+          if (current.runId !== runtime.runId || current.port !== runtime.port) {
+            throw new Error(t('ComfyUI 运行实例已变更，请在设置与管理中查看运行输出'));
+          }
+          if (current.status === 'failed' || current.status === 'exited') throw new Error(current.message);
+        }
         if (await probeComfyServer(base)) {
           ready = true;
           break;
@@ -310,10 +318,13 @@ export default function ComfyUISettings() {
       }
       setStatus(ready ? 'ready' : 'failed');
       if (ready) {
+        if (useAppStore.getState().config.comfyUIPath?.trim() !== comfyPath) {
+          throw new Error(t('ComfyUI 安装目录已变更，请在设置与管理中查看当前运行状态'));
+        }
         await openComfyUI(base);
       }
       showToast(
-        ready ? t('ComfyUI 服务已就绪') : t('ComfyUI 进程已启动，但等待服务就绪超时，请查看终端窗口日志'),
+        ready ? t('ComfyUI 服务已就绪') : t('等待 ComfyUI 服务就绪超时，请在设置与管理中查看运行输出'),
         ready ? 'success' : 'error',
       );
     } catch (error) {
@@ -431,7 +442,7 @@ export default function ComfyUISettings() {
                 type="button"
                 className={`${COMFY_ACTION_BUTTON_CLASS} ui-btn--secondary`}
                 onClick={() => void openManagement()}
-                disabled={managing || launching || choosingPath}
+                disabled={managing || choosingPath}
               >
                 <Icon icon={managing ? 'lucide:loader-circle' : 'lucide:settings'} width="14" height="14" className={managing ? 'animate-spin' : ''} />
                 {t('设置')}
@@ -446,9 +457,9 @@ export default function ComfyUISettings() {
                 {t('打开 ComfyUI 页面')}
               </AnimatedButton>
             </div>
-            {status === 'starting' && <p className="text-[11px] text-canvas-text-secondary mt-2 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />{t('正在等待 ComfyUI 服务就绪，首次启动可能需要几分钟时间…')}</p>}
+            {status === 'starting' && <p className="text-[11px] text-canvas-text-secondary mt-2 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />{t('正在等待 ComfyUI 服务就绪，可打开设置查看实时运行输出')}</p>}
             {status === 'ready' && <p className="text-[11px] text-emerald-400 mt-2 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />{t('ComfyUI 服务已就绪（{url}），可以开始使用', { url: config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188' })}</p>}
-            {status === 'failed' && <p className="text-[11px] text-red-400 mt-2 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />{t('服务未就绪，请查看弹出的终端窗口中的日志')}</p>}
+            {status === 'failed' && <p className="text-[11px] text-red-400 mt-2 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />{t('服务未就绪，可在设置与管理的运行输出中查看日志')}</p>}
             {status === 'idle' && <p className="text-[11px] text-canvas-text-muted mt-2">{t('服务就绪后会自动在软件内打开 ComfyUI 窗口，也可以使用右侧按钮手动打开')}</p>}
           </div>
         </div>

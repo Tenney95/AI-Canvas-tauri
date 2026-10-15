@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowDefinition } from '../../src/types';
+import { ModelMenu, type ModelMenuProps } from '../../src/components/shared/ModelPicker';
 
-interface Element { props: Record<string, unknown> & { children?: unknown } }
+interface Element { type?: unknown; props: Record<string, unknown> & { children?: unknown } }
 const driver = vi.hoisted(() => ({
   states: [] as unknown[], stateIndex: 0, effectIndex: 0,
   effects: [] as Array<{ deps: readonly unknown[]; cleanup?: () => void }>,
@@ -67,8 +68,9 @@ function render(workflows: WorkflowDefinition[], selectedWorkflowId?: string) {
   driver.pending.splice(0).forEach((effect) => effect());
   return all(tree);
 }
-function group(elements: Element[]) { return elements.find((element) => element.props.className === 'model-group model-group-wf'); }
-function items(elements: Element[]) { return elements.filter((element) => typeof element.props.className === 'string' && /^model-item(?: active)?$/.test(element.props.className)); }
+function menu(elements: Element[]) { return elements.find((element) => element.type === ModelMenu)?.props as unknown as ModelMenuProps | undefined; }
+function group(elements: Element[]) { return menu(elements)?.groups.find((entry) => entry.id === '__workflows'); }
+function items(elements: Element[]) { return group(elements)?.items ?? []; }
 function open(workflows: WorkflowDefinition[]) {
   click(render(workflows).find((element) => String(element.props.className).startsWith('model-selector-trigger'))!);
   return render(workflows);
@@ -143,12 +145,12 @@ describe('模型选择器工作流可用性', () => {
     let elements = render(flows);
     expect(driver.probe).toHaveBeenCalledTimes(2);
     expect(items(elements)).toHaveLength(2);
-    const header = all(group(elements)).find((element) => element.props.className === 'model-group-header')!;
-    expect(header.props['aria-expanded']).toBe(false);
-    click(header);
+    expect(items(elements).map((item) => item.value)).toEqual(['workflow:remote-a', 'workflow:remote-b']);
+    expect(menu(elements)?.expandedGroupIds).not.toContain('__workflows');
+    menu(elements)!.onGroupToggle('__workflows');
     elements = render(flows);
-    expect(all(group(elements)).find((element) => element.props.className === 'model-group-header')?.props['aria-expanded']).toBe(true);
-    click(items(elements)[0]);
+    expect(menu(elements)?.expandedGroupIds).toContain('__workflows');
+    menu(elements)!.onChange(items(elements)[0].value);
     expect(select).toHaveBeenCalledWith('remote-a');
     render(flows);
     const signal = driver.probe.mock.calls[0][1].signal as AbortSignal;

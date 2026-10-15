@@ -12,10 +12,10 @@ import {
   ASR_MODEL,
   ASR_VOCAB,
   checkModelExists,
-  downloadModel,
   speechToText,
 } from '../../../../services/onnxService';
 import { textNodeHeight } from '../../../../utils/num';
+import { useModelDownload } from '../../../../hooks/useModelDownload';
 
 /** 估算文本节点高度时按每行多少字折算 */
 const CHARS_PER_LINE = 36;
@@ -53,7 +53,8 @@ export function useAudioNodeAsr({ id, data, t, updateNodeDataTransient }: AudioN
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [downloadPrompt, setDownloadPrompt] = useState(false);
-  const [isDownloadingModel, setIsDownloadingModel] = useState(false);
+  const modelDownload = useModelDownload();
+  const { download: downloadModels, cancel: cancelModelDownload } = modelDownload;
 
   /** 在音频节点右侧新建一个文本节点承载转写结果。 */
   const createTranscriptNode = useCallback(
@@ -157,30 +158,28 @@ export function useAudioNodeAsr({ id, data, t, updateNodeDataTransient }: AudioN
 
   const handleDownloadConfirm = useCallback(async () => {
     setDownloadPrompt(false);
-    setIsDownloadingModel(true);
     try {
-      await downloadModel(ASR_MODEL);
-      await downloadModel(ASR_VOCAB);
+      if (!(await downloadModels([ASR_MODEL, ASR_VOCAB]))) return;
       useAppStore.getState().showToast(t('模型下载完成，开始转写...'), 'success');
     } catch (error) {
       useAppStore.getState().showToast(getErrorMessage(error, t('模型下载失败')), 'error');
-      setIsDownloadingModel(false);
       return;
     }
-    setIsDownloadingModel(false);
     await doTranscribe();
-  }, [doTranscribe, t]);
+  }, [doTranscribe, downloadModels, t]);
 
   const handleDownloadCancel = useCallback(() => {
     setDownloadPrompt(false);
-    setIsDownloadingModel(false);
-  }, []);
+    cancelModelDownload();
+  }, [cancelModelDownload]);
 
   return {
     isTranscribing,
     progress,
     downloadPrompt,
-    isDownloadingModel,
+    isDownloadingModel: modelDownload.isDownloading,
+    modelDownloadProgress: modelDownload.progress,
+    modelDownloadLabel: modelDownload.downloadLabel,
     handleSpeechToText,
     handleDownloadConfirm,
     handleDownloadCancel,

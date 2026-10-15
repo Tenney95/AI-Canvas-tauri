@@ -6,7 +6,7 @@
         "frontendDist": "../dist"
     },
     "productName": "AI Canvas",
-  "version": "0.10.7",
+  "version": "0.10.8",
     "identifier": "com.aicanvas.app",
     "plugins": {
         "shell": {
@@ -15,7 +15,8 @@
         "updater": {
             "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhDMjRGOUVCOTBBMzhCN0MKUldSOGk2T1E2L2trak9ESGFydzBqdmlDcXFoZzhjaHFXVE9sY1poZlMxUmh2K0NMeGJ5SDk0VmgK",
             "endpoints": [
-                "https://github.com/Tenney95/AI-Canvas-tauri/releases/latest/download/latest.json"
+                "https://github.com/Tenney95/AI-Canvas-tauri/releases/latest/download/latest.json",
+                "https://gh-proxy.com/https://github.com/Tenney95/AI-Canvas-tauri/releases/latest/download/latest.json"
             ],
             "windows": {
                 "installMode": "passive"

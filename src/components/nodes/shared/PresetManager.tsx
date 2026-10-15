@@ -128,11 +128,12 @@ const panelVariants = {
 };
 
 export default function PresetManager() {
-  // 只订阅用到的字段：面板常驻在节点对话框内，避免被无关的 store 变更带着重渲染
+  // 首次打开后保留面板，只订阅用到的字段，避免无关 Store 变更带来重渲染。
   const {
     userPresets,
     presetFolders,
     presetManagerOpen,
+    presetManagerNodeType: activeTab,
     setPresetManagerOpen,
     addUserPreset,
     updateUserPreset,
@@ -146,6 +147,7 @@ export default function PresetManager() {
       userPresets: s.userPresets,
       presetFolders: s.presetFolders,
       presetManagerOpen: s.presetManagerOpen,
+      presetManagerNodeType: s.presetManagerNodeType,
       setPresetManagerOpen: s.setPresetManagerOpen,
       addUserPreset: s.addUserPreset,
       updateUserPreset: s.updateUserPreset,
@@ -157,7 +159,6 @@ export default function PresetManager() {
     })),
   );
 
-  const [activeTab, setActiveTab] = useState<PresetNodeType>('ai-text');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeFolderId, setActiveFolderId] = useState(UNGROUPED_PRESET_FOLDER_ID);
   const [folderId, setFolderId] = useState('');
@@ -194,6 +195,10 @@ export default function PresetManager() {
   );
   const folderGroups = useMemo(() => groupPresetsByFolder(activeTab, userPresets, presetFolders), [activeTab, userPresets, presetFolders]);
   const selectedPreset = userPresets.find((preset) => preset.id === selectedId && preset.nodeType === activeTab);
+
+  useEffect(() => {
+    queueMicrotask(() => { setFolderEditor(null); setFolderToDelete(null); });
+  }, [activeTab]);
 
   // 高级模式的结构错误实时算，编辑器里已经列出来了，这里只用来锁保存
   const advancedError = useMemo(
@@ -502,7 +507,7 @@ export default function PresetManager() {
               role="tab"
               aria-selected={activeTab === nt}
               disabled={saving || folderBusy}
-              onClick={() => { setActiveTab(nt); setFolderEditor(null); setFolderToDelete(null); }}
+              onClick={() => setPresetManagerOpen(true, nt)}
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.96 }}
             >

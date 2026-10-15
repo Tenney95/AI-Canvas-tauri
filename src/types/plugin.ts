@@ -451,6 +451,8 @@ export interface PluginModelSummary {
   inputModalities?: Array<'text' | 'image'>;
   /** 脱敏参数能力；不包含协议、服务地址或凭据。 */
   videoCapability?: VideoModelCapability;
+  /** 一键复刻通道的展示提示；宿主执行时仍按实际 Provider 和模型能力复核。 */
+  videoReplicaSupport?: { supported: boolean; reason?: string };
 }
 
 /** 完整视频任务只使用安全模型 ID、时间点和当前会话授权引用。 */
@@ -567,6 +569,8 @@ export type PluginNodeHostEffect =
   | { type: 'resource.createText'; content: string; suggestedName?: string }
   | { type: 'resource.export'; resourceId: string; suggestedName?: string }
   | { type: 'image.lineArt'; resourceId: string }
+  | { type: 'video.preparePlayback'; resourceId: string }
+  | { type: 'video.readPlayback'; resourceId: string; offset: number; length: number }
   | { type: 'video.detectShots'; resourceId: string; start: number; end: number; threshold?: number; minShotDuration?: number }
   | { type: 'video.inspectFrame'; resourceId: string; time: number; direction: -1 | 0 | 1; boundary?: boolean }
   | {

@@ -415,6 +415,37 @@ pub fn reauthorize_existing_plain_directory_with_roots<R: Runtime>(
     authorize_existing_plain_directory_path(app, path, extra_roots)
 }
 
+/// 模型扫描专用的浅层目录枚举授权。根只能来自原生管理会话的系统目录选择器。
+/// 允许逐层经过私有目录的祖先，但不得进入任何私有子树；调用方必须对每次 descent
+/// 重新调用本方法，候选文件仍使用普通文件授权，不能将此结果用于递归归档或删除。
+pub(crate) fn authorize_model_scan_directory_with_roots<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &Path,
+    extra_roots: &[PathBuf],
+) -> Result<PathBuf, String> {
+    if !path.is_absolute() || path.components().any(|part| matches!(part, Component::ParentDir)) {
+        return Err("模型扫描目录格式无效".into());
+    }
+    for ancestor in path.ancestors() {
+        let metadata = std::fs::symlink_metadata(ancestor).map_err(|_| "模型扫描目录不可访问")?;
+        if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+            return Err("模型扫描目录不能含链接或目录联接".into());
+        }
+    }
+    let resolved = canonicalize_simplified(path).map_err(|_| "无法解析模型扫描目录")?;
+    let blender_private = crate::blender_runtime::blender_private_dir(app)
+        .map(|directory| is_under_secret_dir(&directory, &resolved)).unwrap_or(true);
+    if is_private_app_path(app, &resolved) || blender_private {
+        return Err("模型扫描不允许进入应用私有目录".into());
+    }
+    if !is_authorized(app, &resolved, PathAccess::Read, extra_roots)
+        || !is_authorized(app, &resolved, PathAccess::Write, extra_roots)
+    {
+        return Err("模型扫描目录未获原生会话授权".into());
+    }
+    Ok(resolved)
+}
+
 /// 只接受由文件对话框或 fs scope 明确授权的普通现有文件，不回显路径。
 pub fn authorize_existing_plain_file<R: Runtime>(
     app: &tauri::AppHandle<R>,

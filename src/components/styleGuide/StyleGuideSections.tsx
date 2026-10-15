@@ -18,41 +18,33 @@ import Timeline from '../shared/Timeline';
 import MarkdownEditor from '../shared/MarkdownEditor';
 import FileUploadButton from '../shared/FileUploadButton';
 import ProviderBadge from '../shared/ProviderBadge';
-import SendShortcutMenu from '../shared/SendShortcutMenu';
 import Toast from '../Toast';
 import { useAppStore } from '../../store/useAppStore';
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { PromptSubmitShortcut } from '../../types';
-import { getPromptSubmitShortcutHint, PROMPT_SUBMIT_SHORTCUT_OPTIONS, resolvePromptEnterAction } from '../../utils/promptSubmitShortcut';
-import { MotionConfig, useReducedMotion } from 'framer-motion';
-import { Icon } from '@iconify/react';
-import LazyLoadBoundary from '../shared/LazyLoadBoundary';
+import { memo, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { MotionConfig } from 'framer-motion';
 import StyleGuideMascot from './StyleGuideMascot';
 import StyleGuideGenerationEffects from './StyleGuideGenerationEffects';
 import StyleGuideDialogs from './StyleGuideDialogs';
+import StyleGuideAIInput from './StyleGuideAIInput';
 import { buildReferenceChipEl } from '../shared/referenceChipDom';
 import { getNodeChipIconPath } from '../nodes/shared/mentionEditorDom';
 import referenceDemoImage from '../../assets/images/styles/realistic.webp';
 import referenceDemoImageAlt from '../../assets/images/styles/cinematic.webp';
 
-const InputMetalFx = lazy(() => import('../nodes/shared/PolishMetalFx'));
-
-/* ── 分区 id 约定 ──────────────────────────────────────────────────────────
-   每个 <Section> 的 id 同时是左侧目录的锚点，目录列表在 StyleGuideWindow.tsx
-   里维护。两边必须一致，改 id 时记得同步。 */
+/* 分组、顺序、标题和搜索词统一由文件末尾的 STYLE_GUIDE_GROUPS 维护。
+   窗口目录与内容装配共用这份清单，分区 id 同时作为滚动锚点。 */
 
 /* ==========================================================================
    展示原语
    ========================================================================== */
-function Section({ id, title, desc, children }: {
-  id: string;
-  title: string;
+function Section({ id, desc, children }: {
+  id: GuideSectionId;
   desc?: string;
   children: ReactNode;
 }) {
   return (
-    <section id={id} className="mb-9 scroll-mt-4">
-      <h2 className="m-0 mb-1 text-base font-semibold text-canvas-text">{title}</h2>
+    <section id={id} aria-labelledby={`${id}-title`} className="scroll-mt-3">
+      <h3 id={`${id}-title`} className="m-0 mb-1 text-sm font-semibold text-canvas-text">{GUIDE_SECTION_TITLES.get(id)}</h3>
       {desc ? <p className="m-0 mb-3 text-xs leading-relaxed text-canvas-text-muted">{desc}</p> : null}
       <div className="ui-stack">{children}</div>
     </section>
@@ -60,8 +52,8 @@ function Section({ id, title, desc, children }: {
 }
 
 /** 单个样例：上预览、下类名（可一键复制） */
-function Demo({ label, code, children }: { label?: string; code: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false);
+function Demo({ label, code, children }: { label: string; code: string; children: ReactNode }) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
@@ -69,34 +61,35 @@ function Demo({ label, code, children }: { label?: string; code: string; childre
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(code);
-      setCopied(true);
+      setCopyState('copied');
       if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), 1200);
+      timerRef.current = setTimeout(() => setCopyState('idle'), 1600);
     } catch {
-      /* 剪贴板不可用时静默失败，不影响预览 */
+      setCopyState('error');
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopyState('idle'), 2400);
     }
   };
 
   return (
     // 不裁剪内容：下拉菜单一类的浮层需要溢出到卡片外，圆角交给首尾两块自己补
     <div className="rounded-lg border border-canvas-border bg-canvas-card">
-      {label ? (
-        <div className="rounded-t-lg border-b border-canvas-border px-3 py-1.5">
-          <span className="text-[11px] font-medium text-canvas-text-secondary">{label}</span>
-        </div>
-      ) : null}
-      <div className="p-3">{children}</div>
+      <div className="rounded-t-lg border-b border-canvas-border px-3 py-2">
+        <span className="text-xs font-medium text-canvas-text-secondary">{label}</span>
+      </div>
+      <div className="min-w-0 p-3">{children}</div>
       <button
         type="button"
         onClick={handleCopy}
-        title="点击复制类名"
-        className="group flex w-full items-center gap-2 rounded-b-lg border-t border-canvas-border bg-canvas-surface px-3 py-1.5 text-left transition-colors hover:bg-canvas-hover"
+        aria-label={`复制${label}的类名或用法`}
+        title={code}
+        className="group flex w-full items-start gap-3 rounded-b-lg border-t border-canvas-border bg-canvas-surface px-3 py-2 text-left transition-colors hover:bg-canvas-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand motion-reduce:transition-none"
       >
-        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-canvas-text-secondary">
+        <code className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-canvas-text-secondary">
           {code}
         </code>
-        <span className="shrink-0 text-[10px] text-canvas-text-muted group-hover:text-canvas-text-secondary">
-          {copied ? '已复制' : '复制'}
+        <span aria-live="polite" className="shrink-0 text-[11px] text-canvas-text-muted group-hover:text-canvas-text-secondary">
+          {copyState === 'copied' ? '已复制' : copyState === 'error' ? '复制失败' : '复制'}
         </span>
       </button>
     </div>
@@ -135,11 +128,9 @@ function ColorsSection() {
   return (
     <Section
       id="sg-colors"
-      title="颜色令牌"
       desc="外观设置提供主题颜色，统一运行时派生 CSS 令牌，base.css 提供默认值。选择“跟随外观”可实时查看自定义配色；写样式时只引用变量（或 Tailwind 的 canvas-* token）。"
     >
-      <Demo code="--theme-bg / --theme-surface / --theme-card / --theme-border / --theme-hover">
-        <p className="m-0 mb-2 text-[11px] text-canvas-text-secondary">主题层 · 背景与描边</p>
+      <Demo label="主题背景与描边" code="--theme-bg / --theme-surface / --theme-card / --theme-border / --theme-hover">
         <SwatchGrid items={[
           { cssVar: '--theme-bg', usage: '窗口最底层背景' },
           { cssVar: '--theme-surface', usage: '面板、输入框底' },
@@ -149,8 +140,7 @@ function ColorsSection() {
         ]} />
       </Demo>
 
-      <Demo code="--theme-text / --theme-text-secondary / --theme-text-muted">
-        <p className="m-0 mb-2 text-[11px] text-canvas-text-secondary">文本层级 · 三级就够，不要再加</p>
+      <Demo label="文本层级" code="--theme-text / --theme-text-secondary / --theme-text-muted">
         <div className="ui-stack ui-stack--tight">
           <p className="m-0 text-sm text-canvas-text">--theme-text 主文本（标题、正文）</p>
           <p className="m-0 text-xs text-canvas-text-secondary">--theme-text-secondary 次级（说明、表单标签）</p>
@@ -158,7 +148,7 @@ function ColorsSection() {
         </div>
       </Demo>
 
-      <Demo code="--brand / --brand-light / --brand-pale / --brand-alpha-*">
+      <Demo label="品牌色" code="--brand / --brand-light / --brand-pale / --brand-alpha-*">
         <p className="m-0 mb-2 text-[11px] text-canvas-text-secondary">品牌色 · 主行动、选中态、焦点环</p>
         <SwatchGrid items={[
           { cssVar: '--brand', usage: '主按钮填充' },
@@ -168,7 +158,7 @@ function ColorsSection() {
         ]} />
       </Demo>
 
-      <Demo code="--success / --success-bg / --info / --info-bg / --warning / --warning-bg / --danger / --danger-bg">
+      <Demo label="语义状态色" code="--success / --success-bg / --info / --info-bg / --warning / --warning-bg / --danger / --danger-bg">
         <p className="m-0 mb-2 text-[11px] text-canvas-text-secondary">语义色 · 状态提示与危险操作</p>
         <div className="ui-row ui-row--loose">
           <span className="ui-badge ui-badge--success"><i className="ui-badge__dot" />成功</span>
@@ -186,7 +176,7 @@ function ColorsSection() {
         </div>
       </Demo>
 
-      <Demo code="--node-text / --node-image / --node-video / --node-audio / --node-panorama">
+      <Demo label="节点类型色" code="--node-text / --node-image / --node-video / --node-audio / --node-panorama">
         <p className="m-0 mb-2 text-[11px] text-canvas-text-secondary">节点类型色 · 文本=indigo、图像=green、视频=blue、音频=orange、全景=cyan</p>
         <SwatchGrid items={[
           { cssVar: '--node-text', usage: '文本节点' },
@@ -204,10 +194,9 @@ function TypographySection() {
   return (
     <Section
       id="sg-typography"
-      title="排版"
       desc="字号只有 11 / 12 / 14 / 15 / 17 五档，字重只有 400 / 500 / 600。需要更大的数字用 .ui-stat__value。"
     >
-      <Demo code="text-[17px] font-semibold / text-[15px] font-semibold / text-[14px] font-medium">
+      <Demo label="字号与字重" code="text-[17px] font-semibold / text-[15px] font-semibold / text-[14px] font-medium">
         <div className="ui-stack ui-stack--tight">
           <p className="m-0 text-[17px] font-semibold text-canvas-text">窗口标题 17 / 600</p>
           <p className="m-0 text-[15px] font-semibold text-canvas-text">面板标题 15 / 600（.ui-title）</p>
@@ -217,7 +206,7 @@ function TypographySection() {
         </div>
       </Demo>
 
-      <Demo code=".ui-code / .ui-kbd / .ui-subtitle">
+      <Demo label="代码、快捷键与辅助标题" code=".ui-code / .ui-kbd / .ui-subtitle">
         <div className="ui-row ui-row--loose ui-row--baseline">
           <span className="text-xs text-canvas-text-secondary">
             内联代码 <code className="ui-code">ui-btn--primary</code>
@@ -232,11 +221,10 @@ function TypographySection() {
   );
 }
 
-function ButtonsSection({ theme }: { theme: 'dark' | 'light' }) {
+function ButtonsSection() {
   return (
     <Section
       id="sg-buttons"
-      title="按钮"
       desc="普通和主按钮的纯色或上传图片背景、圆角、边框可在设置 → 外观 → 按钮外观中调整。悬停可单独配图，未设置时沿用普通状态图片；ghost 用于工具栏，danger 保留危险操作语义。"
     >
       <Demo label="按钮外观 · 实时同步设置" code="--button-bg / --button-hover-bg / --button-text / --button-border / --button-primary-bg / --button-primary-hover-bg / --button-primary-text / --button-primary-border / --button-radius / --button-border-width">
@@ -263,29 +251,6 @@ function ButtonsSection({ theme }: { theme: 'dark' | 'light' }) {
           <button type="button" className="ui-btn ui-btn--ghost">幽灵</button>
           <button type="button" className="ui-btn ui-btn--danger">删除</button>
           <button type="button" className="ui-btn ui-btn--link">了解更多</button>
-        </div>
-      </Demo>
-
-      <Demo label="提示词栏共用按钮 · 28px 高度与 14px 金属厂商文字" code="prompt-btn / model-selector--pill > model-selector-trigger prompt-btn + ui-model-pill__avatar（ProviderBadge appearance=metal）+ ui-model-pill__label + ui-model-pill__action">
-        <div className="ui-row">
-          {['Seedance 2.0', '超长模型名称 · 视频生成预览版本'].map((label) => (
-            <div key={label} className="model-selector model-selector--pill w-48">
-              <button type="button" className="model-selector-trigger prompt-btn text-xs" title={label}>
-                <span className="ui-model-pill__avatar"><ProviderBadge providerId="apimart" size="medium" appearance="metal" theme={theme} /></span>
-                <span className="ui-model-pill__label">{label}</span>
-                <span className="ui-model-pill__action" aria-hidden="true">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="m6 6 12 12M18 6 6 18" />
-                  </svg>
-                </span>
-              </button>
-            </div>
-          ))}
-          <button type="button" className="prompt-btn" aria-label="画风按钮样例">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M12 3C9 7 5 10.5 5 15a7 7 0 0 0 14 0c0-4.5-4-8-7-12Z" />
-            </svg>
-          </button>
         </div>
       </Demo>
 
@@ -391,7 +356,6 @@ function ChipsSection() {
   return (
     <Section
       id="sg-chips"
-      title="分类胶囊"
       desc="工作流面板里「生成文本 / 生成图像」那种紧凑分类按钮。用 ui-chip 做默认品牌色，ui-chip--node-* 做节点主题色分类。"
     >
       <Demo label="基础分类" code="ui-chip（.is-active 默认品牌色）">
@@ -402,6 +366,7 @@ function ChipsSection() {
               type="button"
               className={`ui-chip${active === item.key ? ' is-active' : ''}`}
               onClick={() => setActive(item.key)}
+              aria-pressed={active === item.key}
             >
               {item.label}
             </button>
@@ -428,18 +393,14 @@ function ChipsSection() {
           ))}
         </div>
       </Demo>
-      <Demo label="提示词引用胶囊（真实 DOM 构造器）" code="ui-reference-chip ui-reference-chip--image | --video | --audio | --text | __icon | __thumb | __label | __index；buildReferenceChipEl(document, options)；iconPath: getNodeChipIconPath(nodeType)">
-        <ReferenceChipsDemo />
-      </Demo>
     </Section>
   );
 }
 
-function InputsSection({ theme }: { theme: 'dark' | 'light' }) {
+function InputsSection() {
   return (
     <Section
       id="sg-inputs"
-      title="输入框"
       desc="统一用 .ui-field 包一层（label + 控件 + hint），间距和错误提示就不用各写一遍了。"
     >
       <Demo label="基础与尺寸" code="<div className=&quot;ui-field&quot;><label className=&quot;ui-label&quot;/><input className=&quot;ui-input&quot;/></div>">
@@ -468,8 +429,8 @@ function InputsSection({ theme }: { theme: 'dark' | 'light' }) {
           </div>
           <div className="ui-field">
             <label className="ui-label" htmlFor="sg-input-err">接口地址</label>
-            <input id="sg-input-err" className="ui-input is-invalid" defaultValue="not-a-url" />
-            <p className="ui-error">请填写以 http(s):// 开头的完整地址</p>
+            <input id="sg-input-err" className="ui-input is-invalid" defaultValue="not-a-url" aria-invalid="true" aria-describedby="sg-input-err-hint" />
+            <p id="sg-input-err-hint" className="ui-error">请填写以 http(s):// 开头的完整地址</p>
           </div>
         </div>
       </Demo>
@@ -497,14 +458,6 @@ function InputsSection({ theme }: { theme: 'dark' | 'light' }) {
         </div>
       </Demo>
 
-      <Demo label="AI 输入框 · 节点与助手共用" code="ui-ai-input / ui-ai-input__footer--single-row / ui-ai-input__shortcut-hint / ui-ai-input__submit / ui-ai-input__send-metal / SendShortcutMenu(anchor, value, onChange, onClose)">
-        <AIInputDemo theme={theme} />
-      </Demo>
-
-      <Demo label="@选择器弹窗" code="MentionPicker(search) / ExpandableSearch(expanded, onExpandedChange, value, onChange) / mention-picker-header / ui-expandable-search">
-        <ExpandableSearchDemo />
-      </Demo>
-
       <Demo label="多行文本与禁用" code=".ui-textarea（可纵向拉伸）/ :disabled">
         <div className="ui-field">
           <label className="ui-label" htmlFor="sg-textarea">提示词</label>
@@ -512,11 +465,17 @@ function InputsSection({ theme }: { theme: 'dark' | 'light' }) {
           <p className="ui-hint">右下角可拖动改变高度</p>
         </div>
         <div className="ui-field">
-          <label className="ui-label" htmlFor="sg-input-disabled">只读字段</label>
+          <label className="ui-label" htmlFor="sg-input-disabled">禁用字段</label>
           <input id="sg-input-disabled" className="ui-input" defaultValue="由系统生成，不可编辑" disabled />
         </div>
       </Demo>
+    </Section>
+  );
+}
 
+function NumberInputsSection() {
+  return (
+    <Section id="sg-number-inputs" desc="参数微调复用 NumberStepper；支持键入、步进与拖动，边界、单位和精度由调用方提供。">
       <Demo
         label="数字微调步进输入框 (Number Stepper)"
         code="<NumberStepper value={val} onChange={setVal} min={0} max={100} unit=&quot;px&quot; size=&quot;sm|md|lg&quot; /> / .ui-stepper"
@@ -550,65 +509,6 @@ function ExpandableSearchDemo() {
       search={{ expanded, onExpandedChange: setExpanded, value: query, onChange: setQuery }}
       footer={<span className="ui-hint">引用资产</span>} />
     <p className="ui-hint">页签与搜索共用外框；输入框向左展开，页签向左移出，资源增减时高度同步过渡。Esc 清空并收起，示例不读取项目资源。</p>
-  </div>;
-}
-
-function AIInputDemo({ theme }: { theme: 'dark' | 'light' }) {
-  const [value, setValue] = useState('');
-  const [submitShortcut, setSubmitShortcut] = useState<PromptSubmitShortcut>('enter');
-  const [shortcutMenuAnchor, setShortcutMenuAnchor] = useState<HTMLElement | null>(null);
-  const closeShortcutMenu = useCallback(() => setShortcutMenuAnchor(null), []);
-  const shortcutLabel = PROMPT_SUBMIT_SHORTCUT_OPTIONS.find((option) => option.value === submitShortcut)?.label;
-  const reduceMotion = useReducedMotion();
-  const sendDisabled = !value.trim();
-  const sendButton = <button type="button" className="ui-ai-input__icon-btn ui-ai-input__submit" disabled={sendDisabled}
-    aria-label="演示发送后清空输入" onClick={() => setValue('')} aria-haspopup="menu" aria-expanded={!!shortcutMenuAnchor}
-    title={`右键设置发送快捷键 · ${shortcutLabel}`}>
-    <Icon icon="lucide:arrow-up" width={16} height={16} aria-hidden="true" />
-  </button>;
-  return <div className="ui-stack max-w-lg">
-    <div className="ui-ai-input">
-      <div className="ui-ai-input__body">
-        <textarea className="ui-ai-input__editor" aria-label="AI 输入框样例"
-          placeholder={`输入提示词，@ 引用素材，/ 调用 Skill\n${getPromptSubmitShortcutHint(submitShortcut)}`}
-          value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => {
-            const action = resolvePromptEnterAction(event.nativeEvent, submitShortcut);
-            if (action === 'submit') {
-              event.preventDefault();
-              if (!sendDisabled) setValue('');
-            } else if (event.key === 'Enter' && action === 'ignore' && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
-              event.preventDefault();
-            }
-          }} />
-      </div>
-      <div className="ui-ai-input__footer ui-ai-input__footer--single-row">
-        <span className="model-selector model-selector--pill ui-row ui-row--tight text-xs">
-          <span className="ui-model-pill__avatar"><ProviderBadge providerId="apimart" appearance="metal" theme={theme} /></span>
-          <span className="ui-model-pill__label" title="超长模型名称 · 视频生成预览版本">超长模型名称 · 视频生成预览版本</span>
-        </span>
-        <div className="ui-ai-input__tools">
-          <button type="button" className="ui-ai-input__icon-btn" aria-label="插入引用标记" onClick={() => setValue((text) => `${text}@`)}>@</button>
-          <button type="button" className="ui-ai-input__icon-btn" aria-label="插入指令标记" onClick={() => setValue((text) => `${text}/`)}>/</button>
-          {value.trim() && <span className="ui-ai-input__shortcut-hint text-[11px] text-canvas-text-muted">{shortcutLabel}</span>}
-          <div className="inline-flex shrink-0" onContextMenu={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setShortcutMenuAnchor(event.currentTarget);
-          }}>
-            {reduceMotion ? sendButton : <LazyLoadBoundary label="AI 输入框金属样例" errorFallback={sendButton}>
-              <Suspense fallback={sendButton}>
-                <InputMetalFx className="ui-ai-input__send-metal" variant="circle" theme={theme}
-                  preset={theme === 'light' ? 'silver' : 'chromatic'} strength={theme === 'light' ? 0.65 : 0.81}
-                  paused={sendDisabled} normalizeHostStyles={false} innerShadow>{sendButton}</InputMetalFx>
-              </Suspense>
-            </LazyLoadBoundary>}
-          </div>
-        </div>
-      </div>
-    </div>
-    {shortcutMenuAnchor && <SendShortcutMenu anchor={shortcutMenuAnchor} value={submitShortcut}
-      onChange={setSubmitShortcut} onClose={closeShortcutMenu} />}
-    <p className="ui-hint">右键发送按钮切换快捷键，设置只影响本样例；匹配的按键会清空文字以模拟发送，其余换行沿用节点规则。单排变体优先截断模型名称，窄容器隐藏提示；不调用模型。</p>
   </div>;
 }
 
@@ -879,17 +779,18 @@ function SelectsSection() {
   return (
     <Section
       id="sg-selects"
-      title="下拉选择"
       desc="选择字段统一复用 Select 组件；支持键盘、分组及禁用项，菜单挂到页面顶层以避免父容器裁剪。"
     >
       <Demo label="自定义下拉（视觉与 .ui-menu 一致）" code="ui-select ui-select--custom > ui-select__trigger + ui-select__native + ui-menu">
         <CustomSelectDemo />
       </Demo>
+    </Section>
+  );
+}
 
-      <Demo label="厂商分层模型菜单 · 节点与插件共用" code="ModelPicker(groups, value, onChange) / ModelMenu(groups, expandedGroupIds, onGroupToggle) / ui-model-menu__surface">
-        <ModelPickerDemo />
-      </Demo>
-
+function MenusSection() {
+  return (
+    <Section id="sg-menus" desc="菜单用于组织排序、导出等操作；字段取值请使用下拉选择，模型目录请使用复合组件中的模型选择。">
       <Demo label="自定义菜单" code="ui-dropdown > ui-menu > ui-menu__label / ui-menu__item / ui-menu__sep / ui-menu__shortcut">
         <div className="pb-32">
           <DropdownMenuDemo />
@@ -931,7 +832,6 @@ function DropzoneSection() {
   return (
     <Section
       id="sg-dropzones"
-      title="上传区"
       desc="按钮式文件选择适合工具栏和紧凑表单；拖放区适合批量导入。文件选择只交给调用方处理，不自动上传或保存。"
     >
       <Demo label="按钮上传 · 紧凑文件选择" code={'<FileUploadButton fileName={fileName} onChange={handleFile} /> · .ui-file-upload'}>
@@ -944,7 +844,7 @@ function DropzoneSection() {
           <p className="ui-hint">支持键盘操作；长文件名自动省略，悬停可查看完整名称。</p>
         </div>
       </Demo>
-      <Demo code="ui-dropzone > ui-dropzone__title / __icon / __hint（.is-dragover 高亮）">
+      <Demo label="拖放上传区" code="ui-dropzone > ui-dropzone__title / __icon / __hint（.is-dragover 高亮）">
         <div
           className={`ui-dropzone${dragOver ? ' is-dragover' : ''}`}
           onMouseEnter={() => setDragOver(true)}
@@ -978,7 +878,6 @@ function SelectionSection() {
   return (
     <Section
       id="sg-selection"
-      title="选择控件"
       desc="开关用 button[aria-checked]，复选框/单选保留原生 input（.ui-checkbox + label 的相邻选择器负责画框），保证键盘与读屏可用。"
     >
       <Demo label="开关" code="<button className=&quot;ui-switch&quot; aria-checked={on} />">
@@ -1113,7 +1012,7 @@ function TabsSection() {
     { value: 'nodes', label: '节点列表', count: 36 },
   ];
   return (
-    <Section id="sg-tabs" title="Tabs · 滚动页签"
+    <Section id="sg-tabs"
       desc="下划线与计数徽标复用真实 Tabs 组件。选中项尽量居中，末项靠右；略微越过目标后回弹，滚动边界也保留弹性。支持方向键、Home/End 和系统减少动态效果。">
       <Demo label="带计数 · 横向滚动与弹簧回弹"
         code={'<Tabs items={items} value={value} onChange={setValue} aria-label="资产类型" /> · .ui-tabs / .ui-tabs__item / .ui-tabs__count'}>
@@ -1153,7 +1052,6 @@ function CardsSection() {
   return (
     <Section
       id="sg-cards"
-      title="卡片"
       desc="卡片只负责「一块内容」的容器语义：header 放标题与操作，body 放内容，footer 放行动按钮。选中态用 .is-selected，不要改背景以免和 hover 冲突。"
     >
       <Demo label="基础卡片" code=".ui-card > .ui-card__header / __title / __body / __footer">
@@ -1234,7 +1132,6 @@ function BadgesSection() {
   return (
     <Section
       id="sg-badges"
-      title="徽标与表格"
       desc="徽标用圆角胶囊 + 淡底；密集列表里改用 .ui-badge--outline，避免底色抢视觉。"
     >
       <Demo label="徽标" code="ui-badge ui-badge--primary | --success | --info | --warning | --danger | --outline">
@@ -1274,50 +1171,59 @@ function BadgesSection() {
           ) : null}
         </div>
       </Demo>
+    </Section>
+  );
+}
 
-      <Demo label="表格" code=".ui-table">
-        <table className="ui-table">
-          <thead>
-            <tr>
-              <th>连接</th>
-              <th>厂商</th>
-              <th>状态</th>
-              <th>模型数</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td className="text-canvas-text">主账号</td>
-              <td>OpenAI</td>
-              <td><span className="ui-badge ui-badge--success"><i className="ui-badge__dot" />可用</span></td>
-              <td>24</td>
-            </tr>
-            <tr>
-              <td className="text-canvas-text">备用</td>
-              <td>火山方舟</td>
-              <td><span className="ui-badge ui-badge--warning"><i className="ui-badge__dot" />限流</span></td>
-              <td>11</td>
-            </tr>
-            <tr>
-              <td className="text-canvas-text">本地</td>
-              <td>ComfyUI</td>
-              <td><span className="ui-badge ui-badge--outline">未连接</span></td>
-              <td>0</td>
-            </tr>
-          </tbody>
-        </table>
+function TablesSection() {
+  const [activeItem, setActiveItem] = useState('recent');
+  return (
+    <Section id="sg-tables" desc="表格用于比较结构化数据，列表用于纵向浏览与选择。窄容器中的表格允许横向滚动。">
+      <Demo label="表格" code=".ui-table / .ui-scroll.ui-scroll--both">
+        <div className="ui-scroll ui-scroll--both">
+          <table className="ui-table min-w-max" aria-label="厂商连接状态示例">
+            <thead>
+              <tr>
+                <th scope="col">连接</th>
+                <th scope="col">厂商</th>
+                <th scope="col">状态</th>
+                <th scope="col">模型数</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="text-canvas-text">主账号</td>
+                <td>OpenAI</td>
+                <td><span className="ui-badge ui-badge--success"><i className="ui-badge__dot" />可用</span></td>
+                <td>24</td>
+              </tr>
+              <tr>
+                <td className="text-canvas-text">备用</td>
+                <td>火山方舟</td>
+                <td><span className="ui-badge ui-badge--warning"><i className="ui-badge__dot" />限流</span></td>
+                <td>11</td>
+              </tr>
+              <tr>
+                <td className="text-canvas-text">本地</td>
+                <td>ComfyUI</td>
+                <td><span className="ui-badge ui-badge--outline">未连接</span></td>
+                <td>0</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </Demo>
 
       <Demo label="列表" code=".ui-list > .ui-list__item（--interactive 可点，.is-active 选中）">
         <div className="ui-list">
-          <div className="ui-list__item ui-list__item--interactive is-active">
-            最近使用
-            <span className="ui-list__trailing">12</span>
-          </div>
-          <div className="ui-list__item ui-list__item--interactive">
-            我的收藏
-            <span className="ui-list__trailing">48</span>
-          </div>
+          {[{ id: 'recent', label: '最近使用', count: 12 }, { id: 'favorites', label: '我的收藏', count: 48 }].map((item) => (
+            <button key={item.id} type="button" aria-pressed={activeItem === item.id}
+              onClick={() => setActiveItem(item.id)}
+              className={`ui-list__item ui-list__item--interactive w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand${activeItem === item.id ? ' is-active' : ''}`}>
+              {item.label}
+              <span className="ui-list__trailing">{item.count}</span>
+            </button>
+          ))}
           <div className="ui-list__item">
             回收站
             <span className="ui-list__trailing">3</span>
@@ -1332,7 +1238,6 @@ function FeedbackSection() {
   return (
     <Section
       id="sg-feedback"
-      title="反馈与状态"
       desc="提示条承载一句话结论，进度条只给「可预期等待」，空状态必须给出下一步动作。"
     >
       <Demo label="提示条" code=".ui-alert--info | --success | --warning | --danger">
@@ -1409,7 +1314,6 @@ function ToastSection() {
   return (
     <Section
       id="sg-toast"
-      title="吐司提示"
       desc="复用应用真实 Toast，顶部居中弹出，支持复制和关闭。成功、信息提示 2.5 秒后消失，错误提示保留 15 秒。"
     >
       <Demo label="交互演示 · 成功 / 信息 / 错误" code="<Toast /> / useAppStore.getState().showToast(message, 'success' | 'info' | 'error') / dismissToast()">
@@ -1461,7 +1365,6 @@ function ScrollbarsSection() {
   return (
     <Section
       id="sg-scrollbars"
-      title="覆盖式滚动条"
       desc={'公用样式位于 ui-kit.css；纵向容器使用 ui-scroll，双轴加 ui-scroll--both。应用根视图自动挂载浮层，无须手动插入浮层或单独引入样式；data-overlay-scrollbar="off" 可显式退出接管。'}
     >
       <Demo label="嵌套滚动、双轴与可变尺寸" code={'<div className="ui-scroll h-80">内容</div>\n<div className="ui-scroll ui-scroll--both h-40">内容</div>'}>
@@ -1518,7 +1421,6 @@ function LayoutSection() {
   return (
     <Section
       id="sg-layout"
-      title="布局辅助"
       desc="只把跨模块反复出现的排布收进类里；业务自己的布局仍然优先用 Tailwind。"
     >
       <Demo label="行与栈" code=".ui-row（--tight / --loose / --between / --baseline）/ .ui-stack（--tight / --loose / --pad-sm / --pad）">
@@ -1620,8 +1522,8 @@ function VideoPlayerSection() {
   const [compact, setCompact] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => () => { if (media) URL.revokeObjectURL(media.src); }, [media]);
-  return <Section id="sg-video-player" title="视频播放器" desc="公用 VideoPlayer；主题色进度、倍速、音量、悬停预览与全屏。进度滑块悬浮轻微放大，拖动时按方向倾斜，松手回弹恢复；支持减少动态效果。音量使用 ui-slider，在按钮右侧同一行展开；紧凑模式时间靠右。下方展示共用 Timeline 的缩放、打点和切点调整。选择本地视频试播，样例仅在本窗口使用，关闭或替换时释放资源。">
-    <Demo code={'<VideoPlayer src={videoUrl} name="示例视频" compact={compact} onMetadata={handleMetadata} /> · ui-video-player--compact'}>
+  return <Section id="sg-video-player" desc="公用 VideoPlayer；支持进度、倍速、音量、悬停预览、全屏和减少动态效果。选择本地视频试播，样例仅在本窗口使用，关闭或替换时释放资源。切点与分段交互见独立的时间轴分区。">
+    <Demo label="播放器与本地视频" code={'<VideoPlayer src={videoUrl} name="示例视频" compact={compact} unavailable={!videoUrl} /> · ui-video-player--compact'}>
       <div className="ui-stack">
         <div className="ui-row">
           <FileUploadButton label="选择视频" accept="video/*" aria-label="选择视频样例" fileName={media?.name ?? ''} placeholder="选择本地视频试播" className="min-w-0 flex-1" onChange={(event) => {
@@ -1640,59 +1542,213 @@ function VideoPlayerSection() {
         </div>
       </div>
     </Demo>
-    <TimelineDemo />
   </Section>;
 }
 
 function MarkdownEditorSection() {
   const [value, setValue] = useState('# Markdown 编辑器\n\n资源文件与节点大屏共用真实组件。支持 **粗体**、*斜体* 和 [链接](https://example.com)。\n\n- [x] 编辑与预览\n- [ ] 查找替换\n\n| 功能 | 状态 |\n| --- | --- |\n| 分栏预览 | 可用 |\n\n```ts\nconst message = "Hello";\n```');
-  return <Section id="sg-markdown-editor" title="Markdown 编辑器" desc="受控组件；保存策略由宿主提供。支持格式工具、分栏预览、查找替换、撤销重做与字数统计。">
-    <Demo code={'<MarkdownEditor value={value} onChange={setValue} initialMode="split" /> · ui-markdown-editor'}>
+  return <Section id="sg-markdown-editor" desc="受控组件；保存策略由宿主提供。支持格式工具、分栏预览、查找替换、撤销重做与字数统计。">
+    <Demo label="编辑与分栏预览" code={'<MarkdownEditor value={value} onChange={setValue} initialMode="split" /> · ui-markdown-editor'}>
       <div className="h-[480px] min-w-0"><MarkdownEditor value={value} onChange={setValue} status="交互样例 · 不写入磁盘" /></div>
     </Demo>
   </Section>;
 }
 
-export function StyleGuideContent({ theme }: { theme: 'dark' | 'light' }) {
+function AIInputSection({ theme }: GuideSectionProps) {
   return (
-    <>
-      <header className="mb-7">
-        <h2 className="m-0 text-lg font-semibold text-canvas-text">AI Canvas · UI Kit</h2>
-        <p className="m-0 mt-1 text-xs leading-relaxed text-canvas-text-secondary">
-          全应用公用控件一览。样式定义在 <code className="ui-code">src/styles/ui-kit.css</code>，
-          颜色由外观设置同步到 CSS 变量，<code className="ui-code">src/styles/base.css</code> 提供默认令牌。
-          写新界面时先来这里挑控件，不要另造一套；点击每个样例下方的类名即可复制。
-        </p>
-      </header>
-
-      <ColorsSection />
-      <TypographySection />
-      <ButtonsSection theme={theme} />
-      <ChipsSection />
-      <InputsSection theme={theme} />
-      <SelectsSection />
-      <DropzoneSection />
-      <SelectionSection />
-      <TabsSection />
-      <ScrollbarsSection />
-      <CardsSection />
-      <BadgesSection />
-      <FeedbackSection />
-      <ToastSection />
-      <Section id="sg-dialogs" title="弹窗" desc="复用 ModalOverlay、PopupCloseButton 和 UI Kit 标题、表单、按钮样式；跟随外观中的窗口 / 弹窗背景图片，预览普通、表单、确认与长内容弹窗。">
-        <Demo label="弹窗交互演示" code="ModalOverlay / PopupCloseButton / ui-card__header / ui-card__body / ui-card__footer · closeOnBackdrop / draggable / backdropBlur">
-          <StyleGuideDialogs />
-        </Demo>
-      </Section>
-      <Section id="sg-generation-effects" title="生成特效" desc="生成思考球、对话框边框流光与金属按钮，复用画布中的真实组件。">
-        <StyleGuideGenerationEffects theme={theme} />
-      </Section>
-      <VideoPlayerSection />
-      <MarkdownEditorSection />
-      <Section id="sg-mascot" title="吉祥物" desc="预览真实吉祥物的状态、表情与身体动作，支持循环演示和不同尺寸查看。">
-        <StyleGuideMascot theme={theme} />
-      </Section>
-      <LayoutSection />
-    </>
+    <Section id="sg-ai-input" desc="节点与助手共用的输入组合：编辑区、模型入口、引用工具与发送按钮。使用固定示例数据，体验引用、模型切换与模拟请求。">
+      <Demo label="AI 输入框 · 节点与助手共用" code="ChatComposerEditor(referencePresentation) / MentionPicker / ModelMenu / ui-ai-input / ui-ai-input__footer--single-row / ui-ai-input__shortcut-hint / ui-ai-input__submit / ui-ai-input__send-metal / ThinkingOrb / BorderBeam / SendShortcutMenu(anchor, value, onChange, onClose)">
+        <StyleGuideAIInput theme={theme} modelGroups={MODEL_PICKER_DEMO_GROUPS} />
+      </Demo>
+    </Section>
   );
 }
+
+function ModelsSection({ theme }: GuideSectionProps) {
+  return (
+    <Section id="sg-models" desc="厂商与模型的分层选择复用 ModelPicker；提示词栏模型胶囊在同一分区查看尺寸、徽标和长名称截断。">
+      <Demo label="厂商分层模型菜单 · 节点与插件共用" code="ModelPicker(groups, value, onChange) / ModelMenu(groups, expandedGroupIds, onGroupToggle) / ui-model-menu__surface">
+        <ModelPickerDemo />
+      </Demo>
+      <Demo label="提示词栏模型胶囊 · 标准与长名称" code="prompt-btn / model-selector--pill > model-selector-trigger prompt-btn + ui-model-pill__avatar（ProviderBadge appearance=metal）+ ui-model-pill__label + ui-model-pill__action">
+        <div className="ui-row">
+          {['Seedance 2.0', '超长模型名称 · 视频生成预览版本'].map((label) => (
+            <div key={label} className="model-selector model-selector--pill w-48 max-w-full">
+              <button type="button" className="model-selector-trigger prompt-btn text-xs" title={label}>
+                <span className="ui-model-pill__avatar"><ProviderBadge providerId="apimart" size="medium" appearance="metal" theme={theme} /></span>
+                <span className="ui-model-pill__label">{label}</span>
+                <span className="ui-model-pill__action" aria-hidden="true">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="m6 6 12 12M18 6 6 18" />
+                  </svg>
+                </span>
+              </button>
+            </div>
+          ))}
+          <button type="button" className="prompt-btn" aria-label="画风按钮样例">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M12 3C9 7 5 10.5 5 15a7 7 0 0 0 14 0c0-4.5-4-8-7-12Z" />
+            </svg>
+          </button>
+        </div>
+        <p className="ui-hint mt-2">此处展示胶囊外观；实际选择交互使用上方 ModelPicker。</p>
+      </Demo>
+    </Section>
+  );
+}
+
+function ReferencesSection() {
+  return (
+    <Section id="sg-references" desc="引用由素材选择器与编辑器内胶囊组成。复用真实 MentionPicker 和 DOM 构造器，示例不读取项目资源。">
+      <Demo label="素材选择 · 页签与展开式搜索" code="MentionPicker(search) / ExpandableSearch(expanded, onExpandedChange, value, onChange) / mention-picker-header / ui-expandable-search">
+        <ExpandableSearchDemo />
+      </Demo>
+      <Demo label="提示词引用胶囊（真实 DOM 构造器）" code="ui-reference-chip ui-reference-chip--image | --video | --audio | --text | __icon | __thumb | __label | __index；buildReferenceChipEl(document, options)；iconPath: getNodeChipIconPath(nodeType)">
+        <ReferenceChipsDemo />
+      </Demo>
+    </Section>
+  );
+}
+
+function DialogsSection() {
+  return (
+    <Section id="sg-dialogs" desc="复用 ModalOverlay、PopupCloseButton 和 UI Kit 的标题、表单、按钮样式；预览普通、表单、确认与长内容弹窗。">
+      <Demo label="弹窗交互演示" code="ModalOverlay / PopupCloseButton / ui-card__header / ui-card__body / ui-card__footer · closeOnBackdrop / draggable / backdropBlur">
+        <StyleGuideDialogs />
+      </Demo>
+    </Section>
+  );
+}
+
+function TimelineSection() {
+  return (
+    <Section id="sg-timeline" desc="公用 Timeline；提供时间码、缩放、播放头、切点和分段编辑，可独立于视频播放器使用。">
+      <TimelineDemo />
+    </Section>
+  );
+}
+
+function GenerationEffectsSection({ theme }: GuideSectionProps) {
+  return (
+    <Section id="sg-generation-effects" desc="生成思考球、对话框边框流光与金属按钮，复用画布中的真实组件。">
+      <StyleGuideGenerationEffects theme={theme} />
+    </Section>
+  );
+}
+
+function MascotSection({ theme }: GuideSectionProps) {
+  return (
+    <Section id="sg-mascot" desc="预览真实吉祥物的状态、表情与身体动作，支持循环演示和不同尺寸查看。">
+      <StyleGuideMascot theme={theme} />
+    </Section>
+  );
+}
+
+type GuideSectionProps = { theme: 'dark' | 'light' };
+
+interface GuideGroup {
+  id: string;
+  title: string;
+  description: string;
+  sections: readonly {
+    id: string;
+    title: string;
+    keywords: readonly string[];
+    component: ComponentType<GuideSectionProps>;
+  }[];
+}
+
+/** 新增样例先确定职责归属；目录、搜索、分区标题和内容顺序只维护这一份。 */
+// eslint-disable-next-line react-refresh/only-export-components -- 预览窗口的目录与正文共用这份包含组件引用的清单。
+export const STYLE_GUIDE_GROUPS = [
+  {
+    id: 'foundations', title: '基础规范', description: '先确定颜色、排版与度量，再组合控件。',
+    sections: [
+      { id: 'sg-colors', title: '颜色令牌', keywords: ['token', 'canvas', 'brand', '主题', '语义色', 'CSS 变量'], component: ColorsSection },
+      { id: 'sg-typography', title: '排版', keywords: ['字体', '字号', '标题', '正文', 'ui-code', 'ui-kbd', 'ui-subtitle'], component: TypographySection },
+      { id: 'sg-layout', title: '尺寸与布局', keywords: ['间距', '内边距', '圆角', '高度', 'p-2', 'p-3', 'ui-row', 'ui-stack', 'ui-divider', '布局辅助'], component: LayoutSection },
+    ],
+  },
+  {
+    id: 'forms', title: '操作与表单', description: '触发操作、填写内容与调整参数。',
+    sections: [
+      { id: 'sg-buttons', title: '按钮', keywords: ['ui-btn', 'ui-icon-btn', 'PopupCloseButton', '关闭', '加载', '危险操作'], component: ButtonsSection },
+      { id: 'sg-inputs', title: '文本输入', keywords: ['ui-input', 'ui-textarea', 'ui-field', 'ui-hint', 'ui-error', '输入框', '校验', '禁用'], component: InputsSection },
+      { id: 'sg-number-inputs', title: '数字输入', keywords: ['NumberStepper', 'ui-stepper', '步进', '微调', '拖动', '单位', '精度'], component: NumberInputsSection },
+      { id: 'sg-selects', title: '下拉选择', keywords: ['Select', 'ui-select', '分组', '选项', '字段'], component: SelectsSection },
+      { id: 'sg-selection', title: '选择控件', keywords: ['ui-switch', 'ui-checkbox', 'ui-radio', 'ui-slider', 'ui-segmented', '开关', '复选', '单选', '滑块', '分段'], component: SelectionSection },
+      { id: 'sg-dropzones', title: '文件上传', keywords: ['FileUploadButton', 'ui-file-upload', 'ui-dropzone', '上传区', '拖放', '文件选择'], component: DropzoneSection },
+    ],
+  },
+  {
+    id: 'navigation', title: '导航与筛选', description: '切换内容、筛选集合与浏览滚动区域。',
+    sections: [
+      { id: 'sg-tabs', title: '页签 Tabs', keywords: ['ui-tabs', '滚动页签', '计数', '切换'], component: TabsSection },
+      { id: 'sg-chips', title: '分类筛选', keywords: ['ui-chip', '分类胶囊', '节点主题色', '过滤'], component: ChipsSection },
+      { id: 'sg-menus', title: '动作菜单', keywords: ['ui-dropdown', 'ui-menu', '排序', '菜单项', '快捷键', '导出'], component: MenusSection },
+      { id: 'sg-scrollbars', title: '覆盖式滚动条', keywords: ['ui-scroll', '滚动容器', '双轴', '嵌套', 'overflow'], component: ScrollbarsSection },
+    ],
+  },
+  {
+    id: 'display', title: '数据展示', description: '组织信息、展示状态与比较数据。',
+    sections: [
+      { id: 'sg-cards', title: '卡片与指标', keywords: ['ui-card', 'ui-stat', '选中', '容器'], component: CardsSection },
+      { id: 'sg-badges', title: '徽标与标签', keywords: ['ui-badge', 'ui-tag', '状态点', '可移除'], component: BadgesSection },
+      { id: 'sg-tables', title: '表格与列表', keywords: ['ui-table', 'ui-list', '行', '列', '数据'], component: TablesSection },
+    ],
+  },
+  {
+    id: 'feedback', title: '反馈与浮层', description: '解释结果、提示等待与承载临时任务。',
+    sections: [
+      { id: 'sg-feedback', title: '提示与状态', keywords: ['ui-alert', 'ui-progress', 'ui-spinner', 'ui-skeleton', 'ui-empty', '进度', '加载', '骨架屏', '空状态'], component: FeedbackSection },
+      { id: 'sg-toast', title: '吐司提示', keywords: ['Toast', 'showToast', 'dismissToast', '通知', '成功', '信息', '错误'], component: ToastSection },
+      { id: 'sg-dialogs', title: '弹窗', keywords: ['ModalOverlay', 'PopupCloseButton', 'dialog', '确认', '表单', '遮罩'], component: DialogsSection },
+    ],
+  },
+  {
+    id: 'composites', title: '复合组件', description: '直接复用 AI 编辑、媒体与动效的完整组件。',
+    sections: [
+      { id: 'sg-ai-input', title: 'AI 输入框', keywords: ['ui-ai-input', 'SendShortcutMenu', '提示词', '发送', '快捷键', '助手'], component: AIInputSection },
+      { id: 'sg-models', title: '模型选择', keywords: ['ModelPicker', 'ModelMenu', 'ProviderBadge', 'ui-model-menu', 'ui-model-pill', 'prompt-btn', '厂商', '胶囊'], component: ModelsSection },
+      { id: 'sg-references', title: '引用与素材选择', keywords: ['MentionPicker', 'ExpandableSearch', 'buildReferenceChipEl', 'ui-reference-chip', 'ui-expandable-search', '@', '引用胶囊', '搜索'], component: ReferencesSection },
+      { id: 'sg-markdown-editor', title: 'Markdown 编辑器', keywords: ['MarkdownEditor', 'ui-markdown-editor', '预览', '查找', '替换', '撤销'], component: MarkdownEditorSection },
+      { id: 'sg-video-player', title: '视频播放器', keywords: ['VideoPlayer', 'ui-video-player', '倍速', '音量', '全屏', '播放'], component: VideoPlayerSection },
+      { id: 'sg-timeline', title: '时间轴', keywords: ['Timeline', 'TimelineRuler', 'TimelineThumbnails', 'ui-timeline', '切点', '分段', '缩放', '播放头'], component: TimelineSection },
+      { id: 'sg-generation-effects', title: '生成特效', keywords: ['PolishMetalFx', '动效', '流光', '思考球', '金属', '边框'], component: GenerationEffectsSection },
+      { id: 'sg-mascot', title: '吉祥物', keywords: ['mascot', '角色', '表情', '动作', '循环'], component: MascotSection },
+    ],
+  },
+] as const satisfies readonly GuideGroup[];
+
+type GuideSectionId = typeof STYLE_GUIDE_GROUPS[number]['sections'][number]['id'];
+const GUIDE_SECTION_TITLES = new Map<string, string>(STYLE_GUIDE_GROUPS.flatMap((group) => group.sections.map(({ id, title }) => [id, title] as const)));
+
+export const StyleGuideContent = memo(function StyleGuideContent({ theme }: GuideSectionProps) {
+  return (
+    <>
+      <header className="mb-6 rounded-lg border border-canvas-border bg-canvas-surface p-3">
+        <p className="m-0 text-sm font-medium text-canvas-text">从基础规范到复合组件</p>
+        <p className="m-0 mt-1 text-xs leading-relaxed text-canvas-text-secondary">
+          按职责查找控件，先看使用边界，再体验交互并复制用法。左侧支持搜索名称、组件名和类名。
+          公用样式在 <code className="ui-code">src/styles/ui-kit.css</code>，
+          令牌默认值在 <code className="ui-code">src/styles/base.css</code>，配色跟随外观设置。
+        </p>
+      </header>
+      {STYLE_GUIDE_GROUPS.map((group, index) => (
+        <section key={group.id} aria-labelledby={`sg-group-${group.id}`} className="mb-8 last:mb-0">
+          <header className="mb-4 border-b border-canvas-border pb-3">
+            <div className="ui-row ui-row--tight">
+              <span aria-hidden="true" className="font-mono text-xs text-canvas-text-muted">{String(index + 1).padStart(2, '0')}</span>
+              <h2 id={`sg-group-${group.id}`} className="m-0 text-base font-semibold text-canvas-text">{group.title}</h2>
+              <span className="ui-badge ui-badge--outline">{group.sections.length} 项</span>
+            </div>
+            <p className="m-0 mt-1 text-xs leading-relaxed text-canvas-text-secondary">{group.description}</p>
+          </header>
+          <div className="space-y-6">
+            {group.sections.map(({ id, component: Component }) => <Component key={id} theme={theme} />)}
+          </div>
+        </section>
+      ))}
+    </>
+  );
+});

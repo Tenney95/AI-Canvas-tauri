@@ -351,7 +351,8 @@ export function resolveH3AutoTemplate(options: {
   const model = explicit?.model ?? inferH3ModelVariant(options.modelId, options.name);
   if (!model) return undefined;
   const transport = explicit?.transport ?? inferH3Transport(options.baseUrl);
-  if (!transport) return { model, capability: getOfficialH3Capability(model) };
+  // 同名中转模型不代表继承官方能力；只有已确认协议或显式模板才成套补齐。
+  if (!transport) return undefined;
   const template = createH3QuickAdaptTemplate(model, transport);
   return {
     model,
@@ -374,10 +375,11 @@ export function applyH3TemplateDefaults(
     templateId,
   });
   if (!match) return model;
+  // 已有协议只使用配套的显式能力，不能混入另一份模板声明的可调参数。
   return {
     ...model,
     category: 'video',
-    videoCapability: model.videoCapability ?? match.capability,
+    videoCapability: model.videoCapability ?? (model.executionProfile ? undefined : match.capability),
     executionProfile: model.executionProfile ?? match.executionProfile,
   };
 }

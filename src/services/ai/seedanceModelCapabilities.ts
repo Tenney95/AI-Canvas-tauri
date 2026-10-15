@@ -429,9 +429,8 @@ export function resolveSeedanceAutoTemplate(options: {
   const model = explicit?.model ?? inferSeedanceModelVariant(options.modelId, options.name);
   if (!model) return undefined;
   const transport = explicit?.transport ?? inferSeedanceTransport(options.baseUrl);
-  if (!transport) {
-    return { model, capability: getOfficialSeedanceCapability(model) };
-  }
+  // 同名中转模型不代表继承官方能力；只有已确认协议或显式模板才成套补齐。
+  if (!transport) return undefined;
   const template = createSeedanceQuickAdaptTemplate(model, transport);
   const capability = options.capability ?? (transport === 'lec'
     ? lecCapabilityOverride(options.modelId) ?? template.capability
@@ -462,10 +461,11 @@ export function applySeedanceTemplateDefaults(
     templateId,
   });
   if (!match) return model;
+  // 已有协议只使用配套的显式能力，不能混入另一份模板声明的可调参数。
   return {
     ...model,
     category: 'video',
-    videoCapability: model.videoCapability ?? match.capability,
+    videoCapability: model.videoCapability ?? (model.executionProfile ? undefined : match.capability),
     executionProfile: model.executionProfile ?? match.executionProfile,
   };
 }

@@ -1,0 +1,10 @@
+Czkawka Core 10.0.0
+Copyright (c) 2020-2025 Rafał Mikrut
+License: MIT (see Czkawka-Core-LICENSE.txt)
+Source: https://github.com/qarmin/czkawka
+Package: https://crates.io/crates/czkawka_core/10.0.0
+
+AI Canvas uses Czkawka Core's complete-file BLAKE3 hash calculation for
+ComfyUI model duplicate detection. Authorization, scan scope, file identity,
+replacement confirmation, link transactions and recovery are implemented
+by AI Canvas. No Czkawka graphical frontend is bundled.

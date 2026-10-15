@@ -226,58 +226,78 @@ where
             .user_agent("AI-Canvas/0.4")
             .build()
             .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-        let mut response: Response = client
+        let response: Response = client
             .get(url)
             .send()
             .map_err(|e| format!("下载请求失败: {e}"))?;
-        if !response.status().is_success() {
-            return Err(format!("下载请求失败: HTTP {}", response.status()));
-        }
-
-        let metadata = DownloadMetadata {
-            content_length: response.content_length(),
-            content_type: response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(';').next())
-                .map(str::trim)
-                .map(str::to_string),
-        };
-        if let (Some(content_length), Some(max_bytes)) = (metadata.content_length, max_bytes) {
-            validate_transfer_size(content_length, None, Some(max_bytes))?;
-        }
-
-        let disk_space_bytes = metadata.content_length.or(max_bytes);
-        let transferred = stream_to_file(
+        download_response_to_file(
             task_id,
-            &mut response,
+            response,
             destination,
-            metadata.content_length,
-            disk_space_bytes,
             max_bytes,
-            || is_cancelled(task_id),
-            |transferred_bytes| {
+            validate_temp,
+            |transferred_bytes, total_bytes| {
                 let _ = app.emit(
                     PROGRESS_EVENT,
                     FileTransferProgress {
                         task_id: task_id.to_string(),
                         transferred_bytes,
-                        total_bytes: metadata.content_length,
+                        total_bytes,
                     },
                 );
             },
-            |temp_path| validate_temp(temp_path, &metadata),
-        )?;
-
-        Ok(FileTransferResult {
-            path: destination.to_string_lossy().into_owned(),
-            total_bytes: transferred,
-            content_type: metadata.content_type,
-        })
+        )
     })();
     clear_cancelled(task_id);
     result
+}
+
+/// 复用流式落盘边界，允许固定下载入口保留各自的 HTTP 超时和进度协议。
+pub(crate) fn download_response_to_file<V, P>(
+    task_id: &str,
+    mut response: Response,
+    destination: &Path,
+    max_bytes: Option<u64>,
+    validate_temp: V,
+    mut on_progress: P,
+) -> Result<FileTransferResult, String>
+where
+    V: FnOnce(&Path, &DownloadMetadata) -> Result<(), String>,
+    P: FnMut(u64, Option<u64>),
+{
+    if !response.status().is_success() {
+        return Err(format!("下载请求失败: HTTP {}", response.status()));
+    }
+    let metadata = DownloadMetadata {
+        content_length: response.content_length(),
+        content_type: response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .map(str::to_string),
+    };
+    if let (Some(content_length), Some(max_bytes)) = (metadata.content_length, max_bytes) {
+        validate_transfer_size(content_length, None, Some(max_bytes))?;
+    }
+    on_progress(0, metadata.content_length);
+    let transferred = stream_to_file(
+        task_id,
+        &mut response,
+        destination,
+        metadata.content_length,
+        metadata.content_length.or(max_bytes),
+        max_bytes,
+        || is_cancelled(task_id),
+        |transferred_bytes| on_progress(transferred_bytes, metadata.content_length),
+        |temp_path| validate_temp(temp_path, &metadata),
+    )?;
+    Ok(FileTransferResult {
+        path: destination.to_string_lossy().into_owned(),
+        total_bytes: transferred,
+        content_type: metadata.content_type,
+    })
 }
 
 #[tauri::command]

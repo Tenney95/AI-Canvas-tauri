@@ -18,7 +18,9 @@ import {
   saveBinaryToProjectData,
   saveDataUrlToProjectData,
 } from '../../../../../services/fileService';
-import { subjectMatting, checkModelExists, downloadModel } from '../../../../../services/onnxService';
+import { subjectMatting, checkModelExists } from '../../../../../services/onnxService';
+import { useModelDownload } from '../../../../../hooks/useModelDownload';
+import DownloadProgress from '../../../../shared/DownloadProgress';
 import { clamp } from '../../../../../utils/num';
 import ImageEditorZoomControls from '../ImageEditorZoomControls';
 import { useComposer } from './useComposer';
@@ -100,6 +102,8 @@ async function saveComposerSourceToProject(source: string, projectId: string) {
 
 export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose, onStart, onSave }: ImageComposerEditorProps) {
   const cmp = useComposer();
+  const modelDownload = useModelDownload();
+  const { download: downloadMattingModel, cancel: cancelModelDownload } = modelDownload;
   const {
     layers, selectedId, setSelectedId, selectedLayer, canvas, updateCanvas,
     updateLayer, removeLayer, duplicateLayer, reorderLayer, addImageLayer, addImageFileLayer, replaceImageLayer,
@@ -270,6 +274,7 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
 
   /* ── 关闭时复位 ── */
   const handleClose = useCallback(() => {
+    cancelModelDownload();
     editorEpochRef.current += 1;
     if (exportFrameRef.current !== null) {
       cancelAnimationFrame(exportFrameRef.current);
@@ -282,17 +287,18 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
     exportingRef.current = false;
     resourceIssuesRef.current.clear();
     onClose();
-  }, [reset, onClose, setDraftPoints]);
+  }, [cancelModelDownload, reset, onClose, setDraftPoints]);
 
   useEffect(() => {
     if (isOpen) return;
+    cancelModelDownload();
     editorEpochRef.current += 1;
     if (exportFrameRef.current !== null) {
       cancelAnimationFrame(exportFrameRef.current);
       exportFrameRef.current = null;
     }
     exportingRef.current = false;
-  }, [isOpen]);
+  }, [isOpen, cancelModelDownload]);
 
   useEffect(() => () => {
     editorEpochRef.current += 1;
@@ -580,6 +586,8 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
   const handleMatteSubject = useCallback(async () => {
     const layer = selectedLayer;
     if (!layer || layer.type !== 'image') return;
+    const editorEpoch = editorEpochRef.current;
+    const isCurrent = () => editorEpochRef.current === editorEpoch;
     const store = useAppStore.getState();
     if (!('__TAURI_INTERNALS__' in window)) {
       store.showToast('主体识别仅桌面端可用', 'error');
@@ -593,26 +601,30 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
 
     setMattingLayerId(layer.id);
     try {
-      if (!(await checkModelExists(MATTING_MODEL))) {
-        store.showToast('正在下载主体识别模型…');
-        await downloadModel(MATTING_MODEL);
+      const hasModel = await checkModelExists(MATTING_MODEL);
+      if (!isCurrent()) return;
+      if (!hasModel) {
+        if (!(await downloadMattingModel([MATTING_MODEL]))) return;
       }
+      if (!isCurrent()) return;
       // 1. 落地图层图片为输入文件
       const saved = await saveComposerSourceToProject(layer.src, projectId);
+      if (!isCurrent()) return;
       if (!saved) throw new Error('无法写入临时文件');
       // 2. 抠主体
       const outputPath = `${saved.filePath.replace(/\.[^.]+$/, '')}_subject.png`;
       const result = await subjectMatting(saved.filePath, outputPath, MATTING_MODEL, `composer-matting-${Date.now()}`);
+      if (!isCurrent()) return;
       // 3. 载回并原位替换图层图片
       const resultSrc = convertFileSrc(result.subject_path);
       await replaceImageLayer(layer.id, resultSrc);
       store.showToast(`主体识别完成 (${result.input_size})`);
     } catch (err) {
-      store.showToast(errMessage(err, '主体识别失败'), 'error');
+      if (isCurrent()) store.showToast(errMessage(err, '主体识别失败'), 'error');
     } finally {
       setMattingLayerId(null);
     }
-  }, [replaceImageLayer, selectedLayer]);
+  }, [downloadMattingModel, replaceImageLayer, selectedLayer]);
 
   /* ── 导出：临时复位相机 + 舞台尺寸=画布，导出原生分辨率透明 PNG ── */
   const handleExport = useCallback(() => {
@@ -739,6 +751,22 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
             onReset={resetZoom}
           />
         </div>
+
+        {modelDownload.isDownloading && (
+          <div className="ui-card mx-3 mb-2 shrink-0 p-2">
+            <div className="flex items-center gap-3">
+              <DownloadProgress
+                downloadedBytes={modelDownload.progress?.transferredBytes ?? 0}
+                totalBytes={modelDownload.progress?.totalBytes ?? undefined}
+                label="正在下载主体识别模型..."
+                className="min-w-0 flex-1"
+              />
+              <button type="button" className="ui-btn ui-btn--sm" onClick={cancelModelDownload}>
+                取消下载
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="composer-body">
           <div

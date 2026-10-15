@@ -16,7 +16,8 @@ import { NODE_TYPE_CONFIG } from '../types';
 import { uploadSourceFileToProject } from '../services/fileService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { classifyFile } from '../hooks/useNodeCreation';
-import { checkForUpdate, downloadAndInstallUpdate } from '../services/updateService';
+import { checkForUpdate, downloadAndInstallUpdate, isAppUpdateRunning } from '../services/updateService';
+import DownloadProgress from './shared/DownloadProgress';
 import AnimatedButton from './shared/AnimatedButton';
 import LazyLoadBoundary, { LazyLoadFallback } from './shared/LazyLoadBoundary';
 import ProjectLibraryModal from './ProjectLibraryModal';
@@ -356,6 +357,8 @@ function AvatarMenu() {
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'no-update' | 'available' | 'updating' | 'error'>('idle');
   const [updateMsg, setUpdateMsg] = useState('');
   const [updateVersion, setUpdateVersion] = useState('');
+  const appUpdateProgress = useAppStore((state) => state.appUpdateProgress);
+  const updating = isAppUpdateRunning(appUpdateProgress);
 
   const handleCheckUpdate = async () => {
     setUpdateStatus('checking');
@@ -379,11 +382,10 @@ function AvatarMenu() {
   const handleDownloadUpdate = async () => {
     setUpdateStatus('updating');
     setUpdateMsg(t('正在下载更新...'));
-    const ok = await downloadAndInstallUpdate();
-    if (!ok) {
-      setUpdateStatus('error');
-      setUpdateMsg(t('下载失败，请稍后重试'));
-    }
+    const ok = await downloadAndInstallUpdate(useAppStore.getState().setAppUpdateProgress);
+    const progress = useAppStore.getState().appUpdateProgress;
+    setUpdateStatus(ok || progress?.phase === 'no-update' ? 'no-update' : 'error');
+    setUpdateMsg(t(progress?.message ?? '下载失败，请稍后重试'));
   };
 
   // 连点 logo 达到阈值时打开样式预览窗口；超过间隔没有下一次点击就重新计数
@@ -516,7 +518,7 @@ function AvatarMenu() {
               <p className="text-xs text-canvas-text-secondary">v{appVersion} · {t('开发预览版')}</p>
               <button
                 onClick={updateStatus === 'available' ? handleDownloadUpdate : handleCheckUpdate}
-                disabled={updateStatus === 'checking' || updateStatus === 'updating'}
+                disabled={updateStatus === 'checking' || updateStatus === 'updating' || updating}
                 className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 disabled:text-canvas-text-muted transition-colors"
               >
                 {updateStatus === 'checking' ? (
@@ -524,10 +526,10 @@ function AvatarMenu() {
                     <Icon icon="svg-spinners:90-ring" width="12" height="12" />
                     {t('检查中...')}
                   </>
-                ) : updateStatus === 'updating' ? (
+                ) : updateStatus === 'updating' || updating ? (
                   <>
                     <Icon icon="svg-spinners:90-ring" width="12" height="12" />
-                    {t('下载中...')}
+                    {t(appUpdateProgress?.message ?? '下载中...')}
                   </>
                 ) : updateStatus === 'no-update' && updateMsg ? (
                   updateMsg
@@ -541,6 +543,18 @@ function AvatarMenu() {
               </button>
             </div>
           </div>
+
+          {appUpdateProgress?.phase === 'downloading' ? (
+            <DownloadProgress
+              downloadedBytes={appUpdateProgress.downloadedBytes}
+              totalBytes={appUpdateProgress.totalBytes}
+              label={t(appUpdateProgress.message)}
+            />
+          ) : appUpdateProgress ? (
+            <p role="status" className={`text-xs ${appUpdateProgress.phase === 'error' ? 'text-danger-light' : 'text-canvas-text-secondary'}`}>
+              {t(appUpdateProgress.message)}
+            </p>
+          ) : null}
 
           {/* Description */}
           <p className="text-sm text-canvas-text-secondary leading-relaxed">

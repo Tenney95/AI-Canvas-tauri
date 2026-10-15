@@ -241,13 +241,10 @@ const settings = {
   '打开 ComfyUI 页面失败': 'Failed to open the ComfyUI page',
   '请先设置 ComfyUI 安装目录': 'Set the ComfyUI install directory first',
   'ComfyUI 服务已就绪': 'ComfyUI service is ready',
-  'ComfyUI 进程已启动，但等待服务就绪超时，请查看终端窗口日志':
-    'The ComfyUI process started, but waiting for it to become ready timed out. Check the terminal logs',
   '启动 ComfyUI 失败': 'Failed to start ComfyUI',
   '正在等待 ComfyUI 服务就绪，首次启动可能需要几分钟时间…':
     'Waiting for the ComfyUI service to become ready; the first launch may take a few minutes…',
   'ComfyUI 服务已就绪（{url}），可以开始使用': 'ComfyUI service is ready ({url}). You can start using it',
-  '服务未就绪，请查看弹出的终端窗口中的日志': 'Service not ready; check the logs in the popped-up terminal window',
   '服务就绪后会自动在软件内打开 ComfyUI 窗口，也可以使用右侧按钮手动打开':
     'Once ready, the ComfyUI window opens automatically; you can also open it manually with the button on the right',
   'ComfyUI 显存与缓存': 'ComfyUI VRAM and cache',
@@ -752,7 +749,6 @@ const settings = {
   '预设操作失败': 'Preset action failed',
   '外观': 'Appearance',
   '跟随系统': 'Follow system',
-  '外观预设包含画布、节点、连接线、连接手柄和所有页面配色': 'Appearance presets cover the canvas, nodes, edges, connection handles and all page colors',
   '正在自动保存…': 'Auto-saving…',
   '已自动保存': 'Auto-saved',
   '自动保存失败': 'Auto-save failed',
@@ -777,7 +773,6 @@ const settings = {
   '界面底色': 'Surface colors',
   '分别配置页面、窗口和组件各层底色': 'Configure the background color of each layer: page, window and components',
   '页面背景': 'Page background',
-  '窗口背景': 'Window background',
   '组件底色': 'Component background',
   '组件悬浮底色': 'Component hover background',
   '组件边框': 'Component border',

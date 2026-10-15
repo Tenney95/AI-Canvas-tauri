@@ -530,6 +530,20 @@ describe('pluginUiSessionService', () => {
     expect(await session.request('effect', { type: 'resource.export' })).toMatchObject({ ok: true });
     session.dispose();
   });
+  it('allows sequential playback pages beyond ordinary request budgets and bounds failed preview reads', async () => {
+    const session = await native();
+    mocks.executeEffect.mockResolvedValue({ type: 'video.readPlayback', ok: true, value: { bytes: 1, base64: 'AA==' } });
+    for (let offset = 0; offset < 220; offset++) {
+      expect(await session.request('effect', { type: 'video.readPlayback', resourceId: 'preview', offset, length: 1 })).toMatchObject({ ok: true });
+    }
+    expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: true });
+    mocks.executeEffect.mockResolvedValue({ type: 'video.readPlayback', ok: false, error: 'invalid preview' });
+    for (let i = 0; i < 4; i++) {
+      expect(await session.request('effect', { type: 'video.readPlayback', resourceId: 'preview', offset: 0, length: 1 })).toMatchObject({ value: { ok: false } });
+    }
+    expect(await session.request('effect', { type: 'video.readPlayback', resourceId: 'preview', offset: 0, length: 1 })).toMatchObject({ ok: false });
+    session.dispose();
+  });
   it('rejects invalid read lengths and enforces the cumulative byte limit even on failed reads', async () => {
     const session = await createPluginUiNativeSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', parameters: {}, onClose: vi.fn() });
     for (const length of [0, -1, 0.5, '1', 256 * 1024 + 1, NaN]) {

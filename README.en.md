@@ -10,7 +10,7 @@
 
 AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, Markdown, shot lists, 360° panoramas and hand-drawn notes into connectable canvas nodes. In a single project you can orchestrate generation pipelines, manage characters, scenes, props and local media assets, run ComfyUI workflows, and use the conversational assistant to query or modify the canvas, generate media, dispatch read-only sub-agents, read authorized files, and accumulate project memory. Projects can also be split into series and episodes — each episode of an AI short drama gets its own canvas, while the character library and assets are shared across the whole series.
 
-![Version](https://img.shields.io/badge/version-0.10.7-6366f1)
+![Version](https://img.shields.io/badge/version-0.10.8-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
@@ -35,7 +35,7 @@ AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, 
 | --- | --- |
 | Multimodal node canvas | Connect text, images, video, audio, animation, Markdown, shot lists, panoramas, director nodes, source files and canvas notes. Minimap counts, lightweight overview nodes and progressive display improve navigation while preserving source media and canvas data. |
 | Frame animation editing & export | Import or generate sprite sheets, correct grids, reorder or disable frames, and adjust offsets, frame rate and looping. Desktop Rust processing exports GIF, PNG sequences or PNG atlases with JSON, using the same frame arrangement as the preview. |
-| AI & workflows | Cloud models, custom model protocols with trial runs, unified CCC group management with automatic per-model key routing, multiple ComfyUI servers, RunningHub workflows/AI apps, generic Workflow API connections with an AutoDL H3 template, Dreamina and local ONNX inference. Built-in DLSS5 image/video texture-enhancement templates require the matching ComfyUI nodes. Uploads, progress and recovery follow each platform. |
+| AI & workflows | Cloud models, custom model protocols with trial runs, unified CCC group management with automatic per-model key routing, multiple ComfyUI servers and local management (model deduplication and a runtime console), RunningHub workflows/AI apps, generic Workflow API connections with an AutoDL H3 template, Dreamina and local ONNX inference. Built-in DLSS5 image/video texture-enhancement templates require the matching ComfyUI nodes. Uploads, progress and recovery follow each platform. |
 | User plugins | Install JavaScript or trusted Python plugins from local folders, the marketplace or GitHub Releases. Plugins extend tools, nodes and host-managed UI. JavaScript uses QuickJS; Python has the current user’s permissions. Source and full revision digests bind execution; disabled or replaced revisions cannot write results back. |
 | Scripts & shot production | Browse source chapters, write episodes, preserve script snapshots, revise shots, fill missing frames, prepare voice/video/director nodes and send dialogue captions and ready voice-overs to the timeline. Reference character action media with @. |
 | Built-in video editing | A separate editor provides multiple tracks, trimming, splitting, transforms, transitions, text, stickers and volume controls, with passthrough or composited export. MCP also exposes project editing, background export, media probing and frame extraction. |

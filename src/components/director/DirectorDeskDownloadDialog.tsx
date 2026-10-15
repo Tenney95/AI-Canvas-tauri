@@ -4,13 +4,15 @@
 import { Icon } from '@iconify/react';
 import { createPortal } from 'react-dom';
 import ModalOverlay from '../shared/ModalOverlay';
+import DownloadProgress from '../shared/DownloadProgress';
+import type { DirectorDeskInstallProgress } from '../../services/directorDeskRuntimeService';
 
 export type DirectorDeskDialogPhase = 'prompt' | 'downloading' | 'error';
 
 interface DirectorDeskDownloadDialogProps {
   phase: DirectorDeskDialogPhase;
   version: string;
-  progress: number;
+  progress: DirectorDeskInstallProgress | null;
   stageText: string;
   error: string | null;
   cancelling: boolean;
@@ -63,18 +65,12 @@ export default function DirectorDeskDownloadDialog({
         </div>
 
         {isDownloading && (
-          <div className="mb-4" role="status" aria-live="polite">
-            <div className="mb-1.5 flex items-center justify-between text-[11px] text-canvas-text-muted">
-              <span>{stageText}</span>
-              <span>{Math.round(progress)}%</span>
-            </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-canvas-hover">
-              <div
-                className="h-full rounded-full bg-violet-500 transition-[width] duration-200"
-                style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
-              />
-            </div>
-          </div>
+          <DownloadProgress
+            className="mb-4"
+            downloadedBytes={progress?.transferredBytes ?? 0}
+            totalBytes={progress?.totalBytes}
+            label={stageText}
+          />
         )}
 
         <div className="flex justify-end gap-2">

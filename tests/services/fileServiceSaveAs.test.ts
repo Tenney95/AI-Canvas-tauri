@@ -38,7 +38,7 @@ vi.mock('../../src/services/fs/core', () => ({
   stripVerbatimPrefix: (p: string) => p,
 }));
 
-import { saveNodeOutputToFile } from '../../src/services/fileService';
+import { saveNodeOutputToFile, type NodeOutputDownloadProgress } from '../../src/services/fileService';
 
 /** mac 的 asset URL 形如 asset://localhost/<encoded path>；Windows 是 http://asset.localhost/… */
 const MAC_ASSET_URL = 'asset://localhost/%2FUsers%2Fme%2FLibrary%2Fout.png';
@@ -86,6 +86,77 @@ describe('saveNodeOutputToFile', () => {
     await expect(
       saveNodeOutputToFile({ filePath: '/gone/out.png', nodeType: 'ai-image' }),
     ).rejects.toThrow('ENOENT');
+  });
+
+  it('远程媒体逐块报告真实下载字节并无损保存', async () => {
+    const bytes = new Uint8Array([99, 0, 255, 128, 3, 17, 88]);
+    const progress: NodeOutputDownloadProgress[] = [];
+    vi.mocked(fetch).mockResolvedValue(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.subarray(1, 3));
+        controller.enqueue(bytes.subarray(3, 6));
+        controller.close();
+      },
+    }), { headers: { 'content-length': '5' } }));
+
+    const dest = await saveNodeOutputToFile({
+      mediaUrl: 'https://example.com/out.png',
+      nodeType: 'ai-image',
+      fileName: 'out.png',
+      onProgress: (value) => progress.push(value),
+    });
+
+    expect(progress.filter(({ phase, transferredBytes }) => phase === 'downloading' && transferredBytes > 0))
+      .toEqual([
+        { transferredBytes: 2, totalBytes: 5, phase: 'downloading' },
+        { transferredBytes: 5, totalBytes: 5, phase: 'downloading' },
+      ]);
+    expect(progress.at(-1)).toEqual({ transferredBytes: 5, totalBytes: 5, phase: 'saving' });
+    expect(dest).toBe('/Users/me/Desktop/out.png');
+    expect(mocks.writeFile).toHaveBeenCalledWith(dest, new Uint8Array([0, 255, 128, 3, 17]));
+  });
+
+  it('下载进度回调中取消后不写入用户选择的目标文件', async () => {
+    const controller = new AbortController();
+    const progress: NodeOutputDownloadProgress[] = [];
+    vi.mocked(fetch).mockResolvedValue(new Response(new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new Uint8Array([1, 2]));
+        stream.enqueue(new Uint8Array([3, 4]));
+        stream.close();
+      },
+    }), { headers: { 'content-length': '4' } }));
+
+    await expect(saveNodeOutputToFile({
+      mediaUrl: 'https://example.com/out.png',
+      nodeType: 'ai-image',
+      signal: controller.signal,
+      onProgress: (value) => {
+        progress.push(value);
+        if (value.transferredBytes > 0) controller.abort();
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(mocks.save).toHaveBeenCalledOnce();
+    expect(progress.at(-1)).toEqual({ transferredBytes: 2, totalBytes: 4, phase: 'downloading' });
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('远程响应短于声明长度时拒绝保存且不覆盖目标文件', async () => {
+    const onProgress = vi.fn();
+    vi.mocked(fetch).mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), {
+      headers: { 'content-length': '5' },
+    }));
+
+    await expect(saveNodeOutputToFile({
+      mediaUrl: 'https://example.com/out.png',
+      nodeType: 'ai-image',
+      onProgress,
+    })).rejects.toThrow('媒体下载不完整');
+
+    expect(onProgress).toHaveBeenCalledWith({ transferredBytes: 3, totalBytes: 5, phase: 'downloading' });
+    expect(onProgress).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'saving' }));
+    expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
   it.each(['wav', 'mp3', 'ogg', 'flac', 'aac', 'm4a', 'wma', 'opus'])(

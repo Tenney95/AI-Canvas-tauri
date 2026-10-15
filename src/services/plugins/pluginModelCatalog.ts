@@ -46,9 +46,18 @@ function groupSummary(group: ModelGroup): PluginModelGroupSummary {
   };
 }
 
-function videoCapabilitySummary(category: GeneralModelCategory, modelId: string, config: AppConfig): Pick<PluginModelSummary, 'videoCapability'> {
-  const capability = category === 'video' ? resolveVideoModelCapability(modelId, config) : undefined;
-  return capability ? { videoCapability: capability } : {};
+/** 完整复刻仅开放已接入提交前租约校验的通道；显示提示与执行入口共用此策略。 */
+export function getPluginVideoReplicaSupport(provider: string) {
+  if (['general', 'comfyui', 'volcengine'].includes(provider)) return { supported: true } as const;
+  return { supported: false, reason: '此通道暂不支持一键全片复刻，请选择其他视频模型或工作流。' } as const;
+}
+
+function videoCapabilitySummary(
+  category: GeneralModelCategory, modelId: string, provider: string, config: AppConfig,
+): Pick<PluginModelSummary, 'videoCapability' | 'videoReplicaSupport'> {
+  if (category !== 'video') return {};
+  const capability = resolveVideoModelCapability(modelId, config);
+  return { ...(capability ? { videoCapability: capability } : {}), videoReplicaSupport: getPluginVideoReplicaSupport(provider) };
 }
 
 /** 旧目录没有显式模态时复用宿主既有视觉能力判断，让插件不用复制模型 ID 规则。 */
@@ -92,7 +101,7 @@ export function buildPluginModelCatalog(
       description: model.description,
       group: groupSummary(group),
       inputModalities: resolvePluginModelInputModalities(category, model.value, model.inputModalities),
-      ...videoCapabilitySummary(category, model.value, config),
+      ...videoCapabilitySummary(category, model.value, model.provider, config),
     })));
     const callableGeneralModels = (config.generalModels ?? [])
       .filter((model) => (
@@ -115,7 +124,7 @@ export function buildPluginModelCatalog(
         description: presentation?.model.description ?? (model.description || `ID: ${model.modelId}`),
         ...(presentation ? { group: presentation.group } : {}),
         inputModalities: resolvePluginModelInputModalities(category, model.modelId, model.inputModalities),
-        ...videoCapabilitySummary(category, `general/${model.id}`, config),
+        ...videoCapabilitySummary(category, `general/${model.id}`, 'general', config),
       };
     });
     return [...builtIn, ...general];
@@ -133,7 +142,8 @@ export function buildPluginModelCatalog(
       provider: 'comfyui',
       category: 'video',
       description: 'ComfyUI 工作流',
-      group: { id: 'comfyui', name: 'ComfyUI', description: 'ComfyUI 视频工作流', badgeText: 'CF', tone: 'brand' },
+      group: { id: '__workflows', name: '工作流', description: 'ComfyUI、RunningHub 与工作流 API', badgeText: 'WF', tone: 'brand' },
+      videoReplicaSupport: getPluginVideoReplicaSupport('comfyui'),
     }));
   return [...new Map([...models, ...workflowModels].map((model) => [model.id, model])).values()];
 }

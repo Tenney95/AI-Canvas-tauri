@@ -787,7 +787,8 @@ function createModelSelection(
   }
   const displayName = examples.name?.trim() || result.modelId;
   const category = result.category;
-  const videoCapability = examples.videoCapability ?? templateMatch?.capability;
+  // 只有协议也来自同一模板时才补模板能力，避免把官方可调项混入用户文档协议。
+  const videoCapability = examples.videoCapability ?? (useTemplateProtocol ? templateMatch?.capability : undefined);
   // 文本模型由连接级标准聊天协议统一处理。仍先解析文档示例以验证模型 ID、
   // Base URL 和文档证据，但不把一次性 OpenAI 风格模板写进模型配置。
   const executionProfile: ModelExecutionProfile | undefined = category === 'text'

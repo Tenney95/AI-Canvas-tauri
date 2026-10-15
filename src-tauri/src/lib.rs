@@ -1172,6 +1172,8 @@ pub fn run() {
         .manage(native_rendering::NativeRenderingState::default())
         .manage(proxy_http_state)
         .manage(comfyui::management::ManagementState::default())
+        .manage(comfyui::runtime_console::ComfyUIRuntimeState::default())
+        .manage(comfyui::model_dedupe::ModelDedupeState::default())
         .manage(blender_runtime::BlenderRuntimeState::default())
         .manage(blender_runtime::ProjectGrantState::default())
         .manage(blender_runtime::production_blender_job_core())
@@ -1257,6 +1259,7 @@ pub fn run() {
             native_rendering::sync_native_performance_mode,
             sync_authorized_directories,
             comfyui::launch_comfyui,
+            comfyui::runtime_console::get_comfyui_runtime_status,
             comfyui::installation::select_comfyui_installation,
             comfyui::installation::get_comfyui_installation,
             comfyui::open_comfyui_window,
@@ -1268,8 +1271,19 @@ pub fn run() {
             comfyui::management::list_comfyui_catalog,
             comfyui::management::install_comfyui_extension,
             comfyui::management::install_comfyui_dependencies,
+            comfyui::model_dedupe::scan_comfyui_duplicate_models,
+            comfyui::model_dedupe::choose_comfyui_model_scan_root,
+            comfyui::model_dedupe::cancel_comfyui_model_scan,
+            comfyui::model_dedupe_links::apply_comfyui_model_deduplication,
+            comfyui::model_dedupe_links::apply_comfyui_model_deduplication_batch,
+            comfyui::model_dedupe_history::list_comfyui_model_dedupe_history,
+            comfyui::model_dedupe_links::list_comfyui_model_dedupe_recoveries,
+            comfyui::model_dedupe_links::recover_comfyui_model_dedupe,
             comfyui::launch_settings::get_comfyui_launch_settings,
             comfyui::launch_settings::save_comfyui_launch_settings,
+            comfyui::runtime_console::start_comfyui_managed,
+            comfyui::runtime_console::stop_comfyui_managed,
+            comfyui::runtime_console::get_comfyui_runtime_snapshot,
             onnx::get_models_dir,
             onnx::check_model_exists,
             onnx::list_onnx_models,
@@ -1375,6 +1389,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                comfyui::runtime_console::shutdown_runtime(app_handle);
                 plugin_window::revoke_all_sessions();
                 app_handle
                     .state::<blender_runtime::BlenderJobCore>()

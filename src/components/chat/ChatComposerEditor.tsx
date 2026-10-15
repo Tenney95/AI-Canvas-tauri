@@ -38,6 +38,11 @@ interface ChatComposerEditorProps {
   suggestionsOpen?: boolean;
   placeholder: string;
   disabled?: boolean;
+  /** 宿主可复用自己的引用 DOM；序列化与光标行为仍由编辑器维护。 */
+  referencePresentation?: {
+    createElement: (reference: ChatComposerReference) => HTMLSpanElement;
+    synchronize?: (root: HTMLDivElement) => void;
+  };
 }
 
 type ParsedReference = ChatComposerReference & { raw: string };
@@ -137,8 +142,8 @@ function ensureCaretSlotBefore(referenceElement: HTMLElement): void {
   }
 }
 
-function buildReferenceElement(reference: ParsedReference): HTMLSpanElement {
-  const element = document.createElement('span');
+function buildReferenceElement(reference: ParsedReference, presentation?: ChatComposerEditorProps['referencePresentation']): HTMLSpanElement {
+  const element = presentation?.createElement(reference) ?? document.createElement('span');
   element.contentEditable = 'false';
   element.setAttribute('data-chat-reference', reference.kind);
   element.setAttribute('data-chat-reference-raw', reference.raw);
@@ -146,6 +151,7 @@ function buildReferenceElement(reference: ParsedReference): HTMLSpanElement {
   element.setAttribute('aria-label', `${REFERENCE_ARIA_PREFIX[reference.kind]} ${reference.label}${
     reference.kind === 'node' && reference.displayId != null ? `，编号 ${reference.displayId}` : ''
   }`);
+  if (presentation) return element;
   element.className = `mx-0.5 inline-flex max-w-[min(100%,18rem)] select-none items-center align-middle
     rounded-[7px] border px-2 py-1 text-[12px] font-medium leading-none shadow-sm ${style.chip}`;
 
@@ -177,14 +183,14 @@ function appendText(nodes: Node[], value: string): void {
   });
 }
 
-function renderValue(value: string, nodeDisplayIds: ReadonlyMap<string, number | undefined>): Node[] {
+function renderValue(value: string, nodeDisplayIds: ReadonlyMap<string, number | undefined>, presentation?: ChatComposerEditorProps['referencePresentation']): Node[] {
   const nodes: Node[] = [];
   let cursor = 0;
   for (const match of value.matchAll(REFERENCE_PATTERN)) {
     const start = match.index;
     if (start == null) continue;
     appendText(nodes, value.slice(cursor, start));
-    const referenceElement = buildReferenceElement(parseReference(match, nodeDisplayIds));
+    const referenceElement = buildReferenceElement(parseReference(match, nodeDisplayIds), presentation);
     const previous = nodes[nodes.length - 1];
     if (!previous || isBreakElement(previous) || isReferenceElement(previous)) {
       nodes.push(document.createTextNode(ZWSP));
@@ -269,15 +275,19 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
   suggestionsOpen = false,
   placeholder,
   disabled = false,
+  referencePresentation,
 }, ref) {
   const t = useT();
   const editorRef = useRef<HTMLDivElement>(null);
   const lastRangeRef = useRef<Range | null>(null);
   const triggerRangeRef = useRef<Range | null>(null);
+  const previousPresentationRef = useRef(referencePresentation);
 
   const emitValue = useCallback(() => {
-    if (editorRef.current) onChange(serializeEditor(editorRef.current));
-  }, [onChange]);
+    if (!editorRef.current) return;
+    referencePresentation?.synchronize?.(editorRef.current);
+    onChange(serializeEditor(editorRef.current));
+  }, [onChange, referencePresentation]);
 
   const captureSelection = useCallback(() => {
     const editor = editorRef.current;
@@ -327,13 +337,16 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
     const editor = editorRef.current;
     if (!editor) return;
     const serializedValue = serializeEditor(editor);
-    if (serializedValue === value && !containsUndecoratedReference(editor)) return;
+    const presentationChanged = previousPresentationRef.current !== referencePresentation;
+    previousPresentationRef.current = referencePresentation;
+    if (!presentationChanged && serializedValue === value && !containsUndecoratedReference(editor)) return;
 
     const hadFocus = document.activeElement === editor;
     editor.innerHTML = '';
-    for (const node of renderValue(value, nodeDisplayIds)) editor.appendChild(node);
+    for (const node of renderValue(value, nodeDisplayIds, referencePresentation)) editor.appendChild(node);
+    referencePresentation?.synchronize?.(editor);
     if (hadFocus) placeCaretAtEnd(editor);
-  }, [nodeDisplayIds, value]);
+  }, [nodeDisplayIds, value, referencePresentation]);
 
   useEffect(() => {
     const focusEditor = () => editorRef.current?.focus();
@@ -360,7 +373,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
       range.deleteContents();
 
       const raw = serializeReference(reference);
-      const chip = buildReferenceElement({ ...reference, raw });
+      const chip = buildReferenceElement({ ...reference, raw }, referencePresentation);
       range.insertNode(chip);
       ensureCaretSlotBefore(chip);
       const spacer = document.createTextNode(' ');
@@ -375,7 +388,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
       onSlashQueryChange(null);
       emitValue();
     },
-  }), [disabled, emitValue, onMentionQueryChange, onSlashQueryChange]);
+  }), [disabled, emitValue, onMentionQueryChange, onSlashQueryChange, referencePresentation]);
 
   const handleInput = useCallback(() => {
     const editor = editorRef.current;

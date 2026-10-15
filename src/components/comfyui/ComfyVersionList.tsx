@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useT } from '../../i18n';
-import type { ComfyRepository, ComfyVersion } from '../../types/comfyManagement';
+import type { ComfyDownloadProgress as DownloadProgress, ComfyRepository, ComfyVersion } from '../../types/comfyManagement';
 import { listComfyVersions } from '../../services/comfyManagementService';
 import Tabs from '../shared/Tabs';
+import ComfyDownloadProgress from './ComfyDownloadProgress';
 
 interface Props {
   repository: ComfyRepository;
@@ -19,9 +20,12 @@ export default function ComfyVersionList({ repository, busy, onSwitch }: Props) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   useEffect(() => {
     let disposed = false;
-    void listComfyVersions(repository.id, refresh > 0).then((next) => {
+    void listComfyVersions(repository.id, refresh > 0, (progress) => {
+      if (!disposed) setDownloadProgress(progress);
+    }).then((next) => {
       if (!disposed) { setVersions(next); setError(''); setLoading(false); }
     }, (cause: unknown) => {
       if (!disposed) { setError(String(cause)); setLoading(false); }
@@ -33,10 +37,11 @@ export default function ComfyVersionList({ repository, busy, onSwitch }: Props) 
     <div className="ui-row ui-row--between">
       <Tabs<ComfyVersion['kind']> size="sm" className="flex-1" aria-label={t('版本类型')} value={kind} onChange={setKind}
         items={([{ value: 'tag', label: '稳定版' }, { value: 'commit', label: '开发版' }, { value: 'branch', label: '分支' }] as const).map((item) => ({ value: item.value, label: t(item.label) }))} />
-      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy || loading} onClick={() => { setLoading(true); setRefresh((value) => value + 1); }}><Icon icon="lucide:refresh-cw" width={14} className={loading ? 'animate-spin' : ''} />{t('刷新远端版本')}</button>
+      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy || loading} onClick={() => { setDownloadProgress(null); setError(''); setLoading(true); setRefresh((value) => value + 1); }}><Icon icon="lucide:refresh-cw" width={14} className={loading ? 'animate-spin' : ''} />{t('刷新远端版本')}</button>
     </div>
     <input className="ui-input ui-input--sm" type="search" aria-label={t('搜索版本')} placeholder={t('搜索版本或提交 ID…')} value={search} onChange={(event) => setSearch(event.target.value)} />
     {repository.dirty && <div className="ui-alert ui-alert--warning">{t('仓库有本地修改，版本切换和更新会被阻止。请先自行保存或处理修改。')}</div>}
+    {loading && downloadProgress && <ComfyDownloadProgress progress={downloadProgress} />}
     {error ? <div className="ui-alert ui-alert--danger" role="alert">{error}</div> : loading ? <p className="ui-hint" role="status">{t('正在读取版本列表…')}</p> : <div className="ui-scroll ui-scroll--both max-h-[52vh] rounded-lg border border-canvas-border">
       <table className="ui-table"><thead><tr><th>{t('版本 ID')}</th><th>{t('更新内容')}</th><th>{t('日期')}</th><th>{t('操作')}</th></tr></thead><tbody>
         {rows.map((version) => <tr key={`${version.kind}:${version.reference}`}>

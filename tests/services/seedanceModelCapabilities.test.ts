@@ -8,6 +8,7 @@ import {
   SEEDANCE_QUICK_ADAPT_OPTIONS,
 } from '../../src/services/ai/seedanceModelCapabilities';
 import type { VideoModelCapability } from '../../src/types/aiTypes';
+import type { ProviderModelSelection } from '../../src/types';
 
 describe('Seedance capability templates', () => {
   it('declares the official 2.0 resolution tiers and adaptive ratio support', () => {
@@ -167,14 +168,72 @@ describe('Seedance capability templates', () => {
     });
   });
 
-  it('returns capability-only defaults for an unverified relay', () => {
+  it.each([undefined, 'https://ailingg.store/v1', 'invalid-url'])(
+    'does not infer capabilities or a protocol for an unverified relay: %s', (baseUrl) => {
+      const match = resolveSeedanceAutoTemplate({
+        modelId: 'dreamina-seedance-2-0-260128-max',
+        baseUrl,
+      });
+      expect(match).toBeUndefined();
+      const input: ProviderModelSelection = {
+        id: 'dreamina-seedance-2-0-260128-max', name: 'Seedance Max',
+        category: 'video', provider: 'custom-test',
+      };
+      expect(applySeedanceTemplateDefaults(input, baseUrl)).toBe(input);
+    },
+  );
+
+  it('uses an explicit template for an unverified relay and clones explicit capabilities', () => {
+    const capability: VideoModelCapability = { operations: ['text-to-video'], durations: [8] };
+    const before = structuredClone(capability);
     const match = resolveSeedanceAutoTemplate({
-      modelId: 'doubao-seedance-2-5-260628',
-      baseUrl: 'https://ailingg.store/v1',
+      modelId: 'dreamina-seedance-2-0-260128-max',
+      baseUrl: 'https://relay.example.com/v1',
+      templateId: '2.0-standard:volcengine',
+      capability,
     });
-    expect(match?.model).toBe('2.5');
-    expect(match?.executionProfile).toBeUndefined();
-    expect(match?.capability.maxImageReferences).toBe(30);
+    expect(match?.templateId).toBe('2.0-standard:volcengine');
+    expect(match?.executionProfile?.protocol?.submit.path).toBe('/contents/generations/tasks');
+    expect(match?.capability).toEqual(capability);
+    expect(match?.capability).not.toBe(capability);
+    expect(capability).toEqual(before);
+  });
+
+  it('fills capabilities together with a verified transport when no protocol was configured', () => {
+    const model = applySeedanceTemplateDefaults({
+      id: 'doubao-seedance-2-0-260128', name: 'Seedance',
+      category: 'video', provider: 'custom-test',
+    }, 'https://ark.cn-beijing.volces.com/api/v3');
+    expect(model.videoCapability?.supportsAudio).toBe(true);
+    expect(model.executionProfile?.protocol?.submit.body).toMatchObject({
+      generate_audio: '{{generateAudio}}',
+    });
+  });
+
+  it.each([undefined, true, false])(
+    'does not mix capabilities into an existing protocol or mutate an explicit audio value: %s', (supportsAudio) => {
+      const input: ProviderModelSelection = {
+        id: 'dreamina-seedance-2-0-260128-max', name: 'Seedance Max',
+        category: 'video', provider: 'custom-test',
+        executionProfile: { preset: 'custom', protocol: {
+          version: 2, mode: 'sync', submit: { method: 'POST', path: '/private/video' },
+          response: { type: 'json', result: { urlPath: 'url' } },
+        } },
+        ...(supportsAudio === undefined ? {} : { videoCapability: { supportsAudio } }),
+      };
+      const before = structuredClone(input);
+      const model = applySeedanceTemplateDefaults(input, 'https://ark.cn-beijing.volces.com/api/v3');
+      expect(model.videoCapability).toBe(input.videoCapability);
+      expect(model.executionProfile).toBe(input.executionProfile);
+      expect(input).toEqual(before);
+    },
+  );
+
+  it('does not accept an invalid explicit template as evidence of an unknown transport', () => {
+    expect(resolveSeedanceAutoTemplate({
+      modelId: 'dreamina-seedance-2-0-260128-max',
+      baseUrl: 'https://relay.example.com/v1', templateId: 'invalid-template',
+    })).toBeUndefined();
   });
 
   it('only fills missing fields and preserves explicit user configuration', () => {

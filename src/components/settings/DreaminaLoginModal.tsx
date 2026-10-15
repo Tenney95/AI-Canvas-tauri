@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { DreaminaRuntime } from '../../types';
 import PopupCloseButton from '../shared/PopupCloseButton';
+import DownloadProgress from '../shared/DownloadProgress';
 import { useT } from '../../i18n';
 
 interface DreaminaLoginModalProps {
@@ -66,6 +67,15 @@ export default function DreaminaLoginModal({
             <div className="dreamina-login-modal-message">
               {runtime?.message || t('OAuth 登录已启动，请按下方步骤完成授权。')}
             </div>
+
+            {phase === 'preparing' && runtime?.downloadedBytes !== undefined && (
+              <DownloadProgress
+                downloadedBytes={runtime.downloadedBytes}
+                totalBytes={runtime.downloadTotalBytes}
+                label={runtime.message}
+                className="my-3"
+              />
+            )}
 
             {waiting && (
               <div className="dreamina-login-modal-wait">

@@ -56,6 +56,9 @@ import {
   getPluginLineArtResource,
   setPluginLineArtResource,
   registerPluginDerivedResource,
+  getPluginPlaybackResource,
+  registerPluginPlaybackResource,
+  readPluginPlaybackRange,
   replacePluginDerivedResources,
   resolvePluginResourceHostUrl,
   resolvePluginMediaWorkspaceInputs,
@@ -968,7 +971,7 @@ function parseHostEffect(
       maxBytes,
     };
   }
-  if (type === 'resource.readRange') {
+  if (type === 'resource.readRange' || type === 'video.readPlayback') {
     const resourceId = String(raw.resourceId ?? '').slice(0, 160);
     const offset = Number(raw.offset);
     const length = Number(raw.length);
@@ -1007,6 +1010,13 @@ function parseHostEffect(
     if (![start, end, threshold, minShotDuration].every(Number.isFinite) || start < 0 || end <= start || end - start > 300
       || threshold < 0.05 || threshold > 0.95 || minShotDuration < 0.04 || minShotDuration > 10) throw new Error('镜头检测参数或区间无效');
     return { type, resourceId, start, end, threshold, minShotDuration };
+  }
+  if (type === 'video.preparePlayback') {
+    if (Object.keys(raw).some((key) => !['type', 'resourceId'].includes(key))
+      || typeof raw.resourceId !== 'string' || !raw.resourceId || raw.resourceId.length > 160) {
+      throw new Error('连续预览只接受有效视频资源句柄');
+    }
+    return { type, resourceId: raw.resourceId };
   }
   if (type === 'video.extractFrames') {
     const resourceId = typeof raw.resourceId === 'string' ? raw.resourceId.slice(0, 160) : '';
@@ -1346,14 +1356,16 @@ async function executeHostEffect(
       );
       return { type: effect.type, ok: true, value: toPluginJson(value) };
     }
-    if (effect.type === 'resource.readRange') {
+    if (effect.type === 'resource.readRange' || effect.type === 'video.readPlayback') {
       if (!context.resourceReadContext) throw new Error('插件资源会话已失效');
-      const value = await readPluginResourceRange(
+      assertFresh();
+      const value = await (effect.type === 'video.readPlayback' ? readPluginPlaybackRange : readPluginResourceRange)(
         context.resourceReadContext,
         effect.resourceId,
         effect.offset,
         effect.length,
       );
+      assertFresh();
       return { type: effect.type, ok: true, value: toPluginJson(value) };
     }
     if (effect.type === 'image.lineArt') {
@@ -1384,7 +1396,7 @@ async function executeHostEffect(
         previewDataUrl: image.previewDataUrl,
       } };
     }
-    if (effect.type === 'video.extractFrames' || effect.type === 'video.detectShots' || effect.type === 'video.inspectFrame') {
+    if (effect.type === 'video.extractFrames' || effect.type === 'video.detectShots' || effect.type === 'video.inspectFrame' || effect.type === 'video.preparePlayback') {
       if (
         !context.permissions.includes('files.connected.read')
         || !context.permissions.includes('files.output.create')
@@ -1403,6 +1415,17 @@ async function executeHostEffect(
       }
       const url = await resolvePluginResourceHostUrl(context.resourceReadContext, effect.resourceId);
       assertFresh();
+      if (effect.type === 'video.preparePlayback') {
+        const cached = getPluginPlaybackResource(context.resourceReadContext, effect.resourceId);
+        if (cached) return { type: effect.type, ok: true, value: toPluginJson(cached) };
+        const { createPluginVideoPlayback } = await import('./pluginVideoPlaybackService');
+        const preview = await createPluginVideoPlayback({ url, signal: context.signal, assertFresh });
+        assertFresh();
+        await resolvePluginResourceHostUrl(context.resourceReadContext, effect.resourceId);
+        assertFresh();
+        const resource = registerPluginPlaybackResource(context.resourceReadContext, effect.resourceId, preview);
+        return { type: effect.type, ok: true, value: toPluginJson({ resource, duration: preview.duration, hasAudio: preview.hasAudio }) };
+      }
       if (effect.type === 'video.detectShots' || effect.type === 'video.inspectFrame') {
         const value = effect.type === 'video.detectShots'
           ? await detectPluginVideoShots({ ...effect, url, signal: context.signal })

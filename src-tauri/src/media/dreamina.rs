@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 
 // 各平台二进制按 cfg 选用，未选中的常量在该平台上不会被引用
@@ -46,6 +46,10 @@ pub struct LoginRuntime {
     logged_in: bool,
     username: String,
     credit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    downloaded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    download_total_bytes: Option<u64>,
 }
 
 fn state() -> &'static Mutex<LoginRuntime> {
@@ -201,20 +205,54 @@ fn ensure_cli(app: &AppHandle) -> Result<PathBuf, String> {
         .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| format!("创建下载客户端失败: {e}"))?;
-    let download_result = client
-        .get(url)
-        .send()
-        .and_then(|response| response.error_for_status())
-        .and_then(|response| response.bytes());
-    let bytes = match download_result {
-        Ok(bytes) => bytes,
-        Err(_error) if existing_usable => return Ok(path),
-        Err(error) => return Err(format!("下载即梦组件失败: {error}")),
-    };
-
     let tmp = path.with_extension("download");
     let _ = std::fs::remove_file(&tmp);
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("写入即梦组件失败: {e}"))?;
+    let task_id = format!(
+        "dreamina-cli-{}",
+        SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let mut last_progress = None;
+    let download_result = (|| {
+        let response = client
+            .get(url)
+            .send()
+            .map_err(|error| format!("下载即梦组件失败: {error}"))?;
+        crate::file_transfer::download_response_to_file(
+            &task_id,
+            response,
+            &tmp,
+            None,
+            |_, _| Ok(()),
+            |downloaded_bytes, total_bytes| {
+                if downloaded_bytes != 0 && total_bytes != Some(downloaded_bytes)
+                    && last_progress.is_some_and(|sent: Instant| sent.elapsed() < Duration::from_millis(100)) {
+                    return;
+                }
+                last_progress = Some(Instant::now());
+                update(app, |r| {
+                    if r.active && r.phase == "preparing" {
+                        r.downloaded_bytes = Some(downloaded_bytes);
+                        r.download_total_bytes = total_bytes;
+                        r.message = "正在下载即梦组件…".into();
+                    }
+                });
+            },
+        )
+    })();
+    let downloaded = match download_result {
+        Ok(result) => result.total_bytes,
+        Err(_) if existing_usable => return Ok(path),
+        Err(error) => return Err(error),
+    };
+    update(app, |r| {
+        if r.active && r.phase == "preparing" {
+            r.downloaded_bytes = Some(downloaded);
+            r.message = "正在校验即梦组件…".into();
+        }
+    });
 
     #[cfg(unix)]
     {

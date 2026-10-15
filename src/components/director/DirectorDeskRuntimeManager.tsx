@@ -22,20 +22,17 @@ import DirectorDeskDownloadDialog, {
 
 const DEFAULT_VERSION = '0.3.1';
 
-function progressState(progress: DirectorDeskInstallProgress) {
-  const ratio = progress.totalBytes > 0
-    ? Math.min(1, progress.transferredBytes / progress.totalBytes)
-    : 0;
+function progressLabel(progress: DirectorDeskInstallProgress) {
   if (progress.stage === 'downloading') {
-    return { percent: ratio * 78, text: '正在下载运行资源...' };
+    return '正在下载运行资源...';
   }
   if (progress.stage === 'verifying') {
-    return { percent: 82, text: '正在校验安装包...' };
+    return '正在校验安装包...';
   }
   if (progress.stage === 'extracting') {
-    return { percent: 84 + ratio * 15, text: '正在安装本地资源...' };
+    return '正在安装本地资源...';
   }
-  return { percent: 100, text: '安装完成' };
+  return '安装完成';
 }
 
 export default function DirectorDeskRuntimeManager() {
@@ -64,7 +61,7 @@ function DirectorDeskRuntimeRequestController({
     runtimeAvailable ? 'checking' : 'error',
   );
   const [version, setVersion] = useState(DEFAULT_VERSION);
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState<DirectorDeskInstallProgress | null>(null);
   const [stageText, setStageText] = useState('正在准备下载...');
   const [error, setError] = useState<string | null>(
     runtimeAvailable ? null : '3D 导演台运行资源仅支持 Tauri 桌面端下载',
@@ -72,6 +69,21 @@ function DirectorDeskRuntimeRequestController({
   const [cancelling, setCancelling] = useState(false);
   const cancelRequestedRef = useRef(false);
   const installStartedRef = useRef(false);
+  const mountedRef = useRef(true);
+  const progressUnlistenRef = useRef<(() => void) | undefined>(undefined);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      progressUnlistenRef.current?.();
+      progressUnlistenRef.current = undefined;
+      if (installStartedRef.current) {
+        cancelRequestedRef.current = true;
+        void cancelDirectorDeskInstall().catch(() => {});
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!runtimeAvailable) return;
@@ -95,11 +107,11 @@ function DirectorDeskRuntimeRequestController({
   }, [clearRequest, runtimeAvailable]);
 
   const startInstall = useCallback(async (archivePath?: string) => {
-    if (installStartedRef.current) return;
+    if (!mountedRef.current || installStartedRef.current) return;
     installStartedRef.current = true;
     setPhase('downloading');
     setError(null);
-    setProgress(archivePath ? 78 : 0);
+    setProgress(null);
     setStageText(archivePath ? '正在读取本地安装包...' : '正在连接下载服务...');
     setCancelling(false);
     cancelRequestedRef.current = false;
@@ -107,21 +119,27 @@ function DirectorDeskRuntimeRequestController({
     let unlisten: (() => void) | undefined;
     try {
       unlisten = await subscribeDirectorDeskInstallProgress((event) => {
-        const next = progressState(event);
-        setProgress(next.percent);
-        setStageText(next.text);
+        if (!mountedRef.current) return;
+        setProgress(event);
+        setStageText(progressLabel(event));
       });
+      if (!mountedRef.current) {
+        unlisten();
+        return;
+      }
+      progressUnlistenRef.current = unlisten;
       if (cancelRequestedRef.current) {
         clearRequest();
         return;
       }
       const status = await installDirectorDeskRuntime(archivePath);
+      installStartedRef.current = false;
+      if (!mountedRef.current) return;
       if (cancelRequestedRef.current) {
         clearRequest();
         return;
       }
       setVersion(status.version);
-      setProgress(100);
       clearRequest();
       const matchingNode = useAppStore.getState().nodes.find((node) => {
         if (node.type !== 'ai-director') return false;
@@ -145,6 +163,7 @@ function DirectorDeskRuntimeRequestController({
         });
       }
     } catch (reason) {
+      if (!mountedRef.current) return;
       if (cancelRequestedRef.current) {
         clearRequest();
         return;
@@ -152,9 +171,12 @@ function DirectorDeskRuntimeRequestController({
       setError(reason instanceof Error ? reason.message : String(reason));
       setPhase('error');
     } finally {
-      unlisten?.();
+      if (progressUnlistenRef.current === unlisten) {
+        unlisten?.();
+        progressUnlistenRef.current = undefined;
+      }
       installStartedRef.current = false;
-      setCancelling(false);
+      if (mountedRef.current) setCancelling(false);
     }
   }, [clearRequest, request, theme]);
 
@@ -184,6 +206,7 @@ function DirectorDeskRuntimeRequestController({
     cancelRequestedRef.current = true;
     setCancelling(true);
     void cancelDirectorDeskInstall().catch((reason) => {
+      if (!mountedRef.current) return;
       cancelRequestedRef.current = false;
       setCancelling(false);
       const message = reason instanceof Error ? reason.message : String(reason);

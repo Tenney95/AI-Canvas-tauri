@@ -8,7 +8,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-use tauri::{Manager, Webview, WebviewUrl, WebviewWindowBuilder};
+use tauri::{ipc::Channel, Manager, Webview, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use url::Url;
 
@@ -72,6 +72,7 @@ fn sanitize_ui_context(mut context: ManagementUiContext) -> Result<ManagementUiC
 
 #[derive(Clone)]
 struct ManagementSession {
+    id: String,
     installation_root: PathBuf,
     source_root: PathBuf,
     origin: Url,
@@ -80,9 +81,25 @@ struct ManagementSession {
 }
 
 #[derive(Default)]
-pub struct ManagementState(Mutex<Option<ManagementSession>>);
+pub struct ManagementState(Mutex<Option<ManagementSession>>, Mutex<Option<CachedSnapshot>>);
 
-#[derive(Serialize)]
+// 展示缓存与窗口会话分开：关窗仍撤销会话，但不必重跑所有仓库的 Git 查询。
+struct CachedSnapshot {
+    installation_root: PathBuf,
+    source_root: PathBuf,
+    git_program: PathBuf,
+    snapshot: Snapshot,
+    versions: Vec<(String, Vec<Version>)>,
+}
+
+impl CachedSnapshot {
+    fn matches(&self, session: &ManagementSession) -> bool {
+        self.installation_root == session.installation_root && self.source_root == session.source_root
+            && self.git_program == session.git_program
+    }
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
     id: String,
@@ -97,7 +114,7 @@ pub struct Repository {
     dirty: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Version {
     reference: String,
@@ -108,7 +125,7 @@ pub struct Version {
     current: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     installation_name: String,
@@ -133,6 +150,65 @@ pub struct ManagementResult {
 }
 
 #[derive(Serialize)]
+pub struct DownloadProgress {
+    stage: &'static str,
+    completed: u64,
+    total: Option<u64>,
+    unit: &'static str,
+}
+
+fn send_progress(channel: Option<&Channel<String>>, stage: &'static str, completed: u64, total: Option<u64>, unit: &'static str) {
+    if let Some(channel) = channel {
+        if let Ok(message) = serde_json::to_string(&DownloadProgress { stage, completed, total, unit }) {
+            let _ = channel.send(message);
+        }
+    }
+}
+
+// 只投递固定阶段和计数，Git 原始输出可能包含路径或凭据，不越过原生边界。
+fn parse_git_progress(line: &str) -> Option<DownloadProgress> {
+    let line = line.trim().strip_prefix("remote:").unwrap_or(line).trim();
+    let (stage, counts) = [
+        ("Receiving objects:", "receiving"), ("Resolving deltas:", "resolving"),
+        ("Counting objects:", "counting"), ("Compressing objects:", "compressing"),
+    ].into_iter().find_map(|(prefix, stage)| line.strip_prefix(prefix).map(|rest| (stage, rest)))?;
+    let counts = counts.split_once('(')?.1.split_once(')')?.0;
+    let (completed, total) = counts.split_once('/')?;
+    let completed = completed.trim().parse::<u64>().ok()?;
+    let total = total.trim().parse::<u64>().ok()?;
+    if total == 0 || completed > total { return None; }
+    Some(DownloadProgress { stage, completed, total: Some(total), unit: "objects" })
+}
+
+fn read_git_status(mut pipe: impl Read, channel: Channel<String>) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut line = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut last_sent = Instant::now() - Duration::from_millis(100);
+    loop {
+        let count = match pipe.read(&mut buffer) { Ok(0) | Err(_) => break, Ok(count) => count };
+        let retained = count.min((MAX_OUTPUT + 1).saturating_sub(output.len()));
+        output.extend_from_slice(&buffer[..retained]);
+        for &byte in &buffer[..count] {
+            if matches!(byte, b'\r' | b'\n') {
+                if let Ok(text) = std::str::from_utf8(&line) {
+                    if let Some(progress) = parse_git_progress(text) {
+                        if progress.total == Some(progress.completed) || last_sent.elapsed() >= Duration::from_millis(100) {
+                            send_progress(Some(&channel), progress.stage, progress.completed, progress.total, progress.unit);
+                            last_sent = Instant::now();
+                        }
+                    }
+                }
+                line.clear();
+            } else if line.len() < 1024 {
+                line.push(byte);
+            }
+        }
+    }
+    output
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {
     id: String,
@@ -154,6 +230,10 @@ fn current_session(app: &tauri::AppHandle) -> Result<ManagementSession, String> 
         .clone().ok_or_else(|| "请从主窗口重新打开 ComfyUI 设置".to_string())
 }
 
+pub(super) fn management_session_id(app: &tauri::AppHandle) -> Result<String, String> {
+    Ok(current_session(app)?.id)
+}
+
 pub(super) fn ensure_management_caller(webview: &Webview, app: &tauri::AppHandle) -> Result<(), String> {
     let session = current_session(app)?;
     let current = webview.url().map_err(|_| "无法确认管理窗口来源".to_string())?;
@@ -168,6 +248,10 @@ pub(super) fn ensure_management_caller(webview: &Webview, app: &tauri::AppHandle
 
 pub(super) fn management_root(webview: &Webview, app: &tauri::AppHandle) -> Result<PathBuf, String> {
     ensure_management_caller(webview, app)?;
+    management_source_root(app)
+}
+
+pub(super) fn management_source_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let session = current_session(app)?;
     let installation = authorized_installation_root(app)?;
     let root = crate::path_policy::reauthorize_existing_plain_directory_with_roots(app, &session.source_root, std::slice::from_ref(&installation))?;
@@ -177,7 +261,7 @@ pub(super) fn management_root(webview: &Webview, app: &tauri::AppHandle) -> Resu
     Ok(root)
 }
 
-fn authorized_installation_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(super) fn authorized_installation_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let session = current_session(app)?;
     let root = super::installation::reauthorize_installation(app, &session.installation_root)?;
     if root != session.installation_root {
@@ -253,11 +337,11 @@ fn git_command(app: &tauri::AppHandle, path: &Path) -> Result<Command, String> {
 }
 
 #[cfg(windows)]
-struct ProcessJob(windows::Win32::Foundation::HANDLE);
+pub(super) struct ProcessJob(windows::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
 impl ProcessJob {
-    fn attach(child: &std::process::Child) -> Result<Self, String> {
+    pub(super) fn attach(child: &std::process::Child) -> Result<Self, String> {
         use windows::{core::PCWSTR, Win32::{Foundation::HANDLE, System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
             JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -275,7 +359,7 @@ impl ProcessJob {
             .map_err(|_| "无法绑定 ComfyUI 管理进程".to_string())?;
         Ok(job)
     }
-    fn terminate(&self) { unsafe { let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1223); } }
+    pub(super) fn terminate(&self) { unsafe { let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1223); } }
 }
 
 #[cfg(windows)]
@@ -283,7 +367,11 @@ impl Drop for ProcessJob {
     fn drop(&mut self) { unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.0); } }
 }
 
-fn run_command(app: &tauri::AppHandle, mut command: Command, timeout: Duration) -> Result<String, String> {
+fn run_command(app: &tauri::AppHandle, command: Command, timeout: Duration) -> Result<String, String> {
+    run_command_with_progress(app, command, timeout, None)
+}
+
+fn run_command_with_progress(app: &tauri::AppHandle, mut command: Command, timeout: Duration, progress: Option<Channel<String>>) -> Result<String, String> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     command.creation_flags(super::CREATE_NO_WINDOW);
@@ -303,7 +391,10 @@ fn run_command(app: &tauri::AppHandle, mut command: Command, timeout: Duration) 
         bytes
     });
     let output_reader = read(Box::new(stdout));
-    let error_reader = read(Box::new(stderr));
+    let error_reader = match progress {
+        Some(channel) => std::thread::spawn(move || read_git_status(stderr, channel)),
+        None => read(Box::new(stderr)),
+    };
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -454,12 +545,44 @@ fn snapshot(app: &tauri::AppHandle, root: &Path) -> Result<Snapshot, String> {
     })
 }
 
-fn assert_server_stopped(app: &tauri::AppHandle) -> Result<(), String> {
+pub(super) fn invalidate_management_cache(app: &tauri::AppHandle) {
+    if let Ok(mut cache) = app.state::<ManagementState>().1.lock() { *cache = None; }
+}
+
+/// 只复用展示数据；调用方与实际安装授权仍须每次核对，写操作始终读取真实仓库。
+fn display_snapshot(app: &tauri::AppHandle, root: &Path, refresh: bool) -> Result<Snapshot, String> {
+    let session = current_session(app)?;
+    {
+        let state = app.state::<ManagementState>();
+        let mut cache = state.1.lock().map_err(|_| "管理信息缓存不可用".to_string())?;
+        if !refresh {
+            if let Some(cached) = cache.as_ref().filter(|cached| cached.matches(&session)) {
+                let mut result = cached.snapshot.clone();
+                result.ui_context = session.ui_context;
+                return Ok(result);
+            }
+        }
+        // 强制刷新失败也不恢复旧缓存，避免保存部分执行前的状态。
+        *cache = None;
+    }
+    let result = snapshot(app, root)?;
+    if current_session(app)?.id != session.id { return Err("ComfyUI 管理会话已变化，请重新打开设置".into()); }
+    *app.state::<ManagementState>().1.lock().map_err(|_| "管理信息缓存不可用".to_string())? = Some(CachedSnapshot {
+        installation_root: session.installation_root, source_root: session.source_root,
+        git_program: session.git_program, snapshot: result.clone(), versions: Vec::new(),
+    });
+    Ok(result)
+}
+
+pub(super) fn assert_server_stopped(app: &tauri::AppHandle) -> Result<(), String> {
+    if super::runtime_console::has_active_owned_run(app) {
+        return Err("ComfyUI 进程正在启动或运行，请先在运行输出页停止服务，再修改内核、扩展或模型文件".into());
+    }
     let ports: HashSet<u16> = [8188, super::launch_settings::configured_port(app)?, super::launch_settings::last_launch_port().unwrap_or(0)]
         .into_iter().filter(|port| *port > 0).collect();
     for port in ports {
         if std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(300)).is_ok() {
-            return Err("ComfyUI 服务仍在运行，请先关闭启动终端，再修改内核或扩展".into());
+            return Err("ComfyUI 服务仍在运行，请先停止服务，再修改内核、扩展或模型文件".into());
         }
     }
     Ok(())
@@ -492,7 +615,9 @@ pub async fn open_comfyui_settings_window(webview: Webview, app: tauri::AppHandl
         window.set_focus().map_err(|_| "无法聚焦设置窗口".to_string())?;
         return Ok(());
     }
+    super::model_dedupe::revoke_model_scan_roots(&app);
     *app.state::<ManagementState>().0.lock().map_err(|_| "管理会话不可用".to_string())? = Some(ManagementSession {
+        id: super::model_dedupe::opaque_id("management"),
         installation_root, source_root, origin: origin.clone(), ui_context, git_program,
     });
     let result = WebviewWindowBuilder::new(&app, WINDOW_LABEL, WebviewUrl::App("index.html?view=comfyui-settings".into()))
@@ -505,6 +630,7 @@ pub async fn open_comfyui_settings_window(webview: Webview, app: tauri::AppHandl
             let handle = app.clone();
             window.on_window_event(move |event| {
                 if matches!(event, tauri::WindowEvent::Destroyed) {
+                    super::model_dedupe::revoke_model_scan_roots(&handle);
                     if let Ok(mut state) = handle.state::<ManagementState>().0.lock() { *state = None; }
                 }
             });
@@ -518,19 +644,28 @@ pub async fn open_comfyui_settings_window(webview: Webview, app: tauri::AppHandl
 }
 
 #[tauri::command]
-pub async fn get_comfyui_management_snapshot(webview: Webview, app: tauri::AppHandle) -> Result<Snapshot, String> {
+pub async fn get_comfyui_management_snapshot(webview: Webview, app: tauri::AppHandle, refresh: Option<bool>) -> Result<Snapshot, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let root = management_root(&webview, &app)?;
-    tauri::async_runtime::spawn_blocking(move || snapshot(&app, &root)).await.map_err(|_| "读取管理状态失败".to_string())?
+    let session_id = management_session_id(&app)?;
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || display_snapshot(&worker_app, &root, refresh.unwrap_or(false)))
+        .await.map_err(|_| "读取管理状态失败".to_string())??;
+    management_root(&webview, &app)?;
+    if management_session_id(&app)? != session_id { return Err("ComfyUI 管理会话已变化，请重新打开设置".into()); }
+    Ok(result)
 }
 
-fn fetch_origin(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+fn fetch_origin(app: &tauri::AppHandle, path: &Path, progress: Option<Channel<String>>) -> Result<(), String> {
+    send_progress(progress.as_ref(), "connecting", 0, None, "objects");
     ensure_repository(app, path)?;
     let url = resolve_repository_url(git(app, path, &["remote", "get-url", "origin"])?.trim())?;
     let mut command = git_command(app, path)?;
     // 使用经过校验的 URL，而不是仓库中的 remote.*.pushurl / 上传命令。
-    command.args(["fetch", "--no-recurse-submodules", "--tags", &url, "+refs/heads/*:refs/remotes/origin/*"]);
-    run_command(app, command, Duration::from_secs(180))?;
+    command.args(["fetch", "--progress", "--no-recurse-submodules", "--tags", &url, "+refs/heads/*:refs/remotes/origin/*"])
+        .env("LC_ALL", "C").env("LANG", "C");
+    run_command_with_progress(app, command, Duration::from_secs(180), progress.clone())?;
+    send_progress(progress.as_ref(), "applying", 0, None, "objects");
     Ok(())
 }
 
@@ -567,14 +702,40 @@ fn versions(app: &tauri::AppHandle, path: &Path) -> Result<Vec<Version>, String>
     Ok(versions)
 }
 
+// Channel 依赖 Tauri 专用 CommandArg 解析，命令入参不能包在 Option 中。
 #[tauri::command]
-pub async fn list_comfyui_versions(webview: Webview, app: tauri::AppHandle, repository_id: String, refresh: bool) -> Result<Vec<Version>, String> {
+pub async fn list_comfyui_versions(webview: Webview, app: tauri::AppHandle, repository_id: String, refresh: bool, on_progress: Channel<String>) -> Result<Vec<Version>, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let root = management_root(&webview, &app)?;
+    let on_progress = Some(on_progress);
     tauri::async_runtime::spawn_blocking(move || {
+        let session = current_session(&app)?;
         let path = repository_path(&app, &root, &repository_id)?;
-        if refresh { fetch_origin(&app, &path)?; }
-        versions(&app, &path)
+        {
+            let state = app.state::<ManagementState>();
+            let mut cache = state.1.lock().map_err(|_| "管理信息缓存不可用".to_string())?;
+            if let Some(cached) = cache.as_mut().filter(|cached| cached.matches(&session)) {
+                if !refresh {
+                    if let Some(index) = cached.versions.iter().position(|(id, _)| id == &repository_id) {
+                        let entry = cached.versions.remove(index);
+                        let result = entry.1.clone();
+                        cached.versions.push(entry);
+                        return Ok(result);
+                    }
+                }
+                cached.versions.retain(|(id, _)| id != &repository_id);
+            }
+        }
+        if refresh { fetch_origin(&app, &path, on_progress)?; }
+        let result = versions(&app, &path)?;
+        if current_session(&app)?.id != session.id { return Err("ComfyUI 管理会话已变化，请重新打开设置".into()); }
+        if let Some(cached) = app.state::<ManagementState>().1.lock().map_err(|_| "管理信息缓存不可用".to_string())?
+            .as_mut().filter(|cached| cached.matches(&session)) {
+            // 只保留最近八个仓库的版本列表，避免大量插件展开后无界增长。
+            if cached.versions.len() >= 8 { cached.versions.remove(0); }
+            cached.versions.push((repository_id, result.clone()));
+        }
+        Ok(result)
     }).await.map_err(|_| "读取版本列表失败".to_string())?
 }
 
@@ -616,10 +777,14 @@ fn valid_branch(branch: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn apply_comfyui_repository_action(webview: Webview, app: tauri::AppHandle, request: RepositoryAction) -> Result<ManagementResult, String> {
+pub async fn apply_comfyui_repository_action(webview: Webview, app: tauri::AppHandle, request: RepositoryAction, on_progress: Channel<String>) -> Result<ManagementResult, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let root = management_root(&webview, &app)?;
     assert_server_stopped(&app)?;
+    super::model_dedupe_links::ensure_no_pending_recoveries(&app, &root).await?;
+    super::model_dedupe::invalidate_model_scans(&app);
+    invalidate_management_cache(&app);
+    let on_progress = Some(on_progress);
     tauri::async_runtime::spawn_blocking(move || {
         let path = repository_path(&app, &root, &request.repository_id)?;
         assert_server_stopped(&app)?;
@@ -630,7 +795,7 @@ pub async fn apply_comfyui_repository_action(webview: Webview, app: tauri::AppHa
                 let branch = git(&app, &path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
                     .map_err(|_| "当前处于固定版本，请先切换到分支再更新".to_string())?;
                 if !valid_branch(branch.trim()) { return Err("仓库分支名无效".into()); }
-                fetch_origin(&app, &path)?;
+                fetch_origin(&app, &path, on_progress)?;
                 let reference = format!("refs/remotes/origin/{}", branch.trim());
                 if !versions(&app, &path)?.iter().any(|v| v.reference == reference) { return Err("远端不存在当前分支".into()); }
                 assert_server_stopped(&app)?;
@@ -670,20 +835,35 @@ pub async fn apply_comfyui_repository_action(webview: Webview, app: tauri::AppHa
 }
 
 #[tauri::command]
-pub async fn list_comfyui_catalog(webview: Webview, app: tauri::AppHandle) -> Result<Vec<CatalogEntry>, String> {
+pub async fn list_comfyui_catalog(webview: Webview, app: tauri::AppHandle, on_progress: Channel<String>) -> Result<Vec<CatalogEntry>, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let root = management_root(&webview, &app)?;
+    let on_progress = Some(on_progress);
     tauri::async_runtime::spawn_blocking(move || {
-        let installed: HashSet<_> = snapshot(&app, &root)?.extensions.into_iter().filter(|repository| !repository.removed)
+        let installed: HashSet<_> = display_snapshot(&app, &root, false)?.extensions.into_iter().filter(|repository| !repository.removed)
             .filter_map(|repository| repository.remote_url).map(|url| url.trim_end_matches(".git").to_lowercase()).collect();
         let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "无法建立扩展目录连接".to_string())?;
-        let response = client.get(CATALOG_URL).send().and_then(|response| response.error_for_status())
+        send_progress(on_progress.as_ref(), "catalog", 0, None, "bytes");
+        let mut response = client.get(CATALOG_URL).send().and_then(|response| response.error_for_status())
             .map_err(|_| "无法读取 ComfyUI Manager 官方目录，请检查网络后重试".to_string())?;
         if response.content_length().is_some_and(|size| size > MAX_CATALOG) { return Err("扩展目录超过体积上限".into()); }
+        let total = response.content_length().filter(|size| *size > 0);
         let mut bytes = Vec::new();
-        response.take(MAX_CATALOG + 1).read_to_end(&mut bytes).map_err(|_| "读取扩展目录失败".to_string())?;
-        if bytes.len() as u64 > MAX_CATALOG { return Err("扩展目录超过体积上限".into()); }
+        let mut buffer = [0_u8; 32 * 1024];
+        let mut last_sent = Instant::now();
+        send_progress(on_progress.as_ref(), "catalog", 0, total, "bytes");
+        loop {
+            let count = response.read(&mut buffer).map_err(|_| "读取扩展目录失败".to_string())?;
+            if count == 0 { break; }
+            if bytes.len() as u64 + count as u64 > MAX_CATALOG { return Err("扩展目录超过体积上限".into()); }
+            bytes.extend_from_slice(&buffer[..count]);
+            if last_sent.elapsed() >= Duration::from_millis(100) {
+                send_progress(on_progress.as_ref(), "catalog", bytes.len() as u64, total, "bytes");
+                last_sent = Instant::now();
+            }
+        }
+        send_progress(on_progress.as_ref(), "catalog", bytes.len() as u64, total, "bytes");
         let catalog: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "官方扩展目录格式无效".to_string())?;
         let entries = catalog.get("custom_nodes").and_then(|value| value.as_array()).ok_or_else(|| "官方扩展目录格式无效".to_string())?;
         let mut result = Vec::new();
@@ -702,12 +882,17 @@ pub async fn list_comfyui_catalog(webview: Webview, app: tauri::AppHandle) -> Re
 }
 
 #[tauri::command]
-pub async fn install_comfyui_extension(webview: Webview, app: tauri::AppHandle, repository_url: String) -> Result<ManagementResult, String> {
+pub async fn install_comfyui_extension(webview: Webview, app: tauri::AppHandle, repository_url: String, on_progress: Channel<String>) -> Result<ManagementResult, String> {
     let _guard = OPERATION_LOCK.lock().await;
     let root = management_root(&webview, &app)?;
     assert_server_stopped(&app)?;
     let url = safe_repository_url(&repository_url)?;
+    super::model_dedupe_links::ensure_no_pending_recoveries(&app, &root).await?;
+    super::model_dedupe::invalidate_model_scans(&app);
+    invalidate_management_cache(&app);
+    let on_progress = Some(on_progress);
     tauri::async_runtime::spawn_blocking(move || {
+        send_progress(on_progress.as_ref(), "connecting", 0, None, "objects");
         let url = resolve_repository_url(&url)?;
         let parsed = Url::parse(&url).map_err(|_| "仓库 URL 无效".to_string())?;
         let name = parsed.path_segments().and_then(|segments| segments.last()).unwrap_or("").trim_end_matches(".git");
@@ -720,8 +905,10 @@ pub async fn install_comfyui_extension(webview: Webview, app: tauri::AppHandle, 
         let target_name = format!("{name}{DISABLED_SUFFIX}");
         assert_server_stopped(&app)?;
         let mut command = git_command(&app, &nodes)?;
-        command.args(["clone", "--no-recurse-submodules", "--template=", "--", &url, &target_name]);
-        run_command(&app, command, Duration::from_secs(240))?;
+        command.args(["clone", "--progress", "--no-recurse-submodules", "--template=", "--", &url, &target_name])
+            .env("LC_ALL", "C").env("LANG", "C");
+        run_command_with_progress(&app, command, Duration::from_secs(240), on_progress.clone())?;
+        send_progress(on_progress.as_ref(), "applying", 0, None, "objects");
         let staged = plain_directory(&app, &nodes.join(&target_name), &nodes)?;
         ensure_repository(&app, &staged)?;
         Ok(ManagementResult { message: "扩展已下载并保持停用。请按需安装依赖，再启用并重启 ComfyUI；不会自动运行 install.py。".into() })
@@ -742,6 +929,9 @@ pub async fn install_comfyui_dependencies(webview: Webview, app: tauri::AppHandl
     if !approved { return Err("已取消依赖安装".into()); }
     let root = management_root(&webview, &app)?;
     assert_server_stopped(&app)?;
+    super::model_dedupe_links::ensure_no_pending_recoveries(&app, &root).await?;
+    super::model_dedupe::invalidate_model_scans(&app);
+    invalidate_management_cache(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let path = repository_path(&app, &root, &repository_id)?;
         let requirements = path.join("requirements.txt");
@@ -755,4 +945,76 @@ pub async fn install_comfyui_dependencies(webview: Webview, app: tauri::AppHandl
         run_command(&app, command, Duration::from_secs(600))?;
         Ok(ManagementResult { message: "依赖安装完成，请重启 ComfyUI。".into() })
     }).await.map_err(|_| "依赖安装失败，请检查环境后重试".to_string())?
+}
+
+#[cfg(test)]
+mod snapshot_cache_tests {
+    use super::*;
+
+    #[test]
+    fn closing_window_keeps_display_cache_without_keeping_authority_or_crossing_installations() {
+        let session = ManagementSession {
+            id: "previous-session".into(), installation_root: PathBuf::from("installation-a"),
+            source_root: PathBuf::from("installation-a/ComfyUI"),
+            origin: Url::parse("http://localhost").unwrap(),
+            ui_context: ManagementUiContext::default(), git_program: PathBuf::from("git"),
+        };
+        let state = ManagementState::default();
+        *state.0.lock().unwrap() = Some(session.clone());
+        *state.1.lock().unwrap() = Some(CachedSnapshot {
+            installation_root: session.installation_root.clone(), source_root: session.source_root.clone(),
+            git_program: session.git_program.clone(),
+            snapshot: Snapshot { installation_name: "installation-a".into(), git_available: true,
+                core: None, extensions: Vec::new(), warnings: Vec::new(), ui_context: session.ui_context.clone() },
+            versions: Vec::new(),
+        });
+        *state.0.lock().unwrap() = None;
+        assert!(state.0.lock().unwrap().is_none());
+        let cache = state.1.lock().unwrap();
+        let cached = cache.as_ref().unwrap();
+        let mut reopened = session;
+        reopened.id = "new-session".into();
+        reopened.ui_context.language = Some("en".into());
+        assert!(cached.matches(&reopened));
+        reopened.installation_root = PathBuf::from("installation-b");
+        assert!(!cached.matches(&reopened));
+        reopened.installation_root = cached.installation_root.clone();
+        reopened.source_root = PathBuf::from("installation-a/other-source");
+        assert!(!cached.matches(&reopened));
+        reopened.source_root = cached.source_root.clone();
+        reopened.git_program = PathBuf::from("different-git");
+        assert!(!cached.matches(&reopened));
+    }
+}
+
+#[cfg(test)]
+mod download_progress_tests {
+    use super::parse_git_progress;
+
+    #[test]
+    fn reports_actual_object_counts_and_separate_git_phases() {
+        let receiving = parse_git_progress("Receiving objects:  25% (12/48), 1.2 MiB | 1 MiB/s").unwrap();
+        assert_eq!(receiving.stage, "receiving");
+        assert_eq!(receiving.completed, 12);
+        assert_eq!(receiving.total, Some(48));
+        let resolving = parse_git_progress("Resolving deltas: 100% (9/9), done.").unwrap();
+        assert_eq!(resolving.stage, "resolving");
+        assert_eq!(resolving.completed, 9);
+        let remote = parse_git_progress("remote: Counting objects: 50% (10/20)").unwrap();
+        assert_eq!(remote.stage, "counting");
+        assert_eq!(remote.total, Some(20));
+    }
+
+    #[test]
+    fn ignores_raw_output_and_invalid_counts() {
+        for line in [
+            "fatal: could not access https://user:secret@example.com/repo",
+            "Cloning into '/private/path'...",
+            "Receiving objects: 100% (2/0)",
+            "Receiving objects: 100% (3/2)",
+            "Receiving objects: (unknown/20)",
+        ] {
+            assert!(parse_git_progress(line).is_none());
+        }
+    }
 }

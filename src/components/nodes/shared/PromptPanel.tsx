@@ -27,7 +27,7 @@ import type {
   WorkflowDefinition,
 } from '../../../types';
 import type { SkillPickerOption } from '../../../types/agentPackage';
-import { ANIMATION_ACTION_LABELS } from '../../../types';
+import { ANIMATION_ACTION_LABELS, PRESET_NODE_TYPES } from '../../../types';
 import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
 import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
@@ -44,7 +44,6 @@ import { buildDramaVoiceMentionId } from '../../../types/dramaAssets';
 import StyleSelector from './StyleSelector';
 import MentionEditor, { type MentionEditorHandle } from './MentionEditor';
 import SlashCommandMenu from './SlashCommandMenu';
-import PresetManager from './PresetManager';
 import SkillManager from './SkillManager';
 import { expandSkillReferences } from '../../../services/skillPromptService';
 import { listRuntimeSkills, projectSkillPickerOptions } from '../../../services/chat/skillCatalog';
@@ -781,8 +780,9 @@ export default function PromptPanel({
   }, []);
 
   const handleManagePresets = useCallback(() => {
-    setPresetManagerOpen(true);
-  }, [setPresetManagerOpen]);
+    const presetNodeType = PRESET_NODE_TYPES.find((type) => type === nodeType);
+    setPresetManagerOpen(true, presetNodeType);
+  }, [nodeType, setPresetManagerOpen]);
 
   const handleRunAdvancedPreset = useCallback((preset: UserPreset) => {
     if (!nodeId) {
@@ -1119,13 +1119,14 @@ export default function PromptPanel({
           )}
 
           <div className="ui-ai-input__actions prompt-actions">
-            {/* Slash command button — only for ai-image and ai-text node types */}
-            {(nodeType === 'ai-image' || nodeType === 'ai-text') && (
+            {/* 支持自定义快捷指令的节点共用同一入口。 */}
+            {PRESET_NODE_TYPES.some((type) => type === nodeType) && (
               <button
                 ref={slashBtnRef}
                 type="button"
                 className={`prompt-btn prompt-slash-btn${slashOpen ? ' slash-active' : ''}`}
                 data-tooltip={t('预设提示词')}
+                aria-label={t('预设提示词')}
                 onClick={handleButtonSlash}
               >
                 /
@@ -1276,7 +1277,6 @@ export default function PromptPanel({
         onManagePresets={handleManagePresets}
       />
     )}
-    <PresetManager />
     <SkillManager open={skillManagerOpen} onClose={() => setSkillManagerOpen(false)} />
     </>
   );

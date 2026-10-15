@@ -55,6 +55,7 @@ import HistoryTimelinePanel from './canvas/HistoryTimelinePanel';
 import SelectedNodeFlowEdge from './canvas/SelectedNodeFlowEdge';
 import CanvasRadialMenu, { CanvasLongPressIndicator } from './canvas/CanvasRadialMenu';
 import NodePluginToolDialog from './nodes/shared/toolbar/NodePluginToolDialog';
+import NodeOutputDownloadDialog from './shared/NodeOutputDownloadDialog';
 import { useConnectionDropMenu } from '../hooks/useConnectionDropMenu';
 import { useCanvasContextMenu } from '../hooks/useCanvasContextMenu';
 import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
@@ -937,6 +938,7 @@ function CanvasInner({ onReady }: CanvasProps) {
     showInFolder,
     handleSaveAs,
     showSaveAs,
+    cancelSaveAsDownload,
     handleOpenInPS,
     showOpenInPS,
     handleEditVideo,
@@ -1787,6 +1789,8 @@ function CanvasInner({ onReady }: CanvasProps) {
         pluginTools={pluginTools}
         onPluginTool={handlePluginTool}
       />, document.body)}
+
+      <NodeOutputDownloadDialog onCancel={cancelSaveAsDownload} />
 
       {pendingPluginTool ? (
         <NodePluginToolDialog

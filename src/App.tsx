@@ -25,7 +25,7 @@ import { parseAspectRatio, useMainWindowSize } from './hooks/useMainWindowSize';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type AppState } from './store/useAppStore';
 import * as fileService from './services/fileService';
-import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './services/updateService';
+import { checkForUpdate, downloadAndInstallUpdate, isAppUpdateRunning, type UpdateInfo } from './services/updateService';
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 import UpdateBubble from './components/shared/mascot/UpdateBubble';
 import HiddenFilmSet from './components/shared/mascot/HiddenFilmSet';
@@ -38,6 +38,7 @@ import { useMascotDrag } from './hooks/useMascotDrag';
 // type-only：Mascot 是懒加载的，类型导入不会把它拖进主包
 import type { MascotHandle } from './components/shared/mascot/Mascot';
 import { initComfyUIWindowBridge } from './services/comfyUIWindowService';
+import { initComfyRuntimeHostSync } from './services/comfyRuntimeHostSync';
 import { invoke } from '@tauri-apps/api/core';
 import { prepareSettingsClose, resumeSettingsPersistence } from './services/configPersistenceQueue';
 import { applyNativePerformanceMode, registerPerformanceRestartHost } from './services/nativePerformanceModeService';
@@ -59,6 +60,7 @@ const AssetsPanel = lazy(() => import('./components/AssetsPanel'));
 const CharacterLibraryPanel = lazy(() => import('./components/CharacterLibraryPanel'));
 const OutputHistoryPanel = lazy(() => import('./components/OutputHistoryPanel'));
 const ChatPanel = lazy(() => import('./components/chat/ChatPanel'));
+const PresetManager = lazy(() => import('./components/nodes/shared/PresetManager'));
 const PresetRunnerDialog = lazy(() => import('./components/nodes/shared/PresetRunnerDialog'));
 const ReversePromptDialog = lazy(() => import('./components/nodes/shared/ReversePromptDialog'));
 const DirectorDeskRuntimeManager = lazy(() => import('./components/director/DirectorDeskRuntimeManager'));
@@ -121,6 +123,7 @@ export default function App() {
       characters: state.characterLibraryOpen || state.characterActionLibraryOpen,
       history: state.historyPanelOpen,
       chat: state.chatOpen || state.chatPanelDetached,
+      presetManager: state.presetManagerOpen,
       presetRunner: state.presetRunRequest !== null,
       reversePrompt: state.reversePromptRequest !== null,
     })),
@@ -132,6 +135,7 @@ export default function App() {
   const mountCharacters = useFeatureMount(featureVisibility.characters);
   const mountHistory = useFeatureMount(featureVisibility.history);
   const mountChat = useFeatureMount(featureVisibility.chat);
+  const mountPresetManager = useFeatureMount(featureVisibility.presetManager);
   const mountPresetRunner = useFeatureMount(featureVisibility.presetRunner);
   const mountReversePrompt = useFeatureMount(featureVisibility.reversePrompt);
 
@@ -160,7 +164,10 @@ export default function App() {
   // 更新检测
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateBubbleVisible, setUpdateBubbleVisible] = useState(false);
-  const [updating, setUpdating] = useState(false);
+  const updating = useAppStore((state) => isAppUpdateRunning(state.appUpdateProgress));
+  const appUpdateMessage = useAppStore((state) => state.appUpdateProgress?.message);
+  const appUpdateVersion = useAppStore((state) => state.appUpdateProgress?.version);
+  const availableUpdateInfo = updateInfo ?? (appUpdateVersion ? { version: appUpdateVersion } : null);
   const configHydrated = useAppStore((state) => state.configHydrated);
   const projectLoadStatus = useAppStore((state) => state.projectLoadStatus);
   const currentProjectId = useAppStore((state) => state.currentProjectId);
@@ -369,6 +376,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isTauri || !configHydrated) return;
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    void initComfyRuntimeHostSync()
+      .then((cleanup) => {
+        if (cancelled) cleanup();
+        else dispose = cleanup;
+      })
+      .catch(() => {
+        useAppStore.getState().showToast('ComfyUI 运行状态同步未能初始化，请重新打开应用后重试', 'error');
+      });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [configHydrated]);
+
+  useEffect(() => {
     if (!isTauri) return;
     let dispose: (() => void) | undefined;
     let cancelled = false;
@@ -412,9 +437,7 @@ export default function App() {
 
   // ── 更新相关操作 ──
   const handleUpdateNow = async () => {
-    setUpdating(true);
-    await downloadAndInstallUpdate();
-    setUpdating(false);
+    await downloadAndInstallUpdate(useAppStore.getState().setAppUpdateProgress);
   };
   const handleDismissUpdate = () => {
     setUpdateBubbleVisible(false);
@@ -453,7 +476,7 @@ export default function App() {
   // 性能模式仅保留静态助手入口，不挂载 WebGL 吉祥物或调度生命周期动画。
   useMascotLifecycle(mascotHandleRef, Boolean(mascotVisible) && !updating && !performanceMode);
   const mascotFeedback = updating
-    ? t('正在下载更新')
+    ? t(appUpdateMessage ?? '正在下载更新')
     : mascotLoading
       ? t('生成中')
       : mascotStatus === 'thinking'
@@ -616,6 +639,11 @@ export default function App() {
             {mountChat && <ChatPanel />}
           </Suspense>
         </LazyLoadBoundary>
+        <LazyLoadBoundary label="快捷指令管理器">
+          <Suspense fallback={<LazyLoadFallback label="快捷指令管理器" />}>
+            {mountPresetManager && <PresetManager />}
+          </Suspense>
+        </LazyLoadBoundary>
         <LazyLoadBoundary label="快捷指令运行器">
           <Suspense fallback={null}>
             {mountPresetRunner && <PresetRunnerDialog />}
@@ -675,7 +703,7 @@ export default function App() {
                   }}
                   disabled={mascotShrink}
                   aria-label={updating
-                    ? '打开画布助手，正在下载更新'
+                    ? `打开画布助手，${mascotFeedback}`
                     : mascotLoading
                       ? '打开画布助手，正在生成'
                       : mascotStatus === 'thinking'
@@ -686,7 +714,7 @@ export default function App() {
                             ? '打开画布助手，任务失败'
                             : '打开画布助手'}
                   data-tooltip={updating
-                    ? t('正在下载更新')
+                    ? mascotFeedback
                     : mascotLoading
                       ? t('生成中')
                       : mascotStatus === 'thinking'
@@ -745,10 +773,10 @@ export default function App() {
       )}
 
       {/* 更新聊天气泡 — 悬停在吉祥物左上方 */}
-      {updateInfo && (
+      {availableUpdateInfo && (
         <UpdateBubble
-          info={updateInfo}
-          visible={updateBubbleVisible}
+          info={availableUpdateInfo}
+          visible={updateBubbleVisible || updating}
           onUpdate={() => { handleUpdateNow(); }}
           onDismiss={handleDismissUpdate}
           updating={updating}

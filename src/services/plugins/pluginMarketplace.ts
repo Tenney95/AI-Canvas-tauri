@@ -19,6 +19,24 @@ const PINNED_RELEASE_TAG_RE = /^(?:[A-Za-z0-9][A-Za-z0-9._-]*-)?v?(\d+\.\d+\.\d+
 
 type Fetcher = typeof fetch;
 
+export interface PluginMarketplaceDownloadProgress {
+  downloadedBytes: number;
+  totalBytes?: number;
+  fileName: string;
+  repository?: string;
+  /** 市场并发加载时额外保留最近上报文件的真实进度，downloadedBytes 此时是累计值。 */
+  currentFileDownloadedBytes?: number;
+  currentFileTotalBytes?: number;
+}
+
+type ProgressReporter = (progress: PluginMarketplaceDownloadProgress) => void;
+
+interface DownloadRequestOptions {
+  fileName: string;
+  accept?: string;
+  onProgress?: ProgressReporter;
+}
+
 interface GithubPluginLocation {
   repository: string;
   directory?: string;
@@ -86,38 +104,64 @@ function githubRepositoryParts(repository: string): [string, string] {
   return [parts[0], parts[1]];
 }
 
-async function fetchText(fetcher: Fetcher, url: string, maxBytes: number, accept?: string): Promise<string> {
+async function fetchText(fetcher: Fetcher, url: string, maxBytes: number, options: DownloadRequestOptions): Promise<string> {
+  const text = new TextDecoder().decode(await fetchBytes(fetcher, url, maxBytes, options));
+  if (new Blob([text]).size > maxBytes) throw new Error('下载内容过大');
+  return text;
+}
+
+async function fetchBytes(fetcher: Fetcher, url: string, maxBytes: number, options: DownloadRequestOptions): Promise<Uint8Array> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const response = await fetcher(url, {
       signal: controller.signal,
-      headers: accept ? { Accept: accept } : undefined,
+      headers: options.accept ? { Accept: options.accept } : undefined,
     });
     if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
     const contentLength = Number(response.headers.get('content-length'));
     if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error('下载内容过大');
-    const text = await response.text();
-    if (new Blob([text]).size > maxBytes) throw new Error('下载内容过大');
-    return text;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('请求超时', { cause: error });
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+    const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+    // Fetch 的 body 可能已解压，压缩后的 Content-Length 不能作为实际读取总量。
+    let totalBytes = (!encoding || encoding === 'identity') && Number.isFinite(contentLength) && contentLength > 0
+      ? contentLength : undefined;
+    let downloadedBytes = 0;
+    const report = () => {
+      if (totalBytes !== undefined && downloadedBytes > totalBytes) totalBytes = undefined;
+      options.onProgress?.({ downloadedBytes, totalBytes, fileName: options.fileName });
+    };
+    report();
 
-async function fetchBytes(fetcher: Fetcher, url: string, maxBytes: number): Promise<Uint8Array> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetcher(url, { signal: controller.signal });
-    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
-    const contentLength = Number(response.headers.get('content-length'));
-    if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error('下载内容过大');
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxBytes) throw new Error('下载内容过大');
+    const reader = response.body?.getReader();
+    if (!reader) {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > maxBytes) throw new Error('下载内容过大');
+      downloadedBytes = bytes.byteLength;
+      report();
+      return bytes;
+    }
+    const chunks: Uint8Array[] = [];
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        downloadedBytes += value.byteLength;
+        if (downloadedBytes > maxBytes) {
+          await reader.cancel().catch(() => {});
+          throw new Error('下载内容过大');
+        }
+        chunks.push(value);
+        report();
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(downloadedBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
     return bytes;
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw new Error('请求超时', { cause: error });
@@ -173,7 +217,7 @@ export function comparePluginVersions(left: string, right: string): number {
 
 export async function resolveGithubPlugin(
   repositoryInput: string,
-  options: { fetcher?: Fetcher; force?: boolean; directory?: string; releaseTag?: string } = {},
+  options: { fetcher?: Fetcher; force?: boolean; directory?: string; releaseTag?: string; onProgress?: ProgressReporter } = {},
 ): Promise<ResolvedGithubPlugin> {
   const fetcher = options.fetcher ?? fetch;
   const repository = canonicalRepository(repositoryInput);
@@ -181,6 +225,11 @@ export async function resolveGithubPlugin(
   const cacheKey = `${pluginMarketplaceKey(location)}@${location.releaseTag ?? 'latest'}`;
   const cached = releaseCache.get(cacheKey);
   if (!options.force && cached && cached.expiresAt > Date.now()) return cached.plugin;
+  const onProgress: ProgressReporter = (progress) => options.onProgress?.({
+    ...progress,
+    repository,
+    fileName: location.directory ? `${location.directory}/${progress.fileName}` : progress.fileName,
+  });
 
   const [owner, repo] = githubRepositoryParts(repository);
   const releaseEndpoint = location.releaseTag ? `tags/${encodeURIComponent(location.releaseTag)}` : 'latest';
@@ -188,7 +237,7 @@ export async function resolveGithubPlugin(
     fetcher,
     `https://api.github.com/repos/${owner}/${repo}/releases/${releaseEndpoint}`,
     MAX_RELEASE_BYTES,
-    'application/vnd.github+json',
+    { accept: 'application/vnd.github+json', fileName: 'Release 信息', onProgress },
   );
   const release = objectValue(JSON.parse(releaseText), 'GitHub Release');
   const releaseTag = typeof release.tag_name === 'string' ? release.tag_name : '';
@@ -198,9 +247,9 @@ export async function resolveGithubPlugin(
   if (release.draft === true || release.prerelease === true) throw new Error('不能安装草稿或预发布版本');
 
   const rawBase = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(releaseTag)}${location.directory ? `/${location.directory}` : ''}`;
-  const manifestText = await fetchText(fetcher, `${rawBase}/manifest.json`, MAX_MANIFEST_BYTES);
+  const manifestText = await fetchText(fetcher, `${rawBase}/manifest.json`, MAX_MANIFEST_BYTES, { fileName: 'manifest.json', onProgress });
   const declaredManifest = parsePluginManifest(manifestText);
-  const source = await fetchText(fetcher, `${rawBase}/${declaredManifest.entry}`, MAX_SOURCE_BYTES);
+  const source = await fetchText(fetcher, `${rawBase}/${declaredManifest.entry}`, MAX_SOURCE_BYTES, { fileName: declaredManifest.entry, onProgress });
   const manifest = parsePluginBundle(manifestText, source);
   if (!manifest.repository || manifest.repository !== repository) {
     throw new Error('Manifest repository 与 GitHub 仓库不一致');
@@ -209,11 +258,11 @@ export async function resolveGithubPlugin(
     throw new Error(`Manifest 版本 ${manifest.version} 与 Release 标签 ${releaseTag} 不一致`);
   }
   const uiSource = manifest.ui
-    ? await fetchText(fetcher, `${rawBase}/${manifest.ui.entry}`, 2 * 1024 * 1024)
+    ? await fetchText(fetcher, `${rawBase}/${manifest.ui.entry}`, 2 * 1024 * 1024, { fileName: manifest.ui.entry, onProgress })
     : undefined;
   const resourcePayloads = await Promise.all((manifest.resources ?? []).map(async (resource) => ({
     id: resource.id,
-    bytes: Array.from(await fetchBytes(fetcher, `${rawBase}/${resource.path}`, resource.bytes)),
+    bytes: Array.from(await fetchBytes(fetcher, `${rawBase}/${resource.path}`, resource.bytes, { fileName: resource.path, onProgress })),
   })));
 
   const plugin: ResolvedGithubPlugin = {
@@ -231,15 +280,15 @@ export async function resolveGithubPlugin(
   return plugin;
 }
 
-async function loadCatalog(fetcher: Fetcher): Promise<PluginMarketplaceCatalogEntry[]> {
+async function loadCatalog(fetcher: Fetcher, onProgress?: ProgressReporter): Promise<PluginMarketplaceCatalogEntry[]> {
   let remoteError: unknown;
   try {
-    return parsePluginMarketplaceCatalog(await fetchText(fetcher, REMOTE_CATALOG_URL, MAX_CATALOG_BYTES));
+    return parsePluginMarketplaceCatalog(await fetchText(fetcher, REMOTE_CATALOG_URL, MAX_CATALOG_BYTES, { fileName: '插件市场索引', onProgress }));
   } catch (error) {
     remoteError = error;
   }
   try {
-    return parsePluginMarketplaceCatalog(await fetchText(fetcher, LOCAL_CATALOG_URL, MAX_CATALOG_BYTES));
+    return parsePluginMarketplaceCatalog(await fetchText(fetcher, LOCAL_CATALOG_URL, MAX_CATALOG_BYTES, { fileName: '插件市场索引', onProgress }));
   } catch {
     throw remoteError;
   }
@@ -247,10 +296,25 @@ async function loadCatalog(fetcher: Fetcher): Promise<PluginMarketplaceCatalogEn
 
 export async function loadPluginMarketplace(
   installedRepositories: string[] = [],
-  options: { fetcher?: Fetcher; force?: boolean } = {},
+  options: { fetcher?: Fetcher; force?: boolean; onProgress?: ProgressReporter } = {},
 ): Promise<PluginMarketplaceItem[]> {
   const fetcher = options.fetcher ?? fetch;
-  const catalog = await loadCatalog(fetcher);
+  let downloadedBytes = 0;
+  const fileBytes = new Map<string, number>();
+  const onProgress: ProgressReporter = (progress) => {
+    const key = `${progress.repository ?? ''}:${progress.fileName}`;
+    downloadedBytes += Math.max(0, progress.downloadedBytes - (fileBytes.get(key) ?? 0));
+    fileBytes.set(key, progress.downloadedBytes);
+    // 并行下载的后续清单/资源尚未发现，总大小保持未知，不能用当前文件冒充整体总量。
+    options.onProgress?.({
+      ...progress,
+      downloadedBytes,
+      totalBytes: undefined,
+      currentFileDownloadedBytes: progress.downloadedBytes,
+      currentFileTotalBytes: progress.totalBytes,
+    });
+  };
+  const catalog = await loadCatalog(fetcher, onProgress);
   const entries = new Map(catalog.map((entry) => [pluginMarketplaceKey(entry), entry]));
   const registeredRepositories = new Set(catalog.map((entry) => entry.repository));
   for (const value of installedRepositories) {
@@ -268,6 +332,7 @@ export async function loadPluginMarketplace(
           force: options.force,
           directory: entry.directory,
           releaseTag: entry.releaseTag,
+          onProgress,
         })),
         status: 'ready',
         featured: entry.featured,

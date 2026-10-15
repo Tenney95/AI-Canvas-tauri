@@ -43,6 +43,12 @@ export interface FileTransferProgress {
   totalBytes: number | null;
 }
 
+export interface NodeOutputDownloadProgress {
+  transferredBytes: number;
+  totalBytes: number | null;
+  phase: 'downloading' | 'saving';
+}
+
 export interface FileTransferOptions {
   /** 创作资产集中放到项目的 Library 文件夹。 */
   projectSubdirectory?: 'Library';
@@ -1543,8 +1549,11 @@ export async function saveNodeOutputToFile(opts: {
   textOutput?: string;
   nodeType: string;
   fileName?: string;
+  signal?: AbortSignal;
+  onProgress?: (progress: NodeOutputDownloadProgress) => void;
 }): Promise<string | null> {
-  const { filePath, mediaUrl, textOutput, nodeType, fileName } = opts;
+  const { filePath, mediaUrl, textOutput, nodeType, fileName, signal, onProgress } = opts;
+  throwIfMediaReadAborted(signal);
   const defExt = nodeType === 'ai-audio' || nodeType === 'source-audio'
     ? getAudioSaveExtension(filePath, fileName, mediaUrl)
     : getDefaultExtension(nodeType);
@@ -1571,12 +1580,16 @@ export async function saveNodeOutputToFile(opts: {
   if (!destPath) return null; // User cancelled
 
   try {
+    throwIfMediaReadAborted(signal);
     // 1. Media: try real file path first
     if (filePath) {
       try {
-        await writeFile(destPath, await tauriReadFile(filePath));
+        const bytes = await tauriReadFile(filePath);
+        throwIfMediaReadAborted(signal);
+        await writeFile(destPath, bytes);
         return destPath;
       } catch (err) {
+        if (signal?.aborted || isAbortError(err)) throw err;
         // 源文件被移动/删除时不整体放弃，落到下面的 URL / 文本分支再试一次
         if (!mediaUrl && !textOutput) throw err;
         console.warn('[fileService] saveNodeOutputToFile: 源文件读取失败，改用节点 URL:', filePath, err);
@@ -1592,6 +1605,7 @@ export async function saveNodeOutputToFile(opts: {
       for (let i = 0; i < binaryStr.length; i++) {
         bytes[i] = binaryStr.charCodeAt(i);
       }
+      throwIfMediaReadAborted(signal);
       await writeFile(destPath, bytes);
       return destPath;
     }
@@ -1600,16 +1614,62 @@ export async function saveNodeOutputToFile(opts: {
     //    节点里的 asset URL 已经是 convertFileSrc 的产物，再转一次会把整个 URL 当成路径编码进去 —
     //    Windows 的 asset URL 是 http://asset.localhost/… 走不到这一步，mac 的 asset:// 才会踩到。
     if (mediaUrl && /^(asset:|blob:|https?:)/.test(mediaUrl)) {
-      const resp = await fetch(mediaUrl);
+      const reportProgress = isRemoteMediaUrl(mediaUrl) ? onProgress : undefined;
+      reportProgress?.({ transferredBytes: 0, totalBytes: null, phase: 'downloading' });
+      const resp = await fetch(mediaUrl, { signal });
       if (!resp.ok) throw new Error(`读取媒体失败：HTTP ${resp.status}`);
-      const buffer = await resp.arrayBuffer();
-      await writeFile(destPath, new Uint8Array(buffer));
+      let bytes: Uint8Array;
+      if (reportProgress) {
+        const contentLength = resp.headers.get('content-length');
+        const encoding = resp.headers.get('content-encoding');
+        // fetch 可能已解压响应，压缩传输长度不能作为已读取字节的分母。
+        let totalBytes = (!encoding || encoding.toLowerCase() === 'identity')
+          && contentLength !== null && /^\d+$/.test(contentLength)
+          && Number.isSafeInteger(Number(contentLength)) ? Number(contentLength) : null;
+        let transferredBytes = 0;
+        reportProgress({ transferredBytes, totalBytes, phase: 'downloading' });
+        const reader = resp.body?.getReader();
+        if (reader) {
+          const chunks: Uint8Array[] = [];
+          try {
+            while (true) {
+              throwIfMediaReadAborted(signal);
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+              transferredBytes += value.byteLength;
+              if (totalBytes !== null && transferredBytes > totalBytes) totalBytes = null;
+              reportProgress({ transferredBytes, totalBytes, phase: 'downloading' });
+            }
+          } finally {
+            reader.releaseLock();
+          }
+          bytes = new Uint8Array(transferredBytes);
+          let offset = 0;
+          for (const chunk of chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+        } else {
+          bytes = new Uint8Array(await resp.arrayBuffer());
+          transferredBytes = bytes.byteLength;
+          if (totalBytes !== null && transferredBytes > totalBytes) totalBytes = null;
+        }
+        throwIfMediaReadAborted(signal);
+        if (totalBytes !== null && transferredBytes !== totalBytes) throw new Error('媒体下载不完整，请重试');
+        reportProgress({ transferredBytes, totalBytes, phase: 'saving' });
+      } else {
+        bytes = new Uint8Array(await resp.arrayBuffer());
+      }
+      throwIfMediaReadAborted(signal);
+      await writeFile(destPath, bytes);
       return destPath;
     }
 
     // 5. Text output (ai-text / ai-markdown)
     if (textOutput) {
       const encoder = new TextEncoder();
+      throwIfMediaReadAborted(signal);
       await writeFile(destPath, encoder.encode(textOutput));
       return destPath;
     }
@@ -1617,6 +1677,7 @@ export async function saveNodeOutputToFile(opts: {
     console.warn('[fileService] saveNodeOutputToFile: 无可保存的内容');
     return null;
   } catch (err) {
+    if (signal?.aborted) throw mediaReadAbortReason(signal);
     console.error('[fileService] saveNodeOutputToFile 失败:', err);
     throw err;
   }

@@ -17,6 +17,15 @@ declare global {
 export type * from '../src/types/plugin';
 
 /**
+ * video.playbackPreview：UI 用 video.preparePlayback 为当前 self 视频准备连续 MP4 预览。
+ * 仅返回资源句柄、时长和 hasAudio；路径、源 URL 与容器标签不跨越隔离边界。
+ * 以 video.readPlayback 从 offset=0 顺序读取，每页最多 8×180 KiB，每块只读一次。
+ * 回包 base64Chunks 为至多 8 个 Base64 字符串，单字符串最多对应 180 KiB。
+ * 预览没有 12/16 MiB 总体积限制；该专用读取不消耗普通资源读取额度。
+ * 准备操作仍消耗本地媒体额度，支持取消、项目/源文件/revision 失效撤销。
+ */
+
+/**
  * 模型目录可附带 group 展示白名单（id/name/description/badgeText/tone）。
  * 使用 UI Kit 共用模型选择器按 group 分组，旧宿主缺省时按 provider 兼容展示。
  * group 不代表执行厂商；模型调用始终提交原始 id，不能据此改写 provider 或生成请求。
@@ -26,6 +35,9 @@ export type * from '../src/types/plugin';
 /**
  * video.replicaPipeline：runEffect(video.replicaJob.start) 接受整个本地视频任务。
  * 模型目录 videoCapability 用于分段预览；宿主按实际配置再次预检。
+ * 可选 videoReplicaSupport 提示该通道是否支持一键复刻；不支持时展示但禁用，并显示 reason。
+ * 该提示不代表模型具备参考视频能力，也不是执行授权；宿主按实际 Provider 再次校验。
+ * 工作流统一显示在“工作流”分组，调用仍保留目录原始 id，不改写为展示分组 ID。
  * 接受后只用返回 jobId 查询/停止；不得沿用 UI resourceId 或引用 token 执行后台步骤。
  * 原音保留、模型声音和静音分别由 audioMode 指定；转写是分段文本，不是声音克隆。
  * speechModelsRequired 表示等待用户明确下载；停止后续段不重投已经提交的生成。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPluginModelCatalog, resolvePluginModelInputModalities } from '../../src/services/plugins/pluginModelCatalog';
+import { buildPluginModelCatalog, getPluginVideoReplicaSupport, resolvePluginModelInputModalities } from '../../src/services/plugins/pluginModelCatalog';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { AppConfig, WorkflowDefinition } from '../../src/types';
 
@@ -27,7 +27,8 @@ describe('pluginModelCatalog video capabilities', () => {
         executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync', submit: { method: 'POST', path: '/private', body: {} }, response: { type: 'json', result: { urlPath: 'url' } } } } }],
     };
     const model = buildPluginModelCatalog(config, ['video']).find((entry) => entry.id === 'general/replica');
-    expect(model).toMatchObject({ videoCapability: { maxDuration: 30, maxVideoReferences: 10, maxAudioReferences: 10 } });
+    expect(model).toMatchObject({ videoCapability: { maxDuration: 30, maxVideoReferences: 10, maxAudioReferences: 10 },
+      videoReplicaSupport: { supported: true } });
     expect(JSON.stringify(model)).not.toContain('private');
     expect(JSON.stringify(model)).not.toContain('executionProfile');
   });
@@ -41,6 +42,31 @@ describe('pluginModelCatalog video capabilities', () => {
   });
 });
 
+describe('pluginModelCatalog complete replica support', () => {
+  it.each(['general', 'comfyui', 'volcengine'])('marks the guarded %s channel supported', (provider) => {
+    expect(getPluginVideoReplicaSupport(provider)).toEqual({ supported: true });
+  });
+
+  it.each(['apimart', 'grsai', 'runninghub', 'registered'])('keeps %s outside the full replica pipeline', (provider) => {
+    expect(getPluginVideoReplicaSupport(provider)).toEqual({ supported: false, reason: expect.stringContaining('请选择其他视频模型或工作流') });
+  });
+
+  it('keeps built-in video models visible with a separate pipeline support hint', () => {
+    const config: AppConfig = { ...useAppStore.getState().config,
+      providers: { apimart: { name: 'APIMart', apiKey: 'never-export-key' }, grsai: { name: 'GRSAI', apiKey: 'never-export-key' }, volcengine: { name: '火山方舟', apiKey: 'never-export-key' } },
+      generalModels: [],
+    };
+    const models = buildPluginModelCatalog(config, ['video'], []);
+    for (const provider of ['apimart', 'grsai', 'volcengine']) {
+      const entries = models.filter((model) => model.provider === provider);
+      expect(entries.length).toBeGreaterThan(0);
+      expect(entries.every((model) => model.videoReplicaSupport?.supported === (provider === 'volcengine'))).toBe(true);
+      expect(entries.every((model) => model.group?.id === provider)).toBe(true);
+    }
+    expect(JSON.stringify(models)).not.toContain('never-export');
+  });
+});
+
 describe('pluginModelCatalog menu presentation', () => {
   it('exposes built-in group display fields without changing execution identity', () => {
     const config: AppConfig = {
@@ -50,14 +76,15 @@ describe('pluginModelCatalog menu presentation', () => {
       },
       generalModels: [],
     };
-    const entry = buildPluginModelCatalog(config, ['text'], []).find((model) => model.id === 'apimart/gpt-4o');
-    expect(entry).toMatchObject({ id: 'apimart/gpt-4o', provider: 'apimart', category: 'text' });
+    const entry = buildPluginModelCatalog(config, ['text'], []).find((model) => model.id === 'apimart/gpt-6.1-sol');
+    expect(entry).toMatchObject({ id: 'apimart/gpt-6.1-sol', provider: 'apimart', category: 'text' });
     expect(entry?.group).toEqual({
       id: 'apimart', name: 'APIMart', description: '一个 API 搞定一切——节省 30-70%', badgeText: 'AM', tone: 'success',
     });
     expect(JSON.stringify(entry)).not.toContain('never-export');
     expect(entry?.group).not.toHaveProperty('models');
     expect(entry?.group).not.toHaveProperty('apiKey');
+    expect(entry).not.toHaveProperty('videoReplicaSupport');
   });
 
   it('uses host CCC and Sora2U groups while preserving general model IDs and routing', () => {
@@ -120,7 +147,8 @@ describe('pluginModelCatalog video workflows', () => {
     const config = { ...useAppStore.getState().config, comfyUIUrl: 'http://127.0.0.1:8188', comfyUIPath: 'D:\\private\\ComfyUI' };
     const models = buildPluginModelCatalog(config, ['video'], [workflow('local')]);
     expect(models).toContainEqual({ id: 'comfyui/local', name: '工作流 local', provider: 'comfyui', category: 'video', description: 'ComfyUI 工作流',
-      group: { id: 'comfyui', name: 'ComfyUI', description: 'ComfyUI 视频工作流', badgeText: 'CF', tone: 'brand' },
+      group: { id: '__workflows', name: '工作流', description: 'ComfyUI、RunningHub 与工作流 API', badgeText: 'WF', tone: 'brand' },
+      videoReplicaSupport: { supported: true },
     });
     const entry = models.find((model) => model.id === 'comfyui/local');
     expect(JSON.stringify(entry)).not.toContain('127.0.0.1');

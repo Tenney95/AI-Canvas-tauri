@@ -54,3 +54,10 @@ export interface ComfyRepositoryAction {
 export interface ComfyManagementResult {
   message: string;
 }
+
+export interface ComfyDownloadProgress {
+  stage: 'connecting' | 'receiving' | 'resolving' | 'counting' | 'compressing' | 'catalog' | 'applying';
+  completed: number;
+  total?: number | null;
+  unit: 'objects' | 'bytes';
+}

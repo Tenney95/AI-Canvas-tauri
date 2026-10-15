@@ -1,6 +1,6 @@
 {
   "apiVersions": [1, 2],
-  "capabilities": ["javascript.async", "invocation.cancel", "network.request", "settings", "image.lineArt", "tool.effectBudgets", "python.executionTimeout", "python.mediaWorkspace", "video.nodeSetGeneration", "prompt.mentions", "video.replicaPipeline"],
+  "capabilities": ["javascript.async", "invocation.cancel", "network.request", "settings", "image.lineArt", "tool.effectBudgets", "python.executionTimeout", "python.mediaWorkspace", "video.nodeSetGeneration", "prompt.mentions", "video.replicaPipeline", "video.playbackPreview"],
   "limits": {
     "tool": { "total": 32, "model": 4, "network": 8, "settings": 16, "resourceRead": 8, "resourceWrite": 4, "media": 8 },
     "ui": { "total": 192, "ordinary": 4, "model": 4, "network": 16, "settings": 64, "resourceRangeRead": 96, "resourceRangeBytes": 16777216, "resourceWrite": 12, "media": 96, "promptMentions": 96 },

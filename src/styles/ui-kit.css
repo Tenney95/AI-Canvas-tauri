@@ -2284,7 +2284,8 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
 .ui-timeline__zoom { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .ui-timeline__zoom .ui-slider { width: 80px; min-width: 0; }
 .ui-timeline__position { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; font-variant-numeric: tabular-nums; }
-.ui-timeline__position .ui-input { width: 108px; }
+.ui-timeline__position > label { flex: 0 1 220px; flex-wrap: nowrap; min-width: 0; max-width: 100%; white-space: nowrap; }
+.ui-timeline__position .ui-input { flex: 0 1 108px; width: 108px; min-width: 0; }
 .ui-timeline__scroll { min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; background: var(--theme-bg); }
 .ui-timeline__canvas { position: relative; min-width: 100%; }
 .ui-timeline__ruler { position: relative; height: 28px; flex-shrink: 0; background: var(--theme-bg); border-bottom: 1px solid var(--theme-border); cursor: var(--cursor-pointer, pointer); touch-action: none; user-select: none; }
@@ -2298,7 +2299,7 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
 .ui-timeline__thumbnails { position: absolute; inset: 0; display: flex; overflow: hidden; pointer-events: none; }
 .ui-timeline__thumbnails img, .ui-timeline__thumbnail-blank { flex: 1 0 64px; min-width: 64px; height: 100%; object-fit: cover; }
 .ui-timeline__thumbnail-blank { background: var(--theme-hover); }
-.ui-timeline__track-name { position: absolute; left: 8px; right: 8px; bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--theme-text); background: var(--theme-surface); border-radius: 4px; padding-inline: 4px; pointer-events: none; }
+.ui-timeline__track-name { position: absolute; left: 8px; bottom: 4px; width: max-content; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--theme-text); background: color-mix(in srgb, var(--theme-surface) 70%, transparent); border-radius: 4px; padding-inline: 4px; pointer-events: none; }
 .ui-timeline__segments { position: relative; height: 32px; margin-bottom: 8px; }
 .ui-timeline__segment { position: absolute; top: 0; height: 28px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 8px; border: 1px solid var(--brand); border-radius: 4px; color: var(--theme-text); background: var(--brand-alpha-15); font-size: 11px; font-variant-numeric: tabular-nums; text-align: left; cursor: var(--cursor-pointer, pointer); }
 .ui-timeline__segment:hover { background: var(--brand-alpha-25); }

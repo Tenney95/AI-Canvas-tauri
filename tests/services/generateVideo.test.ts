@@ -1267,7 +1267,7 @@ describe('general video runtime safety', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(generateVideo({
+    const generation = generateVideo({
       provider: 'general',
       model: 'general/missing-video-protocol',
       prompt: '让首帧产生轻微运动',
@@ -1277,8 +1277,38 @@ describe('general video runtime safety', () => {
         origin: 'connection',
         role: 'first_frame',
       }],
-    })).rejects.toThrow(/未配置可执行的提交\/轮询协议[\s\S]*不会再猜测 \/videos\/generations/);
+    });
+    await expect(generation).rejects.toThrow('模型调用协议未配置');
+    await expect(generation).rejects.toThrow('连接：运行时视频测试连接');
+    await expect(generation).rejects.toThrow('模型：运行时视频测试模型（模型 ID：vendor-video-model）');
+    await expect(generation).rejects.toThrow('设置 → API Key → 编辑“运行时视频测试连接” → 启用模型');
+    await expect(generation).rejects.toThrow('调用协议”（滑杆图标）');
+    await expect(generation).rejects.toThrow('保存更改');
+    await expect(generation).rejects.toThrow('尚未提交视频生成请求');
+    await expect(generation).rejects.not.toThrow('重新导入');
+    await expect(generation).rejects.not.toThrow('secret');
 
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['anthropic-chat', 'Anthropic Messages'],
+    ['gemini-chat', 'Google Gemini generateContent'],
+  ] as const)('identifies a text-only %s preset and the exact video settings location', async (preset, label) => {
+    configureGeneralVideoModel({ id: 'wrong-video-protocol', executionProfile: { preset } });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const generation = generateVideo({
+      provider: 'general', model: 'general/wrong-video-protocol', prompt: '平稳向前推进的镜头',
+    });
+    await expect(generation).rejects.toThrow('调用协议类型不适用');
+    await expect(generation).rejects.toThrow(`“协议预设”误选为文本对话协议“${label}”`);
+    await expect(generation).rejects.toThrow('连接：运行时视频测试连接');
+    await expect(generation).rejects.toThrow('模型 ID：vendor-video-model');
+    await expect(generation).rejects.toThrow('修改位置：设置 → API Key');
+    await expect(generation).rejects.toThrow('高级自定义 JSON');
+    await expect(generation).rejects.toThrow('尚未提交视频生成请求');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

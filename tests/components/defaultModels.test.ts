@@ -37,10 +37,23 @@ describe('内置厂商动态模型目录', () => {
   });
   it('新模型按媒体分类展示且不自动启用', () => {
     const models = defaultModelGroups.find((group) => group.id === 'apimart')!.models;
-    for (const [id, kind] of [['claude-opus-4-8', 'text'], ['qwen3.8-max', 'text'], ['grok-imagine-image-2.0', 'image'], ['seedream-5-0-flash', 'image'], ['wan3.0-video', 'video'], ['seedance-2.5', 'video'], ['suno-v6-mini', 'audio'], ['flowmusic-lyria-3.5', 'audio']]) {
+    expect(models.filter((model) => model.nodeTypes.includes('ai-text')).map((model) => model.value)).toEqual([
+      'apimart/gemini-3.8-flash',
+      'apimart/gemini-4-argon',
+      'apimart/qwen3.8-flash',
+      'apimart/deepseek-v4.1-flash',
+      'apimart/gpt-6.1-sol',
+      'apimart/grok-4.7',
+      'apimart/qwen3.8-27b',
+      'apimart/claude-opus-5-5',
+      'apimart/glm-5.3-flash',
+    ]);
+    for (const [id, kind] of [['grok-imagine-image-2.0', 'image'], ['seedream-5-0-flash', 'image'], ['wan3.0-video', 'video'], ['seedance-2.5', 'video'], ['suno-v6-mini', 'audio'], ['flowmusic-lyria-3.5', 'audio']]) {
       expect(models.find((model) => model.value === `apimart/${id}`)?.nodeTypes).toContain(`ai-${kind}`);
     }
     const configured = createConfig([{ id: 'gpt-5.4', name: 'GPT', category: 'text', provider: 'apimart' }]);
+    expect(getConfiguredModelGroups(configured, 'ai-text').flatMap((group) => group.models).map((model) => model.value))
+      .toEqual(['apimart/gpt-5.4']);
     expect(getConfiguredModelGroups(configured, 'ai-image')).toEqual([]);
     expect(getConfiguredModelGroups(configured, 'ai-audio')).toEqual([]);
   });
@@ -197,8 +210,8 @@ describe('内置厂商动态模型目录', () => {
 
   it('保留已选预置模型且不会生成重复项', () => {
     const config = createConfig([{
-      id: 'gpt-5.4',
-      name: 'GPT-5.4',
+      id: 'gpt-6.1-sol',
+      name: 'GPT-6.1 Sol',
       category: 'text',
       provider: 'apimart',
     }]);
@@ -206,8 +219,8 @@ describe('内置厂商动态模型目录', () => {
     const models = getConfiguredModelGroups(config, 'ai-text')
       .find((group) => group.id === 'apimart')?.models ?? [];
 
-    expect(models.filter((model) => model.value === 'apimart/gpt-5.4')).toHaveLength(1);
-    expect(models.some((model) => model.value === 'apimart/gpt-5.2')).toBe(false);
+    expect(models.filter((model) => model.value === 'apimart/gpt-6.1-sol')).toHaveLength(1);
+    expect(models.some((model) => model.value === 'apimart/gemini-3.8-flash')).toBe(false);
   });
 
   it('保留远端模型 ID 自带的命名空间', () => {

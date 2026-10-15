@@ -6,6 +6,7 @@ import {
   pluginMarketplaceKey,
   resolveGithubPlugin,
 } from '../../src/services/plugins/pluginMarketplace';
+import type { PluginMarketplaceDownloadProgress } from '../../src/services/plugins/pluginMarketplace';
 
 function pluginManifest(repository: string, version = '1.2.0', id = 'com.example.marketplace-tool'): string {
   return JSON.stringify({
@@ -129,6 +130,101 @@ describe('GitHub plugin marketplace', () => {
     expect(plugin.releaseTag).toBe('v1.2.0');
     expect(plugin.manifest.repository).toBe(repository);
     expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports streamed bytes and preserves Chinese text across chunk boundaries', async () => {
+    const repository = 'https://github.com/example/streamed-progress';
+    const source = 'definePlugin({ tools: {} }); // 中文';
+    const bytes = new TextEncoder().encode(source);
+    const split = bytes.byteLength - 2;
+    const progress: PluginMarketplaceDownloadProgress[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/releases/latest')) return new Response(JSON.stringify({ tag_name: 'v1.2.0' }));
+      if (url.endsWith('/manifest.json')) return new Response(pluginManifest(repository));
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes.subarray(0, split));
+          controller.enqueue(bytes.subarray(split));
+          controller.close();
+        },
+      }), { headers: { 'content-length': String(bytes.byteLength) } });
+    }) as typeof fetch;
+
+    const plugin = await resolveGithubPlugin(repository, { fetcher, force: true, onProgress: (value) => progress.push(value) });
+
+    expect(plugin.source).toBe(source);
+    expect(progress.filter(({ fileName }) => fileName === 'main.js').map(({ downloadedBytes }) => downloadedBytes))
+      .toEqual([0, split, bytes.byteLength]);
+    expect(progress.at(-1)).toMatchObject({ downloadedBytes: bytes.byteLength, totalBytes: bytes.byteLength });
+  });
+
+  it.each([undefined, 'gzip'])('drops an unreliable response total for encoding %s', async (encoding) => {
+    const repository = `https://github.com/example/unreliable-size-${encoding ?? 'identity'}`;
+    const source = 'definePlugin({ tools: {} });';
+    const progress: PluginMarketplaceDownloadProgress[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/releases/latest')) return new Response(JSON.stringify({ tag_name: 'v1.2.0' }));
+      if (url.endsWith('/manifest.json')) return new Response(pluginManifest(repository));
+      return new Response(source, {
+        headers: { 'content-length': '4', ...(encoding ? { 'content-encoding': encoding } : {}) },
+      });
+    }) as typeof fetch;
+
+    await resolveGithubPlugin(repository, { fetcher, force: true, onProgress: (value) => progress.push(value) });
+
+    const sourceProgress = progress.filter(({ fileName }) => fileName === 'main.js');
+    expect(sourceProgress.at(-1)).toMatchObject({ downloadedBytes: new TextEncoder().encode(source).byteLength });
+    expect(sourceProgress.at(-1)?.totalBytes).toBeUndefined();
+    if (encoding) expect(sourceProgress.every(({ totalBytes }) => totalBytes === undefined)).toBe(true);
+  });
+
+  it('cancels a streamed source as soon as its existing byte limit is exceeded', async () => {
+    const repository = 'https://github.com/example/oversized-stream';
+    const cancel = vi.fn();
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/releases/latest')) return new Response(JSON.stringify({ tag_name: 'v1.2.0' }));
+      if (url.endsWith('/manifest.json')) return new Response(pluginManifest(repository));
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(512 * 1024));
+          controller.enqueue(new Uint8Array(1));
+        },
+        cancel,
+      }));
+    }) as typeof fetch;
+
+    await expect(resolveGithubPlugin(repository, { fetcher, force: true })).rejects.toThrow('下载内容过大');
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('accumulates parallel directory downloads without inventing a marketplace total', async () => {
+    const repository = 'https://github.com/example/parallel-progress';
+    const entries = ['first', 'second'].map((directory) => ({ repository, directory, releaseTag: `${directory}-v1.2.0` }));
+    const progress: PluginMarketplaceDownloadProgress[] = [];
+    let expectedBytes = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      let text: string;
+      if (url.endsWith('/plugin-marketplace.json')) text = JSON.stringify({ schemaVersion: 1, plugins: entries });
+      else if (url.includes('/releases/tags/')) text = JSON.stringify({ tag_name: url.split('/').at(-1) });
+      else if (url.endsWith('/manifest.json')) text = pluginManifest(repository);
+      else text = 'definePlugin({ tools: {} });';
+      const bytes = new TextEncoder().encode(text).byteLength;
+      expectedBytes += bytes;
+      return new Response(text, { headers: { 'content-length': String(bytes) } });
+    }) as typeof fetch;
+
+    const items = await loadPluginMarketplace([], { fetcher, force: true, onProgress: (value) => progress.push(value) });
+
+    expect(items.every(({ status }) => status === 'ready')).toBe(true);
+    expect(progress.at(-1)?.downloadedBytes).toBe(expectedBytes);
+    expect(progress.every(({ totalBytes }) => totalBytes === undefined)).toBe(true);
+    expect(progress.at(-1)?.currentFileTotalBytes).toBeGreaterThan(0);
+    expect(progress.at(-1)?.currentFileDownloadedBytes).toBe(progress.at(-1)?.currentFileTotalBytes);
+    expect(progress.every((value, index) => index === 0 || value.downloadedBytes >= progress[index - 1].downloadedBytes)).toBe(true);
   });
 
   it('downloads the Python entry declared by a trusted Plugin API v1 plugin', async () => {

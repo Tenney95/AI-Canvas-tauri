@@ -12,8 +12,9 @@ export interface PresetSlice {
   userPresets: UserPreset[];
   presetFolders: PresetFolder[];
   presetManagerOpen: boolean;
+  presetManagerNodeType: PresetNodeType;
   presetRunRequest: PresetRunRequest | null;
-  setPresetManagerOpen: (open: boolean) => void;
+  setPresetManagerOpen: (open: boolean, nodeType?: PresetNodeType) => void;
   setPresetRunRequest: (request: PresetRunRequest | null) => void;
   addUserPreset: (preset: UserPreset) => Promise<void>;
   updateUserPreset: (id: string, data: Partial<UserPreset>) => Promise<void>;
@@ -36,9 +37,13 @@ export const createPresetSlice: StateCreator<AppState, [], [], PresetSlice> = (s
     userPresets: [],
     presetFolders: [],
     presetManagerOpen: false,
+    presetManagerNodeType: 'ai-text',
     presetRunRequest: null,
 
-    setPresetManagerOpen: (open) => set({ presetManagerOpen: open }),
+    setPresetManagerOpen: (open, nodeType) => set((state) => ({
+      presetManagerOpen: open,
+      presetManagerNodeType: nodeType ?? state.presetManagerNodeType,
+    })),
     setPresetRunRequest: (request) => set({ presetRunRequest: request }),
 
     addUserPreset: (preset) => enqueue(async () => {

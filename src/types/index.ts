@@ -566,6 +566,8 @@ export interface DreaminaRuntime {
   loggedIn: boolean;
   username: string;
   credit: string;
+  downloadedBytes?: number;
+  downloadTotalBytes?: number;
 }
 
 /** 画布背景主题 */

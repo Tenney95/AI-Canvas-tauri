@@ -5,7 +5,8 @@ class ElementStub {
   className = ''; textContent = ''; title = ''; contentEditable = ''; src = ''; alt = ''; draggable = true;
   attributes: Record<string, string> = {}; style: Record<string, string> = {}; children: ElementStub[] = [];
   classList = { add: (name: string) => { this.className += ` ${name}`; } };
-  constructor(readonly tagName: string) {}
+  readonly tagName: string;
+  constructor(tagName: string) { this.tagName = tagName; }
   setAttribute(name: string, value: string) { this.attributes[name] = value; }
   appendChild(child: ElementStub) { this.children.push(child); return child; }
 }

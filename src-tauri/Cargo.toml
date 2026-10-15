@@ -1,6 +1,6 @@
 [package]
 name = "ai-canvas-tauri"
-version = "0.10.7"
+version = "0.10.8"
 edition = "2021"
 
 [lib]
@@ -52,6 +52,9 @@ base64 = "0.22"
 fs2 = "0.4"
 flate2 = "1"
 sha2 = "0.10"
+# ComfyUI 模型去重复用 Czkawka 完整文件散列；关闭可选格式功能，不启用其缓存或写入工具。
+czkawka_core = { version = "=10.0.0", default-features = false }
+file-id = "=0.2.3"
 tar = "0.4"
 image = "0.25"
 rquickjs = "0.12.2"
@@ -81,6 +84,7 @@ windows = { version = "0.58", features = [
   "Win32_System_Memory",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_Storage_FileSystem",
   "Win32_Security",
   "Win32_Foundation",
 ] }

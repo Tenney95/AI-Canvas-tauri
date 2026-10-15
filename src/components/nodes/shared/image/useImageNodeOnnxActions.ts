@@ -10,12 +10,12 @@ import type { BaseNodeData } from '../../../../types';
 import { generateId, useAppStore } from '../../../../store/useAppStore';
 import {
   checkModelExists,
-  downloadModel,
   imageUpscale,
   subjectMatting,
 } from '../../../../services/onnxService';
 import { computeImageNodeDimensions } from './imageUtils';
 import { buildNodeFileName, resolveProjectOutputPath } from '../../../../services/fileService';
+import { useModelDownload } from '../../../../hooks/useModelDownload';
 
 const UPSCALE_MODEL = 'realesrgan-x4.onnx';
 const MATTING_MODEL = 'rmbg-1.4.onnx';
@@ -45,10 +45,12 @@ export function useImageNodeOnnxActions({
   const [isUpscaling, setIsUpscaling] = useState(false);
   const [upscaleProgress, setUpscaleProgress] = useState(0);
   const [downloadPrompt, setDownloadPrompt] = useState(false);
-  const [isDownloadingModel, setIsDownloadingModel] = useState(false);
+  const upscaleDownload = useModelDownload();
+  const { download: downloadUpscaleModel, cancel: cancelUpscaleDownload } = upscaleDownload;
   const [isMattingRunning, setIsMattingRunning] = useState(false);
   const [mattingDownloadPrompt, setMattingDownloadPrompt] = useState(false);
-  const [isDownloadingMattingModel, setIsDownloadingMattingModel] = useState(false);
+  const mattingDownload = useModelDownload();
+  const { download: downloadMattingModel, cancel: cancelMattingDownload } = mattingDownload;
 
   const createResultNode = useCallback(async (
     assetUrl: string,
@@ -132,23 +134,20 @@ export function useImageNodeOnnxActions({
 
   const handleDownloadConfirm = useCallback(async () => {
     setDownloadPrompt(false);
-    setIsDownloadingModel(true);
     try {
-      await downloadModel(UPSCALE_MODEL);
+      if (!(await downloadUpscaleModel([UPSCALE_MODEL]))) return;
       useAppStore.getState().showToast('模型下载完成，开始超分...', 'success');
     } catch (error) {
       useAppStore.getState().showToast(getErrorMessage(error, '模型下载失败'), 'error');
-      setIsDownloadingModel(false);
       return;
     }
-    setIsDownloadingModel(false);
     await doUpscale(data.filePath as string);
-  }, [data.filePath, doUpscale]);
+  }, [data.filePath, doUpscale, downloadUpscaleModel]);
 
   const handleDownloadCancel = useCallback(() => {
     setDownloadPrompt(false);
-    setIsDownloadingModel(false);
-  }, []);
+    cancelUpscaleDownload();
+  }, [cancelUpscaleDownload]);
 
   const doSubjectMatting = useCallback(async (filePath: string) => {
     setIsMattingRunning(true);
@@ -191,35 +190,34 @@ export function useImageNodeOnnxActions({
 
   const handleMattingDownloadConfirm = useCallback(async () => {
     setMattingDownloadPrompt(false);
-    setIsDownloadingMattingModel(true);
     try {
-      await downloadModel(MATTING_MODEL);
+      if (!(await downloadMattingModel([MATTING_MODEL]))) return;
       useAppStore.getState().showToast('模型下载完成，开始识别主体...', 'success');
     } catch (error) {
       useAppStore.getState().showToast(getErrorMessage(error, '模型下载失败'), 'error');
-      setIsDownloadingMattingModel(false);
       return;
     }
-    setIsDownloadingMattingModel(false);
     await doSubjectMatting(data.filePath as string);
-  }, [data.filePath, doSubjectMatting]);
+  }, [data.filePath, doSubjectMatting, downloadMattingModel]);
 
   const handleMattingDownloadCancel = useCallback(() => {
     setMattingDownloadPrompt(false);
-    setIsDownloadingMattingModel(false);
-  }, []);
+    cancelMattingDownload();
+  }, [cancelMattingDownload]);
 
   return {
     isUpscaling,
     upscaleProgress,
     downloadPrompt,
-    isDownloadingModel,
+    isDownloadingModel: upscaleDownload.isDownloading,
+    modelDownloadProgress: upscaleDownload.progress,
     handleUpscale,
     handleDownloadConfirm,
     handleDownloadCancel,
     isMattingRunning,
     mattingDownloadPrompt,
-    isDownloadingMattingModel,
+    isDownloadingMattingModel: mattingDownload.isDownloading,
+    mattingDownloadProgress: mattingDownload.progress,
     handleSubjectMatting,
     handleMattingDownloadConfirm,
     handleMattingDownloadCancel,

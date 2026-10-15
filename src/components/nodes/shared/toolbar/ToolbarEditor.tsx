@@ -7,6 +7,7 @@ import { memo, useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Icon } from '@iconify/react';
 import { useReactFlow } from '@xyflow/react';
 import type { ToolbarButtonDef, NodeType } from '../../../../types';
+import { PRESET_NODE_TYPES } from '../../../../types';
 import type { UseToolbarEditReturn } from '../../../../hooks/useToolbarEdit';
 import { getSlashCommands } from '../slashCommands';
 import { useAppStore } from '../../../../store/useAppStore';
@@ -354,6 +355,8 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
 
   // ── 快捷指令数据 ──
   const userPresets = useAppStore((s) => s.userPresets);
+  const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
+  const presetNodeType = PRESET_NODE_TYPES.find((type) => type === nodeType);
   const allSlashCommands = useMemo(() => {
     const cmds = getSlashCommands(nodeType as NodeType);
     const flat: { id: string; title: string; icon: string; description: string }[] = [];
@@ -373,6 +376,8 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
     () => userPresets.filter((p) => p.nodeType === nodeType),
     [userPresets, nodeType],
   );
+  const hasAvailableCommands = allSlashCommands.some((command) => !edit.activeButtonKeys.has(command.id))
+    || matchingUserPresets.some((preset) => !edit.activeButtonKeys.has(preset.id));
 
   // ── 根据鼠标位置计算目标 zone + index ──
   const calcTarget = useCallback((clientX: number, clientY: number): { zoneId: string; index: number } | null => {
@@ -598,6 +603,8 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   // ── 点击外部退出编辑态 ──
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
+      // 管理器通过 Portal 展示，操作其内容时保留工具栏布局草稿。
+      if (useAppStore.getState().presetManagerOpen) return;
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         handleExitEdit();
       }
@@ -740,10 +747,17 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
       </div>
 
       {/* 右侧：快捷指令面板 */}
-      {(allSlashCommands.length > 0 || matchingUserPresets.length > 0) && (
+      {(presetNodeType || allSlashCommands.length > 0 || matchingUserPresets.length > 0) && (
         <div className="toolbar-edit-commands nodrag">
           <div className="toolbar-edit-commands-header">快捷指令</div>
           <div className="toolbar-edit-commands-list nodrag nowheel">
+            {!hasAvailableCommands && (
+              <p className="m-0 p-2 text-xs text-canvas-text-muted" role="status">
+                {allSlashCommands.length === 0 && matchingUserPresets.length === 0
+                  ? '暂无快捷指令，可在下方管理中添加'
+                  : '快捷指令已全部添加'}
+              </p>
+            )}
             {allSlashCommands.map((cmd) => {
               if (edit.activeButtonKeys.has(cmd.id)) return null;
               return (
@@ -775,6 +789,16 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
               );
             })}
           </div>
+          {presetNodeType && (
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--block shrink-0 nodrag"
+              onClick={(e) => { e.stopPropagation(); setPresetManagerOpen(true, presetNodeType); }}
+            >
+              <Icon icon="mdi:pencil-outline" width={14} height={14} />
+              管理快捷指令
+            </button>
+          )}
         </div>
       )}
     </div>

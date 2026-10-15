@@ -443,6 +443,32 @@ export default function VideoCapabilityEditor({
           )}
         </section>
 
+        <section className="ui-card space-y-2 p-3">
+          <label className="ui-field">
+            <span className="ui-label">生成音轨能力</span>
+            <Select
+              fixedMenu
+              className="w-full"
+              size="sm"
+              name="video-audio-capability"
+              aria-label="生成音轨能力"
+              value={capability.supportsAudio === undefined ? '' : capability.supportsAudio ? 'supported' : 'unsupported'}
+              onChange={(value) => commit({
+                ...capability,
+                supportsAudio: value === '' ? undefined : value === 'supported',
+              })}
+            >
+              <option value="">未声明（接口默认）</option>
+              <option value="supported">支持（可切换有声/无声）</option>
+              <option value="unsupported">不支持生成音轨</option>
+            </Select>
+          </label>
+          <p className="ui-hint text-[10px] leading-4">
+            未确认或接口不提供音频开关时保持未声明；参考音频不受此项影响。
+            声明支持时，请在调用协议中映射音频开关。
+          </p>
+        </section>
+
         <section className="rounded-lg border border-canvas-border bg-black/10 p-3">
           <div className="mb-3">
             <span className="text-xs font-medium text-canvas-text">提交前输入校验</span>

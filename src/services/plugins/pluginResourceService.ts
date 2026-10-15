@@ -97,6 +97,12 @@ interface PluginResourceLease {
   bytes?: Uint8Array;
   /** 原图的固定线稿槽位，与原图共用资源 ID、租约及总字节额度。 */
   lineart?: PluginLineArtImage;
+  /** 预览单独绑定原视频，不进入可写回画布的派生图像列表。 */
+  playbackSourceId?: string;
+  playbackResourceId?: string;
+  playbackInfo?: { duration: number; hasAudio: boolean };
+  playbackReadOffset?: number;
+  playbackReading?: boolean;
 }
 
 const resourceLeases = new Map<string, PluginResourceLease>();
@@ -353,11 +359,63 @@ function requireLease(context: PluginResourceReadContext, resourceId: string): P
 
 function requireDerivedLease(context: PluginResourceReadContext, resourceId: string): PluginResourceLease {
   const lease = requireLease(context, resourceId);
-  if (lease.ref.origin !== 'derived' || !lease.bytes) throw new Error('节点集只能绑定宿主派生资源');
+  if (lease.ref.origin !== 'derived' || !lease.bytes || lease.playbackSourceId) throw new Error('节点集只能绑定宿主派生资源');
   return lease;
 }
 
+export function getPluginPlaybackResource(context: PluginResourceReadContext, resourceId: string): { resource: PluginResourceRef; duration: number; hasAudio: boolean } | undefined {
+  const source = requireLease(context, resourceId);
+  return source.playbackResourceId && source.playbackInfo
+    ? { resource: requireLease(context, source.playbackResourceId).ref, ...source.playbackInfo } : undefined;
+}
+
+export function registerPluginPlaybackResource(
+  context: PluginResourceReadContext, resourceId: string, preview: { bytes: Uint8Array; duration: number; hasAudio: boolean },
+): PluginResourceRef {
+  const { bytes, duration, hasAudio } = preview;
+  const source = requireLease(context, resourceId);
+  if (source.ref.origin !== 'node-self' || source.sourceNodeId !== context.nodeId
+    || !source.ref.mediaType.startsWith('video/') || source.bytes || source.packageResourceId
+    || !context.permissions.includes('files.output.create')) throw new Error('连续预览只允许当前节点的授权视频');
+  if (bytes.byteLength <= 0) throw new Error('连续视频预览为空');
+  if (!Number.isFinite(duration) || duration <= 0 || duration > 300 || typeof hasAudio !== 'boolean') throw new Error('连续视频预览信息无效');
+  const ref: PluginResourceRef = { resourceId: createResourceId(), origin: 'derived',
+    displayName: 'playback-preview.mp4', mediaType: 'video/mp4', size: bytes.byteLength, access: 'read' };
+  if (source.playbackResourceId) resourceLeases.delete(source.playbackResourceId);
+  resourceLeases.set(ref.resourceId, { ...source, ref, path: undefined, relativePath: undefined,
+    bytes: bytes.slice(), playbackSourceId: resourceId, playbackResourceId: undefined, playbackReadOffset: 0 });
+  source.playbackResourceId = ref.resourceId;
+  source.playbackInfo = { duration, hasAudio };
+  return ref;
+}
+
+/** 独立预览通道：一次顺序读取，不占通用资源的 16 MiB 额度，不允许反复读取放大流量。 */
+export async function readPluginPlaybackRange(
+  context: PluginResourceReadContext, resourceId: string, offset: number, length: number,
+): Promise<{ resource: PluginResourceRef; offset: number; bytes: number; base64Chunks: string[] }> {
+  const lease = requireLease(context, resourceId);
+  if (!lease.playbackSourceId || !lease.bytes || lease.playbackReading || offset !== lease.playbackReadOffset
+    || !Number.isSafeInteger(offset) || offset < 0 || offset >= lease.ref.size
+    || !Number.isSafeInteger(length) || length <= 0 || length > 8 * 180 * 1024) {
+    throw new Error('播放预览只允许按顺序读取有效分块');
+  }
+  // 先预留位置，阻止同一分块的并发重复读取；失败后需要重开会话。
+  const end = Math.min(lease.ref.size, offset + length);
+  lease.playbackReadOffset = end; lease.playbackReading = true;
+  try {
+    const base64Chunks: string[] = [];
+    let bytes = 0;
+    for (let start = offset; start < end; start += 180 * 1024) {
+      const value = await readPluginResourceRange(context, resourceId, start, Math.min(180 * 1024, end - start));
+      base64Chunks.push(value.base64); bytes += value.bytes;
+    }
+    if (end === lease.ref.size) lease.bytes = undefined;
+    return { resource: lease.ref, offset, bytes, base64Chunks };
+  } finally { lease.playbackReading = false; }
+}
+
 function derivedLeaseBytes(lease: PluginResourceLease): number {
+  if (lease.playbackSourceId) return 0;
   return (lease.bytes?.byteLength ?? 0) + (lease.lineart?.bytes.byteLength ?? 0);
 }
 
@@ -570,6 +628,10 @@ export async function readPluginResourceRange(
   }
   const lease = requireLease(context, resourceId);
   if (offset >= lease.ref.size) throw new Error('资源读取 offset 超出文件范围');
+  if (lease.playbackSourceId) {
+    await revalidateProjectLease(context, requireLease(context, lease.playbackSourceId));
+    requireLease(context, resourceId);
+  }
   const safeLength = Math.min(length, lease.ref.size - offset);
   const bytes = lease.bytes
     ? lease.bytes.slice(offset, offset + safeLength)

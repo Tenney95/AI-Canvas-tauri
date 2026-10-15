@@ -67,6 +67,7 @@ commands.allow = [
   "sync_native_performance_mode",
   "sync_authorized_directories",
   "launch_comfyui",
+  "get_comfyui_runtime_status",
   "select_comfyui_installation",
   "get_comfyui_installation",
   "open_comfyui_window",

@@ -96,6 +96,7 @@ interface PluginUiSession {
   effectBudget: number;
   rangeReadBudget?: number;
   rangeReadBytes?: number;
+  playbackReadFailures?: number;
   mediaEffectBudget?: number;
   exportEffectBudget?: number;
   networkEffectBudget?: number;
@@ -324,10 +325,12 @@ async function dispatchRequest(
     ? request.payload.type : undefined;
   const replicaObservation = !!session.replicaJobId && request.kind === 'effect'
     && (effectType === 'video.replicaJob.status' || effectType === 'video.replicaJob.cancel');
-  if (request.kind !== 'close' && !replicaObservation && session.requestCount >= MAX_UI_REQUESTS) {
+  const playbackRead = request.kind === 'effect' && effectType === 'video.readPlayback';
+  if (playbackRead && (session.playbackReadFailures ?? 0) >= 4) return { ok: false, error: '播放预览读取已失效，请重新打开插件' };
+  if (request.kind !== 'close' && !replicaObservation && !playbackRead && session.requestCount >= MAX_UI_REQUESTS) {
     return { ok: false, error: '插件界面请求次数已达上限' };
   }
-  if (request.kind !== 'close' && !replicaObservation) session.requestCount += 1;
+  if (request.kind !== 'close' && !replicaObservation && !playbackRead) session.requestCount += 1;
   const exclusive = request.kind === 'effect'
     || request.kind === 'set-parameters'
     || request.kind === 'submit';
@@ -402,7 +405,9 @@ async function dispatchRequest(
           updateReplicaJobParameter(session, summary);
           return { ok: true, value: { type: effect.type, ok: true, value: summary } };
         }
-        if (effectType === 'prompt.mentions') {
+        if (playbackRead) {
+          // Broker 只接受当前会话预览的下一块；不放宽普通资源读取与其他 effect 额度。
+        } else if (effectType === 'prompt.mentions') {
           if ((session.mentionEffectBudget ?? 0) >= PLUGIN_HOST.limits.ui.promptMentions) throw new Error('本次会话引用查询达到 96 次上限，请重新打开插件');
           session.mentionEffectBudget = (session.mentionEffectBudget ?? 0) + 1;
         } else if (effectType === 'network.request') {
@@ -423,7 +428,7 @@ async function dispatchRequest(
           // 按请求量预留额度，失败也计数；不占用模型调用额度，不改变资源授权校验。
           session.rangeReadBudget = (session.rangeReadBudget ?? 0) + 1;
           session.rangeReadBytes = (session.rangeReadBytes ?? 0) + length;
-        } else if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame'
+        } else if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame' || effectType === 'video.preparePlayback'
           || effectType === 'image.lineArt') {
           if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地媒体操作达到 96 次上限，请重新打开插件');
           session.mediaEffectBudget = (session.mediaEffectBudget ?? 0) + 1;
@@ -453,6 +458,7 @@ async function dispatchRequest(
           if (session.effectAbortController === controller) session.effectAbortController = undefined;
         });
         resolveLivePlugin(session);
+        if (playbackRead && !result.ok) session.playbackReadFailures = (session.playbackReadFailures ?? 0) + 1;
         return { ok: true, value: result };
       }
       case 'set-parameters': {
@@ -507,6 +513,7 @@ async function dispatchRequest(
         throw new Error(`未知请求: ${request.kind}`);
     }
   } catch (error) {
+    if (playbackRead) session.playbackReadFailures = (session.playbackReadFailures ?? 0) + 1;
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),

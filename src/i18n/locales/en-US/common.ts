@@ -102,7 +102,6 @@ const common = {
   '返回启动页': 'Back to the start page',
   '正在保存项目…': 'Saving project…',
   '已打开样式预览窗口': 'Style preview window opened',
-  '切换明暗主题，仅在本窗口生效': 'Toggle the light or dark theme for this window only',
   '样式分区目录': 'Style section index',
   '吉祥物已显示': 'Mascot shown',
 

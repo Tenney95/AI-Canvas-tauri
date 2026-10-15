@@ -1089,6 +1089,32 @@ curl https://gateway.example.com/v1/videos \
 });
 
 describe('Seedance built-in provider templates', () => {
+  it.each([
+    ['dreamina-seedance-2-0-260128-max', 'https://relay.example.com/v1'],
+    ['doubao-seedance-2-0-260128', 'https://ark.cn-beijing.volces.com/api/v3'],
+    ['MiniMax-H3', 'https://api.minimax.io'],
+  ])('keeps custom %s protocols separate from inferred template capabilities', (modelId, baseUrl) => {
+    const executionProtocol: ModelExecutionProtocol = {
+      version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/videos', body: { model: '{{model}}', prompt: '{{prompt}}' } },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    };
+    const model = { modelId, category: 'video' as const, protocolSource: 'declarative' as const, executionProtocol };
+    // 自有协议必须显式说明操作类型，不能借型号名引入整套官方能力。
+    expect(() => createProviderConfigDraft(`custom-missing-operations-${modelId}`, {
+      connectionName: 'Custom video relay', baseUrl, models: [model],
+    })).toThrow('videoCapability.operations');
+    const capability: VideoModelCapability = { operations: ['text-to-video'] };
+    const draft = createProviderConfigDraft(`custom-video-protocol-${modelId}`, {
+      connectionName: 'Custom video relay', baseUrl, models: [{ ...model, videoCapability: capability }],
+    });
+    const selected = draft.config.selectedModels![0];
+    expect(selected.videoCapability).toEqual(capability);
+    expect(selected.videoCapability?.supportsAudio).toBeUndefined();
+    expect(selected.executionProfile?.protocol?.submit).toEqual(executionProtocol.submit);
+    expect(capability).toEqual({ operations: ['text-to-video'] });
+  });
+
   it('keeps the Lec audio toggle undeclared while retaining supported reference audio', () => {
     const draft = createProviderConfigDraft('lec-audio-parameters', {
       connectionName: 'Lec', baseUrl: 'https://gateway.example.com/v1',

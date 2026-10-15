@@ -296,6 +296,8 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     progress: asrProgress,
     downloadPrompt,
     isDownloadingModel,
+    modelDownloadProgress,
+    modelDownloadLabel,
     handleSpeechToText,
     handleDownloadConfirm,
     handleDownloadCancel,
@@ -592,6 +594,8 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         type="asr"
         showPrompt={downloadPrompt}
         showDownloading={isDownloadingModel}
+        progress={modelDownloadProgress}
+        downloadLabel={modelDownloadLabel}
         onConfirm={handleDownloadConfirm}
         onCancel={handleDownloadCancel}
       />

@@ -21,7 +21,10 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.state,
   subscribe: (fn: () => void) => { mocks.subscribers.add(fn); return () => mocks.subscribers.delete(fn); } } }));
-vi.mock('../../src/services/plugins/pluginModelCatalog', () => ({ buildPluginModelCatalog: () => mocks.catalog }));
+vi.mock('../../src/services/plugins/pluginModelCatalog', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/plugins/pluginModelCatalog')>(),
+  buildPluginModelCatalog: () => mocks.catalog,
+}));
 vi.mock('../../src/services/ai/videoModelCapabilityResolver', () => ({ resolveVideoModelCapability: () => mocks.capability }));
 vi.mock('../../src/services/ai/generationRuntime', () => ({ resolveMediaModel: () => mocks.model }));
 vi.mock('../../src/services/comfyUIWindowService', () => ({ extractComfyUIIONodes: mocks.extractIO }));
@@ -225,8 +228,9 @@ it('requests explicit speech model preparation before any media submission', asy
 
 it.each(['registered', 'apimart'] as const)('rejects the %s provider before preparation, paid calls or task persistence', async (provider) => {
   mocks.model = { ...mocks.model, provider };
+  mocks.catalog = mocks.catalog.map((model) => ({ ...model, videoReplicaSupport: { supported: true } }));
   const service = await import('../../src/services/plugins/pluginVideoReplicaJobService');
-  await expect(service.startPluginVideoReplicaJob(context(), request)).rejects.toThrow('高级物料流程');
+  await expect(service.startPluginVideoReplicaJob(context(), request)).rejects.toThrow('请选择其他视频模型或工作流');
   expect(mocks.probeSource).not.toHaveBeenCalled();
   expect(mocks.fingerprint).not.toHaveBeenCalled();
   expect(mocks.effect).not.toHaveBeenCalled();

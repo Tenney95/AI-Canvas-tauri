@@ -37,7 +37,7 @@ export default function ComfyLaunchSettings({ busy, run }: Props) {
   const fieldClass = 'ui-field min-w-0';
 
   return <section className="space-y-3">
-    <div className="ui-alert ui-alert--info"><Icon icon="lucide:info" width={16} className="ui-alert__icon" /><div className="ui-alert__body">{t('设置在下次通过本应用启动 ComfyUI 时生效。请先关闭原来的 ComfyUI 终端，再重新启动。服务只监听本机。')}</div></div>
+    <div className="ui-alert ui-alert--info"><Icon icon="lucide:info" width={16} className="ui-alert__icon" /><div className="ui-alert__body">{t('设置在下次通过本应用启动 ComfyUI 时生效。请先在运行控制台停止服务，再重新启动；外部启动的服务需在原启动器中停止。服务只监听本机。')}</div></div>
     <div className="ui-card p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
       <div className={fieldClass}>
         <label className="ui-label" htmlFor="comfy-launch-port">{t('服务端口')}</label>

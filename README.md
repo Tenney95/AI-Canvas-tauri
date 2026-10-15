@@ -12,7 +12,7 @@
 
 AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown、分镜、360° 全景和手绘笔记组织成可连接的画布节点。你可以在同一个项目中编排生成链路、统一管理角色库、人物/场景/道具与本地素材、执行 ComfyUI 工作流、安装 JavaScript 或可信 Python 用户插件，也可以通过对话助手查询或修改画布、生成媒体、派出只读子智能体、读取授权文件并沉淀项目记忆。项目还能拆成剧集与分集，一部 AI短剧的每一集各占一张画布，角色库与素材整部剧共用。
 
-![Version](https://img.shields.io/badge/version-0.10.7-6366f1)
+![Version](https://img.shields.io/badge/version-0.10.8-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
@@ -55,7 +55,7 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 | --- | --- |
 | 多模态节点画布 | 文本、图像、视频、音频、逐帧动画、Markdown、分镜、全景、3D 导演台、源文件和画布笔记统一连接。支持小地图分类统计、远景轻节点与渐进显示；原图与画布数据保留。 |
 | 帧动画编辑与导出 | 导入或生成 Sprite Sheet，校正宫格、排序或停用帧、调整偏移、帧率与循环。桌面端通过 Rust 处理并导出 GIF、PNG 序列帧或 PNG 图集 + JSON，预览与导出共用帧编排。 |
-| AI 与工作流 | 云端模型、自定义模型执行协议与试跑、CCC 统一入口管理多分组 Key、按模型自动匹配、ComfyUI 多服务器、RunningHub 云工作流/AI 应用、通用工作流 API（含 AutoDL H3 模板）、Dreamina 和本地 ONNX 推理。内置 DLSS5 图片/视频材质增强模板，目标 ComfyUI 需安装对应节点；上传、进度和任务恢复按平台处理。 |
+| AI 与工作流 | 云端模型、自定义模型执行协议与试跑、CCC 统一入口管理多分组 Key、按模型自动匹配、ComfyUI 多服务器与本地管理（模型去重、运行控制台）、RunningHub 云工作流/AI 应用、通用工作流 API（含 AutoDL H3 模板）、Dreamina 和本地 ONNX 推理。内置 DLSS5 图片/视频材质增强模板，目标 ComfyUI 需安装对应节点；上传、进度和任务恢复按平台处理。 |
 | 用户插件 | 从本地、市场或 GitHub Release 安装 JavaScript / 可信 Python 插件，扩展工具、节点与宿主管理的界面。JavaScript 使用 QuickJS 沙箱；Python 拥有当前用户权限。入口摘要与完整 revision 摘要共同校验，停用或换版本后旧调用不能继续写回。 |
 | 剧本与分镜制作 | 原著章节浏览、分集创作工作台、剧本快照、镜头改稿与补图，准备配音/视频/导演节点，并把对白字幕与已就绪配音推送时间轴。角色动作素材可通过 @ 引用。 |
 | 内置视频剪辑 | 独立编辑器支持多轨编排、裁剪与分割、画面变换、转场、文字、贴纸和音量调整，可无损直通或合成导出。MCP 另有创建/修改工程、后台导出、媒体探测与抽帧入口。 |

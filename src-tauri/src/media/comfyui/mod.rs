@@ -15,6 +15,10 @@
 pub mod installation;
 pub mod launch_settings;
 pub mod management;
+pub mod model_dedupe;
+pub mod model_dedupe_links;
+pub mod model_dedupe_history;
+pub mod runtime_console;
 
 use launch_settings::ComfyUILaunchSettings;
 use serde::{Deserialize, Serialize};
@@ -591,29 +595,14 @@ fn build_comfy_args(
     Ok(args)
 }
 
-/// 在 Windows 新终端窗口中启动 ComfyUI
+/// 仅保留无法直接启动 Python 的旧整合包兜底；此模式不能捕获输出。
 #[cfg(windows)]
-fn launch_windows(app: &tauri::AppHandle, comfy_path: &str, settings: &ComfyUILaunchSettings) -> Result<String, String> {
-    let root = Path::new(comfy_path);
-
-    // 1) 首选：直接启动 main.py —— 可注入 API/CORS 参数，跳过启动器的 custom_nodes 检测
-    if let Some(working_dir) = find_main_py(root) {
-        crate::path_policy::validate_comfyui_installation_file(app, &working_dir.join("main.py"), root)?;
-        if let Some(python) = find_python(&working_dir, root) {
-            let args = build_comfy_args(root, &working_dir, settings)?;
-            spawn_new_console(&python, &args, &working_dir)?;
-            return Ok(format!(
-                "ComfyUI 已启动（API 模式）\n{}",
-                working_dir.display()
-            ));
-        }
-    }
-
+fn launch_external_windows(app: &tauri::AppHandle, root: &Path, settings: &ComfyUILaunchSettings) -> Result<String, String> {
     if settings.requires_direct_launch() {
         return Err("当前安装只能使用启动器或批处理启动，无法应用已保存的启动设置；请补齐 main.py 与配套 Python，或先恢复默认设置".to_string());
     }
 
-    // 2) 兜底：便携版 bat（GPU 优先）
+    // 便携版 bat（GPU 优先）
     for script in &FALLBACK_SCRIPTS {
         let script_path = root.join(script);
         if script_path.is_file() {
@@ -622,7 +611,7 @@ fn launch_windows(app: &tauri::AppHandle, comfy_path: &str, settings: &ComfyUILa
         }
     }
 
-    // 3) 兜底：启动器 exe（秋叶启动器 / Comfy Desktop Electron）
+    // 启动器 exe（秋叶启动器 / Comfy Desktop Electron）
     for launcher in &FALLBACK_LAUNCHERS {
         let launcher_path = root.join(launcher);
         if launcher_path.is_file() {
@@ -631,12 +620,7 @@ fn launch_windows(app: &tauri::AppHandle, comfy_path: &str, settings: &ComfyUILa
         }
     }
 
-    Err(format!(
-        "在目录 {} 中未找到 ComfyUI。\n\
-         支持：GitHub 源码版 / 秋叶整合包（含 main.py）、官方便携版（ComfyUI/main.py）、\n\
-         官方 Comfy Desktop（选择安装基目录，如 F:\\ComfyUI）。",
-        comfy_path
-    ))
+    Err("未找到可用的 ComfyUI main.py、Python 或受支持的启动入口，请检查安装目录。".into())
 }
 
 /// 通过 cmd 内建 start 在全新控制台中运行命令。
@@ -690,74 +674,24 @@ fn run_exe_new_console(exe_path: &Path) -> Result<String, String> {
     Ok("ComfyUI 启动器已启动".into())
 }
 
-/// 用 cmd /k 在新控制台启动进程（保留窗口以便查看服务日志）
-#[cfg(windows)]
-fn spawn_new_console(program: &str, args: &[String], working_dir: &Path) -> Result<(), String> {
-    let program_normalized = program.replace('/', "\\");
-    let args_joined = args
-        .iter()
-        .map(|arg| quote_cmd_arg(arg))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let inner = format!(r#"cmd /k ""{}" {}""#, program_normalized, args_joined);
-    start_new_console(&inner, working_dir, "启动 ComfyUI 失败")
-}
-
-#[cfg(windows)]
-fn quote_cmd_arg(arg: &str) -> String {
-    if arg.is_empty() || arg.contains([' ', '\t', '"']) {
-        format!(r#""{}""#, arg.replace('"', r#"\""#))
-    } else {
-        arg.to_string()
-    }
-}
-
-/// 非 Windows 系统
-#[cfg(not(windows))]
-fn launch_unix(app: &tauri::AppHandle, comfy_path: &str, settings: &ComfyUILaunchSettings) -> Result<String, String> {
-    let root = Path::new(comfy_path);
-
-    let working_dir =
-        find_main_py(root).ok_or_else(|| format!("在目录 {} 中未找到 main.py。", comfy_path))?;
-    crate::path_policy::validate_comfyui_installation_file(app, &working_dir.join("main.py"), root)?;
-
-    let python = find_python(&working_dir, root).unwrap_or_else(|| "python3".to_string());
-
-    let args = build_comfy_args(root, &working_dir, settings)?;
-
-    Command::new(&python)
-        .args(args)
-        .current_dir(&working_dir)
-        .spawn()
-        .map_err(|e| format!("启动 ComfyUI 失败: {e}"))?;
-
-    Ok("ComfyUI 已启动（API 模式）".into())
-}
-
 /// Tauri command: 启动 ComfyUI
 #[tauri::command]
 pub async fn launch_comfyui(
     webview: tauri::Webview,
     app: tauri::AppHandle,
     comfy_path: String,
-) -> Result<String, String> {
+) -> Result<runtime_console::ComfyUIRuntimeStartResult, String> {
     // 只有自有本地窗口能触发进程启动；目录内容仍由下面的已知文件名探测约束。
     crate::path_policy::ensure_trusted_caller(&webview)?;
+    if webview.label() != "main" { return Err("仅主窗口可以通过安装路径启动 ComfyUI".into()); }
     let _operation_guard = management::lock_operations().await;
     let path = installation::authorize_installation(&app, &comfy_path).await?;
-    let settings = launch_settings::load_settings(&app)?;
-    let comfy_path = path.to_string_lossy();
-
-    #[cfg(windows)]
-    let result = launch_windows(&app, &comfy_path, &settings);
-
-    #[cfg(not(windows))]
-    let result = launch_unix(&app, &comfy_path, &settings);
-
-    if result.is_ok() {
-        launch_settings::record_launch_port(settings.port);
-    }
-    result
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    let launch_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || runtime_console::launch_authorized(&launch_app, &path))
+        .await.map_err(|_| "ComfyUI 启动任务中断，请查看运行状态".to_string())??;
+    runtime_console::notify_main_started(&app, &result);
+    Ok(result)
 }
 
 /// 把下载结果告诉 ComfyUI 页面。wry 默认把下载标记为已处理，WebView2 既不弹「另存为」

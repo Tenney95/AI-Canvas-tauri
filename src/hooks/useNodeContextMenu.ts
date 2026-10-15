@@ -63,9 +63,22 @@ export function useNodeContextMenu() {
   });
   const [characterCaptureNodeId, setCharacterCaptureNodeId] = useState<string | null>(null);
   const [pendingPluginTool, setPendingPluginTool] = useState<PendingPluginTool | null>(null);
+  const saveAsRuntimeRef = useRef<{ controller: AbortController; saving: boolean; lastProgressAt: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const closePluginToolDialog = useCallback(() => setPendingPluginTool(null), []);
+  const cancelSaveAsDownload = useCallback(() => {
+    if (saveAsRuntimeRef.current?.saving) return;
+    saveAsRuntimeRef.current?.controller.abort();
+    useAppStore.getState().setNodeOutputDownload(null);
+  }, []);
+
+  useEffect(() => () => {
+    if (!saveAsRuntimeRef.current) return;
+    saveAsRuntimeRef.current?.controller.abort();
+    saveAsRuntimeRef.current = null;
+    useAppStore.getState().setNodeOutputDownload(null);
+  }, []);
 
   const closeMenu = useCallback(() => {
     setMenu({ visible: false, position: { x: 0, y: 0 }, nodeId: null, textSelection: null });
@@ -418,7 +431,7 @@ export function useNodeContextMenu() {
     && (!!nodeData?.filePath || !!nodeData?.imageUrl || !!nodeData?.videoUrl || !!nodeData?.audioUrl || !!nodeData?.output);
 
   const handleSaveAs = useCallback(async () => {
-    if (!menu.nodeId) return;
+    if (!menu.nodeId || saveAsRuntimeRef.current) return;
     const node = nodes.find((n) => n.id === menu.nodeId);
     const data = node?.data as BaseNodeData | undefined;
     if (!data) {
@@ -428,6 +441,10 @@ export function useNodeContextMenu() {
     }
 
     const mediaUrl = data.imageUrl || data.videoUrl || data.audioUrl || undefined;
+    const runtime = { controller: new AbortController(), saving: false, lastProgressAt: 0 };
+    saveAsRuntimeRef.current = runtime;
+    const fileName = (data.fileName || data.label || t('节点文件')).split(/[/\\]/).pop() || t('节点文件');
+    closeMenu();
     try {
       const result = await saveNodeOutputToFile({
         filePath: data.filePath,
@@ -435,14 +452,27 @@ export function useNodeContextMenu() {
         textOutput: data.output,
         nodeType: nodeType!,
         fileName: data.fileName || data.label,
+        signal: runtime.controller.signal,
+        onProgress: (progress) => {
+          if (saveAsRuntimeRef.current !== runtime || runtime.controller.signal.aborted) return;
+          runtime.saving = progress.phase === 'saving';
+          const now = Date.now();
+          if (progress.transferredBytes === 0 || runtime.saving || now - runtime.lastProgressAt >= 100) {
+            runtime.lastProgressAt = now;
+            useAppStore.getState().setNodeOutputDownload({ ...progress, fileName });
+          }
+        },
       });
-      closeMenu();
-      if (result) {
+      if (result && !runtime.controller.signal.aborted) {
         useAppStore.getState().showToast(t('文件已保存'));
       }
     } catch {
-      useAppStore.getState().showToast(t('文件保存失败'));
-      closeMenu();
+      if (!runtime.controller.signal.aborted) useAppStore.getState().showToast(t('文件保存失败'));
+    } finally {
+      if (saveAsRuntimeRef.current === runtime) {
+        saveAsRuntimeRef.current = null;
+        useAppStore.getState().setNodeOutputDownload(null);
+      }
     }
   }, [menu.nodeId, nodeType, nodes, closeMenu, t]);
 
@@ -535,6 +565,7 @@ export function useNodeContextMenu() {
     showInFolder,
     handleSaveAs,
     showSaveAs,
+    cancelSaveAsDownload,
     handleOpenInPS,
     showOpenInPS,
     handleEditVideo,

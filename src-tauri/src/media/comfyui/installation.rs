@@ -120,7 +120,7 @@ pub(crate) fn privacy_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
-fn storage_directory<R: Runtime>(app: &AppHandle<R>, create: bool) -> Result<Option<PathBuf>, String> {
+pub(super) fn storage_directory<R: Runtime>(app: &AppHandle<R>, create: bool) -> Result<Option<PathBuf>, String> {
     isolate_private_storage(app)?;
     let directory = private_directory(app)?;
     match fs::symlink_metadata(&directory) {
@@ -289,6 +289,11 @@ fn persist_installation<R: Runtime>(app: &AppHandle<R>, expected: &Path) -> Resu
     write_record_at(&directory, &root)
 }
 
+/// 当前已记住的安装根，只供原生运行状态匹配，不授予通用文件权限。
+pub(super) fn current_installation_root(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    saved_installation(app)
+}
+
 /// 只从已保存的原生安装授权恢复；管理会话复核不能弹确认或依赖易失 fs scope。
 pub(super) fn reauthorize_installation(app: &AppHandle, expected: &Path) -> Result<PathBuf, String> {
     let root = saved_installation(app)?
@@ -349,6 +354,9 @@ pub fn get_comfyui_installation(webview: Webview, app: AppHandle) -> Result<Opti
 pub async fn select_comfyui_installation(webview: Webview, app: AppHandle) -> Result<Option<String>, String> {
     ensure_main_caller(&webview)?;
     let _guard = super::management::lock_operations().await;
+    if super::runtime_console::has_active_owned_run(&app) {
+        return Err("请先在 ComfyUI 运行输出页停止本应用启动的服务，再更换安装目录".to_string());
+    }
     if app.get_webview_window("comfyui-settings").is_some() {
         return Err("请先关闭 ComfyUI 设置窗口，再更换安装目录".to_string());
     }
@@ -364,6 +372,7 @@ pub async fn select_comfyui_installation(webview: Webview, app: AppHandle) -> Re
     let path = selected.into_path().map_err(|_| "请选择本机 ComfyUI 安装目录".to_string())?;
     let root = validate_installation(&app, &path.to_string_lossy())?;
     persist_installation(&app, &root)?;
+    super::management::invalidate_management_cache(&app);
     Ok(Some(root.to_string_lossy().into_owned()))
 }
 

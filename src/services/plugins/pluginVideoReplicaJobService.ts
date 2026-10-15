@@ -20,7 +20,7 @@ import { createControlledEditor, updateControlledEditor } from '../videoEditorCo
 import { probeControlledNode } from '../videoEditorInspectionService';
 import { createVideoInput, probeVideoSource } from '../videoEditorMediaService';
 import { startControlledExport, getControlledExport, cancelControlledExport } from '../videoEditorExportService';
-import { buildPluginModelCatalog } from './pluginModelCatalog';
+import { buildPluginModelCatalog, getPluginVideoReplicaSupport } from './pluginModelCatalog';
 import { executeNodePluginTool, executePluginUiHostEffect } from './pluginRuntime';
 import { mintPluginInvocationResources, clearPluginInvocationResources, resolvePluginResourceHostUrl, resolvePluginMediaWorkspaceInputs, type PluginResourceReadContext } from './pluginResourceService';
 import { PLUGIN_HOST } from './pluginHost';
@@ -220,9 +220,8 @@ export async function startPluginVideoReplicaJob(context: StartContext, request:
     const selected = catalog.find((model) => model.id === request.modelId && model.category === 'video');
     if (!selected) throw new ReplicaFailure('请选择当前应用可用的视频模型或工作流');
     const model = resolveMediaModel('video', request.modelId);
-    if (!['general', 'comfyui', 'volcengine'].includes(model.provider)) {
-      throw new ReplicaFailure('一键全片复刻当前支持已配置中转协议、ComfyUI 和火山方舟；此通道请使用高级物料流程');
-    }
+    const replicaSupport = getPluginVideoReplicaSupport(model.provider);
+    if (!replicaSupport.supported) throw new ReplicaFailure(replicaSupport.reason);
     const url = await resolvePluginResourceHostUrl(context.resourceReadContext, request.resourceId);
     const sourceInput = (await resolvePluginMediaWorkspaceInputs(context.resourceReadContext, context.resources))[0];
     const sourceData = useAppStore.getState().nodes.find((node) => node.id === context.nodeId)!.data;

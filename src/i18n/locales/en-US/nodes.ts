@@ -519,7 +519,6 @@ const nodes = {
   // ── 图像编辑 / 超分 / 主体识别 ──
   '主体识别仅桌面端可用': 'Subject detection is available on desktop only',
   '请先在项目中使用主体识别': 'Use subject detection in the project first',
-  '正在下载主体识别模型…': 'Downloading the subject detection model…',
   '钢笔裁切输出': 'Pen crop output',
   '扩图输出': 'Expand output',
   '删除失败，请重试': 'Deletion failed. Please try again',

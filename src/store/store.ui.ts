@@ -4,8 +4,9 @@
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { ReversePromptRequest } from '../types';
-import type { AssetFileEntry, AssetFolderSelection, FileTransferOptions } from '../services/fileService';
+import type { AssetFileEntry, AssetFolderSelection, FileTransferOptions, NodeOutputDownloadProgress } from '../services/fileService';
 import type { AssetImageRecord, AssetImageSaveInput } from '../types/assetImage';
+import type { AppUpdateProgress } from '../services/updateService';
 
 export type SettingsTab = 'general' | 'appearance' | 'files' | 'api' | 'shortcuts' | 'comfyui' | 'storage' | 'plugins' | 'mcp';
 export const NEW_API_KEY_CONNECTION_ID = '__new__';
@@ -79,6 +80,12 @@ export interface UISlice {
   reversePromptRequest: ReversePromptRequest | null;
   /** 仅当前运行期使用的 ComfyUI 节点进度；不进入项目节点数据或 IndexedDB。 */
   comfyNodeProgress: Record<string, ComfyNodeProgress>;
+  /** 吉祥物与关于窗口共用的应用更新进度，不持久化。 */
+  appUpdateProgress: AppUpdateProgress | null;
+  setAppUpdateProgress: (progress: AppUpdateProgress) => void;
+  /** 节点另存为的下载展示，不持久化；取消句柄留在画布 Hook。 */
+  nodeOutputDownload: (NodeOutputDownloadProgress & { fileName: string }) | null;
+  setNodeOutputDownload: (progress: UISlice['nodeOutputDownload']) => void;
   setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
   setSettingsInitialTab: (tab: SettingsTab | null) => void;
   /** 打开 API Key 页的指定连接，可同时展开模型参数；不传连接 id 时打开新建弹窗。 */
@@ -154,6 +161,10 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   pendingPresetAction: null,
   reversePromptRequest: null,
   comfyNodeProgress: {},
+  appUpdateProgress: null,
+  setAppUpdateProgress: (progress) => set({ appUpdateProgress: progress }),
+  nodeOutputDownload: null,
+  setNodeOutputDownload: (progress) => set({ nodeOutputDownload: progress }),
 
   setSettingsOpen: (open, tab) => set(open
     ? {

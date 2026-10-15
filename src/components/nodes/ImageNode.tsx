@@ -823,12 +823,14 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     upscaleProgress,
     downloadPrompt,
     isDownloadingModel,
+    modelDownloadProgress,
     handleUpscale,
     handleDownloadConfirm,
     handleDownloadCancel,
     isMattingRunning,
     mattingDownloadPrompt,
     isDownloadingMattingModel,
+    mattingDownloadProgress,
     handleSubjectMatting,
     handleMattingDownloadConfirm,
     handleMattingDownloadCancel,
@@ -1173,6 +1175,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         type="upscale"
         showPrompt={downloadPrompt}
         showDownloading={isDownloadingModel}
+        progress={modelDownloadProgress}
         onConfirm={handleDownloadConfirm}
         onCancel={handleDownloadCancel}
       />
@@ -1182,6 +1185,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         type="matting"
         showPrompt={mattingDownloadPrompt}
         showDownloading={isDownloadingMattingModel}
+        progress={mattingDownloadProgress}
         onConfirm={handleMattingDownloadConfirm}
         onCancel={handleMattingDownloadCancel}
       />

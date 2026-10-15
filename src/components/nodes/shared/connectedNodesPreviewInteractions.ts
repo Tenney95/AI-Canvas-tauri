@@ -21,7 +21,8 @@ export function calculateReferenceFan(
     return REFERENCE_FAN_THUMB_SIZE / 2 * (Math.abs(Math.cos(radians)) + Math.abs(Math.sin(radians))) + 6;
   };
   const points = (inward: boolean) => Array.from({ length: total }, (_, index) => {
-    const degrees = total === 1 ? 45 : 90 - index * 90 / (total - 1);
+    // 两份素材对称靠近圆弧中线，保留与三份素材相同的相邻间距。
+    const degrees = total === 1 ? 45 : total === 2 ? 67.5 - index * 45 : 90 - index * 90 / (total - 1);
     const angle = degrees * Math.PI / 180;
     const direction = inward ? 1 : -1;
     return {

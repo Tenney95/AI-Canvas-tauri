@@ -36,6 +36,40 @@ describe('provider video capability editor normalization', () => {
     expect(createEditableVideoCapability()).toEqual({});
   });
 
+  it.each([
+    [undefined, ''],
+    [true, 'supported'],
+    [false, 'unsupported'],
+  ] as const)('exposes the saved audio declaration %s without replacing it with a default', (supportsAudio, value) => {
+    const html = renderToStaticMarkup(createElement(VideoCapabilityEditor, {
+      model: { id: 'video', name: 'Video', category: 'video', provider: 'custom', videoCapability: { supportsAudio } },
+      onChange: () => undefined, onApplySeedanceTemplate: () => undefined,
+      onApplyH3Template: () => undefined, onClose: () => undefined,
+    }));
+    const audioSelect = html.match(/<select[^>]*name="video-audio-capability"[^>]*>[\s\S]*?<\/select>/)?.[0];
+    expect(audioSelect).toBeDefined();
+    expect(audioSelect).toContain(`value="${value}" selected=""`);
+    expect(audioSelect).toContain('未声明（接口默认）');
+    expect(audioSelect).toContain('支持（可切换有声/无声）');
+    expect(audioSelect).toContain('不支持生成音轨');
+  });
+
+  it('allows correcting a legacy hidden audio toggle without losing reference audio settings', () => {
+    const model: ProviderModelSelection = {
+      id: 'dreamina-seedance-2-0-260128-max', name: 'Seedance', category: 'video', provider: 'custom',
+      videoCapability: { supportsAudio: true, supportsStandaloneAudio: true, maxAudioReferences: 3 },
+      executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+        submit: { method: 'POST', path: '/videos', body: { model: '{{model}}', prompt: '{{prompt}}' } },
+        response: { type: 'json', result: { urlPath: 'url' } } } },
+    };
+    expect(() => assertProviderModelsVideoCapabilities([model])).toThrow('音频开关');
+    const corrected = { ...model, videoCapability: createEditableVideoCapability({ ...model.videoCapability, supportsAudio: undefined }) };
+    expect(() => assertProviderModelsVideoCapabilities([corrected])).not.toThrow();
+    expect(corrected.videoCapability).toMatchObject({ supportsStandaloneAudio: true, maxAudioReferences: 3 });
+    expect(model.videoCapability?.supportsAudio).toBe(true);
+    expect(() => assertProviderModelsVideoCapabilities([{ ...model, videoCapability: undefined }])).not.toThrow();
+  });
+
   it('clones nested operation and input-mode overrides before editing', () => {
     const source: VideoModelCapability = {
       ratios: ['adaptive'],
