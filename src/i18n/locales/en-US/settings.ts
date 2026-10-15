@@ -335,6 +335,7 @@ const settings = {
   '外部编辑器': 'External editors',
   '用于图片节点的「在 PS 中打开」': 'For the "Open in PS" action on image nodes',
   '选择 Photoshop.exe': 'Choose Photoshop.exe',
+  '选择 Photoshop.app': 'Choose Photoshop.app',
   '用于视频节点的「在剪映中打开」': 'For the "Open in JianYing" action on video nodes',
   '选择剪映专业版': 'Choose JianYing Pro',
   '用于视频节点的「在 PR 中打开」': 'For the "Open in PR" action on video nodes',

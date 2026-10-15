@@ -23,6 +23,9 @@ import {
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
 
+const isMacOS = typeof navigator !== 'undefined'
+  && (/mac/i.test(navigator.platform || '') || /Macintosh|Mac OS X/.test(navigator.userAgent || ''));
+
 interface ExternalEditorRow {
   id: string;
   label: string;
@@ -129,12 +132,20 @@ export default function FileAppSettings({ active }: { active: boolean }) {
     title: string,
     name: string,
     patch: (path: string) => Record<string, string>,
+    currentPath?: string,
   ) => {
     try {
+      const isMacPath = (p: string) => p.startsWith('/') || p.startsWith('~');
+      const defaultPath = isMacOS
+        ? (currentPath?.trim() && isMacPath(currentPath.trim()) ? currentPath.trim() : '/Applications')
+        : (currentPath?.trim() || undefined);
+
       const selected = await openDialog({
         multiple: false,
         title,
-        filters: [{ name, extensions: ['exe', 'app'] }],
+        filters: [{ name, extensions: [isMacOS ? 'app' : 'exe'] }],
+        defaultPath,
+        ...(isMacOS ? { canCreateDirectories: false } : {}),
       });
       if (selected && typeof selected === 'string') {
         updateConfig(patch(selected));
@@ -166,21 +177,36 @@ export default function FileAppSettings({ active }: { active: boolean }) {
       label: 'Photoshop',
       path: config.photoshopPath,
       description: t('用于图片节点的「在 PS 中打开」'),
-      onChoose: () => chooseApplication(t('选择 Photoshop.exe'), 'Photoshop', (photoshopPath) => ({ photoshopPath })),
+      onChoose: () => chooseApplication(
+        isMacOS ? t('选择 Photoshop.app') : t('选择 Photoshop.exe'),
+        'Photoshop',
+        (photoshopPath) => ({ photoshopPath }),
+        config.photoshopPath,
+      ),
     },
     {
       id: 'jianying',
       label: '剪映专业版',
       path: config.jianyingPath,
       description: t('用于视频节点的「在剪映中打开」'),
-      onChoose: () => chooseApplication(t('选择剪映专业版'), '剪映专业版', (jianyingPath) => ({ jianyingPath })),
+      onChoose: () => chooseApplication(
+        t('选择剪映专业版'),
+        '剪映专业版',
+        (jianyingPath) => ({ jianyingPath }),
+        config.jianyingPath,
+      ),
     },
     {
       id: 'premiere',
       label: 'Adobe Premiere Pro',
       path: config.premierePath,
       description: t('用于视频节点的「在 PR 中打开」'),
-      onChoose: () => chooseApplication(t('选择 Adobe Premiere Pro'), 'Adobe Premiere Pro', (premierePath) => ({ premierePath })),
+      onChoose: () => chooseApplication(
+        t('选择 Adobe Premiere Pro'),
+        'Adobe Premiere Pro',
+        (premierePath) => ({ premierePath }),
+        config.premierePath,
+      ),
     },
   ];
 
