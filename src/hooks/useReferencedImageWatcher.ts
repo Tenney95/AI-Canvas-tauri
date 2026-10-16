@@ -202,7 +202,9 @@ export function useReferencedImageWatcher(): void {
                 const normalized = normalizeWatchedPath(eventPath);
                 // 缓存目录创建或写入不能使同目录全部原图失效；分组和外部同名目录保留。
                 if (cacheDirectory && (normalized === cacheDirectory || normalized.startsWith(`${cacheDirectory}/`))) return [];
-                return [normalized, normalizeWatchedPath(parentDirectory(eventPath))];
+                // 文件事件只刷新该文件；原子替换会携带原图路径，不能把临时文件写入
+                // 扩大为同目录全部图片失效。仅原生直接报告目录路径时按目录刷新。
+                return [normalized];
               }),
             );
             const affected = paths.filter((path) => {

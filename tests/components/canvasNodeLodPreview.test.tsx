@@ -4,7 +4,7 @@ const driver = vi.hoisted(() => ({
   states: [] as unknown[], refs: [] as Array<{ current: unknown }>,
   effects: [] as Array<{ deps?: readonly unknown[]; cleanup?: () => void }>,
   pending: [] as Array<() => void>, stateIndex: 0, refIndex: 0, effectIndex: 0,
-  image: vi.fn(), video: vi.fn(), unavailable: vi.fn(), revision: 0,
+  image: vi.fn(), cached: vi.fn(), video: vi.fn(), unavailable: vi.fn(), revision: 0,
   runtime: null as null | {
     prepareDisplay: (key: object, work: () => Promise<void>, nodeId?: string) => () => void;
     enqueueDisplay: (key: object, work: () => void, nodeId?: string) => () => void;
@@ -47,7 +47,9 @@ vi.mock('../../src/hooks/useReferencedImageWatcher', () => ({
     withPreviewRevision: (source: string, revision: number) => revision ? `${source}?_refresh=${revision}` : source,
 }));
 vi.mock('../../src/hooks/useCanvasNodeLod', () => ({ CanvasNodeLodContext: {}, useCanvasNodeLodPreviewRevision: () => driver.revision }));
-vi.mock('../../src/components/nodes/shared/image/canvasImagePreviewCache', () => ({ acquireCanvasImagePreview: driver.image }));
+vi.mock('../../src/components/nodes/shared/image/canvasImagePreviewCache', () => ({
+  acquireCanvasImagePreview: driver.image, acquireCachedCanvasImagePreview: driver.cached,
+}));
 vi.mock('../../src/components/nodes/shared/video/canvasVideoPreviewCache', () => ({ acquireCanvasVideoPoster: driver.video }));
 import Preview from '../../src/components/nodes/shared/CanvasNodeLodPreview';
 
@@ -85,12 +87,67 @@ function deferred<T>() {
 function unmount() { driver.effects.forEach((effect) => effect.cleanup?.()); driver.effects = []; }
 beforeEach(() => {
   driver.states = []; driver.refs = []; driver.effects = []; driver.pending = [];
-  driver.image.mockReset(); driver.video.mockReset(); driver.unavailable.mockReset();
+  driver.image.mockReset(); driver.cached.mockReset().mockReturnValue(null); driver.video.mockReset(); driver.unavailable.mockReset();
   driver.revision = 0; driver.runtime = null;
 });
 afterEach(unmount);
 
 describe('canvas lightweight media preview', () => {
+  it('shows ready cached pixels without waiting for the interaction queue and releases its lease on unmount', async () => {
+    const prepareDisplay = vi.fn();
+    const enqueueDisplay = vi.fn();
+    driver.runtime = { prepareDisplay, enqueueDisplay };
+    const lease = { src: 'blob:already-ready', maxEdge: 256, release: vi.fn() };
+    driver.cached.mockReturnValue(lease);
+    render();
+    await Promise.resolve();
+    const image = render().image!;
+    expect(image.src).toBe(lease.src);
+    expect(driver.cached).toHaveBeenCalledWith(base.data.imageUrl, 256, expect.any(AbortSignal), 'project-a');
+    expect(prepareDisplay).not.toHaveBeenCalled();
+    expect(driver.image).not.toHaveBeenCalled();
+    expect(image.className).not.toContain('is-ready');
+    await image.onLoad({ currentTarget: { decode: async () => {} } });
+    expect(render().image?.className).toContain('is-ready');
+    expect(enqueueDisplay).not.toHaveBeenCalled();
+    unmount();
+    expect(lease.release).toHaveBeenCalledOnce();
+  });
+
+  it('drops cached load callbacks after a project change and keeps a cache miss behind the original queue', async () => {
+    const prepareDisplay = vi.fn(() => vi.fn());
+    const enqueueDisplay = vi.fn(() => vi.fn());
+    driver.runtime = { prepareDisplay, enqueueDisplay };
+    const lease = { src: 'blob:project-a', maxEdge: 256, release: vi.fn() };
+    driver.cached.mockReturnValueOnce(lease);
+    render();
+    await Promise.resolve();
+    const image = render().image!;
+    const decoding = deferred<void>();
+    const loaded = image.onLoad({ currentTarget: { decode: () => decoding.promise } });
+    expect(render({ ...base, projectId: 'project-b' }).image).toBeUndefined();
+    expect(lease.release).toHaveBeenCalledOnce();
+    expect(prepareDisplay).toHaveBeenCalledOnce();
+    decoding.resolve();
+    await loaded;
+    image.onError();
+    expect(enqueueDisplay).not.toHaveBeenCalled();
+    expect(driver.unavailable).not.toHaveBeenCalled();
+    expect(driver.image).not.toHaveBeenCalled();
+  });
+
+  it('releases a cached lease once and ignores its pending completion after unmount', async () => {
+    const lease = { src: 'blob:already-ready', maxEdge: 256, release: vi.fn() };
+    driver.cached.mockReturnValue(lease);
+    render();
+    const before = driver.states.slice();
+    unmount();
+    await Promise.resolve();
+    expect(driver.states).toEqual(before);
+    expect(lease.release).toHaveBeenCalledOnce();
+    expect(driver.unavailable).not.toHaveBeenCalled();
+  });
+
   it('queues cache acquisition, display and decode completion separately and cancels pending display on unmount', async () => {
     const preparation = new Map<object, () => Promise<void>>();
     const display = new Map<object, () => void>();

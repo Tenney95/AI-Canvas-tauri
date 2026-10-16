@@ -4,6 +4,7 @@ import type { BaseNodeData } from '../../src/types';
 import { createCanvasNoteData } from '../../src/types/canvasNote';
 import { resolveCanvasMentionNodes } from '../../src/components/nodes/shared/mentionEditorSources';
 import {
+  canAnimateCanvasEdgeFlow,
   createCanvasEdgeProjection,
   createCanvasNodeProjectionCache,
   getCanvasNodeById,
@@ -234,5 +235,29 @@ describe('canvas render projection', () => {
     expect(resolveCanvasMentionNodes(target.id, [source, target], edges)).toEqual([
       expect.objectContaining({ id: source.id, label: '远处参考图', outputType: 'image' }),
     ]);
+  });
+
+  it('bounds selected-edge decoration without removing high-fan-out inputs or edge data', () => {
+    const edges: Edge[] = Array.from({ length: 80 }, (_, index) => ({
+      id: `reference-${index}`, source: 'reference', target: `clip-${index}`,
+      data: { inputOrder: index },
+    }));
+    const selected = projectSelectedCanvasEdges(createCanvasEdgeProjection(edges), ['reference'], true);
+
+    expect(selected).toHaveLength(80);
+    expect(selected.filter((edge) => edge.data?.selectedNodeFlowAnimated)).toHaveLength(12);
+    selected.forEach((edge, index) => {
+      expect(edge).toMatchObject({ source: 'reference', target: `clip-${index}`, type: 'selected-node-flow' });
+      expect(edge.data).toMatchObject({ inputOrder: index, selectedNodeFlowBaseType: 'smoothstep' });
+    });
+    expect(edges.every((edge) => edge.data?.selectedNodeFlowAnimated === undefined)).toBe(true);
+  });
+
+  it('keeps ordinary flow masks but rejects long or large offscreen surfaces', () => {
+    expect(canAnimateCanvasEdgeFlow(1024, 768)).toBe(true);
+    expect(canAnimateCanvasEdgeFlow(512, 36_000)).toBe(false);
+    expect(canAnimateCanvasEdgeFlow(3000, 3000)).toBe(false);
+    expect(canAnimateCanvasEdgeFlow(Infinity, 512)).toBe(false);
+    expect(canAnimateCanvasEdgeFlow(Number.NaN, 512)).toBe(false);
   });
 });

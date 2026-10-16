@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCanvasDisplayScheduler } from '../../src/services/canvasDisplayScheduler';
 import { canvasImageTier, createCanvasImageDisplay, prepareCanvasImage, type DisplayImageLease } from '../../src/components/nodes/shared/image/canvasImageDisplay';
 
-const acquire = vi.hoisted(() => vi.fn());
-vi.mock('../../src/components/nodes/shared/image/canvasImagePreviewCache', () => ({ acquireCanvasImagePreview: acquire }));
+const { acquire, cached } = vi.hoisted(() => ({ acquire: vi.fn(), cached: vi.fn() }));
+vi.mock('../../src/components/nodes/shared/image/canvasImagePreviewCache', () => ({
+  acquireCanvasImagePreview: acquire, acquireCachedCanvasImagePreview: cached,
+}));
 
 function fixture() {
   let id = 0;
@@ -31,7 +33,7 @@ function fixture() {
   };
   return { queue, queueForImage, prepare, publish, display, update, frames, tick, settle };
 }
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); });
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(0); cached.mockReset().mockReturnValue(null); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); acquire.mockReset(); });
 
 describe('canvas image preparation', () => {
@@ -84,6 +86,54 @@ describe('canvas image preparation', () => {
 });
 
 describe('canvas image display transitions', () => {
+  it('shows only an existing preview on first entry during interaction and queues a later upgrade', async () => {
+    const f = fixture();
+    const lease = { src: 'blob:cached-small', maxEdge: 256, release: vi.fn() };
+    cached.mockReturnValueOnce(lease);
+    f.queue.interaction(true);
+    f.update(.4);
+    expect(cached).toHaveBeenCalledWith('asset://source.png', 512, expect.any(AbortSignal), 'a');
+    expect(f.publish).toHaveBeenCalledExactlyOnceWith(lease);
+    await f.tick(1000);
+    expect(f.prepare).not.toHaveBeenCalled();
+    expect(lease.release).not.toHaveBeenCalled();
+    f.queue.interaction(false);
+    await f.settle();
+    expect(f.prepare.mock.lastCall?.[1]).toBe(512);
+    f.display.committed(f.publish.mock.lastCall![0]);
+    expect(lease.release).toHaveBeenCalledOnce();
+    f.display.dispose();
+  });
+
+  it('does not prepare a matching cached tier and releases it when a strict-mode effect is disposed', async () => {
+    const f = fixture();
+    const lease = { src: 'blob:cached', maxEdge: 256, release: vi.fn() };
+    cached.mockReturnValueOnce(lease);
+    f.queue.interaction(true);
+    f.update(.2);
+    expect(f.publish).toHaveBeenCalledExactlyOnceWith(lease);
+    f.display.dispose();
+    f.display.dispose();
+    await f.tick(1000);
+    expect(lease.release).toHaveBeenCalledOnce();
+    expect(f.prepare).not.toHaveBeenCalled();
+  });
+
+  it('uses a cached small preview while an initial original request still waits for the interaction queue', async () => {
+    const f = fixture();
+    const lease = { src: 'blob:cached', maxEdge: 512, release: vi.fn() };
+    cached.mockReturnValueOnce(lease);
+    f.queue.interaction(true);
+    f.update(2);
+    expect(f.publish).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(f.prepare).not.toHaveBeenCalled();
+    f.queue.interaction(false);
+    await f.settle();
+    expect(f.prepare.mock.lastCall?.[1]).toBe(0);
+    f.display.dispose();
+    expect(lease.release).toHaveBeenCalledOnce();
+  });
+
   it.each([1, 1.5, 2])('caps only performance previews at DPR %s, keeping the image until the replacement commits', async (dpr) => {
     const f = fixture();
     f.display.viewport(3, 1024, 768, dpr);

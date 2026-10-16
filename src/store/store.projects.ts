@@ -1034,26 +1034,29 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   exportProject: async (id) => {
     const state = get();
-    const project = state.projects.find((item) => item.id === id);
+    const ownerId = seriesOwnerId(state.projects, id);
+    const project = state.projects.find((item) => item.id === ownerId);
     if (!project) return false;
 
-    // 导出读的是 IndexedDB 里已落盘的记录，当前项目必须先把内存改动写回去。
-    if (state.currentProjectId === id) {
+    // 导出整部剧前，先保存当前分集画布与共享角色库。
+    const activeId = state.currentProjectId;
+    if (activeId && seriesOwnerId(state.projects, activeId) === ownerId) {
       if (state.projectLoadStatus !== 'ready') {
         state.showToast('项目尚未成功加载，已阻止导出', 'error');
         return false;
       }
       void get().captureCurrentProjectSnapshot();
-      if (await get().saveCurrentProjectSilent() !== id) {
+      if (await get().saveCurrentProjectSilent() !== activeId || get().currentProjectId !== activeId) {
         get().showToast('项目保存失败，已取消导出', 'error');
         return false;
       }
     }
 
     try {
-      const result = await exportProjectArchive(id);
+      const result = await exportProjectArchive(ownerId);
       if (!result) return false;
-      get().showToast(`已导出「${project.name}」，含 ${result.assetCount} 个素材`);
+      const episodes = result.episodeCount > 0 ? `${result.episodeCount} 个分集、` : '';
+      get().showToast(`已导出「${project.name}」，含 ${episodes}${result.assetCount} 个素材`);
       return true;
     } catch (error) {
       console.error('[项目导出] 失败:', error);
@@ -1064,16 +1067,18 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   duplicateProject: async (id) => {
     const state = get();
-    const project = state.projects.find((item) => item.id === id);
+    const ownerId = seriesOwnerId(state.projects, id);
+    const project = state.projects.find((item) => item.id === ownerId);
     if (!project) return undefined;
 
     // 复制读的是 IndexedDB 里已落盘的记录，当前项目必须先把内存改动写回去。
-    if (state.currentProjectId === id || listEpisodes(state.projects, id).some((e) => e.id === state.currentProjectId)) {
+    const activeId = state.currentProjectId;
+    if (activeId && seriesOwnerId(state.projects, activeId) === ownerId) {
       if (state.projectLoadStatus !== 'ready') {
         state.showToast('项目尚未成功加载，已阻止复制', 'error');
         return undefined;
       }
-      if (await get().saveCurrentProjectSilent() !== state.currentProjectId) {
+      if (await get().saveCurrentProjectSilent() !== activeId || get().currentProjectId !== activeId) {
         get().showToast('项目保存失败，已取消复制', 'error');
         return undefined;
       }
@@ -1081,9 +1086,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
     try {
       const result = await duplicateProjectArchive(
-        id,
+        ownerId,
         `${project.name} 副本`,
-        listEpisodes(get().projects, id).map((episode) => episode.id),
       );
       const copy: CanvasProject = {
         id: result.projectId,
@@ -1093,11 +1097,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         dataFolder: result.dataFolder,
         settings: result.settings,
         snapshot: result.snapshot,
-        series: project.series,
+        series: result.series,
       };
       fileService.registerProjectFolders([copy, ...result.episodes]);
       set((current) => ({ projects: [...current.projects, copy, ...result.episodes] }));
-      get().showToast(`已复制为「${result.projectName}」`);
+      const episodes = result.episodes.length > 0 ? `，含 ${result.episodes.length} 个分集` : '';
+      get().showToast(`已复制为「${result.projectName}」${episodes}`);
       return result.projectId;
     } catch (error) {
       console.error('[项目复制] 失败:', error);
@@ -1125,15 +1130,27 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       dataFolder: result.dataFolder,
       settings: result.settings,
       snapshot: result.snapshot,
+      series: result.series,
     };
-    set((state) => ({ projects: [...state.projects, project] }));
-    // 缺素材不阻断导入，只在提示里说明，与项目加载时保留节点的策略一致。
-    if (result.missingAssetCount > 0) {
-      get().showToast(`已导入「${result.projectName}」，${result.missingAssetCount} 个素材未找到`, 'info');
-    } else {
-      get().showToast(`已导入「${result.projectName}」，含 ${result.assetCount} 个素材`);
+    fileService.registerProjectFolders([project, ...result.episodes]);
+    set((state) => ({ projects: [...state.projects, project, ...result.episodes] }));
+    let opened = false;
+    try {
+      // 项目列表已有全部分集，既有切换流程会打开第一集并加载共享资产。
+      const targetId = resolveOpenTargetId(get().projects, result.projectId);
+      opened = await get().switchProject(result.projectId) === targetId;
+    } catch {
+      // 导入已经落盘，打开失败不能把它误报成导入失败。
     }
-    get().switchProject(result.projectId);
+    const episodes = result.episodes.length > 0 ? `${result.episodes.length} 个分集、` : '';
+    const notices = [
+      `已导入「${result.projectName}」，含 ${episodes}${result.assetCount} 个素材`,
+      ...(result.missingAssetCount > 0 ? [`${result.missingAssetCount} 个素材未找到`] : []),
+      ...result.warnings,
+      ...(!opened ? ['自动打开失败，请从项目库重新打开'] : []),
+    ];
+    // 旧包缺失分集与素材的提示保留在同一条反馈，避免成功提示覆盖原因。
+    get().showToast(notices.join('；'), notices.length > 1 ? 'info' : undefined);
     return result.projectId;
   },
 

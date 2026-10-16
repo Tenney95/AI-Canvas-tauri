@@ -23,6 +23,14 @@ export interface CanvasEdgeProjection {
 let indexedNodes: readonly CanvasNode[] | null = null;
 const indexedNodeById = new Map<string, CanvasNode>();
 const edgeProjectionCache = new WeakMap<readonly Edge[], CanvasEdgeProjection>();
+const MAX_SELECTED_EDGE_FLOW_ANIMATIONS = 12;
+
+/** 按画布坐标保守限制离屏遮罩，避免给每条边新增逐帧缩放订阅。 */
+export function canAnimateCanvasEdgeFlow(maskWidth: number, maskHeight: number): boolean {
+  return maskWidth > 0 && maskHeight > 0
+    && maskWidth <= 4096 && maskHeight <= 4096
+    && maskWidth * maskHeight <= 4 * 1024 * 1024;
+}
 
 function rebuildNodeIndex(nodes: readonly CanvasNode[]): void {
   indexedNodeById.clear();
@@ -234,6 +242,7 @@ export function projectSelectedCanvasEdges(
   if (selectedEdgeIndexes.size === 0) return projection.layeredEdges;
 
   const selectedEdges = [...projection.layeredEdges];
+  let animatedEdges = 0;
   for (const edgeIndex of selectedEdgeIndexes) {
     const edge = projection.layeredEdges[edgeIndex];
     selectedEdges[edgeIndex] = withCanvasEdgeLayer({
@@ -241,6 +250,8 @@ export function projectSelectedCanvasEdges(
       type: 'selected-node-flow',
       data: {
         ...edge.data,
+        // 只限制渲染装饰，完整边、输入引用与剪断交互仍全部保留。
+        selectedNodeFlowAnimated: animatedEdges++ < MAX_SELECTED_EDGE_FLOW_ANIMATIONS,
         selectedNodeFlowBaseType: edge.type === 'smoothstep' || (!edge.type && smoothLine)
           ? 'smoothstep'
           : 'default',

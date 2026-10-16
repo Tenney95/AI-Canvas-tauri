@@ -66,8 +66,10 @@ const canvas = {
   '显示背景网格': 'Show background grid',
   '切换为曲线连线': 'Switch to curved edges',
   '切换为直角连线': 'Switch to orthogonal edges',
+  '隐藏连线': 'Hide edges',
   '连线类型：直角 → 切换为曲线': 'Edge type: orthogonal → switch to curved',
-  '连线类型：曲线 → 切换为直角': 'Edge type: curved → switch to orthogonal',
+  '连线类型：曲线 → 隐藏连线': 'Edge type: curved → hide edges',
+  '连线类型：隐藏 → 切换为直角': 'Edge type: hidden → switch to orthogonal',
 
   // ── CanvasNoteStylePanel ──
   '画布笔记属性': 'Canvas note properties',

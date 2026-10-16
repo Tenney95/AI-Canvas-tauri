@@ -1,4 +1,4 @@
-import { acquireCanvasImagePreview } from './canvasImagePreviewCache';
+import { acquireCachedCanvasImagePreview, acquireCanvasImagePreview } from './canvasImagePreviewCache';
 import { getPerformanceModeBudget } from '../../../../services/performanceModeRuntime';
 
 export interface DisplayQueue {
@@ -87,6 +87,15 @@ export function createCanvasImageDisplay(options: {
     target = edge;
     abort?.();
     const version = ++generation;
+    if (!displayed && !force) {
+      // 首次入场复用现成小图，不等待交互结束；升档和原图仍由原队列调度。
+      const cached = acquireCachedCanvasImagePreview(options.source, edge || 1024, new AbortController().signal, options.projectId);
+      if (cached) {
+        held.add(cached);
+        displayed = { edge: cached.maxEdge, lease: cached };
+        options.publish(cached);
+      }
+    }
     if (!force && displayed?.edge === edge) return;
     const controller = new AbortController();
     let prepared: DisplayImageLease | undefined;

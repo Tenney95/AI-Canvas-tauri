@@ -10,6 +10,7 @@ vi.mock('../../src/services/rasterImageDimensions', () => ({
 
 type Acquire = typeof import('../../src/components/nodes/shared/image/canvasImagePreviewCache').acquireCanvasImagePreview;
 let acquire: Acquire;
+let acquireCached: typeof import('../../src/components/nodes/shared/image/canvasImagePreviewCache').acquireCachedCanvasImagePreview;
 let mode: typeof import('../../src/services/performanceModeRuntime');
 let interacting = false;
 let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
@@ -84,7 +85,9 @@ beforeEach(async () => {
   createUrl = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:preview-${++sequence}`);
   revokeUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
   mode = await import('../../src/services/performanceModeRuntime');
-  acquire = (await import('../../src/components/nodes/shared/image/canvasImagePreviewCache')).acquireCanvasImagePreview;
+  const cache = await import('../../src/components/nodes/shared/image/canvasImagePreviewCache');
+  acquire = cache.acquireCanvasImagePreview;
+  acquireCached = cache.acquireCachedCanvasImagePreview;
 });
 
 afterEach(() => {
@@ -95,6 +98,52 @@ afterEach(() => {
 });
 
 describe('canvas image preview cache', () => {
+  it('acquires only ready project and source-matching previews during interaction without starting work', async () => {
+    const abort = new AbortController();
+    const ready = acquire('asset://localhost/image.png?_refresh=1', 256, abort.signal, 'project-a');
+    await flush();
+    const original = await ready;
+    expect(original).not.toBeNull();
+    original!.release();
+    interacting = true;
+    const cached = acquireCached('asset://localhost/image.png?_refresh=1', 512, abort.signal, 'project-a');
+    expect(cached).toMatchObject({ src: original!.src, maxEdge: 256 });
+    expect(acquireCached('asset://localhost/image.png?_refresh=1', 512, abort.signal, 'project-b')).toBeNull();
+    expect(acquireCached('asset://localhost/image.png?_refresh=2', 512, abort.signal, 'project-a')).toBeNull();
+    expect(acquireCached('asset://localhost/uncached.png', 256, abort.signal, 'project-a')).toBeNull();
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(revokeUrl).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    cached!.release();
+    cached!.release();
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(revokeUrl).toHaveBeenCalledExactlyOnceWith(original!.src);
+  });
+
+  it('bounds total queue waiting when an earlier non-cancellable decode never completes', async () => {
+    let resolveBitmap!: (bitmap: ImageBitmap) => void;
+    const close = vi.fn();
+    bitmapMock.mockImplementationOnce(() => new Promise((resolve) => { resolveBitmap = resolve; }));
+    const stalled = request('asset://localhost/stalled.png');
+    const queued = request('asset://localhost/queued.png');
+    await flush();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(await stalled.promise).toBeNull();
+    expect(await queued.promise).toBeNull();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(bitmapMock).toHaveBeenCalledOnce();
+    // 旧槽继续占用；下一次请求不得越过它启动新的不可取消解码。
+    const later = request('asset://localhost/later.png');
+    await flush();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    resolveBitmap({ close } as unknown as ImageBitmap);
+    await flush();
+    expect(close).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await later.promise).not.toBeNull();
+    later.controller.abort();
+  });
+
   it('tightens only idle memory on a mode switch while preserving active and reusable recent previews', async () => {
     dimensions.height = 4096;
     const active = await lease('asset://localhost/live.png', 1024);

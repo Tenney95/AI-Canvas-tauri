@@ -17,6 +17,7 @@ import { ReactFlow,
   type OnSelectionChangeParams,
   type NodeChange,
   type EdgeTypes,
+  type MiniMapProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import TextNode from './nodes/TextNode';
@@ -53,6 +54,7 @@ import SelectionConnectionHandle from './canvas/SelectionConnectionNode';
 import CanvasEmptyState from './canvas/CanvasEmptyState';
 import HistoryTimelinePanel from './canvas/HistoryTimelinePanel';
 import SelectedNodeFlowEdge from './canvas/SelectedNodeFlowEdge';
+import CanvasEdgeLayer from './canvas/CanvasEdgeLayer';
 import CanvasRadialMenu, { CanvasLongPressIndicator } from './canvas/CanvasRadialMenu';
 import NodePluginToolDialog from './nodes/shared/toolbar/NodePluginToolDialog';
 import NodeOutputDownloadDialog from './shared/NodeOutputDownloadDialog';
@@ -80,6 +82,7 @@ import { useCanvasWheelZoom } from '../hooks/useCanvasWheelZoom';
 import { useCanvasViewportPreferences } from '../hooks/useCanvasViewportPreferences';
 import { getCanvasLockedZoom, normalizeCanvasZoom } from '../utils/canvasViewportPreferences';
 import type { BaseNodeData } from '../types';
+import type { CanvasEdgeDisplayMode } from '../types/canvasEdges';
 import { SHOTLIST_FRAME_SOURCE_TYPES, STORYBOARD_CELL_SOURCE_TYPES } from '../types';
 import type { Node as RFNode, NodeProps, NodeTypes, OnMove } from '@xyflow/react';
 import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
@@ -155,10 +158,20 @@ const nodeTypes: NodeTypes = withNodeRenderBoundaries({
   'ai-app': AiAppNode,
 });
 
+const sharedEdgeType = Object.assign(SelectedNodeFlowEdge, { renderLayer: CanvasEdgeLayer });
 const edgeTypes: EdgeTypes = {
-  default: SelectedNodeFlowEdge,
+  default: sharedEdgeType,
   smoothstep: SelectedNodeFlowEdge,
   'selected-node-flow': SelectedNodeFlowEdge,
+};
+
+// Unmount edge visuals and geometry subscriptions while keeping Flow's connection index.
+function HiddenCanvasEdges() { return null; }
+const hiddenEdgeType = Object.assign(HiddenCanvasEdges, { renderLayer: HiddenCanvasEdges });
+const hiddenEdgeTypes: EdgeTypes = {
+  default: hiddenEdgeType,
+  smoothstep: hiddenEdgeType,
+  'selected-node-flow': hiddenEdgeType,
 };
 
 // ── Stable ReactFlow props (hoisted to avoid new identities every render,
@@ -585,9 +598,9 @@ function CanvasInner({ onReady }: CanvasProps) {
       // 普通平移无需查找控件；缩放只改控件自身，避免根变量让整个媒体子树重算样式。
       if (!refreshTargets && zoom === previousZoom) return;
       const updateLocal = (selector: string, elements: Set<HTMLElement>, property: string, value: number) => {
-        // 性能模式只在首次使用、挂载/可见状态变化时搜索；空结果也缓存。
-        // 普通模式保持原有查询路径，开关切换不影响控件的缩放补偿。
-        if (!getPerformanceModeEnabled() || refreshTargets || !cachedZoomTargetsRef.current.has(elements)) {
+        // 所有模式只在首次使用、挂载/可见状态变化时搜索；空结果也缓存。
+        // 交互中继续更新已淡出的控件，避免退场期间缩放补偿跳变。
+        if (refreshTargets || !cachedZoomTargetsRef.current.has(elements)) {
           canvasRoot.querySelectorAll<HTMLElement>(selector).forEach((element) => elements.add(element));
           cachedZoomTargetsRef.current.add(elements);
         }
@@ -625,10 +638,6 @@ function CanvasInner({ onReady }: CanvasProps) {
 
   const refreshLocalZoomTargets = useCallback(() => {
     if (activeInteractionsRef.current.size === 0) return;
-    if (!getPerformanceModeEnabled()) {
-      updateNodeZoomCompensation(latestCanvasZoomRef.current, true);
-      return;
-    }
     if (zoomTargetsRefreshFrameRef.current) return;
     // 同帧的节点挂载、选中变化与指针穿越共用一次查询，不在每个子元素事件中扫描。
     zoomTargetsRefreshFrameRef.current = requestAnimationFrame(() => {
@@ -638,11 +647,9 @@ function CanvasInner({ onReady }: CanvasProps) {
   }, [updateNodeZoomCompensation]);
 
   const handleZoomTargetPointer = useCallback((event: PointerEvent) => {
-    if (getPerformanceModeEnabled()) {
-      const target = event.target instanceof Element ? event.target.closest(ZOOM_POINTER_CONTEXT) : null;
-      const previous = event.relatedTarget instanceof Element ? event.relatedTarget.closest(ZOOM_POINTER_CONTEXT) : null;
-      if (target === previous) return;
-    }
+    const target = event.target instanceof Element ? event.target.closest(ZOOM_POINTER_CONTEXT) : null;
+    const previous = event.relatedTarget instanceof Element ? event.relatedTarget.closest(ZOOM_POINTER_CONTEXT) : null;
+    if (target === previous) return;
     refreshLocalZoomTargets();
   }, [refreshLocalZoomTargets]);
 
@@ -671,12 +678,10 @@ function CanvasInner({ onReady }: CanvasProps) {
       if (canvasRoot) {
         // 只在交互期间监听挂载/选中与 hover；不读取布局，也不监听自身的 style 写入。
         const observer = new MutationObserver((records) => {
-          const performanceMode = getPerformanceModeEnabled();
           if (records.some((record) => {
             if (record.type === 'attributes') {
               return record.target instanceof Element && record.target.matches('.react-flow__node, .node, .node-toolbar-shell');
             }
-            if (!performanceMode) return true;
             // 图片加载、文本/图标更新不影响可见工具栏目标；只处理相关结构的新增与移除。
             const affectsTargets = (node: Node) => node instanceof Element
               && (node.matches(ZOOM_TARGET_STRUCTURE) || node.querySelector(ZOOM_TARGET_STRUCTURE) !== null);
@@ -870,9 +875,15 @@ function CanvasInner({ onReady }: CanvasProps) {
     ? `rgb(${darkShade + 68} ${darkShade + 68} ${darkShade + 84})`
     : canvasBackground === 'off-white' ? lightDotColor : 'var(--theme-hover)');
   const appearanceGridVisible = appearanceCanvas?.gridVisible ?? true;
-  const [smoothLine, setSmoothLine] = useState(() => localStorage.getItem('canvas-smoothLine') !== 'false');
+  const [edgeDisplayMode, setEdgeDisplayMode] = useState<CanvasEdgeDisplayMode>(() => {
+    const saved = localStorage.getItem('canvas-edgeDisplayMode');
+    if (saved === 'orthogonal' || saved === 'curved' || saved === 'hidden') return saved;
+    return localStorage.getItem('canvas-smoothLine') === 'false' ? 'curved' : 'orthogonal';
+  });
+  const smoothLine = edgeDisplayMode === 'orthogonal';
 
   useEffect(() => { localStorage.setItem('canvas-showGrid', String(showGrid)); }, [showGrid]);
+  useEffect(() => { localStorage.setItem('canvas-edgeDisplayMode', edgeDisplayMode); }, [edgeDisplayMode]);
   useEffect(() => { localStorage.setItem('canvas-smoothLine', String(smoothLine)); }, [smoothLine]);
 
   // Sync existing edges when line type changes
@@ -904,6 +915,21 @@ function CanvasInner({ onReady }: CanvasProps) {
   }, [closeNodeDialog]);
 
   const toggleGrid = useCallback(() => setShowGrid((v) => !v), []);
+  const toggleLine = useCallback(() => {
+    setEdgeDisplayMode((mode) => mode === 'orthogonal' ? 'curved'
+      : mode === 'curved' ? 'hidden' : 'orthogonal');
+  }, []);
+  const handleMiniMapClick = useCallback<NonNullable<MiniMapProps['onClick']>>((event, position) => {
+    const state = useAppStore.getState();
+    if (event.button !== 0 || !state.configHydrated || state.currentProjectId !== currentProjectId
+      || !reactFlowInstance.viewportInitialized) return;
+    wheelZoomCancelRef.current?.();
+    beginUserMove();
+    // 小地图已返回画布坐标；显式保留倍率，避免 setCenter 默认放大。
+    void reactFlowInstance.setCenter(position.x, position.y, {
+      zoom: reactFlowInstance.getZoom(),
+    }).finally(endUserMove);
+  }, [beginUserMove, currentProjectId, endUserMove, reactFlowInstance]);
 
   // ── Connection drop menu ──
   const {
@@ -1240,6 +1266,10 @@ function CanvasInner({ onReady }: CanvasProps) {
   // ── Selection sync ──
   const onSelectionChange = useCallback(
     (changes: OnSelectionChangeParams) => {
+      // 框选及项目恢复也可能选中边，隐藏时始终保留节点选区、取消不可见的边选区。
+      if (edgeDisplayMode === 'hidden' && changes.edges.length) {
+        handleEdgesChange(changes.edges.map((edge) => ({ id: edge.id, type: 'select', selected: false })));
+      }
       const sel = changes.nodes;
       const nonGroup = sel.filter((n) => n.type !== 'group');
       // 框选忽略分组节点：与其它节点一同被选中时，store 选区剔除分组（删除/分组不波及容器）；
@@ -1247,7 +1277,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       const next = nonGroup.length > 0 ? nonGroup : sel;
       setSelectedNodeIds(next.map((n) => n.id));
     },
-    [setSelectedNodeIds],
+    [edgeDisplayMode, handleEdgesChange, setSelectedNodeIds],
   );
 
   // 框选结束后：若分组节点与其它节点一同被框中，取消分组节点的选中，避免随后被一起拖动
@@ -1596,7 +1626,7 @@ function CanvasInner({ onReady }: CanvasProps) {
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
+        edgeTypes={edgeDisplayMode === 'hidden' ? hiddenEdgeTypes : edgeTypes}
         zIndexMode="manual"
         connectionMode={ConnectionMode.Loose}
         connectionRadius={64}
@@ -1634,7 +1664,7 @@ function CanvasInner({ onReady }: CanvasProps) {
         {/* Mini Map — interactive navigator, toggle with M key */}
         {minimapVisible && (
           <>
-            <MiniMapNodeStats />
+            <MiniMapNodeStats onClick={handleMiniMapClick} />
             <RoundedMiniMapMask />
           </>
         )}
@@ -1677,9 +1707,9 @@ function CanvasInner({ onReady }: CanvasProps) {
         <Panel position="bottom-right" className="flex items-center gap-2">
           <CanvasToolbar
             showGrid={showGrid}
-            smoothLine={smoothLine}
+            edgeDisplayMode={edgeDisplayMode}
             onToggleGrid={toggleGrid}
-            onToggleLine={() => setSmoothLine((v) => !v)}
+            onToggleLine={toggleLine}
             mode={viewportPreferences.mode}
             disabled={!viewportPreferences.hydrated}
             minZoom={viewportPreferences.minZoom}

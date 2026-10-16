@@ -15,6 +15,35 @@
   will-change: transform;
 }
 
+.canvas-shared-edge-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.canvas-edge-stroke-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+
+.canvas-edge-stroke-probe {
+  width: 1px;
+  height: 1px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Read the target appearance once, rather than caching a transition midpoint. */
+.canvas-edge-stroke-probe .react-flow__edge-path {
+  transition: none;
+}
+
 .react-flow__panel {
   margin: 8px !important;
 }
@@ -38,51 +67,50 @@
   fill: var(--appearance-edge-selected, var(--brand)) !important;
 }
 
-/* The original edge stays solid; a moving mask reveals a gradient on its path. */
+/* 归一化描边保留流动反馈，避免每条高亮边创建巨幅离屏 mask。 */
 .selected-node-edge-flow {
   fill: none;
   pointer-events: none;
   stroke: var(--appearance-edge-flow, var(--brand-pale));
   stroke-width: 2.25;
   vector-effect: non-scaling-stroke;
-}
-
-.selected-node-edge-flow-mask {
-  mask-type: alpha;
-}
-
-.selected-node-edge-flow-stop {
-  stop-color: var(--theme-text);
-}
-
-.selected-node-edge-flow-stop--edge {
-  stop-opacity: 0;
-}
-
-.selected-node-edge-flow-stop--shoulder {
-  stop-opacity: 0.12;
-}
-
-.selected-node-edge-flow-stop--center {
-  stop-opacity: 0.82;
+  stroke-dasharray: 8 92;
+  stroke-linecap: round;
+  animation: canvas-edge-flow 1600ms linear infinite;
 }
 
 [data-theme='light'] .selected-node-edge-flow {
   stroke: color-mix(in srgb, var(--brand) 82%, black);
 }
 
-[data-theme='light'] .selected-node-edge-flow-stop--shoulder {
-  stop-opacity: 0.1;
+@keyframes canvas-edge-flow {
+  to { stroke-dashoffset: -100; }
 }
 
-[data-theme='light'] .selected-node-edge-flow-stop--center {
-  stop-opacity: 0.68;
-}
-
-/* 拖拽/平移/缩放期间彻底不画流光层：mask + 渐变是 CPU 光栅化，且拖拽时 edgePath 每帧变化
-   会让 animateMotion 每帧重启（光点原地卡在起点，本来也看不出流动）。 */
+/* 交互期间暂停装饰；基础线和连接关系始终保留。 */
 .canvas-interacting .selected-node-edge-flow-group {
   display: none;
+}
+
+.canvas-interacting .selected-node-edge-flow {
+  animation-play-state: paused;
+}
+
+/* 平移/缩放经过长曲线时无需命中透明宽描边，也不应触发悬停剪刀。
+   节点仍参与文件夹、宫格和分镜表的拖入命中检测。 */
+.canvas-interacting .react-flow__edge,
+.canvas-interacting .react-flow__edge path {
+  pointer-events: none;
+}
+
+/* These hit areas are already disabled during gestures. Remove their SVG
+   geometry from rendering until the existing interaction state settles. */
+.canvas-interacting .react-flow__edge-interaction {
+  display: none;
+}
+
+.canvas-interacting .canvas-edge-delete-control {
+  visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

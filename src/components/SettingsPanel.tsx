@@ -35,6 +35,7 @@ import type { BackgroundDetection } from '../services/backgroundService';
 import type { SettingsTab } from '../store/store.ui';
 import { LOCALES, LOCALE_LABELS, getLocale, useT } from '../i18n';
 import { applyNativePerformanceMode, isNativePerformanceModeSupported } from '../services/nativePerformanceModeService';
+import { applyMainWindowWorkArea } from '../services/mainWindowBoundsService';
 
 /** 窗口尺寸预设：每种比例给紧凑 / 标准 / 大屏三档主流尺寸 */
 const WINDOW_ASPECT_OPTIONS: {
@@ -57,18 +58,24 @@ async function applyWindowSize(width: number, height: number): Promise<void> {
     if (await win.isFullscreen()) await win.setFullscreen(false);
     if (await win.isMaximized()) await win.unmaximize();
 
-    let w = width;
-    let h = height;
     const monitor = await currentMonitor();
-    if (monitor) {
-      const maxW = monitor.size.width / monitor.scaleFactor - 40;
-      const maxH = monitor.size.height / monitor.scaleFactor - 80;
-      const scale = Math.min(1, maxW / w, maxH / h);
-      w = Math.round(w * scale);
-      h = Math.round(h * scale);
+    if (monitor && /Macintosh|Mac OS X/.test(navigator.userAgent)) {
+      await applyMainWindowWorkArea(win, monitor, {
+        size: { width, height }, ratio: width / height, center: true,
+      });
+    } else {
+      let w = width;
+      let h = height;
+      if (monitor) {
+        const maxW = monitor.size.width / monitor.scaleFactor - 40;
+        const maxH = monitor.size.height / monitor.scaleFactor - 80;
+        const scale = Math.min(1, maxW / w, maxH / h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+      await win.setSize(new LogicalSize(w, h));
+      await win.center();
     }
-    await win.setSize(new LogicalSize(w, h));
-    await win.center();
   } catch (error) {
     // 权限没配全时 Tauri 会直接 reject，静默 catch 会让人以为按钮没反应
     console.warn('[窗口尺寸] 设置失败:', error);

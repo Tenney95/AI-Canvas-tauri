@@ -4,11 +4,21 @@
  * - 记忆：拖拽缩放结束后把逻辑尺寸写进配置，下次启动恢复（最大化 / 全屏时不记也不恢复）。
  * - 锁定：Tauri / tao 没有原生的比例锁定 API，只能在 resize 结束后纠正一次高度。
  *
- * 两件事共用一个 onResized 监听，防抖等用户松手再动，避免拖动过程中反复 setSize 打架。
+ * Mac 同时按当前屏幕工作区避让 Dock；所有尺寸写入共用防抖队列，避免拖动时打架。
  */
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { isSettingsClosing, registerSettingsProducer } from '../services/configPersistenceQueue';
+import {
+  applyMainWindowWorkArea,
+  MAIN_WINDOW_MIN_WIDTH,
+  MAIN_WINDOW_MIN_HEIGHT,
+  monitorWorkAreaKey,
+  type MainWindowSize,
+} from '../services/mainWindowBoundsService';
+
+export { MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT } from '../services/mainWindowBoundsService';
+export type { MainWindowSize } from '../services/mainWindowBoundsService';
 
 /** 防抖任务可在关闭前立即执行，并等待已经开始的异步保存。 */
 export function createWindowSizeSaveScheduler(save: () => Promise<void>, delay = 300) {
@@ -38,14 +48,6 @@ export function createWindowSizeSaveScheduler(save: () => Promise<void>, delay =
     flush,
     dispose: () => { disposed = true; clearTimeout(timer); },
   };
-}
-
-export const MAIN_WINDOW_MIN_WIDTH = 1000;
-export const MAIN_WINDOW_MIN_HEIGHT = 700;
-
-export interface MainWindowSize {
-  width: number;
-  height: number;
 }
 
 /** 过滤启动、退出或 DPI 切换时系统可能短暂上报的异常尺寸。 */
@@ -85,16 +87,24 @@ export function useMainWindowSize(lockedRatio: number | null): void {
   useEffect(() => {
     if (!configHydrated) return;
     let disposed = false;
-    let unlisten: (() => void) | undefined;
+    const unlisteners: (() => void)[] = [];
+    let workAreaTimer: ReturnType<typeof setInterval> | undefined;
     let scheduler: ReturnType<typeof createWindowSizeSaveScheduler> | undefined;
     let unregisterProducer: (() => void) | undefined;
     // 自己发起的 setSize 也会触发 onResized，靠这个标记避免自激
     let applying = false;
+    const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
+    let workAreaKey = '';
+    let wasMaximized = false;
 
     void (async () => {
       try {
-        const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window');
+        const { getCurrentWindow, LogicalSize, currentMonitor } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
+        wasMaximized = await win.isMaximized();
+        const initialMonitor = isMacOS ? await currentMonitor() : null;
+        if (disposed) return;
+        if (initialMonitor) workAreaKey = monitorWorkAreaKey(initialMonitor);
 
         // 必须先恢复再监听，避免恢复动作或启动期系统事件反过来污染持久化尺寸。
         if (!restored.current) {
@@ -103,21 +113,48 @@ export function useMainWindowSize(lockedRatio: number | null): void {
             width: 0,
             height: 0,
           });
-          if (savedSize && !(await win.isMaximized()) && !(await win.isFullscreen())) {
-            await win.setSize(new LogicalSize(savedSize.width, savedSize.height));
+          if (!(await win.isFullscreen())) {
+            if (initialMonitor) {
+              await applyMainWindowWorkArea(win, initialMonitor, {
+                size: wasMaximized ? undefined : savedSize ?? undefined,
+                fill: wasMaximized,
+              });
+            } else if (savedSize && !wasMaximized) {
+              await win.setSize(new LogicalSize(savedSize.width, savedSize.height));
+            }
           }
         }
         if (disposed) return;
 
         scheduler = createWindowSizeSaveScheduler(async () => {
             try {
-              // 最大化 / 全屏时窗口尺寸由系统决定，既不纠正也不记忆
-              if (await win.isMaximized() || await win.isFullscreen()) return;
+              const [maximized, fullscreen] = await Promise.all([win.isMaximized(), win.isFullscreen()]);
+              if (fullscreen) return;
+              const monitor = isMacOS ? await currentMonitor() : null;
+              if (disposed) return;
+              const nextWorkAreaKey = monitor ? monitorWorkAreaKey(monitor) : '';
+              // Dock 改变后 AppKit 的 isMaximized 可能因旧尺寸不再等于 visibleFrame 而返回 false。
+              const keepMaximized = maximized || (wasMaximized && nextWorkAreaKey !== workAreaKey);
+              if (maximized && !monitor) return;
               const size = (await win.innerSize()).toLogical(await win.scaleFactor());
               let actualSize = normalizeMainWindowSize(size);
-              if (!actualSize) return;
 
-              if (lockedRatio) {
+              if (monitor) {
+                applying = true;
+                try {
+                  const applied = await applyMainWindowWorkArea(win, monitor, {
+                    ratio: lockedRatio,
+                    fill: keepMaximized,
+                  });
+                  actualSize = normalizeMainWindowSize(applied);
+                } finally {
+                  applying = false;
+                }
+                wasMaximized = keepMaximized || await win.isMaximized();
+                workAreaKey = nextWorkAreaKey;
+                // 最大化与小屏临时尺寸不覆盖用户记忆的常规窗口尺寸。
+                if (wasMaximized) return;
+              } else if (lockedRatio && actualSize) {
                 const target = fitMainWindowAspectRatio(actualSize.width, lockedRatio);
                 if (
                   Math.abs(target.width - actualSize.width) > 2
@@ -134,6 +171,7 @@ export function useMainWindowSize(lockedRatio: number | null): void {
                   if (!actualSize) return;
                 }
               }
+              if (!actualSize) return;
 
               const store = useAppStore.getState();
               if (disposed) return;
@@ -147,12 +185,34 @@ export function useMainWindowSize(lockedRatio: number | null): void {
             }
         });
         unregisterProducer = registerSettingsProducer(scheduler.flush);
-        const off = await win.onResized(() => {
+        const schedule = () => {
           if (applying || disposed || isSettingsClosing()) return;
           scheduler?.schedule();
-        });
-        if (disposed) off();
-        else unlisten = off;
+        };
+        const listen = async (subscription: Promise<() => void>) => {
+          const off = await subscription;
+          if (disposed) off();
+          else unlisteners.push(off);
+        };
+        await listen(win.onResized(schedule));
+        if (isMacOS && !disposed) {
+          await listen(win.onScaleChanged(schedule));
+          let focused = await win.isFocused();
+          await listen(win.onFocusChanged(({ payload }) => {
+            focused = payload;
+            if (focused) schedule();
+          }));
+          if (disposed) return;
+          let checking = false;
+          // 系统 Dock 设置变化不一定发窗口 resize；只在前台低频读取系统工作区。
+          workAreaTimer = setInterval(() => {
+            if (!focused || checking || disposed || applying || isSettingsClosing()) return;
+            checking = true;
+            void Promise.all([currentMonitor(), win.isFullscreen()]).then(([monitor, fullscreen]) => {
+              if (!fullscreen && monitor && monitorWorkAreaKey(monitor) !== workAreaKey) schedule();
+            }).catch(() => {}).finally(() => { checking = false; });
+          }, 1500);
+        }
       } catch (error) {
         console.warn('[窗口尺寸] 监听失败:', error);
       }
@@ -162,7 +222,8 @@ export function useMainWindowSize(lockedRatio: number | null): void {
       disposed = true;
       scheduler?.dispose();
       unregisterProducer?.();
-      unlisten?.();
+      clearInterval(workAreaTimer);
+      unlisteners.forEach((off) => off());
     };
   }, [configHydrated, lockedRatio]);
 }

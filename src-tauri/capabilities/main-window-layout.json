@@ -1,0 +1,7 @@
+{
+  "identifier": "main-window-layout",
+  "description": "Allow the main window minimum size to fit the current monitor work area",
+  "platforms": ["macOS"],
+  "windows": ["main"],
+  "permissions": ["core:window:allow-set-min-size"]
+}

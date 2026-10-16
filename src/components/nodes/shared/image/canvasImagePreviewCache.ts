@@ -6,6 +6,7 @@ import { getPerformanceModeBudget, subscribePerformanceMode } from '../../../../
 const MAX_ENCODED_BYTES = 32 * 1024 * 1024;
 const INTERACTION_POLL_MS = 80;
 const DERIVATION_TIMEOUT_MS = 10_000;
+const PREVIEW_WAIT_TIMEOUT_MS = 15_000;
 const entries = new Map<string, Entry>();
 let running = false;
 let pumpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -20,6 +21,7 @@ export interface CanvasImagePreviewLease {
 interface Client {
   resolve?: (value: CanvasImagePreviewLease | null) => void;
   release: () => void;
+  waitTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface Preview {
@@ -37,6 +39,37 @@ interface Entry {
   controller: AbortController;
   preview?: Preview;
   idleSince: number;
+}
+
+function resolveClient(client: Client, lease: CanvasImagePreviewLease | null): void {
+  if (client.waitTimer !== undefined) clearTimeout(client.waitTimer);
+  client.waitTimer = undefined;
+  client.resolve?.(lease);
+  client.resolve = undefined;
+}
+
+function addClient(current: Entry, signal: AbortSignal, resolve?: Client['resolve']): Client {
+  let released = false;
+  const client: Client = {
+    resolve,
+    release: () => {
+      if (released) return;
+      released = true;
+      signal.removeEventListener('abort', client.release);
+      current.clients.delete(client);
+      resolveClient(client, null);
+      if (current.clients.size !== 0) return;
+      if (current.state === 'ready') {
+        current.idleSince = Date.now();
+        pruneIdle();
+      } else discard(current);
+    },
+  };
+  current.clients.add(client);
+  signal.addEventListener('abort', client.release, { once: true });
+  // 包含排队时间；超时仅释放消费者，不能提前腾出不可取消的解码/编码槽。
+  if (resolve) client.waitTimer = setTimeout(client.release, PREVIEW_WAIT_TIMEOUT_MS);
+  return client;
 }
 
 function discard(entry: Entry): void {
@@ -215,8 +248,7 @@ async function pump(): Promise<void> {
   if (preview && entry.clients.size > 0 && !entry.controller.signal.aborted) {
     entry.state = 'ready';
     for (const client of entry.clients) {
-      client.resolve?.({ src: preview.src, release: client.release });
-      client.resolve = undefined;
+      resolveClient(client, { src: preview.src, release: client.release });
     }
   } else {
     for (const client of [...entry.clients]) client.release();
@@ -224,6 +256,25 @@ async function pump(): Promise<void> {
   }
   running = false;
   schedulePump();
+}
+
+/** 仅领取当前项目、完整来源的已就绪小图；不读取磁盘、不启动派生。 */
+export function acquireCachedCanvasImagePreview(
+  source: string,
+  maxEdge: number,
+  signal: AbortSignal,
+  projectId?: string | null,
+): (CanvasImagePreviewLease & { maxEdge: number }) | null {
+  if (signal.aborted || !Number.isFinite(maxEdge) || maxEdge <= 0) return null;
+  pruneIdle();
+  // 画布只有三档，不在每个入场节点上扫描整份缓存。
+  const current = [1024, 512, 256]
+    .filter((edge) => edge <= maxEdge)
+    .map((edge) => entries.get(JSON.stringify([projectId ?? null, source, edge])))
+    .find((entry) => entry?.state === 'ready' && entry.preview && !entry.controller.signal.aborted);
+  if (!current?.preview) return null;
+  const client = addClient(current, signal);
+  return { src: current.preview.src, maxEdge: current.maxEdge, release: client.release };
 }
 
 /** Shared bounded memory previews, backed by project disk cache when available. */
@@ -250,30 +301,9 @@ export function acquireCanvasImagePreview(
   }
   const current = entry;
   return new Promise((resolve) => {
-    let released = false;
-    const client: Client = {
-      resolve,
-      release: () => {
-        if (released) return;
-        released = true;
-        signal.removeEventListener('abort', client.release);
-        current.clients.delete(client);
-        client.resolve?.(null);
-        client.resolve = undefined;
-        if (current.clients.size !== 0) return;
-        if (current.state === 'ready') {
-          current.idleSince = Date.now();
-          pruneIdle();
-        } else {
-          discard(current);
-        }
-      },
-    };
-    current.clients.add(client);
-    signal.addEventListener('abort', client.release, { once: true });
+    const client = addClient(current, signal, resolve);
     if (current.preview) {
-      resolve({ src: current.preview.src, release: client.release });
-      client.resolve = undefined;
+      resolveClient(client, { src: current.preview.src, release: client.release });
     } else {
       schedulePump();
     }

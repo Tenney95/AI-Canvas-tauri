@@ -3,7 +3,7 @@
  * 统计口径与 React Flow 实际渲染的节点一致（已剔除隐藏节点），与小地图显示的内容同步。
  */
 import { useMemo, useState } from 'react';
-import { MiniMap, useStore, type Node as RFNode } from '@xyflow/react';
+import { MiniMap, useStore, type MiniMapProps, type Node as RFNode } from '@xyflow/react';
 import { useT } from '../../i18n';
 import { getNodeTypeConfig } from '../../types';
 
@@ -100,7 +100,7 @@ function getNodeTypeLabel(type: string): string {
   return EXTRA_NODE_LABELS[type] ?? getNodeTypeConfig(type).label;
 }
 
-export default function MiniMapNodeStats() {
+export default function MiniMapNodeStats({ onClick }: Pick<MiniMapProps, 'onClick'>) {
   const t = useT();
   const [hovered, setHovered] = useState(false);
   // 直接读 React Flow 内部节点，保证统计与小地图渲染的是同一批节点
@@ -134,6 +134,7 @@ export default function MiniMapNodeStats() {
     >
       <MiniMap
         position="bottom-right"
+        onClick={onClick}
         pannable
         zoomable
         // 置空后 React Flow 不再注入默认 <title>Mini Map</title>，避免悬浮时的原生文字气泡

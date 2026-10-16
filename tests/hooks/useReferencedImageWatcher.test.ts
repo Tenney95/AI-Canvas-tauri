@@ -180,7 +180,7 @@ describe('referenced image watcher ignores project thumbnail writes', () => {
     expect(mocks.dispatchEvent.mock.calls[0][0].detail.paths).toEqual(['/series/original.png']);
   });
 
-  it('keeps group and external thumbnail directories and similarly prefixed folder events', async () => {
+  it('keeps group and external image events without refreshing unrelated sibling files', async () => {
     state.nodes.push(
       node('group', { filePath: '/series/group/.thumbnail/user.png', imageUrl: 'asset://group' }),
       node('external', { filePath: '/external/.thumbnail/user.png', imageUrl: 'asset://external' }),
@@ -195,8 +195,22 @@ describe('referenced image watcher ignores project thumbnail writes', () => {
     expect(mocks.dispatchEvent.mock.calls.map(([event]) => event.detail.paths)).toEqual([
       ['/series/group/.thumbnail/user.png'],
       ['/external/.thumbnail/user.png'],
-      ['/series/original.png'],
     ]);
+  });
+
+  it('refreshes only the exact image on rename or replacement and expands only direct directory events', async () => {
+    state.nodes.push(node('second', { filePath: '/series/second.png', imageUrl: 'asset://second' }));
+    WatcherHarness();
+    await vi.waitFor(() => expect(mocks.watchFilePaths).toHaveBeenCalledOnce());
+    emit(['/series/new-image.png']);
+    emit(['/series/original.png.tmp']);
+    expect(mocks.dispatchEvent).not.toHaveBeenCalled();
+    emit(['/series/original.png.tmp', '/series/original.png']);
+    expect(mocks.dispatchEvent.mock.lastCall![0].detail.paths).toEqual(['/series/original.png']);
+    emit(['/series/second.png']);
+    expect(mocks.dispatchEvent.mock.lastCall![0].detail.paths).toEqual(['/series/second.png']);
+    emit(['/series']);
+    expect(mocks.dispatchEvent.mock.lastCall![0].detail.paths).toEqual(['/series/original.png', '/series/second.png']);
   });
 
   it('rebuilds cache scope on project switches even when referenced image paths are identical', async () => {
@@ -210,6 +224,8 @@ describe('referenced image watcher ignores project thumbnail writes', () => {
     emit(['/other/.thumbnail'], 1);
     expect(mocks.dispatchEvent).not.toHaveBeenCalled();
     emit(['/series/.thumbnail'], 1);
+    expect(mocks.dispatchEvent).not.toHaveBeenCalled();
+    emit(['/series/original.png'], 1);
     expect(mocks.dispatchEvent).toHaveBeenCalledOnce();
     expect(stop).toHaveBeenCalledOnce();
     expect(mocks.getProjectDataDir.mock.calls).toEqual([['episode'], ['other']]);

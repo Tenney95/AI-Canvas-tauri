@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.10.8 操作说明书：ComfyUI 模型去重与运行控制台、节点快捷指令与引用搜索，AI 应用节点的创建、使用、状态保存与 MCP 动作，自定义接口 JSON 编辑、视频预设、图片批量反推，附首次生成、资源整理、工作流及逐镜制作教程。">
-<title>AI Canvas 0.10.8 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.10.9 操作说明书：多连线画布性能、小地图点击定位、ComfyUI 模型去重与运行控制台、节点快捷指令与引用搜索，AI 应用节点的创建、使用、状态保存与 MCP 动作，自定义接口 JSON 编辑、视频预设、图片批量反推，附首次生成、资源整理、工作流及逐镜制作教程。">
+<title>AI Canvas 0.10.9 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -34,7 +34,7 @@ dialog .character-actions-shot{width:1912px}
 <body>
 <a class="skip" href="#main">跳到正文</a>
 <nav class="toc" aria-label="说明书目录">
-<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.8 · 操作说明书<br>从素材整理到逐镜制作</small>
+<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.9 · 操作说明书<br>从素材整理到逐镜制作</small>
 <a class="back" href="index.html">← 返回软件首页</a>
 <label for="search">查找章节或操作</label><input id="search" type="search" placeholder="如：文件夹、回收站、视频批次" autocomplete="off" aria-describedby="search-status" aria-controls="search-results toc-links">
 <p id="search-status" class="search-status" role="status">支持空格分隔关键词；Ctrl + F 查找全文。</p>
@@ -54,10 +54,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.10.8 说明书</span><span class="badge">2026-10-15 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.10.9 说明书</span><span class="badge">2026-10-16 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
-<aside class="tip"><b>0.10.8 源码补充：</b>ComfyUI 管理页增加模型内容去重、链接替换与恢复历史、运行控制台和管理信息缓存；重复模型处理需先停止服务并由用户确认。图片、视频、文本与音频工具栏统一快捷指令管理入口，提示词框提供对应类型的 / 菜单。引用标签与搜索、模型菜单、图片/SVG 外观背景和下载进度沿用共用界面；视频模型配置错误提示及桌面文件行为同步修复。<b>0.10.7 源码补充：</b>视频查询超时后可继续查询同一个远端任务，重启后保留恢复记录；图片/视频新建节点继承同模型参数，项目输出默认值优先，切换模型后重置。历史图片可以应用并撤销；快捷指令支持文件夹。节点与助手统一输入布局和发送快捷键，发送按钮右键可调整；MCP 在启动页也能查询、打开和切换项目。自定义接口表单与 JSON 使用一致变量布局，原接口文档导入界面已移除，改用手动接口配置。<b>0.10.6 补充：</b>性能模式收紧闲置媒体缓存并渐进恢复画布媒体，独立资源搜索与助手窗口同步开关；保留 Windows 现有抗闪烁配置。生成文件使用普通名称，同名顺延序号。修复独立助手窗口打开，提示词编辑使用独立临时撤销历史，优化输入栏布局与参数状态。<b>0.10.5 补充：</b>助手按当前上下文预算分页读取 Skill，支持参考资料关键词检索。模型接口返回的推理内容单独折叠展示；它是当前会话的临时参考信息，不进入续聊摘要。回复失败保留已收到正文，暂停/失败的继续按钮在收起步骤后仍可见。压缩有独立状态与计时。<b>0.10.4 补充：</b>逐模型图片/视频参数能力、完整参考素材协议校验、无项目 MCP 厂商设置、CCC 全部分组删除、共享 Skill 目录与自定义画布缩放范围。模型参数编辑后需先保存连接，再复制配置；复制不携带 API Key。<b>0.10.3 补充：</b><a href="#prompt-input-updates">节点发送快捷键、模型清除与完整素材引用</a>。0.10.2 已补充：<a href="#ccc-group-keys">CCC 统一管理与分组 Key 自动匹配</a>。此前已补充：<a href="#ai-app">由 Agent / MCP 创建的 AI 应用节点</a>与<a href="#mcp-ai-app">无界面动作调用</a>。0.10.2 说明另含<a href="#protocol-json-editor">JSON 变量插入与共用预览</a>、<a href="#protocol-video-presets">视频协议预设</a>、<a href="#async-download">完成后下载文件</a>、<a href="#asset-image-reverse">单图反推与标签</a>、<a href="#asset-image-batch-reverse">批量反推</a>、<a href="#provider-model-updates">内置模型更新</a>；版本与核对范围见<a href="#about">文末说明</a>。</aside>
+<aside class="tip"><b>0.10.9 重要优化：</b>多连线画布采用视口范围绘制，减少缩放与拖拽时的卡顿和闪烁。右下角连线按钮支持直角、曲线、隐藏切换；小地图支持点击定位并保持倍率。修复剧集整体归档遗漏分集画布和 macOS 最大化遮挡。<b>0.10.8 源码补充：</b>ComfyUI 管理页增加模型内容去重、链接替换与恢复历史、运行控制台和管理信息缓存；重复模型处理需先停止服务并由用户确认。图片、视频、文本与音频工具栏统一快捷指令管理入口，提示词框提供对应类型的 / 菜单。引用标签与搜索、模型菜单、图片/SVG 外观背景和下载进度沿用共用界面；视频模型配置错误提示及桌面文件行为同步修复。<b>0.10.7 源码补充：</b>视频查询超时后可继续查询同一个远端任务，重启后保留恢复记录；图片/视频新建节点继承同模型参数，项目输出默认值优先，切换模型后重置。历史图片可以应用并撤销；快捷指令支持文件夹。节点与助手统一输入布局和发送快捷键，发送按钮右键可调整；MCP 在启动页也能查询、打开和切换项目。自定义接口表单与 JSON 使用一致变量布局，原接口文档导入界面已移除，改用手动接口配置。<b>0.10.6 补充：</b>性能模式收紧闲置媒体缓存并渐进恢复画布媒体，独立资源搜索与助手窗口同步开关；保留 Windows 现有抗闪烁配置。生成文件使用普通名称，同名顺延序号。修复独立助手窗口打开，提示词编辑使用独立临时撤销历史，优化输入栏布局与参数状态。<b>0.10.5 补充：</b>助手按当前上下文预算分页读取 Skill，支持参考资料关键词检索。模型接口返回的推理内容单独折叠展示；它是当前会话的临时参考信息，不进入续聊摘要。回复失败保留已收到正文，暂停/失败的继续按钮在收起步骤后仍可见。压缩有独立状态与计时。<b>0.10.4 补充：</b>逐模型图片/视频参数能力、完整参考素材协议校验、无项目 MCP 厂商设置、CCC 全部分组删除、共享 Skill 目录与自定义画布缩放范围。模型参数编辑后需先保存连接，再复制配置；复制不携带 API Key。<b>0.10.3 补充：</b><a href="#prompt-input-updates">节点发送快捷键、模型清除与完整素材引用</a>。0.10.2 已补充：<a href="#ccc-group-keys">CCC 统一管理与分组 Key 自动匹配</a>。此前已补充：<a href="#ai-app">由 Agent / MCP 创建的 AI 应用节点</a>与<a href="#mcp-ai-app">无界面动作调用</a>。0.10.2 说明另含<a href="#protocol-json-editor">JSON 变量插入与共用预览</a>、<a href="#protocol-video-presets">视频协议预设</a>、<a href="#async-download">完成后下载文件</a>、<a href="#asset-image-reverse">单图反推与标签</a>、<a href="#asset-image-batch-reverse">批量反推</a>、<a href="#provider-model-updates">内置模型更新</a>；版本与核对范围见<a href="#about">文末说明</a>。</aside>
 
 <section id="reading" class="reading-routes" aria-label="按需求阅读"><h2>先找到你要做的事</h2>
 <p class="small">第一次使用可走第一条路线。每章保留原有编号，旧链接仍可直接定位。</p>
@@ -203,7 +203,7 @@ dialog .character-actions-shot{width:1912px}
 <p><a href="#ai-app">AI 应用节点</a>只能由内部 Agent / MCP 创建，不能通过菜单、快捷键、复制粘贴或拖拽复制建立副本；选区或分组中含有 AI 应用时，整次复制也会被阻止。已有应用仍可移动、打开、使用和删除。</p>
 <aside class="tip"><b>连线后仍需检查输入：</b>下游是否使用了上游文本、图片或视频，取决于节点类型和模型支持。生成前打开下游编辑面板，确认实际参考素材、提示词与参数。</aside>
 <h3 id="canvas-navigation">小地图统计、缩放与大画布浏览</h3>
-<p>按 <kbd>M</kbd> 显示小地图。小地图位于缩放工具栏上方，右边缘与工具栏对齐；把鼠标移到小地图上，可查看各类型节点数量和总数。统计跟随当前画布中实际展示的节点；被收纳隐藏的节点不计入，不等于磁盘素材文件数。</p>
+<p>按 <kbd>M</kbd> 显示小地图。点击小地图任意位置，画布会以当前倍率居中到对应位置。小地图位于缩放工具栏上方，右边缘与工具栏对齐；把鼠标移到小地图上，可查看各类型节点数量和总数。统计跟随当前画布中实际展示的节点；被收纳隐藏的节点不计入，不等于磁盘素材文件数。</p>
 <p><b>Figma 模式</b>下普通鼠标滚轮直接缩放，macOS 普通鼠标也使用这一方式；触摸板保留双指平移与捏合。<b>经典模式</b>使用滚轮平移、Ctrl + 滚轮缩放。光标位于输入框、列表或弹窗时，先移回画布空白区域再操作。</p>
 <p>缩到远景时，部分图片和视频节点会暂时只显示预览与连接点；停止缩放或平移后，软件逐步恢复细节。选中、编辑、播放、生成中或报错的节点会优先保留完整界面。此过程不删除节点、不压缩原始素材，也不产生新的撤销记录；检查清晰度时请打开全屏原图。</p>
 <h3 id="canvas-history">最近项目与画布操作记录</h3>
@@ -908,14 +908,14 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书版本为 <b>0.10.8</b>，<b>2026-10-15</b> 按源码增量核对 ComfyUI 模型去重、运行控制台与缓存、节点快捷指令入口、引用搜索、主题图片和下载进度；安装升级及真实模型操作仍需桌面验收。<b>2026-10-13</b> 按源码增量核对视频查询恢复、节点参数偏好、历史图片应用、快捷指令文件夹、统一输入与发送快捷键、启动页 MCP 项目控制及自定义接口编辑；<b>2026-10-12</b> 按源码增量核对性能模式、文件重名保护、独立助手窗口与提示词编辑；同日核对 Skill 分页、推理展示、压缩状态和失败恢复；<b>2026-10-11</b> 按源码增量核对逐模型参数、CCC 整体删除、Skill 目录及画布缩放；<b>2026-10-10</b> 按源码增量核对节点发送快捷键、模型清除与素材引用；<b>2026-10-09</b> 增量核对 CCC 统一管理与自动匹配分组 Key；主体内容沿用 <b>2026-10-07</b> 的源码与可运行界面核对；<b>2026-10-08</b> 根据当前源码补充 AI 应用节点与 MCP 动作、图片反推成功后自动保存，以及资源库图片改名同步画布节点标题和已保存项目。原有说明包括自定义协议 JSON 变量插入与共用预览、视频预设、草稿试跑、异步完成后下载与模型更新。说明书版本不代表已发布安装包的版本；看不到入口时核对实际构建。操作说明以桌面版为主，Web 端主要用于演示。</p>
+<p>本说明书版本为 <b>0.10.9</b>，<b>2026-10-16</b> 按源码增量核对多连线性能、连线隐藏与小地图点击定位、剧集归档修复；<b>2026-10-15</b> 按源码增量核对 ComfyUI 模型去重、运行控制台与缓存、节点快捷指令入口、引用搜索、主题图片和下载进度；安装升级及真实模型操作仍需桌面验收。<b>2026-10-13</b> 按源码增量核对视频查询恢复、节点参数偏好、历史图片应用、快捷指令文件夹、统一输入与发送快捷键、启动页 MCP 项目控制及自定义接口编辑；<b>2026-10-12</b> 按源码增量核对性能模式、文件重名保护、独立助手窗口与提示词编辑；同日核对 Skill 分页、推理展示、压缩状态和失败恢复；<b>2026-10-11</b> 按源码增量核对逐模型参数、CCC 整体删除、Skill 目录及画布缩放；<b>2026-10-10</b> 按源码增量核对节点发送快捷键、模型清除与素材引用；<b>2026-10-09</b> 增量核对 CCC 统一管理与自动匹配分组 Key；主体内容沿用 <b>2026-10-07</b> 的源码与可运行界面核对；<b>2026-10-08</b> 根据当前源码补充 AI 应用节点与 MCP 动作、图片反推成功后自动保存，以及资源库图片改名同步画布节点标题和已保存项目。原有说明包括自定义协议 JSON 变量插入与共用预览、视频预设、草稿试跑、异步完成后下载与模型更新。说明书版本不代表已发布安装包的版本；看不到入口时核对实际构建。操作说明以桌面版为主，Web 端主要用于演示。</p>
 <p>本次发布同步检查文案、UTF-8 编码、内联脚本语法、内部链接与内嵌截图完整性；既有离线阅读交互记录不代表本次重新验收。未重新执行真实模型生成、资源库改名的桌面操作、文件移动 / 回收站、声音克隆、官方费用对账或桌面多窗口验收。内置工作流表示已有配置模板，不代表本机已安装依赖或所有声音效果已验收；本地费用核算不等于官方扣费。</p>
 <p>AI 应用节点当前为首版，只读绑定材料并保存自身状态；画布写入、结果节点及模型 / 文件编排仍待后续实现。已有 macOS 桌面核心验收记录，Windows / Linux 原生界面和真实外部 MCP 客户端联调仍待补充；本次说明书更新不扩大功能验收范围。</p>
 <p>共十一张内嵌截图：保留原有九张界面示意，新增当前构建的自定义视频协议 JSON 编辑器和批量反推窗口。新增截图只展示未保存的示例草稿与待执行队列，没有启动模型调用。旧截图来自此前构建，用于位置与空状态示意；按钮可用性仍取决于资料、分集和模型配置。</p>
 <p>内容依据当前版本的启动页、资源库、设置界面、应用帮助与相关操作实现核对。接口示例用于本地配置校验，<b>未调用真实厂商接口</b>；所有 example.com 地址与示例模型 ID 均为占位内容。按钮准备草稿、创建节点、实际模型生成和媒体保存是不同步骤，请按各章检查实际结果。</p>
 <p class="small">页面所需样式、脚本和十一张截图均在当前 HTML 内，无外部字体或 CDN 依赖。可直接双击离线打开；点击“返回软件首页”需同时保留 site 目录中的首页。打印按钮使用浏览器打印功能，可选择保存为 PDF。</p>
 </section>
-<footer>AI Canvas · 0.10.8 操作说明书 · 2026-10-15 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
+<footer>AI Canvas · 0.10.9 操作说明书 · 2026-10-16 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
 </main>
 <dialog id="zoom" aria-label="放大界面截图"><button class="action" id="zoom-close" type="button">关闭放大图（Esc）</button><div class="zoom-box"></div></dialog>
 <script>

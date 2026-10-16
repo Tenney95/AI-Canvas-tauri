@@ -3,7 +3,7 @@ import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../../types';
 import { withPreviewRevision } from '../../../hooks/useReferencedImageWatcher';
 import { CanvasNodeLodContext, useCanvasNodeLodPreviewRevision } from '../../../hooks/useCanvasNodeLod';
-import { acquireCanvasImagePreview } from './image/canvasImagePreviewCache';
+import { acquireCachedCanvasImagePreview, acquireCanvasImagePreview } from './image/canvasImagePreviewCache';
 import { acquireCanvasVideoPoster } from './video/canvasVideoPreviewCache';
 
 interface Props {
@@ -27,39 +27,44 @@ function CanvasNodeLodPreview({ nodeId, data, video, projectId, width, height, c
     ? withPreviewRevision(imageSource, revision)
     : data.videoUrl;
   const [preview, setPreview] = useState<{
-    source: string; projectId: string | null; image: boolean; src: string; request: AbortController;
+    source: string; projectId: string | null; image: boolean; src: string; request: AbortController; cached?: boolean;
   }>();
   const [ready, setReady] = useState<string>();
   const requestRef = useRef<AbortController | null>(null);
   const cancelDisplay = useRef<(() => void) | undefined>(undefined);
-  const publish = useCallback((request: AbortController, update: () => void) => {
+  const publish = useCallback((request: AbortController, update: () => void, cached = false) => {
     if (request.signal.aborted || requestRef.current !== request) return;
     cancelDisplay.current?.();
     const commit = () => { if (!request.signal.aborted && requestRef.current === request) update(); };
-    if (runtime) cancelDisplay.current = runtime.enqueueDisplay(request, commit, nodeId);
+    if (runtime && !cached) cancelDisplay.current = runtime.enqueueDisplay(request, commit, nodeId);
     else commit();
   }, [runtime, nodeId]);
 
   useEffect(() => {
     const request = new AbortController();
     requestRef.current = request;
-    let lease: { src: string; release: () => void } | null = null;
+    const cached = source && imageSource ? acquireCachedCanvasImagePreview(source, 256, request.signal, projectId) : null;
+    let lease: { src: string; release: () => void } | null = cached;
     const prepare = async () => {
       if (!source || request.signal.aborted) return;
-      const acquisition = imageSource
-        ? acquireCanvasImagePreview(source, 256, request.signal, projectId)
-        : acquireCanvasVideoPoster(source, request.signal);
+      const acquisition = cached ? Promise.resolve(cached)
+        : imageSource ? acquireCanvasImagePreview(source, 256, request.signal, projectId)
+          : acquireCanvasVideoPoster(source, request.signal);
       await acquisition.then((result) => {
+        // 缓存租约已由清理函数持有；异步冷请求的迟到租约在这里归还。
+        if (request.signal.aborted) { if (!cached) result?.release(); return; }
         lease = result;
-        if (request.signal.aborted) { lease?.release(); return; }
         const next = lease;
         publish(request, () => {
-          if (next) setPreview({ source, projectId, image: !!imageSource, src: next.src, request });
+          if (next) setPreview({ source, projectId, image: !!imageSource, src: next.src, request, cached: !!cached });
           else onUnavailable();
-        });
+        }, !!cached);
       }, () => publish(request, onUnavailable));
     };
-    const cancelPrepare = runtime ? runtime.prepareDisplay(request, prepare, nodeId) : (void prepare(), undefined);
+    let cancelPrepare: (() => void) | undefined;
+    // 已就绪的内存小图随节点入场显示；未缓存图和视频派生仍等待交互预算。
+    if (cached) void prepare();
+    else cancelPrepare = runtime ? runtime.prepareDisplay(request, prepare, nodeId) : (void prepare(), undefined);
     return () => { request.abort(); cancelPrepare?.(); cancelDisplay.current?.(); lease?.release(); };
   }, [source, imageSource, projectId, onUnavailable, publish, runtime, nodeId]);
 
@@ -83,7 +88,7 @@ function CanvasNodeLodPreview({ nodeId, data, video, projectId, width, height, c
           const request = preview?.request;
           try {
             await event.currentTarget.decode();
-            if (request) publish(request, () => setReady(resolved));
+            if (request) publish(request, () => setReady(resolved), preview?.cached);
           } catch { if (request) publish(request, onUnavailable); }
         }}
         onError={() => {

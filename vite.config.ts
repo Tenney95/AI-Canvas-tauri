@@ -1,9 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import {
+  CANVAS_EDGE_LAYER_OPTIMIZE_INCLUDE,
+  canvasEdgeLayerPlugin,
+} from "./scripts/viteCanvasEdgeLayer";
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
+    canvasEdgeLayerPlugin(),
     react(),
   ],
   clearScreen: false,
@@ -41,5 +46,7 @@ export default defineConfig({
   },
   optimizeDeps: {
     entries: ["index.html", "plugin-ui-host.html"],
+    exclude: ["@xyflow/react"],
+    include: CANVAS_EDGE_LAYER_OPTIMIZE_INCLUDE,
   },
 });

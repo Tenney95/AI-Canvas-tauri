@@ -57,14 +57,7 @@
   border: var(--appearance-node-border-width, 0px) solid var(--appearance-node-border, transparent);
   transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth),
     transform var(--dur-fast) var(--ease-out-quart), height 0.24s var(--ease-spring);
-  /* 进场只淡入，不移动连线锚点；跨视口重新挂载时无需在动画结束后补测。 */
-  animation: nodeIn 0.3s var(--ease-spring) backwards;
-}
-
-/* ── 节点进场 ── */
-@keyframes nodeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  /* 可见区重挂载立即显示；不能把平移中新进入视口的已有节点重新淡入。 */
 }
 
 /* ── 节点退场（由 playNodeExit 添加 .node-exiting）——向下淡出。
@@ -447,20 +440,7 @@
   border-radius: inherit;
 }
 
-/* ── 图片揭示动画：淡入 + 微放大落位 ── */
-/* 避免 filter 动画逐帧重绘图片；只用合成器处理 opacity/transform。 */
-.img-reveal {
-  opacity: 0;
-  transform: scale(1.025);
-  transition:
-    opacity var(--dur-slow) var(--ease-out-expo),
-    transform 0.36s var(--ease-spring);
-}
-.img-reveal.is-loaded {
-  opacity: 1;
-  transform: scale(1);
-}
-
+/* 图片可见区重挂载不重复揭示；生成完成仍使用节点的 just-completed 反馈。 */
 .image-preview-container {
   position: relative;
   width: 100%;
