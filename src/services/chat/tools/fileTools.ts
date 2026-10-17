@@ -69,7 +69,7 @@ export function registerFileAgentTools(): Array<() => void> {
     registerAgentTool<ResourcePosition & { files: MediaResourceInput[] }>({
       id: 'file_import_media_to_canvas',
       title: '批量导入媒体到画布',
-      description: '创建 source 素材节点并返回同序 nodeId。files 每项 path/uploadId 二选一：path 复制已通过文件选择、拖入或设置授权的本地图片、视频、音频；uploadId 使用 file_media_upload 已完成的图片，不读取外部路径。一次 1 至 20 项，支持混合导入、名称和位置，一批一次历史。不会扩大目录权限；失败不自动重试，不调用生成模型。',
+      description: '创建 source 素材节点并返回同序 nodeId。剧集所有分集共享素材文件，只有画布节点各自独立；在其他分集使用已有素材时传原文件 path，复用共享目录中的同一文件，不重新复制或生成 _1。files 每项 path/uploadId 二选一：path 位于当前项目或所属剧集素材目录时，经路径授权校验后直接引用；外部图片、视频、音频仍需已通过文件选择、拖入或设置授权，再复制入项目。uploadId 使用 file_media_upload 已完成的图片，不读取外部路径。一次 1 至 20 项，支持混合导入、名称和位置，一批一次历史。不会扩大目录权限；失败不自动重试，不调用生成模型。',
       inputSchema: { type: 'object', required: ['files'], additionalProperties: false, properties: {
         ...positionFields,
         files: { type: 'array', minItems: 1, maxItems: 20, items: {

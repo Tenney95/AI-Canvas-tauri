@@ -106,6 +106,63 @@ describe('downloadUrlAndSave', () => {
     ));
   });
 
+  it('reuses the same shared media file across episodes without allocating or writing a copy', async () => {
+    const filePath = '/project/data/Library/角色.png';
+    mocks.invoke.mockResolvedValue({ path: filePath, totalBytes: 3, contentType: null });
+    const options = { reuseExistingProjectFile: true, redactErrors: true };
+    for (const episodeId of ['episode-1', 'episode-2']) {
+      await expect(copyFileToProjectData(filePath, episodeId, options)).resolves.toEqual({
+        filePath, assetUrl: `asset://${filePath}`, fileName: '角色.png',
+      });
+    }
+    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+    expect(mocks.invoke).toHaveBeenCalledWith('copy_file_streamed', expect.objectContaining({
+      sourcePath: filePath, destinationPath: filePath, reuseRoot: '/project/data',
+    }));
+    expect(mocks.resolveUniqueDestPath).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(mocks.notifyProjectDiskChanged).not.toHaveBeenCalled();
+  });
+
+  it.each(['/external/图片.png', '/project/data-other/图片.png', '/project/data/../other/图片.png'])(
+    'still copies external or non-project paths instead of treating them as shared: %s', async (sourcePath) => {
+      mocks.invoke.mockResolvedValue({ path: '/project/data/图片.png', totalBytes: 3 });
+      const result = await copyFileToProjectData(sourcePath, 'episode-2', { reuseExistingProjectFile: true });
+      expect(result?.filePath).toBe('/project/data/图片.png');
+      expect(mocks.resolveUniqueDestPath).toHaveBeenCalledOnce();
+      expect(mocks.invoke.mock.calls[0][1]).not.toHaveProperty('reuseRoot');
+      expect(mocks.notifyProjectDiskChanged).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('keeps ordinary node copies independent even when their source is in the project', async () => {
+    mocks.resolveUniqueDestPath.mockResolvedValueOnce('/project/data/图片_1.png');
+    mocks.invoke.mockResolvedValue({ path: '/project/data/图片_1.png', totalBytes: 3 });
+    expect((await copyFileToProjectData('/project/data/图片.png', 'episode-1'))?.filePath)
+      .toBe('/project/data/图片_1.png');
+    expect(mocks.invoke.mock.calls[0][1]).not.toHaveProperty('reuseRoot');
+  });
+
+  it('fails closed when native validation rejects reuse instead of silently copying or disclosing paths', async () => {
+    mocks.invoke.mockRejectedValueOnce(new Error('unapproved /private/path'));
+    await expect(copyFileToProjectData('/project/data/图片.png', 'episode-1', {
+      reuseExistingProjectFile: true, redactErrors: true,
+    })).resolves.toBeNull();
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.resolveUniqueDestPath).not.toHaveBeenCalled();
+    expect(mocks.notifyProjectDiskChanged).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse a path retired by a project media relocation', async () => {
+    const filePath = '/project/data/图片.png';
+    mocks.retired.mockResolvedValueOnce(new Set([filePath]));
+    await expect(copyFileToProjectData(filePath, 'episode-1', {
+      reuseExistingProjectFile: true, redactErrors: true,
+    })).resolves.toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.resolveUniqueDestPath).not.toHaveBeenCalled();
+  });
+
   it('serializes same-name downloads until the first destination exists', async () => {
     const existingPaths = new Set<string>();
     mocks.resolveUniqueDestPath.mockImplementation(async (dataDir: string, fileName: string) => {

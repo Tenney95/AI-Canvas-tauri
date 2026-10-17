@@ -58,6 +58,8 @@ export interface FileTransferOptions {
   onProgress?: (progress: FileTransferProgress) => void;
   /** 内嵌媒体按名称和内容摘要复用已有文件，供持久化迁移重试使用。 */
   deduplicateByContent?: boolean;
+  /** MCP 创建分集素材节点时复用共享项目目录中的原文件，普通节点复制不启用。 */
+  reuseExistingProjectFile?: boolean;
   /** 持久化入口需要接收底层异常，再转换为不含路径、链接或凭据的错误。 */
   throwOnError?: boolean;
 }
@@ -753,7 +755,7 @@ async function saveProjectBytes(
 
 /**
  * 将文件拷贝到项目数据目录，返回本地路径和 asset URL
- * 如文件已存在于目标目录则跳过拷贝
+ * 默认创建独立副本；显式启用 reuseExistingProjectFile 时可复用项目目录内原文件。
  */
 export async function copyFileToProjectData(
   sourcePath: string,
@@ -772,9 +774,23 @@ export async function copyFileToProjectData(
   const fileName = sourcePath.split(/[/\\]/).pop() || 'file';
   let destPath: string;
   try {
-    destPath = await resolveUniqueDestPath(dataDir, fileName, true);
-    await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath }, options);
-    notifyProjectDiskChanged();
+    const relative = options?.reuseExistingProjectFile ? getRelativeAssetPath(sourcePath, dataDir) : undefined;
+    const reuse = !!relative && relative.split('/').every((part) => !!part && !part.startsWith('.'));
+    if (reuse) {
+      throwIfMediaReadAborted(options?.signal);
+      if ((await retiredMediaPaths()).has(mediaFileAllocationKey(sourcePath))) {
+        throw new Error('素材路径已迁移，请刷新后重试');
+      }
+      // 原生端以真实路径再次核对归属，不能仅凭字符串前缀绕过目录授权。
+      const existing = await runNativeFileTransfer('copy_file_streamed', {
+        sourcePath, destinationPath: sourcePath, reuseRoot: dataDir,
+      }, options);
+      destPath = stripVerbatimPrefix(existing.path);
+    } else {
+      destPath = await resolveUniqueDestPath(dataDir, fileName, true);
+      await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath }, options);
+      notifyProjectDiskChanged();
+    }
   } catch (err) {
     if (!options?.redactErrors) console.error('Failed to copy file to project data:', sourcePath, err);
     // Don't fallback to convertFileSrc on external paths — asset protocol won't serve them

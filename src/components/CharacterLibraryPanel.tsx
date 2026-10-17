@@ -721,6 +721,7 @@ export default function CharacterLibraryPanel() {
               } as CSSProperties : undefined}
             >
               <CharacterReferenceGallery
+                key={`${currentProjectId}:${scope}:${selectedCharacter.id}`}
                 references={selectedCharacter.referenceImages ?? []}
                 selectedId={effectiveReferenceId}
                 onSelect={setSelectedReferenceId}

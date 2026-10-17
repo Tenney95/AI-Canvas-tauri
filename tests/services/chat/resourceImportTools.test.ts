@@ -55,6 +55,22 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); cancelProjectCanvasDerivations('p1'); });
 
 describe('resource import tools', () => {
+  it('creates episode canvas nodes pointing to shared media without requesting independent file copies', async () => {
+    mocks.copy.mockImplementation(async (path: string) => ({ filePath: path, assetUrl: `asset://${path}` }));
+    const path = '/project/shared/角色.png';
+    for (const projectId of ['episode-1', 'episode-2']) {
+      useAppStore.setState({ currentProjectId: projectId, nodes: [], edges: [] });
+      const result = await importTool().execute({ ...context(), projectId }, { files: [{ path }] });
+      expect(result.status).toBe('success');
+      expect(useAppStore.getState().nodes[0].data.filePath).toBe(path);
+      expect(mocks.copy).toHaveBeenLastCalledWith(path, projectId, expect.objectContaining({
+        reuseExistingProjectFile: true, redactErrors: true,
+      }));
+      expect(JSON.stringify(result)).not.toContain(path);
+      cancelProjectCanvasDerivations(projectId);
+    }
+  });
+
   it('imports uploaded images and existing paths in order with one history entry and no extra image copy', async () => {
     const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
     const result = await importTool().execute(context(), { files: [

@@ -170,7 +170,7 @@ async function importResources(
           saved = resource.saved;
         } else if ('path' in resource) {
           saved = await cancellable(copyFileToProjectData(resource.path, context.projectId, {
-            signal: controller.signal, redactErrors: true,
+            signal: controller.signal, redactErrors: true, reuseExistingProjectFile: true,
           }), controller.signal);
         } else {
           const dataUrl = await cancellable(blobToDataUrl(resource.blob), controller.signal);

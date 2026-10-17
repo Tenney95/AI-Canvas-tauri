@@ -58,7 +58,7 @@ MCP 设置中的「工具发现方式」默认按需加载，对应可选配置 
 | 能力 | 工具与边界 |
 |---|---|
 | 图片上传 | `file_media_upload`（`file_write`）按 begin/append/finish/status/cancel 管理 PNG/JPEG/WebP；固定 256 KiB 分块与链式摘要，完成后由批量导入领取。仅 MCP 会话可用。 |
-| 批量导入 | `file_import_media_to_canvas`（`canvas_write`）一次 1–20 项，每项使用已授权 path 或同会话 uploadId；准备成功后批量写入一次历史。 |
+| 批量导入 | `file_import_media_to_canvas`（`canvas_write`）一次 1–20 项；path 位于当前项目/剧集共享素材目录时只建画布引用，不重复复制，已授权外部文件仍复制入项目；也可领取同会话 uploadId。准备成功后批量写入一次历史。 |
 | 系统内容与截图 | `canvas_paste_external` 和 `ui_capture_to_canvas` 写入画布；只查看主窗口图像仍用只读 `ui_capture_window`。 |
 | 剪辑工程 | `video_editor_list` / `video_editor_get` 读取；`video_editor_create` / `video_editor_update` 为 `file_write`，更新携带 expectedVersion，tracks 完整替换。仅当前项目的 MCP 会话可用。 |
 | 后台合成 | `video_editor_export` / `video_editor_export_cancel` 为 `canvas_write`，`video_editor_export_status` 只读。requestKey 与版本约束避免同任务重复启动；返回 jobId 后须查询完成。 |

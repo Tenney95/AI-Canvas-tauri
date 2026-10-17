@@ -300,6 +300,26 @@ where
     })
 }
 
+// 调用方已对源、目标和根目录完成真实路径授权；只复用根目录内同一普通文件。
+fn reusable_project_media(
+    source: &Path,
+    destination: &Path,
+    root: &Path,
+) -> Result<FileTransferResult, String> {
+    if source != destination || !root.is_dir() || source == root || !source.starts_with(root) {
+        return Err("只能复用当前项目素材目录内的原文件".to_string());
+    }
+    let metadata = fs::metadata(source).map_err(|_| "项目素材不存在或无法读取".to_string())?;
+    if !metadata.is_file() {
+        return Err("项目素材必须是普通文件".to_string());
+    }
+    Ok(FileTransferResult {
+        path: source.to_string_lossy().into_owned(),
+        total_bytes: metadata.len(),
+        content_type: None,
+    })
+}
+
 #[tauri::command]
 pub async fn copy_file_streamed(
     app: AppHandle,
@@ -307,12 +327,25 @@ pub async fn copy_file_streamed(
     task_id: String,
     source_path: String,
     destination_path: String,
+    reuse_root: Option<String>,
 ) -> Result<FileTransferResult, String> {
     ensure_trusted_caller(&webview)?;
     // 源文件必须是用户显式给过的（对话框选中、拖入、已登记的素材目录），
     // 否则本命令等于把任意文件搬进项目目录，再经 asset 协议读走。
     let source = authorize_path(&app, &source_path, PathAccess::Read)?;
     let destination = authorize_path(&app, &destination_path, PathAccess::Write)?;
+
+    if let Some(root) = reuse_root {
+        let root = authorize_path(&app, &root, PathAccess::Read)?;
+        let result = is_cancelled(&task_id).and_then(|cancelled| {
+            if cancelled {
+                return Err("素材引用已取消".to_string());
+            }
+            reusable_project_media(&source, &destination, &root)
+        });
+        clear_cancelled(&task_id);
+        return result;
+    }
 
     let task_id_for_worker = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -810,6 +843,43 @@ pub fn cancel_file_transfer(task_id: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn project_media_reuse_keeps_the_existing_file_without_creating_a_copy() {
+        let root = test_directory("project-media-reuse");
+        let folder = root.join("Library");
+        fs::create_dir(&folder).unwrap();
+        let source = folder.join("角色.png");
+        fs::write(&source, b"shared-media").unwrap();
+        let result = reusable_project_media(&source, &source, &root).unwrap();
+        assert_eq!(result.path, source.to_string_lossy().into_owned());
+        assert_eq!(result.total_bytes, 12);
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+        assert_eq!(fs::read(&source).unwrap(), b"shared-media");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_media_reuse_rejects_other_roots_directories_and_different_destinations() {
+        let root = test_directory("project-media-reuse-boundary");
+        let project = root.join("series");
+        let other_project = root.join("series-other");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&other_project).unwrap();
+        let source = project.join("角色.png");
+        let other = other_project.join("角色.png");
+        fs::write(&source, b"shared-media").unwrap();
+        fs::write(&other, b"other-media").unwrap();
+        assert!(reusable_project_media(&other, &other, &project).is_err());
+        assert!(reusable_project_media(&source, &other, &project).is_err());
+        assert!(reusable_project_media(&project, &project, &root).is_err());
+        assert!(reusable_project_media(&source, &source, &source).is_err());
+        let missing = project.join("missing.png");
+        assert!(reusable_project_media(&missing, &missing, &project).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"shared-media");
+        assert_eq!(fs::read(&other).unwrap(), b"other-media");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn asset_move_requires_identical_copy_and_never_overwrites_conflicts() {

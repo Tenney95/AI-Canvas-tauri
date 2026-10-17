@@ -422,6 +422,12 @@ function resolveProjectFolder(projectId: string): string {
   return _projectFolders.get(projectId) ?? projectId;
 }
 
+/** 剧集和分集共用目录时，节点只拥有画布引用，不能随节点删除共享文件。 */
+export function isSharedProjectDataDir(projectId: string): boolean {
+  const folder = resolveProjectFolder(projectId);
+  return [..._projectFolders].some(([id, otherFolder]) => id !== projectId && otherFolder === folder);
+}
+
 /** 获取项目的本地数据目录路径 */
 export async function getProjectDataDir(projectId: string): Promise<string | null> {
   const folder = resolveProjectFolder(projectId);

@@ -8,7 +8,7 @@ import {
   normalizeDirectorResultManifestReference,
   normalizeDirectorSceneReference,
 } from '../directorSceneSchema';
-import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir, sanitizeFolderName } from './core';
+import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir, isSharedProjectDataDir, sanitizeFolderName } from './core';
 
 /** Explicit history deletion: fail visibly, accept only regular files owned by this project. */
 export async function recycleHistoryFile(projectId: string, filePath: string, assertCurrent: (fileExists: boolean) => void): Promise<void> {
@@ -105,7 +105,7 @@ export async function resolveNodeUndoTrashPaths(
     const filePath = stringPath(nodeData.filePath);
     return filePath && !keepReferences?.has(filePath) ? [filePath] : [];
   }
-  if (!projectId) return [];
+  if (!projectId || isSharedProjectDataDir(projectId)) return [];
 
   const projectRoot = await getProjectDataDir(projectId).catch(() => null);
   if (!projectRoot) return [];
@@ -343,7 +343,7 @@ export function deletedGroupFolderNames(
 export async function resolveGroupUndoTrashPaths(
   names: readonly string[], projectId: string | null | undefined, keepPaths?: ReadonlySet<string>,
 ): Promise<string[]> {
-  if (!names.length || !projectId) return [];
+  if (!names.length || !projectId || isSharedProjectDataDir(projectId)) return [];
   const root = await getProjectDataDir(projectId);
   if (!root) return [];
   return [...new Set(names.map((name) => sanitizeFolderName(name)))].filter((name) =>

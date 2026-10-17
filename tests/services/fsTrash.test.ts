@@ -14,6 +14,7 @@ const coreMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   notifyProjectDiskChanged: vi.fn(),
   isTauriEnv: vi.fn(() => true),
+  isSharedProjectDataDir: vi.fn(() => false),
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => fsMocks);
@@ -24,6 +25,7 @@ vi.mock('../../src/services/fs/core', () => ({
   getProjectDataDir: projectDirMock.get,
   sanitizeFolderName: (name: string) => name.replace(/[<>:"|?*/\\]/g, "_"),
   isTauriEnv: coreMocks.isTauriEnv,
+  isSharedProjectDataDir: coreMocks.isSharedProjectDataDir,
   joinPath: (...parts: string[]) => parts.join('/'),
   notifyProjectDiskChanged: coreMocks.notifyProjectDiskChanged,
 }));
@@ -156,12 +158,24 @@ describe('undo trash media moves', () => {
 describe('删除节点文件的项目归属校验', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    coreMocks.isSharedProjectDataDir.mockReturnValue(false);
     fsMocks.exists.mockImplementation(async (path: string) => !path.includes('/.trash/'));
     fsMocks.mkdir.mockResolvedValue(undefined);
     fsMocks.rename.mockResolvedValue(undefined);
     projectDirMock.get.mockResolvedValue('D:/data/project-b');
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  it('删除分集节点或分组仅移除引用，不回收全剧共享素材', async () => {
+    coreMocks.isSharedProjectDataDir.mockReturnValue(true);
+    const filePath = 'D:/data/project-b/分组/角色.png';
+    expect(await resolveNodeUndoTrashPaths({ filePath }, 'episode-2')).toEqual([]);
+    expect(await resolveGroupUndoTrashPaths(['分组'], 'episode-2')).toEqual([]);
+    await deleteNodeFiles([{ filePath }], undefined, 'episode-2', ['分组']);
+    expect(fsMocks.rename).not.toHaveBeenCalled();
+    expect(coreMocks.invoke).not.toHaveBeenCalled();
+    expect(coreMocks.notifyProjectDiskChanged).not.toHaveBeenCalled();
   });
 
   it('路径归属判定兼容反斜杠、大小写与同前缀目录', () => {
