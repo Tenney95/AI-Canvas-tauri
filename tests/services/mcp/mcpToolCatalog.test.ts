@@ -39,13 +39,15 @@ beforeEach(() => {
 });
 
 describe('MCP tool catalog', () => {
-  it('shows connection rules before the initial discovery descriptions and full-mode creation tools', () => {
+  it('shows library preference and connection rules before initial discovery and full-mode creation tools', () => {
     for (const id of ['tools_describe', 'canvas_create_nodes', 'shotlist_prepare_production']) register(id);
     const descriptors = [MCP_CALL_DESCRIPTOR, ...[
       'tools_search', 'tools_describe', 'canvas_create_nodes', 'shotlist_prepare_production',
     ].map((id) => toMcpToolDescriptor(getAgentTool(id)!))];
     for (const descriptor of descriptors) {
-      expect(descriptor.description.startsWith('画布连线规则：')).toBe(true);
+      expect(descriptor.description.startsWith('素材引用优先级：')).toBe(true);
+      expect(descriptor.description).toContain('drama_reference_image_add');
+      expect(descriptor.description).toContain('dramaAssetId');
       expect(descriptor.description).toContain('sourceId（提供内容）→ targetId（消费内容）');
       expect(descriptor.description).toContain('sourceHandle=right、targetHandle=left');
       expect(descriptor.description).toContain('水平间距至少 80');
@@ -58,7 +60,7 @@ describe('MCP tool catalog', () => {
     expect(MCP_CALL_DESCRIPTOR.annotations?.readOnlyHint).toBe(false);
   });
 
-  it('keeps connection rules first in navigation, search and describe responses without clipping contracts', () => {
+  it('keeps library preference first in navigation, search and describe responses without clipping contracts', () => {
     const results = [
       searchMcpToolCatalog(context, {}),
       searchMcpToolCatalog(context, { category: 'canvas' }),
@@ -69,12 +71,12 @@ describe('MCP tool catalog', () => {
     ];
     for (const result of results) {
       const serialized = serializeMcpCatalogResult(result);
-      expect(serialized.startsWith('{"hint":"画布连线规则：')).toBe(true);
+      expect(serialized.startsWith('{"hint":"素材引用优先级：')).toBe(true);
       const decoded = JSON.parse(serialized);
       expect(decoded.hint).toContain('不要把导演台反接回分镜表');
       expect(decoded.tools).toEqual(result.tools);
       if (result.hint) expect(decoded.hint.endsWith(result.hint)).toBe(true);
-      expect(result.hint?.startsWith('画布连线规则：')).not.toBe(true);
+      expect(result.hint?.startsWith('素材引用优先级：')).not.toBe(true);
     }
   });
 

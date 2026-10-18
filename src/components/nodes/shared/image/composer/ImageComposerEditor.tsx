@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Konva from 'konva';
 import { Stage, Layer as KLayer, Rect, Line, Transformer } from 'react-konva';
 import FullscreenOverlay from '../../../../shared/FullscreenOverlay';
-import { setExternalDropCaptured } from '../../../../../utils/dropCapture';
+import { isExternalDropCaptured, setExternalDropCaptured } from '../../../../../utils/dropCapture';
 import { useAppStore } from '../../../../../store/useAppStore';
 import {
   fetchImageForCrop,
@@ -550,32 +550,51 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
   // Tauri 桌面端：原生 drag-drop 事件（独占，避免画布在弹层后建节点）
   useEffect(() => {
     if (!isOpen || !('__TAURI_INTERNALS__' in window)) return;
+    const previouslyCaptured = isExternalDropCaptured();
     setExternalDropCaptured(true);
     let cancelled = false;
-    let unlisten: (() => void) | null = null;
+    const unlisten: Array<() => void> = [];
+    let lastDrop = { signature: '', time: 0 };
+    const handle = async (payload: { type: string; paths?: string[] }) => {
+      if (cancelled) return;
+      const { type, paths } = payload;
+      if (type === 'enter') { setIsDragOver(!!paths?.some((path) => IMAGE_EXT.test(path))); return; }
+      if (type === 'over') return;
+      setIsDragOver(false);
+      if (type !== 'drop' || !paths?.length) return;
+      const signature = JSON.stringify(paths);
+      if (lastDrop.signature === signature && Date.now() - lastDrop.time < 400) return;
+      lastDrop = { signature, time: Date.now() };
+      for (const fp of paths) {
+        if (cancelled) return;
+        if (!IMAGE_EXT.test(fp)) continue;
+        await enqueueImageImport(async (isCurrent) => {
+          if (!isCurrent()) return;
+          const src = convertFileSrc(fp);
+          await addImageLayer(src, fp.split(/[\\/]/).pop() || '图片');
+        }).catch(() => { /* 单个文件失败不阻断其余 */ });
+      }
+    };
     (async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      const ul = await listen<{ type: string; paths: string[] }>('tauri://drag-drop', async (event) => {
-        const { type, paths } = event.payload;
-        if (type === 'enter' || type === 'over') { setIsDragOver(true); return; }
-        if (type === 'leave' || type === 'cancelled') { setIsDragOver(false); return; }
-        setIsDragOver(false);
-        for (const fp of paths ?? []) {
-          if (!IMAGE_EXT.test(fp)) continue;
-          await enqueueImageImport(async (isCurrent) => {
-            if (!isCurrent()) return;
-            const src = convertFileSrc(fp);
-            await addImageLayer(src, fp.split(/[\\/]/).pop() || '图片');
-          }).catch(() => { /* 单个文件失败不阻断其余 */ });
-        }
+      const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+      if (cancelled) return;
+      const webviewRelease = await getCurrentWebview().onDragDropEvent(({ payload }) => handle(payload));
+      if (cancelled) { webviewRelease(); return; }
+      unlisten.push(webviewRelease);
+      // 同进程资源窗口的原生文件拖拽可能只投递窗口通道；两路 drop 按文件去重。
+      const release = await listen<{ paths: string[] }>('tauri://drag-drop', ({ payload }) => {
+        return handle({ ...payload, type: 'drop' });
       });
-      if (cancelled) ul();
-      else unlisten = ul;
-    })();
+      if (cancelled) release();
+      else unlisten.push(release);
+    })().catch(() => {
+      if (!cancelled) useAppStore.getState().showToast('拖放接收不可用，请点击上传图片按钮', 'error');
+    });
     return () => {
       cancelled = true;
-      unlisten?.();
-      setExternalDropCaptured(false);
+      unlisten.forEach((release) => release());
+      setExternalDropCaptured(previouslyCaptured);
       setIsDragOver(false);
     };
   }, [isOpen, addImageLayer, enqueueImageImport]);

@@ -41,4 +41,7 @@ describe('API Key 设置连接列表', () => {
       catalogId: 'dreamina',
     }, 'oauth')).toBe(true);
   });
+  it('当前站点为空时仍保留 RunningHub 入口，允许切回另一套已保存密钥', () => {
+    expect(shouldListProviderConnection({ apiKey: '', catalogId: 'runninghub-model', runninghubSiteCredentials: true }, 'api-key')).toBe(true);
+  });
 });

@@ -8,11 +8,12 @@ import { resolvePromptEnterAction } from '../../../utils/promptSubmitShortcut';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../../store/useAppStore';
 import { Icon } from '@iconify/react';
-import { listGlobalFolderContents, listExternalFolderContents, type AssetFileEntry } from '../../../services/fileService';
+import { getAssetUrlFromPath, getFileCategory, listGlobalFolderContents, listExternalFolderContents, type AssetFileEntry } from '../../../services/fileService';
 import { getAllAssetMeta } from '../../../services/indexedDbService';
 import { springSmooth, fadeFast } from '../../../utils/motion';
 import { calcAnchoredPosition, calcFixedPosition } from '../../../utils/popupPosition';
 import { resolveMentionPreview } from './connectedNodesPreviewInteractions';
+import { readMentionPreviewSource, resolveDramaMentionPreview, type MentionChipPreview, type MentionPreviewSource } from './mentionEditorPreview';
 import { AnimatePresence, motion } from 'framer-motion';
 import PopupCloseButton from '../../shared/PopupCloseButton';
 import MentionPicker, { type MentionPickerChip, type MentionPickerItem } from '../../shared/MentionPicker';
@@ -1117,15 +1118,18 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   );
 
   // ── 芯片 hover：读取对应内容的小卡片，保留原有引用高亮联动 ──
-  const lastHoverIdRef = useRef<string | null>(null);
+  const lastHoverKeyRef = useRef<string | null>(null);
   const chipHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chipHoverSuppressedRef = useRef(false);
   const [chipHoverSuppressed, setChipHoverSuppressed] = useState(false);
-  const [chipTip, setChipTip] = useState<{ id: string; label: string; x: number; y: number; width: number; ownerNodeId?: string } | null>(null);
+  const [chipTip, setChipTip] = useState<{
+    source: MentionPreviewSource; key: string; x: number; y: number; width: number;
+    ownerNodeId?: string; ownerProjectId: typeof currentProjectId; assetUrl?: string; assetUnavailable?: boolean;
+  } | null>(null);
   const handleEditorMouseLeave = useCallback(() => {
     if (chipHoverTimer.current !== null) clearTimeout(chipHoverTimer.current);
     chipHoverTimer.current = null;
-    lastHoverIdRef.current = null;
+    lastHoverKeyRef.current = null;
     useAppStore.getState().setHoveredMentionNodeId(null);
     setChipTip(null);
   }, []);
@@ -1134,17 +1138,21 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       handleEditorMouseLeave();
       return;
     }
-    const el = (e.target as HTMLElement).closest?.('[data-ref-id]') as HTMLElement | null;
-    const id = el?.getAttribute('data-ref-id') ?? null;
-    if (id === lastHoverIdRef.current) return; // 同一芯片，跳过避免抖动
+    const el = (e.target as Element).closest?.<HTMLElement>('[data-ref-id],[data-drama-id],[data-asset-path]') ?? null;
+    const source = el && editorRef.current?.contains(el) ? readMentionPreviewSource(el) : null;
+    const key = source ? `${source.kind}:${source.id}` : null;
+    if (key === lastHoverKeyRef.current) return; // 同一芯片，跳过避免抖动
     handleEditorMouseLeave();
-    lastHoverIdRef.current = id;
-    useAppStore.getState().setHoveredMentionNodeId(id);
-    if (el && id) {
-      const label = el.getAttribute('data-ref-label') || '节点';
+    lastHoverKeyRef.current = key;
+    if (source?.kind === 'node') useAppStore.getState().setHoveredMentionNodeId(source.id);
+    if (el && source && key) {
       chipHoverTimer.current = setTimeout(() => {
         chipHoverTimer.current = null;
-        if (chipHoverSuppressedRef.current || editorRef.current?.classList.contains('is-chip-dragging') || lastHoverIdRef.current !== id || !el.isConnected) return;
+        const stillHovered = () => !chipHoverSuppressedRef.current
+          && !editorRef.current?.classList.contains('is-chip-dragging')
+          && lastHoverKeyRef.current === key && el.isConnected && editorRef.current?.contains(el)
+          && useAppStore.getState().currentProjectId === currentProjectId;
+        if (!stillHovered()) return;
         const rect = el.getBoundingClientRect();
         const width = Math.min(264, window.innerWidth - 24);
         const height = Math.min(208, window.innerHeight - 24);
@@ -1152,10 +1160,22 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         const position = rect.bottom + 8 + height <= window.innerHeight - 12
           ? calcFixedPosition(rect.left, rect.bottom + 8, width, height, 12)
           : calcAnchoredPosition(rect, width, height, 8, 12);
-        setChipTip({ id, label, x: position.left, y: position.top, width, ownerNodeId: nodeId });
+        const tip = { source, key, x: position.left, y: position.top, width,
+          ownerNodeId: nodeId, ownerProjectId: currentProjectId };
+        setChipTip(tip);
+        if (source.kind === 'asset' && getFileCategory(source.label) === 'image') {
+          // Resolve only the hovered file; do not scan asset folders or retain stale results.
+          void getAssetUrlFromPath(source.id).then((assetUrl) => {
+            if (stillHovered()) setChipTip((current) => current === tip
+              ? { ...current, assetUrl, assetUnavailable: !assetUrl } : current);
+          }, () => {
+            if (stillHovered()) setChipTip((current) => current === tip
+              ? { ...current, assetUnavailable: true } : current);
+          });
+        }
       }, 120);
     }
-  }, [handleEditorMouseLeave, nodeId]);
+  }, [currentProjectId, handleEditorMouseLeave, nodeId]);
   const handleChipPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const root = editorRef.current;
     if (!root || event.button !== 0 || event.pointerType === 'touch') return;
@@ -1179,9 +1199,20 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       isCurrent: () => useAppStore.getState().currentProjectId === currentProjectId,
     });
   }, [currentProjectId, emitDOM, handleEditorMouseLeave]);
-  const chipPreview = chipTip && chipTip.ownerNodeId === nodeId
-    ? resolveMentionPreview(nodes, chipTip.id, chipTip.label, nodeMetaMap.get(chipTip.id)?.thumbnailUrl)
-    : null;
+  const chipPreview = useMemo<MentionChipPreview | null>(() => {
+    if (!chipTip || chipTip.ownerNodeId !== nodeId || chipTip.ownerProjectId !== currentProjectId) return null;
+    const { source } = chipTip;
+    if (source.kind === 'node') return resolveMentionPreview(nodes, source.id, source.label, nodeMetaMap.get(source.id)?.thumbnailUrl);
+    if (source.kind === 'drama') return resolveDramaMentionPreview(dramaAssets, globalCharacters, nodes, source.id, source.label);
+    const category = getFileCategory(source.label);
+    return {
+      label: source.label, displayId: undefined, sprite: undefined,
+      outputType: category === 'other' ? 'text' : category,
+      thumbnailUrl: category === 'image' && !chipTip.assetUnavailable ? chipTip.assetUrl : undefined,
+      text: '', missing: !!chipTip.assetUnavailable,
+      description: chipTip.assetUnavailable ? '素材图片不可用' : `素材库 · ${{ image: '图像素材', video: '视频素材', audio: '音频素材', text: '文本文件', other: '文件' }[category]}`,
+    };
+  }, [chipTip, currentProjectId, dramaAssets, globalCharacters, nodeId, nodeMetaMap, nodes]);
   useEffect(() => {
     // 捕获画布、文字选择和胶囊拖动；原生拖放开始后可能立即收到 pointercancel。
     let nativeDragging = false;
@@ -1208,7 +1239,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       handleEditorMouseLeave();
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && lastHoverIdRef.current) handleEditorMouseLeave();
+      if (event.key === 'Escape' && lastHoverKeyRef.current) handleEditorMouseLeave();
     };
     window.addEventListener('pointerdown', pointerDown, true);
     window.addEventListener('pointerup', pointerUp, true);
@@ -1223,7 +1254,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     window.addEventListener('keydown', escape);
     return () => {
       if (chipHoverTimer.current !== null) clearTimeout(chipHoverTimer.current);
-      lastHoverIdRef.current = null;
+      lastHoverKeyRef.current = null;
       useAppStore.getState().setHoveredMentionNodeId(null);
       window.removeEventListener('pointerdown', pointerDown, true);
       window.removeEventListener('pointerup', pointerUp, true);
@@ -1237,7 +1268,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       window.removeEventListener('scroll', handleEditorMouseLeave, true);
       window.removeEventListener('keydown', escape);
     };
-  }, [nodeId, handleEditorMouseLeave]);
+  }, [currentProjectId, nodeId, handleEditorMouseLeave]);
 
   // ── @ 面板数据：输入图（画布节点） / 资产库（短剧资产） / ComfyUI 节点（工作流 IO） ──
   const dramaThumbOf = useCallback((item: { imageNodeId?: string; imageUrl?: string; referenceImages?: CharacterReferenceImage[] }) => {
@@ -1643,7 +1674,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         chipHoverSuppressed ? null : <AnimatePresence>
           {chipTip && chipPreview && (
             <motion.div
-              key={chipTip.id}
+              key={chipTip.key}
               className="chip-name-tip reference-chip-card ui-card p-2"
               role="tooltip"
               data-reference-preview-open=""
@@ -1654,11 +1685,19 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
               transition={fadeFast}
             >
               <div className="reference-chip-content flex h-32 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-canvas-bg">
-                {chipPreview.thumbnailUrl ? (
+                {chipPreview.thumbnailUrls && chipPreview.thumbnailUrls.length > 1 ? (
+                  <div className="grid h-full w-full grid-cols-2 gap-1 overflow-hidden p-2">
+                    {chipPreview.thumbnailUrls.slice(0, 4).map((url, index) => (
+                      <img key={`${index}:${url}`} src={url} alt={`${chipPreview.label} · ${index + 1}`} className="h-12 w-full object-contain" loading="lazy" />
+                    ))}
+                  </div>
+                ) : chipPreview.thumbnailUrl ? (
                   chipPreview.sprite ? (
                     <div role="img" aria-label={chipPreview.label} className="h-full w-full bg-no-repeat" style={{ backgroundImage: `url(${JSON.stringify(chipPreview.thumbnailUrl)})`, ...chipPreview.sprite }} />
                   ) : (
-                    <img src={chipPreview.thumbnailUrl} alt={chipPreview.label} className="h-full w-full object-contain" />
+                    <img src={chipPreview.thumbnailUrl} alt={chipPreview.label} className="h-full w-full object-contain"
+                      onError={chipTip.source.kind === 'asset' ? () => setChipTip((current) => current && current === chipTip
+                        ? { ...current, assetUrl: undefined, assetUnavailable: true } : current) : undefined} />
                   )
                 ) : chipPreview.text ? (
                   <p className="line-clamp-5 whitespace-pre-wrap break-words p-2 text-xs leading-5 text-canvas-text-secondary">{chipPreview.text}</p>
@@ -1669,7 +1708,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
               <p className="mt-2 line-clamp-2 break-words text-xs font-medium text-canvas-text">{chipPreview.label}</p>
               <span className="mt-1 text-[11px] text-canvas-text-muted">
                 {chipPreview.displayId != null ? `#${chipPreview.displayId} · ` : ''}
-                {chipPreview.missing ? '引用节点已不存在' : ({ image: '图像素材', video: '视频素材', audio: '音频素材', text: '文本内容' }[chipPreview.outputType])}
+                {chipPreview.description ?? (chipPreview.missing ? '引用节点已不存在' : ({ image: '图像素材', video: '视频素材', audio: '音频素材', text: '文本内容' }[chipPreview.outputType]))}
+                {chipPreview.thumbnailUrls && chipPreview.thumbnailUrls.length > 4 ? ' · 预览前4张' : ''}
               </span>
             </motion.div>
           )}

@@ -21,6 +21,7 @@ import {
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../canvasDerivationGuard';
 import { saveCloudWorkflowOutputs } from '../workflowExecutionService';
 import { normalizeWorkflowApiBaseUrl, AUTODL_H3_WORKFLOW, resolveWorkflowApiInputValues, validateWorkflowApiManifest } from './autodlWorkflowManifest';
+import { getGenerationNodeType } from '../../utils/nodeGeneration';
 
 const TASK_ID = /^[\w-]{1,128}$/;
 const RETRY_HTTP = new Set([408, 429, 500, 502, 503, 504]);
@@ -335,7 +336,7 @@ export async function executeWorkflowApi(params: {
   const projectId = context?.projectId ?? store.currentProjectId;
   const node = store.nodes.find((item) => item.id === params.nodeId);
   if (!projectId || store.currentProjectId !== projectId || (!params.nodeId && !context)
-    || (params.nodeId && (!node || node.data.workflowId !== workflow.id || node.data.type !== nodeType))
+    || (params.nodeId && (!node || node.data.workflowId !== workflow.id || getGenerationNodeType(node.data.type) !== nodeType))
     || workflow.category !== nodeType) throw new Error('工作流与当前项目或节点输出类型不匹配');
   const trackingId = params.nodeId ?? `workflow-api-message-${context!.messageId}`;
   if (getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId)) throw new Error('已有工作流任务，请先继续查询或在平台确认远端任务结束');
@@ -400,7 +401,7 @@ export async function executeWorkflowApi(params: {
     const current = useAppStore.getState();
     const canReport = !signal.aborted && current.currentProjectId === projectId
       && (!submitting || ownsRecord())
-      && current.nodes.some((item) => item.id === params.nodeId && item.data.type === nodeType
+      && current.nodes.some((item) => item.id === params.nodeId && getGenerationNodeType(item.data.type) === nodeType
         && item.data.workflowId === workflow.id && item.data.status === 'loading');
     if (ownsRecord() && (error instanceof WorkflowApiTaskFailed || (submitting && !taskId && error instanceof WorkflowApiRequestError && error.rejected))) removePendingTask(trackingId, taskId);
     if (params.nodeId && canReport) useAppStore.getState().updateNodeDataTransient(params.nodeId, {

@@ -3,6 +3,8 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { buildRunningHubInputs, cancelRunningHubNodeTask, completeRunningHubNodeTask, executeRunningHubWorkflow, parseRunningHubOutputs } from '../../src/services/ai/providers/runninghubWorkflow';
 import { cancelNodePolling, getPendingTasksForProject, resumePendingTasks, resumeRunningHubNodeTask, savePendingTask } from '../../src/services/pollManager';
 import { uploadRunningHubMedia } from '../../src/services/ai/providers/runninghubClient';
+import { fetchRunningHubDefinition } from '../../src/services/runninghubWorkflowService';
+import { buildRunningHubSiteProviders } from '../../src/services/runninghubSiteCredentials';
 import type { RunningHubMediaKind, RunningHubWorkflowManifest } from '../../src/types/runninghub';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), persist: vi.fn(), desktop: vi.fn(() => true) }));
@@ -47,6 +49,29 @@ beforeEach(() => {
 afterEach(() => { cancelNodePolling('n1'); cancelNodePolling('runninghub-message-m1'); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('RunningHub 云任务生命周期', () => {
+  it('国际站应用定义使用指定站点、密钥和完整字符串 ID', async () => {
+    const remoteId = '2108920489564520450';
+    mocks.fetch.mockResolvedValueOnce(json({ code: 0, data: { nodeInfoList: [] } }));
+    const definition = await fetchRunningHubDefinition({ ...connection, baseUrl: 'https://www.runninghub.ai' },
+      { kind: 'app', remoteId: `https://www.runninghub.ai/zh-cn/ai-detail/${remoteId}`, connectionId: 'runninghub' });
+    const [address, init] = mocks.fetch.mock.calls[0];
+    const url = new URL(address);
+    expect(url.origin).toBe('https://www.runninghub.ai');
+    expect(url.pathname).toBe('/api/webapp/apiCallDemo');
+    expect(url.searchParams.get('webappId')).toBe(remoteId);
+    expect(url.searchParams.get('apiKey')).toBe(connection.apiKey);
+    expect(init).toMatchObject({ method: 'GET' });
+    expect(definition.remoteId).toBe(remoteId);
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('定义读取返回 901 时保留错误，不把密钥改投另一站点', async () => {
+    mocks.fetch.mockResolvedValueOnce(json({ code: 901, msg: 'WEBAPP_NOT_EXISTS' }));
+    await expect(fetchRunningHubDefinition({ ...connection, baseUrl: 'https://www.runninghub.ai' },
+      { kind: 'app', remoteId: '2108920489564520450', connectionId: 'runninghub' })).rejects.toThrow('业务码 901');
+    expect(mocks.fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(mocks.fetch.mock.calls[0][0]).origin).toBe('https://www.runninghub.ai');
+  });
+
   it('纯对话调用中断后按原消息恢复，不创建画布节点或重复提交', async () => {
     const message = { id: 'm1', conversationId: 'c1', role: 'assistant' as const, content: '', timestamp: 1, status: 'done' as const };
     useAppStore.setState({ nodes: [], messages: [message] });
@@ -72,7 +97,7 @@ describe('RunningHub 云任务生命周期', () => {
     expect(result).toHaveLength(2); expect(result[0].filePath).toBeTruthy(); expect(mocks.persist).toHaveBeenCalledTimes(2);
     const body = JSON.parse(submitCalls()[0][1].body as string);
     expect(body).toMatchObject({ workflowId: manifest.remoteId, apiKey: connection.apiKey, nodeInfoList: [{ fieldValue: '猫' }, { fieldValue: 0 }, { fieldValue: false }] });
-    expect(pending()[0]).toMatchObject({ taskId, runninghubRecoveryState: 'save_pending' });
+    expect(pending()[0]).toMatchObject({ taskId, runninghubSite: 'cn', runninghubRecoveryState: 'save_pending' });
     expect(JSON.stringify(pending())).not.toContain(connection.apiKey);
     completeRunningHubNodeTask('n1'); expect(pending()).toEqual([]);
   });
@@ -143,6 +168,19 @@ describe('RunningHub 云任务生命周期', () => {
     state = 'RUNNING'; await expect(cancelRunningHubNodeTask('n1')).rejects.toThrow('尚未确认'); expect(pending()[0].runninghubRecoveryState).toBe('cancel_pending');
     state = 'SUCCESS'; await expect(cancelRunningHubNodeTask('n1')).rejects.toThrow('保存产物'); expect(pending()[0].runninghubRecoveryState).toBe('save_pending');
     state = 'CANCELED'; await expect(cancelRunningHubNodeTask('n1')).resolves.toBe('cancelled'); expect(pending()).toEqual([]);
+  });
+  it('切换当前站点后仍使用任务原站点和凭据取消', async () => {
+    const store = useAppStore.getState();
+    useAppStore.setState({ config: { ...store.config, providers: buildRunningHubSiteProviders({},
+      { name: 'RH', apiKey: '', baseUrl: 'https://www.runninghub.ai/openapi/v2' },
+      { cn: { modelKey: '', workflowKey: 'original-cn-fixture' }, ai: { modelKey: '', workflowKey: 'current-ai-fixture' } }) } });
+    savePendingTask({ nodeId: 'n1', projectId: 'p1', taskId, taskType: 'runninghub-workflow', provider: 'runninghubwf', nodeType: 'ai-image', submitted: true, runninghubSite: 'cn' });
+    state = 'CANCELED';
+    await expect(cancelRunningHubNodeTask('n1')).resolves.toBe('cancelled');
+    for (const [url, init] of mocks.fetch.mock.calls) {
+      expect(new URL(url).origin).toBe('https://www.runninghub.cn');
+      expect(JSON.parse(init.body as string).apiKey).toBe('original-cn-fixture');
+    }
   });
   it('上传复用同一素材，按字段分别传文件名和 URL，不走第三方图床', async () => {
     const mediaManifest: RunningHubWorkflowManifest = { ...manifest, parameters: [

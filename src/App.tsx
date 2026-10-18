@@ -19,6 +19,7 @@ import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
+import { getCanvasViewportController } from './services/canvasViewportService';
 import { useReferencedImageWatcher } from './hooks/useReferencedImageWatcher';
 import { useTooltipAutoPlacement } from './hooks/useTooltipAutoPlacement';
 import { parseAspectRatio, useMainWindowSize } from './hooks/useMainWindowSize';
@@ -284,6 +285,7 @@ export default function App() {
           if (closeInProgress.current) return;
           closeInProgress.current = true;
           try {
+            getCanvasViewportController()?.rememberViewport?.();
             flushSync(() => setClosePhase('saving'));
             // 给提示一次绘制机会；窗口隐藏时 rAF 可能暂停，用计时器兜底。
             await new Promise<void>((resolve) => {

@@ -104,7 +104,8 @@ fn validate_transfer_size(
     Ok(())
 }
 
-fn stream_to_file<R, C, P, V>(
+/// 流式暂存、校验及独占发布；内部调用方必须先完成目标路径授权。
+pub(crate) fn stream_to_file<R, C, P, V>(
     task_id: &str,
     reader: &mut R,
     destination: &Path,
@@ -221,6 +222,33 @@ where
     let result = (|| {
         if is_cancelled(task_id)? {
             return Err("文件传输已取消".to_string());
+        }
+        if crate::github_fallback::mirror_url(url).is_some() {
+            let mut validate = Some(validate_temp);
+            return crate::github_fallback::retry(url, |source| {
+                use crate::github_fallback::Failure;
+                if is_cancelled(task_id).map_err(Failure::terminal)? {
+                    return Err(Failure::terminal("文件传输已取消"));
+                }
+                let mut reader = crate::github_fallback::get(source)?;
+                let metadata = DownloadMetadata {
+                    content_length: reader.response.content_length(),
+                    content_type: reader.response.headers().get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok()).and_then(|value| value.split(';').next()).map(str::trim).map(str::to_string),
+                };
+                if let (Some(size), Some(limit)) = (metadata.content_length, max_bytes) {
+                    validate_transfer_size(size, None, Some(limit)).map_err(Failure::terminal)?;
+                }
+                let progress = |transferred_bytes| { let _ = app.emit(PROGRESS_EVENT, FileTransferProgress {
+                    task_id: task_id.to_owned(), transferred_bytes, total_bytes: metadata.content_length,
+                }); };
+                progress(0);
+                let result = stream_to_file(task_id, &mut reader, destination, metadata.content_length,
+                    metadata.content_length.or(max_bytes), max_bytes, || is_cancelled(task_id), progress,
+                    |path| validate.take().expect("download validator consumed once")(path, &metadata));
+                result.map(|total_bytes| FileTransferResult { path: destination.to_string_lossy().into_owned(), total_bytes,
+                    content_type: metadata.content_type }).map_err(|message| Failure { message, retryable: reader.network_failed })
+            });
         }
         let client = reqwest::blocking::Client::builder()
             .user_agent("AI-Canvas/0.4")

@@ -1,5 +1,7 @@
 # 导演台与 Blender
 
+导演台运行包下载支持 GitHub 网络超时后单次国内加速，重新下载并保留 SHA-256 校验；本地安装包路径不切源。共用边界见 [GitHub 下载加速](./plans/2026-10-18-github-download-fallback.md)。
+
 负责 `ai-director` 的轻量网页、Blender 与 AI 镜头预演运行时、3D 镜头场景、任务和结果回填。Blender 阶段见[原生运行时计划](./plans/2026-08-28-director-blender-native-runtime.md)，AI 预演见[实施计划](./plans/2026-10-03-director-ai-previs.md)。
 
 ## 主要入口

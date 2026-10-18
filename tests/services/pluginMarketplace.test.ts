@@ -78,6 +78,20 @@ describe('GitHub plugin marketplace', () => {
     expect(comparePluginVersions('1.0.0', '1.0.1')).toBe(-1);
   });
 
+  it('插件下载网络失败切源，仍校验原仓库身份和包内容', async () => {
+    const repository = 'https://github.com/example/fallback-plugin';
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError('offline')).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/releases/latest')) return new Response(JSON.stringify({ tag_name: 'v1.2.0',
+        html_url: `${repository}/releases/tag/v1.2.0`, draft: false, prerelease: false }));
+      if (url.endsWith('/manifest.json')) return new Response(pluginManifest(repository));
+      return new Response('definePlugin({ tools: {} });');
+    });
+    const plugin = await resolveGithubPlugin(repository, { fetcher, force: true });
+    expect(plugin.manifest.repository).toBe(repository);
+    expect(fetcher.mock.calls.some(([source]) => String(source).startsWith('https://gh-proxy.com/https://api.github.com/'))).toBe(true);
+  });
+
   it('registers independent directories in one repository and rejects a repeated directory', () => {
     const first = { repository: 'example/collection', directory: 'plugins/first', releaseTag: 'first-v1.2.0' };
     const second = { repository: first.repository, directory: 'second', releaseTag: 'second-v1.0.0' };

@@ -21,6 +21,7 @@ import { generateImageStandard } from '../../src/services/ai/providers/standardI
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelTemplates';
+import { uploadToRemote } from '../../src/services/uploadService';
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -36,6 +37,56 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('ToAPIs 参考素材上传与图片提交', () => {
+  function configure(id = 'gpt-image-2', baseUrl = 'https://toapis.cn/v1', apiKey = 'toapis-fixture') {
+    const selected = getProviderDefinition('toapis')!.models!.find((model) => model.id === id)!;
+    useAppStore.getState().saveProviderConfig('toapis-user', {
+      name: 'ToAPIs', catalogId: 'toapis', apiKey, baseUrl, selectedModels: [selected],
+    });
+    const general = useAppStore.getState().config.generalModels!.find((model) => model.providerConfigId === 'toapis-user')!;
+    return { provider: 'general', model: `general/${general.id}`, prompt: '测试参考图' };
+  }
+
+  it.each([
+    ['video', 'video/mp4', 'videos'], ['audio', 'audio/mpeg', 'audios'],
+  ] as const)('本地 %s 使用当前连接 Key 和当前站点的上传接口', async (kind, mime, endpoint) => {
+    configure('gpt-image-2', 'https://toapis.com/v1');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: { url: `https://cdn.example/toapis-${kind}` } }));
+    const result = await uploadToRemote(`data:${mime};base64,dG9hcGlzLXJlZmVyZW5jZQ==`, 'toapis-user', kind);
+    expect(result).toBe(`https://cdn.example/toapis-${kind}`);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe(`https://toapis.com/v1/uploads/${endpoint}`);
+    expect(init.headers).toEqual({ Authorization: 'Bearer toapis-fixture' });
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.body.get('file')).toBeInstanceOf(Blob);
+    expect(init.body.get('purpose')).toBe('generation');
+  });
+
+  it('图片先上传当前 ToAPIs 连接，再提交异步任务并只查询同一个任务 ID', async () => {
+    const params = configure();
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { url: 'https://cdn.example/toapis-image-ref' } }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'image-toapis-task', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed', result: { data: [{ url: 'https://cdn.example/toapis-output.png' }] } }));
+    const result = await generateImagesBatch({ ...params, image_urls: ['data:image/png;base64,dG9hcGlzLWltYWdlLWZpeHR1cmU='], imageSize: '2k', aspectRatio: '16:9' }, 1);
+    expect(result.results[0].url).toBe('https://cdn.example/toapis-output.png');
+    const calls = transportMocks.corsSafeFetch.mock.calls;
+    expect(calls.map(([url]) => url)).toEqual(['https://toapis.cn/v1/uploads/images', 'https://toapis.cn/v1/images/generations', 'https://toapis.cn/v1/images/generations/image-toapis-task']);
+    expect(JSON.parse(String(calls[1][1].body))).toMatchObject({ model: 'gpt-image-2', resolution: '2k', size: '16:9', n: 1,
+      reference_images: ['https://cdn.example/toapis-image-ref'] });
+    expect(JSON.parse(String(calls[1][1].body))).not.toHaveProperty('image_urls');
+  });
+
+  it('本连接未配置 Key 时不借用 APIMart 或其他连接 Key', async () => {
+    configure('gpt-image-2', 'https://toapis.cn/v1', '');
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      apimart: { name: 'APIMart', apiKey: 'other-fixture' },
+    } } }));
+    await expect(uploadToRemote('data:video/mp4;base64,bWlzc2luZy1rZXk=', 'toapis-user', 'video')).rejects.toThrow('当前连接');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('image quick template request transport', () => {

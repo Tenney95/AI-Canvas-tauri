@@ -13,6 +13,7 @@ import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import RunningHubWorkflowImport from './runninghub/RunningHubWorkflowImport';
 import { readBinaryFile } from '../services/fileService';
+import { nativeDropClientPosition } from '../utils/nativeDropPosition';
 
 const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-text', label: '生成文本' },
@@ -243,9 +244,7 @@ export default function WorkflowPanel() {
           return;
         }
         const rect = dropZoneRef.current?.getBoundingClientRect();
-        const scale = window.devicePixelRatio || 1;
-        const x = payload.position.x / scale;
-        const y = payload.position.y / scale;
+        const { x, y } = nativeDropClientPosition(payload.position);
         const inside = !!rect && x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
         setDragOver(inside && payload.type !== 'drop');
         if (payload.type !== 'drop' || !inside) return;

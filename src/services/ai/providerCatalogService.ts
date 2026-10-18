@@ -11,6 +11,7 @@ import {
   GRSAI_BASE_URL,
   RUNNINGHUB_MODEL_BASE_URL,
   TAVILY_BASE_URL,
+  TOAPIS_BASE_URL,
   VOLCENGINE_BASE_URL,
   ZHIPU_SEARCH_BASE_URL,
 } from '../../constants/api';
@@ -30,6 +31,7 @@ import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni 
 import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
 import { XAI_BASE_URL, XAI_MODEL_MANIFEST } from './providers/xaiModelManifest';
 import { GRSAI_ADDED_MODELS } from './grsaiModels';
+import { matchToapisCatalog, TOAPIS_MODEL_MANIFEST } from './providers/toapisModelManifest';
 import { filterCccGroupModels } from './cccProviderGroups';
 import {
   GOOGLE_GEMINI_BASE_URL,
@@ -278,6 +280,14 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
       { ...API_KEY_FIELD, placeholder: 'sk-...' },
     ],
     models: CCCAPI_MODEL_MANIFEST,
+  },
+  {
+    id: 'toapis', name: 'ToAPIs',
+    description: '国内站与国际站共用账号和 API Key，按所选站点拉取可用模型。',
+    badgeText: 'T', authType: 'api-key', catalogAdapter: 'openai-compatible',
+    defaultBaseUrl: TOAPIS_BASE_URL, modelsPath: '/models', allowCustomBaseUrl: false,
+    externalUrl: 'https://toapis.cn/login?aff=SnMr',
+    credentials: [{ ...API_KEY_FIELD, placeholder: 'sk-...' }], models: TOAPIS_MODEL_MANIFEST,
   },
   {
     id: 'xai',
@@ -829,22 +839,25 @@ export async function fetchProviderModelCatalog(
       config,
       signal,
     );
+    const matchedToapis = definition.id === 'toapis' ? matchToapisCatalog(models) : undefined;
     const catalogModels = mergeRemoteCatalogMetadata(
       definition.id === 'apimart'
         ? expandApimartCatalog(models, normalizedFallback, providerId)
-        : models,
+        : matchedToapis || models,
       normalizedFallback,
     );
     return {
       models: definition.id === 'cccapi' ? filterCccGroupModels(catalogModels, config.cccGroup) : catalogModels,
       source: 'remote',
       resolvedBaseUrl: baseUrl,
+      ...(matchedToapis && models.some((model) => model.category !== 'text' && !matchedToapis.some((known) => known.id === model.id))
+        ? { warning: '已获取当前站点目录，仅展示已适配的媒体型号及指定文本型号；尚无完整调用合同的型号暂不展示。' } : {}),
     };
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     const warning = safeCatalogError(error);
     // CCC 分组权限由 Key 决定，不能用全站目录伪装成该 Key 的可用模型。
-    if (!(definition.id === 'cccapi' && config.cccGroup) && normalizedFallback.length > 0) {
+    if (definition.id !== 'toapis' && !(definition.id === 'cccapi' && config.cccGroup) && normalizedFallback.length > 0) {
       return { models: normalizedFallback, source: 'local-fallback', warning };
     }
     throw new Error(warning, { cause: error });

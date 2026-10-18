@@ -30,6 +30,7 @@ import { completeRunningHubNodeTask } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
 import { videoInputFingerprint } from './videoBatchPlanning';
 import { completeVideoNodeTask, getPendingTasksForProject, pauseVideoNodeTask, prepareVideoNodeGeneration, VideoPollingPausedError } from './pollManager';
+import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 
 export interface GenerationResult {
   success: boolean;
@@ -66,7 +67,7 @@ export async function executeGeneration(
     try { await assertLease(); } catch { return { success: false, message: '任务已取消' }; }
   }
   const store = useAppStore.getState();
-  const data: BaseNodeData | undefined = passData ?? (store.nodes.find((n) => n.id === nodeId)?.data as BaseNodeData | undefined);
+  const data = resolveGenerationNodeData(passData ?? store.nodes.find((n) => n.id === nodeId)?.data);
   if (!data) return { success: false, message: '节点不存在' };
 
   const nodeType = data?.type;

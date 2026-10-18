@@ -54,6 +54,15 @@ function validRect(rect: CanvasEdgeClipRect): boolean {
     && rect.left <= rect.right && rect.top <= rect.bottom;
 }
 
+function segmentDistance(point: Point, start: Point, end: Point): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = dx * dx + dy * dy;
+  const t = length ? Math.max(0, Math.min(1,
+    ((point.x - start.x) * dx + (point.y - start.y) * dy) / length)) : 0;
+  return Math.hypot(point.x - start.x - t * dx, point.y - start.y - t * dy);
+}
+
 /** Strictly parse only the absolute commands emitted by React Flow's geometry helpers. */
 function parse(source: string): Segment[] | null {
   if (source.length > 65_536) return null;
@@ -121,10 +130,38 @@ function lineInterval(points: Point[], rect: CanvasEdgeClipRect): Interval | nul
  */
 export function createCanvasEdgeClipper(source: string): {
   clip(rect: CanvasEdgeClipRect, tolerance: number): string | null;
+  distance(point: Point, radius: number, tolerance: number): number | null;
 } | null {
   const segments = parse(source);
   if (!segments) return null;
   return {
+    // Reuse the parsed geometry for occasional pointer queries, never per pan/zoom.
+    distance(point, radius, tolerance) {
+      if (![point.x, point.y, radius, tolerance].every(Number.isFinite)
+        || radius < 0 || tolerance <= 0) return null;
+      let budget = QUERY_BUDGET;
+      let nearest = radius;
+      let found = false;
+      const visit = (curve: Curve, depth: number): boolean => {
+        if (--budget < 0) return false;
+        const { bounds, points } = curve;
+        if (Math.hypot(Math.max(bounds.left - point.x, 0, point.x - bounds.right),
+          Math.max(bounds.top - point.y, 0, point.y - bounds.bottom)) > nearest + tolerance) return true;
+        const start = points[0];
+        const end = points[points.length - 1];
+        if (points.slice(1, -1).every((control) => segmentDistance(control, start, end) <= tolerance)) {
+          const distance = segmentDistance(point, start, end);
+          if (distance <= nearest) { nearest = distance; found = true; }
+          return true;
+        }
+        if (depth >= MAX_DEPTH) return false;
+        const children = curve.children ?? split(points, 0.5).map(makeCurve) as [Curve, Curve];
+        if (depth < CACHE_DEPTH) curve.children = children;
+        return visit(children[0], depth + 1) && visit(children[1], depth + 1);
+      };
+      for (const segment of segments) if (!visit(segment.curve, 0)) return null;
+      return found ? nearest : null;
+    },
     clip(rect, tolerance) {
       if (!validRect(rect) || !Number.isFinite(tolerance) || tolerance <= 0) return null;
       let budget = QUERY_BUDGET;

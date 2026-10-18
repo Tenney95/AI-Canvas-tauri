@@ -37,6 +37,7 @@ import { assertConfiguredImageReferences, assertModelCapabilityProtocol, resolve
 import { getProviderDefinition } from './providerCatalogService';
 import { resolveBuiltInImageRequestContract, validateBuiltInImageResponse } from './imageRequestContracts';
 import { buildGoogleImageParts, resolveImageTemplateDimensions } from './imageModelTemplates';
+import { assertToapisImageInput, toapisImageReferences } from './providers/toapisModelManifest';
 
 function hasReferenceImageFile(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
@@ -184,7 +185,7 @@ export async function generateImagesBatch(
   const comfyMedia = isComfyWorkflow ? await resolvePromptWithMediaRefs(rawPrompt) : undefined;
   const { prompt: resolvedPrompt, imageUrls } = comfyMedia
     ? { prompt: comfyMedia.prompt, imageUrls: getMediaReferenceUrls(comfyMedia.references, 'image', 'local') }
-    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls });
+    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || providerDefinition?.id === 'toapis' });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // 合并调用方传入的 image_urls 与从 prompt 中解析出的 imageUrls
@@ -263,10 +264,11 @@ export async function generateImagesBatch(
   const referenceMedia = provider === 'runninghub' ? mergeMediaReferences(collectPromptNodeMediaUrls(rawPrompt).references, collectConnectedReferenceMedia(params.nodeId).references) : undefined;
   if (referenceMedia) allImageUrls = mergeImageUrls(allImageUrls, getMediaReferenceUrls(referenceMedia, 'image', 'local'));
   if (configuredCapability) assertConfiguredImageReferences(configuredCapability, allImageUrls.length);
+  if (providerDefinition?.id === 'toapis') assertToapisImageInput(modelName, allImageUrls.length, requestedCount);
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
   allImageUrls = provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
     ? await resolveImageDataUrlArray(allImageUrls, signal)
-    : await resolveImageUrlArray(allImageUrls, provider, signal);
+    : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' ? connectionId : provider, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   if (!prompt.trim() && provider !== 'runninghub') throw new Error('提示词不能为空');
@@ -340,7 +342,7 @@ export async function generateImagesBatch(
             height: dimensions.height,
             n: requestedCount,
             batchCount: requestedCount,
-            imageUrls: allImageUrls,
+            imageUrls: providerDefinition?.id === 'toapis' ? toapisImageReferences(modelName, allImageUrls) : allImageUrls,
             ...(customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts')
               ? { googleImageParts: buildGoogleImageParts(prompt, allImageUrls) } : {}),
           },

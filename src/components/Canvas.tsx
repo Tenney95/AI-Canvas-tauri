@@ -55,6 +55,7 @@ import CanvasEmptyState from './canvas/CanvasEmptyState';
 import HistoryTimelinePanel from './canvas/HistoryTimelinePanel';
 import SelectedNodeFlowEdge from './canvas/SelectedNodeFlowEdge';
 import CanvasEdgeLayer from './canvas/CanvasEdgeLayer';
+import { CanvasEdgePanePointerContext, useCanvasEdgePanePointer } from '../hooks/useCanvasEdgePanePointer';
 import CanvasRadialMenu, { CanvasLongPressIndicator } from './canvas/CanvasRadialMenu';
 import NodePluginToolDialog from './nodes/shared/toolbar/NodePluginToolDialog';
 import NodeOutputDownloadDialog from './shared/NodeOutputDownloadDialog';
@@ -482,21 +483,25 @@ function CanvasInner({ onReady }: CanvasProps) {
     autoFit: autoFitCanvas,
     beginUserMove,
     endUserMove,
+    restoreInitialView,
+    markViewportReady,
+    recordViewport,
+    rememberViewport,
   } = viewportPreferences;
   const readyProjectRef = useRef<string | null>(null);
-  const hasRenderableNodes = renderableGraph.nodes.some((node) => !node.hidden);
   useEffect(() => {
-    if (!onReady || !currentProjectId || readyProjectRef.current === currentProjectId
+    if (!viewportPreferences.hydrated || !currentProjectId || readyProjectRef.current === currentProjectId
       || !reactFlowInstance.viewportInitialized) return;
     // 不依赖节点数组：测量写回会持续替换数组，不能反复取消、重启首帧等待。
     return waitForCanvasFirstPaint(
-      () => hasRenderableNodes ? fitCanvasView({ padding: 0.2 }, true) : Promise.resolve(false),
+      restoreInitialView,
       () => {
         readyProjectRef.current = currentProjectId;
-        onReady(currentProjectId);
+        markViewportReady();
+        onReady?.(currentProjectId);
       },
     );
-  }, [currentProjectId, hasRenderableNodes, onReady, reactFlowInstance, fitCanvasView]);
+  }, [currentProjectId, onReady, reactFlowInstance, restoreInitialView, markViewportReady, viewportPreferences.hydrated]);
   const lodSession = useMemo(() => ({
     projectId: currentProjectId,
     runtime: createCanvasNodeLodRuntime(reactFlowInstance.getViewport().zoom, undefined, getPerformanceModeEnabled()),
@@ -521,6 +526,7 @@ function CanvasInner({ onReady }: CanvasProps) {
   } | null>(null);
 
   useEffect(() => registerCanvasViewportController({
+    rememberViewport,
     getSnapshot: () => {
       const viewport = reactFlowInstance.getViewport();
       const topLeft = reactFlowInstance.screenToFlowPosition({ x: 0, y: 0 });
@@ -556,7 +562,7 @@ function CanvasInner({ onReady }: CanvasProps) {
         duration: options.duration ?? 0,
       });
     },
-  }), [reactFlowInstance, fitCanvasView]);
+  }), [reactFlowInstance, fitCanvasView, rememberViewport]);
   const activeInteractionsRef = useRef(new Set<CanvasInteractionKind>());
   const interactionReleaseFramesRef = useRef<Record<CanvasInteractionKind, number>>({
     node: 0,
@@ -762,8 +768,9 @@ function CanvasInner({ onReady }: CanvasProps) {
       return;
     }
     endUserMove();
+    rememberViewport();
     endCanvasInteraction('viewport');
-  }, [endCanvasInteraction, endUserMove, setCanvasInteraction]);
+  }, [endCanvasInteraction, endUserMove, rememberViewport, setCanvasInteraction]);
 
   const handleCanvasViewportMove = useCallback<OnMove>((_, viewport) => {
     const { width, height } = flowStore.getState();
@@ -779,6 +786,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       });
       return;
     }
+    recordViewport(viewport, { width, height });
     nodeLodRuntime.viewport(viewport.zoom, (width / 2 - viewport.x) / viewport.zoom, (height / 2 - viewport.y) / viewport.zoom);
     updateNodeZoomCompensation(viewport.zoom);
     const activePan = activeCanvasPanRef.current;
@@ -787,7 +795,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       deltaX: viewport.x - activePan.startX,
       deltaY: viewport.y - activePan.startY,
     });
-  }, [flowStore, nodeLodRuntime, reactFlowInstance, updateNodeZoomCompensation]);
+  }, [flowStore, nodeLodRuntime, reactFlowInstance, recordViewport, updateNodeZoomCompensation]);
 
   const handleWheelZoomStart = useCallback(() => {
     beginUserMove();
@@ -795,9 +803,10 @@ function CanvasInner({ onReady }: CanvasProps) {
   }, [beginCanvasInteraction, beginUserMove]);
   const handleWheelZoomEnd = useCallback((interrupted: boolean) => {
     endUserMove();
+    rememberViewport();
     if (interrupted) setCanvasInteraction('wheel', false);
     else endCanvasInteraction('wheel');
-  }, [endCanvasInteraction, endUserMove, setCanvasInteraction]);
+  }, [endCanvasInteraction, endUserMove, rememberViewport, setCanvasInteraction]);
   useCanvasWheelZoom({
     rootRef: canvasRootRef,
     cancelRef: wheelZoomCancelRef,
@@ -847,11 +856,6 @@ function CanvasInner({ onReady }: CanvasProps) {
   }, [activeDrawingTool, canvasNoteToolbarVisible, chooseDrawingTool]);
 
   const drawingActive = activeDrawingTool !== 'select';
-  const {
-    position: radialMenuPosition,
-    holdPosition: radialMenuHoldPosition,
-    close: closeRadialMenu,
-  } = useCanvasLongPressRadialMenu(canvasRootRef, !drawingActive);
   const drawingInteraction = useMemo(() => ({
     ...interaction,
     ...(drawingActive ? {
@@ -881,6 +885,12 @@ function CanvasInner({ onReady }: CanvasProps) {
     return localStorage.getItem('canvas-smoothLine') === 'false' ? 'curved' : 'orthogonal';
   });
   const smoothLine = edgeDisplayMode === 'orthogonal';
+  const edgePanePointer = useCanvasEdgePanePointer(!drawingActive && edgeDisplayMode !== 'hidden');
+  const {
+    position: radialMenuPosition,
+    holdPosition: radialMenuHoldPosition,
+    close: closeRadialMenu,
+  } = useCanvasLongPressRadialMenu(canvasRootRef, !drawingActive, edgePanePointer.isEdgeAtPoint);
 
   useEffect(() => { localStorage.setItem('canvas-showGrid', String(showGrid)); }, [showGrid]);
   useEffect(() => { localStorage.setItem('canvas-edgeDisplayMode', edgeDisplayMode); }, [edgeDisplayMode]);
@@ -1047,7 +1057,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       frame = requestAnimationFrame(() => {
         const source = (event as CustomEvent<{ source?: string }>).detail?.source;
         if (source === 'user') autoFitCanvas();
-        else void fitCanvasView({ padding: 0.2 }, true);
+        else void restoreInitialView();
       });
     };
     window.addEventListener('canvas-fit-view', handler);
@@ -1055,7 +1065,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       window.removeEventListener('canvas-fit-view', handler);
       cancelAnimationFrame(frame);
     };
-  }, [autoFitCanvas, fitCanvasView]);
+  }, [autoFitCanvas, restoreInitialView]);
 
   // ── Keep anchored overlays visible by panning the whole canvas ──
   useEffect(() => {
@@ -1603,6 +1613,7 @@ function CanvasInner({ onReady }: CanvasProps) {
   return (
     <CanvasNodeLodContext.Provider value={nodeLodRuntime}>
     <ResizeSnapContext.Provider value={resizeSnapApi}>
+    <CanvasEdgePanePointerContext.Provider value={edgePanePointer.bridge}>
     <div
       ref={canvasRootRef}
       className={`absolute inset-0 canvas-drawing-root is-interaction-${interactionMode} is-tool-${activeDrawingTool}${connectableSelectionCount > 1 ? ' is-multi-selected' : ''}`}
@@ -1631,13 +1642,15 @@ function CanvasInner({ onReady }: CanvasProps) {
         connectionMode={ConnectionMode.Loose}
         connectionRadius={64}
         onlyRenderVisibleElements
-        fitView
+        fitView={viewportPreferences.initialFit}
+        defaultViewport={viewportPreferences.defaultViewport}
         fitViewOptions={viewportPreferences.initialFitOptions}
         minZoom={viewportPreferences.minZoom}
         maxZoom={viewportPreferences.maxZoom}
         defaultEdgeOptions={defaultEdgeOptions}
         proOptions={PRO_OPTIONS}
         {...drawingInteraction}
+        {...edgePanePointer.handlers}
         zoomOnScroll={!viewportPreferences.locked && interaction.zoomOnScroll}
         zoomOnPinch={!viewportPreferences.locked}
         zoomOnDoubleClick={!viewportPreferences.locked && interactionMode !== 'classic'}
@@ -1857,6 +1870,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       </div>,
       document.body,
     )}
+    </CanvasEdgePanePointerContext.Provider>
     </ResizeSnapContext.Provider>
     </CanvasNodeLodContext.Provider>
   );

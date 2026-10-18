@@ -8,6 +8,7 @@ import { getSlashCommands, fillTemplate } from '../slashCommands';
 import { generateId, useAppStore } from '../../../../store/useAppStore';
 import { derivedNodePlacement } from '../../../../store/store.utils';
 import { defaultModelGroups } from '../defaultModels';
+import { getGenerationNodeType } from '../../../../utils/nodeGeneration';
 
 /** 从 localStorage 读取模型偏好（与 ModelSelector 逻辑一致） */
 const MODEL_PREF_KEY = 'canvas-model-prefs';
@@ -20,6 +21,7 @@ function loadModelPrefs(): Record<string, string> {
 
 /** 获取有效模型：节点 data → localStorage → config generalModels → undefined */
 export function resolveEffectiveModel(nodeType: string, nodeData?: BaseNodeData): { model: string; provider: string } | null {
+  nodeType = getGenerationNodeType(nodeType as NodeType);
   // 1) 节点数据
   if (nodeData?.model && nodeData?.provider) {
     return { model: nodeData.model, provider: nodeData.provider };
@@ -181,7 +183,7 @@ export function createPresetNode(
   sourceNode: { id: string; position: { x: number; y: number }; parentId?: string; data: BaseNodeData },
   resolved: ResolvedPreset,
 ): { node: Node<BaseNodeData>; edge: Edge } {
-  const nodeType = sourceNode.data.type;
+  const nodeType = getGenerationNodeType(sourceNode.data.type);
   const { nodeWidth, nodeHeight } = computeDimensionsFromAspectRatio(resolved.override?.aspectRatio, nodeType);
 
   const sourceLabel = sourceNode.data.label || sourceNode.data.fileName || sourceNode.id;

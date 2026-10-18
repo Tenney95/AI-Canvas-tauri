@@ -326,7 +326,9 @@ fn git_command(app: &tauri::AppHandle, path: &Path) -> Result<Command, String> {
         "-c", "credential.helper=", "-c", "core.fsmonitor=false", "-c", "submodule.recurse=false",
         "-c", "filter.lfs.smudge=", "-c", "filter.lfs.required=false",
         "-c", "http.followRedirects=false", "-c", "http.sslVerify=true",
-    ]).env("GIT_TERMINAL_PROMPT", "0").env("GIT_CONFIG_NOSYSTEM", "1")
+    ]).arg("-c").arg("http.lowSpeedLimit=1").arg("-c")
+        .arg(format!("http.lowSpeedTime={}", crate::github_fallback::policy().read_timeout_ms / 1000))
+        .env("GIT_TERMINAL_PROMPT", "0").env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
         .env("GIT_LFS_SKIP_SMUDGE", "1").env_remove("GIT_DIR").env_remove("GIT_WORK_TREE")
         .env_remove("GIT_CONFIG_COUNT").env_remove("GIT_CONFIG_PARAMETERS")
@@ -371,7 +373,12 @@ fn run_command(app: &tauri::AppHandle, command: Command, timeout: Duration) -> R
     run_command_with_progress(app, command, timeout, None)
 }
 
-fn run_command_with_progress(app: &tauri::AppHandle, mut command: Command, timeout: Duration, progress: Option<Channel<String>>) -> Result<String, String> {
+fn run_command_with_progress(app: &tauri::AppHandle, command: Command, timeout: Duration, progress: Option<Channel<String>>) -> Result<String, String> {
+    run_scoped_command(command, timeout, progress, || current_session(app).is_ok())
+}
+
+/// 只接收原生构造的命令；调用域负责实际路径授权与活动租约。
+pub(super) fn run_scoped_command(mut command: Command, timeout: Duration, progress: Option<Channel<String>>, active: impl Fn() -> bool) -> Result<String, String> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     command.creation_flags(super::CREATE_NO_WINDOW);
@@ -399,7 +406,7 @@ fn run_command_with_progress(app: &tauri::AppHandle, mut command: Command, timeo
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline && current_session(app).is_ok() => std::thread::sleep(Duration::from_millis(40)),
+            Ok(None) if Instant::now() < deadline && active() => std::thread::sleep(Duration::from_millis(40)),
             _ => break None,
         }
     };
@@ -414,9 +421,13 @@ fn run_command_with_progress(app: &tauri::AppHandle, mut command: Command, timeo
     if status.is_none() { let _ = child.kill(); let _ = child.wait(); }
     let output = output_reader.join().unwrap_or_default();
     let errors = error_reader.join().unwrap_or_default();
-    let status = status.ok_or_else(|| "管理操作超时；请刷新列表确认实际状态后再决定是否重试".to_string())?;
+    let status = status.ok_or_else(|| if active() { "管理操作超时；请刷新列表确认实际状态后再决定是否重试".to_string() }
+        else { "管理操作已取消".to_string() })?;
     if output.len() > MAX_OUTPUT || errors.len() > MAX_OUTPUT { return Err("管理命令输出超过限制".into()); }
     if !status.success() {
+        let network = String::from_utf8_lossy(&errors).to_ascii_lowercase();
+        if ["timed out", "operation too slow", "could not resolve host", "failed to connect", "connection reset", "early eof", "curl 18", "curl 28", "curl 56"]
+            .iter().any(|message| network.contains(message)) { return Err("仓库连接或读取失败".into()); }
         // 原始 Git / pip 输出可能包含凭据、路径或文件正文，不回传 Renderer 日志。
         return Err("管理命令未完成，请检查网络、仓库权限或本地环境；刷新列表确认当前状态".into());
     }
@@ -456,8 +467,13 @@ fn resolve_repository_url(raw: &str) -> Result<String, String> {
             { attempt.error("仓库跳转离开受支持的 HTTPS 代码托管站点") } else { attempt.follow() }
         }))
         .build().map_err(|_| "无法建立仓库连接".to_string())?;
-    let response = client.get(discovery).send().and_then(|response| response.error_for_status())
-        .map_err(|_| "无法访问仓库，请检查仓库地址、权限和网络".to_string())?;
+    let response = match client.get(discovery).send().and_then(|response| response.error_for_status()) {
+        Ok(response) => response,
+        // 只省略失败的读取探测；后续 Git 获取仍有自己的单次切源边界，仓库身份保留官方地址。
+        Err(error) if crate::github_fallback::mirror_url(&url).is_some()
+            && (error.is_timeout() || error.is_connect() || error.status().is_some_and(|status| crate::github_fallback::transient_status(status.as_u16()))) => return Ok(url),
+        Err(_) => return Err("无法访问仓库，请检查仓库地址、权限和网络".into()),
+    };
     let mut resolved = response.url().clone();
     let path = resolved.path().strip_suffix("/info/refs").ok_or_else(|| "仓库返回了非 Git 地址".to_string())?.to_string();
     resolved.set_path(&path);
@@ -660,13 +676,26 @@ fn fetch_origin(app: &tauri::AppHandle, path: &Path, progress: Option<Channel<St
     send_progress(progress.as_ref(), "connecting", 0, None, "objects");
     ensure_repository(app, path)?;
     let url = resolve_repository_url(git(app, path, &["remote", "get-url", "origin"])?.trim())?;
-    let mut command = git_command(app, path)?;
-    // 使用经过校验的 URL，而不是仓库中的 remote.*.pushurl / 上传命令。
-    command.args(["fetch", "--progress", "--no-recurse-submodules", "--tags", &url, "+refs/heads/*:refs/remotes/origin/*"])
-        .env("LC_ALL", "C").env("LANG", "C");
-    run_command_with_progress(app, command, Duration::from_secs(180), progress.clone())?;
+    fetch_repository(app, path, &url, progress.clone(), false)?;
     send_progress(progress.as_ref(), "applying", 0, None, "objects");
     Ok(())
+}
+
+/// 只重试获取对象；远端身份、checkout、依赖安装和启用操作不进入循环。
+fn fetch_repository(app: &tauri::AppHandle, path: &Path, url: &str, progress: Option<Channel<String>>, head: bool) -> Result<(), String> {
+    crate::github_fallback::retry(url, |source| {
+        use crate::github_fallback::Failure;
+        current_session(app).map_err(Failure::terminal)?;
+        send_progress(progress.as_ref(), "connecting", 0, None, "objects");
+        let mut command = git_command(app, path).map_err(Failure::terminal)?;
+        command.args(["fetch", "--progress", "--no-recurse-submodules", "--tags", "--", source]);
+        if head { command.arg("HEAD"); }
+        command.arg("+refs/heads/*:refs/remotes/origin/*").env("LC_ALL", "C").env("LANG", "C");
+        run_command_with_progress(app, command, Duration::from_secs(180), progress.clone())
+            .map(|_| ()).map_err(|message| Failure {
+                retryable: current_session(app).is_ok() && (message == "仓库连接或读取失败" || message.starts_with("管理操作超时；")), message,
+            })
+    })
 }
 
 fn versions(app: &tauri::AppHandle, path: &Path) -> Result<Vec<Version>, String> {
@@ -842,28 +871,31 @@ pub async fn list_comfyui_catalog(webview: Webview, app: tauri::AppHandle, on_pr
     tauri::async_runtime::spawn_blocking(move || {
         let installed: HashSet<_> = display_snapshot(&app, &root, false)?.extensions.into_iter().filter(|repository| !repository.removed)
             .filter_map(|repository| repository.remote_url).map(|url| url.trim_end_matches(".git").to_lowercase()).collect();
-        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "无法建立扩展目录连接".to_string())?;
-        send_progress(on_progress.as_ref(), "catalog", 0, None, "bytes");
-        let mut response = client.get(CATALOG_URL).send().and_then(|response| response.error_for_status())
-            .map_err(|_| "无法读取 ComfyUI Manager 官方目录，请检查网络后重试".to_string())?;
-        if response.content_length().is_some_and(|size| size > MAX_CATALOG) { return Err("扩展目录超过体积上限".into()); }
-        let total = response.content_length().filter(|size| *size > 0);
-        let mut bytes = Vec::new();
-        let mut buffer = [0_u8; 32 * 1024];
-        let mut last_sent = Instant::now();
-        send_progress(on_progress.as_ref(), "catalog", 0, total, "bytes");
-        loop {
-            let count = response.read(&mut buffer).map_err(|_| "读取扩展目录失败".to_string())?;
-            if count == 0 { break; }
-            if bytes.len() as u64 + count as u64 > MAX_CATALOG { return Err("扩展目录超过体积上限".into()); }
-            bytes.extend_from_slice(&buffer[..count]);
-            if last_sent.elapsed() >= Duration::from_millis(100) {
-                send_progress(on_progress.as_ref(), "catalog", bytes.len() as u64, total, "bytes");
-                last_sent = Instant::now();
+        let bytes = crate::github_fallback::retry(CATALOG_URL, |source| {
+            use crate::github_fallback::Failure;
+            current_session(&app).map_err(Failure::terminal)?;
+            send_progress(on_progress.as_ref(), "catalog", 0, None, "bytes");
+            let mut response = crate::github_fallback::get(source)?;
+            if response.response.content_length().is_some_and(|size| size > MAX_CATALOG) { return Err(Failure::terminal("扩展目录超过体积上限")); }
+            let total = response.response.content_length().filter(|size| *size > 0);
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 32 * 1024];
+            let mut last_sent = Instant::now();
+            send_progress(on_progress.as_ref(), "catalog", 0, total, "bytes");
+            loop {
+                current_session(&app).map_err(Failure::terminal)?;
+                let count = response.read(&mut buffer).map_err(|_| Failure { message: "读取扩展目录失败".into(), retryable: response.network_failed })?;
+                if count == 0 { break; }
+                if bytes.len() as u64 + count as u64 > MAX_CATALOG { return Err(Failure::terminal("扩展目录超过体积上限")); }
+                bytes.extend_from_slice(&buffer[..count]);
+                if last_sent.elapsed() >= Duration::from_millis(100) {
+                    send_progress(on_progress.as_ref(), "catalog", bytes.len() as u64, total, "bytes");
+                    last_sent = Instant::now();
+                }
             }
-        }
-        send_progress(on_progress.as_ref(), "catalog", bytes.len() as u64, total, "bytes");
+            send_progress(on_progress.as_ref(), "catalog", bytes.len() as u64, total, "bytes");
+            Ok(bytes)
+        })?;
         let catalog: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "官方扩展目录格式无效".to_string())?;
         let entries = catalog.get("custom_nodes").and_then(|value| value.as_array()).ok_or_else(|| "官方扩展目录格式无效".to_string())?;
         let mut result = Vec::new();
@@ -901,16 +933,17 @@ pub async fn install_comfyui_extension(webview: Webview, app: tauri::AppHandle, 
         if [nodes.join(name), nodes.join(format!("{name}{DISABLED_SUFFIX}")), nodes.join(REMOVED_DIR).join(name)].iter().any(|path| path.exists()) {
             return Err("该扩展的目录已存在，请在扩展列表管理或恢复".into());
         }
-        // 固定停用目录暂存，失败保留现场，不递归删除或自动重复安装。
+        // 固定停用目录只初始化一次；仅 fetch 可切源，失败保留现场，不递归清理或重复安装。
         let target_name = format!("{name}{DISABLED_SUFFIX}");
         assert_server_stopped(&app)?;
-        let mut command = git_command(&app, &nodes)?;
-        command.args(["clone", "--progress", "--no-recurse-submodules", "--template=", "--", &url, &target_name])
-            .env("LC_ALL", "C").env("LANG", "C");
-        run_command_with_progress(&app, command, Duration::from_secs(240), on_progress.clone())?;
-        send_progress(on_progress.as_ref(), "applying", 0, None, "objects");
+        git(&app, &nodes, &["init", "--template=", "--", &target_name])?;
         let staged = plain_directory(&app, &nodes.join(&target_name), &nodes)?;
+        git(&app, &staged, &["remote", "add", "origin", &url])?;
         ensure_repository(&app, &staged)?;
+        fetch_repository(&app, &staged, &url, on_progress.clone(), true)?;
+        assert_server_stopped(&app)?;
+        send_progress(on_progress.as_ref(), "applying", 0, None, "objects");
+        git(&app, &staged, &["checkout", "--detach", "FETCH_HEAD"])?;
         Ok(ManagementResult { message: "扩展已下载并保持停用。请按需安装依赖，再启用并重启 ComfyUI；不会自动运行 install.py。".into() })
     }).await.map_err(|_| "安装操作失败，请刷新列表确认目录状态".to_string())?
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createPresetNode, resolvePresetAction, resolvePresetDef } from '../../src/components/nodes/shared/toolbar/presetAction';
+import { createPresetNode, resolveEffectiveModel, resolvePresetAction, resolvePresetDef } from '../../src/components/nodes/shared/toolbar/presetAction';
 import type { BaseNodeData } from '../../src/types';
 
 const source = (data: Partial<BaseNodeData>) => ({
@@ -41,6 +41,21 @@ it('双面部特写预设沿用原快捷指令 ID，并将横版源图切换为 
 });
 
 describe('createPresetNode 派生 ComfyUI 工作流节点', () => {
+  it.each([
+    ['source-text', 'ai-text'], ['source-image', 'ai-image'], ['source-video', 'ai-video'],
+    ['source-audio', 'ai-audio'], ['ai-markdown', 'ai-text'],
+  ] as const)('%s 的快捷指令创建 %s 生成节点，同时保留原始素材', (type, generationType) => {
+    const original = source({ type, model: 'comfyui/workflow', provider: 'comfyui', workflowId: 'original-workflow',
+      output: '原始内容', assetId: 'asset-1', filePath: 'original.file' });
+    const { node, edge } = createPresetNode(original, resolved);
+    expect(node).toMatchObject({ type: generationType, data: { type: generationType, role: 'generator',
+      model: 'comfyui/workflow', workflowId: 'original-workflow', prompt: '@{node-src:源图}\n低角度镜头' } });
+    expect(node.data.output).toBeUndefined(); expect(node.data.assetId).toBeUndefined(); expect(node.data.filePath).toBeUndefined();
+    expect(original.data).toMatchObject({ type, role: 'source', output: '原始内容', assetId: 'asset-1', filePath: 'original.file' });
+    expect(edge).toMatchObject({ source: original.id, target: node.id });
+    expect(resolveEffectiveModel(type, original.data)).toEqual({ model: 'comfyui/workflow', provider: 'comfyui' });
+  });
+
   it('provider=comfyui 时继承 workflowId，但不继承 workflowInputs', () => {
     const { node } = createPresetNode(
       source({

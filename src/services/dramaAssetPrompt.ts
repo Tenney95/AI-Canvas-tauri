@@ -10,7 +10,7 @@ import type {
   DramaProp,
   DramaScene,
 } from '../types/dramaAssets';
-import { DRAMA_ASSET_KIND_LABEL } from '../types/dramaAssets';
+import { buildDramaMentionId, DRAMA_ASSET_KIND_LABEL, formatDramaMention } from '../types/dramaAssets';
 
 export type DramaAssetPromptPurpose = 'lookbook' | 'scene_plate' | 'prop_ref';
 
@@ -147,6 +147,52 @@ export function resolveDramaAssetImageRef(
     || asset.imageUrl;
   if (!imageUrl || !String(imageUrl).trim()) return null;
   return { imageNodeId, imageUrl };
+}
+
+/** 仅同一张可用图片且库内归属唯一时推荐库引用；不按名称猜测，也不替换分镜单格。 */
+export function preferredDramaMentionForNode(
+  nodeId: string,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+  library: DramaAssetLibrary,
+  globalCharacters: readonly DramaCharacter[] = [],
+): string | undefined {
+  const node = nodes.find((item) => item.id === nodeId);
+  if (!node || !['ai-image', 'source-image', 'ai-panorama', 'ai-animation', 'ai-storyboard'].includes(String(node.data?.type))) return undefined;
+  const imageUrl = node.data?.imageUrl || node.data?.thumbnailUrl;
+  if (typeof imageUrl !== 'string' || !imageUrl.trim()) return undefined;
+  const candidates = (assets: readonly DramaAsset[], global: boolean) => {
+    const mentions = new Set<string>();
+    for (const asset of assets) {
+      if (/[:#{}\r\n]/.test(asset.id) || /[{}\r\n]/.test(asset.name)) continue;
+      const references = asset.kind === 'character' && asset.referenceImages?.length
+        ? asset.referenceImages.map((reference) => reference.id) : [undefined];
+      for (const referenceId of references) {
+        if (referenceId && /[:{}\r\n]/.test(referenceId)) continue;
+        if (resolveDramaAssetImageRef(asset, nodes, referenceId)?.imageUrl !== imageUrl) continue;
+        const id = global ? `global/${asset.id}` : asset.id;
+        mentions.add(formatDramaMention(buildDramaMentionId(id, referenceId), asset.name));
+      }
+    }
+    return [...mentions];
+  };
+  const projectMentions = candidates(listDramaAssetsFlat(library), false);
+  if (projectMentions.length) return projectMentions.length === 1 ? projectMentions[0] : undefined;
+  const globalMentions = candidates(globalCharacters, true);
+  return globalMentions.length === 1 ? globalMentions[0] : undefined;
+}
+
+/** 保留 Picture 顺序和正文；无法精确映射的节点引用继续走原协议。 */
+export function preferDramaLibraryReferences(
+  prompt: string,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+  library: DramaAssetLibrary,
+  globalCharacters: readonly DramaCharacter[] = [],
+): string {
+  const cache = new Map<string, string | undefined>();
+  return prompt.replace(/@\{([^:}\r\n]+):[^}\r\n]+\}/g, (token, nodeId: string) => {
+    if (!cache.has(nodeId)) cache.set(nodeId, preferredDramaMentionForNode(nodeId, nodes, library, globalCharacters));
+    return cache.get(nodeId) ?? token;
+  });
 }
 
 /** 角色的全部参考图地址（按库内顺序），用于 @drama{id#all} 拼成一张 */

@@ -13,10 +13,10 @@ beforeEach(() => {
 });
 
 describe('provider connection tests', () => {
-  it.each(['runninghub', 'runninghub-model'])('RunningHub %s 连接使用无生成计费的账户接口', async (provider) => {
+  it.each(['runninghub', 'runninghub-model'].flatMap((provider) => ['cn', 'ai'].map((site) => [provider, site] as const)))('RunningHub %s 连接使用 %s 站点的只读账户接口', async (provider, site) => {
     transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, data: { remainCoins: '12', currentTaskCounts: '0' } })));
-    await expect(testProviderConnection(provider, 'secret', 'https://www.runninghub.cn/openapi/v2')).resolves.toMatchObject({ success: true, balance: '12 积分' });
-    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith('https://www.runninghub.cn/uc/openapi/accountStatus', expect.objectContaining({ method: 'POST', body: JSON.stringify({ apikey: 'secret' }) }));
+    await expect(testProviderConnection(provider, 'secret', `https://www.runninghub.${site}/openapi/v2`)).resolves.toMatchObject({ success: true, balance: '12 积分' });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith(`https://www.runninghub.${site}/uc/openapi/accountStatus`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ apikey: 'secret' }) }));
   });
   it.each([
     ['apimart', 'https://api.example/v1/', 'https://api.example/v1/models'],

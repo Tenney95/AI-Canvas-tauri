@@ -72,6 +72,7 @@ import { readAppSecret } from '../providerSecretService';
 import { uploadCreativeMaterials } from '../creativeMaterialUploadService';
 import { quoteVolcengineVideo } from '../billing/volcenginePricing';
 import { createBillingRun, updateBillingRun } from '../billing/volcengineBillingService';
+import { assertToapisVideoInput, toapisVideoVariables } from './providers/toapisModelManifest';
 
 async function mapSequentially<T, R>(
   items: readonly T[],
@@ -317,12 +318,13 @@ async function resolveGeneralProtocolMediaUrls(
   kind: 'video' | 'audio',
   budget: MediaDataUrlBudget,
   signal?: AbortSignal,
+  publicUrlProvider?: string,
 ): Promise<string[]> {
   return mapSequentially(references.filter((reference) => reference.kind === kind), async (reference) => {
     const url = getMediaReferenceUrl(reference);
-    // 通用协议模型需要 data URL（base64）；公网 / data: 原样返回
+    // ToAPIs 必须使用自己的上传 URL；其他通用协议继续沿用 data URL。
     return resolveMediaReferenceUrl(url, {
-      mode: 'dataUrl', kind, signal, dataUrlBudget: budget,
+      mode: publicUrlProvider ? 'publicUrl' : 'dataUrl', provider: publicUrlProvider, kind, signal, dataUrlBudget: budget,
     });
   }, signal);
 }
@@ -826,10 +828,12 @@ export async function generateVideo(
     };
     const originalReferences = referenceInput.references ?? referencesFromLegacyInput(referenceInput);
     // 所有能力和组合错误都必须在素材上传或付费提交前失败。
-    resolveCanonicalVideoRequest(canonicalParams, {
+    const preflight = resolveCanonicalVideoRequest(canonicalParams, {
       references: originalReferences,
       capability: videoCapability,
     });
+    const isToapis = connection.providerConfigId === 'toapis' || connection.provider.catalogId === 'toapis';
+    if (isToapis) assertToapisVideoInput(preflight);
     const executionProtocol = resolveModelExecutionProfile(gm.executionProfile);
     if (executionProtocol) {
       const uploadConfig = executionProtocol.prepare?.upload;
@@ -856,10 +860,10 @@ export async function generateVideo(
         signal,
       );
       const videoUrls = await resolveGeneralProtocolMediaUrls(
-        protocolReferences, 'video', dataUrlBudget, signal,
+        protocolReferences, 'video', dataUrlBudget, signal, isToapis ? connection.providerConfigId : undefined,
       );
       const audioUrls = await resolveGeneralProtocolMediaUrls(
-        protocolReferences, 'audio', dataUrlBudget, signal,
+        protocolReferences, 'audio', dataUrlBudget, signal, isToapis ? connection.providerConfigId : undefined,
       );
       const remoteReferences = replaceReferenceUrls(protocolReferences, {
         image: remoteImageUrls,
@@ -893,7 +897,8 @@ export async function generateVideo(
         category: 'video',
         nodeId: params.nodeId,
         signal,
-        variables: buildCanonicalVideoProtocolVariables(canonicalRequest),
+        variables: isToapis ? toapisVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
+          : buildCanonicalVideoProtocolVariables(canonicalRequest),
       });
       const url = urls[0];
       if (!url) throw new Error('视频生成完成但未返回结果');

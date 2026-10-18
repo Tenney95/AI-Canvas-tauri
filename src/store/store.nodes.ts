@@ -33,10 +33,12 @@ import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData, getImageNodeDimensionsForAspectRatio } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
+import { videoNodeDimensionsForAspectRatio } from '../utils/nodeBounds';
 import { resolveDirectorRuntime } from '../services/directorRuntimeRegistry';
 import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../services/nodeMediaCopy';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
 import { AI_APP_COPY_MESSAGE, AI_APP_CREATION_MESSAGE, assertAiAppNodeInsertion, isAiAppNode } from '../services/aiApps/aiAppCreation';
+import { getGenerationNodeType } from '../utils/nodeGeneration';
 
 interface GroupNodeDataAccess {
   groupId: string;
@@ -214,6 +216,13 @@ function hasMaterializedNodeOutput(data: BaseNodeData, nodeType: string | undefi
   return hasValue(data.output);
 }
 
+/** 仅联动待生成的视频框；已有成片及导入素材继续使用真实媒体尺寸。 */
+function alignEmptyVideoNodeDimensions(data: BaseNodeData): BaseNodeData {
+  if (data.type !== 'ai-video' || data.role === 'source' || data.videoUrl || data.output) return data;
+  const dimensions = videoNodeDimensionsForAspectRatio(data.seedanceRatio, data.nodeWidth);
+  return dimensions ? { ...data, aspectRatio: data.seedanceRatio, ...dimensions } : data;
+}
+
 function prepareDirectorNodeDataForInsertion(
   data: BaseNodeData,
   nodeType: string | undefined,
@@ -240,12 +249,27 @@ function prepareDirectorNodeDataForInsertion(
   return next;
 }
 
+/** 等待计时属于生成状态，不能随节点移出视口后的组件重挂而重置。 */
+function withGenerationTiming(data: BaseNodeData, previous?: BaseNodeData): BaseNodeData {
+  const type = getGenerationNodeType(data.type);
+  if (type !== 'ai-image' && type !== 'ai-video') return data;
+  if (data.status !== 'loading') {
+    return data.generationStartedAt === undefined ? data : { ...data, generationStartedAt: undefined };
+  }
+  const startedAt = previous?.status === 'loading' ? previous.generationStartedAt : undefined;
+  return {
+    ...data,
+    generationStartedAt: typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt > 0
+      ? startedAt : Date.now(),
+  };
+}
+
 function prepareNodeForInsertion(
   node: Node<BaseNodeData>,
   data: BaseNodeData,
   displayId: number,
 ): Node<BaseNodeData> {
-  const prepared = prepareDirectorNodeDataForInsertion(data, node.type, node.id);
+  const prepared = withGenerationTiming(prepareDirectorNodeDataForInsertion(alignEmptyVideoNodeDimensions(data), node.type, node.id));
   return { ...node, data: { ...prepared, displayId } } as Node<BaseNodeData>;
 }
 
@@ -494,7 +518,7 @@ function mergeNodeData(previous: BaseNodeData, patch: Partial<BaseNodeData>): Ba
     && (patch.type === 'ai-app' || previous.type === 'ai-app')) {
     throw new Error(AI_APP_CREATION_MESSAGE);
   }
-  const next = { ...previous, ...patch } as BaseNodeData;
+  const next = withGenerationTiming({ ...previous, ...patch } as BaseNodeData, previous);
   if (previous.type === 'ai-video' && previous.shotlistProductionSource?.kind === 'video'
     && 'seedanceDuration' in patch && patch.seedanceDuration !== previous.seedanceDuration) {
     next.shotlistProductionSource = { ...previous.shotlistProductionSource, durationSync: 'manual' };
@@ -509,7 +533,7 @@ function mergeNodeData(previous: BaseNodeData, patch: Partial<BaseNodeData>): Ba
     next.assetId = undefined;
     next.relativePath = undefined;
   }
-  return next;
+  return 'seedanceRatio' in patch ? alignEmptyVideoNodeDimensions(next) : next;
 }
 
 /** 在同一次 Store 更新中同步稳定关联的镜头时长，沿用调用方的历史快照。 */
@@ -842,7 +866,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         type,
         position,
         data: {
-          ...nodeData,
+          ...withGenerationTiming(nodeData),
           role: 'source',
           displayId: getNextDisplayId(current.nodes),
         },

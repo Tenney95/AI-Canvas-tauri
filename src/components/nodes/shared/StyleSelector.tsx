@@ -242,7 +242,9 @@ export default function StyleSelector({
       ) : (
         <button
           type="button"
-          className={`prompt-btn style-selector-btn${open ? ' style-active' : ''}${effectiveSelectedStyle ? ' has-style' : ''}${lockedProjectStyle ? ' cursor-not-allowed opacity-70' : ''}`}
+          className={`prompt-btn style-selector-btn${effectiveSelectedStyle ? ' is-configured' : ''}${lockedProjectStyle ? ' cursor-not-allowed opacity-70' : ''}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
           data-tooltip={lockedProjectStyle
             ? t('项目已锁定画风：{name}', { name: selectedName || t('项目画风') })
             : selectedName ? t('画风: {name}', { name: selectedName }) : t('选择画风')}

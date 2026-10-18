@@ -14,7 +14,7 @@ function findZone(root: unknown): ElementLike | undefined {
 }
 
 beforeEach(() => { vi.resetModules(); });
-afterEach(() => { vi.doUnmock('react'); });
+afterEach(() => { vi.doUnmock('react'); vi.unstubAllGlobals(); });
 
 async function setup(options: { tauri?: boolean; delayedRegistration?: boolean; registrationError?: boolean } = {}) {
   const slots: unknown[] = [];
@@ -109,6 +109,19 @@ async function setup(options: { tauri?: boolean; delayedRegistration?: boolean; 
 }
 
 const drop = (x = 300): DragDropEvent => ({ type: 'drop', paths: ['G:/plugins/example'], position: new PhysicalPosition(x, 300) });
+
+it('accepts a Finder folder inside the plugin zone on a Retina Mac', async () => {
+  const h = await setup();
+  vi.stubGlobal('navigator', { platform: 'MacIntel' });
+  try {
+    await h.send({ type: 'enter', paths: ['/Users/example/plugin'], position: new PhysicalPosition(150, 150) });
+    expect(h.render().props.className).toContain('is-dragover');
+    await h.send({ type: 'drop', paths: ['/Users/example/plugin'], position: new PhysicalPosition(150, 150) });
+    expect(h.readPackage).toHaveBeenCalledExactlyOnceWith(['/Users/example/plugin'], true);
+    expect(h.confirm).toHaveBeenCalledOnce();
+    expect(h.install).toHaveBeenCalledOnce();
+  } finally { h.dispose(); }
+});
 
 it('labels each entry with its declared node type without mixing placements from different tools', async () => {
   const h = await setup();

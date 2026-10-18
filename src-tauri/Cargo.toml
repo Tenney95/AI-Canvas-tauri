@@ -1,6 +1,6 @@
 [package]
 name = "ai-canvas-tauri"
-version = "0.10.9"
+version = "0.10.10"
 edition = "2021"
 
 [lib]
@@ -56,6 +56,7 @@ sha2 = "0.10"
 czkawka_core = { version = "=10.0.0", default-features = false }
 file-id = "=0.2.3"
 tar = "0.4"
+sevenz-rust = { version = "=0.6.1", default-features = false }
 image = "0.25"
 rquickjs = "0.12.2"
 # 本地语音转文本：解码 mp3 / wav / m4a / flac / ogg。默认已含 wav、flac、ogg、vorbis、pcm

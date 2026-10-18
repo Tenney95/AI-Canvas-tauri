@@ -2,6 +2,9 @@
 export type RunningHubMediaKind = import('./workflowApi').CloudWorkflowMediaKind;
 export type RunningHubValue = string | number | boolean;
 export type RunningHubConnectionId = 'runninghub' | 'runninghub-model';
+export type RunningHubSiteId = 'cn' | 'ai';
+/** 仅用于设置弹窗和保存调用；不得作为嵌套字段写入配置或 IndexedDB。 */
+export type RunningHubSiteKeyDrafts = Record<RunningHubSiteId, { modelKey: string; workflowKey: string }>;
 export interface RunningHubTaskContext {
   projectId: string;
   conversationId: string;

@@ -1,5 +1,7 @@
 # ComfyUI 工作流集成说明
 
+官方安装包、扩展目录和 Git 获取的超时加速见 [共用专项](./plans/2026-10-18-github-download-fallback.md)。Git 只重试 fetch，仓库 origin 保留官方地址；新扩展初始化停用目录后获取默认 HEAD，checkout 只执行一次，不自动安装依赖或运行 install.py。
+
 > 本文档描述 AI Canvas 如何导入、管理和执行 ComfyUI 工作流，包括 IO 节点识别、内容与参数注入规则、结果取回和编辑回写链路。
 > 最后更新：2026-10-11。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)、[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)、[打开与编辑体验](./plans/2026-09-08-comfyui-editor-experience.md)和[独立管理窗口](./plans/2026-10-11-comfyui-management.md)。
 
@@ -29,6 +31,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 - **服务地址**：默认 `http://127.0.0.1:8188`，存在 `config.comfyUIUrl`。未配置时执行会直接抛「未配置 ComfyUI 服务地址」。
 - **额外服务器**：`config.comfyServers` 保存服务器名称和 URL；工作流通过 `serverId` 绑定。未绑定或服务器记录已删除时回落到默认地址；可用性灯通过 `/system_stats` 探测。
 - **本地安装目录**：通过主窗口原生选择器保存到用途专属的私有安装授权；`config.comfyUIPath` 仅作显示镜像。私有存储由 fs 插件之后注册的隐私插件在 `Builder::build` 初始化时隔离，早于配置窗口/Renderer 创建，初始隔离失败则终止应用启动；每次读写仍复核。启动与管理恢复原生记录，正常重启无需重新选址；旧配置首次使用可原生确认一次已有目录。取消或保存失败保留旧选择，更换前需关闭管理窗口；目录离线、链接替换或记录损坏时拒绝，不改用镜像授权。
+- **官方一键安装**：主设置页目录旁的「安装」入口支持 Windows x64 / ARM64，选择新文件夹及 GPU / CPU 环境，下载内置清单固定的官方便携包，包含独立 Python、PyTorch 与前端依赖。连接或读取超时、网络阻断时回退一次国内加速源，使用同一官方 SHA-256 校验；通过解压与固定环境检测后记住安装目录，可接续既有启动与控制台。已存在的目录不覆盖，显卡驱动、模型和第三方节点按需准备。源码入口为 `ComfyInstallDialog.tsx`、`comfyInstallService.ts`、`media/comfyui/installer.rs` 与 `resources/comfyui-portable.json`；已实现，待用户桌面验收，范围、异常恢复和清单维护见[一键安装计划](./plans/2026-10-18-comfyui-installer.md)。
 - **本地启动**：`launch_comfyui` 固定使用 `--listen 127.0.0.1 --enable-cors-header`。端口及常用参数由原生启动设置提供，按实际安装的 CLI 声明校验；通过设置页启动时，主窗口同步默认服务地址到该回环端口。源码只从所选根内的固定候选识别；Comfy Desktop 源码在 Electron 目录同级时应选包含源码的基目录。无根内源码的 Windows 安装仅支持固定启动器的默认启动兜底，不能越界进行源码/API 模式或版本管理。
 - **独立管理窗口**：启动与打开页面之间的「设置」按钮打开单例 Tauri 管理窗口，提供内核标签/提交/分支、已装插件启停/更新/切换版本/可恢复卸载、官方 Git 节点目录与仓库 URL 安装，以及常用启动设置。主窗口先授权安装并由 Rust 绑定会话；窗口只获取精简外观信息，不读取全量配置或凭据。Git 节点下载后默认停用，依赖安装另经原生信任确认，不执行 `install.py`；非 Git 内核不支持版本写入。已实现，待用户验证，本次未运行测试；范围、限制与桌面验收见[专项计划](./plans/2026-10-11-comfyui-management.md)。
 - **运行控制台**：管理窗口右上角可启动 ComfyUI，自动切换到实时输出页；主设置页启动也复用同一进程与输出。控制台支持跟随/暂停、清空显示、退出状态和停止自有服务；输出只在内存保留最近记录，不写普通日志或项目数据。关闭管理窗口继续运行，退出整个应用停止其直接托管的服务。外部启动的进程或固定启动器兜底明确提示无法读取终端输出，仍由原启动器停止。非默认启动端口由主窗口复核原生状态后同步默认服务地址。已实现，待用户桌面验证，验收与回滚见上述专项计划。
@@ -308,11 +311,13 @@ Qwen 验证入口为 `builtinWorkflows.test.ts`、`audioSpeechSettings.test.ts` 
 
 `savePendingTask` 在提交前落盘，`taskId` 留空、`submitted: false`；拿到 `prompt_id` 后回填 ID 和实际服务器地址。只有已记录 ID 的任务才能由 [pollManager.ts](../src/services/pollManager.ts) 继续查询。提交响应丢失或关窗时尚未记下 ID 的任务仍不能自动找回，也不会自动重新提交。
 
-- history 请求连续失败或查询达到一小时上限：抛出 `ComfyPendingError`，保留任务并标记 `comfyRecoveryState=disconnected`。节点显示“继续查询”和“再次终止”；续查复用原 ID，不再次生成。
+- history 请求连续失败或查询达到一小时上限：保留任务并标记 `comfyRecoveryState=disconnected`。图片/音频沿用 `ComfyPendingError` 和“继续查询”；视频复用暂停状态与“重试”入口，续查复用原 ID，不再次生成。
 - 取消前先标记 `cancel_pending` 并停止本地等待。远端取消得到成功响应后清理；请求失败保留记录和重试入口。重开项目不会自动再次发送取消请求。
-- 执行成功、明确执行失败、连续确认 history/queue 都不存在以及节点删除：正常清理。旧控制器退出或旧取消回执不得删除新任务。
+- 视频远端完成后仍保留任务，直到文件保存与节点回填成功才清理；下载失败或派生守卫过期时暂停，点击“重试”只续取原任务。保存期间退出应用，重开项目后等待用户重试，不自动查询。明确执行失败、连续确认 history/queue 都不存在以及节点删除正常清理。旧控制器退出或旧取消回执不得删除新任务。
 - 恢复下载回填须复核任务、项目和 canvas derivation guard；项目或画布已变化时保留任务供再次查询。
-- 已有可恢复任务时禁止覆盖提交；用户先续查或确认终止后再生成。
+- 视频已暂停时允许再次生成：旧任务及原始生成参数先移至独立恢复节点，保留重试入口。查询进行中或取消未确认时仍禁止覆盖提交；图片/音频沿用先续查或确认终止后再生成。
+
+本轮交付恢复与空视频框比例兜底已实现，待 macOS、Windows 桌面端验收；未运行测试。验收时选择 9:16 确认空框竖屏，再切回 16:9；使用 ComfyUI 生成视频，确认本地回填后可播放。模拟项目目录写入失败、保存期间切换项目或修改画布，恢复条件后点击“重试”，应保存原任务视频且不新增远端任务；重开项目应保留暂停状态，再次生成应保留独立恢复节点。上游明确失败仍报错，取消未确认仍禁止覆盖。已有视频保持真实比例；画风与摄影参数选中均只改变图标颜色。相关回归用例为 `tests/services/comfyTaskRecovery.test.ts`、`tests/components/videoNodePreviewLifecycle.test.tsx`。
 
 正常生成的实时进度保存在非持久化 UI Store，图片、动画、视频和音频节点共用 `NodeGenerationProgress`。WebSocket 失效时继续 HTTP 轮询，恢复任务当前仍以 HTTP 续查为主。
 

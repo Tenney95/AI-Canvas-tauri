@@ -8,6 +8,7 @@ import { getMediaReferenceUrls } from '../connectedReferenceMedia';
 import { corsSafeFetch } from '../httpTransport';
 import { pollTask } from '../../pollTask';
 import { runningHubConnection } from '../../workflowExecutionService';
+import { runningHubSiteId } from '../../runninghubSiteCredentials';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../../canvasDerivationGuard';
 import { registerNodePolling, cleanupNodePolling, getPendingTasksForProject, savePendingTask, updatePendingTask, removePendingTask } from '../../pollManager';
 import { uploadRunningHubMedia } from './runninghubClient';
@@ -251,7 +252,7 @@ export async function executeRunningHubModel(params: ModelParams, kind: RunningH
     const body = await buildRunningHubModelRequest(connection, definition, prompt, parameters, references, signal);
     if (count > 1 && ['n', 'imageNum', 'numImages', 'maxImages'].some((key) => Number(body[key]) > 1)) throw new Error('请仅使用一处数量设置：节点批量数量或模型产物数量');
     if (!fresh()) throw new Error('画布已变化，未提交任务');
-    if (trackingId && projectId) savePendingTask({ nodeId: trackingId, projectId, nodeType: store.nodes.find((node) => node.id === nodeId)?.data.type ?? `ai-${kind}`, provider: 'runninghub', providerConfigId: 'runninghub-model', taskType: 'runninghub-model', taskId: '', taskIds: [], submitted: false, runninghubRecoveryState: 'submit_unknown', runninghubModelId: params.model, runninghubMessage: context, batchCount: count });
+    if (trackingId && projectId) savePendingTask({ nodeId: trackingId, projectId, nodeType: store.nodes.find((node) => node.id === nodeId)?.data.type ?? `ai-${kind}`, provider: 'runninghub', providerConfigId: 'runninghub-model', taskType: 'runninghub-model', taskId: '', taskIds: [], submitted: false, runninghubSite: runningHubSiteId(connection.baseUrl), runninghubRecoveryState: 'submit_unknown', runninghubModelId: params.model, runninghubMessage: context, batchCount: count });
     for (let index = 0; index < count; index++) {
       signal?.throwIfAborted();
       stage(count > 1 ? `提交任务 ${index + 1}/${count}` : '提交任务');

@@ -1074,6 +1074,14 @@ function dedicatedGeneralModelGroup(
       badgeText: 'CCC',
     };
   }
+  if (catalogId === 'toapis') {
+    return {
+      id: `general-provider-${model.providerConfigId}`,
+      name: 'ToAPIs',
+      description: '使用连接中选择的国内站或国际站',
+      badgeText: 'T',
+    };
+  }
   return null;
 }
 

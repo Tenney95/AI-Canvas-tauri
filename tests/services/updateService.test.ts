@@ -6,10 +6,15 @@ const mocks = vi.hoisted(() => ({
   check: vi.fn(),
   downloadAndInstall: vi.fn(),
   relaunch: vi.fn(),
+  invoke: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: mocks.check }));
 vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: mocks.relaunch }));
+vi.mock('@tauri-apps/api/core', () => ({
+  Channel: class { onmessage?: (event: DownloadEvent) => void },
+  invoke: mocks.invoke,
+}));
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -17,7 +22,10 @@ beforeEach(() => {
   vi.stubGlobal('window', { __TAURI__: {} });
   mocks.downloadAndInstall.mockResolvedValue(undefined);
   mocks.relaunch.mockResolvedValue(undefined);
+  mocks.invoke.mockImplementation(async (_command: string, args: { onEvent: { onmessage: (event: DownloadEvent) => void } }) =>
+    mocks.downloadAndInstall(args.onEvent.onmessage));
   mocks.check.mockResolvedValue({
+    rid: 42,
     version: '0.8.18',
     downloadAndInstall: mocks.downloadAndInstall,
   });
@@ -29,6 +37,7 @@ describe('downloadAndInstallUpdate', () => {
 
     await expect(downloadAndInstallUpdate()).resolves.toBe(true);
     expect(mocks.downloadAndInstall).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith('download_app_update', { rid: 42, onEvent: expect.any(Object) });
     expect(mocks.relaunch).toHaveBeenCalledOnce();
     expect(mocks.downloadAndInstall.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.relaunch.mock.invocationCallOrder[0]);

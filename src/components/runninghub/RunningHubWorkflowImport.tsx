@@ -6,6 +6,7 @@ import type { RunningHubConnectionId, RunningHubParameter, RunningHubWorkflowMan
 import { fetchRunningHubDefinition, importRunningHubDefinition, runningHubFieldValue, runningHubParameterKey, validateRunningHubManifest } from '../../services/runninghubWorkflowService';
 import { runningHubConnection } from '../../services/workflowExecutionService';
 import RunningHubParameterFields from '../nodes/shared/RunningHubParameterFields';
+import { RUNNINGHUB_MODEL_BASE_URL } from '../../constants/api';
 
 export default function RunningHubWorkflowImport({ kind, editing, onSaved }: {
   kind: 'workflow' | 'app'; editing?: WorkflowDefinition; onSaved: () => void;
@@ -14,6 +15,10 @@ export default function RunningHubWorkflowImport({ kind, editing, onSaved }: {
   const [category, setCategory] = useState<WorkflowCategory>(editing?.category ?? 'ai-image');
   const [remoteId, setRemoteId] = useState(editing?.runninghub?.remoteId ?? '');
   const [connectionId, setConnectionId] = useState<RunningHubConnectionId>(editing?.runninghub?.connectionId ?? 'runninghub');
+  const configuredBaseUrl = useAppStore((state) => state.config.providers[connectionId]?.baseUrl);
+  let apiSite: string;
+  try { apiSite = new URL(configuredBaseUrl || RUNNINGHUB_MODEL_BASE_URL).origin; }
+  catch { apiSite = '地址无效'; }
   const [definition, setDefinition] = useState('');
   const [manifest, setManifest] = useState<RunningHubWorkflowManifest | undefined>(editing?.runninghub);
   const [defaultInputs, setDefaultInputs] = useState<Record<string, string>>({});
@@ -64,6 +69,7 @@ export default function RunningHubWorkflowImport({ kind, editing, onSaved }: {
           <option value="runninghub">工作流 API Key</option><option value="runninghub-model">模型 API Key</option>
         </Select></label>
       </div>
+      <p className="ui-hint break-words">请求站点：{apiSite}。请在「设置 → API Key → RunningHub → API 站点」选择应用所在站点，并使用该站点的密钥。</p>
       <label className="flex flex-col gap-1 text-xs">{kind === 'app' ? 'AI 应用' : '工作流'}链接或 ID<input className="ui-input w-full" value={remoteId} placeholder={kind === 'app' ? 'https://www.runninghub.cn/ai-detail/…' : 'https://www.runninghub.cn/workflow/…'} onChange={(event) => { setRemoteId(event.target.value); setManifest(undefined); }} /></label>
       <button type="button" className="ui-btn" disabled={!remoteId.trim()} onClick={() => { void readDefinition(true); }}>从 RunningHub 读取定义</button>
       <details className="ui-card p-3">

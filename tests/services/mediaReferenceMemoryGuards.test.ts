@@ -8,7 +8,7 @@ function source(relativePath: string): string {
 describe('媒体引用内存守卫接线', () => {
   it('图片上传透传调用方取消信号', () => {
     expect(source('generateImage.ts')).toContain(
-      'resolveImageUrlArray(allImageUrls, provider, signal)',
+      "resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' ? connectionId : provider, signal)",
     );
   });
 

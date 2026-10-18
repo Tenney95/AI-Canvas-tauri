@@ -6,6 +6,7 @@ import { flushSync } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import { isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { getCanvasNodeById } from '../../utils/canvasRenderProjection';
+import { videoNodeDimensionsForAspectRatio } from '../../utils/nodeBounds';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
@@ -268,8 +269,12 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const projectId = useAppStore((s) => s.currentProjectId);
   const isSource = data.role === 'source';
   const fallbackDimensions = computeVideoNodeDimensions(data.videoWidth ?? 0, data.videoHeight ?? 0);
-  const nodeWidth = data.nodeWidth ?? fallbackDimensions.nodeWidth;
-  const nodeHeight = data.nodeHeight ?? fallbackDimensions.nodeHeight;
+  // 旧项目可能保存了横屏框尺寸；空节点展示跟随当前比例，成片继续使用真实媒体尺寸。
+  const emptyDimensions = !isSource && !data.videoUrl && !data.thumbnailUrl
+    ? videoNodeDimensionsForAspectRatio(data.seedanceRatio, data.nodeWidth ?? fallbackDimensions.nodeWidth)
+    : null;
+  const nodeWidth = emptyDimensions?.nodeWidth ?? data.nodeWidth ?? fallbackDimensions.nodeWidth;
+  const nodeHeight = emptyDimensions?.nodeHeight ?? data.nodeHeight ?? fallbackDimensions.nodeHeight;
   const source = data.videoUrl;
   if (generatedCover && (generatedCover.source !== source || generatedCover.projectId !== projectId)) {
     setGeneratedCover(null);

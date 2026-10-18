@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { importRunningHubDefinition, parseRunningHubId, parseRunningHubJson, runningHubFieldValue, validateRunningHubManifest } from '../../src/services/runninghubWorkflowService';
 import { runningHubConnection, workflowExecution } from '../../src/services/workflowExecutionService';
+import { RunningHubRequestError } from '../../src/services/ai/providers/runninghubClient';
 import type { RunningHubWorkflowManifest } from '../../src/types/runninghub';
 
 const options = { kind: 'workflow' as const, remoteId: '1904152026220003329', connectionId: 'runninghub' as const };
@@ -13,6 +14,34 @@ describe('RunningHub 导入与参数合同', () => {
     expect(parseRunningHubId(`https://www.runninghub.ai/ai-detail/${options.remoteId}`, 'app')).toBe(options.remoteId);
     expect(() => parseRunningHubId('https://evil.test/workflow/123', 'workflow')).toThrow();
     expect(() => parseRunningHubId('https://www.runninghub.cn/ai-detail/123', 'workflow')).toThrow();
+  });
+  it('兼容带语言前缀的官方分享链接，保持长 ID 和导入类型', () => {
+    const appId = '2108920489564520450';
+    expect(parseRunningHubId(`https://www.runninghub.ai/zh-cn/ai-detail/${appId}`, 'app')).toBe(appId);
+    expect(parseRunningHubId(`https://runninghub.ai/en/webapp/${appId}/?share=1#detail`, 'app')).toBe(appId);
+    expect(parseRunningHubId(`https://www.runninghub.cn/zh-CN/workflow/${options.remoteId}`, 'workflow')).toBe(options.remoteId);
+    expect(parseRunningHubId(appId, 'app')).toBe(appId);
+    const manifest = importRunningHubDefinition('{"nodeInfoList":[]}', { ...options, kind: 'app', remoteId: `https://www.runninghub.ai/zh-cn/ai-detail/${appId}` });
+    expect(manifest.remoteId).toBe(appId);
+    expect(manifest.connectionId).toBe(options.connectionId);
+  });
+  it('语言前缀不允许绕过域名、资源类型、凭据及路径结构校验', () => {
+    for (const invalid of [
+      'https://evil.test/zh-cn/ai-detail/123',
+      'https://www.runninghub.ai.evil.test/zh-cn/ai-detail/123',
+      'https://user:secret@www.runninghub.ai/zh-cn/ai-detail/123',
+      'https://www.runninghub.ai/zh-cn/workflow/123',
+      'https://www.runninghub.ai/arbitrary/ai-detail/123',
+      'https://www.runninghub.ai/zh-cn/en/ai-detail/123',
+      'https://www.runninghub.ai/zh-cn/ai-detail/123/extra',
+    ]) expect(() => parseRunningHubId(invalid, 'app')).toThrow('AI 应用');
+    expect(() => parseRunningHubId('https://www.runninghub.ai/zh-cn/ai-detail/123', 'workflow')).toThrow('工作流');
+  });
+  it('901 业务失败显示应用不存在，同时保留 HTTP 与业务码', () => {
+    const error = new RunningHubRequestError(901, 200);
+    expect(error.message).toContain('AI 应用不存在');
+    expect(error.message).toContain('业务码 901，HTTP 200');
+    expect(error).toMatchObject({ code: 901, httpStatus: 200 });
   });
   it('读取 API graph 的标量，不推测提示词映射，不保存鉴权字段', () => {
     const manifest = importRunningHubDefinition(JSON.stringify({ code: 0, data: { prompt: JSON.stringify(graph) } }), options);
@@ -54,6 +83,12 @@ describe('RunningHub 导入与参数合同', () => {
     expect(workflowExecution(wf)).toMatchObject({ provider: 'comfyui', model: 'comfyui/workflow' });
     expect(workflowExecution({ ...wf, adapterType: 'runninghub', runninghub: { version: 1, ...options, parameters: [] } })).toMatchObject({ provider: 'runninghubwf', model: 'runninghubwf/local' });
     expect(runningHubConnection({ runninghub: { name: 'RH', apiKey: 'secret', baseUrl: 'https://www.runninghub.cn/openapi/v2' } }, 'runninghub').baseUrl).toBe('https://www.runninghub.cn');
+    const connections = {
+      runninghub: { name: '国际工作流', apiKey: 'workflow-secret', baseUrl: 'https://www.runninghub.ai/openapi/v2' },
+      'runninghub-model': { name: '国内模型', apiKey: 'model-secret', baseUrl: 'https://www.runninghub.cn/openapi/v2' },
+    };
+    expect(runningHubConnection(connections, 'runninghub')).toEqual({ apiKey: 'workflow-secret', baseUrl: 'https://www.runninghub.ai' });
+    expect(runningHubConnection(connections, 'runninghub-model')).toEqual({ apiKey: 'model-secret', baseUrl: 'https://www.runninghub.cn' });
     expect(() => runningHubConnection({ runninghub: { name: 'RH', apiKey: 'secret' } }, 'runninghub-model')).toThrow('模型');
   });
 });

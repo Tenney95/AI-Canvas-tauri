@@ -1,0 +1,6 @@
+{
+  "mirrorBase": "https://gh-proxy.com/",
+  "officialHosts": ["github.com", "api.github.com", "raw.githubusercontent.com"],
+  "connectTimeoutMs": 20000,
+  "readTimeoutMs": 30000
+}

@@ -22,6 +22,10 @@ const driver = vi.hoisted(() => ({
   observers: [] as Array<{ callback: () => void; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }>,
   frames: new Map<number, FrameRequestCallback>(),
   nextFrame: 0,
+  panePointer: { current: null as {
+    handle(event: unknown, action: 'click' | 'doubleClick'): boolean;
+    hitTest(point: { x: number; y: number }): boolean;
+  } | null },
   appState: { config: { performanceMode: false }, onEdgesChange: vi.fn() },
 }));
 
@@ -29,6 +33,7 @@ vi.mock('react', async () => ({
   ...await vi.importActual<typeof import('react')>('react'),
   memo: <T,>(component: T) => component,
   useCallback: <T,>(callback: T) => callback,
+  useContext: () => driver.panePointer,
   useMemo: (compute: () => unknown, deps?: readonly unknown[]) => {
     const hooks = driver.current!;
     const index = hooks.memoIndex++;
@@ -118,7 +123,12 @@ function node(id: string): InternalNode {
 function fixture(edges: Edge[] = [{ id: 'ab', source: 'a', target: 'b' }]) {
   const children: Array<{ getAttribute: (name: string) => string | null; classList: { contains: (name: string) => boolean } }> = [];
   const container = { children };
-  const root = { querySelector: vi.fn((selector: string) => selector === '.react-flow__nodes' ? container : null) };
+  const sharedSvg = { getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) };
+  const root = {
+    querySelector: vi.fn((selector: string): unknown => selector === '.react-flow__nodes' ? container
+      : selector === '.canvas-shared-edge-layer' ? sharedSvg : null),
+    querySelectorAll: vi.fn(() => []),
+  };
   const listeners = new Set<() => void>();
   const state = {
     edges,
@@ -151,7 +161,7 @@ function fixture(edges: Edge[] = [{ id: 'ab', source: 'a', target: 'b' }]) {
     getAttribute: (name) => name === 'data-id' ? id : null,
     classList: { contains: (name) => name === 'react-flow__node' },
   });
-  return { state, store, props, renderEdge, render, root, container, notify, mountNode };
+  return { state, store, props, renderEdge, render, root, sharedSvg, container, notify, mountNode };
 }
 
 function sharedGroup(tree: unknown, id = 'ab') {
@@ -172,6 +182,7 @@ function groupHandlers(group: ElementTree) {
 
 beforeEach(() => {
   driver.instances.clear(); driver.observers = []; driver.frames.clear(); driver.nextFrame = 0;
+  driver.panePointer.current = null;
   driver.appState.onEdgesChange.mockClear();
   vi.stubGlobal('MutationObserver', class {
     observe = vi.fn(); disconnect = vi.fn();
@@ -278,6 +289,87 @@ describe('central canvas edge rendering', () => {
     expect(f.store.setState).toHaveBeenCalledWith({ nodesSelectionActive: false });
     expect(f.state.addSelectedEdges).toHaveBeenCalledExactlyOnceWith(['ab']);
     expect(f.state.unselectNodesAndEdges).not.toHaveBeenCalled();
+  });
+
+  it.each(['svg', 'canvas'])('routes overlapping %s hit strokes to the closest line for click, Shift, double click and context menu', (backend) => {
+    if (backend === 'canvas') {
+      vi.stubGlobal('Path2D', class {});
+      vi.stubGlobal('DOMMatrixReadOnly', class {});
+    }
+    const f = fixture([{ id: 'near', source: 'a', target: 'b' }, { id: 'far', source: 'a', target: 'b' }]);
+    f.props.geometry.getEdgePosition = ({ id }) => ({ sourceX: 0, sourceY: id === 'near' ? 0 : 8,
+      targetX: 500, targetY: id === 'near' ? 0 : 8,
+      sourcePosition: 'right' as Position, targetPosition: 'left' as Position });
+    const onEdgeClick = vi.fn();
+    const onEdgeDoubleClick = vi.fn();
+    const onEdgeContextMenu = vi.fn();
+    const group = sharedGroup(f.render({ onEdgeClick, onEdgeDoubleClick, onEdgeContextMenu }), 'far');
+    const event = { detail: 1, clientX: 225, clientY: 100,
+      currentTarget: { ownerSVGElement: { getScreenCTM: () => ({ a: 0.5, b: 0, c: 0, d: 0.5, e: 100, f: 100 }) } } };
+    groupHandlers(group).onClick(event);
+    expect(f.state.addSelectedEdges).toHaveBeenCalledExactlyOnceWith(['near']);
+    expect(onEdgeClick).toHaveBeenCalledWith(event, expect.objectContaining({ id: 'near' }));
+    (group.props.onDoubleClick as (event: unknown) => void)(event);
+    (group.props.onContextMenu as (event: unknown) => void)(event);
+    expect(onEdgeDoubleClick).toHaveBeenCalledWith(event, expect.objectContaining({ id: 'near' }));
+    expect(onEdgeContextMenu).toHaveBeenCalledWith(event, expect.objectContaining({ id: 'near' }));
+    const selected = { ...f.state.edgeLookup.get('near')!, selected: true };
+    f.state.edgeLookup.set('near', selected);
+    f.state.multiSelectionActive = true;
+    groupHandlers(group).onClick(event);
+    expect(f.state.unselectNodesAndEdges).toHaveBeenCalledWith({ nodes: [], edges: [selected] });
+    // Keyboard activation still applies to the focused edge, without pointer picking.
+    groupHandlers(group).onKeyDown?.({ key: 'Enter' });
+    expect(f.state.addSelectedEdges).toHaveBeenLastCalledWith(['far']);
+  });
+
+  it.each([0.1, 0.25, 0.45, 0.85, 1.2, 4.5, 5])('picks long crossing bitmap edges with both endpoints unmounted at zoom %s', (zoom) => {
+    vi.stubGlobal('Path2D', class {});
+    vi.stubGlobal('DOMMatrixReadOnly', class {});
+    const f = fixture([{ id: 'near', source: 'a', target: 'b' }, { id: 'far', source: 'a', target: 'b' }]);
+    f.props.geometry.getEdgePosition = ({ id }) => ({ sourceX: id === 'near' ? 20 : 25, sourceY: -100000,
+      targetX: id === 'near' ? 20 : 25, targetY: 100000,
+      sourcePosition: 'bottom' as Position, targetPosition: 'top' as Position });
+    f.sharedSvg.getScreenCTM = () => ({ a: zoom, b: 0, c: 0, d: zoom, e: 100, f: 100 });
+    const onEdgeClick = vi.fn();
+    const onEdgeDoubleClick = vi.fn();
+    const tree = f.render({ onEdgeClick, onEdgeDoubleClick });
+    for (const id of ['near', 'far']) {
+      const visual = elements(sharedGroup(tree, id), 'edge-visual')[0];
+      expect(visual.props).toMatchObject({ baseStroke: false, interactive: false });
+    }
+    const event = { clientX: 100 + 20 * zoom, clientY: 100 };
+    expect(driver.panePointer.current?.hitTest({ x: event.clientX, y: event.clientY })).toBe(true);
+    expect(f.store.setState).not.toHaveBeenCalled();
+    expect(f.state.addSelectedEdges).not.toHaveBeenCalled();
+    expect(f.state.unselectNodesAndEdges).not.toHaveBeenCalled();
+    expect(f.root.querySelectorAll).not.toHaveBeenCalled();
+    expect(onEdgeClick).not.toHaveBeenCalled();
+    expect(onEdgeDoubleClick).not.toHaveBeenCalled();
+    expect(driver.panePointer.current?.handle(event, 'click')).toBe(true);
+    expect(f.state.addSelectedEdges).toHaveBeenCalledExactlyOnceWith(['near']);
+    expect(onEdgeClick).toHaveBeenCalledWith(event, expect.objectContaining({ id: 'near' }));
+    const selected = { ...f.state.edgeLookup.get('near')!, selected: true };
+    f.state.edgeLookup.set('near', selected);
+    f.state.multiSelectionActive = true;
+    expect(driver.panePointer.current?.handle(event, 'click')).toBe(true);
+    expect(f.state.unselectNodesAndEdges).toHaveBeenCalledWith({ nodes: [], edges: [selected] });
+    expect(driver.panePointer.current?.handle(event, 'doubleClick')).toBe(true);
+    expect(onEdgeDoubleClick).toHaveBeenCalledWith(event, selected);
+    expect(driver.panePointer.current?.handle({ clientX: 100 + 100 * zoom, clientY: 100 }, 'click')).toBe(false);
+  });
+
+  it('does not consume a pane hit after its edge is removed and releases the bridge on unmount', () => {
+    const f = fixture();
+    f.render();
+    const handler = driver.panePointer.current;
+    expect(handler?.hitTest({ x: 0, y: 0 })).toBe(true);
+    expect(handler?.handle({ clientX: 0, clientY: 0 }, 'click')).toBe(true);
+    f.state.edgeLookup.delete('ab');
+    expect(handler?.handle({ clientX: 0, clientY: 0 }, 'click')).toBe(false);
+    expect(handler?.hitTest({ x: 0, y: 0 })).toBe(false);
+    driver.instances.get('layer')!.effects.forEach(({ cleanup }) => cleanup?.());
+    expect(driver.panePointer.current).toBeNull();
   });
 
   it('reads live selection for Shift cancellation and preserves selected nodes', () => {

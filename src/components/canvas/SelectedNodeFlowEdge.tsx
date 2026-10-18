@@ -22,8 +22,9 @@ const FLOW_EFFECT_MARGIN = 256;
 export const CanvasEdgeHover = memo(function CanvasEdgeHover({
   id,
   onDelete,
+  resolveHoverEdge,
   children,
-}: Pick<CanvasEdgeVisualProps, 'id' | 'onDelete'> & { children: ReactNode }) {
+}: Pick<CanvasEdgeVisualProps, 'id' | 'onDelete' | 'resolveHoverEdge'> & { children: ReactNode }) {
   const { screenToFlowPosition } = useReactFlow();
   const [showDeleteButton, setShowDeleteButton] = useState(false);
   const [deleteButtonPosition, setDeleteButtonPosition] = useState({ x: 0, y: 0 });
@@ -31,6 +32,7 @@ export const CanvasEdgeHover = memo(function CanvasEdgeHover({
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pointerFrameRef = useRef<number | null>(null);
   const pointerPositionRef = useRef({ x: 0, y: 0 });
+  const hoveredEdgeRef = useRef(id);
   const clearTimers = useCallback(() => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
@@ -49,25 +51,27 @@ export const CanvasEdgeHover = memo(function CanvasEdgeHover({
     if (!showDeleteButton || pointerFrameRef.current !== null) return;
     pointerFrameRef.current = requestAnimationFrame(() => {
       pointerFrameRef.current = null;
+      hoveredEdgeRef.current = resolveHoverEdge?.(pointerPositionRef.current) ?? id;
       setDeleteButtonPosition(screenToFlowPosition(pointerPositionRef.current));
     });
-  }, [screenToFlowPosition, showDeleteButton]);
+  }, [id, resolveHoverEdge, screenToFlowPosition, showDeleteButton]);
 
   const handleEdgeMouseEnter = useCallback((event: React.MouseEvent<SVGGElement>) => {
     clearTimers();
     updatePointerPosition(event);
     hoverTimerRef.current = setTimeout(() => {
+      hoveredEdgeRef.current = resolveHoverEdge?.(pointerPositionRef.current) ?? id;
       setDeleteButtonPosition(screenToFlowPosition(pointerPositionRef.current));
       setShowDeleteButton(true);
     }, 1000);
-  }, [clearTimers, screenToFlowPosition, updatePointerPosition]);
+  }, [clearTimers, id, resolveHoverEdge, screenToFlowPosition, updatePointerPosition]);
 
   const handleDelete = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
     clearTimers();
-    onDelete(id);
-  }, [clearTimers, id, onDelete]);
+    onDelete(hoveredEdgeRef.current);
+  }, [clearTimers, onDelete]);
 
   useEffect(() => clearTimers, [clearTimers]);
   useEffect(() => () => {
@@ -142,6 +146,7 @@ export const CanvasEdgeVisual = memo(function CanvasEdgeVisual({
   interactive = true,
   performanceMode,
   onDelete,
+  resolveHoverEdge,
 }: CanvasEdgeVisualProps) {
   const baseType = data?.selectedNodeFlowBaseType ?? (type === SMOOTHSTEP_TYPE ? SMOOTHSTEP_TYPE : 'default');
   const [edgePath, labelX, labelY] = useMemo(() => {
@@ -174,7 +179,7 @@ export const CanvasEdgeVisual = memo(function CanvasEdgeVisual({
 
   return (
     <>
-      {interactive ? <CanvasEdgeHover id={id} onDelete={onDelete}>{stroke}</CanvasEdgeHover> : stroke}
+      {interactive ? <CanvasEdgeHover id={id} onDelete={onDelete} resolveHoverEdge={resolveHoverEdge}>{stroke}</CanvasEdgeHover> : stroke}
       {interactive && type === 'selected-node-flow' && !performanceMode
         && data?.selectedNodeFlowAnimated !== false && canAnimateCanvasEdgeFlow(effectWidth, effectHeight) && (
         <g className="selected-node-edge-flow-group" aria-hidden="true">

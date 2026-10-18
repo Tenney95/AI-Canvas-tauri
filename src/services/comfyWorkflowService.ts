@@ -16,6 +16,7 @@ import {
   cancelNodePolling,
   cleanupNodePolling,
   getPendingTasksForProject,
+  pauseVideoNodeTask,
   registerNodePolling,
   removePendingTask,
   savePendingTask,
@@ -116,9 +117,9 @@ function assertComfyNodeCanSubmit(nodeId?: string): void {
   const projectId = useAppStore.getState().currentProjectId;
   if (!nodeId || !projectId) return;
   if (getPendingTasksForProject(projectId).some((task) => (
-    task.nodeId === nodeId && task.taskType === 'comfyui' && task.submitted && task.comfyRecoveryState
+    task.nodeId === nodeId && task.taskType === 'comfyui' && task.submitted
   ))) {
-    throw new Error('该节点还有未确认结束的 ComfyUI 任务，请先继续查询或终止任务');
+    throw new Error('该节点还有未交付或未确认结束的 ComfyUI 任务，请先继续查询或终止任务');
   }
 }
 
@@ -1644,6 +1645,12 @@ export async function executeComfyUIVideoGenerate(
 
     // 轮询等待结果
     const result = await pollComfyUIHistoryForVideo(baseUrl, promptId, signal);
+    // 远端完成不等于已交付：调用方保存文件并回填节点后才清理任务。
+    // 保存期间退出应用或画布变更时，仍可按原 promptId 续取视频。
+    if (params.nodeId && projectId) {
+      retainPending = true;
+      updatePendingTask(params.nodeId, { videoRecoveryState: 'paused' }, promptId);
+    }
     await applyConfiguredComfyMemoryPolicy(baseUrl);
     return result;
   } catch (error) {
@@ -1652,6 +1659,10 @@ export async function executeComfyUIVideoGenerate(
       if (params.nodeId && !nodeSignal?.aborted) {
         updatePendingTask(params.nodeId, { comfyRecoveryState: 'disconnected' }, submittedTaskId);
       }
+    }
+    if (retainPending && params.nodeId && !nodeSignal?.aborted) {
+      const paused = pauseVideoNodeTask(params.nodeId, submittedTaskId);
+      if (paused) throw paused;
     }
     if (submittedTaskId && !(error instanceof ComfyPendingError) && !signal?.aborted) {
       await applyConfiguredComfyMemoryPolicy(comfyUrl);

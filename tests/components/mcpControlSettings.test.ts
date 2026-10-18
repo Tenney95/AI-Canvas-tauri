@@ -3,7 +3,7 @@ import { isValidElement, type ReactElement } from 'react';
 import { getConfiguredMcpToolExposure } from '../../src/services/mcp/mcpToolCatalog';
 
 const settingsState = vi.hoisted(() => ({
-  config: {} as { mcpToolExposure?: string }, updateConfig: vi.fn(), saveConfig: vi.fn(),
+  config: {} as { mcpToolExposure?: string; mcpPort?: number }, updateConfig: vi.fn(), saveConfig: vi.fn(),
 }));
 const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as Array<() => void | (() => void)> }));
 const tokenMocks = vi.hoisted(() => ({ start: vi.fn(), rotate: vi.fn(), read: vi.fn(), status: vi.fn(), stop: vi.fn(), persistence: vi.fn() }));
@@ -17,6 +17,7 @@ vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
   useEffect: (effect: () => void | (() => void)) => { hooks.effects.push(effect); },
   useMemo: <T>(factory: () => T) => factory(),
+  useCallback: <T>(callback: T) => callback,
   useRef: <T>(value: T) => {
     const index = hooks.cursor++;
     if (!(index in hooks.slots)) hooks.slots[index] = { current: value };
@@ -73,6 +74,43 @@ import {
 } from '../../src/components/settings/mcpConnectionRequirements';
 
 describe('MCP control settings helpers', () => {
+  it('plays the rooftop tribute only after manually confirming a changed port of 4927', async () => {
+    settingsState.config = { mcpPort: 27149 };
+    settingsState.updateConfig.mockClear(); settingsState.saveConfig.mockClear();
+    const tree = await renderSettings();
+    const port = tree.find((element) => element.type === 'input' && element.props.type === 'number')!;
+    const blur = port.props.onBlur as (event: { target: { value: string } }) => void;
+    expect(tree.some((element) => element.props.isOpen === true)).toBe(false);
+    blur({ target: { value: '4927' } });
+    expect(settingsState.updateConfig).toHaveBeenCalledExactlyOnceWith({ mcpPort: 4927 });
+    const tribute = (await renderSettings()).find((element) => element.props.isOpen === true)!;
+    expect(tribute).toBeDefined();
+    (tribute.props.onClose as () => void)();
+    settingsState.config = { mcpPort: 4927 };
+    const closed = await renderSettings();
+    expect(closed.some((element) => element.props.isOpen === true)).toBe(false);
+    const input = closed.find((element) => element.type === 'input' && element.props.type === 'number')!;
+    (input.props.onBlur as typeof blur)({ target: { value: '4927' } });
+    expect((await renderSettings()).some((element) => element.props.isOpen === true)).toBe(false);
+    expect(tokenMocks.start).not.toHaveBeenCalled();
+    expect(tokenMocks.stop).not.toHaveBeenCalled();
+  });
+
+  it('does not play on loading 4927, another port or an invalid port, and keeps explicit random mode', async () => {
+    settingsState.config = { mcpPort: 4927 };
+    settingsState.updateConfig.mockClear();
+    const tree = await renderSettings();
+    expect(tree.some((element) => element.props.isOpen === true)).toBe(false);
+    const input = tree.find((element) => element.type === 'input' && element.props.type === 'number')!;
+    const blur = input.props.onBlur as (event: { target: { value: string } }) => void;
+    blur({ target: { value: '70000' } });
+    expect(settingsState.updateConfig).not.toHaveBeenCalled();
+    blur({ target: { value: '27149' } });
+    blur({ target: { value: '' } });
+    expect(settingsState.updateConfig).toHaveBeenLastCalledWith({ mcpPort: 0 });
+    expect((await renderSettings()).some((element) => element.props.isOpen === true)).toBe(false);
+  });
+
   it('uses compact discovery for old settings and preserves full mode when selected', () => {
     expect(getConfiguredMcpToolExposure(undefined)).toBe('compact');
     expect(getConfiguredMcpToolExposure('invalid')).toBe('compact');

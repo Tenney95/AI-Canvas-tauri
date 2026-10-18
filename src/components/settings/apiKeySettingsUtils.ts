@@ -5,12 +5,12 @@ import type { ProviderAuthType } from '../../services/ai/providerCatalogService'
 import type { ApiProviderConfig } from '../../types';
 
 export function shouldListProviderConnection(
-  config: Pick<ApiProviderConfig, 'apiKey' | 'catalogId'>,
+  config: Pick<ApiProviderConfig, 'apiKey' | 'catalogId' | 'runninghubSiteCredentials'>,
   authType: ProviderAuthType,
   runninghubWorkflowApiKey = '',
 ): boolean {
   return authType === 'oauth'
     || !!config.apiKey.trim()
     || config.catalogId === 'custom-openai'
-    || (config.catalogId === 'runninghub-model' && !!runninghubWorkflowApiKey.trim());
+    || (config.catalogId === 'runninghub-model' && (!!runninghubWorkflowApiKey.trim() || config.runninghubSiteCredentials === true));
 }

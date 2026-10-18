@@ -281,7 +281,7 @@ fn saved_installation<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBuf>,
     Ok(Some(root))
 }
 
-fn persist_installation<R: Runtime>(app: &AppHandle<R>, expected: &Path) -> Result<(), String> {
+pub(super) fn persist_installation<R: Runtime>(app: &AppHandle<R>, expected: &Path) -> Result<(), String> {
     let _guard = RECORD_LOCK.lock().map_err(|_| UNAVAILABLE_RECORD.to_string())?;
     let root = validate_installation(app, &expected.to_string_lossy())?;
     if root != expected { return Err(INVALID_INSTALLATION.to_string()); }

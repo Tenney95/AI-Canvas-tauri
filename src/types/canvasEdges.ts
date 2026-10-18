@@ -62,6 +62,7 @@ export type CanvasEdgeVisualProps = EdgeProps & {
   interactive?: boolean;
   performanceMode: boolean;
   onDelete(id: string): void;
+  resolveHoverEdge?(point: { x: number; y: number }): string;
 };
 
 export interface CanvasSharedEdgeModel {

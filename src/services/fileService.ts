@@ -8,6 +8,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils/mediaUrl';
+import { downloadGithubBytes, githubMirrorUrl } from './githubDownloadService';
 import { identifyAsset, getRelativeAssetPath } from './fs/assetIndex';
 import { readAssetTextFile } from './fs/assetTextFiles';
 import { walkDirectoryFiles } from './fs/assetLibrary';
@@ -655,7 +656,10 @@ export async function readFileToDataUrl(
     }
 
     // blob 与浏览器可访问的 URL 由 WebView 读取，不把 URL 当文件路径。
-    const resp = await fetch(filePath, { signal: options.signal });
+    const resp = githubMirrorUrl(filePath)
+      ? new Response(await downloadGithubBytes(filePath, { signal: options.signal, maxBytes: MEDIA_DATA_URL_BYTE_LIMITS[kind] }),
+        { headers: { 'Content-Type': getMimeType(ext) } })
+      : await fetch(filePath, { signal: options.signal });
     throwIfMediaReadAborted(options.signal);
     if (!resp.ok) throw new Error(`读取本地文件失败 (${resp.status})`);
     const contentLength = Number(resp.headers.get('Content-Length'));
@@ -1630,6 +1634,14 @@ export async function saveNodeOutputToFile(opts: {
     //    节点里的 asset URL 已经是 convertFileSrc 的产物，再转一次会把整个 URL 当成路径编码进去 —
     //    Windows 的 asset URL 是 http://asset.localhost/… 走不到这一步，mac 的 asset:// 才会踩到。
     if (mediaUrl && /^(asset:|blob:|https?:)/.test(mediaUrl)) {
+      if (githubMirrorUrl(mediaUrl)) {
+        const bytes = await downloadGithubBytes(mediaUrl, { signal, onProgress: (transferredBytes, totalBytes) =>
+          onProgress?.({ transferredBytes, totalBytes: totalBytes ?? null, phase: 'downloading' }) });
+        throwIfMediaReadAborted(signal);
+        onProgress?.({ transferredBytes: bytes.byteLength, totalBytes: bytes.byteLength, phase: 'saving' });
+        await writeFile(destPath, bytes);
+        return destPath;
+      }
       const reportProgress = isRemoteMediaUrl(mediaUrl) ? onProgress : undefined;
       reportProgress?.({ transferredBytes: 0, totalBytes: null, phase: 'downloading' });
       const resp = await fetch(mediaUrl, { signal });

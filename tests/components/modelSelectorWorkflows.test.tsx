@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorkflowDefinition } from '../../src/types';
+import type { BaseNodeData, ModelGroup, NodeType, WorkflowDefinition } from '../../src/types';
+import { getGenerationNodeType, resolveGenerationNodeData } from '../../src/utils/nodeGeneration';
 import { ModelMenu, type ModelMenuProps } from '../../src/components/shared/ModelPicker';
 
 interface Element { type?: unknown; props: Record<string, unknown> & { children?: unknown } }
@@ -46,6 +47,7 @@ vi.mock('../../src/components/nodes/shared/defaultModels', () => ({
   defaultModelGroups: [], getConfiguredModelGroups: () => [], getGeneralModelGroups: () => [],
 }));
 vi.mock('../../src/components/shared/ProviderBadge', () => ({ default: 'badge' }));
+vi.mock('react-dom', () => ({ createPortal: (children: unknown) => children }));
 import ModelSelector from '../../src/components/nodes/shared/ModelSelector';
 
 function all(tree: unknown): Element[] {
@@ -84,7 +86,7 @@ beforeEach(() => {
   driver.resolveUrl.mockReset().mockReturnValue('https://comfy.example.com');
   driver.config.comfyServers = [{ id: 'remote', name: '远程', url: 'https://comfy.example.com' }];
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
-  vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  vi.stubGlobal('document', { body: {}, addEventListener: vi.fn(), removeEventListener: vi.fn() });
 });
 afterEach(() => {
   driver.effects.forEach((effect) => effect.cleanup?.());
@@ -92,6 +94,49 @@ afterEach(() => {
 });
 
 describe('模型选择器工作流可用性', () => {
+  it.each([
+    ['source-text', 'ai-text'], ['source-image', 'ai-image'], ['source-video', 'ai-video'],
+    ['source-audio', 'ai-audio'], ['ai-markdown', 'ai-text'],
+  ] as const)('%s 沿用 %s 的模型和工作流，选中后写入公用偏好', (type, generationType) => {
+    localStorage.clear();
+    const selectModel = vi.fn(); const selectWorkflow = vi.fn();
+    const groups: ModelGroup[] = [{ id: 'configured', name: '已配置', description: '', models:
+      (['ai-text', 'ai-image', 'ai-video', 'ai-audio'] as const).map((nodeType) => ({
+        value: `general/${nodeType}`, provider: 'general', label: nodeType, nodeTypes: [nodeType],
+      })) }];
+    const flow = workflow('cloud', { category: generationType, adapterType: 'runninghub' });
+    const draw = () => {
+      driver.stateIndex = 0; driver.effectIndex = 0;
+      const elements = all(ModelSelector({ nodeType: type, configuredGroupsOverride: groups, workflows: [flow],
+        onSelect: selectModel, onWorkflowSelect: selectWorkflow }));
+      driver.pending.splice(0).forEach((effect) => effect());
+      return elements;
+    };
+    click(draw().find((element) => String(element.props.className).startsWith('model-selector-trigger'))!);
+    const picker = menu(draw())!;
+    expect(picker.groups.find((item) => item.id === 'configured')?.items.map((item) => item.value)).toEqual([`general/${generationType}`]);
+    expect(picker.groups.find((item) => item.id === '__workflows')?.items.map((item) => item.value)).toEqual(['workflow:cloud']);
+    picker.onChange(`general/${generationType}`);
+    expect(selectModel).toHaveBeenCalledWith(expect.objectContaining({ value: `general/${generationType}` }));
+    expect(JSON.parse(localStorage.getItem('canvas-model-prefs')!)[generationType]).toBe(`general/${generationType}`);
+    click(draw().find((element) => String(element.props.className).startsWith('model-selector-trigger'))!);
+    menu(draw())!.onChange('workflow:cloud');
+    expect(selectWorkflow).toHaveBeenLastCalledWith('cloud');
+  });
+
+  it('能力映射不改变原节点字段，特殊节点和普通生成节点沿用原对象', () => {
+    const data: BaseNodeData = { type: 'source-text', label: '原文', output: '正文 @{reference:素材}', role: 'source', assetId: 'asset-1' };
+    expect(resolveGenerationNodeData(data)).toEqual({ ...data, type: 'ai-text' });
+    expect(data.type).toBe('source-text');
+    for (const type of ['ai-text', 'ai-image', 'ai-video', 'ai-audio', 'ai-animation', 'ai-panorama', 'ai-shotlist', 'ai-director', 'plugin-node', 'canvas-note'] as NodeType[]) {
+      const original = { ...data, type };
+      expect(resolveGenerationNodeData(original)).toBe(original);
+      expect(getGenerationNodeType(type)).toBe(type);
+    }
+    expect(resolveGenerationNodeData(undefined)).toBeUndefined();
+    expect(getGenerationNodeType('unknown-node')).toBe('unknown-node');
+  });
+
   it('编辑按钮打开当前工作流绑定的服务器，不展开菜单且防止重复打开', async () => {
     const flow = workflow('remote', { serverId: 'remote' });
     let complete!: (value: { missingNodeClasses: string[] }) => void;
@@ -104,7 +149,7 @@ describe('模型选择器工作流可用性', () => {
     expect(driver.editor).toHaveBeenCalledExactlyOnceWith('https://comfy.example.com', flow);
     const elements = render([flow], flow.id);
     expect(elements.find((element) => element.props['aria-label'] === '在 ComfyUI 中编辑')?.props.disabled).toBe(true);
-    expect(elements.some((element) => String(element.props.className).startsWith('model-dropdown'))).toBe(false);
+    expect(elements.some((element) => String(element.props.className).startsWith('ui-model-menu__surface'))).toBe(false);
     complete({ missingNodeClasses: [] });
     await vi.advanceTimersByTimeAsync(0);
     expect(render([flow], flow.id).find((element) => element.props['aria-label'] === '在 ComfyUI 中编辑')?.props.disabled).toBe(false);

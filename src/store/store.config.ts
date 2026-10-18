@@ -29,6 +29,7 @@ import { getCanvasZoomRange, MAX_CANVAS_ZOOM, MIN_CANVAS_ZOOM, normalizeCanvasZo
 import { getBuiltinAppearanceTheme, normalizeAppearanceTheme } from '../services/appearance/appearanceDefaults';
 import { migrateLegacyAppearance } from '../services/appearance/appearanceMigration';
 import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
+import { hydrateRunningHubAliases, isRunningHubCredentialAlias } from '../services/runninghubSiteCredentials';
 
 const defaultConfig: AppConfig = {
   providers: {},
@@ -48,6 +49,7 @@ const defaultConfig: AppConfig = {
   nodeToolbarMode: 'icons',
   nodeLabelVisible: true,
   startupView: 'project-library',
+  mcpPort: 27149,
   performanceMode: false,
   // language 不给默认值：未设置时按系统语言判定
 };
@@ -121,7 +123,7 @@ function createGeneralModelId(providerConfigId: string, modelId: string): string
   return `provider-${safeProviderId}-${(hash >>> 0).toString(36)}`;
 }
 
-const GENERAL_MODEL_CATALOG_IDS = new Set(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u']);
+const GENERAL_MODEL_CATALOG_IDS = new Set(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis']);
 
 function syncProviderModels(
   generalModels: GeneralModelConfig[],
@@ -380,8 +382,15 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     const next = typeof partial === 'function' ? partial(state) : partial;
     if (!next.config || next.config === state.config) return next;
     const secretChanges = { ...state.configSecretChanges };
-    const providers = { ...next.config.providers };
+    const providers = hydrateRunningHubAliases(next.config.providers);
     for (const [id, provider] of Object.entries(providers)) {
+      if (isRunningHubCredentialAlias(id, provider)) {
+        providers[id] = { ...provider };
+        delete providers[id].apiKeyRef;
+        Reflect.deleteProperty(providers[id], 'apiKeyRevision');
+        delete secretChanges[id];
+        continue;
+      }
       if (provider.apiKey !== state.config.providers[id]?.apiKey && provider.apiKey) secretChanges[id] = crypto.randomUUID();
       if (!provider.apiKeyRef && state.config.providers[id]?.apiKeyRef) {
         providers[id] = { ...provider, apiKeyRef: state.config.providers[id].apiKeyRef };
@@ -667,6 +676,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
           else if (!sameCredential && provider.apiKeyRef && !hasLaterEdit) unread.add(id);
           if (changedHere && nextSecrets[id] === secretChanges[id]) delete nextSecrets[id];
         }
+        merged.providers = hydrateRunningHubAliases(merged.providers);
         const dirty = Object.keys(nextSecrets).length > 0 || !configValuesEqual(configWithoutSecrets(merged), ordinary);
         rawSet({ config: merged, configPersistedBaseline: configWithoutSecrets(committed), configEditBaseline: ordinary,
           configSecretChanges: nextSecrets, configSecretReadErrors: [...unread], configDirty: dirty });
@@ -753,6 +763,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         : unread.includes(id) && sameRef ? oldProvider?.apiKey ?? '' : cfg.providers[id]?.apiKey ?? '';
       if (edited && latest.configSecretChanges[id]) nextSecrets[id] = latest.configSecretChanges[id];
     }
+    merged.providers = hydrateRunningHubAliases(merged.providers);
     const dirty = pending.length > 0 || Object.keys(nextSecrets).length > 0;
     rawSet({ config: merged, configHydrated: true, configEditBaseline: ordinary,
       configPersistedBaseline: configWithoutSecrets(loaded.persistedConfig ?? saved),

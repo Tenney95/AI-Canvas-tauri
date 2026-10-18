@@ -1,0 +1,55 @@
+/* 低频、可跳过的电影致敬。只在彩蛋挂载期间运行，不占用画布动画循环。 */
+.mcp-rooftop-tribute {
+  width: min(880px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  background: var(--theme-surface);
+}
+.mcp-rooftop-code { font: 600 12px ui-monospace, monospace; letter-spacing: .2em; color: var(--brand-light); }
+.mcp-rooftop-stage { position: relative; overflow: hidden; aspect-ratio: 16 / 9; min-height: 0; flex-shrink: 1; background: var(--theme-bg); }
+.mcp-rooftop-scene { display: block; width: 100%; height: 100%; transform-origin: 55% 48%; animation: mcp-rooftop-dolly 8.2s var(--ease-out-quart) both; }
+.mcp-rooftop-sky-top { stop-color: color-mix(in srgb, var(--node-panorama) 20%, var(--theme-text-muted)); }
+.mcp-rooftop-sky-bottom { stop-color: color-mix(in srgb, var(--brand-contrast) 75%, var(--theme-text-secondary)); }
+.mcp-rooftop-clouds { fill: var(--brand-contrast); opacity: .2; animation: mcp-rooftop-clouds 8.2s linear both; }
+.mcp-rooftop-mountains { fill: var(--theme-text-secondary); opacity: .45; }
+.mcp-rooftop-city { fill: var(--theme-text-muted); opacity: .8; }
+.mcp-rooftop-city-detail { fill: none; stroke: var(--brand-contrast); stroke-width: 2; opacity: .3; }
+.mcp-rooftop-water { fill: var(--theme-text-muted); opacity: .65; }
+.mcp-rooftop-waterlines { fill: none; stroke: var(--brand-contrast); stroke-width: 2; opacity: .35; }
+.mcp-rooftop-deck { fill: color-mix(in srgb, var(--brand-contrast) 80%, var(--theme-text-secondary)); }
+.mcp-rooftop-tiles { fill: none; stroke: var(--theme-text-muted); stroke-width: 1; opacity: .4; }
+.mcp-rooftop-parapet { fill: var(--theme-text-secondary); }
+.mcp-rooftop-railing { fill: none; stroke: var(--brand-contrast); stroke-width: 3; opacity: .6; }
+.mcp-rooftop-person { fill: color-mix(in srgb, var(--black-alpha-60) 80%, var(--theme-bg)); stroke: var(--black-alpha-40); stroke-width: 1; }
+.mcp-rooftop-person-left { transform-box: fill-box; transform-origin: bottom center; animation: mcp-rooftop-person-in 600ms var(--ease-out-expo) 120ms both; }
+.mcp-rooftop-person-right { transform-box: fill-box; transform-origin: bottom center; animation: mcp-rooftop-person-in 600ms var(--ease-out-expo) 200ms both; }
+.mcp-rooftop-hair { fill: var(--black-alpha-60); }
+.mcp-rooftop-shirt { fill: var(--brand-contrast); stroke: none; opacity: .85; }
+.mcp-rooftop-lapel { fill: none; stroke: var(--brand-contrast); stroke-width: 1.5; opacity: .25; }
+.mcp-rooftop-hand { fill: color-mix(in srgb, var(--brand-contrast) 65%, var(--theme-text-muted)); }
+.mcp-rooftop-arm { transform-box: fill-box; transform-origin: 97% 82%; animation: mcp-rooftop-arm 650ms var(--ease-out-expo) 450ms both; }
+.mcp-rooftop-vignette { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(transparent 45%, var(--black-alpha-60)), linear-gradient(var(--black-alpha-30), transparent 25%); }
+.mcp-rooftop-captions { position: absolute; inset: auto 12px 10%; display: grid; text-align: center; pointer-events: none; }
+.mcp-rooftop-line, .mcp-rooftop-credit { grid-area: 1 / 1; margin: 0; color: var(--brand-contrast); text-shadow: 0 2px 8px var(--black-alpha-60); opacity: 0; }
+.mcp-rooftop-line { display: grid; gap: 8px; font-size: clamp(14px, 2.5vw, 26px); font-weight: 500; letter-spacing: .08em; line-height: 1.5; }
+.mcp-rooftop-line > span { font: 500 10px ui-monospace, monospace; letter-spacing: .35em; opacity: .7; }
+.mcp-rooftop-line-first { animation: mcp-rooftop-dialogue 2.5s var(--ease-out-expo) 1s both; }
+.mcp-rooftop-line-second { animation: mcp-rooftop-dialogue 2.5s var(--ease-out-expo) 3.5s both; }
+.mcp-rooftop-credit { display: grid; gap: 8px; animation: mcp-rooftop-credit-in 500ms var(--ease-out-expo) 6.2s both; }
+.mcp-rooftop-credit > span { font-size: clamp(14px, 2vw, 20px); letter-spacing: .2em; }
+.mcp-rooftop-credit > strong { font: 500 10px ui-monospace, monospace; letter-spacing: .4em; opacity: .7; }
+
+@keyframes mcp-rooftop-dolly { from { transform: scale(1.01); } to { transform: scale(1.065) translateY(-1%); } }
+@keyframes mcp-rooftop-clouds { from { transform: translateX(-1%); } to { transform: translateX(1%); } }
+@keyframes mcp-rooftop-person-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes mcp-rooftop-arm { from { transform: rotate(-18deg); } to { transform: rotate(0deg); } }
+@keyframes mcp-rooftop-dialogue { 0%, 100% { opacity: 0; transform: translateY(4px); } 12%, 85% { opacity: 1; transform: translateY(0); } }
+@keyframes mcp-rooftop-credit-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .mcp-rooftop-scene, .mcp-rooftop-clouds, .mcp-rooftop-person, .mcp-rooftop-arm,
+  .mcp-rooftop-line, .mcp-rooftop-credit { animation: none; transform: none; opacity: 1; }
+  .mcp-rooftop-captions { gap: 8px; }
+  .mcp-rooftop-line, .mcp-rooftop-credit { grid-area: auto; gap: 2px; }
+  .mcp-rooftop-line { font-size: clamp(12px, 2vw, 20px); }
+  .mcp-rooftop-line > span, .mcp-rooftop-credit > strong { display: none; }
+}

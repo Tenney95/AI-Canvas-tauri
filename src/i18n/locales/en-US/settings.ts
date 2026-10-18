@@ -2,6 +2,15 @@
  * 设置面板：语言与启动 / 画布背景 / 画布交互 / 界面偏好
  */
 const settings = {
+  '国内站（toapis.cn）': 'Mainland China (toapis.cn)',
+  '国际站（toapis.com）': 'International (toapis.com)',
+  '国内站与国际站共用账号和 API Key；切换保留 Key，模型以当前站点实际返回为准。': 'Both sites share your account and API key. Switching keeps the key; available models come from the selected site.',
+  '站点已切换，请重新拉取当前站点的模型目录。': 'Site changed. Fetch the selected site’s model catalog again.',
+  '天台彩蛋': 'Rooftop Easter egg',
+  '天台见': 'Meet on the rooftop',
+  '我想做个好人。': 'I want to be a good man.',
+  '对不起，我是警察。': 'Sorry. I am a cop.',
+  '致敬《无间道》': 'A tribute to Infernal Affairs',
   'GPT Image 快速适配': 'GPT Image quick setup',
   'Nano Banana 快速适配': 'Nano Banana quick setup',
   'OpenAI 官方 Images': 'Official OpenAI Images',

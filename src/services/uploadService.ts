@@ -4,7 +4,8 @@
  *
  * 上传策略：
  *  - provider === 'apimart' → APIMart /uploads/images（需 API Key）
- *  - 其他所有 provider  → uguu.se 免费图床（无需 API Key，直接返回无轮询）
+ *  - ToAPIs 连接 → 当前站点 /uploads/{images,videos,audios}（仅使用该连接 Key）
+ *  - 其他 provider → uguu.se 免费图床（无需 API Key，直接返回无轮询）
  *
  * 缓存策略：
  *  - 内存缓存：同一进程内即时复用
@@ -12,7 +13,7 @@
  */
 import { isLocalMediaUrl, isRemoteMediaUrl, isTauriAssetUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 import { useAppStore } from '../store/useAppStore';
-import { APIMART_BASE_URL } from '../constants/api';
+import { APIMART_BASE_URL, TOAPIS_API_SITES, TOAPIS_BASE_URL } from '../constants/api';
 import { bytePartsToBase64Async, getAssetUrlFromPath, isTauriEnv } from './fs/core';
 import {
   assertMediaDataUrlSize,
@@ -25,6 +26,7 @@ import {
 } from './fileService';
 import { invoke } from '@tauri-apps/api/core';
 import { MIN_REFERENCE_REENCODE_BYTES, prepareReferenceImageUpload } from './ai/referenceImageUpload';
+import { corsSafeFetch } from './ai/httpTransport';
 
 const DEFAULT_UPLOAD_BASE = APIMART_BASE_URL;
 
@@ -352,6 +354,40 @@ async function urlToBlob(
   return blob === source.blob ? source : { blob, ext: 'jpg' };
 }
 
+/** ToAPIs 不回退到其他连接凭据或公共图床；同一 Key 的两站由用户显式选择。 */
+async function uploadToToapis(url: string, providerId: string, kind: MediaDataUrlKind, signal?: AbortSignal): Promise<string> {
+  const connection = useAppStore.getState().config.providers[providerId];
+  const apiKey = connection?.apiKey?.trim();
+  if (!apiKey) throw new Error('ToAPIs 参考素材上传失败：请在「设置 → API Key → ToAPIs」填写当前连接的 Key');
+  const baseUrl = (connection.baseUrl || TOAPIS_BASE_URL).trim().replace(/\/+$/, '');
+  if (!TOAPIS_API_SITES.some((site) => site.baseUrl === baseUrl)) {
+    throw new Error('ToAPIs 上传站点无效，请在「设置 → API Key → ToAPIs → API 站点」重新选择国内站或国际站');
+  }
+  const { blob, ext } = await urlToBlob(url, kind, undefined, signal);
+  const limit = (kind === 'image' ? 10 : 50) * 1024 * 1024;
+  if (blob.size > limit) throw new Error(`ToAPIs ${mediaKindLabel(kind)}单个文件不能超过 ${kind === 'image' ? 10 : 50} MB`);
+  const allowed = kind === 'image' ? ['jpg', 'jpeg', 'png', 'webp', 'gif']
+    : kind === 'video' ? ['mp4', 'webm', 'mov', 'quicktime'] : ['mp3', 'mpeg', 'wav', 'x-wav', 'm4a', 'mp4', 'x-m4a'];
+  const extension = ext.toLowerCase().split(';')[0];
+  if (!allowed.includes(extension)) throw new Error(`ToAPIs ${mediaKindLabel(kind)}格式不支持，请改用${kind === 'image' ? ' JPG / PNG / WebP / GIF' : kind === 'video' ? ' MP4 / WebM / MOV' : ' MP3 / WAV / M4A'}`);
+  const form = new FormData();
+  const filenameExt = extension === 'quicktime' ? 'mov' : extension === 'mpeg' ? 'mp3' : extension === 'x-wav' ? 'wav' : extension === 'x-m4a' || kind === 'audio' && extension === 'mp4' ? 'm4a' : extension;
+  form.append('file', blob, `reference.${filenameExt}`);
+  form.append('purpose', 'generation');
+  const response = await corsSafeFetch(`${baseUrl}/uploads/${kind === 'image' ? 'images' : kind === 'video' ? 'videos' : 'audios'}`, {
+    method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+  });
+  signal?.throwIfAborted();
+  if (!response.ok) throw new Error(`ToAPIs ${mediaKindLabel(kind)}上传失败（HTTP ${response.status}），请检查当前站点、Key 权限与文件限制`);
+  const result = await response.json().catch(() => {
+    throw new Error(`ToAPIs ${mediaKindLabel(kind)}上传返回了无效 JSON`);
+  }) as { success?: boolean; data?: { url?: unknown } };
+  if (result.success !== true || typeof result.data?.url !== 'string' || !isRemoteMediaUrl(result.data.url)) {
+    throw new Error(`ToAPIs ${mediaKindLabel(kind)}上传未返回有效公网 URL`);
+  }
+  return result.data.url;
+}
+
 // ── APIMart 上传 ──
 
 async function uploadToApimart(url: string, signal?: AbortSignal): Promise<string> {
@@ -543,7 +579,7 @@ function setCachedUrl(key: string, remoteUrl: string) {
 /**
  * 上传单个本地文件到远端图床
  * @param url    本地文件 URL（data: / asset: / file:）
- * @param provider 提供商标识：'apimart' + 图片走 APIMart /uploads/images，其余走 uguu.se
+ * @param provider 连接身份；ToAPIs 的全部媒体走自己的上传接口，APIMart 图片走其图床，其余走 uguu.se
  * @returns 公网可访问的 URL
  */
 export async function uploadToRemote(
@@ -580,7 +616,10 @@ export async function uploadToRemote(
     const queuedCached = getCachedUrl(key);
     if (queuedCached) return queuedCached;
 
-    const publicUrl = provider === 'apimart' && kind === 'image'
+    const connection = useAppStore.getState().config.providers[provider];
+    const publicUrl = provider === 'toapis' || connection?.catalogId === 'toapis'
+      ? await uploadToToapis(url, provider, kind, operationSignal)
+      : provider === 'apimart' && kind === 'image'
       ? await uploadToApimart(url, operationSignal)
       : await uploadToUguu(url, kind, operationSignal);
 
@@ -606,8 +645,7 @@ export async function uploadToRemote(
  *
  * 分发策略：
  *  - `dataUrl`   → 读取本地文件转 base64 data URL（general 通用协议等）
- *  - `publicUrl` → 上传图床：provider === 'apimart' 且为图片时走 APIMart /uploads/images，
- *                   其余（含 apimart 的视频/音频，以及所有非 apimart Provider）走 uguu.se
+ *  - `publicUrl` → ToAPIs 走所选站点的上传接口；APIMart 图片走 /uploads/images，其他走 uguu.se
  *
  * @param url     原始 URL（公网原样返回；data: 按目标 mode 保留或上传）
  * @param options.provider 提供商标识，决定上传图床

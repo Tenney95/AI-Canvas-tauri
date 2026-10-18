@@ -1106,6 +1106,92 @@ describe('资产库 Tab 抽屉', () => {
     expect(driver.store!.getState().assetsPanelOpen).toBe(false);
   });
 
+  it.each(['drawer', 'modal'] as const)('首次打开 %s 读取短暂失败时自动恢复，不必关闭重开', async (mode) => {
+    vi.useFakeTimers();
+    driver.listProject.mockRejectedValueOnce(new Error('temporary index failure'));
+    driver.store!.getState().setAssetsPanelOpen(true, mode);
+    render();
+    await vi.advanceTimersByTimeAsync(100); render();
+    expect(driver.listProject).toHaveBeenCalledTimes(2);
+    expect(cards().map((el) => (el.props.file as AssetFileEntry).name)).toEqual(['森林', '人物']);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(0);
+  });
+
+  it('某一分集持续读取失败时仍显示共享素材和画布资源，可原地重试', async () => {
+    vi.useFakeTimers();
+    driver.store!.setState({ currentProjectId: 'episode-1', projects: [
+      { id: 'series', name: '剧集', createdAt: 1, updatedAt: 1 },
+      { id: 'episode-1', name: '第一集', parentId: 'series', episodeNo: 1, createdAt: 1, updatedAt: 1 },
+      { id: 'episode-2', name: '第二集', parentId: 'series', episodeNo: 2, createdAt: 1, updatedAt: 1 },
+    ], nodes: [canvasNode('image', 'source-image')] });
+    driver.nodeFile = file('画布图片');
+    driver.listProject.mockImplementation(async (id: string) => {
+      if (id === 'episode-2') throw new Error('unavailable');
+      return [file('共享素材')];
+    });
+    driver.store!.getState().setAssetsPanelOpen(true); render();
+    await vi.advanceTimersByTimeAsync(100); render();
+    expect(cards().map((el) => (el.props.file as AssetFileEntry).name)).toEqual(['共享素材', '画布图片']);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(1);
+    expect(driver.listProject.mock.calls.filter(([id]) => id === 'episode-2')).toHaveLength(2);
+    driver.listProject.mockImplementation(async (id: string) => [file(id === 'episode-2' ? '第二集素材' : '共享素材')]);
+    click(find((el) => el.type === 'button' && el.props.children === '重试加载'));
+    await vi.advanceTimersByTimeAsync(0); render();
+    expect(cards().map((el) => (el.props.file as AssetFileEntry).name)).toEqual(['共享素材', '第二集素材', '画布图片']);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(0);
+    expect(driver.store!.getState().assetsPanelOpen).toBe(true);
+  });
+
+  it('持续失败明确提示而不冒充空项目，手动重试后正常展示', async () => {
+    vi.useFakeTimers();
+    driver.listProject.mockRejectedValue(new Error('read failed'));
+    key(); render(); await vi.advanceTimersByTimeAsync(100); render();
+    expect(driver.listProject).toHaveBeenCalledTimes(2);
+    expect(cards()).toHaveLength(0);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(1);
+    expect(all(tree, (el) => el.props.children === '暂无项目文件')).toHaveLength(0);
+    driver.listProject.mockResolvedValue([file('已恢复')]);
+    click(find((el) => el.type === 'button' && el.props.children === '重试加载'));
+    await vi.advanceTimersByTimeAsync(0); render();
+    expect(cards().map((el) => (el.props.file as AssetFileEntry).name)).toEqual(['已恢复']);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(0);
+  });
+
+  it('关闭面板会使等待中的自动重试失效，再次打开可以正常加载', async () => {
+    vi.useFakeTimers();
+    driver.listProject.mockRejectedValueOnce(new Error('temporary failure'));
+    key(); render(); await vi.advanceTimersByTimeAsync(0);
+    driver.store!.getState().setAssetsPanelOpen(false); render();
+    await vi.advanceTimersByTimeAsync(100); render();
+    expect(driver.listProject).toHaveBeenCalledOnce();
+    key(); render(); await vi.advanceTimersByTimeAsync(0); render();
+    expect(cards()).toHaveLength(2);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(0);
+  });
+
+  it('切换到读取失败的项目时不显示上一项目文件', async () => {
+    key(); render(); await settle();
+    expect(cards()).toHaveLength(2);
+    vi.useFakeTimers();
+    driver.listProject.mockRejectedValue(new Error('new project unavailable'));
+    driver.store!.setState({ currentProjectId: 'project-2' }); render();
+    await vi.advanceTimersByTimeAsync(100); render();
+    expect(cards()).toHaveLength(0);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(1);
+  });
+
+  it('保存根目录变化时重新加载，真正的空目录不反复重试', async () => {
+    key(); render(); await settle();
+    const calls = driver.listProject.mock.calls.length;
+    driver.listProject.mockResolvedValue([]);
+    driver.store!.setState((state) => ({ config: { ...state.config, baseDataDir: 'F:/new-assets' } }));
+    render(); await settle();
+    expect(driver.listProject).toHaveBeenCalledTimes(calls + 1);
+    expect(cards()).toHaveLength(0);
+    expect(all(tree, (el) => el.props.children === '暂无项目文件')).toHaveLength(1);
+    expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(0);
+  });
+
   it('项目切换后忽略旧项目的迟到列表', async () => {
     let finishOld!: (files: AssetFileEntry[]) => void;
     driver.listProject.mockImplementationOnce(() => new Promise<AssetFileEntry[]>((resolve) => { finishOld = resolve; }));

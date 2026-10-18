@@ -1,0 +1,12 @@
+{
+  "version": "v0.41.0",
+  "variants": [
+    { "id": "nvidia", "label": "NVIDIA RTX（20 系列及以上）", "arch": "x86_64", "asset": "ComfyUI_windows_portable_nvidia.7z", "bytes": 2010075321, "sha256": "7ff446d6904a9eecdfa07870a06238cc33a6204dcd31726edc6783efd080ac34" },
+    { "id": "nvidia-legacy", "label": "NVIDIA GTX（10 系列及更早）", "arch": "x86_64", "asset": "ComfyUI_windows_portable_nvidia_cu126.7z", "bytes": 1901799620, "sha256": "a6160054bf1f17367bdfa4cac33f176fc275771c0edbcc20ec58c75c39de19af" },
+    { "id": "amd", "label": "AMD（ROCm）", "arch": "x86_64", "asset": "ComfyUI_windows_portable_amd.7z", "bytes": 1627801471, "sha256": "7dd91dec08f4bf6d76adeb9aae0920f2d7ac6101f60be72063b76f86fc67dfb1" },
+    { "id": "intel", "label": "Intel（XPU）", "arch": "x86_64", "asset": "ComfyUI_windows_portable_intel.7z", "bytes": 1442748194, "sha256": "5f2107e2e2cf86ce9eff3f769507028fd55cebc5972930756fb5dc3558f058b3" },
+    { "id": "cpu", "label": "仅 CPU（速度较慢）", "arch": "x86_64", "asset": "ComfyUI_windows_portable_nvidia_cu126.7z", "bytes": 1901799620, "sha256": "a6160054bf1f17367bdfa4cac33f176fc275771c0edbcc20ec58c75c39de19af" },
+    { "id": "nvidia-arm64", "label": "Windows ARM64 + NVIDIA", "arch": "aarch64", "asset": "ComfyUI_windows_portable_nvidia_arm64.7z", "bytes": 1853240417, "sha256": "b06891cbd7d0d0af4b73852386b23ebd4a98f0f695f1d1c4cceb3d60ddfc410e" },
+    { "id": "cpu-arm64", "label": "Windows ARM64 仅 CPU（速度较慢）", "arch": "aarch64", "asset": "ComfyUI_windows_portable_nvidia_arm64.7z", "bytes": 1853240417, "sha256": "b06891cbd7d0d0af4b73852386b23ebd4a98f0f695f1d1c4cceb3d60ddfc410e" }
+  ]
+}

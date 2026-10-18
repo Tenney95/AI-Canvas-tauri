@@ -164,6 +164,27 @@ afterEach(() => {
 });
 
 describe('video node demand loading', () => {
+  it('旧空节点的比例和保存尺寸不一致时按当前比例显示，切换后即时更新', () => {
+    store.nodes[0].data = { type: 'ai-video', role: 'generator', seedanceRatio: '9:16', nodeWidth: 280, nodeHeight: 158 };
+    render();
+    const dimensions = () => ({
+      width: named('ResizeHandle').props.currentWidth,
+      height: named('ResizeHandle').props.currentHeight,
+    });
+    expect(dimensions()).toEqual({ width: 280, height: 498 });
+    store.nodes[0].data.seedanceRatio = '16:9';
+    render();
+    expect(dimensions()).toEqual({ width: 280, height: 158 });
+    expect(driver.acquire).not.toHaveBeenCalled();
+  });
+
+  it.each(['source', 'generator'])('保留 %s 已有视频的真实框尺寸，不按下次生成比例拉伸', (role) => {
+    store.nodes[0].data = { ...store.nodes[0].data, role, seedanceRatio: '9:16', nodeWidth: 480, nodeHeight: 270 };
+    render();
+    expect(named('ResizeHandle').props.currentWidth).toBe(480);
+    expect(named('ResizeHandle').props.currentHeight).toBe(270);
+  });
+
   it.each([
     { path: 'poster', videoWidth: 832, videoHeight: 1472, nodeWidth: 540, nodeHeight: 955 },
     { path: 'player', videoWidth: 1920, videoHeight: 800, nodeWidth: 730, nodeHeight: 304 },

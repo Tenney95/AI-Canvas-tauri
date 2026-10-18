@@ -16,6 +16,8 @@
 ## 关键边界
 
 - MCP 默认关闭，只有手动开启或显式配置自动开启才启动。stdio 使用本机回环桥；Streamable HTTP 的高风险传输确认属于配置授权。
+- 固定端口默认 `27149`，本机与 HTTP 传输共用；已有自定义端口优先，默认值不改写运行中的会话。设置页清空端口后以 `0` 保存显式随机模式，启动时仍交给系统分配，不在重启后回落到固定默认值。已实现，本次未运行测试，待用户验收：缺省配置显示 27149，已有固定端口不变；清空并保存、重开后仍留空，开启会话取得随机端口，自动开启与传输授权保持原行为。
+- 用户在端口输入框把其他值改为 `4927`，按 Enter 或失焦确认时播放《无间道》天台致敬；已保存端口的加载、随机按钮和重复确认不触发。动画组件按需加载，复用 `ModalOverlay` 的焦点圈定、Esc 和遮罩关闭，约 8 秒自动结束；减少动态效果时展示静态对白并由用户关闭。纯 SVG/CSS，不读取截图、不联网、不启动或重启 MCP，会话和端口保存沿用原流程。已实现，本次未运行测试，待用户验收：Tauri 设置 → MCP，27149 改为 4927 后按 Enter，检查天台、抬手、两段对白和落款；中途按 Esc、点关闭或遮罩应退出，切换设置页清理播放，重开 4927 不自动播放；改其他值再改回可重播。回归深浅主题、小窗口、减少动态效果、非法端口、留空随机及运行中会话不被彩蛋中断。定向入口为 `tests/components/mcpControlSettings.test.ts`，可在仓库根目录运行 `npx vitest run tests/components/mcpControlSettings.test.ts`。
 - 两种传输共用 Registry 与 Policy；MCP 按 C 自主模式处理，`user_choice` 仍等待用户作答，不能由客户端替用户解决审批。
 - MCP 进入模型勾选等 `user_choice` 等待时，自动打开助手并切到对应控制对话的消息视图；已独立的助手显示、取消最小化并聚焦原窗口，窗口不可用时回到主窗口面板。后台普通调用不导航，已切换项目或对话的异步窗口结果不抢回焦点。沿用现有 Store Action 与双窗口状态同步，用户仍需亲自选择。
 - 令牌只由原生凭据存储持久化，不进入普通配置、事件或日志。HTTP 保留 Bearer、Host、Origin、请求体与并发限制；具体常量以当前原生源码为准。
@@ -27,9 +29,11 @@
 
 ## 按需工具发现
 
+角色、场景和道具先查询库再复用，工具发现入口的首个提示明确库引用优先、先绑图后使用。`drama_reference_image_add` 同时覆盖项目场景/道具，资产查询返回 `imageReady`，画布详情返回同图的 `preferredMention`；MCP 创建/更新提示词会将唯一同图节点引用转换为精确库引用以减少新连线。新建项目参考图可向 `canvas_create_nodes` 传 `dramaAssetId`，生成成功后自动回填。匹配边界、全局前缀与待验收项见[角色与短剧资产](./角色与短剧资产模块.md)。客户端需刷新工具目录或重新连接以获取新合同；不更改 transport、Policy 或既有连线。
+
 导演台预演提供 `director_get_previs_schema`、`director_get_previs_scene` 与 `director_set_previs_scene`，仅在 MCP 控制上下文开放。客户端先取得合同和示例，再创建或查询 `ai-director`、选择 `ai-threejs` 并写入 `sceneJson`；读回返回完整场景，未保存时为 `null`。两项读取为 `read`，写入为 `canvas_write`，仍经 Policy 和项目/实例/派生守卫；不执行外部 JS，也不额外调用应用内模型。场景保存后的节点截图由宿主同步，完整合同与验收见[导演模块](./导演台与Blender模块.md)。
 
-`canvas_create_nodes` 与 `canvas_update_nodes` 为视频节点设置 `aspectRatio` 时同步实际视频参数 `seedanceRatio`；`canvas_query(detail=true)` 只报告已显式设置的实际视频比例，旧节点未设时不把画框比例误报为生成比例。多图视频提示词应按 Picture 顺序写入图片节点的 `@{nodeId:label}` 引用；只有连线无法指定参考图顺序。
+`canvas_create_nodes` 与 `canvas_update_nodes` 为视频节点设置 `aspectRatio` 时同步实际视频参数 `seedanceRatio`，固定比例同时联动空视频框；创建省略时先继承项目视频比例再排布，显式参数优先，已有成片和自适应的边界见[画布与项目](./画布与项目模块.md#视频参数与空节点比例)。`canvas_query(detail=true)` 只报告已显式设置或继承项目设置的实际视频比例，旧节点未设时不把画框比例误报为生成比例。多图视频提示词应按 Picture 顺序写入图片节点的 `@{nodeId:label}` 引用；只有连线无法指定参考图顺序。
 
 媒体参数随 MCP 节点创建一起写入：图片支持 `aspectRatio`、`imageSize`、`batchCount`；视频支持 `aspectRatio`、`videoLongSide`（本地工作流长边像素，如 832）、`videoResolution`（API 画质档位，如 720p）、`videoDuration`（分镜小数秒向上取整）；旧调用传数字字符串 `videoResolution: "832"` 时兼容写入长边像素，而不再错误写成 API 档位。音频支持 `audioPurpose`、音色/格式/语速、描述式语音的声音类型/节奏/秒数，以及音乐标题、歌词、BPM、时长与自动歌词开关。三类均可传已配置的 `model` ID；未传的字段才使用项目/模型默认值。`canvas_update_nodes` 对同类字段可更新，`canvas_query(detail=true)` 返回安全的参数摘要；字段传给错误的节点类型或模型 ID 未配置时，在整批写入前拒绝。参考音频通过节点引用/工作流 IO 传入，Qwen 等工作流专属参数仍由工作流配置控制。ComfyUI H3 的帧率由工作流内部 24fps 公式固定，不把通用 `videoFps` 伪装成可独立生效的 MCP 控件。
 

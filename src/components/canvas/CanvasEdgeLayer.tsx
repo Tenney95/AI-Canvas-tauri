@@ -2,6 +2,7 @@ import {
   Fragment,
   memo,
   useCallback,
+  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -17,7 +18,9 @@ import { createCanvasEdgeModelSelector, createCanvasEdgeSnapshotReader } from '.
 import type { CanvasEdgeLayerProps, CanvasSharedEdgeModel } from '../../types/canvasEdges';
 import { CanvasEdgeVisual } from './SelectedNodeFlowEdge';
 import { canUseCanvasEdgeStroke } from '../../utils/canvasEdgePath';
+import { canvasEdgePointer, createCanvasEdgePicker } from '../../utils/canvasEdgePicking';
 import CanvasEdgeStrokeLayer from './CanvasEdgeStrokeLayer';
+import { CanvasEdgePanePointerContext } from '../../hooks/useCanvasEdgePanePointer';
 
 type FlowStore = ReturnType<typeof useStoreApi>;
 type EdgeCallbacks = Pick<CanvasEdgeLayerProps,
@@ -27,6 +30,7 @@ type EdgeCallbacks = Pick<CanvasEdgeLayerProps,
 const EMPTY_NODE_IDS: ReadonlySet<string> = new Set();
 // Bound viewport bitmap memory even when custom/SVG edges alternate frequently.
 const MAX_CANVAS_STROKE_LAYERS = 2;
+type PickPointerEdge = (point: { x: number; y: number }, svg: SVGSVGElement | null) => CanvasSharedEdgeModel | undefined;
 
 /** One observer per flow, limited to direct node-wrapper mounts/unmounts. */
 function useMountedNodeIds(store: FlowStore) {
@@ -75,6 +79,18 @@ function deleteCanvasEdge(id: string) {
   useAppStore.getState().onEdgesChange([{ type: 'remove', id }]);
 }
 
+function selectCanvasEdge(store: FlowStore, model: CanvasSharedEdgeModel) {
+  const state = store.getState();
+  const edge = state.edgeLookup.get(model.edge.id);
+  if (!edge) return;
+  if (model.selectable) {
+    store.setState({ nodesSelectionActive: false });
+    if (edge.selected && state.multiSelectionActive) state.unselectNodesAndEdges({ nodes: [], edges: [edge] });
+    else state.addSelectedEdges([edge.id]);
+  }
+  return edge;
+}
+
 const SharedEdge = memo(function SharedEdge({
   model,
   store,
@@ -83,6 +99,7 @@ const SharedEdge = memo(function SharedEdge({
   disableKeyboardA11y,
   performanceMode,
   callbacks,
+  pickPointerEdge,
   baseStroke = true,
 }: {
   model: CanvasSharedEdgeModel;
@@ -92,6 +109,7 @@ const SharedEdge = memo(function SharedEdge({
   disableKeyboardA11y?: boolean;
   performanceMode: boolean;
   callbacks: EdgeCallbacks;
+  pickPointerEdge: PickPointerEdge;
   baseStroke?: boolean;
 }) {
   const groupRef = useRef<SVGGElement>(null);
@@ -103,19 +121,30 @@ const SharedEdge = memo(function SharedEdge({
     previouslySelected.current = edge.selected;
   }, [edge.selected]);
 
+  const pointerModel = (event: MouseEvent<SVGGElement>) => pickPointerEdge(
+    { x: event.clientX, y: event.clientY }, groupRef.current?.ownerSVGElement ?? event.currentTarget?.ownerSVGElement ?? null,
+  ) ?? model;
+  const resolveHoverEdge = useCallback((point: { x: number; y: number }) =>
+    pickPointerEdge(point, groupRef.current?.ownerSVGElement ?? null)?.edge.id ?? edge.id,
+  [edge.id, pickPointerEdge]);
   const handleClick = (event: MouseEvent<SVGGElement>) => {
     const state = store.getState();
+    const target = event.detail === 0 ? model : pointerModel(event);
     // Always read the live edge: selection can change between rendering and input.
-    const liveEdge = state.edgeLookup.get(edge.id);
+    const liveEdge = selectCanvasEdge(store, target);
     if (!liveEdge) return;
-    if (selectable) {
-      store.setState({ nodesSelectionActive: false });
-      if (liveEdge.selected && state.multiSelectionActive) {
-        state.unselectNodesAndEdges({ nodes: [], edges: [liveEdge] });
-        groupRef.current?.blur();
-      } else state.addSelectedEdges([edge.id]);
+    if (target.selectable) {
+      if (liveEdge.selected && state.multiSelectionActive) groupRef.current?.blur();
+      const group = groupRef.current;
+      if (group && target.edge.id !== edge.id && group.ownerDocument.activeElement === group) {
+        group.blur();
+        if (target.focusable && !(liveEdge.selected && state.multiSelectionActive)) {
+          const groups = state.domNode?.querySelectorAll<SVGGElement>('[data-canvas-central-edge-id]') ?? [];
+          Array.from(groups).find((candidate) => candidate.getAttribute('data-canvas-central-edge-id') === liveEdge.id)?.focus();
+        }
+      }
     }
-    callbacks.onEdgeClick?.(event, edge);
+    callbacks.onEdgeClick?.(event, liveEdge);
   };
   const handleKeyDown = (event: KeyboardEvent<SVGGElement>) => {
     if (disableKeyboardA11y || !selectable || !['Enter', ' ', 'Escape'].includes(event.key)) return;
@@ -146,14 +175,15 @@ const SharedEdge = memo(function SharedEdge({
       tabIndex={focusable ? 0 : undefined}
       onClick={handleClick}
       onKeyDown={focusable ? handleKeyDown : undefined}
-      onDoubleClick={callbacks.onEdgeDoubleClick ? (event) => callbacks.onEdgeDoubleClick?.(event, { ...edge }) : undefined}
-      onContextMenu={callbacks.onEdgeContextMenu ? (event) => callbacks.onEdgeContextMenu?.(event, { ...edge }) : undefined}
+      onDoubleClick={callbacks.onEdgeDoubleClick ? (event) => callbacks.onEdgeDoubleClick?.(event, { ...pointerModel(event).edge }) : undefined}
+      onContextMenu={callbacks.onEdgeContextMenu ? (event) => callbacks.onEdgeContextMenu?.(event, { ...pointerModel(event).edge }) : undefined}
       onMouseEnter={callbacks.onEdgeMouseEnter ? (event) => callbacks.onEdgeMouseEnter?.(event, { ...edge }) : undefined}
       onMouseMove={callbacks.onEdgeMouseMove ? (event) => callbacks.onEdgeMouseMove?.(event, { ...edge }) : undefined}
       onMouseLeave={callbacks.onEdgeMouseLeave ? (event) => callbacks.onEdgeMouseLeave?.(event, { ...edge }) : undefined}
     >
       <CanvasEdgeVisual {...model.props} path={model.path} baseStroke={baseStroke}
-        interactive={model.interactive} performanceMode={performanceMode} onDelete={deleteCanvasEdge} />
+        interactive={model.interactive} performanceMode={performanceMode} onDelete={deleteCanvasEdge}
+        resolveHoverEdge={resolveHoverEdge} />
     </g>
   );
 });
@@ -164,6 +194,7 @@ export default function CanvasEdgeLayer({
   onEdgeClick, onEdgeDoubleClick, onEdgeContextMenu, onEdgeMouseEnter, onEdgeMouseMove, onEdgeMouseLeave,
 }: CanvasEdgeLayerProps) {
   const store = useStoreApi();
+  const panePointerRef = useContext(CanvasEdgePanePointerContext);
   const [canvasStroke, setCanvasStroke] = useState(() => {
     if (typeof Path2D === 'undefined' || typeof DOMMatrixReadOnly === 'undefined') return false;
     // Session-independent diagnostic fallback; does not change graph data or line type.
@@ -178,9 +209,48 @@ export default function CanvasEdgeLayer({
     store.getState, selectModels, edgeIds, geometry, rfId, mountedNodeIds,
   ), [store, selectModels, edgeIds, geometry, rfId, mountedNodeIds]);
   const models = useSyncExternalStore(subscribe, snapshot, snapshot);
+  const modelsRef = useRef(models);
+  useLayoutEffect(() => { modelsRef.current = models; }, [models]);
+  const pickGeometry = useMemo(() => createCanvasEdgePicker(), []);
+  const pickPointerEdge = useCallback<PickPointerEdge>((point, svg) => {
+    const matrix = svg?.getScreenCTM();
+    const pointer = matrix ? canvasEdgePointer(point, matrix) : null;
+    return pointer ? pickGeometry(modelsRef.current, pointer.point, pointer.zoom) : undefined;
+  }, [pickGeometry]);
   const callbacks = useMemo(() => ({
     onEdgeClick, onEdgeDoubleClick, onEdgeContextMenu, onEdgeMouseEnter, onEdgeMouseMove, onEdgeMouseLeave,
   }), [onEdgeClick, onEdgeDoubleClick, onEdgeContextMenu, onEdgeMouseEnter, onEdgeMouseMove, onEdgeMouseLeave]);
+
+  useLayoutEffect(() => {
+    if (!panePointerRef) return;
+    const paneEdgeAt = (point: { x: number; y: number }) => {
+      const state = store.getState();
+      const svg = state.domNode?.querySelector<SVGSVGElement>('.canvas-shared-edge-layer') ?? null;
+      const target = pickPointerEdge(point, svg);
+      return target && state.edgeLookup.has(target.edge.id) ? target : undefined;
+    };
+    const handlePanePointer: NonNullable<typeof panePointerRef.current> = {
+      hitTest: (point) => paneEdgeAt(point) !== undefined,
+      handle: (event, action) => {
+        const state = store.getState();
+        const target = paneEdgeAt({ x: event.clientX, y: event.clientY });
+        const callback = action === 'click' ? onEdgeClick : onEdgeDoubleClick;
+        if (!target || (!target.selectable && !callback)) return false;
+        const edge = action === 'click' ? selectCanvasEdge(store, target) : state.edgeLookup.get(target.edge.id);
+        if (!edge) return false;
+        if (action === 'click' && target.selectable && target.focusable) {
+          const groups = state.domNode?.querySelectorAll<SVGGElement>('[data-canvas-central-edge-id]') ?? [];
+          const group = Array.from(groups).find((candidate) => candidate.getAttribute('data-canvas-central-edge-id') === edge.id);
+          if (edge.selected && state.multiSelectionActive) group?.blur();
+          else group?.focus();
+        }
+        callback?.(event, edge);
+        return true;
+      },
+    };
+    panePointerRef.current = handlePanePointer;
+    return () => { if (panePointerRef.current === handlePanePointer) panePointerRef.current = null; };
+  }, [panePointerRef, store, pickPointerEdge, onEdgeClick, onEdgeDoubleClick]);
 
   // Consecutive runs preserve paint order across native fallbacks and z-layers.
   const layers: ReactNode[] = [];
@@ -223,7 +293,7 @@ export default function CanvasEdgeLayer({
     runModels.push(model);
     run.push(<SharedEdge key={model.edge.id} model={model} store={store} rfId={rfId}
       noPanClassName={noPanClassName} disableKeyboardA11y={disableKeyboardA11y}
-      performanceMode={performanceMode} callbacks={callbacks} baseStroke={!useCanvas} />);
+      performanceMode={performanceMode} callbacks={callbacks} pickPointerEdge={pickPointerEdge} baseStroke={!useCanvas} />);
   }
   flush();
   return <>{layers}</>;

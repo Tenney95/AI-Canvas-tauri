@@ -1,7 +1,7 @@
 /**
  * AINodeDialog AI 生成弹窗 — 点击节点后弹出的浮动面板，包含 Prompt 输入、模型选择、参数配置、生成按钮
  */
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 // 生成中的流光边框：仅在生成时按需加载
 const BorderBeam = lazy(() => import('../../vendor/generation-effects/border-beam/src').then((m) => ({ default: m.BorderBeam })));
@@ -59,6 +59,7 @@ import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDeriva
 import { animationProcessing, animationResultPatch } from '../../services/animationService';
 import { useT } from '../../i18n';
 import { mergeAppendedNodeMentions } from '../../utils/promptConnectionMentions';
+import { resolveGenerationNodeData } from '../../utils/nodeGeneration';
 
 const DIALOG_VIEWPORT_MARGIN = 16;
 
@@ -82,7 +83,7 @@ function AINodeDialog() {
   // 仅订阅当前激活的节点（而非整个 nodes 数组），拖拽其他节点时不会触发本弹窗重渲染
   const node = useAppStore((s) => (s.activeNodeId ? s.nodes.find((n) => n.id === s.activeNodeId) : undefined));
   const performanceMode = useAppStore((s) => s.config.performanceMode === true);
-  const data: BaseNodeData | undefined = node?.data;
+  const data = useMemo(() => resolveGenerationNodeData(node?.data), [node?.data]);
   const nodeType = data?.type;
   const isPrevis = nodeType === 'ai-director' && data?.directorRuntimeKind === 'ai-threejs';
   const directorDialogBlocked = (node?.type === 'ai-director' || nodeType === 'ai-director') && !isPrevis;
@@ -358,7 +359,7 @@ function AINodeDialog() {
     // 实时从 store 读取全部数据 — 避免闭包 data 为 undefined
     const store = useAppStore.getState();
     const latestNode = store.nodes.find((n) => n.id === activeNodeId);
-    const latestData = latestNode?.data as BaseNodeData | undefined;
+    const latestData = resolveGenerationNodeData(latestNode?.data);
     if (!latestData) {
       showToast(t('节点不存在'), 'error');
       return;

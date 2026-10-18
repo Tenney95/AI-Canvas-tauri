@@ -55,15 +55,6 @@ const workerScope = self as unknown as SnapshotWorkerScope;
 const MAX_BLOB_SIZE = 260_000;
 const WEBP_QUALITIES = [0.72, 0.55, 0.4, 0.28] as const;
 
-const KIND_COLORS: Record<string, string> = {
-  text: '#818cf8',
-  image: '#34d399',
-  video: '#60a5fa',
-  audio: '#fb923c',
-  animation: '#c084fc',
-  group: '#a78bfa',
-};
-
 function roundedRect(
   context: OffscreenCanvasRenderingContext2D,
   rect: ProjectSnapshotRect,
@@ -216,8 +207,6 @@ async function renderSnapshot(request: ProjectSnapshotWorkerRequest): Promise<Ar
     context.strokeStyle = '#2a2a3a';
     context.lineWidth = 1;
     context.stroke();
-    context.fillStyle = KIND_COLORS[node.kind] ?? '#8888a0';
-    context.fillRect(node.x, node.y, Math.max(2, 3 / scaleX), node.height);
   }
 
   for (const media of request.media) {

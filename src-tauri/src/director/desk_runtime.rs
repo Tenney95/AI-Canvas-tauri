@@ -196,56 +196,52 @@ fn download_archive<R: Runtime>(
     manifest: &DirectorDeskReleaseManifest,
     destination: &Path,
 ) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("AI-Canvas/director-desk-runtime")
-        .connect_timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| format!("创建导演台下载客户端失败: {error}"))?;
-    let mut response = client
-        .get(&manifest.url)
-        .send()
-        .map_err(|error| format!("下载导演台失败: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!("下载导演台失败: HTTP {}", response.status()));
-    }
-    if response
-        .content_length()
-        .is_some_and(|size| size > MAX_ARCHIVE_BYTES)
-    {
-        return Err("导演台下载包超过 100 MB 限制".to_string());
-    }
+    crate::github_fallback::retry(&manifest.url, |source| {
+        ensure_not_cancelled().map_err(crate::github_fallback::Failure::terminal)?;
+        emit_progress(app, "downloading", 0, manifest.download_bytes);
+        let mut response = crate::github_fallback::get(source)?;
+        let result = (|| {
+            if response.response
+                .content_length()
+                .is_some_and(|size| size > MAX_ARCHIVE_BYTES)
+            {
+                return Err("导演台下载包超过 100 MB 限制".to_string());
+            }
 
-    let mut output = File::create(destination)
-        .map_err(|error| format!("创建导演台临时下载文件失败: {error}"))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; DOWNLOAD_BUFFER_SIZE];
-    let mut downloaded = 0_u64;
-    loop {
-        ensure_not_cancelled()?;
-        let read = response
-            .read(&mut buffer)
-            .map_err(|error| format!("读取导演台下载数据失败: {error}"))?;
-        if read == 0 {
-            break;
-        }
-        downloaded = downloaded.saturating_add(read as u64);
-        if downloaded > MAX_ARCHIVE_BYTES {
-            return Err("导演台下载包超过 100 MB 限制".to_string());
-        }
-        output
-            .write_all(&buffer[..read])
-            .map_err(|error| format!("写入导演台下载文件失败: {error}"))?;
-        hasher.update(&buffer[..read]);
-        emit_progress(app, "downloading", downloaded, manifest.download_bytes);
-    }
-    output
-        .sync_all()
-        .map_err(|error| format!("同步导演台下载文件失败: {error}"))?;
+            let mut output = File::create(destination)
+                .map_err(|error| format!("创建导演台临时下载文件失败: {error}"))?;
+            let mut hasher = Sha256::new();
+            let mut buffer = vec![0_u8; DOWNLOAD_BUFFER_SIZE];
+            let mut downloaded = 0_u64;
+            loop {
+                ensure_not_cancelled()?;
+                let read = response
+                    .read(&mut buffer)
+                    .map_err(|error| format!("读取导演台下载数据失败: {error}"))?;
+                if read == 0 {
+                    break;
+                }
+                downloaded = downloaded.saturating_add(read as u64);
+                if downloaded > MAX_ARCHIVE_BYTES {
+                    return Err("导演台下载包超过 100 MB 限制".to_string());
+                }
+                output
+                    .write_all(&buffer[..read])
+                    .map_err(|error| format!("写入导演台下载文件失败: {error}"))?;
+                hasher.update(&buffer[..read]);
+                emit_progress(app, "downloading", downloaded, manifest.download_bytes);
+            }
+            output
+                .sync_all()
+                .map_err(|error| format!("同步导演台下载文件失败: {error}"))?;
 
-    ensure_not_cancelled()?;
-    emit_progress(app, "verifying", downloaded, downloaded.max(1));
-    let digest = format!("{:x}", hasher.finalize());
-    validate_archive_digest(manifest, &digest)
+            ensure_not_cancelled()?;
+            emit_progress(app, "verifying", downloaded, downloaded.max(1));
+            let digest = format!("{:x}", hasher.finalize());
+            validate_archive_digest(manifest, &digest)
+        })();
+        result.map_err(|message| crate::github_fallback::Failure { message, retryable: response.network_failed })
+    })
 }
 
 fn validate_archive_digest(

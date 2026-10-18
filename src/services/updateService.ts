@@ -112,7 +112,9 @@ async function performUpdate(onProgress?: (progress: AppUpdateProgress) => void)
 
     console.log(`[Updater] 开始下载 v${update.version}...`);
     report({ phase: 'downloading', version: update.version, message: '正在下载更新...' });
-    await update.downloadAndInstall((event) => {
+    const { Channel, invoke } = await import('@tauri-apps/api/core');
+    const onEvent = new Channel<import('@tauri-apps/plugin-updater').DownloadEvent>();
+    onEvent.onmessage = (event) => {
       if (event.event === 'Started') {
         const total = event.data.contentLength;
         report({
@@ -125,7 +127,8 @@ async function performUpdate(onProgress?: (progress: AppUpdateProgress) => void)
       } else if (event.event === 'Finished') {
         report({ phase: 'installing', message: '正在校验并安装更新...' });
       }
-    });
+    };
+    await invoke('download_app_update', { rid: update.rid, onEvent });
     console.log(`[Updater] v${update.version} 安装完成，即将重启`);
 
     report({ phase: 'restarting', message: '安装完成，正在重启...' });

@@ -15,6 +15,30 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe('providerCatalogService 模型分类推断', () => {
+  it.each(['https://toapis.cn/v1', 'https://toapis.com/v1'])('ToAPIs 只请求所选站点 %s，绑定渠道协议并筛选文本型号', async (baseUrl) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: [
+      { id: 'gemini-3.8-flash' }, { id: 'gpt-5.6-sol' }, { id: 'seedance-2-5' }, { id: 'suno' },
+    ] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await fetchProviderModelCatalog({ providerId: 'toapis-user',
+      config: { name: 'ToAPIs', apiKey: 'shared-fixture', catalogId: 'toapis', baseUrl },
+      fallbackModels: [...getProviderDefinition('toapis')!.models!],
+    });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`${baseUrl}/models`, expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer shared-fixture' }),
+    }));
+    expect(result.models.map((item) => item.id)).toEqual(['gemini-3.8-flash', 'seedance-2-5', 'suno']);
+    expect(result.models[1]).toMatchObject({ category: 'video', provider: 'toapis-user', executionProfile: { preset: 'custom' } });
+    expect(result.models[2].category).toBe('audio');
+  });
+
+  it('ToAPIs 验证失败不能用预置清单假装 Key 或另一站点验证成功', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchProviderModelCatalog({ providerId: 'toapis', config: { name: 'ToAPIs', apiKey: 'invalid-fixture',
+      baseUrl: 'https://toapis.cn/v1' }, fallbackModels: [...getProviderDefinition('toapis')!.models!] })).rejects.toThrow();
+    expect(fetchMock.mock.calls.every(([url]) => new URL(url).hostname === 'toapis.cn')).toBe(true);
+  });
   it('creates independent CCC connection identities and resolves their shared definition', () => {
     const first = createConnectionId('cccapi');
     const second = createConnectionId('cccapi');

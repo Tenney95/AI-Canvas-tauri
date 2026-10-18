@@ -31,6 +31,7 @@ import type {
 import VolcengineAssetPickerDialog, { type VolcengineAssetSelection } from './volcengine/VolcengineAssetPickerDialog';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
+import MentionEditor from './nodes/shared/MentionEditor';
 import {
   avatarCropBase,
   CHARACTER_REFERENCE_KIND_LABELS,
@@ -773,15 +774,20 @@ function CharacterNodeCaptureDialog({
                 ))}
               </Select>
             </label>
-            <label className="character-field character-field-wide">
+            <div className="character-field character-field-wide">
               <span>图片提示词</span>
-              <textarea
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                rows={3}
-                placeholder="记录生成该形象时使用的提示词"
-              />
-            </label>
+              <div className="ui-textarea focus-within:border-[var(--border-focus)] focus-within:ring-2 focus-within:ring-[var(--brand-alpha-12)]" role="group" aria-label="图片提示词">
+                <MentionEditor
+                  nodeId={sourceNodeId}
+                  value={prompt}
+                  onChange={setPrompt}
+                  canSubmit={false}
+                  submitShortcut="ctrl-enter"
+                  placeholder="记录生成该形象时使用的提示词，@ 可引用节点或资产"
+                  className="[&_.prompt-editor]:min-h-20 [&_.prompt-editor]:max-h-48 [&_.prompt-editor]:text-sm [&_.mention-dropdown]:static [&_.mention-dropdown]:mt-2 [&_.mention-dropdown]:w-full [&_.mention-dropdown]:max-w-full"
+                />
+              </div>
+            </div>
           </div>
             </>
           ) : (
@@ -1360,15 +1366,21 @@ function CharacterAssetEditorDialog({
                       ))}
                     </Select>
                   </label>
-                  <label className="character-field">
+                  <div className="character-field">
                     <span>图片提示词</span>
-                    <textarea
-                      value={selectedReference.prompt}
-                      onChange={(event) => patchReference({ prompt: event.target.value })}
-                      rows={4}
-                      placeholder="记录生成该形象时使用的提示词"
-                    />
-                  </label>
+                    <div className="ui-textarea focus-within:border-[var(--border-focus)] focus-within:ring-2 focus-within:ring-[var(--brand-alpha-12)]" role="group" aria-label="图片提示词">
+                      <MentionEditor
+                        key={selectedReference.id}
+                        nodeId={selectedReference.sourceNodeId}
+                        value={selectedReference.prompt}
+                        onChange={(value) => patchReference({ prompt: value })}
+                        canSubmit={false}
+                        submitShortcut="ctrl-enter"
+                        placeholder="记录生成该形象时使用的提示词，@ 可引用节点或资产"
+                        className="[&_.prompt-editor]:min-h-20 [&_.prompt-editor]:max-h-48 [&_.prompt-editor]:text-sm [&_.mention-dropdown]:static [&_.mention-dropdown]:mt-2 [&_.mention-dropdown]:w-full [&_.mention-dropdown]:max-w-full"
+                      />
+                    </div>
+                  </div>
                   <div className="character-reference-actions">
                     <button
                       type="button"

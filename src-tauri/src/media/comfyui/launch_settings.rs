@@ -263,6 +263,10 @@ pub fn save_comfyui_launch_settings(
     settings: ComfyUILaunchSettings,
 ) -> Result<ComfyUILaunchSettings, String> {
     super::management::ensure_management_caller(&webview, &app)?;
+    save_settings(&app, settings)
+}
+
+pub(super) fn save_settings(app: &tauri::AppHandle, settings: ComfyUILaunchSettings) -> Result<ComfyUILaunchSettings, String> {
     settings.validate()?;
     let _guard = SETTINGS_LOCK
         .lock()

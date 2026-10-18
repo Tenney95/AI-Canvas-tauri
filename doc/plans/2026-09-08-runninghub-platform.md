@@ -24,6 +24,22 @@
 
 ## 源码与兼容边界
 
+### API 站点与语言前缀兼容
+
+已实现，待用户桌面验收；本轮未运行功能测试、类型检查、构建或真实账户调用。提交时按仓库钩子执行改动文件的定向 ESLint。
+
+- 官网链接支持 `/zh-cn/`、`/en/` 等语言前缀，继续校验官方域名与应用/工作流类型，长 ID 不转成 JavaScript 数字。业务码 901 显示应用不存在及站点核对提示，不能仅凭此码认定应用已被删除。
+- 「设置 → API Key → RunningHub → API 站点」显式选择国内 `.cn` 或国际 `.ai`。宽窗口的站点、模型 Key、工作流 Key 同排，窄窗口换行；两站各自保存模型与工作流密钥，切换只显示对应草稿，未配置站点不复制另一站的值。保存同时提交两站编辑和当前站点，取消弹窗不写入。
+- `runninghubSiteCredentials.ts` 维护四个独立的顶层凭据记录，统一由 `providerSecretService` 写入 Rust 安全存储；`runninghub` / `runninghub-model` 入口保留模型配置与当前地址，`apiKey` 只在内存按选中站点派生，不另外落原生共享槽，不回读旧共享槽作为兜底。Store Action、保存后合并与重启加载均重新派生，模型、工作流和恢复查询继续使用原入口 ID。删除 RunningHub 连接一并按既有条件删除流程回收两站记录与旧入口凭据。
+- 旧单组密钥只归入原配置地址对应站点，另一站保持空白；未知自定义地址不自动归类或搬迁。未读出的既有站点凭据记录不因空草稿而删除，旧单组密钥未读出时阻止迁移，保留原引用。源代码同时保留旧格式读取，不清空已有单站配置；首次保存新格式后以站点记录为准，旧共享原生条目不再用于调用，删除连接时回收。
+- 新提交任务只记录原站点标识，续查与取消使用该站凭据，切换站点不影响已有任务；原站凭据缺失时提示配置，不借用当前站密钥。旧待续记录缺少站点信息，仍需选择原站后再续查。
+- 导入页显示当前连接实际请求的 origin。读取定义、上传、执行与查询沿用所选连接；模型目录读取前的账户验证也使用当前表单地址。粘贴链接不改变请求站点，不把密钥跨站重试，不新建或迁移已有任务。
+- 桌面验收：选择国际站并填写对应站点密钥，保存后重开设置仍为国际站；在 AI 应用导入页确认请求站点是 `https://www.runninghub.ai`，粘贴带语言前缀的链接后应能进入定义请求。读取不提交生成任务；若仍返回 901，需进一步核对该站点的 API 访问权限或用网页的官方调用示例导入。
+- 额外桌面验收：国内站填写模型/工作流 Key，切到国际站应显示该站独立值或空白；输入另一套后往返切换，应各自保留。保存当前站点并重启，确认两套均恢复，当前无模型 Key 时模型调用提示配置，不能借用另一站。取消编辑应保留原选择；删除连接后重启不得恢复两站凭据。验证深浅主题和窄窗口，以及读取失败时保留引用、保存失败可重试。
+- 回归：默认国内站、纯 ID、工作流链接、仅工作流 Key；错类型和非官方域名仍拒绝。新增测试源码覆盖地址持久化、两站原生凭据隔离、空值拒绝回退、站点选择、国际站定义请求与不跨站重试。以下回归测试尚未执行；用户可在仓库根目录运行 `npx vitest run tests/services/runninghubSiteCredentials.test.ts tests/services/providerSecretService.test.ts tests/services/runninghubWorkflowService.test.ts tests/services/runninghubWorkflow.test.ts tests/services/testConnection.test.ts tests/components/providerConnectionForm.test.tsx tests/components/apiKeyDeletionPersistence.test.tsx tests/components/runninghubWorkflowImport.test.tsx tests/components/apiKeySettings.test.ts tests/services/configSecretStorage.test.ts tests/store/config.test.ts`。
+
+### 入口与既有合同
+
 | 入口 | 职责 |
 |---|---|
 | [runninghub.ts](../../src/types/runninghub.ts) | manifest、参数、产物和任务消息关联类型 |

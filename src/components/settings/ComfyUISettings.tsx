@@ -3,7 +3,7 @@
  * 配置 ComfyUI 服务地址、启动 / 停止本地 ComfyUI、探测服务状态，
  * 并提供工作流面板入口与相关目录选择。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
@@ -33,6 +33,7 @@ import {
 } from '../../services/comfyMemory';
 
 type ComfyStatus = 'idle' | 'starting' | 'ready' | 'failed';
+const ComfyInstallDialog = lazy(() => import('../comfyui/ComfyInstallDialog'));
 
 const INPUT_CLASS = 'text-xs bg-canvas-surface border border-canvas-border rounded-md px-2.5 py-1.5 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
 const COMFY_ACTION_BUTTON_CLASS = 'ui-btn ui-btn--sm ui-btn--block min-w-0 [&>svg]:shrink-0';
@@ -116,6 +117,7 @@ export default function ComfyUISettings() {
   const [launching, setLaunching] = useState(false);
   const [opening, setOpening] = useState(false);
   const [managing, setManaging] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
   const [choosingPath, setChoosingPath] = useState(false);
   const choosingPathRef = useRef(false);
   const [status, setStatus] = useState<ComfyStatus>('idle');
@@ -243,7 +245,7 @@ export default function ComfyUISettings() {
   };
 
   const openManagement = async () => {
-    if (choosingPathRef.current || managing) return;
+    if (choosingPathRef.current || managing || installOpen) return;
     setManaging(true);
     try {
       const comfyPath = await resolveInstallationPath();
@@ -268,7 +270,7 @@ export default function ComfyUISettings() {
   };
 
   const choosePath = async () => {
-    if (choosingPathRef.current || launching || managing) return;
+    if (choosingPathRef.current || launching || managing || installOpen) return;
     choosingPathRef.current = true;
     setChoosingPath(true);
     try {
@@ -409,7 +411,10 @@ export default function ComfyUISettings() {
             }`}>
               {comfyUIPath || t('未设置')}
             </div>
-            <AnimatedButton type="button" className="settings-save-btn self-stretch shrink-0 text-xs" onClick={choosePath} disabled={choosingPath || launching || managing}>
+            <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm self-stretch shrink-0" onClick={() => setInstallOpen(true)} disabled={choosingPath || launching || managing || installOpen}>
+              <Icon icon="lucide:download" width={14} />{t('安装')}
+            </button>
+            <AnimatedButton type="button" className="settings-save-btn self-stretch shrink-0 text-xs" onClick={choosePath} disabled={choosingPath || launching || managing || installOpen}>
               {choosingPath ? t('正在选择…') : comfyUIPath ? t('更换') : t('选择文件夹')}
             </AnimatedButton>
           </div>
@@ -422,7 +427,7 @@ export default function ComfyUISettings() {
                 type="button"
                 className={`${COMFY_ACTION_BUTTON_CLASS} [&.ui-btn]:border-transparent [&.ui-btn]:bg-purple-500/15 [&.ui-btn]:text-purple-400 [&.ui-btn:hover:not(:disabled):not(.is-active)]:border-transparent [&.ui-btn:hover:not(:disabled):not(.is-active)]:bg-purple-500/25 [&.ui-btn:hover:not(:disabled):not(.is-active)]:text-purple-400`}
                 onClick={launch}
-                disabled={launching || managing || choosingPath}
+                disabled={launching || managing || choosingPath || installOpen}
               >
                 {launching ? (
                   <>
@@ -442,7 +447,7 @@ export default function ComfyUISettings() {
                 type="button"
                 className={`${COMFY_ACTION_BUTTON_CLASS} ui-btn--secondary`}
                 onClick={() => void openManagement()}
-                disabled={managing || choosingPath}
+                disabled={managing || choosingPath || installOpen}
               >
                 <Icon icon={managing ? 'lucide:loader-circle' : 'lucide:settings'} width="14" height="14" className={managing ? 'animate-spin' : ''} />
                 {t('设置')}
@@ -661,12 +666,17 @@ export default function ComfyUISettings() {
             <div className="text-xs font-medium text-canvas-text">{t('工作流管理')}</div>
             <div className="text-[11px] text-canvas-text-muted mt-0.5">{t('已导入 {count} 个工作流', { count: workflows.length })}</div>
           </div>
-          <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs flex items-center gap-1.5" onClick={openWorkflows}>
+          <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs flex items-center gap-1.5" onClick={openWorkflows} disabled={installOpen}>
             {t('管理工作流')}
             <Icon icon="lucide:chevron-right" width="14" height="14" />
           </AnimatedButton>
         </div>
       </div>
+      {installOpen && <Suspense fallback={null}><ComfyInstallDialog
+        onClose={() => setInstallOpen(false)}
+        onInstalled={syncInstallationMirror}
+        onLaunch={() => { setInstallOpen(false); void launch(); }}
+      /></Suspense>}
     </div>
   );
 }

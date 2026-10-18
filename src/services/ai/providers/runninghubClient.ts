@@ -8,7 +8,7 @@ export class RunningHubRequestError extends Error {
   readonly code?: number;
   readonly httpStatus: number;
   constructor(code: number | undefined, httpStatus: number) {
-    const detail: Record<number, string> = { 401: '鉴权失败，请检查所选连接', 402: '余额不足', 403: '无权访问该资源', 429: '请求过于频繁', 805: '任务执行失败', 807: '任务不存在或不属于此密钥', 809: '上传文件过大', 814: '个人队列已满' };
+    const detail: Record<number, string> = { 401: '鉴权失败，请检查所选连接', 402: '余额不足', 403: '无权访问该资源', 429: '请求过于频繁', 805: '任务执行失败', 807: '任务不存在或不属于此密钥', 809: '上传文件过大', 814: '个人队列已满', 901: 'AI 应用不存在，请核对应用 ID 和所选连接的 API 站点' };
     super(`RunningHub ${detail[code ?? -1] || detail[httpStatus] || '请求失败'}（${code === undefined ? `HTTP ${httpStatus}` : `业务码 ${code}，HTTP ${httpStatus}`}）`);
     this.code = code; this.httpStatus = httpStatus;
   }

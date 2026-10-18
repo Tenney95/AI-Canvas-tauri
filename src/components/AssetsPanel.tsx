@@ -55,6 +55,7 @@ import { loadAssetVideoHistory } from '../services/assetVideoDetails';
 import { getAllAssetMeta, putAssetMeta, deleteAssetMeta, imageHistoryReferenceKey } from '../services/indexedDbService';
 import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
 import { isExternalDropCaptured, setExternalDropCaptured } from '../utils/dropCapture';
+import { nativeDropClientPosition } from '../utils/nativeDropPosition';
 import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
 import AssetThumb from './shared/AssetThumb';
 import PopupCloseButton from './shared/PopupCloseButton';
@@ -131,6 +132,7 @@ export default function AssetsPanel() {
     canvasNodeCount,
     currentProjectId,
     projects,
+    baseDataDir,
     assetFolders,
     assetWaterfallColumns,
     updateConfig,
@@ -154,6 +156,7 @@ export default function AssetsPanel() {
         canvasNodeCount: s.nodes.length,
         currentProjectId: s.currentProjectId,
         projects: s.projects,
+        baseDataDir: s.config.baseDataDir,
         assetFolders: s.config.assetFolders,
         assetWaterfallColumns: s.config.assetWaterfallColumns,
         updateConfig: s.updateConfig,
@@ -235,6 +238,7 @@ export default function AssetsPanel() {
   const [arkAssetCount, setArkAssetCount] = useState(0);
 
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -247,6 +251,7 @@ export default function AssetsPanel() {
   const filterRowRef = useRef<HTMLDivElement | null>(null);
   const filterListRef = useRef<HTMLDivElement | null>(null);
   const loadRequestRef = useRef(0);
+  const projectFilesScopeRef = useRef<string | null>(null);
 
   // 同一组件在两种展示方式之间复用；每次从画布打开时跟随当前项目。
   const presentation = assetsPanelOpen ? assetsPanelMode : null;
@@ -316,18 +321,38 @@ export default function AssetsPanel() {
   const loadFiles = useCallback(async () => {
     const requestId = ++loadRequestRef.current;
     const isCurrentRequest = () => requestId === loadRequestRef.current
-      && currentProjectId === useAppStore.getState().currentProjectId;
+      && useAppStore.getState().assetsPanelOpen
+      && currentProjectId === useAppStore.getState().currentProjectId
+      && baseDataDir === useAppStore.getState().config.baseDataDir;
     setLoading(true);
+    setLoadError(null);
     try {
       if (activeTab === 'project') {
+        const scope = JSON.stringify([baseDataDir, viewProjectIds]);
+        if (projectFilesScopeRef.current !== scope) {
+          projectFilesScopeRef.current = scope;
+          setProjectFiles([]);
+          setProjectFileOwners(new Map());
+        }
         if (!viewProjectIds.length) { setProjectFiles([]); setProjectFileOwners(new Map()); return; }
         const owners = new Map<string, string>();
         const diskEntries = new Map<string, AssetFileEntry>();
+        let failedProjects = 0;
         // 父项目后读取分集，重叠目录中的文件沿用具体分集的身份和历史归属。
         for (const projectId of viewProjectIds) {
-          const entries = await listProjectFiles(projectId);
-          if (!isCurrentRequest()) return;
-          for (const file of entries) {
+          let entries: AssetFileEntry[] | null = null;
+          // 单个目录/索引读取失败不丢弃整部剧；短暂故障仅自动重读一次。
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try { entries = await listProjectFiles(projectId); }
+            catch {
+              if (!isCurrentRequest()) return;
+              if (attempt === 0) await new Promise<void>((resolve) => setTimeout(resolve, 100));
+            }
+            if (!isCurrentRequest()) return;
+            if (entries !== null) break;
+          }
+          if (entries === null) failedProjects++;
+          for (const file of entries ?? []) {
             diskEntries.set(imageHistoryReferenceKey(file.path) ?? file.path, file);
             owners.set(file.path, projectId);
           }
@@ -353,8 +378,11 @@ export default function AssetsPanel() {
             }
           }
         }
-        setProjectFileOwners(owners);
-        setProjectFiles([...diskFiles, ...nodeEntries]);
+        if (failedProjects < viewProjectIds.length || nodeEntries.length) {
+          setProjectFileOwners(owners);
+          setProjectFiles([...diskFiles, ...nodeEntries]);
+        }
+        if (failedProjects) setLoadError('项目文件读取未完成，已保留可用资源，请重试。');
       } else {
         // 永久 = 全局 file 目录 + 登记的外部文件夹（递归）
         const [globalContents, contents] = await Promise.all([
@@ -379,10 +407,12 @@ export default function AssetsPanel() {
           && !allFolders.some((folder) => folder.rootPath === selection.rootPath && folder.relativePath === selection.relativePath)
           ? { kind: 'all' } : selection);
       }
-    } catch { /* ignore */ } finally {
+    } catch {
+      if (isCurrentRequest()) setLoadError('资源读取失败，请重试。');
+    } finally {
       if (isCurrentRequest()) setLoading(false);
     }
-  }, [activeTab, currentProjectId, viewProjectIds, folders]);
+  }, [activeTab, currentProjectId, baseDataDir, viewProjectIds, folders]);
 
   useEffect(() => {
     if (assetsPanelOpen) {
@@ -561,8 +591,8 @@ export default function AssetsPanel() {
       if (disposed) return;
       const handlers = nativeFolderHandlersRef.current;
       if (payload.type === 'leave') { handlers.highlightFolder(null); releaseDrawer(); return; }
-      const ratio = window.devicePixelRatio || 1;
-      const target = payload.position ? handlers.folderTargetAt(payload.position.x / ratio, payload.position.y / ratio) : null;
+      const point = payload.position ? nativeDropClientPosition(payload.position) : null;
+      const target = point ? handlers.folderTargetAt(point.x, point.y) : null;
       handlers.highlightFolder(target);
       if (isDrawer && target && drawerCapture === null) {
         drawerCapture = isExternalDropCaptured(); setExternalDropCaptured(true);
@@ -1444,13 +1474,20 @@ export default function AssetsPanel() {
               {/* 文件瀑布流 */}
               <div className="assets-file-scroll-shell">
                 <div className="assets-file-scroll" key={activeTab === 'permanent' ? JSON.stringify(folderSelection) : 'project'}>
+                  {!loading && loadError && (
+                    <div className="ui-alert ui-alert--warning m-2" role="alert">
+                      <span className="min-w-0 flex-1">{loadError}</span>
+                      <button type="button" className="ui-btn ui-btn--secondary shrink-0"
+                        onClick={() => { void loadFiles().then(loadTags); }}>重试加载</button>
+                    </div>
+                  )}
                   <div className="assets-file-waterfall" data-columns={waterfallColumns}>
                     {loading ? (
                       <div className="assets-empty">
                         <motion.div className="assets-spinner" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.6, ease: 'linear' }} />
                         <span>加载中...</span>
                       </div>
-                    ) : filteredFiles.length === 0 ? (
+                    ) : filteredFiles.length === 0 && !loadError ? (
                       <div className="assets-empty">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.3">
                           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />

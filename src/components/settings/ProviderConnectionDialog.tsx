@@ -40,6 +40,7 @@ import { emitCloseChatWindow } from '../../services/chat/chatWindowService';
 import { testProviderConnection } from '../../services/testConnection';
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
+import { runningHubSiteDrafts, runningHubSiteId } from '../../services/runninghubSiteCredentials';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
@@ -112,10 +113,29 @@ export default function ProviderConnectionDialog({
   const [chatApiProtocol, setChatApiProtocol] = useState<ChatApiProtocol>(
     () => resolveChatApiProtocol(initialConfig?.chatApiProtocol),
   );
-  const [apiKey, setApiKey] = useState(initialConfig?.apiKey || '');
+  const [genericApiKey, setGenericApiKey] = useState(initialConfig?.apiKey || '');
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [assetLibraryConfig, setAssetLibraryConfig] = useState<VolcengineAssetLibraryConfig | undefined>(initialConfig?.assetLibrary);
-  const [workflowApiKey, setWorkflowApiKey] = useState(runninghubWorkflowApiKey);
+  const [legacyWorkflowApiKey, setLegacyWorkflowApiKey] = useState(runninghubWorkflowApiKey);
+  const [siteKeys, setSiteKeys] = useState(() => runningHubSiteDrafts({ ...providerConfigs,
+    ...(initialDefinition?.id === 'runninghub-model' && initialConfig ? { 'runninghub-model': initialConfig } : {}),
+    ...(!providerConfigs.runninghub && runninghubWorkflowApiKey ? { runninghub: {
+      name: 'RunningHub 工作流', apiKey: runninghubWorkflowApiKey, baseUrl: initialBaseUrl,
+    } } : {}),
+  }));
+  const activeRunningHubSite = definitionId === 'runninghub-model' ? runningHubSiteId(baseUrl) : undefined;
+  const apiKey = activeRunningHubSite ? siteKeys[activeRunningHubSite].modelKey : genericApiKey;
+  const workflowApiKey = activeRunningHubSite ? siteKeys[activeRunningHubSite].workflowKey : legacyWorkflowApiKey;
+  const setApiKey = (value: string | ((previous: string) => string)) => {
+    if (!activeRunningHubSite) { setGenericApiKey(value); return; }
+    setSiteKeys((previous) => ({ ...previous, [activeRunningHubSite]: { ...previous[activeRunningHubSite],
+      modelKey: typeof value === 'function' ? value(previous[activeRunningHubSite].modelKey) : value } }));
+  };
+  const setWorkflowApiKey = (value: string | ((previous: string) => string)) => {
+    if (!activeRunningHubSite) { setLegacyWorkflowApiKey(value); return; }
+    setSiteKeys((previous) => ({ ...previous, [activeRunningHubSite]: { ...previous[activeRunningHubSite],
+      workflowKey: typeof value === 'function' ? value(previous[activeRunningHubSite].workflowKey) : value } }));
+  };
   const [workflowDrafts, setWorkflowDrafts] = useState<WorkflowApiDraft[]>(() =>
     useAppStore.getState().workflows.filter((workflow) => workflow.adapterType === 'workflow-api' && workflow.workflowApi?.connectionId === connectionId)
       .map((workflow) => ({ id: workflow.id, name: workflow.name, manifest: editableWorkflowApiManifest(workflow.workflowApi!) })));
@@ -224,13 +244,15 @@ export default function ProviderConnectionDialog({
     if (!definition) return true;
     if (definition.kind === 'workflow-api') return !baseUrl.trim();
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
-    if (definition.id === 'runninghub-model') return !apiKey.trim() && !workflowApiKey.trim();
+    if (definition.id === 'runninghub-model') return activeRunningHubSite
+      ? !Object.values(siteKeys).some((keys) => keys.modelKey.trim() || keys.workflowKey.trim())
+      : !apiKey.trim() && !workflowApiKey.trim();
     if (!apiKey.trim()) return true;
     return definition.credentials.some(
       (field) => field.required && field.key === 'baseUrl' && !baseUrl.trim(),
     );
-  }, [apiKey, baseUrl, definition, dreaminaLoggedIn, workflowApiKey]);
-  const workflowOnlyConnection = definition?.id === 'runninghub-model' && !!workflowApiKey.trim() && !apiKey.trim();
+  }, [apiKey, baseUrl, definition, dreaminaLoggedIn, workflowApiKey, activeRunningHubSite, siteKeys]);
+  const workflowOnlyConnection = definition?.id === 'runninghub-model' && !apiKey.trim();
 
   const chooseDefinition = (nextDefinition: ProviderDefinition) => {
     abortRef.current?.abort();
@@ -240,10 +262,11 @@ export default function ProviderConnectionDialog({
     setDefinitionId(nextDefinition.id);
     setConnectionName(savedConfig?.name || nextDefinition.name);
     setChatApiProtocol(resolveChatApiProtocol(savedConfig?.chatApiProtocol));
-    setApiKey(savedConfig?.apiKey || '');
+    setGenericApiKey(savedConfig?.apiKey || '');
     setBaseUrl(savedConfig?.baseUrl || nextDefinition.defaultBaseUrl || '');
     setAssetLibraryConfig(savedConfig?.assetLibrary);
-    setWorkflowApiKey('');
+    setLegacyWorkflowApiKey('');
+    if (nextDefinition.id === 'runninghub-model') setSiteKeys(runningHubSiteDrafts(providerConfigs));
     const localModels = nextDefinition.id === 'cccapi' ? [] : fallbackModels[nextDefinition.id] || [];
     setModels(localModels);
     setSelectedIds(new Set());
@@ -272,6 +295,28 @@ export default function ProviderConnectionDialog({
     return resolved;
   };
 
+  const changeBaseUrl = (value: string | ((previous: string) => string)) => {
+    const next = typeof value === 'function' ? value(baseUrl) : value;
+    if (next === baseUrl) return;
+    if (definition?.id === 'toapis') {
+      // Key 属于同一账号；仅取消旧站请求，防止迟到结果覆盖新站目录。
+      abortRef.current?.abort();
+      setCatalogStatus('idle');
+      setCatalogMessage(t('站点已切换，请重新拉取当前站点的模型目录。'));
+      setModels((current) => mergeModels(fallbackModels.toapis || [], current.filter((model) => selectedIds.has(model.id))));
+    }
+    setBaseUrl(next);
+  };
+
+  const changeApiKey = (value: string | ((previous: string) => string)) => {
+    if (definition?.id === 'toapis') {
+      abortRef.current?.abort();
+      setCatalogStatus('idle');
+      setCatalogMessage(t('Key 已修改，保存后使用此 Key；可拉取模型验证权限。'));
+    }
+    setApiKey(value);
+  };
+
   const handleFetchModels = async () => {
     if (!definition || missingCredentials) return;
     if (workflowOnlyConnection) { setCatalogStatus('warning'); setCatalogMessage('当前只配置工作流连接，可直接保存；获取模型目录需要模型 API Key'); return; }
@@ -282,7 +327,7 @@ export default function ProviderConnectionDialog({
     setCatalogMessage('');
     try {
       if (definition.id === 'runninghub-model') {
-        const result = await testProviderConnection('runninghub-model', apiKey.trim());
+        const result = await testProviderConnection('runninghub-model', apiKey.trim(), baseUrl.trim() || undefined);
         if (!result.success) throw new Error(result.error || t('RunningHub API Key 验证失败'));
       }
       const result = await fetchProviderModelCatalog({
@@ -301,17 +346,18 @@ export default function ProviderConnectionDialog({
       const resolvedBaseUrl = result.resolvedBaseUrl || baseUrl;
       const remoteIds = new Set(result.models.map((model) => model.id));
       setModels((current) => mergeModels(
-        definition.id === 'cccapi' ? current.filter((model) => remoteIds.has(model.id)) : current,
+        definition.id === 'cccapi' || definition.id === 'toapis' ? current.filter((model) => remoteIds.has(model.id)) : current,
         result.models,
       )
         .map((model) => applyKnownVideoTemplateDefaults(model, resolvedBaseUrl)));
-      if (definition.id === 'cccapi') {
+      if (definition.id === 'cccapi' || definition.id === 'toapis') {
         setSelectedIds((current) => new Set([...current].filter((id) => remoteIds.has(id))));
         if (protocolModelId && !remoteIds.has(protocolModelId)) {
           setProtocolModelId(null);
           setProtocolValid(true);
         }
         if (videoCapabilityModelId && !remoteIds.has(videoCapabilityModelId)) setVideoCapabilityModelId(null);
+        if (imageCapabilityModelId && !remoteIds.has(imageCapabilityModelId)) setImageCapabilityModelId(null);
         if (categoryEditModelId && !remoteIds.has(categoryEditModelId)) setCategoryEditModelId(null);
       }
       setCatalogStatus(result.warning ? 'warning' : 'ready');
@@ -346,8 +392,11 @@ export default function ProviderConnectionDialog({
 
   const handleTestConnection = async () => {
     if (!definition || missingCredentials) return;
-    if (definition.id === 'cccapi') {
-      // 用该 Key 的模型目录验证分组连接，同时刷新它自己的可选模型。
+    if (definition.id === 'runninghub-model' && !apiKey.trim() && !workflowApiKey.trim()) {
+      setCatalogStatus('warning'); setCatalogMessage('当前站点尚未配置密钥，请填写或切换到已配置的站点'); return;
+    }
+    if (definition.id === 'cccapi' || definition.id === 'toapis') {
+      // 用当前 Key 的模型目录验证连接，同时刷新对应分组或站点的可选模型。
       await handleFetchModels();
       return;
     }
@@ -622,7 +671,7 @@ export default function ProviderConnectionDialog({
         ...(definition.id === 'volcengine' && assetLibraryConfig ? { assetLibrary: { ...assetLibraryConfig, projectName: assetLibraryConfig.projectName || 'default' } } : {}),
       },
       definition.id === 'runninghub-model'
-        ? { runninghubWorkflowApiKey: workflowApiKey.trim() }
+        ? { runninghubWorkflowApiKey: workflowApiKey.trim(), ...(activeRunningHubSite ? { runninghubSiteKeys: siteKeys } : {}) }
         : isWorkflowApi ? { workflowApiDrafts: workflowDrafts } : undefined,
     );
     } catch (error) {
@@ -698,9 +747,9 @@ export default function ProviderConnectionDialog({
               chatApiProtocol={chatApiProtocol}
               setChatApiProtocol={setChatApiProtocol}
               apiKey={apiKey}
-              setApiKey={setApiKey}
+              setApiKey={changeApiKey}
               baseUrl={baseUrl}
-              setBaseUrl={setBaseUrl}
+              setBaseUrl={changeBaseUrl}
               workflowApiKey={workflowApiKey}
               setWorkflowApiKey={setWorkflowApiKey}
               dreaminaLoggedIn={dreaminaLoggedIn}

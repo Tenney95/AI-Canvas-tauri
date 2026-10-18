@@ -27,6 +27,7 @@ import * as videoInputValidation from '../../src/services/ai/videoInputValidatio
 import * as volcengineBilling from '../../src/services/billing/volcengineBillingService';
 import { createSeedanceQuickAdaptTemplate } from '../../src/services/ai/seedanceModelCapabilities';
 import { resolveVideoSubmissionControls } from '../../src/services/ai/videoRequestResolver';
+import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
 import { buildCharacterVideoReferences, resolveVideoParameterInputMode } from '../../src/components/nodes/shared/VideoParamSelector';
 import type {
   ModelExecutionProfile,
@@ -1195,6 +1196,30 @@ describe('离散时长校验', () => {
 });
 
 describe('general video runtime safety', () => {
+  it('ToAPIs 本地视频/音频转为所属连接的公网 URL，不再转换为 Base64', async () => {
+    const selected = TOAPIS_MODEL_MANIFEST.find((item) => item.id === 'seedance-2-5')!;
+    useAppStore.getState().saveProviderConfig('toapis-local', { name: 'ToAPIs', catalogId: 'toapis',
+      baseUrl: 'https://toapis.cn/v1', apiKey: 'toapis-fixture', selectedModels: [selected] });
+    const general = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'toapis-local')!;
+    const resolve = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url, options) =>
+      options?.mode === 'publicUrl' ? `https://cdn.example/${options.kind}.ref` : url);
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'toapis-video-task' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'completed', result: { data: [{ url: 'https://cdn.example/complete.mp4' }] } })));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await generateVideo({ model: `general/${general.id}`, provider: 'general', prompt: '参考视频1和音频1生成', referenceMedia: [
+        { kind: 'video', role: 'reference', origin: 'connection', url: 'data:video/mp4;base64,dmlkZW8=' },
+        { kind: 'audio', role: 'reference_audio', origin: 'connection', url: 'data:audio/mpeg;base64,YXVkaW8=' },
+      ] });
+      expect(resolve).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ provider: 'toapis-local', mode: 'publicUrl', kind: 'video' }));
+      expect(resolve).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ provider: 'toapis-local', mode: 'publicUrl', kind: 'audio' }));
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+        video_with_roles: [{ url: 'https://cdn.example/video.ref', role: 'reference_video' }],
+        audio_with_roles: [{ url: 'https://cdn.example/audio.ref', role: 'reference_audio' }],
+      });
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://toapis.cn/v1/videos/generations', 'https://toapis.cn/v1/videos/generations/toapis-video-task']);
+    } finally { resolve.mockRestore(); }
+  });
   function configureGeneralVideoModel(options: {
     id: string;
     executionProfile?: ModelExecutionProfile;

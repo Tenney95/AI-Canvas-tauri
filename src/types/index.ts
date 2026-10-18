@@ -223,6 +223,8 @@ export interface BaseNodeData {
   prompt?: string;           // 提示词
   output?: string;            // 输出结果（文本/URL等）
   status?: 'idle' | 'loading' | 'success' | 'error';
+  /** 当前图片／视频生成等待的开始时间；仅状态切入 loading 时记录，不逐秒写入。 */
+  generationStartedAt?: number;
   /** 已提交的视频任务暂停本地查询，仍可续查或提交新的生成。 */
   videoTaskState?: 'paused';
   model?: string;             // 模型 ID；空字符串表示主动清除，不回填偏好或项目默认模型
@@ -525,6 +527,8 @@ export interface ApiProviderConfig {
   apiKey: string;
   /** 凭据在凭据存储中的条目名；由持久化层维护，业务代码不要直接读写。 */
   apiKeyRef?: string;
+  /** RunningHub 当前入口使用独立站点凭据记录；此入口的 apiKey 仅为内存派生值。 */
+  runninghubSiteCredentials?: boolean;
   baseUrl?: string;
   /** 文本/对话请求协议；旧配置缺失时按 openai-compatible 处理。 */
   chatApiProtocol?: ChatApiProtocol;
@@ -814,7 +818,7 @@ export interface AppConfig {
   assistantVideoModelId?: string;  // 助手生视频模型 ID：generalModels 中的 video 模型 id
   cloudParseEnabled?: boolean; // 是否启用云端解析，默认 true；关闭后助手仅使用本地规则
   mcpAutoStart?: boolean;     // 启动软件时自动开启 MCP 本地控制会话，默认 false
-  mcpPort?: number;           // MCP 固定端口，1024-65535；未设置时随机分配
+  mcpPort?: number;           // MCP 固定端口，默认 27149；1024-65535 可自定义，0 为显式随机模式
   mcpTransport?: 'stdio' | 'streamable-http'; // 默认 stdio；HTTP 模式监听 0.0.0.0
   mcpToolExposure?: McpToolExposure; // 默认 compact；full 兼容客户端原生工具发现
 }

@@ -2,7 +2,7 @@
  * MCP 本地控制设置页，管理 bridge 会话、固定端口/令牌、自动开启和外部客户端配置片段。
  */
 import Select from '../shared/Select';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import AnimatedButton from '../shared/AnimatedButton';
@@ -29,6 +29,7 @@ import { useT } from '../../i18n';
 import { StorageError } from '../../services/storageDiagnostics';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+const McpRooftopTribute = lazy(() => import('./McpRooftopTribute'));
 
 export default function McpControlSettings() {
   const t = useT();
@@ -44,6 +45,8 @@ export default function McpControlSettings() {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [remoteConfirmOpen, setRemoteConfirmOpen] = useState(false);
+  const [rooftopOpen, setRooftopOpen] = useState<boolean | null>(null);
+  const closeRooftop = useCallback(() => setRooftopOpen(false), []);
   const portInputRef = useRef<HTMLInputElement>(null);
   const controlRevision = useRef(0);
 
@@ -311,7 +314,8 @@ export default function McpControlSettings() {
             className="min-w-0 flex-1 rounded-md border border-canvas-border bg-canvas-surface px-3 py-2 text-sm text-canvas-text placeholder-canvas-text-muted transition-colors focus:border-indigo-500 focus:outline-none"
             onBlur={(event) => {
               const raw = event.target.value.trim();
-              const next = raw ? normalizeMcpPort(raw) : undefined;
+              // 0 持久化显式随机模式，避免字段被省略后重启又继承默认固定端口。
+              const next = raw ? normalizeMcpPort(raw) : 0;
               if (raw && next === undefined) {
                 setError(t('端口需在 1024-65535 之间'));
                 event.target.value = String(configuredPort ?? '');
@@ -319,7 +323,15 @@ export default function McpControlSettings() {
               }
               setError('');
               event.target.value = next ? String(next) : '';
+              // 只响应用户确认的新值；加载已保存端口和重复失焦都不播放彩蛋。
+              if (next === 4927 && configuredPort !== 4927) setRooftopOpen(true);
               persistConfig({ mcpPort: next });
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
             }}
           />
           <button
@@ -435,6 +447,12 @@ export default function McpControlSettings() {
         <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
           {t('未找到本地 MCP 适配器脚本。')}
         </div>
+      )}
+
+      {rooftopOpen !== null && (
+        <Suspense fallback={null}>
+          <McpRooftopTribute isOpen={rooftopOpen} onClose={closeRooftop} />
+        </Suspense>
       )}
 
       <ModalOverlay

@@ -1,7 +1,8 @@
 import type { ApiProviderConfig, WorkflowDefinition } from '../types';
-import type { RunningHubConnectionId } from '../types/runninghub';
+import type { RunningHubConnectionId, RunningHubSiteId } from '../types/runninghub';
 import type { CloudWorkflowOutput } from '../types/workflowApi';
 import { resolveWorkflowApiInputValues } from './workflowApi/autodlWorkflowManifest';
+import { resolveRunningHubCredential } from './runninghubSiteCredentials';
 
 /** 两个云 adapter 共用保存及新鲜度检查；具体端点、上传、查询不在这里。 */
 export async function saveCloudWorkflowOutputs(
@@ -74,8 +75,9 @@ export function mediaProviderConfigId(provider: string, workflow?: WorkflowDefin
 export function runningHubConnection(
   providers: Record<string, ApiProviderConfig>,
   connectionId: RunningHubConnectionId,
+  taskSite?: RunningHubSiteId,
 ) {
-  const config = providers[connectionId];
+  const config = resolveRunningHubCredential(providers, connectionId, taskSite);
   if (!config?.apiKey?.trim()) throw new Error(`请先配置 RunningHub ${connectionId === 'runninghub' ? '工作流' : '模型'} API Key`);
   const url = new URL(config.baseUrl || 'https://www.runninghub.cn');
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {

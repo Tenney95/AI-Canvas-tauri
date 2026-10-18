@@ -13,6 +13,7 @@
 //! 启动参数固定绑定回环 HTTP API，并按已保存的白名单设置覆盖端口、显存、
 //! 扩散模型精度、注意力与预览。默认 GPU 选择由 ComfyUI 自行决定。
 pub mod installation;
+pub mod installer;
 pub mod launch_settings;
 pub mod management;
 pub mod model_dedupe;

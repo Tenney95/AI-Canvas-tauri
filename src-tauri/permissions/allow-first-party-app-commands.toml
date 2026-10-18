@@ -2,6 +2,7 @@
 identifier = "allow-first-party-app-commands"
 description = "Allows registered AI Canvas application commands for trusted first-party windows."
 commands.allow = [
+  "download_app_update",
   "store_theme_image",
   "billing_upsert",
   "billing_query",
@@ -70,6 +71,10 @@ commands.allow = [
   "get_comfyui_runtime_status",
   "select_comfyui_installation",
   "get_comfyui_installation",
+  "get_comfyui_install_info",
+  "choose_comfyui_install_target",
+  "install_comfyui_portable",
+  "cancel_comfyui_install",
   "open_comfyui_window",
   "complete_comfyui_workflow_save",
   "open_comfyui_settings_window",

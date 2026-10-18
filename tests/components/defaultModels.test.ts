@@ -401,6 +401,35 @@ describe('CCC API 独立模型分组', () => {
   });
 });
 
+describe('ToAPIs 独立模型分组', () => {
+  it('节点和对话按厂商分组，并保留模型身份和类别可见性', () => {
+    const config: AppConfig = { theme: 'dark', providers: {
+      toapis: { name: 'ToAPIs', catalogId: 'toapis', apiKey: 'key', visibleModelCategories: ['image', 'video', 'text'] },
+      relay: { name: '自定义', catalogId: 'custom-openai', apiKey: 'other' },
+    } };
+    const models = [
+      { id: 'toapis-image', name: 'GPT Image 2', modelId: 'gpt-image-2', category: 'image' as const, providerConfigId: 'toapis' },
+      { id: 'toapis-video', name: 'Seedance 2.5', modelId: 'seedance-2-5', category: 'video' as const, providerConfigId: 'toapis' },
+      { id: 'toapis-audio', name: 'Suno', modelId: 'suno', category: 'audio' as const, providerConfigId: 'toapis' },
+      { id: 'toapis-text', name: 'GPT 6.1', modelId: 'gpt-6.1-sol', category: 'text' as const, providerConfigId: 'toapis' },
+      { id: 'relay-image', name: 'GPT Image 2', modelId: 'gpt-image-2', category: 'image' as const, providerConfigId: 'relay' },
+    ];
+    const groups = getGeneralModelGroups(models, config, 'ai-image');
+    expect(groups.find((group) => group.name === 'ToAPIs')).toMatchObject({
+      id: 'general-provider-toapis', badgeText: 'T',
+      models: [expect.objectContaining({ value: 'general/toapis-image', provider: 'general' })],
+    });
+    expect(groups.find((group) => group.id === 'general-models')?.models)
+      .toEqual([expect.objectContaining({ value: 'general/relay-image' })]);
+    expect(getGeneralModelGroups(models, config, 'ai-text')[0]).toMatchObject({
+      name: 'ToAPIs', models: [expect.objectContaining({ value: 'general/toapis-text' })],
+    });
+    const media = getMediaModelOptions(models, config).filter((model) => model.groupName === 'ToAPIs');
+    expect(media.map((model) => model.value)).toEqual(['general/toapis-image', 'general/toapis-video']);
+    expect(media.every((model) => model.groupId === 'general-provider-toapis' && model.provider === 'general')).toBe(true);
+  });
+});
+
 describe('自定义连接模型的来源标注', () => {
   const config: AppConfig = {
     providers: {

@@ -16,7 +16,7 @@ import type {
   DramaCharacter,
 } from '../../../types/dramaAssets';
 import { buildDramaMentionId, buildDramaVoiceMentionId, formatDramaMention, normalizeDramaCharacter } from '../../../types/dramaAssets';
-import { findDramaAsset, formatDramaAssetTextBrief, listDramaAssetsFlat } from '../../dramaAssetPrompt';
+import { findDramaAsset, formatDramaAssetTextBrief, listDramaAssetsFlat, resolveDramaAssetImageRef } from '../../dramaAssetPrompt';
 import {
   registerAgentTool,
   type AgentToolExecutionResult,
@@ -63,8 +63,13 @@ function findScopedAsset(
     : findDramaAsset(store.dramaAssets, assetId);
 }
 
-/** 列表条目只给 Agent 挑选所需的信息，完整简报留给 drama_asset_get。 */
-function summarizeAsset(asset: DramaAsset) {
+/** 全局角色的引用必须携带作用域，不能与项目内同 ID 的资产混淆。 */
+function assetMention(asset: DramaAsset, scope?: CharacterLibraryScope, pick?: string): string {
+  return formatDramaMention(buildDramaMentionId(scope === 'global' ? `global/${asset.id}` : asset.id, pick), asset.name);
+}
+
+/** 列表只返回选取所需信息，完整简报留给 drama_asset_get。 */
+function summarizeAsset(asset: DramaAsset, scope?: CharacterLibraryScope) {
   const character = asset.kind === 'character' ? asset as DramaCharacter : undefined;
   return {
     id: asset.id,
@@ -72,7 +77,9 @@ function summarizeAsset(asset: DramaAsset) {
     name: asset.name,
     summary: asset.summary || undefined,
     importance: asset.importance,
-    mention: formatDramaMention(asset.id, asset.name),
+    mention: assetMention(asset, scope),
+    imageReady: Boolean(resolveDramaAssetImageRef(asset, useAppStore.getState().nodes)),
+    ...(scope !== 'global' ? { imageNodeId: asset.imageNodeId } : {}),
     referenceImageCount: character?.referenceImages?.length ?? (asset.imageUrl ? 1 : 0),
     voiceClipCount: character?.voiceClips?.length ?? 0,
     hasVoice: Boolean(character?.primaryVoiceClipId),
@@ -102,7 +109,7 @@ const getInputSchema: AgentToolSchema = {
 
 const textField = { type: 'string' as const, maxLength: 2000 };
 
-interface BindCharacterMediaInput {
+interface BindAssetMediaInput {
   assetId: string;
   nodeId: string;
   scope?: CharacterLibraryScope;
@@ -132,8 +139,8 @@ function characterMediaSchema(audio: boolean): AgentToolSchema {
   };
 }
 
-async function bindCharacterMedia(
-  context: AgentToolContext, input: BindCharacterMediaInput, audio: boolean,
+async function bindAssetMedia(
+  context: AgentToolContext, input: BindAssetMediaInput, audio: boolean,
 ): Promise<AgentToolExecutionResult> {
   const fail = (message: string): AgentToolExecutionResult => ({ status: 'error', summary: message, modelContent: message });
   const store = useAppStore.getState();
@@ -144,14 +151,24 @@ async function bindCharacterMedia(
   }
   if (context.signal?.aborted) return fail('操作已取消');
   const scope = input.scope ?? 'project';
-  const character = findScopedAsset(scope, input.assetId);
-  if (character?.kind !== 'character') return fail('目标角色不存在，请先查询角色库');
+  const asset = findScopedAsset(scope, input.assetId);
+  if (!asset || (audio && asset.kind !== 'character')) return fail('目标资产不存在或类型不匹配，请先查询资产库');
   const node = store.nodes.find((item) => item.id === input.nodeId);
   if (!node || !(audio ? isEligibleCharacterVoiceNode(node) : isEligibleCharacterReferenceNode(node))) {
     return fail(audio ? '源节点没有可用音频，请先导入音频到画布' : '源节点没有可用图片，请先导入图片到画布');
   }
   const mediaUrl = audio ? node.data.audioUrl : node.data.imageUrl ?? node.data.thumbnailUrl;
   if (!mediaUrl?.trim()) return fail('源节点没有可用媒体');
+  if (!audio && asset.kind !== 'character') {
+    const reused = asset.imageNodeId === node.id && asset.imageUrl === mediaUrl;
+    if (!reused) store.bindDramaAssetImage(asset.kind, asset.id, node.id, mediaUrl);
+    return {
+      status: 'success', summary: '已绑定资产参考图',
+      modelContent: JSON.stringify({ assetId: asset.id, kind: asset.kind, scope, nodeId: node.id,
+        imageReady: true, reused, mention: assetMention(asset, scope) }),
+    };
+  }
+  const character = asset as DramaCharacter;
   // 全局库不保留项目 sourceNodeId；稳定 ID 仍保证同源节点重复绑定不增殖。
   const stableId = `mcp-${audio ? 'voice' : 'image'}-${encodeURIComponent(context.projectId)}-${encodeURIComponent(node.id)}`;
   const entries = audio ? character.voiceClips : character.referenceImages;
@@ -179,7 +196,8 @@ async function bindCharacterMedia(
         prompt: input.prompt ?? character.referenceImages?.find((item) => item.id === media.id)?.prompt ?? '',
       }, { makePrimary: input.makePrimary === true || input.kind === 'primary' });
     if (!saved) return fail('角色素材保存失败');
-    const mentionId = audio ? buildDramaVoiceMentionId(character.id, media.id) : buildDramaMentionId(character.id, media.id);
+    const mentionAssetId = scope === 'global' ? `global/${character.id}` : character.id;
+    const mentionId = audio ? buildDramaVoiceMentionId(mentionAssetId, media.id) : buildDramaMentionId(mentionAssetId, media.id);
     return {
       status: 'success', summary: audio ? '已添加角色参考音频' : '已添加角色参考图',
       modelContent: JSON.stringify({ assetId: character.id, scope, nodeId: node.id,
@@ -271,6 +289,7 @@ export function registerDramaAssetAgentTools(): Array<() => void> {
       title: '查询短剧资产',
       description:
         '列出已入库的人物、场景与道具，含可直接写进提示词的 @drama 引用串。'
+        + '优先使用库引用，不为这些素材重新导入节点或连线；imageReady=false 表示只有设定，须先生成/绑定图片再用于 Picture 参考。'
         + 'scope=project（默认）查当前项目资产库，scope=global 查跨项目角色库。'
         + '需要某个资产的完整设定时再调用 drama_asset_get。',
       inputSchema: listInputSchema,
@@ -282,7 +301,7 @@ export function registerDramaAssetAgentTools(): Array<() => void> {
       execute: async (_context, input): Promise<AgentToolExecutionResult> => {
         const assets = listScopedAssets(input.scope)
           .filter((asset) => !input.kind || asset.kind === input.kind)
-          .map(summarizeAsset);
+          .map((asset) => summarizeAsset(asset, input.scope));
         return {
           status: 'success',
           summary: `找到 ${assets.length} 个短剧资产`,
@@ -317,13 +336,15 @@ export function registerDramaAssetAgentTools(): Array<() => void> {
             id: asset.id,
             kind: asset.kind,
             name: asset.name,
-            mention: formatDramaMention(asset.id, asset.name),
+            mention: assetMention(asset, input.scope),
+            imageReady: Boolean(resolveDramaAssetImageRef(asset, useAppStore.getState().nodes)),
+            ...(input.scope !== 'global' ? { imageNodeId: asset.imageNodeId } : {}),
             brief: formatDramaAssetTextBrief(asset),
             referenceImageCount: character?.referenceImages?.length ?? (asset.imageUrl ? 1 : 0),
             referenceImages: character?.referenceImages?.map((reference) => ({
               id: reference.id, kind: reference.kind,
               isPrimary: reference.id === character.primaryReferenceImageId,
-              mention: formatDramaMention(buildDramaMentionId(asset.id, reference.id), asset.name),
+              mention: assetMention(asset, input.scope, reference.id),
             })) ?? [],
             voiceClips: character?.voiceClips?.map((clip) => ({
               id: clip.id,
@@ -344,7 +365,7 @@ export function registerDramaAssetAgentTools(): Array<() => void> {
         'scope=project（默认）写当前项目资产库；scope=global 写跨项目角色库，只能是 character。',
         '专属字段按类型区分：人物 identity/personality/wardrobeDefault/voiceNotes，',
         '场景 placeType/timeOfDay/atmosphere/spatialNotes，道具 ownerName/category/significance。',
-        '参考图和音色片段通过 drama_reference_image_add / drama_voice_add 从画布节点绑定，写入遵循当前模式权限。',
+        '人物/场景/道具的已有参考图通过 drama_reference_image_add 从画布节点绑定；新建 ai-image 时传 dramaAssetId，生成后自动回填。人物音色用 drama_voice_add。返回的 mention 应优先用于下游提示词，减少节点连线。',
       ].join(''),
       inputSchema: upsertInputSchema,
       effect: 'asset_write',
@@ -415,7 +436,7 @@ export function registerDramaAssetAgentTools(): Array<() => void> {
             kind: merged.kind,
             name: merged.name,
             scope: input.scope ?? 'project',
-            mention: formatDramaMention(merged.id, merged.name),
+            mention: assetMention(merged, input.scope),
             created: !existing,
           }),
         };
@@ -460,17 +481,18 @@ export function registerDramaAssetAgentTools(): Array<() => void> {
         };
       },
     }),
-    ...([false, true] as const).map((audio) => registerAgentTool<BindCharacterMediaInput>({
+    ...([false, true] as const).map((audio) => registerAgentTool<BindAssetMediaInput>({
       id: audio ? 'drama_voice_add' : 'drama_reference_image_add',
-      title: audio ? '添加角色参考音频' : '添加角色参考图',
-      description: `把当前画布中已有${audio ? '音频' : '图片'}产物绑定到指定角色。`
+      title: audio ? '添加角色参考音频' : '绑定创作资产参考图',
+      description: (audio ? '把当前画布中已有音频产物绑定到指定角色。' : '把当前画布中已有图片绑定到人物、场景或道具；已生成的场景/道具也必须调用本工具关联，不能只录入文字。')
         + '本机文件先用 file_import_media_to_canvas 导入，再传 nodeId；不接受路径或 URL。'
-        + 'scope 支持 project/global；重复绑定复用素材 ID，makePrimary 可设为主素材。'
-        + '不生成媒体，不隐藏或修改源节点。返回素材 ID 和可用于提示词的角色引用。',
+        + (audio ? 'scope 支持 project/global，仅绑定角色声音，重复绑定复用素材 ID，makePrimary 可设主音色。'
+          : 'scope=project 支持人物、场景、道具，global 仅角色；角色重复绑定复用素材 ID，makePrimary 可设主素材，场景/道具只有一张主参考图。')
+        + '不生成媒体，不隐藏或修改源节点。返回可直接写进下游提示词的库引用；库引用不需要额外连线。',
       inputSchema: characterMediaSchema(audio), effect: 'asset_write',
       authorize: authorizeCurrentProject,
-      summarizeInput: (input) => `为角色 ${input.assetId} 绑定${audio ? '声音' : '图片'}节点 ${input.nodeId}`,
-      execute: (context, input) => bindCharacterMedia(context, input, audio),
+      summarizeInput: (input) => `为资产 ${input.assetId} 绑定${audio ? '声音' : '图片'}节点 ${input.nodeId}`,
+      execute: (context, input) => bindAssetMedia(context, input, audio),
     })),
     registerAgentTool<{ assetId: string; clipId: string; scope?: CharacterLibraryScope; kind?: CharacterVoiceKind; label?: string; transcript?: string }>({
       id: 'drama_voice_update',

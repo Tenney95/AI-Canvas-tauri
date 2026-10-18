@@ -102,7 +102,11 @@ function isBlankCanvasTarget(target: EventTarget | null, root: HTMLElement): boo
   return target.classList.contains('react-flow__pane') || target.closest('.react-flow__pane') !== null;
 }
 
-export function useCanvasLongPressRadialMenu(rootRef: RefObject<HTMLElement | null>, enabled: boolean) {
+export function useCanvasLongPressRadialMenu(
+  rootRef: RefObject<HTMLElement | null>,
+  enabled: boolean,
+  isEdgeAtPoint?: (point: CanvasRadialMenuPosition) => boolean,
+) {
   const [position, setPosition] = useState<CanvasRadialMenuPosition | null>(null);
   const [holdPosition, setHoldPosition] = useState<CanvasRadialMenuPosition | null>(null);
   const suppressContextMenuUntilRef = useRef(0);
@@ -118,7 +122,10 @@ export function useCanvasLongPressRadialMenu(rootRef: RefObject<HTMLElement | nu
       setPosition(nextPosition);
     }, CANVAS_LONG_PRESS_DELAY_MS, setHoldPosition);
     const onPointerDown = (event: PointerEvent) => {
-      if (!isBlankCanvasTarget(event.target, root)) return;
+      controller.cancel();
+      if (event.button !== 0 || !event.isPrimary || !isBlankCanvasTarget(event.target, root)) return;
+      // Bitmap lines target the pane; exclude them before either long-press timer starts.
+      if (isEdgeAtPoint?.({ x: event.clientX, y: event.clientY })) return;
       setPosition(null);
       controller.pointerDown(event);
     };
@@ -151,7 +158,7 @@ export function useCanvasLongPressRadialMenu(rootRef: RefObject<HTMLElement | nu
       window.removeEventListener('blur', controller.cancel);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [close, enabled, rootRef]);
+  }, [close, enabled, isEdgeAtPoint, rootRef]);
 
   return { position, holdPosition, close };
 }

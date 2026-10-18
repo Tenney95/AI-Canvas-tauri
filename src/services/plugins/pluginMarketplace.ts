@@ -1,4 +1,5 @@
 import type { PluginManifest, PluginPackageResourcePayload } from '../../types/plugin';
+import { downloadGithubBytes } from '../githubDownloadService';
 import {
   normalizeGithubRepository,
   parsePluginBundle,
@@ -8,7 +9,6 @@ import {
 const REMOTE_CATALOG_URL = 'https://raw.githubusercontent.com/Tenney95/AI-Canvas-tauri/master/public/plugin-marketplace.json';
 const LOCAL_CATALOG_URL = '/plugin-marketplace.json';
 const CACHE_TTL_MS = 15 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 15_000;
 const MAX_CATALOG_BYTES = 128 * 1024;
 const MAX_RELEASE_BYTES = 256 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
@@ -111,64 +111,10 @@ async function fetchText(fetcher: Fetcher, url: string, maxBytes: number, option
 }
 
 async function fetchBytes(fetcher: Fetcher, url: string, maxBytes: number, options: DownloadRequestOptions): Promise<Uint8Array> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetcher(url, {
-      signal: controller.signal,
-      headers: options.accept ? { Accept: options.accept } : undefined,
-    });
-    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
-    const contentLength = Number(response.headers.get('content-length'));
-    if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error('下载内容过大');
-    const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
-    // Fetch 的 body 可能已解压，压缩后的 Content-Length 不能作为实际读取总量。
-    let totalBytes = (!encoding || encoding === 'identity') && Number.isFinite(contentLength) && contentLength > 0
-      ? contentLength : undefined;
-    let downloadedBytes = 0;
-    const report = () => {
-      if (totalBytes !== undefined && downloadedBytes > totalBytes) totalBytes = undefined;
-      options.onProgress?.({ downloadedBytes, totalBytes, fileName: options.fileName });
-    };
-    report();
-
-    const reader = response.body?.getReader();
-    if (!reader) {
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > maxBytes) throw new Error('下载内容过大');
-      downloadedBytes = bytes.byteLength;
-      report();
-      return bytes;
-    }
-    const chunks: Uint8Array[] = [];
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        downloadedBytes += value.byteLength;
-        if (downloadedBytes > maxBytes) {
-          await reader.cancel().catch(() => {});
-          throw new Error('下载内容过大');
-        }
-        chunks.push(value);
-        report();
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    const bytes = new Uint8Array(downloadedBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return bytes;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('请求超时', { cause: error });
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  return downloadGithubBytes(url, {
+    fetcher, maxBytes, accept: options.accept,
+    onProgress: (downloadedBytes, totalBytes) => options.onProgress?.({ downloadedBytes, totalBytes, fileName: options.fileName }),
+  });
 }
 
 export function parsePluginMarketplaceCatalog(text: string): PluginMarketplaceCatalogEntry[] {
@@ -303,7 +249,7 @@ export async function loadPluginMarketplace(
   const fileBytes = new Map<string, number>();
   const onProgress: ProgressReporter = (progress) => {
     const key = `${progress.repository ?? ''}:${progress.fileName}`;
-    downloadedBytes += Math.max(0, progress.downloadedBytes - (fileBytes.get(key) ?? 0));
+    downloadedBytes += progress.downloadedBytes - (fileBytes.get(key) ?? 0);
     fileBytes.set(key, progress.downloadedBytes);
     // 并行下载的后续清单/资源尚未发现，总大小保持未知，不能用当前文件冒充整体总量。
     options.onProgress?.({

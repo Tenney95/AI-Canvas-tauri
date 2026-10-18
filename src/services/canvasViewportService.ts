@@ -28,6 +28,7 @@ export interface CanvasViewportController {
   getSnapshot: () => CanvasViewportSnapshot;
   setViewport: (viewport: { x: number; y: number; zoom: number }, duration?: number) => Promise<void>;
   fitView: (options?: { nodeIds?: string[]; padding?: number; duration?: number }) => Promise<void>;
+  rememberViewport?: () => void;
 }
 
 let viewportController: CanvasViewportController | null = null;

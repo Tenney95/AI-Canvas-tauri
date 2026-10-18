@@ -9,6 +9,7 @@ import { useAppStore, generateId, computeImageNodeDimensions } from '../store/us
 import { arrayBufferToBase64, copyFileToProjectData, readBinaryFile } from '../services/fileService';
 import type { BaseNodeData } from '../types';
 import { isExternalDropCaptured } from '../utils/dropCapture';
+import { nativeDropClientPosition } from '../utils/nativeDropPosition';
 import { textNodeHeight } from '../utils/num';
 
 // ── File type constants ──
@@ -278,8 +279,7 @@ export function useNodeCreation() {
         setIsDragOver(false);
         if (!paths?.length) return;
 
-        const scale = window.devicePixelRatio || 1;
-        const flowPos = rf.screenToFlowPosition({ x: position.x / scale, y: position.y / scale });
+        const flowPos = rf.screenToFlowPosition(nativeDropClientPosition(position));
         const store = useAppStore.getState();
         const recordSuccessfulDrop = (path: string, nodeId: string, projectId: string) => {
           const current = useAppStore.getState();

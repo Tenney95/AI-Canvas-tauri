@@ -37,6 +37,9 @@ mod director_desk_runtime;
 mod dreamina;
 #[path = "files/transfer.rs"]
 mod file_transfer;
+#[path = "files/github_fallback.rs"]
+mod github_fallback;
+mod app_update;
 #[path = "files/thumbnail_cache.rs"]
 mod thumbnail_cache;
 #[path = "files/theme_assets.rs"]
@@ -1173,6 +1176,7 @@ pub fn run() {
         .manage(proxy_http_state)
         .manage(comfyui::management::ManagementState::default())
         .manage(comfyui::runtime_console::ComfyUIRuntimeState::default())
+        .manage(comfyui::installer::ComfyUIInstallerState::default())
         .manage(comfyui::model_dedupe::ModelDedupeState::default())
         .manage(blender_runtime::BlenderRuntimeState::default())
         .manage(blender_runtime::ProjectGrantState::default())
@@ -1233,6 +1237,7 @@ pub fn run() {
             file_transfer::copy_asset_file_to_folder,
             file_transfer::finish_asset_file_move,
             file_transfer::download_file_streamed,
+            app_update::download_app_update,
             file_transfer::cancel_file_transfer,
             director_desk_runtime::director_desk_runtime_status,
             director_desk_runtime::install_director_desk_runtime,
@@ -1262,6 +1267,10 @@ pub fn run() {
             comfyui::runtime_console::get_comfyui_runtime_status,
             comfyui::installation::select_comfyui_installation,
             comfyui::installation::get_comfyui_installation,
+            comfyui::installer::get_comfyui_install_info,
+            comfyui::installer::choose_comfyui_install_target,
+            comfyui::installer::install_comfyui_portable,
+            comfyui::installer::cancel_comfyui_install,
             comfyui::open_comfyui_window,
             comfyui::complete_comfyui_workflow_save,
             comfyui::management::open_comfyui_settings_window,
@@ -1389,6 +1398,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                comfyui::installer::shutdown_installation(app_handle);
                 comfyui::runtime_console::shutdown_runtime(app_handle);
                 plugin_window::revoke_all_sessions();
                 app_handle

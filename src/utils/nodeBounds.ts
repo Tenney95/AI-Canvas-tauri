@@ -28,6 +28,19 @@ export function nodeHeightForAspectRatio(
   return Math.max(min, Math.round((nodeWidth - 4) / ratio) + 4);
 }
 
+/** 空视频框保持当前宽度并匹配生成比例；自适应或未指定比例不推测尺寸。 */
+export function videoNodeDimensionsForAspectRatio(
+  aspectRatio: string | undefined,
+  nodeWidth = 280,
+): { nodeWidth: number; nodeHeight: number } | null {
+  const parts = aspectRatio?.split(':');
+  if (parts?.length !== 2) return null;
+  const [width, height] = parts.map(Number);
+  const nodeHeight = Math.round(nodeWidth * height / width);
+  if (![width, height, nodeWidth, nodeHeight].every((value) => Number.isFinite(value) && value > 0)) return null;
+  return { nodeWidth, nodeHeight };
+}
+
 /** Follow parentId chain to compute absolute offset from relative position */
 export function getParentOffset(
   node: RFNode<BaseNodeData>,

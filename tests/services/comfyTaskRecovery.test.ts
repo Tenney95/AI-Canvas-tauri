@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from '../../src/store/useAppStore';
 import {
-  cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, registerNodePolling,
-  resumeComfyUINodeTask, resumePendingTasks, savePendingTask,
+  cancelNodePolling, cleanupNodePolling, clearProjectTasks, completeVideoNodeTask, getPendingTasksForProject,
+  pauseVideoNodeTask, prepareVideoNodeGeneration, registerNodePolling, resumeComfyUINodeTask,
+  resumePendingTasks, resumeVideoNodeTask, savePendingTask, VideoPollingPausedError,
 } from '../../src/services/pollManager';
 import {
   cancelComfyUINodeTask, executeComfyUIAudioGenerate, executeComfyUIGenerate, executeComfyUIVideoGenerate,
@@ -26,8 +27,24 @@ const task = {
 const params = { nodeId: 'n1', prompt: 'cat', model: 'comfyui/workflow', provider: 'comfyui', workflowId: 'wf-1' };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const completed = () => json({ 'prompt-1': { status: { completed: true }, outputs: { '9': { images: [{ filename: 'out.png' }] } } } });
+const completedVideo = () => json({ 'prompt-1': { status: { completed: true }, outputs: {
+  '9': { images: [{ filename: 'out.mp4', subfolder: 'video', type: 'output' }], animated: [true] },
+} } });
 const pending = () => getPendingTasksForProject('p1');
 const promptCalls = () => mocks.fetch.mock.calls.filter(([url]) => String(url).endsWith('/prompt'));
+
+function configureVideo() {
+  useAppStore.setState({
+    nodes: [{ id: 'n1', type: 'ai-video', position: { x: 0, y: 0 }, data: {
+      type: 'ai-video', label: 'test', provider: 'comfyui', model: params.model, workflowId: params.workflowId,
+      prompt: params.prompt, seedanceRatio: '9:16', status: 'loading',
+    } }],
+    workflows: [{ id: 'wf-1', name: 'test', category: 'ai-video', createdAt: 1, fileName: 'test.json',
+      fileContent: JSON.stringify({ '9': { class_type: 'SaveVideo', inputs: {} } }),
+    }],
+  });
+  mocks.history.mockImplementation(async () => completedVideo());
+}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -53,6 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cancelNodePolling('n1');
+  clearProjectTasks('p1');
   vi.useRealTimers();
 });
 
@@ -62,12 +80,16 @@ describe('ComfyUI 任务恢复合同', () => {
     ['视频', () => executeComfyUIVideoGenerate(params)],
     ['音频', () => executeComfyUIAudioGenerate(params)],
   ] as const)('%s 查询中断保留任务，继续查询不再次生成', async (kind, generate) => {
+    if (kind === '视频') configureVideo();
     mocks.history.mockRejectedValue(new TypeError('network unavailable'));
-    const result = expect(generate()).rejects.toBeInstanceOf(ComfyPendingError);
+    const result = expect(generate()).rejects.toBeInstanceOf(kind === '视频' ? VideoPollingPausedError : ComfyPendingError);
     await vi.waitFor(() => expect(pending()[0]?.submitted).toBe(true));
     await vi.advanceTimersByTimeAsync(30_000);
     await result;
     expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', comfyRecoveryState: 'disconnected' });
+    if (kind === '视频') {
+      expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', videoTaskState: 'paused', error: undefined });
+    }
     await expect(executeComfyUIGenerate(params)).rejects.toThrow('未确认结束');
     mocks.history.mockResolvedValue(kind === '视频'
       ? json({ 'prompt-1': { status: { completed: true }, outputs: { '9': { images: [{ filename: 'out.mp4' }] } } } })
@@ -76,6 +98,92 @@ describe('ComfyUI 任务恢复合同', () => {
     expect(promptCalls()).toHaveLength(1);
     expect(pending()).toEqual([]);
     expect(useAppStore.getState().nodes[0].data.status).toBe('success');
+  });
+
+  it('远端完成后保留视频任务直到调用方完成本地交付', async () => {
+    configureVideo();
+    const result = await executeComfyUIVideoGenerate(params);
+    expect(result.url).toBe(`${task.baseUrl}/view?filename=out.mp4&subfolder=video&type=output`);
+    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', videoRecoveryState: 'paused' });
+    expect(useAppStore.getState().nodes[0].data.videoUrl).toBeUndefined();
+    await expect(executeComfyUIVideoGenerate(params)).rejects.toThrow('未交付');
+    expect(promptCalls()).toHaveLength(1);
+    useAppStore.getState().updateNodeDataTransient('n1', { videoUrl: 'asset://local.mp4', status: 'success' });
+    completeVideoNodeTask('n1', 'prompt-1');
+    expect(pending()).toEqual([]);
+  });
+
+  it('视频下载失败保留任务，重试后落盘回填且不重复生成', async () => {
+    configureVideo();
+    await executeComfyUIVideoGenerate(params);
+    mocks.persist.mockRejectedValueOnce(new Error('系统拒绝写入项目目录'));
+    await resumeVideoNodeTask('n1');
+    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', videoRecoveryState: 'paused' });
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', videoTaskState: 'paused', error: undefined });
+    expect(useAppStore.getState().nodes[0].data.videoUrl).toBeUndefined();
+
+    mocks.persist.mockResolvedValue({ mediaUrl: 'asset://local.mp4', sourceUrl: 'http://comfy.test/out.mp4', filePath: 'saved.mp4' });
+    await resumeVideoNodeTask('n1');
+    expect(pending()).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ videoUrl: 'asset://local.mp4', filePath: 'saved.mp4', status: 'success' });
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it.each(['项目', '画布 revision'])('视频下载期间%s变化时不回填，保留任务供重试', async (change) => {
+    configureVideo();
+    await executeComfyUIVideoGenerate(params);
+    mocks.persist.mockImplementationOnce(async () => {
+      if (change === '项目') useAppStore.setState({ currentProjectId: 'p2' });
+      else useAppStore.getState().setCanvasRevision(useAppStore.getState().getCurrentRevision() + 1);
+      return { mediaUrl: 'asset://stale.mp4', sourceUrl: 'http://comfy.test/out.mp4' };
+    });
+    await resumeVideoNodeTask('n1');
+    expect(useAppStore.getState().nodes.find((node) => node.id === 'n1')?.data.videoUrl).toBeUndefined();
+    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', videoRecoveryState: 'paused' });
+    useAppStore.setState({ currentProjectId: 'p1' });
+    mocks.persist.mockResolvedValue({ mediaUrl: 'asset://fresh.mp4', sourceUrl: 'http://comfy.test/out.mp4' });
+    await resumeVideoNodeTask('n1');
+    expect(useAppStore.getState().nodes.find((node) => node.id === 'n1')?.data.videoUrl).toBe('asset://fresh.mp4');
+    expect(pending()).toEqual([]);
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it('重开项目不会自动查询待交付视频，新生成前保留独立恢复节点', async () => {
+    configureVideo();
+    await executeComfyUIVideoGenerate(params);
+    const queries = mocks.history.mock.calls.length;
+    await resumePendingTasks('p1');
+    expect(mocks.history).toHaveBeenCalledTimes(queries);
+    expect(useAppStore.getState().nodes[0].data.videoTaskState).toBe('paused');
+    useAppStore.getState().updateNodeDataTransient('n1', { prompt: 'new prompt', seedanceRatio: '16:9' });
+    prepareVideoNodeGeneration('n1');
+    const recovery = useAppStore.getState().nodes.find((node) => node.id !== 'n1')!;
+    expect(pending()[0]).toMatchObject({ nodeId: recovery.id, taskId: 'prompt-1' });
+    expect(recovery.data).toMatchObject({ prompt: 'cat', seedanceRatio: '9:16', videoTaskState: 'paused' });
+    await resumeVideoNodeTask(recovery.id);
+    expect(useAppStore.getState().nodes.find((node) => node.id === recovery.id)?.data.videoUrl).toContain('out.mp4');
+    expect(useAppStore.getState().nodes.find((node) => node.id === 'n1')?.data.videoUrl).toBeUndefined();
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it('ComfyUI 明确失败不转成暂停，取消未确认的视频不自动查询或允许新提交', async () => {
+    configureVideo();
+    await executeComfyUIVideoGenerate(params);
+    mocks.history.mockImplementation(async () => json({ 'prompt-1': { status: { status_str: 'error',
+      messages: [['execution_error', { exception_message: 'video encode failed' }]],
+    } } }));
+    await resumeVideoNodeTask('n1');
+    expect(pending()).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'error', error: expect.stringContaining('video encode failed') });
+
+    savePendingTask({ ...task, nodeType: 'ai-video', videoRecoveryState: 'paused', comfyRecoveryState: 'cancel_pending' });
+    const queries = mocks.history.mock.calls.length;
+    await resumePendingTasks('p1');
+    expect(mocks.history).toHaveBeenCalledTimes(queries);
+    expect(pauseVideoNodeTask('n1', task.taskId)).toBeUndefined();
+    prepareVideoNodeGeneration('n1');
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    await expect(executeComfyUIVideoGenerate(params)).rejects.toThrow('未确认结束');
   });
 
   it('取消请求失败时，原轮询退出不会清理任务；可再次终止', async () => {

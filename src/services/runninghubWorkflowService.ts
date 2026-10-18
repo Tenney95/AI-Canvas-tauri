@@ -22,7 +22,8 @@ export function parseRunningHubId(input: string, kind: 'workflow' | 'app'): stri
   try {
     const url = new URL(value);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !/^(?:www\.)?runninghub\.(?:cn|ai)$/.test(url.hostname)) throw new Error();
-    const match = /^\/(workflow|ai-detail|webapp)\/(\d{1,30})\/?$/.exec(url.pathname);
+    // 官网分享链接可带 /zh-cn/、/en/ 等语言前缀；仍只提取资源类型和字符串 ID。
+    const match = /^\/(?:[a-zA-Z]{2}(?:-[a-zA-Z]{2})?\/)?(workflow|ai-detail|webapp)\/(\d{1,30})\/?$/.exec(url.pathname);
     if (!match || (kind === 'workflow' ? match[1] !== 'workflow' : match[1] === 'workflow')) throw new Error();
     return match[2];
   } catch { throw new Error(`请输入正确的 RunningHub ${kind === 'workflow' ? '工作流' : 'AI 应用'}链接或 ID`); }

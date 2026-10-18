@@ -9,6 +9,8 @@ import type {
   ProviderModelSelection,
 } from '../../../types';
 import { CHAT_API_PROTOCOL_LABELS } from '../../../services/ai/chatApiProtocol';
+import { RUNNINGHUB_API_SITES } from '../../../constants/api';
+import type { RunningHubSiteKeyDrafts } from '../../../types/runninghub';
 
 export const CATEGORY_ORDER: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
 export const VIDEO_RATIO_PRESETS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'];
@@ -20,7 +22,7 @@ export const VIDEO_DURATION_RANGE_MAX = 3600;
 export const PROVIDER_LINKS: Record<string, string> = {
   apimart: 'https://apimart.ai/register?aff=ZnmCKm',
   volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
-  'runninghub-model': 'https://www.runninghub.cn?inviteCode=iadc40jt',
+  'runninghub-model': RUNNINGHUB_API_SITES[0].consoleUrl,
   grsai: 'https://grsai.com/zh/dashboard/api-keys',
   dreamina: 'https://jimeng.jianying.com/ai-tool/home/',
   tavily: 'https://app.tavily.com',
@@ -81,7 +83,7 @@ export interface ProviderConnectionDialogProps {
   onSave: (
     connectionId: string,
     config: ApiProviderConfig,
-    related?: { runninghubWorkflowApiKey?: string; workflowApiDrafts?: import('../../../types/workflowApi').WorkflowApiDraft[] },
+    related?: { runninghubWorkflowApiKey?: string; runninghubSiteKeys?: RunningHubSiteKeyDrafts; workflowApiDrafts?: import('../../../types/workflowApi').WorkflowApiDraft[] },
   ) => Promise<void>;
 }
 

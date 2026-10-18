@@ -44,6 +44,13 @@ function drag(type: DropEvent['payload']['type'], path = '/external/source.mp4')
   driver.onDrag!({ payload: { type, paths: [path], position: { x: 20, y: 30 } } });
 }
 describe('成功导入后的最近使用记录', () => {
+  it('Retina Mac 的文件节点出现在原生逻辑落点，不重复除以屏幕倍率', async () => {
+    vi.stubGlobal('navigator', { platform: 'MacIntel' });
+    window.devicePixelRatio = 2;
+    drag('drop');
+    expect(driver.state.nodes[0].position).toEqual({ x: 20, y: 30 });
+    await vi.waitFor(() => expect(driver.mark).toHaveBeenCalledOnce());
+  });
   it('进入后离开、未实际放下文件时不记录', () => {
     drag('enter'); drag('leave'); expect(driver.mark).not.toHaveBeenCalled(); expect(driver.copy).not.toHaveBeenCalled();
   });

@@ -81,9 +81,9 @@ function elements(tree: unknown, type: unknown): ElementTree[] {
   const element = tree as ElementTree;
   return [...(element.type === type ? [element] : []), ...elements(element.props.children, type)];
 }
-function render() {
+function render(resolveHoverEdge?: (point: { x: number; y: number }) => string) {
   driver.stateIndex = driver.refIndex = driver.memoIndex = driver.effectIndex = 0;
-  const tree = CanvasEdgeHover({ id: edgeProps.id, onDelete, children: <path d="M0,0L500,300" /> });
+  const tree = CanvasEdgeHover({ id: edgeProps.id, onDelete, resolveHoverEdge, children: <path d="M0,0L500,300" /> });
   driver.pending.splice(0).forEach((effect) => effect());
   return { hit: elements(tree, 'g')[0].props as unknown as PointerHandlers, button: elements(tree, 'button')[0] };
 }
@@ -115,6 +115,28 @@ beforeEach(() => {
 afterEach(() => { unmount(); vi.useRealTimers(); });
 
 describe('canvas edge pointer scheduling', () => {
+  it('deletes the nearest hovered line, resolving only after the hover delay or a visible-scissors frame', () => {
+    const resolve = vi.fn(() => 'near');
+    onDelete.mockClear();
+    render(resolve).hit.onMouseEnter({ clientX: 20, clientY: 30 });
+    expect(resolve).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000);
+    const preview = render(resolve);
+    const { hit } = preview;
+    let { button } = preview;
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({ x: 20, y: 30 });
+    (button.props.onClick as (event: unknown) => void)({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(onDelete).toHaveBeenLastCalledWith('near');
+    resolve.mockReturnValue('next-near');
+    for (let i = 0; i < 50; i++) hit.onMouseMove({ clientX: i, clientY: 30 });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    flushFrame();
+    ({ button } = render(resolve));
+    (button.props.onClick as (event: unknown) => void)({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(onDelete).toHaveBeenLastCalledWith('next-near');
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps only the transparent hit path when Canvas owns the shared geometry', () => {
     const tree = CanvasEdgeVisual({ ...edgeProps, baseStroke: false, interactive: true,
       path: ['M10 20L30 40', 20, 30, 10, 10], performanceMode: false, onDelete });

@@ -17,6 +17,7 @@ import { getPythonPluginRuntimeStatus } from '../../services/plugins/pluginRunti
 import { useAppStore } from '../../store/useAppStore';
 import { isExternalDropCaptured, setExternalDropCaptured } from '../../utils/dropCapture';
 import { formatSize } from '../../utils/assetFormat';
+import { nativeDropClientPosition } from '../../utils/nativeDropPosition';
 import { getNodeTypeConfig } from '../../types';
 import type {
   PluginCategory,
@@ -609,9 +610,7 @@ export default function PluginSettings() {
           return;
         }
         const rect = dropZoneRef.current?.getBoundingClientRect();
-        const scale = window.devicePixelRatio || 1;
-        const x = payload.position.x / scale;
-        const y = payload.position.y / scale;
+        const { x, y } = nativeDropClientPosition(payload.position);
         const inside = !!rect && x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
         setDragOver(inside && payload.type !== 'drop' && !busyRef.current);
         if (payload.type !== 'drop' || !inside) return;

@@ -3,6 +3,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import type { RunningHubConnection, RunningHubMediaKind, RunningHubOutput, RunningHubWorkflowManifest } from '../../../types/runninghub';
 import { runningHubFieldValue, runningHubParameterKey, validateRunningHubManifest, isRecord } from '../../runninghubWorkflowService';
 import { runningHubConnection, isRunningHubWorkflow, saveCloudWorkflowOutputs, getCloudWorkflowPersistedOutput } from '../../workflowExecutionService';
+import { runningHubSiteId } from '../../runninghubSiteCredentials';
 import { runningHubRequest, uploadRunningHubMedia, RunningHubRequestError } from './runninghubClient';
 import { pollTask } from '../../pollTask';
 import { cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, registerNodePolling, removePendingTask, savePendingTask, updatePendingTask } from '../../pollManager';
@@ -134,7 +135,7 @@ export async function executeRunningHubWorkflow(params: {
     const nodeInfoList = await buildRunningHubInputs(connection, manifest, params.prompt, params.workflowInputs, params.references, signal);
     if (!fresh()) throw new Error('画布已变化，请重新生成');
     stage('提交任务');
-    if (trackingId && projectId) savePendingTask({ nodeId: trackingId, projectId, nodeType: workflow.category, provider: 'runninghubwf', providerConfigId: manifest.connectionId, taskType: 'runninghub-workflow', taskId: '', submitted: false, runninghubRecoveryState: 'submit_unknown', runninghubOutputNodeIds: manifest.outputNodeIds, runninghubWorkflowId: workflow.id, runninghubMessage: context });
+    if (trackingId && projectId) savePendingTask({ nodeId: trackingId, projectId, nodeType: workflow.category, provider: 'runninghubwf', providerConfigId: manifest.connectionId, taskType: 'runninghub-workflow', taskId: '', submitted: false, runninghubSite: runningHubSiteId(connection.baseUrl), runninghubRecoveryState: 'submit_unknown', runninghubOutputNodeIds: manifest.outputNodeIds, runninghubWorkflowId: workflow.id, runninghubMessage: context });
     submitting = true;
     const response = await runningHubRequest(connection, manifest.kind === 'app' ? '/task/openapi/ai-app/run' : '/task/openapi/create', {
       [manifest.kind === 'app' ? 'webappId' : 'workflowId']: manifest.remoteId,
@@ -176,7 +177,7 @@ export async function cancelRunningHubNodeTask(nodeId: string): Promise<'cancell
   if (!task || task.taskType === 'runninghub-model') return 'local-stopped';
   if (!task.taskId) throw new Error('提交状态未知，请先到 RunningHub 平台确认任务');
   updatePendingTask(nodeId, { runninghubRecoveryState: 'cancel_pending' }, task.taskId);
-  const connection = runningHubConnection(store.config.providers, task.providerConfigId === 'runninghub-model' ? 'runninghub-model' : 'runninghub');
+  const connection = runningHubConnection(store.config.providers, task.providerConfigId === 'runninghub-model' ? 'runninghub-model' : 'runninghub', task.runninghubSite);
   await runningHubRequest(connection, '/task/openapi/cancel', { taskId: task.taskId });
   const status = await runningHubRequest(connection, '/task/openapi/status', { taskId: task.taskId });
   if (['FAILED', 'CANCELED', 'CANCELLED'].includes(String(status.data).toUpperCase())) {

@@ -21,6 +21,47 @@ beforeEach(() => {
 });
 
 describe('pending generation task recovery', () => {
+  it.each([
+    { type: 'source-image', generationType: 'ai-image', field: 'imageUrl', extension: 'png' },
+    { type: 'source-video', generationType: 'ai-video', field: 'videoUrl', extension: 'mp4' },
+    { type: 'source-audio', generationType: 'ai-audio', field: 'audioUrl', extension: 'mp3' },
+  ] as const)('recovers $type into its own media field without changing its canvas type', async ({ type, generationType, field, extension }) => {
+    const url = `https://cdn.example/result.${extension}`;
+    const localUrl = `asset://result.${extension}`;
+    useAppStore.setState((state) => ({
+      config: { ...state.config, providers: { ...state.config.providers,
+        'source-provider': { name: '源节点模型', apiKey: 'test-key', baseUrl: 'https://gateway.example/v1', catalogId: 'custom-openai' } } },
+      nodes: [{ id: 'source-node', type, position: { x: 12, y: 34 },
+        data: { type, role: 'source', label: '原始素材', status: 'loading', assetId: 'asset-1', prompt: '生成' } }],
+    }));
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockResolvedValue({ mediaUrl: localUrl, sourceUrl: url });
+    const history = vi.spyOn(useAppStore.getState(), 'recordOutputHistory').mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'completed', url })));
+    vi.stubGlobal('fetch', fetchMock);
+    savePendingTask({ nodeId: 'source-node', projectId: 'project-1', nodeType: type, provider: 'general',
+      providerConfigId: 'source-provider', taskId: 'existing-task', taskType: 'custom-protocol', submitted: true,
+      protocolPoll: { method: 'GET', url: 'https://gateway.example/v1/tasks/existing-task', intervalMs: 1,
+        statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url' } });
+    expect(getPendingTasksForProject('project-1')[0].nodeType).toBe(generationType);
+    await resumePendingTasks('project-1');
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().nodes[0]).toMatchObject({ id: 'source-node', type, position: { x: 12, y: 34 },
+        data: { type, role: 'source', assetId: 'asset-1', status: 'success', [field]: localUrl } });
+      expect(getPendingTasksForProject('project-1')).toEqual([]);
+    });
+    expect(persist).toHaveBeenCalledWith(url, 'project-1', generationType, '原始素材');
+    expect(history).toHaveBeenCalledWith('source-node', expect.objectContaining({ nodeType: generationType, mediaUrl: localUrl }));
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('reads legacy source-video task records as video tasks while retaining their remote identity', () => {
+    localStorage.setItem('ai_canvas_pending_tasks', JSON.stringify([{ nodeId: 'legacy-video', projectId: 'project-1',
+      nodeType: 'source-video', provider: 'general', providerConfigId: 'original-provider', taskId: 'original-task',
+      taskType: 'custom-protocol', submitted: true, videoRecoveryState: 'paused' }]));
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ nodeId: 'legacy-video', nodeType: 'ai-video',
+      providerConfigId: 'original-provider', taskId: 'original-task', videoRecoveryState: 'paused' });
+  });
+
   function pausedVideo() {
     useAppStore.setState((state) => ({
       config: { ...state.config, providers: { ...state.config.providers,

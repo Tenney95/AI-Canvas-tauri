@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   retired: vi.fn(),
   resolveUniqueDestPath: vi.fn(),
   writeFile: vi.fn(),
+  save: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
@@ -25,7 +26,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   stat: vi.fn(),
   writeFile: mocks.writeFile,
 }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: mocks.save }));
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: vi.fn(),
   invoke: mocks.invoke,
@@ -62,6 +63,7 @@ import {
   resolveProjectOutputPath,
   saveBinaryToProjectData,
   saveDataUrlToProjectData,
+  saveNodeOutputToFile,
 } from '../../src/services/fileService';
 
 function mockMediaDisk(initial: Record<string, Uint8Array> = {}) {
@@ -89,6 +91,20 @@ function mockMediaDisk(initial: Record<string, Uint8Array> = {}) {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe('GitHub 文件另存为', () => {
+  it('仅在下载完整后写盘，原站断线后从加速源重新开始', async () => {
+    mocks.isTauriEnv.mockReturnValue(true);
+    mocks.save.mockResolvedValue('/selected/file.mp4');
+    mocks.writeFile.mockReset().mockResolvedValue(undefined);
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError('connection lost')).mockResolvedValue(new Response('complete'));
+    vi.stubGlobal('fetch', fetcher);
+    const url = 'https://github.com/example/repo/releases/download/v1/video.mp4';
+    await expect(saveNodeOutputToFile({ nodeType: 'ai-video', mediaUrl: url })).resolves.toBe('/selected/file.mp4');
+    expect(fetcher.mock.calls.map(([source]) => source)).toEqual([url, `https://gh-proxy.com/${url}`]);
+    expect(mocks.writeFile).toHaveBeenCalledExactlyOnceWith('/selected/file.mp4', new TextEncoder().encode('complete'));
+  });
+});
 
 describe('downloadUrlAndSave', () => {
   beforeEach(() => {

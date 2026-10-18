@@ -26,7 +26,7 @@ import {
   PROJECT_IMAGE_SIZES,
   PROJECT_VIDEO_ASPECT_RATIOS,
 } from '../../projectSettingsService';
-import { nodeHeightForAspectRatio } from '../../../utils/nodeBounds';
+import { nodeHeightForAspectRatio, videoNodeDimensionsForAspectRatio } from '../../../utils/nodeBounds';
 import { textNodeHeight } from '../../../utils/num';
 import { executeCommand, logOperation } from '../commandRegistry';
 import {
@@ -36,6 +36,7 @@ import {
 } from '../toolRegistry';
 import { listConfiguredModels } from './appTools';
 import { normalizeAiAppReference } from '../../aiApps/aiAppSchema';
+import { findDramaAsset, preferDramaLibraryReferences, preferredDramaMentionForNode } from '../../dramaAssetPrompt';
 
 const NODE_TYPES: NodeType[] = [
   'ai-text',
@@ -185,6 +186,7 @@ interface CreateNodesInput {
     prompt?: string;
     content?: string;
     model?: string;
+    dramaAssetId?: string;
     aspectRatio?: string;
     imageSize?: string;
     batchCount?: number;
@@ -512,6 +514,7 @@ function truncateText(value: string | undefined, limit = DETAIL_TEXT_LIMIT): {
  */
 function describeNode(node: Node<BaseNodeData>): Record<string, unknown> {
   const data = node.data;
+  const store = useAppStore.getState();
   let aiApp: Record<string, unknown> | undefined;
   if (node.type === 'ai-app') {
     try {
@@ -536,6 +539,9 @@ function describeNode(node: Node<BaseNodeData>): Record<string, unknown> {
     type: node.type,
     label: data.label,
     displayLabel: data.displayLabel || data.fileName || data.label,
+    dramaAssetId: data.dramaAssetId,
+    dramaAssetKind: data.dramaAssetKind,
+    preferredMention: preferredDramaMentionForNode(node.id, store.nodes, store.dramaAssets, store.globalCharacters),
     role: data.role,
     status: data.status ?? 'idle',
     position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
@@ -708,6 +714,12 @@ async function executeCanvasCommand(
  */
 function getNodeDimensions(input: CreateNodeInput): { width: number; height: number } {
   if (input.type === 'ai-shotlist') return { width: 800, height: 400 };
+  if (input.type === 'ai-video') {
+    const dimensions = videoNodeDimensionsForAspectRatio(input.aspectRatio, DEFAULT_NODE_WIDTH);
+    return dimensions
+      ? { width: dimensions.nodeWidth, height: dimensions.nodeHeight }
+      : { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
+  }
   if (input.aspectRatio && VISUAL_NODE_TYPES.has(input.type)) {
     return {
       width: DEFAULT_NODE_WIDTH,
@@ -872,6 +884,7 @@ function createCanvasNode(
   const isSource = isSourceNodeType(type) || Boolean(input.content?.trim());
   const prompt = isSourceNodeType(type) && !input.content ? undefined : input.prompt?.trim();
   const dimensions = getNodeDimensions(input);
+  const dramaAsset = input.dramaAssetId ? findDramaAsset(useAppStore.getState().dramaAssets, input.dramaAssetId) : undefined;
   return {
     id,
     type,
@@ -882,6 +895,7 @@ function createCanvasNode(
       role: isSource ? 'source' : 'generator',
       ...(body ? { output: body } : {}),
       ...(prompt ? { prompt } : {}),
+      ...(dramaAsset ? { dramaAssetId: dramaAsset.id, dramaAssetKind: dramaAsset.kind } : {}),
       ...(input.imageSize !== undefined ? { imageSize: input.imageSize } : {}),
       ...(input.batchCount !== undefined ? { batchCount: input.batchCount } : {}),
       ...(type === 'ai-video' ? videoResolutionPatch(input) : {}),
@@ -1043,7 +1057,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
       description: [
         '在画布上原子创建一个或多个节点；不会自动运行节点模型。',
         '布局按数据流从左向右：上游素材放左、下游生成或汇总节点放右；右出左入，节点之间建议预留至少 80 画布单位。',
-        'prompt 里可写 @{nodeId:label} 或 @drama{assetId:name} 引用已有节点输出与资产库设定；节点引用会在创建时自动连线，生成时自动展开，不要再重复调用 canvas_connect_nodes。',
+        '角色、场景和道具优先使用 drama_asset_list/get 返回的 @drama 库引用，不为库引用创建连线。只有未入库素材和真实生成依赖使用 @{nodeId:label}；节点引用会自动连线，不要重复连接。MCP 会把能唯一匹配库内同一张图片的节点引用转为精确库引用，保持 Picture 顺序。',
+        '为已有资产新建参考图时传 dramaAssetId（仅项目 ai-image），生成成功后自动回填库条目；已有图用 drama_reference_image_add 绑定。先完成绑图再创建下游，不能把只有文字设定的库条目当图片。',
         'type 按这个节点最终要产出什么来选，不要因为内容是文字描述就一律建文本节点：',
         '产物是画面的（角色设定图、场景图、道具图、关键帧、单张分镜）用 ai-image，把画面描述写进 prompt；',
         '产物是镜头的用 ai-video，配乐旁白用 ai-audio，多宫格图片也用 ai-image，镜头表用 ai-shotlist。',
@@ -1056,7 +1071,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         '直接落进节点正文，建完就能看见、能被下游 @{nodeId:label} 引用，不需要再跑模型；',
         'prompt 是给模型的生成指令（“把这集拆成镜头表”），节点正文会留空，等用户点生成才有内容。',
         '你已经写出成品文字时一律放 content；放进 prompt 只会让节点显示空白，引用它也只能拿到空内容。',
-        '多图视频 prompt 须按 Picture 顺序写入对应图片节点的 @{nodeId:label} 引用；只有连线不能指定 Picture 顺序。视频 aspectRatio 同时设置实际生成比例。',
+        '多图视频 prompt 须按 Picture 顺序写入对应图片节点的 @{nodeId:label} 引用；只有连线不能指定 Picture 顺序。视频 aspectRatio 同时设置实际生成比例和空节点框尺寸，省略时继承项目视频比例；自适应比例不推测尺寸。',
         '视觉节点要按画面内容给 aspectRatio，不要整批用同一个比例：',
         '人物立绘、定妆图用 3:4，场景板、镜头画面、分镜用 16:9，道具、图标、材质用 1:1，竖屏短视频用 9:16，宽银幕气氛图用 21:9；',
         '项目已经定了画幅（如剧本写明 16:9）时，镜头类节点跟随项目画幅，只有人物、道具这类单体参考图才另选比例。',
@@ -1082,6 +1097,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
                 content: { type: 'string', maxLength: 40000 },
                 model: { type: 'string', minLength: 1, maxLength: 240,
                   description: '可用模型 ID；先用 app_get_state 查询，工作流 ID 会正确绑定到节点。' },
+                dramaAssetId: { type: 'string', minLength: 1, maxLength: 160,
+                  description: '仅 ai-image：已有项目人物/场景/道具 ID；新节点作为其参考图，生成后自动回填资产库。不是提示词输入引用。' },
                 aspectRatio: { type: 'string', enum: ASPECT_RATIOS },
                 imageSize: { type: 'string', enum: [...PROJECT_IMAGE_SIZES] },
                 batchCount: { type: 'integer', minimum: 1, maximum: MAX_IMAGE_BATCH_COUNT },
@@ -1129,6 +1146,12 @@ export function registerCanvasAgentTools(): Array<() => void> {
           const message = `第 ${invalidMedia.index + 1} 个节点：${invalidMedia.issue}`;
           return { status: 'error', summary: message, modelContent: message };
         }
+        const invalidAsset = input.nodes.find((node) => node.dramaAssetId !== undefined
+          && (node.type !== 'ai-image' || !findDramaAsset(useAppStore.getState().dramaAssets, node.dramaAssetId)));
+        if (invalidAsset) {
+          const message = 'dramaAssetId 只允许 ai-image 关联已存在的项目人物、场景或道具；请先查询资产库';
+          return { status: 'error', summary: message, modelContent: message };
+        }
         // 媒体节点的 output 存的是本地路径或 URL，写正文进去会直接建出一个坏节点
         const nonText = input.nodes.filter(
           (node) => node.content?.trim() && !TEXT_OUTPUT_NODE_TYPES.has(node.type),
@@ -1137,8 +1160,20 @@ export function registerCanvasAgentTools(): Array<() => void> {
           const message = `content 只能用于文本类节点，${nonText.length} 个节点不是文本节点`;
           return { status: 'error', summary: message, modelContent: message };
         }
-        const positions = resolveCreateNodePositions(context, input.nodes);
-        const nodes = input.nodes.map((nodeInput, index) => createCanvasNode(
+        const projectRatio = useAppStore.getState().projects
+          .find((project) => project.id === context.projectId)?.settings?.generation?.videoAspectRatio;
+        // 布局与落库共用最终视频比例，不能等插入 Store 后才补项目默认值。
+        const referenceState = useAppStore.getState();
+        const mcp = context.conversationId === `mcp-control-${context.projectId}`;
+        const nodeInputs = input.nodes.map((node) => ({
+          ...node,
+          ...(node.type === 'ai-video' && node.aspectRatio === undefined && projectRatio ? { aspectRatio: projectRatio } : {}),
+          ...(mcp && node.prompt && !isSourceNodeType(node.type) && !node.content?.trim()
+            ? { prompt: preferDramaLibraryReferences(node.prompt, referenceState.nodes,
+              referenceState.dramaAssets, referenceState.globalCharacters) } : {}),
+        }));
+        const positions = resolveCreateNodePositions(context, nodeInputs);
+        const nodes = nodeInputs.map((nodeInput, index) => createCanvasNode(
           nodeInput,
           index,
           positions[index],
@@ -1173,6 +1208,11 @@ export function registerCanvasAgentTools(): Array<() => void> {
           const explicit = Object.fromEntries(explicitKeys
             .filter((key) => node.data[key] !== undefined)
             .map((key) => [key, node.data[key]])) as Partial<BaseNodeData>;
+          // 显式自适应也要恢复创建时的框，不能遗留项目固定比例产生的中间尺寸。
+          if (node.data.type === 'ai-video') {
+            explicit.nodeWidth = node.data.nodeWidth;
+            explicit.nodeHeight = node.data.nodeHeight;
+          }
           if (Object.keys(explicit).length) store.updateNodeDataTransient(node.id, explicit);
         }
         useAppStore.getState().incrementRevision();
@@ -1192,6 +1232,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
               type: node.type,
               label: node.data.label,
               position: node.position,
+              ...(node.data.dramaAssetId ? { dramaAssetId: node.data.dramaAssetId, dramaAssetKind: node.data.dramaAssetKind } : {}),
             })),
             edges: edgePlan.edges.map((edge) => ({
               id: edge.id,
@@ -1224,6 +1265,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
       description: [
         '批量更新匹配节点：名称、提示词、正文内容、位置、尺寸、生成模型和生成参数。',
         'label 同步已有文件名显示别名，但不重命名磁盘文件或改变媒体路径。',
+        '角色、场景、道具优先使用库内 @drama 引用；canvas_query(detail=true) 的 preferredMention 给出同图的精确库引用。MCP 更新 prompt 时自动转换能唯一匹配的同图节点引用，不改既有连线；引用明确的镜头输入或分镜单格仍保留节点。',
+        '视频 aspectRatio 同步实际生成比例；固定比例按当前宽度重算空节点高度（同时传 width 时使用新宽度，优先于 height），已有成片保持真实视频框，自适应不改框。',
         '视频节点的 videoLongSide 是本地工作流长边像素，videoResolution 是 API 档位（旧版数字字符串会转长边像素）；videoDuration 是实际生成秒数。',
         '音频节点可设置语音音色/格式/速度、描述式语音参数及音乐时长/BPM；工作流专属参数继续由工作流配置管理。',
         'content 改写节点正文，只能用于文本类节点（ai-text / ai-markdown / source-text / comment）。',
@@ -1287,7 +1330,10 @@ export function registerCanvasAgentTools(): Array<() => void> {
 
         const patch: Partial<BaseNodeData> = {
           ...(input.label !== undefined ? { label: input.label.trim() } : {}),
-          ...(input.prompt !== undefined ? { prompt: input.prompt.trim() } : {}),
+          ...(input.prompt !== undefined ? { prompt: context.conversationId === `mcp-control-${context.projectId}`
+            ? preferDramaLibraryReferences(input.prompt.trim(), useAppStore.getState().nodes,
+              useAppStore.getState().dramaAssets, useAppStore.getState().globalCharacters)
+            : input.prompt.trim() } : {}),
           ...(input.width !== undefined ? { nodeWidth: Math.round(input.width) } : {}),
           ...(input.height !== undefined ? { nodeHeight: Math.round(input.height) } : {}),
           ...(input.aspectRatio !== undefined ? { aspectRatio: input.aspectRatio } : {}),
@@ -1347,7 +1393,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         // updateNodesDataBatch 自带一次 commitToHistory；只移动时才需要单独提交历史
         if (Object.keys(patch).length > 0) store.updateNodesDataBatch(targetIds, patch);
         else store.commitToHistory();
-        // 视频参数面板读取 seedanceRatio，画布框尺寸才读取 aspectRatio。
+        // 视频参数面板读取 seedanceRatio，Store 在同一次写入中联动空视频框。
         // 复用同一次历史快照，且不把视频参数写入混合目标中的图片节点。
         if (input.aspectRatio !== undefined) {
           for (const node of targets) {

@@ -26,6 +26,7 @@ import {
   writeAppSecret,
 } from '../../src/services/providerSecretService';
 import { enqueueConfigPersistence } from '../../src/services/configPersistenceQueue';
+import { buildRunningHubSiteProviders, runningHubCredentialId } from '../../src/services/runninghubSiteCredentials';
 
 function config(providers: Record<string, Record<string, unknown>>, extra: Record<string, unknown> = {}) {
   return { theme: 'dark', providers, ...extra };
@@ -57,6 +58,24 @@ beforeEach(() => {
 });
 
 describe('provider secret persistence', () => {
+  it('RunningHub 两站四个密钥独立落原生，入口不另存或回读旧共享凭据', async () => {
+    const siteKeys = { cn: { modelKey: 'cn-model-fixture', workflowKey: 'cn-workflow-fixture' }, ai: { modelKey: 'ai-model-fixture', workflowKey: 'ai-workflow-fixture' } };
+    const providers = buildRunningHubSiteProviders({}, { name: 'RH', apiKey: '', baseUrl: 'https://www.runninghub.ai/openapi/v2' }, siteKeys);
+    const { config: stripped } = await stripConfigSecrets({ providers });
+    for (const key of Object.values(siteKeys).flatMap((site) => Object.values(site))) expect(JSON.stringify(stripped)).not.toContain(key);
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_set')).toHaveLength(4);
+    expect(tauriMocks.keychain.has('provider/runninghub-model')).toBe(false);
+    const restored = await restoreConfigSecrets(stripped);
+    expect(restored.config).toMatchObject({ providers: { 'runninghub-model': { apiKey: siteKeys.ai.modelKey }, runninghub: { apiKey: siteKeys.ai.workflowKey } } });
+    const saved = structuredClone(stripped) as { providers: Record<string, Record<string, unknown>> };
+    delete saved.providers[runningHubCredentialId('ai', 'runninghub-model')];
+    tauriMocks.keychain.set('provider/runninghub-model', 'old-shared-fixture');
+    tauriMocks.invoke.mockClear();
+    const missing = await restoreConfigSecrets(saved);
+    expect(missing.config).toMatchObject({ providers: { 'runninghub-model': { apiKey: '' } } });
+    expect(tauriMocks.invoke.mock.calls.some(([, args]) => (args as { key?: string }).key === 'provider/runninghub-model')).toBe(false);
+  });
+
   it('persists and restores independent CCC group credentials without copying keys into configuration', async () => {
     const raw = config({
       'cccapi-free': { name: 'CCC', catalogId: 'cccapi', cccGroup: 'CCC生图白嫖', apiKey: 'free-fixture' },

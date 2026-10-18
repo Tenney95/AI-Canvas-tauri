@@ -1,4 +1,50 @@
+import { useEffect, useState } from 'react';
 import { useAppStore } from '../../../store/useAppStore';
+import { getGenerationNodeType } from '../../../utils/nodeGeneration';
+import { useT } from '../../../i18n';
+
+function GenerationWaitTime({ nodeId }: { nodeId: string }) {
+  const t = useT();
+  const projectId = useAppStore((state) => state.currentProjectId);
+  const startedAt = useAppStore((state) => {
+    const data = state.nodes.find((node) => node.id === nodeId)?.data;
+    const type = getGenerationNodeType(data?.type);
+    if (data?.status !== 'loading' || (type !== 'ai-image' && type !== 'ai-video')) return undefined;
+    const value = data.generationStartedAt;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+  });
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (startedAt === undefined) return;
+    // 兼容更新前已经运行的任务，从首次可确认的等待时间开始记录。
+    if (startedAt === 0) {
+      const state = useAppStore.getState();
+      const node = state.nodes.find((item) => item.id === nodeId);
+      if (state.currentProjectId === projectId && node?.data.status === 'loading') {
+        state.updateNodeDataTransient(nodeId, { status: 'loading' });
+      }
+      return;
+    }
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [nodeId, projectId, startedAt]);
+
+  if (startedAt === undefined) return null;
+  const seconds = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+  const hours = Math.floor(seconds / 3600);
+  const duration = [
+    ...(hours > 0 ? [String(hours)] : []),
+    String(Math.floor(seconds / 60) % 60).padStart(2, '0'),
+    String(seconds % 60).padStart(2, '0'),
+  ].join(':');
+
+  return (
+    <span role="timer" aria-live="off" className="text-[11px] tabular-nums text-canvas-text-muted">
+      {t('已等待 {duration}', { duration })}
+    </span>
+  );
+}
 
 interface NodeGenerationProgressProps {
   nodeId: string;
@@ -25,6 +71,7 @@ export default function NodeGenerationProgress({
         <div className="generation-progress-overlay">
           <div className="spinner large" />
           <span className="text-xs">{fallbackLabel}</span>
+          <GenerationWaitTime nodeId={nodeId} />
         </div>
       );
     }
@@ -32,6 +79,7 @@ export default function NodeGenerationProgress({
       <div className="node-preview-loading">
         <div className={compactSpinner ? 'spinner' : 'spinner large'} />
         <span>{fallbackLabel}</span>
+        <GenerationWaitTime nodeId={nodeId} />
       </div>
     );
   }
@@ -62,6 +110,7 @@ export default function NodeGenerationProgress({
       >
         <div className="ui-progress__bar" style={determinate ? { width: `${progress.percent}%` } : undefined} />
       </div>
+      <GenerationWaitTime nodeId={nodeId} />
     </div>
   );
 }

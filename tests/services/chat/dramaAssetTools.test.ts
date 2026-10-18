@@ -94,6 +94,29 @@ describe('drama asset agent tools', () => {
     expect(JSON.parse(read.modelContent).referenceImages[0]).toMatchObject({ id: reference.referenceImageId, isPrimary: true });
   });
 
+  it.each(['scene', 'prop'] as const)('binds an already generated %s image without copying media or changing the canvas', async (kind) => {
+    registerDramaAssetAgentTools();
+    mediaNodes();
+    const result = await getAgentTool('drama_asset_upsert')!.execute(context(), { kind, name: '参考资产' });
+    const assetId = JSON.parse(result.modelContent).id;
+    const before = useAppStore.getState().nodes;
+    const tool = getAgentTool('drama_reference_image_add')!;
+    const input = { assetId, nodeId: 'image-1' };
+    const bound = await tool.execute(context(), input);
+    expect(bound.status).toBe('success');
+    expect(JSON.parse(bound.modelContent)).toMatchObject({ assetId, kind, imageReady: true, reused: false,
+      mention: `@drama{${assetId}:参考资产}` });
+    expect(useAppStore.getState().nodes).toBe(before);
+    const read = await getAgentTool('drama_asset_get')!.execute(context(), { assetId });
+    expect(JSON.parse(read.modelContent)).toMatchObject({ imageNodeId: 'image-1', imageReady: true });
+    expect(JSON.parse((await tool.execute(context(), input)).modelContent).reused).toBe(true);
+    expect(bound.modelContent + read.modelContent).not.toContain('asset:///');
+    expect((await getAgentTool('drama_voice_add')!.execute(context(), { assetId, nodeId: 'audio-1' })).status).toBe('error');
+    useAppStore.getState().syncDramaAssetImageFromNode('image-1', 'updated.png');
+    const list = kind === 'scene' ? useAppStore.getState().dramaAssets.scenes : useAppStore.getState().dramaAssets.props;
+    expect(list[0].imageUrl).toBe('updated.png');
+  });
+
   it.each(['drama_voice_add', 'drama_reference_image_add'])('reuses %s media and rejects wrong types, missing roles and stale projects', async (id) => {
     registerDramaAssetAgentTools();
     mediaNodes();
@@ -144,6 +167,9 @@ describe('drama asset agent tools', () => {
     const media = id === 'drama_voice_add' ? card.voiceClips : card.referenceImages;
     expect(media).toHaveLength(1);
     expect(media?.[0].sourceNodeId).toBeUndefined();
+    const read = await getAgentTool('drama_asset_get')!.execute(context(), { scope: 'global', assetId: 'global-1' });
+    expect(JSON.parse(read.modelContent).mention).toBe('@drama{global/global-1:沈砚}');
+    expect(JSON.parse((await tool.execute(context(), input)).modelContent).mention).toContain('@drama{global/global-1#');
     expect(useAppStore.getState().dramaAssets.characters[0].referenceImages).toBeUndefined();
     save.mockResolvedValueOnce(false);
     expect((await tool.execute(context(), input)).status).toBe('error');
@@ -169,6 +195,7 @@ describe('drama asset agent tools', () => {
       mention: '@drama{char_1:沈砚}',
       voiceClipCount: 1,
       hasVoice: true,
+      imageReady: false,
     })]);
     unregisters.forEach((unregister) => unregister());
   });

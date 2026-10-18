@@ -634,18 +634,6 @@
 .prompt-btn.is-configured:hover {
   color: var(--brand-light);
 }
-.style-selector-btn.has-style {
-  color: var(--brand-light);
-  background: var(--brand-alpha-15);
-}
-.style-selector-btn.has-style:hover {
-  color: var(--brand-light);
-  background: var(--brand-alpha-30);
-}
-.style-selector-btn.style-active {
-  color: var(--brand-light);
-  background: var(--brand-alpha-15);
-}
 
 /* ModalOverlay 面板尺寸 */
 .style-picker-panel {
