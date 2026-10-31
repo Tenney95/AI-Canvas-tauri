@@ -5,9 +5,5 @@ set -e
 node scripts/sync-version.js
 git add README.md
 
-# 只检查本次暂存的前端源码：全量 lint 约 12s，按文件检查才能常驻提交流程。
-# 完整门禁（lint + 类型 + 测试 + 构建）见 npm run ci。
-staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx')
-if [ -n "$staged" ]; then
-  echo "$staged" | xargs npx eslint --max-warnings=0
-fi
+# 与 GitHub Frontend quality 使用同一入口；任一步失败即阻止提交。
+npm run ci

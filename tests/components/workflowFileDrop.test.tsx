@@ -53,6 +53,7 @@ async function setup(platform = 'Win32') {
   vi.doMock('../../src/services/fileService', () => ({ readBinaryFile: read, copyFileToProjectData: vi.fn(), arrayBufferToBase64: vi.fn() }));
   const store = {
     workflows: [], workflowPanelOpen: true, workflowPanelSource: 'comfyui', config: { comfyServers: [] },
+    currentProjectId: 'project-a', getCurrentRevision: () => 1, markAssetUsed: vi.fn(),
     addNode: vi.fn(), pasteExternalFromDataTransfer: vi.fn(), showToast: vi.fn(),
   };
   vi.doMock('../../src/store/useAppStore', () => ({

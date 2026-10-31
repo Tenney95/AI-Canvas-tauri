@@ -268,11 +268,24 @@ describe('分集切换', () => {
     // 记忆按剧集加载
     expect(state.loadProjectMemoriesForProject).toHaveBeenCalledWith('series');
 
+    // 切换前已把共享库保存到剧集；同一份库再次保存时应复用成功基线。
+    const switchingRecords = fileMocks.saveProject.mock.calls.map((call) => call[0]);
+    expect(switchingRecords.find((record) => record.id === 'series')).toMatchObject({ dramaAssets });
     fileMocks.saveProject.mockClear();
     await useAppStore.getState().saveCurrentProjectSilent();
     const records = fileMocks.saveProject.mock.calls.map((call) => call[0]);
-    expect(records.find((record) => record.id === 'ep-2')?.dramaAssets).toBeUndefined();
-    expect(records.find((record) => record.id === 'series')).toMatchObject({ dramaAssets });
+    const episodeRecord = records.find((record) => record.id === 'ep-2');
+    expect(episodeRecord).toBeDefined();
+    expect(episodeRecord?.dramaAssets).toBeUndefined();
+    expect(records.find((record) => record.id === 'series')).toBeUndefined();
+
+    // 修改共享库后必须再次落盘，不能让去重跳过真实更新。
+    const changedLibrary = library('林夏与列车长');
+    useAppStore.setState({ dramaAssets: changedLibrary });
+    fileMocks.saveProject.mockClear();
+    await useAppStore.getState().saveCurrentProjectSilent();
+    const changedRecords = fileMocks.saveProject.mock.calls.map((call) => call[0]);
+    expect(changedRecords.find((record) => record.id === 'series')).toMatchObject({ dramaAssets: changedLibrary });
   });
 
   it('打开剧集项目等于打开它的第一集', async () => {

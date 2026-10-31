@@ -146,8 +146,8 @@ const canvas = {
   '全景': 'Panorama',
 
   // ── MultiSelectToolbar ──
-  '选中的节点中没有可执行的（需要配置模型且有 prompt）':
-    'No executable nodes selected (requires a configured model and a prompt)',
+  '选中的节点暂不可执行，请检查模型、提示词或工作流配置':
+    'The selected nodes cannot run yet. Check the model, prompt, or workflow configuration.',
   '{count} 个成功': '{count} succeeded',
   '{count} 个失败': '{count} failed',
   '批量生成完成：{result}': 'Batch generation finished: {result}',
