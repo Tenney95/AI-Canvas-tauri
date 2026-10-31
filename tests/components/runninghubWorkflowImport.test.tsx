@@ -50,7 +50,7 @@ function elements(value: unknown): Element[] {
   const element = value as Element;
   return [element, ...elements(element.props.children)];
 }
-function renderEditor(editing: WorkflowDefinition, onSaved = vi.fn()) {
+function renderEditor(editing?: WorkflowDefinition, onSaved = vi.fn()) {
   driver.active = true; driver.cursor = 0;
   return elements(RunningHubWorkflowImport({ kind: 'app', editing, onSaved }));
 }
@@ -191,5 +191,33 @@ describe('云工作流参数界面', () => {
     expect(driver.update).not.toHaveBeenCalled();
     expect(driver.add).not.toHaveBeenCalled();
     expect(renderEditor(editing).find((element) => element.props.role === 'status')?.props.children).toBe('模式 不在允许的选项中');
+  });
+  it('编辑目标删除后保留未保存草稿，显式添加时使用新 ID 而非更新旧记录', async () => {
+    const onSaved = vi.fn();
+    const editor = renderEditor(workflow, onSaved);
+    const nameInput = editor.find((element) => element.type === 'input' && element.props.value === workflow.name)!;
+    (nameInput.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: '重新添加的音频工作流' } });
+    const fields = editor.find((element) => element.type === RunningHubParameterFields && (element.props.parameters as RunningHubParameter[])[0].fieldName === 'count')!;
+    (fields.props.onChange as (values: Record<string, string>) => void)({ '3::count': '2' });
+
+    const deletedEditor = renderEditor(undefined, onSaved);
+    expect(deletedEditor.some((element) => element.props.children === '保存修改')).toBe(false);
+    expect(deletedEditor.some((element) => element.type === 'input' && element.props.value === '重新添加的音频工作流')).toBe(true);
+    expect(driver.add).not.toHaveBeenCalled();
+    expect(driver.update).not.toHaveBeenCalled();
+    const save = deletedEditor.find((element) => element.type === 'button' && element.props.children === '添加云工作流')!;
+    (save.props.onClick as () => void)();
+    await Promise.resolve();
+
+    expect(driver.update).not.toHaveBeenCalled();
+    expect(driver.add).toHaveBeenCalledOnce();
+    const added = driver.add.mock.calls[0][0] as WorkflowDefinition;
+    expect(added.id).toBeTruthy();
+    expect(added.id).not.toBe(workflow.id);
+    expect(added).toMatchObject({
+      name: '重新添加的音频工作流', category: 'ai-audio', adapterType: 'runninghub',
+      runninghub: { ...workflow.runninghub!, parameters: workflow.runninghub!.parameters.map((field) => field.fieldName === 'count' ? { ...field, defaultValue: 2 } : field) },
+    });
+    expect(onSaved).toHaveBeenCalledOnce();
   });
 });

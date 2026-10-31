@@ -413,6 +413,8 @@ export default function WorkflowPanel() {
   const sourceWorkflows = workflows.filter((workflow) => importSource === 'comfyui'
     ? !workflow.adapterType || workflow.adapterType === 'comfyui'
     : workflow.adapterType === 'runninghub' && workflow.runninghub?.kind === importSource);
+  // 删除后只撤销编辑目标；保留下方草稿 key，避免清空尚未保存的名称和参数。
+  const cloudEditTarget = sourceWorkflows.find((workflow) => workflow.id === editingCloud?.id);
   const workflowsByCategory = CATEGORIES
     .filter((cat) => listFilter === 'all' || cat.value === listFilter)
     .map((cat) => ({
@@ -454,7 +456,7 @@ export default function WorkflowPanel() {
             <option value="comfyui">{t("ComfyUI 工作流")}</option><option value="workflow">{t("RunningHub 云工作流")}</option><option value="app">{t("RunningHub AI 应用")}</option>
           </Select></label>
           <div className="wf-section-rule" />
-          {importSource !== 'comfyui' ? <RunningHubWorkflowImport key={`${importSource}:${editingCloud?.id ?? 'new'}`} kind={importSource} editing={editingCloud?.runninghub?.kind === importSource ? editingCloud : undefined} onSaved={() => { setEditingCloud(undefined); showToast('已保存云工作流', 'success'); }} /> : <>
+          {importSource !== 'comfyui' ? <RunningHubWorkflowImport key={`${importSource}:${editingCloud?.id ?? 'new'}`} kind={importSource} editing={cloudEditTarget} onSaved={() => { setEditingCloud(undefined); showToast('已保存云工作流', 'success'); }} /> : <>
           {/* Name */}
           <div className="wf-field">
             <label className="wf-label">{t("工作流名称")}</label>
