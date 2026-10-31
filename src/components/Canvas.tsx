@@ -65,6 +65,7 @@ import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
 import { useCanvasSecondaryClickMenu } from '../hooks/useCanvasSecondaryClickMenu';
 import { useCanvasLongPressRadialMenu } from '../hooks/useCanvasLongPressRadialMenu';
 import { useAppStore } from '../store/useAppStore';
+import { createFrameCoalescer } from '../utils/frameCoalescer';
 import { createNodeDuplicateDrag, filterHiddenCanvasElements, isBatchConnectableNode, isCanvasConnectionValid } from '../store/store.nodes';
 import {
   createCanvasEdgeProjection,
@@ -1355,13 +1356,8 @@ function CanvasInner({ onReady }: CanvasProps) {
     (changes: NodeChange<RFNode<BaseNodeData>>[]) => {
       const currentNodes = useAppStore.getState().nodes;
       const hydratedChanges = hydrateCanvasNodeChanges(changes, currentNodes);
-      const lockedNodeIds = new Set(
-        currentNodes
-          .filter((node) => node.draggable === false)
-          .map((node) => node.id),
-      );
       const unlockedChanges = hydratedChanges.filter(
-        (change) => change.type !== 'position' || !lockedNodeIds.has(change.id),
+        (change) => change.type !== 'position' || getCanvasNodeById(currentNodes, change.id)?.draggable !== false,
       );
       if (unlockedChanges.length === 0) return;
 
@@ -1447,11 +1443,9 @@ function CanvasInner({ onReady }: CanvasProps) {
    */
   const findShotlistDropHit = useCallback((
     node: RFNode,
-    clientX: number,
-    clientY: number,
+    stack: readonly Element[],
   ): HTMLElement | null => {
     if (!SHOTLIST_FRAME_SOURCE_TYPES.includes(node.type ?? '')) return null;
-    const stack = document.elementsFromPoint(clientX, clientY);
     for (const el of stack) {
       const shotlist = el.closest<HTMLElement>('.shotlist-node');
       if (!shotlist) continue;
@@ -1466,11 +1460,9 @@ function CanvasInner({ onReady }: CanvasProps) {
   // 按鼠标位置命中宫格节点与真实空格，兼容缩放和非均匀自定义宫格。
   const findStoryboardDropHit = useCallback((
     node: RFNode,
-    clientX: number,
-    clientY: number,
+    stack: readonly Element[],
   ): { storyboard: HTMLElement; emptyCell: HTMLElement | null } | null => {
     if (!STORYBOARD_CELL_SOURCE_TYPES.includes(node.type ?? '')) return null;
-    const stack = document.elementsFromPoint(clientX, clientY);
     for (const el of stack) {
       const storyboard = el.closest<HTMLElement>('.storyboard-node');
       if (!storyboard) continue;
@@ -1485,8 +1477,11 @@ function CanvasInner({ onReady }: CanvasProps) {
     return null;
   }, []);
 
-  const handleNodeDrag = useCallback(
-    (e: React.MouseEvent, node: RFNode) => {
+  const updateDragPreview = useCallback(
+    ({ clientX, clientY, node: draggedNode, projectId }: { clientX: number; clientY: number; node: RFNode; projectId: string | null }) => {
+      const state = useAppStore.getState();
+      if (state.currentProjectId !== projectId || !getCanvasNodeById(state.nodes, draggedNode.id)) return;
+      let node = draggedNode;
       if (duplicateDrag.current?.sourceId === node.id) {
         const clone = duplicateDrag.current.getNode();
         if (!clone) return;
@@ -1496,9 +1491,10 @@ function CanvasInner({ onReady }: CanvasProps) {
         node as RFNode<BaseNodeData>,
         useAppStore.getState().nodes,
       );
+      const stack = node.type === 'group' ? [] : document.elementsFromPoint(clientX, clientY);
       const folder = node.type === 'group'
         ? null
-        : document.elementsFromPoint(e.clientX, e.clientY)
+        : stack
           .map((el) => el.closest<HTMLElement>('.canvas-group-folder'))
           .find((el): el is HTMLElement => el != null) ?? null;
       if (folder !== folderDropTarget.current) {
@@ -1512,7 +1508,7 @@ function CanvasInner({ onReady }: CanvasProps) {
         }
       }
 
-      const hit = findStoryboardDropHit(node, e.clientX, e.clientY);
+      const hit = findStoryboardDropHit(node, stack);
       const cell = hit?.emptyCell ?? null;
       if (cell !== sbDropTarget.current) {
         clearSbDropTarget();
@@ -1521,7 +1517,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       // 进入宫格节点后隐藏真实节点；空格上倾斜表示可放置，占用区域保持水平。
       const url = (liveNode.data?.imageUrl || liveNode.data?.thumbnailUrl) as string | undefined;
       if (hit && url) {
-        setDropGhost({ url, x: e.clientX, y: e.clientY, canDrop: cell != null });
+        setDropGhost({ url, x: clientX, y: clientY, canDrop: cell != null });
         if (ghostNodeId.current !== node.id) {
           clearGhostNodeHidden();
           document.querySelector(`.react-flow__node[data-id="${node.id}"]`)?.classList.add('sb-drop-hidden');
@@ -1533,7 +1529,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       }
 
       // 分镜表画面格：只做高亮，不隐藏被拖的节点——绑定后它仍要留在画布上
-      const frameCell = findShotlistDropHit(node, e.clientX, e.clientY);
+      const frameCell = findShotlistDropHit(node, stack);
       if (frameCell !== shotlistDropTarget.current) {
         clearShotlistDropTarget();
         if (frameCell) {
@@ -1545,16 +1541,34 @@ function CanvasInner({ onReady }: CanvasProps) {
     [findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],
   );
 
+  const dragPreview = useMemo(() => createFrameCoalescer<() => void>((preview) => preview()), []);
+  const handleNodeDrag = useCallback((event: React.MouseEvent, node: RFNode) => {
+    const input = { clientX: event.clientX, clientY: event.clientY, node,
+      projectId: useAppStore.getState().currentProjectId };
+    dragPreview.schedule(() => updateDragPreview(input));
+  }, [dragPreview, updateDragPreview]);
+  useEffect(() => {
+    const reset = () => {
+      dragPreview.cancel();
+      clearSbDropTarget(); clearShotlistDropTarget(); clearFolderDropTarget(); clearGhostNodeHidden();
+      setDropGhost(null);
+    };
+    window.addEventListener('blur', reset);
+    return () => { window.removeEventListener('blur', reset); reset(); };
+  }, [currentProjectId, dragPreview, clearSbDropTarget, clearShotlistDropTarget, clearFolderDropTarget, clearGhostNodeHidden]);
+
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
     (event: React.MouseEvent, node: RFNode) => {
+      dragPreview.cancel();
       const liveNode = hydrateCanvasNodeData(
         node as RFNode<BaseNodeData>,
         useAppStore.getState().nodes,
       );
       endCanvasInteraction('node');
-      const cell = findStoryboardDropHit(node, event.clientX, event.clientY)?.emptyCell ?? null;
-      const frameCell = findShotlistDropHit(node, event.clientX, event.clientY);
+      const stack = document.elementsFromPoint(event.clientX, event.clientY);
+      const cell = findStoryboardDropHit(node, stack)?.emptyCell ?? null;
+      const frameCell = findShotlistDropHit(node, stack);
       clearSbDropTarget();
       clearShotlistDropTarget();
       clearFolderDropTarget();
@@ -1607,7 +1621,7 @@ function CanvasInner({ onReady }: CanvasProps) {
       settleNodeGroupingOnDragStop(liveNode);
       onNodeDragStop();
     },
-    [onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, endCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],
+    [dragPreview, onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, endCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],
   );
 
   return (

@@ -3,6 +3,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
+import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
 import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sharedAssetSyncRepository';
 
@@ -1761,5 +1762,101 @@ describe('episode creative content', () => {
       episodeScript: expect.stringContaining('这张票不该存在'),
       episodeCreative: expect.objectContaining({ task: '让林夏决定登车' }),
     }));
+  });
+});
+
+
+describe('confirmed shared series library saves', () => {
+  function openSeries() {
+    useAppStore.setState({
+      projects: [
+        { id: 'perf-series', name: '剧集', createdAt: 1, updatedAt: 1 },
+        { id: 'perf-episode', parentId: 'perf-series', name: '第一集', createdAt: 1, updatedAt: 1 },
+      ],
+      currentProjectId: 'perf-episode', projectName: '第一集', projectLoadStatus: 'ready',
+      nodes: [{ id: 'text', type: 'ai-text', position: { x: 0, y: 0 }, data: { type: 'ai-text', label: '正文' } }],
+      dramaAssets: { version: 2, characters: [], scenes: [], props: [] },
+    });
+  }
+  function libraryCalls() {
+    return fileMocks.saveProject.mock.calls.map(([record]) => record as ProjectSaveData)
+      .filter((record) => record.id === 'perf-series');
+  }
+
+  it('saves each changed episode but skips a previously committed unchanged shared library', async () => {
+    openSeries();
+    expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe('perf-episode');
+    useAppStore.getState().updateNodeDataTransient('text', { output: '第二版' });
+    expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe('perf-episode');
+    expect(fileMocks.saveProject.mock.calls.map(([record]) => record.id))
+      .toEqual(['perf-episode', 'perf-series', 'perf-episode']);
+  });
+
+  it('persists changes to the library and parent project metadata', async () => {
+    openSeries();
+    await useAppStore.getState().saveCurrentProjectSilent();
+    const library = { ...useAppStore.getState().dramaAssets, scenes: [] };
+    useAppStore.setState({ dramaAssets: library });
+    await useAppStore.getState().saveCurrentProjectSilent();
+    useAppStore.setState((state) => ({ projects: state.projects.map((project) => project.id === 'perf-series'
+      ? { ...project, name: '改名后的剧集' } : project) }));
+    await useAppStore.getState().saveCurrentProjectSilent();
+    expect(libraryCalls()).toHaveLength(3);
+    expect(libraryCalls()[1].dramaAssets).toBe(library);
+    expect(libraryCalls()[2].name).toBe('改名后的剧集');
+  });
+
+  it('retries a failed library write instead of marking it as saved', async () => {
+    openSeries();
+    let fail = true;
+    fileMocks.saveProject.mockImplementation(async (record) => {
+      if (record.id === 'perf-series' && fail) { fail = false; throw new Error('disk full'); }
+      return record.id;
+    });
+    expect(await useAppStore.getState().saveCurrentProjectSilent()).toBeUndefined();
+    expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe('perf-episode');
+    expect(libraryCalls()).toHaveLength(2);
+    expect(useAppStore.getState().autoSaveFailure).toBeNull();
+  });
+
+  it('tracks the version actually written when queued requests are superseded', async () => {
+    openSeries();
+    const firstLibrary = useAppStore.getState().dramaAssets;
+    const secondLibrary = { ...firstLibrary, lastViewedAt: 2 };
+    const thirdLibrary = { ...firstLibrary, lastViewedAt: 3 };
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let hold = true;
+    fileMocks.saveProject.mockImplementation(async (record) => {
+      if (record.id === 'perf-series' && hold) { hold = false; await pending; }
+      return record.id;
+    });
+    const first = useAppStore.getState().saveCurrentProjectSilent();
+    useAppStore.setState({ dramaAssets: secondLibrary });
+    const second = useAppStore.getState().saveCurrentProjectSilent();
+    useAppStore.setState({ dramaAssets: thirdLibrary });
+    const third = useAppStore.getState().saveCurrentProjectSilent();
+    release();
+    await Promise.all([first, second, third]);
+    expect(libraryCalls().map((record) => record.dramaAssets)).toEqual([firstLibrary, thirdLibrary]);
+    useAppStore.setState({ dramaAssets: secondLibrary });
+    await useAppStore.getState().saveCurrentProjectSilent();
+    expect(libraryCalls().map((record) => record.dramaAssets)).toEqual([firstLibrary, thirdLibrary, secondLibrary]);
+  });
+
+  it('invalidates the baseline across a shared asset commit even when the library reference is unchanged', async () => {
+    openSeries();
+    await useAppStore.getState().saveCurrentProjectSilent();
+    assetSyncMocks.applySharedAssetSyncCommit.mockResolvedValueOnce({ alreadyApplied: false });
+    await useAppStore.getState().commitSharedAssetSyncDownload({
+      ownerId: 'perf-series', originProjectId: 'perf-episode', expectedLibrary: useAppStore.getState().dramaAssets,
+      commit: { ownerId: 'perf-series', operationId: 'operation', mappings: [], operation: {
+        ownerId: 'perf-series', connectionId: 'connection', connectionRevision: 'c1', libraryId: 'library', sharedProjectId: 'shared',
+        id: 'pending', operationId: 'operation', sharedAssetId: 'asset', kind: 'file', direction: 'download',
+        mappingId: 'mapping', revisionId: 'r2', phase: 'applying', createdAt: 1, updatedAt: 1,
+      } },
+    });
+    await useAppStore.getState().saveCurrentProjectSilent();
+    expect(libraryCalls()).toHaveLength(2);
   });
 });

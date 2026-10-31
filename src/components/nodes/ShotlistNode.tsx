@@ -33,6 +33,8 @@ import {
   resolveShotlistColumns,
 } from '../../types';
 import MentionEditor from './shared/MentionEditor';
+import { createCanvasNodeDataSelector } from '../../utils/canvasNodeDataSelector';
+import { getCanvasNodeById } from '../../utils/canvasRenderProjection';
 import { isInsideMentionPortal } from './shared/mentionPortals';
 import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
@@ -142,44 +144,37 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   // 常驻列不受配置影响，避免存量数据把表结构裁没了
   const visibleColumns = useMemo(() => resolveShotlistColumns(columns), [columns]);
 
-  /**
-   * 画面格实时解析：读画布上被引用节点的当前素材，源节点不在了才回落到快照。
-   *
-   * 选择器刻意返回 JSON 字符串而不是对象/Map——返回值按值比较，
-   * 画布上任何无关节点的拖动都不会让这张表重渲染，只有被引用素材真的变了才触发。
-   */
-  const frameEntriesJson = useAppStore((s) => JSON.stringify(
-    rows.flatMap<[string, ResolvedFrame]>((row) => {
+  // 只订阅本表引用的媒体字段；拖拽或无关正文变化不重算预览。
+  const selectReferenceNodes = useMemo(() => createCanvasNodeDataSelector(
+    ['imageUrl', 'videoUrl', 'thumbnailUrl', 'filePath', 'assetId', 'videoDuration'],
+    [...new Set(rows.flatMap((row) => [row.frame?.nodeId, row.video?.nodeId].filter((id): id is string => !!id)))],
+  ), [rows]);
+  const referenceNodes = useAppStore((state) => selectReferenceNodes(state.nodes));
+  const { resolvedFrames, resolvedVideos } = useMemo(() => {
+    const byId = new Map(referenceNodes.map((node) => [node.id, node]));
+    const resolvedFrames = new Map<string, ResolvedFrame>();
+    const resolvedVideos = new Map<string, ResolvedShotVideo>();
+    const ready = new Map(resolveShotlistTimelineRows(rows, referenceNodes).map((row) => [row.id, row.video]));
+    for (const row of rows) {
       const frame = row.frame;
-      if (!frame) return [];
-      const source = s.nodes.find((candidate) => candidate.id === frame.nodeId);
-      if (!source) return [[row.id, { url: frame.url, videoUrl: frame.kind === 'video' ? frame.url : undefined,
-        filePath: frame.filePath, kind: frame.kind, dangling: true }]];
-      const resolved = readShotFrameSource(source);
-      return [[row.id, { url: resolved.url ?? frame.url, videoUrl: source.data.videoUrl,
-        filePath: source.data.filePath, kind: resolved.kind, dangling: false }]];
-    }),
-  ));
-
-  const resolvedFrames = useMemo(
-    () => new Map<string, ResolvedFrame>(JSON.parse(frameEntriesJson) as [string, ResolvedFrame][]),
-    [frameEntriesJson],
-  );
-
-  const videoEntriesJson = useAppStore((state) => {
-    const ready = new Map(resolveShotlistTimelineRows(rows, state.nodes).map((row) => [row.id, row.video]));
-    return JSON.stringify(rows.flatMap<[string, ResolvedShotVideo]>((row) => {
-      if (!row.video) return [];
-      const source = state.nodes.find((node) => node.id === row.video!.nodeId);
-      const video = ready.get(row.id);
-      return [[row.id, {
-        url: video?.url, filePath: video?.filePath,
-        poster: source?.data.thumbnailUrl,
-        available: !!video, dangling: !source,
-      }]];
-    }));
-  });
-  const resolvedVideos = useMemo(() => new Map<string, ResolvedShotVideo>(JSON.parse(videoEntriesJson)), [videoEntriesJson]);
+      if (frame) {
+        const source = byId.get(frame.nodeId);
+        const resolved = source ? readShotFrameSource(source) : undefined;
+        resolvedFrames.set(row.id, source ? {
+          url: resolved?.url ?? frame.url, videoUrl: source.data.videoUrl,
+          filePath: source.data.filePath, kind: resolved!.kind, dangling: false,
+        } : { url: frame.url, videoUrl: frame.kind === 'video' ? frame.url : undefined,
+          filePath: frame.filePath, kind: frame.kind, dangling: true });
+      }
+      if (row.video) {
+        const source = byId.get(row.video.nodeId);
+        const video = ready.get(row.id);
+        resolvedVideos.set(row.id, { url: video?.url, filePath: video?.filePath,
+          poster: source?.data.thumbnailUrl, available: !!video, dangling: !source });
+      }
+    }
+    return { resolvedFrames, resolvedVideos };
+  }, [referenceNodes, rows]);
 
   const totalDuration = useMemo(() => computeShotlistDuration(rows), [rows]);
 
@@ -243,7 +238,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const numberScrubbingRef = useRef(false);
   const timelineRunning = useRef(false);
   const episodeScript = useAppStore((state) => state.projects.find((project) => project.id === data.shotlistScriptSource?.episodeId)?.episodeScript);
-  const sourceScript = useAppStore((state) => state.nodes.find((node) => node.id === data.shotlistScriptSource?.nodeId)?.data.output);
+  const sourceScript = useAppStore((state) => getCanvasNodeById(state.nodes, data.shotlistScriptSource?.nodeId ?? '')?.data.output);
   const scriptChanged = useMemo(() => typeof sourceScript === 'string' && sourceScript.trim() !== (episodeScript ?? '').trim(), [sourceScript, episodeScript]);
   const frameController = useRef<AbortController | null>(null);
   const emptyRows = rows.filter((row) => !row.frame && buildShotFramePrompt(row).trim());

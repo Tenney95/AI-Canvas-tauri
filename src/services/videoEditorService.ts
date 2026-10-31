@@ -178,9 +178,10 @@ function hasReadyShotVideo(row: ShotRow): row is ShotRow & { video: ShotVideoBin
 
 /** 仅返回可推送的生成视频行；活源清空时不复用旧快照，已删除来源才保留快照。 */
 export function resolveShotlistTimelineRows(rows: ShotRow[], nodes: EditableMediaNode[]): ShotRow[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
   return rows.flatMap((row): ShotRow[] => {
     if (row.video?.kind !== 'video') return [];
-    const source = nodes.find((node) => node.id === row.video!.nodeId);
+    const source = byId.get(row.video.nodeId);
     if (!source) return hasReadyShotVideo(row) ? [row] : [];
     if (!VIDEO_NODE_TYPES.includes(source.type as NodeType)
       || typeof source.data.videoUrl !== 'string' || !source.data.videoUrl.trim()) return [];

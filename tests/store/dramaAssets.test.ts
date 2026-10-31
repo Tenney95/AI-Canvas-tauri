@@ -1212,3 +1212,38 @@ describe('dramaAssets store', () => {
     expect(asset).not.toHaveProperty('imageUrl');
   });
 });
+
+
+describe('canvas visibility membership cache', () => {
+  const make = (id: string, data: Partial<BaseNodeData> = {}, parentId?: string): Node<BaseNodeData> => ({
+    id, parentId, type: id === 'group' ? 'group' : 'ai-image', position: { x: 0, y: 0 },
+    data: { type: 'ai-image', label: id, ...data },
+  });
+
+  it('uses the latest geometry without reading unchanged edges again', () => {
+    const nodes = [make('hidden', { hiddenByCharacterLibrary: true }), make('visible')];
+    const edge: Edge = { id: 'edge', get source() { return 'hidden'; }, target: 'visible' };
+    const reads = vi.spyOn(edge, 'source', 'get');
+    const edges = [edge];
+    const initial = filterHiddenCanvasElements(nodes, edges);
+    reads.mockClear();
+    const moved = nodes.map((node) => ({ ...node, position: { x: 120, y: 90 }, data: { ...node.data, output: '新正文' } }));
+    const next = filterHiddenCanvasElements(moved, edges);
+    expect(next.nodes).toEqual([moved[1]]);
+    expect(next.edges).toBe(initial.edges);
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it('invalidates on collapsing, reparenting, reordering and a project with reused ids', () => {
+    const group = make('group', { groupCollapsed: true }), child = make('child', {}, 'group'), other = make('other');
+    const edges: Edge[] = [{ id: 'edge', source: 'child', target: 'other' }];
+    expect(filterHiddenCanvasElements([group, child, other], edges).nodes.map((node) => node.id)).toEqual(['group', 'other']);
+    const detached = { ...child, parentId: undefined };
+    expect(filterHiddenCanvasElements([other, detached, group], edges).edges).toBe(edges);
+    expect(filterHiddenCanvasElements([other, child, group], edges).nodes.map((node) => node.id)).toEqual(['other', 'group']);
+    const expanded = { ...group, data: { ...group.data, groupCollapsed: false } };
+    expect(filterHiddenCanvasElements([expanded, child, other], edges).edges).toBe(edges);
+    expect(filterHiddenCanvasElements([], []).nodes).toEqual([]);
+    expect(filterHiddenCanvasElements([make('group'), make('child'), make('other')], edges).edges).toBe(edges);
+  });
+});

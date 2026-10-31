@@ -25,6 +25,7 @@ export interface CanvasEdgeProjection {
 
 let indexedNodes: readonly CanvasNode[] | null = null;
 const indexedNodeById = new Map<string, CanvasNode>();
+const indexedNodeOrder = new Map<string, number>();
 const edgeProjectionCache = new WeakMap<readonly Edge[], CanvasEdgeProjection>();
 const MAX_SELECTED_EDGE_FLOW_ANIMATIONS = 12;
 
@@ -37,7 +38,8 @@ export function canAnimateCanvasEdgeFlow(maskWidth: number, maskHeight: number):
 
 function rebuildNodeIndex(nodes: readonly CanvasNode[]): void {
   indexedNodeById.clear();
-  for (const node of nodes) indexedNodeById.set(node.id, node);
+  indexedNodeOrder.clear();
+  nodes.forEach((node, order) => { indexedNodeById.set(node.id, node); indexedNodeOrder.set(node.id, order); });
 }
 
 /**
@@ -75,6 +77,12 @@ export function getCanvasNodeById(
 ): CanvasNode | undefined {
   ensureNodeIndex(nodes);
   return indexedNodeById.get(nodeId);
+}
+
+/** 连接候选沿用节点数组顺序，与连线添加顺序无关。 */
+export function getCanvasNodeOrder(nodes: readonly CanvasNode[], nodeId: string): number {
+  ensureNodeIndex(nodes);
+  return indexedNodeOrder.get(nodeId) ?? -1;
 }
 
 /** 项目切换到空画布时也主动同步，避免索引暂时保留上一项目的节点引用。 */

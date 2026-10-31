@@ -10,7 +10,7 @@ import LazyLoadBoundary from '../shared/LazyLoadBoundary';
 import SendShortcutMenu from '../shared/SendShortcutMenu';
 import ModelSelector from '../nodes/shared/ModelSelector';
 import ContextUsageIndicator from './ContextUsageIndicator';
-import ChatComposerEditor, { type ChatComposerEditorHandle, type ChatComposerReference } from './ChatComposerEditor';
+import ChatComposerEditor, { getChatComposerNodeIds, type ChatComposerEditorHandle, type ChatComposerReference } from './ChatComposerEditor';
 import ChatImageAttachments from './ChatImageAttachments';
 import type { ChatImageReference } from '../../types/chat';
 import { parseChatImageReferences } from '../../services/chat/chatImageReferenceService';
@@ -27,6 +27,7 @@ import type { GeneralModelConfig, ModelGroup, ModelOption, PromptSubmitShortcut 
 import type { SkillPickerOption } from '../../types/agentPackage';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
+import { createCanvasNodeDataSelector } from '../../utils/canvasNodeDataSelector';
 import { t as translate, useT } from '../../i18n';
 import { projectSkillPickerOptions } from '../../services/chat/skillCatalog';
 import {
@@ -243,7 +244,14 @@ export default function ChatInput({
   const [skillQuery, setSkillQuery] = useState('');
   const [skillUploading, setSkillUploading] = useState(false);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
-  const canvasNodes = useAppStore((state) => state.nodes);
+  const selectPickerNodes = useMemo(() => createCanvasNodeDataSelector(
+    ['displayId', 'imageUrl', 'videoUrl', 'thumbnailUrl', 'filePath'],
+  ), []);
+  const canvasNodes = useAppStore((state) => selectPickerNodes(modelMenuOpen ? state.nodes : undefined));
+  const selectDraftNodes = useMemo(() => createCanvasNodeDataSelector(
+    ['displayId', 'imageUrl', 'videoUrl', 'thumbnailUrl', 'filePath'], getChatComposerNodeIds(inputValue),
+  ), [inputValue]);
+  const draftNodes = useAppStore((state) => selectDraftNodes(state.nodes));
   const dramaAssets = useAppStore((state) => state.dramaAssets);
   const globalCharacters = useAppStore((state) => state.globalCharacters);
   const globalScenes = useAppStore((state) => state.globalScenes);
@@ -266,8 +274,8 @@ export default function ChatInput({
   const availableSkillOptions = skillOptions ?? storeSkillOptions;
   const compatibleMediaModels = mediaModelOptions;
   const filteredMediaModels = useMemo(
-    () => compatibleMediaModels.filter((model) => fuzzyMatchModel(model, modelQuery)),
-    [compatibleMediaModels, modelQuery],
+    () => modelMenuOpen ? compatibleMediaModels.filter((model) => fuzzyMatchModel(model, modelQuery)) : [],
+    [compatibleMediaModels, modelQuery, modelMenuOpen],
   );
   const filteredCanvasNodes = useMemo(() => canvasNodes
     .filter((node) => node.type !== 'group')
@@ -292,8 +300,8 @@ export default function ChatInput({
     [groupedSkills],
   );
   const nodeDisplayIds = useMemo(
-    () => new Map(canvasNodes.map((node) => [node.id, node.data.displayId])),
-    [canvasNodes],
+    () => new Map(draftNodes.map((node) => [node.id, node.data.displayId])),
+    [draftNodes],
   );
   // 媒体模型按类型分档，作为「模型」Tab 的筛选芯片
   const mediaKindChips = useMemo(() => {
@@ -313,8 +321,8 @@ export default function ChatInput({
   );
   // 资产库（短剧人物/场景/道具），与节点提示词的 @ 用同一份数据源
   const filteredDramaAssets = useMemo(
-    () => resolveDramaMentionItems(dramaAssets, modelQuery, undefined, globalAssets),
-    [dramaAssets, globalAssets, modelQuery],
+    () => modelMenuOpen ? resolveDramaMentionItems(dramaAssets, modelQuery, undefined, globalAssets) : [],
+    [dramaAssets, globalAssets, modelQuery, modelMenuOpen],
   );
   const assetKindChips = useMemo(() => {
     const counts = new Map<string, number>();

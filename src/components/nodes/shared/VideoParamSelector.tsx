@@ -11,7 +11,6 @@ import VideoCharacterPicker from './VideoCharacterPicker';
 import type { MentionPickerItem } from '../../shared/MentionPicker';
 import { useT } from '../../../i18n';
 import { useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from 'react';
-import { useShallow } from 'zustand/react/shallow';
 import AnimatedButton from '../../shared/AnimatedButton';
 import type { BaseNodeData, GeneralModelConfig } from '../../../types';
 import type {
@@ -36,6 +35,8 @@ import {
   VIDEO_DURATION_MIN_SECONDS,
 } from '../../../services/aiDimensions';
 import { useAppStore, type AppState } from '../../../store/useAppStore';
+import { createCanvasNodeDataSelector, type CanvasNodeDataView } from '../../../utils/canvasNodeDataSelector';
+import { getCanvasConnectedSourceNodes } from '../../../utils/canvasConnectionIndex';
 
 interface VideoParamSelectorProps {
   provider?: string;
@@ -95,7 +96,7 @@ interface CharacterVideoReferenceOption {
 // eslint-disable-next-line react-refresh/only-export-components
 export function resolveCharacterVideoReferenceOptions(
   characters: readonly DramaCharacter[],
-  canvasNodes: AppState['nodes'],
+  canvasNodes: CanvasNodeDataView[],
   scope: 'project' | 'global',
 ): CharacterVideoReferenceOption[] {
   return characters.flatMap((character) => {
@@ -284,17 +285,13 @@ export function resolveVideoParameterInputMode(
   return hasReference ? 'reference' : 'text';
 }
 
-/** 返回扁平数组，供 useShallow 对节点引用逐项比较并复用上一次快照。 */
+/** 来源按画布顺序返回；展示订阅另按必要媒体字段比较。 */
 // eslint-disable-next-line react-refresh/only-export-components
 export function selectConnectedVideoSourceNodes(
   state: Pick<AppState, 'nodes' | 'edges'>,
   nodeId: string | undefined,
 ): AppState['nodes'] {
-  if (!nodeId) return [];
-  const sourceIds = new Set(
-    state.edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source),
-  );
-  return state.nodes.filter((node) => sourceIds.has(node.id));
+  return getCanvasConnectedSourceNodes(state.nodes, state.edges, nodeId);
 }
 
 export default function VideoParamSelector({
@@ -319,11 +316,11 @@ export default function VideoParamSelector({
   const globalCharacters = useAppStore((state) => state.globalCharacters);
   const loadGlobalCharacters = useAppStore((state) => state.loadGlobalCharacters);
   const globalCharactersLoading = useAppStore((state) => state.globalCharactersLoading);
-  // selector 必须只返回扁平节点数组：若返回含有新建数组的对象，Zustand 会认为
-  // 每次快照都变化，React 19 会进入重复渲染并让节点编辑器错误边界兜底。
-  const connectedSourceNodes = useAppStore(useShallow((state) => (
-    selectConnectedVideoSourceNodes(state, nodeId)
-  )));
+  // 连线摘要影响模型能力与默认参数，关闭弹层时也必须保持实时。
+  const selectConnectedData = useMemo(() => createCanvasNodeDataSelector(
+    ['imageUrl', 'videoUrl', 'audioUrl', 'thumbnailUrl', 'filePath'],
+  ), []);
+  const connectedSourceNodes = useAppStore((state) => selectConnectedData(selectConnectedVideoSourceNodes(state, nodeId)));
   const connectedImageNodes = connectedSourceNodes.filter((node) => (
     Boolean((node.data as BaseNodeData).imageUrl)
   ));
@@ -333,7 +330,12 @@ export default function VideoParamSelector({
   const connectedAudioCount = connectedSourceNodes.filter((node) => (
     Boolean((node.data as BaseNodeData).audioUrl)
   )).length;
-  const canvasNodes = useAppStore((state) => state.nodes);
+  const selectCharacterNodes = useMemo(() => createCanvasNodeDataSelector(
+    ['imageUrl', 'thumbnailUrl'], [...new Set(projectCharacters.flatMap((character) => [
+      character.imageNodeId, ...(character.referenceImages ?? []).map((reference) => reference.sourceNodeId),
+    ].filter((id): id is string => !!id)))],
+  ), [projectCharacters]);
+  const canvasNodes = useAppStore((state) => selectCharacterNodes(open ? state.nodes : undefined));
   const workflowApiManifest = useAppStore((state) => state.workflows.find((workflow) =>
     workflow.id === selectedModel?.replace(/^workflow-api\//, ''))?.workflowApi);
 
@@ -342,11 +344,11 @@ export default function VideoParamSelector({
   const characterReferences = references.filter((item) => item.kind === 'character' && item.mediaKind !== 'audio');
 
   const projectCharacterOptions = useMemo(() => (
-    resolveCharacterVideoReferenceOptions(projectCharacters, canvasNodes, 'project')
-  ), [canvasNodes, projectCharacters]);
+    open ? resolveCharacterVideoReferenceOptions(projectCharacters, canvasNodes, 'project') : []
+  ), [open, canvasNodes, projectCharacters]);
   const globalCharacterOptions = useMemo(() => (
-    resolveCharacterVideoReferenceOptions(globalCharacters, [], 'global')
-  ), [globalCharacters]);
+    open ? resolveCharacterVideoReferenceOptions(globalCharacters, [], 'global') : []
+  ), [open, globalCharacters]);
   const characterOptions = [...projectCharacterOptions, ...globalCharacterOptions];
 
   const addReference = (kind: 'frame' | 'character', option: CharacterVideoReferenceOption) => {

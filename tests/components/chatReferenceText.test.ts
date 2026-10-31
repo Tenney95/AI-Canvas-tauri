@@ -4,6 +4,7 @@
 import type { Node } from '@xyflow/react';
 import { describe, expect, it } from 'vitest';
 import { selectNodeDisplayIds } from '../../src/components/chat/ChatReferenceText';
+import { getChatComposerNodeIds } from '../../src/components/chat/ChatComposerEditor';
 import type { AppState } from '../../src/store/useAppStore';
 import type { BaseNodeData } from '../../src/types';
 
@@ -72,5 +73,19 @@ describe('selectNodeDisplayIds', () => {
     expect(replaced.has('node-c')).toBe(true);
     expect(removed).not.toBe(replaced);
     expect(removed.size).toBe(1);
+  });
+});
+
+
+describe('composer draft node scope', () => {
+  it('collects only complete node references, preserving order and removing duplicates', () => {
+    expect(getChatComposerNodeIds('@{a:节点 A} @model{general/m|模型} @{b:节点 B} @{a:再次引用} @drama{role:角色}'))
+      .toEqual(['a', 'b']);
+    expect(getChatComposerNodeIds('普通文字 @未完成 @{缺少标签} @skill{skill|说明}')).toEqual([]);
+  });
+
+  it('keeps precise storyboard and shotlist references without widening the draft scope', () => {
+    expect(getChatComposerNodeIds('@{board/cell/2:图片} @{sheet/shot/row-1:镜头}'))
+      .toEqual(['board/cell/2', 'sheet/shot/row-1']);
   });
 });

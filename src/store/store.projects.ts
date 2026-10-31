@@ -203,6 +203,14 @@ interface ProjectAssetSyncBarrier {
 }
 const projectAssetSyncBarriers = new Map<string, ProjectAssetSyncBarrier>();
 const projectImportsApplying = new Set<string>();
+// 只保留最近一个共享库的成功记录；不缓存普通画布或跨重载/同步沿用基线。
+const seriesLibraryOwners = new WeakMap<ProjectSaveData, CanvasProject>();
+let confirmedSeriesLibrary: { record: ProjectSaveData; owner: CanvasProject } | undefined;
+let seriesLibrarySaveEpoch = 0;
+function invalidateSeriesLibrarySave() {
+  confirmedSeriesLibrary = undefined;
+  seriesLibrarySaveEpoch += 1;
+}
 const importPreviewGuards = new WeakMap<ProjectImportPreview, () => void>();
 
 function waitForProjectSaveQueue(projectId: string): Promise<void> {
@@ -282,6 +290,7 @@ async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue)
         const patch = queue.pendingSnapshot!;
         queue.pendingSnapshot = null;
         try {
+          if (confirmedSeriesLibrary?.record.id === projectId) confirmedSeriesLibrary = undefined;
           await updateProjectSnapshot(projectId, patch.snapshot);
           patch.waiters.forEach((waiter) => waiter.resolve(projectId));
         } catch (error) {
@@ -293,8 +302,15 @@ async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue)
       queue.pending = null;
       queue.active = batch;
 
+      const epoch = seriesLibrarySaveEpoch;
+      if (confirmedSeriesLibrary?.record.id === projectId) confirmedSeriesLibrary = undefined;
       try {
         const savedProjectId = await fileService.saveProject(batch.record);
+        const owner = seriesLibraryOwners.get(batch.record);
+        // 记录队列实际写入的版本，不能把被后续 pending 覆盖的请求误认为已落库。
+        if (owner && epoch === seriesLibrarySaveEpoch && savedProjectId === projectId) {
+          confirmedSeriesLibrary = { record: batch.record, owner };
+        }
         batch.waiters.forEach((waiter) => waiter.resolve(savedProjectId));
       } catch (error) {
         batch.waiters.forEach((waiter) => waiter.reject(error));
@@ -407,7 +423,7 @@ function createSeriesLibraryRecord(state: AppState): ProjectSaveData | null {
     : undefined;
   if (!series) return null;
 
-  return {
+  const record: ProjectSaveData = {
     id: series.id,
     exchangeEpoch: series.exchangeEpoch,
     name: series.name,
@@ -422,6 +438,18 @@ function createSeriesLibraryRecord(state: AppState): ProjectSaveData | null {
     groups: EMPTY_SERIES_CANVAS,
     dramaAssets: state.dramaAssets,
   };
+  seriesLibraryOwners.set(record, series);
+  return record;
+}
+
+/** 跳过已确认的共享库重复写入；排队/屏障期间仍走原串行保存流程。 */
+function enqueueSeriesLibrarySave(record: ProjectSaveData): Promise<string> {
+  const confirmed = confirmedSeriesLibrary;
+  if (confirmed && confirmed.owner === seriesLibraryOwners.get(record)
+    && hasSameProjectSaveContent(confirmed.record, record)
+    && !projectSaveQueues.has(record.id) && !projectAssetSyncBarriers.has(record.id)
+    && !projectImportsApplying.has(record.id)) return Promise.resolve(record.id);
+  return enqueueProjectSave(record);
 }
 
 /** 保存当前画布，同时把共享角色库写回它所属的剧集项目。 */
@@ -429,7 +457,7 @@ async function saveCurrentProjectRecord(state: AppState, record: ProjectSaveData
   const libraryRecord = createSeriesLibraryRecord(state);
   const [savedProjectId] = await Promise.all([
     enqueueProjectSave(record),
-    libraryRecord ? enqueueProjectSave(libraryRecord) : Promise.resolve(undefined),
+    libraryRecord ? enqueueSeriesLibrarySave(libraryRecord) : Promise.resolve(undefined),
   ]);
   return savedProjectId;
 }
@@ -1397,6 +1425,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const preview = await previewProjectImport(session, targetId, confirmedBase); assertCurrent(); importPreviewGuards.set(preview, assertCurrent); return preview;
   },
   importProject: async (session, preview, choices = {}, options = { appendChat: false, appendMemories: false }) => {
+    invalidateSeriesLibrarySave();
     let result: Awaited<ReturnType<typeof importProjectArchive>>;
     let committed = false, lockedCanvas = false;
     const affected = preview ? get().projects.filter((item) => item.id === preview.targetId || item.parentId === preview.targetId).map((item) => item.id) : [];
@@ -1422,6 +1451,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (session) throw error;
       return undefined;
     } finally {
+      invalidateSeriesLibrarySave();
       affected.forEach((id) => projectImportsApplying.delete(id));
       if (lockedCanvas && !committed) set({ projectLoadStatus: 'ready' });
     }
@@ -1471,6 +1501,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   restoreProjectImport: async (ownerId, recoveryId) => {
+    invalidateSeriesLibrarySave();
     if (projectAssetSyncBarriers.has(ownerId)) throw new Error('项目正在同步，请稍后恢复');
     const affected = get().projects.filter((item) => item.id === ownerId || item.parentId === ownerId).map((item) => item.id);
     if (!affected.length || affected.some((id) => projectImportsApplying.has(id) || getPendingTasksForProject(id).length)
@@ -1498,15 +1529,18 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       else set({ projects });
       projected = true;
       // 在后续切换加载之前释放屏障；空画布不会把旧内容重新保存。
+      invalidateSeriesLibrarySave();
       affected.forEach((id) => projectImportsApplying.delete(id));
       await get().switchProject(ownerId); get().showToast('已恢复项目，恢复前的状态也已保存为恢复点');
     } finally {
+      invalidateSeriesLibrarySave();
       affected.forEach((id) => projectImportsApplying.delete(id));
       if (lockedCanvas && !projected) set({ projectLoadStatus: committed ? 'error' : 'ready' });
     }
   },
 
   deleteProject: async (id) => {
+    invalidateSeriesLibrarySave();
     projectSwitchSequence += 1;
     const state = get();
     const target = state.projects.find((project) => project.id === id);
@@ -1647,6 +1681,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   switchProject: async (requestedId, options) => {
+    invalidateSeriesLibrarySave();
     if (options?.signal?.aborted || get().isReturningToStartPage || get().isCreatingProject
       || get().projectLoadStatus === 'loading') return;
     if (!get().projects.some((project) => project.id === requestedId)) return;
@@ -1890,6 +1925,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const barrier: ProjectAssetSyncBarrier = {
       done: new Promise<void>((resolve) => { release = resolve; }), library: input.expectedLibrary,
     };
+    invalidateSeriesLibrarySave();
     projectAssetSyncBarriers.set(input.ownerId, barrier);
     let unsubscribe = api.subscribe(() => { try { assertCurrent(); } catch { controller.abort(); } });
     try {
@@ -1937,12 +1973,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (current.currentProjectId && seriesOwnerId(current.projects, current.currentProjectId) === input.ownerId) {
         if (current.dramaAssets !== input.expectedLibrary) barrier.library = current.dramaAssets;
       }
+      invalidateSeriesLibrarySave();
       projectAssetSyncBarriers.delete(input.ownerId);
       release();
     }
   },
 
   loadProject: async () => {
+    invalidateSeriesLibrarySave();
     try {
       const allProjects = await fileService.loadProjectsList();
       if (allProjects.length > 0) {
@@ -1996,6 +2034,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   initFromDb: () => {
+    invalidateSeriesLibrarySave();
     if (get().projectInitialized) return Promise.resolve();
     const pending = projectInitializations.get(get);
     if (pending) return pending;

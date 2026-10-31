@@ -55,6 +55,12 @@ const ZWSP = '\u200B';
 const REFERENCE_PATTERN = /@\{([^:}\r\n]+):([^}\r\n]+)\}|@model\{([^|}\r\n]+)\|([^}\r\n]*)\}|@skill\{([^|}\r\n]+)\|([^}\r\n]*)\}|@drama\{([^:}\r\n]+):([^}\r\n]+)\}|@image\{(chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp))\|([^}\r\n]*)\}/g;
 const REFERENCE_TEXT_PATTERN = /@\{[^:}\r\n]+:[^}\r\n]+\}|@model\{[^|}\r\n]+\|[^}\r\n]*\}|@skill\{[^|}\r\n]+\|[^}\r\n]*\}|@drama\{[^:}\r\n]+:[^}\r\n]+\}|@image\{chat-ref-[a-f0-9-]{36}\.(?:png|jpg|webp)\|[^}\r\n]*\}/;
 
+/** 只读取草稿实际引用的节点；与编辑器解析使用同一语法。 */
+// eslint-disable-next-line react-refresh/only-export-components
+export function getChatComposerNodeIds(value: string): string[] {
+  return [...new Set([...value.matchAll(REFERENCE_PATTERN)].flatMap((match) => match[1] === undefined ? [] : [match[1]]))];
+}
+
 const REFERENCE_ARIA_PREFIX: Record<ChatComposerReference['kind'], string> = {
   node: '节点',
   model: '模型',

@@ -729,35 +729,46 @@ function pruneDeletedNodesAndEmptyGroups(
   };
 }
 
-// 每个源数组只保留最近一次过滤结果；正文更新不必让连线投影跟着重建。
-const visibleEdgesBySource = new WeakMap<Edge[], Edge[]>();
+// 几何变化不改变可见成员；只保存最近一份轻量成员快照。
+let visibilityState: Array<{ id: string; parentId?: string; collapsed: boolean; hidden: boolean }> = [];
+let visibleIndexes: number[] = [];
+let visibleNodeIds = new Set<string>();
+const visibleEdgesBySource = new WeakMap<Edge[], { ids: Set<string>; edges: Edge[] }>();
 
-/** 渲染前剔除隐藏元素：角色库收纳的节点、已折叠分组的子节点，以及它们的连线 */
+/** 渲染前剔除隐藏元素；节点仍使用最新位置与数据，成员相同则不重新扫描连线。 */
 export function filterHiddenCanvasElements(
   nodes: Node<BaseNodeData>[],
   edges: Edge[],
 ): { nodes: Node<BaseNodeData>[]; edges: Edge[] } {
-  const collapsedGroupIds = new Set(
-    nodes.filter((node) => node.data.groupCollapsed === true).map((node) => node.id),
-  );
-  const visibleNodes = nodes.filter((node) => (
-    node.data.hiddenByCharacterLibrary !== true
-    && !(node.parentId && collapsedGroupIds.has(node.parentId))
-  ));
-  if (visibleNodes.length === nodes.length) return { nodes, edges };
-  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const nextEdges = edges.filter(
-    (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
-  );
-  const previousEdges = visibleEdgesBySource.get(edges);
+  const sameMembership = nodes.length === visibilityState.length && nodes.every((node, index) => {
+    const previous = visibilityState[index];
+    return node.id === previous.id && node.parentId === previous.parentId
+      && (node.data.groupCollapsed === true) === previous.collapsed
+      && (node.data.hiddenByCharacterLibrary === true) === previous.hidden;
+  });
+  if (!sameMembership) {
+    visibilityState = nodes.map((node) => ({ id: node.id, parentId: node.parentId,
+      collapsed: node.data.groupCollapsed === true, hidden: node.data.hiddenByCharacterLibrary === true }));
+    const collapsed = new Set(visibilityState.filter((node) => node.collapsed).map((node) => node.id));
+    visibleIndexes = [];
+    const nextIds = new Set<string>();
+    visibilityState.forEach((node, index) => {
+      if (node.hidden || (node.parentId && collapsed.has(node.parentId))) return;
+      visibleIndexes.push(index);
+      nextIds.add(node.id);
+    });
+    if (nextIds.size !== visibleNodeIds.size || [...nextIds].some((id) => !visibleNodeIds.has(id))) visibleNodeIds = nextIds;
+  }
+  if (visibleIndexes.length === nodes.length) return { nodes, edges };
+  const visibleNodes = visibleIndexes.map((index) => nodes[index]);
+  const previous = visibleEdgesBySource.get(edges);
+  if (previous?.ids === visibleNodeIds) return { nodes: visibleNodes, edges: previous.edges };
+  const nextEdges = edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target));
   const visibleEdges = nextEdges.length === edges.length ? edges
-    : previousEdges?.length === nextEdges.length
-      && nextEdges.every((edge, index) => edge === previousEdges[index]) ? previousEdges : nextEdges;
-  visibleEdgesBySource.set(edges, visibleEdges);
-  return {
-    nodes: visibleNodes,
-    edges: visibleEdges,
-  };
+    : previous?.edges.length === nextEdges.length
+      && nextEdges.every((edge, index) => edge === previous.edges[index]) ? previous.edges : nextEdges;
+  visibleEdgesBySource.set(edges, { ids: visibleNodeIds, edges: visibleEdges });
+  return { nodes: visibleNodes, edges: visibleEdges };
 }
 
 export interface NodeSlice {
