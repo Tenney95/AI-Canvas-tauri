@@ -14,6 +14,7 @@ import { comfyBaseUrlFor, DEFAULT_COMFY_URL } from '../services/comfyServers';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import RunningHubWorkflowImport from './runninghub/RunningHubWorkflowImport';
+import { workflowInputNodes } from '../services/runninghubWorkflowService';
 import { readBinaryFile } from '../services/fileService';
 import { nativeDropClientPosition } from '../utils/nativeDropPosition';
 
@@ -123,6 +124,7 @@ export default function WorkflowPanel() {
     addWorkflow,
     deleteWorkflow,
     updateWorkflow,
+    toggleWorkflowDefaultNode,
     resetBuiltIns,
     comfyServers,
     showToast,
@@ -136,6 +138,7 @@ export default function WorkflowPanel() {
       addWorkflow: s.addWorkflow,
       deleteWorkflow: s.deleteWorkflow,
       updateWorkflow: s.updateWorkflow,
+      toggleWorkflowDefaultNode: s.toggleWorkflowDefaultNode,
       resetBuiltIns: s.resetBuiltInWorkflows,
       comfyServers: s.config.comfyServers,
       showToast: s.showToast,
@@ -331,23 +334,16 @@ export default function WorkflowPanel() {
   // 默认 IO 节点：用户没 @ 该类型节点时，提示词框里的同类内容自动注入这里
   const handleToggleDefaultNode = useCallback(
     (workflow: WorkflowDefinition, ioNode: WorkflowIONode) => {
-      const defaultNodes = { ...workflow.defaultNodes };
-      const isDefault = defaultNodes[ioNode.type] === ioNode.nodeId;
-      if (isDefault) {
-        delete defaultNodes[ioNode.type];
-      } else {
-        defaultNodes[ioNode.type] = ioNode.nodeId;
-      }
-      updateWorkflow(workflow.id, { defaultNodes })
-        .then(() => showToast(
-          isDefault
-            ? t('已取消默认{type}节点', { type: t(IONODE_LABELS[ioNode.type]) })
-            : t('“{name}”已设为默认{type}节点', { name: ioNode.title, type: t(IONODE_LABELS[ioNode.type]) }),
+      toggleWorkflowDefaultNode(workflow.id, { nodeId: ioNode.nodeId, type: ioNode.type })
+        .then((enabled) => showToast(
+          enabled
+            ? t('“{name}”已设为默认{type}节点', { name: ioNode.title, type: t(IONODE_LABELS[ioNode.type]) })
+            : t('已取消默认{type}节点', { type: t(IONODE_LABELS[ioNode.type]) }),
           'success',
         ))
         .catch(() => showToast(t('保存默认节点失败'), 'error'));
     },
-    [updateWorkflow, showToast],
+    [toggleWorkflowDefaultNode, showToast],
   );
 
   const handleToggleExpand = useCallback((id: string) => {
@@ -675,6 +671,7 @@ export default function WorkflowPanel() {
               {t('未设置默认节点时，ComfyUI 调用需要在提示词中 @对应节点，提示词或参考图才会写入对应输入。展开下方工作流卡片，点击节点徽章设为该类型默认节点（★），未显式 @ 的内容即可自动注入。')}
             </span>
           </p>}
+          {importSource !== 'comfyui' && <p className="wf-hint" role="note">{t('展开输入节点，点击徽章设置默认节点（★）；也可在提示词中 @ 指定输入。旧工作流保留原映射，设置默认节点后启用节点绑定。')}</p>}
 
           <AnimatePresence mode="popLayout">
             {sourceWorkflows.length > 0 && workflowsByCategory.length === 0 ? (
@@ -718,8 +715,9 @@ export default function WorkflowPanel() {
                       <span className="wf-group-count">{group.items.length}</span>
                     </div>
                     {group.items.map((wf) => {
-                      const nodeCount = wf.ioNodes?.length ?? 0;
-                      const defaultCount = wf.ioNodes?.filter(
+                      const inputs = workflowInputNodes(wf);
+                      const nodeCount = inputs.length;
+                      const defaultCount = inputs.filter(
                         (n) => wf.defaultNodes?.[n.type] === n.nodeId,
                       ).length ?? 0;
                       const expanded = expandedIds.has(wf.id);
@@ -840,7 +838,7 @@ export default function WorkflowPanel() {
                               transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                             >
                               <div className="wf-item-ionodes">
-                                {(wf.ioNodes ?? []).map((n, i) => {
+                                {inputs.map((n, i) => {
                                   const isDefault = wf.defaultNodes?.[n.type] === n.nodeId;
                                   return (
                                     <button

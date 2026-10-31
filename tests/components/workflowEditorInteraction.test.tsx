@@ -157,10 +157,19 @@ it.each(['workflow', 'app'] as const)('%s 删除当前云工作流后撤销编�
   const store = {
     workflows: ['A', 'B'].map((name): WorkflowDefinition => ({
       id: `wf-${name}`, name, category: 'ai-image', fileName: 'RH', fileContent: '', createdAt: 1,
-      adapterType: 'runninghub', runninghub: { version: 1, kind, remoteId: '1904152026220003329', connectionId: 'runninghub', parameters: [] },
+      adapterType: 'runninghub', runninghub: { version: 1, kind, remoteId: '1904152026220003329', connectionId: 'runninghub', parameters: [{ nodeId: '6', fieldName: 'text', label: '正文', type: 'string', defaultValue: '', source: 'prompt' }] },
     })),
     workflowPanelOpen: true, workflowPanelSource: kind, config: { comfyServers: [] }, showToast: vi.fn(),
     setWorkflowPanelSource: vi.fn(),
+    updateWorkflow: vi.fn(async (id: string, changes: Partial<WorkflowDefinition>) => {
+      store.workflows = store.workflows.map((workflow) => workflow.id === id ? { ...workflow, ...changes } : workflow);
+    }),
+    toggleWorkflowDefaultNode: vi.fn(async (id: string, node: { nodeId: string; type: 'prompt' }) => {
+      store.workflows = store.workflows.map((workflow) => workflow.id === id ? {
+        ...workflow, defaultNodes: { [node.type]: node.nodeId }, runninghub: { ...workflow.runninghub!, inputBindingMode: 'nodes' },
+      } : workflow);
+      return true;
+    }),
     deleteWorkflow: vi.fn((id: string) => new Promise<void>((resolve, reject) => {
       finishDelete = (error) => {
         if (error) { reject(error); return; }
@@ -185,6 +194,14 @@ it.each(['workflow', 'app'] as const)('%s 删除当前云工作流后撤销编�
   click(findElement(render(), (element) => element.props['aria-label'] === '编辑工作流：A')!);
   const draftKey = editor().key;
   expect(editor().props.editing).toMatchObject({ id: 'wf-A' });
+  const inputRow = findElement(render(), (element) => element.key === 'wf-A')!;
+  click(findElement(inputRow, (element) => element.props['data-tooltip'] === '展开输入输出节点')!);
+  const inputBadge = findElement(render(), (element) => String(element.props.title ?? '').includes('设为默认文本节点'))!;
+  click(inputBadge);
+  await Promise.resolve();
+  expect(store.toggleWorkflowDefaultNode).toHaveBeenCalledWith('wf-A', { nodeId: '6::text', type: 'prompt' });
+  expect(store.updateWorkflow).not.toHaveBeenCalled();
+  expect(textOf(render())).toContain('★1');
   click(findElement(render(), (element) => element.props.children === '生成视频')!);
   expect(textOf(render())).toContain('该分类下暂无工作流');
   expect(editor().props.editing).toMatchObject({ id: 'wf-A' });

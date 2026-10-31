@@ -20,6 +20,7 @@ import { generateDreaminaImage } from '../dreaminaService';
 import { executeComfyUIGenerate } from '../comfyWorkflowService';
 import { isRunningHubWorkflow } from '../workflowExecutionService';
 import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
+import { splitRunningHubPrompt } from './providers/runninghubWorkflowInputs';
 import { executeWorkflowApiMedia } from '../workflowApi/workflowApiAdapter';
 import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
 import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
@@ -142,7 +143,9 @@ export async function generateImagesBatch(
   signal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
-  const { prompt: rawPrompt, model, provider } = params;
+  const { model, provider } = params;
+  let rawPrompt = params.prompt;
+  const rawWorkflowPrompt = rawPrompt;
   let imageSize = params.imageSize ?? '2K';
   let aspectRatio = params.aspectRatio ?? '1:1';
 
@@ -223,6 +226,7 @@ export async function generateImagesBatch(
   const selectedWorkflow = params.workflowId ? useAppStore.getState().workflows.find((item) => item.id === params.workflowId) : undefined;
   const isComfyWorkflow = Boolean(params.workflowId && (!selectedWorkflow?.adapterType || selectedWorkflow.adapterType === 'comfyui'));
   const isRunningHub = params.workflowId ? isRunningHubWorkflow(selectedWorkflow) : provider === 'runninghub';
+  if (isRunningHubWorkflow(selectedWorkflow)) rawPrompt = splitRunningHubPrompt(rawWorkflowPrompt).prompt;
   const cameraSettings = useAppStore.getState().nodes.find((node) => node.id === params.nodeId)?.data.cameraSettings;
   const comfyMedia = isComfyWorkflow ? await resolvePromptWithMediaRefs(rawPrompt, { cameraSettings }) : undefined;
   const runninghubMedia = isRunningHub ? await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true, cameraSettings }) : undefined;
@@ -293,7 +297,7 @@ export async function generateImagesBatch(
     }
     if (isRunningHubWorkflow(workflow)) {
       const refs = referenceMedia ?? [];
-      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'image', references: {
+      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, rawWorkflowPrompt, prompt, kind: 'image', references: {
         image: allImageUrls,
         video: getMediaReferenceUrls(refs, 'video', 'local'), audio: getMediaReferenceUrls(refs, 'audio', 'local'),
       } }, signal);

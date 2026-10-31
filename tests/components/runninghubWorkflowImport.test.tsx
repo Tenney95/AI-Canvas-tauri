@@ -8,7 +8,9 @@ import RunningHubWorkflowImport from '../../src/components/runninghub/RunningHub
 import RunningHubParameterFields from '../../src/components/nodes/shared/RunningHubParameterFields';
 import type { WorkflowDefinition } from '../../src/types';
 import type { RunningHubParameter } from '../../src/types/runninghub';
-import { runningHubFieldValue } from '../../src/services/runninghubWorkflowService';
+import { runningHubFieldValue, runningHubInputNodes } from '../../src/services/runninghubWorkflowService';
+import * as workflowService from '../../src/services/runninghubWorkflowService';
+import * as workflowExecution from '../../src/services/workflowExecutionService';
 
 const driver = vi.hoisted(() => ({ active: false, cursor: 0, states: [] as unknown[], add: vi.fn(), update: vi.fn() }));
 vi.mock('react', async (original) => {
@@ -58,7 +60,7 @@ beforeEach(() => {
   driver.active = false; driver.cursor = 0; driver.states = [];
   driver.add.mockReset().mockResolvedValue(undefined); driver.update.mockReset().mockResolvedValue(undefined);
 });
-afterEach(() => { driver.active = false; });
+afterEach(() => { driver.active = false; vi.restoreAllMocks(); });
 
 const workflow: WorkflowDefinition = { id: 'wf-cloud', name: '音频处理', category: 'ai-audio', fileContent: '', fileName: 'RH', createdAt: 1, adapterType: 'runninghub', runninghub: { version: 1, kind: 'app', remoteId: '1904152026220003329', connectionId: 'runninghub-model', parameters: [
   { nodeId: '6', fieldName: 'text', type: 'string', label: '正面提示词', defaultValue: '', source: 'prompt' },
@@ -68,6 +70,38 @@ const workflow: WorkflowDefinition = { id: 'wf-cloud', name: '音频处理', cat
 ] } };
 
 describe('云工作流参数界面', () => {
+  it('编辑重新读取后按原 ID 保存新定义及输入节点，保留有效默认并移除失效默认', async () => {
+    const editing: WorkflowDefinition = { ...workflow, defaultNodes: { prompt: '6::text', audio: '4::audio' },
+      runninghub: { ...workflow.runninghub!, inputBindingMode: 'nodes' } };
+    const refreshed = { ...editing.runninghub!, parameters: [
+      editing.runninghub!.parameters[0],
+      { nodeId: '807', fieldName: 'image', label: '参考图片', type: 'string' as const, defaultValue: '', source: 'image' as const, mediaFormat: 'filename' as const },
+    ] };
+    vi.spyOn(workflowExecution, 'runningHubConnection').mockReturnValue({ apiKey: 'fixture-key', baseUrl: 'https://www.runninghub.cn' });
+    const read = vi.spyOn(workflowService, 'fetchRunningHubDefinition').mockResolvedValue(refreshed);
+    const onSaved = vi.fn();
+    const editor = renderEditor(editing, onSaved);
+    (editor.find((element) => element.type === 'button' && element.props.children === '从 RunningHub 读取定义')!.props.onClick as () => void)();
+    await vi.waitFor(() => expect(renderEditor(editing, onSaved).some((element) => element.type === 'input' && element.props.value === '807')).toBe(true));
+    expect(read).toHaveBeenCalledOnce();
+    expect(driver.update).not.toHaveBeenCalled();
+    const save = renderEditor(editing, onSaved).find((element) => element.type === 'button' && element.props.children === '保存修改')!;
+    (save.props.onClick as () => void)();
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(driver.update).toHaveBeenCalledWith(editing.id, expect.objectContaining({
+      runninghub: refreshed, ioNodes: runningHubInputNodes(refreshed), defaultNodes: { prompt: '6::text' },
+    }));
+    expect(driver.add).not.toHaveBeenCalled();
+    expect(editing.runninghub!.parameters.some((field) => field.nodeId === '807')).toBe(false);
+  });
+  it('编辑保存保留合法默认节点并保存实际输入投影', async () => {
+    const editing = { ...workflow, defaultNodes: { prompt: '6::text' }, runninghub: { ...workflow.runninghub!, inputBindingMode: 'nodes' as const } };
+    const editor = renderEditor(editing);
+    const save = editor.find((element) => element.type === 'button' && element.props.children === '保存修改')!;
+    (save.props.onClick as () => void)();
+    await Promise.resolve();
+    expect(driver.update).toHaveBeenCalledWith(workflow.id, expect.objectContaining({ defaultNodes: { prompt: '6::text' }, ioNodes: runningHubInputNodes(editing.runninghub), runninghub: expect.objectContaining({ inputBindingMode: 'nodes' }) }));
+  });
   it('编辑时保留输出类型、长 ID、连接、参数类型与已保存映射', () => {
     const html = renderToStaticMarkup(<RunningHubWorkflowImport kind="app" editing={workflow} onSaved={vi.fn()} />);
     expect(html).toContain('value="1904152026220003329"');
@@ -76,6 +110,21 @@ describe('云工作流参数界面', () => {
     expect(html).toContain('正面提示词 · 提示词');
     expect(html).toContain('参考音频 · audio #2');
     expect(html).toContain('保存修改');
+  });
+  it('参数折叠标题将节点 ID 放在最前面，同节点多字段与未填写 ID 分别显示', () => {
+    const parameters: RunningHubParameter[] = [
+      { nodeId: '197', fieldName: 'clip_name', label: 'CLIP加载器 · clip_name', type: 'string', defaultValue: 'model', source: 'value' },
+      { nodeId: '197', fieldName: 'type', label: 'CLIP加载器 · type', type: 'string', defaultValue: 'krea2', source: 'value' },
+      { nodeId: '807', fieldName: 'image', label: '参考图片 · image', type: 'string', defaultValue: '', source: 'image', referenceIndex: 0 },
+      { nodeId: '', fieldName: '', label: '新参数', type: 'string', defaultValue: '', source: 'value' },
+    ];
+    const html = renderToStaticMarkup(<RunningHubWorkflowImport kind="workflow" editing={{ ...workflow, runninghub: { ...workflow.runninghub!, parameters } }} onSaved={vi.fn()} />);
+    const summaries = [...html.matchAll(/<summary[^>]*>(.*?)<\/summary>/g)].map((match) => match[1]);
+    expect(summaries).toContain('#197 · CLIP加载器 · clip_name · 固定值 / 可调整');
+    expect(summaries).toContain('#197 · CLIP加载器 · type · 固定值 / 可调整');
+    expect(summaries).toContain('#807 · 参考图片 · image · image #1');
+    expect(summaries).toContain('新参数 · 固定值 / 可调整');
+    expect(summaries.some((text) => text.startsWith('# · '))).toBe(false);
   });
   it('生成参数保留零与 false，动态映射提示用户应提供的引用', () => {
     const html = renderToStaticMarkup(<RunningHubParameterFields parameters={workflow.runninghub!.parameters} values={{ '3::count': '2' }} onChange={vi.fn()} disabled />);

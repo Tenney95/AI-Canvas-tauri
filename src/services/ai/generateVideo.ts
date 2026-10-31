@@ -7,6 +7,7 @@ import { videoInputData, videoInputFingerprint } from '../videoBatchPlanning';
 import { useAppStore } from '../../store/useAppStore';
 import { isRunningHubWorkflow } from '../workflowExecutionService';
 import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
+import { splitRunningHubPrompt, resolveRunningHubInputRouting } from './providers/runninghubWorkflowInputs';
 import { executeWorkflowApi } from '../workflowApi/workflowApiAdapter';
 import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
 import { getPendingTasksForProject } from '../pollManager';
@@ -303,15 +304,19 @@ export async function hasVideoReferenceContent(params: AIVideoGenParams): Promis
   });
   // RefMod is a deliberate character reference even when no image is attached.
   if (input.comfyRefmods.length) return true;
-  const referenceInput = await resolveVideoReferenceInput(input.prompt, params.nodeId, params.referenceMedia ?? [], {
+  const workflow = state.workflows.find((item) => item.id === params.workflowId);
+  const referencePrompt = workflow?.adapterType === 'runninghub' ? splitRunningHubPrompt(input.prompt).prompt : input.prompt;
+  const referenceInput = await resolveVideoReferenceInput(referencePrompt, params.nodeId, params.referenceMedia ?? [], {
     provider: params.provider, target: 'local', preserveDeclaredRoles: true, suppressWarning: true,
   });
   if (referenceInput.references?.length) return true;
 
-  const workflow = state.workflows.find((item) => item.id === params.workflowId);
   // ComfyUI explicit media slots are resolved separately from the main prompt.
-  // Cloud workflows consume references by declared media source, not arbitrary
-  // scalar inputs; their actual media is already included above.
+  // RH 的定向素材不混入正文，单独检查其已声明的输入槽。
+  if (workflow?.adapterType === 'runninghub') {
+    const routing = await resolveRunningHubInputRouting(workflow, input.prompt, input.workflowInputs);
+    return [...routing.bindings.values()].some((binding) => !!binding.mediaSource);
+  }
   if (!workflow || (workflow.adapterType && workflow.adapterType !== 'comfyui')) return false;
   for (const io of workflow.ioNodes ?? []) {
     if (!['image', 'video', 'audio'].includes(io.type)) continue;
@@ -567,7 +572,11 @@ export async function generateVideo(
     .map(([key, value]) => [key, typeof value === 'string'
       ? expandShotlistRowMentions(value, cameraState.nodes, shotOptions) : value]));
   const refmodInputs = resolveComfyRefmodMentionInputs({ prompt: expandedPrompt, workflowInputs: expandedInputs, manual: params.comfyRefmods });
-  const rawPrompt = refmodInputs.prompt;
+  let rawPrompt = refmodInputs.prompt;
+  const rawWorkflowPrompt = rawPrompt;
+  if (isRunningHubWorkflow(useAppStore.getState().workflows.find((workflow) => workflow.id === params.workflowId))) {
+    rawPrompt = splitRunningHubPrompt(rawWorkflowPrompt).prompt;
+  }
   params = { ...params, prompt: rawPrompt,
     ...(expandedInputs ? { workflowInputs: refmodInputs.workflowInputs } : {}),
     ...(refmodInputs.comfyRefmods.length ? { comfyRefmods: refmodInputs.comfyRefmods } : {}),
@@ -641,7 +650,7 @@ export async function generateVideo(
     }
     if (provider === 'workflow-api' || (workflow?.adapterType && !['comfyui', 'runninghub'].includes(workflow.adapterType))) throw new Error('工作流定义缺失或执行类型不支持');
     if (isRunningHubWorkflow(workflow)) {
-      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, beforeSubmit, prompt: referenceInput.prompt, kind: 'video', references: {
+      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, rawWorkflowPrompt, beforeSubmit, prompt: referenceInput.prompt, kind: 'video', references: {
         image: getMediaReferenceUrls(references, 'image', 'local'), video: videoUrls, audio: getMediaReferenceUrls(references, 'audio', 'local'),
       } }, signal);
       return { url: outputs[0].url, runninghubOutputs: outputs };

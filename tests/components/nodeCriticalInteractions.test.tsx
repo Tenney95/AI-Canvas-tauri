@@ -2304,6 +2304,14 @@ describe('critical canvas node interactions', () => {
     expect(store.nodes[0].data.workflowInputs).toEqual({ panelInput: '保留的面板参数', '57:27': '原文' });
     changePrompt('删除工作流标签');
     expect(store.nodes[0].data.workflowInputs).toEqual({ panelInput: '保留的面板参数' });
+    store.workflows = [{ id: 'rh-test', name: 'RH', category: 'ai-video', fileName: 'RH', fileContent: '', createdAt: 1, adapterType: 'runninghub', runninghub: { version: 1, kind: 'workflow', remoteId: '123', connectionId: 'runninghub', parameters: [] } }];
+    store.updateNodeDataTransient('video-node', { workflowId: 'rh-test' });
+    changePrompt('@wf{9::first|首帧|image}(@{image:参考图}) @wf{6::text|正文|prompt}(动作 (特写))');
+    expect(store.nodes[0].data.workflowInputs).toEqual({ panelInput: '保留的面板参数', '9::first': '@{image:参考图}', '6::text': '动作 (特写)' });
+    changePrompt('@wf{6::text|正文|prompt}(编辑中');
+    expect(store.nodes[0].data.prompt).toBe('@wf{6::text|正文|prompt}(编辑中');
+    changePrompt('移除 RH 输入');
+    expect(store.nodes[0].data.workflowInputs).toEqual({ panelInput: '保留的面板参数' });
     expect(store.commitToHistory).not.toHaveBeenCalled();
     const editWrites = store.updateNodeDataTransient.mock.calls.length;
     store.currentProjectId = 'project-b';

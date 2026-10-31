@@ -52,6 +52,74 @@ beforeEach(() => {
 });
 
 describe('工作流持久化顺序', () => {
+  it('原条目更新定义后，排队的旧卡片默认操作不覆盖新节点，重载仍保留新定义', async () => {
+    const prompt = { nodeId: '6::text', title: '正文 · #6 / text', type: 'prompt' as const };
+    const image = { nodeId: '807::image', title: '参考图 · #807 / image', type: 'image' as const };
+    const cloud: WorkflowDefinition = { ...workflow, fileContent: '', adapterType: 'runninghub', ioNodes: [prompt],
+      runninghub: { version: 1, kind: 'workflow', remoteId: '123', connectionId: 'runninghub', inputBindingMode: 'nodes', parameters: [
+        { nodeId: '6', fieldName: 'text', label: '正文', type: 'string', defaultValue: '', source: 'prompt' },
+      ] } };
+    const refreshed: NonNullable<WorkflowDefinition['runninghub']> = { ...cloud.runninghub!, parameters: [
+      ...cloud.runninghub!.parameters,
+      { nodeId: '807', fieldName: 'image', label: '参考图', type: 'string', defaultValue: '', source: 'image', mediaFormat: 'filename' },
+    ] };
+    const disk = new Map([[cloud.id, cloud]]);
+    const { slice, getState } = createSlice([cloud]);
+    fileMocks.saveWorkflow.mockImplementation(async (record: WorkflowDefinition) => { disk.set(record.id, record); });
+    let finishSave!: () => void;
+    fileMocks.saveWorkflow.mockImplementationOnce(async (record: WorkflowDefinition) => {
+      await new Promise<void>((resolve) => { finishSave = resolve; });
+      disk.set(record.id, record);
+    });
+    fileMocks.loadWorkflows.mockImplementation(async () => [...disk.values()]);
+    const saving = slice.updateWorkflow(cloud.id, { runninghub: refreshed, ioNodes: [prompt, image] });
+    await vi.waitFor(() => expect(finishSave).toBeDefined());
+    const selectingDefault = slice.toggleWorkflowDefaultNode(cloud.id, { nodeId: prompt.nodeId, type: prompt.type });
+    finishSave();
+    await saving;
+    await expect(selectingDefault).resolves.toBe(true);
+    expect(getState().workflows).toHaveLength(1);
+    expect(getState().workflows[0]).toMatchObject({ id: cloud.id, createdAt: cloud.createdAt, runninghub: refreshed, ioNodes: [prompt, image], defaultNodes: { prompt: prompt.nodeId } });
+    const restarted = createSlice();
+    await restarted.slice.loadWorkflows();
+    expect(restarted.getState().workflows).toEqual(getState().workflows);
+  });
+  it('更新定义移除的输入不能由旧卡片重新设为默认或恢复旧定义', async () => {
+    const cloud: WorkflowDefinition = { ...workflow, fileContent: '', adapterType: 'runninghub',
+      runninghub: { version: 1, kind: 'workflow', remoteId: '123', connectionId: 'runninghub', parameters: [
+        { nodeId: '6', fieldName: 'text', label: '正文', type: 'string', defaultValue: '', source: 'prompt' },
+      ] } };
+    const { slice, getState } = createSlice([cloud]);
+    const refreshed = { ...cloud.runninghub!, parameters: [] };
+    await slice.updateWorkflow(cloud.id, { runninghub: refreshed, ioNodes: [] });
+    await expect(slice.toggleWorkflowDefaultNode(cloud.id, { nodeId: '6::text', type: 'prompt' })).rejects.toThrow('已变化');
+    expect(fileMocks.saveWorkflow).toHaveBeenCalledOnce();
+    expect(getState().workflows[0].runninghub).toEqual(refreshed);
+  });
+  it('默认输入的连续切换读取最新状态，落库失败时保留原选择', async () => {
+    const image = { nodeId: '7', title: '参考图', type: 'image' as const };
+    const { slice, getState } = createSlice([{ ...workflow, ioNodes: [image] }]);
+    const first = slice.toggleWorkflowDefaultNode(workflow.id, image);
+    const second = slice.toggleWorkflowDefaultNode(workflow.id, image);
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
+    expect(getState().workflows[0].defaultNodes).toEqual({});
+    fileMocks.saveWorkflow.mockRejectedValueOnce(new Error('写入失败'));
+    await expect(slice.toggleWorkflowDefaultNode(workflow.id, image)).rejects.toThrow('写入失败');
+    expect(getState().workflows[0].defaultNodes).toEqual({});
+  });
+  it('RH 默认节点和输入模式重载保留，伪造输入节点拒绝保存', async () => {
+    const io = { nodeId: '6::text', title: '正文 · #6 / text', type: 'prompt' as const };
+    const cloud: WorkflowDefinition = { ...workflow, fileContent: '', adapterType: 'runninghub', ioNodes: [io], defaultNodes: { prompt: io.nodeId }, runninghub: { version: 1, kind: 'workflow', remoteId: '123', connectionId: 'runninghub', inputBindingMode: 'nodes', parameters: [{ nodeId: '6', fieldName: 'text', label: '正文', type: 'string', defaultValue: '', source: 'prompt' }] } };
+    const { slice, getState } = createSlice();
+    await slice.addWorkflow(cloud);
+    fileMocks.loadWorkflows.mockResolvedValue([cloud]);
+    await slice.loadWorkflows();
+    expect(getState().workflows.find((item) => item.id === cloud.id)).toMatchObject({ ioNodes: [io], defaultNodes: cloud.defaultNodes, runninghub: cloud.runninghub });
+    await expect(slice.updateWorkflow(cloud.id, { ioNodes: [{ ...io, nodeId: 'secret' }] })).rejects.toThrow('不一致');
+    await expect(slice.updateWorkflow(cloud.id, { defaultNodes: { image: io.nodeId } })).rejects.toThrow('已失效');
+    await expect(slice.updateWorkflow(cloud.id, { fileContent: '{"raw":"do-not-save"}' })).rejects.toThrow('不保存');
+  });
   it('AutoDL 复用工作流记录，保留执行类型与默认参数并拒绝原始正文', async () => {
     const cloud: WorkflowDefinition = { ...workflow, category: 'ai-video', fileContent: '', adapterType: 'workflow-api',
       workflowApi: { version: 1, adapter: 'autodl-comfyui', workflowId: 'minimax_h3_zm_u24', connectionId: 'autodl-test', defaults: { seed: 0 } } };

@@ -26,6 +26,8 @@ export interface RunningHubParameter {
   /** 字符串字段实际声明的多行展示方式。 */
   multiline?: boolean;
   source: 'value' | 'prompt' | RunningHubMediaKind;
+  /** API 图中明确的文本输入；未绑定时仍保留其固定值（如负面提示词）。 */
+  inputType?: 'prompt';
   /** 用户在导入编辑器显式选择的来源；固定值不再参与旧定义的提示词兼容识别。 */
   sourceExplicit?: boolean;
   /** 同类型参考素材的索引，从 0 开始。 */
@@ -38,6 +40,8 @@ export interface RunningHubWorkflowManifest {
   remoteId: string;
   connectionId: RunningHubConnectionId;
   parameters: RunningHubParameter[];
+  /** 显式节点绑定；缺省保留旧来源/参考序号映射。 */
+  inputBindingMode?: 'nodes';
   outputNodeIds?: string[];
   instanceType?: 'default' | 'plus';
   usePersonalQueue?: boolean;

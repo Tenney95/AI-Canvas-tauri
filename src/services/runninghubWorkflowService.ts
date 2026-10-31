@@ -3,6 +3,7 @@
  */
 import type { RunningHubParameter, RunningHubValue, RunningHubWorkflowManifest, RunningHubConnection } from '../types/runninghub';
 import { runningHubRequest } from './ai/providers/runninghubClient';
+import type { WorkflowDefinition, WorkflowIONode } from '../types';
 
 const ID = /^\d{1,30}$/;
 const SENSITIVE = /(?:api.?key|authorization|token|secret|password|cookie)/i;
@@ -10,6 +11,24 @@ const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_IMPORT = 1_500_000;
 export const runningHubParameterKey = (field: Pick<RunningHubParameter, 'nodeId' | 'fieldName'>): string =>
   `${encodeURIComponent(field.nodeId)}::${encodeURIComponent(field.fieldName)}`;
+
+/** 只投影明确声明的动态输入，不把模型名等普通字符串参数当成素材槽。 */
+export function runningHubInputNodes(manifest: RunningHubWorkflowManifest): WorkflowIONode[] {
+  return resolveRunningHubParameters(manifest.parameters).flatMap((field) => {
+    const type = field.source === 'value' ? (!field.sourceExplicit ? field.inputType : undefined) : field.source;
+    return type ? [{ nodeId: runningHubParameterKey(field), title: `${field.label} · #${field.nodeId} / ${field.fieldName}`.replace(/[|}\r\n]/g, ' '), type }] : [];
+  });
+}
+
+export function workflowInputNodes(workflow?: WorkflowDefinition): WorkflowIONode[] {
+  if (workflow?.adapterType === 'runninghub') return workflow.runninghub ? runningHubInputNodes(workflow.runninghub) : [];
+  return workflow?.ioNodes ?? [];
+}
+
+export function validRunningHubDefaults(manifest: RunningHubWorkflowManifest, defaults: WorkflowDefinition['defaultNodes']) {
+  const nodes = runningHubInputNodes(manifest);
+  return Object.fromEntries(Object.entries(defaults ?? {}).filter(([type, id]) => nodes.some((node) => node.type === type && node.nodeId === id))) as NonNullable<WorkflowDefinition['defaultNodes']>;
+}
 
 /** 旧导入器把主提示词保存成固定值；仅修正唯一且明确的主提示词，保留手工映射。 */
 export function resolveRunningHubParameters(parameters: readonly RunningHubParameter[]): RunningHubParameter[] {
@@ -142,7 +161,8 @@ export function importRunningHubDefinition(
       for (const [fieldName, value] of Object.entries(node.inputs)) {
         if (!primitive(value) || SENSITIVE.test(fieldName)) continue;
         const field = parameter(nodeId, fieldName, value, `${title} · ${fieldName}`);
-        const media = ({ LoadImage: ['image', 'image'], LoadAudio: ['audio', 'audio'], VHS_LoadVideo: ['video', 'video'], LoadImageFromUrl: ['image', 'image'] } as Record<string, string[]>)[node.class_type];
+        if (node.class_type === 'CLIPTextEncode' && fieldName === 'text' && typeof value === 'string') field.inputType = 'prompt';
+        const media = ({ LoadImage: ['image', 'image'], H3OptionalPicture3: ['image', 'image'], LoadAudio: ['audio', 'audio'], VHS_LoadVideo: ['video', 'video'], LoadImageFromUrl: ['image', 'image'] } as Record<string, string[]>)[node.class_type];
         if (media && fieldName === media[1]) {
           field.source = media[0] as 'image' | 'video' | 'audio';
           field.referenceIndex = fields.filter((entry) => entry.source === field.source).length;
@@ -158,17 +178,19 @@ export function importRunningHubDefinition(
 }
 
 export function validateRunningHubManifest(value: RunningHubWorkflowManifest): void {
-  const allowed = new Set(['version', 'kind', 'remoteId', 'connectionId', 'parameters', 'outputNodeIds', 'instanceType', 'usePersonalQueue']);
-  const fieldKeys = new Set(['nodeId', 'fieldName', 'label', 'type', 'defaultValue', 'required', 'options', 'min', 'max', 'step', 'multiline', 'source', 'sourceExplicit', 'referenceIndex', 'mediaFormat']);
+  const allowed = new Set(['version', 'kind', 'remoteId', 'connectionId', 'parameters', 'inputBindingMode', 'outputNodeIds', 'instanceType', 'usePersonalQueue']);
+  const fieldKeys = new Set(['nodeId', 'fieldName', 'label', 'type', 'defaultValue', 'required', 'options', 'min', 'max', 'step', 'multiline', 'source', 'sourceExplicit', 'inputType', 'referenceIndex', 'mediaFormat']);
   if (!isRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) throw new Error('RunningHub 工作流包含不支持的配置字段');
   if (!value || value.version !== 1 || !['workflow', 'app'].includes(value.kind) || !ID.test(value.remoteId)
     || !['runninghub', 'runninghub-model'].includes(value.connectionId) || !Array.isArray(value.parameters)
     || value.parameters.length > 200) throw new Error('RunningHub 工作流定义无效');
   const keys = new Set<string>();
+  if (value.inputBindingMode !== undefined && value.inputBindingMode !== 'nodes') throw new Error('RunningHub 输入绑定模式无效');
   for (const field of value.parameters) {
     if (!isRecord(field) || Object.keys(field).some((key) => !fieldKeys.has(key))
       || (field.required !== undefined && typeof field.required !== 'boolean')
       || (field.sourceExplicit !== undefined && typeof field.sourceExplicit !== 'boolean')
+      || (field.inputType !== undefined && (field.inputType !== 'prompt' || field.type !== 'string'))
       || (typeof field.defaultValue === 'string' && /^(?:[a-z]:[\\/]|\\\\|file:)/i.test(field.defaultValue))) throw new Error('RunningHub 参数不能包含额外配置或本地文件路径');
     if (!field || typeof field.nodeId !== 'string' || !/^[\w:-]{1,120}$/.test(field.nodeId)
       || typeof field.fieldName !== 'string' || !field.fieldName || field.fieldName.length > 160 || UNSAFE_KEYS.has(field.fieldName) || SENSITIVE.test(field.fieldName)

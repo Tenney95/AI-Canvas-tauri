@@ -60,6 +60,7 @@ import { getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
 import { beginComfyNodeDelivery, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, isComfyNodeDeliveryActive, isMediaTaskPausedError, pauseComfyNodeDelivery, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, resumeComfyUINodeTask, resumeRunningHubNodeTask, subscribeComfyDeliveries, updatePendingTask, removePendingTask } from '../../services/pollManager';
 import MediaTaskStatus from './shared/MediaTaskStatus';
 import { isCloudWorkflow, getCloudWorkflowPersistedOutput, workflowExecution } from '../../services/workflowExecutionService';
+import { splitRunningHubPrompt } from '../../services/ai/providers/runninghubWorkflowInputs';
 import { completeWorkflowApiNodeTask, stopWorkflowApiNodeTask } from '../../services/workflowApi/workflowApiAdapter';
 import WorkflowApiTaskStatus from './shared/WorkflowApiTaskStatus';
 import { cancelRunningHubNodeTask, completeRunningHubNodeTask } from '../../services/ai/providers/runninghubWorkflow';
@@ -365,7 +366,19 @@ function AINodeDialog() {
       if (!current) return;
       const nextValue = previousValue === undefined ? value
         : mergeAppendedNodeMentions(previousValue, value, current.prompt ?? '');
-      if (isCloudWorkflow(state.workflows.find((item) => item.id === current.workflowId))) {
+      const workflow = state.workflows.find((item) => item.id === current.workflowId);
+      if (workflow?.adapterType === 'runninghub') {
+        const inputs = { ...current.workflowInputs };
+        // 草稿暂未闭合时也清除上一版芯片赋值，防止随后删掉整个芯片留下旧值。
+        for (const field of (current.prompt ?? '').matchAll(/@wf\{([^|}]+)\|[^|}]+\|[^|}]+\}/g)) delete inputs[field[1]];
+        try {
+          const next = splitRunningHubPrompt(nextValue).assignments;
+          for (const field of next) inputs[field.key] = field.value;
+        } catch { /* 保留未闭合正文草稿；提交时会提示修正。 */ }
+        updateNodeDataTransient(activeNodeId!, { prompt: nextValue, workflowInputs: Object.keys(inputs).length ? inputs : undefined });
+        return;
+      }
+      if (isCloudWorkflow(workflow)) {
         updateNodeDataTransient(activeNodeId!, { prompt: nextValue }); return;
       }
       // Extract workflow IO node assignments from the prompt string

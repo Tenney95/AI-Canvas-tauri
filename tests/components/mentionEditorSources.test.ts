@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../src/types';
+import { runningHubInputNodes } from '../../src/services/runninghubWorkflowService';
 import type { DramaAsset, DramaAssetBase, DramaAssetLibrary, DramaCharacter } from '../../src/types/dramaAssets';
 import {
   matchesMentionQuery,
@@ -14,6 +15,15 @@ import {
   filterWorkflowMentions,
   workflowMentionFilterChips,
 } from '../../src/components/nodes/shared/mentionEditorSources';
+
+it('RH 的同一远端节点多个字段作为不同 @ 目标，普通参数不进入候选', () => {
+  const inputs = runningHubInputNodes({ version: 1, kind: 'workflow', remoteId: '123', connectionId: 'runninghub', parameters: [
+    { nodeId: '9', fieldName: 'first', label: '首帧', type: 'string', defaultValue: '', source: 'image' },
+    { nodeId: '9', fieldName: 'last', label: '尾帧', type: 'string', defaultValue: '', source: 'image' },
+    { nodeId: '9', fieldName: 'model', label: '模型', type: 'string', defaultValue: 'model', source: 'value', sourceExplicit: true },
+  ] });
+  expect(resolveWorkflowMentionNodes('rh', inputs).map((item) => item._ioNodeId)).toEqual(['9::first', '9::last']);
+});
 
 function node(
   id: string,

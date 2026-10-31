@@ -81,6 +81,7 @@ import { comfyRefmodKey } from '../../../utils/comfyRefmod';
 import { prepareComfyRefmodSelections } from '../../../services/comfyRefmodWorkflow';
 import type { ComfyRefmodAsset, ComfyRefmodSelection } from '../../../types/comfyRefmod';
 import type { WorkflowDefinition } from '../../../types';
+import { workflowInputNodes } from '../../../services/runninghubWorkflowService';
 
 const ComfyRefmodMentionSettings = lazy(() => import('./ComfyRefmodMentionSettings'));
 const AssetFolderNavigation = lazy(() => import('../../assets/AssetFolderNavigation'));
@@ -410,7 +411,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     return () => window.clearTimeout(timer);
   }, [currentProjectId, nodeId, selectedWorkflow]);
   const workflowIONodes = useMemo(
-    () => selectedWorkflow?.ioNodes || [],
+    () => workflowInputNodes(selectedWorkflow),
     [selectedWorkflow],
   );
 

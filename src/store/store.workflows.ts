@@ -3,9 +3,9 @@
  */
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { WorkflowDefinition } from '../types';
+import type { WorkflowDefinition, WorkflowIONode } from '../types';
 import * as fileService from '../services/fileService';
-import { validateRunningHubManifest } from '../services/runninghubWorkflowService';
+import { validateRunningHubManifest, runningHubInputNodes, validRunningHubDefaults, workflowInputNodes } from '../services/runninghubWorkflowService';
 import { validateWorkflowApiManifest } from '../services/workflowApi/autodlWorkflowManifest';
 import { workflowApiOutputKind } from '../services/workflowApi/workflowApiDefinition';
 import {
@@ -24,6 +24,8 @@ export interface WorkflowSlice {
   setWorkflowPanelOpen: (open: boolean, source?: WorkflowSlice['workflowPanelSource']) => void;
   addWorkflow: (wf: WorkflowDefinition) => Promise<void>;
   updateWorkflow: (id: string, updates: Partial<Omit<WorkflowDefinition, 'id' | 'createdAt'>>) => Promise<void>;
+  /** 排队后按当前定义切换默认输入，返回是否已启用。 */
+  toggleWorkflowDefaultNode: (id: string, node: Pick<WorkflowIONode, 'nodeId' | 'type'>) => Promise<boolean>;
   deleteWorkflow: (id: string) => Promise<void>;
   /** 内置工作流恢复成随包发布的版本（删掉的补回、改过的覆盖），返回恢复条数。 */
   resetBuiltInWorkflows: () => Promise<number>;
@@ -40,7 +42,9 @@ function validateWorkflow(workflow: WorkflowDefinition) {
   if (workflow.adapterType === 'runninghub') {
     if (!workflow.runninghub || !['ai-image', 'ai-video', 'ai-audio'].includes(workflow.category)) throw new Error('请选择云工作流的图像、视频或音频输出类型');
     validateRunningHubManifest(workflow.runninghub);
-    if (workflow.fileContent || workflow.editableContent || workflow.ioNodes?.length || workflow.serverId) throw new Error('云工作流只保存参数定义，不保存调用示例或本地工作流正文');
+    if (workflow.fileContent || workflow.editableContent || workflow.serverId) throw new Error('云工作流只保存参数定义，不保存调用示例或本地工作流正文');
+    if (workflow.ioNodes?.length && JSON.stringify(workflow.ioNodes) !== JSON.stringify(runningHubInputNodes(workflow.runninghub))) throw new Error('云工作流输入节点与参数定义不一致');
+    if (Object.keys(workflow.defaultNodes ?? {}).length !== Object.keys(validRunningHubDefaults(workflow.runninghub, workflow.defaultNodes)).length) throw new Error('云工作流默认输入已失效，请重新选择');
   } else if (workflow.runninghub) throw new Error('云工作流定义与来源不一致');
 }
 
@@ -51,6 +55,21 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
     const pending = persistenceQueue.then(operation);
     persistenceQueue = pending.then(() => undefined, () => undefined);
     return pending;
+  };
+  const saveChanges = async (id: string, updates: Partial<Omit<WorkflowDefinition, 'id' | 'createdAt'>>) => {
+    const existing = get().workflows.find((workflow) => workflow.id === id);
+    if (!existing) throw new Error('要更新的工作流不存在');
+    const updatedWorkflow: WorkflowDefinition = {
+      ...existing,
+      ...updates,
+      id: existing.id,
+      createdAt: existing.createdAt,
+    };
+    validateWorkflow(updatedWorkflow);
+    await fileService.saveWorkflow(updatedWorkflow);
+    set((state) => ({
+      workflows: state.workflows.map((workflow) => workflow.id === id ? updatedWorkflow : workflow),
+    }));
   };
   return ({
   workflows: [],
@@ -81,22 +100,22 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
     set((state) => ({ workflows: [...state.workflows, wf] }));
   }),
 
-  updateWorkflow: (id, updates) => enqueue(async () => {
+  updateWorkflow: (id, updates) => enqueue(() => saveChanges(id, updates)),
+
+  toggleWorkflowDefaultNode: (id, node) => enqueue(async () => {
     const existing = get().workflows.find((workflow) => workflow.id === id);
     if (!existing) throw new Error('要更新的工作流不存在');
-    const updatedWorkflow: WorkflowDefinition = {
-      ...existing,
-      ...updates,
-      id: existing.id,
-      createdAt: existing.createdAt,
-    };
-    validateWorkflow(updatedWorkflow);
-    await fileService.saveWorkflow(updatedWorkflow);
-    set((state) => ({
-      workflows: state.workflows.map((workflow) => (
-        workflow.id === id ? updatedWorkflow : workflow
-      )),
-    }));
+    const inputs = workflowInputNodes(existing);
+    if (!inputs.some((input) => input.nodeId === node.nodeId && input.type === node.type)) throw new Error('工作流输入节点已变化，请重新选择');
+    const defaultNodes = existing.runninghub ? validRunningHubDefaults(existing.runninghub, existing.defaultNodes) : { ...existing.defaultNodes };
+    const enabled = defaultNodes[node.type] !== node.nodeId;
+    if (enabled) defaultNodes[node.type] = node.nodeId;
+    else delete defaultNodes[node.type];
+    // 排队后读取当前定义，不能把旧卡片捕获的整份 runninghub 参数写回。
+    await saveChanges(id, { defaultNodes, ...(existing.runninghub ? {
+      runninghub: { ...existing.runninghub, inputBindingMode: 'nodes' }, ioNodes: inputs,
+    } : {}) });
+    return enabled;
   }),
 
   deleteWorkflow: (id) => enqueue(async () => {

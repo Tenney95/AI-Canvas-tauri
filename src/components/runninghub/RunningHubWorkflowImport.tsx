@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { generateId, useAppStore } from '../../store/useAppStore';
 import type { WorkflowCategory, WorkflowDefinition } from '../../types';
 import type { RunningHubConnectionId, RunningHubParameter, RunningHubWorkflowManifest } from '../../types/runninghub';
-import { fetchRunningHubDefinition, importRunningHubDefinition, resolveRunningHubParameters, runningHubFieldValue, runningHubParameterKey, validateRunningHubManifest } from '../../services/runninghubWorkflowService';
+import { fetchRunningHubDefinition, importRunningHubDefinition, resolveRunningHubParameters, runningHubFieldValue, runningHubParameterKey, validateRunningHubManifest, runningHubInputNodes, validRunningHubDefaults } from '../../services/runninghubWorkflowService';
 import { runningHubConnection } from '../../services/workflowExecutionService';
 import RunningHubParameterFields from '../nodes/shared/RunningHubParameterFields';
 import { RUNNINGHUB_MODEL_BASE_URL } from '../../constants/api';
@@ -46,8 +46,9 @@ export default function RunningHubWorkflowImport({ kind, editing, onSaved }: {
         ? await fetchRunningHubDefinition(runningHubConnection(useAppStore.getState().config.providers, connectionId), options, controller.signal)
         : importRunningHubDefinition(definition, options);
       if (controller.signal.aborted) return;
-      setManifest(next); setDefaultInputs({}); setRemoteId(next.remoteId); setDefinition('');
-      setMessage(t('已读取 {count} 个参数。请核对提示词与参考素材映射后保存。', { count: next.parameters.length }));
+      setManifest({ ...next, ...(editing?.runninghub?.inputBindingMode ? { inputBindingMode: editing.runninghub.inputBindingMode } : {}) }); setDefaultInputs({}); setRemoteId(next.remoteId); setDefinition('');
+      const invalidDefaults = Object.keys(editing?.defaultNodes ?? {}).length !== Object.keys(validRunningHubDefaults(next, editing?.defaultNodes)).length;
+      setMessage(invalidDefaults ? t('部分默认输入已失效，保存后请重新设置默认节点。') : t('已读取 {count} 个参数。请核对提示词与参考素材映射后保存。', { count: next.parameters.length }));
     } catch (error) {
       if (!controller.signal.aborted) setMessage(error instanceof Error ? error.message : t('读取定义失败'));
     } finally { if (!controller.signal.aborted) setBusy(false); }
@@ -61,7 +62,8 @@ export default function RunningHubWorkflowImport({ kind, editing, onSaved }: {
         ? { ...field, defaultValue: runningHubFieldValue({ ...field, required: false }, defaultInputs[runningHubParameterKey(field)]) }
         : field) };
       validateRunningHubManifest(next);
-      const changes = { name: name.trim(), category, adapterType: 'runninghub' as const, runninghub: next, fileName: `RunningHub ${kind === 'app' ? 'AI 应用' : '工作流'} · ${next.remoteId}`, fileContent: '', ioNodes: [], updatedAt: Date.now() };
+      const bound = { ...next, ...(!editing ? { inputBindingMode: 'nodes' as const } : {}) };
+      const changes = { name: name.trim(), category, adapterType: 'runninghub' as const, runninghub: bound, fileName: `RunningHub ${kind === 'app' ? 'AI 应用' : '工作流'} · ${next.remoteId}`, fileContent: '', ioNodes: runningHubInputNodes(bound), defaultNodes: validRunningHubDefaults(bound, editing?.defaultNodes), updatedAt: Date.now() };
       if (editing) await useAppStore.getState().updateWorkflow(editing.id, changes);
       else await useAppStore.getState().addWorkflow({ ...changes, id: generateId(), createdAt: Date.now() });
       setMessage(t('已保存，可在对应媒体节点的工作流菜单中选择')); onSaved();
@@ -96,11 +98,12 @@ export default function RunningHubWorkflowImport({ kind, editing, onSaved }: {
         </div>
       </details>
       {manifest && <>
+        <p className="ui-hint">{t('保存后展开工作流卡片设置默认输入，或在提示词中 @ 指定输入节点。')}</p>
         <div className="flex items-center justify-between gap-2 text-xs"><span>{t('参数映射 · {count} 项', { count: manifest.parameters.length })}</span><button type="button" className="ui-btn ui-btn--sm" onClick={() => setManifest({ ...manifest, parameters: [...manifest.parameters, { nodeId: '', fieldName: '', label: '新参数', type: 'string', defaultValue: '', source: 'value', sourceExplicit: true }] })}>{t("添加参数")}</button></div>
         <p className="text-xs text-canvas-text-secondary">{t("保留固定值，或映射到本次提示词和参考素材。参考序号按各媒体类型分别计数。")}</p>
         <div className="flex max-h-96 flex-col gap-2 overflow-y-auto">
           {manifest.parameters.map((field, index) => <details key={index} className="ui-card shrink-0 p-3">
-            <summary className="cursor-pointer break-words text-xs">{field.label} · {field.source === 'value' ? t('固定值 / 可调整') : field.source === 'prompt' ? t('提示词') : `${field.source} #${(field.referenceIndex ?? 0) + 1}`}</summary>
+            <summary className="cursor-pointer break-words text-xs">{field.nodeId ? `#${field.nodeId} · ` : ''}{field.label} · {field.source === 'value' ? t('固定值 / 可调整') : field.source === 'prompt' ? t('提示词') : `${field.source} #${(field.referenceIndex ?? 0) + 1}`}</summary>
             <div className="mt-2 flex min-w-0 flex-col gap-2">
               <label className="text-xs">{t("显示名称")}<input className="ui-input w-full" value={field.label} maxLength={160} onChange={(event) => setField(index, { label: event.target.value })} /></label>
               <div className="flex flex-wrap gap-2">

@@ -9,6 +9,7 @@ import { executeWorkflowApiMedia } from '../workflowApi/workflowApiAdapter';
 import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
 import { isRunningHubWorkflow, getCloudWorkflowPersistedOutput } from '../workflowExecutionService';
 import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
+import { splitRunningHubPrompt } from './providers/runninghubWorkflowInputs';
 import { executeComfyUIAudioGenerate } from '../comfyWorkflowService';
 import {
   createMediaDataUrlBudget,
@@ -143,12 +144,15 @@ export async function generateAudio(
   params: AIAudioGenParams,
   signal?: AbortSignal,
 ): Promise<AudioGenerationResult> {
-  const { prompt: rawPrompt, model, provider } = params;
+  const { model, provider } = params;
+  let rawPrompt = params.prompt;
+  const rawWorkflowPrompt = rawPrompt;
   const state = useAppStore.getState();
   const globalAssets = await loadGlobalDramaAssetsForPrompt(`${rawPrompt}\n${JSON.stringify(params.workflowInputs ?? {})}`, state);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   if (useAppStore.getState().currentProjectId !== state.currentProjectId) throw new Error('项目已切换，请重新生成音频');
   const selectedWorkflow = params.workflowId ? state.workflows.find((item) => item.id === params.workflowId) : undefined;
+  if (isRunningHubWorkflow(selectedWorkflow)) rawPrompt = splitRunningHubPrompt(rawWorkflowPrompt).prompt;
   if (resolveAudioSpeechWorkflow(selectedWorkflow)) {
     const invalid = collectAudioSpeechReferences(rawPrompt, params.nodeId, state.nodes, state.edges,
       state.dramaAssets, selectedWorkflow, params.workflowInputs, globalAssets).find((reference) => !reference.url);
@@ -188,7 +192,7 @@ export async function generateAudio(
       return { ...normalizeProtocolAudioResult(result.url), ...result };
     }
     if (isRunningHubWorkflow(workflow)) {
-      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'audio', references: {
+      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, rawWorkflowPrompt, prompt, kind: 'audio', references: {
         image: getMediaReferenceUrls(references, 'image', 'local'), video: getMediaReferenceUrls(references, 'video', 'local'), audio: getMediaReferenceUrls(references, 'audio', 'local'),
       } }, signal);
       return { ...normalizeProtocolAudioResult(outputs[0].url), runninghubOutputs: outputs };

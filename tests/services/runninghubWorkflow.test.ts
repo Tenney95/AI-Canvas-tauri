@@ -9,6 +9,7 @@ import { uploadRunningHubMedia } from '../../src/services/ai/providers/runninghu
 import { fetchRunningHubDefinition } from '../../src/services/runninghubWorkflowService';
 import { buildRunningHubSiteProviders } from '../../src/services/runninghubSiteCredentials';
 import type { RunningHubMediaKind, RunningHubWorkflowManifest } from '../../src/types/runninghub';
+import type { RunningHubInputRouting } from '../../src/services/ai/providers/runninghubWorkflowInputs';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), persist: vi.fn(), desktop: vi.fn(() => true) }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
@@ -20,6 +21,65 @@ const manifest: RunningHubWorkflowManifest = { version: 1, kind: 'workflow', rem
   { nodeId: '3', fieldName: 'seed', label: '种子', type: 'number', defaultValue: 1, source: 'value' },
   { nodeId: '3', fieldName: 'enabled', label: '开关', type: 'boolean', defaultValue: true, source: 'value' },
 ] };
+
+describe('RH 默认输入与显式输入的提交映射', () => {
+  const routed = (): RunningHubInputRouting => ({ nodeMode: true, bindings: new Map(), mentionedTypes: new Set(), defaults: { prompt: '6::text', image: '9::first' } });
+  const withImages: RunningHubWorkflowManifest = { ...manifest, parameters: [...manifest.parameters,
+    { nodeId: '9', fieldName: 'first', label: '首帧', type: 'string', defaultValue: '', source: 'image' },
+    { nodeId: '9', fieldName: 'last', label: '尾帧', type: 'string', defaultValue: '', source: 'image' },
+  ] };
+  it.each(['image', 'video', 'audio'] as const)('%s 生成入口剥离芯片正文并把字段赋值交给共享执行器', async (kind) => {
+    setup(kind);
+    const store = useAppStore.getState();
+    useAppStore.setState({ workflows: store.workflows.map((workflow) => ({ ...workflow,
+      runninghub: { ...workflow.runninghub!, inputBindingMode: 'nodes' }, defaultNodes: { prompt: '6::text' },
+    })) });
+    const params = { provider: 'runninghubwf', model: 'runninghubwf/wf1', workflowId: 'wf1', nodeId: 'n1',
+      prompt: '外层说明 @wf{6::text|正文|prompt}(本轮独立正文)' };
+    if (kind === 'image') await (await import('../../src/services/ai/generateImage')).generateImage(params);
+    else if (kind === 'video') await (await import('../../src/services/ai/generateVideo')).generateVideo(params);
+    else await (await import('../../src/services/ai/generateAudio')).generateAudio(params);
+    expect(submitCalls()).toHaveLength(1);
+    const body = JSON.parse(String(submitCalls()[0][1].body));
+    expect(body.nodeInfoList.find((field: { nodeId: string; fieldName: string }) => field.nodeId === '6' && field.fieldName === 'text').fieldValue).toBe('本轮独立正文');
+    expect(JSON.stringify(body)).not.toContain('@wf');
+  });
+  it('正文仅写入默认字段，固定 0/false 不受影响，无默认槽不偷偷注入', async () => {
+    const result = await buildRunningHubInputs(connection, manifest, '主正文', { '3::seed': '0', '3::enabled': 'false' }, {}, undefined, routed());
+    expect(result).toEqual([{ nodeId: '6', fieldName: 'text', fieldValue: '主正文' }, { nodeId: '3', fieldName: 'seed', fieldValue: 0 }, { nodeId: '3', fieldName: 'enabled', fieldValue: false }]);
+    await expect(buildRunningHubInputs(connection, manifest, '主正文', {}, {}, undefined, { ...routed(), defaults: {} })).rejects.toThrow('请填写');
+  });
+  it('未绑定的 API 文本候选保留负面词，指定后只覆盖该字段', async () => {
+    const definition: RunningHubWorkflowManifest = { ...manifest, parameters: [...manifest.parameters,
+      { nodeId: '7', fieldName: 'text', label: '负面提示词', type: 'string', defaultValue: '原负面词', source: 'value', inputType: 'prompt' },
+    ] };
+    const routing = routed();
+    const result = await buildRunningHubInputs(connection, definition, '主正文', {}, {}, undefined, routing);
+    expect(result.find((field) => field.nodeId === '7')?.fieldValue).toBe('原负面词');
+    routing.bindings.set('7::text', { value: '新负面词' });
+    routing.mentionedTypes.add('prompt');
+    routing.bindings.set('6::text', { value: '明确正文' });
+    const assigned = await buildRunningHubInputs(connection, definition, '主正文', {}, {}, undefined, routing);
+    expect(assigned.find((field) => field.nodeId === '7')?.fieldValue).toBe('新负面词');
+    expect(assigned.find((field) => field.nodeId === '6')?.fieldValue).toBe('明确正文');
+  });
+  it('显式指定尾帧后不把同类素材填入默认首帧；同素材多槽仅上传一次', async () => {
+    const routing = routed();
+    routing.bindings.set('9::last', { value: '', mediaSource: 'https://input.test/a.png' });
+    routing.mentionedTypes.add('image');
+    const first = await buildRunningHubInputs(connection, withImages, '主正文', {}, { image: ['https://input.test/unused.png'] }, undefined, routing);
+    expect(first.find((field) => field.fieldName === 'first')?.fieldValue).toBe('');
+    expect(first.find((field) => field.fieldName === 'last')?.fieldValue).toBe('rh/reference.png');
+    mocks.fetch.mockClear();
+    routing.bindings.set('9::first', { value: '', mediaSource: 'https://input.test/a.png' });
+    await buildRunningHubInputs(connection, withImages, '主正文', {}, {}, undefined, routing);
+    expect(mocks.fetch.mock.calls.filter(([url]) => String(url).endsWith('/upload/binary'))).toHaveLength(1);
+  });
+  it('默认单素材槽拒绝多份素材，错误发生在上传和生成之前', async () => {
+    await expect(buildRunningHubInputs(connection, withImages, '主正文', {}, { image: ['https://input.test/a.png', 'https://input.test/b.png'] }, undefined, routed())).rejects.toThrow('只能接收一份');
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  });
+});
 const pending = () => getPendingTasksForProject('p1');
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const submitCalls = () => mocks.fetch.mock.calls.filter(([url]) => /\/(create|run)$/.test(String(url)));

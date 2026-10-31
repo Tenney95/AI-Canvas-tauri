@@ -2,7 +2,7 @@
  * runninghubWorkflowService — 回归测试：RunningHub 导入与参数合同。
  */
 import { describe, expect, it } from 'vitest';
-import { importRunningHubDefinition, parseRunningHubId, parseRunningHubJson, resolveRunningHubParameters, runningHubFieldValue, validateRunningHubManifest } from '../../src/services/runninghubWorkflowService';
+import { importRunningHubDefinition, parseRunningHubId, parseRunningHubJson, resolveRunningHubParameters, runningHubFieldValue, validateRunningHubManifest, runningHubInputNodes, validRunningHubDefaults } from '../../src/services/runninghubWorkflowService';
 import { runningHubConnection, workflowExecution } from '../../src/services/workflowExecutionService';
 import { RunningHubRequestError } from '../../src/services/ai/providers/runninghubClient';
 import type { RunningHubWorkflowManifest } from '../../src/types/runninghub';
@@ -11,6 +11,19 @@ const options = { kind: 'workflow' as const, remoteId: '1904152026220003329', co
 const graph = { '6': { class_type: 'CLIPTextEncode', inputs: { text: '猫', link: ['1', 0] }, _meta: { title: '正面提示词' } }, '3': { class_type: 'KSampler', inputs: { seed: 0, denoise: 0.5, enabled: false, api_key: 'do-not-save' } } };
 
 describe('RunningHub 导入与参数合同', () => {
+  it('仅动态输入进入 @ 列表，字段身份包含节点与字段名；默认节点必须仍属于同一类型', () => {
+    const manifest = importRunningHubDefinition(JSON.stringify(graph), options);
+    const inputs = runningHubInputNodes(manifest);
+    expect(inputs.map((node) => [node.nodeId, node.type])).toEqual([['6::text', 'prompt']]);
+    expect(validRunningHubDefaults(manifest, { prompt: '6::text', image: '6::text', audio: 'missing' })).toEqual({ prompt: '6::text' });
+    expect(() => validateRunningHubManifest({ ...manifest, inputBindingMode: 'nodes' })).not.toThrow();
+  });
+  it('API 图的 CLIP 文本输入可被 @ 选择，负面固定值及用户显式固定选择保留', () => {
+    const manifest = importRunningHubDefinition(JSON.stringify({ '7': { class_type: 'CLIPTextEncode', _meta: { title: '负面提示词' }, inputs: { text: '保留的负面词' } } }), options);
+    expect(manifest.parameters[0]).toMatchObject({ source: 'value', defaultValue: '保留的负面词', inputType: 'prompt' });
+    expect(runningHubInputNodes(manifest).map((node) => node.nodeId)).toEqual(['7::text']);
+    expect(runningHubInputNodes({ ...manifest, parameters: manifest.parameters.map((field) => ({ ...field, sourceExplicit: true })) })).toEqual([]);
+  });
   it('保留官方数字形式的长 ID，并区分工作流与应用链接', () => {
     expect(parseRunningHubJson('{"webappId":1904152026220003329}')).toEqual({ webappId: options.remoteId });
     expect(parseRunningHubId(`https://www.runninghub.cn/workflow/${options.remoteId}?x=1`, 'workflow')).toBe(options.remoteId);
@@ -222,6 +235,31 @@ describe('RunningHub 导入与参数合同', () => {
   it('识别确定的媒体节点且保留各类型顺序与上传格式', () => {
     const result = importRunningHubDefinition(JSON.stringify({ a: { class_type: 'LoadImage', inputs: { image: 'a.png' } }, b: { class_type: 'LoadImageFromUrl', inputs: { image: 'https://cdn.test/b.png' } }, c: { class_type: 'LoadAudio', inputs: { audio: 'a.wav' } } }), options);
     expect(result.parameters).toMatchObject([{ source: 'image', referenceIndex: 0, mediaFormat: 'filename' }, { source: 'image', referenceIndex: 1, mediaFormat: 'url' }, { source: 'audio', referenceIndex: 0 }]);
+  });
+  it('RH 可选参考图的空图片字段进入输入列表，保留可选空值与同类参考顺序', () => {
+    const manifest = importRunningHubDefinition(JSON.stringify({
+      '807': { class_type: 'H3OptionalPicture3', _meta: { title: '参考图片' }, inputs: { image: '', mode: 'keep' } },
+      '808': { class_type: 'ImageOptionalGate', inputs: { input: ['807', 0], on_empty: 'bypass' } },
+      '809': { class_type: 'LoadImage', inputs: { image: 'other.png' } },
+    }), options);
+    const image = manifest.parameters.find((field) => field.nodeId === '807' && field.fieldName === 'image')!;
+    expect(image).toMatchObject({ source: 'image', defaultValue: '', referenceIndex: 0, mediaFormat: 'filename' });
+    expect(image.required).toBeUndefined();
+    expect(runningHubFieldValue(image)).toBe('');
+    expect(runningHubInputNodes(manifest).map((node) => [node.nodeId, node.type])).toEqual([
+      ['807::image', 'image'], ['809::image', 'image'],
+    ]);
+    expect(manifest.parameters.find((field) => field.nodeId === '809')).toMatchObject({ referenceIndex: 1 });
+    expect(validRunningHubDefaults(manifest, { image: '807::image' })).toEqual({ image: '807::image' });
+    expect(manifest.parameters.filter((field) => field.fieldName !== 'image').every((field) => field.source === 'value')).toBe(true);
+  });
+  it('不把相似节点名称或已知图片节点的其他字段猜成图片输入', () => {
+    const manifest = importRunningHubDefinition(JSON.stringify({
+      '1': { class_type: 'H3OptionalPicture3Custom', inputs: { image: '' } },
+      '2': { class_type: 'H3OptionalPicture3', inputs: { filename: '', description: 'image' } },
+    }), options);
+    expect(manifest.parameters.every((field) => field.source === 'value')).toBe(true);
+    expect(runningHubInputNodes(manifest)).toEqual([]);
   });
   it.each(['IMAGE', 'VIDEO', 'AUDIO'] as const)('%s 文件候选不作为枚举，空值和已失效的示例文件仍可导入', (fieldType) => {
     const source = fieldType.toLowerCase();

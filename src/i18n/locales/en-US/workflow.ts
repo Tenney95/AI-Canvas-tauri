@@ -95,6 +95,9 @@ const workflow: Record<string, string> = {
   "添加云工作流": "Add cloud workflow",
   "未设置默认节点时，ComfyUI 调用需要在提示词中 @对应节点，提示词或参考图才会写入对应输入。展开下方工作流卡片，点击节点徽章设为该类型默认节点（★），未显式 @ 的内容即可自动注入。": "Without a default node, @mention the matching node in your prompt to route text or reference images to its input. Expand a workflow card and click a node badge to make it the default for its type (★). Inputs without an explicit @mention will then be injected automatically.",
   "读取文件失败": "Failed to read file",
+  "部分默认输入已失效，保存后请重新设置默认节点。": "Some default inputs are no longer valid. Choose their default nodes again after saving.",
+  "保存后展开工作流卡片设置默认输入，或在提示词中 @ 指定输入节点。": "After saving, expand the workflow card to choose default inputs, or @mention an input node in the prompt.",
+  "展开输入节点，点击徽章设置默认节点（★）；也可在提示词中 @ 指定输入。旧工作流保留原映射，设置默认节点后启用节点绑定。": "Expand the inputs and click a badge to choose a default (★), or @mention an input in the prompt. Existing workflows keep their mappings until a default node is selected.",
 };
 
 export default workflow;
