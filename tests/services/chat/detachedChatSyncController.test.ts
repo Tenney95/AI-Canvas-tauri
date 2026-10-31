@@ -682,9 +682,9 @@ describe('detached chat sync controller', () => {
     useAppStore.setState({ nodes: [node('asset://localhost/second.mp4', 120)] });
     const next = buildDetachedChatSnapshot(useAppStore.getState());
     const patch = createChatStatePatch(first, next);
-    expect(patch.fields.nodes?.[0].data.videoUrl).toBe('asset://localhost/second.mp4');
+    expect(patch.nodes?.upserted[0].data.videoUrl).toBe('asset://localhost/second.mp4');
     expect(applyChatStatePatch(first, patch).nodes[0].data.videoUrl).toBe('asset://localhost/second.mp4');
-    expect(JSON.stringify(patch.fields.nodes)).not.toContain('PRIVATE_');
+    expect(JSON.stringify(patch.nodes)).not.toContain('PRIVATE_');
   });
 
   it('keeps the node projection stable across canvas drags', () => {
@@ -768,4 +768,42 @@ it('reuses the newly created conversation for rapid MCP selections and projects 
   const snapshot = buildDetachedChatSnapshot(state);
   expect(snapshot.mcpClientOptions).toEqual([{ id: 'one', name: 'one', toolCount: 1 }, { id: 'two', name: 'two', toolCount: 1 }]);
   expect(JSON.stringify(snapshot.mcpClientOptions)).not.toContain('private.example');
+});
+
+
+it('keeps unchanged entity arrays and applies only changed nodes, including ordering and removal', () => {
+  const node = (id: string) => ({ id, type: 'ai-text', position: { x: 0, y: 0 }, data: { label: id, type: 'ai-text' as const } });
+  useAppStore.setState({ nodes: [node('a'), node('b'), node('c')] });
+  const first = buildDetachedChatSnapshot(useAppStore.getState());
+  const unchanged = applyChatStatePatch(first, createChatStatePatch(first, first));
+  expect(unchanged.messages).toBe(first.messages);
+  expect(unchanged.conversations).toBe(first.conversations);
+  expect(unchanged.agentTasks).toBe(first.agentTasks);
+  expect(unchanged.nodes).toBe(first.nodes);
+  useAppStore.setState({ nodes: [node('c'), { ...node('a'), data: { type: 'ai-text', label: '新名' } }, node('d')] });
+  const next = buildDetachedChatSnapshot(useAppStore.getState());
+  const patch = createChatStatePatch(first, next);
+  expect(patch.fields.nodes).toBeUndefined();
+  expect(patch.nodes?.upserted.map((item) => item.id)).toEqual(['a', 'd']);
+  expect(patch.nodes?.removedIds).toEqual(['b']);
+  expect(applyChatStatePatch(first, patch).nodes).toEqual(next.nodes);
+  const oldPatch = createChatStatePatch(first, first);
+  oldPatch.fields.nodes = [];
+  expect(applyChatStatePatch(first, oldPatch).nodes).toEqual([]);
+});
+
+it('does not reparse unchanged historical message bodies on canvas or streaming updates', () => {
+  const old = { id: 'old', conversationId: 'conversation-1', role: 'user' as const,
+    status: 'done' as const, timestamp: 1, get content() { return '历史正文'; } };
+  const read = vi.spyOn(old, 'content', 'get');
+  const message = { id: 'stream', conversationId: 'conversation-1', role: 'assistant' as const,
+    status: 'streaming' as const, timestamp: 2, content: '第一段' };
+  useAppStore.setState({ messages: [old, message] });
+  buildDetachedChatSnapshot(useAppStore.getState());
+  const initial = read.mock.calls.length;
+  buildDetachedChatSnapshot(useAppStore.getState());
+  useAppStore.setState({ messages: [old, { ...message, content: '第一段，第二段' }] });
+  buildDetachedChatSnapshot(useAppStore.getState());
+  expect(read.mock.calls.length).toBe(initial);
+  read.mockRestore();
 });

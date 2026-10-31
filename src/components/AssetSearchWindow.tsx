@@ -11,9 +11,6 @@ import {
   loadConfigWithoutSecrets as loadConfig,
   saveConfig,
   loadProjectsList,
-  listProjectFiles,
-  listGlobalFiles,
-  listExternalFolderFiles,
   registerProjectFolders,
   setBaseDataDir,
   syncAuthorizedDirectories,
@@ -21,9 +18,9 @@ import {
   addAssetFilesToGlobal,
   pickAssetFolder,
   CATEGORY_LABELS,
-  type AssetFileEntry,
   type FileCategory,
 } from '../services/fileService';
+import { loadAssetSearchFiles, type AssetSearchEntry as SearchEntry } from '../services/assetSearchService';
 import { getAllAssetMeta } from '../services/indexedDbService';
 import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
 import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
@@ -40,11 +37,6 @@ import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
 
 /** 单页渲染数量（增量加载步长）*/
 const PAGE_SIZE = 60;
-
-interface SearchEntry extends AssetFileEntry {
-  projectId?: string;
-  projectName?: string;
-}
 
 /** 来源筛选项 */
 interface SourceOption {
@@ -67,68 +59,57 @@ export default function AssetSearchWindow() {
   const [loading, setLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
-  // ── 加载：配置 → 项目/文件夹 → 聚合所有文件 + 标签 ──
+  const scanController = useRef<AbortController | null>(null);
+  const [loadError, setLoadError] = useState(false);
+
+  // 配置与授权仍由此窗口初始化；扫描有界并发，已识别的条目分批可见。
   const loadAll = useCallback(async () => {
+    scanController.current?.abort();
+    const controller = new AbortController();
+    scanController.current = controller;
+    const { signal } = controller;
     setLoading(true);
+    setLoadError(false);
+    setFiles([]);
+    setTagMap({});
+    setVisibleCount(PAGE_SIZE);
     try {
       const cfg = (await loadConfig()) as AppConfig | null;
-      // 独立窗口需自行应用完整外观
+      signal.throwIfAborted();
       applyAppearanceTheme(cfg?.appearance ?? getAppearanceForConfig(cfg));
       document.documentElement.toggleAttribute('data-native-cursor', cfg?.customCursor === false);
       const performanceMode = (cfg?.performanceMode ?? cfg?.graphicsCompatibilityMode) === true;
       syncPerformanceModeRuntime(performanceMode);
       document.documentElement.toggleAttribute('data-performance-mode', performanceMode);
       setLocale(cfg?.language);
-      // 同步用户自定义数据根目录到 fileService
       setBaseDataDir(cfg?.baseDataDir);
       await syncAuthorizedDirectories(cfg ?? {});
-
+      signal.throwIfAborted();
       const projects = await loadProjectsList();
-      registerProjectFolders(projects);          // 让 getProjectDataDir 解析「项目名-短ID」目录
+      signal.throwIfAborted();
+      registerProjectFolders(projects);
       const folders = cfg?.assetFolders ?? [];
-
-      // 聚合：每个项目目录 + 全局 file 目录 + 外部文件夹
-      const [perProject, globalFiles, folderFiles] = await Promise.all([
-        Promise.all(
-          projects.map(async (p) => {
-            const list = await listProjectFiles(p.id);
-            return list.map<SearchEntry>((f) => ({
-              ...f, source: 'project', projectId: p.id, projectName: p.name,
-            }));
-          }),
-        ),
-        listGlobalFiles(),
-        listExternalFolderFiles(folders),
-      ]);
-
-      // 去重（按绝对路径）
-      const seen = new Set<string>();
-      const merged: SearchEntry[] = [];
-      for (const f of [...perProject.flat(), ...globalFiles, ...folderFiles]) {
-        if (seen.has(f.path)) continue;
-        seen.add(f.path);
-        merged.push(f);
-      }
-      setFiles(merged);
-
-      // 来源下拉项
       const opts: SourceOption[] = [{ key: 'all', label: '全部来源' }];
       for (const p of projects) opts.push({ key: `project:${p.id}`, label: p.name, group: '项目' });
-      if (globalFiles.length > 0) opts.push({ key: 'global', label: '全局资产库', group: '其他' });
+      opts.push({ key: 'global', label: '全局资产库', group: '其他' });
       for (const root of folders) opts.push({ key: `folder:${root}`, label: shortFolderName(root), group: '文件夹' });
       setSources(opts);
-
-      // 标签
+      await loadAssetSearchFiles(projects, folders, { signal, onFiles: (files) => {
+        if (!signal.aborted) setFiles(files);
+      } });
+      signal.throwIfAborted();
+      // 扫描完成后包含本轮迁移的旧标签；取消后的读取结果不得覆盖新一轮。
       try {
         const metas = await getAllAssetMeta();
+        signal.throwIfAborted();
         const map: Record<string, string[]> = {};
         for (const m of metas) if (m.tags?.length) map[m.assetId] = m.tags;
         setTagMap(map);
-      } catch { /* ignore */ }
-    } catch (err) {
-      console.error('[AssetSearchWindow] 加载失败:', err);
+      } catch { /* 保留无标签的文件结果 */ }
+    } catch {
+      if (!signal.aborted) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, []);
 
@@ -138,7 +119,8 @@ export default function AssetSearchWindow() {
     void prepareDragIcon(); // 预创建拖拽占位图，确保 dragstart 时可同步发起原生拖拽
     // 挂载时拉取数据（异步内部 setState，属合理的副作用数据获取）
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadAll();
+    void loadAll();
+    return () => scanController.current?.abort();
   }, [loadAll]);
 
   // ── 添加文件 / 文件夹 ──
@@ -393,8 +375,10 @@ export default function AssetSearchWindow() {
         ))}
       </div>
 
-      <div className="asset-search-scroll">
-        {loading ? (
+      <div className="asset-search-scroll" aria-busy={loading}>
+        {loadError && <div className="ui-alert ui-alert--warning m-2" role="alert">{translate('部分资源加载失败，请刷新重试')}</div>}
+        {loading && files.length > 0 && <div className="assets-load-sentinel" role="status">{translate('加载中…')}</div>}
+        {loading && filtered.length === 0 ? (
           <div className="assets-empty">
             <div className="assets-spinner asset-search-spinner" />
             <span>{translate("加载中…")}</span>

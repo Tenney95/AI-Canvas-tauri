@@ -27,6 +27,9 @@ vi.mock('../../src/services/fs/core', async (importOriginal) => ({
 }));
 vi.mock('../../src/services/fs/assetIndex', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fs/assetIndex')>(),
+  identifyAssetBatch: async (files: Array<{ path: string; options: { rootPath: string } }>) => files.map(({ path, options }) => ({
+    assetId: `asset-${path}`, relativePath: path.slice(options.rootPath.length + 1),
+  })),
   identifyAsset: async (path: string, options: { rootPath: string }) => ({
     assetId: `asset-${path}`, relativePath: path.slice(options.rootPath.length + 1),
   }),

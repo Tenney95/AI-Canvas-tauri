@@ -264,22 +264,58 @@ export function buildChatModelCatalog(state: Pick<AppState, 'config' | 'workflow
   return cachedModelCatalog;
 }
 
+const messageImageFileNames = new WeakMap<ChatMessage, string[]>();
+let cachedImageMessages: ChatMessage[] | undefined;
+let cachedImageConversation: string | null | undefined;
+let cachedConversationImages: string[] = [];
+let cachedImageDraft = '';
+let cachedDraftImages: string[] = [];
+let cachedConversations: ChatConversation[] | undefined;
+let cachedConversationOwner: string | undefined;
+let cachedScopedConversations: ChatConversation[] = [];
+
+function conversationImageFileNames(messages: ChatMessage[], conversationId: string | null): string[] {
+  if (messages === cachedImageMessages && conversationId === cachedImageConversation) return cachedConversationImages;
+  const names: string[] = [];
+  for (const message of messages) {
+    if (message.conversationId !== conversationId) continue;
+    let files = messageImageFileNames.get(message);
+    if (!files) {
+      files = parseChatImageReferences(message.content).map((image) => image.fileName);
+      messageImageFileNames.set(message, files);
+    }
+    names.push(...files);
+  }
+  cachedImageMessages = messages;
+  cachedImageConversation = conversationId;
+  cachedConversationImages = names;
+  return names;
+}
+
 export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
   const chatScopeId = state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
   const ownerId = seriesOwnerId(state.projects, chatScopeId);
-  const conversations = state.conversations.filter((conversation) => conversation.projectId === ownerId
-    || conversation.id === MCP_SETTINGS_CONVERSATION_ID);
+  if (state.conversations !== cachedConversations || ownerId !== cachedConversationOwner) {
+    cachedScopedConversations = state.conversations.filter((conversation) => conversation.projectId === ownerId
+      || conversation.id === MCP_SETTINGS_CONVERSATION_ID);
+    cachedConversations = state.conversations;
+    cachedConversationOwner = ownerId;
+  }
+  const conversations = cachedScopedConversations;
   const activeConversationId = conversations.some((conversation) => conversation.id === state.activeConversationId)
     ? state.activeConversationId : null;
   const composerDraft = activeConversationId ? state.chatComposerDrafts[activeConversationId] ?? ''
     : state.activeConversationId ? '' : state.chatComposerLiveDraft;
   const imageDrafts = activeConversationId ? state.chatImageDrafts[activeConversationId] ?? [] : [];
-  const imageFileNames = [
+  if (composerDraft !== cachedImageDraft) {
+    cachedImageDraft = composerDraft;
+    cachedDraftImages = parseChatImageReferences(composerDraft).map((image) => image.fileName);
+  }
+  const imageFileNames = [...new Set([
     ...imageDrafts.map((image) => image.fileName),
-    ...state.messages.filter((message) => message.conversationId === activeConversationId)
-      .flatMap((message) => parseChatImageReferences(message.content).map((image) => image.fileName)),
-    ...parseChatImageReferences(composerDraft).map((image) => image.fileName),
-  ];
+    ...conversationImageFileNames(state.messages, activeConversationId),
+    ...cachedDraftImages,
+  ])];
   void prepareChatImagePreviews(chatScopeId, imageFileNames);
   const project = state.projects.find((item) => item.id === state.currentProjectId);
   return {

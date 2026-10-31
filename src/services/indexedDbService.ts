@@ -1569,30 +1569,91 @@ export async function getAssetIndexesByFingerprint(fingerprint: string): Promise
   });
 }
 
-export async function putAssetIndex(record: AssetIndexRecord): Promise<void> {
+/** 目录扫描的小批路径查询；一次事务读取，按输入顺序返回，不扫描整张索引表。 */
+export async function getAssetIndexesByPaths(paths: readonly string[]): Promise<Array<AssetIndexRecord | undefined>> {
+  if (!paths.length) return [];
+  if (paths.length > 128) throw new Error('资产索引查询批次过大');
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_ASSET_INDEX, STORE_METADATA], 'readwrite');
-    let forgotten = false;
-    withActiveAsset(tx, record.assetId, () => {
-      withRelocatedMedia(tx, record, (next) => {
-        const store = tx.objectStore(STORE_ASSET_INDEX);
-        const current = store.get(next.assetId);
-        current.onsuccess = () => {
-          const lastUsedAt = latestAssetUsageTime(next.lastUsedAt, current.result?.lastUsedAt);
-          const merged = { ...next };
-          if (!merged.contentDigest && current.result?.size === next.size && current.result?.mtimeMs === next.mtimeMs) {
-            merged.contentDigest = current.result.contentDigest;
-          }
-          if (lastUsedAt === undefined) delete merged.lastUsedAt;
-          else merged.lastUsedAt = lastUsedAt;
-          store.put(merged);
-        };
-      });
-    }, () => { forgotten = true; });
-    tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () => reject(new Error(forgotten ? '素材已被清理，请重新加载后重试' : '文件引用写入事务失败'));
+    const tx = db.transaction(STORE_ASSET_INDEX, 'readonly');
+    const index = tx.objectStore(STORE_ASSET_INDEX).index('path');
+    const records: Array<AssetIndexRecord | undefined> = new Array(paths.length);
+    paths.forEach((path, position) => {
+      const request = index.get(path);
+      request.onsuccess = () => { records[position] = request.result as AssetIndexRecord | undefined; };
+    });
+    tx.oncomplete = () => resolve(records);
+    tx.onerror = tx.onabort = () => reject(new Error('资产索引读取失败'));
   });
+}
+
+/** 扫描刷新合并小批事务；同值免写仍在墓碑与迁移日志校验之后执行。 */
+export async function putAssetIndexes(
+  records: readonly AssetIndexRecord[],
+  options: { skipUnchanged?: boolean; migrateLegacyTags?: boolean; requireExistingPath?: boolean } = {},
+): Promise<AssetIndexRecord[]> {
+  if (!records.length) return [];
+  if (records.length > 128) throw new Error('资产索引保存批次过大');
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const stores = options.migrateLegacyTags
+      ? [STORE_ASSET_INDEX, STORE_METADATA, STORE_ASSET_META, STORE_ASSET_META_V2]
+      : [STORE_ASSET_INDEX, STORE_METADATA];
+    const tx = db.transaction(stores, 'readwrite');
+    let forgotten = false;
+    let identityChanged = false;
+    const saved: AssetIndexRecord[] = new Array(records.length);
+    records.forEach((record, position) => {
+      withActiveAsset(tx, record.assetId, () => {
+        withRelocatedMedia(tx, record, (next) => {
+          const store = tx.objectStore(STORE_ASSET_INDEX);
+          const request = store.get(next.assetId);
+          request.onsuccess = () => {
+            const current = request.result as AssetIndexRecord | undefined;
+            if (options.requireExistingPath && current?.path !== next.path) {
+              identityChanged = true;
+              tx.abort();
+              return;
+            }
+            const lastUsedAt = latestAssetUsageTime(next.lastUsedAt, current?.lastUsedAt);
+            const merged = { ...next };
+            if (!merged.contentDigest && current?.size === next.size && current.mtimeMs === next.mtimeMs) {
+              merged.contentDigest = current.contentDigest;
+            }
+            if (lastUsedAt === undefined) delete merged.lastUsedAt;
+            else merged.lastUsedAt = lastUsedAt;
+            const keys = new Set([...Object.keys(current ?? {}), ...Object.keys(merged)] as Array<keyof AssetIndexRecord>);
+            keys.delete('updatedAt');
+            const unchanged = options.skipUnchanged && current
+              && [...keys].every((key) => Object.is(current[key], merged[key]));
+            saved[position] = unchanged && current ? current : merged;
+            if (!unchanged) store.put(merged);
+          };
+          if (options.migrateLegacyTags) {
+            const tags = tx.objectStore(STORE_ASSET_META_V2);
+            const currentTags = tags.get(next.assetId);
+            currentTags.onsuccess = () => {
+              // 已有标签（包括用户主动清空的标签）不再被旧路径标签覆盖。
+              if (currentTags.result) return;
+              const legacy = tx.objectStore(STORE_ASSET_META).get(record.path);
+              legacy.onsuccess = () => {
+                const old = legacy.result as LegacyAssetMetaRecord | undefined;
+                if (old?.tags?.length) tags.put({ assetId: next.assetId, path: next.path,
+                  tags: old.tags, taggedBy: old.taggedBy, updatedAt: old.updatedAt } satisfies AssetMetaRecord);
+              };
+            };
+          }
+        });
+      }, () => { forgotten = true; });
+    });
+    tx.oncomplete = () => resolve(saved);
+    tx.onerror = tx.onabort = () => reject(new Error(forgotten ? '素材已被清理，请重新加载后重试'
+      : identityChanged ? '资产身份已变化，请重新扫描' : '文件引用写入事务失败'));
+  });
+}
+
+export async function putAssetIndex(record: AssetIndexRecord): Promise<void> {
+  await putAssetIndexes([record]);
 }
 
 /** Forget only identities already verified missing by the file service; never delete disk files. */

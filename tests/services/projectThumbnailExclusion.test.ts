@@ -51,6 +51,14 @@ vi.mock('../../src/services/fs/core', async (importOriginal) => ({
 vi.mock('../../src/services/fs/assetIndex', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fs/assetIndex')>(),
   identifyAsset: mocks.identifyAsset,
+  identifyAssetBatch: async (files: Array<{ path: string; options: { rootPath: string } }>, signal?: AbortSignal) => {
+    const results = [];
+    for (const file of files) {
+      signal?.throwIfAborted();
+      results.push(await mocks.identifyAsset(file.path, file.options));
+    }
+    return results;
+  },
 }));
 vi.mock('../../src/services/fs/assetImageMetadata', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fs/assetImageMetadata')>(),

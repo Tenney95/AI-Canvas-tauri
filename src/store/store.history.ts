@@ -58,25 +58,55 @@ const LAYOUT_NODE_DATA_KEYS = [
   'displayLabel',
 ] as const satisfies readonly (keyof BaseNodeData)[];
 
-function createSnapshot(
-  nodes: Node<BaseNodeData>[],
-  edges: Edge[],
-  groups: NodeGroup[],
-): HistoryEntry {
-  return {
-    nodes: nodes.map((node) => ({
-      ...node,
-      position: { ...node.position },
-      data: { ...node.data },
-      style: node.style ? { ...node.style } : node.style,
-    })),
-    edges: edges.map((edge) => ({
-      ...edge,
-      data: edge.data ? { ...edge.data } : edge.data,
-      style: edge.style ? { ...edge.style } : edge.style,
-    })),
-    groups: groups.map((group) => ({ ...group, nodeIds: [...group.nodeIds] })),
+/** 缓存只认不可变对象身份；弱键随历史淘汰和项目切换释放，不按节点 ID 跨项目复用。 */
+function cachedHistoryMap<T extends object, R>(project: (item: T) => R) {
+  const items = new WeakMap<T, R>();
+  const arrays = new WeakMap<T[], R[]>();
+  const get = (item: T): R => {
+    if (items.has(item)) return items.get(item)!;
+    const value = project(item);
+    items.set(item, value);
+    return value;
   };
+  return {
+    items, get,
+    map: (source: T[]): R[] => {
+      const cached = arrays.get(source);
+      if (cached) return cached;
+      const result = source.map(get);
+      arrays.set(source, result);
+      return result;
+    },
+  };
+}
+
+function cloneNode(node: Node<BaseNodeData>): Node<BaseNodeData> {
+  return { ...node, position: { ...node.position }, data: { ...node.data },
+    style: node.style ? { ...node.style } : node.style };
+}
+
+function cloneEdge(edge: Edge): Edge {
+  return { ...edge, data: edge.data ? { ...edge.data } : edge.data,
+    style: edge.style ? { ...edge.style } : edge.style };
+}
+
+const snapshotNodes = cachedHistoryMap((node: Node<BaseNodeData>) => {
+  const snapshot = cloneNode(node);
+  // 比较阶段已有的投影沿用到副本；不保留源节点，也不重复比较未变化节点的字段。
+  structuralNodesWithLayout.items.set(snapshot, structuralNodesWithLayout.get(node));
+  const structure = structuralNodesWithoutLayout.items.get(node);
+  if (structure) structuralNodesWithoutLayout.items.set(snapshot, structure);
+  return snapshot;
+});
+const snapshotEdges = cachedHistoryMap((edge: Edge) => {
+  const snapshot = cloneEdge(edge);
+  structuralEdges.items.set(snapshot, structuralEdges.get(edge));
+  return snapshot;
+});
+const snapshotGroups = cachedHistoryMap((group: NodeGroup) => ({ ...group, nodeIds: [...group.nodeIds] }));
+
+function createSnapshot(nodes: Node<BaseNodeData>[], edges: Edge[], groups: NodeGroup[]): HistoryEntry {
+  return { nodes: snapshotNodes.map(nodes), edges: snapshotEdges.map(edges), groups: snapshotGroups.map(groups) };
 }
 
 function isDeepEqual(
@@ -150,32 +180,37 @@ function getNodeStyleDimensions(
   return dimensions;
 }
 
-function getStructuralSnapshot(entry: HistoryEntry, includeLayout = true): unknown {
+function projectStructuralNode(node: Node<BaseNodeData>, includeLayout: boolean) {
   return {
-    nodes: entry.nodes.map((node) => ({
-      id: node.id,
-      type: node.type,
-      parentId: node.parentId,
-      extent: node.extent,
-      expandParent: node.expandParent,
-      data: getStructuralNodeData(node.data),
-      ...(includeLayout || node.type === 'canvas-note' ? {
-        position: node.position,
-        layoutData: getNodeDataFields(node.data, LAYOUT_NODE_DATA_KEYS),
-        styleDimensions: getNodeStyleDimensions(node),
-        ...(node.type === 'group' ? { dimensions: { width: node.width, height: node.height } } : {}),
-      } : {}),
-    })),
-    edges: entry.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      sourceHandle: edge.sourceHandle,
-      targetHandle: edge.targetHandle,
-      type: edge.type,
-    })),
-    groups: entry.groups,
+    id: node.id, type: node.type, parentId: node.parentId, extent: node.extent, expandParent: node.expandParent,
+    data: getStructuralNodeData(node.data),
+    ...(includeLayout || node.type === 'canvas-note' ? {
+      position: node.position,
+      layoutData: getNodeDataFields(node.data, LAYOUT_NODE_DATA_KEYS),
+      styleDimensions: getNodeStyleDimensions(node),
+      ...(node.type === 'group' ? { dimensions: { width: node.width, height: node.height } } : {}),
+    } : {}),
   };
+}
+const structuralNodesWithLayout = cachedHistoryMap((node: Node<BaseNodeData>) => projectStructuralNode(node, true));
+const structuralNodesWithoutLayout = cachedHistoryMap((node: Node<BaseNodeData>) => projectStructuralNode(node, false));
+const structuralEdges = cachedHistoryMap((edge: Edge) => ({
+  id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle,
+  targetHandle: edge.targetHandle, type: edge.type,
+}));
+const structuralSnapshots = new WeakMap<HistoryEntry, unknown>();
+const structuralSnapshotsWithoutLayout = new WeakMap<HistoryEntry, unknown>();
+
+function getStructuralSnapshot(entry: HistoryEntry, includeLayout = true): unknown {
+  const cache = includeLayout ? structuralSnapshots : structuralSnapshotsWithoutLayout;
+  const cached = cache.get(entry);
+  if (cached) return cached;
+  const projection = {
+    nodes: (includeLayout ? structuralNodesWithLayout : structuralNodesWithoutLayout).map(entry.nodes),
+    edges: structuralEdges.map(entry.edges), groups: entry.groups,
+  };
+  cache.set(entry, projection);
+  return projection;
 }
 
 function isSameStructure(left: HistoryEntry, right: HistoryEntry): boolean {
@@ -209,7 +244,7 @@ function restoreStructuralNode(
   current: Node<BaseNodeData> | undefined,
   restoreLayout: boolean,
 ): Node<BaseNodeData> {
-  if (!current) return createSnapshot([target], [], []).nodes[0];
+  if (!current) return cloneNode(target);
 
   if (target.type === 'canvas-note') {
     return {
@@ -329,7 +364,7 @@ function restoreStructuralSnapshot(
             targetHandle: edge.targetHandle,
             type: edge.type,
           }
-        : createSnapshot([], [edge], []).edges[0];
+        : cloneEdge(edge);
     }),
     groups: target.groups.map((group) => ({ ...group, nodeIds: [...group.nodeIds] })),
   };
@@ -361,7 +396,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     // 文件暂存不等动画，必须单独等：还原跑在暂存前面的话，文件会在节点复活之后才进 .trash
     await fileService.waitForPendingNodeFileDeletions();
 
-    const { historyIndex, history, nodes, edges, groups } = get();
+    const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
     if (historyIndex < 0 || history.length === 0) return false;
 
     const current = createSnapshot(nodes, edges, groups);
@@ -392,14 +427,14 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const currentGroupIds = new Set(groups.map((group) => group.id));
     const revivedFolders = await fileService.resolveGroupUndoTrashPaths(
       entry.groups.filter((group) => !currentGroupIds.has(group.id)).map((group) => group.name),
-      get().currentProjectId,
+      currentProjectId,
     );
     // Restore parent folders first, including empty groups and legacy nested trash content.
     for (const folder of revivedFolders) await fileService.restoreFromUndoTrash(folder);
     const revivedPathGroups = await Promise.all(entry.nodes.map((node) => (
       currentNodeIds.has(node.id)
         ? Promise.resolve([])
-        : fileService.resolveNodeUndoTrashPaths(node.data, get().currentProjectId)
+        : fileService.resolveNodeUndoTrashPaths(node.data, currentProjectId)
     )));
     const revivedPaths = [...new Set(revivedPathGroups.flat())];
     if (revivedPaths.length > 0) {
@@ -415,7 +450,8 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);
-    if (latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
+    if (latest.currentProjectId !== currentProjectId || latest.history !== history
+      || latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
 
     const restored = restoreStructuralSnapshot(entry, latestSnapshot);
     set({
@@ -431,7 +467,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
   redo: () => enqueueHistoryTransition(async () => {
     await waitForPendingNodeExits();
 
-    const { historyIndex, history, nodes, edges, groups } = get();
+    const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
     const current = createSnapshot(nodes, edges, groups);
     let targetIndex = historyIndex + 2;
     while (targetIndex < history.length && isSameStructure(history[targetIndex], current)) {
@@ -441,7 +477,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     const entry = history[targetIndex];
     const targetNodeIds = new Set(entry.nodes.map((node) => node.id));
-    const projectId = get().currentProjectId;
+    const projectId = currentProjectId;
     const keepReferences = new Set<string>();
     entry.nodes.forEach((node) => {
       fileService.collectNodeFileReferences(node.data).forEach((reference) => keepReferences.add(reference));
@@ -461,7 +497,8 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);
-    if (latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
+    if (latest.currentProjectId !== currentProjectId || latest.history !== history
+      || latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
 
     const restored = restoreStructuralSnapshot(entry, latestSnapshot);
     set({
@@ -475,11 +512,10 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
   commitToHistory: () => {
     const { nodes, edges, groups, history, historyIndex } = get();
+    const previous = historyIndex >= 0 ? history[Math.min(historyIndex, history.length - 1)] : undefined;
+    if (previous && isSameStructure(previous, { nodes, edges, groups })) return;
     const snapshot = createSnapshot(nodes, edges, groups);
     const newHistory = history.slice(0, historyIndex + 1);
-    if (newHistory.length > 0 && isSameStructure(newHistory[newHistory.length - 1], snapshot)) {
-      return;
-    }
     newHistory.push(snapshot);
     if (newHistory.length > MAX_HISTORY) newHistory.shift();
     set({ history: newHistory, historyIndex: newHistory.length - 1 });

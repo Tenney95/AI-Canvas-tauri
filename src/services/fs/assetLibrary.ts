@@ -16,7 +16,7 @@ import {
   type AssetFileEntry,
 } from './core';
 import { moveToTrash } from './trash';
-import { getRelativeAssetPath, identifyAsset } from './assetIndex';
+import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './assetIndex';
 import { getAssetIndexByPath, putAssetIndex } from '../indexedDbService';
 
 /** 仅用于目录浏览的运行时条目，不写入资产索引或持久化配置。 */
@@ -95,8 +95,8 @@ async function ensureGlobalFilesDir(): Promise<string | null> {
 }
 
 /** 列出全局 file 目录的文件，包含用户创建的子目录。 */
-export async function listGlobalFiles(): Promise<AssetFileEntry[]> {
-  return (await listGlobalFolderContents()).files;
+export async function listGlobalFiles(options: AssetScanOptions = {}): Promise<AssetFileEntry[]> {
+  return (await listGlobalFolderContents(options)).files;
 }
 
 export async function listGlobalFolderContents(options: AssetScanOptions = {}): Promise<{ files: AssetFileEntry[]; folders: AssetFolderEntry[]; truncated: boolean; rootPath: string | null }> {
@@ -213,6 +213,18 @@ export async function scanDirectoryFiles(
       }));
       throwIfScanAborted(opts.signal);
       const batch: AssetFileEntry[] = [];
+      // 首批仍逐项发布首个结果；后续普通扫描合并已知身份刷新，精确项目扫描保留原隔离流程。
+      const validResults = statResults.filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+        .slice(0, maxFiles - out.length);
+      const batchIdentities = out.length > 0 && !opts.projectIdentityScope
+        ? await identifyAssetBatch(validResults.map((entry) => ({ path: entry.filePath, options: {
+            rootPath: rootDir, source: opts.source ?? 'folder', projectId: opts.projectId,
+            size: entry.size, mtimeMs: entry.mtimeMs,
+          } })), opts.signal)
+        : undefined;
+      const identitiesByPath = batchIdentities
+        ? new Map(validResults.map((entry, index) => [entry.filePath, batchIdentities[index]])) : undefined;
+      throwIfScanAborted(opts.signal);
       for (const r of statResults) {
         if (!r) { failedFiles++; continue; }
         if (out.length >= maxFiles) { truncated = true; break; }
@@ -240,7 +252,7 @@ export async function scanDirectoryFiles(
             throwIfScanAborted(opts.signal);
           }
         }
-        const identity = await identifyAsset(r.filePath, {
+        const identity = identitiesByPath?.get(r.filePath) ?? await identifyAsset(r.filePath, {
           assetId,
           rootPath: rootDir,
           source: opts.source ?? 'folder',

@@ -1,7 +1,8 @@
 /**
  * 渲染对话消息的受限 Markdown 子集，并把画布、模型与 Skill 引用交给专用引用组件处理。
  */
-import { useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
+import { createChatMarkdownParser, type ChatMarkdownBlock } from '../../utils/chatMarkdownBlocks';
 import { Icon } from '@iconify/react';
 import ChatReferenceText, { type ChatReferenceHandlers } from './ChatReferenceText';
 import { useT } from '../../i18n';
@@ -171,166 +172,79 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   );
 }
 
-function splitTableRow(value: string): string[] {
-  return value.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
-}
-
-function isTableDivider(value: string): boolean {
-  const cells = splitTableRow(value);
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function isBlockStart(lines: string[], index: number): boolean {
-  const line = lines[index] ?? '';
-  if (!line.trim()) return true;
-  if (/^```/.test(line) || /^#{1,6}\s+/.test(line) || /^>\s?/.test(line)) return true;
-  if (/^\s*(?:[-+*]|\d+\.)\s+/.test(line) || /^\s*(?:-{3,}|\*{3,})\s*$/.test(line)) return true;
-  return index + 1 < lines.length && line.includes('|') && isTableDivider(lines[index + 1]);
-}
-
-export default function ChatMarkdown({
-  value,
-  onNodeActivate,
-  onNodeHover,
-  onModelActivate,
-}: ChatMarkdownProps) {
-  const lines = value.replace(/\r\n?/g, '\n').split('\n');
-  const blocks: ReactNode[] = [];
+const MarkdownBlock = memo(function MarkdownBlock({
+  block, onNodeActivate, onNodeHover, onModelActivate,
+}: ChatReferenceHandlers & { block: ChatMarkdownBlock }) {
   const inlineProps = { onNodeActivate, onNodeHover, onModelActivate };
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-
-    const fence = /^```([^\s`]*)\s*$/.exec(line);
-    if (fence) {
-      const code: string[] = [];
-      index += 1;
-      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
-        code.push(lines[index]);
-        index += 1;
-      }
-      if (index < lines.length) index += 1;
-      blocks.push(<CodeBlock key={`code-${index}`} code={code.join('\n')} language={fence[1]} />);
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (heading) {
-      const level = heading[1].length;
-      const headingClasses = level === 1
+  switch (block.kind) {
+    case 'code': return <CodeBlock code={block.code} language={block.language} />;
+    case 'heading': {
+      const headingClasses = block.level === 1
         ? 'mt-3 mb-1.5 text-[16px] font-semibold'
-        : level === 2
-          ? 'mt-3 mb-1 text-[14px] font-semibold'
-          : 'mt-2.5 mb-1 text-[13px] font-semibold';
-      const content = <InlineContent value={heading[2]} {...inlineProps} />;
-      if (level === 1) blocks.push(<h1 key={`h-${index}`} className={headingClasses}>{content}</h1>);
-      else if (level === 2) blocks.push(<h2 key={`h-${index}`} className={headingClasses}>{content}</h2>);
-      else blocks.push(<h3 key={`h-${index}`} className={headingClasses}>{content}</h3>);
-      index += 1;
-      continue;
+        : block.level === 2 ? 'mt-3 mb-1 text-[14px] font-semibold' : 'mt-2.5 mb-1 text-[13px] font-semibold';
+      const content = <InlineContent value={block.text} {...inlineProps} />;
+      if (block.level === 1) return <h1 className={headingClasses}>{content}</h1>;
+      if (block.level === 2) return <h2 className={headingClasses}>{content}</h2>;
+      return <h3 className={headingClasses}>{content}</h3>;
     }
-
-    if (/^\s*(?:-{3,}|\*{3,})\s*$/.test(line)) {
-      blocks.push(<hr key={`hr-${index}`} className="my-3 border-canvas-border/80" />);
-      index += 1;
-      continue;
-    }
-
-    if (index + 1 < lines.length && line.includes('|') && isTableDivider(lines[index + 1])) {
-      const header = splitTableRow(line);
-      const rows: string[][] = [];
-      index += 2;
-      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
-        rows.push(splitTableRow(lines[index]));
-        index += 1;
-      }
-      blocks.push(
-        <div key={`table-${index}`} className="my-2 overflow-x-auto rounded-lg border border-canvas-border/80">
-          <table className="w-full min-w-[280px] border-collapse text-left text-[11px]">
-            <thead className="bg-canvas-hover/70 text-canvas-text-secondary">
-              <tr>{header.map((cell, cellIndex) => (
-                <th key={cellIndex} className="border-b border-canvas-border px-2.5 py-2 font-medium">
-                  <InlineContent value={cell} {...inlineProps} />
-                </th>
-              ))}</tr>
-            </thead>
-            <tbody>{rows.map((row, rowIndex) => (
-              <tr key={rowIndex} className="border-b border-canvas-border/60 last:border-b-0">
-                {header.map((_, cellIndex) => (
-                  <td key={cellIndex} className="px-2.5 py-2 align-top text-canvas-text/90">
-                    <InlineContent value={row[cellIndex] ?? ''} {...inlineProps} />
-                  </td>
-                ))}
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>,
-      );
-      continue;
-    }
-
-    const listItem = /^\s*([-+*]|\d+\.)\s+(.+)$/.exec(line);
-    if (listItem) {
-      const ordered = /\d+\./.test(listItem[1]);
-      const items: string[] = [];
-      while (index < lines.length) {
-        const item = /^\s*([-+*]|\d+\.)\s+(.+)$/.exec(lines[index]);
-        if (!item || /\d+\./.test(item[1]) !== ordered) break;
-        items.push(item[2]);
-        index += 1;
-      }
-      const children = items.map((item, itemIndex) => (
+    case 'rule': return <hr className="my-3 border-canvas-border/80" />;
+    case 'table': return (
+      <div className="my-2 overflow-x-auto rounded-lg border border-canvas-border/80">
+        <table className="w-full min-w-[280px] border-collapse text-left text-[11px]">
+          <thead className="bg-canvas-hover/70 text-canvas-text-secondary">
+            <tr>{block.header.map((cell, cellIndex) => (
+              <th key={cellIndex} className="border-b border-canvas-border px-2.5 py-2 font-medium">
+                <InlineContent value={cell} {...inlineProps} />
+              </th>
+            ))}</tr>
+          </thead>
+          <tbody>{block.rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="border-b border-canvas-border/60 last:border-b-0">
+              {block.header.map((_, cellIndex) => (
+                <td key={cellIndex} className="px-2.5 py-2 align-top text-canvas-text/90">
+                  <InlineContent value={row[cellIndex] ?? ''} {...inlineProps} />
+                </td>
+              ))}
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    );
+    case 'list': {
+      const children = block.items.map((item, itemIndex) => (
         <li key={itemIndex} className="pl-0.5 marker:text-canvas-text-muted">
           <InlineContent value={item} {...inlineProps} />
         </li>
       ));
-      blocks.push(ordered ? (
-        <ol key={`list-${index}`} className="my-1.5 list-decimal space-y-1 pl-5 text-canvas-text/90">{children}</ol>
-      ) : (
-        <ul key={`list-${index}`} className="my-1.5 list-disc space-y-1 pl-5 text-canvas-text/90">{children}</ul>
-      ));
-      continue;
+      return block.ordered
+        ? <ol className="my-1.5 list-decimal space-y-1 pl-5 text-canvas-text/90">{children}</ol>
+        : <ul className="my-1.5 list-disc space-y-1 pl-5 text-canvas-text/90">{children}</ul>;
     }
-
-    if (/^>\s?/.test(line)) {
-      const quote: string[] = [];
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quote.push(lines[index].replace(/^>\s?/, ''));
-        index += 1;
-      }
-      blocks.push(
-        <blockquote key={`quote-${index}`} className="my-2 border-l-2 border-indigo-400/45 pl-3 text-canvas-text-muted">
-          {quote.map((quoteLine, quoteIndex) => (
-            <span key={quoteIndex} className="block"><InlineContent value={quoteLine} {...inlineProps} /></span>
-          ))}
-        </blockquote>,
-      );
-      continue;
-    }
-
-    const paragraph: string[] = [line];
-    index += 1;
-    while (index < lines.length && !isBlockStart(lines, index)) {
-      paragraph.push(lines[index]);
-      index += 1;
-    }
-    blocks.push(
-      <p key={`p-${index}`} className="my-1.5 text-canvas-text/90 first:mt-0 last:mb-0">
-        {paragraph.map((paragraphLine, lineIndex) => (
-          <span key={lineIndex}>
-            {lineIndex > 0 && <br />}
-            <InlineContent value={paragraphLine} {...inlineProps} />
+    case 'quote': return (
+      <blockquote className="my-2 border-l-2 border-indigo-400/45 pl-3 text-canvas-text-muted">
+        {block.lines.map((line, index) => (
+          <span key={index} className="block"><InlineContent value={line} {...inlineProps} /></span>
+        ))}
+      </blockquote>
+    );
+    case 'paragraph': return (
+      <p className="my-1.5 text-canvas-text/90 first:mt-0 last:mb-0">
+        {block.lines.map((line, index) => (
+          <span key={index}>
+            {index > 0 && <br />}
+            <InlineContent value={line} {...inlineProps} />
           </span>
         ))}
-      </p>,
+      </p>
     );
   }
+});
 
-  // overflow-wrap 会继承：长 URL、行内代码在列表项/表格/引用里也不会再撑破气泡
-  return <div className="chat-markdown min-w-0 [overflow-wrap:anywhere]">{blocks}</div>;
+export default function ChatMarkdown({ value, ...handlers }: ChatMarkdownProps) {
+  const [parse] = useState(createChatMarkdownParser);
+  const blocks = useMemo(() => parse(value), [parse, value]);
+  // overflow-wrap 会继承：长 URL、行内代码在列表项/表格/引用里也不会再撑破气泡。
+  return <div className="chat-markdown min-w-0 [overflow-wrap:anywhere]">
+    {blocks.map((block) => <MarkdownBlock key={`${block.kind}-${block.start}`} block={block} {...handlers} />)}
+  </div>;
 }

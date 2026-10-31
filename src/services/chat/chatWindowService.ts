@@ -93,6 +93,8 @@ export interface ChatStatePatch {
   conversations: ChatEntityPatch<ChatConversation>;
   messages: ChatEntityPatch<ChatMessage>;
   agentTasks: ChatEntityPatch<AgentTask>;
+  /** 新补丁按节点 ID 同步；fields.nodes 保留旧完整补丁的读取兼容。 */
+  nodes?: ChatEntityPatch<Node<BaseNodeData>>;
   fields: Partial<{
     activeConversationId: string | null;
     projectId: string | null;
@@ -130,6 +132,7 @@ export type ChatStateSync =
 type Entity = { id: string };
 
 function createEntityPatch<T extends Entity>(previous: T[], next: T[]): ChatEntityPatch<T> {
+  if (previous === next) return { upserted: [], removedIds: [] };
   const previousById = new Map(previous.map((item) => [item.id, item]));
   const nextIds = new Set(next.map((item) => item.id));
   const upserted = next.filter((item) => previousById.get(item.id) !== item);
@@ -159,6 +162,7 @@ function applyEntityPatch<T extends Entity>(
   current: T[],
   patch: ChatEntityPatch<T>,
 ): T[] {
+  if (!hasEntityPatchChanges(patch)) return current;
   const removedIds = new Set(patch.removedIds);
   const upsertedById = new Map(patch.upserted.map((item) => [item.id, item]));
   const merged = current
@@ -221,7 +225,6 @@ export function createChatStatePatch(
   setChangedField(fields, 'localFileGrants', previous.localFileGrants, next.localFileGrants);
   setChangedField(fields, 'imageDrafts', previous.imageDrafts, next.imageDrafts);
   setChangedField(fields, 'imagePreviewUrls', previous.imagePreviewUrls, next.imagePreviewUrls);
-  setChangedField(fields, 'nodes', previous.nodes, next.nodes);
   setChangedField(fields, 'dramaAssets', previous.dramaAssets, next.dramaAssets);
   setChangedField(fields, 'skillOptions', previous.skillOptions, next.skillOptions);
   setChangedField(fields, 'mcpClientOptions', previous.mcpClientOptions, next.mcpClientOptions);
@@ -234,17 +237,19 @@ export function createChatStatePatch(
     conversations: createEntityPatch(previous.conversations, next.conversations),
     messages: createEntityPatch(previous.messages, next.messages),
     agentTasks: createEntityPatch(previous.agentTasks, next.agentTasks),
+    nodes: previous.nodes === next.nodes ? undefined : createEntityPatch(previous.nodes, next.nodes),
     fields,
   };
 }
 
+function hasEntityPatchChanges(patch: ChatEntityPatch<unknown>): boolean {
+  return patch.upserted.length > 0 || patch.removedIds.length > 0 || patch.orderedIds !== undefined;
+}
+
 export function hasChatStatePatchChanges(patch: ChatStatePatch): boolean {
-  const entityPatches = [patch.conversations, patch.messages, patch.agentTasks];
-  return Object.keys(patch.fields).length > 0 || entityPatches.some(
-    (entityPatch) => entityPatch.upserted.length > 0
-      || entityPatch.removedIds.length > 0
-      || entityPatch.orderedIds !== undefined,
-  );
+  return Object.keys(patch.fields).length > 0
+    || [patch.conversations, patch.messages, patch.agentTasks].some(hasEntityPatchChanges)
+    || (!!patch.nodes && hasEntityPatchChanges(patch.nodes));
 }
 
 export function applyChatStatePatch(
@@ -274,7 +279,7 @@ export function applyChatStatePatch(
     imageDrafts: fields.imageDrafts === null ? undefined : (fields.imageDrafts ?? current.imageDrafts),
     imagePreviewUrls: fields.imagePreviewUrls === null ? undefined : (fields.imagePreviewUrls ?? current.imagePreviewUrls),
     assistantModelGroups: fields.assistantModelGroups ?? current.assistantModelGroups,
-    nodes: fields.nodes ?? current.nodes,
+    nodes: patch.nodes ? applyEntityPatch(current.nodes, patch.nodes) : (fields.nodes ?? current.nodes),
     dramaAssets: fields.dramaAssets ?? current.dramaAssets,
     skillOptions: fields.skillOptions ?? current.skillOptions,
     composerDraft: fields.composerDraft ?? current.composerDraft,

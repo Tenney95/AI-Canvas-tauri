@@ -1380,3 +1380,86 @@ describe('batch canvas history', () => {
     expect(useAppStore.getState().nodes[0].data.comfyRefmods).toBeUndefined();
   });
 });
+
+
+describe('history snapshot sharing', () => {
+  it('reuses unchanged snapshot objects while keeping changed nodes detached from live state', () => {
+    const a = node('a');
+    const b = node('b');
+    const edges: Edge[] = [{ id: 'edge', source: 'a', target: 'b' }];
+    useAppStore.setState({ nodes: [a, b], edges });
+    useAppStore.getState().commitToHistory();
+    const first = useAppStore.getState().history[0];
+    expect(first.nodes[0]).not.toBe(a);
+    expect(first.nodes[0].data).not.toBe(a.data);
+    const moved = { ...a, position: { x: 30, y: 40 } };
+    useAppStore.setState({ nodes: [moved, b] });
+    useAppStore.getState().commitToHistory();
+    const second = useAppStore.getState().history[1];
+    expect(second.nodes[1]).toBe(first.nodes[1]);
+    expect(second.edges).toBe(first.edges);
+    expect(second.groups).toBe(first.groups);
+    expect(second.nodes[0]).not.toBe(first.nodes[0]);
+    expect(second.nodes[0].position).not.toBe(moved.position);
+    expect(first.nodes[0].position).toEqual({ x: 0, y: 0 });
+    const history = useAppStore.getState().history;
+    useAppStore.getState().commitToHistory();
+    expect(useAppStore.getState().history).toBe(history);
+  });
+
+  it('keeps latest generated content through undo/redo and preserves branch semantics', async () => {
+    useAppStore.setState({ nodes: [node('a', { output: '旧结果' })] });
+    const commit = () => useAppStore.getState().commitToHistory();
+    commit();
+    useAppStore.setState((state) => ({ nodes: [{ ...state.nodes[0], position: { x: 20, y: 0 } }] }));
+    commit();
+    useAppStore.setState((state) => ({ nodes: [{ ...state.nodes[0], data: { ...state.nodes[0].data, output: '最新结果' } }] }));
+    commit();
+    expect(useAppStore.getState().history).toHaveLength(2);
+    await useAppStore.getState().undo();
+    expect(useAppStore.getState().nodes[0]).toMatchObject({ position: { x: 0, y: 0 }, data: { output: '最新结果' } });
+    await useAppStore.getState().redo();
+    expect(useAppStore.getState().nodes[0]).toMatchObject({ position: { x: 20, y: 0 }, data: { output: '最新结果' } });
+    await useAppStore.getState().undo();
+    useAppStore.setState((state) => ({ nodes: [{ ...state.nodes[0], position: { x: 50, y: 0 } }] }));
+    commit();
+    await useAppStore.getState().redo();
+    expect(useAppStore.getState().nodes[0].position.x).toBe(50);
+  });
+
+  it('does not reuse snapshot content by node id across projects', () => {
+    useAppStore.setState({ currentProjectId: 'first', nodes: [node('same', { output: 'first' })] });
+    useAppStore.getState().commitToHistory();
+    const first = useAppStore.getState().history[0];
+    useAppStore.setState({ currentProjectId: 'second', history: [], historyIndex: -1, nodes: [node('same', { output: 'second' })] });
+    useAppStore.getState().commitToHistory();
+    const second = useAppStore.getState().history[0];
+    expect(second.nodes[0]).not.toBe(first.nodes[0]);
+    expect(second.nodes[0].data.output).toBe('second');
+  });
+});
+
+
+it('does not write a late undo result into another project with matching node ids', async () => {
+  const original = node('same');
+  useAppStore.setState({ currentProjectId: 'first', nodes: [original] });
+  useAppStore.getState().commitToHistory();
+  const moved = { ...original, position: { x: 20, y: 0 } };
+  useAppStore.setState({ nodes: [moved] });
+  useAppStore.getState().commitToHistory();
+  let release!: () => void;
+  let reached!: () => void;
+  const started = new Promise<void>((resolve) => { reached = resolve; });
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  fileMocks.resolveGroupUndoTrashPaths.mockImplementationOnce(async () => {
+    reached();
+    await pending;
+    return [];
+  });
+  const undo = useAppStore.getState().undo();
+  await started;
+  useAppStore.setState({ currentProjectId: 'second', nodes: [{ ...moved, data: { ...moved.data, output: '第二项目' } }] });
+  release();
+  await undo;
+  expect(useAppStore.getState().nodes[0]).toMatchObject({ position: { x: 20, y: 0 }, data: { output: '第二项目' } });
+});
