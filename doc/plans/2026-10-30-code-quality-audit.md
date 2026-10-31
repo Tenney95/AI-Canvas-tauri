@@ -1,6 +1,6 @@
 # 全仓代码质量审查与精简建议
 
-日期：2026-10-30。状态：静态审查完成；Q01 自动回归与部分桌面交互已验证，真实生成等场景待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；Q04 闲置模块及专属样式已清理，Q05 音视频工具栏预设执行、Q06 历史筛选、Q07 参考媒体串行处理、Q08 模型协议基础逻辑及 Q09 四组局部重复已合并，均待用户验收；Q10～Q17 已于 2026-10-31 实现，新增回归尚未运行、待用户验收。
+日期：2026-10-30。状态：静态审查完成；Q01 自动回归与部分桌面交互已验证，真实生成等场景待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；Q04 闲置模块及专属样式已清理，Q05 音视频工具栏预设执行、Q06 历史筛选、Q07 参考媒体串行处理、Q08 模型协议基础逻辑及 Q09 四组局部重复已合并，均待用户验收；Q10～Q17 已于 2026-10-31 实现，相关自动回归 535 项通过，桌面验收待完成。
 
 2026-10-31 续查初稿：以 `e53ddcdf` 所在工作区源码为准，新增 Q12～Q17。随后用户授权全部优化，实施结果见下方“Q10～Q17 实施结果”；问题描述及带行号证据保留为修改前的审查快照。Q12～Q14 的行为风险优先于 Q10／Q11 的低收益统一。初稿阶段仅阅读源码、搜索引用与比对重复片段；实施阶段已修改代码，但未执行测试、lint、类型检查、构建或实机验收。上文各批次的测试状态是当时记录；后续发布门禁另见 [0.10.22 发布专项](./2026-10-31-release-0.10.22.md)，不能代替本轮新增场景的验收。
 
@@ -341,7 +341,7 @@ Tauri 桌面验收（准备测试项目、已有 ComfyUI 工作流及完成后�
 
 ## Q10～Q17 实施结果（2026-10-31）
 
-状态：八项已实现，补充/调整回归源码；用户已要求提交并推送，本批提交门禁沿用既有钩子的暂存 TS/TSX 定向 ESLint。自动化回归、类型检查、构建与 Tauri 实机验收仍未运行，待用户验收。已完成调用链、引用、差异空白及 UTF-8/BOM 静态核对；静态复核不能代替运行验证，历史发布门禁也不能作为本批通过证据。
+状态：八项已实现，补充/调整回归源码；用户已要求提交并推送，本批提交门禁沿用既有钩子的暂存 TS/TSX 定向 ESLint。2026-10-31 用户授权测试后，专项 18 个测试文件的 483 个用例通过，另有分组与全景 2 个测试文件的 52 个用例通过；类型检查、构建与 Tauri 实机验收仍未运行。已完成调用链、引用、差异空白及 UTF-8/BOM 静态核对；静态复核不能代替运行验证，历史发布门禁也不能作为本批通过证据。
 
 | 项目 | 实现与保留边界 |
 |---|---|
@@ -362,7 +362,7 @@ Tauri 桌面验收（准备可回滚测试项目、中文文本/Markdown/媒体�
 4. 混合至少 6 个独立节点和一条依赖链，核对最多 3 个节点任务同时执行、单项失败后其他项仍完成、汇总成功/失败/跳过正确。运行中切换项目后无新任务提交，原异步模型任务沿用既有暂停/恢复规则。
 5. 回归火山视频首次查询和原任务恢复：成功、失败/取消、超时、鉴权错误、无用量及缺少 URL；保存失败仍保留原任务，不重投。回归全景查看/关闭动画、分组选择/缩放/折叠、搜索导航与风格母图禁用。浏览器演示模式只验选择成功/取消/返回焦点收尾，不替代桌面文件验收。
 
-自动回归由用户在仓库根目录执行（以下命令本批均未运行）：
+2026-10-31 在仓库根目录执行以下前三组对应的 18 个测试文件，合并重跑结果为 483/483 通过；另执行 `npx vitest run tests/components/panoramaInternalization.test.ts tests/store/groupFolders.test.ts`，52/52 通过。首次运行有 5 项失败：3 项因批量测试模拟的旧项目 ID 覆盖实时状态，已修正并重跑通过；图片全屏保存的 2 项超时，在 11 项定向重跑和完整重跑中均通过，未确认其首次超时原因。以下类型检查与桌面验收尚未执行：
 
 - 导入/文件选择：`npx vitest run tests/services/sourceFileImportService.test.ts tests/hooks/useNodeCreation.test.tsx tests/components/nodeMenuModelPreferences.test.tsx tests/services/browserOpenFile.test.ts tests/services/fileServiceSkillUpload.test.ts`
 - 批量/生成：`npx vitest run tests/services/batchExecute.test.ts tests/services/imageSingleRequestBatch.test.ts tests/services/imageBatchService.test.ts tests/services/generationProjectDefaults.test.ts tests/services/generationServiceReplicaLease.test.ts tests/services/audioSpeechSettings.test.ts tests/components/nodeCriticalInteractions.test.tsx`

@@ -66,7 +66,7 @@ vi.mock('../../src/services/workflowApi/workflowApiAdapter', () => ({ completeWo
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: {
     getState: () => ({
-      ...mocks.liveState, ...mocks.actions,
+      ...mocks.actions, ...mocks.liveState,
       projects: mocks.projects, workflows: mocks.workflows, customStyles: [], edges: mocks.edges,
       showToast: mocks.showToast, updateNodeData: vi.fn(() => { throw new Error('批量不应逐节点提交历史'); }),
       addNodesTransient: (nodes: Node<BaseNodeData>[]) => { mocks.liveState.nodes = [...mocks.liveState.nodes, ...nodes]; },
