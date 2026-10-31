@@ -549,6 +549,68 @@ function visibleShotRatio(store: TestStore, column: string) {
 }
 
 describe('critical canvas node interactions', () => {
+  it('dismisses node input outside its React subtree while preserving portal interactions and edits', async () => {
+    const effects: Array<() => void | (() => void)> = [];
+    await installReactHookDriver(undefined, effects);
+    const store = createStore([{
+      id: 'workflow-node', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', prompt: '保留输入', status: 'idle' },
+    }], () => 1);
+    store.activeNodeId = 'workflow-node';
+    installStoreMock(store);
+    vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
+    vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({
+      default: function PromptPanelMock() { return null; },
+    }));
+    vi.doMock('../../src/services/pollManager', () => ({ ...mockComfyDeliveries(), getPendingTasksForProject: () => [] }));
+    const doc = Object.assign(new EventTarget(), document, { querySelector: () => null });
+    // Node 的 EventTarget 移除布尔 capture 监听时与 DOM 不一致，显式归一化选项。
+    const removeEventListener = doc.removeEventListener.bind(doc);
+    doc.removeEventListener = (type: string, listener: EventListenerOrEventListenerObject | null,
+      options?: boolean | EventListenerOptions) => removeEventListener(type, listener,
+      typeof options === 'boolean' ? { capture: options } : options);
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('window', new EventTarget());
+    const Dialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
+    const tree = Dialog();
+    const boundary = findElement(tree, (element) => element.props.className === 'contents');
+    const capture = boundary.props.onPointerDownCapture as (event: { nativeEvent: Event }) => void;
+    const panel = findElement(tree, (element) => componentName(element) === 'PromptPanelMock');
+    const cleanups = effects.map((effect) => effect());
+    vi.useFakeTimers();
+    try {
+      // 编辑器和挂到 body 的子菜单都沿 React 子树经过同一捕获边界。
+      for (const target of ['editor', 'portal-menu']) {
+        const event = new Event('pointerdown');
+        Object.defineProperty(event, 'target', { value: { id: target } });
+        doc.dispatchEvent(event);
+        capture({ nativeEvent: event });
+        event.stopPropagation();
+        vi.runOnlyPendingTimers();
+        expect(store.closeNodeDialog).not.toHaveBeenCalled();
+      }
+      (panel.props.onWorkflowInputsChange as (values: Record<string, string>) => void)({ parameter: '保留参数' });
+      expect(store.commitToHistory).toHaveBeenCalledOnce();
+      const outside = new Event('pointerdown', { cancelable: true });
+      doc.dispatchEvent(outside);
+      outside.stopPropagation();
+      vi.runOnlyPendingTimers();
+      expect(store.closeNodeDialog).toHaveBeenCalledOnce();
+      expect(store.commitToHistory).toHaveBeenCalledTimes(2);
+      expect(store.nodes[0].data).toMatchObject({ prompt: '保留输入', workflowInputs: { parameter: '保留参数' } });
+      expect(outside.defaultPrevented).toBe(false);
+
+      doc.dispatchEvent(new Event('pointerdown'));
+      cleanups.forEach((cleanup) => { if (cleanup) cleanup(); });
+      doc.dispatchEvent(new Event('pointerdown'));
+      vi.runOnlyPendingTimers();
+      expect(store.closeNodeDialog).toHaveBeenCalledOnce();
+    } finally {
+      cleanups.forEach((cleanup) => { if (cleanup) cleanup(); });
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps frame editor keyboard input from opening generation or modifying the canvas', async () => {
     const effects: Array<() => void | (() => void)> = [];
     await installReactHookDriver(undefined, effects);

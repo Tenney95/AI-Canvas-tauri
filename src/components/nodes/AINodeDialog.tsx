@@ -105,6 +105,7 @@ function AINodeDialog() {
   const directorDialogBlocked = (node?.type === 'ai-director' || nodeType === 'ai-director') && !isPrevis;
 
   const panelRef = useRef<HTMLDivElement>(null);
+  const insidePointerDownRef = useRef<PointerEvent | null>(null);
   const cancellingNodeIdsRef = useRef(new Set<string>());
   const [isExpanded, setIsExpanded] = useState(false);
   const [billingOpen, setBillingOpen] = useState(false);
@@ -305,6 +306,23 @@ function AINodeDialog() {
   }, [closeNodeDialog, finishContinuousEdit]);
 
   useEffect(() => () => finishContinuousEdit(), [activeNodeId, finishContinuousEdit]);
+
+  useEffect(() => {
+    if (!activeNodeId) return;
+    let dismissTimer: ReturnType<typeof setTimeout> | undefined;
+    const handlePointerDown = (event: PointerEvent) => {
+      clearTimeout(dismissTimer);
+      // 等 React 捕获阶段标记整个子树（包括 Portal），外部阻止冒泡也能收起。
+      dismissTimer = setTimeout(() => {
+        if (insidePointerDownRef.current !== event) handleCloseNodeDialog();
+      }, 0);
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      clearTimeout(dismissTimer);
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  }, [activeNodeId, handleCloseNodeDialog]);
 
   // Close on Escape
   useEffect(() => {
@@ -1195,7 +1213,7 @@ function AINodeDialog() {
 
   // 与导航栏脱离画布裁剪层，收放时保留同一编辑器子树。
   return createPortal(
-    <>
+    <div className="contents" onPointerDownCapture={(event) => { insidePointerDownRef.current = event.nativeEvent; }}>
       {isExpanded && (
         <button
           type="button"
@@ -1437,7 +1455,7 @@ function AINodeDialog() {
         </div>
         {billingOpen && <Suspense fallback={<div className="p-5 text-sm text-canvas-text-secondary">{t('正在加载用量记录…')}</div>}><VolcengineBillingSettings /></Suspense>}
       </ModalOverlay>
-    </>,
+    </div>,
     document.body,
   );
 }
