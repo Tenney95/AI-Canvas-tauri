@@ -10,6 +10,7 @@
 import { isPollTimeoutError, pollTask, PollTaskFailedError, PollTimeoutError, withPollRequestDeadline } from './pollTask';
 import { derivedNodePlacement, generateId, getNextDisplayId } from '../store/store.utils';
 import { corsSafeFetch } from './ai/httpTransport';
+import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
 import { useAppStore } from '../store/useAppStore';
 import { MediaPersistenceError, persistMediaUrlToProjectData } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
@@ -1722,41 +1723,12 @@ async function resumeVolcengine(task: PendingTask, parentSignal?: AbortSignal): 
   let remoteSucceeded = false;
 
   try {
-    const { url, completionTokens } = await pollTask<Record<string, unknown>, { url: string; completionTokens?: number }>({
-      fetchState: async (querySignal) => {
-        const resp = await corsSafeFetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          signal: querySignal,
-        });
-        if ([408, 504].includes(resp.status)) throw new PollTimeoutError();
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        return (await resp.json()) as Record<string, unknown>;
+    const { url, completionTokens } = await pollVolcengineVideoTask({
+      apiKey, baseUrl, taskId, signal, maxDuration: VIDEO_POLL_MAX_DURATION_MS,
+      onFailed: (status) => {
+        remoteFailed = true;
+        remoteCancelled = status === 'cancelled';
       },
-      isComplete: (raw) => {
-        const status = raw.status as string;
-        if (status === 'succeeded') {
-          const content = raw.content as Record<string, unknown> | undefined;
-          const videoUrl = content?.video_url as string | undefined;
-          const usage = raw.usage as Record<string, unknown> | undefined;
-          if (videoUrl) return { url: videoUrl, completionTokens: typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : undefined };
-          throw new Error('任务完成但未返回视频地址');
-        }
-        return null;
-      },
-      isFailed: (raw) => {
-        const status = raw.status as string;
-        if (status === 'failed' || status === 'cancelled') {
-          remoteFailed = true;
-          remoteCancelled = status === 'cancelled';
-          const err = raw.error as { message?: string } | undefined;
-          return `任务失败: ${err?.message || status}`;
-        }
-        return null;
-      },
-      interval: 3000,
-      maxDuration: VIDEO_POLL_MAX_DURATION_MS,
-      onFetchError: 'throw',
-      signal,
     });
     if (run) {
       const input = JSON.parse(run.inputJson) as { durationSeconds?: number; resolution?: string; ratio?: string; referenceType?: string };

@@ -3,13 +3,14 @@
  */
 import type { Edge, Node } from '@xyflow/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AppState } from '../../src/store/useAppStore';
 import type { BaseNodeData } from '../../src/types';
 import type { BatchContext } from '../../src/utils/batchExecute';
 import { DRAMA_EXTRACT_MARKER } from '../../src/types/dramaAssets';
 
 const mocks = vi.hoisted(() => ({
   generateText: vi.fn(),
-  generateImage: vi.fn(),
+  generateImage: vi.fn(), generateImagesBatch: vi.fn(),
   generateVideo: vi.fn(),
   generateAudio: vi.fn(),
   buildPanoramaPrompt: vi.fn(),
@@ -20,12 +21,15 @@ const mocks = vi.hoisted(() => ({
   syncDramaAssetImageFromNode: vi.fn(),
   mergeDramaExtract: vi.fn(),
   completeMedia: vi.fn(), pauseMedia: vi.fn(() => new Error('任务已保留')), endOperation: vi.fn(),
+  actions: {} as Pick<AppState, 'updateNodeDataTransient' | 'recordOutputHistory' | 'commitToHistory'>,
+  projects: [] as AppState['projects'], workflows: [] as AppState['workflows'], edges: [] as Edge[],
+  showToast: vi.fn(),
   liveState: { currentProjectId: null as string | null, nodes: [] as Node<BaseNodeData>[], revision: 0 },
 }));
 
 vi.mock('../../src/services/aiService', () => ({
   generateText: mocks.generateText,
-  generateImage: mocks.generateImage,
+  generateImage: mocks.generateImage, generateImagesBatch: mocks.generateImagesBatch,
   generateVideo: mocks.generateVideo,
   generateAudio: mocks.generateAudio,
   buildPanoramaPrompt: mocks.buildPanoramaPrompt,
@@ -54,13 +58,18 @@ vi.mock('../../src/services/pollManager', () => ({
     constructor() { super('视频查询已暂停'); }
   },
 }));
-vi.mock('../../src/services/workflowExecutionService', () => ({ getCloudWorkflowPersistedOutput: () => undefined }));
-vi.mock('../../src/services/ai/providers/runninghubWorkflow', () => ({ completeRunningHubNodeTask: vi.fn() }));
+vi.mock('../../src/services/workflowExecutionService', async (original) => ({ ...await original<typeof import('../../src/services/workflowExecutionService')>(), getCloudWorkflowPersistedOutput: () => undefined }));
+vi.mock('../../src/services/ai/providers/runninghubWorkflow', () => ({ completeRunningHubNodeTask: vi.fn(), getRunningHubPersistedOutput: () => undefined }));
+vi.mock('../../src/services/shotlistService', () => ({ generateShotlistRows: vi.fn() }));
+vi.mock('../../src/services/workflowApi/workflowApiAdapter', () => ({ completeWorkflowApiNodeTask: vi.fn() }));
 
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: {
     getState: () => ({
-      ...mocks.liveState,
+      ...mocks.liveState, ...mocks.actions,
+      projects: mocks.projects, workflows: mocks.workflows, customStyles: [], edges: mocks.edges,
+      showToast: mocks.showToast, updateNodeData: vi.fn(() => { throw new Error('批量不应逐节点提交历史'); }),
+      addNodesTransient: (nodes: Node<BaseNodeData>[]) => { mocks.liveState.nodes = [...mocks.liveState.nodes, ...nodes]; },
       config: { providers: {}, generalModels: [] },
       getCurrentRevision: () => mocks.liveState.revision,
       syncDramaAssetImageFromNode: mocks.syncDramaAssetImageFromNode,
@@ -69,7 +78,7 @@ vi.mock('../../src/store/useAppStore', () => ({
   },
 }));
 
-import { batchExecuteNodes } from '../../src/utils/batchExecute';
+import { batchExecuteNodes as executeBatch } from '../../src/utils/batchExecute';
 import { VideoPollingPausedError } from '../../src/services/pollManager';
 
 function deferred<T>() {
@@ -101,16 +110,26 @@ function createNode(
   };
 }
 
-function createContext(): BatchContext {
+type TestContext = BatchContext & Pick<AppState, 'updateNodeDataTransient' | 'recordOutputHistory'>;
+function createContext(): TestContext {
   return {
-    currentProjectId: null,
-    commitToHistory: vi.fn<BatchContext['commitToHistory']>(),
-    updateNodeDataTransient: vi.fn<BatchContext['updateNodeDataTransient']>(),
-    recordOutputHistory: vi.fn<BatchContext['recordOutputHistory']>().mockResolvedValue(undefined),
+    currentProjectId: 'default',
+    commitToHistory: vi.fn(),
+    updateNodeDataTransient: vi.fn((id, patch) => {
+      mocks.liveState.nodes = mocks.liveState.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
+    }),
+    recordOutputHistory: vi.fn().mockResolvedValue(undefined),
   };
 }
 
-function createTextContext(node: Node<BaseNodeData>): BatchContext {
+function batchExecuteNodes(ids: string[], nodes: Node<BaseNodeData>[], edges: Edge[], ctx: TestContext) {
+  if (!mocks.liveState.nodes.length) mocks.liveState = { currentProjectId: ctx.currentProjectId, nodes, revision: 0 };
+  mocks.actions = ctx;
+  mocks.edges = edges;
+  return executeBatch(ids, nodes, edges, ctx);
+}
+
+function createTextContext(node: Node<BaseNodeData>): TestContext {
   mocks.liveState = { currentProjectId: 'text-project', nodes: [node], revision: 0 };
   const ctx = createContext();
   ctx.currentProjectId = 'text-project';
@@ -124,6 +143,8 @@ function createTextContext(node: Node<BaseNodeData>): BatchContext {
 beforeEach(() => {
   mocks.completeMedia.mockClear(); mocks.pauseMedia.mockClear(); mocks.endOperation.mockClear();
   mocks.liveState = { currentProjectId: null, nodes: [], revision: 0 };
+  mocks.projects = []; mocks.workflows = []; mocks.edges = []; mocks.showToast.mockClear();
+  mocks.generateImagesBatch.mockReset();
   mocks.generateText.mockReset();
   mocks.generateImage.mockReset();
   mocks.generateVideo.mockReset();
@@ -150,7 +171,7 @@ describe('batchExecuteNodes', () => {
     const ctx = createTextContext(node);
     mocks.generateText.mockResolvedValue(failure === 'invalid-json' ? '模型没有返回 JSON' : JSON.stringify({ kind, items: [] }));
 
-    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 0, fail: 1 });
+    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 0, fail: 1, skipped: 0 });
     expect(mocks.generateText).toHaveBeenCalledWith({ prompt: expect.stringContaining(original), model: node.data.model, provider: node.data.provider });
     expect(mocks.liveState.nodes[0].data).toMatchObject({ role: 'source', output: original, status: 'error', error: expect.any(String) });
     expect(vi.mocked(ctx.updateNodeDataTransient).mock.calls.every(([, patch]) => !('output' in patch))).toBe(true);
@@ -164,7 +185,7 @@ describe('batchExecuteNodes', () => {
       prompt: `${DRAMA_EXTRACT_MARKER[kind]}\n# 剧本正文\n` });
     const ctx = createTextContext(node);
 
-    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 0, fail: 1 });
+    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 0, fail: 1, skipped: 0 });
     expect(mocks.generateText).not.toHaveBeenCalled();
     expect(mocks.mergeDramaExtract).not.toHaveBeenCalled();
     expect(mocks.liveState.nodes[0].data).toMatchObject({ output: '  ', status: 'error', error: expect.any(String) });
@@ -177,7 +198,7 @@ describe('batchExecuteNodes', () => {
     const ctx = createTextContext(node);
     mocks.generateText.mockResolvedValue(JSON.stringify({ kind, items: [{ name: '提取资产', summary: '资产简介', importance: 'main' }] }));
 
-    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 1, fail: 0 });
+    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 1, fail: 0, skipped: 0 });
     expect(mocks.liveState.nodes[0].data).toMatchObject({ role: 'source', status: 'success', output: expect.stringContaining('提取资产') });
     expect(mocks.mergeDramaExtract).toHaveBeenCalledWith(expect.objectContaining({ kind }), { sourceNodeId: node.id, modelId: node.data.model });
     expect(ctx.recordOutputHistory).toHaveBeenCalledWith(node.id, expect.objectContaining({ status: 'success', output: expect.stringContaining('提取资产') }));
@@ -188,7 +209,7 @@ describe('batchExecuteNodes', () => {
     const ctx = createTextContext(node);
     mocks.generateText.mockResolvedValue('生成后的普通文本');
 
-    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 1, fail: 0 });
+    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 1, fail: 0, skipped: 0 });
     expect(mocks.generateText).toHaveBeenCalledWith({ prompt: node.data.prompt, model: node.data.model, provider: node.data.provider });
     expect(mocks.liveState.nodes[0].data.output).toBe('生成后的普通文本');
     expect(mocks.mergeDramaExtract).not.toHaveBeenCalled();
@@ -205,7 +226,7 @@ describe('batchExecuteNodes', () => {
     else mocks.liveState.nodes = [];
     pending.resolve('迟到的生成结果');
 
-    await expect(execution).resolves.toEqual({ ok: 0, fail: 1 });
+    await expect(execution).resolves.toEqual({ ok: 0, fail: 1, skipped: 0 });
     expect(vi.mocked(ctx.updateNodeDataTransient).mock.calls.every(([, patch]) => !('output' in patch))).toBe(true);
     expect(ctx.recordOutputHistory).not.toHaveBeenCalled();
     expect(mocks.mergeDramaExtract).not.toHaveBeenCalled();
@@ -284,7 +305,7 @@ describe('batchExecuteNodes', () => {
     ));
     expect(mocks.generateVideo).toHaveBeenCalledTimes(2);
     saved.resolve({ mediaUrl: 'saved.mp4', sourceUrl: 'first.mp4' });
-    await expect(execution).resolves.toEqual({ ok: 3, fail: 0 });
+    await expect(execution).resolves.toEqual({ ok: 3, fail: 0, skipped: 0 });
     expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId)).toEqual(['random-z', 'ordinary', 'random-a']);
   });
 
@@ -305,7 +326,7 @@ describe('batchExecuteNodes', () => {
     ];
     const originalEdges = structuredClone(edges);
     await expect(batchExecuteNodes(nodes.map((node) => node.id), nodes, edges, createContext()))
-      .resolves.toEqual({ ok: 5, fail: 0 });
+      .resolves.toEqual({ ok: 5, fail: 0, skipped: 0 });
     expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId))
       .toEqual(['before', 'first', 'middle', 'last', 'after']);
     expect(edges).toEqual(originalEdges);
@@ -319,7 +340,7 @@ describe('batchExecuteNodes', () => {
       createNode('two', 'ai-video', { workflowId: 'wf', displayId: 2 }),
     ];
     await expect(batchExecuteNodes(['ten', 'two'], nodes, [{ id: 'reverse', source: 'ten', target: 'two' }], createContext()))
-      .resolves.toEqual({ ok: 1, fail: 1 });
+      .resolves.toEqual({ ok: 1, fail: 1, skipped: 0 });
     expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId)).toEqual(['two', 'ten']);
   });
 
@@ -333,7 +354,7 @@ describe('batchExecuteNodes', () => {
       createNode('empty', 'ai-video', { workflowId: 'wf', displayId: 3, prompt: '' }),
     ];
     await expect(batchExecuteNodes(nodes.map((node) => node.id), nodes, [], createContext()))
-      .resolves.toEqual({ ok: 3, fail: 0 });
+      .resolves.toEqual({ ok: 3, fail: 0, skipped: 0 });
     expect(mocks.generateVideo.mock.calls.map(([request]) => request.nodeId)).toEqual(['numbered', 'old-b', 'old-a']);
   });
 
@@ -359,7 +380,7 @@ describe('batchExecuteNodes', () => {
     });
 
     pending.get('b')!.resolve({ url: 'https://example.com/b.png', width: 64, height: 64 });
-    await expect(execution).resolves.toEqual({ ok: 3, fail: 0 });
+    await expect(execution).resolves.toEqual({ ok: 3, fail: 0, skipped: 0 });
     expect(ctx.commitToHistory).toHaveBeenCalledTimes(1);
   });
 
@@ -380,6 +401,7 @@ describe('batchExecuteNodes', () => {
     await expect(batchExecuteNodes(nodes.map((node) => node.id), nodes, [], ctx)).resolves.toEqual({
       ok: 1,
       fail: 1,
+      skipped: 0,
     });
     expect(mocks.generateImage).toHaveBeenCalledTimes(2);
     expect(ctx.updateNodeDataTransient).toHaveBeenCalledWith('failed', {
@@ -448,6 +470,7 @@ describe('batchExecuteNodes', () => {
     await expect(batchExecuteNodes([node.id], [node], [], createContext())).resolves.toEqual({
       ok: 1,
       fail: 0,
+      skipped: 0,
     });
 
     expect(mocks.generateVideo).toHaveBeenCalledWith(expect.objectContaining({
@@ -490,7 +513,7 @@ describe('batchExecuteNodes', () => {
     ctx.currentProjectId = 'project-a';
     mocks.liveState = { currentProjectId: 'project-a', nodes: [node], revision: 0 };
 
-    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 1, fail: 0 });
+    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 1, fail: 0, skipped: 0 });
 
     expect(mocks.generateAudio).toHaveBeenCalledWith(expect.objectContaining({
       nodeId: 'audio',
@@ -541,6 +564,7 @@ describe('batchExecuteNodes', () => {
     await expect(batchExecuteNodes(nodes.map((node) => node.id), nodes, edges, createContext())).resolves.toEqual({
       ok: 4,
       fail: 0,
+      skipped: 0,
     });
     expect(mocks.generateImage.mock.calls.map(([request]) => request.nodeId)).toEqual([
       'upstream',
@@ -568,6 +592,7 @@ describe('batchExecuteNodes', () => {
     await expect(batchExecuteNodes(nodes.map((node) => node.id), nodes, [], ctx)).resolves.toEqual({
       ok: 2,
       fail: 0,
+      skipped: 0,
     });
 
     expect(mocks.resolveAnimationSheetAspectRatio).toHaveBeenCalledWith(12, 'provider-animation');
@@ -609,5 +634,81 @@ describe('batchExecuteNodes', () => {
     expect(mocks.persistMediaUrlToProjectData).not.toHaveBeenCalled();
     expect(ctx.recordOutputHistory).not.toHaveBeenCalled();
     expect(ctx.updateNodeDataTransient).not.toHaveBeenCalledWith('animation', expect.objectContaining({ status: 'success' }));
+  });
+
+  it('批量复用项目默认模型、风格后缀与 RunningHub 参数，多图只提交一次历史', async () => {
+    mocks.projects = [{ id: 'default', name: '项目', createdAt: 1, updatedAt: 1, settings: {
+      defaultModels: { image: 'general/default-image' }, promptSuffixes: { image: '统一后缀' },
+      visualStyle: { styleId: 'cinematic', prompt: '统一电影风格', locked: true },
+    } }];
+    const node = createNode('images', 'ai-image', { model: undefined, provider: undefined,
+      batchCount: 3, runninghubModelParameters: { quality: 'high' } });
+    mocks.generateImagesBatch.mockResolvedValue({ requestedCount: 3, failedCount: 0,
+      results: [1, 2, 3].map((index) => ({ url: `https://example.com/${index}.png` })) });
+    const ctx = createContext();
+    await expect(batchExecuteNodes([node.id], [node], [], ctx)).resolves.toEqual({ ok: 1, fail: 0, skipped: 0 });
+    expect(mocks.generateImagesBatch).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'general', model: 'general/default-image', runninghubModelParameters: { quality: 'high' },
+      prompt: expect.stringContaining('统一后缀'),
+    }), 3);
+    expect(mocks.generateImagesBatch.mock.calls[0][0].prompt).toContain('统一电影风格');
+    expect(mocks.liveState.nodes.filter((item) => item.data.status === 'success')).toHaveLength(3);
+    expect(ctx.commitToHistory).toHaveBeenCalledOnce();
+    expect(ctx.recordOutputHistory).toHaveBeenCalledWith(node.id, expect.objectContaining({ model: 'general/default-image', provider: 'general' }));
+    expect(mocks.showToast).not.toHaveBeenCalled();
+  });
+
+  it('空提示词云工作流和 RunningHub 可执行，显式清空的模型不会回退', async () => {
+    mocks.workflows = [{ id: 'cloud', adapterType: 'workflow-api' } as AppState['workflows'][number]];
+    mocks.projects = [{ id: 'default', name: '项目', createdAt: 1, updatedAt: 1,
+      settings: { defaultModels: { image: 'general/default' } } }];
+    mocks.generateImage.mockResolvedValue({ url: 'https://example.com/image.png' });
+    const nodes = [createNode('cloud', 'ai-image', { prompt: '', provider: 'workflow-api', workflowId: 'cloud' }),
+      createNode('rh', 'ai-image', { prompt: '', provider: 'runninghub' }),
+      createNode('deselected', 'ai-image', { model: '' })];
+    await expect(batchExecuteNodes(nodes.map((node) => node.id), nodes, [], createContext()))
+      .resolves.toEqual({ ok: 2, fail: 0, skipped: 0 });
+    expect(mocks.generateImage.mock.calls.map(([request]) => request.nodeId)).toEqual(['cloud', 'rh']);
+  });
+
+  it.each(['edit', 'remove', 'loading', 'project', 'revision'])('排队期间 %s 变化后跳过后继，不提交旧参数', async (change) => {
+    const pending = deferred<{ url: string }>();
+    mocks.generateImage.mockReturnValue(pending.promise);
+    const nodes = [createNode('first'), createNode('next')];
+    const ctx = createContext();
+    const task = batchExecuteNodes(['first', 'next'], nodes, [{ id: 'link', source: 'first', target: 'next' }], ctx);
+    await vi.waitFor(() => expect(mocks.generateImage).toHaveBeenCalledOnce());
+    if (change === 'remove') mocks.liveState.nodes = mocks.liveState.nodes.filter((node) => node.id !== 'next');
+    else if (change === 'project') mocks.liveState.currentProjectId = 'other';
+    else if (change === 'revision') mocks.liveState.revision++;
+    else ctx.updateNodeDataTransient('next', change === 'loading' ? { status: 'loading' } : { prompt: '新提示词' });
+    pending.resolve({ url: 'https://example.com/result.png' });
+    const result = await task;
+    expect(result.skipped).toBe(1);
+    expect(mocks.generateImage).toHaveBeenCalledOnce();
+    expect(mocks.liveState.nodes.find((node) => node.id === 'next')?.data.error).toBeUndefined();
+  });
+
+  it('有依赖的链与独立节点共用三个执行名额，失败后保留成功结果且不重试', async () => {
+    const nodes = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => createNode(id));
+    const releases = new Map<string, () => void>();
+    let active = 0, peak = 0;
+    mocks.generateImage.mockImplementation(async ({ nodeId }: { nodeId: string }) => {
+      active++; peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => { releases.set(nodeId, resolve); });
+      active--;
+      if (nodeId === 'd') throw new Error('上游拒绝');
+      return { url: `https://example.com/${nodeId}.png` };
+    });
+    const task = batchExecuteNodes(nodes.map((node) => node.id), nodes, [{ id: 'ab', source: 'a', target: 'b' }], createContext());
+    await vi.waitFor(() => expect(releases.size).toBe(3));
+    expect([...releases.keys()]).toEqual(['a', 'c', 'd']);
+    expect(releases.has('b')).toBe(false);
+    releases.get('a')!(); releases.get('c')!(); releases.get('d')!();
+    await vi.waitFor(() => expect(releases.size).toBe(6));
+    for (const id of ['b', 'e', 'f']) releases.get(id)!();
+    await expect(task).resolves.toEqual({ ok: 5, fail: 1, skipped: 0 });
+    expect(peak).toBe(3);
+    expect(mocks.generateImage).toHaveBeenCalledTimes(6);
   });
 });

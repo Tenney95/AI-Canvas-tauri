@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { appDataDir } from '@tauri-apps/api/path';
 import {
+  browserOpenFile,
   isTauriEnv,
   joinPath,
   resolveUniqueDestPath,
@@ -49,36 +50,6 @@ function isSkillTextFile(fileName: string): boolean {
   return SKILL_TEXT_EXTENSIONS.has(ext);
 }
 
-function browserOpenFile(accept: string): Promise<File | null> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = accept;
-    input.style.display = 'none';
-    document.body.appendChild(input);
-    input.addEventListener('change', () => {
-      document.body.removeChild(input);
-      resolve(input.files?.[0] ?? null);
-    });
-    input.addEventListener('cancel', () => {
-      document.body.removeChild(input);
-      resolve(null);
-    });
-    input.click();
-    window.addEventListener(
-      'focus',
-      () => {
-        setTimeout(() => {
-          if (document.body.contains(input)) {
-            document.body.removeChild(input);
-            resolve(null);
-          }
-        }, 300);
-      },
-      { once: true },
-    );
-  });
-}
 
 async function ensureSkillRootDir(): Promise<string> {
   const dir = joinPath(await appDataDir(), 'skill');

@@ -27,6 +27,39 @@ export function isTauriEnv(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/** 浏览器降级文件选择；选择、取消与返回焦点共用一次收尾。 */
+export function browserOpenFile(accept: string): Promise<File | null> {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    input.hidden = true;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      window.removeEventListener('focus', onFocus);
+      input.removeEventListener('change', onChange);
+      input.removeEventListener('cancel', onCancel);
+      input.remove();
+    };
+    const finish = (file: File | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(file);
+    };
+    const onChange = () => finish(input.files?.[0] ?? null);
+    const onCancel = () => finish(null);
+    const onFocus = () => { timer = setTimeout(onChange, 300); };
+    input.addEventListener('change', onChange);
+    input.addEventListener('cancel', onCancel);
+    window.addEventListener('focus', onFocus, { once: true });
+    document.body.appendChild(input);
+    try { input.click(); } catch (error) { cleanup(); reject(error); }
+  });
+}
+
 /** 项目目录磁盘内容发生增删改时派发的事件名（由 useAutoSave 监听，触发静默保存） */
 export const PROJECT_DISK_CHANGED_EVENT = 'project-disk-changed';
 

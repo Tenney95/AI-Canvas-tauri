@@ -13,6 +13,7 @@
  * 公共前置处理（prompt 解析、图床上传、空值校验）统一在此完成。
  */
 import { useAppStore } from '../../store/useAppStore';
+import { getEnabledProjectStyleReferenceUrl } from '../projectSettingsService';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { mapImageDimensions } from '../aiDimensions';
 import { generateDreaminaImage } from '../dreaminaService';
@@ -132,10 +133,7 @@ function enrichPromptWithReferenceHints(
 function getProjectStyleMasterUrl(): string | null {
   const { currentProjectId, projects } = useAppStore.getState();
   const project = projects.find((p) => p.id === currentProjectId);
-  const ref = project?.settings?.visualStyle?.styleReference;
-  if (!ref || ref.enabled === false) return null;
-  const url = (ref.imageUrl || '').trim();
-  return url || null;
+  return getEnabledProjectStyleReferenceUrl(project?.settings);
 }
 
 export async function generateImagesBatch(

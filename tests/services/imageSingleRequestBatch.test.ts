@@ -83,6 +83,17 @@ beforeEach(() => {
 afterEach(() => { cancelImageBatchGeneration('source'); });
 
 describe('单次仅一张的普通图片模型批量', () => {
+  it('外层批量管理历史时，逐张生成不重复提交快照或弹出单节点通知', async () => {
+    mocks.store.commitToHistory();
+    await expect(executeGeneration('source', undefined, undefined, undefined, undefined,
+      { history: 'transient', silent: true })).resolves.toEqual({ success: true });
+    expect(mocks.image).toHaveBeenCalledTimes(3);
+    expect(mocks.batch).not.toHaveBeenCalled();
+    expect(mocks.store.commitToHistory).toHaveBeenCalledOnce();
+    expect(mocks.store.showToast).not.toHaveBeenCalled();
+    expect(mocks.store.nodes.every((node) => node.data.status === 'success')).toBe(true);
+  });
+
   it('只对明确单次上限为一的普通通用模型使用逐节点提交', () => {
     const config = mocks.store.config;
     expect(usesSequentialImageBatch('general', 'general/flare', config)).toBe(true);

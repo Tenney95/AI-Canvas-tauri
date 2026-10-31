@@ -1,6 +1,8 @@
 # 全仓代码质量审查与精简建议
 
-日期：2026-10-30。状态：静态审查完成；Q01 自动回归与部分桌面交互已验证，真实生成等场景待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；Q04 闲置模块及专属样式已清理，Q05 音视频工具栏预设执行、Q06 历史筛选、Q07 参考媒体串行处理、Q08 模型协议基础逻辑及 Q09 四组局部重复已合并，均待用户验收；Q10～Q11 尚未实施。
+日期：2026-10-30。状态：静态审查完成；Q01 自动回归与部分桌面交互已验证，真实生成等场景待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；Q04 闲置模块及专属样式已清理，Q05 音视频工具栏预设执行、Q06 历史筛选、Q07 参考媒体串行处理、Q08 模型协议基础逻辑及 Q09 四组局部重复已合并，均待用户验收；Q10～Q17 已于 2026-10-31 实现，新增回归尚未运行、待用户验收。
+
+2026-10-31 续查初稿：以 `e53ddcdf` 所在工作区源码为准，新增 Q12～Q17。随后用户授权全部优化，实施结果见下方“Q10～Q17 实施结果”；问题描述及带行号证据保留为修改前的审查快照。Q12～Q14 的行为风险优先于 Q10／Q11 的低收益统一。初稿阶段仅阅读源码、搜索引用与比对重复片段；实施阶段已修改代码，但未执行测试、lint、类型检查、构建或实机验收。上文各批次的测试状态是当时记录；后续发布门禁另见 [0.10.22 发布专项](./2026-10-31-release-0.10.22.md)，不能代替本轮新增场景的验收。
 
 建议先收敛模型默认值和节点几何计算，再清理闲置模块、合并同领域重复函数。前两项已经存在实现差异；全仓建立通用抽象或批量拆分大文件的收益较低，影响面更难控制。
 
@@ -256,13 +258,118 @@ Tauri 桌面验收（准备测试项目、已有 ComfyUI 工作流及完成后�
 
 [GroupNode.tsx:74](../../src/components/nodes/GroupNode.tsx#L74) 直接导出函数，其他主要自定义节点及自定义边使用 `memo`。它已有细粒度子节点数量与封面 selector，不应为添加 memo 而重新订阅整张画布。
 
-建议评估直接补齐组件 memo；实际收益需要在多分组、大画布拖拽场景观察渲染次数，本轮不声称存在已测得的性能下降。
+已补齐组件 memo；实际收益仍需在多分组、大画布拖拽场景观察渲染次数，不声称已测得性能提升。
 
 ### Q11 P4 动画依赖入口可以统一，当前没有重复核心版本证据
 
 [PanoramaViewer.tsx:28](../../src/components/nodes/panorama/internal/PanoramaViewer.tsx#L28) 使用 `motion/react`，项目其余多数地方使用 `framer-motion`；`package.json` 同时直接声明两者。
 
-锁文件中 `motion` 与 `framer-motion` 均为 12.43.0，后者只有一份解析记录。因此可以统一导入入口、减少一个直接依赖声明，但不能据此宣称当前打包了两套动画核心。依赖修改与锁文件更新留待单独实施。
+锁文件中 `motion` 与 `framer-motion` 均为 12.43.0，后者只有一份解析记录。因此可以统一导入入口、减少一个直接依赖声明，但不能据此宣称当前打包了两套动画核心。现已统一入口并同步两份依赖清单，未运行安装或构建。
+
+## 2026-10-31 续查：优先修复行为分叉，再合并小重复
+
+2026-10-31 用户已授权实施全部剩余项（Q10～Q17）。按 Code／Writing Plans 的小步实施方式沿用本专项：先共享导入准备与过期保护，再收敛批量参数、排队校验和并发，最后合并厂商查询及局部工具并统一 memo／动画入口。主要影响画布菜单、节点创建 Hook、批量执行器、共享生成服务、图片批次服务、火山视频查询、文件选择、搜索导航和项目风格读取；Q11 仅移除 `motion` 直接声明及无其他引用的锁记录，保留 `framer-motion` 及其传递依赖版本。各批补充相关回归源码；依仓库规则本轮不自动运行测试、lint、类型检查或构建，也不自动提交。无数据库迁移与原生权限变更，回滚以本批源码及锁文件差异为单位，保留已生成素材和待续任务。
+
+本轮对前端及原生源码做重复片段候选检索，重点追踪菜单上传、拖拽导入、批量生成、普通生成、轮询恢复、自动保存与画布渲染。以下结论是源码可确认的路径差异，尚未通过运行复现；不是新一轮完整安全审计或性能基准。原生侧已有 Cargo 与生成权限描述的工作区修改未纳入本轮修改。
+
+### Q12 P2 菜单文件导入重复，文本读取和异步回填边界缺失
+
+证据：
+
+- [NodeMenu.tsx:146](../../src/components/NodeMenu.tsx#L146) 与 [Sidebar.tsx:179](../../src/components/Sidebar.tsx#L179) 各自实现约 50 行上传、分类、尺寸计算和建节点逻辑。文本分支把 `result.dataUrl` 直接写入 `output`；[fileService.ts:1454](../../src/services/fileService.ts#L1454) 在桌面项目中返回复制后的 `assetUrl`，浏览器分支返回 Base64 data URL，均不是文件正文。
+- [TextNode.tsx:278](../../src/components/nodes/TextNode.tsx#L278) 直接显示 `data.output`，Store 插入过程也不解码文本；对比原生拖拽的 [useNodeCreation.ts:425](../../src/hooks/useNodeCreation.ts#L425)，那里明确读取字节并用 `TextDecoder` 解码。同一个 UTF-8 `.txt` 文件，经菜单上传会得到 URL，经拖拽才得到正文。
+- 两个菜单在文件选择／复制和图片尺寸读取之后直接调用 `addNode`，没有复核发起时的项目和 revision。若处理期间从项目 A 切到 B，文件可能保存于 A，节点却插入当前 B；[store.nodes.ts:899](../../src/store/store.nodes.ts#L899) 的 Action 写入当前 Store，不携带上传项目身份。
+
+建议把两个菜单的素材准备与建节点收为一个入口：文本显式读取正文，媒体保留 URL；异步链复用 [registerCanvasImport](../../src/services/canvasDerivationGuard.ts#L54) 的项目、revision 与取消边界，在写入前复核并清理登记。一次导入仍只产生一次历史快照。不要直接套用 Agent 导入的所有限制，UI 与 Agent 的权限、批量上限和文本入口不同。
+
+同类排查边界：原生拖拽当前仅 Markdown 路径登记导入守卫（[useNodeCreation.ts:415](../../src/hooks/useNodeCreation.ts#L415)），普通文本和媒体分支也应纳入异步切项目回归，不能把整个拖拽入口视为已经保护。
+
+验收：在 Tauri 中通过两个菜单分别上传含中文的 `.txt`、图片和视频，正文／素材应正确，撤销一次移除新增节点；导入大文件或等待图片解码时切项目、撤销，过期导入不得写入新画布。取消选择、读取失败与拖拽入口也需回归。扩展现有 `tests/components/nodeMenuModelPreferences.test.tsx`、`tests/hooks/useNodeCreation.test.tsx` 或同领域用例覆盖两个菜单；上述场景本轮未执行。
+
+### Q13 P2 批量生成与普通生成存在参数和可执行条件分叉
+
+入口为 [GroupNode.tsx:139](../../src/components/nodes/GroupNode.tsx#L139) 和 [MultiSelectToolbar.tsx:273](../../src/components/canvas/MultiSelectToolbar.tsx#L273)。两者进入 [batchExecute.ts:65](../../src/utils/batchExecute.ts#L65) 的独立单节点执行器，只有 `workflow-api` 分支委托给 `executeGeneration`。
+
+已确认的差异：
+
+- 批量直接使用节点原始 `prompt`；普通入口在 [generationService.ts:286](../../src/services/generationService.ts#L286) 和 [AINodeDialog.tsx:445](../../src/components/nodes/AINodeDialog.tsx#L445) 合并项目风格、节点风格与分类型提示词后缀。因此相同节点单独生成与分组生成会使用不同提示词。风格母图已有底层注入，这项缺口指文字风格与后缀，不能扩大为所有参考素材都失效。
+- [batchExecute.ts:167](../../src/utils/batchExecute.ts#L167) 固定调用单张 `generateImage`；后者 [generateImage.ts:60](../../src/services/ai/generateImage.ts#L60) 固定传数量 1，忽略节点 `batchCount`。普通入口处理多图数量及串行多图策略。
+- 批量图片／视频／音频参数不传 `runninghubModelParameters`；普通入口有传递，例如 [generationService.ts:540](../../src/services/generationService.ts#L540)。[runninghubMedia.ts:249](../../src/services/ai/providers/runninghubMedia.ts#L249) 使用该字段组装参数，批量会丢掉用户填写的模型专属参数。
+- [batchExecute.ts:444](../../src/utils/batchExecute.ts#L444) 一律要求非空提示词及节点自身模型身份；普通入口 [generationService.ts:277](../../src/services/generationService.ts#L277) 允许云工作流／RunningHub 的无提示词任务，并有项目默认模型解析。批量入口可能提前跳过单独可以执行的节点。
+
+建议让批量层负责筛选、顺序与结果汇总，逐步复用普通生成的参数准备和单节点执行；先迁移图片／视频，再覆盖文本、音频、动画和全景。保留批量一次历史、通知汇总、工作流顺序、旧任务恢复与派生结果守卫，避免简单委托造成重复历史或逐节点 Toast。对话 Agent 的 `generationRuntime` 保持自身授权边界，不一起替换。
+
+验收：同一节点分别从普通入口、分组和多选入口执行，对比风格／后缀、数量、RunningHub 参数、无提示词工作流及项目默认模型；失败、取消、历史与恢复任务行为一致。先用 mock 捕获请求，实际付费生成由用户决定。主要回归入口为 `tests/services/batchExecute.test.ts`、`tests/services/projectSettingsService.test.ts`、`tests/components/generationEffects.test.tsx` 与 `tests/services/imageSingleRequestBatch.test.ts`。
+
+### Q14 P2 批量排队期间修改节点，后续仍使用旧数据
+
+[batchExecute.ts:574](../../src/utils/batchExecute.ts#L574) 从开始时传入的 `nodes` 构建队列，[第 620 行](../../src/utils/batchExecute.ts#L620) 逐个传入旧节点对象；[第 70 行](../../src/utils/batchExecute.ts#L70) 直接使用旧 `node.data`，直到 [第 109 行](../../src/utils/batchExecute.ts#L109) 才以实时 Store 登记当前 revision 的守卫。
+
+触发场景：A、B 有依赖顺序，A 运行期间用户修改 B 的提示词或模型。B 出队时仍发送旧参数，却用修改后的画布 revision 建立守卫；旧请求有机会通过校验并回填到已修改节点。队列初建时的 `loading` 筛选也不能证明 B 到出队时仍未被其他入口启动。此项适用于未委托普通入口的批量路径。
+
+建议队列保存明确的节点身份与输入基线，出队时重新取当前节点并复核项目、输入和运行状态；已变化的项跳过并给出原因，不能把旧输入包装成新 revision 的有效请求。复用已有指纹／派生守卫，不新增另一套画布版本体系。
+
+验收：用受控 Promise 让 A 暂停，在等待期间修改 B 的 prompt／model、删除 B、从单独入口启动 B 或切项目，然后释放 A；B 不得提交旧输入或重复启动，跳过项应可辨认。再确认上游正常输出更新不会误判全部下游失效。用 `tests/services/batchExecute.test.ts` 增加这些场景即可，不需要真实模型请求。
+
+### Q15 P3 独立节点批量执行没有并发上限
+
+[batchExecute.ts:628](../../src/utils/batchExecute.ts#L628) 对全部孤立节点直接 `Promise.all`，另有连通节点队列同时运行。选中较多互不连线的节点时会同时开始全部上传／模型请求，既有工作流串行规则只约束工作流节点。
+
+建议复用 [runBatchTasks](../../src/services/ai/batchUtils.ts#L10) 的有限 worker 池，从小并发值开始；上限应统计连通队列与孤立队列的合计，同时保留部分成功、稳定统计与工作流顺序，不自动重投付费请求。当前没有吞吐基准或线上限流证据，收益表述仅限“约束请求峰值”，不承诺速度提升。
+
+验收：mock 多个孤立任务和一条依赖链，记录同时进行的任务数；混合成功／失败、切项目、用户取消时，未开始项不继续提交，统计与顺序正确。延续 `tests/services/batchExecute.test.ts`，同步调整其原先全部并发的预期。
+
+### Q16 P3 火山视频首次查询与恢复查询重复维护同一协议
+
+[generateVideo.ts:1021](../../src/services/ai/generateVideo.ts#L1021) 与 [pollManager.ts:1725](../../src/services/pollManager.ts#L1725) 重复实现同一任务查询 URL、Bearer 请求、408／504 判断、成功视频地址和 `completion_tokens` 提取、失败／取消状态及轮询间隔。
+
+建议在厂商层共享只读查询与响应解析，首次提交和恢复入口继续分别持有任务 receipt、账本、项目守卫与交付状态。两处 `onFetchError` 一处显式写 `throw`、另一处采用同值默认，目前不是行为差异；不要为了合并把“查询重试”扩大为“付费提交重试”。
+
+验收：用相同响应覆盖成功、缺失地址、失败、远端取消、HTTP 408／504、鉴权失败和用量字段缺失；首次路径与恢复路径的协议解释一致，保存失败仍保留原任务。沿用 `tests/services/pollManager.test.ts` 与 `tests/services/volcengineVideoModels.test.ts`。
+
+### Q17 P3 三组可以小步合并的局部重复
+
+| 重复位置 | 最小合并方向 | 保留的边界 |
+|---|---|---|
+| [webSearchService.ts:35](../../src/services/webSearchService.ts#L35) 与 [webTools.ts:27](../../src/services/chat/tools/webTools.ts#L27) 的 Google RSS／Bing URL 构造 | 共享搜索入口构造和顺序 | 自动聚合与模型导航的调用、任务授权、来源登记仍分别保留，不合并 URL 安全策略 |
+| [fileService.ts:532](../../src/services/fileService.ts#L532) 与 [skillFiles.ts:52](../../src/services/fs/skillFiles.ts#L52) 的浏览器文件选择 | 共享 input 创建、change／cancel／focus 的收尾 | 保留文件种类与大小限制、Skill UTF-8 校验；仅浏览器降级路径，Tauri 文件对话框不变 |
+| [generateImage.ts:132](../../src/services/ai/generateImage.ts#L132) 私有风格母图读取与 [projectSettingsService.ts:318](../../src/services/projectSettingsService.ts#L318) 已有纯函数 | 读取当前项目后调用现有纯函数 | 不改启用开关、首位参考图顺序、去重或 ComfyUI 排除条件 |
+
+这些属于维护性收益，不作为已发现功能错误。建议拆成小提交；浏览器选择器的返回焦点、选择成功和取消竞态需要一并回归。既有用例入口：`tests/services/webSearchService.test.ts`、`tests/services/chat/webTools.test.ts`、`tests/services/fileServiceSkillUpload.test.ts`、`tests/services/projectStyleReference.test.ts`、`tests/services/referenceImageTransport.test.ts`。
+
+本轮建议顺序：Q12 → Q13／Q14 → Q15 → Q16／Q17 → Q10／Q11。Q13 与 Q14 修改同一批量执行器，实施时协调范围，分别保留可验证场景。Q10～Q17 已按下节实现；本次未运行测试，待用户验收。
+
+## Q10～Q17 实施结果（2026-10-31）
+
+状态：八项已实现，补充/调整回归源码；用户已要求提交并推送，本批提交门禁沿用既有钩子的暂存 TS/TSX 定向 ESLint。自动化回归、类型检查、构建与 Tauri 实机验收仍未运行，待用户验收。已完成调用链、引用、差异空白及 UTF-8/BOM 静态核对；静态复核不能代替运行验证，历史发布门禁也不能作为本批通过证据。
+
+| 项目 | 实现与保留边界 |
+|---|---|
+| Q10 | `GroupNode` 使用 `memo`，保留既有细粒度 selector；未测量渲染收益。 |
+| Q11 | 全景查看器统一使用 `framer-motion`，移除 `motion` 直接声明及锁文件包装记录；其余动画核心和传递依赖版本保持不变，没有执行依赖安装。 |
+| Q12 | 两个菜单共用 `sourceFileImportService`，桌面文本读取资产文件字节、浏览器解码 data URL，再写入正文；在选择之前绑定项目/revision，读取与尺寸解析后复核。原生拖放媒体的复制/回填路径合并，保留即时占位、尺寸、Markdown 类型和最近使用记录，普通文本也受守卫保护。画布支持的扩展名移至 `sourceFileType`，不借用资产浏览器更宽的分类规则。 |
+| Q13 | `batchExecute` 只管理调度，生成交给 `generationService`；准入与单节点共用 `generationInput`，支持项目默认、显式取消模型、空提示词云工作流/RunningHub、源节点类型适配、风格/后缀、多图及模型参数。帧动画分支迁入执行器并保留宫格与处理参数快照；多图仍分节点交付，单次上限为一的模型仍逐张提交。外层一次历史，内层瞬时回填、汇总提示，产物历史保留实际模型。 |
+| Q14 | 排队快照绑定项目/revision、节点数据与类型、有效模型/工作流、项目设置和连线。每项执行前复核；删除、修改、切项目、撤销或已在生成的节点计为跳过，不提交旧参数。上游正常产物回填不改变下游自身快照。 |
+| Q15 | 复用 `runBatchTasks`，依赖/工作流串行链占一个名额，与独立节点合计最多 3 个节点任务；底层模型的单节点多图策略保持原有语义。继续处理部分失败，保留成功结果和稳定统计，不自动重试付费请求，不新增批次取消入口。 |
+| Q16 | `volcengineVideoQuery` 共享原任务 GET 查询、状态/用量解析、查询超时和取消；首次提交与恢复各自保留 receipt、账本、项目守卫和交付状态。 |
+| Q17 | 搜索 URL 构造由 `webSearchService` 导出复用；通用上传/Skill 上传共用 `fs/core` 浏览器选择器并一次清理监听器和定时器；风格母图读取复用已有纯函数。授权、URL 安全策略、文件限制、风格启用及参考顺序保持原边界。 |
+
+Tauri 桌面验收（准备可回滚测试项目、中文文本/Markdown/媒体、可用测试模型与已配置的工作流）：
+
+1. 分别从右键菜单、侧栏上传文本和媒体，核对正文、尺寸及源节点身份；取消选择不建节点。原生拖入多文件后核对占位、落点和最近使用记录；在选择/复制/图片测量期间切换项目或撤销，迟到成功及错误均不得写入另一项目或被删除节点。
+2. 对同一图片/视频/音频输入分别用单节点与分组/多选生成，核对项目默认模型、风格、分类后缀和 RunningHub 参数；显式清空模型仍拒绝，云工作流和 RunningHub 支持原有空提示词规则。图片数量 3 应生成三个节点，单图模型逐张提交；一次撤销还原本次结构变化。帧动画、全景及音频语音参数按旧功能回归。
+3. 让依赖链前项保持运行，分别修改/删除后项、让后项单独开始生成、切换项目及撤销，再释放前项；未开始项应按变化跳过，不发旧请求。正常上游完成后，下游使用当前产物并按拓扑和工作流展示编号执行。
+4. 混合至少 6 个独立节点和一条依赖链，核对最多 3 个节点任务同时执行、单项失败后其他项仍完成、汇总成功/失败/跳过正确。运行中切换项目后无新任务提交，原异步模型任务沿用既有暂停/恢复规则。
+5. 回归火山视频首次查询和原任务恢复：成功、失败/取消、超时、鉴权错误、无用量及缺少 URL；保存失败仍保留原任务，不重投。回归全景查看/关闭动画、分组选择/缩放/折叠、搜索导航与风格母图禁用。浏览器演示模式只验选择成功/取消/返回焦点收尾，不替代桌面文件验收。
+
+自动回归由用户在仓库根目录执行（以下命令本批均未运行）：
+
+- 导入/文件选择：`npx vitest run tests/services/sourceFileImportService.test.ts tests/hooks/useNodeCreation.test.tsx tests/components/nodeMenuModelPreferences.test.tsx tests/services/browserOpenFile.test.ts tests/services/fileServiceSkillUpload.test.ts`
+- 批量/生成：`npx vitest run tests/services/batchExecute.test.ts tests/services/imageSingleRequestBatch.test.ts tests/services/imageBatchService.test.ts tests/services/generationProjectDefaults.test.ts tests/services/generationServiceReplicaLease.test.ts tests/services/audioSpeechSettings.test.ts tests/components/nodeCriticalInteractions.test.tsx`
+- 查询及公共规则：`npx vitest run tests/services/volcengineVideoQuery.test.ts tests/services/pollManager.test.ts tests/services/webSearchService.test.ts tests/services/chat/webTools.test.ts tests/services/projectStyleReference.test.ts tests/services/referenceImageTransport.test.ts`
+- 源码和测试类型：`npm run typecheck`、`npm run test:typecheck`；全景依赖入口可在验收环境安装锁文件依赖后运行既有构建。
+
+回滚：恢复本批前端、测试、两个依赖清单及对应文档差异；不修改原生权限、数据库版本、已生成文件和待续任务记录。原生 Cargo/生成 schema 的已有工作区改动不属于本批。
 
 ## 保留的边界与暂缓的重构
 
@@ -277,7 +384,7 @@ Tauri 桌面验收（准备测试项目、已有 ComfyUI 工作流及完成后�
 |---|---|
 | Provider 边界 | 画布内容及相关 Hook 位于 `Canvas.tsx:1882` 的 Provider 内；Portal 保留组件上下文 |
 | nodeTypes／edgeTypes 稳定性 | 在 `Canvas.tsx:141`、164、173 行的模块作用域定义 |
-| 自定义节点与边 memo | 主要节点与边已有 memo；GroupNode 的缺口见 Q10 |
+| 自定义节点与边 memo | 主要节点与边已有 memo；GroupNode 已按 Q10 补齐，性能效果待实测 |
 | 重计算与交互回调 | 关键路径使用 selector、缓存、useMemo 与 useCallback；实际热点与收益仍待性能观察 |
 | 节点与边更新 | 沿用 Store Action 与不可变更新；批量写入已有 `addNodesWithEdges`，不能为精简改成循环单次写入 |
 | data 更新接口 | 本项目以 Zustand 为权威，复用 Store Action；不直接改成 React Flow 自身写入接口 |
@@ -303,6 +410,6 @@ Tauri 桌面验收（准备测试项目、已有 ComfyUI 工作流及完成后�
 
 1. **默认模型与几何行为收敛**：Q01 自动回归与部分桌面交互已验证，真实生成等场景仍待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；归档坏父链的入口策略仍待独立处理，保留源码与测试的独立回退点。
 2. **闲置入口与局部重复清理**：Q04 闲置模块与专属样式清理、Q05 音视频工具栏预设执行合并、Q06 历史筛选共享、Q07 参考媒体串行准备共享、Q08 协议基础逻辑收口及 Q09 四组局部重复合并已实现，尚未运行测试。
-3. **低收益统一与热点重构**：处理 Q10、Q11；大模块只有在具体维护需求或性能证据出现时再按职责拆分。
+3. **低收益统一与热点重构**：Q10、Q11 已实现；大模块只有在具体维护需求或性能证据出现时再按职责拆分。
 
-除已明确实施的 Q01、Q02、Q03 运行时保护、Q04 闲置模块清理、Q05 预设执行合并、Q06 历史筛选共享、Q07 参考媒体串行准备共享、Q08 协议基础逻辑收口及 Q09 局部重复合并外，其余均为建议，不构成架构改动、删除文件、新增依赖或运行测试的授权。
+Q01～Q17 的实施范围与验收状态分别见上文；“保留的边界与暂缓的重构”仍为建议，不构成额外架构改动、删除文件、新增依赖或运行测试的授权。

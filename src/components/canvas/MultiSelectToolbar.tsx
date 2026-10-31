@@ -79,7 +79,6 @@ function MultiSelectToolbar() {
   // 这样单节点拖拽（每帧改 nodes）完全不会触发本工具栏重渲染。
   const nodes = useAppStore((s) => (s.selectedNodeIds.length >= 2 ? s.nodes : EMPTY_NODES));
   const setNodes = useAppStore((s) => s.setNodes);
-  const recordOutputHistory = useAppStore((s) => s.recordOutputHistory);
   const copySelectedNodes = useAppStore((s) => s.copySelectedNodes);
   const { flowToScreenPosition, getZoom } = useReactFlow();
   const [batchRunning, setBatchRunning] = useState(false);
@@ -249,7 +248,6 @@ function MultiSelectToolbar() {
     const currentIds = state.selectedNodeIds;
     const {
       commitToHistory,
-      updateNodeDataTransient,
       showToast: toast,
       currentProjectId,
     } = state;
@@ -258,7 +256,7 @@ function MultiSelectToolbar() {
     const hasExecutable = hasBatchExecutableNodes(currentIds, currentNodes);
 
     if (!hasExecutable) {
-      toast(t('选中的节点中没有可执行的（需要配置模型且有 prompt）'), 'error');
+      toast(t('选中的节点暂不可执行，请检查模型、提示词或工作流配置'), 'error');
       return;
     }
 
@@ -266,18 +264,18 @@ function MultiSelectToolbar() {
 
     const ctx: BatchContext = {
       commitToHistory,
-      updateNodeDataTransient,
-      recordOutputHistory,
       currentProjectId,
     };
-    const { ok, fail } = await batchExecuteNodes(currentIds, currentNodes, currentEdges, ctx);
+    const { ok, fail, skipped } = await batchExecuteNodes(currentIds, currentNodes, currentEdges, ctx);
 
     setBatchRunning(false);
+    if (useAppStore.getState().currentProjectId !== currentProjectId) return;
     const parts: string[] = [];
     if (ok > 0) parts.push(t('{count} 个成功', { count: ok }));
     if (fail > 0) parts.push(t('{count} 个失败', { count: fail }));
+    if (skipped > 0) parts.push(`已跳过 ${skipped} 个（输入或画布已变化）`);
     toast(t('批量生成完成：{result}', { result: parts.join('，') }), fail > 0 ? 'error' : undefined);
-  }, [recordOutputHistory, t]);
+  }, [t]);
 
   // ── Group / ungroup（选中里有分组成员或分组节点时，store 自己转成解散）──
   const isGrouped = useMemo(

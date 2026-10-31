@@ -244,11 +244,10 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
     const live = useAppStore.getState();
     const { ok, fail } = await batchExecuteNodes([reskinNode.id], live.nodes, live.edges, {
       commitToHistory: live.commitToHistory,
-      updateNodeDataTransient: live.updateNodeDataTransient,
-      recordOutputHistory: live.recordOutputHistory,
       currentProjectId: live.currentProjectId,
     });
     setReskinning(false);
+    if (useAppStore.getState().currentProjectId !== live.currentProjectId) return;
     if (ok) live.showToast(t('换皮完成'));
     else live.showToast(fail ? t('换皮失败') : t('请先为该节点选择模型'), 'error');
   }, [action, id, nodeHeight, nodeWidth, previewMode, processing, sheet, t]);

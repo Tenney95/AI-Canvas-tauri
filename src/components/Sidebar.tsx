@@ -8,15 +8,14 @@ import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore, computeImageNodeDimensions, generateId } from '../store/useAppStore';
+import { useAppStore, generateId } from '../store/useAppStore';
 import { countUnreadDramaAssets } from '../store/store.dramaAssets';
 import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
-import { uploadSourceFileToProject } from '../services/fileService';
+import { importSourceFileToCanvas } from '../services/sourceFileImportService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
-import { classifyFile } from '../hooks/useNodeCreation';
 import { checkForUpdate, downloadAndInstallUpdate, isAppUpdateRunning } from '../services/updateService';
 import DownloadProgress from './shared/DownloadProgress';
 import AnimatedButton from './shared/AnimatedButton';
@@ -119,12 +118,11 @@ function NodePicker({
   onLeave: () => void;
 }) {
   const t = useT();
-  const { nodePickerOpen, closeNodePicker, addNode, currentProjectId, showToast, installedPlugins } = useAppStore(
+  const { nodePickerOpen, closeNodePicker, addNode, showToast, installedPlugins } = useAppStore(
     useShallow((s) => ({
       nodePickerOpen: s.nodePickerOpen,
       closeNodePicker: s.closeNodePicker,
       addNode: s.addNode,
-      currentProjectId: s.currentProjectId,
       showToast: s.showToast,
       installedPlugins: s.installedPlugins,
     })),
@@ -179,52 +177,7 @@ function NodePicker({
   const handleUploadFile = async () => {
     closeNodePicker();
     try {
-      const result = await uploadSourceFileToProject('*/*', currentProjectId);
-      if (!result) return;
-
-      const ext = result.fileName.split('.').pop()?.toLowerCase() || '';
-      const category = classifyFile(ext);
-
-      if (!category) {
-        showToast(t('不支持的文件类型'), 'error');
-        return;
-      }
-
-      const pos = getCanvasPointerPosition();
-      const typeMap: Record<string, { type: NodeType; label: string; field: string }> = {
-        image: { type: 'ai-image', label: result.fileName, field: 'imageUrl' },
-        video: { type: 'ai-video', label: result.fileName, field: 'videoUrl' },
-        audio: { type: 'ai-audio', label: result.fileName, field: 'audioUrl' },
-        text: { type: 'ai-text', label: result.fileName, field: 'output' },
-      };
-      const info = typeMap[category];
-
-      const nodeData: Record<string, unknown> = {
-        label: info.label,
-        type: info.type,
-        role: 'source',
-        status: 'success',
-        fileName: result.fileName,
-        nodeWidth: info.type === 'ai-audio' ? 260 : 280,
-        nodeHeight: 160,
-        [info.field]: result.dataUrl,
-        ...(result.filePath ? { filePath: result.filePath } : {}),
-        ...(info.field === 'output' ? { prompt: '' } : {}),
-      };
-
-      if (category === 'image' && result.dataUrl) {
-        try {
-          const dims = await computeImageNodeDimensions(result.dataUrl);
-          Object.assign(nodeData, dims);
-        } catch { /* ignore */ }
-      }
-
-      addNode({
-        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        type: info.type,
-        position: pos,
-        data: nodeData,
-      } as never);
+      await importSourceFileToCanvas(getCanvasPointerPosition());
     } catch (err) {
       const msg = err instanceof Error ? err.message : t('上传失败');
       showToast(msg, 'error');

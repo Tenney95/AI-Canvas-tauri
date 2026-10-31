@@ -3,6 +3,10 @@
  *
  * 供 Toolbar 快捷指令直接调用，也供 AINodeDialog 复用。
  */
+import { ANIMATION_FRAME_GRIDS } from '../types';
+import { buildAnimationSpritePrompt, resolveAnimationSheetAspectRatio } from './ai/animationPrompt';
+import { animationProcessing, animationResultPatch } from './animationService';
+import { resolveGenerationSelection } from './generationInput';
 import type { AppConfig, BaseNodeData, ImagePostProcess } from '../types';
 import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt } from '../types/aiTypes';
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
@@ -16,7 +20,6 @@ import {
 import { derivedNodePlacement, generateId } from '../store/store.utils';
 import { useAppStore } from '../store/useAppStore';
 import {
-  getProjectModelKind,
   parseProjectModelRef,
   resolveProjectGenerationPrompt,
 } from './projectSettingsService';
@@ -24,7 +27,7 @@ import { postProcessDramaExtractOutput, prepareDramaExtractPrompt } from './dram
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { resolveVideoSubmissionControls } from './ai/videoRequestResolver';
 import { generateShotlistRows } from './shotlistService';
-import { isCloudWorkflow, getCloudWorkflowPersistedOutput } from './workflowExecutionService';
+import { getCloudWorkflowPersistedOutput } from './workflowExecutionService';
 import { completeWorkflowApiNodeTask } from './workflowApi/workflowApiAdapter';
 import { completeRunningHubNodeTask } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
@@ -44,6 +47,13 @@ export interface GenerationResult {
 export interface GenerationLease {
   signal?: AbortSignal;
   assertFresh: () => void | Promise<void>;
+}
+
+/** 宿主批量调度共用执行器，但由外层管理一次历史和汇总提示。 */
+export interface GenerationOptions {
+  comfyH3ExpectedSettings?: string;
+  history?: 'transient';
+  silent?: boolean;
 }
 
 /** 仅保留本进程内的提交身份，避免旧任务清理或覆盖同节点的新请求。 */
@@ -119,7 +129,7 @@ export function cancelImageBatchGeneration(nodeId: string): boolean {
 }
 
 async function runSequentialImageBatch(
-  nodeId: string, count: number, data: BaseNodeData, rawPrompt: string, parentLease?: GenerationLease,
+  nodeId: string, count: number, data: BaseNodeData, rawPrompt: string, parentLease?: GenerationLease, options?: GenerationOptions,
 ): Promise<GenerationResult> {
   const state = useAppStore.getState();
   const projectId = state.currentProjectId;
@@ -128,7 +138,7 @@ async function runSequentialImageBatch(
   try {
     // 与单次生成共用旧任务保护；创建新批次前不能覆盖原节点的恢复身份。
     prepareMediaNodeGeneration(nodeId);
-    const nodeIds = prepareImageBatchNodes({ nodeId, count, projectId }).nodeIds;
+    const nodeIds = prepareImageBatchNodes({ nodeId, count, projectId, commitHistory: options?.history !== 'transient' }).nodeIds;
     owner = { projectId, nodeIds, remainingNodeIds: new Set(nodeIds), controller: new AbortController() };
     const activeOwner = owner;
     const baselineRevision = useAppStore.getState().getCurrentRevision();
@@ -136,7 +146,7 @@ async function runSequentialImageBatch(
       .map((node) => [node.id, imageBatchInputSignature(node.data)]));
     for (const targetId of nodeIds) imageBatchOwners.set(targetId, activeOwner);
     notifyImageBatches();
-    state.showToast(`正在逐张生成 ${count} 张图片`);
+    if (!options?.silent) state.showToast(`正在逐张生成 ${count} 张图片`);
     const signal = parentLease?.signal ? AbortSignal.any([parentLease.signal, activeOwner.controller.signal]) : activeOwner.controller.signal;
     for (const targetId of nodeIds) {
       const lease: GenerationLease = { signal, assertFresh: async () => {
@@ -156,17 +166,17 @@ async function runSequentialImageBatch(
       imageBatchLeases.set(lease, activeOwner);
       let result: GenerationResult;
       try {
-        result = await executeGeneration(targetId, rawPrompt, undefined, { ...data, label: target.data.label, batchCount: 1 }, lease);
+        result = await executeGeneration(targetId, rawPrompt, undefined, { ...data, label: target.data.label, batchCount: 1 }, lease, options);
       } finally { imageBatchLeases.delete(lease); }
       if (!result.success) return result;
       activeOwner.currentNodeId = undefined;
       completed += 1;
     }
-    state.showToast(`批量生成完成：共 ${completed} 张`);
+    if (!options?.silent) state.showToast(`批量生成完成：共 ${completed} 张`);
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : '批量生成已停止';
-    if (!owner?.controller.signal.aborted && !parentLease?.signal?.aborted) state.showToast(message, 'error');
+    if (!options?.silent && !owner?.controller.signal.aborted && !parentLease?.signal?.aborted) state.showToast(message, 'error');
     return { success: false, message };
   } finally {
     if (owner) {
@@ -192,7 +202,7 @@ export async function executeGeneration(
   passData?: BaseNodeData,
   lease?: GenerationLease,
   /** 批次预检捕获的 H3 策略摘要；适配器在本次执行解析策略后再次核对。 */
-  batchOptions?: { comfyH3ExpectedSettings?: string },
+  batchOptions?: GenerationOptions,
 ): Promise<GenerationResult> {
   let leaseValid = true;
   const assertLease = async () => {
@@ -227,6 +237,8 @@ export async function executeGeneration(
     }
   }
   const store = useAppStore.getState();
+  const notify: typeof store.showToast = (...args) => { if (!batchOptions?.silent) store.showToast(...args); };
+  const updateResult = batchOptions?.history === 'transient' ? store.updateNodeDataTransient : store.updateNodeData;
   const data = resolveGenerationNodeData(passData ?? store.nodes.find((n) => n.id === nodeId)?.data);
   if (!data) return { success: false, message: '节点不存在' };
 
@@ -234,14 +246,14 @@ export async function executeGeneration(
   const rawPrompt = overridePrompt ?? (data?.prompt as string) ?? '';
 
   if (data.model === '' && !data.workflowId) {
-    store.showToast('请先在底部模型选择器中选择一个模型', 'error');
+    notify('请先在底部模型选择器中选择一个模型', 'error');
     return { success: false, message: '未选择模型' };
   }
 
   if (nodeType === 'ai-director') {
     if (data.directorRuntimeKind !== 'ai-threejs') {
       const message = '请切换到 AI 镜头预演后生成';
-      store.showToast(message, 'error');
+      notify(message, 'error');
       return { success: false, message };
     }
     const defaults = parseProjectModelRef(store.projects.find((project) => project.id === store.currentProjectId)?.settings?.defaultModels?.text);
@@ -253,7 +265,7 @@ export async function executeGeneration(
     const validation = !description.trim() || description.length > 12000 ? '请填写场景和运镜描述（最多 12000 字符）'
       : !model || !provider ? '请先选择文本模型；引用图片时请选择视觉模型' : undefined;
     if (validation) {
-      store.showToast(validation, 'error');
+      notify(validation, 'error');
       return { success: false, message: validation };
     }
     try {
@@ -264,53 +276,33 @@ export async function executeGeneration(
         return { success: false, message: '画布或生成输入已变化，未提交预演请求' };
       }
       await generateDirectorPrevis({ nodeId, description, model, provider: provider || '' });
-      useAppStore.getState().showToast('镜头预演已生成，可打开导演台查看');
+      notify('镜头预演已生成，可打开导演台查看');
       return { success: true };
     } catch (error) {
       const cancelled = error instanceof Error && error.name === 'AbortError';
       const message = cancelled ? '预演生成已取消或画布发生变化，未写回结果' : '镜头预演生成失败，请检查描述、模型配置和引用素材';
-      useAppStore.getState().showToast(message, cancelled ? 'info' : 'error');
+      notify(message, cancelled ? 'info' : 'error');
       return { success: false, message };
     }
   }
 
-  const cloudWorkflow = isCloudWorkflow(store.workflows.find((item) => item.id === data.workflowId));
-  if (!rawPrompt.trim() && !cloudWorkflow && data.provider !== 'runninghub') {
-    store.showToast('请输入提示词', 'error');
-    return { success: false, message: '提示词为空' };
+  const { model: nodeModel, provider: nodeProvider, workflowId, cloudWorkflow,
+    settings: projectSettings, error: inputError } = resolveGenerationSelection(data, store, rawPrompt);
+  if (inputError || !nodeModel || !nodeProvider) {
+    notify(inputError === '提示词为空' ? '请输入提示词' : '请先在底部模型选择器中选择一个模型', 'error');
+    return { success: false, message: inputError ?? '未选择模型' };
   }
-
-  const projectSettings = store.projects.find(
-    (project) => project.id === store.currentProjectId,
-  )?.settings;
   let effectivePrompt = resolveProjectGenerationPrompt({
-    prompt: rawPrompt,
-    data,
-    settings: projectSettings,
-    customStyles: store.customStyles,
+    prompt: rawPrompt, data, settings: projectSettings, customStyles: store.customStyles,
   });
-  const projectModelKind = getProjectModelKind(nodeType);
-  const projectModel = parseProjectModelRef(
-    projectModelKind ? projectSettings?.defaultModels?.[projectModelKind] : undefined,
-  );
-  const parsedNodeModel = parseProjectModelRef(data?.model);
-  const nodeModel = data?.model || projectModel?.model;
-  const nodeProvider = data.model
-    ? data.provider || parsedNodeModel?.provider
-    : projectModel?.provider || data.provider;
-  const workflowId = data.workflowId || (!data.model ? projectModel?.workflowId : undefined);
-  if (!nodeModel || !nodeProvider) {
-    store.showToast('请先在底部模型选择器中选择一个模型', 'error');
-    return { success: false, message: '未选择模型' };
-  }
   const sequentialCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
   if (nodeType === 'ai-image' && sequentialCount > 1 && usesSequentialImageBatch(nodeProvider, nodeModel, store.config, workflowId)) {
     if (postProcess) {
       const message = '批量生成暂不支持图片后处理，请将数量设为 1';
-      store.showToast(message, 'error');
+      notify(message, 'error');
       return { success: false, message };
     }
-    return runSequentialImageBatch(nodeId, sequentialCount, { ...data, provider: nodeProvider, model: nodeModel, workflowId }, rawPrompt, lease);
+    return runSequentialImageBatch(nodeId, sequentialCount, { ...data, provider: nodeProvider, model: nodeModel, workflowId }, rawPrompt, lease, batchOptions);
   }
   if (nodeType === 'ai-image' || nodeType === 'ai-video') {
     try {
@@ -318,7 +310,7 @@ export async function executeGeneration(
       effectivePrompt = applyGenerationCameraPrompt(effectivePrompt, store.nodes, data.cameraSettings, duration);
     } catch (error) {
       const message = error instanceof Error ? error.message : '镜头引用无效';
-      store.showToast(message, 'error');
+      notify(message, 'error');
       return { success: false, message };
     }
   }
@@ -329,11 +321,11 @@ export async function executeGeneration(
     try { prepareMediaNodeGeneration(nodeId); }
     catch (error) {
       const message = error instanceof Error ? error.message : '暂时无法保留旧任务，请稍后再生成';
-      store.showToast(message, 'error');
+      notify(message, 'error');
       return { success: false, message };
     }
   }
-  const runningHubTask = cloudWorkflow || data.provider === 'runninghub';
+  const runningHubTask = cloudWorkflow || nodeProvider === 'runninghub';
   const localComfyTask = !!workflowId && !cloudWorkflow;
   let comfyTaskId: string | undefined;
   const guardedSubmission = mediaSubmission || runningHubTask || localComfyTask;
@@ -372,23 +364,30 @@ export async function executeGeneration(
   };
 
   try {
-    if (nodeType === 'ai-image') {
+    if (nodeType === 'ai-image' || nodeType === 'ai-animation') {
+      const isAnimation = nodeType === 'ai-animation';
       const imageSize = (data.imageSize as string) || '2K';
-      const imageCapability = workflowId ? undefined : resolveImageParameterCapability(nodeModel, nodeProvider, store.config);
+      const imageCapability = isAnimation || workflowId ? undefined : resolveImageParameterCapability(nodeModel, nodeProvider, store.config);
       const imageQuality = resolveConfiguredImageQuality(imageCapability, data.imageQuality);
       const imageBackground = resolveConfiguredImageBackground(imageCapability, data.imageBackground);
-      const aspectRatio = (data.aspectRatio as string) || '1:1';
-      const batchCount = cloudWorkflow ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
+      const animationAction = data.animationAction ?? 'idle';
+      const animationFrames = data.animationFrames ?? 8;
+      const aspectRatio = isAnimation ? resolveAnimationSheetAspectRatio(animationFrames, nodeProvider)
+        : (data.aspectRatio as string) || '1:1';
+      const spriteProcessing = isAnimation ? animationProcessing({ ...data, animationSheet: undefined }) : undefined;
+      if (isAnimation) effectivePrompt = buildAnimationSpritePrompt(effectivePrompt, animationAction, animationFrames, aspectRatio, spriteProcessing);
+      const batchCount = cloudWorkflow || isAnimation ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
       if (batchCount > 1) {
         if (postProcess) throw new Error('批量生成暂不支持图片后处理，请将数量设为 1');
         batchNodeIds = prepareImageBatchNodes({
           nodeId,
           count: batchCount,
+          commitHistory: batchOptions?.history !== 'transient',
           projectId: submittingProjectId,
         }).nodeIds;
         if (cloudGuard) completeCanvasDerivation(cloudGuard);
         cloudGuard = guardedSubmission ? registerCanvasDerivation(useAppStore.getState(), nodeId) : null;
-        store.showToast(`正在批量生成 ${batchCount} 张图片`);
+        notify(`正在批量生成 ${batchCount} 张图片`);
         const batch = await generateImagesBatch({
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
@@ -403,6 +402,8 @@ export async function executeGeneration(
           targetNodeIds: batchNodeIds,
           isCurrent: guardedSubmission ? isStillCurrentSubmission : undefined,
           batch,
+          silent: batchOptions?.silent,
+          model: nodeModel, provider: nodeProvider,
           projectId: submittingProjectId,
           prompt: effectivePrompt,
           imageSize,
@@ -433,11 +434,12 @@ export async function executeGeneration(
       if (lease) await assertLease();
       if (guardedSubmission && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       const mediaUrl = persisted.mediaUrl;
-      const applyImageData = lease && imageBatchLeases.has(lease) ? store.updateNodeDataTransient : store.updateNodeData;
+      const applyImageData = lease && imageBatchLeases.has(lease) ? store.updateNodeDataTransient : updateResult;
       applyImageData(nodeId, {
         imageUrl: mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: mediaUrl, output: persisted.sourceUrl, status: 'success',
         imageWidth: result.width, imageHeight: result.height,
+        ...(isAnimation ? { aspectRatio, ...animationResultPatch(data) } : {}),
       });
       confirmMediaDelivery();
       if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
@@ -445,9 +447,11 @@ export async function executeGeneration(
       store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: persisted.sourceUrl, nodeType: 'ai-image', model: nodeModel, provider: nodeProvider,
+        output: persisted.sourceUrl, nodeType, model: nodeModel, provider: nodeProvider,
         status: 'success', mediaUrl, filePath: persisted.filePath,
-        params: { imageSize, imageQuality, imageBackground, aspectRatio },
+        params: isAnimation ? { imageSize, aspectRatio, animationAction, animationFrames,
+          grid: ANIMATION_FRAME_GRIDS[animationFrames], animationProcessing: spriteProcessing, animationPromptVersion: 1 }
+          : { imageSize, imageQuality, imageBackground, aspectRatio },
       });
 
       if (postProcess === 'character-8-direction-grid' && persisted.filePath) {
@@ -465,12 +469,12 @@ export async function executeGeneration(
               data: { label: `${data.label} 8向宫格`, type: 'ai-storyboard', role: 'source', status: 'success', imageUrl: convertFileSrc(gridResult.grid_path), filePath: gridResult.grid_path, imageWidth: gridResult.grid_size, imageHeight: gridResult.grid_size, storyboardRows: 3, storyboardCols: 3, nodeWidth: 360, nodeHeight: 360 },
             });
           }
-          store.showToast('角色 8 向宫格已生成');
+          notify('角色 8 向宫格已生成');
         } catch {
-          store.showToast(`原图已生成，8 向宫格处理失败`, 'error');
+          notify(`原图已生成，8 向宫格处理失败`, 'error');
         }
       } else {
-        store.showToast('图片生成完成');
+        notify(isAnimation ? '帧动画生成完成' : '图片生成完成');
       }
     } else if (nodeType === 'ai-panorama') {
       const imageSize = (data.imageSize as string) || '2K';
@@ -490,7 +494,7 @@ export async function executeGeneration(
         : { mediaUrl: result.url, sourceUrl: result.url };
       if (!isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       const mediaUrl = persisted.mediaUrl;
-      store.updateNodeData(nodeId, {
+      updateResult(nodeId, {
         imageUrl: mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: mediaUrl, output: persisted.sourceUrl, status: 'success',
         imageWidth: result.width, imageHeight: result.height,
@@ -503,7 +507,7 @@ export async function executeGeneration(
         status: 'success', mediaUrl, filePath: persisted.filePath,
         params: { imageSize, aspectRatio },
       });
-      store.showToast('全景图生成完成');
+      notify('全景图生成完成');
     } else if (nodeType === 'ai-video') {
       // Imported/legacy outputs may not have a history record. Preserve before replacing.
       if (data.videoUrl) {
@@ -571,7 +575,7 @@ export async function executeGeneration(
       }
       if (lease) await assertLease();
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      store.updateNodeData(nodeId, {
+      updateResult(nodeId, {
         videoUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: persisted.mediaUrl, output: persisted.sourceUrl, status: 'success', videoBatchFingerprint: videoFingerprint, videoTaskState: undefined,
       });
@@ -583,7 +587,7 @@ export async function executeGeneration(
         status: 'success', mediaUrl: persisted.mediaUrl, filePath: persisted.filePath,
         params: { videoResolution, videoFps, videoFrames, seedanceResolution, seedanceRatio, seedanceDuration, generateAudio: genAudio, cameraSettings: data.cameraSettings },
       }, true);
-      store.showToast('视频生成完成');
+      notify('视频生成完成');
     } else if (nodeType === 'ai-audio') {
       const result = await generateAudio({
         prompt: effectivePrompt,
@@ -613,7 +617,7 @@ export async function executeGeneration(
       const persisted = await persistAudioGenerationResult(result, submittingProjectId, data.label);
       if (guardedSubmission && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       if (persisted.persistence === 'failed') throw new Error('音频已生成，但保存失败；请继续保存原结果');
-      store.updateNodeData(nodeId, {
+      updateResult(nodeId, {
         audioUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: persisted.mediaUrl, output: persisted.outputUrl,
         musicClipId: result.clipId,
@@ -640,7 +644,7 @@ export async function executeGeneration(
         },
       });
       if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
-      store.showToast('音频生成完成');
+      notify('音频生成完成');
     } else if (nodeType === 'ai-shotlist') {
       await generateShotlistRows(nodeId, effectivePrompt, nodeModel, nodeProvider);
     } else {
@@ -652,7 +656,7 @@ export async function executeGeneration(
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       const processed = postProcessDramaExtractOutput(effectivePrompt, result);
       if (!processed.ok) throw new Error(processed.error);
-      store.updateNodeData(nodeId, { output: processed.output, status: 'success' });
+      updateResult(nodeId, { output: processed.output, status: 'success' });
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: processed.output, nodeType: 'ai-text', model: nodeModel, provider: nodeProvider, status: 'success',
@@ -666,7 +670,7 @@ export async function executeGeneration(
         }
         const kindLabel =
           processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具';
-        store.showToast(`${kindLabel}简介已提取并入库 · 「资产管理 > 短剧资产」可查看`);
+        notify(`${kindLabel}简介已提取并入库 · 「资产管理 > 短剧资产」可查看`);
       }
     }
     return { success: true };
@@ -688,7 +692,7 @@ export async function executeGeneration(
       output: '', nodeType: nodeType as 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio' | 'ai-panorama',
       model: nodeModel, provider: nodeProvider, status: 'error', error: msg,
     });
-    store.showToast(msg, 'error');
+    notify(msg, 'error');
     return { success: false, message: msg };
   } finally {
     if (!mediaDelivered && taskReceipt) pauseMediaTask(taskReceipt, undefined, isStillCurrentSubmission() ? 'delivery_pending' : 'canvas_changed');

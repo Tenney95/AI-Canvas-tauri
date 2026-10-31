@@ -25,7 +25,7 @@ import {
   ZoomIn,
   ZoomOut
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import PopupCloseButton from '../../../shared/PopupCloseButton';
 import { PanoramaCore } from './PanoramaCore';
 import type { PanoramaCoreHandle, PanoramaViewState, PanoramaViewerProps, PanoramaCaptureResult, PanoramaCaptureRatio } from '../../../../types/panorama';

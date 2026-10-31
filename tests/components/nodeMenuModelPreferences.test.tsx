@@ -30,7 +30,7 @@ vi.mock('../../src/store/useAppStore', () => ({
 vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'created' }));
 vi.mock('../../src/services/fileService', () => ({ uploadSourceFileToProject: vi.fn() }));
 vi.mock('../../src/services/canvasPointerService', () => ({ getCanvasPointerPosition: () => ({ x: 20, y: 40 }) }));
-vi.mock('../../src/hooks/useNodeCreation', () => ({ classifyFile: vi.fn() }));
+vi.mock('../../src/services/sourceFileImportService', () => ({ importSourceFileToCanvas: vi.fn() }));
 vi.mock('../../src/components/shared/AnimatedButton', () => ({ default: 'animated-button' }));
 vi.mock('../../src/utils/popupPosition', () => ({ calcFixedPosition: () => ({ left: 0, top: 0 }) }));
 vi.mock('../../src/services/plugins/pluginRuntime', () => ({ getAvailablePluginNodes: () => [], createPluginNode: vi.fn() }));

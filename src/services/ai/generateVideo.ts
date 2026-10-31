@@ -39,7 +39,7 @@ import {
   warnIfTooManyReferences,
 } from './connectedReferenceMedia';
 import { getApimartSeedanceCapability, type ApimartSeedanceCapability } from './apimartVideoModels';
-import { pollTask, PollTimeoutError } from '../pollTask';
+import { pollVolcengineVideoTask } from './providers/volcengineVideoQuery';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import {
   getModelProtocolPresetVideoCapability,
@@ -1018,40 +1018,12 @@ async function generateVolcengineVideo(
     billingRun = await updateBillingRun(billingRun, { status: 'running', taskId });
 
     // 轮询
-    const completed = await pollTask<Record<string, unknown>, { url: string; completionTokens?: number }>({
-      fetchState: async (querySignal) => {
-        const pollResp = await corsSafeFetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          signal: querySignal,
-        });
-        if ([408, 504].includes(pollResp.status)) throw new PollTimeoutError();
-        if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
-        return (await pollResp.json()) as Record<string, unknown>;
+    const completed = await pollVolcengineVideoTask({
+      apiKey, baseUrl, taskId, signal, maxDuration: VIDEO_POLL_MAX_DURATION_MS,
+      onFailed: (status) => {
+        remoteFailed = true;
+        remoteCancelled = status === 'cancelled';
       },
-      isComplete: (raw) => {
-        const status = raw.status as string;
-        if (status === 'succeeded') {
-          const c = raw.content as Record<string, unknown> | undefined;
-          const videoUrl = c?.video_url as string | undefined;
-          const usage = raw.usage as Record<string, unknown> | undefined;
-          if (videoUrl) return { url: videoUrl, completionTokens: typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : undefined };
-          throw new Error('任务完成但未返回视频地址');
-        }
-        return null;
-      },
-      isFailed: (raw) => {
-        const status = raw.status as string;
-        if (status === 'failed' || status === 'cancelled') {
-          remoteFailed = true;
-          remoteCancelled = status === 'cancelled';
-          const err = raw.error as { message?: string } | undefined;
-          return `任务失败: ${err?.message || status}`;
-        }
-        return null;
-      },
-      interval: 3000,
-      maxDuration: VIDEO_POLL_MAX_DURATION_MS,
-      signal,
     });
 
     const measured = completed.completionTokens === undefined ? null : quoteVolcengineVideo({

@@ -32,7 +32,7 @@ export interface WebSearchResult {
   sources: WebSource[];
 }
 
-const BUILT_IN_SEARCH_PAGE_BUILDERS = [
+export const SEARCH_NAVIGATION_BUILDERS = [
   (query: string) => {
     const params = new URLSearchParams({
       q: query,
@@ -131,7 +131,7 @@ async function searchBuiltInWeb(
   signal?: AbortSignal,
 ): Promise<WebSearchResult> {
   let lastError: unknown;
-  for (const buildSearchUrl of BUILT_IN_SEARCH_PAGE_BUILDERS) {
+  for (const buildSearchUrl of SEARCH_NAVIGATION_BUILDERS) {
     try {
       const page = await readWebPage(buildSearchUrl(query), {
         signal,

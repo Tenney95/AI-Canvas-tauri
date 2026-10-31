@@ -41,7 +41,6 @@
         "konva": "^10.3.0",
         "lucide-react": "^0.546.0",
         "mediabunny": "^1.52.1",
-        "motion": "^12.43.0",
         "pannellum": "2.5.7",
         "postprocessing": "^6.39.1",
         "react": "^19.2.6",

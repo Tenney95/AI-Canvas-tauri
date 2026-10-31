@@ -4,7 +4,7 @@
 import { useAppStore } from '../../../store/useAppStore';
 import type { WebReadContinuation } from '../../../types/chat';
 import { describeWebReadStatus, readWebPage } from '../../webPageService';
-import { searchWeb } from '../../webSearchService';
+import { searchWeb, SEARCH_NAVIGATION_BUILDERS } from '../../webSearchService';
 import {
   assignWebSourceCitations,
   isWebUrlAllowed,
@@ -23,22 +23,6 @@ interface WebExtractInput extends WebReadContinuation {
   url: string;
   charLimit?: number;
 }
-
-const SEARCH_NAVIGATION_BUILDERS = [
-  (query: string) => {
-    const params = new URLSearchParams({
-      q: query,
-      hl: 'zh-CN',
-      gl: 'CN',
-      ceid: 'CN:zh-Hans',
-    });
-    return `https://news.google.com/rss/search?${params.toString()}`;
-  },
-  (query: string) => {
-    const params = new URLSearchParams({ q: query });
-    return `https://www.bing.com/search?${params.toString()}`;
-  },
-] as const;
 
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined'

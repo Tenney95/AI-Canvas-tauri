@@ -184,9 +184,8 @@ describe('生成入口的文本与参考分离', () => {
     const state = useAppStore.getState();
     if (entry === 'batch') {
       expect(await batchExecuteNodes(['target'], state.nodes, state.edges, {
-        commitToHistory: state.commitToHistory, updateNodeDataTransient: state.updateNodeDataTransient,
-        recordOutputHistory: history, currentProjectId: projectId,
-      })).toEqual({ ok: 1, fail: 0 });
+        commitToHistory: state.commitToHistory, currentProjectId: projectId,
+      })).toEqual({ ok: 1, fail: 0, skipped: 0 });
     } else {
       expect((await executeGeneration('target')).success).toBe(true);
     }

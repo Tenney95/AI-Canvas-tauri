@@ -13,6 +13,9 @@ import { completeRunningHubNodeTask, getRunningHubPersistedOutput } from './ai/p
 import { completeComfyNodeTask, completeMediaNodeTask, pauseMediaTask } from './pollManager';
 
 interface ApplyImageBatchParams {
+  model?: string;
+  provider?: string;
+  silent?: boolean;
   isCurrent?: () => boolean;
   nodeId: string;
   /** 提交请求前创建的目标节点；恢复旧任务时可缺省，由 batchGroupId 自动找回。 */
@@ -27,6 +30,7 @@ interface ApplyImageBatchParams {
 }
 
 interface PrepareImageBatchParams {
+  commitHistory?: boolean;
   nodeId: string;
   count: number;
   projectId: string | null | undefined;
@@ -69,6 +73,7 @@ function emptyImageOutput(): Partial<BaseNodeData> {
  * 数量包含源节点：选择 4 时保留源节点，并在其右侧立即创建 3 个加载节点。
  */
 export function prepareImageBatchNodes({
+  commitHistory = true,
   nodeId,
   count,
   projectId,
@@ -105,7 +110,7 @@ export function prepareImageBatchNodes({
     } as Node<BaseNodeData>;
   });
 
-  store.commitToHistory();
+  if (commitHistory) store.commitToHistory();
   store.updateNodeDataTransient(nodeId, {
     batchGroupId,
     status: 'loading',
@@ -159,6 +164,9 @@ function resolveBatchTargetNodeIds(
 
 /** Save and materialize a batch while keeping node placement and history consistent. */
 export async function applyImageBatchResults({
+  model,
+  provider,
+  silent = false,
   nodeId,
   targetNodeIds,
   batch,
@@ -258,8 +266,8 @@ export async function applyImageBatchResults({
       prompt,
       output: item.persisted.sourceUrl,
       nodeType: 'ai-image',
-      model: (sourceData.model as string) || '',
-      provider: (sourceData.provider as string) || '',
+      model: model ?? sourceData.model ?? '',
+      provider: provider ?? sourceData.provider ?? '',
       status: 'success',
       mediaUrl: item.persisted.mediaUrl,
       filePath: item.persisted.filePath,
@@ -280,10 +288,10 @@ export async function applyImageBatchResults({
     if (deliveryComplete && result.comfyTaskId) completeComfyNodeTask(nodeId, result.comfyTaskId);
   }
   if (deliveryComplete && !batch.results.some((result) => result.taskReceipt)
-    && ['runninghub', 'runninghubwf'].includes(sourceData.provider ?? '')) completeRunningHubNodeTask(nodeId);
+    && ['runninghub', 'runninghubwf'].includes(provider ?? sourceData.provider ?? '')) completeRunningHubNodeTask(nodeId);
 
   const failedCount = Math.max(batch.failedCount, batch.requestedCount - deliveredIndexes.size);
-  store.showToast(
+  if (!silent) store.showToast(
     failedCount > 0
       ? `批量生成完成：成功 ${items.length}/${batch.requestedCount} 张`
       : `批量生成完成：共 ${items.length} 张`,

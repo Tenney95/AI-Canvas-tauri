@@ -21,6 +21,7 @@ import {
   sha256BytesHex,
 } from './mediaDataUrl';
 import {
+  browserOpenFile,
   isTauriEnv,
   getMimeType,
   arrayBufferToBase64,
@@ -526,38 +527,6 @@ export async function syncAuthorizedDirectories(config: {
   if (rejected.length > 0) {
     console.warn('[fileService] 已跳过不存在或无效的授权目录:', rejected);
   }
-}
-
-/** 浏览器降级：通过 file input 读取文件 */
-function browserOpenFile(accept: string): Promise<File | null> {
-  return new Promise((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = accept;
-    input.style.display = 'none';
-    document.body.appendChild(input);
-    input.addEventListener('change', () => {
-      document.body.removeChild(input);
-      resolve(input.files?.[0] ?? null);
-    });
-    input.addEventListener('cancel', () => {
-      document.body.removeChild(input);
-      resolve(null);
-    });
-    input.click();
-    window.addEventListener(
-      'focus',
-      () => {
-        setTimeout(() => {
-          if (document.body.contains(input)) {
-            document.body.removeChild(input);
-            resolve(null);
-          }
-        }, 300);
-      },
-      { once: true }
-    );
-  });
 }
 
 /** 解析裁剪来源，本地文件使用 asset URL，远程图片按需绕过 CORS。 */

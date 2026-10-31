@@ -34,7 +34,7 @@ beforeEach(async () => {
   driver.effects = []; driver.ids = 0; driver.onDrag = undefined;
   driver.copy.mockReset().mockResolvedValue({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
   driver.read.mockReset().mockResolvedValue(new Uint8Array([0])); driver.mark.mockReset().mockResolvedValue(true);
-  driver.state = { currentProjectId: 'project', projects: [], nodes: [], workflowPanelOpen: false, showToast: vi.fn(), markAssetUsed: driver.mark,
+  driver.state = { getCurrentRevision: () => 0, currentProjectId: 'project', projects: [], nodes: [], workflowPanelOpen: false, showToast: vi.fn(), markAssetUsed: driver.mark,
     addNode: vi.fn((node: AppState['nodes'][number]) => { driver.state.nodes = [...driver.state.nodes, node]; }),
     updateNodeDataTransient: vi.fn((id: string, patch: Record<string, unknown>) => {
       driver.state.nodes = driver.state.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
@@ -102,7 +102,7 @@ describe('成功导入后的最近使用记录', () => {
   it('复制途中切换项目或删除占位节点时不记录', async () => {
     let finish!: (result: unknown) => void;
     driver.copy.mockImplementation(() => new Promise((resolve) => { finish = resolve; })); drag('drop');
-    driver.state = { ...driver.state, currentProjectId: 'other', nodes: [] };
+    driver.state = { ...driver.state, currentProjectId: 'other', nodes: [...driver.state.nodes] };
     finish({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(driver.mark).not.toHaveBeenCalled();
@@ -110,5 +110,15 @@ describe('成功导入后的最近使用记录', () => {
   it('重复原生 drop 事件只记录一次，读取失败不记录', async () => {
     drag('drop'); drag('drop'); await vi.waitFor(() => expect(driver.mark).toHaveBeenCalledOnce());
     expect(driver.copy).toHaveBeenCalledOnce();
+  });
+  it.each(['txt', 'md'])('%s 读取期间撤销或切换项目时不建节点', async (extension) => {
+    let finish!: (value: Uint8Array) => void;
+    driver.read.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    drag('drop', `/external/note.${extension}`);
+    driver.state = { ...driver.state, currentProjectId: 'other' };
+    finish(new TextEncoder().encode('迟到正文'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(driver.state.addNode).not.toHaveBeenCalled();
+    expect(driver.mark).not.toHaveBeenCalled();
   });
 });

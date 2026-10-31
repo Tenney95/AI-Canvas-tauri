@@ -5,7 +5,7 @@ vi.mock('../../src/hooks/useComfyImageSource', () => ({ useComfyImageSource: (so
 vi.mock('../../src/hooks/useComfyMediaSource', () => ({ useComfyMediaSource: (source?: string) => source }));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HistoryRecord } from '../../src/services/indexedDbService';
-import type { BatchContext } from '../../src/utils/batchExecute';
+import type { AppState } from '../../src/store/useAppStore';
 import type { ComfyNodeProgress } from '../../src/types/comfyProgress';
 import type { AppConfig } from '../../src/types';
 
@@ -46,8 +46,8 @@ interface TestStore {
   addNodeTransient: ReturnType<typeof vi.fn>;
   updateNodeData: ReturnType<typeof vi.fn>;
   updateNodeDataTransient: ReturnType<typeof vi.fn<(nodeId: string, patch: Record<string, unknown>) => void>>;
-  commitToHistory: ReturnType<typeof vi.fn<BatchContext['commitToHistory']>>;
-  recordOutputHistory: ReturnType<typeof vi.fn<BatchContext['recordOutputHistory']>>;
+  commitToHistory: ReturnType<typeof vi.fn<AppState['commitToHistory']>>;
+  recordOutputHistory: ReturnType<typeof vi.fn<AppState['recordOutputHistory']>>;
   showToast: ReturnType<typeof vi.fn>;
   renameGroup: ReturnType<typeof vi.fn>;
   toggleGroupCollapsed: ReturnType<typeof vi.fn>;
@@ -157,8 +157,8 @@ function createStore(nodes: TestNode[], getRevision: () => number): TestStore {
         node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node
       ));
     }),
-    commitToHistory: vi.fn<BatchContext['commitToHistory']>(),
-    recordOutputHistory: vi.fn<BatchContext['recordOutputHistory']>().mockResolvedValue(undefined),
+    commitToHistory: vi.fn<AppState['commitToHistory']>(),
+    recordOutputHistory: vi.fn<AppState['recordOutputHistory']>().mockResolvedValue(undefined),
     showToast: vi.fn(),
     renameGroup: vi.fn(),
     toggleGroupCollapsed: vi.fn(),
@@ -1816,12 +1816,12 @@ describe('critical canvas node interactions', () => {
         const { executeGeneration } = await import('../../src/services/generationService');
         expect(await executeGeneration('quality-image')).toEqual({ success: true });
       } else {
+        vi.doUnmock('../../src/services/generationService');
         vi.doUnmock('../../src/utils/batchExecute');
         const { batchExecuteNodes } = await import('../../src/utils/batchExecute');
         expect(await batchExecuteNodes(['quality-image'], store.nodes as unknown as Parameters<typeof batchExecuteNodes>[1], [], {
-          commitToHistory: store.commitToHistory, updateNodeDataTransient: store.updateNodeDataTransient,
-          recordOutputHistory: store.recordOutputHistory, currentProjectId: store.currentProjectId,
-        })).toEqual({ ok: 1, fail: 0 });
+          commitToHistory: store.commitToHistory, currentProjectId: store.currentProjectId,
+        })).toEqual({ ok: 1, fail: 0, skipped: 0 });
       }
       if (count === 1) {
         expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({ imageBackground: requested, aspectRatio: '16:9' }));

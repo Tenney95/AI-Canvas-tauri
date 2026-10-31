@@ -5,7 +5,7 @@
  * 拖拽分组时 React Flow 自动同步所有子节点位置，无卡顿。
  * 支持拖拽右下角调整大小。
  */
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { memo, useRef, useState, useCallback, useEffect } from 'react';
 import { NodeResizer, Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import { Icon } from '@iconify/react';
@@ -71,7 +71,7 @@ function GroupCoverPhoto({ cover, fan }: { cover: GroupCoverItem; fan: number })
   );
 }
 
-export default function GroupNode({ id, data, selected }: NodeProps) {
+function GroupNode({ id, data, selected }: NodeProps) {
   const t = useT();
   const { groupId, color, label, groupCollapsed } = data as unknown as GroupNodeData;
   const renameGroup = useAppStore((s) => s.renameGroup);
@@ -119,8 +119,6 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
     const allEdges = state.edges;
     const {
       commitToHistory: commitBatchToHistory,
-      updateNodeDataTransient,
-      recordOutputHistory,
       showToast,
       currentProjectId,
     } = state;
@@ -132,16 +130,16 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
     setBatchRunning(true);
     const ctx: BatchContext = {
       commitToHistory: commitBatchToHistory,
-      updateNodeDataTransient,
-      recordOutputHistory,
       currentProjectId,
     };
-    const { ok, fail } = await batchExecuteNodes(childIds, allNodes, allEdges, ctx);
+    const { ok, fail, skipped } = await batchExecuteNodes(childIds, allNodes, allEdges, ctx);
     setBatchRunning(false);
+    if (useAppStore.getState().currentProjectId !== currentProjectId) return;
 
     const parts: string[] = [];
     if (ok > 0) parts.push(t('{count} 个成功', { count: ok }));
     if (fail > 0) parts.push(t('{count} 个失败', { count: fail }));
+    if (skipped > 0) parts.push(`已跳过 ${skipped} 个（输入或画布已变化）`);
     if (parts.length > 0) {
       showToast(t('分组批量生成完成：{result}', { result: parts.join('，') }), fail > 0 ? 'error' : undefined);
     }
@@ -333,3 +331,5 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
     </>
   );
 }
+
+export default memo(GroupNode);
