@@ -15,6 +15,7 @@ import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import RunningHubWorkflowImport from './runninghub/RunningHubWorkflowImport';
 import { workflowInputNodes } from '../services/runninghubWorkflowService';
+import { workflowPromptRoles } from '../services/comfyPromptRoles';
 import { readBinaryFile } from '../services/fileService';
 import { nativeDropClientPosition } from '../utils/nativeDropPosition';
 
@@ -24,6 +25,13 @@ const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-video', label: '生成视频' },
   { value: 'ai-audio', label: '生成音频' },
 ];
+
+const PROMPT_ROLE_BADGES = {
+  positive: { label: '正面', className: 'ui-badge--success', hint: '根据工作流连线识别：用于正面条件' },
+  negative: { label: '负面', className: 'ui-badge--danger', hint: '根据工作流连线识别：用于负面条件；请核对默认提示词选择' },
+  mixed: { label: '正负共用', className: 'ui-badge--warning', hint: '根据工作流连线识别：同一文本同时用于正面和负面条件' },
+  unknown: { label: '未判定', className: 'ui-badge--outline', hint: '缺少完整连线或经过未支持的节点，无法可靠判定；旧云工作流可重新读取完整 API 定义后保存' },
+};
 
 /** 浏览器文件选择器：选取 .json 文件（解析与校验交给统一入口） */
 function pickJsonFile(): Promise<File | null> {
@@ -721,6 +729,7 @@ export default function WorkflowPanel() {
                         (n) => wf.defaultNodes?.[n.type] === n.nodeId,
                       ).length ?? 0;
                       const expanded = expandedIds.has(wf.id);
+                      const promptRoles = expanded && inputs.some((node) => node.type === 'prompt') ? workflowPromptRoles(wf) : undefined;
                       return (
                       <motion.div
                         key={wf.id}
@@ -840,6 +849,8 @@ export default function WorkflowPanel() {
                               <div className="wf-item-ionodes">
                                 {inputs.map((n, i) => {
                                   const isDefault = wf.defaultNodes?.[n.type] === n.nodeId;
+                                  const promptRole = n.type === 'prompt' ? promptRoles?.get(n.nodeId) ?? 'unknown' : undefined;
+                                  const roleBadge = promptRole ? PROMPT_ROLE_BADGES[promptRole] : undefined;
                                   return (
                                     <button
                                       key={i}
@@ -850,6 +861,7 @@ export default function WorkflowPanel() {
                                         ? t('已是默认{type}节点，点击取消', { type: t(IONODE_LABELS[n.type]) })
                                         : t('设为默认{type}节点：提示词框里的{type}内容在没 @ 时自动注入这里', { type: t(IONODE_LABELS[n.type]) })}
                                     >
+                                      {roleBadge && <span className={`ui-badge ${roleBadge.className}`} title={t(roleBadge.hint)}>{t(roleBadge.label)}</span>}
                                       {isDefault ? '★' : IONODE_ICONS[n.type]} {n.title}
                                       <code>#{n.nodeId}</code>
                                     </button>

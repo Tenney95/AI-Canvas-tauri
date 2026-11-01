@@ -11,6 +11,28 @@ const options = { kind: 'workflow' as const, remoteId: '1904152026220003329', co
 const graph = { '6': { class_type: 'CLIPTextEncode', inputs: { text: '猫', link: ['1', 0] }, _meta: { title: '正面提示词' } }, '3': { class_type: 'KSampler', inputs: { seed: 0, denoise: 0.5, enabled: false, api_key: 'do-not-save' } } };
 
 describe('RunningHub 导入与参数合同', () => {
+  it('完整 API 图只保留字段身份与提示词用途，支持重载，不保存原图或改写默认输入来源', () => {
+    const input = {
+      '714': { class_type: 'PrimitiveStringMultiline', inputs: { value: '当前人物' } },
+      '231': { class_type: 'CLIPTextEncode', inputs: { text: ['714', 0] } },
+      '232': { class_type: 'CLIPTextEncode', inputs: { text: '原负面词' } },
+      '235': { class_type: 'KSampler', inputs: { positive: ['231', 0], negative: ['232', 0] } },
+    };
+    const manifest = importRunningHubDefinition(JSON.stringify({ prompt: JSON.stringify(input) }), options);
+    expect(manifest.promptRoles).toEqual({ '714::value': 'positive', '232::text': 'negative' });
+    expect(manifest.parameters.every((field) => field.source === 'value')).toBe(true);
+    expect(manifest).not.toHaveProperty('prompt');
+    const restored = JSON.parse(JSON.stringify(manifest)) as RunningHubWorkflowManifest;
+    expect(() => validateRunningHubManifest(restored)).not.toThrow();
+    expect(restored.promptRoles).toEqual(manifest.promptRoles);
+    // 编辑器移除/更改字段后，旧用途仍只绑定原身份，不会转给另一个字段，也不阻止保存。
+    expect(() => validateRunningHubManifest({ ...restored, parameters: [] })).not.toThrow();
+    const limited = importRunningHubDefinition(JSON.stringify({ nodeInfoList: [{ nodeId: '232', fieldName: 'text', fieldValue: '', description: '正面提示词' }] }), options);
+    expect(limited.promptRoles).toBeUndefined();
+    for (const promptRoles of [{ '232::text': 'unknown' }, { '232::text': {} }, { wrong: 'positive' }]) {
+      expect(() => validateRunningHubManifest({ ...manifest, promptRoles } as unknown as RunningHubWorkflowManifest)).toThrow('用途标记无效');
+    }
+  });
   it('仅动态输入进入 @ 列表，字段身份包含节点与字段名；默认节点必须仍属于同一类型', () => {
     const manifest = importRunningHubDefinition(JSON.stringify(graph), options);
     const inputs = runningHubInputNodes(manifest);
@@ -24,6 +46,32 @@ describe('RunningHub 导入与参数合同', () => {
     expect(runningHubInputNodes(manifest).map((node) => node.nodeId)).toEqual(['7::text']);
     expect(runningHubInputNodes({ ...manifest, parameters: manifest.parameters.map((field) => ({ ...field, sourceExplicit: true })) })).toEqual([]);
   });
+  it('原版字符串 value 输入可供默认正文与 @ 选择，不把其他字符串字段当正文', () => {
+    const definition = importRunningHubDefinition(JSON.stringify({
+      '714': { class_type: 'PrimitiveStringMultiline', _meta: { title: '双采共用描述' }, inputs: { value: '原始场景描述' } },
+      '715': { class_type: 'PrimitiveString', inputs: { value: '' } },
+      '232': { class_type: 'CLIPTextEncode', inputs: { text: '保留负面词', clip: ['512', 0] } },
+      '517': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae.safetensors' } },
+      '716': { class_type: 'PrimitiveStringMultilineHelper', inputs: { value: '不明节点' } },
+      '717': { class_type: 'PrimitiveString', inputs: { description: '不明字段' } },
+    }), options);
+    expect(runningHubInputNodes(definition).map((node) => node.nodeId)).toEqual(['232::text', '714::value', '715::value']);
+    expect(definition.parameters.find((field) => field.nodeId === '714')).toMatchObject({
+      source: 'value', inputType: 'prompt', defaultValue: '原始场景描述',
+    });
+    expect(validRunningHubDefaults(definition, { prompt: '714::value' })).toEqual({ prompt: '714::value' });
+  });
+  it.each(['PrimitiveStringMultiline · value', 'Primitive String (Multiline) · value', '字符串（多行） · value', '字符串 · value', 'Text (Multiline) · value', '文本（多行） · value'])(
+    '旧记录 %s 补输入候选，保留用户默认选择和原参数', (label) => {
+      const field = { nodeId: '714', fieldName: 'value', label, type: 'string' as const, defaultValue: '旧描述', source: 'value' as const };
+      const definition: RunningHubWorkflowManifest = { version: 1, ...options, parameters: [field] };
+      expect(runningHubInputNodes(definition)).toMatchObject([{ nodeId: '714::value', type: 'prompt' }]);
+      expect(field).not.toHaveProperty('inputType');
+      expect(resolveRunningHubParameters([{ ...field, sourceExplicit: true }])[0]).not.toHaveProperty('inputType');
+      expect(resolveRunningHubParameters([{ ...field, options: ['旧描述'] }])[0]).not.toHaveProperty('inputType');
+      expect(resolveRunningHubParameters([{ ...field, fieldName: 'other' }])[0]).not.toHaveProperty('inputType');
+    },
+  );
   it('保留官方数字形式的长 ID，并区分工作流与应用链接', () => {
     expect(parseRunningHubJson('{"webappId":1904152026220003329}')).toEqual({ webappId: options.remoteId });
     expect(parseRunningHubId(`https://www.runninghub.cn/workflow/${options.remoteId}?x=1`, 'workflow')).toBe(options.remoteId);

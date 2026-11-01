@@ -31,6 +31,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
 }));
 
 import { executeComfyUIGenerate, executeComfyUIVideoGenerate } from '../../src/services/comfyWorkflowService';
+import { comfyWorkflowParameterKey } from '../../src/services/comfyWorkflowParameters';
 
 /** 文生图工作流：两个 CLIPTextEncode（正/负）+ 一个 LoadImage */
 const WORKFLOW_JSON = JSON.stringify({
@@ -93,6 +94,51 @@ beforeEach(() => {
 const baseParams = { prompt: '一只在屋顶的猫', model: 'wf', provider: 'comfyui', workflowId: 'wf-1' };
 
 describe('ComfyUI 默认 IO 节点', () => {
+  it.each(['image', 'video'] as const)('%s 本地普通参数按字段覆盖，优先于通用尺寸，不抑制正文兜底且不改原图', async (kind) => {
+    registerWorkflow();
+    const original = JSON.stringify({
+      '6': { class_type: 'CLIPTextEncode', inputs: { text: 't-1' } },
+      '20': { class_type: 'ParameterTest', inputs: { steps: 8, cfg: 1, enabled: true, width: 64, height: 64 } },
+      '21': { class_type: 'ParameterTest', inputs: { steps: ['20', 0] } },
+    });
+    mocks.storeState.workflows[0].fileContent = original;
+    mocks.storeState.workflows[0].ioNodes = [{ nodeId: '6', title: '正文', type: 'prompt' }];
+    const network = mocks.corsSafeFetch.getMockImplementation()!;
+    mocks.corsSafeFetch.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.includes('/view?')) {
+        const header = new Uint8Array(24);
+        header.set([0x89, 80, 78, 71, 13, 10, 26, 10]); header.set([73, 72, 68, 82], 12);
+        const view = new DataView(header.buffer); view.setUint32(16, 512); view.setUint32(20, 768);
+        return new Response(header, { status: 206, headers: { 'Content-Length': '24', 'Content-Type': 'image/png' } });
+      }
+      if (url.endsWith('/object_info/ParameterTest')) return jsonResponse({ ParameterTest: { input: { required: {
+        steps: ['INT', { min: 1, max: 100 }], cfg: ['FLOAT', { min: 0, max: 100 }], enabled: ['BOOLEAN', {}],
+        width: ['INT', { min: 64, max: 8192 }], height: ['INT', { min: 64, max: 8192 }],
+      } } } });
+      return network(url, init);
+    });
+    const workflowInputs = Object.fromEntries(Object.entries({ steps: '25', cfg: '0', enabled: 'false', width: '512', height: '768' })
+      .map(([fieldName, value]) => [comfyWorkflowParameterKey({ nodeId: '20', fieldName }), value]));
+    const params = { ...baseParams, workflowInputs, imageSize: '2K', aspectRatio: '16:9' };
+    const result = kind === 'image' ? await executeComfyUIGenerate(params) : await executeComfyUIVideoGenerate(params);
+    if (kind === 'image') {
+      expect(result).toMatchObject({ width: 512, height: 768 });
+      expect(mocks.corsSafeFetch.mock.calls.find(([url]) => String(url).includes('/view?'))?.[1]).toMatchObject({ headers: { Range: 'bytes=0-1048575' } });
+    }
+    const submitted = submittedWorkflow();
+    expect(submitted['20'].inputs).toMatchObject({ steps: 25, cfg: 0, enabled: false, width: 512, height: 768 });
+    expect(submitted['21'].inputs.steps).toEqual(['20', 0]);
+    expect(submitted['6'].inputs.text).toBe(baseParams.prompt);
+    expect(mocks.storeState.workflows[0].fileContent).toBe(original);
+  });
+
+  it('连线参数覆盖在上传参考图和提交任务前拒绝', async () => {
+    registerWorkflow();
+    mocks.storeState.workflows[0].fileContent = JSON.stringify({ '20': { class_type: 'ParameterTest', inputs: { steps: ['source', 0] } } });
+    const field = comfyWorkflowParameterKey({ nodeId: '20', fieldName: 'steps' });
+    await expect(executeComfyUIGenerate({ ...baseParams, workflowInputs: { [field]: '12' } }, undefined, ['data:image/png;base64,QUJD'])).rejects.toThrow('参数已失效');
+    expect(mocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
   it.each(['string', 'value'])('显式提示词与默认提示词都支持 %s 字段，并保留连线', async (key) => {
     registerWorkflow({ prompt: '6' });
     mocks.storeState.workflows[0].fileContent = JSON.stringify({

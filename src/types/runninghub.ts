@@ -40,6 +40,8 @@ export interface RunningHubWorkflowManifest {
   remoteId: string;
   connectionId: RunningHubConnectionId;
   parameters: RunningHubParameter[];
+  /** 完整 API 图导入时派生的提示词用途，键为编码后的 nodeId::fieldName；不保存原图。 */
+  promptRoles?: Record<string, import('./index').WorkflowPromptRole>;
   /** 显式节点绑定；缺省保留旧来源/参考序号映射。 */
   inputBindingMode?: 'nodes';
   outputNodeIds?: string[];

@@ -148,6 +148,17 @@ describe('快捷指令文件夹菜单', () => {
     expect(props.onClose).toHaveBeenCalledOnce();
     expect(props.onRunAdvancedPreset).not.toHaveBeenCalled();
   });
+  it.each(['生成双面部特写\n{{ 文章内容 }}', '生成双面部特写'])('快捷指令直接触发时保留输入框正文与素材引用：%s', (template) => {
+    props.currentPrompt = '@{ref-image:人物参考}\n银发角色，穿蓝色长袍';
+    props.userPresets = [{ ...preset, promptTemplate: template }];
+    const child = elements(openCommands(props)).find((element) => element.props.role === 'menuitem');
+    (child!.props.onClick as () => void)();
+    const [filled, trigger] = vi.mocked(props.onSelect).mock.calls[0];
+    expect(trigger).toBe(true);
+    expect(filled).toContain('生成双面部特写');
+    expect(filled).toContain(props.currentPrompt);
+    expect(filled.match(/银发角色，穿蓝色长袍/g)).toHaveLength(1);
+  });
 
   it('加入提示词沿用追加方式，高级指令交给顺序执行入口', () => {
     props.currentPrompt = '用户输入';

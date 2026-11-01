@@ -926,6 +926,8 @@ export default function PromptPanel({
   const runninghubWorkflow = workflows?.find((workflow) => workflow.id === selectedWorkflowId && workflow.adapterType === 'runninghub');
   const workflowApi = workflows?.find((workflow) => workflow.id === selectedWorkflowId && workflow.adapterType === 'workflow-api');
   const cloudWorkflow = runninghubWorkflow ?? (workflowApi?.workflowApi?.version === 2 ? workflowApi : undefined);
+  const parameterWorkflow = cloudWorkflow ?? workflows.find((workflow) => workflow.id === selectedWorkflowId
+    && (!workflow.adapterType || workflow.adapterType === 'comfyui'));
   const generatingFallback = <span className="ui-spinner" role="img" aria-label={t('生成中')} />;
   const submitButton = (
     <button
@@ -1065,9 +1067,9 @@ export default function PromptPanel({
             <CameraSettingsSelector value={cameraSettings} onChange={onChangeCameraSettings} />
           )}
 
-          {cloudWorkflow && onWorkflowInputsChange && (
+          {parameterWorkflow && onWorkflowInputsChange && (
             <CloudWorkflowParamSelector key={`${nodeId}:${selectedWorkflowId}`}
-              workflow={cloudWorkflow} values={workflowInputs}
+              workflow={parameterWorkflow} values={workflowInputs}
               onChange={onWorkflowInputsChange} disabled={isGenerating} onContinuousEditEnd={onContinuousEditEnd} />
           )}
 

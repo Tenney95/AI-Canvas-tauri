@@ -32,6 +32,9 @@ import { applyComfyRefmodsToWorkflow, assertComfyRefmodSubmissionFresh, assertCo
 import type { ComfyRefmodSelection } from '../types/comfyRefmod';
 import { videoInputData, videoInputFingerprint } from './videoBatchPlanning';
 import { applyComfyH3Memory } from './comfyH3Memory';
+import type { ComfyInputSpec } from '../types/comfyWorkflow';
+import { applyComfyWorkflowParameterOverrides, prepareComfyWorkflowParameterOverrides, splitComfyWorkflowInputs } from './comfyWorkflowParameters';
+import { parseRasterImageDimensions } from './rasterImageDimensions';
 
 /** ComfyUI 已注册的节点类型；同一次会话里短暂缓存，装完插件重开也能很快看到变化 */
 let nodeClassCache: { baseUrl: string; classes: Set<string>; fetchedAt: number } | null = null;
@@ -140,14 +143,6 @@ async function fetchComfyNodeClasses(baseUrl: string): Promise<Set<string> | nul
 }
 
 /** 节点某个输入的声明：combo 的可选值 + 数值范围，用来决定敢不敢写、写多少 */
-interface ComfyInputSpec {
-  options?: unknown[];
-  type?: string;
-  optional?: boolean;
-  min?: number;
-  max?: number;
-  step?: number;
-}
 type ComfyNodeInputSpecs = Record<string, ComfyInputSpec>;
 
 const nodeInputSpecCache = new Map<string, { fetchedAt: number; specs: Promise<ComfyNodeInputSpecs | null> }>();
@@ -169,6 +164,7 @@ function parseNodeInputSpecs(payload: unknown, classType: string): ComfyNodeInpu
         min: typeof config?.min === 'number' ? config.min : undefined,
         max: typeof config?.max === 'number' ? config.max : undefined,
         step: typeof config?.step === 'number' ? config.step : undefined,
+        multiline: typeof config?.multiline === 'boolean' ? config.multiline : undefined,
       };
     }
   }
@@ -176,16 +172,22 @@ function parseNodeInputSpecs(payload: unknown, classType: string): ComfyNodeInpu
 }
 
 /** 单个节点类型的输入声明；问不到就返回 null，调用方按「不敢写」处理 */
-async function fetchNodeInputSpecs(baseUrl: string, classType: string): Promise<ComfyNodeInputSpecs | null> {
+export async function fetchNodeInputSpecs(baseUrl: string, classType: string, fresh = false, signal?: AbortSignal): Promise<ComfyNodeInputSpecs | null> {
   const key = `${baseUrl}::${classType}`;
   const cached = nodeInputSpecCache.get(key);
-  if (cached && Date.now() - cached.fetchedAt < NODE_CLASS_CACHE_TTL) return cached.specs;
-  const specs = (async () => {
+  if (!fresh && cached && Date.now() - cached.fetchedAt < NODE_CLASS_CACHE_TTL) return cached.specs;
+  const specs: Promise<ComfyNodeInputSpecs | null> = (async () => {
     try {
-      const response = await comfyFetch(`${baseUrl}/object_info/${encodeURIComponent(classType)}`);
-      if (!response.ok) return null;
-      return parseNodeInputSpecs(await response.json(), classType);
-    } catch {
+      return await withComfyQueryTimeout(async (signal) => {
+        const response = await comfyFetch(`${baseUrl}/object_info/${encodeURIComponent(classType)}`, { signal });
+        if (!response.ok) { void response.body?.cancel().catch(() => undefined); return null; }
+        return parseNodeInputSpecs(await response.json(), classType);
+      }, signal);
+    } catch (error) {
+      if (signal?.aborted) {
+        if (nodeInputSpecCache.get(key)?.specs === specs) nodeInputSpecCache.delete(key);
+        throw error;
+      }
       return null;
     }
   })();
@@ -1284,7 +1286,7 @@ async function submitComfyUIWorkflow(
   promptMedia: { imageUrls?: string[]; videoUrls?: string[] } = {},
   speech?: { settings?: AudioSpeechSettings },
   refmods?: ComfyRefmodSelection[],
-): Promise<{ baseUrl: string; promptId: string; workflowObj: Record<string, Record<string, unknown>>; workflow: WorkflowDefinition }> {
+): Promise<{ baseUrl: string; promptId: string; workflowObj: Record<string, Record<string, unknown>>; workflow: WorkflowDefinition; applyParameters: (assertOnly?: boolean) => void; hasDimensionParameters: boolean }> {
   const baseUrl = getComfyUIConfig(workflowId);
 
   // 从 store 中获取工作流定义
@@ -1301,6 +1303,11 @@ async function submitComfyUIWorkflow(
   } catch {
     throw new Error('工作流 JSON 解析失败');
   }
+  const separated = splitComfyWorkflowInputs(workflowInputs);
+  workflowInputs = separated.inputs;
+  const parameterAssignments = await prepareComfyWorkflowParameterOverrides(wf, separated.parameters,
+    (classType) => fetchNodeInputSpecs(baseUrl, classType, true, signal), separated.inputs);
+  const applyParameters = (assertOnly = false) => applyComfyWorkflowParameterOverrides(workflowObj, parameterAssignments, assertOnly);
 
   // 模型文件按服务端原始名称绑定，不进入普通媒体上传，也不改原工作流。
   await applyComfyRefmodsToWorkflow(wf, workflowObj, refmods, signal);
@@ -1369,7 +1376,8 @@ async function submitComfyUIWorkflow(
   await pruneUnfilledOptionalMediaBranches(workflowObj, ioNodes, baseUrl);
 
   // 返回 workflowObj 让调用方注入尺寸/视频参数后再提交
-  return { baseUrl, promptId: '', workflowObj, workflow: wf };
+  const hasDimensionParameters = parameterAssignments.some(({ field }) => /^(?:(?:image|target|output|latent|video|custom)_)?(?:width|height)$|^(?:aspect_ratio|megapixels|resolution|image_size|size|ratio_preset|multiple)$/i.test(field.fieldName));
+  return { baseUrl, promptId: '', workflowObj, workflow: wf, applyParameters, hasDimensionParameters };
 }
 
 /**
@@ -1509,7 +1517,7 @@ export async function executeComfyUIGenerate(
       }
     }
 
-    const { baseUrl, workflowObj } = await submitComfyUIWorkflow(
+    const { baseUrl, workflowObj, applyParameters, hasDimensionParameters } = await submitComfyUIWorkflow(
       workflowId!,
       workflowInputs,
       prompt,
@@ -1520,6 +1528,7 @@ export async function executeComfyUIGenerate(
 
     // 注入画布选择的尺寸
     const dimensionInjection = await injectDimensionsIntoWorkflow(baseUrl, workflowObj, imageSize, aspectRatio);
+    applyParameters();
 
     if (params.nodeId && projectId) {
       progressSession = createComfyProgressSession({ baseUrl, projectId, nodeId: params.nodeId, signal, workflow: workflowObj });
@@ -1539,6 +1548,21 @@ export async function executeComfyUIGenerate(
 
     // 轮询等待结果
     const result = await pollComfyUIHistory(baseUrl, promptId, dims, signal);
+    if (hasDimensionParameters) {
+      try {
+        const actual = await withComfyQueryTimeout(async (querySignal) => {
+          const response = await comfyFetch(result.url, { headers: { Range: 'bytes=0-1048575' }, signal: querySignal });
+          if (!response.ok || (response.status !== 206 && Number(response.headers.get('Content-Length')) > 1024 * 1024)) {
+            void response.body?.cancel().catch(() => undefined); return null;
+          }
+          return parseRasterImageDimensions(new Uint8Array(await response.arrayBuffer()));
+        }, signal);
+        if (actual) Object.assign(result, actual);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        // 文件头不支持或暂时不可读时，保留原有画布尺寸估计，不重投已完成任务。
+      }
+    }
     if (params.nodeId && projectId) retainPending = true;
     await applyConfiguredComfyMemoryPolicy(baseUrl);
     if (params.nodeId && projectId) updatePendingTask(params.nodeId, { comfyRecoveryState: 'save_pending' }, promptId);
@@ -1656,7 +1680,7 @@ export async function executeComfyUIVideoGenerate(
       }
     }
 
-    const { baseUrl, workflowObj, workflow: capturedWorkflow } = await submitComfyUIWorkflow(
+    const { baseUrl, workflowObj, workflow: capturedWorkflow, applyParameters } = await submitComfyUIWorkflow(
       workflowId!,
       workflowInputs,
       prompt,
@@ -1678,9 +1702,11 @@ export async function executeComfyUIVideoGenerate(
       await resolveParamSpecs(baseUrl, workflowObj, VIDEO_PARAM_SPEC_KEYS),
     );
 
+    applyParameters();
     const h3MemoryApplication = await applyComfyH3Memory(
       workflowObj, baseUrl, params.comfyH3MemoryPreset, signal, params.comfyH3ExpectedSettings,
     );
+    applyParameters(true);
 
     if (params.nodeId && projectId) {
       progressSession = createComfyProgressSession({ baseUrl, projectId, nodeId: params.nodeId, signal, workflow: workflowObj });
@@ -1802,7 +1828,8 @@ export async function executeComfyUIAudioGenerate(
       }
     }
 
-    const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt, signal, referenceAudioUrls, promptMedia, { settings: params.audioSpeechSettings });
+    const { baseUrl, workflowObj, applyParameters } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt, signal, referenceAudioUrls, promptMedia, { settings: params.audioSpeechSettings });
+    applyParameters();
 
     if (params.nodeId && projectId) {
       progressSession = createComfyProgressSession({ baseUrl, projectId, nodeId: params.nodeId, signal, workflow: workflowObj });

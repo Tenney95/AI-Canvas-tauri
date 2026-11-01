@@ -977,6 +977,9 @@ export type WorkflowCategory = 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
 /** 工作流中识别的输入/输出节点类型 */
 export type WorkflowIONodeType = 'prompt' | 'image' | 'video' | 'audio';
 
+/** 根据 ComfyUI 连线识别的提示词用途；缺省表示证据不足，不影响输入绑定。 */
+export type WorkflowPromptRole = 'positive' | 'negative' | 'mixed';
+
 /** 工作流中识别的输入/输出节点信息 */
 export interface WorkflowIONode {
   nodeId: string;             // ComfyUI 节点 ID（如 "57:27"）

@@ -10,6 +10,7 @@ import { fetchRunningHubDefinition } from '../../src/services/runninghubWorkflow
 import { buildRunningHubSiteProviders } from '../../src/services/runninghubSiteCredentials';
 import type { RunningHubMediaKind, RunningHubWorkflowManifest } from '../../src/types/runninghub';
 import type { RunningHubInputRouting } from '../../src/services/ai/providers/runninghubWorkflowInputs';
+import { getSlashCommands, fillTemplate } from '../../src/components/nodes/shared/slashCommands';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), persist: vi.fn(), desktop: vi.fn(() => true) }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
@@ -28,6 +29,38 @@ describe('RH 默认输入与显式输入的提交映射', () => {
     { nodeId: '9', fieldName: 'first', label: '首帧', type: 'string', defaultValue: '', source: 'image' },
     { nodeId: '9', fieldName: 'last', label: '尾帧', type: 'string', defaultValue: '', source: 'image' },
   ] };
+  it('人物快捷指令与输入框正文合并写入默认字符串节点，引用图单独上传且负面词保留', async () => {
+    setup();
+    const definition: RunningHubWorkflowManifest = { ...manifest, inputBindingMode: 'nodes', parameters: [
+      { nodeId: '714', fieldName: 'value', label: '字符串（多行） · value', type: 'string', defaultValue: '原始场景描述', source: 'value' },
+      { nodeId: '232', fieldName: 'text', label: 'CLIP文本编码器 · text', type: 'string', defaultValue: '原负面提示词', source: 'value', inputType: 'prompt' },
+      { nodeId: '807', fieldName: 'image', label: '参考图片（可选）', type: 'string', defaultValue: '', source: 'image' },
+    ] };
+    const before = useAppStore.getState();
+    useAppStore.setState({
+      nodes: [...before.nodes, { id: 'ref-image', type: 'ai-image', position: { x: 0, y: 0 },
+        data: { type: 'ai-image', label: '人物参考', imageUrl: 'https://input.test/character.png', status: 'success' } }],
+      workflows: [{ ...before.workflows[0], runninghub: definition, defaultNodes: { prompt: '714::value', image: '807::image' } }],
+    });
+    const command = getSlashCommands('ai-image').flatMap((item) => item.children ?? [item])
+      .find((item) => item.id === 'char-three-view-face')!;
+    const filled = fillTemplate(command.promptTemplate!, '@{ref-image:人物参考}\n银发角色，穿蓝色长袍');
+    await (await import('../../src/services/ai/generateImage')).generateImage({
+      provider: 'runninghubwf', model: 'runninghubwf/wf1', workflowId: 'wf1', nodeId: 'n1', prompt: filled,
+    });
+    expect(submitCalls()).toHaveLength(1);
+    const body = JSON.parse(String(submitCalls()[0][1].body));
+    const inputs = body.nodeInfoList as Array<{ nodeId: string; fieldName: string; fieldValue: string }>;
+    const prompt = inputs.find((field) => field.nodeId === '714' && field.fieldName === 'value')!.fieldValue;
+    expect(prompt).toContain('上二下三的两排布局');
+    expect(prompt).toContain('银发角色，穿蓝色长袍');
+    expect(prompt).not.toContain('原始场景描述');
+    expect(prompt).not.toContain('@{');
+    expect(inputs.find((field) => field.nodeId === '232')?.fieldValue).toBe('原负面提示词');
+    expect(inputs.find((field) => field.nodeId === '807')?.fieldValue).toBe('rh/reference.png');
+    expect(definition.parameters[0]).not.toHaveProperty('inputType');
+    expect(useAppStore.getState().workflows[0].defaultNodes).toEqual({ prompt: '714::value', image: '807::image' });
+  });
   it.each(['image', 'video', 'audio'] as const)('%s 生成入口剥离芯片正文并把字段赋值交给共享执行器', async (kind) => {
     setup(kind);
     const store = useAppStore.getState();

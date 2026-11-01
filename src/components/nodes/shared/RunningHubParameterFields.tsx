@@ -81,7 +81,7 @@ export default function RunningHubParameterFields({ parameters, values = {}, onC
       const options = field.options?.length ? field.options
         : field.type === 'string' && isCloudWorkflowScheduler(field.fieldName, field.label)
           && LEGACY_RH_SCHEDULERS.includes(String(field.defaultValue)) ? LEGACY_RH_SCHEDULERS : field.options;
-      return <CloudWorkflowParameterField key={key} name={field.fieldName} label={field.label} type={field.type}
+      return <CloudWorkflowParameterField key={key} name={field.fieldName} label={field.label} nodeId={field.nodeId} type={field.type}
         value={values[key] ?? String(field.defaultValue)} defaultValue={field.defaultValue} options={options}
         min={field.min} max={field.max} step={field.step} multiline={field.multiline}
         required={field.required} disabled={disabled} onChange={(next) => onChange({ ...values, [key]: next })}

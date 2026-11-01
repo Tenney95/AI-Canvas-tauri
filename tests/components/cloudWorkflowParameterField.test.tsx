@@ -8,10 +8,30 @@ import RunningHubParameterFields from '../../src/components/nodes/shared/Running
 import WorkflowApiParameterFields from '../../src/components/nodes/shared/WorkflowApiParameterFields';
 import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
 import type { RunningHubParameter } from '../../src/types/runninghub';
+import ComfyWorkflowParameterFields from '../../src/components/nodes/shared/ComfyWorkflowParameterFields';
+import type { ComfyWorkflowParameter } from '../../src/types/comfyWorkflow';
 
 const ignoreChange = () => undefined;
 
 describe('云工作流参数默认展示', () => {
+  it('RH 与本地字段使用 C# 节点标记区分同名步数，本地沿用排序、下拉和原参数身份', () => {
+    const local: ComfyWorkflowParameter[] = [
+      { nodeId: '202', fieldName: 'scheduler', classType: 'KSampler', label: 'K采样器 · scheduler', type: 'string', defaultValue: 'normal', options: ['normal', 'karras'] },
+      { nodeId: '202', fieldName: 'steps', classType: 'KSampler', label: 'K采样器 · steps', type: 'integer', defaultValue: 8, min: 1, max: 100 },
+      { nodeId: '235', fieldName: 'steps', classType: 'KSampler', label: 'K采样器 · steps', type: 'integer', defaultValue: 25, min: 1, max: 100 },
+    ];
+    const snapshot = structuredClone(local);
+    const html = renderToStaticMarkup(<ComfyWorkflowParameterFields parameters={local} values={{}} onChange={ignoreChange} />);
+    expect(html).toContain('C#202'); expect(html).toContain('C#235');
+    expect(html.indexOf('value="8"')).toBeLessThan(html.indexOf('value="25"'));
+    expect(html.indexOf('value="25"')).toBeLessThan(html.indexOf('scheduler'));
+    expect(html).toContain('K采样器 · scheduler · C#202');
+    expect(local).toEqual(snapshot);
+    const cloud = renderToStaticMarkup(<RunningHubParameterFields parameters={[
+      { nodeId: '235', fieldName: 'steps', label: 'K采样器 · steps', type: 'number', defaultValue: 25, source: 'value' },
+    ]} appearance="popover" onChange={ignoreChange} />);
+    expect(cloud).toContain('C#235');
+  });
   it('RunningHub 浮层将常用参数置顶，原定义与同类参数顺序保持', () => {
     const parameters: RunningHubParameter[] = [
       { nodeId: '197', fieldName: 'device', label: 'CLIP加载器 · DEVICE', type: 'string', defaultValue: 'default', source: 'value' },

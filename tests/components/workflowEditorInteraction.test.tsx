@@ -157,7 +157,17 @@ it.each(['workflow', 'app'] as const)('%s 删除当前云工作流后撤销编�
   const store = {
     workflows: ['A', 'B'].map((name): WorkflowDefinition => ({
       id: `wf-${name}`, name, category: 'ai-image', fileName: 'RH', fileContent: '', createdAt: 1,
-      adapterType: 'runninghub', runninghub: { version: 1, kind, remoteId: '1904152026220003329', connectionId: 'runninghub', parameters: [{ nodeId: '6', fieldName: 'text', label: '正文', type: 'string', defaultValue: '', source: 'prompt' }] },
+      adapterType: 'runninghub', runninghub: {
+        version: 1, kind, remoteId: '1904152026220003329', connectionId: 'runninghub',
+        parameters: [
+          { nodeId: '6', fieldName: 'text', label: '正文', type: 'string', defaultValue: '', source: 'prompt' },
+          { nodeId: '7', fieldName: 'text', label: '固定负面', type: 'string', defaultValue: '模糊', source: 'value', inputType: 'prompt' },
+          { nodeId: '8', fieldName: 'value', label: '共用文本', type: 'string', defaultValue: '', source: 'value', inputType: 'prompt' },
+          { nodeId: '9', fieldName: 'value', label: '未知用途', type: 'string', defaultValue: '', source: 'value', inputType: 'prompt' },
+          { nodeId: '10', fieldName: 'image', label: '图片', type: 'string', defaultValue: '', source: 'image' },
+        ],
+        promptRoles: { '6::text': 'positive', '7::text': 'negative', '8::value': 'mixed' },
+      },
     })),
     workflowPanelOpen: true, workflowPanelSource: kind, config: { comfyServers: [] }, showToast: vi.fn(),
     setWorkflowPanelSource: vi.fn(),
@@ -196,6 +206,15 @@ it.each(['workflow', 'app'] as const)('%s 删除当前云工作流后撤销编�
   expect(editor().props.editing).toMatchObject({ id: 'wf-A' });
   const inputRow = findElement(render(), (element) => element.key === 'wf-A')!;
   click(findElement(inputRow, (element) => element.props['data-tooltip'] === '展开输入输出节点')!);
+  const expanded = findElement(render(), (element) => element.key === 'wf-A')!;
+  for (const label of ['正面', '负面', '正负共用', '未判定']) {
+    expect(findElement(expanded, (element) => String(element.props.className).startsWith('ui-badge ') && textOf(element) === label)).toBeDefined();
+  }
+  const imageBadge = findElement(expanded, (element) => String(element.props.className).includes('wf-ionode-image'));
+  expect(imageBadge).toBeDefined();
+  expect(textOf(imageBadge)).not.toMatch(/正面|负面|未判定/);
+  expect(store.toggleWorkflowDefaultNode).not.toHaveBeenCalled();
+  expect(store.workflows[0].defaultNodes).toBeUndefined();
   const inputBadge = findElement(render(), (element) => String(element.props.title ?? '').includes('设为默认文本节点'))!;
   click(inputBadge);
   await Promise.resolve();

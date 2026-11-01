@@ -4,6 +4,7 @@
 import type { RunningHubParameter, RunningHubValue, RunningHubWorkflowManifest, RunningHubConnection } from '../types/runninghub';
 import { runningHubRequest } from './ai/providers/runninghubClient';
 import type { WorkflowDefinition, WorkflowIONode } from '../types';
+import { inferComfyPromptRoles } from './comfyPromptRoles';
 
 const ID = /^\d{1,30}$/;
 const SENSITIVE = /(?:api.?key|authorization|token|secret|password|cookie)/i;
@@ -30,8 +31,16 @@ export function validRunningHubDefaults(manifest: RunningHubWorkflowManifest, de
   return Object.fromEntries(Object.entries(defaults ?? {}).filter(([type, id]) => nodes.some((node) => node.type === type && node.nodeId === id))) as NonNullable<WorkflowDefinition['defaultNodes']>;
 }
 
-/** 旧导入器把主提示词保存成固定值；仅修正唯一且明确的主提示词，保留手工映射。 */
+/** 兼容旧主提示词映射与原版字符串输入候选，保留用户手工固定来源。 */
 export function resolveRunningHubParameters(parameters: readonly RunningHubParameter[]): RunningHubParameter[] {
+  // 旧 API 导入遗漏了原版字符串节点；只补输入候选，不擅自选择默认正文或覆盖固定值。
+  const stringNodes = new Set(['primitivestring', 'primitivestringmultiline', '字符串', '字符串多行', 'text', 'textmultiline', '文本', '文本多行']);
+  parameters = parameters.map((field) => {
+    const title = field.label.split(/[·|]/)[0].toLowerCase().replace(/[\s_()（）-]+/g, '');
+    return field.source === 'value' && !field.sourceExplicit && !field.inputType && !field.options?.length
+      && field.type === 'string' && field.fieldName === 'value' && stringNodes.has(title)
+      ? { ...field, inputType: 'prompt' as const } : field;
+  });
   if (parameters.some((field) => field.source === 'prompt')) return [...parameters];
   const primaryNames = new Set(['prompt', 'positiveprompt', '提示词', '主提示词', '正面提示词', '正向提示词']);
   const normalize = (value: string) => value.trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -97,6 +106,7 @@ export function importRunningHubDefinition(
   const remoteId = options.remoteId ? parseRunningHubId(options.remoteId, options.kind)
     : parseRunningHubId(String(record[options.kind === 'app' ? 'webappId' : 'workflowId'] ?? ''), options.kind);
   const fields: RunningHubParameter[] = [];
+  let promptRoles: RunningHubWorkflowManifest['promptRoles'];
   if (Array.isArray(record.nodeInfoList)) {
     for (const item of record.nodeInfoList) {
       if (!isRecord(item) || typeof item.nodeId !== 'string' || typeof item.fieldName !== 'string') throw new Error('nodeInfoList 缺少节点 ID 或字段名称');
@@ -155,13 +165,15 @@ export function importRunningHubDefinition(
     if (options.kind === 'app') throw new Error('AI 应用定义缺少 nodeInfoList，请从官方 API 调用示例导入');
     const graph = typeof record.prompt === 'string' ? parseRunningHubJson(record.prompt) : record;
     if (!isRecord(graph) || Array.isArray(graph.nodes)) throw new Error('请使用 ComfyUI「导出工作流 API」格式');
+    const nodeRoles = inferComfyPromptRoles(graph);
     for (const [nodeId, node] of Object.entries(graph)) {
       if (!isRecord(node) || !isRecord(node.inputs) || typeof node.class_type !== 'string') continue;
       const title = isRecord(node._meta) && typeof node._meta.title === 'string' ? node._meta.title : node.class_type;
       for (const [fieldName, value] of Object.entries(node.inputs)) {
         if (!primitive(value) || SENSITIVE.test(fieldName)) continue;
         const field = parameter(nodeId, fieldName, value, `${title} · ${fieldName}`);
-        if (node.class_type === 'CLIPTextEncode' && fieldName === 'text' && typeof value === 'string') field.inputType = 'prompt';
+        if (typeof value === 'string' && ((node.class_type === 'CLIPTextEncode' && fieldName === 'text')
+          || (['PrimitiveString', 'PrimitiveStringMultiline'].includes(node.class_type) && fieldName === 'value'))) field.inputType = 'prompt';
         const media = ({ LoadImage: ['image', 'image'], H3OptionalPicture3: ['image', 'image'], LoadAudio: ['audio', 'audio'], VHS_LoadVideo: ['video', 'video'], LoadImageFromUrl: ['image', 'image'] } as Record<string, string[]>)[node.class_type];
         if (media && fieldName === media[1]) {
           field.source = media[0] as 'image' | 'video' | 'audio';
@@ -171,19 +183,29 @@ export function importRunningHubDefinition(
         fields.push(field);
       }
     }
+    promptRoles = Object.fromEntries(fields.flatMap((field) => {
+      const role = nodeRoles.get(field.nodeId);
+      return role && field.inputType === 'prompt' ? [[runningHubParameterKey(field), role]] : [];
+    }));
   }
-  const manifest: RunningHubWorkflowManifest = { version: 1, ...options, remoteId, parameters: resolveRunningHubParameters(fields) };
+  const manifest: RunningHubWorkflowManifest = { version: 1, ...options, remoteId, parameters: resolveRunningHubParameters(fields),
+    ...(promptRoles && Object.keys(promptRoles).length ? { promptRoles } : {}) };
   validateRunningHubManifest(manifest);
   return manifest;
 }
 
 export function validateRunningHubManifest(value: RunningHubWorkflowManifest): void {
-  const allowed = new Set(['version', 'kind', 'remoteId', 'connectionId', 'parameters', 'inputBindingMode', 'outputNodeIds', 'instanceType', 'usePersonalQueue']);
+  const allowed = new Set(['version', 'kind', 'remoteId', 'connectionId', 'parameters', 'promptRoles', 'inputBindingMode', 'outputNodeIds', 'instanceType', 'usePersonalQueue']);
   const fieldKeys = new Set(['nodeId', 'fieldName', 'label', 'type', 'defaultValue', 'required', 'options', 'min', 'max', 'step', 'multiline', 'source', 'sourceExplicit', 'inputType', 'referenceIndex', 'mediaFormat']);
   if (!isRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) throw new Error('RunningHub 工作流包含不支持的配置字段');
   if (!value || value.version !== 1 || !['workflow', 'app'].includes(value.kind) || !ID.test(value.remoteId)
     || !['runninghub', 'runninghub-model'].includes(value.connectionId) || !Array.isArray(value.parameters)
     || value.parameters.length > 200) throw new Error('RunningHub 工作流定义无效');
+  if (value.promptRoles !== undefined && (!isRecord(value.promptRoles) || Object.keys(value.promptRoles).length > 200
+    || Object.entries(value.promptRoles).some(([key, role]) => key.length > 1000 || key.split('::').length !== 2
+      || key.split('::').some((part) => !part) || typeof role !== 'string' || !['positive', 'negative', 'mixed'].includes(role)))) {
+    throw new Error('RunningHub 提示词用途标记无效');
+  }
   const keys = new Set<string>();
   if (value.inputBindingMode !== undefined && value.inputBindingMode !== 'nodes') throw new Error('RunningHub 输入绑定模式无效');
   for (const field of value.parameters) {

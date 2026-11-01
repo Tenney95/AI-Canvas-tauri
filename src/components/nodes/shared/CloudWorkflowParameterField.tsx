@@ -14,6 +14,7 @@ import Select from '../../shared/Select';
 import { useT } from '../../../i18n';
 
 interface CloudWorkflowParameterFieldProps extends CloudWorkflowParameterControlSpec {
+  nodeId?: string;
   required?: boolean;
   disabled?: boolean;
   onChange: (value: string) => void;
@@ -28,12 +29,13 @@ const rangeStyle = (progress: number): CSSProperties => ({ '--range-progress': `
 
 /** 分辨率和时长仅通过滑块与刻度编辑，不自动吸附已有值。 */
 export default function CloudWorkflowParameterField({
-  name, label, type, value, options, min, max, step, multiline: declaredMultiline,
+  name, label, nodeId, type, value, options, min, max, step, multiline: declaredMultiline,
   required = false, disabled = false, onChange, onReset, defaultValue, displayDefaultWhenEmpty = false,
 }: CloudWorkflowParameterFieldProps) {
   const t = useT();
   const id = useId();
   const labelId = `${id}-label`;
+  const accessibleLabel = nodeId ? `${label} · C#${nodeId}` : label;
   const [multiline] = useState(() => declaredMultiline ?? [value, String(defaultValue ?? '')].some((text) => /[\r\n]/.test(text) || text.length > 100));
   const effectiveValue = displayDefaultWhenEmpty && value === '' ? String(defaultValue ?? '') : value;
   const spec = resolveCloudWorkflowParameterSpec({ name, label, type, value: effectiveValue, options, min, max, step, multiline });
@@ -71,11 +73,14 @@ export default function CloudWorkflowParameterField({
 
   return <div className="ui-field min-w-0">
     <div className={`flex min-w-0 items-center justify-between gap-2 ${isSlider ? 'min-h-[var(--ui-control-h-sm)]' : ''}`}>
-      <label id={labelId} htmlFor={id} className="img-rp-section-label cloud-workflow-param-label min-w-0 break-words">{label}{required ? ' *' : ''}</label>
+      <label id={labelId} htmlFor={id} className="img-rp-section-label cloud-workflow-param-label flex min-w-0 flex-1 items-center justify-between gap-2 break-words">
+        <span className="min-w-0">{label}{required ? ' *' : ''}</span>
+        {nodeId && <code className="ui-badge ui-badge--outline shrink-0 normal-case" title={t('ComfyUI 节点 ID')}>C#{nodeId}</code>}
+      </label>
       {(isSlider || onReset) && <div className="flex min-w-0 items-center justify-end gap-2">
         {isSlider && currentBadge}
         {onReset && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm shrink-0" disabled={disabled}
-          onClick={onReset} aria-label={`${label}：${defaultValue === undefined ? t('清除') : t('恢复默认')}`}>
+          onClick={onReset} aria-label={`${accessibleLabel}：${defaultValue === undefined ? t('清除') : t('恢复默认')}`}>
           {defaultValue === undefined ? t('清除') : t('恢复默认')}
         </button>}
       </div>}
@@ -105,19 +110,19 @@ export default function CloudWorkflowParameterField({
           title={option.value} aria-pressed={effectiveValue === option.value} disabled={disabled} onClick={() => onChange(option.value)}>{option.label}</button>)}
       </div>
       {!knownValue && <p className="ui-hint break-words">{effectiveValue === '' ? t('未填写') : t('当前值：{value}', { value: effectiveValue })}</p>}
-    </> : control.kind === 'select' ? <Select id={id} className="w-full" fixedMenu aria-label={label}
+    </> : control.kind === 'select' ? <Select id={id} className="w-full" fixedMenu aria-label={accessibleLabel}
       required={required} value={effectiveValue} options={selectionOptions} disabled={disabled} onChange={onChange} />
       : control.kind === 'options-slider' ? <div className="rh-duration-slider">
         <input id={id} className="w-full" type="range" min={0} max={Math.max(0, control.sliderOptions.length - 1)} step={1}
           value={Math.max(0, control.currentOptionIndex)} style={rangeStyle(control.currentOptionIndex < 0 || control.sliderOptions.length < 2 ? 0 : control.currentOptionIndex * 100 / (control.sliderOptions.length - 1))}
-          disabled={disabled || control.currentOptionIndex < 0 || control.sliderOptions.length < 2} aria-label={t('{label}滑块', { label })} aria-valuetext={effectiveValue || t('未填写')}
+          disabled={disabled || control.currentOptionIndex < 0 || control.sliderOptions.length < 2} aria-label={t('{label}滑块', { label: accessibleLabel })} aria-valuetext={effectiveValue || t('未填写')}
           onChange={(event) => { const option = control.sliderOptions[Number(event.target.value)]; if (option) onChange(option.value); }} />
         <div className="rh-duration-labels gap-1" role="group" aria-labelledby={labelId}>
           {discreteTicks.map((option) => <button type="button" key={option.value}
             className={`rh-duration-tick truncate disabled:cursor-not-allowed disabled:opacity-50 ${effectiveValue === option.value ? 'active' : ''}`} title={option.label}
             disabled={disabled} aria-pressed={effectiveValue === option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}
         </div>
-        {control.specialOptions.length > 0 && <div className="flex flex-wrap gap-1" role="group" aria-label={t('{label}特殊选项', { label })}>
+        {control.specialOptions.length > 0 && <div className="flex flex-wrap gap-1" role="group" aria-label={t('{label}特殊选项', { label: accessibleLabel })}>
           {control.specialOptions.map((option) => <button type="button" key={option.value}
             className={`ui-btn ui-btn--sm ${option.value === effectiveValue ? 'ui-btn--primary' : ''}`} disabled={disabled}
             aria-pressed={option.value === effectiveValue} onClick={() => onChange(option.value)}>{option.label}</button>)}
@@ -128,7 +133,7 @@ export default function CloudWorkflowParameterField({
           <input id={id} className="w-full" type="range" min={Number.isFinite(bounds.min) ? bounds.min : 0} max={validBounds ? bounds.max : Number.isFinite(bounds.min) ? bounds.min : 0}
             step={rangeHasValue && !onSliderStep ? 'any' : Number.isFinite(bounds.step) && bounds.step > 0 ? bounds.step : 1} value={rangeHasValue ? numericValue : Number.isFinite(bounds.min) ? bounds.min : 0}
             style={rangeStyle(rangeHasValue && validRange ? (numericValue - bounds.min) / (bounds.max - bounds.min) * 100 : 0)} disabled={disabled || !validRange || !onSliderStep}
-            aria-label={t('{label}滑块', { label })} aria-valuetext={effectiveValue || t('未填写')}
+            aria-label={t('{label}滑块', { label: accessibleLabel })} aria-valuetext={effectiveValue || t('未填写')}
             onChange={(event) => onChange(formatCloudWorkflowSliderValue(Number(event.target.value), bounds.precision))} />
           {validBounds && <div className="rh-duration-labels gap-1" role="group" aria-labelledby={labelId}>
             {cloudWorkflowSliderTicks(bounds).map((tick) => <button type="button" key={tick} disabled={disabled}
