@@ -5,3 +5,7 @@ src-tauri/resources/blender-runtime/**/*.blend binary
 
 # MCP Node 入口包含 shebang，固定 LF 以兼容 Windows 测试模块加载。
 scripts/ai-canvas-mcp.mjs text eol=lf
+
+# Git hooks 包含 shebang，固定 LF 以便跨平台执行。
+scripts/pre-commit text eol=lf
+scripts/pre-push text eol=lf

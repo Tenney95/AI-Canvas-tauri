@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+# 与 GitHub Frontend quality 使用同一入口；任一步失败即阻止推送。
+npm run ci

@@ -5,7 +5,7 @@
 import { execSync } from 'node:child_process';
 import { chmodSync, statSync } from 'node:fs';
 
-const HOOKS = ['scripts/pre-commit'];
+const HOOKS = ['scripts/pre-commit', 'scripts/pre-push'];
 
 try {
   execSync('git config core.hooksPath scripts', { stdio: 'inherit' });

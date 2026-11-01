@@ -2241,6 +2241,12 @@
           "markdownDescription": "Allows main-window project-scoped storage configuration, checks, manual sync and confirmed cloud-only cleanup."
         },
         {
+          "description": "主窗口项目归档摘要与隔离素材发布；命令内部仍校验来源和路径授权。",
+          "type": "string",
+          "const": "allow-project-import",
+          "markdownDescription": "主窗口项目归档摘要与隔离素材发布；命令内部仍校验来源和路径授权。"
+        },
+        {
           "description": "Denies all project-scoped object storage commands.",
           "type": "string",
           "const": "deny-project-asset-storage",
