@@ -2994,6 +2994,8 @@ describe('missing API key', () => {
 
 describe('undeliverable reference media', () => {
   it('协议接不住参考素材时直接失败，并给出可抄的修法', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fixture transport failure'));
+    vi.stubGlobal('fetch', fetchMock);
     useAppStore.setState({
       configHydrated: true,
       config: {
@@ -3056,13 +3058,15 @@ describe('undeliverable reference media', () => {
         imageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
       },
     })).rejects.toThrow('无法完整发送');
+    expect(fetchMock).not.toHaveBeenCalled();
 
-    // 没有参考素材时照常放行（会走到网络层，这里只验证没被参考素材检查拦下）
+    // 空参考进入模拟提交，不访问外网；同时确认前面的校验失败没有发出请求。
     await expect(runConfiguredModelProtocol({
       model,
       category: 'video',
       variables: { model: 'lec-seed-2-0-900', prompt: '释放法术', imageUrls: [] },
     })).rejects.not.toThrow('没有完整接收参考图');
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
