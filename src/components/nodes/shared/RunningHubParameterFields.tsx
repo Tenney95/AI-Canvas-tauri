@@ -4,7 +4,7 @@
 import { t, useT } from '../../../i18n';
 import type { RunningHubParameter } from '../../../types/runninghub';
 import { resolveRunningHubParameters, runningHubParameterKey } from '../../../services/runninghubWorkflowService';
-import { isCloudWorkflowScheduler } from '../../../services/cloudWorkflowParameterControls';
+import { getCloudWorkflowParameterPriority, isCloudWorkflowScheduler } from '../../../services/cloudWorkflowParameterControls';
 import { runningHubFrameRole, type RunningHubModelDefinition } from '../../../services/ai/providers/runninghubModelManifest';
 import Select from '../../shared/Select';
 import CloudWorkflowParameterField from './CloudWorkflowParameterField';
@@ -75,7 +75,8 @@ export default function RunningHubParameterFields({ parameters, values = {}, onC
 }) {
   const t = useT();
   if (appearance === 'popover') return <div className="flex min-w-0 flex-col gap-3">
-    {resolveRunningHubParameters(parameters).filter((field) => field.source === 'value').map((field) => {
+    {resolveRunningHubParameters(parameters).filter((field) => field.source === 'value')
+      .sort((a, b) => getCloudWorkflowParameterPriority(a.fieldName, a.label) - getCloudWorkflowParameterPriority(b.fieldName, b.label)).map((field) => {
       const key = runningHubParameterKey(field);
       const options = field.options?.length ? field.options
         : field.type === 'string' && isCloudWorkflowScheduler(field.fieldName, field.label)

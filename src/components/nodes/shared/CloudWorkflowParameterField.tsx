@@ -7,6 +7,7 @@ import {
   createCloudWorkflowSliderBounds,
   formatCloudWorkflowSliderValue,
   resolveCloudWorkflowParameterControl,
+  resolveCloudWorkflowParameterSpec,
   type CloudWorkflowParameterControlSpec,
 } from '../../../services/cloudWorkflowParameterControls';
 import Select from '../../shared/Select';
@@ -35,7 +36,7 @@ export default function CloudWorkflowParameterField({
   const labelId = `${id}-label`;
   const [multiline] = useState(() => declaredMultiline ?? [value, String(defaultValue ?? '')].some((text) => /[\r\n]/.test(text) || text.length > 100));
   const effectiveValue = displayDefaultWhenEmpty && value === '' ? String(defaultValue ?? '') : value;
-  const spec = { name, label, type, value: effectiveValue, options, min, max, step, multiline };
+  const spec = resolveCloudWorkflowParameterSpec({ name, label, type, value: effectiveValue, options, min, max, step, multiline });
   const control = resolveCloudWorkflowParameterControl(spec);
   const isSlider = control.kind === 'options-slider' || control.kind === 'number-slider';
   const knownValue = control.options.some((option) => option.value === effectiveValue);
@@ -50,9 +51,9 @@ export default function CloudWorkflowParameterField({
   const rangeHasValue = validBounds && Number.isFinite(numericValue) && numericValue >= bounds.min && numericValue <= bounds.max;
   const stepIndex = (numericValue - bounds.min) / bounds.step;
   const onSliderStep = rangeHasValue && Number.isFinite(stepIndex) && Math.abs(stepIndex - Math.round(stepIndex)) < 1e-7;
-  const numericStep = step !== undefined && Number.isFinite(step) && step > 0 ? step : type === 'integer' ? 1 : 'any';
+  const numericStep = spec.step !== undefined && Number.isFinite(spec.step) && spec.step > 0 ? spec.step : type === 'integer' ? 1 : 'any';
   const numberInput = () => <input id={id} className="ui-input w-full" type="number" value={value}
-    min={min} max={max} step={numericStep} required={required} disabled={disabled}
+    min={spec.min} max={spec.max} step={numericStep} required={required} disabled={disabled}
     placeholder={defaultValue === undefined ? t('未填写') : String(defaultValue)} onChange={(event) => onChange(event.target.value)} />;
   const currentBadge = <output className="ui-badge min-w-0 max-w-full" aria-live="off" title={effectiveValue || t('未填写')}>
     <span className="min-w-0 truncate">{effectiveValue || t('未填写')}</span>
@@ -61,10 +62,6 @@ export default function CloudWorkflowParameterField({
     || Array.from({ length: 8 }, (_, tick) => Math.round(tick * (all.length - 1) / 7)).includes(index));
   const renderScalar = () => {
     if (control.kind === 'number') return numberInput();
-    if (control.kind === 'ratio-input') return <div className="img-rp-quality-segmented">
-      <output id={id} aria-labelledby={labelId} className={`img-rp-quality-item flex min-w-0 items-center justify-center break-words text-center ${effectiveValue ? 'active' : ''}`}
-        title={effectiveValue || undefined}>{effectiveValue.match(/\d+(?:\.\d+)?\s*[:：]\s*\d+(?:\.\d+)?/)?.[0] || effectiveValue || t('未填写')}</output>
-    </div>;
     return multiline ? <textarea id={id} className="ui-textarea w-full resize-y" rows={3} value={value}
       required={required} disabled={disabled} placeholder={defaultValue === undefined ? t('未填写') : String(defaultValue)}
       onChange={(event) => onChange(event.target.value)} />
@@ -83,7 +80,25 @@ export default function CloudWorkflowParameterField({
         </button>}
       </div>}
     </div>
-    {control.kind === 'segments' ? <>
+    {control.kind === 'ratio-options' ? <>
+      <div className="img-rp-ratio-right min-w-0" role="group" aria-labelledby={labelId}>
+        {control.options.map((option) => {
+          const parts = option.label.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+          const ratio = parts ? Number(parts[1]) / Number(parts[2]) : 1;
+          const width = Number.isFinite(ratio) && ratio > 0 ? 18 * Math.min(1, ratio) : 18;
+          const height = Number.isFinite(ratio) && ratio > 0 ? 18 / Math.max(1, ratio) : 18;
+          return <button type="button" key={option.value}
+            className={`img-rp-ratio-item min-w-0 break-words text-center disabled:cursor-not-allowed disabled:opacity-50 ${effectiveValue === option.value ? 'active' : ''}`}
+            title={option.value} aria-pressed={effectiveValue === option.value} disabled={disabled} onClick={() => onChange(option.value)}>
+            <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+              <rect x={(24 - width) / 2} y={(24 - height) / 2} width={width} height={height} rx={1.5} />
+            </svg>
+            <span className="max-w-full">{option.label}</span>
+          </button>;
+        })}
+      </div>
+      {!knownValue && <p className="ui-hint break-words">{effectiveValue === '' ? t('未填写') : t('当前值：{value}', { value: effectiveValue })}</p>}
+    </> : control.kind === 'segments' ? <>
       <div role="group" aria-labelledby={labelId} className={`img-rp-quality-segmented ${control.semantic === 'ratio' ? 'rh-video-resolution-seg' : 'flex-wrap'}`}>
         {control.options.map((option) => <button type="button" key={option.value}
           className={`img-rp-quality-item min-w-0 break-words text-center disabled:cursor-not-allowed disabled:opacity-50 ${effectiveValue === option.value ? 'active' : ''}`}

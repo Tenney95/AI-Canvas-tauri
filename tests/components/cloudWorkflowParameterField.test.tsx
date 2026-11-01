@@ -4,10 +4,94 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import CloudWorkflowParameterField from '../../src/components/nodes/shared/CloudWorkflowParameterField';
+import RunningHubParameterFields from '../../src/components/nodes/shared/RunningHubParameterFields';
+import WorkflowApiParameterFields from '../../src/components/nodes/shared/WorkflowApiParameterFields';
+import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
+import type { RunningHubParameter } from '../../src/types/runninghub';
 
 const ignoreChange = () => undefined;
 
 describe('云工作流参数默认展示', () => {
+  it('RunningHub 浮层将常用参数置顶，原定义与同类参数顺序保持', () => {
+    const parameters: RunningHubParameter[] = [
+      { nodeId: '197', fieldName: 'device', label: 'CLIP加载器 · DEVICE', type: 'string', defaultValue: 'default', source: 'value' },
+      { nodeId: '202', fieldName: 'steps', label: '一采 · STEPS', type: 'number', defaultValue: 8, source: 'value' },
+      { nodeId: '515', fieldName: 'aspect_ratio', label: '分辨率选择器 · ASPECT_RATIO', type: 'string', defaultValue: '21:9 (Ultrawide)', source: 'value' },
+      { nodeId: '515', fieldName: 'megapixels', label: '分辨率选择器 · MEGAPIXELS', type: 'number', defaultValue: 4, source: 'value' },
+      { nodeId: '235', fieldName: 'steps', label: '二采 · STEPS', type: 'number', defaultValue: 25, source: 'value' },
+      { nodeId: '201', fieldName: 'vae_name', label: 'VAE加载器 · VAE_NAME', type: 'string', defaultValue: 'flux2-vae.safetensors', source: 'value' },
+    ];
+    const snapshot = structuredClone(parameters);
+    const html = renderToStaticMarkup(<RunningHubParameterFields parameters={parameters} appearance="popover" onChange={ignoreChange} />);
+    const labels = ['分辨率选择器 · MEGAPIXELS', '分辨率选择器 · ASPECT_RATIO', '一采 · STEPS', '二采 · STEPS', 'CLIP加载器 · DEVICE', 'VAE加载器 · VAE_NAME'];
+    labels.forEach((label, index) => {
+      expect(html.indexOf(label)).toBeGreaterThan(-1);
+      if (index > 0) expect(html.indexOf(label)).toBeGreaterThan(html.indexOf(labels[index - 1]));
+    });
+    expect(parameters).toEqual(snapshot);
+    const form = renderToStaticMarkup(<RunningHubParameterFields parameters={parameters} onChange={ignoreChange} />);
+    expect(form.indexOf('CLIP加载器 · DEVICE')).toBeLessThan(form.indexOf('一采 · STEPS'));
+  });
+
+  it('声明式云工作流只排序浮层，编辑表单和参数键保持原顺序', () => {
+    const { manifest } = createWorkflowApiDraft();
+    manifest.parameters = {
+      device: { type: 'string', label: '设备', default: 'default' },
+      steps: { type: 'integer', label: '总步数', default: 12 },
+      aspect_ratio: { type: 'string', label: '画面比例', default: '16:9', options: ['16:9', '9:16'] },
+      resolution: { type: 'number', label: '分辨率', default: 1.5 },
+    };
+    const html = renderToStaticMarkup(<WorkflowApiParameterFields manifest={manifest} appearance="popover" onChange={ignoreChange} />);
+    expect(html.indexOf('分辨率')).toBeLessThan(html.indexOf('画面比例'));
+    expect(html.indexOf('画面比例')).toBeLessThan(html.indexOf('总步数'));
+    expect(html.indexOf('总步数')).toBeLessThan(html.indexOf('设备'));
+    expect(Object.keys(manifest.parameters)).toEqual(['device', 'steps', 'aspect_ratio', 'resolution']);
+    const form = renderToStaticMarkup(<WorkflowApiParameterFields manifest={manifest} onChange={ignoreChange} />);
+    expect(form.indexOf('设备')).toBeLessThan(form.indexOf('总步数'));
+  });
+
+  it('旧分辨率选择器显示八种带图标的比例卡片，不重复显示只读当前值', () => {
+    const html = renderToStaticMarkup(<CloudWorkflowParameterField name="aspect_ratio" label="分辨率选择器 · ASPECT_RATIO" type="string"
+      value="21:9 (Ultrawide)" onChange={ignoreChange} />);
+    expect(html.match(/class="img-rp-ratio-item /g)).toHaveLength(8);
+    expect(html).toContain('title="21:9 (Ultrawide)" aria-pressed="true"');
+    expect(html).toContain('title="16:9 (Widescreen)" aria-pressed="false"');
+    expect(html.match(/<svg /g)).toHaveLength(8);
+    expect(html).not.toContain('type="text"');
+    expect(html).not.toContain('<output');
+    expect(html).not.toContain('自适应');
+  });
+
+  it('未知比例保留原值且不自动选中，已有枚举限制与禁用状态保持', () => {
+    const html = renderToStaticMarkup(<CloudWorkflowParameterField name="aspect_ratio" label="分辨率选择器 · aspect_ratio" type="string"
+      value="2:1 (Custom)" options={['16:9 (Widescreen)', '9:16 (Portrait)']} disabled onChange={ignoreChange} />);
+    expect(html.match(/class="img-rp-ratio-item /g)).toHaveLength(2);
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+    expect(html).not.toContain('aria-pressed="true"');
+    expect(html).toContain('当前值：2:1 (Custom)');
+  });
+
+  it('未知节点没有枚举时保留可编辑比例输入，不伪造允许选项', () => {
+    const html = renderToStaticMarkup(<CloudWorkflowParameterField name="aspect_ratio" label="自定义节点 · aspect_ratio" type="string"
+      value="2:1" onChange={ignoreChange} />);
+    expect(html).toContain('type="text"');
+    expect(html).toContain('value="2:1"');
+    expect(html).not.toContain('img-rp-ratio-item');
+  });
+
+  it('倍数 16 使用原版数值输入，百万像素不再受 H3 通用范围限制', () => {
+    const multiple = renderToStaticMarkup(<CloudWorkflowParameterField name="multiple" label="分辨率选择器 · MULTIPLE" type="number"
+      value="16" onChange={ignoreChange} />);
+    expect(multiple).toContain('type="number"');
+    expect(multiple).toContain('value="16"');
+    expect(multiple).toContain('min="8" max="128" step="4"');
+    expect(multiple).not.toContain('type="range"');
+    expect(multiple).not.toContain('不在滑块范围');
+    const megapixels = renderToStaticMarkup(<CloudWorkflowParameterField name="megapixels" label="分辨率选择器 · MEGAPIXELS" type="number"
+      value="4" onChange={ignoreChange} />);
+    expect(megapixels).toContain('min="0.1" max="16"');
+  });
+
   it('时长只显示滑块和默认值，不再提供数值输入或区间编辑', () => {
     const html = renderToStaticMarkup(<CloudWorkflowParameterField name="duration" label="时长" type="number"
       value="" defaultValue={12} min={4} max={30} displayDefaultWhenEmpty onChange={ignoreChange} />);

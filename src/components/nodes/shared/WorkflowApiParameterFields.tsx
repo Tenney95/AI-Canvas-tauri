@@ -3,6 +3,7 @@
  */
 import type { DeclarativeWorkflowApiManifest } from '../../../types/workflowApi';
 import { useT } from '../../../i18n';
+import { getCloudWorkflowParameterPriority } from '../../../services/cloudWorkflowParameterControls';
 import Select from '../../shared/Select';
 import CloudWorkflowParameterField from './CloudWorkflowParameterField';
 
@@ -17,12 +18,15 @@ export default function WorkflowApiParameterFields({ manifest, values = {}, onCh
     if (value !== '') next[`workflow::${name}`] = value;
     onChange(next);
   };
+  const parameters = Object.entries(manifest.parameters);
+  if (appearance === 'popover') parameters.sort(([nameA, specA], [nameB, specB]) =>
+    getCloudWorkflowParameterPriority(nameA, specA.label || nameA) - getCloudWorkflowParameterPriority(nameB, specB.label || nameB));
   return <div className={`flex min-w-0 flex-col ${appearance === 'popover' ? 'gap-3' : 'gap-2'}`}>
     <p className="text-xs text-canvas-text-secondary">{(['image', 'video', 'audio'] as const).map((kind) => {
       const limit = manifest.references[kind] ?? { min: 0, max: 0 };
       return `${t(kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频')} ${limit.min}–${limit.max}`;
     }).join(' · ')}</p>
-    {Object.entries(manifest.parameters).map(([name, spec]) => {
+    {parameters.map(([name, spec]) => {
       const defaultValue = spec.default;
       if (appearance === 'popover') return <CloudWorkflowParameterField key={name} name={name} label={spec.label || name}
         type={spec.type} value={currentValue(name)} displayDefaultWhenEmpty

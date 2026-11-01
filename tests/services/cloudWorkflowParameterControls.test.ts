@@ -4,7 +4,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   getCloudWorkflowParameterSemantic,
+  getCloudWorkflowParameterPriority,
   resolveCloudWorkflowParameterControl,
+  resolveCloudWorkflowParameterSpec,
   createCloudWorkflowSliderBounds,
   cloudWorkflowSliderTicks,
   formatCloudWorkflowSliderValue,
@@ -16,14 +18,79 @@ function resolve(overrides: Partial<CloudWorkflowParameterControlSpec> = {}) {
 }
 
 describe('云工作流参数控件匹配', () => {
+  it('常用参数优先，同类参数稳定排序且不会因加载器标题误置顶', () => {
+    const fields = [
+      { name: 'device', label: 'CLIP加载器 · DEVICE' },
+      { name: 'steps_b', label: '总步数（一采默认6步）' },
+      { name: 'megapixels', label: '分辨率选择器 · MEGAPIXELS' },
+      { name: 'aspect_ratio', label: '分辨率选择器 · ASPECT_RATIO' },
+      { name: 'width', label: '空Latent · WIDTH' },
+      { name: 'height', label: '空Latent · HEIGHT' },
+      { name: 'steps', label: '绘制步数 Steps' },
+      { name: 'duration', label: '时长（秒）' },
+      { name: 'count', label: '出几张' },
+      { name: 'cfg', label: 'K采样器 · CFG' },
+      { name: 'denoise', label: '重绘自由度 Denoise (0.1-0.25)' },
+      { name: 'seed', label: 'K采样器 · SEED' },
+      { name: 'sampler_name', label: '采样器' },
+      { name: 'scheduler', label: '调度器' },
+      { name: 'multiple', label: '分辨率选择器 · MULTIPLE' },
+      { name: 'vae_name', label: 'VAE加载器 · VAE_NAME' },
+    ];
+    const original = [...fields];
+    const sorted = [...fields].sort((a, b) => getCloudWorkflowParameterPriority(a.name, a.label) - getCloudWorkflowParameterPriority(b.name, b.label));
+    expect(sorted.map((field) => field.name)).toEqual([
+      'megapixels', 'width', 'height', 'aspect_ratio', 'duration', 'steps_b', 'steps', 'count',
+      'cfg', 'denoise', 'seed', 'sampler_name', 'scheduler', 'device', 'multiple', 'vae_name',
+    ]);
+    expect(fields).toEqual(original);
+    expect(getCloudWorkflowParameterPriority('steps_description', '步数说明')).toBe(100);
+  });
+
   it('识别语义但保留比例选项的完整提交值', () => {
     expect(getCloudWorkflowParameterSemantic('aspectRatio', '画面比例')).toBe('ratio');
     const control = resolve({ name: 'aspect_ratio', label: '画面比例', value: '16:9 (Widescreen)', options: ['16:9 (Widescreen)', '9:16 (Portrait)'] });
-    expect(control.kind).toBe('segments');
+    expect(control.kind).toBe('ratio-options');
     expect(control.options).toEqual([
       { value: '16:9 (Widescreen)', label: '16:9' },
       { value: '9:16 (Portrait)', label: '9:16' },
     ]);
+  });
+
+  it('旧 ResolutionSelector 缺少枚举时补原版八种比例，完整提交值不缩写', () => {
+    const spec = { name: 'aspect_ratio', label: '分辨率选择器 · aspect_ratio', type: 'string' as const, value: '21:9 (Ultrawide)' };
+    const control = resolve(spec);
+    expect(control.kind).toBe('ratio-options');
+    expect(control.options.map((option) => option.label)).toEqual(['1:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '21:9']);
+    expect(control.options.find((option) => option.label === '16:9')?.value).toBe('16:9 (Widescreen)');
+    expect(control.options.some((option) => option.value === '自适应')).toBe(false);
+    expect(spec).not.toHaveProperty('options');
+    expect(resolve({ ...spec, value: '' }).options).toEqual(control.options);
+    expect(resolve({ ...spec, label: 'MyResolutionSelector · aspect_ratio' }).kind).toBe('ratio-input');
+  });
+
+  it('实际枚举优先于已知节点补全，不扩展单选项或丢弃自定义比例', () => {
+    const spec = { name: 'aspect_ratio', label: 'Resolution Selector · aspect_ratio', type: 'string' as const, value: '21:9 (Ultrawide)' };
+    const single = resolve({ ...spec, options: ['21:9 (Ultrawide)'] });
+    expect(single.kind).toBe('ratio-options');
+    expect(single.options).toEqual([{ value: '21:9 (Ultrawide)', label: '21:9' }]);
+    expect(resolve({ ...spec, options: ['auto', '2:1 (Custom)'] }).options).toEqual([
+      { value: 'auto', label: 'auto' }, { value: '2:1 (Custom)', label: '2:1' },
+    ]);
+  });
+
+  it('节点标题不污染相邻字段语义，原版百万像素与倍数各用自己的范围', () => {
+    expect(getCloudWorkflowParameterSemantic('aspect_ratio', '分辨率选择器 · ASPECT_RATIO')).toBe('ratio');
+    expect(getCloudWorkflowParameterSemantic('megapixels', '分辨率选择器 · MEGAPIXELS')).toBe('resolution');
+    expect(getCloudWorkflowParameterSemantic('multiple', '分辨率选择器 · MULTIPLE')).toBe('other');
+    expect(getCloudWorkflowParameterSemantic('seed', '时长控制器 · seed')).toBe('other');
+    const multiple = { name: 'multiple', label: '分辨率选择器 · MULTIPLE', type: 'number' as const, value: '16' };
+    expect(resolve(multiple)).toMatchObject({ kind: 'number', semantic: 'other' });
+    expect(resolveCloudWorkflowParameterSpec(multiple)).toMatchObject({ value: '16', min: 8, max: 128, step: 4 });
+    expect(createCloudWorkflowSliderBounds({ name: 'megapixels', label: 'ResolutionSelector · megapixels', type: 'number', value: '4' }))
+      .toEqual({ min: 0.1, max: 16, step: 0.1, precision: 1, declared: true });
+    expect(resolveCloudWorkflowParameterSpec({ ...multiple, min: 16, max: 64, step: 8 }))
+      .toMatchObject({ min: 16, max: 64, step: 8 });
   });
 
   it('浮点分辨率和时长使用数值滑块，不把比例字符串补造成允许值', () => {
