@@ -100,7 +100,11 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 显式修改尺寸相关字段后，图片结果优先通过原生代理读取产物文件头更新画布宽高，避免继续使用旧通用尺寸；读取失败保留原有尺寸估计，不重新提交任务。
 
-源码入口：[参数合同](../src/types/comfyWorkflow.ts)、[识别与覆盖](../src/services/comfyWorkflowParameters.ts)、[执行](../src/services/comfyWorkflowService.ts)、[共用浮层](../src/components/nodes/shared/CloudWorkflowParamSelector.tsx)、[本地字段](../src/components/nodes/shared/ComfyWorkflowParameterFields.tsx)。本轮只做源码、引用、差异及 UTF-8 静态核对，已补回归源码，未运行测试、lint、类型检查、构建、桌面或真实 ComfyUI 验收。
+发版前复核补齐 DynamicCombo（例如 `task.text`）的正文保护，RH 已绑定默认字符串正文不再重复显示为普通参数；本地未设默认时也不把已确认的负面／共用文本当作正面占位符。参数面板加载状态按请求身份派生，生成任务可取消的声明请求只在成功后共享结果，避免同步 Effect 级联更新和取消影响 UI 请求。新增参数标签、提示词用途及提示文案同步英／日／韩语言。
+
+已确认的范围限制：本地 `batch_size` 等内部批量大于 1 时，现有接收与恢复仍只接收首份产物，浮层现已明确提示其余需在 ComfyUI 查看；完整多产物回填及恢复尚未实现。缺少连线或未支持节点的提示词用途仍为未判定；超过 JavaScript 安全整数范围的种子覆盖会拒绝，不静默损失精度。参数按节点分组及搜索可作为后续界面优化。
+
+源码入口：[参数合同](../src/types/comfyWorkflow.ts)、[识别与覆盖](../src/services/comfyWorkflowParameters.ts)、[执行](../src/services/comfyWorkflowService.ts)、[共用浮层](../src/components/nodes/shared/CloudWorkflowParamSelector.tsx)、[本地字段](../src/components/nodes/shared/ComfyWorkflowParameterFields.tsx)。回归源码覆盖默认正文隐藏、语音子字段保护、负面与共用提示词保护、取消请求隔离和内部批量提示；最终前端门禁以推送钩子与对应 CI 的实际结果为准。桌面及真实 ComfyUI 验收待补。
 
 桌面验收前置：准备已启动且已绑定的 ComfyUI，导入包含两个采样器及分辨率选择器的 API 图。打开本地图像／视频节点的参数入口，核对 `C#202` 与 `C#235` 各自的步数，按所选服务器实际声明显示比例、分辨率、采样器及调度器选项；默认正文和参考图不重复列出，负面文本按用途识别保留。分别修改两处步数、CFG=0、开关=false、尺寸或百万像素，重开应保留覆盖；生成后在服务端核对对应节点值及原图未变，恢复默认应清除该字段覆盖。检查原尺寸入口与新字段同时设置时新字段优先，音频自定义参数同样生效。异常回归：断开服务后重试、绑定服务器删除／换址、字段改成连线、删除节点、非法枚举／数值、显式 @ 冲突、H3 专用设置冲突、切换节点／项目、生成期间禁用及深浅主题。回滚可撤销本节源码改动并清理节点中该命名空间的覆盖，保留原有 IO 赋值。
 

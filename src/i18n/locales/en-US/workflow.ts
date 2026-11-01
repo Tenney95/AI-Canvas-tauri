@@ -98,6 +98,23 @@ const workflow: Record<string, string> = {
   "部分默认输入已失效，保存后请重新设置默认节点。": "Some default inputs are no longer valid. Choose their default nodes again after saving.",
   "保存后展开工作流卡片设置默认输入，或在提示词中 @ 指定输入节点。": "After saving, expand the workflow card to choose default inputs, or @mention an input node in the prompt.",
   "展开输入节点，点击徽章设置默认节点（★）；也可在提示词中 @ 指定输入。旧工作流保留原映射，设置默认节点后启用节点绑定。": "Expand the inputs and click a badge to choose a default (★), or @mention an input in the prompt. Existing workflows keep their mappings until a default node is selected.",
+  "ComfyUI 工作流参数": "ComfyUI workflow parameters",
+  "ComfyUI 节点 ID": "ComfyUI node ID",
+  "请先配置或启动此工作流的 ComfyUI 服务": "Configure or start the ComfyUI server for this workflow first.",
+  "读取工作流参数失败": "Failed to load workflow parameters",
+  "显示工作流原值；此处修改的字段优先于通用尺寸设置。默认正文和参考素材仍使用对话框内容。": "Values shown are from the workflow. Changes here take priority over general size settings. The default prompt and references still come from the node dialog.",
+  "正在读取 ComfyUI 参数声明…": "Loading ComfyUI parameter definitions…",
+  "部分参数已失效，请清除后重新设置。": "Some parameters are no longer valid. Clear them and configure them again.",
+  "清除失效参数": "Clear invalid parameters",
+  "此参数控制工作流内部批量。当前画布只接收首份产物，其余请在 ComfyUI 中查看。": "This controls batching inside the workflow. The canvas currently receives only the first output; view the remaining outputs in ComfyUI.",
+  "正面": "Positive",
+  "负面": "Negative",
+  "正负共用": "Positive and negative",
+  "未判定": "Undetermined",
+  "根据工作流连线识别：用于正面条件": "Identified from workflow connections: used for positive conditioning.",
+  "根据工作流连线识别：用于负面条件；请核对默认提示词选择": "Identified from workflow connections: used for negative conditioning. Check the default prompt input.",
+  "根据工作流连线识别：同一文本同时用于正面和负面条件": "Identified from workflow connections: the same text is used for both positive and negative conditioning.",
+  "缺少完整连线或经过未支持的节点，无法可靠判定；旧云工作流可重新读取完整 API 定义后保存": "Cannot determine reliably without complete connections or support for intermediate nodes. Reload and save the full API definition for older cloud workflows.",
 };
 
 export default workflow;

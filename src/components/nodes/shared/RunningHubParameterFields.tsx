@@ -66,16 +66,17 @@ export function RunningHubModelParameterFields({ model, values = {}, onChange, d
   </div>;
 }
 
-export default function RunningHubParameterFields({ parameters, values = {}, onChange, disabled = false, appearance = 'form' }: {
+export default function RunningHubParameterFields({ parameters, values = {}, onChange, disabled = false, appearance = 'form', defaultPromptKey }: {
   parameters: RunningHubParameter[];
   values?: Record<string, string>;
   onChange: (values: Record<string, string>) => void;
   disabled?: boolean;
   appearance?: 'form' | 'popover';
+  defaultPromptKey?: string;
 }) {
   const t = useT();
   if (appearance === 'popover') return <div className="flex min-w-0 flex-col gap-3">
-    {resolveRunningHubParameters(parameters).filter((field) => field.source === 'value')
+    {resolveRunningHubParameters(parameters).filter((field) => field.source === 'value' && runningHubParameterKey(field) !== defaultPromptKey)
       .sort((a, b) => getCloudWorkflowParameterPriority(a.fieldName, a.label) - getCloudWorkflowParameterPriority(b.fieldName, b.label)).map((field) => {
       const key = runningHubParameterKey(field);
       const options = field.options?.length ? field.options

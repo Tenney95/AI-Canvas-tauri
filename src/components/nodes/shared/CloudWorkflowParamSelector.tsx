@@ -39,31 +39,31 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
   const serverAddress = useAppStore((state) => !local ? '' : workflow.serverId
     ? state.config.comfyServers?.find((server) => server.id === workflow.serverId)?.url ?? '' : state.config.comfyUIUrl ?? '');
   const [reload, setReload] = useState(0);
-  const [localState, setLocalState] = useState<{ workflow?: WorkflowDefinition; address?: string; fields: ComfyWorkflowParameter[]; loading: boolean; error?: string }>({ fields: [], loading: false });
-  const currentLocal = localState.workflow === workflow && localState.address === serverAddress;
+  const [localState, setLocalState] = useState<{ workflow?: WorkflowDefinition; address?: string; reload?: number; fields: ComfyWorkflowParameter[]; error?: string }>({ fields: [] });
+  const currentLocal = localState.workflow === workflow && localState.address === serverAddress && localState.reload === reload;
   const localFields = currentLocal ? localState.fields : [];
-  const localLoading = local && open && (!currentLocal || localState.loading);
+  const localLoading = local && open && !currentLocal;
   const localError = currentLocal ? localState.error : undefined;
   useEffect(() => {
     if (!open || !local) return;
     let active = true;
-    setLocalState({ workflow, address: serverAddress, fields: [], loading: true });
     void (async () => {
       try {
         const baseUrl = comfyBaseUrlFor(workflow.id);
         if (!baseUrl) throw new Error(t('请先配置或启动此工作流的 ComfyUI 服务'));
         const fields = await loadComfyWorkflowParameters(workflow, (classType) => fetchNodeInputSpecs(baseUrl, classType, reload > 0));
-        if (active) setLocalState({ workflow, address: serverAddress, fields, loading: false });
+        if (active) setLocalState({ workflow, address: serverAddress, reload, fields });
       } catch (error) {
-        if (active) setLocalState({ workflow, address: serverAddress, fields: [], loading: false,
+        if (active) setLocalState({ workflow, address: serverAddress, reload, fields: [],
           error: error instanceof Error ? error.message : t('读取工作流参数失败') });
       }
     })();
     return () => { active = false; };
   }, [open, local, workflow, serverAddress, reload, t]);
   const manifest = workflow.workflowApi;
+  const defaultPromptKey = workflow.runninghub?.inputBindingMode === 'nodes' ? workflow.defaultNodes?.prompt : undefined;
   const fields = workflow.adapterType === 'runninghub'
-    ? resolveRunningHubParameters(workflow.runninghub?.parameters ?? []).filter((field) => field.source === 'value').map((field) => ({
+    ? resolveRunningHubParameters(workflow.runninghub?.parameters ?? []).filter((field) => field.source === 'value' && runningHubParameterKey(field) !== defaultPromptKey).map((field) => ({
       name: field.fieldName, label: field.label, value: values[runningHubParameterKey(field)] ?? String(field.defaultValue),
     }))
     : manifest?.version === 2 ? Object.entries(manifest.parameters).map(([name, field]) => ({
@@ -71,7 +71,7 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
       value: values[`workflow::${name}`] ?? values[name] ?? String(field.default ?? ''),
     })) : localFields.map((field) => ({ name: field.fieldName, label: field.label,
       value: values[comfyWorkflowParameterKey(field)] ?? String(field.defaultValue) }));
-  const staleLocalKeys = local && currentLocal && !localState.loading && !localError
+  const staleLocalKeys = local && currentLocal && !localError
     ? Object.keys(splitComfyWorkflowInputs(values).parameters).filter((key) => !localFields.some((field) => comfyWorkflowParameterKey(field) === key)) : [];
   const summary = fields.filter((field) => getCloudWorkflowParameterSemantic(field.name, field.label) !== 'other' && field.value !== '')
     .slice(0, 3).map((field) => getCloudWorkflowParameterSemantic(field.name, field.label) === 'duration'
@@ -187,7 +187,7 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
             const next = { ...values }; for (const key of staleLocalKeys) delete next[key]; onChange(next);
           }}>{t('清除失效参数')}</button></div>}
         {workflow.adapterType === 'runninghub' ? <RunningHubParameterFields appearance="popover"
-          parameters={workflow.runninghub?.parameters ?? []} values={values} onChange={onChange} disabled={disabled} />
+          parameters={workflow.runninghub?.parameters ?? []} defaultPromptKey={defaultPromptKey} values={values} onChange={onChange} disabled={disabled} />
           : manifest?.version === 2 ? <WorkflowApiParameterFields appearance="popover" manifest={manifest}
             values={values} onChange={onChange} disabled={disabled} /> : local && !localLoading && !localError
               ? <ComfyWorkflowParameterFields parameters={localFields} values={values} onChange={onChange} disabled={disabled} /> : null}

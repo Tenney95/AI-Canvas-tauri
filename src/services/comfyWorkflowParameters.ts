@@ -5,6 +5,8 @@ import { inferComfyPromptRoles } from './comfyPromptRoles';
 const PREFIX = 'comfy-param::';
 const SENSITIVE = /api.?key|authorization|token|secret|password|cookie|(?:^|_)(?:path|directory|folder|code|script)(?:_|$)/i;
 const PROMPT_FIELDS = new Set(['text', 'text_g', 'text_l', 'clip_l', 't5xxl', 'target_text', 'prompt', 'string', 'value', 'instruction']);
+// 与默认 IO 写入一致，DynamicCombo 的 task.text 等子字段也是正文，不能被普通参数覆盖。
+const isPromptField = (name: string) => PROMPT_FIELDS.has(name.split('.').at(-1) ?? name);
 const MEDIA_FIELDS = new Set(['image', 'video', 'audio', 'file', 'upload']);
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -34,7 +36,7 @@ function candidates(workflow: WorkflowDefinition): ComfyWorkflowParameter[] {
     for (const [fieldName, value] of Object.entries(node.inputs)) {
       if (UNSAFE_KEYS.has(fieldName) || !scalar(value) || SENSITIVE.test(fieldName) || MEDIA_FIELDS.has(fieldName)
         || (typeof value === 'string' && /^(?:[a-z]:[\\/]|\\\\|file:)/i.test(value))) continue;
-      if (typeof value === 'string' && PROMPT_FIELDS.has(fieldName)
+      if (typeof value === 'string' && isPromptField(fieldName)
         && (workflow.defaultNodes?.prompt === nodeId || roles.get(nodeId) !== 'negative')) continue;
       fields.push({ nodeId, fieldName, classType: node.class_type, label: `${title} · ${fieldName}`,
         type: typeof value as 'string' | 'number' | 'boolean', defaultValue: value });
@@ -84,7 +86,7 @@ export async function prepareComfyWorkflowParameterOverrides(workflow: WorkflowD
     const field = fields.find((item) => comfyWorkflowParameterKey(item) === key);
     if (!field) throw new Error('工作流参数已失效或不允许覆盖，请打开参数面板清除失效设置');
     const name = `C#${field.nodeId} · ${field.fieldName}`;
-    if (field.type === 'string' && PROMPT_FIELDS.has(field.fieldName) && inputs[field.nodeId] !== undefined) throw new Error(`${name} 已有显式 @ 输入，请恢复此参数默认值后再提交`);
+    if (field.type === 'string' && isPromptField(field.fieldName) && inputs[field.nodeId] !== undefined) throw new Error(`${name} 已有显式 @ 输入，请恢复此参数默认值后再提交`);
     let value: string | number | boolean = raw;
     if (field.type === 'integer' || field.type === 'number') {
       value = Number(raw);

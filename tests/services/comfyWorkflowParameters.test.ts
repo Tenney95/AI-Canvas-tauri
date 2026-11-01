@@ -25,6 +25,14 @@ const getSpecs = async (classType: string) => specs[classType] ?? null;
 const key = (nodeId: string, fieldName: string) => comfyWorkflowParameterKey({ nodeId, fieldName });
 
 describe('本地 ComfyUI 参数编辑', () => {
+  it('DynamicCombo 的 task.text 与 task.prompt 不重复展示，旧覆盖不能盖过对话框正文', async () => {
+    const local = workflow({ '714': { class_type: 'Speech', inputs: { 'task.text': '原台词', 'task.prompt': '原正文', 'task.description': '音色描述', speed: 1 } } });
+    const fields = await loadComfyWorkflowParameters(local, async () => ({
+      'task.text': { type: 'STRING' }, 'task.prompt': { type: 'STRING' }, 'task.description': { type: 'STRING' }, speed: { type: 'FLOAT' },
+    }));
+    expect(fields.map((field) => field.fieldName)).toEqual(['task.description', 'speed']);
+    await expect(prepareComfyWorkflowParameterOverrides(local, { [key('714', 'task.text')]: '过期台词覆盖' }, getSpecs)).rejects.toThrow('参数已失效');
+  });
   it('只展示已声明的标量，区分两轮步数，正文/媒体/连线不进入普通参数，负面可单独编辑', async () => {
     const original = workflow();
     const snapshot = structuredClone(original);

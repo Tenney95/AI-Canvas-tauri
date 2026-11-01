@@ -30,7 +30,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
   resolveNodeReferencesAsync: async (value: string) => value,
 }));
 
-import { executeComfyUIGenerate, executeComfyUIVideoGenerate } from '../../src/services/comfyWorkflowService';
+import { executeComfyUIGenerate, executeComfyUIVideoGenerate, fetchNodeInputSpecs } from '../../src/services/comfyWorkflowService';
 import { comfyWorkflowParameterKey } from '../../src/services/comfyWorkflowParameters';
 
 /** 文生图工作流：两个 CLIPTextEncode（正/负）+ 一个 LoadImage */
@@ -94,6 +94,40 @@ beforeEach(() => {
 const baseParams = { prompt: '一只在屋顶的猫', model: 'wf', provider: 'comfyui', workflowId: 'wf-1' };
 
 describe('ComfyUI 默认 IO 节点', () => {
+  it.each([false, true])('未设默认输入时保护已确认的负面和共用文本：共用=%s', async (shared) => {
+    registerWorkflow();
+    mocks.storeState.workflows[0].fileContent = JSON.stringify({
+      '6': { class_type: 'CLIPTextEncode', inputs: { text: 'good' } },
+      '7': { class_type: 'CLIPTextEncode', inputs: { text: 'bad' } },
+      '8': { class_type: 'KSampler', inputs: { positive: ['6', 0], negative: [shared ? '6' : '7', 0] } },
+    });
+    mocks.storeState.workflows[0].ioNodes = IO_NODES.filter((io) => io.type === 'prompt');
+    await executeComfyUIGenerate(baseParams);
+    const submitted = submittedWorkflow();
+    expect(submitted['6'].inputs.text).toBe(shared ? 'good' : baseParams.prompt);
+    if (!shared) expect(submitted['7'].inputs.text).toBe('bad');
+  });
+  it('取消生成任务的声明读取不取消或污染 UI 的共用请求', async () => {
+    const controller = new AbortController();
+    let requests = 0;
+    let finishUI!: () => void;
+    mocks.corsSafeFetch.mockImplementation((_url: string, init: RequestInit) => {
+      requests++;
+      if (requests === 1) return new Promise((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true }));
+      return new Promise((resolve) => { finishUI = () => resolve(jsonResponse({ CancelableSchemaTest: { input: { required: { steps: ['INT', { min: 1, max: 100 }] } } } })); });
+    });
+    const task = fetchNodeInputSpecs('http://schema-cancel.test', 'CancelableSchemaTest', true, controller.signal);
+    const rejectedTask = expect(task).rejects.toMatchObject({ name: 'AbortError' });
+    const ui = fetchNodeInputSpecs('http://schema-cancel.test', 'CancelableSchemaTest');
+    expect(requests).toBe(2);
+    controller.abort();
+    await rejectedTask;
+    finishUI();
+    const result = await ui;
+    expect(result?.steps).toMatchObject({ type: 'INT', min: 1, max: 100 });
+    expect(await fetchNodeInputSpecs('http://schema-cancel.test', 'CancelableSchemaTest')).toEqual(result);
+    expect(requests).toBe(2);
+  });
   it.each(['image', 'video'] as const)('%s 本地普通参数按字段覆盖，优先于通用尺寸，不抑制正文兜底且不改原图', async (kind) => {
     registerWorkflow();
     const original = JSON.stringify({

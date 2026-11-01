@@ -35,6 +35,7 @@ import { applyComfyH3Memory } from './comfyH3Memory';
 import type { ComfyInputSpec } from '../types/comfyWorkflow';
 import { applyComfyWorkflowParameterOverrides, prepareComfyWorkflowParameterOverrides, splitComfyWorkflowInputs } from './comfyWorkflowParameters';
 import { parseRasterImageDimensions } from './rasterImageDimensions';
+import { inferComfyPromptRoles } from './comfyPromptRoles';
 
 /** ComfyUI 已注册的节点类型；同一次会话里短暂缓存，装完插件重开也能很快看到变化 */
 let nodeClassCache: { baseUrl: string; classes: Set<string>; fetchedAt: number } | null = null;
@@ -173,6 +174,7 @@ function parseNodeInputSpecs(payload: unknown, classType: string): ComfyNodeInpu
 
 /** 单个节点类型的输入声明；问不到就返回 null，调用方按「不敢写」处理 */
 export async function fetchNodeInputSpecs(baseUrl: string, classType: string, fresh = false, signal?: AbortSignal): Promise<ComfyNodeInputSpecs | null> {
+  signal?.throwIfAborted();
   const key = `${baseUrl}::${classType}`;
   const cached = nodeInputSpecCache.get(key);
   if (!fresh && cached && Date.now() - cached.fetchedAt < NODE_CLASS_CACHE_TTL) return cached.specs;
@@ -184,15 +186,16 @@ export async function fetchNodeInputSpecs(baseUrl: string, classType: string, fr
         return parseNodeInputSpecs(await response.json(), classType);
       }, signal);
     } catch (error) {
-      if (signal?.aborted) {
-        if (nodeInputSpecCache.get(key)?.specs === specs) nodeInputSpecCache.delete(key);
-        throw error;
-      }
+      if (signal?.aborted) throw error;
       return null;
     }
   })();
-  nodeInputSpecCache.set(key, { fetchedAt: Date.now(), specs });
-  return specs;
+  // 生成任务的可取消请求不能成为 UI 共用的在途请求；完成后才共享其成功结果。
+  if (!signal) nodeInputSpecCache.set(key, { fetchedAt: Date.now(), specs });
+  const result = await specs;
+  signal?.throwIfAborted();
+  if (signal && result) nodeInputSpecCache.set(key, { fetchedAt: Date.now(), specs: Promise.resolve(result) });
+  return result;
 }
 
 /**
@@ -295,8 +298,11 @@ async function injectPromptsIntoWorkflow(
     return;
   }
   if (!workflowInputs || Object.keys(workflowInputs).length === 0) {
+    const roles = inferComfyPromptRoles(workflowObj);
     // 没有 explicit IO 赋值时，遍历所有文本节点做兜底替换
-    for (const [, nodeData] of Object.entries(workflowObj)) {
+    for (const [nodeId, nodeData] of Object.entries(workflowObj)) {
+      // 未选默认输入时也不能把已确认的负面／共用条件当作正面占位符。
+      if (roles.get(nodeId) === 'negative' || roles.get(nodeId) === 'mixed') continue;
       if (!nodeData || typeof nodeData !== 'object') continue;
       const inputs = nodeData.inputs as Record<string, unknown> | undefined;
       if (!inputs) continue;

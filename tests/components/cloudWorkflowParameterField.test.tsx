@@ -14,6 +14,28 @@ import type { ComfyWorkflowParameter } from '../../src/types/comfyWorkflow';
 const ignoreChange = () => undefined;
 
 describe('云工作流参数默认展示', () => {
+  it('本地内部批量大于一时明确提示当前只接收首份，不把批量数量等同于画布节点数', () => {
+    const parameters: ComfyWorkflowParameter[] = [{ nodeId: '801', classType: 'EmptyLatentImage', fieldName: 'batch_size',
+      label: '空 Latent · batch_size', type: 'integer', defaultValue: 1, min: 1, max: 64 }];
+    const original = renderToStaticMarkup(<ComfyWorkflowParameterFields parameters={parameters} values={{}} onChange={ignoreChange} />);
+    expect(original).not.toContain('当前画布只接收首份产物');
+    const batch = renderToStaticMarkup(<ComfyWorkflowParameterFields parameters={parameters} values={{ 'comfy-param::801::batch_size': '3' }} onChange={ignoreChange} />);
+    expect(batch).toContain('当前画布只接收首份产物');
+    expect(batch).toContain('C#801'); expect(batch).toContain('value="3"');
+  });
+  it('RH 默认字符串正文不在参数浮层重复编辑，负面仍可调，导入表单仍保留原定义', () => {
+    const parameters: RunningHubParameter[] = [
+      { nodeId: '714', fieldName: 'value', label: '字符串（多行） · value', type: 'string', defaultValue: '原正文', source: 'value', inputType: 'prompt' },
+      { nodeId: '232', fieldName: 'text', label: '负面提示词', type: 'string', defaultValue: '低清晰度', source: 'value', inputType: 'prompt' },
+    ];
+    const html = renderToStaticMarkup(<RunningHubParameterFields parameters={parameters} defaultPromptKey="714::value" appearance="popover" onChange={ignoreChange} />);
+    expect(html).not.toContain('原正文'); expect(html).not.toContain('C#714');
+    expect(html).toContain('低清晰度'); expect(html).toContain('C#232');
+    const form = renderToStaticMarkup(<RunningHubParameterFields parameters={parameters} defaultPromptKey="714::value" onChange={ignoreChange} />);
+    expect(form).toContain('原正文');
+    const legacy = renderToStaticMarkup(<RunningHubParameterFields parameters={parameters} appearance="popover" onChange={ignoreChange} />);
+    expect(legacy).toContain('C#714');
+  });
   it('RH 与本地字段使用 C# 节点标记区分同名步数，本地沿用排序、下拉和原参数身份', () => {
     const local: ComfyWorkflowParameter[] = [
       { nodeId: '202', fieldName: 'scheduler', classType: 'KSampler', label: 'K采样器 · scheduler', type: 'string', defaultValue: 'normal', options: ['normal', 'karras'] },
