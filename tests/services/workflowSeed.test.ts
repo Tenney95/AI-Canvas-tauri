@@ -25,7 +25,7 @@ describe('工作流种子模式', () => {
     expect(createWorkflowSeed({ ...spec, min: 10, max: 20 })).toBe(10);
     random.mockReturnValue(0.9999999999999999);
     expect(createWorkflowSeed({ ...spec, min: 10, max: 20 })).toBe(20);
-    const large = createWorkflowSeed({ ...spec, max: 18446744073709551615 });
+    const large = createWorkflowSeed({ ...spec, max: Number('18446744073709551615') });
     expect(Number.isSafeInteger(large)).toBe(true);
     expect(large).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
     expect(createWorkflowSeed({ ...spec, min: 7, max: 7 })).toBe(7);
