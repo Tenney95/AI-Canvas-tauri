@@ -1881,10 +1881,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         position: { x: absPos.x - parentPos.x, y: absPos.y - parentPos.y },
       });
       if (oldParent) oldParentIds.add(oldParent.id);
-      if (parent?.data.groupId) {
-        const added = addedByGroup.get(parent.data.groupId) ?? new Set<string>();
+      const groupId = parent?.data.groupId;
+      if (typeof groupId === 'string' && groupId) {
+        const added = addedByGroup.get(groupId) ?? new Set<string>();
         added.add(node.id);
-        addedByGroup.set(parent.data.groupId, added);
+        addedByGroup.set(groupId, added);
       }
     }
     if (updates.size === 0) return;
