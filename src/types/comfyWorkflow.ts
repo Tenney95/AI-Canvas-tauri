@@ -21,9 +21,13 @@ export interface ComfyWorkflowParameter {
   max?: number;
   step?: number;
   multiline?: boolean;
+  /** 已由语音专用面板管理模式，通用参数不再额外默认随机。 */
+  dedicatedSeedControl?: true;
 }
 
 export interface ComfyWorkflowParameterAssignment {
   field: ComfyWorkflowParameter;
   value: string | number | boolean;
+  /** 本次新请求已解析的随机值；可选分支裁剪后不要求不存在的种子节点继续写入。 */
+  randomSeed?: true;
 }

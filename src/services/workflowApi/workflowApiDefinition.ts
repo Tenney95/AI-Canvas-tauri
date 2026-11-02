@@ -5,6 +5,7 @@ import type { ProtocolJsonValue } from '../../types/aiTypes';
 import type { DeclarativeWorkflowApiManifest, WorkflowApiDraft, WorkflowApiInputValues, WorkflowApiManifest, WorkflowApiParameter } from '../../types/workflowApi';
 import { parseModelExecutionProtocol } from '../ai/modelProtocol';
 import { AUTODL_H3_WORKFLOW, resolveWorkflowApiInputValues } from './autodlWorkflowManifest';
+import { isWorkflowSeedParameter, resolveWorkflowSeed } from '../workflowSeed';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
@@ -65,7 +66,9 @@ export function workflowApiOutputKind(manifest: WorkflowApiManifest) { return ma
 export function resolveDeclaredWorkflowInputs(manifest: DeclarativeWorkflowApiManifest, input: WorkflowApiInputValues = {}): WorkflowApiInputValues {
   if (Object.keys(input).some((name) => !Object.hasOwn(manifest.parameters, name))) throw new Error('工作流包含未声明的输入参数');
   return Object.fromEntries(Object.entries(manifest.parameters).flatMap(([name, spec]) => {
-    const value = input[name] === undefined ? spec.default : input[name];
+    const seedSpec = { ...spec, name, label: spec.label ?? name };
+    const value = isWorkflowSeedParameter(seedSpec) ? resolveWorkflowSeed(seedSpec, input[name])
+      : input[name] === undefined ? spec.default : input[name];
     validateWorkflowParameter(value, spec, name);
     return value === undefined ? [] : [[name, value]];
   }));

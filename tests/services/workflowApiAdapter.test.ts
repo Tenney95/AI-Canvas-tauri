@@ -4,6 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createAutodlH3WorkflowManifest } from '../../src/services/workflowApi/autodlWorkflowManifest';
+import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
+import * as workflowSeed from '../../src/services/workflowSeed';
 import { generateVideo } from '../../src/services/ai/generateVideo';
 import { runMediaGeneration } from '../../src/services/ai/generationRuntime';
 import {
@@ -121,6 +123,27 @@ describe('AutoDL 工作流输入合同', () => {
 });
 
 describe('AutoDL 提交、查询及恢复', () => {
+  it('声明式种子在新请求解析，停止后续查不重新解析或提交', async () => {
+    const { manifest: declared } = createWorkflowApiDraft();
+    declared.connectionId = 'autodl-test';
+    declared.parameters = { seed: { type: 'integer', label: '种子', default: 42, min: 0, max: 99 } };
+    declared.protocol.submit.body = { prompt: '{{prompt}}', images: '{{imageUrls}}', seed: '{{parameters.seed}}' };
+    useAppStore.setState({ workflows: useAppStore.getState().workflows.map((workflow) => ({ ...workflow, workflowApi: declared })) });
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    const resolveSeed = vi.spyOn(workflowSeed, 'resolveWorkflowSeed');
+    try {
+      remoteState = 'running';
+      const running = generate(); const stopped = expect(running).rejects.toThrow();
+      await vi.waitFor(() => expect(pending()[0]?.taskId).toBe(taskId));
+      expect(JSON.parse(submissions()[0][1].body as string).seed).toBe(10);
+      const parsed = resolveSeed.mock.calls.length;
+      stopWorkflowApiNodeTask('n1'); await stopped;
+      remoteState = 'success'; await resumeWorkflowApiNodeTask('n1');
+      expect(resolveSeed).toHaveBeenCalledTimes(parsed);
+      expect(submissions()).toHaveLength(1); expect(pending()).toEqual([]);
+    } finally { random.mockRestore(); resolveSeed.mockRestore(); }
+  });
+
   it('视频入口传入两图两音频，保持模板默认参数且不重复下载', async () => {
     const sources = refs(2, 2);
     const result = await generateVideo({ provider: 'workflow-api', model: 'workflow-api/wf1', workflowId: 'wf1', nodeId: 'n1', prompt: '猫',

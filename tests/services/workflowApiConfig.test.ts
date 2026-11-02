@@ -9,6 +9,8 @@ import { saveAutodlWorkflowTemplate, saveWorkflowApiDrafts, parseWorkflowApiFiel
 import { useAppStore } from '../../src/store/useAppStore';
 import { findMediaModelOption } from '../../src/components/nodes/shared/defaultModels';
 import { workflowExecution } from '../../src/services/workflowExecutionService';
+import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
+import { WORKFLOW_RANDOM_SEED } from '../../src/services/workflowSeed';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), save: vi.fn() }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
@@ -18,6 +20,23 @@ const connection = { name: 'AutoDL', catalogId: 'autodl-workflow', apiKey: 'priv
 beforeEach(() => { useAppStore.setState(useAppStore.getInitialState(), true); vi.clearAllMocks(); mocks.save.mockResolvedValue(undefined); });
 
 describe('工作流 API 配置与目录', () => {
+  it('声明式种子默认随机，在别名转型前识别随机标记；固定零及大整数保留', () => {
+    const { manifest } = createWorkflowApiDraft();
+    manifest.parameters = { seed: { type: 'integer', label: '随机种子', default: 42, min: 0, max: 99 } };
+    const random = vi.spyOn(Math, 'random').mockReturnValueOnce(0.1).mockReturnValueOnce(0.9);
+    try {
+      expect(parseWorkflowApiFields({}, manifest)).toEqual({ seed: 10 });
+      expect(parseWorkflowApiFields({ 'workflow::seed': WORKFLOW_RANDOM_SEED }, manifest)).toEqual({ seed: 90 });
+      random.mockClear();
+      expect(parseWorkflowApiFields({ seed: '0' }, manifest)).toEqual({ seed: 0 });
+      manifest.parameters.seed.max = undefined;
+      expect(parseWorkflowApiFields({ 'workflow::seed': '110761519084224' }, manifest)).toEqual({ seed: 110761519084224 });
+      expect(random).not.toHaveBeenCalled();
+      expect(() => parseWorkflowApiFields({ seed: '' }, manifest)).toThrow('安全整数');
+      expect(() => parseWorkflowApiFields({ seed: '1', 'workflow::seed': '2' }, manifest)).toThrow('重复');
+    } finally { random.mockRestore(); }
+  });
+
   it('独立类别不请求模型目录，配置检查不声称验证 Token 或提交任务', async () => {
     expect(getProviderDefinition('autodl-workflow')).toMatchObject({ kind: 'workflow-api', catalogAdapter: 'local-manifest' });
     expect((await fetchProviderModelCatalog({ providerId: 'autodl-workflow', config: connection })).models).toEqual([]);

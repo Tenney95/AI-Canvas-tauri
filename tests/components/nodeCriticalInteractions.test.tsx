@@ -9,6 +9,7 @@ import type { AppState } from '../../src/store/useAppStore';
 import type { ComfyNodeProgress } from '../../src/types/comfyProgress';
 import type { AppConfig, WorkflowDefinition } from '../../src/types';
 import type { ComfyWorkflowParameter } from '../../src/types/comfyWorkflow';
+import { WORKFLOW_RANDOM_SEED } from '../../src/services/workflowSeed';
 
 const confirmVideoReferencesBeforeGeneration = vi.fn<
   (nodeId: string, overridePrompt?: string) => Promise<boolean>
@@ -550,6 +551,47 @@ function visibleShotRatio(store: TestStore, column: string) {
 }
 
 describe('critical canvas node interactions', () => {
+  it('种子面板不抽值，随机/固定切换、一次填入和固定编辑按操作写回', async () => {
+    await installReactHookDriver();
+    installStoreMock(createStore([], () => 1));
+    const Field = (await import('../../src/components/nodes/shared/CloudWorkflowParameterField')).default;
+    const onChange = vi.fn();
+    const props = { name: 'seed', label: 'K采样器 · SEED', nodeId: '202', type: 'integer' as const,
+      min: 0, max: 99, defaultValue: 42, allowRandomSeed: true, onChange };
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const tree = Field({ ...props, value: WORKFLOW_RANDOM_SEED });
+      expect(random).not.toHaveBeenCalled();
+      expect(findElement(tree, (element) => element.type === 'input').props.readOnly).toBe(true);
+      (findElement(tree, (element) => element.type === 'button' && element.props.children === '固定').props.onClick as () => void)();
+      expect(onChange).toHaveBeenLastCalledWith('42'); expect(random).not.toHaveBeenCalled();
+      (findElement(tree, (element) => element.props['aria-label'] === 'K采样器 · SEED · C#202：随机填入固定种子').props.onClick as () => void)();
+      expect(onChange).toHaveBeenLastCalledWith('50'); expect(random).toHaveBeenCalledOnce();
+      const fixed = Field({ ...props, value: '77' }); onChange.mockClear();
+      (findElement(fixed, (element) => element.type === 'button' && element.props.children === '固定').props.onClick as () => void)();
+      expect(onChange).not.toHaveBeenCalled();
+      (findElement(fixed, (element) => element.type === 'input').props.onChange as (event: unknown) => void)({ target: { value: '0' } });
+      expect(onChange).toHaveBeenLastCalledWith('0');
+      (findElement(fixed, (element) => element.type === 'button' && element.props.children === '随机').props.onClick as () => void)();
+      expect(onChange).toHaveBeenLastCalledWith(WORKFLOW_RANDOM_SEED); expect(random).toHaveBeenCalledOnce();
+    } finally { random.mockRestore(); }
+  });
+
+  it('声明式工作流固定种子清空可继续编辑，恢复默认才移除覆盖', async () => {
+    await installReactHookDriver(); installStoreMock(createStore([], () => 1));
+    const Fields = (await import('../../src/components/nodes/shared/WorkflowApiParameterFields')).default;
+    const { manifest } = (await import('../../src/services/workflowApi/workflowApiDefinition')).createWorkflowApiDraft();
+    manifest.parameters = { seed: { type: 'integer', label: '种子', default: 42 } };
+    const onChange = vi.fn();
+    const tree = Fields({ manifest, values: { 'workflow::seed': '77' }, appearance: 'popover', onChange });
+    const field = findElement(tree, (element) => element.props.name === 'seed');
+    (field.props.onChange as (value: string) => void)('');
+    expect(onChange).toHaveBeenLastCalledWith({ 'workflow::seed': '' });
+    expect(field.props.displayDefaultWhenEmpty).toBe(false);
+    (field.props.onReset as () => void)();
+    expect(onChange).toHaveBeenLastCalledWith({});
+  });
+
   it.each(['comfyui', 'runninghub', 'workflow-api'] as const)('%s 比例选择与恢复默认传出归一化比例，保留提交原值且不被其他参数触发', async (adapterType) => {
     const fields: ComfyWorkflowParameter[] = [
       { nodeId: '515', fieldName: 'aspect_ratio', classType: 'ResolutionSelector', label: '分辨率选择器 · ASPECT_RATIO',

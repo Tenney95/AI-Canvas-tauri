@@ -422,6 +422,16 @@ const common = {
   "保存到本地": "Save locally",
   "写入项目目录": "Write to project folder",
   "输出到画布": "Output to canvas",
+  "生成已完成，待下载": "Generation complete, download pending",
+  "待下载": "Download pending",
+  "重新下载": "Download again",
+  "下载中…": "Downloading…",
+  "放弃": "Abandon",
+  "已放弃下载": "Download abandoned",
+  "只放弃本地下载恢复，不删除文件或取消远端任务": "Stop local download recovery without deleting files or canceling the provider task",
+  "无法确认原下载任务，请前往节点继续保存": "The original download task cannot be confirmed. Open the node to continue saving.",
+  "下载尚未完成，原任务已保留，可再次重新下载": "The download is incomplete. The original task is retained for another download attempt.",
+  "无法放弃下载，请确认原任务未在处理中后重试": "Cannot abandon the download. Wait until the original task is no longer processing and try again.",
 };
 
 export default common;

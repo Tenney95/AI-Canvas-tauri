@@ -370,7 +370,9 @@ export interface OutputHistoryEntry {
   nodeType: NodeType;            // 节点类型
   model: string;                 // 模型 ID
   provider: string;              // 供应商 ID
-  status: 'success' | 'error';   // 生成结果
+  status: 'success' | 'error' | 'download_pending' | 'abandoned'; // 生成与交付结果
+  /** 只关联原任务，不在历史中复制下载地址、查询协议或凭据。 */
+  recoveryTask?: import('./aiTypes').MediaTaskReceipt;
   error?: string;                // 错误信息
   mediaUrl?: string;             // 媒体资源 URL（imageUrl/videoUrl/audioUrl）
   filePath?: string;             // 本地文件路径

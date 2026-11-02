@@ -4,13 +4,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from '../../src/store/useAppStore';
 import { buildRunningHubInputs, cancelRunningHubNodeTask, completeRunningHubNodeTask, executeRunningHubWorkflow, parseRunningHubOutputs } from '../../src/services/ai/providers/runninghubWorkflow';
-import { cancelNodePolling, getPendingTasksForProject, resumePendingTasks, resumeRunningHubNodeTask, savePendingTask } from '../../src/services/pollManager';
+import { abandonHistoryMediaDownload, cancelNodePolling, getPendingTasksForProject, retryHistoryMediaDownload, resumePendingTasks, resumeRunningHubNodeTask, savePendingTask } from '../../src/services/pollManager';
 import { uploadRunningHubMedia } from '../../src/services/ai/providers/runninghubClient';
 import { fetchRunningHubDefinition } from '../../src/services/runninghubWorkflowService';
 import { buildRunningHubSiteProviders } from '../../src/services/runninghubSiteCredentials';
 import type { RunningHubMediaKind, RunningHubWorkflowManifest } from '../../src/types/runninghub';
 import type { RunningHubInputRouting } from '../../src/services/ai/providers/runninghubWorkflowInputs';
 import { getSlashCommands, fillTemplate } from '../../src/components/nodes/shared/slashCommands';
+import { WORKFLOW_RANDOM_SEED } from '../../src/services/workflowSeed';
+import { historyMediaTaskReceipt } from '../../src/services/historyMediaRecovery';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), persist: vi.fn(), desktop: vi.fn(() => true) }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
@@ -24,6 +26,28 @@ const manifest: RunningHubWorkflowManifest = { version: 1, kind: 'workflow', rem
 ] };
 
 describe('RH 默认输入与显式输入的提交映射', () => {
+  it('新请求的种子默认分别随机，固定值和零稳定，随机标记不会上传到平台', async () => {
+    const definition: RunningHubWorkflowManifest = { version: 1, kind: 'workflow', remoteId: manifest.remoteId, connectionId: 'runninghub',
+      parameters: ['202', '235'].map((nodeId) => ({ nodeId, fieldName: 'seed', label: 'K采样器 · SEED', type: 'number',
+        defaultValue: 42, source: 'value', min: 0, max: 99 })) };
+    const snapshot = structuredClone(definition);
+    const random = vi.spyOn(Math, 'random').mockReturnValueOnce(0.1).mockReturnValueOnce(0.2).mockReturnValueOnce(0.3).mockReturnValueOnce(0.4);
+    try {
+      const first = await buildRunningHubInputs(connection, definition, '正文');
+      const second = await buildRunningHubInputs(connection, definition, '正文');
+      expect(first.map((field) => field.fieldValue)).toEqual([10, 20]);
+      expect(second.map((field) => field.fieldValue)).toEqual([30, 40]);
+      random.mockClear();
+      const fixed = await buildRunningHubInputs(connection, definition, '正文', { '202::seed': '0', '235::seed': '42' });
+      expect(fixed.map((field) => field.fieldValue)).toEqual([0, 42]); expect(random).not.toHaveBeenCalled();
+      random.mockReturnValue(0.5);
+      const marked = await buildRunningHubInputs(connection, definition, '正文', { '202::seed': WORKFLOW_RANDOM_SEED });
+      expect(marked[0].fieldValue).toBe(50);
+      expect(definition).toEqual(snapshot);
+      await expect(buildRunningHubInputs(connection, definition, '正文', { '202::seed': '9007199254740993' })).rejects.toThrow('安全整数');
+    } finally { random.mockRestore(); }
+  });
+
   const routed = (): RunningHubInputRouting => ({ nodeMode: true, bindings: new Map(), mentionedTypes: new Set(), defaults: { prompt: '6::text', image: '9::first' } });
   const withImages: RunningHubWorkflowManifest = { ...manifest, parameters: [...manifest.parameters,
     { nodeId: '9', fieldName: 'first', label: '首帧', type: 'string', defaultValue: '', source: 'image' },
@@ -145,6 +169,39 @@ beforeEach(() => {
 afterEach(() => { cancelNodePolling('n1'); cancelNodePolling('runninghub-message-m1'); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('RunningHub 云任务生命周期', () => {
+  it('历史重新下载只续取原任务，成功更新同一条历史；旧回执不能操作新尝试', async () => {
+    mocks.persist.mockRejectedValueOnce(Object.assign(new Error('生成媒体未能写入项目目录：下载媒体失败'), { name: 'MediaPersistenceError' }));
+    await expect(generate()).rejects.toThrow('下载媒体失败');
+    const receipt = historyMediaTaskReceipt(pending()[0]);
+    await useAppStore.getState().recordOutputHistory('n1', { nodeId: 'n1', nodeLabel: '测试云工作流', nodeType: 'ai-image',
+      timestamp: 10, prompt: '原提示词', output: '', model: 'runninghubwf/wf1', provider: 'runninghubwf',
+      status: 'download_pending', recoveryTask: receipt, error: '下载失败' });
+    const original = useAppStore.getState().outputHistoryRecords[0];
+    await expect(retryHistoryMediaDownload({ ...receipt, attemptId: 'other-attempt' })).rejects.toThrow('原下载任务已变化');
+    await retryHistoryMediaDownload(receipt);
+    const recovered = useAppStore.getState().outputHistoryRecords.find((entry) => entry.id === original.id);
+    expect(recovered).toMatchObject({ status: 'success', timestamp: 10, prompt: '原提示词' });
+    expect(recovered?.filePath).toBeTruthy(); expect(pending()).toEqual([]);
+    expect(submitCalls()).toHaveLength(1);
+    expect(useAppStore.getState().outputHistoryRecords.filter((entry) => entry.id === original.id)).toHaveLength(1);
+  });
+  it('再次下载失败仍保留原任务，放弃不发取消、不重新生成或清除旧媒体', async () => {
+    mocks.persist.mockRejectedValue(Object.assign(new Error('生成媒体未能写入项目目录：下载媒体失败'), { name: 'MediaPersistenceError' }));
+    await expect(generate()).rejects.toThrow('下载媒体失败');
+    const receipt = historyMediaTaskReceipt(pending()[0]);
+    await expect(retryHistoryMediaDownload(receipt)).rejects.toThrow('下载尚未完成');
+    expect(pending()[0].attemptId).toBe(receipt.attemptId);
+    useAppStore.getState().updateNodeDataTransient('n1', { imageUrl: 'asset://old-result', filePath: 'old-result.png' });
+    abandonHistoryMediaDownload(receipt);
+    expect(pending()).toEqual([]); expect(submitCalls()).toHaveLength(1);
+    expect(mocks.fetch.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(false);
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ imageUrl: 'asset://old-result', filePath: 'old-result.png' });
+    const next = savePendingTask({ ...receipt, attemptId: 'next-attempt', submitted: true, nodeType: 'ai-image', provider: 'runninghubwf',
+      taskType: 'runninghub-workflow', runninghubWorkflowId: 'wf1', runninghubRecoveryState: 'save_pending' });
+    abandonHistoryMediaDownload(receipt);
+    expect(pending()[0].attemptId).toBe(next.attemptId);
+  });
+
   it('国际站应用定义使用指定站点、密钥和完整字符串 ID', async () => {
     const remoteId = '2108920489564520450';
     mocks.fetch.mockResolvedValueOnce(json({ code: 0, data: { nodeInfoList: [] } }));

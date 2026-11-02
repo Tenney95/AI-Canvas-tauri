@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   generate: vi.fn(), persist: vi.fn(), guardFresh: true, completeGuard: vi.fn(),
   image: vi.fn(), audio: vi.fn(), persistAudio: vi.fn(), completeComfy: vi.fn(), pauseComfy: vi.fn(),
   completeMedia: vi.fn(), pauseMedia: vi.fn(() => new Error('任务已保留')), endOperation: vi.fn(), prepareMedia: vi.fn(),
+  tasks: [] as Array<import('../../src/services/pollManager').PendingTask>,
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
 vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'test-id', derivedNodePlacement: vi.fn() }));
@@ -36,7 +37,7 @@ vi.mock('../../src/services/pollManager', () => ({
   isMediaTaskPausedError: (error: unknown) => error instanceof Error && error.message === '视频查询已暂停',
   prepareVideoNodeGeneration: vi.fn(), completeVideoNodeTask: vi.fn(), pauseVideoNodeTask: vi.fn(),
   beginComfyNodeDelivery: vi.fn(), completeComfyNodeTask: mocks.completeComfy, pauseComfyNodeDelivery: mocks.pauseComfy,
-  getPendingTasksForProject: () => [],
+  getPendingTasksForProject: () => mocks.tasks,
   VideoPollingPausedError: class extends Error {
     constructor() { super('视频查询已暂停'); }
   },
@@ -63,6 +64,7 @@ function expectNoCommit() {
 
 beforeEach(() => {
   vi.clearAllMocks(); mocks.guardFresh = true; mocks.store.currentProjectId = 'p';
+  mocks.tasks = [];
   mocks.store.nodes = [{ id: 'video', data: data() }];
   mocks.generate.mockReset().mockResolvedValue({ url: 'generated.mp4' });
   mocks.persist.mockReset().mockResolvedValue({ mediaUrl: 'saved.mp4', sourceUrl: 'generated.mp4', filePath: 'saved.mp4' });
@@ -70,6 +72,18 @@ beforeEach(() => {
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it('已完成任务的下载失败记为待下载，不写成生成失败，也不重新提交', async () => {
+    mocks.tasks = [{ projectId: 'p', nodeId: 'video', taskId: 'remote-1', attemptId: 'attempt-1', provider: 'runninghubwf',
+      nodeType: 'ai-video', taskType: 'runninghub-workflow', submitted: true, runninghubRecoveryState: 'save_pending' }];
+    mocks.generate.mockRejectedValueOnce(Object.assign(new Error('生成媒体未能写入项目目录：下载媒体失败'), { name: 'MediaPersistenceError' }));
+    expect(await run()).toEqual({ success: false, message: '生成已完成，待下载' });
+    expect(mocks.generate).toHaveBeenCalledOnce();
+    expect(mocks.store.recordOutputHistory).toHaveBeenCalledWith('video', expect.objectContaining({
+      status: 'download_pending', output: '', recoveryTask: { projectId: 'p', nodeId: 'video', taskId: 'remote-1', attemptId: 'attempt-1' },
+    }));
+    expect(mocks.store.updateNodeDataTransient.mock.calls.every(([, patch]) => patch.status !== 'error')).toBe(true);
+  });
+
   it('leaves a paused query out of failed output history and error toasts', async () => {
     mocks.generate.mockRejectedValueOnce(new VideoPollingPausedError());
     expect(await run()).toEqual({ success: false, message: '视频查询已暂停' });

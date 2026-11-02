@@ -6,6 +6,7 @@ import { useT } from '../../../i18n';
 import { getCloudWorkflowParameterPriority } from '../../../services/cloudWorkflowParameterControls';
 import Select from '../../shared/Select';
 import CloudWorkflowParameterField from './CloudWorkflowParameterField';
+import { isWorkflowSeedParameter, workflowSeedInputValue } from '../../../services/workflowSeed';
 
 export default function WorkflowApiParameterFields({ manifest, values = {}, onChange, disabled, appearance = 'form' }: {
   manifest: DeclarativeWorkflowApiManifest; values?: Record<string, string>; onChange: (values: Record<string, string>) => void; disabled?: boolean;
@@ -13,9 +14,10 @@ export default function WorkflowApiParameterFields({ manifest, values = {}, onCh
 }) {
   const t = useT();
   const currentValue = (name: string) => values[`workflow::${name}`] ?? values[name] ?? '';
-  const change = (name: string, value: string) => {
+  const change = (name: string, value: string, reset = false) => {
     const next = { ...values }; delete next[name]; delete next[`workflow::${name}`];
-    if (value !== '') next[`workflow::${name}`] = value;
+    const spec = manifest.parameters[name];
+    if (!reset && (value !== '' || (appearance === 'popover' && isWorkflowSeedParameter({ ...spec, name, label: spec.label || name })))) next[`workflow::${name}`] = value;
     onChange(next);
   };
   const parameters = Object.entries(manifest.parameters);
@@ -29,10 +31,11 @@ export default function WorkflowApiParameterFields({ manifest, values = {}, onCh
     {parameters.map(([name, spec]) => {
       const defaultValue = spec.default;
       if (appearance === 'popover') return <CloudWorkflowParameterField key={name} name={name} label={spec.label || name}
-        type={spec.type} value={currentValue(name)} displayDefaultWhenEmpty
+        type={spec.type} value={workflowSeedInputValue({ ...spec, name, label: spec.label || name }, values[`workflow::${name}`] ?? values[name], defaultValue)}
+        displayDefaultWhenEmpty={!isWorkflowSeedParameter({ ...spec, name, label: spec.label || name })} allowRandomSeed
         defaultValue={defaultValue} options={spec.options} min={spec.min} max={spec.max} step={spec.type === 'integer' ? 1 : undefined}
         required={spec.required} disabled={disabled} onChange={(value) => change(name, value)}
-        onReset={values[`workflow::${name}`] === undefined && values[name] === undefined ? undefined : () => change(name, '')} />;
+        onReset={values[`workflow::${name}`] === undefined && values[name] === undefined ? undefined : () => change(name, '', true)} />;
       return <label key={name} className="flex flex-wrap items-center gap-2 text-xs">
         <span>{spec.label || name}{spec.required ? ' *' : ''}</span>
         {spec.type === 'boolean' || spec.options ? <Select className="min-w-0 flex-1" fixedMenu aria-label={spec.label || name}

@@ -10,10 +10,26 @@ import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowA
 import type { RunningHubParameter } from '../../src/types/runninghub';
 import ComfyWorkflowParameterFields from '../../src/components/nodes/shared/ComfyWorkflowParameterFields';
 import type { ComfyWorkflowParameter } from '../../src/types/comfyWorkflow';
+import { WORKFLOW_RANDOM_SEED } from '../../src/services/workflowSeed';
 
 const ignoreChange = () => undefined;
 
 describe('云工作流参数默认展示', () => {
+  it('工作流种子默认显示随机且不暴露模式标记，固定输入与普通模型控件保留', () => {
+    const parameters: RunningHubParameter[] = [{ nodeId: '202', fieldName: 'seed', label: 'K采样器 · SEED',
+      type: 'number', defaultValue: 42, source: 'value', min: 0, max: 99 }];
+    const random = renderToStaticMarkup(<RunningHubParameterFields parameters={parameters} appearance="popover" onChange={ignoreChange} />);
+    expect(random).toMatch(/aria-pressed="true"[^>]*>随机<\/button>/);
+    expect(random).toContain('每次生成时随机'); expect(random).not.toContain(WORKFLOW_RANDOM_SEED);
+    const fixed = renderToStaticMarkup(<RunningHubParameterFields parameters={parameters} appearance="popover" values={{ '202::seed': '0' }} onChange={ignoreChange} />);
+    expect(fixed).toMatch(/aria-pressed="true"[^>]*>固定<\/button>/); expect(fixed).toContain('value="0"');
+    const plain = renderToStaticMarkup(<CloudWorkflowParameterField name="seed" label="种子" type="integer" value="42" onChange={ignoreChange} />);
+    expect(plain).not.toContain('种子模式'); expect(plain).toContain('value="42"');
+    const speech = renderToStaticMarkup(<ComfyWorkflowParameterFields parameters={[{ nodeId: '3', classType: 'FB_Qwen3TTSVoiceClone',
+      fieldName: 'seed', label: '固定种子', type: 'integer', defaultValue: 42, dedicatedSeedControl: true }]} values={{}} onChange={ignoreChange} />);
+    expect(speech).not.toContain('种子模式'); expect(speech).toContain('value="42"');
+  });
+
   it('本地内部批量大于一时明确提示当前只接收首份，不把批量数量等同于画布节点数', () => {
     const parameters: ComfyWorkflowParameter[] = [{ nodeId: '801', classType: 'EmptyLatentImage', fieldName: 'batch_size',
       label: '空 Latent · batch_size', type: 'integer', defaultValue: 1, min: 1, max: 64 }];

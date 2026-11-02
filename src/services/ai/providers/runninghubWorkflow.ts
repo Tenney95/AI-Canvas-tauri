@@ -11,6 +11,7 @@ import { pollTask } from '../../pollTask';
 import { cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, registerNodePolling, removePendingTask, savePendingTask, updatePendingTask } from '../../pollManager';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
 import { resolveRunningHubInputRouting, splitRunningHubPrompt, type RunningHubInputRouting } from './runninghubWorkflowInputs';
+import { resolveWorkflowSeed } from '../../workflowSeed';
 
 export class RunningHubTaskFailed extends Error {}
 export type RunningHubReferences = Partial<Record<RunningHubMediaKind, string[]>>;
@@ -44,7 +45,8 @@ export async function buildRunningHubInputs(
     const type = field.source === 'value' ? (!field.sourceExplicit ? field.inputType : undefined) : field.source;
     if (field.source === 'value' && (!binding || !type)
       && !(type && routing?.nodeMode && routing.defaults?.[type] === key && !routing.mentionedTypes.has(type))) {
-      return { field, value: runningHubFieldValue(field, inputs[key]), mediaSource: undefined };
+      const value = resolveWorkflowSeed({ ...field, name: field.fieldName, label: `C#${field.nodeId} · ${field.label}` }, inputs[key]);
+      return { field, value: runningHubFieldValue(field, value === undefined ? undefined : String(value)), mediaSource: undefined };
     }
     if (binding) return { field, ...binding };
     if (!type) throw new Error('工作流输入类型不支持');

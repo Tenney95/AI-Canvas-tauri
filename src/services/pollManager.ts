@@ -39,6 +39,7 @@ import {
 } from '../constants/api';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { getGenerationNodeType } from '../utils/nodeGeneration';
+import { isHistoryMediaDownloadPending } from './historyMediaRecovery';
 
 // ═══════════════════════════════════════════
 // AbortController 注册表 — 节点删除时取消轮询
@@ -894,6 +895,7 @@ async function applyNodeResult(
   const data = node.data as BaseNodeData;
   const nodeType = getGenerationNodeType(data.type);
   const currentProjectId = store.currentProjectId;
+  const historyReceipt = getMediaTaskReceipt(nodeId);
 
   // 下载远程 URL 到本地
   const guard = isCurrent ? registerCanvasDerivation(store, nodeId) : null;
@@ -935,7 +937,7 @@ async function applyNodeResult(
   if (nodeType === 'ai-image' || nodeType === 'ai-panorama') {
     store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
   }
-  store.recordOutputHistory(nodeId, {
+  await store.recordOutputHistory(nodeId, {
     nodeId,
     nodeLabel,
     timestamp: Date.now(),
@@ -947,7 +949,10 @@ async function applyNodeResult(
     status: 'success',
     mediaUrl,
     filePath: persisted.filePath,
-  });
+  }, false, historyReceipt);
+  const historyOutcome = currentProjectId ? mediaResumeOutcomes.get(JSON.stringify([currentProjectId, nodeId])) : undefined;
+  if (historyReceipt && historyOutcome && historyOutcome.receipt.taskId === historyReceipt.taskId
+    && historyOutcome.receipt.attemptId === historyReceipt.attemptId) historyOutcome.delivered = true;
   store.showToast(`${nodeLabel} 生成已完成`);
 }
 
@@ -2041,6 +2046,59 @@ const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask, signal?: A
   'runninghub-model': resumeRunningHubWorkflow,
   'workflow-api': resumeWorkflowApi,
 };
+
+function historyDownloadTask(receipt: MediaTaskReceipt): PendingTask {
+  if (useAppStore.getState().currentProjectId !== receipt.projectId) throw new Error('项目已切换，请重新操作');
+  const task = loadAll().find((item) => matchesReceipt(item, receipt));
+  if (!task || !isHistoryMediaDownloadPending(task)) throw new Error('原下载任务已变化或不可恢复，请前往节点核对');
+  return task;
+}
+
+/** 历史按钮绑定完整回执，复用原查询/下载出口，不进入生成提交。 */
+export async function retryHistoryMediaDownload(receipt: MediaTaskReceipt): Promise<void> {
+  historyDownloadTask(receipt);
+  const busy = () => videoResumePromises.has(receipt.nodeId) || abortControllers.has(receipt.nodeId)
+    || isMediaOperationActive(receipt.projectId, receipt.nodeId);
+  if (busy()) return Promise.reject(new Error('原任务仍在处理，请稍后再重新下载'));
+  const outcomeKey = JSON.stringify([receipt.projectId, receipt.nodeId]);
+  const outcome = { receipt, delivered: false, error: undefined as unknown };
+  mediaResumeOutcomes.set(outcomeKey, outcome);
+  const promise = Promise.resolve().then(() => {
+    const task = historyDownloadTask(receipt);
+    if (abortControllers.has(receipt.nodeId) || isMediaOperationActive(receipt.projectId, receipt.nodeId)) throw new Error('原任务仍在处理，请稍后再重新下载');
+    return RESUME_MAP[task.taskType](task);
+  }).then(() => {
+    if (!outcome.delivered) throw new Error('下载尚未完成，请核对原任务后重新下载');
+  }).catch((error: unknown) => {
+    const task = loadAll().find((item) => matchesReceipt(item, receipt));
+    const store = useAppStore.getState();
+    if (task && isHistoryMediaDownloadPending(task) && store.currentProjectId === receipt.projectId
+      && store.nodes.some((node) => node.id === receipt.nodeId)) store.updateNodeDataTransient(receipt.nodeId, {
+      status: 'idle', error: undefined, mediaTaskState: 'delivery_pending',
+      ...(task.taskType.startsWith('runninghub') ? { runninghubStage: '生成已完成，待下载' } : {}),
+    });
+    throw error;
+  }).finally(() => {
+    if (videoResumePromises.get(receipt.nodeId) === promise) videoResumePromises.delete(receipt.nodeId);
+    if (mediaResumeOutcomes.get(outcomeKey) === outcome) mediaResumeOutcomes.delete(outcomeKey);
+  });
+  videoResumePromises.set(receipt.nodeId, promise);
+  return promise;
+}
+
+/** 放弃只解除当前已完成任务的本地恢复，不删除文件、不取消上游。 */
+export function abandonHistoryMediaDownload(receipt: MediaTaskReceipt): void {
+  if (useAppStore.getState().currentProjectId !== receipt.projectId) throw new Error('项目已切换，请重新操作');
+  if (!loadAll().some((task) => matchesReceipt(task, receipt))) return;
+  historyDownloadTask(receipt);
+  if (videoResumePromises.has(receipt.nodeId) || abortControllers.has(receipt.nodeId)
+    || isMediaOperationActive(receipt.projectId, receipt.nodeId)) throw new Error('正在重新下载，请等待完成后再放弃');
+  discardMediaTask(receipt);
+  const store = useAppStore.getState();
+  if (store.currentProjectId === receipt.projectId && store.nodes.some((node) => node.id === receipt.nodeId)) {
+    store.updateNodeDataTransient(receipt.nodeId, { status: 'idle', error: undefined, runninghubStage: undefined });
+  }
+}
 
 /** 用户重试只执行已保存任务的查询 / 下载，不走生成提交。 */
 export function resumeMediaNodeTask(nodeId: string, externalSignal?: AbortSignal): Promise<void> {

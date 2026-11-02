@@ -41,6 +41,16 @@ function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
 }
 
+/** 新请求在上传前读取种子合同；其余声明继续由各用例提供。 */
+function seedSchemaResponse(url: string) {
+  const classType = url.split('/object_info/')[1];
+  return classType ? jsonResponse({ [decodeURIComponent(classType)]: { input: { required: {
+    seed: ['INT', { min: 0, max: Number.MAX_SAFE_INTEGER }],
+    noise_seed: ['INT', { min: 0, max: Number.MAX_SAFE_INTEGER }],
+    random_seed: ['INT', { min: 0, max: Number.MAX_SAFE_INTEGER }],
+  } } } }) : undefined;
+}
+
 function submittedWorkflow(): Record<string, { class_type: string; inputs: Record<string, unknown> }> {
   const call = mocks.corsSafeFetch.mock.calls.find(([url]) => String(url).endsWith('/prompt'));
   return JSON.parse(String((call?.[1] as RequestInit).body)).prompt;
@@ -62,6 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   mocks.corsSafeFetch.mockImplementation(async (url: string) => {
+    const seedSchema = seedSchemaResponse(url); if (seedSchema) return seedSchema;
     if (url.endsWith('/upload/image')) {
       return jsonResponse({ name: 'upload_1.png', subfolder: '', type: 'input' });
     }
@@ -256,6 +267,7 @@ describe('内置 AuK 音频工作流', () => {
   beforeEach(() => {
     let outputFormat = 'flac';
     mocks.corsSafeFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const seedSchema = seedSchemaResponse(url); if (seedSchema) return seedSchema;
       if (url.endsWith('/upload/image')) return jsonResponse({ name: 'auk-reference.wav', subfolder: '', type: 'input' });
       if (url.endsWith('/prompt')) {
         const body = JSON.parse(String(init?.body));
@@ -392,7 +404,9 @@ describe('内置 AuK 音频工作流', () => {
     expect(graph['4'].inputs.instruction).toContain('natural young boy voice');
     expect(graph['4'].inputs.instruction).toContain('slightly slower pace');
     expect(graph['4'].inputs.instruction).toContain('The content to speak is: "你好。".');
-    expect(graph['5'].inputs).toMatchObject({ seconds: 12, seed: 42, steps: 32, guidance: 2, sway: -1 });
+    expect(graph['5'].inputs).toMatchObject({ seconds: 12, steps: 32, guidance: 2, sway: -1 });
+    expect(Number.isSafeInteger(graph['5'].inputs.seed)).toBe(true);
+    expect(Number(graph['5'].inputs.seed)).toBeGreaterThanOrEqual(0);
     expect(workflow.fileContent).toBe(original);
   });
 
@@ -761,6 +775,7 @@ describe('内置 H3 PDD 与 Breeze TTS 2', () => {
     const original = workflow.fileContent;
     const uploads: string[] = [];
     mocks.corsSafeFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const seedSchema = seedSchemaResponse(url); if (seedSchema) return seedSchema;
       if (url.endsWith('/upload/image')) {
         const file = (init?.body as FormData).get('image') as File;
         const name = file.type.startsWith('audio/') ? 'reference.wav' : 'reference.png';
@@ -802,6 +817,7 @@ describe('内置 H3 PDD 与 Breeze TTS 2', () => {
 
   function audioResponses() {
     mocks.corsSafeFetch.mockImplementation(async (url: string) => {
+      const seedSchema = seedSchemaResponse(url); if (seedSchema) return seedSchema;
       if (url.endsWith('/upload/image')) return jsonResponse({ name: 'breeze-reference.wav', subfolder: '', type: 'input' });
       if (url.endsWith('/prompt')) return jsonResponse({ prompt_id: 'prompt-breeze' });
       if (url.includes('/history/')) return jsonResponse({ 'prompt-breeze': {
@@ -946,6 +962,7 @@ describe('内置 H3 PDD 自由参考', () => {
       }
     }
     mocks.corsSafeFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const seedSchema = seedSchemaResponse(url); if (seedSchema) return seedSchema;
       if (url.endsWith('/upload/image')) {
         const file = (init?.body as FormData).get('image') as File;
         const name = `ref-${uploads.length + 1}.${file.type.split('/')[1]}`;

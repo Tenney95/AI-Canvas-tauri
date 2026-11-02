@@ -25,6 +25,7 @@ const historyMocks = vi.hoisted(() => ({
   })),
   getHistoryEntriesForExport: vi.fn(async (): Promise<HistoryRecord[]> => []),
   getHistoryEntryCount: vi.fn(async () => 0),
+  getNodeHistoryEntries: vi.fn(async (): Promise<HistoryRecord[]> => []),
   hasCompletedHistoryMigration: vi.fn(async () => true),
   markHistoryMigrationCompleted: vi.fn(async () => undefined),
   claimLegacyHistoryEntries: vi.fn(async () => undefined),
@@ -72,6 +73,8 @@ function historyEntry(index: number): Omit<OutputHistoryEntry, 'id' | 'projectId
 
 beforeEach(() => {
   vi.clearAllMocks();
+  historyMocks.getNodeHistoryEntries.mockReset().mockResolvedValue([]);
+  historyMocks.putHistoryEntry.mockReset().mockResolvedValue(undefined);
   fileServiceMocks.recycleHistoryFile.mockImplementation(async (_project, _path, check) => { check(true); });
   fileServiceMocks.exists.mockResolvedValue(true);
   fileServiceMocks.persistMediaUrlToProjectData.mockResolvedValue({
@@ -84,6 +87,72 @@ beforeEach(() => {
 });
 
 describe('project output history', () => {
+  const receipt = { projectId: 'project-a', nodeId: 'node-1', taskId: 'remote-1', attemptId: 'attempt-1' };
+  const pendingDownload = (): OutputHistoryEntry => ({ ...historyEntry(1), id: 'original-history', projectId: 'project-a',
+    nodeType: 'ai-image', status: 'download_pending', recoveryTask: receipt, prompt: '原提示词', error: '下载失败' });
+  function installPendingDownload() {
+    const entry = pendingDownload();
+    useAppStore.setState({ currentProjectId: 'project-a', historyProjectId: 'project-a', outputHistoryRecords: [entry], historyTotalCount: 1 });
+    historyMocks.getNodeHistoryEntries.mockResolvedValue([entry]);
+    return entry;
+  }
+
+  it('重新交付更新原历史而非追加，保留原提示词、时间和 ID；重复回填不产生第二条', async () => {
+    const original = installPendingDownload();
+    const delivered = { ...historyEntry(1), nodeType: 'ai-image' as const, timestamp: 100, prompt: '当前节点的新提示词',
+      output: 'asset:///project/data/result.png', mediaUrl: 'asset:///project/data/result.png', filePath: '/project/data/result.png' };
+    await useAppStore.getState().recordOutputHistory('node-1', delivered, false, receipt);
+    const saved = useAppStore.getState().outputHistoryRecords[0];
+    expect(saved).toMatchObject({ id: original.id, timestamp: original.timestamp, prompt: '原提示词', status: 'success', filePath: delivered.filePath });
+    expect(saved.error).toBeUndefined(); expect(useAppStore.getState().historyTotalCount).toBe(1);
+    historyMocks.getNodeHistoryEntries.mockResolvedValue([saved]);
+    await useAppStore.getState().recordOutputHistory('node-1', delivered, false, receipt);
+    expect(useAppStore.getState().outputHistoryRecords).toHaveLength(1);
+    expect(useAppStore.getState().outputHistoryRecords[0].id).toBe(original.id);
+  });
+  it('历史更新落盘失败不丢弃原待下载状态，也不替换另一尝试的历史', async () => {
+    const original = installPendingDownload();
+    historyMocks.putHistoryEntry.mockRejectedValueOnce(new Error('storage full'));
+    await expect(useAppStore.getState().recordOutputHistory('node-1', historyEntry(1), false, receipt)).rejects.toThrow('storage full');
+    expect(useAppStore.getState().outputHistoryRecords).toEqual([original]);
+    await useAppStore.getState().recordOutputHistory('node-1', historyEntry(1), false, { ...receipt, attemptId: 'new-attempt' });
+    expect(useAppStore.getState().outputHistoryRecords.find((entry) => entry.id === original.id)?.status).toBe('download_pending');
+  });
+  it('重试期间互斥，放弃保留历史且不触碰原文件', async () => {
+    const original = installPendingDownload();
+    const poll = await import('../../src/services/pollManager');
+    let finish!: () => void;
+    const retry = vi.spyOn(poll, 'retryHistoryMediaDownload').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const abandon = vi.spyOn(poll, 'abandonHistoryMediaDownload').mockImplementation(() => undefined);
+    try {
+      const first = useAppStore.getState().retryHistoryDownload(original.id);
+      const second = useAppStore.getState().retryHistoryDownload(original.id);
+      await vi.waitFor(() => expect(retry).toHaveBeenCalledOnce());
+      await expect(useAppStore.getState().abandonHistoryDownload(original.id)).rejects.toThrow('正在重新下载');
+      expect(abandon).not.toHaveBeenCalled();
+      expect(useAppStore.getState().historyDownloadBusyIds).toContain(original.id);
+      finish(); await Promise.all([first, second]);
+      expect(retry).toHaveBeenCalledWith(receipt); expect(useAppStore.getState().historyDownloadBusyIds).toEqual([]);
+      await useAppStore.getState().abandonHistoryDownload(original.id);
+      expect(abandon).toHaveBeenCalledWith(receipt);
+      expect(useAppStore.getState().outputHistoryRecords[0]).toMatchObject({ id: original.id, status: 'abandoned' });
+      expect(fileServiceMocks.recycleHistoryFile).not.toHaveBeenCalled(); expect(historyMocks.deleteHistoryEntryFromDb).not.toHaveBeenCalled();
+    } finally { retry.mockRestore(); abandon.mockRestore(); }
+  });
+  it('放弃写入失败时不解除原任务，旧失败记录不根据文案绑定任务', async () => {
+    const original = installPendingDownload();
+    const poll = await import('../../src/services/pollManager');
+    const abandon = vi.spyOn(poll, 'abandonHistoryMediaDownload').mockImplementation(() => undefined);
+    try {
+      historyMocks.putHistoryEntry.mockRejectedValueOnce(new Error('storage full'));
+      await expect(useAppStore.getState().abandonHistoryDownload(original.id)).rejects.toThrow('storage full');
+      expect(abandon).not.toHaveBeenCalled();
+      historyMocks.getNodeHistoryEntries.mockResolvedValue([{ ...original, status: 'error', recoveryTask: undefined } as OutputHistoryEntry]);
+      await expect(useAppStore.getState().retryHistoryDownload(original.id)).rejects.toThrow('无法确认原下载任务');
+      expect(useAppStore.getState().historyDownloadBusyIds).toEqual([]);
+    } finally { abandon.mockRestore(); }
+  });
+
   it('propagates persistence errors when video replacement requires durable history', async () => {
     useAppStore.setState({ currentProjectId: 'project-a' });
     historyMocks.putHistoryEntry.mockRejectedValueOnce(new Error('storage full'));

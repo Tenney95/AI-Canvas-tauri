@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { WorkflowDefinition } from '../../src/types';
 import type { ComfyInputSpec } from '../../src/types/comfyWorkflow';
 import { applyComfyWorkflowParameterOverrides, comfyWorkflowParameterKey, loadComfyWorkflowParameters, prepareComfyWorkflowParameterOverrides, splitComfyWorkflowInputs } from '../../src/services/comfyWorkflowParameters';
+import { WORKFLOW_RANDOM_SEED } from '../../src/services/workflowSeed';
 
 const graph = {
   '714': { class_type: 'PrimitiveStringMultiline', inputs: { value: '当前人物' } },
@@ -25,6 +26,51 @@ const getSpecs = async (classType: string) => specs[classType] ?? null;
 const key = (nodeId: string, fieldName: string) => comfyWorkflowParameterKey({ nodeId, fieldName });
 
 describe('本地 ComfyUI 参数编辑', () => {
+  it('默认随机预检只计入种子候选，不因无关标量多而拒绝原工作流', async () => {
+    const large = workflow({ main: { class_type: 'KSampler', inputs: { seed: 42 } },
+      other: { class_type: 'CustomSettings', inputs: Object.fromEntries(Array.from({ length: 1001 }, (_, index) => [`option_${index}`, index])) } });
+    const get = vi.fn(async () => ({ seed: { type: 'INT', min: 0, max: 99 } }));
+    expect(await prepareComfyWorkflowParameterOverrides(large, {}, get)).toMatchObject([{ field: { nodeId: 'main' }, randomSeed: true }]);
+    expect(get.mock.calls).toEqual([['KSampler']]);
+  });
+
+  it('Qwen 专用种子继续由语音面板控制，显式通用固定覆盖仍可使用', async () => {
+    const speech: WorkflowDefinition = { ...workflow({
+      design: { class_type: 'FB_Qwen3TTSVoiceDesign', inputs: { text: '样本', instruct: '温柔', seed: 42 } },
+      save: { class_type: 'SaveAudio', inputs: { audio: ['design', 0] } },
+    }), category: 'ai-audio', defaultNodes: { prompt: 'design' }, ioNodes: [{ nodeId: 'design', title: '正文', type: 'prompt' }] };
+    const get = vi.fn(async () => ({ seed: { type: 'INT', min: 0, max: 99 } }));
+    expect(await prepareComfyWorkflowParameterOverrides(speech, {}, get)).toEqual([]);
+    expect(get).not.toHaveBeenCalled();
+    const fields = await loadComfyWorkflowParameters(speech, get);
+    expect(fields.find((field) => field.fieldName === 'seed')?.dedicatedSeedControl).toBe(true);
+    expect(await prepareComfyWorkflowParameterOverrides(speech, { [key('design', 'seed')]: '0' }, get))
+      .toMatchObject([{ value: 0 }]);
+  });
+
+  it('无需打开面板也默认随机种子，独立节点分别取值；固定零、原图和连线保留', async () => {
+    const original = workflow({ ...graph, '235': { class_type: 'KSampler', inputs: { seed: 42 } },
+      '236': { class_type: 'KSampler', inputs: { seed: ['202', 0] } } });
+    const snapshot = structuredClone(original);
+    const random = vi.spyOn(Math, 'random').mockReturnValueOnce(0.1).mockReturnValueOnce(0.9);
+    try {
+      const assignments = await prepareComfyWorkflowParameterOverrides(original, {}, async () => ({ seed: { type: 'INT', min: 0, max: 99 } }));
+      expect(assignments.map(({ field, value, randomSeed }) => [field.nodeId, value, randomSeed])).toEqual([['202', 10, true], ['235', 90, true]]);
+      const draft = JSON.parse(original.fileContent);
+      applyComfyWorkflowParameterOverrides(draft, assignments);
+      expect(draft['202'].inputs.seed).toBe(10); expect(draft['235'].inputs.seed).toBe(90);
+      expect(draft['236'].inputs.seed).toEqual(['202', 0]);
+      expect(original).toEqual(snapshot);
+      random.mockClear();
+      const fixed = await prepareComfyWorkflowParameterOverrides(workflow(), { [key('202', 'seed')]: '0' }, getSpecs);
+      expect(fixed).toMatchObject([{ value: 0 }]); expect(fixed[0].randomSeed).toBeUndefined();
+      expect(random).not.toHaveBeenCalled();
+      random.mockReturnValue(0.5);
+      const marked = await prepareComfyWorkflowParameterOverrides(workflow(), { [key('202', 'seed')]: WORKFLOW_RANDOM_SEED }, getSpecs);
+      expect(marked[0].randomSeed).toBe(true); expect(Number.isSafeInteger(marked[0].value)).toBe(true);
+    } finally { random.mockRestore(); }
+  });
+
   it('DynamicCombo 的 task.text 与 task.prompt 不重复展示，旧覆盖不能盖过对话框正文', async () => {
     const local = workflow({ '714': { class_type: 'Speech', inputs: { 'task.text': '原台词', 'task.prompt': '原正文', 'task.description': '音色描述', speed: 1 } } });
     const fields = await loadComfyWorkflowParameters(local, async () => ({

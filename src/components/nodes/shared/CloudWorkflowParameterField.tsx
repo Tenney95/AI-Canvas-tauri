@@ -2,6 +2,7 @@
  * CloudWorkflowParameterField — 提供云工作流参数字段界面与交互。
  */
 import { useId, useState, type CSSProperties } from 'react';
+import { Icon } from '@iconify/react';
 import {
   cloudWorkflowSliderTicks,
   createCloudWorkflowSliderBounds,
@@ -12,6 +13,7 @@ import {
 } from '../../../services/cloudWorkflowParameterControls';
 import Select from '../../shared/Select';
 import { useT } from '../../../i18n';
+import { createWorkflowSeed, isRandomWorkflowSeed, isWorkflowSeedParameter, workflowSeedBounds, WORKFLOW_RANDOM_SEED } from '../../../services/workflowSeed';
 
 interface CloudWorkflowParameterFieldProps extends CloudWorkflowParameterControlSpec {
   nodeId?: string;
@@ -20,6 +22,8 @@ interface CloudWorkflowParameterFieldProps extends CloudWorkflowParameterControl
   onChange: (value: string) => void;
   onReset?: () => void;
   defaultValue?: string | number | boolean;
+  /** 工作流入口已支持在提交边界解析随机标记；普通模型及导入表单不启用。 */
+  allowRandomSeed?: boolean;
   /** 仅声明式工作流空串表示采用默认值；精确输入仍保持空串。 */
   displayDefaultWhenEmpty?: boolean;
 }
@@ -30,7 +34,7 @@ const rangeStyle = (progress: number): CSSProperties => ({ '--range-progress': `
 /** 分辨率和时长仅通过滑块与刻度编辑，不自动吸附已有值。 */
 export default function CloudWorkflowParameterField({
   name, label, nodeId, type, value, options, min, max, step, multiline: declaredMultiline,
-  required = false, disabled = false, onChange, onReset, defaultValue, displayDefaultWhenEmpty = false,
+  required = false, disabled = false, onChange, onReset, defaultValue, displayDefaultWhenEmpty = false, allowRandomSeed = false,
 }: CloudWorkflowParameterFieldProps) {
   const t = useT();
   const id = useId();
@@ -40,6 +44,15 @@ export default function CloudWorkflowParameterField({
   const effectiveValue = displayDefaultWhenEmpty && value === '' ? String(defaultValue ?? '') : value;
   const spec = resolveCloudWorkflowParameterSpec({ name, label, type, value: effectiveValue, options, min, max, step, multiline });
   const control = resolveCloudWorkflowParameterControl(spec);
+  const seedControl = allowRandomSeed && isWorkflowSeedParameter(spec);
+  const randomSeed = seedControl && isRandomWorkflowSeed(effectiveValue);
+  const seedBounds = seedControl ? workflowSeedBounds(spec) : null;
+  const fixSeed = () => {
+    if (!randomSeed) return;
+    const original = typeof defaultValue === 'number' ? defaultValue : NaN;
+    onChange(String(seedBounds && Number.isSafeInteger(original) && original >= seedBounds.min && original <= seedBounds.max
+      ? original : createWorkflowSeed(spec)));
+  };
   const isSlider = control.kind === 'options-slider' || control.kind === 'number-slider';
   const knownValue = control.options.some((option) => option.value === effectiveValue);
   const selectionOptions = [
@@ -85,7 +98,27 @@ export default function CloudWorkflowParameterField({
         </button>}
       </div>}
     </div>
-    {control.kind === 'ratio-options' ? <>
+    {seedControl ? <>
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1" role="group" aria-label={`${accessibleLabel}：${t('种子模式')}`}>
+          <button type="button" className={`ui-btn ui-btn--sm ${randomSeed ? 'ui-btn--primary' : 'ui-btn--ghost'}`}
+            disabled={disabled || !seedBounds} aria-pressed={randomSeed} onClick={() => onChange(WORKFLOW_RANDOM_SEED)}>{t('随机')}</button>
+          <button type="button" className={`ui-btn ui-btn--sm ${!randomSeed ? 'ui-btn--primary' : 'ui-btn--ghost'}`}
+            disabled={disabled || !seedBounds} aria-pressed={!randomSeed} onClick={fixSeed}>{t('固定')}</button>
+        </div>
+        <input id={id} className="ui-input min-w-0 flex-1" type="number" step={1}
+          min={seedBounds?.min} max={seedBounds?.max} value={randomSeed ? '' : value} readOnly={randomSeed}
+          required={required && !randomSeed} disabled={disabled || !seedBounds}
+          placeholder={randomSeed ? t('每次生成时随机') : String(defaultValue ?? '')}
+          onChange={(event) => onChange(event.target.value)} />
+        <button type="button" className="ui-icon-btn ui-icon-btn--sm ui-icon-btn--ghost shrink-0"
+          title={t('随机填入固定种子')} aria-label={`${accessibleLabel}：${t('随机填入固定种子')}`}
+          disabled={disabled || !seedBounds} onClick={() => onChange(String(createWorkflowSeed(spec)))}>
+          <Icon icon="lucide:dices" width={16} />
+        </button>
+      </div>
+      {!seedBounds && <p className="ui-hint">{t('此种子范围没有可用的安全整数，请调整工作流定义。')}</p>}
+    </> : control.kind === 'ratio-options' ? <>
       <div className="img-rp-ratio-right min-w-0" role="group" aria-labelledby={labelId}>
         {control.options.map((option) => {
           const parts = option.label.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);

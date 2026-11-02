@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { WorkflowApiDraft, WorkflowApiInputValues, WorkflowApiManifest } from '../../types/workflowApi';
 import { AUTODL_H3_WORKFLOW, createAutodlH3WorkflowManifest, resolveWorkflowApiInputValues } from './autodlWorkflowManifest';
 import { resolveDeclaredWorkflowInputs, validateDeclarativeWorkflowManifest } from './workflowApiDefinition';
+import { isRandomWorkflowSeed, isWorkflowSeedParameter } from '../workflowSeed';
 
 export async function saveWorkflowApiDrafts(connectionId: string, drafts: WorkflowApiDraft[]): Promise<void> {
   if (!drafts.length || drafts.length > 50 || new Set(drafts.map((draft) => draft.id)).size !== drafts.length) throw new Error('请配置 1–50 个不同的工作流');
@@ -43,6 +44,8 @@ export function parseWorkflowApiFields(fields: Record<string, string> = {}, mani
   const entries = Object.entries(fields).map(([name, value]) => {
     const key = name.startsWith('workflow::') ? name.slice('workflow::'.length) : name;
     const type = manifest?.version === 2 ? manifest.parameters[key]?.type : key === 'seed' || key === 'duration' ? 'number' : 'string';
+    const spec = manifest?.version === 2 ? manifest.parameters[key] : undefined;
+    if (spec && isWorkflowSeedParameter({ ...spec, name: key, label: spec.label ?? key }) && isRandomWorkflowSeed(value)) return [key, value] as const;
     return [key, type === 'number' || type === 'integer' ? (value.trim() ? Number(value) : NaN)
       : type === 'boolean' ? value === 'true' ? true : value === 'false' ? false : value : value] as const;
   });

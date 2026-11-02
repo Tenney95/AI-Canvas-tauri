@@ -115,6 +115,12 @@ const workflow: Record<string, string> = {
   "根据工作流连线识别：用于负面条件；请核对默认提示词选择": "Identified from workflow connections: used for negative conditioning. Check the default prompt input.",
   "根据工作流连线识别：同一文本同时用于正面和负面条件": "Identified from workflow connections: the same text is used for both positive and negative conditioning.",
   "缺少完整连线或经过未支持的节点，无法可靠判定；旧云工作流可重新读取完整 API 定义后保存": "Cannot determine reliably without complete connections or support for intermediate nodes. Reload and save the full API definition for older cloud workflows.",
+  "种子模式": "Seed mode",
+  "随机": "Random",
+  "固定": "Fixed",
+  "每次生成时随机": "Random for each generation",
+  "随机填入固定种子": "Fill a random fixed seed",
+  "此种子范围没有可用的安全整数，请调整工作流定义。": "This seed range contains no safe integers. Update the workflow definition.",
 };
 
 export default workflow;

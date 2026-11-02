@@ -8,6 +8,7 @@ import { getCloudWorkflowParameterPriority, isCloudWorkflowScheduler } from '../
 import { runningHubFrameRole, type RunningHubModelDefinition } from '../../../services/ai/providers/runninghubModelManifest';
 import Select from '../../shared/Select';
 import CloudWorkflowParameterField from './CloudWorkflowParameterField';
+import { workflowSeedInputValue } from '../../../services/workflowSeed';
 
 // 仅用于缺少枚举的旧 RH 参数展示，取自用户确认的调度器列表；不写回定义或执行校验。
 const LEGACY_RH_SCHEDULERS = ['simple', 'sgm_uniform', 'karras', 'exponential', 'ddim_uniform', 'beta', 'normal'];
@@ -83,7 +84,7 @@ export default function RunningHubParameterFields({ parameters, values = {}, onC
         : field.type === 'string' && isCloudWorkflowScheduler(field.fieldName, field.label)
           && LEGACY_RH_SCHEDULERS.includes(String(field.defaultValue)) ? LEGACY_RH_SCHEDULERS : field.options;
       return <CloudWorkflowParameterField key={key} name={field.fieldName} label={field.label} nodeId={field.nodeId} type={field.type}
-        value={values[key] ?? String(field.defaultValue)} defaultValue={field.defaultValue} options={options}
+        value={workflowSeedInputValue({ ...field, name: field.fieldName }, values[key], field.defaultValue)} defaultValue={field.defaultValue} options={options} allowRandomSeed
         min={field.min} max={field.max} step={field.step} multiline={field.multiline}
         required={field.required} disabled={disabled} onChange={(next) => onChange({ ...values, [key]: next })}
         onReset={values[key] === undefined ? undefined : () => {

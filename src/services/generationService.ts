@@ -32,11 +32,12 @@ import { completeWorkflowApiNodeTask } from './workflowApi/workflowApiAdapter';
 import { completeRunningHubNodeTask } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
 import { videoInputFingerprint } from './videoBatchPlanning';
-import { beginComfyNodeDelivery, cancelNodePolling, completeComfyNodeTask, completeMediaNodeTask, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, isMediaTaskPausedError } from './pollManager';
+import { beginComfyNodeDelivery, cancelNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, isMediaTaskPausedError } from './pollManager';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { applyGenerationCameraPrompt } from './shotlistPromptService';
 import { resolveImageParameterCapability } from './ai/mediaModelCapabilities';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './ai/modelCapabilityValidation';
+import { historyMediaTaskReceipt, isHistoryMediaDownloadFailure, isHistoryMediaDownloadPending, sameHistoryMediaTask } from './historyMediaRecovery';
 
 export interface GenerationResult {
   success: boolean;
@@ -675,8 +676,27 @@ export async function executeGeneration(
     }
     return { success: true };
   } catch (err) {
-    if (isMediaTaskPausedError(err)) return { success: false, message: err instanceof Error ? err.message : '任务已保留' };
-    if (!mediaDelivered && taskReceipt && pauseMediaTask(taskReceipt, err, 'delivery_pending')) {
+    const pausedError = isMediaTaskPausedError(err);
+    const paused = !mediaDelivered && taskReceipt && !pausedError ? pauseMediaTask(taskReceipt, err, 'delivery_pending') : undefined;
+    const expectedReceipt = taskReceipt ?? (pausedError ? err.taskReceipt : undefined);
+    const retained = !mediaDelivered && submittingProjectId && (expectedReceipt || isHistoryMediaDownloadFailure(err))
+      ? getPendingTasksForProject(submittingProjectId).find((task) => task.nodeId === nodeId && isHistoryMediaDownloadPending(task)
+        && (!expectedReceipt || sameHistoryMediaTask(historyMediaTaskReceipt(task), expectedReceipt))) : undefined;
+    if (retained && isStillCurrentSubmission()) {
+      const message = '生成已完成，待下载';
+      store.updateNodeDataTransient(nodeId, { status: 'idle', error: undefined, mediaTaskState: 'delivery_pending',
+        ...(retained.taskType.startsWith('runninghub') ? { runninghubStage: message } : {}) });
+      await store.recordOutputHistory(nodeId, {
+        nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
+        output: '', nodeType, model: nodeModel, provider: nodeProvider, status: 'download_pending',
+        recoveryTask: historyMediaTaskReceipt(retained),
+        error: isHistoryMediaDownloadFailure(err) && err instanceof Error ? err.message : '下载或保存尚未完成，可重新取回原结果',
+      });
+      notify(message);
+      return { success: false, message };
+    }
+    if (pausedError) return { success: false, message: err instanceof Error ? err.message : '任务已保留' };
+    if (paused) {
       return { success: false, message: '结果保存暂未完成，任务已保留，可继续保存原结果' };
     }
     if (lease) {

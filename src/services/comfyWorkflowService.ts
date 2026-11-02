@@ -1311,10 +1311,6 @@ async function submitComfyUIWorkflow(
   }
   const separated = splitComfyWorkflowInputs(workflowInputs);
   workflowInputs = separated.inputs;
-  const parameterAssignments = await prepareComfyWorkflowParameterOverrides(wf, separated.parameters,
-    (classType) => fetchNodeInputSpecs(baseUrl, classType, true, signal), separated.inputs);
-  const applyParameters = (assertOnly = false) => applyComfyWorkflowParameterOverrides(workflowObj, parameterAssignments, assertOnly);
-
   // 模型文件按服务端原始名称绑定，不进入普通媒体上传，也不改原工作流。
   await applyComfyRefmodsToWorkflow(wf, workflowObj, refmods, signal);
   if (refmods?.length) await assertComfyRefmodSubmissionFresh(wf, refmods, baseUrl);
@@ -1333,6 +1329,10 @@ async function submitComfyUIWorkflow(
       }
     }
   }
+
+  let parameterAssignments = await prepareComfyWorkflowParameterOverrides(wf, separated.parameters,
+    (classType) => fetchNodeInputSpecs(baseUrl, classType, true, signal), separated.inputs);
+  const applyParameters = (assertOnly = false) => applyComfyWorkflowParameterOverrides(workflowObj, parameterAssignments, assertOnly);
 
   // 收集所有 IO 节点信息
   const ioNodes = wf.ioNodes?.length ? wf.ioNodes : extractComfyUIIONodes(wf.fileContent);
@@ -1380,6 +1380,7 @@ async function submitComfyUIWorkflow(
 
   // 空上传节点即使只服务于可选参考位，也会在 ComfyUI prompt 校验阶段先报错。
   await pruneUnfilledOptionalMediaBranches(workflowObj, ioNodes, baseUrl);
+  parameterAssignments = parameterAssignments.filter((assignment) => !assignment.randomSeed || Object.hasOwn(workflowObj, assignment.field.nodeId));
 
   // 返回 workflowObj 让调用方注入尺寸/视频参数后再提交
   const hasDimensionParameters = parameterAssignments.some(({ field }) => /^(?:(?:image|target|output|latent|video|custom)_)?(?:width|height)$|^(?:aspect_ratio|megapixels|resolution|image_size|size|ratio_preset|multiple)$/i.test(field.fieldName));

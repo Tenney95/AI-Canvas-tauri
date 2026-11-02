@@ -32,6 +32,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
 
 import { executeComfyUIGenerate, executeComfyUIVideoGenerate, fetchNodeInputSpecs } from '../../src/services/comfyWorkflowService';
 import { comfyWorkflowParameterKey } from '../../src/services/comfyWorkflowParameters';
+import { WORKFLOW_RANDOM_SEED } from '../../src/services/workflowSeed';
 
 /** 文生图工作流：两个 CLIPTextEncode（正/负）+ 一个 LoadImage */
 const WORKFLOW_JSON = JSON.stringify({
@@ -94,6 +95,27 @@ beforeEach(() => {
 const baseParams = { prompt: '一只在屋顶的猫', model: 'wf', provider: 'comfyui', workflowId: 'wf-1' };
 
 describe('ComfyUI 默认 IO 节点', () => {
+  it('默认随机和显式随机在新提交中解析，固定种子保留，原工作流不改写', async () => {
+    registerWorkflow();
+    const original = JSON.stringify({ 'seed-node': { class_type: 'SeedFixture', inputs: { seed: 42 } },
+      '9': { class_type: 'SaveImage', inputs: { images: ['seed-node', 0] } } });
+    mocks.storeState.workflows[0].fileContent = original;
+    const previous = mocks.corsSafeFetch.getMockImplementation()!;
+    mocks.corsSafeFetch.mockImplementation((url: string, init: RequestInit) => url.endsWith('/object_info/SeedFixture')
+      ? jsonResponse({ SeedFixture: { input: { required: { seed: ['INT', { min: 0, max: 99 }] } } } }) : previous(url, init));
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    try {
+      await executeComfyUIGenerate(baseParams);
+      random.mockReturnValue(0.9);
+      await executeComfyUIGenerate({ ...baseParams, workflowInputs: { 'comfy-param::seed-node::seed': WORKFLOW_RANDOM_SEED } });
+      await executeComfyUIGenerate({ ...baseParams, workflowInputs: { 'comfy-param::seed-node::seed': '0' } });
+      const submitted = mocks.corsSafeFetch.mock.calls.filter(([url]) => String(url).endsWith('/prompt'))
+        .map(([, init]) => JSON.parse(String(init.body)).prompt['seed-node'].inputs.seed);
+      expect(submitted).toEqual([10, 90, 0]);
+      expect(mocks.storeState.workflows[0].fileContent).toBe(original);
+    } finally { random.mockRestore(); }
+  });
+
   it.each([false, true])('未设默认输入时保护已确认的负面和共用文本：共用=%s', async (shared) => {
     registerWorkflow();
     mocks.storeState.workflows[0].fileContent = JSON.stringify({
@@ -224,7 +246,7 @@ describe('ComfyUI 默认 IO 节点', () => {
       { nodeId: '127', type: 'video', title: 'Load Video (Upload) from S3' },
     ];
     mocks.storeState.workflows[0].fileContent = JSON.stringify({
-      '127': { class_type: 'LoadVideoUploadS3', inputs: { video: null } },
+      '127': { class_type: 'LoadVideoUploadS3', inputs: { video: null, seed: 42 } },
       '93': {
         class_type: 'ReferenceToVideo',
         inputs: {
@@ -234,6 +256,9 @@ describe('ComfyUI 默认 IO 节点', () => {
       },
       '9': { class_type: 'SaveImage', inputs: { images: ['93', 0] } },
     });
+    const previous = mocks.corsSafeFetch.getMockImplementation()!;
+    mocks.corsSafeFetch.mockImplementation((url: string, init: RequestInit) => url.endsWith('/object_info/LoadVideoUploadS3')
+      ? jsonResponse({ LoadVideoUploadS3: { input: { required: { seed: ['INT', { min: 0, max: 99 }] } } } }) : previous(url, init));
 
     await executeComfyUIVideoGenerate(baseParams);
 

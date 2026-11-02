@@ -1,6 +1,8 @@
 import type { WorkflowDefinition } from '../types';
 import type { ComfyInputSpec, ComfyWorkflowParameter, ComfyWorkflowParameterAssignment } from '../types/comfyWorkflow';
 import { inferComfyPromptRoles } from './comfyPromptRoles';
+import { isRandomWorkflowSeed, isWorkflowSeedParameter, resolveWorkflowSeed, WORKFLOW_RANDOM_SEED } from './workflowSeed';
+import { resolveAudioSpeechWorkflow } from './ai/audioSpeechSettings';
 
 const PREFIX = 'comfy-param::';
 const SENSITIVE = /api.?key|authorization|token|secret|password|cookie|(?:^|_)(?:path|directory|folder|code|script)(?:_|$)/i;
@@ -23,12 +25,14 @@ export function splitComfyWorkflowInputs(values: Record<string, string> = {}) {
   };
 }
 
-function candidates(workflow: WorkflowDefinition): ComfyWorkflowParameter[] {
+function candidates(workflow: WorkflowDefinition, include?: (field: ComfyWorkflowParameter) => boolean): ComfyWorkflowParameter[] {
   if (workflow.adapterType && workflow.adapterType !== 'comfyui') return [];
   if (workflow.fileContent.length > 16 * 1024 * 1024) throw new Error('工作流定义过大');
   const graph: unknown = JSON.parse(workflow.fileContent);
   if (!record(graph) || Array.isArray(graph.nodes)) throw new Error('请先导入 ComfyUI API 格式工作流');
   const roles = inferComfyPromptRoles(graph);
+  const speechSeeds = new Set(resolveAudioSpeechWorkflow(workflow)?.qwen?.fields
+    .filter((field) => field.key === 'seed').map((field) => `${field.nodeId}::${field.key}`));
   const fields: ComfyWorkflowParameter[] = [];
   for (const [nodeId, node] of Object.entries(graph)) {
     if (UNSAFE_KEYS.has(nodeId) || !record(node) || typeof node.class_type !== 'string' || !record(node.inputs) || /refmod/i.test(node.class_type)) continue;
@@ -38,8 +42,11 @@ function candidates(workflow: WorkflowDefinition): ComfyWorkflowParameter[] {
         || (typeof value === 'string' && /^(?:[a-z]:[\\/]|\\\\|file:)/i.test(value))) continue;
       if (typeof value === 'string' && isPromptField(fieldName)
         && (workflow.defaultNodes?.prompt === nodeId || roles.get(nodeId) !== 'negative')) continue;
-      fields.push({ nodeId, fieldName, classType: node.class_type, label: `${title} · ${fieldName}`,
-        type: typeof value as 'string' | 'number' | 'boolean', defaultValue: value });
+      const field: ComfyWorkflowParameter = { nodeId, fieldName, classType: node.class_type, label: `${title} · ${fieldName}`,
+        type: typeof value as 'string' | 'number' | 'boolean', defaultValue: value,
+        ...(speechSeeds.has(`${nodeId}::${fieldName}`) ? { dedicatedSeedControl: true as const } : {}) };
+      if (include && !include(field)) continue;
+      fields.push(field);
       if (fields.length > 1000) throw new Error('工作流可调参数过多，请在 ComfyUI 中精简输入');
     }
   }
@@ -50,7 +57,7 @@ type GetSpecs = (classType: string) => Promise<Record<string, ComfyInputSpec> | 
 
 /** 使用绑定服务器的真实声明，不把连线、隐藏输入或未知自定义类型转换成可写标量。 */
 export async function loadComfyWorkflowParameters(workflow: WorkflowDefinition, getSpecs: GetSpecs, keys?: ReadonlySet<string>): Promise<ComfyWorkflowParameter[]> {
-  const fields = candidates(workflow).filter((field) => !keys || keys.has(comfyWorkflowParameterKey(field)));
+  const fields = candidates(workflow, (field) => !keys || keys.has(comfyWorkflowParameterKey(field)));
   const classes = [...new Set(fields.map((field) => field.classType))];
   const specs = new Map<string, Record<string, ComfyInputSpec>>();
   let index = 0;
@@ -76,20 +83,28 @@ export async function loadComfyWorkflowParameters(workflow: WorkflowDefinition, 
   });
 }
 
-/** 提交前只复核已修改字段；未知、连线及过期输入在上传素材前拒绝。 */
+/** 提交前复核已修改字段和默认随机种子；未知、连线及过期输入在上传素材前拒绝。 */
 export async function prepareComfyWorkflowParameterOverrides(workflow: WorkflowDefinition, values: Record<string, string>, getSpecs: GetSpecs, inputs: Record<string, string> = {}): Promise<ComfyWorkflowParameterAssignment[]> {
   const entries = Object.entries(values);
-  if (!entries.length) return [];
   const keys = new Set(entries.map(([key]) => key));
+  const seeds = candidates(workflow, (field) => !field.dedicatedSeedControl && isWorkflowSeedParameter({ ...field, name: field.fieldName }));
+  for (const field of seeds) keys.add(comfyWorkflowParameterKey(field));
+  if (!keys.size) return [];
   const fields = await loadComfyWorkflowParameters(workflow, getSpecs, keys);
+  for (const field of fields) {
+    const key = comfyWorkflowParameterKey(field);
+    if (!field.dedicatedSeedControl && !Object.hasOwn(values, key) && isWorkflowSeedParameter({ ...field, name: field.fieldName })) entries.push([key, WORKFLOW_RANDOM_SEED]);
+  }
   return entries.map(([key, raw]) => {
     const field = fields.find((item) => comfyWorkflowParameterKey(item) === key);
     if (!field) throw new Error('工作流参数已失效或不允许覆盖，请打开参数面板清除失效设置');
     const name = `C#${field.nodeId} · ${field.fieldName}`;
     if (field.type === 'string' && isPromptField(field.fieldName) && inputs[field.nodeId] !== undefined) throw new Error(`${name} 已有显式 @ 输入，请恢复此参数默认值后再提交`);
-    let value: string | number | boolean = raw;
+    const seedSpec = { ...field, name: field.fieldName, label: name };
+    const randomSeed = isWorkflowSeedParameter(seedSpec) && isRandomWorkflowSeed(raw);
+    let value = resolveWorkflowSeed(seedSpec, raw) as string | number | boolean;
     if (field.type === 'integer' || field.type === 'number') {
-      value = Number(raw);
+      value = Number(value);
       if (!raw.trim() || !Number.isFinite(value) || (field.type === 'integer' && !Number.isSafeInteger(value))) throw new Error(`${name} 必须是有效${field.type === 'integer' ? '整数' : '数字'}`);
       if ((field.min !== undefined && value < field.min) || (field.max !== undefined && value > field.max)) throw new Error(`${name} 超出允许范围`);
     } else if (field.type === 'boolean') {
@@ -98,7 +113,7 @@ export async function prepareComfyWorkflowParameterOverrides(workflow: WorkflowD
     }
     if (field.options && !field.options.includes(value)) throw new Error(`${name} 不在允许的选项中`);
     if (typeof value === 'string' && (/^(?:[a-z]:[\\/]|\\\\|file:)/i.test(value) || value.length > 100_000)) throw new Error(`${name} 不支持本地路径或过长内容`);
-    return { field, value };
+    return { field, value, ...(randomSeed ? { randomSeed: true as const } : {}) };
   });
 }
 
