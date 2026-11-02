@@ -11,7 +11,7 @@ const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function keys(value: Record<string, unknown>, allowed: string[]): boolean { return Object.keys(value).every((key) => allowed.includes(key)); }
 
-export function validateWorkflowParameter(value: unknown, spec: WorkflowApiParameter, name: string): void {
+export function validateWorkflowParameter(value: unknown, spec: WorkflowApiParameter, name: string): asserts value is WorkflowApiInputValues[string] {
   if (value === undefined || (value === '' && spec.type !== 'string')) {
     if (spec.required) throw new Error(`工作流参数 ${name} 必须填写`);
     return;
