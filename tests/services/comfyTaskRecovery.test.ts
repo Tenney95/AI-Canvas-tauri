@@ -55,7 +55,8 @@ function configureVideo() {
 }
 
 beforeEach(() => {
-  vi.useFakeTimers();
+  // IndexedDB 用真实 setImmediate 推进事务，仅模拟轮询所用的时钟和计时器。
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'p1',

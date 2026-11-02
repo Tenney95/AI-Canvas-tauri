@@ -438,6 +438,7 @@ async function setupImageFullscreen() {
   // 这里只执行父节点的开图保存屏障；预览/轮询子组件不渲染，避免冷导入整套媒体服务。
   vi.doMock('../../src/components/shared/CanvasImagePreview', () => ({ default: () => null }));
   vi.doMock('../../src/components/nodes/shared/MediaTaskStatus', () => ({ default: () => null }));
+  vi.doMock('../../src/components/nodes/shared/NodeGenerationProgress', () => ({ default: () => null }));
   vi.doMock('../../src/hooks/useCanvasNodeLod', () => ({ useCanvasNodeLodPreviewRevision: () => undefined, useCanvasNodeLodProtection: () => {} }));
   vi.doMock('../../src/components/nodes/shared/image/useImageNodeOnnxActions', () => ({ useImageNodeOnnxActions: () => ({}) }));
   vi.doMock('../../src/components/nodes/shared/image/imageUtils', () => ({ computeImageNodeDimensions: vi.fn() }));

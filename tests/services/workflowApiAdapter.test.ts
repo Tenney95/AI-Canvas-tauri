@@ -42,7 +42,9 @@ let resultItems: unknown[];
 const generate = () => executeWorkflowApi({ workflowId: 'wf1', nodeId: 'n1', prompt: '猫在花园里散步', references: refs() });
 
 beforeEach(() => {
-  vi.useFakeTimers(); localStorage.clear(); useAppStore.setState(useAppStore.getInitialState(), true);
+  // 查询时间可控，IndexedDB 的 setImmediate 仍正常推进。
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  localStorage.clear(); useAppStore.setState(useAppStore.getInitialState(), true);
   const store = useAppStore.getState();
   useAppStore.setState({
     currentProjectId: 'p1',

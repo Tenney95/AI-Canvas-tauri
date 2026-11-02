@@ -32,7 +32,9 @@ function setup(next: RunningHubMediaKind = 'image') {
 }
 const generate = (count = 1) => executeRunningHubModel({ provider: 'runninghub', model: ids[kind], prompt: '测试模型生成内容', nodeId: 'n1' }, kind, '测试模型生成内容', kind === 'video' ? { image: ['https://input.test/first.png'], imageRoles: ['first_frame'] } : {}, count);
 beforeEach(() => {
-  vi.useFakeTimers(); localStorage.clear(); useAppStore.setState(useAppStore.getInitialState(), true); setup(); state = 'SUCCESS'; serial = 0;
+  // 只模拟轮询计时，不冻结 IndexedDB 事务的 setImmediate。
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  localStorage.clear(); useAppStore.setState(useAppStore.getInitialState(), true); setup(); state = 'SUCCESS'; serial = 0;
   mocks.upload.mockReset().mockImplementation(async (target, source, mediaKind) => ({ filename: 'rh/reference', url: uploadedUrl(source, mediaKind, target.baseUrl) }));
   mocks.persist.mockReset().mockImplementation(async (url: string) => ({ filePath: `project/${url.split('/').pop()}`, mediaUrl: `asset://localhost/${url.split('/').pop()}`, sourceUrl: url }));
   mocks.fetch.mockReset().mockImplementation(async (url: string, init: RequestInit) => {

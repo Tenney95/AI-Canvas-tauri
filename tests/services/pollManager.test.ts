@@ -760,7 +760,7 @@ describe('pending generation task recovery', () => {
     const history = vi.spyOn(useAppStore.getState(), 'recordOutputHistory').mockResolvedValue(undefined);
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'completed', url })));
     vi.stubGlobal('fetch', fetchMock);
-    savePendingTask({ nodeId: 'source-node', projectId: 'project-1', nodeType: type, provider: 'general',
+    const receipt = savePendingTask({ nodeId: 'source-node', projectId: 'project-1', nodeType: type, provider: 'general',
       providerConfigId: 'source-provider', taskId: 'existing-task', taskType: 'custom-protocol', submitted: true,
       protocolPoll: { method: 'GET', url: 'https://gateway.example/v1/tasks/existing-task', intervalMs: 1,
         statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url' } });
@@ -774,7 +774,7 @@ describe('pending generation task recovery', () => {
     expect(persist).toHaveBeenCalledWith(url, 'project-1', generationType, '原始素材', {
       mediaDownloadAccess: { providerConfigId: 'source-provider', origin: 'https://gateway.example' },
     });
-    expect(history).toHaveBeenCalledWith('source-node', expect.objectContaining({ nodeType: generationType, mediaUrl: localUrl }));
+    expect(history).toHaveBeenCalledWith('source-node', expect.objectContaining({ nodeType: generationType, mediaUrl: localUrl }), false, receipt);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 

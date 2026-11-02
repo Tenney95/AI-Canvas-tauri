@@ -153,7 +153,9 @@ function setup(kind: RunningHubMediaKind = 'image') {
 }
 const generate = (kind: RunningHubMediaKind = 'image') => executeRunningHubWorkflow({ workflowId: 'wf1', prompt: '猫', kind, nodeId: 'n1', workflowInputs: { '3::seed': '0', '3::enabled': 'false' } });
 beforeEach(() => {
-  vi.useFakeTimers(); localStorage.clear(); useAppStore.setState(useAppStore.getInitialState(), true); setup(); state = 'SUCCESS';
+  // 保留 IndexedDB 的 setImmediate，让原历史的持久化可以完成。
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  localStorage.clear(); useAppStore.setState(useAppStore.getInitialState(), true); setup(); state = 'SUCCESS';
   mocks.desktop.mockReturnValue(true);
   mocks.persist.mockReset().mockImplementation(async (url: string) => ({ filePath: `project/${url.split('/').pop()}`, mediaUrl: `asset://localhost/${url.split('/').pop()}`, sourceUrl: url }));
   mocks.fetch.mockReset().mockImplementation(async (url: string) => {
