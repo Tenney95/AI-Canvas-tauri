@@ -1559,12 +1559,8 @@ function CanvasInner({ onReady }: CanvasProps) {
 
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
-    (event: React.MouseEvent, node: RFNode) => {
+    (event: React.MouseEvent, node: RFNode, draggedNodes: RFNode[]) => {
       dragPreview.cancel();
-      const liveNode = hydrateCanvasNodeData(
-        node as RFNode<BaseNodeData>,
-        useAppStore.getState().nodes,
-      );
       endCanvasInteraction('node');
       const stack = document.elementsFromPoint(event.clientX, event.clientY);
       const cell = findStoryboardDropHit(node, stack)?.emptyCell ?? null;
@@ -1618,7 +1614,10 @@ function CanvasInner({ onReady }: CanvasProps) {
           return;
         }
       }
-      settleNodeGroupingOnDragStop(liveNode);
+      const currentNodes = useAppStore.getState().nodes;
+      settleNodeGroupingOnDragStop(draggedNodes.map((dragged) => hydrateCanvasNodeData(
+        dragged as RFNode<BaseNodeData>, currentNodes,
+      )));
       onNodeDragStop();
     },
     [dragPreview, onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, endCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],

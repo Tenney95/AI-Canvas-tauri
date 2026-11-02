@@ -153,6 +153,133 @@ describe('展开分组内创建和拖入空节点', () => {
     expect(useAppStore.getState().nodes[1].parentId).toBe(group.id);
   });
 
+  it('多选拖入时整批入组，保留位置、数据和连线，归属共用一次撤销重做', async () => {
+    const { group, empty } = setup();
+    const second = { ...node('second'), position: { x: 250, y: 200 } };
+    const stationary = { ...node('stationary'), position: { x: 450, y: 300 } };
+    const edges = [{ id: 'batch-edge', source: empty.id, target: second.id }];
+    useAppStore.setState({
+      nodes: [empty, second, stationary, group], edges,
+      selectedNodeIds: [empty.id, second.id, stationary.id],
+    });
+
+    useAppStore.getState().settleNodeGroupingOnDragStop([empty, second]);
+    let state = useAppStore.getState();
+    expect(state.nodes.find((item) => item.id === empty.id)).toMatchObject({
+      parentId: group.id, position: { x: 600, y: 300 }, data: empty.data,
+    });
+    expect(state.nodes.find((item) => item.id === second.id)).toMatchObject({
+      parentId: group.id, position: { x: 150, y: 100 }, data: second.data,
+    });
+    expect(state.nodes.find((item) => item.id === stationary.id)).toBe(stationary);
+    expect(state.groups[0].nodeIds).toEqual([empty.id, second.id]);
+    expect(state.edges).toBe(edges);
+    expect(state.nodes[0].id).toBe(group.id);
+    expect(state.history).toHaveLength(1);
+
+    await state.undo();
+    state = useAppStore.getState();
+    for (const original of [empty, second]) {
+      expect(state.nodes.find((item) => item.id === original.id)).toMatchObject({ position: original.position });
+      expect(state.nodes.find((item) => item.id === original.id)?.parentId).toBeUndefined();
+    }
+    expect(state.groups[0].nodeIds).toEqual([]);
+    await state.redo();
+    state = useAppStore.getState();
+    expect(state.groups[0].nodeIds).toEqual([empty.id, second.id]);
+    expect(state.nodes.filter((item) => item.parentId === group.id).map((item) => item.id))
+      .toEqual([empty.id, second.id]);
+    state.settleNodeGroupingOnDragStop(state.nodes.filter((item) => item.parentId === group.id));
+    expect(useAppStore.getState().history).toBe(state.history);
+    expect(useAppStore.getState().groups[0].nodeIds).toEqual([empty.id, second.id]);
+  });
+
+  it('同批节点按各自中心结算，组外、锁定和非普通分组成员保持原归属', () => {
+    const { group, empty } = setup();
+    const ignored = [
+      { ...node('outside'), position: { x: 1300, y: 200 } },
+      { ...node('locked'), draggable: false, position: { x: 200, y: 200 } },
+      { ...node('storyboard-child'), parentId: 'storyboard', position: { x: 300, y: 200 } },
+    ];
+    useAppStore.setState({ nodes: [group, empty, ...ignored] });
+    useAppStore.getState().settleNodeGroupingOnDragStop([empty, ...ignored]);
+    const state = useAppStore.getState();
+    expect(state.groups[0].nodeIds).toEqual([empty.id]);
+    for (const original of ignored) {
+      expect(state.nodes.find((item) => item.id === original.id)).toBe(original);
+    }
+  });
+
+  it('整批换组后再删除变空的原分组，坐标不跳动且一次撤销恢复全部成员', async () => {
+    const { group, empty } = setup();
+    const oldGroup = { ...group, id: 'old-group', position: { x: -1000, y: 0 },
+      data: { ...group.data, groupId: 'old-record' } };
+    const first = { ...empty, parentId: oldGroup.id, position: { x: 1700, y: 400 } };
+    const second = { ...node('second'), parentId: oldGroup.id, position: { x: 1400, y: 200 } };
+    useAppStore.setState({ nodes: [oldGroup, group, first, second], groups: [
+      ...useAppStore.getState().groups,
+      { id: 'old-record', name: '原分组', nodeIds: [first.id, second.id], color: '#888888', createdAt: 0 },
+    ] });
+    useAppStore.getState().settleNodeGroupingOnDragStop([first, second]);
+    let state = useAppStore.getState();
+    expect(state.nodes.find((item) => item.id === first.id)).toMatchObject({
+      parentId: group.id, position: { x: 600, y: 300 },
+    });
+    expect(state.nodes.find((item) => item.id === second.id)).toMatchObject({
+      parentId: group.id, position: { x: 300, y: 100 },
+    });
+    expect(state.nodes.some((item) => item.id === oldGroup.id)).toBe(false);
+    expect(state.groups).toHaveLength(1);
+    expect(state.groups[0].nodeIds).toEqual([first.id, second.id]);
+    expect(state.history).toHaveLength(1);
+    await state.undo();
+    state = useAppStore.getState();
+    expect(state.nodes.find((item) => item.id === oldGroup.id)).toBeDefined();
+    expect(state.nodes.find((item) => item.id === first.id)?.parentId).toBe(oldGroup.id);
+    expect(state.nodes.find((item) => item.id === second.id)?.parentId).toBe(oldGroup.id);
+    expect(state.groups.find((item) => item.id === 'old-record')?.nodeIds).toEqual([first.id, second.id]);
+  });
+
+  it('同批跨组交换成员时，两侧分组均保留并各自更新成员', () => {
+    const { group, empty } = setup();
+    const other = { ...group, id: 'other-group', position: { x: 2000, y: 100 },
+      data: { ...group.data, groupId: 'other-record' } };
+    const first = { ...empty, parentId: group.id, position: { x: 2100, y: 100 } };
+    const second = { ...node('second'), parentId: other.id, position: { x: -1700, y: 200 } };
+    useAppStore.setState({ nodes: [group, other, first, second], groups: [
+      { ...useAppStore.getState().groups[0], nodeIds: [first.id] },
+      { id: 'other-record', name: '其他分组', nodeIds: [second.id], color: '#888888', createdAt: 0 },
+    ] });
+    useAppStore.getState().settleNodeGroupingOnDragStop([first, second]);
+    const state = useAppStore.getState();
+    expect(state.nodes.find((item) => item.id === first.id)).toMatchObject({
+      parentId: other.id, position: { x: 200, y: 100 },
+    });
+    expect(state.nodes.find((item) => item.id === second.id)).toMatchObject({
+      parentId: group.id, position: { x: 200, y: 200 },
+    });
+    expect(state.groups.map((item) => item.nodeIds)).toEqual([[second.id], [first.id]]);
+    expect(state.nodes.filter((item) => item.type === 'group')).toHaveLength(2);
+    expect(state.history).toHaveLength(1);
+  });
+
+  it('多选拖出分组时整批脱组，保留绝对坐标并清理已空的原分组', () => {
+    const { group, empty } = setup();
+    const first = { ...empty, parentId: group.id, position: { x: 1400, y: 900 } };
+    const second = { ...node('second'), parentId: group.id, position: { x: 1700, y: 1000 } };
+    useAppStore.setState({ nodes: [group, first, second], groups: [
+      { ...useAppStore.getState().groups[0], nodeIds: [first.id, second.id] },
+    ] });
+    useAppStore.getState().settleNodeGroupingOnDragStop([first, second]);
+    const state = useAppStore.getState();
+    expect(state.nodes).toMatchObject([
+      { id: first.id, parentId: undefined, position: { x: 1500, y: 1000 } },
+      { id: second.id, parentId: undefined, position: { x: 1800, y: 1100 } },
+    ]);
+    expect(state.groups).toEqual([]);
+    expect(state.history).toHaveLength(1);
+  });
+
   it('无实测音频按音频默认宽度判定中心，不误用通用节点宽度', () => {
     const { group } = setup();
     useAppStore.getState().addNode({

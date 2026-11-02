@@ -844,7 +844,8 @@ export interface NodeSlice {
   onNodesChange: (changes: NodeChange<Node<BaseNodeData>>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   clearGroupedSelection: () => void;
-  settleNodeGroupingOnDragStop: (node: Node<BaseNodeData>) => void;
+  /** 按本次实际拖动节点批量结算归属，共用一次历史快照；兼容单节点拖拽复制。 */
+  settleNodeGroupingOnDragStop: (nodes: Node<BaseNodeData> | Node<BaseNodeData>[]) => void;
   /** 缩放结束后批量同步入组／脱组并提交结束快照；调用方须在手势开始时提交历史。 */
   settleGroupMembersOnResizeEnd: (groupId: string) => void;
   /** 把一个图像节点拖入宫格分镜的某格：该格显示此图，源节点被消耗移除 */
@@ -1852,43 +1853,54 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
   },
 
-  settleNodeGroupingOnDragStop: (node) => {
+  settleNodeGroupingOnDragStop: (nodes) => {
     const state = get();
     const allNodes = state.nodes;
-
-    if (node.type === 'group') return;
-
-    if (!allNodes.some((candidate) => candidate.id === node.id)) return;
+    const nodeMap = new Map(allNodes.map((node) => [node.id, node]));
     const groupNodes = allNodes.filter((candidate) => candidate.type === 'group' && !candidate.hidden);
-    const oldParent = groupNodes.find((candidate) => candidate.id === node.parentId);
-    // 分镜等非普通分组的父子关系由对应业务入口管理。
-    if (node.parentId && !oldParent) return;
-    const center = nodeCenter(node, allNodes);
-    const parent = oldParent && groupContainsPoint(oldParent, center, allNodes)
-      ? oldParent
-      : groupNodes.find((candidate) => groupContainsPoint(candidate, center, allNodes));
-    if (parent?.id === node.parentId) return;
+    const updates = new Map<string, Node<BaseNodeData>>();
+    const addedByGroup = new Map<string, Set<string>>();
+    const oldParentIds = new Set<string>();
+    for (const node of Array.isArray(nodes) ? nodes : [nodes]) {
+      const stored = nodeMap.get(node.id);
+      if (!stored || stored.type === 'group' || stored.hidden || stored.draggable === false) continue;
+      const oldParent = groupNodes.find((candidate) => candidate.id === node.parentId);
+      // 分镜等非普通分组的父子关系由对应业务入口管理。
+      if (node.parentId && !oldParent) continue;
+      const center = nodeCenter(node, allNodes);
+      const parent = oldParent && groupContainsPoint(oldParent, center, allNodes)
+        ? oldParent
+        : groupNodes.find((candidate) => groupContainsPoint(candidate, center, allNodes));
+      if (parent?.id === node.parentId) continue;
 
-    const absPos = absoluteNodePosition(node, allNodes);
-    const parentPos = parent ? absoluteNodePosition(parent, allNodes) : { x: 0, y: 0 };
-    let newNodes = allNodes.map((candidate) => candidate.id === node.id ? {
-      ...candidate,
-      parentId: parent?.id,
-      position: { x: absPos.x - parentPos.x, y: absPos.y - parentPos.y },
-    } : candidate);
+      const absPos = absoluteNodePosition(node, allNodes);
+      const parentPos = parent ? absoluteNodePosition(parent, allNodes) : { x: 0, y: 0 };
+      updates.set(node.id, {
+        ...stored,
+        parentId: parent?.id,
+        position: { x: absPos.x - parentPos.x, y: absPos.y - parentPos.y },
+      });
+      if (oldParent) oldParentIds.add(oldParent.id);
+      if (parent?.data.groupId) {
+        const added = addedByGroup.get(parent.data.groupId) ?? new Set<string>();
+        added.add(node.id);
+        addedByGroup.set(parent.data.groupId, added);
+      }
+    }
+    if (updates.size === 0) return;
+
+    let newNodes = allNodes.map((node) => updates.get(node.id) ?? node);
     let newGroups = state.groups.map((group) => {
-      if (group.id === parent?.data.groupId) {
-        return { ...group, nodeIds: [...new Set([...group.nodeIds, node.id])] };
-      }
-      if (group.id === oldParent?.data.groupId) {
-        return { ...group, nodeIds: group.nodeIds.filter((id) => id !== node.id) };
-      }
-      return group;
+      const added = addedByGroup.get(group.id);
+      const nodeIds = group.nodeIds.filter((id) => !updates.has(id));
+      if (!added && nodeIds.length === group.nodeIds.length) return group;
+      return { ...group, nodeIds: [...new Set([...nodeIds, ...(added ?? [])])] };
     });
 
+    // 整批归属确定后再清理旧组，避免换组途中删除仍将接收其他成员的分组。
     const emptyGroupIds = new Set(
       groupNodes
-        .filter((gn) => gn.id === oldParent?.id && !newNodes.some((n) => n.parentId === gn.id))
+        .filter((gn) => oldParentIds.has(gn.id) && !newNodes.some((n) => n.parentId === gn.id))
         .map((gn) => gn.id),
     );
     if (emptyGroupIds.size > 0) {
