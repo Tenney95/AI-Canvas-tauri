@@ -304,8 +304,7 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
       role="status"
       aria-label={t(label)}
       aria-busy={!ready}
-      className="fixed inset-0 z-[9999] select-none overflow-hidden flex items-center justify-center bg-canvas-bg text-canvas-text rounded-[16px]"
-      style={{ backgroundColor: 'var(--theme-bg, #0a0a0f)', color: 'var(--theme-text, #dddde4)' }}
+      className="fixed inset-0 z-[9999] select-none overflow-hidden flex items-center justify-center bg-[color:var(--splash-base-bg)] bg-[image:linear-gradient(var(--theme-bg),var(--theme-bg))] text-canvas-text rounded-[16px]"
     >
       {/* 宇宙微尘 */}
       <CosmicParticles />

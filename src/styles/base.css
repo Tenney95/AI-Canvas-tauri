@@ -21,6 +21,8 @@
   --window-glass-tint: rgb(var(--window-glass-rgb) / 0.20);
 
   --theme-bg: #0a0a0f;
+  /* 开屏遮罩在自定义透明背景下仍须遮住未就绪的画布。 */
+  --splash-base-bg: #0a0a0f;
   --theme-surface: #14141c;
   --dialog-surface-bg: var(--theme-surface);
   --appearance-surface-image: none;
@@ -307,6 +309,7 @@
 
   /* Theme Layer / 主题层 ── */
   --theme-bg: #EEF2F7;
+  --splash-base-bg: #EEF2F7;
   --theme-surface: #FFFFFF;
   --theme-card: #F7F9FC;
   --theme-border: #C7D0DF;
