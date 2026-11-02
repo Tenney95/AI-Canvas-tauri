@@ -3,8 +3,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
-import type { BaseNodeData, NodeGroup, ShotRow } from '../../src/types';
+import type { BaseNodeData, NodeGroup, ShotRow, WorkflowDefinition } from '../../src/types';
 import { createCanvasNoteData } from '../../src/types';
+import { saveModelPreference } from '../../src/services/modelPreferenceService';
+import { workflowExecution } from '../../src/services/workflowExecutionService';
+import { createWorkflowApiDraft } from '../../src/services/workflowApi/workflowApiDefinition';
 
 const fileMocks = vi.hoisted(() => ({
   copyFileToProjectData: vi.fn(async () => ({ filePath: 'project/copy.png', assetUrl: 'asset://project/copy.png' })),
@@ -129,6 +132,90 @@ beforeEach(() => {
   nodeExitMocks.pending.clear();
   nodeExitMocks.playNodeExit.mockResolvedValue(undefined);
   useAppStore.setState(useAppStore.getInitialState(), true);
+});
+
+describe('工作流模型与尺寸的新建偏好', () => {
+  function setup(adapterType: NonNullable<WorkflowDefinition['adapterType']> = 'comfyui', category: 'ai-image' | 'ai-video' = 'ai-image') {
+    const flow: WorkflowDefinition = { id: 'size-flow', name: '尺寸工作流', category, adapterType, fileName: '', createdAt: 1,
+      fileContent: adapterType === 'comfyui' ? JSON.stringify({
+        '515': { class_type: 'ResolutionSelector', inputs: { aspect_ratio: '16:9 (Widescreen)', megapixels: 1.5 } },
+      }) : '',
+      ...(adapterType === 'runninghub' ? { runninghub: { version: 1 as const, kind: 'app' as const, remoteId: '123', connectionId: 'runninghub' as const,
+        parameters: [
+          { nodeId: '515', fieldName: 'aspect_ratio', label: '比例', type: 'string' as const, source: 'value' as const, defaultValue: '16:9 (Widescreen)' },
+          { nodeId: '515', fieldName: 'megapixels', label: '分辨率', type: 'number' as const, source: 'value' as const, defaultValue: 1.5 },
+        ] } } : {}),
+      ...(adapterType === 'workflow-api' ? { workflowApi: { ...createWorkflowApiDraft().manifest, parameters: {
+        aspect_ratio: { type: 'string' as const }, megapixels: { type: 'number' as const },
+      } } } : {}),
+    };
+    const ratioKey = adapterType === 'comfyui' ? 'comfy-param::515::aspect_ratio' : adapterType === 'runninghub' ? '515::aspect_ratio' : 'workflow::aspect_ratio';
+    const sizeKey = adapterType === 'comfyui' ? 'comfy-param::515::megapixels' : adapterType === 'runninghub' ? '515::megapixels' : 'workflow::megapixels';
+    const sizes = { [ratioKey]: '9:16 (Portrait Widescreen)', [sizeKey]: '4' };
+    useAppStore.setState({ nodes: [node('edited', { type: category, status: 'idle', prompt: '本轮正文' })], workflows: [flow], activeNodeId: 'edited' });
+    useAppStore.getState().updateNodeData('edited', workflowExecution(flow));
+    useAppStore.getState().updateNodeDataTransient('edited', { aspectRatio: '9:16', ...(category === 'ai-video' ? { seedanceRatio: '9:16' } : {}),
+      workflowInputs: { ...sizes, '232': '本轮正文', reference: '@{image:旧素材}', seed: '42' } });
+    return { flow, sizes };
+  }
+
+  function addEmpty(id = 'new', data: Partial<BaseNodeData> = {}) {
+    useAppStore.getState().addNode(node(id, { type: 'ai-image', role: 'generator', status: 'idle', prompt: '',
+      aspectRatio: '16:9', imageSize: '2K', nodeWidth: 280, nodeHeight: 158, ...data }));
+    return useAppStore.getState().nodes.find((item) => item.id === id)!.data;
+  }
+
+  it.each(['comfyui', 'runninghub', 'workflow-api'] as const)('%s 新建恢复同一工作流和实际尺寸参数，重启状态后仍保留', (adapter) => {
+    const { flow, sizes } = setup(adapter);
+    const model = workflowExecution(flow);
+    expect(addEmpty()).toMatchObject({ model: model.model, provider: model.provider, workflowId: flow.id,
+      workflowInputs: sizes, aspectRatio: '9:16', nodeWidth: 158, nodeHeight: 280, batchCount: 1 });
+    expect(useAppStore.getState().nodes[0].data.workflowInputs).toMatchObject({ seed: '42', reference: '@{image:旧素材}' });
+    const stored = JSON.parse(localStorage.getItem('canvas-media-parameter-prefs')!)['ai-image'];
+    expect(stored.workflowInputs).toEqual(sizes);
+    expect(JSON.stringify(stored)).not.toMatch(/本轮正文|旧素材|seed/);
+    useAppStore.setState({ ...useAppStore.getInitialState(), workflows: [flow] }, true);
+    expect(addEmpty('reopened').workflowInputs).toEqual(sizes);
+  });
+
+  it('项目明确的比例和分辨率优先，旧工作流的字段不进入另一工作流', () => {
+    const { flow } = setup();
+    const other = { ...flow, id: 'other' };
+    useAppStore.setState({ workflows: [flow, other] });
+    const another = addEmpty('another', workflowExecution(other));
+    expect(another.workflowInputs).toBeUndefined();
+    expect(another.aspectRatio).toBe('16:9');
+    useAppStore.setState({ currentProjectId: 'project', projects: [{ id: 'project', name: '项目',
+      createdAt: 1, updatedAt: 1, settings: { generation: { imageAspectRatio: '1:1', imageSize: '1K' } } }] });
+    expect(addEmpty('project')).toMatchObject({ workflowId: flow.id, imageSize: '1K', aspectRatio: '1:1',
+      workflowInputs: {}, nodeWidth: 280, nodeHeight: 280 });
+  });
+
+  it('源文件、已有正文和显式尺寸不被偏好覆盖，后台回写不刷新最近偏好', () => {
+    const { flow } = setup();
+    const saved = localStorage.getItem('canvas-media-parameter-prefs');
+    useAppStore.getState().updateNodeDataTransient('edited', { status: 'success', aspectRatio: '1:1', workflowInputs: {} });
+    expect(localStorage.getItem('canvas-media-parameter-prefs')).toBe(saved);
+    expect(addEmpty('source', { role: 'source', imageUrl: 'asset://source.png' }).workflowId).toBeUndefined();
+    expect(addEmpty('prompted', { prompt: '已有正文', model: 'general/explicit', provider: 'general' })).toMatchObject({ model: 'general/explicit', aspectRatio: '16:9' });
+    const explicit = addEmpty('explicit', { ...workflowExecution(flow), workflowInputs: { 'comfy-param::515::megapixels': '2' } });
+    expect(explicit.workflowInputs?.['comfy-param::515::megapixels']).toBe('2');
+    useAppStore.setState({ workflows: [] });
+    expect(addEmpty('deleted').workflowId).toBeUndefined();
+  });
+
+  it('视频的新建比例同步外框，普通模型切回后仍沿用原有偏好机制', () => {
+    const { sizes } = setup('comfyui', 'ai-video');
+    expect(addEmpty('video', { type: 'ai-video' })).toMatchObject({ workflowId: 'size-flow', workflowInputs: sizes,
+      seedanceRatio: '9:16', aspectRatio: '9:16', nodeWidth: 280, nodeHeight: 498 });
+    saveModelPreference('ai-image', 'general/image');
+    useAppStore.setState({ activeNodeId: 'ordinary', nodes: [node('ordinary', { type: 'ai-image', status: 'idle', model: 'general/image', provider: 'general' })] });
+    useAppStore.getState().updateNodeData('ordinary', { aspectRatio: '4:3', imageSize: '4K' });
+    const ordinary = addEmpty('ordinary-new');
+    expect(ordinary).toMatchObject({ model: 'general/image', provider: 'general', aspectRatio: '4:3', imageSize: '4K',
+      nodeWidth: 280, nodeHeight: 210 });
+    expect(ordinary.workflowId).toBeUndefined();
+  });
 });
 
 describe('shotlist photography history', () => {

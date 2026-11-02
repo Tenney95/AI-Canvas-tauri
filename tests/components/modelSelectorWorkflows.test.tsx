@@ -170,6 +170,23 @@ describe('模型选择器工作流可用性', () => {
     click(draw().find((element) => String(element.props.className).startsWith('model-selector-trigger'))!);
     menu(draw())!.onChange('workflow:cloud');
     expect(selectWorkflow).toHaveBeenLastCalledWith('cloud');
+    expect(JSON.parse(localStorage.getItem('canvas-model-prefs')!)[generationType]).toBe('runninghubwf/cloud');
+  });
+
+  it('临时工作流选择仍回调，但不替换最近的节点模型', () => {
+    localStorage.setItem('canvas-model-prefs', JSON.stringify({ 'ai-image': 'general/remembered' }));
+    const flow = workflow('cloud', { adapterType: 'runninghub' });
+    const draw = () => {
+      driver.stateIndex = 0; driver.effectIndex = 0;
+      const elements = all(ModelSelector({ nodeType: 'ai-image', workflows: [flow], onSelect: vi.fn(),
+        onWorkflowSelect: select, persistPreference: false }));
+      driver.pending.splice(0).forEach((effect) => effect());
+      return elements;
+    };
+    click(draw().find((element) => String(element.props.className).startsWith('model-selector-trigger'))!);
+    menu(draw())!.onChange('workflow:cloud');
+    expect(select).toHaveBeenLastCalledWith('cloud');
+    expect(JSON.parse(localStorage.getItem('canvas-model-prefs')!)['ai-image']).toBe('general/remembered');
   });
 
   it('能力映射不改变原节点字段，特殊节点和普通生成节点沿用原对象', () => {

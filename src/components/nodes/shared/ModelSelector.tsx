@@ -26,7 +26,7 @@ import { ModelMenu, type ModelPickerGroup } from '../../shared/ModelPicker';
 import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL, probeComfyServer } from '../../../services/comfyServers';
 import { getGenerationNodeType } from '../../../utils/nodeGeneration';
-import { getModelPreferenceType, saveModelPreference } from '../../../services/modelPreferenceService';
+import { getModelPreferenceType, saveModelPreference, saveWorkflowModelPreference } from '../../../services/modelPreferenceService';
 
 interface ModelSelectorProps {
   nodeType: NodeType;
@@ -389,6 +389,7 @@ export default function ModelSelector({
     }
     const workflow = visibleWorkflows.find((candidate) => `workflow:${candidate.id}` === value);
     if (workflow && onWorkflowSelect) {
+      if (persistPreference) saveWorkflowModelPreference(generationNodeType, workflow);
       onWorkflowSelect(workflow.id);
       setOpen(false);
       ref.current?.querySelector<HTMLButtonElement>('.model-selector-trigger')?.focus({ preventScroll: true });
