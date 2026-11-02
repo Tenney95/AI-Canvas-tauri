@@ -27,8 +27,9 @@ function LogoOutline() {
       <path
         data-logo-squircle
         d="M512,4 C898,4 1020,122 1020,512 C1020,902 898,1020 512,1020 C126,1020 4,902 4,512 C4,122 126,4 512,4Z"
-        fill="rgba(255,255,255,0.015)"
-        stroke="white"
+        fill="currentColor"
+        fillOpacity="0.015"
+        stroke="currentColor"
         strokeOpacity="0.25"
         strokeWidth="2.5"
         strokeLinecap="round"
@@ -37,7 +38,7 @@ function LogoOutline() {
         <path
           data-logo-sparkle
           d="M0,-260 C15,-120 120,-15 260,0 C120,15 15,120 0,260 C-15,120 -120,15 -260,0 C-120,-15 -15,-120 0,-260Z"
-          stroke="white"
+          stroke="currentColor"
           strokeOpacity="0.7"
           strokeWidth="2.5"
           strokeLinecap="round"
@@ -46,7 +47,7 @@ function LogoOutline() {
         <circle
           data-logo-core
           cx="0" cy="0" r="42"
-          stroke="white"
+          stroke="currentColor"
           strokeOpacity="0"
           strokeWidth="2"
         />
@@ -79,7 +80,7 @@ function CosmicParticles() {
           style={{
             width: particle.size,
             height: particle.size,
-            background: 'rgba(255,255,255,0.3)',
+            background: 'color-mix(in srgb, var(--theme-text) 30%, transparent)',
             opacity: 0,
             left: '50%',
             top: '50%',
@@ -238,7 +239,7 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
 
       timeline
         .to(logoWrapRef.current, {
-          boxShadow: '0 0 72px rgba(255,255,255,0.10), 0 0 140px rgba(255,255,255,0.035)',
+          boxShadow: '0 0 72px color-mix(in srgb, var(--theme-text) 10%, transparent), 0 0 140px color-mix(in srgb, var(--theme-text) 3.5%, transparent)',
           duration: 0.22,
           ease: 'power2.out',
         }, 0.22)
@@ -256,12 +257,12 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
           ease: 'power2.inOut',
         }, 0.46)
         .to(titleInnerRef.current, {
-          textShadow: '0 0 12px rgba(255,255,255,0.14), 0 0 24px rgba(255,255,255,0.04)',
+          textShadow: '0 0 12px color-mix(in srgb, var(--theme-text) 14%, transparent), 0 0 24px color-mix(in srgb, var(--theme-text) 4%, transparent)',
           duration: 0.12,
           ease: 'power2.out',
         }, 0.5)
         .to(titleInnerRef.current, {
-          textShadow: '0 1px 6px rgba(255,255,255,0.06), 0 2px 14px rgba(255,255,255,0.03)',
+          textShadow: '0 1px 6px color-mix(in srgb, var(--theme-text) 6%, transparent), 0 2px 14px color-mix(in srgb, var(--theme-text) 3%, transparent)',
           duration: 0.16,
           ease: 'power2.inOut',
         }, 0.62)
@@ -271,7 +272,7 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
           ease: 'power2.in',
         }, 0.7)
         .to(logoWrapRef.current, {
-          boxShadow: '0 0 56px rgba(255,255,255,0.07), 0 0 110px rgba(255,255,255,0.025)',
+          boxShadow: '0 0 56px color-mix(in srgb, var(--theme-text) 7%, transparent), 0 0 110px color-mix(in srgb, var(--theme-text) 2.5%, transparent)',
           duration: 0.2,
           ease: 'power2.inOut',
         }, 0.62)
@@ -303,7 +304,8 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
       role="status"
       aria-label={t(label)}
       aria-busy={!ready}
-      className="fixed inset-0 z-[9999] select-none overflow-hidden flex items-center justify-center bg-black rounded-[16px]"
+      className="fixed inset-0 z-[9999] select-none overflow-hidden flex items-center justify-center bg-canvas-bg text-canvas-text rounded-[16px]"
+      style={{ backgroundColor: 'var(--theme-bg, #0a0a0f)', color: 'var(--theme-text, #dddde4)' }}
     >
       {/* 宇宙微尘 */}
       <CosmicParticles />
@@ -313,7 +315,7 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
         ref={vignetteRef}
         className="absolute inset-0 pointer-events-none"
         style={{
-          background: 'radial-gradient(ellipse at 50% 50%, rgba(255,255,255,0.018) 0%, transparent 60%)',
+          background: 'radial-gradient(ellipse at 50% 50%, color-mix(in srgb, var(--theme-text) 1.8%, transparent) 0%, transparent 60%)',
           opacity: 0,
         }}
       />
@@ -326,7 +328,7 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
           width: 120,
           height: 120,
           borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0.04) 30%, transparent 70%)',
+          background: 'radial-gradient(circle, color-mix(in srgb, var(--theme-text) 15%, transparent) 0%, color-mix(in srgb, var(--theme-text) 4%, transparent) 30%, transparent 70%)',
           opacity: 0,
           transform: 'scale(0)',
           top: '50%',
@@ -357,7 +359,7 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
             ref={lightSweepRef}
             className="absolute top-0 h-full w-1/2 pointer-events-none"
             style={{
-              background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.04) 40%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 60%, transparent 100%)',
+              background: 'linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--theme-text) 4%, transparent) 40%, color-mix(in srgb, var(--theme-text) 8%, transparent) 50%, color-mix(in srgb, var(--theme-text) 4%, transparent) 60%, transparent 100%)',
               opacity: 0,
             }}
           />
@@ -365,7 +367,7 @@ export default function SplashScreen({ onComplete, ready = true, label = 'AI Can
             ref={titleInnerRef}
             className="block text-xl font-light tracking-[0.25em] uppercase"
             style={{
-              color: 'rgba(255,255,255,0.7)',
+              color: 'color-mix(in srgb, var(--theme-text) 70%, transparent)',
               letterSpacing: '0.3em',
             }}
           >
