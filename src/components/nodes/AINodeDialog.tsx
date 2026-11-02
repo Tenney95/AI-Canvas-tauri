@@ -1073,6 +1073,17 @@ function AINodeDialog() {
     [activeNodeId, updateNodeData]
   );
 
+  const onWorkflowInputsChange = useCallback((workflowInputs: Record<string, string>, aspectRatio?: string) => {
+    const patch: Partial<BaseNodeData> = { workflowInputs };
+    if (aspectRatio && (nodeType === 'ai-image' || nodeType === 'ai-panorama')) {
+      Object.assign(patch, { aspectRatio }, getImageNodeDimensionsForAspectRatio(aspectRatio) ?? {});
+    } else if (aspectRatio && nodeType === 'ai-video') {
+      // Store 沿用空视频框的比例联动，已有成片继续保留真实尺寸。
+      Object.assign(patch, { aspectRatio, seedanceRatio: aspectRatio });
+    }
+    updateContinuousNodeData(patch);
+  }, [nodeType, updateContinuousNodeData]);
+
   const onChangeBatchCount = useCallback(
     (value: number) => updateNodeData(activeNodeId!, { batchCount: value }),
     [activeNodeId, updateNodeData],
@@ -1387,7 +1398,7 @@ function AINodeDialog() {
             runninghubModelParameters={data.runninghubModelParameters}
             onRunninghubModelParametersChange={(runninghubModelParameters) => updateNodeData(activeNodeId, { runninghubModelParameters })}
             workflowInputs={data.workflowInputs}
-            onWorkflowInputsChange={(workflowInputs) => updateContinuousNodeData({ workflowInputs })}
+            onWorkflowInputsChange={onWorkflowInputsChange}
             onPassThrough={supportsPassThrough ? onPassThrough : undefined}
             imageSize={(data.imageSize as string) || '2K'}
             imageQuality={data.imageQuality}

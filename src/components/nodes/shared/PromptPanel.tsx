@@ -391,7 +391,7 @@ interface PromptPanelProps {
   runninghubModelParameters?: Record<string, string>;
   onRunninghubModelParametersChange?: (values: Record<string, string>) => void;
   workflowInputs?: Record<string, string>;
-  onWorkflowInputsChange?: (values: Record<string, string>) => void;
+  onWorkflowInputsChange?: (values: Record<string, string>, aspectRatio?: string) => void;
   animationAction?: AnimationAction;
   onAnimationActionChange?: (action: AnimationAction) => void;
   animationFrames?: number;

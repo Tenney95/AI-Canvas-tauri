@@ -22,7 +22,7 @@ import { comfyWorkflowParameterKey, loadComfyWorkflowParameters, splitComfyWorkf
 interface CloudWorkflowParamSelectorProps {
   workflow: WorkflowDefinition;
   values?: Record<string, string>;
-  onChange: (values: Record<string, string>) => void;
+  onChange: (values: Record<string, string>, aspectRatio?: string) => void;
   disabled?: boolean;
   onContinuousEditEnd?: () => void;
 }
@@ -64,13 +64,29 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
   const defaultPromptKey = workflow.runninghub?.inputBindingMode === 'nodes' ? workflow.defaultNodes?.prompt : undefined;
   const fields = workflow.adapterType === 'runninghub'
     ? resolveRunningHubParameters(workflow.runninghub?.parameters ?? []).filter((field) => field.source === 'value' && runningHubParameterKey(field) !== defaultPromptKey).map((field) => ({
-      name: field.fieldName, label: field.label, value: values[runningHubParameterKey(field)] ?? String(field.defaultValue),
+      name: field.fieldName, label: field.label, keys: [runningHubParameterKey(field)], defaultValue: String(field.defaultValue),
+      value: values[runningHubParameterKey(field)] ?? String(field.defaultValue),
     }))
     : manifest?.version === 2 ? Object.entries(manifest.parameters).map(([name, field]) => ({
-      name, label: field.label || name,
+      name, label: field.label || name, keys: [`workflow::${name}`, name], defaultValue: String(field.default ?? ''),
       value: values[`workflow::${name}`] ?? values[name] ?? String(field.default ?? ''),
-    })) : localFields.map((field) => ({ name: field.fieldName, label: field.label,
+    })) : localFields.map((field) => ({ name: field.fieldName, label: field.label, keys: [comfyWorkflowParameterKey(field)], defaultValue: String(field.defaultValue),
       value: values[comfyWorkflowParameterKey(field)] ?? String(field.defaultValue) }));
+  const changeParameters = (next: Record<string, string>) => {
+    if (disabled) return;
+    const changedKeys = new Set([...Object.keys(values), ...Object.keys(next)].filter((key) => values[key] !== next[key]));
+    const ratios = fields.filter((field) => getCloudWorkflowParameterSemantic(field.name, field.label) === 'ratio');
+    // 多个比例字段只跟随本次修改项；重选唯一的当前比例也能修正旧节点外框。
+    const field = ratios.find((item) => item.keys.some((key) => changedKeys.has(key)))
+      ?? (changedKeys.size === 0 && ratios.length === 1 ? ratios[0] : undefined);
+    const raw = field?.keys.map((key) => Object.hasOwn(next, key) ? next[key] : undefined).find((value) => value !== undefined) ?? field?.defaultValue;
+    const ratio = raw?.match(/^\s*(\d+(?:\.\d+)?)\s*[:：]\s*(\d+(?:\.\d+)?)(?=\s|\(|$)/);
+    const width = Number(ratio?.[1]);
+    const height = Number(ratio?.[2]);
+    const aspectRatio = [width, height, width / height].every((value) => Number.isFinite(value) && value > 0) ? `${width}:${height}` : undefined;
+    // 保留提交用的完整枚举值，归一化比例仅用于同一次节点更新。
+    onChange(next, aspectRatio);
+  };
   const staleLocalKeys = local && currentLocal && !localError
     ? Object.keys(splitComfyWorkflowInputs(values).parameters).filter((key) => !localFields.some((field) => comfyWorkflowParameterKey(field) === key)) : [];
   const summary = fields.filter((field) => getCloudWorkflowParameterSemantic(field.name, field.label) !== 'other' && field.value !== '')
@@ -187,10 +203,10 @@ export default function CloudWorkflowParamSelector({ workflow, values = {}, onCh
             const next = { ...values }; for (const key of staleLocalKeys) delete next[key]; onChange(next);
           }}>{t('清除失效参数')}</button></div>}
         {workflow.adapterType === 'runninghub' ? <RunningHubParameterFields appearance="popover"
-          parameters={workflow.runninghub?.parameters ?? []} defaultPromptKey={defaultPromptKey} values={values} onChange={onChange} disabled={disabled} />
+          parameters={workflow.runninghub?.parameters ?? []} defaultPromptKey={defaultPromptKey} values={values} onChange={changeParameters} disabled={disabled} />
           : manifest?.version === 2 ? <WorkflowApiParameterFields appearance="popover" manifest={manifest}
-            values={values} onChange={onChange} disabled={disabled} /> : local && !localLoading && !localError
-              ? <ComfyWorkflowParameterFields parameters={localFields} values={values} onChange={onChange} disabled={disabled} /> : null}
+            values={values} onChange={changeParameters} disabled={disabled} /> : local && !localLoading && !localError
+              ? <ComfyWorkflowParameterFields parameters={localFields} values={values} onChange={changeParameters} disabled={disabled} /> : null}
         {fields.length === 0 && !localLoading && !localError && <p className="text-xs text-canvas-text-muted">{t('此工作流没有额外可调参数')}</p>}
       </div>
     </div>, document.body)}

@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HistoryRecord } from '../../src/services/indexedDbService';
 import type { AppState } from '../../src/store/useAppStore';
 import type { ComfyNodeProgress } from '../../src/types/comfyProgress';
-import type { AppConfig } from '../../src/types';
+import type { AppConfig, WorkflowDefinition } from '../../src/types';
+import type { ComfyWorkflowParameter } from '../../src/types/comfyWorkflow';
 
 const confirmVideoReferencesBeforeGeneration = vi.fn<
   (nodeId: string, overridePrompt?: string) => Promise<boolean>
@@ -549,6 +550,89 @@ function visibleShotRatio(store: TestStore, column: string) {
 }
 
 describe('critical canvas node interactions', () => {
+  it.each(['comfyui', 'runninghub', 'workflow-api'] as const)('%s 比例选择与恢复默认传出归一化比例，保留提交原值且不被其他参数触发', async (adapterType) => {
+    const fields: ComfyWorkflowParameter[] = [
+      { nodeId: '515', fieldName: 'aspect_ratio', classType: 'ResolutionSelector', label: '分辨率选择器 · ASPECT_RATIO',
+        type: 'string', defaultValue: '16:9 (Widescreen)', options: ['16:9 (Widescreen)', '9:16 (Portrait Widescreen)'] },
+      { nodeId: '202', fieldName: 'steps', classType: 'KSampler', label: 'K采样器 · STEPS', type: 'number', defaultValue: 8 },
+    ];
+    const workflow: WorkflowDefinition = { id: 'workflow-ratio', name: '比例联动', category: 'ai-image', adapterType,
+      fileName: 'ratio.json', fileContent: '{}', createdAt: 0 };
+    if (adapterType === 'runninghub') workflow.runninghub = { version: 1, kind: 'workflow', remoteId: '123', connectionId: 'runninghub',
+      parameters: fields.map((field) => ({ nodeId: field.nodeId, fieldName: field.fieldName, label: field.label,
+        type: field.type === 'integer' ? 'number' : field.type, defaultValue: field.defaultValue, source: 'value' })) };
+    if (adapterType === 'workflow-api') {
+      const { manifest } = (await import('../../src/services/workflowApi/workflowApiDefinition')).createWorkflowApiDraft();
+      manifest.parameters = { aspect_ratio: { type: 'string', label: '画面比例', default: '16:9 (Widescreen)' },
+        steps: { type: 'integer', default: 8 } };
+      workflow.workflowApi = manifest;
+    }
+    await installReactHookDriver((initial) => initial === false ? true
+      : initial && typeof initial === 'object' && 'fields' in initial ? { workflow, address: '', reload: 0, fields } : initial);
+    installStoreMock(createStore([], () => 1));
+    const Selector = (await import('../../src/components/nodes/shared/CloudWorkflowParamSelector')).default;
+    const onChange = vi.fn();
+    const snapshot = structuredClone(workflow);
+    const key = adapterType === 'comfyui' ? 'comfy-param::515::aspect_ratio'
+      : adapterType === 'runninghub' ? '515::aspect_ratio' : 'workflow::aspect_ratio';
+    const change = (values: Record<string, string>, disabled = false) => {
+      const tree = Selector({ workflow, values, onChange, disabled });
+      return findElement(tree, (element) => typeof element.props.onChange === 'function'
+        && ('parameters' in element.props || 'manifest' in element.props)).props.onChange as (next: Record<string, string>) => void;
+    };
+    const original = { 'reference-input': '保留参考' };
+    const selected = { ...original, [key]: '9:16 (Portrait Widescreen)' };
+    change(original)(selected);
+    expect(onChange).toHaveBeenLastCalledWith(selected, '9:16');
+    change(selected)(original);
+    expect(onChange).toHaveBeenLastCalledWith(original, '16:9');
+    change(selected)({ ...selected });
+    expect(onChange).toHaveBeenLastCalledWith(selected, '9:16');
+    const stepKey = adapterType === 'comfyui' ? 'comfy-param::202::steps' : adapterType === 'runninghub' ? '202::steps' : 'workflow::steps';
+    const stepped = { ...selected, [stepKey]: '25' };
+    change(selected)(stepped);
+    expect(onChange).toHaveBeenLastCalledWith(stepped, undefined);
+    for (const value of ['auto', '0:1', 'bad ratio']) {
+      const next = { ...selected, [key]: value };
+      change(selected)(next);
+      expect(onChange).toHaveBeenLastCalledWith(next, undefined);
+    }
+    if (adapterType === 'workflow-api') {
+      change({ aspect_ratio: '9:16 (Portrait Widescreen)' })({});
+      expect(onChange).toHaveBeenLastCalledWith({}, '16:9');
+    }
+    onChange.mockClear();
+    change(original, true)(selected);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(workflow).toEqual(snapshot);
+  });
+
+  it.each(['ai-image', 'ai-video'] as const)('%s 在一次连续编辑中同步工作流参数与比例，沿用节点尺寸规则并保留素材', async (type) => {
+    await installReactHookDriver();
+    const store = createStore([{ id: 'ratio-node', type, position: { x: 0, y: 0 },
+      data: { type, prompt: '保留正文', status: 'idle', nodeWidth: 340, nodeHeight: 191,
+        imageUrl: type === 'ai-image' ? 'blob:previous-image' : undefined,
+        videoUrl: type === 'ai-video' ? 'blob:previous-video' : undefined } }], () => 1);
+    store.activeNodeId = 'ratio-node';
+    installStoreMock(store);
+    vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
+    vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({ default: function PromptPanelMock() { return null; } }));
+    vi.doMock('../../src/services/pollManager', () => ({ ...mockComfyDeliveries(), getPendingTasksForProject: () => [] }));
+    const Dialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
+    const panel = findElement(Dialog(), (element) => componentName(element) === 'PromptPanelMock');
+    const values = { '515::aspect_ratio': '9:16 (Portrait Widescreen)' };
+    (panel.props.onWorkflowInputsChange as (next: Record<string, string>, ratio?: string) => void)(values, '9:16');
+    expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('ratio-node', type === 'ai-image'
+      ? { workflowInputs: values, aspectRatio: '9:16', nodeWidth: 158, nodeHeight: 280 }
+      : { workflowInputs: values, aspectRatio: '9:16', seedanceRatio: '9:16' });
+    expect(store.updateNodeData).not.toHaveBeenCalled();
+    expect(store.commitToHistory).toHaveBeenCalledOnce();
+    expect(store.nodes[0].data).toMatchObject({ prompt: '保留正文', workflowInputs: values, aspectRatio: '9:16',
+      ...(type === 'ai-image' ? { imageUrl: 'blob:previous-image' } : { videoUrl: 'blob:previous-video', nodeWidth: 340, nodeHeight: 191 }) });
+    (panel.props.onContinuousEditEnd as () => void)();
+    expect(store.commitToHistory).toHaveBeenCalledTimes(2);
+  });
+
   it('dismisses node input outside its React subtree while preserving portal interactions and edits', async () => {
     const effects: Array<() => void | (() => void)> = [];
     await installReactHookDriver(undefined, effects);
