@@ -2,6 +2,7 @@
  * 注册画布查询与写入工具，并通过命令注册表、项目校验和 revision 防护执行节点操作。
  */
 import type { Edge, Node } from '@xyflow/react';
+import { invoke } from '@tauri-apps/api/core';
 import { getLastCanvasPointerPosition } from '../../canvasPointerService';
 import { workflowExecution } from '../../workflowExecutionService';
 import { useAppStore } from '../../../store/useAppStore';
@@ -43,7 +44,8 @@ import { resolveImageParameterCapability } from '../../ai/mediaModelCapabilities
 import { isSafeMediaParameterText, resolveConfiguredImageBackground, resolveConfiguredImageQuality } from '../../ai/modelCapabilityValidation';
 import { findDramaAsset, listGlobalDramaAssets, preferDramaLibraryReferences, preferredDramaMentionForNode } from '../../dramaAssetPrompt';
 import { AGENT_NODE_LAYOUT, AGENT_NODE_LAYOUT_GUIDANCE } from '../agentCanvasLayout';
-import { isTauriEnv, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from '../../fileService';
+import { getProjectDataDir, isTauriEnv, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from '../../fileService';
+import { findMissingSingleCloudOutputFields, type ArchiveAssetDigest } from '../../projectExchangeDomain';
 import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation } from '../../canvasDerivationGuard';
 
 const NODE_TYPES: NodeType[] = [
@@ -313,6 +315,7 @@ interface QueryNodesInput extends NodeTargetInput {
 }
 
 interface UpdateNodesInput extends NodeTargetInput {
+  repairMissingCloudOutputs?: boolean;
   label?: string;
   prompt?: string;
   content?: string;
@@ -567,6 +570,78 @@ function assertCanvasRevision(context: AgentToolContext): void {
     throw new Error(
       `画布已变更（rev ${currentRevision} ≠ ${context.baseRevision}），请重新规划`,
     );
+  }
+}
+
+/** 原生清单仅用于核对既有缓存，不允许调用方提供路径或任意节点数据。 */
+async function repairMissingCloudOutputs(context: AgentToolContext, targetIds: string[]): Promise<AgentToolExecutionResult> {
+  if (!isTauriEnv()) {
+    const message = '缺失云工作流产物缓存修复仅在桌面端可用';
+    return { status: 'error', summary: message, modelContent: message };
+  }
+  const initial = useAppStore.getState();
+  if (initial.currentProjectId !== context.projectId || initial.projectLoadStatus !== 'ready') {
+    throw new Error('目标项目尚未加载完成，不能修复产物缓存');
+  }
+  const targets = initial.nodes.filter((node) => targetIds.includes(node.id));
+  const guard = registerCanvasImport(initial);
+  if (!guard) throw new Error('无法锁定当前项目，请重新查询后操作');
+  const assertFresh = () => {
+    const current = useAppStore.getState();
+    if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+    if (!isCanvasDerivationFresh(guard, current) || current.projectLoadStatus !== 'ready'
+      || targets.some((target) => current.nodes.find((node) => node.id === target.id)?.data !== target.data)) {
+      throw new Error('项目、画布或节点素材已变化，请重新查询后修复');
+    }
+    assertCanvasRevision(context);
+  };
+  const counts = (data: BaseNodeData) => ({
+    runninghubOutputs: Array.isArray(data.runninghubOutputs) ? data.runninghubOutputs.length : 0,
+    workflowApiOutputs: Array.isArray(data.workflowApiOutputs) ? data.workflowApiOutputs.length : 0,
+  });
+  try {
+    assertFresh();
+    const directory = await getProjectDataDir(context.projectId).catch(() => {
+      throw new Error('无法读取当前项目素材目录，未修改节点');
+    });
+    assertFresh();
+    if (!directory) throw new Error('无法读取当前项目素材目录，未修改节点');
+    // 原生命令再次限定主窗口与受授权的项目目录。
+    const assets = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir: directory }).catch(() => {
+      throw new Error('无法读取项目真实素材清单，未修改节点');
+    });
+    assertFresh();
+    const byPath = new Map(assets.map((asset) => [asset.path, asset]));
+    const portablePaths = new Set(assets.map((asset) => asset.path.normalize('NFC').toLowerCase()));
+    const repairs = targets.map((node) => ({ node,
+      fields: findMissingSingleCloudOutputFields(node.data as Record<string, unknown>, byPath, directory, portablePaths) }));
+    const changed = repairs.filter((repair) => repair.fields.length > 0);
+    assertFresh();
+    if (changed.length) {
+      const current = useAppStore.getState();
+      current.commitToHistory();
+      for (const { node, fields } of changed) {
+        current.updateNodeDataTransient(node.id, Object.fromEntries(fields.map((field) => [field, undefined])));
+      }
+      current.incrementRevision();
+    }
+    const current = useAppStore.getState();
+    return {
+      status: 'success',
+      summary: changed.length ? `已修复 ${changed.length} 个节点的缺失单产物缓存，当前主图保持不变`
+        : '未发现可安全清理的缺失单产物缓存，未修改节点',
+      modelContent: JSON.stringify({
+        affectedNodeIds: changed.map(({ node }) => node.id), revision: current.getCurrentRevision(),
+        nodes: repairs.map(({ node, fields }) => ({
+          nodeId: node.id, label: node.data.label, clearedFields: fields,
+          primaryStatus: fields.length ? 'exists' : 'not_confirmed',
+          beforeCounts: counts(node.data),
+          afterCounts: counts(current.nodes.find((entry) => entry.id === node.id)?.data ?? node.data),
+        })),
+      }),
+    };
+  } finally {
+    completeCanvasDerivation(guard);
   }
 }
 
@@ -1588,12 +1663,14 @@ export function registerCanvasAgentTools(): Array<() => void> {
         'prompt 里可写 @{nodeId:label} 引用其他节点输出、@drama{assetId:name} 引用资产库设定，生成时自动展开；ID 必须真实存在。多图视频须按 Picture 顺序逐条写入图片节点 @ 引用，仅有连线不能指定 Picture 顺序。',
         'x/y 是绝对坐标，一次只能移动一个节点；dx/dy 是相对位移，可批量。',
         'model 必须是 app_get_state 返回的模型 ID，且类型要与节点匹配。',
+        'repairMissingCloudOutputs=true 仅按真实项目文件清单清理当前主图仍存在、且同类型单产物旧文件已缺失的云工作流缓存；不改主图、不接受路径或任意 data，也不清理多产物。只能与目标筛选字段一起使用，不能混合名称、提示词、位置或生成参数等普通编辑。',
         '不修改已生成的结果，也不会触发生成（生成用 canvas_run_nodes）。',
       ].join(''),
       inputSchema: {
         type: 'object',
         properties: {
           ...targetProperties,
+          repairMissingCloudOutputs: { type: 'boolean', description: '显式为 true 时，仅安全修复缺失的云工作流单产物缓存，不允许混合普通编辑字段。' },
           label: { type: 'string', minLength: 1, maxLength: 120 },
           prompt: { type: 'string', maxLength: 8000 },
           content: { type: 'string', maxLength: 40000 },
@@ -1634,12 +1711,21 @@ export function registerCanvasAgentTools(): Array<() => void> {
       },
       effect: 'canvas_write',
       authorize: authorizeCurrentProject,
-      summarizeInput: (input) => `更新 ${resolveTargetIds(input).length} 个节点`,
+      summarizeInput: (input) => input.repairMissingCloudOutputs === true
+        ? `核对 ${resolveTargetIds(input).length} 个节点的缺失单产物缓存` : `更新 ${resolveTargetIds(input).length} 个节点`,
       execute: async (context, input) => {
         assertCanvasRevision(context);
         const targetIds = resolveTargetIds(input);
         if (targetIds.length === 0) {
           return { status: 'error', summary: '没有找到匹配节点', modelContent: '没有找到匹配节点' };
+        }
+        if (input.repairMissingCloudOutputs === true) {
+          if (Object.keys(input).some((key) => key !== 'repairMissingCloudOutputs'
+            && !Object.prototype.hasOwnProperty.call(targetProperties, key))) {
+            const message = '修复缺失产物缓存不能混合普通节点编辑，请分开调用';
+            return { status: 'error', summary: message, modelContent: message };
+          }
+          return repairMissingCloudOutputs(context, targetIds);
         }
         const moveAbsolute = input.x !== undefined || input.y !== undefined;
         const moveRelative = input.dx !== undefined || input.dy !== undefined;

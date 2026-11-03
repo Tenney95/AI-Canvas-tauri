@@ -135,6 +135,49 @@ export function validateExchangeDomain(snapshot: ProjectExchangeSnapshot): Proje
 }
 
 export interface ExchangeCapture { snapshot: ProjectExchangeSnapshot; identities: ProjectExchangeIdentity[]; files: Map<string, string> }
+function captureSourceLocation(parent: string, kind: string, source: Record<string, unknown>): string {
+  const data = exchangeObject(source.data) ? source.data : source;
+  const label = [data.label, source.name, source.shotNo].find((value): value is string => typeof value === 'string' && !!value.trim());
+  const displayId = kind === '节点' && typeof data.displayId === 'number' && Number.isInteger(data.displayId)
+    ? ` #${data.displayId}` : '';
+  return `${parent} → ${kind}${displayId}「${label?.trim() || '未命名'}」（ID：${source.id}）`;
+}
+
+function relativeProjectFile(path: string, projectDirectory?: string): string {
+  const normalized = path.replace(/\\/g, '/'), root = projectDirectory?.replace(/\\/g, '/').replace(/\/$/, '');
+  if (root && normalized.toLowerCase().startsWith(root.toLowerCase() + '/')) return normalized.slice(root.length + 1);
+  if (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(path)) throw new Error('项目包含无法映射到项目目录的原生文件引用');
+  return safeExchangePath(path);
+}
+
+function referencePath(value: Record<string, unknown>, projectDirectory?: string): string | undefined {
+  if (value.relativePath) return typeof value.relativePath === 'string' ? safeExchangePath(value.relativePath) : undefined;
+  return typeof value.filePath === 'string' ? safeExchangePath(relativeProjectFile(value.filePath, projectDirectory)) : undefined;
+}
+
+const cloudOutputKeys = new Set(['kind', 'url', 'sourceUrl', 'filePath', 'relativePath', 'assetId', 'nodeId']);
+
+/** 当前主媒体已落盘时，识别不单独展示且确实缺失的单产物缓存；不推测其他业务字段。 */
+export function findMissingSingleCloudOutputFields(data: Record<string, unknown>, assets: ReadonlyMap<string, ArchiveAssetDigest>,
+  projectDirectory?: string, portablePaths?: ReadonlySet<string>): Array<'runninghubOutputs' | 'workflowApiOutputs'> {
+  const candidates = (['runninghubOutputs', 'workflowApiOutputs'] as const).filter((field) => {
+    const outputs = data[field];
+    return Array.isArray(outputs) && outputs.length === 1 && exchangeObject(outputs[0])
+      && Object.entries(outputs[0]).every(([key, value]) => cloudOutputKeys.has(key) && (value === undefined || typeof value === 'string'));
+  });
+  if (!candidates.length) return [];
+  const primaryPath = referencePath(data, projectDirectory), primaryAsset = primaryPath ? assets.get(primaryPath) : undefined;
+  const primaryKind = primaryAsset ? media(primaryAsset).kind : undefined;
+  if (!primaryKind || primaryKind === 'file') return [];
+  const knownPaths = portablePaths ?? new Set([...assets.keys()].map((path) => path.normalize('NFC').toLowerCase()));
+  return candidates.filter((field) => {
+    const output = (data[field] as Array<Record<string, unknown>>)[0];
+    if (output.kind !== primaryKind) return false;
+    const path = referencePath(output, projectDirectory);
+    return !!path && !knownPaths.has(path.normalize('NFC').toLowerCase());
+  });
+}
+
 export function captureExchangeSnapshot(records: readonly ProjectSaveData[], assets: readonly ArchiveAssetDigest[], previous: ProjectExchangeState | null,
   previousSnapshot?: ProjectExchangeSnapshot, projectDirectory?: string): ExchangeCapture {
   const owner = records[0]; if (!owner || owner.parentId) throw new Error('必须读取整部剧或独立项目');
@@ -153,13 +196,14 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
     return [record.id, id];
   }));
   const byPath = new Map(assets.map((asset) => [safeExchangePath(asset.path), asset]));
-  if (byPath.size !== assets.length || new Set([...byPath.keys()].map((path) => path.normalize('NFC').toLowerCase())).size !== assets.length) {
+  const portablePaths = new Set([...byPath.keys()].map((path) => path.normalize('NFC').toLowerCase()));
+  if (byPath.size !== assets.length || portablePaths.size !== assets.length) {
     throw new Error('项目素材存在大小写或 Unicode 重名，无法建立可移植的归档');
   }
   const entities: ProjectExchangeEntity[] = [], usedMedia = new Map<string, ProjectExchangeMedia>(), files = new Map<string, string>();
-  const fileToken = (path: string): string => {
+  const fileToken = (path: string, location = '', fieldPath = ''): string => {
     const safe = safeExchangePath(path), asset = byPath.get(safe);
-    if (!asset) throw new Error(`项目引用的素材缺失，无法建立完整合并基线：${safe}`);
+    if (!asset) throw new Error(`项目引用的素材缺失：${safe}；引用位置：${location || '项目文件'}${fieldPath ? `；引用字段：${fieldPath}` : ''}。请恢复文件或重新选择素材后重试。`);
     const id = logical('file', root, safe);
     if (!files.has(id)) {
       const descriptor = media(asset); usedMedia.set(descriptor.id, descriptor); files.set(id, safe);
@@ -169,16 +213,13 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
     return FILE_TOKEN + id;
   };
   const relativeFile = (path: string): string => {
-    const normalized = path.replace(/\\/g, '/'), root = projectDirectory?.replace(/\\/g, '/').replace(/\/$/, '');
-    if (root && normalized.toLowerCase().startsWith(root.toLowerCase() + '/')) return normalized.slice(root.length + 1);
-    if (/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(path)) throw new Error('项目包含无法映射到项目目录的原生文件引用');
-    return safeExchangePath(path);
+    return relativeProjectFile(path, projectDirectory);
   };
-  const clean = (value: unknown, key = ''): ProjectExchangeValue | undefined => {
+  const clean = (value: unknown, key = '', location = '', fieldPath = ''): ProjectExchangeValue | undefined => {
     if (value === undefined || omitted.has(key)) return undefined;
     if (typeof value === 'string') {
       if (['projectId', 'parentProjectId'].includes(key)) return projectIds.get(value) ?? value;
-      if (key === 'relativePath' || key === 'imageRelativePath') return value ? fileToken(value) : undefined;
+      if (key === 'relativePath' || key === 'imageRelativePath') return value ? fileToken(value, location, fieldPath) : undefined;
       if (mediaUrls.has(key) && (/^(blob:|data:|file:|asset:|https?:\/\/(?:asset\.localhost|tauri\.localhost)|[a-z]:[\\/])/i.test(value))) return undefined;
       if (key === 'status' && ['loading', 'generating', 'running', 'pending', 'polling'].includes(value)) return 'idle';
       if (/(?:paths?|directory|folder)$/i.test(key) && /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(value)) {
@@ -188,10 +229,10 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
       return value;
     }
     if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
-    if (Array.isArray(value)) return value.map((item) => clean(item, key) ?? null);
+    if (Array.isArray(value)) return value.map((item, index) => clean(item, key, location, `${fieldPath}[${index}]`) ?? null);
     if (!exchangeObject(value)) throw new Error('项目存在无法迁移的运行期对象');
     const result: ProjectExchangeObject = {};
-    if (!value.relativePath && typeof value.filePath === 'string') result.relativePath = fileToken(relativeFile(value.filePath));
+    if (!value.relativePath && typeof value.filePath === 'string') result.relativePath = fileToken(relativeFile(value.filePath), location, fieldPath ? `${fieldPath}.filePath` : 'filePath');
     if (!value.relativePath && !value.imageRelativePath && !result.relativePath && [...mediaUrls].some((field) =>
       typeof value[field] === 'string' && /^(?:asset:|file:|blob:|data:|https?:\/\/(?:asset\.localhost|tauri\.localhost))/i.test(value[field] as string))) {
       throw new Error('项目包含尚未归档的本地媒体，请先将素材保存到项目目录');
@@ -203,52 +244,61 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
       if (field === 'directorCaptureUrls' && (value.directorCaptureFilePaths || value.directorCaptureRelativePaths)) continue;
       if ((field === 'directorCaptureFilePaths' || field === 'directorCaptureRelativePaths') && Array.isArray(item)) {
         if (field === 'directorCaptureFilePaths' && value.directorCaptureRelativePaths) continue;
-        result.directorCaptureRelativePaths = item.map((path) => {
-          if (typeof path !== 'string') throw new Error('导演截图引用不完整'); return fileToken(relativeFile(path));
+        result.directorCaptureRelativePaths = item.map((path, index) => {
+          if (typeof path !== 'string') throw new Error('导演截图引用不完整');
+          return fileToken(relativeFile(path), location, `${fieldPath ? `${fieldPath}.` : ''}${field}[${index}]`);
         }); continue;
       }
-      const next = clean(item, field); if (next !== undefined) result[field] = next;
+      const next = clean(item, field, location, fieldPath ? `${fieldPath}.${field}` : field); if (next !== undefined) result[field] = next;
     }
     return result;
   };
-  const add = (kind: ProjectExchangeEntityKind, scopeId: string, source: Record<string, unknown>) => {
+  const add = (kind: ProjectExchangeEntityKind, scopeId: string, source: Record<string, unknown>, location: string) => {
     if (typeof source.id !== 'string') throw new Error('项目实体缺少稳定 ID');
     const id = logical(kind, scopeId, source.id);
-    const data = clean(source) as ProjectExchangeObject; delete data.id;
+    const data = clean(source, '', location) as ProjectExchangeObject; delete data.id;
     // 已知的有序子实体单独对账，其顺序作为父级的原子字段。
     for (const [field, childKind] of collections) {
       if (!Array.isArray(source[field])) continue;
       const children = source[field] as unknown[];
       if (children.some((child) => !exchangeObject(child) || typeof child.id !== 'string')) continue;
-      data[`${field}Ids`] = children.map((child) => add(childKind, scopeId, child as Record<string, unknown>));
+      data[`${field}Ids`] = children.map((child) => add(childKind, scopeId, child as Record<string, unknown>, location));
       delete data[field];
     }
     entities.push({ kind, scopeId, id, data, references: [] }); return id;
   };
   for (const record of records) {
     const scope = projectIds.get(record.id)!;
+    const location = `项目「${owner.name}」${record.parentId ? ` → 分集「${record.name}」` : ''}`;
     const { nodes, edges, groups, dramaAssets, ...metadata } = record;
-    const data = clean(metadata) as ProjectExchangeObject; delete data.id; delete data.exchangeEpoch;
+    const data = clean(metadata, '', location) as ProjectExchangeObject; delete data.id; delete data.exchangeEpoch;
     if (record.parentId) data.parentId = root;
     entities.push({ kind: 'project', scopeId: scope, id: scope, data, references: [] });
     for (const node of Array.isArray(nodes) ? nodes : []) {
       if (!exchangeObject(node)) throw new Error('节点结构损坏');
       // shotlistRows 位于 data 中，作为独立有序业务集合。
       const nodeData = exchangeObject(node.data) ? { ...node.data } : {};
+      // 只修改导出副本；有效产物、多产物和其他文件引用仍完整校验。
+      for (const field of findMissingSingleCloudOutputFields(nodeData, byPath, projectDirectory, portablePaths)) delete nodeData[field];
       const shotRows = nodeData.shotlistRows; delete nodeData.shotlistRows;
-      const id = add('node', scope, { ...node, data: nodeData });
+      const nodeLocation = captureSourceLocation(location, '节点', node);
+      const id = add('node', scope, { ...node, data: nodeData }, nodeLocation);
       const entity = entities.find((item) => item.kind === 'node' && item.scopeId === scope && item.id === id)!;
       if (Array.isArray(shotRows) && shotRows.every((row) => exchangeObject(row) && typeof row.id === 'string')) {
-        entity.data.shotlistRowsIds = shotRows.map((row) => add('shot', scope, row as Record<string, unknown>));
-      } else if (shotRows !== undefined) (entity.data.data as ProjectExchangeObject).shotlistRows = clean(shotRows)!;
+        entity.data.shotlistRowsIds = shotRows.map((row) => add('shot', scope, row as Record<string, unknown>,
+          captureSourceLocation(nodeLocation, '镜头', row as Record<string, unknown>)));
+      } else if (shotRows !== undefined) (entity.data.data as ProjectExchangeObject).shotlistRows = clean(shotRows, '', nodeLocation)!;
     }
-    for (const edge of Array.isArray(edges) ? edges : []) add('edge', scope, edge);
-    for (const group of Array.isArray(groups) ? groups : []) add('group', scope, group);
+    for (const edge of Array.isArray(edges) ? edges : []) add('edge', scope, edge, captureSourceLocation(location, '连线', edge));
+    for (const group of Array.isArray(groups) ? groups : []) add('group', scope, group, captureSourceLocation(location, '分组', group));
     data.nodesIds = Array.isArray(nodes) ? nodes.map((node) => (node as { id: string }).id) : [];
     data.edgesIds = Array.isArray(edges) ? edges.map((edge) => (edge as { id: string }).id) : [];
     data.groupsIds = Array.isArray(groups) ? groups.map((group) => (group as { id: string }).id) : [];
-    if (!record.parentId) for (const [field, kind] of [['characters', 'character'], ['scenes', 'scene'], ['props', 'prop']] as const) {
-      data[field + 'Ids'] = (dramaAssets?.[field] ?? []).map((asset) => add(kind, root, asset as unknown as Record<string, unknown>));
+    if (!record.parentId) for (const [field, kind, label] of [['characters', 'character', '角色'], ['scenes', 'scene', '场景'], ['props', 'prop', '道具']] as const) {
+      data[field + 'Ids'] = (dramaAssets?.[field] ?? []).map((asset) => {
+        const source = asset as unknown as Record<string, unknown>;
+        return add(kind, root, source, captureSourceLocation(location, label, source));
+      });
     }
   }
   // 项目文件资产包含未被节点引用的原稿与附件；失败发布的孤儿 imports 目录不纳入新基线。

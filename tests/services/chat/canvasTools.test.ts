@@ -16,15 +16,21 @@ import {
 import type { BaseNodeData } from '../../../src/types';
 import { emptyDramaAssetLibrary, type DramaAsset } from '../../../src/types/dramaAssets';
 import type { AssetTextSnapshot } from '../../../src/services/fileService';
+import type { ArchiveAssetDigest } from '../../../src/services/projectExchangeDomain';
 
 const executeGeneration = vi.hoisted(() => vi.fn(async () => ({ success: true })));
 const loadGlobalAssets = vi.hoisted(() => vi.fn<() => Promise<DramaAsset[]>>());
 const textFiles = vi.hoisted(() => ({ desktop: false, read: vi.fn(), save: vi.fn() }));
+const cloudOutputRepair = vi.hoisted(() => ({ invoke: vi.fn(), directory: vi.fn() }));
+vi.mock('@tauri-apps/api/core', async (original) => ({
+  ...await original<typeof import('@tauri-apps/api/core')>(), invoke: cloudOutputRepair.invoke,
+}));
 vi.mock('../../../src/services/generationService', () => ({ executeGeneration }));
 vi.mock('../../../src/services/globalDramaAssetService', () => ({ loadGlobalDramaAssetCards: loadGlobalAssets }));
 vi.mock('../../../src/services/fileService', async (original) => ({
   ...await original<typeof import('../../../src/services/fileService')>(),
   isTauriEnv: () => textFiles.desktop, readAssetTextFile: textFiles.read, saveAssetTextFile: textFiles.save,
+  getProjectDataDir: cloudOutputRepair.directory,
 }));
 
 function textSnapshot(content: string): AssetTextSnapshot {
@@ -66,6 +72,8 @@ beforeEach(() => {
   textFiles.desktop = false;
   textFiles.read.mockReset().mockResolvedValue(textSnapshot('原文'));
   textFiles.save.mockReset().mockImplementation(async (_path: string, _baseline: AssetTextSnapshot, content: string) => textSnapshot(content));
+  cloudOutputRepair.invoke.mockReset();
+  cloudOutputRepair.directory.mockReset().mockResolvedValue(null);
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'p1',
@@ -79,6 +87,117 @@ beforeEach(() => {
 });
 
 describe('canvas agent tools', () => {
+  describe('显式修复缺失的云工作流单产物缓存', () => {
+    const directory = 'D:/project';
+    const primaryName = '沈松月1.png';
+    const assets: ArchiveAssetDigest[] = [{ path: primaryName, bytes: 12, sha256: 'a'.repeat(64) }];
+
+    beforeEach(() => {
+      textFiles.desktop = true;
+      cloudOutputRepair.directory.mockResolvedValue(directory);
+      cloudOutputRepair.invoke.mockResolvedValue(assets);
+      useAppStore.setState({ projectLoadStatus: 'ready', edges: [], nodes: [node('repair', {
+        label: '沈松月1', displayId: 173, status: 'success', prompt: '保留原提示词',
+        imageUrl: `asset://localhost/${directory}/${primaryName}`, filePath: `${directory}/${primaryName}`,
+        assetId: 'primary-asset', relativePath: primaryName,
+        runninghubOutputs: [{ kind: 'image', filePath: `${directory}/生成图像_4.png`, url: 'https://example.test/old-output.png' }],
+        workflowApiOutputs: [{ kind: 'image', filePath: `${directory}/${primaryName}`, url: 'https://example.test/current-output.png' }],
+      })] });
+    });
+
+    it('仅清除已缺失的 RunningHub 缓存，保留主图、身份及提示词，整批只提交一次', async () => {
+      const before = useAppStore.getState();
+      const source = before.nodes[0];
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const increment = vi.spyOn(before, 'incrementRevision');
+      const tool = getAgentTool('canvas_update_nodes')!;
+      const input = { nodeIds: ['repair'], repairMissingCloudOutputs: true };
+      expect(tool.effect).toBe('canvas_write');
+      expect(validateAgentToolInput(tool.inputSchema, input).valid).toBe(true);
+      const result = await tool.execute({ ...context(), baseRevision: revision }, input);
+      expect(result.status).toBe('success');
+      expect(cloudOutputRepair.directory).toHaveBeenCalledExactlyOnceWith('p1');
+      expect(cloudOutputRepair.invoke).toHaveBeenCalledExactlyOnceWith('inspect_project_archive_assets', { assetsDir: directory });
+      expect(useAppStore.getState().nodes[0].data).toEqual({ ...source.data, runninghubOutputs: undefined });
+      expect(useAppStore.getState().nodes[0].data.workflowApiOutputs).toBe(source.data.workflowApiOutputs);
+      expect(commit).toHaveBeenCalledOnce();
+      expect(increment).toHaveBeenCalledOnce();
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision + 1);
+      expect(useAppStore.getState().history[0].nodes[0].data.runninghubOutputs).toEqual(source.data.runninghubOutputs);
+      expect(JSON.parse(result.modelContent)).toMatchObject({ affectedNodeIds: ['repair'], revision: revision + 1, nodes: [{
+        nodeId: 'repair', label: '沈松月1', clearedFields: ['runninghubOutputs'], primaryStatus: 'exists',
+        beforeCounts: { runninghubOutputs: 1, workflowApiOutputs: 1 }, afterCounts: { runninghubOutputs: 0, workflowApiOutputs: 1 },
+      }] });
+      expect(result.summary + result.modelContent).not.toMatch(/D:\/project|asset:\/\/|https:\/\/|生成图像_4\.png|保留原提示词/);
+    });
+
+    it('多产物缓存保持原样，不提交历史或递增版本', async () => {
+      const source = useAppStore.getState().nodes[0];
+      useAppStore.setState({ nodes: [{ ...source, data: { ...source.data, runninghubOutputs: [
+        ...source.data.runninghubOutputs!, { kind: 'image', filePath: `${directory}/第二张旧图.png`, url: 'https://example.test/second.png' },
+      ] } }] });
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const increment = vi.spyOn(before, 'incrementRevision');
+      const result = await getAgentTool('canvas_update_nodes')!.execute(context(), { nodeIds: ['repair'], repairMissingCloudOutputs: true });
+      expect(result).toMatchObject({ status: 'success', summary: '未发现可安全清理的缺失单产物缓存，未修改节点' });
+      expect(useAppStore.getState().nodes).toBe(before.nodes);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+      expect(increment).not.toHaveBeenCalled();
+      expect(JSON.parse(result.modelContent)).toMatchObject({ affectedNodeIds: [], nodes: [{ clearedFields: [],
+        beforeCounts: { runninghubOutputs: 2, workflowApiOutputs: 1 }, afterCounts: { runninghubOutputs: 2, workflowApiOutputs: 1 },
+      }] });
+    });
+
+    it('拒绝混合普通编辑，也不接受调用方指定的路径或任意 data', async () => {
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const tool = getAgentTool('canvas_update_nodes')!;
+      const input = { nodeIds: ['repair'], repairMissingCloudOutputs: true };
+      expect(validateAgentToolInput(tool.inputSchema, { ...input, filePath: '/private/file.png' }).valid).toBe(false);
+      expect(validateAgentToolInput(tool.inputSchema, { ...input, data: { runninghubOutputs: undefined } }).valid).toBe(false);
+      const result = await tool.execute(context(), { ...input, label: '不得写入的名称' });
+      expect(result).toMatchObject({ status: 'error', summary: '修复缺失产物缓存不能混合普通节点编辑，请分开调用' });
+      expect(cloudOutputRepair.directory).not.toHaveBeenCalled();
+      expect(cloudOutputRepair.invoke).not.toHaveBeenCalled();
+      expect(useAppStore.getState().nodes).toBe(before.nodes);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+    });
+
+    it.each(['project', 'node-data', 'revision'] as const)('原生清单读取期间 %s 改变时不清理旧节点数据', async (change) => {
+      let finishInspection!: (value: ArchiveAssetDigest[]) => void;
+      let inspectionStarted!: () => void;
+      const started = new Promise<void>((resolve) => { inspectionStarted = resolve; });
+      cloudOutputRepair.invoke.mockImplementationOnce(() => new Promise<ArchiveAssetDigest[]>((resolve) => {
+        finishInspection = resolve;
+        inspectionStarted();
+      }));
+      const initial = useAppStore.getState();
+      const commit = vi.spyOn(initial, 'commitToHistory');
+      const pending = getAgentTool('canvas_update_nodes')!.execute({ ...context(), baseRevision: initial.getCurrentRevision() }, {
+        nodeIds: ['repair'], repairMissingCloudOutputs: true,
+      });
+      await started;
+      if (change === 'project') useAppStore.setState({ currentProjectId: 'p2' });
+      if (change === 'node-data') useAppStore.getState().updateNodeDataTransient('repair', { prompt: '用户继续编辑' });
+      if (change === 'revision') useAppStore.getState().incrementRevision();
+      const beforeFinish = useAppStore.getState();
+      const revision = beforeFinish.getCurrentRevision();
+      finishInspection(assets);
+      await expect(pending).rejects.toThrow('已变化');
+      expect(useAppStore.getState().nodes).toBe(beforeFinish.nodes);
+      expect(useAppStore.getState().nodes[0].data.runninghubOutputs).toEqual(initial.nodes[0].data.runninghubOutputs);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+      expect(useAppStore.getState().history).toEqual([]);
+    });
+  });
+
   it.each(['ai-text', 'ai-markdown', 'source-text'] as const)('更新已有 %s 文件时使用真实磁盘基线 CAS，画布只提交一次', async (type) => {
     textFiles.desktop = true;
     const filePath = '/project/文稿.md';
