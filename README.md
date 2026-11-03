@@ -27,7 +27,7 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 
 **下载：** <https://github.com/tenney95/AI-Canvas-tauri/releases>（获取桌面安装包）
 
-[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载](https://github.com/tenney95/AI-Canvas-tauri/releases) · [核心能力](#核心能力) · [快速开始](#快速开始) · [项目文档](#项目文档) · [License](#license)
+[在线体验](https://tenney95.github.io/AI-Canvas-tauri/) · [下载](https://github.com/tenney95/AI-Canvas-tauri/releases) · [赞助支持](#赞助支持) · [核心能力](#核心能力) · [快速开始](#快速开始) · [项目文档](#项目文档) · [License](#license)
 
 > 在线版适合体验画布与界面。用户插件、文件系统、凭据存储、独立窗口、3D 导演台、本地模型等能力依赖 Tauri 桌面环境；完整体验请按下方步骤启动桌面应用。
 
@@ -52,6 +52,28 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 逐帧预览与编辑动画，调整帧顺序、偏移、播放帧率和角色对齐。
 
 ![帧动画编辑：逐帧预览、偏移调整与角色对齐](doc/images/animation-editor.jpg)
+
+## 赞助支持
+
+<table>
+  <tr>
+    <td align="center" width="140">
+      <a href="https://www.runninghub.ai/call-api?source=github"><img src="doc/images/sponsors/runninghub-logo.png" alt="RunningHub API" width="80" height="80"></a><br>
+      <a href="https://www.runninghub.ai/call-api?source=github"><strong>RunningHub API</strong></a>
+    </td>
+    <td>
+      <strong>感谢 <a href="https://www.runninghub.ai/call-api?source=github">RunningHub API</a> 支持本项目！</strong>
+      <ul>
+        <li><strong>400+ 主流模型、8000+ 版本</strong>，覆盖 Seedance、Kling、MiniMax、Nano Banana、Veo 等，并支持国际版模型访问。</li>
+        <li><strong>高并发、按量付费</strong>，随用随充；Seedance 在线工具低至 <strong>0.21 元/秒</strong>。</li>
+        <li><strong>从剧本到成片</strong>：无限画布、ComfyUI 与 Agent 等在线工具协同完成创作。</li>
+        <li><strong>统一 API 接入</strong>：LLM、多模态、工作流 API 与 AI 应用。</li>
+      </ul>
+      <a href="https://www.runninghub.ai/call-api?source=github">查看模型与 API</a> · 折扣与免费测试请联系 <a href="mailto:zhenyuedong@haima.me">zhenyuedong@haima.me</a>。<br>
+      <sub>模型、版本、价格、优惠及可用权限以 RunningHub 官方页面和实际开通情况为准。</sub>
+    </td>
+  </tr>
+</table>
 
 ## 核心能力
 

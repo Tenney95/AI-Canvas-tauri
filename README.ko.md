@@ -21,13 +21,35 @@ AI Canvas Tauri는 텍스트, 이미지, 비디오, 오디오, 프레임 단위 
 
 **다운로드:** <https://github.com/tenney95/AI-Canvas-tauri/releases> (데스크톱 설치 패키지)
 
-[온라인 체험](https://tenney95.github.io/AI-Canvas-tauri/) · [다운로드](https://github.com/tenney95/AI-Canvas-tauri/releases) · [주요 기능](#주요-기능) · [빠른 시작](#빠른-시작) · [문서](#문서) · [라이선스](#라이선스)
+[온라인 체험](https://tenney95.github.io/AI-Canvas-tauri/) · [다운로드](https://github.com/tenney95/AI-Canvas-tauri/releases) · [후원](#후원) · [주요 기능](#주요-기능) · [빠른 시작](#빠른-시작) · [문서](#문서) · [라이선스](#라이선스)
 
 > 웹 버전은 캔버스와 인터페이스 체험에 적합합니다. 파일 시스템, 자격 증명 저장소, 독립 창, 3D 디렉터 데스크, 로컬 모델 등은 Tauri 데스크톱 환경에 의존합니다. 완전한 체험을 원하시면 아래 단계에 따라 데스크톱 앱을 실행하세요.
 
 ## 화면 미리보기
 
 ![AI Canvas Tauri Screenshot](public/screenshot.png)
+
+## 후원
+
+<table>
+  <tr>
+    <td align="center" width="140">
+      <a href="https://www.runninghub.ai/call-api?source=github"><img src="doc/images/sponsors/runninghub-logo.png" alt="RunningHub API" width="80" height="80"></a><br>
+      <a href="https://www.runninghub.ai/call-api?source=github"><strong>RunningHub API</strong></a>
+    </td>
+    <td>
+      <strong>이 프로젝트를 지원해 주시는 <a href="https://www.runninghub.ai/call-api?source=github">RunningHub API</a>에 감사드립니다!</strong>
+      <ul>
+        <li>Seedance, Kling, MiniMax, Nano Banana, Veo 등 <strong>400개 이상의 모델과 8,000개 이상의 버전</strong>을 제공하며 국제 버전 모델도 이용할 수 있습니다.</li>
+        <li><strong>높은 동시 처리 성능과 사용량 기반 요금제</strong>를 지원합니다. Seedance 온라인 도구는 <strong>초당 0.21위안부터</strong> 이용할 수 있습니다.</li>
+        <li><strong>대본부터 완성 영상까지</strong> 무한 캔버스, ComfyUI, AI 에이전트 등 온라인 도구로 제작할 수 있습니다.</li>
+        <li><strong>하나의 플랫폼</strong>에서 LLM, 멀티모달, 워크플로 API와 AI 앱을 이용할 수 있습니다.</li>
+      </ul>
+      <a href="https://www.runninghub.ai/call-api?source=github">모델 및 API 살펴보기</a> · 할인과 무료 API 테스트는 <a href="mailto:zhenyuedong@haima.me">zhenyuedong@haima.me</a>로 문의해 주세요.<br>
+      <sub>모델, 버전, 가격, 혜택과 이용 권한은 RunningHub 공식 정보 및 계정에 적용되는 조건을 따릅니다.</sub>
+    </td>
+  </tr>
+</table>
 
 ## 주요 기능
 

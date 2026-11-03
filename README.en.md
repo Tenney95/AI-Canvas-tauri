@@ -25,13 +25,35 @@ AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, 
 
 **Download:** <https://github.com/tenney95/AI-Canvas-tauri/releases> (desktop installers)
 
-[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download](https://github.com/tenney95/AI-Canvas-tauri/releases) · [Capabilities](#capabilities) · [Getting Started](#getting-started) · [Documentation](#documentation) · [License](#license)
+[Live demo](https://tenney95.github.io/AI-Canvas-tauri/) · [Download](https://github.com/tenney95/AI-Canvas-tauri/releases) · [Sponsors](#sponsors) · [Capabilities](#capabilities) · [Getting Started](#getting-started) · [Documentation](#documentation) · [License](#license)
 
 > The web version is ideal for exploring the canvas and interface. File system, credential storage, separate windows, the 3D director desk and local models depend on the Tauri desktop environment; for the full experience, launch the desktop app using the steps below.
 
 ## Preview
 
 ![AI Canvas Tauri Screenshot](public/screenshot.png)
+
+## Sponsors
+
+<table>
+  <tr>
+    <td align="center" width="140">
+      <a href="https://www.runninghub.ai/call-api?source=github"><img src="doc/images/sponsors/runninghub-logo.png" alt="RunningHub API" width="80" height="80"></a><br>
+      <a href="https://www.runninghub.ai/call-api?source=github"><strong>RunningHub API</strong></a>
+    </td>
+    <td>
+      <strong>Thanks to <a href="https://www.runninghub.ai/call-api?source=github">RunningHub API</a> for supporting this project!</strong>
+      <ul>
+        <li><strong>400+ models and 8,000+ versions</strong>, including Seedance, Kling, MiniMax, Nano Banana and Veo, with access to international model editions.</li>
+        <li><strong>High concurrency and pay-as-you-go billing</strong>; Seedance online tools start at <strong>CNY 0.21/second</strong>.</li>
+        <li><strong>From script to finished video</strong> with online tools including an infinite canvas, ComfyUI and AI agents.</li>
+        <li><strong>One platform</strong> for LLM, multimodal and workflow APIs, plus AI applications.</li>
+      </ul>
+      <a href="https://www.runninghub.ai/call-api?source=github">Explore models and APIs</a> · Contact <a href="mailto:zhenyuedong@haima.me">zhenyuedong@haima.me</a> for discounts and free API testing.<br>
+      <sub>Models, versions, pricing, offers and access are subject to RunningHub's official information and your account permissions.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Capabilities
 
