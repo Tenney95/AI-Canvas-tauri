@@ -176,43 +176,59 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   }, [currentProjectId, id]);
 
   const onUpload = useCallback(async () => {
-    const result = await handleUpload();
-    if (!result) return;
-
-    let textContent: string;
-    if (result.dataUrl.startsWith('data:text/')) {
-      const base64 = result.dataUrl.split(',')[1];
-      try {
-        const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-        textContent = new TextDecoder('utf-8').decode(bytes);
-      } catch {
-        textContent = atob(base64);
+    const initial = useAppStore.getState();
+    const source = initial.nodes.find((node) => node.id === id);
+    if (!source || initial.currentProjectId !== currentProjectId || initial.projectLoadStatus !== 'ready') return;
+    const controller = new AbortController();
+    const guard = registerCanvasDerivation(initial, id, { onCancel: () => controller.abort() });
+    if (!guard) return;
+    const isFresh = () => {
+      const state = useAppStore.getState();
+      const currentData = state.nodes.find((node) => node.id === id)?.data;
+      return activeRef.current && !controller.signal.aborted && state.projectLoadStatus === 'ready'
+        && state.switchingProjectName === null && !state.isCreatingProject && !state.isReturningToStartPage
+        && isCanvasDerivationFresh(guard, state) && !!currentData
+        && (['output', 'filePath', 'fileName', 'label', 'relativePath', 'assetId', 'assetSource'] as const)
+          .every((field) => currentData[field] === source.data[field]);
+    };
+    try {
+      const result = await handleUpload();
+      if (!result || !isFresh()) return;
+      // 桌面上传已复制到项目目录，dataUrl 是资产地址，必须从文件读取正文和保存基线。
+      const snapshot = result.filePath ? await readAssetTextFile(result.filePath, controller.signal) : null;
+      if (!isFresh()) return;
+      let textContent = snapshot?.content;
+      if (textContent === undefined) {
+        if (!/^data:[^,]*;base64,/i.test(result.dataUrl)) throw new Error('上传结果缺少可读取的文本文件');
+        const bytes = Uint8Array.from(atob(result.dataUrl.slice(result.dataUrl.indexOf(',') + 1)), (char) => char.charCodeAt(0));
+        textContent = new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/\r\n/g, '\n');
+        if (textContent.includes('\0')) throw new Error('文件包含二进制数据');
       }
-    } else {
-      textContent = result.dataUrl;
-    }
-
-    const lineCount = textContent.split('\n').length;
-    const estimatedHeight = textNodeHeight(lineCount, 160);
-
-    // 使用上传文件的文件名
-    savedFileNameRef.current = result.fileName;
-    savedFilePathRef.current = '';
-    baselineRef.current = null;
-    baselineLoadRef.current = null;
-
-    updateNodeData(id, {
-      output: textContent,
-      fileName: result.fileName,
-      filePath: undefined,
-      label: result.fileName,
-      status: 'success',
-      nodeHeight: estimatedHeight,
-    } as Partial<BaseNodeData>);
-
-    // 立即保存到本地
-    doSave(textContent);
-  }, [id, handleUpload, updateNodeData, doSave]);
+      // 先结束旧文件的保存任务，避免迟到结果覆盖新文件的摘要基线。
+      if (autoSaveTimer.current) { clearTimeout(autoSaveTimer.current); autoSaveTimer.current = null; }
+      await saveQueueRef.current.catch(() => {});
+      if (!isFresh()) return;
+      savedFileNameRef.current = result.fileName;
+      savedFilePathRef.current = result.filePath || '';
+      baselineRef.current = result.filePath && snapshot ? { path: result.filePath, snapshot } : null;
+      baselineLoadRef.current = null;
+      updateNodeData(id, {
+        output: textContent,
+        fileName: result.fileName,
+        filePath: result.filePath,
+        relativePath: undefined,
+        assetId: undefined,
+        assetSource: undefined,
+        label: result.fileName,
+        status: 'success',
+        nodeHeight: textNodeHeight(textContent.split('\n').length, 160),
+      });
+      if (result.filePath) setSaveStatus('已自动保存');
+      else void doSave(textContent);
+    } catch {
+      if (isFresh()) showToast(t('文件读取失败'), 'error');
+    } finally { completeCanvasDerivation(guard); }
+  }, [id, currentProjectId, handleUpload, updateNodeData, doSave, showToast, t]);
 
   // ── Auto-save debounce ──
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
