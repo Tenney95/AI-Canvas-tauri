@@ -303,7 +303,7 @@ describe('project loading tolerates asset recovery failures', () => {
     }
     expect(captureExchangeSnapshot([loaded], receivedAssets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
     await saveProject(loaded);
-    const saved = (await getProjectById(recipientId))!;
+    const saved = (await getProjectById(recipientId))! as ProjectSaveData;
     const savedWorkflow = (saved.nodes as Array<{ id: string; data: Record<string, unknown> }>).find((node) => node.id === 'workflow')!;
     for (const field of ['runninghubOutputs', 'workflowApiOutputs']) {
       const output = (savedWorkflow.data[field] as Array<Record<string, unknown>>)[0];
