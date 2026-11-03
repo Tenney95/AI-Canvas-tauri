@@ -18,7 +18,7 @@ use tar::{Archive, Builder, Header};
 use tauri::{AppHandle, Emitter, Runtime, Webview};
 use sha2::{Digest, Sha256};
 
-use crate::path_policy::{authorize_path, ensure_trusted_caller, PathAccess};
+use crate::path_policy::{authorize_path, ensure_trusted_caller, reauthorize_existing_plain_directory, PathAccess};
 
 /// 归档内素材统一前缀；解包时只有该前缀下的条目会写入项目数据目录。
 const ASSETS_PREFIX: &str = "assets";
@@ -121,10 +121,24 @@ pub fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app: AppHa
     let total_bytes = assets.iter().try_fold(0_u64, |total, asset| total.checked_add(asset.bytes)).ok_or("素材体积无效")?;
     if assets.len() > MAX_ARCHIVE_ENTRIES || total_bytes > MAX_EXPANDED_BYTES { return Err("导入素材超过上限".into()); }
     crate::file_transfer::ensure_disk_space(&root, Some(total_bytes))?;
-    let destination = root.join("imports").join(&operation_id);
+    // 写入授权要求直接父目录存在；首次导入须先授权并创建 imports，不能先解析其子目录。
+    let imports = root.join("imports");
+    if authorize_path(&app, &imports.to_string_lossy(), PathAccess::Write)? != imports {
+        return Err("导入父目录不能指向项目外或其他目录".into());
+    }
+    match fs::create_dir(&imports) {
+        Ok(()) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(_) => return Err("无法创建导入父目录".into()),
+    }
+    if reauthorize_existing_plain_directory(&app, &imports)? != imports {
+        return Err("导入父目录真实路径已变化，请重新预览".into());
+    }
+    let destination = imports.join(&operation_id);
     // 授权真实父链，拒绝已有目录/链接，禁止前端用重试覆盖一次已发布的目录。
-    let destination = authorize_path(&app, &destination.to_string_lossy(), PathAccess::Write)?;
-    fs::create_dir_all(destination.parent().ok_or("导入目录无效")?).map_err(|_| "无法创建导入父目录")?;
+    if authorize_path(&app, &destination.to_string_lossy(), PathAccess::Write)? != destination {
+        return Err("导入目录真实路径已变化，请重新预览".into());
+    }
     fs::create_dir(&destination).map_err(|_| "导入目录已存在或无法创建，请重新预览")?;
     let mut seen = HashSet::new(); let mut total = 0_u64; let mut transferred = 0_u64;
     let result = (|| {
