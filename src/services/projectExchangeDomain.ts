@@ -100,7 +100,8 @@ export function validateExchangeDomain(snapshot: ProjectExchangeSnapshot): Proje
     const entity = entityIndex ? entities[Number(entityIndex[1])] : mediaIndex
       ? entities.find((item) => item.kind === 'file' && item.data.mediaId === snapshot.media[Number(mediaIndex[1])]?.id) : undefined;
     if (!entity) throw error;
-    throw new Error(`${error.message}；所属位置：${exchangeSourceLocation(entity, entities, snapshot.rootProjectId)}`, { cause: error.cause });
+    error.message += `；所属位置：${exchangeSourceLocation(entity, entities, snapshot.rootProjectId)}`;
+    throw error;
   }
   const childOwners = new Map<string, string>();
   for (const entity of entities) for (const [field, kind] of collections) {

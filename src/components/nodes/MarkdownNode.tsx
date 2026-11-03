@@ -88,6 +88,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const baselineRef = useRef<{ path: string; snapshot: AssetTextSnapshot } | null>(null);
   const baselineLoadRef = useRef<{ path: string; promise: Promise<AssetTextSnapshot> } | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRef = useRef(true);
   useEffect(() => {
     const path = (data.filePath as string) || '';
@@ -229,9 +230,6 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       if (isFresh()) showToast(t('文件读取失败'), 'error');
     } finally { completeCanvasDerivation(guard); }
   }, [id, currentProjectId, handleUpload, updateNodeData, doSave, showToast, t]);
-
-  // ── Auto-save debounce ──
-  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => {
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
