@@ -148,6 +148,13 @@ describe('uploadService 内存上传治理', () => {
   });
 
   it('不同本地素材也按单并发上传，避免 multipart Base64 峰值叠加', async () => {
+    let releasePreparation: () => void = () => undefined;
+    const preparationGate = new Promise<void>((resolve) => { releasePreparation = resolve; });
+    // 明确让后调用的 B 先完成身份准备，回归 CI 曾出现的合法入队顺序。
+    mocks.lstat.mockImplementation(async (path: string) => {
+      if (path.endsWith('queue-a.png')) await preparationGate;
+      throw new Error('文件指纹不可用');
+    });
     const fileBytes = new Uint8Array([1, 2, 3, 4, 5]);
     const fetchMock = vi.fn(async () => responseFor(new Blob([fileBytes], {
       type: 'image/png',
@@ -159,28 +166,46 @@ describe('uploadService 内存上传治理', () => {
       releaseFirst = resolve;
     });
     let invocation = 0;
+    let activeUploads = 0;
+    let maxActiveUploads = 0;
     mocks.invoke.mockImplementation(async () => {
-      invocation += 1;
-      if (invocation === 1) await firstGate;
-      return {
-        status: 200,
-        body: btoa(JSON.stringify({
-          success: true,
-          files: [{ url: `https://cdn.example/${invocation}.png` }],
-        })),
-      };
+      const uploadIndex = ++invocation;
+      activeUploads += 1;
+      maxActiveUploads = Math.max(maxActiveUploads, activeUploads);
+      try {
+        if (uploadIndex === 1) await firstGate;
+        return {
+          status: 200,
+          body: btoa(JSON.stringify({
+            success: true,
+            files: [{ url: `https://cdn.example/${uploadIndex}.png` }],
+          })),
+        };
+      } finally {
+        activeUploads -= 1;
+      }
     });
 
     const first = uploadToRemote('asset://localhost/queue-a.png');
     const second = uploadToRemote('asset://localhost/queue-b.png');
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mocks.lstat).toHaveBeenCalledTimes(2));
+    const firstPreparation = mocks.lstat.mock.results[
+      mocks.lstat.mock.calls.findIndex(([path]) => String(path).endsWith('queue-a.png'))
+    ].value;
+    releasePreparation();
+    await expect(firstPreparation).rejects.toThrow('文件指纹不可用');
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     releaseFirst();
-    await expect(Promise.all([first, second])).resolves.toEqual([
+    // 指纹准备异步完成，不约束 A/B 谁先入队；两次上传结果与单并发边界都必须保留。
+    const results = await Promise.all([first, second]);
+    expect(results.toSorted()).toEqual([
       'https://cdn.example/1.png',
       'https://cdn.example/2.png',
     ]);
+    expect(maxActiveUploads).toBe(1);
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const firstBody = mocks.invoke.mock.calls[0]?.[1]?.req?.body as string;
