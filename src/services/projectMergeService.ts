@@ -69,7 +69,7 @@ export function buildProjectMergePlan(base: ProjectExchangeSnapshot | null, loca
     const key = projectExchangeEntityKey(entity);
     const automatic = base ? exchangeEqual(lv, bv) ? 'incoming' : exchangeEqual(rv, bv) ? 'local' : undefined : undefined;
     let merged: ProjectExchangeValue | undefined;
-    if (base && field.endsWith('Ids') && Array.isArray(bv) && Array.isArray(lv) && Array.isArray(rv)
+    if (base && !automatic && field.endsWith('Ids') && Array.isArray(bv) && Array.isArray(lv) && Array.isArray(rv)
       && [...bv, ...lv, ...rv].every((value) => typeof value === 'string')) {
       const baseIds = new Set(bv), surviving = bv.filter((id) => lv.includes(id) && rv.includes(id));
       if (exchangeEqual(lv.filter((id) => surviving.includes(id)), surviving) && exchangeEqual(rv.filter((id) => surviving.includes(id)), surviving)) {

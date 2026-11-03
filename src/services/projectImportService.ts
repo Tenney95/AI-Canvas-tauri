@@ -175,6 +175,7 @@ export function projectImportMediaPreview(session: PreparedProjectImport, previe
 
 async function historyRows(session: PreparedProjectImport, records: ProjectSaveData[], options: ProjectImportOptions,
   identities: ProjectExchangeState['identities']): Promise<ProjectImportHistoryRow[]> {
+  if (!options.appendChat && !options.appendMemories) return [];
   const rows: ProjectImportHistoryRow[] = [], namespace = session.bundle?.lineageId ?? session.manifest.projectId;
   const origin = async (kind: string, source: { id: string }) => {
     const stored = (source as { archiveOriginId?: unknown }).archiveOriginId;
@@ -182,33 +183,53 @@ async function historyRows(session: PreparedProjectImport, records: ProjectSaveD
       : sha256BytesHex(new TextEncoder().encode(JSON.stringify([namespace, kind, source.id])));
   };
   const stable = async (kind: string, source: { id: string }, projectId: string) => 'exchange-' + await sha256BytesHex(new TextEncoder().encode(JSON.stringify([projectId, kind, await origin(kind, source)])));
+  const retained = new Set(records.map((record) => record.id));
   const projectMap = new Map(session.records.map((record, index) => {
     const logical = session.sourceState?.identities.find((item) => item.kind === 'project' && item.localId === record.id)?.id;
-    const local = logical ? identities.find((item) => item.kind === 'project' && item.id === logical)?.localId : index === 0 ? records[0].id : records.find((item) => item.id === record.id)?.id;
-    return [record.id, local];
+    const local = index === 0 ? records[0].id : identities.find((item) => item.kind === 'project' && item.id === (logical ?? record.id))?.localId;
+    return [record.id, local && retained.has(local) ? local : undefined];
   }));
+  const conversations = new Map<string, string>(), messages = new Map<string, string>(), messageConversations = new Map<string, string>();
+  // 先为整部剧建立来源映射，项目记忆可能引用另一个分集的会话。
+  for (const [index, payload] of session.chat.entries()) {
+    const projectId = projectMap.get(session.records[index].id); if (!payload || !projectId) continue;
+    const localConversations = new Set(payload.conversations.map((conversation) => conversation.id));
+    for (const conversation of payload.conversations) {
+      if (conversations.has(conversation.id)) throw new Error('项目包中的会话 ID 重复');
+      conversations.set(conversation.id, await stable('conversation', conversation, projectId));
+    }
+    for (const message of payload.messages) {
+      if (!localConversations.has(message.conversationId)) continue;
+      if (messages.has(message.id)) throw new Error('项目包中的消息 ID 重复');
+      messages.set(message.id, await stable('message', message, projectId));
+      messageConversations.set(message.id, message.conversationId);
+    }
+  }
   for (const [index, payload] of session.chat.entries()) {
     if (!payload) continue;
     const projectId = projectMap.get(session.records[index].id); if (!projectId) continue;
-    const conversations = new Map<string, string>(), messages = new Map<string, string>();
-    for (const conversation of payload.conversations) conversations.set(conversation.id, await stable('conversation', conversation, projectId));
-    for (const message of payload.messages) messages.set(message.id, await stable('message', message, projectId));
+    const localConversations = new Set(payload.conversations.map((conversation) => conversation.id));
     if (options.appendChat) {
       for (const conversation of payload.conversations) rows.push({ store: 'chatConversations', value: {
         id: conversations.get(conversation.id)!, archiveOriginId: await origin('conversation', conversation), projectId, title: conversation.title, titleSource: conversation.titleSource,
         pinned: false, archived: conversation.archived === true, agentMode: 'plan', createdAt: conversation.createdAt,
         updatedAt: conversation.updatedAt, messageCount: payload.messages.filter((message) => message.conversationId === conversation.id).length } });
       for (const message of payload.messages) {
-        if (!conversations.has(message.conversationId)) continue;
+        if (!localConversations.has(message.conversationId)) continue;
         rows.push({ store: 'chatMessages', value: { id: messages.get(message.id)!, archiveOriginId: await origin('message', message), projectId, conversationId: conversations.get(message.conversationId)!,
           sequence: message.sequence, role: message.role, content: message.content, status: 'done', createdAt: message.createdAt, updatedAt: message.updatedAt } });
       }
     }
-    if (options.appendMemories) for (const memory of payload.memories) rows.push({ store: 'projectMemories', value: {
-      id: await stable('memory', memory, projectId), archiveOriginId: await origin('memory', memory), projectId, kind: memory.kind, content: memory.content,
-      enabled: memory.enabled === true, createdAt: memory.createdAt, updatedAt: memory.updatedAt, source: {
-        conversationId: options.appendChat ? conversations.get(memory.source?.conversationId ?? '') ?? '' : '',
-        messageId: options.appendChat ? messages.get(memory.source?.messageId ?? '') : undefined, unavailable: !options.appendChat } } });
+    if (options.appendMemories) for (const memory of payload.memories) {
+      const sourceConversationId = memory.source?.conversationId ?? '', sourceMessageId = memory.source?.messageId ?? '';
+      const conversationId = options.appendChat ? conversations.get(sourceConversationId) : undefined;
+      rows.push({ store: 'projectMemories', value: {
+        id: await stable('memory', memory, projectId), archiveOriginId: await origin('memory', memory), projectId, kind: memory.kind, content: memory.content,
+        enabled: memory.enabled === true, createdAt: memory.createdAt, updatedAt: memory.updatedAt, source: {
+          conversationId: conversationId ?? '',
+          messageId: conversationId && messageConversations.get(sourceMessageId) === sourceConversationId ? messages.get(sourceMessageId) : undefined,
+          unavailable: memory.source?.unavailable === true || !conversationId } } });
+    }
   }
   return rows;
 }

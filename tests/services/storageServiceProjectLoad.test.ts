@@ -40,7 +40,10 @@ import {
   setLastActiveProjectId,
 } from '../../src/services/indexedDbService';
 import { loadProjectData, saveProject, type ProjectSaveData } from '../../src/services/storageService';
-import { normalizeDramaVisualAsset, syncDramaVisualAssetPrimary, type DramaScene } from '../../src/types/dramaAssets';
+import { normalizeDramaAssetLibrary, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary, type DramaScene } from '../../src/types/dramaAssets';
+import { captureExchangeSnapshot, materializeExchangeSnapshot } from '../../src/services/projectExchangeDomain';
+import { resolveDramaAssetImageRef } from '../../src/services/dramaAssetPrompt';
+import type { ProjectExchangeIdentity, ProjectExchangeState } from '../../src/types/projectExchange';
 
 describe('project loading tolerates asset recovery failures', () => {
   beforeEach(() => {
@@ -228,6 +231,98 @@ describe('project loading tolerates asset recovery failures', () => {
       audioUrl: 'asset:///project/data/character/shenyan.mp3',
     }));
     expect(character?.imageUrl).toBe('asset:///project/data/character/shenyan.png');
+  });
+
+  it('便携快照异机落库后恢复媒体和参考图展示，实际选图可用且再导出不改变快照', async () => {
+    const sourceId = 'portable-source', recipientId = `portable-recipient-${Date.now()}`;
+    mocks.identifyAsset.mockImplementation(async (path: string) => ({ assetId: `portable-${path}`, relativePath: path.slice('/recipient/data/'.length) }));
+    const paths = ['图片/角色.png', '视频/动作.mp4', '声音/角色.wav', '说明.md'];
+    const source: ProjectSaveData = {
+      id: sourceId, name: '跨设备项目', createdAt: 1, updatedAt: 2, edges: [], groups: [],
+      nodes: [
+        { id: 'image', type: 'source-image', data: { type: 'source-image', relativePath: paths[0], imageUrl: 'asset:///old/image.png' } },
+        { id: 'video', type: 'ai-video', data: { type: 'ai-video', relativePath: paths[1], videoUrl: 'asset:///old/video.mp4',
+          videoReferences: [{ id: 'reference', kind: 'frame', role: 'reference', relativePath: paths[0], url: 'asset:///old/reference.png' }] } },
+        { id: 'audio', data: { type: 'source-audio', relativePath: paths[2], audioUrl: 'asset:///old/audio.wav' } },
+        { id: 'markdown', type: 'ai-markdown', data: { type: 'ai-markdown', relativePath: paths[3], output: '# 原文\n中文说明' } },
+        { id: 'sheet', data: { type: 'ai-shotlist', shotlistRows: [{ id: 'shot', shotNo: '1',
+          frame: { nodeId: 'image', kind: 'image', relativePath: paths[0], url: 'asset:///old/frame.png' },
+          video: { nodeId: 'video', kind: 'video', relativePath: paths[1], url: 'asset:///old/shot.mp4' } }] } },
+        { id: 'grid', data: { type: 'ai-storyboard', storyboardOverrides: [{ relativePath: paths[0], url: 'asset:///old/cell.png' }] } },
+        { id: 'workflow', data: { type: 'ai-image', relativePath: paths[0], imageUrl: 'asset:///old/primary.png',
+          runninghubOutputs: [{ kind: 'image', relativePath: paths[0], url: 'asset:///old/result.png' }],
+          workflowApiOutputs: [{ kind: 'video', relativePath: paths[1], url: 'asset:///old/result.mp4' }] } },
+        { id: 'director', data: { type: 'ai-director', directorCaptureRelativePaths: [paths[0]], directorCaptureUrls: ['asset:///old/capture.png'] } },
+      ],
+      settings: { visualStyle: { styleReference: { relativePath: paths[0], imageUrl: 'asset:///old/style.png' } } } as ProjectSaveData['settings'],
+      dramaAssets: normalizeDramaAssetLibrary({ version: 2, characters: [{ id: 'hero', name: '角色', kind: 'character', relativePath: paths[0],
+        referenceImages: [{ id: 'hero-reference', kind: 'primary', relativePath: paths[0], imageUrl: 'asset:///old/hero.png' }],
+        primaryReferenceImageId: 'hero-reference',
+        voiceClips: [{ id: 'hero-voice', kind: 'timbre', relativePath: paths[2], audioUrl: 'asset:///old/voice.wav' }],
+        actions: [{ id: 'hero-action', name: '动作', prompt: '转身',
+          media: [{ id: 'hero-action-media', kind: 'video', relativePath: paths[1], url: 'asset:///old/action.mp4' }] }] }],
+        scenes: [{ id: 'scene', name: '场景', kind: 'scene', relativePath: paths[0], referenceImages: [{ id: 'scene-reference', relativePath: paths[0], imageUrl: 'asset:///old/scene.png' }] }],
+        props: [{ id: 'prop', name: '道具', kind: 'prop', relativePath: paths[0], referenceImages: [{ id: 'prop-reference', relativePath: paths[0], imageUrl: 'asset:///old/prop.png' }] }],
+      }),
+    };
+    const assets = paths.map((path, index) => ({ path, bytes: index + 1, sha256: String(index + 1).repeat(64) }));
+    const captured = captureExchangeSnapshot([source], assets, null);
+    const identities: ProjectExchangeIdentity[] = [{ kind: 'project', scopeId: sourceId, id: sourceId, localId: recipientId }];
+    const published = new Map([...captured.files].map(([id, path]) => [id, `imports/portable/${id}/${path.split('/').pop()}`]));
+    const imported = materializeExchangeSnapshot(captured.snapshot, identities, [], '接收方目录', published);
+    for (const [id, path] of published) identities.push({ kind: 'file', scopeId: sourceId, id, localId: path });
+    const state: ProjectExchangeState = { ownerId: recipientId, lineageId: captured.snapshot.lineageId, rootProjectId: sourceId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities };
+    const receivedAssets = [...captured.files].map(([id, path]) => ({ ...assets.find((asset) => asset.path === path)!, path: published.get(id)! }));
+    const importedNodes = imported[0].nodes as Array<{ id: string; data: Record<string, unknown> }>;
+    expect(importedNodes.find((node) => node.id === 'image')?.data).not.toHaveProperty('imageUrl');
+    await saveProjectToDb(imported[0]);
+    mocks.getProjectDataDir.mockResolvedValue('/recipient/data');
+    const loaded = (await loadProjectData(recipientId))!;
+    const nodes = loaded.nodes as Array<{ id: string; data: Record<string, unknown> }>;
+    const data = (id: string) => nodes.find((node) => node.id === id)!.data;
+    const url = (sourcePath: string) => `asset:///recipient/data/${published.get([...captured.files].find(([, path]) => path === sourcePath)![0])}`;
+    expect(data('image').imageUrl).toBe(url(paths[0]));
+    expect(data('video').videoUrl).toBe(url(paths[1]));
+    expect(data('audio').audioUrl).toBe(url(paths[2]));
+    expect(data('markdown').output).toBe('# 原文\n中文说明');
+    expect(data('markdown')).not.toHaveProperty('imageUrl');
+    expect(data('video').videoReferences).toMatchObject([{ url: url(paths[0]) }]);
+    expect(data('sheet').shotlistRows).toMatchObject([{ frame: { url: url(paths[0]) }, video: { url: url(paths[1]) } }]);
+    expect(data('grid').storyboardOverrides).toMatchObject([{ url: url(paths[0]) }]);
+    expect(data('workflow').runninghubOutputs).toMatchObject([{ url: url(paths[0]) }]);
+    expect(data('workflow').workflowApiOutputs).toMatchObject([{ url: url(paths[1]) }]);
+    expect(data('director').directorCaptureUrls).toEqual([url(paths[0])]);
+    expect(loaded.settings?.visualStyle?.styleReference?.imageUrl).toBe(url(paths[0]));
+    const library = loaded.dramaAssets!;
+    expect(library.characters[0].voiceClips?.[0].audioUrl).toBe(url(paths[2]));
+    expect(library.characters[0].actions?.[0].media?.[0].url).toBe(url(paths[1]));
+    for (const asset of [library.characters[0], library.scenes[0], library.props[0]]) {
+      const referenceId = asset.referenceImages![0].id;
+      expect(resolveDramaAssetImageRef(asset, nodes, referenceId)?.imageUrl).toBe(url(paths[0]));
+    }
+    expect(captureExchangeSnapshot([loaded], receivedAssets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+    await saveProject(loaded);
+    const saved = (await getProjectById(recipientId))!;
+    const savedWorkflow = (saved.nodes as Array<{ id: string; data: Record<string, unknown> }>).find((node) => node.id === 'workflow')!;
+    for (const field of ['runninghubOutputs', 'workflowApiOutputs']) {
+      const output = (savedWorkflow.data[field] as Array<Record<string, unknown>>)[0];
+      expect(output.relativePath).toEqual(expect.stringMatching(/^imports\/portable\//));
+      expect(output).not.toHaveProperty('filePath');
+    }
+    expect(captureExchangeSnapshot([saved], receivedAssets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('便携媒体文件缺失时保留引用，不伪造可用的展示地址', async () => {
+    mocks.exists.mockResolvedValue(false);
+    mocks.walkDirectoryFiles.mockResolvedValue([]);
+    const projectId = `portable-missing-${Date.now()}`;
+    await saveProjectToDb({ id: projectId, name: '缺失媒体', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', data: { type: 'source-image', relativePath: 'missing.png' } }],
+    });
+    const loaded = await loadProjectData(projectId);
+    expect((loaded?.nodes as Array<{ data: Record<string, unknown> }>)[0].data).toEqual({ type: 'source-image', relativePath: 'missing.png' });
   });
 
   it('persists URL-only video references with local identities and restores them in the new directory', async () => {

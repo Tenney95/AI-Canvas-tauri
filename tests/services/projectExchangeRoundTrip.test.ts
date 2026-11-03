@@ -38,6 +38,65 @@ describe('项目规范快照往返', () => {
   });
 });
 
+describe('项目正文与内部导入文件的往返边界', () => {
+  it.each(['ai-text', 'source-text', 'ai-markdown'])('%s 保留协议开头的直接正文，嵌套媒体仍清理本机投影', (type) => {
+    const output = 'https://example.com/参考资料\n\n中文正文与末尾内容';
+    const source: ProjectSaveData = { id: 'root', name: '正文项目', createdAt: 1, updatedAt: 2, edges: [], nodes: [
+      { id: 'text', type, data: { type, output, relativePath: '正文.md',
+        preview: { relativePath: '图片.png', imageUrl: 'asset://localhost/private/image.png', output: 'https://example.com/image.png' } } },
+    ] };
+    const assets = [{ path: '正文.md', bytes: 10, sha256: 'a'.repeat(64) }, { path: '图片.png', bytes: 20, sha256: 'b'.repeat(64) }];
+    const captured = captureExchangeSnapshot([source], assets, null);
+    const data = captured.snapshot.entities.find((entity) => entity.kind === 'node')!.data.data as Record<string, unknown>;
+    expect(data.output).toBe(output);
+    expect(data.preview).toEqual({ relativePath: expect.stringMatching(/^exchange-file:/) });
+    const identities = structuredClone(captured.identities);
+    const records = materializeExchangeSnapshot(captured.snapshot, identities, [], '接收端目录', captured.files);
+    const state: ProjectExchangeState = { ownerId: records[0].id, lineageId: captured.snapshot.lineageId, rootProjectId: 'root',
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities };
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it.each([
+    ['ai-image', 'imageUrl', '图片.png'], ['ai-video', 'videoUrl', '视频.mp4'], ['ai-audio', 'audioUrl', '音频.wav'],
+  ])('%s 的 output 和主媒体地址继续作为投影清理，旧快照往返不变', (type, field, path) => {
+    const source: ProjectSaveData = { id: 'root', name: '媒体项目', createdAt: 1, updatedAt: 2, edges: [], nodes: [
+      { id: 'media', type, data: { type, relativePath: path, output: 'https://example.com/generated', [field]: 'asset://localhost/private/media' } },
+    ] };
+    const assets = [{ path, bytes: 10, sha256: 'a'.repeat(64) }];
+    const captured = captureExchangeSnapshot([source], assets, null);
+    expect(captured.snapshot.entities.find((entity) => entity.kind === 'node')!.data.data).toEqual({ type, relativePath: expect.stringMatching(/^exchange-file:/) });
+    const records = materializeExchangeSnapshot(captured.snapshot, [...captured.identities], [source], '项目目录', captured.files);
+    const state: ProjectExchangeState = { ownerId: 'root', lineageId: captured.snapshot.lineageId, rootProjectId: 'root',
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it('首次建立来源时保留当前引用的 imports 和普通附件，排除无引用恢复点与失败残留', () => {
+    const current = 'imports/current-op/current.png';
+    const source: ProjectSaveData = { id: 'root', name: '旧包更新后的项目', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', type: 'ai-image', data: { relativePath: current } }] };
+    const assets = [current, '附件/制作说明.md', 'imports/recovery-op/旧图.png', 'imports/failed-op/孤儿.png']
+      .map((path, index) => ({ path, bytes: 10, sha256: String(index + 1).repeat(64) }));
+    const captured = captureExchangeSnapshot([source], assets, null);
+    expect([...captured.files.values()]).toEqual([current, '附件/制作说明.md']);
+    const records = materializeExchangeSnapshot(captured.snapshot, [...captured.identities], [source], '项目目录', captured.files);
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it('已确认的 imports 文件映射可作为未引用附件保留', () => {
+    const path = 'imports/confirmed-op/原稿.txt';
+    const source: ProjectSaveData = { id: 'root', name: '已确认附件', createdAt: 1, updatedAt: 2, edges: [], nodes: [] };
+    const assets = [{ path, bytes: 1, sha256: 'a'.repeat(64) }];
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: 'lineage', headRevisionId: 'a'.repeat(64),
+      stateVersion: 1, identities: [{ kind: 'file', scopeId: 'root', id: 'confirmed-file', localId: path }] };
+    const captured = captureExchangeSnapshot([source], assets, state);
+    expect([...captured.files]).toEqual([['confirmed-file', path]]);
+  });
+});
+
 describe('项目缺失素材定位', () => {
   const project = (): ProjectSaveData => ({ id: 'root', name: '剧集', nodes: [], edges: [], createdAt: 1, updatedAt: 2 });
   const path = '生成图像_4.png';
@@ -244,5 +303,57 @@ describe('资产参考图的历史节点出处', () => {
     source.nodes = [{ id: 'generator', type: 'ai-image', data: { label: '真实生成节点', type: 'ai-image', prompt } }];
     expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('missing_dependency');
     expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('节点「真实生成节点」（ID：generator）');
+  });
+});
+
+describe('当前执行的精确创作素材引用', () => {
+  const assets = [{ path: '参考.png', bytes: 10, sha256: 'a'.repeat(64) }, { path: '声音.wav', bytes: 20, sha256: 'b'.repeat(64) }];
+  const project = (prompt: string) => ({ id: 'root', name: '精确引用', createdAt: 1, updatedAt: 2, edges: [],
+    nodes: [{ id: 'generator', type: 'ai-image', data: { type: 'ai-image', label: '生成节点', prompt } as Record<string, unknown> }],
+    dramaAssets: normalizeDramaAssetLibrary({ characters: [
+      { id: 'character', kind: 'character', name: '角色', primaryReferenceImageId: 'primary', referenceImages: [
+        { id: 'primary', kind: 'primary', relativePath: '参考.png' }, { id: 'selected', relativePath: '参考.png' },
+      ], voiceClips: [{ id: 'voice', relativePath: '声音.wav' }], actions: [
+        { id: 'action', name: '动作', media: [{ id: 'clip', kind: 'image', relativePath: '参考.png' }] },
+        { id: 'another-action', name: '另一动作', media: [{ id: 'another-clip', kind: 'image', relativePath: '参考.png' }] },
+      ] },
+      { id: 'other-character', kind: 'character', name: '另一角色', referenceImages: [{ id: 'foreign-reference', relativePath: '参考.png' }],
+        voiceClips: [{ id: 'foreign-voice', relativePath: '声音.wav' }], actions: [
+          { id: 'foreign-action', name: '他人动作', media: [{ id: 'foreign-clip', kind: 'image', relativePath: '参考.png' }] },
+        ] },
+    ] }) });
+
+  it.each(['character#selected', 'character#voice/voice', 'character#action/action/clip', 'character#all'])('%s 保留合法旧快照的父资产依赖和往返摘要', (mention) => {
+    const source = project(`@drama{${mention}:角色}`);
+    const captured = captureExchangeSnapshot([source], assets, null);
+    const node = captured.snapshot.entities.find((entity) => entity.kind === 'node')!;
+    expect(node.references).toEqual([{ kind: 'character', scopeId: 'root', id: 'character' }]);
+    const records = materializeExchangeSnapshot(captured.snapshot, [...captured.identities], [source], '项目目录', captured.files);
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it.each([
+    'character#missing', 'character#foreign-reference', 'character#voice/missing', 'character#voice/foreign-voice',
+    'character#voice/%', 'character#action/action/missing', 'character#action/action/another-clip',
+    'character#action/foreign-action/foreign-clip', 'character#action/action',
+  ])('%s 的缺失、错误归属或损坏选项阻止当前执行引用导出', (mention) => {
+    const source = project(`@drama{${mention}:角色}`);
+    const original = structuredClone(source);
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('创作素材缺失或归属不一致');
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('引用字段：data.prompt');
+    expect(source).toEqual(original);
+  });
+
+  it('工作流输入中的精确引用同样校验；历史资产提示词与 global 沿用原边界', () => {
+    const source = project('@drama{global/unknown#selected:全局角色}');
+    source.dramaAssets.characters[0].referenceImages![0].prompt = '@drama{character#deleted-reference:历史选图}';
+    const captured = captureExchangeSnapshot([source], assets, null);
+    expect(captured.snapshot.entities.find((entity) => entity.kind === 'referenceImage' && entity.id === 'primary')!.data.prompt)
+      .toBe('@drama{character#deleted-reference:历史选图}');
+    expect(captured.snapshot.entities.find((entity) => entity.kind === 'node')!.references).toEqual([]);
+    source.nodes[0].data.workflowInputs = { image: '@drama{character#missing:角色}' };
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('引用字段：data.workflowInputs.image');
   });
 });

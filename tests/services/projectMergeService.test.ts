@@ -6,6 +6,7 @@ import { buildProjectMergePlan, resolveProjectMerge } from '../../src/services/p
 import { createProjectExchangeRevision, findProjectExchangeBase } from '../../src/services/projectExchangeFormat';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectExchangeState } from '../../src/types/projectExchange';
+import { normalizeDramaAssetLibrary } from '../../src/types/dramaAssets';
 
 beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => vi.unstubAllGlobals());
@@ -44,6 +45,52 @@ describe('项目业务三方合并', () => {
     const result = resolveProjectMerge(plan, {});
     expect(result.entities.filter((item) => item.kind === 'node')).toHaveLength(3);
     expect(result.entities.find((item) => item.kind === 'project')!.data.nodesIds).toEqual(['node', 'local-node', 'remote-node']);
+  });
+  it.each([['local', 0], ['local', 1], ['incoming', 0], ['incoming', 1]] as const)(
+    '%s 单边在位置 %s 插入镜头，自动合并保留原位置', (side, index) => {
+      const record = (ids: string[], x = 0): ProjectSaveData => ({ ...project('正文', x), nodes: [
+        { id: 'node', type: 'ai-shotlist', position: { x, y: 0 }, data: { type: 'ai-shotlist', shotlistRows: ids.map((id) => ({ id, content: id })) } },
+      ] });
+      const captured = captureExchangeSnapshot([record(['a', 'b'])], [], null);
+      const state: ProjectExchangeState = { ownerId: 'owner', lineageId: captured.snapshot.lineageId, rootProjectId: 'owner',
+        headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+      const ids = ['a', 'b']; ids.splice(index, 0, 'new');
+      const changed = captureExchangeSnapshot([record(ids)], [], state, captured.snapshot).snapshot;
+      const other = captureExchangeSnapshot([record(['a', 'b'], 100)], [], state, captured.snapshot).snapshot;
+      const plan = buildProjectMergePlan(captured.snapshot, side === 'local' ? changed : other, side === 'local' ? other : changed);
+      expect(plan.changes.some((change) => change.conflict)).toBe(false);
+      const node = resolveProjectMerge(plan, {}).entities.find((entity) => entity.kind === 'node')!;
+      expect(node.data.shotlistRowsIds).toEqual(ids);
+      expect(node.data.position).toEqual({ x: 100, y: 0 });
+    },
+  );
+
+  it.each(['image', 'voice', 'action'] as const)('一侧新增精确 %s 引用、另一侧删除对应素材时不能合成断裂输入', (kind) => {
+    const record = () => ({ ...project(), dramaAssets: normalizeDramaAssetLibrary({ characters: [
+      { id: 'character', kind: 'character', name: '角色', primaryReferenceImageId: 'primary', referenceImages: [
+        { id: 'primary', kind: 'primary', relativePath: '参考.png' }, { id: 'selected', relativePath: '参考.png' },
+      ], voiceClips: [{ id: 'voice', relativePath: '声音.wav' }], actions: [
+        { id: 'action', name: '动作', media: [{ id: 'clip', kind: 'image', relativePath: '参考.png' }] },
+      ] },
+    ] }) });
+    const assets = [{ path: '参考.png', bytes: 10, sha256: 'a'.repeat(64) }, { path: '声音.wav', bytes: 20, sha256: 'b'.repeat(64) }];
+    const captured = captureExchangeSnapshot([record()], assets, null);
+    const state: ProjectExchangeState = { ownerId: 'owner', lineageId: captured.snapshot.lineageId, rootProjectId: 'owner',
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    const local = record(), incoming = record();
+    const pick = { image: 'selected', voice: 'voice/voice', action: 'action/action/clip' }[kind];
+    (local.nodes as Array<{ data: Record<string, unknown> }>)[0].data.prompt = `@drama{character#${pick}:角色}`;
+    const character = incoming.dramaAssets.characters[0];
+    if (kind === 'image') character.referenceImages = character.referenceImages!.filter((reference) => reference.id !== 'selected');
+    if (kind === 'voice') character.voiceClips = [];
+    if (kind === 'action') character.actions![0].media = [];
+    const plan = buildProjectMergePlan(captured.snapshot,
+      captureExchangeSnapshot([local], assets, state, captured.snapshot).snapshot,
+      captureExchangeSnapshot([incoming], assets, state, captured.snapshot).snapshot);
+    expect(plan.changes.some((change) => change.conflict)).toBe(false);
+    expect(() => resolveProjectMerge(plan, {})).toThrow('创作素材缺失或归属不一致');
+    const prompt = plan.changes.find((change) => change.field === 'data.prompt')!;
+    expect(() => resolveProjectMerge(plan, { [prompt.id]: 'incoming' })).not.toThrow();
   });
   it('删除与修改冲突，选择删除时关联列表也必须一致', () => {
     const { base, capture } = fixture(), removed = project(); removed.nodes = [];

@@ -92,6 +92,7 @@ const NODE_MEDIA_URL_KEYS = [
 ] as const;
 
 const ASSET_REFERENCE_URL_KEYS = ['imageUrl', 'videoUrl', 'audioUrl', 'url'] as const;
+type AssetReferenceUrlKey = typeof ASSET_REFERENCE_URL_KEYS[number];
 const NODE_PRIMARY_MEDIA_KEYS = new Set<string>(['imageUrl', 'videoUrl', 'audioUrl', 'output']);
 
 interface MaterializedInlineMedia {
@@ -368,6 +369,14 @@ async function serializeProjectNodes(
       });
       data = { ...data, videoReferences };
     }
+    for (const field of ['runninghubOutputs', 'workflowApiOutputs'] as const) {
+      const outputs = data[field];
+      if (Array.isArray(outputs)) {
+        data = { ...data, [field]: await mapWithConcurrency(outputs, 4, async (output) => (
+          serializeAssetReference(await materializeAssetReference(output, context), context)
+        )) };
+      }
+    }
     if (Array.isArray(data.directorCaptureUrls)) {
       const existingPaths = Array.isArray(data.directorCaptureFilePaths)
         ? data.directorCaptureFilePaths as string[]
@@ -444,6 +453,7 @@ async function restoreAssetReference<T extends AssetReferenceLike>(
   projectId: string,
   projectDir: string,
   lookup: ProjectFileLookup,
+  projection?: AssetReferenceUrlKey,
 ): Promise<T> {
   const storedPath = data.filePath ? stripVerbatimPrefix(data.filePath) : undefined;
   const relativeCandidate = data.relativePath ? joinPath(projectDir, data.relativePath) : undefined;
@@ -516,10 +526,13 @@ async function restoreAssetReference<T extends AssetReferenceLike>(
       restored.label = currentDiskName;
     }
   }
-  if ('imageUrl' in restored && restored.imageUrl) restored.imageUrl = await getAssetUrlFromPath(filePath);
-  if ('videoUrl' in restored && restored.videoUrl) restored.videoUrl = await getAssetUrlFromPath(filePath);
-  if ('audioUrl' in restored && restored.audioUrl) restored.audioUrl = await getAssetUrlFromPath(filePath);
-  if ('url' in restored) restored.url = await getAssetUrlFromPath(filePath);
+  // 便携归档会去掉机器相关 URL；由调用方的明确媒体角色重建，不能依赖原字段仍存在。
+  const urlKeys = ASSET_REFERENCE_URL_KEYS.filter((key) => key === projection
+    || (key === 'url' ? key in restored : Boolean(restored[key])));
+  if (urlKeys.length) {
+    const url = await getAssetUrlFromPath(filePath);
+    for (const key of urlKeys) (restored as AssetReferenceLike)[key] = url;
+  }
   return restored;
 }
 
@@ -528,9 +541,10 @@ async function restoreAssetReferenceSafely<T extends AssetReferenceLike>(
   projectId: string,
   projectDir: string,
   lookup: ProjectFileLookup,
+  projection?: AssetReferenceUrlKey,
 ): Promise<T> {
   try {
-    return await restoreAssetReference(data, projectId, projectDir, lookup);
+    return await restoreAssetReference(data, projectId, projectDir, lookup, projection);
   } catch {
     console.warn('[项目加载] 单个资产展示信息恢复失败，已保留节点', {
       projectId,
@@ -646,10 +660,14 @@ async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: Pr
 
   const restoreNode = async (node: PersistedNodeLike) => {
     if (!node.data) return node;
-    let data = await restoreAssetReferenceSafely(node.data, projectId, projectDir, lookup);
+    const type = node.type ?? node.data.type;
+    const projection = ['ai-image', 'source-image', 'ai-animation', 'ai-panorama', 'ai-storyboard'].includes(String(type))
+      ? 'imageUrl' : ['ai-video', 'source-video'].includes(String(type)) ? 'videoUrl'
+        : ['ai-audio', 'source-audio'].includes(String(type)) ? 'audioUrl' : undefined;
+    let data = await restoreAssetReferenceSafely(node.data, projectId, projectDir, lookup, projection);
     if (Array.isArray(data.storyboardOverrides)) {
       const storyboardOverrides = await mapWithConcurrency(data.storyboardOverrides, 4, async (override) => (
-        override ? restoreAssetReferenceSafely(override, projectId, projectDir, lookup) : null
+        override ? restoreAssetReferenceSafely(override, projectId, projectDir, lookup, 'url') : null
       ));
       data = { ...data, storyboardOverrides };
     }
@@ -657,19 +675,27 @@ async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: Pr
       const shotlistRows = await mapWithConcurrency(data.shotlistRows, 4, async (row) => ({
         ...row,
         frame: row.frame
-          ? await restoreAssetReferenceSafely(row.frame, projectId, projectDir, lookup)
+          ? await restoreAssetReferenceSafely(row.frame, projectId, projectDir, lookup, 'url')
           : row.frame,
         video: row.video
-          ? await restoreAssetReferenceSafely(row.video, projectId, projectDir, lookup)
+          ? await restoreAssetReferenceSafely(row.video, projectId, projectDir, lookup, 'url')
           : row.video,
       }));
       data = { ...data, shotlistRows };
     }
     if (Array.isArray(data.videoReferences)) {
       const videoReferences = await mapWithConcurrency(data.videoReferences, 4, (reference) => (
-        restoreAssetReferenceSafely(reference, projectId, projectDir, lookup)
+        restoreAssetReferenceSafely(reference, projectId, projectDir, lookup, 'url')
       ));
       data = { ...data, videoReferences };
+    }
+    for (const field of ['runninghubOutputs', 'workflowApiOutputs'] as const) {
+      const outputs = data[field];
+      if (Array.isArray(outputs)) {
+        data = { ...data, [field]: await mapWithConcurrency(outputs, 4, (output) => (
+          restoreAssetReferenceSafely(output, projectId, projectDir, lookup, 'url')
+        )) };
+      }
     }
     if (Array.isArray(data.directorCaptureRelativePaths)) {
       const captures = await mapWithConcurrency(data.directorCaptureRelativePaths, 2, async (relativePath) => {
@@ -711,7 +737,7 @@ async function restoreProjectSettings(
 ): Promise<ProjectSettings | undefined> {
   const reference = settings?.visualStyle?.styleReference;
   if (!settings?.visualStyle || !reference) return settings;
-  const styleReference = await restoreAssetReferenceSafely(reference, projectId, projectDir, lookup);
+  const styleReference = await restoreAssetReferenceSafely(reference, projectId, projectDir, lookup, 'imageUrl');
   return {
     ...settings,
     visualStyle: { ...settings.visualStyle, styleReference },
@@ -807,20 +833,20 @@ async function restoreProjectDramaAssets(
 ): Promise<DramaAssetLibrary> {
   const projectDir = await getProjectDataDir(projectId);
   if (!projectDir) return library;
-  const restoreReference = <T extends AssetReferenceLike>(reference: T): Promise<T> => (
-    restoreAssetReferenceSafely(reference, projectId, projectDir, lookup)
+  const restoreReference = <T extends AssetReferenceLike>(reference: T, projection: AssetReferenceUrlKey): Promise<T> => (
+    restoreAssetReferenceSafely(reference, projectId, projectDir, lookup, projection)
   );
   const characters = await mapWithConcurrency(library.characters, 2, async (character) => {
-    const topLevel = await restoreReference(character);
+    const topLevel = await restoreReference(character, 'imageUrl');
     const referenceImages = await mapWithConcurrency(
       character.referenceImages ?? [],
       2,
-      restoreReference,
+      (reference) => restoreReference(reference, 'imageUrl'),
     );
-    const voiceClips = await mapWithConcurrency(character.voiceClips ?? [], 2, restoreReference);
+    const voiceClips = await mapWithConcurrency(character.voiceClips ?? [], 2, (clip) => restoreReference(clip, 'audioUrl'));
     const actions = await mapWithConcurrency(character.actions ?? [], 2, async (action) => ({
       ...action,
-      media: await mapWithConcurrency(action.media ?? [], 2, restoreReference),
+      media: await mapWithConcurrency(action.media ?? [], 2, (media) => restoreReference(media, 'url')),
     }));
     const primaryReference = referenceImages.find(
       (reference) => reference.id === character.primaryReferenceImageId,
@@ -836,7 +862,7 @@ async function restoreProjectDramaAssets(
   const restoreVisual = async <T extends DramaScene | DramaProp>(asset: T): Promise<T> => {
     const normalized = normalizeDramaVisualAsset(asset);
     const referenceImages = await mapWithConcurrency(normalized.referenceImages ?? [], 2,
-      (reference) => resolveVisualAssetReference(reference, lookup, restoreReference));
+      (reference) => resolveVisualAssetReference(reference, lookup, (image) => restoreReference(image, 'imageUrl')));
     return syncDramaVisualAssetPrimary({ ...normalized, referenceImages });
   };
   const scenes = await mapWithConcurrency(library.scenes, 2, (asset) => restoreVisual(asset));

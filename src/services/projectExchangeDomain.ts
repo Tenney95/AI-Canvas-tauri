@@ -3,6 +3,7 @@ import type { ProjectSaveData } from './storageService';
 import type { ProjectExchangeEntity, ProjectExchangeEntityKind, ProjectExchangeIdentity, ProjectExchangeMedia,
   ProjectExchangeObject, ProjectExchangeReference, ProjectExchangeSnapshot, ProjectExchangeState, ProjectExchangeValue } from '../types/projectExchange';
 import { parseProjectExchangeSnapshot, projectExchangeEntityKey, serializeProjectExchangeValue } from './projectExchangeFormat';
+import { parseDramaMentionId } from '../types/dramaAssets';
 
 export interface ArchiveAssetDigest { path: string; bytes: number; sha256: string }
 const FILE_TOKEN = 'exchange-file:';
@@ -13,6 +14,7 @@ const omitted = new Set(['filePath', 'imageFilePath', 'dataFolder', 'snapshot', 
   'generationStartedAt', 'videoTaskState', 'mediaTaskState', 'mediaTaskStage', 'runninghubStage', 'workflowApiStage',
   'comfyH3MemoryApplied', 'thumbnailUrl', 'sourceUrl', 'artifactId', 'mediaVersion', 'volcengineBinding']);
 const mediaUrls = new Set(['imageUrl', 'videoUrl', 'audioUrl', 'url']);
+const textNodeTypes = new Set(['ai-text', 'source-text', 'ai-markdown']);
 const nodeReferenceFields = new Set(['sourceNodeId', 'imageNodeId', 'nodeId', 'targetNodeId']);
 const historicalAssetKinds = new Set<ProjectExchangeEntityKind>(['character', 'scene', 'prop', 'referenceImage',
   'voiceClip', 'action', 'actionMedia', 'imageMetadata']);
@@ -48,6 +50,11 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
     // 资产可以保留已删除源节点的出处；这类出处不是执行引用。
     if (all.some((item) => item.kind === 'node' && item.id === id && item.scopeId === entity.scopeId)) add('node', entity.scopeId, id);
   };
+  const child = (owner: ProjectExchangeEntity, field: string, kind: ProjectExchangeEntityKind, id: string | undefined) => {
+    const ids = owner.data[field];
+    if (!id || !Array.isArray(ids) || !ids.includes(id)) return undefined;
+    return all.find((item) => item.kind === kind && item.scopeId === root && item.id === id);
+  };
   const walk = (value: ProjectExchangeValue, key = '', fieldPath = ''): void => {
     if (typeof value === 'string') {
       if (['relativePath', 'imageRelativePath', 'directorCaptureRelativePaths'].includes(key) && !value.startsWith(FILE_TOKEN)) {
@@ -61,11 +68,25 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
         if (historicalAssetKinds.has(entity.kind)) node(match[1]);
         else add('node', entity.scopeId, match[1]);
       }
-      for (const match of value.matchAll(/@drama\{([^:{}#]+)(?:#[^:{}]+)?:([^}]*)\}/g)) {
-        const target = all.find((item) => ['character', 'scene', 'prop'].includes(item.kind) && item.id === match[1] && item.scopeId === root);
-        if (target) add(target.kind, root, target.id);
-        else if (!match[1].startsWith('global/')) {
-          throw new Error(`项目引用的创作资产缺失：${match[2] || '未命名资产'}（ID：${match[1]}）；引用位置：${exchangeSourceLocation(entity, all, root)}；引用字段：${fieldPath}。请移除失效引用或重新选择资产后重试。`);
+      for (const match of value.matchAll(/@drama\{([^:{}]+):([^}]*)\}/g)) {
+        const mention = parseDramaMentionId(match[1]);
+        const target = all.find((item) => ['character', 'scene', 'prop'].includes(item.kind) && item.id === mention.assetId && item.scopeId === root);
+        if (target) {
+          add(target.kind, root, target.id);
+          // 精确选图/音色/动作是当前执行输入；历史资产提示词保留既有出处边界。
+          // 只补校验，不改合法旧 v3 的 references 和摘要。
+          if (!historicalAssetKinds.has(entity.kind)) {
+            let valid = true;
+            if (mention.referenceImageId !== undefined) valid = !!child(target, 'referenceImagesIds', 'referenceImage', mention.referenceImageId);
+            if (mention.voiceClipId !== undefined) valid = target.kind === 'character' && !!child(target, 'voiceClipsIds', 'voiceClip', mention.voiceClipId);
+            if (mention.actionId !== undefined) {
+              const action = target.kind === 'character' ? child(target, 'actionsIds', 'action', mention.actionId) : undefined;
+              valid = !!action && !!child(action, 'mediaIds', 'actionMedia', mention.actionMediaId);
+            }
+            if (!valid) throw new Error(`项目引用的创作素材缺失或归属不一致；引用位置：${exchangeSourceLocation(entity, all, root)}；引用字段：${fieldPath}。请重新选择素材后重试。`);
+          }
+        } else if (!mention.assetId.startsWith('global/')) {
+          throw new Error(`项目引用的创作资产缺失：${match[2] || '未命名资产'}（ID：${mention.assetId}）；引用位置：${exchangeSourceLocation(entity, all, root)}；引用字段：${fieldPath}。请移除失效引用或重新选择资产后重试。`);
         }
       }
     } else if (Array.isArray(value)) value.forEach((item, index) => walk(item, key, `${fieldPath}[${index}]`));
@@ -247,7 +268,7 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
   const relativeFile = (path: string): string => {
     return relativeProjectFile(path, projectDirectory);
   };
-  const clean = (value: unknown, key = '', location = '', fieldPath = ''): ProjectExchangeValue | undefined => {
+  const clean = (value: unknown, key = '', location = '', fieldPath = '', textNodeOutput = false): ProjectExchangeValue | undefined => {
     if (value === undefined || omitted.has(key)) return undefined;
     if (typeof value === 'string') {
       if (['projectId', 'parentProjectId'].includes(key)) return projectIds.get(value) ?? value;
@@ -261,7 +282,7 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
       return value;
     }
     if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
-    if (Array.isArray(value)) return value.map((item, index) => clean(item, key, location, `${fieldPath}[${index}]`) ?? null);
+    if (Array.isArray(value)) return value.map((item, index) => clean(item, key, location, `${fieldPath}[${index}]`, textNodeOutput) ?? null);
     if (!exchangeObject(value)) throw new Error('项目存在无法迁移的运行期对象');
     const result: ProjectExchangeObject = {};
     if (!value.relativePath && typeof value.filePath === 'string') result.relativePath = fileToken(relativeFile(value.filePath), location, fieldPath ? `${fieldPath}.filePath` : 'filePath');
@@ -271,7 +292,8 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
     }
     for (const [field, item] of Object.entries(value)) {
       // 有相对身份的 URL 是本机投影，不能影响跨设备比较。
-      if ((mediaUrls.has(field) || field === 'output' && typeof item === 'string' && /^(?:https?:|asset:|blob:|data:)/i.test(item))
+      if ((mediaUrls.has(field) || field === 'output' && !(textNodeOutput && fieldPath === 'data')
+        && typeof item === 'string' && /^(?:https?:|asset:|blob:|data:)/i.test(item))
         && (value.relativePath || value.imageRelativePath || result.relativePath)) continue;
       if (field === 'directorCaptureUrls' && (value.directorCaptureFilePaths || value.directorCaptureRelativePaths)) continue;
       if ((field === 'directorCaptureFilePaths' || field === 'directorCaptureRelativePaths') && Array.isArray(item)) {
@@ -281,14 +303,15 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
           return fileToken(relativeFile(path), location, `${fieldPath ? `${fieldPath}.` : ''}${field}[${index}]`);
         }); continue;
       }
-      const next = clean(item, field, location, fieldPath ? `${fieldPath}.${field}` : field); if (next !== undefined) result[field] = next;
+      const next = clean(item, field, location, fieldPath ? `${fieldPath}.${field}` : field, textNodeOutput); if (next !== undefined) result[field] = next;
     }
     return result;
   };
   const add = (kind: ProjectExchangeEntityKind, scopeId: string, source: Record<string, unknown>, location: string) => {
     if (typeof source.id !== 'string') throw new Error('项目实体缺少稳定 ID');
     const id = logical(kind, scopeId, source.id);
-    const data = clean(source, '', location) as ProjectExchangeObject; delete data.id;
+    const nodeType = typeof source.type === 'string' ? source.type : exchangeObject(source.data) ? source.data.type : undefined;
+    const data = clean(source, '', location, '', kind === 'node' && typeof nodeType === 'string' && textNodeTypes.has(nodeType)) as ProjectExchangeObject; delete data.id;
     // 已知的有序子实体单独对账，其顺序作为父级的原子字段。
     for (const [field, childKind] of collections) {
       if (!Array.isArray(source[field])) continue;
@@ -336,7 +359,7 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
   // 项目文件资产包含未被节点引用的原稿与附件；失败发布的孤儿 imports 目录不纳入新基线。
   for (const path of byPath.keys()) {
     const known = identities.find((item) => item.kind === 'file' && item.localId === path);
-    if (previous && path.startsWith('imports/') && !known) continue;
+    if (path.startsWith('imports/') && !known) continue;
     if (known && previousSnapshot && !previousSnapshot.entities.some((item) => item.kind === 'file' && item.id === known.id) && !files.has(known.id)) continue;
     fileToken(path);
   }
