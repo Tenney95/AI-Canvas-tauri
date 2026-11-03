@@ -91,7 +91,9 @@ fn inspect_assets(root: &Path, relative: &Path, rows: &mut Vec<ArchiveAssetDiges
         } else if kind.is_file() {
             if rows.len() >= MAX_ARCHIVE_ENTRIES { return Err("项目素材数量超过上限".into()); }
             let (bytes, sha256) = hash_file(&entry.path())?;
-            rows.push(ArchiveAssetDigest { path: to_archive_text(&normalize_archive_path(&child)?), bytes, sha256 });
+            // 本机递归路径使用平台分隔符，进入归档校验前统一为正斜杠。
+            let archive_path = child.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+            rows.push(ArchiveAssetDigest { path: to_archive_text(&normalize_archive_path(Path::new(&archive_path))?), bytes, sha256 });
         } else { return Err("不支持的素材类型".into()); }
     }
     if rows.iter().map(|row| row.bytes).sum::<u64>() > MAX_EXPANDED_BYTES { return Err("项目素材超过 20 GB".into()); }
@@ -536,6 +538,57 @@ mod tests {
         let normalized =
             normalize_archive_path(Path::new("./assets/分组/a.png")).expect("路径可归一化");
         assert_eq!(to_archive_text(&normalized), "assets/分组/a.png");
+    }
+
+    #[test]
+    fn inspects_and_packs_nested_assets_with_portable_paths() {
+        let directory = std::env::temp_dir().join(format!(
+            "ai-canvas-archive-paths-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let files = [
+            ("EP000｜剧本、视觉与制作说明/EP000 制作总览与连续性待核对.md", "# 制作总览\n连续性待核对"),
+            ("EP000｜剧本、视觉与制作说明/参考/人物.md", "# 人物\n中文正文"),
+        ];
+        for (path, content) in files {
+            let target = directory.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, content.as_bytes()).unwrap();
+        }
+
+        let mut assets = Vec::new();
+        inspect_assets(&directory, Path::new(""), &mut assets).unwrap();
+        assets.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(assets.len(), files.len());
+        for (asset, (path, content)) in assets.iter().zip(files) {
+            assert_eq!(asset.path, path);
+            assert_eq!(asset.bytes, content.len() as u64);
+            assert_eq!(asset.sha256, format!("{:x}", Sha256::digest(content.as_bytes())));
+            assert!(normalize_archive_path(Path::new(&asset.path)).is_ok());
+        }
+
+        let selected = assets.iter().map(|asset| asset.path.clone()).collect::<HashSet<_>>();
+        let mut builder = Builder::new(Vec::new());
+        let mut stats = AssetStats { count: 0, bytes: 0 };
+        append_assets_dir(&mut builder, &directory, Path::new(ASSETS_PREFIX), &mut stats, Some(&selected)).unwrap();
+        let bytes = builder.into_inner().unwrap();
+        let mut archive = Archive::new(bytes.as_slice());
+        let mut packed = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = normalize_archive_path(&entry.path().unwrap()).unwrap();
+            let mut content = String::new();
+            entry.read_to_string(&mut content).unwrap();
+            packed.push((to_archive_text(&path), content));
+        }
+        packed.sort();
+
+        let resolved = directory.canonicalize().unwrap();
+        assert!(resolved.starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        fs::remove_dir_all(&resolved).unwrap();
+        assert_eq!(packed, files.map(|(path, content)| (format!("assets/{path}"), content.to_string())));
+        assert_eq!(stats.count, files.len());
     }
 
     #[test]
