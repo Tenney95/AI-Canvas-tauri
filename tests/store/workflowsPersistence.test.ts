@@ -10,13 +10,22 @@ const fileMocks = vi.hoisted(() => ({
   deleteWorkflow: vi.fn(),
   loadWorkflows: vi.fn(),
 }));
-const builtInMocks = vi.hoisted(() => ({ withBuiltInEditableContent: vi.fn() }));
+const builtInMocks = vi.hoisted(() => ({
+  withBuiltInEditableContent: vi.fn(),
+  retiredIds: [
+    'builtin-minimax-h3-pdd-r2v-lowvram',
+    'builtin-minimax-h3-t2v',
+    'builtin-minimax-h3-t2v-turbo',
+    'builtin-minimax-h3-r2v',
+    'builtin-minimax-h3-r2v-turbo',
+  ],
+}));
 
 vi.mock('../../src/services/fileService', () => fileMocks);
 vi.mock('../../src/services/builtinWorkflows', () => ({
-  isRetiredBuiltInWorkflow: (id: string) => id === 'builtin-minimax-h3-pdd-r2v-lowvram',
+  isRetiredBuiltInWorkflow: (id: string) => builtInMocks.retiredIds.includes(id),
   pendingBuiltInWorkflows: () => [],
-  RETIRED_BUILT_IN_WORKFLOW_IDS: ['builtin-minimax-h3-pdd-r2v-lowvram'],
+  RETIRED_BUILT_IN_WORKFLOW_IDS: builtInMocks.retiredIds,
   resetBuiltInWorkflows: () => [],
   withBuiltInEditableContent: builtInMocks.withBuiltInEditableContent,
 }));
@@ -272,19 +281,32 @@ describe('工作流持久化顺序', () => {
     expect(getState().workflows).toEqual([]);
   });
 
-  it('加载时删除已经退役的低显存 H3 工作流', async () => {
+  it.each(builtInMocks.retiredIds)('加载时删除退役内置项 %s，保留同名手动导入副本', async (id) => {
     const retired = {
       ...workflow,
-      id: 'builtin-minimax-h3-pdd-r2v-lowvram',
-      name: 'MiniMax H3 PDD 自由参考（低显存 Q4·Q2）',
+      id,
+      name: '已退役 H3 工作流',
     };
-    fileMocks.loadWorkflows.mockResolvedValue([workflow, retired]);
+    const imported = { ...retired, id: 'wf-imported-h3' };
+    fileMocks.loadWorkflows.mockResolvedValue([workflow, retired, imported]);
     const { slice, getState } = createSlice();
 
     await slice.loadWorkflows();
 
     expect(fileMocks.deleteWorkflow).toHaveBeenCalledWith(retired.id);
-    expect(getState().workflows).toEqual([workflow]);
+    expect(fileMocks.deleteWorkflow).toHaveBeenCalledOnce();
+    expect(getState().workflows).toEqual([workflow, imported]);
+  });
+
+  it('重置内置工作流时清理全部退役项，保留用户工作流', async () => {
+    const retired = builtInMocks.retiredIds.map((id) => ({ ...workflow, id }));
+    const imported = { ...retired[0], id: 'wf-imported-h3' };
+    const { slice, getState } = createSlice([workflow, imported, ...retired]);
+
+    await slice.resetBuiltInWorkflows();
+
+    expect(fileMocks.deleteWorkflow.mock.calls.map(([id]) => id)).toEqual(builtInMocks.retiredIds);
+    expect(getState().workflows).toEqual([workflow, imported]);
   });
 
   it('加载失败时保留原列表，不按空列表处理', async () => {

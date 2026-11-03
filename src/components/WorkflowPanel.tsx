@@ -740,94 +740,98 @@ export default function WorkflowPanel() {
                         <div className="wf-item-row">
                           <div className="wf-item-info">
                             <span className="wf-item-name" title={wf.name}>{wf.name}</span>
-                            <span className="wf-item-meta">
-                              <span className="wf-item-file" title={wf.fileName}>{wf.fileName}</span>
-                              <span className="wf-item-sep">·</span>
-                              <span>{new Date(wf.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</span>
-                              {/* 从 ComfyUI 存回来的分类是猜的，猜错了在这里改 */}
-                              <Select
-                                className="wf-item-cat"
-                                triggerClassName="wf-item-cat-trigger"
-                                value={wf.category}
-                                title={t("修改分类")}
-                                options={CATEGORIES.filter((cat) => wf.adapterType === 'workflow-api' ? cat.value === wf.category : wf.adapterType !== 'runninghub' || cat.value !== 'ai-text').map((cat) => ({ value: cat.value, label: t(cat.label) }))}
-                                onChange={(value) => {
-                                  updateWorkflow(wf.id, { category: value as WorkflowCategory })
-                                    .catch(() => showToast('修改分类失败', 'error'));
-                                }}
-                              />
-                              {/* 只有配了多台服务端才需要选：单台时这一栏是纯噪音 */}
-                              {!['runninghub', 'workflow-api'].includes(wf.adapterType ?? '') && (comfyServers?.length ?? 0) > 0 && (
-                                <Select
-                                  className="wf-item-cat"
-                                  triggerClassName="wf-item-cat-trigger"
-                                  value={wf.serverId ?? ''}
-                                  title={t("选择执行这个工作流的 ComfyUI 服务端")}
-                                  options={[
-                                    { value: '', label: t('默认服务端') },
-                                    ...(comfyServers ?? []).map((server) => ({
-                                      value: server.id,
-                                      label: server.name || server.url,
-                                    })),
-                                  ]}
-                                  onChange={(value) => {
-                                    updateWorkflow(wf.id, { serverId: value || undefined })
-                                      .catch(() => showToast('绑定服务端失败', 'error'));
-                                  }}
-                                />
-                              )}
-                            </span>
+                            <span className="wf-item-meta wf-item-file" title={wf.fileName}>{wf.fileName}</span>
                           </div>
                           <div className="flex shrink-0 items-center gap-1">
-                            {nodeCount > 0 && (
-                              <button
-                                type="button"
-                                className="wf-item-toggle"
-                                onClick={() => handleToggleExpand(wf.id)}
-                                data-tooltip={expanded ? t('收起输入输出节点') : t('展开输入输出节点')}
-                                data-tooltip-pos="left"
-                                aria-expanded={expanded}
-                              >
-                                <svg className="wf-item-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                  <polyline points="9 18 15 12 9 6" />
-                                </svg>
-                                <span>{t('{count} 个节点', { count: nodeCount })}</span>
-                                {defaultCount > 0 && <span className="wf-item-star">★{defaultCount}</span>}
-                              </button>
-                            )}
-                            <motion.button
+                            <span className="wf-item-date">
+                              {new Date(wf.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+                            </span>
+                            <button
                               type="button"
-                              className="wf-item-del wf-item-edit disabled:opacity-50 disabled:cursor-wait"
+                              className="ui-icon-btn ui-icon-btn--sm ui-icon-btn--ghost disabled:cursor-wait"
                               onClick={(event) => void handleEdit(wf, event)}
                               disabled={wf.adapterType !== 'runninghub' && (editorOpen?.phase === 'checking' || editorOpen?.phase === 'opening')}
                               aria-label={t('编辑工作流：{name}', { name: wf.name })}
                               aria-busy={editorOpen?.workflowId === wf.id && (editorOpen.phase === 'checking' || editorOpen.phase === 'opening')}
                               data-tooltip={wf.adapterType === 'workflow-api' ? t('编辑工作流 API 连接') : wf.adapterType === 'runninghub' ? t('编辑云工作流参数') : t('在 ComfyUI 中编辑')}
                               data-tooltip-pos="left"
-                              whileHover={{ scale: 1.1 }}
-                              whileTap={{ scale: 0.9 }}
                             >
                               {editorOpen?.workflowId === wf.id && (editorOpen.phase === 'checking' || editorOpen.phase === 'opening') ? <span className="ui-spinner" aria-hidden="true" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                 <path d="M12 20h9" />
                                 <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
                               </svg>}
-                            </motion.button>
-                            <motion.button
+                            </button>
+                            <button
                               type="button"
-                              className="wf-item-del"
+                              className="ui-icon-btn ui-icon-btn--sm ui-icon-btn--ghost ui-icon-btn--danger"
                               onClick={(e) => handleDelete(wf.id, e)}
+                              aria-label={t("删除工作流")}
                               data-tooltip={t("删除工作流")}
                               data-tooltip-pos="left"
-                              whileHover={{ scale: 1.1 }}
-                              whileTap={{ scale: 0.9 }}
                             >
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                 <polyline points="3 6 5 6 21 6" />
                                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                               </svg>
-                            </motion.button>
+                            </button>
                           </div>
                         </div>{/* /wf-item-row */}
+
+                        <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
+                          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
+                            {/* 从 ComfyUI 存回来的分类是猜的，猜错了在这里改 */}
+                            <Select
+                              size="sm"
+                              className="max-w-full"
+                              value={wf.category}
+                              title={t("修改分类")}
+                              aria-label={t("修改分类")}
+                              options={CATEGORIES.filter((cat) => wf.adapterType === 'workflow-api' ? cat.value === wf.category : wf.adapterType !== 'runninghub' || cat.value !== 'ai-text').map((cat) => ({ value: cat.value, label: t(cat.label) }))}
+                              onChange={(value) => {
+                                updateWorkflow(wf.id, { category: value as WorkflowCategory })
+                                  .catch(() => showToast('修改分类失败', 'error'));
+                              }}
+                            />
+                            {/* 只有配了多台服务端才需要选：单台时这一栏是纯噪音 */}
+                            {!['runninghub', 'workflow-api'].includes(wf.adapterType ?? '') && (comfyServers?.length ?? 0) > 0 && (
+                              <Select
+                                size="sm"
+                                className="max-w-full"
+                                value={wf.serverId ?? ''}
+                                title={t("选择执行这个工作流的 ComfyUI 服务端")}
+                                aria-label={t("选择执行这个工作流的 ComfyUI 服务端")}
+                                options={[
+                                  { value: '', label: t('默认服务端') },
+                                  ...(comfyServers ?? []).map((server) => ({
+                                    value: server.id,
+                                    label: server.name || server.url,
+                                  })),
+                                ]}
+                                onChange={(value) => {
+                                  updateWorkflow(wf.id, { serverId: value || undefined })
+                                    .catch(() => showToast('绑定服务端失败', 'error'));
+                                }}
+                              />
+                            )}
+                          </div>
+                          {nodeCount > 0 && (
+                            <button
+                              type="button"
+                              className="ui-btn ui-btn--sm ui-btn--ghost ml-auto shrink-0"
+                              onClick={() => handleToggleExpand(wf.id)}
+                              data-tooltip={expanded ? t('收起输入输出节点') : t('展开输入输出节点')}
+                              data-tooltip-pos="left"
+                              aria-label={expanded ? t('收起输入输出节点') : t('展开输入输出节点')}
+                              aria-expanded={expanded}
+                            >
+                              <svg className="wf-item-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
+                                <polyline points="9 18 15 12 9 6" />
+                              </svg>
+                              <span>{t('{count} 个节点', { count: nodeCount })}</span>
+                              {defaultCount > 0 && <span className="wf-item-star">★{defaultCount}</span>}
+                            </button>
+                          )}
+                        </div>
 
                         {wf.adapterType !== 'runninghub' && editorOpen?.workflowId === wf.id && (
                           <div className={`ui-alert mt-2 flex-wrap ${editorOpen.phase === 'error' ? 'ui-alert--danger' : 'ui-alert--info'}`} role={editorOpen.phase === 'error' ? 'alert' : 'status'}>

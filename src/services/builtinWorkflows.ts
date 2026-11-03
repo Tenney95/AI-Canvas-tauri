@@ -4,14 +4,25 @@
  */
 import type { WorkflowDefinition, WorkflowIONodeType } from '../types';
 import { extractComfyUIIONodes } from './comfyUIWindowService';
-const WORKFLOW_FILES = import.meta.glob('../assets/comfyWorkflows/*.json', {
+// 退役图保留为手动导入兼容性的回归样本，不再打入内置资源。
+const WORKFLOW_FILES = import.meta.glob([
+  '../assets/comfyWorkflows/*.json',
+  '!../assets/comfyWorkflows/minimax-h3-t2v.json',
+  '!../assets/comfyWorkflows/minimax-h3-t2v-turbo.json',
+  '!../assets/comfyWorkflows/minimax-h3-r2v.json',
+  '!../assets/comfyWorkflows/minimax-h3-r2v-turbo.json',
+], {
   query: '?raw',
   import: 'default',
   eager: true,
 }) as Record<string, string>;
 
 /** ComfyUI 界面格式的同名工作流；有它才能在 ComfyUI 里正常打开编辑 */
-const WORKFLOW_UI_FILES = import.meta.glob('../assets/comfyWorkflows/ui/*.json', {
+const WORKFLOW_UI_FILES = import.meta.glob([
+  '../assets/comfyWorkflows/ui/*.json',
+  '!../assets/comfyWorkflows/ui/minimax-h3-t2v.json',
+  '!../assets/comfyWorkflows/ui/minimax-h3-r2v.json',
+], {
   query: '?raw',
   import: 'default',
   eager: true,
@@ -31,6 +42,10 @@ function readWorkflowUiFile(fileName: string): string | undefined {
 const SEEDED_IDS_KEY = 'aicanvas.builtinWorkflows.seededIds';
 export const RETIRED_BUILT_IN_WORKFLOW_IDS = [
   'builtin-minimax-h3-pdd-r2v-lowvram',
+  'builtin-minimax-h3-t2v',
+  'builtin-minimax-h3-t2v-turbo',
+  'builtin-minimax-h3-r2v',
+  'builtin-minimax-h3-r2v-turbo',
 ] as const;
 
 export function isRetiredBuiltInWorkflow(id: string): boolean {
@@ -97,28 +112,10 @@ const BUILT_IN_SPECS: BuiltInWorkflowSpec[] = [
     defaultNodes: { prompt: '10', audio: '7' },
   },
   {
-    id: 'builtin-minimax-h3-t2v',
-    name: 'MiniMax H3 文生视频',
-    fileName: 'minimax-h3-t2v.json',
-    defaultNodes: { prompt: '105:104' },
-  },
-  {
     id: 'builtin-minimax-h3-i2v',
     name: 'MiniMax H3 图生视频',
     fileName: 'minimax-h3-i2v.json',
     defaultNodes: { prompt: '105:104', image: '114' },
-  },
-  {
-    id: 'builtin-minimax-h3-r2v',
-    name: 'MiniMax H3 参考生视频',
-    fileName: 'minimax-h3-r2v.json',
-    defaultNodes: { prompt: '138', image: '137' },
-  },
-  {
-    id: 'builtin-minimax-h3-t2v-turbo',
-    name: 'MiniMax H3 文生视频（Turbo 加速）',
-    fileName: 'minimax-h3-t2v-turbo.json',
-    defaultNodes: { prompt: '130' },
   },
   {
     id: 'builtin-minimax-h3-i2v-turbo',
@@ -131,12 +128,6 @@ const BUILT_IN_SPECS: BuiltInWorkflowSpec[] = [
     name: 'MiniMax H3 图生视频（12GB 极速·4B）',
     fileName: 'minimax-h3-i2v-fast-12gb.json',
     defaultNodes: { prompt: '132', image: '114' },
-  },
-  {
-    id: 'builtin-minimax-h3-r2v-turbo',
-    name: 'MiniMax H3 参考生视频（Turbo 加速）',
-    fileName: 'minimax-h3-r2v-turbo.json',
-    defaultNodes: { prompt: '138', image: '169', video: '167' },
   },
   {
     id: 'builtin-minimax-h3-pdd-i2v',

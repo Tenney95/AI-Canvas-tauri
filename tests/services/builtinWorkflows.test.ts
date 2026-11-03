@@ -2,6 +2,9 @@
  * builtinWorkflows — 回归测试：内置 MiniMax H3 工作流。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import legacyTextToVideo from '../../src/assets/comfyWorkflows/minimax-h3-t2v.json?raw';
+import legacyReferenceToVideo from '../../src/assets/comfyWorkflows/minimax-h3-r2v.json?raw';
+import legacyReferenceToVideoTurbo from '../../src/assets/comfyWorkflows/minimax-h3-r2v-turbo.json?raw';
 
 const mocks = vi.hoisted(() => ({
   corsSafeFetch: vi.fn(),
@@ -31,7 +34,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
   resolveNodeReferencesAsync: async (value: string) => value,
 }));
 
-import { pendingBuiltInWorkflows, resetBuiltInWorkflows, withBuiltInEditableContent } from '../../src/services/builtinWorkflows';
+import { isRetiredBuiltInWorkflow, pendingBuiltInWorkflows, resetBuiltInWorkflows, withBuiltInEditableContent } from '../../src/services/builtinWorkflows';
 import { executeComfyUIGenerate, executeComfyUIAudioGenerate, executeComfyUIVideoGenerate } from '../../src/services/comfyWorkflowService';
 import { extractComfyUIIONodes } from '../../src/services/comfyUIWindowService';
 import { resolveVideoSubmissionControls } from '../../src/services/ai/videoRequestResolver';
@@ -56,13 +59,32 @@ function submittedWorkflow(): Record<string, { class_type: string; inputs: Recor
   return JSON.parse(String((call?.[1] as RequestInit).body)).prompt;
 }
 
-/** 把内置工作流装进 store，然后按 id 提交一次 */
-async function runBuiltIn(
+// 退役的图仍可由用户手动导入；保留其参数注入与参考素材裁剪回归。
+const legacyImports: WorkflowDefinition[] = [
+  {
+    id: 'wf-imported-h3-t2v', fileName: 'minimax-h3-t2v.json',
+    fileContent: legacyTextToVideo, defaultNodes: { prompt: '105:104' },
+  },
+  {
+    id: 'wf-imported-h3-r2v', fileName: 'minimax-h3-r2v.json',
+    fileContent: legacyReferenceToVideo, defaultNodes: { prompt: '138', image: '137' },
+  },
+  {
+    id: 'wf-imported-h3-r2v-turbo', fileName: 'minimax-h3-r2v-turbo.json',
+    fileContent: legacyReferenceToVideoTurbo, defaultNodes: { prompt: '138', image: '169', video: '167' },
+  },
+].map((workflow) => ({
+  ...workflow, name: workflow.fileName, category: 'ai-video' as const,
+  ioNodes: extractComfyUIIONodes(workflow.fileContent), createdAt: 1,
+}));
+
+/** 把内置与手动导入的工作流装进 store，然后按 id 提交一次。 */
+async function runWorkflow(
   workflowId: string,
   params: Parameters<typeof executeComfyUIVideoGenerate>[0],
   promptMedia: { imageUrls?: string[]; videoUrls?: string[] } = {},
 ) {
-  const workflows = pendingBuiltInWorkflows([]);
+  const workflows = [...pendingBuiltInWorkflows([]), ...legacyImports];
   mocks.storeState.workflows = workflows as unknown as Array<Record<string, unknown>>;
   await executeComfyUIVideoGenerate({ ...params, workflowId }, undefined, [], promptMedia);
   return workflows.find((workflow) => workflow.id === workflowId) as WorkflowDefinition;
@@ -90,11 +112,11 @@ beforeEach(() => {
 });
 
 describe('内置 MiniMax H3 工作流', () => {
-  it('首次启动播种一个图片、十一个视频与七个音频工作流，之后不再重复添加', () => {
+  it('首次启动播种一个图片、七个视频与七个音频工作流，之后不再重复添加', () => {
     const first = pendingBuiltInWorkflows([]);
-    expect(first).toHaveLength(19);
+    expect(first).toHaveLength(15);
     expect(first.filter((workflow) => workflow.category === 'ai-image')).toHaveLength(1);
-    expect(first.filter((workflow) => workflow.category === 'ai-video')).toHaveLength(11);
+    expect(first.filter((workflow) => workflow.category === 'ai-video')).toHaveLength(7);
     expect(first.filter((workflow) => workflow.category === 'ai-audio')).toHaveLength(7);
     expect(pendingBuiltInWorkflows([])).toHaveLength(0);
   });
@@ -102,11 +124,22 @@ describe('内置 MiniMax H3 工作流', () => {
   it('只记账已经建出来的，剩下的下次启动继续补', () => {
     localStorage.setItem(
       'aicanvas.builtinWorkflows.seededIds',
-      JSON.stringify(['builtin-minimax-h3-t2v']),
+      JSON.stringify(['builtin-minimax-h3-i2v']),
     );
     const pending = pendingBuiltInWorkflows([]);
-    expect(pending.map((workflow) => workflow.id)).not.toContain('builtin-minimax-h3-t2v');
-    expect(pending).toHaveLength(18);
+    expect(pending.map((workflow) => workflow.id)).not.toContain('builtin-minimax-h3-i2v');
+    expect(pending).toHaveLength(14);
+  });
+
+  it.each([
+    'builtin-minimax-h3-t2v',
+    'builtin-minimax-h3-t2v-turbo',
+    'builtin-minimax-h3-r2v',
+    'builtin-minimax-h3-r2v-turbo',
+  ])('%s 已退役，首次播种和重置均不再提供', (id) => {
+    expect(isRetiredBuiltInWorkflow(id)).toBe(true);
+    expect(pendingBuiltInWorkflows([]).map((workflow) => workflow.id)).not.toContain(id);
+    expect(resetBuiltInWorkflows().map((workflow) => workflow.id)).not.toContain(id);
   });
 
   it('默认 IO 节点都能在工作流 JSON 里找到对应的输入', () => {
@@ -173,8 +206,8 @@ describe('内置 MiniMax H3 工作流', () => {
     expect(withBuiltInEditableContent(workflow)).toBeNull();
   });
 
-  it('文生视频：分辨率写进 ResolutionSelector，时长写进秒数节点，帧率保持工作流原值', async () => {
-    await runBuiltIn('builtin-minimax-h3-t2v', {
+  it('手动导入旧版文生视频：分辨率写进 ResolutionSelector，时长写进秒数节点，帧率保持工作流原值', async () => {
+    await runWorkflow('wf-imported-h3-t2v', {
       prompt: '海边日落',
       model: 'wf',
       provider: 'comfyui',
@@ -203,7 +236,7 @@ describe('内置 MiniMax H3 工作流', () => {
     { name: '选择 3 秒覆盖旧的 121 帧', controls: { seedanceDuration: 3, videoFrames: 121 }, seconds: 3 },
   ])('图生视频时长提交：$name', async ({ controls, seconds }) => {
     const workflowId = 'builtin-minimax-h3-i2v';
-    await runBuiltIn(workflowId, {
+    await runWorkflow(workflowId, {
       // 提示词里的秒数不能覆盖参数控件。
       prompt: 'Create a 5-second shot', model: 'wf', provider: 'comfyui',
       ...resolveVideoSubmissionControls({ provider: 'comfyui', workflowId, ...controls }),
@@ -219,7 +252,7 @@ describe('内置 MiniMax H3 工作流', () => {
   });
 
   it('图生视频：连线图片上传后写进 LoadImage', async () => {
-    await runBuiltIn(
+    await runWorkflow(
       'builtin-minimax-h3-i2v',
       { prompt: '让它动起来', model: 'wf', provider: 'comfyui', seedanceRatio: '9:16' },
       { imageUrls: ['data:image/png;base64,QUJD'] },
@@ -230,9 +263,9 @@ describe('内置 MiniMax H3 工作流', () => {
     expect(submitted['115'].inputs.aspect_ratio).toBe('9:16 (Portrait Widescreen)');
   });
 
-  it('参考生视频：只给一张图时，多余的参考位连同视频链路一起摘掉', async () => {
-    await runBuiltIn(
-      'builtin-minimax-h3-r2v-turbo',
+  it('手动导入旧版参考生视频：只给一张图时，多余的参考位连同视频链路一起摘掉', async () => {
+    await runWorkflow(
+      'wf-imported-h3-r2v-turbo',
       { prompt: '按参考图生成', model: 'wf', provider: 'comfyui' },
       { imageUrls: ['data:image/png;base64,QUJD'] },
     );
@@ -247,9 +280,9 @@ describe('内置 MiniMax H3 工作流', () => {
       .toEqual(['ref_image_size', 'ref_images.ref_image_0']);
   });
 
-  it('参考生视频：两张图各就各位，不会互相覆盖', async () => {
-    await runBuiltIn(
-      'builtin-minimax-h3-r2v',
+  it('手动导入旧版参考生视频：两张图各就各位，不会互相覆盖', async () => {
+    await runWorkflow(
+      'wf-imported-h3-r2v',
       { prompt: '双角色同框', model: 'wf', provider: 'comfyui' },
       // 上传结果按内容缓存，这里要用别的用例没传过的图，否则命中缓存就不会真的上传
       { imageUrls: ['data:image/png;base64,SEhI', 'data:image/png;base64,SUlJ'] },
@@ -300,7 +333,7 @@ describe('内置 AuK 音频工作流', () => {
     expect(pending.map((workflow) => workflow.id)).toEqual(['builtin-auk-tts', 'builtin-auk-voice-cloning']);
     expect(existing[0].name).toBe('用户修改的名字');
     expect(pendingBuiltInWorkflows(existing)).toEqual([]);
-    expect(resetBuiltInWorkflows()).toHaveLength(19);
+    expect(resetBuiltInWorkflows()).toHaveLength(15);
   });
 
   it.each(['builtin-auk-tts', 'builtin-auk-voice-cloning'])('%s 保留可编辑布局、模型、采样参数和全部执行连线', (id) => {
@@ -465,10 +498,10 @@ describe('内置 DLSS5 材质增强工作流', () => {
     });
   });
 
-  it('从原十七项增量添加两项，保留用户编辑、删除记录及同名导入项', () => {
+  it('增量添加两项 DLSS5，保留用户编辑、删除记录及同名导入项', () => {
     const all = resetBuiltInWorkflows();
     const existing = all.filter((workflow) => !ids.includes(workflow.id));
-    expect(existing).toHaveLength(17);
+    expect(existing).toHaveLength(13);
     localStorage.setItem('aicanvas.builtinWorkflows.seededIds', JSON.stringify(existing.map((workflow) => workflow.id)));
     existing.pop();
     existing[0].name = '用户编辑';
@@ -580,7 +613,7 @@ describe('内置 Qwen3 音频工作流', () => {
 
   it('已有其他项的用户只补三个 Qwen3 工作流，保留修改且不重复播种', () => {
     const existing = resetBuiltInWorkflows().filter((workflow) => !ids.includes(workflow.id));
-    expect(existing).toHaveLength(16);
+    expect(existing).toHaveLength(12);
     existing[0].name = '自定义 AuK';
     localStorage.setItem('aicanvas.builtinWorkflows.seededIds', JSON.stringify(existing.map((workflow) => workflow.id)));
     const pending = pendingBuiltInWorkflows(existing);
@@ -754,7 +787,7 @@ describe('内置 H3 PDD 与 Breeze TTS 2', () => {
 
   it('已有其他项时补齐四项单图PDD与Breeze，保留用户修改和删除记录', () => {
     const existing = resetBuiltInWorkflows().filter((workflow) => !ids.includes(workflow.id));
-    expect(existing).toHaveLength(15);
+    expect(existing).toHaveLength(11);
     const seeded = existing.map((workflow) => workflow.id);
     const removedId = existing.pop()!.id;
     existing[0].name = '用户自定义';
@@ -876,7 +909,7 @@ describe('内置 H3 PDD 自由参考', () => {
   it('已有项只补缺少的自由参考，不覆盖用户修改、删除记录及同名 MCP 导入项', () => {
     const all = resetBuiltInWorkflows();
     const existing = all.filter((workflow) => workflow.id !== id);
-    expect(existing).toHaveLength(18);
+    expect(existing).toHaveLength(14);
     localStorage.setItem('aicanvas.builtinWorkflows.seededIds', JSON.stringify(existing.map((workflow) => workflow.id)));
     const removed = existing.pop()!.id;
     existing[0].name = '保留用户修改';

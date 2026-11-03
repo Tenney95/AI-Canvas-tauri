@@ -120,7 +120,11 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 ### 4.2 内置工作流播种
 
-[builtinWorkflows.ts](../src/services/builtinWorkflows.ts) 内置了 10 个 MiniMax H3 视频工作流（原有文生/图生/参考生 × 普通/Turbo、3 个 PDD，以及 12GB 极速图生视频）、DLSS5 图片与视频材质增强各 1 项、2 个 AuK、3 个 Qwen3 和 2 个 Breeze TTS 2 音频工作流。每项可独立声明分类，未声明时保留视频分类。API JSON 打包在 `src/assets/comfyWorkflows/` 下，界面格式放在同级 `ui/` 里。
+[builtinWorkflows.ts](../src/services/builtinWorkflows.ts) 内置了 6 个 MiniMax H3 视频工作流（普通/Turbo 图生视频、3 个 PDD，以及 12GB 极速图生视频）、DLSS5 图片与视频材质增强各 1 项、2 个 AuK、3 个 Qwen3 和 2 个 Breeze TTS 2 音频工作流，共 15 项。每项可独立声明分类，未声明时保留视频分类。API JSON 位于 `src/assets/comfyWorkflows/`，界面格式放在同级 `ui/` 里；打包仅包含仍在内置目录中的资源。
+
+**H3 旧模板退役（2026-11-03，已实现，待用户验收）**：按用户要求移除 MiniMax H3 文生视频、文生视频（Turbo 加速）、参考生视频、参考生视频（Turbo 加速）四项。它们不再播种或由“重置内置工作流”恢复；加载和重置复用既有退役清理机制，只按四个固定内置 ID 移除已有记录，用户手动导入的独立 ID 副本保留。旧 JSON 保留作兼容回归样本，已从内置资源打包中排除。
+
+桌面验收：运行新版后重新打开工作流管理，确认四项消失，其他 H3 图生/PDD、图片与音频工作流以及同名手动导入副本仍保留；再次启动不应补回。可在临时数据环境点击“重置内置工作流”确认仍只有 15 项内置定义，避免覆盖日常已修改的模板。回归入口为 `tests/services/builtinWorkflows.test.ts` 和 `tests/store/workflowsPersistence.test.ts`；本次未运行测试，待用户验收。回滚撤销本次退役声明与注册变更；已清理的原内置定义需手动重置恢复，原记录的用户修改不由重置恢复。
 
 **DLSS5 材质增强**
 

@@ -770,43 +770,43 @@
 .wf-item {
   display: flex;
   flex-direction: column;
-  padding: 6px 8px;
-  border: 1px solid var(--white-alpha-04);
-  border-radius: 8px;
-  background: var(--white-alpha-03);
+  min-width: 0;
+  padding: var(--ui-pad-sm);
+  border: 1px solid var(--theme-border);
+  border-radius: var(--ui-radius);
+  background: var(--theme-card);
   transition: background var(--transition-base), border-color var(--transition-base);
 }
 .wf-item:hover {
-  background: var(--white-alpha-06);
-  border-color: var(--border-subtle);
+  background: var(--theme-hover);
+  border-color: var(--border-secondary);
 }
 .wf-item.is-expanded {
-  border-color: var(--border-subtle);
+  border-color: var(--border-secondary);
 }
 .wf-item-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .wf-item-info {
-  flex: 1;
+  flex: 1 1 120px;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
 .wf-item-name {
   font-size: 13px;
+  font-weight: 500;
   color: var(--theme-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .wf-item-meta {
-  display: flex;
-  align-items: center;
-  gap: 4px;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--ui-font-sm);
   color: var(--theme-text-muted);
   margin-top: 1px;
 }
@@ -815,32 +815,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.wf-item-sep {
-  opacity: 0.5;
-}
-/* 节点徽章折叠开关：平时只留数量，展开后才铺开 */
-.wf-item-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid transparent;
-  border-radius: 11px;
-  background: var(--white-alpha-04);
+.wf-item-date {
+  flex-shrink: 0;
+  margin-right: 4px;
   color: var(--theme-text-muted);
-  font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-font-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--ui-control-h-sm);
   white-space: nowrap;
-  cursor: var(--cursor-pointer, pointer);
-  transition: var(--transition-colors);
-}
-.wf-item-toggle:hover {
-  color: var(--theme-text);
-  border-color: var(--border-secondary);
 }
 .wf-item-chevron {
-  transition: transform 0.18s ease;
+  transition: transform var(--transition-base);
 }
 .wf-item.is-expanded .wf-item-chevron {
   transform: rotate(90deg);
@@ -848,42 +833,11 @@
 .wf-item-star {
   color: var(--brand-light);
 }
-.wf-item-toggle[data-tooltip]::after {
-  top: 50%;
-  right: calc(100% + 6px);
-  bottom: auto;
-  left: auto;
-  transform: translateY(-50%);
-}
-.wf-item-del {
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-muted);
-  border-radius: 5px;
-  cursor: var(--cursor-pointer, pointer);
-  transition: color var(--transition-base), background var(--transition-base);
-  padding: 0;
-  flex-shrink: 0;
-}
-.wf-item-del[data-tooltip]::after {
-  top: 50%;
-  right: calc(100% + 6px);
-  bottom: auto;
-  left: auto;
-  transform: translateY(-50%);
-}
-.wf-item-del:hover {
-  color: var(--danger-light);
-  background: var(--danger-bg);
-}
-.wf-item-edit:hover {
-  color: var(--node-text-light);
-  background: var(--node-text-bg);
+@media (prefers-reduced-motion: reduce) {
+  .wf-item,
+  .wf-item-chevron {
+    transition: none;
+  }
 }
 
 /* ── IO node badges for workflow upload & list ── */
@@ -913,33 +867,6 @@
   font-size: 11px;
   white-space: nowrap;
 }
-.wf-item-cat {
-  flex-shrink: 0;
-  margin-left: 2px;
-}
-.ui-select__trigger.wf-item-cat-trigger {
-  height: auto;
-  min-height: 18px;
-  padding: 0 14px 0 4px;
-  border: 1px solid var(--theme-border);
-  border-radius: 5px;
-  background: var(--theme-input-bg);
-  color: inherit;
-  font: inherit;
-  font-size: 10px;
-  cursor: var(--cursor-pointer, pointer);
-  transition: var(--transition-colors);
-}
-.ui-select__trigger.wf-item-cat-trigger:hover {
-  color: var(--theme-text);
-  border-color: var(--border-secondary);
-}
-.ui-select__trigger.wf-item-cat-trigger .ui-select__chevron {
-  right: 2px;
-  width: 10px;
-  height: 10px;
-}
-
 /* 列表里的徽章是按钮：点一下把该节点设为对应类型的默认注入目标 */
 button.wf-ionode-badge {
   border: 1px solid transparent;
@@ -1049,8 +976,7 @@ button.wf-ionode-badge.is-default {
 [data-theme='light'] .wf-msg-success {
   color: color-mix(in srgb, var(--success) 68%, var(--theme-text));
 }
-[data-theme='light'] .wf-msg-error,
-[data-theme='light'] .wf-item-del:hover {
+[data-theme='light'] .wf-msg-error {
   color: color-mix(in srgb, var(--danger) 72%, var(--theme-text));
 }
 [data-theme='light'] .wf-ionode-prompt {
