@@ -3,8 +3,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
-import type { BaseNodeData } from '../../src/types';
-import { runningHubInputNodes } from '../../src/services/runninghubWorkflowService';
+import type { BaseNodeData, WorkflowDefinition } from '../../src/types';
+import { runningHubInputNodes, workflowInputNodes } from '../../src/services/runninghubWorkflowService';
 import type { DramaAsset, DramaAssetBase, DramaAssetLibrary, DramaCharacter } from '../../src/types/dramaAssets';
 import {
   matchesMentionQuery,
@@ -23,6 +23,30 @@ it('RH 的同一远端节点多个字段作为不同 @ 目标，普通参数不�
     { nodeId: '9', fieldName: 'model', label: '模型', type: 'string', defaultValue: 'model', source: 'value', sourceExplicit: true },
   ] });
   expect(resolveWorkflowMentionNodes('rh', inputs).map((item) => item._ioNodeId)).toEqual(['9::first', '9::last']);
+});
+
+it.each(['workflow', 'app'] as const)('RH %s 复用 ComfyUI 输入分类，按原字段身份搜索并选择文本和媒体目标', (kind) => {
+  const workflow: WorkflowDefinition = { id: 'rh', name: 'RH', category: 'ai-video', adapterType: 'runninghub',
+    fileContent: '', fileName: '', createdAt: 1, runninghub: { version: 1, kind, remoteId: '123', connectionId: 'runninghub', parameters: [
+      { nodeId: '57:27', fieldName: 'text', label: '提示词', type: 'string', defaultValue: '', source: 'prompt' },
+      { nodeId: '9', fieldName: 'image', label: '参考图片', type: 'string', defaultValue: '', source: 'image' },
+      { nodeId: '11', fieldName: 'video', label: '动作视频', type: 'string', defaultValue: '', source: 'video' },
+      { nodeId: '10', fieldName: 'audio', label: '参考音频', type: 'string', defaultValue: '', source: 'audio' },
+      { nodeId: '9', fieldName: 'steps', label: '步数', type: 'number', defaultValue: 25, source: 'value' },
+    ] } };
+  const items = resolveWorkflowMentionNodes(workflow.id, workflowInputNodes(workflow));
+  expect(items.map((item) => item._ioNodeId)).toEqual(['57%3A27::text', '9::image', '11::video', '10::audio']);
+  expect(workflowMentionFilterChips(items)).toEqual([
+    { id: 'all', label: '全部', count: 4 }, { id: 'image', label: '图片', count: 1 },
+    { id: 'video', label: '视频', count: 1 }, { id: 'audio', label: '音乐', count: 1 },
+    { id: 'prompt', label: '文本', count: 1 },
+  ]);
+  expect(filterWorkflowMentions(items, 'prompt')[0]).toMatchObject({ _ioNodeId: '57%3A27::text', _ioType: 'prompt' });
+  expect(filterWorkflowMentions(items, 'image')[0]._ioNodeId).toBe('9::image');
+  expect(filterWorkflowMentions(items, 'video')[0]._ioNodeId).toBe('11::video');
+  expect(filterWorkflowMentions(items, 'audio')[0]._ioNodeId).toBe('10::audio');
+  expect(items.filter((item) => matchesMentionQuery('57:27 提示词', [item.label, item._ioNodeId]))).toHaveLength(1);
+  expect(resolveWorkflowMentionNodes(undefined, workflowInputNodes(workflow))).toEqual([]);
 });
 
 function node(

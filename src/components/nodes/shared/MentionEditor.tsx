@@ -616,6 +616,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const [comfySection, setComfySection] = useState<'inputs' | 'roles'>('inputs');
   const [workflowMediaFilter, setWorkflowMediaFilter] = useState<'all' | WorkflowIONodeType>('all');
   const localComfyWorkflow = selectedWorkflow && (!selectedWorkflow.adapterType || selectedWorkflow.adapterType === 'comfyui') ? selectedWorkflow : undefined;
+  // RH 已提供相同的定向输入；只有角色参考包仍限定本地 ComfyUI。
+  const hasWorkflowInputTab = !!localComfyWorkflow || selectedWorkflow?.adapterType === 'runninghub';
   const canMentionRefmod = !disabled && isVideoNode && currentEditorNode?.data.role !== 'source' && currentEditorNode?.data.status !== 'loading' && !!localComfyWorkflow;
   const activeRefmodSession = refmodSession && canMentionRefmod && refmodSession.projectId === currentProjectId && refmodSession.nodeId === nodeId
     && refmodSession.workflow === selectedWorkflow ? refmodSession : undefined;
@@ -2045,10 +2047,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
 
   // 首次打开优先展示有内容的分类；手动切换后保留选择，工作流取消时回到普通分类。
   const defaultTab = nodeTabItems.length > 0 ? 'nodes'
-    : localComfyWorkflow && workflowTabItems.length > 0 ? 'workflow'
+    : hasWorkflowInputTab && workflowTabItems.length > 0 ? 'workflow'
       : assetTabItems.length > 0 ? 'assets' : 'nodes';
   const effectiveTab = drillItem ? 'assets'
-    : pickerTab === 'workflow' && !localComfyWorkflow ? defaultTab
+    : pickerTab === 'workflow' && !hasWorkflowInputTab ? defaultTab
       : pickerTab ?? defaultTab;
   const activeTabItems = effectiveTab === 'assets' ? assetTabItems
     : effectiveTab === 'workflow' ? workflowTabItems : nodeTabItems;
@@ -2375,7 +2377,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
             tabs={[
               { id: 'nodes', label: isAudioNode ? t('输入音频') : t('输入图'), icon: isAudioNode ? MEDIA_ICONS.audio : 'mdi:image-multiple-outline' },
               { id: 'assets', label: t('资产库'), icon: 'mdi:bookshelf' },
-              ...(localComfyWorkflow ? [{ id: 'workflow', label: 'ComfyUI' }] : []),
+              ...(hasWorkflowInputTab ? [{ id: 'workflow', label: 'ComfyUI' }] : []),
             ]}
             activeTab={effectiveTab}
             onTabChange={(id) => {
