@@ -436,6 +436,10 @@ async function setupImageFullscreen() {
   vi.doMock('@xyflow/react', () => ({ Handle: () => null, Position: { Left: 'left', Right: 'right' } }));
   vi.doMock('../../src/components/nodes/shared/image/ImageNodeToolbar', () => ({ default: () => null }));
   // 这里只执行父节点的开图保存屏障；预览/轮询子组件不渲染，避免冷导入整套媒体服务。
+  vi.doMock('../../src/components/shared/FullscreenOverlay', () => ({ default: () => null }));
+  vi.doMock('../../src/components/nodes/shared/NodeLabel', () => ({ default: () => null }));
+  vi.doMock('../../src/components/nodes/shared/ResizeHandle', () => ({ default: () => null }));
+  vi.doMock('../../src/components/nodes/shared/NodeError', () => ({ default: () => null }));
   vi.doMock('../../src/components/shared/CanvasImagePreview', () => ({ default: () => null }));
   vi.doMock('../../src/components/nodes/shared/MediaTaskStatus', () => ({ default: () => null }));
   vi.doMock('../../src/components/shared/ModelDownloadDialog', () => ({ default: () => null, DOWNLOAD_MASCOT_EVENT: 'ai-canvas:download-mascot' }));
@@ -467,6 +471,8 @@ describe('image fullscreen save barrier', () => {
   afterEach(() => {
     for (const path of [
       '@xyflow/react', '../../src/components/nodes/shared/image/ImageNodeToolbar',
+      '../../src/components/shared/FullscreenOverlay', '../../src/components/nodes/shared/NodeLabel',
+      '../../src/components/nodes/shared/ResizeHandle', '../../src/components/nodes/shared/NodeError',
       '../../src/components/shared/CanvasImagePreview', '../../src/components/nodes/shared/MediaTaskStatus',
       '../../src/components/shared/ModelDownloadDialog', '../../src/components/nodes/shared/image/CanvasPreviewImage',
       '../../src/hooks/useCanvasNodeLod', '../../src/components/nodes/shared/image/useImageNodeOnnxActions',

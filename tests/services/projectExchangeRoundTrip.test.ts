@@ -176,7 +176,7 @@ describe('项目协作格式错误定位', () => {
 
   it.each([
     { code: 'missing_dependency', id: 'a-target', prompt: '@{missing-source:缺失节点}', field: 'entities[3].references' },
-    { code: 'invalid_identity', id: 'C:/private/invalid-node', prompt: '保留正文', field: 'entities[3].id' },
+    { code: 'invalid_identity', id: 'a-target', prompt: '@{/private/invalid-node:无效引用}', field: 'entities[3].references[0].id' },
   ])('$code 保留原实体索引并指出正确项目、分集和节点', ({ code, id, prompt, field }) => {
     const owner: ProjectSaveData = { id: 'root', name: '剧集', nodes: [], edges: [], createdAt: 1, updatedAt: 2 };
     const episode = { ...owner, id: 'episode', parentId: 'root', name: 'EP000', nodes: [
@@ -189,7 +189,7 @@ describe('项目协作格式错误定位', () => {
     expect(error.message).toContain('所属位置：项目「剧集」 → 分集「EP000」 → 节点 #93「错误目标」');
     expect(error.message).not.toContain('z-unrelated');
     expect(error.message).not.toContain('无关节点');
-    expect(error.message).not.toContain('C:/private/');
+    expect(error.message).not.toContain('/private/');
   });
 
   it('零字节图片的媒体格式错误能定位对应项目文件', () => {

@@ -1104,16 +1104,18 @@ describe('pending generation task recovery', () => {
       },
     });
     await resumePendingTasks('project-1');
-    await vi.waitFor(() => expect(useAppStore.getState().nodes[0].data).toMatchObject({
-      status: 'success', videoUrl: 'asset://recovered-video.mp4',
-    }));
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().nodes[0].data).toMatchObject({
+        status: 'success', videoUrl: 'asset://recovered-video.mp4',
+      });
+      expect(getPendingTasksForProject('project-1')).toEqual([]);
+    });
     expect(persistMedia).toHaveBeenCalledWith('data:video/mp4;base64,AQID', 'project-1', 'ai-video', 'Video', {
       mediaDownloadAccess: { providerConfigId: 'custom-video', origin: 'https://gateway.example' },
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenLastCalledWith('https://gateway.example/v1/videos/video-1/content',
       expect.objectContaining({ method: 'GET', headers: { Accept: 'video/mp4', Authorization: 'Bearer current-provider-key' } }));
-    expect(getPendingTasksForProject('project-1')).toEqual([]);
   });
 
   it('keeps loading placeholders covered by a resumable image batch task', () => {
