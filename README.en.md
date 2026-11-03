@@ -14,7 +14,7 @@
 
 AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, Markdown, shot lists, 360° panoramas and hand-drawn notes into connectable canvas nodes. In a single project you can orchestrate generation pipelines, manage characters, scenes, props and local media assets, run ComfyUI workflows, and use the conversational assistant to query or modify the canvas, generate media, dispatch read-only sub-agents, read authorized files, and accumulate project memory. Projects can also be split into series and episodes — each episode of an AI short drama gets its own canvas, while the character library and assets are shared across the whole series.
 
-![Version](https://img.shields.io/badge/version-0.10.23-6366f1)
+![Version](https://img.shields.io/badge/version-0.10.24-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
@@ -41,6 +41,7 @@ AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, 
 | Frame animation editing & export | Import or generate sprite sheets, edit animation frames and playback, and export GIFs, PNG sequences or atlases. |
 | AI & workflows | Connect cloud and custom models, CCC, LibAPI text/image/video/audio models, multiple ComfyUI servers, RunningHub, generic workflow APIs, Dreamina and local ONNX models. |
 | Workflow parameters | Local ComfyUI and RunningHub share a parameter popover with declared ratios, resolution, steps and schedulers. Fields show `C#` node IDs and detected prompt roles; the default prompt and references remain in the node composer. |
+| Workflow seeds & download recovery | Choose random or fixed numeric seeds and reuse the last workflow and dimensions for new empty nodes. Retry downloads from output history using the original task; project export handles nested Windows asset paths and reports missing references. |
 | Preset workflows & sharing | Reference the original input or the previous step, run advanced steps sequentially or by dependency, and copy, export or import JSON as independent presets. |
 | Video parameter retention | Keep the chosen aspect ratio and compatible resolution, frame rate, duration and audio settings when switching video models. Review them against the selected model before generating. |
 | User plugins | Install plugins from local files, the marketplace or GitHub Releases to extend tools, nodes and interfaces. JavaScript runs with restricted capabilities; trusted Python plugins run with your user permissions. |

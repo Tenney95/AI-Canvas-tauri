@@ -16,7 +16,7 @@
 
 AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown、分镜、360° 全景和手绘笔记组织成可连接的画布节点。你可以在同一个项目中编排生成链路、统一管理角色库、人物/场景/道具与本地素材、执行 ComfyUI 工作流、安装 JavaScript 或可信 Python 用户插件，也可以通过对话助手查询或修改画布、生成媒体、派出只读子智能体、读取授权文件并沉淀项目记忆。项目还能拆成剧集与分集，一部 AI短剧的每一集各占一张画布，角色库与素材整部剧共用。
 
-![Version](https://img.shields.io/badge/version-0.10.23-6366f1)
+![Version](https://img.shields.io/badge/version-0.10.24-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
@@ -61,6 +61,7 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 | 帧动画编辑与导出 | 导入或生成 Sprite Sheet，编辑动画帧与播放效果，导出 GIF、PNG 序列帧或图集。 |
 | AI 与工作流 | 连接云端与自定义模型、CCC、LibAPI 的文本/图片/视频/音频模型、ComfyUI 多服务器、RunningHub、通用工作流 API、Dreamina 和本地 ONNX 模型。 |
 | 工作流参数配置 | 本地 ComfyUI 与 RunningHub 共用参数浮层，按真实声明提供比例、分辨率、步数、调度器等设置；标记 `C#` 节点编号和提示词用途，默认正文与参考素材沿用节点输入框。 |
+| 工作流种子与下载恢复 | 工作流数字种子支持随机或固定；新建空节点沿用最近工作流与尺寸。输出历史可重新下载原任务结果，Windows 多层素材路径与项目导出错误定位同步修复。 |
 | 快捷指令编排与分享 | 高级步骤可参考原始输入或上一步结果，按顺序或依赖并发执行；复制、导出或导入 JSON 创建独立指令副本。 |
 | 视频参数保持 | 切换视频型号保留已有比例和兼容的分辨率、帧率、时长及音轨设置，生成前按所选模型核对。 |
 | 用户插件 | 通过本地文件、市场或 GitHub Release 安装插件，扩展工具、节点与界面。支持受限运行的 JavaScript 和拥有当前用户权限的可信 Python 插件。 |
