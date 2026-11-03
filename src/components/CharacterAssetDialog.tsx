@@ -556,7 +556,7 @@ function CharacterNodeCaptureDialog({
       isOpen={isOpen}
       onClose={onClose}
       ariaLabel={t('添加到角色库')}
-      className="character-capture-dialog"
+      className="character-capture-dialog ui-dialog-surface"
     >
       <header className="character-dialog-header">
         <div>
