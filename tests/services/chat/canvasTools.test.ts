@@ -198,6 +198,156 @@ describe('canvas agent tools', () => {
     });
   });
 
+  describe('显式移除父资产已不存在的精确剧集引用', () => {
+    const missingId = 'deleted-character#missing-picture';
+    const missingToken = `@drama{${missingId}:押运差头}`;
+    const secondToken = `@drama{${missingId}:押运差头侧面}`;
+    const validId = 'kept-character#kept-picture';
+    const validToken = `@drama{${validId}:有效角色}`;
+    const otherToken = '@drama{deleted-character#other-picture:尚未请求移除的引用}';
+    const longPrompt = `${'前文应原样保留。'.repeat(80)}${missingToken}\n正文中段不可删\n${validToken}\n${otherToken}\n${missingToken}\n${'尾部完整保留。'.repeat(80)}长提示词结尾哨兵`;
+
+    beforeEach(() => {
+      const kept: DramaAsset = { id: 'kept-character', kind: 'character', name: '有效角色', key: 'kept', identity: '',
+        summary: '', visualNotes: '', importance: 'supporting', confirmed: true, source: 'manual', createdAt: 1, updatedAt: 1,
+        referenceImages: [{ id: 'kept-picture', kind: 'primary', imageUrl: 'https://example.test/kept.png', prompt: '', createdAt: 1, updatedAt: 1 }] };
+      useAppStore.setState({ projectLoadStatus: 'ready', switchingProjectName: null, isCreatingProject: false, isReturningToStartPage: false,
+        edges: [], dramaAssets: { ...emptyDramaAssetLibrary(), characters: [kept] }, nodes: [
+        node('mention-a', { displayId: 93, label: '视频一', type: 'ai-video', prompt: longPrompt,
+          videoUrl: 'asset://localhost/D:/project/result.mp4', filePath: 'D:/project/result.mp4', relativePath: 'result.mp4', assetId: 'result-asset' }),
+        node('mention-b', { displayId: 97, label: '视频二', type: 'ai-video', prompt: `开始\n${secondToken}\n${validToken}\n完整结尾` }),
+        node('unselected', { prompt: missingToken }),
+      ] });
+    });
+
+    it('宿主完整替换指定精确 ID 的所有 token，保留长正文、有效引用与未选节点，批量只提交一次', async () => {
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const increment = vi.spyOn(before, 'incrementRevision');
+      const result = await getAgentTool('canvas_update_nodes')!.execute({ ...context(), baseRevision: revision }, {
+        nodeIds: ['mention-a', 'mention-b'], removeMissingDramaMentionIds: [missingId],
+      });
+      expect(result.status).toBe('success');
+      const after = useAppStore.getState();
+      expect(after.nodes[0].data).toEqual({ ...before.nodes[0].data, prompt: longPrompt.replaceAll(missingToken, '押运差头') });
+      expect(after.nodes[1].data).toEqual({ ...before.nodes[1].data,
+        prompt: before.nodes[1].data.prompt!.replaceAll(secondToken, '押运差头侧面') });
+      expect(after.nodes[0].data.prompt).toContain(validToken);
+      expect(after.nodes[0].data.prompt).toContain(otherToken);
+      expect(after.nodes[0].data.prompt).toContain('长提示词结尾哨兵');
+      expect(after.nodes[2]).toBe(before.nodes[2]);
+      expect(after.edges).toBe(before.edges);
+      expect(commit).toHaveBeenCalledOnce();
+      expect(increment).toHaveBeenCalledOnce();
+      expect(after.getCurrentRevision()).toBe(revision + 1);
+      expect(after.history[0].nodes[0].data.prompt).toBe(longPrompt);
+      expect(JSON.parse(result.modelContent)).toMatchObject({ affectedNodeIds: ['mention-a', 'mention-b'], removedCount: 3,
+        revision: revision + 1, nodes: [{ nodeId: 'mention-a', removedCount: 2 }, { nodeId: 'mention-b', removedCount: 1 }] });
+      expect(result.summary + result.modelContent).not.toMatch(/前文应原样保留|正文中段不可删|长提示词结尾哨兵|D:\/project|asset:\/\//);
+    });
+
+    it('再次移除已处理的精确 ID 不再写节点、历史或版本', async () => {
+      const tool = getAgentTool('canvas_update_nodes')!;
+      const input = { nodeIds: ['mention-a', 'mention-b'], removeMissingDramaMentionIds: [missingId] };
+      expect((await tool.execute(context(), input)).status).toBe('success');
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const increment = vi.spyOn(before, 'incrementRevision');
+      expect((await tool.execute(context(), input)).status).toBe('success');
+      expect(useAppStore.getState().nodes).toBe(before.nodes);
+      expect(useAppStore.getState().history).toBe(before.history);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+      expect(increment).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: '项目切换', state: { switchingProjectName: '' } },
+      { name: '项目创建', state: { isCreatingProject: true } },
+      { name: '返回启动页', state: { isReturningToStartPage: true } },
+    ])('$name期间拒绝清理引用，不修改节点或历史', async ({ state }) => {
+      useAppStore.setState(state);
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const increment = vi.spyOn(before, 'incrementRevision');
+      await expect(getAgentTool('canvas_update_nodes')!.execute(context(), {
+        nodeIds: ['mention-a', 'mention-b'], removeMissingDramaMentionIds: [missingId],
+      })).rejects.toThrow('不能清理资产引用');
+      expect(useAppStore.getState().nodes).toBe(before.nodes);
+      expect(useAppStore.getState().history).toBe(before.history);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+      expect(increment).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: '嵌套花括号', label: '押运{差头}图片' },
+      { name: '跨行显示名称', label: '押运\n差头' },
+    ])('匹配 ID 的 token 含$name时保留原文，不产生历史', async ({ label }) => {
+      const prompt = `完整前文 @drama{${missingId}:${label}} 完整后文`;
+      useAppStore.setState({ nodes: [node('malformed', { prompt })] });
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const increment = vi.spyOn(before, 'incrementRevision');
+      const result = await getAgentTool('canvas_update_nodes')!.execute(context(), {
+        nodeIds: ['malformed'], removeMissingDramaMentionIds: [missingId],
+      });
+      expect(result.status).toBe('success');
+      expect(JSON.parse(result.modelContent)).toMatchObject({ affectedNodeIds: [], removedCount: 0 });
+      expect(useAppStore.getState().nodes).toBe(before.nodes);
+      expect(useAppStore.getState().nodes[0].data.prompt).toBe(prompt);
+      expect(useAppStore.getState().history).toBe(before.history);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+      expect(increment).not.toHaveBeenCalled();
+    });
+
+    it.each([validId, 'kept-character#already-deleted-pick', 'global/absent-character#pick'])('请求混入不允许移除的 %s 时整批失败', async (blockedId) => {
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const commit = vi.spyOn(before, 'commitToHistory');
+      const result = await getAgentTool('canvas_update_nodes')!.execute(context(), {
+        nodeIds: ['mention-a', 'mention-b'], removeMissingDramaMentionIds: [missingId, blockedId],
+      });
+      expect(result.status).toBe('error');
+      expect(useAppStore.getState().nodes).toBe(before.nodes);
+      expect(useAppStore.getState().history).toBe(before.history);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: '名称', fields: { label: '不得写入' } },
+      { name: '完整提示词', fields: { prompt: '不能以此覆盖原文' } },
+      { name: '其他修复', fields: { repairMissingCloudOutputs: true } },
+    ])('拒绝与$name编辑混用，不部分移除引用', async ({ fields }) => {
+      const before = useAppStore.getState();
+      const revision = before.getCurrentRevision();
+      const result = await getAgentTool('canvas_update_nodes')!.execute(context(), {
+        nodeIds: ['mention-a'], removeMissingDramaMentionIds: [missingId], ...fields,
+      });
+      expect(result.status).toBe('error');
+      expect(useAppStore.getState().nodes).toBe(before.nodes);
+      expect(useAppStore.getState().history).toBe(before.history);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+    });
+
+    it('参数只接受一至二十个精确引用 ID，不开放路径或任意 data', () => {
+      const schema = getAgentTool('canvas_update_nodes')!.inputSchema;
+      const input = { nodeIds: ['mention-a'], removeMissingDramaMentionIds: [missingId] };
+      expect(validateAgentToolInput(schema, input).valid).toBe(true);
+      expect(validateAgentToolInput(schema, { ...input, removeMissingDramaMentionIds: Array.from({ length: 20 }, (_, index) => `gone-${index}#pick`) }).valid).toBe(true);
+      expect(validateAgentToolInput(schema, { ...input, removeMissingDramaMentionIds: [] }).valid).toBe(false);
+      expect(validateAgentToolInput(schema, { ...input, removeMissingDramaMentionIds: Array.from({ length: 21 }, (_, index) => `gone-${index}#pick`) }).valid).toBe(false);
+      expect(validateAgentToolInput(schema, { ...input, filePath: '/private/file' }).valid).toBe(false);
+      expect(validateAgentToolInput(schema, { ...input, data: { prompt: '不接受任意数据' } }).valid).toBe(false);
+    });
+  });
+
   it.each(['ai-text', 'ai-markdown', 'source-text'] as const)('更新已有 %s 文件时使用真实磁盘基线 CAS，画布只提交一次', async (type) => {
     textFiles.desktop = true;
     const filePath = '/project/文稿.md';

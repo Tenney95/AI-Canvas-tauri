@@ -152,3 +152,97 @@ describe('项目缺失素材定位', () => {
     expect(() => captureExchangeSnapshot([source], [], null)).toThrow(`项目「剧集」 → ${label}「创作资产」（ID：asset）`);
   });
 });
+
+describe('项目失效创作资产引用定位', () => {
+  it.each([
+    { name: '提示词', data: { prompt: '@drama{deleted-character#image:押运差头}' }, field: 'data.prompt' },
+    { name: '工作流输入', data: { workflowInputs: [{ value: '@drama{deleted-character#voice/clip:押运差头}' }] }, field: 'data.workflowInputs[0].value' },
+  ])('$name 中的失效引用指出分集、节点、资产与字段', ({ data, field }) => {
+    const owner: ProjectSaveData = { id: 'root', name: '剧集', nodes: [], edges: [], createdAt: 1, updatedAt: 2 };
+    const episode = { ...owner, id: 'episode', parentId: 'root', name: 'EP000', nodes: [{ id: 'node-93', type: 'ai-image',
+      data: { label: '角色三视图', displayId: 93, ...data } }] };
+    expect(() => captureExchangeSnapshot([owner, episode], [], null)).toThrow(
+      `项目引用的创作资产缺失：押运差头（ID：deleted-character）；引用位置：项目「剧集」 → 分集「EP000」 → 节点 #93「角色三视图」（ID：node-93）；引用字段：${field}。请移除失效引用或重新选择资产后重试。`,
+    );
+  });
+});
+
+describe('项目协作格式错误定位', () => {
+  function captureError(run: () => unknown): Error {
+    try { run(); }
+    catch (error) { if (error instanceof Error) return error; throw error; }
+    throw new Error('预期快照捕获报告格式错误');
+  }
+
+  it.each([
+    { code: 'missing_dependency', id: 'a-target', prompt: '@{missing-source:缺失节点}', field: 'entities[3].references' },
+    { code: 'invalid_identity', id: 'C:/private/invalid-node', prompt: '保留正文', field: 'entities[3].id' },
+  ])('$code 保留原实体索引并指出正确项目、分集和节点', ({ code, id, prompt, field }) => {
+    const owner: ProjectSaveData = { id: 'root', name: '剧集', nodes: [], edges: [], createdAt: 1, updatedAt: 2 };
+    const episode = { ...owner, id: 'episode', parentId: 'root', name: 'EP000', nodes: [
+      { id: 'z-unrelated', type: 'ai-image', data: { label: '无关节点', displayId: 92, prompt: '正常正文' } },
+      { id, type: 'ai-image', data: { label: '错误目标', displayId: 93, prompt } },
+    ] };
+    const error = captureError(() => captureExchangeSnapshot([owner, episode], [], null));
+    expect(error.cause).toMatchObject({ code, fieldPath: field });
+    expect(error.message).toContain(field);
+    expect(error.message).toContain('所属位置：项目「剧集」 → 分集「EP000」 → 节点 #93「错误目标」');
+    expect(error.message).not.toContain('z-unrelated');
+    expect(error.message).not.toContain('无关节点');
+    expect(error.message).not.toContain('C:/private/');
+  });
+
+  it('零字节图片的媒体格式错误能定位对应项目文件', () => {
+    const source: ProjectSaveData = { id: 'root', name: '剧集', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', type: 'ai-image', data: { label: '图片', relativePath: '图像/空图片.png' } }] };
+    const error = captureError(() => captureExchangeSnapshot([source], [{ path: '图像/空图片.png', bytes: 0, sha256: 'a'.repeat(64) }], null));
+    expect(error.cause).toEqual({ code: 'invalid_media', fieldPath: 'media[0]' });
+    expect(error.message).toContain('invalid_media');
+    expect(error.message).toContain('media[0]');
+    expect(error.message).toContain('所属位置：项目「剧集」 → 文件「空图片.png」');
+  });
+});
+
+describe('资产参考图的历史节点出处', () => {
+  const path = '角色/参考图.png';
+  const prompt = '原生成说明 @{origin-node:原始图片节点}，保留历史文字';
+  const assets = [{ path, bytes: 12, sha256: 'a'.repeat(64) }];
+  const project = (): ProjectSaveData => ({ id: 'root', name: '剧集', nodes: [], edges: [], createdAt: 1, updatedAt: 2,
+    dramaAssets: normalizeDramaAssetLibrary({ characters: [{ id: 'character', kind: 'character', name: '角色',
+      primaryReferenceImageId: 'reference', referenceImages: [{ id: 'reference', kind: 'primary', relativePath: path,
+        sourceNodeId: 'origin-node', prompt, createdAt: 1, updatedAt: 2 }] }] }) });
+
+  it('参考图保留已删除来源节点的提示词和图片，不建立悬空执行依赖', () => {
+    const source = project();
+    const original = structuredClone(source);
+    const captured = captureExchangeSnapshot([source], assets, null);
+    const reference = captured.snapshot.entities.find((entity) => entity.kind === 'referenceImage')!;
+    const file = captured.snapshot.entities.find((entity) => entity.kind === 'file')!;
+    expect(reference.data).toMatchObject({ prompt, sourceNodeId: 'origin-node', relativePath: `exchange-file:${file.id}` });
+    expect(reference.references).toEqual([{ kind: 'file', scopeId: 'root', id: file.id }]);
+    expect([...captured.files.values()]).toEqual([path]);
+    expect(captured.snapshot.media).toMatchObject([{ kind: 'image', bytes: 12, sha256: assets[0].sha256 }]);
+    expect(source).toEqual(original);
+  });
+
+  it('来源节点仍存在时保持既有依赖，并能按原身份往返捕获', () => {
+    const source = project();
+    source.nodes = [{ id: 'origin-node', type: 'source-image', data: { label: '原始图片节点', type: 'source-image', relativePath: path } }];
+    const captured = captureExchangeSnapshot([source], assets, null);
+    const reference = captured.snapshot.entities.find((entity) => entity.kind === 'referenceImage')!;
+    const file = captured.snapshot.entities.find((entity) => entity.kind === 'file')!;
+    expect(reference.data.prompt).toBe(prompt);
+    expect(reference.references).toEqual([{ kind: 'file', scopeId: 'root', id: file.id }, { kind: 'node', scopeId: 'root', id: 'origin-node' }]);
+    const records = materializeExchangeSnapshot(captured.snapshot, [...captured.identities], [source], '项目目录', captured.files, false);
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it('同样的失效节点引用用于真实节点提示词时仍阻止导出', () => {
+    const source = project();
+    source.nodes = [{ id: 'generator', type: 'ai-image', data: { label: '真实生成节点', type: 'ai-image', prompt } }];
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('missing_dependency');
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('节点「真实生成节点」（ID：generator）');
+  });
+});

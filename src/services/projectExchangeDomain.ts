@@ -14,6 +14,8 @@ const omitted = new Set(['filePath', 'imageFilePath', 'dataFolder', 'snapshot', 
   'comfyH3MemoryApplied', 'thumbnailUrl', 'sourceUrl', 'artifactId', 'mediaVersion', 'volcengineBinding']);
 const mediaUrls = new Set(['imageUrl', 'videoUrl', 'audioUrl', 'url']);
 const nodeReferenceFields = new Set(['sourceNodeId', 'imageNodeId', 'nodeId', 'targetNodeId']);
+const historicalAssetKinds = new Set<ProjectExchangeEntityKind>(['character', 'scene', 'prop', 'referenceImage',
+  'voiceClip', 'action', 'actionMedia', 'imageMetadata']);
 const collections: Array<[string, ProjectExchangeEntityKind]> = [['referenceImages', 'referenceImage'], ['voiceClips', 'voiceClip'],
   ['actions', 'action'], ['media', 'actionMedia'], ['shotlistRows', 'shot']];
 export const exchangeObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -46,21 +48,28 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
     // 资产可以保留已删除源节点的出处；这类出处不是执行引用。
     if (all.some((item) => item.kind === 'node' && item.id === id && item.scopeId === entity.scopeId)) add('node', entity.scopeId, id);
   };
-  const walk = (value: ProjectExchangeValue, key = ''): void => {
+  const walk = (value: ProjectExchangeValue, key = '', fieldPath = ''): void => {
     if (typeof value === 'string') {
       if (['relativePath', 'imageRelativePath', 'directorCaptureRelativePaths'].includes(key) && !value.startsWith(FILE_TOKEN)) {
         throw new Error('规范快照包含未绑定的素材路径');
       }
       if (value.startsWith(FILE_TOKEN)) add('file', root, value.slice(FILE_TOKEN.length));
       if (nodeReferenceFields.has(key)) node(value);
-      for (const match of value.matchAll(/@\{([^:{}]+):[^}]*\}/g)) add('node', entity.scopeId, match[1]);
-      for (const match of value.matchAll(/@drama\{([^:{}#]+)(?:#[^:{}]+)?:[^}]*\}/g)) {
+      for (const match of value.matchAll(/@\{([^:{}]+):[^}]*\}/g)) {
+        // 共享资产保存的出图提示词是历史出处，与 imageNodeId 一样允许来源节点已删除。
+        // 画布节点和镜头仍保留执行依赖，不能通过归档丢掉当前输入。
+        if (historicalAssetKinds.has(entity.kind)) node(match[1]);
+        else add('node', entity.scopeId, match[1]);
+      }
+      for (const match of value.matchAll(/@drama\{([^:{}#]+)(?:#[^:{}]+)?:([^}]*)\}/g)) {
         const target = all.find((item) => ['character', 'scene', 'prop'].includes(item.kind) && item.id === match[1] && item.scopeId === root);
         if (target) add(target.kind, root, target.id);
-        else if (!match[1].startsWith('global/')) throw new Error('人物引用缺少对应的项目资产');
+        else if (!match[1].startsWith('global/')) {
+          throw new Error(`项目引用的创作资产缺失：${match[2] || '未命名资产'}（ID：${match[1]}）；引用位置：${exchangeSourceLocation(entity, all, root)}；引用字段：${fieldPath}。请移除失效引用或重新选择资产后重试。`);
+        }
       }
-    } else if (Array.isArray(value)) value.forEach((item) => walk(item, key));
-    else if (value && typeof value === 'object') Object.entries(value).forEach(([field, item]) => walk(item, field));
+    } else if (Array.isArray(value)) value.forEach((item, index) => walk(item, key, `${fieldPath}[${index}]`));
+    else if (value && typeof value === 'object') Object.entries(value).forEach(([field, item]) => walk(item, field, fieldPath ? `${fieldPath}.${field}` : field));
   };
   walk(entity.data);
   if (entity.kind === 'project' && typeof entity.data.parentId === 'string') add('project', entity.data.parentId, entity.data.parentId);
@@ -82,7 +91,17 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
 
 export function validateExchangeDomain(snapshot: ProjectExchangeSnapshot): ProjectExchangeSnapshot {
   const entities = snapshot.entities.map((entity) => ({ ...entity, references: exchangeReferences(entity, snapshot.entities, snapshot.rootProjectId) }));
-  const parsed = parseProjectExchangeSnapshot({ ...snapshot, entities });
+  let parsed: ProjectExchangeSnapshot;
+  try { parsed = parseProjectExchangeSnapshot({ ...snapshot, entities }); }
+  catch (error) {
+    if (!(error instanceof Error) || !exchangeObject(error.cause) || typeof error.cause.fieldPath !== 'string') throw error;
+    const entityIndex = /^entities\[(\d+)\]/.exec(error.cause.fieldPath);
+    const mediaIndex = /^media\[(\d+)\]/.exec(error.cause.fieldPath);
+    const entity = entityIndex ? entities[Number(entityIndex[1])] : mediaIndex
+      ? entities.find((item) => item.kind === 'file' && item.data.mediaId === snapshot.media[Number(mediaIndex[1])]?.id) : undefined;
+    if (!entity) throw error;
+    throw new Error(`${error.message}；所属位置：${exchangeSourceLocation(entity, entities, snapshot.rootProjectId)}`, { cause: error.cause });
+  }
   const childOwners = new Map<string, string>();
   for (const entity of entities) for (const [field, kind] of collections) {
     const ids = entity.data[`${field}Ids`];
@@ -141,6 +160,18 @@ function captureSourceLocation(parent: string, kind: string, source: Record<stri
   const displayId = kind === '节点' && typeof data.displayId === 'number' && Number.isInteger(data.displayId)
     ? ` #${data.displayId}` : '';
   return `${parent} → ${kind}${displayId}「${label?.trim() || '未命名'}」（ID：${source.id}）`;
+}
+
+function exchangeSourceLocation(entity: ProjectExchangeEntity, all: readonly ProjectExchangeEntity[], root: string): string {
+  const owner = all.find((item) => item.kind === 'project' && item.id === root);
+  const project = all.find((item) => item.kind === 'project' && item.id === entity.scopeId);
+  const location = `项目「${owner?.data.name || '未命名'}」${entity.scopeId !== root ? ` → 分集「${project?.data.name || '未命名'}」` : ''}`;
+  const labels: Record<ProjectExchangeEntityKind, string> = { project: '项目记录', node: '节点', edge: '连线', group: '分组',
+    character: '角色', scene: '场景', prop: '道具', referenceImage: '参考图', voiceClip: '音色', action: '动作',
+    actionMedia: '动作素材', shot: '镜头', file: '文件', imageMetadata: '图片信息' };
+  // 格式错误的 ID 可能本身是路径或正文，不能直接写入错误日志。
+  const id = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(entity.id) ? entity.id : '格式无效';
+  return captureSourceLocation(location, labels[entity.kind], { ...entity.data, id });
 }
 
 function relativeProjectFile(path: string, projectDirectory?: string): string {

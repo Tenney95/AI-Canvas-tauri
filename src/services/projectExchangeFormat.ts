@@ -21,50 +21,65 @@ const forbiddenKeys = new Set(['proto', 'constructor', 'prototype', 'apikey', 'a
   'secretaccesskey', 'sessiontoken', 'accesstoken', 'refreshtoken', 'password', 'clientsecret',
   'token', 'mcptoken', 'bearertoken', 'authorization', 'filepath', 'rootpath', 'datafolder', 'outputpath',
   'abortcontroller', 'taskid', 'agenttaskid']);
+const diagnosticKeys = new Set(['data', 'settings', 'position', 'x', 'y', 'width', 'height', 'style', 'name', 'label',
+  'type', 'prompt', 'output', 'content', 'workflowInputs', 'workflowConfig', 'workflowApiConfig', 'runninghubConfig',
+  'params', 'parameters', 'input', 'inputs', 'value', 'values', 'referenceImages', 'voiceClips', 'actions', 'media']);
 type RecordValue = Record<string, unknown>;
-const invalid = (code = 'invalid_format'): never => {
-  throw new Error('项目协作材料格式无效，已停止处理', { cause: { code } });
+const invalid = (code = 'invalid_format', fieldPath = '', dependency?: ProjectExchangeReference): never => {
+  const reasons: Record<string, string> = {
+    invalid_format: '结构或字段类型无效', invalid_identity: '对象或引用 ID 格式无效', invalid_digest: '内容摘要无效',
+    limit_exceeded: '容量、数量或嵌套深度超限', non_portable_field: '包含本机路径或凭据字段',
+    duplicate_identity: '存在重复对象 ID', missing_dependency: '缺少被引用的对象或素材',
+    invalid_media: '媒体类型、扩展名或文件大小无效', invalid_path: '归档路径无效', invalid_ancestry: '版本关系无效',
+  };
+  throw new Error(`项目协作材料格式无效：${reasons[code] ?? '材料校验失败'}（${code}）${fieldPath ? `；字段：${fieldPath}` : ''}${dependency ? `；缺失依赖：${dependency.kind}（ID：${dependency.id}）` : ''}，已停止处理`,
+    { cause: { code, fieldPath, ...(dependency ? { dependency } : {}) } });
 };
-function object(value: unknown, allowed?: readonly string[]): RecordValue {
+function object(value: unknown, allowed?: readonly string[], fieldPath = ''): RecordValue {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return invalid();
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return invalid('invalid_format', fieldPath);
   const record = value as RecordValue;
-  if (allowed && Object.keys(record).some((key) => !allowed.includes(key))) invalid();
+  if (allowed && Object.keys(record).some((key) => !allowed.includes(key))) invalid('invalid_format', fieldPath);
   return record;
 }
-export function projectExchangeId(value: unknown): string {
-  if (typeof value !== 'string' || !ID.test(value)) return invalid('invalid_identity');
+export function projectExchangeId(value: unknown, fieldPath = ''): string {
+  if (typeof value !== 'string' || !ID.test(value)) return invalid('invalid_identity', fieldPath);
   return value;
 }
 function digest(value: unknown): string {
   if (typeof value !== 'string' || !DIGEST.test(value)) return invalid('invalid_digest');
   return value;
 }
-function list(value: unknown, limit: number): unknown[] {
-  if (!Array.isArray(value) || value.length > limit) return invalid('limit_exceeded');
+function list(value: unknown, limit: number, fieldPath = ''): unknown[] {
+  if (!Array.isArray(value) || value.length > limit) return invalid('limit_exceeded', fieldPath);
   return value;
 }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-function jsonValue(value: unknown, budget: { count: number; bytes: number }, visiting: WeakSet<object>, depth = 0): ProjectExchangeValue {
-  if (++budget.count > PROJECT_EXCHANGE_LIMITS.values || depth > PROJECT_EXCHANGE_LIMITS.depth) return invalid('limit_exceeded');
+function jsonValue(value: unknown, budget: { count: number; bytes: number }, visiting: WeakSet<object>, depth = 0, fieldPath = ''): ProjectExchangeValue {
+  if (++budget.count > PROJECT_EXCHANGE_LIMITS.values || depth > PROJECT_EXCHANGE_LIMITS.depth) return invalid('limit_exceeded', fieldPath);
   if (value === null || typeof value === 'boolean') return value;
-  if (typeof value === 'number') { if (!Number.isFinite(value)) return invalid(); return value; }
+  if (typeof value === 'number') { if (!Number.isFinite(value)) return invalid('invalid_format', fieldPath); return value; }
   if (typeof value === 'string') {
-    if (value.length > PROJECT_EXCHANGE_LIMITS.stringBytes || value.includes('\0')) return invalid('limit_exceeded');
+    if (value.length > PROJECT_EXCHANGE_LIMITS.stringBytes || value.includes('\0')) return invalid('limit_exceeded', fieldPath);
     budget.bytes += encoder.encode(value).byteLength;
-    if (budget.bytes > PROJECT_EXCHANGE_LIMITS.snapshotBytes) return invalid('limit_exceeded');
+    if (budget.bytes > PROJECT_EXCHANGE_LIMITS.snapshotBytes) return invalid('limit_exceeded', fieldPath);
     return value;
   }
-  if (!value || typeof value !== 'object' || visiting.has(value)) return invalid();
+  if (!value || typeof value !== 'object' || visiting.has(value)) return invalid('invalid_format', fieldPath);
   visiting.add(value);
   try {
-    if (Array.isArray(value)) return list(value, PROJECT_EXCHANGE_LIMITS.values).map((entry) => jsonValue(entry, budget, visiting, depth + 1));
-    const record = object(value);
-    return Object.fromEntries(Object.keys(record).sort(compare).map((key) => {
-      if (forbiddenKeys.has(key.replace(/[_-]/g, '').toLowerCase())) return invalid('non_portable_field');
+    if (Array.isArray(value)) return list(value, PROJECT_EXCHANGE_LIMITS.values, fieldPath)
+      .map((entry, index) => jsonValue(entry, budget, visiting, depth + 1, `${fieldPath}[${index}]`));
+    const record = object(value, undefined, fieldPath);
+    return Object.fromEntries(Object.keys(record).sort(compare).map((key, index) => {
+      // 动态键可能包含正文、路径或凭据，只显示短的结构字段名，不回传字段值。
+      const forbidden = forbiddenKeys.has(key.replace(/[_-]/g, '').toLowerCase());
+      const segment = (diagnosticKeys.has(key) || forbidden) && key.length <= 80 ? key : `[动态字段${index}]`;
+      const path = fieldPath ? `${fieldPath}.${segment}` : segment;
+      if (forbidden) return invalid('non_portable_field', path);
       budget.bytes += encoder.encode(key).byteLength;
-      if (budget.bytes > PROJECT_EXCHANGE_LIMITS.snapshotBytes) return invalid('limit_exceeded');
-      return [key, jsonValue(record[key], budget, visiting, depth + 1)];
+      if (budget.bytes > PROJECT_EXCHANGE_LIMITS.snapshotBytes) return invalid('limit_exceeded', path);
+      return [key, jsonValue(record[key], budget, visiting, depth + 1, path)];
     }));
   } finally { visiting.delete(value); }
 }
@@ -77,10 +92,12 @@ function parseInput(input: unknown, limit: number): unknown {
   if (input.length > limit || encoder.encode(input).byteLength > limit) return invalid('limit_exceeded');
   try { return JSON.parse(input); } catch { return invalid(); }
 }
-function reference(input: unknown): ProjectExchangeReference {
-  const value = object(input, ['kind', 'scopeId', 'id']);
-  if (!KINDS.includes(value.kind as ProjectExchangeEntityKind)) return invalid('invalid_identity');
-  return { kind: value.kind as ProjectExchangeEntityKind, scopeId: projectExchangeId(value.scopeId), id: projectExchangeId(value.id) };
+function reference(input: unknown, fieldPath = ''): ProjectExchangeReference {
+  const value = object(input, ['kind', 'scopeId', 'id'], fieldPath);
+  if (!KINDS.includes(value.kind as ProjectExchangeEntityKind)) return invalid('invalid_identity', fieldPath ? `${fieldPath}.kind` : 'kind');
+  return { kind: value.kind as ProjectExchangeEntityKind,
+    scopeId: projectExchangeId(value.scopeId, fieldPath ? `${fieldPath}.scopeId` : 'scopeId'),
+    id: projectExchangeId(value.id, fieldPath ? `${fieldPath}.id` : 'id') };
 }
 export const parseProjectExchangeReference = reference;
 export function projectExchangeEntityKey(value: ProjectExchangeReference): string {
@@ -90,40 +107,50 @@ export function parseProjectExchangeSnapshot(input: unknown): ProjectExchangeSna
   const value = object(parseInput(input, PROJECT_EXCHANGE_LIMITS.snapshotBytes),
     ['format', 'canonicalVersion', 'lineageId', 'rootProjectId', 'complete', 'entities', 'media']);
   if (value.format !== 'ai-canvas-project-snapshot' || value.canonicalVersion !== 1 || value.complete !== true) return invalid();
-  const lineageId = projectExchangeId(value.lineageId), rootProjectId = projectExchangeId(value.rootProjectId);
+  const lineageId = projectExchangeId(value.lineageId, 'lineageId'), rootProjectId = projectExchangeId(value.rootProjectId, 'rootProjectId');
   const budget = { count: 0, bytes: 0 };
   let referenceCount = 0;
-  const entities = list(value.entities, PROJECT_EXCHANGE_LIMITS.entities).map((entry): ProjectExchangeEntity => {
-    const entity = object(entry, ['kind', 'scopeId', 'id', 'data', 'references']);
-    const identity = reference({ kind: entity.kind, scopeId: entity.scopeId, id: entity.id });
-    const refs = list(entity.references, PROJECT_EXCHANGE_LIMITS.references);
+  const entities = list(value.entities, PROJECT_EXCHANGE_LIMITS.entities, 'entities').map((entry, index): ProjectExchangeEntity => {
+    const path = `entities[${index}]`;
+    const entity = object(entry, ['kind', 'scopeId', 'id', 'data', 'references'], path);
+    const identity = reference({ kind: entity.kind, scopeId: entity.scopeId, id: entity.id }, path);
+    const refs = list(entity.references, PROJECT_EXCHANGE_LIMITS.references, `${path}.references`);
     referenceCount += refs.length;
-    if (referenceCount > PROJECT_EXCHANGE_LIMITS.references) return invalid('limit_exceeded');
-    const references = refs.map(reference).sort((a, b) => compare(projectExchangeEntityKey(a), projectExchangeEntityKey(b)));
-    if (new Set(references.map(projectExchangeEntityKey)).size !== references.length) return invalid('duplicate_identity');
-    const data = jsonValue(object(entity.data), budget, new WeakSet()) as ProjectExchangeObject;
+    if (referenceCount > PROJECT_EXCHANGE_LIMITS.references) return invalid('limit_exceeded', `${path}.references`);
+    const references = refs.map((ref, refIndex) => reference(ref, `${path}.references[${refIndex}]`))
+      .sort((a, b) => compare(projectExchangeEntityKey(a), projectExchangeEntityKey(b)));
+    if (new Set(references.map(projectExchangeEntityKey)).size !== references.length) return invalid('duplicate_identity', `${path}.references`);
+    const data = jsonValue(object(entity.data, undefined, `${path}.data`), budget, new WeakSet(), 0, `${path}.data`) as ProjectExchangeObject;
     return { ...identity, data, references };
-  }).sort((a, b) => compare(projectExchangeEntityKey(a), projectExchangeEntityKey(b)));
+  });
   const byKey = new Map(entities.map((entity) => [projectExchangeEntityKey(entity), entity]));
-  if (byKey.size !== entities.length) return invalid('duplicate_identity');
+  if (byKey.size !== entities.length) {
+    const seen = new Set<string>();
+    const duplicateIndex = entities.findIndex((entity) => { const key = projectExchangeEntityKey(entity);
+      if (seen.has(key)) return true; seen.add(key); return false; });
+    return invalid('duplicate_identity', `entities[${duplicateIndex}].id`);
+  }
   const projects = new Set(entities.filter((entity) => entity.kind === 'project').map((entity) => {
     if (entity.scopeId !== entity.id) return invalid('invalid_identity');
     return entity.id;
   }));
   if (!projects.has(rootProjectId)) return invalid('missing_dependency');
-  for (const entity of entities) {
-    if (!projects.has(entity.scopeId) || entity.references.some((ref) => !byKey.has(projectExchangeEntityKey(ref)))) return invalid('missing_dependency');
+  for (const [index, entity] of entities.entries()) {
+    if (!projects.has(entity.scopeId)) return invalid('missing_dependency', `entities[${index}].scopeId`);
+    const missing = entity.references.find((ref) => !byKey.has(projectExchangeEntityKey(ref)));
+    if (missing) return invalid('missing_dependency', `entities[${index}].references`, missing);
   }
   let totalBytes = 0;
-  const media = list(value.media, PROJECT_EXCHANGE_LIMITS.media).map((entry): ProjectExchangeMedia => {
-    const item = object(entry, ['id', 'kind', 'extension', 'bytes', 'sha256']);
+  const media = list(value.media, PROJECT_EXCHANGE_LIMITS.media, 'media').map((entry, index): ProjectExchangeMedia => {
+    const path = `media[${index}]`;
+    const item = object(entry, ['id', 'kind', 'extension', 'bytes', 'sha256'], path);
     if (!['image', 'video', 'audio', 'file'].includes(String(item.kind))
       || typeof item.extension !== 'string' || !/^[a-z0-9]{1,16}$/.test(item.extension)
       || !Number.isSafeInteger(item.bytes) || (item.bytes as number) < 0
-      || (item.bytes === 0 && item.kind !== 'file')) return invalid();
+      || (item.bytes === 0 && item.kind !== 'file')) return invalid('invalid_media', path);
     totalBytes += item.bytes as number;
-    if (totalBytes > PROJECT_EXCHANGE_LIMITS.mediaBytes) return invalid('limit_exceeded');
-    return { id: projectExchangeId(item.id), kind: item.kind as ProjectExchangeMedia['kind'], extension: item.extension,
+    if (totalBytes > PROJECT_EXCHANGE_LIMITS.mediaBytes) return invalid('limit_exceeded', path);
+    return { id: projectExchangeId(item.id, `${path}.id`), kind: item.kind as ProjectExchangeMedia['kind'], extension: item.extension,
       bytes: item.bytes as number, sha256: digest(item.sha256) };
   }).sort((a, b) => compare(a.id, b.id));
   const mediaIds = new Set(media.map((item) => item.id));
@@ -136,7 +163,7 @@ export function parseProjectExchangeSnapshot(input: unknown): ProjectExchangeSna
   }
   if (used.size !== media.length) return invalid('missing_dependency');
   const result: ProjectExchangeSnapshot = { format: 'ai-canvas-project-snapshot', canonicalVersion: 1,
-    lineageId, rootProjectId, complete: true, entities, media };
+    lineageId, rootProjectId, complete: true, entities: entities.sort((a, b) => compare(projectExchangeEntityKey(a), projectExchangeEntityKey(b))), media };
   if (encoder.encode(serializeProjectExchangeValue(result)).byteLength > PROJECT_EXCHANGE_LIMITS.snapshotBytes) return invalid('limit_exceeded');
   return result;
 }

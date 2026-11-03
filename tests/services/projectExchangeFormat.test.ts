@@ -17,6 +17,11 @@ function snapshot(prompt = '原始提示词', lineageId = 'lineage'): ProjectExc
         references: [{ kind: 'project', scopeId: 'root', id: 'root' }] },
     ], media: [] };
 }
+function parsingError(input: ProjectExchangeSnapshot): Error {
+  try { parseProjectExchangeSnapshot(input); }
+  catch (error) { if (error instanceof Error) return error; throw error; }
+  throw new Error('预期协议校验拒绝此材料');
+}
 async function bundle(): Promise<ProjectExchangeBundle> {
   const revision = await createProjectExchangeRevision(snapshot());
   return { format: 'ai-canvas-project-exchange', version: 1, packageId: 'package', lineageId: 'lineage',
@@ -51,6 +56,62 @@ describe('项目协作协议', () => {
     }
     const cycle: Record<string, unknown> = {}; cycle.self = cycle;
     expect(() => serializeProjectExchangeValue(cycle)).toThrow();
+  });
+
+  it('嵌套数组中的不可迁移字段报告完整结构路径和分类，不回显凭据值', () => {
+    const value = snapshot('不应回显的完整正文');
+    const secret = 'secret-value-never-include-in-diagnostics';
+    value.entities[1].data.workflowInputs = [{ inputs: [{ value: { api_key: secret } }] }];
+    const error = parsingError(value);
+    expect(error.cause).toEqual({ code: 'non_portable_field', fieldPath: 'entities[1].data.workflowInputs[0].inputs[0].value.api_key' });
+    expect(error.message).toContain('non_portable_field');
+    expect(error.message).toContain('entities[1].data.workflowInputs[0].inputs[0].value.api_key');
+    expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain('不应回显的完整正文');
+  });
+
+  it('短凭据形态的动态字段名也必须脱敏，不回显原键', () => {
+    const value = snapshot();
+    const dynamicKey = 'sk-proj-fixture-secret';
+    value.entities[1].data.workflowInputs = { [dynamicKey]: NaN };
+    const error = parsingError(value);
+    expect(error.cause).toEqual({ code: 'invalid_format', fieldPath: 'entities[1].data.workflowInputs.[动态字段0]' });
+    expect(error.message).toContain('[动态字段0]');
+    expect(error.message + JSON.stringify(error.cause)).not.toContain(dynamicKey);
+  });
+
+  it('非法身份指向输入实体索引，不回显作为 ID 误传的本机路径', () => {
+    const value = snapshot();
+    const original = value.entities[1];
+    const unsafeId = 'C:/private/project-secret/invalid-node';
+    value.entities = [{ ...original, id: 'z-first' }, value.entities[0], { ...original, id: unsafeId }];
+    const error = parsingError(value);
+    expect(error.cause).toEqual({ code: 'invalid_identity', fieldPath: 'entities[2].id' });
+    expect(error.message).toContain('invalid_identity');
+    expect(error.message).toContain('entities[2].id');
+    expect(JSON.stringify(error.cause) + error.message).not.toContain(unsafeId);
+    expect(error.message).not.toContain('project-secret');
+  });
+
+  it('重复身份指向第二次出现的原始实体索引，不使用规范排序后的索引', () => {
+    const value = snapshot();
+    const original = value.entities[1];
+    value.entities = [{ ...original, id: 'z-last' }, value.entities[0], { ...original, id: 'a-first' }, { ...original, id: 'z-last' }];
+    const error = parsingError(value);
+    expect(error.cause).toEqual({ code: 'duplicate_identity', fieldPath: 'entities[3].id' });
+    expect(error.message).toContain('duplicate_identity');
+    expect(error.message).toContain('entities[3].id');
+  });
+
+  it('缺失依赖报告安全的类型和 ID，以及原输入源实体的引用字段', () => {
+    const value = snapshot();
+    const dependency = { kind: 'node' as const, scopeId: 'root', id: 'missing-source' };
+    value.entities.push({ ...value.entities[1], id: 'a-first', references: [dependency] });
+    const error = parsingError(value);
+    expect(error.cause).toEqual({ code: 'missing_dependency', fieldPath: 'entities[2].references', dependency });
+    expect(error.message).toContain('missing_dependency');
+    expect(error.message).toContain('entities[2].references');
+    expect(error.message).toContain('缺失依赖：node（ID：missing-source）');
   });
 
   it('正式版本重新核对正文与父关系摘要，不能只相信传入的 revisionId', async () => {

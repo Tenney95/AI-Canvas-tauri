@@ -10,6 +10,7 @@ import { isBatchConnectableNode } from '../../../store/store.nodes';
 import { generateId } from '../../../store/store.utils';
 import type { BaseNodeData, NodeType } from '../../../types';
 import type { DramaAsset } from '../../../types/dramaAssets';
+import { parseDramaMentionId } from '../../../types/dramaAssets';
 import { parseShotlistRowMentionId, resolveShotVideoDuration } from '../../../types/shotlist';
 import { resolveSingleShotlistRowReference } from '../../shotlistPromptService';
 import type { AudioOutputFormat, AudioSpeechSettings, AudioTtsVoice } from '../../../types/aiTypes';
@@ -316,6 +317,7 @@ interface QueryNodesInput extends NodeTargetInput {
 
 interface UpdateNodesInput extends NodeTargetInput {
   repairMissingCloudOutputs?: boolean;
+  removeMissingDramaMentionIds?: string[];
   label?: string;
   prompt?: string;
   content?: string;
@@ -571,6 +573,49 @@ function assertCanvasRevision(context: AgentToolContext): void {
       `画布已变更（rev ${currentRevision} ≠ ${context.baseRevision}），请重新规划`,
     );
   }
+}
+
+/** 只移除明确指定、父项目资产已不存在的 token，完整提示词始终由宿主读取。 */
+function removeMissingDramaMentions(context: AgentToolContext, targetIds: string[], mentionIds: string[]): AgentToolExecutionResult {
+  const store = useAppStore.getState();
+  if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+  if (store.currentProjectId !== context.projectId || store.projectLoadStatus !== 'ready'
+    || store.switchingProjectName !== null || store.isCreatingProject || store.isReturningToStartPage) {
+    throw new Error('目标项目尚未加载完成，不能清理资产引用');
+  }
+  assertCanvasRevision(context);
+  const requested = new Set(mentionIds);
+  if (!requested.size || [...requested].some((id) => {
+    const { assetId } = parseDramaMentionId(id);
+    return !/^[^:{}\r\n]+$/.test(id) || !assetId || assetId.startsWith('global/') || !!findDramaAsset(store.dramaAssets, assetId);
+  })) {
+    const message = '只能清理父项目资产已不存在的指定引用；有效资产和全局资产引用未修改';
+    return { status: 'error', summary: message, modelContent: message };
+  }
+  const changes = store.nodes.filter((node) => targetIds.includes(node.id)).flatMap((node) => {
+    if (typeof node.data.prompt !== 'string') return [];
+    let removedCount = 0;
+    const prompt = node.data.prompt.replace(/@drama\{([^:{}\r\n]+):([^{}\r\n]*)\}/g, (token, id: string, label: string) => {
+      if (!requested.has(id)) return token;
+      removedCount += 1;
+      return label;
+    });
+    return removedCount ? [{ node, prompt, removedCount }] : [];
+  });
+  if (changes.length) {
+    store.commitToHistory();
+    for (const { node, prompt } of changes) store.updateNodeDataTransient(node.id, { prompt });
+    store.incrementRevision();
+  }
+  const removedCount = changes.reduce((sum, change) => sum + change.removedCount, 0);
+  return {
+    status: 'success',
+    summary: removedCount ? `已移除 ${changes.length} 个节点的 ${removedCount} 处失效资产引用，保留显示名称和其余提示词`
+      : '目标提示词中未发现指定失效引用，未修改节点',
+    modelContent: JSON.stringify({ affectedNodeIds: changes.map(({ node }) => node.id), removedCount,
+      revision: useAppStore.getState().getCurrentRevision(),
+      nodes: changes.map(({ node, removedCount: count }) => ({ nodeId: node.id, removedCount: count })) }),
+  };
 }
 
 /** 原生清单仅用于核对既有缓存，不允许调用方提供路径或任意节点数据。 */
@@ -1664,6 +1709,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         'x/y 是绝对坐标，一次只能移动一个节点；dx/dy 是相对位移，可批量。',
         'model 必须是 app_get_state 返回的模型 ID，且类型要与节点匹配。',
         'repairMissingCloudOutputs=true 仅按真实项目文件清单清理当前主图仍存在、且同类型单产物旧文件已缺失的云工作流缓存；不改主图、不接受路径或任意 data，也不清理多产物。只能与目标筛选字段一起使用，不能混合名称、提示词、位置或生成参数等普通编辑。',
+        'removeMissingDramaMentionIds 指定完整 @drama 引用 ID（含选图后缀，不含外层标记），仅将父项目资产已不存在的匹配 token 替换为显示名称，其余完整 prompt 保持原样。有效资产和 global/ 引用拒绝清理；只能与目标筛选字段一起使用。',
         '不修改已生成的结果，也不会触发生成（生成用 canvas_run_nodes）。',
       ].join(''),
       inputSchema: {
@@ -1671,6 +1717,9 @@ export function registerCanvasAgentTools(): Array<() => void> {
         properties: {
           ...targetProperties,
           repairMissingCloudOutputs: { type: 'boolean', description: '显式为 true 时，仅安全修复缺失的云工作流单产物缓存，不允许混合普通编辑字段。' },
+          removeMissingDramaMentionIds: { type: 'array', minItems: 1, maxItems: 20,
+            items: { type: 'string', minLength: 1, maxLength: 2048 },
+            description: '只清理明确指定且父项目资产已删除的引用 ID，保留显示名称和完整提示词；不能混合普通编辑。' },
           label: { type: 'string', minLength: 1, maxLength: 120 },
           prompt: { type: 'string', maxLength: 8000 },
           content: { type: 'string', maxLength: 40000 },
@@ -1711,13 +1760,23 @@ export function registerCanvasAgentTools(): Array<() => void> {
       },
       effect: 'canvas_write',
       authorize: authorizeCurrentProject,
-      summarizeInput: (input) => input.repairMissingCloudOutputs === true
-        ? `核对 ${resolveTargetIds(input).length} 个节点的缺失单产物缓存` : `更新 ${resolveTargetIds(input).length} 个节点`,
+      summarizeInput: (input) => input.removeMissingDramaMentionIds !== undefined
+        ? `清理 ${resolveTargetIds(input).length} 个节点的指定失效资产引用`
+        : input.repairMissingCloudOutputs === true
+          ? `核对 ${resolveTargetIds(input).length} 个节点的缺失单产物缓存` : `更新 ${resolveTargetIds(input).length} 个节点`,
       execute: async (context, input) => {
         assertCanvasRevision(context);
         const targetIds = resolveTargetIds(input);
         if (targetIds.length === 0) {
           return { status: 'error', summary: '没有找到匹配节点', modelContent: '没有找到匹配节点' };
+        }
+        if (input.removeMissingDramaMentionIds !== undefined) {
+          if (Object.keys(input).some((key) => key !== 'removeMissingDramaMentionIds'
+            && !Object.prototype.hasOwnProperty.call(targetProperties, key))) {
+            const message = '清理失效资产引用不能混合其他节点编辑，请分开调用';
+            return { status: 'error', summary: message, modelContent: message };
+          }
+          return removeMissingDramaMentions(context, targetIds, input.removeMissingDramaMentionIds);
         }
         if (input.repairMissingCloudOutputs === true) {
           if (Object.keys(input).some((key) => key !== 'repairMissingCloudOutputs'
