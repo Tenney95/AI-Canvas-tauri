@@ -559,6 +559,29 @@ function visibleShotRatio(store: TestStore, column: string) {
   return ratios[column] / total * 100;
 }
 
+/** 只测工作流编辑与关闭回调，生成服务不在本用例执行范围内。 */
+async function loadWorkflowEditingDialog() {
+  vi.doMock('../../src/services/aiService', () => ({
+    generateText: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
+    generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
+  }));
+  vi.doMock('../../src/services/generationService', () => ({
+    cancelImageBatchGeneration: vi.fn(), isImageBatchGenerating: () => false,
+    subscribeImageBatches: () => () => undefined, usesSequentialImageBatch: () => false,
+  }));
+  vi.doMock('../../src/services/shotlistService', () => ({ generateShotlistRows: vi.fn() }));
+  vi.doMock('../../src/services/ai/generateAudio', () => ({ persistAudioGenerationResult: vi.fn() }));
+  try {
+    return (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
+  } finally {
+    // 当前模块保留导入的替身；后续 resetModules 后的生成用例仍加载自己的真实实现或替身。
+    vi.doUnmock('../../src/services/aiService');
+    vi.doUnmock('../../src/services/generationService');
+    vi.doUnmock('../../src/services/shotlistService');
+    vi.doUnmock('../../src/services/ai/generateAudio');
+  }
+}
+
 describe('critical canvas node interactions', () => {
   it('种子面板不抽值，随机/固定切换、一次填入和固定编辑按操作写回', async () => {
     await installReactHookDriver();
@@ -669,7 +692,7 @@ describe('critical canvas node interactions', () => {
     vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
     vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({ default: function PromptPanelMock() { return null; } }));
     vi.doMock('../../src/services/pollManager', () => ({ ...mockComfyDeliveries(), getPendingTasksForProject: () => [] }));
-    const Dialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
+    const Dialog = await loadWorkflowEditingDialog();
     const panel = findElement(Dialog(), (element) => componentName(element) === 'PromptPanelMock');
     const values = { '515::aspect_ratio': '9:16 (Portrait Widescreen)' };
     (panel.props.onWorkflowInputsChange as (next: Record<string, string>, ratio?: string) => void)(values, '9:16');
@@ -706,7 +729,7 @@ describe('critical canvas node interactions', () => {
       typeof options === 'boolean' ? { capture: options } : options);
     vi.stubGlobal('document', doc);
     vi.stubGlobal('window', new EventTarget());
-    const Dialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
+    const Dialog = await loadWorkflowEditingDialog();
     const tree = Dialog();
     const boundary = findElement(tree, (element) => element.props.className === 'contents');
     const capture = boundary.props.onPointerDownCapture as (event: { nativeEvent: Event }) => void;
