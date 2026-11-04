@@ -141,6 +141,7 @@ export class LoopbackClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         cleanupAbort();
+        this.sendCancellation(id);
         reject(new Error('AI Canvas MCP 请求等待超时'));
       }, this.timeoutMs);
       const handleAbort = () => {

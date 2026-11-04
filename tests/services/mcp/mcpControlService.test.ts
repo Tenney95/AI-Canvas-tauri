@@ -568,6 +568,65 @@ describe('MCP on-demand discovery', () => {
     expect(useAppStore.getState().agentTasks[0].status).toBe('stopped');
   });
 
+  it('cancels during tool registration before a task exists', async () => {
+    const execute = registerDispatchProbe();
+    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'cancel-before-registration');
+    const rejected = expect(pending).rejects.toThrow('已取消');
+
+    expect(await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'early-cancel',
+      method: 'requests/cancel', params: { requestId: 'cancel-before-registration' } })).toEqual({ cancelled: true });
+
+    await rejected;
+    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('remembers an early cancellation only for its own session and for a bounded time', async () => {
+    const execute = registerDispatchProbe();
+    const cancelledId = 'cancelled-before-arrival';
+    await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-before-arrival',
+      method: 'requests/cancel', params: { requestId: cancelledId } });
+    await expect(mcpCall('mcp_dispatch_probe', { value: 'ok' }, cancelledId)).rejects.toThrow('已取消');
+    expect(execute).not.toHaveBeenCalled();
+    expect(await handleMcpBridgeRequest({ sessionId: 'another-session', requestId: cancelledId,
+      method: 'tools/call', params: { name: 'mcp_dispatch_probe', arguments: { value: 'ok' } } })).toMatchObject({ isError: false });
+
+    const later = Date.now() + 16 * 60 * 1_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(later);
+    try {
+      expect(await mcpCall('mcp_dispatch_probe', { value: 'ok' }, cancelledId)).toMatchObject({ isError: false });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('only accepts native session revocation and keeps a replacement session usable', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    registerDispatchProbe({ execute: (context) => {
+      if (receivedSignal) return Promise.resolve({ status: 'success' as const, summary: '新会话成功', modelContent: '新会话成功' });
+      receivedSignal = context.signal;
+      return new Promise((_resolve, reject) => {
+        context.signal.addEventListener('abort', () => reject(new DOMException('Stopped', 'AbortError')), { once: true });
+      });
+    } });
+    const request = { sessionId: 'session-to-revoke', requestId: 'same-request', method: 'tools/call' as const,
+      params: { name: 'mcp_dispatch_probe', arguments: { value: 'ok' } } };
+    const pending = handleMcpBridgeRequest(request);
+    try {
+      await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+      expect(await handleMcpBridgeRequest({ sessionId: request.sessionId, requestId: 'client-cancel',
+        method: 'requests/cancel', params: { scope: 'session' } })).toEqual({ cancelled: false });
+      expect(receivedSignal?.aborted).toBe(false);
+    } finally {
+      await handleMcpBridgeRequest({ sessionId: request.sessionId, requestId: '',
+        method: 'requests/cancel', params: { scope: 'session' } });
+      await pending;
+    }
+    expect(receivedSignal?.aborted).toBe(true);
+    await expect(handleMcpBridgeRequest({ ...request, requestId: 'late-request' })).rejects.toThrow('已取消');
+    expect(await handleMcpBridgeRequest({ ...request, sessionId: 'replacement-session' })).toMatchObject({ isError: false });
+  });
+
   it.each([null, [], { name: 'tools_call', arguments: {} }, { name: 'tools_search', arguments: {} }, { name: 'canvas_query', arguments: [] }])('rejects invalid or recursive envelopes without starting a task: %j', async (input) => {
     expect(await mcpCall('tools_call', input)).toMatchObject({ isError: true });
     expect(useAppStore.getState().agentTasks).toHaveLength(0);

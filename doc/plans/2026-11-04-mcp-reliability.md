@@ -9,13 +9,18 @@
 | 项目 | 主要文件（测试不计入源码范围） | 状态 |
 | --- | --- | --- |
 | 1. 配置截图脱敏 | `components/settings/McpControlSettings.tsx`、本计划、模块入口；`tests/components/mcpControlSettings.test.ts` | 已实现，待用户验收 |
-| 2. 请求生命周期取消 | `src-tauri/src/mcp/bridge.rs`、`services/mcp/mcpControlService.ts`、`scripts/ai-canvas-mcp.mjs`、本计划；对应原生与控制层/适配器测试 | 待实施 |
+| 2. 请求生命周期取消 | `src-tauri/src/mcp/bridge.rs`、`services/mcp/mcpControlService.ts`、`scripts/ai-canvas-mcp.mjs`、`types/mcp.ts`（协议注释）、本计划；对应原生与控制层/适配器测试 | 已实现，待用户验收 |
 | 3. 完整业务结果 | `services/chat/agentRoundExecutor.ts`、`services/mcp/mcpControlService.ts`（按需）、本计划；对应执行器与 MCP 结果测试 | 待实施 |
 | 4. stdio 在途限额 | `src-tauri/src/mcp/bridge.rs`、本计划；原生内置测试 | 待实施 |
 | 5. 外部连接保存串行化 | `services/mcp/mcpClientService.ts`、本计划；`tests/services/mcpClientService.test.ts` | 待实施 |
 | 6. 外部会话失效恢复 | `services/mcp/mcpClientService.ts`、本计划；`tests/services/mcpClientService.test.ts` | 待实施 |
 
 前端相对路径均以 `src/` 为根。每阶段提交前静态核对差异、调用引用、严格 UTF-8 和差异空白；这些核对不代表功能测试通过。
+
+## 已实现边界
+
+- 第 1 项：配置区域复用 `data-mcp-sensitive`；复制配置不变，显式关闭截图脱敏的既有选项不变。
+- 第 2 项：stdio 断连只取消本连接仍在等待的请求，原生/适配器超时传播取消；停止或替换 bridge 撤销同会话前端任务。登记发生在首次异步加载前，取消覆盖加载中和执行中；迟到请求由有界、带期限的取消记录拒绝。原生使用外部入口禁止的空请求 ID 发送单向生命周期通知，普通请求不能借此撤销其他连接。HTTP 既有主动取消保留，不承诺撤销已提交的外部副作用。
 
 ## 用户桌面验收
 
@@ -28,7 +33,7 @@
 5. 保存外部连接期间关闭编辑器，重新打开并保存/移除同一连接；过期操作不能替换当前连接的凭据或覆盖新修订。凭据和配置保存失败须能安全重试。
 6. 建立外部连接后重启服务或让会话过期；下一次发现应重新握手恢复。写请求遇到失效会话不得自动重投；回归认证失败、普通 404、停用连接和取消。
 
-供用户执行的命令：在仓库根目录运行 `npx vitest run tests/components/mcpControlSettings.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/mcpClientService.test.ts`，适配器用 `node --test tests/scripts/aiCanvasMcp.test.mjs`；在 `src-tauri/` 运行 `cargo test mcp_bridge::tests --lib` 和 `cargo check --lib`。本轮均未运行。
+供用户执行的命令：在仓库根目录运行 `npx vitest run tests/components/mcpControlSettings.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/chat/agentToolExecution.test.ts tests/services/mcpClientService.test.ts tests/scripts/aiCanvasMcp.test.mjs`；在 `src-tauri/` 运行 `cargo test mcp_bridge::tests --lib` 和 `cargo check --lib`。本轮均未运行。
 
 ## 回退
 

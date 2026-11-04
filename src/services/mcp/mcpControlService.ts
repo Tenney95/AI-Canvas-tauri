@@ -61,8 +61,61 @@ const MCP_EXECUTION_MODE = 'autonomous' as const;
  */
 export const MCP_TOOL_DISCOVERY_TASK_ID = 'mcp-tool-discovery';
 
-const activeRequestTasks = new Map<string, string>();
+interface ActiveMcpRequest {
+  sessionId: string;
+  taskId?: string;
+  cancelled: boolean;
+}
+
+const activeRequestTasks = new Map<string, ActiveMcpRequest>();
+// 取消可能先于工具注册/原请求到达；在途记录独立保留标记，墓碑只覆盖迟到请求。
+const cancellationTtlMs = 15 * 60 * 1_000;
+const cancelledRequests = new Map<string, number>();
+const cancelledSessions = new Map<string, number>();
+const maxCancelledRequests = 512;
+const maxCancelledSessions = 64;
 let settingsAuditInitialization: Promise<void> | undefined;
+
+function requestKey(sessionId: string, requestId: string): string {
+  return JSON.stringify([sessionId, requestId]);
+}
+
+function pruneCancellations(entries: Map<string, number>): void {
+  const now = Date.now();
+  for (const [key, expiresAt] of entries) {
+    if (expiresAt <= now) entries.delete(key);
+  }
+}
+
+function rememberCancellation(entries: Map<string, number>, key: string, limit: number): void {
+  pruneCancellations(entries);
+  entries.delete(key);
+  entries.set(key, Date.now() + cancellationTtlMs);
+  while (entries.size > limit) {
+    const oldest = entries.keys().next().value;
+    if (oldest === undefined) break;
+    entries.delete(oldest);
+  }
+}
+
+function assertMcpRequestActive(request: McpBridgeRequestEvent, active: ActiveMcpRequest): void {
+  pruneCancellations(cancelledRequests);
+  pruneCancellations(cancelledSessions);
+  if (active.cancelled || cancelledRequests.has(requestKey(request.sessionId, request.requestId))
+    || cancelledSessions.has(request.sessionId)) {
+    active.cancelled = true;
+    throw new Error('MCP 请求已取消；已提交的操作仍需核对实际状态。');
+  }
+}
+
+function cancelActiveRequest(active: ActiveMcpRequest): void {
+  active.cancelled = true;
+  if (!active.taskId) return;
+  const task = useAppStore.getState().agentTasks.find((item) => item.id === active.taskId);
+  // 取消只中止尚在运行/等待的阶段，不把已完成的外部副作用改写成已撤销。
+  if (!task || ['completed', 'failed', 'stopped'].includes(task.status)) return;
+  stopAgentTask(active.taskId);
+}
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -212,8 +265,10 @@ function revealMcpUserChoice(projectId: string, conversationId: string, step: Ag
 
 async function callMcpTool(
   request: McpBridgeRequestEvent,
+  active: ActiveMcpRequest,
 ): Promise<McpToolCallResult> {
   await ensureToolsRegistered();
+  assertMcpRequestActive(request, active);
   const name = typeof request.params.name === 'string' ? request.params.name : '';
   const current = getCurrentMcpContext(name);
   if (!current) {
@@ -272,7 +327,7 @@ async function callMcpTool(
     status: 'executing',
     agentTaskId: task.id,
   });
-  activeRequestTasks.set(request.requestId, task.id);
+  active.taskId = task.id;
 
   let executionResult: Awaited<ReturnType<
     typeof import('../chat/agentToolExecution')['executeRegisteredAgentToolCall']
@@ -280,6 +335,7 @@ async function callMcpTool(
   try {
     const finalTask = await runAgentTask(task.id, async (signal) => {
       const { executeRegisteredAgentToolCall } = await import('../chat/agentToolExecution');
+      assertMcpRequestActive(request, active);
       executionResult = await executeRegisteredAgentToolCall({
         taskId: task.id,
         call: {
@@ -320,19 +376,34 @@ async function callMcpTool(
   } finally {
     clearSkillReadTask(task.id);
     clearSkillCatalogTask(task.id);
-    activeRequestTasks.delete(request.requestId);
   }
 }
 
 function cancelMcpRequest(request: McpBridgeRequestEvent): { cancelled: boolean } {
+  // 空 ID 仅由原生发出单向生命周期通知；客户端入口拒绝空 ID，不能借 scope 撤销其他连接。
+  if (request.requestId === '' && request.params.scope === 'session') {
+    rememberCancellation(cancelledSessions, request.sessionId, maxCancelledSessions);
+    for (const active of activeRequestTasks.values()) {
+      if (active.sessionId !== request.sessionId) continue;
+      try {
+        cancelActiveRequest(active);
+      } catch {
+        // 单个任务的终态竞态不能阻止同会话的其他请求收到撤销。
+      }
+    }
+    return { cancelled: true };
+  }
   // bridge 已把目标 ID 换成同一连接内的请求键，这里按键直接取消。
   const target = typeof request.params.requestId === 'string'
     ? request.params.requestId
     : '';
-  const taskId = activeRequestTasks.get(target);
-  if (!taskId) return { cancelled: false };
+  if (!target || target.length > 512) return { cancelled: false };
+  const key = requestKey(request.sessionId, target);
+  rememberCancellation(cancelledRequests, key, maxCancelledRequests);
+  const active = activeRequestTasks.get(key);
+  if (!active) return { cancelled: false };
   try {
-    stopAgentTask(taskId);
+    cancelActiveRequest(active);
     return { cancelled: true };
   } catch {
     return { cancelled: false };
@@ -345,19 +416,29 @@ export async function handleMcpBridgeRequest(
   switch (request.method) {
     case 'tools/list':
       return { tools: await listMcpTools() };
-    case 'tools/call':
-      if (request.params.name === MCP_CALL_TOOL_NAME) {
-        let envelope;
-        try {
-          envelope = decodeMcpToolCallEnvelope(request.params.arguments);
-        } catch (error) {
-          const summary = error instanceof Error ? error.message : 'MCP 调用信封无效';
-          return { isError: true, summary, content: [{ type: 'text', text: summary }] };
+    case 'tools/call': {
+      const key = requestKey(request.sessionId, request.requestId);
+      if (activeRequestTasks.has(key)) throw new Error('MCP 请求 ID 重复');
+      const active: ActiveMcpRequest = { sessionId: request.sessionId, cancelled: false };
+      activeRequestTasks.set(key, active);
+      try {
+        assertMcpRequestActive(request, active);
+        if (request.params.name === MCP_CALL_TOOL_NAME) {
+          let envelope;
+          try {
+            envelope = decodeMcpToolCallEnvelope(request.params.arguments);
+          } catch (error) {
+            const summary = error instanceof Error ? error.message : 'MCP 调用信封无效';
+            return { isError: true, summary, content: [{ type: 'text', text: summary }] };
+          }
+          // 只解包一次，保留原 requestId 的取消关联。校验、effect 和审计均属于真实工具。
+          return await callMcpTool({ ...request, params: { name: envelope.name, arguments: envelope.arguments } }, active);
         }
-        // 只解包一次，保留原 requestId 的取消关联。校验、effect 和审计均属于真实工具。
-        return callMcpTool({ ...request, params: { name: envelope.name, arguments: envelope.arguments } });
+        return await callMcpTool(request, active);
+      } finally {
+        activeRequestTasks.delete(key);
       }
-      return callMcpTool(request);
+    }
     case 'requests/cancel':
       return cancelMcpRequest(request);
     default:
@@ -384,6 +465,8 @@ export async function initMcpControlService(): Promise<() => void> {
   const unlisten = await listenForMcpBridgeRequests(async (request) => {
     try {
       const result = await handleMcpBridgeRequest(request);
+      // 原生生命周期通知不登记 pending，也不需要回传响应。
+      if (request.method === 'requests/cancel' && request.requestId === '') return;
       await respondToMcpBridge({
         sessionId: request.sessionId,
         requestId: request.requestId,
@@ -403,13 +486,15 @@ export async function initMcpControlService(): Promise<() => void> {
   });
   return () => {
     unlisten();
-    for (const taskId of activeRequestTasks.values()) {
+    for (const active of activeRequestTasks.values()) {
       try {
-        stopAgentTask(taskId);
+        cancelActiveRequest(active);
       } catch {
         // 任务可能已经结束。
       }
     }
     activeRequestTasks.clear();
+    cancelledRequests.clear();
+    cancelledSessions.clear();
   };
 }

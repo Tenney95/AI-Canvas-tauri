@@ -75,6 +75,7 @@ pub struct McpBridgeSessionInfo {
 #[serde(rename_all = "camelCase")]
 struct McpBridgeRequestEvent {
     session_id: String,
+    // 空 ID 仅用于原生单向撤销通知，外部 parse_request 始终拒绝空 ID。
     request_id: String,
     method: String,
     params: Value,
@@ -215,6 +216,51 @@ fn write_shared_response(
     write_response(&mut stream, response)
 }
 
+fn notify_frontend_cancellation(
+    app: &AppHandle,
+    info: &McpBridgeSessionInfo,
+    request_id: Option<&str>,
+) {
+    let params = match request_id {
+        Some(request_id) => serde_json::json!({ "requestId": request_id }),
+        None => serde_json::json!({ "scope": "session" }),
+    };
+    let _ = app.emit_to(
+        "main",
+        MCP_REQUEST_EVENT,
+        McpBridgeRequestEvent {
+            session_id: info.session_id.clone(),
+            request_id: String::new(),
+            method: "requests/cancel".to_string(),
+            params,
+        },
+    );
+}
+
+fn remove_connection_requests(
+    pending: &Mutex<HashMap<String, mpsc::SyncSender<FrontendResponse>>>,
+    prefix: &str,
+) -> Vec<String> {
+    let Ok(mut requests) = pending.lock() else {
+        return Vec::new();
+    };
+    let ids: Vec<String> = requests
+        .keys()
+        .filter(|id| id.starts_with(prefix))
+        .cloned()
+        .collect();
+    for id in &ids {
+        if let Some(sender) = requests.remove(id) {
+            let _ = sender.try_send(FrontendResponse {
+                ok: false,
+                result: None,
+                error: Some("AI Canvas MCP 客户端连接已断开".to_string()),
+            });
+        }
+    }
+    ids
+}
+
 /// 轮询超时只暂停收帧；已消费字节保留到换行，避免丢失半帧或拆开 UTF-8。
 fn read_request_frame<R: BufRead>(
     reader: &mut R,
@@ -352,41 +398,72 @@ fn handle_connection(
         }
         let response_writer = Arc::clone(&writer);
         let response_pending = Arc::clone(&pending);
-        let _ = thread::Builder::new()
+        let response_app = app.clone();
+        let response_info = info.clone();
+        let response_request_id = request_id.clone();
+        let response_id = request.id.clone();
+        let spawned = thread::Builder::new()
             .name("ai-canvas-mcp-response".to_string())
             .spawn(move || {
                 let frontend_response = receiver.recv_timeout(RESPONSE_TIMEOUT);
                 if let Ok(mut requests) = response_pending.lock() {
-                    requests.remove(&request_id);
+                    requests.remove(&response_request_id);
+                }
+                if matches!(frontend_response, Err(mpsc::RecvTimeoutError::Timeout)) {
+                    notify_frontend_cancellation(
+                        &response_app,
+                        &response_info,
+                        Some(&response_request_id),
+                    );
                 }
                 let response = match frontend_response {
                     Ok(frontend) if frontend.ok => OutgoingResponse {
                         version: PROTOCOL_VERSION,
-                        id: request.id,
+                        id: response_id,
                         ok: true,
                         result: frontend.result.or(Some(Value::Null)),
                         error: None,
                     },
                     Ok(frontend) => response_error(
-                        request.id,
+                        response_id,
                         "MCP_FRONTEND_ERROR",
                         frontend
                             .error
                             .unwrap_or_else(|| "AI Canvas MCP 请求失败".to_string()),
                     ),
                     Err(mpsc::RecvTimeoutError::Timeout) => response_error(
-                        request.id,
+                        response_id,
                         "MCP_RESPONSE_TIMEOUT",
                         "AI Canvas MCP 请求等待超时",
                     ),
                     Err(mpsc::RecvTimeoutError::Disconnected) => response_error(
-                        request.id,
+                        response_id,
                         "MCP_SESSION_STOPPED",
                         "AI Canvas MCP 会话已停止",
                     ),
                 };
                 let _ = write_shared_response(&response_writer, &response);
             });
+        if spawned.is_err() {
+            if let Ok(mut requests) = pending.lock() {
+                requests.remove(&request_id);
+            }
+            notify_frontend_cancellation(&app, &info, Some(&request_id));
+            let _ = write_shared_response(
+                &writer,
+                &response_error(
+                    request.id,
+                    "MCP_RESPONSE_UNAVAILABLE",
+                    "无法等待 MCP 工具结果，已请求取消",
+                ),
+            );
+        }
+    }
+
+    // 只撤销这个 TCP 连接仍在等待的请求，不影响同会话中的其他客户端。
+    let connection_prefix = format!("{}:{connection_seq:x}:", info.session_id);
+    for request_id in remove_connection_requests(&pending, &connection_prefix) {
+        notify_frontend_cancellation(&app, &info, Some(&request_id));
     }
 }
 
@@ -450,6 +527,9 @@ fn forward_frontend_request(
     let received = receiver.recv_timeout(RESPONSE_TIMEOUT);
     if let Ok(mut requests) = pending.lock() {
         requests.remove(&request_id);
+    }
+    if matches!(received, Err(mpsc::RecvTimeoutError::Timeout)) {
+        notify_frontend_cancellation(app, info, Some(&request_id));
     }
     match received {
         Ok(response) if response.ok => Ok(response.result.unwrap_or(Value::Null)),
@@ -734,7 +814,9 @@ pub fn mcp_bridge_start(
         .map_err(|_| "MCP bridge 会话锁不可用".to_string())?
         .take();
     if let Some(previous) = previous {
+        let previous_info = previous.info.clone();
         stop_session(previous);
+        notify_frontend_cancellation(&app, &previous_info, None);
     }
     let listener = match transport {
         McpTransport::Stdio => bind_loopback(port.unwrap_or(0))?,
@@ -885,14 +967,16 @@ fn adapter_candidates(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> 
 }
 
 #[tauri::command]
-pub fn mcp_bridge_stop(state: State<'_, McpBridgeState>) -> Result<(), String> {
+pub fn mcp_bridge_stop(app: AppHandle, state: State<'_, McpBridgeState>) -> Result<(), String> {
     let session = state
         .session
         .lock()
         .map_err(|_| "MCP bridge 会话锁不可用".to_string())?
         .take();
     if let Some(session) = session {
+        let info = session.info.clone();
         stop_session(session);
+        notify_frontend_cancellation(&app, &info, None);
     }
     Ok(())
 }
@@ -1190,6 +1274,26 @@ mod tests {
         let response = receiver.recv_timeout(Duration::from_millis(50)).unwrap();
         assert!(!response.ok);
         assert_eq!(response.error.as_deref(), Some("AI Canvas MCP 会话已停止"));
+    }
+
+    #[test]
+    fn disconnecting_only_releases_requests_from_that_connection() {
+        let (own_sender, own_receiver) = mpsc::sync_channel(1);
+        let (other_sender, other_receiver) = mpsc::sync_channel(1);
+        let pending = Mutex::new(HashMap::from([
+            ("session:a:request".to_string(), own_sender),
+            ("session:ab:request".to_string(), other_sender),
+        ]));
+
+        let cancelled = remove_connection_requests(&pending, "session:a:");
+
+        assert_eq!(cancelled, vec!["session:a:request".to_string()]);
+        assert!(!own_receiver.try_recv().unwrap().ok);
+        assert!(matches!(
+            other_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert_eq!(pending.lock().unwrap().len(), 1);
     }
 
     #[test]

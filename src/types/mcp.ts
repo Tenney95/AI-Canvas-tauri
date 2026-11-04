@@ -56,6 +56,7 @@ export interface McpBridgeSessionInfo {
 
 export interface McpBridgeRequestEvent {
   sessionId: string;
+  /** 空值仅供原生 requests/cancel 单向生命周期通知；外部请求入口始终拒绝空 ID。 */
   requestId: string;
   method: 'tools/list' | 'tools/call' | 'requests/cancel';
   params: Record<string, unknown>;
