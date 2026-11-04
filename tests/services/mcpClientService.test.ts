@@ -228,7 +228,7 @@ describe('external MCP client boundaries', () => {
     let started!: () => void;
     const saving = new Promise<void>((resolve) => { started = resolve; });
     let fail!: (reason: Error) => void;
-    const saveConfig = vi.fn(async () => undefined).mockImplementationOnce(async () => undefined)
+    const saveConfig = vi.fn(async (): Promise<void> => undefined).mockImplementationOnce(async () => undefined)
       .mockImplementationOnce(() => { started(); return new Promise<void>((_resolve, reject) => { fail = reject; }); });
     useAppStore.setState({ saveConfig });
     const save = saveMcpClientConnection(item, 'new-secret');

@@ -119,7 +119,7 @@ describe('Amam 图片／视频的异步交付', () => {
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-video-task' }))
       .mockResolvedValueOnce(jsonResponse({ status: 'completed' }))
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
-    const result = await generateVideo({ ...params, resolution: '720p', aspectRatio: '1:1', duration: 8 });
+    const result = await generateVideo({ ...params, seedanceResolution: '720p', seedanceRatio: '1:1', seedanceDuration: 8 });
     expect(result).toMatchObject({ url: 'data:video/mp4;base64,AQID', taskReceipt: { taskId: 'am-video-task' } });
     const calls = transportMocks.corsSafeFetch.mock.calls;
     expect(calls.map(([url]) => url)).toEqual(['https://aigc-si.com/v1/videos',
@@ -138,7 +138,7 @@ describe('Amam 图片／视频的异步交付', () => {
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-video-retained' }))
       .mockResolvedValueOnce(jsonResponse({ status: 'completed' }))
       .mockResolvedValueOnce(new Response('{"detail":"下载暂不可用"}', { status: 401 }));
-    await expect(generateVideo({ ...params, duration: 5 })).rejects.toMatchObject({ name: 'MediaTaskPausedError',
+    await expect(generateVideo({ ...params, seedanceDuration: 5 })).rejects.toMatchObject({ name: 'MediaTaskPausedError',
       taskReceipt: { taskId: 'am-video-retained' } });
     const [task] = getPendingTasksForProject('am-video-project');
     expect(task).toMatchObject({ taskId: 'am-video-retained', providerConfigId: 'my-amam', submitted: true,
@@ -156,15 +156,15 @@ describe('Amam 图片／视频的异步交付', () => {
     const params = configureAmam('muse-video-1');
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-video-failed' }))
       .mockResolvedValueOnce(jsonResponse({ status: 'failed', error: { message: '当前素材不符合要求' } }));
-    await expect(generateVideo({ ...params, duration: 5 })).rejects.toMatchObject({ name: 'PollTaskFailedError', message: expect.stringContaining('当前素材不符合要求') });
+    await expect(generateVideo({ ...params, seedanceDuration: 5 })).rejects.toMatchObject({ name: 'PollTaskFailedError', message: expect.stringContaining('当前素材不符合要求') });
     expect(getPendingTasksForProject('am-video-project')).toEqual([]);
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
   });
 
   it('Muse 的非法时长、参考视频在提交前拒绝，不产生生成请求', async () => {
     const params = configureAmam('muse-video-1');
-    await expect(generateVideo({ ...params, duration: 7 })).rejects.toThrow();
-    await expect(generateVideo({ ...params, duration: 5,
+    await expect(generateVideo({ ...params, seedanceDuration: 7 })).rejects.toThrow();
+    await expect(generateVideo({ ...params, seedanceDuration: 5,
       referenceMedia: [{ kind: 'video', url: 'https://cdn.example/reference.mp4', origin: 'prompt', role: 'reference' }] })).rejects.toThrow();
     expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
     expect(getPendingTasksForProject('am-video-project')).toEqual([]);
