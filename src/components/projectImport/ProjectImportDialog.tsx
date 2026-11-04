@@ -32,6 +32,7 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
   const apply = useAppStore((state) => state.importProject);
   const [session, setSession] = useState<PreparedProjectImport | null>(null), sessionRef = useRef<PreparedProjectImport | null>(null);
   const [baseline, setBaseline] = useState<PreparedProjectImport | null>(null), baselineRef = useRef<PreparedProjectImport | null>(null);
+  const pendingCleanup = useRef(new Set<PreparedProjectImport>());
   const [baseConfirmed, setBaseConfirmed] = useState(false);
   const [mode, setMode] = useState<'new' | 'update'>('new'), [targetId, setTargetId] = useState('');
   const [preview, setPreview] = useState<ProjectImportPreview | null>(null), [choices, setChoices] = useState<Record<string, ProjectMergeSide>>({});
@@ -55,25 +56,40 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
     if (!preview || unresolved || preview.plan.alreadyApplied) return '';
     try { resolveProjectMerge(preview.plan, choices); return ''; } catch (cause) { return cause instanceof Error ? cause.message : t('合并依赖不完整'); }
   }, [preview, choices, unresolved, t]);
+  const cleanupSession = async (prepared: PreparedProjectImport) => {
+    pendingCleanup.current.add(prepared);
+    await closePreparedProjectImport(prepared);
+    pendingCleanup.current.delete(prepared);
+  };
+  const retryCleanup = async () => {
+    for (const prepared of [...pendingCleanup.current]) await cleanupSession(prepared);
+  };
   const close = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      if (sessionRef.current) await closePreparedProjectImport(sessionRef.current);
-      if (baselineRef.current) await closePreparedProjectImport(baselineRef.current);
+      await retryCleanup();
+      if (sessionRef.current) await cleanupSession(sessionRef.current);
+      if (baselineRef.current) await cleanupSession(baselineRef.current);
       sessionRef.current = null; baselineRef.current = null; onClose();
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : t('清理暂存素材失败，请重试')); setBusy(false); }
   };
   const chooseFile = async () => {
     setBusy(true); setError('');
+    let next: PreparedProjectImport | null = null;
     try {
-      const next = await prepare(); if (!next) return;
-      if (sessionRef.current) await closePreparedProjectImport(sessionRef.current);
-      if (baselineRef.current) await closePreparedProjectImport(baselineRef.current);
+      await retryCleanup();
+      next = await prepare(); if (!next) return;
+      if (sessionRef.current) await cleanupSession(sessionRef.current);
+      if (baselineRef.current) await cleanupSession(baselineRef.current);
       baselineRef.current = null; setBaseline(null); setBaseConfirmed(false);
       sessionRef.current = next; setSession(next); setPreview(null); setChoices({});
-    } catch (cause) { setError(cause instanceof Error ? cause.message : t('读取项目包失败')); } finally { setBusy(false); }
+      next = null;
+    } catch (cause) {
+      if (next) await cleanupSession(next).catch(() => undefined);
+      setError(pendingCleanup.current.size ? t('清理暂存素材失败，请重试关闭或重新选择项目包') : cause instanceof Error ? cause.message : t('读取项目包失败'));
+    } finally { setBusy(false); }
   };
   const runCompare = async () => {
     if (!session || !targetId) return; setBusy(true); setError(''); setPreview(null); setChoices({});
@@ -82,16 +98,23 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
   };
   const chooseBaseline = async () => {
     setBusy(true); setError('');
+    let next: PreparedProjectImport | null = null;
     try {
-      const next = await prepare(); if (!next) return;
-      if (baselineRef.current) await closePreparedProjectImport(baselineRef.current);
+      await retryCleanup();
+      next = await prepare(); if (!next) return;
+      if (baselineRef.current) await cleanupSession(baselineRef.current);
       baselineRef.current = next; setBaseline(next); setBaseConfirmed(false); setPreview(null);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : t('读取原始包失败')); } finally { setBusy(false); }
+      next = null;
+    } catch (cause) {
+      if (next) await cleanupSession(next).catch(() => undefined);
+      setError(pendingCleanup.current.size ? t('清理暂存素材失败，请重试关闭或重新选择项目包') : cause instanceof Error ? cause.message : t('读取原始包失败'));
+    } finally { setBusy(false); }
   };
   const runApply = async () => {
     if (!session) return; setBusy(true); setError('');
     const controller = new AbortController(); transfer.current = { controller }; setCanCancel(false); setProgress(null);
     try {
+      await retryCleanup();
       const id = await apply(session, mode === 'update' ? preview : null, choices, { appendChat, appendMemories, independent,
         signal: controller.signal, onTransfer: (id) => { transfer.current = { id, controller }; setCanCancel(true); setProgress(0); } });
       if (!id) throw new Error(t('项目导入未完成'));

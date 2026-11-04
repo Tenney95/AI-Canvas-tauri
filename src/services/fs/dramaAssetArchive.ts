@@ -55,7 +55,8 @@ export async function createDramaAssetArchiveWorkspace(options: DramaAssetWriteO
     const assetsDirectory = joinPath(directory, 'assets');
     const mediaDirectory = joinPath(assetsDirectory, 'media');
     const incomingDirectory = joinPath(directory, 'incoming');
-    await guardedDramaAssetTransfer(() => mkdir(mediaDirectory, { recursive: true }), options);
+    // 导入目标必须为空；导出媒体目录由首次写入按需创建。
+    await guardedDramaAssetTransfer(() => mkdir(assetsDirectory), options);
     await guardedDramaAssetTransfer(() => mkdir(incomingDirectory), options);
     return { directory, assetsDirectory, mediaDirectory, incomingDirectory };
   } catch (error) { await cleanupDramaAssetTransferDirectory(directory).catch(() => undefined); throw error; }
@@ -81,6 +82,7 @@ export async function stageDramaAssetArchiveMedia(
   id: string, extension: string, kind: 'image' | 'audio' | 'video', options: DramaAssetWriteOptions = {},
 ): Promise<AssetFileCopyResult & { relativePath: string }> {
   if (!/^[a-zA-Z0-9_-]+$/.test(id) || !/^[a-z0-9]{1,8}$/.test(extension)) throw new Error('资产包媒体名称无效');
+  await guardedDramaAssetTransfer(() => mkdir(workspace.mediaDirectory, { recursive: true }), options);
   let sourcePath = source.filePath;
   if (!sourcePath) {
     const url = source.url;

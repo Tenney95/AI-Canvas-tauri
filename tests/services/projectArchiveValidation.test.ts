@@ -1,6 +1,6 @@
 /** 归档隐私与旧包输入边界；使用真实可移植适配器。 */
 import { describe, expect, it } from 'vitest';
-import { portableArchiveChat, sanitizeLegacyArchiveProject, selectArchiveAssets } from '../../src/services/projectArchiveValidation';
+import { portableArchiveChat, sanitizeLegacyArchiveProject, selectArchiveAssets, selectArchiveImportPaths } from '../../src/services/projectArchiveValidation';
 import { captureExchangeSnapshot } from '../../src/services/projectExchangeDomain';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectArchiveChatPayload } from '../../src/services/projectTransferService';
@@ -10,6 +10,62 @@ const project = (data: Record<string, unknown> = {}): ProjectSaveData => ({ id: 
   nodes: [{ id: 'node', type: 'source-image', position: { x: 0, y: 0 }, data }], edges: [], groups: [], createdAt: 1, updatedAt: 1 });
 
 describe('项目归档输入与导出边界', () => {
+  it('扫描范围采用活身份和当前引用，排除恢复点、失败残留及删除墓碑', () => {
+    const files = ['imports/old/附件.txt', 'imports/deleted/旧图.png'].map((path) => ({ path, bytes: 1, sha256: 'a'.repeat(64) }));
+    const baseline = captureExchangeSnapshot([project()], files.map((file) => ({ ...file, path: file.path.replace('imports/', '原稿/') })), null);
+    const identities = baseline.identities.map((identity) => identity.kind === 'file'
+      ? { ...identity, localId: identity.localId.replace('原稿/', 'imports/') } : identity);
+    const removed = identities.find((identity) => identity.kind === 'file' && identity.localId.includes('deleted'))!;
+    const head = { ...baseline.snapshot, entities: baseline.snapshot.entities.filter((entity) => entity.id !== removed.id) };
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: head.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities };
+    const current = project({ relativePath: 'imports/current/当前.png', filePath: '/project/imports/stale/旧投影.png',
+      videoReferences: [{ relativePath: 'imports/reference/参考.png' }], directorCaptureRelativePaths: ['imports/capture/摄影机.png'],
+      other: { filePath: '/project/imports/native/原生.png' }, prompt: 'imports/prompt/这不是引用.txt' });
+    expect(selectArchiveImportPaths([current], state, head, '/project')).toEqual([
+      'imports/capture/摄影机.png', 'imports/current/当前.png', 'imports/native/原生.png', 'imports/old/附件.txt', 'imports/reference/参考.png',
+    ]);
+  });
+
+  it('首次建立来源也只选择记录中明确引用的内部文件，并兼容 Windows 原生与相对路径', () => {
+    const current = project({ filePath: 'C:\\Project\\imports\\current\\原图.png', nested: { filePath: 'imports/relative/附件.txt' },
+      outside: { filePath: 'D:\\Other\\imports\\外部.png' }, directorCaptureRelativePaths: ['C:\\Project\\imports\\capture\\截图.png'] });
+    expect(selectArchiveImportPaths([current], null, undefined, 'c:/project/')).toEqual([
+      'imports/capture/截图.png', 'imports/current/原图.png', 'imports/relative/附件.txt',
+    ]);
+    expect(selectArchiveImportPaths([project({ relativePath: '附件/普通文件.md' })], null, undefined, '/project')).toEqual([]);
+  });
+
+  it.each(['Imports', 'IMPORTS'])('%s 首段按内部目录选择且保留真实相对路径拼写', (directory) => {
+    const path = `${directory}/current/当前.png`;
+    const current = project({ relativePath: path, nested: { filePath: `C:/Project/${directory}/reference/参考.png` } });
+    expect(selectArchiveImportPaths([current], null, undefined, 'C:/Project')).toEqual([
+      path, `${directory}/reference/参考.png`,
+    ]);
+    const captured = captureExchangeSnapshot([project({ relativePath: path })], [{ path, bytes: 1, sha256: 'a'.repeat(64) }], null);
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    expect(selectArchiveImportPaths([project()], state, captured.snapshot, 'C:/Project')).toEqual([path]);
+  });
+
+  it('主媒体仅有原生路径时，不因同时存在封面相对路径而漏扫主媒体', () => {
+    const current = project({ filePath: 'C:/Project/imports/current/video.mp4', imageRelativePath: 'imports/cover/preview.png' });
+    const paths = selectArchiveImportPaths([current], null, undefined, 'C:/Project');
+    expect(paths).toEqual(['imports/cover/preview.png', 'imports/current/video.mp4']);
+    const assets = paths.map((path, index) => ({ path, bytes: 1, sha256: String(index + 1).repeat(64) }));
+    const captured = captureExchangeSnapshot([current], assets, null, undefined, 'C:/Project');
+    expect([...captured.files.values()].sort()).toEqual(paths);
+  });
+
+  it('有协作状态却缺少匹配快照时停止扫描，不按墓碑猜测当前文件', () => {
+    const captured = captureExchangeSnapshot([project()], [], null);
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    expect(() => selectArchiveImportPaths([project()], state, undefined, '/project')).toThrow('当前协作快照');
+    expect(() => selectArchiveImportPaths([project()], state, { ...captured.snapshot, lineageId: 'another' }, '/project')).toThrow('当前协作快照');
+    expect(() => selectArchiveImportPaths([project({ relativePath: 'imports/../private.png' })], null, undefined, '/project')).toThrow('不安全');
+  });
+
   it.each(['../private.png', '/private.png', 'C:/private.png', 'a/../../private.png', 'a/NUL.png'])('旧包拒绝越界素材引用 %s', (relativePath) => {
     expect(() => sanitizeLegacyArchiveProject(project({ nested: { relativePath } }))).toThrow();
   });

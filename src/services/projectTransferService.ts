@@ -34,7 +34,7 @@ import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
 import { normalizeEpisodeAssetRoster } from '../types/episodeAssets';
 import type { CanvasProject } from '../types';
 import { serializeProjectArchiveEntries, type ProjectArchiveJsonEntry } from './projectArchiveSerialization';
-import { portableArchiveChat, sanitizeLegacyArchiveProject, selectArchiveAssets } from './projectArchiveValidation';
+import { portableArchiveChat, sanitizeLegacyArchiveProject, selectArchiveAssets, selectArchiveImportPaths } from './projectArchiveValidation';
 import { configValuesEqual } from './configPatch';
 import type { ArchiveAssetDigest } from './projectExchangeDomain';
 
@@ -344,10 +344,14 @@ async function packProjectArchive(
   // 用 ensure 而不是 get：老项目可能还没建过数据目录，直接打包会卡在路径校验上。
   const assetsDir = await fileService.ensureProjectDataDir(projectRecord.id);
   if (!assetsDir) throw new Error('无法读取项目素材目录，已取消导出');
-  const { prepareExchangeExport } = await import('./projectImportService');
-  const assets = await invoke<import('./projectExchangeDomain').ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir });
+  const { prepareExchangeExport, readProjectArchiveContents } = await import('./projectImportService');
+  const { loadProjectExchangeState, loadProjectExchangeGraph } = await import('./indexedDb/projectExchangeRepository');
+  const previous = await loadProjectExchangeState(projectRecord.id);
+  const previousGraph = previous ? await loadProjectExchangeGraph(previous.lineageId) : undefined;
+  const previousHead = previousGraph?.revisions.find((revision) => revision.revisionId === previous?.headRevisionId)?.snapshot;
+  const includeImportPaths = selectArchiveImportPaths([projectRecord, ...episodes.map((episode) => episode.project)], previous, previousHead, assetsDir);
+  const assets = await invoke<import('./projectExchangeDomain').ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir, includeImportPaths });
   const exchange = await prepareExchangeExport([projectRecord, ...episodes.map((episode) => episode.project)], assets, assetsDir);
-  const { loadProjectExchangeState } = await import('./indexedDb/projectExchangeRepository');
   const exchangeState = await loadProjectExchangeState(projectRecord.id);
   if (exchangeState?.headRevisionId !== exchange.headRevisionId) throw new Error('协作版本在导出准备期间变化，请重试');
   const { materializeExchangeSnapshot } = await import('./projectExchangeDomain');
@@ -364,11 +368,18 @@ async function packProjectArchive(
   ];
   if (episodes.length > 0) values.push({ path: EPISODES_ENTRY, value: episodes.map((episode) => ({ ...episode, project: portable.find((record) => record.id === episode.project.id)! })) });
   const entries = await serializeProjectArchiveEntries(values);
+  const expectedAssets = selectArchiveAssets(head.snapshot, exchangeState, assets);
+  try {
+    await readProjectArchiveContents({ texts: Object.fromEntries(entries.map((entry) => [entry.path, entry.content])), assets: expectedAssets });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '归档内容校验失败';
+    throw new Error(`项目导出前收件校验失败：${detail}`, { cause: error });
+  }
   const result = await invoke<PackResult>('pack_project_archive', {
     entries,
     assetsDir,
     outputPath,
-    expectedAssets: selectArchiveAssets(head.snapshot, exchangeState, assets),
+    expectedAssets,
   });
   return { ...result, episodeCount: episodes.length };
 }

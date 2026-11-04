@@ -3,7 +3,8 @@ import type { ProjectSaveData } from './storageService';
 import type { ProjectExchangeEntity, ProjectExchangeEntityKind, ProjectExchangeIdentity, ProjectExchangeMedia,
   ProjectExchangeObject, ProjectExchangeReference, ProjectExchangeSnapshot, ProjectExchangeState, ProjectExchangeValue } from '../types/projectExchange';
 import { parseProjectExchangeSnapshot, projectExchangeEntityKey, serializeProjectExchangeValue } from './projectExchangeFormat';
-import { parseDramaMentionId } from '../types/dramaAssets';
+import { normalizeCharacterWeaponIds, parseDramaMentionId } from '../types/dramaAssets';
+import { parseShotlistRowMentionId } from '../types/shotlist';
 
 export interface ArchiveAssetDigest { path: string; bytes: number; sha256: string }
 const FILE_TOKEN = 'exchange-file:';
@@ -32,12 +33,15 @@ export function safeExchangePath(path: string): string {
   // 校验按 NFC，真实落盘名称保持原样，避免 Linux/NFD 文件被改指向不存在的 NFC 路径。
   return path.replace(/\\/g, '/');
 }
-function media(asset: ArchiveAssetDigest): ProjectExchangeMedia {
-  const extension = asset.path.split('.').pop()?.toLowerCase() ?? 'bin';
+function mediaForExtension(asset: ArchiveAssetDigest, extension: string): ProjectExchangeMedia {
   const normalizedExtension = /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'bin';
   return { id: `${asset.sha256}_${normalizedExtension}`, sha256: asset.sha256, bytes: asset.bytes, extension: normalizedExtension,
     kind: /^(png|jpe?g|webp|gif|bmp|avif)$/.test(extension) ? 'image' : /^(mp4|webm|mov|mkv)$/.test(extension) ? 'video'
       : /^(mp3|wav|ogg|flac|m4a|aac)$/.test(extension) ? 'audio' : 'file' };
+}
+function media(asset: ArchiveAssetDigest): ProjectExchangeMedia {
+  const name = asset.path.split('/').pop()!, dot = name.lastIndexOf('.');
+  return mediaForExtension(asset, dot < 0 ? 'bin' : name.slice(dot + 1).toLowerCase());
 }
 
 /** 字段中的引用由此重建；合并后不拼接旧 references 数组。 */
@@ -53,7 +57,10 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
   const child = (owner: ProjectExchangeEntity, field: string, kind: ProjectExchangeEntityKind, id: string | undefined) => {
     const ids = owner.data[field];
     if (!id || !Array.isArray(ids) || !ids.includes(id)) return undefined;
-    return all.find((item) => item.kind === kind && item.scopeId === root && item.id === id);
+    return all.find((item) => item.kind === kind && item.scopeId === owner.scopeId && item.id === id);
+  };
+  const invalidReference = (reason: string, fieldPath: string): never => {
+    throw new Error(`${reason}；引用位置：${exchangeSourceLocation(entity, all, root)}；引用字段：${fieldPath}。请重新选择后重试。`);
   };
   const walk = (value: ProjectExchangeValue, key = '', fieldPath = ''): void => {
     if (typeof value === 'string') {
@@ -65,8 +72,30 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
       for (const match of value.matchAll(/@\{([^:{}]+):[^}]*\}/g)) {
         // 共享资产保存的出图提示词是历史出处，与 imageNodeId 一样允许来源节点已删除。
         // 画布节点和镜头仍保留执行依赖，不能通过归档丢掉当前输入。
-        if (historicalAssetKinds.has(entity.kind)) node(match[1]);
-        else add('node', entity.scopeId, match[1]);
+        if (historicalAssetKinds.has(entity.kind)) { node(match[1]); continue; }
+        const id = match[1];
+        if (id.includes('/shot/')) {
+          const mention = parseShotlistRowMentionId(id);
+          const sheet = mention && all.find((item) => item.kind === 'node' && item.scopeId === entity.scopeId && item.id === mention.nodeId);
+          const data = sheet && exchangeObject(sheet.data.data) ? sheet.data.data : undefined;
+          if (!mention || !sheet || (sheet.data.type ?? data?.type) !== 'ai-shotlist'
+            || !child(sheet, 'shotlistRowsIds', 'shot', mention.rowId)) {
+            return invalidReference('项目引用的分镜镜头缺失、格式无效或归属不一致', fieldPath);
+          }
+          add('node', entity.scopeId, mention.nodeId);
+        } else if (id.includes('/cell/')) {
+          const mention = /^([^/{}:]+)\/cell\/(0|[1-9]\d*)$/.exec(id);
+          const board = mention && all.find((item) => item.kind === 'node' && item.scopeId === entity.scopeId && item.id === mention[1]);
+          const data = board && exchangeObject(board.data.data) ? board.data.data : undefined;
+          const columns = data?.storyboardCols || 3, rows = data?.storyboardRows || 3;
+          const index = mention ? Number(mention[2]) : NaN;
+          if (!mention || !board || (board.data.type ?? data?.type) !== 'ai-storyboard'
+            || typeof columns !== 'number' || typeof rows !== 'number' || !Number.isSafeInteger(columns) || !Number.isSafeInteger(rows)
+            || columns < 1 || rows < 1 || !Number.isSafeInteger(columns * rows) || !Number.isSafeInteger(index) || index >= columns * rows) {
+            return invalidReference('项目引用的分镜宫格缺失、格式无效或超出范围', fieldPath);
+          }
+          add('node', entity.scopeId, mention[1]);
+        } else add('node', entity.scopeId, id);
       }
       for (const match of value.matchAll(/@drama\{([^:{}]+):([^}]*)\}/g)) {
         const mention = parseDramaMentionId(match[1]);
@@ -107,6 +136,21 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
   }
   if (entity.kind === 'group' && Array.isArray(entity.data.nodeIds)) for (const id of entity.data.nodeIds) if (typeof id === 'string') add('node', entity.scopeId, id);
   if (typeof entity.data.primaryReferenceImageId === 'string') add('referenceImage', entity.scopeId, entity.data.primaryReferenceImageId);
+  if (entity.kind === 'character') {
+    for (const [field, list, kind] of [['primaryVoiceClipId', 'voiceClipsIds', 'voiceClip'], ['avatarReferenceImageId', 'referenceImagesIds', 'referenceImage']] as const) {
+      const id = entity.data[field];
+      if (id !== undefined && (typeof id !== 'string' || !child(entity, list, kind, id))) {
+        invalidReference('角色选择的声音或头像不存在或不属于本角色', field);
+      }
+    }
+    if (entity.data.weaponIds !== undefined) {
+      const ids = normalizeCharacterWeaponIds(entity.data.weaponIds);
+      if (!Array.isArray(entity.data.weaponIds) || ids.length !== entity.data.weaponIds.length
+        || ids.some((id) => !all.some((item) => item.kind === 'prop' && item.scopeId === entity.scopeId && item.id === id && item.data.propType === 'weapon'))) {
+        invalidReference('角色绑定的武器不存在、类型无效或不属于当前作用域', 'weaponIds');
+      }
+    }
+  }
   return [...result.values()];
 }
 
@@ -259,9 +303,19 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
     if (!asset) throw new Error(`项目引用的素材缺失：${safe}；引用位置：${location || '项目文件'}${fieldPath ? `；引用字段：${fieldPath}` : ''}。请恢复文件或重新选择素材后重试。`);
     const id = logical('file', root, safe);
     if (!files.has(id)) {
-      const descriptor = media(asset); usedMedia.set(descriptor.id, descriptor); files.set(id, safe);
+      const name = safe.split('/').pop()!;
+      let descriptor = media(asset);
+      if (!name.includes('.')) {
+        const previousFile = previousSnapshot?.entities.find((entity) => entity.kind === 'file' && entity.scopeId === root && entity.id === id);
+        const previousMedia = previousSnapshot?.media.find((item) => item.id === previousFile?.data.mediaId);
+        // 旧 v3 曾把根目录无点文件名当成扩展；仅原身份、同名同字节的该旧描述可沿用。
+        if (previousFile?.data.name === name && previousMedia && exchangeEqual(previousMedia, mediaForExtension(asset, name.toLowerCase()))) {
+          descriptor = previousMedia;
+        }
+      }
+      usedMedia.set(descriptor.id, descriptor); files.set(id, safe);
       entities.push({ kind: 'file', scopeId: root, id, data: { mediaId: descriptor.id,
-        name: safe.split('/').pop()! }, references: [] });
+        name }, references: [] });
     }
     return FILE_TOKEN + id;
   };
@@ -359,7 +413,7 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
   // 项目文件资产包含未被节点引用的原稿与附件；失败发布的孤儿 imports 目录不纳入新基线。
   for (const path of byPath.keys()) {
     const known = identities.find((item) => item.kind === 'file' && item.localId === path);
-    if (path.startsWith('imports/') && !known) continue;
+    if (/^imports\//i.test(path) && !known) continue;
     if (known && previousSnapshot && !previousSnapshot.entities.some((item) => item.kind === 'file' && item.id === known.id) && !files.has(known.id)) continue;
     fileToken(path);
   }

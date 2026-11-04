@@ -86,37 +86,142 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
     Ok((bytes, format!("{:x}", digest.finalize())))
 }
 
-fn inspect_assets(root: &Path, relative: &Path, rows: &mut Vec<ArchiveAssetDigest>) -> Result<(), String> {
-    if relative.components().count() > 64 { return Err("项目素材目录过深".into()); }
-    for item in fs::read_dir(root.join(relative)).map_err(|_| "无法读取项目目录")? {
-        let entry = item.map_err(|_| "无法读取素材目录项")?;
-        let kind = entry.file_type().map_err(|_| "无法读取素材类型")?;
-        let name = entry.file_name(); let child = relative.join(&name);
-        if kind.is_symlink() { return Err("项目素材包含链接，请先移入普通文件".into()); }
-        if kind.is_dir() {
-            if EXCLUDED_DIR_NAMES.contains(&name.to_string_lossy().as_ref()) || (relative.as_os_str().is_empty() && name == ".thumbnail") { continue; }
-            inspect_assets(root, &child, rows)?;
-        } else if kind.is_file() {
-            if rows.len() >= MAX_ARCHIVE_ENTRIES { return Err("项目素材数量超过上限".into()); }
-            let (bytes, sha256) = hash_file(&entry.path())?;
-            // 本机递归路径使用平台分隔符，进入归档校验前统一为正斜杠。
-            let archive_path = child.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-            rows.push(ArchiveAssetDigest { path: to_archive_text(&normalize_archive_path(Path::new(&archive_path))?), bytes, sha256 });
-        } else { return Err("不支持的素材类型".into()); }
+fn plain_asset_metadata(path: &Path) -> Result<Option<fs::Metadata>, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("无法读取项目素材类型".into()),
+    };
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    if metadata.file_type().is_symlink() || reparse { return Err("项目素材包含链接，请先移入普通文件".into()); }
+    Ok(Some(metadata))
+}
+
+fn excluded_asset_directory(name: &str, project_root: bool) -> bool {
+    let matches = |expected: &str| name == expected || cfg!(windows) && name.eq_ignore_ascii_case(expected);
+    EXCLUDED_DIR_NAMES.iter().any(|expected| matches(expected)) || project_root && matches(".thumbnail")
+}
+
+/// 根已由宿主授权；逐组件拒绝链接，缺失项留给上层依引用位置报告。
+fn selected_asset_file(root: &Path, relative: &Path) -> Result<Option<PathBuf>, String> {
+    let target = root.join(relative);
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        if !matches!(component, Component::Normal(_)) { return Err("素材相对路径无效".into()); }
+        current.push(component);
+        let Some(metadata) = plain_asset_metadata(&current)? else { return Ok(None); };
+        if current == target {
+            if !metadata.is_file() { return Err("项目素材不是普通文件".into()); }
+        } else {
+            if !metadata.is_dir() { return Err("项目素材父路径不是普通目录".into()); }
+            let name = component.as_os_str();
+            if excluded_asset_directory(&name.to_string_lossy(), current.parent() == Some(root)) {
+                return Err("项目素材位于回收站或派生缓存目录".into());
+            }
+        }
     }
-    if rows.iter().map(|row| row.bytes).sum::<u64>() > MAX_EXPANDED_BYTES { return Err("项目素材超过 20 GB".into()); }
+    let resolved = current.canonicalize().map_err(|_| "无法解析项目素材真实路径")?;
+    if !resolved.starts_with(root) { return Err("项目素材超出项目目录".into()); }
+    Ok(Some(resolved))
+}
+
+fn selected_asset_paths(paths: &[String], imports_only: bool) -> Result<Vec<PathBuf>, String> {
+    if paths.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材清单超过上限".into()); }
+    let mut seen = HashSet::new();
+    paths.iter().map(|path| {
+        let relative = normalize_archive_path(Path::new(path))?;
+        let name = to_archive_text(&relative);
+        if name.is_empty() || !seen.insert(name.to_lowercase()) { return Err("项目素材清单存在重复路径".into()); }
+        if imports_only && !name.split_once('/').is_some_and(|(first, _)| first.eq_ignore_ascii_case("imports")) {
+            return Err("导入素材清单必须属于 imports 目录".into());
+        }
+        Ok(relative)
+    }).collect()
+}
+
+struct AssetScan {
+    root: PathBuf,
+    rows: Vec<ArchiveAssetDigest>,
+    real_files: HashSet<PathBuf>,
+    bytes: u64,
+    max_files: usize,
+    max_bytes: u64,
+}
+impl AssetScan {
+    fn add_file(&mut self, relative: &Path) -> Result<(), String> {
+        let Some(file) = selected_asset_file(&self.root, relative)? else { return Ok(()); };
+        // canonicalize 也展开 Windows 短文件名；同一真实路径不能以多个别名进入清单。
+        if !self.real_files.insert(PathBuf::from(file.to_string_lossy().to_lowercase())) { return Err("项目素材清单存在重复路径".into()); }
+        if self.rows.len() >= self.max_files { return Err("项目素材数量超过上限".into()); }
+        let metadata = fs::metadata(&file).map_err(|_| "无法读取项目素材信息")?;
+        if metadata.len() > self.max_bytes.saturating_sub(self.bytes) { return Err("项目素材体积超过上限".into()); }
+        let (bytes, sha256) = hash_file(&file)?;
+        self.bytes = self.bytes.checked_add(bytes).ok_or("项目素材体积无效")?;
+        if self.bytes > self.max_bytes { return Err("项目素材体积超过上限".into()); }
+        self.rows.push(ArchiveAssetDigest { path: to_archive_text(relative), bytes, sha256 });
+        Ok(())
+    }
+
+    fn walk(&mut self, relative: &Path, exclude_imports: bool) -> Result<(), String> {
+        if relative.components().count() > 64 { return Err("项目素材目录过深".into()); }
+        for item in fs::read_dir(self.root.join(relative)).map_err(|_| "无法读取项目目录")? {
+            let entry = item.map_err(|_| "无法读取素材目录项")?;
+            let name = entry.file_name();
+            let imports_directory = name.to_string_lossy().eq_ignore_ascii_case("imports");
+            if relative.as_os_str().is_empty() && exclude_imports && imports_directory { continue; }
+            let child = relative.join(&name);
+            let Some(metadata) = plain_asset_metadata(&entry.path())? else { return Err("项目素材在扫描时发生变化".into()); };
+            if metadata.is_dir() {
+                if excluded_asset_directory(&name.to_string_lossy(), relative.as_os_str().is_empty()) { continue; }
+                self.walk(&child, exclude_imports)?;
+            } else if metadata.is_file() {
+                let portable = child.to_str().ok_or("项目素材文件名不是有效 UTF-8")?.replace(std::path::MAIN_SEPARATOR, "/");
+                self.add_file(&normalize_archive_path(Path::new(&portable))?)?;
+            } else { return Err("不支持的素材类型".into()); }
+        }
+        Ok(())
+    }
+}
+
+fn inspect_assets_scoped(root: &Path, include_import_paths: Option<&[String]>, selected_paths: Option<&[String]>,
+    max_files: usize, max_bytes: u64) -> Result<Vec<ArchiveAssetDigest>, String> {
+    if include_import_paths.is_some() && selected_paths.is_some() { return Err("项目素材扫描范围无效".into()); }
+    let selected = selected_paths.map(|paths| selected_asset_paths(paths, false)).transpose()?;
+    let imports = include_import_paths.map(|paths| selected_asset_paths(paths, true)).transpose()?;
+    let mut scan = AssetScan { root: root.canonicalize().map_err(|_| "无法解析项目素材目录")?, rows: Vec::new(),
+        real_files: HashSet::new(), bytes: 0, max_files, max_bytes };
+    if let Some(paths) = selected {
+        for path in paths { scan.add_file(&path)?; }
+    } else {
+        scan.walk(Path::new(""), imports.is_some())?;
+        for path in imports.unwrap_or_default() { scan.add_file(&path)?; }
+    }
+    scan.rows.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(scan.rows)
+}
+
+#[cfg(test)]
+fn inspect_assets(root: &Path, relative: &Path, rows: &mut Vec<ArchiveAssetDigest>) -> Result<(), String> {
+    if !relative.as_os_str().is_empty() { return Err("测试扫描入口只接受项目根".into()); }
+    rows.extend(inspect_assets_scoped(root, None, None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)?);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn inspect_project_archive_assets<R: Runtime>(webview: Webview<R>, app: AppHandle<R>, assets_dir: String) -> Result<Vec<ArchiveAssetDigest>, String> {
+pub async fn inspect_project_archive_assets<R: Runtime>(webview: Webview<R>, app: AppHandle<R>, assets_dir: String,
+    include_import_paths: Option<Vec<String>>, selected_paths: Option<Vec<String>>) -> Result<Vec<ArchiveAssetDigest>, String> {
     ensure_trusted_caller(&webview)?;
     if webview.label() != "main" { return Err("仅主窗口可以准备项目归档".into()); }
     let root = authorize_path(&app, &assets_dir, PathAccess::Read)?;
     tauri::async_runtime::spawn_blocking(move || {
         reauthorize_archive_path(&app, &root, PathAccess::Read)?;
-        let mut rows = Vec::new(); inspect_assets(&root, Path::new(""), &mut rows)?;
-        rows.sort_by(|a, b| a.path.cmp(&b.path)); Ok(rows)
+        inspect_assets_scoped(&root, include_import_paths.as_deref(), selected_paths.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)
     }).await.map_err(|_| "项目素材扫描任务失败".to_string())?
 }
 
@@ -254,6 +359,27 @@ struct AssetStats {
     bytes: u64,
 }
 
+fn append_asset_file<W: Write>(builder: &mut Builder<W>, source: &Path, archive_path: &Path,
+    stats: &mut AssetStats) -> Result<(), String> {
+    stats.count += 1;
+    if stats.count > MAX_ARCHIVE_ENTRIES { return Err("项目素材文件数量超过导出上限".into()); }
+    let mut file = File::open(source).map_err(|error| format!("打开项目素材失败: {error}"))?;
+    let size = file.metadata().map_err(|_| "无法读取项目素材大小")?.len();
+    stats.bytes = stats.bytes.checked_add(size).ok_or("项目素材体积无效")?;
+    if stats.bytes > MAX_EXPANDED_BYTES { return Err("项目素材总体积超过 20 GB 导出上限".into()); }
+    builder.append_file(archive_path, &mut file).map_err(|error| format!("写入项目素材失败: {error}"))
+}
+
+fn append_selected_assets<W: Write>(builder: &mut Builder<W>, root: &Path, paths: &[PathBuf],
+    stats: &mut AssetStats) -> Result<(), String> {
+    let root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
+    for relative in paths {
+        let file = selected_asset_file(&root, relative)?.ok_or("导出素材已缺失，请重新导出")?;
+        append_asset_file(builder, &file, &Path::new(ASSETS_PREFIX).join(relative), stats)?;
+    }
+    Ok(())
+}
+
 /// 递归打包项目数据目录。符号链接既不是文件也不是目录，会被跳过，
 /// 避免把项目目录之外的内容打进归档。
 fn append_assets_dir<W: Write>(
@@ -291,21 +417,7 @@ fn append_assets_dir<W: Write>(
         let relative = archive_path.strip_prefix(ASSETS_PREFIX).map_err(|_| "素材路径无效")?;
         if selected.is_some_and(|paths| !paths.contains(&to_archive_text(relative))) { continue; }
 
-        stats.count += 1;
-        if stats.count > MAX_ARCHIVE_ENTRIES {
-            return Err("项目素材文件数量超过导出上限".to_string());
-        }
-        let path = entry.path();
-        let mut file =
-            File::open(&path).map_err(|error| format!("打开项目素材失败: {error}"))?;
-        let size = file.metadata().map(|meta| meta.len()).unwrap_or(0);
-        stats.bytes = stats.bytes.saturating_add(size);
-        if stats.bytes > MAX_EXPANDED_BYTES {
-            return Err("项目素材总体积超过 20 GB 导出上限".to_string());
-        }
-        builder
-            .append_file(&archive_path, &mut file)
-            .map_err(|error| format!("写入项目素材失败: {error}"))?;
+        append_asset_file(builder, &entry.path(), &archive_path, stats)?;
     }
     Ok(())
 }
@@ -345,14 +457,10 @@ fn pack_archive(
     expected_assets: Option<Vec<ArchiveAssetDigest>>,
     entry_limit: usize,
 ) -> Result<ProjectArchivePackResult, String> {
-    let selected = expected_assets.as_ref().map(|assets| assets.iter().map(|asset| asset.path.clone()).collect::<HashSet<_>>());
-    if let Some(expected) = &expected_assets {
-        if selected.as_ref().map_or(0, HashSet::len) != expected.len() { return Err("导出素材清单重复".into()); }
-        for asset in expected { normalize_archive_path(Path::new(&asset.path))?; }
-    }
+    let selected_names = expected_assets.as_ref().map(|assets| assets.iter().map(|asset| asset.path.clone()).collect::<Vec<_>>());
+    let selected = selected_names.as_deref().map(|paths| selected_asset_paths(paths, false)).transpose()?;
     if let (Some(root), Some(expected)) = (&assets_root, &expected_assets) {
-        let mut actual = Vec::new(); inspect_assets(root, Path::new(""), &mut actual)?;
-        actual.retain(|asset| selected.as_ref().is_some_and(|paths| paths.contains(&asset.path)));
+        let mut actual = inspect_assets_scoped(root, None, selected_names.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)?;
         let mut expected = expected.clone(); expected.sort_by(|a, b| a.path.cmp(&b.path)); actual.sort_by(|a, b| a.path.cmp(&b.path));
         if actual != expected { return Err("素材在导出前已变化，请重新导出".into()); }
     }
@@ -384,7 +492,8 @@ fn pack_archive(
 
     let mut stats = AssetStats { count: 0, bytes: 0 };
     if let Some(root) = &assets_root {
-        append_assets_dir(&mut builder, root, Path::new(ASSETS_PREFIX), &mut stats, selected.as_ref())?;
+        if let Some(paths) = &selected { append_selected_assets(&mut builder, root, paths, &mut stats)?; }
+        else { append_assets_dir(&mut builder, root, Path::new(ASSETS_PREFIX), &mut stats, None)?; }
     }
 
     let encoder = builder
@@ -406,9 +515,10 @@ fn pack_archive(
         let mut archive = Archive::new(GzDecoder::new(BufReader::new(file)));
         let mut actual = Vec::new();
         let mut seen = HashSet::new();
+        let mut expanded_bytes = 0_u64;
         for entry in archive.entries().map_err(|_| "无法复核归档")? {
             let mut entry = entry.map_err(|_| "无法复核归档条目")?;
-            let path = to_archive_text(&archive_entry_path(&entry, &mut seen)?);
+            let path = to_archive_text(&archive_entry_path(&entry, &mut seen, &mut expanded_bytes, MAX_EXPANDED_BYTES + MAX_TEXT_BYTES)?);
             if let Some(path) = path.strip_prefix("assets/").filter(|_| entry.header().entry_type().is_file()) {
                 let mut digest = Sha256::new(); let mut bytes = 0_u64; let mut buffer = vec![0; 1024 * 1024];
                 loop { let count = entry.read(&mut buffer).map_err(|_| "归档素材读取失败")?; if count == 0 { break; } digest.update(&buffer[..count]); bytes += count as u64; }
@@ -456,12 +566,20 @@ fn validate_archive_stream_with_limit<R: Read>(reader: R, entry_limit: usize) ->
 }
 
 /// 导出复核和解包必须针对带 assets/ 前缀的完整名称执行同一套校验。
-fn archive_entry_path<R: Read>(entry: &tar::Entry<'_, R>, seen: &mut HashSet<String>) -> Result<PathBuf, String> {
+fn archive_entry_path<R: Read>(entry: &tar::Entry<'_, R>, seen: &mut HashSet<String>,
+    expanded_bytes: &mut u64, byte_limit: u64) -> Result<PathBuf, String> {
     let kind = entry.header().entry_type();
     if !kind.is_file() && !kind.is_dir() {
         return Err("项目归档包含不允许的链接或设备文件".into());
     }
+    // 普通解析会应用扩展元数据中的有效大小；必须在任何跳过条目前计入预算。
+    *expanded_bytes = expanded_bytes.checked_add(entry.size()).ok_or("归档体积无效")?;
+    if *expanded_bytes > byte_limit { return Err("归档展开体积超过上限".into()); }
+    if kind.is_dir() && entry.size() != 0 { return Err("项目归档目录不能携带文件内容".into()); }
     let path = normalize_archive_path(&entry.path().map_err(|_| "读取项目归档路径失败")?)?;
+    if (path.as_os_str().is_empty() || path == Path::new(ASSETS_PREFIX)) && entry.size() != 0 {
+        return Err("项目归档根条目不能携带文件内容".into());
+    }
     if !path.as_os_str().is_empty() && !seen.insert(to_archive_text(&path).to_lowercase()) {
         return Err("项目归档含重复或大小写冲突路径".into());
     }
@@ -506,6 +624,7 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
     let mut entry_count = 0_usize;
     let mut asset_bytes = 0_u64;
     let mut text_bytes = 0_u64;
+    let mut expanded_bytes = 0_u64;
     let mut seen = HashSet::new(); let mut assets = Vec::new();
 
     for item in entries {
@@ -515,7 +634,7 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
         }
         let mut entry = item.map_err(|error| format!("读取项目归档项失败: {error}"))?;
         let entry_type = entry.header().entry_type();
-        let relative = archive_entry_path(&entry, &mut seen)?;
+        let relative = archive_entry_path(&entry, &mut seen, &mut expanded_bytes, MAX_EXPANDED_BYTES + MAX_TEXT_BYTES)?;
         if relative.as_os_str().is_empty() {
             continue;
         }
@@ -575,6 +694,65 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
 mod tests {
     use super::*;
 
+    #[test]
+    fn effective_entry_size_is_budgeted_before_reading_content() {
+        let mut builder = Builder::new(Vec::new());
+        let metadata = b"10 size=8\n";
+        let mut extension = Header::new_gnu();
+        extension.set_entry_type(tar::EntryType::XHeader); extension.set_size(metadata.len() as u64); extension.set_cksum();
+        builder.append_data(&mut extension, "metadata", metadata.as_slice()).unwrap();
+        let mut header = Header::new_gnu(); header.set_size(8); header.set_cksum();
+        builder.append_data(&mut header, "note.txt", [0_u8; 8].as_slice()).unwrap();
+        let mut bytes = builder.into_inner().unwrap();
+        let offset = {
+            let mut raw = Archive::new(bytes.as_slice());
+            let position = raw.entries().unwrap().raw(true).map(Result::unwrap).find(|entry| entry.header().entry_type().is_file())
+                .unwrap().raw_header_position() as usize;
+            position
+        };
+        let mut raw_header = Header::new_gnu(); raw_header.set_path("note.txt").unwrap();
+        raw_header.set_size(0); raw_header.set_cksum(); bytes[offset..offset + 512].copy_from_slice(raw_header.as_bytes());
+        validate_archive_stream(bytes.as_slice()).unwrap();
+        let mut archive = Archive::new(bytes.as_slice());
+        let mut entry = archive.entries().unwrap().next().unwrap().unwrap();
+        assert_eq!(entry.size(), 8); assert_eq!(entry.header().entry_size().unwrap(), 0);
+        let mut budget = 0;
+        assert!(archive_entry_path(&entry, &mut HashSet::new(), &mut budget, 4).unwrap_err().contains("超过上限"));
+        assert_eq!(budget, 8);
+        let mut accepted = 0;
+        assert_eq!(archive_entry_path(&entry, &mut HashSet::new(), &mut accepted, 8).unwrap(), Path::new("note.txt"));
+        let mut body = Vec::new(); entry.read_to_end(&mut body).unwrap(); assert_eq!(body, [0_u8; 8]);
+    }
+
+    #[test]
+    fn rejects_content_on_skipped_directory_and_root_entries() {
+        for (path, kind) in [("folder/", tar::EntryType::Directory), (".", tar::EntryType::Regular), ("assets", tar::EntryType::Regular)] {
+            let mut builder = Builder::new(Vec::new());
+            let mut header = Header::new_gnu(); header.set_entry_type(kind); header.set_size(1); header.set_cksum();
+            builder.append_data(&mut header, path, b"x".as_slice()).unwrap();
+            let bytes = builder.into_inner().unwrap();
+            let mut archive = Archive::new(bytes.as_slice());
+            let entry = archive.entries().unwrap().next().unwrap().unwrap();
+            let mut budget = 0;
+            assert!(archive_entry_path(&entry, &mut HashSet::new(), &mut budget, 8).unwrap_err().contains("不能携带"));
+            assert_eq!(budget, 1);
+        }
+    }
+
+    #[test]
+    fn effective_budget_is_accumulated_across_entries() {
+        let mut builder = Builder::new(Vec::new());
+        for name in ["a.txt", "b.txt"] {
+            let mut header = Header::new_gnu(); header.set_size(2); header.set_cksum();
+            builder.append_data(&mut header, name, b"ab".as_slice()).unwrap();
+        }
+        let bytes = builder.into_inner().unwrap();
+        let mut archive = Archive::new(bytes.as_slice()); let mut budget = 0; let mut seen = HashSet::new();
+        let mut entries = archive.entries().unwrap();
+        archive_entry_path(&entries.next().unwrap().unwrap(), &mut seen, &mut budget, 3).unwrap();
+        assert!(archive_entry_path(&entries.next().unwrap().unwrap(), &mut seen, &mut budget, 3).unwrap_err().contains("超过上限"));
+    }
+
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -623,6 +801,146 @@ mod tests {
     }
 
     #[test]
+    fn scoped_scan_counts_current_files_without_historical_imports() {
+        let fixture = Fixture::new();
+        fixture.write("current.txt", b"now");
+        fixture.write("imports/old-a.txt", b"history a");
+        fixture.write("imports/old-b.txt", b"history b");
+        fixture.write("imports/live/current.txt", b"live");
+        assert!(inspect_assets_scoped(&fixture.0, None, None, 1, 3).is_err());
+        let current = inspect_assets_scoped(&fixture.0, Some(&[]), None, 1, 3).unwrap();
+        assert_eq!(current.len(), 1); assert_eq!(current[0].path, "current.txt");
+        let include = vec!["imports/live/current.txt".to_owned()];
+        let current = inspect_assets_scoped(&fixture.0, Some(&include), None, 2, 7).unwrap();
+        assert_eq!(current.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(), ["current.txt", "imports/live/current.txt"]);
+        assert!(inspect_assets_scoped(&fixture.0, Some(&include), None, 2, 6).is_err());
+    }
+
+    #[test]
+    fn scoped_scan_preserves_imports_spelling_and_skips_history_case_insensitively() {
+        for directory in ["Imports", "IMPORTS"] {
+            let fixture = Fixture::new();
+            fixture.write("current.txt", b"now");
+            let current = format!("{directory}/live/current.txt");
+            fixture.write(&current, b"live");
+            fixture.write(&format!("{directory}/recovery/old.txt"), b"unrelated historical bytes");
+            let regular = inspect_assets_scoped(&fixture.0, Some(&[]), None, 1, 3).unwrap();
+            assert_eq!(regular.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(), ["current.txt"]);
+            let include = vec![current.clone()];
+            let selected = inspect_assets_scoped(&fixture.0, Some(&include), None, 2, 7).unwrap();
+            assert_eq!(selected.len(), 2);
+            assert!(selected.iter().any(|row| row.path == current));
+            let output = fixture.0.with_extension("aicanvas");
+            pack_archive(vec![], Some(fixture.0.clone()), output.clone(), Some(selected.clone()), MAX_ARCHIVE_ENTRIES).unwrap();
+            let target = Fixture::new();
+            assert!(unpack_archive(&output, &target.0).unwrap().assets == selected);
+            fs::remove_file(output).unwrap();
+        }
+    }
+
+    #[test]
+    fn explicit_scans_and_pack_reject_excluded_directories() {
+        for path in [".trash/current.png", "imports/op/.trash/current.png", ".thumbnail/current.png"] {
+            let fixture = Fixture::new(); fixture.write(path, b"img");
+            let selected = vec![path.to_owned()];
+            assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 3).err().unwrap().contains("回收站或派生缓存"));
+            if path.starts_with("imports/") {
+                assert!(inspect_assets_scoped(&fixture.0, Some(&selected), None, 1, 3).err().unwrap().contains("回收站或派生缓存"));
+            }
+            let (bytes, sha256) = hash_file(&fixture.0.join(path)).unwrap();
+            let output = fixture.0.with_extension("aicanvas");
+            assert!(pack_archive(vec![], Some(fixture.0.clone()), output.clone(),
+                Some(vec![ArchiveAssetDigest { path: path.to_owned(), bytes, sha256 }]), MAX_ARCHIVE_ENTRIES)
+                .err().unwrap().contains("回收站或派生缓存"));
+            assert!(!output.exists());
+            assert_eq!(fs::read(fixture.0.join(path)).unwrap(), b"img");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_scans_reject_windows_excluded_directory_case_aliases() {
+        for path in [".trash/current.png", "imports/op/.trash/current.png", ".thumbnail/current.png"] {
+            let fixture = Fixture::new(); fixture.write(path, b"img");
+            let alias = path.to_ascii_uppercase(); let selected = vec![alias.clone()];
+            assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 3).is_err());
+            if path.starts_with("imports/") {
+                assert!(inspect_assets_scoped(&fixture.0, Some(&selected), None, 1, 3).is_err());
+            }
+            let (bytes, sha256) = hash_file(&fixture.0.join(path)).unwrap();
+            assert!(pack_archive(vec![], Some(fixture.0.clone()), fixture.0.with_extension("aicanvas"),
+                Some(vec![ArchiveAssetDigest { path: alias, bytes, sha256 }]), MAX_ARCHIVE_ENTRIES).is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_scans_keep_nested_thumbnail_directories_and_same_named_plain_files() {
+        let fixture = Fixture::new();
+        let selected = ["user/.thumbnail/current.png", "imports/op/.thumbnail/current.png", ".trash", ".thumbnail"]
+            .into_iter().map(str::to_owned).collect::<Vec<_>>();
+        for path in &selected { fixture.write(path, b"img"); }
+        let assets = inspect_assets_scoped(&fixture.0, None, Some(&selected), 4, 12).unwrap();
+        let include = vec!["imports/op/.thumbnail/current.png".to_owned()];
+        assert!(inspect_assets_scoped(&fixture.0, Some(&include), None, 4, 12).unwrap() == assets);
+        let output = fixture.0.with_extension("aicanvas");
+        pack_archive(vec![], Some(fixture.0.clone()), output.clone(), Some(assets.clone()), MAX_ARCHIVE_ENTRIES).unwrap();
+        let target = Fixture::new();
+        assert!(unpack_archive(&output, &target.0).unwrap().assets == assets);
+        fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn selected_recovery_scan_reports_missing_or_changed_files_by_digest() {
+        let fixture = Fixture::new();
+        fixture.write("current.txt", b"current content outside recovery budget");
+        fixture.write("imports/recovery/keep.txt", b"keep");
+        fixture.write("imports/other/history.txt", b"unrelated history outside recovery budget");
+        let selected = vec!["imports/recovery/keep.txt".to_owned(), "imports/recovery/missing.txt".to_owned()];
+        let before = inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 4).unwrap();
+        assert_eq!(before.len(), 1); assert_eq!(before[0].path, selected[0]);
+        fixture.write("imports/recovery/keep.txt", b"edit");
+        let after = inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 4).unwrap();
+        assert_ne!(before[0].sha256, after[0].sha256);
+        fs::remove_file(fixture.0.join("imports/recovery/keep.txt")).unwrap();
+        assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 4).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_scope_paths_and_duplicate_aliases() {
+        let fixture = Fixture::new(); fixture.write("current.txt", b"current");
+        for selected in [vec!["../outside.txt"], vec!["/outside.txt"], vec!["imports\\outside.txt"],
+            vec!["current.txt", "./current.txt"], vec!["current.txt", "CURRENT.txt"], vec![""]] {
+            let selected = selected.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 10, 100).is_err());
+        }
+        let selected = vec!["current.txt".to_owned()];
+        assert!(inspect_assets_scoped(&fixture.0, Some(&selected), None, 10, 100).is_err());
+        assert!(inspect_assets_scoped(&fixture.0, Some(&[]), Some(&[]), 10, 100).is_err());
+        let directory = vec!["imports".to_owned()]; fs::create_dir(fixture.0.join("imports")).unwrap();
+        assert!(inspect_assets_scoped(&fixture.0, None, Some(&directory), 10, 100).is_err());
+        assert_eq!(fs::read(fixture.0.join("current.txt")).unwrap(), b"current");
+    }
+
+    #[test]
+    fn packs_only_selected_current_files_despite_other_project_history() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("source");
+        fixture.write("source/current.txt", b"now");
+        fixture.write("source/imports/old-a.txt", b"history a");
+        fixture.write("source/imports/old-b.txt", b"history b");
+        let assets = inspect_assets_scoped(&source, Some(&[]), None, 1, 3).unwrap();
+        let output = fixture.0.join("project.aicanvas");
+        pack_archive(vec![], Some(source.clone()), output.clone(), Some(assets.clone()), MAX_ARCHIVE_ENTRIES).unwrap();
+        let target = fixture.0.join("unpacked"); fs::create_dir(&target).unwrap();
+        let unpacked = unpack_archive(&output, &target).unwrap();
+        assert!(unpacked.assets == assets);
+        assert_eq!(fs::read(target.join("current.txt")).unwrap(), b"now");
+        assert!(!target.join("imports").exists());
+        fs::write(source.join("current.txt"), b"changed").unwrap();
+        assert!(pack_archive(vec![], Some(source), output, Some(assets), MAX_ARCHIVE_ENTRIES).is_err());
+    }
+
+    #[test]
     fn creates_first_import_parent_and_reuses_it_without_overwriting_operations() {
         let fixture = Fixture::new();
         assert!(!fixture.0.join("imports").exists());
@@ -655,10 +973,15 @@ mod tests {
         other.write("keep.txt", b"outside");
         symlink(&other.0, fixture.0.join("imports")).unwrap();
         assert!(create_import_destination(&fixture.0, "first", filesystem_authorize).is_err());
+        let selected = vec!["imports/keep.txt".to_owned()];
+        assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 10, 100).is_err());
+        assert!(inspect_assets_scoped(&fixture.0, Some(&[]), None, 10, 100).unwrap().is_empty());
         fs::remove_file(fixture.0.join("imports")).unwrap();
         fs::create_dir(fixture.0.join("imports")).unwrap();
         symlink(&other.0, fixture.0.join("imports/first")).unwrap();
         assert!(create_import_destination(&fixture.0, "first", filesystem_authorize).is_err());
+        let selected = vec!["imports/first/keep.txt".to_owned()];
+        assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 10, 100).is_err());
         assert_eq!(fs::read(other.0.join("keep.txt")).unwrap(), b"outside");
     }
 
@@ -693,11 +1016,16 @@ mod tests {
         {
             let _link = Junction::new(fixture.0.join("imports"), &other.0);
             assert!(create_import_destination(&fixture.0, "first", filesystem_authorize).is_err());
+            let selected = vec!["imports/keep.txt".to_owned()];
+            assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 10, 100).is_err());
+            assert!(inspect_assets_scoped(&fixture.0, Some(&[]), None, 10, 100).unwrap().is_empty());
         }
         fs::create_dir(fixture.0.join("imports")).unwrap();
         {
             let _link = Junction::new(fixture.0.join("imports/first"), &other.0);
             assert!(create_import_destination(&fixture.0, "first", filesystem_authorize).is_err());
+            let selected = vec!["imports/first/keep.txt".to_owned()];
+            assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 10, 100).is_err());
         }
         assert_eq!(fs::read(other.0.join("keep.txt")).unwrap(), b"outside");
     }

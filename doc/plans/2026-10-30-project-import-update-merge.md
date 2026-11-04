@@ -334,6 +334,29 @@ UI 实施时先查 `src/styles/ui-kit.css` 与样式预览窗口，复用 `Modal
 
 定向命令（仓库根目录）：`npx vitest run tests/services/projectArchiveValidation.test.ts tests/services/projectExchangeFormat.test.ts tests/services/projectExchangeRepository.test.ts tests/services/projectExchangeRoundTrip.test.ts tests/services/projectMergeService.test.ts tests/services/projectImportRepository.test.ts tests/services/projectTransferService.test.ts tests/services/storageHealth.test.ts`。
 
+### 本轮边界收敛
+
+2026-11-04 已实现以下修复，自动化结果与桌面验收分别记录：
+
+- 归档识别分镜行与宫格虚拟引用，校验真实所属节点、行和宫格范围；合并后复核角色选定的头像、音色及同作用域武器，不改变合法旧 v3 的引用摘要或历史提示词出处语义。
+- 当前素材扫描排除未选中的内部导入历史，`imports` 首段忽略大小写并保留真实拼写，恢复点按冻结的文件清单及摘要单独读取；打包也只检查和写入当前清单，历史副本不消耗当前项目的数量／体积预算。恢复保留身份墓碑，但不以墓碑路径扩充恢复文件。
+- 无基线的旧包人工更新和恢复也保存本机首个无父修订，承接未被节点引用的正式附件，不伪造远端共同历史。文件映射改指向新路径时保留旧路径的本机删除身份，避免原件留在磁盘而被下次导出当成新附件。
+- 暂存会话关闭后立即禁止复用，删除失败保留重试能力，并合并并发清理；重新选包失败时保留尚未清理成功的暂存句柄。资产包解包前保持空素材目录，导出时按需建立媒体目录。
+- 原生复核和解包在跳过任意根或目录条目前，按普通 tar 解析应用扩展元数据后的有效长度累计预算；目录和根条目携带内容时拒绝。显式文件清单继续排除回收站及根缩略图缓存目录，包括 Windows 大小写别名；嵌套用户缩略图目录和同名普通文件仍保留。现有路径、扩展头、数量及私有目录保护不放宽。
+- 最终序列化文本在打包前复用导入端的完整收件校验，失败时不发布包。无扩展名原稿不再因导入改目录而改变媒体身份；旧 v3 描述只在同逻辑文件、同名同字节且严格符合旧算法时复用。真实目录删除失败通过严格清理模式向上传递，暂存重试不再被底层吞错架空；其他旧删除调用沿用默认行为。
+
+最新定向回归：仓库根目录执行下列命令，12 文件 282 项通过，新增无扩展名兼容用例修正类型标注后，其所在文件 101 项再次通过；`npm run typecheck` 通过。原生归档源码本轮未变，上一轮在 `src-tauri/` 执行 `cargo test project_archive::tests --lib`，25 项通过、无跳过。未运行完整 CI 或独立构建。
+
+本轮 `npm run test:typecheck` 尚未全通过：归档用例的类型标注已修正，重跑仅剩 `tests/services/generateVideo.test.ts:461` 的 APIMart 模拟返回值缺少当前返回类型要求的 `mediaDownloadAccess`；该厂商实现正有并行改动，本轮未修改其代码或测试。不得把全量测试类型标为通过。
+
+`projectArchiveRoundTrip.test.ts` 的 5 项完整调用链回归将 `exportProjectArchive` 真正生成的 JSON 与文件字节原样交给 `prepareProjectImport`、真实 IndexedDB 提交、保存重开及再次导出，不手拼交换快照或替换领域/仓储/文件服务；原生 IO 与 Worker 传输仍隔离。覆盖普通／独立多分集、同字节别名、空原稿、无扩展名附件、当前导入素材、聊天及跨分集记忆，并证明损坏的序列化投影在打包前被收件门禁阻止。其他回归包含真实临时目录和 React hooks 的清理失败事件流程；不包含实际 tar/gzip 桥接、浏览器布局或桌面双机验收。
+
+```powershell
+npx vitest run tests/services/projectArchiveRoundTrip.test.ts tests/services/projectExchangeRoundTrip.test.ts tests/services/projectMergeService.test.ts tests/services/projectImportService.test.ts tests/services/projectImportPersistence.test.ts tests/services/projectImportRecoveryService.test.ts tests/services/projectArchiveValidation.test.ts tests/services/projectTransferService.test.ts tests/services/dramaAssetArchive.test.ts tests/services/dramaAssetTransferService.test.ts tests/services/fsTrash.test.ts tests/components/projectImportDialog.test.tsx
+```
+
+待桌面验收：重新构建并启动 Tauri，使用含分镜行／宫格引用、角色头像／音色／武器、未被节点引用附件和中文目录的项目，在两台机器间新建导入、更新后保存重开，再导出核对；验证旧包人工更新保留附件、恢复后已删除文件不重新出现、恢复点缺失或被修改时不提交，以及选包／清理失败后能重试。另验收 `.aicassets` 的空媒体包和含媒体包导入。自动化不代替上述原生文件与双机验收。
+
 ## 12. 依据
 
 用户 2026-10-30 提出导入更新、双方修改对比和冲突二选一，并确认首版范围；本方案依据上述源码静态阅读及现行[文件与存储模块](../文件与存储模块.md)、[S3 专项](./2026-10-26-shared-asset-library-s3-sync.md)的实际边界。源码核对不构成运行、测试或验收证据。

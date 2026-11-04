@@ -82,3 +82,45 @@ export function selectArchiveAssets(snapshot: ProjectExchangeSnapshot, state: Pr
     return asset;
   });
 }
+
+/** 当前扫描只纳入活文件和当前记录仍引用的内部发布文件，恢复点另按冻结清单核对。 */
+export function selectArchiveImportPaths(records: readonly ProjectSaveData[], state: ProjectExchangeState | null,
+  snapshot: ProjectExchangeSnapshot | undefined, directory: string): string[] {
+  if (state && (!snapshot || snapshot.lineageId !== state.lineageId || snapshot.rootProjectId !== state.rootProjectId)) {
+    throw new Error('无法读取当前协作快照，已停止素材扫描');
+  }
+  const paths = new Set<string>();
+  const add = (path: string) => {
+    const relative = safeExchangePath(path);
+    if (/^imports\//i.test(relative)) paths.add(relative);
+  };
+  const active = new Set(snapshot?.entities.filter((entity) => entity.kind === 'file').map((entity) => entity.id) ?? []);
+  for (const identity of state?.identities ?? []) {
+    if (identity.kind === 'file' && active.has(identity.id)) add(identity.localId);
+  }
+  const root = directory.replace(/\\/g, '/').replace(/\/+$/, '');
+  const local = (path: string) => {
+    const normalized = path.replace(/\\/g, '/');
+    if (normalized.toLowerCase().startsWith(root.toLowerCase() + '/')) add(normalized.slice(root.length + 1));
+    else if (!/^(?:[a-z]:[\\/]|\/|\\\\)/i.test(path)) add(normalized);
+  };
+  let count = 0;
+  const walk = (value: unknown, key = '', depth = 0): void => {
+    if (++count > 1_000_000 || depth > 32) throw new Error('项目记录嵌套或数量超过上限');
+    if (typeof value === 'string' && value) {
+      if (['relativePath', 'imageRelativePath'].includes(key)) add(value);
+      else if (['filePath', 'imageFilePath', 'directorCaptureFilePaths', 'directorCaptureRelativePaths'].includes(key)) local(value);
+    } else if (Array.isArray(value)) value.forEach((item) => walk(item, key, depth + 1));
+    else if (value && typeof value === 'object') {
+      const source = value as Record<string, unknown>;
+      for (const [field, item] of Object.entries(source)) {
+        if (field === 'filePath' && source.relativePath) continue;
+        if (field === 'imageFilePath' && (source.relativePath || source.imageRelativePath)) continue;
+        if (field === 'directorCaptureFilePaths' && source.directorCaptureRelativePaths) continue;
+        walk(item, field, depth + 1);
+      }
+    }
+  };
+  walk(records);
+  return [...paths].sort();
+}

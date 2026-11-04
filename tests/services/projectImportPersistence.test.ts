@@ -40,14 +40,18 @@ beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('crypto', webcrypto);
   native.assets.clear(); native.open.mockResolvedValue('/incoming/project.aicanvas');
   native.invoke.mockImplementation(async (command: string, input: {
-    assetsDir?: string; stagingDir?: string; projectDir?: string; operationId?: string;
+    assetsDir?: string; stagingDir?: string; projectDir?: string; operationId?: string; includeImportPaths?: string[]; selectedPaths?: string[];
     assets?: Array<ArchiveAssetDigest & { destinationPath: string }>;
   }) => {
     if (command === 'unpack_project_archive') {
       native.assets.set(input.assetsDir!, structuredClone(archive.assets));
       return structuredClone(archive);
     }
-    if (command === 'inspect_project_archive_assets') return structuredClone(native.assets.get(input.assetsDir!) ?? []);
+    if (command === 'inspect_project_archive_assets') {
+      const assets = native.assets.get(input.assetsDir!) ?? [];
+      return structuredClone(assets.filter((asset) => input.selectedPaths !== undefined ? input.selectedPaths.includes(asset.path)
+        : !asset.path.startsWith('imports/') || input.includeImportPaths === undefined || input.includeImportPaths.includes(asset.path)));
+    }
     if (command === 'publish_project_import_assets') {
       const source = native.assets.get(input.stagingDir!) ?? [], target = native.assets.get(input.projectDir!)!;
       for (const asset of input.assets ?? []) {
@@ -102,13 +106,14 @@ function histories(records: ProjectSaveData[]): ProjectArchiveChatPayload[] {
       source: { conversationId: `${records[1].id}-conversation`, messageId: `${records[1].id}-conversation-message` }, createdAt: 1, updatedAt: 2 }] : [] };
   });
 }
-async function prepare(context: Runtime, records: ProjectSaveData[], previous?: { state: ProjectExchangeState; revisions: ProjectExchangeRevision[] }) {
-  const captured = context.domain.captureExchangeSnapshot(records, sourceAssets, previous?.state ?? null);
+async function prepare(context: Runtime, records: ProjectSaveData[], previous?: { state: ProjectExchangeState; revisions: ProjectExchangeRevision[] },
+  assets = sourceAssets) {
+  const captured = context.domain.captureExchangeSnapshot(records, assets, previous?.state ?? null);
   const head = await context.format.createProjectExchangeRevision(captured.snapshot, previous ? [previous.state.headRevisionId] : []);
   const state: ProjectExchangeState = { ownerId: records[0].id, lineageId: captured.snapshot.lineageId, rootProjectId: captured.snapshot.rootProjectId,
     headRevisionId: head.revisionId, stateVersion: (previous?.state.stateVersion ?? 0) + 1, identities: captured.identities };
   const revisions = [...(previous?.revisions ?? []), head], payloads = histories(records);
-  archive = { assets: sourceAssets, texts: {
+  archive = { assets, texts: {
     'manifest.json': JSON.stringify({ formatVersion: 3, exportedAt: 1, projectId: records[0].id, projectName: records[0].name, episodeCount: records.length - 1 }),
     'project.json': JSON.stringify(records[0]), 'chat.json': JSON.stringify(payloads[0]),
     'episodes.json': JSON.stringify(records.slice(1).map((project, index) => ({ project, chat: payloads[index + 1] }))),
@@ -130,6 +135,12 @@ async function rows<T>(db: IDBDatabase, store: string): Promise<T[]> {
     tx.oncomplete = () => resolve(request.result as T[]); tx.onabort = tx.onerror = () => reject(tx.error);
   });
 }
+async function put(db: IDBDatabase, store: string, value: unknown) {
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite'); tx.objectStore(store).put(value);
+    tx.oncomplete = () => resolve(); tx.onabort = tx.onerror = () => reject(tx.error);
+  });
+}
 async function assertExport(context: Runtime, ownerId: string) {
   const records = await context.repository.readProjectImportScope(ownerId), state = (await context.exchange.loadProjectExchangeState(ownerId))!;
   const graph = await context.exchange.loadProjectExchangeGraph(state.lineageId), head = graph.revisions.find((revision) => revision.revisionId === state.headRevisionId)!;
@@ -141,6 +152,67 @@ async function assertExport(context: Runtime, ownerId: string) {
 }
 
 describe('项目包真实持久化导入', () => {
+  it('旧 v2 手工更新的未引用空附件建立本机首修订，恢复后再导出不复活普通旧路径', async () => {
+    const context = await runtime(), ownerId = 'legacy-recipient';
+    const owner: ProjectSaveData = { id: ownerId, name: '本机旧项目', dataFolder: 'legacy-folder', createdAt: 1, updatedAt: 2, nodes: [], edges: [], groups: [] };
+    const path = '附件/制作说明.txt', before = { path, bytes: 10, sha256: 'a'.repeat(64) }, incoming = { path, bytes: 0, sha256: 'b'.repeat(64) };
+    await put(context.db, 'projects', owner); native.assets.set(`/projects/${ownerId}`, [before]);
+    const source = { ...owner, id: 'legacy-source', name: '对方修改后的项目' };
+    archive = { assets: [incoming], texts: {
+      'manifest.json': JSON.stringify({ formatVersion: 2, exportedAt: 1, projectId: source.id, projectName: source.name, episodeCount: 0 }),
+      'project.json': JSON.stringify(source), 'chat.json': JSON.stringify({ conversations: [], messages: [], memories: [] }),
+    } };
+    const session = (await context.service.prepareProjectImport())!;
+    cleanup.push(() => context.service.closePreparedProjectImport(session));
+    const preview = await context.service.previewProjectImport(session, ownerId);
+    expect(preview.expectedState).toBeNull(); expect(preview.baseStatus).toBe('manual');
+    await context.service.applyProjectImport(session, preview,
+      Object.fromEntries(preview.plan.changes.map((change) => [change.id, 'incoming'])), { appendChat: false, appendMemories: false });
+    const state = (await context.exchange.loadProjectExchangeState(ownerId))!;
+    const graph = await context.exchange.loadProjectExchangeGraph(state.lineageId), head = graph.revisions[0];
+    expect(state).toMatchObject({ ownerId, stateVersion: 1 });
+    expect(graph.revisions).toHaveLength(1); expect(head.parentRevisionIds).toEqual([]);
+    expect(head.snapshot.media).toMatchObject([{ bytes: 0, sha256: incoming.sha256 }]);
+    expect(state.identities.filter((identity) => identity.kind === 'file' && identity.localId === path)).toHaveLength(1);
+    expect(native.assets.get(`/projects/${ownerId}`)).toContainEqual(before);
+    await assertExport(context, ownerId);
+    const manual = await context.service.previewProjectImport(session, ownerId);
+    expect(manual.baseStatus).toBe('manual'); expect(manual.plan.alreadyApplied).toBe(false);
+    const recovery = (await context.repository.listProjectImportRecoveries(ownerId)).find((item) => item.state === null)!;
+    await context.service.restoreProjectImportRecovery(ownerId, recovery.id);
+    const restored = (await context.exchange.loadProjectExchangeState(ownerId))!;
+    const restoredGraph = await context.exchange.loadProjectExchangeGraph(restored.lineageId);
+    const restoredHead = restoredGraph.revisions.find((revision) => revision.revisionId === restored.headRevisionId)!;
+    expect(restoredHead.snapshot.media).toMatchObject([{ bytes: before.bytes, sha256: before.sha256 }]);
+    expect((await context.repository.readProjectImportScope(ownerId))[0].name).toBe(owner.name);
+    expect(new Set(restored.identities.filter((identity) => identity.kind === 'file').map((identity) => identity.localId)).size)
+      .toBe(restored.identities.filter((identity) => identity.kind === 'file').length);
+    await assertExport(context, ownerId);
+    await assertExport(context, ownerId);
+  });
+
+  it('无协作状态恢复冻结的未引用零字节附件后，首修订与再次导出保留冻结版本', async () => {
+    const context = await runtime(), ownerId = 'legacy-recovery';
+    const owner: ProjectSaveData = { id: ownerId, name: '当前项目', dataFolder: 'current-folder', createdAt: 1, updatedAt: 2, nodes: [], edges: [], groups: [] };
+    const path = '制作说明.txt', before = { path, bytes: 10, sha256: 'b'.repeat(64) }, original = { path, bytes: 0, sha256: 'a'.repeat(64) };
+    const captured = context.domain.captureExchangeSnapshot([{ ...owner, name: '冻结项目' }], [original], null);
+    const frozen = { ...original, path: 'imports/frozen/制作说明.txt' };
+    const identities = captured.identities.map((identity) => identity.kind === 'file' ? { ...identity, localId: frozen.path } : identity);
+    await put(context.db, 'projects', owner);
+    await put(context.db, 'metadata', { id: 'project-import-recovery:legacy', ownerId, operationId: 'legacy', createdAt: 1,
+      records: [{ ...owner, name: '冻结项目' }], state: null, identities, assets: [frozen], afterEpoch: 1, label: '旧恢复点' });
+    native.assets.set(`/projects/${ownerId}`, [before, frozen]);
+    await context.service.restoreProjectImportRecovery(ownerId, 'project-import-recovery:legacy');
+    const state = (await context.exchange.loadProjectExchangeState(ownerId))!;
+    const graph = await context.exchange.loadProjectExchangeGraph(state.lineageId), head = graph.revisions[0];
+    expect(state.stateVersion).toBe(1); expect(head.parentRevisionIds).toEqual([]);
+    expect(head.snapshot.media).toMatchObject([{ bytes: 0, sha256: original.sha256 }]);
+    expect(state.identities).toContainEqual(expect.objectContaining({ kind: 'file', localId: path }));
+    expect(native.assets.get(`/projects/${ownerId}`)).toContainEqual(before);
+    await assertExport(context, ownerId);
+    await assertExport(context, ownerId);
+  });
+
   it.each([false, true])('新建整部剧完成真实状态校验、事务与再次导出（独立副本=%s）', async (independent) => {
     const context = await runtime(), source = sourceRecords(context), incoming = await prepare(context, source);
     const result = await context.service.applyProjectImport(incoming.session, null, {}, { independent, appendChat: true, appendMemories: true });
@@ -196,6 +268,35 @@ describe('项目包真实持久化导入', () => {
     expect(await rows(context.db, 'projectMemories')).toHaveLength(1);
     const recoveries = await context.repository.listProjectImportRecoveries(result.projectId);
     expect(recoveries).toHaveLength(1); expect(recoveries[0].records).toHaveLength(3); expect(recoveries[0].assets).toHaveLength(2);
+    await assertExport(context, result.projectId);
+  });
+
+  it('连续更新后恢复冻结点，真实数据库与再次导出都不复活删除素材墓碑', async () => {
+    const context = await runtime(), source = sourceRecords(context), initial = await prepare(context, source);
+    const result = await context.service.applyProjectImport(initial.session, null, {}, { appendChat: false, appendMemories: false });
+    const firstState = (await context.exchange.loadProjectExchangeState(result.projectId))!;
+    const removedId = initial.state.identities.find((identity) => identity.kind === 'file' && identity.localId === sourceAssets[1].path)!.id;
+    const retained = JSON.parse(JSON.stringify(source).replaceAll(sourceAssets[1].path, sourceAssets[0].path)) as ProjectSaveData[];
+    const deleted = await prepare(context, retained, { state: initial.state, revisions: initial.revisions }, [sourceAssets[0]]);
+    const deletionPreview = await context.service.previewProjectImport(deleted.session, result.projectId);
+    await context.service.applyProjectImport(deleted.session, deletionPreview, {}, { appendChat: false, appendMemories: false });
+    const deletedState = (await context.exchange.loadProjectExchangeState(result.projectId))!;
+    const changed = structuredClone(retained); changed[0].name = '下一版剧集';
+    const incoming = await prepare(context, changed, { state: deleted.state, revisions: deleted.revisions }, [sourceAssets[0]]);
+    const preview = await context.service.previewProjectImport(incoming.session, result.projectId);
+    await context.service.applyProjectImport(incoming.session, preview, {}, { appendChat: false, appendMemories: false });
+    const recovery = (await context.repository.listProjectImportRecoveries(result.projectId))
+      .find((item) => item.state?.headRevisionId === deletedState.headRevisionId)!;
+    expect(recovery.assets).toHaveLength(1);
+    const originalPath = firstState.identities.find((identity) => identity.kind === 'file' && identity.id === removedId)!.localId;
+    expect(native.assets.get(`/projects/${result.projectId}`)).toContainEqual(expect.objectContaining({ path: originalPath }));
+    await context.service.restoreProjectImportRecovery(result.projectId, recovery.id);
+    const restored = (await context.exchange.loadProjectExchangeState(result.projectId))!;
+    const graph = await context.exchange.loadProjectExchangeGraph(restored.lineageId);
+    const head = graph.revisions.find((revision) => revision.revisionId === restored.headRevisionId)!;
+    expect(restored.identities).toContainEqual(expect.objectContaining({ kind: 'file', id: removedId, localId: originalPath }));
+    expect(head.snapshot.entities.some((entity) => entity.kind === 'file' && entity.id === removedId)).toBe(false);
+    expect((await context.repository.readProjectImportScope(result.projectId))[0].name).toBe(source[0].name);
     await assertExport(context, result.projectId);
   });
 });

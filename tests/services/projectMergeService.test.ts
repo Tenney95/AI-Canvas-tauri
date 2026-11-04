@@ -82,13 +82,62 @@ describe('项目业务三方合并', () => {
     (local.nodes as Array<{ data: Record<string, unknown> }>)[0].data.prompt = `@drama{character#${pick}:角色}`;
     const character = incoming.dramaAssets.characters[0];
     if (kind === 'image') character.referenceImages = character.referenceImages!.filter((reference) => reference.id !== 'selected');
-    if (kind === 'voice') character.voiceClips = [];
+    if (kind === 'voice') { character.voiceClips = []; character.primaryVoiceClipId = undefined; }
     if (kind === 'action') character.actions![0].media = [];
     const plan = buildProjectMergePlan(captured.snapshot,
       captureExchangeSnapshot([local], assets, state, captured.snapshot).snapshot,
       captureExchangeSnapshot([incoming], assets, state, captured.snapshot).snapshot);
     expect(plan.changes.some((change) => change.conflict)).toBe(false);
     expect(() => resolveProjectMerge(plan, {})).toThrow('创作素材缺失或归属不一致');
+    const prompt = plan.changes.find((change) => change.field === 'data.prompt')!;
+    expect(() => resolveProjectMerge(plan, { [prompt.id]: 'incoming' })).not.toThrow();
+  });
+
+  it.each(['voice', 'avatar', 'weapon'] as const)('双方各自有效的 %s 选择与删除不能自动合成悬空关系', (kind) => {
+    const record = () => ({ ...project(), dramaAssets: normalizeDramaAssetLibrary({ characters: [
+      { id: 'hero', name: '角色', kind: 'character', primaryReferenceImageId: 'primary', avatarReferenceImageId: 'a1', primaryVoiceClipId: 'v1',
+        referenceImages: [{ id: 'primary', kind: 'primary', relativePath: '参考.png' },
+          { id: 'a1', kind: 'avatar', relativePath: '参考.png' }, { id: 'a2', kind: 'avatar', relativePath: '参考.png' }],
+        voiceClips: [{ id: 'v1', relativePath: '声音.wav' }, { id: 'v2', relativePath: '声音.wav' }], weaponIds: ['w1'] },
+    ], props: [{ id: 'w1', kind: 'prop', name: '武器一', propType: 'weapon' }, { id: 'w2', kind: 'prop', name: '武器二', propType: 'weapon' }] }) });
+    const assets = [{ path: '参考.png', bytes: 10, sha256: 'a'.repeat(64) }, { path: '声音.wav', bytes: 20, sha256: 'b'.repeat(64) }];
+    const captured = captureExchangeSnapshot([record()], assets, null);
+    const state: ProjectExchangeState = { ownerId: 'owner', rootProjectId: 'owner', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    const local = record(), incoming = record();
+    const selected = local.dramaAssets.characters[0], deleted = incoming.dramaAssets.characters[0];
+    const field = kind === 'voice' ? 'primaryVoiceClipId' : kind === 'avatar' ? 'avatarReferenceImageId' : 'weaponIds';
+    if (kind === 'voice') { selected.primaryVoiceClipId = 'v2'; deleted.voiceClips = deleted.voiceClips!.filter((item) => item.id !== 'v2'); }
+    if (kind === 'avatar') { selected.avatarReferenceImageId = 'a2'; selected.avatarCrop = { x: 0.2, y: 0.2, width: 0.5, height: 0.5 };
+      deleted.referenceImages = deleted.referenceImages!.filter((item) => item.id !== 'a2'); }
+    if (kind === 'weapon') { selected.weaponIds = ['w2']; incoming.dramaAssets.props = incoming.dramaAssets.props.filter((item) => item.id !== 'w2'); }
+    const plan = buildProjectMergePlan(captured.snapshot,
+      captureExchangeSnapshot([local], assets, state, captured.snapshot).snapshot,
+      captureExchangeSnapshot([incoming], assets, state, captured.snapshot).snapshot);
+    expect(plan.changes.some((change) => change.conflict)).toBe(false);
+    expect(() => resolveProjectMerge(plan, {})).toThrow(kind === 'weapon' ? '角色绑定的武器不存在' : '角色选择的声音或头像不存在');
+    const selection = plan.changes.find((change) => change.kind === 'character' && change.field === field)!;
+    expect(() => resolveProjectMerge(plan, { [selection.id]: 'incoming' })).not.toThrow();
+  });
+
+  it.each(['shot', 'cell'] as const)('引用 %s 后另一侧删除镜头或缩小宫格时阻止迟到失效引用', (kind) => {
+    const record = () => ({ ...project(), nodes: [
+      { id: 'sheet', type: 'ai-shotlist', data: { type: 'ai-shotlist', shotlistRows: [{ id: 'row', content: '有人回家' }] } },
+      { id: 'board', type: 'ai-storyboard', data: { type: 'ai-storyboard', storyboardCols: 2, storyboardRows: 2 } },
+      { id: 'generator', type: 'ai-video', data: { type: 'ai-video', prompt: '' } },
+    ] });
+    const captured = captureExchangeSnapshot([record()], [], null);
+    const state: ProjectExchangeState = { ownerId: 'owner', rootProjectId: 'owner', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    const local = record(), incoming = record();
+    local.nodes[2].data.prompt = kind === 'shot' ? '@{sheet/shot/row:镜头}' : '@{board/cell/3:宫格}';
+    if (kind === 'shot') incoming.nodes[0].data.shotlistRows = [];
+    else { incoming.nodes[1].data.storyboardCols = 1; incoming.nodes[1].data.storyboardRows = 1; }
+    const plan = buildProjectMergePlan(captured.snapshot,
+      captureExchangeSnapshot([local], [], state, captured.snapshot).snapshot,
+      captureExchangeSnapshot([incoming], [], state, captured.snapshot).snapshot);
+    expect(plan.changes.some((change) => change.conflict)).toBe(false);
+    expect(() => resolveProjectMerge(plan, {})).toThrow('项目引用的分镜');
     const prompt = plan.changes.find((change) => change.field === 'data.prompt')!;
     expect(() => resolveProjectMerge(plan, { [prompt.id]: 'incoming' })).not.toThrow();
   });

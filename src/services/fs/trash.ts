@@ -285,23 +285,28 @@ export async function flushUndoTrashDirs(): Promise<void> {
 /** 将目录移至回收站（Tauri 端），trash crate 本身支持直接移动整个目录 */
 async function removeDirRecursive(dirPath: string): Promise<void> {
   if (!isTauriEnv()) return;
-  try {
-    await invoke('move_to_trash', { path: dirPath });
-    console.log('[fileService] Moved dir to trash:', dirPath);
-  } catch (err) {
-    console.warn('[fileService] Failed to move dir to trash:', dirPath, err);
-  }
+  await invoke('move_to_trash', { path: dirPath });
+  console.log('[fileService] Moved dir to trash:', dirPath);
 }
 
 /** 删除项目的本地数据目录（Tauri 端），包括所有媒体文件 */
-export async function deleteProjectDataDir(projectId: string): Promise<void> {
-  if (!isTauriEnv()) return;
+export async function deleteProjectDataDir(projectId: string, options: { throwOnError?: boolean } = {}): Promise<void> {
+  if (!isTauriEnv()) {
+    if (options.throwOnError) throw new Error('清理项目目录需要桌面应用');
+    return;
+  }
   const dirPath = await getProjectDataDir(projectId);
-  if (!dirPath) return;
+  if (!dirPath) {
+    if (options.throwOnError) throw new Error('无法定位待清理的项目目录');
+    return;
+  }
   try {
+    // 严格清理可重试；上次已移走或外部已清理的目录视为完成。
+    if (options.throwOnError && !await exists(dirPath)) return;
     await removeDirRecursive(dirPath);
     console.log('[fileService] Deleted project data dir:', dirPath);
   } catch (err) {
+    if (options.throwOnError) throw err;
     console.warn('[fileService] Failed to delete project data dir:', dirPath, err);
   }
 }

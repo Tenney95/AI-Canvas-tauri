@@ -9,13 +9,13 @@ import { captureExchangeSnapshot } from '../../src/services/projectExchangeDomai
 import { createProjectExchangeRevision } from '../../src/services/projectExchangeFormat';
 import { buildProjectMergePlan } from '../../src/services/projectMergeService';
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), read: vi.fn(), state: vi.fn(), graph: vi.fn(), commit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), read: vi.fn(), state: vi.fn(), graph: vi.fn(), commit: vi.fn(), delete: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, convertFileSrc: (value: string) => value }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }));
 vi.mock('../../src/services/fileService', () => ({
   isTauriEnv: () => true, buildProjectFolderName: (name: string, id: string) => `${name}-${id}`,
   registerProjectFolder: vi.fn(), registerProjectFolders: vi.fn(), ensureProjectDataDir: async () => '/projects/recipient',
-  deleteProjectDataDir: vi.fn(async () => undefined), notifyProjectDiskChanged: vi.fn(),
+  deleteProjectDataDir: mocks.delete, notifyProjectDiskChanged: vi.fn(),
 }));
 vi.mock('../../src/services/indexedDb/projectExchangeRepository', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/indexedDb/projectExchangeRepository')>(),
@@ -77,7 +77,7 @@ beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto);
   mocks.open.mockResolvedValue('/incoming/project.aicanvas');
   mocks.state.mockResolvedValue(null); mocks.graph.mockResolvedValue({ revisions: [], ancestors: [] });
-  mocks.commit.mockResolvedValue(undefined);
+  mocks.commit.mockResolvedValue(undefined); mocks.delete.mockResolvedValue(undefined);
 });
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map(closePreparedProjectImport));
@@ -85,6 +85,38 @@ afterEach(async () => {
 });
 
 describe('项目导入历史追加编排', () => {
+  it('关闭预览立即失效，物理清理失败后重试仍会删除，成功后不再重复删除', async () => {
+    const source = project('source'), session = await prepareArchive([source], [emptyChat()]);
+    mocks.delete.mockRejectedValueOnce(new Error('文件被占用'));
+    await expect(closePreparedProjectImport(session)).rejects.toThrow('文件被占用');
+    expect(session.disposed).toBe(true);
+    await expect(applyProjectImport(session, null, {}, { appendChat: false, appendMemories: false })).rejects.toThrow('预览已关闭');
+    await closePreparedProjectImport(session);
+    await closePreparedProjectImport(session);
+    expect(mocks.delete).toHaveBeenCalledTimes(2);
+    expect(mocks.delete).toHaveBeenLastCalledWith(session.stagingProjectId, { throwOnError: true });
+  });
+
+  it('同时关闭同一预览共用一次清理，失败后两次调用均可再次重试', async () => {
+    const session = await prepareArchive([project('source')], [emptyChat()]);
+    let rejectCleanup!: (error: Error) => void;
+    mocks.delete.mockReturnValueOnce(new Promise<void>((_resolve, reject) => { rejectCleanup = reject; }));
+    const first = closePreparedProjectImport(session), second = closePreparedProjectImport(session);
+    expect(mocks.delete).toHaveBeenCalledTimes(1);
+    const rejected = Promise.allSettled([first, second]); rejectCleanup(new Error('暂存目录占用'));
+    expect((await rejected).every((result) => result.status === 'rejected')).toBe(true);
+    await Promise.all([closePreparedProjectImport(session), closePreparedProjectImport(session)]);
+    expect(mocks.delete).toHaveBeenCalledTimes(2);
+  });
+
+  it('已有协作来源缺少当前完整快照时不以墓碑映射扫描预览', async () => {
+    const source = project('source'), session = await prepareArchive([source], [emptyChat()]);
+    mocks.read.mockResolvedValue([source]); mocks.state.mockResolvedValue(session.sourceState);
+    mocks.graph.mockResolvedValue({ revisions: [], ancestors: [] });
+    await expect(previewProjectImport(session, source.id)).rejects.toThrow('缺少完整快照');
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual(['unpack_project_archive']);
+  });
+
   it('不追加历史时跨分集重复历史 ID 不影响业务导入', async () => {
     const source = project('source'), episode = project('episode', source.id);
     const session = await prepareArchive([source, episode], [chat(source.id, 'shared-conversation'), chat(episode.id, 'shared-conversation')]);

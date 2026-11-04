@@ -35,7 +35,10 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open, save: mocks.save
 vi.mock('@tauri-apps/plugin-fs', () => ({ remove: mocks.remove }));
 vi.mock('../../src/services/projectArchiveSerialization', () => ({ serializeProjectArchiveEntries: mocks.serializeEntries }));
 // 本文件保留旧包恢复/目录回滚的回归；v3 内核与事务在各自的专用用例覆盖。
-vi.mock('../../src/services/indexedDb/projectExchangeRepository', () => ({ loadProjectExchangeState: async () => ({ headRevisionId: 'export-head', identities: [] }) }));
+vi.mock('../../src/services/indexedDb/projectExchangeRepository', () => ({
+  loadProjectExchangeState: async () => ({ headRevisionId: 'export-head', lineageId: 'export-lineage', rootProjectId: 'export-root', identities: [] }),
+  loadProjectExchangeGraph: async () => ({ revisions: [{ revisionId: 'export-head', snapshot: { lineageId: 'export-lineage', rootProjectId: 'export-root', entities: [] } }], ancestors: [] }),
+}));
 vi.mock('../../src/services/projectExchangeDomain', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/projectExchangeDomain')>(),
   materializeExchangeSnapshot: (_snapshot: unknown, _identities: unknown, records: unknown[]) => records,
@@ -46,6 +49,7 @@ vi.mock('../../src/services/projectArchiveValidation', async (importOriginal) =>
 }));
 vi.mock('../../src/services/projectImportService', () => ({
   prepareExchangeExport: async () => ({ headRevisionId: 'export-head', revisions: [{ revisionId: 'export-head', snapshot: {} }] }),
+  readProjectArchiveContents: async () => undefined,
   prepareProjectImport: async () => {
     if (!mocks.isTauriEnv()) throw new Error('项目导入仅在桌面版可用');
     const archivePath = await mocks.open(); return archivePath ? { archivePath } : null;

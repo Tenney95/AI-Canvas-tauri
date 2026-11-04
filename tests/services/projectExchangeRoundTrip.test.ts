@@ -1,11 +1,21 @@
-/** 真实业务适配的跨设备往返；不依赖归档编排的 mock。 */
+/** 真实业务适配的跨设备往返；旧包准备仅隔离原生 IO 与 Worker 传输。 */
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { captureExchangeSnapshot, materializeExchangeSnapshot, validateExchangeDomain } from '../../src/services/projectExchangeDomain';
+import { captureExchangeSnapshot, materializeExchangeSnapshot, validateExchangeDomain, type ArchiveAssetDigest } from '../../src/services/projectExchangeDomain';
 import type { ProjectSaveData } from '../../src/services/storageService';
-import type { ProjectExchangeIdentity, ProjectExchangeState } from '../../src/types/projectExchange';
+import type { ProjectExchangeIdentity, ProjectExchangeMedia, ProjectExchangeState } from '../../src/types/projectExchange';
 import { normalizeDramaAssetLibrary } from '../../src/types/dramaAssets';
 import { parseProjectExchangeState } from '../../src/services/indexedDb/projectExchangeRepository';
+import { createProjectExchangeRevision } from '../../src/services/projectExchangeFormat';
+const archiveMocks = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: archiveMocks.invoke, convertFileSrc: (value: string) => value }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: archiveMocks.open }));
+vi.mock('../../src/services/fileService', () => ({ isTauriEnv: () => true,
+  buildProjectFolderName: (name: string, id: string) => `${name}-${id}`, registerProjectFolder: vi.fn(),
+  ensureProjectDataDir: async () => '/preview', deleteProjectDataDir: async () => undefined }));
+vi.mock('../../src/services/projectMergeWorkerClient', () => ({
+  captureProjectSnapshot: (...args: Parameters<typeof captureExchangeSnapshot>) => captureExchangeSnapshot(...args),
+}));
 beforeEach(() => vi.stubGlobal('crypto', webcrypto)); afterEach(() => vi.unstubAllGlobals());
 describe('项目规范快照往返', () => {
   it.each(['episode', 'node'] as const)('新建实体的身份映射只保存身份字段（%s）', (kind) => {
@@ -53,6 +63,82 @@ describe('项目规范快照往返', () => {
   });
 });
 
+describe('无扩展文件的媒体身份与旧 v3 兼容', () => {
+  const project = (path: string): ProjectSaveData => ({ id: 'root', name: '原稿', nodes: [
+    { id: 'file', type: 'source-text', data: { type: 'source-text', relativePath: path } },
+  ], edges: [], groups: [], createdAt: 1, updatedAt: 2 });
+  function legacy(name: 'LICENSE' | 'png') {
+    const source = project(name), asset = { path: name, bytes: 10, sha256: 'a'.repeat(64) };
+    const captured = captureExchangeSnapshot([source], [asset], null);
+    const descriptor: ProjectExchangeMedia = { id: `${asset.sha256}_${name.toLowerCase()}`, sha256: asset.sha256, bytes: asset.bytes,
+      extension: name.toLowerCase(), kind: name === 'png' ? 'image' : 'file' };
+    const snapshot = validateExchangeDomain({ ...captured.snapshot, media: [descriptor], entities: captured.snapshot.entities.map((entity) =>
+      entity.kind === 'file' ? { ...entity, data: { ...entity.data, mediaId: descriptor.id } } : entity) });
+    return { source, asset, captured, descriptor, snapshot };
+  }
+
+  it.each([
+    { path: 'LICENSE', bytes: 0, extension: 'bin' }, { path: 'LICENSE', bytes: 10, extension: 'bin' },
+    { path: 'png', bytes: 10, extension: 'bin' }, { path: '制作.v1/LICENSE', bytes: 10, extension: 'bin' },
+    { path: '.gitignore', bytes: 10, extension: 'gitignore' },
+  ])('新捕获 $path（$bytes 字节）只按文件名后缀分类，受管目录往返不漂移', ({ path, bytes, extension }) => {
+    const asset = { path, bytes, sha256: 'a'.repeat(64) }, captured = captureExchangeSnapshot([project(path)], [asset], null);
+    expect(captured.snapshot.media).toEqual([{ id: `${asset.sha256}_${extension}`, sha256: asset.sha256, bytes, extension, kind: 'file' }]);
+    const identities: ProjectExchangeIdentity[] = [{ kind: 'project', scopeId: 'root', id: 'root', localId: 'recipient' }];
+    const paths = new Map([...captured.files].map(([id]) => [id, `imports/operation/${id}/${path.split('/').pop()}`]));
+    for (const [id, localId] of paths) identities.push({ kind: 'file', scopeId: 'root', id, localId });
+    const records = materializeExchangeSnapshot(captured.snapshot, identities, [], '接收目录', paths);
+    const state = parseProjectExchangeState({ ownerId: 'recipient', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities });
+    const assets = [...paths.values()].map((name) => ({ ...asset, path: name }));
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it.each(['LICENSE', 'png'] as const)('旧 v3 根文件 %s 通过真实准备校验，迁入受管目录后仍复用原描述', async (name) => {
+    const { source, asset, captured, snapshot } = legacy(name), head = await createProjectExchangeRevision(snapshot);
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: snapshot.lineageId,
+      headRevisionId: head.revisionId, stateVersion: 1, identities: captured.identities };
+    archiveMocks.open.mockResolvedValue('/incoming/legacy.aicanvas');
+    archiveMocks.invoke.mockResolvedValue({ assets: [asset], texts: {
+      'manifest.json': JSON.stringify({ formatVersion: 3, exportedAt: 1, projectId: source.id, projectName: source.name, episodeCount: 0 }),
+      'project.json': JSON.stringify(source), 'exchange-state.json': JSON.stringify(state),
+      'exchange.json': JSON.stringify({ format: 'ai-canvas-project-exchange', version: 1, packageId: 'package', lineageId: state.lineageId,
+        headRevisionId: head.revisionId, revisions: [head], ancestors: [], files: [{ mediaId: snapshot.media[0].id, archivePath: `assets/${name}` }] }),
+    } });
+    const { prepareProjectImport, closePreparedProjectImport } = await import('../../src/services/projectImportService');
+    const session = await prepareProjectImport();
+    expect(session?.bundle?.headRevisionId).toBe(head.revisionId);
+    try {
+      const paths = new Map([...captured.files].map(([id]) => [id, `imports/operation/${id}/${name}`]));
+      const identities: ProjectExchangeIdentity[] = [{ kind: 'project', scopeId: 'root', id: 'root', localId: 'recipient' },
+        ...[...paths].map(([id, localId]) => ({ kind: 'file' as const, scopeId: 'root', id, localId }))];
+      const records = materializeExchangeSnapshot(snapshot, identities, [], '接收目录', paths);
+      const received = parseProjectExchangeState({ ...state, ownerId: 'recipient', identities });
+      expect(captureExchangeSnapshot(records, [...paths.values()].map((path) => ({ ...asset, path })), received, snapshot).snapshot).toEqual(snapshot);
+    } finally { if (session) await closePreparedProjectImport(session); }
+  });
+
+  it.each(['sha', 'bytes', 'rename', 'descriptor'] as const)('旧描述兼容不吞掉 %s 变化或任意媒体描述', (change) => {
+    const fixture = legacy('LICENSE'), snapshot = structuredClone(fixture.snapshot);
+    const asset: ArchiveAssetDigest = { ...fixture.asset };
+    const identities = structuredClone(fixture.captured.identities);
+    if (change === 'sha') asset.sha256 = 'b'.repeat(64);
+    if (change === 'bytes') asset.bytes += 1;
+    if (change === 'rename') {
+      asset.path = 'license';
+      identities.find((identity) => identity.kind === 'file')!.localId = asset.path;
+    }
+    if (change === 'descriptor') {
+      snapshot.media[0] = { ...snapshot.media[0], id: `${asset.sha256}_png`, extension: 'png', kind: 'image' };
+      snapshot.entities.find((entity) => entity.kind === 'file')!.data.mediaId = snapshot.media[0].id;
+    }
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities };
+    const next = captureExchangeSnapshot([project(asset.path)], [asset], state, snapshot);
+    expect(next.snapshot.media[0]).toEqual({ id: `${asset.sha256}_bin`, sha256: asset.sha256, bytes: asset.bytes, extension: 'bin', kind: 'file' });
+  });
+});
+
 describe('项目正文与内部导入文件的往返边界', () => {
   it.each(['ai-text', 'source-text', 'ai-markdown'])('%s 保留协议开头的直接正文，嵌套媒体仍清理本机投影', (type) => {
     const output = 'https://example.com/参考资料\n\n中文正文与末尾内容';
@@ -87,11 +173,11 @@ describe('项目正文与内部导入文件的往返边界', () => {
     expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
   });
 
-  it('首次建立来源时保留当前引用的 imports 和普通附件，排除无引用恢复点与失败残留', () => {
-    const current = 'imports/current-op/current.png';
+  it.each(['imports', 'Imports', 'IMPORTS'])('首次建立来源时保留当前引用的 %s 和普通附件，排除无引用恢复点与失败残留', (directory) => {
+    const current = `${directory}/current-op/current.png`;
     const source: ProjectSaveData = { id: 'root', name: '旧包更新后的项目', createdAt: 1, updatedAt: 2, edges: [],
       nodes: [{ id: 'image', type: 'ai-image', data: { relativePath: current } }] };
-    const assets = [current, '附件/制作说明.md', 'imports/recovery-op/旧图.png', 'imports/failed-op/孤儿.png']
+    const assets = [current, '附件/制作说明.md', `${directory}/recovery-op/旧图.png`, `${directory}/failed-op/孤儿.png`]
       .map((path, index) => ({ path, bytes: 10, sha256: String(index + 1).repeat(64) }));
     const captured = captureExchangeSnapshot([source], assets, null);
     expect([...captured.files.values()]).toEqual([current, '附件/制作说明.md']);
@@ -101,8 +187,8 @@ describe('项目正文与内部导入文件的往返边界', () => {
     expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
   });
 
-  it('已确认的 imports 文件映射可作为未引用附件保留', () => {
-    const path = 'imports/confirmed-op/原稿.txt';
+  it.each(['imports', 'Imports', 'IMPORTS'])('已确认的 %s 文件映射可作为未引用附件保留', (directory) => {
+    const path = `${directory}/confirmed-op/原稿.txt`;
     const source: ProjectSaveData = { id: 'root', name: '已确认附件', createdAt: 1, updatedAt: 2, edges: [], nodes: [] };
     const assets = [{ path, bytes: 1, sha256: 'a'.repeat(64) }];
     const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: 'lineage', headRevisionId: 'a'.repeat(64),
@@ -370,5 +456,85 @@ describe('当前执行的精确创作素材引用', () => {
     expect(captured.snapshot.entities.find((entity) => entity.kind === 'node')!.references).toEqual([]);
     source.nodes[0].data.workflowInputs = { image: '@drama{character#missing:角色}' };
     expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('引用字段：data.workflowInputs.image');
+  });
+});
+
+describe('分镜虚拟引用与角色关系的领域校验', () => {
+  const assets = [{ path: '参考.png', bytes: 10, sha256: 'a'.repeat(64) }, { path: '声音.wav', bytes: 20, sha256: 'b'.repeat(64) }];
+  const virtualProjects = (prompt: string): ProjectSaveData[] => [
+    { id: 'root', name: '剧集', createdAt: 1, updatedAt: 2, nodes: [], edges: [] },
+    { id: 'episode', parentId: 'root', name: '分集', createdAt: 1, updatedAt: 2, edges: [], nodes: [
+      { id: 'sheet', type: 'ai-shotlist', data: { type: 'ai-shotlist', shotlistRows: [{ id: 'row', shotNo: '1', content: '有人回家' }] } },
+      { id: 'other-sheet', type: 'ai-shotlist', data: { type: 'ai-shotlist', shotlistRows: [{ id: 'other-row', content: '另一镜头' }] } },
+      { id: 'board', type: 'ai-storyboard', data: { type: 'ai-storyboard', storyboardCols: 2, storyboardRows: 2, relativePath: '参考.png' } },
+      { id: 'generator', type: 'ai-video', data: { type: 'ai-video', label: '生成节点', prompt } },
+    ] },
+  ];
+
+  it.each(['sheet/shot/row', 'sheet/shot/%72ow', 'board/cell/0', 'board/cell/3'])('%s 关联真实分集节点，保留正文并跨设备往返', (id) => {
+    const prompt = `@{${id}:精确引用}`;
+    const captured = captureExchangeSnapshot(virtualProjects(prompt), assets, null);
+    const node = captured.snapshot.entities.find((entity) => entity.kind === 'node' && entity.id === 'generator')!;
+    expect((node.data.data as Record<string, unknown>).prompt).toBe(prompt);
+    expect(node.references).toEqual([{ kind: 'node', scopeId: 'episode', id: id.split('/')[0] }]);
+    const identities = structuredClone(captured.identities);
+    const records = materializeExchangeSnapshot(captured.snapshot, identities, [], '接收方目录', captured.files);
+    const state: ProjectExchangeState = { ownerId: records[0].id, rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities };
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it.each([
+    'missing/shot/row', 'board/shot/row', 'sheet/shot/missing', 'sheet/shot/other-row', 'sheet/shot/%',
+    'missing/cell/0', 'sheet/cell/0', 'board/cell/4', 'board/cell/-1', 'board/cell/1junk', 'board/cell/00', 'board/cell/9007199254740992',
+  ])('%s 的父类型、行归属或格范围错误时保留定位并拒绝', (id) => {
+    expect(() => captureExchangeSnapshot(virtualProjects(`@{${id}:精确引用}`), assets, null)).toThrow('项目引用的分镜');
+    expect(() => captureExchangeSnapshot(virtualProjects(`@{${id}:精确引用}`), assets, null)).toThrow('引用字段：data.prompt');
+  });
+
+  const characterProject = () => ({ id: 'root', name: '角色关系', createdAt: 1, updatedAt: 2, edges: [],
+    nodes: [] as Array<{ id: string; type: string; data: Record<string, unknown> }>,
+    dramaAssets: normalizeDramaAssetLibrary({ characters: [
+      { id: 'hero', name: '角色', kind: 'character', primaryReferenceImageId: 'primary', avatarReferenceImageId: 'avatar', primaryVoiceClipId: 'voice',
+        referenceImages: [{ id: 'primary', kind: 'primary', relativePath: '参考.png' }, { id: 'avatar', kind: 'avatar', relativePath: '参考.png' }],
+        voiceClips: [{ id: 'voice', relativePath: '声音.wav' }], weaponIds: ['weapon'] },
+      { id: 'other', name: '另一角色', kind: 'character', referenceImages: [{ id: 'foreign-avatar', kind: 'avatar', relativePath: '参考.png' }],
+        voiceClips: [{ id: 'foreign-voice', relativePath: '声音.wav' }] },
+    ], props: [{ id: 'weapon', kind: 'prop', name: '武器', propType: 'weapon' }, { id: 'ordinary', kind: 'prop', name: '普通道具' }] }),
+  });
+
+  it('有效声音、头像、武器保留旧依赖摘要；普通历史与全局引用仍沿既有边界', () => {
+    const source = characterProject();
+    source.nodes = [{ id: 'origin', type: 'ai-text', data: { type: 'ai-text', output: '原始说明' } },
+      { id: 'generator', type: 'ai-image', data: { type: 'ai-image', prompt: '@drama{global/hero#voice/global-voice:全局角色}' } }];
+    const prompt = '@{origin:普通出处} @{deleted/shot/row:历史镜头} @{deleted/cell/0:历史宫格}';
+    source.dramaAssets.characters[0].referenceImages![0].prompt = prompt;
+    const captured = captureExchangeSnapshot([source], assets, null);
+    const hero = captured.snapshot.entities.find((entity) => entity.kind === 'character' && entity.id === 'hero')!;
+    expect(hero.references.some((reference) => reference.kind === 'prop')).toBe(false);
+    const reference = captured.snapshot.entities.find((entity) => entity.kind === 'referenceImage' && entity.id === 'primary')!;
+    expect(reference.data.prompt).toBe(prompt);
+    expect(reference.references.filter((item) => item.kind === 'node')).toEqual([{ kind: 'node', scopeId: 'root', id: 'origin' }]);
+    const records = materializeExchangeSnapshot(captured.snapshot, [...captured.identities], [source], '项目目录', captured.files);
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    expect(captureExchangeSnapshot(records, assets, state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
+  it.each([
+    ['primaryVoiceClipId', 'missing'], ['primaryVoiceClipId', 'foreign-voice'],
+    ['avatarReferenceImageId', 'missing'], ['avatarReferenceImageId', 'foreign-avatar'],
+  ] as const)('%s=%s 不属于当前角色时拒绝，不静默回退', (field, id) => {
+    const source = characterProject();
+    source.dramaAssets.characters[0][field] = id;
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('角色选择的声音或头像不存在或不属于本角色');
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow(`引用字段：${field}`);
+    expect(source.dramaAssets.characters[0][field]).toBe(id);
+  });
+
+  it.each([{ ids: ['missing'] }, { ids: ['ordinary'] }, { ids: ['weapon', 'weapon'] }])('武器绑定 $ids 缺失、类型不符或重复时拒绝', ({ ids }) => {
+    const source = characterProject();
+    source.dramaAssets.characters[0].weaponIds = ids;
+    expect(() => captureExchangeSnapshot([source], assets, null)).toThrow('角色绑定的武器不存在、类型无效或不属于当前作用域');
   });
 });

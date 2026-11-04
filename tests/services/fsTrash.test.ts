@@ -37,6 +37,7 @@ import {
   collectNodeFileReferences,
   deleteNodeFile,
   deleteNodeFiles,
+  deleteProjectDataDir,
   resolveGroupUndoTrashPaths,
   isPathInsideDir,
   isProjectOwnedFile,
@@ -77,6 +78,42 @@ describe('显式资产删除的回收站结果', () => {
       await expect(moveToTrash('/assets/image.png')).resolves.toBeUndefined();
       expect(coreMocks.invoke).not.toHaveBeenCalled();
     } finally { coreMocks.isTauriEnv.mockReturnValue(true); }
+  });
+});
+
+describe('项目暂存目录的严格清理', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks(); coreMocks.invoke.mockReset(); coreMocks.isTauriEnv.mockReturnValue(true);
+    projectDirMock.get.mockResolvedValue('/projects/staging'); fsMocks.exists.mockResolvedValue(true);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  it('原生删除失败真正拒绝，下一次调用可再次尝试', async () => {
+    const failure = new Error('暂存目录被占用');
+    coreMocks.invoke.mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined);
+    await expect(deleteProjectDataDir('staging', { throwOnError: true })).rejects.toBe(failure);
+    await expect(deleteProjectDataDir('staging', { throwOnError: true })).resolves.toBeUndefined();
+    expect(coreMocks.invoke).toHaveBeenCalledTimes(2);
+    expect(coreMocks.invoke).toHaveBeenLastCalledWith('move_to_trash', { path: '/projects/staging' });
+  });
+  it('默认旧调用仍忽略原生错误', async () => {
+    coreMocks.invoke.mockRejectedValueOnce(new Error('暂存目录被占用'));
+    await expect(deleteProjectDataDir('staging')).resolves.toBeUndefined();
+    expect(coreMocks.invoke).toHaveBeenCalledOnce();
+  });
+  it('严格清理已不存在的目录不再次调用原生删除', async () => {
+    fsMocks.exists.mockResolvedValueOnce(false);
+    await expect(deleteProjectDataDir('staging', { throwOnError: true })).resolves.toBeUndefined();
+    expect(coreMocks.invoke).not.toHaveBeenCalled();
+  });
+  it('严格清理缺少运行时、目录定位或查询权限时拒绝', async () => {
+    coreMocks.isTauriEnv.mockReturnValueOnce(false);
+    await expect(deleteProjectDataDir('staging', { throwOnError: true })).rejects.toThrow('桌面应用');
+    projectDirMock.get.mockResolvedValueOnce(null);
+    await expect(deleteProjectDataDir('staging', { throwOnError: true })).rejects.toThrow('无法定位');
+    fsMocks.exists.mockRejectedValueOnce(new Error('访问被拒绝'));
+    await expect(deleteProjectDataDir('staging', { throwOnError: true })).rejects.toThrow('访问被拒绝');
+    expect(coreMocks.invoke).not.toHaveBeenCalled();
   });
 });
 

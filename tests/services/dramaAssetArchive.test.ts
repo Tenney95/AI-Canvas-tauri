@@ -2,12 +2,15 @@
  * dramaAssetArchive — 回归测试：creative asset archive filesystem boundary。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
 const io = vi.hoisted(() => ({ mkdir: vi.fn(), remove: vi.fn(), rename: vi.fn(), write: vi.fn(), stat: vi.fn(),
-  invoke: vi.fn(), copy: vi.fn(), download: vi.fn(), readData: vi.fn() }));
+  invoke: vi.fn(), copy: vi.fn(), download: vi.fn(), readData: vi.fn(), base: '/base' }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ mkdir: io.mkdir, remove: io.remove, rename: io.rename, writeFile: io.write, stat: io.stat }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke }));
 vi.mock('../../src/services/fs/core', () => ({
-  getBaseDir: async () => '/base', ensureProjectDataDir: async () => '/project',
+  getBaseDir: async () => io.base, ensureProjectDataDir: async () => '/project',
   joinPath: (...parts: string[]) => parts.join('/'), stripVerbatimPrefix: (path: string) => path,
 }));
 vi.mock('../../src/services/fileService', () => ({
@@ -19,6 +22,7 @@ import { cleanupDramaAssetTransferDirectory, createDramaAssetArchiveWorkspace, c
   stageDramaAssetArchiveMedia, unpackDramaAssetArchive } from '../../src/services/fs/dramaAssetArchive';
 
 beforeEach(() => {
+  io.base = '/base';
   vi.clearAllMocks(); io.mkdir.mockReset().mockResolvedValue(undefined);
   io.remove.mockResolvedValue(undefined); io.rename.mockResolvedValue(undefined); io.write.mockResolvedValue(undefined);
   io.copy.mockImplementation(async (source: string, directory: string) => ({ path: `${directory}/${source.split('/').pop()}`, totalBytes: 3, digest: 'a'.repeat(64) }));
@@ -26,6 +30,32 @@ beforeEach(() => {
   io.invoke.mockResolvedValue({ assetCount: 1 });
 });
 describe('creative asset archive filesystem boundary', () => {
+  it('真实工作区的解包目标保持为空，首次导出媒体时才创建 media 子目录', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'ai-canvas-asset-workspace-'));
+    io.base = base;
+    io.mkdir.mockImplementation(async (path: string, options?: { recursive?: boolean }) => mkdir(path, options));
+    io.remove.mockImplementation(async (path: string, options?: { recursive?: boolean }) => rm(path, options));
+    io.rename.mockImplementation(rename);
+    io.copy.mockImplementation(async (source: string, directory: string) => {
+      const path = join(directory, 'source.png'); await copyFile(source, path);
+      return { path, totalBytes: 3, digest: 'a'.repeat(64) };
+    });
+    try {
+      const workspace = await createDramaAssetArchiveWorkspace();
+      expect(await readdir(workspace.assetsDirectory)).toEqual([]);
+      const source = join(base, 'source.png'); await writeFile(source, new Uint8Array([1, 2, 3]));
+      const staged = await stageDramaAssetArchiveMedia(workspace, { filePath: source }, 'image', 'png', 'image');
+      expect(await readdir(workspace.assetsDirectory)).toEqual(['media']);
+      expect([...await readFile(staged.path)]).toEqual([1, 2, 3]);
+      await cleanupDramaAssetTransferDirectory(workspace.directory);
+    } finally {
+      const resolved = await realpath(base), temporary = await realpath(tmpdir());
+      const child = relative(temporary, resolved);
+      if (!child || child.startsWith('..') || isAbsolute(child)) throw new Error('临时目录清理范围无效');
+      await rm(resolved, { recursive: true, force: true });
+    }
+  });
+
   it('allocates isolated staging and Library leaves, and never grants cleanup of their parents', async () => {
     const workspace = await createDramaAssetArchiveWorkspace();
     const folder = await createDramaAssetImportFolder('series');
