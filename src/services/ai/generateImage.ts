@@ -43,6 +43,7 @@ import { buildGoogleImageParts, resolveImageTemplateDimensions } from './imageMo
 import { assertToapisImageInput, resolveToapisImageModelContract, toapisImageReferences } from './providers/toapisModelManifest';
 import { assertLibapiImageInput, libapiImageExecutionProfile, libapiImageVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { relayonImageVariables, resolveRelayonImageExecutionProfile, resolveRelayonImageModelContract, usesRelayonModelProtocol } from './providers/relayonModelManifest';
+import { aigcsiImageExecutionProfile, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
 import { resolveImageParameterCapability } from './mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
 import { compileVideoReferencePrompt } from './referencePrompt';
@@ -200,6 +201,8 @@ export async function generateImagesBatch(
   const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(modelName, executionProfile);
   const usesRelayonProtocol = providerDefinition?.id === 'relayonapi'
     && usesRelayonModelProtocol(modelName, executionProfile);
+  const usesAigcsiProtocol = providerDefinition?.id === 'aigc-si'
+    && usesAigcsiModelProtocol(modelName, executionProfile);
   const usesStandardImageRequest = !executionProfile
     || executionProfile.preset === 'openai-image'
     || executionProfile.preset === 'openai-gpt-image';
@@ -210,7 +213,7 @@ export async function generateImagesBatch(
         : selectedModel?.imageReferenceRequestMode
           ?? catalogModel?.imageReferenceRequestMode);
   const usesImageDataUrls = !params.workflowId
-    && (builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
+    && (usesAigcsiProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
       || imageReferenceRequestMode === 'generation-json-image-data-urls');
   const usesImageMultipart = !params.workflowId
     && usesStandardImageRequest
@@ -329,6 +332,7 @@ export async function generateImagesBatch(
   const libapiExecutionProfile = usesLibapiProtocol ? libapiImageExecutionProfile(modelName, allImageUrls.length) : undefined;
   const relayonExecutionProfile = usesRelayonProtocol
     ? resolveRelayonImageExecutionProfile(modelName, executionProfile, allImageUrls.length, imageBackground) : undefined;
+  const aigcsiExecutionProfile = usesAigcsiProtocol ? aigcsiImageExecutionProfile(allImageUrls.length) : undefined;
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
   allImageUrls = provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
     ? await resolveImageDataUrlArray(allImageUrls, signal)
@@ -409,7 +413,7 @@ export async function generateImagesBatch(
         };
         const urls = await runConfiguredModelProtocol({
           model: { ...gm,
-            executionProfile: libapiExecutionProfile ?? relayonExecutionProfile ?? executionProfile,
+            executionProfile: libapiExecutionProfile ?? relayonExecutionProfile ?? aigcsiExecutionProfile ?? executionProfile,
             imageCapability: configuredCapability },
           category: 'image',
           nodeId: params.nodeId,

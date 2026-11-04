@@ -15,6 +15,7 @@ import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabi
 import { parseConnectionShare, serializeConnection } from '../../src/services/ai/providerConnectionTransfer';
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
+import { AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
 import { RELAYON_IMAGE_MODEL_IDS, RELAYON_MODEL_MANIFEST, RELAYON_VIDEO_MODEL_IDS } from '../../src/services/ai/providers/relayonModelManifest';
 import { RELAYON_PROVIDER_GROUPS, getRelayonGroupPresetModels, relayonConnectionName } from '../../src/services/ai/relayonProviderGroups';
 import { useAppStore } from '../../src/store/useAppStore';
@@ -75,6 +76,65 @@ describe('厂商定义与接线策略', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('Amam 内置目录与连接身份', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('默认候选包含 Muse，保存后同步为通用模型，保留当前连接而非借用同名 Key', () => {
+    expect(getProviderDefinition('aigc-si')).toMatchObject({ name: 'Amam（AIGC SI）', models: AIGCSI_MODEL_MANIFEST,
+      defaultBaseUrl: 'https://aigc-si.com/v1', modelsPath: '/models', externalUrl: 'https://aigc-si.com/?ref=OAXZHWXT' });
+    expect(getProviderDefinition('aigc-si')?.description).toContain('每秒 2 分');
+    const previous = useAppStore.getState().config;
+    try {
+      const selected = AIGCSI_MODEL_MANIFEST.find((item) => item.id === 'muse-video-1')!;
+      useAppStore.getState().saveProviderConfig('my-amam', { name: '自己的 Amam', catalogId: 'aigc-si',
+        apiKey: 'my-fixture', selectedModels: [selected] });
+      const synced = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'my-amam')!;
+      expect(synced).toMatchObject({ category: 'video', modelId: 'muse-video-1', executionProfile: selected.executionProfile,
+        videoCapability: selected.videoCapability });
+      expect(resolveGeneralModelConnection(`general/${synced.id}`)).toMatchObject({ apiKey: 'my-fixture',
+        providerConfigId: 'my-amam', baseUrl: 'https://aigc-si.com/v1', definition: { id: 'aigc-si' } });
+    } finally {
+      useAppStore.setState({ config: previous });
+    }
+    expect(getProviderDefinition('aigc-si', { catalogId: 'custom-openai' })?.id).toBe('custom-openai');
+  });
+
+  it('按 api_model 与已适配精确调用值求交，合并 H3 重复 SKU，不采用远端误分类或未知能力', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ data: [
+      { id: 'muse-internal-sku', api_model: 'muse-video-1', kind: 'video', resolutions: ['4K'] },
+      { id: 'h3-768', api_model: 'minimax-h3-5' }, { id: 'h3-2k', api_model: 'minimax-h3-5' },
+      { id: 'image-2.5-flare' }, { id: '香蕉' }, { id: 'image-2', enabled: false },
+      { id: 'native-image-2.5-flare-pool' }, { id: 'MJ-2k' }, { id: 'future-model' },
+    ] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await fetchProviderModelCatalog({ providerId: 'my-amam',
+      config: { name: 'Amam', catalogId: 'aigc-si', apiKey: 'am-fixture' }, fallbackModels: [...AIGCSI_MODEL_MANIFEST] });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('https://aigc-si.com/v1/models', expect.objectContaining({
+      method: 'GET', headers: { Authorization: 'Bearer am-fixture' },
+    }));
+    expect(new Set(result.models.map((item) => item.id))).toEqual(new Set(['muse-video-1', 'minimax-h3-5', 'image-2.5-flare', '香蕉']));
+    expect(result.models.every((item) => item.provider === 'my-amam')).toBe(true);
+    expect(result.models.find((item) => item.id === 'muse-video-1')?.videoCapability?.resolutions).toEqual(['720p']);
+    expect(result.models.find((item) => item.id === '香蕉')?.category).toBe('image');
+    expect(result).toMatchObject({ source: 'remote', resolvedBaseUrl: 'https://aigc-si.com/v1', warning: expect.any(String) });
+  });
+
+  it.each([401, 503])('认证目录 HTTP %s 不回退静态候选冒充可用型号', async (status) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status })));
+    await expect(fetchProviderModelCatalog({ providerId: 'my-amam',
+      config: { name: 'Amam', catalogId: 'aigc-si', apiKey: 'fixture' },
+      fallbackModels: [...AIGCSI_MODEL_MANIFEST] })).rejects.toThrow(String(status));
+  });
+
+  it('未填 Key 时不查询，也不将默认目录标记为认证成功', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchProviderModelCatalog({ providerId: 'my-amam',
+      config: { name: 'Amam', catalogId: 'aigc-si', apiKey: '' }, fallbackModels: [...AIGCSI_MODEL_MANIFEST] })).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

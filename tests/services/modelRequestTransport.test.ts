@@ -26,8 +26,10 @@ import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtoco
 import { useAppStore } from '../../src/store/useAppStore';
 import { createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelTemplates';
 import { uploadToRemote } from '../../src/services/uploadService';
-import { getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
+import { clearProjectTasks, getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
+import { AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
+import { pollResolvedModelProtocol } from '../../src/services/ai/modelProtocol';
 import { executeRunningHubModel } from '../../src/services/ai/providers/runninghubMedia';
 
 function jsonResponse(payload: unknown): Response {
@@ -44,6 +46,129 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('Amam 图片／视频的异步交付', () => {
+  function configureAmam(id: string, custom = false) {
+    const selected = structuredClone(AIGCSI_MODEL_MANIFEST.find((item) => item.id === id)!);
+    if (custom) selected.executionProfile!.protocol!.submit.path = '/my-image-job';
+    const category = selected.category === 'image' ? 'image' : 'video';
+    const nodeId = `am-${category}-node`;
+    const projectId = `am-${category}-project`;
+    clearProjectTasks(projectId);
+    useAppStore.getState().saveProviderConfig('my-amam', { name: '自己的 Amam', catalogId: 'aigc-si',
+      apiKey: 'my-amam-fixture', selectedModels: [selected] });
+    const general = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'my-amam')!;
+    useAppStore.setState({ currentProjectId: projectId, nodes: [{ id: nodeId, type: category === 'image' ? 'ai-image' : 'ai-video',
+      position: { x: 0, y: 0 }, data: { type: category === 'image' ? 'ai-image' : 'ai-video', label: 'Amam', status: 'loading' } }] });
+    return { provider: 'general', model: `general/${general.id}`, nodeId, prompt: '镜头缓慢推进' };
+  }
+
+  it.each([false, true])('图片参考模式 %s 选择正确异步入口，原连接鉴权和结果续存身份均保留', async (withReference) => {
+    const params = configureAmam('image-2.5-flare');
+    const saved = structuredClone(useAppStore.getState().config.providers['my-amam'].selectedModels);
+    const reference = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8Z0AAAAASUVORK5CYII=';
+    const directFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('不应上传公共图床'));
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-image-task', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed', result: { data: [
+        { url: '/v1/image-jobs/am-image-task/content?item_id=one' }, { url: 'https://cdn.example/two.png' },
+      ] } }));
+    const result = await generateImagesBatch({ ...params, imageSize: '2K', aspectRatio: '9:16',
+      ...(withReference ? { image_urls: [reference] } : {}) }, 2);
+    expect(result.results.map((item) => item.url)).toEqual([
+      'https://aigc-si.com/v1/image-jobs/am-image-task/content?item_id=one', 'https://cdn.example/two.png',
+    ]);
+    expect(result.taskReceipt).toMatchObject({ taskId: 'am-image-task', nodeId: params.nodeId, projectId: 'am-image-project' });
+    const calls = transportMocks.corsSafeFetch.mock.calls;
+    expect(calls.map(([url]) => url)).toEqual([
+      `https://aigc-si.com/v1/images/${withReference ? 'edits' : 'generations'}/async`, 'https://aigc-si.com/v1/image-jobs/am-image-task',
+    ]);
+    expect(JSON.parse(String(calls[0][1].body))).toEqual({ model: 'image-2.5-flare', prompt: expect.stringContaining(params.prompt),
+      resolution: '2K', aspect_ratio: '9:16', response_format: 'url', n: 2, ...(withReference ? { images: [reference] } : {}) });
+    expect(new Headers(calls[0][1].headers).get('Idempotency-Key')).toBeTruthy();
+    expect(new Headers(calls[1][1].headers).get('Idempotency-Key')).toBeNull();
+    expect(calls[1][1].headers).toMatchObject({ Authorization: 'Bearer my-amam-fixture' });
+    expect(getPendingTasksForProject('am-image-project')).toEqual([expect.objectContaining({ taskId: 'am-image-task',
+      providerConfigId: 'my-amam', mediaRecoveryState: 'delivery_pending', mediaDownloadAccess: { providerConfigId: 'my-amam',
+        origin: 'https://aigc-si.com', auth: { type: 'bearer' } } })]);
+    expect(JSON.stringify(getPendingTasksForProject('am-image-project'))).not.toContain('my-amam-fixture');
+    expect(directFetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config.providers['my-amam'].selectedModels).toEqual(saved);
+  });
+
+  it('图片自定义协议路径不被内置文生图路由覆盖', async () => {
+    const params = configureAmam('image-2', true);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-custom' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed', result: { data: [{ url: 'https://cdn.example/custom.png' }] } }));
+    await generateImagesBatch(params, 1);
+    expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe('https://aigc-si.com/v1/my-image-job');
+  });
+
+  it.each(['//external.example/image.png', '/\\external.example/image.png'])('拒绝改变来源的相对结果 %s，保留原任务且不向外站发起下载', async (url) => {
+    const params = configureAmam('image-2');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-unsafe-result' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed', result: { data: [{ url }] } }));
+    await expect(generateImagesBatch(params, 1)).rejects.toMatchObject({ name: 'MediaTaskPausedError',
+      taskReceipt: { taskId: 'am-unsafe-result' } });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
+    expect(getPendingTasksForProject('am-image-project')[0]).toMatchObject({ taskId: 'am-unsafe-result', submitted: true });
+  });
+
+  it('视频完成后使用原连接 Key 下载二进制，提交幂等标识不进入查询或下载', async () => {
+    const params = configureAmam('muse-video-1');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-video-task' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed' }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
+    const result = await generateVideo({ ...params, resolution: '720p', aspectRatio: '1:1', duration: 8 });
+    expect(result).toMatchObject({ url: 'data:video/mp4;base64,AQID', taskReceipt: { taskId: 'am-video-task' } });
+    const calls = transportMocks.corsSafeFetch.mock.calls;
+    expect(calls.map(([url]) => url)).toEqual(['https://aigc-si.com/v1/videos',
+      'https://aigc-si.com/v1/videos/am-video-task', 'https://aigc-si.com/v1/videos/am-video-task/content']);
+    expect(JSON.parse(String(calls[0][1].body))).toEqual({ model: 'muse-video-1', prompt: params.prompt,
+      seconds: '8', resolution: '720p', aspect_ratio: '1:1' });
+    expect(new Headers(calls[0][1].headers).get('Idempotency-Key')).toBeTruthy();
+    for (const [, init] of calls.slice(1)) {
+      expect(init).toMatchObject({ method: 'GET', headers: { Authorization: 'Bearer my-amam-fixture' } });
+      expect(new Headers(init.headers).get('Idempotency-Key')).toBeNull();
+    }
+  });
+
+  it('下载失败保留原任务；仅用原查询和下载描述取回，轮换 Key 后不重新 POST', async () => {
+    const params = configureAmam('muse-video-1');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-video-retained' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed' }))
+      .mockResolvedValueOnce(new Response('{"detail":"下载暂不可用"}', { status: 401 }));
+    await expect(generateVideo({ ...params, duration: 5 })).rejects.toMatchObject({ name: 'MediaTaskPausedError',
+      taskReceipt: { taskId: 'am-video-retained' } });
+    const [task] = getPendingTasksForProject('am-video-project');
+    expect(task).toMatchObject({ taskId: 'am-video-retained', providerConfigId: 'my-amam', submitted: true,
+      protocolPoll: { url: 'https://aigc-si.com/v1/videos/am-video-retained',
+        resultDownload: { url: 'https://aigc-si.com/v1/videos/am-video-retained/content' } } });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ status: 'completed' }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([4, 5, 6]), { headers: { 'Content-Type': 'video/mp4' } }));
+    await expect(pollResolvedModelProtocol(task.protocolPoll!, 'rotated-amam-fixture', undefined, 'https://aigc-si.com/v1'))
+      .resolves.toMatchObject({ urls: ['data:video/mp4;base64,BAUG'] });
+    expect(transportMocks.corsSafeFetch.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    expect(transportMocks.corsSafeFetch.mock.calls.at(-1)![1].headers).toMatchObject({ Authorization: 'Bearer rotated-amam-fixture' });
+  });
+
+  it('远端明确 failed 时直接失败并清理当前待续记录，不显示提交未知', async () => {
+    const params = configureAmam('muse-video-1');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'am-video-failed' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed', error: { message: '当前素材不符合要求' } }));
+    await expect(generateVideo({ ...params, duration: 5 })).rejects.toMatchObject({ name: 'PollTaskFailedError', message: expect.stringContaining('当前素材不符合要求') });
+    expect(getPendingTasksForProject('am-video-project')).toEqual([]);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('Muse 的非法时长、参考视频在提交前拒绝，不产生生成请求', async () => {
+    const params = configureAmam('muse-video-1');
+    await expect(generateVideo({ ...params, duration: 7 })).rejects.toThrow();
+    await expect(generateVideo({ ...params, duration: 5,
+      referenceMedia: [{ kind: 'video', url: 'https://cdn.example/reference.mp4', origin: 'prompt', role: 'reference' }] })).rejects.toThrow();
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    expect(getPendingTasksForProject('am-video-project')).toEqual([]);
+  });
 });
 
 describe('standard image error credentials', () => {

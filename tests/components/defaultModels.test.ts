@@ -15,6 +15,29 @@ import type { AppConfig, ProviderModelSelection } from '../../src/types';
 import { APIMART_OMNI_MODELS, replaceLegacyApimartOmni } from '../../src/services/ai/apimartVideoModels';
 import { getProviderDefinition, isProviderModelVisible } from '../../src/services/ai/providerCatalogService';
 
+describe('Amam 图片与视频模型菜单', () => {
+  it('默认目录不自动启用；勾选后使用当前连接的独立分组，并供对话媒体选择使用', () => {
+    const candidates = getProviderDefinition('aigc-si')!.models!;
+    expect(candidates).toHaveLength(19);
+    const selected = ['image', 'video'].map((category) => candidates.find((item) => item.category === category)!);
+    const config: AppConfig = { theme: 'dark', providers: {
+      'my-amam': { name: '自己的 Amam', catalogId: 'aigc-si', apiKey: 'fixture', selectedModels: selected },
+    } };
+    expect(getGeneralModelGroups([], config, 'ai-image')).toEqual([]);
+    const models = selected.map((item) => ({ id: `am-${item.category}`, name: item.name, modelId: item.id,
+      category: item.category, providerConfigId: 'my-amam' }));
+    expect(getGeneralModelGroups(models, config, 'ai-video')).toEqual([
+      expect.objectContaining({ id: 'general-provider-my-amam', name: 'Amam（AIGC SI）', badgeText: 'AM',
+        models: [expect.objectContaining({ value: 'general/am-video' })] }),
+    ]);
+    expect(getMediaModelOptions(models, config).map((item) => [item.value, item.mediaKind, item.groupId])).toEqual([
+      ['general/am-image', 'image', 'general-provider-my-amam'], ['general/am-video', 'video', 'general-provider-my-amam'],
+    ]);
+    expect(getGeneralModelGroups(models, config, 'ai-text')).toEqual([]);
+    expect(getGeneralModelGroups(models, config, 'ai-audio')).toEqual([]);
+  });
+});
+
 describe('DeepSeek 文本模型的图片输入能力', () => {
   it.each([
     'deepseek-flash',

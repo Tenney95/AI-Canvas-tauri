@@ -54,6 +54,10 @@ const POLICY_OVERRIDES: Record<string, PolicyOverrides> = {
     modelMenuGroup: { scope: 'catalog', description: '按模型所属分组使用对应的 API Key' },
     catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
     referenceTransport: 'public-url', submitIdempotency: true },
+  'aigc-si': { syncGeneralModels: true,
+    modelMenuGroup: { scope: 'connection', description: '使用当前 Amam 连接中启用的图片与视频模型' },
+    catalog: { refresh: 'replace', fallback: 'deny', invalidateOnKeyChange: true, connectionTest: 'catalog' },
+    submitIdempotency: true },
 };
 
 const POLICIES = new Map(Object.entries(POLICY_OVERRIDES).map(([id, overrides]) => [id, Object.freeze({

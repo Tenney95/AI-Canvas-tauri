@@ -37,6 +37,7 @@ import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from './dreaminaModels';
 import { matchToapisCatalog, resolveToapisImageModelContract, TOAPIS_MODEL_MANIFEST } from './providers/toapisModelManifest';
 import { LIBAPI_MODEL_MANIFEST, matchLibapiCatalog, resolveLibapiModelId } from './providers/libapiModelManifest';
 import { RELAYON_BASE_URL, RELAYON_MODEL_MANIFEST, matchRelayonCatalog, resolveRelayonImageModelContract } from './providers/relayonModelManifest';
+import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST, matchAigcsiCatalog, normalizeAigcsiCatalogItems } from './providers/aigcsiModelManifest';
 import { assertImageModelCapability, isModelProtocolPresetId } from './modelCapabilityValidation';
 import { validateModelExecutionProtocol } from './modelProtocolValidation';
 import { filterCccGroupModels } from './cccProviderGroups';
@@ -320,6 +321,14 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
     externalUrl: 'https://relayonapi.com/sign-up?aff=Ei6o',
     credentials: [{ ...API_KEY_FIELD, placeholder: '填写 RelayOnAPI API Key' }],
     models: RELAYON_MODEL_MANIFEST,
+  },
+  {
+    id: 'aigc-si', name: 'Amam（AIGC SI）',
+    description: 'Muse 视频生成每秒 2 分，快速稳定，轻松创作。价格以平台为准。',
+    badgeText: 'AM', authType: 'api-key', catalogAdapter: 'openai-compatible',
+    defaultBaseUrl: AIGCSI_BASE_URL, modelsPath: '/models', allowCustomBaseUrl: false,
+    externalUrl: 'https://aigc-si.com/?ref=OAXZHWXT',
+    credentials: [{ ...API_KEY_FIELD, placeholder: '填写 Amam API Key' }], models: AIGCSI_MODEL_MANIFEST,
   },
   {
     id: 'xai',
@@ -843,7 +852,8 @@ async function fetchCatalogAt(
   if (!response.ok) throw new Error(`模型列表拉取失败 (HTTP ${response.status})`);
 
   const payload: unknown = await response.json().catch(() => null);
-  const models = readCatalogItems(payload)
+  const items = readCatalogItems(payload);
+  const models = (definition.id === 'aigc-si' ? normalizeAigcsiCatalogItems(items) : items)
     .map((item) => parseCatalogItem(item, providerId, resolveChatApiProtocol(config.chatApiProtocol)))
     .filter((item): item is ProviderModelSelection => (
       item !== null && isProviderModelVisible(definition.id, item.id)
@@ -948,7 +958,7 @@ export async function fetchProviderModelCatalog(
   }
 
   try {
-    if ((definition.id === 'libapi' || definition.id === 'relayonapi') && !config.apiKey.trim()) throw new Error('请填写 API Key');
+    if (['libapi', 'relayonapi', 'aigc-si'].includes(definition.id) && !config.apiKey.trim()) throw new Error('请填写 API Key');
     const { models, baseUrl } = await fetchOpenAiCompatibleCatalog(
       definition,
       providerId,
@@ -978,6 +988,11 @@ export async function fetchProviderModelCatalog(
             ? { warning: '已获取当前 Key 的目录，仅展示已适配的文本、图片与视频型号；Midjourney 和其他未适配型号暂不展示。' }
           : {}),
       };
+    }
+    if (definition.id === 'aigc-si') {
+      const matched = matchAigcsiCatalog(models);
+      return { models: matched, source: 'remote', resolvedBaseUrl: baseUrl,
+        ...(matched.length < models.length ? { warning: '已获取当前 Key 的目录，仅展示已适配的图片与视频型号；MJ、原生图片跨协议池及未知型号暂不展示。' } : {}) };
     }
     const matchedToapis = definition.id === 'toapis' ? matchToapisCatalog(models) : undefined;
     const catalogModels = mergeRemoteCatalogMetadata(

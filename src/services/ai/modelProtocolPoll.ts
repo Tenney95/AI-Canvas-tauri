@@ -294,7 +294,17 @@ export async function pollResolvedModelProtocol(
         ? readModelProtocolFirstScalar(payload, poll.resultTextPath)
         : undefined;
       const text = textValue === undefined || textValue === null ? undefined : String(textValue);
-      const mediaUrls = [...urls, ...base64Urls];
+      // 厂商可能返回 /v1/... 站内路径；按原 API origin 解析，不能按 /v1 base 路径拼接。
+      const resolvedUrls = urls.map((value) => {
+        const path = value.trim();
+        if (!path.startsWith('/')) return value;
+        if (!allowedBaseUrl || path.startsWith('//')) throw new Error('模型结果相对地址缺少受信来源或不是站内路径');
+        const origin = new URL(allowedBaseUrl).origin;
+        const resolved = new URL(path, origin);
+        if (resolved.origin !== origin || resolved.username || resolved.password) throw new Error('模型结果相对地址与厂商连接地址不同源');
+        return resolved.toString();
+      });
+      const mediaUrls = [...resolvedUrls, ...base64Urls];
       if (mediaUrls.length === 0 && !text) throw new Error('模型任务完成但未返回配置的结果');
       return {
         ...(mediaUrls.length > 0 ? { urls: mediaUrls } : {}),

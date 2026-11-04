@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { getProviderPolicy, resolveProviderCatalogId } from '../../src/services/ai/providerPolicies';
 
 describe('厂商接线策略', () => {
-  it.each(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis', 'libapi', 'relayonapi'])('%s 沿用通用模型同步', (id) => {
+  it.each(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis', 'libapi', 'relayonapi', 'aigc-si'])('%s 沿用通用模型同步', (id) => {
     expect(getProviderPolicy(id).syncGeneralModels).toBe(true);
   });
 
@@ -30,6 +30,7 @@ describe('厂商接线策略', () => {
     ['toapis', 'fallback', 'fallback', 'deny', true],
     ['libapi', 'fallback', 'fallback', 'deny', true],
     ['relayonapi', 'fallback', 'fallback', 'deny', true],
+    ['aigc-si', 'fallback', 'fallback', 'deny', true],
   ] as const)('%s 分别声明初始目录、刷新和失败规则', (id, create, edit, fallback, keyChange) => {
     expect(getProviderPolicy(id).catalog).toEqual({ initialModelsOnCreate: create,
       initialModelsOnEdit: edit, refresh: 'replace', fallback,
@@ -71,5 +72,14 @@ describe('厂商接线策略', () => {
     expect(libapiPolicy.catalog.initialModelsOnCreate).toBe('fallback');
     expect(libapiPolicy.catalog.fallback).toBe('deny');
     expect(defaultPolicy.catalog.fallback).toBe('allow');
+  });
+
+  it('Amam 按连接分组，只启用提交幂等，不借用其他厂商上传或同名自定义身份', () => {
+    const policy = getProviderPolicy('aigc-si');
+    expect(policy.modelMenuGroup?.scope).toBe('connection');
+    expect(policy.submitIdempotency).toBe(true);
+    expect(policy.upload).toBeUndefined();
+    expect(policy.referenceTransport).toBeUndefined();
+    expect(getProviderPolicy(resolveProviderCatalogId('aigc-si', { catalogId: 'custom-openai' })).submitIdempotency).toBeUndefined();
   });
 });

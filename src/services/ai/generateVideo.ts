@@ -82,6 +82,7 @@ import { quoteVolcengineVideo } from '../billing/volcenginePricing';
 import { createBillingRun, updateBillingRun } from '../billing/volcengineBillingService';
 import { assertToapisVideoInput, toapisVideoVariables } from './providers/toapisModelManifest';
 import { assertLibapiVideoInput, libapiVideoVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
+import { aigcsiVideoVariables, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
 import { withSora2uReferenceLimits } from './providers/sora2uModelManifest';
 
 export { compileVideoReferencePrompt } from './referencePrompt';
@@ -806,6 +807,7 @@ export async function generateVideo(
     const isToapis = catalogId === 'toapis';
     const isLibapi = catalogId === 'libapi';
     const usesRelayonProtocol = catalogId === 'relayonapi' && usesRelayonModelProtocol(gm.modelId, gm.executionProfile);
+    const usesAigcsiProtocol = catalogId === 'aigc-si' && usesAigcsiModelProtocol(gm.modelId, gm.executionProfile);
     const policy = getProviderPolicy(catalogId);
     const publicUrlProvider = policy.upload || (usesRelayonProtocol && policy.referenceTransport === 'public-url')
       ? connection.providerConfigId : undefined;
@@ -833,6 +835,7 @@ export async function generateVideo(
     });
     if (isToapis) assertToapisVideoInput(preflight);
     if (usesLibapiProtocol) assertLibapiVideoInput(preflight);
+    if (usesAigcsiProtocol) aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(preflight));
     if (usesRelayonProtocol) {
       // 先检查素材角色与组合，避免上传完成后才发现内置合同接不住首尾帧。
       relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(preflight));
@@ -888,7 +891,8 @@ export async function generateVideo(
         variables: isToapis ? toapisVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
           : usesLibapiProtocol ? libapiVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
             : usesRelayonProtocol ? relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(canonicalRequest))
-            : buildCanonicalVideoProtocolVariables(canonicalRequest),
+              : usesAigcsiProtocol ? aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(canonicalRequest))
+                : buildCanonicalVideoProtocolVariables(canonicalRequest),
       });
       const url = urls[0];
       if (!url) throw new Error('视频生成完成但未返回结果');
