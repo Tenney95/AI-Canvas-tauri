@@ -7,9 +7,14 @@ import type { McpClientConnection } from '../../src/types/mcpClient';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../src/services/chat/assistantScope';
 import { areSettingsMutationsFrozen, prepareSettingsClose, resumeSettingsPersistence } from '../../src/services/configPersistenceQueue';
 
-const sdk = vi.hoisted(() => ({ request: vi.fn(), connect: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }));
+const sdk = vi.hoisted(() => ({
+  request: vi.fn(), connect: vi.fn(), close: vi.fn(),
+  fetches: new Map<object, typeof fetch>(),
+  pending: new Map<object, (error: Error) => void>(),
+}));
 const secrets = vi.hoisted(() => ({ write: vi.fn(async () => true), remove: vi.fn(async () => true) }));
-vi.mock('@tauri-apps/api/core', async (importOriginal) => ({ ...await importOriginal<typeof import('@tauri-apps/api/core')>(), invoke: vi.fn(async () => undefined) }));
+const native = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', async (importOriginal) => ({ ...await importOriginal<typeof import('@tauri-apps/api/core')>(), invoke: native.invoke }));
 vi.mock('../../src/services/providerSecretService', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/providerSecretService')>(),
   writeAppSecret: secrets.write, deleteAppSecret: secrets.remove,
@@ -19,9 +24,12 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: class {
   connect = sdk.connect;
   close = sdk.close;
 } }));
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({ StreamableHTTPClientTransport: class {} }));
+vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({ StreamableHTTPClientTransport: class {
+  fetch: typeof fetch;
+  constructor(_url: URL, options: { fetch: typeof fetch }) { this.fetch = options.fetch; }
+} }));
 
-import { callExternalMcp, fingerprintMcpTool, getMcpClientOptions, parseMcpToolArguments, removeMcpClientConnection, sanitizeMcpValue, saveMcpClientConnection, selectedMcpConnection, validateMcpClientUrl } from '../../src/services/mcp/mcpClientService';
+import { callExternalMcp, discoverMcpTools, fingerprintMcpTool, getMcpClientOptions, parseMcpToolArguments, removeMcpClientConnection, sanitizeMcpValue, saveMcpClientConnection, selectedMcpConnection, validateMcpClientUrl } from '../../src/services/mcp/mcpClientService';
 
 const tool = { name: 'lookup', description: 'Lookup records', inputSchema: { type: 'object' as const, properties: { query: { type: 'string' } } }, annotations: { readOnlyHint: true } };
 const context = () => ({ projectId: GENERAL_ASSISTANT_SCOPE_ID, conversationId: 'conv-mcp', signal: new AbortController().signal });
@@ -35,9 +43,49 @@ async function arrange() {
   return { item, input: { serverId: item.id, toolName: tool.name, arguments: { query: 'hello' }, revision: item.revision, fingerprint, selectionRevision: 'legacy' } };
 }
 
+/** 模拟 SDK send 的异步拒绝与 close 同步拒绝 pending RPC 的先后关系。 */
+function useNativeRpc(item: McpClientConnection, statuses: number[], sessionId: string | undefined = 'server-session', onReply?: () => void) {
+  const methods: string[] = [];
+  let requestId = 0;
+  native.invoke.mockImplementation(async (command: string, args?: { body?: string }) => {
+    if (command !== 'mcp_client_fetch') return;
+    const message = JSON.parse(args!.body!) as { method: string };
+    methods.push(message.method);
+    const status = statuses.shift() ?? 200;
+    onReply?.();
+    return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(message.method === 'tools/list'
+      ? { tools: [tool] } : { content: [{ type: 'text', text: 'A real result' }] }) };
+  });
+  sdk.request.mockImplementation(function (this: object, message: { method: string; params?: unknown }) {
+    return new Promise<unknown>((resolve, reject) => {
+      sdk.pending.set(this, reject);
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (sessionId) headers['mcp-session-id'] = sessionId;
+      void sdk.fetches.get(this)!(item.url, {
+        method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, ...message }),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      }).then(resolve, reject);
+    }).finally(() => { sdk.pending.delete(this); });
+  });
+  return methods;
+}
+
 beforeEach(() => {
   resumeSettingsPersistence();
+  sdk.pending.clear();
+  sdk.fetches.clear();
+  sdk.connect.mockReset().mockImplementation(async function (this: object, transport: { fetch: typeof fetch }) {
+    sdk.fetches.set(this, transport.fetch);
+  });
+  sdk.close.mockReset().mockImplementation(async function (this: object) {
+    sdk.pending.get(this)?.(new Error('Connection closed'));
+  });
+  native.invoke.mockReset().mockResolvedValue(undefined);
   useAppStore.setState(useAppStore.getInitialState(), true);
+  sdk.connect.mockClear();
+  sdk.close.mockClear();
   secrets.write.mockReset().mockResolvedValue(true);
   secrets.remove.mockReset().mockResolvedValue(true);
   sdk.request.mockReset();
@@ -46,6 +94,81 @@ beforeEach(() => {
 });
 
 describe('external MCP client boundaries', () => {
+  it('rebuilds an expired session and retries tool discovery only once', async () => {
+    const { item } = await arrange();
+    const methods = useNativeRpc(item, [404, 200]);
+    expect(await discoverMcpTools(item.id)).toHaveLength(1);
+    expect(methods).toEqual(['tools/list', 'tools/list']);
+    expect(sdk.connect).toHaveBeenCalledTimes(2);
+    expect(sdk.close).toHaveBeenCalledTimes(1);
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'mcp_client_fetch')
+      .every(([, args]) => args.method === 'POST')).toBe(true);
+  });
+
+  it('recovers when a newly initialized session expires before its initialized notification completes', async () => {
+    const { item } = await arrange();
+    const methods = useNativeRpc(item, [404, 200]);
+    sdk.connect.mockImplementationOnce(async function (this: object, transport: { fetch: typeof fetch }) {
+      sdk.fetches.set(this, transport.fetch);
+      await transport.fetch(item.url, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'mcp-session-id': 'server-session' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      });
+    });
+
+    expect(await discoverMcpTools(item.id)).toHaveLength(1);
+    expect(methods).toEqual(['notifications/initialized', 'tools/list']);
+    expect(sdk.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not loop when the replacement MCP session also expires', async () => {
+    const { item } = await arrange();
+    const methods = useNativeRpc(item, [404, 404]);
+    await expect(discoverMcpTools(item.id)).rejects.toThrow('MCP 会话已失效');
+    expect(methods).toEqual(['tools/list', 'tools/list']);
+    expect(sdk.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['read', 'write'] as const)('never resubmits a %s tool call after session expiry and reconnects on the next operation', async (access) => {
+    const { item, input } = await arrange();
+    const authorized = { ...item, tools: { lookup: { ...item.tools.lookup, access } } };
+    useAppStore.setState({ config: { ...useAppStore.getState().config, mcpClientConnections: [authorized] } });
+    const methods = useNativeRpc(authorized, [200, 404, 200]);
+    await expect(callExternalMcp(context(), input, access)).rejects.toThrow('MCP 会话已失效');
+    expect(methods).toEqual(['tools/list', 'tools/call']);
+    expect(sdk.connect).toHaveBeenCalledTimes(1);
+    expect(await discoverMcpTools(item.id)).toHaveLength(1);
+    expect(methods).toEqual(['tools/list', 'tools/call', 'tools/list']);
+    expect(sdk.connect).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { status: 401, sessionId: 'server-session' },
+    { status: 403, sessionId: 'server-session' },
+    { status: 404, sessionId: '' },
+  ])('does not reconnect for authentication errors or responses without a session ($status/$sessionId)', async ({ status, sessionId }) => {
+    const { item } = await arrange();
+    const methods = useNativeRpc(item, [status, 200], sessionId);
+    await expect(discoverMcpTools(item.id)).rejects.toThrow(`HTTP ${status}`);
+    expect(methods).toEqual(['tools/list']);
+    expect(await discoverMcpTools(item.id)).toHaveLength(1);
+    expect(sdk.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['signal', 'connection', 'selection'] as const)('does not reconnect after %s authority changes', async (changed) => {
+    const { item, input } = await arrange();
+    const controller = new AbortController();
+    const methods = useNativeRpc(item, [404], 'server-session', () => {
+      const state = useAppStore.getState();
+      if (changed === 'signal') controller.abort();
+      if (changed === 'connection') useAppStore.setState({ config: { ...state.config, mcpClientConnections: [{ ...item, revision: crypto.randomUUID() }] } });
+      if (changed === 'selection') useAppStore.setState({ conversations: [{ ...state.conversations[0], mcpSelectionRevision: 'renewed' }] });
+    });
+    await expect(callExternalMcp({ ...context(), signal: controller.signal }, input, 'read')).rejects.toThrow();
+    expect(methods).toEqual(['tools/list']);
+    expect(sdk.connect).toHaveBeenCalledTimes(1);
+  });
+
   it('serializes credential saves and removal and rejects revisions captured during a pending save', async () => {
     const { item } = await arrange();
     useAppStore.setState({ saveConfig: vi.fn(async () => undefined) });

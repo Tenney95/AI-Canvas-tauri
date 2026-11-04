@@ -11,7 +11,7 @@ import { deleteAppSecret, writeAppSecret } from '../providerSecretService';
 import { areSettingsMutationsFrozen, registerSettingsProducer } from '../configPersistenceQueue';
 
 const entries = new Map<string, { config: string; abort: AbortController; client: Client; ready: Promise<Client> }>();
-const calls = new Map<AbortController, { projectId: string; conversationId: string; serverId: string }>();
+const calls = new Map<AbortController, { projectId: string; conversationId: string; serverId: string; selectionRevision: string }>();
 const connectionMutations = new Map<string, Promise<void>>();
 const pendingConnectionMutations = new Set<Promise<void>>();
 let subscribed = false;
@@ -97,16 +97,30 @@ function initialize(): void {
       void synchronize().catch(() => { configKey = ''; });
     }
     for (const [abort, call] of calls) {
-      if (!selectedMcpConnection(call, call.serverId)) abort.abort();
+      if (!selectedMcpConnection(call, call.serverId) || getMcpSelectionRevision(call.conversationId) !== call.selectionRevision) abort.abort();
     }
   });
 }
 
 interface NativeHttpResponse { status: number; headers: Record<string, string>; body: string }
 
-async function getClient(item: McpClientConnection): Promise<Client> {
+class McpSessionExpiredError extends Error {
+  constructor() { super('MCP 会话已失效，后续操作将重新连接；已提交的操作请先核实远端状态'); }
+}
+
+function closeExpiredClient(serverId: string, client: Client): void {
+  const entry = entries.get(serverId);
+  if (entry?.client !== client) return;
+  entries.delete(serverId);
+  entry.abort.abort();
+  void client.close().catch(() => undefined);
+}
+
+async function getClient(item: McpClientConnection, signal?: AbortSignal): Promise<Client> {
   initialize();
+  if (signal?.aborted) throw new DOMException('MCP 请求已取消', 'AbortError');
   await synchronize();
+  if (signal?.aborted) throw new DOMException('MCP 请求已取消', 'AbortError');
   if (connection(item.id).revision !== item.revision) throw new Error('MCP 配置已改变，请重新发现工具');
   const existing = entries.get(item.id);
   if (existing?.config === JSON.stringify(item) && !existing.abort.signal.aborted) return existing.ready;
@@ -154,6 +168,7 @@ async function getClient(item: McpClientConnection): Promise<Client> {
           method: request.method, headers, body,
         });
         if (abort.signal.aborted || request.signal.aborted) throw new Error('MCP 请求已取消');
+        if (result.status === 404 && request.headers.get('mcp-session-id')) throw new McpSessionExpiredError();
         return new Response([204, 205, 304].includes(result.status) ? null : result.body, { status: result.status, headers: result.headers });
       } finally {
         if (rpcKey) { rpcRequests.delete(rpcKey); cancelledRpcs.delete(rpcKey); }
@@ -162,10 +177,11 @@ async function getClient(item: McpClientConnection): Promise<Client> {
       }
     },
   });
-  const ready = client.connect(transport, { timeout: 30_000 }).then(() => client).catch(() => {
+  const ready = client.connect(transport, { timeout: 30_000 }).then(() => client).catch((error: unknown) => {
     if (entries.get(item.id)?.client === client) entries.delete(item.id);
     abort.abort();
     void client.close().catch(() => undefined);
+    if (error instanceof McpSessionExpiredError) throw error;
     throw new Error('连接 MCP 失败，请检查地址、认证及服务是否支持 Streamable HTTP');
   });
   entries.set(item.id, { config: JSON.stringify(item), abort, client, ready });
@@ -186,27 +202,43 @@ export async function fingerprintMcpTool(value: unknown): Promise<string> {
 /** 每次调用前刷新目录；不把服务 instructions 注入系统提示词。 */
 export async function discoverMcpTools(serverId: string, signal?: AbortSignal): Promise<McpClientToolInfo[]> {
   const item = connection(serverId);
-  const client = await getClient(item);
-  const tools: McpClientToolInfo[] = [];
-  const cursors = new Set<string>();
-  let cursor: string | undefined;
-  do {
-    const page = await client.request({ method: 'tools/list', params: cursor ? { cursor } : {} }, ListToolsResultSchema, { signal, timeout: 30_000 });
-    for (const tool of page.tools) {
-      if (tool.execution?.taskSupport === 'required') continue; // 首期仅同步工具，不接 MCP 后台任务。
-      if (tools.length >= 256 || tools.some((existing) => existing.name === tool.name)) throw new Error('MCP 工具目录过大或名称重复');
-      const identity = { name: tool.name, description: tool.description ?? '', inputSchema: tool.inputSchema, annotations: tool.annotations, outputSchema: tool.outputSchema, execution: tool.execution };
-      if (new TextEncoder().encode(JSON.stringify(identity)).length > 32_768) throw new Error('MCP 单个工具定义超过 32 KiB');
-      tools.push({ name: tool.name, description: tool.description ?? '', inputSchema: tool.inputSchema,
-        fingerprint: await fingerprintMcpTool(identity), readOnlyHint: tool.annotations?.readOnlyHint === true });
-    }
-    cursor = page.nextCursor;
-    if (cursor && cursors.has(cursor)) throw new Error('MCP 目录分页游标重复');
-    if (cursor) cursors.add(cursor);
-    if (cursors.size > 32) throw new Error('MCP 目录分页过多');
-  } while (cursor);
-  if (connection(serverId).revision !== item.revision) throw new Error('MCP 配置已变更');
-  return tools;
+  try {
+    return await discoverMcpToolsOnce(item, signal);
+  } catch (error) {
+    if (!(error instanceof McpSessionExpiredError) || signal?.aborted || connection(serverId).revision !== item.revision) throw error;
+    // 只重建会话并重读一次目录，工具执行请求绝不在这里重投。
+    return discoverMcpToolsOnce(item, signal);
+  }
+}
+
+async function discoverMcpToolsOnce(item: McpClientConnection, signal?: AbortSignal): Promise<McpClientToolInfo[]> {
+  const client = await getClient(item, signal);
+  try {
+    const tools: McpClientToolInfo[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await client.request({ method: 'tools/list', params: cursor ? { cursor } : {} }, ListToolsResultSchema, { signal, timeout: 30_000 });
+      for (const tool of page.tools) {
+        if (tool.execution?.taskSupport === 'required') continue; // 首期仅同步工具，不接 MCP 后台任务。
+        if (tools.length >= 256 || tools.some((existing) => existing.name === tool.name)) throw new Error('MCP 工具目录过大或名称重复');
+        const identity = { name: tool.name, description: tool.description ?? '', inputSchema: tool.inputSchema, annotations: tool.annotations, outputSchema: tool.outputSchema, execution: tool.execution };
+        if (new TextEncoder().encode(JSON.stringify(identity)).length > 32_768) throw new Error('MCP 单个工具定义超过 32 KiB');
+        tools.push({ name: tool.name, description: tool.description ?? '', inputSchema: tool.inputSchema,
+          fingerprint: await fingerprintMcpTool(identity), readOnlyHint: tool.annotations?.readOnlyHint === true });
+      }
+      cursor = page.nextCursor;
+      if (cursor && cursors.has(cursor)) throw new Error('MCP 目录分页游标重复');
+      if (cursor) cursors.add(cursor);
+      if (cursors.size > 32) throw new Error('MCP 目录分页过多');
+    } while (cursor);
+    if (connection(item.id).revision !== item.revision) throw new Error('MCP 配置已变更');
+    return tools;
+  } catch (error) {
+    // 等本次 RPC 已 reject 再 close，避免 SDK 的 ConnectionClosed 抢先覆盖失效原因。
+    if (error instanceof McpSessionExpiredError) closeExpiredClient(item.id, client);
+    throw error;
+  }
 }
 
 /** 工具 Observation 沿用文本预算，剥离常见凭据、绝对路径及媒体大正文。 */
@@ -255,15 +287,18 @@ export async function callExternalMcp(
   const abort = new AbortController();
   const cancel = () => abort.abort();
   context.signal.addEventListener('abort', cancel, { once: true });
-  calls.set(abort, { projectId: context.projectId, conversationId: context.conversationId, serverId: item.id });
+  calls.set(abort, { projectId: context.projectId, conversationId: context.conversationId, serverId: item.id, selectionRevision: getMcpSelectionRevision(context.conversationId) });
   try {
     const tools = await discoverMcpTools(item.id, abort.signal);
     const tool = tools.find((candidate) => candidate.name === input.toolName);
     if (!tool || tool.fingerprint !== input.fingerprint) throw new Error('MCP 工具定义已变更，请在设置中重新授权');
     assertAuthorized();
-    const client = await getClient(item);
+    const client = await getClient(item, abort.signal);
     assertAuthorized();
-    const result = await client.request({ method: 'tools/call', params: { name: input.toolName, arguments: input.arguments } }, CallToolResultSchema, { signal: abort.signal, timeout: 65_000 });
+    const result = await client.request({ method: 'tools/call', params: { name: input.toolName, arguments: input.arguments } }, CallToolResultSchema, { signal: abort.signal, timeout: 65_000 }).catch((error: unknown) => {
+      if (error instanceof McpSessionExpiredError) closeExpiredClient(item.id, client);
+      throw error;
+    });
     assertAuthorized();
     if (abort.signal.aborted) throw new Error('MCP 请求已取消');
     // 仅把文本/结构化结果交给模型，外部图片和资源链接不会自动读取或持久化。
