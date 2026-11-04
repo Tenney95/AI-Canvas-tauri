@@ -328,7 +328,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     const id = 'sd-2.5-c1';
     expect(model(id).videoCapability).toMatchObject({ minDuration: 4, maxDuration: 30, resolutions: ['720p'],
       maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
-    expect(model(id).inputModalities).toEqual(['text', 'image', 'video', 'audio']);
+    expect(model(id).inputModalities).toEqual(['text', 'image']);
     const variables = relayonVideoVariables(id, { model: id, prompt: '图片1和视频1、音频1', durationText: '30',
       resolution: '720p', aspectRatio: '16:9', generateAudio: true, referenceImageUrls: ['https://cdn.example/i.png'],
       referenceVideoUrls: ['https://cdn.example/v.mp4'], referenceAudioUrls: ['https://cdn.example/a.mp3'] });

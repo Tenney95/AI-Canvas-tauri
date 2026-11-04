@@ -172,8 +172,6 @@ function cVideo(
     aspect_ratio: '{{aspectRatio}}', references: referenceItems(false) });
   // H3 文档明确提供受保护的二进制下载；不为其他渠道猜测 /content 合同。
   const protocol = model.executionProfile?.protocol;
-  if (id === 'minimax-h3') model.inputModalities = ['text', 'image', 'video', 'audio'];
-  if (id === 'sd-2.0-c3') model.inputModalities = ['text', 'image', 'audio'];
   if (id === 'minimax-h3' && protocol?.version === 2 && protocol.poll) {
     protocol.poll.response.result = { download: { method: 'GET', path: '/videos/{{submit.id}}/content' }, mimeType: 'video/mp4' };
   }
@@ -200,11 +198,8 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   cVideo('sd-2.0-c1', 'Seedance 2.0 C1', 10, 3), cVideo('sd-2.0-c2', 'Seedance 2.0 C2', 4, 0),
   cVideo('minimax-h3', 'MiniMax H3', 4, 3, { resolutions: ['480p', '720p', '1K', '2K'] }),
   cVideo('sd-2.0-c3', 'Seedance 2.0 C3', 4, 0),
-  {
-    ...referenceVideo('sd-2.5-c1', 30, { resolutions: ['720p'], defaultResolution: '720p',
-      maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 }, 'Seedance 2.5 C1'),
-    inputModalities: ['text', 'image', 'video', 'audio'],
-  },
+  referenceVideo('sd-2.5-c1', 30, { resolutions: ['720p'], defaultResolution: '720p',
+    maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 }, 'Seedance 2.5 C1'),
 ];
 
 const MODEL_BY_ID = new Map(RELAYON_MODEL_MANIFEST.map((model) => [model.id, model]));

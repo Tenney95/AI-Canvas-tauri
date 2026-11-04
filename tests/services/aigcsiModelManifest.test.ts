@@ -49,6 +49,9 @@ describe('Amam 已核对模型合同', () => {
   });
 
   it('不同渠道的参考数量和输出范围分别声明，不混合独立最大值', () => {
+    for (const item of AIGCSI_MODEL_MANIFEST.filter((entry) => entry.category === 'video')) {
+      expect(item.inputModalities).toEqual(['text', 'image']);
+    }
     expect(model('seedance2.5-15').videoCapability).toMatchObject({ maxImageReferences: 30, maxVideoReferences: 0, maxAudioReferences: 10 });
     expect(model('seedance2.0-930-1').videoCapability).toMatchObject({ maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 0, maxDuration: 15 });
     expect(model('seedance2.0-15').videoCapability).toMatchObject({ maxVideoReferences: 0, maxAudioReferences: 3 });

@@ -382,7 +382,7 @@ export function saveMcpClientConnection(item: McpClientConnection, token?: strin
       if (credentialChanged && !saved) {
         const latest = useAppStore.getState();
         const current = latest.config.mcpClientConnections?.find((candidate) => candidate.id === item.id);
-        if (current?.revision === revision && current.enabled) {
+        if (current && current.revision === revision && current.enabled) {
           latest.updateConfig({ mcpClientConnections: latest.config.mcpClientConnections!.map((candidate) => candidate.id === item.id ? { ...candidate, enabled: false, revision: crypto.randomUUID() } : candidate) });
           await synchronize().catch(() => undefined);
         }

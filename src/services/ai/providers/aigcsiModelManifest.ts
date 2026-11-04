@@ -53,7 +53,7 @@ function videoModel(
         result: { download: { method: 'GET', path: '/videos/{{submit.id}}/content' }, mimeType: 'video/mp4' } } },
   };
   return { id, name, provider: 'aigc-si', category: 'video',
-    inputModalities: ['text', 'image', ...(maxVideoReferences ? ['video' as const] : []), ...(maxAudioReferences ? ['audio' as const] : [])],
+    inputModalities: ['text', 'image'],
     videoCapability: { operations: ['text-to-video', 'image-to-video', ...(maxVideoReferences ? ['video-to-video' as const] : [])],
       ratios: ['16:9', '9:16'], defaultRatio: '16:9', resolutions: ['720p'], defaultResolution: '720p',
       minDuration: 5, maxDuration: 30, defaultDuration: 5, ...output,
