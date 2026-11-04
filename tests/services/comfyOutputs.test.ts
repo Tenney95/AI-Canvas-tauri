@@ -28,12 +28,13 @@ describe('sanitizeComfyOutputFile', () => {
     '/tmp/result.png', '\\result.png', 'C:\\output\\result.png', 'C:result.png',
     '\\\\server\\share\\result.png', '../result.png', 'nested/../result.png',
     'nested\\..\\result.png', 'https://other.test/result.png', 'folder/', 'folder/.', 'nested/C:file.png',
+    './C:/result.png', '.\\C:\\result.png', './https://other.test/result.png',
     `nested/blake3:${'a'.repeat(64)}`,
   ])('拒绝绝对路径、目录和遍历文件名 %s', (filename) => {
     expect(sanitizeComfyOutputFile({ filename })).toBeUndefined();
   });
 
-  it.each(['/tmp', 'C:\\output', '\\\\server\\share', '../outside', 'nested/../outside'])('拒绝非法子目录 %s', (subfolder) => {
+  it.each(['/tmp', 'C:\\output', '\\\\server\\share', '../outside', 'nested/../outside', './C:/output'])('拒绝非法子目录 %s', (subfolder) => {
     expect(sanitizeComfyOutputFile({ filename: 'result.png', subfolder })).toBeUndefined();
   });
 
@@ -58,7 +59,8 @@ describe('sanitizeComfyOutputFile', () => {
 
   it.each(['nested/deep/result.png', 'nested\\deep\\result.png'])('拆出相对文件名里的目录 %s', (filename) => {
     expect(sanitizeComfyOutputFile({ filename })).toEqual({ filename: 'result.png', subfolder: 'nested/deep' });
-    expect(sanitizeComfyOutputFile({ filename, subfolder: '' })).toEqual({ filename: 'result.png', subfolder: 'nested/deep' });
+    expect(sanitizeComfyOutputFile({ filename, subfolder: '' })).toEqual({ filename: 'result.png', subfolder: '' });
+    expect(sanitizeComfyOutputFile({ filename, subfolder: '.' })).toEqual({ filename: 'result.png', subfolder: '' });
   });
 
   it('显式目录优先，不重复叠加文件名自带目录', () => {
@@ -203,6 +205,14 @@ describe('findComfyOutputFile', () => {
     }, ['image'])).toEqual(file('final.png'));
     expect(findComfyOutputFile({ '2': { images: [{ filename: 'nested/preview.png', type: 'temp' }] } }, ['image']))
       .toEqual({ filename: 'preview.png', subfolder: 'nested', type: 'temp' });
+  });
+
+  it('跳过带点前缀的非法首项，后续合法结果仍能构造取件地址', () => {
+    for (const invalid of [{ filename: './C:/bad.png' }, { filename: 'bad.png', subfolder: './C:/private' },
+      { filename: './https://other.test/bad.png' }]) {
+      expect(resolveComfyOutputUrl('http://comfy.test', { '9': { images: [invalid, file('out.png')] } }, ['image']))
+        .toEqual({ url: 'http://comfy.test/view?filename=out.png&type=output', file: file('out.png') });
+    }
   });
 });
 

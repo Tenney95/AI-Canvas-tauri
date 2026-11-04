@@ -50,7 +50,7 @@ function hasControlCharacters(value: string): boolean {
 }
 
 function relativePathParts(value: string): string[] | undefined {
-  const path = value.replace(/\\/g, '/');
+  const path = value.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
   if (hasControlCharacters(path) || path.startsWith('/') || /^[a-z]:/i.test(path)
     || /^[a-z][a-z\d+.-]*:\/\//i.test(path)) return;
   const parts = path.split('/');
@@ -96,7 +96,7 @@ export function sanitizeComfyOutputFile(value: unknown): ComfyOutputFile | undef
   const basename = filenameParts?.pop();
   if (!basename?.trim() || /^[a-z]:/i.test(basename) || basename.startsWith('blake3:')) return;
   // 显式 subfolder 与原生 /view 行为一致，不重复拼入 filename 自带的目录。
-  const subfolder = (subfolderParts.length ? subfolderParts : filenameParts ?? []).join('/');
+  const subfolder = (candidate.subfolder !== undefined ? subfolderParts : filenameParts ?? []).join('/');
   return {
     filename: basename,
     ...(subfolder || candidate.subfolder !== undefined ? { subfolder } : {}),

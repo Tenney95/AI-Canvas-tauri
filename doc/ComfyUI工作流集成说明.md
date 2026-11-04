@@ -346,7 +346,7 @@ Qwen 验证入口为 `builtinWorkflows.test.ts`、`audioSpeechSettings.test.ts` 
 
 找到后拼成 `{baseUrl}/view?filename=…&subfolder=…&type=…`，缺省类型按 `output` 处理。视频只认视频扩展名，`videos` / `video` / `gifs` 也必须逐项匹配；PNG、WebP 和 GIF 预览不能当成成片。`SaveWEBM`/`SaveVideo` 即使把 `.mp4` / `.webm` 挂在 `images` 下也能识别，但不会被图片流程认领；图片和音频已知键排除明确跨媒体的文件，保留无扩展名及未知扩展名的旧兼容。图片、视频和音频统一先选显式正式 `output`，再兼容缺省类型的旧结果，最后才接受 `temp` / `input` 预览。仍保留调用方指定的媒体类型优先级与单结果交付，实时生成和任务恢复共用相同规则。
 
-文件描述只保留经过清洗的 `filename/subfolder/type`，拒绝空文件名、绝对路径、目录穿越、控制字符和无效字段；目录类型只允许 `output/temp/input`。自定义节点将相对目录写进 filename 而未提供非空 subfolder 时，拆为目录与文件名；显式 subfolder 优先，避免重复拼接。保留原服务的反代前缀、官方目录注解和 BLAKE3 资源标识。格式识别不代表 WebView 支持解码 AVIF、EXR 或某种视频编码。
+文件描述只保留经过清洗的 `filename/subfolder/type`，拒绝空文件名、绝对路径、目录穿越、控制字符和无效字段；目录类型只允许 `output/temp/input`。自定义节点将相对目录写进 filename 而未提供 subfolder 字段时，拆为目录与文件名；显式 subfolder 优先，空目录仍表示根目录，避免重复拼接或猜错原生取件位置。路径先规范化前置 `./` 再检查盘符或协议；无效首项不会阻塞后面的有效文件。保留原服务的反代前缀、官方目录注解和 BLAKE3 资源标识。格式识别不代表 WebView 支持解码 AVIF、EXR 或某种视频编码。
 
 取得文件后立即把清洗后的描述与 `save_pending` 保存到原任务；“继续保存”优先从任务原地址重建 `/view` 续取，不要求 ComfyUI 历史仍在。旧记录没有有效文件描述时仍查询 history。下载失败保留原任务和脱敏原因（如 HTTP 状态、目录权限），节点与提示词窗口复用恢复提示，保留终止入口；重试不提交 `/prompt`。文件被删除、覆盖、临时目录清理或原服务被替换后，文件位置不能保证原内容仍可恢复，失败也不自动换取其他输出节点。
 
