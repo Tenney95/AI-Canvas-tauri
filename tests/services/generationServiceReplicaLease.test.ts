@@ -215,7 +215,7 @@ describe('ComfyUI 图片与音频交付边界', () => {
     expect((await pending).success).toBe(false);
     expect(mocks.store.updateNodeData).not.toHaveBeenCalled();
     expect(mocks.completeComfy).not.toHaveBeenCalled();
-    expect(mocks.pauseComfy).toHaveBeenCalledWith('media', 'original', expect.any(Function));
+    expect(mocks.pauseComfy).toHaveBeenCalledWith('media', 'original', expect.any(Function), undefined);
     expect(mocks.pauseComfy.mock.calls[0][2]()).toBe(false);
   });
 
@@ -232,7 +232,21 @@ describe('ComfyUI 图片与音频交付边界', () => {
     expect((await executeGeneration('media')).success).toBe(false);
     expect(mocks.store.updateNodeData).not.toHaveBeenCalled();
     expect(mocks.completeComfy).not.toHaveBeenCalled();
-    expect(mocks.pauseComfy).toHaveBeenCalledWith('media', 'original', expect.any(Function));
+    expect(mocks.pauseComfy).toHaveBeenCalledWith('media', 'original', expect.any(Function), expect.objectContaining({ message: '音频已生成，但保存失败；请继续保存原结果' }));
+  });
+
+  it.each(['ai-image', 'ai-audio'] as const)('%s 把原保存异常交给恢复层，不确认任务或重新生成', async (kind) => {
+    setup(kind);
+    const error = Object.assign(new Error('生成媒体未能写入项目目录：保存目录无法写入'), {
+      name: 'MediaPersistenceError', failureKind: 'permission',
+    });
+    (kind === 'ai-image' ? mocks.persist : mocks.persistAudio).mockRejectedValueOnce(error);
+    expect((await executeGeneration('media')).success).toBe(false);
+    expect(mocks.pauseComfy).toHaveBeenCalledWith('media', 'original', expect.any(Function), error);
+    expect(mocks.pauseComfy.mock.calls[0][2]()).toBe(true);
+    expect(mocks.completeComfy).not.toHaveBeenCalled();
+    expect(mocks.store.updateNodeData).not.toHaveBeenCalled();
+    expect(kind === 'ai-image' ? mocks.image : mocks.audio).toHaveBeenCalledOnce();
   });
 });
 

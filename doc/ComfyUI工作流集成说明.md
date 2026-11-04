@@ -344,13 +344,21 @@ Qwen 验证入口为 `builtinWorkflows.test.ts`、`audioSpeechSettings.test.ts` 
 1. **按已知键名**：图片 `images`/`image`，视频 `videos`/`video`/`gifs`，音频 `audio`/`audios`；
 2. **按扩展名**：键名认不出时扫描其余键，按 `.mp4`/`.png`/`.mp3` 这类扩展名认领。
 
-找到后拼成 `{baseUrl}/view?filename=…&subfolder=…&type=…`，缺省类型按 `output` 处理。视频只认视频扩展名，`videos` / `video` / `gifs` 也必须逐项匹配；PNG、WebP 和 GIF 预览不能当成成片。`SaveWEBM`/`SaveVideo` 即使把 `.mp4` / `.webm` 挂在 `images` 下也能识别。图片、视频和音频统一先选显式正式 `output`，再兼容缺省类型的旧结果，最后才接受 `temp` / `input` 预览。仍保留调用方指定的媒体类型优先级与单结果交付，实时生成和任务恢复共用相同规则。
+找到后拼成 `{baseUrl}/view?filename=…&subfolder=…&type=…`，缺省类型按 `output` 处理。视频只认视频扩展名，`videos` / `video` / `gifs` 也必须逐项匹配；PNG、WebP 和 GIF 预览不能当成成片。`SaveWEBM`/`SaveVideo` 即使把 `.mp4` / `.webm` 挂在 `images` 下也能识别，但不会被图片流程认领；图片和音频已知键排除明确跨媒体的文件，保留无扩展名及未知扩展名的旧兼容。图片、视频和音频统一先选显式正式 `output`，再兼容缺省类型的旧结果，最后才接受 `temp` / `input` 预览。仍保留调用方指定的媒体类型优先级与单结果交付，实时生成和任务恢复共用相同规则。
+
+文件描述只保留经过清洗的 `filename/subfolder/type`，拒绝空文件名、绝对路径、目录穿越、控制字符和无效字段；目录类型只允许 `output/temp/input`。自定义节点将相对目录写进 filename 而未提供非空 subfolder 时，拆为目录与文件名；显式 subfolder 优先，避免重复拼接。保留原服务的反代前缀、官方目录注解和 BLAKE3 资源标识。格式识别不代表 WebView 支持解码 AVIF、EXR 或某种视频编码。
+
+取得文件后立即把清洗后的描述与 `save_pending` 保存到原任务；“继续保存”优先从任务原地址重建 `/view` 续取，不要求 ComfyUI 历史仍在。旧记录没有有效文件描述时仍查询 history。下载失败保留原任务和脱敏原因（如 HTTP 状态、目录权限），节点与提示词窗口复用恢复提示，保留终止入口；重试不提交 `/prompt`。文件被删除、覆盖、临时目录清理或原服务被替换后，文件位置不能保证原内容仍可恢复，失败也不自动换取其他输出节点。
 
 2026-10-18 远端视频交付修正已实现，待用户桌面验收：项目视频通过原生流式下载，并在临时文件发布前读取有界容器头，拒绝空文件、错误页和图片预览；完整长度仍由传输层核对，不要求本机解码器支持。普通原生完整下载拒绝未请求的 HTTP 206 分段响应。下载失败保留原任务 ID，暂停卡片持续展示固定分类后的落盘原因，不保存原始异常、路径、正文或凭据；重试只取回原结果。
 
 本次未运行测试。后续用户反馈将现场原因定位为目标 Mac 播放器不支持 AV1 编码，更换输出格式后恢复；该结论来自用户反馈，未在助手环境复现，不能归因为下载失败。播放错误分类见[画布与项目模块](./画布与项目模块.md)。验收以 Mac Tauri 连接 Windows ComfyUI 为主：准备有效项目保存目录和远端视频工作流，完成生成后确认 Mac 项目目录有非空视频、节点可播放且重启后保留；含图片/临时视频预览与正式视频时应取正式成片。下载中断、空内容、HTTP 200 错误页或未请求的 206 应保留重试入口并显示原因，恢复后重试不得新增 `/prompt`。回归项目切换、原本地 Windows 生成及图片/音频下载。回归入口：`comfyOutputs.test.ts`、`comfyTaskRecovery.test.ts`、`fileServiceDownload.test.ts`、`videoTaskStatus.test.tsx` 和 `file_transfer::tests`。Rust 检查由用户在 `src-tauri/` 执行 `cargo test file_transfer::tests`、`cargo check`；回滚撤销本段及对应源码/测试补丁，无数据库或权限迁移。
 
-轮询节奏：**3 秒一次，最多 1200 次（1 小时）**。当 history 带 `status` 时，必须等到 `completed=true` 或 `status_str=success` 才交付输出；没有 `status` 的旧兼容服务仍按已有输出判断。失败信息从 `status.messages` 里倒着找 `exception_message` / `error` / `message`，找不到就报「ComfyUI 执行失败」。执行完成但取不到目标媒体，报「执行完成但未返回目标媒体」。
+轮询节奏：**3 秒一次，最多 1200 次（1 小时）**。当 history 带 `status` 时，必须等到 `completed=true` 或 `status_str=success` 才交付输出；明确 `completed=false` 时仍等待。没有 `status` 的旧兼容服务仍按已有输出判断。失败信息从 `status.messages` 里倒着找 `exception_message` / `error` / `message`，找不到就报「ComfyUI 执行失败」。明确成功但取不到目标媒体标为 `output_unavailable`，保留回执并说明检查输出类型和文件输出节点；不会冒充远端执行失败而解除重复生成保护。仅通过 WebSocket 发送二进制图片、未返回文件的工作流不在 history→view 取件范围，需要添加 SaveImage、PreviewImage 等文件输出节点；不把任意进度预览当最终结果。
+
+本次依据：[官方服务接口](https://docs.comfy.org/development/comfyui-server/comms_routes)、[官方 API 取件示例](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/websockets_api_example.py)、[服务端文件读取](https://github.com/Comfy-Org/ComfyUI/blob/master/server.py)、[目录注解](https://github.com/Comfy-Org/ComfyUI/blob/master/folder_paths.py)和[纯 WebSocket 输出示例](https://github.com/Comfy-Org/ComfyUI/blob/master/custom_nodes/websocket_image_save.py)。[子目录问题 #12437](https://github.com/Comfy-Org/ComfyUI_frontend/issues/12437)与[历史持久化请求 #15965](https://github.com/Comfy-Org/ComfyUI/issues/15965)提供相关个案，不能据此认定用户现场根因或声称官方已经修复。
+
+2026-11-04 回填兼容改动已实现，自动检查结果见本版发布计划；真实模型及桌面验收仍待用户验证。验收前准备可写项目目录、带子目录的文件输出工作流及旧的待保存任务：生成后应回填正确媒体，保存失败应显示脱敏原因；保留输出文件但清空服务历史后继续保存，应仍从原服务取件且不新增生成任务。再验证 temp 输出、403/404、下载取消、项目切换、画布修改、新尝试替代旧尝试及旧任务无文件描述的历史查询。纯 WebSocket 工作流应明确提示并保留原回执；同一节点只显示一套恢复控件且仍可终止。回归源码入口：`comfyOutputs.test.ts`、`comfyTaskRecovery.test.ts`、`nodeCriticalInteractions.test.tsx`、`mediaTaskStatus.test.tsx`、`generationServiceReplicaLease.test.ts`。无数据库或权限迁移，回滚撤销本批源码与文档补丁；新增文件描述字段可由旧逻辑忽略。
 
 ### 9.1 显存释放边界
 

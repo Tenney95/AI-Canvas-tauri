@@ -12,7 +12,8 @@ import {
 import {
   cancelComfyUINodeTask, executeComfyUIAudioGenerate, executeComfyUIGenerate, executeComfyUIVideoGenerate,
 } from '../../src/services/comfyWorkflowService';
-import { ComfyPendingError, ComfyQueryAuthorizationError, pollComfyHistory } from '../../src/services/comfyPolling';
+import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, pollComfyHistory } from '../../src/services/comfyPolling';
+import type { ComfyOutputFile } from '../../src/services/comfyOutputs';
 import { MediaPersistenceError } from '../../src/services/fileService';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), history: vi.fn(), queue: vi.fn(), cancel: vi.fn(), persist: vi.fn() }));
@@ -89,7 +90,8 @@ describe('ComfyUI 任务恢复合同', () => {
     useAppStore.getState().updateNodeDataTransient('n1', { type: nodeType });
     const result = await (nodeType === 'ai-audio' ? executeComfyUIAudioGenerate(params) : executeComfyUIGenerate(params));
     expect(result.comfyTaskId).toBe('prompt-1');
-    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', comfyRecoveryState: 'save_pending' });
+    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', comfyRecoveryState: 'save_pending', comfyOutputFile: { filename: 'out.png' } });
+    expect(result).not.toHaveProperty('file');
     await expect(executeComfyUIGenerate(params)).rejects.toThrow('未交付');
     expect(promptCalls()).toHaveLength(1);
     completeComfyNodeTask('n1', 'old-prompt');
@@ -103,10 +105,11 @@ describe('ComfyUI 任务恢复合同', () => {
     useAppStore.getState().updateNodeDataTransient('n1', { type: nodeType });
     mocks.history.mockImplementation(async () => completed());
     await (nodeType === 'ai-audio' ? executeComfyUIAudioGenerate(params) : executeComfyUIGenerate(params));
-    mocks.persist.mockRejectedValueOnce(new Error('/private/output?token=secret'));
+    mocks.persist.mockRejectedValueOnce(new MediaPersistenceError(new Error('HTTP 403 /private/output?token=secret')));
     await resumeComfyUINodeTask('n1');
     expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', comfyRecoveryState: 'save_pending' });
-    expect(useAppStore.getState().nodes[0].data.error).toContain('保存或回填尚未完成');
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ mediaTaskState: 'delivery_pending', error: undefined });
+    expect(pending()[0].mediaFailureDiagnostic).toEqual({ kind: 'persistence', failureKind: 'http', httpStatus: 403 });
     expect(JSON.stringify(pending())).not.toMatch(/private|secret/);
     const calls = mocks.history.mock.calls.length;
     await resumePendingTasks('p1');
@@ -116,6 +119,88 @@ describe('ComfyUI 任务恢复合同', () => {
     expect(pending()).toEqual([]);
     expect(useAppStore.getState().nodes[0].data.status).toBe('success');
     expect(promptCalls()).toHaveLength(1);
+  });
+
+  it.each([
+    { nodeType: 'ai-image', generate: executeComfyUIGenerate, complete: completed, file: { filename: 'out.png' } },
+    { nodeType: 'ai-audio', generate: executeComfyUIAudioGenerate, complete: completedAudio, file: { filename: 'out.flac', type: 'output' } },
+    { nodeType: 'ai-video', generate: executeComfyUIVideoGenerate, complete: completedVideo, file: { filename: 'out.mp4', subfolder: 'video', type: 'output' } },
+  ] as const)('$nodeType 历史清空及当前服务地址改变后，仍从原服务续取已确认文件', async ({ nodeType, generate, complete, file }) => {
+    if (nodeType === 'ai-video') configureVideo();
+    else useAppStore.getState().updateNodeDataTransient('n1', { type: nodeType });
+    mocks.history.mockImplementation(complete);
+    await generate(params);
+    expect(pending()[0].comfyOutputFile).toEqual(file);
+    const queries = mocks.history.mock.calls.length;
+    mocks.history.mockImplementation(async () => json({}));
+    useAppStore.setState({ config: { ...useAppStore.getState().config, comfyUIUrl: 'http://other.test:8188' } });
+    await resumeComfyUINodeTask('n1');
+    expect(mocks.history).toHaveBeenCalledTimes(queries);
+    expect(mocks.persist).toHaveBeenCalledWith(expect.stringContaining(`${task.baseUrl}/view?filename=${file.filename}`),
+      'p1', nodeType, 'test', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(pending()).toEqual([]);
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it.each([403, 404, 410])('已记录的临时文件下载 HTTP %i 后仍保留原文件与安全诊断', async (status) => {
+    const file = { filename: '图片.png', subfolder: '测试/preview', type: 'temp' };
+    savePendingTask({ ...task, comfyRecoveryState: 'save_pending', comfyOutputFile: file });
+    mocks.persist.mockRejectedValueOnce(new MediaPersistenceError(new Error(`HTTP ${status} /private?token=secret`)));
+    await resumeComfyUINodeTask('n1');
+    expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'save_pending', comfyOutputFile: file,
+      mediaFailureDiagnostic: { kind: 'persistence', failureKind: 'http', httpStatus: status } });
+    expect(JSON.stringify(pending())).not.toMatch(/private|secret/);
+    expect(mocks.history).not.toHaveBeenCalled();
+    await resumeComfyUINodeTask('n1');
+    expect(pending()).toEqual([]);
+    expect(mocks.persist.mock.calls[1][0]).toContain('&subfolder=%E6%B5%8B%E8%AF%95%2Fpreview&type=temp');
+    expect(promptCalls()).toHaveLength(0);
+  });
+
+  it('首次保存失败的诊断跨 finally 和项目重新进入保留', async () => {
+    savePendingTask({ ...task, comfyRecoveryState: 'save_pending' });
+    const error = new MediaPersistenceError(new Error('HTTP 404 /private?token=secret'));
+    pauseComfyNodeDelivery('n1', task.taskId, () => true, error);
+    pauseComfyNodeDelivery('n1', task.taskId, () => true);
+    await resumePendingTasks('p1');
+    expect(pending()[0].mediaFailureDiagnostic).toEqual({ kind: 'persistence', failureKind: 'http', httpStatus: 404 });
+    expect(useAppStore.getState().nodes[0].data.mediaTaskState).toBe('delivery_pending');
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(JSON.stringify(pending())).not.toMatch(/private|secret/);
+  });
+
+  it.each([
+    { filename: '' }, { filename: '../out.png' }, { filename: 'C:\\private\\out.png' },
+    { filename: '/private/out.png' }, { filename: 'out.png', subfolder: '../private' },
+    { filename: 'out.png', type: 'private' }, { filename: 'out.png', subfolder: 7 },
+  ])('持久化读取丢弃无效文件描述，旧记录回退查询历史：%j', async (file) => {
+    // 直接写旧存储，验证 loadAll 的信任边界，而非只覆盖正常保存入口。
+    localStorage.setItem('ai_canvas_pending_tasks', JSON.stringify([{ ...task, comfyOutputFile: file }]));
+    expect(pending()[0].comfyOutputFile).toBeUndefined();
+    await resumeComfyUINodeTask('n1');
+    expect(mocks.history).toHaveBeenCalledTimes(1);
+    expect(pending()).toEqual([]);
+  });
+
+  it('文件描述白名单在保存与再次读取时均不保留额外元数据', () => {
+    savePendingTask({ ...task, comfyOutputFile: { filename: 'out.png', subfolder: '角色', type: 'output',
+      url: '/private?token=secret', apiKey: 'secret' } as ComfyOutputFile });
+    expect(pending()[0].comfyOutputFile).toEqual({ filename: 'out.png', subfolder: '角色', type: 'output' });
+    expect(localStorage.getItem('ai_canvas_pending_tasks')).not.toMatch(/private|secret|apiKey/);
+  });
+
+  it.each([{ completed: true }, { status_str: 'success' }])('明确完成但无目标文件立即说明，保留任务且重开不盲目重投：%j', async (status) => {
+    mocks.history.mockImplementation(async () => json({ 'prompt-1': { status, outputs: {} } }));
+    await expect(executeComfyUIGenerate(params)).rejects.toBeInstanceOf(ComfyOutputUnavailableError);
+    const receipt = { taskId: pending()[0].taskId, attemptId: pending()[0].attemptId };
+    expect(pending()[0].comfyRecoveryState).toBe('output_unavailable');
+    useAppStore.getState().updateNodeDataTransient('n1', { status: 'error', error: COMFY_OUTPUT_UNAVAILABLE_MESSAGE });
+    await resumePendingTasks('p1');
+    expect(pending()[0]).toMatchObject({ ...receipt, comfyRecoveryState: 'output_unavailable' });
+    expect(mocks.history).toHaveBeenCalledTimes(1);
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(promptCalls()).toHaveLength(1);
+    await expect(executeComfyUIGenerate(params)).rejects.toThrow('未确认结束');
   });
 
   it('旧交付回执既不清除新任务，也不改写已失效画布的状态', () => {
@@ -370,7 +455,8 @@ describe('ComfyUI 任务恢复合同', () => {
 
   it('ComfyUI 明确失败不转成暂停，取消未确认的视频不自动查询或允许新提交', async () => {
     configureVideo();
-    await executeComfyUIVideoGenerate(params);
+    // 旧记录尚未识别文件，恢复仍须查询远端明确失败；新记录有文件时则直接续取。
+    savePendingTask({ ...task, nodeType: 'ai-video', videoRecoveryState: 'paused' });
     mocks.history.mockImplementation(async () => json({ 'prompt-1': { status: { status_str: 'error',
       messages: [['execution_error', { exception_message: 'video encode failed' }]],
     } } }));

@@ -33,7 +33,7 @@ function elements(value: unknown): Element[] {
   const element = value as Element;
   return [element, ...elements(element.props.children)];
 }
-function render(overlay = false) { mocks.cursor = 0; return MediaTaskStatus({ nodeId: 'media', overlay }); }
+function render(overlay = false, children?: ReactElement) { mocks.cursor = 0; return MediaTaskStatus({ nodeId: 'media', overlay, children }); }
 const queryButton = () => elements(render()).find((element) => element.props['aria-label'] === '继续查询 / 保存');
 
 beforeEach(() => {
@@ -101,6 +101,22 @@ describe('跨媒体原任务续取入口', () => {
     expect(queryButton()).toBeDefined();
   });
 
+  it('同一张恢复卡保留宿主取消入口，重新查询期间不遗留可点击操作', () => {
+    mocks.state.nodes[0].data.mediaTaskState = 'delivery_pending';
+    mocks.tasks[0].mediaRecoveryState = 'delivery_pending';
+    mocks.tasks[0].mediaFailureDiagnostic = { kind: 'persistence', failureKind: 'permission' };
+    const cancel = vi.fn();
+    const action = <button type="button" onClick={cancel}>再次终止</button>;
+    const tree = render(false, action);
+    const button = elements(tree).find((element) => element.type === 'button' && element.props.children === '再次终止')!;
+    (button.props.onClick as () => void)();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(elements(tree).filter((element) => element.props['aria-label'] === '继续查询 / 保存')).toHaveLength(1);
+    expect(JSON.stringify(tree)).toContain('保存目录无法写入');
+    mocks.state.nodes[0].data.status = 'loading';
+    expect(render(false, action)).toBeNull();
+  });
+
   it.each([
     ['timeout', '下载等待超时'], ['network', '下载连接中断'], ['permission', '保存目录无法写入'],
     ['disk_space', '目标磁盘空间不足'], ['connection_changed', '原连接或接口地址已变化'],
@@ -145,6 +161,16 @@ describe('跨媒体原任务续取入口', () => {
     mocks.tasks[0].comfyQueryHttpStatus = '/private?token=secret';
     const message = elements(render()).find((element) => element.type === 'span')?.props.children;
     expect(message).toBe('查询已暂停，任务已保留');
+  });
+
+  it('ComfyUI 执行完成但没有文件输出时显示适配边界，仍只续查原任务', () => {
+    mocks.tasks[0].taskType = 'comfyui';
+    mocks.tasks[0].comfyRecoveryState = 'output_unavailable';
+    const message = elements(render()).find((element) => element.type === 'span')?.props.children;
+    expect(message).toContain('没有可下载的目标媒体');
+    expect(message).toContain('SaveImage');
+    expect(message).toContain('仅 WebSocket');
+    expect(queryButton()).toBeDefined();
   });
 
   it('批量已取得部分ID但后续提交未知时仍禁止伪续取', () => {

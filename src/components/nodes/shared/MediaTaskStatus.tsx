@@ -1,16 +1,16 @@
 /**
  * MediaTaskStatus — 提供媒体任务状态界面与交互。
  */
-import { memo, useState } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
 import { discardMediaTask, getPendingTasksForProject, resumeMediaNodeTask } from '../../../services/pollManager';
-import { getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
+import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
 import { useT } from '../../../i18n';
 import { GenerationWaitTime } from './NodeGenerationProgress';
 
 /** 节点和提示词窗口共用；继续查询只读取原任务，不重新提交生成。 */
-function MediaTaskStatus({ nodeId, overlay = false }: { nodeId: string; overlay?: boolean }) {
+function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string; overlay?: boolean; children?: ReactNode }) {
   const t = useT();
   const projectId = useAppStore((state) => state.currentProjectId);
   const taskState = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.mediaTaskState);
@@ -28,9 +28,11 @@ function MediaTaskStatus({ nodeId, overlay = false }: { nodeId: string; overlay?
   const authorizationMessage = getComfyQueryAuthorizationMessage(task.comfyQueryHttpStatus);
   const message = !canQuery
     ? t('提交状态未知，请到对应平台核对；应用不会自动重新生成。')
-    : (authorizationMessage ? t(authorizationMessage) : task.videoRecoveryMessage) || (deliveryPending
-      ? t('媒体已生成，保存或回填尚未完成；可继续取回原结果。')
-      : t('查询已暂停，任务已保留'));
+    : task.taskType === 'comfyui' && task.comfyRecoveryState === 'output_unavailable'
+      ? t(COMFY_OUTPUT_UNAVAILABLE_MESSAGE)
+      : (authorizationMessage ? t(authorizationMessage) : task.videoRecoveryMessage) || (deliveryPending
+        ? t('媒体已生成，保存或回填尚未完成；可继续取回原结果。')
+        : t('查询已暂停，任务已保留'));
   const diagnostic = task.mediaFailureDiagnostic;
   const httpStatus = (diagnostic?.kind === 'http' || diagnostic?.kind === 'persistence') && typeof diagnostic.httpStatus === 'number'
     && Number.isInteger(diagnostic.httpStatus) && diagnostic.httpStatus >= 400 && diagnostic.httpStatus <= 599
@@ -65,7 +67,7 @@ function MediaTaskStatus({ nodeId, overlay = false }: { nodeId: string; overlay?
   const kind = task.nodeType === 'ai-audio' ? 'audio' : task.nodeType === 'ai-video' ? 'video' : 'image';
   const identity = JSON.stringify([task.projectId, task.nodeId, task.taskId, task.attemptId]);
   return <div className={overlay ? 'generation-progress-overlay generation-progress-overlay--interactive nodrag nopan text-center'
-    : 'ui-card nodrag nopan flex items-center gap-2 p-2'} role="status"
+    : 'ui-card nodrag nopan flex flex-wrap items-center gap-2 p-2'} role="status"
     onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}
     onDoubleClick={(event) => event.stopPropagation()}>
     <div className={`flex min-w-0 flex-col gap-1${overlay ? ' max-w-full items-center' : ' flex-1'}`}>
@@ -97,6 +99,7 @@ function MediaTaskStatus({ nodeId, overlay = false }: { nodeId: string; overlay?
       }}>
       <RotateCw size={14} aria-hidden="true" />{t('继续查询 / 保存')}
     </button>}
+    {children}
   </div>;
 }
 

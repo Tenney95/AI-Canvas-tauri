@@ -9,7 +9,7 @@ import { isRemoteMediaUrl } from '../utils/mediaUrl';
 import { useAppStore } from '../store/useAppStore';
 import { comfyBaseUrlFor } from './comfyServers';
 import type { WorkflowDefinition, WorkflowIONode, WorkflowIONodeType } from '../types';
-import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams, AudioSpeechSettings } from '../types/aiTypes';
+import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams, AudioSpeechSettings, MediaTaskReceipt } from '../types/aiTypes';
 import { mapImageDimensions, mapVideoDimensions, resolveVideoDurationSeconds } from './aiDimensions';
 import { resolveNodeReferencesAsync } from './nodeReferenceService';
 import {
@@ -22,10 +22,10 @@ import {
   savePendingTask,
   updatePendingTask,
 } from './pollManager';
-import { ComfyPendingError, ComfyQueryAuthorizationError, comfyFetch, pollComfyHistory } from './comfyPolling';
+import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, comfyFetch, pollComfyHistory } from './comfyPolling';
 import { assertComfyResponse, withComfyQueryTimeout } from './comfyQuery';
 import { corsSafeFetch } from './ai/httpTransport';
-import { resolveComfyOutputUrl } from './comfyOutputs';
+import { resolveComfyOutputUrl, type ComfyOutputFile } from './comfyOutputs';
 import { createComfyProgressSession, type ComfyProgressSession } from './comfyProgress';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { applyComfyRefmodsToWorkflow, assertComfyRefmodSubmissionFresh, assertComfyRefmodSubmissionTargetFresh } from './comfyRefmodWorkflow';
@@ -1480,10 +1480,10 @@ async function pollComfyUIHistory(
   promptId: string,
   dimensions: { width: number; height: number },
   signal?: AbortSignal,
-): Promise<{ url: string; width: number; height: number }> {
+): Promise<{ url: string; file: ComfyOutputFile; width: number; height: number }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 图片生成超时（1 小时）', (outputs) => {
     const found = resolveComfyOutputUrl(baseUrl, outputs, ['image']);
-    return found ? { url: found.url, width: dimensions.width, height: dimensions.height } : null;
+    return found ? { ...found, width: dimensions.width, height: dimensions.height } : null;
   }, signal);
 }
 
@@ -1506,12 +1506,13 @@ export async function executeComfyUIGenerate(
   let progressSession: ComfyProgressSession | undefined;
   let submittedTaskId: string | undefined;
   let retainPending = false;
+  let pendingReceipt: MediaTaskReceipt | undefined;
 
   try {
     // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
     if (params.nodeId) {
       if (projectId) {
-        savePendingTask({
+        pendingReceipt = savePendingTask({
           nodeId: params.nodeId,
           projectId,
           nodeType: useAppStore.getState().nodes.find((node) => node.id === params.nodeId)?.data.type ?? 'ai-image',
@@ -1547,7 +1548,7 @@ export async function executeComfyUIGenerate(
 
     // 回填 promptId，标记为已提交
     if (params.nodeId) {
-      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl }, '', pendingReceipt?.attemptId);
     }
 
     // 计算最终输出尺寸（用于节点显示）
@@ -1555,6 +1556,10 @@ export async function executeComfyUIGenerate(
 
     // 轮询等待结果
     const result = await pollComfyUIHistory(baseUrl, promptId, dims, signal);
+    if (params.nodeId && projectId) {
+      retainPending = true;
+      updatePendingTask(params.nodeId, { comfyRecoveryState: 'save_pending', comfyOutputFile: result.file }, promptId, pendingReceipt?.attemptId);
+    }
     if (hasDimensionParameters) {
       try {
         const actual = await withComfyQueryTimeout(async (querySignal) => {
@@ -1570,16 +1575,16 @@ export async function executeComfyUIGenerate(
         // 文件头不支持或暂时不可读时，保留原有画布尺寸估计，不重投已完成任务。
       }
     }
-    if (params.nodeId && projectId) retainPending = true;
     await applyConfiguredComfyMemoryPolicy(baseUrl);
-    if (params.nodeId && projectId) updatePendingTask(params.nodeId, { comfyRecoveryState: 'save_pending' }, promptId);
-    return { ...result, ...(params.nodeId && projectId ? { comfyTaskId: promptId } : {}) };
+    return { url: result.url, width: result.width, height: result.height, ...(params.nodeId && projectId ? { comfyTaskId: promptId } : {}) };
   } catch (error) {
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
+      const outputReceived = retainPending;
       retainPending = true;
       if (params.nodeId && !nodeSignal?.aborted) {
-        updatePendingTask(params.nodeId, { comfyRecoveryState: 'disconnected',
-          comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId);
+        updatePendingTask(params.nodeId, { comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
+          : outputReceived ? 'save_pending' : 'disconnected',
+          comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId, pendingReceipt?.attemptId);
       }
     }
     if (submittedTaskId && !(error instanceof ComfyPendingError) && !signal?.aborted) {
@@ -1599,7 +1604,7 @@ async function pollComfyUIHistoryForVideo(
   baseUrl: string,
   promptId: string,
   signal?: AbortSignal,
-): Promise<{ url: string }> {
+): Promise<{ url: string; file: ComfyOutputFile }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 视频生成超时（1 小时）', (outputs) => (
     // SaveWEBM / SaveVideo 可能把 mp4/webm 挂在 images 下；输出解析器会按扩展名识别，
     // 这里只接受真实视频，避免把编码前的 PreviewImage PNG 当作最终成片。
@@ -1669,12 +1674,13 @@ export async function executeComfyUIVideoGenerate(
   let progressSession: ComfyProgressSession | undefined;
   let submittedTaskId: string | undefined;
   let retainPending = false;
+  let pendingReceipt: MediaTaskReceipt | undefined;
 
   try {
     // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
     if (params.nodeId) {
       if (projectId) {
-        savePendingTask({
+        pendingReceipt = savePendingTask({
           nodeId: params.nodeId,
           projectId,
           nodeType: 'ai-video',
@@ -1750,7 +1756,7 @@ export async function executeComfyUIVideoGenerate(
 
     // 回填 promptId，标记为已提交
     if (params.nodeId) {
-      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl }, '', pendingReceipt?.attemptId);
     }
 
     // 轮询等待结果
@@ -1759,16 +1765,19 @@ export async function executeComfyUIVideoGenerate(
     // 保存期间退出应用或画布变更时，仍可按原 promptId 续取视频。
     if (params.nodeId && projectId) {
       retainPending = true;
-      updatePendingTask(params.nodeId, { videoRecoveryState: 'paused' }, promptId);
+      updatePendingTask(params.nodeId, { videoRecoveryState: 'paused', comfyRecoveryState: 'save_pending',
+        comfyOutputFile: result.file }, promptId, pendingReceipt?.attemptId);
     }
     await applyConfiguredComfyMemoryPolicy(baseUrl);
-    return result;
+    return { url: result.url };
   } catch (error) {
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
+      const outputReceived = retainPending;
       retainPending = true;
       if (params.nodeId && !nodeSignal?.aborted) {
-        updatePendingTask(params.nodeId, { comfyRecoveryState: 'disconnected',
-          comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId);
+        updatePendingTask(params.nodeId, { comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
+          : outputReceived ? 'save_pending' : 'disconnected',
+          comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId, pendingReceipt?.attemptId);
       }
     }
     if (retainPending && params.nodeId && !nodeSignal?.aborted) {
@@ -1792,7 +1801,7 @@ async function pollComfyUIHistoryForAudio(
   baseUrl: string,
   promptId: string,
   signal?: AbortSignal,
-): Promise<{ url: string }> {
+): Promise<{ url: string; file: ComfyOutputFile }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 音频生成超时（1 小时）', (outputs) => (
     resolveComfyOutputUrl(baseUrl, outputs, ['audio', 'video', 'image'])
   ), signal);
@@ -1817,12 +1826,13 @@ export async function executeComfyUIAudioGenerate(
   let progressSession: ComfyProgressSession | undefined;
   let submittedTaskId: string | undefined;
   let retainPending = false;
+  let pendingReceipt: MediaTaskReceipt | undefined;
 
   try {
     // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
     if (params.nodeId) {
       if (projectId) {
-        savePendingTask({
+        pendingReceipt = savePendingTask({
           nodeId: params.nodeId,
           projectId,
           nodeType: 'ai-audio',
@@ -1848,21 +1858,25 @@ export async function executeComfyUIAudioGenerate(
 
     // 回填 promptId，标记为已提交
     if (params.nodeId) {
-      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl }, '', pendingReceipt?.attemptId);
     }
 
     // 轮询等待结果
     const result = await pollComfyUIHistoryForAudio(baseUrl, promptId, signal);
-    if (params.nodeId && projectId) retainPending = true;
+    if (params.nodeId && projectId) {
+      retainPending = true;
+      updatePendingTask(params.nodeId, { comfyRecoveryState: 'save_pending', comfyOutputFile: result.file }, promptId, pendingReceipt?.attemptId);
+    }
     await applyConfiguredComfyMemoryPolicy(baseUrl);
-    if (params.nodeId && projectId) updatePendingTask(params.nodeId, { comfyRecoveryState: 'save_pending' }, promptId);
-    return { ...result, ...(params.nodeId && projectId ? { comfyTaskId: promptId } : {}) };
+    return { url: result.url, ...(params.nodeId && projectId ? { comfyTaskId: promptId } : {}) };
   } catch (error) {
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
+      const outputReceived = retainPending;
       retainPending = true;
       if (params.nodeId && !nodeSignal?.aborted) {
-        updatePendingTask(params.nodeId, { comfyRecoveryState: 'disconnected',
-          comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId);
+        updatePendingTask(params.nodeId, { comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
+          : outputReceived ? 'save_pending' : 'disconnected',
+          comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined }, submittedTaskId, pendingReceipt?.attemptId);
       }
     }
     if (submittedTaskId && !(error instanceof ComfyPendingError) && !signal?.aborted) {

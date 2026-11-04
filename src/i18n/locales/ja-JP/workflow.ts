@@ -121,6 +121,7 @@ const workflow: Record<string, string> = {
   "每次生成时随机": "生成ごとにランダム",
   "随机填入固定种子": "ランダムな固定シードを入力",
   "此种子范围没有可用的安全整数，请调整工作流定义。": "このシード範囲に安全な整数がありません。ワークフロー定義を調整してください。",
+  "ComfyUI 已完成，但没有可下载的目标媒体。请检查输出类型，并使用 SaveImage、PreviewImage、SaveVideo 或 SaveAudio 等文件输出节点；仅 WebSocket 出图暂不支持取回。": "ComfyUI の処理は完了しましたが、指定した種類のダウンロード可能なメディアがありません。出力の種類を確認し、SaveImage、PreviewImage、SaveVideo、SaveAudio などのファイル出力ノードを使用してください。WebSocket のみの画像出力は、現在取得できません。",
 };
 
 export default workflow;

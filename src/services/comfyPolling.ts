@@ -113,6 +113,16 @@ export class ComfyPendingError extends Error {
   }
 }
 
+export const COMFY_OUTPUT_UNAVAILABLE_MESSAGE = 'ComfyUI 已完成，但没有可下载的目标媒体。请检查输出类型，并使用 SaveImage、PreviewImage、SaveVideo 或 SaveAudio 等文件输出节点；仅 WebSocket 出图暂不支持取回。';
+
+/** 执行成功不等于本客户端已识别到文件；保留回执，不能冒充远端失败。 */
+export class ComfyOutputUnavailableError extends ComfyPendingError {
+  constructor() {
+    super(COMFY_OUTPUT_UNAVAILABLE_MESSAGE);
+    this.name = 'ComfyOutputUnavailableError';
+  }
+}
+
 const COMFY_QUERY_AUTHORIZATION_MESSAGES = {
   401: 'ComfyUI 查询未授权（HTTP 401），请检查服务端鉴权配置；原任务已保留，修复后可继续查询',
   403: 'ComfyUI 查询被拒绝（HTTP 403），请检查服务端访问权限或反向代理限制；原任务已保留，修复后可继续查询',
@@ -191,18 +201,18 @@ export async function pollComfyHistory<T>(
         return {};
       }
     },
-    isComplete: ({ entry }) => (
-      entry?.outputs && isComfyHistoryEntryComplete(entry) ? extract(entry.outputs) : null
-    ),
+    isComplete: ({ entry }) => {
+      if (!entry || !isComfyHistoryEntryComplete(entry)) return null;
+      const result = entry.outputs ? extract(entry.outputs) : null;
+      // 只有明确终态才能判定输出不兼容；无 status 的旧服务继续等待。
+      if (result === null && entry.status) throw new ComfyOutputUnavailableError();
+      return result;
+    },
     isFailed: ({ entry, gone }) => {
       if (gone) return TASK_GONE_MESSAGE;
       if (!entry) return null;
       const failure = readComfyFailureMessage(entry);
       if (failure) return failure;
-      if (entry.status?.completed === true) {
-        const result = entry.outputs ? extract(entry.outputs) : null;
-        if (result === null) return 'ComfyUI 执行完成但未返回目标媒体';
-      }
       return null;
     },
     interval: 3000,

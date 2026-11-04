@@ -1837,6 +1837,7 @@ describe('critical canvas node interactions', () => {
       for (const module of [
         '../../src/services/ai/mediaModelCapabilities', '../../src/services/projectSettingsService',
         '../../src/services/imageBatchService', '../../src/services/pollManager',
+        '../../src/components/nodes/shared/MediaTaskStatus',
       ]) vi.doUnmock(module);
     });
 
@@ -1858,12 +1859,15 @@ describe('critical canvas node interactions', () => {
       const persistMediaUrlToProjectData = vi.fn(async (url: string) => ({ mediaUrl: url, sourceUrl: url, filePath: 'result.png' }));
       const completeMediaNodeTask = vi.fn();
       const pauseMediaTask = vi.fn();
+      const pauseComfyNodeDelivery = vi.fn();
+      const pendingTasks: import('../../src/services/pollManager').PendingTask[] = [];
       await installReactHookDriver();
       installStoreMock(store);
       vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
       vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
       vi.doMock('@tauri-apps/api/core', () => ({ convertFileSrc: (path: string) => path }));
       vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({ default: function PromptPanelMock() { return null; } }));
+      vi.doMock('../../src/components/nodes/shared/MediaTaskStatus', () => ({ default: function MediaTaskStatusMock() { return null; } }));
       vi.doMock('../../src/components/nodes/shared/defaultModels', () => ({ findMediaModelOption: vi.fn() }));
       vi.doMock('../../src/services/aiService', () => ({
         generateText: vi.fn(), generateImage, generateImagesBatch, generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
@@ -1894,7 +1898,7 @@ describe('critical canvas node interactions', () => {
         getImageNodeDimensionsForAspectRatio: () => ({ nodeWidth: 280, nodeHeight: 280 }),
       }));
       vi.doMock('../../src/services/pollManager', () => ({
-        ...mockComfyDeliveries(), getPendingTasksForProject: () => [],
+        ...mockComfyDeliveries(), getPendingTasksForProject: () => pendingTasks, pauseComfyNodeDelivery,
         prepareMediaNodeGeneration: vi.fn(), registerMediaNodeOperation, completeMediaNodeTask, pauseMediaTask,
         registerNodePolling, cleanupNodePolling,
       }));
@@ -1906,8 +1910,53 @@ describe('critical canvas node interactions', () => {
       const panel = () => findElement(AINodeDialog(), (element) => componentName(element) === 'PromptPanelMock');
       return { store, panel, generateImage, generateImagesBatch, applyImageBatchResults,
         persistMediaUrlToProjectData, savingController, registerNodePolling, cleanupNodePolling, registerMediaNodeOperation,
-        completeMediaNodeTask, pauseMediaTask };
+        completeMediaNodeTask, pauseMediaTask, pauseComfyNodeDelivery, pendingTasks, dialog: AINodeDialog };
     }
+
+    it('本地 ComfyUI 保存失败把原始错误交给恢复层，保留原任务而不重新生成', async () => {
+      const { panel, store, generateImage, persistMediaUrlToProjectData, pauseComfyNodeDelivery, completeMediaNodeTask } = await setupImageQualityDialog();
+      const error = Object.assign(new Error('生成媒体未能写入项目目录：保存目录无法写入'), {
+        name: 'MediaPersistenceError', failureKind: 'permission',
+      });
+      generateImage.mockResolvedValueOnce({ url: 'https://example.com/result.png', width: 1024, height: 1024, comfyTaskId: 'original' });
+      persistMediaUrlToProjectData.mockRejectedValueOnce(error);
+      await (panel().props.onSubmit as () => Promise<void>)();
+      expect(pauseComfyNodeDelivery).toHaveBeenCalledWith('quality-image', 'original', expect.any(Function), error);
+      expect(pauseComfyNodeDelivery.mock.calls[0][2]()).toBe(true);
+      expect(generateImage).toHaveBeenCalledOnce();
+      expect(store.nodes[0].data.imageUrl).toBeUndefined();
+      expect(completeMediaNodeTask).not.toHaveBeenCalled();
+    });
+
+    it('ComfyUI 已有通用恢复卡时不重复展示横条，但保留终止和防重复生成', async () => {
+      const { dialog, panel, store, pendingTasks } = await setupImageQualityDialog();
+      store.nodes[0].data = { ...store.nodes[0].data, provider: 'comfyui', workflowId: 'wf-1', status: 'idle', mediaTaskState: 'delivery_pending' };
+      pendingTasks.push({ projectId: 'project-a', nodeId: 'quality-image', nodeType: 'ai-image', provider: 'comfyui',
+        taskType: 'comfyui', taskId: 'original', submitted: true, comfyRecoveryState: 'save_pending' });
+      const tree = dialog();
+      expect(findElement(tree, (element) => componentName(element) === 'MediaTaskStatusMock')).toBeDefined();
+      expect(findElement(tree, (element) => element.type === 'button' && element.props.children === '再次终止')).toBeDefined();
+      expect(() => findElement(tree, (element) => element.type === 'span' && element.props.children === 'ComfyUI 已完成，结果尚未保存或回填，任务已保留')).toThrow('Element not found');
+      expect(panel().props.canGenerate).toBe(false);
+    });
+
+    it.each(['save_pending', 'cancel_pending', 'output_unavailable'] as const)('ComfyUI %s 旧恢复记录或专用状态继续保留说明和原任务操作', async (recoveryState) => {
+      const { dialog, panel, store, pendingTasks } = await setupImageQualityDialog();
+      store.nodes[0].data = { ...store.nodes[0].data, provider: 'comfyui', workflowId: 'wf-1', status: 'error',
+        mediaTaskState: recoveryState === 'save_pending' ? undefined : 'paused',
+        videoTaskState: recoveryState === 'output_unavailable' ? 'paused' : undefined };
+      pendingTasks.push({ projectId: 'project-a', nodeId: 'quality-image', nodeType: 'ai-image', provider: 'comfyui',
+        taskType: 'comfyui', taskId: 'original', submitted: true, comfyRecoveryState: recoveryState });
+      const tree = dialog();
+      expect(() => findElement(tree, (element) => componentName(element) === 'MediaTaskStatusMock')).toThrow('Element not found');
+      const expected = recoveryState === 'save_pending' ? 'ComfyUI 已完成，结果尚未保存或回填，任务已保留'
+        : recoveryState === 'cancel_pending' ? 'ComfyUI 取消尚未确认，任务已保留'
+          : 'ComfyUI 已完成，但没有可下载的目标媒体。请检查输出类型，并使用 SaveImage、PreviewImage、SaveVideo 或 SaveAudio 等文件输出节点；仅 WebSocket 出图暂不支持取回。';
+      expect(findElement(tree, (element) => element.type === 'span' && element.props.children === expected)).toBeDefined();
+      expect(findElement(tree, (element) => element.type === 'button' && element.props.children === '再次终止')).toBeDefined();
+      expect(findElement(tree, (element) => element.type === 'button' && element.props.children === (recoveryState === 'save_pending' ? '继续保存' : '继续查询'))).toBeDefined();
+      expect(panel().props.canGenerate).toBe(false);
+    });
 
     it.each(['dialog', 'toolbar'].flatMap((entry) => ['saving', 'delivered'].map((newerStage) => ({ entry, newerStage }))))(
       '$entry 中旧同步图片迟到时不能抢占 $newerStage 的新一轮保存', async ({ entry, newerStage }) => {

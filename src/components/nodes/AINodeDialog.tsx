@@ -56,7 +56,7 @@ import { getLibapiAudioCapability, usesLibapiModelProtocol } from '../../service
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from '../../services/ai/modelCapabilityValidation';
 import { applyGenerationCameraPrompt } from '../../services/shotlistPromptService';
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
-import { getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
+import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
 import { beginComfyNodeDelivery, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, isComfyNodeDeliveryActive, isMediaTaskPausedError, pauseComfyNodeDelivery, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, resumeComfyUINodeTask, resumeRunningHubNodeTask, subscribeComfyDeliveries, updatePendingTask, removePendingTask } from '../../services/pollManager';
 import MediaTaskStatus from './shared/MediaTaskStatus';
 import { isCloudWorkflow, getCloudWorkflowPersistedOutput, workflowExecution } from '../../services/workflowExecutionService';
@@ -501,6 +501,7 @@ function AINodeDialog() {
     const runningHubTask = cloudWorkflow || latestData.provider === 'runninghub';
     const localComfyTask = !!latestData.workflowId && !cloudWorkflow;
     let comfyTaskId: string | undefined;
+    let comfyDeliveryError: unknown;
     let savingSignal: AbortSignal | undefined;
     const beginMediaSaving = () => savingSignal ??= registerNodePolling(submittingNodeId);
     const guardedSubmission = mediaSubmission || runningHubTask || localComfyTask;
@@ -847,6 +848,7 @@ function AINodeDialog() {
         }
       }
     } catch (err) {
+      comfyDeliveryError = err;
       if (isMediaTaskPausedError(err)) return;
       if (!mediaDelivered && taskReceipt && pauseMediaTask(taskReceipt, err, 'delivery_pending')) return;
       const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : t('生成失败'));
@@ -875,7 +877,7 @@ function AINodeDialog() {
       showToast(msg, 'error');
     } finally {
       if (!mediaDelivered && taskReceipt) pauseMediaTask(taskReceipt, undefined, isStillCurrentSubmission() ? 'delivery_pending' : 'canvas_changed');
-      if (comfyTaskId) pauseComfyNodeDelivery(submittingNodeId, comfyTaskId, isStillCurrentSubmission);
+      if (comfyTaskId) pauseComfyNodeDelivery(submittingNodeId, comfyTaskId, isStillCurrentSubmission, comfyDeliveryError);
       if (savingSignal) cleanupNodePolling(submittingNodeId, savingSignal);
       if (cloudGuard) completeCanvasDerivation(cloudGuard);
       endOperation?.();
@@ -1216,6 +1218,9 @@ function AINodeDialog() {
     ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'comfyui' && task.comfyRecoveryState
       && (data.status !== 'loading' || task.comfyRecoveryState === 'save_pending'))
     : undefined;
+  const showMediaTaskStatus = (data.mediaTaskState || data.videoTaskState === 'paused')
+    && recoverableComfyTask?.comfyRecoveryState !== 'cancel_pending'
+    && recoverableComfyTask?.comfyRecoveryState !== 'output_unavailable';
   const cloudTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && ['runninghub-workflow', 'runninghub-model'].includes(task.taskType)) : undefined;
   const workflowApiTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'workflow-api') : undefined;
 
@@ -1328,7 +1333,9 @@ function AINodeDialog() {
           {['runninghubwf', 'runninghub'].includes(data.provider ?? '') && data.runninghubStage && <p role="status" className="px-3 py-1 text-xs text-canvas-text-secondary">RunningHub · {data.runninghubStage}</p>}
           {data.provider === 'workflow-api' && data.workflowApiStage && <p role="status" className="px-3 py-1 text-xs text-canvas-text-secondary">AutoDL · {data.workflowApiStage}</p>}
           {workflowApiTask && data.status !== 'loading' && <WorkflowApiTaskStatus key={`${activeNodeId}:${workflowApiTask.workflowApi?.attemptId}`} task={workflowApiTask} />}
-          {(data.mediaTaskState || data.videoTaskState === 'paused') && <div className="m-2"><MediaTaskStatus nodeId={activeNodeId} /></div>}
+          {showMediaTaskStatus && <div className="m-2"><MediaTaskStatus nodeId={activeNodeId}>
+            {recoverableComfyTask && <button type="button" className="ui-btn ui-btn--sm ui-btn--danger" onClick={() => { void onCancelGeneration(); }}>{t('再次终止')}</button>}
+          </MediaTaskStatus></div>}
           {cloudTask && data.status !== 'loading' && <div className="ui-card m-2 flex flex-col gap-2 p-3 text-xs">
             <p>{cloudTask.taskId ? <>{t('任务 {ids} 已保留，可以继续查询。', { ids: (cloudTask.taskIds?.length ? cloudTask.taskIds : [cloudTask.taskId]).join('、') })}{cloudTask.runninghubSubmissionUncertain && t('另有提交状态未知，请到平台核对后再清除恢复记录。')}</> : t('提交状态未知。请到 RunningHub 平台核对，补充任务 ID 后继续查询。')}</p>
             {!cloudTask.taskId && <input aria-label={t('RunningHub 任务 ID')} className="ui-input w-full" value={recoveryInput.nodeId === activeNodeId ? recoveryInput.taskId : ''} inputMode="numeric" onChange={(event) => setRecoveryInput({ nodeId: activeNodeId, taskId: event.target.value, confirmed: false })} />}
@@ -1356,14 +1363,16 @@ function AINodeDialog() {
                   onExpandedChange={(expanded) => cloudVideoPreview.setExpanded(expanded ? `${output.url}:${index}` : null)} />
               : <ViewportAudio className="w-full" src={output.url} controls preload="metadata" />}
           </div>)}</div></details>}
-          {recoverableComfyTask && (
+          {recoverableComfyTask && !showMediaTaskStatus && (
             <div className="ui-alert ui-alert--warning mx-3 mb-2 flex-wrap" role="status">
               <span className="min-w-0 flex-1 text-xs">
                 {recoverableComfyTask.comfyRecoveryState === 'cancel_pending'
                   ? t('ComfyUI 取消尚未确认，任务已保留')
-                  : recoverableComfyTask.comfyRecoveryState === 'save_pending'
-                    ? t('ComfyUI 已完成，结果尚未保存或回填，任务已保留')
-                    : t(getComfyQueryAuthorizationMessage(recoverableComfyTask.comfyQueryHttpStatus) ?? 'ComfyUI 查询中断，任务已保留')}
+                  : recoverableComfyTask.comfyRecoveryState === 'output_unavailable'
+                    ? t(COMFY_OUTPUT_UNAVAILABLE_MESSAGE)
+                    : recoverableComfyTask.comfyRecoveryState === 'save_pending'
+                      ? t('ComfyUI 已完成，结果尚未保存或回填，任务已保留')
+                      : t(getComfyQueryAuthorizationMessage(recoverableComfyTask.comfyQueryHttpStatus) ?? 'ComfyUI 查询中断，任务已保留')}
               </span>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="ui-btn ui-btn--sm" onClick={() => {

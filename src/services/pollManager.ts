@@ -16,8 +16,8 @@ import { MediaPersistenceError, persistMediaUrlToProjectData, type MediaPersiste
 import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './ai/helpers';
-import { resolveComfyOutputUrl, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
-import { ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory } from './comfyPolling';
+import { buildComfyFileUrl, resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
+import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from './canvasDerivationGuard';
 import { pollResolvedModelProtocol } from './ai/modelProtocol';
@@ -197,6 +197,8 @@ export interface PendingTask {
   protocolPolls?: ResolvedModelProtocolPoll[];
   /** 同步接口已返回的可重取结果，仅继续下载，不发起生成。 */
   resultUrls?: string[];
+  /** 已确认的 ComfyUI 相对文件描述；仅由原 baseUrl 的 /view 续取，不保存任意 URL。 */
+  comfyOutputFile?: ComfyOutputFile;
   mediaDownloadAccess?: MediaDownloadAccess;
   /** 是否已取得远端任务 ID；false 不能证明请求未被上游接收。 */
   submitted: boolean;
@@ -220,7 +222,7 @@ export interface PendingTask {
   videoGeneration?: Pick<BaseNodeData, 'prompt' | 'model' | 'provider' | 'seedanceResolution'
     | 'seedanceRatio' | 'seedanceDuration' | 'generateAudio' | 'videoResolution' | 'videoFrames' | 'videoFps'>;
   /** ComfyUI 远端终态尚未确认，保留任务并提供续查/再次取消。 */
-  comfyRecoveryState?: 'disconnected' | 'cancel_pending' | 'save_pending';
+  comfyRecoveryState?: 'disconnected' | 'cancel_pending' | 'save_pending' | 'output_unavailable';
   /** 仅保留可识别的查询鉴权状态，不保存上游错误正文、地址或凭据。 */
   comfyQueryHttpStatus?: 401 | 403;
 }
@@ -645,7 +647,7 @@ export function completeComfyNodeTask(nodeId: string, expectedTaskId: string | u
 }
 
 /** 已生成的原任务尚未交付时，保留续取入口，且不触碰切换后的项目或新任务。 */
-export function pauseComfyNodeDelivery(nodeId: string, expectedTaskId: string | undefined, isCurrent: () => boolean): void {
+export function pauseComfyNodeDelivery(nodeId: string, expectedTaskId: string | undefined, isCurrent: () => boolean, error?: unknown): void {
   if (!expectedTaskId) return;
   endComfyNodeDelivery(nodeId, expectedTaskId);
   const task = loadAll().find((item) => item.nodeId === nodeId && item.taskType === 'comfyui'
@@ -653,7 +655,7 @@ export function pauseComfyNodeDelivery(nodeId: string, expectedTaskId: string | 
   if (!task) return;
   const state = useAppStore.getState();
   if (isCurrent() && state.currentProjectId === task.projectId && state.nodes.some((node) => node.id === nodeId)) {
-    state.updateNodeDataTransient(nodeId, { status: 'error', error: 'ComfyUI 已完成，结果保存或回填尚未完成，请继续查询取回原结果' });
+    pauseMediaTask(receiptForTask(task), error, 'delivery_pending');
   }
 }
 
@@ -761,19 +763,21 @@ function inferLegacyProviderConfigId(task: LegacyPendingTask): string | undefine
 }
 
 function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
-  const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure, ...safeTask } = task;
+  const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, comfyOutputFile, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure, ...safeTask } = task;
   delete safeTask.apiKey;
   const providerConfigId = inferLegacyProviderConfigId(task);
   const parameters = sanitizeMediaParameters(task.mediaContext?.parameters);
   const access = sanitizeMediaDownloadAccess(mediaDownloadAccess);
   const safeAccess = access?.providerConfigId === providerConfigId ? access : undefined;
   const urls = sanitizeMediaResultUrls(resultUrls, providerConfigId ? useAppStore.getState().config.providers[providerConfigId]?.apiKey : undefined);
+  const outputFile = task.taskType === 'comfyui' ? sanitizeComfyOutputFile(comfyOutputFile) : undefined;
   return {
     ...safeTask,
     nodeType: getGenerationNodeType(safeTask.nodeType),
     providerConfigId,
     ...(safeAccess ? { mediaDownloadAccess: safeAccess } : {}),
     ...(urls ? { resultUrls: urls } : {}),
+    ...(outputFile ? { comfyOutputFile: outputFile } : {}),
     ...(sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) ? { mediaFailureDiagnostic: sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) } : {}),
     ...(terminalFailure === true ? { terminalFailure: true as const } : {}),
     ...(task.taskType === 'comfyui' && legacyBaseUrl ? { baseUrl: legacyBaseUrl } : {}),
@@ -1509,10 +1513,11 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
 
   try {
     beginComfyNodeDelivery(nodeId, taskId);
-    updatePendingTask(nodeId, { comfyRecoveryState: undefined, comfyQueryHttpStatus: undefined }, taskId);
+    updatePendingTask(nodeId, { comfyQueryHttpStatus: undefined }, taskId, task.attemptId);
     // 与实时生成共用轮询：ComfyUI 重启后 promptId 会彻底消失，那里会连 /queue 一起确认并直接判失败，
     // 不再让恢复出来的任务空转一小时
-    const { url } = await pollComfyHistory(
+    const cachedFile = sanitizeComfyOutputFile(task.comfyOutputFile);
+    const result = cachedFile ? { url: buildComfyFileUrl(baseUrl, cachedFile), file: cachedFile } : await pollComfyHistory(
       baseUrl,
       taskId,
       'ComfyUI 任务恢复超时（1 小时）',
@@ -1520,10 +1525,11 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
       signal,
     );
     resultReceived = true;
-    updatePendingTask(nodeId, { comfyRecoveryState: 'save_pending' }, taskId, task.attemptId);
+    const { url } = result;
+    updatePendingTask(nodeId, { comfyRecoveryState: 'save_pending', comfyOutputFile: result.file }, taskId, task.attemptId);
     markMediaTaskDeliveryPending(task, signal);
     if (nodeType === 'ai-video') {
-      updatePendingTask(nodeId, { videoRecoveryState: 'paused' }, taskId);
+      updatePendingTask(nodeId, { videoRecoveryState: 'paused' }, taskId, task.attemptId);
     }
     await maybeAutoReleaseComfyMemory(
       baseUrl,
@@ -1540,7 +1546,8 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
     if (task.mediaContext?.messageId) {
       if (err instanceof PollTaskFailedError) await handleResumeError(task, err, signal);
       else {
-        updatePendingTask(nodeId, { comfyRecoveryState: resultReceived ? 'save_pending' : 'disconnected' }, taskId, task.attemptId);
+        updatePendingTask(nodeId, { comfyRecoveryState: resultReceived ? 'save_pending'
+          : err instanceof ComfyOutputUnavailableError ? 'output_unavailable' : 'disconnected' }, taskId, task.attemptId);
         pauseMediaTask(receiptForTask(task), err, resultReceived ? 'delivery_pending' : 'query_interrupted');
       }
       return;
@@ -1548,8 +1555,9 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
     if (err instanceof ComfyPendingError) {
       // 图片/音频切走后仍需恢复入口；视频另用 canvas_changed 保留本地交付状态。
       if (!(err instanceof CanvasResultStaleError) || nodeType !== 'ai-video') {
-        updatePendingTask(nodeId, { comfyRecoveryState: resultReceived ? 'save_pending' : 'disconnected',
-          comfyQueryHttpStatus: err instanceof ComfyQueryAuthorizationError ? err.status : undefined }, taskId);
+        updatePendingTask(nodeId, { comfyRecoveryState: resultReceived ? 'save_pending'
+          : err instanceof ComfyOutputUnavailableError ? 'output_unavailable' : 'disconnected',
+          comfyQueryHttpStatus: err instanceof ComfyQueryAuthorizationError ? err.status : undefined }, taskId, task.attemptId);
       }
       if (err instanceof ComfyQueryAuthorizationError) {
         pauseMediaTask(receiptForTask(task), err, 'query_interrupted');
@@ -1566,8 +1574,8 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
         if (nodeType === 'ai-video' && resultReceived && !(err instanceof PollTaskFailedError)
           && pauseVideoNodeTask(nodeId, taskId, err, 'delivery_pending')) return;
         if (resultReceived && !(err instanceof PollTaskFailedError)) {
-          updatePendingTask(nodeId, { comfyRecoveryState: 'save_pending' }, taskId);
-          useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: 'ComfyUI 已完成，结果保存或回填尚未完成，请继续查询取回原结果' });
+          updatePendingTask(nodeId, { comfyRecoveryState: 'save_pending' }, taskId, task.attemptId);
+          pauseMediaTask(receiptForTask(task), err, 'delivery_pending');
           return;
         }
         await handleResumeError(task, err);
@@ -2298,9 +2306,15 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
         pauseMediaTask(receiptForTask(task), undefined, 'submit_unknown');
         continue;
       }
-      if (task.mediaRecoveryState || task.comfyQueryHttpStatus || (task.nodeType === 'ai-video' && task.videoRecoveryState === 'paused')) {
+      if (task.comfyRecoveryState === 'output_unavailable') {
+        pauseMediaTask(receiptForTask(task), undefined, 'query_interrupted');
+        continue;
+      }
+      if (task.mediaRecoveryState || task.comfyQueryHttpStatus || task.comfyRecoveryState === 'save_pending'
+        || (task.nodeType === 'ai-video' && task.videoRecoveryState === 'paused')) {
         pauseMediaTask(receiptForTask(task), undefined,
-          task.mediaRecoveryState === 'delivery_pending' ? 'delivery_pending' : task.mediaRecoveryReason ?? 'query_interrupted');
+          task.mediaRecoveryState === 'delivery_pending' || task.comfyRecoveryState === 'save_pending'
+            ? 'delivery_pending' : task.mediaRecoveryReason ?? 'query_interrupted');
         continue;
       }
       if (task.mediaContext?.messageId) {

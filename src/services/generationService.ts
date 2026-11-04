@@ -329,6 +329,7 @@ export async function executeGeneration(
   const runningHubTask = cloudWorkflow || nodeProvider === 'runninghub';
   const localComfyTask = !!workflowId && !cloudWorkflow;
   let comfyTaskId: string | undefined;
+  let comfyDeliveryError: unknown;
   let savingSignal: AbortSignal | undefined;
   const beginMediaSaving = () => savingSignal ??= registerNodePolling(nodeId, lease?.signal);
   const guardedSubmission = mediaSubmission || runningHubTask || localComfyTask;
@@ -683,6 +684,7 @@ export async function executeGeneration(
     }
     return { success: true };
   } catch (err) {
+    comfyDeliveryError = err;
     const pausedError = isMediaTaskPausedError(err);
     const paused = !mediaDelivered && taskReceipt && !pausedError ? pauseMediaTask(taskReceipt, err, 'delivery_pending') : undefined;
     const expectedReceipt = taskReceipt ?? (pausedError ? err.taskReceipt : undefined);
@@ -723,7 +725,7 @@ export async function executeGeneration(
     return { success: false, message: msg };
   } finally {
     if (!mediaDelivered && taskReceipt) pauseMediaTask(taskReceipt, undefined, isStillCurrentSubmission() ? 'delivery_pending' : 'canvas_changed');
-    if (comfyTaskId) pauseComfyNodeDelivery(nodeId, comfyTaskId, isStillCurrentSubmission);
+    if (comfyTaskId) pauseComfyNodeDelivery(nodeId, comfyTaskId, isStillCurrentSubmission, comfyDeliveryError);
     if (savingSignal) cleanupNodePolling(nodeId, savingSignal);
     const current = useAppStore.getState();
     const currentVideo = hasProtectedVideoInputs ? current.nodes.find((node) => node.id === nodeId) : undefined;
