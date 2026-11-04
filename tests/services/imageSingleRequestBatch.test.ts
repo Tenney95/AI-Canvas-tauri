@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   },
   image: vi.fn(), batch: vi.fn(), persist: vi.fn(), capability: vi.fn(), camera: vi.fn(),
   completeMedia: vi.fn(), pauseMedia: vi.fn(), pauseNode: vi.fn(), cancelPolling: vi.fn(), prepare: vi.fn(),
+  registerPolling: vi.fn((_nodeId: string, parentSignal?: AbortSignal) => parentSignal ?? new AbortController().signal),
+  cleanupPolling: vi.fn(),
   revision: 0, sequence: 0,
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
@@ -40,6 +42,8 @@ vi.mock('../../src/utils/cinematography', async (original) => ({
 vi.mock('../../src/services/pollManager', () => ({
   prepareMediaNodeGeneration: mocks.prepare,
   registerMediaNodeOperation: () => vi.fn(), completeMediaNodeTask: mocks.completeMedia,
+  registerNodePolling: mocks.registerPolling, cleanupNodePolling: mocks.cleanupPolling,
+  getPendingTasksForProject: () => [],
   pauseMediaTask: mocks.pauseMedia, pauseMediaNodeTask: mocks.pauseNode, cancelNodePolling: mocks.cancelPolling,
   isMediaTaskPausedError: () => false, beginComfyNodeDelivery: vi.fn(), completeComfyNodeTask: vi.fn(), pauseComfyNodeDelivery: vi.fn(),
 }));
@@ -132,6 +136,8 @@ describe('单次仅一张的普通图片模型批量', () => {
       expect(mocks.batch).not.toHaveBeenCalled();
       expect(mocks.store.commitToHistory).toHaveBeenCalledOnce();
       expect(mocks.persist).toHaveBeenCalledTimes(3);
+      expect(mocks.persist.mock.calls.every(([, , , , options]) => options.signal instanceof AbortSignal && !options.signal.aborted)).toBe(true);
+      expect(mocks.cleanupPolling.mock.calls.map(([nodeId]) => nodeId)).toEqual(ids);
       expect(mocks.completeMedia.mock.calls.map(([receipt]) => receipt.nodeId)).toEqual(ids);
       expect(mocks.store.recordOutputHistory).toHaveBeenCalledTimes(3);
       expect(mocks.store.nodes.every((node) => node.data.status === 'success')).toBe(true);
@@ -162,6 +168,27 @@ describe('单次仅一张的普通图片模型批量', () => {
     expect(mocks.cancelPolling).toHaveBeenCalledWith('source', true);
     await expect(pending).resolves.toMatchObject({ success: false });
     expect(mocks.image).toHaveBeenCalledOnce();
+    expect(mocks.store.nodes.every((node) => node.data.status === 'idle')).toBe(true);
+    expect(isImageBatchGenerating('source')).toBe(false);
+  });
+
+  it('取消当前图片保存会传递停止信号，保留原回执且不提交后续图片', async () => {
+    mocks.persist.mockImplementationOnce((_url: string, _project: string, _kind: string, _label: string, options: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('保存已停止', 'AbortError')), { once: true });
+    }));
+    const pending = executeGeneration('source');
+    await vi.waitFor(() => expect(mocks.persist).toHaveBeenCalledOnce());
+    const signal = mocks.persist.mock.calls[0][4].signal as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    expect(cancelImageBatchGeneration('source')).toBe(true);
+    await expect(pending).resolves.toMatchObject({ success: false });
+    expect(signal.aborted).toBe(true);
+    expect(mocks.cleanupPolling).toHaveBeenCalledWith('source', signal);
+    expect(mocks.pauseMedia).toHaveBeenCalledWith(imageResult('source').taskReceipt, expect.any(Error), 'delivery_pending');
+    expect(mocks.completeMedia).not.toHaveBeenCalled();
+    expect(mocks.store.recordOutputHistory).not.toHaveBeenCalled();
+    expect(mocks.image).toHaveBeenCalledOnce();
+    expect(mocks.batch).not.toHaveBeenCalled();
     expect(mocks.store.nodes.every((node) => node.data.status === 'idle')).toBe(true);
     expect(isImageBatchGenerating('source')).toBe(false);
   });

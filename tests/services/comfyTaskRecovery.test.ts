@@ -302,7 +302,9 @@ describe('ComfyUI 任务恢复合同', () => {
     await expect(executeComfyUIVideoGenerate(params)).resolves.toEqual({ url });
     mocks.persist.mockResolvedValue({ mediaUrl: 'asset://saved.mp4', sourceUrl: url, filePath: 'saved.mp4' });
     await resumeVideoNodeTask('n1');
-    expect(mocks.persist).toHaveBeenCalledWith(url, 'p1', 'ai-video', 'test', { mediaDownloadAccess: undefined });
+    expect(mocks.persist).toHaveBeenCalledWith(url, 'p1', 'ai-video', 'test', {
+      mediaDownloadAccess: undefined, signal: expect.any(AbortSignal),
+    });
     expect(useAppStore.getState().nodes[0].data.videoUrl).toBe('asset://saved.mp4');
     expect(pending()).toEqual([]);
     expect(promptCalls()).toHaveLength(1);
