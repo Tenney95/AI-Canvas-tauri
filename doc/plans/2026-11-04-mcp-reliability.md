@@ -11,7 +11,7 @@
 | 1. 配置截图脱敏 | `components/settings/McpControlSettings.tsx`、本计划、模块入口；`tests/components/mcpControlSettings.test.ts` | 已实现，待用户验收 |
 | 2. 请求生命周期取消 | `src-tauri/src/mcp/bridge.rs`、`services/mcp/mcpControlService.ts`、`scripts/ai-canvas-mcp.mjs`、`types/mcp.ts`（协议注释）、本计划；对应原生与控制层/适配器测试 | 已实现，待用户验收 |
 | 3. 完整业务结果 | `services/chat/agentRoundExecutor.ts`、`services/mcp/mcpControlService.ts`、本计划；对应执行器与 MCP 结果测试 | 已实现，待用户验收 |
-| 4. stdio 在途限额 | `src-tauri/src/mcp/bridge.rs`、本计划；原生内置测试 | 待实施 |
+| 4. stdio 在途限额 | `src-tauri/src/mcp/bridge.rs`、本计划；原生内置测试 | 已实现，待用户验收 |
 | 5. 外部连接保存串行化 | `services/mcp/mcpClientService.ts`、本计划；`tests/services/mcpClientService.test.ts` | 待实施 |
 | 6. 外部会话失效恢复 | `services/mcp/mcpClientService.ts`、本计划；`tests/services/mcpClientService.test.ts` | 待实施 |
 
@@ -22,6 +22,7 @@
 - 第 1 项：配置区域复用 `data-mcp-sensitive`；复制配置不变，显式关闭截图脱敏的既有选项不变。
 - 第 2 项：stdio 断连只取消本连接仍在等待的请求，原生/适配器超时传播取消；停止或替换 bridge 撤销同会话前端任务。登记发生在首次异步加载前，取消覆盖加载中和执行中；迟到请求由有界、带期限的取消记录拒绝。原生使用外部入口禁止的空请求 ID 发送单向生命周期通知，普通请求不能借此撤销其他连接。HTTP 既有主动取消保留，不承诺撤销已提交的外部副作用。
 - 第 3 项：普通 MCP 文本保留完整正文，按内容数组序列化后的 UTF-8 设置 512 KiB 交付预算；普通助手模型文本仍为 20,000 字符。超限读取返回明确交付错误，已成功写入保留成功并提示只读核实、不可重投；工具自身截断另附元信息。既有富内容仍沿用各自预算，完整正文不进入审计或消息持久化。
+- 第 4 项：stdio 每连接最多 8 个、同会话最多 16 个在途业务请求，额度持有到响应写完；超额立即返回忙碌。取消仅对本连接真实在途目标单向转发一次，不占业务额度、不创建等待线程。响应写等待超过 5 秒会报错并关闭连接，退出也关闭旧 socket。重复 ID 由 Entry 拒绝且原 ID 保留到响应写完，不替换原请求；线程创建失败同样释放连接和请求额度。
 
 ## 用户桌面验收
 

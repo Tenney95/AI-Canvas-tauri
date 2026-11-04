@@ -25,9 +25,9 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -44,7 +44,10 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// 固定端口后同时接多个客户端（Claude Desktop、Cursor…）是常态，仍留上限防跑飞。
 const MAX_CLIENTS: usize = 4;
+const MAX_CONNECTION_REQUESTS: usize = 8;
+const MAX_SESSION_REQUESTS: usize = 16;
 const READ_POLL_TIMEOUT: Duration = Duration::from_millis(500);
+const RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_ENDPOINT_PATH: &str = "/mcp";
 
 static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -213,19 +216,24 @@ fn write_shared_response(
     let mut stream = writer
         .lock()
         .map_err(|_| std::io::Error::other("MCP bridge 响应锁不可用"))?;
-    write_response(&mut stream, response)
+    let result = write_response(&mut stream, response);
+    if result.is_err() {
+        // 失败时可能已发出半帧；关闭双向连接，不能把后续 JSON 追加到残缺响应。
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    result
 }
 
 fn notify_frontend_cancellation(
     app: &AppHandle,
     info: &McpBridgeSessionInfo,
     request_id: Option<&str>,
-) {
+) -> bool {
     let params = match request_id {
         Some(request_id) => serde_json::json!({ "requestId": request_id }),
         None => serde_json::json!({ "scope": "session" }),
     };
-    let _ = app.emit_to(
+    app.emit_to(
         "main",
         MCP_REQUEST_EVENT,
         McpBridgeRequestEvent {
@@ -234,7 +242,39 @@ fn notify_frontend_cancellation(
             method: "requests/cancel".to_string(),
             params,
         },
-    );
+    )
+    .is_ok()
+}
+
+fn register_pending_request(
+    pending: &Mutex<HashMap<String, mpsc::SyncSender<FrontendResponse>>>,
+    request_id: String,
+    sender: mpsc::SyncSender<FrontendResponse>,
+) -> Result<(), String> {
+    let mut requests = pending
+        .lock()
+        .map_err(|_| "MCP bridge 请求锁不可用".to_string())?;
+    match requests.entry(request_id) {
+        Entry::Vacant(entry) => {
+            entry.insert(sender);
+            Ok(())
+        }
+        Entry::Occupied(_) => Err("MCP bridge 请求 ID 重复".to_string()),
+    }
+}
+
+fn claim_connection_cancellation(
+    pending: &Mutex<HashMap<String, mpsc::SyncSender<FrontendResponse>>>,
+    cancelled: &mut HashSet<String>,
+    target: &str,
+) -> (bool, bool) {
+    let Ok(requests) = pending.lock() else {
+        return (false, false);
+    };
+    // 此集合最多保留本连接的在途请求，不为重复/未知目标创建额外任务或等待线程。
+    cancelled.retain(|id| requests.contains_key(id));
+    let known = requests.contains_key(target);
+    (known, known && cancelled.insert(target.to_string()))
 }
 
 fn remove_connection_requests(
@@ -279,13 +319,16 @@ fn handle_connection(
     info: McpBridgeSessionInfo,
     token: String,
     active: Arc<AtomicBool>,
-    connections: Arc<AtomicUsize>,
+    session_requests: Arc<AtomicUsize>,
     pending: Arc<Mutex<HashMap<String, mpsc::SyncSender<FrontendResponse>>>>,
 ) {
-    let _connection_guard = ClientConnectionGuard(connections);
     let connection_seq = CONNECTION_SEQUENCE.fetch_add(1, Ordering::AcqRel);
+    let connection_requests = Arc::new(AtomicUsize::new(0));
     // Windows accept 会继承监听 socket 的非阻塞模式；连接线程使用读超时轮询。
     if stream.set_nonblocking(false).is_err() {
+        return;
+    }
+    if stream.set_write_timeout(Some(RESPONSE_WRITE_TIMEOUT)).is_err() {
         return;
     }
     let Ok(read_stream) = stream.try_clone() else {
@@ -297,6 +340,7 @@ fn handle_connection(
     }
     let mut reader = BufReader::new(read_stream);
     let mut partial_frame = Vec::new();
+    let mut cancelled_targets = HashSet::new();
 
     while active.load(Ordering::Acquire) {
         let frame = match read_request_frame(&mut reader, &mut partial_frame) {
@@ -348,29 +392,70 @@ fn handle_connection(
         };
 
         let request_id = scope_request_id(&info.session_id, connection_seq, &request.id);
-        // 取消请求指向的也是同一连接内的请求键，前端直接按键取消即可。
-        let mut params = request.params;
+        let params = request.params;
         if request.method == "requests/cancel" {
-            let target = params
+            let Some(target) = params
                 .get("requestId")
                 .and_then(Value::as_str)
-                .map(|target| scope_request_id(&info.session_id, connection_seq, target));
-            if let (Some(target), Some(map)) = (target, params.as_object_mut()) {
-                map.insert("requestId".to_string(), Value::String(target));
+                .filter(|target| !target.is_empty() && target.len() <= 128)
+                .map(|target| scope_request_id(&info.session_id, connection_seq, target))
+            else {
+                let _ = write_shared_response(
+                    &writer,
+                    &response_error(request.id, "MCP_REQUEST_INVALID", "MCP 取消目标 ID 无效"),
+                );
+                continue;
+            };
+            let (known, should_notify) =
+                claim_connection_cancellation(&pending, &mut cancelled_targets, &target);
+            if should_notify && !notify_frontend_cancellation(&app, &info, Some(&target)) {
+                cancelled_targets.remove(&target);
+                let _ = write_shared_response(
+                    &writer,
+                    &response_error(
+                        request.id,
+                        "MCP_FRONTEND_UNAVAILABLE",
+                        "AI Canvas 主窗口尚未就绪",
+                    ),
+                );
+                continue;
             }
-        }
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let inserted = pending
-            .lock()
-            .map(|mut requests| requests.insert(request_id.clone(), sender).is_none())
-            .unwrap_or(false);
-        if !inserted {
+            // 控制路径先发撤销、立即应答，业务额度已满时仍可取消，不另建响应线程。
             let _ = write_shared_response(
                 &writer,
-                &response_error(request.id, "MCP_DUPLICATE_ID", "MCP bridge 请求 ID 重复"),
+                &OutgoingResponse {
+                    version: PROTOCOL_VERSION,
+                    id: request.id,
+                    ok: true,
+                    result: Some(serde_json::json!({ "cancelled": known })),
+                    error: None,
+                },
             );
             continue;
         }
+        let Some(request_slot) = try_acquire_request_slot(&session_requests, &connection_requests)
+        else {
+            let _ = write_shared_response(
+                &writer,
+                &response_error(
+                    request.id,
+                    "MCP_REQUEST_LIMIT_REACHED",
+                    format!(
+                        "MCP 请求繁忙：每连接最多 {MAX_CONNECTION_REQUESTS} 个、会话最多 {MAX_SESSION_REQUESTS} 个在途请求；可取消已有请求后重试"
+                    ),
+                ),
+            );
+            continue;
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        if let Err(message) = register_pending_request(&pending, request_id.clone(), sender) {
+            let _ = write_shared_response(
+                &writer,
+                &response_error(request.id, "MCP_DUPLICATE_ID", message),
+            );
+            continue;
+        }
+        cancelled_targets.remove(&request_id);
 
         let emitted = app.emit_to(
             "main",
@@ -405,10 +490,9 @@ fn handle_connection(
         let spawned = thread::Builder::new()
             .name("ai-canvas-mcp-response".to_string())
             .spawn(move || {
+                // 即使会话撤销移除 pending，也保留额度到写完或写超时，防慢客户端堆积线程。
+                let _request_slot = request_slot;
                 let frontend_response = receiver.recv_timeout(RESPONSE_TIMEOUT);
-                if let Ok(mut requests) = response_pending.lock() {
-                    requests.remove(&response_request_id);
-                }
                 if matches!(frontend_response, Err(mpsc::RecvTimeoutError::Timeout)) {
                     notify_frontend_cancellation(
                         &response_app,
@@ -443,6 +527,9 @@ fn handle_connection(
                     ),
                 };
                 let _ = write_shared_response(&response_writer, &response);
+                if let Ok(mut requests) = response_pending.lock() {
+                    requests.remove(&response_request_id);
+                }
             });
         if spawned.is_err() {
             if let Ok(mut requests) = pending.lock() {
@@ -460,6 +547,8 @@ fn handle_connection(
         }
     }
 
+    // 无锁关闭同一底层 socket，停止/断连时让仍在写响应的线程立即退出。
+    let _ = reader.get_ref().shutdown(Shutdown::Both);
     // 只撤销这个 TCP 连接仍在等待的请求，不影响同会话中的其他客户端。
     let connection_prefix = format!("{}:{connection_seq:x}:", info.session_id);
     for request_id in remove_connection_requests(&pending, &connection_prefix) {
@@ -475,6 +564,43 @@ impl Drop for ClientConnectionGuard {
     }
 }
 
+struct RequestSlotGuard {
+    session: Arc<AtomicUsize>,
+    connection: Arc<AtomicUsize>,
+}
+
+impl Drop for RequestSlotGuard {
+    fn drop(&mut self) {
+        self.connection.fetch_sub(1, Ordering::AcqRel);
+        self.session.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire_request_slot(
+    session: &Arc<AtomicUsize>,
+    connection: &Arc<AtomicUsize>,
+) -> Option<RequestSlotGuard> {
+    if !try_acquire_counter(session, MAX_SESSION_REQUESTS) {
+        return None;
+    }
+    if !try_acquire_counter(connection, MAX_CONNECTION_REQUESTS) {
+        session.fetch_sub(1, Ordering::AcqRel);
+        return None;
+    }
+    Some(RequestSlotGuard {
+        session: Arc::clone(session),
+        connection: Arc::clone(connection),
+    })
+}
+
+fn try_acquire_counter(counter: &AtomicUsize, limit: usize) -> bool {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < limit).then_some(current + 1)
+        })
+        .is_ok()
+}
+
 /// 请求键要带连接号：多个客户端各自生成 ID，重名会被误判成重复请求。
 fn scope_request_id(session_id: &str, connection: u64, request_id: &str) -> String {
     format!("{session_id}:{connection:x}:{request_id}")
@@ -482,11 +608,7 @@ fn scope_request_id(session_id: &str, connection: u64, request_id: &str) -> Stri
 
 /// 占一个客户端名额；超上限时立刻退回，由调用方拒绝该连接。
 fn try_acquire_client_slot(connections: &AtomicUsize) -> bool {
-    if connections.fetch_add(1, Ordering::AcqRel) < MAX_CLIENTS {
-        return true;
-    }
-    connections.fetch_sub(1, Ordering::AcqRel);
-    false
+    try_acquire_counter(connections, MAX_CLIENTS)
 }
 
 fn forward_frontend_request(
@@ -498,14 +620,7 @@ fn forward_frontend_request(
     params: Value,
 ) -> Result<Value, String> {
     let (sender, receiver) = mpsc::sync_channel(1);
-    let inserted = pending
-        .lock()
-        .map_err(|_| "MCP bridge 请求锁不可用".to_string())?
-        .insert(request_id.clone(), sender)
-        .is_none();
-    if !inserted {
-        return Err("MCP bridge 请求 ID 重复".to_string());
-    }
+    register_pending_request(pending, request_id.clone(), sender)?;
     if app
         .emit_to(
             "main",
@@ -850,6 +965,7 @@ pub fn mcp_bridge_start(
     };
     let active = Arc::new(AtomicBool::new(true));
     let connections = Arc::new(AtomicUsize::new(0));
+    let session_requests = Arc::new(AtomicUsize::new(0));
     let pending = Arc::new(Mutex::new(HashMap::new()));
     let cancellation = CancellationToken::new();
 
@@ -893,18 +1009,20 @@ pub fn mcp_bridge_start(
                             let connection_info = thread_info.clone();
                             let connection_token = token.clone();
                             let connection_active = Arc::clone(&active);
-                            let connection_connected = Arc::clone(&connections);
+                            let connection_guard = ClientConnectionGuard(Arc::clone(&connections));
+                            let connection_requests = Arc::clone(&session_requests);
                             let connection_pending = Arc::clone(&pending);
                             let _ = thread::Builder::new()
                                 .name("ai-canvas-mcp-client".to_string())
                                 .spawn(move || {
+                                    let _connection_guard = connection_guard;
                                     handle_connection(
                                         connection_app,
                                         stream,
                                         connection_info,
                                         connection_token,
                                         connection_active,
-                                        connection_connected,
+                                        connection_requests,
                                         connection_pending,
                                     );
                                 });
@@ -1011,7 +1129,9 @@ pub fn mcp_bridge_respond(
         .pending
         .lock()
         .map_err(|_| "MCP bridge 请求锁不可用".to_string())?
-        .remove(&response.request_id)
+        // 等待线程拥有清理权；直到响应发送结束都不能让同 ID 新请求替换这条记录。
+        .get(&response.request_id)
+        .cloned()
         .ok_or_else(|| "MCP bridge 请求不存在或已结束".to_string())?;
     sender
         .try_send(FrontendResponse {
@@ -1309,6 +1429,130 @@ mod tests {
         // 连接结束时 guard 归还名额
         drop(ClientConnectionGuard(Arc::clone(&connections)));
         assert!(try_acquire_client_slot(&connections));
+    }
+
+    #[test]
+    fn request_slots_limit_connections_and_the_whole_session_without_leaking_rejections() {
+        let session = Arc::new(AtomicUsize::new(0));
+        let first = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(AtomicUsize::new(0));
+        let third = Arc::new(AtomicUsize::new(0));
+        let mut first_slots: Vec<_> = (0..MAX_CONNECTION_REQUESTS)
+            .map(|_| try_acquire_request_slot(&session, &first).unwrap())
+            .collect();
+        assert!(try_acquire_request_slot(&session, &first).is_none());
+        assert_eq!(session.load(Ordering::Acquire), MAX_CONNECTION_REQUESTS);
+
+        let second_slots: Vec<_> = (0..MAX_CONNECTION_REQUESTS)
+            .map(|_| try_acquire_request_slot(&session, &second).unwrap())
+            .collect();
+        assert_eq!(session.load(Ordering::Acquire), MAX_SESSION_REQUESTS);
+        assert!(try_acquire_request_slot(&session, &third).is_none());
+        assert_eq!(third.load(Ordering::Acquire), 0);
+
+        drop(first_slots.pop());
+        let replacement = try_acquire_request_slot(&session, &third).unwrap();
+        drop(first_slots);
+        drop(second_slots);
+        drop(replacement);
+        assert_eq!(session.load(Ordering::Acquire), 0);
+        assert_eq!(first.load(Ordering::Acquire), 0);
+        assert_eq!(second.load(Ordering::Acquire), 0);
+        assert_eq!(third.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn receiving_a_frontend_response_does_not_release_its_response_thread_slot() {
+        let session = Arc::new(AtomicUsize::new(0));
+        let connection = Arc::new(AtomicUsize::new(0));
+        let slots: Vec<_> = (0..MAX_CONNECTION_REQUESTS)
+            .map(|_| try_acquire_request_slot(&session, &connection).unwrap())
+            .collect();
+        let pending = Mutex::new(HashMap::new());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        register_pending_request(&pending, "response-writing".to_string(), sender).unwrap();
+        let sender = pending
+            .lock()
+            .unwrap()
+            .get("response-writing")
+            .unwrap()
+            .clone();
+        sender
+            .try_send(FrontendResponse {
+                ok: true,
+                result: None,
+                error: None,
+            })
+            .unwrap();
+        assert!(receiver.try_recv().unwrap().ok);
+        // 会话停止甚至可以清掉 pending；响应线程仍占额度，不能靠空 map 绕过上限。
+        pending.lock().unwrap().clear();
+        assert!(try_acquire_request_slot(&session, &connection).is_none());
+        drop(slots);
+        assert!(try_acquire_request_slot(&session, &connection).is_some());
+    }
+
+    #[test]
+    fn duplicate_request_keeps_the_original_sender_and_response() {
+        let pending = Mutex::new(HashMap::new());
+        let (original, original_receiver) = mpsc::sync_channel(1);
+        let (duplicate, duplicate_receiver) = mpsc::sync_channel(1);
+        register_pending_request(&pending, "same-id".to_string(), original).unwrap();
+
+        assert!(register_pending_request(&pending, "same-id".to_string(), duplicate)
+            .unwrap_err()
+            .contains("重复"));
+        assert!(matches!(
+            original_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            duplicate_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        let original = pending.lock().unwrap().get("same-id").unwrap().clone();
+        original
+            .try_send(FrontendResponse {
+                ok: true,
+                result: Some(serde_json::json!({ "original": true })),
+                error: None,
+            })
+            .unwrap();
+        assert_eq!(
+            original_receiver.try_recv().unwrap().result,
+            Some(serde_json::json!({ "original": true }))
+        );
+        // frontend 已返回也不允许同 ID 插队，直到原响应写完由等待线程清理。
+        let (replacement, _) = mpsc::sync_channel(1);
+        assert!(register_pending_request(&pending, "same-id".to_string(), replacement).is_err());
+    }
+
+    #[test]
+    fn cancellation_is_forwarded_once_only_for_a_known_connection_request() {
+        let pending = Mutex::new(HashMap::new());
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        register_pending_request(&pending, "session:a:request".to_string(), sender).unwrap();
+        let mut cancelled = HashSet::new();
+        assert_eq!(
+            claim_connection_cancellation(&pending, &mut cancelled, "session:a:request"),
+            (true, true)
+        );
+        assert_eq!(
+            claim_connection_cancellation(&pending, &mut cancelled, "session:a:request"),
+            (true, false)
+        );
+        assert_eq!(
+            claim_connection_cancellation(&pending, &mut cancelled, "session:b:request"),
+            (false, false)
+        );
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(pending.lock().unwrap().len(), 1);
+        pending.lock().unwrap().clear();
+        assert_eq!(
+            claim_connection_cancellation(&pending, &mut cancelled, "unknown"),
+            (false, false)
+        );
+        assert!(cancelled.is_empty());
     }
 
     #[test]
