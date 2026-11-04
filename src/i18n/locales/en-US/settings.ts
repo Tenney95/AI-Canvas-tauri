@@ -2,6 +2,10 @@
  * 设置面板：语言与启动 / 画布背景 / 画布交互 / 界面偏好
  */
 const settings = {
+  '积分': 'credits',
+  '算力': 'compute credits',
+  '账户剩余额度；打开设置或更换连接后更新': 'Remaining account balance; refreshed when settings open or the connection changes',
+  '当前 Key 剩余额度；不代表账户总余额': 'Remaining credit for this key; not the total account balance',
   '试跑的视频数值参数必须是有限数值，请检查时长、帧率、帧数和长边像素': 'Video trial numeric parameters must be finite numbers. Check duration, frame rate, frame count and long-edge pixels.',
   "请求成功，但没有解析出有效媒体结果地址；请检查结果 URL、Base64 或二进制下载映射": "The request succeeded, but no valid media URL was extracted. Check the result URL, Base64 or binary download mapping.",
   "请求成功，但实际返回的内联媒体 MIME 类型与模型类别不匹配，请检查厂商响应与结果映射": "The request succeeded, but the inline media MIME type does not match the model category. Check the provider response and result mapping.",

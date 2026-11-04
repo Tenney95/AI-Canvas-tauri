@@ -258,7 +258,7 @@ describe('万象 API 内置目录与连接身份', () => {
     expect(definition?.models?.filter((model) => model.category === 'text').map((model) => model.id)).toEqual([
       'gemini-3.8-flash', 'gemini-4-argon', 'gpt-6.1-sol', 'claude-opus-5-5',
     ]);
-    expect(definition?.models).toHaveLength(21);
+    expect(definition?.models).toHaveLength(24);
     expect(definition?.models?.filter((model) => model.category === 'image').map((model) => model.id)).toEqual([...RELAYON_IMAGE_MODEL_IDS]);
     expect(definition?.models?.filter((model) => model.category === 'video').map((model) => model.id)).toEqual([...RELAYON_VIDEO_MODEL_IDS]);
     expect(definition?.models?.filter((model) => model.category === 'text').every((model) => model.executionProfile?.preset === 'openai-chat')).toBe(true);
@@ -275,7 +275,13 @@ describe('万象 API 内置目录与连接身份', () => {
       'gemini-3.8-flash', 'gemini-4-argon',
     ]);
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'image')).toHaveLength(9);
-    expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video')).toHaveLength(8);
+    expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video')).toHaveLength(11);
+    for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1']) {
+      expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video').some((model) => model.id === id)).toBe(true);
+      for (const group of ['image', 'default', 'GPTpro号池', 'Gemini号池', 'ClaudeMax号池']) {
+        expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, group).some((model) => model.id === id)).toBe(false);
+      }
+    }
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'default')).toEqual([]);
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, '其他分组')).toEqual([]);
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST)).toEqual(RELAYON_MODEL_MANIFEST);
@@ -302,6 +308,24 @@ describe('万象 API 内置目录与连接身份', () => {
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ credentials: 'omit' });
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('headers');
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('body');
+  });
+
+  it('新增三款视频只按 video 分组及当前 Key 实际权限启用', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'minimax-h3' }, { id: 'sd-2.0-c3' }, { id: 'sd-2.5-c1' }] }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: [
+        { model_name: 'minimax-h3', enable_groups: ['video'] },
+        { model_name: 'sd-2.0-c3', enable_groups: ['video'] },
+        { model_name: 'sd-2.5-c1', enable_groups: ['video'] },
+      ] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await fetchProviderModelCatalog({ providerId: 'my-video-group', config: {
+      name: '视频组', catalogId: 'relayonapi', relayonGroup: 'video', apiKey: 'video-group-fixture',
+    } });
+    expect(result.models.map(({ id }) => id)).toEqual(['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1']);
+    expect(result.models.every((model) => model.category === 'video' && model.provider === 'my-video-group')).toBe(true);
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer video-group-fixture' });
+    expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('headers');
   });
 
   it.each([null, { success: false, data: [] }, { success: true, data: [{ model_name: 'x' }] }])(
@@ -355,7 +379,7 @@ describe('万象 API 内置目录与连接身份', () => {
       method: 'GET', headers: expect.objectContaining({ Authorization: 'Bearer alias-fixture-key' }),
     }));
     expect(result).toMatchObject({ source: 'remote', resolvedBaseUrl: 'https://relayonapi.com/v1' });
-    expect(result.models).toHaveLength(21);
+    expect(result.models).toHaveLength(24);
     expect(result.models).toEqual(expect.arrayContaining(RELAYON_MODEL_MANIFEST.map((model) => ({
       ...model, provider: 'relayon-alias',
     }))));
@@ -381,7 +405,7 @@ describe('万象 API 内置目录与连接身份', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const definition = getProviderDefinition('relayonapi');
-    expect(definition?.models).toHaveLength(21);
+    expect(definition?.models).toHaveLength(24);
     await expect(fetchProviderModelCatalog({ providerId: 'relayonapi',
       config: { name: '万象', catalogId: 'relayonapi', apiKey: '' },
       fallbackModels: [...RELAYON_MODEL_MANIFEST] })).rejects.toThrow();

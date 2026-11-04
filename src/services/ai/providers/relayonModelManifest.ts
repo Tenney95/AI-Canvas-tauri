@@ -1,5 +1,6 @@
 /**
- * RelayOnAPI 已核对目录（2026-10-27）。来源：https://relayonapi.com/docs。
+ * RelayOnAPI 已核对目录（基础 2026-10-27；新视频补充 2026-11-04）。来源：https://relayonapi.com/docs。
+ * 2.5 C1 能力文档暂不可用，按用户确认沿用现有 2.5 A 参数映射，真实渠道尚待验收。
  * 媒体结果映射采用用户确认的 OpenAI 兼容合同，尚未进行厂商真实生成验收。
  * 普通 Flare／Sunburst 的质量和背景候选采用用户确认的兼容选项，未据此宣称平台实测通过。
  * 其余型号不推断质量、背景或未公开的首尾帧合同。
@@ -30,6 +31,7 @@ export const RELAYON_IMAGE_MODEL_IDS = [
 export const RELAYON_VIDEO_MODEL_IDS = [
   'doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-mini-260615',
   'doubao-seedance-2-5-260628', 'sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2',
+  'minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1',
 ] as const;
 
 export const RELAYON_VIDEO_RESULT_URL_PATHS = ['url', 'video_url', 'content.video_url'] as const;
@@ -142,25 +144,40 @@ function officialVideo(id: string, name: string, maxDuration: number, resolution
   });
 }
 
-function referenceVideo(id: string, maxDuration: number): ProviderModelSelection {
-  return videoModel(id, `Seedance ${id === 'sd-2.0-A' ? '2.0' : '2.5'} A`, {
+function referenceVideo(
+  id: string, maxDuration: number, overrides: Partial<VideoModelCapability> = {},
+  name = `Seedance ${id === 'sd-2.0-A' ? '2.0' : '2.5'} A`,
+): ProviderModelSelection {
+  return videoModel(id, name, {
     operations: ['text-to-video', 'image-to-video', 'video-to-video'], minDuration: 4, maxDuration,
     resolutions: ['480p', '720p', '1080p'], defaultResolution: '480p', ratios: ['16:9'], supportsAudio: true,
     // 应用首批只开放已核对的组合，不将未公开的纯音频输入当成厂商能力。
     supportsStandaloneAudio: false,
+    ...overrides,
   }, { model: '{{model}}', prompt: '{{prompt}}', seconds: '{{durationText}}',
     output: { resolution: '{{resolution}}', aspect_ratio: '{{aspectRatio}}' },
     generate_audio: '{{generateAudio}}', references: referenceItems(true) });
 }
 
-function cVideo(id: string, minDuration: number, maxVideoReferences: number): ProviderModelSelection {
-  return videoModel(id, `Seedance 2.0 ${id.endsWith('c1') ? 'C1' : 'C2'}`, {
+function cVideo(
+  id: string, name: string, minDuration: number, maxVideoReferences: number, overrides: Partial<VideoModelCapability> = {},
+): ProviderModelSelection {
+  const model = videoModel(id, name, {
     operations: maxVideoReferences ? ['text-to-video', 'image-to-video', 'video-to-video'] : ['text-to-video', 'image-to-video'],
     minDuration, maxDuration: 15, resolutions: ['720p'], defaultResolution: '720p',
     ratios: ['16:9', '9:16', '4:3', '3:4', '1:1'], maxImageReferences: 9, maxVideoReferences, maxAudioReferences: 3,
     supportsStandaloneAudio: false,
+    ...overrides,
   }, { model: '{{model}}', prompt: '{{prompt}}', duration: '{{duration}}', resolution: '{{resolution}}',
     aspect_ratio: '{{aspectRatio}}', references: referenceItems(false) });
+  // H3 文档明确提供受保护的二进制下载；不为其他渠道猜测 /content 合同。
+  const protocol = model.executionProfile?.protocol;
+  if (id === 'minimax-h3') model.inputModalities = ['text', 'image', 'video', 'audio'];
+  if (id === 'sd-2.0-c3') model.inputModalities = ['text', 'image', 'audio'];
+  if (id === 'minimax-h3' && protocol?.version === 2 && protocol.poll) {
+    protocol.poll.response.result = { download: { method: 'GET', path: '/videos/{{submit.id}}/content' }, mimeType: 'video/mp4' };
+  }
+  return model;
 }
 
 export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
@@ -180,7 +197,14 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   officialVideo('doubao-seedance-2-0-mini-260615', 'Doubao Seedance 2.0 Mini', 15, ['480p', '720p']),
   officialVideo('doubao-seedance-2-5-260628', 'Doubao Seedance 2.5', 30, ['480p', '720p', '1080p']),
   referenceVideo('sd-2.0-A', 15), referenceVideo('sd-2.5-A', 30),
-  cVideo('sd-2.0-c1', 10, 3), cVideo('sd-2.0-c2', 4, 0),
+  cVideo('sd-2.0-c1', 'Seedance 2.0 C1', 10, 3), cVideo('sd-2.0-c2', 'Seedance 2.0 C2', 4, 0),
+  cVideo('minimax-h3', 'MiniMax H3', 4, 3, { resolutions: ['480p', '720p', '1K', '2K'] }),
+  cVideo('sd-2.0-c3', 'Seedance 2.0 C3', 4, 0),
+  {
+    ...referenceVideo('sd-2.5-c1', 30, { resolutions: ['720p'], defaultResolution: '720p',
+      maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 }, 'Seedance 2.5 C1'),
+    inputModalities: ['text', 'image', 'video', 'audio'],
+  },
 ];
 
 const MODEL_BY_ID = new Map(RELAYON_MODEL_MANIFEST.map((model) => [model.id, model]));
@@ -300,7 +324,7 @@ export function relayonImageVariables(modelId: string, variables: ModelProtocolV
     imageUrls: urls.length ? urls : undefined };
 }
 
-/** 普通参考按类别原序传递；C1 转换为 @图／视频／音频编号，C2 保留图片／音频编号。 */
+/** 普通参考按类别原序传递；C1、H3、C3 使用 @ 编号，C2 保留图片／音频编号。 */
 export function relayonVideoVariables(modelId: string, variables: ModelProtocolVariables): ModelProtocolVariables {
   const capability = MODEL_BY_ID.get(modelId)?.videoCapability;
   if (!capability) throw new Error(`RelayOnAPI 视频模型“${modelId}”尚未适配`);
@@ -317,6 +341,19 @@ export function relayonVideoVariables(modelId: string, variables: ModelProtocolV
   ] as const) {
     if (maximum !== undefined && urls.length > maximum) throw new Error(`RelayOnAPI 模型“${modelId}”最多接受 ${maximum} 个${label}`);
   }
+  if (modelId === 'minimax-h3' && imageUrls.length + videoUrls.length + audioUrls.length > 12) {
+    throw new Error('RelayOnAPI MiniMax H3 的图片、视频与音频参考合计最多 12 份，请减少参考素材');
+  }
+  if (modelId === 'sd-2.0-c3' && audioUrls.length) {
+    const duration = Number(variables.duration ?? variables.durationText ?? capability.defaultDuration);
+    const ratio = String(variables.aspectRatio ?? capability.defaultRatio);
+    if (![5, 10, 15].includes(duration)) {
+      throw new Error(`RelayOnAPI C3 带参考音频时不支持 ${duration} 秒；请在视频参数中将时长改为 5、10 或 15 秒`);
+    }
+    if (!['16:9', '9:16', '1:1'].includes(ratio)) {
+      throw new Error(`RelayOnAPI C3 带参考音频时不支持比例 ${ratio}；请在视频参数中改为 16:9、9:16 或 1:1`);
+    }
+  }
   if (audioUrls.length && !imageUrls.length && !videoUrls.length && capability.supportsStandaloneAudio === false) {
     throw new Error('RelayOnAPI 当前应用接入尚未开放仅使用参考音频生成视频，请同时提供图片或视频参考');
   }
@@ -327,7 +364,24 @@ export function relayonVideoVariables(modelId: string, variables: ModelProtocolV
       Number(index) >= 1 && Number(index) <= counts[kind] ? `@${kind === '图片' ? '图' : kind}${index}` : label
     ));
   }
+  if (modelId === 'minimax-h3' || modelId === 'sd-2.0-c3') {
+    const counts: Record<string, number> = { 图片: imageUrls.length, 图: imageUrls.length, 视频: videoUrls.length, 音频: audioUrls.length };
+    if (typeof prompt === 'string') prompt = prompt.replace(/@?(图片|图|视频|音频)(\d+)/gu, (label, kind: string, index: string) => (
+      Number(index) >= 1 && Number(index) <= counts[kind] ? `@${kind === '图片' || kind === '图' ? '图' : kind}${Number(index)}` : label
+    ));
+  }
+  let resolution = variables.resolution;
+  if (modelId === 'minimax-h3') {
+    const mentioned = new Set(typeof prompt === 'string' ? Array.from(prompt.matchAll(/@图(\d+)/gu), (match) => Number(match[1])) : []);
+    for (let index = 1; index <= imageUrls.length; index += 1) {
+      if (!mentioned.has(index)) throw new Error(`RelayOnAPI MiniMax H3 的参考图 ${index} 未在提示词中引用，请补充 @图${index}`);
+    }
+    const requested = String(resolution ?? capability.defaultResolution).toLowerCase();
+    if (!['480p', '720p', '1k', '2k'].includes(requested)) throw new Error('RelayOnAPI MiniMax H3 分辨率仅支持 480p、720p、1K 或 2K');
+    resolution = requested;
+  }
   return { ...variables, prompt,
+    ...(modelId === 'minimax-h3' ? { resolution } : {}),
     referenceImageUrls: imageUrls.length ? imageUrls : undefined,
     referenceVideoUrls: videoUrls.length ? videoUrls : undefined,
     referenceAudioUrls: audioUrls.length ? audioUrls : undefined };

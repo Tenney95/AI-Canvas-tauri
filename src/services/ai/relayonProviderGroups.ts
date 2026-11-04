@@ -22,7 +22,7 @@ const GROUP_PRESETS: Record<string, readonly string[]> = {
     'image-2.5-sunburst-01', 'nano-banana-2', 'nano-banana-2.1', 'nano-banana-pro', 'Seedream 5.0 Pro'],
   video: ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128',
     'doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-5-260628',
-    'sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2'],
+    'sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2', 'minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1'],
 };
 
 export function getRelayonGroupPresetModels(models: readonly ProviderModelSelection[], group?: string): ProviderModelSelection[] {

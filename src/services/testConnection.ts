@@ -5,7 +5,7 @@ import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
 import type { ChatApiProtocol, WebSearchProviderId } from '../types';
 import { corsSafeFetch } from './ai/httpTransport';
 import { getProviderDefinition } from './ai/providerCatalogService';
-import { baseUrlCandidates } from './ai/providerBaseUrl';
+import { baseUrlCandidates, normalizeBaseUrl } from './ai/providerBaseUrl';
 import { getChatApiHeaders, resolveChatApiProtocol } from './ai/chatApiProtocol';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -19,6 +19,113 @@ export interface TestResult {
   unsupported?: boolean;
   /** 实际验证通过的接口地址；与用户填的不同（如补了 /v1）时调用方应回写。 */
   baseUrl?: string;
+}
+
+/** 仅供设置面板展示，不进入连接配置、用量账本或导出。 */
+export interface ProviderBalance {
+  amount: string;
+  unit: 'GP' | '积分' | '算力' | 'USD' | '';
+  scope: 'account' | 'key';
+}
+
+function balanceAmount(value: unknown): string | undefined {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(value.trim()))) return undefined;
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 }).format(amount) : undefined;
+}
+
+function readBalance(value: unknown, unit: ProviderBalance['unit'], scope: ProviderBalance['scope']): ProviderBalance | undefined {
+  const amount = balanceAmount(value);
+  return amount === undefined ? undefined : { amount, unit, scope };
+}
+
+interface BalanceEndpoint {
+  path: string;
+  bodyKey?: 'apiKey' | 'apikey';
+  /** 根接口只移除已知 API 后缀，保留用户代理地址中的路径前缀。 */
+  root?: boolean;
+  read: (payload: Record<string, unknown>) => ProviderBalance | undefined;
+}
+
+function readUserCredits(payload: Record<string, unknown>): ProviderBalance | undefined {
+  if (payload.success !== true) return undefined;
+  return payload.unlimited_quota === true ? { amount: '∞', unit: '', scope: 'account' }
+    : readBalance(payload.remain_credits, '积分', 'account');
+}
+
+// 新厂商先核实文档的鉴权、字段、单位和账户/Key 口径，再登记；不探测相似站点的路径。
+const BALANCE_ENDPOINTS: Readonly<Record<string, BalanceEndpoint>> = {
+  sora2u: { path: '/api/v1/credits', root: true,
+    read: (payload) => payload.success === true && payload.currency === 'GP' ? readBalance(payload.balance, 'GP', 'account') : undefined },
+  apimart: { path: '/user/balance', read: readUserCredits },
+  toapis: { path: '/user/balance', read: readUserCredits },
+  libapi: { path: '/skills/balance', read: (payload) => {
+    const credits = payload.credits as Record<string, unknown> | undefined;
+    const available = credits?.unit === 'CREDIT' ? readBalance(credits.available, '算力', 'account') : undefined;
+    if (available) return available;
+    // 美元字段带 $，不能把原始美元数字标为站内算力，也不能用总额冒充可用余额。
+    return typeof payload.available_balance === 'string' && /^\$-?\d+(?:\.\d+)?$/.test(payload.available_balance)
+      ? readBalance(payload.available_balance.slice(1), 'USD', 'account') : undefined;
+  } },
+  'aigc-si': { path: '/user/balance', read: (payload) => payload.object === 'user.balance'
+    ? readBalance(payload.balance, '积分', 'account') : undefined },
+  grsai: { path: '/client/openapi/getAPIKeyCredits', root: true, bodyKey: 'apiKey', read: (payload) => payload.code === 0
+    ? readBalance((payload.data as Record<string, unknown> | undefined)?.credits, '积分', 'key') : undefined },
+  'runninghub-model': { path: '/uc/openapi/accountStatus', root: true, bodyKey: 'apikey', read: (payload) => payload.code === 0
+    ? readBalance((payload.data as Record<string, unknown> | undefined)?.remainCoins, '积分', 'account') : undefined },
+};
+// 工作流和模型密钥分别查询，保持当前站点和凭据身份，不互相回退或相加。
+const RUNNINGHUB_BALANCE_ENDPOINT = BALANCE_ENDPOINTS['runninghub-model'];
+
+function balanceEndpoint(provider: string): BalanceEndpoint | undefined {
+  return provider === 'runninghub' ? RUNNINGHUB_BALANCE_ENDPOINT
+    : Object.hasOwn(BALANCE_ENDPOINTS, provider) ? BALANCE_ENDPOINTS[provider] : undefined;
+}
+
+export function supportsProviderBalance(provider: string): boolean {
+  return !!balanceEndpoint(provider);
+}
+
+/** 独立无计费查询；失败不影响连接状态，不调用模型、不获取网页账户令牌。 */
+export async function queryProviderBalance(
+  provider: string, apiKey: string, baseUrl?: string, signal?: AbortSignal,
+): Promise<ProviderBalance | undefined> {
+  const endpoint = balanceEndpoint(provider);
+  if (!endpoint || !apiKey.trim() || signal?.aborted) return undefined;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, 12_000);
+  try {
+    const definition = getProviderDefinition(provider === 'runninghub' ? 'runninghub-model' : provider);
+    const base = normalizeBaseUrl(baseUrl || definition?.defaultBaseUrl);
+    if (!base) return undefined;
+    const root = base.replace(/\/(?:v1|openapi\/v2)$/i, '');
+    const apiBase = /\/v\d[^/]*$/i.test(base) ? base : `${base}/v1`;
+    const url = new URL(`${endpoint.root ? root : apiBase}${endpoint.path}`);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return undefined;
+    if (provider === 'sora2u') {
+      for (const [name, value] of Object.entries(definition?.requestQuery ?? {})) url.searchParams.set(name, value);
+    }
+    const response = await corsSafeFetch(url.toString(), {
+      method: endpoint.bodyKey ? 'POST' : 'GET',
+      headers: endpoint.bodyKey ? { 'Content-Type': 'application/json' } : { Authorization: `Bearer ${apiKey.trim()}` },
+      ...(endpoint.bodyKey ? { body: JSON.stringify({ [endpoint.bodyKey]: apiKey.trim() }) } : {}),
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const payload: unknown = await response.json();
+    if (controller.signal.aborted || !payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+    const record = payload as Record<string, unknown>;
+    if (record.success === false || record.error) return undefined;
+    return endpoint.read(record);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
 }
 
 function readErrorMessage(payload: unknown): string | undefined {
@@ -149,12 +256,12 @@ async function testRunninghubModel(apiKey: string, baseUrl?: string): Promise<Te
   return { success: false, error: data.msg || data.errorMessage || `code=${data.code}` };
 }
 
-/** GRSAI 当前仅有本地模型 manifest，不自动发送可能计费的真实生成请求。 */
+/** GRSAI 模型协议仍作本地核对；余额由设置列表独立查询，不以余额代替生成验证。 */
 async function testGRSAI(): Promise<TestResult> {
   return {
     success: false,
     unsupported: true,
-    error: 'GRSAI 未提供已确认无计费的目录或鉴权端点，本次未发送网络请求',
+    error: 'GRSAI 模型连接仅作本地配置核对，余额在 API Key 列表独立查询；本次未发送模型请求',
   };
 }
 

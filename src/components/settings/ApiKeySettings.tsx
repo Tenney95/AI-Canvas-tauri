@@ -33,7 +33,7 @@ import ProviderBadge from '../shared/ProviderBadge';
 import { defaultModelGroups } from '../nodes/shared/defaultModels';
 import { getCustomConnectionReadiness, shouldListProviderConnection } from './apiKeySettingsUtils';
 import { deleteAppSecret, isSecretStoreAvailable } from '../../services/providerSecretService';
-import { testProviderConnection } from '../../services/testConnection';
+import { queryProviderBalance, supportsProviderBalance, type ProviderBalance } from '../../services/testConnection';
 import { replaceLegacyApimartOmni } from '../../services/ai/apimartVideoModels';
 import { RELAYON_BASE_URL } from '../../services/ai/providers/relayonModelManifest';
 import DreaminaLoginModal from './DreaminaLoginModal';
@@ -45,12 +45,23 @@ import { saveAutodlWorkflowTemplate, saveWorkflowApiDrafts } from '../../service
 import { invoke } from '@tauri-apps/api/core';
 import { useT } from '../../i18n';
 import { RUNNINGHUB_API_SITES, TOAPIS_API_SITES } from '../../constants/api';
-import { buildRunningHubSiteProviders, runningHubSiteDrafts, runningHubSiteId, RUNNINGHUB_CREDENTIAL_IDS } from '../../services/runninghubSiteCredentials';
+import { buildRunningHubSiteProviders, resolveRunningHubCredential, runningHubSiteDrafts, runningHubSiteId, RUNNINGHUB_CREDENTIAL_IDS } from '../../services/runninghubSiteCredentials';
 import type { RunningHubSiteKeyDrafts } from '../../types/runninghub';
 
 interface ProviderListItem {
   id: string;
   config: ApiProviderConfig;
+}
+
+interface BalanceQueryTarget {
+  id: string;
+  provider: string;
+  apiKey: string;
+  baseUrl?: string;
+}
+
+function balanceFingerprint(target: BalanceQueryTarget): string {
+  return `${target.provider}\u0000${target.apiKey}\u0000${target.baseUrl || ''}`;
 }
 
 function modelCategory(model: { nodeTypes: string[] }): ProviderModelSelection['category'] {
@@ -117,9 +128,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string>();
   const [billingOpen, setBillingOpen] = useState(false);
   const [hasBillingHistory, setHasBillingHistory] = useState(false);
-  const [providerBalances, setProviderBalances] = useState<Record<string, string>>({});
-  const balanceRefreshStartedRef = useRef(new Set<string>());
-  const balanceRefreshActiveRef = useRef(true);
+  const [providerBalances, setProviderBalances] = useState<Record<string, { fingerprint: string; balance: ProviderBalance }>>({});
+  const balanceRequestsRef = useRef(new Map<string, { fingerprint: string; controller: AbortController }>());
   // 凭据存在 Rust 侧的凭据存储里；不可用时只能本次会话有效，得在用户填写前就说清楚
   const [secretStoreAvailable, setSecretStoreAvailable] = useState(true);
 
@@ -213,6 +223,34 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     return true;
   });
 
+  const balanceTargets = useMemo(() => {
+    const targets: BalanceQueryTarget[] = [];
+    for (const item of providerItems) {
+      const provider = getProviderDefinition(item.id, item.config)?.id;
+      if (!provider || !supportsProviderBalance(provider)) continue;
+      const credentials = item.id === 'runninghub-model'
+        ? resolveRunningHubCredential(config.providers, 'runninghub-model') : item.config;
+      if (credentials?.apiKey.trim()) targets.push({ id: item.id, provider, apiKey: credentials.apiKey, baseUrl: credentials.baseUrl });
+    }
+    if (providerItems.some((item) => getProviderDefinition(item.id, item.config)?.id === 'runninghub-model')) {
+      const credentials = resolveRunningHubCredential(config.providers, 'runninghub');
+      if (credentials?.apiKey.trim()) targets.push({ id: 'runninghub', provider: 'runninghub', apiKey: credentials.apiKey, baseUrl: credentials.baseUrl });
+    }
+    return targets;
+  }, [providerItems, config.providers]);
+
+  const renderProviderBalance = (id: string) => {
+    const target = balanceTargets.find((candidate) => candidate.id === id);
+    const record = providerBalances[id];
+    if (!target || !record || record.fingerprint !== balanceFingerprint(target)
+      || balanceRequestsRef.current.get(id)?.fingerprint !== record.fingerprint) return null;
+    const { balance } = record;
+    return <span className="shrink-0 text-xs font-medium text-canvas-text-secondary"
+      data-tooltip={balance.scope === 'key' ? t('当前 Key 剩余额度；不代表账户总余额') : t('账户剩余额度；打开设置或更换连接后更新')}>
+      {balance.amount}{balance.unit ? ` ${balance.unit === '积分' ? t('积分') : balance.unit === '算力' ? t('算力') : balance.unit}` : ''}
+    </span>;
+  };
+
   const connectedProviderIds = useMemo(
     () => providerItems.map((item) => getProviderDefinition(item.id, item.config)?.id || item.id),
     [providerItems],
@@ -263,8 +301,11 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
-    balanceRefreshActiveRef.current = true;
-    return () => { balanceRefreshActiveRef.current = false; };
+    const requests = balanceRequestsRef.current;
+    return () => {
+      for (const request of requests.values()) request.controller.abort();
+      requests.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -299,31 +340,31 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   }, [config.providers, saveConfig, saveProviderConfig]);
 
   useEffect(() => {
-    for (const item of providerItems) {
-      const definition = getProviderDefinition(item.id, item.config);
-      if (!definition || !['sora2u', 'apimart'].includes(definition.id) || !item.config.apiKey.trim()) continue;
-      const fingerprint = `${item.id}\u0000${item.config.apiKey}\u0000${item.config.baseUrl || ''}`;
-      if (balanceRefreshStartedRef.current.has(fingerprint)) continue;
-      balanceRefreshStartedRef.current.add(fingerprint);
+    const requests = balanceRequestsRef.current;
+    for (const [id, request] of requests) {
+      if (balanceTargets.some((target) => target.id === id)) continue;
+      request.controller.abort();
+      requests.delete(id);
+    }
+    for (const target of balanceTargets) {
+      const fingerprint = balanceFingerprint(target);
+      const previous = requests.get(target.id);
+      if (previous?.fingerprint === fingerprint) continue;
+      previous?.controller.abort();
+      const request = { fingerprint, controller: new AbortController() };
+      requests.set(target.id, request);
       setProviderBalances((current) => {
+        if (!current[target.id]) return current;
         const next = { ...current };
-        delete next[item.id];
+        delete next[target.id];
         return next;
       });
-      void testProviderConnection(
-        definition.id,
-        item.config.apiKey.trim(),
-        item.config.baseUrl,
-      ).then((result) => {
-        const balance = result.balance;
-        if (!balanceRefreshActiveRef.current || !result.success || !balance) return;
-        const latest = useAppStore.getState().config.providers[item.id];
-        if (!latest || latest.apiKey !== item.config.apiKey || latest.baseUrl !== item.config.baseUrl
-          || getProviderDefinition(item.id, latest)?.id !== definition.id) return;
-        setProviderBalances((current) => ({ ...current, [item.id]: balance }));
+      void queryProviderBalance(target.provider, target.apiKey, target.baseUrl, request.controller.signal).then((balance) => {
+        if (!balance || request.controller.signal.aborted || requests.get(target.id) !== request) return;
+        setProviderBalances((current) => ({ ...current, [target.id]: { fingerprint, balance } }));
       });
     }
-  }, [providerItems]);
+  }, [balanceTargets]);
 
   const applyDreaminaRuntime = useCallback((runtime: DreaminaRuntime) => {
     setDreaminaRuntime(runtime);
@@ -833,11 +874,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                           </button>
                         ))}
                       </div>}
-                      {providerBalances[item.id] && (
-                        <span className="shrink-0 text-xs font-medium text-canvas-text-secondary">
-                          {providerBalances[item.id]}
-                        </span>
-                      )}
+                      {!isRunningHub && renderProviderBalance(item.id)}
                     </div>
                     {!isRunningHub && <div className="provider-connection-meta">
                       {isWorkflowApi ? (
@@ -869,12 +906,14 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                       {hasRunningHubModelKey && <span className="provider-runninghub-model-count">
                         {selectedCount === undefined ? t('沿用内置模型目录') : t('{count} 个模型', { count: selectedCount })}
                       </span>}
+                      {renderProviderBalance(item.id)}
                     </div>
                     <div className="provider-runninghub-connection">
                       <span className="provider-runninghub-connection-state">
                         <Icon icon={hasRunningHubWorkflowKey ? 'mdi:check-circle-outline' : 'mdi:circle-outline'} width="14" className={hasRunningHubWorkflowKey ? 'is-configured' : ''} />
                         {hasRunningHubWorkflowKey ? t('工作流连接已配置') : t('工作流连接未配置')}
                       </span>
+                      {renderProviderBalance('runninghub')}
                       <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost provider-runninghub-manage" onClick={() => { useAppStore.getState().setSettingsOpen(false); useAppStore.getState().setWorkflowPanelOpen(true, 'workflow'); }}>
                         {t("管理云工作流")} <Icon icon="mdi:arrow-right" width="14" />
                       </button>
