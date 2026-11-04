@@ -242,8 +242,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const renderProviderBalance = (id: string) => {
     const target = balanceTargets.find((candidate) => candidate.id === id);
     const record = providerBalances[id];
-    if (!target || !record || record.fingerprint !== balanceFingerprint(target)
-      || balanceRequestsRef.current.get(id)?.fingerprint !== record.fingerprint) return null;
+    if (!target || !record || record.fingerprint !== balanceFingerprint(target)) return null;
     const { balance } = record;
     return <span className="shrink-0 text-xs font-medium text-canvas-text-secondary"
       data-tooltip={balance.scope === 'key' ? t('当前 Key 剩余额度；不代表账户总余额') : t('账户剩余额度；打开设置或更换连接后更新')}>
@@ -341,10 +340,17 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const requests = balanceRequestsRef.current;
+    const clearBalance = (id: string) => setProviderBalances((current) => {
+      if (!current[id]) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     for (const [id, request] of requests) {
       if (balanceTargets.some((target) => target.id === id)) continue;
       request.controller.abort();
       requests.delete(id);
+      clearBalance(id);
     }
     for (const target of balanceTargets) {
       const fingerprint = balanceFingerprint(target);
@@ -353,12 +359,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       previous?.controller.abort();
       const request = { fingerprint, controller: new AbortController() };
       requests.set(target.id, request);
-      setProviderBalances((current) => {
-        if (!current[target.id]) return current;
-        const next = { ...current };
-        delete next[target.id];
-        return next;
-      });
+      clearBalance(target.id);
       void queryProviderBalance(target.provider, target.apiKey, target.baseUrl, request.controller.signal).then((balance) => {
         if (!balance || request.controller.signal.aborted || requests.get(target.id) !== request) return;
         setProviderBalances((current) => ({ ...current, [target.id]: { fingerprint, balance } }));
