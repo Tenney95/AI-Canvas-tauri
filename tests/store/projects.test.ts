@@ -770,15 +770,21 @@ describe('project switching', () => {
     snapshotMocks.captureCurrentCanvasSnapshot
       .mockResolvedValueOnce('data:image/webp;base64,PROJECT_TWO')
       .mockResolvedValueOnce('data:image/webp;base64,PROJECT_THREE');
-    fileMocks.loadProjectData.mockImplementation(async (projectId: string) => ({
-      id: projectId,
-      name: projectId === 'project-2' ? 'Project 2' : 'Project 3',
-      createdAt: projectId === 'project-2' ? 2 : 3,
-      updatedAt: 4,
-      nodes: projectId === 'project-2' ? projectTwoNodes : projectThreeNodes,
-      edges: [],
-      groups: [],
-    }));
+    const persisted = new Map<string, ProjectSaveData>([
+      ['project-2', { id: 'project-2', name: 'Project 2', createdAt: 2, updatedAt: 4, nodes: projectTwoNodes, edges: [], groups: [] }],
+      ['project-3', { id: 'project-3', name: 'Project 3', createdAt: 3, updatedAt: 4, nodes: projectThreeNodes, edges: [], groups: [] }],
+    ]);
+    fileMocks.loadProjectData.mockImplementation(async (projectId: string) => structuredClone(persisted.get(projectId) ?? null));
+    fileMocks.saveProject.mockImplementation(async (record) => {
+      persisted.set(record.id, structuredClone(record as ProjectSaveData));
+      return record.id;
+    });
+    const patchSnapshot = async (id: string, snapshot: string | undefined) => {
+      persisted.get(id)!.snapshot = snapshot;
+      return true;
+    };
+    // 再次加载必须看到已经持久化的预览，不能用永远不变的假记录模拟真实 DB。
+    metadataMocks.updateProjectSnapshot.mockImplementationOnce(patchSnapshot).mockImplementationOnce(patchSnapshot);
     useAppStore.setState({
       projects: [
         { id: 'project-2', name: 'Project 2', createdAt: 2, updatedAt: 2 },

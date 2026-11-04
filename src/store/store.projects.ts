@@ -40,7 +40,8 @@ import {
   setLastActiveProjectId,
   updateProjectSnapshot,
 } from '../services/indexedDbService';
-import { serializeProjectRecord } from '../services/storageService';
+import { serializeProjectRecord, type ProjectSummaryData } from '../services/storageService';
+import { toProjectSummaryRecord } from '../services/indexedDb/projectSummary';
 import {
   applySharedAssetSyncCommit,
   type SharedAssetSyncCommitInput,
@@ -114,6 +115,22 @@ function withInheritedDataFolders(projects: CanvasProject[]): CanvasProject[] {
     const inherited = item.parentId ? folderById.get(item.parentId) : undefined;
     return inherited ? { ...item, dataFolder: inherited } : item;
   });
+}
+
+/** 摘要与完整记录共用白名单，保存代际不能在启动投影时丢失。 */
+function toCanvasProjectSummary(record: ProjectSummaryData): CanvasProject {
+  const summary = toProjectSummaryRecord(record);
+  if (!summary) throw new Error('项目摘要无效，无法加载项目');
+  return { ...summary, settings: record.settings };
+}
+
+/** 只接纳已实际读取的记录，并让版本、元数据与画布/角色库来自同一份内容。 */
+function withLoadedProjectSummaries(projects: CanvasProject[], ...records: (ProjectSaveData | null | undefined)[]): CanvasProject[] {
+  const loaded = new Map(records.filter((record): record is ProjectSaveData => !!record).map((record) => [record.id, record]));
+  return withInheritedDataFolders(projects.map((project) => {
+    const record = loaded.get(project.id);
+    return record ? { ...toCanvasProjectSummary(record), revisionScope: project.revisionScope } : project;
+  }));
 }
 
 function hasProjectCanvasData(data: ProjectSaveData | null): data is ProjectSaveData {
@@ -1649,9 +1666,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         const data = await fileService.loadProjectData(nextId);
         const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
         if (hasProjectCanvasData(data)) {
-          const ownerId = seriesOwnerId(filtered, nextId);
+          const ownerId = data.parentId ?? nextId;
           const ownerData = ownerId === nextId ? data : await fileService.loadProjectData(ownerId);
           set({
+            projects: withLoadedProjectSummaries(get().projects, data, ownerData),
+            projectName: data.name,
             nodes: data.nodes as Node<BaseNodeData>[],
             edges: data.edges as Edge[],
             groups: getProjectGroups(data),
@@ -1734,20 +1753,19 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
 
       // 角色库归剧集项目所有；同一部剧内换集时内存里的那份就是对的，不用再读盘。
-      const ownerId = project.parentId ?? id;
+      const ownerId = data.parentId ?? id;
       let dramaAssets = get().dramaAssets;
-      if (ownerId !== previousOwnerId) {
-        const ownerData = ownerId === id ? data : await fileService.loadProjectData(ownerId);
+      let ownerData: ProjectSaveData | null = null;
+      if (ownerId === id || ownerId !== previousOwnerId) {
+        ownerData = ownerId === id ? data : await fileService.loadProjectData(ownerId);
         if (!isLatestSwitch()) return;
         dramaAssets = ownerData?.dramaAssets ?? emptyDramaAssetLibrary();
       }
 
       set({
-        projects: get().projects.map((item) => (
-          item.id === id ? { ...item, settings: data.settings, episodeAssetRoster: data.episodeAssetRoster } : item
-        )),
+        projects: withLoadedProjectSummaries(get().projects, data, ownerData),
         currentProjectId: id,
-        projectName: project.name,
+        projectName: data.name,
         projectLoadStatus: 'ready',
         nodes: data.nodes as Node<BaseNodeData>[],
         edges: data.edges as Edge[],
@@ -1984,14 +2002,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     try {
       const allProjects = await fileService.loadProjectsList();
       if (allProjects.length > 0) {
-        const mapped: CanvasProject[] = withInheritedDataFolders(allProjects.map((p) => ({
-          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
-          snapshot: p.snapshot, dataFolder: p.dataFolder, settings: p.settings,
-          parentId: p.parentId, episodeNo: p.episodeNo, episodeOutline: p.episodeOutline,
-          episodeScript: p.episodeScript, episodeCreative: p.episodeCreative,
-          episodeAssetRoster: p.episodeAssetRoster,
-          series: p.series,
-        })));
+        const mapped: CanvasProject[] = withInheritedDataFolders(allProjects.map(toCanvasProjectSummary));
         fileService.registerProjectFolders(mapped);
         const current = get().currentProjectId;
         const exists = mapped.find((p) => p.id === current);
@@ -2001,12 +2012,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         const data = await fileService.loadProjectData(targetId);
         if (hasProjectCanvasData(data)) {
           const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
-          const ownerId = seriesOwnerId(mapped, targetId);
+          const ownerId = data.parentId ?? targetId;
           const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId);
           set({
-            projects: mapped.map((project) => (
-              project.id === targetId ? { ...project, settings: data.settings, episodeAssetRoster: data.episodeAssetRoster } : project
-            )),
+            projects: withLoadedProjectSummaries(mapped, data, ownerData),
             currentProjectId: targetId,
             projectName: data.name || '已加载项目',
             nodes: data.nodes as Node<BaseNodeData>[],
@@ -2051,14 +2060,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           fileService.deleteProjectData('default').catch((e) => console.warn('[初始化] 清理默认项目数据失败:', e));
         }
         let activeProjectId: string | null = null;
-        const mapped: CanvasProject[] = withInheritedDataFolders(valid.map((p) => ({
-          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
-          snapshot: p.snapshot, dataFolder: p.dataFolder, settings: p.settings,
-          parentId: p.parentId, episodeNo: p.episodeNo, episodeOutline: p.episodeOutline,
-          episodeScript: p.episodeScript, episodeCreative: p.episodeCreative,
-          episodeAssetRoster: p.episodeAssetRoster,
-          series: p.series,
-        })));
+        const mapped: CanvasProject[] = withInheritedDataFolders(valid.map(toCanvasProjectSummary));
         fileService.registerProjectFolders(mapped);
         mapped.sort((a, b) => b.updatedAt - a.updatedAt);
         const recoveringWebview = await isWebviewRecovery();
@@ -2087,12 +2089,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
           if (hasProjectCanvasData(data)) {
             activeProjectId = targetId;
-            const ownerId = seriesOwnerId(mapped, targetId);
+            const ownerId = data.parentId ?? targetId;
             const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId);
             set({
-              projects: mapped.map((project) => (
-                project.id === targetId ? { ...project, settings: data.settings, episodeAssetRoster: data.episodeAssetRoster } : project
-              )),
+              projects: withLoadedProjectSummaries(mapped, data, ownerData),
               currentProjectId: targetId,
               projectName: data.name || '新项目',
               nodes: data.nodes as Node<BaseNodeData>[],

@@ -8,6 +8,7 @@ import type { ProjectArchiveJsonEntry, ProjectArchiveTextEntry } from '../../src
 import type { PreparedProjectImport } from '../../src/services/projectImportService';
 import type { ProjectArchiveChatPayload } from '../../src/services/projectTransferService';
 import type { ProjectExchangeBundle } from '../../src/types/projectExchange';
+import type { AppState } from '../../src/store/useAppStore';
 
 interface MemoryArchive { entries: ProjectArchiveTextEntry[]; files: Array<{ path: string; bytes: Uint8Array }> }
 const native = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), save: vi.fn(),
@@ -109,6 +110,7 @@ beforeEach(async () => {
 afterEach(async () => {
   const { closePreparedProjectImport } = await import('../../src/services/projectImportService');
   await Promise.all(sessions.splice(0).map(closePreparedProjectImport));
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   database?.close(); database = undefined; vi.unstubAllGlobals();
 });
 async function runtime() {
@@ -119,6 +121,19 @@ async function runtime() {
   ]);
   database = await schema.openDB();
   return { transfer, imports, records, exchange, fs, storage, drama, db: await import('../../src/services/indexedDbService') };
+}
+async function resetAppStore() {
+  const { useAppStore } = await import('../../src/store/useAppStore');
+  useAppStore.setState(useAppStore.getInitialState(), true);
+  // 只省去与项目持久化无关的全局目录加载；导入、切换、编辑、保存与 DB CAS 均为真实实现。
+  useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready',
+    loadConfig: vi.fn(async () => undefined), loadWorkflows: vi.fn(async () => undefined),
+    loadPresets: vi.fn(async () => undefined), loadSkills: vi.fn(async () => undefined),
+    loadSubAgentProfiles: vi.fn(async () => undefined), loadCustomStyles: vi.fn(async () => undefined),
+    loadToolbarLayouts: vi.fn(async () => undefined), loadPlugins: vi.fn(async () => undefined),
+    loadAppearanceThemes: vi.fn(async () => undefined),
+  });
+  return useAppStore;
 }
 type Runtime = Awaited<ReturnType<typeof runtime>>;
 const project = (id = 'source'): ProjectSaveData => ({ id, name: '人间有差', nodes: [], edges: [], groups: [], dataFolder: 'source-folder', createdAt: 1, updatedAt: 2 });
@@ -226,4 +241,106 @@ it('序列化后的业务投影被破坏时，真实收件门禁阻止 native pa
   await expect(context.transfer.exportProjectArchive(owner.id)).rejects.toThrow('项目包业务记录与协作快照不一致');
   expect(native.invoke.mock.calls.some(([command]) => command === 'pack_project_archive')).toBe(false);
   expect(native.archives.size).toBe(0);
+});
+
+it.each([false, true].flatMap((series) => (['loadProject', 'initFromDb'] as const).map((reload) => ({ series, reload }))))(
+  '真实 Store 导入后 $reload 保留保存代际并拒绝过期窗口（剧集=$series）', async ({ series, reload }) => {
+    const context = await runtime();
+    const owner = project();
+    owner.dramaAssets = context.drama.normalizeDramaAssetLibrary({ characters: [{ id: 'character', name: '原角色' }] });
+    const editable = { id: 'editable', type: 'ai-text', position: { x: 0, y: 0 },
+      data: { type: 'ai-text', label: '正文', output: '导出原文' } };
+    const source = series ? [owner, { ...project('episode'), parentId: owner.id, name: '第一集', episodeNo: 1, nodes: [editable] }]
+      : [{ ...owner, nodes: [editable] }];
+    await seed(context, source, []);
+    const exported = (await context.transfer.exportProjectArchive(owner.id))!;
+    native.open.mockResolvedValueOnce(exported.filePath);
+    const prepared = (await context.imports.prepareProjectImport())!; sessions.push(prepared);
+    const useAppStore = await resetAppStore();
+    const importedId = await useAppStore.getState().importProject(prepared, null, {}, { appendChat: false, appendMemories: false });
+    expect(importedId).toBeDefined();
+    const activeId = useAppStore.getState().currentProjectId!;
+    expect(activeId).toBe(series ? useAppStore.getState().projects.find((item) => item.parentId === importedId)!.id : importedId);
+    useAppStore.getState().updateNodeData('editable', { output: '刚导入后的编辑' });
+    await expect(useAppStore.getState().saveCurrentProject()).resolves.toBe(activeId);
+
+    const { createStore } = await import('zustand/vanilla');
+    const { createProjectSlice } = await import('../../src/store/store.projects');
+    const current = useAppStore.getState();
+    const stale = createStore<AppState>()((set, get, api) => ({ ...current, ...createProjectSlice(set, get, api),
+      currentProjectId: activeId, projectLoadStatus: 'ready', projectName: '旧窗口不应覆盖',
+      projects: current.projects.map((item) => ({ ...item, exchangeEpoch: 0 })),
+      nodes: current.nodes.map((item) => ({ ...item, data: { ...item.data, output: '过期内容不应落盘' } })),
+    }));
+    await expect(stale.getState().saveCurrentProjectSilent()).resolves.toBeUndefined();
+    expect(stale.getState().autoSaveFailure?.reason).toContain('项目已被导入更新或删除');
+    expect((await context.db.getProjectById(activeId))?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ data: expect.objectContaining({ output: '刚导入后的编辑' }) }),
+    ]));
+
+    if (reload === 'initFromDb') {
+      useAppStore.setState({ projectInitialized: false, config: { ...useAppStore.getState().config, startupView: 'last-project' } });
+    }
+    await useAppStore.getState()[reload]();
+    expect(useAppStore.getState().currentProjectId).toBe(activeId);
+    useAppStore.getState().updateNodeData('editable', { output: '重开后的新编辑' });
+    const library = useAppStore.getState().dramaAssets;
+    useAppStore.getState().setDramaAssets({ ...library, characters: library.characters.map((item) => ({ ...item, name: '重开后的角色' })) });
+    await expect(useAppStore.getState().saveCurrentProjectSilent()).resolves.toBe(activeId);
+    const stored = await context.records.readProjectImportScope(importedId!);
+    expect(stored.every((record) => record.exchangeEpoch === 1)).toBe(true);
+    expect(stored.find((record) => record.id === activeId)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ data: expect.objectContaining({ output: '重开后的新编辑' }) }),
+    ]));
+    expect(stored[0].dramaAssets?.characters[0].name).toBe('重开后的角色');
+    expect(useAppStore.getState().autoSaveFailure).toBeNull();
+  },
+);
+
+it('切换用实际读取的完整记录同步摘要，不把旧元数据和未读取的共享库抬到新代际', async () => {
+  const context = await runtime();
+  const owner = { ...project(), series: { script: '新全剧剧本' },
+    dramaAssets: context.drama.normalizeDramaAssetLibrary({ characters: [{ id: 'character', name: '新角色' }] }) };
+  await seed(context, [owner, { ...project('episode-1'), parentId: owner.id, name: '新第一集', episodeNo: 1,
+    episodeScript: '新第一集剧本' }, { ...project('episode-2'), parentId: owner.id, name: '新第二集', episodeNo: 2 }], []);
+  const exported = (await context.transfer.exportProjectArchive(owner.id))!;
+  native.open.mockResolvedValueOnce(exported.filePath);
+  const prepared = (await context.imports.prepareProjectImport())!; sessions.push(prepared);
+  const useAppStore = await resetAppStore();
+  const importedId = (await useAppStore.getState().importProject(prepared, null, {}, { appendChat: false, appendMemories: false }))!;
+  const imported = await context.records.readProjectImportScope(importedId);
+  const first = imported.find((record) => record.episodeNo === 1)!;
+  const second = imported.find((record) => record.episodeNo === 2)!;
+  useAppStore.setState({ currentProjectId: null, nodes: [], edges: [], projectName: '', projects:
+    useAppStore.getState().projects.map((item) => ({ ...item, exchangeEpoch: 0, name: `旧${item.name}`,
+      series: { script: '旧全剧剧本' }, episodeOutline: '已经移除的旧大纲' })) });
+  await expect(useAppStore.getState().switchProject(first.id)).resolves.toBe(first.id);
+  const loaded = useAppStore.getState();
+  expect(loaded.projectName).toBe(first.name);
+  expect(loaded.projects.find((item) => item.id === first.id)).toMatchObject({ name: first.name, exchangeEpoch: 1,
+    episodeScript: first.episodeScript, episodeNo: 1 });
+  expect(loaded.projects.find((item) => item.id === first.id)?.episodeOutline).toBeUndefined();
+  expect(loaded.projects.find((item) => item.id === first.id)?.series).toBeUndefined();
+  expect(loaded.projects.find((item) => item.id === importedId)).toMatchObject({ name: imported[0].name,
+    exchangeEpoch: 1, series: { script: '新全剧剧本' } });
+  expect(loaded.projects.find((item) => item.id === second.id)?.exchangeEpoch).toBe(0);
+  loaded.setDramaAssets({ ...loaded.dramaAssets, characters: loaded.dramaAssets.characters.map((item) => ({ ...item, name: '已编辑角色' })) });
+  await expect(useAppStore.getState().saveCurrentProject()).resolves.toBe(first.id);
+  expect(await context.db.getProjectById(first.id)).toMatchObject({ name: first.name, episodeScript: first.episodeScript });
+  expect((await context.db.getProjectById(first.id))?.series).toBeUndefined();
+  expect(await context.db.getProjectById(importedId)).toMatchObject({ name: imported[0].name,
+    series: { script: '新全剧剧本' }, dramaAssets: { characters: [{ name: '已编辑角色' }] } });
+
+  // 失败画布允许直接重开另一分集；同剧换集没有重新读取 owner，不能只给旧共享库刷新代际。
+  useAppStore.setState({ projectLoadStatus: 'error', projects: useAppStore.getState().projects.map((item) => (
+    item.id === importedId ? { ...item, exchangeEpoch: 0, name: '旧剧集名', series: { script: '旧全剧剧本' } } : item
+  )) });
+  await expect(useAppStore.getState().switchProject(second.id)).resolves.toBe(second.id);
+  expect(useAppStore.getState().projects.find((item) => item.id === second.id)).toMatchObject({ name: second.name, exchangeEpoch: 1 });
+  expect(useAppStore.getState().projects.find((item) => item.id === importedId)).toMatchObject({ name: '旧剧集名',
+    exchangeEpoch: 0, series: { script: '旧全剧剧本' } });
+  await expect(useAppStore.getState().saveCurrentProjectSilent()).resolves.toBeUndefined();
+  expect(useAppStore.getState().autoSaveFailure?.reason).toContain('项目已被导入更新或删除');
+  expect(await context.db.getProjectById(importedId)).toMatchObject({ name: imported[0].name,
+    exchangeEpoch: 1, series: { script: '新全剧剧本' }, dramaAssets: { characters: [{ name: '已编辑角色' }] } });
 });
