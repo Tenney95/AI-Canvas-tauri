@@ -1933,6 +1933,18 @@ describe('critical canvas node interactions', () => {
       expect(completeMediaNodeTask).not.toHaveBeenCalled();
     });
 
+    it('保存交付已结束但旧 loading 状态仍保留时，恢复横条不能被空的通用卡遮掉', async () => {
+      const { dialog, panel, store, pendingTasks } = await setupImageQualityDialog();
+      store.nodes[0].data = { ...store.nodes[0].data, provider: 'comfyui', workflowId: 'wf-1', status: 'loading', mediaTaskState: 'delivery_pending' };
+      pendingTasks.push({ projectId: 'project-a', nodeId: 'quality-image', nodeType: 'ai-image', provider: 'comfyui',
+        taskType: 'comfyui', taskId: 'original', submitted: true, comfyRecoveryState: 'save_pending' });
+      const tree = dialog();
+      expect(() => findElement(tree, (element) => componentName(element) === 'MediaTaskStatusMock')).toThrow('Element not found');
+      expect(findElement(tree, (element) => element.type === 'button' && element.props.children === '继续保存')).toBeDefined();
+      expect(findElement(tree, (element) => element.type === 'button' && element.props.children === '再次终止')).toBeDefined();
+      expect(panel().props.canGenerate).toBe(false);
+    });
+
     it('ComfyUI 已有通用恢复卡时不重复展示横条，但保留终止和防重复生成', async () => {
       const { dialog, panel, store, pendingTasks } = await setupImageQualityDialog();
       store.nodes[0].data = { ...store.nodes[0].data, provider: 'comfyui', workflowId: 'wf-1', status: 'idle', mediaTaskState: 'delivery_pending' };

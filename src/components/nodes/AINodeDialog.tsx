@@ -1218,7 +1218,7 @@ function AINodeDialog() {
     ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'comfyui' && task.comfyRecoveryState
       && (data.status !== 'loading' || task.comfyRecoveryState === 'save_pending'))
     : undefined;
-  const showMediaTaskStatus = (data.mediaTaskState || data.videoTaskState === 'paused')
+  const showMediaTaskStatus = data.status !== 'loading' && (data.mediaTaskState || data.videoTaskState === 'paused')
     && recoverableComfyTask?.comfyRecoveryState !== 'cancel_pending'
     && recoverableComfyTask?.comfyRecoveryState !== 'output_unavailable';
   const cloudTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && ['runninghub-workflow', 'runninghub-model'].includes(task.taskType)) : undefined;
