@@ -1915,6 +1915,10 @@ describe('critical canvas node interactions', () => {
 
     it('本地 ComfyUI 保存失败把原始错误交给恢复层，保留原任务而不重新生成', async () => {
       const { panel, store, generateImage, persistMediaUrlToProjectData, pauseComfyNodeDelivery, completeMediaNodeTask } = await setupImageQualityDialog();
+      const currentAtPause: boolean[] = [];
+      pauseComfyNodeDelivery.mockImplementation((_nodeId: string, _taskId: string, isCurrent: () => boolean) => {
+        currentAtPause.push(isCurrent());
+      });
       const error = Object.assign(new Error('生成媒体未能写入项目目录：保存目录无法写入'), {
         name: 'MediaPersistenceError', failureKind: 'permission',
       });
@@ -1922,7 +1926,8 @@ describe('critical canvas node interactions', () => {
       persistMediaUrlToProjectData.mockRejectedValueOnce(error);
       await (panel().props.onSubmit as () => Promise<void>)();
       expect(pauseComfyNodeDelivery).toHaveBeenCalledWith('quality-image', 'original', expect.any(Function), error);
-      expect(pauseComfyNodeDelivery.mock.calls[0][2]()).toBe(true);
+      expect(currentAtPause).toEqual([true]);
+      expect(pauseComfyNodeDelivery.mock.calls[0][2]()).toBe(false);
       expect(generateImage).toHaveBeenCalledOnce();
       expect(store.nodes[0].data.imageUrl).toBeUndefined();
       expect(completeMediaNodeTask).not.toHaveBeenCalled();
