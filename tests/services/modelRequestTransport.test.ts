@@ -28,7 +28,7 @@ import { createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelT
 import { uploadToRemote } from '../../src/services/uploadService';
 import { clearProjectTasks, getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
-import { AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
+import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
 import { pollResolvedModelProtocol } from '../../src/services/ai/modelProtocol';
 import { executeRunningHubModel } from '../../src/services/ai/providers/runninghubMedia';
 
@@ -57,7 +57,7 @@ describe('Amam 图片／视频的异步交付', () => {
     const projectId = `am-${category}-project`;
     clearProjectTasks(projectId);
     useAppStore.getState().saveProviderConfig('my-amam', { name: '自己的 Amam', catalogId: 'aigc-si',
-      apiKey: 'my-amam-fixture', selectedModels: [selected] });
+      apiKey: 'my-amam-fixture', baseUrl: AIGCSI_BASE_URL, selectedModels: [selected] });
     const general = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'my-amam')!;
     useAppStore.setState({ currentProjectId: projectId, nodes: [{ id: nodeId, type: category === 'image' ? 'ai-image' : 'ai-video',
       position: { x: 0, y: 0 }, data: { type: category === 'image' ? 'ai-image' : 'ai-video', label: 'Amam', status: 'loading' } }] });
