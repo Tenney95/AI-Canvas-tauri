@@ -12,7 +12,7 @@
 | 2. 请求生命周期取消 | `src-tauri/src/mcp/bridge.rs`、`services/mcp/mcpControlService.ts`、`scripts/ai-canvas-mcp.mjs`、`types/mcp.ts`（协议注释）、本计划；对应原生与控制层/适配器测试 | 已实现，待用户验收 |
 | 3. 完整业务结果 | `services/chat/agentRoundExecutor.ts`、`services/mcp/mcpControlService.ts`、本计划；对应执行器与 MCP 结果测试 | 已实现，待用户验收 |
 | 4. stdio 在途限额 | `src-tauri/src/mcp/bridge.rs`、本计划；原生内置测试 | 已实现，待用户验收 |
-| 5. 外部连接保存串行化 | `services/mcp/mcpClientService.ts`、本计划；`tests/services/mcpClientService.test.ts` | 待实施 |
+| 5. 外部连接保存串行化 | `services/mcp/mcpClientService.ts`、本计划；`tests/services/mcpClientService.test.ts` | 已实现，待用户验收 |
 | 6. 外部会话失效恢复 | `services/mcp/mcpClientService.ts`、本计划；`tests/services/mcpClientService.test.ts` | 待实施 |
 
 前端相对路径均以 `src/` 为根。每阶段提交前静态核对差异、调用引用、严格 UTF-8 和差异空白；这些核对不代表功能测试通过。
@@ -23,6 +23,7 @@
 - 第 2 项：stdio 断连只取消本连接仍在等待的请求，原生/适配器超时传播取消；停止或替换 bridge 撤销同会话前端任务。登记发生在首次异步加载前，取消覆盖加载中和执行中；迟到请求由有界、带期限的取消记录拒绝。原生使用外部入口禁止的空请求 ID 发送单向生命周期通知，普通请求不能借此撤销其他连接。HTTP 既有主动取消保留，不承诺撤销已提交的外部副作用。
 - 第 3 项：普通 MCP 文本保留完整正文，按内容数组序列化后的 UTF-8 设置 512 KiB 交付预算；普通助手模型文本仍为 20,000 字符。超限读取返回明确交付错误，已成功写入保留成功并提示只读核实、不可重投；工具自身截断另附元信息。既有富内容仍沿用各自预算，完整正文不进入审计或消息持久化。
 - 第 4 项：stdio 每连接最多 8 个、同会话最多 16 个在途业务请求，额度持有到响应写完；超额立即返回忙碌。取消仅对本连接真实在途目标单向转发一次，不占业务额度、不创建等待线程。响应写等待超过 5 秒会报错并关闭连接，退出也关闭旧 socket。重复 ID 由 Entry 拒绝且原 ID 保留到响应写完，不替换原请求；线程创建失败同样释放连接和请求额度。
+- 第 5 项：同一连接的保存和移除串行执行，并在轮到该操作时复核修订。更换凭据先持久化停用的目标端点，再更新原生凭据，最后保存启用状态；中途失败保留停用供重试，不危险回滚可能已提交的凭据或配置。完整修改队列参与应用退出准备，操作收尾后才冻结配置。新连接写凭据后若进程退出，未完成记录保持停用；重启后需重新输入认证或移除该条目，不能自动使用未确认关联的凭据。
 
 ## 用户桌面验收
 
@@ -32,7 +33,7 @@
 2. 发起等待用户选择或可取消的慢操作，再停止 MCP、轮换令牌、断开 stdio 或等待超时；旧任务应终止，随后选择或迟到结果不得继续执行。回归首次调用立即取消及 HTTP 主动取消；已提交的外部副作用不能承诺撤回，失败不得自动重投。
 3. 查询带长提示词的多个节点，使完整结果超过 20,000 字符；预算内必须是可解析的完整 JSON，超过 MCP 预算须明确反馈。回归目录 schema、图片/媒体内容及普通助手的模型文本预算。
 4. 同连接连续提交慢请求直至上限，应立即返回忙碌且仍能取消；结束后名额恢复，不影响其他连接。重复 ID 不得破坏原请求。
-5. 保存外部连接期间关闭编辑器，重新打开并保存/移除同一连接；过期操作不能替换当前连接的凭据或覆盖新修订。凭据和配置保存失败须能安全重试。
+5. 保存外部连接期间关闭编辑器，重新打开并保存/移除同一连接；过期操作不能替换当前连接的凭据或覆盖新修订。凭据和配置保存失败须能安全重试。再在最终保存尚未结束时触发应用退出准备，并让保存失败、取消退出；连接应保持停用，不在配置冻结后继续启用。
 6. 建立外部连接后重启服务或让会话过期；下一次发现应重新握手恢复。写请求遇到失效会话不得自动重投；回归认证失败、普通 404、停用连接和取消。
 
 供用户执行的命令：在仓库根目录运行 `npx vitest run tests/components/mcpControlSettings.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/chat/agentToolExecution.test.ts tests/services/mcpClientService.test.ts tests/scripts/aiCanvasMcp.test.mjs`；在 `src-tauri/` 运行 `cargo test mcp_bridge::tests --lib` 和 `cargo check --lib`。本轮均未运行。

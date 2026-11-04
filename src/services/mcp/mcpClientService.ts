@@ -8,17 +8,21 @@ import { seriesOwnerId } from '../../store/store.utils';
 import { isGeneralAssistantScope } from '../chat/assistantScope';
 import type { McpClientConnection, McpClientOption, McpClientToolInfo } from '../../types/mcpClient';
 import { deleteAppSecret, writeAppSecret } from '../providerSecretService';
-import { areSettingsMutationsFrozen } from '../configPersistenceQueue';
+import { areSettingsMutationsFrozen, registerSettingsProducer } from '../configPersistenceQueue';
 
 const entries = new Map<string, { config: string; abort: AbortController; client: Client; ready: Promise<Client> }>();
 const calls = new Map<AbortController, { projectId: string; conversationId: string; serverId: string }>();
+const connectionMutations = new Map<string, Promise<void>>();
+const pendingConnectionMutations = new Set<Promise<void>>();
 let subscribed = false;
 let configKey = '';
 let nativeSync: Promise<unknown> = Promise.resolve();
 let unsubscribe: (() => void) | undefined;
+let unregisterSettingsProducer: (() => void) | undefined;
 
 if (import.meta.hot) import.meta.hot.dispose(() => {
   unsubscribe?.();
+  unregisterSettingsProducer?.();
   for (const entry of entries.values()) {
     entry.abort.abort();
     void entry.client.close().catch(() => undefined);
@@ -87,6 +91,7 @@ async function synchronize(): Promise<unknown> {
 function initialize(): void {
   if (subscribed) return;
   subscribed = true;
+  unregisterSettingsProducer = registerSettingsProducer(drainConnectionMutations);
   unsubscribe = useAppStore.subscribe((state, previous) => {
     if (state.config.mcpClientConnections !== previous.config.mcpClientConnections) {
       void synchronize().catch(() => { configKey = ''; });
@@ -272,41 +277,99 @@ export async function callExternalMcp(
   }
 }
 
-/** 由设置 UI 调用；明文 token 只作为短暂参数交给凭据存储。 */
-export async function saveMcpClientConnection(item: McpClientConnection, token?: string, clearToken = false): Promise<void> {
-  if (areSettingsMutationsFrozen()) throw new Error('设置正在保存或恢复，请稍后重试');
+/** 不复用配置持久化锁：saveConfig 会自行入队，嵌套等待会死锁。 */
+function mutateConnection(id: string, operation: () => Promise<void>): Promise<void> {
   initialize();
-  const state = useAppStore.getState();
-  const previous = state.config.mcpClientConnections ?? [];
-  if (previous.length >= 16 && !previous.some((candidate) => candidate.id === item.id)) throw new Error('最多配置 16 个 MCP 连接');
-  const url = validateMcpClientUrl(item.url);
-  if (!item.name.trim() || item.name.length > 80) throw new Error('连接名称需为 1–80 个字符');
-  const old = previous.find((candidate) => candidate.id === item.id);
-  if (old && old.revision !== item.revision) throw new Error('连接已被其他设置操作修改，请重新打开');
-  const entry = entries.get(item.id);
-  if (entry) { entry.abort.abort(); entries.delete(item.id); void entry.client.close().catch(() => undefined); }
-  if (token?.trim() && !await writeAppSecret(`mcp-client/${item.id}`, token.trim())) throw new Error('MCP 凭据保存失败，未更新连接');
-  if (clearToken && !await deleteAppSecret(`mcp-client/${item.id}`)) throw new Error('MCP 凭据清除失败');
-  const targetChanged = !old || old.url !== url || old.authHeader !== item.authHeader || !!token?.trim() || clearToken;
-  const updated = { ...item, url, name: item.name.trim(), revision: crypto.randomUUID(), hasSecret: clearToken ? false : !!token?.trim() || item.hasSecret, tools: targetChanged ? {} : item.tools };
-  const latest = useAppStore.getState();
-  const connections = latest.config.mcpClientConnections ?? [];
-  if (old && connections.find((candidate) => candidate.id === item.id)?.revision !== old.revision) throw new Error('连接已变化，请重新打开设置');
-  latest.updateConfig({ mcpClientConnections: old ? connections.map((candidate) => candidate.id === item.id ? updated : candidate) : [...connections, updated] });
-  await latest.saveConfig({ throwOnError: true });
-  await synchronize();
+  const result = (connectionMutations.get(id) ?? Promise.resolve()).then(operation);
+  const settled = result.then(() => undefined, () => undefined);
+  connectionMutations.set(id, settled);
+  pendingConnectionMutations.add(result);
+  void settled.then(() => {
+    pendingConnectionMutations.delete(result);
+    if (connectionMutations.get(id) === settled) connectionMutations.delete(id);
+  });
+  return result;
 }
 
-export async function removeMcpClientConnection(id: string): Promise<void> {
-  if (areSettingsMutationsFrozen()) throw new Error('设置正在保存或恢复，请稍后重试');
-  initialize();
-  const state = useAppStore.getState();
-  state.updateConfig({ mcpClientConnections: state.config.mcpClientConnections?.map((item) => item.id === id ? { ...item, enabled: false, revision: crypto.randomUUID() } : item) ?? [] });
-  await state.saveConfig({ throwOnError: true });
-  await synchronize();
-  if (!await deleteAppSecret(`mcp-client/${id}`)) throw new Error('连接已停用，凭据清理失败，请再次点击移除');
-  const latest = useAppStore.getState();
-  latest.updateConfig({ mcpClientConnections: latest.config.mcpClientConnections?.filter((item) => item.id !== id) ?? [] });
-  await latest.saveConfig({ throwOnError: true });
-  await synchronize();
+/** 应用退出必须等完整凭据/连接操作收尾，不能只等待 saveConfig 后提前冻结停用 Action。 */
+async function drainConnectionMutations(): Promise<void> {
+  let failed = false;
+  while (pendingConnectionMutations.size) {
+    const results = await Promise.allSettled([...pendingConnectionMutations]);
+    if (results.some((result) => result.status === 'rejected')) failed = true;
+  }
+  if (failed) throw new Error('MCP 连接修改失败，请检查连接后再退出');
+}
+
+/** 由设置 UI 调用；明文 token 只作为短暂参数交给凭据存储。 */
+export function saveMcpClientConnection(item: McpClientConnection, token?: string, clearToken = false): Promise<void> {
+  const existed = useAppStore.getState().config.mcpClientConnections?.some((candidate) => candidate.id === item.id);
+  return mutateConnection(item.id, async () => {
+    if (areSettingsMutationsFrozen()) throw new Error('设置正在保存或恢复，请稍后重试');
+    initialize();
+    const state = useAppStore.getState();
+    const previous = state.config.mcpClientConnections ?? [];
+    if (previous.length >= 16 && !previous.some((candidate) => candidate.id === item.id)) throw new Error('最多配置 16 个 MCP 连接');
+    const url = validateMcpClientUrl(item.url);
+    if (!item.name.trim() || item.name.length > 80) throw new Error('连接名称需为 1–80 个字符');
+    const old = previous.find((candidate) => candidate.id === item.id);
+    if ((old && old.revision !== item.revision) || (!old && existed)) throw new Error('连接已被其他设置操作修改，请重新打开');
+    const entry = entries.get(item.id);
+    if (entry) { entry.abort.abort(); entries.delete(item.id); void entry.client.close().catch(() => undefined); }
+    const credentialChanged = !!token?.trim() || clearToken;
+    let revision = old?.revision;
+    let saved = false;
+    try {
+      if (credentialChanged) {
+        // 先持久化停用，再改固定凭据条目；崩溃或后续保存失败都不能让旧端点拿到新令牌。
+        const disabled = { ...item, url, name: item.name.trim(), enabled: false, revision: crypto.randomUUID(), hasSecret: false, tools: {} };
+        revision = disabled.revision;
+        state.updateConfig({ mcpClientConnections: old ? previous.map((candidate) => candidate.id === item.id ? disabled : candidate) : [...previous, disabled] });
+        await state.saveConfig({ throwOnError: true });
+        await synchronize();
+        if (areSettingsMutationsFrozen() || useAppStore.getState().config.mcpClientConnections?.find((candidate) => candidate.id === item.id)?.revision !== revision) {
+          throw new Error('连接已变化或设置正在关闭，请重新打开设置');
+        }
+        if (token?.trim() && !await writeAppSecret(`mcp-client/${item.id}`, token.trim())) throw new Error('MCP 凭据保存失败，连接保持停用');
+        if (clearToken && !await deleteAppSecret(`mcp-client/${item.id}`)) throw new Error('MCP 凭据清除失败，连接保持停用');
+      }
+      const targetChanged = !old || old.url !== url || old.authHeader !== item.authHeader || credentialChanged;
+      const updated = { ...item, url, name: item.name.trim(), revision: crypto.randomUUID(), hasSecret: clearToken ? false : !!token?.trim() || item.hasSecret, tools: targetChanged ? {} : item.tools };
+      const latest = useAppStore.getState();
+      const connections = latest.config.mcpClientConnections ?? [];
+      if (areSettingsMutationsFrozen() || connections.find((candidate) => candidate.id === item.id)?.revision !== revision) throw new Error('连接已变化，请重新打开设置');
+      revision = updated.revision;
+      latest.updateConfig({ mcpClientConnections: connections.some((candidate) => candidate.id === item.id) ? connections.map((candidate) => candidate.id === item.id ? updated : candidate) : [...connections, updated] });
+      await latest.saveConfig({ throwOnError: true });
+      await synchronize();
+      saved = true;
+    } finally {
+      if (credentialChanged && !saved) {
+        const latest = useAppStore.getState();
+        const current = latest.config.mcpClientConnections?.find((candidate) => candidate.id === item.id);
+        if (current?.revision === revision && current.enabled) {
+          latest.updateConfig({ mcpClientConnections: latest.config.mcpClientConnections!.map((candidate) => candidate.id === item.id ? { ...candidate, enabled: false, revision: crypto.randomUUID() } : candidate) });
+          await synchronize().catch(() => undefined);
+        }
+      }
+    }
+  });
+}
+
+export function removeMcpClientConnection(id: string): Promise<void> {
+  const revision = useAppStore.getState().config.mcpClientConnections?.find((item) => item.id === id)?.revision;
+  return mutateConnection(id, async () => {
+    if (areSettingsMutationsFrozen()) throw new Error('设置正在保存或恢复，请稍后重试');
+    initialize();
+    const state = useAppStore.getState();
+    if (state.config.mcpClientConnections?.find((item) => item.id === id)?.revision !== revision) throw new Error('连接已变化，请重新打开设置');
+    state.updateConfig({ mcpClientConnections: state.config.mcpClientConnections?.map((item) => item.id === id ? { ...item, enabled: false, revision: crypto.randomUUID() } : item) ?? [] });
+    await state.saveConfig({ throwOnError: true });
+    await synchronize();
+    if (!await deleteAppSecret(`mcp-client/${id}`)) throw new Error('连接已停用，凭据清理失败，请再次点击移除');
+    const latest = useAppStore.getState();
+    latest.updateConfig({ mcpClientConnections: latest.config.mcpClientConnections?.filter((item) => item.id !== id) ?? [] });
+    await latest.saveConfig({ throwOnError: true });
+    await synchronize();
+  });
 }
