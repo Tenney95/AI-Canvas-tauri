@@ -77,6 +77,26 @@ import {
 } from '../../src/components/settings/mcpConnectionRequirements';
 
 describe('MCP control settings helpers', () => {
+  it('marks the complete client config as sensitive for both transports without changing copied content', async () => {
+    const token = 'ab'.repeat(32);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    for (const transport of ['stdio', 'streamable-http'] as const) {
+      tokenMocks.start.mockResolvedValue({ token, session: {
+        sessionId: `sensitive-${transport}`, transport, port: 43123, adapterPath: 'fixture.mjs',
+      } });
+      await click(await renderSettings(), '开启');
+      const tree = await renderSettings();
+      const config = tree.find((element) => element.type === 'pre')!;
+      expect(config.props['data-mcp-sensitive']).toBe('true');
+      expect(config.props.children).toContain(token);
+      const copy = tree.find((element) => element.props['aria-label'] === '复制 MCP 客户端配置')!;
+      await (copy.props.onClick as () => Promise<void>)();
+      expect(writeText).toHaveBeenLastCalledWith(config.props.children);
+      await click(tree, '停止');
+    }
+  });
+
   it('plays the rooftop tribute only after manually confirming a changed port of 4927', async () => {
     settingsState.config = { mcpPort: 27149 };
     settingsState.updateConfig.mockClear(); settingsState.saveConfig.mockClear();

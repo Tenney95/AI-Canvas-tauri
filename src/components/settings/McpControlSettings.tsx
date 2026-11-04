@@ -388,7 +388,7 @@ export default function McpControlSettings() {
               </button>
             </div>
           </div>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md border border-canvas-border bg-canvas-bg px-3 py-2 text-[11px] leading-relaxed text-canvas-text-secondary select-all">
+          <pre data-mcp-sensitive="true" className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md border border-canvas-border bg-canvas-bg px-3 py-2 text-[11px] leading-relaxed text-canvas-text-secondary select-all">
             {clientConfig}
           </pre>
           <p className="text-[11px] text-canvas-text-muted">
