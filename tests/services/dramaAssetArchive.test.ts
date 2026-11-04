@@ -29,6 +29,13 @@ beforeEach(() => {
   io.download.mockImplementation(async (_url: string, path: string) => path);
   io.invoke.mockResolvedValue({ assetCount: 1 });
 });
+
+async function removeCheckedTemporaryDirectory(directory: string): Promise<void> {
+  const resolved = await realpath(directory), temporary = await realpath(tmpdir());
+  const child = relative(temporary, resolved);
+  if (!child || child.startsWith('..') || isAbsolute(child)) throw new Error('临时目录清理范围无效');
+  await rm(resolved, { recursive: true, force: true });
+}
 describe('creative asset archive filesystem boundary', () => {
   it('真实工作区的解包目标保持为空，首次导出媒体时才创建 media 子目录', async () => {
     const base = await mkdtemp(join(tmpdir(), 'ai-canvas-asset-workspace-'));
@@ -49,10 +56,7 @@ describe('creative asset archive filesystem boundary', () => {
       expect([...await readFile(staged.path)]).toEqual([1, 2, 3]);
       await cleanupDramaAssetTransferDirectory(workspace.directory);
     } finally {
-      const resolved = await realpath(base), temporary = await realpath(tmpdir());
-      const child = relative(temporary, resolved);
-      if (!child || child.startsWith('..') || isAbsolute(child)) throw new Error('临时目录清理范围无效');
-      await rm(resolved, { recursive: true, force: true });
+      await removeCheckedTemporaryDirectory(base);
     }
   });
 
