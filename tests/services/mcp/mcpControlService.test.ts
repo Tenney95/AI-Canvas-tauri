@@ -649,6 +649,55 @@ describe('MCP on-demand discovery', () => {
 });
 
 describe('MCP control service', () => {
+  it.each(['direct', 'envelope'])('returns complete large canvas details through MCP: %s', async (route) => {
+    const prompt = 'private-canvas-detail-marker'.repeat(15).slice(0, 400);
+    useAppStore.setState({ nodes: Array.from({ length: 50 }, (_, index) => ({
+      id: `detail-${index}`, type: 'ai-text', position: { x: index * 20, y: 0 },
+      data: { type: 'ai-text' as const, label: `Detail ${index}`, prompt, output: prompt, status: 'success' as const },
+    })) });
+
+    const args = { detail: true, limit: 50 };
+    const result = await mcpCall(route === 'direct' ? 'canvas_query' : 'tools_call',
+      route === 'direct' ? args : { name: 'canvas_query', arguments: args }, `large-canvas-${route}`);
+
+    expect(result.isError).toBe(false);
+    const content = result.content[0];
+    if (content.type !== 'text') throw new Error('Expected canvas detail text');
+    expect(content.text.length).toBeGreaterThan(20_000);
+    const detail = JSON.parse(content.text);
+    expect(detail.nodes).toHaveLength(50);
+    expect(detail.nodes[49]).toMatchObject({ id: 'detail-49', prompt: { text: prompt, truncated: false } });
+    expect(JSON.stringify([useAppStore.getState().messages, useAppStore.getState().agentTasks]))
+      .not.toContain('private-canvas-detail-marker');
+  });
+
+  it.each([
+    { route: 'direct', effect: 'read' as const },
+    { route: 'envelope', effect: 'read' as const },
+    { route: 'direct', effect: 'file_write' as const },
+    { route: 'envelope', effect: 'file_write' as const },
+  ])('distinguishes result delivery errors from completed writes: $route / $effect', async ({ route, effect }) => {
+    const execute = vi.fn(async () => ({
+      status: 'success' as const, summary: 'operation complete', modelContent: 'x'.repeat(600_000),
+    }));
+    registerAgentTool({ id: 'mcp_large_result_test', title: 'Large result', description: 'Result delivery test', effect,
+      inputSchema: { type: 'object', additionalProperties: false, properties: {} }, execute });
+
+    const result = await mcpCall(route === 'direct' ? 'mcp_large_result_test' : 'tools_call',
+      route === 'direct' ? {} : { name: 'mcp_large_result_test', arguments: {} }, `oversized-${route}-${effect}`);
+
+    expect(result.isError).toBe(effect === 'read');
+    const content = result.content[0];
+    if (content.type !== 'text') throw new Error('Expected result delivery text');
+    expect(JSON.parse(content.text)).toMatchObject({
+      code: 'MCP_RESULT_TOO_LARGE', operationStatus: 'success', resultOmitted: true, retryable: false,
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().agentTasks.at(-1)).toMatchObject({
+      status: 'completed', steps: [expect.objectContaining({ status: 'succeeded' })],
+    });
+  });
+
   it('discovers available Registry tools with their local schemas', async () => {
     const tools = await listMcpTools('full');
     expect(tools.some((tool) => tool.name === 'canvas_query')).toBe(true);

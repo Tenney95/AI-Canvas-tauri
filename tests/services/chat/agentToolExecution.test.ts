@@ -103,6 +103,110 @@ function setBoundaryMode(mode: AgentMode) {
 }
 
 describe('shared Agent tool execution for MCP', () => {
+  it('returns complete MCP JSON above the model limit without persisting its body', async () => {
+    const body = JSON.stringify({ nodes: [{ prompt: 'complete-mcp-body-marker'.repeat(1200) }] });
+    registerBoundaryTool({ effect: 'read', execute: async () => ({
+      status: 'success', summary: 'read complete', modelContent: body,
+    }) });
+    transitionAgentTask('mcp-task-1', 'planning');
+
+    const result = await executeBoundaryTool();
+
+    expect(result.modelContent).toHaveLength(20_000);
+    expect(result.summary.truncated).toBe(true);
+    expect(result.mcpContent).toEqual([{ type: 'text', text: body }]);
+    expect(JSON.parse((result.mcpContent![0] as { text: string }).text)).toEqual(JSON.parse(body));
+    expect(JSON.stringify({ tasks: useAppStore.getState().agentTasks, messages: useAppStore.getState().messages }))
+      .not.toContain('complete-mcp-body-marker');
+  });
+
+  it('keeps ordinary assistant results bounded by the model limit', async () => {
+    useAppStore.setState((state) => ({
+      activeConversationId: 'ordinary-conversation',
+      conversations: [{ ...state.conversations[0], id: 'ordinary-conversation' }],
+      agentTasks: [{ ...state.agentTasks[0], conversationId: 'ordinary-conversation' }],
+    }));
+    registerBoundaryTool({ effect: 'read', execute: async () => ({
+      status: 'success', summary: 'read complete', modelContent: 'x'.repeat(21_000),
+    }) });
+    transitionAgentTask('mcp-task-1', 'planning');
+
+    const result = await executeBoundaryTool();
+
+    expect(result.modelContent).toHaveLength(20_000);
+    expect(result.mcpContent).toBeUndefined();
+    expect(result.mcpResultError).toBeUndefined();
+  });
+
+  it('marks truncation performed by the tool separately from the model text limit', async () => {
+    const body = JSON.stringify({ items: ['first page'], nextCursor: 'next' });
+    registerBoundaryTool({ effect: 'read', execute: async () => ({
+      status: 'success', summary: 'partial read', modelContent: body, truncated: true,
+    }) });
+    transitionAgentTask('mcp-task-1', 'planning');
+
+    const result = await executeBoundaryTool();
+
+    expect(result.mcpContent?.[0]).toEqual({ type: 'text', text: body });
+    expect(JSON.parse((result.mcpContent![1] as { text: string }).text)).toMatchObject({ truncated: true });
+    expect(result.mcpResultError).toBeUndefined();
+  });
+
+  it.each([
+    { kind: 'UTF-8 bytes', body: '界'.repeat(180_000) },
+    { kind: 'JSON escapes', body: '\n'.repeat(263_000) },
+  ])('rejects oversized serialized MCP text without splitting JSON ($kind)', async ({ body }) => {
+    expect(body.length).toBeLessThan(512 * 1024);
+    registerBoundaryTool({ effect: 'read', execute: async () => ({
+      status: 'success', summary: 'read complete', modelContent: body,
+    }) });
+    transitionAgentTask('mcp-task-1', 'planning');
+
+    const result = await executeBoundaryTool();
+
+    expect(result.mcpResultError).toBe(true);
+    expect(result.summary.status).toBe('success');
+    expect(JSON.parse((result.mcpContent![0] as { text: string }).text)).toMatchObject({
+      code: 'MCP_RESULT_TOO_LARGE', operationStatus: 'success', resultOmitted: true, retryable: false,
+    });
+    expect(JSON.stringify(result.mcpContent).length).toBeLessThan(1000);
+  });
+
+  it('preserves successful writes when their result exceeds the MCP delivery budget', async () => {
+    const write = vi.fn(async () => ({
+      status: 'success' as const, summary: 'write complete', modelContent: 'x'.repeat(600_000),
+    }));
+    registerBoundaryTool({ effect: 'file_write', execute: write });
+
+    const task = await runAgentTask('mcp-task-1', async (signal) => {
+      const result = await executeBoundaryTool({ signal });
+      expect(result.summary.status).toBe('success');
+      expect(result.mcpResultError).toBe(false);
+      const omitted = JSON.parse((result.mcpContent![0] as { text: string }).text);
+      expect(omitted).toMatchObject({ operationStatus: 'success', resultOmitted: true, retryable: false });
+      expect(omitted.message).toContain('不要重复提交写入');
+      return 'completed';
+    });
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(task.status).toBe('completed');
+    expect(task.steps[0].status).toBe('succeeded');
+    expect(task.steps[0].toolCall?.resultSummary).toBe('write complete');
+  });
+
+  it('preserves existing rich MCP content without applying the ordinary text budget', async () => {
+    const content = [{ type: 'image' as const, mimeType: 'image/jpeg' as const, data: 'Y'.repeat(600_000) }];
+    registerBoundaryTool({ effect: 'read', execute: async () => ({
+      status: 'success', summary: 'image complete', modelContent: 'image complete', mcpContent: content,
+    }) });
+    transitionAgentTask('mcp-task-1', 'planning');
+
+    const result = await executeBoundaryTool();
+
+    expect(result.mcpContent).toBe(content);
+    expect(result.mcpResultError).toBeUndefined();
+  });
+
   it.each([false, true])('rechecks general tool access after approval; revoked=%s', async (revoked) => {
     const task = { ...createTask(), projectId: GENERAL_ASSISTANT_SCOPE_ID,
       conversationId: 'conv-general', toolAllowlist: ['file_write_text'], mode: 'collaborative' as const };

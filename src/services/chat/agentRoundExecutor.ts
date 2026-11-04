@@ -39,6 +39,7 @@ import {
   prepareAgentToolCall,
   type AgentToolContext,
   type AgentToolEffect,
+  type AgentToolExecutionResult,
   type PreparedAgentToolCall,
 } from './toolRegistry';
 import { evaluateAgentToolPolicy } from './policyEngine';
@@ -104,8 +105,47 @@ export interface ExecutedToolCall {
   summary: ToolResultSummary;
   modelContent: string;
   mcpContent?: McpContent[];
+  /** 瞬时结果交付失败，不改变工具已执行的真实状态或持久化审计。 */
+  mcpResultError?: boolean;
   /** 仅供串行编排使用；固定在工具返回时，不吸收后续回调造成的画布变化。 */
   canvasRevisionAfter?: number;
+}
+
+const MCP_TEXT_RESULT_MAX_BYTES = 512 * 1024;
+
+function preserveMcpToolContent(
+  result: AgentToolExecutionResult,
+  context: AgentToolContext,
+  effect: AgentToolEffect,
+): Pick<ExecutedToolCall, 'mcpContent' | 'mcpResultError'> {
+  if (context.conversationId !== `mcp-control-${context.projectId}` || result.mcpContent?.length) {
+    return { mcpContent: result.mcpContent };
+  }
+  const content: McpContent[] = [{ type: 'text', text: result.modelContent }];
+  if (result.truncated) {
+    content.push({ type: 'text', text: JSON.stringify({
+      truncated: true,
+      message: '工具自身仅返回部分结果，请使用其筛选、分页或续读参数继续读取。',
+    }) });
+  }
+  if (new TextEncoder().encode(JSON.stringify(content)).byteLength <= MCP_TEXT_RESULT_MAX_BYTES) {
+    return { mcpContent: content };
+  }
+  const writeSucceeded = result.status === 'success' && effect !== 'read';
+  return {
+    mcpResultError: effect === 'read',
+    mcpContent: [{ type: 'text', text: JSON.stringify({
+      code: 'MCP_RESULT_TOO_LARGE',
+      operationStatus: result.status,
+      effect,
+      resultOmitted: true,
+      truncated: true,
+      retryable: false,
+      message: writeSucceeded
+        ? '操作已执行成功，但结果超过 512 KiB 交付预算，详情已省略。请用只读查询核实，不要重复提交写入。'
+        : '工具已执行，但结果超过 512 KiB 交付预算，详情已省略。请缩小筛选范围或使用分页、续读参数读取。',
+    }) }],
+  };
 }
 
 function isAgentExecutionInactive(taskId: string, signal: AbortSignal): boolean {
@@ -512,7 +552,7 @@ export async function executePreparedToolCall(
           sources: result.sources,
         },
         modelContent,
-        mcpContent: result.mcpContent,
+        ...preserveMcpToolContent(result, context, prepared.definition.effect),
         canvasRevisionAfter: result.status === 'success'
           && (prepared.definition.effect === 'canvas_write' || prepared.definition.effect === 'media_generation')
           ? revisionAfterExecution
