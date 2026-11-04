@@ -782,7 +782,8 @@ export function createDetachedChatSyncController(
       }
       if (!detachedSnapshotSourceChanged(state, previous)) return;
       const justDetached = !previous.chatPanelDetached;
-      sync(justDetached, justDetached);
+      const projectChanged = state.currentProjectId !== previous.currentProjectId;
+      sync(justDetached || projectChanged, justDetached || projectChanged);
     });
     unsubscribeFileGrants = subscribeFileGrants(() => sync());
     unsubscribeImagePreviews = subscribeChatImagePreviews(() => sync());

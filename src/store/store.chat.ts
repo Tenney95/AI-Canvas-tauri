@@ -193,6 +193,11 @@ function retainBackgroundTaskMessages(state: AppState, targetConversationId?: st
   );
 }
 
+function isConversationInCurrentChatScope(state: AppState, conversation: ChatConversation): boolean {
+  const ownerId = seriesOwnerId(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
+  return conversation.projectId === ownerId || conversation.id === MCP_SETTINGS_CONVERSATION_ID;
+}
+
 function resolveMessageProjectId(state: AppState, conversationId: string): string | null {
   return state.conversations.find((conversation) => conversation.id === conversationId)?.projectId
     ?? state.agentTasks.find((task) => task.conversationId === conversationId)?.projectId
@@ -387,9 +392,9 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   setActiveConversation: (id) => {
     if (id) {
       const state = get();
-      const projectId = state.conversations.find((conversation) => conversation.id === id)?.projectId
-        ?? (state.currentProjectId ? seriesOwnerId(state.projects, state.currentProjectId) : null);
-      if (projectId) persistActiveConversation(projectId, id);
+      const conversation = state.conversations.find((item) => item.id === id);
+      if (!conversation || !isConversationInCurrentChatScope(state, conversation)) return;
+      persistActiveConversation(conversation.projectId, id);
     }
     set({ activeConversationId: id, chatComposerLiveDraft: id ? get().chatComposerDrafts[id] ?? '' : '' });
   },
@@ -426,9 +431,27 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   // ==========================================
 
   loadConversationsForProject: async (projectId) => {
+    if ((get().currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) !== projectId) return;
+    const ownerId = seriesOwnerId(get().projects, projectId);
+    // 先切换展示作用域，再读取历史；慢读取或失败都不能把旧项目继续当作活动对话。
+    set((state) => {
+      const conversations = state.conversations.filter((conversation) => conversation.projectId === ownerId
+        || conversation.id === MCP_SETTINGS_CONVERSATION_ID);
+      const activeId = conversations.find((conversation) => conversation.id === state.activeConversationId)?.id ?? null;
+      return {
+        conversations,
+        activeConversationId: activeId,
+        chatComposerLiveDraft: activeId ? state.chatComposerLiveDraft
+          : projectId === GENERAL_ASSISTANT_SCOPE_ID && !state.activeConversationId ? state.chatComposerLiveDraft : '',
+        messages: [
+          ...retainBackgroundTaskMessages(state, activeId ?? undefined),
+          ...state.messages.filter((message) => message.conversationId === activeId),
+        ],
+        operationLogs: [],
+      };
+    });
     try {
       // 会话按剧集项目归属：分集共用剧集的会话（seriesOwnerId 对普通项目是恒等）
-      const ownerId = seriesOwnerId(get().projects, projectId);
       const persistedConversations = await chatHistoryService.loadProjectConversations(ownerId);
       // 列表加载期间用户可能已新建或编辑会话，内存中的最新记录优先。
       const projectConversations = [...new Map([
@@ -469,7 +492,10 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     try {
       const { messages } = await chatHistoryService.loadMessages(conversationId, 0, 200);
       // 只保留当前展示的 conversationId 的消息（时序上切换后仍然可能收到旧异步结果）
-      if (get().activeConversationId !== conversationId) return;
+      const current = get();
+      const conversation = current.conversations.find((item) => item.id === conversationId);
+      if (current.activeConversationId !== conversationId || !conversation
+        || !isConversationInCurrentChatScope(current, conversation)) return;
       set((state) => ({
         messages: [
           ...retainBackgroundTaskMessages(state, conversationId),

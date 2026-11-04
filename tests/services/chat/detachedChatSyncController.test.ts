@@ -69,6 +69,57 @@ beforeEach(() => {
 });
 
 describe('detached chat sync controller', () => {
+  it('immediately sends a complete snapshot when switching projects despite a long sync interval', async () => {
+    const frames: ChatStateSync[] = [];
+    const controller = createDetachedChatSyncController({
+      enabled: true, syncIntervalMs: 60_000, now: () => 1,
+      emitSync: async (sync) => { frames.push(sync); },
+      initListener: async () => () => undefined,
+    });
+    await controller.start();
+    try {
+      expect(frames).toHaveLength(1);
+      expect(frames[0]).toMatchObject({ type: 'snapshot', snapshot: { projectId: 'project-1', activeConversationId: 'conversation-1' } });
+      useAppStore.setState((state) => ({
+        currentProjectId: 'project-2',
+        projects: [...state.projects, { id: 'project-2', name: 'Another project', createdAt: 2, updatedAt: 2 }],
+      }));
+      // 不推进计时器：项目切换必须越过普通节流，立即撤下旧窗口会话。
+      expect(frames).toHaveLength(2);
+      expect(frames[1]).toMatchObject({ type: 'snapshot', snapshot: {
+        projectId: 'project-2', activeConversationId: null, conversations: [],
+      } });
+      expect(receiveChatStateSync(receiveChatStateSync(null, frames[0]), frames[1])?.snapshot.activeConversationId).toBeNull();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('rejects a stale detached conversation selection even when the previous project remains cached', async () => {
+    useAppStore.setState((state) => ({
+      currentProjectId: 'project-2', activeConversationId: 'conversation-2',
+      projects: [...state.projects, { id: 'project-2', name: 'Another project', createdAt: 2, updatedAt: 2 }],
+      conversations: [...state.conversations, { ...state.conversations[0], id: 'conversation-2', projectId: 'project-2' }],
+      messages: [{ id: 'message-2', conversationId: 'conversation-2', role: 'assistant', content: 'Current project', timestamp: 2, status: 'done' }],
+    }));
+    let finish!: () => void;
+    const pendingRead = new Promise<void>((resolve) => { finish = resolve; });
+    const loadMessages = vi.spyOn(useAppStore.getState(), 'loadConversationMessages').mockReturnValue(pendingRead);
+    try {
+      handleDetachedChatAction({ type: 'switch_conversation', conversationId: 'conversation-1' }, vi.fn());
+      expect(loadMessages).toHaveBeenCalledWith('conversation-1');
+      expect(useAppStore.getState().activeConversationId).toBe('conversation-2');
+      finish();
+      await pendingRead;
+      expect(useAppStore.getState().activeConversationId).toBe('conversation-2');
+      expect(useAppStore.getState().messages.map((message) => message.id)).toEqual(['message-2']);
+      expect(buildDetachedChatSnapshot(useAppStore.getState()).conversations.map((conversation) => conversation.id)).toEqual(['conversation-2']);
+    } finally {
+      finish();
+      loadMessages.mockRestore();
+    }
+  });
+
   it('creates and sends the first general conversation through the main store on the start page', () => {
     useAppStore.setState({ currentProjectId: null, activeConversationId: null, conversations: [] });
     handleDetachedChatAction({ type: 'send_message', content: '帮我写一份提纲' }, vi.fn());
