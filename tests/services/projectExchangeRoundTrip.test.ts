@@ -5,8 +5,23 @@ import { captureExchangeSnapshot, materializeExchangeSnapshot, validateExchangeD
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectExchangeIdentity, ProjectExchangeState } from '../../src/types/projectExchange';
 import { normalizeDramaAssetLibrary } from '../../src/types/dramaAssets';
+import { parseProjectExchangeState } from '../../src/services/indexedDb/projectExchangeRepository';
 beforeEach(() => vi.stubGlobal('crypto', webcrypto)); afterEach(() => vi.unstubAllGlobals());
 describe('项目规范快照往返', () => {
+  it.each(['episode', 'node'] as const)('新建实体的身份映射只保存身份字段（%s）', (kind) => {
+    const source: ProjectSaveData = { id: 'root', name: '项目', nodes: [], edges: [], createdAt: 1, updatedAt: 2 };
+    const records = kind === 'episode' ? [source, { ...source, id: 'episode', parentId: source.id }]
+      : [{ ...source, nodes: [{ id: 'text', type: 'source-text', data: { type: 'source-text', output: '原文' } }] }];
+    const captured = captureExchangeSnapshot(records, [], null);
+    const identities: ProjectExchangeIdentity[] = [{ kind: 'project', scopeId: 'root', id: 'root', localId: 'recipient' }];
+    const restored = materializeExchangeSnapshot(captured.snapshot, identities, [], '接收方目录', captured.files);
+    const state: ProjectExchangeState = { ownerId: restored[0].id, rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities };
+    expect(() => parseProjectExchangeState(state)).not.toThrow();
+    for (const identity of identities) expect(Object.keys(identity).sort()).toEqual(['id', 'kind', 'localId', 'scopeId']);
+    expect(captureExchangeSnapshot(restored, [], state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+
   it('拒绝合并后失去父对象的子实体，以及循环子对象列表', () => {
     const source: ProjectSaveData = { id: 'root', name: '项目', nodes: [], edges: [], createdAt: 1, updatedAt: 1 };
     const captured = captureExchangeSnapshot([source], [], null);

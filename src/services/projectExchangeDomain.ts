@@ -374,7 +374,12 @@ export function materializeExchangeSnapshot(snapshot: ProjectExchangeSnapshot, i
   const projects = snapshot.entities.filter((item) => item.kind === 'project');
   const local = (entity: ProjectExchangeReference): string => {
     let mapping = identities.find((item) => projectExchangeEntityKey(item) === projectExchangeEntityKey(entity));
-    if (!mapping) { mapping = { ...entity, localId: entity.kind === 'project' ? crypto.randomUUID() : entity.id }; identities.push(mapping); }
+    if (!mapping) {
+      // 调用方可能传入完整实体；身份映射不能混入 data / references 等业务字段。
+      mapping = { kind: entity.kind, scopeId: entity.scopeId, id: entity.id,
+        localId: entity.kind === 'project' ? crypto.randomUUID() : entity.id };
+      identities.push(mapping);
+    }
     return mapping.localId;
   };
   projects.forEach(local);
