@@ -50,6 +50,8 @@ vi.mock('../../src/services/fileService', () => ({
 vi.mock('../../src/services/pollManager', () => ({
   prepareMediaNodeGeneration: vi.fn(), completeMediaNodeTask: mocks.completeMedia, pauseMediaTask: mocks.pauseMedia,
   registerMediaNodeOperation: () => mocks.endOperation,
+  registerNodePolling: (_nodeId: string, parentSignal?: AbortSignal) => parentSignal ?? new AbortController().signal,
+  cleanupNodePolling: vi.fn(() => true),
   isMediaTaskPausedError: (error: unknown) => error instanceof Error && error.message === '视频查询已暂停',
   beginComfyNodeDelivery: vi.fn(), completeComfyNodeTask: vi.fn(), pauseComfyNodeDelivery: vi.fn(),
   prepareVideoNodeGeneration: vi.fn(), completeVideoNodeTask: vi.fn(), pauseVideoNodeTask: vi.fn(),
@@ -267,7 +269,7 @@ describe('batchExecuteNodes', () => {
     const mediaDownloadAccess = { providerConfigId: 'relay-image', origin: 'https://relayonapi.com', auth: { type: 'bearer' as const } };
     mocks.generateImage.mockResolvedValueOnce({ url: 'https://relayonapi.com/image', width: 1, height: 1, mediaDownloadAccess });
     await batchExecuteNodes([node.id], [node], [], ctx);
-    expect(mocks.persistMediaUrlToProjectData).toHaveBeenCalledWith('https://relayonapi.com/image', 'project', 'ai-image', 'image', { mediaDownloadAccess });
+    expect(mocks.persistMediaUrlToProjectData).toHaveBeenCalledWith('https://relayonapi.com/image', 'project', 'ai-image', 'image', { mediaDownloadAccess, signal: expect.any(AbortSignal) });
     expect(JSON.stringify(vi.mocked(ctx.recordOutputHistory).mock.calls)).not.toContain('mediaDownloadAccess');
   });
   it('does not mark a paused video query as a failed node or resubmit it', async () => {
@@ -301,7 +303,7 @@ describe('batchExecuteNodes', () => {
     generated.resolve({ url: 'first.mp4' });
     await vi.waitFor(() => expect(mocks.persistMediaUrlToProjectData).toHaveBeenCalledWith(
       'first.mp4', 'project', 'ai-video', 'random-z',
-      { mediaDownloadAccess: undefined },
+      { mediaDownloadAccess: undefined, signal: expect.any(AbortSignal) },
     ));
     expect(mocks.generateVideo).toHaveBeenCalledTimes(2);
     saved.resolve({ mediaUrl: 'saved.mp4', sourceUrl: 'first.mp4' });

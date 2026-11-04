@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { pollTask, PollTaskFailedError, PollTimeoutError } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, removeFailedMediaTask, registerNodePolling, cleanupNodePolling, pauseMediaTask, VIDEO_POLL_MAX_DURATION_MS } from '../pollManager';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './helpers';
-import type { BatchImageResult, MediaTaskReceipt } from '../../types/aiTypes';
+import type { BatchImageResult, MediaDownloadAccess, MediaTaskReceipt } from '../../types/aiTypes';
 import {
   buildApimartSeedanceRequest,
   type ApimartSeedanceRequestParams,
@@ -17,6 +17,7 @@ import { runBatchTasks } from './batchUtils';
 import { resolveConfiguredImageBackground } from './modelCapabilityValidation';
 import { redactModelProtocolError, redactModelProtocolErrorText, throwIfDefinitiveModelResponseFailure } from './modelProtocolHttp';
 import { classifyHttpResponseFailure, getHttpResponseError, HttpResponseError } from './httpUtils';
+import { createMediaDownloadAccess } from './mediaDownloadAccess';
 
 /* ── APIMart 任务轮询共享类型 ── */
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
@@ -98,7 +99,8 @@ export async function executeGeneralAsyncTask(
   nodeId?: string,
   externalSignal?: AbortSignal,
   requestBody?: Record<string, unknown>,
-): Promise<{ url: string; taskReceipt?: MediaTaskReceipt }> {
+): Promise<{ url: string; taskReceipt?: MediaTaskReceipt; mediaDownloadAccess: MediaDownloadAccess }> {
+  const mediaDownloadAccess = createMediaDownloadAccess(providerConfigId, baseUrl, { type: 'bearer' });
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
@@ -116,6 +118,7 @@ export async function executeGeneralAsyncTask(
           nodeType: resultField === 'videos' ? 'ai-video' : resultField === 'audios' ? 'ai-audio' : 'ai-image',
           provider: 'general',
           providerConfigId,
+          mediaDownloadAccess,
           taskId: '',
           taskType: 'general',
           submitted: false,
@@ -147,13 +150,13 @@ export async function executeGeneralAsyncTask(
       const url = parseMultiPathResponse(submitResult, resultField);
       if (url) {
         if (receipt) removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
-        return { url };
+        return { url, mediaDownloadAccess };
       }
       // 尝试标准 OpenAI 图片格式
       const dataArr = submitResult.data as Array<{ url: string }> | undefined;
       if (dataArr?.[0]?.url) {
         if (receipt) removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
-        return { url: dataArr[0].url };
+        return { url: dataArr[0].url, mediaDownloadAccess };
       }
       throwIfDefinitiveModelResponseFailure(submitResult, submitResp.status, undefined, apiKey);
       throw new Error('响应格式异常：未返回 task_id 或结果 URL');
@@ -194,7 +197,7 @@ export async function executeGeneralAsyncTask(
       signal,
     });
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId) ?? receipt;
-    return { ...result, ...(receipt ? { taskReceipt: receipt } : {}) };
+    return { ...result, mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) };
   } catch (unsafeError) {
     const error = redactModelProtocolError(unsafeError, apiKey);
     const rejected = !receipt?.taskId && getHttpResponseError(error)?.definitiveFailure === true;
@@ -242,6 +245,7 @@ export async function generateApimartImagesBatch(
     ? requestedBatchCount
     : (capabilityRequest?.requestedCount ?? requestedBatchCount);
   const effectiveDimensions = capabilityRequest?.dimensions ?? dimensions;
+  const mediaDownloadAccess = createMediaDownloadAccess('apimart', baseUrl, { type: 'bearer' });
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
   let uncertainSubmission = false;
@@ -261,6 +265,7 @@ export async function generateApimartImagesBatch(
           nodeType: 'ai-image',
           provider: 'apimart',
           providerConfigId: 'apimart',
+          mediaDownloadAccess,
           taskId: '',
           taskType: 'apimart',
           batchCount: requestedCount,
@@ -389,12 +394,14 @@ export async function generateApimartImagesBatch(
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId) ?? receipt;
     const results = urls.map((url) => ({
       url,
+      mediaDownloadAccess,
       width: effectiveDimensions.width,
       height: effectiveDimensions.height,
       ...(receipt ? { taskReceipt: receipt } : {}),
     }));
     return {
       requestedCount,
+      mediaDownloadAccess,
       results,
       failedCount: Math.max(0, requestedCount - results.length),
       allTasksSettled: true,
@@ -458,7 +465,8 @@ export async function generateApimartVideo(
   nodeId?: string,
   params: ApimartSeedanceRequestParams = {},
   externalSignal?: AbortSignal,
-): Promise<{ url: string; taskReceipt?: MediaTaskReceipt }> {
+): Promise<{ url: string; taskReceipt?: MediaTaskReceipt; mediaDownloadAccess: MediaDownloadAccess }> {
+  const mediaDownloadAccess = createMediaDownloadAccess('apimart', baseUrl, { type: 'bearer' });
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
@@ -476,6 +484,7 @@ export async function generateApimartVideo(
           nodeType: 'ai-video',
           provider: 'apimart',
           providerConfigId: 'apimart',
+          mediaDownloadAccess,
           taskId: '',
           taskType: 'apimart',
           submitted: false,
@@ -542,7 +551,7 @@ export async function generateApimartVideo(
       signal,
     });
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId) ?? receipt;
-    return { ...result, ...(receipt ? { taskReceipt: receipt } : {}) };
+    return { ...result, mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) };
   } catch (unsafeError) {
     const error = redactModelProtocolError(unsafeError, apiKey);
     const rejected = !receipt?.taskId && getHttpResponseError(error)?.definitiveFailure === true;

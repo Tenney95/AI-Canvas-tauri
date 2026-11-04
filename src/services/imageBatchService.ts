@@ -17,6 +17,7 @@ interface ApplyImageBatchParams {
   provider?: string;
   silent?: boolean;
   isCurrent?: () => boolean;
+  signal?: AbortSignal;
   nodeId: string;
   /** 提交请求前创建的目标节点；恢复旧任务时可缺省，由 batchGroupId 自动找回。 */
   targetNodeIds?: string[];
@@ -177,7 +178,9 @@ export async function applyImageBatchResults({
   imageBackground,
   aspectRatio,
   isCurrent,
+  signal,
 }: ApplyImageBatchParams): Promise<boolean> {
+  signal?.throwIfAborted();
   if (isCurrent && !isCurrent()) throw new Error('画布已变化，批量产物已保留');
   if (batch.results.length === 0) throw new Error('批量图片生成未返回可用结果');
 
@@ -187,20 +190,29 @@ export async function applyImageBatchResults({
   const sourceData = sourceNode.data;
   if (batch.results.some((result) => result.taskReceipt)) initialStore.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
 
+  let firstSaveError: unknown;
   const savedBatch = await runBatchTasks(batch.results.length, 3, async (index): Promise<SavedBatchItem> => {
+    signal?.throwIfAborted();
     const result = batch.results[index];
-    const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (projectId
-      ? await persistMediaUrlToProjectData(
-          result.url,
-          projectId,
-          'ai-image',
-          `${sourceData.label}-${index + 1}`,
-          { mediaDownloadAccess: result.mediaDownloadAccess },
-        )
-      : { mediaUrl: result.url, sourceUrl: result.url });
-    return { index, result, persisted };
+    try {
+      const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (projectId
+        ? await persistMediaUrlToProjectData(
+            result.url,
+            projectId,
+            'ai-image',
+            `${sourceData.label}-${index + 1}`,
+            { mediaDownloadAccess: result.mediaDownloadAccess, ...(signal ? { signal } : {}) },
+          )
+        : { mediaUrl: result.url, sourceUrl: result.url });
+      signal?.throwIfAborted();
+      return { index, result, persisted };
+    } catch (error) {
+      firstSaveError ??= error;
+      throw error;
+    }
   });
 
+  signal?.throwIfAborted();
   let store = useAppStore.getState();
   if (isCurrent && !isCurrent()) throw new Error('画布已变化，批量产物已保留');
   let liveSource = store.nodes.find((node) => node.id === nodeId) as Node<BaseNodeData> | undefined;
@@ -275,6 +287,7 @@ export async function applyImageBatchResults({
     });
   }));
 
+  signal?.throwIfAborted();
   // 聚合任务的任一产物仍待保存或回填时，不能用一张成功图清掉整批远端身份。
   const remoteComplete = batch.allTasksSettled === true
     || (batch.failedCount === 0 && batch.results.length >= batch.requestedCount);
@@ -283,7 +296,7 @@ export async function applyImageBatchResults({
   for (const result of batch.results) {
     if (result.taskReceipt) {
       if (deliveryComplete) completeMediaNodeTask(result.taskReceipt);
-      else pauseMediaTask(result.taskReceipt, undefined, 'delivery_pending');
+      else pauseMediaTask(result.taskReceipt, firstSaveError, 'delivery_pending');
     }
     if (deliveryComplete && result.comfyTaskId) completeComfyNodeTask(nodeId, result.comfyTaskId);
   }

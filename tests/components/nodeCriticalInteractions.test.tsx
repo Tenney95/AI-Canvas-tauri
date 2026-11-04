@@ -196,6 +196,8 @@ function mockComfyDeliveries() {
     pauseComfyNodeDelivery: vi.fn(),
     prepareMediaNodeGeneration: vi.fn(),
     registerMediaNodeOperation: () => vi.fn(),
+    registerNodePolling: (_nodeId: string, parentSignal?: AbortSignal) => parentSignal ?? new AbortController().signal,
+    cleanupNodePolling: vi.fn(),
     completeMediaNodeTask: vi.fn(),
     pauseMediaTask: vi.fn(),
     isMediaTaskPausedError: () => false,
@@ -1849,6 +1851,13 @@ describe('critical canvas node interactions', () => {
       const generateImage = vi.fn().mockResolvedValue({ url: 'https://example.com/result.png', width: 1024, height: 1024 });
       const generateImagesBatch = vi.fn().mockResolvedValue({ results: [{ url: 'https://example.com/result.png' }] });
       const applyImageBatchResults = vi.fn().mockResolvedValue(true);
+      const savingController = new AbortController();
+      const registerNodePolling = vi.fn(() => savingController.signal);
+      const cleanupNodePolling = vi.fn();
+      const registerMediaNodeOperation = vi.fn((_nodeId: string, _ownsGeneration?: boolean) => vi.fn());
+      const persistMediaUrlToProjectData = vi.fn(async (url: string) => ({ mediaUrl: url, sourceUrl: url, filePath: 'result.png' }));
+      const completeMediaNodeTask = vi.fn();
+      const pauseMediaTask = vi.fn();
       await installReactHookDriver();
       installStoreMock(store);
       vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
@@ -1860,7 +1869,7 @@ describe('critical canvas node interactions', () => {
         generateText: vi.fn(), generateImage, generateImagesBatch, generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
       }));
       vi.doMock('../../src/services/fileService', () => ({
-        persistMediaUrlToProjectData: vi.fn(async (url: string) => ({ mediaUrl: url, sourceUrl: url, filePath: 'result.png' })),
+        persistMediaUrlToProjectData,
       }));
       vi.doMock('../../src/services/ai/mediaModelCapabilities', () => ({
         resolveImageParameterCapability: (model: string) => model === 'general/model-compatible'
@@ -1886,7 +1895,8 @@ describe('critical canvas node interactions', () => {
       }));
       vi.doMock('../../src/services/pollManager', () => ({
         ...mockComfyDeliveries(), getPendingTasksForProject: () => [],
-        prepareMediaNodeGeneration: vi.fn(), registerMediaNodeOperation: () => vi.fn(), completeMediaNodeTask: vi.fn(),
+        prepareMediaNodeGeneration: vi.fn(), registerMediaNodeOperation, completeMediaNodeTask, pauseMediaTask,
+        registerNodePolling, cleanupNodePolling,
       }));
       vi.doMock('../../src/services/imageBatchService', () => ({
         prepareImageBatchNodes: () => ({ nodeIds: ['quality-image', 'batch-image'] }),
@@ -1894,8 +1904,88 @@ describe('critical canvas node interactions', () => {
       }));
       const AINodeDialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
       const panel = () => findElement(AINodeDialog(), (element) => componentName(element) === 'PromptPanelMock');
-      return { store, panel, generateImage, generateImagesBatch, applyImageBatchResults };
+      return { store, panel, generateImage, generateImagesBatch, applyImageBatchResults,
+        persistMediaUrlToProjectData, savingController, registerNodePolling, cleanupNodePolling, registerMediaNodeOperation,
+        completeMediaNodeTask, pauseMediaTask };
     }
+
+    it.each(['dialog', 'toolbar'].flatMap((entry) => ['saving', 'delivered'].map((newerStage) => ({ entry, newerStage }))))(
+      '$entry 中旧同步图片迟到时不能抢占 $newerStage 的新一轮保存', async ({ entry, newerStage }) => {
+        const { store, panel, generateImage, persistMediaUrlToProjectData, registerNodePolling, registerMediaNodeOperation } = await setupImageQualityDialog();
+        let owner = 0;
+        registerMediaNodeOperation.mockImplementation((_nodeId, ownsGeneration) => {
+          const token = ownsGeneration ? ++owner : owner;
+          return Object.assign(vi.fn(), { isCurrent: () => owner === token });
+        });
+        const saveControllers: AbortController[] = [];
+        registerNodePolling.mockImplementation(() => {
+          saveControllers.at(-1)?.abort();
+          const controller = new AbortController();
+          saveControllers.push(controller);
+          return controller.signal;
+        });
+        const first = deferred<{ url: string; width: number; height: number }>();
+        const second = deferred<{ url: string; width: number; height: number }>();
+        const saving = deferred<{ mediaUrl: string; sourceUrl: string; filePath: string }>();
+        generateImage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+        persistMediaUrlToProjectData.mockReturnValueOnce(saving.promise);
+        const submit = entry === 'dialog' ? panel().props.onSubmit as () => Promise<void> : async () => {
+          vi.doUnmock('../../src/services/generationService');
+          const { executeGeneration } = await import('../../src/services/generationService');
+          await executeGeneration('quality-image');
+        };
+        const older = submit();
+        await vi.waitFor(() => expect(generateImage).toHaveBeenCalledTimes(1));
+        const newer = submit();
+        await vi.waitFor(() => expect(generateImage).toHaveBeenCalledTimes(2));
+        expect(registerMediaNodeOperation).toHaveBeenNthCalledWith(1, 'quality-image', true);
+        expect(registerMediaNodeOperation).toHaveBeenNthCalledWith(2, 'quality-image', true);
+        second.resolve({ url: 'https://example.com/new.png', width: 1024, height: 1024 });
+        await vi.waitFor(() => expect(persistMediaUrlToProjectData).toHaveBeenCalledOnce());
+        const finishNewSave = () => saving.resolve({ mediaUrl: 'asset://new.png', sourceUrl: 'https://example.com/new.png', filePath: 'new.png' });
+        if (newerStage === 'delivered') { finishNewSave(); await newer; }
+        first.resolve({ url: 'https://example.com/old.png', width: 1024, height: 1024 });
+        await older;
+        expect(registerNodePolling).toHaveBeenCalledOnce();
+        expect(saveControllers[0].signal.aborted).toBe(false);
+        expect(persistMediaUrlToProjectData).toHaveBeenCalledOnce();
+        if (newerStage === 'saving') { finishNewSave(); await newer; }
+        expect(store.nodes[0].data.imageUrl).toBe('asset://new.png');
+        expect(store.recordOutputHistory).toHaveBeenCalledOnce();
+        expect(store.recordOutputHistory).toHaveBeenCalledWith('quality-image', expect.objectContaining({ output: 'https://example.com/new.png' }));
+      },
+    );
+
+    it('图片保存接入取消信号，取消后保留原任务且不回填', async () => {
+      const { store, panel, generateImage, persistMediaUrlToProjectData, savingController,
+        registerNodePolling, cleanupNodePolling, completeMediaNodeTask, pauseMediaTask } = await setupImageQualityDialog();
+      const receipt = { projectId: 'project-a', nodeId: 'quality-image', taskId: 'original', attemptId: 'first' };
+      generateImage.mockResolvedValueOnce({ url: 'https://example.com/result.png', width: 1024, height: 1024, taskReceipt: receipt });
+      const saving = deferred<{ mediaUrl: string; sourceUrl: string; filePath: string }>();
+      persistMediaUrlToProjectData.mockReturnValueOnce(saving.promise);
+      const pending = (panel().props.onSubmit as () => Promise<void>)();
+      await vi.waitFor(() => expect(persistMediaUrlToProjectData).toHaveBeenCalledOnce());
+      expect(registerNodePolling).toHaveBeenCalledWith('quality-image');
+      expect(persistMediaUrlToProjectData).toHaveBeenCalledWith('https://example.com/result.png', 'project-a', 'ai-image', '图片', {
+        mediaDownloadAccess: undefined, signal: savingController.signal,
+      });
+      savingController.abort();
+      saving.resolve({ mediaUrl: 'asset://late.png', sourceUrl: 'https://example.com/result.png', filePath: 'late.png' });
+      await pending;
+      expect(store.nodes[0].data.imageUrl).toBeUndefined();
+      expect(store.recordOutputHistory).not.toHaveBeenCalled();
+      expect(completeMediaNodeTask).not.toHaveBeenCalled();
+      expect(pauseMediaTask).toHaveBeenCalledWith(receipt, undefined, 'canvas_changed');
+      expect(cleanupNodePolling).toHaveBeenCalledWith('quality-image', savingController.signal);
+      expect(generateImage).toHaveBeenCalledOnce();
+    });
+
+    it('批量入口把保存取消信号交给共享交付器', async () => {
+      const { panel, applyImageBatchResults, savingController, cleanupNodePolling } = await setupImageQualityDialog(2);
+      await (panel().props.onSubmit as () => Promise<void>)();
+      expect(applyImageBatchResults).toHaveBeenCalledWith(expect.objectContaining({ signal: savingController.signal }));
+      expect(cleanupNodePolling).toHaveBeenCalledWith('quality-image', savingController.signal);
+    });
 
     it('adjusts only incompatible quality while retaining compatible background, ratio and dimensions', async () => {
       const { store, panel } = await setupImageQualityDialog();

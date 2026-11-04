@@ -680,6 +680,34 @@ describe('persistMediaUrlToProjectData', () => {
     expect(mocks.ensureProjectDataDir).toHaveBeenCalledWith('project-1', { throwOnError: true });
   });
 
+  it.each([
+    { failure: '下载请求失败: HTTP 401 Unauthorized https://private.example/media?key=private-token', kind: 'http', status: 401 },
+    { failure: '媒体下载响应超时，请继续取回原结果', kind: 'timeout' },
+    { failure: new Error('connection timed out https://private.example/private-token'), kind: 'timeout' },
+    { failure: '媒体下载连接失败，请检查网络后继续取回原结果', kind: 'network' },
+    { failure: '读取下载数据失败: private-token', kind: 'network' },
+    { failure: 'forbidden path: C:/private/file.png', kind: 'path_access' },
+    { failure: new Error('Access is denied (os error 5): C:/private/file.png'), kind: 'permission' },
+    { failure: '目标磁盘空间不足，需要至少 999 字节', kind: 'disk_space' },
+    { failure: 'No such file: C:/private/file.png', kind: 'missing_file' },
+    { failure: '项目目录或本地媒体地址不可用', kind: 'missing_file' },
+    { failure: '下载结果不是有效视频', kind: 'invalid_media' },
+    { failure: '视频下载返回空文件', kind: 'invalid_media' },
+    { failure: '原媒体连接或接口地址已变化，请检查原连接配置', kind: 'connection_changed' },
+    { failure: '原连接已不存在', kind: 'connection_changed' },
+    { failure: '媒体下载地址与厂商连接不同源', kind: 'connection_changed' },
+    { failure: '原媒体连接尚未填写 API Key，请补填后继续保存', kind: 'missing_key' },
+    { failure: new Error('unknown private-token C:/private/file.png https://private.example/file'), kind: 'unknown' },
+  ])('exposes only safe structured delivery failure $kind', ({ failure, kind, status }) => {
+    const error = new MediaPersistenceError(failure);
+    expect(error.failureKind).toBe(kind);
+    expect(error.httpStatus).toBe(status);
+    expect(error).not.toHaveProperty('cause');
+    expect(error.message).not.toMatch(/private-token|C:\/private|https?:\/\//);
+    expect(JSON.stringify(error)).not.toMatch(/private-token|C:\/private|https?:\/\//);
+    if (kind !== 'http') expect(error.httpStatus).toBeUndefined();
+  });
+
   it('propagates blob write failures instead of replacing them with a generic failure', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Uint8Array([1]), {
       headers: { 'content-type': 'image/png' },

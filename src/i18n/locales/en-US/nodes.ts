@@ -1498,6 +1498,21 @@ const nodes = {
   "镜头内容已变化，请关闭后重新打开": "The shot has changed. Close and reopen the editor.",
   "六格线稿分镜": "Six-panel line-art storyboard",
   "黑白铅笔线稿、彩色调度箭头与镜号批注 · 16:9": "Black-and-white pencil lines, colored blocking arrows and shot notes · 16:9",
+  "下载等待超时，原任务已保留，可继续取回": "The download timed out. The original task is retained; try retrieving it again.",
+  "下载连接中断，原任务已保留，可继续取回": "The download connection was interrupted. The original task is retained; try again.",
+  "保存目录未获应用授权，请在设置中重新选择目录": "The app cannot access the save folder. Select it again in Settings.",
+  "保存目录无法写入，请检查目录权限": "Cannot write to the save folder. Check its permissions.",
+  "目标磁盘空间不足，清理后可继续保存": "The destination disk is full. Free up space, then continue saving.",
+  "项目目录或源文件不存在，请检查保存位置": "The project folder or source file is missing. Check the save location.",
+  "下载内容为空、不完整或格式无效，可继续取回原任务": "The downloaded content is empty, incomplete, or invalid. Retrieve the original task again.",
+  "原连接或接口地址已变化，请检查原连接配置": "The original connection or API address has changed. Check that connection.",
+  "原连接尚未填写 Key，请补填后继续保存": "The original connection has no Key. Add it, then continue saving.",
+  "媒体保存失败，请检查保存目录和媒体来源": "Could not save the media. Check the save folder and media source.",
+  "媒体下载请求失败，原任务已保留": "The media download request failed. The original task is retained.",
+  "下载鉴权被拒绝（HTTP {status}），请检查原连接的 Key 或权限": "Download authorization was denied (HTTP {status}). Check the original connection’s Key or permissions.",
+  "下载地址已失效或资源不存在（HTTP {status}），可继续查询原任务": "The download URL expired or the resource is missing (HTTP {status}). Query the original task again.",
+  "媒体下载失败（HTTP {status}），原任务已保留": "The media download failed (HTTP {status}). The original task is retained.",
+  "画布已变化，结果未回填；请在原节点继续取回": "The canvas changed, so the result was not applied. Continue retrieving it at the original node.",
 };
 
 export default nodes;

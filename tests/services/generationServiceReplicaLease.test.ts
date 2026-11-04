@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   image: vi.fn(), audio: vi.fn(), persistAudio: vi.fn(), completeComfy: vi.fn(), pauseComfy: vi.fn(),
   completeMedia: vi.fn(), pauseMedia: vi.fn(() => new Error('任务已保留')), endOperation: vi.fn(), prepareMedia: vi.fn(),
   tasks: [] as Array<import('../../src/services/pollManager').PendingTask>,
+  polling: new Map<string, { controller: AbortController; signal: AbortSignal }>(),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
 vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'test-id', derivedNodePlacement: vi.fn() }));
@@ -34,6 +35,17 @@ vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint:
 vi.mock('../../src/services/pollManager', () => ({
   prepareMediaNodeGeneration: mocks.prepareMedia, completeMediaNodeTask: mocks.completeMedia, pauseMediaTask: mocks.pauseMedia,
   registerMediaNodeOperation: () => mocks.endOperation,
+  registerNodePolling: vi.fn((nodeId: string, parentSignal?: AbortSignal) => {
+    mocks.polling.get(nodeId)?.controller.abort();
+    const controller = new AbortController();
+    const signal = parentSignal ? AbortSignal.any([controller.signal, parentSignal]) : controller.signal;
+    mocks.polling.set(nodeId, { controller, signal });
+    return signal;
+  }),
+  cleanupNodePolling: vi.fn((nodeId: string, expectedSignal?: AbortSignal) => {
+    if (expectedSignal && mocks.polling.get(nodeId)?.signal !== expectedSignal) return false;
+    return mocks.polling.delete(nodeId);
+  }),
   isMediaTaskPausedError: (error: unknown) => error instanceof Error && error.message === '视频查询已暂停',
   prepareVideoNodeGeneration: vi.fn(), completeVideoNodeTask: vi.fn(), pauseVideoNodeTask: vi.fn(),
   beginComfyNodeDelivery: vi.fn(), completeComfyNodeTask: mocks.completeComfy, pauseComfyNodeDelivery: mocks.pauseComfy,
@@ -44,7 +56,7 @@ vi.mock('../../src/services/pollManager', () => ({
 }));
 
 import { executeGeneration, type GenerationLease } from '../../src/services/generationService';
-import { VideoPollingPausedError } from '../../src/services/pollManager';
+import { cleanupNodePolling, registerNodePolling, VideoPollingPausedError } from '../../src/services/pollManager';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -65,6 +77,7 @@ function expectNoCommit() {
 beforeEach(() => {
   vi.clearAllMocks(); mocks.guardFresh = true; mocks.store.currentProjectId = 'p';
   mocks.tasks = [];
+  mocks.polling.clear();
   mocks.store.nodes = [{ id: 'video', data: data() }];
   mocks.generate.mockReset().mockResolvedValue({ url: 'generated.mp4' });
   mocks.persist.mockReset().mockResolvedValue({ mediaUrl: 'saved.mp4', sourceUrl: 'generated.mp4', filePath: 'saved.mp4' });
@@ -230,7 +243,7 @@ describe('跨媒体异步任务交付确认', () => {
     const mediaDownloadAccess = { providerConfigId: 'relay-video', origin: 'https://relayonapi.com', auth: { type: 'bearer' as const } };
     mocks.generate.mockResolvedValueOnce({ url: 'https://relayonapi.com/video', taskReceipt: receipt, mediaDownloadAccess });
     expect(await run()).toEqual({ success: true });
-    expect(mocks.persist).toHaveBeenCalledWith('https://relayonapi.com/video', 'p', 'ai-video', '复刻分段', { mediaDownloadAccess });
+    expect(mocks.persist).toHaveBeenCalledWith('https://relayonapi.com/video', 'p', 'ai-video', '复刻分段', { mediaDownloadAccess, signal: expect.any(AbortSignal) });
     expect(JSON.stringify(mocks.store.updateNodeData.mock.calls)).not.toContain('mediaDownloadAccess');
     expect(JSON.stringify(mocks.store.recordOutputHistory.mock.calls)).not.toContain('mediaDownloadAccess');
   });
@@ -250,6 +263,45 @@ describe('跨媒体异步任务交付确认', () => {
     expect(mocks.completeMedia).not.toHaveBeenCalled();
     expect(mocks.pauseMedia).toHaveBeenCalledWith(receipt, expect.any(Error), 'delivery_pending');
     expect(mocks.generate).toHaveBeenCalledOnce();
+  });
+
+  it('保存使用当前取消信号，停止后保留原任务并释放保存控制器', async () => {
+    const controller = new AbortController();
+    mocks.generate.mockResolvedValueOnce({ url: 'generated.mp4', taskReceipt: receipt });
+    mocks.persist.mockImplementationOnce((_url, _project, _kind, _label, options: { signal: AbortSignal }) => (
+      new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }))
+    ));
+    const pending = run({ signal: controller.signal, assertFresh: vi.fn() });
+    await vi.waitFor(() => expect(mocks.persist).toHaveBeenCalledOnce());
+    const signal = mocks.persist.mock.calls[0][4].signal as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    controller.abort();
+    expect((await pending).success).toBe(false);
+    expect(signal.aborted).toBe(true);
+    expect(mocks.generate).toHaveBeenCalledOnce();
+    expect(mocks.completeMedia).not.toHaveBeenCalled();
+    expect(mocks.pauseMedia).toHaveBeenCalledWith(receipt, expect.any(Error), 'delivery_pending');
+    expect(cleanupNodePolling).toHaveBeenCalledWith('video', signal);
+    expect(mocks.polling.has('video')).toBe(false);
+    expectNoCommit();
+  });
+
+  it('旧保存结束不能回填或清除替代它的新查询控制器', async () => {
+    const saving = deferred<{ mediaUrl: string; sourceUrl: string }>();
+    mocks.generate.mockResolvedValueOnce({ url: 'generated.mp4', taskReceipt: receipt });
+    mocks.persist.mockReturnValueOnce(saving.promise);
+    const pending = run();
+    await vi.waitFor(() => expect(mocks.persist).toHaveBeenCalledOnce());
+    const oldSignal = mocks.persist.mock.calls[0][4].signal as AbortSignal;
+    const replacement = registerNodePolling('video');
+    expect(oldSignal.aborted).toBe(true);
+    saving.resolve({ mediaUrl: 'saved.mp4', sourceUrl: 'generated.mp4' });
+    expect((await pending).success).toBe(false);
+    expect(cleanupNodePolling).toHaveBeenCalledWith('video', oldSignal);
+    expect(mocks.polling.get('video')?.signal).toBe(replacement);
+    expect(replacement.aborted).toBe(false);
+    expect(mocks.completeMedia).not.toHaveBeenCalled();
+    expectNoCommit();
   });
 
   it('保存期间目标已变化，旧回调只暂停原receipt，不确认新任务', async () => {

@@ -101,6 +101,34 @@ describe('跨媒体原任务续取入口', () => {
     expect(queryButton()).toBeDefined();
   });
 
+  it.each([
+    ['timeout', '下载等待超时'], ['network', '下载连接中断'], ['permission', '保存目录无法写入'],
+    ['disk_space', '目标磁盘空间不足'], ['connection_changed', '原连接或接口地址已变化'],
+    ['missing_key', '原连接尚未填写 Key'],
+  ])('显示 %s 保存诊断并保留原任务续取按钮', (failureKind, expected) => {
+    mocks.tasks[0].mediaRecoveryState = 'delivery_pending';
+    mocks.tasks[0].mediaFailureDiagnostic = { kind: 'persistence', failureKind };
+    mocks.state.nodes[0].data.mediaTaskState = 'delivery_pending';
+    const spans = elements(render()).filter((element) => element.type === 'span');
+    expect(spans.some((element) => String(element.props.children).includes(expected))).toBe(true);
+    expect(queryButton()).toBeDefined();
+  });
+
+  it.each([401, 403, 404, 410, 500])('下载 HTTP %i 与任务查询错误区分展示', (httpStatus) => {
+    mocks.tasks[0].mediaFailureDiagnostic = { kind: 'persistence', failureKind: 'http', httpStatus };
+    const spans = elements(render()).filter((element) => element.type === 'span');
+    expect(spans.some((element) => String(element.props.children).includes(`HTTP ${httpStatus}`))).toBe(true);
+    expect(spans.some((element) => String(element.props.children).includes('下载'))).toBe(true);
+    expect(queryButton()).toBeDefined();
+  });
+
+  it('画布变化保留原任务并显示未回填的原因', () => {
+    mocks.tasks[0].mediaRecoveryReason = 'canvas_changed';
+    expect(elements(render()).some((element) => element.type === 'span'
+      && String(element.props.children).includes('画布已变化，结果未回填'))).toBe(true);
+    expect(queryButton()).toBeDefined();
+  });
+
   it.each([401, 403])('ComfyUI HTTP %i 显示固定鉴权原因并仍只续查原任务', async (status) => {
     mocks.tasks[0].taskType = 'comfyui';
     mocks.tasks[0].comfyQueryHttpStatus = status;

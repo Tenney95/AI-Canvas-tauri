@@ -32,7 +32,7 @@ import { completeWorkflowApiNodeTask } from './workflowApi/workflowApiAdapter';
 import { completeRunningHubNodeTask } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
 import { videoInputFingerprint } from './videoBatchPlanning';
-import { beginComfyNodeDelivery, cancelNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, isMediaTaskPausedError } from './pollManager';
+import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError } from './pollManager';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { applyGenerationCameraPrompt } from './shotlistPromptService';
 import { resolveImageParameterCapability } from './ai/mediaModelCapabilities';
@@ -329,6 +329,8 @@ export async function executeGeneration(
   const runningHubTask = cloudWorkflow || nodeProvider === 'runninghub';
   const localComfyTask = !!workflowId && !cloudWorkflow;
   let comfyTaskId: string | undefined;
+  let savingSignal: AbortSignal | undefined;
+  const beginMediaSaving = () => savingSignal ??= registerNodePolling(nodeId, lease?.signal);
   const guardedSubmission = mediaSubmission || runningHubTask || localComfyTask;
   let cloudGuard = guardedSubmission ? registerCanvasDerivation(store, nodeId) : null;
   const videoNode = store.nodes.find((n) => n.id === nodeId);
@@ -345,7 +347,8 @@ export async function executeGeneration(
   const isStillCurrentSubmission = () => {
     const s = useAppStore.getState();
     const currentVideo = hasProtectedVideoInputs ? s.nodes.find((node) => node.id === nodeId) : undefined;
-    return leaseValid && !lease?.signal?.aborted && s.currentProjectId === submittingProjectId && s.nodes.some((n) => n.id === nodeId)
+    return leaseValid && !lease?.signal?.aborted && !savingSignal?.aborted && s.currentProjectId === submittingProjectId && s.nodes.some((n) => n.id === nodeId)
+      && endOperation?.isCurrent?.() !== false
       && (!guardedSubmission || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, s)))
       && (!videoOwner || videoSubmissionOwners.get(submissionKey) === videoOwner)
       && (!hasProtectedVideoInputs || (!!currentVideo
@@ -353,7 +356,7 @@ export async function executeGeneration(
         && videoInputFingerprint({ ...currentVideo, data: { ...currentVideo.data, ...promptOverride } }, s) === videoFingerprint));
   };
 
-  const endOperation = mediaSubmission ? registerMediaNodeOperation(nodeId) : undefined;
+  const endOperation = mediaSubmission ? registerMediaNodeOperation(nodeId, true) : undefined;
   store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
   let batchNodeIds: string[] | undefined;
   let taskReceipt: MediaTaskReceipt | undefined;
@@ -402,6 +405,7 @@ export async function executeGeneration(
           nodeId,
           targetNodeIds: batchNodeIds,
           isCurrent: guardedSubmission ? isStillCurrentSubmission : undefined,
+          signal: beginMediaSaving(),
           batch,
           silent: batchOptions?.silent,
           model: nodeModel, provider: nodeProvider,
@@ -429,8 +433,9 @@ export async function executeGeneration(
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
 
       if (taskReceipt) store.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
+      const signal = beginMediaSaving();
       const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
-        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-image', data.label, { mediaDownloadAccess: result.mediaDownloadAccess })
+        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-image', data.label, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
         : { mediaUrl: result.url, sourceUrl: result.url });
       if (lease) await assertLease();
       if (guardedSubmission && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
@@ -490,8 +495,9 @@ export async function executeGeneration(
       if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       if (taskReceipt) store.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
+      const signal = beginMediaSaving();
       const persisted = submittingProjectId
-        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-panorama', data.label, { mediaDownloadAccess: result.mediaDownloadAccess })
+        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-panorama', data.label, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
         : { mediaUrl: result.url, sourceUrl: result.url };
       if (!isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       const mediaUrl = persisted.mediaUrl;
@@ -566,8 +572,9 @@ export async function executeGeneration(
         return { success: false, message: '任务已取消' };
       }
       if (taskReceipt) store.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
+      const signal = beginMediaSaving();
       const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
-        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-video', data.label, { mediaDownloadAccess: result.mediaDownloadAccess })
+        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-video', data.label, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
         : { mediaUrl: result.url, sourceUrl: result.url });
       if (lease) await assertLease();
       if (!isStillCurrentSubmission()) {
@@ -717,6 +724,7 @@ export async function executeGeneration(
   } finally {
     if (!mediaDelivered && taskReceipt) pauseMediaTask(taskReceipt, undefined, isStillCurrentSubmission() ? 'delivery_pending' : 'canvas_changed');
     if (comfyTaskId) pauseComfyNodeDelivery(nodeId, comfyTaskId, isStillCurrentSubmission);
+    if (savingSignal) cleanupNodePolling(nodeId, savingSignal);
     const current = useAppStore.getState();
     const currentVideo = hasProtectedVideoInputs ? current.nodes.find((node) => node.id === nodeId) : undefined;
     if (videoOwner && videoSubmissionOwners.get(submissionKey) === videoOwner

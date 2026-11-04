@@ -458,7 +458,8 @@ describe('角色图片与声音的最终请求对应', () => {
     setCharacters();
     const state = useAppStore.getState();
     useAppStore.setState({ config: { ...state.config, providers: { ...state.config.providers, apimart: { name: 'APIMart', apiKey: 'test-key', baseUrl: 'https://api.example' } } } });
-    const submit = vi.spyOn(apimartApi, 'generateApimartVideo').mockResolvedValue({ url: 'https://cdn.example/result.mp4' });
+    const submit = vi.spyOn(apimartApi, 'generateApimartVideo').mockResolvedValue({ url: 'https://cdn.example/result.mp4',
+      mediaDownloadAccess: { providerConfigId: 'apimart', origin: 'https://api.example', auth: { type: 'bearer' } } });
     const uploadImages = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => urls);
     const uploadMedia = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (url) => url);
     try {

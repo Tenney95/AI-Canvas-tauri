@@ -57,7 +57,7 @@ import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from 
 import { applyGenerationCameraPrompt } from '../../services/shotlistPromptService';
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
 import { getComfyQueryAuthorizationMessage } from '../../services/comfyPolling';
-import { beginComfyNodeDelivery, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, isComfyNodeDeliveryActive, isMediaTaskPausedError, pauseComfyNodeDelivery, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, resumeComfyUINodeTask, resumeRunningHubNodeTask, subscribeComfyDeliveries, updatePendingTask, removePendingTask } from '../../services/pollManager';
+import { beginComfyNodeDelivery, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, isComfyNodeDeliveryActive, isMediaTaskPausedError, pauseComfyNodeDelivery, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, resumeComfyUINodeTask, resumeRunningHubNodeTask, subscribeComfyDeliveries, updatePendingTask, removePendingTask } from '../../services/pollManager';
 import MediaTaskStatus from './shared/MediaTaskStatus';
 import { isCloudWorkflow, getCloudWorkflowPersistedOutput, workflowExecution } from '../../services/workflowExecutionService';
 import { splitRunningHubPrompt } from '../../services/ai/providers/runninghubWorkflowInputs';
@@ -501,17 +501,21 @@ function AINodeDialog() {
     const runningHubTask = cloudWorkflow || latestData.provider === 'runninghub';
     const localComfyTask = !!latestData.workflowId && !cloudWorkflow;
     let comfyTaskId: string | undefined;
+    let savingSignal: AbortSignal | undefined;
+    const beginMediaSaving = () => savingSignal ??= registerNodePolling(submittingNodeId);
     const guardedSubmission = mediaSubmission || runningHubTask || localComfyTask;
     let cloudGuard = guardedSubmission ? registerCanvasDerivation(store, submittingNodeId) : null;
     const isStillCurrentSubmission = () => {
       const state = useAppStore.getState();
       return (
         state.currentProjectId === submittingProjectId
+        && !savingSignal?.aborted
+        && endOperation?.isCurrent?.() !== false
         && state.nodes.some((n) => n.id === submittingNodeId)
         && (!guardedSubmission || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, state)))
       );
     };
-    const endOperation = mediaSubmission ? registerMediaNodeOperation(submittingNodeId) : undefined;
+    const endOperation = mediaSubmission ? registerMediaNodeOperation(submittingNodeId, true) : undefined;
     updateNodeDataTransient(activeNodeId!, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
     let batchNodeIds: string[] | undefined;
     let taskReceipt: MediaTaskReceipt | undefined;
@@ -559,6 +563,7 @@ function AINodeDialog() {
           nodeId: submittingNodeId,
           targetNodeIds: batchNodeIds,
           isCurrent: guardedSubmission ? isStillCurrentSubmission : undefined,
+          signal: beginMediaSaving(),
           batch,
           projectId: submittingProjectId,
           prompt: effectivePrompt,
@@ -599,8 +604,9 @@ function AINodeDialog() {
         if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
         if (taskReceipt) updateNodeDataTransient(submittingNodeId, { mediaTaskStage: 'saving' });
+        const signal = beginMediaSaving();
         const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (currentProjectId
-          ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-image', nodeLabel, { mediaDownloadAccess: result.mediaDownloadAccess })
+          ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-image', nodeLabel, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
           : { mediaUrl: result.url, sourceUrl: result.url });
         if (!isStillCurrentSubmission()) return;
         const mediaUrl = persisted.mediaUrl;
@@ -700,8 +706,9 @@ function AINodeDialog() {
         if (comfyTaskId) beginComfyNodeDelivery(submittingNodeId, comfyTaskId);
         if (!isStillCurrentSubmission()) return;
         if (taskReceipt) updateNodeDataTransient(submittingNodeId, { mediaTaskStage: 'saving' });
+        const signal = beginMediaSaving();
         const persisted = currentProjectId
-          ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-panorama', nodeLabel, { mediaDownloadAccess: result.mediaDownloadAccess })
+          ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-panorama', nodeLabel, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
           : { mediaUrl: result.url, sourceUrl: result.url };
         if (!isStillCurrentSubmission()) return;
         const mediaUrl = persisted.mediaUrl;
@@ -869,6 +876,7 @@ function AINodeDialog() {
     } finally {
       if (!mediaDelivered && taskReceipt) pauseMediaTask(taskReceipt, undefined, isStillCurrentSubmission() ? 'delivery_pending' : 'canvas_changed');
       if (comfyTaskId) pauseComfyNodeDelivery(submittingNodeId, comfyTaskId, isStillCurrentSubmission);
+      if (savingSignal) cleanupNodePolling(submittingNodeId, savingSignal);
       if (cloudGuard) completeCanvasDerivation(cloudGuard);
       endOperation?.();
     }

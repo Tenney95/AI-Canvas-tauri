@@ -958,41 +958,67 @@ export interface PersistedProjectMedia {
   sourceUrl: string;
 }
 
+export type MediaPersistenceFailureKind = 'http' | 'timeout' | 'network' | 'path_access' | 'permission'
+  | 'disk_space' | 'missing_file' | 'invalid_media' | 'connection_changed' | 'missing_key' | 'unknown';
+
+interface MediaPersistenceFailure {
+  kind: MediaPersistenceFailureKind;
+  message: string;
+  httpStatus?: number;
+}
+
 /** 原始异常只用于本次分类，不把路径、签名 URL 或响应正文传入节点和历史。 */
-function describeMediaPersistenceFailure(error: unknown): string {
+function describeMediaPersistenceFailure(error: unknown): MediaPersistenceFailure {
   const message = typeof error === 'string' ? error : error instanceof Error ? error.message : '';
-  if (/视频下载返回空文件/.test(message)) return '视频下载返回空文件，可重试下载原任务';
-  if (/下载结果不是有效视频/.test(message)) return '下载结果不是有效视频，请检查输出格式或下载服务';
-  if (/下载返回不完整的分段内容/.test(message)) return '下载返回了不完整的视频或媒体，可重试下载原任务';
-  if (message === '项目目录或本地媒体地址不可用') return message;
+  if (/视频下载返回空文件/.test(message)) return { kind: 'invalid_media', message: '视频下载返回空文件，可重试下载原任务' };
+  if (/下载结果不是有效视频/.test(message)) return { kind: 'invalid_media', message: '下载结果不是有效视频，请检查输出格式或下载服务' };
+  if (/下载返回不完整的分段内容/.test(message)) return { kind: 'invalid_media', message: '下载返回了不完整的视频或媒体，可重试下载原任务' };
+  if (message === '项目目录或本地媒体地址不可用') return { kind: 'missing_file', message };
+  if (/原(?:媒体)?连接.*(?:不存在|已变化)|接口地址已变化|媒体下载地址与厂商连接不同源/.test(message)) {
+    return { kind: 'connection_changed', message: '原媒体连接或接口地址已变化，请检查原连接配置' };
+  }
+  if (/原媒体连接尚未填写 API Key|API Key.*(?:缺失|未填写)|未(?:填写|配置).*(?:API Key|密钥)/i.test(message)) {
+    return { kind: 'missing_key', message: '原媒体连接尚未填写 API Key，请补填后继续保存' };
+  }
   if (/forbidden path|路径未获授权|not allowed on the scope/i.test(message)) {
-    return '应用拒绝访问项目文件，请在设置中重新选择文件保存目录';
+    return { kind: 'path_access', message: '应用拒绝访问项目文件，请在设置中重新选择文件保存目录' };
   }
   if (/permission denied|access is denied|拒绝访问|os error 5\b|EACCES|EPERM/i.test(message)) {
-    return '系统拒绝写入项目目录，请检查目录的写入权限';
+    return { kind: 'permission', message: '系统拒绝写入项目目录，请检查目录的写入权限' };
   }
   if (/no space|disk.*full|磁盘.*不足|空间不足|ENOSPC|os error 112\b/i.test(message)) {
-    return '目标磁盘空间不足';
+    return { kind: 'disk_space', message: '目标磁盘空间不足' };
   }
   const httpStatus = /\bHTTP\s+(\d{3})\b/i.exec(message)?.[1];
-  if (httpStatus) return `图片或媒体下载失败（HTTP ${httpStatus}）`;
-  if (/下载请求失败|failed to fetch|network|timed?\s*out|超时/i.test(message)) {
-    return '下载媒体失败，请检查网络或媒体链接是否已失效';
+  if (httpStatus && Number(httpStatus) >= 400 && Number(httpStatus) <= 599) {
+    return { kind: 'http', httpStatus: Number(httpStatus), message: `图片或媒体下载失败（HTTP ${httpStatus}）` };
+  }
+  if (/timed?\s*out|timeout|超时/i.test(message)) {
+    return { kind: 'timeout', message: '下载媒体失败，请检查网络或媒体链接是否已失效' };
+  }
+  if (/下载请求失败|媒体下载连接失败|读取下载数据失败|failed to fetch|network|connection (?:reset|closed|refused)|连接.*(?:失败|中断)|读取.*中断/i.test(message)) {
+    return { kind: 'network', message: '下载媒体失败，请检查网络或媒体链接是否已失效' };
   }
   if (/目录.*不存在|no such file|path not found|找不到指定|ENOENT|os error [23]\b/i.test(message)) {
-    return '项目目录或源文件不存在，请检查文件保存位置';
+    return { kind: 'missing_file', message: '项目目录或源文件不存在，请检查文件保存位置' };
   }
   if (error instanceof MediaDataUrlTooLargeError || error instanceof MediaDataUrlTotalTooLargeError) {
-    return '媒体超过内存保存上限';
+    return { kind: 'invalid_media', message: '媒体超过内存保存上限' };
   }
-  return '保存过程发生异常，请检查文件保存目录和媒体来源';
+  return { kind: 'unknown', message: '保存过程发生异常，请检查文件保存目录和媒体来源' };
 }
 
 /** 只携带固定分类后的原因，供待恢复任务展示；不保留原生异常或 cause。 */
 export class MediaPersistenceError extends Error {
+  readonly failureKind: MediaPersistenceFailureKind;
+  readonly httpStatus?: number;
+
   constructor(error: unknown) {
-    super(`生成媒体未能写入项目目录：${describeMediaPersistenceFailure(error)}`);
+    const failure = describeMediaPersistenceFailure(error);
+    super(`生成媒体未能写入项目目录：${failure.message}`);
     this.name = 'MediaPersistenceError';
+    this.failureKind = failure.kind;
+    if (failure.httpStatus !== undefined) this.httpStatus = failure.httpStatus;
   }
 }
 

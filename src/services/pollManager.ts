@@ -12,7 +12,7 @@ import { derivedNodePlacement, generateId, getNextDisplayId } from '../store/sto
 import { corsSafeFetch } from './ai/httpTransport';
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
 import { useAppStore } from '../store/useAppStore';
-import { MediaPersistenceError, persistMediaUrlToProjectData } from './fileService';
+import { MediaPersistenceError, persistMediaUrlToProjectData, type MediaPersistenceFailureKind } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './ai/helpers';
@@ -55,6 +55,7 @@ function createPollManagerRuntime() {
     mediaTaskContexts: new Map<string, MediaTaskContext>(),
     mediaTaskObservers: new Map<string, (receipt: MediaTaskReceipt) => void>(),
     activeMediaOperations: new Map<string, Set<symbol>>(),
+    latestMediaOperationOwners: new Map<string, symbol>(),
     mediaMessageRecoveryHandler: undefined as MediaMessageRecoveryHandler | undefined,
     mediaTaskListeners: new Set<() => void>(),
     runninghubMessageWaiters: new Map<string, () => void>(),
@@ -69,6 +70,7 @@ function createPollManagerRuntime() {
 /** 热更新继续使用同一份运行时，旧请求的清理闭包也必须能找到它。 */
 export function createOrReusePollManagerRuntime(hotData?: { pollManagerRuntime?: ReturnType<typeof createPollManagerRuntime> }) {
   const runtime = hotData?.pollManagerRuntime ?? createPollManagerRuntime();
+  runtime.latestMediaOperationOwners ??= new Map();
   // 依赖重新求值时不保证先触发 dispose，首次载入就要保留引用。
   if (hotData) hotData.pollManagerRuntime = runtime;
   return runtime;
@@ -76,7 +78,7 @@ export function createOrReusePollManagerRuntime(hotData?: { pollManagerRuntime?:
 
 const runtime = createOrReusePollManagerRuntime(import.meta.hot?.data);
 const { abortControllers, videoResumePromises, mediaResumeOutcomes, mediaTaskContexts, mediaTaskObservers,
-  activeMediaOperations, mediaTaskListeners, runninghubMessageWaiters, workflowApiMessageWaiters,
+  activeMediaOperations, latestMediaOperationOwners, mediaTaskListeners, runninghubMessageWaiters, workflowApiMessageWaiters,
   activeComfyDeliveries, comfyDeliveryListeners, pausedErrors } = runtime;
 export function subscribeMediaTasks(listener: () => void): () => void {
   mediaTaskListeners.add(listener);
@@ -203,7 +205,7 @@ export interface PendingTask {
   mediaRecoveryState?: 'query_paused' | 'delivery_pending' | 'submit_unknown';
   mediaRecoveryReason?: MediaTaskPauseReason;
   /** 只保存有限错误分类与状态码，不保存响应正文、Key 或原始异常。 */
-  mediaFailureDiagnostic?: { kind: 'http' | 'timeout' | 'network'; httpStatus?: number };
+  mediaFailureDiagnostic?: { kind: 'http' | 'timeout' | 'network' | 'persistence' | 'canvas_changed'; httpStatus?: number; failureKind?: MediaPersistenceFailureKind };
   /** 已确认终态失败，但所属项目未加载；切回后显示普通失败，不再续查。 */
   terminalFailure?: true;
   /** 批次已有部分 ID 但仍有提交响应丢失，不能由已知任务成功掩盖。 */
@@ -311,17 +313,25 @@ export function registerMediaMessageRecoveryHandler(handler: MediaMessageRecover
 }
 
 /** 覆盖同步等待和交付阶段；不把运行时租约写入持久化。 */
-export function registerMediaNodeOperation(nodeId: string): () => void {
+export function registerMediaNodeOperation(nodeId: string, ownsGeneration = false): (() => void) & { isCurrent: () => boolean } {
   const projectId = mediaTaskContexts.get(nodeId)?.projectId ?? useAppStore.getState().currentProjectId;
   const key = JSON.stringify([projectId, nodeId]);
   const token = Symbol();
   const operations = activeMediaOperations.get(key) ?? new Set<symbol>();
   operations.add(token);
   activeMediaOperations.set(key, operations);
-  return () => {
+  // 声明式执行器等内层也会登记活跃状态，只有外层生成入口领取运行所有权。
+  if (ownsGeneration) latestMediaOperationOwners.set(key, token);
+  const release = () => {
     operations.delete(token);
-    if (operations.size === 0 && activeMediaOperations.get(key) === operations) activeMediaOperations.delete(key);
+    if (operations.size === 0 && activeMediaOperations.get(key) === operations) {
+      activeMediaOperations.delete(key);
+      latestMediaOperationOwners.delete(key);
+    }
   };
+  // 新尝试结束也不让旧尝试重新取得保存资格；运行时身份不进入持久化。
+  return Object.assign(release, { isCurrent: () => operations.has(token)
+    && (!ownsGeneration || latestMediaOperationOwners.get(key) === token) });
 }
 
 function isMediaOperationActive(projectId: string, nodeId: string): boolean {
@@ -356,13 +366,17 @@ export function pauseMediaTask(receipt: MediaTaskReceipt, error?: unknown,
   if (!task || task.terminalFailure || !isRecoverableMediaTask(task)) return undefined;
   const unknown = task.mediaSubmissionUncertain || !task.submitted || !task.taskId || reason === 'submit_unknown';
   const resolvedReason = unknown ? 'submit_unknown' : reason;
+  const deliveryPending = !unknown && (reason === 'delivery_pending'
+    || reason === 'canvas_changed' && task.mediaRecoveryState === 'delivery_pending');
   const comfyQueryHttpStatus = !unknown && task.taskType === 'comfyui'
     ? error instanceof ComfyQueryAuthorizationError ? error.status : task.comfyQueryHttpStatus : undefined;
   updatePendingTask(task.nodeId, {
-    mediaRecoveryState: unknown ? 'submit_unknown' : reason === 'delivery_pending' ? 'delivery_pending' : 'query_paused',
+    mediaRecoveryState: unknown ? 'submit_unknown' : deliveryPending ? 'delivery_pending' : 'query_paused',
     mediaRecoveryReason: resolvedReason,
     comfyQueryHttpStatus,
-    mediaFailureDiagnostic: error === undefined ? task.mediaFailureDiagnostic : describeMediaFailure(error),
+    mediaFailureDiagnostic: error === undefined
+      ? reason === 'canvas_changed' ? { kind: 'canvas_changed' } : task.mediaFailureDiagnostic
+      : describeMediaFailure(error),
     ...(task.nodeType === 'ai-video' && !unknown ? { videoRecoveryState: 'paused' as const } : {}),
   }, task.taskId, task.attemptId);
   const store = useAppStore.getState();
@@ -371,7 +385,7 @@ export function pauseMediaTask(receipt: MediaTaskReceipt, error?: unknown,
   if (store.currentProjectId === task.projectId) for (const node of store.nodes) {
     if (!nodeIds.has(node.id)) continue;
     store.updateNodeDataTransient(node.id, { status: node.data.status === 'success' ? 'success' : 'idle', error: undefined,
-      mediaTaskState: unknown ? 'submit_unknown' : reason === 'delivery_pending' ? 'delivery_pending' : 'paused',
+      mediaTaskState: unknown ? 'submit_unknown' : deliveryPending ? 'delivery_pending' : 'paused',
       mediaTaskStage: undefined, ...(task.nodeType === 'ai-video' && !unknown ? {
         videoTaskState: 'paused' as const, generationStartedAt: task.videoGenerationStartedAt,
       } : {}) });
@@ -385,12 +399,26 @@ export function pauseMediaTask(receipt: MediaTaskReceipt, error?: unknown,
 function sanitizeMediaFailureDiagnostic(value: unknown): PendingTask['mediaFailureDiagnostic'] {
   if (!value || typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
+  if (record.kind === 'canvas_changed') return { kind: 'canvas_changed' };
+  if (record.kind === 'persistence') {
+    const kinds: MediaPersistenceFailureKind[] = ['http', 'timeout', 'network', 'path_access', 'permission', 'disk_space',
+      'missing_file', 'invalid_media', 'connection_changed', 'missing_key', 'unknown'];
+    if (!kinds.some((kind) => kind === record.failureKind)) return;
+    const httpStatus = typeof record.httpStatus === 'number' && Number.isInteger(record.httpStatus)
+      && record.httpStatus >= 400 && record.httpStatus <= 599 ? record.httpStatus : undefined;
+    return { kind: 'persistence', failureKind: record.failureKind as MediaPersistenceFailureKind,
+      ...(record.failureKind === 'http' && httpStatus !== undefined ? { httpStatus } : {}) };
+  }
   if (record.kind === 'network' || record.kind === 'timeout') return { kind: record.kind };
   if (record.kind === 'http' && typeof record.httpStatus === 'number' && Number.isInteger(record.httpStatus)
     && record.httpStatus >= 400 && record.httpStatus <= 599) return { kind: 'http', httpStatus: record.httpStatus };
 }
 
 function describeMediaFailure(error: unknown): PendingTask['mediaFailureDiagnostic'] {
+  if (error instanceof MediaPersistenceError) {
+    return sanitizeMediaFailureDiagnostic({ kind: 'persistence', failureKind: error.failureKind, httpStatus: error.httpStatus });
+  }
+  if (error instanceof CanvasResultStaleError) return { kind: 'canvas_changed' };
   const http = getHttpResponseError(error);
   if (http) return sanitizeMediaFailureDiagnostic({ kind: 'http', httpStatus: http.status });
   const seen = new Set<Error>();
@@ -887,7 +915,9 @@ async function applyNodeResult(
   savedOutput?: { mediaUrl: string; sourceUrl: string; filePath?: string },
   generation?: PendingTask['videoGeneration'],
   mediaDownloadAccess?: MediaDownloadAccess,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   if (isCurrent && !isCurrent()) throw new CanvasResultStaleError();
   const store = useAppStore.getState();
   const node = store.nodes.find((n) => n.id === nodeId);
@@ -902,8 +932,9 @@ async function applyNodeResult(
   let persisted;
   try {
     persisted = savedOutput ?? (currentProjectId
-      ? await persistMediaUrlToProjectData(resultUrl, currentProjectId, nodeType, nodeLabel, { mediaDownloadAccess })
+      ? await persistMediaUrlToProjectData(resultUrl, currentProjectId, nodeType, nodeLabel, { mediaDownloadAccess, signal })
       : { mediaUrl: resultUrl, sourceUrl: resultUrl });
+    signal?.throwIfAborted();
     if (isCurrent && (!isCurrent() || !guard || !isCanvasDerivationFresh(guard, useAppStore.getState()))) {
       throw new CanvasResultStaleError();
     }
@@ -990,8 +1021,8 @@ async function handleResumeError(
     const current = loadAll().find((item) => item.nodeId === task.nodeId && item.projectId === task.projectId
       && item.attemptId === task.attemptId);
     if (current) pauseMediaTask(receiptForTask(current), err,
-      err instanceof MediaPersistenceError || current.mediaRecoveryState === 'delivery_pending' ? 'delivery_pending'
-        : err instanceof CanvasResultStaleError ? 'canvas_changed'
+      err instanceof CanvasResultStaleError ? 'canvas_changed'
+        : err instanceof MediaPersistenceError || current.mediaRecoveryState === 'delivery_pending' ? 'delivery_pending'
           : isPollTimeoutError(err) ? 'query_timeout' : 'query_interrupted');
     return;
   }
@@ -1126,6 +1157,14 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
   const query = guardVideoTaskQuery(task, signal);
 
   try {
+    // 旧任务没有访问描述时按原连接补齐；外部 CDN 仍不会收到连接密钥。
+    const mediaDownloadAccess = task.mediaDownloadAccess ?? createMediaDownloadAccess(
+      task.providerConfigId || 'apimart', baseUrl, { type: 'bearer' },
+    );
+    if (mediaDownloadAccess) {
+      task = { ...task, mediaDownloadAccess };
+      updatePendingTask(nodeId, { mediaDownloadAccess }, task.taskId, task.attemptId);
+    }
     const settled = await settleMediaTaskQueries(taskIds.map((taskId) => (batchSignal: AbortSignal) => (
       pollTask<ApimartTaskResult, string[]>({
         fetchState: async (querySignal) => {
@@ -1160,7 +1199,7 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
       const imageSize = (nodeData.imageSize as string) || '2K';
       const aspectRatio = (nodeData.aspectRatio as string) || '1:1';
       const dimensions = mapImageDimensions(imageSize, aspectRatio);
-      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions }));
+      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions, mediaDownloadAccess, taskReceipt: receiptForTask(task) }));
       const delivered = await applyImageBatchResults({
         nodeId,
         batch: {
@@ -1174,10 +1213,11 @@ async function resumeApimart(task: PendingTask, parentSignal?: AbortSignal): Pro
         imageSize,
         aspectRatio,
         isCurrent: query.isCurrent,
+        signal,
       });
       if (!delivered) { pauseMediaTask(receiptForTask(task), undefined, 'delivery_pending'); return; }
     } else {
-      await applyNodeResult(nodeId, urls[0], label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess);
+      await applyNodeResult(nodeId, urls[0], label, query.isCurrent, undefined, task.videoGeneration, mediaDownloadAccess, signal);
     }
     signal.throwIfAborted();
     completeMediaNodeTask(receiptForTask(task));
@@ -1300,9 +1340,10 @@ async function resumeRunningHub(task: PendingTask): Promise<void> {
         prompt: (nodeData.prompt as string) || '',
         imageSize,
         aspectRatio,
+        signal,
       });
     } else {
-      await applyNodeResult(nodeId, urls[0], nodeData.label || '', undefined, undefined, task.videoGeneration, task.mediaDownloadAccess);
+      await applyNodeResult(nodeId, urls[0], nodeData.label || '', undefined, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);
     }
     removePendingTask(nodeId);
   } catch (error) {
@@ -1384,7 +1425,7 @@ async function resumeApimartFlowMusic(task: PendingTask, parentSignal?: AbortSig
     });
     markMediaTaskDeliveryPending(task, signal);
     if (await deliverMediaMessageResult(task, [result.url], signal)) return;
-    await applyNodeResult(nodeId, result.url, data.label, query.isCurrent);
+    await applyNodeResult(nodeId, result.url, data.label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);
     signal.throwIfAborted();
     completeMediaNodeTask(receiptForTask(task));
   } catch (err) {
@@ -1432,7 +1473,7 @@ async function resumeDreamina(task: PendingTask, parentSignal?: AbortSignal): Pr
     const url = out.localPath ? convertFileSrc(out.localPath) : out.url;
     markMediaTaskDeliveryPending(task, signal);
     if (await deliverMediaMessageResult(task, [url], signal)) return;
-    await applyNodeResult(nodeId, url, label, query.isCurrent);
+    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);
     signal.throwIfAborted();
     completeMediaNodeTask(receiptForTask(task));
   } catch (err) {
@@ -1489,7 +1530,7 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
       useAppStore.getState().config.comfyMemoryPolicy ?? 'smart',
     ).catch(() => {});
     if (await deliverMediaMessageResult(task, [url], signal)) return;
-    await applyNodeResult(nodeId, url, label, isCurrent);
+    await applyNodeResult(nodeId, url, label, isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);
     signal.throwIfAborted();
     if (nodeType === 'ai-video') completeVideoNodeTask(nodeId, taskId);
     else completeComfyNodeTask(nodeId, taskId);
@@ -1605,7 +1646,7 @@ async function resumeGeneral(task: PendingTask, parentSignal?: AbortSignal): Pro
     });
     markMediaTaskDeliveryPending(task, signal);
     if (await deliverMediaMessageResult(task, [url], signal)) return;
-    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess);
+    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);
     signal.throwIfAborted();
     completeMediaNodeTask(receiptForTask(task));
   } catch (err) {
@@ -1659,7 +1700,11 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
     )), signal);
     const uncertain = settled.find((result) => result.status === 'rejected' && !(result.reason instanceof PollTaskFailedError));
     if (uncertain?.status === 'rejected') throw uncertain.reason;
-    const urls = resultUrls ?? settled.flatMap((result) => result.status === 'fulfilled' ? result.value.urls ?? [] : []);
+    // 可查询的原任务使用本轮结果，旧缓存不能覆盖刚刷新的签名地址。
+    // 同步交付记录没有查询描述，只续存已取得的结果。
+    const urls = polls.length > 0
+      ? settled.flatMap((result) => result.status === 'fulfilled' ? result.value.urls ?? [] : [])
+      : resultUrls ?? [];
     if (urls.length === 0) {
       const failed = settled.find((result) => result.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
@@ -1673,7 +1718,7 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
       const imageSize = nodeData.imageSize || '2K';
       const aspectRatio = nodeData.aspectRatio || '1:1';
       const dimensions = mapImageDimensions(imageSize, aspectRatio);
-      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions, mediaDownloadAccess }));
+      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions, mediaDownloadAccess, taskReceipt: receiptForTask(task) }));
       const delivered = await applyImageBatchResults({
         nodeId,
         batch: {
@@ -1687,12 +1732,13 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
         imageSize,
         aspectRatio,
         isCurrent: query.isCurrent,
+        signal,
       });
       if (!delivered) { pauseMediaTask(receiptForTask(task), undefined, 'delivery_pending'); return; }
     } else {
       const url = urls[0];
       if (!url) throw new Error('任务完成但未返回结果 URL');
-      await applyNodeResult(nodeId, url, nodeData.label || '', query.isCurrent, undefined, task.videoGeneration, mediaDownloadAccess);
+      await applyNodeResult(nodeId, url, nodeData.label || '', query.isCurrent, undefined, task.videoGeneration, mediaDownloadAccess, signal);
     }
     signal.throwIfAborted();
     completeMediaNodeTask(receiptForTask(task));
@@ -1750,7 +1796,7 @@ async function resumeVolcengine(task: PendingTask, parentSignal?: AbortSignal): 
     remoteSucceeded = true;
     markMediaTaskDeliveryPending(task, signal);
     if (await deliverMediaMessageResult(task, [url], signal)) return;
-    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration);
+    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, task.mediaDownloadAccess, signal);
     signal.throwIfAborted();
     completeMediaNodeTask(receiptForTask(task));
   } catch (err) {

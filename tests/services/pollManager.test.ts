@@ -82,6 +82,101 @@ describe('polling runtime hot reload identity', () => {
     expect(localStorage.getItem('ai_canvas_pending_tasks')).not.toContain('secret-key');
   });
 
+  it.each(['timeout', 'network', 'disk_space', 'permission', 'missing_key', 'connection_changed'] as const)(
+    'retains only the safe %s delivery failure category', (failureKind) => {
+      const messages = {
+        timeout: '媒体下载读取超时 private-url', network: '媒体下载连接失败 private-url',
+        disk_space: '目标磁盘空间不足 private-path', permission: 'permission denied private-path',
+        missing_key: '原媒体连接尚未填写 API Key，请补填后继续保存',
+        connection_changed: '原媒体连接或接口地址已变化，请检查原连接配置',
+      };
+      const receipt = savePendingTask({ nodeId: 'save-failed', projectId: 'project-1', nodeType: 'ai-image',
+        provider: 'general', taskId: 'original-task', taskType: 'custom-protocol', submitted: true });
+      pauseMediaTask(receipt, new fileService.MediaPersistenceError(messages[failureKind]), 'delivery_pending');
+      expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ taskId: 'original-task',
+        mediaRecoveryState: 'delivery_pending', mediaFailureDiagnostic: { kind: 'persistence', failureKind } });
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).not.toContain('private');
+    },
+  );
+
+  it('uses a newly queried URL instead of a cached expired URL and keeps download cancellation', async () => {
+    const mediaDownloadAccess = { providerConfigId: 'refresh-origin', origin: 'https://gateway.example', auth: { type: 'bearer' as const } };
+    useAppStore.setState((state) => ({ nodes: [{ id: 'refresh-url', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: '原任务', status: 'idle' } }], config: { ...state.config, providers: {
+      'refresh-origin': { name: 'Original', apiKey: 'fixture-key', baseUrl: 'https://gateway.example' },
+    } } }));
+    savePendingTask({ nodeId: 'refresh-url', projectId: 'project-1', nodeType: 'ai-image', provider: 'general',
+      taskType: 'custom-protocol', providerConfigId: 'refresh-origin', taskId: 'original-task', submitted: true,
+      resultUrls: ['https://cdn.example/expired.png'], mediaDownloadAccess, mediaRecoveryState: 'delivery_pending',
+      protocolPoll: { method: 'GET', url: 'https://gateway.example/tasks/original-task', statusPath: 'status',
+        successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url', intervalMs: 1 } });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'completed', url: 'https://cdn.example/fresh.png' })));
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockResolvedValue({ mediaUrl: 'asset://saved', sourceUrl: 'asset://saved' });
+    await resumeMediaNodeTask('refresh-url');
+    expect(persist).toHaveBeenCalledWith('https://cdn.example/fresh.png', 'project-1', 'ai-image', '原任务',
+      expect.objectContaining({ mediaDownloadAccess, signal: expect.any(AbortSignal) }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
+  it('retains an APIMart task with a visible download failure and can save it on the next query', async () => {
+    useAppStore.setState((state) => ({ nodes: [{ id: 'apimart-retry', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: 'APIMart 图片', status: 'idle' } }], config: { ...state.config, providers: {
+      apimart: { name: 'APIMart', apiKey: 'fixture-key', baseUrl: 'https://api.apimart.ai/v1' },
+    } } }));
+    const receipt = savePendingTask({ nodeId: 'apimart-retry', projectId: 'project-1', nodeType: 'ai-image', provider: 'apimart',
+      providerConfigId: 'apimart', taskType: 'apimart', taskId: 'original-task', submitted: true });
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: {
+      status: 'completed', result: { images: [{ url: ['https://upload.apimart.ai/result.png'] }] },
+    } })));
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData')
+      .mockRejectedValueOnce(new fileService.MediaPersistenceError('媒体下载响应等待超时'))
+      .mockResolvedValueOnce({ mediaUrl: 'asset://saved', sourceUrl: 'asset://saved' });
+    await resumeMediaNodeTask('apimart-retry');
+    expect(getMediaTaskReceipt('apimart-retry')).toEqual(receipt);
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ mediaRecoveryState: 'delivery_pending',
+      mediaFailureDiagnostic: { kind: 'persistence', failureKind: 'timeout' } });
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'idle', mediaTaskState: 'delivery_pending' });
+    await resumeMediaNodeTask('apimart-retry');
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist.mock.calls[1][4]).toMatchObject({ signal: expect.any(AbortSignal), mediaDownloadAccess: {
+      providerConfigId: 'apimart', origin: 'https://api.apimart.ai', auth: { type: 'bearer' },
+    } });
+    expect(fetchMock.mock.calls.every(([url]) => url === 'https://api.apimart.ai/v1/tasks/original-task?language=zh')).toBe(true);
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data.status).toBe('success');
+  });
+
+  it('does not restore saving ownership to an older operation after a newer one finishes', () => {
+    const older = registerMediaNodeOperation('parallel-image', true);
+    const newer = registerMediaNodeOperation('parallel-image', true);
+    expect(older.isCurrent()).toBe(false);
+    expect(newer.isCurrent()).toBe(true);
+    newer();
+    expect(older.isCurrent()).toBe(false);
+    older();
+    const next = registerMediaNodeOperation('parallel-image', true);
+    expect(next.isCurrent()).toBe(true);
+    next();
+    expect(next.isCurrent()).toBe(false);
+  });
+
+  it('does not let nested protocol tracking supersede its generation owner', () => {
+    const generation = registerMediaNodeOperation('nested-image', true);
+    const protocol = registerMediaNodeOperation('nested-image');
+    expect(generation.isCurrent()).toBe(true);
+    protocol();
+    expect(generation.isCurrent()).toBe(true);
+    const newerGeneration = registerMediaNodeOperation('nested-image', true);
+    expect(generation.isCurrent()).toBe(false);
+    newerGeneration();
+    expect(generation.isCurrent()).toBe(false);
+    generation();
+  });
+
   it('keeps controllers, promises and mutable recovery state together without waiting for dispose', async () => {
     const hotData = {};
     const oldRuntime = createOrReusePollManagerRuntime(hotData);
@@ -773,6 +868,7 @@ describe('pending generation task recovery', () => {
     });
     expect(persist).toHaveBeenCalledWith(url, 'project-1', generationType, '原始素材', {
       mediaDownloadAccess: { providerConfigId: 'source-provider', origin: 'https://gateway.example' },
+      signal: expect.any(AbortSignal),
     });
     expect(history).toHaveBeenCalledWith('source-node', expect.objectContaining({ nodeType: generationType, mediaUrl: localUrl }), false, receipt);
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -1112,6 +1208,7 @@ describe('pending generation task recovery', () => {
     });
     expect(persistMedia).toHaveBeenCalledWith('data:video/mp4;base64,AQID', 'project-1', 'ai-video', 'Video', {
       mediaDownloadAccess: { providerConfigId: 'custom-video', origin: 'https://gateway.example' },
+      signal: expect.any(AbortSignal),
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenLastCalledWith('https://gateway.example/v1/videos/video-1/content',

@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{Read, Write},
+    future::Future,
+    io::{self, Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::Duration,
@@ -18,6 +19,7 @@ use crate::path_policy::{authorize_path, ensure_trusted_caller, PathAccess};
 const BUFFER_SIZE: usize = 1024 * 1024;
 const MIN_FREE_SPACE_RESERVE: u64 = 64 * 1024 * 1024;
 const PROGRESS_EVENT: &str = "file-transfer-progress";
+const MEDIA_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 static CANCELLED_TRANSFERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -275,20 +277,13 @@ where
                     content_type: metadata.content_type }).map_err(|message| Failure { message, retryable: reader.network_failed })
             });
         }
-        let response = if let Some(access) = access {
-            fetch_media_download(url, access, || is_cancelled(task_id))?
-        } else {
-            let client = reqwest::blocking::Client::builder()
-                .user_agent("AI-Canvas/0.4")
-                .build()
-                .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-            client.get(url).send().map_err(|e| format!("下载请求失败: {e}"))?
-        };
-        download_response_to_file(
+        let response = fetch_media_download(url, access, || is_cancelled(task_id), MEDIA_DOWNLOAD_IDLE_TIMEOUT)?;
+        download_media_response_to_file(
             task_id,
             response,
             destination,
             max_bytes,
+            MEDIA_DOWNLOAD_IDLE_TIMEOUT,
             validate_temp,
             |transferred_bytes, total_bytes| {
                 let _ = app.emit(
@@ -348,42 +343,119 @@ fn strip_media_query_auth(url: &mut reqwest::Url, name: &str) {
     if retained != query { url.set_query(if retained.is_empty() { None } else { Some(&retained) }); }
 }
 
+/// 每次响应头或正文读取分别计时；取消会丢弃正在等待的网络 Future，不限制整个大文件的耗时。
+async fn wait_media_download<T, C>(
+    future: impl Future<Output = Result<T, reqwest::Error>>,
+    idle_timeout: Duration,
+    cancelled: &mut C,
+) -> Result<T, String>
+where C: FnMut() -> Result<bool, String> {
+    if cancelled()? { return Err("文件传输已取消".into()); }
+    tokio::pin!(future);
+    let deadline = tokio::time::sleep(idle_timeout);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            result = &mut future => {
+                if cancelled()? { return Err("文件传输已取消".into()); }
+                return result.map_err(|error| if error.is_timeout() {
+                    "媒体下载等待超时，请继续取回原结果".into()
+                } else {
+                    "媒体下载连接失败，请检查网络后继续取回原结果".into()
+                });
+            },
+            _ = &mut deadline => {
+                if cancelled()? { return Err("文件传输已取消".into()); }
+                return Err("媒体下载等待超时，请继续取回原结果".into());
+            },
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                if cancelled()? { return Err("文件传输已取消".into()); }
+            },
+        }
+    }
+}
+
 /// 受鉴权结果可跳到公开 CDN；离开初始来源后永久去掉全部显式请求头。
-fn fetch_media_download<C>(url: &str, access: &MediaDownloadAccess, cancelled: C) -> Result<Response, String>
-where C: Fn() -> Result<bool, String> {
+fn fetch_media_download<C>(
+    url: &str,
+    access: Option<&MediaDownloadAccess>,
+    mut cancelled: C,
+    idle_timeout: Duration,
+) -> Result<reqwest::Response, String>
+where C: FnMut() -> Result<bool, String> {
     let mut current = reqwest::Url::parse(url).map_err(|_| "媒体下载地址无效")?;
     validate_media_download_url(&current)?;
-    let origin = reqwest::Url::parse(&access.origin).map_err(|_| "媒体下载来源无效")?;
-    validate_media_download_url(&origin)?;
-    if origin.origin().ascii_serialization() != access.origin || current.origin() != origin.origin() {
-        return Err("媒体下载地址与厂商连接不同源".into());
-    }
-    let headers = media_download_headers(access)?;
-    if access.query_auth_name.as_ref().is_some_and(|name| name.is_empty() || name.len() > 256 || name.chars().any(char::is_control)) {
-        return Err("媒体下载查询鉴权字段无效".into());
-    }
-    let client = reqwest::blocking::Client::builder().user_agent("AI-Canvas/media-download")
-        .referer(false).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(15))
-        .build().map_err(|_| "创建媒体下载客户端失败")?;
-    let mut include_headers = true;
-    for redirect_count in 0..=10 {
-        if cancelled()? { return Err("文件传输已取消".into()); }
-        let request = client.get(current.clone());
-        let response = (if include_headers { request.headers(headers.clone()) } else { request })
-            .send().map_err(|_| "媒体下载连接失败，请检查网络后继续取回原结果")?;
-        if cancelled()? { return Err("文件传输已取消".into()); }
-        if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) { return Ok(response); }
-        if redirect_count == 10 { return Err("媒体下载重定向次数超过上限".into()); }
-        let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok())
-            .ok_or("媒体下载重定向缺少有效地址")?;
-        let mut target = media_download_redirect_target(&current, location)?;
-        include_headers &= target.origin() == origin.origin();
-        if !include_headers {
-            if let Some(name) = &access.query_auth_name { strip_media_query_auth(&mut target, name); }
+    let origin = current.origin();
+    let headers = if let Some(access) = access {
+        let bound_origin = reqwest::Url::parse(&access.origin).map_err(|_| "媒体下载来源无效")?;
+        validate_media_download_url(&bound_origin)?;
+        if bound_origin.origin().ascii_serialization() != access.origin || origin != bound_origin.origin() {
+            return Err("媒体下载地址与厂商连接不同源".into());
         }
-        current = target;
+        if access.query_auth_name.as_ref().is_some_and(|name| name.is_empty() || name.len() > 256 || name.chars().any(char::is_control)) {
+            return Err("媒体下载查询鉴权字段无效".into());
+        }
+        media_download_headers(access)?
+    } else {
+        reqwest::header::HeaderMap::new()
+    };
+    tauri::async_runtime::block_on(async {
+        let client = reqwest::Client::builder().user_agent(if access.is_some() { "AI-Canvas/media-download" } else { "AI-Canvas/0.4" })
+            .referer(false).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(15))
+            .build().map_err(|_| "创建媒体下载客户端失败")?;
+        let mut include_headers = access.is_some();
+        for redirect_count in 0..=10 {
+            let request = client.get(current.clone());
+            let response = wait_media_download(
+                (if include_headers { request.headers(headers.clone()) } else { request }).send(),
+                idle_timeout,
+                &mut cancelled,
+            ).await?;
+            if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) { return Ok(response); }
+            if redirect_count == 10 { return Err("媒体下载重定向次数超过上限".into()); }
+            let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok())
+                .ok_or("媒体下载重定向缺少有效地址")?;
+            let mut target = media_download_redirect_target(&current, location)?;
+            include_headers &= target.origin() == origin;
+            if !include_headers {
+                if let Some(name) = access.and_then(|access| access.query_auth_name.as_ref()) { strip_media_query_auth(&mut target, name); }
+            }
+            current = target;
+        }
+        Err("媒体下载重定向次数超过上限".into())
+    })
+}
+
+struct MediaDownloadReader<C> {
+    response: reqwest::Response,
+    pending: Cursor<Vec<u8>>,
+    idle_timeout: Duration,
+    cancelled: C,
+}
+
+impl<C> Read for MediaDownloadReader<C>
+where C: FnMut() -> Result<bool, String> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() { return Ok(0); }
+        loop {
+            if self.pending.position() < self.pending.get_ref().len() as u64 { return self.pending.read(buffer); }
+            let response = &mut self.response;
+            // 空 DATA 帧没有真实下载进展，跳过它们时仍沿用同一次等待期限。
+            let next_bytes = async {
+                loop {
+                    match response.chunk().await? {
+                        Some(bytes) if bytes.is_empty() => continue,
+                        chunk => return Ok(chunk),
+                    }
+                }
+            };
+            match tauri::async_runtime::block_on(wait_media_download(next_bytes, self.idle_timeout, &mut self.cancelled)) {
+                Ok(Some(bytes)) => self.pending = Cursor::new(bytes.to_vec()),
+                Ok(None) => return Ok(0),
+                Err(error) => return Err(io::Error::other(error)),
+            }
+        }
     }
-    Err("媒体下载重定向次数超过上限".into())
 }
 
 /// 模型下载一次尝试的失败类别；本地 I/O、取消与校验失败不能通过换源重试。
@@ -527,30 +599,74 @@ where
     V: FnOnce(&Path, &DownloadMetadata) -> Result<(), String>,
     P: FnMut(u64, Option<u64>),
 {
-    if !response.status().is_success() {
-        return Err(format!("下载请求失败: HTTP {}", response.status()));
+    let metadata = download_response_metadata(response.status(), response.content_length(), response.headers())?;
+    download_reader_to_file(task_id, &mut response, destination, max_bytes, metadata, validate_temp, &mut on_progress)
+}
+
+fn download_media_response_to_file<V, P>(
+    task_id: &str,
+    response: reqwest::Response,
+    destination: &Path,
+    max_bytes: Option<u64>,
+    idle_timeout: Duration,
+    validate_temp: V,
+    mut on_progress: P,
+) -> Result<FileTransferResult, String>
+where
+    V: FnOnce(&Path, &DownloadMetadata) -> Result<(), String>,
+    P: FnMut(u64, Option<u64>),
+{
+    let metadata = download_response_metadata(response.status(), response.content_length(), response.headers())?;
+    let mut reader = MediaDownloadReader {
+        response, pending: Cursor::new(Vec::new()), idle_timeout, cancelled: || is_cancelled(task_id),
+    };
+    download_reader_to_file(task_id, &mut reader, destination, max_bytes, metadata, validate_temp, &mut on_progress)
+}
+
+fn download_response_metadata(
+    status: reqwest::StatusCode,
+    content_length: Option<u64>,
+    headers: &reqwest::header::HeaderMap,
+) -> Result<DownloadMetadata, String> {
+    if !status.is_success() {
+        return Err(format!("下载请求失败: HTTP {status}"));
     }
     // 本入口未请求 Range；不能把服务端返回的局部分段当作完整文件发布。
-    if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+    if status == reqwest::StatusCode::PARTIAL_CONTENT {
         return Err("下载返回不完整的分段内容".into());
     }
-    let metadata = DownloadMetadata {
-        content_length: response.content_length(),
-        content_type: response
-            .headers()
+    Ok(DownloadMetadata {
+        content_length,
+        content_type: headers
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next())
             .map(str::trim)
             .map(str::to_string),
-    };
+    })
+}
+
+fn download_reader_to_file<R, V, P>(
+    task_id: &str,
+    reader: &mut R,
+    destination: &Path,
+    max_bytes: Option<u64>,
+    metadata: DownloadMetadata,
+    validate_temp: V,
+    on_progress: &mut P,
+) -> Result<FileTransferResult, String>
+where
+    R: Read,
+    V: FnOnce(&Path, &DownloadMetadata) -> Result<(), String>,
+    P: FnMut(u64, Option<u64>),
+{
     if let (Some(content_length), Some(max_bytes)) = (metadata.content_length, max_bytes) {
         validate_transfer_size(content_length, None, Some(max_bytes))?;
     }
     on_progress(0, metadata.content_length);
     let transferred = stream_to_file(
         task_id,
-        &mut response,
+        reader,
         destination,
         metadata.content_length,
         metadata.content_length.or(max_bytes),
@@ -1173,6 +1289,151 @@ mod tests {
         })
     }
 
+    fn serve_media_connection(serve: impl FnOnce(std::net::TcpStream) + Send + 'static) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/media?signature=fixture-private", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+                    Err(error) => panic!("test media accept failed: {error}"),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            stream.set_nodelay(true).unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0_u8; 1];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 64 * 1024);
+            }
+            serve(stream);
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn media_download_times_out_waiting_for_response_headers() {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (url, server) = serve_media_connection(move |_| { let _ = wait.recv_timeout(Duration::from_secs(3)); });
+        let error = fetch_media_download(&url, None, || Ok(false), Duration::from_millis(100)).unwrap_err();
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert_eq!(error, "媒体下载等待超时，请继续取回原结果");
+        assert!(!error.contains("fixture-private"));
+    }
+
+    #[test]
+    fn media_download_times_out_stalled_body_and_removes_partial_file() {
+        let directory = test_directory("media-body-timeout");
+        let destination = directory.join("result.mp4");
+        let task_id = "media-body-timeout";
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (url, server) = serve_media_connection(move |mut stream| {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nok").unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(3));
+        });
+        let response = fetch_media_download(&url, None, || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap();
+        let mut progress = Vec::new();
+        let error = download_media_response_to_file(task_id, response, &destination, None, Duration::from_millis(100),
+            |_, _| Ok(()), |bytes, _| progress.push(bytes)).err().expect("正文停滞应超时");
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert!(error.contains("媒体下载等待超时"));
+        assert!(progress.contains(&2));
+        assert!(!destination.exists());
+        assert!(!part_path(&destination, task_id).exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn media_download_cancels_while_waiting_for_response_headers() {
+        use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (url, server) = serve_media_connection(move |_| {
+            flag.store(true, Ordering::Release);
+            let _ = wait.recv_timeout(Duration::from_secs(3));
+        });
+        let started = std::time::Instant::now();
+        let error = fetch_media_download(&url, None, || Ok(cancelled.load(Ordering::Acquire)), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap_err();
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert_eq!(error, "文件传输已取消");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn media_download_cancels_stalled_body_and_removes_partial_file() {
+        let directory = test_directory("media-body-cancel");
+        let destination = directory.join("result.mp4");
+        let task_id = "media-body-cancel";
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (url, server) = serve_media_connection(move |mut stream| {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nok").unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(3));
+        });
+        let response = fetch_media_download(&url, None, || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap();
+        let (body_started, body_wait) = std::sync::mpsc::channel::<()>();
+        let cancel = std::thread::spawn(move || {
+            body_wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            cancelled_transfers().lock().unwrap().insert(task_id.to_owned());
+        });
+        let mut notified = false;
+        let started = std::time::Instant::now();
+        let error = download_media_response_to_file(task_id, response, &destination, None, MEDIA_DOWNLOAD_IDLE_TIMEOUT,
+            |_, _| Ok(()), |bytes, _| {
+                if bytes > 0 && !notified { notified = true; body_started.send(()).unwrap(); }
+            }).err().expect("正文等待中取消应结束");
+        cancel.join().unwrap();
+        clear_cancelled(task_id);
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert!(error.contains("文件传输已取消"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!destination.exists());
+        assert!(!part_path(&destination, task_id).exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn media_download_keeps_streaming_beyond_one_idle_timeout() {
+        let directory = test_directory("media-active-body");
+        let destination = directory.join("result.mp4");
+        let body = b"abcdefghijkl";
+        let (url, server) = serve_media_connection(move |mut stream| {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n").unwrap();
+            for byte in body {
+                std::thread::sleep(Duration::from_millis(40));
+                stream.write_all(&[*byte]).unwrap();
+            }
+        });
+        let response = fetch_media_download(&url, None, || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap();
+        let idle_timeout = Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let result = download_media_response_to_file("media-active-body", response, &destination, None, idle_timeout, |_, _| Ok(()), |_, _| {}).unwrap();
+        server.join().unwrap();
+        assert!(started.elapsed() > idle_timeout);
+        assert_eq!(result.total_bytes, body.len() as u64);
+        assert_eq!(fs::read(&destination).unwrap(), body);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn media_download_reports_redacted_connection_failure() {
+        let (url, server) = serve_media_connection(|_| {});
+        let error = fetch_media_download(&url, None, || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error, "媒体下载连接失败，请检查网络后继续取回原结果");
+        assert!(!error.contains("fixture-private"));
+    }
+
     #[test]
     fn media_download_only_sends_access_headers_before_leaving_the_origin() {
         let origin_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1189,8 +1450,8 @@ mod tests {
         let access = MediaDownloadAccess { origin: origin.clone(), query_auth_name: Some("key".into()), headers: HashMap::from([
             ("Authorization".into(), "Bearer fixture".into()), ("X-API-Key".into(), "fixture-custom".into()),
         ]) };
-        let response = fetch_media_download(&format!("{origin}/content?key=fixture-query"), &access, || Ok(false)).unwrap();
-        assert_eq!(response.text().unwrap(), "video");
+        let response = fetch_media_download(&format!("{origin}/content?key=fixture-query"), Some(&access), || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap();
+        assert_eq!(tauri::async_runtime::block_on(response.text()).unwrap(), "video");
         let requests = origin_server.join().unwrap();
         let initial = requests[0].to_ascii_lowercase();
         assert!(initial.contains("authorization: bearer fixture"));
@@ -1210,8 +1471,8 @@ mod tests {
     #[test]
     fn media_download_rejects_unbound_origin_credentials_and_unsafe_headers() {
         let access = MediaDownloadAccess { origin: "https://provider.example".into(), query_auth_name: None, headers: HashMap::new() };
-        assert!(fetch_media_download("https://cdn.example/result", &access, || Ok(false)).is_err());
-        assert!(fetch_media_download("https://user:pass@provider.example/content", &access, || Ok(false)).is_err());
+        assert!(fetch_media_download("https://cdn.example/result", Some(&access), || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).is_err());
+        assert!(fetch_media_download("https://user:pass@provider.example/content", Some(&access), || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).is_err());
         let base = reqwest::Url::parse("https://provider.example/content").unwrap();
         for target in ["http://cdn.example/result", "file:///result", "https://user:pass@cdn.example/result"] {
             assert!(media_download_redirect_target(&base, target).is_err());
@@ -1221,7 +1482,7 @@ mod tests {
             let access = MediaDownloadAccess { origin: "https://provider.example".into(), query_auth_name: None, headers: HashMap::from([(name.into(), "fixture".into())]) };
             assert!(media_download_headers(&access).is_err());
         }
-        assert!(fetch_media_download("https://provider.example/content", &access, || Ok(true)).is_err());
+        assert!(fetch_media_download("https://provider.example/content", Some(&access), || Ok(true), MEDIA_DOWNLOAD_IDLE_TIMEOUT).is_err());
     }
 
     #[test]
