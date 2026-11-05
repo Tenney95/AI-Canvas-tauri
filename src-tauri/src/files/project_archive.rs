@@ -701,6 +701,9 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn effective_entry_size_is_budgeted_before_reading_content() {
@@ -764,8 +767,8 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!("ai-canvas-archive-regression-{}-{}", std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+            let root = std::env::temp_dir().join(format!("ai-canvas-archive-regression-{}-{}-{}", std::process::id(),
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(), FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
             fs::create_dir(&root).unwrap();
             Self(root.canonicalize().unwrap())
         }

@@ -2,7 +2,7 @@
 
 主模块：[文件与存储](../文件与存储模块.md)。任务类型：现有平台能力的局部性能修复，不调整架构、文件格式、权限或依赖。
 
-状态（2026-11-05）：用户已确认完整范围，以下优化已实现并补充回归源码；已完成差异、引用、严格 UTF-8 与差异空白静态核对及交叉代码审查。本次未运行测试，待用户验收；未运行 lint、类型检查、构建、性能基准或桌面验收，不承诺实测提速比例。
+状态（2026-11-05）：全部优化已提交为 `3e7c770c`。用户随后授权助手测试；自动化验证及修正见下方“提交与自动化验证”。前面各轮的“未运行测试”是实施时记录，以最新验证节为准。未做实际吞吐／峰值内存采样或桌面交互验收，不承诺实测提速比例。
 
 ## 调查结论与实施范围
 
@@ -218,6 +218,36 @@ cargo test --lib project_archive::tests
 cargo test --lib file_transfer::tests
 cargo check --lib
 ```
+
+## 提交与自动化验证（2026-11-05）
+
+在 `3e7c770c` 的独立工作树验证，复用已安装依赖，隔离 S3／MCP 并行改动；随后在同一工作树应用下列最小修复再重跑。未推送，未运行生产构建、全量前端测试、性能基准或桌面交互验收。
+
+- 首轮前端 470 项中 466 项通过，4 项失败已修正：索引 `getAll` 的中止注入捕获真实事务，并明确断言注入发生；节点历史清理接受原生 `AbortError`，继续核对事务回滚和项目隔离。
+- 类型检查暴露提交基线已有的筛选表达式多余括号及 `ToolResultSummary.errorCode` 声明缺失，已通过 `21cd445d` 独立修复，仅修改一个括号与一个可选类型字段，保留并行 MCP 差异。节点工具的 138 项回归也纳入最终前端重跑。
+- 归档首轮并行测试有一次临时目录撞名，串行复核 27 项通过。测试 Fixture 已给既有进程 ID／时间目录名追加原子序号，修复只在 `cfg(test)` 内，不改变归档业务逻辑。
+
+| 验证范围 | 实际结果 |
+|---|---|
+| 本专项 16 个前端回归文件及 7 个相关既有文件 | 最终重跑 23 文件、608 项通过 |
+| 本专项改动的 26 个 TypeScript 文件及上述两处检查阻断文件的定向 ESLint | 通过，零警告 |
+| `npm run typecheck`、`npm run test:typecheck` | 修复后均通过 |
+| `cargo test --lib thumbnail_cache::tests` | 13 项通过 |
+| `cargo test --lib file_transfer::tests` | 32 项通过，1 个既有 176 MiB 压力项按原声明忽略 |
+| `cargo test --lib project_archive::tests` | Fixture 修复后默认并行 27 项通过 |
+| `cargo check --lib` | Fixture 修复后重跑通过 |
+
+前端最终重跑命令，运行目录为仓库根目录：
+
+```powershell
+$ioRegressionFiles = @(git show --pretty= --name-only 3e7c770c | Where-Object { $_ -match '^tests/.*\.tsx?$' })
+$ioRegressionFiles += @('tests/services/base64Encoding.test.ts', 'tests/services/mediaRelocations.test.ts', 'tests/services/projectAssetScanRelocations.test.ts', 'tests/services/projectArchiveRoundTrip.test.ts', 'tests/services/recentAssets.test.ts', 'tests/services/seriesSourceService.test.ts', 'tests/services/chat/canvasTools.test.ts')
+npx --no-install vitest run @ioRegressionFiles
+npm run typecheck
+npm run test:typecheck
+```
+
+Rust 命令及桌面操作步骤见各轮验收节。上述自动化结果不代替 Tauri 桌面验收；原生读写、取消、路径切换、缓存命中和实际性能收益仍须按同设备／同文件条件验证。
 
 ## 回滚
 

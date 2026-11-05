@@ -146,14 +146,20 @@ describe('getProjectChatForExport', () => {
     await service.putChatMessage(message('m', 'chat', 0));
     await service.putProjectMemory(memory('memory', 1));
     const getAll = FakeIDBIndex.prototype.getAll;
+    let abortInjected = false;
     vi.spyOn(FakeIDBIndex.prototype, 'getAll').mockImplementation(function (this: IDBIndex, query, count) {
       const request = getAll.call(this, query, count);
       if (this.objectStore.name === storeName) {
-        request.addEventListener('success', () => queueMicrotask(() => request.transaction?.abort()), { once: true });
+        const transaction = this.objectStore.transaction;
+        request.addEventListener('success', () => queueMicrotask(() => {
+          transaction.abort();
+          abortInjected = true;
+        }), { once: true });
       }
       return request;
     });
     await expect(service.getProjectChatForExport('p1', 10)).rejects.toThrow('项目聊天归档读取失败');
+    expect(abortInjected).toBe(true);
   });
 
   it('rejects a failed message read without leaving the export promise pending', async () => {

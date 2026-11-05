@@ -190,17 +190,24 @@ describe('history key cursor pruning and cleanup', () => {
     ]);
     const remove = FakeIDBObjectStore.prototype.delete;
     let abortScheduled = false;
+    let abortInjected = false;
     const deletion = vi.spyOn(FakeIDBObjectStore.prototype, 'delete').mockImplementation(function (this: IDBObjectStore, key) {
       const request = remove.call(this, key);
       if (this.name === 'history' && !abortScheduled) {
         abortScheduled = true;
-        request.addEventListener('success', () => queueMicrotask(() => request.transaction?.abort()), { once: true });
+        const transaction = this.transaction;
+        request.addEventListener('success', () => queueMicrotask(() => {
+          transaction.abort();
+          abortInjected = true;
+        }), { once: true });
       }
       return request;
     });
     const operation = scope === 'project' ? service.clearAllHistoryEntries('project-a')
       : service.deleteNodeHistoryEntries('project-a', 'node-a');
-    await expect(operation).rejects.toThrow(/清理失败/);
+    if (scope === 'node') await expect(operation).rejects.toMatchObject({ name: 'AbortError' });
+    else await expect(operation).rejects.toThrow('历史记录清理失败');
+    expect(abortInjected).toBe(true);
     deletion.mockRestore();
     expect((await service.getHistoryEntriesForExport('project-a')).map((record) => record.id)).toEqual(['newer', 'older']);
     expect((await service.getHistoryEntriesForExport('project-b')).map((record) => record.id)).toEqual(['foreign']);
