@@ -51,6 +51,8 @@ macro_rules! request {
 request!(ListInput { cursor: Option<String> });
 request!(CleanupPreviewInput { mode: String });
 request!(CleanupApplyInput { mode: String, preview_token: String });
+request!(AssetDeletePreviewInput { operation_id: String, shared_asset_id: String, expected_revision_id: String, expected_e_tag: String });
+request!(AssetDeleteApplyInput { operation_id: String, shared_asset_id: String, preview_token: String });
 request!(PrepareInput { root_directory: String, draft: Revision, base_e_tag: Option<String>, sources: Vec<Source> });
 request!(OperationInput { operation_id: String, revision_id: String, shared_asset_id: String });
 request!(DownloadInput { operation_id: String, revision_id: String, shared_asset_id: String, root_directory: String, expected_revision_digest: String });
@@ -75,18 +77,30 @@ pub struct Revision {
     #[serde(skip_serializing_if = "Option::is_none")] pub parent_revision_id: Option<String>,
     pub operation_id: String, pub created_at: u64, pub payload: Value, pub media: Vec<Media>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Head {
     pub shared_asset_id: String, pub kind: String, pub revision_id: String,
     pub revision_digest: String, pub operation_id: String, pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deleted_flag")]
+    pub deleted: Option<bool>,
+}
+fn deleted_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
+    if bool::deserialize(deserializer)? { Ok(Some(true)) }
+    else { Err(serde::de::Error::custom("deleted must be true when present")) }
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAsset { pub head: Head, pub etag: String, pub revision: Revision }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ListResult { pub assets: Vec<RemoteAsset>, pub complete: bool, #[serde(skip_serializing_if = "Option::is_none")] pub next_cursor: Option<String> }
+pub struct ListResult { pub assets: Vec<RemoteAsset>, pub deleted_assets: Vec<Head>, pub complete: bool, #[serde(skip_serializing_if = "Option::is_none")] pub next_cursor: Option<String> }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetDeletePreviewResult { pub shared_asset_id: String, pub revision_id: String, pub operation_id: String, pub preview_token: String }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetDeleteApplyResult { pub status: &'static str, pub shared_asset_id: String, pub operation_id: String }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupPreviewResult { pub mode: String, pub object_count: u64, pub bytes: u64, pub preview_token: String }
@@ -276,7 +290,8 @@ impl Revision {
 impl Head {
     pub(super) fn validate(&self) -> Result<(), StorageError> {
         for value in [&self.shared_asset_id, &self.revision_id, &self.operation_id] { validate_id(value)?; }
-        if !["file", "character", "scene", "prop"].contains(&self.kind.as_str()) || !valid_digest(&self.revision_digest) || self.updated_at > 9_007_199_254_740_991 { return Err(invalid()); } Ok(())
+        if !["file", "character", "scene", "prop"].contains(&self.kind.as_str()) || !valid_digest(&self.revision_digest)
+            || self.updated_at > 9_007_199_254_740_991 || self.deleted == Some(false) { return Err(invalid()); } Ok(())
     }
 }
 
@@ -315,8 +330,26 @@ mod tests {
     fn missing_card_fields_fail_without_panicking_and_head_needs_a_digest() {
         let revision: Revision = serde_json::from_value(serde_json::json!({"format":"ai-canvas-shared-asset","version":1,"libraryId":"l","sharedProjectId":"p","sharedAssetId":"a","revisionId":"r","operationId":"o","createdAt":1,"payload":{"kind":"character","data":{"id":"a","kind":"character"}},"media":[]})).unwrap();
         assert!(revision.validate(false).is_err());
-        let head = Head { shared_asset_id:"a".into(), kind:"file".into(), revision_id:"r".into(), revision_digest:"a".repeat(64), operation_id:"o".into(), updated_at:1 };
+        let head = Head { shared_asset_id:"a".into(), kind:"file".into(), revision_id:"r".into(), revision_digest:"a".repeat(64), operation_id:"o".into(), updated_at:1, deleted: None };
         assert!(head.validate().is_ok()); assert!(Head { revision_digest:"etag-is-not-sha256".into(), ..head }.validate().is_err());
         assert!(!valid_extension("image", "lnk")); assert!(!valid_extension("video", "exe")); assert!(valid_extension("audio", "wav"));
+    }
+
+    #[test]
+    fn normal_heads_keep_old_wire_shape_and_deleted_heads_fail_closed_for_old_readers() {
+        let head = Head { shared_asset_id: "asset".into(), kind: "file".into(), revision_id: "revision".into(),
+            revision_digest: "a".repeat(64), operation_id: "publish".into(), updated_at: 1, deleted: None };
+        let normal = serde_json::to_value(&head).unwrap();
+        assert!(normal.get("deleted").is_none());
+        let parsed: Head = serde_json::from_value(normal.clone()).unwrap(); assert!(parsed.validate().is_ok());
+        let deleted = serde_json::to_value(Head { deleted: Some(true), ..head }).unwrap();
+        let tombstone: Head = serde_json::from_value(deleted.clone()).unwrap(); assert!(tombstone.validate().is_ok());
+        assert!(object(&deleted, &["sharedAssetId", "kind", "revisionId", "revisionDigest", "operationId", "updatedAt"]).is_err());
+        for flag in [serde_json::json!(false), serde_json::Value::Null, serde_json::json!("true")] {
+            let mut invalid = normal.clone(); invalid["deleted"] = flag;
+            assert!(serde_json::from_value::<Head>(invalid).is_err());
+        }
+        let result = ListResult { assets: vec![], deleted_assets: vec![tombstone], complete: true, next_cursor: None };
+        assert!(serde_json::to_value(result).unwrap().get("deletedAssets").unwrap().is_array());
     }
 }

@@ -29,7 +29,10 @@ const ACTION = ['id', 'category', 'customCategory', 'name', 'prompt', 'media', '
 const ACTION_MEDIA = ['id', 'kind', 'name', 'mimeType', 'url', 'createdAt', 'updatedAt'];
 const DRAMA_MENTION = /@drama\{([^:}\r\n]+):([^}\r\n]*)\}/g;
 type Data = Record<string, unknown>;
-const fail = (): never => { throw new Error('项目共享资产格式无效'); };
+type FormatStage = 'format' | 'restoreText' | 'restoreMedia';
+const fail = (reason = 'invalidFormat', fieldPath = 'revision', stage: FormatStage = 'format'): never => {
+  throw new Error(`项目共享资产格式无效（${stage}/${reason}；字段：${fieldPath}）`, { cause: { reason, fieldPath, stage } });
+};
 const object = (value: unknown): Data => {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return fail();
@@ -37,17 +40,27 @@ const object = (value: unknown): Data => {
 };
 const keys = (value: Data, allowed: readonly string[]) => { if (Object.keys(value).some((key) => !allowed.includes(key))) fail(); };
 const id = (value: unknown): string => { if (typeof value !== 'string' || !ID.test(value)) return fail(); return value; };
-const text = (value: unknown, max = DRAMA_ASSET_TRANSFER_LIMITS.textBytes): string => {
-  if (typeof value !== 'string' || encoder.encode(value).byteLength > max || value.includes('\0')) return fail();
+const localId = (value: unknown, fieldPath = 'identity', stage: FormatStage = 'restoreText'): string => {
+  if (typeof value !== 'string' || !value.trim() || value.length > 256 || value.startsWith('global/')
+    || Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
+    return fail('invalidLocalIdentity', fieldPath, stage);
+  }
+  return value;
+};
+const text = (value: unknown, max = DRAMA_ASSET_TRANSFER_LIMITS.textBytes, local = false, fieldPath = 'text'): string => {
+  if (typeof value !== 'string' || encoder.encode(value).byteLength > max || value.includes('\0')) {
+    return fail('invalidText', fieldPath, local ? 'restoreText' : 'format');
+  }
   // 本机执行引用不能随项目元数据出境；共享 @drama 由调用方明确转换身份。
   if (/@(?:asset|wf|refmod|skill|model|image)?\{/.test(value) || /@drama\{global\//.test(value)) {
     throw new Error('资产包含尚未纳入共享的本机或全局引用，请先移除或物化为项目资产');
   }
   if (value.replace(DRAMA_MENTION, '').includes('@drama{')) throw new Error('资产包含损坏的引用，请先修复后共享');
   for (const match of value.matchAll(DRAMA_MENTION)) {
-    const mention = parseDramaMentionId(match[1]); id(mention.assetId);
+    const readId = local ? (value: unknown) => localId(value, fieldPath) : id;
+    const mention = parseDramaMentionId(match[1]); readId(mention.assetId);
     for (const member of [mention.referenceImageId, mention.voiceClipId, mention.actionId, mention.actionMediaId]) {
-      if (member !== undefined) id(member);
+      if (member !== undefined) readId(member);
     }
   }
   return value;
@@ -107,12 +120,13 @@ export function getSharedAssetSyncDependencies(payload: SharedSyncRevision['payl
   return [...new Set([...mentions, ...(payload.kind === 'character' && payload.data.kind === 'character' ? payload.data.weaponIds ?? [] : [])])];
 }
 
-function mapWeaponIds(value: readonly string[], mapId?: (value: string) => string): string[] {
-  const ids = list(value, MAX_CHARACTER_WEAPONS).map(id);
+function mapWeaponIds(value: readonly string[], mapId?: (value: string) => string, reverse = false): string[] {
+  const readLocalId = (value: unknown) => localId(value, 'payload.data.weaponIds', reverse ? 'restoreText' : 'format');
+  const ids = list(value, MAX_CHARACTER_WEAPONS).map(reverse ? id : readLocalId);
   unique(ids);
   if (!ids.length) return [];
   if (!mapId) throw new Error('角色武器尚未建立共享映射，请先纳入对应项目资产');
-  const mapped = ids.map((value) => id(mapId(value)));
+  const mapped = ids.map((value) => (reverse ? readLocalId : id)(mapId(value)));
   unique(mapped);
   return mapped;
 }
@@ -189,33 +203,35 @@ function readPayload(value: unknown, media: readonly SharedSyncMedia[]): SharedS
 function parseRevision(input: unknown, draft: boolean): SharedSyncRevision | SharedSyncDraft {
   let raw = input;
   if (typeof input === 'string') {
-    if (encoder.encode(input).byteLength > DRAMA_ASSET_TRANSFER_LIMITS.manifestBytes) fail();
-    try { raw = JSON.parse(input); } catch { fail(); }
+    if (encoder.encode(input).byteLength > DRAMA_ASSET_TRANSFER_LIMITS.manifestBytes) fail('manifestTooLarge');
+    try { raw = JSON.parse(input); } catch { fail('invalidJson'); }
   }
   const value = object(raw);
   keys(value, ['format', 'version', 'libraryId', 'sharedProjectId', 'sharedAssetId', 'revisionId', 'parentRevisionId',
     'operationId', 'createdAt', 'payload', 'media']);
-  if (value.format !== SHARED_ASSET_SYNC_FORMAT || value.version !== SHARED_ASSET_SYNC_VERSION) fail();
-  for (const field of ['libraryId', 'sharedProjectId', 'sharedAssetId', 'revisionId', 'operationId']) id(value[field]);
-  if (value.parentRevisionId !== undefined) id(value.parentRevisionId);
-  if (!Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0) fail();
+  if (value.format !== SHARED_ASSET_SYNC_FORMAT || value.version !== SHARED_ASSET_SYNC_VERSION) fail('unsupportedVersion', 'version');
+  for (const field of ['libraryId', 'sharedProjectId', 'sharedAssetId', 'revisionId', 'operationId', 'parentRevisionId']) {
+    if (field === 'parentRevisionId' && value[field] === undefined) continue;
+    if (typeof value[field] !== 'string' || !ID.test(value[field] as string)) fail('invalidIdentity', field);
+  }
+  if (!Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0) fail('invalidTimestamp', 'createdAt');
   let totalBytes = 0;
-  const media = list(value.media, DRAMA_ASSET_TRANSFER_LIMITS.media).map((entry): SharedSyncMedia => {
+  const media = list(value.media, DRAMA_ASSET_TRANSFER_LIMITS.media).map((entry, index): SharedSyncMedia => {
     const item = object(entry); keys(item, draft ? ['id', 'kind', 'extension'] : ['id', 'kind', 'extension', 'sha256', 'bytes']);
-    id(item.id);
+    if (typeof item.id !== 'string' || !ID.test(item.id)) fail('invalidIdentity', `media[${index}].id`);
     if (!['image', 'audio', 'video'].includes(String(item.kind)) || typeof item.extension !== 'string'
-      || !MEDIA_EXTENSIONS[item.kind as SharedSyncMediaKind].includes(item.extension)) fail();
+      || !MEDIA_EXTENSIONS[item.kind as SharedSyncMediaKind].includes(item.extension)) fail('invalidMediaType', `media[${index}].kind/extension`);
     if (!draft && (typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256)
-      || !Number.isSafeInteger(item.bytes) || (item.bytes as number) <= 0)) fail();
+      || !Number.isSafeInteger(item.bytes) || (item.bytes as number) <= 0)) fail('invalidMediaDigestOrSize', `media[${index}]`);
     totalBytes += draft ? 1 : item.bytes as number;
     return { ...item, ...(draft ? { sha256: '0'.repeat(64), bytes: 1 } : {}) } as unknown as SharedSyncMedia;
   });
-  if (totalBytes > DRAMA_ASSET_TRANSFER_LIMITS.mediaBytes) fail();
+  if (totalBytes > DRAMA_ASSET_TRANSFER_LIMITS.mediaBytes) fail('mediaTooLarge', 'media');
   unique(media.map((entry) => entry.id));
   const payload = readPayload(value.payload, media);
-  if (payload.kind !== 'file' && payload.data.id !== value.sharedAssetId) fail();
+  if (payload.kind !== 'file' && payload.data.id !== value.sharedAssetId) fail('assetIdentityMismatch', 'payload.data.id');
   const used = getSharedAssetSyncMediaIds(payload);
-  if (used.length !== media.length || used.some((mediaId) => !media.some((entry) => entry.id === mediaId))) fail();
+  if (used.length !== media.length || used.some((mediaId) => !media.some((entry) => entry.id === mediaId))) fail('mediaReferenceMismatch', 'media');
   const result = { ...value, payload, media: draft ? media.map(({ id: mediaId, kind, extension }) => ({ id: mediaId, kind, extension })) : media };
   const json = JSON.stringify(result);
   if (encoder.encode(json).byteLength > DRAMA_ASSET_TRANSFER_LIMITS.manifestBytes) fail();
@@ -242,23 +258,33 @@ export interface SharedDramaAssetSerialization {
   mapProjectNodeReferences?: (value: string) => string;
 }
 
-function mapText(value: unknown, mentionId?: (value: string) => string, mapProjectNodeReferences?: (value: string) => string): unknown {
+function mapText(value: unknown, mentionId?: (value: string) => string, mapProjectNodeReferences?: (value: string) => string,
+  local = false, fieldPath = 'text'): unknown {
   if (typeof value === 'string') {
     const prepared = value.includes('@{') && mapProjectNodeReferences ? mapProjectNodeReferences(value) : value;
     const mapped = prepared.replace(DRAMA_MENTION, (_token, identity: string, label: string) => {
       if (identity.startsWith('global/')) throw new Error('全局资产引用须先物化为项目资产后共享');
       if (!mentionId) throw new Error('资产引用尚未建立共享映射，请先纳入对应项目资产');
-      return `@drama{${mentionId(identity)}:${label}}`;
+      const mappedId = mentionId(identity);
+      if (local && (typeof mappedId !== 'string' || /[{}:\r\n]/.test(mappedId))) return fail('invalidLocalMention', fieldPath, 'restoreText');
+      return `@drama{${mappedId}:${label}}`;
     });
-    return text(mapped);
+    return text(mapped, DRAMA_ASSET_TRANSFER_LIMITS.textBytes, local, fieldPath);
   }
-  if (Array.isArray(value)) return value.map((entry) => mapText(entry, mentionId, mapProjectNodeReferences));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, mapText(entry, mentionId, mapProjectNodeReferences)]));
+  if (Array.isArray(value)) return value.map((entry, index) => mapText(entry, mentionId, mapProjectNodeReferences, local, `${fieldPath}[${index}]`));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) =>
+    [key, mapText(entry, mentionId, mapProjectNodeReferences, local, `${fieldPath}.${key}`)]));
   return value;
 }
 
 export function mapSharedAssetSyncText(value: string, mapMentionId?: (value: string) => string, mapProjectNodeReferences?: (value: string) => string): string {
   return mapText(value, mapMentionId, mapProjectNodeReferences) as string;
+}
+
+/** 先验证共享身份，再恢复本机项目引用；本机 ID 不沿用 wire 的 ASCII 限制。 */
+export function restoreSharedAssetSyncText(value: string, mapMentionId?: (value: string) => string): string {
+  text(value);
+  return mapText(value, mapMentionId, undefined, true) as string;
 }
 
 /** 只换显式映射身份；同名、同图不产生任何合并。媒体回调必须先物化到当前项目。 */
@@ -319,34 +345,38 @@ export function restoreSharedDramaAsset(payload: SharedSyncCardPayload, localEnt
     media.set(mediaId, { id: mediaId, kind: entry.kind, extension: 'bin', sha256: '0'.repeat(64), bytes: 1 });
   }
   validateCard(payload, [...media.values()]);
-  const asset = mapText(JSON.parse(JSON.stringify(payload.data)), mapping.mapMentionId) as DramaAsset;
-  asset.id = localEntityId;
-  const bind = (token: string | undefined, field: 'imageUrl' | 'audioUrl' | 'url') => {
+  const asset = mapText(JSON.parse(JSON.stringify(payload.data)), mapping.mapMentionId, undefined, true, 'payload.data') as DramaAsset;
+  asset.id = localId(localEntityId, 'payload.data.id');
+  const bind = (token: string | undefined, field: 'imageUrl' | 'audioUrl' | 'url', fieldPath: string) => {
     if (token === undefined) return {};
     const local = mapping.mediaById.get(tokenId(token));
-    if (!local?.assetId || !local.relativePath || !localMediaUrlToPath(local.url)) return fail();
+    if (!local?.assetId || !local.relativePath) return fail('missingLocalMedia', fieldPath, 'restoreMedia');
+    if (!localMediaUrlToPath(local.url)) return fail('invalidLocalMediaUrl', fieldPath, 'restoreMedia');
     return { assetId: local.assetId, relativePath: local.relativePath, [field]: local.url };
   };
-  Object.assign(asset, bind(asset.imageUrl, 'imageUrl'));
+  Object.assign(asset, bind(asset.imageUrl, 'imageUrl', 'payload.data.imageUrl'));
   const referenceIds = new Map<string, string>();
-  const references = asset.referenceImages?.map((reference) => {
-    const nextId = mapping.memberId('referenceImage', reference.id); referenceIds.set(reference.id, nextId);
-    return { ...reference, ...bind(reference.imageUrl, 'imageUrl'), id: nextId };
+  const references = asset.referenceImages?.map((reference, index) => {
+    const nextId = localId(mapping.memberId('referenceImage', reference.id), `payload.data.referenceImages[${index}].id`);
+    referenceIds.set(reference.id, nextId);
+    return { ...reference, ...bind(reference.imageUrl, 'imageUrl', `payload.data.referenceImages[${index}].imageUrl`), id: nextId };
   });
   asset.referenceImages = references as DramaAsset['referenceImages'];
   asset.primaryReferenceImageId = asset.primaryReferenceImageId ? referenceIds.get(asset.primaryReferenceImageId) : undefined;
   if (asset.kind === 'character') {
-    if (asset.weaponIds !== undefined) asset.weaponIds = mapWeaponIds(asset.weaponIds, mapping.mapWeaponId);
+    if (asset.weaponIds !== undefined) asset.weaponIds = mapWeaponIds(asset.weaponIds, mapping.mapWeaponId, true);
     asset.avatarReferenceImageId = asset.avatarReferenceImageId ? referenceIds.get(asset.avatarReferenceImageId) : undefined;
     const voices = new Map<string, string>();
-    asset.voiceClips = asset.voiceClips?.map((voice) => {
-      const nextId = mapping.memberId('voiceClip', voice.id); voices.set(voice.id, nextId);
-      return { ...voice, ...bind(voice.audioUrl, 'audioUrl'), id: nextId };
+    asset.voiceClips = asset.voiceClips?.map((voice, index) => {
+      const nextId = localId(mapping.memberId('voiceClip', voice.id), `payload.data.voiceClips[${index}].id`);
+      voices.set(voice.id, nextId);
+      return { ...voice, ...bind(voice.audioUrl, 'audioUrl', `payload.data.voiceClips[${index}].audioUrl`), id: nextId };
     });
     asset.primaryVoiceClipId = asset.primaryVoiceClipId ? voices.get(asset.primaryVoiceClipId) : undefined;
-    asset.actions = asset.actions?.map((action) => ({ ...action, id: mapping.memberId('action', action.id),
-      media: action.media?.map((item) => ({ ...item, ...bind(item.url, 'url'),
-        id: mapping.memberId('actionMedia', item.id, action.id) })) }));
+    asset.actions = asset.actions?.map((action, actionIndex) => ({ ...action,
+      id: localId(mapping.memberId('action', action.id), `payload.data.actions[${actionIndex}].id`),
+      media: action.media?.map((item, mediaIndex) => ({ ...item, ...bind(item.url, 'url', `payload.data.actions[${actionIndex}].media[${mediaIndex}].url`),
+        id: localId(mapping.memberId('actionMedia', item.id, action.id), `payload.data.actions[${actionIndex}].media[${mediaIndex}].id`) })) }));
     const primary = asset.referenceImages?.find((reference) => reference.id === asset.primaryReferenceImageId) ?? asset.referenceImages?.[0];
     if (primary) Object.assign(asset, { imageUrl: primary.imageUrl, assetId: primary.assetId, relativePath: primary.relativePath });
     return asset as DramaCharacter;

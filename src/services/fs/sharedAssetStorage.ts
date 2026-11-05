@@ -8,6 +8,8 @@ import type {
   SharedSyncRequestContext, SharedSyncListResult, SharedSyncPrepareInput, SharedSyncPreparedResult,
   SharedSyncOperationInput, SharedSyncPublishResult, SharedSyncDownloadInput, SharedSyncDownloadResult, SharedSyncRemoteAsset,
   SharedSyncErrorStage, SharedProjectResetMode, SharedProjectResetPreview, SharedProjectResetResult,
+  SharedSyncHead, SharedSyncAssetDeletePreviewInput, SharedSyncAssetDeletePreview,
+  SharedSyncAssetDeleteApplyInput, SharedSyncAssetDeleteResult,
 } from '../../types/assetSync';
 import { parseSharedAssetSyncRevision, parseSharedAssetSyncDraft } from '../sharedAssetSyncFormat';
 
@@ -17,7 +19,8 @@ const SYNC_ERROR_STAGES: readonly SharedSyncErrorStage[] = ['blobCheck', 'stagin
   'multipartComplete', 'blobVerify', 'revisionWrite', 'headRead', 'revisionRead', 'multipartAbort'];
 const SYNC_COMMANDS = new Set(['project_asset_storage_list_heads', 'project_asset_storage_prepare_publish',
   'project_asset_storage_publish_revision', 'project_asset_storage_recover_operation',
-  'project_asset_storage_download_revision', 'project_asset_storage_acknowledge_apply']);
+  'project_asset_storage_download_revision', 'project_asset_storage_acknowledge_apply',
+  'project_asset_storage_preview_asset_delete', 'project_asset_storage_apply_asset_delete']);
 const ERROR_MESSAGES: Record<string, string> = {
   permission_denied: '项目云存储仅允许在主窗口操作',
   access_denied: '云存储访问被拒绝，请检查 Bucket 和项目目录权限',
@@ -47,6 +50,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   operation_not_found: '未找到本次同步执行材料，请重新预览',
   insufficient_space: '可用磁盘空间不足，原有资产已保留',
   file_too_large: '共享素材超过允许大小，已停止传输',
+  remote_deleted: '该云端资产已删除，本地资产已保留，请重新预览',
 };
 
 export function sharedStorageErrorMessage(code: string): string {
@@ -54,7 +58,7 @@ export function sharedStorageErrorMessage(code: string): string {
 }
 
 function validateId(value: string): string {
-  if (!ID_PATTERN.test(value)) throw new Error(ERROR_MESSAGES.invalid_input);
+  if (typeof value !== 'string' || !ID_PATTERN.test(value)) throw new Error(ERROR_MESSAGES.invalid_input);
   return value;
 }
 
@@ -239,11 +243,20 @@ function publicRemoteAsset(asset: SharedSyncRemoteAsset, context: SharedSyncRequ
     || head.sharedAssetId !== revision.sharedAssetId || head.revisionId !== revision.revisionId
     || head.operationId !== revision.operationId || head.kind !== revision.payload.kind
     || !/^[a-f0-9]{64}$/.test(head.revisionDigest) || !Number.isSafeInteger(head.updatedAt)
+    || (head.deleted !== undefined && head.deleted !== false)
     || typeof asset.etag !== 'string' || !asset.etag || asset.etag.length > 1024 || hasControlCharacters(asset.etag)) {
     throw new Error(ERROR_MESSAGES.invalid_revision);
   }
   return { revision, etag: asset.etag, head: { sharedAssetId: head.sharedAssetId, kind: head.kind,
     revisionId: head.revisionId, revisionDigest: head.revisionDigest, operationId: head.operationId, updatedAt: head.updatedAt } };
+}
+function publicDeletedHead(head: SharedSyncHead): SharedSyncHead {
+  if (!head || head.deleted !== true || !['file', 'character', 'scene', 'prop'].includes(head.kind)
+    || typeof head.revisionDigest !== 'string' || !/^[a-f0-9]{64}$/.test(head.revisionDigest)
+    || !Number.isSafeInteger(head.updatedAt) || head.updatedAt < 0) throw new Error(ERROR_MESSAGES.invalid_revision);
+  [head.sharedAssetId, head.revisionId, head.operationId].forEach(validateId);
+  return { sharedAssetId: head.sharedAssetId, kind: head.kind, revisionId: head.revisionId,
+    revisionDigest: head.revisionDigest, operationId: head.operationId, updatedAt: head.updatedAt, deleted: true };
 }
 export async function listSharedAssetHeads(input: SharedSyncRequestContext & { cursor?: string }): Promise<SharedSyncListResult> {
   syncContext(input);
@@ -253,7 +266,36 @@ export async function listSharedAssetHeads(input: SharedSyncRequestContext & { c
     || result.nextCursor && (typeof result.nextCursor !== 'string' || result.nextCursor.length > 4096 || hasControlCharacters(result.nextCursor))) {
     throw new Error(ERROR_MESSAGES.invalid_revision);
   }
-  return { assets: result.assets.map((asset) => publicRemoteAsset(asset, input)), complete: result.complete, nextCursor: result.nextCursor };
+  if (result.deletedAssets !== undefined && (!Array.isArray(result.deletedAssets) || result.deletedAssets.length > 5000)) {
+    throw new Error(ERROR_MESSAGES.invalid_revision);
+  }
+  const assets = result.assets.map((asset) => publicRemoteAsset(asset, input));
+  const deletedAssets = (result.deletedAssets ?? []).map(publicDeletedHead);
+  const ids = [...assets.map((asset) => asset.head.sharedAssetId), ...deletedAssets.map((head) => head.sharedAssetId)];
+  if (new Set(ids).size !== ids.length || ids.length > 5000) throw new Error(ERROR_MESSAGES.invalid_revision);
+  return { assets, deletedAssets, complete: result.complete, nextCursor: result.nextCursor };
+}
+export async function previewSharedAssetDelete(input: SharedSyncAssetDeletePreviewInput): Promise<SharedSyncAssetDeletePreview> {
+  syncContext(input);
+  [input.operationId, input.sharedAssetId, input.expectedRevisionId].forEach(validateId);
+  if (typeof input.expectedETag !== 'string' || !input.expectedETag || input.expectedETag.length > 1024
+    || hasControlCharacters(input.expectedETag)) throw new Error(ERROR_MESSAGES.invalid_input);
+  const result = await nativeCall<SharedSyncAssetDeletePreview>('project_asset_storage_preview_asset_delete', { input });
+  if (!result || result.sharedAssetId !== input.sharedAssetId || result.revisionId !== input.expectedRevisionId
+    || result.operationId !== input.operationId || typeof result.previewToken !== 'string' || !result.previewToken
+    || result.previewToken.length > 1024 || hasControlCharacters(result.previewToken)) throw new Error(ERROR_MESSAGES.invalid_revision);
+  return { sharedAssetId: result.sharedAssetId, revisionId: result.revisionId,
+    operationId: result.operationId, previewToken: result.previewToken };
+}
+export async function applySharedAssetDelete(input: SharedSyncAssetDeleteApplyInput): Promise<SharedSyncAssetDeleteResult> {
+  syncContext(input);
+  [input.operationId, input.sharedAssetId].forEach(validateId);
+  if (typeof input.previewToken !== 'string' || !input.previewToken || input.previewToken.length > 1024
+    || hasControlCharacters(input.previewToken)) throw new Error(ERROR_MESSAGES.invalid_input);
+  const result = await nativeCall<SharedSyncAssetDeleteResult>('project_asset_storage_apply_asset_delete', { input });
+  if (!result || !['deleted', 'conflict', 'uncertain'].includes(result.status) || result.sharedAssetId !== input.sharedAssetId
+    || result.operationId !== input.operationId) throw new Error(ERROR_MESSAGES.invalid_revision);
+  return { status: result.status, sharedAssetId: result.sharedAssetId, operationId: result.operationId };
 }
 export async function prepareSharedAssetPublish(input: SharedSyncPrepareInput): Promise<SharedSyncPreparedResult> {
   syncContext(input);

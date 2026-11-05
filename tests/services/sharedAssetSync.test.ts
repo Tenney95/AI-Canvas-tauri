@@ -5,18 +5,22 @@ import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AssetIndexRecord } from '../../src/services/indexedDbService';
 import type { DramaAssetLibrary, DramaCharacter } from '../../src/types/dramaAssets';
-import type { SharedAssetSyncLocalState, SharedSyncDownloadInput, SharedSyncPrepareInput, SharedSyncRemoteAsset } from '../../src/types/assetSync';
+import type { SharedAssetSyncLocalState, SharedSyncDownloadInput, SharedSyncPrepareInput, SharedSyncRemoteAsset,
+  SharedSyncHead, SharedSyncAssetDeletePreviewInput, SharedSyncAssetDeleteApplyInput } from '../../src/types/assetSync';
 import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sharedAssetSyncRepository';
 import type { AssetImageRecord } from '../../src/types/assetImage';
 import { getAssetUrlFromPath } from '../../src/services/fs/core';
+import { localMediaUrlToPath } from '../../src/utils/mediaUrl';
 
 const mocks = vi.hoisted(() => ({
   repo: { mappings: [], outbox: [], conflicts: [] } as SharedAssetSyncLocalState,
   indexes: new Map<string, AssetIndexRecord>(), cloud: [] as SharedSyncRemoteAsset[],
   roots: new Map<string, string>(),
+  deleted: [] as SharedSyncHead[],
   imageRecords: [] as AssetImageRecord[],
   changedPaths: new Set<string>(),
   prepare: vi.fn(), publish: vi.fn(), recover: vi.fn(), download: vi.fn(), acknowledge: vi.fn(),
+  previewDelete: vi.fn(), applyDelete: vi.fn(),
   scan: vi.fn(), list: vi.fn(), listHeads: vi.fn(), copy: vi.fn(), image: vi.fn(), prepareImage: vi.fn(), putPlan: vi.fn(), patch: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-fs', () => ({
@@ -24,10 +28,10 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   lstat: vi.fn(async (path: string) => ({ isFile: /\.(?:png|wav|mp4)$/.test(path),
     isDirectory: !/\.(?:png|wav|mp4)$/.test(path), isSymlink: false, size: 10, mtime: new Date(mocks.changedPaths.has(path) ? 20 : 10) })),
 }));
-vi.mock('../../src/services/fs/core', () => ({
+vi.mock('../../src/services/fs/core', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/fs/core')>(),
   getProjectDataDir: vi.fn(async (projectId: string) => mocks.roots.get(projectId)),
   joinPath: (...parts: string[]) => parts.join('/'), stripVerbatimPrefix: (value: string) => value,
-  getAssetUrlFromPath: vi.fn(async (path: string) => `asset://localhost${path}`),
   getFileCategory: (name: string) => name.endsWith('.wav') ? 'audio' : name.endsWith('.mp4') ? 'video' : 'image',
 }));
 vi.mock('../../src/services/fs/assetIndex', () => ({
@@ -52,6 +56,7 @@ vi.mock('../../src/services/fs/sharedAssetStorage', () => ({
   prepareSharedAssetPublish: mocks.prepare, publishSharedAssetRevision: mocks.publish,
   recoverSharedAssetOperation: mocks.recover, downloadSharedAssetRevision: mocks.download,
   acknowledgeSharedAssetApply: mocks.acknowledge,
+  previewSharedAssetDelete: mocks.previewDelete, applySharedAssetDelete: mocks.applyDelete,
 }));
 
 import { buildSharedAssetSyncPreview, executeSharedAssetSync, projectSharedFileView, sharedAssetSyncContentDigest,
@@ -79,31 +84,42 @@ function remoteFile(): SharedSyncRemoteAsset {
     payload: { kind: 'file', name: '共享.png', displayRelativePath: 'Library/共享.png', mediaId: 'image', tags: [] },
     media: [{ id: 'image', kind: 'image', extension: 'png', bytes: 10, sha256: 'a'.repeat(64) }] } };
 }
-function commitExecution(): SharedAssetSyncExecution & { applyDownload: ReturnType<typeof vi.fn> } {
-  return { applyDownload: vi.fn(async ({ commit }: { commit: SharedAssetSyncCommitInput }) => {
+function commitExecution(onLibrary?: (library: DramaAssetLibrary) => void) {
+  return { applyDownload: vi.fn<SharedAssetSyncExecution['applyDownload']>(async ({ commit, nextLibrary }) => {
     for (const mapping of commit.mappings) mocks.repo.mappings = [...mocks.repo.mappings.filter((row) => row.id !== mapping.id), structuredClone(mapping)];
     const operation = { ...structuredClone(commit.operation), phase: commit.operation.direction === 'download' ? 'applied' as const : 'completed' as const };
     mocks.repo.outbox = [...mocks.repo.outbox.filter((row) => row.id !== operation.id), operation];
     for (const index of commit.indexes ?? []) mocks.indexes.set(index.assetId, index);
+    if (nextLibrary) onLibrary?.(structuredClone(nextLibrary));
     return { alreadyApplied: false };
   }) };
 }
 
 beforeEach(() => {
   vi.stubGlobal('crypto', webcrypto);
-  vi.clearAllMocks(); prepared.clear(); mocks.repo = { mappings: [], outbox: [], conflicts: [] }; mocks.indexes.clear(); mocks.cloud = [];
+  // 只隔离 Tauri 原生委派；core.getAssetUrlFromPath 与 api.convertFileSrc 保持真实调用。
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: { convertFileSrc: (path: string) => `asset://localhost${path}` } });
+  vi.clearAllMocks(); prepared.clear(); mocks.repo = { mappings: [], outbox: [], conflicts: [] }; mocks.indexes.clear(); mocks.cloud = []; mocks.deleted = [];
   mocks.roots = new Map([['owner', '/project/owner'], ['episode', '/project/episode']]);
   mocks.imageRecords = [];
   mocks.changedPaths.clear();
   mocks.list.mockResolvedValue([]);
-  mocks.listHeads.mockImplementation(async () => ({ assets: structuredClone(mocks.cloud), complete: true }));
+  mocks.listHeads.mockImplementation(async () => ({ assets: structuredClone(mocks.cloud), deletedAssets: structuredClone(mocks.deleted), complete: true }));
+  mocks.previewDelete.mockImplementation(async (input: SharedSyncAssetDeletePreviewInput) => ({ sharedAssetId: input.sharedAssetId,
+    revisionId: input.expectedRevisionId, operationId: input.operationId, previewToken: 'delete-preview' }));
+  mocks.applyDelete.mockImplementation(async (input: SharedSyncAssetDeleteApplyInput) => {
+    const asset = mocks.cloud.find((asset) => asset.head.sharedAssetId === input.sharedAssetId)!;
+    mocks.cloud = mocks.cloud.filter((row) => row !== asset);
+    mocks.deleted.push({ ...asset.head, deleted: true });
+    return { status: 'deleted', sharedAssetId: input.sharedAssetId, operationId: input.operationId };
+  });
   mocks.image.mockResolvedValue(null); mocks.acknowledge.mockResolvedValue(undefined);
   mocks.scan.mockResolvedValue({ files: [], folders: [], complete: true, truncated: false, failedDirectories: 0, failedFiles: 0 });
   mocks.copy.mockImplementation(async (source: string, directory: string) => ({ path: `${directory}/${source.split('/').at(-1)}`, totalBytes: 10, digest: 'a'.repeat(64) }));
   mocks.putPlan.mockImplementation(async (input: { mappings: SharedAssetSyncLocalState['mappings']; outbox: SharedAssetSyncLocalState['outbox']; conflicts?: SharedAssetSyncLocalState['conflicts'] }) => {
     for (const mapping of input.mappings) mocks.repo.mappings = [...mocks.repo.mappings.filter((row) => row.id !== mapping.id), structuredClone(mapping)];
     for (const operation of input.outbox) if (!mocks.repo.outbox.some((row) => row.id === operation.id)) mocks.repo.outbox.push(structuredClone(operation));
-    mocks.repo.conflicts.push(...structuredClone(input.conflicts ?? []));
+    for (const conflict of input.conflicts ?? []) mocks.repo.conflicts = [...mocks.repo.conflicts.filter((row) => row.id !== conflict.id), structuredClone(conflict)];
   });
   mocks.patch.mockImplementation(async (operationId: string, patch: object) => {
     const operation = mocks.repo.outbox.find((row) => row.operationId === operationId);
@@ -138,7 +154,426 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+type AssetPlatform = 'windows' | 'unix';
+const platformAssetUrl = (platform: AssetPlatform, path: string) => platform === 'windows'
+  ? `http://asset.localhost/${encodeURIComponent(path)}` : `asset://localhost${path}`;
+
+async function publishCardsThroughNativeBridge(platform: AssetPlatform) {
+  const storage = await vi.importActual<typeof import('../../src/services/fs/sharedAssetStorage')>('../../src/services/fs/sharedAssetStorage');
+  const native = { list: mocks.listHeads.getMockImplementation()!, prepare: mocks.prepare.getMockImplementation()!,
+    recover: mocks.recover.getMockImplementation()!, publish: mocks.publish.getMockImplementation()!,
+    download: mocks.download.getMockImplementation()!, acknowledge: mocks.acknowledge.getMockImplementation()! };
+  const convert = vi.fn((path: string, _protocol: string) => platformAssetUrl(platform, path));
+  const invoke = vi.fn(async (command: string, args: { input: unknown }) => {
+    // 原生返回的是发件端实际 draft 填入摘要后的固定 revision，接收端不可手写另一份 payload。
+    switch (command) {
+      case 'project_asset_storage_list_heads': return native.list(args.input);
+      case 'project_asset_storage_prepare_publish': return native.prepare(args.input);
+      case 'project_asset_storage_recover_operation': return native.recover(args.input);
+      case 'project_asset_storage_publish_revision': return native.publish(args.input);
+      case 'project_asset_storage_download_revision': return native.download(args.input);
+      case 'project_asset_storage_acknowledge_apply': return native.acknowledge(args.input);
+      default: throw new Error(`未隔离的原生调用：${command}`);
+    }
+  });
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: { convertFileSrc: convert, invoke } });
+  mocks.listHeads.mockImplementation(storage.listSharedAssetHeads);
+  mocks.prepare.mockImplementation(storage.prepareSharedAssetPublish);
+  mocks.recover.mockImplementation(storage.recoverSharedAssetOperation);
+  mocks.publish.mockImplementation(storage.publishSharedAssetRevision);
+  mocks.download.mockImplementation(storage.downloadSharedAssetRevision);
+  mocks.acknowledge.mockImplementation(storage.acknowledgeSharedAssetApply);
+  const sourceRoot = platform === 'windows' ? 'D:/桥接素材/发件项目' : '/projects/发件项目';
+  mocks.roots.set('owner', sourceRoot);
+  const files = ['image.png', 'voice.wav', 'action.mp4'].map((name) => {
+    const path = `${sourceRoot}/${name}`;
+    const assetId = `source-${name}`;
+    const index: AssetIndexRecord = { assetId, path, relativePath: name, rootPath: sourceRoot, projectId: 'owner',
+      source: 'project', fingerprint: '10:10', size: 10, mtimeMs: 10, status: 'online', updatedAt: 1 };
+    mocks.indexes.set(assetId, index);
+    return { assetId, name, path, relativePath: name, category: name.endsWith('.wav') ? 'audio' as const
+      : name.endsWith('.mp4') ? 'video' as const : 'image' as const, source: 'project' as const, size: 10 };
+  });
+  mocks.scan.mockResolvedValue({ files, complete: true });
+  const imageUrl = await getAssetUrlFromPath(files[0].path);
+  const audioUrl = await getAssetUrlFromPath(files[1].path);
+  const videoUrl = await getAssetUrlFromPath(files[2].path);
+  const library: DramaAssetLibrary = { version: 2, characters: [{ ...character(), assetId: files[0].assetId, imageUrl,
+    imageNodeId: 'publisher-node', referenceImages: [{ id: 'reference', kind: 'primary', imageUrl, assetId: files[0].assetId,
+      sourceNodeId: 'publisher-node', prompt: '主图提示词', createdAt: 1, updatedAt: 2 }], primaryReferenceImageId: 'reference',
+    avatarReferenceImageId: 'reference', voiceClips: [{ id: 'voice', kind: 'timbre', audioUrl, assetId: files[1].assetId,
+      transcript: '声音文本', createdAt: 1, updatedAt: 2 }], primaryVoiceClipId: 'voice',
+    actions: [{ id: 'walking', category: 'walking', name: '行走', prompt: '动作提示词', createdAt: 1, updatedAt: 2,
+      media: [{ id: 'walking-image', kind: 'gif', name: '姿势', url: imageUrl, assetId: files[0].assetId, createdAt: 1, updatedAt: 2 },
+        { id: 'walking-video', kind: 'video', name: '动作', url: videoUrl, assetId: files[2].assetId, createdAt: 1, updatedAt: 2 }] }] }],
+    scenes: [{ id: 'source-scene', kind: 'scene', name: '场景', key: '场景', summary: '', visualNotes: '',
+      importance: 'supporting', confirmed: true, source: 'manual', createdAt: 1, updatedAt: 2, imageUrl, assetId: files[0].assetId,
+      referenceImages: [{ id: 'scene-reference', label: '场景图', imageUrl, assetId: files[0].assetId, prompt: '', createdAt: 1, updatedAt: 2 }],
+      primaryReferenceImageId: 'scene-reference' }],
+    props: [{ id: 'source-prop', kind: 'prop', name: '道具', key: '道具', summary: '', visualNotes: '',
+      importance: 'supporting', confirmed: true, source: 'manual', createdAt: 1, updatedAt: 2, imageUrl, assetId: files[0].assetId,
+      referenceImages: [{ id: 'prop-reference', label: '道具图', imageUrl, assetId: files[0].assetId, prompt: '', createdAt: 1, updatedAt: 2 }],
+      primaryReferenceImageId: 'prop-reference' }] };
+  const outgoing = await buildSharedAssetSyncPreview(context(library));
+  expect(outgoing.items.some((item) => item.direction === 'blocked')).toBe(false);
+  await executeSharedAssetSync(outgoing, commitExecution());
+  const cloudCards = structuredClone(mocks.cloud.filter((asset) => asset.head.kind !== 'file'));
+  expect(cloudCards.map((asset) => asset.head.kind).sort()).toEqual(['character', 'prop', 'scene']);
+  expect(JSON.stringify(cloudCards)).not.toMatch(/sourceNodeId|imageNodeId|relativePath|assetId|asset\.localhost|asset:\/\//);
+  mocks.repo = { mappings: [], outbox: [], conflicts: [] }; mocks.indexes.clear(); mocks.cloud = cloudCards;
+  mocks.scan.mockResolvedValue({ files: [], complete: true });
+  mocks.roots.set('owner', platform === 'windows' ? 'D:/桥接素材/收件项目' : '/projects/收件项目');
+  mocks.prepare.mockClear(); mocks.publish.mockClear(); mocks.download.mockClear(); mocks.acknowledge.mockClear();
+  return { convert, invoke };
+}
+
+async function blockedWeaponCandidate() {
+  const value = context({ version: 2, characters: [{ ...character(), weaponIds: ['weapon'] }], scenes: [], props: [{ id: 'weapon',
+    kind: 'prop', propType: 'weapon', name: '长剑', key: '长剑', summary: '', visualNotes: '', importance: 'main', confirmed: true,
+    source: 'manual', createdAt: 1, updatedAt: 2, assetId: 'missing-weapon-media', imageUrl: 'asset://localhost/project/missing.png' }] });
+  const initial = await buildSharedAssetSyncPreview(value);
+  expect(initial.operations).toHaveLength(0);
+  const old = structuredClone(mocks.repo.outbox.find((row) => row.kind === 'character')!);
+  expect(old).toMatchObject({ phase: 'paused', errorCode: 'dependency_missing' });
+  value.library.characters[0].weaponIds = [];
+  mocks.prepare.mockClear(); mocks.acknowledge.mockClear();
+  return { value, old };
+}
+
 describe('手动项目资产同步协调', () => {
+  it('逐项上传只执行所选固定操作，其余待办身份、内容和阶段保持不变', async () => {
+    const value = context({ version: 2, characters: [character(), { ...character(), id: 'second', name: '第二人' }], scenes: [], props: [] });
+    const session = await buildSharedAssetSyncPreview(value);
+    const [selected, untouched] = session.operations;
+    const before = structuredClone(mocks.repo.outbox.find((row) => row.operationId === untouched.operation.operationId));
+    await executeSharedAssetSync(session, commitExecution(), { itemId: selected.mapping.id, direction: 'upload' });
+    expect(mocks.publish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ operationId: selected.operation.operationId }));
+    expect(mocks.repo.outbox.find((row) => row.operationId === untouched.operation.operationId)).toEqual(before);
+    expect(value.onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ stage: 'preview', completed: 1, total: 2 }));
+    const reopened = await buildSharedAssetSyncPreview(value);
+    expect(reopened.operations.find((item) => item.mapping.id === untouched.mapping.id)?.operation).toMatchObject({
+      operationId: before!.operationId, revisionId: before!.revisionId, phase: before!.phase });
+  });
+
+  it('逐项操作不反转方向，也不绕过冲突或未纳入状态', async () => {
+    const session = await buildSharedAssetSyncPreview(context());
+    const target = session.operations[0]; const before = structuredClone(mocks.repo);
+    await expect(executeSharedAssetSync(session, commitExecution(), { itemId: target.mapping.id, direction: 'download' })).rejects.toThrow('所选方向');
+    for (const direction of ['conflict', 'blocked'] as const) {
+      session.items[0].direction = direction;
+      await expect(executeSharedAssetSync(session, commitExecution(), { itemId: target.mapping.id, direction: 'upload' })).rejects.toThrow('所选方向');
+    }
+    expect(mocks.repo).toEqual(before); expect(mocks.publish).not.toHaveBeenCalled(); expect(mocks.download).not.toHaveBeenCalled();
+  });
+
+  it.each(['upload', 'download'] as const)('单项%s先要求跨卡依赖完成，角色内部媒体闭包不拆分', async (direction) => {
+    const source = character(); source.summary = '同伴 @drama{second:第二人}';
+    const value = context({ version: 2, characters: [source, { ...character(), id: 'second', name: '第二人' }], scenes: [], props: [] });
+    let session = await buildSharedAssetSyncPreview(value);
+    if (direction === 'download') {
+      await executeSharedAssetSync(session, commitExecution());
+      mocks.repo = { mappings: [], outbox: [], conflicts: [] }; mocks.indexes.clear();
+      session = await buildSharedAssetSyncPreview(context({ version: 2, characters: [], scenes: [], props: [] }));
+      mocks.publish.mockClear();
+    }
+    const dependent = session.operations.find((item) => item.operation.revision?.payload.kind === 'character'
+      && item.operation.revision.payload.data.name === '角色')!;
+    const dependency = session.operations.find((item) => item !== dependent)!;
+    await expect(executeSharedAssetSync(session, commitExecution(), { itemId: dependent.mapping.id, direction })).rejects.toThrow('先同步依赖');
+    expect(mocks.publish).not.toHaveBeenCalled(); expect(mocks.download).not.toHaveBeenCalled();
+    await executeSharedAssetSync(session, commitExecution(), { itemId: dependency.mapping.id, direction });
+    await executeSharedAssetSync(session, commitExecution(), { itemId: dependent.mapping.id, direction });
+    expect(direction === 'upload' ? mocks.publish : mocks.download).toHaveBeenCalledTimes(2);
+  });
+
+  it.each((['upload', 'download'] as const).flatMap((direction) => (['success', 'failure', 'cancel'] as const)
+    .map((outcome) => ({ direction, outcome }))))('整批$direction按真实目标依赖排序，$outcome时不先提交悬空引用', async ({ direction, outcome }) => {
+    const controller = new AbortController();
+    const source = character(); source.summary = '依赖 @drama{second:依赖角色}';
+    const value = { ...context({ version: 2, characters: [source, { ...character(), id: 'second', name: '依赖角色' }], scenes: [], props: [] }), signal: controller.signal };
+    let session = await buildSharedAssetSyncPreview(value);
+    if (direction === 'download') {
+      await executeSharedAssetSync(session, commitExecution());
+      mocks.repo = { mappings: [], outbox: [], conflicts: [] }; mocks.indexes.clear();
+      session = await buildSharedAssetSyncPreview({ ...context({ version: 2, characters: [], scenes: [], props: [] }), signal: controller.signal });
+      session.operations.reverse(); mocks.publish.mockClear();
+    }
+    expect(session.operations[0].operation.revision?.payload).toMatchObject({ kind: 'character', data: { name: '角色' } });
+    const order: string[] = []; const publish = mocks.publish.getMockImplementation()!;
+    const execution = commitExecution(); const commit = execution.applyDownload.getMockImplementation()!;
+    const beforeSideEffect = (name: string) => {
+      order.push(name);
+      if (name === '依赖角色' && outcome !== 'success') {
+        if (outcome === 'cancel') controller.abort();
+        throw new Error('共享依赖同步中断');
+      }
+    };
+    if (direction === 'upload') mocks.publish.mockImplementation(async (input: { operationId: string }) => {
+      const payload = prepared.get(input.operationId)!.revision.payload;
+      beforeSideEffect(payload.kind === 'file' ? payload.name : payload.data.name);
+      return publish(input);
+    });
+    else execution.applyDownload.mockImplementation(async (input: Parameters<SharedAssetSyncExecution['applyDownload']>[0]) => {
+      const payload = input.commit.operation.revision!.payload;
+      beforeSideEffect(payload.kind === 'file' ? payload.name : payload.data.name);
+      return commit(input);
+    });
+    if (outcome === 'success') {
+      await executeSharedAssetSync(session, execution); expect(order).toEqual(['依赖角色', '角色']);
+    } else {
+      await expect(executeSharedAssetSync(session, execution)).rejects.toThrow(); expect(order).toEqual(['依赖角色']);
+      const dependent = mocks.repo.outbox.find((row) => row.revision?.payload.kind === 'character' && row.revision.payload.data.name === '角色')!;
+      expect(dependent.phase).toBe(direction === 'upload' ? 'prepared' : 'planned');
+      expect(dependent.errorCode).toBeUndefined();
+    }
+  });
+
+  it('整批遇到互相依赖且目标端均不存在时保留原候选，不先发布任何一项', async () => {
+    const value = context({ version: 2, characters: [{ ...character(), summary: '依赖 @drama{second:第二人}' },
+      { ...character(), id: 'second', name: '第二人', summary: '依赖 @drama{local-character:角色}' }], scenes: [], props: [] });
+    const session = await buildSharedAssetSyncPreview(value); const ids = session.operations.map((item) => item.operation.operationId);
+    await executeSharedAssetSync(session, commitExecution());
+    expect(mocks.publish).not.toHaveBeenCalled(); expect(mocks.recover).not.toHaveBeenCalled();
+    expect(mocks.repo.outbox.map((row) => row.operationId)).toEqual(ids);
+    expect(mocks.repo.outbox.every((row) => row.phase === 'paused' && row.errorCode === 'dependency_missing')).toBe(true);
+    expect(value.onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ stage: 'paused', completed: 0, total: 2 }));
+  });
+
+  it('目标卡片已存在但新参考图未上传时，整批先发布其新子项再发布引用方', async () => {
+    const image: AssetIndexRecord = { assetId: 'image', path: '/project/owner/image.png', relativePath: 'image.png', rootPath: '/project/owner',
+      projectId: 'owner', source: 'project', fingerprint: '10:10', size: 10, mtimeMs: 10, status: 'online', updatedAt: 1 };
+    mocks.indexes.set(image.assetId, image); mocks.scan.mockResolvedValue({ files: [{ assetId: image.assetId, name: 'image.png', path: image.path,
+      relativePath: image.relativePath, category: 'image', source: 'project', size: 10 }], complete: true });
+    const dependency = { ...character(), id: 'second', name: '依赖角色' };
+    const value = context({ version: 2, characters: [character(), dependency], scenes: [], props: [] });
+    await executeSharedAssetSync(await buildSharedAssetSyncPreview(value), commitExecution());
+    dependency.referenceImages = [{ id: 'new-reference', kind: 'primary', prompt: '', createdAt: 1, updatedAt: 2,
+      assetId: image.assetId, imageUrl: 'asset://localhost/project/owner/image.png' }];
+    value.library.characters[0].summary = '参考 @drama{second#new-reference:新参考图}';
+    const session = await buildSharedAssetSyncPreview(value);
+    const dependent = session.operations.find((item) => item.mapping.localEntityId === 'local-character')!;
+    await expect(executeSharedAssetSync(session, commitExecution(), { itemId: dependent.mapping.id, direction: 'upload' })).rejects.toThrow('先同步依赖');
+    const order: string[] = []; const publish = mocks.publish.getMockImplementation()!;
+    mocks.publish.mockImplementation(async (input: { operationId: string }) => {
+      const payload = prepared.get(input.operationId)!.revision.payload; if (payload.kind !== 'file') order.push(payload.data.name);
+      return publish(input);
+    });
+    await executeSharedAssetSync(session, commitExecution()); expect(order).toEqual(['依赖角色', '角色']);
+  });
+
+  it.each(['paused', 'applied', 'completed'] as const)('删除标记阻止%s旧待办重新上传或恢复，已应用结果不倒退', async (phase) => {
+    const initial = await buildSharedAssetSyncPreview(context());
+    const operation = mocks.repo.outbox[0]; operation.phase = phase;
+    if (phase !== 'paused') operation.errorCode = 'ack_pending';
+    mocks.deleted = [{ sharedAssetId: operation.sharedAssetId, kind: 'character', revisionId: 'delete-revision',
+      revisionDigest: 'e'.repeat(64), operationId: 'delete-operation', updatedAt: 10, deleted: true }];
+    const untouchedLibrary = structuredClone(initial.expectedLibrary);
+    mocks.prepare.mockClear(); mocks.recover.mockClear();
+    const preview = await buildSharedAssetSyncPreview(context());
+    expect(preview.operations).toHaveLength(0);
+    expect(preview.items).toMatchObject([{ direction: 'conflict', message: expect.stringContaining('云端资产已删除') }]);
+    expect(mocks.repo.outbox[0]).toMatchObject({ operationId: operation.operationId,
+      phase: phase === 'paused' ? 'conflict' : 'completed', errorCode: 'remote_deleted' });
+    expect(mocks.repo.conflicts).toMatchObject([{ reason: 'remoteDeleted', remoteRevisionId: 'delete-revision' }]);
+    await buildSharedAssetSyncPreview(context());
+    expect(mocks.repo.conflicts).toHaveLength(1);
+    expect(preview.expectedLibrary).toEqual(untouchedLibrary);
+    expect(mocks.prepare).not.toHaveBeenCalled(); expect(mocks.recover).not.toHaveBeenCalled(); expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
+  it('已应用资产被云端删除后，用保留原token释放租约；双ACK失败保持待确认，后续不重放', async () => {
+    const session = await buildSharedAssetSyncPreview(context()); const publish = mocks.publish.getMockImplementation()!;
+    let activeToken: string | undefined, issuedToken = ''; let failures = 4;
+    mocks.publish.mockImplementation(async (...args: unknown[]) => {
+      const result = await publish(...args); activeToken = result.applyToken; issuedToken = result.applyToken; return result;
+    });
+    mocks.acknowledge.mockImplementation(async (input: { applyToken?: string }) => {
+      expect(input.applyToken).toBe(activeToken);
+      if (failures-- > 0) throw new Error('共享回执响应丢失');
+      activeToken = undefined;
+    });
+    await expect(executeSharedAssetSync(session, commitExecution())).rejects.toThrow();
+    const original = structuredClone(mocks.repo.outbox[0]); expect(original.errorCode).toBe('ack_pending');
+    mocks.deleted = [{ ...mocks.cloud[0].head, deleted: true }]; mocks.cloud = []; mocks.recover.mockClear();
+    const stillPending = await buildSharedAssetSyncPreview(context());
+    expect(mocks.repo.outbox[0]).toEqual(original); expect(activeToken).toBe(issuedToken);
+    expect(stillPending.items[0].message).toContain('回执尚未释放');
+    const released = await buildSharedAssetSyncPreview(context());
+    expect(activeToken).toBeUndefined(); expect(mocks.repo.outbox[0]).toMatchObject({ phase: 'completed', errorCode: 'remote_deleted' });
+    expect(released.items[0].message).toContain('旧同步不会重新上传');
+    expect(mocks.publish).toHaveBeenCalledTimes(1); expect(mocks.recover).not.toHaveBeenCalled();
+    expect(JSON.stringify(mocks.repo)).not.toContain(issuedToken);
+  });
+
+  it('无变更行仍可按本轮head预览并CAS删除云端，本机卡片与索引不删除', async () => {
+    const value = context(); await executeSharedAssetSync(await buildSharedAssetSyncPreview(value), commitExecution());
+    const session = await buildSharedAssetSyncPreview(value);
+    expect(session.items).toMatchObject([{ direction: 'unchanged', canDelete: true }]);
+    const head = session.remoteAssets[0]; const local = structuredClone(value.library);
+    await projectAssetSyncService.deleteAsset(session, session.items[0].id);
+    expect(mocks.previewDelete).toHaveBeenCalledWith(expect.objectContaining({ sharedAssetId: head.head.sharedAssetId,
+      expectedRevisionId: head.head.revisionId, expectedETag: head.etag }));
+    expect(mocks.applyDelete).toHaveBeenCalledWith(expect.objectContaining({ sharedAssetId: head.head.sharedAssetId, previewToken: 'delete-preview' }));
+    expect(value.library).toEqual(local); expect(mocks.cloud).toEqual([]); expect(mocks.deleted).toHaveLength(1);
+    expect(session.invalidated).toBe(true);
+  });
+
+  it('删除预览等待中head变化或会话取消时，不提交旧令牌', async () => {
+    await executeSharedAssetSync(await buildSharedAssetSyncPreview(context()), commitExecution());
+    for (const cancelled of [false, true]) {
+      const controller = new AbortController();
+      const session = await buildSharedAssetSyncPreview({ ...context(), signal: controller.signal });
+      mocks.previewDelete.mockImplementationOnce(async (input: SharedSyncAssetDeletePreviewInput) => {
+        if (cancelled) controller.abort(); else session.remoteAssets[0].etag = 'new-etag';
+        return { sharedAssetId: input.sharedAssetId, revisionId: input.expectedRevisionId, operationId: input.operationId, previewToken: 'old-preview' };
+      });
+      await expect(projectAssetSyncService.deleteAsset(session, session.items[0].id)).rejects.toThrow();
+    }
+    expect(mocks.applyDelete).not.toHaveBeenCalled(); expect(mocks.cloud).toHaveLength(1);
+  });
+
+  it('删除武器后只阻塞引用它的角色，其他云端行仍可预览处理', async () => {
+    const role = { ...character(), weaponIds: ['weapon'] };
+    const value = context({ version: 2, characters: [role], scenes: [], props: [{ id: 'weapon', kind: 'prop', propType: 'weapon',
+      name: '长剑', key: '长剑', summary: '', visualNotes: '', importance: 'main', confirmed: true, source: 'manual', createdAt: 1, updatedAt: 2 }] });
+    await executeSharedAssetSync(await buildSharedAssetSyncPreview(value), commitExecution());
+    const before = await buildSharedAssetSyncPreview(value);
+    await projectAssetSyncService.deleteAsset(before, before.items.find((item) => item.kind === 'prop')!.id);
+    const after = await buildSharedAssetSyncPreview(value);
+    expect(after.operations).toHaveLength(0);
+    expect(after.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'character', direction: 'blocked', canDelete: true, message: expect.stringContaining('武器依赖缺失') }),
+      expect.objectContaining({ kind: 'prop', direction: 'conflict', message: expect.stringContaining('云端资产已删除') }),
+    ]));
+    expect(value.library.characters[0].weaponIds).toEqual(['weapon']); expect(value.library.props).toHaveLength(1);
+    value.library.characters[0].weaponIds = [];
+    const repaired = await buildSharedAssetSyncPreview(value);
+    const row = repaired.items.find((item) => item.kind === 'character')!;
+    expect(row.direction).toBe('upload');
+    const execution = commitExecution();
+    await executeSharedAssetSync(repaired, execution, { itemId: row.id, direction: 'upload' });
+    const published = mocks.cloud.find((asset) => asset.head.kind === 'character')!.revision.payload;
+    expect(published).toMatchObject({ kind: 'character', data: { weaponIds: [] } });
+    expect(mocks.deleted).toHaveLength(1); expect(value.library.props).toHaveLength(1);
+    expect(mocks.download).not.toHaveBeenCalled();
+  });
+
+  it.each(['remoteOnly', 'unchangedLocal', 'bothChanged'] as const)('远端缺失武器依赖时%s仍不采用不完整云版本或自动覆盖双方变更', async (mode) => {
+    const value = context({ version: 2, characters: [{ ...character(), weaponIds: ['weapon'] }], scenes: [], props: [{ id: 'weapon',
+      kind: 'prop', propType: 'weapon', name: '长剑', key: '长剑', summary: '', visualNotes: '', importance: 'main', confirmed: true,
+      source: 'manual', createdAt: 1, updatedAt: 2 }] });
+    await executeSharedAssetSync(await buildSharedAssetSyncPreview(value), commitExecution());
+    const before = await buildSharedAssetSyncPreview(value);
+    await projectAssetSyncService.deleteAsset(before, before.items.find((item) => item.kind === 'prop')!.id);
+    const remote = mocks.cloud.find((asset) => asset.head.kind === 'character')!;
+    remote.revision.revisionId = 'changed-remote'; remote.head.revisionId = 'changed-remote'; remote.etag = 'changed-etag';
+    if (remote.revision.payload.kind === 'character') remote.revision.payload.data.summary = '云端新简介';
+    if (mode === 'bothChanged') value.library.characters[0].weaponIds = [];
+    if (mode === 'remoteOnly') mocks.repo = { mappings: [], outbox: [], conflicts: [] };
+    mocks.publish.mockClear(); mocks.download.mockClear();
+    const preview = await buildSharedAssetSyncPreview(mode === 'remoteOnly' ? context({ version: 2, characters: [], scenes: [], props: [] }) : value);
+    expect(preview.items.find((item) => item.kind === 'character')).toMatchObject({ direction: mode === 'bothChanged' ? 'conflict' : 'blocked' });
+    expect(preview.operations.some((item) => item.mapping.kind === 'character')).toBe(false);
+    expect(mocks.download).not.toHaveBeenCalled(); expect(mocks.publish).not.toHaveBeenCalled();
+    if (mode === 'bothChanged') expect(mocks.repo.conflicts.some((row) => row.reason === 'bothChanged')).toBe(true);
+  });
+
+  it('修复本机依赖时仅在原生确认旧准备候选未发出后退役，再创建当前候选', async () => {
+    const { value, old } = await blockedWeaponCandidate();
+    const preview = await buildSharedAssetSyncPreview(value);
+    expect(mocks.acknowledge).toHaveBeenCalledWith(expect.objectContaining({ operationId: old.operationId, applied: false }));
+    expect(mocks.acknowledge.mock.calls[0][0]).not.toHaveProperty('applyToken');
+    expect(mocks.repo.outbox.find((row) => row.operationId === old.operationId)?.phase).toBe('completed');
+    const replacement = preview.operations.find((item) => item.mapping.kind === 'character')!;
+    expect(replacement.operation.operationId).not.toBe(old.operationId); expect(replacement.operation.revisionId).not.toBe(old.revisionId);
+    expect(replacement.operation.revision?.payload).toMatchObject({ kind: 'character', data: { weaponIds: [] } });
+    await executeSharedAssetSync(preview, commitExecution(), { itemId: replacement.mapping.id, direction: 'upload' });
+    expect(mocks.publish).toHaveBeenCalledWith(expect.objectContaining({ operationId: replacement.operation.operationId }));
+  });
+
+  it.each(['conflict', 'operation_not_found'] as const)('原生以%s拒绝退役时保留原候选，不用重试状态推断未写云端', async (code) => {
+    const { value, old } = await blockedWeaponCandidate();
+    mocks.acknowledge.mockRejectedValueOnce(new Error('共享旧候选尚不能安全清理，请恢复核对', { cause: { code } }));
+    const preview = await buildSharedAssetSyncPreview(value);
+    expect(mocks.repo.outbox.find((row) => row.operationId === old.operationId)).toEqual(old);
+    expect(preview.operations).toHaveLength(0); expect(preview.items.find((item) => item.kind === 'character')?.direction).toBe('blocked');
+    expect(mocks.prepare).not.toHaveBeenCalled(); expect(mocks.publish).not.toHaveBeenCalled(); expect(mocks.recover).not.toHaveBeenCalled();
+  });
+
+  it('依赖缺失不覆盖未知提交标记，也不退役可能已写云端的候选', async () => {
+    const { value, old } = await blockedWeaponCandidate();
+    const operation = mocks.repo.outbox.find((row) => row.operationId === old.operationId)!;
+    operation.phase = 'checkingCommit'; operation.errorCode = 'unknown_commit';
+    const expected = structuredClone(operation);
+    const preview = await buildSharedAssetSyncPreview(value);
+    expect(mocks.repo.outbox.find((row) => row.operationId === old.operationId)).toEqual(expected);
+    expect(preview.operations).toHaveLength(0);
+    expect(preview.items.find((item) => item.kind === 'character')).toMatchObject({ direction: 'blocked', message: expect.stringContaining('提交结果尚未确认') });
+    expect(mocks.acknowledge).not.toHaveBeenCalled(); expect(mocks.prepare).not.toHaveBeenCalled(); expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
+  it('执行失败不回显不安全显示名或原始异常URL，但保留白名单诊断阶段', async () => {
+    const session = await buildSharedAssetSyncPreview(context()); session.items[0].name = 'D:/private/project.png';
+    mocks.recover.mockRejectedValueOnce(new Error('https://secret.example.com/private-token', { cause: { code: 'network', stage: 'headRead', unsafe: 'private-token' } }));
+    const failure = await executeSharedAssetSync(session, commitExecution()).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ message: '上传「项目资产」失败：共享资产操作未完成，请重新预览或恢复', cause: { code: 'network', stage: 'headRead' } });
+    expect(JSON.stringify(failure)).not.toContain('private-token'); expect(String(failure)).not.toContain('D:/private');
+  });
+
+  it.each(['windows', 'unix'] as const)('真实 URL 桥接在 %s 完成图声动作、场景与道具的发件到接收', async (platform) => {
+    const bridge = await publishCardsThroughNativeBridge(platform);
+    const receiver = context({ version: 2, characters: [], scenes: [], props: [] });
+    const session = await buildSharedAssetSyncPreview(receiver);
+    expect(session.items).toHaveLength(3);
+    expect(session.items.every((item) => item.direction === 'download')).toBe(true);
+    let persistedLibrary = receiver.library;
+    const execution = commitExecution((library) => { persistedLibrary = library; });
+    await executeSharedAssetSync(session, execution);
+    const role = persistedLibrary.characters[0];
+    expect(role).toMatchObject({ name: '角色', referenceImages: [{ prompt: '主图提示词' }], voiceClips: [{ transcript: '声音文本' }],
+      actions: [{ name: '行走', prompt: '动作提示词', media: [{ kind: 'gif' }, { kind: 'video' }] }] });
+    expect(role.primaryReferenceImageId).toBe(role.referenceImages![0].id);
+    expect(role.avatarReferenceImageId).toBe(role.referenceImages![0].id);
+    expect(role.primaryVoiceClipId).toBe(role.voiceClips![0].id);
+    expect(role.imageNodeId).toBeUndefined(); expect(role.referenceImages![0].sourceNodeId).toBeUndefined();
+    expect(persistedLibrary.scenes).toMatchObject([{ name: '场景', referenceImages: [{ label: '场景图' }] }]);
+    expect(persistedLibrary.props).toMatchObject([{ name: '道具', referenceImages: [{ label: '道具图' }] }]);
+    const bound = [{ assetId: role.assetId, relativePath: role.relativePath, url: role.imageUrl },
+      ...role.referenceImages!.map((item) => ({ ...item, url: item.imageUrl })),
+      ...role.voiceClips!.map((item) => ({ ...item, url: item.audioUrl })), ...role.actions![0].media!,
+      ...[...persistedLibrary.scenes, ...persistedLibrary.props].flatMap((item) => [{ ...item, url: item.imageUrl },
+        ...item.referenceImages!.map((reference) => ({ ...reference, url: reference.imageUrl }))])];
+    for (const media of bound) {
+      const index = mocks.indexes.get(media.assetId!)!;
+      expect(index).toBeDefined(); expect(index.projectId).toBe('owner');
+      expect(media.relativePath).toBe(index.relativePath);
+      expect(media.url).toBe(platformAssetUrl(platform, index.path));
+      expect(localMediaUrlToPath(media.url)).toBe(index.path);
+      expect(bridge.convert).toHaveBeenCalledWith(index.path, 'asset');
+    }
+    expect(mocks.download).toHaveBeenCalledTimes(3); expect(execution.applyDownload).toHaveBeenCalledTimes(3);
+    expect(mocks.prepare).not.toHaveBeenCalled(); expect(mocks.publish).not.toHaveBeenCalled();
+    expect(receiver.onStatus).toHaveBeenLastCalledWith(expect.objectContaining({ stage: 'completed', completed: 3, total: 3 }));
+    await executeSharedAssetSync(session, execution);
+    expect(mocks.download).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['rawPath', 'remoteUrl'] as const)('原生 URL 桥接错误返回 %s 时拒绝恢复，不提交本机卡片或索引', async (output) => {
+    const bridge = await publishCardsThroughNativeBridge('windows');
+    mocks.cloud = mocks.cloud.filter((asset) => asset.head.kind === 'character');
+    bridge.convert.mockImplementation((path) => output === 'rawPath' ? path : 'https://example.com/shared.png');
+    const receiver = context({ version: 2, characters: [], scenes: [], props: [] });
+    const session = await buildSharedAssetSyncPreview(receiver); const execution = commitExecution();
+    const failure = await executeSharedAssetSync(session, execution).then(() => { throw new Error('预期拒绝无效地址'); }, (error: unknown) => error);
+    expect(failure).toMatchObject({ message: expect.stringContaining('下载「角色」失败：项目共享资产格式无效'),
+      cause: { reason: 'invalidLocalMediaUrl', fieldPath: 'payload.data.imageUrl', stage: 'restoreMedia' } });
+    expect(String(failure)).not.toContain('https://example.com');
+    expect(execution.applyDownload).not.toHaveBeenCalled(); expect(mocks.indexes.size).toBe(0);
+    expect(session.expectedLibrary).toBe(receiver.library); expect(receiver.library.characters).toEqual([]);
+    expect(mocks.repo.mappings[0].acceptedRevisionId).toBeUndefined();
+    expect(mocks.acknowledge).toHaveBeenCalledWith(expect.objectContaining({ applied: false }));
+  });
+
   it('恢复预览仅读取原版本并释放本机令牌，不自动执行', async () => {
     const initial = await buildSharedAssetSyncPreview(context());
     await executeSharedAssetSync(initial, commitExecution());
@@ -174,7 +609,7 @@ describe('手动项目资产同步协调', () => {
     asset.revision.payload = { kind: 'character', data: { ...character(), id: asset.head.sharedAssetId,
       imageUrl: 'aicsync-media:image' } };
     mocks.cloud = [asset];
-    vi.mocked(getAssetUrlFromPath).mockImplementationOnce(async (path) => `http://asset.localhost/${encodeURIComponent(path)}`);
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { convertFileSrc: (path: string) => `http://asset.localhost/${encodeURIComponent(path)}` } });
     const receiver = context({ version: 2, characters: [], scenes: [], props: [] });
     const session = await buildSharedAssetSyncPreview(receiver);
     expect(session.items).toMatchObject([{ kind: 'character', direction: 'download' }]);
@@ -276,7 +711,7 @@ describe('手动项目资产同步协调', () => {
       if (request.operationId === unfinished.operationId) throw new Error('模拟应用退出前中断');
       return recover(request);
     });
-    await expect(executeSharedAssetSync(initial, commitExecution())).rejects.toThrow('模拟应用退出前中断');
+    await expect(executeSharedAssetSync(initial, commitExecution())).rejects.toThrow('上传「image-5.png」失败');
     expect(initial).toMatchObject({ completed: 4, total: 5 });
     expect(mocks.cloud).toHaveLength(4);
     expect(mocks.repo.outbox.filter((entry) => entry.phase === 'completed' && !entry.errorCode)).toHaveLength(4);
@@ -335,7 +770,7 @@ describe('手动项目资产同步协调', () => {
   it('提交后上传ack失败只恢复ack，不重新发布或重复接受基线', async () => {
     const session = await buildSharedAssetSyncPreview(context()); const execution = commitExecution(); let fail = true;
     mocks.acknowledge.mockImplementation(async (input: { applied: boolean }) => { if (input.applied && fail) { fail = false; throw new Error('网络失败'); } });
-    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('网络失败');
+    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('上传「角色」失败');
     expect(mocks.repo.outbox[0]).toMatchObject({ phase: 'completed', errorCode: 'ack_pending' });
     const firstAck = mocks.acknowledge.mock.calls[0][0] as { operationId: string; applyToken: string };
     expect(mocks.acknowledge).toHaveBeenNthCalledWith(2, expect.objectContaining({ applied: false,
@@ -363,10 +798,10 @@ describe('手动项目资产同步协调', () => {
       if (input.applied && failures-- > 0) throw new Error('回执响应丢失');
       activeToken = undefined;
     });
-    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('回执响应丢失');
+    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('上传「角色」失败');
     expect(activeToken).toBeUndefined();
     const firstRecovery = await buildSharedAssetSyncPreview(context());
-    await expect(executeSharedAssetSync(firstRecovery, execution)).rejects.toThrow('回执响应丢失');
+    await expect(executeSharedAssetSync(firstRecovery, execution)).rejects.toThrow('上传「角色」失败');
     expect(activeToken).toBeUndefined();
     const secondRecovery = await buildSharedAssetSyncPreview(context());
     await executeSharedAssetSync(secondRecovery, execution);
@@ -384,7 +819,7 @@ describe('手动项目资产同步协调', () => {
       if (!input.applied) throw new Error('原生已清除此租约');
       if (lostResponse) { lostResponse = false; throw new Error('回执响应丢失'); }
     });
-    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('回执响应丢失');
+    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('上传「角色」失败');
     expect(mocks.repo.outbox[0]).toMatchObject({ phase: 'completed', errorCode: 'ack_pending' });
     const resumed = await buildSharedAssetSyncPreview(context()); await executeSharedAssetSync(resumed, execution);
     expect(execution.applyDownload).toHaveBeenCalledTimes(1); expect(mocks.publish).toHaveBeenCalledTimes(1);
@@ -494,7 +929,7 @@ describe('手动项目资产同步协调', () => {
     const session = await buildSharedAssetSyncPreview(context({ version: 2, characters: [], scenes: [], props: [] }));
     const execution = commitExecution(); let fail = true;
     mocks.acknowledge.mockImplementation(async (input: { applied: boolean }) => { if (input.applied && fail) { fail = false; throw new Error('网络失败'); } });
-    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('网络失败');
+    await expect(executeSharedAssetSync(session, execution)).rejects.toThrow('下载「共享.png」失败');
     const currentId = mocks.repo.mappings[0].currentFileAssetId;
     expect(mocks.repo.outbox[0].phase).toBe('applied');
     const failedAck = mocks.acknowledge.mock.calls[0][0] as { operationId: string; applyToken: string };

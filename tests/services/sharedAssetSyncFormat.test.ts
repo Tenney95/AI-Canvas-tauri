@@ -3,9 +3,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { DramaAssetLibrary, DramaCharacter, DramaProp, DramaScene } from '../../src/types/dramaAssets';
+import { buildDramaActionMentionId, buildDramaMentionId, buildDramaVoiceMentionId } from '../../src/types/dramaAssets';
 import type { SharedSyncFilePayload, SharedSyncMedia, SharedSyncRevision } from '../../src/types/assetSync';
 import { getSharedAssetSyncDependencies, getSharedAssetSyncMediaIds, parseSharedAssetSyncDraft, parseSharedAssetSyncRevision,
-  restoreSharedDramaAsset, serializeSharedDramaAsset, sharedSyncMediaToken } from '../../src/services/sharedAssetSyncFormat';
+  restoreSharedAssetSyncText, restoreSharedDramaAsset, serializeSharedDramaAsset, sharedSyncMediaToken } from '../../src/services/sharedAssetSyncFormat';
 import { preferDramaLibraryReferences } from '../../src/services/dramaAssetPrompt';
 
 const media: SharedSyncMedia[] = [
@@ -39,6 +40,22 @@ function revision(payload: SharedSyncRevision['payload'], files = media): Shared
 }
 
 describe('共享项目资产格式', () => {
+  it('格式诊断给出稳定字段和原因，不回显损坏值', async () => {
+    const payload = await serializeSharedDramaAsset(character(), 'shared-card', mapping);
+    const value = revision(payload);
+    for (const [broken, fieldPath, reason] of [
+      [{ ...value, sharedAssetId: 'private/path-value' }, 'sharedAssetId', 'invalidIdentity'],
+      [{ ...value, media: [{ ...value.media[0], extension: 'private/path-value' }, ...value.media.slice(1)] }, 'media[0].kind/extension', 'invalidMediaType'],
+      [{ ...value, media: [{ ...value.media[0], sha256: 'private/path-value' }, ...value.media.slice(1)] }, 'media[0]', 'invalidMediaDigestOrSize'],
+    ] as const) {
+      let failure: unknown;
+      try { parseSharedAssetSyncRevision(broken); } catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).cause).toEqual({ reason, fieldPath, stage: 'format' });
+      expect((failure as Error).message).not.toContain('private/path-value');
+    }
+  });
+
   it('角色武器使用顶层卡片映射，单卡修订允许武器位于另一个修订', async () => {
     const source = { ...character(), weaponIds: ['local-sword', 'local-bow'] };
     const payload = await serializeSharedDramaAsset(source, 'shared-card', {
@@ -156,6 +173,90 @@ describe('共享项目资产格式', () => {
     }
     expect(() => restoreSharedDramaAsset(payload, 'other-card', { memberId: (_kind, value) => value,
       mediaById: new Map() })).toThrow('项目共享资产格式无效');
+  });
+
+  it('合法共享身份恢复为本机中文、点号及256字符身份，保留精确图片/声音/动作与武器映射', async () => {
+    const source = character();
+    source.weaponIds = ['武器.长剑'];
+    source.summary = '人物 @drama{friend:同伴}，图片 @drama{friend#ref:参考图}，声音 @drama{friend#voice/voice:音色}，动作 @drama{friend#action/action/item:行走}';
+    const outbound: Record<string, string> = { friend: 'shared-friend', 'friend#ref': 'shared-friend#shared-ref',
+      'friend#voice/voice': 'shared-friend#voice/shared-voice', 'friend#action/action/item': 'shared-friend#action/shared-action/shared-item' };
+    const payload = await serializeSharedDramaAsset(source, 'shared-card', { ...mapping,
+      mapWeaponId: () => 'shared-sword', mapMentionId: (value) => outbound[value] });
+    expect(parseSharedAssetSyncRevision(revision(payload)).payload).toEqual(payload);
+    const localEntityId = `人物.${'甲'.repeat(253)}`;
+    expect(localEntityId).toHaveLength(256);
+    const inbound: Record<string, string> = { 'shared-friend': localEntityId,
+      'shared-friend#shared-ref': buildDramaMentionId(localEntityId, '图片.同伴'),
+      'shared-friend#voice/shared-voice': buildDramaVoiceMentionId(localEntityId, '声音.同伴'),
+      'shared-friend#action/shared-action/shared-item': buildDramaActionMentionId(localEntityId, '动作.同伴', '素材.同伴') };
+    const restored = restoreSharedDramaAsset(payload, localEntityId, {
+      memberId: (kind, value) => `${kind}.本机.${value}`, mapMentionId: (value) => inbound[value],
+      mapWeaponId: () => '武器.长剑',
+      mediaById: new Map(media.map((entry) => [entry.id, { assetId: `本机.${entry.id}`,
+        relativePath: `Library/${entry.id}.${entry.extension}`, url: `http://asset.localhost/Library/${entry.id}.${entry.extension}` }])),
+    }) as DramaCharacter;
+    expect(restored).toMatchObject({ id: localEntityId, weaponIds: ['武器.长剑'],
+      primaryReferenceImageId: 'referenceImage.本机.referenceImage-ref', avatarReferenceImageId: 'referenceImage.本机.referenceImage-ref',
+      primaryVoiceClipId: 'voiceClip.本机.voiceClip-voice', actions: [{ id: 'action.本机.action-action',
+        media: [{ id: 'actionMedia.本机.actionMedia-action-image' }, { id: 'actionMedia.本机.actionMedia-action-video' }] }] });
+    expect(restored.summary).toBe(source.summary.replace(/@drama\{([^:}]+):/g, (_token, value: string) => `@drama{${inbound[outbound[value]]}:`));
+    expect(source.weaponIds).toEqual(['武器.长剑']);
+    const invalidWire = structuredClone(revision(payload));
+    invalidWire.sharedAssetId = localEntityId;
+    if (invalidWire.payload.kind !== 'file') invalidWire.payload.data.id = localEntityId;
+    expect(() => parseSharedAssetSyncRevision(invalidWire)).toThrow('项目共享资产格式无效');
+  });
+
+  it('图片专属文本先验证wire身份，再恢复本机身份，仍拒绝全局/损坏/超限引用', () => {
+    const wire = '@drama{shared-card#shared-ref:人物}';
+    expect(restoreSharedAssetSyncText(wire, () => '人物.本机#图片.本机')).toBe('@drama{人物.本机#图片.本机:人物}');
+    for (const unsafe of ['@drama{人物.本机:人物}', '@drama{shared.card:人物}', `@drama{${'x'.repeat(129)}:人物}`,
+      '@drama{global/card:人物}', '@drama{shared-card#voice/:人物}', '@drama{shared-card:缺少结束', '@{node:节点}', '含\0文本']) {
+      expect(() => restoreSharedAssetSyncText(unsafe, () => 'safe-local')).toThrow();
+    }
+    for (const local of ['', 'x'.repeat(257), '本机\n身份', 'global/card', 'card#voice/', 'card:其他人物', 'card}:改写正文']) {
+      expect(() => restoreSharedAssetSyncText(wire, () => local)).toThrow();
+    }
+    expect(() => restoreSharedAssetSyncText(wire, () => `card#${'图'.repeat(256)}`)).not.toThrow();
+    expect(() => restoreSharedAssetSyncText('文'.repeat(64 * 1024), () => 'safe-local')).toThrow();
+  });
+
+  it('本机武器映射仍拒绝全局、过长和控制字符身份，不污染有效载荷', async () => {
+    const payload = await serializeSharedDramaAsset({ ...character(), weaponIds: ['local-sword'] }, 'shared-card', {
+      ...mapping, mapWeaponId: () => 'shared-sword',
+    });
+    const before = JSON.stringify(payload);
+    const mediaById = new Map(media.map((entry) => [entry.id, { assetId: `local-${entry.id}`,
+      relativePath: `Library/${entry.id}.${entry.extension}`, url: `asset://localhost/Library/${entry.id}.${entry.extension}` }]));
+    for (const local of ['global/weapon', '剑'.repeat(257), 'weapon\0id']) {
+      expect(() => restoreSharedDramaAsset(payload, 'local-card', { memberId: (_kind, value) => value,
+        mapWeaponId: () => local, mediaById })).toThrow('项目共享资产格式无效');
+    }
+    expect(JSON.stringify(payload)).toBe(before);
+  });
+
+  it('恢复媒体错误包含稳定原因和字段，不泄露本机路径、URL或正文', async () => {
+    const payload = await serializeSharedDramaAsset(character(), 'shared-card', mapping);
+    const mediaById = new Map(media.map((entry) => [entry.id, { assetId: `local-${entry.id}`,
+      relativePath: `private/${entry.id}.${entry.extension}`, url: `asset://localhost/private/${entry.id}.${entry.extension}` }]));
+    mediaById.delete('audio');
+    let missing: unknown;
+    try { restoreSharedDramaAsset(payload, 'local-card', { memberId: (_kind, value) => value, mediaById }); }
+    catch (error) { missing = error; }
+    expect(missing).toBeInstanceOf(Error);
+    expect((missing as Error).cause).toEqual({ reason: 'missingLocalMedia', fieldPath: 'payload.data.voiceClips[0].audioUrl', stage: 'restoreMedia' });
+    expect((missing as Error).message).toContain('missingLocalMedia');
+    mediaById.set('audio', { assetId: 'local-audio', relativePath: 'private/audio.wav', url: 'asset://localhost/private/audio.wav' });
+    mediaById.set('video', { assetId: 'local-video', relativePath: 'private/video.mp4', url: 'https://secret.invalid/private/video.mp4' });
+    let invalid: unknown;
+    try { restoreSharedDramaAsset(payload, 'local-card', { memberId: (_kind, value) => value, mediaById }); }
+    catch (error) { invalid = error; }
+    expect(invalid).toBeInstanceOf(Error);
+    expect((invalid as Error).cause).toEqual({ reason: 'invalidLocalMediaUrl', fieldPath: 'payload.data.actions[0].media[1].url', stage: 'restoreMedia' });
+    expect((invalid as Error).message).toContain('invalidLocalMediaUrl');
+    expect(JSON.stringify({ missing: (missing as Error).message, invalid: (invalid as Error).message,
+      missingCause: (missing as Error).cause, invalidCause: (invalid as Error).cause })).not.toMatch(/secret|private|https?:\/\/|主音色|向前走/);
   });
 
   it('真实引用按显式映射保留；未知、本机与全局引用不静默脱为标签', async () => {

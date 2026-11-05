@@ -191,6 +191,90 @@ pub async fn project_asset_storage_apply_cleanup(app: AppHandle, webview: Webvie
     Ok(CleanupApplyResult { status: "completed", deleted_count, total_count, error_code: None })
 }
 
+fn check_asset_delete_preview(preview: &super::AssetDeletePreviewSession, context: &Context, owner_revision: u64,
+    input: &AssetDeleteApplyInput, now: u64) -> Result<(), StorageError> {
+    if preview.expires_at <= now { return Err(StorageError::new("apply_expired")); }
+    if !preview.context.same_binding(context) || preview.owner_revision != owner_revision
+        || preview.operation_id != input.operation_id || preview.head.shared_asset_id != input.shared_asset_id
+        || preview.token_digest != digest(input.preview_token.as_bytes()) { return Err(StorageError::new("conflict")); }
+    Ok(())
+}
+
+/// The head remains present so stale Create and Update requests cannot recreate the asset.
+fn deleted_by_preview(head: &Head, preview: &super::AssetDeletePreviewSession) -> bool {
+    head.deleted == Some(true) && head.operation_id == preview.operation_id && head.shared_asset_id == preview.head.shared_asset_id
+        && head.revision_id == preview.head.revision_id && head.revision_digest == preview.head.revision_digest && head.kind == preview.head.kind
+}
+async fn delete_asset_head(store: &dyn ObjectStore, key: &ObjectPath, preview: &super::AssetDeletePreviewSession,
+    cancel: &CancellationToken, verify: &Verify) -> Result<&'static str, StorageError> {
+    let Some((current, etag)) = read_head_at(store, key, &preview.head.shared_asset_id, cancel, verify).await? else { return Ok("conflict"); };
+    if current.deleted == Some(true) {
+        return Ok(if deleted_by_preview(&current, preview) { "deleted" } else { "conflict" });
+    }
+    if etag != preview.etag || current != preview.head { return Ok("conflict"); }
+    let tombstone = Head { operation_id: preview.operation_id.clone(), updated_at: now_ms(), deleted: Some(true), ..current };
+    tombstone.validate()?; let bytes = encode(&tombstone)?; verify()?;
+    let result = transfer::request(cancel, store.put_opts(key, bytes.into(), PutOptions::from(PutMode::Update(UpdateVersion {
+        e_tag: Some(preview.etag.clone()), version: None,
+    })))).await;
+    // Once a write was attempted, cancellation/network failure can mean the response was lost.
+    let observed = read_head_at(store, key, &preview.head.shared_asset_id, cancel, verify).await;
+    Ok(asset_delete_commit_status(result.map(|_| ()), observed, preview))
+}
+fn asset_delete_commit_status(result: Result<(), StorageError>, observed: Result<Option<(Head, String)>, StorageError>,
+    preview: &super::AssetDeletePreviewSession) -> &'static str {
+    if let Ok(Some((head, _))) = &observed {
+        if deleted_by_preview(head, preview) { return "deleted"; }
+    }
+    match result {
+        Err(error) if error.code == "conflict" => "conflict",
+        Err(_) => "uncertain",
+        Ok(_) => match observed {
+            Ok(Some((head, _))) if head.deleted == Some(true) => "conflict",
+            _ => "uncertain",
+        },
+    }
+}
+
+#[tauri::command]
+pub async fn project_asset_storage_preview_asset_delete(app: AppHandle, webview: Webview, state: State<'_, ObjectStorageState>,
+    input: AssetDeletePreviewInput) -> Result<AssetDeletePreviewResult, StorageError> {
+    ensure_main(&webview)?;
+    for id in [&input.operation_id, &input.shared_asset_id, &input.expected_revision_id] { super::validate_id(id)?; }
+    if !valid_etag(&input.expected_e_tag) { return Err(invalid()); }
+    let lease = Lease::begin(&app, &state, input.context()).await?;
+    let (head, etag) = read_head(&lease, &input.shared_asset_id).await?.ok_or_else(|| StorageError::new("conflict"))?;
+    require_live_head(&head)?;
+    if head.revision_id != input.expected_revision_id || etag != input.expected_e_tag { return Err(StorageError::new("conflict")); }
+    let preview_token = random_lock_secret()?;
+    let preview = super::AssetDeletePreviewSession { context: lease.context.clone(), owner_revision: lease.generation,
+        operation_id: input.operation_id.clone(), head: head.clone(), etag, token_digest: digest(preview_token.as_bytes()),
+        expires_at: now_ms().saturating_add(120_000) };
+    (lease.verify)()?;
+    let mut previews = state.asset_delete_previews.lock().map_err(|_| StorageError::new("unavailable"))?;
+    previews.retain(|_, preview| preview.expires_at > now_ms());
+    if previews.len() >= 64 && !previews.contains_key(&input.owner_id) { return Err(StorageError::new("busy")); }
+    previews.insert(input.owner_id, preview);
+    Ok(AssetDeletePreviewResult { shared_asset_id: input.shared_asset_id, revision_id: head.revision_id,
+        operation_id: input.operation_id, preview_token })
+}
+
+#[tauri::command]
+pub async fn project_asset_storage_apply_asset_delete(app: AppHandle, webview: Webview, state: State<'_, ObjectStorageState>,
+    input: AssetDeleteApplyInput) -> Result<AssetDeleteApplyResult, StorageError> {
+    ensure_main(&webview)?;
+    for id in [&input.operation_id, &input.shared_asset_id] { super::validate_id(id)?; }
+    if !valid_digest(&input.preview_token) { return Err(invalid()); }
+    let context = input.context(); let lease = Lease::begin(&app, &state, context.clone()).await?;
+    let preview = state.asset_delete_previews.lock().map_err(|_| StorageError::new("unavailable"))?.get(&input.owner_id)
+        .cloned().ok_or_else(|| StorageError::new("apply_expired"))?;
+    check_asset_delete_preview(&preview, &context, lease.generation, &input, now_ms())?;
+    // Retain the bounded preview until expiry so the same operation can confirm a lost response.
+    let status = delete_asset_head(&lease.metadata, &lease.key(&format!("heads/{}.json", input.shared_asset_id))?,
+        &preview, &lease.cancel, &lease.verify).await?;
+    Ok(AssetDeleteApplyResult { status, shared_asset_id: input.shared_asset_id, operation_id: input.operation_id })
+}
+
 async fn read_small(lease: &Lease, location: &ObjectPath, limit: usize) -> Result<(Vec<u8>, object_store::ObjectMeta), StorageError> {
     (lease.verify)()?;
     let result = transfer::request(&lease.cancel, lease.metadata.get(location)).await?;
@@ -212,19 +296,46 @@ async fn read_revision(lease: &Lease, asset: &str, revision: &str, expected: Opt
         Ok((value, digest))
     }.await.map_err(|error: StorageError| error.at_stage(ErrorStage::RevisionRead))
 }
-async fn read_asset(lease: &Lease, asset: &str) -> Result<Option<RemoteAsset>, StorageError> {
+fn valid_etag(value: &str) -> bool { !value.is_empty() && value.len() <= 1024 && !value.chars().any(char::is_control) }
+fn require_live_head(head: &Head) -> Result<(), StorageError> {
+    if head.deleted == Some(true) { return Err(StorageError::new("remote_deleted")); }
+    Ok(())
+}
+async fn read_head_at(store: &dyn ObjectStore, key: &ObjectPath, asset: &str, cancel: &CancellationToken,
+    verify: &Verify) -> Result<Option<(Head, String)>, StorageError> {
+    verify()?; super::validate_id(asset)?;
+    let result = match transfer::request(cancel, store.get(key)).await {
+        Ok(result) => result, Err(error) if error.code == "project_not_found" => return Ok(None), Err(error) => return Err(error),
+    };
+    if result.meta.size > 16 * 1024 { return Err(StorageError::new("response_too_large")); }
+    let size = result.meta.size;
+    let etag = result.meta.e_tag.clone().filter(|etag| valid_etag(etag)).ok_or_else(|| StorageError::new("conditional_write_unsupported"))?;
+    let mut stream = result.into_stream(); let mut bytes = Vec::new();
+    while let Some(chunk) = transfer::request(cancel, stream.try_next()).await? {
+        if chunk.len() > (16_usize * 1024).saturating_sub(bytes.len()) { return Err(StorageError::new("response_too_large")); }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.len() as u64 != size { return Err(StorageError::new("unknown")); }
+    let head: Head = serde_json::from_slice(&bytes).map_err(|_| invalid())?; head.validate()?;
+    if head.shared_asset_id != asset { return Err(StorageError::new("project_mismatch")); }
+    verify()?; Ok(Some((head, etag)))
+}
+async fn read_head(lease: &Lease, asset: &str) -> Result<Option<(Head, String)>, StorageError> {
+    read_head_at(&lease.metadata, &lease.key(&format!("heads/{asset}.json"))?, asset, &lease.cancel, &lease.verify).await
+        .map_err(|error| error.at_stage(ErrorStage::HeadRead))
+}
+async fn asset_from_head(lease: &Lease, head: Head, etag: String) -> Result<RemoteAsset, StorageError> {
     async {
-        super::validate_id(asset)?;
-        let (bytes, meta) = match read_small(lease, &lease.key(&format!("heads/{asset}.json"))?, 16 * 1024).await {
-            Ok(result) => result, Err(error) if error.code == "project_not_found" => return Ok(None), Err(error) => return Err(error),
-        };
-        let head: Head = serde_json::from_slice(&bytes).map_err(|_| invalid())?; head.validate()?;
-        if head.shared_asset_id != asset { return Err(StorageError::new("project_mismatch")); }
-        let etag = meta.e_tag.filter(|etag| !etag.is_empty() && etag.len() <= 1024 && !etag.chars().any(char::is_control)).ok_or_else(|| StorageError::new("conditional_write_unsupported"))?;
-        let (revision, _) = read_revision(lease, asset, &head.revision_id, Some(&head.revision_digest)).await?;
+        require_live_head(&head)?;
+        let (revision, _) = read_revision(lease, &head.shared_asset_id, &head.revision_id, Some(&head.revision_digest)).await?;
         if revision.operation_id != head.operation_id || revision.kind() != head.kind { return Err(invalid()); }
-        Ok(Some(RemoteAsset { head, etag, revision }))
+        Ok(RemoteAsset { head, etag, revision })
     }.await.map_err(|error: StorageError| error.at_stage(ErrorStage::HeadRead))
+}
+async fn read_asset(lease: &Lease, asset: &str) -> Result<Option<RemoteAsset>, StorageError> {
+    match read_head(lease, asset).await? {
+        Some((head, etag)) => Ok(Some(asset_from_head(lease, head, etag).await?)), None => Ok(None),
+    }
 }
 fn token(expires_at: u64) -> String {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher(); hasher.write_u64(now_ms());
@@ -282,17 +393,30 @@ pub async fn project_asset_storage_list_heads(app: AppHandle, webview: Webview, 
     let prefix = lease.key("heads/")?;
     let offset = input.cursor.as_ref().map(|cursor| lease.key(&format!("heads/{cursor}.json"))).transpose()?;
     let mut entries = match offset.as_ref() { Some(offset) => lease.metadata.list_with_offset(Some(&prefix), offset), None => lease.metadata.list(Some(&prefix)) };
-    let mut assets = Vec::new(); let mut total = 0; let mut seen = HashSet::new();
+    let mut assets = Vec::new(); let mut deleted_assets = Vec::new(); let mut total = 0;
+    let mut seen = HashSet::new(); let mut next_cursor = None;
     while let Some(entry) = transfer::request(&lease.cancel, entries.try_next()).await? {
         let name = entry.location.as_ref().strip_prefix(&format!("{}/heads/", lease.data_prefix())).and_then(|name| name.strip_suffix(".json")).ok_or_else(invalid)?;
         super::validate_id(name)?; if !seen.insert(name.to_string()) { return Err(invalid()); }
-        if assets.len() >= 32 { let next_cursor = assets.last().map(|asset: &RemoteAsset| asset.head.shared_asset_id.clone()); return Ok(ListResult { assets, complete: false, next_cursor }); }
-        let asset = read_asset(&lease, name).await?.ok_or_else(|| StorageError::new("conflict"))?;
-        total += encode(&asset.revision)?.len();
-        if total > MANIFEST_LIMIT && !assets.is_empty() { let next_cursor = assets.last().map(|asset: &RemoteAsset| asset.head.shared_asset_id.clone()); return Ok(ListResult { assets, complete: false, next_cursor }); }
-        assets.push(asset);
+        if assets.len() + deleted_assets.len() >= 32 { return Ok(ListResult { assets, deleted_assets, complete: false, next_cursor }); }
+        let (head, etag) = read_head(&lease, name).await?.ok_or_else(|| StorageError::new("conflict"))?;
+        if head.deleted == Some(true) {
+            total += encode(&head)?.len();
+            if total > MANIFEST_LIMIT && (!assets.is_empty() || !deleted_assets.is_empty()) {
+                return Ok(ListResult { assets, deleted_assets, complete: false, next_cursor });
+            }
+            deleted_assets.push(head);
+        } else {
+            let asset = asset_from_head(&lease, head, etag).await?;
+            total += encode(&asset.revision)?.len();
+            if total > MANIFEST_LIMIT && (!assets.is_empty() || !deleted_assets.is_empty()) {
+                return Ok(ListResult { assets, deleted_assets, complete: false, next_cursor });
+            }
+            assets.push(asset);
+        }
+        next_cursor = Some(name.to_owned());
     }
-    (lease.verify)()?; Ok(ListResult { assets, complete: true, next_cursor: None })
+    (lease.verify)()?; Ok(ListResult { assets, deleted_assets, complete: true, next_cursor: None })
 }
 
 #[tauri::command]
@@ -302,6 +426,14 @@ pub async fn project_asset_storage_prepare_publish(app: AppHandle, webview: Webv
     if input.draft.library_id != context.library_id || input.draft.shared_project_id != context.shared_project_id || input.sources.len() != input.draft.media.len()
         || input.draft.parent_revision_id.is_some() != input.base_e_tag.is_some()
         || input.base_e_tag.as_ref().is_some_and(|etag| etag.is_empty() || etag.len() > 1024 || etag.chars().any(char::is_control)) { return Err(invalid()); }
+    let current = read_head(&lease, &input.draft.shared_asset_id).await?;
+    if let Some((head, etag)) = &current {
+        require_live_head(head)?;
+        let same_operation = head.revision_id == input.draft.revision_id && head.operation_id == input.draft.operation_id;
+        if !same_operation && (Some(etag) != input.base_e_tag.as_ref() || Some(&head.revision_id) != input.draft.parent_revision_id.as_ref()) {
+            return Err(StorageError::new("conflict"));
+        }
+    } else if input.base_e_tag.is_some() { return Err(StorageError::new("conflict")); }
     let (root, root_path) = Root::capture(&app, &input.root_directory)?;
     let verify = lease.root_verify(&app, root.clone()); verify()?;
     let journal = Journal::open(&app, &context.owner_id, &input.draft.operation_id)?;
@@ -358,7 +490,7 @@ async fn recover(lease: &Lease, record: &Record) -> Result<PublishResult, Storag
         if id == record.revision.revision_id {
             if revision_digest == record.revision_digest && revision.operation_id == record.revision.operation_id {
                 // Return the exact published candidate, not a later version the user did not approve.
-                let head = Head { shared_asset_id: revision.shared_asset_id.clone(), kind: revision.kind().into(), revision_id: revision.revision_id.clone(), revision_digest, operation_id: revision.operation_id.clone(), updated_at: revision.created_at };
+                let head = Head { shared_asset_id: revision.shared_asset_id.clone(), kind: revision.kind().into(), revision_id: revision.revision_id.clone(), revision_digest, operation_id: revision.operation_id.clone(), updated_at: revision.created_at, deleted: None };
                 return Ok(PublishResult { status: "published", lock_retained: None, asset: Some(RemoteAsset { head, etag: asset.etag, revision }), apply_token: None, prepared: None });
             } return Ok(PublishResult { status: "conflict", lock_retained: None, asset: Some(asset), apply_token: None, prepared: None });
         }
@@ -391,7 +523,7 @@ pub async fn project_asset_storage_publish_revision(app: AppHandle, webview: Web
         Err(error) => return Err(error),
     }
     record.phase = "checkingCommit".into(); journal.save(&record)?; verify()?;
-    let head = Head { shared_asset_id: input.shared_asset_id.clone(), kind: record.revision.kind().into(), revision_id: input.revision_id.clone(), revision_digest: record.revision_digest.clone(), operation_id: input.operation_id.clone(), updated_at: record.revision.created_at };
+    let head = Head { shared_asset_id: input.shared_asset_id.clone(), kind: record.revision.kind().into(), revision_id: input.revision_id.clone(), revision_digest: record.revision_digest.clone(), operation_id: input.operation_id.clone(), updated_at: record.revision.created_at, deleted: None };
     let mode = match &record.base_e_tag { Some(etag) => PutMode::Update(UpdateVersion { e_tag: Some(etag.clone()), version: None }), None => PutMode::Create };
     transfer::progress(&app, &lease.context, &input.operation_id, "publishing", 0, 1);
     let key = lease.key(&format!("heads/{}.json", input.shared_asset_id))?;
@@ -407,6 +539,7 @@ pub async fn project_asset_storage_publish_revision(app: AppHandle, webview: Web
 #[tauri::command]
 pub async fn project_asset_storage_recover_operation(app: AppHandle, webview: Webview, state: State<'_, ObjectStorageState>, input: OperationInput) -> Result<PublishResult, StorageError> {
     ensure_main(&webview)?; let lease = Lease::begin(&app, &state, input.context()).await?;
+    if let Some((head, _)) = read_head(&lease, &input.shared_asset_id).await? { require_live_head(&head)?; }
     let journal = Journal::open(&app, &input.owner_id, &input.operation_id)?; let mut record = journal.load()?.ok_or_else(|| StorageError::new("operation_not_found"))?;
     lease.check_record(&record, &input.operation_id, &input.revision_id, &input.shared_asset_id)?; record.root.resolve(&app)?;
     if record.direction == "download" {
@@ -425,6 +558,10 @@ pub async fn project_asset_storage_recover_operation(app: AppHandle, webview: We
 pub async fn project_asset_storage_download_revision(app: AppHandle, webview: Webview, state: State<'_, ObjectStorageState>, input: DownloadInput) -> Result<DownloadResult, StorageError> {
     ensure_main(&webview)?; if !valid_digest(&input.expected_revision_digest) { return Err(invalid()); }
     let lease = Lease::begin_for(&app, &state, input.context(), Some(&input.operation_id)).await?;
+    let current = read_head(&lease, &input.shared_asset_id).await?.ok_or_else(|| StorageError::new("conflict"))?;
+    require_live_head(&current.0)?;
+    if current.0.revision_id != input.revision_id || current.0.revision_digest != input.expected_revision_digest { return Err(StorageError::new("conflict")); }
+    let expected_etag = current.1;
     let (revision, revision_digest) = read_revision(&lease, &input.shared_asset_id, &input.revision_id, Some(&input.expected_revision_digest)).await?;
     let (root, root_path) = Root::capture(&app, &input.root_directory)?; let verify = lease.root_verify(&app, root.clone());
     let journal = Journal::open(&app, &input.owner_id, &input.operation_id)?;
@@ -458,7 +595,8 @@ pub async fn project_asset_storage_download_revision(app: AppHandle, webview: We
     }
     verify()?; record.phase = "awaitingApply".into(); journal.save(&record)?;
     let current = read_asset(&lease, &input.shared_asset_id).await?;
-    if current.as_ref().is_none_or(|current| current.head.revision_id != input.revision_id || current.head.revision_digest != input.expected_revision_digest) {
+    if current.as_ref().is_none_or(|current| current.head.revision_id != input.revision_id
+        || current.head.revision_digest != input.expected_revision_digest || current.etag != expected_etag) {
         return Err(StorageError::new("conflict"));
     }
     record.apply_issued = true; journal.save(&record)?;
@@ -469,7 +607,13 @@ pub async fn project_asset_storage_download_revision(app: AppHandle, webview: We
 #[tauri::command]
 pub async fn project_asset_storage_acknowledge_apply(app: AppHandle, webview: Webview, state: State<'_, ObjectStorageState>, input: AcknowledgeInput) -> Result<(), StorageError> {
     ensure_main(&webview)?; let context = input.context(); context.validate()?;
-    let lease = Lease::begin_for(&app, &state, context.clone(), Some(&input.operation_id)).await?;
+    let lease = if !input.applied && input.apply_token.is_some() {
+        // A tokened abort only releases the local lease after its transaction ends.
+        // Keep the token/binding/owner/OS-lock checks below, without requiring network access.
+        Lease::initialize(&app, &state, context.clone()).await?
+    } else {
+        Lease::begin_for(&app, &state, context.clone(), Some(&input.operation_id)).await?
+    };
     let journal = Journal::open(&app, &input.owner_id, &input.operation_id)?; let record = journal.load()?.ok_or_else(|| StorageError::new("operation_not_found"))?;
     if !record.context.same_binding(&context) || record.operation_id != input.operation_id || record.revision.revision_id != input.revision_id || record.revision.shared_asset_id != input.shared_asset_id { return Err(StorageError::new("conflict")); }
     verify_binding(&app, &context, record.owner_revision)?;
@@ -508,6 +652,115 @@ async fn clean_journal(app: AppHandle, journal: Journal, record: Record, cancel:
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn delete_context() -> Context {
+        Context { task_id: "task".into(), owner_id: "owner".into(), connection_id: "connection".into(), connection_revision: "revision".into(),
+            library_id: "library".into(), shared_project_id: "project".into(), generation: "legacy".into() }
+    }
+    fn live_head() -> Head {
+        Head { shared_asset_id: "asset".into(), kind: "file".into(), revision_id: "revision".into(), revision_digest: "a".repeat(64),
+            operation_id: "publish".into(), updated_at: 1, deleted: None }
+    }
+    fn delete_preview(head: Head, etag: String) -> super::super::AssetDeletePreviewSession {
+        super::super::AssetDeletePreviewSession { context: delete_context(), owner_revision: 7, operation_id: "delete-operation".into(),
+            head, etag, token_digest: digest("a".repeat(64).as_bytes()), expires_at: 100 }
+    }
+    fn delete_input() -> AssetDeleteApplyInput {
+        let mut input = serde_json::to_value(delete_context()).unwrap();
+        input["operationId"] = serde_json::json!("delete-operation"); input["sharedAssetId"] = serde_json::json!("asset");
+        input["previewToken"] = serde_json::json!("a".repeat(64));
+        serde_json::from_value(input).unwrap()
+    }
+    #[tokio::test]
+    async fn single_asset_delete_is_conditional_idempotent_and_preserves_shared_content() {
+        use object_store::memory::InMemory;
+        let store = InMemory::new(); let head = live_head();
+        let key = ObjectPath::from("project/heads/asset.json"); let sibling = ObjectPath::from("project/heads/sibling.json");
+        let revision = ObjectPath::from("project/revisions/asset/revision.json"); let blob = ObjectPath::from("project/objects/sha256/shared");
+        store.put(&key, encode(&head).unwrap().into()).await.unwrap();
+        for path in [&sibling, &revision, &blob] { store.put(path, "keep".into()).await.unwrap(); }
+        let preview = delete_preview(head.clone(), store.head(&key).await.unwrap().e_tag.unwrap());
+        let verify: Verify = Arc::new(|| Ok(())); let cancel = CancellationToken::new();
+        assert_eq!(delete_asset_head(&store, &key, &preview, &cancel, &verify).await.unwrap(), "deleted");
+        let (deleted, etag) = read_head_at(&store, &key, "asset", &cancel, &verify).await.unwrap().unwrap();
+        assert!(deleted.deleted == Some(true)); assert_eq!(deleted.operation_id, preview.operation_id);
+        assert_eq!(deleted.revision_id, head.revision_id); assert_eq!(deleted.revision_digest, head.revision_digest);
+        assert_eq!(require_live_head(&deleted).unwrap_err().code, "remote_deleted");
+        assert_eq!(delete_asset_head(&store, &key, &preview, &cancel, &verify).await.unwrap(), "deleted");
+        assert_eq!(store.head(&key).await.unwrap().e_tag.unwrap(), etag);
+        assert!(store.put_opts(&key, encode(&head).unwrap().into(), PutOptions::from(PutMode::Create)).await.is_err());
+        assert!(store.put_opts(&key, encode(&head).unwrap().into(), PutOptions::from(PutMode::Update(UpdateVersion {
+            e_tag: Some(preview.etag), version: None,
+        }))).await.is_err());
+        for path in [&sibling, &revision, &blob] { assert_eq!(store.get(path).await.unwrap().bytes().await.unwrap().as_ref(), b"keep"); }
+    }
+
+    #[tokio::test]
+    async fn changed_head_or_etag_blocks_asset_delete_without_touching_other_assets() {
+        use object_store::memory::InMemory;
+        let store = InMemory::new(); let head = live_head(); let key = ObjectPath::from("project/heads/asset.json");
+        store.put(&key, encode(&head).unwrap().into()).await.unwrap();
+        let preview = delete_preview(head.clone(), store.head(&key).await.unwrap().e_tag.unwrap());
+        let changed = Head { updated_at: 2, ..head };
+        store.put(&key, encode(&changed).unwrap().into()).await.unwrap();
+        let verify: Verify = Arc::new(|| Ok(())); let cancel = CancellationToken::new();
+        assert_eq!(delete_asset_head(&store, &key, &preview, &cancel, &verify).await.unwrap(), "conflict");
+        let (actual, _) = read_head_at(&store, &key, "asset", &cancel, &verify).await.unwrap().unwrap();
+        assert!(actual == changed);
+        let mut another = preview.clone(); another.head = actual; another.etag = store.head(&key).await.unwrap().e_tag.unwrap();
+        another.operation_id = "other-delete".into();
+        assert_eq!(delete_asset_head(&store, &key, &another, &cancel, &verify).await.unwrap(), "deleted");
+        assert_eq!(delete_asset_head(&store, &key, &preview, &cancel, &verify).await.unwrap(), "conflict");
+    }
+
+    #[tokio::test]
+    async fn cancellation_or_binding_lease_change_before_cas_keeps_head_untouched() {
+        use object_store::memory::InMemory;
+        let store = InMemory::new(); let head = live_head(); let key = ObjectPath::from("project/heads/asset.json");
+        store.put(&key, encode(&head).unwrap().into()).await.unwrap();
+        let preview = delete_preview(head.clone(), store.head(&key).await.unwrap().e_tag.unwrap());
+        let cancel = CancellationToken::new(); cancel.cancel(); let verify: Verify = Arc::new(|| Ok(()));
+        assert_eq!(delete_asset_head(&store, &key, &preview, &cancel, &verify).await.unwrap_err().code, "cancelled");
+        let stale: Verify = Arc::new(|| Err(StorageError::new("conflict")));
+        assert_eq!(delete_asset_head(&store, &key, &preview, &CancellationToken::new(), &stale).await.unwrap_err().code, "conflict");
+        assert_eq!(store.get(&key).await.unwrap().bytes().await.unwrap().as_ref(), encode(&head).unwrap().as_slice());
+    }
+
+    #[test]
+    fn asset_delete_preview_binds_scope_generation_operation_asset_token_and_expiry() {
+        let preview = delete_preview(live_head(), "etag".into()); let context = delete_context(); let input = delete_input();
+        assert!(check_asset_delete_preview(&preview, &context, 7, &input, 99).is_ok());
+        assert_eq!(check_asset_delete_preview(&preview, &context, 7, &input, 100).unwrap_err().code, "apply_expired");
+        assert!(check_asset_delete_preview(&preview, &context, 8, &input, 99).is_err());
+        for field in ["owner", "connection", "revision", "library", "project", "generation"] {
+            let mut context = context.clone();
+            match field {
+                "owner" => context.owner_id = "other".into(), "connection" => context.connection_id = "other".into(),
+                "revision" => context.connection_revision = "other".into(), "library" => context.library_id = "other".into(),
+                "project" => context.shared_project_id = "other".into(), _ => context.generation = "b".repeat(64),
+            }
+            assert!(check_asset_delete_preview(&preview, &context, 7, &input, 99).is_err());
+        }
+        for field in ["operation", "asset", "token"] {
+            let mut input = delete_input();
+            match field { "operation" => input.operation_id = "other".into(), "asset" => input.shared_asset_id = "other".into(), _ => input.preview_token = "b".repeat(64) }
+            assert!(check_asset_delete_preview(&preview, &context, 7, &input, 99).is_err());
+        }
+    }
+
+    #[test]
+    fn lost_delete_responses_require_matching_persisted_tombstone_to_confirm_success() {
+        let preview = delete_preview(live_head(), "etag".into());
+        let deleted = Head { deleted: Some(true), operation_id: "delete-operation".into(), ..live_head() };
+        assert_eq!(asset_delete_commit_status(Err(StorageError::new("network")), Ok(Some((deleted.clone(), "etag".into()))), &preview), "deleted");
+        assert_eq!(asset_delete_commit_status(Err(StorageError::new("conflict")), Ok(Some((deleted, "etag".into()))), &preview), "deleted");
+        assert_eq!(asset_delete_commit_status(Err(StorageError::new("network")), Ok(Some((live_head(), "etag".into()))), &preview), "uncertain");
+        assert_eq!(asset_delete_commit_status(Ok(()), Err(StorageError::new("cancelled")), &preview), "uncertain");
+        assert_eq!(asset_delete_commit_status(Err(StorageError::new("conflict")), Ok(None), &preview), "conflict");
+        let other = Head { deleted: Some(true), operation_id: "other-delete".into(), ..live_head() };
+        assert_eq!(asset_delete_commit_status(Ok(()), Ok(Some((other, "etag".into()))), &preview), "conflict");
+        let changed = Head { deleted: Some(true), operation_id: "delete-operation".into(), revision_id: "other-revision".into(), ..live_head() };
+        assert_eq!(asset_delete_commit_status(Ok(()), Ok(Some((changed, "etag".into()))), &preview), "conflict");
+    }
     #[tokio::test]
     async fn cleanup_targets_keep_descriptor_for_clear_and_delete_it_last() {
         use object_store::memory::InMemory;
@@ -553,6 +806,23 @@ mod tests {
         assert!(!apply_matches_ack(&apply, &context, &record, "token", 7, "revision", false));
         assert!(!apply_matches_ack(&apply, &context, &record, "other", 7, "revision", true));
         assert!(!apply_matches_ack(&apply, &context, &record, "token", 8, "revision", true));
+        assert!(!apply_matches_ack(&apply, &context, &record, "token", 7, "other", true));
+        // Offline tokened aborts retain the same complete identity checks as late ACKs.
+        for field in ["owner", "connection", "connectionRevision", "library", "project", "generation"] {
+            let mut wrong = context.clone();
+            match field {
+                "owner" => wrong.owner_id = "other".into(), "connection" => wrong.connection_id = "other".into(),
+                "connectionRevision" => wrong.connection_revision = "other".into(), "library" => wrong.library_id = "other".into(),
+                "project" => wrong.shared_project_id = "other".into(), _ => wrong.generation = "other".into(),
+            }
+            assert!(!apply_matches_ack(&apply, &wrong, &record, "token", 7, "revision", true), "{field}");
+        }
+        apply.revision_id = "other".into();
+        assert!(!apply_matches_ack(&apply, &context, &record, "token", 7, "revision", true));
+        apply.revision_id = record.revision.revision_id.clone();
+        apply.shared_asset_id = "other".into();
+        assert!(!apply_matches_ack(&apply, &context, &record, "token", 7, "revision", true));
+        apply.shared_asset_id = record.revision.shared_asset_id.clone();
         apply.operation_id = "other".into();
         assert!(!apply_matches_ack(&apply, &context, &record, "token", 7, "revision", true));
     }

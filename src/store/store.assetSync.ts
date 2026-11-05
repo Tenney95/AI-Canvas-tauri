@@ -32,7 +32,8 @@ export interface AssetSyncSlice {
   cancelSharedStorageOperation: (taskId: string) => Promise<void>;
   loadSharedProjectSyncState: (ownerId: string) => Promise<void>;
   previewSharedProjectSync: (ownerId: string) => Promise<void>;
-  syncSharedProjectNow: (ownerId: string) => Promise<void>;
+  syncSharedProjectNow: (ownerId: string, itemId?: string, direction?: 'upload' | 'download') => Promise<void>;
+  deleteSharedProjectAsset: (ownerId: string, itemId: string) => Promise<void>;
   cancelSharedProjectSync: (ownerId: string) => Promise<void>;
   previewSharedProjectReset: (ownerId: string, mode: SharedProjectResetMode) => Promise<SharedProjectResetPreview>;
   applySharedProjectReset: (ownerId: string, mode: SharedProjectResetMode, previewToken: string) => Promise<SharedProjectResetResult>;
@@ -192,14 +193,15 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
       for (const sharedAssetId of pendingByAsset.keys()) completedByAsset.delete(sharedAssetId);
       const mappingsByAsset = new Map([...mappings.values()].map((entry) => [entry.sharedAssetId, entry]));
       const conflictsByAsset = new Map<string, SharedAssetSyncStatus['items'][number]>();
-      const addConflict = (entry: Pick<SharedAssetConflict, 'id' | 'sharedAssetId' | 'kind' | 'baseRevisionId'>, operation?: typeof entries[number]) => {
+      const addConflict = (entry: Pick<SharedAssetConflict, 'id' | 'sharedAssetId' | 'kind' | 'baseRevisionId'> & { reason?: SharedAssetConflict['reason'] }, operation?: typeof entries[number]) => {
         const mapping = mappingsByAsset.get(entry.sharedAssetId);
         if (!mapping || mapping.kind !== entry.kind || mapping.acceptedRevisionId !== entry.baseRevisionId
           || pendingByAsset.has(entry.sharedAssetId)) return;
         const payload = (operation?.revision ?? operation?.draft)?.payload;
         conflictsByAsset.set(entry.sharedAssetId, { id: entry.id, kind: entry.kind, direction: 'conflict',
           name: payload?.kind === 'file' ? payload.name : payload?.data.name ?? entry.sharedAssetId,
-          message: '共享候选版本存在冲突，请恢复核对' });
+          message: entry.reason === 'remoteDeleted' || operation?.errorCode === 'remote_deleted'
+            ? '云端资产已删除，本机内容已保留，旧同步不会重新上传' : '共享候选版本存在冲突，请恢复核对' });
         completedByAsset.delete(entry.sharedAssetId);
       };
       for (const entry of entries) if (entry.phase === 'conflict') addConflict(entry, entry);
@@ -246,9 +248,10 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
         const state = get();
         const live = state.sharedAssetStorage?.bindings.find((item) => item.ownerId === ownerId);
         const liveConnection = state.sharedAssetStorage?.connections.find((item) => item.id === binding.connectionId);
-        if (state.currentProjectId !== originProjectId || state.config.baseDataDir !== initial.config.baseDataDir
-          || live?.connectionRevision !== binding.connectionRevision || live.libraryId !== binding.libraryId
+        if (syncRuns.get(ownerId) !== runtime || state.currentProjectId !== originProjectId || state.config.baseDataDir !== initial.config.baseDataDir
+          || live?.connectionId !== binding.connectionId || live.connectionRevision !== binding.connectionRevision || live.libraryId !== binding.libraryId
           || live.sharedProjectId !== binding.sharedProjectId || liveConnection?.revision !== connection.revision
+          || (live.generation ?? 'legacy') !== (binding.generation ?? 'legacy')
           || JSON.stringify(state.projects.map(({ id, parentId, dataFolder }) => ({ id, parentId, dataFolder }))) !== folders
           || !runtime.applying && state.dramaAssets !== runtime.expectedLibrary) {
           throw new Error(sharedStorageErrorMessage('source_changed'));
@@ -275,14 +278,15 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
         assertCurrent();
         runtime.session = await projectAssetSyncService.preview({ binding, originProjectId, projects: initial.projects,
           library: initial.dramaAssets, nodes: initial.nodes, signal: controller.signal, assertCurrent,
-          onStatus: (patch) => { if (!controller.signal.aborted) updateSync(ownerId, patch); },
+          onStatus: (patch) => { if (!controller.signal.aborted && syncRuns.get(ownerId) === runtime) updateSync(ownerId, patch); },
           onTask: (taskId, active) => { if (active) runtime.tasks.add(taskId); else runtime.tasks.delete(taskId); },
         });
         assertCurrent();
         runtime.running = false;
-        updateSync(ownerId, { stage: runtime.session.operations.length ? 'preview'
+        const hasActions = runtime.session.operations.length > 0 || runtime.session.items.some((item) => item.canDelete);
+        updateSync(ownerId, { stage: hasActions ? 'preview'
           : get().sharedAssetSyncStatus[ownerId]?.stage ?? 'idle', progress: undefined });
-        if (!runtime.session.operations.length) {
+        if (!hasActions) {
           runtime.stop?.();
           if (syncRuns.get(ownerId) === runtime) syncRuns.delete(ownerId);
         }
@@ -296,15 +300,20 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
         }
       }
     },
-    syncSharedProjectNow: async (ownerId) => {
+    syncSharedProjectNow: async (ownerId, itemId, direction) => {
       requireOwner(ownerId);
+      if (itemId !== undefined && !itemId.trim() || direction !== undefined && itemId === undefined) {
+        throw new Error('请选择有效的单项资产后同步');
+      }
       const runtime = syncRuns.get(ownerId);
       if (!runtime?.session || runtime.running || runtime.controller.signal.aborted) throw new Error('请先重新预览项目资产同步');
       runtime.running = true;
+      let refresh = false;
       updateSync(ownerId, { stage: 'syncing', completed: runtime.session.completed, total: runtime.session.total,
         error: undefined, errorStage: undefined });
       try {
         const { projectAssetSyncService } = await import('../services/fs/sharedAssetSync');
+        runtime.session.context.assertCurrent();
         await projectAssetSyncService.apply(runtime.session, {
           applyDownload: async ({ expectedLibrary, nextLibrary, commit }) => {
             runtime.applying = true;
@@ -316,9 +325,11 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
               return result;
             } finally { runtime.applying = false; }
           },
-        });
+        }, itemId !== undefined ? { itemId, direction } : undefined);
         runtime.controller.signal.throwIfAborted();
+        runtime.session.context.assertCurrent();
         notifyProjectDiskChanged();
+        refresh = itemId !== undefined;
       } catch (error) {
         if (syncRuns.get(ownerId) === runtime) updateSync(ownerId, { stage: runtime.controller.signal.aborted ? 'paused' : 'failed', progress: undefined,
           errorStage: runtime.controller.signal.aborted ? undefined : sharedStorageErrorStage(error),
@@ -326,6 +337,39 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
       } finally {
         runtime.stop?.();
         if (syncRuns.get(ownerId) === runtime) syncRuns.delete(ownerId);
+        runtime.controller.abort();
+      }
+      // 单项结果不能把其余固定待办显示成完成；关闭旧会话后从真实本地与云端重建列表。
+      if (refresh && currentOwner() === ownerId && get().currentProjectId === runtime.session.context.originProjectId) {
+        await get().previewSharedProjectSync(ownerId);
+      }
+    },
+    deleteSharedProjectAsset: async (ownerId, itemId) => {
+      requireOwner(ownerId);
+      const runtime = syncRuns.get(ownerId);
+      if (!runtime?.session || runtime.running || runtime.controller.signal.aborted) throw new Error('请先重新预览项目资产同步');
+      runtime.session.context.assertCurrent();
+      runtime.running = true;
+      let refresh = false;
+      updateSync(ownerId, { stage: 'syncing', error: undefined, errorStage: undefined, progress: undefined });
+      try {
+        const { projectAssetSyncService } = await import('../services/fs/sharedAssetSync');
+        runtime.session.context.assertCurrent();
+        await projectAssetSyncService.deleteAsset(runtime.session, itemId);
+        runtime.session.context.assertCurrent();
+        refresh = true;
+      } catch (error) {
+        if (syncRuns.get(ownerId) === runtime) updateSync(ownerId, { stage: runtime.controller.signal.aborted ? 'paused' : 'failed',
+          error: runtime.controller.signal.aborted ? undefined : error instanceof Error ? error.message : '云端资产删除未完成，请重新预览',
+          errorStage: runtime.controller.signal.aborted ? undefined : sharedStorageErrorStage(error), progress: undefined });
+        throw error;
+      } finally {
+        runtime.stop?.();
+        if (syncRuns.get(ownerId) === runtime) syncRuns.delete(ownerId);
+        runtime.controller.abort();
+      }
+      if (refresh && currentOwner() === ownerId && get().currentProjectId === runtime.session.context.originProjectId) {
+        await get().previewSharedProjectSync(ownerId);
       }
     },
     cancelSharedProjectSync: cancelSync,

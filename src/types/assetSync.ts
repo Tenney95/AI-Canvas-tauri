@@ -157,6 +157,8 @@ export interface SharedSyncHead {
   revisionDigest: string;
   operationId: string;
   updatedAt: number;
+  /** 持久删除标记；正常 head 省略。旧待办不得据此重新创建资产。 */
+  deleted?: boolean;
 }
 export interface SharedSyncRemoteAsset {
   head: SharedSyncHead;
@@ -231,7 +233,7 @@ export interface SharedAssetConflict extends SharedSyncBindingIdentity {
   operationId?: string;
   baseRevisionId?: string;
   remoteRevisionId?: string;
-  reason: 'bothChanged' | 'headChanged' | 'missingLocal' | 'missingRemote' | 'unknownCommit';
+  reason: 'bothChanged' | 'headChanged' | 'missingLocal' | 'missingRemote' | 'remoteDeleted' | 'unknownCommit';
   createdAt: number;
 }
 export interface SharedAssetSyncLocalState {
@@ -244,8 +246,32 @@ export interface SharedSyncRequestContext extends SharedSyncBindingIdentity {
 }
 export interface SharedSyncListResult {
   assets: SharedSyncRemoteAsset[];
+  /** 兼容未返回此字段的旧运行时；这些资产不进入下载或自动上传候选。 */
+  deletedAssets?: SharedSyncHead[];
   complete: boolean;
   nextCursor?: string;
+}
+export interface SharedSyncAssetDeletePreviewInput extends SharedSyncRequestContext {
+  operationId: string;
+  sharedAssetId: string;
+  expectedRevisionId: string;
+  expectedETag: string;
+}
+export interface SharedSyncAssetDeletePreview {
+  sharedAssetId: string;
+  revisionId: string;
+  operationId: string;
+  previewToken: string;
+}
+export interface SharedSyncAssetDeleteApplyInput extends SharedSyncRequestContext {
+  operationId: string;
+  sharedAssetId: string;
+  previewToken: string;
+}
+export interface SharedSyncAssetDeleteResult {
+  status: 'deleted' | 'conflict' | 'uncertain';
+  sharedAssetId: string;
+  operationId: string;
 }
 export interface SharedSyncPrepareInput extends SharedSyncRequestContext {
   rootDirectory: string;
@@ -302,6 +328,7 @@ export interface SharedAssetSyncPreviewItem {
   name: string;
   kind: SharedSyncAssetKind;
   direction: 'upload' | 'download' | 'conflict' | 'unchanged' | 'blocked';
+  canDelete?: boolean;
   message?: string;
 }
 export interface SharedAssetSyncStatus {

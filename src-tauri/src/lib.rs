@@ -1872,6 +1872,8 @@ pub fn run() {
             project_asset_storage::project_asset_storage_cancel,
             project_asset_storage::project_asset_storage_preview_cleanup,
             project_asset_storage::project_asset_storage_apply_cleanup,
+            project_asset_storage::project_asset_storage_preview_asset_delete,
+            project_asset_storage::project_asset_storage_apply_asset_delete,
             project_asset_storage::project_asset_storage_list_heads,
             project_asset_storage::project_asset_storage_prepare_publish,
             project_asset_storage::project_asset_storage_publish_revision,

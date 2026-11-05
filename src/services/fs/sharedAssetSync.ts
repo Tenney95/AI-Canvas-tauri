@@ -8,14 +8,14 @@ import type { AssetImageRecord } from '../../types/assetImage';
 import type { SharedAssetConflict, SharedAssetMapping, SharedAssetOutboxEntry, SharedAssetSyncPreviewItem,
   SharedAssetSyncStatus, SharedProjectBinding, SharedSyncBindingIdentity, SharedSyncDraft, SharedSyncMediaKind,
   SharedSyncMemberKind, SharedSyncOperationInput, SharedSyncPayload, SharedSyncPublishResult,
-  SharedSyncRemoteAsset, SharedSyncRevision } from '../../types/assetSync';
+  SharedSyncRemoteAsset, SharedSyncRevision, SharedSyncHead } from '../../types/assetSync';
 import { getAllAssetMeta, getAllProjects, getAssetImageRecords, getAssetIndexById, getAssetMetaById,
   type AssetIndexRecord, type AssetMetaRecord } from '../indexedDbService';
 import { loadSharedAssetSyncState, patchSharedAssetSyncOperation, putSharedAssetSyncPlan,
   type SharedAssetSyncCommitInput, type SharedAssetSyncCommitResult } from '../indexedDb/sharedAssetSyncRepository';
 import { configValuesEqual } from '../configPatch';
 import { getSharedAssetSyncDependencies, mapSharedAssetSyncText, parseSharedAssetSyncDraft, parseSharedAssetSyncRevision,
-  restoreSharedDramaAsset, serializeSharedDramaAsset } from '../sharedAssetSyncFormat';
+  restoreSharedAssetSyncText, restoreSharedDramaAsset, serializeSharedDramaAsset } from '../sharedAssetSyncFormat';
 import { sha256BytesHex } from '../mediaDataUrl';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { preferDramaLibraryReferences } from '../dramaAssetPrompt';
@@ -26,7 +26,8 @@ import { getRelativeAssetPath } from './assetIndex';
 import { scanDirectoryFiles, type AssetScanOptions } from './assetLibrary';
 import { prepareSharedAssetImageMetadata, readSharedAssetImageMetadata } from './assetImageMetadata';
 import { acknowledgeSharedAssetApply, downloadSharedAssetRevision, listSharedAssetHeads,
-  prepareSharedAssetPublish, publishSharedAssetRevision, recoverSharedAssetOperation } from './sharedAssetStorage';
+  prepareSharedAssetPublish, publishSharedAssetRevision, recoverSharedAssetOperation,
+  previewSharedAssetDelete, applySharedAssetDelete } from './sharedAssetStorage';
 
 export interface SharedAssetSyncContext {
   binding: SharedProjectBinding;
@@ -73,6 +74,9 @@ export interface SharedAssetSyncSession {
   invalidated?: boolean;
   /** 持久层最后一次已接受的映射，用于准备阶段 CAS。 */
   savedMappings: Map<string, SharedAssetMapping>;
+  /** 删除操作只接受本轮原生已核对的 head，不从界面显示名推断身份。 */
+  remoteAssets: SharedSyncRemoteAsset[];
+  deletedAssets: SharedSyncHead[];
 }
 export interface SharedAssetSyncExecution {
   applyDownload: (input: { expectedLibrary: DramaAssetLibrary; nextLibrary?: DramaAssetLibrary;
@@ -80,6 +84,10 @@ export interface SharedAssetSyncExecution {
 }
 
 const identityKeys = ['ownerId', 'connectionId', 'connectionRevision', 'libraryId', 'sharedProjectId'] as const;
+// 原 token 只用于确认已开始的本机事务终态；不持久化，也不用于重新发布或重新应用。
+const pendingApplyTokens = new Map<string, string>();
+const applyTokenKey = (binding: SharedSyncBindingIdentity, operationId: string) =>
+  JSON.stringify([...identityKeys.map((key) => binding[key]), binding.generation ?? 'legacy', operationId]);
 const sameProjectBinding = (row: SharedSyncBindingIdentity, binding: SharedSyncBindingIdentity) => identityKeys.every((key) => row[key] === binding[key]);
 const sameBinding = (row: SharedSyncBindingIdentity, binding: SharedSyncBindingIdentity) =>
   sameProjectBinding(row, binding) && (row.generation ?? 'legacy') === (binding.generation ?? 'legacy');
@@ -106,9 +114,21 @@ const flat = (library: DramaAssetLibrary): DramaAsset[] => [...library.character
 const pending = (operation: SharedAssetOutboxEntry) => operation.errorCode === 'ack_pending' || !['completed', 'conflict'].includes(operation.phase);
 function guard(context: SharedAssetSyncContext): void { context.signal?.throwIfAborted(); context.assertCurrent(); }
 function publicError(error: unknown): string {
-  if (error instanceof Error && /^(?:资产|角色|全局|项目|图片|参考图|共享|本次|待同步|素材|未找到|云存储|版本|目标存储|连接)/.test(error.message)
-    && !/(?:https?:\/\/|[A-Za-z]:[\\/]|\\\\)/.test(error.message) && error.message.length <= 180) return error.message;
+  if (error instanceof Error && /^(?:资产|角色|全局|项目|图片|参考图|共享|本次|待同步|素材|未找到|云存储|版本|目标存储|连接|上传|下载)/.test(error.message)
+    && !/(?:https?:\/\/|[A-Za-z]:[\\/]|\\\\)/.test(error.message) && error.message.length <= 280) return error.message;
   return '共享资产操作未完成，请重新预览或恢复';
+}
+function itemFailure(session: SharedAssetSyncSession, item: SessionOperation, error: unknown): Error {
+  const raw = session.items.find((row) => row.id === item.mapping.id)?.name ?? itemName(item.mapping, item.operation.revision);
+  const unsafeLabel = /(?:[a-z][a-z0-9+.-]*:\/\/|[A-Za-z]:[\\/])/i.test(raw) || /^[\\/]/.test(raw)
+    || Array.from(raw).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
+  const label = unsafeLabel ? '项目资产' : Array.from(raw).slice(0, 48).join('');
+  const source = error instanceof Error && error.cause && typeof error.cause === 'object' ? error.cause : {};
+  const cause = Object.fromEntries(['code', 'stage', 'reason', 'fieldPath'].flatMap((key) => {
+    const value: unknown = Reflect.get(source, key);
+    return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.[\]-]{0,159}$/.test(value) ? [[key, value]] : [];
+  }));
+  return new Error(`${item.operation.direction === 'upload' ? '上传' : '下载'}「${label || '项目资产'}」失败：${publicError(error)}`, { cause });
 }
 async function native<T>(session: SharedAssetSyncSession, run: (context: SharedSyncBindingIdentity & { taskId: string }) => Promise<T>): Promise<T> {
   guard(session.context);
@@ -142,7 +162,12 @@ function localApplyLease(context: SharedAssetSyncContext, token: string) {
 /** 已决定提交／撤销的回执沿用原绑定；即使界面关闭也可以清理本次租约。 */
 async function acknowledgeOperation(session: SharedAssetSyncSession, item: SessionOperation, token: string, applied: boolean): Promise<void> {
   const taskId = crypto.randomUUID(); session.context.onTask(taskId, true);
-  try { await acknowledgeSharedAssetApply({ ...operationInput({ ...identity(session.context.binding), taskId }, item.operation), applyToken: token, applied }); }
+  const key = applyTokenKey(session.context.binding, item.operation.operationId);
+  pendingApplyTokens.set(key, token);
+  try {
+    await acknowledgeSharedAssetApply({ ...operationInput({ ...identity(session.context.binding), taskId }, item.operation), applyToken: token, applied });
+    if (pendingApplyTokens.get(key) === token) pendingApplyTokens.delete(key);
+  }
   finally { session.context.onTask(taskId, false); }
 }
 
@@ -341,7 +366,9 @@ function itemName(mapping: SharedAssetMapping, revision?: SharedSyncRevision): s
   return mapping.displayRelativePath?.split('/').at(-1) ?? '项目资产';
 }
 function previewItem(session: SharedAssetSyncSession, mapping: SharedAssetMapping, name: string, direction: SharedAssetSyncPreviewItem['direction'], message?: string) {
-  session.items.push({ id: mapping.id, name, kind: mapping.kind, direction, ...(message ? { message } : {}) });
+  session.items.push({ id: mapping.id, name, kind: mapping.kind, direction,
+    ...(session.remoteAssets.some((asset) => asset.head.sharedAssetId === mapping.sharedAssetId) ? { canDelete: true } : {}),
+    ...(message ? { message } : {}) });
   session.context.onStatus({ items: [...session.items] });
 }
 
@@ -350,9 +377,11 @@ async function remoteAssets(session: SharedAssetSyncSession): Promise<SharedSync
   for (let page = 0; page < 100; page++) {
     const batch = await native(session, (context) => listSharedAssetHeads({ ...context, cursor }));
     result.push(...batch.assets);
-    if (result.length > 5000) throw new Error('共享资产数量超过当前同步上限');
+    session.deletedAssets.push(...(batch.deletedAssets ?? []));
+    if (result.length + session.deletedAssets.length > 5000) throw new Error('共享资产数量超过当前同步上限');
     if (batch.complete) {
-      if (new Set(result.map((asset) => asset.head.sharedAssetId)).size !== result.length) throw new Error('共享清单身份不唯一，请重新预览');
+      const ids = [...result.map((asset) => asset.head.sharedAssetId), ...session.deletedAssets.map((head) => head.sharedAssetId)];
+      if (new Set(ids).size !== ids.length) throw new Error('共享清单身份不唯一，请重新预览');
       return result;
     }
     if (!batch.nextCursor || cursors.has(batch.nextCursor)) throw new Error('共享清单读取不完整，请重新预览');
@@ -423,17 +452,21 @@ export async function buildSharedAssetSyncPreview(context: SharedAssetSyncContex
   const stored = await loadSharedAssetSyncState(ownerId);
   const session: SharedAssetSyncSession = { context, expectedLibrary: context.library, rootDirectory, mappings:
     structuredClone(stored.mappings.filter((mapping) => sameBinding(mapping, context.binding))), operations: [], items: [],
-    completed: 0, total: 0, executing: false, savedMappings: new Map(stored.mappings.map((mapping) => [mapping.id, structuredClone(mapping)])) };
+    completed: 0, total: 0, executing: false, remoteAssets: [], deletedAssets: [],
+    savedMappings: new Map(stored.mappings.map((mapping) => [mapping.id, structuredClone(mapping)])) };
   // Keep restored counts visible until local and remote snapshots have been checked.
   context.onStatus({ ownerId, stage: 'scanning', items: [] });
-  const remote = await remoteAssets(session); const remoteById = new Map(remote.map((asset) => [asset.head.sharedAssetId, asset]));
+  const remote = await remoteAssets(session); session.remoteAssets = remote;
+  const remoteById = new Map(remote.map((asset) => [asset.head.sharedAssetId, asset]));
+  const deletedById = new Map(session.deletedAssets.map((head) => [head.sharedAssetId, head]));
+  const invalidRemoteDependencies = new Set<string>();
   for (const asset of remote) {
     const payload = asset.revision.payload;
     if (payload.kind !== 'character' || payload.data.kind !== 'character') continue;
     for (const weaponId of payload.data.weaponIds ?? []) {
       const weapon = remoteById.get(weaponId)?.revision.payload;
       if (!weapon || weapon.kind !== 'prop' || weapon.data.kind !== 'prop' || weapon.data.propType !== 'weapon') {
-        throw new Error('共享角色的武器依赖缺失或类型不符，请先恢复对应武器');
+        invalidRemoteDependencies.add(asset.head.sharedAssetId);
       }
     }
   }
@@ -540,11 +573,67 @@ export async function buildSharedAssetSyncPreview(context: SharedAssetSyncContex
     const cloud = remoteById.get(mapping.sharedAssetId);
     const card = localCards.find((asset) => assetKey(asset.kind, asset.id) === assetKey(mapping.kind, mapping.localEntityId));
     const local = mapping.kind === 'file' ? fileById.get(mapping.currentFileAssetId ?? mapping.localEntityId) : undefined;
+    const deleted = deletedById.get(mapping.sharedAssetId);
+    if (deleted) {
+      const interrupted = stored.outbox.filter((operation) => sameBinding(operation, context.binding)
+        && operation.sharedAssetId === mapping.sharedAssetId && pending(operation));
+      let receiptPending = false, receiptNeedsRestart = false;
+      for (const operation of interrupted) {
+        // 本地已提交的结果不倒退；只终止旧回执恢复，未提交的候选才进入冲突。
+        if (['applied', 'completed'].includes(operation.phase)) {
+          const key = applyTokenKey(context.binding, operation.operationId);
+          const retained = pendingApplyTokens.get(key);
+          if (!retained) receiptNeedsRestart = true;
+          else {
+            try { await acknowledgeAppliedOperation(session, { operation, mapping }, retained); }
+            catch {
+              guard(context);
+              // ACK false 成功也已权威释放本机锁；双失败不能假装这笔回执已完成。
+              if (pendingApplyTokens.has(key)) { receiptPending = true; continue; }
+            }
+          }
+        }
+        await patchSharedAssetSyncOperation(operation.operationId, {
+          phase: ['applied', 'completed'].includes(operation.phase) ? 'completed' : 'conflict', errorCode: 'remote_deleted' });
+        guard(context);
+      }
+      const prior = stored.conflicts.find((row) => sameBinding(row, context.binding) && row.sharedAssetId === mapping.sharedAssetId
+        && row.reason === 'remoteDeleted' && row.remoteRevisionId === deleted.revisionId && row.baseRevisionId === mapping.acceptedRevisionId);
+      await persist(session, mapping, undefined, [prior ?? { ...identity(context.binding), id: crypto.randomUUID(),
+        sharedAssetId: mapping.sharedAssetId, kind: mapping.kind, baseRevisionId: mapping.acceptedRevisionId,
+        remoteRevisionId: deleted.revisionId, reason: 'remoteDeleted', createdAt: Date.now() }]);
+      previewItem(session, mapping, card?.name ?? local?.file.name ?? itemName(mapping), 'conflict',
+        receiptPending ? '云端资产已删除，本机内容已保留；原操作回执尚未释放，请重新预览核对'
+          : receiptNeedsRestart ? '云端资产已删除，本机内容已保留，请重启应用后继续同步'
+          : '云端资产已删除，本机内容已保留；旧同步不会重新上传，请先处理删除冲突');
+      continue;
+    }
+    let previous = pendingByAsset.get(mapping.sharedAssetId);
+    const invalidRemote = invalidRemoteDependencies.has(mapping.sharedAssetId);
+    const acknowledgeOnly = previous?.phase === 'applied' || previous?.errorCode === 'ack_pending';
+    const missingRemoteDependency = '共享角色的武器依赖缺失或类型不符，请先处理对应武器；本机内容已保留';
+    // 不采用缺依赖的云端版本；完整的本机修复候选仍走下面原有的比较和并发冲突判断。
+    if (invalidRemote && !acknowledgeOnly && ((!card && !local) || previous?.direction === 'download')) {
+      previewItem(session, mapping, card?.name ?? itemName(mapping, cloud?.revision), 'blocked',
+        missingRemoteDependency);
+      continue;
+    }
     if (unresolvedUnknown.has(mapping.sharedAssetId)) {
       previewItem(session, mapping, card?.name ?? local?.file.name ?? itemName(mapping, cloud?.revision), 'blocked', uncertainCommitMessage);
       continue;
     }
-    const previous = pendingByAsset.get(mapping.sharedAssetId);
+    if (previous?.direction === 'upload' && previous.phase === 'paused' && previous.errorCode === 'dependency_missing') {
+      const blockedOperation = previous;
+      try {
+        // Renderer 不能推断候选从未发出；由原生确认 journal 无远端副作用并清理成功后才换身份。
+        await discardPrepared(session, { operation: blockedOperation, mapping, remote: cloud, local });
+        previous = undefined;
+      } catch (error) {
+        guard(context);
+        previewItem(session, mapping, card?.name ?? itemName(mapping, blockedOperation.revision), 'blocked', publicError(error));
+        continue;
+      }
+    }
     if (previous) {
       if (previous.errorCode === 'locked_conflict') {
         previewItem(session, mapping, card?.name ?? local?.file.name ?? itemName(mapping, cloud?.revision), 'conflict', '共享候选版本冲突，需确认后处理原同步');
@@ -572,7 +661,7 @@ export async function buildSharedAssetSyncPreview(context: SharedAssetSyncContex
             else if (recovered.status === 'published' && recovered.asset) {
               await operationPhase(item, 'checkingCommit', { revision: recovered.asset.revision, revisionDigest: recovered.asset.head.revisionDigest, errorCode: undefined });
               // 预览不应用结果，只释放本次读取取得的本机租约。
-              if (recovered.applyToken) await native(session, (request) => acknowledgeSharedAssetApply({ ...operationInput(request, previous), applyToken: recovered.applyToken, applied: false }));
+              if (recovered.applyToken) await acknowledgeOperation(session, item, recovered.applyToken, false);
             } else throw new Error('共享候选版本存在冲突，请恢复核对');
           } catch (error) {
             if (!(error instanceof Error && error.cause && typeof error.cause === 'object'
@@ -707,11 +796,16 @@ export async function buildSharedAssetSyncPreview(context: SharedAssetSyncContex
         previewItem(session, mapping, card?.name ?? local!.file.name, 'conflict', '本地和云端均已修改，保留两个候选版本');
       } else if (cloudChanged) {
         await discardPrepared(session, item);
+        if (invalidRemote) {
+          previewItem(session, mapping, card?.name ?? local!.file.name, 'blocked', missingRemoteDependency);
+          continue;
+        }
         const download = newOperation(mapping, 'download', cloud); await persist(session, mapping, download);
         session.operations.push({ operation: download, mapping, remote: cloud, local, mediaLocals: item.mediaLocals });
         previewItem(session, mapping, card?.name ?? local!.file.name, 'download');
       } else if (mapping.baselineDigest === digest && cloud) {
-        await discardPrepared(session, item); previewItem(session, mapping, card?.name ?? local!.file.name, 'unchanged');
+        await discardPrepared(session, item); previewItem(session, mapping, card?.name ?? local!.file.name,
+          invalidRemote ? 'blocked' : 'unchanged', invalidRemote ? missingRemoteDependency : undefined);
       } else {
         session.operations.push(item); previewItem(session, mapping, card?.name ?? local!.file.name, 'upload');
       }
@@ -750,10 +844,11 @@ export async function buildSharedAssetSyncPreview(context: SharedAssetSyncContex
           });
         });
       if (!unresolved && !missingLocalWeapon) continue;
-      await operationPhase(item, 'paused', { errorCode: 'dependency_missing' });
+      const uncertain = ['unknown_commit', 'locked_conflict'].includes(item.operation.errorCode ?? '');
+      if (!uncertain) await operationPhase(item, 'paused', { errorCode: 'dependency_missing' });
       session.operations = session.operations.filter((entry) => entry !== item); dependenciesChanged = true;
       session.items = session.items.map((entry) => entry.id === item.mapping.id ? { ...entry, direction: 'blocked',
-        message: '引用的项目资产尚未成功纳入共享，请先修复对应资产' } : entry);
+        message: uncertain ? uncertainCommitMessage : '引用的项目资产尚未成功纳入共享，请先修复对应资产' } : entry);
     }
   }
   const unresolved = session.items.some((item) => item.direction === 'blocked' || item.direction === 'conflict');
@@ -846,6 +941,7 @@ async function acceptPublished(session: SharedAssetSyncSession, item: SessionOpe
     committed = true;
     item.mapping = next; item.operation = { ...commitOperation, phase: 'completed' }; item.acknowledgeOnly = true;
     session.mappings = session.mappings.map((mapping) => mapping.id === next.id ? next : mapping);
+    session.remoteAssets = [...session.remoteAssets.filter((asset) => asset.head.sharedAssetId !== published.head.sharedAssetId), published];
     await acknowledgeAppliedOperation(session, item, result.applyToken);
     await operationPhase(item, 'completed', { errorCode: undefined }); item.acknowledgeOnly = false;
   } catch (error) {
@@ -907,7 +1003,7 @@ async function applyDownloaded(session: SharedAssetSyncSession, item: SessionOpe
       ...baselines.map((file) => ({ assetId: file.index.assetId, expected: file.tags, next: file.tags }))];
       if (payload.imageMetadata) {
         const record = await prepareSharedAssetImageMetadata({ assetId: index.assetId, name: payload.name, path: index.path,
-          size: index.size, source: 'project', category: 'image' }, { prompt: mapSharedAssetSyncText(payload.imageMetadata.prompt, (value) => mention(session, value, true)),
+          size: index.size, source: 'project', category: 'image' }, { prompt: restoreSharedAssetSyncText(payload.imageMetadata.prompt, (value) => mention(session, value, true)),
           references: payload.imageMetadata.references.map((reference) => ({ id: member(mapping, 'imageReference', reference.id, true),
             name: reference.name, filePath: indexes.find((index) => index.assetId === mediaById.get(reference.mediaId)!.assetId)!.path })) }, { signal: lease.signal });
         lease.assertCurrent();
@@ -941,13 +1037,127 @@ async function applyDownloaded(session: SharedAssetSyncSession, item: SessionOpe
   } finally { lease?.dispose(); }
 }
 
-export async function executeSharedAssetSync(session: SharedAssetSyncSession, execution: SharedAssetSyncExecution): Promise<void> {
+export interface SharedAssetSyncSelection { itemId: string; direction?: 'upload' | 'download' }
+
+function selectedOperation(session: SharedAssetSyncSession, selection: SharedAssetSyncSelection): SessionOperation {
+  const item = session.operations.find((item) => item.mapping.id === selection.itemId
+    || item.operation.operationId === selection.itemId);
+  const row = item && session.items.find((row) => row.id === item.mapping.id);
+  if (!item || !row || !['upload', 'download'].includes(row.direction)
+    || row.direction !== item.operation.direction || selection.direction && selection.direction !== item.operation.direction) {
+    throw new Error('本条资产当前不可按所选方向同步，请重新预览或先处理冲突');
+  }
+  assertOperationDependencies(session, item);
+  return item;
+}
+
+function assertOperationDependencies(session: SharedAssetSyncSession, item: SessionOperation): void {
+  if (item.acknowledgeOnly || item.operation.phase === 'applied' || item.operation.errorCode === 'ack_pending') return;
+  const payload = item.operation.revision?.payload ?? item.operation.draft?.payload;
+  if (!payload) throw new Error('本条资产的固定版本缺失，请重新预览');
+  const dependencies = getSharedAssetSyncDependencies(payload).filter((id) => id !== item.mapping.sharedAssetId);
+  const dependencyAsset = (sharedId: string): DramaAsset | undefined => {
+    if (item.operation.direction === 'upload') {
+      const remote = session.remoteAssets.find((asset) => asset.head.sharedAssetId === sharedId)?.revision.payload;
+      return remote && remote.kind !== 'file' ? remote.data : undefined;
+    }
+    const mapping = session.mappings.find((mapping) => mapping.sharedAssetId === sharedId);
+    return mapping && flat(session.expectedLibrary).find((asset) => asset.id === mapping.localEntityId && asset.kind === mapping.kind);
+  };
+  let missing = dependencies.some((sharedId) => !dependencyAsset(sharedId));
+  // 有卡片而没有所引用的参考图／声音／动作，同样需要先同步依赖卡片的新版本。
+  for (const match of JSON.stringify(payload).matchAll(/@drama\{([^:}]+):/g)) {
+    const reference = parseDramaMentionId(match[1]);
+    if (reference.assetId === item.mapping.sharedAssetId) continue;
+    const asset = dependencyAsset(reference.assetId);
+    const mapping = session.mappings.find((mapping) => mapping.sharedAssetId === reference.assetId);
+    const memberId = (kind: SharedSyncMemberKind, sharedId: string, parent?: string) => item.operation.direction === 'upload' ? sharedId
+      : mapping?.members.find((member) => member.kind === kind && member.sharedId === sharedId
+        && (kind !== 'actionMedia' || member.parentLocalId === parent))?.localId;
+    if (!asset) { missing = true; continue; }
+    if (reference.referenceImageId !== undefined && !asset.referenceImages?.some((entry) => entry.id === memberId('referenceImage', reference.referenceImageId!))) missing = true;
+    if (reference.voiceClipId !== undefined && (asset.kind !== 'character'
+      || !asset.voiceClips?.some((entry) => entry.id === memberId('voiceClip', reference.voiceClipId!)))) missing = true;
+    if (reference.actionId !== undefined) {
+      const actionId = memberId('action', reference.actionId);
+      const action = asset.kind === 'character' ? asset.actions?.find((entry) => entry.id === actionId) : undefined;
+      if (!action?.media?.some((entry) => entry.id === memberId('actionMedia', reference.actionMediaId ?? '', actionId))) missing = true;
+    }
+  }
+  if (payload.kind === 'character' && payload.data.kind === 'character') {
+    for (const sharedId of payload.data.weaponIds ?? []) {
+      const weapon = dependencyAsset(sharedId);
+      if (!weapon || weapon.kind !== 'prop' || weapon.propType !== 'weapon') missing = true;
+    }
+  }
+  if (missing) throw new Error('本条资产引用的其他项目资产尚未同步，请先同步依赖资产');
+}
+
+/** 删除只发布云端删除标记；媒体文件、卡片与本机索引保持原样。 */
+export async function deleteSharedAsset(session: SharedAssetSyncSession, itemId: string): Promise<void> {
+  if (session.executing || session.invalidated) throw new Error('请先重新预览项目资产同步');
+  guard(session.context);
+  const mapping = session.mappings.find((mapping) => mapping.id === itemId
+    || session.operations.some((item) => item.mapping.id === mapping.id && item.operation.operationId === itemId));
+  const remote = mapping && session.remoteAssets.find((asset) => asset.head.sharedAssetId === mapping.sharedAssetId);
+  if (!mapping || !remote || !session.items.some((row) => row.id === mapping.id && row.canDelete)) {
+    throw new Error('本条资产没有可删除的云端版本，请重新预览');
+  }
+  const expected = { sharedAssetId: remote.head.sharedAssetId, expectedRevisionId: remote.head.revisionId, expectedETag: remote.etag };
+  const publisher = remote.head.operationId, digest = remote.head.revisionDigest;
+  const operationId = crypto.randomUUID();
+  const assertRemote = () => {
+    guard(session.context);
+    const live = session.remoteAssets.find((asset) => asset.head.sharedAssetId === expected.sharedAssetId);
+    if (!live || live.head.revisionId !== expected.expectedRevisionId || live.etag !== expected.expectedETag
+      || live.head.operationId !== publisher || live.head.revisionDigest !== digest) {
+      throw new Error('云端资产版本已变化，请重新预览后删除');
+    }
+  };
+  session.executing = true;
+  try {
+    const preview = await native(session, (context) => previewSharedAssetDelete({ ...context, ...expected, operationId }));
+    assertRemote();
+    if (preview.operationId !== operationId || preview.sharedAssetId !== expected.sharedAssetId
+      || preview.revisionId !== expected.expectedRevisionId) throw new Error('云端删除预览已失效，请重新预览');
+    const result = await native(session, (context) => applySharedAssetDelete({ ...context, operationId,
+      sharedAssetId: expected.sharedAssetId, previewToken: preview.previewToken }));
+    assertRemote();
+    if (result.status !== 'deleted') throw new Error(result.status === 'conflict'
+      ? '云端资产已有其他修改，未删除，请重新预览' : '云端删除结果尚未确认，请重新预览核对');
+    session.invalidated = true;
+  } finally { session.executing = false; }
+}
+
+export async function executeSharedAssetSync(session: SharedAssetSyncSession, execution: SharedAssetSyncExecution,
+  selection?: SharedAssetSyncSelection): Promise<void> {
   if (session.executing) throw new Error('项目资产正在同步，请稍后重试');
   if (session.invalidated) throw new Error('共享操作已由其他实例应用，请重新打开项目后预览');
+  guard(session.context);
+  const operations = selection ? [selectedOperation(session, selection)] : session.operations;
   guard(session.context); session.executing = true;
   session.context.onStatus({ stage: 'syncing', total: session.total, completed: session.completed });
   try {
-    for (const item of session.operations) {
+    const waiting = [...operations];
+    while (waiting.length) {
+      guard(session.context);
+      const ready = waiting.findIndex((item) => {
+        if (item.operation.phase === 'completed' && !item.acknowledgeOnly && item.operation.errorCode !== 'ack_pending') return true;
+        try { assertOperationDependencies(session, item); return true; } catch { return false; }
+      });
+      if (ready < 0) {
+        // 计划中的候选不是已经到达目标端的依赖；没有就绪项时保留原身份，不能先发布悬空引用。
+        for (const item of waiting) {
+          const uncertain = ['unknown_commit', 'locked_conflict'].includes(item.operation.errorCode ?? '');
+          if (!uncertain) await operationPhase(item, 'paused', { errorCode: 'dependency_missing' });
+          session.items = session.items.map((row) => row.id === item.mapping.id ? { ...row, direction: 'blocked',
+            message: uncertain ? uncertainCommitMessage : '引用的项目资产尚未同步到目标端，请先同步依赖资产' } : row);
+        }
+        session.context.onStatus({ stage: 'paused', items: [...session.items], completed: session.completed, total: session.total,
+          error: '部分资产的依赖尚未同步，原待办已保留' });
+        return;
+      }
+      const [item] = waiting.splice(ready, 1);
       guard(session.context);
       if (item.operation.phase === 'completed' && !item.acknowledgeOnly && item.operation.errorCode !== 'ack_pending') continue;
       try {
@@ -965,6 +1175,7 @@ export async function executeSharedAssetSync(session: SharedAssetSyncSession, ex
               await cleanupInputs(session, item.operation);
             }
             if (!item.operation.revision || !item.operation.revisionDigest) throw new Error('未找到上次准备的固定版本，请重新预览');
+            assertOperationDependencies(session, item);
             await operationPhase(item, 'uploading', { errorCode: undefined });
             result = await native(session, (context) => publishSharedAssetRevision(operationInput(context, item.operation)));
           }
@@ -983,14 +1194,14 @@ export async function executeSharedAssetSync(session: SharedAssetSyncSession, ex
         if (!['unknown_commit', 'locked_conflict'].includes(item.operation.errorCode ?? '') && !['applied', 'completed', 'conflict'].includes(item.operation.phase)) {
           await patchSharedAssetSyncOperation(item.operation.operationId, { phase: 'paused', errorCode: 'sync_interrupted' }).catch(() => undefined);
         }
-        throw error;
+        throw itemFailure(session, item, error);
       }
     }
     const unresolved = session.items.some((item) => item.direction === 'conflict' || item.direction === 'blocked');
-    const restored = session.operations.some((item) => item.resumed);
-    session.context.onStatus({ stage: unresolved || restored ? 'paused' : 'completed', completed: session.completed, total: session.total,
+    const restored = operations.some((item) => item.resumed);
+    session.context.onStatus({ stage: selection ? 'preview' : unresolved || restored ? 'paused' : 'completed', completed: session.completed, total: session.total,
       ...(unresolved ? { error: '部分资产需要处理，请查看冲突或未纳入项' }
-        : restored ? { error: '上次操作已恢复，请重新预览最新本地和云端变更' } : { lastSyncedAt: Date.now() }) });
+        : restored ? { error: '上次操作已恢复，请重新预览最新本地和云端变更' } : !selection ? { lastSyncedAt: Date.now() } : {}) });
   } catch (error) {
     session.context.onStatus({ stage: session.context.signal?.aborted ? 'paused' : 'failed', error: publicError(error) });
     throw error;
@@ -1001,6 +1212,7 @@ export async function executeSharedAssetSync(session: SharedAssetSyncSession, ex
 export const projectAssetSyncService = {
   preview: buildSharedAssetSyncPreview,
   apply: executeSharedAssetSync,
+  deleteAsset: deleteSharedAsset,
   readProjectFiles,
   projectFileView: projectSharedFileView,
   readState: loadSharedAssetSyncState,

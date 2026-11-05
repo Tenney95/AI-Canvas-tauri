@@ -8,7 +8,7 @@ import type { SharedAssetConflict, SharedAssetMapping, SharedAssetOutboxEntry, S
 import type { SharedAssetSyncContext, SharedAssetSyncSession } from '../../src/services/fs/sharedAssetSync';
 
 const mocks = vi.hoisted(() => ({
-  preview: vi.fn(), execute: vi.fn(), cancel: vi.fn(async () => undefined),
+  preview: vi.fn(), execute: vi.fn(), deleteAsset: vi.fn(), cancel: vi.fn(async () => undefined),
   load: vi.fn(), listen: vi.fn<(name: string, handler: (event: { payload: unknown }) => void) => Promise<() => void>>(),
   notify: vi.fn(), commit: vi.fn(async () => ({ alreadyApplied: false })),
   invoke: vi.fn(),
@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('../../src/services/fs/sharedAssetSync', () => ({ projectAssetSyncService: {
-  preview: mocks.preview, apply: mocks.execute, readState: mocks.load,
+  preview: mocks.preview, apply: mocks.execute, deleteAsset: mocks.deleteAsset, readState: mocks.load,
 } }));
 vi.mock('../../src/services/fs/sharedAssetStorage', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fs/sharedAssetStorage')>(),
@@ -38,9 +38,10 @@ const binding: SharedProjectBinding = {
   capabilities: { checks: [], multiplayerWritable: true, cleanupPending: false, checkedAt: 1 }, updatedAt: 1,
 };
 function session(context: SharedAssetSyncContext, completed = 0, total = 1): SharedAssetSyncSession {
-  context.onStatus({ stage: 'preview', items: [{ id: 'asset', name: '角色', kind: 'character', direction: 'upload' }], completed, total });
+  const items = [{ id: 'asset', name: '角色', kind: 'character' as const, direction: 'upload' as const }];
+  context.onStatus({ stage: 'preview', items, completed, total });
   return { context, expectedLibrary: context.library, rootDirectory: 'runtime-only', mappings: [],
-    operations: [{ operation: {} }], items: [], completed, total, executing: false, savedMappings: new Map() } as unknown as SharedAssetSyncSession;
+    operations: [{ operation: {} }], items, completed, total, executing: false, savedMappings: new Map() } as unknown as SharedAssetSyncSession;
 }
 const syncIdentity = { ownerId: binding.ownerId, connectionId: binding.connectionId, connectionRevision: binding.connectionRevision,
   libraryId: binding.libraryId, sharedProjectId: binding.sharedProjectId, generation: 'legacy' };
@@ -57,9 +58,9 @@ function savedOperation(assetId: string, revisionId = `${assetId}-v1`, patch: Pa
       payload: { kind: 'file', name: `${assetId}.png`, displayRelativePath: `${assetId}.png`, mediaId: 'image', tags: [] },
       media: [{ id: 'image', kind: 'image', extension: 'png', sha256: 'b'.repeat(64), bytes: 10 }] }, ...patch };
 }
-function savedConflict(assetId: string, baseRevisionId: string): SharedAssetConflict {
+function savedConflict(assetId: string, baseRevisionId: string, patch: Partial<SharedAssetConflict> = {}): SharedAssetConflict {
   return { ...syncIdentity, id: `${assetId}-conflict`, sharedAssetId: assetId, kind: 'file',
-    baseRevisionId, remoteRevisionId: `${assetId}-remote`, reason: 'bothChanged', createdAt: 20 };
+    baseRevisionId, remoteRevisionId: `${assetId}-remote`, reason: 'bothChanged', createdAt: 20, ...patch };
 }
 function arrange() {
   return createStore<AppState>()((...args) => ({
@@ -80,10 +81,86 @@ beforeEach(() => {
   mocks.listen.mockResolvedValue(vi.fn());
   mocks.preview.mockImplementation(async (context: SharedAssetSyncContext) => session(context));
   mocks.commit.mockResolvedValue({ alreadyApplied: false });
+  mocks.deleteAsset.mockResolvedValue(undefined);
   mocks.execute.mockImplementation(async (value: SharedAssetSyncSession) => value.context.onStatus({ stage: 'completed' }));
 });
 
 describe('手动项目资产同步协调边界', () => {
+  it('无效单项ID或仅给方向均拒绝执行，不能退化为整批同步', async () => {
+    const store = arrange(); await store.getState().previewSharedProjectSync('series');
+    await expect(store.getState().syncSharedProjectNow('series', '', 'upload')).rejects.toThrow('有效的单项资产');
+    await expect(store.getState().syncSharedProjectNow('series', undefined, 'download')).rejects.toThrow('有效的单项资产');
+    expect(mocks.execute).not.toHaveBeenCalled();
+    expect(store.getState().sharedAssetSyncStatus.series.stage).toBe('preview');
+  });
+
+  it('单条动作传递原row及方向，完成后销毁旧会话并重新预览剩余项目', async () => {
+    const store = arrange(); let original!: SharedAssetSyncSession;
+    mocks.preview.mockImplementationOnce(async (context: SharedAssetSyncContext) => {
+      original = session(context, 0, 2); return original;
+    }).mockImplementationOnce(async (context: SharedAssetSyncContext) => {
+      const next = session(context, 1, 2);
+      next.items = [{ id: 'remaining', name: '声音', kind: 'file', direction: 'download' }];
+      context.onStatus({ stage: 'preview', items: next.items, completed: 1, total: 2 }); return next;
+    });
+    await store.getState().previewSharedProjectSync('series');
+    await store.getState().syncSharedProjectNow('series', 'asset', 'upload');
+    expect(mocks.execute).toHaveBeenCalledWith(original, expect.any(Object), { itemId: 'asset', direction: 'upload' });
+    expect(original.context.signal?.aborted).toBe(true); expect(() => original.context.assertCurrent()).toThrow();
+    expect(mocks.preview).toHaveBeenCalledTimes(2);
+    expect(store.getState().sharedAssetSyncStatus.series).toMatchObject({ stage: 'preview', completed: 1, total: 2,
+      items: [{ id: 'remaining', direction: 'download' }] });
+  });
+
+  it('无变更且可删的行保留本轮会话，云端删除完成重新预览且本机库不变', async () => {
+    const store = arrange(); const library = store.getState().dramaAssets;
+    mocks.preview.mockImplementationOnce(async (context: SharedAssetSyncContext) => {
+      const value = session(context, 1, 1); value.operations = [];
+      value.items = [{ id: 'unchanged', name: '角色', kind: 'character', direction: 'unchanged', canDelete: true }];
+      context.onStatus({ stage: 'completed', items: value.items, completed: 1, total: 1 }); return value;
+    });
+    await store.getState().previewSharedProjectSync('series');
+    expect(store.getState().sharedAssetSyncStatus.series.stage).toBe('preview');
+    await store.getState().deleteSharedProjectAsset('series', 'unchanged');
+    expect(mocks.deleteAsset).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({ id: 'unchanged' })] }), 'unchanged');
+    expect(mocks.preview).toHaveBeenCalledTimes(2); expect(mocks.execute).not.toHaveBeenCalled();
+    expect(store.getState().dramaAssets).toBe(library); expect(mocks.commit).not.toHaveBeenCalled();
+  });
+
+  it('旧删除结果在取消并建立新预览后到达，不覆盖新状态也不额外重扫', async () => {
+    const store = arrange(); let finish!: () => void;
+    mocks.deleteAsset.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await store.getState().previewSharedProjectSync('series');
+    const deleting = store.getState().deleteSharedProjectAsset('series', 'asset').catch((error: unknown) => error);
+    await vi.waitFor(() => expect(mocks.deleteAsset).toHaveBeenCalledOnce());
+    await store.getState().cancelSharedProjectSync('series');
+    await store.getState().previewSharedProjectSync('series');
+    const current = store.getState().sharedAssetSyncStatus.series;
+    finish(); await deleting;
+    expect(store.getState().sharedAssetSyncStatus.series).toBe(current);
+    expect(mocks.preview).toHaveBeenCalledTimes(2); expect(mocks.commit).not.toHaveBeenCalled();
+  });
+
+  it('删除CAS冲突保留本机库并提示重新预览，不把列表标为完成', async () => {
+    const store = arrange(); const library = store.getState().dramaAssets;
+    mocks.deleteAsset.mockRejectedValueOnce(new Error('云端资产已有其他修改，未删除，请重新预览'));
+    await store.getState().previewSharedProjectSync('series');
+    await expect(store.getState().deleteSharedProjectAsset('series', 'asset')).rejects.toThrow('重新预览');
+    expect(store.getState().sharedAssetSyncStatus.series).toMatchObject({ stage: 'failed', error: expect.stringContaining('未删除') });
+    expect(store.getState().dramaAssets).toBe(library); expect(mocks.commit).not.toHaveBeenCalled();
+    await expect(store.getState().deleteSharedProjectAsset('series', 'asset')).rejects.toThrow('请先重新预览');
+  });
+
+  it('重新载入删除冲突仍明确显示本机保留，不认作旧上传已完成', async () => {
+    const store = arrange();
+    mocks.load.mockResolvedValue({ mappings: [savedMapping('image', 'accepted-v1')],
+      outbox: [savedOperation('image', 'accepted-v1', { errorCode: 'remote_deleted' })],
+      conflicts: [savedConflict('image', 'accepted-v1', { reason: 'remoteDeleted' })] });
+    await store.getState().loadSharedProjectSyncState('series');
+    expect(store.getState().sharedAssetSyncStatus.series).toMatchObject({ stage: 'paused', completed: 0, total: 0,
+      items: [{ direction: 'conflict', message: expect.stringContaining('云端资产已删除，本机内容已保留') }] });
+  });
+
   it('应用预览后在执行器等待期间立即保留四比五，执行完成再显示五比五', async () => {
     const store = arrange();
     let finish!: () => void;

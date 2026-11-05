@@ -196,6 +196,7 @@ pub struct ObjectStorageState {
     // Held across the main-window IDB commit; OS locks disappear on process exit.
     apply_locks: Arc<Mutex<HashMap<String, std::fs::File>>>,
     cleanup_previews: Arc<Mutex<HashMap<String, CleanupPreviewSession>>>,
+    asset_delete_previews: Arc<Mutex<HashMap<String, AssetDeletePreviewSession>>>,
 }
 
 #[derive(Clone)]
@@ -206,6 +207,17 @@ struct CleanupPreviewSession {
     token_digest: String,
     expires_at: u64,
     objects: Vec<object_store::ObjectMeta>,
+}
+
+#[derive(Clone)]
+struct AssetDeletePreviewSession {
+    context: protocol::Context,
+    owner_revision: u64,
+    operation_id: String,
+    head: protocol::Head,
+    etag: String,
+    token_digest: String,
+    expires_at: u64,
 }
 
 struct TaskGuard { id: String, tasks: Arc<Mutex<Tasks>>, cancel: CancellationToken }

@@ -363,6 +363,28 @@ Tauri 验收：两台电脑、不同本地目录、同一共享码；甲项目�
 
 已进入 v26 的本机数据库保持向前兼容，不降版本；兼容字段不作为清理本地资产的依据。本次按用户授权运行本地隔离测试：同步服务、Store、仓储、数据库和清理组件 5 文件 89 项 Vitest 通过；`cargo test --lib --no-default-features --features local-onnx project_asset_storage::` 19 项通过且无 warning，覆盖项目范围、快照变化、清空保留描述符和删除顺序。实际 RustFS 删除、Tauri 界面和跨平台仍待用户验收。测试未连接真实云端。
 
+### 8.4 接收边界与逐项操作（已实现，隔离验证通过，待桌面验收）
+
+2026-11-05 用户报告接收端仍提示格式无效，并明确需要逐个资产上传、下载和删除。此次修正共享 ID 到本机 ID 的恢复边界：远端材料保持严格校验，恢复后使用本机 ID 规则，合法中文／点号 ID 不再被云端规则误拒绝。接收提示词与人物、场景、道具媒体闭包沿用同一路径。格式异常新增安全的阶段、原因及字段；操作错误标明资产与上传／下载方向。Windows／Unix 的真实媒体 URL 转换桥接样本通过，但没有取得或复现用户真实云端失败材料，不能据此认定截图中的全部成因已解决。
+
+列表复用 UI Kit 滚动类，逐项操作复用统一同步 service 和 Store。仅执行选中预览待办，不改方向、不强制覆盖冲突；固定 operation／revision 保留，其余待办不完成也不重建，空单项参数不能退化为整批。跨卡片及被引用的参考图／声音／动作须先存在于目标端；批量也按实际就绪依赖执行，不能以计划中的候选代替已提交结果，无就绪项时保留原待办。执行后重新预览。确认期间项目、共享状态变化或界面退出时停止旧操作。
+
+单项删除新增 `project_asset_storage_preview_asset_delete`、`project_asset_storage_apply_asset_delete`，命令注册及 allow／deny 声明同步，仍仅主窗口可用。短期预览绑定连接、项目代次、资产、操作、原 head／ETag；以 CAS 写入删除标记并按同一操作身份核对结果。保留本机内容、云端 revision 和内容对象，不以删除 head 或文件实现单项删除。列举、准备、发布、恢复、下载均识别标记，阻止旧待办重建；本机已提交的待办正常收尾，不倒退已完成状态。删除武器后其依赖角色单独受阻，其他行可继续，角色仍可显式云端删除。未知结果提示重新预览，不盲目重试。
+
+依赖修复不锁死在旧快照：本机已移除被删武器引用的完整角色可进入原有候选／冲突比较，仍不采用缺依赖的远端候选。`dependency_missing` 的旧上传候选仅在原生无 token 撤销确认其尚处 prepared、未尝试远端副作用后才能退役重建；拒绝或材料缺失时保留原身份，不用 retryable 推断未发布。未知提交保留原状态。已提交回执的原 token 只在内存按完整绑定与操作保留，不入 Store／数据库／日志；带原 token 的 ACK false 只撤销本地租约，不读远端描述符，仍校验 token、绑定、owner revision 与 OS 锁。双失败不假称回执完成；旧版本丢失 token 时提示重启，由进程退出释放锁，不按 TTL／取消推断事务结束。
+
+本轮隔离验证已通过：`npx vitest run tests/services/sharedAssetSyncFormat.test.ts tests/services/sharedAssetStorage.test.ts tests/services/sharedAssetSync.test.ts tests/services/sharedAssetSyncRepository.test.ts tests/store/sharedAssetSync.test.ts tests/store/sharedAssetStorage.test.ts tests/store/projectAssetSyncPersistence.test.ts tests/components/sharedProjectSyncPanel.test.tsx tests/components/sharedProjectResetDialog.test.tsx`（9 文件 221 项）；`npm run typecheck`、`npm run test:typecheck`；在 `src-tauri` 运行 `cargo test project_asset_storage --lib`（27 项）、`cargo check --lib`。未执行完整 CI、打包或真实云端操作；这些结果不代替桌面及目标 S3 服务验收。
+
+桌面验收使用独立共享项目，两端重新编译并重启包含上述原生命令的程序，不能只刷新前端。旧原生客户端会拒绝含删除标记的 head，两端更新后再共享。
+
+1. 准备超过 32 项的隔离资产，含人物图片、声音、动作、场景、道具及含中文／点号本机 ID 的引用；接收预览后检查滚轮和键盘可到达末行，接收后媒体与引用正确。
+2. 分别上传／下载一项，核对只处理选中资产、其他待办及其身份保留；依赖尚未到达目标端时单项应阻止，先同步依赖后可继续。双方修改应保留冲突。
+3. 对已同步的隔离资产先取消删除，再确认删除；名称及范围清楚，远端条目隐藏，本机素材及云端历史字节保留。另一端保留本机内容并阻止旧上传，删除武器时仅依赖角色受阻。
+4. 回归确认期间切项目或共享失效、并发改 head、断网及写入回执丢失；旧操作不得误写，未确认的删除不得显示成功，恢复核对后仍不能重建已删资产。回归先引用后依赖的列表顺序、依赖失败／取消及新增精确子项，依赖方不能先落地；本机移除失效引用后能重新评估，未知提交仍保留。
+5. 隔离模拟本地提交后回执失败，再从另一端删除该资产；原 token 可核对收尾，不重放已提交内容，其他资产不因离线撤销依赖网络而持续忙碌。旧记录提示重启时先保存项目并完整退出重开，不尝试强制清锁。
+
+回退先暂停同步并保留连接、队列和本地内容；写过删除标记的共享库继续使用支持标记的客户端，不删标记绕过保护。云端空间清理仍走 8.3 的显式整库入口，不把单项逻辑删除当成物理回收。
+
 ## 9. 依据与未决事项
 
 - 用户 2026-10-26 请求：多人共享资产库、S3／OSS 双向自动上传下载；随后明确先出方案并说明项目资产匹配。
@@ -373,4 +395,4 @@ Tauri 验收：两台电脑、不同本地目录、同一共享码；甲项目�
 - [RustFS SDK 说明](https://docs.rustfs.com/en/developer/sdk)与[腾讯 COS 的 S3 通用配置](https://intl.cloud.tencent.com/document/product/436/34688?lang=en)可作为适配验证材料，不能替代实际目标部署的条件写验收。原生 OSS 接口的[寻址与签名要求](https://www.alibabacloud.com/help/en/oss/developer-reference/overview-24)不同，后续单独适配。
 - 已确认：目前仅共享项目资产，不共享全局资产；分集按现有整部剧 owner 组织资产，所有读写与去重限定共享项目。
 - 已确认：首版先做通用 S3 兼容接入；云服务经该接口连接，自建 RustFS 也使用同一协议，不同时展开各厂商原生接口。
-- 待用户确认：删除传播策略与回收期限；固定版本是否作为镜头默认；是否需要首版即支持成员级业务权限。其余推荐值均为方案，尚未生效。
+- 已确认：手动逐项云端删除保留持久标记、本机素材和历史字节，见 8.4。自动删除传播与回收期限、固定版本是否作为镜头默认、成员级业务权限仍未确定；其余推荐值均为方案，尚未生效。
