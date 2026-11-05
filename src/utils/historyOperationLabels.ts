@@ -15,6 +15,9 @@ export interface HistorySnapshotLike {
     type?: string;
     position: { x: number; y: number };
     data: BaseNodeData;
+    width?: number;
+    height?: number;
+    measured?: { width?: number; height?: number };
     style?: { width?: string | number; height?: string | number };
   }[];
   edges: { id: string }[];
@@ -24,6 +27,15 @@ export interface HistorySnapshotLike {
 export interface HistoryOperationLabel {
   title: string;
   icon: string;
+}
+
+/** 历史只比较分组的展开尺寸，文件夹卡片大小属于浏览状态。 */
+export function getHistoryGroupSize(node: HistorySnapshotLike['nodes'][number]): { width: number; height: number } {
+  if (node.data.groupCollapsed && node.data.groupExpandedSize) return node.data.groupExpandedSize;
+  return {
+    width: Number(node.width ?? node.style?.width ?? node.measured?.width) || 320,
+    height: Number(node.height ?? node.style?.height ?? node.measured?.height) || 200,
+  };
 }
 
 /** 节点类型 → 中文名，用于「新增生成图像」这类描述。 */
@@ -45,6 +57,8 @@ function hasContentChange(before: BaseNodeData, after: BaseNodeData): boolean {
   const keys = new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})]);
   keys.delete('nodeWidth');
   keys.delete('nodeHeight');
+  keys.delete('groupCollapsed');
+  keys.delete('groupExpandedSize');
   for (const key of keys) {
     const left = (before as Record<string, unknown>)?.[key];
     const right = (after as Record<string, unknown>)?.[key];
@@ -128,6 +142,11 @@ export function describeCanvasChange(
   const resized = after.nodes.filter((node) => {
     const previous = beforeNodes.get(node.id);
     if (!previous) return false;
+    if (previous.type === 'group' && node.type === 'group') {
+      const beforeSize = getHistoryGroupSize(previous);
+      const afterSize = getHistoryGroupSize(node);
+      return beforeSize.width !== afterSize.width || beforeSize.height !== afterSize.height;
+    }
     return previous.data?.nodeWidth !== node.data?.nodeWidth
       || previous.data?.nodeHeight !== node.data?.nodeHeight
       || previous.style?.width !== node.style?.width

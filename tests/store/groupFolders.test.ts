@@ -107,6 +107,88 @@ describe('展开分组内创建和拖入空节点', () => {
     return { group, empty };
   }
 
+  it('展开和收起只切换分组展示，不新增撤销历史', () => {
+    const { group } = setup();
+    const state = useAppStore.getState();
+    const history = state.history;
+
+    state.toggleGroupCollapsed(group.id);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({
+      width: 220, height: 152, style: { width: 220, height: 152 },
+      data: { groupCollapsed: true, groupExpandedSize: { width: 1000, height: 700 } },
+    });
+    expect(useAppStore.getState().history).toBe(history);
+    expect(useAppStore.getState().historyIndex).toBe(-1);
+
+    state.toggleGroupCollapsed(group.id);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({
+      width: 1000, height: 700, style: { width: 1000, height: 700 },
+    });
+    expect(useAppStore.getState().nodes[0].data.groupCollapsed).toBeUndefined();
+    expect(useAppStore.getState().history).toBe(history);
+    expect(useAppStore.getState().historyIndex).toBe(-1);
+  });
+
+  it('已有当前基线快照时，开合后重复提交不产生只有展示变化的历史', () => {
+    const { group } = setup();
+    const state = useAppStore.getState();
+    state.commitToHistory();
+    const { history, historyIndex } = useAppStore.getState();
+
+    for (let count = 0; count < 2; count += 1) {
+      state.toggleGroupCollapsed(group.id);
+      state.commitToHistory();
+      expect(useAppStore.getState().history).toBe(history);
+      expect(useAppStore.getState().historyIndex).toBe(historyIndex);
+    }
+  });
+
+  it('撤销后收起分组不截断重做分支，重做移动时保持收起', async () => {
+    const { group } = setup();
+    const state = useAppStore.getState();
+    state.commitToHistory();
+    state.onNodesChange([{ id: group.id, type: 'position', position: { x: 200, y: 250 } }]);
+    expect(await state.undo()).toBe(true);
+    const { history, historyIndex } = useAppStore.getState();
+
+    state.toggleGroupCollapsed(group.id);
+    expect(useAppStore.getState().history).toBe(history);
+    expect(useAppStore.getState().historyIndex).toBe(historyIndex);
+    expect(await state.redo()).toBe(true);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({
+      position: { x: 200, y: 250 }, width: 220, height: 152,
+      data: { groupCollapsed: true, groupExpandedSize: { width: 1000, height: 700 } },
+    });
+  });
+
+  it.each([false, true])('跨展开状态撤销重做移动，保留当前展示与子节点归属（原先收起：%s）', async (initiallyCollapsed) => {
+    const { group, empty } = setup();
+    const child = { ...empty, parentId: group.id, position: { x: 20, y: 30 } };
+    useAppStore.setState({ nodes: [group, child], groups: [
+      { ...useAppStore.getState().groups[0], nodeIds: [child.id] },
+    ] });
+    const state = useAppStore.getState();
+    if (initiallyCollapsed) state.toggleGroupCollapsed(group.id);
+    state.commitToHistory();
+    state.onNodesChange([{ id: group.id, type: 'position', position: { x: 200, y: 250 } }]);
+    state.toggleGroupCollapsed(group.id);
+    const displaySize = initiallyCollapsed ? { width: 1000, height: 700 } : { width: 220, height: 152 };
+
+    expect(await state.undo()).toBe(true);
+    let restored = useAppStore.getState();
+    expect(restored.nodes[0]).toMatchObject({ position: group.position, ...displaySize, style: displaySize });
+    expect(restored.nodes[0].data.groupCollapsed === true).toBe(!initiallyCollapsed);
+    expect(restored.nodes[1]).toMatchObject({ parentId: group.id, position: child.position });
+    expect(restored.groups[0].nodeIds).toEqual([child.id]);
+
+    expect(await state.redo()).toBe(true);
+    restored = useAppStore.getState();
+    expect(restored.nodes[0]).toMatchObject({ position: { x: 200, y: 250 }, ...displaySize, style: displaySize });
+    expect(restored.nodes[0].data.groupCollapsed === true).toBe(!initiallyCollapsed);
+    expect(restored.nodes[1]).toMatchObject({ parentId: group.id, position: child.position });
+    expect(restored.groups[0].nodeIds).toEqual([child.id]);
+  });
+
   it('在扩大后的分组空白区新建无内容节点，位置和成员关系一起撤销', async () => {
     const { group, empty } = setup();
     useAppStore.getState().addNode(empty);
@@ -376,6 +458,45 @@ describe('缩放分组后同步成员归属', () => {
       setAttributes: true, resizing: true }]);
     state.settleGroupMembersOnResizeEnd('resize-group');
   }
+
+  it('收起时撤销重做实际缩放，卡片尺寸不变，再展开恢复对应尺寸与成员', async () => {
+    const { group, inside, audio } = setup();
+    const state = useAppStore.getState();
+    resize(1000, 700);
+    state.toggleGroupCollapsed(group.id);
+
+    expect(await state.undo()).toBe(true);
+    let restored = useAppStore.getState();
+    expect(restored.nodes.find((item) => item.id === group.id)).toMatchObject({
+      width: 220, height: 152, style: { width: 220, height: 152 },
+      data: { groupCollapsed: true, groupExpandedSize: { width: 400, height: 200 } },
+    });
+    expect(restored.nodes.find((item) => item.id === inside.id)).toMatchObject({ parentId: group.id, position: inside.position });
+    expect(restored.nodes.find((item) => item.id === audio.id)?.parentId).toBeUndefined();
+    expect(restored.groups[0].nodeIds).toEqual([inside.id]);
+    const { history, historyIndex } = restored;
+
+    state.toggleGroupCollapsed(group.id);
+    expect(useAppStore.getState().nodes.find((item) => item.id === group.id))
+      .toMatchObject({ width: 400, height: 200, style: { width: 400, height: 200 } });
+    state.toggleGroupCollapsed(group.id);
+    expect(useAppStore.getState().history).toBe(history);
+    expect(useAppStore.getState().historyIndex).toBe(historyIndex);
+
+    expect(await state.redo()).toBe(true);
+    restored = useAppStore.getState();
+    expect(restored.nodes.find((item) => item.id === group.id)).toMatchObject({
+      width: 220, height: 152, style: { width: 220, height: 152 },
+      data: { groupCollapsed: true, groupExpandedSize: { width: 1000, height: 700 } },
+    });
+    expect(restored.nodes.find((item) => item.id === inside.id)).toMatchObject({ parentId: group.id, position: inside.position });
+    expect(restored.nodes.find((item) => item.id === audio.id)).toMatchObject({ parentId: group.id, position: { x: 500, y: 300 } });
+    expect(restored.groups[0].nodeIds).toEqual([inside.id, audio.id]);
+
+    state.toggleGroupCollapsed(group.id);
+    expect(useAppStore.getState().nodes.find((item) => item.id === group.id))
+      .toMatchObject({ width: 1000, height: 700, style: { width: 1000, height: 700 } });
+  });
 
   it('扩大后按实测中心吸纳音频，保留绝对位置、连线和资产，尺寸与成员一次撤销重做', async () => {
     const { group, audio, inside } = setup();

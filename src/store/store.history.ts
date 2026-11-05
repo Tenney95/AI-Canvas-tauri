@@ -9,6 +9,8 @@ import type { AppState } from './useAppStore';
 import type { BaseNodeData, NodeGroup } from '../types';
 import * as fileService from '../services/fileService';
 import { waitForPendingNodeExits } from '../utils/nodeAnimations';
+import { getHistoryGroupSize } from '../utils/historyOperationLabels';
+import { COLLAPSED_GROUP_SIZE } from './store.groups';
 
 export interface HistoryEntry {
   nodes: Node<BaseNodeData>[];
@@ -38,7 +40,6 @@ const STRUCTURAL_NODE_DATA_KEYS = [
   'comfyRefmods',
   'comfyH3MemoryPreset',
   'hiddenByCharacterLibrary',
-  'groupCollapsed',
   'note',
   'animationSheet',
   'animationProcessing',
@@ -170,6 +171,7 @@ function getNodeDataFields(
 function getNodeStyleDimensions(
   node: Node<BaseNodeData>,
 ): Pick<NonNullable<Node<BaseNodeData>['style']>, 'width' | 'height'> {
+  if (node.type === 'group') return getHistoryGroupSize(node);
   const dimensions: Pick<NonNullable<Node<BaseNodeData>['style']>, 'width' | 'height'> = {};
   if (Object.prototype.hasOwnProperty.call(node.style ?? {}, 'width')) {
     dimensions.width = node.style?.width;
@@ -188,7 +190,6 @@ function projectStructuralNode(node: Node<BaseNodeData>, includeLayout: boolean)
       position: node.position,
       layoutData: getNodeDataFields(node.data, LAYOUT_NODE_DATA_KEYS),
       styleDimensions: getNodeStyleDimensions(node),
-      ...(node.type === 'group' ? { dimensions: { width: node.width, height: node.height } } : {}),
     } : {}),
   };
 }
@@ -303,6 +304,10 @@ function restoreStructuralNode(
     }
   }
   const parentChanged = current.parentId !== target.parentId;
+  const expandedSize = restoreLayout && target.type === 'group' ? getHistoryGroupSize(target) : undefined;
+  const visibleSize = expandedSize && (current.data.groupCollapsed ? COLLAPSED_GROUP_SIZE : expandedSize);
+  // 保留当前开合状态；真实缩放撤销后，收起的分组下次展开也要使用还原后的尺寸。
+  if (expandedSize) data.groupExpandedSize = expandedSize;
   return {
     ...current,
     type: target.type,
@@ -310,11 +315,12 @@ function restoreStructuralNode(
     extent: target.extent,
     expandParent: target.expandParent,
     position: restoreLayout || parentChanged ? { ...target.position } : { ...current.position },
-    style: restoreLayout ? restoreNodeStyleDimensions(target, current) : current.style,
-    ...(restoreLayout && target.type === 'group' ? {
-      width: target.width,
-      height: target.height,
-      measured: target.measured ? { ...target.measured } : undefined,
+    style: visibleSize ? { ...current.style, ...visibleSize }
+      : restoreLayout ? restoreNodeStyleDimensions(target, current) : current.style,
+    ...(visibleSize ? {
+      width: visibleSize.width,
+      height: visibleSize.height,
+      measured: target.measured ? { ...target.measured, ...visibleSize } : undefined,
     } : {}),
     data,
   };

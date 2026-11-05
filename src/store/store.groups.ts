@@ -34,7 +34,7 @@ export interface GroupSlice {
   renameGroup: (id: string, name: string) => void;
   /** 在画布上直接创建一个空文件夹（折叠态分组），拖节点进去即入组 */
   createEmptyGroup: (position: { x: number; y: number }) => void;
-  /** 折叠/展开分组：折叠后收成文件夹卡片，组内节点与其连线不再渲染 */
+  /** 折叠/展开分组：不进入撤销历史；折叠后收成文件夹卡片，组内节点与其连线不再渲染 */
   toggleGroupCollapsed: (groupId: string) => void;
   setGroupColor: (groupId: string, color: string) => void;
   /** 把节点文件搬到所属分组的文件夹（未分组则搬回项目根目录），由自动保存驱动 */
@@ -431,7 +431,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
     };
     const nextSize = collapsed ? expanded ?? currentSize : COLLAPSED_GROUP_SIZE;
 
-    get().commitToHistory();
+    // 开合只改变浏览状态，不创建历史记录或截断重做分支。
     set((state) => ({
       nodes: state.nodes.map((n) => {
         if (n.id !== groupId) {
