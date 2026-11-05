@@ -29,6 +29,7 @@ const MAX_EXPANDED_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 /// 文本条目（项目 JSON、对话 JSON）解包时的总量上限，避免异常归档撑爆内存。
 const MAX_TEXT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_EXTENSION_BYTES: u64 = 64 * 1024;
+const IO_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct ProjectArchiveTextEntry {
@@ -76,10 +77,11 @@ fn reauthorize_archive_path<R: Runtime>(app: &AppHandle<R>, path: &Path, access:
     Ok(())
 }
 
-fn hash_file(path: &Path) -> Result<(u64, String), String> {
+fn hash_file(path: &Path, buffer: &mut Vec<u8>) -> Result<(u64, String), String> {
     let mut file = File::open(path).map_err(|_| "无法读取项目素材")?;
-    let mut digest = Sha256::new(); let mut bytes = 0_u64; let mut buffer = vec![0_u8; 1024 * 1024];
-    loop { let count = file.read(&mut buffer).map_err(|_| "读取素材失败")?; if count == 0 { break; }
+    let mut digest = Sha256::new(); let mut bytes = 0_u64;
+    buffer.resize(IO_BUFFER_BYTES, 0);
+    loop { let count = file.read(buffer).map_err(|_| "读取素材失败")?; if count == 0 { break; }
         digest.update(&buffer[..count]); bytes += count as u64;
         if bytes > MAX_EXPANDED_BYTES { return Err("素材超过体积限制".into()); }
     }
@@ -152,6 +154,7 @@ struct AssetScan {
     bytes: u64,
     max_files: usize,
     max_bytes: u64,
+    buffer: Vec<u8>,
 }
 impl AssetScan {
     fn add_file(&mut self, relative: &Path) -> Result<(), String> {
@@ -161,7 +164,7 @@ impl AssetScan {
         if self.rows.len() >= self.max_files { return Err("项目素材数量超过上限".into()); }
         let metadata = fs::metadata(&file).map_err(|_| "无法读取项目素材信息")?;
         if metadata.len() > self.max_bytes.saturating_sub(self.bytes) { return Err("项目素材体积超过上限".into()); }
-        let (bytes, sha256) = hash_file(&file)?;
+        let (bytes, sha256) = hash_file(&file, &mut self.buffer)?;
         self.bytes = self.bytes.checked_add(bytes).ok_or("项目素材体积无效")?;
         if self.bytes > self.max_bytes { return Err("项目素材体积超过上限".into()); }
         self.rows.push(ArchiveAssetDigest { path: to_archive_text(relative), bytes, sha256 });
@@ -195,7 +198,7 @@ fn inspect_assets_scoped(root: &Path, include_import_paths: Option<&[String]>, s
     let selected = selected_paths.map(|paths| selected_asset_paths(paths, false)).transpose()?;
     let imports = include_import_paths.map(|paths| selected_asset_paths(paths, true)).transpose()?;
     let mut scan = AssetScan { root: root.canonicalize().map_err(|_| "无法解析项目素材目录")?, rows: Vec::new(),
-        real_files: HashSet::new(), bytes: 0, max_files, max_bytes };
+        real_files: HashSet::new(), bytes: 0, max_files, max_bytes, buffer: Vec::new() };
     if let Some(paths) = selected {
         for path in paths { scan.add_file(&path)?; }
     } else {
@@ -273,6 +276,7 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
             else { authorize_path(&app, &path.to_string_lossy(), PathAccess::Write) }
         })?;
         let mut seen = HashSet::new(); let mut total = 0_u64; let mut transferred = 0_u64;
+        let mut buffer = Vec::new();
         let result = (|| {
             for asset in assets {
                 if crate::file_transfer::is_cancelled(&operation_id)? { return Err("项目导入已取消".into()); }
@@ -287,7 +291,8 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
                 fs::create_dir_all(target.parent().ok_or("素材目录无效")?).map_err(|_| "无法创建素材目录")?;
                 let mut input = File::open(&source).map_err(|_| "无法打开暂存素材")?;
                 let mut output = fs::OpenOptions::new().create_new(true).write(true).open(&target).map_err(|_| "无法创建目标素材")?;
-                let mut buffer = vec![0; 1024 * 1024]; let mut bytes = 0_u64; let mut digest = Sha256::new();
+                buffer.resize(IO_BUFFER_BYTES, 0);
+                let mut bytes = 0_u64; let mut digest = Sha256::new();
                 loop {
                     if crate::file_transfer::is_cancelled(&operation_id)? { return Err("项目导入已取消".into()); }
                     let count = input.read(&mut buffer).map_err(|_| "素材发布读取失败")?; if count == 0 { break; }
@@ -516,11 +521,13 @@ fn pack_archive(
         let mut actual = Vec::new();
         let mut seen = HashSet::new();
         let mut expanded_bytes = 0_u64;
+        let mut buffer = Vec::new();
         for entry in archive.entries().map_err(|_| "无法复核归档")? {
             let mut entry = entry.map_err(|_| "无法复核归档条目")?;
             let path = to_archive_text(&archive_entry_path(&entry, &mut seen, &mut expanded_bytes, MAX_EXPANDED_BYTES + MAX_TEXT_BYTES)?);
             if let Some(path) = path.strip_prefix("assets/").filter(|_| entry.header().entry_type().is_file()) {
-                let mut digest = Sha256::new(); let mut bytes = 0_u64; let mut buffer = vec![0; 1024 * 1024];
+                buffer.resize(IO_BUFFER_BYTES, 0);
+                let mut digest = Sha256::new(); let mut bytes = 0_u64;
                 loop { let count = entry.read(&mut buffer).map_err(|_| "归档素材读取失败")?; if count == 0 { break; } digest.update(&buffer[..count]); bytes += count as u64; }
                 actual.push(ArchiveAssetDigest { path: path.into(), bytes, sha256: format!("{:x}", digest.finalize()) });
             }
@@ -626,6 +633,7 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
     let mut text_bytes = 0_u64;
     let mut expanded_bytes = 0_u64;
     let mut seen = HashSet::new(); let mut assets = Vec::new();
+    let mut buffer = Vec::new();
 
     for item in entries {
         entry_count += 1;
@@ -678,7 +686,7 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
         }
         let mut target = fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|_| "无法创建暂存素材")?;
         std::io::copy(&mut entry, &mut target).map_err(|_| "解压素材失败")?; target.flush().map_err(|_| "暂存素材写入失败")?; drop(target);
-        let path = to_archive_text(&inner); let (bytes, sha256) = hash_file(&destination)?;
+        let path = to_archive_text(&inner); let (bytes, sha256) = hash_file(&destination, &mut buffer)?;
         asset_paths.push(path.clone()); assets.push(ArchiveAssetDigest { path, bytes, sha256 });
     }
 
@@ -775,6 +783,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reused_hash_buffer_preserves_large_short_and_empty_file_digests() {
+        let fixture = Fixture::new();
+        let large: Vec<u8> = (0..IO_BUFFER_BYTES + 17).map(|index| (index % 251) as u8).collect();
+        let files = [("large.bin", large.as_slice()), ("short.bin", b"short tail".as_slice()), ("empty.bin", b"".as_slice())];
+        let mut buffer = Vec::new();
+        for (path, contents) in files {
+            fixture.write(path, contents);
+            let actual = hash_file(&fixture.0.join(path), &mut buffer).unwrap();
+            assert_eq!(actual, (contents.len() as u64, format!("{:x}", Sha256::digest(contents))));
+        }
+    }
+
+    #[test]
+    fn round_trips_multiple_assets_across_reused_buffer_boundaries() {
+        let fixture = Fixture::new();
+        let large: Vec<u8> = (0..IO_BUFFER_BYTES + 17).map(|index| (index % 251) as u8).collect();
+        let files = [("large.bin", large.as_slice()), ("short.bin", b"short tail".as_slice()), ("empty.bin", b"".as_slice())];
+        for (path, contents) in files { fixture.write(&format!("source/{path}"), contents); }
+        let source = fixture.0.join("source");
+        let expected = inspect_assets_scoped(&source, Some(&[]), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
+        let archive = fixture.0.join("project.aicanvas");
+        pack_archive(vec![], Some(source), archive.clone(), Some(expected.clone()), MAX_ARCHIVE_ENTRIES).unwrap();
+        let target = fixture.0.join("unpacked"); fs::create_dir(&target).unwrap();
+        let mut actual = unpack_archive(&archive, &target).unwrap().assets;
+        actual.sort_by(|left, right| left.path.cmp(&right.path));
+        assert!(actual == expected);
+        for (path, contents) in files { assert_eq!(fs::read(target.join(path)).unwrap(), contents); }
+    }
+
     // 只替换 AppHandle 授权入口；路径解析、父链存在性、目录和链接检查均操作真实文件系统。
     fn filesystem_authorize(path: &Path, existing_plain: bool) -> Result<PathBuf, String> {
         if existing_plain {
@@ -847,7 +885,7 @@ mod tests {
             if path.starts_with("imports/") {
                 assert!(inspect_assets_scoped(&fixture.0, Some(&selected), None, 1, 3).err().unwrap().contains("回收站或派生缓存"));
             }
-            let (bytes, sha256) = hash_file(&fixture.0.join(path)).unwrap();
+            let (bytes, sha256) = hash_file(&fixture.0.join(path), &mut Vec::new()).unwrap();
             let output = fixture.0.with_extension("aicanvas");
             assert!(pack_archive(vec![], Some(fixture.0.clone()), output.clone(),
                 Some(vec![ArchiveAssetDigest { path: path.to_owned(), bytes, sha256 }]), MAX_ARCHIVE_ENTRIES)
@@ -867,7 +905,7 @@ mod tests {
             if path.starts_with("imports/") {
                 assert!(inspect_assets_scoped(&fixture.0, Some(&selected), None, 1, 3).is_err());
             }
-            let (bytes, sha256) = hash_file(&fixture.0.join(path)).unwrap();
+            let (bytes, sha256) = hash_file(&fixture.0.join(path), &mut Vec::new()).unwrap();
             assert!(pack_archive(vec![], Some(fixture.0.clone()), fixture.0.with_extension("aicanvas"),
                 Some(vec![ArchiveAssetDigest { path: alias, bytes, sha256 }]), MAX_ARCHIVE_ENTRIES).is_err());
         }

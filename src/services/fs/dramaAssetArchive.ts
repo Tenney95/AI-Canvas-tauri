@@ -5,7 +5,7 @@ import { mkdir, remove, rename, stat, writeFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { assertDramaAssetWriteCurrent, type DramaAssetWriteOptions } from '../../types/dramaAssets';
 import { getBaseDir, ensureProjectDataDir, joinPath, stripVerbatimPrefix } from './core';
-import { copyAssetFileToFolder, downloadAssetArchiveMedia, getGlobalFilesDir, readFileToDataUrl, type AssetFileCopyResult } from '../fileService';
+import { assertMediaDataUrlSize, copyAssetFileToFolder, downloadAssetArchiveMedia, getGlobalFilesDir, type AssetFileCopyResult } from '../fileService';
 import { decodeDataUrlBytesAsync, MEDIA_DATA_URL_BYTE_LIMITS } from '../mediaDataUrl';
 
 export interface DramaAssetArchiveWorkspace {
@@ -91,12 +91,21 @@ export async function stageDramaAssetArchiveMedia(
     if (/^https?:/i.test(url)) {
       sourcePath = await guardedDramaAssetTransfer(() => downloadAssetArchiveMedia(url, rawPath, kind, { signal: options.signal }), options);
     } else if (/^(?:data:|blob:)/i.test(url)) {
-      const dataUrl = /^data:/i.test(url) ? url
-        : await guardedDramaAssetTransfer(() => readFileToDataUrl(url, { kind, signal: options.signal }), options);
-      if (!dataUrl) throw new Error('创作资产媒体缺失');
-      const bytes = await guardedDramaAssetTransfer(() => decodeDataUrlBytesAsync(dataUrl, {
-        maxBytes: MEDIA_DATA_URL_BYTE_LIMITS[kind], signal: options.signal, label: '创作资产媒体',
-      }), options);
+      let bytes: Uint8Array;
+      if (/^blob:/i.test(url)) {
+        const response = await guardedDramaAssetTransfer(() => fetch(url, { signal: options.signal }), options);
+        if (!response.ok) throw new Error('创作资产媒体缺失');
+        const contentLength = Number(response.headers.get('content-length'));
+        if (Number.isFinite(contentLength) && contentLength >= 0) assertMediaDataUrlSize(contentLength, kind, '创作资产媒体');
+        const blob = await guardedDramaAssetTransfer(() => response.blob(), options);
+        assertMediaDataUrlSize(blob.size, kind, '创作资产媒体');
+        bytes = new Uint8Array(await guardedDramaAssetTransfer(() => blob.arrayBuffer(), options));
+        assertMediaDataUrlSize(bytes.byteLength, kind, '创作资产媒体');
+      } else {
+        bytes = await guardedDramaAssetTransfer(() => decodeDataUrlBytesAsync(url, {
+          maxBytes: MEDIA_DATA_URL_BYTE_LIMITS[kind], signal: options.signal, label: '创作资产媒体',
+        }), options);
+      }
       await guardedDramaAssetTransfer(() => writeFile(rawPath, bytes, { createNew: true }), options);
       sourcePath = rawPath;
     } else throw new Error('创作资产媒体地址不可用');

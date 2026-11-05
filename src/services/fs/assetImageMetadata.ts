@@ -26,10 +26,11 @@ export async function fingerprintAssetImage(path: string, signal?: AbortSignal):
   try {
     const before = await file.stat();
     let previous = await sha256BytesHex(new TextEncoder().encode('asset-image-sha256-chain-v1'));
+    const input = new Uint8Array(32 + CHUNK_SIZE);
+    const block = input.subarray(32);
     let bytes = 0;
     let ended = false;
     while (!ended) {
-      const block = new Uint8Array(CHUNK_SIZE);
       let filled = 0;
       while (filled < block.length) {
         checkAbort(signal);
@@ -39,10 +40,9 @@ export async function fingerprintAssetImage(path: string, signal?: AbortSignal):
         filled += count;
       }
       if (!filled) break;
-      const input = new Uint8Array(32 + filled);
       input.set(Uint8Array.from(previous.match(/../g)!, (hex) => parseInt(hex, 16)));
-      input.set(block.subarray(0, filled), 32);
-      previous = await sha256BytesHex(input);
+      // 直接读取到摘要输入的内容区；等待当前摘要完成后再复用缓冲，尾块不包含旧字节。
+      previous = await sha256BytesHex(input.subarray(0, 32 + filled));
       bytes += filled;
     }
     checkAbort(signal);

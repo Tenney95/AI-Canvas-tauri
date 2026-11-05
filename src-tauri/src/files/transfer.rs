@@ -7,10 +7,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
     future::Future,
-    io::{self, Cursor, Read, Write},
+    io::{self, BufWriter, Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Webview};
 
@@ -20,6 +20,7 @@ const BUFFER_SIZE: usize = 1024 * 1024;
 const MIN_FREE_SPACE_RESERVE: u64 = 64 * 1024 * 1024;
 const PROGRESS_EVENT: &str = "file-transfer-progress";
 const MEDIA_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 static CANCELLED_TRANSFERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -145,42 +146,59 @@ where
         if cancelled()? {
             return Err("文件传输已取消".to_string());
         }
-        let mut output = fs::OpenOptions::new()
+        let output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp_path)
             .map_err(|e| format!("创建临时文件失败（禁止覆盖）: {e}"))?;
         temporary_created = true;
-        let mut buffer = vec![0_u8; BUFFER_SIZE];
+        let buffer_size = expected_bytes.map_or(BUFFER_SIZE, |bytes| bytes.clamp(1, BUFFER_SIZE as u64) as usize);
+        let mut output = BufWriter::with_capacity(buffer_size, output);
+        let mut buffer = vec![0_u8; buffer_size];
         let mut transferred_bytes = 0_u64;
+        let mut last_progress: Option<(u64, Instant)> = None;
 
-        loop {
+        let write_result = (|| {
+            loop {
+                if cancelled()? {
+                    return Err("文件传输已取消".to_string());
+                }
+                let read = reader
+                    .read(&mut buffer)
+                    .map_err(|e| format!("读取传输数据失败: {e}"))?;
+                if read == 0 {
+                    break;
+                }
+                let next_total = transferred_bytes.saturating_add(read as u64);
+                validate_transfer_size(next_total, None, max_bytes)?;
+                if expected_bytes.is_some_and(|expected| next_total > expected) {
+                    // 小缓冲不能把已增长的源文件逐字节读到 EOF 才发现长度不符。
+                    validate_transfer_size(next_total, expected_bytes, max_bytes)?;
+                }
+                output
+                    .write_all(&buffer[..read])
+                    .map_err(|e| format!("写入目标文件失败: {e}"))?;
+                transferred_bytes = next_total;
+                if last_progress.is_none_or(|(_, reported_at)| reported_at.elapsed() >= PROGRESS_INTERVAL) {
+                    on_progress(transferred_bytes);
+                    last_progress = Some((transferred_bytes, Instant::now()));
+                }
+            }
+
+            validate_transfer_size(transferred_bytes, expected_bytes, max_bytes)?;
             if cancelled()? {
                 return Err("文件传输已取消".to_string());
             }
-            let read = reader
-                .read(&mut buffer)
-                .map_err(|e| format!("读取传输数据失败: {e}"))?;
-            if read == 0 {
-                break;
-            }
-            let next_total = transferred_bytes.saturating_add(read as u64);
-            validate_transfer_size(next_total, None, max_bytes)?;
-            output
-                .write_all(&buffer[..read])
-                .map_err(|e| format!("写入目标文件失败: {e}"))?;
-            transferred_bytes = next_total;
-            on_progress(transferred_bytes);
-        }
-
-        validate_transfer_size(transferred_bytes, expected_bytes, max_bytes)?;
-        if cancelled()? {
-            return Err("文件传输已取消".to_string());
-        }
-        output
-            .sync_all()
-            .map_err(|e| format!("同步目标文件失败: {e}"))?;
+            output.flush().map_err(|e| format!("写入目标文件失败: {e}"))?;
+            output.get_ref()
+                .sync_all()
+                .map_err(|e| format!("同步目标文件失败: {e}"))?;
+            Ok::<(), String>(())
+        })();
+        // 失败时丢弃未写缓冲，避免 BufWriter::drop 在取消后继续刷盘；先关句柄再清理临时文件。
+        let (output, _) = output.into_parts();
         drop(output);
+        write_result?;
         validate_temp(&temp_path)?;
         if cancelled()? {
             return Err("文件传输已取消".to_string());
@@ -211,6 +229,9 @@ where
             }
         }
         let _ = fs::remove_file(&temp_path);
+        if last_progress.is_none_or(|(bytes, _)| bytes != transferred_bytes) {
+            on_progress(transferred_bytes);
+        }
         Ok(transferred_bytes)
     })();
 
@@ -437,23 +458,28 @@ impl<C> Read for MediaDownloadReader<C>
 where C: FnMut() -> Result<bool, String> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if buffer.is_empty() { return Ok(0); }
-        loop {
-            if self.pending.position() < self.pending.get_ref().len() as u64 { return self.pending.read(buffer); }
-            let response = &mut self.response;
-            // 空 DATA 帧没有真实下载进展，跳过它们时仍沿用同一次等待期限。
-            let next_bytes = async {
-                loop {
-                    match response.chunk().await? {
-                        Some(bytes) if bytes.is_empty() => continue,
-                        chunk => return Ok(chunk),
-                    }
+        if self.pending.position() < self.pending.get_ref().len() as u64 { return self.pending.read(buffer); }
+        self.pending.set_position(0);
+        self.pending.get_mut().clear();
+        let response = &mut self.response;
+        // 空 DATA 帧没有真实下载进展，跳过它们时仍沿用同一次等待期限。
+        let next_bytes = async {
+            loop {
+                match response.chunk().await? {
+                    Some(bytes) if bytes.is_empty() => continue,
+                    chunk => return Ok(chunk),
                 }
-            };
-            match tauri::async_runtime::block_on(wait_media_download(next_bytes, self.idle_timeout, &mut self.cancelled)) {
-                Ok(Some(bytes)) => self.pending = Cursor::new(bytes.to_vec()),
-                Ok(None) => return Ok(0),
-                Err(error) => return Err(io::Error::other(error)),
             }
+        };
+        match tauri::async_runtime::block_on(wait_media_download(next_bytes, self.idle_timeout, &mut self.cancelled)) {
+            Ok(Some(bytes)) => {
+                let count = buffer.len().min(bytes.len());
+                buffer[..count].copy_from_slice(&bytes[..count]);
+                self.pending.get_mut().extend_from_slice(&bytes[count..]);
+                Ok(count)
+            }
+            Ok(None) => Ok(0),
+            Err(error) => Err(io::Error::other(error)),
         }
     }
 }
@@ -1426,6 +1452,35 @@ mod tests {
     }
 
     #[test]
+    fn media_download_preserves_bytes_across_small_buffers_and_pending_tails() {
+        let expected: Vec<u8> = (0..4099).map(|index| (index % 251) as u8).collect();
+        let body = expected.clone();
+        let (url, server) = serve_media_connection(move |mut stream| {
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        let response = fetch_media_download(&url, None, || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap();
+        let mut reader = MediaDownloadReader {
+            response, pending: Cursor::new(Vec::new()), idle_timeout: MEDIA_DOWNLOAD_IDLE_TIMEOUT,
+            cancelled: || Ok(false),
+        };
+        let mut actual = Vec::new();
+        let mut first = [0_u8; 3];
+        let count = reader.read(&mut first).unwrap();
+        actual.extend_from_slice(&first[..count]);
+        assert_eq!(reader.read(&mut []).unwrap(), 0);
+        let mut buffer = [0_u8; 7];
+        loop {
+            let count = reader.read(&mut buffer).unwrap();
+            if count == 0 { break; }
+            actual.extend_from_slice(&buffer[..count]);
+        }
+        assert_eq!(reader.read(&mut buffer).unwrap(), 0);
+        server.join().unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn media_download_reports_redacted_connection_failure() {
         let (url, server) = serve_media_connection(|_| {});
         let error = fetch_media_download(&url, None, || Ok(false), MEDIA_DOWNLOAD_IDLE_TIMEOUT).unwrap_err();
@@ -1699,6 +1754,35 @@ mod tests {
         }
     }
 
+    struct ShortReader<'a> {
+        remaining: &'a [u8],
+        max_read: usize,
+    }
+
+    impl Read for ShortReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = self.remaining.len().min(buffer.len()).min(self.max_read);
+            buffer[..count].copy_from_slice(&self.remaining[..count]);
+            self.remaining = &self.remaining[count..];
+            Ok(count)
+        }
+    }
+
+    struct RecordingReader {
+        remaining: u64,
+        requests: Vec<usize>,
+    }
+
+    impl Read for RecordingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.requests.push(buffer.len());
+            let count = self.remaining.min(buffer.len() as u64) as usize;
+            buffer[..count].fill(0x5a);
+            self.remaining -= count as u64;
+            Ok(count)
+        }
+    }
+
     fn test_directory(name: &str) -> PathBuf {
         let unique = format!(
             "ai-canvas-file-transfer-{name}-{}-{}",
@@ -1778,6 +1862,123 @@ mod tests {
         assert_eq!(fs::read(&destination).expect("应读取正式文件"), bytes);
         assert!(!part_path(&destination, task_id).exists());
         fs::remove_dir_all(directory).expect("应清理测试目录");
+    }
+
+    #[test]
+    fn uses_bounded_buffers_for_zero_small_large_and_unknown_lengths() {
+        for (expected, total, capacity) in [
+            (Some(0), 0, 1),
+            (Some(1), 1, 1),
+            (Some(31), 31, 31),
+            (Some(BUFFER_SIZE as u64 + 17), BUFFER_SIZE as u64 + 17, BUFFER_SIZE),
+            (None, 17, BUFFER_SIZE),
+        ] {
+            let directory = test_directory("buffer-size");
+            let destination = directory.join("result.bin");
+            let mut reader = RecordingReader { remaining: total, requests: Vec::new() };
+            let actual = stream_to_file(
+                "buffer-size", &mut reader, &destination, expected, Some(total), None,
+                || Ok(false), |_| {},
+                |temporary| { assert_eq!(fs::metadata(temporary).unwrap().len(), total); Ok(()) },
+            ).unwrap();
+            assert_eq!(actual, total);
+            assert!(reader.requests.iter().all(|size| *size == capacity));
+            assert_eq!(fs::read(&destination).unwrap(), vec![0x5a; total as usize]);
+            assert!(!part_path(&destination, "buffer-size").exists());
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn refuses_a_grown_source_after_bounded_reads_for_zero_and_one_byte_expectations() {
+        for expected in [0_u64, 1] {
+            let directory = test_directory("grown-source");
+            let destination = directory.join("result.bin");
+            let initial = BUFFER_SIZE as u64 * 2;
+            let mut reader = RecordingReader { remaining: initial, requests: Vec::new() };
+            let validated = std::cell::Cell::new(false);
+            let result = stream_to_file(
+                "grown-source", &mut reader, &destination, Some(expected), None, None,
+                || Ok(false), |_| {}, |_| { validated.set(true); Ok(()) },
+            );
+            assert!(result.unwrap_err().contains("下载不完整"));
+            assert_eq!(reader.requests, vec![1; expected as usize + 1]);
+            assert_eq!(initial - reader.remaining, expected + 1);
+            assert!(!validated.get());
+            assert!(!destination.exists());
+            assert!(!part_path(&destination, "grown-source").exists());
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn short_reads_flush_before_validation_and_report_first_and_final_progress() {
+        let directory = test_directory("short-reads");
+        let destination = directory.join("result.bin");
+        let bytes = b"short chunks leave buffered data";
+        let mut reader = ShortReader { remaining: bytes, max_read: 3 };
+        let mut progress = Vec::new();
+        let transferred = stream_to_file(
+            "short-reads", &mut reader, &destination, Some(bytes.len() as u64),
+            Some(bytes.len() as u64), None, || Ok(false), |current| progress.push(current),
+            |temporary| {
+                assert_eq!(fs::read(temporary).unwrap(), bytes);
+                assert!(!destination.exists());
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(transferred, bytes.len() as u64);
+        assert_eq!(progress.first(), Some(&3));
+        assert_eq!(progress.last(), Some(&transferred));
+        assert!(progress.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert!(!part_path(&destination, "short-reads").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn first_short_read_progress_can_cancel_without_reading_or_publishing_more() {
+        let directory = test_directory("short-read-cancel");
+        let destination = directory.join("result.bin");
+        let bytes = b"cancel after the first short chunk";
+        let mut reader = ShortReader { remaining: bytes, max_read: 3 };
+        let cancelled = std::cell::Cell::new(false);
+        let validated = std::cell::Cell::new(false);
+        let mut progress = Vec::new();
+        let result = stream_to_file(
+            "short-read-cancel", &mut reader, &destination, None, None, None,
+            || Ok(cancelled.get()),
+            |current| { progress.push(current); cancelled.set(true); },
+            |_| { validated.set(true); Ok(()) },
+        );
+        assert!(result.unwrap_err().contains("已取消"));
+        assert_eq!(reader.remaining.len(), bytes.len() - 3);
+        assert_eq!(progress, [3]);
+        assert!(!validated.get());
+        assert!(!destination.exists());
+        assert!(!part_path(&destination, "short-read-cancel").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn read_failure_discards_buffered_output_without_publishing() {
+        struct FailedReader;
+        impl Read for FailedReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("fixture read failure"))
+            }
+        }
+        let directory = test_directory("buffered-read-error");
+        let destination = directory.join("result.bin");
+        let mut reader = Cursor::new(b"buffered data").chain(FailedReader);
+        let result = stream_to_file(
+            "buffered-read-error", &mut reader, &destination, None, None, None,
+            || Ok(false), |_| {}, |_| Ok(()),
+        );
+        assert!(result.unwrap_err().contains("fixture read failure"));
+        assert!(!destination.exists());
+        assert!(!part_path(&destination, "buffered-read-error").exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

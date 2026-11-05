@@ -249,6 +249,28 @@ describe('fileService Data URL 内存预算', () => {
     expect(mocks.readFile).not.toHaveBeenCalled();
   });
 
+  it('无项目的本地上传复用异步分块编码并只编码实际字节范围', async () => {
+    const buffer = new Uint8Array([99, 1, 2, 3, 4, 88]);
+    const content = buffer.subarray(1, 5);
+    mocks.open.mockResolvedValue('G:/media/角色.png');
+    mocks.readFile.mockResolvedValue(content);
+
+    await expect(uploadSourceFileToProject('.png', null)).resolves.toEqual({
+      dataUrl: 'data:image/png;base64,AQIDBA==', fileName: '角色.png', fileSize: 4,
+    });
+    expect(mocks.bytePartsToBase64Async).toHaveBeenCalledExactlyOnceWith([content]);
+    expect(mocks.arrayBufferToBase64).not.toHaveBeenCalled();
+  });
+
+  it('本地上传在读后仍检查实际大小，超限时不开始编码', async () => {
+    mocks.open.mockResolvedValue('G:/media/角色.png');
+    mocks.stat.mockResolvedValue({ size: 1 });
+    mocks.readFile.mockResolvedValue({ byteLength: MEDIA_DATA_URL_MAX_BYTES.image + 1 });
+    await expect(uploadSourceFileToProject('.png', null)).rejects.toThrow('超过内存转换上限');
+    expect(mocks.bytePartsToBase64Async).not.toHaveBeenCalled();
+    expect(mocks.arrayBufferToBase64).not.toHaveBeenCalled();
+  });
+
   it('正式项目的大媒体仍使用原生流式拷贝，不进入 Data URL 路径', async () => {
     const largeSize = MEDIA_DATA_URL_MAX_BYTES.video * 2;
     mocks.open.mockResolvedValue('G:/media/large.mp4');

@@ -1,12 +1,13 @@
 /**
  * dramaAssetArchive — 回归测试：creative asset archive filesystem boundary。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
+import { MEDIA_DATA_URL_BYTE_LIMITS } from '../../src/services/mediaDataUrl';
 const io = vi.hoisted(() => ({ mkdir: vi.fn(), remove: vi.fn(), rename: vi.fn(), write: vi.fn(), stat: vi.fn(),
-  invoke: vi.fn(), copy: vi.fn(), download: vi.fn(), readData: vi.fn(), base: '/base' }));
+  invoke: vi.fn(), copy: vi.fn(), download: vi.fn(), readData: vi.fn(), fetch: vi.fn(), base: '/base' }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ mkdir: io.mkdir, remove: io.remove, rename: io.rename, writeFile: io.write, stat: io.stat }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke }));
 vi.mock('../../src/services/fs/core', () => ({
@@ -15,6 +16,9 @@ vi.mock('../../src/services/fs/core', () => ({
 }));
 vi.mock('../../src/services/fileService', () => ({
   copyAssetFileToFolder: io.copy, downloadAssetArchiveMedia: io.download, readFileToDataUrl: io.readData,
+  assertMediaDataUrlSize: (bytes: number, kind: keyof typeof MEDIA_DATA_URL_BYTE_LIMITS) => {
+    if (bytes > MEDIA_DATA_URL_BYTE_LIMITS[kind]) throw new Error('媒体超过内存转换上限');
+  },
   getGlobalFilesDir: async () => '/global',
 }));
 import { cleanupDramaAssetTransferDirectory, createDramaAssetArchiveWorkspace, createDramaAssetImportFolder,
@@ -28,7 +32,10 @@ beforeEach(() => {
   io.copy.mockImplementation(async (source: string, directory: string) => ({ path: `${directory}/${source.split('/').pop()}`, totalBytes: 3, digest: 'a'.repeat(64) }));
   io.download.mockImplementation(async (_url: string, path: string) => path);
   io.invoke.mockResolvedValue({ assetCount: 1 });
+  io.fetch.mockReset();
+  vi.stubGlobal('fetch', io.fetch);
 });
+afterEach(() => vi.unstubAllGlobals());
 
 async function removeCheckedTemporaryDirectory(directory: string): Promise<void> {
   const resolved = await realpath(directory), temporary = await realpath(tmpdir());
@@ -113,6 +120,88 @@ describe('creative asset archive filesystem boundary', () => {
     expect(io.download).toHaveBeenCalledWith('https://media.example/clip.mp4', `${workspace.incomingDirectory}/media-one.mp4`, 'video', { signal: undefined });
     expect(io.copy.mock.calls[0][0]).toBe(`${workspace.incomingDirectory}/media-one.mp4`);
     expect(io.readData).not.toHaveBeenCalled();
+  });
+
+  it('stages blob bytes directly and still verifies the native copy before publication', async () => {
+    const bytes = new Uint8Array([0, 255, 2, 128, 5]);
+    io.fetch.mockResolvedValue(new Response(bytes, { headers: { 'content-length': '5' } }));
+    const workspace = await createDramaAssetArchiveWorkspace();
+    const copied = await stageDramaAssetArchiveMedia(workspace, { url: 'blob:http://localhost/image' }, 'blob-one', 'png', 'image');
+    const incoming = `${workspace.incomingDirectory}/blob-one.png`;
+    expect(io.fetch).toHaveBeenCalledExactlyOnceWith('blob:http://localhost/image', { signal: undefined });
+    expect(io.write).toHaveBeenCalledExactlyOnceWith(incoming, bytes, { createNew: true });
+    expect(io.copy).toHaveBeenCalledExactlyOnceWith(incoming, workspace.mediaDirectory, { signal: undefined });
+    expect(copied).toMatchObject({ path: `${workspace.mediaDirectory}/blob-one.png`, digest: 'a'.repeat(64) });
+    expect(io.readData).not.toHaveBeenCalled();
+  });
+
+  it('keeps data URL decoding on the existing bounded path', async () => {
+    const workspace = await createDramaAssetArchiveWorkspace();
+    await stageDramaAssetArchiveMedia(workspace, { url: 'data:image/png;base64,AP8CgAU=' }, 'inline', 'png', 'image');
+    expect(io.write).toHaveBeenCalledExactlyOnceWith(`${workspace.incomingDirectory}/inline.png`, new Uint8Array([0, 255, 2, 128, 5]), { createNew: true });
+    expect(io.copy).toHaveBeenCalledOnce();
+    expect(io.fetch).not.toHaveBeenCalled();
+    expect(io.readData).not.toHaveBeenCalled();
+  });
+
+  it.each(['header', 'blob'] as const)('rejects an oversized blob at the %s boundary before allocating its bytes', async (stage) => {
+    const readBytes = vi.fn();
+    const blob = { size: MEDIA_DATA_URL_BYTE_LIMITS.image + 1, arrayBuffer: readBytes };
+    const readBlob = vi.fn(async () => blob);
+    io.fetch.mockResolvedValue({ ok: true,
+      headers: new Headers(stage === 'header' ? { 'content-length': String(blob.size) } : {}), blob: readBlob });
+    const workspace = await createDramaAssetArchiveWorkspace();
+    await expect(stageDramaAssetArchiveMedia(workspace, { url: 'blob:http://localhost/large' }, 'large', 'png', 'image'))
+      .rejects.toThrow('超过内存转换上限');
+    if (stage === 'header') expect(readBlob).not.toHaveBeenCalled();
+    expect(readBytes).not.toHaveBeenCalled();
+    expect(io.write).not.toHaveBeenCalled();
+    expect(io.copy).not.toHaveBeenCalled();
+  });
+
+  it.each(['fetch', 'blob', 'bytes'] as const)('stops before writing when cancellation arrives during %s', async (stage) => {
+    const controller = new AbortController();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const blob = { size: bytes.length, arrayBuffer: async () => {
+      if (stage === 'bytes') controller.abort();
+      return bytes.buffer;
+    } };
+    const response = { ok: true, headers: new Headers(), blob: async () => {
+      if (stage === 'blob') controller.abort();
+      return blob;
+    } };
+    io.fetch.mockImplementation(async () => {
+      if (stage === 'fetch') controller.abort();
+      return response;
+    });
+    const workspace = await createDramaAssetArchiveWorkspace();
+    await expect(stageDramaAssetArchiveMedia(workspace, { url: 'blob:http://localhost/image' }, 'cancelled', 'png', 'image', { signal: controller.signal }))
+      .rejects.toThrow('取消');
+    expect(io.write).not.toHaveBeenCalled();
+    expect(io.copy).not.toHaveBeenCalled();
+  });
+
+  it('discards blob bytes when the asset context changes while reading', async () => {
+    let current = true;
+    const bytes = new Uint8Array([1, 2, 3]);
+    io.fetch.mockResolvedValue({ ok: true, headers: new Headers(), blob: async () => ({
+      size: bytes.length, arrayBuffer: async () => { current = false; return bytes.buffer; },
+    }) });
+    const workspace = await createDramaAssetArchiveWorkspace();
+    await expect(stageDramaAssetArchiveMedia(workspace, { url: 'blob:http://localhost/image' }, 'stale', 'png', 'image', {
+      assertCurrent: () => { if (!current) throw new Error('项目已切换'); },
+    })).rejects.toThrow('项目已切换');
+    expect(io.write).not.toHaveBeenCalled();
+    expect(io.copy).not.toHaveBeenCalled();
+  });
+
+  it('does not write or copy a failed blob response', async () => {
+    io.fetch.mockResolvedValue(new Response(null, { status: 404 }));
+    const workspace = await createDramaAssetArchiveWorkspace();
+    await expect(stageDramaAssetArchiveMedia(workspace, { url: 'blob:http://localhost/missing' }, 'missing', 'png', 'image'))
+      .rejects.toThrow('媒体缺失');
+    expect(io.write).not.toHaveBeenCalled();
+    expect(io.copy).not.toHaveBeenCalled();
   });
 
   it('uses the existing archive commands with only its own media subtree and manifest', async () => {

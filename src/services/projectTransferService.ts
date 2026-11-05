@@ -17,9 +17,7 @@ import {
   deleteProjectFromDb,
   getAllProjects,
   getProjectById,
-  getProjectConversations,
-  getConversationMessages,
-  getProjectMemories,
+  getProjectChatForExport,
   putChatConversation,
   putChatMessage,
   putProjectMemory,
@@ -220,19 +218,8 @@ function detachSourceAssetIdentity(record: ProjectSaveData): void {
   });
 }
 
-async function readAllConversationMessages(conversationId: string): Promise<ChatMessageRecord[]> {
-  const { messages, total } = await getConversationMessages(conversationId, 0, MAX_MESSAGES_PER_CONVERSATION);
-  if (total > messages.length) throw new Error('会话消息超过当前归档上限，请先拆分会话后重新导出');
-  return messages.slice().sort((left, right) => left.sequence - right.sequence);
-}
-
 async function collectChatPayload(projectId: string): Promise<ProjectArchiveChatPayload> {
-  const conversations = await getProjectConversations(projectId);
-  const messageGroups = await Promise.all(
-    conversations.map((conversation) => readAllConversationMessages(conversation.id)),
-  );
-  const memories = await getProjectMemories(projectId);
-  return portableArchiveChat({ conversations, messages: messageGroups.flat(), memories });
+  return portableArchiveChat(await getProjectChatForExport(projectId, MAX_MESSAGES_PER_CONVERSATION));
 }
 
 export function readArchiveProject(value: unknown, label: string): ProjectSaveData {

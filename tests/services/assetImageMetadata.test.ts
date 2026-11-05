@@ -2,6 +2,7 @@
  * assetImageMetadata — 回归测试：content-bound asset image information。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { AssetImageRecord, AssetImageSaveInput } from '../../src/types/assetImage';
 
 const driver = vi.hoisted(() => ({
@@ -50,6 +51,13 @@ const record = (assetId: string, digest: string): AssetImageRecord => ({ id: `as
 async function input(): Promise<AssetImageSaveInput> {
   return { identity: { assetId: 'asset', ...await fingerprintAssetImage(image.path) }, record: null, prompt: '编辑后的提示词', references: [], newReferencePaths: [] };
 }
+function legacyFingerprint(bytes: Uint8Array): { digest: string; bytes: number } {
+  let previous = createHash('sha256').update('asset-image-sha256-chain-v1').digest();
+  for (let offset = 0; offset < bytes.length; offset += 256 * 1024) {
+    previous = createHash('sha256').update(previous).update(bytes.subarray(offset, offset + 256 * 1024)).digest();
+  }
+  return { digest: createHash('sha256').update(`${previous.toString('hex')}:${bytes.length}`).digest('hex'), bytes: bytes.length };
+}
 beforeEach(() => {
   driver.files.clear(); driver.files.set(image.path, new Uint8Array([1, 2, 3, 4]));
   driver.files.set('/selected.png', new Uint8Array([5, 6, 7]));
@@ -63,6 +71,47 @@ beforeEach(() => {
 });
 
 describe('content-bound asset image information', () => {
+  it.each([256 * 1024, 2 * 256 * 1024 + 17])('preserves the legacy digest for %s bytes with whole and short reads', async (length) => {
+    const bytes = Uint8Array.from({ length }, (_, index) => index % 251);
+    driver.files.set(image.path, bytes);
+    const expected = legacyFingerprint(bytes);
+    expect(await fingerprintAssetImage(image.path)).toEqual(expected);
+    driver.chunk = 4093;
+    expect(await fingerprintAssetImage(image.path)).toEqual(expected);
+    expect(driver.close).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not overwrite the shared block while its digest is still pending', async () => {
+    const bytes = Uint8Array.from({ length: 2 * 256 * 1024 + 17 }, (_, index) => index % 251);
+    driver.files.set(image.path, bytes);
+    const expected = legacyFingerprint(bytes);
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    let captured: Uint8Array | undefined;
+    let snapshot: Uint8Array | undefined;
+    let release: (() => void) | undefined;
+    const digest = vi.spyOn(crypto.subtle, 'digest').mockImplementation((algorithm, data) => {
+      if (!captured && data.byteLength === 32 + 256 * 1024) {
+        captured = new Uint8Array(data as ArrayBuffer);
+        snapshot = captured.slice();
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        return gate.then(() => originalDigest(algorithm, data));
+      }
+      return originalDigest(algorithm, data);
+    });
+    const task = fingerprintAssetImage(image.path);
+    try {
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+      expect(captured).toEqual(snapshot);
+      release!();
+      await expect(task).resolves.toEqual(expected);
+      expect(driver.close).toHaveBeenCalledOnce();
+    } finally {
+      release?.();
+      await task.catch(() => undefined);
+      digest.mockRestore();
+    }
+  });
+
   it('hashes all bytes independently of short reads, detecting changes with the same size and mtime', async () => {
     driver.files.set(image.path, new Uint8Array(300000).fill(7));
     const whole = await fingerprintAssetImage(image.path); driver.chunk = 4093;

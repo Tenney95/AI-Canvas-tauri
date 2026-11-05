@@ -3,7 +3,7 @@
  * 节点输出另存为、系统文件管理器定位。基础设施见 ./fs/core，删除域见 ./fs/trash，
  * 全局资产库见 ./fs/assetLibrary（均通过本模块统一对外导出）。
  */
-import { exists, writeFile, readFile as tauriReadFile, readDir, stat, lstat, rename, mkdir } from '@tauri-apps/plugin-fs';
+import { exists, writeFile, readFile as tauriReadFile, open as fsOpen, readDir, stat, lstat, rename, mkdir } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -416,6 +416,17 @@ async function runNativeFileTransfer<T = NativeFileTransferResult>(
     options?.signal?.removeEventListener('abort', cancel);
     unlisten?.();
   }
+}
+
+/** 原生流式复制到新目标；目标已存在或传输失败时不覆盖、不回退内存写入。 */
+export async function copyLocalFileStreamed(
+  sourcePath: string,
+  destinationPath: string,
+  options?: FileTransferOptions,
+): Promise<{ path: string; totalBytes: number }> {
+  if (!isTauriEnv()) throw new Error('文件复制仅支持桌面应用');
+  const result = await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath }, options);
+  return { path: stripVerbatimPrefix(result.path), totalBytes: result.totalBytes };
 }
 
 /** 复制真实目录；原生端负责授权、禁止覆盖、进度及取消。 */
@@ -1364,16 +1375,53 @@ export async function readAgentAuthorizedTextFile(
   signal?: AbortSignal,
 ): Promise<string> {
   if (!isTauriEnv()) throw new Error('本地文件读取仅在 Tauri 桌面环境可用');
-  if (signal?.aborted) throw new DOMException('读取已取消', 'AbortError');
-  const metadata = await stat(path);
-  if (!metadata.isFile) throw new Error('授权目标已不再是文件');
-  if (metadata.size > maxBytes) throw new Error(`文件超过 ${Math.floor(maxBytes / 1024)} KB 读取限制`);
-  const bytes = await tauriReadFile(path);
-  if (signal?.aborted) throw new DOMException('读取已取消', 'AbortError');
+  const checkAbort = () => { if (signal?.aborted) throw new DOMException('读取已取消', 'AbortError'); };
+  const tooLarge = () => new Error(`文件超过 ${Math.floor(maxBytes / 1024)} KB 读取限制`);
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    throw new Error('文件不是有效的 UTF-8 文本');
+    checkAbort();
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error('文件读取限制无效');
+    const metadata = await stat(path);
+    checkAbort();
+    if (!metadata.isFile) throw new Error('授权目标已不再是文件');
+    if (metadata.size > maxBytes) throw tooLarge();
+    const file = await fsOpen(path, { read: true });
+    let content: string;
+    try {
+      checkAbort();
+      const parts: Uint8Array[] = [];
+      let total = 0;
+      let ended = false;
+      while (!ended) {
+        // 最多多读一个字节识别增长；缓冲按实际分块增长，不按调用方上限预分配。
+        const part = new Uint8Array(Math.min(64 * 1024, maxBytes - total + 1));
+        let filled = 0;
+        while (filled < part.length) {
+          checkAbort();
+          const count = await file.read(part.subarray(filled));
+          checkAbort();
+          if (count === null || count === 0) { ended = true; break; }
+          if (!Number.isSafeInteger(count) || count < 0 || count > part.length - filled) {
+            throw new Error('授权文件返回了无效读取长度');
+          }
+          filled += count;
+          total += count;
+          if (total > maxBytes) throw tooLarge();
+        }
+        if (filled) parts.push(part.subarray(0, filled));
+      }
+      const bytes = parts.length === 1 ? parts[0] : new Uint8Array(total);
+      if (parts.length > 1) {
+        let offset = 0;
+        for (const part of parts) { bytes.set(part, offset); offset += part.length; }
+      }
+      try { content = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch { throw new Error('文件不是有效的 UTF-8 文本'); }
+    } finally { await file.close(); }
+    checkAbort();
+    return content;
+  } catch (error) {
+    checkAbort();
+    throw error;
   }
 }
 
@@ -1462,7 +1510,7 @@ export async function uploadSourceFileToProject(
       if (fileSize > 0) assertMediaDataUrlSize(fileSize, kind, `${MEDIA_KIND_LABELS[kind]}「${fileName}」`);
       const content = await tauriReadFile(filePath);
       assertMediaDataUrlSize(content.byteLength, kind, `${MEDIA_KIND_LABELS[kind]}「${fileName}」`);
-      const base64 = arrayBufferToBase64(content.buffer);
+      const base64 = await bytePartsToBase64Async([content]);
       const mimeType = getMimeType(ext);
       return {
         dataUrl: `data:${mimeType};base64,${base64}`,
@@ -1644,9 +1692,25 @@ export async function saveNodeOutputToFile(opts: {
 
   try {
     throwIfMediaReadAborted(signal);
+    // 新目标走独占发布；复制开始后的任何失败都不能落到可能覆盖目标的 URL 回退。
+    // 源路径已经缺失时仍保留下面的读取失败回退，已有目标沿用保存对话框的覆盖语义。
+    if (filePath && !(await exists(destPath)) && await exists(filePath)) {
+      throwIfMediaReadAborted(signal);
+      onProgress?.({ transferredBytes: 0, totalBytes: null, phase: 'saving' });
+      const result = await copyLocalFileStreamed(filePath, destPath, {
+        signal,
+        onProgress: onProgress ? ({ transferredBytes, totalBytes }) => onProgress({
+          transferredBytes, totalBytes, phase: 'saving',
+        }) : undefined,
+      });
+      throwIfMediaReadAborted(signal);
+      onProgress?.({ transferredBytes: result.totalBytes, totalBytes: result.totalBytes, phase: 'saving' });
+      return result.path;
+    }
     // 1. Media: try real file path first
     if (filePath) {
       try {
+        throwIfMediaReadAborted(signal);
         const bytes = await tauriReadFile(filePath);
         throwIfMediaReadAborted(signal);
         await writeFile(destPath, bytes);
@@ -1661,30 +1725,26 @@ export async function saveNodeOutputToFile(opts: {
 
     // 2. data: URL
     if (mediaUrl && mediaUrl.startsWith('data:')) {
-      const commaIdx = mediaUrl.indexOf(',');
-      const b64 = commaIdx > 0 ? mediaUrl.substring(commaIdx + 1) : '';
-      const binaryStr = atob(b64);
-      const bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
+      const bytes = await decodeDataUrlBytesAsync(mediaUrl, { signal });
       throwIfMediaReadAborted(signal);
       await writeFile(destPath, bytes);
       return destPath;
     }
 
-    // 3. ComfyUI 取件走原生流下载，其余 URL 沿用原读取方式。
+    // 3. ComfyUI 与普通远程 URL 的新目标走原生流下载；覆盖与 GitHub 切源保留既有入口。
     //    节点里的 asset URL 已经是 convertFileSrc 的产物，再转一次会把整个 URL 当成路径编码进去 —
     //    Windows 的 asset URL 是 http://asset.localhost/… 走不到这一步，mac 的 asset:// 才会踩到。
     if (mediaUrl && /^(asset:|blob:|https?:)/.test(mediaUrl)) {
-      if (nativeComfySource) {
+      const githubSource = githubMirrorUrl(mediaUrl);
+      const nativeRemoteSource = !nativeComfySource && !githubSource && isRemoteMediaUrl(mediaUrl) && !(await exists(destPath));
+      if (nativeComfySource || nativeRemoteSource) {
         // 复用原生临时文件与提交保护；不得删除或覆盖用户已有的目标文件。
-        if (await exists(destPath)) throw new Error('目标文件已存在，请改用新文件名保存');
+        if (nativeComfySource && await exists(destPath)) throw new Error('目标文件已存在，请改用新文件名保存');
         throwIfMediaReadAborted(signal);
         onProgress?.({ transferredBytes: 0, totalBytes: null, phase: 'downloading' });
         const result = await runNativeFileTransfer('download_file_streamed', {
           url: mediaUrl, destinationPath: destPath,
-          ...(nodeType.includes('video') ? { expectedMediaKind: 'video' } : {}),
+          ...(nativeComfySource && nodeType.includes('video') ? { expectedMediaKind: 'video' } : {}),
         }, {
           signal,
           onProgress: onProgress ? ({ transferredBytes, totalBytes }) => onProgress({
@@ -1695,7 +1755,7 @@ export async function saveNodeOutputToFile(opts: {
         onProgress?.({ transferredBytes: result.totalBytes, totalBytes: result.totalBytes, phase: 'saving' });
         return result.path;
       }
-      if (githubMirrorUrl(mediaUrl)) {
+      if (githubSource) {
         const bytes = await downloadGithubBytes(mediaUrl, { signal, onProgress: (transferredBytes, totalBytes) =>
           onProgress?.({ transferredBytes, totalBytes: totalBytes ?? null, phase: 'downloading' }) });
         throwIfMediaReadAborted(signal);
@@ -1705,6 +1765,7 @@ export async function saveNodeOutputToFile(opts: {
       }
       const reportProgress = isRemoteMediaUrl(mediaUrl) ? onProgress : undefined;
       reportProgress?.({ transferredBytes: 0, totalBytes: null, phase: 'downloading' });
+      throwIfMediaReadAborted(signal);
       const resp = await fetch(mediaUrl, { signal });
       if (!resp.ok) throw new Error(`读取媒体失败：HTTP ${resp.status}`);
       let bytes: Uint8Array;

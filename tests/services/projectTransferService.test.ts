@@ -12,9 +12,7 @@ const mocks = vi.hoisted(() => ({
   getProjectById: vi.fn(),
   deleteProjectFromDb: vi.fn(),
   saveProject: vi.fn(),
-  getProjectConversations: vi.fn(),
-  getConversationMessages: vi.fn(),
-  getProjectMemories: vi.fn(),
+  getProjectChatForExport: vi.fn(),
   putChatConversation: vi.fn(),
   putChatMessage: vi.fn(),
   putProjectMemory: vi.fn(),
@@ -61,9 +59,7 @@ vi.mock('../../src/services/indexedDbService', () => ({
   getAllProjects: mocks.getAllProjects,
   getProjectById: mocks.getProjectById,
   deleteProjectFromDb: mocks.deleteProjectFromDb,
-  getProjectConversations: mocks.getProjectConversations,
-  getConversationMessages: mocks.getConversationMessages,
-  getProjectMemories: mocks.getProjectMemories,
+  getProjectChatForExport: mocks.getProjectChatForExport,
   putChatConversation: mocks.putChatConversation,
   putChatMessage: mocks.putChatMessage,
   putProjectMemory: mocks.putProjectMemory,
@@ -181,9 +177,7 @@ describe('projectTransferService', () => {
     ));
     mocks.deleteProjectFromDb.mockResolvedValue(undefined);
     mocks.deleteProjectDataDir.mockResolvedValue(undefined);
-    mocks.getProjectConversations.mockResolvedValue([]);
-    mocks.getConversationMessages.mockResolvedValue({ messages: [], total: 0 });
-    mocks.getProjectMemories.mockResolvedValue([]);
+    mocks.getProjectChatForExport.mockResolvedValue(EMPTY_CHAT);
     mocks.ensureProjectDataDir.mockResolvedValue('/data/导入中-abc');
     mocks.renameProjectDataDir.mockImplementation(async (_id: string, oldFolder: string, dataFolder: string) => ({
       oldDir: `/data/${oldFolder}`,
@@ -214,12 +208,14 @@ describe('projectTransferService', () => {
 
   it('packs the project record, chat payload and asset directory', async () => {
     mocks.getProjectById.mockResolvedValue(PROJECT_RECORD);
-    mocks.getProjectConversations.mockResolvedValue([{ id: 'conv-1' }]);
-    mocks.getConversationMessages.mockResolvedValue({
-      messages: [{ id: 'm2', conversationId: 'conv-1', sequence: 2 }, { id: 'm1', conversationId: 'conv-1', sequence: 1 }],
-      total: 2,
+    mocks.getProjectChatForExport.mockResolvedValue({
+      conversations: [{ id: 'conv-1', projectId: PROJECT_RECORD.id, title: '导出讨论' }],
+      messages: [
+        { id: 'm1', conversationId: 'conv-1', sequence: 1, content: '第一条', agentTaskId: 'private-task' },
+        { id: 'm2', conversationId: 'conv-1', sequence: 2, content: '第二条' },
+      ],
+      memories: [{ id: 'mem-1', projectId: PROJECT_RECORD.id, content: '项目记忆' }],
     });
-    mocks.getProjectMemories.mockResolvedValue([{ id: 'mem-1' }]);
     mocks.ensureProjectDataDir.mockResolvedValue('/data/分镜项目-source12');
     mocks.save.mockResolvedValue('/out/分镜项目.aicanvas');
     mocks.invoke.mockResolvedValue({ assetCount: 3, assetBytes: 10, archiveBytes: 8 });
@@ -227,6 +223,7 @@ describe('projectTransferService', () => {
     const result = await exportProjectArchive('source-project');
 
     expect(result).toEqual({ filePath: '/out/分镜项目.aicanvas', assetCount: 3, archiveBytes: 8, episodeCount: 0 });
+    expect(mocks.getProjectChatForExport).toHaveBeenCalledExactlyOnceWith(PROJECT_RECORD.id, 100_000);
     const [command, args] = mocks.invoke.mock.calls.find(([name]) => name === 'pack_project_archive')!;
     expect(command).toBe('pack_project_archive');
     expect(args.assetsDir).toBe('/data/分镜项目-source12');
@@ -236,20 +233,23 @@ describe('projectTransferService', () => {
     expect(entries.map((entry) => entry.path)).toEqual(['manifest.json', 'project.json', 'chat.json', 'exchange.json', 'exchange-state.json']);
     expect(JSON.parse(entries[0].content)).toMatchObject({ formatVersion: 3, episodeCount: 0 });
     const chat = JSON.parse(entries[2].content);
-    // 归档内消息按 sequence 升序，保证导入后时间线顺序稳定
+    // 批读服务提供的升序消息经过既有可移植边界后保持顺序。
     expect(chat.messages.map((message: { id: string }) => message.id)).toEqual(['m1', 'm2']);
+    expect(chat.messages[0].content).toBe('第一条');
+    expect(chat.messages[0]).not.toHaveProperty('agentTaskId');
+    expect(chat.conversations[0]).toMatchObject({ id: 'conv-1', title: '导出讨论', messageCount: 2 });
+    expect(chat.memories[0]).toMatchObject({ id: 'mem-1', content: '项目记忆' });
   });
 
   it('does not pack anything when the save dialog is cancelled', async () => {
     mocks.getProjectById.mockResolvedValue(PROJECT_RECORD);
-    mocks.getProjectConversations.mockResolvedValue([]);
-    mocks.getProjectMemories.mockResolvedValue([]);
     mocks.save.mockResolvedValue(null);
 
     await expect(exportProjectArchive('source-project')).resolves.toBeNull();
     expect(mocks.invoke).not.toHaveBeenCalled();
     expect(mocks.getProjectById).not.toHaveBeenCalled();
     expect(mocks.serializeEntries).not.toHaveBeenCalled();
+    expect(mocks.getProjectChatForExport).not.toHaveBeenCalled();
   });
 
   it('uses only summaries before the dialog and packs the latest complete record after confirmation', async () => {
@@ -282,6 +282,65 @@ describe('projectTransferService', () => {
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
+  it.each([
+    '会话消息超过当前归档上限，请先拆分会话后重新导出',
+    '对话与项目记忆读取失败',
+  ])('stops export before serialization or native IO when the batch chat reader rejects: %s', async (message) => {
+    const failure = new Error(message);
+    mocks.getProjectById.mockResolvedValue(PROJECT_RECORD);
+    mocks.getProjectChatForExport.mockRejectedValue(failure);
+    mocks.save.mockResolvedValue('/out/project.aicanvas');
+
+    await expect(exportProjectArchive(PROJECT_RECORD.id)).rejects.toBe(failure);
+
+    expect(mocks.getProjectChatForExport).toHaveBeenCalledExactlyOnceWith(PROJECT_RECORD.id, 100_000);
+    expect(mocks.serializeEntries).not.toHaveBeenCalled();
+    expect(mocks.ensureProjectDataDir).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('stops a series export when an episode batch chat read fails', async () => {
+    const failure = new Error('分集对话读取失败');
+    const records = [SERIES_RECORD, EPISODE_RECORD];
+    mocks.getAllProjects.mockResolvedValue(records);
+    mocks.getProjectById.mockImplementation(async (id: string) => records.find((record) => record.id === id));
+    mocks.getProjectChatForExport.mockImplementation(async (id: string) => {
+      if (id === EPISODE_RECORD.id) throw failure;
+      return EMPTY_CHAT;
+    });
+    mocks.save.mockResolvedValue('/out/整部剧.aicanvas');
+
+    await expect(exportProjectArchive(SERIES_RECORD.id)).rejects.toBe(failure);
+
+    expect(mocks.getProjectChatForExport.mock.calls).toEqual([
+      [SERIES_RECORD.id, 100_000], [EPISODE_RECORD.id, 100_000],
+    ]);
+    expect(mocks.serializeEntries).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+  });
+
+  it('preserves the native packing error without writing project records', async () => {
+    const failure = new Error('磁盘已满');
+    mocks.getProjectById.mockResolvedValue(PROJECT_RECORD);
+    mocks.save.mockResolvedValue('/out/project.aicanvas');
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'inspect_project_archive_assets') return [];
+      if (command === 'pack_project_archive') throw failure;
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    await expect(exportProjectArchive(PROJECT_RECORD.id)).rejects.toBe(failure);
+
+    expect(mocks.getProjectChatForExport).toHaveBeenCalledExactlyOnceWith(PROJECT_RECORD.id, 100_000);
+    expect(mocks.serializeEntries).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith('pack_project_archive', expect.objectContaining({ outputPath: '/out/project.aicanvas' }));
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
   it('exports all episodes in order with one shared asset directory, including an episode entry point', async () => {
     const second = { ...EPISODE_RECORD, id: 'episode-2', name: '第 2 集', episodeNo: 2 };
     const unrelated = { ...EPISODE_RECORD, id: 'other-episode', parentId: 'other-series' };
@@ -301,8 +360,8 @@ describe('projectTransferService', () => {
     expect(JSON.parse(texts['manifest.json'])).toMatchObject({ formatVersion: 3, episodeCount: 2 });
     expect(JSON.parse(texts['episodes.json']).map((episode: { project: { id: string } }) => episode.project.id))
       .toEqual(['episode-1', 'episode-2']);
-    expect(mocks.getProjectConversations.mock.calls.map(([id]) => id)).toEqual([
-      SERIES_RECORD.id, 'episode-1', 'episode-2',
+    expect(mocks.getProjectChatForExport.mock.calls).toEqual([
+      [SERIES_RECORD.id, 100_000], ['episode-1', 100_000], ['episode-2', 100_000],
     ]);
   });
 
@@ -313,7 +372,7 @@ describe('projectTransferService', () => {
       mocks.getAllProjects.mockResolvedValue([SERIES_RECORD, EPISODE_RECORD]);
       mocks.getProjectById.mockImplementation(async (id: string) => id === SERIES_RECORD.id ? SERIES_RECORD : undefined);
     } else if (stage === '对话读取') {
-      mocks.getProjectConversations.mockRejectedValue(new Error('对话读取失败'));
+      mocks.getProjectChatForExport.mockRejectedValue(new Error('对话读取失败'));
     } else {
       mocks.ensureProjectDataDir.mockRejectedValue(new Error('素材目录不可访问'));
     }
@@ -376,18 +435,16 @@ describe('projectTransferService', () => {
     const records = [SERIES_RECORD, second, EPISODE_RECORD];
     mocks.getAllProjects.mockResolvedValue(records);
     mocks.getProjectById.mockImplementation(async (id: string) => records.find((record) => record.id === id));
-    mocks.getProjectConversations.mockImplementation(async (projectId: string) => [{
-      id: `conv-${projectId}`, projectId, title: projectId, messageCount: 1,
-    }]);
-    mocks.getConversationMessages.mockImplementation(async (conversationId: string) => ({
-      messages: [{ id: `msg-${conversationId}`, conversationId, sequence: 1, content: '讨论', agentTaskId: 'old-task' }],
-      total: 1,
+    mocks.getProjectChatForExport.mockImplementation(async (projectId: string) => ({
+      conversations: [{ id: `conv-${projectId}`, projectId, title: projectId, messageCount: 1 }],
+      messages: [{ id: `msg-conv-${projectId}`, projectId, conversationId: `conv-${projectId}`,
+        sequence: 1, content: '讨论', agentTaskId: 'old-task' }],
+      memories: projectId === SERIES_RECORD.id ? [{
+        id: 'series-memory', projectId, kind: 'fact', content: '记忆引用第一集讨论', enabled: true,
+        source: { conversationId: `conv-${EPISODE_RECORD.id}`, messageId: `msg-conv-${EPISODE_RECORD.id}` },
+        createdAt: 1, updatedAt: 1,
+      }] : [],
     }));
-    mocks.getProjectMemories.mockImplementation(async (projectId: string) => projectId === SERIES_RECORD.id ? [{
-      id: 'series-memory', projectId, kind: 'fact', content: '记忆引用第一集讨论', enabled: true,
-      source: { conversationId: `conv-${EPISODE_RECORD.id}`, messageId: `msg-conv-${EPISODE_RECORD.id}` },
-      createdAt: 1, updatedAt: 1,
-    }] : []);
     mocks.save.mockResolvedValue('/out/整部剧.aicanvas');
     mocks.open.mockResolvedValue('/out/整部剧.aicanvas');
     mockArchiveRoundTrip(['分集/a.png']);
@@ -400,6 +457,9 @@ describe('projectTransferService', () => {
     expect(result.warnings).toEqual([]);
     expect(result.missingAssetCount).toBe(0);
     expect(result.conversationCount).toBe(3);
+    expect(mocks.getProjectChatForExport.mock.calls).toEqual([
+      [SERIES_RECORD.id, 100_000], [EPISODE_RECORD.id, 100_000], [second.id, 100_000],
+    ]);
     expect(mocks.saveProject).toHaveBeenCalledTimes(3);
     const [root, first, next] = mocks.saveProject.mock.calls.map(([record]) => record);
     expect(root.nodes).toEqual([]);
@@ -734,8 +794,6 @@ describe('projectTransferService', () => {
       id === 'episode-1' ? EPISODE : PROJECT_RECORD
     ));
     mocks.getAllProjects.mockResolvedValue([PROJECT_RECORD, EPISODE]);
-    mocks.getProjectConversations.mockResolvedValue([]);
-    mocks.getProjectMemories.mockResolvedValue([]);
     mockArchiveRoundTrip(['镜头1/a.png']);
 
     const result = await duplicateProjectArchive('source-project', '分镜项目 副本');
@@ -761,12 +819,17 @@ describe('projectTransferService', () => {
 
   it('removes the temp archive when packing fails', async () => {
     mocks.getProjectById.mockResolvedValue(PROJECT_RECORD);
-    mocks.getProjectConversations.mockResolvedValue([]);
-    mocks.getProjectMemories.mockResolvedValue([]);
-    mocks.invoke.mockRejectedValue(new Error('磁盘已满'));
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'inspect_project_archive_assets') return [];
+      if (command === 'pack_project_archive') throw new Error('磁盘已满');
+      throw new Error(`Unexpected command: ${command}`);
+    });
 
     await expect(duplicateProjectArchive('source-project', '副本')).rejects.toThrow('磁盘已满');
+    expect(mocks.invoke).toHaveBeenCalledWith('pack_project_archive', expect.any(Object));
     expect(mocks.remove).toHaveBeenCalledTimes(1);
+    expect(mocks.remove).toHaveBeenCalledWith(mocks.invoke.mock.calls.find(([name]) => name === 'pack_project_archive')![1].outputPath);
+    expect(mocks.saveProject).not.toHaveBeenCalled();
   });
 
   it('keeps the staging folder name when renaming the data directory fails', async () => {

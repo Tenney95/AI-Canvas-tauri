@@ -7,15 +7,24 @@ const mocks = vi.hoisted(() => ({
   exists: vi.fn(async (_path: string) => true),
   getProjectDataDir: vi.fn(async (_projectId: string): Promise<string | null> => '/project/data'),
   identifyAsset: vi.fn(),
-  walkDirectoryFiles: vi.fn(),
+  resolveIndexedAssetPath: vi.fn(async (_assetId: string): Promise<string | null> => null),
+  scanDirectoryFiles: vi.fn(),
   writeFile: vi.fn(),
   mkdir: vi.fn(),
+  stat: vi.fn(),
+  readDir: vi.fn(),
   notifyProjectDiskChanged: vi.fn(),
   resolveUniqueDestPath: vi.fn(async (dir: string, name: string) => `${dir}/${name}`),
 }));
 
-vi.mock('@tauri-apps/plugin-fs', () => ({ exists: mocks.exists, mkdir: mocks.mkdir, writeFile: mocks.writeFile }));
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  exists: mocks.exists, mkdir: mocks.mkdir, writeFile: mocks.writeFile, stat: mocks.stat, readDir: mocks.readDir,
+}));
 vi.mock('../../src/services/fs/core', () => ({
+  isTauriEnv: () => true,
+  getConvertFileSrc: async () => (path: string) => `asset://${path}`,
+  getFileCategory: () => 'image',
+  CATEGORY_EXTENSIONS: { image: ['.png'] },
   buildNodeFileName: (label: string | undefined, ext: string, fallback: string) => `${label || fallback}${ext}`,
   getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
   getProjectDataDir: mocks.getProjectDataDir,
@@ -25,15 +34,17 @@ vi.mock('../../src/services/fs/core', () => ({
   stripVerbatimPrefix: (path: string) => path,
 }));
 vi.mock('../../src/services/fs/assetLibrary', () => ({
-  walkDirectoryFiles: mocks.walkDirectoryFiles,
+  scanDirectoryFiles: mocks.scanDirectoryFiles,
 }));
 vi.mock('../../src/services/fs/assetIndex', () => ({
   identifyAsset: mocks.identifyAsset,
-  resolveIndexedAssetPath: vi.fn(async () => null),
+  resolveIndexedAssetPath: mocks.resolveIndexedAssetPath,
 }));
 
 import {
   getLastActiveProjectId,
+  getAssetIndexById,
+  getAssetIndexByPath,
   getProjectById,
   putAssetIndex,
   saveProjectToDb,
@@ -44,16 +55,24 @@ import { normalizeDramaAssetLibrary, normalizeDramaVisualAsset, syncDramaVisualA
 import { captureExchangeSnapshot, materializeExchangeSnapshot } from '../../src/services/projectExchangeDomain';
 import { resolveDramaAssetImageRef } from '../../src/services/dramaAssetPrompt';
 import type { ProjectExchangeIdentity, ProjectExchangeState } from '../../src/types/projectExchange';
+import type { AssetDirectoryScanResult } from '../../src/services/fs/assetLibrary';
+
+function scanResult(overrides: Partial<AssetDirectoryScanResult> = {}): AssetDirectoryScanResult {
+  return { files: [], folders: [], truncated: false, complete: true, failedDirectories: 0, failedFiles: 0, ...overrides };
+}
 
 describe('project loading tolerates asset recovery failures', () => {
   beforeEach(() => {
     mocks.exists.mockResolvedValue(true);
     mocks.getProjectDataDir.mockResolvedValue('/project/data');
     mocks.identifyAsset.mockRejectedValue(new Error('asset index unavailable'));
-    mocks.walkDirectoryFiles.mockRejectedValue(new Error('directory scan unavailable'));
+    mocks.resolveIndexedAssetPath.mockReset().mockResolvedValue(null);
+    mocks.scanDirectoryFiles.mockReset().mockRejectedValue(new Error('directory scan unavailable'));
     mocks.resolveUniqueDestPath.mockImplementation(async (dir: string, name: string) => `${dir}/${name}`);
     mocks.writeFile.mockResolvedValue(undefined);
     mocks.mkdir.mockResolvedValue(undefined);
+    mocks.stat.mockReset();
+    mocks.readDir.mockReset();
   });
 
   it('全局来源标记经重复归一化及 JSON 往返保留，明确改绑项目后不复活旧来源', () => {
@@ -316,7 +335,7 @@ describe('project loading tolerates asset recovery failures', () => {
 
   it('便携媒体文件缺失时保留引用，不伪造可用的展示地址', async () => {
     mocks.exists.mockResolvedValue(false);
-    mocks.walkDirectoryFiles.mockResolvedValue([]);
+    mocks.scanDirectoryFiles.mockResolvedValue(scanResult());
     const projectId = `portable-missing-${Date.now()}`;
     await saveProjectToDb({ id: projectId, name: '缺失媒体', createdAt: 1, updatedAt: 2, edges: [],
       nodes: [{ id: 'image', data: { type: 'source-image', relativePath: 'missing.png' } }],
@@ -482,7 +501,7 @@ describe('project loading tolerates asset recovery failures', () => {
 
     const loaded = await loadProjectData(projectId);
 
-    expect(mocks.walkDirectoryFiles).not.toHaveBeenCalled();
+    expect(mocks.scanDirectoryFiles).not.toHaveBeenCalled();
     expect(mocks.identifyAsset).not.toHaveBeenCalled();
     expect((loaded?.nodes as Array<{ data: { filePath?: string } }>)[0].data.filePath)
       .toBe('/project/data/saved.png');
@@ -519,7 +538,7 @@ describe('project loading tolerates asset recovery failures', () => {
 
   it('成片快照素材缺失也触发索引恢复扫描并保留稳定身份', async () => {
     mocks.exists.mockResolvedValue(false);
-    mocks.walkDirectoryFiles.mockResolvedValue([]);
+    mocks.scanDirectoryFiles.mockResolvedValue(scanResult());
     const projectId = `project-shot-video-missing-${Date.now()}`;
     await saveProjectToDb({ id: projectId, name: '缺失成片', createdAt: 1, updatedAt: 2, edges: [],
       nodes: [{ id: 'sheet', data: { type: 'ai-shotlist', shotlistRows: [{ id: 'shot-1', shotNo: '1',
@@ -529,7 +548,9 @@ describe('project loading tolerates asset recovery failures', () => {
     const loaded = await loadProjectData(projectId) as unknown as {
       nodes: Array<{ data: { shotlistRows: Array<{ video: Record<string, unknown> }> } }>;
     };
-    expect(mocks.walkDirectoryFiles).toHaveBeenCalledWith('/project/data', { excludedRootDirectories: ['.thumbnail'] });
+    expect(mocks.scanDirectoryFiles).toHaveBeenCalledWith('/project/data', {
+      source: 'project', projectId, excludedRootDirectories: ['.thumbnail'],
+    });
     expect(loaded.nodes[0].data.shotlistRows[0].video).toEqual({
       nodeId: 'deleted-source', kind: 'video', assetId: 'missing-video', relativePath: 'missing.mp4',
     });
@@ -537,7 +558,7 @@ describe('project loading tolerates asset recovery failures', () => {
 
   it('excludes the project thumbnail cache when rebuilding the index for a missing asset', async () => {
     mocks.exists.mockResolvedValue(false);
-    mocks.walkDirectoryFiles.mockResolvedValue([]);
+    mocks.scanDirectoryFiles.mockResolvedValue(scanResult());
     const projectId = `project-missing-${Date.now()}`;
     await saveProjectToDb({
       id: projectId,
@@ -550,7 +571,8 @@ describe('project loading tolerates asset recovery failures', () => {
 
     await loadProjectData(projectId);
 
-    expect(mocks.walkDirectoryFiles).toHaveBeenCalledWith('/project/data', {
+    expect(mocks.scanDirectoryFiles).toHaveBeenCalledWith('/project/data', {
+      source: 'project', projectId,
       excludedRootDirectories: ['.thumbnail'],
     });
   });
@@ -701,7 +723,7 @@ describe('project loading tolerates asset recovery failures', () => {
   it('observes a file that reappears during missing-asset recovery', async () => {
     let recovered = false;
     mocks.exists.mockImplementation(async () => recovered);
-    mocks.walkDirectoryFiles.mockImplementation(async () => { recovered = true; return []; });
+    mocks.scanDirectoryFiles.mockImplementation(async () => { recovered = true; return scanResult(); });
     const projectId = `reappeared-load-${Date.now()}`;
     await saveProjectToDb({ id: projectId, name: 'Recovered file', createdAt: 1, updatedAt: 2,
       nodes: [{ id: 'a', data: { assetId: 'saved', relativePath: 'saved.png' } }], edges: [],
@@ -713,19 +735,20 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(mocks.exists).toHaveBeenCalledTimes(2);
   });
 
-  it('bounds missing-asset index refresh and rechecks files for the recovery retry', async () => {
+  it('bounds recovery path checks and reuses the scan without registering every file again', async () => {
     let active = 0;
     let peak = 0;
-    mocks.exists.mockResolvedValue(false);
-    const files = Array.from({ length: 12 }, (_, index) => ({ path: `/project/data/image${index}.png`, size: 10 }));
-    mocks.walkDirectoryFiles.mockResolvedValue(files);
-    mocks.identifyAsset.mockImplementation(async (path: string) => {
+    mocks.exists.mockImplementation(async () => {
       active += 1;
       peak = Math.max(peak, active);
       await Promise.resolve();
       active -= 1;
-      return { assetId: path, relativePath: path.split('/').pop() };
+      return false;
     });
+    const files = Array.from({ length: 12 }, (_, index) => ({ name: `image${index}.png`,
+      path: `/project/data/image${index}.png`, relativePath: `image${index}.png`, assetId: `asset${index}`,
+      size: 10, category: 'image' as const }));
+    mocks.scanDirectoryFiles.mockResolvedValue(scanResult({ files }));
     const projectId = `bounded-recovery-${Date.now()}`;
     await saveProjectToDb({ id: projectId, name: 'Recovery', createdAt: 1, updatedAt: 2,
       nodes: files.map((_, index) => ({ id: `n${index}`, data: { assetId: `asset${index}`, relativePath: `image${index}.png` } })),
@@ -735,8 +758,118 @@ describe('project loading tolerates asset recovery failures', () => {
     await loadProjectData(projectId);
 
     expect(peak).toBeLessThanOrEqual(4);
-    expect(mocks.identifyAsset).toHaveBeenCalledTimes(files.length);
+    expect(peak).toBeGreaterThan(1);
+    expect(mocks.scanDirectoryFiles).toHaveBeenCalledExactlyOnceWith('/project/data', {
+      source: 'project', projectId, excludedRootDirectories: ['.thumbnail'],
+    });
+    expect(mocks.identifyAsset).not.toHaveBeenCalled();
     expect(mocks.exists).toHaveBeenCalledTimes(files.length * 2);
+  });
+
+  it('reuses real scan registration once and does not reindex retired copies or thumbnail files', async () => {
+    const projectId = `single-scan-recovery-${Date.now()}`;
+    const directory = `/project/${projectId}`;
+    const assetId = `${projectId}-image`;
+    const currentPath = `${directory}/current.png`;
+    const oldPath = `${directory}/old.png`;
+    mocks.getProjectDataDir.mockResolvedValue(directory);
+    mocks.exists.mockResolvedValueOnce(false).mockResolvedValue(true);
+    mocks.stat.mockResolvedValue({ size: 10, mtime: new Date(20) });
+    mocks.readDir.mockResolvedValue([
+      { name: 'old.png', isFile: true, isDirectory: false, isSymlink: false },
+      { name: 'current.png', isFile: true, isDirectory: false, isSymlink: false },
+      { name: '.thumbnail', isFile: false, isDirectory: true, isSymlink: false },
+    ]);
+    await putAssetIndex({ assetId, path: currentPath, rootPath: directory, relativePath: 'current.png',
+      source: 'project', projectId, size: 10, mtimeMs: 20, fingerprint: '10:20', status: 'online', updatedAt: 1 });
+    const { persistMediaRelocation } = await import('../../src/services/indexedDb/mediaRelocations');
+    await persistMediaRelocation({ projectId, oldPath, newPath: currentPath,
+      assetUrl: `asset://${currentPath}`, relativePath: 'current.png' });
+    const realIndex = await vi.importActual<typeof import('../../src/services/fs/assetIndex')>('../../src/services/fs/assetIndex');
+    const realLibrary = await vi.importActual<typeof import('../../src/services/fs/assetLibrary')>('../../src/services/fs/assetLibrary');
+    mocks.identifyAsset.mockImplementation(realIndex.identifyAsset);
+    mocks.scanDirectoryFiles.mockImplementation(realLibrary.scanDirectoryFiles);
+    await saveProjectToDb({ id: projectId, name: 'Single recovery scan', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', data: { type: 'source-image', assetId, relativePath: 'current.png' } }],
+    });
+
+    const loaded = await loadProjectData(projectId);
+
+    expect(mocks.scanDirectoryFiles).toHaveBeenCalledExactlyOnceWith(directory, {
+      source: 'project', projectId, excludedRootDirectories: ['.thumbnail'],
+    });
+    expect(mocks.stat).toHaveBeenCalledExactlyOnceWith(currentPath);
+    expect(mocks.identifyAsset).toHaveBeenCalledExactlyOnceWith(currentPath, {
+      assetId: undefined, rootPath: directory, source: 'project', projectId, size: 10, mtimeMs: 20,
+    });
+    expect(mocks.readDir).toHaveBeenCalledExactlyOnceWith(directory);
+    expect(mocks.exists).toHaveBeenCalledTimes(2);
+    expect(await getAssetIndexByPath(oldPath)).toBeUndefined();
+    expect(await getAssetIndexById(assetId)).toMatchObject({ path: currentPath, source: 'project', projectId, mtimeMs: 20 });
+    expect((loaded?.nodes as Array<{ data: { filePath?: string } }>)[0].data.filePath).toBe(currentPath);
+  });
+
+  it('restores a renamed asset from the identity registered by the recovery scan', async () => {
+    const projectId = `renamed-scan-recovery-${Date.now()}`;
+    const directory = `/project/${projectId}`;
+    const assetId = `${projectId}-image`;
+    const oldPath = `${directory}/old.png`;
+    const newPath = `${directory}/renamed.png`;
+    mocks.getProjectDataDir.mockResolvedValue(directory);
+    mocks.exists.mockImplementation(async (path: string) => path === newPath);
+    mocks.stat.mockResolvedValue({ size: 10, mtime: new Date(20) });
+    const realIndex = await vi.importActual<typeof import('../../src/services/fs/assetIndex')>('../../src/services/fs/assetIndex');
+    mocks.identifyAsset.mockImplementation(realIndex.identifyAsset);
+    mocks.resolveIndexedAssetPath.mockImplementation(realIndex.resolveIndexedAssetPath);
+    mocks.scanDirectoryFiles.mockImplementation(async () => {
+      await putAssetIndex({ assetId, path: newPath, rootPath: directory, relativePath: 'renamed.png',
+        source: 'project', projectId, size: 10, mtimeMs: 20, fingerprint: '10:20', status: 'online', updatedAt: 1 });
+      return scanResult({ files: [{ assetId, path: newPath, relativePath: 'renamed.png', name: 'renamed.png',
+        size: 10, category: 'image', source: 'project' }] });
+    });
+    await saveProjectToDb({ id: projectId, name: 'Renamed recovery', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', data: { type: 'source-image', assetId, relativePath: 'old.png' } }],
+    });
+
+    const loaded = await loadProjectData(projectId);
+
+    expect(mocks.scanDirectoryFiles).toHaveBeenCalledTimes(1);
+    expect(mocks.resolveIndexedAssetPath).toHaveBeenCalledTimes(2);
+    expect(mocks.exists.mock.calls.filter(([path]) => path === oldPath)).toHaveLength(2);
+    // 仅改名后的单个引用需要重新核对身份，不再对扫描结果整批登记。
+    expect(mocks.identifyAsset).toHaveBeenCalledExactlyOnceWith(newPath, {
+      assetId, rootPath: directory, projectId, source: 'project',
+    });
+    expect((loaded?.nodes as Array<{ data: Record<string, unknown> }>)[0].data).toMatchObject({
+      assetId, relativePath: 'renamed.png', filePath: newPath, imageUrl: `asset://${newPath}`,
+    });
+    expect(await getAssetIndexById(assetId)).toMatchObject({ path: newPath, source: 'project', projectId });
+  });
+
+  it.each(['failed', 'partial', 'truncated'] as const)('keeps the persisted canvas and retries recovery after a %s scan', async (state) => {
+    const projectId = `incomplete-scan-${state}-${Date.now()}`;
+    const nodes = [{ id: 'image', position: { x: 10, y: 20 },
+      data: { type: 'source-image', assetId: 'missing', relativePath: 'missing.png' } }];
+    mocks.exists.mockResolvedValue(false);
+    const result = scanResult({ complete: false, failedFiles: state === 'partial' ? 2 : 0,
+      failedDirectories: state === 'partial' ? 1 : 0, truncated: state === 'truncated' });
+    if (state !== 'failed') mocks.scanDirectoryFiles.mockResolvedValue(result);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await saveProjectToDb({ id: projectId, name: 'Incomplete recovery', createdAt: 1, updatedAt: 2, nodes, edges: [] });
+
+    const loaded = await loadProjectData(projectId);
+
+    expect(loaded?.nodes).toEqual(nodes);
+    expect(mocks.scanDirectoryFiles).toHaveBeenCalledTimes(1);
+    expect(mocks.exists).toHaveBeenCalledTimes(2);
+    expect(mocks.identifyAsset).not.toHaveBeenCalled();
+    if (state === 'failed') {
+      expect(warn).toHaveBeenCalledWith('[项目加载] 资产目录扫描失败，已继续加载画布', { projectId });
+    } else {
+      expect(warn).toHaveBeenCalledWith('[项目加载] 资产索引扫描未完成，已继续加载画布', {
+        projectId, failedFiles: result.failedFiles, failedDirectories: result.failedDirectories, truncated: result.truncated,
+      });
+    }
   });
 
   it('moves legacy inline generated media to a project file before saving', async () => {

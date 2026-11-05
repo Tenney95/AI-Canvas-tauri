@@ -2,6 +2,7 @@
 import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AssetIndexRecord } from '../../src/services/indexedDbService';
+import type { MediaRelocation } from '../../src/services/indexedDb/mediaRelocations';
 
 const fs = vi.hoisted(() => ({ stat: vi.fn(), exists: vi.fn() }));
 vi.mock('@tauri-apps/plugin-fs', async (original) => ({
@@ -34,6 +35,37 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('asset index batch persistence', () => {
+  it('reads the relocation journal once after every tombstone check and does not cache across batches', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    await seed('metadata', [{ id: 'media-relocations', moves: [] }]);
+    const get = vi.spyOn(IDBObjectStore.prototype, 'get');
+    const input = ['a', 'b', 'c'].map(record);
+
+    await db.putAssetIndexes(input);
+
+    const journalReads = () => get.mock.calls.flatMap(([key], index) => (
+      (get.mock.contexts[index] as IDBObjectStore).name === 'metadata' && key === 'media-relocations' ? [index] : []
+    ));
+    expect(journalReads()).toHaveLength(1);
+    const guards = get.mock.calls.flatMap(([key], index) => (
+      typeof key === 'string' && key.startsWith('forgotten-missing-asset:') ? [index] : []
+    ));
+    expect(guards).toHaveLength(input.length);
+    expect(guards.every((index) => index < journalReads()[0])).toBe(true);
+    await db.putAssetIndexes(input, { skipUnchanged: true });
+    expect(journalReads()).toHaveLength(2);
+  });
+
+  it('preserves batch positions and the original write order for repeated identities', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const input = [{ ...record('same'), size: 2, fingerprint: '2:1', updatedAt: 2 }, record('other'),
+      { ...record('same'), size: 3, fingerprint: '3:1', updatedAt: 3 }];
+    const saved = await db.putAssetIndexes(input);
+    expect(saved.map((entry) => entry.assetId)).toEqual(['same', 'other', 'same']);
+    expect(saved.map((entry) => entry.size)).toEqual([2, 1, 3]);
+    expect(await db.getAssetIndexById('same')).toMatchObject({ size: 3, updatedAt: 3 });
+  });
+
   it('skips unchanged writes after merging latest usage and digest, but persists real changes', async () => {
     const db = await import('../../src/services/indexedDbService');
     const initial = { ...record('a'), lastUsedAt: 20, contentDigest: 'a'.repeat(64) };
@@ -63,10 +95,62 @@ describe('asset index batch persistence', () => {
     const db = await import('../../src/services/indexedDbService');
     await db.putAssetIndexes([record('safe'), record('gone')]);
     await seed('metadata', [{ id: 'forgotten-missing-asset:gone', forgottenAt: 2 }]);
+    const get = vi.spyOn(IDBObjectStore.prototype, 'get');
     await expect(db.putAssetIndexes([{ ...record('safe'), size: 9 }, record('gone')], {
       skipUnchanged: true, migrateLegacyTags: true,
     })).rejects.toThrow('素材已被清理');
+    expect(get.mock.calls.some(([key]) => key === 'media-relocations')).toBe(false);
     expect((await db.getAssetIndexById('safe'))?.size).toBe(1);
+  });
+
+  it('applies chained moves without applying node-owned copies to asset indexes and migrates tags from the original path', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const input = [record('a'), record('shared')];
+    const intermediate = '/assets/intermediate/a.png';
+    const final = '/assets/final/a.png';
+    const moves: MediaRelocation[] = [
+      { projectId: 'project', oldPath: input[0].path, newPath: intermediate,
+        relativePath: 'intermediate/a.png', assetUrl: 'asset://intermediate' },
+      { projectId: 'project', oldPath: intermediate, newPath: final,
+        relativePath: 'final/a.png', assetUrl: 'asset://final' },
+      { projectId: 'project', oldPath: input[1].path, newPath: '/assets/node-copy/shared.png',
+        relativePath: 'node-copy/shared.png', assetUrl: 'asset://copy', ownerId: 'node-one' },
+    ];
+    await seed('metadata', [{ id: 'media-relocations', moves }]);
+    await seed('assetMeta', [{ path: input[0].path, tags: ['原路径标签'], updatedAt: 1 },
+      { path: final, tags: ['不能借用新路径标签'], updatedAt: 2 }]);
+
+    const saved = await db.putAssetIndexes(input, { migrateLegacyTags: true });
+
+    expect(saved.map((entry) => entry.path)).toEqual([final, input[1].path]);
+    expect(await db.getAssetIndexById('a')).toMatchObject({ path: final, relativePath: 'final/a.png' });
+    expect(await db.getAssetIndexById('shared')).toMatchObject({ path: input[1].path });
+    expect((await db.getAssetMetaById('a'))?.tags).toEqual(['原路径标签']);
+    expect(input.map((entry) => entry.path)).toEqual(['/assets/a.png', '/assets/shared.png']);
+  });
+
+  it('rolls back indexes and tag migration if a batch write is aborted', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    await db.putAssetIndexes([record('a'), record('b')]);
+    await seed('assetMeta', ['a', 'b'].map((id) => ({ path: record(id).path, tags: ['旧标签'], updatedAt: 1 })));
+    const originalPut = IDBObjectStore.prototype.put;
+    let scheduled = false;
+    const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value: unknown, key?: IDBValidKey) {
+      const request = originalPut.call(this, value, key);
+      if (this.name === 'assetIndex' && !scheduled) {
+        scheduled = true;
+        request.addEventListener('success', () => queueMicrotask(() => request.transaction?.abort()), { once: true });
+      }
+      return request;
+    });
+    await expect(db.putAssetIndexes(['a', 'b'].map((id) => ({ ...record(id), size: 9 })), {
+      migrateLegacyTags: true,
+    })).rejects.toThrow('文件引用写入事务失败');
+    put.mockRestore();
+    expect((await db.getAssetIndexById('a'))?.size).toBe(1);
+    expect((await db.getAssetIndexById('b'))?.size).toBe(1);
+    expect(await db.getAssetMetaById('a')).toBeUndefined();
+    expect(await db.getAssetMetaById('b')).toBeUndefined();
   });
 
   it('still applies a committed relocation to stale scan records inside the batch', async () => {

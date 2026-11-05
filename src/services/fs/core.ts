@@ -190,17 +190,24 @@ export async function readBinaryFile(filePath: string): Promise<Uint8Array<Array
 }
 
 const TEXT_PREVIEW_CACHE_MAX = 300;
+const TEXT_PREVIEW_MAX_BYTES = 2048;
 const textPreviewCache = new Map<string, string>();
+const pendingTextPreviews = new Map<string, Promise<string>>();
+
+function textPreviewKey(filePath: string, size: number | undefined, maxBytes: number): string {
+  return `${filePath}:${size ?? 'unknown'}:${maxBytes}`;
+}
 
 /** 同步读取已缓存的文本预览片段（若存在） */
-export function getCachedTextPreview(filePath: string, size?: number): string | undefined {
+export function getCachedTextPreview(filePath: string, size?: number, maxBytes = TEXT_PREVIEW_MAX_BYTES): string | undefined {
   if (!filePath) return undefined;
-  return textPreviewCache.get(`${filePath}:${size ?? 0}`);
+  return textPreviewCache.get(textPreviewKey(filePath, size, maxBytes));
 }
 
 /** 清理文本预览缓存（测试或重置时使用） */
 export function clearTextPreviewCache(): void {
   textPreviewCache.clear();
+  pendingTextPreviews.clear();
 }
 
 /** 保存文本后刷新等尺寸文件的已挂载缩略内容。 */
@@ -208,6 +215,9 @@ export const ASSET_TEXT_UPDATED_EVENT = 'asset-text-updated';
 export function invalidateTextPreview(filePath: string): void {
   for (const key of textPreviewCache.keys()) {
     if (key.startsWith(`${filePath}:`)) textPreviewCache.delete(key);
+  }
+  for (const key of pendingTextPreviews.keys()) {
+    if (key.startsWith(`${filePath}:`)) pendingTextPreviews.delete(key);
   }
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(ASSET_TEXT_UPDATED_EVENT, { detail: filePath }));
 }
@@ -227,12 +237,14 @@ function setPreviewCache(key: string, val: string): void {
 export async function readTextFilePreview(
   filePath: string,
   size?: number,
-  maxBytes = 2048,
+  maxBytes = TEXT_PREVIEW_MAX_BYTES,
 ): Promise<string> {
   if (!filePath) return '';
-  const cacheKey = `${filePath}:${size ?? 0}`;
+  const cacheKey = textPreviewKey(filePath, size, maxBytes);
   const cached = textPreviewCache.get(cacheKey);
   if (cached !== undefined) return cached;
+  const pending = pendingTextPreviews.get(cacheKey);
+  if (pending) return pending;
 
   if (size === 0) {
     setPreviewCache(cacheKey, '');
@@ -241,7 +253,7 @@ export async function readTextFilePreview(
 
   if (!isTauriEnv()) return '';
 
-  try {
+  const request: Promise<string> = (async () => {
     let bytes: Uint8Array | null = null;
     if (typeof fsOpen === 'function') {
       const file = await fsOpen(filePath, { read: true });
@@ -261,22 +273,25 @@ export async function readTextFilePreview(
     // 局部读取失败就停止预览，不能为了几 KB 摘要把整个大文件搬进 WebView。
 
     if (!bytes || bytes.length === 0) {
-      setPreviewCache(cacheKey, '');
       return '';
     }
 
     const decoder = new TextDecoder('utf-8', { fatal: false });
     const text = decoder.decode(bytes).replace(/\uFFFD+$/, '').replace(/^\uFEFF/, '');
     if (text.includes('\0')) {
-      setPreviewCache(cacheKey, '');
       return '';
     }
 
-    setPreviewCache(cacheKey, text);
     return text;
-  } catch {
-    return '';
-  }
+  })().then((text) => {
+    // 保存或清理会使在途请求失效；旧读取不能覆盖随后启动的新预览。
+    if (pendingTextPreviews.get(cacheKey) === request) setPreviewCache(cacheKey, text);
+    return text;
+  }).catch(() => '').finally(() => {
+    if (pendingTextPreviews.get(cacheKey) === request) pendingTextPreviews.delete(cacheKey);
+  });
+  pendingTextPreviews.set(cacheKey, request);
+  return request;
 }
 
 /** 确保二进制文件存在；已存在时不覆盖。 */
@@ -369,14 +384,22 @@ export function getConvertFileSrc(): ((path: string) => string) | null {
   return (isTauriEnv() ? convertFileSrc : null) as ((path: string) => string) | null;
 }
 
-/** 获取应用数据根目录（Tauri: appDataDir, 浏览器: null） */
+let cachedAppDataDir: string | undefined;
+let pendingAppDataDir: Promise<string | null> | undefined;
+
+/** 只复用当前窗口固定的系统目录；自定义根目录与项目映射仍由各入口实时解析。 */
 async function getAppDataDir(): Promise<string | null> {
   if (!isTauriEnv()) return null;
-  try {
-    return await appDataDir();
-  } catch {
-    return null;
+  if (cachedAppDataDir) return cachedAppDataDir;
+  if (!pendingAppDataDir) {
+    pendingAppDataDir = Promise.resolve().then(() => appDataDir()).then((directory) => {
+      if (directory) cachedAppDataDir = directory;
+      return directory || null;
+    }).catch(() => null).finally(() => {
+      pendingAppDataDir = undefined;
+    });
   }
+  return pendingAppDataDir;
 }
 
 /** 获取应用可执行文件所在目录（Tauri: executableDir, 浏览器: null） */

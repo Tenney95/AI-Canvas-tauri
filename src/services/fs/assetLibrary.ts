@@ -2,7 +2,7 @@
  * fs/assetLibrary — 全局资产库（项目无关）+ 外部文件夹 + 全局资产
  * 全局 file 目录、递归遍历外部文件夹、添加文件/文件夹、保存到永久目录、删除永久文件。
  */
-import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, readDir } from '@tauri-apps/plugin-fs';
+import { writeFile, mkdir, exists, stat, readDir } from '@tauri-apps/plugin-fs';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   isTauriEnv,
@@ -19,6 +19,7 @@ import { moveToTrash } from './trash';
 import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './assetIndex';
 import { getAllAssetIndexes, getAssetIndexByPath, putAssetIndex, type AssetIndexRecord } from '../indexedDbService';
 import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
+import { decodeDataUrlBytesAsync } from '../mediaDataUrl';
 
 /** 仅用于目录浏览的运行时条目，不写入资产索引或持久化配置。 */
 export interface AssetFolderEntry {
@@ -429,8 +430,8 @@ export async function addAssetFilesToGlobal(
     try {
       const fileName = src.split(/[\\/]/).pop() || 'file';
       const destPath = await resolveUniqueDestPath(destDir, fileName);
-      const data = await tauriReadFile(src);
-      await writeFile(destPath, data);
+      const { copyLocalFileStreamed } = await import('../fileService');
+      await copyLocalFileStreamed(src, destPath);
       count++;
     } catch (err) {
       console.error('Failed to add file to global:', src, err);
@@ -456,9 +457,8 @@ export async function saveToPermanent(filePath: string): Promise<string | null> 
   try {
     const fileName = filePath.split(/[\\/]/).pop() || 'file';
     const destPath = await resolveUniqueDestPath(destDir, fileName);
-    const data = await tauriReadFile(filePath);
-    await writeFile(destPath, data);
-    return destPath;
+    const { copyLocalFileStreamed } = await import('../fileService');
+    return (await copyLocalFileStreamed(filePath, destPath)).path;
   } catch (err) {
     console.error('Failed to save file to permanent:', filePath, err);
     return null;
@@ -483,20 +483,8 @@ export async function saveAssetToPermanent(
     try {
       const destPath = await resolveUniqueDestPath(destDir, entry.name);
 
-      const match = entry.assetUrl.match(/^data:(.+?);base64,(.+)$/);
-      if (match) {
-        const b64 = match[2];
-        const binaryStr = atob(b64);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) {
-          bytes[i] = binaryStr.charCodeAt(i);
-        }
-        await writeFile(destPath, bytes);
-      } else {
-        const resp = await fetch(entry.assetUrl);
-        const buffer = await resp.arrayBuffer();
-        await writeFile(destPath, new Uint8Array(buffer));
-      }
+      const bytes = await decodeDataUrlBytesAsync(entry.assetUrl);
+      await writeFile(destPath, bytes);
       return destPath;
     } catch (err) {
       console.error('Failed to save virtual asset to permanent:', entry.name, err);

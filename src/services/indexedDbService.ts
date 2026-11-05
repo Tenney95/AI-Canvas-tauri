@@ -762,11 +762,11 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
     const conversationRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
     const conversationCursor = conversationStore
       .index('projectId_updatedAt')
-      .openCursor(conversationRange);
+      .openKeyCursor(conversationRange);
     conversationCursor.onsuccess = () => {
       const cursor = conversationCursor.result;
       if (!cursor) return;
-      cursor.delete();
+      conversationStore.delete(cursor.primaryKey);
       cursor.continue();
     };
 
@@ -781,51 +781,54 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
     };
 
     const taskRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
-    const taskCursor = tx.objectStore(STORE_AGENT_TASKS)
+    const taskStore = tx.objectStore(STORE_AGENT_TASKS);
+    const taskCursor = taskStore
       .index('projectId_updatedAt')
-      .openCursor(taskRange);
+      .openKeyCursor(taskRange);
     taskCursor.onsuccess = () => {
       const cursor = taskCursor.result;
       if (!cursor) return;
-      cursor.delete();
+      taskStore.delete(cursor.primaryKey);
       cursor.continue();
     };
 
     const memoryRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
-    const memoryCursor = tx.objectStore(STORE_PROJECT_MEMORIES)
+    const memoryStore = tx.objectStore(STORE_PROJECT_MEMORIES);
+    const memoryCursor = memoryStore
       .index('projectId_updatedAt')
-      .openCursor(memoryRange);
+      .openKeyCursor(memoryRange);
     memoryCursor.onsuccess = () => {
       const cursor = memoryCursor.result;
       if (!cursor) return;
-      cursor.delete();
+      memoryStore.delete(cursor.primaryKey);
       cursor.continue();
     };
 
-    const historyCursor = tx.objectStore(STORE_HISTORY)
+    const historyStore = tx.objectStore(STORE_HISTORY);
+    const historyCursor = historyStore
       .index('projectId_timestamp_id')
-      .openCursor(projectHistoryRange(id));
+      .openKeyCursor(projectHistoryRange(id));
     historyCursor.onsuccess = () => {
       const cursor = historyCursor.result;
       if (!cursor) return;
-      cursor.delete();
+      historyStore.delete(cursor.primaryKey);
       cursor.continue();
     };
 
     const visualRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
-    const visualCursor = tx.objectStore(STORE_PROJECT_VISUAL_DESCRIPTIONS)
+    const visualStore = tx.objectStore(STORE_PROJECT_VISUAL_DESCRIPTIONS);
+    const visualCursor = visualStore
       .index('projectId_updatedAt')
-      .openCursor(visualRange);
+      .openKeyCursor(visualRange);
     visualCursor.onsuccess = () => {
       const cursor = visualCursor.result;
       if (!cursor) return;
-      cursor.delete();
+      visualStore.delete(cursor.primaryKey);
       cursor.continue();
     };
 
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error ?? new Error(`删除项目 ${id} 的持久化数据失败`));
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error(`删除项目 ${id} 的持久化数据失败`));
   });
 }
 
@@ -970,16 +973,21 @@ function projectHistoryRange(
 }
 
 function pruneProjectHistory(store: IDBObjectStore, projectId: string): void {
-  const request = store.index('projectId_timestamp_id').openCursor(
+  const request = store.index('projectId_timestamp_id').openKeyCursor(
     projectHistoryRange(projectId),
     'prev',
   );
-  let retained = 0;
+  let skippedRetained = false;
   request.onsuccess = () => {
     const cursor = request.result;
     if (!cursor) return;
-    if (retained >= MAX_PROJECT_HISTORY) cursor.delete();
-    else retained += 1;
+    if (!skippedRetained) {
+      // 首条就是最新记录；跳过保留区，只继续遍历待删除的主键。
+      skippedRetained = true;
+      cursor.advance(MAX_PROJECT_HISTORY);
+      return;
+    }
+    store.delete(cursor.primaryKey);
     cursor.continue();
   };
 }
@@ -1234,17 +1242,18 @@ export async function clearAllHistoryEntries(projectId: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
-    const request = tx.objectStore(STORE_HISTORY)
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store
       .index('projectId_timestamp_id')
-      .openCursor(projectHistoryRange(projectId));
+      .openKeyCursor(projectHistoryRange(projectId));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) return;
-      cursor.delete();
+      store.delete(cursor.primaryKey);
       cursor.continue();
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('历史记录清理失败'));
   });
 }
 
@@ -1253,18 +1262,19 @@ export async function deleteNodeHistoryEntries(projectId: string, nodeId: string
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
-    const request = tx.objectStore(STORE_HISTORY)
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store
       .index('projectId_nodeId')
-      .openCursor(IDBKeyRange.only([projectId, nodeId]));
+      .openKeyCursor(IDBKeyRange.only([projectId, nodeId]));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) return;
-      cursor.delete();
+      store.delete(cursor.primaryKey);
       cursor.continue();
     };
     request.onerror = () => reject(request.error);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('节点历史记录清理失败'));
   });
 }
 
@@ -1610,46 +1620,52 @@ export async function putAssetIndexes(
     let forgotten = false;
     let identityChanged = false;
     const saved: AssetIndexRecord[] = new Array(records.length);
-    records.forEach((record, position) => {
+    let pendingActive = records.length;
+    records.forEach((record) => {
       withActiveAsset(tx, record.assetId, () => {
-        withRelocatedMedia(tx, record, (next) => {
-          const store = tx.objectStore(STORE_ASSET_INDEX);
-          const request = store.get(next.assetId);
-          request.onsuccess = () => {
-            const current = request.result as AssetIndexRecord | undefined;
-            if (options.requireExistingPath && current?.path !== next.path) {
-              identityChanged = true;
-              tx.abort();
-              return;
-            }
-            const lastUsedAt = latestAssetUsageTime(next.lastUsedAt, current?.lastUsedAt);
-            const merged = { ...next };
-            if (!merged.contentDigest && current?.size === next.size && current.mtimeMs === next.mtimeMs) {
-              merged.contentDigest = current.contentDigest;
-            }
-            if (lastUsedAt === undefined) delete merged.lastUsedAt;
-            else merged.lastUsedAt = lastUsedAt;
-            const keys = new Set([...Object.keys(current ?? {}), ...Object.keys(merged)] as Array<keyof AssetIndexRecord>);
-            keys.delete('updatedAt');
-            const unchanged = options.skipUnchanged && current
-              && [...keys].every((key) => Object.is(current[key], merged[key]));
-            saved[position] = unchanged && current ? current : merged;
-            if (!unchanged) store.put(merged);
-          };
-          if (options.migrateLegacyTags) {
-            const tags = tx.objectStore(STORE_ASSET_META_V2);
-            const currentTags = tags.get(next.assetId);
-            currentTags.onsuccess = () => {
-              // 已有标签（包括用户主动清空的标签）不再被旧路径标签覆盖。
-              if (currentTags.result) return;
-              const legacy = tx.objectStore(STORE_ASSET_META).get(record.path);
-              legacy.onsuccess = () => {
-                const old = legacy.result as LegacyAssetMetaRecord | undefined;
-                if (old?.tags?.length) tags.put({ assetId: next.assetId, path: next.path,
-                  tags: old.tags, taggedBy: old.taggedBy, updatedAt: old.updatedAt } satisfies AssetMetaRecord);
-              };
+        if (--pendingActive !== 0) return;
+        // 全批墓碑检查通过后只读一次同事务内的迁移日志，不跨事务缓存。
+        withRelocatedMedia(tx, records, (relocated) => {
+          relocated.forEach((next, position) => {
+            const record = records[position];
+            const store = tx.objectStore(STORE_ASSET_INDEX);
+            const request = store.get(next.assetId);
+            request.onsuccess = () => {
+              const current = request.result as AssetIndexRecord | undefined;
+              if (options.requireExistingPath && current?.path !== next.path) {
+                identityChanged = true;
+                tx.abort();
+                return;
+              }
+              const lastUsedAt = latestAssetUsageTime(next.lastUsedAt, current?.lastUsedAt);
+              const merged = { ...next };
+              if (!merged.contentDigest && current?.size === next.size && current.mtimeMs === next.mtimeMs) {
+                merged.contentDigest = current.contentDigest;
+              }
+              if (lastUsedAt === undefined) delete merged.lastUsedAt;
+              else merged.lastUsedAt = lastUsedAt;
+              const keys = new Set([...Object.keys(current ?? {}), ...Object.keys(merged)] as Array<keyof AssetIndexRecord>);
+              keys.delete('updatedAt');
+              const unchanged = options.skipUnchanged && current
+                && [...keys].every((key) => Object.is(current[key], merged[key]));
+              saved[position] = unchanged && current ? current : merged;
+              if (!unchanged) store.put(merged);
             };
-          }
+            if (options.migrateLegacyTags) {
+              const tags = tx.objectStore(STORE_ASSET_META_V2);
+              const currentTags = tags.get(next.assetId);
+              currentTags.onsuccess = () => {
+                // 已有标签（包括用户主动清空的标签）不再被旧路径标签覆盖。
+                if (currentTags.result) return;
+                const legacy = tx.objectStore(STORE_ASSET_META).get(record.path);
+                legacy.onsuccess = () => {
+                  const old = legacy.result as LegacyAssetMetaRecord | undefined;
+                  if (old?.tags?.length) tags.put({ assetId: next.assetId, path: next.path,
+                    tags: old.tags, taggedBy: old.taggedBy, updatedAt: old.updatedAt } satisfies AssetMetaRecord);
+                };
+              };
+            }
+          });
         });
       }, () => { forgotten = true; });
     });
@@ -1816,35 +1832,89 @@ export async function getConversationMessages(
       [conversationId, 0],
       [conversationId, Infinity],
     );
+    const messages: ChatMessageRecord[] = [];
+    let total = 0;
+    // 旧比较逻辑对正小数向上取整，负数和 NaN 从头读取。
+    let remaining = offset > 0 ? Math.ceil(offset) : 0;
     // 先获取总数
     const countReq = index.count(range);
     countReq.onsuccess = () => {
-      const total = countReq.result;
+      total = countReq.result;
+      if (!(limit > 0) || remaining >= total) return;
       // 再获取分页数据（cursor 倒序）
       const cursorReq = index.openCursor(range, 'prev');
-      const messages: ChatMessageRecord[] = [];
-      let skipped = 0;
       cursorReq.onsuccess = () => {
         const cursor = cursorReq.result;
-        if (!cursor) {
-          resolve({ messages, total });
+        if (!cursor) return;
+        if (remaining > 0) {
+          // advance 接受 unsigned long；大偏移分批跳过，不逐条分配 JS 回调。
+          const step = Math.min(remaining, 0xffff_ffff);
+          remaining -= step;
+          cursor.advance(step);
           return;
         }
-        if (skipped < offset) {
-          skipped++;
-          cursor.continue();
-          return;
-        }
-        if (messages.length < limit) {
-          messages.push(cursor.value as ChatMessageRecord);
-          cursor.continue();
-        } else {
-          resolve({ messages, total });
-        }
+        messages.push(cursor.value as ChatMessageRecord);
+        if (messages.length < limit) cursor.continue();
       };
       cursorReq.onerror = () => reject(cursorReq.error);
     };
     countReq.onerror = () => reject(countReq.error);
+    tx.oncomplete = () => resolve({ messages, total });
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('会话消息读取失败'));
+  });
+}
+
+/** 导出时批量读取项目聊天；保持原读取范围，归档关系与正文校验仍由后续流程负责。 */
+export async function getProjectChatForExport(
+  projectId: string,
+  maxMessagesPerConversation: number,
+): Promise<{ conversations: ChatConversationRecord[]; messages: ChatMessageRecord[]; memories: ProjectMemoryRecord[] }> {
+  if (!Number.isInteger(maxMessagesPerConversation) || maxMessagesPerConversation <= 0
+    || maxMessagesPerConversation >= 0xffff_ffff) {
+    throw new Error('会话消息归档上限无效');
+  }
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_PROJECT_MEMORIES], 'readonly');
+    const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
+    let conversations: ChatConversationRecord[] = [];
+    let messageGroups: ChatMessageRecord[][] = [];
+    let memories: ProjectMemoryRecord[] = [];
+    let failure: unknown;
+    const abort = (error: unknown) => {
+      failure ??= error;
+      tx.abort();
+    };
+    const conversationRequest = tx.objectStore(STORE_CHAT_CONVERSATIONS).index('projectId_updatedAt').getAll(range);
+    conversationRequest.onsuccess = () => {
+      try {
+        conversations = (conversationRequest.result as ChatConversationRecord[]).filter((conversation) => !conversation.deletedAt);
+        messageGroups = new Array(conversations.length);
+        const messages = tx.objectStore(STORE_CHAT_MESSAGES).index('conversationId_sequence');
+        conversations.forEach((conversation, index) => {
+          const request = messages.getAll(
+            IDBKeyRange.bound([conversation.id, 0], [conversation.id, Infinity]),
+            maxMessagesPerConversation + 1,
+          );
+          request.onsuccess = () => {
+            try {
+              const records = request.result as ChatMessageRecord[];
+              if (records.length > maxMessagesPerConversation) {
+                abort(new Error('会话消息超过当前归档上限，请先拆分会话后重新导出'));
+                return;
+              }
+              // 保留旧 prev 游标再稳定按 sequence 排序时，同序号主键倒序的行为。
+              messageGroups[index] = records.reverse().sort((left, right) => left.sequence - right.sequence);
+            } catch (error) { abort(error); }
+          };
+        });
+      } catch (error) { abort(error); }
+    };
+    const memoryRequest = tx.objectStore(STORE_PROJECT_MEMORIES).index('projectId_updatedAt').getAll(range);
+    memoryRequest.onsuccess = () => { memories = memoryRequest.result as ProjectMemoryRecord[]; };
+    tx.oncomplete = () => resolve({ conversations, messages: messageGroups.flat(), memories });
+    tx.onerror = () => { failure ??= tx.error; };
+    tx.onabort = () => reject(failure ?? tx.error ?? new Error('项目聊天归档读取失败'));
   });
 }
 
@@ -1877,10 +1947,10 @@ export async function putChatMessageWithSequence(
         [record.conversationId, 0],
         [record.conversationId, Infinity],
       );
-      const cursorReq = index.openCursor(range, 'prev');
+      const cursorReq = index.openKeyCursor(range, 'prev');
       cursorReq.onsuccess = () => {
         const cursor = cursorReq.result;
-        sequence = cursor ? (cursor.value as ChatMessageRecord).sequence + 1 : 0;
+        sequence = cursor ? (cursor.key as [string, number])[1] + 1 : 0;
         withRelocatedMedia(tx, { ...record, sequence }, (next) => store.put(next));
       };
       cursorReq.onerror = () => reject(cursorReq.error);
@@ -1902,17 +1972,17 @@ export async function deleteConversationMessages(conversationId: string): Promis
       [conversationId, 0],
       [conversationId, Infinity],
     );
-    const cursorReq = index.openCursor(range);
+    const cursorReq = index.openKeyCursor(range);
     cursorReq.onsuccess = () => {
       const cursor = cursorReq.result;
       if (cursor) {
-        cursor.delete();
+        store.delete(cursor.primaryKey);
         cursor.continue();
       }
     };
     cursorReq.onerror = () => reject(cursorReq.error);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('会话消息删除失败'));
   });
 }
 
@@ -1930,11 +2000,11 @@ export async function permanentlyDeleteConversation(convId: string): Promise<voi
     const msgStore = tx.objectStore(STORE_CHAT_MESSAGES);
     const msgIndex = msgStore.index('conversationId_sequence');
     const range = IDBKeyRange.bound([convId, 0], [convId, Infinity]);
-    const cursorReq = msgIndex.openCursor(range);
+    const cursorReq = msgIndex.openKeyCursor(range);
     cursorReq.onsuccess = () => {
       const cursor = cursorReq.result;
       if (cursor) {
-        cursor.delete();
+        msgStore.delete(cursor.primaryKey);
         cursor.continue();
       }
     };
@@ -1952,7 +2022,7 @@ export async function permanentlyDeleteConversation(convId: string): Promise<voi
       }
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('会话删除失败'));
   });
 }
 
@@ -2280,19 +2350,20 @@ export async function deleteProjectMemories(projectId: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PROJECT_MEMORIES, 'readwrite');
-    const index = tx.objectStore(STORE_PROJECT_MEMORIES).index('projectId_updatedAt');
+    const store = tx.objectStore(STORE_PROJECT_MEMORIES);
+    const index = store.index('projectId_updatedAt');
     const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
-    const cursorRequest = index.openCursor(range);
+    const cursorRequest = index.openKeyCursor(range);
     cursorRequest.onsuccess = () => {
       const cursor = cursorRequest.result;
       if (cursor) {
-        cursor.delete();
+        store.delete(cursor.primaryKey);
         cursor.continue();
       }
     };
     cursorRequest.onerror = () => reject(cursorRequest.error);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('项目记忆清理失败'));
   });
 }
 

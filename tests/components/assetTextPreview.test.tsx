@@ -57,6 +57,7 @@ import {
   readTextFilePreview,
   getCachedTextPreview,
   clearTextPreviewCache,
+  invalidateTextPreview,
 } from '../../src/services/fs/core';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
@@ -90,6 +91,25 @@ function findByClassName(root: unknown, className: string): Element | undefined 
   });
 }
 
+function pausedTextFile(text: string) {
+  let start!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { start = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const bytes = new TextEncoder().encode(text);
+  const file = {
+    read: vi.fn(async (buffer: Uint8Array) => {
+      start();
+      await gate;
+      const preview = bytes.subarray(0, buffer.length);
+      buffer.set(preview);
+      return preview.length;
+    }),
+    close: vi.fn(async () => undefined),
+  };
+  return { file, started, release };
+}
+
 describe('AssetThumb - 文本预览 (Text Preview)', () => {
   beforeEach(() => {
     clearTextPreviewCache();
@@ -117,6 +137,102 @@ describe('AssetThumb - 文本预览 (Text Preview)', () => {
     expect(await readTextFilePreview('/test/large.txt', 200 * 1024 * 1024)).toBe('');
     expect(fs.readFile).not.toHaveBeenCalled();
     if (failure === 'read') expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('并发预览同一文件只读取一次，完成后继续复用缓存', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const source = pausedTextFile('并发预览正文');
+    fs.open.mockResolvedValue(source.file);
+    const previews = Array.from({ length: 3 }, () => readTextFilePreview('/test/shared.txt', 100));
+    await source.started;
+    expect(fs.open).toHaveBeenCalledOnce();
+    source.release();
+    expect(await Promise.all(previews)).toEqual(Array(3).fill('并发预览正文'));
+    expect(await readTextFilePreview('/test/shared.txt', 100)).toBe('并发预览正文');
+    expect(source.file.read).toHaveBeenCalledOnce();
+    expect(source.file.close).toHaveBeenCalledOnce();
+  });
+
+  it('不同预览字节上限分别读取和缓存，不复用截短内容', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const source = pausedTextFile('abcdef');
+    fs.open.mockResolvedValue(source.file);
+    const short = readTextFilePreview('/test/limits.txt', 6, 2);
+    const long = readTextFilePreview('/test/limits.txt', 6, 5);
+    source.release();
+    expect(await Promise.all([short, long])).toEqual(['ab', 'abcde']);
+    expect(fs.open).toHaveBeenCalledTimes(2);
+    expect(getCachedTextPreview('/test/limits.txt', 6, 2)).toBe('ab');
+    expect(getCachedTextPreview('/test/limits.txt', 6, 5)).toBe('abcde');
+    expect(getCachedTextPreview('/test/limits.txt', 6)).toBeUndefined();
+  });
+
+  it('未知大小的预览与已知空文件使用不同缓存', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    expect(await readTextFilePreview('/test/unknown.txt', 0)).toBe('');
+    const source = pausedTextFile('content');
+    fs.open.mockResolvedValue(source.file);
+    source.release();
+    expect(await readTextFilePreview('/test/unknown.txt')).toBe('content');
+    expect(getCachedTextPreview('/test/unknown.txt', 0)).toBe('');
+    expect(getCachedTextPreview('/test/unknown.txt')).toBe('content');
+  });
+
+  it.each(['invalidate', 'clear'])('%s 后旧请求不能覆盖新内容或移除新请求', async (operation) => {
+    const surface = Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} });
+    vi.stubGlobal('window', surface);
+    const oldFile = pausedTextFile('old');
+    const newFile = pausedTextFile('new');
+    fs.open.mockResolvedValueOnce(oldFile.file).mockResolvedValueOnce(newFile.file);
+    const oldPreview = readTextFilePreview('/test/changed.txt', 3);
+    await oldFile.started;
+    if (operation === 'invalidate') invalidateTextPreview('/test/changed.txt');
+    else clearTextPreviewCache();
+    const newPreview = readTextFilePreview('/test/changed.txt', 3);
+    await newFile.started;
+    oldFile.release();
+    expect(await oldPreview).toBe('old');
+    expect(getCachedTextPreview('/test/changed.txt', 3)).toBeUndefined();
+    const joinedPreview = readTextFilePreview('/test/changed.txt', 3);
+    expect(fs.open).toHaveBeenCalledTimes(2);
+    newFile.release();
+    expect(await Promise.all([newPreview, joinedPreview])).toEqual(['new', 'new']);
+    expect(getCachedTextPreview('/test/changed.txt', 3)).toBe('new');
+    expect(oldFile.file.close).toHaveBeenCalledOnce();
+    expect(newFile.file.close).toHaveBeenCalledOnce();
+  });
+
+  it('新预览先完成时，迟到的旧读取不能回灌缓存', async () => {
+    vi.stubGlobal('window', Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} }));
+    const oldFile = pausedTextFile('old');
+    const newFile = pausedTextFile('new');
+    fs.open.mockResolvedValueOnce(oldFile.file).mockResolvedValueOnce(newFile.file);
+    const oldPreview = readTextFilePreview('/test/late.txt', 3);
+    await oldFile.started;
+    invalidateTextPreview('/test/late.txt');
+    const newPreview = readTextFilePreview('/test/late.txt', 3);
+    newFile.release();
+    expect(await newPreview).toBe('new');
+    oldFile.release();
+    expect(await oldPreview).toBe('old');
+    expect(getCachedTextPreview('/test/late.txt', 3)).toBe('new');
+  });
+
+  it('共享读取失败后释放请求，后续预览可以重试', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const source = pausedTextFile('retry');
+    fs.open.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(source.file);
+    const failed = await Promise.all([
+      readTextFilePreview('/test/retry.txt', 5),
+      readTextFilePreview('/test/retry.txt', 5),
+    ]);
+    expect(failed).toEqual(['', '']);
+    expect(fs.open).toHaveBeenCalledOnce();
+    expect(getCachedTextPreview('/test/retry.txt', 5)).toBeUndefined();
+    source.release();
+    expect(await readTextFilePreview('/test/retry.txt', 5)).toBe('retry');
+    expect(fs.open).toHaveBeenCalledTimes(2);
+    expect(source.file.close).toHaveBeenCalledOnce();
   });
 
   it('当 category === "text" 且传入有效 textPreview 时，渲染 .assets-card-text-wrap 与小字内容', () => {

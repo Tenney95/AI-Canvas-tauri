@@ -44,7 +44,7 @@ import {
   notifyProjectDiskChanged,
   stripVerbatimPrefix,
 } from './fs/core';
-import { walkDirectoryFiles } from './fs/assetLibrary';
+import { scanDirectoryFiles } from './fs/assetLibrary';
 import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import type { DramaAssetLibrary, DramaProp, DramaScene, DramaAssetReferenceImage } from '../types/dramaAssets';
 import { normalizeDramaAssetLibrary, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary } from '../types/dramaAssets';
@@ -555,27 +555,21 @@ async function restoreAssetReferenceSafely<T extends AssetReferenceLike>(
 }
 
 async function refreshProjectAssetIndex(projectId: string, projectDir: string): Promise<void> {
-  let diskFiles: Awaited<ReturnType<typeof walkDirectoryFiles>>;
+  let scan: Awaited<ReturnType<typeof scanDirectoryFiles>>;
   try {
-    diskFiles = await walkDirectoryFiles(projectDir, { excludedRootDirectories: ['.thumbnail'] });
+    // 扫描器已用同一次 stat 的大小与修改时间登记身份，不再对整库逐个识别第二遍。
+    scan = await scanDirectoryFiles(projectDir, { source: 'project', projectId, excludedRootDirectories: ['.thumbnail'] });
   } catch {
     console.warn('[项目加载] 资产目录扫描失败，已继续加载画布', { projectId });
     return;
   }
 
-  const results = await mapWithConcurrency(diskFiles, 4, async (file) => {
-    try {
-      await identifyAsset(file.path, { rootPath: projectDir, projectId, source: 'project', size: file.size });
-      return true;
-    } catch {
-      return false;
-    }
-  });
-  const failedCount = results.filter((result) => !result).length;
-  if (failedCount > 0) {
-    console.warn('[项目加载] 部分资产索引刷新失败，已继续加载画布', {
+  if (!scan.complete) {
+    console.warn('[项目加载] 资产索引扫描未完成，已继续加载画布', {
       projectId,
-      failedCount,
+      failedFiles: scan.failedFiles,
+      failedDirectories: scan.failedDirectories,
+      truncated: scan.truncated,
     });
   }
 }

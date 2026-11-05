@@ -83,6 +83,7 @@ export async function openMediaFileReader(path: string, signal?: AbortSignal): P
     });
     let closed = false;
     let busy = false;
+    let position = 0;
     let readComplete: Promise<void> | undefined;
     let closing: Promise<void> | undefined;
     function checkReadable(readSignal?: AbortSignal): void {
@@ -129,7 +130,10 @@ export async function openMediaFileReader(path: string, signal?: AbortSignal): P
             fail('MEDIA_READ_OFFSET_INVALID', '原文件读取偏移无效');
           }
           await checkFile(readSignal);
-          if (await handle.seek(offset, SeekMode.Start) !== offset) fail('MEDIA_READ_FAILED', '原文件定位失败');
+          if (position !== offset) {
+            if (await handle.seek(offset, SeekMode.Start) !== offset) fail('MEDIA_READ_FAILED', '原文件定位失败');
+            position = offset;
+          }
           checkReadable(readSignal);
           const bytes = new Uint8Array(Math.min(MEDIA_READ_CHUNK_BYTES, metadata.totalBytes - offset));
           let filled = 0;
@@ -142,6 +146,7 @@ export async function openMediaFileReader(path: string, signal?: AbortSignal): P
               fail('MEDIA_READ_FAILED', '原文件返回的分块无效');
             }
             filled += count;
+            position += count;
           }
           await checkFile(readSignal);
           return bytes;

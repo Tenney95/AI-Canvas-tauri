@@ -1,6 +1,7 @@
 //! 项目内可重建的缩略图缓存；原图读取授权与派生文件写入始终在原生侧复核。
 
-use serde::Serialize;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
@@ -8,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Runtime, Webview};
+use tauri::ipc::{InvokeBody, Request};
 
 use crate::path_policy::{
     authorize_existing_plain_directory, authorize_existing_plain_file, ensure_trusted_caller,
@@ -18,6 +20,8 @@ const CACHE_MAGIC: &[u8; 8] = b"ACTHMB01";
 const CACHE_HEADER_BYTES: usize = 8 + 32 + 4 + 4 + 32;
 const MAX_PREVIEW_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+const WRITE_METADATA_HEADER: &str = "x-aic-thumbnail-meta";
+const MAX_WRITE_METADATA_BYTES: usize = 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
@@ -32,6 +36,38 @@ pub struct PreparedThumbnail {
 struct SourceIdentity {
     version: [u8; 32],
     cache_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThumbnailWriteMetadata {
+    project_dir: String,
+    source_path: String,
+    max_edge: u32,
+    source_version: String,
+}
+
+fn thumbnail_write_input<'a>(
+    body: &'a InvokeBody,
+    headers: &tauri::http::HeaderMap,
+) -> Result<(ThumbnailWriteMetadata, &'a [u8]), String> {
+    let bytes = match body {
+        InvokeBody::Raw(bytes) if !bytes.is_empty() && bytes.len() <= MAX_PREVIEW_BYTES => bytes.as_slice(),
+        _ => return Err("缩略图写入格式无效或超过 4 MiB".into()),
+    };
+    let values = headers.get_all(WRITE_METADATA_HEADER);
+    let mut values = values.iter();
+    let encoded = values.next().ok_or("缩略图写入元数据无效")?;
+    if values.next().is_some() || encoded.as_bytes().is_empty() || encoded.as_bytes().len() > MAX_WRITE_METADATA_BYTES {
+        return Err("缩略图写入元数据无效".into());
+    }
+    let decoded = BASE64_STANDARD.decode(encoded.as_bytes()).map_err(|_| "缩略图写入元数据无效")?;
+    let metadata: ThumbnailWriteMetadata = serde_json::from_slice(&decoded).map_err(|_| "缩略图写入元数据无效")?;
+    validate_edge(metadata.max_edge)?;
+    if metadata.source_version.len() != 64 || !metadata.source_version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("缩略图写入参数无效".into());
+    }
+    Ok((metadata, bytes))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -162,15 +198,14 @@ fn validate_image(bytes: &[u8], max_edge: u32) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-fn encode_cache(identity: &SourceIdentity, width: u32, height: u32, bytes: &[u8]) -> Vec<u8> {
-    let mut encoded = Vec::with_capacity(CACHE_HEADER_BYTES + bytes.len());
-    encoded.extend_from_slice(CACHE_MAGIC);
-    encoded.extend_from_slice(&identity.version);
-    encoded.extend_from_slice(&width.to_le_bytes());
-    encoded.extend_from_slice(&height.to_le_bytes());
-    encoded.extend_from_slice(&Sha256::digest(bytes));
-    encoded.extend_from_slice(bytes);
-    encoded
+fn cache_header(identity: &SourceIdentity, width: u32, height: u32, bytes: &[u8]) -> [u8; CACHE_HEADER_BYTES] {
+    let mut header = [0_u8; CACHE_HEADER_BYTES];
+    header[..8].copy_from_slice(CACHE_MAGIC);
+    header[8..40].copy_from_slice(&identity.version);
+    header[40..44].copy_from_slice(&width.to_le_bytes());
+    header[44..48].copy_from_slice(&height.to_le_bytes());
+    header[48..80].copy_from_slice(&Sha256::digest(bytes));
+    header
 }
 
 fn read_cache(
@@ -188,26 +223,28 @@ fn read_cache(
     if size <= CACHE_HEADER_BYTES as u64 || size > (CACHE_HEADER_BYTES + MAX_PREVIEW_BYTES) as u64 {
         return None;
     }
-    let mut encoded = Vec::with_capacity(size as usize);
+    let mut header = [0_u8; CACHE_HEADER_BYTES];
+    file.read_exact(&mut header).ok()?;
+    if &header[..8] != CACHE_MAGIC || header[8..40] != identity.version {
+        return None;
+    }
+    let payload_size = size as usize - CACHE_HEADER_BYTES;
+    let mut bytes = Vec::with_capacity(payload_size);
     Read::by_ref(&mut file)
-        .take((CACHE_HEADER_BYTES + MAX_PREVIEW_BYTES + 1) as u64)
-        .read_to_end(&mut encoded)
+        .take((MAX_PREVIEW_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
         .ok()?;
-    if encoded.len() != size as usize
-        || &encoded[..8] != CACHE_MAGIC
-        || encoded[8..40] != identity.version
+    if bytes.len() != payload_size {
+        return None;
+    }
+    let width = u32::from_le_bytes(header[40..44].try_into().ok()?);
+    let height = u32::from_le_bytes(header[44..48].try_into().ok()?);
+    if header[48..80] != Sha256::digest(&bytes)[..]
+        || validate_image(&bytes, max_edge).ok()? != (width, height)
     {
         return None;
     }
-    let width = u32::from_le_bytes(encoded[40..44].try_into().ok()?);
-    let height = u32::from_le_bytes(encoded[44..48].try_into().ok()?);
-    let bytes = &encoded[CACHE_HEADER_BYTES..];
-    if encoded[48..80] != Sha256::digest(bytes)[..]
-        || validate_image(bytes, max_edge).ok()? != (width, height)
-    {
-        return None;
-    }
-    Some((bytes.to_vec(), width, height))
+    Some((bytes, width, height))
 }
 
 #[cfg(windows)]
@@ -308,10 +345,11 @@ fn write_cache(
         return Ok(false);
     }
     let (width, height) = validate_image(bytes, max_edge)?;
-    publish_cache_file(
+    let header = cache_header(&identity, width, height, bytes);
+    publish_cache_parts(
         root,
         &identity.cache_name,
-        &encode_cache(&identity, width, height, bytes),
+        &[header.as_slice(), bytes],
         || Ok(source_identity(root, source, max_edge)?.version == identity.version),
     )
 }
@@ -321,6 +359,15 @@ pub(crate) fn publish_cache_file(
     root: &Path,
     name: &str,
     bytes: &[u8],
+    still_current: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    publish_cache_parts(root, name, &[bytes], still_current)
+}
+
+fn publish_cache_parts(
+    root: &Path,
+    name: &str,
+    parts: &[&[u8]],
     still_current: impl FnOnce() -> Result<bool, String>,
 ) -> Result<bool, String> {
     validate_cache_name(name)?;
@@ -341,7 +388,9 @@ pub(crate) fn publish_cache_file(
         .open(&temporary)
         .map_err(|_| "无法创建缩略图临时文件")?;
     let result = (|| {
-        file.write_all(bytes).map_err(|_| "缩略图写入失败")?;
+        for bytes in parts {
+            file.write_all(bytes).map_err(|_| "缩略图写入失败")?;
+        }
         file.sync_all().map_err(|_| "缩略图写入失败")?;
         drop(file);
         // 编码或落盘期间原图可能已被编辑，旧结果不可取代当前版本。
@@ -415,22 +464,14 @@ pub async fn prepare_project_thumbnail<R: Runtime>(
 pub async fn write_project_thumbnail<R: Runtime>(
     webview: Webview<R>,
     app: AppHandle<R>,
-    project_dir: String,
-    source_path: String,
-    max_edge: u32,
-    source_version: String,
-    bytes: Vec<u8>,
+    request: Request<'_>,
 ) -> Result<bool, String> {
     ensure_main(&webview)?;
-    if bytes.len() > MAX_PREVIEW_BYTES
-        || source_version.len() != 64
-        || !source_version.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("缩略图写入参数无效".into());
-    }
+    let (metadata, bytes) = thumbnail_write_input(request.body(), request.headers())?;
+    let bytes = bytes.to_vec();
     tauri::async_runtime::spawn_blocking(move || {
-        let (root, source) = authorized_source(&app, &project_dir, &source_path)?;
-        write_cache(&root, &source, max_edge, &source_version, &bytes)
+        let (root, source) = authorized_source(&app, &metadata.project_dir, &metadata.source_path)?;
+        write_cache(&root, &source, metadata.max_edge, &metadata.source_version, &bytes)
     })
     .await
     .map_err(|_| "缩略图缓存写入任务失败")?
@@ -478,6 +519,119 @@ mod tests {
             .write_to(&mut output, image::ImageFormat::Png)
             .unwrap();
         output.into_inner()
+    }
+
+    fn legacy_cache(identity: &SourceIdentity, width: u32, height: u32, bytes: &[u8]) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(b"ACTHMB01");
+        encoded.extend_from_slice(&identity.version);
+        encoded.extend_from_slice(&width.to_le_bytes());
+        encoded.extend_from_slice(&height.to_le_bytes());
+        encoded.extend_from_slice(&Sha256::digest(bytes));
+        encoded.extend_from_slice(bytes);
+        encoded
+    }
+
+    fn write_metadata() -> serde_json::Value {
+        serde_json::json!({ "projectDir": "G:/项目/中文 #1", "sourcePath": "G:/项目/中文 #1/源图.png",
+            "maxEdge": 512, "sourceVersion": "a".repeat(64) })
+    }
+
+    fn metadata_headers(metadata: &serde_json::Value) -> tauri::http::HeaderMap {
+        let mut headers = tauri::http::HeaderMap::new();
+        headers.insert(WRITE_METADATA_HEADER,
+            BASE64_STANDARD.encode(serde_json::to_vec(metadata).unwrap()).parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn raw_write_metadata_preserves_unicode_paths_and_binary_bytes() {
+        let metadata = write_metadata();
+        let mut headers = metadata_headers(&metadata);
+        headers.insert("origin", "tauri://localhost".parse().unwrap());
+        let expected = png(32, 32);
+        let body = InvokeBody::Raw(expected.clone());
+        let (input, bytes) = thumbnail_write_input(&body, &headers).unwrap();
+        assert_eq!(input.project_dir, "G:/项目/中文 #1");
+        assert_eq!(input.source_path, "G:/项目/中文 #1/源图.png");
+        assert_eq!(input.max_edge, 512);
+        assert_eq!(input.source_version, "a".repeat(64));
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn raw_write_rejects_json_empty_and_oversized_bodies_before_metadata() {
+        let headers = metadata_headers(&write_metadata());
+        for body in [InvokeBody::Json(serde_json::json!({ "bytes": [1, 2, 3] })), InvokeBody::Raw(Vec::new())] {
+            assert!(thumbnail_write_input(&body, &headers).is_err());
+        }
+        let mut oversized = InvokeBody::Raw(vec![0; MAX_PREVIEW_BYTES + 1]);
+        assert!(thumbnail_write_input(&oversized, &tauri::http::HeaderMap::new()).err().unwrap().contains("4 MiB"));
+        if let InvokeBody::Raw(bytes) = &mut oversized { bytes.pop(); }
+        assert!(thumbnail_write_input(&oversized, &headers).is_ok());
+    }
+
+    #[test]
+    fn raw_write_rejects_missing_duplicate_and_invalid_metadata() {
+        let body = InvokeBody::Raw(vec![1]);
+        assert!(thumbnail_write_input(&body, &tauri::http::HeaderMap::new()).is_err());
+        let mut duplicate = metadata_headers(&write_metadata());
+        let encoded = duplicate[WRITE_METADATA_HEADER].clone();
+        duplicate.append(WRITE_METADATA_HEADER, encoded);
+        assert!(thumbnail_write_input(&body, &duplicate).is_err());
+        for encoded in ["".to_owned(), "%%%".to_owned(), BASE64_STANDARD.encode(b"not json"),
+            BASE64_STANDARD.encode(b"\xff\xfe")] {
+            let mut headers = tauri::http::HeaderMap::new();
+            headers.insert(WRITE_METADATA_HEADER, encoded.parse().unwrap());
+            assert!(thumbnail_write_input(&body, &headers).is_err());
+        }
+        let mut unknown = write_metadata(); unknown["extra"] = serde_json::json!(true);
+        let mut missing = write_metadata(); missing.as_object_mut().unwrap().remove("projectDir");
+        let mut edge = write_metadata(); edge["maxEdge"] = serde_json::json!(128);
+        let mut version = write_metadata(); version["sourceVersion"] = serde_json::json!("g".repeat(64));
+        let mut short_version = write_metadata(); short_version["sourceVersion"] = serde_json::json!("a".repeat(63));
+        for metadata in [unknown, missing, edge, version, short_version] {
+            assert!(thumbnail_write_input(&body, &metadata_headers(&metadata)).is_err());
+        }
+    }
+
+    #[test]
+    fn raw_write_limits_the_encoded_metadata_header_separately_from_image_bytes() {
+        let body = InvokeBody::Raw(vec![1]);
+        let mut json = serde_json::to_vec(&write_metadata()).unwrap();
+        json.resize(MAX_WRITE_METADATA_BYTES / 4 * 3, b' ');
+        let mut encoded = BASE64_STANDARD.encode(json);
+        assert_eq!(encoded.len(), MAX_WRITE_METADATA_BYTES);
+        let mut headers = tauri::http::HeaderMap::new();
+        headers.insert(WRITE_METADATA_HEADER, encoded.parse().unwrap());
+        assert!(thumbnail_write_input(&body, &headers).is_ok());
+        encoded.push('A');
+        headers.insert(WRITE_METADATA_HEADER, encoded.parse().unwrap());
+        assert!(thumbnail_write_input(&body, &headers).is_err());
+    }
+
+    #[test]
+    fn writes_header_and_payload_with_the_unchanged_v1_format() {
+        let project = Fixture::new();
+        let identity = source_identity(&project.0, &project.source(), 256).unwrap();
+        let bytes = png(32, 32);
+        assert!(write_cache(&project.0, &project.source(), 256, &hex(&identity.version), &bytes).unwrap());
+        let path = project.0.join(CACHE_DIRECTORY).join(&identity.cache_name);
+        assert_eq!(fs::read(path).unwrap(), legacy_cache(&identity, 32, 32, &bytes));
+        assert_eq!(read_cache(&project.0, &identity, 256).unwrap(), (bytes, 32, 32));
+    }
+
+    #[test]
+    fn publishes_all_parts_and_keeps_the_previous_file_when_stale() {
+        let project = Fixture::new();
+        assert!(publish_cache_parts(&project.0, "parts.cache", &[b"header".as_slice(), b"".as_slice(), b"payload".as_slice()], || Ok(true)).unwrap());
+        let directory = project.0.join(CACHE_DIRECTORY);
+        assert_eq!(fs::read(directory.join("parts.cache")).unwrap(), b"headerpayload");
+        assert!(!publish_cache_parts(&project.0, "parts.cache", &[b"old".as_slice(), b"result".as_slice()], || Ok(false)).unwrap());
+        assert_eq!(fs::read(directory.join("parts.cache")).unwrap(), b"headerpayload");
+        assert!(publish_cache_file(&project.0, "sprite.json", b"single part", || Ok(true)).unwrap());
+        assert_eq!(fs::read(directory.join("sprite.json")).unwrap(), b"single part");
+        assert!(fs::read_dir(directory).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
     }
 
     #[test]
@@ -608,6 +762,30 @@ mod tests {
             &bytes
         )
         .unwrap());
+    }
+
+    #[test]
+    fn cache_payload_rejects_truncated_trailing_and_oversized_content() {
+        let project = Fixture::new();
+        let identity = source_identity(&project.0, &project.source(), 256).unwrap();
+        let bytes = png(32, 32);
+        let encoded = legacy_cache(&identity, 32, 32, &bytes);
+        let directory = ensure_cache_directory(&project.0).unwrap();
+        let path = directory.join(&identity.cache_name);
+        for length in [7, CACHE_HEADER_BYTES - 1, encoded.len() - 1] {
+            fs::write(&path, &encoded[..length]).unwrap();
+            assert!(read_cache(&project.0, &identity, 256).is_none());
+        }
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        fs::write(&path, trailing).unwrap();
+        assert!(read_cache(&project.0, &identity, 256).is_none());
+        File::create(&path).unwrap().set_len((CACHE_HEADER_BYTES + MAX_PREVIEW_BYTES + 1) as u64).unwrap();
+        assert!(read_cache(&project.0, &identity, 256).is_none());
+        fs::write(&path, encoded).unwrap();
+        let (cached, width, height) = read_cache(&project.0, &identity, 256).unwrap();
+        assert_eq!(cached, bytes);
+        assert_eq!((width, height), (32, 32));
     }
 
     #[test]

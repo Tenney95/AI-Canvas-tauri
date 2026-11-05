@@ -45,6 +45,35 @@ beforeEach(() => {
 });
 
 describe('bounded original media file reader', () => {
+  it('reads contiguous chunks and EOF without seeking, while retaining file checks', async () => {
+    const reader = await openMediaFileReader(path);
+    const initialChecks = driver.handleStat.mock.calls.length;
+    expect(await reader.read(0)).toEqual(driver.bytes.slice(0, MEDIA_READ_CHUNK_BYTES));
+    expect(await reader.read(MEDIA_READ_CHUNK_BYTES)).toEqual(driver.bytes.slice(MEDIA_READ_CHUNK_BYTES));
+    expect(await reader.read(driver.bytes.length)).toHaveLength(0);
+    expect(driver.seek).not.toHaveBeenCalled();
+    expect(driver.handleStat.mock.calls.length - initialChecks).toBe(6);
+    await reader.close();
+  });
+
+  it('seeks only for random or repeated offsets and tracks positions across short reads', async () => {
+    driver.shortRead = 4093;
+    const reader = await openMediaFileReader(path);
+    expect(await reader.read(5)).toEqual(driver.bytes.slice(5, 5 + MEDIA_READ_CHUNK_BYTES));
+    expect(await reader.read(5 + MEDIA_READ_CHUNK_BYTES)).toEqual(driver.bytes.slice(5 + MEDIA_READ_CHUNK_BYTES));
+    expect(await reader.read(5)).toEqual(driver.bytes.slice(5, 5 + MEDIA_READ_CHUNK_BYTES));
+    expect(driver.seek.mock.calls).toEqual([[5, SeekMode.Start], [5, SeekMode.Start]]);
+    await reader.close();
+  });
+
+  it('closes the file when a required random seek returns the wrong position', async () => {
+    const reader = await openMediaFileReader(path);
+    driver.seek.mockResolvedValueOnce(4);
+    await expect(reader.read(5)).rejects.toMatchObject({ code: 'MEDIA_READ_FAILED' });
+    expect(driver.read).not.toHaveBeenCalled();
+    expect(driver.close).toHaveBeenCalledOnce();
+  });
+
   it('preserves every byte across short reads, repeated offsets, tail chunks and an empty EOF chunk', async () => {
     driver.shortRead = 4093;
     const reader = await openMediaFileReader(path);

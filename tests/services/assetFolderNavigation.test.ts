@@ -10,12 +10,14 @@ const mocks = vi.hoisted(() => ({
   tauri: true,
   exists: vi.fn(), mkdir: vi.fn(),
   open: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), uniquePath: vi.fn(),
+  copyStream: vi.fn(),
 }));
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readDir: mocks.readDir, stat: mocks.stat, exists: mocks.exists,
   writeFile: mocks.writeFile, readFile: mocks.readFile, mkdir: mocks.mkdir,
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }));
+vi.mock('../../src/services/fileService', () => ({ copyLocalFileStreamed: mocks.copyStream }));
 vi.mock('../../src/services/fs/core', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fs/core')>(),
   isTauriEnv: () => mocks.tauri,
@@ -40,7 +42,7 @@ vi.mock('../../src/services/indexedDb/mediaRelocations', async (importOriginal) 
   retiredMediaPaths: async () => new Set<string>(),
 }));
 
-import { listExternalFolderContents, listExternalFolderFiles, selectAssetFolderFiles, listGlobalFolderContents, createAssetSubfolder, resolveAssetFolderDirectory, addAssetFilesToGlobal, walkDirectoryFiles } from '../../src/services/fs/assetLibrary';
+import { listExternalFolderContents, listExternalFolderFiles, selectAssetFolderFiles, listGlobalFolderContents, createAssetSubfolder, resolveAssetFolderDirectory, addAssetFilesToGlobal, saveToPermanent, saveAssetToPermanent, walkDirectoryFiles } from '../../src/services/fs/assetLibrary';
 import type { AssetFileEntry } from '../../src/services/fs/core';
 
 function directory(path: string, names: string[]) {
@@ -55,6 +57,7 @@ beforeEach(() => {
   mocks.open.mockReset().mockResolvedValue(['/source/角色.png']);
   mocks.readFile.mockReset().mockResolvedValue(new Uint8Array([1, 2, 3]));
   mocks.writeFile.mockReset().mockResolvedValue(undefined);
+  mocks.copyStream.mockReset().mockImplementation(async (_source: string, destination: string) => ({ path: destination, totalBytes: 3 }));
   mocks.uniquePath.mockReset().mockImplementation(async (directory: string, name: string) => `${directory}/${name}`);
   mocks.directories.clear();
   mocks.readDir.mockImplementation(async (path: string) => {
@@ -95,7 +98,52 @@ describe('global asset folder browsing', () => {
     { selection: { kind: 'folder' as const, rootPath: '/library', relativePath: '人物' }, roots: ['/library'], destination: '/library/人物/角色.png' },
   ])('adds picked files to the selected directory: $destination', async ({ selection, roots, destination }) => {
     await expect(addAssetFilesToGlobal(selection, roots)).resolves.toBe(1);
-    expect(mocks.writeFile).toHaveBeenCalledExactlyOnceWith(destination, new Uint8Array([1, 2, 3]));
+    expect(mocks.copyStream).toHaveBeenCalledExactlyOnceWith('/source/角色.png', destination);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('copies same-name files to separate allocated destinations and counts only successful transfers', async () => {
+    mocks.open.mockResolvedValue(['/source/角色.png', '/other/角色.png', '/third/角色.png']);
+    mocks.uniquePath.mockResolvedValueOnce('/global/file/角色.png')
+      .mockResolvedValueOnce('/global/file/角色_1.png').mockResolvedValueOnce('/global/file/角色_2.png');
+    mocks.copyStream.mockRejectedValueOnce(new Error('目标文件已存在，已拒绝覆盖'));
+    await expect(addAssetFilesToGlobal()).resolves.toBe(2);
+    expect(mocks.copyStream.mock.calls).toEqual([
+      ['/source/角色.png', '/global/file/角色.png'],
+      ['/other/角色.png', '/global/file/角色_1.png'],
+      ['/third/角色.png', '/global/file/角色_2.png'],
+    ]);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('saves real assets to the permanent directory without loading their bytes', async () => {
+    await expect(saveToPermanent('/source/视频.mp4')).resolves.toBe('/global/file/视频.mp4');
+    await expect(saveAssetToPermanent({ path: '/source/角色.png', name: '角色.png' } as AssetFileEntry))
+      .resolves.toBe('/global/file/角色.png');
+    expect(mocks.copyStream.mock.calls).toEqual([
+      ['/source/视频.mp4', '/global/file/视频.mp4'], ['/source/角色.png', '/global/file/角色.png'],
+    ]);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed permanent copy from falling back to an overwriting write', async () => {
+    mocks.copyStream.mockRejectedValue(new Error('目标文件已存在，已拒绝覆盖'));
+    await expect(saveToPermanent('/source/角色.png')).resolves.toBeNull();
+    expect(mocks.copyStream).toHaveBeenCalledOnce();
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('decodes a virtual asset across multiple base64 chunks without changing its bytes', async () => {
+    const assetUrl = `data:image/png;base64,${'AAAA'.repeat(100_000)}`;
+    await expect(saveAssetToPermanent({ path: 'virtual://image', name: '角色.png', assetUrl } as AssetFileEntry))
+      .resolves.toBe('/global/file/角色.png');
+    expect(mocks.writeFile).toHaveBeenCalledExactlyOnceWith('/global/file/角色.png', new Uint8Array(300_000));
+    expect(mocks.copyStream).not.toHaveBeenCalled();
+    expect(mocks.readFile).not.toHaveBeenCalled();
   });
 
   it('does not fall back to the import root for removed or invalid target folders', async () => {

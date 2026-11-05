@@ -3,11 +3,13 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
-import { getProjectDataDir, isTauriEnv } from './core';
+import { bytePartsToBase64, getProjectDataDir, isTauriEnv } from './core';
 
 const MAX_THUMBNAIL_BYTES = 4 * 1024 * 1024;
 const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
 const MAX_QUEUED_WRITES = 64;
+const MAX_METADATA_HEADER_BYTES = 1024 * 1024;
+const METADATA_HEADER = 'x-aic-thumbnail-meta';
 
 interface PendingWrite {
   blob: Blob;
@@ -29,9 +31,13 @@ async function drainWrites(): Promise<void> {
       queuedBytes -= job.blob.size;
       try {
         if (job.signal.aborted) continue;
+        // Header 只携带固定元数据；UTF-8 转 Base64 后可安全传递中文和特殊字符路径。
+        const metadata = bytePartsToBase64([new TextEncoder().encode(JSON.stringify(job.args))]);
+        if (metadata.length > MAX_METADATA_HEADER_BYTES) continue;
         const bytes = new Uint8Array(await job.blob.arrayBuffer());
         if (job.signal.aborted) continue;
-        await invoke<boolean>('write_project_thumbnail', { ...job.args, bytes: Array.from(bytes) });
+        if (!bytes.byteLength || bytes.byteLength > MAX_THUMBNAIL_BYTES) continue;
+        await invoke<boolean>('write_project_thumbnail', bytes, { headers: { [METADATA_HEADER]: metadata } });
       } catch { /* 缓存写入失败不影响已显示的内存预览。 */ }
       finally { job.resolve(); }
     }

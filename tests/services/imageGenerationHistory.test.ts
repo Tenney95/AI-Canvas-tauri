@@ -1,7 +1,12 @@
 /**
  * imageGenerationHistory — 回归测试：节点历史读取，以及内存、分页与导出的筛选一致性。
  */
-import { IDBFactory } from 'fake-indexeddb';
+import {
+  IDBCursor as FakeIDBCursor,
+  IDBFactory,
+  IDBIndex as FakeIDBIndex,
+  IDBObjectStore as FakeIDBObjectStore,
+} from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HistoryPageCursor, HistoryRecord } from '../../src/services/indexedDbService';
 import type { HistoryQuery } from '../../src/types';
@@ -102,6 +107,103 @@ describe('getNodeHistoryEntries', () => {
 
     await expect(service.getHistoryEntryCount('project-a')).resolves.toBe(0);
     await expect(service.getHistoryEntryCount('project-b')).resolves.toBe(1);
+  });
+});
+
+describe('history key cursor pruning and cleanup', () => {
+  it.each([0, 1, 15, 16, 17, 35])('retains the newest records at the 16-entry boundary with %s inputs', async (count) => {
+    const service = await import('../../src/services/indexedDbService');
+    await service.putHistoryEntries(Array.from({ length: count }, (_, index) => (
+      historyRecord(`a-${index}`, 'node-a', index)
+    )));
+    const records = await service.getHistoryEntriesForExport('project-a');
+    expect(records.map((record) => record.id)).toEqual(
+      Array.from({ length: Math.min(count, 16) }, (_, index) => `a-${count - index - 1}`),
+    );
+  });
+
+  it('uses the compound index id order to break timestamp ties', async () => {
+    const service = await import('../../src/services/indexedDbService');
+    const ids = Array.from({ length: 20 }, (_, index) => `tie-${String(index).padStart(2, '0')}`);
+    await service.putHistoryEntries(ids.map((id) => historyRecord(id, 'node-a', 100)));
+    expect((await service.getHistoryEntriesForExport('project-a')).map((record) => record.id))
+      .toEqual(ids.slice(4).reverse());
+  });
+
+  it.each([16, 17])('requests only keys and advances once over the retained region for %s entries', async (count) => {
+    const service = await import('../../src/services/indexedDbService');
+    const valueCursor = vi.spyOn(FakeIDBIndex.prototype, 'openCursor');
+    const keyCursor = vi.spyOn(FakeIDBIndex.prototype, 'openKeyCursor');
+    const advance = vi.spyOn(FakeIDBCursor.prototype, 'advance');
+    const next = vi.spyOn(FakeIDBCursor.prototype, 'continue');
+    await service.putHistoryEntries(Array.from({ length: count }, (_, index) => (
+      historyRecord(`a-${index}`, 'node-a', index)
+    )));
+
+    expect(valueCursor).not.toHaveBeenCalled();
+    expect(keyCursor).toHaveBeenCalledTimes(1);
+    expect(keyCursor.mock.calls[0][1]).toBe('prev');
+    expect(advance).toHaveBeenCalledExactlyOnceWith(16);
+    expect(next).toHaveBeenCalledTimes(count - 16);
+    expect(await service.getHistoryEntryCount('project-a')).toBe(16);
+  });
+
+  it('also prunes after saving a single entry without removing another project history', async () => {
+    const service = await import('../../src/services/indexedDbService');
+    await service.putHistoryEntries([
+      ...Array.from({ length: 16 }, (_, index) => historyRecord(`a-${index}`, 'node-a', index)),
+      historyRecord('foreign', 'node-a', 1, 'project-b'),
+    ]);
+    await service.putHistoryEntry(historyRecord('new', 'node-a', 100));
+    const records = await service.getHistoryEntriesForExport('project-a');
+    expect(records).toHaveLength(16);
+    expect(records[0].id).toBe('new');
+    expect(records.some((record) => record.id === 'a-0')).toBe(false);
+    expect((await service.getHistoryEntriesForExport('project-b')).map((record) => record.id)).toEqual(['foreign']);
+  });
+
+  it.each(['project', 'node'] as const)('cleans %s history using keys and preserves other scopes', async (scope) => {
+    const service = await import('../../src/services/indexedDbService');
+    await service.putHistoryEntries([
+      historyRecord('target', 'node-a', 1),
+      historyRecord('other-node', 'node-b', 2),
+      historyRecord('foreign', 'node-a', 1, 'project-b'),
+    ]);
+    const valueCursor = vi.spyOn(FakeIDBIndex.prototype, 'openCursor');
+    const keyCursor = vi.spyOn(FakeIDBIndex.prototype, 'openKeyCursor');
+    if (scope === 'project') await service.clearAllHistoryEntries('project-a');
+    else await service.deleteNodeHistoryEntries('project-a', 'node-a');
+
+    expect(valueCursor).not.toHaveBeenCalled();
+    expect(keyCursor).toHaveBeenCalledTimes(1);
+    valueCursor.mockRestore();
+    expect((await service.getHistoryEntriesForExport('project-a')).map((record) => record.id))
+      .toEqual(scope === 'project' ? [] : ['other-node']);
+    expect((await service.getHistoryEntriesForExport('project-b')).map((record) => record.id)).toEqual(['foreign']);
+  });
+
+  it.each(['project', 'node'] as const)('rejects aborted %s cleanup and rolls back deletions', async (scope) => {
+    const service = await import('../../src/services/indexedDbService');
+    await service.putHistoryEntries([
+      historyRecord('older', 'node-a', 1), historyRecord('newer', 'node-a', 2),
+      historyRecord('foreign', 'node-a', 1, 'project-b'),
+    ]);
+    const remove = FakeIDBObjectStore.prototype.delete;
+    let abortScheduled = false;
+    const deletion = vi.spyOn(FakeIDBObjectStore.prototype, 'delete').mockImplementation(function (this: IDBObjectStore, key) {
+      const request = remove.call(this, key);
+      if (this.name === 'history' && !abortScheduled) {
+        abortScheduled = true;
+        request.addEventListener('success', () => queueMicrotask(() => request.transaction?.abort()), { once: true });
+      }
+      return request;
+    });
+    const operation = scope === 'project' ? service.clearAllHistoryEntries('project-a')
+      : service.deleteNodeHistoryEntries('project-a', 'node-a');
+    await expect(operation).rejects.toThrow(/清理失败/);
+    deletion.mockRestore();
+    expect((await service.getHistoryEntriesForExport('project-a')).map((record) => record.id)).toEqual(['newer', 'older']);
+    expect((await service.getHistoryEntriesForExport('project-b')).map((record) => record.id)).toEqual(['foreign']);
   });
 });
 

@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
-vi.mock('../../src/services/fs/core', () => ({
+vi.mock('../../src/services/fs/core', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/fs/core')>(),
   isTauriEnv: mocks.isTauriEnv,
   getProjectDataDir: mocks.getProjectDataDir,
 }));
@@ -43,6 +44,19 @@ function deferred<T>() {
 
 function writeCalls() {
   return mocks.invoke.mock.calls.filter(([command]) => command === 'write_project_thumbnail');
+}
+
+function writtenPreviews() {
+  return writeCalls().map(([, body, options]) => {
+    expect(body).toBeInstanceOf(Uint8Array);
+    expect(Array.isArray(body)).toBe(false);
+    const headers = (options as { headers: Record<string, string> }).headers;
+    expect(Object.keys(headers)).toEqual(['x-aic-thumbnail-meta']);
+    const metadata = headers['x-aic-thumbnail-meta'];
+    expect(metadata).toMatch(/^[A-Za-z0-9+/]*={0,2}$/);
+    const decoded = Uint8Array.from(atob(metadata), (character) => character.charCodeAt(0));
+    return { bytes: body as Uint8Array, metadata: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(decoded)) };
+  });
 }
 
 beforeEach(() => {
@@ -81,14 +95,26 @@ describe('prepareProjectThumbnail platform and project routing', () => {
     await prepareProjectThumbnail('another-project', SOURCE, 256, new AbortController().signal);
     await session!.persist(new Blob([Uint8Array.from(WEBP_BYTES)], { type: 'image/webp' }));
 
-    expect(writeCalls()).toEqual([['write_project_thumbnail', {
+    expect(writtenPreviews()).toEqual([{ bytes: Uint8Array.from(WEBP_BYTES), metadata: {
       projectDir: PROJECT_DIR,
       sourcePath: 'G:\\media\\source.png',
       maxEdge: 512,
       sourceVersion: SOURCE_VERSION,
-      bytes: WEBP_BYTES,
-    }]]);
+    } }]);
     expect(mocks.getProjectDataDir.mock.calls).toEqual([['episode-id'], ['another-project']]);
+  });
+
+  it('transports raw bytes and UTF-8 paths through an ASCII metadata header', async () => {
+    const projectDir = 'G:/项目 data/100%+😀';
+    const sourcePath = `${projectDir}/图 1.png`;
+    mocks.getProjectDataDir.mockResolvedValue(projectDir);
+    const session = await prepareProjectThumbnail('unicode-project', `http://asset.localhost/${encodeURIComponent(sourcePath)}`,
+      512, new AbortController().signal);
+    const bytes = new Uint8Array([0, 1, 127, 128, 255]);
+    await session!.persist(new Blob([bytes]));
+    expect(writtenPreviews()).toEqual([{ bytes, metadata: {
+      projectDir, sourcePath, maxEdge: 512, sourceVersion: SOURCE_VERSION,
+    } }]);
   });
 
   it.each([
@@ -150,7 +176,9 @@ describe('prepareProjectThumbnail cache transport and budgets', () => {
     expect(session?.cached).toBeNull();
     await session!.persist(new Blob([Uint8Array.from(WEBP_BYTES)]));
     expect(writeCalls()).toHaveLength(1);
-    expect(writeCalls()[0]?.[1]).toMatchObject({ maxEdge: 1024, sourceVersion: SOURCE_VERSION, bytes: WEBP_BYTES });
+    expect(writtenPreviews()[0]).toEqual({ bytes: Uint8Array.from(WEBP_BYTES), metadata: {
+      projectDir: PROJECT_DIR, sourcePath: 'G:\\media\\source.png', maxEdge: 1024, sourceVersion: SOURCE_VERSION,
+    } });
   });
 
   it.each([
@@ -179,13 +207,31 @@ describe('prepareProjectThumbnail cache transport and budgets', () => {
     expect(session?.cached?.blob.size).toBe(MAX_BYTES);
     await session!.persist(session!.cached!.blob);
     expect(writeCalls()).toHaveLength(1);
-    expect(writeCalls()[0]?.[1].bytes).toHaveLength(MAX_BYTES);
+    expect(writtenPreviews()[0]?.bytes).toHaveLength(MAX_BYTES);
   });
 
   it.each([0, MAX_BYTES + 1])('does not even read a blob outside the write size budget (%s bytes)', async (size) => {
     const session = await prepareProjectThumbnail('project-id', SOURCE, 256, new AbortController().signal);
     const blob = new Blob();
     Object.defineProperty(blob, 'size', { value: size });
+    const read = vi.spyOn(blob, 'arrayBuffer');
+    await session!.persist(blob);
+    expect(read).not.toHaveBeenCalled();
+    expect(writeCalls()).toHaveLength(0);
+  });
+
+  it.each([0, MAX_BYTES + 1])('checks the actual binary payload before IPC (%s bytes)', async (size) => {
+    const session = await prepareProjectThumbnail('project-id', SOURCE, 256, new AbortController().signal);
+    const blob = new Blob([Uint8Array.from(WEBP_BYTES)]);
+    vi.spyOn(blob, 'arrayBuffer').mockResolvedValue(new ArrayBuffer(size));
+    await session!.persist(blob);
+    expect(writeCalls()).toHaveLength(0);
+  });
+
+  it('drops excessive metadata before reading the image bytes', async () => {
+    mocks.getProjectDataDir.mockResolvedValue(`G:/${'x'.repeat(1024 * 1024)}`);
+    const session = await prepareProjectThumbnail('project-id', SOURCE, 256, new AbortController().signal);
+    const blob = new Blob([Uint8Array.from(WEBP_BYTES)]);
     const read = vi.spyOn(blob, 'arrayBuffer');
     await session!.persist(blob);
     expect(read).not.toHaveBeenCalled();
@@ -287,7 +333,7 @@ describe('project thumbnail background write queue', () => {
       firstWrite.resolve(true);
       await Promise.all([first, cancelled, third]);
     }
-    expect(writeCalls().map(([, args]) => new TextDecoder().decode(Uint8Array.from(args.bytes)))).toEqual(['first', 'third']);
+    expect(writtenPreviews().map(({ bytes }) => new TextDecoder().decode(bytes))).toEqual(['first', 'third']);
     expect(readQueued).not.toHaveBeenCalled();
   });
 
@@ -329,7 +375,7 @@ describe('project thumbnail background write queue', () => {
       firstWrite.resolve(true);
       await Promise.all(requests);
     }
-    expect(writeCalls().map(([, args]) => args.bytes.length)).toEqual([6, MAX_BYTES, MAX_BYTES]);
+    expect(writtenPreviews().map(({ bytes }) => bytes.length)).toEqual([6, MAX_BYTES, MAX_BYTES]);
     expect(readExtra).not.toHaveBeenCalled();
   });
 });
