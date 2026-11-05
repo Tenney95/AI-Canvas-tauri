@@ -33,6 +33,7 @@ import {
 import { nodeHeightForAspectRatio, videoNodeDimensionsForAspectRatio } from '../../../utils/nodeBounds';
 import { textNodeHeight } from '../../../utils/num';
 import { executeCommand, logOperation } from '../commandRegistry';
+import { validateAgentToolInput, type AgentToolSchema } from '../agentToolSchemas';
 import {
   registerAgentTool,
   type AgentToolContext,
@@ -45,7 +46,7 @@ import { resolveImageParameterCapability } from '../../ai/mediaModelCapabilities
 import { isSafeMediaParameterText, resolveConfiguredImageBackground, resolveConfiguredImageQuality } from '../../ai/modelCapabilityValidation';
 import { findDramaAsset, listGlobalDramaAssets, preferDramaLibraryReferences, preferredDramaMentionForNode } from '../../dramaAssetPrompt';
 import { AGENT_NODE_LAYOUT, AGENT_NODE_LAYOUT_GUIDANCE } from '../agentCanvasLayout';
-import { getProjectDataDir, isTauriEnv, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from '../../fileService';
+import { getProjectDataDir, isTauriEnv, readAssetTextFile, saveAssetTextFile, stripVerbatimPrefix, type AssetTextSnapshot } from '../../fileService';
 import { findMissingSingleCloudOutputFields, type ArchiveAssetDigest } from '../../projectExchangeDomain';
 import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation } from '../../canvasDerivationGuard';
 
@@ -323,9 +324,7 @@ interface QueryNodesInput extends NodeTargetInput {
   textLimit?: number;
 }
 
-interface UpdateNodesInput extends NodeTargetInput {
-  repairMissingCloudOutputs?: boolean;
-  removeMissingDramaMentionIds?: string[];
+interface NodeUpdatePatch {
   label?: string;
   prompt?: string;
   promptEdit?: { oldText: string; newText: string };
@@ -359,6 +358,12 @@ interface UpdateNodesInput extends NodeTargetInput {
   musicTitle?: string;
   musicLyrics?: string;
   autoGenerateLyrics?: boolean;
+}
+
+interface UpdateNodesInput extends NodeTargetInput, NodeUpdatePatch {
+  repairMissingCloudOutputs?: boolean;
+  removeMissingDramaMentionIds?: string[];
+  updates?: Array<{ nodeId: string; patch: NodeUpdatePatch }>;
 }
 
 interface ConnectNodesInput {
@@ -555,6 +560,49 @@ const targetProperties = {
   selected: { type: 'boolean' as const },
 };
 
+const nodeUpdateProperties: Record<string, AgentToolSchema> = {
+  label: { type: 'string', minLength: 1, maxLength: 120 },
+  prompt: { type: 'string', maxLength: 8000 },
+  promptEdit: { type: 'object', required: ['oldText', 'newText'], additionalProperties: false, properties: {
+    oldText: { type: 'string', minLength: 1, maxLength: 8000 },
+    newText: { type: 'string', maxLength: 8000 },
+  } },
+  content: { type: 'string', maxLength: 40000 },
+  x: { type: 'number', minimum: -100000, maximum: 100000 },
+  y: { type: 'number', minimum: -100000, maximum: 100000 },
+  dx: { type: 'number', minimum: -100000, maximum: 100000 },
+  dy: { type: 'number', minimum: -100000, maximum: 100000 },
+  width: { type: 'number', minimum: MIN_NODE_SIZE, maximum: MAX_NODE_SIZE },
+  height: { type: 'number', minimum: MIN_NODE_SIZE, maximum: MAX_NODE_SIZE },
+  model: { type: 'string', minLength: 1, maxLength: 240 },
+  aspectRatio: { type: 'string', enum: ASPECT_RATIOS },
+  imageSize: { type: 'string', enum: [...PROJECT_IMAGE_SIZES] },
+  imageQuality: { type: 'string', minLength: 1, maxLength: 40 },
+  imageBackground: { type: 'string', maxLength: 40, description: '空字符串表示接口默认。' },
+  batchCount: { type: 'integer', minimum: 1, maximum: MAX_IMAGE_BATCH_COUNT },
+  videoResolution: { type: 'string', minLength: 1, maxLength: 40 },
+  videoLongSide: { type: 'integer', minimum: 128, maximum: 4096 },
+  videoDuration: { type: 'number', maximum: 3600,
+    description: '负数仅允许所选模型声明的自动时长值。' },
+  videoFps: { type: 'number', minimum: 1, maximum: 240 },
+  generateAudio: { type: 'boolean' },
+  audioPurpose: { type: 'string', enum: ['music', 'speech'] },
+  audioVoice: { type: 'string', minLength: 1, maxLength: 256, description: '当前模型公布的音色 ID，不含控制字符。' },
+  audioFormat: { type: 'string', enum: AUDIO_FORMATS },
+  audioSpeed: { type: 'number', minimum: 0.25, maximum: 4 },
+  audioSpeechSettings: { type: 'object', additionalProperties: false, properties: {
+    voiceStyle: { type: 'string', enum: SPEECH_STYLES },
+    pace: { type: 'integer', minimum: 0, maximum: 4 },
+    duration: { type: 'integer', minimum: 1, maximum: 3600 },
+  } },
+  musicDuration: { type: 'integer', minimum: 1, maximum: 240 },
+  musicBpm: { type: 'integer', minimum: 1 },
+  musicTitle: { type: 'string', maxLength: 120 },
+  musicLyrics: { type: 'string', maxLength: 8000 },
+  autoGenerateLyrics: { type: 'boolean' },
+};
+const nodeUpdatePatchSchema: AgentToolSchema = { type: 'object', properties: nodeUpdateProperties, additionalProperties: false };
+
 /** 素材节点（source-* / comment）只产出内容，没有输入端，不能作为连线终点。 */
 function isSourceOnlyNode(node: Node<BaseNodeData>): boolean {
   const role = node.data.role;
@@ -705,6 +753,7 @@ interface TextFileTarget {
   nodeType: NodeType;
   filePath: string | undefined;
   previousOutput: string | undefined;
+  content: string;
 }
 
 interface TextFileUpdate extends TextFileTarget {
@@ -713,18 +762,24 @@ interface TextFileUpdate extends TextFileTarget {
   state: 'write' | 'unchanged' | 'conflict' | 'read_failed';
 }
 
-function textFileTargetsFresh(context: AgentToolContext, revision: number, targets: TextFileTarget[], content?: string): boolean {
+/** 与 saveAssetTextFile 的同窗口串行键一致；原始路径仍只交给文件层。 */
+function textFileSaveKey(path: string): string {
+  const normalized = stripVerbatimPrefix(path).replace(/\\/g, '/');
+  return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+}
+
+function textFileTargetsFresh(context: AgentToolContext, revision: number, targets: TextFileTarget[], committed = false): boolean {
   const current = useAppStore.getState();
   return !context.signal.aborted && current.currentProjectId === context.projectId
     && current.getCurrentRevision() === revision && targets.every((target) => {
       const node = current.nodes.find((item) => item.id === target.nodeId);
       return node?.data.type === target.nodeType && node.data.filePath === target.filePath
-        && node.data.output === (content === undefined ? target.previousOutput : content);
+        && node.data.output === (committed ? target.content : target.previousOutput);
     });
 }
 
-/** 真实磁盘基线先整批读完；冲突只禁止覆盖文件，不丢弃新的画布草稿。 */
-async function prepareTextFileUpdates(context: AgentToolContext, targets: TextFileTarget[], content: string, revision: number): Promise<TextFileUpdate[]> {
+/** 真实磁盘基线先整批读完；只准备状态，由入口决定是否保留新草稿。 */
+async function prepareTextFileUpdates(context: AgentToolContext, targets: TextFileTarget[], revision: number): Promise<TextFileUpdate[]> {
   const updates: TextFileUpdate[] = targets
     .filter((target) => TEXT_FILE_NODE_TYPES.has(target.nodeType) && target.filePath)
     .map((target): TextFileUpdate => ({ ...target, filePath: target.filePath!, state: 'read_failed' }));
@@ -736,7 +791,7 @@ async function prepareTextFileUpdates(context: AgentToolContext, targets: TextFi
     try {
       update.baseline = await readAssetTextFile(update.filePath, context.signal);
       const previous = (update.previousOutput || '').replace(/\r\n/g, '\n');
-      update.state = update.baseline.content === content.replace(/\r\n/g, '\n') ? 'unchanged'
+      update.state = update.baseline.content === update.content.replace(/\r\n/g, '\n') ? 'unchanged'
         : update.baseline.content === previous ? 'write' : 'conflict';
     } catch {
       update.state = 'read_failed';
@@ -747,13 +802,13 @@ async function prepareTextFileUpdates(context: AgentToolContext, targets: TextFi
 }
 
 /** 画布只提交一次；各文件沿用已有摘要 CAS，失败不重试、不回滚草稿或已写入的文件。 */
-async function persistTextFileUpdates(context: AgentToolContext, updates: TextFileUpdate[], content: string, targets: TextFileTarget[]) {
+async function persistTextFileUpdates(context: AgentToolContext, updates: TextFileUpdate[], targets: TextFileTarget[]) {
   const revision = useAppStore.getState().getCurrentRevision();
   const controller = new AbortController();
   const abort = () => controller.abort();
   const guard = registerCanvasImport(useAppStore.getState(), abort);
   const fresh = () => !!guard && isCanvasDerivationFresh(guard, useAppStore.getState())
-    && textFileTargetsFresh(context, revision, targets, content);
+    && textFileTargetsFresh(context, revision, targets, true);
   context.signal.addEventListener('abort', abort, { once: true });
   const unsubscribe = useAppStore.subscribe(() => { if (!fresh()) abort(); });
   const results: Array<{ nodeId: string; status: 'saved' | 'unchanged' | 'conflict' | 'read_failed' | 'save_failed' | 'stale' }> = [];
@@ -768,13 +823,14 @@ async function persistTextFileUpdates(context: AgentToolContext, updates: TextFi
         results.push({ nodeId: update.nodeId, status: update.state });
         continue;
       }
-      if (savedPaths.has(update.filePath)) {
+      const fileKey = textFileSaveKey(update.filePath);
+      if (savedPaths.has(fileKey)) {
         results.push({ nodeId: update.nodeId, status: 'saved' });
         continue;
       }
       try {
-        await saveAssetTextFile(update.filePath, update.baseline!, content, controller.signal);
-        savedPaths.add(update.filePath);
+        await saveAssetTextFile(update.filePath, update.baseline!, update.content, controller.signal);
+        savedPaths.add(fileKey);
         results.push({ nodeId: update.nodeId, status: 'saved' });
       } catch {
         results.push({ nodeId: update.nodeId, status: fresh() && !controller.signal.aborted ? 'save_failed' : 'stale' });
@@ -1513,6 +1569,150 @@ function buildPromptReferenceEdges(
   return { edges };
 }
 
+interface PreparedNodeUpdate {
+  input: NodeUpdatePatch;
+  targetIds: string[];
+  targets: Node<BaseNodeData>[];
+  patch: Partial<BaseNodeData>;
+  promptEdits: Map<string, { before: string; after: string }>;
+  beforeAudit: Map<string, NodeAuditSnapshot>;
+  moveAbsolute: boolean;
+  moveRelative: boolean;
+}
+
+/** 单补丁与异构补丁共用全部普通编辑校验；此阶段只准备，不写 Store 或文件。 */
+function prepareNodeUpdate(
+  context: AgentToolContext, input: NodeUpdatePatch, targets: Node<BaseNodeData>[], globalAssets?: readonly DramaAsset[],
+): PreparedNodeUpdate | AgentToolExecutionResult {
+  const targetIds = targets.map((node) => node.id);
+  if (input.promptEdit !== undefined) {
+    const edit = input.promptEdit;
+    if (input.prompt !== undefined || !edit || typeof edit !== 'object'
+      || Object.keys(edit).some((key) => key !== 'oldText' && key !== 'newText')
+      || typeof edit.oldText !== 'string' || !edit.oldText.length || edit.oldText.length > 8000
+      || typeof edit.newText !== 'string' || edit.newText.length > 8000) {
+      const message = 'promptEdit 仅接受非空且最多 8000 字的 oldText 和最多 8000 字的 newText，不能与 prompt 混传';
+      return { status: 'error', summary: message, modelContent: message };
+    }
+  }
+  const moveAbsolute = input.x !== undefined || input.y !== undefined;
+  const moveRelative = input.dx !== undefined || input.dy !== undefined;
+  if (moveAbsolute && targetIds.length > 1) {
+    const message = '绝对坐标一次只能移动一个节点，批量移动请用 dx/dy';
+    return { status: 'error', summary: message, modelContent: message };
+  }
+
+  const mcp = context.conversationId === `mcp-control-${context.projectId}`;
+
+  const patch: Partial<BaseNodeData> = {
+    ...(input.label !== undefined ? { label: input.label.trim() } : {}),
+    ...(input.prompt !== undefined ? { prompt: mcp
+      ? preferDramaLibraryReferences(input.prompt.trim(), useAppStore.getState().nodes,
+        useAppStore.getState().dramaAssets, globalAssets ?? listGlobalDramaAssets(useAppStore.getState()))
+      : input.prompt.trim() } : {}),
+    ...(input.width !== undefined ? { nodeWidth: Math.round(input.width) } : {}),
+    ...(input.height !== undefined ? { nodeHeight: Math.round(input.height) } : {}),
+    ...(input.aspectRatio !== undefined ? { aspectRatio: input.aspectRatio } : {}),
+    ...(input.imageSize !== undefined ? { imageSize: input.imageSize } : {}),
+    ...(input.imageQuality !== undefined ? { imageQuality: input.imageQuality } : {}),
+    ...(input.imageBackground !== undefined ? { imageBackground: input.imageBackground } : {}),
+    ...(input.batchCount !== undefined ? { batchCount: input.batchCount } : {}),
+    ...videoResolutionPatch(input),
+    ...(input.videoDuration !== undefined ? { seedanceDuration: input.videoDuration < 0
+      ? input.videoDuration : resolveShotVideoDuration(input.videoDuration) } : {}),
+    ...(input.videoFps !== undefined ? { videoFps: input.videoFps } : {}),
+    ...(input.generateAudio !== undefined ? { generateAudio: input.generateAudio } : {}),
+    ...(input.audioPurpose !== undefined ? { audioPurpose: input.audioPurpose } : {}),
+    ...(input.audioVoice !== undefined ? { audioVoice: input.audioVoice } : {}),
+    ...(input.audioFormat !== undefined ? { audioFormat: input.audioFormat } : {}),
+    ...(input.audioSpeed !== undefined ? { audioSpeed: input.audioSpeed } : {}),
+    ...(input.audioSpeechSettings !== undefined ? { audioSpeechSettings: input.audioSpeechSettings } : {}),
+    ...(input.musicDuration !== undefined ? { musicDuration: input.musicDuration } : {}),
+    ...(input.musicBpm !== undefined ? { musicBpm: input.musicBpm } : {}),
+    ...(input.musicTitle !== undefined ? { musicTitle: input.musicTitle } : {}),
+    ...(input.musicLyrics !== undefined ? { musicLyrics: input.musicLyrics } : {}),
+    ...(input.autoGenerateLyrics !== undefined ? { autoGenerateLyrics: input.autoGenerateLyrics } : {}),
+  };
+  const promptEdits = new Map<string, { before: string; after: string }>();
+  if (input.promptEdit !== undefined) {
+    const edit = input.promptEdit;
+    const replacement = mcp
+      ? preferDramaLibraryReferences(edit.newText, useAppStore.getState().nodes, useAppStore.getState().dramaAssets,
+        globalAssets ?? listGlobalDramaAssets(useAppStore.getState()))
+      : edit.newText;
+    for (const node of targets) {
+      const before = node.data.prompt ?? '';
+      const range = promptEditRange(before, edit.oldText);
+      if ('error' in range) return { status: 'error', summary: range.error, modelContent: range.error };
+      promptEdits.set(node.id, { before, after: before.slice(0, range.start) + replacement + before.slice(range.end) });
+    }
+  }
+  if (targets.some((node) => node.data.type === 'ai-storyboard'
+    && (promptEdits.get(node.id)?.after ?? input.prompt)?.trim())) {
+    const message = '宫格分镜是已有图片的裁切结果，不能设置生成提示词';
+    return { status: 'error', summary: message, modelContent: message };
+  }
+  const beforeAudit = new Map(
+    targets.map((node) => [node.id, captureNodeAudit(node)]),
+  );
+  const invalidMedia = targets.map((node) => ({ label: node.data.label,
+    issue: mediaSettingsIssue(node.data.type, input, node.data) })).find((entry) => entry.issue);
+  if (invalidMedia) {
+    const message = `${invalidMedia.label}：${invalidMedia.issue}`;
+    return { status: 'error', summary: message, modelContent: message };
+  }
+  if (input.content !== undefined) {
+    // 媒体节点的 output 存的是本地路径或 URL，改写会直接破坏节点
+    const nonText = targets.filter((node) => !TEXT_OUTPUT_NODE_TYPES.has(node.data.type));
+    if (nonText.length > 0) {
+      const message = `content 只能改写文本类节点，${nonText.length} 个目标节点不是文本节点`;
+      return { status: 'error', summary: message, modelContent: message };
+    }
+    patch.output = input.content;
+  }
+  if (input.model !== undefined) {
+    const resolved = resolveModelPatch(input.model, targets);
+    if ('error' in resolved) {
+      return { status: 'error', summary: resolved.error, modelContent: resolved.error };
+    }
+    Object.assign(patch, resolved.patch);
+    if (input.batchCount !== undefined) patch.batchCount = input.batchCount;
+    if (input.audioPurpose !== undefined) patch.audioPurpose = input.audioPurpose;
+  }
+  if (Object.keys(patch).length === 0 && !promptEdits.size && !moveAbsolute && !moveRelative) {
+    return { status: 'error', summary: '没有提供需要更新的字段', modelContent: '没有提供需要更新的字段' };
+  }
+
+  return { input, targetIds, targets, patch, promptEdits, beforeAudit, moveAbsolute, moveRelative };
+}
+
+function applyPreparedNodeUpdates(groups: PreparedNodeUpdate[], batch: boolean): number {
+  const store = useAppStore.getState();
+  // 保留旧标量入口的批量 Action；新异构入口先提交一次，再复用无历史的节点 Action。
+  if (!batch && Object.keys(groups[0].patch).length) store.updateNodesDataBatch(groups[0].targetIds, groups[0].patch);
+  else store.commitToHistory();
+  for (const group of groups) {
+    for (const node of group.targets) {
+      const patch: Partial<BaseNodeData> = batch ? { ...group.patch } : {};
+      const edited = group.promptEdits.get(node.id);
+      if (edited) patch.prompt = edited.after;
+      if (group.input.aspectRatio !== undefined && node.data.type === 'ai-video') patch.seedanceRatio = group.input.aspectRatio;
+      if (group.input.label !== undefined) {
+        if (node.data.displayLabel) patch.displayLabel = group.input.label.trim();
+        if (node.data.fileName) patch.fileName = group.input.label.trim();
+      }
+      if (Object.keys(patch).length) store.updateNodeDataTransient(node.id, patch);
+      if (group.moveAbsolute || group.moveRelative) store.updateNodePositionTransient(node.id, {
+        x: Math.round(group.input.x ?? node.position.x + (group.input.dx ?? 0)),
+        y: Math.round(group.input.y ?? node.position.y + (group.input.dy ?? 0)),
+      });
+    }
+  }
+  store.incrementRevision();
+  return useAppStore.getState().getCurrentRevision();
+}
+
+
 export function registerCanvasAgentTools(): Array<() => void> {
   return [
     registerAgentTool<QueryNodesInput>({
@@ -1843,6 +2043,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       title: '更新画布节点',
       description: [
         '批量更新匹配节点：名称、提示词、正文内容、位置、尺寸、生成模型和生成参数。',
+        '各节点内容不同时用 updates:[{nodeId,patch}]，每次 1 至 50 项，每项仅接受普通编辑字段。不能与任何顶层筛选、补丁或特殊修复操作混用；重复或不存在的 ID、任一无效补丁都会在写入前整批拒绝，成功时只提交一次历史和 revision。',
         '只改提示词一处时用 promptEdit:{oldText,newText}，不能与整段 prompt 混传。oldText 非空且必须在每个目标的当前原文中唯一出现（重叠重复也拒绝）；任一目标不匹配或参数无效时整批不写。',
         '片段新旧文本各最多 8000 个 UTF-16 代码单元，newText 可为空以删除片段；保留范围外所有原文、空白及存量长提示词，不截断全文。不得切入 @{...}、@asset{...}、@drama{...} 引用令牌或 Unicode 代理项对；可以替换或删除完整引用。MCP 只转换 newText 内的同图节点引用，范围外引用保持原样。',
         'label 同步已有文件名显示别名，但不重命名磁盘文件或改变媒体路径。',
@@ -1851,8 +2052,9 @@ export function registerCanvasAgentTools(): Array<() => void> {
         '视频节点的 videoLongSide 是本地工作流长边像素，videoResolution 是 API 档位（旧版数字字符串会转长边像素）；videoDuration 是实际生成秒数。',
         '音频节点可设置语音音色/格式/速度、描述式语音参数及音乐时长/BPM；工作流专属参数继续由工作流配置管理。',
         'content 改写节点正文，只能用于文本类节点（ai-text / ai-markdown / source-text / comment）。桌面端前三类已关联文件时用真实磁盘摘要校验后保存；冲突或部分文件失败会返回错误与脱敏状态，保留新草稿，不自动重试整批。',
+        'updates 在提交前若有文本文件基线读取失败或冲突，整批不改画布；同一文件不能请求不同正文，相同正文合并实际保存。旧顶层补丁仍保留冲突时的新草稿。画布已提交后文件部分保存失败时保留全部草稿并逐项报告，不回滚已保存文件，也不承诺文件系统与画布原子提交。',
         'prompt 里可写 @{nodeId:label} 引用其他节点输出、@drama{assetId:name} 引用资产库设定，生成时自动展开；ID 必须真实存在。多图视频须按 Picture 顺序逐条写入图片节点 @ 引用，仅有连线不能指定 Picture 顺序。',
-        'x/y 是绝对坐标，一次只能移动一个节点；dx/dy 是相对位移，可批量。',
+        '顶层 x/y 是绝对坐标，一次只能移动一个节点；updates 中每项可分别设置 x/y。dx/dy 是相对位移，可批量。',
         'model 必须是 app_get_state 返回的模型 ID，且类型要与节点匹配。',
         'repairMissingCloudOutputs=true 仅按真实项目文件清单清理当前主图仍存在、且同类型单产物旧文件已缺失的云工作流缓存；不改主图、不接受路径或任意 data，也不清理多产物。只能与目标筛选字段一起使用，不能混合名称、提示词、位置或生成参数等普通编辑。',
         'removeMissingDramaMentionIds 指定完整 @drama 引用 ID（含选图后缀，不含外层标记），仅将父项目资产已不存在的匹配 token 替换为显示名称，其余完整 prompt 保持原样。有效资产和 global/ 引用拒绝清理；只能与目标筛选字段一起使用。',
@@ -1866,256 +2068,141 @@ export function registerCanvasAgentTools(): Array<() => void> {
           removeMissingDramaMentionIds: { type: 'array', minItems: 1, maxItems: 20,
             items: { type: 'string', minLength: 1, maxLength: 2048 },
             description: '只清理明确指定且父项目资产已删除的引用 ID，保留显示名称和完整提示词；不能混合普通编辑。' },
-          label: { type: 'string', minLength: 1, maxLength: 120 },
-          prompt: { type: 'string', maxLength: 8000 },
-          promptEdit: { type: 'object', required: ['oldText', 'newText'], additionalProperties: false, properties: {
-            oldText: { type: 'string', minLength: 1, maxLength: 8000 },
-            newText: { type: 'string', maxLength: 8000 },
-          } },
-          content: { type: 'string', maxLength: 40000 },
-          x: { type: 'number', minimum: -100000, maximum: 100000 },
-          y: { type: 'number', minimum: -100000, maximum: 100000 },
-          dx: { type: 'number', minimum: -100000, maximum: 100000 },
-          dy: { type: 'number', minimum: -100000, maximum: 100000 },
-          width: { type: 'number', minimum: MIN_NODE_SIZE, maximum: MAX_NODE_SIZE },
-          height: { type: 'number', minimum: MIN_NODE_SIZE, maximum: MAX_NODE_SIZE },
-          model: { type: 'string', minLength: 1, maxLength: 240 },
-          aspectRatio: { type: 'string', enum: ASPECT_RATIOS },
-          imageSize: { type: 'string', enum: [...PROJECT_IMAGE_SIZES] },
-          imageQuality: { type: 'string', minLength: 1, maxLength: 40 },
-          imageBackground: { type: 'string', maxLength: 40, description: '空字符串表示接口默认。' },
-          batchCount: { type: 'integer', minimum: 1, maximum: MAX_IMAGE_BATCH_COUNT },
-          videoResolution: { type: 'string', minLength: 1, maxLength: 40 },
-          videoLongSide: { type: 'integer', minimum: 128, maximum: 4096 },
-          videoDuration: { type: 'number', maximum: 3600,
-            description: '负数仅允许所选模型声明的自动时长值。' },
-          videoFps: { type: 'number', minimum: 1, maximum: 240 },
-          generateAudio: { type: 'boolean' },
-          audioPurpose: { type: 'string', enum: ['music', 'speech'] },
-          audioVoice: { type: 'string', minLength: 1, maxLength: 256, description: '当前模型公布的音色 ID，不含控制字符。' },
-          audioFormat: { type: 'string', enum: AUDIO_FORMATS },
-          audioSpeed: { type: 'number', minimum: 0.25, maximum: 4 },
-          audioSpeechSettings: { type: 'object', additionalProperties: false, properties: {
-            voiceStyle: { type: 'string', enum: SPEECH_STYLES },
-            pace: { type: 'integer', minimum: 0, maximum: 4 },
-            duration: { type: 'integer', minimum: 1, maximum: 3600 },
-          } },
-          musicDuration: { type: 'integer', minimum: 1, maximum: 240 },
-          musicBpm: { type: 'integer', minimum: 1 },
-          musicTitle: { type: 'string', maxLength: 120 },
-          musicLyrics: { type: 'string', maxLength: 8000 },
-          autoGenerateLyrics: { type: 'boolean' },
+          ...nodeUpdateProperties,
+          updates: { type: 'array', minItems: 1, maxItems: 50, items: {
+            type: 'object', required: ['nodeId', 'patch'], additionalProperties: false, properties: {
+              nodeId: { type: 'string', minLength: 1, maxLength: 120 }, patch: nodeUpdatePatchSchema,
+            },
+          }, description: '每个节点一个独立普通补丁，整批最多 50 项；不能与任何顶层筛选、补丁或特殊修复操作混用。' },
         },
         additionalProperties: false,
       },
       effect: 'canvas_write',
       authorize: authorizeCurrentProject,
-      summarizeInput: (input) => input.removeMissingDramaMentionIds !== undefined
-        ? `清理 ${resolveTargetIds(input).length} 个节点的指定失效资产引用`
-        : input.repairMissingCloudOutputs === true
-          ? `核对 ${resolveTargetIds(input).length} 个节点的缺失单产物缓存` : `更新 ${resolveTargetIds(input).length} 个节点`,
+      summarizeInput: (input) => Array.isArray(input.updates) ? `分别更新 ${input.updates.length} 个节点`
+        : input.removeMissingDramaMentionIds !== undefined
+          ? `清理 ${resolveTargetIds(input).length} 个节点的指定失效资产引用`
+          : input.repairMissingCloudOutputs === true
+            ? `核对 ${resolveTargetIds(input).length} 个节点的缺失单产物缓存` : `更新 ${resolveTargetIds(input).length} 个节点`,
       execute: async (context, input) => {
         if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
         assertCanvasRevision(context);
-        const targetIds = resolveTargetIds(input);
-        if (targetIds.length === 0) {
-          return { status: 'error', summary: '没有找到匹配节点', modelContent: '没有找到匹配节点' };
-        }
-        if (input.removeMissingDramaMentionIds !== undefined) {
-          if (Object.keys(input).some((key) => key !== 'removeMissingDramaMentionIds'
-            && !Object.prototype.hasOwnProperty.call(targetProperties, key))) {
-            const message = '清理失效资产引用不能混合其他节点编辑，请分开调用';
-            return { status: 'error', summary: message, modelContent: message };
+        if (!isCurrentProject(context.projectId)) throw new Error('目标项目当前未加载');
+        const reject = (message: string): AgentToolExecutionResult => ({ status: 'error', summary: message, modelContent: message });
+        const updates = input.updates;
+        const batch = updates !== undefined;
+        const requests: Array<{ input: NodeUpdatePatch; targetIds: string[] }> = [];
+        if (updates !== undefined) {
+          if (Object.keys(input).some((key) => key !== 'updates') || !Array.isArray(updates) || updates.length < 1 || updates.length > 50) {
+            return reject('updates 需要 1 至 50 项，不能与顶层筛选、补丁或特殊修复操作混用');
           }
-          return removeMissingDramaMentions(context, targetIds, input.removeMissingDramaMentionIds);
-        }
-        if (input.repairMissingCloudOutputs === true) {
-          if (Object.keys(input).some((key) => key !== 'repairMissingCloudOutputs'
-            && !Object.prototype.hasOwnProperty.call(targetProperties, key))) {
-            const message = '修复缺失产物缓存不能混合普通节点编辑，请分开调用';
-            return { status: 'error', summary: message, modelContent: message };
+          const seen = new Set<string>();
+          const known = new Set(useAppStore.getState().nodes.map((node) => node.id));
+          for (const item of updates) {
+            if (!item || typeof item !== 'object' || Object.keys(item).some((key) => key !== 'nodeId' && key !== 'patch')
+              || typeof item.nodeId !== 'string' || !known.has(item.nodeId) || seen.has(item.nodeId)
+              || !validateAgentToolInput(nodeUpdatePatchSchema, item.patch).valid) {
+              return reject('updates 含重复或不存在的节点 ID，或补丁不符合普通编辑 schema；未修改任何节点');
+            }
+            seen.add(item.nodeId);
+            requests.push({ input: item.patch, targetIds: [item.nodeId] });
           }
-          return repairMissingCloudOutputs(context, targetIds);
-        }
-        if (input.promptEdit !== undefined) {
-          const edit = input.promptEdit;
-          if (input.prompt !== undefined || !edit || typeof edit !== 'object'
-            || Object.keys(edit).some((key) => key !== 'oldText' && key !== 'newText')
-            || typeof edit.oldText !== 'string' || !edit.oldText.length || edit.oldText.length > 8000
-            || typeof edit.newText !== 'string' || edit.newText.length > 8000) {
-            const message = 'promptEdit 仅接受非空且最多 8000 字的 oldText 和最多 8000 字的 newText，不能与 prompt 混传';
-            return { status: 'error', summary: message, modelContent: message };
+        } else {
+          const targetIds = resolveTargetIds(input);
+          if (targetIds.length === 0) {
+            return { status: 'error', summary: '没有找到匹配节点', modelContent: '没有找到匹配节点' };
           }
+          if (input.removeMissingDramaMentionIds !== undefined) {
+            if (Object.keys(input).some((key) => key !== 'removeMissingDramaMentionIds'
+              && !Object.prototype.hasOwnProperty.call(targetProperties, key))) {
+              const message = '清理失效资产引用不能混合其他节点编辑，请分开调用';
+              return { status: 'error', summary: message, modelContent: message };
+            }
+            return removeMissingDramaMentions(context, targetIds, input.removeMissingDramaMentionIds);
+          }
+          if (input.repairMissingCloudOutputs === true) {
+            if (Object.keys(input).some((key) => key !== 'repairMissingCloudOutputs'
+              && !Object.prototype.hasOwnProperty.call(targetProperties, key))) {
+              const message = '修复缺失产物缓存不能混合普通节点编辑，请分开调用';
+              return { status: 'error', summary: message, modelContent: message };
+            }
+            return repairMissingCloudOutputs(context, targetIds);
+          }
+          requests.push({ input, targetIds });
         }
-        const moveAbsolute = input.x !== undefined || input.y !== undefined;
-        const moveRelative = input.dx !== undefined || input.dy !== undefined;
-        if (moveAbsolute && targetIds.length > 1) {
-          const message = '绝对坐标一次只能移动一个节点，批量移动请用 dx/dy';
-          return { status: 'error', summary: message, modelContent: message };
+        const needsAssets = context.conversationId === `mcp-control-${context.projectId}` && requests.some((request) => {
+          const text = request.input.promptEdit?.newText ?? request.input.prompt;
+          return text !== undefined && hasActualNodeReference(text);
+        });
+        const globalAssets = needsAssets ? await readGlobalReferenceAssets(context) : undefined;
+        const state = useAppStore.getState();
+        const groups: PreparedNodeUpdate[] = [];
+        for (const request of requests) {
+          const targets: Node<BaseNodeData>[] = [];
+          for (const id of request.targetIds) {
+            const node = state.nodes.find((item) => item.id === id);
+            if (!node) return reject('目标节点已变化，请重新查询；未修改任何节点');
+            targets.push(node);
+          }
+          const prepared = prepareNodeUpdate(context, request.input, targets, globalAssets);
+          if ('status' in prepared) return prepared;
+          groups.push(prepared);
         }
-
-        const mcp = context.conversationId === `mcp-control-${context.projectId}`;
-        const referenceText = input.promptEdit?.newText ?? input.prompt;
-        const globalAssets = mcp && referenceText !== undefined && hasActualNodeReference(referenceText)
-          ? await readGlobalReferenceAssets(context) : undefined;
-
-        const patch: Partial<BaseNodeData> = {
-          ...(input.label !== undefined ? { label: input.label.trim() } : {}),
-          ...(input.prompt !== undefined ? { prompt: mcp
-            ? preferDramaLibraryReferences(input.prompt.trim(), useAppStore.getState().nodes,
-              useAppStore.getState().dramaAssets, globalAssets ?? listGlobalDramaAssets(useAppStore.getState()))
-            : input.prompt.trim() } : {}),
-          ...(input.width !== undefined ? { nodeWidth: Math.round(input.width) } : {}),
-          ...(input.height !== undefined ? { nodeHeight: Math.round(input.height) } : {}),
-          ...(input.aspectRatio !== undefined ? { aspectRatio: input.aspectRatio } : {}),
-          ...(input.imageSize !== undefined ? { imageSize: input.imageSize } : {}),
-          ...(input.imageQuality !== undefined ? { imageQuality: input.imageQuality } : {}),
-          ...(input.imageBackground !== undefined ? { imageBackground: input.imageBackground } : {}),
-          ...(input.batchCount !== undefined ? { batchCount: input.batchCount } : {}),
-          ...videoResolutionPatch(input),
-          ...(input.videoDuration !== undefined ? { seedanceDuration: input.videoDuration < 0
-            ? input.videoDuration : resolveShotVideoDuration(input.videoDuration) } : {}),
-          ...(input.videoFps !== undefined ? { videoFps: input.videoFps } : {}),
-          ...(input.generateAudio !== undefined ? { generateAudio: input.generateAudio } : {}),
-          ...(input.audioPurpose !== undefined ? { audioPurpose: input.audioPurpose } : {}),
-          ...(input.audioVoice !== undefined ? { audioVoice: input.audioVoice } : {}),
-          ...(input.audioFormat !== undefined ? { audioFormat: input.audioFormat } : {}),
-          ...(input.audioSpeed !== undefined ? { audioSpeed: input.audioSpeed } : {}),
-          ...(input.audioSpeechSettings !== undefined ? { audioSpeechSettings: input.audioSpeechSettings } : {}),
-          ...(input.musicDuration !== undefined ? { musicDuration: input.musicDuration } : {}),
-          ...(input.musicBpm !== undefined ? { musicBpm: input.musicBpm } : {}),
-          ...(input.musicTitle !== undefined ? { musicTitle: input.musicTitle } : {}),
-          ...(input.musicLyrics !== undefined ? { musicLyrics: input.musicLyrics } : {}),
-          ...(input.autoGenerateLyrics !== undefined ? { autoGenerateLyrics: input.autoGenerateLyrics } : {}),
-        };
-        const targets = useAppStore.getState().nodes
-          .filter((node) => targetIds.includes(node.id));
-        const promptEdits = new Map<string, { before: string; after: string }>();
-        if (input.promptEdit !== undefined) {
-          const edit = input.promptEdit;
-          const replacement = mcp
-            ? preferDramaLibraryReferences(edit.newText, useAppStore.getState().nodes, useAppStore.getState().dramaAssets,
-              globalAssets ?? listGlobalDramaAssets(useAppStore.getState()))
-            : edit.newText;
-          for (const node of targets) {
-            const before = node.data.prompt ?? '';
-            const range = promptEditRange(before, edit.oldText);
-            if ('error' in range) return { status: 'error', summary: range.error, modelContent: range.error };
-            promptEdits.set(node.id, { before, after: before.slice(0, range.start) + replacement + before.slice(range.end) });
+        const targetIds = groups.flatMap((group) => group.targetIds);
+        const textFileTargets: TextFileTarget[] = groups.flatMap((group) => {
+          const content = group.input.content;
+          return content === undefined ? [] : group.targets.map((node) => ({ nodeId: node.id, nodeType: node.data.type,
+            filePath: node.data.filePath, previousOutput: node.data.output, content }));
+        });
+        if (batch && isTauriEnv()) {
+          const contents = new Map<string, string>();
+          for (const target of textFileTargets) {
+            if (!target.filePath || !TEXT_FILE_NODE_TYPES.has(target.nodeType)) continue;
+            const fileKey = textFileSaveKey(target.filePath);
+            if (contents.has(fileKey) && contents.get(fileKey) !== target.content) {
+              return reject('同一个文本文件不能在同一批中写入不同正文；未修改任何节点');
+            }
+            contents.set(fileKey, target.content);
           }
         }
-        if (targets.some((node) => node.data.type === 'ai-storyboard'
-          && (promptEdits.get(node.id)?.after ?? input.prompt)?.trim())) {
-          const message = '宫格分镜是已有图片的裁切结果，不能设置生成提示词';
-          return { status: 'error', summary: message, modelContent: message };
+        const textFileRevision = state.getCurrentRevision();
+        const textFileUpdates = isTauriEnv() && textFileTargets.some((target) => TEXT_FILE_NODE_TYPES.has(target.nodeType) && target.filePath)
+          ? await prepareTextFileUpdates(context, textFileTargets, textFileRevision) : [];
+        if (batch && textFileUpdates.some((update) => update.state === 'conflict' || update.state === 'read_failed')) {
+          const summary = '文本文件基线读取失败或发生冲突，整批未修改；请核对后重新读取，不要自动重投写入';
+          return { status: 'error', summary, retryable: false, errorCode: 'TEXT_FILE_PREPARE_FAILED',
+            modelContent: JSON.stringify({ errorCode: 'TEXT_FILE_PREPARE_FAILED', operationStatus: 'not_executed', retryable: false,
+              results: textFileUpdates.map((update) => ({ nodeId: update.nodeId, status: update.state })) }) };
         }
-        const beforeAudit = new Map(
-          targets.map((node) => [node.id, captureNodeAudit(node)]),
-        );
-        const invalidMedia = targets.map((node) => ({ label: node.data.label,
-          issue: mediaSettingsIssue(node.data.type, input, node.data) })).find((entry) => entry.issue);
-        if (invalidMedia) {
-          const message = `${invalidMedia.label}：${invalidMedia.issue}`;
-          return { status: 'error', summary: message, modelContent: message };
-        }
-        if (input.content !== undefined) {
-          // 媒体节点的 output 存的是本地路径或 URL，改写会直接破坏节点
-          const nonText = targets.filter((node) => !TEXT_OUTPUT_NODE_TYPES.has(node.data.type));
-          if (nonText.length > 0) {
-            const message = `content 只能改写文本类节点，${nonText.length} 个目标节点不是文本节点`;
-            return { status: 'error', summary: message, modelContent: message };
-          }
-          patch.output = input.content;
-        }
-        if (input.model !== undefined) {
-          const resolved = resolveModelPatch(input.model, targets);
-          if ('error' in resolved) {
-            return { status: 'error', summary: resolved.error, modelContent: resolved.error };
-          }
-          Object.assign(patch, resolved.patch);
-          if (input.batchCount !== undefined) patch.batchCount = input.batchCount;
-          if (input.audioPurpose !== undefined) patch.audioPurpose = input.audioPurpose;
-        }
-        if (Object.keys(patch).length === 0 && !promptEdits.size && !moveAbsolute && !moveRelative) {
-          return { status: 'error', summary: '没有提供需要更新的字段', modelContent: '没有提供需要更新的字段' };
-        }
-
-        const textFileRevision = useAppStore.getState().getCurrentRevision();
-        const textFileTargets: TextFileTarget[] = targets.map((node) => ({ nodeId: node.id, nodeType: node.data.type,
-          filePath: node.data.filePath, previousOutput: node.data.output }));
-        const textFileUpdates = input.content !== undefined && isTauriEnv()
-          && targets.some((node) => TEXT_FILE_NODE_TYPES.has(node.data.type) && node.data.filePath)
-          ? await prepareTextFileUpdates(context, textFileTargets, input.content, textFileRevision) : [];
         if (textFileUpdates.length && !textFileTargetsFresh(context, textFileRevision, textFileTargets)) {
           throw new Error('项目、画布或文本文件关联已变化，请重新查询后操作');
         }
         assertCanvasRevision(context);
         if (!isCurrentProject(context.projectId)) throw new Error('目标项目当前未加载');
         if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
-        const store = useAppStore.getState();
-        if ([...promptEdits].some(([id, edit]) => {
-          const current = store.nodes.find((node) => node.id === id);
-          return !current || (current.data.prompt ?? '') !== edit.before;
-        })) {
-          throw new Error('目标提示词已变化，请重新读取后修改；未修改任何节点');
+        const current = useAppStore.getState();
+        for (const group of groups) {
+          if (batch && group.targets.some((node) => {
+            const latest = current.nodes.find((item) => item.id === node.id);
+            return !latest || latest.data !== node.data || latest.position.x !== node.position.x || latest.position.y !== node.position.y;
+          })) throw new Error('目标节点已变化，请重新读取后修改；未修改任何节点');
+          if ([...group.promptEdits].some(([id, edit]) => {
+            const node = current.nodes.find((item) => item.id === id);
+            return !node || (node.data.prompt ?? '') !== edit.before;
+          })) throw new Error('目标提示词已变化，请重新读取后修改；未修改任何节点');
         }
-        // updateNodesDataBatch 自带一次 commitToHistory；只移动时才需要单独提交历史
-        if (Object.keys(patch).length > 0) store.updateNodesDataBatch(targetIds, patch);
-        else store.commitToHistory();
-        for (const [id, edit] of promptEdits) store.updateNodeDataTransient(id, { prompt: edit.after });
-        // 视频参数面板读取 seedanceRatio，Store 在同一次写入中联动空视频框。
-        // 复用同一次历史快照，且不把视频参数写入混合目标中的图片节点。
-        if (input.aspectRatio !== undefined) {
-          for (const node of targets) {
-            if (node.data.type === 'ai-video') {
-              store.updateNodeDataTransient(node.id, { seedanceRatio: input.aspectRatio });
-            }
-          }
-        }
-        // Media titles prefer fileName. Reuse the batch history entry and
-        // change only the displayed alias, preserving media paths and bytes.
-        if (input.label !== undefined) {
-          for (const node of targets) {
-            if (node.data.displayLabel) {
-              store.updateNodeDataTransient(node.id, { displayLabel: input.label.trim() });
-            }
-            if (node.data.fileName) {
-              store.updateNodeDataTransient(node.id, { fileName: input.label.trim() });
-            }
-          }
-        }
-        if (moveAbsolute || moveRelative) {
-          const current = useAppStore.getState();
-          for (const nodeId of targetIds) {
-            const node = current.nodes.find((candidate) => candidate.id === nodeId);
-            if (!node) continue;
-            current.updateNodePositionTransient(nodeId, {
-              x: Math.round(input.x ?? node.position.x + (input.dx ?? 0)),
-              y: Math.round(input.y ?? node.position.y + (input.dy ?? 0)),
-            });
-          }
-        }
-        useAppStore.getState().incrementRevision();
-        const committedRevision = useAppStore.getState().getCurrentRevision();
-        const updatedTargets = useAppStore.getState().nodes
-          .filter((node) => targetIds.includes(node.id));
-        const textFilePersistence = textFileUpdates.length
-          ? await persistTextFileUpdates(context, textFileUpdates, input.content!, textFileTargets) : undefined;
-        const persistenceIncomplete = textFilePersistence && (textFilePersistence.failedCount > 0 || textFilePersistence.stale);
+        const committedRevision = applyPreparedNodeUpdates(groups, batch);
+        const textFilePersistence = textFileUpdates.length ? await persistTextFileUpdates(context, textFileUpdates, textFileTargets) : undefined;
+        const incomplete = textFilePersistence && (textFilePersistence.failedCount > 0 || textFilePersistence.stale);
         return {
-          status: persistenceIncomplete ? 'error' : 'success',
-          summary: persistenceIncomplete
-            ? `已更新 ${targetIds.length} 个节点；文本文件保存未全部完成，画布草稿已保留，请检查冲突或文件权限`
+          status: incomplete ? 'error' : 'success',
+          summary: incomplete ? `已更新 ${targetIds.length} 个节点；文本文件保存未全部完成，画布草稿已保留，请检查冲突或文件权限`
             : `已更新 ${targetIds.length} 个节点`,
-          ...(persistenceIncomplete ? { retryable: false, errorCode: 'TEXT_FILE_SAVE_INCOMPLETE' } : {}),
-          modelContent: JSON.stringify({
-            affectedNodeIds: targetIds,
-            revision: committedRevision,
-            ...(textFilePersistence ? { textFilePersistence } : {}),
-          }),
-          display: {
-            changes: buildUpdateChanges(input, updatedTargets, beforeAudit),
-          },
+          ...(incomplete ? { retryable: false, errorCode: 'TEXT_FILE_SAVE_INCOMPLETE' } : {}),
+          modelContent: JSON.stringify({ affectedNodeIds: targetIds, revision: committedRevision,
+            ...(textFilePersistence ? { textFilePersistence } : {}) }),
+          display: { changes: groups.flatMap((group) => buildUpdateChanges(group.input,
+            useAppStore.getState().nodes.filter((node) => group.targetIds.includes(node.id)), group.beforeAudit)) },
         };
       },
     }),
