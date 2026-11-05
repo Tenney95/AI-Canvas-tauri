@@ -9,10 +9,8 @@ if (!install) throw new Error('找不到 ComfyUI 窗口控件安装入口');
 class TestElement {
   constructor(readonly selectors: string[] = [], readonly parent: TestElement | null = null) {}
   closest(selector: string): TestElement | null {
-    for (let node: TestElement | null = this; node; node = node.parent) {
-      if (selector.split(',').some((part) => node?.selectors.includes(part.trim()))) return node;
-    }
-    return null;
+    if (selector.split(',').some((part) => this.selectors.includes(part.trim()))) return this;
+    return this.parent?.closest(selector) ?? null;
   }
 }
 
