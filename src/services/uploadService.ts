@@ -619,7 +619,7 @@ async function readMinimaxUploadResponse(response: Response, signal?: AbortSigna
   } catch (error) {
     await reader.cancel().catch(() => undefined);
     signal?.throwIfAborted();
-    if (error instanceof SyntaxError || error instanceof TypeError) throw new Error('MiniMax 上传返回了无效 JSON');
+    if (error instanceof SyntaxError || error instanceof TypeError) throw new Error('MiniMax 上传返回了无效 JSON', { cause: error });
     throw error;
   } finally {
     signal?.removeEventListener('abort', cancel);
