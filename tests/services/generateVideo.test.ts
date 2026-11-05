@@ -33,6 +33,7 @@ import { resolveVideoSubmissionControls } from '../../src/services/ai/videoReque
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
+import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../src/services/ai/providers/minimaxModelManifest';
 import { getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
 import { buildCharacterVideoReferences, resolveVideoParameterInputMode } from '../../src/components/nodes/shared/VideoParamSelector';
 import type {
@@ -58,6 +59,77 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('MiniMax 官方视频素材与任务交付', () => {
+  function configureMinimaxVideo(customized = false) {
+    const selected = structuredClone(MINIMAX_MODEL_MANIFEST.find((item) => item.id === 'MiniMax-H3')!);
+    if (customized) selected.executionProfile!.protocol!.submit.path = '/v2/my-video';
+    useAppStore.getState().saveProviderConfig('minimax-video-selected', {
+      name: 'MiniMax 官方', catalogId: 'minimax', baseUrl: MINIMAX_BASE_URL,
+      apiKey: 'minimax-video-selected-fixture', selectedModels: [selected],
+    });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'minimax-video-selected')!;
+    return { provider: 'general', model: `general/${model.id}`, prompt: '图片1中的人物跟随视频1运动，使用音频1的声音' };
+  }
+
+  it.each([false, true])('协议自定义 %s：上传前校验原媒体，mm_file 不交给浏览器探测', async (customized) => {
+    const params = configureMinimaxVideo(customized);
+    const sourceImage = 'data:image/png;base64,YQ==';
+    const sourceVideo = 'data:video/mp4;base64,Yg==';
+    const sourceAudio = 'data:audio/mpeg;base64,Yw==';
+    const image = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockResolvedValue(['mm_file://101']);
+    const media = vi.spyOn(uploadService, 'resolveMediaReferenceUrl').mockImplementation(async (_url, options) => {
+      expect(constraints).toHaveBeenCalledTimes(1);
+      return options?.kind === 'video' ? 'mm_file://102' : 'mm_file://103';
+    });
+    const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ task_id: 'minimax-original-task' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ task: { id: 'minimax-original-task', status: 'succeeded',
+        content: { url: 'https://cdn.example/h3-generated.mp4' } } })));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await generateVideo({ ...params, seedanceDuration: 6, seedanceResolution: '768P', seedanceRatio: '9:16', referenceMedia: [
+        { kind: 'image', role: 'reference', origin: 'prompt', url: sourceImage },
+        { kind: 'video', role: 'reference', origin: 'prompt', url: sourceVideo },
+        { kind: 'audio', role: 'reference_audio', origin: 'prompt', url: sourceAudio },
+      ] });
+      expect(result.url).toBe('https://cdn.example/h3-generated.mp4');
+      expect(constraints).toHaveBeenCalledTimes(1);
+      expect(constraints.mock.calls[0][0]).toMatchObject({ imageUrls: [sourceImage], videoUrls: [sourceVideo], audioUrls: [sourceAudio] });
+      expect(media.mock.calls.map(([url, options]) => [url, options?.provider, options?.mode])).toEqual([
+        [sourceVideo, 'minimax-video-selected', 'publicUrl'], [sourceAudio, 'minimax-video-selected', 'publicUrl'],
+      ]);
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        `${MINIMAX_BASE_URL}${customized ? '/v2/my-video' : '/v2/video_generation'}`, `${MINIMAX_BASE_URL}/v2/query/video_generation/minimax-original-task`,
+      ]);
+      const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+      expect(body).toMatchObject({ model: 'MiniMax-H3', resolution: '768P', duration: 6, ratio: '9:16' });
+      expect(body.content).toEqual([
+        { type: 'text', text: expect.any(String) },
+        { type: 'image_url', image_url: { url: 'mm_file://101' }, role: 'reference_image' },
+        { type: 'video_url', video_url: { url: 'mm_file://102' }, role: 'reference_video' },
+        { type: 'audio_url', audio_url: { url: 'mm_file://103' }, role: 'reference_audio' },
+      ]);
+      for (const [, init] of fetchMock.mock.calls) expect(new Headers(init.headers).get('Authorization')).toBe('Bearer minimax-video-selected-fixture');
+      expect(body).not.toHaveProperty('audio');
+    } finally { image.mockRestore(); media.mockRestore(); constraints.mockRestore(); }
+  });
+
+  it('首尾帧混参考图在上传前拒绝，保留用户选择且不提交生成', async () => {
+    const params = configureMinimaxVideo();
+    const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(generateVideo({ ...params, seedanceDuration: 5, seedanceResolution: '2K', referenceMedia: [
+        { kind: 'image', role: 'first_frame', origin: 'prompt', url: 'data:image/png;base64,YQ==' },
+        { kind: 'image', role: 'reference', origin: 'prompt', url: 'data:image/png;base64,Yg==' },
+      ] })).rejects.toThrow();
+      expect(image).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { image.mockRestore(); }
+  });
 });
 
 describe('RelayOnAPI 视频渠道与原任务交付', () => {

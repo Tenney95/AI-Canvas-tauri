@@ -38,6 +38,7 @@ import { matchToapisCatalog, resolveToapisImageModelContract, TOAPIS_MODEL_MANIF
 import { LIBAPI_MODEL_MANIFEST, matchLibapiCatalog, resolveLibapiModelId } from './providers/libapiModelManifest';
 import { RELAYON_BASE_URL, RELAYON_MODEL_MANIFEST, matchRelayonCatalog, resolveRelayonImageModelContract } from './providers/relayonModelManifest';
 import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST, matchAigcsiCatalog, normalizeAigcsiCatalogItems } from './providers/aigcsiModelManifest';
+import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from './providers/minimaxModelManifest';
 import { assertImageModelCapability, isModelProtocolPresetId } from './modelCapabilityValidation';
 import { validateModelExecutionProtocol } from './modelProtocolValidation';
 import { filterCccGroupModels } from './cccProviderGroups';
@@ -336,6 +337,14 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
     defaultBaseUrl: AIGCSI_BASE_URL, modelsPath: '/models', allowCustomBaseUrl: false,
     externalUrl: 'https://aigc-si.com/?ref=OAXZHWXT',
     credentials: [{ ...API_KEY_FIELD, placeholder: '填写 Amam API Key' }], models: AIGCSI_MODEL_MANIFEST,
+  },
+  {
+    id: 'minimax', name: 'MiniMax 官方', badgeText: 'MM', authType: 'api-key', catalogAdapter: 'local-manifest',
+    description: '官方 H3 视频与 Speech 2.8 语音；参考素材上传到当前官方连接。国内与国际连接分别配置密钥。',
+    defaultBaseUrl: MINIMAX_BASE_URL, allowCustomBaseUrl: true, externalUrl: 'https://platform.minimax.cn',
+    credentials: [{ ...API_KEY_FIELD, placeholder: '填写 MiniMax 官方 API Key' },
+      { key: 'baseUrl', label: '接口地址', required: false, placeholder: MINIMAX_BASE_URL }],
+    models: MINIMAX_MODEL_MANIFEST,
   },
   {
     id: 'xai',
@@ -977,9 +986,10 @@ export async function fetchProviderModelCatalog(
     return { models: [...models.values()], source: 'local-manifest' };
   }
   if (definition.catalogAdapter === 'local-manifest') {
-    // 即梦目录由 CLI 合同维护；缺少或过期的界面 fallback 不能隐藏新型号。
-    if (definition.id === 'dreamina') {
-      return { models: normalizeModels([...(definition.models ?? [])], providerId), source: 'local-manifest' };
+    // 即梦与 MiniMax 使用已核实的本地合同；过期的界面 fallback 不能隐藏新型号，也不代表 Key 已验证。
+    if (definition.id === 'dreamina' || definition.id === 'minimax') {
+      return { models: normalizeModels([...(definition.models ?? [])], providerId), source: 'local-manifest',
+        ...(definition.id === 'minimax' ? { warning: '当前仅展示内置候选模型，未验证 API Key 或各模型权限；请使用「验证连接」检查当前密钥。' } : {}) };
     }
     return { models: definition.id === 'grsai'
       ? mergeRemoteCatalogMetadata(normalizedFallback, [...GRSAI_ADDED_MODELS])

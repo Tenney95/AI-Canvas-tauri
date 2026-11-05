@@ -2217,16 +2217,22 @@ describe('critical canvas node interactions', () => {
   });
 
   it.each([
-    { catalogId: 'libapi', customized: false, adapted: true },
-    { catalogId: 'custom-openai', customized: false, adapted: false },
-    { catalogId: 'libapi', customized: true, adapted: false },
-  ])('音频模型切换仅清理真实 LibAPI 完整合同的不适用参数（$catalogId / 自定义协议 $customized）', async ({ catalogId, customized, adapted }) => {
-    const { LIBAPI_MODEL_MANIFEST } = await import('../../src/services/ai/providers/libapiModelManifest');
-    const selected = structuredClone(LIBAPI_MODEL_MANIFEST.find((model) => model.id === 'gm-3.1-flash-tts')!);
+    { catalogId: 'libapi', modelId: 'gm-3.1-flash-tts', customized: false, adapted: true },
+    { catalogId: 'custom-openai', modelId: 'gm-3.1-flash-tts', customized: false, adapted: false },
+    { catalogId: 'libapi', modelId: 'gm-3.1-flash-tts', customized: true, adapted: false },
+    { catalogId: 'minimax', modelId: 'speech-2.8-hd', customized: false, adapted: true },
+    { catalogId: 'minimax', modelId: 'speech-2.8-turbo', customized: false, adapted: true },
+    { catalogId: 'custom-openai', modelId: 'speech-2.8-hd', customized: false, adapted: false },
+    { catalogId: 'minimax', modelId: 'speech-2.8-hd', customized: true, adapted: false },
+  ])('音频模型切换按真实合同清理参数并保留兼容的声音、格式和语速（$modelId / $catalogId / 自定义 $customized）', async ({ catalogId, modelId, customized, adapted }) => {
+    const { getProviderDefinition } = await import('../../src/services/ai/providerCatalogService');
+    const usesVoiceId = modelId.startsWith('speech-');
+    const selected = structuredClone(getProviderDefinition(usesVoiceId ? 'minimax' : 'libapi')!.models!.find((model) => model.id === modelId)!);
     if (customized) selected.executionProfile!.protocol!.submit.path = '/custom/audio';
+    const voice = usesVoiceId ? 'male-qn-qingse' : 'alloy';
     const store = createStore([{
       id: 'speech-node', type: 'ai-audio', position: { x: 0, y: 0 }, data: { type: 'ai-audio', label: '配音', status: 'idle',
-        prompt: '你好', model: 'general/previous-audio', provider: 'general', audioVoice: 'alloy', audioFormat: 'wav', audioSpeed: 1,
+        prompt: '你好', model: 'general/previous-audio', provider: 'general', audioVoice: voice, audioFormat: 'wav', audioSpeed: 1,
         musicDuration: 60, musicBpm: 120, autoGenerateLyrics: true },
     }], () => 1);
     store.activeNodeId = 'speech-node';
@@ -2251,14 +2257,49 @@ describe('critical canvas node interactions', () => {
     });
     expect(store.nodes[0].data.audioFormat).toBe('wav');
     if (adapted) {
-      expect(store.nodes[0].data).toMatchObject({ audioVoice: undefined, audioSpeed: undefined,
+      expect(store.nodes[0].data).toMatchObject({ audioVoice: usesVoiceId ? voice : undefined, audioSpeed: usesVoiceId ? 1 : undefined,
         musicDuration: undefined, musicBpm: undefined, autoGenerateLyrics: undefined });
-      expect(panel().props.audioVoice).toBeUndefined();
-      expect(panel().props.audioSpeed).toBeUndefined();
+      expect(panel().props.audioVoice).toBe(usesVoiceId ? voice : undefined);
+      expect(panel().props.audioSpeed).toBe(usesVoiceId ? 1 : undefined);
     } else {
-      expect(store.nodes[0].data).toMatchObject({ audioVoice: 'alloy', audioSpeed: 1,
+      expect(store.nodes[0].data).toMatchObject({ audioVoice: voice, audioSpeed: 1,
         musicDuration: 60, musicBpm: 120, autoGenerateLyrics: true });
     }
+  });
+
+  describe('MiniMax 普通 TTS 的共享参数控件', () => {
+    afterEach(() => {
+      vi.doUnmock('../../src/components/nodes/shared/AudioParamSelector');
+      vi.doUnmock('../../src/components/nodes/shared/PromptPanel');
+    });
+
+    it.each(['minimax', 'custom-openai'])('PromptPanel 按真实 %s 连接传递声音与格式能力', async (catalogId) => {
+      const { resolveMinimaxExecutionProfile } = await import('../../src/services/ai/providers/minimaxModelManifest');
+      const store = Object.assign(createStore([], () => 1), {
+        userPresets: [], presetFolders: [], userSkills: [], agentPackageSkills: [],
+      });
+      store.config = { ...store.config,
+        providers: { minimax: { name: 'MiniMax 官方', catalogId, apiKey: 'fixture' } },
+        generalModels: [{ id: 'tts', name: 'Speech 2.8', modelId: 'speech-2.8-hd', category: 'audio', providerConfigId: 'minimax',
+          executionProfile: resolveMinimaxExecutionProfile('speech-2.8-hd') }],
+      };
+      await installReactHookDriver();
+      installStoreMock(store);
+      vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+      vi.doUnmock('../../src/components/nodes/shared/PromptPanel');
+      vi.doUnmock('../../src/components/nodes/shared/defaultModels');
+      vi.doMock('../../src/components/nodes/shared/AudioParamSelector', () => ({
+        default: function AudioParamSelectorMock() { return null; },
+      }));
+      const Panel = (await import('../../src/components/nodes/shared/PromptPanel')).default;
+      const tree = Panel({ nodeType: 'ai-audio', selectedModel: 'general/tts', selectedProvider: 'general', prompt: '你好',
+        onChange: vi.fn(), onSubmit: vi.fn(), onModelSelect: vi.fn() });
+      const params = findElement(tree, (element) => componentName(element) === 'AudioParamSelectorMock');
+      if (catalogId === 'minimax') {
+        expect(params.props.capability).toMatchObject({ kind: 'speech', voiceInput: 'id', defaultVoice: 'male-qn-qingse',
+          formats: ['mp3', 'wav', 'flac'], defaultFormat: 'mp3', speed: { min: 0.5, max: 2, default: 1 } });
+      } else expect(params.props.capability).toBeUndefined();
+    });
   });
 
   it.each([

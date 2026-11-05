@@ -38,7 +38,6 @@ import { getRunningHubModel } from '../../../services/ai/providers/runninghubMod
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
 import AudioParamSelector from './AudioParamSelector';
-import { getLibapiAudioCapability, usesLibapiModelProtocol } from '../../../services/ai/providers/libapiModelManifest';
 import CharacterVoiceSelector, { type CharacterVoiceChoice } from './CharacterVoiceSelector';
 import { collectAudioSpeechReferences, resolveAudioSpeechWorkflow } from '../../../services/ai/audioSpeechSettings';
 import { listGlobalDramaAssets, resolveDramaVoiceRef } from '../../../services/dramaAssetPrompt';
@@ -55,7 +54,7 @@ import type { AudioGenerationPurpose } from '../../../types/media';
 import { useT } from '../../../i18n';
 import CloudWorkflowParamSelector from './CloudWorkflowParamSelector';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../../services/ai/dreaminaModels';
-import { resolveImageParameterCapability } from '../../../services/ai/mediaModelCapabilities';
+import { resolveAudioParameterCapability, resolveImageParameterCapability } from '../../../services/ai/mediaModelCapabilities';
 import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
 import { getPromptSubmitShortcutHint, normalizePromptSubmitShortcut } from '../../../utils/promptSubmitShortcut';
 
@@ -610,11 +609,9 @@ export default function PromptPanel({
     : undefined;
   const imageConnectionId = imageGeneralModel?.providerConfigId ?? selectedProvider;
   const imageConnection = imageConnectionId ? imageModelConfig.providers[imageConnectionId] : undefined;
-  const audioCapability = useMemo(() => nodeType === 'ai-audio' && !selectedWorkflowId && imageGeneralModel?.category === 'audio'
-    && imageConnection && getProviderDefinition(imageGeneralModel.providerConfigId, imageConnection)?.id === 'libapi'
-    && usesLibapiModelProtocol(imageGeneralModel.modelId, imageGeneralModel.executionProfile)
-    ? getLibapiAudioCapability(imageGeneralModel.modelId) : undefined,
-  [nodeType, selectedWorkflowId, imageGeneralModel, imageConnection]);
+  const audioCapability = useMemo(() => nodeType === 'ai-audio' && !selectedWorkflowId
+    ? resolveAudioParameterCapability(selectedModel, selectedProvider, imageModelConfig) : undefined,
+  [nodeType, selectedWorkflowId, selectedModel, selectedProvider, imageModelConfig]);
   const imageModelId = imageGeneralModel?.modelId
     ?? (imageConnectionId && selectedModel?.startsWith(`${imageConnectionId}/`)
       ? selectedModel.slice(imageConnectionId.length + 1) : selectedModel);

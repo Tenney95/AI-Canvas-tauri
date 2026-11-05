@@ -34,6 +34,10 @@ import {
 import { pollTask, PollTimeoutError, PollTaskFailedError } from '../../src/services/pollTask';
 import { useAppStore } from '../../src/store/useAppStore';
 import { HttpResponseError } from '../../src/services/ai/httpUtils';
+import { createH3QuickAdaptTemplate } from '../../src/services/ai/h3ModelCapabilities';
+import { resolveModelExecutionProfile } from '../../src/services/ai/modelProtocol';
+import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
+import type { ResolvedModelProtocolPoll } from '../../src/types/aiTypes';
 import * as fileService from '../../src/services/fileService';
 import * as comfyPolling from '../../src/services/comfyPolling';
 import * as tauriCore from '@tauri-apps/api/core';
@@ -50,6 +54,24 @@ beforeEach(async () => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'project-1' });
 });
+
+function saveMinimaxRecoveryTask(overrides: Partial<ResolvedModelProtocolPoll> = {}) {
+  const baseUrl = 'https://api.minimax.cn';
+  const taskId = 'original-minimax-task';
+  const profile = createH3QuickAdaptTemplate('h3-standard', 'minimax').executionProfile;
+  const protocol = resolveModelExecutionProfile(profile)!;
+  const protocolPoll = { ...resolvePoll(baseUrl, protocol.poll!, protocol.auth, { submit: { task_id: taskId } }),
+    intervalMs: 1, retry: { maxRetries: 0 }, ...overrides };
+  useAppStore.setState((state) => ({ nodes: [{ id: 'minimax-recovery', type: 'ai-video', position: { x: 0, y: 0 },
+    data: { type: 'ai-video', label: 'MiniMax 视频', status: 'idle' } }], config: { ...state.config, providers: {
+    // 原任务的查询身份不随用户后来改名、切换厂商类型或修改模型协议而改变。
+    'original-minimax': { name: '已改名的连接', catalogId: 'custom-openai', baseUrl, apiKey: 'rotated-original-key' },
+    'other-minimax': { name: 'MiniMax', catalogId: 'minimax', baseUrl, apiKey: 'other-key' },
+  } } }));
+  return savePendingTask({ nodeId: 'minimax-recovery', projectId: 'project-1', nodeType: 'ai-video', provider: 'general',
+    providerConfigId: 'original-minimax', taskType: 'custom-protocol', submitted: true, taskId, protocolPoll,
+    mediaDownloadAccess: { providerConfigId: 'original-minimax', origin: baseUrl, auth: { type: 'bearer' } } });
+}
 
 describe('polling runtime hot reload identity', () => {
   it('ComfyUI 提交未知跨重启保留防重，只有明确确认才能解除', async () => {
@@ -771,6 +793,69 @@ describe('pending generation task recovery', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
     expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
+  it.each([1004, 1000])('keeps the original MiniMax task on business query error %i and resumes without submitting again', async (code) => {
+    const receipt = saveMinimaxRecoveryTask();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ base_resp: { status_code: code, status_msg: 'private-query-detail' },
+        task: { status: 'succeeded', content: { url: 'https://cdn.example/unconfirmed.mp4' } } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ base_resp: { status_code: 0, status_msg: 'success' },
+        task: { status: 'succeeded', content: { url: 'https://cdn.example/original.mp4' } } })));
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData')
+      .mockResolvedValue({ mediaUrl: 'asset://minimax-video.mp4', sourceUrl: 'https://cdn.example/original.mp4' });
+
+    await resumeMediaNodeTask(receipt.nodeId);
+    expect(persist).not.toHaveBeenCalled();
+    expect(getMediaTaskReceipt(receipt.nodeId)).toEqual(receipt);
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ taskId: receipt.taskId, mediaRecoveryState: 'query_paused' });
+    expect(localStorage.getItem('ai_canvas_pending_tasks')).not.toContain('private-query-detail');
+
+    await resumeMediaNodeTask(receipt.nodeId);
+    expect(persist).toHaveBeenCalledOnce();
+    expect(persist.mock.calls[0][0]).toBe('https://cdn.example/original.mp4');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(url).toBe(`https://api.minimax.cn/v2/query/video_generation/${receipt.taskId}`);
+      expect(init).toMatchObject({ method: 'GET', headers: { Authorization: 'Bearer rotated-original-key' } });
+    }
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('other-key');
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: 'asset://minimax-video.mp4' });
+  });
+
+  it.each(['failed', 'cancelled'])('treats confirmed MiniMax task %s as terminal even with a nonzero business code', async (status) => {
+    const receipt = saveMinimaxRecoveryTask();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      base_resp: { status_code: 1004, status_msg: 'business rejection' },
+      task: { status, error: { message: 'original task failed' } },
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData');
+
+    await expect(resumeMediaNodeTask(receipt.nodeId)).rejects.toThrow('模型任务失败：original task failed');
+    expect(persist).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ status: 'error', error: '模型任务失败：original task failed' });
+  });
+
+  it('does not apply the MiniMax business validator to a customized saved query contract', async () => {
+    const receipt = saveMinimaxRecoveryTask({ resultUrlPath: 'custom.download' });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      base_resp: { status_code: 1004, status_msg: 'custom diagnostic' },
+      task: { status: 'succeeded' }, custom: { download: 'https://cdn.example/custom.mp4' },
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData')
+      .mockResolvedValue({ mediaUrl: 'asset://custom-video.mp4', sourceUrl: 'https://cdn.example/custom.mp4' });
+
+    await resumeMediaNodeTask(receipt.nodeId);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(persist.mock.calls[0][0]).toBe('https://cdn.example/custom.mp4');
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data.status).toBe('success');
   });
 
   it.each(['ai-image', 'ai-video'] as const)('continues saving returned synchronous %s URLs without a new submission or query', async (nodeType) => {

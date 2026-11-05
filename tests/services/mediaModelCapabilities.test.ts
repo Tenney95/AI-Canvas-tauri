@@ -3,11 +3,76 @@
  */
 import { describe, expect, it } from 'vitest';
 import { normalizeSeedreamSize } from '../../src/services/ai/helpers';
-import { buildImageCapabilityRequest, getImageCapability, resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
+import { buildImageCapabilityRequest, getImageCapability, resolveAudioParameterCapability, resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
 import { assertConfiguredImageReferences, assertImageModelCapability, assertModelCapabilityProtocol, resolveConfiguredImageParameters } from '../../src/services/ai/modelCapabilityValidation';
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
 import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
+import { resolveMinimaxExecutionProfile } from '../../src/services/ai/providers/minimaxModelManifest';
+import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import type { ProtocolJsonValue } from '../../src/types/aiTypes';
+
+describe('真实连接的音频参数能力', () => {
+  it.each(['speech-2.8-hd', 'speech-2.8-turbo'])('%s 的声音、格式与语速来自官方精确合同且不修改保存配置', (modelId) => {
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { official: { name: '自用 MiniMax', catalogId: 'minimax', apiKey: '' } },
+      generalModels: [{ id: 'tts', name: modelId, modelId, providerConfigId: 'official', category: 'audio',
+        executionProfile: resolveMinimaxExecutionProfile(modelId) }],
+    };
+    const saved = structuredClone(config);
+    expect(resolveAudioParameterCapability('general/tts', 'general', config)).toMatchObject({
+      kind: 'speech', voiceInput: 'id', defaultVoice: 'male-qn-qingse',
+      formats: ['mp3', 'wav', 'flac'], defaultFormat: 'mp3', supportsVoiceReference: false,
+      speed: { min: 0.5, max: 2, default: 1 },
+    });
+    delete config.generalModels![0].executionProfile;
+    expect(resolveAudioParameterCapability('general/tts', 'general', config)?.defaultVoice).toBe('male-qn-qingse');
+    expect(config.generalModels![0].executionProfile).toBeUndefined();
+    config.generalModels![0].executionProfile = saved.generalModels![0].executionProfile;
+    expect(config).toEqual(saved);
+  });
+
+  it('显式自定义连接即使命名为 minimax，也不继承同名语音的官方参数', () => {
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { minimax: { name: 'MiniMax 官方', catalogId: 'custom-openai', apiKey: '' } },
+      generalModels: [{ id: 'tts', name: 'Speech', modelId: 'speech-2.8-hd', category: 'audio', providerConfigId: 'minimax',
+        executionProfile: resolveMinimaxExecutionProfile('speech-2.8-hd') }],
+    };
+    expect(resolveAudioParameterCapability('general/tts', 'general', config)).toBeUndefined();
+  });
+
+  it('未知型号、非音频模型和修改过的官方协议不获得内置音频能力', () => {
+    const profile = resolveMinimaxExecutionProfile('speech-2.8-hd')!;
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { official: { name: 'MiniMax', catalogId: 'minimax', apiKey: '' } },
+      generalModels: [{ id: 'tts', name: 'Speech', modelId: 'speech-2.8-hd', category: 'audio', providerConfigId: 'official',
+        executionProfile: profile }],
+    };
+    const selected = config.generalModels![0];
+    selected.executionProfile!.protocol!.submit.path = '/custom/speech';
+    expect(resolveAudioParameterCapability('general/tts', 'general', config)).toBeUndefined();
+    selected.executionProfile = undefined;
+    selected.modelId = 'speech-unpublished';
+    expect(resolveAudioParameterCapability('general/tts', 'general', config)).toBeUndefined();
+    selected.modelId = 'speech-2.8-hd';
+    selected.category = 'text';
+    expect(resolveAudioParameterCapability('general/tts', 'general', config)).toBeUndefined();
+    expect(resolveAudioParameterCapability('general/missing', 'general', config)).toBeUndefined();
+  });
+
+  it('LibAPI 语音与音乐继续只在完整内置协议下获得能力', () => {
+    const speech = LIBAPI_MODEL_MANIFEST.find((model) => model.id === 'gm-3.1-flash-tts')!;
+    const music = LIBAPI_MODEL_MANIFEST.find((model) => model.id === 'music')!;
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { library: { name: 'LibAPI', catalogId: 'libapi', apiKey: '' } },
+      generalModels: [speech, music].map((model) => ({ id: model.id, modelId: model.id, name: model.name,
+        providerConfigId: 'library', category: 'audio', executionProfile: structuredClone(model.executionProfile) })),
+    };
+    expect(resolveAudioParameterCapability(`general/${speech.id}`, 'general', config)).toMatchObject({ kind: 'speech', voiceInput: 'select' });
+    expect(resolveAudioParameterCapability(`general/${music.id}`, 'general', config)?.kind).toBe('music');
+    delete config.generalModels![0].executionProfile;
+    expect(resolveAudioParameterCapability(`general/${speech.id}`, 'general', config)).toBeUndefined();
+  });
+});
 
 describe('RelayOnAPI 旧图片参数能力', () => {
   function legacyModel(modelId: string) {

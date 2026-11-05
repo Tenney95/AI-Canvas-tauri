@@ -50,9 +50,8 @@ import {
   buildAnimationSpritePrompt,
   resolveAnimationSheetAspectRatio,
 } from '../../services/ai/animationPrompt';
-import { resolveImageParameterCapability } from '../../services/ai/mediaModelCapabilities';
+import { resolveAudioParameterCapability, resolveImageParameterCapability } from '../../services/ai/mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../services/ai/dreaminaModels';
-import { getLibapiAudioCapability, usesLibapiModelProtocol } from '../../services/ai/providers/libapiModelManifest';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from '../../services/ai/modelCapabilityValidation';
 import { applyGenerationCameraPrompt } from '../../services/shotlistPromptService';
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
@@ -970,13 +969,8 @@ function AINodeDialog() {
       const imageRatio = currentRatio && imageRatios?.length
         && !imageRatios.some((ratio) => ratio.toLowerCase() === currentRatio.toLowerCase())
         ? fallbackRatio === 'auto' ? '自适应' : fallbackRatio : current.aspectRatio;
-      const audioModel = nodeType === 'ai-audio' && model.provider === 'general'
-        ? state.config.generalModels?.find((item) => item.id === model.value.replace(/^general\//, '')) : undefined;
-      const audioConnection = audioModel ? state.config.providers[audioModel.providerConfigId] : undefined;
-      const audioCapability = audioModel?.category === 'audio' && audioConnection
-        && (audioConnection.catalogId || audioModel.providerConfigId) === 'libapi'
-        && usesLibapiModelProtocol(audioModel.modelId, audioModel.executionProfile)
-        ? getLibapiAudioCapability(audioModel.modelId) : undefined;
+      const audioCapability = nodeType === 'ai-audio'
+        ? resolveAudioParameterCapability(model.value, model.provider, state.config) : undefined;
       const currentSpeed = current.audioSpeed;
       const validSpeed = audioCapability?.speed && typeof currentSpeed === 'number'
         && currentSpeed >= audioCapability.speed.min && currentSpeed <= audioCapability.speed.max
@@ -1003,7 +997,8 @@ function AINodeDialog() {
             ...(getImageNodeDimensionsForAspectRatio(imageRatio) ?? {}) } : {}),
         } : {}),
         ...(modelChanged && audioCapability ? {
-          audioVoice: audioCapability.kind === 'speech' && audioCapability.voices?.includes(current.audioVoice ?? '')
+          audioVoice: audioCapability.kind === 'speech' && (audioCapability.voiceInput === 'id'
+            ? !!current.audioVoice?.trim() : audioCapability.voices?.includes(current.audioVoice ?? ''))
             ? current.audioVoice : undefined,
           audioFormat: current.audioFormat && audioCapability.formats?.includes(current.audioFormat) ? current.audioFormat : undefined,
           audioSpeed: validSpeed ? currentSpeed : undefined,

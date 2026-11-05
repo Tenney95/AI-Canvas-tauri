@@ -11,7 +11,7 @@ import {
   resolveProviderImageModelForValidation,
 } from '../../src/services/ai/providerCatalogService';
 import { SORA2U_MODEL_MANIFEST } from '../../src/services/ai/providers/sora2uModelManifest';
-import { defaultModelGroups, getConfiguredModelGroups, getMediaModelOptions } from '../../src/components/nodes/shared/defaultModels';
+import { defaultModelGroups, getConfiguredModelGroups, getGeneralModelGroups, getMediaModelOptions } from '../../src/components/nodes/shared/defaultModels';
 import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabilityValidation';
 import { parseConnectionShare, serializeConnection } from '../../src/services/ai/providerConnectionTransfer';
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
@@ -32,6 +32,44 @@ function jsonResponse(body: unknown): Response {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+describe('MiniMax 官方本地候选目录', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('新建无 Key 时列出六个候选，刷新不调用假设的 models 接口或声称远端验证成功', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const definition = getProviderDefinition('minimax')!;
+    expect(definition).toMatchObject({ name: 'MiniMax 官方', catalogAdapter: 'local-manifest',
+      defaultBaseUrl: 'https://api.minimax.cn', allowCustomBaseUrl: true });
+    expect(definition.policy.catalog.connectionTest).toBe('default');
+    const result = await fetchProviderModelCatalog({ providerId: 'minimax-international',
+      config: { name: 'MiniMax 国际', catalogId: 'minimax', apiKey: '', baseUrl: 'https://api.minimax.io' },
+      fallbackModels: [{ id: 'old-stale', name: 'Old', category: 'video', provider: 'minimax-international' }],
+    });
+    expect(result.source).toBe('local-manifest');
+    expect(result.warning).toContain('未验证 API Key');
+    expect(result.models).toHaveLength(6);
+    expect(result.models.every((model) => model.provider === 'minimax-international')).toBe(true);
+    expect(result.models.map((model) => model.id)).toContain('speech-2.8-hd');
+    expect(result.models.some((model) => model.id === 'old-stale')).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('已保存连接及菜单保留各自身份，显式同名自定义连接不借用官方合同', () => {
+    const definition = getProviderDefinition('minimax')!;
+    const selected = definition.models!.filter((item) => item.id === 'MiniMax-H3');
+    const config: AppConfig = { theme: 'dark', providers: {
+      domestic: { name: '国内', catalogId: 'minimax', apiKey: 'domestic-fixture', selectedModels: [...selected] },
+      international: { name: '国际', catalogId: 'minimax', apiKey: 'international-fixture', baseUrl: 'https://api.minimax.io', selectedModels: [...selected] },
+    } };
+    const models = ['domestic', 'international'].map((id) => ({ id, name: 'H3', category: 'video' as const,
+      modelId: 'MiniMax-H3', providerConfigId: id }));
+    const groups = getGeneralModelGroups(models, config, 'ai-video');
+    expect(groups.map((group) => group.id)).toEqual(['general-provider-domestic', 'general-provider-international']);
+    expect(getProviderDefinition('minimax', { catalogId: 'custom-openai' })!.models).toBeUndefined();
+  });
+});
 
 describe('厂商定义与接线策略', () => {
   it('目录沿用单一策略实例，连接类型不由显示名或同名 ID 覆盖', () => {

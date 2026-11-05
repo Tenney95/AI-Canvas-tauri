@@ -563,6 +563,36 @@ describe('LibAPI 独立模型分组', () => {
   });
 });
 
+describe('MiniMax 官方语音模型菜单', () => {
+  it('两个官方语音候选勾选后进入独立音频分组，显式自定义同名连接与修改协议不冒充官方用途', () => {
+    const candidates = getProviderDefinition('minimax')!.models!.filter((model) => model.category === 'audio');
+    expect(candidates.map((model) => model.id).sort()).toEqual(['speech-2.8-hd', 'speech-2.8-turbo']);
+    const customized = structuredClone(candidates[0].executionProfile!);
+    customized.protocol!.submit.path = '/custom/tts';
+    const config: AppConfig = { theme: 'dark', providers: {
+      official: { name: '我的 MiniMax', catalogId: 'minimax', apiKey: 'fixture', selectedModels: candidates },
+      minimax: { name: 'MiniMax 官方', catalogId: 'custom-openai', apiKey: 'fixture' },
+    } };
+    expect(getMediaModelOptions([], config)).toEqual([]);
+    const models = [
+      ...candidates.map((model) => ({ id: model.id, name: model.name, modelId: model.id,
+        category: 'audio' as const, providerConfigId: 'official', executionProfile: model.executionProfile })),
+      { id: 'custom', name: 'Custom', modelId: candidates[0].id, category: 'audio' as const,
+        providerConfigId: 'minimax', executionProfile: candidates[0].executionProfile },
+      { id: 'changed', name: 'Changed', modelId: candidates[0].id, category: 'audio' as const,
+        providerConfigId: 'official', executionProfile: customized },
+    ];
+    const options = getMediaModelOptions(models, config);
+    for (const candidate of candidates) {
+      expect(options.find((model) => model.value === `general/${candidate.id}`))
+        .toMatchObject({ provider: 'general', mediaKind: 'audio', audioPurpose: 'speech', groupId: 'general-provider-official' });
+    }
+    expect(options.find((model) => model.value === 'general/custom')?.audioPurpose).toBeUndefined();
+    expect(options.find((model) => model.value === 'general/changed')?.audioPurpose).toBeUndefined();
+    expect(getGeneralModelGroups(models, config, 'ai-image')).toEqual([]);
+  });
+});
+
 describe('RelayOnAPI 模型分组', () => {
   const textIds = ['gemini-3.8-flash', 'gemini-4-argon', 'gpt-6.1-sol', 'claude-opus-5-5'];
   const selectedModels = (): ProviderModelSelection[] => getProviderDefinition('relayonapi')!.models!

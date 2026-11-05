@@ -8,6 +8,7 @@ import { getProviderDefinition } from './ai/providerCatalogService';
 import { baseUrlCandidates, normalizeBaseUrl } from './ai/providerBaseUrl';
 import { getChatApiHeaders, resolveChatApiProtocol } from './ai/chatApiProtocol';
 import { invoke } from '@tauri-apps/api/core';
+import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
 
 export interface TestResult {
   success: boolean;
@@ -265,6 +266,30 @@ async function testGRSAI(): Promise<TestResult> {
   };
 }
 
+/** 官方系统音色目录只验证当前 Key，不生成媒体、不声称覆盖所有模型权限。 */
+async function testMinimax(apiKey: string, baseUrl?: string): Promise<TestResult> {
+  const origin = resolveMinimaxBaseUrl(baseUrl);
+  if (!apiKey.trim()) return { success: false, error: '请先填写 API 密钥' };
+  let response: Response;
+  try {
+    response = await corsSafeFetch(`${origin}/v1/get_voice`, {
+      method: 'POST', headers: { Authorization: `Bearer ${apiKey.trim()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice_type: 'system' }),
+    });
+  } catch { return { success: false, error: 'MiniMax 音色目录网络请求失败，请检查当前官方站点与网络' }; }
+  if (!response.ok) return { success: false, error: `MiniMax 音色目录验证失败（HTTP ${response.status}）` };
+  const payload: unknown = await response.json().catch(() => null);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { success: false, error: 'MiniMax 音色目录响应格式无效' };
+  const record = payload as Record<string, unknown>;
+  try { assertMinimaxResponse(payload); }
+  catch (error) { return { success: false, error: error instanceof Error ? error.message : 'MiniMax 音色目录验证失败' }; }
+  const business = record.base_resp as Record<string, unknown> | undefined;
+  if (business?.status_code !== 0 || !Array.isArray(record.system_voice)) {
+    return { success: false, error: 'MiniMax 音色目录缺少成功状态或系统音色列表' };
+  }
+  return { success: true, baseUrl: origin };
+}
+
 async function testWebSearch(
   provider: WebSearchProviderId,
   apiKey: string,
@@ -290,6 +315,7 @@ export type ProviderTestKey =
   | 'runninghub-model'
   | 'runninghub'
   | 'grsai'
+  | 'minimax'
   | WebSearchProviderId;
 
 const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Promise<TestResult>> = {
@@ -298,6 +324,7 @@ const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Pro
   'runninghub-model': testRunninghubModel,
   runninghub: testRunninghubModel,
   grsai: testGRSAI,
+  minimax: testMinimax,
   tavily: (apiKey) => testWebSearch('tavily', apiKey),
   bocha: (apiKey) => testWebSearch('bocha', apiKey),
   'zhipu-search': (apiKey) => testWebSearch('zhipu-search', apiKey),

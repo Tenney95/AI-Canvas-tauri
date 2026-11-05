@@ -15,6 +15,48 @@ beforeEach(() => {
   transportMocks.corsSafeFetch.mockReset();
 });
 
+describe('MiniMax 官方无生成验证', () => {
+  it.each(['https://api.minimax.cn', 'https://api.minimax.io/v1/'])('只向当前官方连接查询系统音色：%s', async (baseUrl) => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(Response.json({ base_resp: { status_code: 0 }, system_voice: [] }));
+    await expect(testProviderConnection('minimax', ' minimax-fixture ', baseUrl))
+      .resolves.toEqual({ success: true, baseUrl: new URL(baseUrl).origin });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledExactlyOnceWith(`${new URL(baseUrl).origin}/v1/get_voice`, {
+      method: 'POST', headers: { Authorization: 'Bearer minimax-fixture', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice_type: 'system' }),
+    });
+  });
+
+  it.each([
+    { base_resp: { status_code: 1004, status_msg: 'private-fixture' }, system_voice: [] },
+    { base_resp: { status_code: 0 } }, { system_voice: [] }, { base_resp: { status_code: 0 }, system_voice: 'not-an-array' },
+  ])('业务拒绝或缺少正式数组不能因 HTTP200 或本地目录而宣称成功', async (payload) => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(Response.json(payload));
+    const result = await testProviderConnection('minimax', 'minimax-fixture');
+    expect(result.success).toBe(false);
+    expect(result.error).not.toContain('private-fixture');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+  });
+
+  it('Key 或站点无效时不发送请求，网络异常不回显凭据', async () => {
+    await expect(testProviderConnection('minimax', '   ')).resolves.toMatchObject({ success: false });
+    await expect(testProviderConnection('minimax', 'minimax-fixture', 'https://another.example'))
+      .resolves.toMatchObject({ success: false });
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    transportMocks.corsSafeFetch.mockRejectedValueOnce(new Error('minimax-fixture https://secret.example/raw'));
+    const result = await testProviderConnection('minimax', 'minimax-fixture');
+    expect(result.success).toBe(false);
+    expect(result.error).not.toContain('minimax-fixture');
+    expect(result.error).not.toContain('secret.example');
+  });
+
+  it('HTTP401不切换国家站点或改发目录请求，也不猜测余额接口', async () => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response('{}', { status: 401 }));
+    await expect(testProviderConnection('minimax', 'fixture', 'https://api.minimax.io')).resolves.toMatchObject({ success: false, error: expect.stringContaining('401') });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    expect(supportsProviderBalance('minimax')).toBe(false);
+  });
+});
+
 describe('独立剩余额度查询', () => {
   it.each([
     ['apimart', 'https://api.apib.ai/v1', 66.6104, '66.6104'],

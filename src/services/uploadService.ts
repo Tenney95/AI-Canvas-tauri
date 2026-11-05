@@ -6,6 +6,7 @@
  *  - provider === 'apimart' → APIMart /uploads/images（需 API Key）
  *  - ToAPIs 连接 → 当前站点 /uploads/{images,videos,audios}（仅使用该连接 Key）
  *  - LibAPI 连接 → /v1/files（仅使用该连接 Key）
+ *  - MiniMax 官方连接 → /v1/files/upload（返回当前连接的 mm_file 素材引用）
  *  - 其他 provider → uguu.se 免费图床（无需 API Key，直接返回无轮询）
  *
  * 缓存策略：
@@ -32,6 +33,7 @@ import { corsSafeFetch } from './ai/httpTransport';
 import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolicies';
 import { sha256BytesHex } from './mediaDataUrl';
 import { redactModelProtocolError, redactModelProtocolErrorText } from './ai/modelProtocolHttp';
+import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
 import type { ApiProviderConfig } from '../types';
 
 const DEFAULT_UPLOAD_BASE = APIMART_BASE_URL;
@@ -591,6 +593,73 @@ async function uploadToLibapi(url: string, connection: UploadConnection, kind: M
   return result.url;
 }
 
+/** 官方文件 ID 为 int64；在 JSON 数值转为 Number 前保留其原始十进制值。 */
+async function readMinimaxUploadResponse(response: Response, signal?: AbortSignal): Promise<unknown> {
+  const limit = 16 * 1024;
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('MiniMax 上传响应为空');
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let text = '';
+  let bytes = 0;
+  try {
+    while (true) {
+      signal?.throwIfAborted();
+      const chunk = await reader.read();
+      signal?.throwIfAborted();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > limit) throw new Error('MiniMax 上传响应超过大小限制');
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    // 只改完整的十进制 JSON token，不处理小数、指数或引号内的文本。
+    return JSON.parse(text.replace(/("file_id"\s*:\s*)(\d+)(?=\s*[,}])/g, '$1"$2"')) as unknown;
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    signal?.throwIfAborted();
+    if (error instanceof SyntaxError || error instanceof TypeError) throw new Error('MiniMax 上传返回了无效 JSON');
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    reader.releaseLock();
+  }
+}
+
+/** 官方素材直传失败不回退公共图床；私有引用只交付给本次连接的 H3 请求。 */
+async function uploadToMinimax(url: string, connection: UploadConnection, kind: MediaDataUrlKind, signal?: AbortSignal, source?: UploadIdentity['source']): Promise<string> {
+  const apiKey = connection.apiKey?.trim();
+  if (!apiKey) throw new Error('MiniMax 素材上传失败：请在「设置 → API Key → MiniMax 官方」填写当前连接的 Key');
+  const baseUrl = resolveMinimaxBaseUrl(connection.baseUrl);
+  const { blob, ext } = await urlToBlob(url, kind, undefined, signal, source);
+  const limitMb = kind === 'image' ? 30 : kind === 'video' ? 50 : kind === 'audio' ? 15 : 0;
+  if (!limitMb) throw new Error('MiniMax 官方上传仅支持图片、视频或音频参考');
+  if (!blob.size || blob.size > limitMb * 1024 * 1024) throw new Error(`MiniMax ${mediaKindLabel(kind)}必须为非空文件，单个文件不能超过 ${limitMb} MB`);
+  const mimeExtension = ext.toLowerCase().split(';')[0];
+  const pathExtension = localMediaUrlToPath(url)?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  const extension = mimeExtension === 'octet-stream' && pathExtension ? pathExtension : mimeExtension;
+  const aliases: Record<string, string> = { jpeg: 'jpg', quicktime: 'mov', mpeg: 'mp3', 'x-wav': 'wav', wave: 'wav', 'vnd.wave': 'wav' };
+  const filenameExt = aliases[extension] ?? extension;
+  const allowed = kind === 'image' ? ['jpg', 'png', 'webp', 'heic', 'heif'] : kind === 'video' ? ['mp4', 'mov'] : ['mp3', 'wav'];
+  if (!allowed.includes(filenameExt)) throw new Error(`MiniMax ${mediaKindLabel(kind)}格式不支持，请改用${kind === 'image' ? ' JPG / PNG / WebP / HEIC / HEIF' : kind === 'video' ? ' MP4 / MOV' : ' MP3 / WAV'}`);
+  const form = new FormData();
+  form.append('purpose', 'video_generation_input');
+  form.append('file', blob, `reference.${filenameExt}`);
+  const response = await corsSafeFetch(`${baseUrl}/v1/files/upload`, {
+    method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal,
+  });
+  const payload = await readMinimaxUploadResponse(response, signal);
+  assertMinimaxResponse(payload);
+  if (!response.ok) throw new Error(`MiniMax ${mediaKindLabel(kind)}上传失败（HTTP ${response.status}），请核对当前连接与文件限制`);
+  const result = payload as { base_resp?: { status_code?: unknown }; file?: { file_id?: unknown } } | null;
+  const fileId = result?.file?.file_id;
+  if (result?.base_resp?.status_code !== 0 || typeof fileId !== 'string' || !/^[1-9]\d{0,19}$/.test(fileId)) {
+    throw new Error('MiniMax 上传未返回有效文件 ID，本次尚未提交生成请求');
+  }
+  return `mm_file://${fileId}`;
+}
+
 // ── APIMart 上传 ──
 
 async function uploadToApimart(url: string, apimartConfig: UploadConnection, signal?: AbortSignal, source?: UploadIdentity['source']): Promise<string> {
@@ -773,8 +842,8 @@ function setCachedUrl(key: string, remoteUrl: string) {
 /**
  * 上传单个本地文件到远端图床
  * @param url    本地文件 URL（data: / asset: / file:）
- * @param provider 连接身份；ToAPIs / LibAPI 的媒体走自己的上传接口，APIMart 图片走其图床，其余走 uguu.se
- * @returns 公网可访问的 URL
+ * @param provider 连接身份；MiniMax / ToAPIs / LibAPI 走当前连接上传，APIMart 图片走其图床，其余走 uguu.se
+ * @returns 公网 URL；MiniMax 官方返回仅供该连接生成请求使用的 mm_file 引用
  */
 export async function uploadToRemote(
   url: string,
@@ -819,6 +888,8 @@ export async function uploadToRemote(
       ? await uploadToToapis(url, connection, kind, operationSignal, identity.source)
       : upload === 'libapi'
       ? await uploadToLibapi(url, connection, kind, operationSignal, identity.source)
+      : upload === 'minimax'
+      ? await uploadToMinimax(url, connection, kind, operationSignal, identity.source)
       : provider === 'apimart' && kind === 'image'
       ? await uploadToApimart(url, connection, operationSignal, identity.source)
       : await uploadToUguu(url, kind, operationSignal, identity.source);
@@ -850,7 +921,7 @@ export async function uploadToRemote(
  *
  * 分发策略：
  *  - `dataUrl`   → 读取本地文件转 base64 data URL（general 通用协议等）
- *  - `publicUrl` → ToAPIs 走所选站点的上传接口；APIMart 图片走 /uploads/images，其他走 uguu.se
+ *  - `publicUrl` → 按当前连接上传；MiniMax 返回 mm_file，其他返回公网 URL
  *
  * @param url     原始 URL（公网原样返回；data: 按目标 mode 保留或上传）
  * @param options.provider 提供商标识，决定上传图床

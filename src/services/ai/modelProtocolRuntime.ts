@@ -33,6 +33,8 @@ import { assertModelProtocolResult } from './modelCapabilityValidation';
 import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol } from './providers/relayonModelManifest';
 import { createMediaDownloadAccess, sanitizeMediaResultUrls } from './mediaDownloadAccess';
+import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxMediaAccessHint, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
+import { ModelProtocolHttpError } from './modelProtocolHttp';
 
 interface RunConfiguredModelProtocolOptions {
   model: GeneralModelConfig;
@@ -375,6 +377,10 @@ export async function runConfiguredModelProtocol(
   const baseUrl = provider.baseUrl?.trim() || '';
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
   const catalogId = resolveProviderCatalogId(options.model.providerConfigId, provider);
+  const usesMinimaxProtocol = catalogId === 'minimax'
+    && usesMinimaxModelProtocol(options.model.modelId, options.model.executionProfile);
+  const validateResponse = usesMinimaxProtocol
+    ? (payload: unknown) => assertMinimaxResponse(payload, options.category === 'audio') : undefined;
   const mediaDownloadAccess = createMediaDownloadAccess(options.model.providerConfigId, baseUrl, protocol.auth);
   assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
 
@@ -388,12 +394,12 @@ export async function runConfiguredModelProtocol(
     : nodeSignal ?? options.signal;
   try {
     signal?.throwIfAborted();
-    const submitOptions = { apiKey: provider.apiKey || '', baseUrl, protocol, variables: options.variables, signal,
+    const submitOptions = { apiKey: provider.apiKey || '', baseUrl, protocol, variables: options.variables, signal, validateResponse,
       ...(getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
     };
     // 在记录“提交中”之前完成本地构建校验，避免将输入错误误称为提交状态未知。
     buildModelProtocolRequest(submitOptions);
-    if (protocol.mode === 'async' && options.nodeId && projectId) {
+    if ((protocol.mode === 'async' || usesMinimaxProtocol && options.category === 'audio') && options.nodeId && projectId) {
       receipt = savePendingTask({ nodeId: options.nodeId, projectId,
         nodeType: NODE_TYPE_BY_CATEGORY[options.category], provider: 'general', providerConfigId: options.model.providerConfigId,
         taskId: '', taskType: 'custom-protocol', submitted: false, videoGeneration,
@@ -429,6 +435,7 @@ export async function runConfiguredModelProtocol(
       provider.apiKey || '',
       signal,
       baseUrl,
+      validateResponse ? assertMinimaxQueryResponse : undefined,
     );
     assertModelProtocolResult(options.category, result);
     if (!result.urls) throw new Error('媒体模型任务完成但未返回结果 URL');
@@ -436,14 +443,18 @@ export async function runConfiguredModelProtocol(
     // 每类媒体都在本地保存和目标回填后确认，数组携带当次身份而非读取最新节点任务。
     return Object.assign(result.urls, { mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) });
   } catch (error) {
-    const rejected = !receipt?.taskId && getHttpResponseError(error)?.definitiveFailure === true;
-    if (receipt && !(error instanceof PollTaskFailedError) && !rejected) {
-      const paused = pauseMediaTask(receipt, error, !receipt.taskId ? 'submit_unknown'
-        : isPollTimeoutError(error) ? 'query_timeout' : 'query_interrupted');
+    const httpError = getHttpResponseError(error);
+    const hint = usesMinimaxProtocol && httpError ? getMinimaxMediaAccessHint(httpError.message) : undefined;
+    const failure = hint && httpError ? new ModelProtocolHttpError(httpError.status, hint,
+      httpError instanceof ModelProtocolHttpError ? httpError.retryAfterMs : undefined, httpError.definitiveFailure) : error;
+    const rejected = !receipt?.taskId && getHttpResponseError(failure)?.definitiveFailure === true;
+    if (receipt && !(failure instanceof PollTaskFailedError) && !rejected) {
+      const paused = pauseMediaTask(receipt, failure, !receipt.taskId ? 'submit_unknown'
+        : isPollTimeoutError(failure) ? 'query_timeout' : 'query_interrupted');
       if (paused) throw paused;
     }
-    if (receipt && (error instanceof PollTaskFailedError || rejected)) removeFailedMediaTask(receipt);
-    throw error;
+    if (receipt && (failure instanceof PollTaskFailedError || rejected)) removeFailedMediaTask(receipt);
+    throw failure;
   } finally {
     if (options.nodeId) cleanupNodePolling(options.nodeId, nodeSignal);
     releaseOperation?.();

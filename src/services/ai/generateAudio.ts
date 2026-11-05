@@ -38,6 +38,7 @@ import { createMediaDownloadAccess } from './mediaDownloadAccess';
 import { mediaProviderRegistry } from './mediaProviderRegistry';
 import { mapAudioParameters } from './audioParameterMappings';
 import { libapiAudioVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
+import { minimaxAudioVariables, resolveMinimaxBaseUrl, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 
 export interface PersistedAudioGenerationResult {
   mediaUrl: string;
@@ -220,19 +221,23 @@ export async function generateAudio(
 
   // ── 通用模型音频生成 ──
   if (provider === 'general') {
-    const gm = resolveGeneralModel(model);
+    let gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
     const connection = resolveGeneralModelConnection(model);
     if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
     if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    const catalogId = connection.definition?.id ?? resolveProviderCatalogId(connection.providerConfigId, connection.provider);
+    if (catalogId === 'minimax') gm = { ...gm, executionProfile: resolveMinimaxExecutionProfile(gm.modelId, gm.executionProfile) };
     if (gm.executionProfile) {
-      const catalogId = connection.definition?.id ?? resolveProviderCatalogId(connection.providerConfigId, connection.provider);
       const isLibapi = catalogId === 'libapi';
       const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(gm.modelId, gm.executionProfile);
-      if (usesLibapiProtocol) {
+      const usesMinimaxProtocol = catalogId === 'minimax' && usesMinimaxModelProtocol(gm.modelId, gm.executionProfile);
+      if (usesMinimaxProtocol) resolveMinimaxBaseUrl(connection.baseUrl);
+      if (usesLibapiProtocol || usesMinimaxProtocol) {
         // 旧语音收集器只收视频／音频节点；完整解析还覆盖无连线图片、资产及角色素材引用。
         const hasReferences = references.length || (await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true })).references.length;
         if (hasReferences) {
+          if (usesMinimaxProtocol) throw new Error('MiniMax 当前语音合成不接收参考素材；请填写已有音色 ID，声音克隆需先在官方平台完成。本次尚未提交生成请求');
           throw new Error('LibAPI 当前语音与音乐生成不接受参考素材；声音克隆需先在平台创建音色 ID，再填写到语音参数。本次尚未提交生成请求');
         }
       }
@@ -253,7 +258,8 @@ export async function generateAudio(
         n: 1,
         batchCount: 1,
       };
-      const effectiveVariables = usesLibapiProtocol ? libapiAudioVariables(gm.modelId, variables) : variables;
+      const effectiveVariables = usesLibapiProtocol ? libapiAudioVariables(gm.modelId, variables)
+        : usesMinimaxProtocol ? minimaxAudioVariables(gm.modelId, variables) : variables;
       const protocolAudioUrls = await resolveGeneralAudioReferenceUrls(references, signal);
       const urls = await runConfiguredModelProtocol({
         model: gm,

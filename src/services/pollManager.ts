@@ -21,6 +21,7 @@ import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorization
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from './canvasDerivationGuard';
 import { pollResolvedModelProtocol } from './ai/modelProtocol';
+import { assertMinimaxQueryResponse, usesMinimaxResolvedVideoPoll } from './ai/providers/minimaxModelManifest';
 import { assertModelProtocolResult, isSafeMediaParameterText, MEDIA_PARAMETER_TEXT_FIELDS } from './ai/modelCapabilityValidation';
 import {
   extractFlowMusicLyrics,
@@ -1709,6 +1710,9 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
     const settled = await settleMediaTaskQueries(polls.map((poll) => (querySignal: AbortSignal) => pollResolvedModelProtocol(
       { ...poll, maxDurationMs: poll.maxDurationMs ?? MEDIA_POLL_MAX_DURATION_MS },
       providerConfig.apiKey || '', querySignal, providerConfig.baseUrl,
+      // 原任务只按已保存的查询合同识别，不借用连接现在的模型或自定义协议。
+      usesMinimaxResolvedVideoPoll(poll, task.taskId, task.mediaDownloadAccess?.origin)
+        ? assertMinimaxQueryResponse : undefined,
     )), signal);
     const uncertain = settled.find((result) => result.status === 'rejected' && !(result.reason instanceof PollTaskFailedError));
     if (uncertain?.status === 'rejected') throw uncertain.reason;

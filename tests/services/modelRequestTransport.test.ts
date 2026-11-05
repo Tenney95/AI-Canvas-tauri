@@ -29,6 +29,7 @@ import { uploadToRemote } from '../../src/services/uploadService';
 import { clearProjectTasks, getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
+import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../src/services/ai/providers/minimaxModelManifest';
 import { pollResolvedModelProtocol } from '../../src/services/ai/modelProtocol';
 import { executeRunningHubModel } from '../../src/services/ai/providers/runninghubMedia';
 import type { ModelExecutionProfile } from '../../src/types/aiTypes';
@@ -47,6 +48,166 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('MiniMax 官方素材直传与语音交付', () => {
+  function configureMinimax(id = 'speech-2.8-hd') {
+    const selected = structuredClone(MINIMAX_MODEL_MANIFEST.find((item) => item.id === id)!);
+    clearProjectTasks('minimax-audio-project');
+    useAppStore.getState().saveProviderConfig('my-minimax', {
+      name: '自己的 MiniMax', catalogId: 'minimax', apiKey: 'minimax-current-fixture',
+      baseUrl: MINIMAX_BASE_URL, selectedModels: [selected],
+    });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'my-minimax')!;
+    const nodeType = selected.category === 'video' ? 'ai-video' as const : 'ai-audio' as const;
+    useAppStore.setState({ currentProjectId: 'minimax-audio-project', nodes: [{ id: 'minimax-audio-node', type: nodeType,
+      position: { x: 0, y: 0 }, data: { type: nodeType, label: '官方媒体', status: 'loading' } }] });
+    return { provider: 'general', model: `general/${model.id}`, nodeId: 'minimax-audio-node', prompt: '欢迎来到创作画布' };
+  }
+
+  it.each([
+    { kind: 'image' as const, mime: 'image/png', extension: 'png' },
+    { kind: 'video' as const, mime: 'video/quicktime', extension: 'mov' },
+    { kind: 'audio' as const, mime: 'audio/mpeg', extension: 'mp3' },
+  ])('$kind 直传原连接，精确保留超过 JS 安全整数的 file_id', async ({ kind, mime, extension }) => {
+    configureMinimax();
+    const directFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('不应调用公共图床'));
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(
+      '{"file":{"file_id":9223372036854775806},"base_resp":{"status_code":0,"status_msg":"success"}}',
+    ));
+    await expect(uploadToRemote(`data:${mime};base64,YWJj`, 'my-minimax', kind))
+      .resolves.toBe('mm_file://9223372036854775806');
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe(`${MINIMAX_BASE_URL}/v1/files/upload`);
+    expect(init.headers).toEqual({ Authorization: 'Bearer minimax-current-fixture' });
+    expect(init.body).toBeInstanceOf(FormData);
+    const body = init.body as FormData;
+    expect(body.get('purpose')).toBe('video_generation_input');
+    expect((body.get('file') as File).name).toBe(`reference.${extension}`);
+    expect(directFetch).not.toHaveBeenCalled();
+  });
+
+  it('同素材仅复用同连接同 Key 同站点缓存，换 Key 或国际站重新上传', async () => {
+    configureMinimax();
+    const source = 'data:audio/mpeg;base64,Y2FjaGU=';
+    for (const fileId of ['101', '102', '103']) transportMocks.corsSafeFetch.mockResolvedValueOnce(
+      jsonResponse({ file: { file_id: fileId }, base_resp: { status_code: 0 } }),
+    );
+    await expect(uploadToRemote(source, 'my-minimax', 'audio')).resolves.toBe('mm_file://101');
+    await expect(uploadToRemote(source, 'my-minimax', 'audio')).resolves.toBe('mm_file://101');
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      'my-minimax': { ...state.config.providers['my-minimax'], apiKey: 'minimax-rotated-fixture' },
+    } } }));
+    await expect(uploadToRemote(source, 'my-minimax', 'audio')).resolves.toBe('mm_file://102');
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      'my-minimax': { ...state.config.providers['my-minimax'], baseUrl: 'https://api.minimax.io' },
+    } } }));
+    await expect(uploadToRemote(source, 'my-minimax', 'audio')).resolves.toBe('mm_file://103');
+    expect(transportMocks.corsSafeFetch.mock.calls.map(([url]) => url)).toEqual([
+      `${MINIMAX_BASE_URL}/v1/files/upload`, `${MINIMAX_BASE_URL}/v1/files/upload`, 'https://api.minimax.io/v1/files/upload',
+    ]);
+    expect(transportMocks.corsSafeFetch.mock.calls[2][1].headers).toEqual({ Authorization: 'Bearer minimax-rotated-fixture' });
+  });
+
+  it('上传业务失败和非法格式明确报错，不回退 Uguu', async () => {
+    configureMinimax();
+    const directFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('不应回退公共图床'));
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ base_resp: { status_code: 1004, status_msg: 'authorization failed' } }));
+    await expect(uploadToRemote('data:audio/mpeg;base64,ZmFpbA==', 'my-minimax', 'audio')).rejects.toThrow();
+    await expect(uploadToRemote('data:video/webm;base64,Zm9ybWF0', 'my-minimax', 'video')).rejects.toThrow('格式不支持');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+    expect(directFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['speech-2.8-hd', 'speech-2.8-turbo'])('%s 返回 URL 后保留原结果续存身份，不额外提交生成', async (id) => {
+    const params = configureMinimax(id);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: { audio: 'https://cdn.example/minimax-voice.wav' },
+      base_resp: { status_code: 0, status_msg: 'success' } }));
+    const result = await generateAudio({ ...params, audioVoice: 'female-shaonv', audioSpeed: 1.25, audioFormat: 'wav' });
+    expect(result).toMatchObject({ url: 'https://cdn.example/minimax-voice.wav',
+      mediaDownloadAccess: { providerConfigId: 'my-minimax', origin: MINIMAX_BASE_URL, auth: { type: 'bearer' } },
+      taskReceipt: { nodeId: params.nodeId, projectId: 'minimax-audio-project' } });
+    const calls = transportMocks.corsSafeFetch.mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe(`${MINIMAX_BASE_URL}/v1/t2a_v2`);
+    expect(JSON.parse(String(calls[0][1].body))).toMatchObject({ model: id, text: params.prompt,
+      stream: false, output_format: 'url', voice_setting: { voice_id: 'female-shaonv', speed: 1.25 }, audio_setting: { format: 'wav' } });
+    const pending = getPendingTasksForProject('minimax-audio-project');
+    expect(pending).toEqual([expect.objectContaining({ submitted: true, providerConfigId: 'my-minimax',
+      mediaRecoveryState: 'delivery_pending', resultUrls: [result.url] })]);
+    expect(JSON.stringify(pending)).not.toContain('minimax-current-fixture');
+  });
+
+  it.each([null, { audio: 'https://cdn.example/not-a-success.mp3' }])('语音业务失败不接受旁带的结果 %j，也不保存成品记录', async (data) => {
+    const params = configureMinimax();
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data,
+      base_resp: { status_code: 1008, status_msg: 'insufficient balance' } }));
+    await expect(generateAudio(params)).rejects.toMatchObject({ definitiveFailure: true });
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(body).toMatchObject({ voice_setting: { voice_id: 'male-qn-qingse', speed: 1 }, audio_setting: { format: 'mp3' } });
+    expect(getPendingTasksForProject('minimax-audio-project')).toEqual([]);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('提交旁带 task_id 仍先检查明确拒绝，清理未受理记录且不查询假任务', async () => {
+    const params = configureMinimax('MiniMax-H3');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ task_id: 'not-an-accepted-task',
+      base_resp: { status_code: 1008, status_msg: 'insufficient balance' } }));
+    await expect(generateVideo({ ...params, seedanceRatio: '16:9', seedanceResolution: '2K', seedanceDuration: 5 }))
+      .rejects.toMatchObject({ definitiveFailure: true });
+    expect(getPendingTasksForProject('minimax-audio-project')).toEqual([]);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('首次查询业务拒绝保留已经受理的原视频任务，不误判生成失败或重新提交', async () => {
+    const params = configureMinimax('MiniMax-H3');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ task_id: 'minimax-query-retained' }))
+      .mockResolvedValueOnce(jsonResponse({ base_resp: { status_code: 1004, status_msg: 'authorization failed' } }));
+    await expect(generateVideo({ ...params, seedanceRatio: '9:16', seedanceResolution: '768P', seedanceDuration: 5 }))
+      .rejects.toMatchObject({ name: 'MediaTaskPausedError', taskReceipt: { taskId: 'minimax-query-retained' } });
+    expect(getPendingTasksForProject('minimax-audio-project')).toEqual([expect.objectContaining({
+      taskId: 'minimax-query-retained', submitted: true, providerConfigId: 'my-minimax',
+    })]);
+    expect(transportMocks.corsSafeFetch.mock.calls.map(([, init]) => init.method)).toEqual(['POST', 'GET']);
+  });
+
+  it.each(['business-unknown', 'network-interrupted', 'missing-business-status'])('同步语音 %s 保留提交未知记录，不自动再合成', async (reason) => {
+    const params = configureMinimax();
+    if (reason === 'business-unknown') transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({
+      data: null, base_resp: { status_code: 1000, status_msg: 'unknown error' },
+    }));
+    else if (reason === 'missing-business-status') transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({
+      data: { audio: 'https://cdn.example/unconfirmed.mp3' },
+    }));
+    else transportMocks.corsSafeFetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(generateAudio(params)).rejects.toMatchObject({ name: 'MediaTaskPausedError',
+      taskReceipt: { taskId: '', nodeId: params.nodeId } });
+    expect(getPendingTasksForProject('minimax-audio-project')).toEqual([expect.objectContaining({
+      taskId: '', submitted: false, mediaRecoveryState: 'submit_unknown', providerConfigId: 'my-minimax',
+    })]);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('真实 HTTP400 的素材不可达给出直传建议，保留拒绝分类并隐藏原始链接', async () => {
+    const params = configureMinimax('MiniMax-H3');
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ type: 'error',
+      error: { type: 'bad_request_error', message: 'content[2].image_url: media url unreachable: https://private.example/image?token=fixture' },
+    }), { status: 400 }));
+    await expect(generateVideo({ ...params, seedanceRatio: '16:9', seedanceResolution: '2K', seedanceDuration: 5 }))
+      .rejects.toMatchObject({ status: 400, definitiveFailure: true,
+        message: expect.stringContaining('重新上传') });
+    expect(getPendingTasksForProject('minimax-audio-project')).toEqual([]);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('不把参考音频当成隐式克隆，不上传素材也不发起合成', async () => {
+    const params = configureMinimax();
+    useAppStore.setState((state) => ({ nodes: [...state.nodes, { id: 'minimax-reference', type: 'source-audio', position: { x: 0, y: 0 },
+      data: { type: 'source-audio', label: '原声', audioUrl: 'data:audio/mpeg;base64,YQ==' } }],
+      edges: [{ id: 'minimax-edge', source: 'minimax-reference', target: params.nodeId }] }));
+    await expect(generateAudio(params)).rejects.toThrow('声音克隆需先在官方平台完成');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
 });
 
 describe('Amam 图片／视频的异步交付', () => {

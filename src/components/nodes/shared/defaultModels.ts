@@ -18,7 +18,7 @@ import { isRunningHubWorkflow, workflowExecution } from '../../../services/workf
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from '../../../services/ai/dreaminaModels';
 import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni, replaceLegacyApimartOmni } from '../../../services/ai/apimartVideoModels';
 import { GRSAI_ADDED_MODELS } from '../../../services/ai/grsaiModels';
-import { getLibapiAudioCapability, usesLibapiModelProtocol } from '../../../services/ai/providers/libapiModelManifest';
+import { resolveAudioParameterCapability } from '../../../services/ai/mediaModelCapabilities';
 import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
@@ -1081,11 +1081,9 @@ function generalModelLabel(model: GeneralModelConfig, config?: ProviderModelVisi
 }
 
 function createGeneralModelOption(model: GeneralModelConfig, config?: ProviderModelVisibilityConfig): ModelOption {
-  const connection = config?.providers[model.providerConfigId];
-  const audioCapability = model.category === 'audio' && connection
-    && (connection.catalogId || model.providerConfigId) === 'libapi'
-    && usesLibapiModelProtocol(model.modelId, model.executionProfile)
-    ? getLibapiAudioCapability(model.modelId) : undefined;
+  const audioCapability = config && model.category === 'audio'
+    ? resolveAudioParameterCapability(`general/${model.id}`, 'general', { providers: config.providers, generalModels: [model] })
+    : undefined;
   return {
     value: `general/${model.id}`,
     provider: 'general',

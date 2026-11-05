@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { getProviderPolicy, resolveProviderCatalogId } from '../../src/services/ai/providerPolicies';
 
 describe('厂商接线策略', () => {
-  it.each(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis', 'libapi', 'relayonapi', 'aigc-si'])('%s 沿用通用模型同步', (id) => {
+  it.each(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis', 'libapi', 'relayonapi', 'aigc-si', 'minimax'])('%s 沿用通用模型同步', (id) => {
     expect(getProviderPolicy(id).syncGeneralModels).toBe(true);
   });
 
@@ -81,5 +81,13 @@ describe('厂商接线策略', () => {
     expect(policy.upload).toBeUndefined();
     expect(policy.referenceTransport).toBeUndefined();
     expect(getProviderPolicy(resolveProviderCatalogId('aigc-si', { catalogId: 'custom-openai' })).submitIdempotency).toBeUndefined();
+  });
+
+  it('MiniMax 按连接分组，专属上传不应用到碰巧同名的自定义连接', () => {
+    const policy = getProviderPolicy(resolveProviderCatalogId('my-minimax', { catalogId: 'minimax' }));
+    expect(policy).toMatchObject({ upload: 'minimax', syncGeneralModels: true, modelMenuGroup: { scope: 'connection' },
+      catalog: { initialModelsOnCreate: 'fallback', initialModelsOnEdit: 'fallback', connectionTest: 'default' } });
+    expect(getProviderPolicy(resolveProviderCatalogId('minimax', { catalogId: 'custom-openai' })).upload).toBeUndefined();
+    expect(policy.submitIdempotency).toBeUndefined();
   });
 });

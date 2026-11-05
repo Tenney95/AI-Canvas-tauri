@@ -84,6 +84,7 @@ import { assertToapisVideoInput, toapisVideoVariables } from './providers/toapis
 import { assertLibapiVideoInput, libapiVideoVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { aigcsiVideoVariables, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
 import { withSora2uReferenceLimits } from './providers/sora2uModelManifest';
+import { minimaxVideoVariables, resolveMinimaxBaseUrl, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 
 export { compileVideoReferencePrompt } from './referencePrompt';
 
@@ -798,12 +799,15 @@ export async function generateVideo(
 
   // ── 通用模型视频生成 ──
   if (provider === 'general') {
-    const gm = resolveGeneralModel(model);
+    let gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
     const connection = resolveGeneralModelConnection(model);
     if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
     if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     const catalogId = connection.definition?.id ?? resolveProviderCatalogId(connection.providerConfigId, connection.provider);
+    if (catalogId === 'minimax') gm = { ...gm, executionProfile: resolveMinimaxExecutionProfile(gm.modelId, gm.executionProfile) };
+    const usesMinimaxProtocol = catalogId === 'minimax' && usesMinimaxModelProtocol(gm.modelId, gm.executionProfile);
+    if (usesMinimaxProtocol) resolveMinimaxBaseUrl(connection.baseUrl);
     const isToapis = catalogId === 'toapis';
     const isLibapi = catalogId === 'libapi';
     const usesRelayonProtocol = catalogId === 'relayonapi' && usesRelayonModelProtocol(gm.modelId, gm.executionProfile);
@@ -840,6 +844,20 @@ export async function generateVideo(
       // 先检查素材角色与组合，避免上传完成后才发现内置合同接不住首尾帧。
       relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(preflight));
     }
+    if (usesMinimaxProtocol) {
+      minimaxVideoVariables(preflight, buildCanonicalVideoProtocolVariables(preflight));
+    }
+    if (policy.upload === 'minimax') {
+      if (originalReferences.some((reference) => /^mm_file:/i.test(reference.url))) {
+        throw new Error('MiniMax 私有文件引用只用于当前连接的上传结果，请重新引用本地素材后生成');
+      }
+      if (originalReferences.some((reference) => isRemoteMediaUrl(getMediaReferenceUrl(reference))
+        && !/^https:\/\//i.test(getMediaReferenceUrl(reference)))) {
+        throw new Error('MiniMax 公网参考素材必须使用 HTTPS 地址，或重新导入本地素材直传官方');
+      }
+      // 私有文件 ID 无法由浏览器探测；在官方上传之前校验原素材，后续只替换传输地址。
+      await assertVideoInputConstraints(referenceInput, videoCapability, gm.name, { signal });
+    }
     if (resolveModelExecutionProfile(gm.executionProfile)) {
       const dataUrlBudget = createMediaDataUrlBudget('本次视频模型参考媒体');
       const remoteImageUrls = await resolveImageUrlsSequentially(
@@ -874,12 +892,9 @@ export async function generateVideo(
         videoUrls: compatibility.videoUrls,
         audioUrls: compatibility.audioUrls,
       };
-      await assertVideoInputConstraints(
-        resolvedReferenceInput,
-        videoCapability,
-        gm.name,
-        { signal },
-      );
+      if (policy.upload !== 'minimax') {
+        await assertVideoInputConstraints(resolvedReferenceInput, videoCapability, gm.name, { signal });
+      }
       if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
       if (beforeSubmit) await beforeSubmit();
       if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
@@ -892,6 +907,7 @@ export async function generateVideo(
           : usesLibapiProtocol ? libapiVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
             : usesRelayonProtocol ? relayonVideoVariables(gm.modelId, buildCanonicalVideoProtocolVariables(canonicalRequest))
               : usesAigcsiProtocol ? aigcsiVideoVariables(buildCanonicalVideoProtocolVariables(canonicalRequest))
+                : usesMinimaxProtocol ? minimaxVideoVariables(canonicalRequest, buildCanonicalVideoProtocolVariables(canonicalRequest))
                 : buildCanonicalVideoProtocolVariables(canonicalRequest),
       });
       const url = urls[0];

@@ -13,6 +13,8 @@ import { getGrsaiImageCapability } from './grsaiModels';
 import { getProviderDefinition } from './providerCatalogService';
 import { resolveToapisImageModelContract } from './providers/toapisModelManifest';
 import { resolveRelayonImageModelContract } from './providers/relayonModelManifest';
+import { getLibapiAudioCapability, usesLibapiModelProtocol } from './providers/libapiModelManifest';
+import { getMinimaxAudioCapability, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
 
 /* ── 生图能力表 ── */
@@ -747,6 +749,28 @@ export function buildImageCapabilityRequest(
 /* ── 音频能力表 ── */
 
 export type AudioCapabilityKind = 'speech' | 'music';
+
+/** 音频参数与执行共用真实连接及完整合同；同名自定义模型不继承官方能力。 */
+export function resolveAudioParameterCapability(
+  model: string | undefined,
+  provider: string | undefined,
+  config: Pick<AppConfig, 'providers' | 'generalModels'>,
+): AudioModelCapability | undefined {
+  if (!model || provider !== 'general') return undefined;
+  const selected = config.generalModels?.find((item) => item.id === model.replace(/^general\//, ''));
+  if (selected?.category !== 'audio') return undefined;
+  const connection = config.providers[selected.providerConfigId];
+  if (!connection) return undefined;
+  const catalogId = getProviderDefinition(selected.providerConfigId, connection)?.id;
+  if (catalogId === 'libapi' && usesLibapiModelProtocol(selected.modelId, selected.executionProfile)) {
+    return getLibapiAudioCapability(selected.modelId);
+  }
+  if (catalogId === 'minimax') {
+    const profile = resolveMinimaxExecutionProfile(selected.modelId, selected.executionProfile);
+    if (usesMinimaxModelProtocol(selected.modelId, profile)) return getMinimaxAudioCapability(selected.modelId);
+  }
+  return undefined;
+}
 
 const AUDIO_CAPABILITIES: Record<string, AudioModelCapability> = {
   'gpt-4o-mini-tts': {
