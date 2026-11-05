@@ -2269,6 +2269,7 @@ describe('critical canvas node interactions', () => {
 
   describe('MiniMax 普通 TTS 的共享参数控件', () => {
     afterEach(() => {
+      vi.doUnmock('framer-motion');
       vi.doUnmock('../../src/components/nodes/shared/AudioParamSelector');
       vi.doUnmock('../../src/components/nodes/shared/PromptPanel');
     });
@@ -2285,7 +2286,12 @@ describe('critical canvas node interactions', () => {
       };
       await installReactHookDriver();
       installStoreMock(store);
-      vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+      vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text, t: (text: string) => text }));
+      // Framer Motion 的 CJS Hook 持有真实 React；本用例的元素树驱动只替换直接导入的 React Hook。
+      vi.doMock('framer-motion', async () => ({
+        ...await vi.importActual<typeof import('framer-motion')>('framer-motion'),
+        useReducedMotion: () => false,
+      }));
       vi.doUnmock('../../src/components/nodes/shared/PromptPanel');
       vi.doUnmock('../../src/components/nodes/shared/defaultModels');
       vi.doMock('../../src/components/nodes/shared/AudioParamSelector', () => ({

@@ -1,6 +1,6 @@
 # MiniMax 官方 H3 与语音接入
 
-日期：2026-11-05。状态：已实现并补回归源码；本批未运行测试、lint、类型检查、构建、桌面验收或付费调用，待用户验收。本批仅本地提交，不推送。
+日期：2026-11-05。状态：已实现并补回归源码。实现阶段按用户要求仅做静态核对；推送阶段按原钩子执行完整 `npm run ci`，门禁失败先修复，对同一提交全部通过后才推送。Tauri 桌面验收及真实官方调用仍待用户验证，本轮不执行本机 Rust 检查或付费试跑。
 
 ## 目标与边界
 
@@ -44,7 +44,7 @@
 
 尚待验证：真实官方上传及长文件 ID、HEIC／HEIF、各视频编解码／尺寸／帧率限制、不同地区网络、实际音色权限、成片声音、音频文件头及跨入口落盘表现。
 
-自动化命令仅供用户后续在仓库根目录执行，本批未运行：
+验证入口为仓库根目录。推送阶段已通过全仓 ESLint 与两套类型检查；首轮全量回归定位的组件测试替身已修正，相关组件文件 202 项回归通过。最终推送仍须对最新提交完整通过 `npm run ci`，不能用定向结果替代门禁。以下定向命令供后续复验：
 
 ```powershell
 npx vitest run tests/services/minimaxModelManifest.test.ts tests/services/providerCatalogService.test.ts tests/services/providerPolicies.test.ts tests/services/modelRequestTransport.test.ts tests/services/generateVideo.test.ts tests/services/pollManager.test.ts tests/services/mediaModelCapabilities.test.ts tests/services/testConnection.test.ts tests/components/defaultModels.test.ts tests/components/nodeCriticalInteractions.test.tsx
