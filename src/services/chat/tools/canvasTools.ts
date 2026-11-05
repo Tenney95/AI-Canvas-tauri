@@ -313,6 +313,9 @@ const NODE_REFERENCE_PATTERN = /@\{([^:}\r\n]+):[^}\r\n]*\}/g;
 interface QueryNodesInput extends NodeTargetInput {
   detail?: boolean;
   limit?: number;
+  offset?: number;
+  name?: string;
+  nameMatch?: 'contains' | 'exact';
 }
 
 interface UpdateNodesInput extends NodeTargetInput {
@@ -828,6 +831,22 @@ function resolveTargetIds(input: NodeTargetInput): string[] {
   return [...matched];
 }
 
+function queryNodes(input: QueryNodesInput): Node<BaseNodeData>[] {
+  const state = useAppStore.getState();
+  if (input.nodeIds?.length === 0 || input.displayIds?.length === 0) return [];
+  const hasTargets = input.nodeIds !== undefined || input.displayIds !== undefined
+    || input.nodeType !== undefined || input.status !== undefined || input.selected === true;
+  const targetIds = hasTargets ? new Set(resolveTargetIds(input)) : undefined;
+  const normalizeName = (value: string) => value.normalize('NFKC').trim().toLowerCase();
+  const name = input.name === undefined ? undefined : normalizeName(input.name);
+  return state.nodes.filter((node) => (!targetIds || targetIds.has(node.id))
+    && (name === undefined || [node.data.displayLabel, node.data.fileName, node.data.label].some((value) => {
+      if (!value) return false;
+      const candidate = normalizeName(value);
+      return input.nameMatch === 'exact' ? candidate === name : candidate.includes(name);
+    }))));
+}
+
 function truncateText(value: string | undefined, limit = DETAIL_TEXT_LIMIT): {
   text: string;
   truncated: boolean;
@@ -915,29 +934,41 @@ function describeNode(node: Node<BaseNodeData>, globalAssets?: readonly DramaAss
   };
 }
 
-function buildCanvasDetail(targetIds: string[], limit?: number, globalAssets?: readonly DramaAsset[]): Record<string, unknown> {
+function buildCanvasDetail(scoped: Node<BaseNodeData>[], input: QueryNodesInput, globalAssets?: readonly DramaAsset[]): Record<string, unknown> {
   const store = useAppStore.getState();
-  const scoped = targetIds.length > 0
-    ? store.nodes.filter((node) => targetIds.includes(node.id))
-    : store.nodes;
-  const maxNodes = Math.min(limit ?? DETAIL_NODE_LIMIT, DETAIL_NODE_LIMIT);
-  const nodes = scoped.slice(0, maxNodes);
+  const offset = input.offset ?? 0;
+  const maxNodes = Math.min(input.limit ?? DETAIL_NODE_LIMIT, DETAIL_NODE_LIMIT);
+  const nodes = scoped.slice(offset, offset + maxNodes);
+  const nextOffset = offset + nodes.length;
+  const hasMore = nextOffset < scoped.length;
   const visibleIds = new Set(nodes.map((node) => node.id));
   return {
+    projectId: store.currentProjectId,
     revision: store.getCurrentRevision(),
     nodeCount: store.nodes.length,
     edgeCount: store.edges.length,
+    matchedCount: scoped.length,
+    offset,
+    returned: nodes.length,
+    hasMore,
+    ...(hasMore ? { nextOffset } : {}),
     selectedNodeIds: store.selectedNodeIds,
-    nodes: nodes.map((node) => describeNode(node, globalAssets)),
+    nodes: nodes.map((node) => input.detail ? describeNode(node, globalAssets) : {
+      id: node.id, displayId: node.data.displayId, type: node.type,
+      label: node.data.label, displayLabel: node.data.displayLabel || node.data.fileName || node.data.label,
+      status: node.data.status ?? 'idle',
+    }),
     // 只给出与返回节点相关的连线，避免整张图铺满上下文
-    edges: store.edges
-      .filter((edge) => visibleIds.has(edge.source) || visibleIds.has(edge.target))
-      .map((edge) => ({
-        id: edge.id, source: edge.source, target: edge.target,
-        sourceHandle: edge.sourceHandle ?? null, targetHandle: edge.targetHandle ?? null,
-        layout: describeConnectionLayout(edge.source, edge.target, store.nodes),
-      })),
-    truncated: scoped.length > nodes.length,
+    ...(input.detail ? {
+      edges: store.edges
+        .filter((edge) => visibleIds.has(edge.source) || visibleIds.has(edge.target))
+        .map((edge) => ({
+          id: edge.id, source: edge.source, target: edge.target,
+          sourceHandle: edge.sourceHandle ?? null, targetHandle: edge.targetHandle ?? null,
+          layout: describeConnectionLayout(edge.source, edge.target, store.nodes),
+        })),
+    } : {}),
+    truncated: offset > 0 || hasMore,
   };
 }
 
@@ -1401,7 +1432,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
       id: 'canvas_query',
       title: '查询画布',
       description: [
-        '读取画布概况或符合条件的节点。无筛选条件时返回整个画布概况。',
+        '读取画布概况和节点名称索引；按 name 搜索可见名称、文件名别名或内部名称，默认包含匹配，nameMatch=exact 为精确匹配。',
+        '多个筛选条件取交集；未找到返回空列表，不回退全画布。重名返回全部候选，核对 ID 后再写入。offset/limit 分页，hasMore=true 时用 nextOffset 继续。',
         'detail=true 时额外返回结构化节点详情：ID、坐标、尺寸、模型、生成参数、提示词、',
         '文本输出摘要和相关连线（含实际端口、水平间距与布局提醒），用于精确定位后再调用更新、连接或运行工具。',
         '不会返回本地路径或媒体 URL。',
@@ -1412,22 +1444,34 @@ export function registerCanvasAgentTools(): Array<() => void> {
           ...targetProperties,
           detail: { type: 'boolean' },
           limit: { type: 'integer', minimum: 1, maximum: DETAIL_NODE_LIMIT },
+          offset: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          name: { type: 'string', minLength: 1, maxLength: 200, description: '节点可见名称、文件名别名或内部名称；不搜索提示词正文。' },
+          nameMatch: { type: 'string', enum: ['contains', 'exact'] },
         },
         additionalProperties: false,
       },
       effect: 'read',
       authorize: authorizeCurrentProject,
-      summarizeInput: (input) => `查询画布${resolveTargetIds(input).length ? '中的匹配节点' : '概况'}${input.detail ? '详情' : ''}`,
+      summarizeInput: (input) => `查询画布节点${input.detail ? '详情' : '名称索引'}`,
       execute: async (context, input) => {
-        const targetIds = resolveTargetIds(input);
-        const result = await executeCanvasCommand('query', targetIds, context, '查询画布');
-        if (!input.detail || result.status !== 'success') return result;
-        const globalAssets = await readGlobalReferenceAssets(context);
+        if (input.name !== undefined && !input.name.trim()) {
+          return { status: 'error', summary: '名称不能是空白，请填写名称或省略 name', modelContent: '名称不能是空白，请填写名称或省略 name' };
+        }
+        const matched = queryNodes(input);
+        const offset = input.offset ?? 0;
+        const page = matched.slice(offset, offset + (input.limit ?? DETAIL_NODE_LIMIT));
+        const globalAssets = input.detail && page.length ? await readGlobalReferenceAssets(context) : undefined;
+        if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+        if (!isCurrentProject(context.projectId)) throw new Error('目标项目当前未加载');
+        const summary = !matched.length ? '没有找到匹配节点'
+          : !page.length ? `匹配 ${matched.length} 个节点，此页为空，请从 offset=0 重新查询`
+            : `匹配 ${matched.length} 个节点，本页返回 ${page.length} 个`;
         return {
-          ...result,
+          status: 'success', summary,
           modelContent: JSON.stringify({
-            summary: result.summary,
-            ...buildCanvasDetail(targetIds, input.limit, globalAssets),
+            summary,
+            ...(!input.detail ? { message: summary, affectedNodeIds: page.map((node) => node.id) } : {}),
+            ...buildCanvasDetail(matched, input, globalAssets),
           }),
         };
       },

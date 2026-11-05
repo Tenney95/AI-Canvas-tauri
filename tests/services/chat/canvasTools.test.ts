@@ -1427,6 +1427,81 @@ describe('canvas agent tools', () => {
     expect(executeGeneration).not.toHaveBeenCalled();
   });
 
+  it('returns the default node name index without exposing prompt or media fields', async () => {
+    const result = await getAgentTool('canvas_query')!.execute(context(), {});
+    const data = JSON.parse(result.modelContent);
+    expect(data).toMatchObject({ matchedCount: 2, returned: 2, hasMore: false });
+    expect(data.nodes.map((item: { id: string }) => item.id)).toEqual(['n1', 'n2']);
+    expect(data.affectedNodeIds).toEqual(['n1', 'n2']);
+    expect(data.nodes.every((item: Record<string, unknown>) => !('prompt' in item) && !('outputText' in item) && !('imageUrl' in item))).toBe(true);
+  });
+
+  it.each([
+    { nodeIds: ['missing'] }, { displayIds: [9999] }, { nodeType: 'ai-audio' },
+    { selected: true }, { name: '没有这个镜头' }, { nodeIds: [], nodeType: 'ai-image' },
+  ])('returns no nodes for an unmatched query instead of falling back to the whole canvas: %j', async (filter) => {
+    const tool = getAgentTool('canvas_query')!;
+    for (const detail of [false, true]) {
+      const result = await tool.execute(context(), { ...filter, detail });
+      expect(result.status).toBe('success');
+      expect(JSON.parse(result.modelContent)).toMatchObject({ matchedCount: 0, returned: 0, hasMore: false, nodes: [] });
+      expect(result.summary).toContain('没有找到匹配节点');
+    }
+    expect(loadGlobalAssets).not.toHaveBeenCalled();
+  });
+
+  it('matches visible names, file aliases and internal names without guessing between duplicates', async () => {
+    useAppStore.setState({ nodes: [
+      node('visible', { label: '镜头三', displayLabel: 'Ｒ０３' }),
+      node('prefix', { label: 'R030' }),
+      node('file', { label: '原名', fileName: 'r03' }),
+    ] });
+    const tool = getAgentTool('canvas_query')!;
+    const read = async (input: Record<string, unknown>) => JSON.parse((await tool.execute(context(), input)).modelContent);
+    expect((await read({ name: 'r03' })).nodes.map((item: { id: string }) => item.id)).toEqual(['visible', 'prefix', 'file']);
+    expect((await read({ name: ' r03 ', nameMatch: 'exact' })).nodes.map((item: { id: string }) => item.id)).toEqual(['visible', 'file']);
+    expect((await read({ name: '镜头三', nameMatch: 'exact' })).nodes.map((item: { id: string }) => item.id)).toEqual(['visible']);
+    expect((await read({ name: 'R03', nodeIds: ['file'], nameMatch: 'exact' })).nodes.map((item: { id: string }) => item.id)).toEqual(['file']);
+    expect((await read({ name: 'R03', nodeType: 'ai-video' })).nodes).toEqual([]);
+    expect((await tool.execute(context(), { name: '   ' })).status).toBe('error');
+  });
+
+  it('pages a bounded name index and reports exhausted offsets without unrelated nodes', async () => {
+    const ids = Array.from({ length: 67 }, (_, index) => `shot-${index}`);
+    useAppStore.setState({ nodes: ids.map((id) => node(id, { prompt: 'private-prompt-index-marker', imageUrl: 'asset://private-file' })) });
+    const tool = getAgentTool('canvas_query')!;
+    const found: string[] = [];
+    let offset = 0;
+    while (true) {
+      const result = await tool.execute(context(), { name: 'shot-', offset, limit: 20 });
+      const data = JSON.parse(result.modelContent);
+      expect(data).toMatchObject({ projectId: 'p1', matchedCount: 67, offset });
+      expect(data.nodes.length).toBeLessThanOrEqual(20);
+      expect(result.modelContent).not.toContain('private-prompt-index-marker');
+      expect(result.modelContent).not.toContain('asset://private-file');
+      found.push(...data.nodes.map((item: { id: string }) => item.id));
+      if (!data.hasMore) break;
+      expect(data.nextOffset).toBeGreaterThan(offset);
+      offset = data.nextOffset;
+    }
+    expect(found).toEqual(ids);
+    const exhausted = JSON.parse((await tool.execute(context(), { name: 'shot-', offset: 99, detail: true })).modelContent);
+    expect(exhausted).toMatchObject({ matchedCount: 67, returned: 0, nodes: [], edges: [], hasMore: false });
+    expect(exhausted.summary).toContain('offset=0');
+    expect(validateAgentToolInput(tool.inputSchema, { name: 'shot-', nameMatch: 'exact', offset: 1, limit: 1 }).valid).toBe(true);
+    expect(validateAgentToolInput(tool.inputSchema, { offset: -1 }).valid).toBe(false);
+    expect(validateAgentToolInput(tool.inputSchema, { nameMatch: 'regex' }).valid).toBe(false);
+    expect(validateAgentToolInput(getAgentTool('canvas_update_nodes')!.inputSchema, { name: 'shot-', prompt: '不允许按模糊名称写入' }).valid).toBe(false);
+  });
+
+  it('rejects cancelled index reads without writing history', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const state = useAppStore.getState();
+    await expect(getAgentTool('canvas_query')!.execute({ ...context(), signal: controller.signal }, {})).rejects.toMatchObject({ name: 'AbortError' });
+    expect(useAppStore.getState().history).toBe(state.history);
+  });
+
   it('returns structured node detail without leaking local media paths', async () => {
     const result = await getAgentTool('canvas_query')!.execute(context(), { detail: true });
     const payload = JSON.parse(result.modelContent);
