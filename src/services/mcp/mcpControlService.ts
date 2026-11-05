@@ -14,6 +14,7 @@ import type {
   McpToolCallResult,
   McpToolDescriptor,
   McpToolExposure,
+  McpToolCallEnvelope,
 } from '../../types/mcp';
 import {
   runAgentTask,
@@ -280,9 +281,24 @@ function revealMcpUserChoice(projectId: string, conversationId: string, step: Ag
 async function callMcpTool(
   request: McpBridgeRequestEvent,
   active: ActiveMcpRequest,
+  expectation?: Pick<McpToolCallEnvelope, 'expectedProjectId' | 'expectedRevision'>,
 ): Promise<McpToolCallResult> {
   await ensureToolsRegistered();
   assertMcpRequestActive(request, active);
+  const expectedProjectId = expectation?.expectedProjectId;
+  const expectedRevision = expectation?.expectedRevision;
+  const readState = useAppStore.getState();
+  if ((expectedProjectId !== undefined && readState.currentProjectId !== expectedProjectId)
+    || (expectedRevision !== undefined && readState.getCurrentRevision() !== expectedRevision)) {
+    const summary = '读取后项目或画布版本已变化，未创建执行任务；请重新读取后规划，不要自动重投写入';
+    return {
+      isError: true, summary,
+      content: [{ type: 'text', text: JSON.stringify({
+        errorCode: 'MCP_CONTEXT_CHANGED', summary, retryable: false,
+        current: { projectId: readState.currentProjectId, revision: readState.getCurrentRevision() },
+      }) }],
+    };
+  }
   const name = typeof request.params.name === 'string' ? request.params.name : '';
   const current = getCurrentMcpContext(name);
   if (!current) {
@@ -361,6 +377,9 @@ async function callMcpTool(
         transitionTask: transitionAgentTask,
         waitForApproval: waitForAgentApproval,
         policyMode: MCP_EXECUTION_MODE,
+        ...(expectedProjectId !== undefined ? {
+          expectedContext: { projectId: expectedProjectId, baseRevision: expectedRevision },
+        } : {}),
         onApprovalRequired: (step) => revealMcpUserChoice(current.projectId, current.conversation.id, step),
       });
       return executionResult.summary.status === 'success' ? 'completed' : 'failed';
@@ -446,7 +465,7 @@ export async function handleMcpBridgeRequest(
             return { isError: true, summary, content: [{ type: 'text', text: summary }] };
           }
           // 只解包一次，保留原 requestId 的取消关联。校验、effect 和审计均属于真实工具。
-          return await callMcpTool({ ...request, params: { name: envelope.name, arguments: envelope.arguments } }, active);
+          return await callMcpTool({ ...request, params: { name: envelope.name, arguments: envelope.arguments } }, active, envelope);
         }
         return await callMcpTool(request, active);
       } finally {

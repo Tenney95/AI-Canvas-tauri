@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentApprovalResolution, AgentMode, AgentTask } from '../../../src/types/agent';
 import {
   executeRegisteredAgentToolCall,
+  type RegisteredAgentToolCallOptions,
 } from '../../../src/services/chat/agentToolExecution';
 import {
   clearAgentToolRegistryForTests,
@@ -86,13 +87,16 @@ function registerBoundaryTool(overrides: Partial<AgentToolDefinition> = {}) {
 function executeBoundaryTool(options: {
   signal?: AbortSignal;
   policyMode?: AgentMode;
+  expectedContext?: RegisteredAgentToolCallOptions['expectedContext'];
+  input?: Record<string, unknown>;
   waitForApproval?: () => Promise<AgentApprovalResolution>;
 } = {}) {
   return executeRegisteredAgentToolCall({
     taskId: 'mcp-task-1',
-    call: { callId: 'boundary-call', toolId: 'boundary_test', input: {} },
+    call: { callId: 'boundary-call', toolId: 'boundary_test', input: options.input ?? {} },
     signal: options.signal ?? new AbortController().signal,
     policyMode: options.policyMode,
+    expectedContext: options.expectedContext,
     transitionTask: transitionAgentTask,
     waitForApproval: options.waitForApproval ?? vi.fn(async () => ({ approved: true })),
   });
@@ -103,6 +107,65 @@ function setBoundaryMode(mode: AgentMode) {
 }
 
 describe('shared Agent tool execution for MCP', () => {
+  it.each(['project', 'revision'] as const)('rejects a changed %s during dynamic executor loading before counting or executing the call', async (change) => {
+    const execute = registerBoundaryTool();
+    transitionAgentTask('mcp-task-1', 'planning');
+    const state = useAppStore.getState();
+    const expectedContext = { projectId: 'project-1', baseRevision: state.getCurrentRevision() };
+    const previousCount = state.agentTasks[0].toolCallCount;
+
+    // executeRegisteredAgentToolCall 先等待动态 import；同步切换发生在其恢复之前。
+    const pending = executeBoundaryTool({ expectedContext });
+    expect(execute).not.toHaveBeenCalled();
+    if (change === 'project') useAppStore.setState({ currentProjectId: 'project-2' });
+    else useAppStore.getState().incrementRevision();
+    const result = await pending;
+
+    expect(result.summary).toMatchObject({
+      callId: 'boundary-call', toolId: 'boundary_test', status: 'denied', errorCode: 'TOOL_CONTEXT_CHANGED',
+    });
+    expect(JSON.parse(result.modelContent)).toMatchObject({ errorCode: 'TOOL_CONTEXT_CHANGED', retryable: false });
+    expect(result.summary.summary).toContain('不要自动重投写入');
+    expect(execute).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0].toolCallCount).toBe(previousCount);
+    expect(useAppStore.getState().agentTasks[0].steps).toEqual([]);
+  });
+
+  it('passes a matching expected context and the original input to the business executor', async () => {
+    const execute = registerBoundaryTool({ inputSchema: {
+      type: 'object', required: ['value'], additionalProperties: false,
+      properties: { value: { type: 'string' } },
+    } });
+    transitionAgentTask('mcp-task-1', 'planning');
+    useAppStore.getState().incrementRevision();
+    const expectedContext = { projectId: 'project-1', baseRevision: useAppStore.getState().getCurrentRevision() };
+    const input = { value: '原始参数😀' };
+
+    const result = await executeBoundaryTool({ expectedContext, input });
+
+    expect(result.summary.status).toBe('success');
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      ...expectedContext, taskId: 'mcp-task-1', conversationId: 'mcp-control-project-1',
+    }), input);
+    expect(input).toEqual({ value: '原始参数😀' });
+    expect(useAppStore.getState().agentTasks[0].toolCallCount).toBe(1);
+  });
+
+  it('retains current-revision behavior for callers without expected-context metadata', async () => {
+    const execute = registerBoundaryTool();
+    transitionAgentTask('mcp-task-1', 'planning');
+
+    const pending = executeBoundaryTool();
+    useAppStore.getState().incrementRevision();
+    const currentRevision = useAppStore.getState().getCurrentRevision();
+    const result = await pending;
+
+    expect(result.summary.status).toBe('success');
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-1', baseRevision: currentRevision }), {});
+    expect(useAppStore.getState().agentTasks[0].toolCallCount).toBe(1);
+  });
+
   it('returns complete MCP JSON above the model limit without persisting its body', async () => {
     const body = JSON.stringify({ nodes: [{ prompt: 'complete-mcp-body-marker'.repeat(1200) }] });
     registerBoundaryTool({ effect: 'read', execute: async () => ({

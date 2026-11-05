@@ -478,4 +478,26 @@ describe('MCP tool catalog', () => {
       expect(() => decodeMcpToolCallEnvelope({ name, arguments: {} })).toThrow('递归');
     }
   });
+
+  it('accepts optional context preconditions outside the business arguments', () => {
+    const args = { value: 'business-only' };
+    for (const expectation of [{ expectedProjectId: 'project-1' }, { expectedProjectId: 'project-1', expectedRevision: 0 }]) {
+      const envelope = { name: 'canvas_query', arguments: args, ...expectation };
+      const decoded = decodeMcpToolCallEnvelope(envelope);
+      expect(decoded).toEqual(envelope);
+      expect(decoded.arguments).toBe(args);
+      expect(decoded.arguments).toEqual({ value: 'business-only' });
+    }
+    expect(() => decodeMcpToolCallEnvelope({ name: 'canvas_query', arguments: {}, expectedRevision: 0 }))
+      .toThrow('expectedRevision 必须同时提供 expectedProjectId');
+  });
+
+  it('rejects malformed project and revision preconditions without coercion', () => {
+    const envelope = { name: 'canvas_query', arguments: {}, expectedProjectId: 'project-1' };
+    for (const expectation of [{ expectedProjectId: '' }, { expectedProjectId: 1 }, { expectedRevision: -1 },
+      { expectedRevision: 1.5 }, { expectedRevision: '1' }, { expectedRevision: Number.MAX_SAFE_INTEGER + 1 },
+      { expectedRevision: NaN }, { expectedRevision: Infinity }]) {
+      expect(() => decodeMcpToolCallEnvelope({ ...envelope, ...expectation })).toThrow('仅接受');
+    }
+  });
 });

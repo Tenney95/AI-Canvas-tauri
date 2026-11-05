@@ -562,11 +562,60 @@ describe('MCP on-demand discovery', () => {
     const result = await mcpCall('tools_call', { name: 'mcp_dispatch_probe', arguments: { value: 'yes' } });
     expect(result).toMatchObject({ isError: false });
     expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-mcp' }), { value: 'yes' });
     const tasks = useAppStore.getState().agentTasks;
     expect(tasks).toHaveLength(1);
     expect(tasks[0]).toMatchObject({ toolCallCount: 1, status: 'completed', steps: [expect.objectContaining({ toolCall: expect.objectContaining({ toolId: 'mcp_dispatch_probe', effect: 'config_write' }) })] });
     expect(tasks[0].goal).toContain('分发测试');
     expect(tasks[0].goal).not.toContain('tools_call');
+  });
+
+  it.each(['project', 'revision', 'project-only'] as const)('rejects a stale %s precondition before creating an execution task', async (change) => {
+    const execute = registerDispatchProbe();
+    const revision = useAppStore.getState().getCurrentRevision();
+    if (change === 'revision') useAppStore.getState().incrementRevision();
+    else useAppStore.setState({ currentProjectId: 'other-project' });
+    const createTask = vi.spyOn(useAppStore.getState(), 'createAgentTask');
+    try {
+      const result = await mcpCall('tools_call', { name: 'mcp_dispatch_probe', arguments: { value: 'must-not-execute' },
+        expectedProjectId: 'project-mcp', ...(change !== 'project-only' ? { expectedRevision: revision } : {}),
+      }, `stale-context-${change}`);
+      expect(result.isError).toBe(true);
+      const block = result.content[0];
+      if (block.type !== 'text') throw new Error('Expected context conflict text');
+      expect(JSON.parse(block.text)).toMatchObject({ errorCode: 'MCP_CONTEXT_CHANGED', retryable: false,
+        current: { projectId: useAppStore.getState().currentProjectId, revision: useAppStore.getState().getCurrentRevision() } });
+      expect(createTask).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(useAppStore.getState().agentTasks).toHaveLength(0);
+      expect(useAppStore.getState().messages).toHaveLength(0);
+    } finally {
+      createTask.mockRestore();
+    }
+  });
+
+  it.each([false, true])('forwards matching context metadata separately from real arguments (revision=%s)', async (withRevision) => {
+    const execute = registerDispatchProbe();
+    const execution = await import('../../../src/services/chat/agentToolExecution');
+    const shared = vi.spyOn(execution, 'executeRegisteredAgentToolCall');
+    const args = { value: 'business-only' };
+    const revision = useAppStore.getState().getCurrentRevision();
+    try {
+      const result = await mcpCall('tools_call', { name: 'mcp_dispatch_probe', arguments: args,
+        expectedProjectId: 'project-mcp', ...(withRevision ? { expectedRevision: revision } : {}),
+      }, `matching-context-${withRevision}`);
+      expect(result.isError).toBe(false);
+      expect(shared).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        expectedContext: { projectId: 'project-mcp', baseRevision: withRevision ? revision : undefined },
+        call: expect.objectContaining({ toolId: 'mcp_dispatch_probe', input: { value: 'business-only' } }),
+      }));
+      expect(execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ projectId: 'project-mcp', baseRevision: revision }), { value: 'business-only' });
+      expect(args).toEqual({ value: 'business-only' });
+      expect(useAppStore.getState().agentTasks).toHaveLength(1);
+      expect(useAppStore.getState().agentTasks[0].status).toBe('completed');
+    } finally {
+      shared.mockRestore();
+    }
   });
 
   it('applies the target schema and current authorization after earlier discovery', async () => {
@@ -765,7 +814,8 @@ describe('MCP on-demand discovery', () => {
     expect(await handleMcpBridgeRequest({ ...request, sessionId: 'replacement-session' })).toMatchObject({ isError: false });
   });
 
-  it.each([null, [], { name: 'tools_call', arguments: {} }, { name: 'tools_search', arguments: {} }, { name: 'canvas_query', arguments: [] }])('rejects invalid or recursive envelopes without starting a task: %j', async (input) => {
+  it.each([null, [], { name: 'tools_call', arguments: {} }, { name: 'tools_search', arguments: {} }, { name: 'canvas_query', arguments: [] },
+    { name: 'canvas_query', arguments: {}, expectedRevision: 0 }])('rejects invalid or recursive envelopes without starting a task: %j', async (input) => {
     expect(await mcpCall('tools_call', input)).toMatchObject({ isError: true });
     expect(useAppStore.getState().agentTasks).toHaveLength(0);
   });
