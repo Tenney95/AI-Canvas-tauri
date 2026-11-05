@@ -10,6 +10,7 @@ import {
   type AgentToolDefinition,
 } from '../../../src/services/chat/toolRegistry';
 import {
+  buildMcpToolOverview,
   decodeMcpToolCallEnvelope,
   describeMcpToolCatalog,
   getConfiguredMcpToolExposure,
@@ -19,9 +20,20 @@ import {
   serializeMcpCatalogResult,
   toMcpToolDescriptor,
 } from '../../../src/services/mcp/mcpToolCatalog';
+import {
+  MCP_GLOBAL_TOOL_NAMES,
+  MCP_SETTINGS_CONVERSATION_ID,
+  MCP_SETTINGS_SCOPE_ID,
+} from '../../../src/services/mcp/mcpSettingsScope';
 
 const context: Omit<AgentToolContext, 'signal'> = {
   taskId: 'catalog-task', projectId: 'project-1', conversationId: 'mcp-control-project-1', mode: 'autonomous',
+};
+const globalContext: Omit<AgentToolContext, 'signal'> = {
+  ...context,
+  projectId: MCP_SETTINGS_SCOPE_ID,
+  conversationId: MCP_SETTINGS_CONVERSATION_ID,
+  toolAllowlist: [...MCP_GLOBAL_TOOL_NAMES],
 };
 
 function register(id: string, partial: Partial<AgentToolDefinition> = {}) {
@@ -33,6 +45,24 @@ function register(id: string, partial: Partial<AgentToolDefinition> = {}) {
   });
 }
 
+function overviewEntries(overview: string): Array<{ name: string; title: string; availability: string; description?: string }> {
+  const entries: Array<{ name: string; title: string; availability: string; description?: string }> = [];
+  let availability: string | undefined;
+  for (const line of overview.split('\n')) {
+    const group = /^(当前可发现|需打开项目或满足上下文条件)（\d+ 项）$/.exec(line);
+    if (group) {
+      availability = group[1];
+      continue;
+    }
+    if (!availability) continue;
+    const columns = line.split(' | ');
+    if (columns.length !== 3 || columns[0] === 'name') continue;
+    entries.push({ name: columns[0], title: columns[1], availability,
+      ...(columns[2] ? { description: columns[2] } : {}) });
+  }
+  return entries;
+}
+
 beforeEach(() => {
   clearAgentToolRegistryForTests();
   register('canvas_query', { title: '查看画布', description: '读取画布节点与连线。' });
@@ -42,10 +72,130 @@ beforeEach(() => {
 });
 
 describe('MCP tool catalog', () => {
-  it('introduces each entry before preserving library and connection rules', () => {
+  it('lists every environment tool introduction without schemas or first-page truncation', () => {
+    const ids = ['canvas_query', 'canvas_align', 'media_generate'];
+    for (let i = 0; i < 12; i += 1) {
+      const id = `file_overview_${i}`;
+      register(id, { title: `文件工具 ${i}`, description: `读取授权文件 ${i} 的信息。`,
+        inputSchema: { type: 'object', properties: { schema_only_marker: { type: 'string' } } } });
+      ids.push(id);
+    }
+    register('tools_describe');
+    register('tools_call');
+    register('file_unavailable', { isAvailable: () => false });
+
+    const overview = buildMcpToolOverview(context);
+    const entries = overviewEntries(overview);
+
+    expect(overview).toContain('当前环境工具简介目录（15 项）');
+    expect(overview).toContain('简介不含参数');
+    expect(overview).toContain('tools_describe({"names":["canvas_query"]})');
+    expect(overview).toContain('tools_call({"name":"canvas_query","arguments":{}})');
+    expect(overview).toContain('tools_search({"query":"画布","detail":"schema"})');
+    expect(overview).not.toContain('tools_search(detail=');
+    expect(overview).toContain('项目或配置变化后重新搜索');
+    expect(overview).not.toContain('当前连接尚未打开项目画布');
+    expect(overview).toContain('当前可发现（15 项）\nname | title | 简介');
+    expect(overview.endsWith('工具简介目录结束。')).toBe(true);
+    expect(entries.map((tool) => tool.name)).toEqual(ids.sort((a, b) => a.localeCompare(b)));
+    expect(entries.every((tool) => tool.title && tool.description && tool.availability === '当前可发现')).toBe(true);
+    expect(overview).not.toContain('inputSchema');
+    expect(overview).not.toContain('schema_only_marker');
+    expect(overview).not.toContain('file_unavailable');
+  });
+
+  it('explains the startup sequence before listing conditional canvas tools', () => {
+    register('project_list', { title: '列出项目' });
+    register('project_open', { title: '打开项目' });
+    const overview = buildMcpToolOverview(globalContext);
+    const entries = overviewEntries(overview);
+    const steps = [
+      'tools_describe({"names":["project_list","project_open"]})',
+      'tools_call({"name":"project_list","arguments":{}})',
+      'tools_call({"name":"project_open","arguments":{"projectId":"<项目条目的id>"}})',
+      'tools_describe({"names":["canvas_query"]})',
+      'tools_call({"name":"canvas_query","arguments":{}})',
+    ];
+
+    expect(overview).toContain('当前连接尚未打开项目画布；画布工具存在');
+    expect(overview).toContain('从 projects 列表选择用户目标条目的 id');
+    expect(overview).toContain('不要使用为 null 的 currentProjectId');
+    expect(overview).toContain('此时不要混入尚不可发现的画布工具');
+    expect(overview).toContain('打开成功后');
+    const positions = steps.map((step) => overview.indexOf(step));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(overview.match(/tools_describe\(\{[^\n]*?\}\)/)?.[0]).toBe(steps[0]);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'project_list', availability: '当前可发现' }),
+      expect.objectContaining({ name: 'project_open', availability: '当前可发现' }),
+      expect.objectContaining({ name: 'canvas_query', availability: '需打开项目或满足上下文条件' }),
+    ]));
+    expect(searchMcpToolCatalog(globalContext, { query: '*' }).tools.map((tool) => tool.name))
+      .toEqual(['project_list', 'project_open']);
+  });
+
+  it('keeps multiline and separator text in one row and preserves Unicode characters', () => {
+    register('file_table_escape', { title: '查看\n猫🐈|节点', description: '说明|第一行\r\n第二行' });
+    register('file_unicode', { description: '😀'.repeat(49) });
+
+    const entries = overviewEntries(buildMcpToolOverview(context));
+
+    expect(entries.find((tool) => tool.name === 'file_table_escape')).toMatchObject({
+      title: '查看 猫🐈／节点', description: '说明／第一行 第二行',
+    });
+    expect(entries.find((tool) => tool.name === 'file_unicode')?.description).toBe('😀'.repeat(48));
+    expect(entries).toHaveLength(5);
+  });
+
+  it('labels tools outside the actual allowlist without changing discovery scope or its real context', () => {
+    const scoped = { ...context, toolAllowlist: ['canvas_query'] };
+    register('file_other_context', { isAvailable: (current) => current.projectId !== context.projectId });
+    const before = searchMcpToolCatalog(scoped, { query: '*' });
+
+    const entries = overviewEntries(buildMcpToolOverview(scoped));
+
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'canvas_query', availability: '当前可发现' }),
+      expect.objectContaining({ name: 'canvas_align', availability: '需打开项目或满足上下文条件' }),
+      expect.objectContaining({ name: 'media_generate', availability: '需打开项目或满足上下文条件' }),
+    ]));
+    expect(entries.some((tool) => tool.name === 'file_other_context')).toBe(false);
+    expect(scoped.toolAllowlist).toEqual(['canvas_query']);
+    expect(searchMcpToolCatalog(scoped, { query: '*' })).toEqual(before);
+    expect(() => describeMcpToolCatalog(scoped, { names: ['canvas_align'] })).toThrow('不可用');
+  });
+
+  it.each([
+    // 200 行仅合成工具占 27 + 3*titleLength + 3*descriptionLength 字节/行；
+    // 60 字标题的 48 字简介、88 字标题的 24 字简介分别已超 64 KiB。
+    { titleLength: 60, descriptionLength: 24 },
+    { titleLength: 88, descriptionLength: 0 },
+  ])('shortens only descriptions to fit the overview budget (title length $titleLength)', ({ titleLength, descriptionLength }) => {
+    const ids = Array.from({ length: 200 }, (_, index) => `canvas_overview_${String(index).padStart(3, '0')}`);
+    for (const id of ids) register(id, { title: '题'.repeat(titleLength), description: '介'.repeat(60) });
+
+    const overview = buildMcpToolOverview(context);
+    const entries = overviewEntries(overview);
+    const added = entries.filter((tool) => ids.includes(tool.name));
+
+    expect(new TextEncoder().encode(JSON.stringify(overview)).byteLength).toBeLessThanOrEqual(MCP_CATALOG_MAX_BYTES);
+    expect(added.map((tool) => tool.name)).toEqual(ids);
+    expect(added.every((tool) => tool.title === '题'.repeat(titleLength))).toBe(true);
+    expect(added.every((tool) => descriptionLength ? tool.description?.length === descriptionLength : tool.description === undefined)).toBe(true);
+  });
+
+  it('rejects an oversized overview instead of returning partial tool identities', () => {
+    register('canvas_complete_tool_identity', { title: '题'.repeat(MCP_CATALOG_MAX_BYTES) });
+
+    expect(() => buildMcpToolOverview(context)).toThrow('未返回不完整的工具目录');
+    expect(getAgentTool('canvas_complete_tool_identity')?.title).toHaveLength(MCP_CATALOG_MAX_BYTES);
+  });
+
+  it('keeps connection rules on invocation and creation contracts without repeating them on discovery entries', () => {
     for (const id of ['tools_describe', 'canvas_create_nodes', 'shotlist_prepare_production', 'episode_create_shotlist']) register(id);
     const descriptors = [MCP_CALL_DESCRIPTOR, ...[
-      'tools_search', 'tools_describe', 'canvas_create_nodes', 'shotlist_prepare_production', 'episode_create_shotlist',
+      'canvas_create_nodes', 'shotlist_prepare_production', 'episode_create_shotlist',
     ].map((id) => toMcpToolDescriptor(getAgentTool(id)!))];
     for (const descriptor of descriptors) {
       expect(descriptor.description.indexOf('素材引用优先级：')).toBeGreaterThan(0);
@@ -67,17 +217,25 @@ describe('MCP tool catalog', () => {
       expect(descriptor.description).toContain('layout.warning');
     }
     expect(descriptors[0].description.startsWith('执行工具：')).toBe(true);
-    expect(descriptors[1].description.startsWith('查找工具：')).toBe(true);
-    expect(descriptors[1].description).toContain('tools_search({"query":"*","limit":8})');
-    expect(descriptors[2].description.startsWith('读取参数：')).toBe(true);
-    for (const descriptor of descriptors.slice(3)) {
+    for (const descriptor of descriptors.slice(1)) {
       expect(descriptor.description.startsWith(getAgentTool(descriptor.name)!.description)).toBe(true);
     }
-    expect(descriptors[1].inputSchema).toBe(getAgentTool('tools_search')!.inputSchema);
+    const search = toMcpToolDescriptor(getAgentTool('tools_search')!);
+    const describeTools = toMcpToolDescriptor(getAgentTool('tools_describe')!);
+    expect(search.description.startsWith('查找工具：')).toBe(true);
+    expect(search.description).toContain('tools_search({"query":"*","limit":8})');
+    expect(search.description).toContain('tools_search({"query":"画布","detail":"schema"})');
+    expect(describeTools.description.startsWith('读取参数：')).toBe(true);
+    expect(describeTools.description).toContain('不要将未激活的画布工具混入同一批');
+    for (const descriptor of [search, describeTools]) {
+      expect(descriptor.description).not.toContain('素材引用优先级：');
+      expect(descriptor.description).not.toContain('不要把导演台反接回分镜表');
+    }
+    expect(search.inputSchema).toBe(getAgentTool('tools_search')!.inputSchema);
     expect(MCP_CALL_DESCRIPTOR.annotations?.readOnlyHint).toBe(false);
   });
 
-  it('returns tools before guidance without clipping discovery or business contracts', () => {
+  it('returns tools before guidance without repeating unrelated production rules', () => {
     const results = [
       searchMcpToolCatalog(context, {}),
       searchMcpToolCatalog(context, { query: '*' }),
@@ -91,13 +249,55 @@ describe('MCP tool catalog', () => {
       const serialized = serializeMcpCatalogResult(result);
       expect(serialized.startsWith('{"tools":')).toBe(true);
       const decoded = JSON.parse(serialized);
-      expect(decoded.hint).toContain('不要把导演台反接回分镜表');
-      expect(decoded.hint).toContain('不把制作节点反接回所属分镜表输入');
-      expect(decoded.hint).toContain('分镜表不是视频生成的必建前置');
-      expect(decoded.hint).toContain('video_editor_create 的 shotlistNodeId');
       expect(decoded.tools).toEqual(result.tools);
-      if (result.hint) expect(decoded.hint.startsWith(`${result.hint}\n素材引用优先级：`)).toBe(true);
-      expect(result.hint?.startsWith('素材引用优先级：')).not.toBe(true);
+      expect(decoded.hint).toBe(result.hint);
+      expect(serialized).not.toContain('素材引用优先级：');
+      expect(serialized).not.toContain('不要把导演台反接回分镜表');
+    }
+  });
+
+  it('preserves production rules and complete schemas when reading creation contracts', () => {
+    const ids = ['canvas_create_nodes', 'shotlist_prepare_production', 'episode_create_shotlist'];
+    for (const id of ids) register(id, { inputSchema: {
+      type: 'object', properties: { contract_marker: { type: 'string', description: '完整参数' } },
+    } });
+    const result = describeMcpToolCatalog(context, { names: ids });
+    const decoded = JSON.parse(serializeMcpCatalogResult(result));
+
+    expect(decoded.tools).toEqual(result.tools);
+    expect(decoded.tools.every((tool: { inputSchema?: unknown }) => tool.inputSchema)).toBe(true);
+    expect(decoded.hint).toContain('素材引用优先级：');
+    expect(decoded.hint).toContain('不要把导演台反接回分镜表');
+    expect(decoded.hint).toContain('不把制作节点反接回所属分镜表输入');
+    expect(decoded.hint).toContain('分镜表不是视频生成的必建前置');
+    expect(decoded.hint).toContain('video_editor_create 的 shotlistNodeId');
+  });
+
+  it('guides global-context searches and unavailable describes through navigation before canvas discovery', () => {
+    register('project_list');
+    register('project_open');
+    const navigation = searchMcpToolCatalog(globalContext, {});
+    const missing = searchMcpToolCatalog(globalContext, { query: 'canvas_query', detail: 'schema' });
+    const guidance = [navigation.hint, missing.hint];
+
+    expect(navigation.tools).toEqual([]);
+    expect(missing.tools).toEqual([]);
+    for (const hint of guidance) {
+      expect(hint).toContain('当前连接未打开项目画布');
+      expect(hint).toContain('tools_describe({"names":["project_list","project_open"]})');
+      expect(hint).toContain('打开用户指定项目');
+      expect(hint).toContain('成功后重新读取目标工具参数');
+      expect(hint).toContain('project_get 读取资料不会打开画布');
+    }
+    expect(describeMcpToolCatalog(globalContext, { names: ['project_list', 'project_open'] }).tools.map((tool) => tool.name))
+      .toEqual(['project_list', 'project_open']);
+    expect(() => describeMcpToolCatalog(globalContext, { names: ['canvas_query'] }))
+      .toThrow('当前连接未打开项目画布');
+    expect(() => describeMcpToolCatalog(globalContext, { names: ['project_open', 'canvas_query'] }))
+      .toThrow('tools_describe({"names":["project_list","project_open"]})');
+    expect(globalContext.toolAllowlist).toEqual([...MCP_GLOBAL_TOOL_NAMES]);
+    for (const result of [navigation, missing]) {
+      expect(serializeMcpCatalogResult(result)).not.toContain('素材引用优先级：');
     }
   });
 

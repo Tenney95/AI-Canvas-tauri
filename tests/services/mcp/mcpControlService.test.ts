@@ -34,6 +34,7 @@ import { resolveAgentApproval } from '../../../src/services/chat/agentTaskContro
 import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../../../src/services/mcp/mcpSettingsScope';
 import * as chatHistory from '../../../src/services/chat/chatHistoryService';
 import * as mcpBridge from '../../../src/services/mcp/mcpBridgeService';
+import { MCP_CATALOG_MAX_BYTES } from '../../../src/services/mcp/mcpToolCatalog';
 
 const { getChatWindow } = vi.hoisted(() => ({ getChatWindow: vi.fn() }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: getChatWindow } }));
@@ -140,6 +141,26 @@ function catalogResult(result: McpToolCallResult): McpToolCatalogResult {
   return JSON.parse(content.text) as McpToolCatalogResult;
 }
 
+function capabilityOverview(description: string): string {
+  const endMarker = '工具简介目录结束。';
+  const end = description.indexOf(endMarker);
+  expect(end).toBeGreaterThanOrEqual(0);
+  return description.slice(0, end + endMarker.length);
+}
+
+function capabilityEntries(overview: string): Array<{ name: string; title: string; availability: string }> {
+  const entries: Array<{ name: string; title: string; availability: string }> = [];
+  let availability = '';
+  for (const line of overview.split('\n')) {
+    const group = /^(当前可发现|需打开项目或满足上下文条件)（\d+ 项）$/.exec(line);
+    if (group) { availability = group[1]; continue; }
+    if (!availability || !line.includes(' | ') || line.startsWith('name | ')) continue;
+    const [name, title] = line.split(' | ');
+    entries.push({ name, title, availability });
+  }
+  return entries;
+}
+
 function registerDispatchProbe(partial: Partial<AgentToolDefinition> = {}) {
   const execute = vi.fn(async () => ({ status: 'success' as const, summary: '测试成功', modelContent: '{"done":true}' }));
   registerAgentTool({
@@ -213,11 +234,128 @@ describe('MCP on-demand discovery', () => {
     const listed = await listMcpTools('full');
     expect(listed.some((tool) => tool.name === 'provider_config_preview')).toBe(true);
     expect(listed.map((tool) => tool.name)).toEqual(expect.arrayContaining(['project_list', 'project_get', 'project_create', 'project_open', 'project_switch']));
-    expect(listed.every((tool) => tool.name.startsWith('provider_') || ['project_list', 'project_get', 'project_create', 'project_open', 'project_switch'].includes(tool.name))).toBe(true);
+    expect(listed.map((tool) => tool.name)).toEqual(expect.arrayContaining(['tools_search', 'tools_describe', 'tools_call']));
+    expect(listed.filter((tool) => !['tools_search', 'tools_describe', 'tools_call'].includes(tool.name))
+      .every((tool) => tool.name.startsWith('provider_') || ['project_list', 'project_get', 'project_create', 'project_open', 'project_switch'].includes(tool.name))).toBe(true);
     expect(await mcpCall('tools_describe', { names: ['canvas_query'] })).toMatchObject({ isError: true });
     expect(await mcpCall('tools_describe', { names: ['project_delete'] })).toMatchObject({ isError: true });
     const navigation = catalogResult(await mcpCall('tools_search', { category: 'project', detail: 'schema' }, 'startup-project-search'));
     expect(navigation.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['project_list', 'project_create', 'project_open', 'project_switch']));
+  });
+
+  it('shows canvas capabilities in the startup compact overview without granting their search or execution', async () => {
+    useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready' });
+    const cached = await listMcpTools('compact');
+    const search = cached.find((tool) => tool.name === 'tools_search')!;
+    const describe = cached.find((tool) => tool.name === 'tools_describe')!;
+    const call = cached.find((tool) => tool.name === 'tools_call')!;
+    expect(cached.map((tool) => tool.name)).toEqual(['tools_search', 'tools_describe', 'tools_call']);
+    const overview = capabilityOverview(search.description);
+    const entries = capabilityEntries(overview);
+    expect(entries).toEqual(expect.arrayContaining(['canvas_query', 'canvas_update_nodes'].map((name) =>
+      expect.objectContaining({ name, availability: expect.stringContaining('需打开项目') }))));
+    expect(overview).not.toMatch(/"inputSchema"\s*:|"properties"\s*:/);
+    expect(new TextEncoder().encode(JSON.stringify(overview)).byteLength).toBeLessThanOrEqual(MCP_CATALOG_MAX_BYTES);
+    const recoverySteps = [
+      'tools_describe({"names":["project_list","project_open"]})',
+      'tools_call({"name":"project_list","arguments":{}})',
+      'tools_call({"name":"project_open","arguments":{"projectId":"<项目条目的id>"}})',
+      'tools_describe({"names":["canvas_query"]})',
+      'tools_call({"name":"canvas_query","arguments":{}})',
+    ];
+    let previousStep = -1;
+    for (const step of recoverySteps) {
+      const position = overview.indexOf(step);
+      expect(position).toBeGreaterThan(previousStep);
+      previousStep = position;
+    }
+    expect(overview).toContain('不要混入');
+    expect(overview).toContain('project_get 读取项目资料不等于已打开画布');
+
+    // 项目元数据可读不等于画布已打开，简介也不扩大真实目录白名单。
+    expect(await mcpCall('project_get', { projectId: 'project-mcp' }, 'startup-overview-project')).toMatchObject({ isError: false });
+    expect(useAppStore.getState().currentProjectId).toBeNull();
+    const unavailable = catalogResult(await mcpCall(search.name, { category: 'canvas' }, 'startup-overview-search'));
+    expect(unavailable.tools).toEqual([]);
+    const mixed = await mcpCall(describe.name, { names: ['project_list', 'project_open', 'canvas_query'] }, 'startup-overview-describe');
+    expect(mixed).toMatchObject({ isError: true });
+    for (const guidance of ['未打开项目', 'project_list', 'project_open']) {
+      expect(unavailable.hint).toContain(guidance);
+      expect(mixed.summary).toContain(guidance);
+    }
+    for (const name of ['canvas_query', 'canvas_update_nodes']) {
+      expect(await mcpCall(call.name, { name, arguments: {} }, `startup-overview-${name}`)).toMatchObject({ isError: true });
+    }
+  });
+
+  it('rediscovers canvas parameters after project_open through the three entrypoints cached on startup', async () => {
+    const switchProject = vi.fn(async (id: string) => {
+      useAppStore.setState({ currentProjectId: id, projectLoadStatus: 'ready' });
+      return id;
+    });
+    useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready', switchProject });
+    const cached = await listMcpTools('compact');
+    const search = cached.find((tool) => tool.name === 'tools_search')!;
+    const describe = cached.find((tool) => tool.name === 'tools_describe')!;
+    const call = cached.find((tool) => tool.name === 'tools_call')!;
+
+    const navigation = catalogResult(await mcpCall(describe.name, { names: ['project_list', 'project_open'] }, 'cached-compact-navigation'));
+    expect(navigation.tools.map((tool) => tool.name)).toEqual(['project_list', 'project_open']);
+    expect(navigation.tools.every((tool) => tool.inputSchema?.type === 'object')).toBe(true);
+    const listed = await mcpCall(call.name, { name: 'project_list', arguments: {} }, 'cached-compact-list');
+    expect(listed.isError).toBe(false);
+    const projects = JSON.parse((listed.content[0] as { text: string }).text) as { projects: Array<{ id: string }> };
+    const target = projects.projects.find((project) => project.id === 'project-mcp');
+    expect(target).toBeDefined();
+    expect(useAppStore.getState().currentProjectId).toBeNull();
+    expect(await mcpCall(call.name, { name: 'project_open', arguments: { projectId: target!.id } }, 'cached-compact-open'))
+      .toMatchObject({ isError: false });
+    expect(switchProject).toHaveBeenCalledOnce();
+    const found = catalogResult(await mcpCall(search.name, { query: 'canvas_query', detail: 'schema', limit: 1 }, 'cached-compact-search'));
+    expect(found.tools[0]).toMatchObject({ name: 'canvas_query', inputSchema: { type: 'object' } });
+    const described = catalogResult(await mcpCall(describe.name, { names: ['canvas_query', 'canvas_update_nodes'] }, 'cached-compact-describe'));
+    expect(described.tools.map((tool) => tool.name)).toEqual(['canvas_query', 'canvas_update_nodes']);
+    expect(described.tools.every((tool) => tool.inputSchema?.type === 'object')).toBe(true);
+    expect(useAppStore.getState().agentTasks.at(-1)?.projectId).toBe('project-mcp');
+    expect(useAppStore.getState().agentTasks.at(-1)?.toolAllowlist).toBeUndefined();
+  });
+
+  it('keeps startup full-mode entrypoints usable for current-project canvas calls without refreshing tools/list', async () => {
+    const switchProject = vi.fn(async (id: string) => {
+      useAppStore.setState({ currentProjectId: id, projectLoadStatus: 'ready' });
+      return id;
+    });
+    useAppStore.setState({ currentProjectId: null, projectLoadStatus: 'ready', switchProject });
+    const cached = await listMcpTools('full');
+    expect(cached.map((tool) => tool.name)).toEqual(expect.arrayContaining(['tools_search', 'tools_describe', 'tools_call']));
+    expect(cached.some((tool) => tool.name === 'canvas_query' || tool.name === 'canvas_update_nodes')).toBe(false);
+    const call = cached.find((tool) => tool.name === 'tools_call')!;
+    expect(await mcpCall(call.name, { name: 'project_open', arguments: { projectId: 'project-mcp' } }, 'cached-full-open'))
+      .toMatchObject({ isError: false });
+
+    const nodes = useAppStore.getState().nodes;
+    const execution = await import('../../../src/services/chat/agentToolExecution');
+    const execute = vi.spyOn(execution, 'executeRegisteredAgentToolCall').mockImplementation(async ({ taskId, call: proposed }) => {
+      const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
+      expect(task).toMatchObject({ projectId: 'project-mcp', conversationId: 'mcp-control-project-mcp' });
+      expect(task?.toolAllowlist).toBeUndefined();
+      return { summary: { callId: proposed.callId, toolId: proposed.toolId, status: 'success' as const, summary: '已转交工具', truncated: false },
+        modelContent: '已转交工具' };
+    });
+    const calls = [
+      { name: 'canvas_query', arguments: { detail: true, limit: 1 } },
+      { name: 'canvas_update_nodes', arguments: { nodeIds: ['existing-node'], label: '镜头名称', x: 240 } },
+    ];
+    try {
+      for (const input of calls) {
+        expect(await mcpCall(call.name, input, `cached-full-${input.name}`)).toMatchObject({ isError: false });
+      }
+      expect(execute.mock.calls.map(([options]) => ({ name: options.call.toolId, arguments: options.call.input }))).toEqual(calls);
+      expect(execute.mock.calls.every(([options]) => options.policyMode === 'autonomous')).toBe(true);
+      expect(useAppStore.getState().nodes).toBe(nodes);
+    } finally {
+      execute.mockRestore();
+    }
   });
 
   it.each([
@@ -377,7 +515,7 @@ describe('MCP on-demand discovery', () => {
     const store = useAppStore.getState();
     store.updateConfig({ mcpToolExposure: 'full' });
     expect((await listMcpTools()).some((tool) => tool.name === 'canvas_query')).toBe(true);
-    expect((await listMcpTools()).some((tool) => tool.name === 'tools_search')).toBe(false);
+    expect((await listMcpTools()).map((tool) => tool.name)).toEqual(expect.arrayContaining(['tools_search', 'tools_describe', 'tools_call']));
     store.updateConfig({ mcpToolExposure: 'compact' });
     const listed = await handleMcpBridgeRequest({ sessionId: 's', requestId: 'list', method: 'tools/list', params: { exposure: 'full' } }) as { tools: unknown[] };
     expect(listed.tools).toHaveLength(3);
@@ -633,8 +771,20 @@ describe('MCP on-demand discovery', () => {
   });
 
   it('measures the catalog reduction and an actual search/describe/call read flow', async () => {
-    const full = JSON.stringify({ tools: await listMcpTools('full') });
-    const compact = JSON.stringify({ tools: await listMcpTools() });
+    const schemaMarker = 'overview-schema-private-marker';
+    registerDispatchProbe({ id: 'zz_capability_tail_probe', title: '简介末尾能力', description: '末尾完整简介标记',
+      inputSchema: { type: 'object', properties: { value: { type: 'string', description: schemaMarker } } } });
+    const fullTools = await listMcpTools('full');
+    const compactTools = await listMcpTools();
+    const full = JSON.stringify({ tools: fullTools });
+    const compact = JSON.stringify({ tools: compactTools });
+    const overview = capabilityOverview(compactTools.find((tool) => tool.name === 'tools_search')!.description);
+    const entries = capabilityEntries(overview);
+    expect(entries.map((entry) => entry.name).sort()).toEqual(fullTools
+      .filter((tool) => !['tools_search', 'tools_describe', 'tools_call'].includes(tool.name)).map((tool) => tool.name).sort());
+    expect(entries.at(-1)).toMatchObject({ name: 'zz_capability_tail_probe', title: '简介末尾能力' });
+    expect(overview).not.toContain(schemaMarker);
+    expect(overview).not.toMatch(/"inputSchema"\s*:|"properties"\s*:/);
     const search = await mcpCall('tools_search', { query: 'canvas_query', detail: 'schema', limit: 1 }, 'search');
     const selected = catalogResult(search).tools[0];
     expect(selected.name).toBe('canvas_query');
@@ -642,8 +792,8 @@ describe('MCP on-demand discovery', () => {
     const result = await mcpCall('tools_call', { name: selected.name, arguments: {} }, 'execute');
     expect(result.isError).toBe(false);
     const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
-    expect(bytes(compact)).toBeLessThan(bytes(full) * 0.2);
-    expect(bytes(compact + JSON.stringify(search))).toBeLessThan(bytes(full));
+    expect(bytes(compact)).toBeLessThan(bytes(full));
+    expect(bytes(JSON.stringify(overview))).toBeLessThanOrEqual(MCP_CATALOG_MAX_BYTES);
     process.stdout.write(`MCP catalog bytes: ${JSON.stringify({ fullTools: JSON.parse(full).tools.length, full: bytes(full), compact: bytes(compact), search: bytes(JSON.stringify(search)), result: bytes(JSON.stringify(result)) })}\n`);
   });
 });

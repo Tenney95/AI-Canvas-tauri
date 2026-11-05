@@ -30,6 +30,7 @@ import {
   respondToMcpBridge,
 } from './mcpBridgeService';
 import {
+  buildMcpToolOverview,
   decodeMcpToolCallEnvelope,
   getConfiguredMcpToolExposure,
   isMcpDiscoveryTool,
@@ -195,23 +196,35 @@ export async function listMcpTools(
   exposure: McpToolExposure = getConfiguredMcpToolExposure(useAppStore.getState().config.mcpToolExposure),
 ): Promise<McpToolDescriptor[]> {
   await ensureToolsRegistered();
-  if (exposure === 'compact') {
-    // 即使项目尚未加载也保持三个入口可发现，避免客户端缓存空目录。
-    return [
-      ...MCP_DISCOVERY_TOOL_NAMES.map((name) => {
-        const definition = getAgentTool(name);
-        if (!definition) throw new Error('MCP 发现工具未注册');
-        return {
-          ...toMcpToolDescriptor(definition),
-          annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        };
-      }),
-      MCP_CALL_DESCRIPTOR,
-    ];
-  }
+  const store = useAppStore.getState();
+  const projectId = store.currentProjectId ?? MCP_SETTINGS_SCOPE_ID;
+  const discoveryContext = {
+    taskId: MCP_TOOL_DISCOVERY_TASK_ID,
+    projectId,
+    conversationId: `mcp-control-${projectId}`,
+    mode: MCP_EXECUTION_MODE,
+    baseRevision: store.getCurrentRevision(),
+    ...(!store.currentProjectId ? { toolAllowlist: [...MCP_GLOBAL_TOOL_NAMES] } : {}),
+  };
+  // 两种模式都保留稳定入口，客户端缓存启动页目录后仍能重新发现当前项目能力。
+  const discovery: McpToolDescriptor[] = [
+    ...MCP_DISCOVERY_TOOL_NAMES.map((name) => {
+      const definition = getAgentTool(name);
+      if (!definition) throw new Error('MCP 发现工具未注册');
+      const descriptor = toMcpToolDescriptor(definition);
+      return {
+        ...descriptor,
+        ...(exposure === 'compact' && name === 'tools_search'
+          ? { description: `${buildMcpToolOverview(discoveryContext)}\n\n${descriptor.description}` } : {}),
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      };
+    }),
+    MCP_CALL_DESCRIPTOR,
+  ];
+  if (exposure === 'compact') return discovery;
   const current = getCurrentMcpContext();
-  if (!current) return [];
-  return getAvailableAgentTools({
+  if (!current) return discovery;
+  const tools = getAvailableAgentTools({
     taskId: MCP_TOOL_DISCOVERY_TASK_ID,
     projectId: current.projectId,
     conversationId: current.conversation.id,
@@ -219,6 +232,7 @@ export async function listMcpTools(
     baseRevision: useAppStore.getState().getCurrentRevision(),
     toolAllowlist: current.toolAllowlist,
   }).filter((definition) => !isMcpDiscoveryTool(definition.id)).map(toMcpToolDescriptor);
+  return [...discovery, ...tools];
 }
 
 function addAuditMessage(message: ChatMessage): void {
