@@ -32,6 +32,7 @@ import { seekVideoTo } from '../../utils/videoSeek';
 import { downloadUrlAndSave, saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import { getPerformanceModeBudget } from '../../services/performanceModeRuntime';
 import { useCanvasNodeLodProtection } from '../../hooks/useCanvasNodeLod';
 import {
   cancelCanvasDerivation,
@@ -321,39 +322,54 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   useEffect(() => {
     if (!source || suppliedCover || isFullscreen || shouldMountPlayer) return;
     const controller = new AbortController();
-    const derivation = registerCanvasDerivation(useAppStore.getState(), id);
     let current = true;
-    void acquireCanvasVideoPoster(source, controller.signal).then((poster) => {
-      if (!current) { poster?.release(); return; }
-      if (poster) {
-        heldPosters.current.add(poster.release);
-        setGeneratedCover({ ...poster, source, projectId });
-        const state = useAppStore.getState();
-        const liveData = getCanvasNodeById(state.nodes, id)?.data;
-        // 封面读取期间可能又缩放了节点；按最新尺寸重建派生守卫，而不是丢掉这次比例校正。
-        const writeDerivation = derivation && isCanvasDerivationFresh(derivation, state)
-          ? derivation : state.currentProjectId === projectId && liveData?.videoUrl === source
-            ? registerCanvasDerivation(state, id) : null;
-        const fittedDimensions = liveData && fitVideoNodeToShortSide(
-          poster.videoWidth, poster.videoHeight, liveData.nodeWidth, liveData.nodeHeight,
-        );
-        if (writeDerivation && isCanvasDerivationFresh(writeDerivation, state) && liveData?.videoUrl === source
-          && (liveData.videoWidth !== poster.videoWidth || liveData.videoHeight !== poster.videoHeight
-            || liveData.nodeWidth !== fittedDimensions?.nodeWidth
-            || liveData.nodeHeight !== fittedDimensions?.nodeHeight)) {
-          state.updateNodeDataTransient(id, {
-            videoWidth: poster.videoWidth, videoHeight: poster.videoHeight,
-            ...fittedDimensions,
-          });
+    let retries = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let pendingDerivation: ReturnType<typeof registerCanvasDerivation> = null;
+    const requestPoster = () => {
+      if (!current || controller.signal.aborted) return;
+      const derivation = registerCanvasDerivation(useAppStore.getState(), id);
+      pendingDerivation = derivation;
+      void acquireCanvasVideoPoster(source, controller.signal).then((poster) => {
+        if (!current) { poster?.release(); return; }
+        if (poster) {
+          heldPosters.current.add(poster.release);
+          setGeneratedCover({ ...poster, source, projectId });
+          const state = useAppStore.getState();
+          const liveData = getCanvasNodeById(state.nodes, id)?.data;
+          // 封面读取期间可能又缩放了节点；按最新尺寸重建派生守卫，而不是丢掉这次比例校正。
+          const writeDerivation = derivation && isCanvasDerivationFresh(derivation, state)
+            ? derivation : state.currentProjectId === projectId && liveData?.videoUrl === source
+              ? registerCanvasDerivation(state, id) : null;
+          const fittedDimensions = liveData && fitVideoNodeToShortSide(
+            poster.videoWidth, poster.videoHeight, liveData.nodeWidth, liveData.nodeHeight,
+          );
+          if (writeDerivation && isCanvasDerivationFresh(writeDerivation, state) && liveData?.videoUrl === source
+            && (liveData.videoWidth !== poster.videoWidth || liveData.videoHeight !== poster.videoHeight
+              || liveData.nodeWidth !== fittedDimensions?.nodeWidth
+              || liveData.nodeHeight !== fittedDimensions?.nodeHeight)) {
+            state.updateNodeDataTransient(id, {
+              videoWidth: poster.videoWidth, videoHeight: poster.videoHeight,
+              ...fittedDimensions,
+            });
+          }
+          if (writeDerivation && writeDerivation !== derivation) completeCanvasDerivation(writeDerivation);
         }
-        if (writeDerivation && writeDerivation !== derivation) completeCanvasDerivation(writeDerivation);
-      }
-      if (derivation) completeCanvasDerivation(derivation);
-    });
+        if (derivation) completeCanvasDerivation(derivation);
+        pendingDerivation = null;
+        // 等失败缓存过期再重试，最多补两次；保持共享队列的单解码器和失败冷却。
+        if (!poster && retries < 2) {
+          retries++;
+          retryTimer = setTimeout(requestPoster, getPerformanceModeBudget().previewIdleMs + 50);
+        }
+      });
+    };
+    requestPoster();
     return () => {
       current = false;
+      clearTimeout(retryTimer);
       controller.abort();
-      if (derivation) cancelCanvasDerivation(derivation);
+      if (pendingDerivation) cancelCanvasDerivation(pendingDerivation);
     };
   }, [source, suppliedCover, projectId, isFullscreen, shouldMountPlayer, id]);
 
@@ -413,11 +429,6 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     flushSync(() => setActivatedSource(source));
     return videoRef.current;
   }, [source, isFullscreen]);
-
-  const requestPlayback = useCallback(() => {
-    const video = activateCompactVideo();
-    if (video) void video.play().catch(() => setActivatedSource(null));
-  }, [activateCompactVideo]);
 
   const handleVolumeChange = useCallback((volume: number, muted: boolean) => {
     if (!source) return;
@@ -982,7 +993,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onVolumeChange={handleVolumeChange}
               onEnded={() => { setPlayingSource(null); setActivatedSource(null); }}
               onPosterError={() => { if (suppliedCover) setFailedCover(suppliedCover); }}
-              onRequestPlayback={requestPlayback}
+              onRequestPlayback={activateCompactVideo}
+              onError={dismissInitialCover}
               onRequestSeek={() => { dismissInitialCover(); activateCompactVideo(); }}
               onFullscreen={handleOpenFullscreen}
             />

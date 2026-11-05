@@ -61,6 +61,7 @@ let stage: { requestFullscreen: ReturnType<typeof vi.fn>; querySelector: ReturnT
 let progress: { style: { setProperty: ReturnType<typeof vi.fn> }; value: string;
   classList: { add: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn>; toggle: ReturnType<typeof vi.fn> } };
 let frames: Map<number, FrameRequestCallback>; let nextFrame: number; let videoListeners: Map<string, Set<(event: unknown) => void>>;
+let mountedVideoElement: Element | undefined;
 function elements(value: unknown): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!value || typeof value !== 'object' || !('props' in value)) return [];
@@ -69,11 +70,18 @@ function elements(value: unknown): Element[] {
 function find(predicate: (element: Element) => boolean): Element { const found = elements(tree).find(predicate); expect(found).toBeDefined(); return found!; }
 function control(label: string) { return find((el) => el.props['aria-label'] === label || el.props.children === label
   || el.type === 'button' && Array.isArray(el.props.children) && el.props.children.includes(label)); }
-function click(element: Element) { (element.props.onClick as () => void)(); }
+function click(element: Element) { (element.props.onClick as (event: unknown) => void)({ stopPropagation: vi.fn() }); }
 function render() {
   driver.current = scope; scope.stateIndex = scope.refIndex = scope.effectIndex = 0; tree = VideoPlayer(input);
+  const nextVideoElement = elements(tree).find((el) => el.type === 'video');
+  if (!nextVideoElement && mountedVideoElement?.props.ref) {
+    if (typeof mountedVideoElement.props.ref === 'function') (mountedVideoElement.props.ref as (node: unknown) => void)(null);
+    else mountedVideoElement.props.ref.current = null;
+  }
+  mountedVideoElement = nextVideoElement;
   elements(tree).forEach((el) => {
     if (!el.props.ref) return;
+    if (el.type === 'video') video.src = String(el.props.src ?? '');
     const node = el.type === 'video' ? video : el.type === 'input' || el.props.className === 'ui-video-player__progress' ? progress : stage;
     if (typeof el.props.ref === 'function') (el.props.ref as (node: unknown) => void)(node);
     else el.props.ref.current = node;
@@ -88,6 +96,7 @@ beforeEach(() => {
   comfySources.media.mockReset().mockImplementation((source?: string) => source);
   comfySources.image.mockReset().mockImplementation((source?: string) => source);
   scope = { states: [], refs: [], effects: [], pending: [], stateIndex: 0, refIndex: 0, effectIndex: 0 };
+  mountedVideoElement = undefined;
   videoListeners = new Map();
   input = { src: 'https://videos.test/a.mp4?preview=1', name: '视频.mp4', autoPlay: true,
     unavailable: true, onEscape: vi.fn(), onError: vi.fn(), onEnded: vi.fn(), onMetadata: vi.fn() };
@@ -113,18 +122,16 @@ afterEach(() => { scope.effects.forEach((effect) => effect.cleanup?.()); vi.unst
 describe('UI Kit VideoPlayer', () => {
   it('未激活卡片不持有媒体来源，首次点击可等待原生源就绪后播放并在收起时释放', () => {
     const original = 'http://127.0.0.1:8188/view?filename=deferred.mp4';
-    const onRequestPlayback = vi.fn();
+    const onRequestPlayback = vi.fn(() => { input = { ...input, active: true }; render(); });
     let ready = false;
     comfySources.media.mockImplementation((source?: string) => source && ready ? 'http://comfy-media.localhost/opaque-video' : undefined);
-    input = { ...input, src: original, compact: true, active: false, autoPlay: false, onRequestPlayback };
+    input = { ...input, src: original, compact: true, active: false, autoPlay: false, unavailable: false, onRequestPlayback };
     render();
     expect(comfySources.media).toHaveBeenLastCalledWith(undefined, expect.any(Function));
     expect(control('播放视频').props.disabled).toBe(false);
     click(control('播放视频'));
     expect(onRequestPlayback).toHaveBeenCalledOnce();
     expect(video.play).not.toHaveBeenCalled();
-    input = { ...input, active: true };
-    render();
     expect(comfySources.media).toHaveBeenLastCalledWith(original, expect.any(Function));
     expect(video.play).not.toHaveBeenCalled();
     ready = true; render();
@@ -133,6 +140,125 @@ describe('UI Kit VideoPlayer', () => {
     input = { ...input, active: false }; render();
     expect(comfySources.media).toHaveBeenLastCalledWith(undefined, expect.any(Function));
     expect(video.src).toBe('');
+  });
+
+  it.each([
+    ['NotSupportedError', undefined, '视频格式或编码不兼容'],
+    ['Error', 2, '视频读取失败，请检查网络或文件'],
+    ['Error', 3, '视频解码失败：编码不兼容或文件损坏'],
+    ['Error', 4, '视频格式或编码不兼容'],
+    ['Error', undefined, '视频加载失败，点击重试'],
+    ['AbortError', 3, '视频解码失败：编码不兼容或文件损坏'],
+  ] as const)('首次同步激活的 %s / %s 拒绝直接显示原因并通知宿主', async (name, code, message) => {
+    const onRequestPlayback = vi.fn(() => { input = { ...input, active: true }; render(); });
+    input = { ...input, compact: true, active: false, autoPlay: false, unavailable: false, onRequestPlayback };
+    video.play.mockImplementationOnce(() => {
+      video.error = code === undefined ? null : { code };
+      return Promise.reject(Object.assign(new Error('private source detail'), { name }));
+    });
+    render();
+    expect(elements(tree).some((el) => el.type === 'video')).toBe(false);
+    click(control('点击播放'));
+    expect(onRequestPlayback).toHaveBeenCalledOnce();
+    expect(video.play).toHaveBeenCalledOnce();
+    expect(video.src).toBe(input.src);
+    await settle();
+    expect(control(`${message}，重试播放`).type).toBe('button');
+    expect(input.onError).toHaveBeenCalledOnce();
+    expect(elements(tree).some((el) => String(el.props.children).includes('private source detail'))).toBe(false);
+  });
+
+  it('原生源在同步挂载时已就绪也只播放一次', () => {
+    const original = 'http://127.0.0.1:8188/view?filename=ready.mp4';
+    const nativeSource = 'http://comfy-media.localhost/ready-video';
+    comfySources.media.mockImplementation((source?: string) => source === original ? nativeSource : source);
+    input = { ...input, src: original, active: false, autoPlay: false, unavailable: false,
+      onRequestPlayback: () => { input = { ...input, active: true }; render(); } };
+    render(); click(control('点击播放'));
+    expect(video.src).toBe(nativeSource);
+    expect(video.play).toHaveBeenCalledOnce();
+    render(); expect(video.play).toHaveBeenCalledOnce();
+  });
+
+  it('首次同步激活的权限限制保留手动重试，不通知媒体失败', async () => {
+    input = { ...input, active: false, autoPlay: false, unavailable: false,
+      onRequestPlayback: () => { input = { ...input, active: true }; render(); } };
+    video.play.mockRejectedValueOnce(Object.assign(new Error('blocked'), { name: 'NotAllowedError' }));
+    render(); click(control('点击播放')); await settle();
+    expect(input.onError).not.toHaveBeenCalled();
+    const retry = control('点击播放');
+    expect(retry.type).toBe('button');
+    click(retry); await settle(); event('onPlay');
+    expect(video.play).toHaveBeenCalledTimes(2);
+    expect(elements(tree).some((el) => el.props['aria-label'] === '点击播放')).toBe(false);
+  });
+
+  it('暂停或重新加载中断同一来源的播放请求时不提示媒体失败', async () => {
+    let reject!: (reason: Error) => void;
+    input = { ...input, autoPlay: false };
+    video.play.mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }));
+    render(); click(control('播放视频'));
+    video.paused = true; event('onPause');
+    reject(Object.assign(new Error('normal interruption'), { name: 'AbortError' })); await settle();
+    expect(input.onError).not.toHaveBeenCalled();
+    expect(elements(tree).some((el) => el.props['aria-label'] === '点击播放'
+      || el.props.children === '视频加载失败，点击重试')).toBe(false);
+  });
+
+  it('无海报的中心播放按钮隔离画布事件，图片海报仍不接管单击', () => {
+    const onRequestPlayback = vi.fn();
+    input = { ...input, active: false, autoPlay: false, unavailable: false, onRequestPlayback };
+    render();
+    const button = control('点击播放');
+    expect(button.type).toBe('button');
+    expect(button.props.className).toContain('ui-btn');
+    expect(button.props.className).toContain('nodrag nopan');
+    const event = { stopPropagation: vi.fn() };
+    (button.props.onPointerDown as (event: unknown) => void)(event);
+    (button.props.onDoubleClick as (event: unknown) => void)(event);
+    expect(onRequestPlayback).not.toHaveBeenCalled();
+    (button.props.onClick as (event: unknown) => void)(event);
+    expect(event.stopPropagation).toHaveBeenCalledTimes(3);
+    expect(onRequestPlayback).toHaveBeenCalledOnce();
+    expect(video.play).not.toHaveBeenCalled();
+    input = { ...input, poster: 'https://videos.test/cover.jpg' }; render();
+    expect(find((el) => el.type === 'img').props.onClick).toBeUndefined();
+  });
+
+  it('有来源但宿主标记不可用时保留不可用状态，不显示中心播放入口', () => {
+    input = { ...input, active: false, autoPlay: false, unavailable: true, onRequestPlayback: vi.fn() };
+    render();
+    expect(control('视频不可用').props.role).toBe('status');
+    expect(elements(tree).some((el) => el.props['aria-label'] === '点击播放')).toBe(false);
+    expect(input.onRequestPlayback).not.toHaveBeenCalled();
+  });
+
+  it('更换错误回调不释放当前来源，拒绝播放时通知最新宿主', async () => {
+    const previousError = input.onError;
+    const onError = vi.fn();
+    input = { ...input, autoPlay: false }; render();
+    input = { ...input, onError }; render();
+    expect(video.removeAttribute).not.toHaveBeenCalled();
+    video.play.mockRejectedValueOnce(Object.assign(new Error('unsupported'), { name: 'NotSupportedError' }));
+    click(control('播放视频')); await settle();
+    expect(previousError).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('原生来源=%s 的媒体错误后收起视频仍显示错误按钮，不让海报遮住重试', async (nativeSource) => {
+    const original = nativeSource ? 'http://127.0.0.1:8188/view?filename=failed.mp4' : input.src;
+    comfySources.media.mockImplementation((source?: string) => nativeSource && source === original
+      ? 'http://comfy-media.localhost/failed-video' : source);
+    input = { ...input, src: original, autoPlay: false, unavailable: false, poster: 'https://videos.test/cover.jpg',
+      onRequestPlayback: () => { input = { ...input, active: true }; render(); } };
+    render(); video.error = { code: 3 }; event('onError');
+    input = { ...input, active: false, unavailable: true }; render();
+    expect(elements(tree).some((el) => el.type === 'video' || el.type === 'img')).toBe(false);
+    const retry = control('视频解码失败：编码不兼容或文件损坏，重试播放');
+    expect(retry.type).toBe('button');
+    video.error = null; click(retry); await settle(); event('onPlay');
+    expect(video.play).toHaveBeenCalledOnce();
+    expect(elements(tree).some((el) => el.props.children === '视频解码失败：编码不兼容或文件损坏')).toBe(false);
   });
 
   it('Comfy 旧产物只把原生播放源与安全海报交给媒体元素及重试', () => {
@@ -211,7 +337,7 @@ describe('UI Kit VideoPlayer', () => {
     scope.effects.forEach((effect) => effect.cleanup?.()); scope.effects = []; key(); expect(input.onEscape).toHaveBeenCalledOnce();
   });
   it('自动播放受限可重试，播放结束留在全屏，源失败通知上层回退', async () => {
-    video.play.mockRejectedValueOnce(new Error('autoplay blocked')); render(); await settle();
+    video.play.mockRejectedValueOnce(Object.assign(new Error('autoplay blocked'), { name: 'NotAllowedError' })); render(); await settle();
     click(control('点击播放')); await settle(); expect(video.play).toHaveBeenCalledTimes(2);
     video.paused = false; event('onPlay'); click(control('暂停视频')); expect(video.pause).toHaveBeenCalled();
     event('onEnded'); expect(input.onEnded).toHaveBeenCalledOnce(); expect(input.onEscape).not.toHaveBeenCalled();
@@ -379,6 +505,39 @@ describe('UI Kit VideoPlayer', () => {
     expect(video.removeAttribute).toHaveBeenCalledWith('src'); expect(video.src).toBe(input.src);
     reject(Object.assign(new Error('old source blocked'), { name: 'NotSupportedError' })); await settle();
     expect(elements(tree).some((el) => el.props['aria-label'] === '点击播放')).toBe(false);
+    expect(elements(tree).some((el) => el.props.children === '视频格式或编码不兼容')).toBe(false);
+  });
+  it('首次激活的旧来源请求迟到失败不污染新来源或通知错误', async () => {
+    let reject!: (reason: Error) => void;
+    input = { ...input, active: false, autoPlay: false, unavailable: false,
+      onRequestPlayback: () => { input = { ...input, active: true }; render(); } };
+    video.play.mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }));
+    render(); click(control('点击播放'));
+    input = { ...input, src: 'https://videos.test/new.mp4' }; render();
+    reject(Object.assign(new Error('old source failed'), { name: 'NotSupportedError' })); await settle();
+    expect(video.src).toBe(input.src);
+    expect(input.onError).not.toHaveBeenCalled();
+    expect(elements(tree).some((el) => el.props.children === '视频格式或编码不兼容')).toBe(false);
+  });
+  it('同一来源重新挂载后旧实例的播放拒绝不污染新实例', async () => {
+    let reject!: (reason: Error) => void;
+    input = { ...input, active: false, autoPlay: false, unavailable: false,
+      onRequestPlayback: () => { input = { ...input, active: true }; render(); } };
+    const previousVideo = video;
+    previousVideo.getAttribute.mockImplementation(() => previousVideo.src);
+    previousVideo.removeAttribute.mockImplementation(() => { previousVideo.src = ''; });
+    previousVideo.play.mockReturnValueOnce(new Promise((_, fail) => { reject = fail; }));
+    render(); click(control('点击播放'));
+    input = { ...input, active: false }; render();
+    video = { ...previousVideo, src: '', error: null, play: vi.fn().mockResolvedValue(undefined),
+      pause: vi.fn(), load: vi.fn(), getAttribute: vi.fn(() => video.src),
+      removeAttribute: vi.fn(() => { video.src = ''; }) };
+    click(control('点击播放'));
+    // 即使旧元素仍留着同一 src，只有当前 ref 指向的实例能更新错误状态。
+    previousVideo.src = input.src!;
+    reject(Object.assign(new Error('old instance failed'), { name: 'NotSupportedError' })); await settle();
+    expect(video.play).toHaveBeenCalledOnce();
+    expect(input.onError).not.toHaveBeenCalled();
     expect(elements(tree).some((el) => el.props.children === '视频格式或编码不兼容')).toBe(false);
   });
 });

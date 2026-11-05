@@ -28,6 +28,7 @@ export interface VideoPlayerProps {
   onPause?: () => void;
   onVolumeChange?: (volume: number, muted: boolean) => void;
   onPosterError?: () => void;
+  /** 在当前用户手势中同步挂载媒体；播放请求由播放器接续。 */
   onRequestPlayback?: () => void;
   /** 封面状态下按需挂载媒体以定位，不触发播放。 */
   onRequestSeek?: () => void;
@@ -83,6 +84,8 @@ export default function VideoPlayer({ src: source, poster: sourcePoster, name, a
   const failedNativeSource = useRef<string | undefined>(undefined);
   const poster = useComfyImageSource(sourcePoster, onPosterError);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const errorCallback = useRef(onError);
+  useLayoutEffect(() => { errorCallback.current = onError; }, [onError]);
   const bindVideo = useCallback((video: HTMLVideoElement | null) => {
     videoRef.current = video;
     mediaRef?.(video);
@@ -123,7 +126,7 @@ export default function VideoPlayer({ src: source, poster: sourcePoster, name, a
   const src = useComfyMediaSource(active && !retryingSource ? source : undefined, () => {
     failedNativeSource.current = source;
     setFailed({ src: source ?? '', message: videoErrorMessage(2) });
-    onError?.();
+    errorCallback.current?.();
   });
   const failure = failed && (failed.src === src || failed.src === source) ? failed : null;
   // 时长绑定原始来源，暂停释放原生媒体租约后仍可操作进度。
@@ -134,15 +137,17 @@ export default function VideoPlayer({ src: source, poster: sourcePoster, name, a
   const canSeek = !!source && duration > 0 && (active || !!onRequestSeek);
   const buffered = duration ? Math.min(100, Math.max(time, bufferedEnd) / duration * 100) : 0;
   const silent = muted || volume === 0;
-  const handlePlayFailure = useCallback((video: HTMLVideoElement, source: string, error: unknown) => {
-    if (videoRef.current !== video || video.getAttribute('src') !== source) return;
+  const handlePlayFailure = useCallback((video: HTMLVideoElement, playbackSource: string, error: unknown) => {
+    if (videoRef.current !== video || video.getAttribute('src') !== playbackSource) return;
+    const errorName = typeof error === 'object' && error !== null && 'name' in error ? error.name : undefined;
+    if (errorName === 'AbortError' && !video.error) return;
+    setPlaying(false);
     setBlocked(true);
-    if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'NotSupportedError') {
-      const code = video.error?.code ?? 4;
-      setPlaying(false);
-      setFailed({ src: source, code, message: videoErrorMessage(code) });
-    }
-  }, []);
+    if (errorName === 'NotAllowedError' && !video.error) { setFailed(null); return; }
+    const code = video.error?.code ?? (errorName === 'NotSupportedError' ? 4 : undefined);
+    setFailed({ src: source ?? playbackSource, code, message: videoErrorMessage(code) });
+    errorCallback.current?.();
+  }, [source]);
   const changeAudio = (nextVolume: number, nextMuted: boolean) => {
     // 音量设置不依赖媒体实例；封面模式或暂停释放实例后仍可调节，下次挂载再应用。
     preferredAudio.current = { volume: nextVolume, muted: nextMuted };
@@ -178,19 +183,21 @@ export default function VideoPlayer({ src: source, poster: sourcePoster, name, a
   };
   const play = () => {
     if (!source) return;
-    requestedPlayback.current = shouldLoadNativeComfyMedia(source) ? source : undefined;
-    if (!active) { onRequestPlayback?.(); return; }
-    if (!src) {
+    requestedPlayback.current = undefined;
+    if (!active) onRequestPlayback?.();
+    // 宿主会在当前手势中同步挂载；此闭包的 src 仍可能是激活前的空值。
+    const video = videoRef.current;
+    const playbackSource = video?.getAttribute('src') || (active ? src : undefined);
+    if (!video || !playbackSource) {
+      requestedPlayback.current = shouldLoadNativeComfyMedia(source) ? source : undefined;
       if (failedNativeSource.current === source) {
         failedNativeSource.current = undefined;
         setRetryingSource(true);
       }
       return;
     }
-    const video = videoRef.current; if (!video) return;
-    requestedPlayback.current = undefined;
-    if (video.error || !video.getAttribute('src')) { video.src = src; video.load(); }
-    void video.play().catch((error: unknown) => handlePlayFailure(video, src, error));
+    if (video.error || !video.getAttribute('src')) { video.src = playbackSource; video.load(); }
+    void video.play().catch((error: unknown) => handlePlayFailure(video, playbackSource, error));
   };
   const fullscreen = () => {
     if (onFullscreen && !document.fullscreenElement) { onFullscreen(); return; }
@@ -369,17 +376,18 @@ export default function VideoPlayer({ src: source, poster: sourcePoster, name, a
               onVolumeChange?.(video.volume, video.muted);
             }}
             onRateChange={(event) => { preferredRate.current = event.currentTarget.playbackRate; setRate(event.currentTarget.playbackRate); }}
-            onError={(event) => {
-              const code = event.currentTarget.error?.code;
-              setPlaying(false); setFailed({ src, code, message: videoErrorMessage(code) }); setBlocked(true); onError?.();
-            }} />
+            onError={(event) => handlePlayFailure(event.currentTarget, src, undefined)} />
           {(blocked || failure) && <button type="button" className="ui-btn ui-video-player__retry max-w-[calc(100%_-_1rem)]" onClick={play}
             aria-label={failure ? t('{reason}，重试播放', { reason: t(failure.message) }) : t('点击播放')}
             title={failure?.code === 3 || failure?.code === 4 ? t('建议使用 H.264 编码的 MP4；点击重试播放') : undefined}>
             <span className="whitespace-normal">{failure ? t(failure.message) : t('点击播放')}</span>
           </button>}
-        </> : source && poster ? <img src={poster} alt="" draggable={false} onError={onPosterError} />
-          : <p role="status" className="text-xs text-canvas-text-muted">{failure ? t(failure.message) : unavailable ? t('视频不可用') : source && !active ? t('点击播放') : t('加载视频…')}</p>}
+        </> : source && poster && !failure ? <img src={poster} alt="" draggable={false} onError={onPosterError} />
+          : source && !active && (failure || !unavailable) ? <button type="button" className="ui-btn ui-btn--ghost nodrag nopan max-w-full whitespace-normal"
+            aria-label={failure ? t('{reason}，重试播放', { reason: t(failure.message) }) : t('点击播放')}
+            onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); play(); }}>{failure ? t(failure.message) : t('点击播放')}</button>
+          : <p role="status" className="text-xs text-canvas-text-muted">{failure ? t(failure.message) : unavailable ? t('视频不可用') : t('加载视频…')}</p>}
         </div>
         <div ref={controlsRef} className={`ui-video-player__controls nodrag nopan ${compact ? 'p-2' : 'p-3'}`} aria-label={t('视频播放控件')}
           onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
