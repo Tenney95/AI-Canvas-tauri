@@ -13,6 +13,22 @@ function contractFor(model: string, size = '2K', ratio = '16:9') {
 }
 
 describe('built-in image request contracts', () => {
+  it('GRSAI 2.6 仅使用已确认的 1K 正方形与 auto 合同，不继承其他站的增强能力', () => {
+    const contract = contractFor('gpt-image-2.6', '1K', '1:1');
+    expect(contract.protocol.submit.body).toEqual({ model: '{{model}}', prompt: '{{prompt}}', images: '{{imageUrls}}',
+      aspectRatio: '1024x1024', quality: 'auto', replyType: 'json' });
+    expect(contract.dimensions).toEqual({ width: 1024, height: 1024 });
+    expect(validateModelExecutionProtocol(contract.protocol)).toEqual([]);
+    expect(contractFor('gpt-image-2.6', '4K', '1:1').dimensions).toEqual(contract.dimensions);
+    expect(() => contractFor('gpt-image-2.6', '1K', '16:9')).toThrow('1:1');
+    expect(() => resolveBuiltInImageRequestContract(getProviderDefinition('grsai'),
+      'gpt-image-2.6', '1K', '1:1', 'high')).toThrow('不支持质量');
+    expect(resolveBuiltInImageRequestContract(getProviderDefinition('grsai'), 'gpt-image-2.6-flare', '1K', '1:1')).toBeUndefined();
+    expect(resolveBuiltInImageRequestContract(getProviderDefinition('grsai'), 'gpt-image-2.6-sunburst', '1K', '1:1')).toBeUndefined();
+    expect(resolveBuiltInImageRequestContract(getProviderDefinition('cccapi'), 'gpt-image-2.6', '1K', '1:1'))
+      .toEqual({ kind: 'standard', imageReferenceRequestMode: 'edits-multipart' });
+  });
+
   it.each(['gpt-image-2-vip', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
     'maps only documented transparent background for GRSAI %s', (model) => {
       const definition = getProviderDefinition('grsai');

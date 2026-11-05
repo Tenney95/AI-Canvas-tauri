@@ -25,6 +25,7 @@ import { executeWorkflowApiMedia } from '../workflowApi/workflowApiAdapter';
 import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
 import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
 import type { AIImageGenParams, BatchImageResult, ImageGenerationResult, MediaReference } from '../../types/aiTypes';
+import type { GeneralModelConfig } from '../../types';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { collectPromptNodeMediaUrls, resolvePromptWithImageRefs, resolvePromptWithMediaRefs } from './promptResolver';
@@ -37,7 +38,7 @@ import { createMediaDownloadAccess } from './mediaDownloadAccess';
 import { mediaProviderRegistry } from './mediaProviderRegistry';
 import { executeModelProtocol, modelProtocolUsesVariable, resolveModelExecutionProfile } from './modelProtocol';
 import { assertConfiguredImageReferences, assertModelCapabilityProtocol, resolveConfiguredImageParameters, resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
-import { getProviderDefinition } from './providerCatalogService';
+import { getProviderDefinition, resolveCccGeminiImageExecutionProfile } from './providerCatalogService';
 import { resolveBuiltInImageRequestContract, validateBuiltInImageResponse } from './imageRequestContracts';
 import { buildGoogleImageParts, resolveImageTemplateDimensions } from './imageModelTemplates';
 import { assertToapisImageInput, resolveToapisImageModelContract, toapisImageReferences } from './providers/toapisModelManifest';
@@ -175,7 +176,21 @@ export async function generateImagesBatch(
     ? resolveRelayonImageModelContract(modelName, generalModel?.executionProfile ?? selectedModel?.executionProfile,
       generalModel?.imageCapability ?? selectedModel?.imageCapability)
     : undefined;
-  const effectiveProfile = toapisContract?.executionProfile ?? relayonContract?.executionProfile ?? generalModel?.executionProfile;
+  const isCccImage = !params.workflowId && providerDefinition?.id === 'cccapi';
+  const cccExecutionProfile = isCccImage ? resolveCccGeminiImageExecutionProfile(
+    modelName, generalModel?.executionProfile ?? selectedModel?.executionProfile,
+  ) : undefined;
+  const effectiveProfile = cccExecutionProfile ?? toapisContract?.executionProfile
+    ?? relayonContract?.executionProfile ?? generalModel?.executionProfile;
+  if (isCccImage && /^(?:gemini-.*image|nano-banana)/i.test(modelName)
+    && (!effectiveProfile || effectiveProfile.preset === 'openai-image' || effectiveProfile.preset === 'openai-gpt-image')) {
+    throw new Error('此 CCC Gemini／香蕉图片型号尚未适配原生调用协议，请配置该模型的调用协议后再试');
+  }
+  // 旧节点仍可直接保存 CCC 连接 ID；仅构造本轮执行描述，不写入或迁移用户配置。
+  const declarativeModel: GeneralModelConfig | undefined = generalModel ?? (isCccImage ? {
+    id: modelName, modelId: modelName, name: selectedModel?.name ?? catalogModel?.name ?? modelName,
+    category: 'image', providerConfigId: connectionId,
+  } : undefined);
   const parameterCapability = params.workflowId ? undefined : resolveImageParameterCapability(model, provider, config);
   const imageQuality = resolveConfiguredImageQuality(parameterCapability, params.imageQuality);
   const imageBackground = resolveConfiguredImageBackground(parameterCapability, params.imageBackground);
@@ -380,6 +395,54 @@ export async function generateImagesBatch(
     });
   }
 
+  // 通用模型与旧 CCC 直连节点共用声明式执行，不能因旧 provider 形态退回 Images API。
+  if (declarativeModel && executionProfile) {
+    const gm = declarativeModel;
+    const dimensions = resolveImageTemplateDimensions(configuredCapability, imageSize, aspectRatio);
+    const hasExplicitStandardRequestMode = allImageUrls.length > 0
+      && imageReferenceRequestMode !== undefined
+      && usesStandardImageRequest;
+    if (!hasExplicitStandardRequestMode) {
+      const variables = {
+        model: gm.modelId,
+        prompt,
+        imageSize,
+        imageQuality,
+        imageBackground,
+        aspectRatio,
+        size: `${dimensions.width}x${dimensions.height}`,
+        width: dimensions.width,
+        height: dimensions.height,
+        n: requestedCount,
+        batchCount: requestedCount,
+        imageUrls: providerDefinition?.id === 'toapis' ? toapisImageReferences(modelName, allImageUrls) : allImageUrls,
+        ...(customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts')
+          ? { googleImageParts: buildGoogleImageParts(prompt, allImageUrls) } : {}),
+      };
+      const urls = await runConfiguredModelProtocol({
+        model: { ...gm,
+          executionProfile: libapiExecutionProfile ?? relayonExecutionProfile ?? aigcsiExecutionProfile ?? executionProfile,
+          imageCapability: configuredCapability },
+        category: 'image',
+        nodeId: params.nodeId,
+        signal,
+        variables: usesLibapiProtocol ? libapiImageVariables(modelName, variables)
+          : usesRelayonProtocol ? relayonImageVariables(modelName, variables) : variables,
+      });
+      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions,
+        ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt } : {}),
+        ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}) }));
+      if (results.length === 0) throw new Error('图片生成返回结果为空');
+      return {
+        requestedCount,
+        results,
+        failedCount: Math.max(0, requestedCount - results.length),
+        ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}),
+        ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt, allTasksSettled: true } : {}),
+      };
+    }
+  }
+
   // 尚未迁移的 Provider 继续走兼容分支。
   switch (provider) {
     case 'general': {
@@ -391,48 +454,6 @@ export async function generateImagesBatch(
       if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
       if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
       const dimensions = resolveImageTemplateDimensions(configuredCapability, imageSize, aspectRatio);
-      const hasExplicitStandardRequestMode = allImageUrls.length > 0
-        && imageReferenceRequestMode !== undefined
-        && usesStandardImageRequest;
-      if (executionProfile && !hasExplicitStandardRequestMode) {
-        const variables = {
-          model: gm.modelId,
-          prompt,
-          imageSize,
-          imageQuality,
-          imageBackground,
-          aspectRatio,
-          size: `${dimensions.width}x${dimensions.height}`,
-          width: dimensions.width,
-          height: dimensions.height,
-          n: requestedCount,
-          batchCount: requestedCount,
-          imageUrls: providerDefinition?.id === 'toapis' ? toapisImageReferences(modelName, allImageUrls) : allImageUrls,
-          ...(customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts')
-            ? { googleImageParts: buildGoogleImageParts(prompt, allImageUrls) } : {}),
-        };
-        const urls = await runConfiguredModelProtocol({
-          model: { ...gm,
-            executionProfile: libapiExecutionProfile ?? relayonExecutionProfile ?? aigcsiExecutionProfile ?? executionProfile,
-            imageCapability: configuredCapability },
-          category: 'image',
-          nodeId: params.nodeId,
-          signal,
-          variables: usesLibapiProtocol ? libapiImageVariables(modelName, variables)
-            : usesRelayonProtocol ? relayonImageVariables(modelName, variables) : variables,
-        });
-        const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions,
-          ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt } : {}),
-          ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}) }));
-        if (results.length === 0) throw new Error('图片生成返回结果为空');
-        return {
-          requestedCount,
-          results,
-          failedCount: Math.max(0, requestedCount - results.length),
-          ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}),
-          ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt, allTasksSettled: true } : {}),
-        };
-      }
       const batch = await generateImageStandardBatch({
         apiKey: connection.apiKey,
         baseUrl: connection.baseUrl,

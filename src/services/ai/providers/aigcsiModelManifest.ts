@@ -1,4 +1,4 @@
-/** Amam 主站已核对合同（2026-11-04）：https://aigc-si.com/docs。真实生成尚待桌面验收。 */
+/** Amam 主站已核对合同（基础 2026-11-04；Image 2.6 补充 2026-11-05）：https://aigc-si.com/docs。真实生成尚待桌面验收。 */
 import type { ProviderModelSelection } from '../../../types';
 import type { ModelExecutionProfile, NormalizedModelExecutionProtocol, VideoModelCapability } from '../../../types/aiTypes';
 import { comparableProtocol } from '../modelProtocol';
@@ -76,6 +76,9 @@ export const AIGCSI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     { resolutions: ['480p', '720p', '1080p', '4K'], defaultResolution: '480p', durations: [15], minDuration: 15, maxDuration: 15, defaultDuration: 15 }),
   videoModel('minimax-h3-5', 'MiniMax H3 · 默认渠道', 9, 3, 3,
     { resolutions: ['768p', '2K'], defaultResolution: '768p', minDuration: 4, maxDuration: 15, defaultDuration: 4 }),
+  // 2.6 的 quality 独立于 resolution；枚举尚不完整，省略字段使用平台默认 auto。
+  imageModel('image-2.6-flare', 'Image 2.6 Flare'),
+  imageModel('image-2.6-sunburst', 'Image 2.6 Sunburst'),
   imageModel('image-2.5-flare', 'Image 2.5 Flare'),
   imageModel('image-2.5-sunburst', 'Image 2.5 Sunburst'),
   imageModel('image-2', 'Image 2'),

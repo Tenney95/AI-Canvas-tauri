@@ -63,7 +63,7 @@ export interface ImageCapability extends ImageModelCapability {
 }
 
 // https://docs.apimart.ai/cn/api-reference/images/gpt-image-2.5/generation
-// 两个版本共用尺寸与批量合同；质量只在 APIMart 精确型号覆盖中声明。
+// 已核实的 APIMart 2.5／2.6 共用尺寸与批量合同；质量只在其精确型号覆盖中声明。
 const GPT_IMAGE_25_CAPABILITY: Omit<ImageCapability, 'modelId'> = {
   resolutions: ['1k', '2k', '4k'],
   defaultResolution: '1k',
@@ -452,7 +452,9 @@ const APIMART_IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
     qualities: ['auto', 'low', 'medium', 'high'], defaultQuality: 'auto',
   }])),
   // https://docs.apimart.ai/cn/api-reference/images/gpt-image-2.5/generation
-  ...Object.fromEntries(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'].map((modelId) => [modelId, {
+  // https://docs.apimart.ai/cn/api-reference/images/gpt-image-2.6/generation
+  ...Object.fromEntries(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
+    'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'].map((modelId) => [modelId, {
     ...GPT_IMAGE_25_CAPABILITY, modelId,
     qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], defaultQuality: 'auto',
     backgrounds: ['auto', 'opaque', 'transparent'],

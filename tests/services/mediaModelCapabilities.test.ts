@@ -217,6 +217,23 @@ describe('image model capability resolution', () => {
 });
 
 describe('APIMart 新图片模型合同', () => {
+  it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])('%s 保留文档的尺寸、批量、参考与默认参数合同', (modelId) => {
+    const model = `apimart/${modelId}`;
+    expect(getImageCapability(model)).toMatchObject({ resolutions: ['1k', '2k', '4k'],
+      supportsBatch: true, maxBatchCount: 4, maxImageReferences: 16, supportsDataUrlReference: false });
+    const request = buildImageCapabilityRequest(model, 'portrait', { resolution: '2K', ratio: '9:16', count: 8 });
+    expect(request).toEqual({ body: { model: modelId, prompt: 'portrait', n: 4, size: '9:16', resolution: '2k', quality: 'auto' },
+      dimensions: { width: 1152, height: 2048 }, requestedCount: 4 });
+    expect(request?.body).not.toHaveProperty('background');
+    expect(() => buildImageCapabilityRequest(model, 'portrait', { ratio: '8:1' })).toThrow('不支持比例');
+    expect(() => buildImageCapabilityRequest(model, 'portrait', {
+      imageUrls: Array.from({ length: 17 }, (_, index) => `https://reference.example/${index}.png`),
+    })).toThrow('最多支持 16 张');
+    for (const prefix of ['cccapi', 'custom']) {
+      expect(getImageCapability(`${prefix}/${modelId}`)).toBeUndefined();
+    }
+  });
+
   it('uses an explicit user ratio and rejects unsupported ratios instead of silently changing it', () => {
     expect(buildImageCapabilityRequest('apimart/gpt-image-2.5-sunburst', 'portrait', { ratio: '9:16' })?.body)
       .toMatchObject({ size: '9:16' });
@@ -269,6 +286,8 @@ describe('图片生成质量按渠道隔离', () => {
     ['apimart/gpt-image-2-official', ['auto', 'low', 'medium', 'high'], 'auto'],
     ['apimart/gpt-image-2.5-flare', ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], 'auto'],
     ['apimart/gpt-image-2.5-sunburst', ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], 'auto'],
+    ['apimart/gpt-image-2.6-flare', ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], 'auto'],
+    ['apimart/gpt-image-2.6-sunburst', ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], 'auto'],
     ['grsai/gpt-image-2', ['auto'], 'auto'],
     ['grsai/gpt-image-2-vip', ['medium'], 'medium'],
     ['grsai/gpt-image-2.5', ['auto'], 'auto'],
@@ -371,6 +390,8 @@ describe('GPT Image 2.5 背景能力与请求', () => {
   it.each([
     ['apimart/gpt-image-2.5-flare', ['auto', 'opaque', 'transparent']],
     ['apimart/gpt-image-2.5-sunburst', ['auto', 'opaque', 'transparent']],
+    ['apimart/gpt-image-2.6-flare', ['auto', 'opaque', 'transparent']],
+    ['apimart/gpt-image-2.6-sunburst', ['auto', 'opaque', 'transparent']],
     ['grsai/gpt-image-2.5-flare', ['transparent']],
     ['grsai/gpt-image-2.5-sunburst', ['transparent']],
   ] as const)('%s 按精确渠道声明背景并保持接口缺省值', (model, backgrounds) => {

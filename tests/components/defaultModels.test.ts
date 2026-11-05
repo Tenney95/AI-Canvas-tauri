@@ -18,7 +18,7 @@ import { getProviderDefinition, isProviderModelVisible } from '../../src/service
 describe('Amam 图片与视频模型菜单', () => {
   it('默认目录不自动启用；勾选后使用当前连接的独立分组，并供对话媒体选择使用', () => {
     const candidates = getProviderDefinition('aigc-si')!.models!;
-    expect(candidates).toHaveLength(19);
+    expect(candidates).toHaveLength(21);
     const selected = ['image', 'video'].map((category) => candidates.find((item) => item.category === category)!);
     const config: AppConfig = { theme: 'dark', providers: {
       'my-amam': { name: '自己的 Amam', catalogId: 'aigc-si', apiKey: 'fixture', selectedModels: selected },
@@ -90,6 +90,19 @@ function createConfig(selectedModels: ProviderModelSelection[]): AppConfig {
 }
 
 describe('内置厂商动态模型目录', () => {
+  it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])('APIMart %s 属于图片候选，仅勾选后进入节点与对话模型菜单', (id) => {
+    const option = defaultModelGroups.find((group) => group.id === 'apimart')!.models
+      .find((model) => model.value === `apimart/${id}`);
+    expect(option).toMatchObject({ provider: 'apimart', nodeTypes: ['ai-image'] });
+    expect(getConfiguredModelGroups(createConfig([]), 'ai-image')).toEqual([]);
+    const config = createConfig([{ id, name: id, category: 'image', provider: 'apimart' }]);
+    expect(getConfiguredModelGroups(config, 'ai-image').flatMap((group) => group.models).map((model) => model.value))
+      .toEqual([`apimart/${id}`]);
+    expect(getMediaModelOptions([], config).find((model) => model.value === `apimart/${id}`))
+      .toMatchObject({ provider: 'apimart', mediaKind: 'image' });
+    expect(getConfiguredModelGroups(config, 'ai-video')).toEqual([]);
+  });
+
   it('GRSAI 新模型分类正确，默认目录不再列出已下架 GPT-5.4，已有选择保持可读', () => {
     const models = defaultModelGroups.find((group) => group.id === 'grsai')!.models;
     for (const [id, kind] of [['nano-banana-2.1', 'image'], ['gpt-image-2.5', 'image'], ['gpt-image-2.5-flare', 'image'], ['gpt-image-2.5-sunburst', 'image'], ['minimax-h3', 'video'], ['gpt-6-astra', 'text'], ['gpt-5.6-sol', 'text'], ['gpt-5.6-terra', 'text'], ['gemini-3.5-flash-lite', 'text'], ['gemini-3.7-flash', 'text'], ['gemini-3.8-flash', 'text']]) {

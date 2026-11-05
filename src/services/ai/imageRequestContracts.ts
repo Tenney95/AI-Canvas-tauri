@@ -25,7 +25,7 @@ const GRSAI_NANO_MODELS = new Set([
   'nano-banana-pro-vt', 'nano-banana-pro-cl', 'nano-banana-pro-vip', 'nano-banana-pro-4k-vip',
 ]);
 const GRSAI_GPT_MODELS = new Set([
-  'gpt-image-2', 'gpt-image-2-vip', 'gpt-image-2.5',
+  'gpt-image-2', 'gpt-image-2-vip', 'gpt-image-2.5', 'gpt-image-2.6',
   'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
 ]);
 
@@ -81,6 +81,9 @@ export function resolveBuiltInImageRequestContract(
   const requestedSize = imageSize === '720p' ? '1K' : imageSize;
   if (!['1K', '2K', '4K'].includes(requestedSize)) throw new Error(`GRSAI 不支持图片档位 ${imageSize}`);
   const capability = getGrsaiImageCapability(modelId);
+  if (modelId === 'gpt-image-2.6' && aspectRatio !== '1:1') {
+    throw new Error(`GRSAI ${modelId} 当前仅确认 1:1 比例，请在参数中选择 1:1`);
+  }
   const background = resolveConfiguredImageBackground(capability, imageBackground);
   const normalizedSize = capability && !capability.resolutions?.includes(requestedSize)
     ? capability.defaultResolution! : requestedSize;

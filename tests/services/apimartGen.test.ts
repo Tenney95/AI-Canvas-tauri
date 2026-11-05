@@ -350,7 +350,7 @@ describe('APIMart image polling', () => {
     serviceMocks.uploadToRemote.mockResolvedValue('https://upload.example/reference.png');
   });
 
-  it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
+  it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])(
     '将 %s 从媒体目录路由到原生批量接口并收集四张图片',
     async (model) => {
       const option = getMediaModelOptions().find((item) => item.value === `apimart/${model}`);
@@ -387,7 +387,7 @@ describe('APIMart image polling', () => {
     },
   );
 
-  it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
+  it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])(
     '%s 文生图保留自适应尺寸并将原生数量限制为四张',
     (model) => {
       const request = buildImageCapabilityRequest(`apimart/${model}`, '风景', {
@@ -409,15 +409,31 @@ describe('APIMart image polling', () => {
     })?.dimensions).toEqual({ width, height });
   });
 
-  it('GPT Image 2.5 在提交前拒绝超过十六张参考图', async () => {
+  it.each(['gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])('%s 在提交前拒绝超过十六张参考图', async (model) => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     await expect(generateApimartImagesBatch(
-      'api-key', 'https://api.example.com', 'gpt-image-2.5-sunburst', '编辑',
+      'api-key', 'https://api.example.com', model, '编辑',
       '2K', '1:1', { width: 2048, height: 2048 },
       Array.from({ length: 17 }, (_, index) => `https://ref.example/${index}.png`),
     )).rejects.toThrow('最多支持 16 张参考图');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])('%s 发送用户质量，默认不添加背景或格式参数，并沿原任务查询', async (model) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ code: 200, data: [{ task_id: 'gpt-26-task' }] }))
+      .mockResolvedValueOnce(jsonResponse({ code: 200, data: { status: 'completed',
+        result: { images: [{ url: ['https://cdn.example/result.png'] }] } } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await generateApimartImagesBatch('gpt-26-fixture', 'https://api.example.com', model, 'portrait',
+      '2K', '9:16', { width: 1, height: 1 }, [], 1, undefined, undefined, 'max');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      model, prompt: 'portrait', n: 1, size: '9:16', resolution: '2k', quality: 'max',
+    });
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer gpt-26-fixture' });
+    expect(fetchMock.mock.calls[1][0]).toBe('https://api.example.com/tasks/gpt-26-task?language=zh');
   });
 
   it('stops polling immediately when the task fails', async () => {

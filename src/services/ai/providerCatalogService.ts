@@ -25,7 +25,7 @@ import type {
   ProviderModelSelection,
   WebSearchProviderId,
 } from '../../types';
-import type { NormalizedModelExecutionProtocol } from '../../types/aiTypes';
+import type { ModelExecutionProfile, NormalizedModelExecutionProtocol } from '../../types/aiTypes';
 import { corsSafeFetch } from './httpTransport';
 import { baseUrlCandidates } from './providerBaseUrl';
 import { getProviderPolicy, resolveProviderCatalogId, type ProviderPolicy } from './providerPolicies';
@@ -201,9 +201,16 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     id: 'gpt-image-2.5', name: 'GPT Image 2.5', category: 'image', provider: 'cccapi',
     description: 'OpenAI 兼容图片生成与编辑模型', imageReferenceRequestMode: 'edits-multipart',
   },
+  {
+    id: 'gpt-image-2.6', name: 'GPT Image 2.6', category: 'image', provider: 'cccapi',
+    description: '当前在 CCC生图白嫖渠道开放；实际分辨率由渠道决定，质量与背景能力待公布',
+    imageReferenceRequestMode: 'edits-multipart',
+  },
   ...[
     'gemini-3-pro-image-preview', 'gemini-3-pro-image', 'gemini-3.1-flash-image',
     'gemini-2.5-flash-image', 'nano-banana2', 'nano-banana-pro',
+    // 当前模型广场写法；旧别名保留兼容，实际请求始终保留 Key 目录中的 ID。
+    'Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1',
   ].map((id): ProviderModelSelection => ({
     id, name: id, category: 'image', provider: 'cccapi',
     description: 'CCC Gemini 原生文生图（当前不接收参考图）',
@@ -569,6 +576,20 @@ export function createConnectionId(providerId: string): string {
   return `${providerId === 'custom-openai' ? 'custom' : providerId}-${suffix}`;
 }
 
+/** 只补 CCC 已核实图片型号的缺省／旧 Images 预设，不覆盖用户自定义协议。 */
+export function resolveCccGeminiImageExecutionProfile(
+  modelId: string,
+  profile?: ModelExecutionProfile,
+): ModelExecutionProfile | undefined {
+  if (!/^(?:gemini-.*image|nano-banana)/i.test(modelId)) return profile;
+  if (profile && (!['openai-image', 'openai-gpt-image'].includes(profile.preset)
+    || profile.protocol !== undefined
+    || Object.keys(profile).some((key) => key !== 'preset' && key !== 'protocol'))) return profile;
+  const known = CCCAPI_MODEL_MANIFEST.find((item) => item.category === 'image'
+    && item.id.toLowerCase() === modelId.toLowerCase() && item.executionProfile?.preset === 'custom');
+  return known?.executionProfile ? structuredClone(known.executionProfile) : profile;
+}
+
 export function getProviderDefinition(
   providerId: string,
   config?: Pick<ApiProviderConfig, 'catalogId'>,
@@ -595,6 +616,9 @@ export function resolveProviderImageModelForValidation(
   if (definition?.id === 'cccapi' && definition.models?.some((item) => item.id === model.id
     && item.category === 'image' && item.imageReferenceRequestMode === 'edits-multipart')) {
     return { ...model, executionProfile: undefined };
+  }
+  if (definition?.id === 'cccapi') {
+    return { ...model, executionProfile: resolveCccGeminiImageExecutionProfile(model.id, profile) };
   }
   if (definition?.id === 'toapis') {
     return { ...model, ...resolveToapisImageModelContract(model.id, profile, model.imageCapability) };
@@ -763,10 +787,15 @@ function normalizeModels(
 function mergeRemoteCatalogMetadata(
   remoteModels: ProviderModelSelection[],
   fallbackModels: ProviderModelSelection[],
+  catalogId?: string,
 ): ProviderModelSelection[] {
   const fallbackById = new Map(fallbackModels.map((model) => [model.id, model]));
+  const cccFallbackById = catalogId === 'cccapi'
+    ? new Map(fallbackModels.filter((model) => model.category === 'image'
+      && /^(?:gemini-.*image|nano-banana)/i.test(model.id))
+      .map((model) => [model.id.toLowerCase(), model])) : undefined;
   return remoteModels.map((remote) => {
-    const fallback = fallbackById.get(remote.id);
+    const fallback = fallbackById.get(remote.id) ?? cccFallbackById?.get(remote.id.toLowerCase());
     if (!fallback) return remote;
     return {
       ...fallback,
@@ -1000,6 +1029,7 @@ export async function fetchProviderModelCatalog(
         ? expandApimartCatalog(models, normalizedFallback, providerId)
         : matchedToapis || models,
       normalizedFallback,
+      definition.id,
     );
     return {
       models: definition.id === 'cccapi' ? filterCccGroupModels(catalogModels, config.cccGroup) : catalogModels,

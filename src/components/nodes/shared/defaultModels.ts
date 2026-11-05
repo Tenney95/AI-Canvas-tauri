@@ -80,6 +80,8 @@ export const defaultModelGroups: ModelGroup[] = [
         ['gemini-3-pro-image-preview-official', 'Nano Banana Pro 官方渠道', '1K/2K/4K，支持参考图'],
         ['gpt-image-2-official', 'GPT Image 2 官方渠道', '1K/2K/4K，最多 16 张参考图'],
         ['gpt-image-2.5-ext', 'GPT Image 2.5 Ext (Flare)', '1K/2K/4K，最多 16 张参考图'],
+        ['gpt-image-2.6-flare', 'GPT Image 2.6 Flare', '1K/2K/4K，支持质量、透明背景与最多 16 张参考图'],
+        ['gpt-image-2.6-sunburst', 'GPT Image 2.6 Sunburst', '1K/2K/4K，支持质量、透明背景与最多 16 张参考图'],
         ['seedream-5-0-pro', 'Seedream 5.0 Pro', '1K/1.5K/2K，最多 10 张参考图'],
         ['seedream-5-0-flash', 'Seedream 5.0 Flash', '1K/1.5K/2K，最多 10 张参考图'],
         ['qwen-image-3.0', 'Qwen Image 3.0', '1K/2K，最多 3 张参考图，批量最多 6 张'],

@@ -35,7 +35,9 @@ export function filterCccGroupModels(models: readonly ProviderModelSelection[], 
 
 /** 预置目录只用于已知分组的选择预览，不表示 Key 已验证或拥有全部型号权限。 */
 export function getCccGroupPresetModels(models: readonly ProviderModelSelection[], group?: string): ProviderModelSelection[] {
-  return CCC_PROVIDER_GROUPS.some((item) => item.name === group?.trim()) ? filterCccGroupModels(models, group) : [];
+  if (!CCC_PROVIDER_GROUPS.some((item) => item.name === group?.trim())) return [];
+  // 2026-11-05 广场只在白嫖组列出 2.6；仅限制预览，不拦截 Key 实际返回的新权限。
+  return filterCccGroupModels(models, group).filter((model) => model.id !== 'gpt-image-2.6' || group?.trim() === 'CCC生图白嫖');
 }
 
 export function cccConnectionName(config?: Pick<ApiProviderConfig, 'cccGroup'>): string {

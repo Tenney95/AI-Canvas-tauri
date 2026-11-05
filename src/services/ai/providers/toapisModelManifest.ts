@@ -104,6 +104,14 @@ const IMAGE_MODELS: ProviderModelSelection[] = [
     ...K_RESOLUTIONS, ratios: BANANA_RATIOS, dimensionPresets: GPT_PIXEL_SIZES,
     qualities: GPT_25_QUALITIES, defaultQuality: 'high', backgrounds: ['transparent'],
   }, { size: '{{size}}', quality: '{{imageQuality}}', background: '{{imageBackground}}' }),
+  // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2.6-official/generation
+  // 2.6 单独使用文档列出的比例名和分辨率，不沿用 2.5 的像素表或额外输出模式。
+  ...images(['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official'], {
+    resolutions: ['1k', '2k', '4k'], defaultResolution: '1k',
+    ratios: ['auto', '1:1', '3:2', '2:3', '16:9', '9:16'],
+    qualities: GPT_25_QUALITIES, defaultQuality: 'medium', backgrounds: ['auto', 'opaque', 'transparent'],
+    maxImageReferences: 16, supportsBatch: true, maxBatchCount: 4,
+  }, { resolution: '{{imageSize}}', quality: '{{imageQuality}}', background: '{{imageBackground}}', output_format: 'png' }),
   ...images(['gemini-nano-banana-2.1', 'gemini-nano-banana-2.1-vip', 'gemini-nano-banana-2.1-official'], {
     ...K_RESOLUTIONS, ratios: BANANA_WIDE_RATIOS, maxImageReferences: 14,
   }, METADATA_RESOLUTION),
@@ -372,13 +380,15 @@ export function resolveToapisImageModelContract(
   if (executionProfile?.preset === 'custom' && profile?.protocol) {
     const saved = comparableProtocol(executionProfile.protocol);
     const candidates = [profile.protocol];
+    // 2.6 没有这两种历史内置合同，用户删改字段时不能据此还原为当前模板。
+    const hasLegacyContract = !modelId.startsWith('gpt-image-2.6-');
     // 上版质量动态合同和更早的固定质量合同都没有 background；只接受完整匹配。
-    if (current.imageCapability?.backgrounds) {
+    if (hasLegacyContract && current.imageCapability?.backgrounds) {
       const previous = structuredClone(profile.protocol);
       delete (previous.submit.body as Body).background;
       candidates.push(previous);
     }
-    if (current.imageCapability?.qualities) {
+    if (hasLegacyContract && current.imageCapability?.qualities) {
       const previous = structuredClone(candidates[candidates.length - 1]);
       const body = previous.submit.body as Body;
       // 此版本之前只有 GPT 2.5 固定 high，GPT 2 VIP / official 没有质量字段。

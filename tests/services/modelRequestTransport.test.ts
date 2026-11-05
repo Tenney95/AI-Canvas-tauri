@@ -31,6 +31,7 @@ import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiMod
 import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
 import { pollResolvedModelProtocol } from '../../src/services/ai/modelProtocol';
 import { executeRunningHubModel } from '../../src/services/ai/providers/runninghubMedia';
+import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -315,6 +316,94 @@ describe('standard image error credentials', () => {
     expect((error as Error).cause).toBeUndefined();
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
     expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe(`https://gateway.example/v1/images/${mode === 'multipart-504' ? 'edits' : 'generations'}`);
+  });
+});
+
+describe('GPT Image 2.6 的厂商请求合同', () => {
+  it.each([false, true])('CCC 基础款兼容同步／异步结果（async=%s），只使用原分组 Key', async (asyncResult) => {
+    const projectId = 'ccc-26-project';
+    clearProjectTasks(projectId);
+    useAppStore.getState().saveProviderConfig('ccc-26', { name: 'CCC 白嫖', catalogId: 'cccapi',
+      cccGroup: 'CCC生图白嫖', apiKey: 'ccc-26-fixture', baseUrl: 'https://cccapi.cn/v1',
+      selectedModels: [{ id: 'gpt-image-2.6', name: 'GPT Image 2.6', category: 'image', provider: 'ccc-26' }] });
+    const selected = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'ccc-26')!;
+    useAppStore.setState({ currentProjectId: projectId, nodes: [{ id: 'ccc-26-node', type: 'ai-image',
+      position: { x: 0, y: 0 }, data: { type: 'ai-image', label: 'CCC 2.6', status: 'loading' } }] });
+    if (asyncResult) {
+      transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ task_id: 'ccc-26-task' }] }))
+        .mockResolvedValueOnce(jsonResponse({ data: { id: 'ccc-26-task', status: 'completed',
+          result: { images: [{ url: ['https://cdn.example/ccc-26.png'] }] } } }));
+    } else {
+      transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/ccc-26.png' }] }));
+    }
+    const result = await generateImagesBatch({ provider: 'general', model: `general/${selected.id}`,
+      nodeId: 'ccc-26-node', prompt: '风景', imageSize: '1K', aspectRatio: '1:1',
+      imageQuality: 'max', imageBackground: 'transparent' }, 1);
+    expect(result.results[0].url).toBe('https://cdn.example/ccc-26.png');
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1/images/generations');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer ccc-26-fixture' });
+    const body = JSON.parse(String(init.body));
+    expect(body).toMatchObject({ model: 'gpt-image-2.6', size: '1024x1024', n: 1 });
+    for (const field of ['quality', 'background', 'output_format']) expect(body).not.toHaveProperty(field);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(asyncResult ? 2 : 1);
+    if (asyncResult) {
+      expect(transportMocks.corsSafeFetch.mock.calls[1][0]).toBe('https://cccapi.cn/v1/tasks/ccc-26-task');
+      expect(getPendingTasksForProject(projectId)[0]).toMatchObject({ taskId: 'ccc-26-task',
+        providerConfigId: 'ccc-26', mediaRecoveryState: 'delivery_pending' });
+    }
+    clearProjectTasks(projectId);
+  });
+
+  it.each([
+    ['toapis', 'gpt-image-2.6-flare-official'], ['toapis', 'gpt-image-2.6-sunburst-official'],
+    ['aigc-si', 'image-2.6-flare'], ['aigc-si', 'image-2.6-sunburst'],
+  ] as const)('%s 的 %s 复用原任务查询及同源下载身份', async (catalogId, modelId) => {
+    const selected = structuredClone(getProviderDefinition(catalogId)!.models!.find((item) => item.id === modelId)!);
+    const baseUrl = catalogId === 'toapis' ? 'https://toapis.cn/v1' : AIGCSI_BASE_URL;
+    const projectId = `image-26-${modelId}`;
+    clearProjectTasks(projectId);
+    useAppStore.getState().saveProviderConfig('image-26', { name: '2.6', catalogId, baseUrl,
+      apiKey: 'image-26-fixture', selectedModels: [selected] });
+    const general = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'image-26')!;
+    useAppStore.setState({ currentProjectId: projectId, nodes: [{ id: 'image-26-node', type: 'ai-image',
+      position: { x: 0, y: 0 }, data: { type: 'ai-image', label: '2.6', status: 'loading' } }] });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ id: 'image-26-task' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed', result: { data: [{ url: 'https://cdn.example/result-26.png' }] } }));
+    const result = await generateImagesBatch({ provider: 'general', model: `general/${general.id}`, prompt: '竖版海报',
+      nodeId: 'image-26-node', imageSize: catalogId === 'toapis' ? '2k' : '2K', aspectRatio: '9:16',
+      ...(catalogId === 'toapis' ? { imageQuality: 'max', imageBackground: 'transparent' } : {}) }, 1);
+    const calls = transportMocks.corsSafeFetch.mock.calls;
+    expect(calls.map(([url]) => url)).toEqual([`${baseUrl}/images/generations${catalogId === 'toapis' ? '' : '/async'}`,
+      `${baseUrl}/${catalogId === 'toapis' ? 'images/generations' : 'image-jobs'}/image-26-task`]);
+    const body = JSON.parse(String(calls[0][1].body));
+    expect(body).toMatchObject({ model: modelId, n: 1, resolution: catalogId === 'toapis' ? '2k' : '2K' });
+    if (catalogId === 'toapis') expect(body).toMatchObject({ size: '9:16', quality: 'max', background: 'transparent', output_format: 'png' });
+    else {
+      expect(body).toHaveProperty('aspect_ratio', '9:16');
+      for (const field of ['quality', 'background']) expect(body).not.toHaveProperty(field);
+    }
+    expect(calls[1][1].headers).toMatchObject({ Authorization: 'Bearer image-26-fixture' });
+    expect(result).toMatchObject({ results: [{ url: 'https://cdn.example/result-26.png' }],
+      taskReceipt: { taskId: 'image-26-task', projectId, nodeId: 'image-26-node' },
+      mediaDownloadAccess: { providerConfigId: 'image-26', origin: new URL(baseUrl).origin } });
+    expect(getPendingTasksForProject(projectId)[0]).toMatchObject({ taskId: 'image-26-task',
+      providerConfigId: 'image-26', mediaRecoveryState: 'delivery_pending' });
+    expect(calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+    clearProjectTasks(projectId);
+  });
+
+  it('GRSAI 基础 2.6 使用其已确认的像素与 auto，不猜增强型号或其他比例', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      providers: { grsai: { name: 'GRSAI', apiKey: 'grsai-26-fixture' } } } }));
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ status: 'succeeded', results: [{ url: 'https://cdn.example/grsai-26.png' }] }));
+    const params = { provider: 'grsai', model: 'grsai/gpt-image-2.6', prompt: '海报', imageSize: '1K', aspectRatio: '1:1' };
+    await expect(generateImagesBatch(params, 1)).resolves.toMatchObject({ results: [{ url: 'https://cdn.example/grsai-26.png' }] });
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(url).toBe('https://grsai.dakka.com.cn/v1/api/generate');
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'gpt-image-2.6', aspectRatio: '1024x1024', quality: 'auto', replyType: 'json' });
+    await expect(generateImagesBatch({ ...params, aspectRatio: '16:9' }, 1)).rejects.toThrow('1:1');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
   });
 });
 
@@ -1509,6 +1598,133 @@ describe('image quick template request transport', () => {
     const [pollUrl, poll] = transportMocks.corsSafeFetch.mock.calls[1];
     expect(pollUrl).toBe('https://images.example/v1/tasks/task-123');
     expect(poll.headers).toMatchObject({ Authorization: 'Bearer template-fixture' });
+  });
+});
+
+describe('CCC Gemini 旧连接的原生图片路由', () => {
+  function configureCccImage({
+    modelId = 'gemini-3.1-flash-image', connectionId = 'cccapi-banana', profile, selectedProfile,
+    catalogId = 'cccapi', direct = false,
+  }: {
+    modelId?: string; connectionId?: string; profile?: ModelExecutionProfile; selectedProfile?: ModelExecutionProfile;
+    catalogId?: 'cccapi' | 'custom-openai'; direct?: boolean;
+  } = {}) {
+    useAppStore.setState((state) => ({ config: {
+      ...state.config,
+      providers: { ...state.config.providers,
+        'cccapi-other': { name: '另一分组', apiKey: 'other-group-key-fixture', baseUrl: 'https://cccapi.cn/v1', catalogId: 'cccapi' },
+        [connectionId]: { name: '香蕉分组', apiKey: 'banana-group-key-fixture', baseUrl: 'https://cccapi.cn/v1', catalogId,
+          cccGroup: '🍌香蕉（官k）', selectedModels: [{ id: modelId, name: modelId, category: 'image' as const,
+            provider: connectionId, ...(selectedProfile ? { executionProfile: structuredClone(selectedProfile) } : {}) }] },
+      },
+      generalModels: [{ id: 'ccc-legacy-gemini', name: modelId, modelId, category: 'image' as const,
+        providerConfigId: connectionId, ...(profile ? { executionProfile: structuredClone(profile) } : {}) }],
+    } }));
+    return { provider: direct ? connectionId : 'general', model: direct ? `${connectionId}/${modelId}` : 'general/ccc-legacy-gemini',
+      prompt: '画一只猫', imageSize: '2K', aspectRatio: '9:16' };
+  }
+
+  function mockNativeCccImage() {
+    transportMocks.corsSafeFetch.mockImplementation(async () => jsonResponse({ candidates: [{
+      content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } }] },
+    }] }));
+  }
+
+  function customCccImageProfile(): ModelExecutionProfile {
+    return { preset: 'custom', protocol: { version: 2, mode: 'sync', auth: { type: 'bearer' },
+      submit: { method: 'POST', path: '/my-image-job', body: { model: '{{model}}', prompt: '{{prompt}}' } },
+      response: { type: 'json', result: { urlPath: 'data.*.url' } },
+    } };
+  }
+
+  it.each(['gemini-3-pro-image-preview', 'gemini-3-pro-image', 'gemini-3.1-flash-image',
+    'gemini-2.5-flash-image', 'nano-banana2', 'nano-banana-pro'])(
+    '旧通用模型 %s 缺少保存协议时仍使用已确认的原生合同', async (modelId) => {
+      const params = configureCccImage({ modelId });
+      mockNativeCccImage();
+      await expect(generateImagesBatch(params, 1)).resolves.toMatchObject({ results: [{ url: 'data:image/png;base64,aW1hZ2U=' }] });
+      expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+      const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`https://cccapi.cn/v1beta/models/${modelId}:generateContent`);
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer banana-group-key-fixture' });
+      expect(JSON.parse(String(init.body))).toMatchObject({ contents: [{ role: 'user', parts: [{ text: '画一只猫' }] }],
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'], imageConfig: { aspectRatio: '9:16' } } });
+      expect(useAppStore.getState().config.generalModels![0].executionProfile).toBeUndefined();
+    },
+  );
+
+  it.each(['openai-image', 'openai-gpt-image'] as const)('旧 %s 预设临时修正路由，保存配置保持原样', async (preset) => {
+    const params = configureCccImage({ profile: { preset } });
+    const saved = structuredClone(useAppStore.getState().config);
+    mockNativeCccImage();
+    await generateImagesBatch(params, 1);
+    expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe('https://cccapi.cn/v1beta/models/gemini-3.1-flash-image:generateContent');
+    expect(useAppStore.getState().config).toEqual(saved);
+  });
+
+  it.each(['cccapi', 'cccapi-banana-old'])('旧节点直接保存 provider=%s 时也使用原生合同', async (connectionId) => {
+    const params = configureCccImage({ connectionId, direct: true });
+    mockNativeCccImage();
+    await generateImagesBatch(params, 1);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1beta/models/gemini-3.1-flash-image:generateContent');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer banana-group-key-fixture' });
+  });
+
+  it.each(['Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1', 'nAnO-bAnAnA-2.1'])(
+    '别名 %s 只匹配合同，保留实际请求型号和分组 Key', async (modelId) => {
+      const params = configureCccImage({ modelId });
+      mockNativeCccImage();
+      await generateImagesBatch(params, 1);
+      expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+      const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`https://cccapi.cn/v1beta/models/${modelId}:generateContent`);
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer banana-group-key-fixture' });
+      expect(JSON.stringify(transportMocks.corsSafeFetch.mock.calls)).not.toContain('other-group-key-fixture');
+      expect(useAppStore.getState().config.generalModels![0].modelId).toBe(modelId);
+    },
+  );
+
+  it.each([false, true])('显式 custom 协议作为已保存模型／选中配置后备（%s）均不被覆盖', async (selectedFallback) => {
+    const profile = customCccImageProfile();
+    const params = configureCccImage({ modelId: 'gemini-unlisted-image',
+      ...(selectedFallback ? { selectedProfile: profile } : { profile }) });
+    const saved = structuredClone(useAppStore.getState().config);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/custom.png' }] }));
+    await expect(generateImagesBatch(params, 1)).resolves.toMatchObject({ results: [{ url: 'https://cdn.example/custom.png' }] });
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1/my-image-job');
+    expect(JSON.parse(String(init.body))).toEqual({ model: 'gemini-unlisted-image', prompt: '画一只猫' });
+    expect(useAppStore.getState().config).toEqual(saved);
+  });
+
+  it('其他明确声明的图片预设保持自己的请求合同', async () => {
+    const params = configureCccImage({ profile: { preset: 'gpt-image-gateway-json' } });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/explicit.png' }] }));
+    await generateImagesBatch(params, 1);
+    expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe('https://cccapi.cn/v1/images/generations');
+    expect(useAppStore.getState().config.generalModels![0].executionProfile).toEqual({ preset: 'gpt-image-gateway-json' });
+  });
+
+  it.each([false, true])('连接名为 cccapi 的显式自定义接口（直接节点=%s）仍走自己的 Images 请求', async (direct) => {
+    const params = configureCccImage({ modelId: 'Nano-Banana-2.1', connectionId: 'cccapi', catalogId: 'custom-openai', direct });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/openai.png' }] }));
+    await generateImagesBatch(params, 1);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1/images/generations');
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'Nano-Banana-2.1' });
+  });
+
+  it.each(['gemini-unlisted-image', 'Nano-Banana-unknown'])('未知图片候选 %s 没有协议时在提交前拒绝，不再尝试 Images', async (modelId) => {
+    const params = configureCccImage({ modelId });
+    await expect(generateImagesBatch(params, 1)).rejects.toThrow(/CCC|Gemini|香蕉|协议/);
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('旧连接缺协议时仍在发送前阻止未接入的参考图（直接节点=%s）', async (direct) => {
+    const params = configureCccImage({ direct });
+    await expect(generateImagesBatch({ ...params, image_urls: ['https://cdn.example/reference.png'] }, 1)).rejects.toThrow('参考图');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
   });
 });
 

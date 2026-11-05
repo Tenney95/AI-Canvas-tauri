@@ -4,7 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import { TOAPIS_MODEL_MANIFEST, TOAPIS_TEXT_MODEL_IDS, assertToapisImageInput, assertToapisVideoInput,
   matchToapisCatalog, resolveToapisImageModelContract, toapisImageReferences, toapisVideoVariables } from '../../src/services/ai/providers/toapisModelManifest';
-import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabilityValidation';
+import { assertConfiguredImageReferences, assertModelCapabilityProtocol, resolveConfiguredImageBackground,
+  resolveConfiguredImageParameters, resolveConfiguredImageQuality } from '../../src/services/ai/modelCapabilityValidation';
 import { buildModelProtocolRequest, previewModelProtocolResponse, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
 import { findUnusedReferenceVariables } from '../../src/services/ai/modelProtocolRuntime';
 import { buildCanonicalVideoProtocolVariables } from '../../src/services/ai/generateVideo';
@@ -122,6 +123,94 @@ describe('ToAPIs 已核对的渠道合同', () => {
           model: id, prompt: 'test', imageQuality, imageSize: '2K', aspectRatio: '16:9', size: '2048x1152', n: 1,
         } });
       expect(request.renderedBody).toMatchObject({ quality: expected });
+    }
+  });
+
+  it.each(['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official'])(
+    '%s 使用独立的普通 PNG 合同，当前站点和输入顺序保持不变', (id) => {
+      const current = model(id);
+      expect(current.imageCapability).toMatchObject({ resolutions: ['1k', '2k', '4k'], defaultResolution: '1k',
+        ratios: ['auto', '1:1', '3:2', '2:3', '16:9', '9:16'],
+        qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], defaultQuality: 'medium',
+        backgrounds: ['auto', 'opaque', 'transparent'], supportsBatch: true, maxBatchCount: 4,
+        supportsImageReference: true, maxImageReferences: 16, supportsDataUrlReference: false });
+      expect(current.imageCapability?.dimensionPresets).toBeUndefined();
+      const references = Array.from({ length: 16 }, (_, index) => `https://cdn.example/ref-${index}.png`);
+      const protocol = current.executionProfile!.protocol!;
+      const variables = { model: id, prompt: 'retain the subject', n: 4, aspectRatio: '9:16', imageSize: '2k',
+        imageQuality: 'max', imageBackground: 'transparent', imageUrls: toapisImageReferences(id, references) };
+      expect(findUnusedReferenceVariables(JSON.stringify(protocol), variables)).toEqual([]);
+      for (const baseUrl of ['https://toapis.cn/v1', 'https://toapis.com/v1']) {
+        const built = buildModelProtocolRequest({ protocol, baseUrl, apiKey: 'fixture-key', variables });
+        expect(built.url).toBe(`${baseUrl}/images/generations`);
+        expect(built.renderedBody).toEqual({ model: id, prompt: 'retain the subject', n: 4, size: '9:16',
+          resolution: '2k', quality: 'max', background: 'transparent', image_urls: references, output_format: 'png' });
+      }
+      expect(protocol).toMatchObject({ mode: 'async', response: { taskIdPath: 'id' }, poll: {
+        path: '/images/generations/{{submit.id}}', maxDurationMs: 3_600_000,
+        response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed', 'cancelled'],
+          result: { urlPath: 'result.data.*.url' } },
+      } });
+    },
+  );
+
+  it.each(['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official'])(
+    '%s 的默认质量、枚举、单次四张及参考上限在提交前校验', (id) => {
+      const current = model(id);
+      const capability = current.imageCapability!;
+      const defaults = resolveConfiguredImageParameters(capability, { count: 1 });
+      expect(defaults).toEqual({ imageSize: '1k', aspectRatio: '1:1', imageQuality: 'medium' });
+      const request = (imageQuality: string, imageBackground?: string) => buildModelProtocolRequest({
+        protocol: current.executionProfile!.protocol!, baseUrl: 'https://toapis.cn/v1', apiKey: 'fixture', variables: {
+          model: id, prompt: 'test', n: 1, ...defaults, imageQuality, imageBackground,
+        } }).renderedBody;
+      expect(request(defaults.imageQuality!)).toEqual({ model: id, prompt: 'test', n: 1, size: '1:1',
+        resolution: '1k', quality: 'medium', output_format: 'png' });
+      for (const quality of capability.qualities!) {
+        expect(request(resolveConfiguredImageQuality(capability, quality)!)).toMatchObject({ quality });
+      }
+      for (const background of capability.backgrounds!) {
+        expect(request('medium', resolveConfiguredImageBackground(capability, background))).toMatchObject({ background, output_format: 'png' });
+      }
+      expect(resolveConfiguredImageParameters(capability, { imageSize: '4K', aspectRatio: 'auto', count: 4 }))
+        .toMatchObject({ imageSize: '4k', aspectRatio: 'auto' });
+      expect(() => resolveConfiguredImageParameters(capability, { count: 5 })).toThrow('最多生成 4');
+      expect(() => resolveConfiguredImageParameters(capability, { imageSize: '8k', count: 1 })).toThrow('分辨率');
+      expect(() => resolveConfiguredImageParameters(capability, { aspectRatio: '21:9', count: 1 })).toThrow('比例');
+      expect(() => resolveConfiguredImageQuality(capability, 'ultra')).toThrow('质量');
+      expect(() => resolveConfiguredImageBackground(capability, 'green')).toThrow('背景');
+      expect(() => assertConfiguredImageReferences(capability, 16)).not.toThrow();
+      expect(() => assertConfiguredImageReferences(capability, 17)).toThrow('最多支持 16');
+    },
+  );
+
+  it('2.6 仅接受已公布的两个 official ID，认证目录仍决定是否可选', () => {
+    const result = matchToapisCatalog(['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official',
+      'gpt-image-2.6-official', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'].map((id) => ({
+      id, name: id, provider: 'my-toapis', category: 'text',
+    })));
+    expect(result.map((item) => [item.id, item.category, item.provider])).toEqual([
+      ['gpt-image-2.6-flare-official', 'image', 'my-toapis'],
+      ['gpt-image-2.6-sunburst-official', 'image', 'my-toapis'],
+    ]);
+  });
+
+  it('2.6 用户修改过的路径或删掉质量／背景时不套用 2.5 旧协议升级', () => {
+    const current = model('gpt-image-2.6-sunburst-official');
+    for (const change of ['path', 'background', 'quality']) {
+      const profile = structuredClone(current.executionProfile!);
+      if (change === 'path') profile.protocol!.submit.path = '/custom/images';
+      else delete (profile.protocol!.submit.body as Record<string, ProtocolJsonValue>)[change];
+      const saved = JSON.stringify(profile);
+      const resolved = resolveToapisImageModelContract(current.id, profile, {
+        qualities: ['medium', 'high'], defaultQuality: 'high', backgrounds: ['opaque'],
+      });
+      expect(resolved.executionProfile).toBe(profile);
+      expect(JSON.stringify(profile)).toBe(saved);
+      if (change === 'quality') expect(resolved.imageCapability?.qualities).toBeUndefined();
+      else expect(resolved.imageCapability?.qualities).toEqual(['medium', 'high']);
+      if (change === 'background') expect(resolved.imageCapability?.backgrounds).toBeUndefined();
+      else expect(resolved.imageCapability?.backgrounds).toEqual(['opaque']);
     }
   });
 
