@@ -246,6 +246,8 @@ function mediaSettingsIssue(type: NodeType, input: CreateNodeInput | UpdateNodes
 }
 const DETAIL_TEXT_LIMIT = 400;
 const DETAIL_NODE_LIMIT = 50;
+const TEXT_READ_LIMIT = 4000;
+const TEXT_READ_CONTENT_LIMIT = 18_000;
 const MAX_RUN_NODES = 5;
 const MIN_NODE_SIZE = 120;
 const MAX_NODE_SIZE = 4000;
@@ -316,6 +318,9 @@ interface QueryNodesInput extends NodeTargetInput {
   offset?: number;
   name?: string;
   nameMatch?: 'contains' | 'exact';
+  textField?: 'prompt' | 'output';
+  textOffset?: number;
+  textLimit?: number;
 }
 
 interface UpdateNodesInput extends NodeTargetInput {
@@ -323,6 +328,7 @@ interface UpdateNodesInput extends NodeTargetInput {
   removeMissingDramaMentionIds?: string[];
   label?: string;
   prompt?: string;
+  promptEdit?: { oldText: string; newText: string };
   content?: string;
   x?: number;
   y?: number;
@@ -475,6 +481,7 @@ const UPDATE_DISPLAY_FIELDS: Array<{
 }> = [
   { inputKey: 'label', auditKey: 'label', label: '名称' },
   { inputKey: 'prompt', auditKey: 'prompt', label: '提示词' },
+  { inputKey: 'promptEdit', auditKey: 'prompt', label: '提示词' },
   { inputKey: 'content', auditKey: 'content', label: '正文' },
   { inputKey: 'x', auditKey: 'x', label: '位置 X' },
   { inputKey: 'y', auditKey: 'y', label: '位置 Y' },
@@ -845,6 +852,69 @@ function queryNodes(input: QueryNodesInput): Node<BaseNodeData>[] {
       const candidate = normalizeName(value);
       return input.nameMatch === 'exact' ? candidate === name : candidate.includes(name);
     }))));
+}
+
+function splitsSurrogatePair(text: string, offset: number): boolean {
+  return offset > 0 && offset < text.length
+    && text.charCodeAt(offset - 1) >= 0xD800 && text.charCodeAt(offset - 1) <= 0xDBFF
+    && text.charCodeAt(offset) >= 0xDC00 && text.charCodeAt(offset) <= 0xDFFF;
+}
+
+function readCanvasText(context: AgentToolContext, input: QueryNodesInput, matched: Node<BaseNodeData>[]): AgentToolExecutionResult {
+  const reject = (message: string): AgentToolExecutionResult => ({ status: 'error', summary: message, modelContent: message, retryable: false });
+  if (input.textField !== 'prompt' && input.textField !== 'output') return reject('textField 仅允许 prompt 或 output');
+  if (!(input.nodeIds?.length || input.displayIds?.length) || matched.length !== 1) {
+    return reject('读取长文字必须用 nodeIds 或 displayIds 明确定位且恰好匹配一个节点');
+  }
+  const node = matched[0];
+  if (input.textField === 'output' && !TEXT_OUTPUT_NODE_TYPES.has(node.data.type)) {
+    return reject('output 续读只支持文本类节点，不能读取媒体节点的路径或 URL');
+  }
+  const value = node.data[input.textField];
+  const text = typeof value === 'string' ? value : '';
+  const offset = input.textOffset ?? 0;
+  const limit = input.textLimit ?? TEXT_READ_LIMIT;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > TEXT_READ_LIMIT) {
+    return reject('textOffset 必须是非负安全整数，textLimit 必须是 1 至 4000 的整数');
+  }
+  if (splitsSurrogatePair(text, offset)) return reject('textOffset 不能位于 Unicode 字符的代理项对中间，请使用上次 nextOffset');
+  let end = Math.min(text.length, offset + limit);
+  if (splitsSurrogatePair(text, end)) end -= 1;
+  if (end === offset && offset < text.length) return reject('textLimit 过小，无法完整返回当前字符，请至少使用 2');
+  while (true) {
+    const modelContent = JSON.stringify({
+      projectId: context.projectId, nodeId: node.id, textField: input.textField,
+      text: text.slice(offset, end), offset, totalLength: text.length,
+      nextOffset: end < text.length ? end : null,
+      revision: useAppStore.getState().getCurrentRevision(),
+    });
+    if (modelContent.length <= TEXT_READ_CONTENT_LIMIT) {
+      return { status: 'success', summary: `读取节点${input.textField === 'prompt' ? '提示词' : '正文'}片段`, modelContent };
+    }
+    end = offset + Math.floor((end - offset) / 2);
+    if (splitsSurrogatePair(text, end)) end -= 1;
+    if (end <= offset) return reject('节点标识数据超过单次文字读取预算，无法返回完整片段');
+  }
+}
+
+/** 唯一片段替换不能切入现有引用令牌或 Unicode 代理项对。 */
+function promptEditRange(prompt: string, oldText: string): { start: number; end: number } | { error: string } {
+  const start = prompt.indexOf(oldText);
+  if (start < 0 || prompt.indexOf(oldText, start + 1) !== -1) {
+    return { error: '某个目标提示词中的 oldText 不存在或不唯一，请重新读取后明确片段；未修改任何节点' };
+  }
+  const end = start + oldText.length;
+  if (splitsSurrogatePair(prompt, start) || splitsSurrogatePair(prompt, end)) {
+    return { error: 'oldText 不能切入 Unicode 字符的代理项对；未修改任何节点' };
+  }
+  for (const token of prompt.matchAll(/@(?:asset|drama)?\{[^{}\r\n]*\}/g)) {
+    const tokenStart = token.index;
+    const tokenEnd = tokenStart + token[0].length;
+    if ((start > tokenStart && start < tokenEnd) || (end > tokenStart && end < tokenEnd)) {
+      return { error: 'oldText 不能切入节点、资产或剧集引用令牌，请替换完整引用或引用外的文字；未修改任何节点' };
+    }
+  }
+  return { start, end };
 }
 
 function truncateText(value: string | undefined, limit = DETAIL_TEXT_LIMIT): {
@@ -1436,6 +1506,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
         '多个筛选条件取交集；未找到返回空列表，不回退全画布。重名返回全部候选，核对 ID 后再写入。offset/limit 分页，hasMore=true 时用 nextOffset 继续。',
         'detail=true 时额外返回结构化节点详情：ID、坐标、尺寸、模型、生成参数、提示词、',
         '文本输出摘要和相关连线（含实际端口、水平间距与布局提醒），用于精确定位后再调用更新、连接或运行工具。',
+        '长文字须显式用 nodeIds 或 displayIds 恰好定位一个节点，再指定 textField=prompt 或 output；仅返回所选当前字段的原文片段与 revision，不返回其它节点详情。output 只支持文本类节点。',
+        'textOffset/nextOffset 是 JavaScript UTF-16 代码单元偏移；保持节点和字段不变，用 nextOffset 续读到 null。textLimit 默认及上限为 4000，实际片段会按 JSON 预算缩小且不拆 Unicode 代理项对；原文首尾空白保留。未指定 textField 时仍返回 400 字详情摘要。',
         '不会返回本地路径或媒体 URL。',
       ].join(''),
       inputSchema: {
@@ -1447,17 +1519,28 @@ export function registerCanvasAgentTools(): Array<() => void> {
           offset: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
           name: { type: 'string', minLength: 1, maxLength: 200, description: '节点可见名称、文件名别名或内部名称；不搜索提示词正文。' },
           nameMatch: { type: 'string', enum: ['contains', 'exact'] },
+          textField: { type: 'string', enum: ['prompt', 'output'], description: '只续读明确单个节点的当前提示词或文本正文；与普通节点详情分页独立。' },
+          textOffset: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: '所选文字字段的 UTF-16 偏移，默认 0；沿用返回的 nextOffset，不能切入代理项对。' },
+          textLimit: { type: 'integer', minimum: 1, maximum: TEXT_READ_LIMIT, description: '文字片段的 UTF-16 长度上限，默认 4000；JSON 转义较多时实际步长会缩小。' },
         },
         additionalProperties: false,
       },
       effect: 'read',
       authorize: authorizeCurrentProject,
-      summarizeInput: (input) => `查询画布节点${input.detail ? '详情' : '名称索引'}`,
+      summarizeInput: (input) => input.textField !== undefined
+        ? `续读节点${input.textField === 'prompt' ? '提示词' : '正文'}片段`
+        : `查询画布节点${input.detail ? '详情' : '名称索引'}`,
       execute: async (context, input) => {
+        if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+        if (!isCurrentProject(context.projectId)) throw new Error('目标项目当前未加载');
         if (input.name !== undefined && !input.name.trim()) {
           return { status: 'error', summary: '名称不能是空白，请填写名称或省略 name', modelContent: '名称不能是空白，请填写名称或省略 name' };
         }
         const matched = queryNodes(input);
+        if (input.textField !== undefined) return readCanvasText(context, input, matched);
+        if (input.textOffset !== undefined || input.textLimit !== undefined) {
+          return { status: 'error', summary: 'textOffset/textLimit 需要同时指定 textField', modelContent: 'textOffset/textLimit 需要同时指定 textField' };
+        }
         const offset = input.offset ?? 0;
         const page = matched.slice(offset, offset + (input.limit ?? DETAIL_NODE_LIMIT));
         const globalAssets = input.detail && page.length ? await readGlobalReferenceAssets(context) : undefined;
@@ -1743,6 +1826,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
       title: '更新画布节点',
       description: [
         '批量更新匹配节点：名称、提示词、正文内容、位置、尺寸、生成模型和生成参数。',
+        '只改提示词一处时用 promptEdit:{oldText,newText}，不能与整段 prompt 混传。oldText 非空且必须在每个目标的当前原文中唯一出现（重叠重复也拒绝）；任一目标不匹配或参数无效时整批不写。',
+        '片段新旧文本各最多 8000 个 UTF-16 代码单元，newText 可为空以删除片段；保留范围外所有原文、空白及存量长提示词，不截断全文。不得切入 @{...}、@asset{...}、@drama{...} 引用令牌或 Unicode 代理项对；可以替换或删除完整引用。MCP 只转换 newText 内的同图节点引用，范围外引用保持原样。',
         'label 同步已有文件名显示别名，但不重命名磁盘文件或改变媒体路径。',
         '角色、场景、道具优先使用库内 @drama 引用；canvas_query(detail=true) 的 preferredMention 给出同图的精确库引用。MCP 更新 prompt 时自动转换能唯一匹配的同图节点引用，不改既有连线；引用明确的镜头输入或分镜单格仍保留节点。',
         '视频 aspectRatio 同步实际生成比例；固定比例按当前宽度重算空节点高度（同时传 width 时使用新宽度，优先于 height），已有成片保持真实视频框，自适应不改框。',
@@ -1766,6 +1851,10 @@ export function registerCanvasAgentTools(): Array<() => void> {
             description: '只清理明确指定且父项目资产已删除的引用 ID，保留显示名称和完整提示词；不能混合普通编辑。' },
           label: { type: 'string', minLength: 1, maxLength: 120 },
           prompt: { type: 'string', maxLength: 8000 },
+          promptEdit: { type: 'object', required: ['oldText', 'newText'], additionalProperties: false, properties: {
+            oldText: { type: 'string', minLength: 1, maxLength: 8000 },
+            newText: { type: 'string', maxLength: 8000 },
+          } },
           content: { type: 'string', maxLength: 40000 },
           x: { type: 'number', minimum: -100000, maximum: 100000 },
           y: { type: 'number', minimum: -100000, maximum: 100000 },
@@ -1809,6 +1898,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         : input.repairMissingCloudOutputs === true
           ? `核对 ${resolveTargetIds(input).length} 个节点的缺失单产物缓存` : `更新 ${resolveTargetIds(input).length} 个节点`,
       execute: async (context, input) => {
+        if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
         assertCanvasRevision(context);
         const targetIds = resolveTargetIds(input);
         if (targetIds.length === 0) {
@@ -1830,6 +1920,16 @@ export function registerCanvasAgentTools(): Array<() => void> {
           }
           return repairMissingCloudOutputs(context, targetIds);
         }
+        if (input.promptEdit !== undefined) {
+          const edit = input.promptEdit;
+          if (input.prompt !== undefined || !edit || typeof edit !== 'object'
+            || Object.keys(edit).some((key) => key !== 'oldText' && key !== 'newText')
+            || typeof edit.oldText !== 'string' || !edit.oldText.length || edit.oldText.length > 8000
+            || typeof edit.newText !== 'string' || edit.newText.length > 8000) {
+            const message = 'promptEdit 仅接受非空且最多 8000 字的 oldText 和最多 8000 字的 newText，不能与 prompt 混传';
+            return { status: 'error', summary: message, modelContent: message };
+          }
+        }
         const moveAbsolute = input.x !== undefined || input.y !== undefined;
         const moveRelative = input.dx !== undefined || input.dy !== undefined;
         if (moveAbsolute && targetIds.length > 1) {
@@ -1838,7 +1938,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
         }
 
         const mcp = context.conversationId === `mcp-control-${context.projectId}`;
-        const globalAssets = mcp && input.prompt !== undefined && hasActualNodeReference(input.prompt)
+        const referenceText = input.promptEdit?.newText ?? input.prompt;
+        const globalAssets = mcp && referenceText !== undefined && hasActualNodeReference(referenceText)
           ? await readGlobalReferenceAssets(context) : undefined;
 
         const patch: Partial<BaseNodeData> = {
@@ -1872,7 +1973,22 @@ export function registerCanvasAgentTools(): Array<() => void> {
         };
         const targets = useAppStore.getState().nodes
           .filter((node) => targetIds.includes(node.id));
-        if (input.prompt?.trim() && targets.some((node) => node.data.type === 'ai-storyboard')) {
+        const promptEdits = new Map<string, { before: string; after: string }>();
+        if (input.promptEdit !== undefined) {
+          const edit = input.promptEdit;
+          const replacement = mcp
+            ? preferDramaLibraryReferences(edit.newText, useAppStore.getState().nodes, useAppStore.getState().dramaAssets,
+              globalAssets ?? listGlobalDramaAssets(useAppStore.getState()))
+            : edit.newText;
+          for (const node of targets) {
+            const before = node.data.prompt ?? '';
+            const range = promptEditRange(before, edit.oldText);
+            if ('error' in range) return { status: 'error', summary: range.error, modelContent: range.error };
+            promptEdits.set(node.id, { before, after: before.slice(0, range.start) + replacement + before.slice(range.end) });
+          }
+        }
+        if (targets.some((node) => node.data.type === 'ai-storyboard'
+          && (promptEdits.get(node.id)?.after ?? input.prompt)?.trim())) {
           const message = '宫格分镜是已有图片的裁切结果，不能设置生成提示词';
           return { status: 'error', summary: message, modelContent: message };
         }
@@ -1903,7 +2019,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
           if (input.batchCount !== undefined) patch.batchCount = input.batchCount;
           if (input.audioPurpose !== undefined) patch.audioPurpose = input.audioPurpose;
         }
-        if (Object.keys(patch).length === 0 && !moveAbsolute && !moveRelative) {
+        if (Object.keys(patch).length === 0 && !promptEdits.size && !moveAbsolute && !moveRelative) {
           return { status: 'error', summary: '没有提供需要更新的字段', modelContent: '没有提供需要更新的字段' };
         }
 
@@ -1917,10 +2033,19 @@ export function registerCanvasAgentTools(): Array<() => void> {
           throw new Error('项目、画布或文本文件关联已变化，请重新查询后操作');
         }
         assertCanvasRevision(context);
+        if (!isCurrentProject(context.projectId)) throw new Error('目标项目当前未加载');
+        if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
         const store = useAppStore.getState();
+        if ([...promptEdits].some(([id, edit]) => {
+          const current = store.nodes.find((node) => node.id === id);
+          return !current || (current.data.prompt ?? '') !== edit.before;
+        })) {
+          throw new Error('目标提示词已变化，请重新读取后修改；未修改任何节点');
+        }
         // updateNodesDataBatch 自带一次 commitToHistory；只移动时才需要单独提交历史
         if (Object.keys(patch).length > 0) store.updateNodesDataBatch(targetIds, patch);
         else store.commitToHistory();
+        for (const [id, edit] of promptEdits) store.updateNodeDataTransient(id, { prompt: edit.after });
         // 视频参数面板读取 seedanceRatio，Store 在同一次写入中联动空视频框。
         // 复用同一次历史快照，且不把视频参数写入混合目标中的图片节点。
         if (input.aspectRatio !== undefined) {
