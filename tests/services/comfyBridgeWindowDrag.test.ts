@@ -7,7 +7,12 @@ const install = source.match(/const installWindowControls = \(\) => \{[\s\S]*?\r
 if (!install) throw new Error('找不到 ComfyUI 窗口控件安装入口');
 
 class TestElement {
-  constructor(readonly selectors: string[] = [], readonly parent: TestElement | null = null) {}
+  readonly selectors: string[];
+  readonly parent: TestElement | null;
+  constructor(selectors: string[] = [], parent: TestElement | null = null) {
+    this.selectors = selectors;
+    this.parent = parent;
+  }
   closest(selector: string): TestElement | null {
     if (selector.split(',').some((part) => this.selectors.includes(part.trim()))) return this;
     return this.parent?.closest(selector) ?? null;
