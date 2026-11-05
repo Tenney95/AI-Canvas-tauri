@@ -102,6 +102,78 @@ describe('MCP operation durable claims', () => {
     expect(JSON.stringify(await db.getAgentTask(taskId))).not.toContain('must-not-persist-raw-summary');
   });
 
+  it('merges concurrent late progress without regressing media stages, persistence or batch items', async () => {
+    const { api, input, identity, projectId } = await setup();
+    const claim = await api.claimMcpOperation(identity, input);
+    const taskId = claim.receipt.taskId;
+    await api.startMcpOperation(taskId);
+    await api.recordMcpOperationProgress(taskId, { mediaStage: 'preparing', messageId: 'media-message',
+      items: [{ nodeId: 'node-a', status: 'not_started' }, { nodeId: 'node-b', status: 'not_started' }] });
+    await api.recordMcpOperationProgress(taskId, { mediaStage: 'generated', artifactId: 'media-artifact', persistence: 'saved',
+      items: [{ nodeId: 'node-a', status: 'succeeded' }, { nodeId: 'node-b', status: 'started' }] });
+    await Promise.all([
+      api.recordMcpOperationProgress(taskId, { mediaStage: 'started', persistence: 'pending',
+        items: [{ nodeId: 'node-a', status: 'not_started' }, { nodeId: 'node-b', status: 'not_started' }] }),
+      api.recordMcpOperationProgress(taskId, { items: [{ nodeId: 'node-b', status: 'failed', errorCode: 'GENERATION_FAILED' }] }),
+    ]);
+    const progress = await api.getMcpOperationReceipt(projectId, { operationId: claim.receipt.operationId });
+    expect(progress).toMatchObject({ mediaStage: 'generated', persistence: 'saved', artifactId: 'media-artifact', items: [
+      { nodeId: 'node-a', status: 'succeeded' }, { nodeId: 'node-b', status: 'failed', errorCode: 'GENERATION_FAILED' },
+    ] });
+    await expect(api.recordMcpOperationProgress(taskId, { artifactId: 'replacement-artifact' })).rejects.toThrow('不能变更');
+    await expect(api.recordMcpOperationProgress(taskId, { items: [{ nodeId: 'new-target', status: 'started' }] })).rejects.toThrow('不能变更');
+    expect(await api.finishMcpOperation(taskId, { status: 'success' })).toMatchObject({ status: 'partial', retryable: false });
+  });
+
+  it.each(['generated', 'started'] as const)('requires read verification when a successful media tool has only reached %s', async (mediaStage) => {
+    const { api, input, identity } = await setup();
+    const claim = await api.claimMcpOperation(identity, input);
+    await api.startMcpOperation(claim.receipt.taskId);
+    await api.recordMcpOperationProgress(claim.receipt.taskId, { mediaStage, messageId: 'media-message', persistence: 'pending' });
+    expect(await api.finishMcpOperation(claim.receipt.taskId, { status: 'success' }))
+      .toMatchObject({ status: 'partial', mediaStage, requiresReadVerification: true, retryable: false });
+  });
+
+  it.each(['not_started', 'started', 'failed', 'unknown'] as const)('does not report a succeeded receipt while a successful tool leaves only %s items', async (status) => {
+    const { api, input, identity } = await setup();
+    const claim = await api.claimMcpOperation(identity, input);
+    await api.startMcpOperation(claim.receipt.taskId);
+    await api.recordMcpOperationProgress(claim.receipt.taskId, { items: [{ nodeId: 'batch-node', status }] });
+    expect(await api.finishMcpOperation(claim.receipt.taskId, { status: 'success' }))
+      .toMatchObject({ status: 'partial', requiresReadVerification: true, retryable: false });
+  });
+
+  it('stops progress after an active keyed task is removed while ordinary missing tasks remain no-ops', async () => {
+    const { api, useAppStore, input, identity } = await setup();
+    const claim = await api.claimMcpOperation(identity, input);
+    useAppStore.setState({ agentTasks: [] });
+    await expect(api.recordMcpOperationProgress(claim.receipt.taskId, { mediaStage: 'started' })).rejects.toThrow('已移除');
+    await expect(api.recordMcpOperationProgress('ordinary-missing-task', { mediaStage: 'started' })).resolves.toBeUndefined();
+  });
+
+  it('retains partial canvas application even when every linked file failed', async () => {
+    const { api, input, identity } = await setup();
+    const claim = await api.claimMcpOperation(identity, input);
+    await api.startMcpOperation(claim.receipt.taskId);
+    await api.recordMcpOperationProgress(claim.receipt.taskId, { revisionAfter: 7,
+      items: [{ nodeId: 'text-node', status: 'failed', errorCode: 'CANVAS_APPLIED_FILE_SAVE_FAILED' }] });
+    expect(await api.finishMcpOperation(claim.receipt.taskId, { status: 'error' }))
+      .toMatchObject({ status: 'partial', revisionAfter: 7, requiresReadVerification: true });
+  });
+
+  it.each([{ stored: undefined, switchProject: true }, { stored: 7, switchProject: true }, { stored: 7, switchProject: false }])(
+    'preserves committed revision and never borrows another project revision (%o)', async ({ stored, switchProject }) => {
+      const { api, db, useAppStore, input, identity } = await setup();
+      const claim = await api.claimMcpOperation(identity, input);
+      await api.startMcpOperation(claim.receipt.taskId);
+      if (stored !== undefined) await api.recordMcpOperationProgress(claim.receipt.taskId, { revisionAfter: stored });
+      useAppStore.setState({ canvasRevision: 999, ...(switchProject ? { currentProjectId: 'other-project' } : {}) });
+      const finished = api.finishMcpOperation(claim.receipt.taskId, { status: 'success' });
+      if (switchProject) await expect(finished).rejects.toThrow('当前项目');
+      else await expect(finished).resolves.toMatchObject({ revisionAfter: stored });
+      expect((await db.getAgentTask(claim.receipt.taskId))?.mcpOperation?.revisionAfter).toBe(stored);
+    });
+
   it.each(['task', 'conversation', 'permanent-conversation', 'project-tasks'])('retains a monotonically numbered key tombstone after %s deletion', async (kind) => {
     const { api, db, input, identity, projectId } = await setup();
     const claim = await api.claimMcpOperation(identity, input);

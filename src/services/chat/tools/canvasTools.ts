@@ -19,10 +19,13 @@ import type {
   AgentToolDisplayChange,
   AgentToolDisplaySnapshot,
   AgentToolDisplayValue,
+  McpOperationItemReceipt,
 } from '../../../types/agent';
 import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
 import type { CommandId, CommandPlan } from '../../../types/chat';
 import { executeGeneration, type GenerationLease } from '../../generationService';
+import { getPendingTasksForProject } from '../../pollManager';
+import { recordMcpOperationProgress } from '../../mcp/mcpOperationService';
 import {
   getProjectModelKind,
   parseProjectModelRef,
@@ -805,7 +808,9 @@ async function prepareTextFileUpdates(context: AgentToolContext, targets: TextFi
 }
 
 /** 画布只提交一次；各文件沿用已有摘要 CAS，失败不重试、不回滚草稿或已写入的文件。 */
-async function persistTextFileUpdates(context: AgentToolContext, updates: TextFileUpdate[], targets: TextFileTarget[]) {
+type TextFilePersistenceStatus = 'saved' | 'unchanged' | 'conflict' | 'read_failed' | 'save_failed' | 'stale';
+async function persistTextFileUpdates(context: AgentToolContext, updates: TextFileUpdate[], targets: TextFileTarget[],
+  onProgress?: (nodeId: string, status: TextFilePersistenceStatus | 'saving') => Promise<void>) {
   const revision = useAppStore.getState().getCurrentRevision();
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -814,30 +819,29 @@ async function persistTextFileUpdates(context: AgentToolContext, updates: TextFi
     && textFileTargetsFresh(context, revision, targets, true);
   context.signal.addEventListener('abort', abort, { once: true });
   const unsubscribe = useAppStore.subscribe(() => { if (!fresh()) abort(); });
-  const results: Array<{ nodeId: string; status: 'saved' | 'unchanged' | 'conflict' | 'read_failed' | 'save_failed' | 'stale' }> = [];
+  const results: Array<{ nodeId: string; status: TextFilePersistenceStatus }> = [];
   const savedPaths = new Set<string>();
   try {
     for (const update of updates) {
+      let status: TextFilePersistenceStatus;
       if (!fresh() || controller.signal.aborted) {
-        results.push({ nodeId: update.nodeId, status: 'stale' });
-        continue;
+        status = 'stale';
+      } else if (update.state !== 'write') status = update.state;
+      else if (savedPaths.has(textFileSaveKey(update.filePath))) status = 'saved';
+      else {
+        // keyed调用的保存意图先持久化；新增等待后再次检查原文稿/项目租约。
+        if (onProgress) await onProgress(update.nodeId, 'saving');
+        if (!fresh() || controller.signal.aborted) status = 'stale';
+        else {
+          try {
+            await saveAssetTextFile(update.filePath, update.baseline!, update.content, controller.signal);
+            savedPaths.add(textFileSaveKey(update.filePath));
+            status = 'saved';
+          } catch { status = fresh() && !controller.signal.aborted ? 'save_failed' : 'stale'; }
+        }
       }
-      if (update.state !== 'write') {
-        results.push({ nodeId: update.nodeId, status: update.state });
-        continue;
-      }
-      const fileKey = textFileSaveKey(update.filePath);
-      if (savedPaths.has(fileKey)) {
-        results.push({ nodeId: update.nodeId, status: 'saved' });
-        continue;
-      }
-      try {
-        await saveAssetTextFile(update.filePath, update.baseline!, update.content, controller.signal);
-        savedPaths.add(fileKey);
-        results.push({ nodeId: update.nodeId, status: 'saved' });
-      } catch {
-        results.push({ nodeId: update.nodeId, status: fresh() && !controller.signal.aborted ? 'save_failed' : 'stale' });
-      }
+      results.push({ nodeId: update.nodeId, status });
+      if (onProgress) await onProgress(update.nodeId, status);
     }
     const stale = !fresh() || controller.signal.aborted;
     return { results, stale,
@@ -2180,6 +2184,25 @@ export function registerCanvasAgentTools(): Array<() => void> {
           groups.push(prepared);
         }
         const targetIds = groups.flatMap((group) => group.targetIds);
+        const tracksOperation = Boolean(useAppStore.getState().agentTasks?.some((task) => task.id === context.taskId && task.mcpOperation));
+        let operationItems: McpOperationItemReceipt[] = targetIds.map((nodeId) => ({ nodeId, status: 'not_started' }));
+        const assertOperationOwner = () => {
+          if (!useAppStore.getState().agentTasks?.some((task) => task.id === context.taskId && task.mcpOperation
+            && !['paused', 'stopped', 'failed', 'completed'].includes(task.status))) throw new Error('MCP 操作任务已停止或移除');
+        };
+        const notStarted = async (): Promise<AgentToolExecutionResult> => {
+          operationItems = operationItems.map((item) => ({ ...item, status: 'failed', errorCode: 'CANVAS_UPDATE_NOT_STARTED' }));
+          await recordMcpOperationProgress(context.taskId, { phase: 'failed', items: operationItems, errorCode: 'CANVAS_UPDATE_NOT_STARTED' }).catch(() => undefined);
+          return { status: 'error', summary: '画布更新未开始；操作回执或读取条件已变化，请只读核实',
+            errorCode: 'CANVAS_UPDATE_NOT_STARTED', retryable: false, modelContent: JSON.stringify({ items: operationItems, retryable: false }) };
+        };
+        if (tracksOperation) {
+          try {
+            await recordMcpOperationProgress(context.taskId, { items: operationItems });
+            assertOperationOwner();
+            assertNodeVersionSnapshot(context, groups.flatMap((group) => group.targets), version);
+          } catch { return notStarted(); }
+        }
         const textFileTargets: TextFileTarget[] = groups.flatMap((group) => {
           const content = group.input.content;
           return content === undefined ? [] : group.targets.map((node) => ({ nodeId: node.id, nodeType: node.data.type,
@@ -2223,15 +2246,61 @@ export function registerCanvasAgentTools(): Array<() => void> {
             return !node || (node.data.prompt ?? '') !== edit.before;
           })) throw new Error('目标提示词已变化，请重新读取后修改；未修改任何节点');
         }
+        if (tracksOperation) {
+          try {
+            operationItems = operationItems.map((item) => ({ ...item, status: 'started' }));
+            await recordMcpOperationProgress(context.taskId, { items: operationItems });
+            assertOperationOwner();
+            assertNodeVersionSnapshot(context, groups.flatMap((group) => group.targets), version);
+            if (textFileUpdates.length && !textFileTargetsFresh(context, textFileRevision, textFileTargets)) throw new Error('文本文件关联已变化');
+          } catch { return notStarted(); }
+        }
         const committedRevision = applyPreparedNodeUpdates(groups, batch);
-        const textFilePersistence = textFileUpdates.length ? await persistTextFileUpdates(context, textFileUpdates, textFileTargets) : undefined;
-        const incomplete = textFilePersistence && (textFilePersistence.failedCount > 0 || textFilePersistence.stale);
+        let textFilePersistence: Awaited<ReturnType<typeof persistTextFileUpdates>> | undefined;
+        let receiptUnconfirmed = false;
+        const fileProgress = async (nodeId: string, status: TextFilePersistenceStatus | 'saving') => {
+          const item: McpOperationItemReceipt = status === 'saving' ? { nodeId, status: 'started', errorCode: 'CANVAS_APPLIED_FILE_PENDING' }
+            : status === 'saved' || status === 'unchanged' ? { nodeId, status: 'succeeded' }
+              : status === 'stale' ? { nodeId, status: 'unknown', errorCode: 'CANVAS_APPLIED_FILE_UNCONFIRMED' }
+                : { nodeId, status: 'failed', errorCode: `CANVAS_APPLIED_FILE_${status.toUpperCase()}` };
+          operationItems = operationItems.map((existing) => existing.nodeId === nodeId ? item : existing);
+          await recordMcpOperationProgress(context.taskId, { items: operationItems, revisionAfter: committedRevision });
+          if (status === 'saving') assertOperationOwner();
+        };
+        try {
+          if (tracksOperation) {
+            operationItems = operationItems.map((item) => {
+              const file = textFileUpdates.find((update) => update.nodeId === item.nodeId);
+              return !file || file.state === 'unchanged' ? { nodeId: item.nodeId, status: 'succeeded' }
+                : file.state === 'write' ? { nodeId: item.nodeId, status: 'started', errorCode: 'CANVAS_APPLIED_FILE_PENDING' }
+                  : { nodeId: item.nodeId, status: 'failed', errorCode: `CANVAS_APPLIED_FILE_${file.state.toUpperCase()}` };
+            });
+            await recordMcpOperationProgress(context.taskId, { items: operationItems, revisionAfter: committedRevision });
+            assertOperationOwner();
+            if (textFileUpdates.length && !textFileTargetsFresh(context, committedRevision, textFileTargets, true)) {
+              throw new Error('画布提交后的原文件保存租约已失效');
+            }
+          }
+          textFilePersistence = textFileUpdates.length
+            ? await persistTextFileUpdates(context, textFileUpdates, textFileTargets, tracksOperation ? fileProgress : undefined) : undefined;
+        } catch (error) {
+          if (!tracksOperation) throw error;
+          receiptUnconfirmed = true;
+          operationItems = operationItems.map((item) => item.status === 'started'
+            ? { ...item, status: 'unknown', errorCode: 'CANVAS_APPLIED_FILE_UNCONFIRMED' } : item);
+        }
+        const incomplete = receiptUnconfirmed || Boolean(textFilePersistence && (textFilePersistence.failedCount > 0 || textFilePersistence.stale));
+        if (tracksOperation && incomplete) {
+          await recordMcpOperationProgress(context.taskId, { phase: 'partial', items: operationItems, revisionAfter: committedRevision,
+            errorCode: receiptUnconfirmed ? 'MCP_OPERATION_PROGRESS_UNCONFIRMED' : 'TEXT_FILE_SAVE_INCOMPLETE' }).catch(() => { receiptUnconfirmed = true; });
+        }
         return {
           status: incomplete ? 'error' : 'success',
           summary: incomplete ? `已更新 ${targetIds.length} 个节点；文本文件保存未全部完成，画布草稿已保留，请检查冲突或文件权限`
             : `已更新 ${targetIds.length} 个节点`,
-          ...(incomplete ? { retryable: false, errorCode: 'TEXT_FILE_SAVE_INCOMPLETE' } : {}),
+          ...(incomplete ? { retryable: false, errorCode: receiptUnconfirmed ? 'MCP_OPERATION_PROGRESS_UNCONFIRMED' : 'TEXT_FILE_SAVE_INCOMPLETE' } : {}),
           modelContent: JSON.stringify({ affectedNodeIds: targetIds, revision: committedRevision,
+            ...(tracksOperation ? { items: operationItems, receiptUnconfirmed, retryable: false } : {}),
             ...(textFilePersistence ? { textFilePersistence } : {}) }),
           display: { changes: groups.flatMap((group) => buildUpdateChanges(group.input,
             useAppStore.getState().nodes.filter((node) => group.targetIds.includes(node.id)), group.beforeAudit)) },
@@ -2486,58 +2555,130 @@ export function registerCanvasAgentTools(): Array<() => void> {
         const inputs = new Map(initial.nodes.filter((node) => targetIds.includes(node.id))
           .map((node) => [node.id, generationInputSnapshot(node.data, settings)]));
         const results: Array<{ nodeId: string; status: string; message?: string }> = [];
-        for (const nodeId of targetIds) {
-          if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-          const node = useAppStore.getState().nodes.find((candidate) => candidate.id === nodeId);
-          if (!node) {
-            results.push({ nodeId, status: 'missing' });
-            continue;
+        const tracksOperation = Boolean(initial.agentTasks?.some((task) => task.id === context.taskId && task.mcpOperation));
+        let operationItems: McpOperationItemReceipt[] = targetIds.map((nodeId) => ({ nodeId, status: 'not_started' }));
+        let activeNodeId: string | undefined;
+        let enteredGeneration = false;
+        let operationRevision: number | undefined;
+        const updateItem = (nodeId: string, status: McpOperationItemReceipt['status'], errorCode?: string) => {
+          operationItems = operationItems.map((item) => item.nodeId === nodeId
+            ? { nodeId, status, ...(errorCode ? { errorCode } : {}) } : item);
+        };
+        const assertOperationOwner = () => {
+          if (!useAppStore.getState().agentTasks?.some((task) => task.id === context.taskId && task.mcpOperation
+            && !['paused', 'stopped', 'failed', 'completed'].includes(task.status))) throw new Error('MCP 操作任务已停止或移除');
+        };
+        try {
+          if (tracksOperation) {
+            await recordMcpOperationProgress(context.taskId, { items: operationItems });
+            assertOperationOwner();
+            assertCanvasRevision(context);
           }
-          if (node.data.status === 'loading') {
-            results.push({ nodeId, status: 'skipped', message: '节点正在生成中' });
-            continue;
-          }
-          // 校验当前模型，而非仅信任此前配置过参数时的模型；本地及云工作流继续使用各自参数合同。
-          const data = node.data;
-          const kind = getProjectModelKind(data.type);
-          const projectModel = kind && useAppStore.getState().projects.find((project) => project.id === context.projectId)
-            ?.settings?.defaultModels?.[kind];
-          const provider = parseProjectModelRef((data.model || projectModel) ?? undefined)?.provider ?? data.provider;
-          const usesWorkflow = Boolean(data.workflowId) || ['comfyui', 'runninghub', 'runninghubwf', 'workflow-api'].includes(provider ?? '');
-          const parameters = data.type === 'ai-image' ? { imageQuality: data.imageQuality, imageBackground: data.imageBackground }
-            : data.type === 'ai-video' ? { videoFps: data.videoFps, generateAudio: data.generateAudio,
-              ...(data.seedanceDuration !== undefined && data.seedanceDuration < 0 ? { videoDuration: data.seedanceDuration } : {}) }
-              : undefined;
-          const issue = !usesWorkflow && parameters ? mediaSettingsIssue(data.type, parameters, data) : undefined;
-          if (issue) {
-            results.push({ nodeId, status: 'failed', message: issue });
-            continue;
-          }
-          const lease: GenerationLease = { signal: context.signal, assertFresh: () => {
-            if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
-            const current = useAppStore.getState();
-            const live = current.nodes.find((candidate) => candidate.id === nodeId);
-            const currentSettings = current.projects.find((project) => project.id === context.projectId)?.settings;
-            if (current.currentProjectId !== context.projectId || !live
-              || generationInputSnapshot(live.data, currentSettings) !== inputs.get(nodeId)) {
-              throw new Error('项目或节点生成输入已变化，请重新查询后运行');
+          for (const nodeId of targetIds) {
+            activeNodeId = nodeId;
+            enteredGeneration = false;
+            if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            const node = useAppStore.getState().nodes.find((candidate) => candidate.id === nodeId);
+            if (!node) {
+              results.push({ nodeId, status: 'missing' });
+              if (tracksOperation) {
+                updateItem(nodeId, 'failed', 'CANVAS_NODE_MISSING');
+                await recordMcpOperationProgress(context.taskId, { items: operationItems });
+              }
+              continue;
             }
-          } };
-          // 生成自身会创建批次节点并增加 revision，不能用整次调用的旧 revision 取消它。
-          await lease.assertFresh();
-          const result = await executeGeneration(nodeId, undefined, undefined, undefined, lease);
-          if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
-          // 生成期间用户可能切走项目，后续节点不能再往这张画布写
-          if (useAppStore.getState().currentProjectId !== context.projectId) {
-            results.push({ nodeId, status: 'aborted', message: '生成期间项目已切换' });
-            break;
+            if (node.data.status === 'loading') {
+              results.push({ nodeId, status: 'skipped', message: '节点正在生成中' });
+              if (tracksOperation) {
+                updateItem(nodeId, 'not_started', 'CANVAS_NODE_BUSY');
+                await recordMcpOperationProgress(context.taskId, { items: operationItems });
+              }
+              continue;
+            }
+            // 校验当前模型，而非仅信任此前配置过参数时的模型；本地及云工作流继续使用各自参数合同。
+            const data = node.data;
+            const kind = getProjectModelKind(data.type);
+            const projectModel = kind && useAppStore.getState().projects.find((project) => project.id === context.projectId)
+              ?.settings?.defaultModels?.[kind];
+            const provider = parseProjectModelRef((data.model || projectModel) ?? undefined)?.provider ?? data.provider;
+            const usesWorkflow = Boolean(data.workflowId) || ['comfyui', 'runninghub', 'runninghubwf', 'workflow-api'].includes(provider ?? '');
+            const parameters = data.type === 'ai-image' ? { imageQuality: data.imageQuality, imageBackground: data.imageBackground }
+              : data.type === 'ai-video' ? { videoFps: data.videoFps, generateAudio: data.generateAudio,
+                ...(data.seedanceDuration !== undefined && data.seedanceDuration < 0 ? { videoDuration: data.seedanceDuration } : {}) }
+                : undefined;
+            const issue = !usesWorkflow && parameters ? mediaSettingsIssue(data.type, parameters, data) : undefined;
+            if (issue) {
+              results.push({ nodeId, status: 'failed', message: issue });
+              if (tracksOperation) {
+                updateItem(nodeId, 'failed', 'CANVAS_NODE_PARAMETER_INVALID');
+                await recordMcpOperationProgress(context.taskId, { items: operationItems });
+              }
+              continue;
+            }
+            let leaseInvalidated = false;
+            const lease: GenerationLease = { signal: context.signal, assertFresh: () => {
+              if (context.signal.aborted) { leaseInvalidated = true; throw new DOMException('请求已取消', 'AbortError'); }
+              if (tracksOperation) {
+                try { assertOperationOwner(); } catch (error) { leaseInvalidated = true; throw error; }
+              }
+              const current = useAppStore.getState();
+              const live = current.nodes.find((candidate) => candidate.id === nodeId);
+              const currentSettings = current.projects.find((project) => project.id === context.projectId)?.settings;
+              if (current.currentProjectId !== context.projectId || !live
+                || generationInputSnapshot(live.data, currentSettings) !== inputs.get(nodeId)) {
+                leaseInvalidated = true;
+                throw new Error('项目或节点生成输入已变化，请重新查询后运行');
+              }
+            } };
+            // 生成自身会创建批次节点并增加 revision，不能用整次调用的旧 revision 取消它。
+            await lease.assertFresh();
+            if (tracksOperation) {
+              updateItem(nodeId, 'started');
+              await recordMcpOperationProgress(context.taskId, { items: operationItems });
+              await lease.assertFresh();
+            }
+            enteredGeneration = true;
+            const result = await executeGeneration(nodeId, undefined, undefined, undefined, lease);
+            if (tracksOperation) {
+              // 已交付的结果先登记本项目revision；不能被随后的journal等待或取消漏记。
+              if (useAppStore.getState().currentProjectId === context.projectId) operationRevision = useAppStore.getState().incrementRevision();
+              const unconfirmed = !result.success && (leaseInvalidated || context.signal.aborted || useAppStore.getState().currentProjectId !== context.projectId
+                || getPendingTasksForProject(context.projectId).some((task) => task.nodeId === nodeId));
+              updateItem(nodeId, result.success ? 'succeeded' : unconfirmed ? 'unknown' : 'failed',
+                result.success ? undefined : unconfirmed ? 'CANVAS_NODE_RESULT_UNCONFIRMED' : 'CANVAS_NODE_GENERATION_FAILED');
+              results.push({ nodeId, status: result.success ? 'success' : 'failed', message: result.message });
+              await recordMcpOperationProgress(context.taskId, { items: operationItems,
+                ...(operationRevision !== undefined ? { revisionAfter: operationRevision } : {}) });
+              if (leaseInvalidated) throw new Error('节点原生成租约已撤销，请核对原任务');
+            }
+            if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+            // 生成期间用户可能切走项目，后续节点不能再往这张画布写
+            if (useAppStore.getState().currentProjectId !== context.projectId) {
+              if (tracksOperation) throw new Error('生成期间项目已切换');
+              results.push({ nodeId, status: 'aborted', message: '生成期间项目已切换' });
+              break;
+            }
+            if (!tracksOperation) useAppStore.getState().incrementRevision();
+            if (!tracksOperation) results.push({
+              nodeId,
+              status: result.success ? 'success' : 'failed',
+              message: result.message,
+            });
           }
-          useAppStore.getState().incrementRevision();
-          results.push({
-            nodeId,
-            status: result.success ? 'success' : 'failed',
-            message: result.message,
-          });
+        } catch (error) {
+          if (!tracksOperation) throw error;
+          const activeItem = operationItems.find((item) => item.nodeId === activeNodeId);
+          if (activeNodeId && activeItem?.status === 'started') updateItem(activeNodeId, enteredGeneration ? 'unknown' : 'failed',
+            enteredGeneration ? 'CANVAS_NODE_RESULT_UNCONFIRMED' : 'CANVAS_NODE_NOT_STARTED');
+          const succeeded = operationItems.filter((item) => item.status === 'succeeded').length;
+          await recordMcpOperationProgress(context.taskId, { items: operationItems,
+            ...(operationRevision !== undefined ? { revisionAfter: operationRevision } : {}),
+            phase: succeeded > 0 ? 'partial' : operationItems.some((item) => item.status === 'unknown') ? 'unknown' : 'failed',
+            errorCode: 'CANVAS_RUN_INTERRUPTED' }).catch(() => undefined);
+          return { status: 'error', summary: `已完成 ${succeeded}/${targetIds.length} 个节点，批次已停止；请只读核实原任务，不要重投`,
+            errorCode: 'CANVAS_RUN_INTERRUPTED', retryable: false,
+            modelContent: JSON.stringify({ projectId: context.projectId, results, items: operationItems, retryable: false,
+              ...(operationRevision !== undefined ? { revision: operationRevision } : {}) }) };
         }
         const succeeded = results.filter((item) => item.status === 'success').length;
         return {
@@ -2545,7 +2686,10 @@ export function registerCanvasAgentTools(): Array<() => void> {
           summary: `已运行 ${succeeded}/${targetIds.length} 个节点`,
           modelContent: JSON.stringify({
             results,
-            revision: useAppStore.getState().getCurrentRevision(),
+            ...(tracksOperation ? { items: operationItems, retryable: false } : {}),
+            ...(tracksOperation ? { projectId: context.projectId,
+              ...(operationRevision !== undefined ? { revision: operationRevision } : {}) }
+              : { revision: useAppStore.getState().getCurrentRevision() }),
           }),
         };
       },

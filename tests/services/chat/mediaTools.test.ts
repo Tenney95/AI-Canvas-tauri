@@ -12,6 +12,9 @@ import {
 } from '../../../src/services/chat/toolRegistry';
 import { getPendingTasksForProject, registerMediaNodeOperation, savePendingTask } from '../../../src/services/pollManager';
 import * as generationRuntime from '../../../src/services/ai/generationRuntime';
+import * as operationProgress from '../../../src/services/mcp/mcpOperationService';
+import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
+import type { MediaGenerationResult } from '../../../src/types/media';
 
 const context: Omit<AgentToolContext, 'signal'> = {
   taskId: 'task-media',
@@ -47,6 +50,160 @@ beforeEach(() => {
     }],
   });
   registerMediaAgentTools();
+});
+
+describe('keyed media operation progress', () => {
+  function keyedMedia(deliveryMode: 'chat' | 'both' = 'both') {
+    const conversationId = 'mcp-control-project-1';
+    const task: AgentTask = { id: context.taskId, projectId: context.projectId, conversationId,
+      userMessageId: 'receipt-user', mode: 'autonomous', goal: '生成媒体', status: 'running', steps: [],
+      modelRounds: 0, toolCallCount: 1, budget: { ...DEFAULT_AGENT_TASK_BUDGET }, createdAt: 1, updatedAt: 1,
+      mcpOperation: { version: 1, bindingId: 'receipt-binding', projectId: context.projectId,
+        keyDigest: 'a'.repeat(64), inputDigest: 'b'.repeat(64), toolId: 'media_generate', effect: 'media_generation',
+        phase: 'running', sequence: 1, createdAt: 1, updatedAt: 1 } };
+    useAppStore.setState({ agentTasks: [task], messages: [{ id: 'receipt-message', conversationId, role: 'assistant',
+      content: '', timestamp: 1, status: 'executing', agentTaskId: context.taskId }] });
+    const controller = new AbortController();
+    const toolContext: AgentToolContext = { ...context, conversationId, mode: 'autonomous', signal: controller.signal };
+    const input = { kind: 'image', prompt: 'private-prompt-body', modelRef: 'general/receipt-image', deliveryMode };
+    const artifact: MediaGenerationResult = { id: 'receipt-artifact', kind: 'image', deliveryMode,
+      url: 'asset://receipt-image.png', sourceUrl: 'https://private.example/original-result', persistence: 'saved',
+      prompt: input.prompt, modelId: input.modelRef, provider: 'general', createdAt: 1 };
+    return { definition: getAgentTool('media_generate')!, toolContext, controller, input, artifact };
+  }
+
+  it('durably binds node/message and local started before invoking generation, without persisting URLs or prompts', async () => {
+    const { definition, toolContext, input, artifact } = keyedMedia();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const progress = vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockImplementation(async (_taskId, change) => {
+      if (change.mediaStage === 'started') await gate;
+    });
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockImplementation(async (_intent, _projectId, _signal, nodeId) => {
+      if (nodeId) useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'loading', mediaTaskStage: 'querying' });
+      return artifact;
+    });
+    const pending = definition.execute(toolContext, input);
+    try {
+      await vi.waitFor(() => expect(progress).toHaveBeenCalledWith(context.taskId,
+        expect.objectContaining({ mediaStage: 'started', messageId: 'receipt-message', canvasNodeId: expect.any(String) })));
+      expect(generate).not.toHaveBeenCalled();
+    } finally { release(); }
+    expect(await pending).toMatchObject({ status: 'success' });
+    expect(progress.mock.calls.map(([, update]) => update.mediaStage)).toEqual(['preparing', 'started', 'generated', 'delivered']);
+    const storedFields = JSON.stringify(progress.mock.calls);
+    expect(storedFields).not.toContain(input.prompt);
+    expect(storedFields).not.toContain(artifact.sourceUrl);
+    expect(progress).toHaveBeenLastCalledWith(context.taskId, expect.objectContaining({ artifactId: artifact.id, persistence: 'saved' }));
+  });
+
+  it('cleans a placeholder and blocks generation when persisting started fails', async () => {
+    const { definition, toolContext, input } = keyedMedia();
+    const progress = vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockImplementation(async (_taskId, change) => {
+      if (change.mediaStage === 'started') throw new Error('receipt unavailable');
+    });
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration');
+    expect(await definition.execute(toolContext, input)).toMatchObject({ status: 'error', errorCode: 'AGENT_MEDIA_NOT_STARTED' });
+    expect(generate).not.toHaveBeenCalled();
+    expect(useAppStore.getState().nodes.at(-1)?.data.status).toBe('error');
+    expect(progress).toHaveBeenLastCalledWith(context.taskId, expect.objectContaining({ phase: 'failed', errorCode: 'AGENT_MEDIA_NOT_STARTED' }));
+  });
+
+  it.each(['cancel', 'project', 'revision', 'prompt', 'settings'] as const)('rechecks %s after the started persistence wait before calling generation', async (change) => {
+    const { definition, toolContext, controller, input } = keyedMedia();
+    vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockImplementation(async (_taskId, update) => {
+      if (update.mediaStage !== 'started') return;
+      if (change === 'cancel') controller.abort();
+      else if (change === 'project') useAppStore.setState({ currentProjectId: 'different-project' });
+      else if (change === 'revision') useAppStore.getState().incrementRevision();
+      else if (change === 'prompt') useAppStore.getState().updateNodeDataTransient(useAppStore.getState().nodes.at(-1)!.id, { prompt: 'new-user-draft' });
+      else useAppStore.setState((state) => ({ projects: state.projects.map((project) => ({ ...project,
+        settings: { ...project.settings, generation: { ...project.settings?.generation, imageAspectRatio: '4:3' } } })) }));
+    });
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration');
+    expect(await definition.execute(toolContext, input)).toMatchObject({ status: 'error', errorCode: 'AGENT_MEDIA_NOT_STARTED' });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the generated result when writing generated and delivered progress fails', async () => {
+    const { definition, toolContext, input, artifact } = keyedMedia();
+    vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockImplementation(async (_taskId, update) => {
+      if (update.mediaStage === 'generated' || update.mediaStage === 'delivered') throw new Error('receipt unavailable');
+    });
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue(artifact);
+    const result = await definition.execute(toolContext, input);
+    expect(result).toMatchObject({ status: 'success', errorCode: 'MCP_OPERATION_RECEIPT_UNCONFIRMED' });
+    expect(JSON.parse(result.modelContent)).toMatchObject({ artifactId: artifact.id, receiptUnconfirmed: true });
+    expect(useAppStore.getState().messages.find((message) => message.id === 'receipt-message')?.mediaResult).toEqual(artifact);
+    expect(useAppStore.getState().nodes.at(-1)?.data.artifactId).toBe(artifact.id);
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a user prompt changed during generation while retaining the generated artifact for verification', async () => {
+    const { definition, toolContext, input, artifact } = keyedMedia();
+    const progress = vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockResolvedValue(undefined);
+    vi.spyOn(generationRuntime, 'runMediaGeneration').mockImplementation(async (_intent, _projectId, _signal, nodeId) => {
+      useAppStore.getState().updateNodeDataTransient(nodeId!, { prompt: 'new-user-draft' });
+      return artifact;
+    });
+    expect(await definition.execute(toolContext, input)).toMatchObject({ status: 'success', errorCode: 'AGENT_MEDIA_DELIVERY_INCOMPLETE' });
+    expect(useAppStore.getState().nodes.at(-1)?.data.prompt).toBe('new-user-draft');
+    expect(useAppStore.getState().messages.find((message) => message.id === 'receipt-message')?.mediaResult?.id).toBe(artifact.id);
+    expect(progress).toHaveBeenLastCalledWith(context.taskId, expect.objectContaining({ phase: 'partial', artifactId: artifact.id }));
+  });
+
+  it('rejects project defaults changed during the preparing journal before creating a placeholder', async () => {
+    const { definition, toolContext, input } = keyedMedia();
+    vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockImplementation(async (_taskId, update) => {
+      if (update.mediaStage === 'preparing') useAppStore.setState((state) => ({ projects: state.projects.map((project) => ({ ...project,
+        settings: { ...project.settings, defaultModels: { image: 'general/different-model' } } })) }));
+    });
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration');
+    expect(await definition.execute(toolContext, input)).toMatchObject({ status: 'error', errorCode: 'AGENT_MEDIA_NOT_STARTED' });
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('keeps original recovery identity and a partial artifact when the canvas changes during generated persistence', async () => {
+    const { definition, toolContext, input, artifact } = keyedMedia();
+    const progress = vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockImplementation(async (_taskId, update) => {
+      if (update.mediaStage === 'generated' && !update.phase) {
+        useAppStore.getState().updateNodeDataTransient(useAppStore.getState().nodes.at(-1)!.id, { prompt: 'new-user-draft' });
+      }
+    });
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockImplementation(async (_intent, _projectId, _signal, nodeId) => {
+      const taskReceipt = savePendingTask({ projectId: context.projectId, nodeId: nodeId!, nodeType: 'ai-image',
+        provider: 'general', taskType: 'custom-protocol', taskId: 'original-paid-task', submitted: true,
+        mediaContext: { projectId: context.projectId, conversationId: toolContext.conversationId, messageId: 'receipt-message', deliveryMode: 'node+message' } });
+      return { ...artifact, taskReceipt };
+    });
+    const result = await definition.execute(toolContext, input);
+    expect(result).toMatchObject({ status: 'success', errorCode: 'AGENT_MEDIA_DELIVERY_INCOMPLETE' });
+    expect(progress).toHaveBeenLastCalledWith(context.taskId, expect.objectContaining({ phase: 'partial', mediaStage: 'generated', artifactId: artifact.id }));
+    expect(getPendingTasksForProject(context.projectId)).toContainEqual(expect.objectContaining({ taskId: 'original-paid-task' }));
+    expect(useAppStore.getState().messages.find((message) => message.id === 'receipt-message')?.mediaResult?.taskReceipt?.taskId).toBe('original-paid-task');
+    expect(useAppStore.getState().nodes.at(-1)?.data.prompt).toBe('new-user-draft');
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
+  it('marks generated but unsaved media as partial instead of reporting a fully delivered receipt', async () => {
+    const { definition, toolContext, input, artifact } = keyedMedia();
+    const progress = vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockResolvedValue(undefined);
+    vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue({ ...artifact, persistence: 'failed' });
+    expect(await definition.execute(toolContext, input)).toMatchObject({ status: 'success' });
+    expect(progress).toHaveBeenLastCalledWith(context.taskId, expect.objectContaining({ phase: 'partial', mediaStage: 'generated', persistence: 'failed' }));
+  });
+
+  it('adds no metadata wait before ordinary no-key generation', async () => {
+    const { definition, toolContext, input, artifact } = keyedMedia('chat');
+    useAppStore.setState({ agentTasks: [] });
+    const progress = vi.spyOn(operationProgress, 'recordMcpOperationProgress');
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue(artifact);
+    const pending = definition.execute(toolContext, input);
+    expect(generate).toHaveBeenCalledOnce();
+    expect(await pending).toMatchObject({ status: 'success' });
+    expect(progress).not.toHaveBeenCalled();
+  });
 });
 afterEach(() => { vi.restoreAllMocks(); });
 

@@ -320,6 +320,8 @@ export interface AgentSkillBinding {
 
 export type McpOperationPhase = 'reserved' | 'running' | 'succeeded' | 'partial' | 'failed' | 'unknown';
 export type McpOperationItemStatus = 'not_started' | 'started' | 'succeeded' | 'failed' | 'unknown';
+/** started 仅表示进入本地生成调用，不证明服务商已受理；提交身份沿用媒体恢复模块。 */
+export type McpOperationMediaStage = 'preparing' | 'started' | 'generated' | 'delivered';
 
 /** 仅保存摘要身份，不保存客户端 key、参数正文、路径或凭据。 */
 export interface McpOperationIdentity {
@@ -344,6 +346,7 @@ export interface McpOperationRecord extends McpOperationIdentity {
   createdAt: number;
   updatedAt: number;
   items?: McpOperationItemReceipt[];
+  mediaStage?: McpOperationMediaStage;
   canvasNodeId?: string;
   messageId?: string;
   artifactId?: string;
@@ -364,7 +367,7 @@ export interface McpOperationBinding extends McpOperationIdentity {
 }
 
 export type McpOperationUpdate = Partial<Pick<McpOperationRecord,
-  'phase' | 'items' | 'canvasNodeId' | 'messageId' | 'artifactId' | 'persistence'
+  'phase' | 'items' | 'mediaStage' | 'canvasNodeId' | 'messageId' | 'artifactId' | 'persistence'
   | 'errorCode' | 'revisionAfter'>>;
 
 export interface McpOperationReceipt {
@@ -379,6 +382,7 @@ export interface McpOperationReceipt {
   requiresReadVerification: boolean;
   nextAction: string;
   items?: McpOperationItemReceipt[];
+  mediaStage?: McpOperationMediaStage;
   canvasNodeId?: string;
   messageId?: string;
   artifactId?: string;

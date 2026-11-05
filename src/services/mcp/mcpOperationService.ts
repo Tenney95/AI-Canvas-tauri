@@ -81,10 +81,11 @@ function receipt(binding: McpOperationBinding, task: AgentTask | null): McpOpera
     operationId: binding.id, taskId: binding.taskId, projectId: binding.projectId, toolId: binding.toolId,
     status, sequence: Math.max(operation?.sequence ?? 0, binding.lastSequence ?? 0), resultAvailable: false, retryable: false,
     requiresReadVerification,
-    nextAction: status === 'running' || status === 'not_started' ? '等待后用 mcp_operation_get 查询原操作，不要重复提交'
+    nextAction: status === 'running' || status === 'not_started' ? '等待后用 mcp_operation_get 查询原操作，不要重复提交；started 仅表示本地开始调用，不证明服务商已受理'
       : status === 'succeeded' ? '原任务已记录成功；完整正文不持久化，请用对应只读工具核对结果'
         : '先用只读工具核对已完成项和原媒体任务；有可恢复任务时沿用 media_pending_tasks/media_resume_task，不要用新 key 重投',
     ...(items ? { items } : {}),
+    ...(operation?.mediaStage ? { mediaStage: operation.mediaStage } : {}),
     ...(operation?.canvasNodeId ? { canvasNodeId: operation.canvasNodeId } : {}),
     ...(operation?.messageId ? { messageId: operation.messageId } : {}),
     ...(operation?.artifactId ? { artifactId: operation.artifactId } : {}),
@@ -136,6 +137,10 @@ export async function claimMcpOperation(identity: McpOperationIdentity, input: C
 function safeUpdate(changes: McpOperationUpdate): McpOperationUpdate {
   const next: McpOperationUpdate = {};
   if (changes.phase !== undefined) next.phase = changes.phase;
+  if (changes.mediaStage !== undefined) {
+    if (!['preparing', 'started', 'generated', 'delivered'].includes(changes.mediaStage)) throw new Error('MCP 媒体阶段无效');
+    next.mediaStage = changes.mediaStage;
+  }
   if (changes.items !== undefined) {
     if (changes.items.length > 50 || changes.items.some((item) => !SAFE_ID.test(item.nodeId)
       || !['not_started', 'started', 'succeeded', 'failed', 'unknown'].includes(item.status))) throw new Error('MCP 操作条目无效');
@@ -158,7 +163,10 @@ function safeUpdate(changes: McpOperationUpdate): McpOperationUpdate {
 /** 普通 Agent 没有 operationKey 时完全不接触持久化。 */
 export async function recordMcpOperationProgress(taskId: string, changes: McpOperationUpdate): Promise<void> {
   const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
-  if (!task?.mcpOperation) return;
+  if (!task?.mcpOperation) {
+    if (activeOperations.has(taskId)) throw new Error('MCP 操作任务已移除，停止后续提交并请只读核实');
+    return;
+  }
   const saved = await updateMcpOperationTask(taskId, safeUpdate(changes));
   if (saved?.mcpOperation) useAppStore.getState().applyPersistedMcpOperation(taskId, saved.mcpOperation);
   else throw new Error('MCP 操作回执已不可用，请只读核实');
@@ -175,12 +183,16 @@ export async function finishMcpOperation(taskId: string, outcome: {
   if (!task?.mcpOperation) { activeOperations.delete(taskId); return null; }
   const operation = task.mcpOperation;
   const partial = operation.persistence === 'failed' || operation.items?.some((item) => item.status === 'succeeded')
-    && operation.items.some((item) => item.status !== 'succeeded');
+    && operation.items.some((item) => item.status !== 'succeeded')
+    || outcome.status === 'success' && operation.items?.some((item) => item.status !== 'succeeded')
+    || operation.revisionAfter !== undefined && operation.items?.some((item) => item.status !== 'succeeded')
+    || outcome.status === 'success' && operation.mediaStage !== undefined && operation.mediaStage !== 'delivered';
   const phase = partial ? 'partial' : outcome.status === 'success' ? 'succeeded'
     : outcome.knownNoEffect ? 'failed' : 'unknown';
   try {
     await recordMcpOperationProgress(taskId, { phase, errorCode: outcome.errorCode,
-      ...(outcome.status === 'success' ? { revisionAfter: useAppStore.getState().getCurrentRevision() } : {}) });
+      ...(outcome.status === 'success' && operation.revisionAfter === undefined
+        && useAppStore.getState().currentProjectId === task.projectId ? { revisionAfter: useAppStore.getState().getCurrentRevision() } : {}) });
   } finally { activeOperations.delete(taskId); }
   return getMcpOperationReceipt(task.projectId, { operationId: operation.bindingId });
 }

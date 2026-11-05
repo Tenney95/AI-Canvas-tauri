@@ -8,6 +8,8 @@ import { registerCanvasAgentTools } from '../../../src/services/chat/tools/canva
 import { validateAgentToolInput } from '../../../src/services/chat/agentToolSchemas';
 import { clearAgentToolRegistryForTests, getAgentTool, type AgentToolContext } from '../../../src/services/chat/toolRegistry';
 import { getCanvasNodeHash } from '../../../src/services/chat/canvasNodeVersion';
+import * as mcpOperations from '../../../src/services/mcp/mcpOperationService';
+import type { AgentTask, McpOperationUpdate } from '../../../src/types/agent';
 
 const files = vi.hoisted(() => ({ desktop: false, read: vi.fn(), save: vi.fn() }));
 vi.mock('../../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
@@ -40,6 +42,26 @@ function textNodes(samePath = false) {
   files.read.mockImplementation(async (path: string) => snapshot(path.endsWith('a.md') ? '原文甲' : '原文乙'));
 }
 
+function installKeyedTask() {
+  const task: AgentTask = {
+    id: 'batch-task', projectId: 'p1', conversationId: 'mcp-control-p1', userMessageId: 'receipt-user',
+    mode: 'autonomous', goal: '安全批量编辑摘要', status: 'running', steps: [], modelRounds: 0, toolCallCount: 0,
+    budget: { maxModelRounds: 1, maxToolCalls: 1, maxParallelReadTools: 1, maxReadRetries: 0 }, createdAt: 1, updatedAt: 1,
+    mcpOperation: { version: 1, bindingId: 'receipt-binding', projectId: 'p1', keyDigest: 'a'.repeat(64), inputDigest: 'b'.repeat(64),
+      toolId: 'canvas_update_nodes', effect: 'canvas_write', phase: 'running', sequence: 0, createdAt: 1, updatedAt: 1 },
+  };
+  useAppStore.setState({ agentTasks: [task] });
+}
+
+/** 此文件只控制日志的等待/失败；真实持久化与同 key 去重由 MCP service 集成测试覆盖。 */
+function mirrorOperationProgress(taskId: string, changes: McpOperationUpdate) {
+  const operation = useAppStore.getState().agentTasks.find((task) => task.id === taskId)?.mcpOperation;
+  if (!operation) throw new Error('Expected keyed test task');
+  useAppStore.getState().applyPersistedMcpOperation(taskId, { ...operation, ...changes,
+    ...(changes.items ? { items: changes.items.map((item) => ({ ...item })) } : {}),
+    sequence: operation.sequence + 1, updatedAt: operation.updatedAt + 1 });
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
   clearAgentToolRegistryForTests();
@@ -55,6 +77,131 @@ beforeEach(() => {
 });
 
 describe('异构节点批量更新', () => {
+  it.each(['journal-failed', 'user-edit'] as const)('started 回执等待发生 %s 时整批未开始，不写半批', async (failure) => {
+    installKeyedTask();
+    let intercepted = false;
+    vi.spyOn(mcpOperations, 'recordMcpOperationProgress').mockImplementation(async (taskId, changes) => {
+      if (!intercepted && changes.items?.every((item) => item.status === 'started')) {
+        intercepted = true;
+        if (failure === 'journal-failed') throw new Error('private journal failure');
+        mirrorOperationProgress(taskId, changes);
+        await Promise.resolve();
+        useAppStore.getState().updateNodeDataTransient('a', { prompt: '用户最新稿，未增加 revision' });
+      } else mirrorOperationProgress(taskId, changes);
+    });
+    const state = useAppStore.getState();
+    const revision = state.getCurrentRevision();
+    const commit = vi.spyOn(state, 'commitToHistory');
+    const result = await getAgentTool('canvas_update_nodes')!.execute(context(), { updates: [
+      { nodeId: 'a', patch: { prompt: '模型甲稿' } }, { nodeId: 'b', patch: { prompt: '模型乙稿' } },
+    ] });
+    expect(intercepted).toBe(true);
+    expect(result).toMatchObject({ status: 'error', errorCode: 'CANVAS_UPDATE_NOT_STARTED', retryable: false });
+    expect(JSON.parse(result.modelContent)).toMatchObject({ retryable: false, items: [
+      { nodeId: 'a', status: 'failed', errorCode: 'CANVAS_UPDATE_NOT_STARTED' },
+      { nodeId: 'b', status: 'failed', errorCode: 'CANVAS_UPDATE_NOT_STARTED' },
+    ] });
+    expect(useAppStore.getState().nodes.map((item) => item.data.prompt))
+      .toEqual([failure === 'user-edit' ? '用户最新稿，未增加 revision' : '甲旧词', '乙原文']);
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+    expect(commit).not.toHaveBeenCalled();
+    expect(files.save).not.toHaveBeenCalled();
+  });
+
+  it('keyed 文件保存部分失败后保留各项回执与不同草稿，画布只提交一次', async () => {
+    textNodes();
+    installKeyedTask();
+    vi.spyOn(mcpOperations, 'recordMcpOperationProgress').mockImplementation(async (taskId, changes) => {
+      mirrorOperationProgress(taskId, changes);
+    });
+    let phaseDuringSecondSave: string | undefined;
+    files.save.mockImplementation(async (path: string, _baseline: AssetTextSnapshot, content: string) => {
+      if (path.endsWith('a.md')) throw new Error('/private/file 未保存');
+      phaseDuringSecondSave = useAppStore.getState().agentTasks[0].mcpOperation?.phase;
+      return snapshot(content);
+    });
+    const state = useAppStore.getState();
+    const revision = state.getCurrentRevision();
+    const commit = vi.spyOn(state, 'commitToHistory');
+    const result = await getAgentTool('canvas_update_nodes')!.execute(context(), { updates: [
+      { nodeId: 'a', patch: { content: '甲新稿' } }, { nodeId: 'b', patch: { content: '乙新稿' } },
+    ] });
+    const items = [{ nodeId: 'a', status: 'failed', errorCode: 'CANVAS_APPLIED_FILE_SAVE_FAILED' },
+      { nodeId: 'b', status: 'succeeded' }];
+    expect(result).toMatchObject({ status: 'error', errorCode: 'TEXT_FILE_SAVE_INCOMPLETE', retryable: false });
+    expect(JSON.parse(result.modelContent)).toMatchObject({ items, receiptUnconfirmed: false, retryable: false });
+    expect(useAppStore.getState().agentTasks[0].mcpOperation).toMatchObject({ phase: 'partial', revisionAfter: revision + 1, items });
+    expect(useAppStore.getState().nodes.map((item) => item.data.output)).toEqual(['甲新稿', '乙新稿']);
+    expect(files.save).toHaveBeenCalledTimes(2);
+    expect(phaseDuringSecondSave).toBe('running');
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision + 1);
+    expect(result.summary + result.modelContent).not.toContain('/private/');
+  });
+
+  it('第一份文件及其成功回执已保存后日志中断，保留原结果并停止后续文件而不重投', async () => {
+    textNodes();
+    installKeyedTask();
+    let interrupted = false;
+    vi.spyOn(mcpOperations, 'recordMcpOperationProgress').mockImplementation(async (taskId, changes) => {
+      const operation = useAppStore.getState().agentTasks.find((task) => task.id === taskId)?.mcpOperation;
+      const firstSaved = operation?.items?.some((item) => item.nodeId === 'a' && item.status === 'succeeded');
+      if (!interrupted && firstSaved && changes.items?.some((item) => item.nodeId === 'b' && item.status === 'started')) {
+        interrupted = true;
+        throw new Error('journal interrupted before second file');
+      }
+      mirrorOperationProgress(taskId, changes);
+    });
+    const state = useAppStore.getState();
+    const revision = state.getCurrentRevision();
+    const commit = vi.spyOn(state, 'commitToHistory');
+    const result = await getAgentTool('canvas_update_nodes')!.execute(context(), { updates: [
+      { nodeId: 'a', patch: { content: '甲已保存稿' } }, { nodeId: 'b', patch: { content: '乙待保存稿' } },
+    ] });
+    expect(interrupted).toBe(true);
+    expect(result).toMatchObject({ status: 'error', errorCode: 'MCP_OPERATION_PROGRESS_UNCONFIRMED', retryable: false });
+    const items = [{ nodeId: 'a', status: 'succeeded' },
+      { nodeId: 'b', status: 'unknown', errorCode: 'CANVAS_APPLIED_FILE_UNCONFIRMED' }];
+    expect(JSON.parse(result.modelContent)).toMatchObject({ receiptUnconfirmed: true, retryable: false, items });
+    expect(useAppStore.getState().agentTasks[0].mcpOperation).toMatchObject({ phase: 'partial', revisionAfter: revision + 1, items });
+    expect(files.save).toHaveBeenCalledExactlyOnceWith('/project/a.md', expect.anything(), '甲已保存稿', expect.any(AbortSignal));
+    expect(useAppStore.getState().nodes.map((item) => item.data.output)).toEqual(['甲已保存稿', '乙待保存稿']);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision + 1);
+  });
+
+  it('画布提交后的回执等待只推进 revision 时停止文件保存，保留草稿及未确认回执', async () => {
+    textNodes();
+    installKeyedTask();
+    let changedRevision = false;
+    vi.spyOn(mcpOperations, 'recordMcpOperationProgress').mockImplementation(async (taskId, changes) => {
+      mirrorOperationProgress(taskId, changes);
+      if (!changedRevision && changes.revisionAfter !== undefined) {
+        changedRevision = true;
+        await Promise.resolve();
+        useAppStore.getState().incrementRevision();
+      }
+    });
+    const state = useAppStore.getState();
+    const revision = state.getCurrentRevision();
+    const commit = vi.spyOn(state, 'commitToHistory');
+    const result = await getAgentTool('canvas_update_nodes')!.execute(context(), { updates: [
+      { nodeId: 'a', patch: { content: '甲保留草稿' } }, { nodeId: 'b', patch: { content: '乙保留草稿' } },
+    ] });
+    const items = [{ nodeId: 'a', status: 'unknown', errorCode: 'CANVAS_APPLIED_FILE_UNCONFIRMED' },
+      { nodeId: 'b', status: 'unknown', errorCode: 'CANVAS_APPLIED_FILE_UNCONFIRMED' }];
+    expect(changedRevision).toBe(true);
+    expect(result).toMatchObject({ status: 'error', errorCode: 'MCP_OPERATION_PROGRESS_UNCONFIRMED', retryable: false });
+    expect(JSON.parse(result.modelContent)).toMatchObject({ revision: revision + 1, receiptUnconfirmed: true, retryable: false, items });
+    expect(useAppStore.getState().agentTasks[0].mcpOperation).toMatchObject({ phase: 'partial', revisionAfter: revision + 1, items });
+    expect(useAppStore.getState().nodes.map((item) => [item.data.output, item.data.filePath])).toEqual([
+      ['甲保留草稿', '/project/a.md'], ['乙保留草稿', '/project/b.txt'],
+    ]);
+    expect(files.save).not.toHaveBeenCalled();
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision + 2);
+  });
+
   it('每个补丁独立校验指纹，第二项未增 revision 的改名使整批拒绝，刷新后可一次提交', async () => {
     const state = useAppStore.getState();
     const firstHash = await getCanvasNodeHash(state.nodes[0], 'p1');

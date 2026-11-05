@@ -2132,6 +2132,36 @@ export async function getMcpOperationBinding(id: string): Promise<McpOperationBi
   });
 }
 
+function mergeMcpOperationProgress(operation: NonNullable<AgentTask['mcpOperation']>, changes: McpOperationUpdate): McpOperationUpdate {
+  const next = { ...changes };
+  if (operation.phase === 'running' && next.phase === 'reserved') delete next.phase;
+  const stages = ['preparing', 'started', 'generated', 'delivered'];
+  if (operation.mediaStage && next.mediaStage && stages.indexOf(next.mediaStage) < stages.indexOf(operation.mediaStage)) {
+    delete next.mediaStage;
+  }
+  if (operation.persistence && operation.persistence !== 'pending') delete next.persistence;
+  for (const key of ['canvasNodeId', 'messageId', 'artifactId'] as const) {
+    if (operation[key] !== undefined && next[key] !== undefined && operation[key] !== next[key]) {
+      throw new Error('MCP 操作引用身份不能变更');
+    }
+  }
+  if (next.items) {
+    if (new Set(next.items.map((item) => item.nodeId)).size !== next.items.length) throw new Error('MCP 操作条目不能重复');
+    if (operation.items) {
+      const incoming = new Map(next.items.map((item) => [item.nodeId, item]));
+      if (next.items.some((item) => !operation.items!.some((existing) => existing.nodeId === item.nodeId))) {
+        throw new Error('MCP 操作目标集合不能变更');
+      }
+      next.items = operation.items.map((item) => {
+        const changed = incoming.get(item.nodeId);
+        return !changed || ['succeeded', 'failed', 'unknown'].includes(item.status)
+          || (item.status === 'started' && changed.status === 'not_started') ? item : changed;
+      });
+    }
+  }
+  return next;
+}
+
 /** 只有这个事务能推进操作 sequence；普通任务快照保存不能改写回执。 */
 export async function updateMcpOperationTask(taskId: string, changes: McpOperationUpdate): Promise<AgentTask | null> {
   const db = await openDB();
@@ -2158,7 +2188,7 @@ export async function updateMcpOperationTask(taskId: string, changes: McpOperati
           if (!['reserved', 'running'].includes(operation.phase)) { result = task; return; }
           const now = Date.now();
           const sequence = Math.max(operation.sequence, binding.lastSequence ?? 0) + 1;
-          result = { ...task, mcpOperation: { ...operation, ...changes, sequence, updatedAt: now } };
+          result = { ...task, mcpOperation: { ...operation, ...mergeMcpOperationProgress(operation, changes), sequence, updatedAt: now } };
           tasks.put(result);
           metadata.put({ ...binding, lastSequence: sequence });
         } catch (error) { failure = error; tx.abort(); }
