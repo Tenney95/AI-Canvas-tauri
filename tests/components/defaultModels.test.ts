@@ -202,6 +202,7 @@ describe('内置厂商动态模型目录', () => {
       'grsai/gemini-3.8-flash',
       'grsai/nano-banana-2.1',
       'grsai/gpt-image-2.5',
+      'grsai/gpt-image-2.6',
       'grsai/gpt-image-2.5-flare',
       'grsai/gpt-image-2.5-sunburst',
       'grsai/minimax-h3',
@@ -227,7 +228,7 @@ describe('内置厂商动态模型目录', () => {
       'grsai/gemini-2.5-flash',
       'grsai/gemini-2.5-pro',
     ]);
-    expect(models.filter((model) => model.nodeTypes.includes('ai-image'))).toHaveLength(17);
+    expect(models.filter((model) => model.nodeTypes.includes('ai-image'))).toHaveLength(18);
     expect(models.filter((model) => model.nodeTypes.includes('ai-text'))).toHaveLength(14);
     expect(models.filter((model) => model.nodeTypes.includes('ai-video'))).toHaveLength(1);
   });

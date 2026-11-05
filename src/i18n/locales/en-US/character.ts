@@ -401,7 +401,6 @@ const character = {
   '角色必需武器，将随角色一起导入': 'Required by a character; this weapon will be imported with that character.',
   '角色绑定的项目武器已失效，请先修复绑定': 'A linked project weapon is unavailable. Repair the link first.',
   '角色武器缺少唯一的共享映射，请先纳入对应项目资产': 'A weapon has no unique shared mapping. Add it to the corresponding project assets first.',
-  '共享角色的武器依赖缺失或类型不符，请先恢复对应武器': 'A shared character’s weapon is missing or has the wrong type. Restore that weapon first.',
   '角色武器尚未建立共享映射，请先纳入对应项目资产': 'A weapon has not been mapped for sharing. Add it to the corresponding project assets first.',
 };
 

@@ -104,7 +104,6 @@ const series = {
   '转为剧集并新增分集': 'Convert to series and add episode',
   '生成 AI 拆分草案': 'Generate AI split draft',
   '打开剧本创作工作台': 'Open script workspace',
-  '打开工作台': 'Open workspace',
   '正文 {count} 字': 'Script: {count} chars',
   '本集大纲': 'Episode outline',
   '剧本创作工作台': 'Script workspace',
