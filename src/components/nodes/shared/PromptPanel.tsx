@@ -596,6 +596,7 @@ export default function PromptPanel({
   const batchLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressSubmitClickRef = useRef(false);
   const [batchMenuOpen, setBatchMenuOpen] = useState(false);
+  const [workflowEditorTarget, setWorkflowEditorTarget] = useState<HTMLSpanElement | null>(null);
   const imageModelConfig = useAppStore((state) => state.config);
   const dreaminaImageModel = nodeType === 'ai-image' && selectedProvider === 'dreamina'
     ? getDreaminaImageModel(selectedModel)
@@ -993,6 +994,7 @@ export default function PromptPanel({
       <div className="ui-ai-input__footer prompt-footer">
         <ModelSelector
           appearance="pill"
+          workflowEditorTarget={workflowEditorTarget}
           nodeType={nodeType}
           selectedModel={selectedModel}
           selectedProvider={selectedProvider}
@@ -1194,6 +1196,7 @@ export default function PromptPanel({
           )}
 
           <div className="ui-ai-input__actions prompt-actions">
+            <span ref={setWorkflowEditorTarget} className="contents" />
             {/* 支持自定义快捷指令的节点共用同一入口。 */}
             {PRESET_NODE_TYPES.some((type) => type === nodeType) && (
               <button

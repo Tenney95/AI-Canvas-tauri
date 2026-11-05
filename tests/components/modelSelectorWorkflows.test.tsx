@@ -2,6 +2,7 @@
  * modelSelectorWorkflows — 回归测试：模型选择器工作流可用性。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPortal } from 'react-dom';
 import type { BaseNodeData, ModelGroup, NodeType, WorkflowDefinition } from '../../src/types';
 import { getGenerationNodeType, resolveGenerationNodeData } from '../../src/utils/nodeGeneration';
 import { ModelMenu, type ModelMenuProps } from '../../src/components/shared/ModelPicker';
@@ -50,7 +51,7 @@ vi.mock('../../src/components/nodes/shared/defaultModels', () => ({
   defaultModelGroups: [], getConfiguredModelGroups: () => [], getGeneralModelGroups: () => [],
 }));
 vi.mock('../../src/components/shared/ProviderBadge', () => ({ default: 'badge' }));
-vi.mock('react-dom', () => ({ createPortal: (children: unknown) => children }));
+vi.mock('react-dom', () => ({ createPortal: vi.fn((children: unknown) => children) }));
 import ModelSelector from '../../src/components/nodes/shared/ModelSelector';
 
 function all(tree: unknown): Element[] {
@@ -66,10 +67,10 @@ function workflow(id: string, extra: Partial<WorkflowDefinition> = {}): Workflow
   return { id, name: id, category: 'ai-image', fileName: `${id}.json`, fileContent: '{}', createdAt: 0, updatedAt: 0, ...extra };
 }
 const select = vi.fn();
-function render(workflows: WorkflowDefinition[], selectedWorkflowId?: string) {
+function render(workflows: WorkflowDefinition[], selectedWorkflowId?: string, workflowEditorTarget?: HTMLElement | null) {
   driver.stateIndex = 0;
   driver.effectIndex = 0;
-  const tree = ModelSelector({ nodeType: 'ai-image', workflows, selectedWorkflowId, onSelect: vi.fn(), onWorkflowSelect: select });
+  const tree = ModelSelector({ nodeType: 'ai-image', workflows, selectedWorkflowId, workflowEditorTarget, onSelect: vi.fn(), onWorkflowSelect: select });
   driver.pending.splice(0).forEach((effect) => effect());
   return all(tree);
 }
@@ -218,6 +219,20 @@ describe('模型选择器工作流可用性', () => {
     complete({ missingNodeClasses: [] });
     await vi.advanceTimersByTimeAsync(0);
     expect(render([flow], flow.id).find((element) => element.props['aria-label'] === '在 ComfyUI 中编辑')?.props.disabled).toBe(false);
+  });
+
+  it('右侧工具区挂载后再显示无底色编辑入口，不占模型名称的位置', () => {
+    const flow = workflow('local');
+    const label = '在 ComfyUI 中编辑';
+    expect(render([flow], flow.id, null).some((element) => element.props['aria-label'] === label)).toBe(false);
+    const target = {} as HTMLElement;
+    vi.mocked(createPortal).mockClear();
+    const elements = render([flow], flow.id, target);
+    const button = elements.find((element) => element.props['aria-label'] === label)!;
+    expect(button.props.className).toContain('model-workflow-edit--toolbar');
+    expect(createPortal).toHaveBeenCalledWith(expect.anything(), target);
+    expect(elements.find((element) => String(element.props.className).startsWith('model-selector-trigger'))?.props.className)
+      .not.toContain('has-workflow-editor');
   });
 
   it('打开失败提示错误并恢复按钮', async () => {

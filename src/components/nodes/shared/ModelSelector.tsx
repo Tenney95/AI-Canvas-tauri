@@ -35,6 +35,8 @@ interface ModelSelectorProps {
   persistPreference?: boolean;
   /** 节点提示词栏用紧凑透明入口展示当前模型。 */
   appearance?: 'default' | 'pill';
+  /** 提示词栏将编辑入口放到右侧工具区；null 表示目标尚未挂载。 */
+  workflowEditorTarget?: HTMLElement | null;
   /** 独立窗口使用自身已应用的主题；省略时沿用主窗口配置。 */
   theme?: 'dark' | 'light';
   selectedModel?: string;
@@ -58,6 +60,7 @@ export default function ModelSelector({
   disabled = false,
   persistPreference = true,
   appearance = 'default',
+  workflowEditorTarget,
   theme,
   selectedModel,
   selectedWorkflowId,
@@ -396,11 +399,32 @@ export default function ModelSelector({
     }
   };
 
+  const workflowEditButton = canEditWorkflow ? (
+    <button
+      type="button"
+      className={workflowEditorTarget ? 'prompt-btn model-workflow-edit--toolbar nodrag nopan' : 'ui-icon-btn ui-icon-btn--ghost model-workflow-edit nodrag nopan'}
+      aria-label={t('在 ComfyUI 中编辑')}
+      data-tooltip={t('在 ComfyUI 中编辑')}
+      aria-busy={editorOpening}
+      disabled={disabled || editorOpening}
+      onClick={(event) => {
+        event.stopPropagation();
+        void editWorkflow();
+      }}
+    >
+      {editorOpening ? <span className="ui-spinner" /> : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+          <path d="m16 3 5 5M4 20l4-1L21 6a2.8 2.8 0 0 0-4-4L4 15l-1 6 6-1" />
+        </svg>
+      )}
+    </button>
+  ) : null;
+
   return (
     <div className={`model-selector${appearance === 'pill' ? ' model-selector--pill' : ''}`} ref={ref}>
       <button
         type="button"
-        className={`model-selector-trigger${appearance === 'pill' ? ' prompt-btn text-xs' : ''}${selectedWorkflowId ? ' has-workflow' : ''}${currentModel ? ' has-model' : ''}${canEditWorkflow ? ' has-workflow-editor' : ''}`}
+        className={`model-selector-trigger${appearance === 'pill' ? ' prompt-btn text-xs' : ''}${selectedWorkflowId ? ' has-workflow' : ''}${currentModel ? ' has-model' : ''}${canEditWorkflow && workflowEditorTarget === undefined ? ' has-workflow-editor' : ''}`}
         aria-expanded={open && !disabled}
         disabled={disabled}
         title={displayLabel}
@@ -456,26 +480,8 @@ export default function ModelSelector({
         </button>
       )}
 
-      {canEditWorkflow && (
-        <button
-          type="button"
-          className="ui-icon-btn model-workflow-edit nodrag nopan"
-          aria-label={t('在 ComfyUI 中编辑')}
-          data-tooltip={t('在 ComfyUI 中编辑')}
-          aria-busy={editorOpening}
-          disabled={disabled || editorOpening}
-          onClick={(event) => {
-            event.stopPropagation();
-            void editWorkflow();
-          }}
-        >
-          {editorOpening ? <span className="ui-spinner" /> : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="m16 3 5 5M4 20l4-1L21 6a2.8 2.8 0 0 0-4-4L4 15l-1 6 6-1" />
-            </svg>
-          )}
-        </button>
-      )}
+      {workflowEditorTarget === undefined ? workflowEditButton
+        : workflowEditorTarget && workflowEditButton && createPortal(workflowEditButton, workflowEditorTarget)}
 
       {open && !disabled && createPortal(
         <div

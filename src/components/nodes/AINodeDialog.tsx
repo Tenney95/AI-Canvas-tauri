@@ -906,10 +906,11 @@ function AINodeDialog() {
     cancellingNodeIdsRef.current.add(nodeId);
     try {
       const cloudResult = cloud ? await cancelRunningHubNodeTask(nodeId) : undefined;
-      if (!cloud) await cancelComfyUINodeTask(nodeId);
+      const comfyResult = !cloud ? await cancelComfyUINodeTask(nodeId) : undefined;
       if (!isCurrent()) return;
       updateNodeDataTransient(nodeId, { status: 'idle', error: undefined });
-      showToast(cloud ? (cloudResult === 'local-stopped' ? '已停止本地等待；已提交的任务仍在平台运行，可继续查询' : 'RunningHub 已确认任务结束') : t('已终止 ComfyUI 任务'));
+      showToast(cloud ? (cloudResult === 'local-stopped' ? '已停止本地等待；已提交的任务仍在平台运行，可继续查询' : 'RunningHub 已确认任务结束')
+        : comfyResult === 'local-stopped' ? t('已停止本地等待；ComfyUI 任务结束尚未确认，请核对原任务后继续查询') : t('已终止 ComfyUI 任务'));
     } catch (error) {
       if (!isCurrent()) return;
       const message = error instanceof Error ? error.message : t('无法终止 ComfyUI 任务');

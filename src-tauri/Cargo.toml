@@ -1,6 +1,6 @@
 [package]
 name = "ai-canvas-tauri"
-version = "0.10.26"
+version = "0.10.27"
 edition = "2021"
 
 [lib]

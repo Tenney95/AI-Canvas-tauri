@@ -169,3 +169,20 @@ it('无音频加载槽时不静默丢弃音频', async () => {
     ['data:audio/wav;base64,YQ=='])).rejects.toThrow('音频上传槽不足');
   expect(mocks.corsSafeFetch).not.toHaveBeenCalled();
 });
+
+it('音频流程拒绝只有封面的输出，保留视频容器的已有兼容', async () => {
+  registerWorkflow(JSON.stringify({ '2': { class_type: 'SaveAudio', inputs: {} } }), []);
+  let filename = 'cover.png';
+  mocks.corsSafeFetch.mockImplementation(async (url: string) => {
+    if (url.endsWith('/prompt')) return jsonResponse({ prompt_id: 'prompt-1' });
+    if (url.includes('/history/')) return jsonResponse({ 'prompt-1': {
+      status: { completed: true }, outputs: { '2': { images: [{ filename, type: 'output' }] } },
+    } });
+    if (url.includes('/object_info')) return jsonResponse({});
+    throw new Error(`未预期的请求：${url}`);
+  });
+  const params = { prompt: '台词', model: 'wf', provider: 'comfyui', workflowId: 'wf-1' };
+  await expect(executeComfyUIAudioGenerate(params)).rejects.toMatchObject({ name: 'ComfyOutputUnavailableError' });
+  filename = 'with-audio.mp4';
+  await expect(executeComfyUIAudioGenerate(params)).resolves.toMatchObject({ url: expect.stringContaining('with-audio.mp4') });
+});

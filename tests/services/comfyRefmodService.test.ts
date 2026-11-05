@@ -49,6 +49,21 @@ beforeEach(() => {
 });
 
 describe('RefMod 服务器目录', () => {
+  it('支持显式 COMBO 目录且继续过滤越界文件名', async () => {
+    mocks.comfyFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/object_info/MiniMaxH3RefModsLoader')) return json({
+        MiniMaxH3RefModsLoader: { input: { required: {
+          mod_1: ['COMBO', { options: ['(none)', 'people/Alice', 'people/Alice', '../private', 'https://other.test/model', 1] }],
+          strength_1: ['FLOAT', { default: 1, min: 0, max: 1, step: 0.01 }],
+        } } },
+      });
+      return json({}, 404);
+    });
+    const catalog = await loadComfyRefmodCatalog(undefined, { fresh: true, includeDetails: false });
+    expect(catalog.entries.map((entry) => entry.fileName)).toEqual(['people/Alice']);
+    expect(catalog.loaders[0].slots[0]).toMatchObject({ allowedNames: ['people/Alice'], emptyNames: ['(none)'] });
+  });
+
   it('使用真实节点 combo 目录，只摘取白名单元数据', async () => {
     mocks.comfyFetch.mockImplementation(async (url: string) => {
       if (url.endsWith('/object_info/MiniMaxH3RefModsLoader')) return json(originalSchema());

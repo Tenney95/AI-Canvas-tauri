@@ -2695,7 +2695,7 @@ describe('critical canvas node interactions', () => {
     }), true);
   });
 
-  it.each(['success', 'failure', 'project-switch'])('AINodeDialog ComfyUI stop and recovery: %s', async (outcome) => {
+  it.each(['success', 'failure', 'project-switch', 'local-stopped'])('AINodeDialog ComfyUI stop and recovery: %s', async (outcome) => {
     const store = createStore([{
       id: 'image-node',
       type: 'ai-image',
@@ -2719,8 +2719,13 @@ describe('critical canvas node interactions', () => {
         pendingTasks[0].comfyRecoveryState = 'cancel_pending';
         throw new Error('HTTP 503');
       }
+      if (outcome === 'local-stopped') {
+        pendingTasks[0].comfyRecoveryState = 'disconnected';
+        return 'local-stopped';
+      }
       pendingTasks = [];
       if (outcome === 'project-switch') store.currentProjectId = 'project-b';
+      return 'remote-ended';
     });
     vi.doMock('../../src/services/pollManager', () => ({
       ...mockComfyDeliveries(),
@@ -2794,6 +2799,8 @@ describe('critical canvas node interactions', () => {
       'image-node',
       { status: 'idle', error: undefined },
     ));
-    expect(store.showToast).toHaveBeenCalledWith('已终止 ComfyUI 任务');
+    expect(store.showToast).toHaveBeenCalledWith(outcome === 'local-stopped'
+      ? '已停止本地等待；ComfyUI 任务结束尚未确认，请核对原任务后继续查询' : '已终止 ComfyUI 任务');
+    if (outcome === 'local-stopped') expect(pendingTasks).toHaveLength(1);
   });
 });

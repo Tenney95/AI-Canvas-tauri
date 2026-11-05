@@ -11,7 +11,7 @@ const icon = readFileSync(new URL('../../public/favicon.svg', import.meta.url), 
 
 interface GraphNode { id: number; type: string; content: string; pos: number[]; size: number[] }
 interface Tab { filename: string; content: string; activeState?: { nodes: GraphNode[] } }
-interface SavePayload { requestId: string; workflowId: string; name: string; fileContent: string }
+interface SavePayload { requestId: string; workflowId: string; saveMode: 'update' | 'create'; name: string; fileContent: string }
 
 function createBridge(pageUrl = 'http://127.0.0.1:8188', configuredUrl = pageUrl, isTopFrame = true) {
   const store = { openWorkflows: [] as Tab[], activeWorkflow: null as Tab | null, openWorkflow: vi.fn(async (tab: Tab) => { store.activeWorkflow = tab; }) };
@@ -37,7 +37,7 @@ function createBridge(pageUrl = 'http://127.0.0.1:8188', configuredUrl = pageUrl
       activate(tab);
       return true;
     }),
-    loadApiJson: vi.fn(async (output: Record<string, { inputs: { value: string } }>, filename: string) => {
+    loadApiJson: vi.fn(async (output: Record<string, { inputs: { value: string } }>, filename: string): Promise<void | false> => {
       const content = output['1'].inputs.value;
       const tab = { filename, content, activeState: { nodes: [{ id: 1, type: 'PrimitiveString', content, pos: [5000, 4000], size: [200, 100] }] } };
       store.openWorkflows.push(tab);
@@ -51,12 +51,12 @@ function createBridge(pageUrl = 'http://127.0.0.1:8188', configuredUrl = pageUrl
     location: { hostname: new URL(pageUrl).hostname, origin: new URL(pageUrl).origin, assign: vi.fn() },
     top: undefined as unknown,
     localStorage: { getItem: () => null, setItem: vi.fn() },
-    addEventListener: vi.fn(), setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(),
+    addEventListener: vi.fn(), setTimeout: vi.fn((_callback: () => void, _delay: number) => 1), clearTimeout: vi.fn(),
     __AI_CANVAS_PENDING_SAVE_PAYLOAD__: undefined as SavePayload | undefined,
     __AI_CANVAS_COMFY__: undefined as unknown as {
       loadWorkflow: (payload: unknown) => Promise<void>;
       saveToAICanvas: (asNew?: boolean) => Promise<void>;
-      completeSave: (requestId: string, success: boolean, detail: string) => void;
+      completeSave: (requestId: string | null, success: boolean, detail: string) => void;
       consumePending: () => void;
       getLoadResult: (requestId: string) => { state: string; source?: string; nodeCount?: number; detail?: string } | null;
     },
@@ -69,7 +69,7 @@ function createBridge(pageUrl = 'http://127.0.0.1:8188', configuredUrl = pageUrl
     aiCanvasComfyIcon: icon,
     window, navigator: { userAgent: 'Windows' },
     document: { readyState: 'loading', addEventListener: vi.fn() },
-    URL, console, setTimeout, clearTimeout, crypto: { randomUUID: () => `id-${++nextId}` },
+    URL, TextEncoder, console, setTimeout, clearTimeout, crypto: { randomUUID: () => `id-${++nextId}` },
   });
   const bridge = window.__AI_CANVAS_COMFY__;
   const load = (id: string, fileName = `${id}.json`) => bridge.loadWorkflow({
@@ -120,15 +120,75 @@ describe('ComfyUI 桥接真实标签保存身份', () => {
     expect(JSON.parse(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.fileContent)['1'].inputs.value).toBe('wf-a');
   });
 
-  it('同名外部标签只能新建，不覆盖已绑定的工作流', async () => {
+  it('同名外部标签普通保存拒绝，显式另存才创建新记录', async () => {
     const h = createBridge();
     await h.load('wf-a', '同名.json');
     const external = { filename: '同名.json', content: 'external' };
     h.store.openWorkflows.push(external);
     h.activate(external);
     await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toBeUndefined();
+    expect(h.prompt).not.toHaveBeenCalled();
+    expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error', detail: expect.stringContaining('另存到 AI Canvas') }));
+    await h.bridge.saveToAICanvas(true);
     expect(h.prompt).toHaveBeenCalled();
     expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId).not.toBe('wf-a');
+  });
+
+  it('原记录反复编辑保存始终使用原 ID，不重新命名或创建副本', async () => {
+    const h = createBridge();
+    await h.load('builtin-dlss5-image-enhance');
+    for (const content of ['第一次编辑', '第二次编辑']) {
+      h.graph._nodes[0].content = content;
+      await h.bridge.saveToAICanvas();
+      expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId).toBe('builtin-dlss5-image-enhance');
+      expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.saveMode).toBe('update');
+      expect(JSON.parse(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.fileContent)['1'].inputs.value).toBe(content);
+      h.complete();
+    }
+    expect(h.prompt).not.toHaveBeenCalled();
+  });
+
+  it('同一标签经代理重新包装，仍保存原 ID，标记不进入序列化数据', async () => {
+    const h = createBridge();
+    await h.load('wf-a');
+    const a = h.store.activeWorkflow!;
+    h.activate(new Proxy(a, {}));
+    h.app.graphToPrompt.mockImplementationOnce(async () => {
+      h.activate(new Proxy(a, {}));
+      return { workflow: { nodes: h.graph._nodes }, output: { '1': { class_type: 'PrimitiveString', inputs: { value: '修改后' } } } };
+    });
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId).toBe('wf-a');
+    h.complete();
+    await h.load('wf-b');
+    h.store.openWorkflows[0] = new Proxy(a, {});
+    await h.load('wf-a');
+    expect(h.app.loadApiJson).toHaveBeenCalledTimes(2);
+    expect(h.prompt).not.toHaveBeenCalled();
+    expect(Object.getOwnPropertySymbols(a)).toHaveLength(1);
+    expect(Object.getOwnPropertySymbols({ ...a })).toHaveLength(0);
+    expect(JSON.stringify(a)).not.toContain('ai-canvas-workflow-tab');
+  });
+
+  it.each([false, true])('缺少活动标签时拒绝载入绑定与保存，不回退新建（Ref=%s）', async (asRef) => {
+    const h = createBridge();
+    if (asRef) {
+      let active: Tab | null = null;
+      Object.defineProperty(h.store, 'activeWorkflow', {
+        get: () => ({ value: active }),
+        set: (tab: Tab | null) => { active = tab; },
+      });
+    }
+    const load = h.app.loadApiJson.getMockImplementation()!;
+    h.app.loadApiJson.mockImplementationOnce(async (...args) => {
+      await load(...args);
+      h.store.activeWorkflow = null;
+    });
+    await expect(h.load('wf-a')).rejects.toThrow('无法绑定原工作流');
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toBeUndefined();
+    expect(h.prompt).not.toHaveBeenCalled();
   });
 
   it('重新编辑只聚焦原标签对象，不按重名或后缀猜测', async () => {
@@ -164,9 +224,12 @@ describe('ComfyUI 桥接真实标签保存身份', () => {
     const a = h.store.activeWorkflow;
     await h.bridge.saveToAICanvas(true);
     const newId = h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId;
+    const savedRequestId = h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.requestId;
     await h.load('wf-b');
     h.complete();
     await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId).toBe('wf-b');
+    h.bridge.completeSave(savedRequestId, true, '上次保存的迟到回执');
     expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId).toBe('wf-b');
     h.complete();
     h.activate(a);
@@ -189,6 +252,80 @@ describe('ComfyUI 桥接真实标签保存身份', () => {
     await Promise.all([h.bridge.saveToAICanvas(), h.bridge.saveToAICanvas()]);
     expect(h.app.graphToPrompt).toHaveBeenCalledTimes(1);
     expect(h.window.location.assign).toHaveBeenCalledTimes(1);
+  });
+
+  it('超长中文名称在交接前拒绝，缩短后可重新另存', async () => {
+    const h = createBridge();
+    await h.load('wf-a');
+    h.prompt.mockResolvedValueOnce('中'.repeat(180));
+    await h.bridge.saveToAICanvas(true);
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toBeUndefined();
+    expect(h.window.location.assign).not.toHaveBeenCalled();
+    expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.stringContaining('名称过长') }));
+    h.prompt.mockResolvedValueOnce('简短名称');
+    await h.bridge.saveToAICanvas(true);
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toMatchObject({ name: '简短名称', saveMode: 'create' });
+  });
+
+  it('原文件名超过原生 UTF-8 字节限制时可改用短名称另存', async () => {
+    const h = createBridge();
+    await h.load('wf-a', `${'文'.repeat(180)}.json`);
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toBeUndefined();
+    expect(h.window.location.assign).not.toHaveBeenCalled();
+    await h.bridge.saveToAICanvas(true);
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.saveMode).toBe('create');
+  });
+
+  it('正文超过 16 MiB UTF-8 时先拒绝，不进入不可修正的待确认状态', async () => {
+    const h = createBridge();
+    await h.load('wf-a');
+    const oversized = '中'.repeat(Math.floor(16 * 1024 * 1024 / 3) + 1);
+    h.app.graphToPrompt.mockResolvedValueOnce({
+      workflow: { nodes: h.graph._nodes },
+      output: { '1': { class_type: 'PrimitiveString', inputs: { value: oversized } } },
+    });
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toBeUndefined();
+    expect(h.window.location.assign).not.toHaveBeenCalled();
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toMatchObject({ workflowId: 'wf-a', saveMode: 'update' });
+  });
+
+  it.each([null, '', 'save-old-request'])('无关联失败回执 %s 不清理当前在途另存身份', async (requestId) => {
+    const h = createBridge();
+    await h.load('wf-a');
+    await h.bridge.saveToAICanvas(true);
+    const pending = h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!;
+    h.bridge.completeSave(requestId, false, '旧导航读取失败');
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toBe(pending);
+    await h.bridge.saveToAICanvas(true);
+    expect(h.app.graphToPrompt).toHaveBeenCalledOnce();
+    h.complete();
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toMatchObject({ workflowId: pending.workflowId, saveMode: 'update' });
+  });
+
+  it('另存超时仍以原请求核对，确认后只绑定原发起标签', async () => {
+    const h = createBridge();
+    await h.load('wf-a');
+    const a = h.store.activeWorkflow!;
+    await h.bridge.saveToAICanvas(true);
+    const pending = h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!;
+    expect(pending.saveMode).toBe('create');
+    h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__ = undefined;
+    h.window.setTimeout.mock.calls.at(-1)![0]();
+    await h.load('wf-b');
+    await h.bridge.saveToAICanvas(true);
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toBe(pending);
+    expect(h.app.graphToPrompt).toHaveBeenCalledOnce();
+    h.complete();
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId).toBe('wf-b');
+    h.complete();
+    h.activate(a);
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__).toMatchObject({ workflowId: pending.workflowId, saveMode: 'update' });
   });
 
   it('另存后再次打开原记录，应重新载入原记录，不复用已改绑标签', async () => {
@@ -264,6 +401,15 @@ describe('ComfyUI 工作流真实载入和回执', () => {
     expect(h.bridge.getLoadResult('open-a')).toMatchObject({ state: 'error' });
     await h.bridge.loadWorkflow(payload('a'));
     expect(h.bridge.getLoadResult('open-a')).toMatchObject({ state: 'ready', nodeCount: 1 });
+  });
+
+  it('API 明确拒绝载入时不能把之前的非空画布改绑给新工作流', async () => {
+    const h = createBridge();
+    await h.load('wf-a');
+    h.app.loadApiJson.mockResolvedValueOnce(false);
+    await expect(h.load('wf-b')).rejects.toThrow('API 工作流载入被拒绝');
+    await h.bridge.saveToAICanvas();
+    expect(h.window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__!.workflowId).toBe('wf-a');
   });
 
   it('连续请求按顺序执行，同请求 ID 不重复加载', async () => {

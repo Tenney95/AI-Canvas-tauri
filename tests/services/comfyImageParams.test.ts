@@ -30,7 +30,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
   resolveNodeReferencesAsync: async (value: string) => value,
 }));
 
-import { executeComfyUIGenerate } from '../../src/services/comfyWorkflowService';
+import { executeComfyUIGenerate, fetchNodeInputSpecs } from '../../src/services/comfyWorkflowService';
 
 function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
@@ -95,6 +95,18 @@ const baseParams = {
 };
 
 describe('ComfyUI 图片尺寸参数注入', () => {
+  it('真实 object_info 支持两种 COMBO 声明并保留字段元数据', async () => {
+    objectInfoByClass.ExplicitCombo = objectInfo('ExplicitCombo', {
+      scheduler: ['COMBO', { options: ['simple', 'karras'] }],
+      aspect_ratio: [['1:1', '9:16'], {}],
+      amount: ['FLOAT', { min: 0.2, max: 4, step: 0.1 }],
+    });
+    const specs = await fetchNodeInputSpecs(mocks.storeState.config.comfyUIUrl, 'ExplicitCombo', true);
+    expect(specs?.scheduler).toMatchObject({ type: 'COMBO', options: ['simple', 'karras'] });
+    expect(specs?.aspect_ratio.options).toEqual(['1:1', '9:16']);
+    expect(specs?.amount).toMatchObject({ type: 'FLOAT', min: 0.2, max: 4, step: 0.1 });
+  });
+
   it('更新数字宽高并按 8 对齐非整数比例', async () => {
     registerNodes({
       latent: { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512 } },

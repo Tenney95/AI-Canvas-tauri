@@ -61,6 +61,17 @@ beforeEach(() => {
 });
 
 describe('工作流持久化顺序', () => {
+  it('并发新增同 ID 在队列内拒绝重复，不能覆盖磁盘或重复追加列表', async () => {
+    const { slice, getState } = createSlice();
+    const [first, second] = await Promise.allSettled([
+      slice.addWorkflow(workflow),
+      slice.addWorkflow({ ...workflow, name: '重复条目' }),
+    ]);
+    expect(first.status).toBe('fulfilled');
+    expect(second).toMatchObject({ status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('标识已存在') }) });
+    expect(fileMocks.saveWorkflow).toHaveBeenCalledOnce();
+    expect(getState().workflows).toEqual([workflow]);
+  });
   it('原条目更新定义后，排队的旧卡片默认操作不覆盖新节点，重载仍保留新定义', async () => {
     const prompt = { nodeId: '6::text', title: '正文 · #6 / text', type: 'prompt' as const };
     const image = { nodeId: '807::image', title: '参考图 · #807 / image', type: 'image' as const };

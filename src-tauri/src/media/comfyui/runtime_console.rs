@@ -21,6 +21,8 @@ const MAX_LINES: usize = 2_000;
 const MAX_BYTES: usize = 1024 * 1024;
 const MAX_LINE_BYTES: usize = 16 * 1024;
 const SNAPSHOT_LINES: usize = 200;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_STATS_BYTES: u64 = 64 * 1024;
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -150,10 +152,52 @@ impl RuntimeShared {
     }
 }
 
-fn port_is_reachable(port: u16) -> bool {
-    TcpStream::connect_timeout(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PortService { Free, ComfyUI, OccupiedUnknown }
+
+fn is_comfyui_stats(bytes: &[u8]) -> bool {
+    if bytes.len() as u64 > MAX_STATS_BYTES { return false; }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else { return false; };
+    let Some(system) = value.get("system").and_then(serde_json::Value::as_object) else { return false; };
+    // 旧版没有 comfyui_version 等新增字段；CPU 和未枚举设备的服务也应可识别。
+    ["os", "python_version", "pytorch_version"].iter().all(|field| {
+        system.get(*field).and_then(serde_json::Value::as_str).is_some_and(|value| !value.trim().is_empty())
+    }) && value.get("devices").and_then(serde_json::Value::as_array).is_some_and(|devices| {
+        devices.iter().all(|device| ["name", "type"].iter().all(|field| {
+            device.get(*field).and_then(serde_json::Value::as_str).is_some_and(|value| !value.trim().is_empty())
+        }))
+    })
+}
+
+/// 仅在 spawn_blocking 或 supervise 原生线程调用；不把 HTTP 客户端带进异步运行时。
+fn probe_comfyui_port(port: u16) -> PortService {
+    match TcpStream::connect_timeout(
         &SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port), Duration::from_millis(100),
-    ).is_ok()
+    ) {
+        Ok(connection) => drop(connection),
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return PortService::Free,
+        // 超时等状态不能证明端口空闲，避免在不确定时再启动一个服务。
+        Err(_) => return PortService::OccupiedUnknown,
+    }
+    let client = match reqwest::blocking::Client::builder()
+        .no_proxy().redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_millis(300)).timeout(PROBE_TIMEOUT).build()
+    {
+        Ok(client) => client,
+        Err(_) => return PortService::OccupiedUnknown,
+    };
+    let response = match client.get(format!("http://127.0.0.1:{port}/system_stats"))
+        .header("accept", "application/json").header("accept-encoding", "identity").send()
+    {
+        Ok(response) if response.status() == reqwest::StatusCode::OK => response,
+        _ => return PortService::OccupiedUnknown,
+    };
+    if response.content_length().is_some_and(|length| length > MAX_STATS_BYTES) { return PortService::OccupiedUnknown; }
+    let mut bytes = Vec::new();
+    if response.take(MAX_STATS_BYTES + 1).read_to_end(&mut bytes).is_err() || !is_comfyui_stats(&bytes) {
+        return PortService::OccupiedUnknown;
+    }
+    PortService::ComfyUI
 }
 
 /// 脱敏先于入环；整行屏蔽凭据，避免含引号/空格的值被不完整截断。
@@ -386,11 +430,11 @@ fn supervise(mut command: Command, shared: Arc<RuntimeShared>, id: String, insta
         }
         if !reachable && last_probe.elapsed() >= Duration::from_millis(500) {
             last_probe = Instant::now();
-            if port_is_reachable(port) {
+            if probe_comfyui_port(port) == PortService::ComfyUI {
                 reachable = true;
                 shared.update(&id, |run| {
                     run.status = RuntimeStatus::Running;
-                    run.message = "运行进程的端口已响应，加载状态以 ComfyUI 页面为准。".into();
+                    run.message = "ComfyUI 服务已响应，已确认系统信息接口就绪。".into();
                 });
             }
         }
@@ -420,9 +464,13 @@ pub(super) fn launch_authorized(app: &tauri::AppHandle, installation_root: &Path
         }
     }
     let settings = launch_settings::load_settings(app)?;
-    if port_is_reachable(settings.port) {
+    let port_service = probe_comfyui_port(settings.port);
+    if port_service == PortService::OccupiedUnknown {
+        return Err(format!("端口 {} 已被占用或服务身份无法确认，请关闭占用程序或更换端口；未启动或终止任何进程。", settings.port));
+    }
+    if port_service == PortService::ComfyUI {
         let mut run = RuntimeRun::new(&installation_root, settings.port, RuntimeStatus::External,
-            "配置端口已有服务，未重复启动；该服务的命令行输出不由本应用捕获。");
+            "配置端口已有 ComfyUI 服务，未重复启动；该服务的命令行输出不由本应用捕获。");
         run.append(ConsoleStream::System, run.message.clone());
         let result = run.start_result();
         *shared.run.lock().map_err(|_| "ComfyUI 运行状态不可用".to_string())? = Some(run);
@@ -609,6 +657,127 @@ pub fn shutdown_runtime(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{io::Write, net::TcpListener, thread::JoinHandle};
+
+    fn stats_body() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "system": { "os": "win32", "python_version": "3.12.0", "pytorch_version": "2.4.0" },
+            "devices": [{ "name": "cpu", "type": "cpu", "index": null }],
+        })).unwrap()
+    }
+
+    fn stats_server(response: Vec<u8>, delay: Duration) -> (u16, JoinHandle<String>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let task = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+                        let mut request = Vec::new();
+                        let mut buffer = [0; 1024];
+                        while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+                            match stream.read(&mut buffer) {
+                                Ok(0) | Err(_) => break,
+                                Ok(count) => request.extend_from_slice(&buffer[..count]),
+                            }
+                        }
+                        // 首次 TCP 探活只连接后关闭，不发送 HTTP 请求。
+                        if request.is_empty() { continue; }
+                        std::thread::sleep(delay);
+                        let _ = stream.write_all(&response);
+                        return String::from_utf8(request).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("stub accept failed: {error}"),
+                }
+            }
+            panic!("probe did not request system_stats");
+        });
+        (port, task)
+    }
+
+    fn http_stats_response(status: &str, body: &[u8]) -> Vec<u8> {
+        let mut response = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+        response.extend_from_slice(body);
+        response
+    }
+
+    #[test]
+    fn stats_recognition_accepts_legacy_cpu_and_new_fields_without_requiring_a_version() {
+        let body = stats_body();
+        assert!(is_comfyui_stats(&body));
+        let mut value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        value["system"]["comfyui_version"] = "0.41.0".into();
+        value["system"]["future_field"] = true.into();
+        value["devices"] = serde_json::json!([]);
+        assert!(is_comfyui_stats(&serde_json::to_vec(&value).unwrap()));
+        value["devices"] = serde_json::json!([{ "name": "GPU", "type": "cuda", "index": 0 }]);
+        assert!(is_comfyui_stats(&serde_json::to_vec(&value).unwrap()));
+    }
+
+    #[test]
+    fn stats_recognition_rejects_html_partial_shapes_and_oversized_json() {
+        for body in [b"<html>another app</html>".as_slice(), b"{}", b"{\"system\":{}}", b"null"] {
+            assert!(!is_comfyui_stats(body));
+        }
+        for malformed in [
+            serde_json::json!({ "system": { "os": "win32", "python_version": "3.12" }, "devices": [] }),
+            serde_json::json!({ "system": { "os": "win32", "python_version": "3.12", "pytorch_version": "2.4" }, "devices": {} }),
+            serde_json::json!({ "system": { "os": "win32", "python_version": "3.12", "pytorch_version": "" }, "devices": [] }),
+        ] { assert!(!is_comfyui_stats(&serde_json::to_vec(&malformed).unwrap())); }
+        let mut body = stats_body();
+        body.resize(MAX_STATS_BYTES as usize + 1, b' ');
+        assert!(!is_comfyui_stats(&body));
+    }
+
+    #[test]
+    fn occupied_port_requires_a_real_system_stats_response_before_reuse() {
+        let (port, task) = stats_server(http_stats_response("200 OK", &stats_body()), Duration::ZERO);
+        assert_eq!(probe_comfyui_port(port), PortService::ComfyUI);
+        let request = task.join().unwrap();
+        assert!(request.starts_with("GET /system_stats HTTP/1.1\r\n"));
+        assert!(request.to_ascii_lowercase().contains(&format!("host: 127.0.0.1:{port}")));
+        for status in ["200 OK", "401 Unauthorized", "403 Forbidden", "404 Not Found", "500 Error"] {
+            let body = if status == "200 OK" { b"<html>other service</html>".to_vec() } else { stats_body() };
+            let (port, task) = stats_server(http_stats_response(status, &body), Duration::ZERO);
+            assert_eq!(probe_comfyui_port(port), PortService::OccupiedUnknown);
+            task.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn stats_probe_never_follows_redirects_to_another_service() {
+        let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        target.set_nonblocking(true).unwrap();
+        let response = format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/system_stats\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", target.local_addr().unwrap().port());
+        let (port, task) = stats_server(response.into_bytes(), Duration::ZERO);
+        assert_eq!(probe_comfyui_port(port), PortService::OccupiedUnknown);
+        task.join().unwrap();
+        assert_eq!(target.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn stats_probe_bounds_declared_chunked_and_slow_responses() {
+        let mut large = stats_body();
+        large.resize(MAX_STATS_BYTES as usize + 1, b' ');
+        let (port, task) = stats_server(http_stats_response("200 OK", &large), Duration::ZERO);
+        assert_eq!(probe_comfyui_port(port), PortService::OccupiedUnknown);
+        task.join().unwrap();
+        let mut chunked = format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n", large.len()).into_bytes();
+        chunked.extend_from_slice(&large);
+        chunked.extend_from_slice(b"\r\n0\r\n\r\n");
+        let (port, task) = stats_server(chunked, Duration::ZERO);
+        assert_eq!(probe_comfyui_port(port), PortService::OccupiedUnknown);
+        task.join().unwrap();
+        let (port, task) = stats_server(http_stats_response("200 OK", &stats_body()), PROBE_TIMEOUT * 2);
+        assert_eq!(probe_comfyui_port(port), PortService::OccupiedUnknown);
+        task.join().unwrap();
+    }
 
     #[test]
     fn output_is_bounded_and_removes_terminal_sequences_across_reads() {

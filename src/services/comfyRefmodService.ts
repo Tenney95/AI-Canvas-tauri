@@ -12,6 +12,7 @@ import type {
 import { comfyRefmodKey, isComfyRefmodFileName } from '../utils/comfyRefmod';
 import { comfyFetch } from './comfyPolling';
 import { resolveComfyServerSelection } from './comfyServers';
+import { comfyComboOptions } from './comfyInputSpecs';
 
 export { comfyRefmodKey } from '../utils/comfyRefmod';
 
@@ -122,9 +123,10 @@ function inputsFor(payload: unknown, classType: string): Record<string, unknown>
 }
 
 function comboValues(input: unknown): string[] | undefined {
-  if (!Array.isArray(input) || !Array.isArray(input[0])) return undefined;
-  if (input[0].length > MAX_CATALOG_FILES) throw new Error('RefMod 目录条目过多，请拆分目录后重试');
-  return [...new Set(input[0].filter((value): value is string => (
+  const options = comfyComboOptions(input);
+  if (!options) return undefined;
+  if (options.length > MAX_CATALOG_FILES) throw new Error('RefMod 目录条目过多，请拆分目录后重试');
+  return [...new Set(options.filter((value): value is string => (
     typeof value === 'string' && (EMPTY_NAMES.has(value) || isComfyRefmodFileName(value))
   )))];
 }

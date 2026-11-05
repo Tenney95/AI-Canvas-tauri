@@ -80,6 +80,7 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
   setWorkflowPanelOpen: (open, source) => set({ workflowPanelOpen: open, ...(source ? { workflowPanelSource: source } : {}) }),
 
   addWorkflow: (wf) => enqueue(async () => {
+    if (get().workflows.some((workflow) => workflow.id === wf.id)) throw new Error('工作流标识已存在，不能重复新增');
     validateWorkflow(wf);
     await fileService.saveWorkflow({
       id: wf.id,

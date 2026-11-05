@@ -6,7 +6,7 @@ import { useAppStore } from '../../src/store/useAppStore';
 import {
   beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, clearProjectTasks, completeComfyNodeTask, completeVideoNodeTask, getPendingTasksForProject,
   isComfyNodeDeliveryActive, subscribeComfyDeliveries,
-  pauseComfyNodeDelivery, pauseVideoNodeTask, prepareVideoNodeGeneration, registerNodePolling, resumeComfyUINodeTask,
+  pauseComfyNodeDelivery, pauseVideoNodeTask, prepareMediaNodeGeneration, prepareVideoNodeGeneration, registerNodePolling, resumeComfyUINodeTask,
   resumeMediaNodeTask, resumePendingTasks, resumeVideoNodeTask, savePendingTask, VideoPollingPausedError,
 } from '../../src/services/pollManager';
 import {
@@ -16,14 +16,14 @@ import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, ComfyOutputUnavailableError, ComfyPen
 import type { ComfyOutputFile } from '../../src/services/comfyOutputs';
 import { MediaPersistenceError } from '../../src/services/fileService';
 
-const mocks = vi.hoisted(() => ({ fetch: vi.fn(), history: vi.fn(), queue: vi.fn(), cancel: vi.fn(), persist: vi.fn() }));
+const mocks = vi.hoisted(() => ({ fetch: vi.fn(), history: vi.fn(), queue: vi.fn(), cancel: vi.fn(), persist: vi.fn(), bindPrompt: vi.fn() }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
 vi.mock('../../src/services/fileService', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fileService')>(),
   persistMediaUrlToProjectData: mocks.persist,
 }));
 vi.mock('../../src/services/comfyProgress', () => ({ createComfyProgressSession: () => ({
-  clientId: 'test-client', requestId: 'test-request', waitUntilReady: async () => {}, bindPrompt: () => {}, close: () => {},
+  clientId: 'test-client', requestId: 'test-request', waitUntilReady: async () => {}, bindPrompt: mocks.bindPrompt, close: () => {},
 }) }));
 
 const task = {
@@ -68,6 +68,7 @@ beforeEach(() => {
   mocks.history.mockReset().mockResolvedValue(completed());
   mocks.queue.mockReset().mockImplementation(async () => json({ queue_running: [], queue_pending: [] }));
   mocks.cancel.mockReset().mockResolvedValue(json({ cancelled: true }));
+  mocks.bindPrompt.mockReset();
   mocks.persist.mockReset().mockImplementation(async (url: string) => ({ mediaUrl: url, sourceUrl: url }));
   mocks.fetch.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/prompt')) return json({ prompt_id: 'prompt-1' });
@@ -86,11 +87,129 @@ afterEach(() => {
 });
 
 describe('ComfyUI 任务恢复合同', () => {
+  it('ID 已落盘后进度绑定抛错仍保留原回执，不由 finally 清掉', async () => {
+    mocks.bindPrompt.mockImplementationOnce(() => { throw new Error('progress binding failed'); });
+    await expect(executeComfyUIGenerate(params)).rejects.toMatchObject({ name: 'MediaTaskPausedError', reason: 'query_interrupted' });
+    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', submitted: true, mediaRecoveryState: 'query_paused' });
+    await resumeComfyUINodeTask('n1');
+    expect(pending()).toHaveLength(0);
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it('发送期间原 attempt 被明确解除后，迟到回执不能覆盖或删除新记录', async () => {
+    let respond!: (response: Response) => void;
+    const fetch = mocks.fetch.getMockImplementation()!;
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => String(url).endsWith('/prompt')
+      ? new Promise<Response>((resolve) => { respond = resolve; }) : fetch(url, init));
+    const running = expect(executeComfyUIGenerate(params)).rejects.toThrow('回执所属记录已变化');
+    await vi.waitFor(() => expect(promptCalls()).toHaveLength(1));
+    const replacement = savePendingTask({ ...task, taskId: 'replacement' });
+    respond(json({ prompt_id: 'prompt-1' }));
+    await running;
+    expect(pending()[0]).toMatchObject(replacement);
+  });
+
+  it.each([
+    ['图片', executeComfyUIGenerate], ['音频', executeComfyUIAudioGenerate], ['视频', executeComfyUIVideoGenerate],
+  ] as const)('%s 提交已发送但响应丢失时保留未知记录，禁止重投', async (_kind, generate) => {
+    const fetch = mocks.fetch.getMockImplementation()!;
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => String(url).endsWith('/prompt')
+      ? Promise.reject(new TypeError('connection closed')) : fetch(url, init));
+    await expect(generate(params)).rejects.toMatchObject({ name: 'MediaTaskPausedError', reason: 'submit_unknown' });
+    expect(pending()[0]).toMatchObject({ taskId: '', submitted: false, mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown' });
+    await resumePendingTasks('p1');
+    expect(useAppStore.getState().nodes[0].data.mediaTaskState).toBe('submit_unknown');
+    expect(() => prepareMediaNodeGeneration('n1')).toThrow('提交状态未知');
+    await expect(generate(params)).rejects.toThrow('未确认结束');
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it.each([400, 504])('提交 HTTP %s 区分明确拒绝与网关结果未知', async (status) => {
+    const fetch = mocks.fetch.getMockImplementation()!;
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => String(url).endsWith('/prompt')
+      ? Promise.resolve(json({ error: { message: 'validation or gateway failure' } }, status)) : fetch(url, init));
+    await expect(executeComfyUIGenerate(params)).rejects.toThrow();
+    expect(pending()).toHaveLength(status === 400 ? 0 : 1);
+    if (status === 504) expect(pending()[0].mediaRecoveryState).toBe('submit_unknown');
+  });
+
+  it('停止发送中的任务后，迟到的有效 ID 先保存，再响应停止，不再发生成请求', async () => {
+    let respond!: (response: Response) => void;
+    const fetch = mocks.fetch.getMockImplementation()!;
+    mocks.fetch.mockImplementation((url: string, init?: RequestInit) => String(url).endsWith('/prompt')
+      ? new Promise<Response>((resolve) => { respond = resolve; }) : fetch(url, init));
+    const running = expect(executeComfyUIGenerate(params)).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(promptCalls()).toHaveLength(1));
+    await expect(cancelComfyUINodeTask('n1')).resolves.toBe('local-stopped');
+    expect(pending()[0]).toMatchObject({ mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown' });
+    respond(json({ prompt_id: 'prompt-1' }));
+    await running;
+    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', submitted: true, mediaSubmissionUncertain: false, mediaRecoveryState: 'query_paused' });
+    await resumeComfyUINodeTask('n1');
+    expect(pending()).toEqual([]);
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it('旧版正在运行的任务只停止本地等待，绝不发送全局 interrupt', async () => {
+    savePendingTask(task);
+    mocks.cancel.mockImplementation(async () => json({}, 404));
+    mocks.queue.mockImplementation(async () => json({ queue_pending: [], queue_running: [[0, task.taskId]] }));
+    await expect(cancelComfyUINodeTask('n1')).resolves.toBe('local-stopped');
+    expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'disconnected', mediaRecoveryState: 'query_paused' });
+    expect(mocks.fetch.mock.calls.some(([url]) => String(url).endsWith('/interrupt'))).toBe(false);
+  });
+
+  it('旧版排队删除期间转为运行时不清回执；再次核对确认退出后才结束', async () => {
+    savePendingTask(task);
+    mocks.cancel.mockImplementation(async () => json({}, 404));
+    let reads = 0;
+    mocks.queue.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return json({});
+      reads += 1;
+      return json(reads === 1 ? { queue_pending: [[0, task.taskId]], queue_running: [] }
+        : { queue_pending: [], queue_running: [[0, task.taskId]] });
+    });
+    await expect(cancelComfyUINodeTask('n1')).resolves.toBe('local-stopped');
+    expect(reads).toBe(2);
+    expect(pending()).toHaveLength(1);
+    mocks.queue.mockImplementation(async () => json({ queue_pending: [], queue_running: [] }));
+    await expect(cancelComfyUINodeTask('n1')).resolves.toBe('remote-ended');
+    expect(pending()).toEqual([]);
+  });
+
+  it('音频任务只返回封面时保留输出不兼容状态，恢复不能把图片当音频交付', async () => {
+    useAppStore.getState().updateNodeDataTransient('n1', { type: 'ai-audio' });
+    await expect(executeComfyUIAudioGenerate(params)).rejects.toBeInstanceOf(ComfyOutputUnavailableError);
+    await resumeComfyUINodeTask('n1');
+    expect(pending()[0]).toMatchObject({ comfyRecoveryState: 'output_unavailable' });
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(promptCalls()).toHaveLength(1);
+  });
+
+  it.each([true, false])('旧音频回执中的封面缓存重新查 history，不直接下载图片（有音频=%s）', async (hasAudio) => {
+    useAppStore.getState().updateNodeDataTransient('n1', { type: 'ai-audio' });
+    savePendingTask({ ...task, nodeType: 'ai-audio', comfyRecoveryState: 'save_pending',
+      comfyOutputFile: { filename: 'old-cover.png', type: 'output' } });
+    mocks.history.mockImplementation(async () => hasAudio ? completedAudio() : completed());
+    await resumeComfyUINodeTask('n1');
+    expect(mocks.history).toHaveBeenCalledOnce();
+    expect(mocks.persist.mock.calls.some(([url]) => String(url).includes('.png'))).toBe(false);
+    if (hasAudio) {
+      expect(mocks.persist).toHaveBeenCalledWith(expect.stringContaining('out.flac'), expect.anything(), expect.anything(), expect.anything(), expect.anything());
+      expect(pending()).toHaveLength(0);
+    } else {
+      expect(mocks.persist).not.toHaveBeenCalled();
+      expect(pending()[0].comfyRecoveryState).toBe('output_unavailable');
+    }
+  });
+
   it.each(['ai-image', 'ai-audio'] as const)('%s 远端完成先保留原任务，调用方交付后才清理', async (nodeType) => {
     useAppStore.getState().updateNodeDataTransient('n1', { type: nodeType });
+    if (nodeType === 'ai-audio') mocks.history.mockImplementation(async () => completedAudio());
     const result = await (nodeType === 'ai-audio' ? executeComfyUIAudioGenerate(params) : executeComfyUIGenerate(params));
     expect(result.comfyTaskId).toBe('prompt-1');
-    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', comfyRecoveryState: 'save_pending', comfyOutputFile: { filename: 'out.png' } });
+    expect(pending()[0]).toMatchObject({ taskId: 'prompt-1', comfyRecoveryState: 'save_pending',
+      comfyOutputFile: { filename: nodeType === 'ai-audio' ? 'out.flac' : 'out.png' } });
     expect(result).not.toHaveProperty('file');
     await expect(executeComfyUIGenerate(params)).rejects.toThrow('未交付');
     expect(promptCalls()).toHaveLength(1);
@@ -103,7 +222,7 @@ describe('ComfyUI 任务恢复合同', () => {
 
   it.each(['ai-image', 'ai-audio'] as const)('%s 下载失败及重新进入保留原 promptId，续取不重新提交', async (nodeType) => {
     useAppStore.getState().updateNodeDataTransient('n1', { type: nodeType });
-    mocks.history.mockImplementation(async () => completed());
+    mocks.history.mockImplementation(async () => nodeType === 'ai-audio' ? completedAudio() : completed());
     await (nodeType === 'ai-audio' ? executeComfyUIAudioGenerate(params) : executeComfyUIGenerate(params));
     mocks.persist.mockRejectedValueOnce(new MediaPersistenceError(new Error('HTTP 403 /private/output?token=secret')));
     await resumeComfyUINodeTask('n1');
@@ -565,6 +684,7 @@ describe('ComfyUI 任务恢复合同', () => {
     let finishCancel!: (response: Response) => void;
     mocks.cancel.mockImplementation(() => new Promise<Response>((resolve) => { finishCancel = resolve; }));
     const cancel = cancelComfyUINodeTask('n1');
+    await vi.waitFor(() => expect(mocks.cancel).toHaveBeenCalledOnce());
     savePendingTask({ ...task, taskId: 'prompt-new' });
     finishCancel(json({ cancelled: true }));
     await cancel;

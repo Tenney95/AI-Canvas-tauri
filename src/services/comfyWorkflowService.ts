@@ -16,6 +16,7 @@ import {
   cancelNodePolling,
   cleanupNodePolling,
   getPendingTasksForProject,
+  pauseMediaTask,
   pauseVideoNodeTask,
   registerNodePolling,
   removePendingTask,
@@ -36,6 +37,7 @@ import type { ComfyInputSpec } from '../types/comfyWorkflow';
 import { applyComfyWorkflowParameterOverrides, prepareComfyWorkflowParameterOverrides, splitComfyWorkflowInputs } from './comfyWorkflowParameters';
 import { parseRasterImageDimensions } from './rasterImageDimensions';
 import { inferComfyPromptRoles } from './comfyPromptRoles';
+import { comfyComboOptions } from './comfyInputSpecs';
 
 /** ComfyUI 已注册的节点类型；同一次会话里短暂缓存，装完插件重开也能很快看到变化 */
 let nodeClassCache: { baseUrl: string; classes: Set<string>; fetchedAt: number } | null = null;
@@ -61,9 +63,9 @@ function queueContainsPrompt(queue: unknown, promptId: string): boolean {
 
 /**
  * 终止一个节点当前提交给 ComfyUI 的任务。
- * 新版 ComfyUI 使用原子的 job cancel API；旧版回退到队列查询后再做定向删除/中断。
+ * 只有确认任务不在队列才结束本地记录；旧版不支持定向中断时只停止本地等待。
  */
-export async function cancelComfyUINodeTask(nodeId: string): Promise<void> {
+export async function cancelComfyUINodeTask(nodeId: string): Promise<'remote-ended' | 'local-stopped'> {
   const currentProjectId = useAppStore.getState().currentProjectId;
   const task = currentProjectId
     ? getPendingTasksForProject(currentProjectId).find((item) => (
@@ -71,61 +73,77 @@ export async function cancelComfyUINodeTask(nodeId: string): Promise<void> {
     ))
     : undefined;
 
+  if (task?.mediaSubmissionUncertain || task?.mediaRecoveryState === 'submit_unknown') {
+    cancelNodePolling(nodeId, true);
+    pauseMediaTask(task, undefined, 'submit_unknown');
+    return 'local-stopped';
+  }
   if (!task?.submitted || !task.taskId || !task.baseUrl) {
     cancelNodePolling(nodeId);
-    return;
+    return 'remote-ended';
   }
   // 标记后再中止本地等待；远端取消失败时仍可重试，不能丢失任务身份。
-  updatePendingTask(nodeId, { comfyRecoveryState: 'cancel_pending' }, task.taskId);
+  updatePendingTask(nodeId, { comfyRecoveryState: 'cancel_pending' }, task.taskId, task.attemptId);
   cancelNodePolling(nodeId, true);
 
   const baseUrl = task.baseUrl.replace(/\/+$/, '');
   const promptId = task.taskId;
-  const directResponse = await comfyFetch(
-    `${baseUrl}/api/jobs/${encodeURIComponent(promptId)}/cancel`,
-    { method: 'POST' },
-  );
+  const directResponse = await withComfyQueryTimeout((signal) => comfyFetch(
+    `${baseUrl}/api/jobs/${encodeURIComponent(promptId)}/cancel`, { method: 'POST', signal },
+  ));
   if (directResponse.status !== 404) {
     await assertComfyResponse(directResponse, '终止 ComfyUI 任务');
-    removePendingTask(nodeId, promptId);
-    return;
   }
+  void directResponse.body?.cancel().catch(() => undefined);
 
-  // 兼容尚未提供 /api/jobs/:id/cancel 的 ComfyUI 版本。
-  const queue = await withComfyQueryTimeout(async (signal) => {
+  const readQueue = () => withComfyQueryTimeout(async (signal) => {
     const queueResponse = await comfyFetch(`${baseUrl}/queue`, { signal });
     await assertComfyResponse(queueResponse, '读取 ComfyUI 队列');
-    return await queueResponse.json() as Record<string, unknown>;
+    const queue = await queueResponse.json() as Record<string, unknown>;
+    if (!Array.isArray(queue.queue_pending) || !Array.isArray(queue.queue_running)) throw new Error('无法确认 ComfyUI 任务是否已经结束');
+    return queue;
   });
+  let queue = await readQueue();
   if (queueContainsPrompt(queue.queue_pending, promptId)) {
-    const deleteResponse = await comfyFetch(`${baseUrl}/queue`, {
+    const deleteResponse = await withComfyQueryTimeout((signal) => comfyFetch(`${baseUrl}/queue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ delete: [promptId] }),
-    });
+      signal,
+    }));
     await assertComfyResponse(deleteResponse, '移除 ComfyUI 排队任务');
-    removePendingTask(nodeId, promptId);
-    return;
+    // 排队项可能在删除前已经开始运行；HTTP 200 并不确认取消了目标任务。
+    queue = await readQueue();
   }
-  if (queueContainsPrompt(queue.queue_running, promptId)) {
-    const interruptResponse = await comfyFetch(`${baseUrl}/interrupt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt_id: promptId }),
-    });
-    await assertComfyResponse(interruptResponse, '中断 ComfyUI 运行任务');
+  if (queueContainsPrompt(queue.queue_running, promptId) || queueContainsPrompt(queue.queue_pending, promptId)) {
+    // 旧版 /interrupt 忽略 prompt_id，查询后全局中断会误停刚开始的其他任务。
+    updatePendingTask(nodeId, { comfyRecoveryState: 'disconnected' }, promptId, task.attemptId);
+    pauseMediaTask(task, undefined, 'query_interrupted');
+    return 'local-stopped';
   }
-  removePendingTask(nodeId, promptId);
+  removePendingTask(nodeId, promptId, task.attemptId);
+  return 'remote-ended';
 }
 
 function assertComfyNodeCanSubmit(nodeId?: string): void {
   const projectId = useAppStore.getState().currentProjectId;
   if (!nodeId || !projectId) return;
   if (getPendingTasksForProject(projectId).some((task) => (
-    task.nodeId === nodeId && task.taskType === 'comfyui' && task.submitted
+    task.nodeId === nodeId && task.taskType === 'comfyui'
+      && (task.submitted || task.mediaSubmissionUncertain || task.mediaRecoveryState === 'submit_unknown')
   ))) {
     throw new Error('该节点还有未交付或未确认结束的 ComfyUI 任务，请先继续查询或终止任务');
   }
+}
+
+/** POST 已发出而未拿到回执时，只能暂停核对，不能清理后允许重投。 */
+function interruptedComfySubmission(receipt: MediaTaskReceipt | undefined, submittedTaskId: string | undefined) {
+  if (!receipt) return;
+  const task = getPendingTasksForProject(receipt.projectId).find((item) => item.nodeId === receipt.nodeId
+    && item.attemptId === receipt.attemptId && item.taskType === 'comfyui');
+  if (task?.mediaSubmissionUncertain) return { receipt: task, reason: 'submit_unknown' as const };
+  // ID 已落盘后，进度绑定等同步回调仍可能抛错；不能由调用方尚未接到返回值而清掉回执。
+  if (!submittedTaskId && task?.submitted && task.taskId) return { receipt: task, reason: 'query_interrupted' as const };
 }
 
 async function fetchComfyNodeClasses(baseUrl: string): Promise<Set<string> | null> {
@@ -148,7 +166,7 @@ type ComfyNodeInputSpecs = Record<string, ComfyInputSpec>;
 
 const nodeInputSpecCache = new Map<string, { fetchedAt: number; specs: Promise<ComfyNodeInputSpecs | null> }>();
 
-/** /object_info/{class} 的输入声明形如 { name: [type, config] }，combo 的 type 本身就是可选值数组 */
+/** /object_info/{class} 兼容旧选项数组与显式 COMBO.options，保留其他字段的原声明。 */
 function parseNodeInputSpecs(payload: unknown, classType: string): ComfyNodeInputSpecs | null {
   const groups = (payload as Record<string, { input?: Record<string, Record<string, unknown>> }> | null)
     ?.[classType]?.input;
@@ -159,7 +177,7 @@ function parseNodeInputSpecs(payload: unknown, classType: string): ComfyNodeInpu
       if (!Array.isArray(declaration)) continue;
       const [type, config] = declaration as [unknown, Record<string, unknown> | undefined];
       specs[name] = {
-        options: Array.isArray(type) ? type : undefined,
+        options: comfyComboOptions(declaration),
         type: typeof type === 'string' ? type : undefined,
         optional: group === 'optional',
         min: typeof config?.min === 'number' ? config.min : undefined,
@@ -1440,12 +1458,16 @@ async function promptComfyUIWorkflow(
   progressSession?: ComfyProgressSession,
   beforeSubmit?: () => void | Promise<void>,
   finalCheck?: () => void,
+  receipt?: MediaTaskReceipt,
 ): Promise<string> {
   await progressSession?.waitUntilReady();
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   if (beforeSubmit) await beforeSubmit();
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   finalCheck?.();
+  if (receipt && !updatePendingTask(receipt.nodeId, { mediaSubmissionUncertain: true }, '', receipt.attemptId)) {
+    throw new Error('ComfyUI 提交记录已变化，请核对原任务后重新操作');
+  }
   const promptRes = await comfyFetch(`${baseUrl}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1457,19 +1479,34 @@ async function promptComfyUIWorkflow(
   });
 
   if (!promptRes.ok) {
+    // 网关超时或 5xx 可能发生在后端已排队之后，不能据此解除防重。
+    if (receipt && promptRes.status >= 400 && promptRes.status < 500 && promptRes.status !== 408) {
+      updatePendingTask(receipt.nodeId, { mediaSubmissionUncertain: false }, '', receipt.attemptId);
+    }
     const errorBody = await promptRes.text().catch(() => '');
     throw new Error(formatComfyPromptError(promptRes.status, errorBody));
   }
 
   const promptResult = (await promptRes.json()) as { prompt_id?: string; error?: string };
-  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   if (promptResult.error) {
+    if (receipt) updatePendingTask(receipt.nodeId, { mediaSubmissionUncertain: false }, '', receipt.attemptId);
     throw new Error(`ComfyUI 错误: ${promptResult.error}`);
   }
-  if (!promptResult.prompt_id) {
+  if (typeof promptResult.prompt_id !== 'string' || !promptResult.prompt_id.trim()) {
     throw new Error('ComfyUI 未返回 prompt_id');
   }
 
+  // 即使本地已经停止，已收到的远端身份也必须先落盘。不能把成功回执当作未提交丢掉。
+  if (receipt) {
+    const accepted = updatePendingTask(receipt.nodeId, {
+      taskId: promptResult.prompt_id, submitted: true, baseUrl, mediaSubmissionUncertain: false,
+      comfyRecoveryState: signal?.aborted ? 'disconnected' : undefined,
+      mediaRecoveryState: signal?.aborted ? 'query_paused' : undefined,
+      mediaRecoveryReason: signal?.aborted ? 'query_interrupted' : undefined,
+    }, '', receipt.attemptId);
+    if (!accepted) throw new Error('ComfyUI 回执所属记录已变化，请在服务端核对原任务');
+    if (accepted && signal?.aborted) pauseMediaTask(accepted, undefined, 'query_interrupted');
+  }
   progressSession?.bindPrompt(promptResult.prompt_id);
   return promptResult.prompt_id;
 }
@@ -1543,13 +1580,8 @@ export async function executeComfyUIGenerate(
     }
 
     // 提交工作流
-    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession);
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, undefined, undefined, pendingReceipt);
     submittedTaskId = promptId;
-
-    // 回填 promptId，标记为已提交
-    if (params.nodeId) {
-      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl }, '', pendingReceipt?.attemptId);
-    }
 
     // 计算最终输出尺寸（用于节点显示）
     const dims = dimensionInjection.dimensions;
@@ -1578,6 +1610,11 @@ export async function executeComfyUIGenerate(
     await applyConfiguredComfyMemoryPolicy(baseUrl);
     return { url: result.url, width: result.width, height: result.height, ...(params.nodeId && projectId ? { comfyTaskId: promptId } : {}) };
   } catch (error) {
+    const interrupted = interruptedComfySubmission(pendingReceipt, submittedTaskId);
+    if (interrupted) {
+      retainPending = true;
+      throw pauseMediaTask(interrupted.receipt, error, interrupted.reason) ?? error;
+    }
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
       const outputReceived = retainPending;
       retainPending = true;
@@ -1594,7 +1631,7 @@ export async function executeComfyUIGenerate(
   } finally {
     progressSession?.close();
     if (params.nodeId && cleanupNodePolling(params.nodeId, nodeSignal) !== false && !retainPending) {
-      removePendingTask(params.nodeId, submittedTaskId);
+      removePendingTask(params.nodeId, submittedTaskId, pendingReceipt?.attemptId);
     }
   }
 }
@@ -1735,7 +1772,7 @@ export async function executeComfyUIVideoGenerate(
       assertComfyRefmodSubmissionTargetFresh(capturedWorkflow, baseUrl);
       finalNodeCheck();
     } : undefined;
-    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, refmodBeforeSubmit, finalCheck);
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, refmodBeforeSubmit, finalCheck, pendingReceipt);
     submittedTaskId = promptId;
 
     // 回执只描述已真实提交的执行副本；不让过期提交覆盖另一个项目或新参数的说明。
@@ -1754,11 +1791,6 @@ export async function executeComfyUIVideoGenerate(
       }
     }
 
-    // 回填 promptId，标记为已提交
-    if (params.nodeId) {
-      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl }, '', pendingReceipt?.attemptId);
-    }
-
     // 轮询等待结果
     const result = await pollComfyUIHistoryForVideo(baseUrl, promptId, signal);
     // 远端完成不等于已交付：调用方保存文件并回填节点后才清理任务。
@@ -1771,6 +1803,11 @@ export async function executeComfyUIVideoGenerate(
     await applyConfiguredComfyMemoryPolicy(baseUrl);
     return { url: result.url };
   } catch (error) {
+    const interrupted = interruptedComfySubmission(pendingReceipt, submittedTaskId);
+    if (interrupted) {
+      retainPending = true;
+      throw pauseMediaTask(interrupted.receipt, error, interrupted.reason) ?? error;
+    }
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
       const outputReceived = retainPending;
       retainPending = true;
@@ -1791,7 +1828,7 @@ export async function executeComfyUIVideoGenerate(
   } finally {
     progressSession?.close();
     if (params.nodeId && cleanupNodePolling(params.nodeId, nodeSignal) !== false && !retainPending) {
-      removePendingTask(params.nodeId, submittedTaskId);
+      removePendingTask(params.nodeId, submittedTaskId, pendingReceipt?.attemptId);
     }
   }
 }
@@ -1803,7 +1840,7 @@ async function pollComfyUIHistoryForAudio(
   signal?: AbortSignal,
 ): Promise<{ url: string; file: ComfyOutputFile }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 音频生成超时（1 小时）', (outputs) => (
-    resolveComfyOutputUrl(baseUrl, outputs, ['audio', 'video', 'image'])
+    resolveComfyOutputUrl(baseUrl, outputs, ['audio', 'video'])
   ), signal);
 }
 
@@ -1853,13 +1890,8 @@ export async function executeComfyUIAudioGenerate(
     }
 
     // 提交工作流
-    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession);
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, undefined, undefined, pendingReceipt);
     submittedTaskId = promptId;
-
-    // 回填 promptId，标记为已提交
-    if (params.nodeId) {
-      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl }, '', pendingReceipt?.attemptId);
-    }
 
     // 轮询等待结果
     const result = await pollComfyUIHistoryForAudio(baseUrl, promptId, signal);
@@ -1870,6 +1902,11 @@ export async function executeComfyUIAudioGenerate(
     await applyConfiguredComfyMemoryPolicy(baseUrl);
     return { url: result.url, ...(params.nodeId && projectId ? { comfyTaskId: promptId } : {}) };
   } catch (error) {
+    const interrupted = interruptedComfySubmission(pendingReceipt, submittedTaskId);
+    if (interrupted) {
+      retainPending = true;
+      throw pauseMediaTask(interrupted.receipt, error, interrupted.reason) ?? error;
+    }
     if (submittedTaskId && (error instanceof ComfyPendingError || signal?.aborted)) {
       const outputReceived = retainPending;
       retainPending = true;
@@ -1886,7 +1923,7 @@ export async function executeComfyUIAudioGenerate(
   } finally {
     progressSession?.close();
     if (params.nodeId && cleanupNodePolling(params.nodeId, nodeSignal) !== false && !retainPending) {
-      removePendingTask(params.nodeId, submittedTaskId);
+      removePendingTask(params.nodeId, submittedTaskId, pendingReceipt?.attemptId);
     }
   }
 }

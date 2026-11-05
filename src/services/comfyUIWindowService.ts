@@ -12,13 +12,15 @@ import type {
 } from '../types';
 import { generateId, useAppStore } from '../store/useAppStore';
 import { findMissingNodeClasses } from './comfyWorkflowService';
+import { sha256BytesHex } from './mediaDataUrl';
 
 const COMFYUI_SAVE_EVENT = 'comfyui-workflow-save';
 const MAX_WORKFLOW_JSON_LENGTH = 16 * 1024 * 1024;
 
 interface ComfyUIWorkflowSavePayload {
   requestId: string;
-  workflowId?: string | null;
+  workflowId: string;
+  saveMode: 'update' | 'create';
   name: string;
   category: WorkflowCategory;
   fileName: string;
@@ -35,8 +37,7 @@ const IO_TYPE_RULES: { patterns: RegExp[]; type: WorkflowIONodeType }[] = [
 
 /**
  * 接受手动/助手保存的 `wf-`、内置 `builtin-` 与 MCP 创建的 `workflow-mcp-`。
- * 不认这个 id 就会当成新工作流入库 —— 内置工作流在 ComfyUI 里改完存回来会变成同名副本，
- * 原来那条纹丝不动，默认节点也得重标一遍。
+ * 显式提供但不合法的 ID 必须拒绝，不能静默当作新工作流入库。
  */
 const WORKFLOW_ID_PATTERN = /^(wf|builtin|workflow-mcp)-[A-Za-z0-9._:-]{1,160}$/;
 const SAVE_REQUEST_ID_PATTERN = /^save-[A-Za-z0-9._:-]{1,120}$/;
@@ -130,6 +131,10 @@ function validateSavePayload(payload: unknown): ComfyUIWorkflowSavePayload {
   const editableContent = typeof payload.editableContent === 'string' ? payload.editableContent : '';
   const category = payload.category as WorkflowCategory;
   if (!SAVE_REQUEST_ID_PATTERN.test(requestId)) throw new Error('ComfyUI 保存请求无效');
+  if (typeof payload.workflowId !== 'string' || !WORKFLOW_ID_PATTERN.test(payload.workflowId)) {
+    throw new Error('ComfyUI 工作流标识无效，请从画布重新打开编辑');
+  }
+  if (payload.saveMode !== 'update' && payload.saveMode !== 'create') throw new Error('ComfyUI 保存方式无效，请重新打开编辑窗口');
   if (!name || name.length > 120) throw new Error('工作流名称无效');
   if (!WORKFLOW_CATEGORIES.has(category)) throw new Error('工作流分类无效');
   if (!fileContent || fileContent.length > MAX_WORKFLOW_JSON_LENGTH) throw new Error('API 工作流内容无效或过大');
@@ -149,9 +154,8 @@ function validateSavePayload(payload: unknown): ComfyUIWorkflowSavePayload {
 
   return {
     requestId,
-    workflowId: typeof payload.workflowId === 'string' && WORKFLOW_ID_PATTERN.test(payload.workflowId)
-      ? payload.workflowId
-      : null,
+    workflowId: payload.workflowId,
+    saveMode: payload.saveMode,
     name,
     category,
     fileName: sanitizeWorkflowFileName(
@@ -183,6 +187,85 @@ export interface ComfyUIWorkflowOpenResult {
 }
 
 let activeEditorOpen: { key: string; promise: Promise<ComfyUIWorkflowOpenResult> } | null = null;
+
+interface WorkflowSaveResult {
+  success: boolean;
+  detail: string;
+  message: string;
+}
+
+// 当前主窗口会话内幂等：仅保留摘要、结果和在途 Promise，不保留工作流正文。
+const workflowSaveRequests = new Map<string, {
+  digest: Promise<string>;
+  settled: boolean;
+  result: Promise<WorkflowSaveResult>;
+}>();
+const MAX_WORKFLOW_SAVE_REQUESTS = 64;
+
+async function persistComfyUIWorkflow(saved: ComfyUIWorkflowSavePayload): Promise<WorkflowSaveResult> {
+  const store = useAppStore.getState();
+  const existing = store.workflows.find((workflow) => workflow.id === saved.workflowId);
+  const now = Date.now();
+  const ioNodes = extractComfyUIIONodes(saved.fileContent);
+  if (saved.saveMode === 'update') {
+    if (!existing) throw new Error('原工作流已删除，无法更新；需要保留当前内容请另存');
+    await store.updateWorkflow(saved.workflowId, {
+      name: saved.name,
+      category: saved.category,
+      fileName: saved.fileName,
+      fileContent: saved.fileContent,
+      editableContent: saved.editableContent,
+      ioNodes,
+      defaultNodes: pruneDefaultNodes(existing.defaultNodes, ioNodes),
+      updatedAt: now,
+    });
+    return { success: true, detail: saved.name, message: `“${saved.name}”已从 ComfyUI 更新` };
+  }
+  if (existing) throw new Error('新工作流标识已存在，请重新另存，不会覆盖已有记录');
+  await store.addWorkflow({
+    id: saved.workflowId,
+    name: saved.name,
+    category: saved.category,
+    fileName: saved.fileName,
+    fileContent: saved.fileContent,
+    editableContent: saved.editableContent,
+    ioNodes,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { success: true, detail: saved.name, message: `“${saved.name}”已保存到工作流库` };
+}
+
+async function saveComfyUIWorkflowOnce(saved: ComfyUIWorkflowSavePayload): Promise<WorkflowSaveResult> {
+  const known = workflowSaveRequests.get(saved.requestId);
+  if (known) {
+    const [original, current] = await Promise.all([
+      known.digest,
+      sha256BytesHex(new TextEncoder().encode(JSON.stringify(saved))),
+    ]);
+    if (original !== current) throw new Error('ComfyUI 保存请求内容已变化，请重新发起保存');
+    return known.result;
+  }
+  if (workflowSaveRequests.size >= MAX_WORKFLOW_SAVE_REQUESTS) {
+    for (const [id, entry] of workflowSaveRequests) {
+      if (entry.settled) { workflowSaveRequests.delete(id); break; }
+    }
+    if (workflowSaveRequests.size >= MAX_WORKFLOW_SAVE_REQUESTS) throw new Error('ComfyUI 保存请求过多，请等待已有保存完成');
+  }
+  const digest = sha256BytesHex(new TextEncoder().encode(JSON.stringify(saved)));
+  const entry = {
+    digest,
+    settled: false,
+    result: digest.then(() => persistComfyUIWorkflow(saved)).catch((error: unknown): WorkflowSaveResult => {
+      const detail = error instanceof Error ? error.message : '保存 ComfyUI 工作流失败';
+      return { success: false, detail, message: detail };
+    }),
+  };
+  workflowSaveRequests.set(saved.requestId, entry);
+  const result = await entry.result;
+  entry.settled = true;
+  return result;
+}
 
 /** 缺节点检查只作提示，不能因服务器的节点清单请求卡住而永远没有开窗反馈。 */
 async function checkEditorNodeClasses(comfyUrl: string, content: string): Promise<string[]> {
@@ -250,51 +333,18 @@ export async function initComfyUIWindowBridge(): Promise<() => void> {
       : '';
     try {
       const saved = validateSavePayload(payload);
-      const existing = saved.workflowId
-        ? store.workflows.find((workflow) => workflow.id === saved.workflowId)
-        : undefined;
-      const now = Date.now();
-      let successMessage: string;
-      if (existing) {
-        const ioNodes = extractComfyUIIONodes(saved.fileContent);
-        await store.updateWorkflow(existing.id, {
-          name: saved.name,
-          category: saved.category,
-          fileName: saved.fileName,
-          fileContent: saved.fileContent,
-          editableContent: saved.editableContent,
-          ioNodes,
-          // 在 ComfyUI 里改结构后节点可能已不存在，指向空节点的默认设置要丢掉
-          defaultNodes: pruneDefaultNodes(existing.defaultNodes, ioNodes),
-          updatedAt: now,
-        });
-        successMessage = `“${saved.name}”已从 ComfyUI 更新`;
-      } else {
-        const workflow: WorkflowDefinition = {
-          id: saved.workflowId || `wf-${generateId()}`,
-          name: saved.name,
-          category: saved.category,
-          fileName: saved.fileName,
-          fileContent: saved.fileContent,
-          editableContent: saved.editableContent,
-          ioNodes: extractComfyUIIONodes(saved.fileContent),
-          createdAt: now,
-          updatedAt: now,
-        };
-        await store.addWorkflow(workflow);
-        successMessage = `“${saved.name}”已保存到工作流库`;
-      }
-
+      const result = await saveComfyUIWorkflowOnce(saved);
       try {
-        await completeComfyUIWorkflowSave(saved.requestId, true, saved.name);
+        await completeComfyUIWorkflowSave(saved.requestId, result.success, result.detail);
       } catch {
-        store.showToast(`${successMessage}，但无法通知 ComfyUI 窗口`, 'error');
+        store.showToast(`${result.message}，但无法通知 ComfyUI 窗口；再次保存可核对原请求`, 'error');
         return;
       }
-      store.showToast(successMessage, 'success');
+      store.showToast(result.message, result.success ? 'success' : 'error');
     } catch (error) {
       const message = error instanceof Error ? error.message : '保存 ComfyUI 工作流失败';
-      if (SAVE_REQUEST_ID_PATTERN.test(requestId)) {
+      // 重放内容冲突或畸形重放不能用同 ID 的失败回执清掉合法的在途保存。
+      if (SAVE_REQUEST_ID_PATTERN.test(requestId) && !workflowSaveRequests.has(requestId)) {
         try {
           await completeComfyUIWorkflowSave(requestId, false, message);
         } catch {

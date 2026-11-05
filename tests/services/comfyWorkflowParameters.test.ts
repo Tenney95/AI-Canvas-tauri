@@ -3,6 +3,7 @@ import type { WorkflowDefinition } from '../../src/types';
 import type { ComfyInputSpec } from '../../src/types/comfyWorkflow';
 import { applyComfyWorkflowParameterOverrides, comfyWorkflowParameterKey, loadComfyWorkflowParameters, prepareComfyWorkflowParameterOverrides, splitComfyWorkflowInputs } from '../../src/services/comfyWorkflowParameters';
 import { WORKFLOW_RANDOM_SEED } from '../../src/services/workflowSeed';
+import { comfyComboOptions } from '../../src/services/comfyInputSpecs';
 
 const graph = {
   '714': { class_type: 'PrimitiveStringMultiline', inputs: { value: '当前人物' } },
@@ -26,6 +27,26 @@ const getSpecs = async (classType: string) => specs[classType] ?? null;
 const key = (nodeId: string, fieldName: string) => comfyWorkflowParameterKey({ nodeId, fieldName });
 
 describe('本地 ComfyUI 参数编辑', () => {
+  it('显式 COMBO 可显示并覆盖，下游仍拒绝非法选项和不匹配类型', async () => {
+    const local = workflow({ '202': { class_type: 'KSampler', inputs: { scheduler: 'simple', numeric_mode: 0 } } });
+    const explicit = async () => ({
+      scheduler: { type: 'COMBO', options: comfyComboOptions(['COMBO', { options: ['simple', 'karras'] }]) },
+      numeric_mode: { type: 'COMBO', options: comfyComboOptions(['COMBO', { options: [0, 1] }]) },
+    });
+    const fields = await loadComfyWorkflowParameters(local, explicit);
+    expect(fields.map((field) => [field.fieldName, field.options])).toEqual([
+      ['scheduler', ['simple', 'karras']], ['numeric_mode', [0, 1]],
+    ]);
+    const assignments = await prepareComfyWorkflowParameterOverrides(local, { [key('202', 'scheduler')]: 'karras' }, explicit);
+    const copy = JSON.parse(local.fileContent);
+    applyComfyWorkflowParameterOverrides(copy, assignments);
+    expect(copy['202'].inputs.scheduler).toBe('karras');
+    expect(JSON.parse(local.fileContent)['202'].inputs.scheduler).toBe('simple');
+    await expect(prepareComfyWorkflowParameterOverrides(local, { [key('202', 'scheduler')]: 'invalid' }, explicit)).rejects.toThrow('不在允许的选项');
+    const mismatch = await loadComfyWorkflowParameters(local, async () => ({ numeric_mode: { type: 'COMBO', options: ['0', '1'] } }));
+    expect(mismatch).toEqual([]);
+  });
+
   it('默认随机预检只计入种子候选，不因无关标量多而拒绝原工作流', async () => {
     const large = workflow({ main: { class_type: 'KSampler', inputs: { seed: 42 } },
       other: { class_type: 'CustomSettings', inputs: Object.fromEntries(Array.from({ length: 1001 }, (_, index) => [`option_${index}`, index])) } });

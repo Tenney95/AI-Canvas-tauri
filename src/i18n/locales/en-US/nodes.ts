@@ -2,6 +2,7 @@
  * 节点与画布节点组件（nodes）
  */
 const nodes = {
+  '已停止本地等待；ComfyUI 任务结束尚未确认，请核对原任务后继续查询': 'Local waiting stopped; the ComfyUI task has not been confirmed finished. Check the original task before continuing to query.',
   '跟随分镜': 'Inherit shot',
   '逐项选择跟随分镜或覆盖；自动表示此视频不指定该项。': 'Inherit or override each field from the shot. Auto leaves that field unspecified for this video.',
   '选择本视频的摄影机、镜头与效果；自动表示不指定该项。': 'Choose the camera, lens and look for this video. Auto leaves a field unspecified.',

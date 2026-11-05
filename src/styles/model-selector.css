@@ -121,11 +121,16 @@
   right: 36px;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
-  background: var(--theme-hover);
+  background: transparent;
 }
 .model-selector--pill .model-workflow-edit:hover:not(:disabled) {
-  background: var(--brand-alpha-15);
+  background: transparent;
+}
+.model-workflow-edit--toolbar.prompt-btn,
+.model-workflow-edit--toolbar.prompt-btn:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  color: var(--brand-light);
 }
 
 /* Text Model Icon */

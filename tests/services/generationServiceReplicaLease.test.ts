@@ -46,7 +46,8 @@ vi.mock('../../src/services/pollManager', () => ({
     if (expectedSignal && mocks.polling.get(nodeId)?.signal !== expectedSignal) return false;
     return mocks.polling.delete(nodeId);
   }),
-  isMediaTaskPausedError: (error: unknown) => error instanceof Error && error.message === '视频查询已暂停',
+  isMediaTaskPausedError: (error: unknown) => error instanceof Error
+    && (error.message === '视频查询已暂停' || error.name === 'MediaTaskPausedError'),
   prepareVideoNodeGeneration: vi.fn(), completeVideoNodeTask: vi.fn(), pauseVideoNodeTask: vi.fn(),
   beginComfyNodeDelivery: vi.fn(), completeComfyNodeTask: mocks.completeComfy, pauseComfyNodeDelivery: mocks.pauseComfy,
   getPendingTasksForProject: () => mocks.tasks,
@@ -85,6 +86,20 @@ beforeEach(() => {
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it.each(['ai-image', 'ai-audio', 'ai-video'] as const)('%s ComfyUI 提交未知返回暂停，不写终态失败或重投', async (type) => {
+    const input: BaseNodeData = { ...data(), type, provider: 'comfyui', model: 'comfyui/workflow', workflowId: 'wf-1' };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    const taskReceipt = { projectId: 'p', nodeId: 'video', taskId: '', attemptId: 'pending' };
+    const paused = Object.assign(new Error('提交状态未知'), { name: 'MediaTaskPausedError', reason: 'submit_unknown', taskReceipt });
+    const generate = type === 'ai-image' ? mocks.image : type === 'ai-audio' ? mocks.audio : mocks.generate;
+    generate.mockRejectedValueOnce(paused);
+    expect(await run(undefined, input)).toEqual({ success: false, message: '提交状态未知' });
+    expect(generate).toHaveBeenCalledOnce();
+    expect(mocks.store.recordOutputHistory).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(mocks.store.showToast).not.toHaveBeenCalled();
+  });
+
   it('已完成任务的下载失败记为待下载，不写成生成失败，也不重新提交', async () => {
     mocks.tasks = [{ projectId: 'p', nodeId: 'video', taskId: 'remote-1', attemptId: 'attempt-1', provider: 'runninghubwf',
       nodeType: 'ai-video', taskType: 'runninghub-workflow', submitted: true, runninghubRecoveryState: 'save_pending' }];

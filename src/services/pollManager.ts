@@ -16,7 +16,7 @@ import { MediaPersistenceError, persistMediaUrlToProjectData, type MediaPersiste
 import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './ai/helpers';
-import { buildComfyFileUrl, resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
+import { resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
 import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from './canvasDerivationGuard';
@@ -357,7 +357,8 @@ export function getMediaTaskReceipt(nodeId: string, expectedTaskId?: string): Me
 }
 
 function isRecoverableMediaTask(task: PendingTask): boolean {
-  if (task.taskType === 'comfyui') return task.submitted && !!task.taskId && task.comfyRecoveryState !== 'cancel_pending';
+  if (task.taskType === 'comfyui') return task.comfyRecoveryState !== 'cancel_pending'
+    && ((task.submitted && !!task.taskId) || task.mediaSubmissionUncertain === true || task.mediaRecoveryState === 'submit_unknown');
   return ['ai-image', 'ai-video', 'ai-audio', 'ai-panorama', 'ai-animation'].includes(task.nodeType)
     && ['custom-protocol', 'general', 'apimart', 'apimart-flow-music', 'volcengine', 'dreamina'].includes(task.taskType);
 }
@@ -1506,7 +1507,7 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
 
   const kinds: ComfyOutputKind[] =
     nodeType === 'ai-video' ? ['video']
-      : nodeType === 'ai-audio' ? ['audio', 'video', 'image']
+      : nodeType === 'ai-audio' ? ['audio', 'video']
         : ['image'];
   const extract = (outputs: ComfyOutputs) => resolveComfyOutputUrl(baseUrl, outputs, kinds);
   let resultReceived = false;
@@ -1517,7 +1518,10 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
     // 与实时生成共用轮询：ComfyUI 重启后 promptId 会彻底消失，那里会连 /queue 一起确认并直接判失败，
     // 不再让恢复出来的任务空转一小时
     const cachedFile = sanitizeComfyOutputFile(task.comfyOutputFile);
-    const result = cachedFile ? { url: buildComfyFileUrl(baseUrl, cachedFile), file: cachedFile } : await pollComfyHistory(
+    // 旧版本可能给音频任务缓存了封面；同样经过当前媒体识别规则，不能绕过类型检查。
+    const cachedKey = nodeType === 'ai-audio' ? 'audio' : nodeType === 'ai-video' ? 'videos' : 'images';
+    const cachedResult = cachedFile ? resolveComfyOutputUrl(baseUrl, { cached: { [cachedKey]: [cachedFile] } }, kinds) : null;
+    const result = cachedResult ?? await pollComfyHistory(
       baseUrl,
       taskId,
       'ComfyUI 任务恢复超时（1 小时）',

@@ -52,6 +52,23 @@ beforeEach(async () => {
 });
 
 describe('polling runtime hot reload identity', () => {
+  it('ComfyUI 提交未知跨重启保留防重，只有明确确认才能解除', async () => {
+    useAppStore.setState({ nodes: [{ id: 'uncertain', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: '图片', status: 'idle' } }] });
+    const receipt = savePendingTask({ nodeId: 'uncertain', projectId: 'project-1', nodeType: 'ai-image',
+      provider: 'comfyui', taskId: '', taskType: 'comfyui', submitted: false,
+      baseUrl: 'http://127.0.0.1:8188', mediaSubmissionUncertain: true });
+    expect(pauseMediaTask(receipt, undefined, 'submit_unknown')).toBeInstanceOf(MediaTaskPausedError);
+    await resumePendingTasks('project-1');
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ ...receipt, mediaRecoveryState: 'submit_unknown' });
+    expect(useAppStore.getState().nodes[0].data.mediaTaskState).toBe('submit_unknown');
+    expect(() => prepareMediaNodeGeneration('uncertain')).toThrow('提交状态未知');
+    discardMediaTask({ ...receipt, attemptId: 'stale-attempt' });
+    expect(getPendingTasksForProject('project-1')).toHaveLength(1);
+    discardMediaTask(receipt);
+    expect(getPendingTasksForProject('project-1')).toHaveLength(0);
+  });
+
   it.each([504, 502, 429])('persists only safe HTTP %i metadata for unknown submissions', (status) => {
     useAppStore.setState({ nodes: [{ id: 'uncertain', type: 'ai-image', position: { x: 0, y: 0 },
       data: { type: 'ai-image', label: '图片', status: 'loading' } }] });

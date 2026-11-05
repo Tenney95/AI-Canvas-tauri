@@ -113,6 +113,11 @@
 }
 
 /* 节点专用参数与批量菜单；输入框基础布局见 UI Kit。 */
+.prompt-footer.ui-ai-input__footer,
+.prompt-footer-tools.ui-ai-input__tools,
+.prompt-actions.ui-ai-input__actions {
+  align-items: flex-end;
+}
 .ai-dialog-float .prompt-footer-tools .img-pill-btn {
   min-width: 0;
   white-space: nowrap;

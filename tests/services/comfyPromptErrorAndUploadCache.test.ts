@@ -37,6 +37,7 @@ vi.mock('../../src/services/pollManager', () => ({
   cleanupNodePolling: vi.fn(),
   cancelNodePolling: mocks.cancelNodePolling,
   getPendingTasksForProject: mocks.getPendingTasksForProject,
+  pauseMediaTask: vi.fn(),
 }));
 vi.mock('../../src/services/nodeReferenceService', () => ({
   resolveNodeReferences: (value: string) => value,
@@ -121,27 +122,29 @@ describe('ComfyUI 任务终止', () => {
 
   it('优先调用按 prompt_id 原子终止的 job API', async () => {
     mocks.getPendingTasksForProject.mockReturnValue([pendingTask]);
-    mocks.corsSafeFetch.mockResolvedValue(jsonResponse({ cancelled: true }));
+    mocks.corsSafeFetch.mockImplementation(async (url: string) => jsonResponse(url.endsWith('/queue')
+      ? { queue_running: [], queue_pending: [] } : { cancelled: true }));
 
     await cancelComfyUINodeTask('node-1');
 
     expect(mocks.cancelNodePolling).toHaveBeenCalledWith('node-1', true);
-    expect(mocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+    expect(mocks.corsSafeFetch).toHaveBeenCalledTimes(2);
     expect(mocks.corsSafeFetch).toHaveBeenCalledWith(
       'http://comfy.test:8188/api/jobs/prompt-1/cancel',
-      { method: 'POST' },
+      expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) }),
     );
   });
 
   it('旧版 ComfyUI 的排队任务只按 id 从队列删除', async () => {
     mocks.getPendingTasksForProject.mockReturnValue([pendingTask]);
+    let deleted = false;
     mocks.corsSafeFetch.mockImplementation(async (url: string) => {
       if (url.includes('/api/jobs/')) return { ok: false, status: 404, text: async () => '' };
       if (url.endsWith('/queue')) {
         const call = mocks.corsSafeFetch.mock.calls.at(-1);
         const init = call?.[1] as RequestInit | undefined;
-        if (init?.method === 'POST') return jsonResponse({});
-        return jsonResponse({ queue_running: [], queue_pending: [[0, 'prompt-1', {}]] });
+        if (init?.method === 'POST') { deleted = true; return jsonResponse({}); }
+        return jsonResponse({ queue_running: [], queue_pending: deleted ? [] : [[0, 'prompt-1', {}]] });
       }
       throw new Error(`未预期的请求：${url}`);
     });
@@ -155,7 +158,7 @@ describe('ComfyUI 任务终止', () => {
     expect(mocks.corsSafeFetch.mock.calls.some(([url]) => String(url).endsWith('/interrupt'))).toBe(false);
   });
 
-  it('旧版 ComfyUI 仅在目标任务确实运行时发送定向 interrupt', async () => {
+  it('旧版 ComfyUI 不能安全定向中断时只停止本地等待', async () => {
     mocks.getPendingTasksForProject.mockReturnValue([pendingTask]);
     mocks.corsSafeFetch.mockImplementation(async (url: string) => {
       if (url.includes('/api/jobs/')) return { ok: false, status: 404, text: async () => '' };
@@ -166,10 +169,8 @@ describe('ComfyUI 任务终止', () => {
       throw new Error(`未预期的请求：${url}`);
     });
 
-    await cancelComfyUINodeTask('node-1');
-
-    const interruptCall = mocks.corsSafeFetch.mock.calls.find(([url]) => String(url).endsWith('/interrupt'));
-    expect(JSON.parse(String((interruptCall?.[1] as RequestInit).body))).toEqual({ prompt_id: 'prompt-1' });
+    await expect(cancelComfyUINodeTask('node-1')).resolves.toBe('local-stopped');
+    expect(mocks.corsSafeFetch.mock.calls.some(([url]) => String(url).endsWith('/interrupt'))).toBe(false);
   });
 
   it('尚未提交到 ComfyUI 时只终止本地请求', async () => {

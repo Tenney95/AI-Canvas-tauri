@@ -44,6 +44,19 @@ beforeEach(() => {
 });
 
 describe('跨媒体原任务续取入口', () => {
+  it('ComfyUI 提交未知到迟到 ID 转换只恢复原任务查询，不显示重新生成', () => {
+    mocks.tasks[0] = { ...mocks.tasks[0], taskType: 'comfyui', taskId: '', submitted: false,
+      mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown' };
+    mocks.state.nodes[0].data.mediaTaskState = 'submit_unknown';
+    expect(queryButton()).toBeUndefined();
+    expect(JSON.stringify(render())).toContain('不会自动重新生成');
+    mocks.tasks[0] = { ...mocks.tasks[0], taskId: 'accepted-id', submitted: true,
+      mediaSubmissionUncertain: false, mediaRecoveryState: 'query_paused' };
+    mocks.state.nodes[0].data.mediaTaskState = 'paused';
+    expect(queryButton()).toBeDefined();
+    expect(JSON.stringify(render())).not.toContain('提交状态未知');
+    expect(mocks.resume).not.toHaveBeenCalled();
+  });
   it('未知提交同时展示安全的 HTTP 原因，不提供重新生成或伪查询', () => {
     mocks.tasks[0] = { ...mocks.tasks[0], taskId: '', submitted: false,
       mediaRecoveryState: 'submit_unknown', mediaFailureDiagnostic: { kind: 'http', httpStatus: 504, raw: 'secret' } };

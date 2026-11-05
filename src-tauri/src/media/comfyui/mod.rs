@@ -187,10 +187,18 @@ async fn wait_for_editor_load(
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ComfyUIWorkflowSaveMode {
+    Update,
+    Create,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ComfyUIWorkflowSavePayload {
     request_id: String,
     workflow_id: String,
+    save_mode: ComfyUIWorkflowSaveMode,
     name: String,
     category: String,
     file_name: String,
@@ -1184,6 +1192,7 @@ mod tests {
         let valid = serde_json::json!({
             "requestId": "save-test-1",
             "workflowId": "wf-1",
+            "saveMode": "update",
             "name": "测试工作流",
             "category": "ai-image",
             "fileName": "workflow.json",
@@ -1196,6 +1205,14 @@ mod tests {
         invalid_category["category"] = serde_json::Value::String("unknown".to_string());
         assert!(parse_workflow_save_payload(&invalid_category.to_string()).is_err());
 
+        let mut invalid_mode = valid.clone();
+        invalid_mode["saveMode"] = serde_json::Value::String("overwrite".to_string());
+        assert!(parse_workflow_save_payload(&invalid_mode.to_string()).is_err());
+        invalid_mode["saveMode"] = serde_json::Value::String("create".to_string());
+        assert!(parse_workflow_save_payload(&invalid_mode.to_string()).is_ok());
+        invalid_mode.as_object_mut().unwrap().remove("saveMode");
+        assert!(parse_workflow_save_payload(&invalid_mode.to_string()).is_err());
+
         let mut invalid_workflow = valid;
         invalid_workflow["fileContent"] = serde_json::Value::String("not-json".to_string());
         assert!(parse_workflow_save_payload(&invalid_workflow.to_string()).is_err());
@@ -1203,6 +1220,7 @@ mod tests {
         let mut invalid_request_id = serde_json::json!({
             "requestId": "request-without-save-prefix",
             "workflowId": "wf-1",
+            "saveMode": "create",
             "name": "测试工作流",
             "category": "ai-image",
             "fileName": "workflow.json",
