@@ -65,7 +65,7 @@ beforeEach(() => {
     nodes: [{ id: 'n1', type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image', label: 'test', provider: 'comfyui', status: 'loading' } }],
     workflows: [{ id: 'wf-1', name: 'test', category: 'ai-image', createdAt: 1, fileName: 'test.json', fileContent: JSON.stringify({ '9': { class_type: 'SaveImage', inputs: {} } }) }],
   });
-  mocks.history.mockReset().mockResolvedValue(completed());
+  mocks.history.mockReset().mockImplementation(async () => completed());
   mocks.queue.mockReset().mockImplementation(async () => json({ queue_running: [], queue_pending: [] }));
   mocks.cancel.mockReset().mockResolvedValue(json({ cancelled: true }));
   mocks.bindPrompt.mockReset();
@@ -372,6 +372,7 @@ describe('ComfyUI 任务恢复合同', () => {
     ['音频', () => executeComfyUIAudioGenerate(params)],
   ] as const)('%s 查询中断保留任务，继续查询不再次生成', async (kind, generate) => {
     if (kind === '视频') configureVideo();
+    if (kind === '音频') useAppStore.getState().updateNodeDataTransient('n1', { type: 'ai-audio' });
     mocks.history.mockRejectedValue(new TypeError('network unavailable'));
     const result = expect(generate()).rejects.toBeInstanceOf(kind === '视频' ? VideoPollingPausedError : ComfyPendingError);
     await vi.waitFor(() => expect(pending()[0]?.submitted).toBe(true));
@@ -383,9 +384,9 @@ describe('ComfyUI 任务恢复合同', () => {
       expect(pending()[0].videoRecoveryMessage).toContain('本轮视频查询中断');
     }
     await expect(executeComfyUIGenerate(params)).rejects.toThrow('未确认结束');
-    mocks.history.mockResolvedValue(kind === '视频'
+    mocks.history.mockImplementation(async () => kind === '视频'
       ? json({ 'prompt-1': { status: { completed: true }, outputs: { '9': { images: [{ filename: 'out.mp4' }] } } } })
-      : completed());
+      : kind === '音频' ? completedAudio() : completed());
     await resumeComfyUINodeTask('n1');
     expect(promptCalls()).toHaveLength(1);
     expect(pending()).toEqual([]);
