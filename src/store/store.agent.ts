@@ -14,7 +14,9 @@ import {
   type AgentSkillBinding,
   type AgentTask,
   type AgentTaskBudget,
+  type McpOperationRecord,
 } from '../types/agent';
+import type { McpOperationClaim } from '../services/indexedDbService';
 import * as agentTaskService from '../services/chat/agentTaskService';
 import { emitAgentLifecycleEvent } from '../services/chat/agentLifecycle';
 
@@ -35,6 +37,8 @@ export interface CreateAgentTaskInput {
 export interface AgentSlice {
   agentTasks: AgentTask[];
   createAgentTask: (input: CreateAgentTaskInput) => AgentTask;
+  claimMcpAgentTask: (input: CreateAgentTaskInput, operation: McpOperationRecord) => Promise<McpOperationClaim>;
+  applyPersistedMcpOperation: (taskId: string, operation: McpOperationRecord) => void;
   upsertAgentTask: (task: AgentTask) => void;
   updateAgentTask: (id: string, partial: Partial<AgentTask>) => void;
   removeAgentTask: (id: string) => void;
@@ -55,49 +59,30 @@ function createTaskId(): string {
   return `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperationRecord): AgentTask {
+  const now = Date.now();
+  const taskId = createTaskId();
+  return {
+    id: taskId, projectId: input.projectId, conversationId: input.conversationId,
+    userMessageId: input.userMessageId, mode: input.mode, goal: input.goal,
+    status: 'queued', steps: [], modelRounds: 0, toolCallCount: 0, resumeCount: 0,
+    budget: { ...DEFAULT_AGENT_TASK_BUDGET, ...input.budget },
+    toolAllowlist: input.toolAllowlist ? [...new Set(input.toolAllowlist)] : undefined,
+    skillBindings: input.skillBindings?.map((binding) => ({
+      ...binding, allowedTools: binding.allowedTools ? [...binding.allowedTools] : undefined,
+    })),
+    parentTaskId: input.parentTaskId, expertRole: input.expertRole, expertDepth: input.expertDepth,
+    events: [{ id: `${taskId}-event-0`, taskId, sequence: 0, type: 'task_queued', timestamp: now }],
+    metrics: { ...DEFAULT_AGENT_TASK_METRICS }, createdAt: now, updatedAt: now,
+    ...(mcpOperation ? { mcpOperation } : {}),
+  };
+}
+
 export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set) => ({
   agentTasks: [],
 
   createAgentTask: (input) => {
-    const now = Date.now();
-    const taskId = createTaskId();
-    const task: AgentTask = {
-      id: taskId,
-      projectId: input.projectId,
-      conversationId: input.conversationId,
-      userMessageId: input.userMessageId,
-      mode: input.mode,
-      goal: input.goal,
-      status: 'queued',
-      steps: [],
-      modelRounds: 0,
-      toolCallCount: 0,
-      resumeCount: 0,
-      budget: {
-        ...DEFAULT_AGENT_TASK_BUDGET,
-        ...input.budget,
-      },
-      toolAllowlist: input.toolAllowlist
-        ? [...new Set(input.toolAllowlist)]
-        : undefined,
-      skillBindings: input.skillBindings?.map((binding) => ({
-        ...binding,
-        allowedTools: binding.allowedTools ? [...binding.allowedTools] : undefined,
-      })),
-      parentTaskId: input.parentTaskId,
-      expertRole: input.expertRole,
-      expertDepth: input.expertDepth,
-      events: [{
-        id: `${taskId}-event-0`,
-        taskId,
-        sequence: 0,
-        type: 'task_queued',
-        timestamp: now,
-      }],
-      metrics: { ...DEFAULT_AGENT_TASK_METRICS },
-      createdAt: now,
-      updatedAt: now,
-    };
+    const task = buildAgentTask(input);
     set((state) => ({ agentTasks: [...state.agentTasks, task] }));
     persistTask(task);
     emitAgentLifecycleEvent({
@@ -109,6 +94,25 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
     });
     return task;
   },
+
+  claimMcpAgentTask: async (input, operation) => {
+    const result = await agentTaskService.claimMcpOperationTask(buildAgentTask(input, operation));
+    if (result.task) {
+      const task = result.task;
+      set((state) => state.agentTasks.some((item) => item.id === task.id)
+        ? {} : { agentTasks: [...state.agentTasks, task] });
+      if (result.claimed) emitAgentLifecycleEvent({ type: 'task.status', taskId: task.id,
+        projectId: task.projectId, conversationId: task.conversationId, status: task.status });
+    }
+    return result;
+  },
+
+  // 仅在对应回执事务已完成后调用；不触碰运行任务的状态/步骤，也不再发起异步保存。
+  applyPersistedMcpOperation: (taskId, operation) => set((state) => ({
+    agentTasks: state.agentTasks.map((task) => task.id === taskId
+      && task.mcpOperation?.bindingId === operation.bindingId
+      && task.mcpOperation.sequence <= operation.sequence ? { ...task, mcpOperation: operation } : task),
+  })),
 
   upsertAgentTask: (task) => {
     const normalized = { ...task, updatedAt: task.updatedAt || Date.now() };

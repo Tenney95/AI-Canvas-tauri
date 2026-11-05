@@ -500,4 +500,20 @@ describe('MCP tool catalog', () => {
       expect(() => decodeMcpToolCallEnvelope({ ...envelope, ...expectation })).toThrow('仅接受');
     }
   });
+
+  it('keeps optional operation keys outside business arguments and explains replay limits', () => {
+    const argumentsValue = { nodeIds: ['node-from-query'], prompt: 'business-only' };
+    const envelope = { name: 'canvas_update_nodes', arguments: argumentsValue, operationKey: 'edit-intent-1' };
+    const decoded = decodeMcpToolCallEnvelope(envelope);
+    expect(decoded).toEqual(envelope);
+    expect(decoded.arguments).toBe(argumentsValue);
+    expect(decoded.arguments).not.toHaveProperty('operationKey');
+    expect(MCP_CALL_DESCRIPTOR.description).toContain('与 name/arguments 同级');
+    expect(MCP_CALL_DESCRIPTOR.description).toContain('直接调用原工具名保持兼容');
+    expect(MCP_CALL_DESCRIPTOR.description).toContain('不承诺跨重启幂等');
+    expect(MCP_CALL_DESCRIPTOR.description).toContain('不能用新 key 自动重投');
+    for (const operationKey of ['', ' ', 'with space', 'path/key', 'x'.repeat(129), 1, null]) {
+      expect(() => decodeMcpToolCallEnvelope({ ...envelope, operationKey })).toThrow();
+    }
+  });
 });

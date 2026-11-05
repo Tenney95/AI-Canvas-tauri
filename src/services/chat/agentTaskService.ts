@@ -4,6 +4,7 @@
  * 只保存可序列化的任务快照；AbortController、活动 Promise 等运行时对象不得写入 IndexedDB。
  */
 import {
+  claimMcpAgentTask,
   deleteAgentTask,
   deleteConversationAgentTasks,
   deleteProjectAgentTasks,
@@ -65,6 +66,10 @@ function pauseStepAfterRestart(step: AgentStep, now: number): AgentStep {
 
 export async function saveAgentTask(task: AgentTask): Promise<void> {
   await putAgentTask(normalizeTask(task));
+}
+
+export async function claimMcpOperationTask(task: AgentTask) {
+  return claimMcpAgentTask(normalizeTask(task));
 }
 
 export async function loadAgentTask(taskId: string): Promise<AgentTask | null> {

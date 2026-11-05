@@ -7,8 +7,9 @@ import { clearSkillCatalogTask } from '../chat/skillCatalog';
  * MCP 前端控制层，将本地 bridge 请求映射到受 Policy 约束的 Agent 工具和专用审计任务。
  */
 import { useAppStore } from '../../store/useAppStore';
+import type { CreateAgentTaskInput } from '../../store/store.agent';
 import type { ChatConversation, ChatMessage } from '../../types/chat';
-import type { AgentStep } from '../../types/agent';
+import type { AgentStep, AgentTask, McpOperationIdentity, McpOperationReceipt } from '../../types/agent';
 import type {
   McpBridgeRequestEvent,
   McpToolCallResult,
@@ -51,6 +52,9 @@ import {
   MCP_SETTINGS_SCOPE_ID,
   MCP_SETTINGS_TOOL_NAMES,
 } from './mcpSettingsScope';
+import {
+  claimMcpOperation, finishMcpOperation, identifyMcpOperation, readMcpOperation, startMcpOperation,
+} from './mcpOperationService';
 
 const MCP_CONVERSATION_TITLE = 'MCP 控制';
 const MCP_EXECUTION_MODE = 'autonomous' as const;
@@ -281,15 +285,20 @@ function revealMcpUserChoice(projectId: string, conversationId: string, step: Ag
 async function callMcpTool(
   request: McpBridgeRequestEvent,
   active: ActiveMcpRequest,
-  expectation?: Pick<McpToolCallEnvelope, 'expectedProjectId' | 'expectedRevision'>,
+  expectation?: Pick<McpToolCallEnvelope, 'expectedProjectId' | 'expectedRevision' | 'operationKey'>,
 ): Promise<McpToolCallResult> {
   await ensureToolsRegistered();
   assertMcpRequestActive(request, active);
   const expectedProjectId = expectation?.expectedProjectId;
   const expectedRevision = expectation?.expectedRevision;
-  const readState = useAppStore.getState();
-  if ((expectedProjectId !== undefined && readState.currentProjectId !== expectedProjectId)
-    || (expectedRevision !== undefined && readState.getCurrentRevision() !== expectedRevision)) {
+  const operationKey = expectation?.operationKey;
+  const contextChanged = (includeRevision = true) => {
+    const state = useAppStore.getState();
+    return (expectedProjectId !== undefined && state.currentProjectId !== expectedProjectId)
+      || (includeRevision && expectedRevision !== undefined && state.getCurrentRevision() !== expectedRevision);
+  };
+  const contextError = (): McpToolCallResult => {
+    const readState = useAppStore.getState();
     const summary = '读取后项目或画布版本已变化，未创建执行任务；请重新读取后规划，不要自动重投写入';
     return {
       isError: true, summary,
@@ -298,7 +307,9 @@ async function callMcpTool(
         current: { projectId: readState.currentProjectId, revision: readState.getCurrentRevision() },
       }) }],
     };
-  }
+  };
+  // 已存在的同项目操作只是读取回执；原写入已推进 revision，不能因此阻止核实旧 key。
+  if (contextChanged(operationKey === undefined)) return contextError();
   const name = typeof request.params.name === 'string' ? request.params.name : '';
   const current = getCurrentMcpContext(name);
   if (!current) {
@@ -312,6 +323,47 @@ async function callMcpTool(
     ? request.params.arguments
     : {};
   const definition = getAgentTool(name);
+  let operationIdentity: McpOperationIdentity | undefined;
+  const replay = (operation: McpOperationReceipt): McpToolCallResult => ({
+    isError: ['partial', 'failed', 'unknown'].includes(operation.status),
+    summary: `已读取原操作回执：${operation.status}；没有再次执行工具`,
+    content: [{ type: 'text', text: JSON.stringify({ replayed: true, operation }) }],
+  });
+  if (operationKey !== undefined) {
+    try {
+      if (!definition || current.projectId === MCP_SETTINGS_SCOPE_ID) throw new Error('operationKey 仅支持当前项目的画布写入和媒体生成');
+      operationIdentity = await identifyMcpOperation({ projectId: current.projectId, toolId: name,
+        effect: definition.effect, arguments: input, operationKey });
+      assertMcpRequestActive(request, active);
+      if (contextChanged(false)) return contextError();
+      const prior = await readMcpOperation(operationIdentity);
+      assertMcpRequestActive(request, active);
+      if (contextChanged(false)) return contextError();
+      if (prior) return replay(prior);
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : 'MCP 操作身份无法确认，未执行工具';
+      return { isError: true, summary, content: [{ type: 'text', text: JSON.stringify({
+        errorCode: summary === 'MCP_OPERATION_KEY_CONFLICT' ? summary : 'MCP_OPERATION_NOT_STARTED', summary, retryable: false,
+      }) }] };
+    }
+  }
+  if (contextChanged()) {
+    // 原owner可能在首次lookup后已完成写入；旧revision不能遮住此时已存在的原key。
+    if (operationIdentity && !contextChanged(false)) {
+      try {
+        const prior = await readMcpOperation(operationIdentity);
+        assertMcpRequestActive(request, active);
+        if (contextChanged(false)) return contextError();
+        if (prior) return replay(prior);
+      } catch (error) {
+        const summary = error instanceof Error ? error.message : 'MCP 操作身份无法确认，未执行工具';
+        return { isError: true, summary, content: [{ type: 'text', text: JSON.stringify({
+          errorCode: summary === 'MCP_OPERATION_KEY_CONFLICT' ? summary : 'MCP_OPERATION_NOT_STARTED', summary, retryable: false,
+        }) }] };
+      }
+    }
+    return contextError();
+  }
   const title = (definition?.title ?? name) || '未知工具';
   let inputSummary = '参数将在本地 schema 校验';
   if (definition?.summarizeInput) {
@@ -327,15 +379,7 @@ async function callMcpTool(
   const now = Date.now();
   const userMessageId = createId('mcp-user');
   const assistantMessageId = createId('mcp-assistant');
-  addAuditMessage({
-    id: userMessageId,
-    conversationId: current.conversation.id,
-    role: 'user',
-    content: `MCP 请求：${title}\n${inputSummary}`,
-    timestamp: now,
-    status: 'done',
-  });
-  const task = store.createAgentTask({
+  const taskInput: CreateAgentTaskInput = {
     projectId: current.projectId,
     conversationId: current.conversation.id,
     userMessageId,
@@ -347,7 +391,26 @@ async function callMcpTool(
       maxToolCalls: 1,
       maxParallelReadTools: 1,
     },
-  });
+  };
+  let task: AgentTask;
+  if (operationIdentity) {
+    try {
+      const claim = await claimMcpOperation(operationIdentity, taskInput, () => {
+        assertMcpRequestActive(request, active);
+        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error('MCP_CONTEXT_CHANGED');
+      });
+      if (!claim.claimed) return replay(claim.receipt);
+      if (!claim.task) throw new Error('MCP 操作占位没有任务，不能执行');
+      task = claim.task;
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : 'MCP 操作占位未持久化，未开始执行';
+      return { isError: true, summary, content: [{ type: 'text', text: JSON.stringify({
+        errorCode: summary === 'MCP_OPERATION_KEY_CONFLICT' ? summary : 'MCP_OPERATION_CLAIM_FAILED', summary, retryable: false,
+      }) }] };
+    }
+  } else task = store.createAgentTask(taskInput);
+  addAuditMessage({ id: userMessageId, conversationId: current.conversation.id, role: 'user',
+    content: `MCP 请求：${title}\n${inputSummary}`, timestamp: now, status: 'done' });
   addAuditMessage({
     id: assistantMessageId,
     conversationId: current.conversation.id,
@@ -366,6 +429,12 @@ async function callMcpTool(
     const finalTask = await runAgentTask(task.id, async (signal) => {
       const { executeRegisteredAgentToolCall } = await import('../chat/agentToolExecution');
       assertMcpRequestActive(request, active);
+      if (operationIdentity) {
+        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error('MCP_CONTEXT_CHANGED');
+        await startMcpOperation(task.id);
+        assertMcpRequestActive(request, active);
+        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error('MCP_CONTEXT_CHANGED');
+      }
       executionResult = await executeRegisteredAgentToolCall({
         taskId: task.id,
         call: {
@@ -377,8 +446,8 @@ async function callMcpTool(
         transitionTask: transitionAgentTask,
         waitForApproval: waitForAgentApproval,
         policyMode: MCP_EXECUTION_MODE,
-        ...(expectedProjectId !== undefined ? {
-          expectedContext: { projectId: expectedProjectId, baseRevision: expectedRevision },
+        ...(expectedProjectId !== undefined || operationIdentity ? {
+          expectedContext: { projectId: expectedProjectId ?? operationIdentity!.projectId, baseRevision: expectedRevision },
         } : {}),
         onApprovalRequired: (step) => revealMcpUserChoice(current.projectId, current.conversation.id, step),
       });
@@ -396,16 +465,34 @@ async function callMcpTool(
       content: summary,
       status: responseReceived ? 'done' : 'error',
     });
+    let operation: McpOperationReceipt | null = null;
+    if (operationIdentity) {
+      try {
+        operation = await finishMcpOperation(task.id, { status: executionResult?.summary.status === 'success' ? 'success' : 'error',
+          knownNoEffect: executionResult?.summary.status === 'denied', errorCode: executionResult?.summary.errorCode });
+      } catch {
+        // 业务可能已经成功，保存回执失败也不能重投；尽量返回已持久化的旧状态。
+        operation = await readMcpOperation(operationIdentity).catch(() => null);
+      }
+    }
+    const content = executionResult?.mcpContent?.length ? executionResult.mcpContent
+      : [{ type: 'text' as const, text: executionResult?.modelContent ?? summary }];
     return {
       isError,
       summary,
-      content: executionResult?.mcpContent?.length
-        ? executionResult.mcpContent
-        : [{
-            type: 'text',
-            text: executionResult?.modelContent ?? summary,
-          }],
+      content: operation ? [...content, { type: 'text', text: JSON.stringify({ operation }) }]
+        : operationIdentity ? [...content, { type: 'text', text: JSON.stringify({ operation: {
+          operationId: operationIdentity.bindingId, taskId: task.id, status: 'unknown', resultAvailable: false,
+          retryable: false, requiresReadVerification: true, nextAction: '回执暂不可读，先只读核实；不要用新 key 重投',
+        } }) }] : content,
     };
+  } catch (error) {
+    if (!operationIdentity) throw error;
+    const operation = await finishMcpOperation(task.id, { status: 'error', errorCode: 'MCP_OPERATION_INTERRUPTED' })
+      .catch(() => readMcpOperation(operationIdentity!)).catch(() => null);
+    return { isError: true, summary: '原操作结果未完整确认，请读取操作回执，勿重投', content: [{ type: 'text',
+      text: JSON.stringify({ errorCode: 'MCP_OPERATION_INTERRUPTED', retryable: false,
+        operation: operation ?? { operationId: operationIdentity.bindingId, taskId: task.id, status: 'unknown', retryable: false } }) }] };
   } finally {
     clearSkillReadTask(task.id);
     clearSkillCatalogTask(task.id);

@@ -24,6 +24,7 @@ export interface McpToolCallEnvelope {
   arguments: Record<string, unknown>;
   expectedProjectId?: string;
   expectedRevision?: number;
+  operationKey?: string;
 }
 
 export interface McpToolCatalogEntry {

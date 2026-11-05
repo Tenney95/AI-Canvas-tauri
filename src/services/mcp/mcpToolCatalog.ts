@@ -86,7 +86,7 @@ export const MCP_DESCRIBE_SCHEMA: AgentToolSchema = {
 export const MCP_CALL_DESCRIPTOR: McpToolDescriptor = {
   name: MCP_CALL_TOOL_NAME,
   title: '调用 AI Canvas 工具',
-  description: `执行工具：用真实工具名 name 和参数对象 arguments 调用一个业务工具，例如 {"name":"canvas_query","arguments":{}}。先用 tools_search 查找、tools_describe 读取完整参数；已知参数可直接复用。画布写入建议同时携带上次读取的 expectedProjectId 和 expectedRevision，项目或版本变化时先重新读取，不能忽略冲突重投。可能写入、删除或调用付费模型，按目标工具权限执行；写入和生成失败后不要自动重试。不支持递归调用发现入口。\n${MCP_CONNECTION_RULES}`,
+  description: `执行工具：用真实工具名 name 和参数对象 arguments 调用一个业务工具，例如 {"name":"canvas_query","arguments":{}}。先用 tools_search 查找、tools_describe 读取完整参数；已知参数可直接复用。画布写入建议同时携带上次读取的 expectedProjectId 和 expectedRevision，项目或版本变化时先重新读取，不能忽略冲突重投。付费生成和画布写入建议提供 operationKey，与 name/arguments 同级，不放进 arguments；同一意图重查保留原 key，用 mcp_operation_get 查询。相同 key 只返回原回执，不能用新 key 自动重投；未提供 key 或直接调用原工具名保持兼容，但不承诺跨重启幂等。可能写入、删除或调用付费模型，按目标工具权限执行；写入和生成失败后不要自动重试。不支持递归调用发现入口。\n${MCP_CONNECTION_RULES}`,
   inputSchema: {
     type: 'object', required: ['name', 'arguments'], additionalProperties: false,
     properties: {
@@ -94,6 +94,7 @@ export const MCP_CALL_DESCRIPTOR: McpToolDescriptor = {
       arguments: { type: 'object', additionalProperties: true, description: '符合目标工具完整 schema 的参数对象；无参数时传 {}。' },
       expectedProjectId: { type: 'string', minLength: 1, maxLength: 180, description: '上次读取返回的 projectId；在创建任务与实际执行前确认仍为此项目。' },
       expectedRevision: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: '上次读取返回的 revision；必须同时提供 expectedProjectId。冲突时只读核实，不自动重试写入。' },
+      operationKey: { type: 'string', minLength: 1, maxLength: 128, description: '当前项目 canvas_write/media_generation 可选幂等键，仅用字母数字和 . _ : -；同一意图重查保留原 key。重复键只返回原回执，不重投；不同输入必须是新的已规划意图。' },
     },
   },
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -104,6 +105,9 @@ export function decodeMcpToolCallEnvelope(input: unknown): McpToolCallEnvelope {
     throw new Error('tools_call 需要且仅接受 name 字符串和 arguments 对象；请按 tools_describe 的 schema 提交参数。');
   }
   const envelope = input as McpToolCallEnvelope;
+  if (envelope.operationKey !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(envelope.operationKey)) {
+    throw new Error('operationKey 只允许 1–128 位字母数字和 . _ : -，请保留原意图的 key');
+  }
   if (envelope.expectedRevision !== undefined && envelope.expectedProjectId === undefined) {
     throw new Error('expectedRevision 必须同时提供 expectedProjectId，请使用上次读取的项目与版本');
   }

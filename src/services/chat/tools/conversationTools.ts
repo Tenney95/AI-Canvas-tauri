@@ -3,6 +3,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import { pauseAgentTask, stopAgentTask } from '../agentTaskControl';
 import { resumeAgentTaskExecution } from '../conversationExecutionController';
 import { registerAgentTool, type AgentToolExecutionResult } from '../toolRegistry';
+import { getMcpOperationReceipt } from '../../mcp/mcpOperationService';
 
 const mcpOnly = (context: { conversationId: string }) => context.conversationId.startsWith('mcp-control-');
 const authorize = (context: { projectId: string; conversationId: string }) => ({ allowed: mcpOnly(context) && useAppStore.getState().currentProjectId === context.projectId, reason: '会话与任务管理只允许当前项目的 MCP 控制会话调用' });
@@ -20,6 +21,7 @@ function publicTask(id: string, details = false) {
     goal: task.goal.slice(0, 500), modelRounds: task.modelRounds, toolCallCount: task.toolCallCount,
     resumeCount: task.resumeCount ?? 0, resultSummary: task.resultSummary, errorCode: task.errorCode,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
+    ...(task.mcpOperation ? { operationId: task.mcpOperation.bindingId } : {}),
     ...(details ? { steps: task.steps.map((step) => ({ id: step.id, index: step.index, kind: step.kind, title: step.title, status: step.status, toolId: step.toolCall?.toolId, errorCode: step.errorCode })) } : {}),
   };
 }
@@ -27,6 +29,24 @@ function publicTask(id: string, details = false) {
 export function registerConversationAgentTools(): Array<() => void> {
   const common = { isAvailable: mcpOnly, authorize };
   return [
+    registerAgentTool<{ operationKey?: string; operationId?: string }>({
+      id: 'mcp_operation_get', title: '查询原 MCP 操作回执', effect: 'read', ...common,
+      description: '查询当前项目已持久化的 MCP 操作；operationKey 与 operationId 只传一个。查询示例：tools_call({name:"mcp_operation_get",arguments:{operationKey:"原key"}})，查询条件放 arguments。运行中等待后重查；partial/unknown 时先只读核实，不能用新 key 重投。任务已删除或重启后也不重放写入；完整正文不持久化，resultAvailable=false 不代表原操作未完成。',
+      inputSchema: { type: 'object', additionalProperties: false, properties: {
+        operationKey: { type: 'string', minLength: 1, maxLength: 128 },
+        operationId: { type: 'string', minLength: 1, maxLength: 128 },
+      } },
+      summarizeInput: () => '读取当前项目的原 MCP 操作回执',
+      execute: async (context, input) => {
+        if (context.signal.aborted) return fail('操作查询已取消', 'MCP_OPERATION_QUERY_ABORTED');
+        try {
+          const operation = await getMcpOperationReceipt(context.projectId, input);
+          if (context.signal.aborted) return fail('操作查询已取消', 'MCP_OPERATION_QUERY_ABORTED');
+          return operation ? { status: 'success', summary: `原操作状态：${operation.status}`, modelContent: JSON.stringify({ operation }) }
+            : fail('没有找到原操作回执；这不证明付费操作未提交，请先只读核实，勿直接重投', 'MCP_OPERATION_NOT_FOUND');
+        } catch (error) { return fail(error instanceof Error ? error.message : '操作回执读取失败', 'MCP_OPERATION_QUERY_FAILED'); }
+      },
+    }),
     registerAgentTool<Record<string, never>>({ id: 'conversation_list', title: '列出对话', description: '列出当前项目的对话元数据。', effect: 'read', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, ...common, execute: async (context) => { const conversations = useAppStore.getState().conversations.filter((item) => item.projectId === context.projectId && !item.deletedAt).map((item) => publicConversation(item.id)); return { status: 'success', summary: `找到 ${conversations.length} 个对话`, modelContent: JSON.stringify({ conversations }) }; } }),
     registerAgentTool<{ conversationId: string }>({ id: 'conversation_get', title: '读取对话状态', description: '读取一个对话的元数据和任务摘要，不返回消息正文。', effect: 'read', inputSchema: { type: 'object', required: ['conversationId'], additionalProperties: false, properties: { conversationId: { type: 'string', minLength: 1, maxLength: 180 } } }, ...common, execute: async (context, input) => { const conversation = useAppStore.getState().conversations.find((item) => item.id === input.conversationId && item.projectId === context.projectId); if (!conversation) return fail('对话不存在', 'CONVERSATION_NOT_FOUND'); const tasks = useAppStore.getState().agentTasks.filter((task) => task.conversationId === conversation.id).map((task) => publicTask(task.id)); return { status: 'success', summary: `已读取对话“${conversation.title}”`, modelContent: JSON.stringify({ conversation: publicConversation(conversation.id), tasks }) }; } }),
     registerAgentTool<{ title?: string; activate?: boolean }>({ id: 'conversation_create', title: '创建对话', description: '在当前项目创建新对话，并可设为活动对话。', effect: 'config_write', inputSchema: { type: 'object', additionalProperties: false, properties: { title: { type: 'string', minLength: 1, maxLength: 120 }, activate: { type: 'boolean' } } }, ...common, execute: async (context, input) => { const id = useAppStore.getState().createConversation(context.projectId, input.title?.trim()); if (input.activate) useAppStore.getState().setActiveConversation(id); return { status: 'success', summary: '已创建对话', modelContent: JSON.stringify({ conversation: publicConversation(id) }) }; } }),

@@ -318,6 +318,75 @@ export interface AgentSkillBinding {
   allowedTools?: string[];
 }
 
+export type McpOperationPhase = 'reserved' | 'running' | 'succeeded' | 'partial' | 'failed' | 'unknown';
+export type McpOperationItemStatus = 'not_started' | 'started' | 'succeeded' | 'failed' | 'unknown';
+
+/** 仅保存摘要身份，不保存客户端 key、参数正文、路径或凭据。 */
+export interface McpOperationIdentity {
+  bindingId: string;
+  projectId: string;
+  keyDigest: string;
+  inputDigest: string;
+  toolId: string;
+  effect: 'canvas_write' | 'media_generation';
+}
+
+export interface McpOperationItemReceipt {
+  nodeId: string;
+  status: McpOperationItemStatus;
+  errorCode?: string;
+}
+
+export interface McpOperationRecord extends McpOperationIdentity {
+  version: 1;
+  phase: McpOperationPhase;
+  sequence: number;
+  createdAt: number;
+  updatedAt: number;
+  items?: McpOperationItemReceipt[];
+  canvasNodeId?: string;
+  messageId?: string;
+  artifactId?: string;
+  persistence?: 'pending' | 'saved' | 'skipped' | 'failed';
+  errorCode?: string;
+  revisionAfter?: number;
+}
+
+/** AgentTask 删除后仍保留绑定，防止同 key 再次提交付费工作。 */
+export interface McpOperationBinding extends McpOperationIdentity {
+  id: string;
+  kind: 'mcp-operation-binding';
+  version: 1;
+  taskId: string;
+  createdAt: number;
+  taskDeletedAt?: number;
+  lastSequence?: number;
+}
+
+export type McpOperationUpdate = Partial<Pick<McpOperationRecord,
+  'phase' | 'items' | 'canvasNodeId' | 'messageId' | 'artifactId' | 'persistence'
+  | 'errorCode' | 'revisionAfter'>>;
+
+export interface McpOperationReceipt {
+  operationId: string;
+  taskId: string;
+  projectId: string;
+  toolId: string;
+  status: Exclude<McpOperationPhase, 'reserved'> | 'not_started';
+  sequence: number;
+  resultAvailable: false;
+  retryable: false;
+  requiresReadVerification: boolean;
+  nextAction: string;
+  items?: McpOperationItemReceipt[];
+  canvasNodeId?: string;
+  messageId?: string;
+  artifactId?: string;
+  persistence?: 'pending' | 'saved' | 'skipped' | 'failed';
+  errorCode?: string;
+  revisionAfter?: number;
+}
+
 export interface AgentTask {
   id: string;
   projectId: string;
@@ -353,6 +422,7 @@ export interface AgentTask {
   pausedReason?: string;
   errorCode?: string;
   errorMessage?: string;
+  mcpOperation?: McpOperationRecord;
 }
 
 export const AGENT_TERMINAL_STATUSES = new Set<AgentTaskStatus>([

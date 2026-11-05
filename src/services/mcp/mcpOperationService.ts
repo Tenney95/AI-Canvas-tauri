@@ -1,0 +1,197 @@
+/** MCP 操作身份与安全回执；完整参数和业务结果只驻留原请求，不进入持久化。 */
+import { useAppStore } from '../../store/useAppStore';
+import type { CreateAgentTaskInput } from '../../store/store.agent';
+import type {
+  AgentTask, McpOperationBinding, McpOperationIdentity, McpOperationReceipt,
+  McpOperationRecord, McpOperationUpdate,
+} from '../../types/agent';
+import { getAgentTask, getMcpOperationBinding, updateMcpOperationTask } from '../indexedDbService';
+
+const activeOperations = new Set<string>();
+const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,179}$/;
+const SAFE_CODE = /^[A-Z][A-Z0-9_]{0,79}$/;
+
+function assertProject(projectId: string): void {
+  if (useAppStore.getState().currentProjectId !== projectId) throw new Error('MCP 操作只允许当前项目，请重新读取项目状态');
+}
+
+function canonical(value: unknown, depth = 0): unknown {
+  if (depth > 64) throw new Error('MCP 操作参数嵌套过深');
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map((item) => canonical(item, depth + 1));
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, item]) => [key, canonical(item, depth + 1)]));
+  }
+  throw new Error('MCP 操作参数必须是 JSON 数据');
+}
+
+async function digest(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(canonical(value)));
+  if (bytes.byteLength > 1024 * 1024) throw new Error('MCP 操作参数超过摘要预算');
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function keyIdentity(projectId: string, operationKey: string) {
+  if (!KEY.test(operationKey)) throw new Error('operationKey 需为 1–128 位字母、数字或 . _ : -，同一意图重复调用必须保留原 key');
+  const keyDigest = await digest(operationKey);
+  const bindingId = `mcp-operation:${await digest([projectId, keyDigest])}`;
+  return { keyDigest, bindingId };
+}
+
+export async function identifyMcpOperation(input: {
+  projectId: string; toolId: string; effect: string; arguments: unknown; operationKey: string;
+}): Promise<McpOperationIdentity> {
+  assertProject(input.projectId);
+  if (input.effect !== 'canvas_write' && input.effect !== 'media_generation') {
+    throw new Error('operationKey 仅用于当前项目的 canvas_write 或 media_generation 工具');
+  }
+  const [{ keyDigest, bindingId }, inputDigest] = await Promise.all([
+    keyIdentity(input.projectId, input.operationKey), digest({ toolId: input.toolId, arguments: input.arguments }),
+  ]);
+  assertProject(input.projectId);
+  return { bindingId, projectId: input.projectId, keyDigest, inputDigest, toolId: input.toolId, effect: input.effect };
+}
+
+function assertBinding(identity: McpOperationIdentity, binding: McpOperationBinding): void {
+  if (identity.bindingId !== binding.bindingId || identity.projectId !== binding.projectId
+    || identity.keyDigest !== binding.keyDigest || identity.inputDigest !== binding.inputDigest
+    || identity.toolId !== binding.toolId || identity.effect !== binding.effect) throw new Error('MCP_OPERATION_KEY_CONFLICT');
+}
+
+function receipt(binding: McpOperationBinding, task: AgentTask | null): McpOperationReceipt {
+  if (task && (task.id !== binding.taskId || task.projectId !== binding.projectId
+    || task.conversationId !== `mcp-control-${binding.projectId}`)) throw new Error('MCP 操作任务身份不一致，请只读核实');
+  const operation = task?.mcpOperation;
+  if (operation) assertBinding(operation, binding);
+  const live = task && useAppStore.getState().agentTasks.find((item) => item.id === task.id);
+  const liveStatus = live?.status ?? task?.status;
+  const running = task && activeOperations.has(task.id) && liveStatus !== 'paused' && liveStatus !== 'stopped';
+  let status: McpOperationReceipt['status'] = !operation || binding.taskDeletedAt ? 'unknown'
+    : operation.phase === 'reserved' ? (running ? 'not_started' : 'unknown')
+      : operation.phase === 'running' ? (running ? 'running' : 'unknown') : operation.phase;
+  const items = operation?.items?.map((item) => !running && item.status === 'started' ? { ...item, status: 'unknown' as const } : item);
+  if (status === 'unknown' && items?.some((item) => item.status === 'succeeded')) status = 'partial';
+  const requiresReadVerification = ['partial', 'failed', 'unknown'].includes(status)
+    || operation?.persistence === 'failed' || operation?.persistence === 'skipped';
+  return {
+    operationId: binding.id, taskId: binding.taskId, projectId: binding.projectId, toolId: binding.toolId,
+    status, sequence: Math.max(operation?.sequence ?? 0, binding.lastSequence ?? 0), resultAvailable: false, retryable: false,
+    requiresReadVerification,
+    nextAction: status === 'running' || status === 'not_started' ? '等待后用 mcp_operation_get 查询原操作，不要重复提交'
+      : status === 'succeeded' ? '原任务已记录成功；完整正文不持久化，请用对应只读工具核对结果'
+        : '先用只读工具核对已完成项和原媒体任务；有可恢复任务时沿用 media_pending_tasks/media_resume_task，不要用新 key 重投',
+    ...(items ? { items } : {}),
+    ...(operation?.canvasNodeId ? { canvasNodeId: operation.canvasNodeId } : {}),
+    ...(operation?.messageId ? { messageId: operation.messageId } : {}),
+    ...(operation?.artifactId ? { artifactId: operation.artifactId } : {}),
+    ...(operation?.persistence ? { persistence: operation.persistence } : {}),
+    ...(operation?.errorCode ? { errorCode: operation.errorCode } : {}),
+    ...(operation?.revisionAfter !== undefined ? { revisionAfter: operation.revisionAfter } : {}),
+  };
+}
+
+export async function readMcpOperation(identity: McpOperationIdentity): Promise<McpOperationReceipt | null> {
+  assertProject(identity.projectId);
+  const binding = await getMcpOperationBinding(identity.bindingId);
+  if (!binding) { assertProject(identity.projectId); return null; }
+  assertBinding(identity, binding);
+  const task = binding.taskDeletedAt ? null : await getAgentTask(binding.taskId);
+  assertProject(identity.projectId);
+  return receipt(binding, task);
+}
+
+export async function claimMcpOperation(identity: McpOperationIdentity, input: CreateAgentTaskInput, assertFresh?: () => void) {
+  assertProject(identity.projectId);
+  if (input.projectId !== identity.projectId || input.conversationId !== `mcp-control-${identity.projectId}`) {
+    throw new Error('MCP 操作会话不属于当前项目');
+  }
+  const now = Date.now();
+  const operation: McpOperationRecord = { ...identity, version: 1, phase: 'reserved', sequence: 0, createdAt: now, updatedAt: now };
+  const result = await useAppStore.getState().claimMcpAgentTask(input, operation);
+  if (result.claimed && result.task) activeOperations.add(result.task.id);
+  try {
+    assertProject(identity.projectId);
+    // 调用方在摘要后已校验前置条件；只有新所有者复核异步claim期间的变化。
+    // 并发输家只能读原回执；原所有者可能已推进 revision，不能据此拒绝同项目原 key。
+    if (result.claimed) assertFresh?.();
+  } catch (error) {
+    // 绑定保留，不能在失败后删除 key 重新执行；该所有者尚未启动业务工具。
+    if (result.claimed && result.task) {
+      activeOperations.delete(result.task.id);
+      const saved = await updateMcpOperationTask(result.task.id, { phase: 'failed', errorCode: 'MCP_CONTEXT_CHANGED' });
+      if (saved?.mcpOperation) useAppStore.getState().applyPersistedMcpOperation(result.task.id, saved.mcpOperation);
+      const { stopAgentTask } = await import('../chat/agentTaskControl');
+      const pending = useAppStore.getState().agentTasks.find((task) => task.id === result.task!.id);
+      if (pending && !['completed', 'failed', 'stopped'].includes(pending.status)) stopAgentTask(pending.id);
+    }
+    throw error;
+  }
+  return { ...result, receipt: receipt(result.binding, result.task) };
+}
+
+function safeUpdate(changes: McpOperationUpdate): McpOperationUpdate {
+  const next: McpOperationUpdate = {};
+  if (changes.phase !== undefined) next.phase = changes.phase;
+  if (changes.items !== undefined) {
+    if (changes.items.length > 50 || changes.items.some((item) => !SAFE_ID.test(item.nodeId)
+      || !['not_started', 'started', 'succeeded', 'failed', 'unknown'].includes(item.status))) throw new Error('MCP 操作条目无效');
+    next.items = changes.items.map((item) => ({ nodeId: item.nodeId, status: item.status,
+      ...(item.errorCode && SAFE_CODE.test(item.errorCode) ? { errorCode: item.errorCode } : {}) }));
+  }
+  for (const key of ['canvasNodeId', 'messageId', 'artifactId'] as const) {
+    const value = changes[key];
+    if (value !== undefined) {
+      if (!SAFE_ID.test(value)) throw new Error('MCP 操作引用身份无效');
+      next[key] = value;
+    }
+  }
+  if (changes.persistence !== undefined) next.persistence = changes.persistence;
+  if (changes.errorCode && SAFE_CODE.test(changes.errorCode)) next.errorCode = changes.errorCode;
+  if (changes.revisionAfter !== undefined && Number.isSafeInteger(changes.revisionAfter) && changes.revisionAfter >= 0) next.revisionAfter = changes.revisionAfter;
+  return next;
+}
+
+/** 普通 Agent 没有 operationKey 时完全不接触持久化。 */
+export async function recordMcpOperationProgress(taskId: string, changes: McpOperationUpdate): Promise<void> {
+  const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
+  if (!task?.mcpOperation) return;
+  const saved = await updateMcpOperationTask(taskId, safeUpdate(changes));
+  if (saved?.mcpOperation) useAppStore.getState().applyPersistedMcpOperation(taskId, saved.mcpOperation);
+  else throw new Error('MCP 操作回执已不可用，请只读核实');
+}
+
+export async function startMcpOperation(taskId: string): Promise<void> {
+  await recordMcpOperationProgress(taskId, { phase: 'running' });
+}
+
+export async function finishMcpOperation(taskId: string, outcome: {
+  status: 'success' | 'error'; summary?: string; errorCode?: string; knownNoEffect?: boolean;
+}): Promise<McpOperationReceipt | null> {
+  const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
+  if (!task?.mcpOperation) { activeOperations.delete(taskId); return null; }
+  const operation = task.mcpOperation;
+  const partial = operation.persistence === 'failed' || operation.items?.some((item) => item.status === 'succeeded')
+    && operation.items.some((item) => item.status !== 'succeeded');
+  const phase = partial ? 'partial' : outcome.status === 'success' ? 'succeeded'
+    : outcome.knownNoEffect ? 'failed' : 'unknown';
+  try {
+    await recordMcpOperationProgress(taskId, { phase, errorCode: outcome.errorCode,
+      ...(outcome.status === 'success' ? { revisionAfter: useAppStore.getState().getCurrentRevision() } : {}) });
+  } finally { activeOperations.delete(taskId); }
+  return getMcpOperationReceipt(task.projectId, { operationId: operation.bindingId });
+}
+
+export async function getMcpOperationReceipt(projectId: string, input: { operationKey?: string; operationId?: string }): Promise<McpOperationReceipt | null> {
+  assertProject(projectId);
+  if (Boolean(input.operationKey) === Boolean(input.operationId)) throw new Error('请仅提供 operationKey 或 operationId 之一');
+  const bindingId = input.operationId ?? (await keyIdentity(projectId, input.operationKey!)).bindingId;
+  const binding = await getMcpOperationBinding(bindingId);
+  if (!binding || binding.projectId !== projectId) { assertProject(projectId); return null; }
+  const task = binding.taskDeletedAt ? null : await getAgentTask(binding.taskId);
+  assertProject(projectId);
+  return receipt(binding, task);
+}

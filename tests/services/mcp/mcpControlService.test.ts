@@ -1408,3 +1408,135 @@ describe('MCP control service', () => {
     expect(useAppStore.getState().agentTasks).toHaveLength(0);
   });
 });
+
+describe('MCP keyed operation receipts', () => {
+  function project(id: string) {
+    useAppStore.setState({ currentProjectId: id, projects: [{ id, name: id, createdAt: 1, updatedAt: 1 }] });
+  }
+  function operation(result: McpToolCallResult) {
+    for (const content of [...result.content].reverse()) {
+      if (content.type !== 'text') continue;
+      try { const parsed = JSON.parse(content.text); if (parsed.operation) return parsed.operation; } catch { /* plain business text */ }
+    }
+    throw new Error('Missing operation receipt');
+  }
+
+  it('executes a keyed write once and returns its durable receipt after the write changed revision', async () => {
+    project('receipt-control-once');
+    const execute = vi.fn<AgentToolDefinition['execute']>(async () => {
+      useAppStore.getState().incrementRevision();
+      return { status: 'success' as const, summary: '写入完成', modelContent: '{"privateBusinessMarker":"original-only-result"}' };
+    });
+    registerDispatchProbe({ id: 'canvas_receipt_once', effect: 'canvas_write', execute });
+    const revision = useAppStore.getState().getCurrentRevision();
+    const envelope = { name: 'canvas_receipt_once', arguments: { value: 'value-only-in-arguments' },
+      operationKey: 'same-intent', expectedProjectId: 'receipt-control-once', expectedRevision: revision };
+    const first = await mcpCall('tools_call', envelope, 'receipt-once:first');
+    expect(first.isError).toBe(false);
+    expect(first.content[0]).toMatchObject({ type: 'text', text: '{"privateBusinessMarker":"original-only-result"}' });
+    const receipt = operation(first);
+    expect(receipt).toMatchObject({ status: 'succeeded', retryable: false, resultAvailable: false });
+    const replay = await mcpCall('tools_call', envelope, 'receipt-once:replay');
+    expect(replay.isError).toBe(false);
+    expect(operation(replay)).toMatchObject({ operationId: receipt.operationId, taskId: receipt.taskId, status: 'succeeded' });
+    expect(JSON.stringify(replay)).not.toContain('original-only-result');
+    const operationApi = await import('../../../src/services/mcp/mcpOperationService');
+    const staleLookup = vi.spyOn(operationApi, 'readMcpOperation').mockResolvedValueOnce(null);
+    try {
+      const racedReplay = await mcpCall('tools_call', envelope, 'receipt-once:raced-replay');
+      expect(operation(racedReplay)).toMatchObject({ operationId: receipt.operationId, status: 'succeeded' });
+    } finally { staleLookup.mockRestore(); }
+    expect(execute).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().agentTasks).toHaveLength(1);
+    expect(JSON.stringify(useAppStore.getState().agentTasks)).not.toContain('original-only-result');
+    const query = await mcpCall('mcp_operation_get', { operationId: receipt.operationId }, 'receipt-once:query');
+    expect(query.isError).toBe(false);
+    expect(operation(query).taskId).toBe(receipt.taskId);
+    expect(execute.mock.calls[0]?.[1]).not.toHaveProperty('operationKey');
+  });
+
+  it('returns a running receipt for a concurrent duplicate without attaching its cancellation to the owner', async () => {
+    project('receipt-control-running');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let ownerSignal: AbortSignal | undefined;
+    const execute = vi.fn<AgentToolDefinition['execute']>(async (context) => {
+      ownerSignal = context.signal;
+      await gate;
+      return { status: 'success' as const, summary: '已完成', modelContent: '{"done":true}' };
+    });
+    registerDispatchProbe({ id: 'canvas_receipt_running', effect: 'canvas_write', execute });
+    const envelope = { name: 'canvas_receipt_running', arguments: { value: 'ok' }, operationKey: 'in-flight-intent' };
+    const owner = mcpCall('tools_call', envelope, 'receipt-running:owner');
+    try {
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      const duplicate = await mcpCall('tools_call', envelope, 'receipt-running:duplicate');
+      expect(operation(duplicate).status).toBe('running');
+      await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'receipt-running:cancel-duplicate',
+        method: 'requests/cancel', params: { requestId: 'receipt-running:duplicate' } });
+      expect(ownerSignal?.aborted).toBe(false);
+    } finally { release(); await owner; }
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('rejects mismatched arguments and a different active project without executing or exposing the old receipt', async () => {
+    project('receipt-control-conflict');
+    const execute = registerDispatchProbe({ id: 'canvas_receipt_conflict', effect: 'canvas_write' });
+    const envelope = { name: 'canvas_receipt_conflict', arguments: { value: 'first' }, operationKey: 'fixed-intent',
+      expectedProjectId: 'receipt-control-conflict' };
+    const first = await mcpCall('tools_call', envelope, 'receipt-conflict:first');
+    const changed = await mcpCall('tools_call', { ...envelope, arguments: { value: 'changed' } }, 'receipt-conflict:changed');
+    expect(changed.isError).toBe(true);
+    expect(JSON.stringify(changed)).toContain('MCP_OPERATION_KEY_CONFLICT');
+    useAppStore.setState({ currentProjectId: 'another-receipt-project' });
+    const otherProject = await mcpCall('tools_call', envelope, 'receipt-conflict:other-project');
+    expect(otherProject.isError).toBe(true);
+    expect(JSON.stringify(otherProject)).toContain('MCP_CONTEXT_CHANGED');
+    expect(JSON.stringify(otherProject)).not.toContain(operation(first).operationId);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed when its claim cannot persist and does not support keys on read or config tools', async () => {
+    project('receipt-control-claim-failure');
+    const execute = registerDispatchProbe({ id: 'canvas_receipt_claim_failure', effect: 'canvas_write' });
+    const db = await import('../../../src/services/indexedDbService');
+    const claim = vi.spyOn(db, 'claimMcpAgentTask').mockRejectedValueOnce(new Error('simulated operation persistence failure'));
+    try {
+      const failed = await mcpCall('tools_call', { name: 'canvas_receipt_claim_failure', arguments: { value: 'ok' },
+        operationKey: 'must-not-start' }, 'receipt-failure:write');
+      expect(failed.isError).toBe(true);
+      expect(execute).not.toHaveBeenCalled();
+      expect(useAppStore.getState().agentTasks).toEqual([]);
+    } finally { claim.mockRestore(); }
+    const conflictingClaim = vi.spyOn(db, 'claimMcpAgentTask').mockRejectedValueOnce(new Error('MCP_OPERATION_KEY_CONFLICT'));
+    try {
+      const conflict = await mcpCall('tools_call', { name: 'canvas_receipt_claim_failure', arguments: { value: 'other' },
+        operationKey: 'raced-conflict' }, 'receipt-failure:conflict');
+      expect(conflict.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('"errorCode":"MCP_OPERATION_KEY_CONFLICT"') });
+    } finally { conflictingClaim.mockRestore(); }
+    registerDispatchProbe({ id: 'receipt_config_probe', effect: 'config_write' });
+    for (const name of ['canvas_query', 'receipt_config_probe']) {
+      const result = await mcpCall('tools_call', { name, arguments: name === 'canvas_query' ? {} : { value: 'private-input' },
+        operationKey: 'not-for-this-effect' }, `receipt-failure:${name}`);
+      expect(result.isError).toBe(true);
+    }
+    expect(useAppStore.getState().agentTasks).toEqual([]);
+  });
+
+  it('keeps the key reserved after deleting its task and exposes only a scoped unknown receipt', async () => {
+    project('receipt-control-deleted');
+    const execute = registerDispatchProbe({ id: 'canvas_receipt_deleted', effect: 'canvas_write' });
+    const envelope = { name: 'canvas_receipt_deleted', arguments: { value: 'ok' }, operationKey: 'deleted-task-intent' };
+    const first = await mcpCall('tools_call', envelope, 'receipt-deleted:first');
+    const prior = operation(first);
+    useAppStore.getState().removeAgentTask(prior.taskId);
+    const db = await import('../../../src/services/indexedDbService');
+    await db.deleteAgentTask(prior.taskId);
+    const replay = await mcpCall('tools_call', envelope, 'receipt-deleted:replay');
+    expect(operation(replay)).toMatchObject({ status: 'unknown', resultAvailable: false, retryable: false });
+    expect(operation(replay).sequence).toBeGreaterThan(prior.sequence);
+    expect(execute).toHaveBeenCalledOnce();
+    const query = await mcpCall('mcp_operation_get', { operationKey: envelope.operationKey }, 'receipt-deleted:query');
+    expect(operation(query).status).toBe('unknown');
+  });
+});

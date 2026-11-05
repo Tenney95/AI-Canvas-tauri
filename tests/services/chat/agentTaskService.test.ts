@@ -54,6 +54,27 @@ function createInterruptedTask(): AgentTask {
 }
 
 describe('repairInterruptedAgentTasks', () => {
+  it('pauses an interrupted keyed task without discarding or reclaiming its operation identity', async () => {
+    const service = await import('../../../src/services/chat/agentTaskService');
+    const db = await import('../../../src/services/indexedDbService');
+    const base = createInterruptedTask();
+    const task: AgentTask = { ...base, conversationId: `mcp-control-${base.projectId}`, mcpOperation: {
+      version: 1, bindingId: 'mcp-operation:' + 'b'.repeat(64), projectId: base.projectId,
+      keyDigest: 'c'.repeat(64), inputDigest: 'd'.repeat(64), toolId: 'canvas_update_nodes', effect: 'canvas_write',
+      phase: 'reserved', sequence: 0, createdAt: 1, updatedAt: 1,
+    } };
+    await service.claimMcpOperationTask(task);
+    await db.updateMcpOperationTask(task.id, { phase: 'running' });
+    await service.repairInterruptedAgentTasks(base.projectId);
+    const repaired = await service.loadAgentTask(task.id);
+    expect(repaired).toMatchObject({ status: 'paused', pausedReason: 'app_restarted',
+      mcpOperation: { keyDigest: 'c'.repeat(64), phase: 'running', sequence: 1 } });
+    const replay = await service.claimMcpOperationTask({ ...task, id: 'must-not-start-again' });
+    expect(replay.claimed).toBe(false);
+    expect(replay.task?.id).toBe(task.id);
+    expect(replay.task?.status).toBe('paused');
+  });
+
   it('pauses interrupted tasks and expires pending approvals after restart', async () => {
     const service = await import('../../../src/services/chat/agentTaskService');
     await service.saveAgentTask(createInterruptedTask());
