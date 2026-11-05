@@ -35,6 +35,10 @@ vi.mock('../../src/services/fs/assetIndex', async (importOriginal) => ({
   }),
 }));
 vi.mock('../../src/services/fs/trash', () => ({ moveToTrash: vi.fn() }));
+vi.mock('../../src/services/indexedDb/mediaRelocations', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/indexedDb/mediaRelocations')>(),
+  retiredMediaPaths: async () => new Set<string>(),
+}));
 
 import { listExternalFolderContents, listExternalFolderFiles, selectAssetFolderFiles, listGlobalFolderContents, createAssetSubfolder, resolveAssetFolderDirectory, addAssetFilesToGlobal, walkDirectoryFiles } from '../../src/services/fs/assetLibrary';
 import type { AssetFileEntry } from '../../src/services/fs/core';

@@ -102,6 +102,24 @@ function isLocalAssetFile(file: AssetFileEntry): boolean {
 
 type FileTabKey = 'project' | 'permanent';
 type TabKey = FileTabKey | 'drama' | 'ark' | 'nodes' | 'refmods';
+type FileLoadError = {
+  message: string;
+  failures?: { projectId: string; reason: string }[];
+};
+
+/** 仅展示固定错误类别，原生异常可能含本地路径或连接凭据。 */
+function projectFileFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (message === '文件引用写入事务失败') return '文件索引保存失败';
+  if (message === '项目文件身份范围无效，请重新预览'
+    || message === '项目文件包含其他来源的资产身份，请先复制为独立项目资产'
+    || message === '项目文件资产身份存在歧义，请先修复'
+    || message === '资产身份已变化，请重新扫描'
+    || message === '素材已被清理，请重新加载后重试') return '文件身份校验失败';
+  if (message === '文件引用迁移记录损坏，停止分配文件名'
+    || message === '读取文件引用迁移记录失败') return '文件迁移记录读取失败';
+  return '读取失败';
+}
 
 /** 单页渲染数量（增量加载步长）— 限制 DOM 规模 */
 const PAGE_SIZE = 48;
@@ -287,7 +305,7 @@ export default function AssetsPanel() {
   const [arkAssetCount, setArkAssetCount] = useState(0);
 
   const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<FileLoadError | null>(null);
   const [busy, setBusy] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -456,12 +474,13 @@ export default function AssetsPanel() {
           }
           if (entries.length) publishProgress();
         };
-        let failedProjects = 0;
+        const failures: NonNullable<FileLoadError['failures']> = [];
         // 父项目后读取分集，重叠目录中的文件沿用具体分集的身份和历史归属。
         for (const projectId of viewProjectIds) {
           const previousEntries = new Map(diskEntries);
           const previousOwners = new Map(owners);
           let entries: AssetFileEntry[] | null = null;
+          let failureReason = '读取失败';
           // 单个目录/索引读取失败不丢弃整部剧；短暂故障仅自动重读一次。
           for (let attempt = 0; attempt < 2; attempt++) {
             if (attempt > 0) {
@@ -474,14 +493,15 @@ export default function AssetsPanel() {
               signal: controller.signal,
               onFiles: (batch) => receiveFiles(batch, projectId),
             }); }
-            catch {
+            catch (error) {
               if (!isCurrentRequest()) return;
+              failureReason = projectFileFailureReason(error);
               if (attempt === 0) await new Promise<void>((resolve) => setTimeout(resolve, 100));
             }
             if (!isCurrentRequest()) return;
             if (entries !== null) break;
           }
-          if (entries === null) failedProjects++;
+          if (entries === null) failures.push({ projectId, reason: failureReason });
           receiveFiles(entries ?? [], projectId);
         }
         const diskFiles = Array.from(diskEntries.values());
@@ -505,7 +525,7 @@ export default function AssetsPanel() {
             }
           }
         }
-        if (failedProjects < viewProjectIds.length || nodeEntries.length || diskFiles.length) {
+        if (failures.length < viewProjectIds.length || nodeEntries.length || diskFiles.length) {
           const combined = [...diskFiles, ...nodeEntries];
           const projected: AssetFileEntry[] = [];
           // 节点补充条目也经同一适配口过滤，旧版本不会因节点仍引用它而回到当前资产列表。
@@ -518,7 +538,7 @@ export default function AssetsPanel() {
           setProjectFileOwners(owners);
           setProjectFiles(projected);
         }
-        if (failedProjects) setLoadError('项目文件读取未完成，已保留可用资源，请重试。');
+        if (failures.length) setLoadError({ message: '项目文件读取未完成，已保留可用资源，请重试。', failures });
       } else {
         const scope = JSON.stringify([baseDataDir, folders]);
         if (permanentFilesScopeRef.current !== scope) {
@@ -570,7 +590,7 @@ export default function AssetsPanel() {
     } catch {
       if (isCurrentRequest()) {
         publishFiles?.();
-        setLoadError('资源读取失败，请重试。');
+        setLoadError({ message: '资源读取失败，请重试。' });
       }
     } finally {
       cancelPublish();
@@ -1725,7 +1745,17 @@ export default function AssetsPanel() {
                 <div className="assets-file-scroll" key={JSON.stringify([activeTab, activeTab === 'permanent' ? folderSelection : null, sortBy, sortOrder])}>
                   {!loading && loadError && (
                     <div className="ui-alert ui-alert--warning m-2" role="alert">
-                      <span className="min-w-0 flex-1">{translate(loadError)}</span>
+                      <span className="min-w-0 flex-1 break-words">
+                        {translate(loadError.message)}
+                        {loadError.failures?.map((failure) => (
+                          <span key={failure.projectId} className="block">
+                            {translate('{name}：{reason}', {
+                              name: projects.find((project) => project.id === failure.projectId)?.name ?? translate('项目'),
+                              reason: translate(failure.reason),
+                            })}
+                          </span>
+                        ))}
+                      </span>
                       <button type="button" className="ui-btn ui-btn--secondary shrink-0"
                         onClick={() => { void loadFiles().then(loadTags); }}>{translate("重试加载")}</button>
                     </div>

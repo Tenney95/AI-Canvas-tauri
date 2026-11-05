@@ -17,7 +17,8 @@ import {
 } from './core';
 import { moveToTrash } from './trash';
 import { getRelativeAssetPath, identifyAsset, identifyAssetBatch } from './assetIndex';
-import { getAssetIndexByPath, putAssetIndex } from '../indexedDbService';
+import { getAllAssetIndexes, getAssetIndexByPath, putAssetIndex, type AssetIndexRecord } from '../indexedDbService';
+import { mediaFileAllocationKey, retiredMediaPaths } from '../indexedDb/mediaRelocations';
 
 /** 仅用于目录浏览的运行时条目，不写入资产索引或持久化配置。 */
 export interface AssetFolderEntry {
@@ -159,6 +160,33 @@ export async function scanDirectoryFiles(
   const maxDepth = opts.maxDepth ?? 8;
   const maxDirectories = Math.max(1, opts.maxDirectories ?? 3000);
   const excludedFiles = new Set((opts.excludedFilePaths ?? []).map(comparablePath));
+  const retiredPaths = opts.source === 'project' ? await retiredMediaPaths() : undefined;
+  throwIfScanAborted(opts.signal);
+  const indexedFilePaths = new Map<string, string>();
+  let indexedAliases: Map<string, AssetIndexRecord | null> | undefined;
+  const getFilePath = (directory: string, name: string) => {
+    const path = joinPath(stripVerbatimPrefix(directory), name);
+    return indexedFilePaths.get(path) ?? path;
+  };
+  const findIndexedAlias = async (path: string) => {
+    throwIfScanAborted(opts.signal);
+    if (!indexedAliases) {
+      const indexes = await getAllAssetIndexes();
+      throwIfScanAborted(opts.signal);
+      indexedAliases = new Map();
+      for (const index of indexes) {
+        const key = mediaFileAllocationKey(index.path);
+        const previous = indexedAliases.get(key);
+        if (previous === undefined) indexedAliases.set(key, index);
+        else if (previous === null || previous.assetId !== index.assetId || previous.path !== index.path) {
+          indexedAliases.set(key, null);
+        }
+      }
+    }
+    const indexed = indexedAliases.get(mediaFileAllocationKey(path));
+    if (indexed === null) throw new Error('项目文件资产身份存在歧义，请先修复');
+    return indexed;
+  };
   const convertFileSrc = await getConvertFileSrc();
   throwIfScanAborted(opts.signal);
   const out: AssetFileEntry[] = [];
@@ -187,8 +215,29 @@ export async function scanDirectoryFiles(
     }
     throwIfScanAborted(opts.signal);
     // 不跟随符号链接扩大外部目录授权或形成遍历环。
-    const fileEntries = entries.filter((e) => e.isFile && !e.isSymlink
-      && !excludedFiles.has(comparablePath(joinPath(dir, e.name))));
+    const fileEntries: typeof entries = [];
+    for (const entry of entries) {
+      if (!entry.isFile || entry.isSymlink) continue;
+      const filePath = getFilePath(dir, entry.name);
+      if (excludedFiles.has(comparablePath(filePath))) continue;
+      if (retiredPaths?.has(mediaFileAllocationKey(filePath))) {
+        throwIfScanAborted(opts.signal);
+        const indexed = await getAssetIndexByPath(filePath);
+        throwIfScanAborted(opts.signal);
+        // 搬运残留的旧副本不是新资产；共享拆分后仍有精确身份的原文件继续保留。
+        if (!indexed) {
+          const alias = await findIndexedAlias(filePath);
+          throwIfScanAborted(opts.signal);
+          if (!alias) continue;
+          if (alias.source !== 'project') {
+            throw new Error('项目文件包含其他来源的资产身份，请先复制为独立项目资产');
+          }
+          // 大小写别名沿用索引中的路径，后续 stat/严格查找/批量识别不能再建新 UUID。
+          indexedFilePaths.set(filePath, alias.path);
+        }
+      }
+      fileEntries.push(entry);
+    }
     const subDirs = entries.filter((e) => e.isDirectory && !e.isSymlink
       && !opts.excludedDirectories?.includes(e.name)
       && !(depth === 0 && opts.excludedRootDirectories?.includes(e.name)));
@@ -199,7 +248,7 @@ export async function scanDirectoryFiles(
       throwIfScanAborted(opts.signal);
       const batchEntries = fileEntries.slice(offset, offset + statBatchSize);
       const statResults = await Promise.all(batchEntries.map(async (e) => {
-        const filePath = joinPath(dir, e.name);
+        const filePath = getFilePath(dir, e.name);
         try {
           const s = await stat(filePath);
           const createdAt = s.birthtime?.getTime();
@@ -300,7 +349,7 @@ export async function scanDirectoryFiles(
           availability: 'unscanned',
         };
         folders.push(child);
-        stack.push({ dir: joinPath(dir, d.name), depth: depth + 1, folder: child });
+        stack.push({ dir: joinPath(stripVerbatimPrefix(dir), d.name), depth: depth + 1, folder: child });
       }
     } else if (subDirs.length > 0) {
       truncated = true;

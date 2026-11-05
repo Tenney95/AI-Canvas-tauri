@@ -186,6 +186,12 @@ function all(root: unknown, predicate: (element: Element) => boolean): Element[]
   const element = root as Element;
   return [...(predicate(element) ? [element] : []), ...all(element.props.children, predicate)];
 }
+function visibleText(root: unknown): string {
+  if (typeof root === 'string' || typeof root === 'number') return String(root);
+  if (Array.isArray(root)) return root.map(visibleText).join('');
+  if (!root || typeof root !== 'object' || !('props' in root)) return '';
+  return visibleText((root as Element).props.children);
+}
 function find(predicate: (element: Element) => boolean): Element {
   const result = all(tree, predicate)[0];
   if (!result) throw new Error('Missing element');
@@ -1728,13 +1734,17 @@ describe('资产库 Tab 抽屉', () => {
     ], nodes: [canvasNode('image', 'source-image')] });
     driver.nodeFile = file('画布图片');
     driver.listProject.mockImplementation(async (id: string) => {
-      if (id === 'episode-2') throw new Error('unavailable');
+      if (id === 'episode-2') throw new Error('文件引用写入事务失败');
       return [file('共享素材')];
     });
     driver.store!.getState().setAssetsPanelOpen(true); render();
     await vi.advanceTimersByTimeAsync(100); render();
     expect(cards().map((el) => (el.props.file as AssetFileEntry).name)).toEqual(['共享素材', '画布图片']);
     expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(1);
+    const warning = visibleText(find((el) => el.props.role === 'alert'));
+    expect(warning).toContain('项目文件读取未完成，已保留可用资源，请重试。');
+    expect(warning).toContain('第二集：文件索引保存失败');
+    expect(warning).not.toContain('第一集：');
     expect(driver.listProject.mock.calls.filter(([id]) => id === 'episode-2')).toHaveLength(2);
     driver.listProject.mockImplementation(async (id: string) => [file(id === 'episode-2' ? '第二集素材' : '共享素材')]);
     click(find((el) => el.type === 'button' && el.props.children === '重试加载'));
@@ -1742,6 +1752,24 @@ describe('资产库 Tab 抽屉', () => {
     expect(cards().map((el) => (el.props.file as AssetFileEntry).name)).toEqual(['第二集素材', '共享素材', '画布图片']);
     expect(all(tree, (el) => el.props.role === 'alert')).toHaveLength(0);
     expect(driver.store!.getState().assetsPanelOpen).toBe(true);
+  });
+
+  it.each([
+    { kind: '索引事务', error: new Error('文件引用写入事务失败'), reason: '文件索引保存失败' },
+    { kind: '身份校验', error: new Error('项目文件包含其他来源的资产身份，请先复制为独立项目资产'), reason: '文件身份校验失败' },
+    { kind: '迁移记录', error: '读取文件引用迁移记录失败', reason: '文件迁移记录读取失败' },
+    { kind: '未知异常', error: new Error('文件引用写入事务失败: C:\\private-assets\\image.png Authorization: Bearer private-credential-marker'), reason: '读取失败' },
+  ])('项目读取失败只展示安全类别，不泄露原始异常：$kind', async ({ error, reason }) => {
+    vi.useFakeTimers();
+    driver.listProject.mockRejectedValue(error);
+    key(); render(); await vi.advanceTimersByTimeAsync(100); render();
+
+    const warning = visibleText(find((el) => el.props.role === 'alert'));
+    expect(warning).toContain('项目一：' + reason);
+    expect(warning).not.toContain(error instanceof Error ? error.message : error);
+    expect(visibleText(tree)).not.toContain('C:\\private-assets\\image.png');
+    expect(visibleText(tree)).not.toContain('private-credential-marker');
+    expect(visibleText(tree)).not.toContain('Authorization: Bearer');
   });
 
   it('持续失败明确提示而不冒充空项目，手动重试后正常展示', async () => {
