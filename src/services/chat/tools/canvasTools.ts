@@ -33,6 +33,7 @@ import {
 import { nodeHeightForAspectRatio, videoNodeDimensionsForAspectRatio } from '../../../utils/nodeBounds';
 import { textNodeHeight } from '../../../utils/num';
 import { executeCommand, logOperation } from '../commandRegistry';
+import { generationInputSnapshot, getCanvasNodeHash, matchesCanvasNodeSnapshot } from '../canvasNodeVersion';
 import { validateAgentToolInput, type AgentToolSchema } from '../agentToolSchemas';
 import {
   registerAgentTool,
@@ -325,6 +326,7 @@ interface QueryNodesInput extends NodeTargetInput {
 }
 
 interface NodeUpdatePatch {
+  expectedNodeHash?: string;
   label?: string;
   prompt?: string;
   promptEdit?: { oldText: string; newText: string };
@@ -561,6 +563,7 @@ const targetProperties = {
 };
 
 const nodeUpdateProperties: Record<string, AgentToolSchema> = {
+  expectedNodeHash: { type: 'string', minLength: 64, maxLength: 64, description: '上次 canvas_query detail/textField 返回的 nodeHash。只用于恰好一个目标；内容、名称、位置或项目设置变化时整批拒绝。' },
   label: { type: 'string', minLength: 1, maxLength: 120 },
   prompt: { type: 'string', maxLength: 8000 },
   promptEdit: { type: 'object', required: ['oldText', 'newText'], additionalProperties: false, properties: {
@@ -894,23 +897,6 @@ function resolveTargetIds(input: NodeTargetInput): string[] {
   return [...matched];
 }
 
-/** 仅在本次调用内保留生成输入；状态、产物和批次分组变化不撤销自身的生成租约。 */
-function generationInputSnapshot(data: BaseNodeData, projectSettings: unknown): string {
-  return JSON.stringify([
-    data.type, data.prompt, TEXT_OUTPUT_NODE_TYPES.has(data.type) ? data.output : undefined,
-    data.model, data.provider, data.workflowId, data.workflowInputs, data.runninghubModelParameters,
-    data.comfyRefmods, data.comfyH3MemoryPreset, data.imageSize, data.imageQuality, data.imageBackground,
-    data.aspectRatio, data.batchCount, data.cameraSettings, data.videoResolution, data.videoFps, data.videoFrames,
-    data.seedanceResolution, data.seedanceRatio, data.seedanceDuration, data.generateAudio, data.videoReferences,
-    data.animationAction, data.animationFrames, data.animationProcessing, data.animationEdits,
-    data.audioVoice, data.audioSpeechSettings, data.audioFormat, data.audioSpeed, data.audioPurpose,
-    data.musicTitle, data.musicLyrics, data.musicBpm, data.musicDuration, data.autoGenerateLyrics, data.style,
-    data.shotlistRows, data.shotlistColumns, data.shotlistCinematography,
-    data.directorRuntimeKind, data.directorInstanceId, data.directorPrevisPrompt, data.directorPrevisModel,
-    data.directorPrevisProvider, projectSettings,
-  ]);
-}
-
 function queryNodes(input: QueryNodesInput): Node<BaseNodeData>[] {
   const state = useAppStore.getState();
   if (input.nodeIds?.length === 0 || input.displayIds?.length === 0) return [];
@@ -927,13 +913,31 @@ function queryNodes(input: QueryNodesInput): Node<BaseNodeData>[] {
     })));
 }
 
+function captureNodeVersionContext(projectId: string) {
+  const state = useAppStore.getState();
+  const settings = state.projects.find((project) => project.id === projectId)?.settings;
+  return { revision: state.getCurrentRevision(), settings, settingsSnapshot: JSON.stringify(settings) };
+}
+type NodeVersionContext = ReturnType<typeof captureNodeVersionContext>;
+
+function assertNodeVersionSnapshot(context: AgentToolContext, nodes: Node<BaseNodeData>[], version: NodeVersionContext): void {
+  if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+  const state = useAppStore.getState();
+  const settings = state.projects.find((project) => project.id === context.projectId)?.settings;
+  if (state.currentProjectId !== context.projectId || state.getCurrentRevision() !== version.revision
+    || JSON.stringify(settings) !== version.settingsSnapshot
+    || nodes.some((node) => !matchesCanvasNodeSnapshot(node, state.nodes.find((item) => item.id === node.id)))) {
+    throw new Error('项目、节点或项目设置已变化，请重新读取后操作');
+  }
+}
+
 function splitsSurrogatePair(text: string, offset: number): boolean {
   return offset > 0 && offset < text.length
     && text.charCodeAt(offset - 1) >= 0xD800 && text.charCodeAt(offset - 1) <= 0xDBFF
     && text.charCodeAt(offset) >= 0xDC00 && text.charCodeAt(offset) <= 0xDFFF;
 }
 
-function readCanvasText(context: AgentToolContext, input: QueryNodesInput, matched: Node<BaseNodeData>[]): AgentToolExecutionResult {
+async function readCanvasText(context: AgentToolContext, input: QueryNodesInput, matched: Node<BaseNodeData>[]): Promise<AgentToolExecutionResult> {
   const reject = (message: string): AgentToolExecutionResult => ({ status: 'error', summary: message, modelContent: message, retryable: false });
   if (input.textField !== 'prompt' && input.textField !== 'output') return reject('textField 仅允许 prompt 或 output');
   if (!(input.nodeIds?.length || input.displayIds?.length) || matched.length !== 1) {
@@ -954,12 +958,15 @@ function readCanvasText(context: AgentToolContext, input: QueryNodesInput, match
   let end = Math.min(text.length, offset + limit);
   if (splitsSurrogatePair(text, end)) end -= 1;
   if (end === offset && offset < text.length) return reject('textLimit 过小，无法完整返回当前字符，请至少使用 2');
+  const version = captureNodeVersionContext(context.projectId);
+  const nodeHash = await getCanvasNodeHash(node, context.projectId, version.settings);
+  assertNodeVersionSnapshot(context, matched, version);
   while (true) {
     const modelContent = JSON.stringify({
       projectId: context.projectId, nodeId: node.id, textField: input.textField,
       text: text.slice(offset, end), offset, totalLength: text.length,
       nextOffset: end < text.length ? end : null,
-      revision: useAppStore.getState().getCurrentRevision(),
+      revision: version.revision, nodeHash,
     });
     if (modelContent.length <= TEXT_READ_CONTENT_LIMIT) {
       return { status: 'success', summary: `读取节点${input.textField === 'prompt' ? '提示词' : '正文'}片段`, modelContent };
@@ -1581,10 +1588,19 @@ interface PreparedNodeUpdate {
 }
 
 /** 单补丁与异构补丁共用全部普通编辑校验；此阶段只准备，不写 Store 或文件。 */
-function prepareNodeUpdate(
-  context: AgentToolContext, input: NodeUpdatePatch, targets: Node<BaseNodeData>[], globalAssets?: readonly DramaAsset[],
-): PreparedNodeUpdate | AgentToolExecutionResult {
+async function prepareNodeUpdate(
+  context: AgentToolContext, input: NodeUpdatePatch, targets: Node<BaseNodeData>[],
+  globalAssets: readonly DramaAsset[] | undefined, version: NodeVersionContext,
+): Promise<PreparedNodeUpdate | AgentToolExecutionResult> {
   const targetIds = targets.map((node) => node.id);
+  if (input.expectedNodeHash !== undefined) {
+    const reject = (summary: string): AgentToolExecutionResult => ({ status: 'error', summary, retryable: false, errorCode: 'NODE_CONTEXT_CHANGED',
+      modelContent: JSON.stringify({ errorCode: 'NODE_CONTEXT_CHANGED', operationStatus: 'not_executed', retryable: false, summary }) });
+    if (targets.length !== 1) return reject('expectedNodeHash 必须明确对应恰好一个目标节点；未修改任何节点');
+    const nodeHash = await getCanvasNodeHash(targets[0], context.projectId, version.settings);
+    assertNodeVersionSnapshot(context, targets, version);
+    if (nodeHash !== input.expectedNodeHash) return reject('节点内容、名称、位置或项目设置已变化，请重新读取后规划；未修改任何节点，不要自动重投写入');
+  }
   if (input.promptEdit !== undefined) {
     const edit = input.promptEdit;
     if (input.prompt !== undefined || !edit || typeof edit !== 'object'
@@ -1723,6 +1739,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         '多个筛选条件取交集；未找到返回空列表，不回退全画布。重名返回全部候选，核对 ID 后再写入。offset/limit 分页，hasMore=true 时用 nextOffset 继续。',
         'detail=true 时额外返回结构化节点详情：ID、坐标、尺寸、模型、生成参数、提示词、',
         '文本输出摘要和相关连线（含实际端口、水平间距与布局提醒），用于精确定位后再调用更新、连接或运行工具。',
+        'detail=true 的每个节点及 textField 结果返回 nodeHash，覆盖完整可编辑输入、名称、位置和项目设置；更新时原样放入 expectedNodeHash，避免未增加 revision 的手工改稿被覆盖。普通名称索引不计算指纹。',
         '长文字须显式用 nodeIds 或 displayIds 恰好定位一个节点，再指定 textField=prompt 或 output；仅返回所选当前字段的原文片段与 revision，不返回其它节点详情。output 只支持文本类节点。',
         'textOffset/nextOffset 是 JavaScript UTF-16 代码单元偏移；保持节点和字段不变，用 nextOffset 续读到 null。textLimit 默认及上限为 4000，实际片段会按 JSON 预算缩小且不拆 Unicode 代理项对；原文首尾空白保留。未指定 textField 时仍返回 400 字详情摘要。',
         '不会返回本地路径或媒体 URL。',
@@ -1760,18 +1777,30 @@ export function registerCanvasAgentTools(): Array<() => void> {
         }
         const offset = input.offset ?? 0;
         const page = matched.slice(offset, offset + (input.limit ?? DETAIL_NODE_LIMIT));
+        const version = input.detail ? captureNodeVersionContext(context.projectId) : undefined;
         const globalAssets = input.detail && page.length ? await readGlobalReferenceAssets(context) : undefined;
         if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
         if (!isCurrentProject(context.projectId)) throw new Error('目标项目当前未加载');
         const summary = !matched.length ? '没有找到匹配节点'
           : !page.length ? `匹配 ${matched.length} 个节点，此页为空，请从 offset=0 重新查询`
             : `匹配 ${matched.length} 个节点，本页返回 ${page.length} 个`;
+        if (version) assertNodeVersionSnapshot(context, page, version);
+        const detail = buildCanvasDetail(matched, input, globalAssets);
+        if (version) {
+          const details = detail.nodes as Array<Record<string, unknown>>;
+          // 顺序编码，避免同页多份大提示词同时占用摘要缓冲区。
+          for (let index = 0; index < page.length; index += 1) {
+            details[index].nodeHash = await getCanvasNodeHash(page[index], context.projectId, version.settings);
+            assertNodeVersionSnapshot(context, [page[index]], version);
+          }
+          assertNodeVersionSnapshot(context, page, version);
+        }
         return {
           status: 'success', summary,
           modelContent: JSON.stringify({
             summary,
             ...(!input.detail ? { message: summary, affectedNodeIds: page.map((node) => node.id) } : {}),
-            ...buildCanvasDetail(matched, input, globalAssets),
+            ...detail,
           }),
         };
       },
@@ -2044,6 +2073,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       description: [
         '批量更新匹配节点：名称、提示词、正文内容、位置、尺寸、生成模型和生成参数。',
         '各节点内容不同时用 updates:[{nodeId,patch}]，每次 1 至 50 项，每项仅接受普通编辑字段。不能与任何顶层筛选、补丁或特殊修复操作混用；重复或不存在的 ID、任一无效补丁都会在写入前整批拒绝，成功时只提交一次历史和 revision。',
+        '建议将读取到的 nodeHash 原样传入 expectedNodeHash；顶层前置条件只能用于恰好一个目标，多节点请给 updates 的每个 patch 分别传入。指纹不匹配时整批拒绝并要求重新读取，不自动重投；未提供指纹时保留旧客户端行为。',
         '只改提示词一处时用 promptEdit:{oldText,newText}，不能与整段 prompt 混传。oldText 非空且必须在每个目标的当前原文中唯一出现（重叠重复也拒绝）；任一目标不匹配或参数无效时整批不写。',
         '片段新旧文本各最多 8000 个 UTF-16 代码单元，newText 可为空以删除片段；保留范围外所有原文、空白及存量长提示词，不截断全文。不得切入 @{...}、@asset{...}、@drama{...} 引用令牌或 Unicode 代理项对；可以替换或删除完整引用。MCP 只转换 newText 内的同图节点引用，范围外引用保持原样。',
         'label 同步已有文件名显示别名，但不重命名磁盘文件或改变媒体路径。',
@@ -2136,6 +2166,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         });
         const globalAssets = needsAssets ? await readGlobalReferenceAssets(context) : undefined;
         const state = useAppStore.getState();
+        const version = captureNodeVersionContext(context.projectId);
         const groups: PreparedNodeUpdate[] = [];
         for (const request of requests) {
           const targets: Node<BaseNodeData>[] = [];
@@ -2144,7 +2175,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
             if (!node) return reject('目标节点已变化，请重新查询；未修改任何节点');
             targets.push(node);
           }
-          const prepared = prepareNodeUpdate(context, request.input, targets, globalAssets);
+          const prepared = await prepareNodeUpdate(context, request.input, targets, globalAssets, version);
           if ('status' in prepared) return prepared;
           groups.push(prepared);
         }
@@ -2182,10 +2213,11 @@ export function registerCanvasAgentTools(): Array<() => void> {
         if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
         const current = useAppStore.getState();
         for (const group of groups) {
-          if (batch && group.targets.some((node) => {
+          if ((batch || group.input.expectedNodeHash !== undefined) && group.targets.some((node) => {
             const latest = current.nodes.find((item) => item.id === node.id);
-            return !latest || latest.data !== node.data || latest.position.x !== node.position.x || latest.position.y !== node.position.y;
+            return !matchesCanvasNodeSnapshot(node, latest);
           })) throw new Error('目标节点已变化，请重新读取后修改；未修改任何节点');
+          if (group.input.expectedNodeHash !== undefined) assertNodeVersionSnapshot(context, group.targets, version);
           if ([...group.promptEdits].some(([id, edit]) => {
             const node = current.nodes.find((item) => item.id === id);
             return !node || (node.data.prompt ?? '') !== edit.before;

@@ -7,6 +7,7 @@ import { useAppStore } from '../../../src/store/useAppStore';
 import { registerCanvasAgentTools } from '../../../src/services/chat/tools/canvasTools';
 import { validateAgentToolInput } from '../../../src/services/chat/agentToolSchemas';
 import { clearAgentToolRegistryForTests, getAgentTool, type AgentToolContext } from '../../../src/services/chat/toolRegistry';
+import { getCanvasNodeHash } from '../../../src/services/chat/canvasNodeVersion';
 
 const files = vi.hoisted(() => ({ desktop: false, read: vi.fn(), save: vi.fn() }));
 vi.mock('../../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
@@ -54,6 +55,36 @@ beforeEach(() => {
 });
 
 describe('异构节点批量更新', () => {
+  it('每个补丁独立校验指纹，第二项未增 revision 的改名使整批拒绝，刷新后可一次提交', async () => {
+    const state = useAppStore.getState();
+    const firstHash = await getCanvasNodeHash(state.nodes[0], 'p1');
+    const secondHash = await getCanvasNodeHash(state.nodes[1], 'p1');
+    const revision = state.getCurrentRevision();
+    useAppStore.getState().updateNodeDataTransient('b', { label: '用户新名称' });
+    const before = useAppStore.getState().nodes;
+    const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    const update = getAgentTool('canvas_update_nodes')!;
+    const stale = await update.execute(context(), { updates: [
+      { nodeId: 'a', patch: { expectedNodeHash: firstHash, label: '模型名称' } },
+      { nodeId: 'b', patch: { expectedNodeHash: secondHash, prompt: '模型提示词' } },
+    ] });
+    expect(stale).toMatchObject({ status: 'error', retryable: false, errorCode: 'NODE_CONTEXT_CHANGED' });
+    expect(useAppStore.getState().nodes).toBe(before);
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+    expect(commit).not.toHaveBeenCalled();
+    const currentHash = await getCanvasNodeHash(before[1], 'p1');
+    const result = await update.execute(context(), { updates: [
+      { nodeId: 'a', patch: { expectedNodeHash: firstHash, label: '模型名称' } },
+      { nodeId: 'b', patch: { expectedNodeHash: currentHash, prompt: '模型提示词' } },
+    ] });
+    expect(result.status).toBe('success');
+    expect(useAppStore.getState().nodes[0].data.label).toBe('模型名称');
+    expect(useAppStore.getState().nodes[1].data).toMatchObject({ label: '用户新名称', prompt: '模型提示词' });
+    expect(useAppStore.getState().nodes.every((item) => !Object.hasOwn(item.data, 'expectedNodeHash'))).toBe(true);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision + 1);
+  });
+
   it('分别修改提示词、媒体参数和位置，只提交一次历史与 revision', async () => {
     const state = useAppStore.getState();
     const revision = state.getCurrentRevision();
@@ -238,6 +269,31 @@ describe('异构节点批量更新', () => {
     finishRead(snapshot('旧正文'));
     await expect(pending).rejects.toThrow('目标节点已变化');
     expect(useAppStore.getState().nodes.map((item) => item.data.prompt ?? item.data.output)).toEqual(['用户继续编辑', '旧正文']);
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+    expect(commit).not.toHaveBeenCalled();
+    expect(files.save).not.toHaveBeenCalled();
+  });
+
+  it('带指纹的标量在文件预读后再核对位置，阻止摘要计算后的手动移动被覆盖', async () => {
+    textNodes();
+    const expectedNodeHash = await getCanvasNodeHash(useAppStore.getState().nodes[0], 'p1');
+    let finishRead!: (value: AssetTextSnapshot) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    files.read.mockImplementationOnce(() => new Promise<AssetTextSnapshot>((resolve) => {
+      finishRead = resolve;
+      markStarted();
+    }));
+    const revision = useAppStore.getState().getCurrentRevision();
+    const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    const pending = getAgentTool('canvas_update_nodes')!.execute(context(), {
+      nodeIds: ['a'], expectedNodeHash, content: '模型新正文', x: 100, y: 200,
+    });
+    await started;
+    useAppStore.getState().updateNodePositionTransient('a', { x: 30, y: 40 });
+    finishRead(snapshot('原文甲'));
+    await expect(pending).rejects.toThrow('目标节点已变化');
+    expect(useAppStore.getState().nodes[0]).toMatchObject({ position: { x: 30, y: 40 }, data: { output: '原文甲' } });
     expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
     expect(commit).not.toHaveBeenCalled();
     expect(files.save).not.toHaveBeenCalled();

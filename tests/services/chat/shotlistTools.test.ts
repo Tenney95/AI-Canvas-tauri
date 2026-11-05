@@ -10,6 +10,7 @@ import { registerShotlistAgentTools } from '../../../src/services/chat/tools/sho
 import { searchMcpToolCatalog } from '../../../src/services/mcp/mcpToolCatalog';
 import { SHOTLIST_TEXT_FIELDS } from '../../../src/services/shotlistService';
 import type { ShotRow } from '../../../src/types/shotlist';
+import * as nodeVersion from '../../../src/services/chat/canvasNodeVersion';
 
 const context = (): AgentToolContext => ({ projectId: 'ep', conversationId: 'chat', taskId: 'task', mode: 'autonomous',
   baseRevision: useAppStore.getState().getCurrentRevision(), signal: new AbortController().signal });
@@ -34,6 +35,67 @@ beforeEach(() => {
 });
 
 describe('分镜工具', () => {
+  it('表指纹覆盖未返回的长文字，未增加 revision 的手改也拒绝旧稿写入', async () => {
+    const read = getAgentTool('shotlist_read')!;
+    const first = JSON.parse((await read.execute(context(), { nodeId: 'sheet', fields: ['dialogue'] })).modelContent);
+    expect(first.nodeHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.rows[0]).not.toHaveProperty('content');
+    const state = useAppStore.getState();
+    const revision = state.getCurrentRevision();
+    const rows = state.nodes[0].data.shotlistRows!;
+    const editedContent = `${rows[0].content}用户新增尾文`;
+    state.updateNodeDataTransient('sheet', { shotlistRows: [{ ...rows[0], content: editedContent }] });
+    const editedNodes = useAppStore.getState().nodes;
+    const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    try {
+      const update = getAgentTool('shotlist_update_rows')!;
+      const rejected = await update.execute(context(), { nodeId: 'sheet', mode: 'update', expectedNodeHash: first.nodeHash,
+        rows: [{ id: 'r1', content: '模型旧稿覆盖' }] });
+      expect(rejected).toMatchObject({ status: 'error', retryable: false, errorCode: 'NODE_CONTEXT_CHANGED' });
+      expect(useAppStore.getState().nodes).toBe(editedNodes);
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+      const fresh = JSON.parse((await read.execute(context(), { nodeId: 'sheet', fields: [] })).modelContent);
+      expect(fresh.nodeHash).not.toBe(first.nodeHash);
+      expect((await update.execute(context(), { nodeId: 'sheet', mode: 'update', expectedNodeHash: fresh.nodeHash,
+        rows: [{ id: 'r1', dialogue: '核对后新对白' }] })).status).toBe('success');
+      expect(useAppStore.getState().nodes[0].data.shotlistRows![0]).toMatchObject({ content: editedContent, dialogue: '核对后新对白' });
+      expect(commit).toHaveBeenCalledOnce();
+    } finally { commit.mockRestore(); }
+  });
+
+  it.each(['read', 'update'] as const)('摘要 helper 返回与 %s caller 恢复之间发生改稿时仍拒绝过期快照', async (operation) => {
+    const read = getAgentTool('shotlist_read')!;
+    const initial = JSON.parse((await read.execute(context(), { nodeId: 'sheet', fields: [] })).modelContent);
+    const revision = useAppStore.getState().getCurrentRevision();
+    const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    const hash = vi.spyOn(nodeVersion, 'getCanvasNodeHash').mockImplementationOnce(() => ({
+      then(resolve: (value: string) => void) {
+        resolve(initial.nodeHash);
+        // 先恢复 helper 并使其末尾校验通过，再于 caller 续体之前排入真实 UI 改稿。
+        queueMicrotask(() => {
+          const state = useAppStore.getState();
+          const rows = state.nodes[0].data.shotlistRows!;
+          state.updateNodeDataTransient('sheet', { shotlistRows: rows.map((row) => ({ ...row, dialogue: '用户最新对白' })) });
+        });
+      },
+    } as unknown as Promise<string>));
+    try {
+      const result = operation === 'read'
+        ? await read.execute(context(), { nodeId: 'sheet', fields: ['dialogue'] })
+        : await getAgentTool('shotlist_update_rows')!.execute(context(), { nodeId: 'sheet', mode: 'update', expectedNodeHash: initial.nodeHash,
+          rows: [{ id: 'r1', dialogue: '模型旧对白' }] });
+      expect(result).toMatchObject({ status: 'error', retryable: false });
+      expect(result.summary).toContain('已变化');
+      expect(useAppStore.getState().nodes[0].data.shotlistRows![0].dialogue).toBe('用户最新对白');
+      expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+      expect(commit).not.toHaveBeenCalled();
+    } finally {
+      hash.mockRestore();
+      commit.mockRestore();
+    }
+  });
+
   it('读取稳定 ID 与分段文字，不泄漏画面路径、URL 或拉片内部数据', async () => {
     const read = getAgentTool('shotlist_read')!;
     const result = await read.execute(context(), { nodeId: 'sheet' });

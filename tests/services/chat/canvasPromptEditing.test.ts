@@ -7,6 +7,7 @@ import { useAppStore } from '../../../src/store/useAppStore';
 import { registerCanvasAgentTools } from '../../../src/services/chat/tools/canvasTools';
 import { validateAgentToolInput } from '../../../src/services/chat/agentToolSchemas';
 import { clearAgentToolRegistryForTests, getAgentTool, type AgentToolContext } from '../../../src/services/chat/toolRegistry';
+import * as nodeVersion from '../../../src/services/chat/canvasNodeVersion';
 
 const loadGlobalAssets = vi.hoisted(() => vi.fn<() => Promise<DramaAsset[]>>());
 vi.mock('../../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
@@ -37,6 +38,21 @@ function installReference() {
     dramaAssets: { ...emptyDramaAssetLibrary(), scenes: [scene] } });
 }
 
+function pauseNextHash() {
+  const original = nodeVersion.getCanvasNodeHash;
+  let markStarted!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const spy = vi.spyOn(nodeVersion, 'getCanvasNodeHash').mockImplementationOnce(async (...args) => {
+    const hash = await original(...args);
+    markStarted();
+    await gate;
+    return hash;
+  });
+  return { started, release, spy };
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
   clearAgentToolRegistryForTests();
@@ -47,6 +63,28 @@ beforeEach(() => {
 });
 
 describe('长节点文字读取', () => {
+  it.each(['detail', 'text', 'settings'] as const)('计算 %s 指纹期间原文或项目设置变化时拒绝混合快照', async (mode) => {
+    setPrompt('原文尾部');
+    useAppStore.setState({ projects: [{ id: 'p1', name: '项目', createdAt: 1, updatedAt: 1,
+      settings: { promptSuffixes: { video: '旧设置' } } }] });
+    const paused = pauseNextHash();
+    const pending = getAgentTool('canvas_query')!.execute(context(), {
+      nodeIds: ['target'], ...(mode === 'detail' ? { detail: true } : { textField: 'prompt' }),
+    });
+    try {
+      await paused.started;
+      if (mode === 'settings') useAppStore.setState((state) => ({ projects: state.projects.map((project) => ({
+        ...project, settings: { ...project.settings, promptSuffixes: { video: '新设置' } },
+      })) }));
+      else useAppStore.getState().updateNodeDataTransient('target', { prompt: '用户继续改稿，未增加 revision' });
+      paused.release();
+      await expect(pending).rejects.toThrow('已变化');
+    } finally {
+      paused.release();
+      paused.spy.mockRestore();
+    }
+  });
+
   it('按 UTF-16 偏移完整续读当前提示词并保留空白，默认详情仍只给 400 字摘要', async () => {
     const prompt = ` \n开场😀${'镜头说明。'.repeat(1800)}结尾哨兵\r\n\t `;
     setPrompt(prompt);
@@ -141,6 +179,44 @@ describe('长节点文字读取', () => {
 });
 
 describe('提示词片段修改', () => {
+  it('读取的指纹覆盖摘要外的尾部，未增 revision 的手改也拒绝覆盖，重新读取后可修改', async () => {
+    const original = `${'前文'.repeat(800)}尾部哨兵`;
+    setPrompt(original);
+    const query = getAgentTool('canvas_query')!;
+    const read = JSON.parse((await query.execute(context(), { nodeIds: ['target'], textField: 'prompt', textLimit: 80 })).modelContent);
+    expect(read.nodeHash).toMatch(/^[a-f0-9]{64}$/);
+    const revision = useAppStore.getState().getCurrentRevision();
+    const edited = `${original}用户新增尾文`;
+    useAppStore.getState().updateNodeDataTransient('target', { prompt: edited });
+    expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
+    const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    const update = getAgentTool('canvas_update_nodes')!;
+    const stale = await update.execute(context(), { nodeIds: ['target'], expectedNodeHash: read.nodeHash,
+      promptEdit: { oldText: '尾部哨兵', newText: '模型改稿' } });
+    expect(stale).toMatchObject({ status: 'error', retryable: false, errorCode: 'NODE_CONTEXT_CHANGED' });
+    expect(useAppStore.getState().nodes[0].data.prompt).toBe(edited);
+    expect(commit).not.toHaveBeenCalled();
+    const detail = JSON.parse((await query.execute(context(), { nodeIds: ['target'], detail: true })).modelContent);
+    expect(detail.nodes[0].nodeHash).not.toBe(read.nodeHash);
+    const fresh = await update.execute(context(), { nodeIds: ['target'], expectedNodeHash: detail.nodes[0].nodeHash,
+      promptEdit: { oldText: '尾部哨兵', newText: '模型改稿' } });
+    expect(fresh.status).toBe('success');
+    expect(useAppStore.getState().nodes[0].data.prompt).toBe(edited.replace('尾部哨兵', '模型改稿'));
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
+  it('标量指纹只对应一个目标，拒绝把它复用于多个节点', async () => {
+    setPrompt('原文');
+    const hash = await nodeVersion.getCanvasNodeHash(useAppStore.getState().nodes[0], 'p1');
+    useAppStore.setState((state) => ({ nodes: [...state.nodes, node('second', { prompt: '另一个节点' })] }));
+    const nodes = useAppStore.getState().nodes;
+    const result = await getAgentTool('canvas_update_nodes')!.execute(context(), {
+      nodeIds: ['target', 'second'], expectedNodeHash: hash, label: '不应改名',
+    });
+    expect(result).toMatchObject({ status: 'error', errorCode: 'NODE_CONTEXT_CHANGED' });
+    expect(useAppStore.getState().nodes).toBe(nodes);
+  });
+
   it('只替换唯一原文，保留超过 8000 字的原稿、范围外引用和首尾空白', async () => {
     const before = ` \n${'前文。'.repeat(1600)}@{ref:旧节点引用}待修改的唯一句${'尾文。'.repeat(1600)}\r\n\t `;
     setPrompt(before);
