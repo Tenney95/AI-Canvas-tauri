@@ -350,14 +350,12 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
       if (!runtime?.session || runtime.running || runtime.controller.signal.aborted) throw new Error('请先重新预览项目资产同步');
       runtime.session.context.assertCurrent();
       runtime.running = true;
-      let refresh = false;
       updateSync(ownerId, { stage: 'syncing', error: undefined, errorStage: undefined, progress: undefined });
       try {
         const { projectAssetSyncService } = await import('../services/fs/sharedAssetSync');
         runtime.session.context.assertCurrent();
         await projectAssetSyncService.deleteAsset(runtime.session, itemId);
         runtime.session.context.assertCurrent();
-        refresh = true;
       } catch (error) {
         if (syncRuns.get(ownerId) === runtime) updateSync(ownerId, { stage: runtime.controller.signal.aborted ? 'paused' : 'failed',
           error: runtime.controller.signal.aborted ? undefined : error instanceof Error ? error.message : '云端资产删除未完成，请重新预览',
@@ -368,7 +366,7 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
         if (syncRuns.get(ownerId) === runtime) syncRuns.delete(ownerId);
         runtime.controller.abort();
       }
-      if (refresh && currentOwner() === ownerId && get().currentProjectId === runtime.session.context.originProjectId) {
+      if (currentOwner() === ownerId && get().currentProjectId === runtime.session.context.originProjectId) {
         await get().previewSharedProjectSync(ownerId);
       }
     },
