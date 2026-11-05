@@ -6,7 +6,7 @@ import {
   getMinimaxMediaAccessHint,
 } from '../../src/services/ai/providers/minimaxModelManifest';
 import { resolveCanonicalVideoRequest } from '../../src/services/ai/videoRequestResolver';
-import { buildModelProtocolRequest, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
+import { buildModelProtocolRequest, resolveModelExecutionProfile, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
 import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
 import type { MediaReference } from '../../src/types/aiTypes';
 
@@ -65,7 +65,7 @@ describe('MiniMax 官方目录与协议', () => {
 
   it('官方生成与原任务查询合同完整匹配，后改协议、跨站身份和额外头均不能借用原生恢复', () => {
     const profile = resolveMinimaxExecutionProfile('MiniMax-H3')!;
-    const protocol = profile.protocol!;
+    const protocol = resolveModelExecutionProfile(profile)!;
     const poll = resolvePoll(MINIMAX_BASE_URL, protocol.poll!, protocol.auth, { submit: { task_id: 'original-task' } });
     expect(usesMinimaxResolvedVideoPoll(poll, 'original-task', MINIMAX_BASE_URL)).toBe(true);
     expect(usesMinimaxResolvedVideoPoll({ ...poll, intervalMs: 1, maxDurationMs: 999, retry: { maxRetries: 0 } }, 'original-task')).toBe(true);
