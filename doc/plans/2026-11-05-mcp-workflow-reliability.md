@@ -2,19 +2,19 @@
 
 目标：落实用户确认的生产场景优化，按项实现、中文独立提交；复用既有 Registry、Policy、项目／派生守卫、任务和媒体恢复机制。
 
-不新增依赖、不删除文件、不放松原生权限。本轮默认不运行测试、检查、构建或实机验收；用例留给用户执行。只读协议排查结论见 [MCP 控制模块](../MCP控制模块.md)，不替代本轮验收。
+不新增依赖、不删除文件、不放松原生权限。实现阶段按仓库默认不运行测试；2026-11-05 用户随后授权提交与测试，自动检查结果见下节，Tauri 实机验收仍待用户完成。只读协议排查结论见 [MCP 控制模块](../MCP控制模块.md)，不替代本轮验收。
 
 ## 阶段与状态
 
 | 项 | 范围与源码入口 | 状态 |
 |---|---|---|
-| 1 | `canvasTools.ts`：区分无筛选与零命中，增加名称精确／包含查找、名称索引和分页；不改变写工具的目标筛选规则 | 已实现并补用例，待用户验收 |
-| 2 | `canvasTools.ts`：当前节点长字段有界续读、精确原文替换；保留未读文本与原有提示词引用规则 | 已实现并补用例，待用户验收 |
-| 3 | 调用信封携带可选读取项目与版本，创建任务前及动态加载后核对；`canvasNodeVersion.ts`、`canvasTools.ts`、`shotlistTools.ts` 补完整编辑内容指纹，覆盖 UI 手改不递增版本的情况 | 项目／版本及 3B 内容指纹均已实现并补用例，待用户验收；两次扩展范围均已确认 |
-| 4 | `canvasTools.ts`、`generationService.ts`、`ai/generateAudio.ts`、`shotlistService.ts`：当前生成的取消信号沿既有 GenerationLease 传到各媒体／文本分支 | 已实现并补用例，待用户验收；范围已确认 |
-| 5 | `canvasTools.ts`：多个节点分别提交不同 patch，整批先校验、一次历史，逐项回执 | 已实现并补用例，待用户验收 |
-| 6 | 复用现有 AgentTask／媒体恢复，补付费与批量写的操作编号、幂等键和部分完成回执；不新增平行恢复系统 | 6A 持久绑定／查询及 6B 批量／媒体进度均已实现并补用例，待用户验收；11 份源码及计划范围已确认 |
-| 7 | `shotlistTools.ts`：按稳定 ID／镜号定点读取及字段投影，保留行／文字续读和原批量写 | 已实现并补用例，待用户验收 |
+| 1 | `canvasTools.ts`：区分无筛选与零命中，增加名称精确／包含查找、名称索引和分页；不改变写工具的目标筛选规则 | 已实现，定向自动测试通过，待 Tauri 实机验收 |
+| 2 | `canvasTools.ts`：当前节点长字段有界续读、精确原文替换；保留未读文本与原有提示词引用规则 | 已实现，定向自动测试通过，待 Tauri 实机验收 |
+| 3 | 调用信封携带可选读取项目与版本，创建任务前及动态加载后核对；`canvasNodeVersion.ts`、`canvasTools.ts`、`shotlistTools.ts` 补完整编辑内容指纹，覆盖 UI 手改不递增版本的情况 | 项目／版本及 3B 内容指纹均已实现，定向自动测试通过，待 Tauri 实机验收；两次扩展范围均已确认 |
+| 4 | `canvasTools.ts`、`generationService.ts`、`ai/generateAudio.ts`、`shotlistService.ts`：当前生成的取消信号沿既有 GenerationLease 传到各媒体／文本分支 | 已实现，定向自动测试通过，待 Tauri 实机验收；范围已确认 |
+| 5 | `canvasTools.ts`：多个节点分别提交不同 patch，整批先校验、一次历史，逐项回执 | 已实现，定向自动测试通过，待 Tauri 实机验收 |
+| 6 | 复用现有 AgentTask／媒体恢复，补付费与批量写的操作编号、幂等键和部分完成回执；不新增平行恢复系统 | 6A 持久绑定／查询及 6B 批量／媒体进度均已实现，定向自动测试通过，待 Tauri 实机验收；11 份源码及计划范围已确认 |
+| 7 | `shotlistTools.ts`：按稳定 ID／镜号定点读取及字段投影，保留行／文字续读和原批量写 | 已实现，定向自动测试通过，待 Tauri 实机验收 |
 
 每项仅提交本项源码、测试与计划状态；其他任务的共享资产／存储改动保留。涉及超过三份非测试／非多语言文件时，按仓库规则另行列明范围确认。
 
@@ -37,4 +37,16 @@
 - 已知提交版本随结果登记，不借用后来编辑或其他项目的 revision；结果后的回执失败／取消仍保留原提交版本。画布提交后的回执等待也不能把后来版本重新当作文件保存基线。生成租约因手改失效而本地取消时，即使 signal 未中止且无异步服务商任务，也按不确定结果核实。
 - 第 7 项：读取分散镜号、重复镜号、不存在 ID、交集、字段空数组、长对白续读；未请求的大字段不诱发续读，身份与绑定不串镜。
 
-定向命令在仓库根目录由用户执行：第 1 项 `npx vitest run tests/services/chat/canvasTools.test.ts`；第 2 项 `npx vitest run tests/services/chat/canvasPromptEditing.test.ts`；第 3 项 `npx vitest run tests/services/mcp/mcpToolCatalog.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/chat/agentToolExecution.test.ts`；第 3B 项 `npx vitest run tests/services/chat/canvasNodeVersion.test.ts tests/services/chat/canvasPromptEditing.test.ts tests/services/chat/canvasBatchUpdates.test.ts tests/services/chat/shotlistTools.test.ts`；第 4 项 `npx vitest run tests/services/chat/canvasRunNodesLease.test.ts tests/services/generationServiceReplicaLease.test.ts tests/services/chat/canvasTools.test.ts`；第 5 项 `npx vitest run tests/services/chat/canvasBatchUpdates.test.ts tests/services/chat/canvasTools.test.ts tests/services/chat/canvasPromptEditing.test.ts`；第 6A 项 `npx vitest run tests/services/mcp/mcpOperationService.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/mcp/mcpToolCatalog.test.ts tests/services/chat/agentTaskService.test.ts`；第 6B 项 `npx vitest run tests/services/mcp/mcpOperationService.test.ts tests/services/chat/canvasRunNodesLease.test.ts tests/services/chat/canvasBatchUpdates.test.ts tests/services/chat/mediaTools.test.ts`；第 7 项 `npx vitest run tests/services/chat/shotlistTools.test.ts`。其他项随实现补入准确文件。当前未执行任何测试。回退使用对应阶段的独立提交，不回滚项目数据或凭据。
+定向命令在仓库根目录由用户执行：第 1 项 `npx vitest run tests/services/chat/canvasTools.test.ts`；第 2 项 `npx vitest run tests/services/chat/canvasPromptEditing.test.ts`；第 3 项 `npx vitest run tests/services/mcp/mcpToolCatalog.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/chat/agentToolExecution.test.ts`；第 3B 项 `npx vitest run tests/services/chat/canvasNodeVersion.test.ts tests/services/chat/canvasPromptEditing.test.ts tests/services/chat/canvasBatchUpdates.test.ts tests/services/chat/shotlistTools.test.ts`；第 4 项 `npx vitest run tests/services/chat/canvasRunNodesLease.test.ts tests/services/generationServiceReplicaLease.test.ts tests/services/chat/canvasTools.test.ts`；第 5 项 `npx vitest run tests/services/chat/canvasBatchUpdates.test.ts tests/services/chat/canvasTools.test.ts tests/services/chat/canvasPromptEditing.test.ts`；第 6A 项 `npx vitest run tests/services/mcp/mcpOperationService.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/mcp/mcpToolCatalog.test.ts tests/services/chat/agentTaskService.test.ts`；第 6B 项 `npx vitest run tests/services/mcp/mcpOperationService.test.ts tests/services/chat/canvasRunNodesLease.test.ts tests/services/chat/canvasBatchUpdates.test.ts tests/services/chat/mediaTools.test.ts`；第 7 项 `npx vitest run tests/services/chat/shotlistTools.test.ts`。上述入口保留供复验。回退使用对应阶段的独立提交，不回滚项目数据或凭据。
+
+## 自动检查记录（2026-11-05）
+
+用户授权后，在仓库根目录实际执行：
+
+- `npx --no-install vitest run`，参数为上方各项测试文件去重后的 13 个完整路径：490 个用例全部通过，退出码 0，无未处理异步错误。
+- `npm run typecheck`、`npm run test:typecheck`：均退出码 0；测试文件调整后已复跑测试类型检查。
+- `npx --no-install eslint <本轮 30 份源码／测试文件> --max-warnings=0`：退出码 0；两个调整的测试文件已再次单独检查通过。
+
+验证中修正了两处测试准备时序：文件读取竞态用例等待真实读取开始后才模拟并发修改，并提前挂接拒绝断言；操作回执用例把完整 Store 的冷导入移至 `beforeEach`。保留真实 IndexedDB 并发事务、模块／数据库隔离及原有保护断言，没有修改生产源码、测试超时或重试策略。
+
+以上为定向前端自动检查，不等于全量 CI 或桌面验收。本次未执行生产构建、Rust 检查或 Tauri／真实 MCP 客户端交互验收；手工改稿、跨项目、断连／重启和真实媒体任务场景仍按上方步骤验收。未推送。

@@ -438,14 +438,21 @@ describe('canvas agent tools', () => {
     textFiles.desktop = true;
     useAppStore.setState({ nodes: [node('text', { type: 'ai-text', output: '原文', filePath: '/project/文稿.txt' })] });
     let finishRead!: (snapshot: AssetTextSnapshot) => void;
-    textFiles.read.mockImplementationOnce(() => new Promise<AssetTextSnapshot>((resolve) => { finishRead = resolve; }));
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    textFiles.read.mockImplementationOnce(() => new Promise<AssetTextSnapshot>((resolve) => {
+      finishRead = resolve;
+      readStarted();
+    }));
     const pending = getAgentTool('canvas_update_nodes')!.execute(context(), { nodeIds: ['text'], content: '旧请求新稿' });
+    const rejected = expect(pending).rejects.toThrow('已变化');
+    await started;
     if (change === 'project') useAppStore.setState({ currentProjectId: 'p2' });
     if (change === 'revision') useAppStore.getState().incrementRevision();
     if (change === 'output') useAppStore.getState().updateNodeDataTransient('text', { output: '用户继续编辑' });
     if (change === 'path') useAppStore.getState().updateNodeDataTransient('text', { filePath: '/project/已移动.txt' });
     finishRead(textSnapshot('原文'));
-    await expect(pending).rejects.toThrow('已变化');
+    await rejected;
     expect(textFiles.save).not.toHaveBeenCalled();
     expect(useAppStore.getState().nodes[0].data.output).not.toBe('旧请求新稿');
   });
@@ -458,14 +465,21 @@ describe('canvas agent tools', () => {
     ] });
     const revision = useAppStore.getState().getCurrentRevision();
     let finishRead!: (snapshot: AssetTextSnapshot) => void;
-    textFiles.read.mockImplementationOnce(() => new Promise<AssetTextSnapshot>((resolve) => { finishRead = resolve; }));
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    textFiles.read.mockImplementationOnce(() => new Promise<AssetTextSnapshot>((resolve) => {
+      finishRead = resolve;
+      readStarted();
+    }));
     const pending = getAgentTool('canvas_update_nodes')!.execute(context(), { nodeIds: ['file', 'draft'], content: '旧请求的新文' });
+    const rejected = expect(pending).rejects.toThrow('已变化');
+    await started;
     if (change === 'output') useAppStore.getState().updateNodeDataTransient('draft', { output: '用户继续编辑' });
     if (change === 'path') useAppStore.getState().updateNodeDataTransient('draft', { filePath: '/project/restored.txt' });
     if (change === 'type') useAppStore.getState().updateNodeDataTransient('draft', { type: 'ai-markdown' });
     expect(useAppStore.getState().getCurrentRevision()).toBe(revision);
     finishRead(textSnapshot('有文件原文'));
-    await expect(pending).rejects.toThrow('已变化');
+    await rejected;
     expect(textFiles.save).not.toHaveBeenCalled();
     expect(useAppStore.getState().nodes.find((entry) => entry.id === 'file')?.data.output).toBe('有文件原文');
     expect(useAppStore.getState().nodes.find((entry) => entry.id === 'draft')?.data.output)

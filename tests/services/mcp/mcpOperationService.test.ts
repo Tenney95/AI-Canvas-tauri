@@ -3,9 +3,11 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CreateAgentTaskInput } from '../../../src/store/store.agent';
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.stubGlobal('indexedDB', new IDBFactory());
   vi.resetModules();
+  // 完整 Store 的冷加载属于环境准备，不占用事务行为用例的时间预算。
+  await import('../../../src/store/useAppStore');
 });
 afterEach(() => vi.restoreAllMocks());
 
