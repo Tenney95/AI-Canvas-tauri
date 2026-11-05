@@ -129,6 +129,7 @@ export interface ToolResultSummary {
   toolId: string;
   status: 'success' | 'error' | 'denied';
   summary: string;
+  errorCode?: string;
   truncated: boolean;
   sources?: WebSource[];
 }

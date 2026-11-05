@@ -924,7 +924,7 @@ function queryNodes(input: QueryNodesInput): Node<BaseNodeData>[] {
       if (!value) return false;
       const candidate = normalizeName(value);
       return input.nameMatch === 'exact' ? candidate === name : candidate.includes(name);
-    }))));
+    })));
 }
 
 function splitsSurrogatePair(text: string, offset: number): boolean {
