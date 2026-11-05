@@ -276,7 +276,9 @@ export async function executeGeneration(
         || live.nodes.find((node) => node.id === nodeId)?.data !== store.nodes.find((node) => node.id === nodeId)?.data) {
         return { success: false, message: '画布或生成输入已变化，未提交预演请求' };
       }
-      await generateDirectorPrevis({ nodeId, description, model, provider: provider || '' });
+      if (lease) await assertLease();
+      await generateDirectorPrevis({ nodeId, description, model, provider: provider || '',
+        ...(lease ? { signal: lease.signal } : {}) });
       notify('镜头预演已生成，可打开导演台查看');
       return { success: true };
     } catch (error) {
@@ -357,7 +359,8 @@ export async function executeGeneration(
         && videoInputFingerprint({ ...currentVideo, data: { ...currentVideo.data, ...promptOverride } }, s) === videoFingerprint));
   };
 
-  const endOperation = mediaSubmission ? registerMediaNodeOperation(nodeId, true) : undefined;
+  // 文本和分镜也领取节点运行所有权，旧请求的取消收尾不能清掉新一轮的 loading。
+  const endOperation = registerMediaNodeOperation(nodeId, true);
   store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
   let batchNodeIds: string[] | undefined;
   let taskReceipt: MediaTaskReceipt | undefined;
@@ -393,14 +396,18 @@ export async function executeGeneration(
         if (cloudGuard) completeCanvasDerivation(cloudGuard);
         cloudGuard = guardedSubmission ? registerCanvasDerivation(useAppStore.getState(), nodeId) : null;
         notify(`正在批量生成 ${batchCount} 张图片`);
-        const batch = await generateImagesBatch({
+        const imageOptions = {
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
-        }, batchCount);
+        };
+        if (lease) await assertLease();
+        const batch = lease ? await generateImagesBatch(imageOptions, batchCount, lease.signal)
+          : await generateImagesBatch(imageOptions, batchCount);
         taskReceipt = batch.results.find((result) => result.taskReceipt)?.taskReceipt;
         comfyTaskId = batch.results.find((result) => result.comfyTaskId)?.comfyTaskId;
         if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);
+        if (lease) await assertLease();
         if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
         mediaDelivered = await applyImageBatchResults({
           nodeId,
@@ -486,20 +493,24 @@ export async function executeGeneration(
     } else if (nodeType === 'ai-panorama') {
       const imageSize = (data.imageSize as string) || '2K';
       const aspectRatio = (data.aspectRatio as string) || '2:1';
-      const result = await generateImage({
+      const imageOptions = {
         prompt: buildPanoramaPrompt(effectivePrompt), model: nodeModel, provider: nodeProvider,
         imageSize, aspectRatio, nodeId,
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
-      });
+      };
+      if (lease) await assertLease();
+      const result = lease ? await generateImage(imageOptions, lease.signal) : await generateImage(imageOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
       if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);
+      if (lease) await assertLease();
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       if (taskReceipt) store.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
       const signal = beginMediaSaving();
       const persisted = submittingProjectId
         ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-panorama', data.label, { mediaDownloadAccess: result.mediaDownloadAccess, signal })
         : { mediaUrl: result.url, sourceUrl: result.url };
+      if (lease) await assertLease();
       if (!isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       const mediaUrl = persisted.mediaUrl;
       updateResult(nodeId, {
@@ -598,7 +609,7 @@ export async function executeGeneration(
       }, true);
       notify('视频生成完成');
     } else if (nodeType === 'ai-audio') {
-      const result = await generateAudio({
+      const audioOptions = {
         prompt: effectivePrompt,
         model: nodeModel,
         provider: nodeProvider,
@@ -614,16 +625,21 @@ export async function executeGeneration(
         nodeId,
         workflowId,
         workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
-      });
+      };
+      if (lease) await assertLease();
+      const result = lease ? await generateAudio(audioOptions, lease.signal) : await generateAudio(audioOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
       if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);
+      if (lease) await assertLease();
       if (!isStillCurrentSubmission()) {
         if (result.url.startsWith('blob:')) URL.revokeObjectURL(result.url);
         return { success: false, message: '任务已取消' };
       }
       if (taskReceipt) store.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
-      const persisted = await persistAudioGenerationResult(result, submittingProjectId, data.label);
+      const persisted = lease ? await persistAudioGenerationResult(result, submittingProjectId, data.label, beginMediaSaving())
+        : await persistAudioGenerationResult(result, submittingProjectId, data.label);
+      if (lease) await assertLease();
       if (guardedSubmission && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       if (persisted.persistence === 'failed') throw new Error('音频已生成，但保存失败；请继续保存原结果');
       updateResult(nodeId, {
@@ -655,13 +671,19 @@ export async function executeGeneration(
       if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       notify('音频生成完成');
     } else if (nodeType === 'ai-shotlist') {
-      await generateShotlistRows(nodeId, effectivePrompt, nodeModel, nodeProvider);
+      if (lease) {
+        await assertLease();
+        await generateShotlistRows(nodeId, effectivePrompt, nodeModel, nodeProvider, lease.signal);
+      } else await generateShotlistRows(nodeId, effectivePrompt, nodeModel, nodeProvider);
     } else {
       const textSource = prepareDramaExtractPrompt(rawPrompt, data.output);
       if (textSource !== rawPrompt) effectivePrompt = resolveProjectGenerationPrompt({
         prompt: textSource, data, settings: projectSettings, customStyles: store.customStyles,
       });
-      const result = await generateText({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider });
+      if (lease) await assertLease();
+      const result = await generateText({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
+        ...(lease ? { signal: lease.signal } : {}) });
+      if (lease) await assertLease();
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       const processed = postProcessDramaExtractOutput(effectivePrompt, result);
       if (!processed.ok) throw new Error(processed.error);
@@ -728,8 +750,15 @@ export async function executeGeneration(
     if (comfyTaskId) pauseComfyNodeDelivery(nodeId, comfyTaskId, isStillCurrentSubmission, comfyDeliveryError);
     if (savingSignal) cleanupNodePolling(nodeId, savingSignal);
     const current = useAppStore.getState();
+    const currentNode = current.nodes.find((node) => node.id === nodeId);
+    const leaseRevoked = Boolean(lease && (!leaseValid || lease.signal?.aborted));
+    if (leaseRevoked && endOperation.isCurrent?.()
+      && current.currentProjectId === submittingProjectId && currentNode?.data.status === 'loading') {
+      // 只结束本地等待；回执与已写文件继续保留，不能据此承诺远端任务已取消。
+      current.updateNodeDataTransient(nodeId, { status: 'idle', error: undefined });
+    }
     const currentVideo = hasProtectedVideoInputs ? current.nodes.find((node) => node.id === nodeId) : undefined;
-    if (videoOwner && videoSubmissionOwners.get(submissionKey) === videoOwner
+    if (!leaseRevoked && videoOwner && videoSubmissionOwners.get(submissionKey) === videoOwner
       && current.currentProjectId === submittingProjectId && currentVideo?.data.status === 'loading'
       && (!cloudGuard || !isCanvasDerivationFresh(cloudGuard, current)
         || videoInputFingerprint({ ...currentVideo, data: { ...currentVideo.data, ...promptOverride } }, current) !== videoFingerprint)) {

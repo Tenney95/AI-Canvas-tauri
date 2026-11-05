@@ -22,7 +22,7 @@ import type {
 } from '../../../types/agent';
 import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
 import type { CommandId, CommandPlan } from '../../../types/chat';
-import { executeGeneration } from '../../generationService';
+import { executeGeneration, type GenerationLease } from '../../generationService';
 import {
   getProjectModelKind,
   parseProjectModelRef,
@@ -836,6 +836,23 @@ function resolveTargetIds(input: NodeTargetInput): string[] {
     if (matches) matched.add(node.id);
   }
   return [...matched];
+}
+
+/** 仅在本次调用内保留生成输入；状态、产物和批次分组变化不撤销自身的生成租约。 */
+function generationInputSnapshot(data: BaseNodeData, projectSettings: unknown): string {
+  return JSON.stringify([
+    data.type, data.prompt, TEXT_OUTPUT_NODE_TYPES.has(data.type) ? data.output : undefined,
+    data.model, data.provider, data.workflowId, data.workflowInputs, data.runninghubModelParameters,
+    data.comfyRefmods, data.comfyH3MemoryPreset, data.imageSize, data.imageQuality, data.imageBackground,
+    data.aspectRatio, data.batchCount, data.cameraSettings, data.videoResolution, data.videoFps, data.videoFrames,
+    data.seedanceResolution, data.seedanceRatio, data.seedanceDuration, data.generateAudio, data.videoReferences,
+    data.animationAction, data.animationFrames, data.animationProcessing, data.animationEdits,
+    data.audioVoice, data.audioSpeechSettings, data.audioFormat, data.audioSpeed, data.audioPurpose,
+    data.musicTitle, data.musicLyrics, data.musicBpm, data.musicDuration, data.autoGenerateLyrics, data.style,
+    data.shotlistRows, data.shotlistColumns, data.shotlistCinematography,
+    data.directorRuntimeKind, data.directorInstanceId, data.directorPrevisPrompt, data.directorPrevisModel,
+    data.directorPrevisProvider, projectSettings,
+  ]);
 }
 
 function queryNodes(input: QueryNodesInput): Node<BaseNodeData>[] {
@@ -2345,6 +2362,10 @@ export function registerCanvasAgentTools(): Array<() => void> {
           const message = `宫格分镜是已有图片的裁切结果，不能运行生成（${storyboardCount} 个无效节点）`;
           return { status: 'error', summary: message, modelContent: message };
         }
+        const initial = useAppStore.getState();
+        const settings = initial.projects.find((project) => project.id === context.projectId)?.settings;
+        const inputs = new Map(initial.nodes.filter((node) => targetIds.includes(node.id))
+          .map((node) => [node.id, generationInputSnapshot(node.data, settings)]));
         const results: Array<{ nodeId: string; status: string; message?: string }> = [];
         for (const nodeId of targetIds) {
           if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -2373,7 +2394,20 @@ export function registerCanvasAgentTools(): Array<() => void> {
             results.push({ nodeId, status: 'failed', message: issue });
             continue;
           }
-          const result = await executeGeneration(nodeId);
+          const lease: GenerationLease = { signal: context.signal, assertFresh: () => {
+            if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
+            const current = useAppStore.getState();
+            const live = current.nodes.find((candidate) => candidate.id === nodeId);
+            const currentSettings = current.projects.find((project) => project.id === context.projectId)?.settings;
+            if (current.currentProjectId !== context.projectId || !live
+              || generationInputSnapshot(live.data, currentSettings) !== inputs.get(nodeId)) {
+              throw new Error('项目或节点生成输入已变化，请重新查询后运行');
+            }
+          } };
+          // 生成自身会创建批次节点并增加 revision，不能用整次调用的旧 revision 取消它。
+          await lease.assertFresh();
+          const result = await executeGeneration(nodeId, undefined, undefined, undefined, lease);
+          if (context.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
           // 生成期间用户可能切走项目，后续节点不能再往这张画布写
           if (useAppStore.getState().currentProjectId !== context.projectId) {
             results.push({ nodeId, status: 'aborted', message: '生成期间项目已切换' });

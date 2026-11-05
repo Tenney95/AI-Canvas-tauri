@@ -9,23 +9,29 @@ const mocks = vi.hoisted(() => ({
     workflows: [], projects: [], customStyles: [], updateNodeDataTransient: vi.fn(), updateNodeData: vi.fn(),
     recordOutputHistory: vi.fn(), showToast: vi.fn() },
   generate: vi.fn(), persist: vi.fn(), guardFresh: true, completeGuard: vi.fn(),
-  image: vi.fn(), audio: vi.fn(), persistAudio: vi.fn(), completeComfy: vi.fn(), pauseComfy: vi.fn(),
-  completeMedia: vi.fn(), pauseMedia: vi.fn(() => new Error('任务已保留')), endOperation: vi.fn(), prepareMedia: vi.fn(),
+  image: vi.fn(), imageBatch: vi.fn(), audio: vi.fn(), text: vi.fn(), shotlist: vi.fn(), director: vi.fn(),
+  prepareBatch: vi.fn(), applyBatch: vi.fn(), persistAudio: vi.fn(), completeComfy: vi.fn(), pauseComfy: vi.fn(),
+  completeMedia: vi.fn(), pauseMedia: vi.fn(() => new Error('任务已保留')), endOperation: vi.fn(), registerOperation: vi.fn(), prepareMedia: vi.fn(),
   tasks: [] as Array<import('../../src/services/pollManager').PendingTask>,
   polling: new Map<string, { controller: AbortController; signal: AbortSignal }>(),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
 vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'test-id', derivedNodePlacement: vi.fn() }));
-vi.mock('../../src/services/aiService', () => ({ generateVideo: mocks.generate, generateImage: mocks.image, generateAudio: mocks.audio }));
+vi.mock('../../src/services/aiService', () => ({ generateVideo: mocks.generate, generateImage: mocks.image,
+  generateImagesBatch: mocks.imageBatch, generateAudio: mocks.audio, generateText: mocks.text,
+  buildPanoramaPrompt: (prompt: string) => prompt }));
 vi.mock('../../src/services/ai/generateAudio', () => ({ persistAudioGenerationResult: mocks.persistAudio }));
 vi.mock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: mocks.persist }));
-vi.mock('../../src/services/imageBatchService', () => ({ applyImageBatchResults: vi.fn(), failImageBatchNodes: vi.fn(), prepareImageBatchNodes: vi.fn() }));
+vi.mock('../../src/services/imageBatchService', () => ({ applyImageBatchResults: mocks.applyBatch,
+  failImageBatchNodes: vi.fn(), prepareImageBatchNodes: mocks.prepareBatch }));
 vi.mock('../../src/services/projectSettingsService', () => ({ getProjectModelKind: () => 'video', parseProjectModelRef: () => undefined,
   resolveProjectGenerationPrompt: ({ prompt }: { prompt: string }) => prompt }));
-vi.mock('../../src/services/dramaAssetExtract', () => ({ postProcessDramaExtractOutput: vi.fn() }));
+vi.mock('../../src/services/dramaAssetExtract', () => ({ postProcessDramaExtractOutput: vi.fn(),
+  prepareDramaExtractPrompt: (prompt: string) => prompt }));
 vi.mock('@tauri-apps/api/core', () => ({ convertFileSrc: vi.fn() }));
 vi.mock('../../src/services/ai/videoRequestResolver', () => ({ resolveVideoSubmissionControls: (options: { seedanceDuration?: number }) => ({ seedanceDuration: options.seedanceDuration }) }));
-vi.mock('../../src/services/shotlistService', () => ({ generateShotlistRows: vi.fn() }));
+vi.mock('../../src/services/shotlistService', () => ({ generateShotlistRows: mocks.shotlist }));
+vi.mock('../../src/services/directorPrevisService', () => ({ generateDirectorPrevis: mocks.director }));
 vi.mock('../../src/services/workflowExecutionService', () => ({ isCloudWorkflow: () => false, getCloudWorkflowPersistedOutput: () => undefined }));
 vi.mock('../../src/services/workflowApi/workflowApiAdapter', () => ({ completeWorkflowApiNodeTask: vi.fn() }));
 vi.mock('../../src/services/ai/providers/runninghubWorkflow', () => ({ completeRunningHubNodeTask: vi.fn() }));
@@ -34,7 +40,7 @@ vi.mock('../../src/services/canvasDerivationGuard', () => ({ registerCanvasDeriv
 vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint: () => 'video-fingerprint' }));
 vi.mock('../../src/services/pollManager', () => ({
   prepareMediaNodeGeneration: mocks.prepareMedia, completeMediaNodeTask: mocks.completeMedia, pauseMediaTask: mocks.pauseMedia,
-  registerMediaNodeOperation: () => mocks.endOperation,
+  registerMediaNodeOperation: mocks.registerOperation,
   registerNodePolling: vi.fn((nodeId: string, parentSignal?: AbortSignal) => {
     mocks.polling.get(nodeId)?.controller.abort();
     const controller = new AbortController();
@@ -83,6 +89,10 @@ beforeEach(() => {
   mocks.generate.mockReset().mockResolvedValue({ url: 'generated.mp4' });
   mocks.persist.mockReset().mockResolvedValue({ mediaUrl: 'saved.mp4', sourceUrl: 'generated.mp4', filePath: 'saved.mp4' });
   mocks.store.recordOutputHistory.mockReset().mockResolvedValue(undefined);
+  mocks.store.updateNodeDataTransient.mockReset();
+  mocks.registerOperation.mockReset().mockReturnValue(Object.assign(mocks.endOperation, { isCurrent: () => true }));
+  mocks.prepareBatch.mockReset().mockReturnValue({ nodeIds: ['video', 'copy'], batchGroupId: 'batch' });
+  mocks.applyBatch.mockReset().mockResolvedValue(true);
 });
 
 describe('节点视频生成的宿主任务租约', () => {
@@ -344,5 +354,134 @@ describe('跨媒体异步任务交付确认', () => {
     expect((await pending).success).toBe(false);
     expect(mocks.completeMedia).not.toHaveBeenCalled();
     expect(mocks.pauseMedia).toHaveBeenCalledWith(receipt, undefined, 'canvas_changed');
+  });
+});
+
+describe('宿主租约覆盖所有节点生成分支', () => {
+  const branches = [
+    { name: '批量图片', type: 'ai-image', provider: 'comfyui', workflowId: 'wf', batchCount: 2, spy: mocks.imageBatch, signalIndex: 2 },
+    { name: '全景图', type: 'ai-panorama', provider: 'comfyui', workflowId: 'wf', spy: mocks.image, signalIndex: 1 },
+    { name: '音频', type: 'ai-audio', provider: 'comfyui', workflowId: 'wf', spy: mocks.audio, signalIndex: 1 },
+    { name: '文本', type: 'ai-text', provider: 'general', spy: mocks.text },
+    { name: '分镜', type: 'ai-shotlist', provider: 'general', spy: mocks.shotlist, signalIndex: 4 },
+    { name: '导演预演', type: 'ai-director', provider: 'general', spy: mocks.director },
+  ] as const;
+
+  it.each(branches)('$name 请求继承外部信号，取消后不写结果或失败历史', async (branch) => {
+    const controller = new AbortController();
+    const response = deferred<never>();
+    branch.spy.mockReset().mockReturnValueOnce(response.promise);
+    mocks.store.nodes = [{ id: 'video', data: { ...data(), type: branch.type, provider: branch.provider,
+      ...('workflowId' in branch ? { workflowId: branch.workflowId } : {}),
+      ...('batchCount' in branch ? { batchCount: branch.batchCount } : {}),
+      ...(branch.type === 'ai-director' ? { directorRuntimeKind: 'ai-threejs' } : {}),
+    } }];
+    const pending = run({ signal: controller.signal, assertFresh: vi.fn() });
+    await vi.waitFor(() => expect(branch.spy).toHaveBeenCalledOnce());
+    const args = branch.spy.mock.calls[0];
+    expect('signalIndex' in branch ? args[branch.signalIndex] : args[0].signal).toBe(controller.signal);
+    controller.abort();
+    response.reject(new DOMException('Provider cancelled', 'AbortError'));
+    expect((await pending).success).toBe(false);
+    expectNoCommit();
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(mocks.persistAudio).not.toHaveBeenCalled();
+  });
+
+  it('音频保存继承生成租约，取消保存后不确认或覆盖原任务', async () => {
+    const controller = new AbortController();
+    const receipt = { projectId: 'p', nodeId: 'video', taskId: 'audio-original', attemptId: 'first' };
+    mocks.store.nodes = [{ id: 'video', data: { ...data(), type: 'ai-audio', provider: 'comfyui', workflowId: 'wf' } }];
+    mocks.audio.mockReset().mockResolvedValue({ url: 'remote.wav', taskReceipt: receipt });
+    mocks.persistAudio.mockReset().mockImplementationOnce((_result, _projectId, _label, signal?: AbortSignal) => (
+      new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true }))
+    ));
+    const pending = run({ signal: controller.signal, assertFresh: vi.fn() });
+    await vi.waitFor(() => expect(mocks.persistAudio).toHaveBeenCalledOnce());
+    const signal = mocks.persistAudio.mock.calls[0][3] as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    controller.abort();
+    expect((await pending).success).toBe(false);
+    expect(signal.aborted).toBe(true);
+    expect(mocks.audio).toHaveBeenCalledOnce();
+    expect(mocks.completeMedia).not.toHaveBeenCalled();
+    expect(mocks.pauseMedia).toHaveBeenCalledWith(receipt, expect.any(Error), 'delivery_pending');
+    expectNoCommit();
+  });
+
+  it.each(['signal', 'input'] as const)('%s 撤销本轮租约后收回 loading，保留原回执', async (reason) => {
+    const controller = new AbortController();
+    const response = deferred<{ url: string; taskReceipt: { projectId: string; nodeId: string; taskId: string; attemptId: string } }>();
+    const receipt = { projectId: 'p', nodeId: 'video', taskId: 'original', attemptId: 'first' };
+    mocks.store.nodes[0].data.prompt = '@refmod 原输入';
+    const originalPrompt = mocks.store.nodes[0].data.prompt;
+    mocks.store.updateNodeDataTransient.mockImplementation((nodeId: string, patch: Partial<BaseNodeData>) => {
+      mocks.store.nodes = mocks.store.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node);
+    });
+    mocks.generate.mockReturnValueOnce(response.promise);
+    const pending = run({ signal: controller.signal, assertFresh: () => {
+      if (mocks.store.nodes[0].data.prompt !== originalPrompt) throw new Error('生成输入已变化');
+    } });
+    await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledOnce());
+    expect(mocks.store.nodes[0].data.status).toBe('loading');
+    mocks.guardFresh = false;
+    if (reason === 'signal') controller.abort();
+    else mocks.store.updateNodeDataTransient('video', { prompt: '用户的新输入' });
+    response.resolve({ url: 'remote.mp4', taskReceipt: receipt });
+    expect((await pending).success).toBe(false);
+    expect(mocks.store.nodes[0].data.status).toBe('idle');
+    expect(mocks.pauseMedia).toHaveBeenCalledWith(receipt, expect.any(Error), 'delivery_pending');
+    expect(mocks.completeMedia).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expectNoCommit();
+  });
+
+  it('文本请求取消也结束本轮 loading，不写失败历史', async () => {
+    const controller = new AbortController();
+    const response = deferred<string>();
+    mocks.store.nodes = [{ id: 'video', data: { ...data(), type: 'ai-text' } }];
+    mocks.store.updateNodeDataTransient.mockImplementation((nodeId: string, patch: Partial<BaseNodeData>) => {
+      mocks.store.nodes = mocks.store.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node);
+    });
+    mocks.text.mockReset().mockReturnValueOnce(response.promise);
+    const pending = run({ signal: controller.signal, assertFresh: vi.fn() });
+    await vi.waitFor(() => expect(mocks.text).toHaveBeenCalledOnce());
+    controller.abort();
+    response.reject(new DOMException('Provider cancelled', 'AbortError'));
+    expect((await pending).success).toBe(false);
+    expect(mocks.store.nodes[0].data.status).toBe('idle');
+    expectNoCommit();
+  });
+
+  it('旧请求取消收尾不清掉新请求拥有的 loading', async () => {
+    const controller = new AbortController();
+    const oldResponse = deferred<{ url: string }>();
+    const newResponse = deferred<{ url: string }>();
+    let oldOwnsNode = true;
+    const oldOwner = Object.assign(vi.fn(), { isCurrent: () => oldOwnsNode });
+    const newOwner = Object.assign(vi.fn(), { isCurrent: () => true });
+    mocks.registerOperation.mockReset().mockReturnValueOnce(oldOwner).mockImplementationOnce(() => {
+      oldOwnsNode = false;
+      return newOwner;
+    });
+    mocks.store.updateNodeDataTransient.mockImplementation((nodeId: string, patch: Partial<BaseNodeData>) => {
+      mocks.store.nodes = mocks.store.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node);
+    });
+    mocks.generate.mockReturnValueOnce(oldResponse.promise).mockReturnValueOnce(newResponse.promise);
+    const oldPending = run({ signal: controller.signal, assertFresh: vi.fn() });
+    await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(1));
+    controller.abort();
+    const newPending = run({ signal: new AbortController().signal, assertFresh: vi.fn() });
+    await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(2));
+    mocks.store.updateNodeDataTransient.mockClear();
+    oldResponse.resolve({ url: 'old.mp4' });
+    expect((await oldPending).success).toBe(false);
+    expect(mocks.store.nodes[0].data.status).toBe('loading');
+    expect(mocks.store.updateNodeDataTransient).not.toHaveBeenCalled();
+    expect(oldOwner).toHaveBeenCalledOnce();
+    expect(newOwner).not.toHaveBeenCalled();
+    newResponse.resolve({ url: 'new.mp4' });
+    expect((await newPending).success).toBe(true);
+    expect(newOwner).toHaveBeenCalledOnce();
   });
 });

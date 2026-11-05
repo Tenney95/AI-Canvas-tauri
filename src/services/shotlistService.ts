@@ -153,7 +153,8 @@ export function createEpisodeShotlist(scope: ShotlistScope, episodeId: string) {
 }
 
 /** 通用节点执行与节点弹窗共用；生成期间改表、删节点或切项目均拒绝覆盖。 */
-export async function generateShotlistRows(nodeId: string, prompt: string, model: string, provider: string) {
+export async function generateShotlistRows(nodeId: string, prompt: string, model: string, provider: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const state = useAppStore.getState();
   const scope = { projectId: state.currentProjectId ?? '' };
   const { node, rows: previous } = getShotlist(scope, nodeId);
@@ -162,7 +163,9 @@ export async function generateShotlistRows(nodeId: string, prompt: string, model
   const guard = registerCanvasDerivation(state, nodeId);
   if (!guard) throw new Error('分镜生成上下文已失效');
   try {
-    const result = await generateText({ prompt: buildShotlistGenerationPrompt(prompt, columns), model, provider, nodeId });
+    const result = await generateText({ prompt: buildShotlistGenerationPrompt(prompt, columns), model, provider, nodeId,
+      ...(signal ? { signal } : {}) });
+    signal?.throwIfAborted();
     const current = useAppStore.getState();
     const latest = current.nodes.find((item) => item.id === nodeId);
     if (!isCanvasDerivationFresh(guard, current)

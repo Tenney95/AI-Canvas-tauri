@@ -97,14 +97,16 @@ function buildSafeAudioFileName(label: string, format: string): string {
 
 /**
  * 把同步 TTS 二进制或异步远程音频统一保存为节点可持久化的结果。
- * 落盘失败不会抛出，但会如实记在 persistence/persistError 上：调用方必须区分
+ * 落盘失败不会抛出（取消除外），但会如实记在 persistence/persistError 上：调用方必须区分
  * 「生成成功」和「已保存到项目」，否则临时地址失效后产物就打不开了。
  */
 export async function persistAudioGenerationResult(
   result: AudioGenerationResult,
   projectId: string | null | undefined,
   label: string,
+  signal?: AbortSignal,
 ): Promise<PersistedAudioGenerationResult> {
+  signal?.throwIfAborted();
   const cloud = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url);
   if (cloud) return cloud;
   const shouldPersist = !!projectId && isTauriEnv();
@@ -119,12 +121,16 @@ export async function persistAudioGenerationResult(
             buildSafeAudioFileName(label, result.format || 'wav'),
           )
         : await persistMediaUrlToProjectData(result.url, projectId!, 'ai-audio', label,
-          result.mediaDownloadAccess ? { mediaDownloadAccess: result.mediaDownloadAccess } : undefined);
+          result.mediaDownloadAccess || signal ? { ...(result.mediaDownloadAccess ? { mediaDownloadAccess: result.mediaDownloadAccess } : {}),
+            ...(signal ? { signal } : {}) } : undefined);
       if (!saved?.filePath) persistError = AUDIO_PERSIST_FAILED_MESSAGE;
     } catch (error) {
+      if (signal?.aborted) throw error;
       persistError = error instanceof Error ? error.message : AUDIO_PERSIST_FAILED_MESSAGE;
     }
   }
+  // 二进制写入开始后无法撤销；只阻止取消后的交付，不删除已写入的项目文件。
+  signal?.throwIfAborted();
 
   const mediaUrl = saved?.assetUrl || result.url;
   // 只有落盘成功才回收 blob，失败时保留它，用户仍能在本次会话里重试保存

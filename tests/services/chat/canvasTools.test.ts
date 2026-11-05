@@ -1859,7 +1859,8 @@ describe('canvas agent tools', () => {
     const payload = JSON.parse(result.modelContent);
 
     expect(executeGeneration).toHaveBeenCalledTimes(1);
-    expect(executeGeneration).toHaveBeenCalledWith('n2');
+    expect(executeGeneration).toHaveBeenCalledWith('n2', undefined, undefined, undefined,
+      expect.objectContaining({ signal: expect.any(AbortSignal), assertFresh: expect.any(Function) }));
     expect(payload.results).toEqual([
       { nodeId: 'n1', status: 'skipped', message: '节点正在生成中' },
       { nodeId: 'n2', status: 'success', message: undefined },
