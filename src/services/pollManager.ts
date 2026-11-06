@@ -48,6 +48,18 @@ import { isHistoryMediaDownloadPending } from './historyMediaRecovery';
 
 type MediaMessageRecoveryHandler = (task: PendingTask, urls: string[], signal?: AbortSignal) => Promise<void>;
 
+const EMPTY_MEDIA_TASK_SNAPSHOT: readonly MediaTaskSnapshot[] = Object.freeze([]);
+
+function createMediaTaskSnapshotState() {
+  return {
+    tasks: EMPTY_MEDIA_TASK_SNAPSHOT,
+    serialized: undefined as string | null | undefined,
+    messageIdentities: new Set<string>(),
+    refresh: undefined as Promise<void> | undefined,
+    storageListener: undefined as ((event: StorageEvent) => void) | undefined,
+  };
+}
+
 function createPollManagerRuntime() {
   return {
     abortControllers: new Map<string, Pick<AbortController, 'signal' | 'abort'>>(),
@@ -59,6 +71,7 @@ function createPollManagerRuntime() {
     latestMediaOperationOwners: new Map<string, symbol>(),
     mediaMessageRecoveryHandler: undefined as MediaMessageRecoveryHandler | undefined,
     mediaTaskListeners: new Set<() => void>(),
+    mediaTaskSnapshot: createMediaTaskSnapshotState(),
     runninghubMessageWaiters: new Map<string, () => void>(),
     workflowApiMessageWaiters: new Map<string, () => void>(),
     // 只描述本进程仍在消费的交付操作，不作为任务或画布写入授权。
@@ -72,6 +85,7 @@ function createPollManagerRuntime() {
 export function createOrReusePollManagerRuntime(hotData?: { pollManagerRuntime?: ReturnType<typeof createPollManagerRuntime> }) {
   const runtime = hotData?.pollManagerRuntime ?? createPollManagerRuntime();
   runtime.latestMediaOperationOwners ??= new Map();
+  runtime.mediaTaskSnapshot ??= createMediaTaskSnapshotState();
   // 依赖重新求值时不保证先触发 dispose，首次载入就要保留引用。
   if (hotData) hotData.pollManagerRuntime = runtime;
   return runtime;
@@ -81,9 +95,47 @@ const runtime = createOrReusePollManagerRuntime(import.meta.hot?.data);
 const { abortControllers, videoResumePromises, mediaResumeOutcomes, mediaTaskContexts, mediaTaskObservers,
   activeMediaOperations, latestMediaOperationOwners, mediaTaskListeners, runninghubMessageWaiters, workflowApiMessageWaiters,
   activeComfyDeliveries, comfyDeliveryListeners, pausedErrors } = runtime;
+/** 展示只读投影；恢复/取消/保存仍须通过 loadAll 复核原任务。 */
+export function getMediaTaskSnapshot(): readonly MediaTaskSnapshot[] {
+  return runtime.mediaTaskSnapshot.tasks;
+}
+
+export function hasPendingMessageMediaTask(projectId: string, conversationId: string, messageId: string): boolean {
+  const identities = runtime.mediaTaskSnapshot.messageIdentities;
+  return identities.has(JSON.stringify([projectId, conversationId, messageId]))
+    || identities.has(JSON.stringify([projectId, null, messageId]));
+}
+
+/** 同一批挂载只读一次账本；不在 React getSnapshot 或渲染期间迁移存储。 */
+export function initializeMediaTaskSnapshot(): Promise<void> {
+  const snapshot = runtime.mediaTaskSnapshot;
+  snapshot.refresh ??= Promise.resolve().then(() => {
+    loadAll();
+    mediaTaskListeners.forEach((listener) => listener());
+  }).finally(() => { snapshot.refresh = undefined; });
+  return snapshot.refresh;
+}
+
 export function subscribeMediaTasks(listener: () => void): () => void {
+  const firstSubscriber = mediaTaskListeners.size === 0;
   mediaTaskListeners.add(listener);
-  return () => { mediaTaskListeners.delete(listener); };
+  // HMR 可能保留旧版本的订阅者，不能只在 listeners 从 0 变为 1 时补上初始化。
+  if (!runtime.mediaTaskSnapshot.storageListener && typeof window !== 'undefined') {
+    runtime.mediaTaskSnapshot.storageListener = (event) => {
+      if ((event.storageArea === null || event.storageArea === localStorage)
+        && (event.key === null || event.key === STORAGE_KEY)) void initializeMediaTaskSnapshot();
+    };
+    window.addEventListener('storage', runtime.mediaTaskSnapshot.storageListener);
+  }
+  if (firstSubscriber || runtime.mediaTaskSnapshot.serialized === undefined) void initializeMediaTaskSnapshot();
+  return () => {
+    mediaTaskListeners.delete(listener);
+    const storageListener = runtime.mediaTaskSnapshot.storageListener;
+    if (mediaTaskListeners.size === 0 && storageListener && typeof window !== 'undefined') {
+      window.removeEventListener('storage', storageListener);
+      runtime.mediaTaskSnapshot.storageListener = undefined;
+    }
+  };
 }
 
 /** 一个任务查询失联时停止同批的本地查询，明确失败则继续收齐其余终态。 */
@@ -232,6 +284,15 @@ export interface PendingTask {
   comfyRecoveryState?: 'disconnected' | 'cancel_pending' | 'save_pending' | 'output_unavailable';
   /** 仅保留可识别的查询鉴权状态，不保存上游错误正文、地址或凭据。 */
   comfyQueryHttpStatus?: 401 | 403;
+}
+
+/** UI 恢复提示的最小身份与状态；不含查询协议、下载授权、URL 或生成参数。 */
+export interface MediaTaskSnapshot extends Readonly<Pick<PendingTask,
+  'projectId' | 'nodeId' | 'taskId' | 'attemptId' | 'submitted' | 'mediaRecoveryState'
+  | 'mediaSubmissionUncertain' | 'expectedImageOutputs'>> {
+  readonly mediaContext?: Readonly<Pick<MediaTaskContext, 'conversationId' | 'messageId'>>;
+  readonly imageOutputNodeIds?: readonly string[];
+  readonly historyDownloadPending: boolean;
 }
 
 // ═══════════════════════════════════════════
@@ -812,25 +873,56 @@ function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
   };
 }
 
+function updateMediaTaskSnapshot(tasks: PendingTask[], serialized: string | null): void {
+  const snapshot = runtime.mediaTaskSnapshot;
+  if (snapshot.serialized === serialized) return;
+  snapshot.serialized = serialized;
+  const key = (task: MediaTaskReceipt) => JSON.stringify([task.projectId, task.nodeId, task.attemptId]);
+  const previous = new Map(snapshot.tasks.map((task) => [key(task), task]));
+  const next = tasks.map((task): MediaTaskSnapshot => {
+    const view: MediaTaskSnapshot = {
+      projectId: task.projectId, nodeId: task.nodeId, taskId: task.taskId, attemptId: task.attemptId,
+      submitted: task.submitted, mediaRecoveryState: task.mediaRecoveryState,
+      mediaSubmissionUncertain: task.mediaSubmissionUncertain, expectedImageOutputs: task.expectedImageOutputs,
+      ...(task.mediaContext ? { mediaContext: Object.freeze({ conversationId: task.mediaContext.conversationId,
+        messageId: task.mediaContext.messageId }) } : {}),
+      ...(task.imageOutputNodeIds ? { imageOutputNodeIds: Object.freeze([...task.imageOutputNodeIds]) } : {}),
+      historyDownloadPending: isHistoryMediaDownloadPending(task),
+    };
+    const old = previous.get(key(task));
+    return old && JSON.stringify(old) === JSON.stringify(view) ? old : Object.freeze(view);
+  });
+  if (next.length === snapshot.tasks.length && next.every((task, index) => task === snapshot.tasks[index])) return;
+  snapshot.tasks = Object.freeze(next);
+  snapshot.messageIdentities = new Set(next.filter((task) => task.mediaContext?.messageId)
+    .map((task) => JSON.stringify([task.projectId, task.mediaContext?.conversationId || null, task.mediaContext?.messageId])));
+}
+
 function loadAll(): PendingTask[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
+    if (!raw) { updateMediaTaskSnapshot([], null); return []; }
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) { updateMediaTaskSnapshot([], raw); return []; }
     const tasks = parsed
       .filter((item): item is LegacyPendingTask => !!item && typeof item === 'object')
       .map(sanitizePendingTask);
     const serialized = JSON.stringify(tasks);
     if (serialized !== raw) localStorage.setItem(STORAGE_KEY, serialized);
+    // loadAll 也由展示组件读取：只同步投影，不在调用者渲染期间通知其他组件。
+    updateMediaTaskSnapshot(tasks, serialized);
     return tasks;
   } catch {
+    updateMediaTaskSnapshot([], null);
     return [];
   }
 }
 
 function saveAll(tasks: PendingTask[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks.map(sanitizePendingTask)));
+  const sanitized = tasks.map(sanitizePendingTask);
+  const serialized = JSON.stringify(sanitized);
+  localStorage.setItem(STORAGE_KEY, serialized);
+  updateMediaTaskSnapshot(sanitized, serialized);
   mediaTaskListeners.forEach((listener) => listener());
   let changed = false;
   for (const [key, active] of activeComfyDeliveries) {

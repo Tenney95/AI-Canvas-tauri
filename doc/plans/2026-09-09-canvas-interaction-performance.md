@@ -637,7 +637,7 @@ npx vitest run tests/store/history.test.ts tests/store/groupFolders.test.ts
 
 ## 2026-11-06 前端交互续查（仅静态审查）
 
-审查基线：基于 `a76e252d` 后源码核对调用链，下表保留审查时的行为与建议；用户随后授权的 I01/I03/I05/I06 首批实施见本文末，其余条目仍待实施。本轮未运行测试、lint、类型检查、构建、性能基准或浏览器/Tauri 交互。表中的重复工作和缺失处理由源码确认；卡顿幅度、主线程耗时、帧率、内存峰值及交互现象尚未实测，不能据此承诺提速。已有拖拽合帧、连线集中绘制、LOD、历史缓存、Markdown 分块、独立窗口投影、资源搜索增量与资产索引批处理不重复列为待做。
+审查基线：基于 `a76e252d` 后源码核对调用链，下表保留审查时的行为与建议。用户表格的七项已分两批实现（I01～I08，手绘包含 I07/I08），实施与验收缺口见本文末；I09～I12 及 Select 仍为后续候选。本轮未运行测试、lint、类型检查、构建、性能基准或浏览器/Tauri 交互。表中的重复工作和缺失处理由源码确认；卡顿幅度、主线程耗时、帧率、内存峰值及交互现象尚未实测，不能据此承诺提速。已有拖拽合帧、连线集中绘制、LOD、历史缓存、Markdown 分块、独立窗口投影、资源搜索增量与资产索引批处理不重复列为待做。
 
 ### 优先候选
 
@@ -711,4 +711,39 @@ npm run test:typecheck
 npx vitest run tests/components/chatMessages.test.ts tests/components/assetsPanelDrawer.test.tsx tests/components/projectAssetsOverlay.test.tsx tests/services/chat/chatImageReferenceService.test.ts tests/services/chat/detachedChatSyncController.test.ts
 ```
 
-剩余缺口：上述命令、Tauri 桌面回归及同设备前后采样均待执行；不宣称性能百分比或验收通过。I02/I04 和绘图等其他候选维持待实施。回滚仅撤回本批五个组件、三处测试及本文对应变更，无数据库迁移。
+首批已本地提交 `e3193b8e`。上述命令、Tauri 桌面回归及同设备前后采样均待执行，不宣称性能百分比或验收通过；I02/I04 和绘图的后续实现见下一节。首批回滚仅撤回五个组件、三处测试及本文对应变更，无数据库迁移。
+
+### 补齐表格剩余项：I02 / I04 / I07 / I08（2026-11-06）
+
+状态：已实现，待用户验证。用户表格七项现在均有代码实现；“已实现”不代表已通过测试或性能采样。本次未运行测试，待用户验收；未运行 lint、类型检查、构建或实机，不引入依赖或持久化格式迁移。
+
+| 条目 | 实现与边界 |
+|---|---|
+| I02 媒体恢复展示 | `pollManager` 发布冻结的最小身份/状态快照，复用未变条目并与 HMR 运行时共存；`getSnapshot` 只读取内存。初始化在挂载/订阅后按批合并，保留旧账本脱敏迁移、重订阅及跨窗口 storage 更新。普通用户/系统气泡不使用媒体 hook，普通助手文本只在身份变化后探测旧账本关联，命中才订阅；裸旧消息在独立窗口冷启也保留恢复入口。`generationRuntime` 展示匹配沿用项目、会话、attempt 和多图回执语义；真正恢复/保存继续实时读取原账本，不以展示快照授权执行。输出历史共用快照，关闭/无项目返回稳定空值，真实重试复核保持不变。 |
+| I04 引用编辑器 | 胶囊显示只订阅既有字段投影，同字段编辑器共享投影及元数据缓存，避免每个分镜格重复扫描整张画布；最后一个编辑器卸载时释放共享缓存。当前节点 data、选中工作流独立订阅；完整节点/边仅用于已展开候选，悬停预览独立读取完整节点。保留分组/父组、全项目搜索、角色多图/声音/动作、工作流及 RefMod；owner、IME、光标、选区、DOM 历史和业务写回守卫沿用原实现。 |
+| I07/I08 绘图 | 运行期 ref 保留全部按原 1.5 距离规则接收的移动采样，增量维护边界，复用合帧工具每帧物化一次不可变预览；松手同步追加不同于最后采样的真实终点后只调用一次既有 addNode/历史。Canvas 基础节点投影独立 memo，草稿追加不重扫基础投影。统一处理 pointercancel、丢 capture、blur、Escape、换工具、项目与卸载；额外指针不替换活动手势，旧项目事件拒绝写回。取消未完成拖拽草稿不落节点/追加历史。文本/图片仍按下插入，橡皮擦已生效的即时删除及撤销语义保持，未扩展 I10 批量擦除。 |
+
+源码范围为 `src/services/pollManager.ts`、`src/services/ai/generationRuntime.ts`、`src/components/chat/MessageBubble.tsx`、`src/components/OutputHistoryPanel.tsx`、`src/components/nodes/shared/MentionEditor.tsx`、`src/components/nodes/shared/mentionEditorDom.ts`、`src/hooks/useCanvasDrawing.ts`、`src/components/Canvas.tsx`。新增回归为 `tests/components/messageBubble.test.tsx`、`tests/components/mentionEditorSubscriptions.test.tsx`、`tests/hooks/useCanvasDrawing.test.ts`；另补现有 `tests/services/pollManager.test.ts`、`tests/services/generationRuntime.test.ts`、`tests/components/outputHistoryRecovery.test.tsx`。文档仅本专项，工作区其他任务的差异保留。
+
+静态核对包含调用链、消费者与 diff、UTF-8 和原 BOM/换行；交叉审阅收敛了隐藏历史面板的快照 gate、旧任务空会话兼容、多编辑器共享投影，以及绘图的实时项目和 Escape 归属守卫。新增回归均未执行，不能用 headless driver 或 SSR 测试替代真实 React/Zustand 调度、DOM 选区、原生指针和桌面窗口验收。
+
+用户验收步骤（Tauri 桌面端）：
+
+1. 准备长纯文本会话与现有媒体恢复消息。流式输入或另一个媒体任务更新时，普通文本内容、复制和编辑保持正常；媒体暂停、继续查询/保存、提交状态未知及保存失败入口保持原规则。未知提交不得自动重新生成；同 taskId 不同 attempt、项目或会话不能串用任务。主窗口和独立窗口分别检查含原回执的多图结果、旧裸媒体消息冷启和切项目后的迟到探测。
+2. 输出历史关闭时更新媒体任务，再重开查看最新恢复提示。现有待下载记录的重新下载/放弃、处理中禁用、原任务已失效和旧失败记录提示应正确；不得用任务投影替代真实执行前的原任务核对。
+3. 在多行分镜同时挂载编辑器，输入含图片、视频、分镜行和角色的引用，拖动无关节点时光标/选区不跳，中文组合输入及编辑器 Undo/Redo 保持。引用改名、换媒体、导演截图、宫格覆盖/行列、分镜改号与资产变化及时显示；悬停预览仍读取最新正文、视频封面和宫格裁切。
+4. 打开 @ 菜单检查连线素材、父组/来源组、全项目搜索、工作流输入、角色多图/声音/动作和 RefMod；关闭后不准备候选，再打开取最新数据。切项目、换工作流或进入生成状态后，旧弹层与旧 RefMod 回调不能写入错误 owner；最后一个编辑器关闭后不长期保留旧画布投影。
+5. 连续手绘 10～20 秒并快速松手，完整采样及最终末端保留，只新增一个节点，一次 Undo/Redo 对应整条笔划。矩形、菱形、椭圆、箭头、直线和点击默认尺寸/样式回归；预览最后一帧尚未显示时松手也应正确提交。
+6. 拖绘中依次使用 Escape、Alt+Tab、系统 pointercancel、丢 capture、换工具、第二触点和切项目，草稿/捕获/待执行帧正确清理，旧事件不落新节点，随后可以重新绘制。Escape 不抢占 IME、输入控件或弹窗；图片原生选择造成的 blur 不取消有效读取，换工具/项目后的迟到图片不进入新草稿；文本插入后的编辑焦点、橡皮擦即时命中、共享图片和保存重开沿用既有行为。
+
+可在仓库根目录手动执行以下命令（本批均未执行）：
+
+```powershell
+npm run typecheck
+npm run test:typecheck
+npx vitest run tests/services/pollManager.test.ts tests/services/generationRuntime.test.ts tests/components/messageBubble.test.tsx tests/components/outputHistoryRecovery.test.tsx
+npx vitest run tests/components/mentionEditorSubscriptions.test.tsx tests/components/mentionEditorSources.test.ts tests/components/mentionEditorImageIndices.test.ts tests/components/mentionEditorPreview.test.ts tests/components/mentionEditorHistory.test.ts tests/components/mentionEditorChipDrag.test.ts tests/components/mentionEditorTextSelection.test.ts tests/components/promptSubmitShortcut.test.ts
+npx vitest run tests/hooks/useCanvasDrawing.test.ts tests/components/canvasNoteTools.test.tsx tests/utils/canvasNoteGeometry.test.ts
+```
+
+剩余缺口：所有自动化、桌面验收及前后性能采样待执行。手绘每帧仍需本地化完整点列并生成路径，未引入丢点或另一套笔迹持久化；不宣称帧率、输入延迟或提速比例。回滚只撤回本批八处源码、六处回归与对应文档差异，无数据库迁移；首批提交可独立保留。

@@ -3,7 +3,7 @@
  * 把指针拖拽转换为画布笔记（CanvasNote）的绘制草稿，处理选择、矩形/菱形/椭圆/箭头/直线/自由绘制、
  * 橡皮擦与图片/文本插入，几何计算委托 canvasNoteGeometry，落盘走 fileService 上传源文件。
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useReactFlow, type Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
@@ -25,12 +25,15 @@ import {
   getCanvasNotePointBounds,
   localizeCanvasNotePoints,
 } from '../utils/canvasNoteGeometry';
+import { createFrameCoalescer } from '../utils/frameCoalescer';
+import { isEditableTarget } from '../utils/textSelection';
 
 interface DrawingDraft {
   kind: Exclude<CanvasNoteKind, 'text' | 'image'>;
   start: CanvasNotePoint;
   current: CanvasNotePoint;
   points: CanvasNotePoint[];
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
   style: CanvasNoteStyle;
 }
 
@@ -118,7 +121,8 @@ function createNoteNode(
 function materializeDraft(draft: DrawingDraft): RFNode<BaseNodeData> {
   if (draft.kind === 'freehand') {
     const padding = Math.max(4, draft.style.strokeWidth * 3);
-    const bounds = getCanvasNotePointBounds(draft.points, padding);
+    const { minX, minY, maxX, maxY } = draft.bounds;
+    const bounds = getCanvasNotePointBounds([{ x: minX, y: minY }, { x: maxX, y: maxY }], padding);
     return createNoteNode(draft.kind, { x: bounds.x, y: bounds.y }, createCanvasNoteData(draft.kind, {
       width: bounds.width,
       height: bounds.height,
@@ -145,6 +149,21 @@ function materializeDraft(draft: DrawingDraft): RFNode<BaseNodeData> {
   }));
 }
 
+function updateDraft(draft: DrawingDraft, point: CanvasNotePoint, final = false): boolean {
+  if (draft.kind === 'freehand') {
+    const previous = draft.points[draft.points.length - 1];
+    const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+    if (distance === 0 || (!final && distance < 1.5)) return false;
+    draft.points.push(point);
+    draft.bounds.minX = Math.min(draft.bounds.minX, point.x);
+    draft.bounds.minY = Math.min(draft.bounds.minY, point.y);
+    draft.bounds.maxX = Math.max(draft.bounds.maxX, point.x);
+    draft.bounds.maxY = Math.max(draft.bounds.maxY, point.y);
+  }
+  draft.current = point;
+  return true;
+}
+
 function isDrawingUiTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('.canvas-drawing-ui'));
 }
@@ -164,11 +183,40 @@ export function useCanvasDrawing() {
   const showToast = useAppStore((state) => state.showToast);
   const [activeTool, setActiveTool] = useState<CanvasDrawingTool>('select');
   const [toolStyles, setToolStyles] = useState(cloneDefaultStyles);
-  const [draft, setDraft] = useState<DrawingDraft | null>(null);
+  const [draftNode, setDraftNode] = useState<RFNode<BaseNodeData> | null>(null);
   const [pendingImage, setPendingImage] = useState<PendingNoteImage | null>(null);
+  const draftRef = useRef<DrawingDraft | null>(null);
   const pointerIdRef = useRef<number | null>(null);
+  const pointerProjectIdRef = useRef(currentProjectId);
+  const pointerTargetRef = useRef<HTMLDivElement | null>(null);
+  const textEditFrameRef = useRef<number | null>(null);
   const erasedIdsRef = useRef(new Set<string>());
   const imageRequestRef = useRef(0);
+  const [draftPreview] = useState(() => createFrameCoalescer<DrawingDraft>((draft) => {
+    const node = materializeDraft(draft);
+    setDraftNode({
+      ...node,
+      id: 'canvas-note-draft',
+      draggable: false,
+      selectable: false,
+      data: { ...node.data, displayId: undefined },
+    });
+  }));
+
+  const cancelGesture = useCallback(() => {
+    draftPreview.cancel();
+    draftRef.current = null;
+    const pointerId = pointerIdRef.current;
+    const target = pointerTargetRef.current;
+    pointerIdRef.current = null;
+    pointerProjectIdRef.current = null;
+    pointerTargetRef.current = null;
+    erasedIdsRef.current.clear();
+    if (pointerId !== null && target?.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+    if (textEditFrameRef.current !== null) cancelAnimationFrame(textEditFrameRef.current);
+    textEditFrameRef.current = null;
+    setDraftNode(null);
+  }, [draftPreview]);
 
   const selectedNoteNode = useMemo(() => {
     if (selectedNodeIds.length !== 1) return null;
@@ -191,25 +239,34 @@ export function useCanvasDrawing() {
 
   const chooseImage = useCallback(async () => {
     const requestId = ++imageRequestRef.current;
-    const result = await uploadSourceFileToProject('.png,.jpg,.jpeg,.webp,.gif,.bmp', currentProjectId);
-    if (requestId !== imageRequestRef.current) return;
-    if (!result?.dataUrl) {
-      setPendingImage(null);
+    try {
+      const result = await uploadSourceFileToProject('.png,.jpg,.jpeg,.webp,.gif,.bmp', currentProjectId);
+      if (requestId !== imageRequestRef.current || useAppStore.getState().currentProjectId !== currentProjectId) return;
+      if (!result?.dataUrl) {
+        cancelGesture();
+        setPendingImage(null);
+        setActiveTool('select');
+        return;
+      }
+      const size = await getImagePlacementSize(result.dataUrl);
+      if (requestId !== imageRequestRef.current || useAppStore.getState().currentProjectId !== currentProjectId) return;
+      setPendingImage({
+        imageUrl: result.dataUrl,
+        fileName: result.fileName,
+        filePath: result.filePath,
+        ...size,
+      });
+    } catch (error) {
+      if (requestId !== imageRequestRef.current || useAppStore.getState().currentProjectId !== currentProjectId) return;
+      console.error('[画布笔记] 选择图片失败:', error);
+      showToast('选择图片失败', 'error');
+      cancelGesture();
       setActiveTool('select');
-      return;
     }
-    const size = await getImagePlacementSize(result.dataUrl);
-    if (requestId !== imageRequestRef.current) return;
-    setPendingImage({
-      imageUrl: result.dataUrl,
-      fileName: result.fileName,
-      filePath: result.filePath,
-      ...size,
-    });
-  }, [currentProjectId]);
+  }, [cancelGesture, currentProjectId, showToast]);
 
   const chooseTool = useCallback((tool: CanvasDrawingTool) => {
-    setDraft(null);
+    cancelGesture();
     setActiveTool(tool);
     if (tool !== 'select') {
       const store = useAppStore.getState();
@@ -219,18 +276,30 @@ export function useCanvasDrawing() {
       if (selectedChanges.length > 0) store.onNodesChange(selectedChanges);
       store.setSelectedNodeIds([]);
     }
-    if (tool === 'image') {
-      setPendingImage(null);
-      void chooseImage().catch((error) => {
-        console.error('[画布笔记] 选择图片失败:', error);
-        showToast('选择图片失败', 'error');
-        setActiveTool('select');
-      });
-    } else {
+    setPendingImage(null);
+    if (tool === 'image') void chooseImage();
+    else imageRequestRef.current += 1;
+  }, [cancelGesture, chooseImage]);
+
+  useEffect(() => {
+    const onBlur = () => cancelGesture();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229
+        || isEditableTarget(event.target) || document.querySelector('[aria-modal="true"], dialog[open]')
+        || (event.target instanceof Element && event.target.closest('.animation-editor'))) return;
+      if (pointerIdRef.current !== null) chooseTool('select');
+    };
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('keydown', onKeyDown);
       imageRequestRef.current += 1;
+      cancelGesture();
       setPendingImage(null);
-    }
-  }, [chooseImage, showToast]);
+      setActiveTool('select');
+    };
+  }, [cancelGesture, chooseTool, currentProjectId]);
 
   const applyNotePatch = useCallback((patch: CanvasNotePatch, transient = false) => {
     if (selectedNoteNode) {
@@ -260,10 +329,13 @@ export function useCanvasDrawing() {
   }, [deleteNode]);
 
   const handlePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (activeTool === 'select' || event.button !== 0 || isDrawingUiTarget(event.target)) return;
+    if (pointerIdRef.current !== null || activeTool === 'select' || event.button !== 0 || isDrawingUiTarget(event.target)
+      || useAppStore.getState().currentProjectId !== currentProjectId) return;
     event.preventDefault();
     event.stopPropagation();
     pointerIdRef.current = event.pointerId;
+    pointerProjectIdRef.current = currentProjectId;
+    pointerTargetRef.current = event.currentTarget;
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
 
@@ -280,6 +352,7 @@ export function useCanvasDrawing() {
         style: toolStyles.image,
       });
       selectCreatedNode(createNoteNode('image', point, note, pendingImage));
+      cancelGesture();
       setPendingImage(null);
       setActiveTool('select');
       return;
@@ -288,69 +361,69 @@ export function useCanvasDrawing() {
       const note = createCanvasNoteData('text', { style: toolStyles.text });
       const node = createNoteNode('text', point, note);
       selectCreatedNode(node);
-      window.requestAnimationFrame(() => {
+      cancelGesture();
+      textEditFrameRef.current = window.requestAnimationFrame(() => {
+        textEditFrameRef.current = null;
+        if (useAppStore.getState().currentProjectId !== currentProjectId) return;
         window.dispatchEvent(new CustomEvent('canvas-note-edit-text', { detail: { nodeId: node.id } }));
       });
       setActiveTool('select');
       return;
     }
     if (!DRAWING_KINDS.has(activeTool)) return;
-    setDraft({
+    const draft: DrawingDraft = {
       kind: activeTool as DrawingDraft['kind'],
       start: point,
       current: point,
       points: [point],
+      bounds: { minX: point.x, minY: point.y, maxX: point.x, maxY: point.y },
       style: { ...toolStyles[activeTool] },
-    });
-  }, [activeTool, eraseAt, pendingImage, reactFlow, selectCreatedNode, toolStyles]);
+    };
+    draftRef.current = draft;
+    draftPreview.schedule(draft);
+  }, [activeTool, cancelGesture, currentProjectId, draftPreview, eraseAt, pendingImage, reactFlow, selectCreatedNode, toolStyles]);
 
   const handlePointerMoveCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (pointerIdRef.current !== event.pointerId || activeTool === 'select') return;
+    if (pointerProjectIdRef.current !== currentProjectId || useAppStore.getState().currentProjectId !== currentProjectId) {
+      cancelGesture();
+      return;
+    }
     if (activeTool === 'eraser') {
       event.preventDefault();
       event.stopPropagation();
       eraseAt(event.clientX, event.clientY);
       return;
     }
+    const draft = draftRef.current;
     if (!draft) return;
     event.preventDefault();
     event.stopPropagation();
     const point = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    setDraft((current) => {
-      if (!current) return current;
-      if (current.kind !== 'freehand') return { ...current, current: point };
-      const previous = current.points[current.points.length - 1];
-      if (Math.hypot(point.x - previous.x, point.y - previous.y) < 1.5) return current;
-      return { ...current, current: point, points: [...current.points, point] };
-    });
-  }, [activeTool, draft, eraseAt, reactFlow]);
+    if (updateDraft(draft, point)) draftPreview.schedule(draft);
+  }, [activeTool, cancelGesture, currentProjectId, draftPreview, eraseAt, reactFlow]);
 
   const handlePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (pointerIdRef.current !== event.pointerId) return;
-    pointerIdRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (pointerProjectIdRef.current !== currentProjectId || useAppStore.getState().currentProjectId !== currentProjectId) {
+      cancelGesture();
+      return;
     }
-    erasedIdsRef.current.clear();
+    const draft = draftRef.current;
+    if (draft) {
+      event.preventDefault();
+      event.stopPropagation();
+      updateDraft(draft, reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY }), true);
+    }
+    cancelGesture();
     if (!draft) return;
-    event.preventDefault();
-    event.stopPropagation();
     selectCreatedNode(materializeDraft(draft));
-    setDraft(null);
     setActiveTool('select');
-  }, [draft, selectCreatedNode]);
+  }, [cancelGesture, currentProjectId, reactFlow, selectCreatedNode]);
 
-  const draftNode = useMemo(() => {
-    if (!draft) return null;
-    const node = materializeDraft(draft);
-    return {
-      ...node,
-      id: 'canvas-note-draft',
-      draggable: false,
-      selectable: false,
-      data: { ...node.data, displayId: undefined },
-    } as RFNode<BaseNodeData>;
-  }, [draft]);
+  const handlePointerCancelCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (pointerIdRef.current === event.pointerId) cancelGesture();
+  }, [cancelGesture]);
 
   return {
     activeTool,
@@ -375,5 +448,6 @@ export function useCanvasDrawing() {
     handlePointerDownCapture,
     handlePointerMoveCapture,
     handlePointerUpCapture,
+    handlePointerCancelCapture,
   };
 }

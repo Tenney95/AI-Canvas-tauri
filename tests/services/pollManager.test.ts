@@ -6,6 +6,10 @@ import type { BaseNodeData } from '../../src/types';
 import {
   getPendingTaskCoveredNodeIds,
   getPendingTasksForProject,
+  getMediaTaskSnapshot,
+  hasPendingMessageMediaTask,
+  initializeMediaTaskSnapshot,
+  subscribeMediaTasks,
   createOrReusePollManagerRuntime,
   canResumeMediaTask,
   resumePendingTasks,
@@ -54,6 +58,135 @@ beforeEach(async () => {
   localStorage.clear();
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'project-1' });
+});
+
+describe('media task display snapshot', () => {
+  const storageKey = 'ai_canvas_pending_tasks';
+  const task: PendingTask = { projectId: 'project-1', nodeId: 'display-node', nodeType: 'ai-image',
+    provider: 'apimart', taskType: 'apimart', taskId: 'display-task', attemptId: 'display-attempt', submitted: true,
+    mediaContext: { projectId: 'project-1', conversationId: 'conversation-1', messageId: 'display-message' } };
+
+  it('coalesces initialization, migrates once and keeps pure frozen snapshots free of execution material', async () => {
+    localStorage.setItem(storageKey, JSON.stringify([{ ...task, apiKey: 'legacy-private-key',
+      resultUrls: ['https://cdn.example/private-output.png'], protocolPoll: { url: 'https://private-query.example' },
+      expectedImageOutputs: 2, imageOutputNodeIds: ['original-node'], mediaContext: { ...task.mediaContext,
+        parameters: { prompt: 'private-prompt', seed: 7 } } }]));
+    const read = vi.spyOn(localStorage, 'getItem');
+    const write = vi.spyOn(localStorage, 'setItem');
+    const before = getMediaTaskSnapshot();
+    expect(getMediaTaskSnapshot()).toBe(before);
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    const initialization = initializeMediaTaskSnapshot();
+    const unsubscribe = subscribeMediaTasks(vi.fn());
+    try {
+      expect(initializeMediaTaskSnapshot()).toBe(initialization);
+      await initialization;
+      expect(read).toHaveBeenCalledOnce();
+      expect(write).toHaveBeenCalledOnce();
+      const snapshot = getMediaTaskSnapshot();
+      expect(snapshot[0]).toMatchObject({ projectId: task.projectId, nodeId: task.nodeId,
+        taskId: task.taskId, attemptId: task.attemptId, mediaContext: { conversationId: 'conversation-1', messageId: 'display-message' } });
+      expect(hasPendingMessageMediaTask('project-1', 'conversation-1', 'display-message')).toBe(true);
+      expect(hasPendingMessageMediaTask('other-project', 'conversation-1', 'display-message')).toBe(false);
+      expect(JSON.stringify(snapshot)).not.toMatch(/private|protocolPoll|mediaDownloadAccess|parameters|apiKey|resultUrls/);
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot[0])).toBe(true);
+      expect(Object.isFrozen(snapshot[0].mediaContext)).toBe(true);
+      expect(snapshot[0].imageOutputNodeIds).toEqual(['original-node']);
+      expect(Object.isFrozen(snapshot[0].imageOutputNodeIds)).toBe(true);
+      read.mockClear(); write.mockClear();
+      expect(getMediaTaskSnapshot()).toBe(snapshot);
+      expect(getMediaTaskSnapshot()[0]).toBe(snapshot[0]);
+      expect(read).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it.each([undefined, ''])('keeps the legacy wildcard conversation identity %j', (conversationId) => {
+    savePendingTask({ ...task, mediaContext: { ...task.mediaContext!, conversationId } });
+    expect(hasPendingMessageMediaTask('project-1', 'conversation-1', 'display-message')).toBe(true);
+    expect(hasPendingMessageMediaTask('project-1', 'other-conversation', 'display-message')).toBe(true);
+    expect(hasPendingMessageMediaTask('project-1', 'conversation-1', 'other-message')).toBe(false);
+  });
+
+  it('preserves task reference for unrelated saves and updates the uncertain/paused display identity', () => {
+    const receipt = savePendingTask(task);
+    const snapshot = getMediaTaskSnapshot();
+    updatePendingTask(task.nodeId, { resultUrls: ['https://cdn.example/refreshed.png'] }, receipt.taskId, receipt.attemptId);
+    expect(getMediaTaskSnapshot()).toBe(snapshot);
+    updatePendingTask(task.nodeId, { submitted: false, mediaSubmissionUncertain: true,
+      mediaRecoveryState: 'submit_unknown' }, receipt.taskId, receipt.attemptId);
+    expect(getMediaTaskSnapshot()[0]).toMatchObject({ ...receipt, submitted: false,
+      mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown', historyDownloadPending: false });
+    updatePendingTask(task.nodeId, { submitted: true, mediaSubmissionUncertain: false,
+      mediaRecoveryState: 'query_paused' }, receipt.taskId, receipt.attemptId);
+    expect(getMediaTaskSnapshot()[0]).toMatchObject({ ...receipt, submitted: true, mediaRecoveryState: 'query_paused' });
+  });
+
+  it.each<Partial<PendingTask>>([
+    {}, { terminalFailure: true }, { mediaSubmissionUncertain: true }, { runninghubSubmissionUncertain: true },
+    { runninghubRecoveryState: 'cancel_pending' }, { comfyRecoveryState: 'cancel_pending' },
+  ])('uses the existing history eligibility guard for %j', (patch) => {
+    savePendingTask({ ...task, mediaRecoveryState: 'delivery_pending', ...patch });
+    expect(getMediaTaskSnapshot()[0].historyDownloadPending).toBe(Object.keys(patch).length === 0);
+  });
+
+  it('refreshes across storage events and a later subscription after clear without making getters read storage', async () => {
+    const events = new EventTarget();
+    vi.stubGlobal('window', events);
+    const detach = vi.spyOn(events, 'removeEventListener');
+    savePendingTask(task);
+    const unsubscribe = subscribeMediaTasks(vi.fn());
+    await initializeMediaTaskSnapshot();
+    localStorage.clear();
+    events.dispatchEvent(Object.assign(new Event('storage'), { key: null, storageArea: localStorage }));
+    await initializeMediaTaskSnapshot();
+    expect(getMediaTaskSnapshot()).toEqual([]);
+    expect(hasPendingMessageMediaTask('project-1', 'conversation-1', 'display-message')).toBe(false);
+    unsubscribe();
+    expect(detach).toHaveBeenCalledWith('storage', expect.any(Function));
+    localStorage.setItem(storageKey, JSON.stringify([{ ...task, attemptId: 'second-attempt' }]));
+    const read = vi.spyOn(localStorage, 'getItem');
+    expect(getMediaTaskSnapshot()).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
+    const stop = subscribeMediaTasks(vi.fn());
+    try {
+      await initializeMediaTaskSnapshot();
+      expect(getMediaTaskSnapshot()[0].attemptId).toBe('second-attempt');
+      expect(read).toHaveBeenCalledOnce();
+    } finally { stop(); }
+  });
+
+  it('keeps execution reads authoritative without notifying subscribers inside a display read', async () => {
+    savePendingTask(task);
+    const notify = vi.fn();
+    const unsubscribe = subscribeMediaTasks(notify);
+    try {
+      await initializeMediaTaskSnapshot();
+      notify.mockClear();
+      const previous = getMediaTaskSnapshot()[0];
+      localStorage.setItem(storageKey, JSON.stringify([{ ...task, attemptId: 'new-authoritative-attempt' }]));
+      expect(getMediaTaskSnapshot()[0]).toBe(previous);
+      expect(getPendingTasksForProject(task.projectId)[0].attemptId).toBe('new-authoritative-attempt');
+      expect(getMediaTaskSnapshot()[0].attemptId).toBe('new-authoritative-attempt');
+      expect(notify).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it('reuses snapshot state across HMR and initializes it on an older runtime without losing listeners', () => {
+    const hotData = {};
+    const old = createOrReusePollManagerRuntime(hotData);
+    const snapshot = old.mediaTaskSnapshot;
+    const listener = vi.fn();
+    old.mediaTaskListeners.add(listener);
+    expect(createOrReusePollManagerRuntime(hotData).mediaTaskSnapshot).toBe(snapshot);
+    Reflect.deleteProperty(old, 'mediaTaskSnapshot');
+    const refreshed = createOrReusePollManagerRuntime(hotData);
+    expect(refreshed).toBe(old);
+    expect(refreshed.mediaTaskSnapshot.tasks).toEqual([]);
+    expect(refreshed.mediaTaskListeners.has(listener)).toBe(true);
+  });
 });
 
 function saveMinimaxRecoveryTask(overrides: Partial<ResolvedModelProtocolPoll> = {}) {

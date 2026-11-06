@@ -26,8 +26,9 @@ import ViewportImage from './shared/ViewportImage';
 import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
 import { getLocale, t, useT } from '../i18n';
 import { historyMediaTaskReceipt, isHistoryMediaDownloadPending, isUnresolvedHistoryDownload, sameHistoryMediaTask } from '../services/historyMediaRecovery';
-import { getPendingTasksForProject, subscribeMediaTasks } from '../services/pollManager';
+import { getMediaTaskSnapshot, getPendingTasksForProject, subscribeMediaTasks } from '../services/pollManager';
 
+const EMPTY_RECOVERY_TASKS: ReturnType<typeof getMediaTaskSnapshot> = Object.freeze([]);
 const EASE = [0.16, 1, 0.3, 1] as const;
 type FilterType = 'all' | 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
 
@@ -288,9 +289,10 @@ export default function OutputHistoryPanel() {
 
   const [filter, setFilter] = useState<FilterType>('all');
   const recoverySnapshot = useSyncExternalStore(subscribeMediaTasks,
-    useCallback(() => JSON.stringify(historyPanelOpen && currentProjectId ? getPendingTasksForProject(currentProjectId)
-      .filter(isHistoryMediaDownloadPending).map(historyMediaTaskReceipt) : []), [currentProjectId, historyPanelOpen]), () => '[]');
-  const recoveryTasks = useMemo(() => JSON.parse(recoverySnapshot) as ReturnType<typeof historyMediaTaskReceipt>[], [recoverySnapshot]);
+    useCallback(() => historyPanelOpen && currentProjectId ? getMediaTaskSnapshot() : EMPTY_RECOVERY_TASKS,
+      [historyPanelOpen, currentProjectId]), () => EMPTY_RECOVERY_TASKS);
+  const recoveryTasks = useMemo(() => recoverySnapshot.filter((task) => historyPanelOpen
+    && task.projectId === currentProjectId && task.historyDownloadPending), [recoverySnapshot, currentProjectId, historyPanelOpen]);
   const recoveryAvailable = (entry: OutputHistoryEntry) => recoveryTasks.some((task) => sameHistoryMediaTask(entry.recoveryTask, task));
   const [search, setSearch] = useState('');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());

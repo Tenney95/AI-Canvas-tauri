@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiProviderConfig, GeneralModelConfig, WorkflowDefinition } from '../../src/types';
 import type { MediaTaskContext, MediaTaskReceipt } from '../../src/types/aiTypes';
 import type { ChatMessage } from '../../src/types/chat';
-import type { PendingTask } from '../../src/services/pollManager';
+import type { MediaTaskSnapshot, PendingTask } from '../../src/services/pollManager';
 
 const mocks = vi.hoisted(() => ({
   generateImage: vi.fn(),
@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   registerMediaNodeOperation: vi.fn(() => vi.fn()),
   registerMediaMessageRecoveryHandler: vi.fn(),
   getPendingTasksForProject: vi.fn<() => unknown[]>(() => []),
+  getMediaTaskSnapshot: vi.fn<() => readonly MediaTaskSnapshot[]>(() => []),
   getMediaTaskReceipt: vi.fn(),
   resumeMediaNodeTask: vi.fn(),
   completeMediaNodeTask: vi.fn(),
@@ -79,6 +80,7 @@ vi.mock('../../src/services/pollManager', () => ({
   registerMediaNodeOperation: mocks.registerMediaNodeOperation,
   registerMediaMessageRecoveryHandler: mocks.registerMediaMessageRecoveryHandler,
   getPendingTasksForProject: mocks.getPendingTasksForProject,
+  getMediaTaskSnapshot: mocks.getMediaTaskSnapshot,
   getMediaTaskReceipt: mocks.getMediaTaskReceipt,
   resumeMediaNodeTask: mocks.resumeMediaNodeTask,
   completeMediaNodeTask: mocks.completeMediaNodeTask,
@@ -94,6 +96,7 @@ import {
   retryMediaMessageTask,
   ensureMediaMessageRecoveryHandler,
   getRecoverableMessageTask,
+  getRecoverableMessageTaskSnapshot,
   deliverMediaMessageGroup,
   completeMediaMessageDelivery,
   mediaDeliveryResults,
@@ -111,6 +114,7 @@ beforeEach(() => {
   mocks.updatePendingTask.mockReset();
   mocks.bindMediaTaskContext.mockReturnValue(vi.fn());
   mocks.getPendingTasksForProject.mockReturnValue([]);
+  mocks.getMediaTaskSnapshot.mockReturnValue([]);
   mocks.getMediaTaskReceipt.mockReset();
   mocks.storeState.currentProjectId = 'project-1';
   mocks.storeState.projects = [];
@@ -763,6 +767,30 @@ describe('async media task identity', () => {
     expect(mediaDeliveryResults(delivery).map((artifact) => artifact.sourceUrl)).toEqual(urls);
     expect(mocks.persistMediaUrlToProjectData).toHaveBeenCalledTimes(2);
     expect(mocks.generateImage).toHaveBeenCalledOnce();
+  });
+
+  it('uses detached message props and exact project/conversation/attempt receipts for the pure display snapshot', () => {
+    const receipt = { projectId: 'project-1', nodeId: 'original-node', taskId: 'original-task', attemptId: 'original-attempt' };
+    const message: ChatMessage = { id: 'child-message', conversationId: 'conversation-1', role: 'assistant', content: '', timestamp: 1,
+      status: 'done', mediaResult: { id: 'child-image', kind: 'image', taskReceipt: receipt, deliveryMode: 'chat',
+        url: 'asset://image', sourceUrl: 'https://cdn.example/image.png', persistence: 'failed',
+        prompt: '', modelId: 'image-model', provider: 'general', createdAt: 1 } };
+    const task: MediaTaskSnapshot = { ...receipt, nodeId: 'recovery-node', submitted: true, expectedImageOutputs: 4,
+      imageOutputNodeIds: [receipt.nodeId], mediaContext: { conversationId: 'conversation-1', messageId: 'parent-message' },
+      mediaRecoveryState: 'delivery_pending', historyDownloadPending: true };
+    mocks.getMediaTaskSnapshot.mockReturnValue([task]);
+    // 独立窗口没有把消息写入本地 Store，展示仍从当前消息回执定位原作业。
+    expect(mocks.storeState.messages).toEqual([]);
+    expect(getRecoverableMessageTaskSnapshot(message, 'project-1')).toBe(task);
+    expect(getRecoverableMessageTaskSnapshot(message, 'project-1')).toBe(task);
+    expect(getRecoverableMessageTaskSnapshot(message, 'other-project')).toBeUndefined();
+    expect(getRecoverableMessageTaskSnapshot({ ...message, conversationId: 'other-conversation' }, 'project-1')).toBeUndefined();
+    for (const patch of [{ attemptId: 'other-attempt' }, { imageOutputNodeIds: ['unrelated-node'] }, { expectedImageOutputs: 1 }]) {
+      mocks.getMediaTaskSnapshot.mockReturnValue([{ ...task, ...patch }]);
+      expect(getRecoverableMessageTaskSnapshot(message, 'project-1')).toBeUndefined();
+    }
+    expect(mocks.getPendingTasksForProject).not.toHaveBeenCalled();
+    expect(mocks.resumeMediaNodeTask).not.toHaveBeenCalled();
   });
 
   it('第三张保存失败时保留其他三张和整组回执，子图可定位同一原任务', async () => {

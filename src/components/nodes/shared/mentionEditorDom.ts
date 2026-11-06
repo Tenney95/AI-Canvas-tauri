@@ -73,7 +73,8 @@ type NodeMeta = {
   mediaReference?: { kind: MediaReferenceKind; key: string };
 };
 
-const nodeMetaCache = new WeakMap<AppState['nodes'], Map<string, NodeMeta>>();
+type NodeMetaSource = ReadonlyArray<Pick<AppState['nodes'][number], 'id' | 'data'>>;
+const nodeMetaCache = new WeakMap<NodeMetaSource, Map<string, NodeMeta>>();
 
 function localAssetUrl(filePath?: string): string | undefined {
   if (!filePath || !IS_TAURI) return undefined;
@@ -102,7 +103,7 @@ export function bestNodeThumb(
   return data.thumbnailUrl as string | undefined;
 }
 
-export function getNodeMetaMap(nodes: AppState['nodes']) {
+export function getNodeMetaMap(nodes: NodeMetaSource) {
   const cached = nodeMetaCache.get(nodes);
   if (cached) return cached;
   const map = new Map<string, NodeMeta>();

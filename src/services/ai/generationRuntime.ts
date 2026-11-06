@@ -41,13 +41,14 @@ import { findMediaModelOption } from '../../components/nodes/shared/defaultModel
 import { videoLongSideFromLabel } from '../aiDimensions';
 import { resolveProjectGenerationPrompt } from '../projectSettingsService';
 import type { BaseNodeData, NodeType } from '../../types';
+import type { ChatMessage } from '../../types/chat';
 import type { MediaDownloadAccess, MediaTaskReceipt } from '../../types/aiTypes';
 import { tagGeneratedProjectAssetSafely } from '../fs/generatedAssetTags';
 import {
-  bindMediaTaskContext, completeMediaNodeTask, getMediaTaskReceipt, getPendingTasksForProject, pauseMediaTask,
+  bindMediaTaskContext, completeMediaNodeTask, getMediaTaskReceipt, getMediaTaskSnapshot, getPendingTasksForProject, pauseMediaTask,
   registerMediaMessageRecoveryHandler, registerMediaNodeOperation, resumeMediaNodeTask,
   updatePendingTask,
-  type PendingTask,
+  type MediaTaskSnapshot, type PendingTask,
 } from '../pollManager';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../canvasDerivationGuard';
 import { persistMessage } from '../chat/chatHistoryService';
@@ -89,8 +90,11 @@ function sameMediaReceipt(left: MediaTaskReceipt | undefined, right: MediaTaskRe
     && left.taskId === right.taskId && left.attemptId === right.attemptId;
 }
 
+type MessageTaskIdentity = Pick<MediaTaskSnapshot, 'projectId' | 'nodeId' | 'taskId' | 'attemptId'
+  | 'mediaContext' | 'expectedImageOutputs' | 'imageOutputNodeIds'>;
+
 /** 只接受任务自己记下的重挂来源，不按远端 taskId 猜测其他节点。 */
-function matchesMessageTaskReceipt(receipt: MediaTaskReceipt | undefined, task: PendingTask): boolean {
+function matchesMessageTaskReceipt(receipt: MediaTaskReceipt | undefined, task: MessageTaskIdentity): boolean {
   if (!receipt || receipt.projectId !== task.projectId || receipt.taskId !== task.taskId
     || receipt.attemptId !== task.attemptId) return false;
   return receipt.nodeId === task.nodeId || Boolean((task.expectedImageOutputs ?? 1) > 1
@@ -605,16 +609,27 @@ export async function retryMediaArtifactPersist(
   };
 }
 
+function matchesRecoverableMessageTask(messageId: string, message: ChatMessage | undefined, task: MessageTaskIdentity): boolean {
+  return task.mediaContext?.messageId === messageId
+      && (!message || !task.mediaContext.conversationId || task.mediaContext.conversationId === message.conversationId)
+    || Boolean(message && task.mediaContext?.conversationId === message.conversationId
+      && matchesMessageTaskReceipt(message.mediaResult?.taskReceipt, task));
+}
+
+/** 展示专用稳定投影，不读取 Store 消息、解析账本或发起任务恢复。 */
+export function getRecoverableMessageTaskSnapshot(message: ChatMessage, projectId: string | null): MediaTaskSnapshot | undefined {
+  if (!projectId) return undefined;
+  return getMediaTaskSnapshot().find((task) => task.projectId === projectId
+    && matchesRecoverableMessageTask(message.id, message, task));
+}
+
 /** 只暴露原消息的任务身份，不从消息或模型提供的 URL 重建查询协议。 */
 export function getRecoverableMessageTask(messageId: string, projectId?: string | null): PendingTask | undefined {
   const state = useAppStore.getState();
   const targetProjectId = projectId ?? state.currentProjectId;
   if (!targetProjectId) return undefined;
   const message = state.messages.find((item) => item.id === messageId);
-  return getPendingTasksForProject(targetProjectId).find((task) => task.mediaContext?.messageId === messageId
-      && (!message || !task.mediaContext.conversationId || task.mediaContext.conversationId === message.conversationId)
-    || Boolean(message && task.mediaContext?.conversationId === message.conversationId
-      && matchesMessageTaskReceipt(message.mediaResult?.taskReceipt, task)));
+  return getPendingTasksForProject(targetProjectId).find((task) => matchesRecoverableMessageTask(messageId, message, task));
 }
 
 export async function retryMediaMessageTask(messageId: string): Promise<void> {

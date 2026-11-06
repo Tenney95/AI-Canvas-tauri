@@ -7,7 +7,9 @@ import { createPortal } from 'react-dom';
 import type { PromptSubmitShortcut, WorkflowIONodeType } from '../../../types';
 import { resolvePromptEnterAction } from '../../../utils/promptSubmitShortcut';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../../store/useAppStore';
+import { useAppStore, type AppState } from '../../../store/useAppStore';
+import { createCanvasNodeDataSelector } from '../../../utils/canvasNodeDataSelector';
+import { getCanvasNodeById } from '../../../utils/canvasRenderProjection';
 import { Icon } from '@iconify/react';
 import { getAssetUrlFromPath, getFileCategory, listGlobalFolderContents, listExternalFolderContents, selectAssetFolderFiles, type AssetFileEntry, type AssetFolderEntry, type AssetFolderSelection } from '../../../services/fileService';
 import { getAllAssetMeta } from '../../../services/indexedDbService';
@@ -86,6 +88,15 @@ import { workflowInputNodes } from '../../../services/runninghubWorkflowService'
 const ComfyRefmodMentionSettings = lazy(() => import('./ComfyRefmodMentionSettings'));
 const AssetFolderNavigation = lazy(() => import('../../assets/AssetFolderNavigation'));
 const EMPTY_REFMODS: ComfyRefmodSelection[] = [];
+const EMPTY_CANVAS_NODES: AppState['nodes'] = [];
+const EMPTY_CANVAS_EDGES: AppState['edges'] = [];
+// 所有编辑器始终投影完整 nodes、相同展示字段，共用一次比较及元数据缓存。
+// 不按 owner/菜单裁剪，也不把只读展示快照用于业务写回。
+const selectReferenceNodes = createCanvasNodeDataSelector([
+  'displayId', 'imageUrl', 'videoUrl', 'audioUrl', 'thumbnailUrl', 'filePath',
+  'directorCaptureUrls', 'storyboardCols', 'storyboardRows', 'storyboardOverrides', 'shotlistRows',
+]);
+let referenceNodeConsumers = 0;
 interface RefmodEditSession {
   asset: ComfyRefmodAsset;
   thumbnailUrl?: string;
@@ -261,6 +272,13 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   className = '',
 }: MentionEditorProps, ref) {
   const t = useT();
+  useEffect(() => {
+    referenceNodeConsumers += 1;
+    return () => {
+      referenceNodeConsumers -= 1;
+      if (referenceNodeConsumers === 0) selectReferenceNodes(undefined);
+    };
+  }, []);
   // ── @ Mention state ──
   const [showMention, setShowMention] = useState(false);
   useEffect(() => {
@@ -320,11 +338,19 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const [refmodSession, setRefmodSession] = useState<RefmodEditSession>();
   const refmodSessionRef = useRef<RefmodEditSession | undefined>(undefined);
   const [refmodUiError, setRefmodUiError] = useState('');
-  const { nodes, edges, workflows, dramaAssets, globalCharacters, globalScenes, globalProps, globalDramaAssetsLoading, globalDramaAssetsError, currentProjectId } = useAppStore(
+  const [chipTip, setChipTip] = useState<{
+    source: MentionPreviewSource; key: string; x: number; y: number; width: number;
+    ownerNodeId?: string; ownerProjectId: string | null; assetUrl?: string; assetUnavailable?: boolean;
+  } | null>(null);
+  const { nodes, edges, referenceNodes, previewNodes, currentEditorData, selectedWorkflow, dramaAssets, globalCharacters, globalScenes, globalProps, globalDramaAssetsLoading, globalDramaAssetsError, currentProjectId } = useAppStore(
     useShallow((state) => ({
-      nodes: state.nodes,
-      edges: state.edges,
-      workflows: state.workflows,
+      // 完整节点只供展开候选和预览读取，展示投影不参与业务写回。
+      nodes: showMention ? state.nodes : EMPTY_CANVAS_NODES,
+      edges: showMention ? state.edges : EMPTY_CANVAS_EDGES,
+      referenceNodes: selectReferenceNodes(state.nodes),
+      previewNodes: chipTip ? state.nodes : EMPTY_CANVAS_NODES,
+      currentEditorData: nodeId ? getCanvasNodeById(state.nodes, nodeId)?.data : undefined,
+      selectedWorkflow: state.workflows.find((workflow) => workflow.id === selectedWorkflowId),
       dramaAssets: state.dramaAssets,
       globalCharacters: state.globalCharacters,
       globalScenes: state.globalScenes,
@@ -397,10 +423,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const assetSentinelRef = useRef<HTMLDivElement | null>(null);
 
   // ── Selected workflow and its IO nodes ──
-  const selectedWorkflow = useMemo(
-    () => workflows.find((w) => w.id === selectedWorkflowId),
-    [workflows, selectedWorkflowId],
-  );
   const selectedWorkflowRef = useRef(selectedWorkflow);
   useLayoutEffect(() => {
     selectedWorkflowRef.current = selectedWorkflow;
@@ -411,12 +433,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     return () => window.clearTimeout(timer);
   }, [currentProjectId, nodeId, selectedWorkflow]);
   const workflowIONodes = useMemo(
-    () => workflowInputNodes(selectedWorkflow),
-    [selectedWorkflow],
+    () => showMention ? workflowInputNodes(selectedWorkflow) : [],
+    [showMention, selectedWorkflow],
   );
 
   // ── Build nodeId → { type, displayId, thumbnailUrl } map ──
-  const nodeMetaMap = useMemo(() => getNodeMetaMap(nodes), [nodes]);
+  const nodeMetaMap = useMemo(() => getNodeMetaMap(referenceNodes), [referenceNodes]);
 
   // ── Rebuild DOM when prompt changes externally ──
   useLayoutEffect(() => {
@@ -577,8 +599,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     ? workflowMentionNodes.filter((n) => matchesMentionQuery(mentionQuery, [n.id, n._ioNodeId, n.label]))
     : workflowMentionNodes;
 
-  const currentEditorNode = nodes.find((node) => node.id === nodeId);
-  const currentNodeType = currentEditorNode?.data.type;
+  const currentNodeType = currentEditorData?.type;
   const isAudioNode = currentNodeType === 'ai-audio';
   const isVideoNode = currentNodeType === 'ai-video';
   const dramaMentionItems = useMemo(() => {
@@ -618,7 +639,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const localComfyWorkflow = selectedWorkflow && (!selectedWorkflow.adapterType || selectedWorkflow.adapterType === 'comfyui') ? selectedWorkflow : undefined;
   // RH 已提供相同的定向输入；只有角色参考包仍限定本地 ComfyUI。
   const hasWorkflowInputTab = !!localComfyWorkflow || selectedWorkflow?.adapterType === 'runninghub';
-  const canMentionRefmod = !disabled && isVideoNode && currentEditorNode?.data.role !== 'source' && currentEditorNode?.data.status !== 'loading' && !!localComfyWorkflow;
+  const canMentionRefmod = !disabled && isVideoNode && currentEditorData?.role !== 'source' && currentEditorData?.status !== 'loading' && !!localComfyWorkflow;
   const activeRefmodSession = refmodSession && canMentionRefmod && refmodSession.projectId === currentProjectId && refmodSession.nodeId === nodeId
     && refmodSession.workflow === selectedWorkflow ? refmodSession : undefined;
   const effectiveComfySection = canMentionRefmod ? comfySection : 'inputs';
@@ -626,7 +647,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     enabled: canMentionRefmod && ((showMention && ((pickerTab === 'workflow' && comfySection === 'roles') || resourceSearchExpanded)) || !!activeRefmodSession),
     workflow: localComfyWorkflow,
   });
-  const manualRefmods = currentEditorNode?.data.comfyRefmods ?? EMPTY_REFMODS;
+  const manualRefmods = currentEditorData?.comfyRefmods ?? EMPTY_REFMODS;
   const [dramaKind, setDramaKind] = useState<string>('all');
   useEffect(() => {
     if (!showMention) {
@@ -839,14 +860,14 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const removeManualRefmod = useCallback((reference: ComfyRefmodSelection) => {
     const state = useAppStore.getState();
     const node = state.nodes.find((item) => item.id === nodeId);
-    if (state.currentProjectId !== currentProjectId || !node || !currentEditorNode || node.data.status === 'loading' || node.data.role === 'source'
+    if (state.currentProjectId !== currentProjectId || !node || !currentEditorData || node.data.status === 'loading' || node.data.role === 'source'
       || selectedWorkflowRef.current !== selectedWorkflow
-      || JSON.stringify([node.data.workflowId, node.data.comfyRefmods]) !== JSON.stringify([currentEditorNode.data.workflowId, manualRefmods])) {
+      || JSON.stringify([node.data.workflowId, node.data.comfyRefmods]) !== JSON.stringify([currentEditorData.workflowId, manualRefmods])) {
       setRefmodUiError(translate('项目或视频绑定已变化，请重新打开 ComfyUI 角色列表')); return;
     }
     state.updateNodeData(node.id, { comfyRefmods: manualRefmods.filter((item) => item !== reference) });
     setRefmodUiError('');
-  }, [nodeId, currentProjectId, currentEditorNode, selectedWorkflow, manualRefmods]);
+  }, [nodeId, currentProjectId, currentEditorData, selectedWorkflow, manualRefmods]);
 
   // ── Insert a canvas node chip ──
   const insertChipAtCursor = useCallback(
@@ -1112,7 +1133,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       if (!deleteAtChar()) return;
       let thumb: string | undefined;
       if (item.imageNodeId && !item.id.startsWith('global/')) {
-        const n = nodes.find((x) => x.id === item.imageNodeId);
+        const n = useAppStore.getState().nodes.find((x) => x.id === item.imageNodeId);
         thumb = bestNodeThumb(n?.data ?? {}) || item.imageUrl;
       } else {
         thumb = item.imageUrl || item.referenceImages?.find((reference) => reference.imageUrl)?.imageUrl;
@@ -1121,7 +1142,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       setShowMention(false);
       setMentionQuery('');
     },
-    [isCurrentEditorOwner, nodes, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
+    [isCurrentEditorOwner, restoreMentionCursor, deleteAtChar, insertDramaChipAtCursor],
   );
 
   // ── Insert an asset reference chip ──
@@ -1599,10 +1620,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const chipHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chipHoverSuppressedRef = useRef(false);
   const [chipHoverSuppressed, setChipHoverSuppressed] = useState(false);
-  const [chipTip, setChipTip] = useState<{
-    source: MentionPreviewSource; key: string; x: number; y: number; width: number;
-    ownerNodeId?: string; ownerProjectId: typeof currentProjectId; assetUrl?: string; assetUnavailable?: boolean;
-  } | null>(null);
   if (disabled) {
     if (showMention) setShowMention(false);
     if (showAssetPicker) setShowAssetPicker(false);
@@ -1762,8 +1779,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const chipPreview = useMemo<MentionChipPreview | null>(() => {
     if (!chipTip || chipTip.ownerNodeId !== nodeId || chipTip.ownerProjectId !== currentProjectId) return null;
     const { source } = chipTip;
-    if (source.kind === 'node') return resolveMentionPreview(nodes, source.id, source.label, nodeMetaMap.get(source.id)?.thumbnailUrl);
-    if (source.kind === 'drama') return resolveDramaMentionPreview(dramaAssets, globalAssets, nodes, source.id, source.label);
+    if (source.kind === 'node') return resolveMentionPreview(previewNodes, source.id, source.label, nodeMetaMap.get(source.id)?.thumbnailUrl);
+    if (source.kind === 'drama') return resolveDramaMentionPreview(dramaAssets, globalAssets, previewNodes, source.id, source.label);
     if (source.kind === 'refmod') {
       try {
         const mention = parseComfyRefmodMentions(source.id).mentions[0];
@@ -1782,7 +1799,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       text: '', missing: !!chipTip.assetUnavailable,
       description: chipTip.assetUnavailable ? t('素材文件不可用') : t('素材库 · {kind}', { kind: t({ image: '图像素材', video: '视频素材', audio: '音频素材', text: '文本文件', other: '文件' }[category]) }),
     };
-  }, [chipTip, currentProjectId, dramaAssets, globalAssets, nodeId, nodeMetaMap, nodes, t]);
+  }, [chipTip, currentProjectId, dramaAssets, globalAssets, nodeId, nodeMetaMap, previewNodes, t]);
   const chipSpriteSource = useComfyImageSource(chipPreview?.sprite ? chipPreview.thumbnailUrl : undefined);
   useEffect(() => {
     // 捕获画布、文字选择和胶囊拖动；原生拖放开始后可能立即收到 pointercancel。
