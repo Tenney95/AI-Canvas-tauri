@@ -7,7 +7,7 @@ import { subscribeAgentLifecycle } from './agentLifecycle';
  * 对话提交与恢复的统一控制层，按会话模式分派普通回复、Agent 任务和显式媒体生成。
  * 组件只调用本模块，不直接拼接运行时、调度器或审批流程。
  */
-import { completeMediaMessageDelivery, MEDIA_PERSIST_FAILED_MESSAGE, runMediaGeneration } from '../ai/generationRuntime';
+import { completeMediaMessageDelivery, deliverMediaMessageGroup, isMediaDeliveryGroup, MEDIA_PERSIST_FAILED_MESSAGE, runMediaGeneration } from '../ai/generationRuntime';
 import { getPendingTasksForProject, isMediaTaskPausedError } from '../pollManager';
 import { completeCanvasDerivation } from '../canvasDerivationGuard';
 import { completeRunningHubNodeTask } from '../ai/providers/runninghubWorkflow';
@@ -661,6 +661,18 @@ export async function triggerMediaGeneration(
     store.updateMessage(messageId, { mediaStatus: 'generating' });
     const result = await runMediaGeneration(intent, projectId, undefined, targetNodeId, taskContext);
     if (!isCurrentApiMessage()) return;
+    if (isMediaDeliveryGroup(result)) {
+      try {
+        const delivered = await deliverMediaMessageGroup(messageId, result, { targetNodeId,
+          guard: placeholderLifecycle?.guard, isCurrent: isCurrentApiMessage,
+          allowCanvas: !targetNodeId || Boolean(placeholderLifecycle) });
+        if (targetNodeId && delivered.canvasReady) useAppStore.getState().incrementRevision();
+        if (!delivered.complete) store.showToast('候选图片已生成，部分保存或回填尚未完成，可继续取回原结果', 'info');
+      } finally {
+        if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
+      }
+      return;
+    }
     const nodeCreated = placeholderLifecycle
       ? settleMediaPlaceholderLifecycle(placeholderLifecycle, result)
       : targetNodeId ? useAppStore.getState().settleMediaPlaceholder(targetNodeId, result) : false;

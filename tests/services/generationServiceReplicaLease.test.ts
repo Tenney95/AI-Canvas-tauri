@@ -6,6 +6,7 @@ import type { BaseNodeData } from '../../src/types';
 
 const mocks = vi.hoisted(() => ({
   store: { currentProjectId: 'p', nodes: [] as Array<{ id: string; data: BaseNodeData }>,
+    config: { theme: 'dark' as const, providers: {} }, commitToHistory: vi.fn(), getCurrentRevision: vi.fn(() => 0),
     workflows: [], projects: [], customStyles: [], updateNodeDataTransient: vi.fn(), updateNodeData: vi.fn(),
     recordOutputHistory: vi.fn(), showToast: vi.fn() },
   generate: vi.fn(), persist: vi.fn(), guardFresh: true, completeGuard: vi.fn(),
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   completeMedia: vi.fn(), pauseMedia: vi.fn(() => new Error('任务已保留')), endOperation: vi.fn(), registerOperation: vi.fn(), prepareMedia: vi.fn(),
   tasks: [] as Array<import('../../src/services/pollManager').PendingTask>,
   polling: new Map<string, { controller: AbortController; signal: AbortSignal }>(),
+  imageOutputs: vi.fn(() => 1),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
 vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'test-id', derivedNodePlacement: vi.fn() }));
@@ -21,6 +23,10 @@ vi.mock('../../src/services/aiService', () => ({ generateVideo: mocks.generate, 
   generateImagesBatch: mocks.imageBatch, generateAudio: mocks.audio, generateText: mocks.text,
   buildPanoramaPrompt: (prompt: string) => prompt }));
 vi.mock('../../src/services/ai/generateAudio', () => ({ persistAudioGenerationResult: mocks.persistAudio }));
+vi.mock('../../src/services/ai/mediaModelCapabilities', async (original) => ({
+  ...await original<typeof import('../../src/services/ai/mediaModelCapabilities')>(),
+  resolveImageOutputsPerJob: mocks.imageOutputs,
+}));
 vi.mock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: mocks.persist }));
 vi.mock('../../src/services/imageBatchService', () => ({ applyImageBatchResults: mocks.applyBatch,
   failImageBatchNodes: vi.fn(), prepareImageBatchNodes: mocks.prepareBatch }));
@@ -93,9 +99,69 @@ beforeEach(() => {
   mocks.registerOperation.mockReset().mockReturnValue(Object.assign(mocks.endOperation, { isCurrent: () => true }));
   mocks.prepareBatch.mockReset().mockReturnValue({ nodeIds: ['video', 'copy'], batchGroupId: 'batch' });
   mocks.applyBatch.mockReset().mockResolvedValue(true);
+  mocks.imageOutputs.mockReset().mockReturnValue(1);
+  mocks.imageBatch.mockReset();
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it('delivers a fixed four-candidate image job through one batch request without entering the single-result path', async () => {
+    const input: BaseNodeData = { ...data(), type: 'ai-image', model: 'general/mj', batchCount: 1 };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    mocks.imageOutputs.mockReturnValue(4);
+    mocks.prepareBatch.mockReturnValue({ nodeIds: ['video', 'candidate-2', 'candidate-3', 'candidate-4'], batchGroupId: 'four' });
+    const receipt = { projectId: 'p', nodeId: 'video', taskId: 'mj-task', attemptId: 'first' };
+    mocks.imageBatch.mockResolvedValueOnce({ requestedCount: 1, expectedOutputCount: 4, failedCount: 0, taskReceipt: receipt,
+      results: [1, 2, 3, 4].map((index) => ({ url: `https://cdn.example/${index}.png`, width: 1, height: 1, taskReceipt: receipt })) });
+    expect(await run(undefined, input)).toEqual({ success: true });
+    expect(mocks.imageBatch).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ collectCandidates: true }), 1);
+    expect(mocks.prepareBatch).toHaveBeenCalledWith(expect.objectContaining({ count: 4, commitHistory: true }));
+    expect(mocks.applyBatch).toHaveBeenCalledWith(expect.objectContaining({
+      batch: expect.objectContaining({ requestedCount: 1, expectedOutputCount: 4 }),
+      targetNodeIds: ['video', 'candidate-2', 'candidate-3', 'candidate-4'],
+    }));
+    expect(mocks.image).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
+
+  it('submits K fixed-output jobs sequentially and creates 4K output slots without changing the parent revision', async () => {
+    const input: BaseNodeData = { ...data(), type: 'ai-image', model: 'general/mj', batchCount: 2 };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    mocks.imageOutputs.mockReturnValue(4);
+    mocks.store.updateNodeDataTransient.mockImplementation((nodeId: string, patch: Partial<BaseNodeData>) => {
+      mocks.store.nodes = mocks.store.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node);
+    });
+    let sequence = 0;
+    mocks.prepareBatch.mockImplementation(({ nodeId, count, commitHistory }: { nodeId: string; count: number; commitHistory: boolean }) => {
+      if (commitHistory) mocks.store.commitToHistory();
+      const source = mocks.store.nodes.find((node) => node.id === nodeId)!;
+      const additional = Array.from({ length: count - 1 }, () => ({ id: `output-${++sequence}`,
+        data: { ...source.data, batchCount: 1, status: 'loading' as const } }));
+      mocks.store.nodes = [...mocks.store.nodes, ...additional];
+      return { nodeIds: [nodeId, ...additional.map((node) => node.id)], batchGroupId: `group-${sequence}` };
+    });
+    mocks.imageBatch.mockImplementation(async () => ({ requestedCount: 1, expectedOutputCount: 4, failedCount: 0,
+      results: [1, 2, 3, 4].map((index) => ({ url: `https://cdn.example/${index}.png`, width: 1, height: 1 })) }));
+    expect(await run(undefined, input)).toEqual({ success: true });
+    expect(mocks.imageBatch).toHaveBeenCalledTimes(2);
+    expect(mocks.imageBatch.mock.calls.every(([, count]) => count === 1)).toBe(true);
+    expect(mocks.prepareBatch.mock.calls.map(([options]) => [options.count, options.commitHistory])).toEqual([[2, true], [4, false], [4, false]]);
+    expect(mocks.store.nodes).toHaveLength(8);
+    expect(mocks.store.commitToHistory).toHaveBeenCalledOnce();
+    expect(mocks.applyBatch.mock.calls.every(([options]) => options.commitHistory === false && options.batch.expectedOutputCount === 4)).toBe(true);
+    expect(mocks.store.getCurrentRevision()).toBe(0);
+  });
+
+  it('rejects image post-processing for a fixed multi-candidate model before a paid request', async () => {
+    const input: BaseNodeData = { ...data(), type: 'ai-image', model: 'general/mj', batchCount: 1 };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    mocks.imageOutputs.mockReturnValue(4);
+    const result = await executeGeneration('video', undefined, 'character-8-direction-grid', input);
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('固定多候选模型');
+    expect(mocks.imageBatch).not.toHaveBeenCalled();
+    expect(mocks.image).not.toHaveBeenCalled();
+  });
+
   it.each(['ai-image', 'ai-audio', 'ai-video'] as const)('%s ComfyUI 提交未知返回暂停，不写终态失败或重投', async (type) => {
     const input: BaseNodeData = { ...data(), type, provider: 'comfyui', model: 'comfyui/workflow', workflowId: 'wf-1' };
     mocks.store.nodes = [{ id: 'video', data: input }];

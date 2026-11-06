@@ -2,6 +2,7 @@
  * relayonProviderGroups — 维护 Relayon 分组目录与模型、价格筛选。
  */
 import type { ApiProviderConfig, ProviderModelSelection } from '../../types';
+import { RELAYON_IMAGE_MODEL_IDS } from './providers/relayonModelManifest';
 
 /** 官网分组快照，候选不代表 Key 已验证或具有全部权限。 */
 export const RELAYON_PROVIDER_GROUPS = [
@@ -18,8 +19,7 @@ const GROUP_PRESETS: Record<string, readonly string[]> = {
   'GPTpro号池': ['gpt-6.1-sol'],
   'Gemini号池': ['gemini-3.8-flash', 'gemini-4-argon'],
   default: [],
-  image: ['image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst',
-    'image-2.5-sunburst-01', 'nano-banana-2', 'nano-banana-2.1', 'nano-banana-pro', 'Seedream 5.0 Pro'],
+  image: RELAYON_IMAGE_MODEL_IDS,
   video: ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128',
     'doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-5-260628',
     'sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2', 'minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1'],

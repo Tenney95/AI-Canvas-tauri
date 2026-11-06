@@ -40,6 +40,7 @@ import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
 import type { ResolvedModelProtocolPoll } from '../../src/types/aiTypes';
 import * as fileService from '../../src/services/fileService';
 import * as comfyPolling from '../../src/services/comfyPolling';
+import * as indexedDbService from '../../src/services/indexedDbService';
 import * as tauriCore from '@tauri-apps/api/core';
 
 vi.mock('@tauri-apps/api/core', async (importOriginal) => ({
@@ -897,6 +898,89 @@ describe('pending generation task recovery', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(getPendingTasksForProject('project-1')).toEqual([]);
     expect(useAppStore.getState().nodes[0].data.status).toBe('success');
+  });
+
+  it.each([false, true])('resumes only missing fixed candidates from the original receipt after partial save (reattach=%s)', async (reattach) => {
+    const { imageBatchArtifactId } = await import('../../src/services/imageBatchService');
+    const resultUrls = [1, 2, 3, 4].map((index) => `https://relayonapi.com/results/mj-${index}.png`);
+    const mediaDownloadAccess = { providerConfigId: 'mj-origin', origin: 'https://relayonapi.com', auth: { type: 'bearer' as const } };
+    useAppStore.setState((state) => ({ nodes: [{ id: 'mj-source', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: 'MJ 候选', status: 'loading', model: 'mj', provider: 'general' } }],
+    config: { ...state.config, providers: { 'mj-origin': { name: 'MJ original', apiKey: 'fixture-key', baseUrl: 'https://relayonapi.com/v1' } } } }));
+    const receipt = savePendingTask({ nodeId: 'mj-source', projectId: 'project-1', nodeType: 'ai-image', provider: 'general',
+      providerConfigId: 'mj-origin', taskType: 'custom-protocol', taskId: 'mj-original', submitted: true,
+      batchCount: 4, expectedImageOutputs: 4, resultUrls, mediaDownloadAccess, mediaRecoveryState: 'delivery_pending' });
+    const history: indexedDbService.HistoryRecord[] = [];
+    const readHistory = vi.spyOn(indexedDbService, 'getNodeHistoryEntries')
+      .mockImplementation(async (_projectId, nodeId) => history.filter((entry) => entry.nodeId === nodeId));
+    const record = vi.spyOn(useAppStore.getState(), 'recordOutputHistory').mockImplementation(async (nodeId, entry) => {
+      history.push({ ...entry, nodeId, id: `history-${history.length}`, projectId: 'project-1' });
+    });
+    let fail = true;
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockImplementation(async (url) => {
+      if (fail && url === resultUrls[1]) throw new fileService.MediaPersistenceError('目标磁盘空间不足');
+      return { mediaUrl: `asset://saved/${url.split('/').pop()}`, sourceUrl: url, filePath: `saved/${url.split('/').pop()}` };
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await resumeMediaNodeTask('mj-source');
+      expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ ...receipt, expectedImageOutputs: 4,
+        resultUrls, mediaRecoveryState: 'delivery_pending' });
+      expect(JSON.parse(localStorage.getItem('ai_canvas_pending_tasks')!)[0].expectedImageOutputs).toBe(4);
+      expect(useAppStore.getState().nodes).toHaveLength(4);
+      expect(history).toHaveLength(3);
+      let recoveryNodeId = 'mj-source';
+      if (reattach) {
+        prepareMediaNodeGeneration('mj-source');
+        const firstRecoveryId = getPendingTasksForProject('project-1')[0].nodeId;
+        expect(getPendingTasksForProject('project-1')[0].imageOutputNodeIds).toEqual(['mj-source']);
+        // 再次移转同一原任务也必须保留所有已明确绑定的旧节点身份。
+        prepareMediaNodeGeneration(firstRecoveryId);
+        const moved = getPendingTasksForProject('project-1')[0];
+        recoveryNodeId = moved.nodeId;
+        expect(moved.imageOutputNodeIds).toEqual(['mj-source', firstRecoveryId]);
+        expect(imageBatchArtifactId(moved, 0)).toBe(imageBatchArtifactId(receipt, 0));
+        useAppStore.getState().updateNodeDataTransient('mj-source', { status: 'success', imageUrl: 'asset://new-job' });
+      }
+      const retainedIds = useAppStore.getState().nodes.filter((node) => [2, 3].some((index) =>
+        node.data.artifactId === imageBatchArtifactId(receipt, index))).map((node) => node.id);
+      fail = false;
+      persist.mockClear();
+      await resumeMediaNodeTask(recoveryNodeId);
+      expect(persist).toHaveBeenCalledOnce();
+      expect(persist.mock.calls[0][0]).toBe(resultUrls[1]);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getPendingTasksForProject('project-1')).toEqual([]);
+      const nodes = useAppStore.getState().nodes;
+      expect(nodes).toHaveLength(reattach ? 6 : 4);
+      expect(retainedIds.every((id) => nodes.some((node) => node.id === id && node.data.status === 'success'))).toBe(true);
+      expect(nodes.filter((node) => [0, 1, 2, 3].some((index) => node.data.artifactId === imageBatchArtifactId(receipt, index)))).toHaveLength(4);
+      expect(new Set(history.map((entry) => `${entry.nodeId}:${entry.params?.imageOutputId}`)).size).toBe(history.length);
+      if (reattach) expect(nodes.find((node) => node.id === 'mj-source')?.data.imageUrl).toBe('asset://new-job');
+    } finally { persist.mockRestore(); record.mockRestore(); readHistory.mockRestore(); }
+  });
+
+  it('keeps a fixed four-candidate receipt when a completed task has only delivered three URLs', async () => {
+    useAppStore.setState((state) => ({ nodes: [{ id: 'short-mj', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: 'MJ short', status: 'loading' } }], config: { ...state.config,
+      providers: { 'mj-origin': { name: 'MJ original', apiKey: 'fixture-key', baseUrl: 'https://relayonapi.com/v1' } } } }));
+    savePendingTask({ nodeId: 'short-mj', projectId: 'project-1', nodeType: 'ai-image', provider: 'general',
+      providerConfigId: 'mj-origin', taskType: 'custom-protocol', taskId: 'mj-short', submitted: true,
+      batchCount: 4, expectedImageOutputs: 4, resultUrls: [1, 2, 3].map((index) => `https://relayonapi.com/${index}.png`),
+      mediaDownloadAccess: { providerConfigId: 'mj-origin', origin: 'https://relayonapi.com', auth: { type: 'bearer' } },
+      mediaRecoveryState: 'delivery_pending' });
+    const readHistory = vi.spyOn(indexedDbService, 'getNodeHistoryEntries').mockResolvedValue([]);
+    const record = vi.spyOn(useAppStore.getState(), 'recordOutputHistory').mockResolvedValue(undefined);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData').mockImplementation(async (url) => ({ mediaUrl: url, sourceUrl: url }));
+    try {
+      await resumeMediaNodeTask('short-mj');
+      expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ taskId: 'mj-short', expectedImageOutputs: 4,
+        mediaRecoveryState: 'delivery_pending' });
+      expect(useAppStore.getState().nodes).toHaveLength(4);
+      expect(useAppStore.getState().nodes.filter((node) => node.data.imageUrl)).toHaveLength(3);
+      expect(record).toHaveBeenCalledTimes(3);
+    } finally { persist.mockRestore(); record.mockRestore(); readHistory.mockRestore(); }
   });
 
   it('recovers a message-only ComfyUI result without creating a node or clearing a failed message delivery', async () => {

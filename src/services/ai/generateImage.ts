@@ -45,7 +45,7 @@ import { assertToapisImageInput, resolveToapisImageModelContract, toapisImageRef
 import { assertLibapiImageInput, libapiImageExecutionProfile, libapiImageVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { relayonImageVariables, resolveRelayonImageExecutionProfile, resolveRelayonImageModelContract, usesRelayonModelProtocol } from './providers/relayonModelManifest';
 import { aigcsiImageExecutionProfile, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
-import { resolveImageParameterCapability } from './mediaModelCapabilities';
+import { resolveImageOutputsPerJob, resolveImageParameterCapability } from './mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
 import { compileVideoReferencePrompt } from './referencePrompt';
 
@@ -61,10 +61,20 @@ export async function generateImage(
   params: AIImageGenParams,
   signal?: AbortSignal,
 ): Promise<ImageGenerationResult> {
+  if (!params.collectCandidates && !params.workflowId
+    && resolveImageOutputsPerJob(params.model, params.provider, useAppStore.getState().config) > 1) {
+    throw new Error('所选模型一次返回多张候选图，请在图片节点或对话中生成');
+  }
   const batch = await generateImagesBatch(params, 1, signal);
   const result = batch.results[0];
   if (!result) throw new Error('图片生成返回结果为空');
-  return batch.taskReceipt ? { ...result, taskReceipt: batch.taskReceipt } : result;
+  return { ...result,
+    ...(batch.taskReceipt ? { taskReceipt: batch.taskReceipt } : {}),
+    ...((batch.expectedOutputCount ?? 1) > 1 ? {
+      expectedOutputCount: batch.expectedOutputCount,
+      ...(batch.results.length > 1 ? { additionalResults: batch.results.slice(1) } : {}),
+    } : {}),
+  };
 }
 
 function singleResult(result: ImageGenerationResult): BatchImageResult {
@@ -186,8 +196,9 @@ export async function generateImagesBatch(
     && (!effectiveProfile || effectiveProfile.preset === 'openai-image' || effectiveProfile.preset === 'openai-gpt-image')) {
     throw new Error('此 CCC Gemini／香蕉图片型号尚未适配原生调用协议，请配置该模型的调用协议后再试');
   }
-  // 旧节点仍可直接保存 CCC 连接 ID；仅构造本轮执行描述，不写入或迁移用户配置。
-  const declarativeModel: GeneralModelConfig | undefined = generalModel ?? (isCccImage ? {
+  // 直连节点仍绑定原连接；只为已配置协议构造本轮执行描述，不写入或迁移用户配置。
+  const declarativeModel: GeneralModelConfig | undefined = generalModel ?? (isCccImage
+    || !params.workflowId && providerDefinition?.id === 'relayonapi' && effectiveProfile ? {
     id: modelName, modelId: modelName, name: selectedModel?.name ?? catalogModel?.name ?? modelName,
     category: 'image', providerConfigId: connectionId,
   } : undefined);
@@ -217,6 +228,8 @@ export async function generateImagesBatch(
   const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(modelName, executionProfile);
   const usesRelayonProtocol = providerDefinition?.id === 'relayonapi'
     && usesRelayonModelProtocol(modelName, executionProfile);
+  const outputsPerJob = !params.workflowId && usesRelayonProtocol
+    ? resolveImageOutputsPerJob(model, provider, config) : 1;
   const usesAigcsiProtocol = providerDefinition?.id === 'aigc-si'
     && usesAigcsiModelProtocol(modelName, executionProfile);
   const usesStandardImageRequest = !executionProfile
@@ -397,7 +410,7 @@ export async function generateImagesBatch(
     });
   }
 
-  // 通用模型与旧 CCC 直连节点共用声明式执行，不能因旧 provider 形态退回 Images API。
+  // 通用模型与已适配直连节点共用声明式执行，不能因 provider 形态丢失协议或额外候选。
   if (declarativeModel && executionProfile) {
     const gm = declarativeModel;
     const dimensions = resolveImageTemplateDimensions(configuredCapability, imageSize, aspectRatio);
@@ -428,17 +441,19 @@ export async function generateImagesBatch(
         category: 'image',
         nodeId: params.nodeId,
         signal,
+        ...(outputsPerJob > 1 ? { expectedImageOutputs: outputsPerJob } : {}),
         variables: usesLibapiProtocol ? libapiImageVariables(modelName, variables)
           : usesRelayonProtocol ? relayonImageVariables(modelName, variables) : variables,
       });
-      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions,
+      const results = (outputsPerJob > 1 ? urls : urls.slice(0, requestedCount)).map((url) => ({ url, ...dimensions,
         ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt } : {}),
         ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}) }));
       if (results.length === 0) throw new Error('图片生成返回结果为空');
       return {
         requestedCount,
+        ...(outputsPerJob > 1 ? { expectedOutputCount: outputsPerJob } : {}),
         results,
-        failedCount: Math.max(0, requestedCount - results.length),
+        failedCount: Math.max(0, requestedCount * outputsPerJob - results.length),
         ...(urls.mediaDownloadAccess ? { mediaDownloadAccess: urls.mediaDownloadAccess } : {}),
         ...(urls.taskReceipt ? { taskReceipt: urls.taskReceipt, allTasksSettled: true } : {}),
       };

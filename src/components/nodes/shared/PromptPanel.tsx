@@ -54,7 +54,7 @@ import type { AudioGenerationPurpose } from '../../../types/media';
 import { useT } from '../../../i18n';
 import CloudWorkflowParamSelector from './CloudWorkflowParamSelector';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../../services/ai/dreaminaModels';
-import { resolveAudioParameterCapability, resolveImageParameterCapability } from '../../../services/ai/mediaModelCapabilities';
+import { resolveAudioParameterCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../../services/ai/mediaModelCapabilities';
 import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
 import { getPromptSubmitShortcutHint, normalizePromptSubmitShortcut } from '../../../utils/promptSubmitShortcut';
 
@@ -603,6 +603,8 @@ export default function PromptPanel({
   const imageCapability = nodeType === 'ai-image' && !dreaminaImageModel
     ? resolveImageParameterCapability(selectedModel, selectedProvider, imageModelConfig)
     : undefined;
+  const imageOutputsPerJob = nodeType === 'ai-image' && !selectedWorkflowId
+    ? resolveImageOutputsPerJob(selectedModel, selectedProvider, imageModelConfig) : 1;
   const imageResolutions = dreaminaImageModel?.resolutions ?? imageCapability?.resolutions;
   const imageGeneralModel = selectedProvider === 'general'
     ? imageModelConfig.generalModels?.find((model) => model.id === selectedModel?.replace(/^general\//, ''))
@@ -935,7 +937,9 @@ export default function PromptPanel({
       disabled={!canGenerate || !hasGenerationInput}
       aria-haspopup="menu"
       aria-expanded={!!shortcutMenuAnchor || (batchSupported && batchMenuOpen)}
-      data-tooltip={`${isGenerating ? t('生成中') : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))} · ${t('右键设置发送快捷键')}`}
+      data-tooltip={`${isGenerating ? t('生成中') : imageOutputsPerJob > 1
+        ? t('点击生成 {count} 张候选图，长按选择作业次数', { count: imageOutputsPerJob })
+        : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))} · ${t('右键设置发送快捷键')}`}
       onPointerDown={handleBatchPointerDown}
       onPointerUp={clearBatchLongPress}
       onPointerCancel={clearBatchLongPress}
@@ -1307,7 +1311,7 @@ export default function PromptPanel({
                     <div
                       className="image-batch-menu"
                       role="menu"
-                      aria-label={t('选择批量生成数量')}
+                      aria-label={imageOutputsPerJob > 1 ? t('选择生成作业次数') : t('选择批量生成数量')}
                       aria-hidden={!batchMenuOpen}
                     >
                       {imageBatchCounts.map((count) => (
@@ -1317,8 +1321,12 @@ export default function PromptPanel({
                           role="menuitem"
                           tabIndex={batchMenuOpen ? 0 : -1}
                           className={`image-batch-menu-item${batchCount === count ? ' active' : ''}`}
-                          aria-label={t('生成 {count} 张图片', { count })}
-                          title={count >= 4 ? t('生成 {count} 张，费用可能按张计算', { count }) : t('生成 {count} 张', { count })}
+                          aria-label={imageOutputsPerJob > 1
+                            ? t('生成 {jobs} 次作业，共 {count} 张候选图', { jobs: count, count: count * imageOutputsPerJob })
+                            : t('生成 {count} 张图片', { count })}
+                          title={imageOutputsPerJob > 1
+                            ? t('生成 {jobs} 次作业，共 {count} 张候选图', { jobs: count, count: count * imageOutputsPerJob })
+                            : count >= 4 ? t('生成 {count} 张，费用可能按张计算', { count }) : t('生成 {count} 张', { count })}
                           onClick={handleBatchSelect(count)}
                         >
                           {count}

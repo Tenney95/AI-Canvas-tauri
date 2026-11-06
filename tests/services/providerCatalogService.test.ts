@@ -298,7 +298,7 @@ describe('万象 API 内置目录与连接身份', () => {
     expect(definition?.models?.filter((model) => model.category === 'text').map((model) => model.id)).toEqual([
       'gemini-3.8-flash', 'gemini-4-argon', 'gpt-6.1-sol', 'claude-opus-5-5',
     ]);
-    expect(definition?.models).toHaveLength(24);
+    expect(definition?.models).toHaveLength(30);
     expect(definition?.models?.filter((model) => model.category === 'image').map((model) => model.id)).toEqual([...RELAYON_IMAGE_MODEL_IDS]);
     expect(definition?.models?.filter((model) => model.category === 'video').map((model) => model.id)).toEqual([...RELAYON_VIDEO_MODEL_IDS]);
     expect(definition?.models?.filter((model) => model.category === 'text').every((model) => model.executionProfile?.preset === 'openai-chat')).toBe(true);
@@ -314,7 +314,7 @@ describe('万象 API 内置目录与连接身份', () => {
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'Gemini号池').map(({ id }) => id)).toEqual([
       'gemini-3.8-flash', 'gemini-4-argon',
     ]);
-    expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'image')).toHaveLength(9);
+    expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'image').map(({ id }) => id)).toEqual([...RELAYON_IMAGE_MODEL_IDS]);
     expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video')).toHaveLength(11);
     for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1']) {
       expect(getRelayonGroupPresetModels(RELAYON_MODEL_MANIFEST, 'video').some((model) => model.id === id)).toBe(true);
@@ -419,7 +419,7 @@ describe('万象 API 内置目录与连接身份', () => {
       method: 'GET', headers: expect.objectContaining({ Authorization: 'Bearer alias-fixture-key' }),
     }));
     expect(result).toMatchObject({ source: 'remote', resolvedBaseUrl: 'https://relayonapi.com/v1' });
-    expect(result.models).toHaveLength(24);
+    expect(result.models).toHaveLength(30);
     expect(result.models).toEqual(expect.arrayContaining(RELAYON_MODEL_MANIFEST.map((model) => ({
       ...model, provider: 'relayon-alias',
     }))));
@@ -445,7 +445,7 @@ describe('万象 API 内置目录与连接身份', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const definition = getProviderDefinition('relayonapi');
-    expect(definition?.models).toHaveLength(24);
+    expect(definition?.models).toHaveLength(30);
     await expect(fetchProviderModelCatalog({ providerId: 'relayonapi',
       config: { name: '万象', catalogId: 'relayonapi', apiKey: '' },
       fallbackModels: [...RELAYON_MODEL_MANIFEST] })).rejects.toThrow();
@@ -461,7 +461,7 @@ describe('万象 API 内置目录与连接身份', () => {
 
   it('认证目录只返回未接入型号时保留真实空结果，不追加预置候选', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
-      data: [{ id: 'gpt-6-astra' }, { id: 'Midjourney v8.2' }, { id: 'future-video' }],
+      data: [{ id: 'gpt-6-astra' }, { id: 'Midjourney v9' }, { id: 'future-video' }],
     })));
     const result = await fetchProviderModelCatalog({ providerId: 'relayonapi',
       config: { name: '万象', catalogId: 'relayonapi', apiKey: 'fixture' },

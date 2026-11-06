@@ -60,6 +60,15 @@ describe('万象分组连接', () => {
     for (const group of RELAYON_PROVIDER_GROUPS) expect(field(`${group.name} API Key`)).toBeDefined();
     expect(field('启用 image Image-2.5-Flare')).toBeDefined();
     expect(field('启用 video Image-2.5-Flare')).toBeUndefined();
+    for (const id of ['image-2.6-01', 'Midjourney v6', 'Midjourney v6.1', 'Midjourney v7', 'Midjourney v8.1', 'Midjourney v8.2']) {
+      expect(field(`启用 image ${id}`)).toBeDefined();
+      expect(field(`启用 image ${id}`).props.checked).toBe(false);
+      expect(field(`启用 video ${id}`)).toBeUndefined();
+    }
+    for (const id of ['minimax-h3', 'sd-2.0-c3', 'sd-2.5-c1']) {
+      expect(field(`启用 video ${id}`)).toBeDefined();
+      expect(field(`启用 image ${id}`)).toBeUndefined();
+    }
     key('image', 'image-fixture'); toggle('image', 'Image-2.5-Flare');
     key('video', 'video-fixture'); toggle('video', 'sd-2.5-A');
     await save();

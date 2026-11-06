@@ -42,6 +42,8 @@ interface RunConfiguredModelProtocolOptions {
   nodeId?: string;
   category: Exclude<GeneralModelCategory, 'text'>;
   signal?: AbortSignal;
+  /** 图片单作业固定候选数量；只影响交付恢复，不写进请求变量 n。 */
+  expectedImageOutputs?: number;
 }
 
 const NODE_TYPE_BY_CATEGORY: Record<Exclude<GeneralModelCategory, 'text'>, NodeType> = {
@@ -385,6 +387,10 @@ export async function runConfiguredModelProtocol(
   assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
 
   const projectId = useAppStore.getState().currentProjectId;
+  const expectedOutputCount = options.category === 'image' && options.expectedImageOutputs !== undefined
+    ? readBatchCount(options.expectedImageOutputs) : readBatchCount(options.variables.n);
+  const fixedImageOutputs = options.category === 'image' && options.expectedImageOutputs !== undefined && expectedOutputCount > 1
+    ? { expectedImageOutputs: expectedOutputCount } : {};
   const videoGeneration = options.category === 'video' ? captureVideoTaskGeneration(options.nodeId) : undefined;
   let receipt: MediaTaskReceipt | undefined;
   const releaseOperation = options.nodeId ? registerMediaNodeOperation(options.nodeId) : undefined;
@@ -404,7 +410,7 @@ export async function runConfiguredModelProtocol(
         nodeType: NODE_TYPE_BY_CATEGORY[options.category], provider: 'general', providerConfigId: options.model.providerConfigId,
         taskId: '', taskType: 'custom-protocol', submitted: false, videoGeneration,
         mediaDownloadAccess,
-        batchCount: readBatchCount(options.variables.n) });
+        batchCount: expectedOutputCount, ...fixedImageOutputs });
     }
     const submitted = await submitModelProtocol(submitOptions);
     if (submitted.urls) {
@@ -414,11 +420,11 @@ export async function runConfiguredModelProtocol(
       if (resultUrls && options.nodeId && projectId) {
         const taskId = receipt?.taskId || `result-${crypto.randomUUID()}`;
         receipt = receipt ? updatePendingTask(receipt.nodeId, { taskId, submitted: true, resultUrls,
-          mediaDownloadAccess, mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId)
+          mediaDownloadAccess, mediaRecoveryState: 'delivery_pending', ...fixedImageOutputs }, receipt.taskId, receipt.attemptId)
           : savePendingTask({ nodeId: options.nodeId, projectId, nodeType: NODE_TYPE_BY_CATEGORY[options.category],
             provider: 'general', providerConfigId: options.model.providerConfigId, taskType: 'custom-protocol',
             taskId, submitted: true, resultUrls, mediaDownloadAccess, videoGeneration,
-            mediaRecoveryState: 'delivery_pending', batchCount: readBatchCount(options.variables.n) });
+            mediaRecoveryState: 'delivery_pending', batchCount: expectedOutputCount, ...fixedImageOutputs });
       }
       return Object.assign(submitted.urls, { mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) });
     }

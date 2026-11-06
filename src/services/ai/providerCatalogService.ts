@@ -1033,7 +1033,7 @@ export async function fetchProviderModelCatalog(
         ...(group
           ? { warning: '已按当前 Key 的目录和公开分组目录筛选已适配型号；实际调用权限以平台为准。' }
           : matched.length < models.length
-            ? { warning: '已获取当前 Key 的目录，仅展示已适配的文本、图片与视频型号；Midjourney 和其他未适配型号暂不展示。' }
+            ? { warning: '已获取当前 Key 的目录，仅展示已适配的文本、图片与视频型号；其他未适配型号暂不展示。' }
           : {}),
       };
     }

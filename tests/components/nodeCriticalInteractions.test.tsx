@@ -1841,7 +1841,7 @@ describe('critical canvas node interactions', () => {
       ]) vi.doUnmock(module);
     });
 
-    async function setupImageQualityDialog(batchCount = 1) {
+    async function setupImageQualityDialog(batchCount = 1, outputsPerJob = 1) {
       const store = createStore([{
         id: 'quality-image', type: 'ai-image', position: { x: 0, y: 0 },
         data: { type: 'ai-image', label: '图片', status: 'idle', prompt: 'cat',
@@ -1876,6 +1876,7 @@ describe('critical canvas node interactions', () => {
         persistMediaUrlToProjectData,
       }));
       vi.doMock('../../src/services/ai/mediaModelCapabilities', () => ({
+        resolveImageOutputsPerJob: () => outputsPerJob,
         resolveImageParameterCapability: (model: string) => model === 'general/model-compatible'
           ? { resolutions: ['1K', '2k', '4K'], defaultResolution: '1K', ratios: ['1:1', '16:9', '9:16', 'auto'], defaultRatio: '1:1',
             qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], defaultQuality: 'auto',
@@ -1912,6 +1913,21 @@ describe('critical canvas node interactions', () => {
         persistMediaUrlToProjectData, savingController, registerNodePolling, cleanupNodePolling, registerMediaNodeOperation,
         completeMediaNodeTask, pauseMediaTask, pauseComfyNodeDelivery, pendingTasks, dialog: AINodeDialog };
     }
+
+    it('固定四候选即使选择一次作业也委托完整图片交付入口，不走本地首图保存分支', async () => {
+      const executeGeneration = vi.fn().mockResolvedValue({ success: true });
+      vi.doMock('../../src/services/generationService', () => ({ executeGeneration,
+        subscribeImageBatches: () => () => {}, isImageBatchGenerating: () => false,
+        cancelImageBatchGeneration: vi.fn(), usesSequentialImageBatch: () => false,
+      }));
+      const { panel, generateImage, generateImagesBatch, persistMediaUrlToProjectData } = await setupImageQualityDialog(1, 4);
+      await (panel().props.onSubmit as (prompt: string) => Promise<void>)('MJ prompt');
+      expect(executeGeneration).toHaveBeenCalledOnce();
+      expect(executeGeneration).toHaveBeenCalledWith('quality-image', 'MJ prompt', undefined);
+      expect(generateImage).not.toHaveBeenCalled();
+      expect(generateImagesBatch).not.toHaveBeenCalled();
+      expect(persistMediaUrlToProjectData).not.toHaveBeenCalled();
+    });
 
     it('本地 ComfyUI 保存失败把原始错误交给恢复层，保留原任务而不重新生成', async () => {
       const { panel, store, generateImage, persistMediaUrlToProjectData, pauseComfyNodeDelivery, completeMediaNodeTask } = await setupImageQualityDialog();
@@ -2849,5 +2865,51 @@ describe('critical canvas node interactions', () => {
     expect(store.showToast).toHaveBeenCalledWith(outcome === 'local-stopped'
       ? '已停止本地等待；ComfyUI 任务结束尚未确认，请核对原任务后继续查询' : '已终止 ComfyUI 任务');
     if (outcome === 'local-stopped') expect(pendingTasks).toHaveLength(1);
+  });
+});
+
+describe('MJ generation job controls', () => {
+  afterEach(() => {
+    for (const module of ['framer-motion', '../../src/components/nodes/shared/PromptPanel',
+      '../../src/services/ai/mediaModelCapabilities']) vi.doUnmock(module);
+  });
+
+  it.each([4, 1])('labels a job with %i output images without multiplying the submitted job count', async (outputsPerJob) => {
+    const store = Object.assign(createStore([], () => 1), {
+      userPresets: [], presetFolders: [], userSkills: [], agentPackageSkills: [],
+    });
+    await installReactHookDriver();
+    installStoreMock(store);
+    vi.doMock('../../src/i18n', () => ({ useT: () => (key: string, values: Record<string, unknown> = {}) => (
+      key.replace(/\{([^}]+)\}/g, (match, name: string) => String(values[name] ?? match))
+    ), t: (key: string) => key }));
+    vi.doMock('framer-motion', async () => ({
+      ...await vi.importActual<typeof import('framer-motion')>('framer-motion'), useReducedMotion: () => false,
+    }));
+    vi.doMock('../../src/services/ai/mediaModelCapabilities', () => ({
+      resolveAudioParameterCapability: () => undefined,
+      resolveImageOutputsPerJob: () => outputsPerJob,
+      resolveImageParameterCapability: () => ({ resolutions: ['1K'], defaultResolution: '1K',
+        ratios: ['16:9'], defaultRatio: '16:9', supportsBatch: false, maxBatchCount: 1 }),
+    }));
+    vi.doUnmock('../../src/components/nodes/shared/PromptPanel');
+    const Panel = (await import('../../src/components/nodes/shared/PromptPanel')).default;
+    const onSubmit = vi.fn();
+    const onChangeBatchCount = vi.fn();
+    const tree = Panel({ nodeType: 'ai-image', selectedModel: 'general/mj', selectedProvider: 'general',
+      prompt: 'cat', onChange: vi.fn(), onSubmit, onModelSelect: vi.fn(), onChangeBatchCount });
+    const submit = findElement(tree, (element) => element.type === 'button' && element.props['aria-label'] === '调用模型生成');
+    expect(submit.props['data-tooltip']).toContain(outputsPerJob === 4
+      ? '点击生成 4 张候选图，长按选择作业次数' : '点击生成 1 张，长按选择数量');
+    const item = findElement(tree, (element) => element.props.role === 'menuitem'
+      && element.props['aria-label'] === (outputsPerJob === 4 ? '生成 3 次作业，共 12 张候选图' : '生成 3 张图片'));
+    expect(item.props.title).toBe(outputsPerJob === 4 ? '生成 3 次作业，共 12 张候选图' : '生成 3 张');
+    (item.props.onClick as (event: { stopPropagation: () => void }) => void)({ stopPropagation: vi.fn() });
+    expect(onChangeBatchCount).toHaveBeenLastCalledWith(3);
+    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onSubmit).toHaveBeenLastCalledWith('cat', undefined);
+    (submit.props.onClick as (event: { stopPropagation: () => void }) => void)({ stopPropagation: vi.fn() });
+    expect(onChangeBatchCount).toHaveBeenLastCalledWith(1);
+    expect(onSubmit).toHaveBeenCalledTimes(2);
   });
 });

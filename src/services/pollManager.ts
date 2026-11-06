@@ -13,7 +13,7 @@ import { corsSafeFetch } from './ai/httpTransport';
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
 import { useAppStore } from '../store/useAppStore';
 import { MediaPersistenceError, persistMediaUrlToProjectData, type MediaPersistenceFailureKind } from './fileService';
-import { applyImageBatchResults } from './imageBatchService';
+import { applyImageBatchResults, imageBatchArtifactId } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './ai/helpers';
 import { resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
@@ -189,6 +189,10 @@ export interface PendingTask {
   baseUrl?: string;
   /** 批量图片任务期望回填的结果数量；旧记录缺省为 1。 */
   batchCount?: number;
+  /** 单个远端作业固定返回多候选时的交付数量；不随当前连接配置变化。 */
+  expectedImageOutputs?: number;
+  /** 固定候选任务内部重挂的历史节点，仅用于严格匹配旧消息回执。 */
+  imageOutputNodeIds?: string[];
   /** 同一节点对应的多个异步任务 ID（APIMart / RunningHub 批量图片生成）。 */
   taskIds?: string[];
   /** 声明式协议任务从连接配置重新读取密钥，不在此处新增密钥副本。 */
@@ -719,19 +723,26 @@ export function prepareMediaNodeGeneration(nodeId: string): void {
   if (!source) return;
   const recoveryNodeId = generateId();
   const placement = derivedNodePlacement(source);
+  const retainedCandidate = task.nodeType === 'ai-image' && (task.expectedImageOutputs ?? 1) > 1
+    && source.data.artifactId === imageBatchArtifactId(receiptForTask(task), 0) && Boolean(source.data.imageUrl);
   const originalTasks = loadAll();
   saveAll(originalTasks.map((item) => item.nodeId === nodeId && item.projectId === task.projectId
-    ? { ...item, nodeId: recoveryNodeId, mediaContext: item.mediaContext
+    ? { ...item, nodeId: recoveryNodeId,
+      ...(task.nodeType === 'ai-image' && (task.expectedImageOutputs ?? 1) > 1
+        ? { imageOutputNodeIds: [...new Set([...(item.imageOutputNodeIds ?? []), nodeId])] } : {}),
+      mediaContext: item.mediaContext
       ? { ...item.mediaContext, canvasNodeId: recoveryNodeId } : undefined } : item));
   try {
     store.commitToHistory();
     store.addNodesTransient([{ ...source, id: recoveryNodeId, ...placement, selected: false,
       data: { ...source.data, label: `${source.data.label} · 待恢复`, displayId: getNextDisplayId(store.nodes),
-        status: 'idle', error: undefined, imageUrl: undefined, audioUrl: undefined, thumbnailUrl: undefined,
-        output: undefined, sourceUrl: undefined, filePath: undefined,
+        status: 'idle', error: undefined,
+        ...(!retainedCandidate ? { imageUrl: undefined, audioUrl: undefined, thumbnailUrl: undefined,
+          output: undefined, sourceUrl: undefined, filePath: undefined } : {}),
         mediaTaskState: task.mediaRecoveryState === 'delivery_pending' ? 'delivery_pending' : 'paused', mediaTaskStage: undefined } }]);
   } catch (error) { saveAll(originalTasks); throw error; }
   store.updateNodeDataTransient(nodeId, { mediaTaskState: undefined, mediaTaskStage: undefined, error: undefined,
+    ...(retainedCandidate ? { artifactId: undefined } : {}),
     ...(task.nodeType === 'ai-image' && (task.batchCount ?? 1) > 1 ? { batchGroupId: undefined } : {}) });
 }
 
@@ -765,7 +776,8 @@ function inferLegacyProviderConfigId(task: LegacyPendingTask): string | undefine
 }
 
 function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
-  const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, comfyOutputFile, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure, ...safeTask } = task;
+  const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, comfyOutputFile, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure,
+    imageOutputNodeIds, ...safeTask } = task;
   delete safeTask.apiKey;
   const providerConfigId = inferLegacyProviderConfigId(task);
   const parameters = sanitizeMediaParameters(task.mediaContext?.parameters);
@@ -773,6 +785,8 @@ function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
   const safeAccess = access?.providerConfigId === providerConfigId ? access : undefined;
   const urls = sanitizeMediaResultUrls(resultUrls, providerConfigId ? useAppStore.getState().config.providers[providerConfigId]?.apiKey : undefined);
   const outputFile = task.taskType === 'comfyui' ? sanitizeComfyOutputFile(comfyOutputFile) : undefined;
+  const migratedImageNodes = task.nodeType === 'ai-image' && (task.expectedImageOutputs ?? 1) > 1 && Array.isArray(imageOutputNodeIds)
+    ? [...new Set(imageOutputNodeIds.filter((id): id is string => typeof id === 'string' && id.length > 0))] : [];
   return {
     ...safeTask,
     nodeType: getGenerationNodeType(safeTask.nodeType),
@@ -780,6 +794,7 @@ function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
     ...(safeAccess ? { mediaDownloadAccess: safeAccess } : {}),
     ...(urls ? { resultUrls: urls } : {}),
     ...(outputFile ? { comfyOutputFile: outputFile } : {}),
+    ...(migratedImageNodes.length ? { imageOutputNodeIds: migratedImageNodes } : {}),
     ...(sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) ? { mediaFailureDiagnostic: sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) } : {}),
     ...(terminalFailure === true ? { terminalFailure: true as const } : {}),
     ...(task.taskType === 'comfyui' && legacyBaseUrl ? { baseUrl: legacyBaseUrl } : {}),
@@ -1738,7 +1753,8 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
       const delivered = await applyImageBatchResults({
         nodeId,
         batch: {
-          requestedCount,
+          requestedCount: task.expectedImageOutputs ? 1 : requestedCount,
+          ...(task.expectedImageOutputs ? { expectedOutputCount: task.expectedImageOutputs } : {}),
           results,
           failedCount: Math.max(0, requestedCount - results.length),
           allTasksSettled: true,
@@ -1746,11 +1762,15 @@ async function resumeCustomProtocol(task: PendingTask, parentSignal?: AbortSigna
         projectId: task.projectId,
         prompt: nodeData.prompt || '',
         imageSize,
+        imageQuality: nodeData.imageQuality,
+        imageBackground: nodeData.imageBackground,
         aspectRatio,
         isCurrent: query.isCurrent,
+        commitHistory: false,
         signal,
       });
       if (!delivered) { pauseMediaTask(receiptForTask(task), undefined, 'delivery_pending'); return; }
+      return;
     } else {
       const url = urls[0];
       if (!url) throw new Error('任务完成但未返回结果 URL');

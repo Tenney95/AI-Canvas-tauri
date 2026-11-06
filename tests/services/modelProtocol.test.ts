@@ -218,6 +218,35 @@ describe('厂商提交幂等身份与明确结果路径', () => {
     submit: { method: 'POST', path: '/images', body: { model: '{{model}}', prompt: '{{prompt}}' } },
     response: { type: 'json', result: { urlPath: 'data.*.url' } } };
 
+  it('固定四候选的同步协议保存全部结果和交付数量，请求 n 仍为一个作业', async () => {
+    const previous = useAppStore.getState();
+    localStorage.clear();
+    const urls = Array.from({ length: 4 }, (_, index) => `https://cdn.example/mj-${index + 1}.png`);
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ data: urls.map((url) => ({ url })) }));
+    vi.stubGlobal('fetch', fetchMock);
+    useAppStore.setState({ currentProjectId: 'four-candidates-project', nodes: [], config: { ...previous.config,
+      providers: { ...previous.config.providers, 'relay-four': { name: '图片组', catalogId: 'relayonapi',
+        baseUrl: 'https://relayonapi.com/v1', apiKey: 'four-candidates-fixture' } } } });
+    try {
+      const result = await runConfiguredModelProtocol({ category: 'image', nodeId: 'four-candidates-node',
+        expectedImageOutputs: 4, variables: { model: 'Midjourney v8.2', prompt: 'test', n: 1 },
+        model: { id: 'mj-four', name: 'MJ', modelId: 'Midjourney v8.2', category: 'image', providerConfigId: 'relay-four',
+          executionProfile: { preset: 'custom', protocol: { ...syncProtocol, submit: { ...syncProtocol.submit,
+            body: { model: '{{model}}', prompt: '{{prompt}}', n: '{{n}}' } } } } } });
+      expect([...result]).toEqual(urls);
+      expect(result.taskReceipt).toMatchObject({ nodeId: 'four-candidates-node', projectId: 'four-candidates-project' });
+      const tasks = getPendingTasksForProject('four-candidates-project');
+      expect(tasks).toEqual([expect.objectContaining({ batchCount: 4, expectedImageOutputs: 4, resultUrls: urls, submitted: true,
+        mediaRecoveryState: 'delivery_pending', taskId: result.taskReceipt!.taskId })]);
+      expect(JSON.stringify(tasks)).not.toContain('four-candidates-fixture');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: 'Midjourney v8.2', prompt: 'test', n: 1 });
+    } finally {
+      localStorage.clear();
+      useAppStore.setState(previous, true);
+    }
+  });
+
   it('重复本地构建复用同一内部幂等标识，合并不同大小写而不改鉴权', () => {
     const protocol = structuredClone(syncProtocol);
     protocol.submit.headers = { 'idempotency-key': 'user-static-key', 'IDEMPOTENCY-KEY': 'another-static-key' };

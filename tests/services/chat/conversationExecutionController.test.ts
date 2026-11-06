@@ -61,6 +61,8 @@ import { useAppStore } from '../../../src/store/useAppStore';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
 import { GENERAL_ASSISTANT_SCOPE_ID, isGeneralAssistantTool } from '../../../src/services/chat/assistantScope';
 import { getPendingTasksForProject, MediaTaskPausedError, savePendingTask } from '../../../src/services/pollManager';
+import { imageBatchArtifactId } from '../../../src/services/imageBatchService';
+import type { MediaGenerationResult } from '../../../src/types/media';
 
 function arrangeConversation(): void {
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -107,6 +109,28 @@ beforeEach(() => {
 });
 
 describe('ordinary conversation media recovery', () => {
+  it('普通对话把同一作业四张候选拆成独立消息并整组确认', async () => {
+    const receipt = { projectId: 'project-1', nodeId: 'mj-tracking', taskId: 'mj-task', attemptId: 'mj-attempt' };
+    const artifacts: MediaGenerationResult[] = Array.from({ length: 4 }, (_, index) => ({
+      id: imageBatchArtifactId(receipt, index), kind: 'image', deliveryMode: 'chat', taskReceipt: receipt,
+      url: `asset://candidate-${index}.png`, sourceUrl: `https://cdn.test/candidate-${index}.png`,
+      filePath: `candidate-${index}.png`, persistence: 'saved', prompt: '猫', provider: 'general', modelId: 'general/mj', createdAt: 1,
+    }));
+    useAppStore.getState().addMessage({ id: 'mj-message', conversationId: 'conversation-1', role: 'assistant', content: '', timestamp: 1, status: 'done' });
+    savePendingTask({ ...receipt, nodeType: 'ai-image', taskType: 'custom-protocol', provider: 'general', submitted: true,
+      batchCount: 4, expectedImageOutputs: 4, resultUrls: artifacts.map((artifact) => artifact.sourceUrl),
+      mediaContext: { projectId: 'project-1', messageId: 'mj-message', conversationId: 'conversation-1', deliveryMode: 'message' } });
+    mediaRuntimeMocks.generate.mockResolvedValue({ ...artifacts[0], expectedOutputCount: 4, additionalResults: artifacts.slice(1) });
+    await triggerMediaGeneration('mj-message', { kind: 'image', prompt: '猫', modelRef: 'general/mj', deliveryMode: 'chat' });
+    const messages = useAppStore.getState().messages.filter((message) => message.mediaResult);
+    expect(messages.map((message) => message.mediaResult?.id)).toEqual(artifacts.map((artifact) => artifact.id));
+    expect(messages.every((message) => !('additionalResults' in message.mediaResult!)
+      && !('expectedOutputCount' in message.mediaResult!))).toBe(true);
+    expect(mediaHistoryMocks.persist).toHaveBeenCalledTimes(4);
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+    expect(mediaRuntimeMocks.generate).toHaveBeenCalledOnce();
+  });
+
   it('passes message context to ordinary providers and acknowledges only after message delivery', async () => {
     const artifact = { id: 'artifact-1', kind: 'image', deliveryMode: 'chat', url: 'asset://saved.png', sourceUrl: 'https://cdn.test/image.png',
       persistence: 'saved', prompt: '猫', provider: 'general', modelId: 'general/image', createdAt: 1,

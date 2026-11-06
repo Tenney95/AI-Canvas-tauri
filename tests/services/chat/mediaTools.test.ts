@@ -15,6 +15,8 @@ import * as generationRuntime from '../../../src/services/ai/generationRuntime';
 import * as operationProgress from '../../../src/services/mcp/mcpOperationService';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
 import type { MediaGenerationResult } from '../../../src/types/media';
+import { imageBatchArtifactId } from '../../../src/services/imageBatchService';
+import * as chatHistory from '../../../src/services/chat/chatHistoryService';
 
 const context: Omit<AgentToolContext, 'signal'> = {
   taskId: 'task-media',
@@ -71,6 +73,56 @@ describe('keyed media operation progress', () => {
       prompt: input.prompt, modelId: input.modelRef, provider: 'general', createdAt: 1 };
     return { definition: getAgentTool('media_generate')!, toolContext, controller, input, artifact };
   }
+
+  it('MCP完整交付四条单图消息，操作摘要仅包含产物身份', async () => {
+    const { definition, toolContext, input, artifact } = keyedMedia('chat');
+    const receipt = { projectId: 'project-1', nodeId: 'mj-tracking', taskId: 'mj-task', attemptId: 'mj-attempt' };
+    const artifacts: MediaGenerationResult[] = Array.from({ length: 4 }, (_, index) => ({ ...artifact,
+      id: imageBatchArtifactId(receipt, index), taskReceipt: receipt,
+      url: `asset://mj-${index}.png`, sourceUrl: `https://private.example/mj-${index}`, filePath: `mj-${index}.png`,
+    }));
+    savePendingTask({ ...receipt, nodeType: 'ai-image', provider: 'general', taskType: 'custom-protocol', submitted: true,
+      batchCount: 4, expectedImageOutputs: 4, resultUrls: artifacts.map((item) => item.sourceUrl),
+      mediaContext: { projectId: 'project-1', conversationId: toolContext.conversationId,
+        messageId: 'receipt-message', deliveryMode: 'message' } });
+    vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockResolvedValue(undefined);
+    const history = vi.spyOn(chatHistory, 'persistMessage').mockResolvedValue(undefined);
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue({ ...artifacts[0],
+      expectedOutputCount: 4, additionalResults: artifacts.slice(1) });
+    const result = await definition.execute(toolContext, input);
+    expect(result).toMatchObject({ status: 'success' });
+    expect(JSON.parse(result.modelContent)).toMatchObject({ outputCount: 4, artifactIds: artifacts.map((item) => item.id), deliveryPending: false });
+    const messages = useAppStore.getState().messages.filter((message) => message.mediaResult);
+    expect(messages).toHaveLength(4);
+    expect(messages.every((message) => !('additionalResults' in message.mediaResult!))).toBe(true);
+    expect(history).toHaveBeenCalledTimes(4);
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+    expect(generate).toHaveBeenCalledOnce();
+    expect(result.modelContent).not.toContain('https://');
+    expect(result.modelContent).not.toContain(input.prompt);
+  });
+
+  it('候选返回后取消也保留四条独立保存状态，不伪称完整交付', async () => {
+    const { definition, toolContext, controller, input, artifact } = keyedMedia('chat');
+    const artifacts: MediaGenerationResult[] = Array.from({ length: 4 }, (_, index) => ({ ...artifact,
+      id: `cancelled-candidate-${index}`, filePath: index === 2 ? undefined : `candidate-${index}.png`,
+      url: index === 2 ? 'data:image/png;base64,AAAC' : `asset://candidate-${index}.png`,
+      sourceUrl: `data:image/png;base64,AAA${index}`, persistence: index === 2 ? 'failed' : 'saved',
+    }));
+    vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockResolvedValue(undefined);
+    vi.spyOn(chatHistory, 'persistMessage').mockResolvedValue(undefined);
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockImplementation(async () => {
+      controller.abort();
+      return { ...artifacts[0], expectedOutputCount: 4, additionalResults: artifacts.slice(1) };
+    });
+    const result = await definition.execute(toolContext, input);
+    expect(result).toMatchObject({ status: 'success', errorCode: 'AGENT_MEDIA_DELIVERY_INCOMPLETE' });
+    const messages = useAppStore.getState().messages.filter((message) => message.mediaResult);
+    expect(messages.map((message) => message.mediaResult?.persistence)).toEqual(['saved', 'saved', 'failed', 'saved']);
+    expect(messages.every((message) => !('additionalResults' in message.mediaResult!))).toBe(true);
+    expect(generate).toHaveBeenCalledOnce();
+    expect(result.modelContent).not.toContain('data:image');
+  });
 
   it('durably binds node/message and local started before invoking generation, without persisting URLs or prompts', async () => {
     const { definition, toolContext, input, artifact } = keyedMedia();

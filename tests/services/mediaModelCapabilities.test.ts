@@ -3,10 +3,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { normalizeSeedreamSize } from '../../src/services/ai/helpers';
-import { buildImageCapabilityRequest, getImageCapability, resolveAudioParameterCapability, resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
+import { buildImageCapabilityRequest, getImageCapability, resolveAudioParameterCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
 import { assertConfiguredImageReferences, assertImageModelCapability, assertModelCapabilityProtocol, resolveConfiguredImageParameters } from '../../src/services/ai/modelCapabilityValidation';
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
-import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
+import { RELAYON_MIDJOURNEY_MODEL_IDS, RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
 import { resolveMinimaxExecutionProfile } from '../../src/services/ai/providers/minimaxModelManifest';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import type { ImageModelCapability, ModelExecutionProfile, ProtocolJsonValue } from '../../src/types/aiTypes';
@@ -71,6 +71,44 @@ describe('真实连接的音频参数能力', () => {
     expect(resolveAudioParameterCapability(`general/${music.id}`, 'general', config)?.kind).toBe('music');
     delete config.generalModels![0].executionProfile;
     expect(resolveAudioParameterCapability(`general/${speech.id}`, 'general', config)).toBeUndefined();
+  });
+});
+
+describe('RelayOnAPI 固定图片候选', () => {
+  it.each(RELAYON_MIDJOURNEY_MODEL_IDS)('%s 的当前内置合同按作业返回四图且不改用户保存配置', (modelId) => {
+    const model = structuredClone(RELAYON_MODEL_MANIFEST.find((item) => item.id === modelId)!);
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { saved: { name: '万象图片', catalogId: 'relayonapi', apiKey: '', selectedModels: [model] } },
+      generalModels: [{ id: 'mj', name: model.name, modelId, category: 'image', providerConfigId: 'saved',
+        executionProfile: model.executionProfile, imageCapability: model.imageCapability }],
+    };
+    const before = structuredClone(config);
+    expect(resolveImageOutputsPerJob('general/mj', 'general', config)).toBe(4);
+    expect(resolveImageOutputsPerJob(`saved/${modelId}`, 'saved', config)).toBe(4);
+    delete config.generalModels![0].executionProfile;
+    expect(resolveImageOutputsPerJob('general/mj', 'general', config)).toBe(4);
+    config.generalModels![0].executionProfile = before.generalModels![0].executionProfile;
+    expect(resolveImageParameterCapability('general/mj', 'general', config)?.resolutions)
+      .toEqual(modelId === 'Midjourney v8.1' || modelId === 'Midjourney v8.2' ? ['1K', '2K'] : ['1K']);
+    expect(config).toEqual(before);
+  });
+
+  it.each(['custom-openai', 'relayonapi'])('%s 中改过的同名协议仍按单结果处理', (catalogId) => {
+    const model = structuredClone(RELAYON_MODEL_MANIFEST.find((item) => item.id === 'Midjourney v8.2')!);
+    model.executionProfile!.protocol!.submit.path = '/custom/images';
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { relayonapi: { name: '我的连接', catalogId, apiKey: '', selectedModels: [model] } },
+      generalModels: [{ id: 'mj', name: model.name, modelId: model.id, category: 'image', providerConfigId: 'relayonapi',
+        executionProfile: model.executionProfile, imageCapability: model.imageCapability }],
+    };
+    expect(resolveImageOutputsPerJob('general/mj', 'general', config)).toBe(1);
+    expect(resolveImageOutputsPerJob(`relayonapi/${model.id}`, 'relayonapi', config)).toBe(1);
+    if (catalogId === 'custom-openai') {
+      config.generalModels![0].executionProfile = RELAYON_MODEL_MANIFEST.find((item) => item.id === model.id)!.executionProfile;
+      expect(resolveImageOutputsPerJob('general/mj', 'general', config)).toBe(1);
+    }
+    expect(resolveImageOutputsPerJob(undefined, undefined, config)).toBe(1);
+    expect(resolveImageOutputsPerJob('unknown', 'general', config)).toBe(1);
   });
 });
 

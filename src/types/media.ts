@@ -86,6 +86,12 @@ export interface MediaGenerationResult {
   createdAt: number;
 }
 
+/** 仅在本轮交付中携带同一作业的其他候选；拆成独立消息后才持久化。 */
+export interface MediaGenerationDelivery extends MediaGenerationResult {
+  additionalResults?: MediaGenerationResult[];
+  expectedOutputCount?: number;
+}
+
 export interface ResolvedMediaModel {
   configId: string;
   requestModel: string;

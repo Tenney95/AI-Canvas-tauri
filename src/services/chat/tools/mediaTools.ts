@@ -16,7 +16,7 @@ import type {
   AudioGenerationPurpose,
   MediaDeliveryMode,
   MediaGenerationIntent,
-  MediaGenerationResult,
+  MediaGenerationDelivery,
   MediaKind,
 } from '../../../types/media';
 import {
@@ -27,6 +27,9 @@ import {
   extractModelMention,
   MEDIA_PERSIST_FAILED_MESSAGE,
   runMediaGeneration,
+  deliverMediaMessageGroup,
+  isMediaDeliveryGroup,
+  mediaDeliveryResults,
   completeMediaMessageDelivery,
   ensureMediaMessageRecoveryHandler,
 } from '../../ai/generationRuntime';
@@ -628,7 +631,7 @@ export function registerMediaAgentTools(): Array<() => void> {
         let targetNodeId: string | undefined;
         let placeholderLifecycle: MediaPlaceholderLifecycle | null = null;
         let enteredGeneration = false;
-        let generatedArtifact: MediaGenerationResult | undefined;
+        let generatedArtifact: MediaGenerationDelivery | undefined;
         let deliveredToCanvas = false;
         let receiptUnconfirmed = false;
         let placeholderDataBeforeWait: unknown;
@@ -704,6 +707,39 @@ export function registerMediaAgentTools(): Array<() => void> {
             throw new DOMException('请求已取消', 'AbortError');
           }
           const currentStore = useAppStore.getState();
+          if (isMediaDeliveryGroup(result)) {
+            let grouped: Awaited<ReturnType<typeof deliverMediaMessageGroup>>;
+            try {
+              grouped = await deliverMediaMessageGroup(assistantMessageId, result, { targetNodeId,
+                guard: placeholderLifecycle?.guard, signal: context.signal,
+                isCurrent: () => useAppStore.getState().currentProjectId === context.projectId
+                  && useAppStore.getState().messages.some((message) => message.id === assistantMessageId
+                    && message.conversationId === context.conversationId),
+                allowCanvas: !targetNodeId || Boolean(placeholderLifecycle) });
+              deliveredToCanvas = grouped.canvasReady;
+              if (targetNodeId && grouped.canvasReady) useAppStore.getState().incrementRevision();
+            } finally {
+              if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
+            }
+            const artifacts = mediaDeliveryResults(result);
+            if (tracksOperation) {
+              try {
+                await recordMcpOperationProgress(context.taskId, { mediaStage: grouped.complete ? 'delivered' : 'generated',
+                  artifactId: result.id, persistence: artifacts.every((item) => item.persistence !== 'failed') ? result.persistence : 'failed',
+                  ...(!grouped.complete ? { phase: 'partial', errorCode: 'AGENT_MEDIA_DELIVERY_INCOMPLETE' } : {}) });
+                receiptUnconfirmed = false;
+              } catch { receiptUnconfirmed = true; }
+            }
+            return { status: 'success', summary: grouped.complete ? `已交付 ${artifacts.length} 张候选图片`
+              : '候选图片已生成，部分交付尚未完成，可继续取回原结果',
+              ...(!grouped.complete ? { errorCode: 'AGENT_MEDIA_DELIVERY_INCOMPLETE' }
+                : receiptUnconfirmed ? { errorCode: 'MCP_OPERATION_RECEIPT_UNCONFIRMED' } : {}),
+              modelContent: JSON.stringify({ artifactId: result.id, artifactIds: grouped.artifactIds,
+                kind: result.kind, deliveryMode: result.deliveryMode, canvasNodeId: targetNodeId,
+                outputCount: artifacts.length, deliveryPending: !grouped.complete, receiptUnconfirmed }),
+              display: { fields: [{ label: '候选图片', value: `${artifacts.length} 张` },
+                { label: '产物 ID', value: grouped.artifactIds.join('、') }] } };
+          }
           const nodeCreated = placeholderLifecycle
             ? settleMediaPlaceholderLifecycle(placeholderLifecycle, result)
             : targetNodeId ? currentStore.settleMediaPlaceholder(targetNodeId, result) : false;
@@ -778,6 +814,20 @@ export function registerMediaAgentTools(): Array<() => void> {
             },
           };
         } catch (error) {
+          if (generatedArtifact && isMediaDeliveryGroup(generatedArtifact)) {
+            const current = useAppStore.getState();
+            if (current.currentProjectId === context.projectId && current.messages.some((message) =>
+              message.id === assistantMessageId && message.conversationId === context.conversationId)) {
+              await deliverMediaMessageGroup(assistantMessageId, generatedArtifact, { targetNodeId, allowCanvas: false }).catch(() => undefined);
+            }
+            if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
+            if (tracksOperation) await recordMcpOperationProgress(context.taskId, { phase: 'partial', mediaStage: 'generated',
+              artifactId: generatedArtifact.id, persistence: generatedArtifact.persistence,
+              errorCode: 'AGENT_MEDIA_DELIVERY_INCOMPLETE' }).catch(() => undefined);
+            return { status: 'success', summary: '候选图片已生成，交付未完整确认；请续取原任务，不要重新生成',
+              errorCode: 'AGENT_MEDIA_DELIVERY_INCOMPLETE', modelContent: JSON.stringify({
+                artifactIds: mediaDeliveryResults(generatedArtifact).map((item) => item.id), deliveryPending: true, retryable: false }) };
+          }
           if (tracksOperation && generatedArtifact) {
             // 生成后的取消、租约变化或回执异常不能抹掉产物，也不能清除原媒体恢复身份。
             const current = useAppStore.getState();

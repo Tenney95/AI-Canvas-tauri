@@ -7,6 +7,7 @@ import {
   RELAYON_BASE_URL,
   RELAYON_IMAGE_MODEL_IDS,
   RELAYON_IMAGE_REFERENCE_LIMIT,
+  RELAYON_MIDJOURNEY_MODEL_IDS,
   RELAYON_MODEL_MANIFEST,
   RELAYON_TEXT_MODEL_IDS,
   RELAYON_VIDEO_MODEL_IDS,
@@ -17,6 +18,7 @@ import {
   resolveRelayonImageExecutionProfile,
   resolveRelayonImageModelContract,
   usesRelayonModelProtocol,
+  getRelayonImageOutputsPerJob,
 } from '../../src/services/ai/providers/relayonModelManifest';
 import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabilityValidation';
 import { buildModelProtocolRequest, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
@@ -101,10 +103,10 @@ function model(id: string): ProviderModelSelection {
 }
 
 describe('RelayOnAPI 已确认的媒体合同', () => {
-  it('声明九个图片、十一个视频，仅普通 Flare／Sunburst 开放本批确认的质量／背景候选', () => {
-    expect(RELAYON_IMAGE_MODEL_IDS).toHaveLength(9);
+  it('声明十五个图片、十一个视频，仅普通 Flare／Sunburst 开放本批确认的质量／背景候选', () => {
+    expect(RELAYON_IMAGE_MODEL_IDS).toHaveLength(15);
     expect(RELAYON_VIDEO_MODEL_IDS).toHaveLength(11);
-    expect(RELAYON_MODEL_MANIFEST).toHaveLength(24);
+    expect(RELAYON_MODEL_MANIFEST).toHaveLength(30);
     expect(RELAYON_MODEL_MANIFEST.filter((item) => item.category === 'image').map((item) => item.id))
       .toEqual(RELAYON_IMAGE_MODEL_IDS);
     expect(RELAYON_MODEL_MANIFEST.filter((item) => item.category === 'video').map((item) => item.id))
@@ -121,9 +123,59 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       }
       expect(model(id).imageCapability).not.toHaveProperty('defaultQuality');
       expect(model(id).imageCapability).not.toHaveProperty('defaultBackground');
-      expect(model(id).imageCapability!.maxImageReferences).toBe(RELAYON_IMAGE_REFERENCE_LIMIT);
+      expect(model(id).imageCapability!.maxImageReferences).toBe(RELAYON_MIDJOURNEY_MODEL_IDS.some((mj) => mj === id) ? 1 : RELAYON_IMAGE_REFERENCE_LIMIT);
     }
     expect(RELAYON_IMAGE_REFERENCE_LIMIT).toBe(6);
+  });
+
+  it.each(RELAYON_MIDJOURNEY_MODEL_IDS)('%s 按单作业四候选声明精确参数，不添加未公布的质量和背景', (id) => {
+    const item = model(id);
+    const extended = id === 'Midjourney v8.1' || id === 'Midjourney v8.2';
+    expect(item.imageCapability).toMatchObject({ resolutions: extended ? ['1K', '2K'] : ['1K'],
+      supportsBatch: false, maxBatchCount: 1, maxImageReferences: 1 });
+    expect(item.imageCapability!.ratios).toHaveLength(10);
+    expect(item.imageCapability).not.toHaveProperty('qualities');
+    expect(item.imageCapability).not.toHaveProperty('backgrounds');
+    expect(getRelayonImageOutputsPerJob(id, item.executionProfile)).toBe(4);
+    const original = structuredClone(item.executionProfile!);
+    const edited = resolveRelayonImageExecutionProfile(id, item.executionProfile, 1)!;
+    const variables = relayonImageVariables(id, { model: id, prompt: 'test', imageSize: extended ? '2K' : '1K',
+      aspectRatio: extended ? '4:5' : '16:9', imageUrls: ['https://cdn.example/reference.png'], n: 1 });
+    const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: edited.protocol!, variables });
+    expect(built.url).toBe(`${RELAYON_BASE_URL}/images/edits`);
+    expect(built.renderedBody).toMatchObject({ model: id, n: 1, resolution: extended ? '2k' : '1k',
+      size: extended ? '1632x2040' : '1536x864', image: ['https://cdn.example/reference.png'] });
+    expect(item.executionProfile).toEqual(original);
+    expect(item.executionProfile!.protocol!.response.result).toEqual({ urlPath: 'data.*.url', base64Path: 'data.*.b64_json', mimeType: 'image/png' });
+    expect(() => relayonImageVariables(id, { imageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'] })).toThrow('最多接受 1 张');
+    expect(() => relayonImageVariables(id, { n: 4 })).toThrow('仅提交一个结果');
+    if (!extended) expect(() => relayonImageVariables(id, { imageSize: '2K' })).toThrow('没有已公布的像素尺寸');
+  });
+
+  it('MJ 的四候选规则不继承到同名前缀或用户修改过的协议', () => {
+    const profile = structuredClone(model('Midjourney v8.2').executionProfile!);
+    profile.protocol!.submit.path = '/my/images';
+    expect(getRelayonImageOutputsPerJob('Midjourney v8.2', profile)).toBe(1);
+    expect(getRelayonImageOutputsPerJob('Midjourney v8.2-extra', profile)).toBe(1);
+    expect(getRelayonImageOutputsPerJob('Midjourney v8.2', undefined)).toBe(1);
+    const urlOnly = structuredClone(model('Midjourney v8.2').executionProfile!);
+    delete urlOnly.protocol!.response.result!.base64Path;
+    delete urlOnly.protocol!.response.result!.mimeType;
+    expect(usesRelayonModelProtocol('Midjourney v8.2', urlOnly)).toBe(false);
+    expect(getRelayonImageOutputsPerJob('Midjourney v8.2', urlOnly)).toBe(1);
+    expect(resolveRelayonImageModelContract('Midjourney v8.2', urlOnly).executionProfile).toBe(urlOnly);
+  });
+
+  it('2.6 01 仅按确认复用 2.5 01 请求与尺寸，不继承普通 2.5 的质量或背景', () => {
+    const current = model('image-2.6-01');
+    const previous = model('image-2.5-flare-01');
+    expect(current.imageCapability).toEqual(previous.imageCapability);
+    expect(current.executionProfile).toEqual(previous.executionProfile);
+    expect(getRelayonImageOutputsPerJob(current.id, current.executionProfile)).toBe(1);
+    const variables = relayonImageVariables(current.id, { model: current.id, imageSize: '4K', aspectRatio: '5:4' });
+    expect(variables).toMatchObject({ model: 'image-2.6-01', imageSize: '4K', size: '2880x2304' });
+    expect(current.imageCapability).not.toHaveProperty('qualities');
+    expect(current.imageCapability).not.toHaveProperty('backgrounds');
   });
 
   it('全部能力与协议满足当前校验，视频保持同源查询，仅 H3 使用已公布的 content 下载', () => {

@@ -35,7 +35,7 @@ import { videoInputFingerprint } from './videoBatchPlanning';
 import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError } from './pollManager';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { applyGenerationCameraPrompt } from './shotlistPromptService';
-import { resolveImageParameterCapability } from './ai/mediaModelCapabilities';
+import { resolveImageOutputsPerJob, resolveImageParameterCapability } from './ai/mediaModelCapabilities';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './ai/modelCapabilityValidation';
 import { historyMediaTaskReceipt, isHistoryMediaDownloadFailure, isHistoryMediaDownloadPending, sameHistoryMediaTask } from './historyMediaRecovery';
 
@@ -81,7 +81,9 @@ export function subscribeImageBatches(listener: () => void): () => void {
 export function usesSequentialImageBatch(
   provider: string | undefined, model: string | undefined, config: AppConfig, workflowId?: string,
 ): boolean {
-  if (provider !== 'general' || workflowId) return false;
+  if (workflowId) return false;
+  if (resolveImageOutputsPerJob(model ?? '', provider ?? '', config) > 1) return true;
+  if (provider !== 'general') return false;
   const capability = resolveImageParameterCapability(model, provider, config);
   return capability?.supportsBatch === false || capability?.maxBatchCount === 1;
 }
@@ -139,7 +141,9 @@ async function runSequentialImageBatch(
   try {
     // 与单次生成共用旧任务保护；创建新批次前不能覆盖原节点的恢复身份。
     prepareMediaNodeGeneration(nodeId);
-    const nodeIds = prepareImageBatchNodes({ nodeId, count, projectId, commitHistory: options?.history !== 'transient' }).nodeIds;
+    const outputsPerJob = resolveImageOutputsPerJob(data.model ?? '', data.provider ?? '', state.config);
+    const nodeIds = prepareImageBatchNodes({ nodeId, count, projectId, commitHistory: options?.history !== 'transient',
+      ...(outputsPerJob > 1 ? { slotStride: outputsPerJob } : {}) }).nodeIds;
     owner = { projectId, nodeIds, remainingNodeIds: new Set(nodeIds), controller: new AbortController() };
     const activeOwner = owner;
     const baselineRevision = useAppStore.getState().getCurrentRevision();
@@ -147,7 +151,8 @@ async function runSequentialImageBatch(
       .map((node) => [node.id, imageBatchInputSignature(node.data)]));
     for (const targetId of nodeIds) imageBatchOwners.set(targetId, activeOwner);
     notifyImageBatches();
-    if (!options?.silent) state.showToast(`正在逐张生成 ${count} 张图片`);
+    if (!options?.silent) state.showToast(outputsPerJob > 1
+      ? `正在生成 ${count} 次作业，共 ${count * outputsPerJob} 张候选` : `正在逐张生成 ${count} 张图片`);
     const signal = parentLease?.signal ? AbortSignal.any([parentLease.signal, activeOwner.controller.signal]) : activeOwner.controller.signal;
     for (const targetId of nodeIds) {
       const lease: GenerationLease = { signal, assertFresh: async () => {
@@ -173,7 +178,8 @@ async function runSequentialImageBatch(
       activeOwner.currentNodeId = undefined;
       completed += 1;
     }
-    if (!options?.silent) state.showToast(`批量生成完成：共 ${completed} 张`);
+    if (!options?.silent) state.showToast(outputsPerJob > 1
+      ? `批量生成完成：${completed} 次作业，共 ${completed * outputsPerJob} 张候选` : `批量生成完成：共 ${completed} 张`);
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : '批量生成已停止';
@@ -301,7 +307,8 @@ export async function executeGeneration(
   const sequentialCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
   if (nodeType === 'ai-image' && sequentialCount > 1 && usesSequentialImageBatch(nodeProvider, nodeModel, store.config, workflowId)) {
     if (postProcess) {
-      const message = '批量生成暂不支持图片后处理，请将数量设为 1';
+      const message = resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config) > 1
+        ? '固定多候选模型暂不支持图片后处理，请选择单图模型' : '批量生成暂不支持图片后处理，请将数量设为 1';
       notify(message, 'error');
       return { success: false, message };
     }
@@ -385,26 +392,31 @@ export async function executeGeneration(
       const spriteProcessing = isAnimation ? animationProcessing({ ...data, animationSheet: undefined }) : undefined;
       if (isAnimation) effectivePrompt = buildAnimationSpritePrompt(effectivePrompt, animationAction, animationFrames, aspectRatio, spriteProcessing);
       const batchCount = cloudWorkflow || isAnimation ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
-      if (batchCount > 1) {
-        if (postProcess) throw new Error('批量生成暂不支持图片后处理，请将数量设为 1');
+      const outputsPerJob = workflowId || isAnimation ? 1 : resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config);
+      if (batchCount > 1 || outputsPerJob > 1) {
+        if (postProcess) throw new Error(outputsPerJob > 1
+          ? '固定多候选模型暂不支持图片后处理，请选择单图模型' : '批量生成暂不支持图片后处理，请将数量设为 1');
+        const outputCount = batchCount * outputsPerJob;
+        const commitHistory = batchOptions?.history !== 'transient' && !(lease && imageBatchLeases.has(lease));
         batchNodeIds = prepareImageBatchNodes({
           nodeId,
-          count: batchCount,
-          commitHistory: batchOptions?.history !== 'transient',
+          count: outputCount,
+          commitHistory,
           projectId: submittingProjectId,
         }).nodeIds;
         if (cloudGuard) completeCanvasDerivation(cloudGuard);
         cloudGuard = guardedSubmission ? registerCanvasDerivation(useAppStore.getState(), nodeId) : null;
-        notify(`正在批量生成 ${batchCount} 张图片`);
+        notify(`正在批量生成 ${outputCount} 张图片`);
         const imageOptions = {
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
+          ...(outputsPerJob > 1 ? { collectCandidates: true } : {}),
         };
         if (lease) await assertLease();
         const batch = lease ? await generateImagesBatch(imageOptions, batchCount, lease.signal)
           : await generateImagesBatch(imageOptions, batchCount);
-        taskReceipt = batch.results.find((result) => result.taskReceipt)?.taskReceipt;
+        taskReceipt = batch.taskReceipt ?? batch.results.find((result) => result.taskReceipt)?.taskReceipt;
         comfyTaskId = batch.results.find((result) => result.comfyTaskId)?.comfyTaskId;
         if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);
         if (lease) await assertLease();
@@ -414,7 +426,8 @@ export async function executeGeneration(
           targetNodeIds: batchNodeIds,
           isCurrent: guardedSubmission ? isStillCurrentSubmission : undefined,
           signal: beginMediaSaving(),
-          batch,
+          batch: outputsPerJob > 1 ? { ...batch, expectedOutputCount: batch.expectedOutputCount ?? outputCount } : batch,
+          commitHistory,
           silent: batchOptions?.silent,
           model: nodeModel, provider: nodeProvider,
           projectId: submittingProjectId,

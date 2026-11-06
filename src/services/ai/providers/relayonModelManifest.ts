@@ -1,8 +1,9 @@
 /**
- * RelayOnAPI 已核对目录（基础 2026-10-27；新视频补充 2026-11-04）。来源：https://relayonapi.com/docs。
+ * RelayOnAPI 已核对目录（基础 2026-10-27；MJ 与 2.6 补充 2026-11-06）。来源：https://relayonapi.com/docs。
  * 2.5 C1 能力文档暂不可用，按用户确认沿用现有 2.5 A 参数映射，真实渠道尚待验收。
  * 媒体结果映射采用用户确认的 OpenAI 兼容合同，尚未进行厂商真实生成验收。
  * 普通 Flare／Sunburst 的质量和背景候选采用用户确认的兼容选项，未据此宣称平台实测通过。
+ * Image 2.6 01 按用户确认兼容 2.5 01 的请求与尺寸，仍待真实渠道验收。
  * 其余型号不推断质量、背景或未公开的首尾帧合同。
  */
 import type { ProviderModelSelection } from '../../../types';
@@ -23,9 +24,14 @@ const TEXT_MODEL_NAMES: Record<typeof RELAYON_TEXT_MODEL_IDS[number], string> = 
   'claude-opus-5-5': 'Claude Opus 5.5',
 };
 
+export const RELAYON_MIDJOURNEY_MODEL_IDS = [
+  'Midjourney v6', 'Midjourney v6.1', 'Midjourney v7', 'Midjourney v8.1', 'Midjourney v8.2',
+] as const;
+
 export const RELAYON_IMAGE_MODEL_IDS = [
   'image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01',
   'nano-banana-2', 'nano-banana-2.1', 'nano-banana-pro', 'Seedream 5.0 Pro',
+  'image-2.6-01', ...RELAYON_MIDJOURNEY_MODEL_IDS,
 ] as const;
 
 export const RELAYON_VIDEO_MODEL_IDS = [
@@ -86,9 +92,26 @@ const SEEDREAM_PIXELS: ImageDimensions = {
     '16:9': [2048, 1152], '9:16': [1152, 2048], '3:2': [2016, 1344] },
 };
 
+const MIDJOURNEY_1K_PIXELS: Record<string, PixelPair> = {
+  '1:1': [1024, 1024], '16:9': [1536, 864], '9:16': [864, 1536], '4:3': [1152, 864],
+  '3:4': [864, 1152], '3:2': [1248, 832], '2:3': [832, 1248], '4:5': [1024, 1280],
+  '5:4': [1280, 1024], '21:9': [1344, 576],
+};
+const MIDJOURNEY_PIXELS: ImageDimensions = { '1K': MIDJOURNEY_1K_PIXELS };
+const MIDJOURNEY_8_PIXELS: ImageDimensions = {
+  ...MIDJOURNEY_PIXELS,
+  '2K': { '1:1': [2048, 2048], '16:9': [2048, 1152], '9:16': [1152, 2048], '4:3': [2048, 1536],
+    '3:4': [1536, 2048], '3:2': [2048, 1360], '2:3': [1360, 2048], '4:5': [1632, 2040],
+    '5:4': [2040, 1632], '21:9': [2016, 864] },
+};
+
+function isMidjourneyModel(modelId: string): boolean {
+  return RELAYON_MIDJOURNEY_MODEL_IDS.some((id) => id === modelId);
+}
+
 function imageModel(id: string, name: string, pixels: ImageDimensions, maxReferences: number): ProviderModelSelection {
   const hasImageOptions = id === 'Image-2.5-Flare' || id === 'Image-2.5-Sunburst';
-  const hasBase64Result = ['image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01'].includes(id);
+  const hasBase64Result = isMidjourneyModel(id) || ['image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01', 'image-2.6-01'].includes(id);
   const protocol: NormalizedModelExecutionProtocol = {
     version: 2, mode: 'sync', auth: { type: 'bearer' },
     submit: { method: 'POST', path: '/images/generations', bodyEncoding: 'json',
@@ -190,6 +213,9 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   imageModel('nano-banana-2.1', 'Nano Banana 2.1', BANANA_PIXELS, 8),
   imageModel('nano-banana-pro', 'Nano Banana Pro', BANANA_PIXELS, 8),
   imageModel('Seedream 5.0 Pro', 'Seedream 5.0 Pro', SEEDREAM_PIXELS, 10),
+  imageModel('image-2.6-01', 'Image 2.6 01', IMAGE_25_PIXELS, 8),
+  ...RELAYON_MIDJOURNEY_MODEL_IDS.map((id) => imageModel(id, id,
+    id === 'Midjourney v8.1' || id === 'Midjourney v8.2' ? MIDJOURNEY_8_PIXELS : MIDJOURNEY_PIXELS, 1)),
   officialVideo('doubao-seedance-2-0-260128', 'Doubao Seedance 2.0', 15, ['480p', '720p', '1080p', '4k']),
   officialVideo('doubao-seedance-2-0-fast-260128', 'Doubao Seedance 2.0 Fast', 15, ['480p', '720p']),
   officialVideo('doubao-seedance-2-0-mini-260615', 'Doubao Seedance 2.0 Mini', 15, ['480p', '720p']),
@@ -222,7 +248,8 @@ export function usesRelayonModelProtocol(modelId: string, profile: ModelExecutio
   const actual = comparableProtocol(profile);
   if (actual === undefined) return false;
   if (actual === comparableProtocol(known.executionProfile)) return true;
-  if (known.category !== 'image') return false;
+  // 本轮新增型号没有历史模板，不能把用户删除结果字段视作旧版本而覆盖。
+  if (known.category !== 'image' || isMidjourneyModel(modelId) || modelId === 'image-2.6-01') return false;
   // 完整旧内置模板只读取 URL；保留其他请求和响应字段的严格比较。
   const previousResult = structuredClone(known.executionProfile!);
   if (previousResult.protocol?.version !== 2) return false;
@@ -242,6 +269,11 @@ export function usesRelayonModelProtocol(modelId: string, profile: ModelExecutio
   delete previous.protocol.response.result!.base64Path;
   delete previous.protocol.response.result!.mimeType;
   return actual === comparableProtocol(previous);
+}
+
+/** 固定四候选只属于真实内置合同，不按相同名称改写用户自定义协议的交付语义。 */
+export function getRelayonImageOutputsPerJob(modelId: string, profile: ModelExecutionProfile | undefined): number {
+  return isMidjourneyModel(modelId) && usesRelayonModelProtocol(modelId, profile) ? 4 : 1;
 }
 
 /** 只为真实连接的完整新旧内置合同补临时能力；原配置、用户显式能力和自定义协议保持原值。 */
@@ -315,7 +347,8 @@ export function relayonImageVariables(modelId: string, variables: ModelProtocolV
   if (!dimensions) throw new Error(`RelayOnAPI 图片参数 ${String(variables.imageSize)} / ${ratio} 没有已公布的像素尺寸`);
   const size = `${dimensions[0]}x${dimensions[1]}`;
   if (variables.size !== undefined && variables.size !== size) throw new Error('RelayOnAPI 图片 size 与所选分辨率、比例不一致');
-  return { ...variables, imageSize: resolution, aspectRatio: ratio, size, width: dimensions[0], height: dimensions[1],
+  return { ...variables, imageSize: isMidjourneyModel(modelId) ? resolution!.toLowerCase() : resolution,
+    aspectRatio: ratio, size, width: dimensions[0], height: dimensions[1],
     imageUrls: urls.length ? urls : undefined };
 }
 

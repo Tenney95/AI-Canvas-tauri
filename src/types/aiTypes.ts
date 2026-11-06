@@ -14,6 +14,8 @@ export interface AIGenerateParams {
 }
 
 export interface AIImageGenParams extends AIGenerateParams {
+  /** 仅供完整交付多候选的图片节点／对话入口使用，不写入厂商请求。 */
+  collectCandidates?: boolean;
   workflowApiTaskContext?: import('./workflowApi').CloudWorkflowTaskContext;
   runninghubModelParameters?: Record<string, string>;
   runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
@@ -427,6 +429,10 @@ export type MediaProtocolUrls = string[] & { taskReceipt?: MediaTaskReceipt; med
 
 export interface ImageGenerationResult {
   url: string;
+  /** 同一次作业额外返回的候选；仅本轮传递，不递归嵌套或当作新的生成请求。 */
+  additionalResults?: ImageGenerationResult[];
+  /** 本作业期望交付的图片总数，与提交 n 和用户选择的作业次数分开。 */
+  expectedOutputCount?: number;
   mediaDownloadAccess?: MediaDownloadAccess;
   taskReceipt?: MediaTaskReceipt;
   /** 本地 ComfyUI 已完成但尚待画布交付的任务身份，仅完成同一任务时清理。 */
@@ -444,6 +450,8 @@ export interface BatchImageResult {
   /** 所有远端任务均已成功或明确失败；不包括提交未知或查询中断。 */
   allTasksSettled?: boolean;
   requestedCount: number;
+  /** 固定多候选作业的图片交付总数；未声明时沿用 requestedCount。 */
+  expectedOutputCount?: number;
   results: ImageGenerationResult[];
   failedCount: number;
 }

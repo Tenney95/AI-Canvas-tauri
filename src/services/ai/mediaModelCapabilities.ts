@@ -14,7 +14,7 @@ import { getProviderDefinition } from './providerCatalogService';
 import { isCccBananaModelId } from './cccProviderGroups';
 import { modelProtocolUsesVariable } from './modelProtocol';
 import { resolveToapisImageModelContract } from './providers/toapisModelManifest';
-import { resolveRelayonImageModelContract } from './providers/relayonModelManifest';
+import { getRelayonImageOutputsPerJob, resolveRelayonImageModelContract } from './providers/relayonModelManifest';
 import { getLibapiAudioCapability, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { getMinimaxAudioCapability, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
@@ -566,6 +566,23 @@ export function getImageCapability(model?: string): ImageCapability | undefined 
     .sort((left, right) => right.length - left.length)
     .find((key) => normalizedModelId.startsWith(`${key}-`));
   return versionedKey ? IMAGE_CAPABILITIES[versionedKey] : undefined;
+}
+
+/** 固定候选数量绑定真实厂商和完整内置协议，不改变同名自定义连接。 */
+export function resolveImageOutputsPerJob(
+  model: string | undefined,
+  provider: string | undefined,
+  config: Pick<AppConfig, 'providers' | 'generalModels'>,
+): number {
+  if (!model) return 1;
+  const generalModel = provider === 'general'
+    ? config.generalModels?.find((item) => item.id === model.replace(/^general\//, '')) : undefined;
+  const connectionId = generalModel?.providerConfigId ?? provider;
+  if (!connectionId || getProviderDefinition(connectionId, config.providers[connectionId])?.id !== 'relayonapi') return 1;
+  const modelId = generalModel?.modelId ?? (model.startsWith(`${connectionId}/`) ? model.slice(connectionId.length + 1) : model);
+  const profile = generalModel?.executionProfile
+    ?? config.providers[connectionId]?.selectedModels?.find((item) => item.id === modelId)?.executionProfile;
+  return getRelayonImageOutputsPerJob(modelId, profile);
 }
 
 /** 参数面板按生成入口相同的连接身份解析，兼容旧节点的原始 ID 和通用模型引用。 */

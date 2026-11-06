@@ -4,6 +4,8 @@
 import type { Node } from '@xyflow/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
+import type { BatchImageResult } from '../../src/types/aiTypes';
+import type { MediaGenerationResult } from '../../src/types/media';
 
 interface TestStore {
   nodes: Node<BaseNodeData>[];
@@ -21,6 +23,10 @@ let generatedId = 0;
 const persistMediaUrlToProjectData = vi.fn();
 const completeMediaNodeTask = vi.fn();
 const pauseMediaTask = vi.fn();
+const savedHistory = new Map<string, Array<{ status: string; params?: Record<string, unknown> }>>();
+vi.mock('../../src/services/indexedDbService', () => ({
+  getNodeHistoryEntries: async (_projectId: string, nodeId: string) => savedHistory.get(nodeId) ?? [],
+}));
 vi.mock('../../src/services/pollManager', () => ({ completeMediaNodeTask, pauseMediaTask, completeComfyNodeTask: vi.fn() }));
 vi.mock('../../src/services/ai/providers/runninghubWorkflow', () => ({ getRunningHubPersistedOutput: () => undefined, completeRunningHubNodeTask: vi.fn() }));
 
@@ -69,7 +75,9 @@ function createStore(): TestStore {
         ? { ...node, data: { ...node.data, ...patch } }
         : node);
     }),
-    recordOutputHistory: vi.fn().mockResolvedValue(undefined),
+    recordOutputHistory: vi.fn(async (nodeId: string, entry: { status: string; params?: Record<string, unknown> }) => {
+      savedHistory.set(nodeId, [...(savedHistory.get(nodeId) ?? []), entry]);
+    }),
     showToast: vi.fn(),
   } satisfies TestStore;
   return nextStore;
@@ -78,6 +86,8 @@ function createStore(): TestStore {
 beforeEach(() => {
   completeMediaNodeTask.mockClear(); pauseMediaTask.mockClear();
   generatedId = 0;
+  savedHistory.clear();
+  persistMediaUrlToProjectData.mockReset();
   persistMediaUrlToProjectData.mockImplementation(async (url: string) => ({
     mediaUrl: url,
     sourceUrl: url,
@@ -86,6 +96,145 @@ beforeEach(() => {
 });
 
 describe('imageBatchService', () => {
+  const receipt = { projectId: 'project-a', nodeId: 'source', taskId: 'mj-original', attemptId: 'mj-attempt' };
+  function fourCandidates(): BatchImageResult {
+    return { requestedCount: 1, expectedOutputCount: 4, failedCount: 0, allTasksSettled: true, taskReceipt: receipt,
+      results: Array.from({ length: 4 }, (_, index) => ({ url: `https://example.com/${index + 1}.png`,
+        width: 1024, height: 1024, taskReceipt: receipt })) };
+  }
+
+  it('reserves separate candidate space for three sequential jobs without overlapping any of the twelve nodes', async () => {
+    const { prepareImageBatchNodes } = await import('../../src/services/imageBatchService');
+    const jobs = prepareImageBatchNodes({ nodeId: 'source', count: 3, projectId: 'project-a', slotStride: 4 });
+    for (const nodeId of jobs.nodeIds) prepareImageBatchNodes({ nodeId, count: 4, projectId: 'project-a', commitHistory: false });
+    expect(store.nodes).toHaveLength(12);
+    expect(new Set(store.nodes.map((node) => `${node.position.x},${node.position.y}`)).size).toBe(12);
+    expect(store.commitToHistory).toHaveBeenCalledOnce();
+  });
+
+  it('expands one placeholder into four outputs for one remote job and acknowledges that receipt once', async () => {
+    const { applyImageBatchResults, imageBatchArtifactId } = await import('../../src/services/imageBatchService');
+    expect(await applyImageBatchResults({ nodeId: 'source', targetNodeIds: ['source'], batch: fourCandidates(),
+      projectId: 'project-a', prompt: 'cat', imageSize: '1K', aspectRatio: '1:1' })).toBe(true);
+    expect(store.nodes).toHaveLength(4);
+    expect(store.commitToHistory).toHaveBeenCalledOnce();
+    expect(store.nodes.map((node) => node.data.imageUrl)).toEqual([1, 2, 3, 4].map((index) => `https://example.com/${index}.png`));
+    expect(store.nodes.map((node) => node.data.artifactId)).toEqual([0, 1, 2, 3].map((index) => imageBatchArtifactId(receipt, index)));
+    expect(store.recordOutputHistory).toHaveBeenCalledTimes(4);
+    expect(completeMediaNodeTask).toHaveBeenCalledOnce();
+    expect(completeMediaNodeTask).toHaveBeenCalledWith(receipt);
+  });
+
+  it('keeps a migrated task artifact identity stable without conflating other attempts or projects', async () => {
+    const { imageBatchArtifactId } = await import('../../src/services/imageBatchService');
+    expect(imageBatchArtifactId({ ...receipt, nodeId: 'recovery-node' }, 2)).toBe(imageBatchArtifactId(receipt, 2));
+    expect(imageBatchArtifactId({ ...receipt, attemptId: 'another-attempt' }, 2)).not.toBe(imageBatchArtifactId(receipt, 2));
+    expect(imageBatchArtifactId({ ...receipt, projectId: 'another-project' }, 2)).not.toBe(imageBatchArtifactId(receipt, 2));
+    expect(imageBatchArtifactId({ ...receipt, attemptId: undefined, nodeId: 'other-node' }, 2))
+      .not.toBe(imageBatchArtifactId({ ...receipt, attemptId: undefined }, 2));
+  });
+
+  it('does not take sibling job placeholders or another job’s saved output as fixed candidates', async () => {
+    const { applyImageBatchResults, prepareImageBatchNodes } = await import('../../src/services/imageBatchService');
+    const jobs = prepareImageBatchNodes({ nodeId: 'source', count: 3, projectId: 'project-a', slotStride: 4 });
+    store.updateNodeDataTransient(jobs.nodeIds[2], { artifactId: 'other-job-image', status: 'success', imageUrl: 'asset://other-job' });
+    const untouched = store.nodes.slice(1).map((node) => ({ id: node.id, data: { ...node.data } }));
+    expect(await applyImageBatchResults({ nodeId: 'source', batch: fourCandidates(), projectId: 'project-a',
+      prompt: 'cat', imageSize: '1K', aspectRatio: '1:1', commitHistory: false })).toBe(true);
+    expect(store.nodes).toHaveLength(6);
+    for (const expected of untouched) expect(store.nodes.find((node) => node.id === expected.id)?.data).toEqual(expected.data);
+    expect(store.nodes.filter((node) => node.data.batchGroupId === store.nodes[0].data.batchGroupId)).toHaveLength(4);
+  });
+
+  it('does not overwrite a different artifact supplied as an explicit candidate target', async () => {
+    const { applyImageBatchResults, prepareImageBatchNodes } = await import('../../src/services/imageBatchService');
+    const targets = prepareImageBatchNodes({ nodeId: 'source', count: 4, projectId: 'project-a' });
+    store.updateNodeDataTransient(targets.nodeIds[2], { artifactId: 'other-job-image', status: 'success', imageUrl: 'asset://other-job' });
+    expect(await applyImageBatchResults({ nodeId: 'source', targetNodeIds: targets.nodeIds, batch: fourCandidates(), projectId: 'project-a',
+      prompt: 'cat', imageSize: '1K', aspectRatio: '1:1', commitHistory: false })).toBe(true);
+    expect(store.nodes).toHaveLength(5);
+    expect(store.nodes.find((node) => node.id === targets.nodeIds[2])?.data).toMatchObject({ artifactId: 'other-job-image', imageUrl: 'asset://other-job' });
+  });
+
+  it('resumes only a failed slot without downloading successful images, duplicating nodes or duplicating history', async () => {
+    const { applyImageBatchResults } = await import('../../src/services/imageBatchService');
+    let fail = true;
+    persistMediaUrlToProjectData.mockImplementation(async (url: string) => {
+      if (fail && url.endsWith('/2.png')) throw new Error('disk full');
+      return { mediaUrl: `asset://saved/${url.split('/').pop()}`, sourceUrl: url, filePath: `saved/${url.split('/').pop()}` };
+    });
+    const input = { nodeId: 'source', batch: fourCandidates(), projectId: 'project-a', prompt: 'cat', imageSize: '1K', aspectRatio: '1:1' };
+    expect(await applyImageBatchResults(input)).toBe(false);
+    const firstIds = store.nodes.map((node) => node.id);
+    expect(store.recordOutputHistory).toHaveBeenCalledTimes(3);
+    expect(completeMediaNodeTask).not.toHaveBeenCalled();
+    // 恢复查询会让源节点重新进入 loading，已保存文件仍应被复用。
+    store.updateNodeDataTransient('source', { status: 'loading' });
+    fail = false;
+    persistMediaUrlToProjectData.mockClear();
+    expect(await applyImageBatchResults(input)).toBe(true);
+    expect(store.nodes.map((node) => node.id)).toEqual(firstIds);
+    expect(persistMediaUrlToProjectData).toHaveBeenCalledOnce();
+    expect(persistMediaUrlToProjectData.mock.calls[0][0]).toBe('https://example.com/2.png');
+    expect(store.recordOutputHistory).toHaveBeenCalledTimes(4);
+    expect(completeMediaNodeTask).toHaveBeenCalledOnce();
+  });
+
+  it('restores a missing output slot without shifting the other saved candidates', async () => {
+    const { applyImageBatchResults, imageBatchArtifactId } = await import('../../src/services/imageBatchService');
+    let fail = true;
+    persistMediaUrlToProjectData.mockImplementation(async (url: string) => {
+      if (fail && url.endsWith('/2.png')) throw new Error('disk full');
+      return { mediaUrl: url, sourceUrl: url };
+    });
+    const input = { nodeId: 'source', batch: fourCandidates(), projectId: 'project-a', prompt: 'cat', imageSize: '1K', aspectRatio: '1:1' };
+    await applyImageBatchResults(input);
+    const third = store.nodes.find((node) => node.data.artifactId === imageBatchArtifactId(receipt, 2))!;
+    const fourth = store.nodes.find((node) => node.data.artifactId === imageBatchArtifactId(receipt, 3))!;
+    store.nodes = store.nodes.filter((node) => node.data.artifactId !== imageBatchArtifactId(receipt, 1));
+    fail = false;
+    expect(await applyImageBatchResults(input)).toBe(true);
+    expect(store.nodes).toHaveLength(4);
+    expect(store.nodes.find((node) => node.id === third.id)?.data.imageUrl).toBe('https://example.com/3.png');
+    expect(store.nodes.find((node) => node.id === fourth.id)?.data.imageUrl).toBe('https://example.com/4.png');
+  });
+
+  it('uses persisted chat artifacts without another download and defers acknowledgment until all messages are durable', async () => {
+    const { applyImageBatchResults, imageBatchArtifactId } = await import('../../src/services/imageBatchService');
+    const artifacts: MediaGenerationResult[] = [0, 1, 2, 3].map((index) => ({ id: imageBatchArtifactId(receipt, index),
+      kind: 'image', deliveryMode: 'both', taskReceipt: receipt, url: `asset://saved/${index}.png`, sourceUrl: `https://example.com/${index + 1}.png`,
+      filePath: `saved/${index}.png`, persistence: index === 2 ? 'failed' : 'saved', persistError: index === 2 ? 'disk full' : undefined,
+      prompt: 'cat', modelId: 'mj', provider: 'general', createdAt: 1 }));
+    const input = { nodeId: 'source', batch: fourCandidates(), projectId: 'project-a', prompt: 'cat', imageSize: '1K', aspectRatio: '1:1',
+      artifacts, deferTaskCompletion: true, commitHistory: false };
+    expect(await applyImageBatchResults(input)).toBe(false);
+    expect(persistMediaUrlToProjectData).not.toHaveBeenCalled();
+    expect(store.commitToHistory).not.toHaveBeenCalled();
+    expect(completeMediaNodeTask).not.toHaveBeenCalled();
+    artifacts[2] = { ...artifacts[2], persistence: 'saved', persistError: undefined };
+    expect(await applyImageBatchResults(input)).toBe(true);
+    expect(store.recordOutputHistory).toHaveBeenCalledTimes(4);
+    expect(persistMediaUrlToProjectData).not.toHaveBeenCalled();
+    expect(completeMediaNodeTask).not.toHaveBeenCalled();
+  });
+
+  it('does not acknowledge a fixed four-output job when the terminal response only contains three', async () => {
+    const { applyImageBatchResults } = await import('../../src/services/imageBatchService');
+    const batch = fourCandidates();
+    batch.results = batch.results.slice(0, 3);
+    batch.failedCount = 1;
+    expect(await applyImageBatchResults({ nodeId: 'source', batch, projectId: 'project-a', prompt: 'cat', imageSize: '1K', aspectRatio: '1:1' })).toBe(false);
+    expect(store.nodes).toHaveLength(4);
+    expect(completeMediaNodeTask).not.toHaveBeenCalled();
+    expect(pauseMediaTask).toHaveBeenCalledWith(receipt, undefined, 'delivery_pending');
+    const targetIds = store.nodes.map((node) => node.id);
+    persistMediaUrlToProjectData.mockClear();
+    expect(await applyImageBatchResults({ nodeId: 'source', batch, projectId: 'project-a', prompt: 'cat', imageSize: '1K', aspectRatio: '1:1' })).toBe(false);
+    expect(store.nodes.map((node) => node.id)).toEqual(targetIds);
+    expect(persistMediaUrlToProjectData).not.toHaveBeenCalled();
+    expect(store.recordOutputHistory).toHaveBeenCalledTimes(3);
+  });
+
   it('keeps each batch result download access isolated during persistence', async () => {
     const { applyImageBatchResults, prepareImageBatchNodes } = await import('../../src/services/imageBatchService');
     const prepared = prepareImageBatchNodes({ nodeId: 'source', count: 2, projectId: 'project-a' });

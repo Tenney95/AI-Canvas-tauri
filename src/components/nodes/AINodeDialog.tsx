@@ -50,7 +50,7 @@ import {
   buildAnimationSpritePrompt,
   resolveAnimationSheetAspectRatio,
 } from '../../services/ai/animationPrompt';
-import { resolveAudioParameterCapability, resolveImageParameterCapability } from '../../services/ai/mediaModelCapabilities';
+import { resolveAudioParameterCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../services/ai/mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../services/ai/dreaminaModels';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from '../../services/ai/modelCapabilityValidation';
 import { applyGenerationCameraPrompt } from '../../services/shotlistPromptService';
@@ -450,7 +450,8 @@ function AINodeDialog() {
     }
     if (latestData.type === 'ai-image') {
       if (isImageBatchGenerating(latestNode!.id)) return;
-      if (Number(latestData.batchCount) > 1 && usesSequentialImageBatch(
+      if (resolveImageOutputsPerJob(latestData.model ?? '', latestData.provider ?? '', store.config) > 1
+        || Number(latestData.batchCount) > 1 && usesSequentialImageBatch(
         latestData.provider, latestData.model, store.config, latestData.workflowId,
       )) {
         const originalProjectId = store.currentProjectId;
