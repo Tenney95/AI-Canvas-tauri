@@ -564,7 +564,7 @@ function visibleShotRatio(store: TestStore, column: string) {
 /** 只测工作流编辑与关闭回调，生成服务不在本用例执行范围内。 */
 async function loadWorkflowEditingDialog() {
   vi.doMock('../../src/services/aiService', () => ({
-    generateText: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
+    generateText: vi.fn(), generateTextResult: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
     generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
   }));
   vi.doMock('../../src/services/generationService', () => ({
@@ -1815,7 +1815,7 @@ describe('critical canvas node interactions', () => {
       }));
       vi.doMock('../../src/components/nodes/shared/defaultModels', () => ({ findMediaModelOption: vi.fn() }));
       vi.doMock('../../src/services/aiService', () => ({
-        generateText, generateImage, generateImagesBatch: vi.fn(), generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
+        generateText, generateTextResult: vi.fn(), generateImage, generateImagesBatch: vi.fn(), generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
       }));
       vi.doMock('../../src/services/fileService', () => ({
         persistMediaUrlToProjectData: vi.fn(async (url: string) => ({ mediaUrl: url, sourceUrl: url, filePath: 'result.png' })),
@@ -1873,6 +1873,115 @@ describe('critical canvas node interactions', () => {
     });
   });
 
+  describe('AINodeDialog local ComfyUI text delivery', () => {
+    afterEach(() => {
+      vi.doUnmock('../../src/services/projectSettingsService');
+      vi.doUnmock('../../src/services/pollManager');
+      vi.doUnmock('../../src/services/dramaAssetExtract');
+    });
+
+    async function setupLocalTextDialog() {
+      const store = createStore([{ id: 'local-text', type: 'ai-text', position: { x: 0, y: 0 },
+        data: { type: 'ai-text', label: '本地提示词增强', status: 'idle', prompt: '待增强的描述',
+          provider: 'comfyui', model: 'comfyui/workflow', workflowId: 'wf-local-text', workflowInputs: { '1': '指定输入' } } }], () => 1);
+      store.activeNodeId = 'local-text';
+      const pendingTasks: import('../../src/services/pollManager').PendingTask[] = [];
+      const textReceipt = { projectId: 'project-a', nodeId: 'local-text', taskId: 'local-text-task', attemptId: 'text-attempt' };
+      const generateTextResult = vi.fn().mockImplementation(async () => {
+        pendingTasks.push({ ...textReceipt, nodeType: 'ai-text', provider: 'comfyui', taskType: 'comfyui', submitted: true,
+          comfyRecoveryState: 'save_pending', comfyTextOutputNodeIds: ['7'] });
+        return { text: '完整增强后的提示词', comfyTaskId: 'local-text-task' };
+      });
+      const generateText = vi.fn();
+      const completeComfyNodeTask = vi.fn();
+      const pauseComfyNodeDelivery = vi.fn();
+      const prepareMediaNodeGeneration = vi.fn();
+      await installReactHookDriver();
+      installStoreMock(store);
+      vi.doMock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
+      vi.doMock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+      vi.doMock('@tauri-apps/api/core', () => ({ convertFileSrc: (path: string) => path }));
+      vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({ default: function PromptPanelMock() { return null; } }));
+      vi.doMock('../../src/components/nodes/shared/defaultModels', () => ({ findMediaModelOption: vi.fn() }));
+      vi.doMock('../../src/services/aiService', () => ({ generateText, generateTextResult, generateImage: vi.fn(),
+        generateImagesBatch: vi.fn(), generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn() }));
+      vi.doMock('../../src/services/projectSettingsService', async () => ({
+        ...await vi.importActual<typeof import('../../src/services/projectSettingsService')>('../../src/services/projectSettingsService'),
+        resolveProjectGenerationPrompt: ({ prompt }: { prompt: string }) => prompt,
+      }));
+      vi.doMock('../../src/services/generationService', () => ({ executeGeneration: vi.fn(), cancelImageBatchGeneration: vi.fn(),
+        isImageBatchGenerating: () => false, subscribeImageBatches: () => () => {}, usesSequentialImageBatch: () => false }));
+      vi.doMock('../../src/services/pollManager', () => ({ ...mockComfyDeliveries(), getPendingTasksForProject: () => pendingTasks,
+        completeComfyNodeTask, pauseComfyNodeDelivery, prepareMediaNodeGeneration }));
+      const Dialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
+      const panel = () => findElement(Dialog(), (element) => componentName(element) === 'PromptPanelMock');
+      return { store, panel, generateText, generateTextResult, completeComfyNodeTask, pauseComfyNodeDelivery,
+        prepareMediaNodeGeneration, textReceipt };
+    }
+
+    it('passes the selected local workflow without an API key and confirms it after durable text history', async () => {
+      const { store, panel, generateText, generateTextResult, completeComfyNodeTask, prepareMediaNodeGeneration, textReceipt } = await setupLocalTextDialog();
+      const history = deferred<void>();
+      store.recordOutputHistory.mockReturnValueOnce(history.promise);
+      const pending = (panel().props.onSubmit as () => Promise<void>)();
+      await vi.waitFor(() => expect(store.recordOutputHistory).toHaveBeenCalledOnce());
+      expect(store.config.providers).toEqual({});
+      expect(generateTextResult).toHaveBeenCalledExactlyOnceWith({ prompt: '待增强的描述', provider: 'comfyui',
+        model: 'comfyui/workflow', nodeId: 'local-text', workflowId: 'wf-local-text', workflowInputs: { '1': '指定输入' } });
+      expect(prepareMediaNodeGeneration).toHaveBeenCalledWith('local-text');
+      expect(store.nodes[0].data.output).toBe('完整增强后的提示词');
+      expect(store.recordOutputHistory).toHaveBeenCalledWith('local-text', expect.objectContaining({
+        nodeType: 'ai-text', output: '完整增强后的提示词', status: 'success' }), true, textReceipt);
+      expect(completeComfyNodeTask).not.toHaveBeenCalled();
+      history.resolve();
+      await pending;
+      expect(completeComfyNodeTask).toHaveBeenCalledExactlyOnceWith('local-text', 'local-text-task');
+      expect(generateText).not.toHaveBeenCalled();
+    });
+
+    it('keeps the original Comfy text task when history persistence fails', async () => {
+      const { store, panel, generateTextResult, completeComfyNodeTask, pauseComfyNodeDelivery } = await setupLocalTextDialog();
+      const failure = new Error('history storage failed');
+      store.recordOutputHistory.mockRejectedValueOnce(failure);
+      await (panel().props.onSubmit as () => Promise<void>)();
+      expect(generateTextResult).toHaveBeenCalledOnce();
+      expect(completeComfyNodeTask).not.toHaveBeenCalled();
+      expect(pauseComfyNodeDelivery).toHaveBeenCalledWith('local-text', 'local-text-task', expect.any(Function), failure);
+    });
+
+    it('does not fill another canvas after a late local text response', async () => {
+      const { store, panel, generateTextResult, completeComfyNodeTask, pauseComfyNodeDelivery } = await setupLocalTextDialog();
+      const response = deferred<{ text: string; comfyTaskId: string }>();
+      generateTextResult.mockReturnValueOnce(response.promise);
+      const pending = (panel().props.onSubmit as () => Promise<void>)();
+      await vi.waitFor(() => expect(generateTextResult).toHaveBeenCalledOnce());
+      store.getCurrentRevision = () => 2;
+      response.resolve({ text: '过期增强结果', comfyTaskId: 'local-text-task' });
+      await pending;
+      expect(store.nodes[0].data.output).toBeUndefined();
+      expect(store.recordOutputHistory).not.toHaveBeenCalled();
+      expect(completeComfyNodeTask).not.toHaveBeenCalled();
+      expect(pauseComfyNodeDelivery).toHaveBeenCalledWith('local-text', 'local-text-task', expect.any(Function), undefined);
+    });
+
+    it('does not confirm the text task or merge extracted assets after the project changes during history persistence', async () => {
+      vi.doMock('../../src/services/dramaAssetExtract', () => ({
+        prepareDramaExtractPrompt: (prompt: string) => prompt,
+        postProcessDramaExtractOutput: () => ({ ok: true, output: '原项目人物简介', kind: 'character', parsed: { characters: [] } }),
+      }));
+      const { store, panel, completeComfyNodeTask } = await setupLocalTextDialog();
+      const history = deferred<void>();
+      store.recordOutputHistory.mockReturnValueOnce(history.promise);
+      const pending = (panel().props.onSubmit as () => Promise<void>)();
+      await vi.waitFor(() => expect(store.recordOutputHistory).toHaveBeenCalledOnce());
+      store.currentProjectId = 'another-project';
+      history.resolve();
+      await pending;
+      expect(completeComfyNodeTask).not.toHaveBeenCalled();
+      expect(store.mergeDramaExtract).not.toHaveBeenCalled();
+    });
+  });
+
   describe('AINodeDialog image quality', () => {
     afterEach(() => {
       for (const module of [
@@ -1911,7 +2020,7 @@ describe('critical canvas node interactions', () => {
       vi.doMock('../../src/components/nodes/shared/MediaTaskStatus', () => ({ default: function MediaTaskStatusMock() { return null; } }));
       vi.doMock('../../src/components/nodes/shared/defaultModels', () => ({ findMediaModelOption: vi.fn() }));
       vi.doMock('../../src/services/aiService', () => ({
-        generateText: vi.fn(), generateImage, generateImagesBatch, generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
+        generateText: vi.fn(), generateTextResult: vi.fn(), generateImage, generateImagesBatch, generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
       }));
       vi.doMock('../../src/services/fileService', () => ({
         persistMediaUrlToProjectData,
@@ -2303,7 +2412,7 @@ describe('critical canvas node interactions', () => {
     vi.doMock('@tauri-apps/api/core', () => ({ convertFileSrc: (path: string) => path }));
     vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({ default: function PromptPanelMock() { return null; } }));
     vi.doMock('../../src/components/nodes/shared/defaultModels', () => ({ findMediaModelOption: vi.fn() }));
-    vi.doMock('../../src/services/aiService', () => ({ generateText: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
+    vi.doMock('../../src/services/aiService', () => ({ generateText: vi.fn(), generateTextResult: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
       generateVideo: vi.fn(), generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn() }));
     vi.doMock('../../src/services/pollManager', () => ({ ...mockComfyDeliveries(), getPendingTasksForProject: () => [],
       prepareMediaNodeGeneration: vi.fn(), registerMediaNodeOperation: () => vi.fn(), completeMediaNodeTask: vi.fn() }));
@@ -2614,7 +2723,7 @@ describe('critical canvas node interactions', () => {
     vi.doMock('../../src/components/nodes/shared/PromptPanel', () => ({ default: function PromptPanelMock() { return null; } }));
     vi.doMock('../../src/components/nodes/shared/defaultModels', () => ({ findMediaModelOption: vi.fn() }));
     const generateVideo = vi.fn();
-    vi.doMock('../../src/services/aiService', () => ({ generateText: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
+    vi.doMock('../../src/services/aiService', () => ({ generateText: vi.fn(), generateTextResult: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
       generateVideo, generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn() }));
     vi.doMock('../../src/services/pollManager', () => ({ ...mockComfyDeliveries(), getPendingTasksForProject: () => [],
       prepareMediaNodeGeneration: vi.fn(), registerMediaNodeOperation: () => vi.fn(), completeMediaNodeTask: vi.fn() }));
@@ -2670,7 +2779,7 @@ describe('critical canvas node interactions', () => {
       default: function PromptPanelMock() { return null; },
     }));
     vi.doMock('../../src/services/aiService', () => ({
-      generateText: vi.fn(),
+      generateText: vi.fn(), generateTextResult: vi.fn(),
       generateImage: vi.fn(),
       generateImagesBatch: vi.fn(),
       generateVideo,
@@ -2845,7 +2954,7 @@ describe('critical canvas node interactions', () => {
       default: function PromptPanelMock() { return null; },
     }));
     vi.doMock('../../src/services/aiService', () => ({
-      generateText: vi.fn(),
+      generateText: vi.fn(), generateTextResult: vi.fn(),
       generateImage,
       generateImagesBatch: vi.fn(),
       generateVideo: vi.fn(),

@@ -1,11 +1,84 @@
 /**
  * comfyOutputs — 回归测试：findComfyOutputFile。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { buildComfyFileUrl, findComfyOutputFile, resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind } from '../../src/services/comfyOutputs';
+import { buildComfyFileUrl, findComfyOutputFile, getComfyTextOutputNodeIds, MAX_COMFY_TEXT_BYTES, resolveComfyOutputUrl,
+  resolveComfyTextOutput, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind } from '../../src/services/comfyOutputs';
+import { COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, pollComfyTextHistory, readComfyTextOutput } from '../../src/services/comfyPolling';
+
+const textFetch = vi.hoisted(() => vi.fn());
+vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: textFetch }));
 
 const file = (filename: string) => ({ filename, subfolder: '', type: 'output' });
+
+describe('ComfyUI official SaveText output', () => {
+  it('only captures the submitted SaveText node and returns its text rather than the earlier input display', () => {
+    const graph = {
+      '1': { class_type: 'TE_text_display', inputs: { text: 'input placeholder' } },
+      '2': { class_type: 'TE_Qwen_Image_2_1_Prompt_Enhancer', inputs: { prompt: ['1', 0] } },
+      '3': { class_type: 'LoadImage', inputs: { image: 'reference.png' } },
+      '7': { class_type: 'SaveText', inputs: { text: ['2', 0], format: 'txt' } },
+    };
+    expect(getComfyTextOutputNodeIds(graph)).toEqual(['7']);
+    expect(resolveComfyTextOutput({ '1': { text: ['original input'] }, '7': {
+      text: ['  enhanced first line\nsecond line  ', '后续完整内容'], files: [file('enhanced.txt')],
+    } }, ['7'])).toEqual({ text: '  enhanced first line\nsecond line  \n后续完整内容' });
+  });
+
+  it('does not choose an arbitrary output when the submitted selector is missing or ambiguous', () => {
+    const outputs = { '1': { text: ['input text'] }, '7': { text: ['final text'] } };
+    expect(resolveComfyTextOutput(outputs, [])).toBeNull();
+    expect(resolveComfyTextOutput(outputs, ['missing'])).toBeNull();
+    expect(resolveComfyTextOutput(outputs, ['1', '7'])).toBeNull();
+    expect(getComfyTextOutputNodeIds({ '1': { class_type: 'TE_text_display' }, '7': { class_type: 'SaveText' },
+      '9': { class_type: 'SaveText' }, '11': { class_type: 'CustomSaveText' } })).toEqual(['7', '9']);
+  });
+
+  it.each([undefined, null, [], [''], ['   '], ['valid', 42], 'not-the-documented-array', { value: 'text' }])(
+    'rejects missing, empty and malformed SaveText text arrays %#', (text) => {
+      expect(resolveComfyTextOutput({ '7': { text } }, ['7'])).toBeNull();
+    },
+  );
+
+  it('does not fetch file-only output or treat it as a media result', () => {
+    const outputs = { '7': { files: [file('result.txt')], images: [file('result.txt')] } };
+    expect(resolveComfyTextOutput(outputs, ['7'])).toBeNull();
+    for (const kind of ['image', 'video', 'audio'] as const) expect(findComfyOutputFile(outputs, [kind])).toBeNull();
+    for (const extension of ['json', 'md', 'csv']) {
+      expect(findComfyOutputFile({ '7': { images: [file(`result.${extension}`)] } }, ['image'])).toBeNull();
+    }
+  });
+
+  it('checks the complete UTF-8 text budget without truncating valid results', () => {
+    const boundary = 'a'.repeat(MAX_COMFY_TEXT_BYTES);
+    expect(resolveComfyTextOutput({ '7': { text: [boundary] } }, ['7'])?.text).toBe(boundary);
+    expect(() => resolveComfyTextOutput({ '7': { text: [boundary, 'more'] } }, ['7'])).toThrow('2 MiB');
+    expect(() => resolveComfyTextOutput({ '7': { text: ['图'.repeat(Math.floor(MAX_COMFY_TEXT_BYTES / 3) + 1)] } }, ['7'])).toThrow('2 MiB');
+  });
+
+  it('polls the original history and reads the selected text without downloading files or submitting a job', async () => {
+    textFetch.mockReset().mockResolvedValue(new Response(JSON.stringify({ 'original-task': {
+      status: { completed: true, status_str: 'success' }, outputs: { '1': { text: ['input'] }, '7': { text: ['enhanced result'] } },
+    } })));
+    const result = await pollComfyTextHistory('http://comfy.test:8188', 'original-task', ['7']);
+    expect(await readComfyTextOutput(result)).toBe('enhanced result');
+    expect(textFetch).toHaveBeenCalledOnce();
+    expect(textFetch.mock.calls[0][0]).toBe('http://comfy.test:8188/history/original-task');
+  });
+
+  it('reports a text-specific unavailable result for completed file-only output and keeps cancellation explicit', async () => {
+    textFetch.mockReset().mockResolvedValue(new Response(JSON.stringify({ 'original-task': {
+      status: { completed: true, status_str: 'success' }, outputs: { '7': { files: [file('result.txt')] } },
+    } })));
+    await expect(pollComfyTextHistory('http://comfy.test:8188', 'original-task', ['7']))
+      .rejects.toThrow(COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE);
+    expect(textFetch).toHaveBeenCalledOnce();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(readComfyTextOutput({ text: 'completed' }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
 
 describe('sanitizeComfyOutputFile', () => {
   it('只重建文件描述符，去除自定义节点的其他元数据', () => {

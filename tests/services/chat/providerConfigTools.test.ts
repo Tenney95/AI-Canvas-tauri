@@ -146,6 +146,88 @@ afterEach(() => {
 });
 
 describe('provider config agent tools', () => {
+  it('describes the literal loopback HTTP exception without relaxing document reading', () => {
+    const description = getAgentTool('provider_config_preview')!.description;
+    expect(description).toContain('localhost、127.0.0.1 或 [::1]');
+    expect(description).toContain('不允许局域网或公网 HTTP');
+    expect(getAgentTool('provider_docs_read')!.description).toContain('HTTPS');
+  });
+
+  it.each([
+    'http://localhost:8000/v1',
+    'http://127.0.0.1:8188/v1',
+    'http://[::1]:11434/v1',
+  ])('previews and saves a local HTTP provider without a network call: %s', async (baseUrl) => {
+    const input = declarativePreviewInput();
+    input.baseUrl = baseUrl;
+    const mcpContext: AgentToolContext = {
+      ...context,
+      conversationId: `mcp-control-${context.projectId}`,
+      mode: 'autonomous',
+    };
+    const prepared = prepareAgentToolCall({
+      callId: 'local-http-preview', toolId: 'provider_config_preview', input,
+    }, mcpContext);
+    expect(prepared.ok).toBe(true);
+
+    const preview = await getAgentTool('provider_config_preview')!.execute(mcpContext, input);
+    expect(preview.status).toBe('success');
+    const draftId = readDraftId(preview.modelContent);
+    const draft = getProviderConfigDraft(mcpContext.taskId, draftId, Date.now(), {
+      projectId: mcpContext.projectId, conversationId: mcpContext.conversationId,
+    });
+    expect(draft.baseUrl).toBe(baseUrl);
+
+    const saved = await getAgentTool('provider_config_apply')!.execute(mcpContext, { draftId });
+    expect(saved.status).toBe('success');
+    expect(useAppStore.getState().config.providers[draft.connectionId]).toMatchObject({
+      baseUrl, apiKey: '', catalogId: 'custom-openai',
+    });
+    expect(readDocsMock).not.toHaveBeenCalled();
+    expect(fileMocks.saveConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('imports a local text model example through MCP and keeps the explicit API prefix', async () => {
+    const baseUrl = 'http://localhost:11434/custom-api';
+    const input: ProviderConfigDraftInput = {
+      connectionName: 'Local text model', baseUrl,
+      models: [{
+        modelId: 'local-chat', category: 'text',
+        submitRequest: `curl ${baseUrl}/chat/completions -H "Content-Type: application/json" -d '{"model":"local-chat","messages":[{"role":"user","content":"hello"}]}'`,
+        submitResponse: '{"choices":[{"message":{"content":"hello"}}]}',
+      }],
+    };
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, input);
+    expect(preview.status).toBe('success');
+    const draft = getProviderConfigDraft(context.taskId, readDraftId(preview.modelContent));
+    expect(draft.config).toMatchObject({
+      baseUrl, chatApiProtocol: 'openai-compatible',
+      selectedModels: [{ id: 'local-chat', category: 'text' }],
+    });
+    expect(draft.config.selectedModels?.[0].executionProfile).toBeUndefined();
+    expect(readDocsMock).not.toHaveBeenCalled();
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'http://192.168.1.2:8000/v1',
+    'http://127.1:8000/v1',
+    'http://2130706433:8000/v1',
+    'http://localhost.evil.example:8000/v1',
+    'http://user:pass@localhost:8000/v1',
+  ])('rejects unsafe HTTP previews without saving a connection: %s', async (baseUrl) => {
+    const input = declarativePreviewInput();
+    input.baseUrl = baseUrl;
+    const previousProviders = structuredClone(useAppStore.getState().config.providers);
+
+    const result = await getAgentTool('provider_config_preview')!.execute(context, input);
+
+    expect(result).toMatchObject({ status: 'error', errorCode: 'PROVIDER_CONFIG_DRAFT_REJECTED' });
+    expect(result.modelContent).toContain('本机 HTTP 仅允许');
+    expect(useAppStore.getState().config.providers).toEqual(previousProviders);
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+  });
+
   it('exposes image capability parameters in the same import schema as video models', () => {
     const model = previewInput().models[0];
     const prepared = prepareAgentToolCall({ callId: 'image-parameters', toolId: 'provider_config_preview', input: {

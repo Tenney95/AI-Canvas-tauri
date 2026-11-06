@@ -8,9 +8,9 @@ const mocks = vi.hoisted(() => ({
   store: { currentProjectId: 'p', nodes: [] as Array<{ id: string; data: BaseNodeData }>,
     config: { theme: 'dark' as const, providers: {} }, commitToHistory: vi.fn(), getCurrentRevision: vi.fn(() => 0),
     workflows: [], projects: [], customStyles: [], updateNodeDataTransient: vi.fn(), updateNodeData: vi.fn(),
-    recordOutputHistory: vi.fn(), showToast: vi.fn() },
+    recordOutputHistory: vi.fn(), showToast: vi.fn(), mergeDramaExtract: vi.fn() },
   generate: vi.fn(), persist: vi.fn(), guardFresh: true, completeGuard: vi.fn(),
-  image: vi.fn(), imageBatch: vi.fn(), audio: vi.fn(), text: vi.fn(), shotlist: vi.fn(), director: vi.fn(),
+  image: vi.fn(), imageBatch: vi.fn(), audio: vi.fn(), text: vi.fn(), textResult: vi.fn(), processText: vi.fn(), shotlist: vi.fn(), director: vi.fn(),
   prepareBatch: vi.fn(), applyBatch: vi.fn(), persistAudio: vi.fn(), completeComfy: vi.fn(), pauseComfy: vi.fn(),
   completeMedia: vi.fn(), pauseMedia: vi.fn(() => new Error('任务已保留')), endOperation: vi.fn(), registerOperation: vi.fn(), prepareMedia: vi.fn(),
   tasks: [] as Array<import('../../src/services/pollManager').PendingTask>,
@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
 vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'test-id', derivedNodePlacement: vi.fn() }));
 vi.mock('../../src/services/aiService', () => ({ generateVideo: mocks.generate, generateImage: mocks.image,
-  generateImagesBatch: mocks.imageBatch, generateAudio: mocks.audio, generateText: mocks.text,
+  generateImagesBatch: mocks.imageBatch, generateAudio: mocks.audio, generateText: mocks.text, generateTextResult: mocks.textResult,
   buildPanoramaPrompt: (prompt: string) => prompt }));
 vi.mock('../../src/services/ai/generateAudio', () => ({ persistAudioGenerationResult: mocks.persistAudio }));
 vi.mock('../../src/services/ai/mediaModelCapabilities', async (original) => ({
@@ -32,7 +32,7 @@ vi.mock('../../src/services/imageBatchService', () => ({ applyImageBatchResults:
   failImageBatchNodes: vi.fn(), prepareImageBatchNodes: mocks.prepareBatch }));
 vi.mock('../../src/services/projectSettingsService', () => ({ getProjectModelKind: () => 'video', parseProjectModelRef: () => undefined,
   resolveProjectGenerationPrompt: ({ prompt }: { prompt: string }) => prompt }));
-vi.mock('../../src/services/dramaAssetExtract', () => ({ postProcessDramaExtractOutput: vi.fn(),
+vi.mock('../../src/services/dramaAssetExtract', () => ({ postProcessDramaExtractOutput: mocks.processText,
   prepareDramaExtractPrompt: (prompt: string) => prompt }));
 vi.mock('@tauri-apps/api/core', () => ({ convertFileSrc: vi.fn() }));
 vi.mock('../../src/services/ai/videoRequestResolver', () => ({ resolveVideoSubmissionControls: (options: { seedanceDuration?: number }) => ({ seedanceDuration: options.seedanceDuration }) }));
@@ -101,9 +101,100 @@ beforeEach(() => {
   mocks.applyBatch.mockReset().mockResolvedValue(true);
   mocks.imageOutputs.mockReset().mockReturnValue(1);
   mocks.imageBatch.mockReset();
+  mocks.textResult.mockReset().mockResolvedValue({ text: '增强后的完整文本', comfyTaskId: 'text-prompt-original' });
+  mocks.processText.mockReset().mockImplementation((_prompt: string, text: string) => ({ ok: true, output: text }));
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it('uses the shared node/MCP executor for local Comfy text and acknowledges only after durable history completes', async () => {
+    const input: BaseNodeData = { type: 'ai-text', label: '文本增强', prompt: '增强提示词', provider: 'comfyui',
+      model: 'comfyui/workflow', workflowId: 'wf-text', workflowInputs: { '1': '明确输入' } };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    const textReceipt = { projectId: 'p', nodeId: 'video', taskId: 'text-prompt-original', attemptId: 'text-attempt' };
+    mocks.tasks = [{ ...textReceipt, nodeType: 'ai-text', provider: 'comfyui', taskType: 'comfyui', submitted: true }];
+    const history = deferred<void>();
+    mocks.store.recordOutputHistory.mockReturnValueOnce(history.promise);
+    const pending = run(undefined, input);
+    await vi.waitFor(() => expect(mocks.store.recordOutputHistory).toHaveBeenCalledOnce());
+    expect(mocks.textResult).toHaveBeenCalledExactlyOnceWith({ prompt: '增强提示词', model: 'comfyui/workflow', provider: 'comfyui',
+      nodeId: 'video', workflowId: 'wf-text', workflowInputs: { '1': '明确输入' } });
+    expect(mocks.prepareMedia).toHaveBeenCalledWith('video');
+    expect(mocks.store.updateNodeData).toHaveBeenCalledWith('video', { output: '增强后的完整文本', status: 'success' });
+    expect(mocks.store.recordOutputHistory).toHaveBeenCalledWith('video', expect.objectContaining({
+      nodeType: 'ai-text', output: '增强后的完整文本', status: 'success',
+      params: { comfyTextTaskId: 'text-prompt-original', comfyTextAttemptId: 'text-attempt' } }), true, textReceipt);
+    expect(mocks.completeComfy).not.toHaveBeenCalled();
+    history.resolve();
+    expect(await pending).toEqual({ success: true });
+    expect(mocks.completeComfy).toHaveBeenCalledExactlyOnceWith('video', 'text-prompt-original');
+    expect(mocks.text).not.toHaveBeenCalled();
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
+
+  it('retains the original Comfy text receipt when durable history fails', async () => {
+    const input: BaseNodeData = { type: 'ai-text', label: '文本增强', prompt: '增强提示词', provider: 'comfyui',
+      model: 'comfyui/workflow', workflowId: 'wf-text' };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    const failure = new Error('history transaction aborted');
+    mocks.store.recordOutputHistory.mockRejectedValueOnce(failure);
+    expect((await run(undefined, input)).success).toBe(false);
+    expect(mocks.completeComfy).not.toHaveBeenCalled();
+    expect(mocks.pauseComfy).toHaveBeenCalledWith('video', 'text-prompt-original', expect.any(Function), failure);
+    expect(mocks.textResult).toHaveBeenCalledOnce();
+    expect(mocks.text).not.toHaveBeenCalled();
+  });
+
+  it('does not fill a stale canvas with a late local Comfy text result', async () => {
+    const input: BaseNodeData = { type: 'ai-text', label: '文本增强', prompt: '增强提示词', provider: 'comfyui',
+      model: 'comfyui/workflow', workflowId: 'wf-text' };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    const response = deferred<{ text: string; comfyTaskId: string }>();
+    mocks.textResult.mockReturnValueOnce(response.promise);
+    const pending = run(undefined, input);
+    await vi.waitFor(() => expect(mocks.textResult).toHaveBeenCalledOnce());
+    mocks.guardFresh = false;
+    response.resolve({ text: '旧文本不能回填', comfyTaskId: 'text-prompt-original' });
+    expect((await pending).success).toBe(false);
+    expect(mocks.store.updateNodeData).not.toHaveBeenCalled();
+    expect(mocks.store.recordOutputHistory).not.toHaveBeenCalled();
+    expect(mocks.completeComfy).not.toHaveBeenCalled();
+    expect(mocks.pauseComfy).toHaveBeenCalledWith('video', 'text-prompt-original', expect.any(Function), undefined);
+  });
+
+  it('does not acknowledge or merge extracted assets into a new project after awaiting text history', async () => {
+    const input: BaseNodeData = { type: 'ai-text', label: '文本增强', prompt: '增强提示词', provider: 'comfyui',
+      model: 'comfyui/workflow', workflowId: 'wf-text' };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    mocks.processText.mockReturnValueOnce({ ok: true, output: '原项目人物简介', kind: 'character', parsed: { characters: [] } });
+    const history = deferred<void>();
+    mocks.store.recordOutputHistory.mockReturnValueOnce(history.promise);
+    const pending = run(undefined, input);
+    await vi.waitFor(() => expect(mocks.store.recordOutputHistory).toHaveBeenCalledOnce());
+    mocks.store.currentProjectId = 'another-project';
+    history.resolve();
+    expect((await pending).success).toBe(false);
+    expect(mocks.completeComfy).not.toHaveBeenCalled();
+    expect(mocks.store.mergeDramaExtract).not.toHaveBeenCalled();
+  });
+
+  it('propagates the node lease cancellation signal through local Comfy text execution', async () => {
+    const controller = new AbortController();
+    const input: BaseNodeData = { type: 'ai-text', label: '文本增强', prompt: '增强提示词', provider: 'comfyui',
+      model: 'comfyui/workflow', workflowId: 'wf-text' };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    const response = deferred<{ text: string; comfyTaskId: string }>();
+    mocks.textResult.mockReturnValueOnce(response.promise);
+    const pending = run({ signal: controller.signal, assertFresh: vi.fn() }, input);
+    await vi.waitFor(() => expect(mocks.textResult).toHaveBeenCalledOnce());
+    expect(mocks.textResult.mock.calls[0][0]).toMatchObject({ nodeId: 'video', signal: controller.signal,
+      workflowId: 'wf-text', provider: 'comfyui' });
+    controller.abort();
+    response.resolve({ text: '取消后的文本', comfyTaskId: 'text-prompt-original' });
+    expect((await pending).success).toBe(false);
+    expect(mocks.store.recordOutputHistory).not.toHaveBeenCalled();
+    expect(mocks.completeComfy).not.toHaveBeenCalled();
+  });
+
   it('delivers a fixed four-candidate image job through one batch request without entering the single-result path', async () => {
     const input: BaseNodeData = { ...data(), type: 'ai-image', model: 'general/mj', batchCount: 1 };
     mocks.store.nodes = [{ id: 'video', data: input }];

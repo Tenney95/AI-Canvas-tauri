@@ -1517,6 +1517,8 @@ const nodes = {
   "下载地址已失效或资源不存在（HTTP {status}），可继续查询原任务": "The download URL expired or the resource is missing (HTTP {status}). Query the original task again.",
   "媒体下载失败（HTTP {status}），原任务已保留": "The media download failed (HTTP {status}). The original task is retained.",
   "画布已变化，结果未回填；请在原节点继续取回": "The canvas changed, so the result was not applied. Continue retrieving it at the original node.",
+  "ComfyUI 已完成，但选定的 SaveText 节点没有返回有效 text[] 文本。请使用支持该输出的官方 SaveText；仅 files 文件输出暂不支持取回，原任务已保留。": "ComfyUI finished, but the selected SaveText node returned no valid text[]. Use the official SaveText with text output support. Files-only output cannot be retrieved yet; the original task is retained.",
+  "文本已生成，回填或保存尚未完成；可继续取回原结果。": "Text was generated, but saving or applying it is incomplete. You can retrieve the original result.",
 };
 
 export default nodes;

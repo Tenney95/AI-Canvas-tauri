@@ -17,6 +17,8 @@ import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 import { textNodeHeight } from '../../utils/num';
 import ResizeHandle from './shared/ResizeHandle';
 import { useT } from '../../i18n';
+import MediaTaskStatus from './shared/MediaTaskStatus';
+import NodeGenerationProgress from './shared/NodeGenerationProgress';
 
 function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const t = useT();
@@ -283,10 +285,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
               <span>{t('上传中...')}</span>
             </div>
           ) : data.status === 'loading' ? (
-            <div className="node-preview-loading">
-              <div className="spinner" />
-              <span>{t('生成中...')}</span>
-            </div>
+            <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成中...')} />
           ) : (
             <div
               className="node-preview-placeholder text-node-empty-editable"
@@ -299,6 +298,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
             </div>
           )}
         </div>
+        {!isSource && data.mediaTaskState && data.status !== 'loading' && <MediaTaskStatus nodeId={id} overlay />}
         {(isEditing || data.output) && (
           <span className="text-node-wordcount">
             {(isEditing ? draftOutput.length : ((data.output as string) || '').length).toLocaleString()} {t('字')}

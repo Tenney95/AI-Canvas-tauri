@@ -17,7 +17,7 @@ import { applyImageBatchResults, imageBatchArtifactId } from './imageBatchServic
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './ai/helpers';
 import { resolveComfyOutputUrl, sanitizeComfyOutputFile, type ComfyOutputFile, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
-import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory } from './comfyPolling';
+import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, getComfyQueryAuthorizationMessage, pollComfyHistory, pollComfyTextHistory } from './comfyPolling';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from './canvasDerivationGuard';
 import { pollResolvedModelProtocol } from './ai/modelProtocol';
@@ -204,6 +204,8 @@ export interface PendingTask {
   resultUrls?: string[];
   /** 已确认的 ComfyUI 相对文件描述；仅由原 baseUrl 的 /view 续取，不保存任意 URL。 */
   comfyOutputFile?: ComfyOutputFile;
+  /** 原工作流明确声明的最终 SaveText 节点，仅保存 ID，不保存执行图或文本正文。 */
+  comfyTextOutputNodeIds?: string[];
   mediaDownloadAccess?: MediaDownloadAccess;
   /** 是否已取得远端任务 ID；false 不能证明请求未被上游接收。 */
   submitted: boolean;
@@ -776,7 +778,7 @@ function inferLegacyProviderConfigId(task: LegacyPendingTask): string | undefine
 }
 
 function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
-  const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, comfyOutputFile, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure,
+  const { baseUrl: legacyBaseUrl, comfyQueryHttpStatus, comfyOutputFile, comfyTextOutputNodeIds, mediaDownloadAccess, resultUrls, mediaFailureDiagnostic, terminalFailure,
     imageOutputNodeIds, ...safeTask } = task;
   delete safeTask.apiKey;
   const providerConfigId = inferLegacyProviderConfigId(task);
@@ -785,6 +787,9 @@ function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
   const safeAccess = access?.providerConfigId === providerConfigId ? access : undefined;
   const urls = sanitizeMediaResultUrls(resultUrls, providerConfigId ? useAppStore.getState().config.providers[providerConfigId]?.apiKey : undefined);
   const outputFile = task.taskType === 'comfyui' ? sanitizeComfyOutputFile(comfyOutputFile) : undefined;
+  const textOutputNodeIds = task.taskType === 'comfyui' && getGenerationNodeType(task.nodeType) === 'ai-text'
+    && Array.isArray(comfyTextOutputNodeIds)
+    ? [...new Set(comfyTextOutputNodeIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))] : [];
   const migratedImageNodes = task.nodeType === 'ai-image' && (task.expectedImageOutputs ?? 1) > 1 && Array.isArray(imageOutputNodeIds)
     ? [...new Set(imageOutputNodeIds.filter((id): id is string => typeof id === 'string' && id.length > 0))] : [];
   return {
@@ -794,6 +799,7 @@ function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
     ...(safeAccess ? { mediaDownloadAccess: safeAccess } : {}),
     ...(urls ? { resultUrls: urls } : {}),
     ...(outputFile ? { comfyOutputFile: outputFile } : {}),
+    ...(textOutputNodeIds.length ? { comfyTextOutputNodeIds: textOutputNodeIds } : {}),
     ...(migratedImageNodes.length ? { imageOutputNodeIds: migratedImageNodes } : {}),
     ...(sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) ? { mediaFailureDiagnostic: sanitizeMediaFailureDiagnostic(mediaFailureDiagnostic) } : {}),
     ...(terminalFailure === true ? { terminalFailure: true as const } : {}),
@@ -1519,7 +1525,9 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
   const signal = registerNodePolling(nodeId, parentSignal);
   const deliveryGuard = node ? registerCanvasDerivation(useAppStore.getState(), nodeId) : null;
   const isCurrent = () => isCurrentMediaTask(task, signal)
-    && (!node || (!!deliveryGuard && isCanvasDerivationFresh(deliveryGuard, useAppStore.getState())));
+    && (!node || (!!deliveryGuard && isCanvasDerivationFresh(deliveryGuard, useAppStore.getState())))
+    && (nodeType !== 'ai-text' || useAppStore.getState().nodes.some((item) => item.id === nodeId
+      && getGenerationNodeType(item.data.type) === 'ai-text'));
 
   const kinds: ComfyOutputKind[] =
     nodeType === 'ai-video' ? ['video']
@@ -1531,6 +1539,34 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
   try {
     beginComfyNodeDelivery(nodeId, taskId);
     updatePendingTask(nodeId, { comfyQueryHttpStatus: undefined }, taskId, task.attemptId);
+    if (nodeType === 'ai-text') {
+      if (!node || getGenerationNodeType(node.data.type) !== 'ai-text') throw new CanvasResultStaleError();
+      const { text } = await pollComfyTextHistory(baseUrl, taskId, task.comfyTextOutputNodeIds ?? [], signal);
+      resultReceived = true;
+      updatePendingTask(nodeId, { comfyRecoveryState: 'save_pending' }, taskId, task.attemptId);
+      if (!isCurrent()) throw new CanvasResultStaleError();
+      markMediaTaskDeliveryPending(task, signal);
+      await maybeAutoReleaseComfyMemory(baseUrl, useAppStore.getState().config.comfyMemoryPolicy ?? 'smart').catch(() => {});
+      if (!isCurrent()) throw new CanvasResultStaleError();
+      const { getNodeHistoryEntries } = await import('./indexedDbService');
+      const history = await getNodeHistoryEntries(task.projectId, nodeId);
+      if (!isCurrent()) throw new CanvasResultStaleError();
+      if (!history.some((entry) => entry.nodeType === 'ai-text' && entry.status === 'success'
+        && entry.params?.comfyTextTaskId === taskId && entry.params?.comfyTextAttemptId === task.attemptId)) {
+        await useAppStore.getState().recordOutputHistory(nodeId, {
+          nodeId, nodeLabel: label, timestamp: Date.now(), prompt: node.data.prompt ?? '', output: text,
+          nodeType: 'ai-text', model: node.data.model ?? '', provider: node.data.provider ?? 'comfyui', status: 'success',
+          params: { comfyTextTaskId: taskId, comfyTextAttemptId: task.attemptId },
+        }, true, receiptForTask(task));
+      }
+      signal.throwIfAborted();
+      if (!isCurrent()) throw new CanvasResultStaleError();
+      useAppStore.getState().updateNodeData(nodeId, { output: text, status: 'success', error: undefined,
+        mediaTaskState: undefined, mediaTaskStage: undefined });
+      completeMediaNodeTask(receiptForTask(task));
+      useAppStore.getState().showToast(`${label} 生成已完成`);
+      return;
+    }
     // 与实时生成共用轮询：ComfyUI 重启后 promptId 会彻底消失，那里会连 /queue 一起确认并直接判失败，
     // 不再让恢复出来的任务空转一小时
     const cachedFile = sanitizeComfyOutputFile(task.comfyOutputFile);
@@ -1563,6 +1599,10 @@ async function resumeComfyUI(task: PendingTask, parentSignal?: AbortSignal): Pro
   } catch (err) {
     // 被删除、取消或新一轮查询替代时，不能清理当前任务或覆盖其界面状态。
     if (signal.aborted) return;
+    if (nodeType === 'ai-text' && err instanceof RangeError) {
+      resultReceived = true;
+      updatePendingTask(nodeId, { comfyRecoveryState: 'save_pending' }, taskId, task.attemptId);
+    }
     if (task.mediaContext?.messageId) {
       if (err instanceof PollTaskFailedError) await handleResumeError(task, err, signal);
       else {

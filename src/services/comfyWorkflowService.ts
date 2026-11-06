@@ -9,7 +9,7 @@ import { isRemoteMediaUrl } from '../utils/mediaUrl';
 import { useAppStore } from '../store/useAppStore';
 import { comfyBaseUrlFor } from './comfyServers';
 import type { WorkflowDefinition, WorkflowIONode, WorkflowIONodeType } from '../types';
-import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams, AudioSpeechSettings, MediaTaskReceipt } from '../types/aiTypes';
+import type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams, AudioSpeechSettings, MediaTaskReceipt } from '../types/aiTypes';
 import { mapImageDimensions, mapVideoDimensions, resolveVideoDurationSeconds } from './aiDimensions';
 import { resolveNodeReferencesAsync } from './nodeReferenceService';
 import {
@@ -23,10 +23,10 @@ import {
   savePendingTask,
   updatePendingTask,
 } from './pollManager';
-import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, comfyFetch, pollComfyHistory } from './comfyPolling';
+import { ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, comfyFetch, pollComfyHistory, pollComfyTextHistory, readComfyTextOutput } from './comfyPolling';
 import { assertComfyResponse, withComfyQueryTimeout } from './comfyQuery';
 import { corsSafeFetch } from './ai/httpTransport';
-import { resolveComfyOutputUrl, type ComfyOutputFile } from './comfyOutputs';
+import { getComfyTextOutputNodeIds, resolveComfyOutputUrl, type ComfyOutputFile } from './comfyOutputs';
 import { createComfyProgressSession, type ComfyProgressSession } from './comfyProgress';
 import { maybeAutoReleaseComfyMemory } from './comfyMemory';
 import { applyComfyRefmodsToWorkflow, assertComfyRefmodSubmissionFresh, assertComfyRefmodSubmissionTargetFresh } from './comfyRefmodWorkflow';
@@ -38,6 +38,7 @@ import { applyComfyWorkflowParameterOverrides, prepareComfyWorkflowParameterOver
 import { parseRasterImageDimensions } from './rasterImageDimensions';
 import { inferComfyPromptRoles } from './comfyPromptRoles';
 import { comfyComboOptions } from './comfyInputSpecs';
+import { PollTaskFailedError } from './pollTask';
 
 /** ComfyUI 已注册的节点类型；同一次会话里短暂缓存，装完插件重开也能很快看到变化 */
 let nodeClassCache: { baseUrl: string; classes: Set<string>; fetchedAt: number } | null = null;
@@ -1509,6 +1510,88 @@ async function promptComfyUIWorkflow(
   }
   progressSession?.bindPrompt(promptResult.prompt_id);
   return promptResult.prompt_id;
+}
+
+/** 本地文本与媒体共用上传、参数、提交及原任务防重，交付时仅读取最终 SaveText。 */
+export async function executeComfyUITextGenerate(
+  params: AIGenerateParams,
+  externalSignal?: AbortSignal,
+  referenceImageUrls: string[] = [],
+  referenceMedia: { videoUrls?: string[]; audioUrls?: string[] } = {},
+): Promise<{ text: string; comfyTaskId?: string }> {
+  const { workflowId, workflowInputs, prompt } = params;
+  if (!workflowId) throw new Error('请选择已导入的本地 ComfyUI 文本工作流');
+  const sourceState = useAppStore.getState();
+  const sourceProjectId = sourceState.currentProjectId;
+  const sourceRevision = sourceState.getCurrentRevision();
+  const sourceWorkflow = sourceState.workflows.find((workflow) => workflow.id === workflowId);
+  const comfyUrl = getComfyUIConfig(workflowId);
+  assertComfyNodeCanSubmit(params.nodeId);
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+  const requestedSignal = externalSignal ?? params.signal;
+  const signal = nodeSignal && requestedSignal ? AbortSignal.any([nodeSignal, requestedSignal]) : nodeSignal ?? requestedSignal;
+  const projectId = params.nodeId ? useAppStore.getState().currentProjectId : null;
+  let progressSession: ComfyProgressSession | undefined;
+  let submittedTaskId: string | undefined;
+  let pendingReceipt: MediaTaskReceipt | undefined;
+  let retainPending = false;
+  try {
+    if (params.nodeId && projectId) pendingReceipt = savePendingTask({
+      nodeId: params.nodeId, projectId, nodeType: 'ai-text', provider: 'comfyui',
+      taskId: '', taskType: 'comfyui', baseUrl: comfyUrl, submitted: false,
+    });
+    const { baseUrl, workflowObj, applyParameters } = await submitComfyUIWorkflow(
+      workflowId, workflowInputs, prompt, signal, referenceMedia.audioUrls ?? [],
+      { imageUrls: referenceImageUrls, videoUrls: referenceMedia.videoUrls },
+    );
+    applyParameters();
+    const outputNodeIds = getComfyTextOutputNodeIds(workflowObj);
+    if (!outputNodeIds.length) throw new Error('ComfyUI 文本工作流缺少官方 SaveText 输出节点，请先在工作流中添加');
+    if (outputNodeIds.length !== 1) throw new Error('ComfyUI 文本工作流包含多个 SaveText 输出，请仅保留一个最终文本输出节点');
+    if (pendingReceipt && !updatePendingTask(pendingReceipt.nodeId, { comfyTextOutputNodeIds: outputNodeIds }, '', pendingReceipt.attemptId)) {
+      throw new Error('ComfyUI 文本提交记录已变化，请核对原任务后重新操作');
+    }
+    if (params.nodeId && projectId) progressSession = createComfyProgressSession({ baseUrl, projectId,
+      nodeId: params.nodeId, signal, workflow: workflowObj });
+    submittedTaskId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, undefined, () => {
+      const current = useAppStore.getState();
+      if (current.currentProjectId !== sourceProjectId || current.getCurrentRevision() !== sourceRevision
+        || current.workflows.find((workflow) => workflow.id === workflowId) !== sourceWorkflow
+        || getComfyUIConfig(workflowId) !== comfyUrl
+        || (params.nodeId && !current.nodes.some((node) => node.id === params.nodeId && node.data.type === 'ai-text'))) {
+        throw new Error('画布、工作流或服务地址已变化，未提交 ComfyUI 任务');
+      }
+    }, pendingReceipt);
+    const result = await pollComfyTextHistory(baseUrl, submittedTaskId, outputNodeIds, signal);
+    const text = await readComfyTextOutput(result, signal);
+    if (pendingReceipt) {
+      retainPending = true;
+      updatePendingTask(pendingReceipt.nodeId, { comfyRecoveryState: 'save_pending' }, submittedTaskId, pendingReceipt.attemptId);
+    }
+    await applyConfiguredComfyMemoryPolicy(baseUrl);
+    return { text, ...(params.nodeId && projectId ? { comfyTaskId: submittedTaskId } : {}) };
+  } catch (error) {
+    const interrupted = interruptedComfySubmission(pendingReceipt, submittedTaskId);
+    if (interrupted) {
+      retainPending = true;
+      throw pauseMediaTask(interrupted.receipt, error, interrupted.reason) ?? error;
+    }
+    if (submittedTaskId && !(error instanceof PollTaskFailedError)) {
+      retainPending = true;
+      if (pendingReceipt && !nodeSignal?.aborted) updatePendingTask(pendingReceipt.nodeId, {
+        comfyRecoveryState: error instanceof ComfyOutputUnavailableError ? 'output_unavailable'
+          : error instanceof RangeError ? 'save_pending' : 'disconnected',
+        comfyQueryHttpStatus: error instanceof ComfyQueryAuthorizationError ? error.status : undefined,
+      }, submittedTaskId, pendingReceipt.attemptId);
+    }
+    if (submittedTaskId && !(error instanceof ComfyPendingError) && !signal?.aborted) await applyConfiguredComfyMemoryPolicy(comfyUrl);
+    throw error;
+  } finally {
+    progressSession?.close();
+    if (params.nodeId && cleanupNodePolling(params.nodeId, nodeSignal) !== false && !retainPending) {
+      removePendingTask(params.nodeId, submittedTaskId, pendingReceipt?.attemptId);
+    }
+  }
 }
 
 /** 轮询 ComfyUI 执行历史，等待图片生成完成 */

@@ -25,6 +25,45 @@ export type ComfyOutputs = Record<string, ComfyOutputNode>;
 
 export type ComfyOutputKind = 'image' | 'video' | 'audio';
 
+export interface ComfyTextOutput {
+  text: string;
+}
+
+/** 与本地文本文件编辑一致的应用预算，不是 ComfyUI 的模型能力上限。 */
+export const MAX_COMFY_TEXT_BYTES = 2 * 1024 * 1024;
+
+/** 只认已提交图中的官方文本输出，不将输入展示节点误当生成结果。 */
+export function getComfyTextOutputNodeIds(workflow: Record<string, unknown>): string[] {
+  return Object.entries(workflow).filter(([, node]) => node && typeof node === 'object' && !Array.isArray(node)
+    && (node as Record<string, unknown>).class_type === 'SaveText').map(([nodeId]) => nodeId);
+}
+
+export function assertComfyTextOutputSize(text: string): void {
+  if (text.length > MAX_COMFY_TEXT_BYTES || new TextEncoder().encode(text).byteLength > MAX_COMFY_TEXT_BYTES) {
+    throw new RangeError('ComfyUI 文本结果超过 2 MiB 读取限制，原任务已保留');
+  }
+}
+
+/** 官方 SaveText 的 UI 输出为 text[]；仅 files 的旧输出暂不下载。 */
+export function resolveComfyTextOutput(outputs: ComfyOutputs, outputNodeIds: readonly string[]): ComfyTextOutput | null {
+  if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs) || outputNodeIds.length !== 1) return null;
+  const nodeId = outputNodeIds[0];
+  if (!Object.hasOwn(outputs, nodeId)) return null;
+  const node = outputs[nodeId];
+  if (!node || typeof node !== 'object' || Array.isArray(node) || !Array.isArray(node.text)
+    || node.text.length === 0 || node.text.some((item) => typeof item !== 'string')) return null;
+  // 编码前先检查字符数，避免先拼接一份明显超预算的大字符串。
+  let characters = Math.max(0, node.text.length - 1);
+  for (const part of node.text as string[]) {
+    characters += part.length;
+    if (characters > MAX_COMFY_TEXT_BYTES) throw new RangeError('ComfyUI 文本结果超过 2 MiB 读取限制，原任务已保留');
+  }
+  const text = (node.text as string[]).join('\n');
+  if (!text.trim()) return null;
+  assertComfyTextOutputSize(text);
+  return { text };
+}
+
 /** 各类媒体的已知键名，单复数都收 —— 内置节点与自定义节点命名并不统一 */
 const OUTPUT_KEYS: Record<ComfyOutputKind, string[]> = {
   image: ['images', 'image'],
@@ -116,6 +155,7 @@ function pickFromNode(node: ComfyOutputNode, kind: ComfyOutputKind, storageType:
   const hasMatchingExtension = (file: ComfyOutputFile) => extensions.includes(extension(file));
   const accepts = (file: ComfyOutputFile) => (storageType === 'any'
     || (storageType === 'legacy' ? !file.type : file.type === 'output'))
+    && !['txt', 'md', 'json', 'csv'].includes(extension(file))
     && (kind === 'video' ? hasMatchingExtension(file) : !Object.entries(OUTPUT_EXTENSIONS).some(
       ([otherKind, otherExtensions]) => otherKind !== kind && otherExtensions.includes(extension(file)),
     ));

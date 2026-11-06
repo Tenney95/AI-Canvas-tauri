@@ -281,6 +281,33 @@ describe('project output history', () => {
     expect(useAppStore.getState().historyProjectId).toBe('project-b');
   });
 
+  it.each(['data:image/png;base64,AQID', 'blob:这是生成的文本，不是图片地址'])('文本正文 %s 按纯文本耐久保存并原样读取，不调用媒体持久化', async (output) => {
+    useAppStore.setState({ currentProjectId: 'project-a' });
+    await useAppStore.getState().recordOutputHistory('node-1', { ...historyEntry(1), output }, true);
+    const saved = historyMocks.putHistoryEntry.mock.calls[0][0];
+    expect(saved).toMatchObject({ nodeType: 'ai-text', output, status: 'success' });
+    expect(saved.mediaUrl).toBeUndefined();
+    expect(saved.filePath).toBeUndefined();
+    expect(fileServiceMocks.persistMediaUrlToProjectData).not.toHaveBeenCalled();
+    historyMocks.getHistoryEntriesPage.mockResolvedValueOnce({ records: [saved], nextCursor: null, hasMore: false });
+    historyMocks.getHistoryEntryCount.mockResolvedValueOnce(1);
+    await useAppStore.getState().loadHistoryFromDb();
+    expect(useAppStore.getState().outputHistoryRecords[0]).toMatchObject({ output, status: 'success' });
+    expect(historyMocks.putHistoryEntries).not.toHaveBeenCalled();
+    expect(fileServiceMocks.persistMediaUrlToProjectData).not.toHaveBeenCalled();
+  });
+
+  it('文本正文仍保持原文，显式媒体附件继续按原规则持久化', async () => {
+    useAppStore.setState({ currentProjectId: 'project-a' });
+    const output = 'data:这是正文';
+    const mediaUrl = 'data:image/png;base64,AQID';
+    await useAppStore.getState().recordOutputHistory('node-1', { ...historyEntry(1), output, mediaUrl }, true);
+    expect(fileServiceMocks.persistMediaUrlToProjectData).toHaveBeenCalledOnce();
+    expect(fileServiceMocks.persistMediaUrlToProjectData.mock.calls[0][0]).toBe(mediaUrl);
+    expect(historyMocks.putHistoryEntry).toHaveBeenCalledWith(expect.objectContaining({ output,
+      mediaUrl: 'asset:///project/data/generated.png', filePath: '/project/data/generated.png' }));
+  });
+
   it('replaces inline history media with that record own project-file reference', async () => {
     const inline = 'data:image/png;base64,AQID';
     useAppStore.setState({

@@ -474,7 +474,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
         '异步 pollRequest 必须通过 path、query 或 body 动态引用 submitResponse 的任务 ID；不得照抄文档中的固定示例任务号。媒体字段若是 image_url:{url:...} 等嵌套对象，必须保留对象包装。',
         'docs、developer 等文档站地址不能作为 baseUrl；必须使用用户实际调用模型的 API 网关地址。',
         '当文档示例使用 loading、example 等占位主机时，通过 baseUrl 提供文档或用户明确声明的实际接口地址。',
-        '所有模型必须属于同一个 HTTPS Base URL。不得传入 API Key、Token、Authorization 值或其他真实凭据。',
+        '所有模型必须属于同一个 Base URL。远端仅允许无凭据的 HTTPS 默认端口地址；本机 HTTP 仅允许字面 localhost、127.0.0.1 或 [::1]，可带端口，不允许局域网或公网 HTTP。本机 HTTP 请求示例必须显式提供 baseUrl，提交和查询示例均须与它同源。不得传入 API Key、Token、Authorization 值或其他真实凭据。',
         '该工具只生成临时草稿，不写入设置；普通对话必须在同一任务中使用，MCP 可在同一全局模型设置控制会话中继续调用 provider_config_apply；不要求打开项目。',
       ].join(''),
       inputSchema: {
@@ -505,7 +505,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
                 templateId: {
                   type: 'string',
                   enum: VIDEO_TEMPLATE_IDS,
-                  description: '可选的 Seedance 或 MiniMax H3 内置模板。使用模板时仍必须在连接级提供实际 HTTPS baseUrl；显式能力和协议字段优先。',
+                  description: '可选的 Seedance 或 MiniMax H3 内置模板。使用模板时仍必须在连接级提供实际 baseUrl：远端 HTTPS 默认端口，或 localhost、127.0.0.1、[::1] 的本机 HTTP 地址（可带端口）；显式能力和协议字段优先。',
                 },
                 protocolSource: {
                   type: 'string',

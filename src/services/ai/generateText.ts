@@ -3,7 +3,7 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
-import type { AIGenerateParams, ProtocolJsonValue } from '../../types/aiTypes';
+import type { AIGenerateParams, ProtocolJsonValue, TextGenerationResult } from '../../types/aiTypes';
 import {
   extractModelName,
   parseGeneralTextResponse,
@@ -12,8 +12,9 @@ import {
 } from './helpers';
 import { parseResponseError } from './httpUtils';
 import { corsSafeFetch } from './httpTransport';
-import { resolvePromptToChatContent } from './promptResolver';
+import { resolvePromptToChatContent, resolvePromptWithMediaRefs } from './promptResolver';
 import { resolveChatContentImageDataUrls } from './imageUtils';
+import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
 import { executeModelProtocol, resolveModelExecutionProfile } from './modelProtocol';
 import {
   buildChatApiRequest,
@@ -28,10 +29,44 @@ import type { ChatApiProtocol } from '../../types';
 (DEFAULT_BASE_URLS as Record<string, string>).runninghubwf = 'https://api.runninghub.cn';
 
 export async function generateText(params: AIGenerateParams): Promise<string> {
+  return (await generateTextResult(params)).text;
+}
+
+/** 节点交付入口保留 ComfyUI 回执；普通文本消费者仍使用 generateText。 */
+export async function generateTextResult(params: AIGenerateParams): Promise<TextGenerationResult> {
   params.signal?.throwIfAborted();
   const { prompt: rawPrompt, model, provider } = params;
-
   const config = useAppStore.getState().config;
+
+  if (provider === 'comfyui' && (params.workflowId || !config.providers[provider])) {
+    const sourceState = useAppStore.getState();
+    const sourceRevision = sourceState.getCurrentRevision();
+    const workflowId = params.workflowId ?? (model.startsWith('comfyui/') && model !== 'comfyui/workflow'
+      ? model.slice('comfyui/'.length) : undefined);
+    const workflow = sourceState.workflows.find((item) => item.id === workflowId);
+    const assertSourceCurrent = () => {
+      params.signal?.throwIfAborted();
+      const current = useAppStore.getState();
+      if (current.currentProjectId !== sourceState.currentProjectId || current.getCurrentRevision() !== sourceRevision
+        || current.workflows.find((item) => item.id === workflowId) !== workflow
+        || (params.nodeId && !current.nodes.some((node) => node.id === params.nodeId && node.data.type === 'ai-text'))) {
+        throw new Error('画布或文本输入已变化，未提交 ComfyUI 任务');
+      }
+    };
+    if (!workflow || (workflow.adapterType && workflow.adapterType !== 'comfyui') || workflow.category !== 'ai-text') {
+      throw new Error('请先导入并选择本地 ComfyUI 文本工作流');
+    }
+    const media = await resolvePromptWithMediaRefs(rawPrompt);
+    assertSourceCurrent();
+    const references = mergeMediaReferences(media.references, collectConnectedReferenceMedia(params.nodeId).references);
+    const { executeComfyUITextGenerate } = await import('../comfyWorkflowService');
+    assertSourceCurrent();
+    return executeComfyUITextGenerate({ ...params, workflowId, prompt: media.prompt }, params.signal,
+      [...new Set([...getMediaReferenceUrls(references, 'image', 'local'), ...(params.imageUrls ?? [])])], {
+        videoUrls: getMediaReferenceUrls(references, 'video', 'local'),
+        audioUrls: getMediaReferenceUrls(references, 'audio', 'local'),
+      });
+  }
 
   let baseUrl: string;
   let apiKey: string;
@@ -110,7 +145,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
       },
     });
     if (!result.text) throw new Error('模型返回结果为空');
-    return result.text;
+    return { text: result.text };
   }
 
   // 未配置模型级协议时按连接协议执行；旧连接缺省仍是 OpenAI Chat Completions。
@@ -141,5 +176,5 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   if (!replyText) {
     throw new Error('模型返回结果为空');
   }
-  return replyText;
+  return { text: replyText };
 }

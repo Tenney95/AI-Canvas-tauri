@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.10.27 操作说明书：ComfyUI 工作流保存、提交与取消保护、参数兼容和结果恢复。">
-<title>AI Canvas 0.10.27 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.10.28 操作说明书：万象 MJ 四候选、MiniMax 官方视频与语音、GPT Image 2.6、CCC 香蕉参考图、MCP 操作回执与原结果交付。">
+<title>AI Canvas 0.10.28 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -34,7 +34,7 @@ dialog .character-actions-shot{width:1912px}
 <body>
 <a class="skip" href="#main">跳到正文</a>
 <nav class="toc" aria-label="说明书目录">
-<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.27 · 操作说明书<br>从素材整理到逐镜制作</small>
+<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.28 · 操作说明书<br>从素材整理到逐镜制作</small>
 <a class="back" href="index.html">← 返回软件首页</a>
 <label for="search">查找章节或操作</label><input id="search" type="search" placeholder="如：文件夹、回收站、视频批次" autocomplete="off" aria-describedby="search-status" aria-controls="search-results toc-links">
 <p id="search-status" class="search-status" role="status">支持空格分隔关键词；Ctrl + F 查找全文。</p>
@@ -47,6 +47,8 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
+<div class="group">0.10.28 更新入口</div>
+<a href="#relayon-candidates-0-10-28">↳ 万象 MJ 四候选与续存</a><a href="#minimax-official-0-10-28">↳ MiniMax 官方与素材直传</a><a href="#image-models-0-10-28">↳ GPT Image 2.6 与 CCC 香蕉</a><a href="#mcp-receipts-0-10-28">↳ MCP 精确改稿与操作回执</a><a href="#media-delivery-0-10-28">↳ 云资产、文件与视频播放</a>
 <div class="group">0.10.27 更新入口</div>
 <a href="#comfy-protection-0-10-27">↳ ComfyUI 保存与任务保护</a>
 <div class="group">结果恢复与项目往返 · 并入 0.10.27</div>
@@ -80,9 +82,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.10.27 说明书</span><span class="badge">2026-11-05 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.10.28 说明书</span><span class="badge">2026-11-06 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
+<aside class="tip"><b>0.10.28 · 多厂商创作与原结果交付：</b>新增<a href="#relayon-candidates-0-10-28">万象 MJ 四候选</a>、<a href="#minimax-official-0-10-28">MiniMax 官方 H3 与语音</a>及<a href="#image-models-0-10-28">多厂商 GPT Image 2.6／CCC 香蕉参考图</a>；原结果续存、<a href="#mcp-receipts-0-10-28">MCP 精确操作与回执</a>以及<a href="#media-delivery-0-10-28">云资产和播放</a>同步完善。功能与待验收边界见本版更新入口。</aside>
 <aside class="tip"><b>0.10.27 · ComfyUI 保存与任务保护：</b>普通保存更新原工作流，另存才创建副本；提交或取消结果未知时保留原任务，避免重复生成。操作与边界见<a href="#comfy-protection-0-10-27">本版更新入口</a>。此前结果继续保存操作见<a href="#comfy-recovery-0-10-26">结果恢复说明</a>。</aside>
 <aside class="tip"><b>0.10.25 · 工作流输入与项目导出：</b>选择 RH 工作流或 AI 应用后，可从 <b>@ → ComfyUI</b> 选择定向输入，按类型和原节点编号筛选；操作见<a href="#runninghub-inputs-0-10-25">本版更新入口</a>。</aside>
 <aside class="tip"><b>工作流种子与项目导出：</b><a href="#workflow-seeds-0-10-24">随机或固定种子与最近工作流</a>、<a href="#history-download-0-10-24">重新下载原任务结果</a>，以及项目导出、Markdown 上传和多选入组修复。四项旧 H3 模板退役说明见<a href="#project-export-0-10-24">本版操作说明</a>。</aside>
@@ -1120,6 +1123,27 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
+<section id="updates-0-10-28"><h2>0.10.28 · 多厂商创作与原结果交付</h2>
+<h3 id="relayon-candidates-0-10-28">万象 MJ 四候选与原结果续存</h3>
+<ol class="steps"><li>进入<b>设置 → API Key → 万象 API</b>，在 <b>image 图片分组</b>选择需要启用的 Midjourney v6、v6.1、v7、v8.1 或 v8.2，并保存对应分组 Key。新增型号默认只展示，不自动勾选；也可按当前 Key 拉取可用目录。</li><li>在图片节点或提示词窗口选择 MJ。一次作业向平台提交 <code>n=1</code>，接收四张候选；画布分别创建结果节点，对话／MCP 分别保留单图消息。数量设为 K 次作业时，依次提交 K 次，共接收 4K 张候选，不把一次作业误拆成四次付费请求。</li><li>部分候选下载或保存失败时，保留整组原回执。使用<b>继续查询／保存</b>续取原结果，复用已保存项；全部完成后才清理回执，不自动重新生成。若返回的是 Base64 且没有远端任务 ID，未保存的内联结果不能保证跨重启取回。</li></ol>
+<p>固定四候选只在能完整交付的图片节点、提示词及对话／MCP 入口开放。动画、全景、分镜单帧和插件等单结果入口会在提交前提示更换模型。用户修改的自定义协议不自动套用内置四图规则。</p>
+<h3 id="minimax-official-0-10-28">MiniMax 官方视频、语音与素材直传</h3>
+<ol class="steps"><li>在<b>设置 → API Key</b>添加 <b>MiniMax 官方</b>，填写官方 Key，验证并勾选 H3、Highspeed、Lite、Max 或 speech-2.8-hd／turbo。国内官方地址为默认值，国际站使用独立连接；两站的 Key、文件身份与任务不混用。</li><li>视频节点按型号选择支持的比例、分辨率与时长。本地参考图、视频和音频由当前官方连接上传，生成时使用 <code>mm_file://文件ID</code>，不经过公共图床；已有公网 HTTPS 素材仍由厂商直接读取。首尾帧与普通多参考素材不能混用。</li><li>音频节点选择官方语音型号，填写平台已有音色 ID，按需选择语速及 MP3／WAV／FLAC。此入口用于普通语音合成，不把参考音频自动克隆成新音色。</li></ol>
+<p>提示素材不可达时，优先改用本地原文件上传或检查公网地址的访问限制；不要连续重新生成。视频保留原任务查询与保存入口，业务失败和交付失败分别提示。</p>
+<h3 id="image-models-0-10-28">GPT Image 2.6 与 CCC 香蕉参考图</h3>
+<p>APIMart、ToAPIs、Amam、CCC、GRSAI 补入已适配的 GPT Image 2.6 型号；万象增加 <code>image-2.6-01</code>，按该渠道的 2.5 01 兼容参数接入，真实渠道仍需验收。各站型号、分辨率、质量和背景选项按各自合同提供，不因同属 2.6 就共享全部参数；新增模型需手动勾选，实际可用性以当前 Key 为准。</p>
+<ol class="steps"><li>编辑 <b>CCC 香蕉分组</b>，当前候选为 <code>Nano-Banana-pro</code>、<code>Nano-Banana-2</code>、<code>Nano-Banana-2.1</code>，三款提供 1K／2K／4K。旧已选 Gemini／香蕉条目放在兼容区保留；当前区全选不会清掉旧选择，刷新目录也不替换已有节点身份。</li><li>在图片节点使用连线或提示词 <b>@</b> 引用参考图。内置香蕉合同走 Gemini 原生内容接口，按顺序发送全部图片，不再误用 OpenAI Images 接口；已有用户自定义协议继续保留。</li><li>本地图片优先读取原文件，公网图片在本机读取后内联。生图转换预算为单图 32 MiB、合计 48 MiB；不套用普通文本视觉的六图限制，模型已明确声明的参考数量上限仍需遵守。超限、读取失败或取消会阻止提交，不静默丢图。</li></ol>
+<p>切换型号时，已有比例和兼容分辨率继续保留；若型号或自定义协议不支持某项参数，应先在参数面板核对，而不是把默认值当作已生效的能力。</p>
+<h3 id="mcp-receipts-0-10-28">MCP 精确改稿、取消与操作回执</h3>
+<p>本地 ComfyUI 文本工作流不再要求普通厂商 API Key：将工作流导入为“生成文本”，设置默认提示词输入并按需引用图片，应用读取唯一官方 <code>SaveText</code> 返回的完整 <code>text[]</code>。断线后继续查询原任务；缺少或存在多个 SaveText、仅 files 输出、超过应用 2 MiB 文本预算时会提示修正。插件及本地模型须先在 ComfyUI 中准备好。</p>
+<p>MCP 添加本机模型连接时，可明确填写 <code>http://localhost:端口</code>、<code>http://127.0.0.1:端口</code> 或 <code>http://[::1]:端口</code>。调用示例也须明确指定同源 Base URL；局域网与公网 HTTP 仍不开放。</p>
+<p>外部客户端可按名称和分页准确定位节点、分镜及字段，长提示词可以续读后按精确片段修改。读后写操作核对项目、画布版本和内容指纹；异构节点补丁可先整批准备再提交，过期或不匹配的输入不能覆盖新内容。</p>
+<p>取消会贯穿节点生成与结果保存，但停止本地等待不等于厂商已取消。操作绑定与媒体交付回执可用于查询原请求；提交结果未知、连接中断或取消之后，应先查回执和原任务，不能把重复发送当作自动恢复。逐项进度和部分成功结果继续保留；这些改动不扩大 MCP 工具权限或确认策略。</p>
+<h3 id="media-delivery-0-10-28">云资产、文件与视频播放</h3>
+<p>项目云资产同步修复接收流程，并提供逐项同步、冲突核对和删除反馈；先审阅影响范围再操作，远端状态未知时重新预览。文件传输、缩略图和持久化读写减少重复处理，继续保留原生流式保存、取消、路径权限和完整性检查。</p>
+<p>视频预览改善首次点击播放、播放失败反馈与封面重试。媒体已经落盘但无法播放时，应核对实际文件、访问权限与编码；它与结果尚未取回是不同问题，不应因此再次付费生成。</p>
+<p>数据库继续为 <b>v27</b>、项目归档继续为 <b>v3</b>。以上按源码说明本版行为，真实厂商生成、四图续存、跨设备同步及各平台安装升级仍待桌面验收；发布状态以 GitHub Release 为准。</p>
+</section>
 <section id="updates-0-10-27"><h2>0.10.27 · ComfyUI 保存与任务保护</h2>
 <h3 id="comfy-protection-0-10-27">工作流编辑、任务与参数兼容</h3>
 <ol><li>从节点右侧铅笔在 ComfyUI 中编辑，普通<b>保存到 AI Canvas</b>更新原记录，<b>另存</b>才创建副本。原记录已删除时普通保存报错；保存超时后再次点击只核对原请求，不重建副本。核对完成后再保存后续修改。</li><li>生成提交期间停止或断网时，已收到的任务 ID 会保留；尚未确认提交结果时不能直接重投，应先在原服务核对。旧版不支持安全定向取消时只停止本地等待，远端运行需在 ComfyUI 中终止，再继续查询或确认结束后解除本地限制。</li><li>本地参数与 RefMod 目录同时兼容旧选项数组和显式 COMBO 声明。音频只返回封面、波形等图片时不再当作音频交付，旧封面缓存恢复也会重新检查。</li><li>启动时核验端口上的真实 ComfyUI，其他程序占用或身份无法确认时明确报错，不结束未知进程。编辑窗口顶部空白处按菜单实际高度支持拖动，按钮和工作流标签保持点击操作；API 载入失败时不把旧画布绑定为目标工作流。</li></ol>
@@ -1162,8 +1186,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.10.27「ComfyUI 保存与任务保护」</b>，<b>2026-11-05</b> 按源码增量核对工作流编辑保存、提交与取消保护、参数兼容、音频输出和启动探测，并保留结果取回、项目导入与重开保存等说明。此前能力、旧锚点和截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.10.27">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-05-release-0.10.27.md">0.10.27 发布计划</a>，旧版本门禁不作为本轮通过证据。当前数据库为 <b>v27</b>；升级前备份项目与应用数据，安装旧程序不能直接回退已升级的数据。真实 S3 读写与清理、模型调用、各平台安装升级和双客户端交互仍需按发布计划验收。</p>
+<p>本说明书面向 <b>0.10.28「多厂商创作与原结果交付」</b>，<b>2026-11-06</b> 按源码增量核对万象 MJ 四候选、MiniMax 官方视频与语音、多厂商 GPT Image 2.6、CCC 香蕉参考图、MCP 操作回执、云资产及播放，并保留此前工作流编辑保存、结果取回、项目导入与重开保存等说明。旧锚点和截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.10.28">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
+<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-06-release-0.10.28.md">0.10.28 发布计划</a>，旧版本门禁不作为本轮通过证据。当前数据库为 <b>v27</b>、项目归档为 <b>v3</b>；升级前备份项目与应用数据，安装旧程序不能直接回退已升级的数据。真实 S3 读写与清理、模型调用、各平台安装升级和双客户端交互仍需按发布计划验收；本次说明书更新不代表桌面验收通过。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>
@@ -1179,7 +1203,7 @@ dialog .character-actions-shot{width:1912px}
 <p>内容依据当前版本的启动页、资源库、设置界面、应用帮助与相关操作实现核对。接口示例用于本地配置校验，<b>未调用真实厂商接口</b>；所有 example.com 地址与示例模型 ID 均为占位内容。按钮准备草稿、创建节点、实际模型生成和媒体保存是不同步骤，请按各章检查实际结果。</p>
 <p class="small">页面所需样式、脚本和十一张截图均在当前 HTML 内，无外部字体或 CDN 依赖。可直接双击离线打开；点击“返回软件首页”需同时保留 site 目录中的首页。打印按钮使用浏览器打印功能，可选择保存为 PDF。</p>
 </section>
-<footer>AI Canvas · 0.10.27 操作说明书 · 2026-11-05 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
+<footer>AI Canvas · 0.10.28 操作说明书 · 2026-11-06 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
 </main>
 <dialog id="zoom" aria-label="放大界面截图"><button class="action" id="zoom-close" type="button">关闭放大图（Esc）</button><div class="zoom-box"></div></dialog>
 <script>

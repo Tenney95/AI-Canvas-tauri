@@ -6,7 +6,7 @@
  */
 import { corsSafeFetch } from './ai/httpTransport';
 import { pollTask } from './pollTask';
-import type { ComfyOutputs } from './comfyOutputs';
+import { assertComfyTextOutputSize, resolveComfyTextOutput, type ComfyOutputs, type ComfyTextOutput } from './comfyOutputs';
 import { withComfyQueryTimeout } from './comfyQuery';
 
 /**
@@ -114,11 +114,12 @@ export class ComfyPendingError extends Error {
 }
 
 export const COMFY_OUTPUT_UNAVAILABLE_MESSAGE = 'ComfyUI 已完成，但没有可下载的目标媒体。请检查输出类型，并使用 SaveImage、PreviewImage、SaveVideo 或 SaveAudio 等文件输出节点；仅 WebSocket 出图暂不支持取回。';
+export const COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE = 'ComfyUI 已完成，但选定的 SaveText 节点没有返回有效 text[] 文本。请使用支持该输出的官方 SaveText；仅 files 文件输出暂不支持取回，原任务已保留。';
 
 /** 执行成功不等于本客户端已识别到文件；保留回执，不能冒充远端失败。 */
 export class ComfyOutputUnavailableError extends ComfyPendingError {
-  constructor() {
-    super(COMFY_OUTPUT_UNAVAILABLE_MESSAGE);
+  constructor(message = COMFY_OUTPUT_UNAVAILABLE_MESSAGE) {
+    super(message);
     this.name = 'ComfyOutputUnavailableError';
   }
 }
@@ -171,6 +172,7 @@ export async function pollComfyHistory<T>(
   timeoutMsg: string,
   extract: (outputs: ComfyOutputs) => T | null,
   signal?: AbortSignal,
+  outputUnavailableMessage = COMFY_OUTPUT_UNAVAILABLE_MESSAGE,
 ): Promise<T> {
   let missingRounds = 0;
   let errorRounds = 0;
@@ -205,7 +207,7 @@ export async function pollComfyHistory<T>(
       if (!entry || !isComfyHistoryEntryComplete(entry)) return null;
       const result = entry.outputs ? extract(entry.outputs) : null;
       // 只有明确终态才能判定输出不兼容；无 status 的旧服务继续等待。
-      if (result === null && entry.status) throw new ComfyOutputUnavailableError();
+      if (result === null && entry.status) throw new ComfyOutputUnavailableError(outputUnavailableMessage);
       return result;
     },
     isFailed: ({ entry, gone }) => {
@@ -225,4 +227,23 @@ export async function pollComfyHistory<T>(
     }
     throw error;
   });
+}
+
+/** 不读取任意 URL、输入展示节点或未确认的插件字段。 */
+export async function readComfyTextOutput(result: ComfyTextOutput, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  if (typeof result.text !== 'string' || !result.text.trim()) throw new ComfyOutputUnavailableError(COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE);
+  assertComfyTextOutputSize(result.text);
+  return result.text;
+}
+
+export async function pollComfyTextHistory(
+  baseUrl: string,
+  promptId: string,
+  outputNodeIds: readonly string[],
+  signal?: AbortSignal,
+): Promise<ComfyTextOutput> {
+  if (outputNodeIds.length !== 1) throw new ComfyOutputUnavailableError(COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE);
+  return pollComfyHistory(baseUrl, promptId, 'ComfyUI 文本生成超时（1 小时）',
+    (outputs) => resolveComfyTextOutput(outputs, outputNodeIds), signal, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE);
 }

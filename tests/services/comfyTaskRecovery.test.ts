@@ -10,11 +10,12 @@ import {
   resumeMediaNodeTask, resumePendingTasks, resumeVideoNodeTask, savePendingTask, VideoPollingPausedError,
 } from '../../src/services/pollManager';
 import {
-  cancelComfyUINodeTask, executeComfyUIAudioGenerate, executeComfyUIGenerate, executeComfyUIVideoGenerate,
+  cancelComfyUINodeTask, executeComfyUIAudioGenerate, executeComfyUIGenerate, executeComfyUITextGenerate, executeComfyUIVideoGenerate,
 } from '../../src/services/comfyWorkflowService';
-import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, pollComfyHistory } from '../../src/services/comfyPolling';
+import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, ComfyOutputUnavailableError, ComfyPendingError, ComfyQueryAuthorizationError, pollComfyHistory } from '../../src/services/comfyPolling';
 import type { ComfyOutputFile } from '../../src/services/comfyOutputs';
 import { MediaPersistenceError } from '../../src/services/fileService';
+import { getNodeHistoryEntries } from '../../src/services/indexedDbService';
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), history: vi.fn(), queue: vi.fn(), cancel: vi.fn(), persist: vi.fn(), bindPrompt: vi.fn() }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
@@ -39,6 +40,9 @@ const completedVideo = () => json({ 'prompt-1': { status: { completed: true }, o
 const completedAudio = () => json({ 'prompt-1': { status: { completed: true }, outputs: {
   '9': { audio: [{ filename: 'out.flac', type: 'output' }] },
 } } });
+const completedText = (text = '最终生成文本') => json({ 'prompt-1': { status: { completed: true }, outputs: {
+  '1': { text: ['输入展示，不是生成结果'] }, '9': { text: [text, '第二行'] },
+} } });
 const pending = () => getPendingTasksForProject('p1');
 const promptCalls = () => mocks.fetch.mock.calls.filter(([url]) => String(url).endsWith('/prompt'));
 
@@ -53,6 +57,20 @@ function configureVideo() {
     }],
   });
   mocks.history.mockImplementation(async () => completedVideo());
+}
+
+function configureText() {
+  useAppStore.setState({
+    nodes: [{ id: 'n1', type: 'ai-text', position: { x: 0, y: 0 }, data: {
+      type: 'ai-text', label: 'text', provider: 'comfyui', model: params.model, workflowId: params.workflowId,
+      prompt: params.prompt, output: '原有文本', status: 'loading',
+    } }],
+    workflows: [{ id: 'wf-1', name: 'text', category: 'ai-text', createdAt: 1, fileName: 'text.json',
+      fileContent: JSON.stringify({ '1': { class_type: 'TE_text_display', inputs: { text: 'input' } },
+        '9': { class_type: 'SaveText', inputs: { text: ['1', 0] } } }),
+    }],
+  });
+  mocks.history.mockImplementation(async () => completedText());
 }
 
 beforeEach(() => {
@@ -719,6 +737,145 @@ describe('ComfyUI 任务恢复合同', () => {
       return completed();
     });
     await expect(pollComfyHistory(task.baseUrl, task.taskId, 'timeout', () => ({ url: 'out' }), controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('ComfyUI 文本原任务恢复', () => {
+  it('保存最终 SaveText ID 并保留交付回执；续取不再 POST，也不下载文本文件', async () => {
+    configureText();
+    const result = await executeComfyUITextGenerate(params);
+    expect(result).toEqual({ text: '最终生成文本\n第二行', comfyTaskId: task.taskId });
+    const retained = pending()[0];
+    expect(retained).toMatchObject({ nodeType: 'ai-text', taskId: task.taskId,
+      comfyTextOutputNodeIds: ['9'], comfyRecoveryState: 'save_pending' });
+    expect(JSON.stringify(retained)).not.toMatch(/最终生成文本|第二行|class_type|输入展示/);
+    await resumeComfyUINodeTask('n1');
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ output: result.text, status: 'success' });
+    expect(pending()).toEqual([]);
+    expect(promptCalls()).toHaveLength(1);
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(mocks.fetch.mock.calls.some(([url]) => String(url).includes('/view'))).toBe(false);
+    const history = await getNodeHistoryEntries('p1', 'n1');
+    expect(history.find((entry) => entry.params?.comfyTextAttemptId === retained.attemptId))
+      .toMatchObject({ nodeType: 'ai-text', output: result.text, status: 'success' });
+  });
+
+  it('续取只用提交时的服务端和最终输出 ID，工作流改动不改读输入展示', async () => {
+    configureText();
+    savePendingTask({ ...task, nodeType: 'ai-text', comfyTextOutputNodeIds: ['9'], attemptId: 'text-original-server' });
+    useAppStore.setState({ config: { ...useAppStore.getState().config, comfyUIUrl: 'http://new-comfy.test:8188' },
+      workflows: [{ id: 'wf-1', name: 'changed', category: 'ai-text', createdAt: 1, fileName: 'changed.json',
+        fileContent: JSON.stringify({ '1': { class_type: 'SaveText', inputs: {} } }) }] });
+    await resumeComfyUINodeTask('n1');
+    expect(mocks.history).toHaveBeenCalledWith(`${task.baseUrl}/history/${task.taskId}`, expect.any(Object));
+    expect(useAppStore.getState().nodes[0].data.output).toBe('最终生成文本\n第二行');
+    expect(pending()).toEqual([]);
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(promptCalls()).toHaveLength(0);
+  });
+
+  it.each(['缺少提交时输出节点', '仅输入展示', '仅文本文件'] as const)('%s 保留原任务并明确输出不兼容，不按图片保存', async (scenario) => {
+    configureText();
+    savePendingTask({ ...task, nodeType: 'ai-text', attemptId: `text-unavailable-${scenario}`,
+      ...(scenario === '缺少提交时输出节点' ? {} : { comfyTextOutputNodeIds: ['9'] }) });
+    mocks.history.mockImplementation(async () => json({ 'prompt-1': { status: { completed: true }, outputs:
+      scenario === '仅文本文件' ? { '9': { files: [{ filename: 'answer.txt', type: 'output' }] } }
+        : { '1': { text: ['不能当作最终结果'] } },
+    } }));
+    await resumeComfyUINodeTask('n1');
+    expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'output_unavailable' });
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({ output: '原有文本', error: COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE });
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(mocks.fetch.mock.calls.some(([url]) => String(url).includes('/view'))).toBe(false);
+    expect(promptCalls()).toHaveLength(0);
+  });
+
+  it('历史未耐久保存时不回填或清回执，重试只取回原文本', async () => {
+    configureText();
+    const receipt = savePendingTask({ ...task, nodeType: 'ai-text', comfyTextOutputNodeIds: ['9'], attemptId: 'text-durable-retry' });
+    const record = useAppStore.getState().recordOutputHistory;
+    const failedWrite = vi.fn<typeof record>().mockRejectedValueOnce(new Error('storage full'));
+    useAppStore.setState({ recordOutputHistory: failedWrite });
+    try {
+      await resumeComfyUINodeTask('n1');
+      expect(failedWrite).toHaveBeenCalledWith('n1', expect.objectContaining({ output: '最终生成文本\n第二行' }), true, receipt);
+      expect(useAppStore.getState().nodes[0].data.output).toBe('原有文本');
+      expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'save_pending', mediaRecoveryState: 'delivery_pending' });
+    } finally { useAppStore.setState({ recordOutputHistory: record }); }
+    await resumeComfyUINodeTask('n1');
+    expect(pending()).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data.output).toBe('最终生成文本\n第二行');
+    expect(promptCalls()).toHaveLength(0);
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
+
+  it('历史成功后画布变化仍保留原任务，再续取复用同一条耐久历史', async () => {
+    configureText();
+    const receipt = savePendingTask({ ...task, nodeType: 'ai-text', comfyTextOutputNodeIds: ['9'], attemptId: 'text-durable-stale' });
+    const record = useAppStore.getState().recordOutputHistory;
+    useAppStore.setState({ recordOutputHistory: async (...args) => {
+      await record(...args);
+      useAppStore.getState().setCanvasRevision(useAppStore.getState().getCurrentRevision() + 1);
+    } });
+    try { await resumeComfyUINodeTask('n1'); }
+    finally { useAppStore.setState({ recordOutputHistory: record }); }
+    expect(useAppStore.getState().nodes[0].data.output).toBe('原有文本');
+    expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'save_pending' });
+    await resumeComfyUINodeTask('n1');
+    expect(useAppStore.getState().nodes[0].data.output).toBe('最终生成文本\n第二行');
+    expect(pending()).toEqual([]);
+    const history = await getNodeHistoryEntries('p1', 'n1');
+    expect(history.filter((entry) => entry.params?.comfyTextAttemptId === receipt.attemptId)).toHaveLength(1);
+    expect(promptCalls()).toHaveLength(0);
+  });
+
+  it.each(['项目', '画布 revision', '节点类型', 'attempt'] as const)('查询期间%s改变时迟到文本不能覆盖新状态', async (change) => {
+    configureText();
+    savePendingTask({ ...task, nodeType: 'ai-text', comfyTextOutputNodeIds: ['9'], attemptId: `text-stale-${change}` });
+    mocks.history.mockImplementationOnce(async () => {
+      if (change === '项目') useAppStore.setState({ currentProjectId: 'p2' });
+      else if (change === '画布 revision') useAppStore.getState().setCanvasRevision(useAppStore.getState().getCurrentRevision() + 1);
+      else if (change === '节点类型') useAppStore.getState().updateNodeDataTransient('n1', { type: 'ai-image', output: '新图片状态' });
+      else savePendingTask({ ...task, nodeType: 'ai-text', taskId: 'new-text-task', comfyTextOutputNodeIds: ['9'], attemptId: 'new-text-attempt' });
+      return completedText();
+    });
+    await resumeComfyUINodeTask('n1');
+    expect(useAppStore.getState().nodes[0].data.output).toBe(change === '节点类型' ? '新图片状态' : '原有文本');
+    expect(pending()[0].taskId).toBe(change === 'attempt' ? 'new-text-task' : task.taskId);
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(promptCalls()).toHaveLength(0);
+  });
+
+  it('查询中停止本地等待后不回填迟到文本，也不清除原任务', async () => {
+    configureText();
+    savePendingTask({ ...task, nodeType: 'ai-text', comfyTextOutputNodeIds: ['9'], attemptId: 'text-cancel' });
+    mocks.history.mockImplementationOnce(async () => {
+      cancelNodePolling('n1', true);
+      return completedText();
+    });
+    await resumeComfyUINodeTask('n1');
+    expect(useAppStore.getState().nodes[0].data.output).toBe('原有文本');
+    expect(pending()[0].taskId).toBe(task.taskId);
+    expect(promptCalls()).toHaveLength(0);
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
+
+  it('文本超出应用读取预算不截断或丢弃回执', async () => {
+    configureText();
+    savePendingTask({ ...task, nodeType: 'ai-text', comfyTextOutputNodeIds: ['9'], attemptId: 'text-budget' });
+    mocks.history.mockImplementation(async () => completedText('x'.repeat(2 * 1024 * 1024 + 1)));
+    await resumeComfyUINodeTask('n1');
+    expect(useAppStore.getState().nodes[0].data.output).toBe('原有文本');
+    expect(pending()[0]).toMatchObject({ taskId: task.taskId, comfyRecoveryState: 'save_pending', mediaRecoveryState: 'delivery_pending' });
+    expect(mocks.persist).not.toHaveBeenCalled();
+    expect(promptCalls()).toHaveLength(0);
+  });
+
+  it('只为本地文本任务保存非空唯一输出 ID，不给媒体任务继承文本选择器', () => {
+    savePendingTask({ ...task, nodeType: 'ai-text', comfyTextOutputNodeIds: ['9', '', '9', 5] as unknown as string[] });
+    expect(pending()[0].comfyTextOutputNodeIds).toEqual(['9']);
+    savePendingTask({ ...task, comfyTextOutputNodeIds: ['9'] });
+    expect(pending()[0].comfyTextOutputNodeIds).toBeUndefined();
   });
 });
 

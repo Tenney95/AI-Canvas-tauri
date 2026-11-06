@@ -14,8 +14,8 @@ import { derivedNodePlacement } from '../../store/store.utils';
 import type { AnimationAction, BaseNodeData, CameraGenerationSettings, ImagePostProcess, ModelOption } from '../../types';
 import { ANIMATION_FRAME_GRIDS } from '../../types';
 import { generateShotlistRows } from '../../services/shotlistService';
-import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt, type AudioSpeechSettings, type AudioSpeechReference, type AudioOutputFormat, type AudioTtsVoice, type VideoReferenceItem } from '../../types/aiTypes';
-import { generateText, generateImage, generateImagesBatch, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
+import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt, type TextGenerationResult, type AudioSpeechSettings, type AudioSpeechReference, type AudioOutputFormat, type AudioTtsVoice, type VideoReferenceItem } from '../../types/aiTypes';
+import { generateText, generateTextResult, generateImage, generateImagesBatch, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { removeAudioSpeechReference } from '../../services/ai/audioSpeechSettings';
 import { persistAudioGenerationResult } from '../../services/ai/generateAudio';
 import { persistMediaUrlToProjectData } from '../../services/fileService';
@@ -66,6 +66,7 @@ import { cancelRunningHubNodeTask, completeRunningHubNodeTask } from '../../serv
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 import { animationProcessing, animationResultPatch } from '../../services/animationService';
 import { useT } from '../../i18n';
+import { historyMediaTaskReceipt } from '../../services/historyMediaRecovery';
 import { mergeAppendedNodeMentions } from '../../utils/promptConnectionMentions';
 import { resolveGenerationNodeData } from '../../utils/nodeGeneration';
 import { cancelImageBatchGeneration, isImageBatchGenerating, subscribeImageBatches, usesSequentialImageBatch } from '../../services/generationService';
@@ -494,12 +495,12 @@ function AINodeDialog() {
     const submittingNodeId = activeNodeId!;
     const submittingProjectId = currentProjectId;
     const mediaSubmission = ['ai-image', 'ai-animation', 'ai-panorama', 'ai-audio'].includes(latestData.type);
-    if (mediaSubmission) {
+    const localComfyTask = !!latestData.workflowId && !cloudWorkflow;
+    if (mediaSubmission || localComfyTask) {
       try { prepareMediaNodeGeneration(submittingNodeId); }
       catch (error) { showToast(error instanceof Error ? error.message : t('暂时无法继续查询，请检查连接配置'), 'error'); return; }
     }
     const runningHubTask = cloudWorkflow || latestData.provider === 'runninghub';
-    const localComfyTask = !!latestData.workflowId && !cloudWorkflow;
     let comfyTaskId: string | undefined;
     let comfyDeliveryError: unknown;
     let savingSignal: AbortSignal | undefined;
@@ -516,7 +517,7 @@ function AINodeDialog() {
         && (!guardedSubmission || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, state)))
       );
     };
-    const endOperation = mediaSubmission ? registerMediaNodeOperation(submittingNodeId, true) : undefined;
+    const endOperation = mediaSubmission || localComfyTask ? registerMediaNodeOperation(submittingNodeId, true) : undefined;
     updateNodeDataTransient(activeNodeId!, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
     let batchNodeIds: string[] | undefined;
     let taskReceipt: MediaTaskReceipt | undefined;
@@ -815,16 +816,29 @@ function AINodeDialog() {
         if (textSource !== rawPrompt) effectivePrompt = resolveProjectGenerationPrompt({
           prompt: textSource, data: latestData, settings: projectSettings, customStyles: store.customStyles,
         });
-        const result = await generateText({
+        const textParams = {
           prompt: effectivePrompt,
           model: nodeModel,
           provider: nodeProvider,
-        });
+        };
+        const result: TextGenerationResult = localComfyTask
+          ? await generateTextResult({ ...textParams, nodeId: submittingNodeId,
+            workflowId: latestData.workflowId, workflowInputs: latestData.workflowInputs })
+          : { text: await generateText(textParams) };
+        comfyTaskId = result.comfyTaskId;
+        if (comfyTaskId) { beginMediaSaving(); beginComfyNodeDelivery(submittingNodeId, comfyTaskId); }
+        const textTask = comfyTaskId && submittingProjectId ? getPendingTasksForProject(submittingProjectId)
+          .find((task) => task.nodeId === submittingNodeId && task.taskId === comfyTaskId && task.taskType === 'comfyui') : undefined;
+        const textReceipt = textTask ? historyMediaTaskReceipt(textTask) : undefined;
         if (!isStillCurrentSubmission()) return;
-        const processed = postProcessDramaExtractOutput(effectivePrompt, result);
+        const processed = postProcessDramaExtractOutput(effectivePrompt, result.text);
         if (!processed.ok) throw new Error(processed.error);
         updateNodeData(activeNodeId!, { output: processed.output, status: 'success' });
-        recordOutputHistory(activeNodeId!, {
+        if (comfyTaskId && cloudGuard) {
+          completeCanvasDerivation(cloudGuard);
+          cloudGuard = registerCanvasDerivation(useAppStore.getState(), submittingNodeId);
+        }
+        await recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
@@ -834,7 +848,10 @@ function AINodeDialog() {
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
-        });
+          ...(textReceipt ? { params: { comfyTextTaskId: textReceipt.taskId, comfyTextAttemptId: textReceipt.attemptId } } : {}),
+        }, ...(comfyTaskId ? [true, textReceipt] as const : []));
+        if (!isStillCurrentSubmission()) return;
+        if (comfyTaskId) completeComfyNodeTask(submittingNodeId, comfyTaskId);
         if (processed.kind) {
           if (processed.parsed) {
             useAppStore.getState().mergeDramaExtract(processed.parsed, {

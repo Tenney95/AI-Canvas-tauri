@@ -186,6 +186,27 @@ describe('跨媒体原任务续取入口', () => {
     expect(queryButton()).toBeDefined();
   });
 
+  it('ComfyUI 文本缺失显示 SaveText 边界，不提示图片输出节点', () => {
+    mocks.tasks[0].taskType = 'comfyui';
+    mocks.tasks[0].nodeType = 'ai-text';
+    mocks.tasks[0].comfyRecoveryState = 'output_unavailable';
+    const message = elements(render()).find((element) => element.type === 'span')?.props.children;
+    expect(message).toContain('SaveText');
+    expect(message).not.toContain('SaveImage');
+    expect(queryButton()?.props.className).toContain('ui-btn--node-text');
+  });
+
+  it('文本保存未完成时仅续取原任务', async () => {
+    mocks.tasks[0].taskType = 'comfyui';
+    mocks.tasks[0].nodeType = 'ai-text';
+    mocks.tasks[0].mediaRecoveryState = 'delivery_pending';
+    const message = elements(render()).find((element) => element.type === 'span')?.props.children;
+    expect(message).toContain('文本已生成');
+    (queryButton()!.props.onClick as () => void)();
+    expect(mocks.resume).toHaveBeenCalledWith('media');
+    await vi.waitFor(() => expect(mocks.busy).toBe(false));
+  });
+
   it('批量已取得部分ID但后续提交未知时仍禁止伪续取', () => {
     mocks.tasks[0].mediaSubmissionUncertain = true;
     mocks.tasks[0].mediaRecoveryState = 'submit_unknown';

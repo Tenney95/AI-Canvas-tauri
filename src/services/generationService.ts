@@ -8,8 +8,8 @@ import { buildAnimationSpritePrompt, resolveAnimationSheetAspectRatio } from './
 import { animationProcessing, animationResultPatch } from './animationService';
 import { resolveGenerationSelection } from './generationInput';
 import type { AppConfig, BaseNodeData, ImagePostProcess } from '../types';
-import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt } from '../types/aiTypes';
-import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
+import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt, type TextGenerationResult } from '../types/aiTypes';
+import { generateText, generateTextResult, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
 import { persistAudioGenerationResult } from './ai/generateAudio';
 import { persistMediaUrlToProjectData } from './fileService';
 import {
@@ -327,7 +327,8 @@ export async function executeGeneration(
 
   const submittingProjectId = store.currentProjectId;
   const mediaSubmission = ['ai-image', 'ai-animation', 'ai-panorama', 'ai-video', 'ai-audio'].includes(nodeType);
-  if (mediaSubmission) {
+  const localComfyTask = !!workflowId && !cloudWorkflow;
+  if (mediaSubmission || localComfyTask) {
     try { prepareMediaNodeGeneration(nodeId); }
     catch (error) {
       const message = error instanceof Error ? error.message : '暂时无法保留旧任务，请稍后再生成';
@@ -336,7 +337,6 @@ export async function executeGeneration(
     }
   }
   const runningHubTask = cloudWorkflow || nodeProvider === 'runninghub';
-  const localComfyTask = !!workflowId && !cloudWorkflow;
   let comfyTaskId: string | undefined;
   let comfyDeliveryError: unknown;
   let savingSignal: AbortSignal | undefined;
@@ -694,17 +694,32 @@ export async function executeGeneration(
         prompt: textSource, data, settings: projectSettings, customStyles: store.customStyles,
       });
       if (lease) await assertLease();
-      const result = await generateText({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
-        ...(lease ? { signal: lease.signal } : {}) });
+      const textParams = { prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
+        ...(lease ? { signal: lease.signal } : {}) };
+      const result: TextGenerationResult = localComfyTask
+        ? await generateTextResult({ ...textParams, nodeId, workflowId, workflowInputs: data.workflowInputs })
+        : { text: await generateText(textParams) };
+      comfyTaskId = result.comfyTaskId;
+      if (comfyTaskId) { beginMediaSaving(); beginComfyNodeDelivery(nodeId, comfyTaskId); }
+      const textTask = comfyTaskId && submittingProjectId ? getPendingTasksForProject(submittingProjectId)
+        .find((task) => task.nodeId === nodeId && task.taskId === comfyTaskId && task.taskType === 'comfyui') : undefined;
+      const textReceipt = textTask ? historyMediaTaskReceipt(textTask) : undefined;
       if (lease) await assertLease();
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      const processed = postProcessDramaExtractOutput(effectivePrompt, result);
+      const processed = postProcessDramaExtractOutput(effectivePrompt, result.text);
       if (!processed.ok) throw new Error(processed.error);
       updateResult(nodeId, { output: processed.output, status: 'success' });
-      store.recordOutputHistory(nodeId, {
+      if (comfyTaskId && cloudGuard) {
+        completeCanvasDerivation(cloudGuard);
+        cloudGuard = registerCanvasDerivation(useAppStore.getState(), nodeId);
+      }
+      await store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: processed.output, nodeType: 'ai-text', model: nodeModel, provider: nodeProvider, status: 'success',
-      });
+        ...(textReceipt ? { params: { comfyTextTaskId: textReceipt.taskId, comfyTextAttemptId: textReceipt.attemptId } } : {}),
+      }, ...(comfyTaskId ? [true, textReceipt] as const : []));
+      if (!isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
+      if (comfyTaskId) completeComfyNodeTask(nodeId, comfyTaskId);
       if (processed.kind) {
         if (processed.parsed) {
           store.mergeDramaExtract(processed.parsed, {

@@ -951,6 +951,143 @@ fetch("https://docs.newapi.pro/v1beta/models/string:generateContent/", {
       .toThrow('只允许使用 HTTPS 默认端口');
   });
 
+  it.each([
+    ['http://localhost/v1', 'http://localhost/v1'],
+    ['http://localhost:8000/v1/chat/completions/', 'http://localhost:8000/v1'],
+    ['http://127.0.0.1:8188/v1/', 'http://127.0.0.1:8188/v1'],
+    ['http://[::1]:11434/v1', 'http://[::1]:11434/v1'],
+    ['HTTP://LOCALHOST:8000/v1?unused=value#section', 'http://localhost:8000/v1'],
+    ['https://gateway.example.com:443/v1?unused=value#section', 'https://gateway.example.com/v1'],
+  ])('allows the documented local HTTP boundary and normalizes %s', (baseUrl, expected) => {
+    const input = declarativeInput();
+    input.baseUrl = baseUrl;
+    const originalProtocol = structuredClone(input.models[0].executionProtocol);
+
+    const draft = createProviderConfigDraft('task-local-http', input);
+
+    expect(draft.baseUrl).toBe(expected);
+    expect(draft.config.baseUrl).toBe(expected);
+    expect(draft.config.selectedModels?.[0].executionProfile?.protocol).toMatchObject(originalProtocol!);
+    expect(input.baseUrl).toBe(baseUrl);
+    expect(input.models[0].executionProtocol).toEqual(originalProtocol);
+  });
+
+  it.each([
+    'http://192.168.1.2:8000/v1',
+    'http://10.0.0.1/v1',
+    'http://gateway.example.com/v1',
+    'http://localhost.evil.example:8000/v1',
+    'http://localhost.:8000/v1',
+    'http://sub.localhost:8000/v1',
+    'http://127.1:8000/v1',
+    'http://127.0.0.2:8000/v1',
+    'http://2130706433:8000/v1',
+    'http://0x7f000001:8000/v1',
+    'http://0177.0.0.1:8000/v1',
+    'http://%6cocalhost:8000/v1',
+    'http://[0:0:0:0:0:0:0:1]:8000/v1',
+    'http://user:pass@localhost:8000/v1',
+    'https://user:pass@gateway.example.com/v1',
+  ])('rejects non-literal loopback or credential-bearing base URL %s', (baseUrl) => {
+    const input = declarativeInput();
+    input.baseUrl = baseUrl;
+
+    expect(() => createProviderConfigDraft('task-unsafe-local-http', input))
+      .toThrow('必须是无凭据的 HTTPS 地址');
+  });
+
+  it('does not allow non-default HTTPS ports even on a loopback host', () => {
+    const input = declarativeInput();
+    input.baseUrl = 'https://localhost:8000/v1';
+
+    expect(() => createProviderConfigDraft('task-local-https-port', input))
+      .toThrow('只允许使用 HTTPS 默认端口');
+  });
+
+  it.each([
+    'http://localhost:8000/custom-api',
+    'http://127.0.0.1:8188/custom-api',
+    'http://[::1]:11434/custom-api',
+  ])('uses the explicitly declared local HTTP prefix when importing request examples: %s', (baseUrl) => {
+    const input: ProviderConfigDraftInput = {
+      ...createInput(),
+      baseUrl,
+      models: [createInput().models[0]],
+    };
+    input.models[0].submitRequest = IMAGE_REQUEST.replace(
+      'https://gateway.example.com/v1', baseUrl,
+    );
+
+    const draft = createProviderConfigDraft('task-local-example', input);
+
+    expect(draft.baseUrl).toBe(baseUrl);
+    expect(draft.config.selectedModels?.[0].executionProfile?.protocol?.submit.path)
+      .toBe('/images/generations');
+    expect(draft.config.selectedModels?.[0].executionProfile?.protocol?.submit.body)
+      .toMatchObject({ model: '{{model}}', prompt: '{{prompt}}' });
+  });
+
+  it('requires an explicit base URL before importing HTTP request examples', () => {
+    const input = createInput();
+    input.models[0].submitRequest = IMAGE_REQUEST.replace(
+      'https://gateway.example.com/v1', 'http://localhost:8000/v1',
+    );
+
+    expect(() => createProviderConfigDraft('task-local-missing-base', input))
+      .toThrow('本机 HTTP 请求示例必须显式提供');
+  });
+
+  it.each([
+    'http://127.1:8000/v1',
+    'http://2130706433:8000/v1',
+    'http://localhost.evil.example:8000/v1',
+    'http://user:pass@localhost:8000/v1',
+    'http://localhost:8001/v1',
+    'http://127.0.0.1:8000/v1',
+    'https://localhost/v1',
+  ])('checks the original request authority against the explicit HTTP base URL: %s', (requestBaseUrl) => {
+    const input: ProviderConfigDraftInput = {
+      ...createInput(), baseUrl: 'http://localhost:8000/v1', models: [createInput().models[0]],
+    };
+    input.models[0].submitRequest = IMAGE_REQUEST.replace(
+      'https://gateway.example.com/v1', requestBaseUrl,
+    );
+
+    expect(() => createProviderConfigDraft('task-local-origin-mismatch', input))
+      .toThrow('本机 HTTP 请求示例必须使用与 baseUrl 同源的字面回环地址');
+  });
+
+  it.each(['127.1', '2130706433', '0x7f000001', '0177.0.0.1'])(
+    'rejects a request host %s before URL parsing can turn it into the allowed 127.0.0.1 origin', (host) => {
+      const input: ProviderConfigDraftInput = {
+        ...createInput(), baseUrl: 'http://127.0.0.1:8000/v1', models: [createInput().models[0]],
+      };
+      input.models[0].submitRequest = IMAGE_REQUEST.replace(
+        'https://gateway.example.com/v1', `http://${host}:8000/v1`,
+      );
+
+      expect(() => createProviderConfigDraft('task-local-numeric-alias', input))
+        .toThrow('本机 HTTP 请求示例必须使用与 baseUrl 同源的字面回环地址');
+    },
+  );
+
+  it('rejects a cross-origin polling request when importing a local HTTP task', () => {
+    const baseUrl = 'http://localhost:8000/v1';
+    const video = createInput().models[1];
+    const input: ProviderConfigDraftInput = {
+      connectionName: 'Local video', baseUrl,
+      models: [{ ...video,
+        submitRequest: VIDEO_REQUEST.replace('https://gateway.example.com/v1', baseUrl),
+        pollRequest: VIDEO_POLL_REQUEST.replace(
+          'https://gateway.example.com/v1', 'http://localhost:8001/v1',
+        ),
+      }],
+    };
+
+    expect(() => createProviderConfigDraft('task-local-poll-origin-mismatch', input))
+      .toThrow('本机 HTTP 请求示例必须使用与 baseUrl 同源的字面回环地址');
+  });
+
   it('stores the native chat protocol and routes text models through the connection adapter', () => {
     const draft = createProviderConfigDraft('task-gemini-chat', {
       connectionName: 'Gemini Relay',

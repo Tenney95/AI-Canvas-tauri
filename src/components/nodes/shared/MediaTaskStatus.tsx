@@ -5,7 +5,7 @@ import { memo, useState, type ReactNode } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
 import { discardMediaTask, getPendingTasksForProject, resumeMediaNodeTask } from '../../../services/pollManager';
-import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
+import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
 import { useT } from '../../../i18n';
 import { GenerationWaitTime } from './NodeGenerationProgress';
 
@@ -29,9 +29,10 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
   const message = !canQuery
     ? t('提交状态未知，请到对应平台核对；应用不会自动重新生成。')
     : task.taskType === 'comfyui' && task.comfyRecoveryState === 'output_unavailable'
-      ? t(COMFY_OUTPUT_UNAVAILABLE_MESSAGE)
+      ? t(task.nodeType === 'ai-text' ? COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE : COMFY_OUTPUT_UNAVAILABLE_MESSAGE)
       : (authorizationMessage ? t(authorizationMessage) : task.videoRecoveryMessage) || (deliveryPending
-        ? t('媒体已生成，保存或回填尚未完成；可继续取回原结果。')
+        ? task.nodeType === 'ai-text' ? t('文本已生成，回填或保存尚未完成；可继续取回原结果。')
+          : t('媒体已生成，保存或回填尚未完成；可继续取回原结果。')
         : t('查询已暂停，任务已保留'));
   const diagnostic = task.mediaFailureDiagnostic;
   const httpStatus = (diagnostic?.kind === 'http' || diagnostic?.kind === 'persistence') && typeof diagnostic.httpStatus === 'number'
@@ -64,7 +65,7 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
         : httpStatus >= 500 ? '服务商或网关返回异常（HTTP {status}）' : '接口请求被拒绝（HTTP {status}）', { status: httpStatus })
     : diagnostic?.kind === 'timeout' ? t('等待服务商响应超时，尚未确认最终结果')
       : diagnostic?.kind === 'network' ? t('网络连接中断，未收到完整结果') : undefined;
-  const kind = task.nodeType === 'ai-audio' ? 'audio' : task.nodeType === 'ai-video' ? 'video' : 'image';
+  const kind = task.nodeType === 'ai-text' ? 'text' : task.nodeType === 'ai-audio' ? 'audio' : task.nodeType === 'ai-video' ? 'video' : 'image';
   const identity = JSON.stringify([task.projectId, task.nodeId, task.taskId, task.attemptId]);
   return <div className={overlay ? 'generation-progress-overlay generation-progress-overlay--interactive nodrag nopan text-center'
     : 'ui-card nodrag nopan flex flex-wrap items-center gap-2 p-2'} role="status"

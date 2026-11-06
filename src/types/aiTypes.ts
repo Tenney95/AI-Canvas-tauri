@@ -11,6 +11,15 @@ export interface AIGenerateParams {
   signal?: AbortSignal;
   /** 追加到消息末尾的图片；文本/VLM 请求统一转换为受限 Base64 data URL。 */
   imageUrls?: string[];
+  /** 本地 ComfyUI 文本工作流；不走普通文本厂商鉴权。 */
+  workflowId?: string;
+  workflowInputs?: Record<string, string>;
+}
+
+export interface TextGenerationResult {
+  text: string;
+  /** 调用方完成文本回填及历史保存后，再确认交付。 */
+  comfyTaskId?: string;
 }
 
 export interface AIImageGenParams extends AIGenerateParams {
@@ -24,8 +33,6 @@ export interface AIImageGenParams extends AIGenerateParams {
   imageBackground?: string; // 厂商声明的图片背景；空字符串显式使用接口默认
   aspectRatio?: string;   // '1:1' | '16:9' | '9:16' | ...
   image_urls?: string[];  // 参考图片 URL（从 @图片节点 引用中提取）
-  workflowId?: string;    // ComfyUI 工作流 ID（存在时走 ComfyUI 执行）
-  workflowInputs?: Record<string, string>; // IO 节点赋值映射
 }
 
 export type ProtocolJsonValue =

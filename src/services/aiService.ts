@@ -12,7 +12,7 @@
  *   ai/generateAudio.ts — 音频生成
  *   ai/panoramaPrompt.ts — 全景图提示词
  */
-export { generateText } from './ai/generateText';
+export { generateText, generateTextResult } from './ai/generateText';
 export { generateImage, generateImagesBatch } from './ai/generateImage';
 export { generateVideo } from './ai/generateVideo';
 export { generateAudio } from './ai/generateAudio';

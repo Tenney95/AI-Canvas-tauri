@@ -21,6 +21,7 @@ import type {
 } from '../../types/aiTypes';
 import {
   analyzeModelProtocolExamples,
+  isLiteralLoopbackHttpUrl,
   type ModelProtocolExamples,
 } from '../ai/modelProtocolImport';
 import {
@@ -667,6 +668,7 @@ function resolveDraftModelProtocol(
     category: examples.category,
     modelId: explicitModelId,
     baseUrl: declaredBaseUrl,
+    allowLocalHttpBaseUrl: true,
   });
   const displayName = examples.name?.trim() || explicitModelId || result.modelId;
   const diagnostic = result.warnings[0] ? `：${result.warnings[0]}` : '';
@@ -709,14 +711,17 @@ function normalizeConnectionId(value?: string): string {
  * Agent 侧的 Base URL 规范化：先走和设置页同一套清理（补协议、去尾斜杠、
  * 剥掉助手常从文档里照抄的 /chat/completions 之类端点后缀），再做这里独有的
  * 安全校验——助手的输入来自它读到的网页，比用户手输的更不可信，
- * 所以 HTTPS、默认端口、非文档站这几条限制一条都不放宽。
+ * 所以远端仍只允许 HTTPS 默认端口。本机模型可使用三个字面回环主机的
+ * HTTP 地址及端口；在 URL 规范化前检查主机，避免缩写或数字 IP 被转换后混入。
  */
 function normalizeBaseUrl(value: string, chatApiProtocol: ChatApiProtocol): string {
+  const allowsLocalHttp = isLiteralLoopbackHttpUrl(value);
   const url = new URL(normalizeUrlInput(value, chatApiProtocol) || value);
-  if (url.protocol !== 'https:' || url.username || url.password) {
-    throw new Error('厂商 Base URL 必须是无凭据的 HTTPS 地址');
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && allowsLocalHttp))
+    || url.username || url.password) {
+    throw new Error('厂商 Base URL 必须是无凭据的 HTTPS 地址；本机 HTTP 仅允许 localhost、127.0.0.1 或 [::1]（可带端口）');
   }
-  if (url.port && url.port !== '443') {
+  if (url.protocol === 'https:' && url.port && url.port !== '443') {
     throw new Error('厂商 Base URL 只允许使用 HTTPS 默认端口');
   }
   const firstHostLabel = url.hostname.toLowerCase().split('.')[0];

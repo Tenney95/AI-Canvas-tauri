@@ -44,6 +44,8 @@ export interface ModelProtocolImportOptions {
   category?: GeneralModelCategory;
   modelId?: string;
   baseUrl?: string;
+  /** 仅受限的本机配置入口开启；HTTP 示例仍需显式、同源的字面回环 baseUrl。 */
+  allowLocalHttpBaseUrl?: boolean;
 }
 
 export interface ModelProtocolExamples {
@@ -645,12 +647,24 @@ function inferBaseUrl(urls: URL[]): BaseUrlResolution | undefined {
   return { baseUrl: `${urls[0].origin}${prefix}`, prefix };
 }
 
-function resolveExplicitBaseUrl(rawBaseUrl: string | undefined): BaseUrlResolution | undefined {
+export function isLiteralLoopbackHttpUrl(value: string): boolean {
+  const authority = /^http:\/\/([^/?#]*)/i.exec(value.trim())?.[1];
+  return authority !== undefined
+    && /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(authority);
+}
+
+function resolveExplicitBaseUrl(
+  rawBaseUrl: string | undefined,
+  allowLocalHttpBaseUrl = false,
+): BaseUrlResolution | undefined {
   const candidate = rawBaseUrl?.trim();
   if (!candidate) return undefined;
   try {
     const url = new URL(candidate);
-    if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) {
+    const allowsLocalHttp = allowLocalHttpBaseUrl && isLiteralLoopbackHttpUrl(candidate);
+    if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && allowsLocalHttp))
+      || url.username || url.password
+      || (url.protocol === 'https:' && url.port && url.port !== '443')) {
       return undefined;
     }
     const pathname = url.pathname.replace(/\/+$/, '');
@@ -1209,8 +1223,21 @@ export function analyzeModelProtocolDocument(
     ...requests.map((request) => request.format),
     ...(requests.some((request) => request.response !== undefined) ? ['json' as const] : []),
   ]);
+  if (options.allowLocalHttpBaseUrl && (
+    /^http:/i.test(options.baseUrl ?? '')
+    || (!options.baseUrl && requests.some((request) => /^http:/i.test(request.url)))
+  )) {
+    if (!options.baseUrl || !isLiteralLoopbackHttpUrl(options.baseUrl)) {
+      throw new Error('本机 HTTP 请求示例必须显式提供字面回环 baseUrl（localhost、127.0.0.1 或 [::1]，可带端口）');
+    }
+    const baseOrigin = new URL(options.baseUrl).origin;
+    if (requests.some((request) => !isLiteralLoopbackHttpUrl(request.url)
+      || new URL(request.url).origin !== baseOrigin)) {
+      throw new Error('本机 HTTP 请求示例必须使用与 baseUrl 同源的字面回环地址，不能使用 IP 缩写、其他主机或端口');
+    }
+  }
   const urls = requests.map(parseUrl);
-  const explicitBaseResolution = resolveExplicitBaseUrl(options.baseUrl);
+  const explicitBaseResolution = resolveExplicitBaseUrl(options.baseUrl, options.allowLocalHttpBaseUrl);
   const usesPlaceholderOrigin = urls.some((url) => url.hostname.toLowerCase() === 'loading');
   const baseResolution = explicitBaseResolution
     ?? (usesPlaceholderOrigin ? undefined : inferBaseUrl(urls));
