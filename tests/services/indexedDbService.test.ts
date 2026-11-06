@@ -3,6 +3,7 @@
  */
 import { forceCloseDatabase, IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 const DB_NAME = 'ai-canvas-db';
 const EXPECTED_STORES = [
@@ -88,6 +89,39 @@ function readRecord(db: IDBDatabase, store: string, key: string): Promise<unknow
     request.onerror = () => reject(request.error);
   });
 }
+
+describe('故事图原子保存', () => {
+  it('并发 CAS 只有一个成功，迟到的普通保存不能覆盖正式图或项目摘要', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const graph = { ...createEmptyStoryGraph('graph'), revision: 6 };
+    const record = { id: 'series-graph', name: '整部剧', createdAt: 1, updatedAt: 2, nodes: [], edges: [],
+      series: { script: '原剧本', storyGraph: graph } };
+    await db.saveProjectToDb(record);
+    const node = { id: 'event', kind: 'event' as const, label: '关键事件', description: '', aliases: [],
+      episodeIds: [], evidence: [], origin: 'manual' as const, certainty: 'explicit' as const };
+    const writes = await Promise.allSettled([
+      db.updateProjectStoryGraphCAS(record.id, { graphId: graph.id, upsertNodes: [node] }, 6, 0),
+      db.updateProjectStoryGraphCAS(record.id, { graphId: graph.id, upsertNodes: [{ ...node, label: '另一编辑' }] }, 6, 0),
+    ]);
+    expect(writes.filter((write) => write.status === 'fulfilled')).toHaveLength(1);
+    expect(writes.filter((write) => write.status === 'rejected')).toHaveLength(1);
+    const committed = (await db.getProjectById(record.id))!.series!.storyGraph!;
+    expect(committed.revision).toBe(7);
+    await db.saveProjectToDb({ ...record, series: { ...record.series, script: '较新的正文' } });
+    expect((await db.getProjectById(record.id))!.series).toEqual({ script: '较新的正文', storyGraph: committed });
+    expect((await db.getAllProjects()).find((item) => item.id === record.id)?.series?.storyGraph).toEqual(committed);
+  });
+
+  it('归档代际变化或宿主守卫拒绝时不产生图写入', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const record = { id: 'series-epoch', name: '整部剧', exchangeEpoch: 3, createdAt: 1, updatedAt: 2, nodes: [], edges: [] };
+    await db.saveProjectToDb(record);
+    await expect(db.updateProjectStoryGraphCAS(record.id, { graphId: 'graph' }, 0, 2)).rejects.toThrow('已变化');
+    await expect(db.updateProjectStoryGraphCAS(record.id, { graphId: 'graph' }, 0, 3,
+      () => { throw new Error('编辑会话已关闭'); })).rejects.toThrow('会话已关闭');
+    expect((await db.getProjectById(record.id))?.series?.storyGraph).toBeUndefined();
+  });
+});
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'indexedDB', {

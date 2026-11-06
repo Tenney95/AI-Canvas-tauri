@@ -16,8 +16,18 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => { listeners.delete(callback); };
   },
 }));
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  WebviewWindow: class {
+    static getByLabel = async () => null;
+    once = async (name: string, callback: () => void) => {
+      if (name === 'tauri://created') queueMicrotask(callback);
+      return () => {};
+    };
+    destroy = async () => {};
+  },
+}));
 
-import { connectScriptWorkbenchWindow } from '../../src/services/scriptWorkbenchWindowService';
+import { connectScriptWorkbenchWindow, createScriptWorkbenchWindowHost } from '../../src/services/scriptWorkbenchWindowService';
 
 const cleanups: Array<() => void> = [];
 const deliver = (name: string, payload: unknown) => {
@@ -88,5 +98,90 @@ describe('独立工作台客户端协议', () => {
     await canceled;
     expect([...events.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
     await expect(bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'save' } })).rejects.toThrow('尚未连接');
+  });
+});
+
+describe('关系图宿主写入边界', () => {
+  function graphFrame(revision: number): ScriptWorkbenchSnapshot {
+    return { ...frame('graph-host-session', 0), episodes: [], pendingAction: null, draftVersion: 0,
+      series: { id: 'series', name: '剧集', hasScript: true, hasOriginal: false },
+      storyGraphView: { schemaVersion: 1, id: 'graph', revision, nodes: [], edges: [], positions: {},
+        counts: { totalNodes: 0, totalEdges: 0, matchedNodes: 0, matchedEdges: 0, visibleNodes: 0, visibleEdges: 0, truncated: false } } };
+  }
+
+  it('拒绝从旧图快照发起的写入，不进入主窗口执行器', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    let current = graphFrame(1);
+    const onRequest = vi.fn(async () => true);
+    let response!: (value: { error?: string }) => void;
+    const replied = new Promise<{ error?: string }>((resolve) => { response = resolve; });
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:response') response(payload as { error?: string });
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => current,
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    current = graphFrame(2);
+    await host.publish();
+    deliver('script-workbench:request', { sessionId: 'graph-host-session', requestId: 'old_graph_write_001', revision: 1,
+      episodeId: 'episode-b', action: { type: 'story_graph_patch', patch: { graphId: 'graph', positions: {} }, expectedRevision: 1 } });
+    expect((await replied).error).toContain('确认内容已变化');
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  it('同一付费提取请求只执行一次，且等待主窗口完成后才确认', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    let finish!: () => void;
+    let markStarted!: () => void;
+    let reply!: (value: { value?: unknown }) => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const persisted = new Promise<void>((resolve) => { finish = resolve; });
+    const replied = new Promise<{ value?: unknown }>((resolve) => { reply = resolve; });
+    const onRequest = vi.fn(async () => { markStarted(); await persisted; return true; });
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:response') reply(payload as { value?: unknown });
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => graphFrame(1),
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    const request: ScriptWorkbenchRequest = { sessionId: 'graph-host-session', requestId: 'extract_graph_001', revision: 1,
+      episodeId: 'episode-b', action: { type: 'story_graph_extract', request: { episodeIds: ['episode-b'], parts: ['script'], modelId: 'text-model' } } };
+    deliver('script-workbench:request', request);
+    deliver('script-workbench:request', request);
+    await started;
+    expect(events.emitTo.mock.calls.some((call) => call[1] === 'script-workbench:response')).toBe(false);
+    finish();
+    expect((await replied).value).toBe(true);
+    expect(onRequest).toHaveBeenCalledTimes(1);
+    expect(onRequest).toHaveBeenCalledWith(request);
+  });
+
+  it.each(['epoch', 'run'] as const)('拒绝旧 %s 快照对空图或新提取的操作', async (boundary) => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    let current = { ...graphFrame(0), storyGraphExtraction: { status: 'running' as const, runId: 'run-before', completed: 0, total: 1 } };
+    const onRequest = vi.fn(async () => true);
+    let respond!: (value: { error?: string }) => void;
+    const replied = new Promise<{ error?: string }>((resolve) => { respond = resolve; });
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:response') respond(payload as { error?: string });
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => current,
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    current = boundary === 'epoch' ? { ...current, series: { ...current.series!, exchangeEpoch: 1 } }
+      : { ...current, storyGraphExtraction: { ...current.storyGraphExtraction, runId: 'run-after' } };
+    await host.publish();
+    const action: ScriptWorkbenchRequest['action'] = boundary === 'epoch'
+      ? { type: 'story_graph_patch', expectedRevision: 0, patch: { graphId: 'graph', positions: {} } }
+      : { type: 'story_graph_cancel', runId: 'run-before' };
+    deliver('script-workbench:request', { sessionId: 'graph-host-session', requestId: 'old_boundary_request', revision: 1, episodeId: 'episode-b', action });
+    expect((await replied).error).toContain('确认内容已变化');
+    expect(onRequest).not.toHaveBeenCalled();
   });
 });

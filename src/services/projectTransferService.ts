@@ -25,7 +25,7 @@ import {
   type ChatMessageRecord,
   type ProjectMemoryRecord,
 } from './indexedDbService';
-import { toProjectSummaryRecord } from './indexedDb/projectSummary';
+import { toProjectSummaryRecord, normalizeProjectSeriesInfo } from './indexedDb/projectSummary';
 import type { ProjectSaveData } from './storageService';
 import { normalizeProjectSettings } from './projectSettingsService';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
@@ -34,7 +34,7 @@ import type { CanvasProject } from '../types';
 import { serializeProjectArchiveEntries, type ProjectArchiveJsonEntry } from './projectArchiveSerialization';
 import { portableArchiveChat, sanitizeLegacyArchiveProject, selectArchiveAssets, selectArchiveImportPaths } from './projectArchiveValidation';
 import { configValuesEqual } from './configPatch';
-import type { ArchiveAssetDigest } from './projectExchangeDomain';
+import { remapStoryGraphBindings, type ArchiveAssetDigest } from './projectExchangeDomain';
 
 export const PROJECT_ARCHIVE_EXTENSION = 'aicanvas';
 /** 归档格式版本；解包时拒绝更高版本，避免旧版本误读新结构。 */
@@ -230,6 +230,7 @@ export function readArchiveProject(value: unknown, label: string): ProjectSaveDa
   }
   return {
     ...value,
+    ...(value.series !== undefined ? { series: normalizeProjectSeriesInfo(value.series) } : {}),
     ...(value.episodeAssetRoster !== undefined ? {
       episodeAssetRoster: typeof value.parentId === 'string' && value.parentId
         ? normalizeEpisodeAssetRoster(value.episodeAssetRoster) : undefined,
@@ -566,6 +567,10 @@ export async function restoreProjectArchive(
     } satisfies ProjectSaveData))];
 
     const projectIds = new Map<string, string>([[source.id, record.id], ...sourceEpisodes.map((episode, index): [string, string] => [episode.project.id, records[index + 1].id])]);
+    if (record.series?.storyGraph) {
+      record.series = { ...record.series, storyGraph: remapStoryGraphBindings(record.series.storyGraph,
+        (id) => projectIds.get(id) ?? id, (asset) => asset.id, 1) };
+    }
 
     // 同一归档 assets 根中的相对路径是文件身份；主图投影与参考图不能重复计数。
     const relativeKey = (path: string) => path.replace(/\\/g, '/').split('/').filter((part) => part !== '.').join('/');

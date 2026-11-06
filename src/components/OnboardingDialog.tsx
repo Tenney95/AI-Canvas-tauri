@@ -21,7 +21,7 @@ const CANVAS_ENTRY_GUIDE_STEPS = [
     description: '鼠标移到右上方的短竖线，可查看操作记录、撤销和重做。点击图钉可以让面板保持显示。',
     hint: '误操作时也可以使用 Ctrl/⌘ + Z 撤销。' },
   { id: 'series', side: 'left', icon: 'lucide:clapperboard', title: '右侧剧集与项目资产',
-    description: '单击右侧中间的短竖线展开剧集栏，可编辑剧本、管理分集；双击这条线打开项目资产。',
+    description: '鼠标悬浮右侧中间的短竖线即可展开剧集栏，可编辑剧本、管理分集；双击这条线打开项目资产。',
     hint: '左上角加号也可以创建分集，创建时可填写名称。' },
   { id: 'storage', side: 'bottom', icon: 'lucide:folder-cog', title: '先确认文件保存位置',
     description: '这里可以选择文件保存根目录，并查看当前项目目录。未设置时使用系统默认目录；生成和导入素材前，可以先确认保存位置。',

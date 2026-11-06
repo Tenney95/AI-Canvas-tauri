@@ -5,6 +5,28 @@ import type { ProjectExchangeEntity, ProjectExchangeEntityKind, ProjectExchangeI
 import { parseProjectExchangeSnapshot, projectExchangeEntityKey, serializeProjectExchangeValue } from './projectExchangeFormat';
 import { normalizeCharacterWeaponIds, parseDramaMentionId } from '../types/dramaAssets';
 import { parseShotlistRowMentionId } from '../types/shotlist';
+import type { StoryGraph, StoryGraphAssetReference } from '../types/storyGraph';
+import { normalizeStoryGraph, storyGraphCanonicalSnapshot } from './storyGraphService';
+
+/** 映射只处理真实身份，不按名称猜测；缺失引用由所属剧集视图显示为断开。 */
+export function remapStoryGraphBindings(graph: StoryGraph, projectId: (id: string) => string,
+  assetId: (asset: StoryGraphAssetReference) => string, revision = graph.revision): StoryGraph {
+  const fields = <T extends StoryGraph['nodes'][number] | StoryGraph['edges'][number]>(item: T): T => ({
+    ...item, episodeIds: item.episodeIds.map(projectId),
+    evidence: item.evidence.map((evidence) => ({ ...evidence, episodeId: projectId(evidence.episodeId) })),
+  });
+  return normalizeStoryGraph({ ...graph, revision,
+    nodes: graph.nodes.map((node) => ({ ...fields(node), ...(node.asset ? { asset: { ...node.asset, id: assetId(node.asset) } } : {}) })),
+    edges: graph.edges.map((edge) => ({ ...fields(edge),
+      ...(edge.fromEpisodeId ? { fromEpisodeId: projectId(edge.fromEpisodeId) } : {}),
+      ...(edge.toEpisodeId ? { toEpisodeId: projectId(edge.toEpisodeId) } : {}) })),
+  });
+}
+
+function readExchangeStoryGraph(value: unknown): StoryGraph {
+  if (!exchangeObject(value) || Object.hasOwn(value, 'revision')) throw new Error('可交换故事图不得携带本机保存版本');
+  return normalizeStoryGraph({ ...value, revision: 0 });
+}
 
 export interface ArchiveAssetDigest { path: string; bytes: number; sha256: string }
 const FILE_TOKEN = 'exchange-file:';
@@ -63,6 +85,19 @@ export function exchangeReferences(entity: ProjectExchangeEntity, all: readonly 
     throw new Error(`${reason}；引用位置：${exchangeSourceLocation(entity, all, root)}；引用字段：${fieldPath}。请重新选择后重试。`);
   };
   const walk = (value: ProjectExchangeValue, key = '', fieldPath = ''): void => {
+    if (entity.kind === 'project' && fieldPath === 'series.storyGraph') {
+      const graph = readExchangeStoryGraph(value);
+      // 文字和证据里的 @ 符号仅为剧本资料，不成为可执行的画布依赖。
+      for (const item of [...graph.nodes, ...graph.edges]) {
+        const ids = [...item.episodeIds, ...item.evidence.map((evidence) => evidence.episodeId),
+          ...('fromEpisodeId' in item && typeof item.fromEpisodeId === 'string' ? [item.fromEpisodeId] : []),
+          ...('toEpisodeId' in item && typeof item.toEpisodeId === 'string' ? [item.toEpisodeId] : [])];
+        for (const id of ids) if (all.some((entry) => entry.kind === 'project' && entry.id === id)) add('project', id, id);
+      }
+      for (const entry of graph.nodes) if (entry.asset && all.some((item) => item.kind === entry.asset!.kind
+        && item.scopeId === root && item.id === entry.asset!.id)) add(entry.asset.kind, root, entry.asset.id);
+      return;
+    }
     if (typeof value === 'string') {
       if (['relativePath', 'imageRelativePath', 'directorCaptureRelativePaths'].includes(key) && !value.startsWith(FILE_TOKEN)) {
         throw new Error('规范快照包含未绑定的素材路径');
@@ -194,6 +229,10 @@ export function validateExchangeDomain(snapshot: ProjectExchangeSnapshot): Proje
     if (project.id === snapshot.rootProjectId ? project.data.parentId !== undefined : project.data.parentId !== snapshot.rootProjectId) {
       throw new Error('分集归属不一致，请处理项目结构冲突');
     }
+    if (exchangeObject(project.data.series) && project.data.series.storyGraph !== undefined) {
+      if (project.id !== snapshot.rootProjectId) throw new Error('故事关系图必须归属整部剧');
+      readExchangeStoryGraph(project.data.series.storyGraph);
+    }
     for (const [field, kind] of [['nodes', 'node'], ['edges', 'edge'], ['groups', 'group'], ['characters', 'character'], ['scenes', 'scene'], ['props', 'prop']] as const) {
       const ids = project.data[`${field}Ids`];
       const actual = entities.filter((item) => item.kind === kind && item.scopeId === project.id);
@@ -324,6 +363,17 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
   };
   const clean = (value: unknown, key = '', location = '', fieldPath = '', textNodeOutput = false): ProjectExchangeValue | undefined => {
     if (value === undefined || omitted.has(key)) return undefined;
+    if (fieldPath === 'series.storyGraph') {
+      const graph = remapStoryGraphBindings(normalizeStoryGraph(value), (id) => projectIds.get(id)
+        ?? identities.find((item) => item.kind === 'project' && item.localId === id)?.id ?? id,
+        (asset) => {
+          const assets = asset.kind === 'character' ? owner.dramaAssets?.characters
+            : asset.kind === 'scene' ? owner.dramaAssets?.scenes : owner.dramaAssets?.props;
+          return assets?.some((item) => item.id === asset.id) ? logical(asset.kind, root, asset.id)
+            : identities.find((item) => item.kind === asset.kind && item.scopeId === root && item.localId === asset.id)?.id ?? asset.id;
+        });
+      return storyGraphCanonicalSnapshot(graph) as unknown as ProjectExchangeValue;
+    }
     if (typeof value === 'string') {
       if (['projectId', 'parentProjectId'].includes(key)) return projectIds.get(value) ?? value;
       if (key === 'relativePath' || key === 'imageRelativePath') return value ? fileToken(value, location, fieldPath) : undefined;
@@ -437,15 +487,32 @@ export function materializeExchangeSnapshot(snapshot: ProjectExchangeSnapshot, i
     return mapping.localId;
   };
   projects.forEach(local);
-  const decode = (value: ProjectExchangeValue, key = ''): unknown => {
+  const graphProjectId = (id: string): string => {
+    const target = identities.find((item) => item.kind === 'project' && item.id === id)?.localId ?? id;
+    if (!projects.some((item) => item.id === id) && projects.some((item) => local(item) === target)) {
+      throw new Error('故事图失效引用与目标身份冲突，未导入项目');
+    }
+    return target;
+  };
+  const graphAssetId = (asset: StoryGraphAssetReference): string => {
+    const reference = { kind: asset.kind, scopeId: snapshot.rootProjectId, id: asset.id };
+    const live = snapshot.entities.filter((item) => item.kind === asset.kind && item.scopeId === snapshot.rootProjectId);
+    if (live.some((item) => item.id === asset.id)) return local(reference);
+    const target = identities.find((item) => projectExchangeEntityKey(item) === projectExchangeEntityKey(reference))?.localId ?? asset.id;
+    if (live.some((item) => local(item) === target)) throw new Error('故事图失效引用与目标身份冲突，未导入项目');
+    return target;
+  };
+  const decode = (value: ProjectExchangeValue, key = '', fieldPath = ''): unknown => {
+    if (fieldPath === 'series.storyGraph') return remapStoryGraphBindings(readExchangeStoryGraph(value), graphProjectId, graphAssetId, 0);
     if (typeof value === 'string' && value.startsWith(FILE_TOKEN)) {
       const path = paths.get(value.slice(FILE_TOKEN.length)); if (!path) throw new Error('合并结果缺少素材'); return safeExchangePath(path);
     }
     if (typeof value === 'string' && ['projectId', 'parentProjectId'].includes(key)) {
       return identities.find((item) => item.kind === 'project' && item.id === value)?.localId ?? value;
     }
-    if (Array.isArray(value)) return value.map((item) => decode(item));
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([field, item]) => [field, decode(item, field)]));
+    if (Array.isArray(value)) return value.map((item, index) => decode(item, '', `${fieldPath}[${index}]`));
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([field, item]) => [field,
+      decode(item, field, fieldPath ? `${fieldPath}.${field}` : field)]));
     return value;
   };
   const restore = (entity: ProjectExchangeEntity): Record<string, unknown> => {
@@ -464,6 +531,13 @@ export function materializeExchangeSnapshot(snapshot: ProjectExchangeSnapshot, i
   return projects.sort((a, b) => Number(b.id === snapshot.rootProjectId) - Number(a.id === snapshot.rootProjectId)).map((project) => {
     const id = local(project), before = existing.find((record) => record.id === id);
     const data = restore(project);
+    if (exchangeObject(data.series) && data.series.storyGraph !== undefined) {
+      const previousRevision = before?.series?.storyGraph?.revision ?? 0;
+      if (!Number.isSafeInteger(previousRevision) || previousRevision >= Number.MAX_SAFE_INTEGER) throw new Error('故事图本机版本已超出范围');
+      data.series = { ...data.series, storyGraph: normalizeStoryGraph({
+        ...(data.series.storyGraph as StoryGraph), revision: previousRevision + 1,
+      }) };
+    }
     const canvasList = (field: 'nodes' | 'edges' | 'groups', kind: ProjectExchangeEntityKind) => {
       const ids = data[field + 'Ids']; delete data[field + 'Ids'];
       if (!Array.isArray(ids)) throw new Error('项目缺少画布顺序');

@@ -3,6 +3,7 @@ import { createHash, webcrypto } from 'node:crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ProjectSaveData } from '../../src/services/storageService';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import type { ArchiveAssetDigest } from '../../src/services/projectExchangeDomain';
 import type { ProjectArchiveJsonEntry, ProjectArchiveTextEntry } from '../../src/services/projectArchiveSerialization';
 import type { PreparedProjectImport } from '../../src/services/projectImportService';
@@ -185,6 +186,23 @@ async function roundTrip(context: Runtime, source: ProjectSaveData[], independen
   expect(reopened.records).toHaveLength(source.length);
   return { imported, records, archive, returned, state };
 }
+
+it('故事图经真实导出、跨身份导入、保存重开和再次导出后保留出处与布局', async () => {
+  const context = await runtime(), owner = project(), graph = createEmptyStoryGraph('graph');
+  graph.nodes.push({ id: 'event', kind: 'event', label: '相逢', description: '本集关键事件', aliases: [],
+    episodeIds: ['story-episode'], evidence: [], origin: 'manual', certainty: 'explicit' });
+  graph.positions.event = { x: 120, y: 60 };
+  graph.revision = 7;
+  owner.series = { script: '全剧资料', storyGraph: graph };
+  const source = [owner, { ...project('story-episode'), parentId: owner.id, episodeNo: 1, episodeScript: '二人相逢。' }];
+  await seed(context, source, []);
+  const result = await roundTrip(context, source);
+  const received = result.records[0].series!.storyGraph!;
+  expect(received.nodes[0].episodeIds).toEqual([result.records[1].id]);
+  expect(received.positions.event).toEqual({ x: 120, y: 60 });
+  const texts = Object.fromEntries(result.returned.entries.map((entry) => [entry.path, entry.content]));
+  expect(JSON.parse(texts['project.json']).series.storyGraph.nodes[0].episodeIds).toEqual([result.records[1].id]);
+});
 
 it.each([false, true])('真实导出→预览→入库→保存重开→再次导出多分集、同字节别名和空附件（独立=%s）', async (independent) => {
   const context = await runtime(), owner = project();

@@ -5,6 +5,7 @@ import type { ProjectSaveData } from '../../src/services/storageService';
 import { captureExchangeSnapshot } from '../../src/services/projectExchangeDomain';
 import { createProjectExchangeRevision } from '../../src/services/projectExchangeFormat';
 import type { ProjectExchangeState } from '../../src/types/projectExchange';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), read: vi.fn(), recoveries: vi.fn(), commit: vi.fn(), notify: vi.fn(), state: vi.fn(), graph: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, convertFileSrc: (value: string) => value }));
@@ -27,6 +28,16 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 describe('导入恢复点编排', () => {
+  it('恢复故事图内容时提升当前本机令牌，不回退到恢复点 revision', async () => {
+    const graph = { ...createEmptyStoryGraph('graph'), revision: 3 };
+    mocks.read.mockResolvedValue([{ ...owner, series: { script: '当前原文', storyGraph: { ...graph, revision: 12 } } }]);
+    mocks.recoveries.mockResolvedValue([{ id: 'graph-recovery', records: [{ ...owner,
+      series: { script: '旧原文', storyGraph: graph } }], assets: [], state: null }]);
+    await restoreProjectImportRecovery(owner.id, 'graph-recovery');
+    expect(mocks.commit.mock.calls[0][0].records[0].series).toMatchObject({ script: '旧原文', storyGraph: { id: graph.id, revision: 13 } });
+    const snapshot = mocks.commit.mock.calls[0][0].revisions[0].snapshot;
+    expect(snapshot.entities.find((entry: { kind: string }) => entry.kind === 'project').data.series.storyGraph).not.toHaveProperty('revision');
+  });
   it('项目改名后恢复内容仍保留当前目录，分集与 owner 使用同一素材根', async () => {
     mocks.recoveries.mockResolvedValue([{ id: 'recovery', records: [
       { ...owner, name: '旧名称', dataFolder: 'old-folder' },

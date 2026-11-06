@@ -55,6 +55,15 @@ describe('剧本工作台共享视图', () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  it('提供独立的故事关系图入口，普通页签渲染不读取图或调用模型', () => {
+    const state = snapshot();
+    const dispatch = vi.fn(async () => undefined);
+    const html = renderToStaticMarkup(<ScriptWorkbenchView snapshot={state} dispatch={dispatch} />);
+    expect(html).toContain('故事关系图');
+    expect(state.canvasProjectId).toBe('episode-a');
+    expect(state.currentEpisode?.id).toBe('episode-b');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
   it('renders only safe creation profile options without applying them or switching canvas', () => {
     const state = { ...snapshot(), creationProfiles: [{ id: 'writing', version: '1.0.0', name: '创作组合包示例' }] };
     const dispatch = vi.fn(async () => undefined);

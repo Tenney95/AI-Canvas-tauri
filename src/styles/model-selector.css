@@ -6,6 +6,12 @@
   flex: 1;
   min-width: 0;
 }
+.model-selector.model-selector--sm > .model-selector-trigger {
+  height: var(--ui-control-h-sm);
+  padding: 0 var(--ui-pad-sm);
+  border-radius: var(--button-radius-sm);
+  font-size: var(--ui-font-sm);
+}
 .model-selector-trigger:not(.prompt-btn) {
   display: flex;
   align-items: center;

@@ -40,8 +40,9 @@ function partition(entity: ProjectExchangeEntity): Slots {
     return slots;
   }
   for (const [key, value] of Object.entries(data)) {
-    if (entity.kind === 'project' && key === 'settings' && value && typeof value === 'object' && !Array.isArray(value)) {
-      Object.entries(value).forEach(([field, item]) => slots.set(`settings.${field}`, item));
+    if (entity.kind === 'project' && ['settings', 'series'].includes(key) && value && typeof value === 'object' && !Array.isArray(value)) {
+      // 故事图整体为一个原子槽，不能把不同版本的节点/边拆开拼接。
+      Object.entries(value).forEach(([field, item]) => slots.set(`${key}.${field}`, item));
     } else slots.set(key, value);
   }
   return slots;
@@ -52,7 +53,7 @@ function assemble(entity: ProjectExchangeEntity, slots: Slots): ProjectExchangeE
   for (const [key, value] of slots) {
     if (['位置与分组', '尺寸', '连接结构'].includes(key)) Object.assign(data, value);
     else if (key === 'data.媒体产物') data.data = { ...(data.data as ProjectExchangeObject ?? {}), ...value as ProjectExchangeObject };
-    else if (key.startsWith('data.') || key.startsWith('settings.')) {
+    else if (key.startsWith('data.') || key.startsWith('settings.') || key.startsWith('series.')) {
       const [section, field] = key.split('.');
       data[section] = { ...(data[section] as ProjectExchangeObject ?? {}), [field]: value };
     } else data[key] = value;

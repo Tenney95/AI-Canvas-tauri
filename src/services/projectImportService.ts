@@ -16,8 +16,20 @@ import { compareProjectSnapshots, captureProjectSnapshot } from './projectMergeW
 import { configValuesEqual } from './configPatch';
 import { sha256BytesHex } from './mediaDataUrl';
 import { toProjectSummaryRecord } from './indexedDb/projectSummary';
+import { normalizeStoryGraph } from './storyGraphService';
 import { selectArchiveImportPaths } from './projectArchiveValidation';
 import { normalizeConversationWorkbenchTarget } from './chat/workbenchConversationScope';
+
+/** 接收端重建本机令牌；可交换语义不含该令牌，旧候选还受 exchangeEpoch 约束。 */
+function restoreImportedGraphRevisions(records: ProjectSaveData[], before: readonly ProjectSaveData[]): ProjectSaveData[] {
+  return records.map((record) => {
+    if (!record.series?.storyGraph) return record;
+    const previous = before.find((item) => item.id === record.id)?.series?.storyGraph?.revision ?? 0;
+    if (!Number.isSafeInteger(previous) || previous >= Number.MAX_SAFE_INTEGER) throw new Error('故事图本机版本已超出范围');
+    return { ...record, series: { ...record.series,
+      storyGraph: normalizeStoryGraph({ ...record.series.storyGraph, revision: previous + 1 }) } };
+  });
+}
 
 export interface PreparedProjectImport {
   id: string; stagingProjectId: string; stagingFolder: string; archivePath: string; directory: string;
@@ -324,7 +336,8 @@ export async function applyProjectImport(session: PreparedProjectImport, preview
     structuredClone(preview?.local.identities ?? [{ kind: 'project' as const, scopeId: snapshot.rootProjectId, id: snapshot.rootProjectId, localId: ownerId }]),
     [...paths].map(([id, path]) => ({ kind: 'file' as const, scopeId: snapshot.rootProjectId, id, localId: path })),
   );
-  const records = materializeExchangeSnapshot(snapshot, identities, preview?.expectedRecords ?? [], folder, paths);
+  const records = restoreImportedGraphRevisions(materializeExchangeSnapshot(snapshot, identities,
+    preview?.expectedRecords ?? [], folder, paths), preview?.expectedRecords ?? []);
   const graph = preview?.expectedState ? await loadProjectExchangeGraph(preview.expectedState.lineageId) : { revisions: [], ancestors: [] };
   const revisions = new Map([...graph.revisions, ...(session.bundle?.revisions ?? [])].map((item) => [item.revisionId, item]));
   if (preview?.localHead) revisions.set(preview.localHead.revisionId, preview.localHead);
@@ -369,7 +382,9 @@ export async function restoreProjectImportRecovery(ownerId: string, recoveryId: 
   if (!recovery) throw new Error('恢复点不存在');
   const expectedRecords = await readProjectImportScope(ownerId), expectedState = await loadProjectExchangeState(ownerId);
   // 恢复业务内容不回退本机目录定位；项目改名/迁移目录后，旧恢复点仍使用当前素材根。
-  const restoredRecords = recovery.records.map((record) => ({ ...record, dataFolder: expectedRecords[0].dataFolder ?? ownerId }));
+  const restoredRecords = restoreImportedGraphRevisions(recovery.records.map((record) => ({
+    ...record, dataFolder: expectedRecords[0].dataFolder ?? ownerId,
+  })), expectedRecords);
   const directory = await files.ensureProjectDataDir(ownerId); if (!directory) throw new Error('无法读取项目素材');
   if (!recovery.assets && (recovery.identities ?? recovery.state?.identities ?? []).some((item) => item.kind === 'file')) {
     throw new Error('旧恢复点缺少素材校验信息，请使用原始项目包恢复');

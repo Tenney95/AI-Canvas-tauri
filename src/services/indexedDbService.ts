@@ -8,6 +8,8 @@ import type { ConversationContextSummary } from '../types/chat';
 import type { ConversationBranchSource } from '../types/chat';
 import type { AgentTeamProfile, AgentTeamRun, AssistantExecutionSelection } from '../types/agentTeam';
 import type { CreationProfileSelection } from '../types/creationProfile';
+import type { StoryGraph, StoryGraphPatch } from '../types/storyGraph';
+import { applyStoryGraphPatch, normalizeStoryGraph } from './storyGraphService';
 import type { ProjectMemory } from '../types/memory';
 import type { DramaAsset, DramaAssetWriteOptions, DramaCharacter, DramaProp, DramaScene } from '../types/dramaAssets';
 import { assertDramaAssetWriteCurrent, MAX_CHARACTER_WEAPONS, normalizeCharacterWeaponIds } from '../types/dramaAssets';
@@ -38,6 +40,7 @@ import {
 } from './indexedDb/schema';
 import {
   toProjectSummaryRecord,
+  normalizeProjectSeriesInfo,
   type ProjectSummaryRecord,
 } from './indexedDb/projectSummary';
 
@@ -305,8 +308,22 @@ export async function saveProjectToDb(record: ProjectRecord): Promise<void> {
         if ((before?.exchangeEpoch ?? 0) !== (record.exchangeEpoch ?? 0) || (!before && tombstone.result)) {
           failure = new Error('项目已被导入更新或删除，请重新打开项目后保存'); tx.abort(); return;
         }
-        withRelocatedMedia(tx, record, (next) => tx.objectStore(STORE_PROJECTS).put(next));
-        tx.objectStore(STORE_PROJECT_SUMMARIES).put(summary);
+        try {
+          // 正式图只能经下方 CAS 写入；迟到的普通保存不得恢复旧图或抹掉新图。
+          const next = { ...record };
+          const series = normalizeProjectSeriesInfo(record.series);
+          const storedGraph = before?.series?.storyGraph;
+          if (before && (series || storedGraph)) {
+            next.series = { ...(series ?? before.series) };
+            if (storedGraph) next.series.storyGraph = normalizeStoryGraph(storedGraph);
+            else delete next.series.storyGraph;
+          } else if (series) next.series = series;
+          if (next.parentId && next.series?.storyGraph) throw new Error('故事关系图只能由所属剧集保存');
+          const nextSummary = toProjectSummaryRecord(next);
+          if (!nextSummary) throw new Error('项目摘要无效，无法写入 IndexedDB');
+          withRelocatedMedia(tx, next, (relocated) => tx.objectStore(STORE_PROJECTS).put(relocated));
+          tx.objectStore(STORE_PROJECT_SUMMARIES).put(nextSummary);
+        } catch (error) { failure = error instanceof Error ? error : new Error('故事图保存失败'); tx.abort(); }
       };
     };
     let settled = false;
@@ -322,6 +339,41 @@ export async function saveProjectToDb(record: ProjectRecord): Promise<void> {
     };
     tx.onerror = () => fail(tx.error);
     tx.onabort = () => fail(tx.error);
+  });
+}
+
+/** 合并最新剧集记录后原子提交图补丁；不重存画布，也不覆盖同时更新的全剧剧本。 */
+export async function updateProjectStoryGraphCAS(
+  seriesId: string, patch: StoryGraphPatch, expectedRevision: number, expectedExchangeEpoch: number,
+  assertCurrent?: (next?: StoryGraph) => void,
+): Promise<StoryGraph> {
+  if (!seriesId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0
+    || !Number.isSafeInteger(expectedExchangeEpoch) || expectedExchangeEpoch < 0) throw new Error('故事图保存版本无效');
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_PROJECTS, STORE_PROJECT_SUMMARIES], 'readwrite');
+    let result: StoryGraph | undefined;
+    let failure: unknown;
+    const request = tx.objectStore(STORE_PROJECTS).get(seriesId);
+    request.onsuccess = () => {
+      try {
+        assertCurrent?.();
+        const before = request.result as ProjectRecord | undefined;
+        if (!before || before.parentId || (before.exchangeEpoch ?? 0) !== expectedExchangeEpoch) {
+          throw new Error('故事图所属剧集已变化，请重新打开关系图');
+        }
+        const series = normalizeProjectSeriesInfo(before.series);
+        result = applyStoryGraphPatch(series?.storyGraph, patch, expectedRevision);
+        const next = { ...before, series: { ...series, storyGraph: result }, updatedAt: Date.now() };
+        const summary = toProjectSummaryRecord(next);
+        if (!summary) throw new Error('故事图项目摘要无效');
+        assertCurrent?.(result);
+        tx.objectStore(STORE_PROJECTS).put(next);
+        tx.objectStore(STORE_PROJECT_SUMMARIES).put(summary);
+      } catch (error) { failure = error; tx.abort(); }
+    };
+    tx.oncomplete = () => result ? resolve(result) : reject(new Error('故事图未提交'));
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('故事图提交失败'));
   });
 }
 

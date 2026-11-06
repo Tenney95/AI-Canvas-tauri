@@ -7,6 +7,8 @@ import { createProjectExchangeRevision, findProjectExchangeBase } from '../../sr
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectExchangeState } from '../../src/types/projectExchange';
 import { normalizeDramaAssetLibrary } from '../../src/types/dramaAssets';
+import type { StoryGraphNode } from '../../src/types/storyGraph';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => vi.unstubAllGlobals());
@@ -21,6 +23,32 @@ function fixture() {
   return { base: base.snapshot, state, capture };
 }
 describe('项目业务三方合并', () => {
+  it('全剧正文和故事图独立合并，双方改图时整张图为一个冲突单元', () => {
+    const graph = createEmptyStoryGraph('graph');
+    const original = { ...project(), series: { script: '原稿', storyGraph: graph } };
+    const captured = captureExchangeSnapshot([original], [], null);
+    const state: ProjectExchangeState = { ownerId: original.id, lineageId: captured.snapshot.lineageId, rootProjectId: original.id,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    const node = (id: string): StoryGraphNode => ({ id, kind: 'event', label: id, description: '', aliases: [], episodeIds: [],
+      evidence: [], origin: 'manual', certainty: 'explicit' });
+    const local = { ...original, series: { ...original.series, storyGraph: { ...graph, revision: 9, nodes: [node('local')] } } };
+    const incoming = { ...original, series: { ...original.series, script: '对方正文' } };
+    const capture = (record: ProjectSaveData) => captureExchangeSnapshot([record], [], state, captured.snapshot).snapshot;
+    const plan = buildProjectMergePlan(captured.snapshot, capture(local), capture(incoming));
+    expect(plan.changes.some((change) => change.conflict)).toBe(false);
+    expect(resolveProjectMerge(plan, {}).entities.find((entry) => entry.kind === 'project')!.data.series).toMatchObject({
+      script: '对方正文', storyGraph: { nodes: [{ id: 'local' }] },
+    });
+    incoming.series.storyGraph = { ...graph, revision: 2, nodes: [node('incoming')] };
+    const conflictPlan = buildProjectMergePlan(captured.snapshot, capture(local), capture(incoming));
+    const conflicts = conflictPlan.changes.filter((change) => change.conflict);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].field).toBe('series.storyGraph');
+    const resolved = resolveProjectMerge(conflictPlan, { [conflicts[0].id]: 'incoming' });
+    expect(resolved.entities.find((entry) => entry.kind === 'project')!.data.series).toMatchObject({
+      script: '对方正文', storyGraph: { nodes: [{ id: 'incoming' }] },
+    });
+  });
   it('我的位置与对方提示词独立合并，保留模型与完整画布', () => {
     const { base, capture } = fixture();
     const plan = buildProjectMergePlan(base, capture(project('初始提示词', 200)), capture(project('对方提示词')));

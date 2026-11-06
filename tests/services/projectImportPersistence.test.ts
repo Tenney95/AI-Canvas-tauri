@@ -3,6 +3,7 @@ import { webcrypto } from 'node:crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectSaveData } from '../../src/services/storageService';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import type { ArchiveAssetDigest } from '../../src/services/projectExchangeDomain';
 import type { ProjectArchiveChatPayload } from '../../src/services/projectTransferService';
 import type { ProjectExchangeRevision, ProjectExchangeState } from '../../src/types/projectExchange';
@@ -79,9 +80,13 @@ async function runtime() {
 }
 type Runtime = Awaited<ReturnType<typeof runtime>>;
 function sourceRecords(context: Runtime): ProjectSaveData[] {
+  const storyGraph = { ...createEmptyStoryGraph('graph'), revision: 8 };
+  storyGraph.nodes.push({ id: 'person', kind: 'character', label: '主角关系记录', description: '', aliases: [],
+    episodeIds: ['source-episode-1'], asset: { kind: 'character', id: 'character' },
+    evidence: [], origin: 'manual', certainty: 'explicit' });
   const owner: ProjectSaveData = { id: 'source', name: '整部剧', nodes: [
     { id: 'owner-node', type: 'ai-text', data: { type: 'ai-text', output: '剧集正文' } },
-  ], edges: [], groups: [], createdAt: 1, updatedAt: 2, dramaAssets: context.drama.normalizeDramaAssetLibrary({ characters: [
+  ], edges: [], groups: [], createdAt: 1, updatedAt: 2, series: { storyGraph }, dramaAssets: context.drama.normalizeDramaAssetLibrary({ characters: [
     { id: 'character', kind: 'character', name: '主角', primaryReferenceImageId: 'primary', referenceImages: [
       { id: 'primary', kind: 'primary', relativePath: sourceAssets[0].path },
       { id: 'selected', relativePath: sourceAssets[1].path },
@@ -218,6 +223,11 @@ describe('项目包真实持久化导入', () => {
     const result = await context.service.applyProjectImport(incoming.session, null, {}, { independent, appendChat: true, appendMemories: true });
     const records = await context.repository.readProjectImportScope(result.projectId), state = (await context.exchange.loadProjectExchangeState(result.projectId))!;
     expect(records).toHaveLength(3);
+    expect(records[0].series?.storyGraph?.nodes[0]).toMatchObject({
+      episodeIds: [records.find((record) => record.episodeNo === 1)!.id],
+      asset: { kind: 'character', id: records[0].dramaAssets!.characters[0].id },
+    });
+    expect(records[0].series?.storyGraph?.revision).toBe(1);
     expect(records.every((record) => record.exchangeEpoch === 1)).toBe(true);
     expect(records.every((record) => !source.some((original) => original.id === record.id))).toBe(true);
     expect(records.slice(1).every((record) => record.parentId === result.projectId && record.dataFolder === result.dataFolder)).toBe(true);

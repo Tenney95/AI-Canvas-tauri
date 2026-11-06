@@ -7,6 +7,8 @@ import type { ProjectExchangeIdentity, ProjectExchangeMedia, ProjectExchangeStat
 import { normalizeDramaAssetLibrary } from '../../src/types/dramaAssets';
 import { parseProjectExchangeState } from '../../src/services/indexedDb/projectExchangeRepository';
 import { createProjectExchangeRevision } from '../../src/services/projectExchangeFormat';
+import type { StoryGraphNode } from '../../src/types/storyGraph';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 const archiveMocks = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: archiveMocks.invoke, convertFileSrc: (value: string) => value }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: archiveMocks.open }));
@@ -18,6 +20,68 @@ vi.mock('../../src/services/projectMergeWorkerClient', () => ({
 }));
 beforeEach(() => vi.stubGlobal('crypto', webcrypto)); afterEach(() => vi.unstubAllGlobals());
 describe('项目规范快照往返', () => {
+  it('已删除出处和资产使用历史身份往返，保持断开且不产生本机 ID 语义漂移', () => {
+    const graph = createEmptyStoryGraph('graph');
+    graph.nodes.push({ id: 'person', kind: 'character', label: '历史人物', description: '', aliases: [],
+      episodeIds: ['old-local-episode'], asset: { kind: 'character', id: 'old-local-character' },
+      evidence: [], origin: 'manual', certainty: 'unknown' });
+    const owner: ProjectSaveData = { id: 'root', name: '整部剧', createdAt: 1, updatedAt: 2, nodes: [], edges: [], series: { storyGraph: graph } };
+    const state: ProjectExchangeState = { ownerId: 'root', rootProjectId: 'root', lineageId: 'lineage',
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: [
+        { kind: 'project', scopeId: 'root', id: 'root', localId: 'root' },
+        { kind: 'project', scopeId: 'dead-episode', id: 'dead-episode', localId: 'old-local-episode' },
+        { kind: 'character', scopeId: 'root', id: 'dead-character', localId: 'old-local-character' },
+      ] };
+    const captured = captureExchangeSnapshot([owner], [], state);
+    const identities = captured.identities.map((item) => ({ ...item,
+      localId: item.id === 'root' ? 'recipient' : item.kind === 'project' ? 'recipient-dead-episode' : 'recipient-dead-character' }));
+    const restored = materializeExchangeSnapshot(captured.snapshot, identities, [], 'recipient-folder', captured.files);
+    expect(restored[0].series?.storyGraph?.nodes[0]).toMatchObject({
+      episodeIds: ['recipient-dead-episode'], asset: { kind: 'character', id: 'recipient-dead-character' },
+    });
+    expect(captureExchangeSnapshot(restored, [], { ...state, ownerId: 'recipient', identities }, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
+  it.each(['episode', 'asset'] as const)('失效图引用不能因接收端本机身份碰撞而复活（%s）', (kind) => {
+    const graph = createEmptyStoryGraph('graph');
+    graph.nodes.push({ id: 'person', kind: 'character', label: '历史记录', description: '', aliases: [],
+      episodeIds: kind === 'episode' ? ['recipient-episode'] : [],
+      ...(kind === 'asset' ? { asset: { kind: 'character' as const, id: 'recipient-character' } } : {}),
+      evidence: [], origin: 'manual', certainty: 'unknown' });
+    const owner: ProjectSaveData = { id: 'root', name: '整部剧', createdAt: 1, updatedAt: 2, nodes: [], edges: [],
+      series: { storyGraph: graph }, dramaAssets: normalizeDramaAssetLibrary({ characters: [{ id: 'live-character', name: '无关人物' }] }) };
+    const episode: ProjectSaveData = { ...owner, id: 'live-episode', parentId: owner.id, series: undefined, dramaAssets: undefined };
+    const captured = captureExchangeSnapshot([owner, episode], [], null);
+    const identities: ProjectExchangeIdentity[] = captured.identities.map((item) => ({ ...item,
+      localId: item.kind === 'project' ? item.id === 'root' ? 'recipient' : 'recipient-episode'
+        : item.kind === 'character' ? 'recipient-character' : item.localId }));
+    expect(() => materializeExchangeSnapshot(captured.snapshot, identities, [], 'recipient-folder', captured.files))
+      .toThrow('失效引用与目标身份冲突');
+  });
+  it('故事图重映射分集和正式资产，证据仅作资料，本机 revision 不制造语义差异', () => {
+    const node: StoryGraphNode = { id: 'person', kind: 'character', label: '同名人物', description: '', aliases: [],
+      episodeIds: ['episode'], asset: { kind: 'character', id: 'character' }, origin: 'manual', certainty: 'explicit',
+      evidence: [{ episodeId: 'episode', part: 'script', sourceHash: 'a'.repeat(64), start: 0, end: 16, quote: '@{missing:只是原文}' }] };
+    // 摘录边界由读取原文时再验证；交换层只保证结构和身份，不执行摘录中的引用。
+    node.evidence[0].end = node.evidence[0].quote.length;
+    const graph = { ...createEmptyStoryGraph('graph'), revision: 7, nodes: [node] };
+    const owner: ProjectSaveData = { id: 'root', name: '整部剧', createdAt: 1, updatedAt: 2, nodes: [], edges: [],
+      series: { storyGraph: graph }, dramaAssets: normalizeDramaAssetLibrary({ characters: [{ id: 'character', name: '同名人物' }] }) };
+    const episode: ProjectSaveData = { ...owner, id: 'episode', parentId: owner.id, series: undefined, dramaAssets: undefined };
+    const captured = captureExchangeSnapshot([owner, episode], [], null);
+    expect(captured.snapshot.entities.find((item) => item.kind === 'project' && item.id === 'root')!.data.series)
+      .not.toHaveProperty('storyGraph.revision');
+    const identities: ProjectExchangeIdentity[] = captured.identities.map((identity) => ({ ...identity,
+      localId: identity.kind === 'project' ? identity.id === 'root' ? 'recipient' : 'recipient-episode'
+        : identity.kind === 'character' ? 'recipient-character' : identity.localId }));
+    const restored = materializeExchangeSnapshot(captured.snapshot, identities, [], 'recipient-folder', captured.files);
+    const received = restored[0].series!.storyGraph!;
+    expect(received.nodes[0]).toMatchObject({ episodeIds: ['recipient-episode'], asset: { kind: 'character', id: 'recipient-character' },
+      evidence: [{ episodeId: 'recipient-episode', quote: '@{missing:只是原文}' }] });
+    received.revision = 999;
+    const state: ProjectExchangeState = { ownerId: 'recipient', rootProjectId: 'root', lineageId: captured.snapshot.lineageId,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities };
+    expect(captureExchangeSnapshot(restored, [], state, captured.snapshot).snapshot).toEqual(captured.snapshot);
+  });
   it.each(['episode', 'node'] as const)('新建实体的身份映射只保存身份字段（%s）', (kind) => {
     const source: ProjectSaveData = { id: 'root', name: '项目', nodes: [], edges: [], createdAt: 1, updatedAt: 2 };
     const records = kind === 'episode' ? [source, { ...source, id: 'episode', parentId: source.id }]

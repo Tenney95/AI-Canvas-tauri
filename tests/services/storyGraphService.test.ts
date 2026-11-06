@@ -1,0 +1,100 @@
+import { webcrypto } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { StoryGraphEdge, StoryGraphNode } from '../../src/types/storyGraph';
+import { applyStoryGraphPatch, createEmptyStoryGraph, hashStoryGraphSource, normalizeStoryGraph, projectStoryGraphView, STORY_GRAPH_LIMITS, storyGraphCanonicalSnapshot, storyGraphJsonBytes, validateStoryGraphEvidence } from '../../src/services/storyGraphService';
+
+function node(id: string, label = id): StoryGraphNode { return { id, kind: 'character', label, description: '', aliases: [], episodeIds: ['episode-a'], evidence: [], origin: 'manual', certainty: 'unknown' }; }
+function edge(id: string, source: string, target: string): StoryGraphEdge { return { id, source, target, kind: 'character_relationship', directed: true, label: '信任', description: '', episodeIds: ['episode-a'], evidence: [], origin: 'manual', certainty: 'inferred' }; }
+beforeEach(() => vi.stubGlobal('crypto', webcrypto));
+afterEach(() => vi.unstubAllGlobals());
+
+describe('story graph domain boundaries', () => {
+  it('rejects unknown fields, unsupported versions, duplicate IDs and dangling relationships', () => {
+    const empty = createEmptyStoryGraph('graph-a');
+    expect(() => normalizeStoryGraph({ ...empty, runtime: {} })).toThrow();
+    expect(() => normalizeStoryGraph({ ...empty, schemaVersion: 2 })).toThrow();
+    expect(() => normalizeStoryGraph({ ...empty, nodes: [node('a'), node('a')] })).toThrow();
+    expect(() => normalizeStoryGraph({ ...empty, nodes: [node('a')], edges: [edge('relation', 'a', 'missing')] })).toThrow();
+    expect(() => normalizeStoryGraph({ ...empty, nodes: [{ ...node('a'), asset: { kind: 'character', id: 'asset-a', path: 'private' } }] })).toThrow();
+    expect(() => normalizeStoryGraph({ ...empty, positions: { a: { x: Number.NaN, y: 0 } } })).toThrow();
+  });
+
+  it('keeps directional relationships, parallel relationships and character cycles distinct', () => {
+    const graph = normalizeStoryGraph({ ...createEmptyStoryGraph('graph-a'), nodes: [node('a'), node('b')], edges: [edge('one', 'a', 'b'), { ...edge('two', 'a', 'b'), label: '怀疑' }, edge('three', 'b', 'a')] });
+    expect(graph.edges.map((entry) => entry.label)).toEqual(['信任', '怀疑', '信任']);
+    expect(graph.edges[2].target).toBe('a');
+  });
+
+  it('applies an immutable conditional patch and removes incident edges and positions with a deleted node', () => {
+    const original = normalizeStoryGraph({ ...createEmptyStoryGraph('graph-a'), revision: 7, nodes: [node('a'), node('b')], edges: [edge('relation', 'a', 'b')], positions: { a: { x: 10, y: 20 }, b: { x: 30, y: 40 } } });
+    expect(() => applyStoryGraphPatch(original, { graphId: 'graph-a', removeNodeIds: ['a'] }, 6)).toThrow('已变化');
+    expect(() => applyStoryGraphPatch(original, { graphId: 'different' }, 7)).toThrow('已变化');
+    const next = applyStoryGraphPatch(original, { graphId: 'graph-a', removeNodeIds: ['a'] }, 7);
+    expect(next.revision).toBe(8);
+    expect(next.nodes.map((entry) => entry.id)).toEqual(['b']);
+    expect(next.edges).toEqual([]);
+    expect(next.positions).toEqual({ b: { x: 30, y: 40 } });
+    expect(original.nodes).toHaveLength(2);
+    expect(original.edges).toHaveLength(1);
+  });
+
+  it('rejects oversized updates without truncating the original graph', () => {
+    const original = createEmptyStoryGraph('graph-a');
+    expect(() => normalizeStoryGraph({ ...original, nodes: Array.from({ length: 501 }, (_, index) => node(`n${index}`)) })).toThrow();
+    expect(() => applyStoryGraphPatch(original, { upsertNodes: Array.from({ length: 100 }, (_, index) => ({ ...node(`n${index}`), description: '长'.repeat(1000) })) }, 0)).toThrow();
+    expect(original.nodes).toEqual([]);
+    expect(original.revision).toBe(0);
+  });
+
+  it('exports a canonical graph independent of local revision and collection ordering', () => {
+    const first = normalizeStoryGraph({ ...createEmptyStoryGraph('graph-a'), revision: 2, nodes: [node('b'), { ...node('a'), aliases: ['乙', '甲'] }] });
+    const second = { ...first, revision: 900, nodes: [{ ...first.nodes[1], aliases: ['甲', '乙'] }, first.nodes[0]] };
+    expect(storyGraphCanonicalSnapshot(first)).toEqual(storyGraphCanonicalSnapshot(second));
+    expect(storyGraphCanonicalSnapshot(first)).not.toHaveProperty('revision');
+  });
+
+  it('keeps initial and manually saved positions stable when filtering the visible subgraph', () => {
+    const graph = normalizeStoryGraph({ ...createEmptyStoryGraph('graph-a'), nodes: [node('a', '甲'), node('b', '乙'), node('c', '丙')], positions: { b: { x: 71, y: 83 } } });
+    const all = projectStoryGraphView(graph);
+    expect(projectStoryGraphView(graph, { search: '甲' }).positions.a).toEqual(all.positions.a);
+    expect(projectStoryGraphView(graph, { search: '乙' }).positions.b).toEqual({ x: 71, y: 83 });
+  });
+
+  it('projects bounded summaries while retaining true counts and leaving full evidence in the source graph', () => {
+    const proof = { episodeId: 'episode-a', part: 'script' as const, sourceHash: 'a'.repeat(64), start: 0, end: 2, quote: '原文' };
+    const nodes = Array.from({ length: 205 }, (_, index) => ({ ...node(`n${index}`), description: '长'.repeat(1000), evidence: [proof] }));
+    const graph = normalizeStoryGraph({ ...createEmptyStoryGraph('graph-a'), nodes });
+    const view = projectStoryGraphView(graph);
+    expect(view.counts).toMatchObject({ totalNodes: 205, matchedNodes: 205, visibleNodes: 200, truncated: true });
+    expect(storyGraphJsonBytes(view)).toBeLessThanOrEqual(STORY_GRAPH_LIMITS.viewBytes);
+    expect(view.nodes.every((entry) => entry.evidence.length === 0 && entry.evidenceCount === 1)).toBe(true);
+    expect(graph.nodes[0].description).toHaveLength(1000);
+    expect(graph.nodes[0].evidence[0].quote).toBe('原文');
+  });
+
+  it('filters adjacent relationships in both directions and never invents new relationship kinds', () => {
+    const graph = normalizeStoryGraph({ ...createEmptyStoryGraph('graph-a'), nodes: [node('a'), node('b'), node('c'), node('d')], edges: [edge('ab', 'a', 'b'), edge('ca', 'c', 'a'), edge('bd', 'b', 'd')] });
+    const view = projectStoryGraphView(graph, { focusNodeId: 'a', neighbors: true });
+    expect(view.nodes.map((entry) => entry.id)).toEqual(['a', 'b', 'c']);
+    expect(view.edges.map((entry) => entry.id)).toEqual(['ab', 'ca']);
+    expect(projectStoryGraphView(graph, { focusNodeId: 'a', neighbors: false }).edges).toEqual([]);
+  });
+
+  it('includes global characters needed by an in-scope episode relationship', () => {
+    const graph = { ...createEmptyStoryGraph('graph-a'), nodes: [{ ...node('global'), episodeIds: [] }, node('local')], edges: [edge('participation', 'global', 'local')] };
+    const view = projectStoryGraphView(graph, { episodeIds: ['episode-a'] });
+    expect(view.nodes.map((entry) => entry.id)).toEqual(['global', 'local']);
+    expect(view.edges).toHaveLength(1);
+  });
+
+  it('validates exact UTF-16 evidence and refuses stale hashes, changed text and wrong parts', async () => {
+    const text = '前😀后';
+    const source = { episodeId: 'episode-a', part: 'script' as const, text, sourceHash: await hashStoryGraphSource(text) };
+    const proof = { episodeId: 'episode-a', part: 'script' as const, sourceHash: source.sourceHash, start: 1, end: 3, quote: '😀' };
+    expect(validateStoryGraphEvidence(proof, source)).toBe(true);
+    expect(validateStoryGraphEvidence({ ...proof, end: 2 }, source)).toBe(false);
+    expect(validateStoryGraphEvidence(proof, { ...source, sourceHash: 'b'.repeat(64) })).toBe(false);
+    expect(validateStoryGraphEvidence(proof, { ...source, text: '前甲乙后' })).toBe(false);
+    expect(validateStoryGraphEvidence(proof, { ...source, part: 'outline' })).toBe(false);
+  });
+});

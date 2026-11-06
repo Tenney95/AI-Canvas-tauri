@@ -3,7 +3,7 @@
  * 收起只能通过面板右上角的关闭按钮。分集各自是一张画布，点一下就切过去；
  * 原著与剧本挂在剧集项目上，整部剧共用。
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
@@ -140,8 +140,6 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
   // 资产浮层：双击竖线打开，关闭按钮收起
   const [assetsOpen, setAssetsOpen] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
-  // 区分单击 / 双击：单击延迟执行，双击时取消
-  const singleClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 打开编辑器时就把草稿装好，弹窗内部不用再和外部值同步
   const [editorDraft, setEditorDraft] = useState<string | null>(null);
   const [episodeNameDialog, setEpisodeNameDialog] = useState<{ episodeId?: string } | null>(null);
@@ -198,29 +196,18 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
         className="group/series pointer-events-none fixed right-0 top-1/2 z-[150] flex h-[min(70vh,560px)]
                    w-6 -translate-y-1/2 items-center justify-end"
       >
+        {/* 面板让出竖线所在的右缘区域，保留双击入口且不遮挡面板滚动条。 */}
         <button
           type="button"
           aria-label={t('展开剧集栏（双击打开项目资产）')}
+          aria-expanded={pinned}
           data-onboarding-target="series"
-          data-tooltip={t('单击：展开剧集栏｜双击：打开项目资产')}
-          onClick={() => {
-            // 清除之前的定时器（如果有）
-            if (singleClickTimer.current) clearTimeout(singleClickTimer.current);
-            // 延迟 200ms 执行单击逻辑；如果在此期间触发双击，定时器会被清除
-            singleClickTimer.current = setTimeout(() => {
-              singleClickTimer.current = null;
-              setPinned(true);
-            }, 200);
-          }}
-          onDoubleClick={() => {
-            // 双击：取消单击的延迟，直接打开资产浮层
-            if (singleClickTimer.current) {
-              clearTimeout(singleClickTimer.current);
-              singleClickTimer.current = null;
-            }
-            setAssetsOpen(true);
-          }}
-          className={`pointer-events-auto absolute right-2.5 h-20 w-[3px] rounded-full
+          data-tooltip={t('悬浮：展开剧集栏｜双击：打开项目资产')}
+          onPointerEnter={() => setPinned(true)}
+          onFocus={() => setPinned(true)}
+          onClick={() => setPinned(true)}
+          onDoubleClick={() => setAssetsOpen(true)}
+          className={`pointer-events-auto absolute right-2.5 z-10 h-20 w-[3px] rounded-full
                      bg-canvas-text-muted transition-all duration-150
                      ${pinned ? 'opacity-0 scale-100' : 'opacity-40 hover:opacity-70 hover:scale-[1.2]'}`}
         />
@@ -228,7 +215,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
           aria-label={t('剧集')}
           data-onboarding-target="series-panel"
           aria-hidden={!pinned}
-          className={`glass-bevel glass-bevel--panel absolute right-2.5 top-1/2 flex max-h-full
+          className={`glass-bevel glass-bevel--panel absolute right-6 top-1/2 flex max-h-full
                      w-[min(360px,calc(100vw-32px))] -translate-y-1/2 flex-col overflow-hidden
                      rounded-[14px] border border-[var(--glass-ring)] bg-[var(--glass-bg)]
                      text-canvas-text shadow-2xl shadow-black/40 backdrop-blur-2xl

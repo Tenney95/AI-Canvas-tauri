@@ -2,6 +2,7 @@
  * projectTransferService — 回归测试：projectTransferService。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -166,6 +167,21 @@ function mockArchiveRoundTrip(assetPaths: string[] = []) {
 }
 
 describe('projectTransferService', () => {
+  it('旧包故事图的出处随分集新身份迁移，不指回原项目', async () => {
+    const graph = createEmptyStoryGraph('graph');
+    graph.nodes.push({ id: 'event', kind: 'event', label: '关键点', description: '', aliases: [],
+      episodeIds: [EPISODE_RECORD.id], evidence: [], origin: 'manual', certainty: 'explicit' });
+    mocks.invoke.mockResolvedValue({ texts: archiveTexts({
+      project: { ...SERIES_RECORD, series: { ...SERIES_RECORD.series, storyGraph: graph } },
+      manifest: { formatVersion: 2 }, chat: EMPTY_CHAT, episodes: [{ project: EPISODE_RECORD, chat: EMPTY_CHAT }],
+    }), assetPaths: [], assetBytes: 0 });
+    const result = await restoreProjectArchive('/incoming/story.aicanvas');
+    const [root, episode] = mocks.saveProject.mock.calls.map(([record]) => record);
+    expect(root.series.storyGraph.nodes[0].episodeIds).toEqual([episode.id]);
+    expect(root.series.storyGraph.revision).toBe(1);
+    expect(episode.id).not.toBe(EPISODE_RECORD.id);
+    expect(result.series?.storyGraph).toEqual(root.series.storyGraph);
+  });
   beforeEach(() => {
     Object.values(mocks).forEach((mock) => mock.mockReset());
     mocks.isTauriEnv.mockReturnValue(true);

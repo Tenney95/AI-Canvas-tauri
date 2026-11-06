@@ -14,7 +14,9 @@ const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_ep
   'open_source', 'close_source', 'read_source', 'prepare_chapter', 'open_rename', 'close_rename', 'rename', 'creative', 'polish',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
   'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend', 'view_agent_task',
-  'preview_creation_profile', 'apply_creation_profile', 'refresh_external_agents', 'edit_team_graph', 'resolve_dispatch']);
+  'preview_creation_profile', 'apply_creation_profile', 'refresh_external_agents', 'edit_team_graph', 'resolve_dispatch',
+  'story_graph_filter', 'story_graph_detail', 'story_graph_patch', 'story_graph_resolve_evidence', 'story_graph_locate',
+  'story_graph_extract', 'story_graph_cancel', 'story_graph_discard', 'story_graph_adopt', 'story_graph_editor']);
 const isDesktop = () => typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
 
 /** 重复入口只聚焦固定窗口，不重建编辑会话。 */
@@ -55,7 +57,7 @@ export function createScriptWorkbenchWindowHost(options: {
   let openingTimer: ReturnType<typeof setTimeout> | undefined;
   const stops: Array<() => void> = [];
   const requests = new Map<string, { signature: string; result: Promise<ScriptWorkbenchResponse> }>();
-  const bases = new Map<number, { pending: string; draftVersion: number; rename: string; preview: number }>();
+  const bases = new Map<number, { pending: string; draftVersion: number; rename: string; preview: number; graph: string; graphEpoch: string; graphCandidate: string; graphExtraction: string }>();
   const previews = new WeakMap<object, number>();
   let previewSequence = 0;
   const basis = (snapshot: ScriptWorkbenchSnapshot) => {
@@ -63,7 +65,11 @@ export function createScriptWorkbenchWindowHost(options: {
     if (assets && !previews.has(assets)) previews.set(assets, ++previewSequence);
     return { pending: JSON.stringify(snapshot.pendingAction), draftVersion: snapshot.draftVersion,
       rename: JSON.stringify([snapshot.renamingEpisodeId, snapshot.episodes.find((episode) => episode.id === snapshot.renamingEpisodeId)?.name]),
-      preview: assets ? previews.get(assets)! : 0 };
+      preview: assets ? previews.get(assets)! : 0,
+      graph: JSON.stringify([snapshot.series?.id, snapshot.series?.exchangeEpoch ?? 0, snapshot.storyGraphView?.id, snapshot.storyGraphView?.revision]),
+      graphEpoch: JSON.stringify([snapshot.series?.id, snapshot.series?.exchangeEpoch ?? 0]),
+      graphCandidate: snapshot.storyGraphExtraction?.candidate?.id ?? '',
+      graphExtraction: JSON.stringify([snapshot.storyGraphExtraction?.runId, snapshot.storyGraphExtraction?.status, snapshot.storyGraphExtraction?.candidate?.id]) };
   };
 
   const publish = async () => {
@@ -111,9 +117,18 @@ export function createScriptWorkbenchWindowHost(options: {
         const result = Promise.resolve().then(() => {
           const previous = bases.get(payload.revision);
           const current = basis(options.getSnapshot());
+          const graphScoped = payload.action.type.startsWith('story_graph_')
+            && !['story_graph_cancel', 'story_graph_discard'].includes(payload.action.type)
+            && !(payload.action.type === 'story_graph_editor' && !payload.action.open);
           if ((['discard_pending', 'save_pending'].includes(payload.action.type) && (!previous || previous.pending !== current.pending || previous.draftVersion !== current.draftVersion))
+            || (graphScoped && (!previous || previous.graphEpoch !== current.graphEpoch))
             || (payload.action.type === 'rename' && (!previous || previous.rename !== current.rename))
-            || (payload.action.type === 'commit_asset_preview' && (!previous || previous.preview !== current.preview))) {
+            || (payload.action.type === 'commit_asset_preview' && (!previous || previous.preview !== current.preview))
+            || (['story_graph_patch', 'story_graph_extract', 'story_graph_adopt'].includes(payload.action.type)
+              && (!previous || previous.graph !== current.graph))
+            || (payload.action.type === 'story_graph_adopt' && (!previous || previous.graphCandidate !== current.graphCandidate))
+            || (['story_graph_extract', 'story_graph_cancel', 'story_graph_discard'].includes(payload.action.type)
+              && (!previous || previous.graphExtraction !== current.graphExtraction))) {
             throw new Error('工作台确认内容已变化，请核对最新内容后重试');
           }
           return options.onRequest(payload);
@@ -130,7 +145,8 @@ export function createScriptWorkbenchWindowHost(options: {
         await publish().catch(() => {});
         await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, response).catch(() => {});
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。
-        if (['flush_draft', 'read_source', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents'].includes(payload.action.type)) requests.delete(payload.requestId);
+        if (['flush_draft', 'read_source', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents',
+          'story_graph_detail', 'story_graph_resolve_evidence', 'story_graph_filter', 'story_graph_locate'].includes(payload.action.type)) requests.delete(payload.requestId);
         options.onReplySent?.();
       }).catch(() => {});
       })().catch(() => {});

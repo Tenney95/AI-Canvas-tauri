@@ -451,6 +451,8 @@ export interface ProjectSeriesInfo {
   originalWork?: ProjectOriginalWork;
   /** 全剧剧本正文 */
   script?: string;
+  /** 整部剧共享的故事资料图；与主画布节点及撤销历史分开。 */
+  storyGraph?: import('./storyGraph').StoryGraph;
 }
 
 export type ProjectModelKind = 'text' | 'image' | 'video' | 'audio';

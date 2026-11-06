@@ -41,6 +41,7 @@ import {
   getProjectById,
   setLastActiveProjectId,
   updateProjectSnapshot,
+  updateProjectStoryGraphCAS,
 } from '../services/indexedDbService';
 import { serializeProjectRecord, type ProjectSummaryData } from '../services/storageService';
 import { toProjectSummaryRecord } from '../services/indexedDb/projectSummary';
@@ -63,6 +64,8 @@ import type { TeamEpisodeTarget } from '../types/agentTeam';
 import { sha256BytesHex } from '../services/mediaDataUrl';
 import { episodeTeamSourceSnapshot } from '../services/seriesCreativeService';
 import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
+import type { StoryGraph, StoryGraphPatch } from '../types/storyGraph';
+import { normalizeStoryGraph } from '../services/storyGraphService';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
 let activeProjectMetadataWrite: Promise<void> = Promise.resolve();
@@ -85,6 +88,13 @@ export interface EpisodeCreativeWriteOptions {
 }
 
 export type EpisodeAssetRosterWriteOptions = Pick<EpisodeCreativeWriteOptions, 'allowSameSeries' | 'assertCurrent' | 'assertCommitCurrent'>;
+
+export interface StoryGraphWriteOptions {
+  expectedExchangeEpoch?: number;
+  signal?: AbortSignal;
+  /** 只由主窗口宿主验证编辑会话，不进入持久化或跨窗消息。 */
+  assertCurrent?: () => void;
+}
 
 async function serializeEpisodeCreativeWrite<T>(episodeId: string, write: () => Promise<T>): Promise<T> {
   const previous = episodeCreativeWrites.get(episodeId) ?? Promise.resolve();
@@ -613,7 +623,9 @@ export interface ProjectSlice {
   /** 新增一集并切过去。 */
   addEpisode: (name?: string) => Promise<string | undefined>;
   /** 写入当前剧集的原著与剧本；当前项目还不是剧集时先转成剧集。 */
-  updateSeriesInfo: (info: ProjectSeriesInfo) => Promise<boolean>;
+  updateSeriesInfo: (info: Omit<ProjectSeriesInfo, 'storyGraph'>) => Promise<boolean>;
+  updateStoryGraph: (seriesId: string, patch: StoryGraphPatch, expectedRevision: number,
+    guards?: StoryGraphWriteOptions) => Promise<StoryGraph>;
   /** 写入某一集的大纲。兼容既有 Agent 工具。 */
   updateEpisodeOutline: (episodeId: string, outline: string) => Promise<boolean>;
   /** 原子更新某一集的大纲、正文和创作要点。 */
@@ -1378,11 +1390,57 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }
     const seriesId = await ensureCurrentSeriesId(set, get);
     if (!seriesId) return false;
-    const series = get().projects.find((item) => item.id === seriesId);
-    return patchProjectRecord(set, get, seriesId, {
-      series: { ...series?.series, ...info },
+    if ('storyGraph' in info) throw new Error('故事关系图必须通过条件保存更新');
+    return serializeEpisodeCreativeWrite(seriesId, () => {
+      const series = get().projects.find((item) => item.id === seriesId);
+      return patchProjectRecord(set, get, seriesId, { series: { ...series?.series, ...info } });
     });
   },
+
+  updateStoryGraph: async (seriesId, patch, expectedRevision, guards) => serializeEpisodeCreativeWrite(seriesId, async () => {
+    const initial = get();
+    const canvasProjectId = initial.currentProjectId;
+    const owner = initial.projects.find((item) => item.id === seriesId);
+    const epoch = guards?.expectedExchangeEpoch ?? owner?.exchangeEpoch ?? 0;
+    const oldGraph = owner?.series?.storyGraph ? normalizeStoryGraph(owner.series.storyGraph) : undefined;
+    const assertCurrent = (next?: StoryGraph) => {
+      guards?.signal?.throwIfAborted(); guards?.assertCurrent?.();
+      const state = get(), latest = state.projects.find((item) => item.id === seriesId);
+      if (!latest || latest.parentId || state.projectLoadStatus !== 'ready'
+        || state.currentProjectId !== canvasProjectId || !canvasProjectId
+        || seriesOwnerId(state.projects, canvasProjectId) !== seriesId
+        || state.switchingProjectName !== null || state.isCreatingProject || state.isReturningToStartPage
+        || (latest.exchangeEpoch ?? 0) !== epoch) throw new Error('故事图所属剧集或编辑会话已变化，请重新打开');
+      if (!next) return;
+      const episodeIds = new Set(state.projects.filter((item) => item.parentId === seriesId).map((item) => item.id));
+      const previousReferences = new Set((oldGraph ? [...oldGraph.nodes, ...oldGraph.edges] : [])
+        .flatMap((item) => [...item.episodeIds, ...item.evidence.map((evidence) => evidence.episodeId),
+          ...('fromEpisodeId' in item && typeof item.fromEpisodeId === 'string' ? [item.fromEpisodeId] : []),
+          ...('toEpisodeId' in item && typeof item.toEpisodeId === 'string' ? [item.toEpisodeId] : [])]));
+      for (const item of [...next.nodes, ...next.edges]) {
+        const references = [...item.episodeIds, ...item.evidence.map((evidence) => evidence.episodeId),
+          ...('fromEpisodeId' in item && typeof item.fromEpisodeId === 'string' ? [item.fromEpisodeId] : []),
+          ...('toEpisodeId' in item && typeof item.toEpisodeId === 'string' ? [item.toEpisodeId] : [])];
+        if (references.some((id) => !episodeIds.has(id) && !previousReferences.has(id))) throw new Error('故事图只能引用本剧分集');
+      }
+      for (const node of next.nodes) if (node.asset) {
+        const assets = node.asset.kind === 'character' ? state.dramaAssets.characters
+          : node.asset.kind === 'scene' ? state.dramaAssets.scenes : state.dramaAssets.props;
+        if (!assets.some((item) => item.id === node.asset!.id)
+          && !oldGraph?.nodes.some((item) => item.asset?.kind === node.asset!.kind && item.asset.id === node.asset!.id)) {
+          throw new Error('故事图绑定的正式资产不属于本剧');
+        }
+      }
+    };
+    assertCurrent();
+    await waitForProjectSaveQueue(seriesId);
+    assertCurrent();
+    const graph = await updateProjectStoryGraphCAS(seriesId, patch, expectedRevision, epoch, assertCurrent);
+    // 数据库提交已成功；仅合并仍属当前归档代际的元数据，不覆盖较新的原稿。
+    set((state) => ({ projects: state.projects.map((item) => item.id === seriesId && (item.exchangeEpoch ?? 0) === epoch
+      ? { ...item, updatedAt: Date.now(), series: { ...item.series, storyGraph: graph } } : item) }));
+    return graph;
+  }),
 
   updateEpisodeOutline: async (episodeId, outline) => get().updateEpisodeCreative(episodeId, { outline }),
 

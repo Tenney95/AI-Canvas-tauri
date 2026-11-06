@@ -5,6 +5,7 @@ import { captureExchangeSnapshot } from '../../src/services/projectExchangeDomai
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectArchiveChatPayload } from '../../src/services/projectTransferService';
 import type { ProjectExchangeState } from '../../src/types/projectExchange';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 const project = (data: Record<string, unknown> = {}): ProjectSaveData => ({ id: 'root', name: '项目',
   nodes: [{ id: 'node', type: 'source-image', position: { x: 0, y: 0 }, data }], edges: [], groups: [], createdAt: 1, updatedAt: 1 });
@@ -18,6 +19,14 @@ describe('项目归档输入与导出边界', () => {
       workbenchTarget: { seriesId: 'another-series', episodeId: 'episode-b' } }] })).toThrow('目标无效');
   });
 
+  it('正式故事图可携带原文摘录，但坏图不能通过旧归档清理变成可信图', () => {
+    const graph = { ...createEmptyStoryGraph('graph'), revision: 4 };
+    const record = { ...project(), series: { script: '原文', storyGraph: graph } };
+    expect(sanitizeLegacyArchiveProject(record).series?.storyGraph).toEqual(graph);
+    const invalid = { ...record, series: { storyGraph: { ...graph, runtime: {} } } };
+    expect(() => sanitizeLegacyArchiveProject(invalid)).toThrow();
+    expect(() => sanitizeLegacyArchiveProject({ ...record, parentId: 'other' })).toThrow('分集归档');
+  });
   it('扫描范围采用活身份和当前引用，排除恢复点、失败残留及删除墓碑', () => {
     const files = ['imports/old/附件.txt', 'imports/deleted/旧图.png'].map((path) => ({ path, bytes: 1, sha256: 'a'.repeat(64) }));
     const baseline = captureExchangeSnapshot([project()], files.map((file) => ({ ...file, path: file.path.replace('imports/', '原稿/') })), null);

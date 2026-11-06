@@ -87,13 +87,13 @@ export function TeamGraphEditor({ value, onChange, disabled = false }: {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div className="ui-field">
               <label className="ui-label" htmlFor={`${id}-${node.id}-role`}>{t('负责人')}</label>
-              <Select<TeamRoleId> id={`${id}-${node.id}-role`} className="w-full" value={node.roleId} disabled={disabled}
+              <Select<TeamRoleId> id={`${id}-${node.id}-role`} size="sm" className="w-full" value={node.roleId} disabled={disabled}
                 options={ROLES.map((role) => ({ value: role, label: t(TEAM_ROLE_LABELS[role]) }))}
                 onChange={(roleId) => update(node.id, { roleId, modelId: undefined, kind: ROLE_KINDS[roleId].includes(node.kind) ? node.kind : ROLE_KINDS[roleId][0] })} />
             </div>
             <div className="ui-field">
               <label className="ui-label" htmlFor={`${id}-${node.id}-kind`}>{t('产物类型')}</label>
-              <Select<TeamGraphNode['kind']> id={`${id}-${node.id}-kind`} className="w-full" value={node.kind} disabled={disabled}
+              <Select<TeamGraphNode['kind']> id={`${id}-${node.id}-kind`} size="sm" className="w-full" value={node.kind} disabled={disabled}
                 options={ROLE_KINDS[node.roleId].map((kind) => ({ value: kind, label: t(GRAPH_KIND_LABELS[kind]) }))}
                 onChange={(kind) => update(node.id, { kind })} />
             </div>
@@ -118,7 +118,7 @@ export function TeamGraphEditor({ value, onChange, disabled = false }: {
           </fieldset>
           <div className="ui-field">
             <label className="ui-label" htmlFor={`${id}-${node.id}-source`}>{t('正文来源')}</label>
-            <Select id={`${id}-${node.id}-source`} className="w-full" value={node.sourceTaskId ?? ''} disabled={disabled}
+            <Select id={`${id}-${node.id}-source`} size="sm" className="w-full" value={node.sourceTaskId ?? ''} disabled={disabled}
               options={[{ value: '', label: t('原始任务材料') }, ...sourceOptions.map((entry) => ({ value: entry.id, label: entry.title, disabled: !ancestors.has(entry.id) }))]}
               onChange={(sourceTaskId) => update(node.id, { sourceTaskId: sourceTaskId || undefined })} />
           </div>
@@ -127,7 +127,7 @@ export function TeamGraphEditor({ value, onChange, disabled = false }: {
     </ol>
     <div className="ui-field">
       <label className="ui-label" htmlFor={`${id}-final`}>{t('最终交付任务')}</label>
-      <Select id={`${id}-final`} className="w-full" value={value.finalTaskId} disabled={disabled}
+      <Select id={`${id}-final`} size="sm" className="w-full" value={value.finalTaskId} disabled={disabled}
         options={value.nodes.map((node) => ({ value: node.id, label: node.title, disabled: node.kind === 'review' }))}
         onChange={(finalTaskId) => onChange({ ...value, finalTaskId })} />
     </div>
@@ -234,7 +234,7 @@ function TeamExecutionPicker({
         <div className="min-h-0 space-y-3 overflow-y-auto p-3 text-xs text-canvas-text">
           <div className="ui-field">
             <label className="ui-label" htmlFor={templateInputId}>{t('团队模板')}</label>
-            <Select<TeamTemplateId> id={templateInputId} className="w-full" value={templateId} disabled={saving}
+            <Select<TeamTemplateId> id={templateInputId} size="sm" className="w-full" value={templateId} disabled={saving}
               onChange={(next) => { setTemplateId(next); setDraft((current) => ({ ...current, graph: createTemplateTeamGraph(next) })); }} options={TEMPLATES.map((id) => ({ value: id, label: t(TEAM_TEMPLATE_LABELS[id]) }))} />
           </div>
           <p className="text-canvas-text-muted">{t('每个角色可选择不同模型；团队执行方式不会改变规划、协作或自主权限。')}</p>
@@ -247,10 +247,10 @@ function TeamExecutionPicker({
               const external = executor?.kind === 'external-agent' ? externalAgents.find((provider) => provider.id === executor.providerId) : undefined;
               const isGeneral = generalModels?.some((model) => model.id === selected && model.category === 'text');
               return (
-                <div key={role} className="ui-card flex min-w-0 flex-wrap items-center justify-between gap-2 p-2">
-                  <span className="shrink-0 text-xs font-medium">{t(TEAM_ROLE_LABELS[role])}</span>
-                  <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2" aria-label={t('{role}的模型', { role: t(TEAM_ROLE_LABELS[role]) })}>
-                    <Select className="min-w-0" aria-label={t('{role}的执行器', { role: t(TEAM_ROLE_LABELS[role]) })} value={executor?.kind === 'external-agent' ? executor.providerId : 'text-model'} disabled={saving}
+                <div key={role} className="ui-card min-w-0 p-2">
+                  <div className="flex min-w-0 items-center gap-2" aria-label={t('{role}的模型', { role: t(TEAM_ROLE_LABELS[role]) })}>
+                    <span className="w-16 shrink-0 truncate text-xs font-medium sm:w-24" title={t(TEAM_ROLE_LABELS[role])}>{t(TEAM_ROLE_LABELS[role])}</span>
+                    <Select size="sm" className="w-24 min-w-0 shrink-0 sm:w-28" aria-label={t('{role}的执行器', { role: t(TEAM_ROLE_LABELS[role]) })} value={executor?.kind === 'external-agent' ? executor.providerId : 'text-model'} disabled={saving}
                       options={[{ value: 'text-model', label: t('文本模型') }, ...externalAgents.map((provider) => ({ value: provider.id, label: provider.name, disabled: !provider.available })),
                         ...(executor?.kind === 'external-agent' && !external ? [{ value: executor.providerId, label: t('Codex 执行器不可用'), disabled: true }] : [])]}
                       onChange={(selectedExecutor) => setDraft((current) => {
@@ -258,15 +258,17 @@ function TeamExecutionPicker({
                           : { kind: 'external-agent', providerId: 'codex-app-server', modelId: '' };
                         return { ...current, roleExecutors: { ...current.roleExecutors, [role]: target } };
                       })} />
-                    {executor?.kind === 'external-agent' ? <Select className="min-w-0" aria-label={t('{role}的外部模型', { role: t(TEAM_ROLE_LABELS[role]) })}
-                      value={executor.modelId} disabled={saving || !external?.available} placeholder={t('选择外部模型')}
-                      options={[{ value: '', label: t('选择外部模型'), disabled: true }, ...(external?.models ?? []).map((model) => ({ value: model.id, label: model.name })),
-                        ...(executor.modelId && !external?.models.some((model) => model.id === executor.modelId) ? [{ value: executor.modelId, label: executor.modelId, disabled: true }] : [])]}
-                      onChange={(modelId) => setDraft((current) => ({ ...current, roleExecutors: { ...current.roleExecutors, [role]: { kind: 'external-agent', providerId: 'codex-app-server', modelId } } }))} />
-                      : <ModelSelector nodeType="ai-text" persistPreference={false} theme={theme} selectedModel={isGeneral ? `general/${selected}` : selected}
-                      configuredGroupsOverride={modelGroups} generalModelsOverride={modelGroups ? [] : generalModels}
-                      groupAvailability={groupAvailability} disabled={saving}
-                      onSelect={(model) => setDraft((current) => ({ ...current, roles: { ...current.roles, [role]: model.value }, roleExecutors: { ...current.roleExecutors, [role]: { kind: 'text-model', modelId: model.value } } }))} />}
+                    <div className="min-w-0 flex-1">
+                      {executor?.kind === 'external-agent' ? <Select size="sm" className="w-full min-w-0" aria-label={t('{role}的外部模型', { role: t(TEAM_ROLE_LABELS[role]) })}
+                        value={executor.modelId} disabled={saving || !external?.available} placeholder={t('选择外部模型')}
+                        options={[{ value: '', label: t('选择外部模型'), disabled: true }, ...(external?.models ?? []).map((model) => ({ value: model.id, label: model.name })),
+                          ...(executor.modelId && !external?.models.some((model) => model.id === executor.modelId) ? [{ value: executor.modelId, label: executor.modelId, disabled: true }] : [])]}
+                        onChange={(modelId) => setDraft((current) => ({ ...current, roleExecutors: { ...current.roleExecutors, [role]: { kind: 'external-agent', providerId: 'codex-app-server', modelId } } }))} />
+                        : <ModelSelector size="sm" nodeType="ai-text" persistPreference={false} theme={theme} selectedModel={isGeneral ? `general/${selected}` : selected}
+                        configuredGroupsOverride={modelGroups} generalModelsOverride={modelGroups ? [] : generalModels}
+                        groupAvailability={groupAvailability} disabled={saving}
+                        onSelect={(model) => setDraft((current) => ({ ...current, roles: { ...current.roles, [role]: model.value }, roleExecutors: { ...current.roleExecutors, [role]: { kind: 'text-model', modelId: model.value } } }))} />}
+                    </div>
                   </div>
                 </div>
               );
@@ -281,7 +283,7 @@ function TeamExecutionPicker({
             ] as const).map(([key, label, min, max, step]) => (
               <div key={key} className="ui-field">
                 <label className="ui-label" htmlFor={`${templateInputId}-${key}`}>{t(label)}</label>
-                <NumberStepper id={`${templateInputId}-${key}`} className="w-full" aria-label={t(label)}
+                <NumberStepper id={`${templateInputId}-${key}`} size="sm" className="w-full" aria-label={t(label)}
                   min={min} max={max} step={step} value={draft[key]} disabled={saving}
                   onChange={(value) => setDraft((current) => ({ ...current, [key]: value }))} />
               </div>
@@ -291,8 +293,8 @@ function TeamExecutionPicker({
           {error && <p role="alert" className="break-words text-danger-light">{error}</p>}
         </div>
         <footer className="flex shrink-0 justify-end gap-2 border-t border-canvas-border p-3">
-          <button type="button" className="ui-btn ui-btn--ghost" disabled={saving} onClick={() => setOpen(false)}>{t('取消')}</button>
-          <button type="button" className="ui-btn ui-btn--primary" disabled={saving} onClick={() => { void save(); }}>{saving ? t('保存中…') : t('保存团队配置')}</button>
+          <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={saving} onClick={() => setOpen(false)}>{t('取消')}</button>
+          <button type="button" className="ui-btn ui-btn--sm ui-btn--primary" disabled={saving} onClick={() => { void save(); }}>{saving ? t('保存中…') : t('保存团队配置')}</button>
         </footer>
       </ModalOverlay>
     </div>

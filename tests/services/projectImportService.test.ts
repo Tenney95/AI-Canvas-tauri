@@ -2,6 +2,7 @@
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectSaveData } from '../../src/services/storageService';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import type { ProjectArchiveChatPayload } from '../../src/services/projectTransferService';
 import type { ProjectExchangeRevision, ProjectExchangeState } from '../../src/types/projectExchange';
 import type { ProjectImportCommit } from '../../src/services/indexedDb/projectImportRepository';
@@ -106,6 +107,19 @@ describe('项目导入历史追加编排', () => {
     expect(mocks.commit).not.toHaveBeenCalled();
   });
 
+  it('新版接收端重建故事图本机版本，证据绑定接收端分集', async () => {
+    const source = project('source'), episode = project('episode', source.id), graph = createEmptyStoryGraph('graph');
+    graph.revision = 90;
+    graph.nodes.push({ id: 'event', kind: 'event', label: '揭露', description: '', aliases: [], episodeIds: [episode.id],
+      evidence: [], origin: 'manual', certainty: 'explicit' });
+    source.series = { storyGraph: graph };
+    const session = await prepareArchive([source, episode], [emptyChat(), emptyChat()]);
+    await applyProjectImport(session, null, {}, { appendChat: false, appendMemories: false });
+    const { records } = committed();
+    expect(records[0].series!.storyGraph!.revision).toBe(1);
+    expect(records[0].series!.storyGraph!.nodes[0].episodeIds).toEqual([records[1].id]);
+    expect(records[1].id).not.toBe(episode.id);
+  });
   it('关闭预览立即失效，物理清理失败后重试仍会删除，成功后不再重复删除', async () => {
     const source = project('source'), session = await prepareArchive([source], [emptyChat()]);
     mocks.delete.mockRejectedValueOnce(new Error('文件被占用'));

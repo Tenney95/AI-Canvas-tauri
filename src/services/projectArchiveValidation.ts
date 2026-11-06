@@ -3,6 +3,7 @@ import type { ProjectSaveData } from './storageService';
 import type { ProjectArchiveChatPayload } from './projectTransferService';
 import type { ProjectExchangeSnapshot, ProjectExchangeState } from '../types/projectExchange';
 import { safeExchangePath, type ArchiveAssetDigest } from './projectExchangeDomain';
+import { normalizeProjectSeriesInfo } from './indexedDb/projectSummary';
 import { normalizeConversationWorkbenchTarget } from './chat/workbenchConversationScope';
 
 const privateFields = new Set(['filepath', 'imagefilepath', 'directorcapturefilepaths', 'taskid', 'agenttaskid',
@@ -11,6 +12,8 @@ const privateFields = new Set(['filepath', 'imagefilepath', 'directorcapturefile
   'videotaskstate', 'mediataskstate', 'mediataskstage', 'runninghubstage', 'workflowapistage', 'generationstartedat']);
 
 export function sanitizeLegacyArchiveProject(record: ProjectSaveData): ProjectSaveData {
+  if (record.series !== undefined) record = { ...record, series: normalizeProjectSeriesInfo(record.series) };
+  if (record.parentId && record.series?.storyGraph) throw new Error('分集归档不能持有所属剧集的故事图');
   let count = 0;
   const visit = (value: unknown, key = '', depth = 0): unknown => {
     if (++count > 1_000_000 || depth > 32) throw new Error('项目记录嵌套或数量超过上限');

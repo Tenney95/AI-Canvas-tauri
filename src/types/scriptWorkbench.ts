@@ -8,8 +8,10 @@ import type { DramaAsset, DramaAssetKind } from './dramaAssets';
 import type { CreativeAnalysis, CreativeFieldId, EpisodeCreativeAction } from '../services/seriesCreativeService';
 import type { EpisodeAssetPanelAction, EpisodeAssetPanelSnapshot } from './episodeAssets';
 import type { SeriesSourcePart, SeriesSourceReference } from './seriesSource';
+import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
+  StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
 
-export type WorkbenchEditorTab = 'outline' | 'script' | 'creative' | 'characters' | 'props';
+export type WorkbenchEditorTab = 'outline' | 'script' | 'creative' | 'characters' | 'props' | 'story-graph';
 export type WorkbenchPendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
 export interface WorkbenchCreativeDraft {
   task: string; coreConflict: string; openingHook: string; reversal: string; endingHook: string;
@@ -21,7 +23,7 @@ export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; dr
 
 export interface ScriptWorkbenchSnapshot {
   sessionId: string; revision: number; acceptedEditSequence: number; draftVersion: number;
-  series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean } | null;
+  series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; exchangeEpoch?: number } | null;
   episodes: Array<{ id: string; name: string; scriptLength: number; hasOutline: boolean }>;
   currentEpisode: WorkbenchEpisode | null;
   canvasProjectId: string | null;
@@ -40,6 +42,12 @@ export interface ScriptWorkbenchSnapshot {
   episodeAgentTasks?: Array<Pick<AgentTask, 'id' | 'status'> & { title: string; activity: string }>;
   creationProfiles?: CreationProfileOption[];
   externalAgents?: ExternalAgentDescriptor[];
+  storyGraphView?: StoryGraphView;
+  storyGraphFilter?: StoryGraphFilter;
+  storyGraphAssets?: StoryGraphAssetOption[];
+  storyGraphExtraction?: StoryGraphExtractionState;
+  storyGraphEditorOpen?: boolean;
+  sourceLocation?: StoryGraphEvidence & { sequence: number };
   theme?: 'dark' | 'light'; language?: AppConfig['language']; appearance: AppearanceUiSnapshot;
   detached: boolean; openingWindow: boolean;
 }
@@ -69,6 +77,15 @@ export type ScriptWorkbenchAction =
   | { type: 'preview_creation_profile'; profile: CreationProfileOption }
   | { type: 'apply_creation_profile'; selection: CreationProfileSelection | null }
   | { type: 'refresh_external_agents' }
+  | { type: 'story_graph_filter'; filter: StoryGraphFilter }
+  | { type: 'story_graph_detail'; selection: StoryGraphSelection }
+  | { type: 'story_graph_patch'; patch: StoryGraphPatch; expectedRevision: number }
+  | { type: 'story_graph_resolve_evidence'; query: StoryGraphEvidenceQuery }
+  | { type: 'story_graph_locate'; evidence: StoryGraphEvidence }
+  | { type: 'story_graph_extract'; request: StoryGraphExtractRequest }
+  | { type: 'story_graph_cancel'; runId?: string } | { type: 'story_graph_discard'; candidateId?: string }
+  | { type: 'story_graph_adopt'; candidateId: string; selection: StoryGraphCandidateSelection }
+  | { type: 'story_graph_editor'; open: boolean; graphId: string; expectedRevision: number; epoch: number }
   | { type: 'edit_team_graph'; taskId: string; graph: TeamGraphDefinition; expected: { revision: number; boardRevision: number } }
   | { type: 'resolve_dispatch'; taskId: string; dispatchId: string; decision: 'verified_completed' | 'abandoned' }
   | { type: 'team_control'; taskId: string; action: 'pause' | 'stop' | 'resume' | 'view' | 'apply' | 'restore' | 'reconcile' }

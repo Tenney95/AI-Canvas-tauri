@@ -2,6 +2,7 @@
  * projectArchiveSerialization — 回归测试：project archive background serialization。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import type {
   ProjectArchiveJsonEntry,
   ProjectArchiveSerializationResponse,
@@ -44,6 +45,20 @@ afterEach(() => {
 });
 
 describe('project archive background serialization', () => {
+  it('拒绝夹带候选或运行态的故事图，合法正式图仍交给固定 Worker', async () => {
+    const { serializeProjectArchiveEntries } = await import('../../src/services/projectArchiveSerialization');
+    const graph = createEmptyStoryGraph('graph');
+    await expect(serializeProjectArchiveEntries([{ path: 'project.json', value: {
+      id: 'series', series: { storyGraph: { ...graph, candidate: {} } },
+    } }])).rejects.toThrow();
+    expect(SerializationWorker.instances).toHaveLength(0);
+    const entries = [{ path: 'project.json', value: { id: 'series', series: { storyGraph: graph } } }];
+    const pending = serializeProjectArchiveEntries(entries);
+    const worker = SerializationWorker.instances[0];
+    expect(worker.postMessage.mock.calls[0][0][0].value).toEqual(entries[0].value);
+    worker.emit({ ok: true, entries: [{ path: 'project.json', content: JSON.stringify(entries[0].value) }] });
+    await expect(pending).resolves.toHaveLength(1);
+  });
   it('sends structured entries to the fixed module worker and releases it after a result', async () => {
     const { serializeProjectArchiveEntries } = await import('../../src/services/projectArchiveSerialization');
     const entries = [{ path: 'project.json', value: { id: 'project', nodes: [{ text: '中文\n正文' }] } }];

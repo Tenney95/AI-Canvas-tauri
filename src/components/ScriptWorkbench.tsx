@@ -1,7 +1,7 @@
 /**
  * ScriptWorkbench — 提供剧本创作工作台界面与交互。
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EpisodeCreativeInfo } from '../types';
@@ -20,6 +20,7 @@ import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import NumberStepper from './shared/NumberStepper';
+import { LazyLoadBoundary, LazyLoadFallback } from './shared/LazyLoadBoundary';
 import { createEpisodeShotlist } from '../services/shotlistService';
 import SeriesSourceBrowser, { type SeriesSourceBrowserRemote } from './SeriesSourceBrowser';
 import type { DramaAssetKind } from '../types/dramaAssets';
@@ -60,6 +61,16 @@ import { buildSeriesChapterPrompt, readSeriesChapter, readSeriesSource } from '.
 import type { SeriesSourceSnapshot } from '../types/seriesSource';
 import type { ScriptWorkbenchAction, ScriptWorkbenchDispatch, ScriptWorkbenchRequest, ScriptWorkbenchSnapshot,
   WorkbenchCreativeDraft, WorkbenchDraft, WorkbenchEditorTab, WorkbenchPendingAction } from '../types/scriptWorkbench';
+import type { StoryGraphAssetOption, StoryGraphCandidates, StoryGraphDetail, StoryGraphEvidence, StoryGraphExtractionState,
+  StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSource } from '../types/storyGraph';
+import { STORY_GRAPH_EDGE_KINDS, STORY_GRAPH_NODE_KINDS } from '../types/storyGraph';
+import { applyStoryGraphPatch, createEmptyStoryGraph, hashStoryGraphSource, projectStoryGraphView,
+  validateStoryGraphEvidence } from '../services/storyGraphService';
+import { buildStoryGraphCandidatePatch, extractStoryGraphCandidates } from '../services/storyGraphExtractionService';
+import { resolveAssistantModel } from '../services/ai/assistantStream';
+import { sanitizeDomainText } from '../services/chat/subAgentMaterials';
+
+const StoryGraphPanel = lazy(() => import('./storyGraph/StoryGraphPanel'));
 
 type EditorTab = WorkbenchEditorTab;
 type PendingAction = WorkbenchPendingAction;
@@ -329,6 +340,25 @@ export default function ScriptWorkbench({
     && projectLoadStatus === 'ready' && !workspaceState.isCreatingProject && !workspaceState.isReturningToStartPage
     && workspaceState.switchingProjectName === null;
   const [activeTab, setActiveTab] = useState<EditorTab>('outline');
+  const [emptyStoryGraph] = useState(() => createEmptyStoryGraph());
+  const [graphFilter, setGraphFilter] = useState<StoryGraphFilter>();
+  const [graphExtraction, setGraphExtraction] = useState<StoryGraphExtractionState>({ status: 'idle', completed: 0, total: 0 });
+  const [sourceLocation, setSourceLocation] = useState<ScriptWorkbenchSnapshot['sourceLocation']>();
+  const sourceLocationSequence = useRef(0);
+  const graphController = useRef<AbortController | null>(null);
+  const graphRunId = useRef<string | undefined>(undefined);
+  const graphGeneration = useRef(0);
+  const graphCandidate = useRef<StoryGraphCandidates | null>(null);
+  const graphContinuation = useRef<{ request: StoryGraphExtractRequest; candidate: StoryGraphCandidates; epoch: number } | null>(null);
+  const graphEditorLease = useRef<{ graphId: string; epoch: number } | null>(null);
+  const graphWritesInFlight = useRef(0);
+  const [graphEditorOpen, setGraphEditorOpen] = useState(false);
+  useEffect(() => () => {
+    graphGeneration.current += 1;
+    graphController.current?.abort();
+    graphCandidate.current = null;
+    graphEditorLease.current = null;
+  }, [seriesId, isOpen]);
   const [draftsByEpisode, setDraftsByEpisode] = useState<Record<string, WorkbenchDraft>>(() => seriesId ? workbenchDraftCache.get(seriesId) ?? {} : {});
   const draftsRef = useRef<Record<string, WorkbenchDraft>>(draftsByEpisode);
   const draftVersions = useRef(new Map<string, number>());
@@ -450,14 +480,16 @@ export default function ScriptWorkbench({
     return registerEpisodeEditorSession(episodeId, () => {
       const episode = useAppStore.getState().projects.find((item) => item.id === episodeId);
       const local = draftsRef.current[episodeId];
-      return { dirty: !!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null)),
-        saving: savingEpisodeRef.current === episodeId };
+      return { dirty: (!!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null))) || graphEditorLease.current !== null,
+        saving: savingEpisodeRef.current === episodeId || graphWritesInFlight.current > 0 };
     }, () => {
       const version = draftVersions.current.get(episodeId) ?? 0;
+      const lease = graphEditorLease.current;
       return () => {
         if ((draftVersions.current.get(episodeId) ?? 0) === version && draftsRef.current[episodeId]) {
           replaceEpisodeDraft(episodeId, undefined);
         }
+        if (lease && graphEditorLease.current === lease) { graphEditorLease.current = null; setGraphEditorOpen(false); }
       };
     });
   }, [currentEpisodeId, isOpen, replaceEpisodeDraft]);
@@ -517,6 +549,15 @@ export default function ScriptWorkbench({
 
   const requestClose = () => {
     if (savingEpisodeRef.current || editorWriteLocked) return false;
+    if (graphEditorLease.current || graphWritesInFlight.current > 0) {
+      showToast(t('请先保存或关闭关系图详情，再离开工作台'), 'error');
+      setActiveTab('story-graph'); return false;
+    }
+    if (graphController.current || graphCandidate.current) {
+      showToast(t('请先取消关系图提取，或采纳、丢弃候选后关闭工作台'), 'error');
+      setActiveTab('story-graph');
+      return false;
+    }
     if (currentDirty()) { setPendingAction({ type: 'close' }); return false; }
     else {
       setSeriesAssetPreview(null);
@@ -527,10 +568,178 @@ export default function ScriptWorkbench({
 
   const requestEpisodeSwitch = (episodeId: string) => {
     if (savingEpisodeRef.current || editorWriteLocked) return;
+    if (graphEditorLease.current || graphWritesInFlight.current > 0) { showToast(t('请先保存或关闭关系图详情，再切换分集'), 'error'); return; }
     if (episodeId === selectedEpisodeRef.current || !episodes.some((episode) => episode.id === episodeId)) return;
     setSeriesAssetPreview(null);
     if (currentDirty()) setPendingAction({ type: 'switch', episodeId });
     else { selectedEpisodeRef.current = episodeId; setSelectedEpisodeId(episodeId); }
+  };
+
+  const readGraphContext = () => {
+    const state = useAppStore.getState();
+    const owner = state.projects.find((project) => project.id === seriesId);
+    if (!isOpen || !owner || !state.currentProjectId || state.projectLoadStatus !== 'ready'
+      || state.isCreatingProject || state.isReturningToStartPage || state.switchingProjectName !== null
+      || seriesOwnerId(state.projects, state.currentProjectId) !== seriesId) {
+      throw new Error(t('关系图所在剧集已变化，请回到原剧集重试'));
+    }
+    return { state, owner, graph: owner.series?.storyGraph ?? createEmptyStoryGraph(`${emptyStoryGraph.id}-${owner.exchangeEpoch ?? 0}`) };
+  };
+  const readGraphSource = (episodeId: string, part: 'outline' | 'script') => {
+    const { state, owner } = readGraphContext();
+    if (part !== 'outline' && part !== 'script') throw new Error(t('关系图来源类型无效'));
+    const episode = listEpisodes(state.projects, owner.id).find((entry) => entry.id === episodeId);
+    if (!episode) throw new Error(t('关系图来源分集已删除或不属于本剧'));
+    return { episode, text: (part === 'outline' ? episode.episodeOutline : episode.episodeScript) ?? '' };
+  };
+  const modelFingerprint = async (modelId: string) => {
+    const { state } = readGraphContext();
+    const model = buildChatModelCatalog(state).assistantModelGroups.flatMap((group) => group.models).find((item) => item.value === modelId);
+    const resolved = resolveAssistantModel(seriesId, modelId);
+    if (!model || model.provider === 'comfyui' || !resolved) throw new Error(t('请选择可用的文本模型'));
+    const fingerprint = await hashStoryGraphSource(JSON.stringify(resolved));
+    readGraphContext();
+    if (!configValuesEqual(resolved, resolveAssistantModel(seriesId, modelId))) throw new Error(t('文本模型配置已变化，请重新选择'));
+    return { model, fingerprint };
+  };
+  const graphScopeGuard = (epoch: number, selectedId: string | null) => {
+    const { owner } = readGraphContext();
+    if ((owner.exchangeEpoch ?? 0) !== epoch || selectedEpisodeRef.current !== selectedId) {
+      throw new Error(t('关系图会话或分集已变化，请核对后重试'));
+    }
+  };
+  const validateGraphPatch = async (patch: StoryGraphPatch) => {
+    const { state, owner, graph } = readGraphContext();
+    const episodeIds = new Set(listEpisodes(state.projects, owner.id).map((entry) => entry.id));
+    const checkedSources: Array<Pick<StoryGraphSource, 'episodeId' | 'part' | 'text'>> = [];
+    for (const item of [...(patch.upsertNodes ?? []), ...(patch.upsertEdges ?? [])]) {
+      const previous = 'source' in item ? graph.edges.find((edge) => edge.id === item.id) : graph.nodes.find((node) => node.id === item.id);
+      if (item.episodeIds.some((id) => !episodeIds.has(id) && !previous?.episodeIds.includes(id))) throw new Error(t('关系图引用了本剧以外的分集'));
+      if ('source' in item) {
+        for (const key of ['fromEpisodeId', 'toEpisodeId'] as const) {
+          const oldValue = previous && 'source' in previous ? previous[key] : undefined;
+          if (item[key] && !episodeIds.has(item[key]) && item[key] !== oldValue) throw new Error(t('关系图引用了本剧以外的分集'));
+        }
+      }
+      for (const evidence of item.evidence) {
+        if (previous?.evidence.some((entry) => configValuesEqual(entry, evidence))) continue;
+        const { text } = readGraphSource(evidence.episodeId, evidence.part);
+        const source: StoryGraphSource = { episodeId: evidence.episodeId, part: evidence.part, text, sourceHash: await hashStoryGraphSource(text) };
+        if (!validateStoryGraphEvidence(evidence, source)) throw new Error(t('原文证据已变化，请重新绑定'));
+        checkedSources.push(source);
+      }
+      if ('asset' in item && item.asset) {
+        const oldAsset = previous && 'asset' in previous ? previous.asset : undefined;
+        if (!configValuesEqual(oldAsset, item.asset)) {
+          const pool = item.asset.kind === 'character' ? state.dramaAssets.characters : item.asset.kind === 'scene' ? state.dramaAssets.scenes : state.dramaAssets.props;
+          if (!pool.some((asset) => asset.id === item.asset?.id)) throw new Error(t('绑定的正式资产已删除或不属于本剧'));
+        }
+      }
+    }
+    return () => {
+      for (const source of checkedSources) {
+        if (readGraphSource(source.episodeId, source.part).text !== source.text) throw new Error(t('原文证据已变化，请重新绑定'));
+      }
+    };
+  };
+  const commitGraphPatch = async (patch: StoryGraphPatch, expectedRevision: number, assertCandidate?: () => void) => {
+    const { owner, graph } = readGraphContext();
+    const epoch = owner.exchangeEpoch ?? 0;
+    const selectedId = selectedEpisodeRef.current;
+    const lease = graphEditorLease.current;
+    if (lease && (lease.graphId !== graph.id || lease.epoch !== epoch)) throw new Error(t('关系图版本已变化，请重新打开详情'));
+    if (patch.graphId && patch.graphId !== graph.id) throw new Error(t('关系图版本已变化，请刷新后重试'));
+    const boundedPatch = { ...patch, graphId: graph.id };
+    applyStoryGraphPatch(graph, boundedPatch, expectedRevision);
+    graphWritesInFlight.current += 1;
+    try {
+      const assertSources = await validateGraphPatch(boundedPatch);
+      graphScopeGuard(epoch, selectedId);
+      assertSources();
+      assertCandidate?.();
+      await useAppStore.getState().updateStoryGraph(owner.id, boundedPatch, expectedRevision, {
+        expectedExchangeEpoch: epoch, assertCurrent: () => { graphScopeGuard(epoch, selectedId); assertSources(); assertCandidate?.(); },
+      });
+      return true;
+    } finally { graphWritesInFlight.current -= 1; }
+  };
+  const startGraphExtraction = async (input: StoryGraphExtractRequest) => {
+    if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情'));
+    if (graphController.current || graphCandidate.current) throw new Error(t('请先取消提取，或采纳、丢弃当前候选'));
+    const { owner, graph } = readGraphContext();
+    if (!Array.isArray(input.episodeIds) || input.episodeIds.length < 1 || input.episodeIds.length > 100
+      || !Array.isArray(input.parts) || input.parts.length < 1 || input.parts.length > 2
+      || input.parts.some((part) => part !== 'outline' && part !== 'script')
+      || typeof input.modelId !== 'string' || input.modelId.length > 256
+      || (input.startChunk !== undefined && (!Number.isSafeInteger(input.startChunk) || input.startChunk < 0))) {
+      throw new Error(t('关系图提取参数无效'));
+    }
+    const epoch = owner.exchangeEpoch ?? 0;
+    const controller = new AbortController();
+    graphController.current = controller;
+    const generation = ++graphGeneration.current;
+    const runId = crypto.randomUUID();
+    graphRunId.current = runId;
+    const assertScope = () => {
+      controller.signal.throwIfAborted();
+      if (graphGeneration.current !== generation) throw new Error(t('关系图提取已取消'));
+      const current = readGraphContext();
+      if ((current.owner.exchangeEpoch ?? 0) !== epoch) throw new Error(t('关系图会话或分集已变化，请核对后重试'));
+      const live = current.graph;
+      if (live.id !== graph.id || live.revision !== graph.revision) throw new Error(t('关系图版本已变化，请重新提取'));
+    };
+    setGraphExtraction({ status: 'running', runId, completed: 0, total: 0 });
+    try {
+      const capturedModel = await modelFingerprint(input.modelId);
+      assertScope();
+      const sources: StoryGraphSource[] = [];
+      for (const episodeId of [...new Set(input.episodeIds)]) {
+        for (const part of [...new Set(input.parts)]) {
+          const { episode, text } = readGraphSource(episodeId, part);
+          const local = draftsRef.current[episodeId];
+          if ((local && draftSignature(local) !== draftSignature(createDraft(episode))) || isEpisodeEditorWriteLocked(episodeId)
+            || hasUnsettledEpisodeEditorSession(episodeId)) throw new Error(t('请先保存所选分集的稿件，再提取关系图'));
+          if (text.trim()) sources.push({ episodeId, part, text, sourceHash: await hashStoryGraphSource(text) });
+          assertScope();
+        }
+      }
+      const bindings = sources.map(({ episodeId, part, sourceHash }) => ({ episodeId, part, sourceHash }));
+      const continuation = graphContinuation.current;
+      if ((input.startChunk ?? 0) > 0 && (!continuation || continuation.epoch !== epoch
+        || continuation.candidate.nextChunk !== input.startChunk || continuation.candidate.graphId !== graph.id
+        || continuation.candidate.modelFingerprint !== capturedModel.fingerprint
+        || !configValuesEqual(continuation.candidate.sourceBindings, bindings)
+        || continuation.request.modelId !== input.modelId)) throw new Error(t('续批材料或模型已变化，请从第一批重新提取'));
+      const assertCurrent = async () => {
+        assertScope();
+        for (const source of sources) if (readGraphSource(source.episodeId, source.part).text !== source.text) throw new Error(t('稿件来源已变化，请重新提取'));
+        if ((await modelFingerprint(input.modelId)).fingerprint !== capturedModel.fingerprint) throw new Error(t('文本模型配置已变化，请重新选择'));
+        assertScope();
+        for (const source of sources) if (readGraphSource(source.episodeId, source.part).text !== source.text) throw new Error(t('稿件来源已变化，请重新提取'));
+      };
+      await assertCurrent();
+      const candidate = await extractStoryGraphCandidates({ seriesId: owner.id, sessionId, graphId: graph.id,
+        graphRevision: graph.revision, model: { model: capturedModel.model.value, provider: capturedModel.model.provider, fingerprint: capturedModel.fingerprint },
+        sources, startChunk: input.startChunk }, { signal: controller.signal, assertCurrent,
+        onProgress: (progress) => {
+          if (graphGeneration.current === generation) setGraphExtraction({ status: 'running', runId, completed: progress.completedCalls, total: progress.totalCalls });
+        },
+      });
+      await assertCurrent();
+      graphCandidate.current = candidate;
+      graphContinuation.current = { request: structuredClone(input), candidate, epoch };
+      setGraphExtraction({ status: 'ready', runId, completed: candidate.callsUsed, total: candidate.callsUsed, candidate,
+        ...(candidate.hasMore && candidate.nextChunk !== undefined ? { continuation: { request: structuredClone(input), nextChunk: candidate.nextChunk, totalChunks: candidate.totalChunks } } : {}) });
+    } catch (cause) {
+      const error = sanitizeDomainText(cause instanceof Error ? cause.message : t('关系图提取失败')).slice(0, 300);
+      if (graphGeneration.current === generation) setGraphExtraction((previous) => ({ ...previous,
+        status: controller.signal.aborted ? 'cancelled' : 'failed', runId, error: controller.signal.aborted ? undefined : error }));
+      if (controller.signal.aborted) return false;
+      throw new Error(error);
+    } finally {
+      if (graphController.current === controller) graphController.current = null;
+    }
+    return true;
   };
 
   const startAutomaticCreativeRequest = async (content: string) => {
@@ -686,10 +895,21 @@ export default function ScriptWorkbench({
     }
   };
 
+  const effectiveGraphFilter = useMemo<StoryGraphFilter>(() => graphFilter ?? { episodeIds: currentEpisodeId ? [currentEpisodeId] : [] }, [graphFilter, currentEpisodeId]);
+  const liveStoryGraph = useMemo(() => series?.series?.storyGraph
+    ?? createEmptyStoryGraph(`${emptyStoryGraph.id}-${series?.exchangeEpoch ?? 0}`), [series?.series?.storyGraph, series?.exchangeEpoch, emptyStoryGraph.id]);
+  const graphView = useMemo(() => activeTab === 'story-graph'
+    ? projectStoryGraphView(liveStoryGraph, effectiveGraphFilter) : undefined, [activeTab, liveStoryGraph, effectiveGraphFilter]);
+  const graphAssets = useMemo<StoryGraphAssetOption[]>(() => [
+    ...dramaAssets.characters.map((asset) => ({ kind: 'character' as const, id: asset.id, label: asset.name })),
+    ...dramaAssets.scenes.map((asset) => ({ kind: 'scene' as const, id: asset.id, label: asset.name })),
+    ...dramaAssets.props.map((asset) => ({ kind: 'prop' as const, id: asset.id, label: asset.name })),
+  ].slice(0, 500), [dramaAssets]);
+
   const snapshot: ScriptWorkbenchSnapshot = {
     sessionId, revision: 0, acceptedEditSequence,
     draftVersion: currentEpisodeId ? draftVersionByEpisode[currentEpisodeId] ?? 0 : 0,
-    series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork } : null,
+    series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork, exchangeEpoch: series.exchangeEpoch ?? 0 } : null,
     episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
     currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
       episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript,
@@ -704,6 +924,9 @@ export default function ScriptWorkbench({
     assetPanel: currentEpisode && (activeTab === 'characters' || activeTab === 'props') ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
     executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks, episodeAgentTasks,
     creationProfiles: creationProfileOptions(), externalAgents: externalCatalog,
+    storyGraphView: graphView, storyGraphFilter: effectiveGraphFilter,
+    storyGraphAssets: graphView && contextReady ? graphAssets : undefined,
+    storyGraphExtraction: graphView ? graphExtraction : undefined, storyGraphEditorOpen: graphEditorOpen, sourceLocation,
     theme: resolveAppearanceMode(config.appearance?.mode ?? config.theme), language: config.language,
     appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
     detached, openingWindow,
@@ -731,23 +954,28 @@ export default function ScriptWorkbench({
         setAcceptedEditSequence(handoff.sequence);
       }
     }
-    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview'];
+    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor'];
     if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
     if ('taskId' in action && !(action.type === 'view_agent_task' ? episodeAgentTasks : episodeTeamTasks)
       .some((task) => task.id === action.taskId)) throw new Error(t('任务不属于当前分集'));
     switch (action.type) {
       case 'flush_draft': return true;
-      case 'edit_text': if ((action.field === 'outline' || action.field === 'script') && typeof action.value === 'string') setTextDraft(action.field, action.value); return true;
+      case 'edit_text': if ((action.field === 'outline' || action.field === 'script') && typeof action.value === 'string') { setSourceLocation(undefined); setTextDraft(action.field, action.value); } return true;
       case 'edit_creative': if (Object.hasOwn(EMPTY_CREATIVE_DRAFT, action.field) && typeof action.value === 'string') setCreative(action.field, action.value); return true;
       case 'select_episode': requestEpisodeSwitch(action.episodeId); return true;
-      case 'set_tab': if (['outline', 'script', 'creative', 'characters', 'props'].includes(action.tab)) setActiveTab(action.tab); return true;
+      case 'set_tab': {
+        if (action.tab !== 'story-graph' && (graphEditorLease.current || graphWritesInFlight.current > 0)) throw new Error(t('请先保存或关闭关系图详情，再切换页签'));
+        if (['outline', 'script', 'creative', 'characters', 'props', 'story-graph'].includes(action.tab)) setActiveTab(action.tab);
+        return true;
+      }
       case 'save': {
         if (!await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
         return true;
       }
       case 'close': return requestClose();
-      case 'dock': afterReply.current = 'dock'; return true;
+      case 'dock': if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口')); afterReply.current = 'dock'; return true;
       case 'detach': {
+        if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口'));
         if (openingWindow) return false;
         setOpeningWindow(true);
         try { await windowHost.current?.open(); return true; }
@@ -814,7 +1042,7 @@ export default function ScriptWorkbench({
         if (action.episodeId !== selectedEpisodeRef.current) throw new Error(t('工作台分集已变化'));
         return executeEpisodeAssetPanelAction(action.episodeId, action.kind, action.action);
       }
-      case 'settle_editor': if (currentEpisode && !currentDirty() && !savingEpisodeRef.current) settleEpisodeEditorSessions(currentEpisode.id); return true;
+      case 'settle_editor': if (currentEpisode && !currentDirty() && !savingEpisodeRef.current && !graphEditorLease.current) settleEpisodeEditorSessions(currentEpisode.id); return true;
       case 'set_execution': setExecutionSelection(normalizeExecutionSelection(action.value)); return true;
       case 'set_team_mode': if (['plan', 'collaborative', 'autonomous'].includes(action.value)) setTeamMode(action.value); return true;
       case 'preview_creation_profile': {
@@ -842,6 +1070,141 @@ export default function ScriptWorkbench({
         });
         if (!saved) throw new Error(t('组合包未能保存，请重试'));
         if (captured.profile?.teamTemplateId) setExecutionSelection({ kind: 'team', templateId: captured.profile.teamTemplateId });
+        return true;
+      }
+      case 'story_graph_filter': {
+        const { owner, graph } = readGraphContext();
+        const input = action.filter;
+        const knownEpisodes = new Set(listEpisodes(useAppStore.getState().projects, owner.id).map((episode) => episode.id));
+        if (!input || typeof input !== 'object' || Array.isArray(input)
+          || (input.search !== undefined && (typeof input.search !== 'string' || input.search.length > 120))
+          || (input.episodeIds !== undefined && (!Array.isArray(input.episodeIds) || input.episodeIds.length > 100 || input.episodeIds.some((id) => !knownEpisodes.has(id))))
+          || (input.nodeKinds !== undefined && (!Array.isArray(input.nodeKinds) || input.nodeKinds.length > 7 || input.nodeKinds.some((kind) => !STORY_GRAPH_NODE_KINDS.includes(kind))))
+          || (input.edgeKinds !== undefined && (!Array.isArray(input.edgeKinds) || input.edgeKinds.length > 10 || input.edgeKinds.some((kind) => !STORY_GRAPH_EDGE_KINDS.includes(kind))))
+          || (input.focusNodeId !== undefined && (typeof input.focusNodeId !== 'string' || !graph.nodes.some((node) => node.id === input.focusNodeId)))) {
+          throw new Error(t('关系图筛选条件无效'));
+        }
+        setGraphFilter({ episodeIds: input.episodeIds, search: input.search, nodeKinds: input.nodeKinds,
+          edgeKinds: input.edgeKinds, focusNodeId: input.focusNodeId, neighbors: input.neighbors === true });
+        return true;
+      }
+      case 'story_graph_detail': {
+        const { state, graph } = readGraphContext();
+        const item = action.selection?.kind === 'node' ? graph.nodes.find((node) => node.id === action.selection.id)
+          : action.selection?.kind === 'edge' ? graph.edges.find((edge) => edge.id === action.selection.id) : undefined;
+        if (!item) throw new Error(t('关系图条目已删除或不在当前图中'));
+        const evidenceStatuses: StoryGraphDetail['evidenceStatuses'] = [];
+        for (const evidence of item.evidence) {
+          try {
+            const { text } = readGraphSource(evidence.episodeId, evidence.part);
+            const hash = await hashStoryGraphSource(text);
+            const currentText = readGraphSource(evidence.episodeId, evidence.part).text;
+            evidenceStatuses.push(text === currentText && validateStoryGraphEvidence(evidence, { ...evidence, text, sourceHash: hash }) ? 'current' : 'changed');
+          } catch { evidenceStatuses.push('missing'); }
+        }
+        const current = readGraphContext().graph;
+        if (current.id !== graph.id || current.revision !== graph.revision) throw new Error(t('关系图版本已变化，请重新选择条目'));
+        let assetAvailable: boolean | undefined;
+        if ('asset' in item && item.asset) {
+          const pool = item.asset.kind === 'character' ? state.dramaAssets.characters : item.asset.kind === 'scene' ? state.dramaAssets.scenes : state.dramaAssets.props;
+          assetAvailable = pool.some((asset) => asset.id === item.asset?.id);
+        }
+        return { item: structuredClone(item), evidenceStatuses, assetAvailable } satisfies StoryGraphDetail;
+      }
+      case 'story_graph_patch': return commitGraphPatch(action.patch, action.expectedRevision);
+      case 'story_graph_resolve_evidence': {
+        const query = action.query;
+        if (!query || typeof query.quote !== 'string' || !query.quote.trim() || query.quote.length > 240) throw new Error(t('请输入不超过 240 字的原文摘录'));
+        const { owner } = readGraphContext();
+        const epoch = owner.exchangeEpoch ?? 0;
+        const selectedId = selectedEpisodeRef.current;
+        const { text } = readGraphSource(query.episodeId, query.part);
+        const start = text.indexOf(query.quote);
+        if (start < 0 || text.indexOf(query.quote, start + 1) >= 0) throw new Error(t('摘录需在已保存稿件中唯一匹配，请调整摘录'));
+        const sourceHash = await hashStoryGraphSource(text);
+        graphScopeGuard(epoch, selectedId);
+        if (readGraphSource(query.episodeId, query.part).text !== text) throw new Error(t('原文证据已变化，请重新绑定'));
+        return { episodeId: query.episodeId, part: query.part, sourceHash, start, end: start + query.quote.length, quote: query.quote } satisfies StoryGraphEvidence;
+      }
+      case 'story_graph_locate': {
+        if (graphEditorLease.current) throw new Error(t('请先保存或关闭关系图详情，再查看出处'));
+        if (currentDirty()) throw new Error(t('请先保存或处理当前草稿，再查看原文出处'));
+        const evidence = action.evidence;
+        const { owner } = readGraphContext();
+        const epoch = owner.exchangeEpoch ?? 0;
+        const selectedId = selectedEpisodeRef.current;
+        const { text, episode } = readGraphSource(evidence.episodeId, evidence.part);
+        const targetDraft = draftsRef.current[evidence.episodeId];
+        if ((targetDraft && draftSignature(targetDraft) !== draftSignature(createDraft(episode)))
+          || isEpisodeEditorWriteLocked(evidence.episodeId) || hasUnsettledEpisodeEditorSession(evidence.episodeId)) {
+          throw new Error(t('目标分集还有未处理的修改，请先保存后查看出处'));
+        }
+        const sourceHash = await hashStoryGraphSource(text);
+        graphScopeGuard(epoch, selectedId);
+        if (readGraphSource(evidence.episodeId, evidence.part).text !== text
+          || !validateStoryGraphEvidence(evidence, { ...evidence, text, sourceHash })) throw new Error(t('原文来源已变化，请先重新绑定证据'));
+        selectedEpisodeRef.current = evidence.episodeId;
+        setSelectedEpisodeId(evidence.episodeId);
+        setActiveTab(evidence.part);
+        sourceLocationSequence.current += 1;
+        setSourceLocation({ ...evidence, sequence: sourceLocationSequence.current });
+        return true;
+      }
+      case 'story_graph_extract': return startGraphExtraction(action.request);
+      case 'story_graph_editor': {
+        if (typeof action.open !== 'boolean' || typeof action.graphId !== 'string'
+          || !Number.isSafeInteger(action.expectedRevision) || !Number.isSafeInteger(action.epoch)) throw new Error(t('关系图版本已变化，请重新打开详情'));
+        if (action.open) {
+          if (afterReply.current || openingWindow) throw new Error(t('工作台窗口正在交接，请稍后打开详情'));
+          const { owner, graph } = readGraphContext();
+          if (typeof action.graphId !== 'string' || action.graphId !== graph.id || action.expectedRevision !== graph.revision
+            || action.epoch !== (owner.exchangeEpoch ?? 0)) throw new Error(t('关系图版本已变化，请重新打开详情'));
+          graphEditorLease.current = { graphId: graph.id, epoch: owner.exchangeEpoch ?? 0 };
+          setGraphEditorOpen(true);
+        } else {
+          const lease = graphEditorLease.current;
+          if (lease && (lease.graphId !== action.graphId || lease.epoch !== action.epoch)) throw new Error(t('关系图编辑会话已变化，请重新核对'));
+          graphEditorLease.current = null; setGraphEditorOpen(false);
+        }
+        return true;
+      }
+      case 'story_graph_cancel': {
+        if (!graphController.current || !action.runId || action.runId !== graphRunId.current) throw new Error(t('关系图提取已结束，请核对最新候选'));
+        graphGeneration.current += 1;
+        graphController.current?.abort(); graphController.current = null;
+        setGraphExtraction((previous) => ({ status: 'cancelled', runId: previous.runId, completed: previous.completed, total: previous.total, continuation: previous.continuation }));
+        return true;
+      }
+      case 'story_graph_discard': {
+        if (graphController.current) throw new Error(t('请先取消正在执行的关系图提取'));
+        if (graphCandidate.current && action.candidateId !== graphCandidate.current.id) throw new Error(t('关系图候选已变化，请重新核对'));
+        graphCandidate.current = null;
+        setGraphExtraction((previous) => ({ status: 'idle', runId: previous.runId, completed: 0, total: 0, continuation: previous.continuation }));
+        return true;
+      }
+      case 'story_graph_adopt': {
+        const candidate = graphCandidate.current;
+        const { owner, graph } = readGraphContext();
+        if (!candidate || candidate.id !== action.candidateId || candidate.seriesId !== owner.id || candidate.sessionId !== sessionId
+          || candidate.graphId !== graph.id || candidate.graphRevision !== graph.revision) throw new Error(t('关系图候选已变化，请重新核对'));
+        const epoch = owner.exchangeEpoch ?? 0;
+        if (graphContinuation.current?.candidate.id !== candidate.id || graphContinuation.current.epoch !== epoch) throw new Error(t('关系图候选已变化，请重新核对'));
+        const sourceTexts = new Map<string, string>();
+        for (const binding of candidate.sourceBindings) {
+          const { text } = readGraphSource(binding.episodeId, binding.part);
+          if (await hashStoryGraphSource(text) !== binding.sourceHash) throw new Error(t('候选来源已变化，请重新提取'));
+          sourceTexts.set(`${binding.episodeId}:${binding.part}`, text);
+        }
+        const patch = buildStoryGraphCandidatePatch(graph, candidate, action.selection);
+        await commitGraphPatch(patch, graph.revision, () => {
+          if (graphCandidate.current !== candidate || (readGraphContext().owner.exchangeEpoch ?? 0) !== epoch) throw new Error(t('关系图候选已变化，请重新核对'));
+          for (const binding of candidate.sourceBindings) {
+            const source = readGraphSource(binding.episodeId, binding.part);
+            if (source.text !== sourceTexts.get(`${binding.episodeId}:${binding.part}`)) throw new Error(t('候选来源已变化，请重新提取'));
+          }
+        });
+        graphCandidate.current = null;
+        setGraphExtraction((previous) => ({ status: 'idle', runId: previous.runId, completed: 0, total: 0, continuation: previous.continuation }));
         return true;
       }
       case 'refresh_external_agents': { const catalog = await getExternalAgentCatalog(); setExternalCatalog(catalog); return catalog; }
@@ -946,6 +1309,9 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
 }) {
   const t = useT();
   const teamControlsRef = useRef<HTMLDivElement>(null);
+  const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
+  const locatedSourceSequence = useRef(0);
+  const graphViewLease = useRef<{ graphId: string; epoch: number } | null>(null);
   const splitCountId = useId();
   const splitDurationId = useId();
   const [error, setError] = useState('');
@@ -986,6 +1352,18 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
     readSource: async (part, signal) => { signal.throwIfAborted(); const result = await dispatch({ type: 'read_source', part }); signal.throwIfAborted(); return result as SeriesSourceSnapshot; },
     prepareChapter: async (reference) => { await dispatch({ type: 'prepare_chapter', reference }); },
   }), [dispatch, series?.id, snapshot.contextReady, snapshot.sessionId]);
+  useLayoutEffect(() => {
+    const location = snapshot.sourceLocation;
+    const editor = sourceEditorRef.current;
+    if (!location || !editor || locatedSourceSequence.current === location.sequence
+      || currentEpisode?.id !== location.episodeId || activeTab !== location.part || isDirty) return;
+    if (editor.value.slice(location.start, location.end) !== location.quote) return;
+    editor.focus({ preventScroll: true });
+    editor.setSelectionRange(location.start, location.end);
+    locatedSourceSequence.current = location.sequence;
+    const lineHeight = Number.parseFloat(getComputedStyle(editor).lineHeight) || 28;
+    editor.scrollTop = Math.max(0, editor.value.slice(0, location.start).split('\n').length - 2) * lineHeight;
+  }, [activeTab, currentEpisode?.id, isDirty, snapshot.sourceLocation]);
 
   return (
     <WorkbenchFrame standalone={standalone}
@@ -1050,6 +1428,15 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
           <span className="min-w-0 flex-1 break-words">{error || externalError}</span>
           <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => { setError(''); onDismissError?.(); }}>{t('关闭')}</button>
         </div>}
+        {(!currentEpisode || !contextReady) && snapshot.storyGraphExtraction
+          && (snapshot.storyGraphExtraction.status === 'running' || snapshot.storyGraphExtraction.candidate) && (
+          <div role="status" className="ui-alert ui-alert--warning flex shrink-0 flex-wrap items-center gap-2 p-2">
+            <span className="min-w-0 flex-1 text-xs">{t('先处理当前关系图提取或候选，再关闭工作台')}</span>
+            {snapshot.storyGraphExtraction.status === 'running'
+              ? <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" onClick={() => fire({ type: 'story_graph_cancel', runId: snapshot.storyGraphExtraction?.runId })}>{t('取消提取')}</button>
+              : <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" onClick={() => fire({ type: 'story_graph_discard', candidateId: snapshot.storyGraphExtraction?.candidate?.id })}>{t('丢弃候选')}</button>}
+          </div>
+        )}
 
         {pendingAction ? (
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-400/20 bg-amber-500/10 px-4 py-2">
@@ -1209,6 +1596,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                     ['creative', '创作要点', 'lucide:lightbulb'],
                     ['characters', '本集角色', 'lucide:users-round'],
                     ['props', '本集道具', 'lucide:package'],
+                    ['story-graph', '故事关系图', 'lucide:network'],
                   ] as const).map(([id, label, icon]) => (
                     <button
                       key={id}
@@ -1230,6 +1618,31 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-auto">
+                  {activeTab === 'story-graph' && snapshot.storyGraphView ? (
+                    <LazyLoadBoundary label={t('故事关系图')} resetKey={snapshot.sessionId}>
+                      <Suspense fallback={<LazyLoadFallback label={t('故事关系图')} />}>
+                        <StoryGraphPanel view={snapshot.storyGraphView} filter={snapshot.storyGraphFilter}
+                          episodes={episodes} currentEpisodeId={currentEpisode.id} assets={snapshot.storyGraphAssets ?? []}
+                          modelGroups={snapshot.modelGroups} extraction={snapshot.storyGraphExtraction} theme={snapshot.theme}
+                          disabled={!contextReady || editorWriteLocked || isSaving}
+                          onFilterChange={async (filter) => await dispatch({ type: 'story_graph_filter', filter })}
+                          onReadDetail={async (selection) => await dispatch({ type: 'story_graph_detail', selection }) as StoryGraphDetail}
+                          onPatch={async (patch, expectedRevision) => await dispatch({ type: 'story_graph_patch', patch, expectedRevision })}
+                          onResolveEvidence={async (query) => await dispatch({ type: 'story_graph_resolve_evidence', query }) as StoryGraphEvidence}
+                          onLocateEvidence={async (evidence) => await dispatch({ type: 'story_graph_locate', evidence })}
+                          onExtract={async (request) => await dispatch({ type: 'story_graph_extract', request })}
+                          onCancelExtraction={async () => await dispatch({ type: 'story_graph_cancel', runId: snapshot.storyGraphExtraction?.runId })}
+                          onDiscardCandidates={async () => await dispatch({ type: 'story_graph_discard', candidateId: snapshot.storyGraphExtraction?.candidate?.id })}
+                          onAdoptCandidates={async (candidateId, selection) => await dispatch({ type: 'story_graph_adopt', candidateId, selection })}
+                          onEditorStateChange={async (open) => {
+                            const identity = open ? { graphId: snapshot.storyGraphView!.id, epoch: series?.exchangeEpoch ?? 0 }
+                              : graphViewLease.current ?? { graphId: snapshot.storyGraphView!.id, epoch: series?.exchangeEpoch ?? 0 };
+                            await dispatch({ type: 'story_graph_editor', open, ...identity, expectedRevision: snapshot.storyGraphView!.revision });
+                            graphViewLease.current = open ? identity : null;
+                          }} />
+                      </Suspense>
+                    </LazyLoadBoundary>
+                  ) : null}
                   {(activeTab === 'characters' || activeTab === 'props') && snapshot.assetPanel ? (
                       <EpisodeAssetPanel key={`${currentEpisode.id}-${activeTab}`} episodeId={currentEpisode.id}
                         kind={activeTab === 'characters' ? 'character' : 'prop'}
@@ -1239,6 +1652,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   ) : null}
                   {activeTab === 'outline' ? (
                     <textarea
+                      ref={sourceEditorRef}
                       value={draft.outline}
                       readOnly={editorWriteLocked || !contextReady}
                       onChange={(event) => setTextDraft('outline', event.target.value)}
@@ -1250,6 +1664,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   ) : null}
                   {activeTab === 'script' ? (
                     <textarea
+                      ref={sourceEditorRef}
                       value={draft.script}
                       readOnly={editorWriteLocked || !contextReady}
                       onChange={(event) => setTextDraft('script', event.target.value)}
@@ -1502,10 +1917,10 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
               onEditGraph={async (graph, expected) => { await dispatch({ type: 'edit_team_graph', taskId: task.id, graph, expected }); }}
               onResolveDispatch={async (dispatchId, decision) => { await dispatch({ type: 'resolve_dispatch', taskId: task.id, dispatchId, decision }); }} />)}
 
-            <div className="mt-4 grid gap-3">
+            <div className="script-workbench-actions mt-4 grid gap-3">
               {CREATIVE_ACTION_GROUPS.map((group) => (
                 <section key={group.label}>
-                  <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold text-canvas-text-secondary">
+                  <div className="ui-label mb-1.5 flex items-center gap-1.5">
                     <Icon icon={group.icon} className="h-3.5 w-3.5" />
                     {t(group.label)}
                   </div>
@@ -1517,9 +1932,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                         disabled={!currentEpisode || isSaving || isStartingTeam || editorWriteLocked || projectLoadStatus !== 'ready'
                           || (executionSelection.kind === 'team' && !['optimize-outline', 'write-script', 'diagnose'].includes(action.id))}
                         onClick={() => { void openCreativeAction(action.id); }}
-                        className="rounded-lg border border-canvas-border bg-canvas-card px-2.5 py-1.5
-                                   text-[10px] text-canvas-text-secondary transition-colors hover:border-indigo-400/40
-                                   hover:bg-indigo-500/10 hover:text-indigo-200 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="ui-btn ui-btn--sm ui-btn--secondary"
                       >
                         {executionSelection.kind === 'team' && action.id === 'diagnose' ? t('联合审稿') : t(action.label)}
                       </button>

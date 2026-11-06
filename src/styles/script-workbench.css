@@ -1,0 +1,8 @@
+/* 浅色主题下的禁用创作动作仍需可读，颜色沿用主题变量。 */
+[data-theme='light'] .script-workbench-actions .ui-btn:disabled {
+  opacity: 1;
+  color: var(--theme-text-muted);
+  background: var(--theme-card);
+  border-color: var(--theme-border);
+  border-style: dashed;
+}

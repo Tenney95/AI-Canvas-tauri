@@ -7,6 +7,7 @@ import type { CreationProfileSelection } from '../../types/creationProfile';
 import type { AgentTeamProfile } from '../../types/agentTeam';
 import { restoreCreationProfileSelection } from '../creationProfiles/creationProfileManifest';
 import { normalizeTeamProfile } from '../chat/teams/teamProfileService';
+import { normalizeStoryGraph } from '../storyGraphService';
 
 /** 项目列表所需的轻量记录；禁止放入画布节点、连线、历史或角色库。 */
 export interface ProjectSummaryRecord {
@@ -31,6 +32,14 @@ export interface ProjectSummaryRecord {
 
 function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** 保存、加载和摘要共用故事图边界，禁止把未校验的图当作正式资料。 */
+export function normalizeProjectSeriesInfo(value: unknown): ProjectSeriesInfo | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('剧集资料格式无效');
+  const series = value as ProjectSeriesInfo;
+  return { ...series, ...(series.storyGraph === undefined ? {} : { storyGraph: normalizeStoryGraph(series.storyGraph) }) };
 }
 
 function sanitizeProjectSettings(value: unknown): ProjectSettings | undefined {
@@ -83,7 +92,7 @@ export function toProjectSummaryRecord(record: unknown): ProjectSummaryRecord | 
     summary.episodeAssetRoster = normalizeEpisodeAssetRoster(source.episodeAssetRoster);
   }
   if (source.series && typeof source.series === 'object') {
-    summary.series = source.series as ProjectSeriesInfo;
+    summary.series = normalizeProjectSeriesInfo(source.series);
   }
   const selection = restoreCreationProfileSelection(source.creationProfile);
   if (selection) {

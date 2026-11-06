@@ -10,6 +10,7 @@ import type { BaseNodeData } from '../../src/types';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
 import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sharedAssetSyncRepository';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 const fileMocks = vi.hoisted(() => ({
   deleteProjectData: vi.fn(async () => undefined),
@@ -38,6 +39,7 @@ const metadataMocks = vi.hoisted(() => ({
   getLastActiveProjectId: vi.fn(async () => null as string | null),
   setLastActiveProjectId: vi.fn(async () => undefined),
   updateProjectSnapshot: vi.fn(async (_id: string, _snapshot: string | undefined) => true),
+  updateProjectStoryGraphCAS: vi.fn(),
 }));
 const recoveryMock = vi.hoisted(() => vi.fn(async () => false));
 const assetSyncMocks = vi.hoisted(() => ({ applySharedAssetSyncCommit: vi.fn() }));
@@ -99,6 +101,7 @@ beforeEach(() => {
   metadataMocks.getLastActiveProjectId.mockResolvedValue(null);
   metadataMocks.setLastActiveProjectId.mockClear();
   metadataMocks.updateProjectSnapshot.mockClear();
+  metadataMocks.updateProjectStoryGraphCAS.mockReset();
   recoveryMock.mockReset().mockResolvedValue(false);
   assetSyncMocks.applySharedAssetSyncCommit.mockReset();
 });
@@ -120,6 +123,39 @@ function stubInitializationActions(store = useAppStore) {
     repairInterruptedAgentTasksForProject: vi.fn(async () => []),
   });
 }
+
+describe('故事图主窗口写入边界', () => {
+  it('持久化确认前不投影正式图，确认后合并最新正文且不写主画布历史', async () => {
+    const owner = { id: 'series-graph', name: '整部剧', createdAt: 1, updatedAt: 1, exchangeEpoch: 2,
+      series: { script: '原正文', storyGraph: createEmptyStoryGraph('graph') } };
+    const episode = { id: 'episode-graph', parentId: owner.id, name: '第一集', createdAt: 1, updatedAt: 1 };
+    const graph = { ...owner.series.storyGraph, revision: 1 };
+    const history = vi.fn();
+    let complete!: (value: typeof graph) => void;
+    metadataMocks.updateProjectStoryGraphCAS.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    useAppStore.setState({ projects: [owner, episode], currentProjectId: episode.id, projectLoadStatus: 'ready', commitToHistory: history });
+    const beforeNodes = useAppStore.getState().nodes;
+    const pending = useAppStore.getState().updateStoryGraph(owner.id, { graphId: 'graph' }, 0, { expectedExchangeEpoch: 2 });
+    for (let index = 0; index < 8 && !complete; index += 1) await Promise.resolve();
+    expect(metadataMocks.updateProjectStoryGraphCAS).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().projects[0].series?.storyGraph?.revision).toBe(0);
+    useAppStore.setState({ projects: [{ ...owner, series: { ...owner.series, script: '并发更新正文' } }, episode] });
+    complete(graph);
+    await expect(pending).resolves.toEqual(graph);
+    expect(useAppStore.getState().projects[0].series).toEqual({ script: '并发更新正文', storyGraph: graph });
+    expect(useAppStore.getState().nodes).toBe(beforeNodes);
+    expect(history).not.toHaveBeenCalled();
+  });
+
+  it('其他剧集或旧归档代际在接触 IndexedDB 前拒绝', async () => {
+    const owner = { id: 'series-graph', name: '整部剧', createdAt: 1, updatedAt: 1, exchangeEpoch: 2 };
+    useAppStore.setState({ projects: [owner], currentProjectId: owner.id, projectLoadStatus: 'ready' });
+    await expect(useAppStore.getState().updateStoryGraph(owner.id, { graphId: 'graph' }, 0,
+      { expectedExchangeEpoch: 1 })).rejects.toThrow('已变化');
+    await expect(useAppStore.getState().updateStoryGraph('other-series', { graphId: 'graph' }, 0)).rejects.toThrow('已变化');
+    expect(metadataMocks.updateProjectStoryGraphCAS).not.toHaveBeenCalled();
+  });
+});
 
 function refreshProjectInitializer() {
   const fresh = createProjectSlice(useAppStore.setState, useAppStore.getState, useAppStore);

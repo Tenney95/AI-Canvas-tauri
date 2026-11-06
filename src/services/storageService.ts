@@ -53,6 +53,7 @@ import { deleteProviderSecretIfUnchanged, hasPlaintextSecret, readProviderSecret
 import { enqueueConfigPersistence } from './configPersistenceQueue';
 import { applyConfigPatch, ConfigConflictError, configValuesEqual, configWithoutSecrets, createConfigPatch, type ConfigChange } from './configPatch';
 import { classifyStorageError, readStorageWithRetry, storageError } from './storageDiagnostics';
+import { normalizeProjectSeriesInfo } from './indexedDb/projectSummary';
 import {
   decodeDataUrlBytesAsync,
   MEDIA_DATA_URL_BYTE_LIMITS,
@@ -797,6 +798,11 @@ async function serializeProjectDramaAssets(
 }
 
 export async function serializeProjectRecord(data: ProjectSaveData): Promise<ProjectSaveData> {
+  if (data.series !== undefined) {
+    const series = normalizeProjectSeriesInfo(data.series);
+    if (data.parentId && series?.storyGraph) throw new Error('故事关系图只能由所属剧集保存');
+    data = { ...data, series };
+  }
   if (data.episodeAssetRoster !== undefined) {
     data = { ...data, episodeAssetRoster: data.parentId ? normalizeEpisodeAssetRoster(data.episodeAssetRoster) : undefined };
   }
@@ -953,7 +959,7 @@ export async function loadProjectData(id: string): Promise<ProjectSaveData | nul
     } catch {
       console.warn('[项目加载] 角色库本地文件恢复未完成，已使用原始角色数据', { projectId: id });
     }
-    return { ...persistedRecord, nodes, settings, dramaAssets,
+    return { ...persistedRecord, nodes, settings, dramaAssets, series: normalizeProjectSeriesInfo(persistedRecord.series),
       ...(persistedRecord.episodeAssetRoster !== undefined ? {
         episodeAssetRoster: persistedRecord.parentId ? normalizeEpisodeAssetRoster(persistedRecord.episodeAssetRoster) : undefined,
       } : {}),

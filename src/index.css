@@ -25,6 +25,8 @@
 @import './styles/model-selector.css';
 @import './styles/sidebar.css';
 @import './styles/panels.css';
+@import './styles/script-workbench.css';
+@import './styles/story-graph.css';
 @import './styles/assistant.css';
 @import './styles/settings.css';
 @import './styles/appearance-layout.css';

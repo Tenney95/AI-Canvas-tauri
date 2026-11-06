@@ -35,6 +35,8 @@ interface ModelSelectorProps {
   persistPreference?: boolean;
   /** 节点提示词栏用紧凑透明入口展示当前模型。 */
   appearance?: 'default' | 'pill';
+  /** 紧凑配置行使用 UI Kit 的最小控件尺寸；默认保留现有显示。 */
+  size?: 'sm' | 'md';
   /** 提示词栏将编辑入口放到右侧工具区；null 表示目标尚未挂载。 */
   workflowEditorTarget?: HTMLElement | null;
   /** 独立窗口使用自身已应用的主题；省略时沿用主窗口配置。 */
@@ -60,6 +62,7 @@ export default function ModelSelector({
   disabled = false,
   persistPreference = true,
   appearance = 'default',
+  size = 'md',
   workflowEditorTarget,
   theme,
   selectedModel,
@@ -421,7 +424,7 @@ export default function ModelSelector({
   ) : null;
 
   return (
-    <div className={`model-selector${appearance === 'pill' ? ' model-selector--pill' : ''}`} ref={ref}>
+    <div className={`model-selector${appearance === 'pill' ? ' model-selector--pill' : ''}${size === 'sm' ? ' model-selector--sm' : ''}`} ref={ref}>
       <button
         type="button"
         className={`model-selector-trigger${appearance === 'pill' ? ' prompt-btn text-xs' : ''}${selectedWorkflowId ? ' has-workflow' : ''}${currentModel ? ' has-model' : ''}${canEditWorkflow && workflowEditorTarget === undefined ? ' has-workflow-editor' : ''}`}

@@ -56,10 +56,25 @@ import { captureExchangeSnapshot, materializeExchangeSnapshot } from '../../src/
 import { resolveDramaAssetImageRef } from '../../src/services/dramaAssetPrompt';
 import type { ProjectExchangeIdentity, ProjectExchangeState } from '../../src/types/projectExchange';
 import type { AssetDirectoryScanResult } from '../../src/services/fs/assetLibrary';
+import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 function scanResult(overrides: Partial<AssetDirectoryScanResult> = {}): AssetDirectoryScanResult {
   return { files: [], folders: [], truncated: false, complete: true, failedDirectories: 0, failedFiles: 0, ...overrides };
 }
+
+describe('故事图正式资料的保存与加载', () => {
+  it('无媒体目录的项目也保留正式图，运行态图字段在落盘前拒绝', async () => {
+    mocks.getProjectDataDir.mockResolvedValue(null);
+    const graph = { ...createEmptyStoryGraph('graph'), revision: 4 };
+    const record: ProjectSaveData = { id: `story-storage-${Date.now()}`, name: '故事图', createdAt: 1, updatedAt: 2,
+      nodes: [], edges: [], series: { script: '原文', storyGraph: graph } };
+    await saveProject(record);
+    expect((await loadProjectData(record.id))?.series?.storyGraph).toEqual(graph);
+    const invalid = { ...record, id: `${record.id}-bad`, series: { storyGraph: { ...graph, candidates: [] } } };
+    await expect(saveProject(invalid)).rejects.toThrow();
+    expect(await getProjectById(`${record.id}-bad`)).toBeUndefined();
+  });
+});
 
 describe('project loading tolerates asset recovery failures', () => {
   beforeEach(() => {

@@ -189,7 +189,7 @@ const help: Record<string, string> = {
   "鼠标移到右上方的短竖线，可查看操作记录、撤销和重做。点击图钉可以让面板保持显示。": "Hover over the short vertical line at the top right to view history, undo, and redo. Click the pin to keep the panel open.",
   "误操作时也可以使用 Ctrl/⌘ + Z 撤销。": "You can also undo mistakes with Ctrl/⌘ + Z.",
   "右侧剧集与项目资产": "Episodes and project assets on the right",
-  "单击右侧中间的短竖线展开剧集栏，可编辑剧本、管理分集；双击这条线打开项目资产。": "Click the short vertical line at the middle right to open the episode rail, edit scripts, and manage episodes. Double-click it to open project assets.",
+  "鼠标悬浮右侧中间的短竖线即可展开剧集栏，可编辑剧本、管理分集；双击这条线打开项目资产。": "Hover over the short vertical line at the middle right to open the episode rail, edit scripts, and manage episodes. Double-click it to open project assets.",
   "左上角加号也可以创建分集，创建时可填写名称。": "You can also create an episode from the plus button at the top left and name it as you create it.",
   "先确认文件保存位置": "Confirm the file save location first",
   "这里可以选择文件保存根目录，并查看当前项目目录。未设置时使用系统默认目录；生成和导入素材前，可以先确认保存位置。": "Choose the storage root and view the current project folder here. The system default is used if none is set. Check the location before generating or importing media.",
