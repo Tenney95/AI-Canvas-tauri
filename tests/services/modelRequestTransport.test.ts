@@ -22,6 +22,7 @@ import { parseResponseError } from '../../src/services/ai/httpUtils';
 import { resolveImageDataUrlArray } from '../../src/services/ai/imageUtils';
 import { getProviderDefinition } from '../../src/services/ai/providerCatalogService';
 import { generateImageStandard } from '../../src/services/ai/providers/standardImage';
+import { resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createImageQuickAdaptTemplate } from '../../src/services/ai/imageModelTemplates';
@@ -32,7 +33,7 @@ import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/pr
 import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../src/services/ai/providers/minimaxModelManifest';
 import { pollResolvedModelProtocol } from '../../src/services/ai/modelProtocol';
 import { executeRunningHubModel } from '../../src/services/ai/providers/runninghubMedia';
-import type { ModelExecutionProfile } from '../../src/types/aiTypes';
+import type { ModelExecutionProfile, ProtocolJsonValue } from '../../src/types/aiTypes';
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -1846,6 +1847,53 @@ describe('CCC Gemini 旧连接的原生图片路由', () => {
     },
   );
 
+  it.each([
+    ['Nano-Banana-pro', false], ['Nano-Banana-2', false], ['Nano-Banana-2.1', false],
+    ['Nano-Banana-pro', true], ['Nano-Banana-2', true], ['Nano-Banana-2.1', true],
+  ] as const)('CCC 当前型号 %s 的直接节点=%s 按用户选择发送三档分辨率并保留比例', async (modelId, direct) => {
+    const params = configureCccImage({ modelId, direct });
+    const saved = structuredClone(useAppStore.getState().config);
+    mockNativeCccImage();
+    for (const imageSize of ['1K', '2K', '4K']) {
+      transportMocks.corsSafeFetch.mockClear();
+      await generateImagesBatch({ ...params, imageSize, aspectRatio: '9:16' }, 1);
+      expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+      const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`https://cccapi.cn/v1beta/models/${modelId}:generateContent`);
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer banana-group-key-fixture' });
+      expect(JSON.parse(String(init.body)).generationConfig.imageConfig).toEqual({ imageSize, aspectRatio: '9:16' });
+    }
+    expect(useAppStore.getState().config).toEqual(saved);
+  });
+
+  it('当前 Nano-Banana-pro 的用户自定义协议保持原请求，不被目录能力替换', async () => {
+    const params = configureCccImage({ modelId: 'Nano-Banana-pro', profile: customCccImageProfile() });
+    const saved = structuredClone(useAppStore.getState().config);
+    expect(resolveImageParameterCapability(params.model, params.provider, useAppStore.getState().config))
+      .toMatchObject({ resolutions: [], ratios: [] });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/custom-pro.png' }] }));
+    await generateImagesBatch({ ...params, imageSize: '4K', aspectRatio: '9:16' }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1/my-image-job');
+    expect(JSON.parse(String(init.body))).toEqual({ model: 'Nano-Banana-pro', prompt: '画一只猫' });
+    expect(useAppStore.getState().config).toEqual(saved);
+  });
+
+  it('旧 CCC 直连节点也按已选 custom 的参数映射展示并发送原请求', async () => {
+    const params = configureCccImage({ modelId: 'Nano-Banana-2.1', direct: true, selectedProfile: customCccImageProfile() });
+    const saved = structuredClone(useAppStore.getState().config);
+    expect(resolveImageParameterCapability(params.model, params.provider, useAppStore.getState().config))
+      .toMatchObject({ resolutions: [], ratios: [] });
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/custom-direct.png' }] }));
+    await generateImagesBatch({ ...params, imageSize: '4K', aspectRatio: '9:16' }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1/my-image-job');
+    expect(JSON.parse(String(init.body))).toEqual({ model: 'Nano-Banana-2.1', prompt: '画一只猫' });
+    expect(useAppStore.getState().config).toEqual(saved);
+  });
+
   it.each([false, true])('显式 custom 协议作为已保存模型／选中配置后备（%s）均不被覆盖', async (selectedFallback) => {
     const profile = customCccImageProfile();
     const params = configureCccImage({ modelId: 'gemini-unlisted-image',
@@ -1882,10 +1930,164 @@ describe('CCC Gemini 旧连接的原生图片路由', () => {
     expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('旧连接缺协议时仍在发送前阻止未接入的参考图（直接节点=%s）', async (direct) => {
+  it.each([false, true])('旧连接缺协议时通过原生 parts 完整发送多图（直接节点=%s）', async (direct) => {
     const params = configureCccImage({ direct });
-    await expect(generateImagesBatch({ ...params, image_urls: ['https://cdn.example/reference.png'] }, 1)).rejects.toThrow('参考图');
+    const publicUpload = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('不应上传公共图床'));
+    mockNativeCccImage();
+    await expect(generateImagesBatch({ ...params,
+      image_urls: ['data:image/png;base64,YQ==', 'data:image/webp;base64,Yg=='],
+    }, 1)).resolves.toMatchObject({ results: [{ url: 'data:image/png;base64,aW1hZ2U=' }] });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1beta/models/gemini-3.1-flash-image:generateContent');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer banana-group-key-fixture' });
+    expect(JSON.parse(String(init.body)).contents[0].parts).toEqual([
+      { text: expect.stringContaining('画一只猫') },
+      { inlineData: { mimeType: 'image/png', data: 'YQ==' } },
+      { inlineData: { mimeType: 'image/webp', data: 'Yg==' } },
+    ]);
+    expect(publicUpload).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('完整旧文本模板临时升级后发送参考图，保存配置不变（直接节点=%s）', async (direct) => {
+    const modelId = 'gemini-3-pro-image-preview';
+    const profile = structuredClone(getProviderDefinition('cccapi')!.models!
+      .find((model) => model.id === modelId)!.executionProfile!);
+    (profile.protocol!.submit.body as Record<string, ProtocolJsonValue>).contents = [
+      { role: 'user', parts: [{ text: '{{prompt}}' }] },
+    ];
+    const params = configureCccImage({ modelId, direct, profile, selectedProfile: profile });
+    const saved = structuredClone(useAppStore.getState().config);
+    mockNativeCccImage();
+    await generateImagesBatch({ ...params, image_urls: ['data:image/webp;base64,YQ=='] }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`https://cccapi.cn/v1beta/models/${modelId}:generateContent`);
+    expect(JSON.parse(String(init.body)).contents[0].parts[1]).toEqual({
+      inlineData: { mimeType: 'image/webp', data: 'YQ==' },
+    });
+    expect(useAppStore.getState().config).toEqual(saved);
+  });
+
+  it('普通图片输入与 @ 引用合并，优先本地图片并保留素材顺序', async () => {
+    const params = configureCccImage({ modelId: 'gemini-3-pro-image-preview' });
+    useAppStore.setState({ nodes: [{ id: 'ccc-local-ref', type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: '人物', imageUrl: 'asset://localhost/ccc-ref.webp',
+        sourceUrl: 'https://expired.example/ccc-ref.webp' } }] });
+    const localFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      expect(String(url)).toBe('asset://localhost/ccc-ref.webp');
+      return new Response('local-reference', { headers: { 'Content-Type': 'image/webp' } });
+    });
+    mockNativeCccImage();
+    await generateImagesBatch({ ...params, prompt: '@{ccc-local-ref:人物} 保持人物一致',
+      image_urls: ['data:image/webp;base64,YQ=='],
+    }, 1);
+    expect(localFetch).toHaveBeenCalledOnce();
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(body.contents[0].parts).toEqual([
+      { text: expect.stringContaining('保持人物一致') },
+      { inlineData: { mimeType: 'image/webp', data: 'YQ==' } },
+      { inlineData: { mimeType: 'image/webp', data: btoa('local-reference') } },
+    ]);
+    expect(body.contents[0].parts[0].text).not.toContain('@{');
+    expect(body).not.toHaveProperty('images');
+    expect(body).not.toHaveProperty('image_urls');
+  });
+
+  it('公网参考图在本机读取为 inlineData，不把 URL 或 Key 发给外部图片站', async () => {
+    const params = configureCccImage();
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response('remote-reference', {
+      headers: { 'Content-Type': 'image/webp' },
+    }));
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ candidates: [{ content: {
+      parts: [{ inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } }],
+    } }] }));
+    await generateImagesBatch({ ...params, image_urls: ['https://cdn.example/reference.webp'] }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
+    expect(transportMocks.corsSafeFetch.mock.calls[0]).toEqual([
+      'https://cdn.example/reference.webp', { signal: undefined },
+    ]);
+    const [url, init] = transportMocks.corsSafeFetch.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('https://cccapi.cn/v1beta/models/gemini-3.1-flash-image:generateContent');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer banana-group-key-fixture' });
+    expect(JSON.parse(String(init.body)).contents[0].parts[1]).toEqual({
+      inlineData: { mimeType: 'image/webp', data: btoa('remote-reference') },
+    });
+  });
+
+  it('读取参考图失败时不提交生成，也不回退 Images 或公共图床', async () => {
+    const params = configureCccImage();
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response('', { status: 403 }));
+    await expect(generateImagesBatch({ ...params, image_urls: ['https://cdn.example/denied.webp'] }, 1))
+      .rejects.toThrow('读取参考图 1 失败 (403)');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe('https://cdn.example/denied.webp');
+  });
+
+  it.each([7, 14])('未声明张数上限的 CCC 原生合同完整发送 %s 张，不套用通用数量提示', async (count) => {
+    const params = configureCccImage({ modelId: 'gemini-3-pro-image-preview' });
+    const showToast = vi.fn();
+    useAppStore.setState({ showToast });
+    const images = Array.from({ length: count }, (_, index) => `data:image/webp;base64,${btoa(String(index))}`);
+    mockNativeCccImage();
+    await generateImagesBatch({ ...params, image_urls: images }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(body.contents[0].parts.slice(1)).toEqual(images.map((image) => ({
+      inlineData: { mimeType: 'image/webp', data: image.split(',')[1] },
+    })));
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('仍遵守用户保存的图片数量声明（直接节点=%s），不覆盖旧能力', async (direct) => {
+    const params = configureCccImage({ direct });
+    const imageCapability = { supportsImageReference: true, maxImageReferences: 2 };
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      generalModels: state.config.generalModels!.map((model) => ({ ...model, imageCapability })),
+      providers: { ...state.config.providers, 'cccapi-banana': { ...state.config.providers['cccapi-banana'],
+        selectedModels: state.config.providers['cccapi-banana'].selectedModels!.map((model) => ({ ...model, imageCapability })),
+      } },
+    } }));
+    const saved = structuredClone(useAppStore.getState().config);
+    await expect(generateImagesBatch({ ...params, image_urls: [
+      'data:image/webp;base64,YQ==', 'data:image/webp;base64,Yg==', 'data:image/webp;base64,Yw==',
+    ] }, 1)).rejects.toThrow('最多支持 2 张参考图');
     expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(saved);
+  });
+
+  it('参考图超过 32 MiB 读取边界或用户取消时均不提交生成', async () => {
+    const params = configureCccImage();
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response('oversize', {
+      headers: { 'Content-Type': 'image/webp', 'Content-Length': String(33 * 1024 * 1024) },
+    }));
+    await expect(generateImagesBatch({ ...params,
+      image_urls: ['https://cdn.example/oversize.webp'],
+    }, 1)).rejects.toThrow('32');
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe('https://cdn.example/oversize.webp');
+    transportMocks.corsSafeFetch.mockClear();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(generateImagesBatch({ ...params,
+      image_urls: ['https://cdn.example/reference.webp'],
+    }, 1, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it('被用户修改的旧模板仍保持原样，缺少参考图映射时继续阻止丢图', async () => {
+    const profile = structuredClone(getProviderDefinition('cccapi')!.models!
+      .find((model) => model.id === 'gemini-3-pro-image-preview')!.executionProfile!);
+    const body = profile.protocol!.submit.body as Record<string, ProtocolJsonValue>;
+    body.contents = [{ role: 'user', parts: [{ text: '{{prompt}}' }] }];
+    body.customOption = true;
+    const params = configureCccImage({ modelId: 'gemini-3-pro-image-preview', profile });
+    const saved = structuredClone(useAppStore.getState().config);
+    await expect(generateImagesBatch({ ...params, image_urls: ['https://cdn.example/reference.webp'] }, 1))
+      .rejects.toThrow('参考图');
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toEqual(saved);
   });
 });
 
@@ -2166,11 +2368,19 @@ describe('model request transport boundary', () => {
       } },
     });
 
-    // 未接入的参考图必须在提交前报错，不能悄悄丢图。
+    // 各个已知型号均须发送完整原生多图内容。
     transportMocks.corsSafeFetch.mockClear();
-    await expect(generateImagesBatch({ ...params, image_urls: ['https://cdn.example/ref.png'] }, 1))
-      .rejects.toThrow('参考图');
-    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+    await expect(generateImagesBatch({ ...params,
+      image_urls: ['data:image/webp;base64,YQ==', 'data:image/webp;base64,Yg=='],
+    }, 1)).resolves.toMatchObject({ results: [{ url: 'data:image/png;base64,aW1hZ2U=' }] });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    const referenceBody = JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body));
+    expect(referenceBody.contents[0].parts).toEqual([
+      { text: expect.stringContaining('画一只猫') },
+      { inlineData: { mimeType: 'image/webp', data: 'YQ==' } },
+      { inlineData: { mimeType: 'image/webp', data: 'Yg==' } },
+    ]);
+    transportMocks.corsSafeFetch.mockClear();
 
     const controller = new AbortController();
     controller.abort();

@@ -24,7 +24,7 @@ import type { ApiProviderConfig, AppConfig, ProviderModelSelection } from '../..
 import type { ModelExecutionProfile, ProtocolJsonValue } from '../../src/types/aiTypes';
 import { getProviderPolicy } from '../../src/services/ai/providerPolicies';
 import { resolveGeneralModelConnection } from '../../src/services/ai/helpers';
-import { getCccGroupPresetModels } from '../../src/services/ai/cccProviderGroups';
+import { CCC_BANANA_MODEL_IDS, getCccGroupPresetModels, isCccBananaGroup, isCccBananaModelId } from '../../src/services/ai/cccProviderGroups';
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -966,7 +966,7 @@ describe('CCC API 内置厂商目录', () => {
     for (const id of ['gemini-3-pro-image-preview', 'gemini-3-pro-image',
       'gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'nano-banana2', 'nano-banana-pro']) {
       expect(models.find((model) => model.id === id), id).toMatchObject({
-        category: 'image', inputModalities: ['text'], executionProfile: {
+        category: 'image', inputModalities: ['text', 'image'], executionProfile: {
           preset: 'custom', protocol: { submit: { path: '/v1beta/models/{{model}}:generateContent' } },
         },
       });
@@ -1039,11 +1039,49 @@ describe('CCC Gemini 图片型号与旧连接协议兼容', () => {
     vi.restoreAllMocks();
   });
 
+  it('香蕉当前预置仅展示三个精确型号，不把旧别名当作当前候选', () => {
+    const models = getProviderDefinition('cccapi')!.models!;
+    const original = structuredClone(models);
+    const current = getCccGroupPresetModels(models, '🍌香蕉（官k）');
+    expect(current.map((model) => model.id)).toEqual([...CCC_BANANA_MODEL_IDS]);
+    for (const id of CCC_BANANA_MODEL_IDS) {
+      expect(isCccBananaModelId(id)).toBe(true);
+      expect(current.find((model) => model.id === id)?.imageCapability).toMatchObject({
+        resolutions: ['1K', '2K', '4K'], defaultResolution: '1K',
+      });
+    }
+    for (const id of ['nano-banana-pro', 'nano-banana2', 'gemini-3-pro-image-preview', 'Nano-Banana-Next']) {
+      expect(isCccBananaModelId(id)).toBe(false);
+    }
+    expect(isCccBananaGroup(' 🍌香蕉（官k） ')).toBe(true);
+    expect(isCccBananaGroup('CCC生图稳定')).toBe(false);
+    expect(isCccBananaGroup(undefined)).toBe(false);
+    expect(getCccGroupPresetModels(models, 'CCC生图稳定').every((model) => model.id.startsWith('gpt-image-'))).toBe(true);
+    expect(getCccGroupPresetModels(models, '新分组')).toEqual([]);
+    expect(models).toEqual(original);
+  });
+
+  it('当前 Key 返回的三款香蕉保留精确 ID 和分辨率，不添加未返回候选', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: [
+      { id: 'Nano-Banana-pro' }, { id: 'Nano-Banana-2.1' },
+    ] })));
+    const result = await fetchProviderModelCatalog({ providerId: 'ccc-banana-current', config: {
+      name: 'CCC', catalogId: 'cccapi', cccGroup: '🍌香蕉（官k）', apiKey: 'fixture-key',
+    }, fallbackModels: [...getProviderDefinition('cccapi')!.models!] });
+    expect(result.models.map((model) => model.id).sort()).toEqual(['Nano-Banana-2.1', 'Nano-Banana-pro']);
+    for (const model of result.models) {
+      expect(model.imageCapability).toMatchObject({ resolutions: ['1K', '2K', '4K'], defaultResolution: '1K' });
+      expect(model.imageCapability?.qualities).toBeUndefined();
+      expect(model.imageCapability?.backgrounds).toBeUndefined();
+      expect(model.imageCapability?.maxImageReferences).toBeUndefined();
+    }
+  });
+
   it('候选包含网页的三个精确 Nano Banana 写法，并保留旧型号 ID', () => {
     const models = getProviderDefinition('cccapi')!.models!;
     for (const id of ['Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1', 'nano-banana-pro', 'nano-banana2']) {
       expect(models.find((model) => model.id === id), id).toMatchObject({
-        id, category: 'image', provider: 'cccapi', inputModalities: ['text'],
+        id, category: 'image', provider: 'cccapi', inputModalities: ['text', 'image'],
         executionProfile: { preset: 'custom', protocol: { submit: {
           method: 'POST', path: '/v1beta/models/{{model}}:generateContent', pathMode: 'origin',
         } } },
@@ -1081,6 +1119,60 @@ describe('CCC Gemini 图片型号与旧连接协议兼容', () => {
     }
   });
 
+  function legacyNativeImageProfile(modelId: string): ModelExecutionProfile {
+    const profile = structuredClone(getProviderDefinition('cccapi')!.models!
+      .find((model) => model.id === modelId)!.executionProfile!);
+    const body = profile.protocol!.submit.body as Record<string, ProtocolJsonValue>;
+    body.contents = [{ role: 'user', parts: [{ text: '{{prompt}}' }] }];
+    return profile;
+  }
+
+  it.each(['gemini-3-pro-image-preview', 'gemini-2.5-flash-image', 'Nano-Banana-2.1'])(
+    '完整旧内置模板 %s 临时补齐全部参考图，已保存协议保持原样', (modelId) => {
+      const profile = legacyNativeImageProfile(modelId);
+      const saved = structuredClone(profile);
+      const effective = resolveCccGeminiImageExecutionProfile(modelId.toUpperCase(), profile);
+      expect(effective).not.toBe(profile);
+      expect(effective?.protocol?.submit.body).toMatchObject({
+        contents: [{ role: 'user', parts: '{{googleImageParts}}' }],
+      });
+      const body = effective?.protocol?.submit.body as Record<string, ProtocolJsonValue>;
+      expect(body.generationConfig).toMatchObject({ imageConfig: modelId === 'gemini-2.5-flash-image'
+        ? { aspectRatio: '{{aspectRatio}}' } : { aspectRatio: '{{aspectRatio}}', imageSize: '{{imageSize}}' } });
+      if (modelId === 'gemini-2.5-flash-image') {
+        expect(body.generationConfig).not.toHaveProperty('imageConfig.imageSize');
+      }
+      expect(profile).toEqual(saved);
+      const model: ProviderModelSelection = { id: modelId, name: modelId, category: 'image',
+        provider: 'cccapi', executionProfile: profile };
+      expect(resolveProviderImageModelForValidation(getProviderDefinition('cccapi'), model).executionProfile)
+        .toEqual(effective);
+      expect(model.executionProfile).toEqual(saved);
+    },
+  );
+
+  it.each(['path', 'headers', 'body', 'result'] as const)(
+    '旧内置模板的 %s 被用户修改后不替换协议', (field) => {
+      const profile = legacyNativeImageProfile('gemini-3-pro-image-preview');
+      const protocol = profile.protocol!;
+      if (field === 'path') protocol.submit.path = '/my-native-image';
+      if (field === 'headers') protocol.submit.headers = { 'X-Image-Mode': 'custom' };
+      if (field === 'body') (protocol.submit.body as Record<string, ProtocolJsonValue>).customOption = true;
+      if (field === 'result' && protocol.version === 2) protocol.response.result = { urlPath: 'my_image.url' };
+      const saved = structuredClone(profile);
+      expect(resolveCccGeminiImageExecutionProfile('gemini-3-pro-image-preview', profile)).toBe(profile);
+      expect(profile).toEqual(saved);
+    },
+  );
+
+  it('不替换新模板，也不为未知 ID 套用旧模板升级', () => {
+    const current = getProviderDefinition('cccapi')!.models!
+      .find((model) => model.id === 'gemini-3-pro-image-preview')!.executionProfile!;
+    expect(resolveCccGeminiImageExecutionProfile('gemini-3-pro-image-preview', current)).toBe(current);
+    const legacy = legacyNativeImageProfile('gemini-3-pro-image-preview');
+    expect(resolveCccGeminiImageExecutionProfile('gemini-4-image-preview', legacy)).toBe(legacy);
+  });
+
   it('远端大小写不同仍补已知原生合同，原 ID 和当前 Key 的目录范围保持不变', async () => {
     const ids = ['NANO-BANANA-PRO', 'nano-banana-2.1', 'GeMiNi-3.1-flash-image', 'gemini-4-image-preview'];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ data: ids.map((id) => ({ id })) })));
@@ -1092,7 +1184,7 @@ describe('CCC Gemini 图片型号与旧连接协议兼容', () => {
     expect(result.models.map((model) => model.id).sort()).toEqual([...ids].sort());
     for (const id of ids.slice(0, 3)) {
       expect(result.models.find((model) => model.id === id), id).toMatchObject({ id,
-        inputModalities: ['text'], executionProfile: { preset: 'custom', protocol: { submit: {
+        inputModalities: ['text', 'image'], executionProfile: { preset: 'custom', protocol: { submit: {
           path: '/v1beta/models/{{model}}:generateContent',
         } } },
       });

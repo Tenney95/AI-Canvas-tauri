@@ -2,7 +2,6 @@
 import type { ImageReferenceRequestMode, ProviderModelSelection } from '../../types';
 import type { ImageModelCapability, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
 import { mapImageDimensions } from '../aiDimensions';
-import { VLM_MAX_IMAGES } from './imageUtils';
 
 type GptVariant = 'gpt-2' | 'gpt-2.5';
 type BananaVariant = 'banana' | 'banana-pro' | 'banana-2' | 'banana-2.1';
@@ -97,8 +96,7 @@ function bananaCapability(variant: ImageVariant, transport: ImageTransport): Ima
     ratios: [...BANANA_RATIOS, ...(flash || variant === 'banana-2.1' ? BANANA_EXTRA_RATIOS : [])],
     defaultRatio: '1:1', supportsBatch: false, maxBatchCount: 1,
     supportsImageReference: true,
-    // 原生 inlineData 沿用应用现有 Base64 内存预算；URL 型 APIMart 保留渠道上限。
-    maxImageReferences: Math.min(original ? 3 : 14, transport === 'apimart' ? 14 : VLM_MAX_IMAGES),
+    maxImageReferences: original ? 3 : 14,
     supportsDataUrlReference: true,
   };
 }

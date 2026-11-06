@@ -14,7 +14,7 @@ vi.mock('../../src/services/fs/core', async (original) => ({
 }));
 
 import { generateImagesBatch } from '../../src/services/ai/generateImage';
-import { resolveImageDataUrlArray, resolveImageUrlArray, resolveNodeImageUrl } from '../../src/services/ai/imageUtils';
+import { IMAGE_GENERATION_DATA_URL_BUDGET, resolveImageDataUrlArray, resolveImageUrlArray, resolveNodeImageUrl } from '../../src/services/ai/imageUtils';
 import { getMediaReferenceUrl } from '../../src/services/ai/connectedReferenceMedia';
 import { resolvePromptWithMediaRefs } from '../../src/services/ai/promptResolver';
 import { generateImageStandard } from '../../src/services/ai/providers/standardImage';
@@ -262,7 +262,7 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(fromFile[0] === await asDataUrl(png(3, 0))).toBe(true);
     expect(fromInline[0] === await asDataUrl(png(4, 0))).toBe(true);
     localFetch.mockResolvedValueOnce(new Response(new Blob([new Uint8Array(9 * 1024 * 1024)], { type: 'image/jpeg' })));
-    await expect(resolveImageDataUrlArray(['asset://localhost/large.jpg'])).rejects.toThrow('8 MB');
+    await expect(resolveImageDataUrlArray(['asset://localhost/large.jpg'])).rejects.toThrow('8 MiB');
     localFetch.mockResolvedValueOnce(new Response('oversize', { headers: { 'Content-Type': 'image/png', 'Content-Length': String(33 * 1024 * 1024) } }));
     await expect(resolveImageDataUrlArray(['asset://localhost/huge.png'])).rejects.toThrow('32');
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
@@ -312,11 +312,51 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(mocks.transport).not.toHaveBeenCalled();
   });
 
-  it('仍限制参考图数量与最终 Base64 总字节，不以并发或压缩绕过', async () => {
+  it('默认视觉仍限制数量与总字节，同一组 28 MiB 图片可使用生图预算', async () => {
     await expect(resolveImageDataUrlArray(new Array(7).fill('data:image/jpeg;base64,AAAA'))).rejects.toThrow('6 张');
     const dataUrl = await asDataUrl(new Blob([new Uint8Array(7 * 1024 * 1024)], { type: 'image/jpeg' }));
-    await expect(resolveImageDataUrlArray(new Array(4).fill(dataUrl))).rejects.toThrow('24 MB');
+    const references = new Array<string>(4).fill(dataUrl);
+    await expect(resolveImageDataUrlArray(references)).rejects.toThrow('24 MiB');
+    await expect(resolveImageDataUrlArray(references, undefined, IMAGE_GENERATION_DATA_URL_BUDGET))
+      .resolves.toEqual(references);
     expect(decode).not.toHaveBeenCalled();
     expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it('生图预算独立于文本视觉：允许 14 图及超过 8 MiB 的原始图片', async () => {
+    expect(IMAGE_GENERATION_DATA_URL_BUDGET).toEqual({
+      maxImageBytes: 32 * 1024 * 1024, maxTotalBytes: 48 * 1024 * 1024,
+    });
+    const references = await Promise.all(Array.from({ length: 14 }, (_, index) =>
+      asDataUrl(new Blob([new Uint8Array([index])], { type: 'image/webp' }))));
+    await expect(resolveImageDataUrlArray(references, undefined, IMAGE_GENERATION_DATA_URL_BUDGET))
+      .resolves.toEqual(references);
+    const large = await asDataUrl(new Blob([new Uint8Array(9 * 1024 * 1024)], { type: 'image/webp' }));
+    await expect(resolveImageDataUrlArray([large], undefined, IMAGE_GENERATION_DATA_URL_BUDGET))
+      .resolves.toEqual([large]);
+    // 不把生图的预算传播给默认文本视觉调用。
+    await expect(resolveImageDataUrlArray([large])).rejects.toThrow('8 MiB');
+    await expect(resolveImageDataUrlArray(references)).rejects.toThrow('6 张');
+    expect(localFetch).not.toHaveBeenCalled();
+    expect(decode).not.toHaveBeenCalled();
+  });
+
+  it('独立预算包含边界值，逐张累计且超限后不继续领取剩余参考图', async () => {
+    // 按字节缩放预算验证边界，避免为上限回归分配多份几十 MiB 的正文。
+    const budget = { maxImageBytes: 32, maxTotalBytes: 48 };
+    const inline = (bytes: number) => asDataUrl(new Blob([new Uint8Array(bytes)], { type: 'image/webp' }));
+    const exact = [await inline(32), await inline(16)];
+    await expect(resolveImageDataUrlArray(exact, undefined, budget)).resolves.toEqual(exact);
+    await expect(resolveImageDataUrlArray([await inline(33)], undefined, budget)).rejects.toThrow('单图转换上限');
+    localFetch.mockImplementation(async (url) => new Response(new Uint8Array(String(url).includes('extra') ? 1 : 24), {
+      headers: { 'Content-Type': 'image/webp' },
+    }));
+    await expect(resolveImageDataUrlArray([
+      'asset://localhost/first.webp', 'asset://localhost/second.webp',
+      'asset://localhost/extra-1.webp', 'asset://localhost/extra-2.webp', 'asset://localhost/extra-3.webp',
+    ], undefined, budget)).rejects.toThrow('合计超过应用转换上限');
+    expect(localFetch.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(localFetch.mock.calls.map(([url]) => url)).not.toContain('asset://localhost/extra-3.webp');
+    expect(mocks.transport).not.toHaveBeenCalled();
   });
 });

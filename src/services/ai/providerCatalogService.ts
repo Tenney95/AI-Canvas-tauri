@@ -41,7 +41,8 @@ import { AIGCSI_BASE_URL, AIGCSI_MODEL_MANIFEST, matchAigcsiCatalog, normalizeAi
 import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from './providers/minimaxModelManifest';
 import { assertImageModelCapability, isModelProtocolPresetId } from './modelCapabilityValidation';
 import { validateModelExecutionProtocol } from './modelProtocolValidation';
-import { filterCccGroupModels } from './cccProviderGroups';
+import { comparableProtocol } from './modelProtocol';
+import { CCC_BANANA_MODEL_IDS, filterCccGroupModels, isCccBananaModelId } from './cccProviderGroups';
 import { filterRelayonGroupPricing } from './relayonProviderGroups';
 import {
   GOOGLE_GEMINI_BASE_URL,
@@ -115,13 +116,13 @@ const API_KEY_FIELD: ProviderCredentialField = {
 
 // CCC 的 Gemini 渠道沿用 generateContent；鉴权用中转 Key，不复用 Google 直连协议。
 // https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/server/routes/gateway.go
-function cccGeminiImageProtocol(supportsImageSize: boolean): NormalizedModelExecutionProtocol {
+function cccGeminiImageProtocol(supportsImageSize: boolean, acceptsReferences = true): NormalizedModelExecutionProtocol {
   return {
     version: 2, mode: 'sync', auth: { type: 'bearer' },
     submit: {
       method: 'POST', path: '/v1beta/models/{{model}}:generateContent', pathMode: 'origin',
       body: {
-        contents: [{ role: 'user', parts: [{ text: '{{prompt}}' }] }],
+        contents: [{ role: 'user', parts: acceptsReferences ? '{{googleImageParts}}' : [{ text: '{{prompt}}' }] }],
         generationConfig: {
           responseModalities: ['TEXT', 'IMAGE'],
           imageConfig: {
@@ -211,11 +212,15 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     'gemini-3-pro-image-preview', 'gemini-3-pro-image', 'gemini-3.1-flash-image',
     'gemini-2.5-flash-image', 'nano-banana2', 'nano-banana-pro',
     // 当前模型广场写法；旧别名保留兼容，实际请求始终保留 Key 目录中的 ID。
-    'Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1',
+    ...CCC_BANANA_MODEL_IDS,
   ].map((id): ProviderModelSelection => ({
     id, name: id, category: 'image', provider: 'cccapi',
-    description: 'CCC Gemini 原生文生图（当前不接收参考图）',
-    inputModalities: ['text'],
+    description: 'CCC Gemini 原生文生图与参考编辑，参考图片通过 inlineData 完整发送',
+    inputModalities: ['text', 'image'],
+    ...(isCccBananaModelId(id) ? { imageCapability: {
+      resolutions: ['1K', '2K', '4K'], defaultResolution: '1K',
+      ratios: ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '4:5', '5:4', '21:9'], defaultRatio: '1:1',
+    } } : {}),
     executionProfile: { preset: 'custom', protocol: cccGeminiImageProtocol(id !== 'gemini-2.5-flash-image') },
   })),
   {
@@ -585,17 +590,21 @@ export function createConnectionId(providerId: string): string {
   return `${providerId === 'custom-openai' ? 'custom' : providerId}-${suffix}`;
 }
 
-/** 只补 CCC 已核实图片型号的缺省／旧 Images 预设，不覆盖用户自定义协议。 */
+/** 只补已知 CCC 的缺省／旧 Images 预设及完整旧内置模板，不覆盖用户改写的协议。 */
 export function resolveCccGeminiImageExecutionProfile(
   modelId: string,
   profile?: ModelExecutionProfile,
 ): ModelExecutionProfile | undefined {
   if (!/^(?:gemini-.*image|nano-banana)/i.test(modelId)) return profile;
-  if (profile && (!['openai-image', 'openai-gpt-image'].includes(profile.preset)
-    || profile.protocol !== undefined
-    || Object.keys(profile).some((key) => key !== 'preset' && key !== 'protocol'))) return profile;
   const known = CCCAPI_MODEL_MANIFEST.find((item) => item.category === 'image'
     && item.id.toLowerCase() === modelId.toLowerCase() && item.executionProfile?.preset === 'custom');
+  const legacyNative = profile?.preset === 'custom' && known
+    && Object.keys(profile).every((key) => key === 'preset' || key === 'protocol')
+    && comparableProtocol(profile) === comparableProtocol({ preset: 'custom',
+      protocol: cccGeminiImageProtocol(known.id.toLowerCase() !== 'gemini-2.5-flash-image', false) });
+  if (profile && (!['openai-image', 'openai-gpt-image'].includes(profile.preset)
+    || profile.protocol !== undefined
+    || Object.keys(profile).some((key) => key !== 'preset' && key !== 'protocol')) && !legacyNative) return profile;
   return known?.executionProfile ? structuredClone(known.executionProfile) : profile;
 }
 

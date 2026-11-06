@@ -11,6 +11,8 @@ import type { AppConfig } from '../../types';
 import { getRunningHubModel } from './providers/runninghubModelManifest';
 import { getGrsaiImageCapability } from './grsaiModels';
 import { getProviderDefinition } from './providerCatalogService';
+import { isCccBananaModelId } from './cccProviderGroups';
+import { modelProtocolUsesVariable } from './modelProtocol';
 import { resolveToapisImageModelContract } from './providers/toapisModelManifest';
 import { resolveRelayonImageModelContract } from './providers/relayonModelManifest';
 import { getLibapiAudioCapability, usesLibapiModelProtocol } from './providers/libapiModelManifest';
@@ -585,7 +587,8 @@ export function resolveImageParameterCapability(
   const catalogModel = definition?.models?.find((item) => item.id === modelId && item.category === 'image');
   // CCC 已确认的原生 Images 合同在生成入口优先于旧连接协议，参数面板必须使用相同边界。
   const catalogStandard = definition?.id === 'cccapi' && catalogModel?.imageReferenceRequestMode === 'edits-multipart';
-  const profile = catalogStandard ? undefined : generalModel?.executionProfile;
+  const profile = catalogStandard ? undefined : generalModel?.executionProfile
+    ?? (definition?.id === 'cccapi' ? selection?.executionProfile : undefined);
   if (definition?.id === 'grsai') {
     return getImageCapability(modelId.startsWith('grsai/') ? modelId : `grsai/${modelId}`);
   }
@@ -614,7 +617,7 @@ export function resolveImageParameterCapability(
   const catalog = catalogModel?.imageCapability;
   const parameterDeclaration = catalogStandard ? catalog : declared;
   const standard = !profile || profile.preset === 'openai-image' || profile.preset === 'openai-gpt-image';
-  const capability = imageCapabilityForProtocol({ modelId, resolutionStyle: fallback?.resolutionStyle ?? 'none',
+  let capability = imageCapabilityForProtocol({ modelId, resolutionStyle: fallback?.resolutionStyle ?? 'none',
     ...fallback, ...catalog, ...declared,
     ...(standard && definition?.id !== 'custom-openai' ? {
       qualities: parameterDeclaration?.qualities ?? catalog?.qualities ?? fallback?.qualities,
@@ -628,6 +631,21 @@ export function resolveImageParameterCapability(
       backgrounds: declared?.backgrounds, defaultBackground: declared?.defaultBackground,
     }),
   }, profile);
+  if (definition?.id === 'cccapi' && isCccBananaModelId(modelId) && profile?.preset === 'custom') {
+    const source = JSON.stringify(profile.protocol?.submit) ?? '';
+    const mapsDimensions = modelProtocolUsesVariable(source, 'width') && modelProtocolUsesVariable(source, 'height');
+    // 用户声明仍是权威；只有从目录继承的选项需要复核是否能进入改写后的请求。
+    if (declared?.resolutions !== undefined) capability = { ...capability, defaultResolution: declared.defaultResolution };
+    if (declared?.ratios !== undefined) capability = { ...capability, defaultRatio: declared.defaultRatio };
+    if (declared?.resolutions?.length === 0
+      || (declared?.resolutions === undefined && !mapsDimensions && !modelProtocolUsesVariable(source, 'imageSize', 'size'))) {
+      capability = { ...capability, resolutions: [], defaultResolution: declared?.defaultResolution, resolutionStyle: 'none' };
+    }
+    if (declared?.ratios?.length === 0
+      || (declared?.ratios === undefined && !mapsDimensions && !modelProtocolUsesVariable(source, 'aspectRatio', 'size'))) {
+      capability = { ...capability, ratios: [], defaultRatio: declared?.defaultRatio };
+    }
+  }
   if (!fallback && !catalog && !declared) return undefined;
   return { ...capability,
     ...(generalModel ? { resolutions: capability.resolutions ?? [], ratios: capability.ratios ?? [] } : {}) };

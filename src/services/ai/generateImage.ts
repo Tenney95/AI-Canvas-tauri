@@ -30,7 +30,7 @@ import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { collectPromptNodeMediaUrls, resolvePromptWithImageRefs, resolvePromptWithMediaRefs } from './promptResolver';
 import { warnIfTooManyReferences } from './connectedReferenceMedia';
-import { resolveImageDataUrlArray, resolveImageUrlArray } from './imageUtils';
+import { IMAGE_GENERATION_DATA_URL_BUDGET, resolveImageDataUrlArray, resolveImageUrlArray } from './imageUtils';
 import { generateImageStandardBatch } from './providers/standardImage';
 import { generateVolcengineImagesBatch } from './providers/volcengineImage';
 import { retainCompletedMediaResults, runConfiguredModelProtocol } from './modelProtocolRuntime';
@@ -202,7 +202,8 @@ export async function generateImagesBatch(
   const builtInContract = params.workflowId ? undefined
     : resolveBuiltInImageRequestContract(providerDefinition, modelName, imageSize, aspectRatio, imageQuality, imageBackground);
   const configuredCapability = !params.workflowId && !builtInContract
-    ? toapisContract?.imageCapability ?? relayonContract?.imageCapability ?? generalModel?.imageCapability : undefined;
+    ? toapisContract?.imageCapability ?? relayonContract?.imageCapability ?? generalModel?.imageCapability
+      ?? (isCccImage ? selectedModel?.imageCapability : undefined) : undefined;
   if (!builtInContract && generalModel) {
     assertModelCapabilityProtocol({ id: generalModel.modelId, name: generalModel.name, category: 'image',
       provider: connectionId, executionProfile: effectiveProfile,
@@ -227,16 +228,16 @@ export async function generateImagesBatch(
       ?? (executionProfile?.preset === 'custom' && !usesRelayonProtocol ? undefined
         : selectedModel?.imageReferenceRequestMode
           ?? catalogModel?.imageReferenceRequestMode);
+  const customProtocol = executionProfile?.preset === 'custom'
+    ? resolveModelExecutionProfile(executionProfile)
+    : undefined;
+  const usesGoogleImageParts = !!customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts');
   const usesImageDataUrls = !params.workflowId
-    && (usesAigcsiProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
+    && (usesGoogleImageParts || usesAigcsiProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
       || imageReferenceRequestMode === 'generation-json-image-data-urls');
   const usesImageMultipart = !params.workflowId
     && usesStandardImageRequest
     && imageReferenceRequestMode === 'edits-multipart';
-
-  const customProtocol = executionProfile?.preset === 'custom'
-    ? resolveModelExecutionProfile(executionProfile)
-    : undefined;
   const usesCustomImageFiles = customProtocol?.submit.bodyEncoding === 'multipart'
     && hasReferenceImageFile(customProtocol.submit.body);
 
@@ -289,7 +290,8 @@ export async function generateImagesBatch(
     styleAsFirst,
     aspectRatio,
   );
-  warnIfTooManyReferences({ image: allImageUrls.length });
+  // 原生图片按显式模型能力校验，不用通用“多数模型前 10 项”的提示猜测其上限。
+  if (!usesGoogleImageParts) warnIfTooManyReferences({ image: allImageUrls.length });
 
   // Dreamina：CLI 端本地化图片，不走图床上传
   if (provider === 'dreamina') {
@@ -350,7 +352,7 @@ export async function generateImagesBatch(
   const aigcsiExecutionProfile = usesAigcsiProtocol ? aigcsiImageExecutionProfile(allImageUrls.length) : undefined;
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
   allImageUrls = provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
-    ? await resolveImageDataUrlArray(allImageUrls, signal)
+    ? await resolveImageDataUrlArray(allImageUrls, signal, usesGoogleImageParts ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
     : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi ? connectionId : provider, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
@@ -416,7 +418,7 @@ export async function generateImagesBatch(
         n: requestedCount,
         batchCount: requestedCount,
         imageUrls: providerDefinition?.id === 'toapis' ? toapisImageReferences(modelName, allImageUrls) : allImageUrls,
-        ...(customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts')
+        ...(usesGoogleImageParts
           ? { googleImageParts: buildGoogleImageParts(prompt, allImageUrls) } : {}),
       };
       const urls = await runConfiguredModelProtocol({

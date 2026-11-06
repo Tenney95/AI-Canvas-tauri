@@ -9,7 +9,7 @@ import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisMod
 import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
 import { resolveMinimaxExecutionProfile } from '../../src/services/ai/providers/minimaxModelManifest';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
-import type { ProtocolJsonValue } from '../../src/types/aiTypes';
+import type { ImageModelCapability, ModelExecutionProfile, ProtocolJsonValue } from '../../src/types/aiTypes';
 
 describe('真实连接的音频参数能力', () => {
   it.each(['speech-2.8-hd', 'speech-2.8-turbo'])('%s 的声音、格式与语速来自官方精确合同且不修改保存配置', (modelId) => {
@@ -201,6 +201,140 @@ describe('custom image parameter declarations', () => {
 import { resolveBuiltInImageRequestContract } from '../../src/services/ai/imageRequestContracts';
 import { getProviderDefinition } from '../../src/services/ai/providerCatalogService';
 import type { AppConfig } from '../../src/types';
+
+describe('CCC 当前香蕉分辨率', () => {
+  function customCccConfig(modelId: string, body: ProtocolJsonValue, imageCapability?: ImageModelCapability): Pick<AppConfig, 'providers' | 'generalModels'> {
+    const executionProfile: ModelExecutionProfile = { preset: 'custom', protocol: { version: 2, mode: 'sync',
+      submit: { method: 'POST', path: '/my-image', body },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    } };
+    return {
+      providers: { banana: { name: 'CCC', apiKey: '', catalogId: 'cccapi', selectedModels: [
+        { id: modelId, name: modelId, category: 'image', provider: 'banana', executionProfile, imageCapability },
+      ] } },
+      generalModels: [{ id: 'custom-banana', modelId, name: modelId, category: 'image', providerConfigId: 'banana',
+        executionProfile, imageCapability }],
+    };
+  }
+
+  it.each(['Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1'])(
+    '%s 的 prompt-only 自定义协议不继承目录档位或比例，通用及直连一致', (modelId) => {
+      const config = customCccConfig(modelId, { prompt: '{{prompt}}' });
+      const saved = structuredClone(config);
+      for (const [model, provider] of [['general/custom-banana', 'general'], [`banana/${modelId}`, 'banana']]) {
+        expect(resolveImageParameterCapability(model, provider, config)).toMatchObject({ resolutions: [], ratios: [] });
+        expect(resolveImageParameterCapability(model, provider, config)?.defaultResolution).toBeUndefined();
+        expect(resolveImageParameterCapability(model, provider, config)?.defaultRatio).toBeUndefined();
+      }
+      // 通用记录未复制协议时，仍按当前已选模型的真实协议判断。
+      delete config.generalModels![0].executionProfile;
+      expect(resolveImageParameterCapability('general/custom-banana', 'general', config))
+        .toMatchObject({ resolutions: [], ratios: [] });
+      config.generalModels![0].executionProfile = saved.generalModels![0].executionProfile;
+      expect(config).toEqual(saved);
+    },
+  );
+
+  const mappedParameterCases: Array<{ name: string; body: ProtocolJsonValue; resolution: boolean; ratio: boolean }> = [
+    { name: '分辨率', body: { image_size: '{{imageSize}}' }, resolution: true, ratio: false },
+    { name: '比例', body: { ratio: '{{aspectRatio}}' }, resolution: false, ratio: true },
+    { name: 'size 宽高', body: { size: '{{size}}' }, resolution: true, ratio: true },
+    { name: '成对像素宽高', body: { width: '{{width}}', height: '{{height}}' }, resolution: true, ratio: true },
+    { name: '单独宽度', body: { width: '{{width}}' }, resolution: false, ratio: false },
+    { name: '单独高度', body: { height: '{{height}}' }, resolution: false, ratio: false },
+    { name: '固定参数', body: { image_size: '4K', ratio: '9:16' }, resolution: false, ratio: false },
+  ];
+  it.each(mappedParameterCases)('只为实际映射的 $name 保留继承选项', ({ body, resolution, ratio }) => {
+    const config = customCccConfig('Nano-Banana-pro', body);
+    const capability = resolveImageParameterCapability('general/custom-banana', 'general', config)!;
+    expect(capability.resolutions).toEqual(resolution ? ['1K', '2K', '4K'] : []);
+    expect(capability.ratios?.includes('9:16') ?? false).toBe(ratio);
+    if (!resolution) expect(capability.defaultResolution).toBeUndefined();
+    if (!ratio) expect(capability.defaultRatio).toBeUndefined();
+  });
+
+  it('轮询请求中的变量不作为生成提交的可调参数', () => {
+    const config = customCccConfig('Nano-Banana-pro', { prompt: '{{prompt}}' });
+    config.generalModels![0].executionProfile = { preset: 'custom', protocol: { version: 2, mode: 'async',
+      submit: { method: 'POST', path: '/my-image', body: { prompt: '{{prompt}}' } },
+      response: { type: 'json', taskIdPath: 'id' },
+      poll: { method: 'GET', path: '/tasks/{{submit.task_id}}', query: { size: '{{imageSize}}', ratio: '{{aspectRatio}}' },
+        response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], result: { urlPath: 'url' } } },
+    } };
+    expect(resolveImageParameterCapability('general/custom-banana', 'general', config))
+      .toMatchObject({ resolutions: [], ratios: [] });
+  });
+
+  it('显式能力及空数组保留原声明，不向保存配置反写派生能力', () => {
+    const declarations: ImageModelCapability[] = [
+      { resolutions: ['2K'], defaultResolution: '2K', ratios: ['9:16'], defaultRatio: '9:16' },
+      { resolutions: [], ratios: [] },
+      { resolutions: ['2K'], ratios: ['9:16'] },
+    ];
+    for (const imageCapability of declarations) {
+      const config = customCccConfig('Nano-Banana-pro', { prompt: '{{prompt}}' }, imageCapability);
+      const saved = structuredClone(config);
+      const capability = resolveImageParameterCapability('general/custom-banana', 'general', config)!;
+      expect(capability).toMatchObject({ resolutions: imageCapability.resolutions, ratios: imageCapability.ratios });
+      expect(capability.defaultResolution).toBe(imageCapability.defaultResolution);
+      expect(capability.defaultRatio).toBe(imageCapability.defaultRatio);
+      // 空数组供面板表示不展示；持久化能力校验仍按原规则拒绝空选项。
+      if (imageCapability.resolutions?.length) expect(() => assertImageModelCapability(capability)).not.toThrow();
+      expect(config).toEqual(saved);
+    }
+  });
+
+  it.each(['Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1'])(
+    '%s 的通用与旧直连节点均从真实 CCC 目录显示三档', (modelId) => {
+      const native = getProviderDefinition('cccapi')!.models!.find((model) => model.id === modelId)!;
+      const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+        providers: { banana: { name: 'CCC 香蕉', apiKey: '', catalogId: 'cccapi', cccGroup: '🍌香蕉（官k）',
+          selectedModels: [{ id: modelId, name: modelId, category: 'image', provider: 'banana',
+            executionProfile: structuredClone(native.executionProfile) }] } },
+        generalModels: [{ id: 'saved-banana', name: modelId, modelId, category: 'image', providerConfigId: 'banana',
+          executionProfile: structuredClone(native.executionProfile) }],
+      };
+      const original = structuredClone(config);
+      for (const [model, provider] of [[`general/saved-banana`, 'general'], [`banana/${modelId}`, 'banana'], [modelId, 'banana']]) {
+        const capability = resolveImageParameterCapability(model, provider, config);
+        expect(capability?.resolutions).toEqual(['1K', '2K', '4K']);
+        expect(capability?.ratios).toContain('9:16');
+        for (const imageSize of ['2K', '4K']) {
+          expect(resolveConfiguredImageParameters(capability!, { imageSize, aspectRatio: '9:16', count: 1 }))
+            .toMatchObject({ imageSize, aspectRatio: '9:16' });
+        }
+      }
+      expect(config).toEqual(original);
+    },
+  );
+
+  it('显式自定义连接同名型号不继承 CCC 档位，包括连接名为 cccapi', () => {
+    for (const modelId of ['Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1']) {
+      const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+        providers: { cccapi: { name: '自己的接口', apiKey: '', catalogId: 'custom-openai' } },
+        generalModels: [{ id: 'custom-banana', name: modelId, modelId, category: 'image', providerConfigId: 'cccapi' }],
+      };
+      expect(resolveImageParameterCapability('general/custom-banana', 'general', config)?.resolutions).toEqual([]);
+    }
+  });
+
+  it('用户已保存的档位与协议优先，面板解析不覆盖配置', () => {
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { banana: { name: 'CCC', apiKey: '', catalogId: 'cccapi' } },
+      generalModels: [{ id: 'customized-banana', name: '自己的 Pro', modelId: 'Nano-Banana-pro', category: 'image', providerConfigId: 'banana',
+        imageCapability: { resolutions: ['2K'], defaultResolution: '2K', ratios: ['9:16'], defaultRatio: '9:16' },
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+          submit: { method: 'POST', path: '/my-image', body: { size: '{{imageSize}}' } },
+          response: { type: 'json', result: { urlPath: 'url' } },
+        } },
+      }],
+    };
+    const original = structuredClone(config);
+    expect(resolveImageParameterCapability('general/customized-banana', 'general', config))
+      .toMatchObject({ resolutions: ['2K'], defaultResolution: '2K', ratios: ['9:16'], defaultRatio: '9:16' });
+    expect(config).toEqual(original);
+  });
+});
 
 describe('image model capability resolution', () => {
   const grsaiConfig: Pick<AppConfig, 'providers' | 'generalModels'> = {

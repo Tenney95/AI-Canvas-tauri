@@ -62,10 +62,21 @@ describe('explicit image quick templates', () => {
     expect(createImageQuickAdaptTemplate('banana:google').imageCapability!.resolutions).toEqual(['1K']);
     expect(createImageQuickAdaptTemplate('banana-2:google').imageCapability!.resolutions).toContain('512');
     expect(createImageQuickAdaptTemplate('banana-2:apimart').imageCapability!.resolutions).toContain('0.5K');
-    expect(createImageQuickAdaptTemplate('banana-pro:google').imageCapability!.maxImageReferences).toBe(6);
+    expect(createImageQuickAdaptTemplate('banana-pro:google').imageCapability!.maxImageReferences).toBe(14);
     expect(createImageQuickAdaptTemplate('banana-pro:apimart').imageCapability!.maxImageReferences).toBe(14);
     expect(createImageQuickAdaptTemplate('gpt-2:images-json').imageCapability!.maxImageReferences).toBe(8);
     expect(createImageQuickAdaptTemplate('gpt-2:apimart').imageCapability!.maxBatchCount).toBe(1);
+  });
+
+  it.each([
+    { variant: 'banana', maximum: 3 },
+    { variant: 'banana-pro', maximum: 14 },
+    { variant: 'banana-2', maximum: 14 },
+    { variant: 'banana-2.1', maximum: 14 },
+  ])('keeps $variant reference capacity independent of text VLM budgets', ({ variant, maximum }) => {
+    for (const transport of ['google', 'gemini-relay', 'apimart']) {
+      expect(createImageQuickAdaptTemplate(`${variant}:${transport}`).imageCapability!.maxImageReferences).toBe(maximum);
+    }
   });
 
   it('converts all native references and keeps prompt/MIME metadata out of delivery checks', () => {
