@@ -1811,9 +1811,11 @@ describe('image quick template request transport', () => {
   it.each([
     { id: 'banana-pro:google', path: '/v1/models/actual-model-id:generateContent', auth: { 'x-goog-api-key': 'template-fixture' }, field: 'responseFormat' },
     { id: 'banana-pro:gemini-relay', path: '/v1beta/models/actual-model-id:generateContent', auth: { Authorization: 'Bearer template-fixture' }, field: 'imageConfig' },
-  ])('sends every prepared reference in the selected $id native contract', async ({ id, path, auth, field }) => {
+  ])('sends all seven prepared references in one POST using the selected $id native contract', async ({ id, path, auth, field }) => {
     const params = configureTemplate(id);
-    const references = ['data:image/png;base64,YQ==', 'data:image/png;base64,Yg==', 'data:image/png;base64,Yw=='];
+    const references = ['YQ==', 'Yg==', 'Yw==', 'ZA==', 'ZQ==', 'Zg==', 'Zw==']
+      .map((data) => `data:image/png;base64,${data}`);
+    const readReference = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected reference fetch'));
     transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ candidates: [{ content: { parts: [
       { text: 'Description' }, { inlineData: { mimeType: 'image/png', data: 'aW1hZ2U=' } },
     ] } }] }));
@@ -1821,11 +1823,13 @@ describe('image quick template request transport', () => {
     expect(result.results[0].url).toBe('data:image/png;base64,aW1hZ2U=');
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
     const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
+    expect(init.method).toBe('POST');
+    expect(readReference).not.toHaveBeenCalled();
     expect(url).toBe(`https://images.example${path}`);
     expect(init.headers).toMatchObject(auth);
     const body = JSON.parse(String(init.body));
     expect(body.contents[0].parts[0].text).toContain(params.prompt);
-    expect(body.contents[0].parts[0].text).toContain('3 张参考图');
+    expect(body.contents[0].parts[0].text).toContain('7 张参考图');
     expect(body.contents[0].parts[0].text).toContain('16:9');
     expect(body.contents[0].parts).toEqual([{ text: expect.any(String) }, ...references.map((reference) => ({
       inlineData: { mimeType: 'image/png', data: reference.split(',')[1] },
@@ -1834,10 +1838,12 @@ describe('image quick template request transport', () => {
       ? { aspectRatio: '16:9', imageSize: '2K' } : { image: { aspectRatio: '16:9', imageSize: '2K' } });
   });
 
-  it('blocks references beyond the visible native transport budget before reading or submitting', async () => {
+  it('blocks references beyond the model-declared native limit before reading or submitting', async () => {
     const params = configureTemplate('banana-pro:google');
-    await expect(generateImagesBatch({ ...params, image_urls: Array.from({ length: 7 }, (_, index) =>
-      `https://cdn.example/reference-${index}.png`) }, 1)).rejects.toThrow('最多支持 6');
+    const readReference = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected reference fetch'));
+    await expect(generateImagesBatch({ ...params, image_urls: Array.from({ length: 15 }, (_, index) =>
+      `https://cdn.example/reference-${index}.png`) }, 1)).rejects.toThrow('最多支持 14');
+    expect(readReference).not.toHaveBeenCalled();
     expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
   });
 

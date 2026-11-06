@@ -63,6 +63,7 @@ import { GENERAL_ASSISTANT_SCOPE_ID, isGeneralAssistantTool } from '../../../src
 import { getPendingTasksForProject, MediaTaskPausedError, savePendingTask } from '../../../src/services/pollManager';
 import { imageBatchArtifactId } from '../../../src/services/imageBatchService';
 import type { MediaGenerationResult } from '../../../src/types/media';
+import type { ChatMessage } from '../../../src/types/chat';
 
 function arrangeConversation(): void {
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -120,13 +121,43 @@ describe('ordinary conversation media recovery', () => {
     savePendingTask({ ...receipt, nodeType: 'ai-image', taskType: 'custom-protocol', provider: 'general', submitted: true,
       batchCount: 4, expectedImageOutputs: 4, resultUrls: artifacts.map((artifact) => artifact.sourceUrl),
       mediaContext: { projectId: 'project-1', messageId: 'mj-message', conversationId: 'conversation-1', deliveryMode: 'message' } });
+    const writes = artifacts.map(() => {
+      let finish!: () => void;
+      const promise = new Promise<void>((resolve) => { finish = resolve; });
+      return { promise, finish };
+    });
+    const durableMessageIds = new Set<string>();
+    mediaHistoryMocks.persist.mockImplementation(async (message: ChatMessage) => {
+      const index = artifacts.findIndex((item) => item.id === message.mediaResult?.id);
+      if (index < 0) return;
+      await writes[index].promise;
+      durableMessageIds.add(message.id);
+    });
     mediaRuntimeMocks.generate.mockResolvedValue({ ...artifacts[0], expectedOutputCount: 4, additionalResults: artifacts.slice(1) });
-    await triggerMediaGeneration('mj-message', { kind: 'image', prompt: '猫', modelRef: 'general/mj', deliveryMode: 'chat' });
+    let settled = false;
+    const running = triggerMediaGeneration('mj-message', { kind: 'image', prompt: '猫', modelRef: 'general/mj', deliveryMode: 'chat' })
+      .then(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(useAppStore.getState().messages.filter((message) => message.mediaResult)).toHaveLength(4));
+      expect(durableMessageIds.size).toBe(0);
+      expect(settled).toBe(false);
+      expect(getPendingTasksForProject('project-1')).toHaveLength(1);
+      for (const [index, write] of writes.slice(0, 3).entries()) {
+        write.finish();
+        await vi.waitFor(() => expect(durableMessageIds.size).toBe(index + 1));
+        expect(settled).toBe(false);
+        expect(getPendingTasksForProject('project-1')).toHaveLength(1);
+      }
+    } finally { writes.forEach((write) => write.finish()); }
+    await running;
     const messages = useAppStore.getState().messages.filter((message) => message.mediaResult);
     expect(messages.map((message) => message.mediaResult?.id)).toEqual(artifacts.map((artifact) => artifact.id));
     expect(messages.every((message) => !('additionalResults' in message.mediaResult!)
       && !('expectedOutputCount' in message.mediaResult!))).toBe(true);
-    expect(mediaHistoryMocks.persist).toHaveBeenCalledTimes(4);
+    expect(new Set(messages.map((message) => message.id)).size).toBe(4);
+    expect(durableMessageIds).toEqual(new Set(messages.map((message) => message.id)));
+    for (const message of messages) expect(mediaHistoryMocks.persist).toHaveBeenCalledWith(expect.objectContaining({ id: message.id,
+      mediaResult: artifacts.find((item) => item.id === message.mediaResult?.id) }), 'project-1', 'conversation-1');
     expect(getPendingTasksForProject('project-1')).toEqual([]);
     expect(mediaRuntimeMocks.generate).toHaveBeenCalledOnce();
   });

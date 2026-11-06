@@ -2977,7 +2977,8 @@ describe('critical canvas node interactions', () => {
       CANVAS_PAN_DURATION_MS: 200,
       requestCanvasPanBy: vi.fn(),
     }));
-    vi.doMock('../../src/services/projectSettingsService', () => ({
+    vi.doMock('../../src/services/projectSettingsService', async () => ({
+      ...await vi.importActual<typeof import('../../src/services/projectSettingsService')>('../../src/services/projectSettingsService'),
       getImageNodeDimensionsForAspectRatio: vi.fn(),
       resolveProjectGenerationPrompt: vi.fn(),
     }));

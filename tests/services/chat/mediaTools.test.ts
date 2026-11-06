@@ -86,16 +86,44 @@ describe('keyed media operation progress', () => {
       mediaContext: { projectId: 'project-1', conversationId: toolContext.conversationId,
         messageId: 'receipt-message', deliveryMode: 'message' } });
     vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockResolvedValue(undefined);
-    const history = vi.spyOn(chatHistory, 'persistMessage').mockResolvedValue(undefined);
+    const writes = artifacts.map(() => {
+      let finish!: () => void;
+      const promise = new Promise<void>((resolve) => { finish = resolve; });
+      return { promise, finish };
+    });
+    const durableMessageIds = new Set<string>();
+    const history = vi.spyOn(chatHistory, 'persistMessage').mockImplementation(async (message) => {
+      const index = artifacts.findIndex((item) => item.id === message.mediaResult?.id);
+      if (index < 0) return;
+      await writes[index].promise;
+      durableMessageIds.add(message.id);
+    });
     const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockResolvedValue({ ...artifacts[0],
       expectedOutputCount: 4, additionalResults: artifacts.slice(1) });
-    const result = await definition.execute(toolContext, input);
+    let settled = false;
+    const running = definition.execute(toolContext, input).then((result) => { settled = true; return result; });
+    try {
+      await vi.waitFor(() => expect(useAppStore.getState().messages.filter((message) => message.mediaResult)).toHaveLength(4));
+      expect(durableMessageIds.size).toBe(0);
+      expect(settled).toBe(false);
+      expect(getPendingTasksForProject('project-1')).toHaveLength(1);
+      for (const [index, write] of writes.slice(0, 3).entries()) {
+        write.finish();
+        await vi.waitFor(() => expect(durableMessageIds.size).toBe(index + 1));
+        expect(settled).toBe(false);
+        expect(getPendingTasksForProject('project-1')).toHaveLength(1);
+      }
+    } finally { writes.forEach((write) => write.finish()); }
+    const result = await running;
     expect(result).toMatchObject({ status: 'success' });
     expect(JSON.parse(result.modelContent)).toMatchObject({ outputCount: 4, artifactIds: artifacts.map((item) => item.id), deliveryPending: false });
     const messages = useAppStore.getState().messages.filter((message) => message.mediaResult);
     expect(messages).toHaveLength(4);
     expect(messages.every((message) => !('additionalResults' in message.mediaResult!))).toBe(true);
-    expect(history).toHaveBeenCalledTimes(4);
+    expect(new Set(messages.map((message) => message.id)).size).toBe(4);
+    expect(durableMessageIds).toEqual(new Set(messages.map((message) => message.id)));
+    for (const message of messages) expect(history).toHaveBeenCalledWith(expect.objectContaining({ id: message.id,
+      mediaResult: artifacts.find((item) => item.id === message.mediaResult?.id) }), toolContext.projectId, toolContext.conversationId);
     expect(getPendingTasksForProject('project-1')).toEqual([]);
     expect(generate).toHaveBeenCalledOnce();
     expect(result.modelContent).not.toContain('https://');

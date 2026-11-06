@@ -1024,10 +1024,11 @@ describe('GPT Image 2.6 的逐厂商目录', () => {
     for (const [provider, ids] of [
       ['toapis', ['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official']],
       ['aigc-si', ['image-2.6-flare', 'image-2.6-sunburst']],
+      ['relayonapi', ['image-2.6-01']],
     ] as const) {
       for (const id of ids) expect(getProviderDefinition(provider)!.models!.find((item) => item.id === id)?.category).toBe('image');
     }
-    for (const provider of ['libapi', 'relayonapi', 'sora2u']) {
+    for (const provider of ['libapi', 'sora2u']) {
       expect(getProviderDefinition(provider)!.models?.some((item) => /(?:gpt-)?image[- ]?2\.6/i.test(item.id))).not.toBe(true);
     }
   });

@@ -34,7 +34,9 @@ vi.mock('../../src/services/workflowExecutionService', () => ({ isCloudWorkflow:
 vi.mock('../../src/services/workflowApi/workflowApiAdapter', () => ({ completeWorkflowApiNodeTask: vi.fn() }));
 vi.mock('../../src/services/ai/providers/runninghubWorkflow', () => ({ completeRunningHubNodeTask: vi.fn(), getRunningHubPersistedOutput: () => undefined }));
 vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint: vi.fn() }));
-vi.mock('../../src/services/ai/mediaModelCapabilities', () => ({ resolveImageParameterCapability: mocks.capability }));
+vi.mock('../../src/services/ai/mediaModelCapabilities', () => ({
+  resolveImageParameterCapability: mocks.capability, resolveImageOutputsPerJob: () => 1,
+}));
 vi.mock('../../src/services/ai/modelCapabilityValidation', () => ({ resolveConfiguredImageQuality: () => undefined, resolveConfiguredImageBackground: () => undefined }));
 vi.mock('../../src/utils/cinematography', async (original) => ({
   ...await original<typeof import('../../src/utils/cinematography')>(), buildGenerationCameraPrompt: mocks.camera,
