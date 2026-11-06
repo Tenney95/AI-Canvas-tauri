@@ -42,7 +42,7 @@ vi.mock('react', async () => {
     }
     return hooks.memos[index].value as T;
   };
-  const mocked = {
+  return {
     ...actual,
     useCallback: <T,>(callback: T, deps: readonly unknown[]) => memo(() => callback, deps),
     useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
@@ -83,7 +83,6 @@ vi.mock('react', async () => {
     },
     useSyncExternalStore: <T,>(_subscribe: unknown, getSnapshot: () => T) => getSnapshot(),
   };
-  return { ...mocked, default: mocked };
 });
 
 vi.mock('framer-motion', () => ({
@@ -96,6 +95,7 @@ vi.mock('../../src/components/chat/MessageBubble', () => ({
   default: vi.fn(() => null),
 }));
 
+vi.mock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: Object.assign(
   (selector: (state: AppState) => unknown) => selector(hooks.panelState),
   { getState: () => hooks.panelState, subscribe: () => () => {} },
