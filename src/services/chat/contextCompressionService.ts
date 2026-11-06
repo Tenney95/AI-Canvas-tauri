@@ -18,6 +18,8 @@ import { emitAgentLifecycleEvent } from './agentLifecycle';
 import { findHistoryCutIndex, findModelCutPoint, historyMessageContent, serializeModelConversation } from './contextTranscript';
 import { sanitizeDomainText } from './subAgentMaterials';
 import { addAgentTaskMetrics } from './agentJournal';
+import { AgentDurabilityError, beginAgentDispatch, settleAgentDispatch } from './agentDurabilityService';
+import type { AgentDispatchRecord } from '../../types/agent';
 
 /** 压缩时保留原文、不进入摘要的最近消息条数 */
 export const RECENT_KEEP_COUNT = 8;
@@ -130,6 +132,7 @@ function extractSummaryAnchors(value: string): string[] {
     /#[0-9]+/g,
     /https?:\/\/[^\s)\]}]+/g,
     /(?:node|asset):[^\s；]+/g,
+    /\bresult-[a-f0-9-]{36}\b/g,
   ];
   return [...new Set(patterns.flatMap((pattern) => value.match(pattern) ?? []))].slice(0, 100);
 }
@@ -328,6 +331,23 @@ function activeCompactionTask(taskId: string, signal: AbortSignal): AgentTask {
   return task;
 }
 
+/** 先免费缩减旧工具正文，保持工具调用/结果成对以及近期两轮完整。 */
+export function pruneAgentToolMessages(messages: AssistantModelMessage[], task: AgentTask): boolean {
+  const rounds = messages.flatMap((message, index) => message.role === 'assistant' && message.tool_calls?.length ? [index] : []);
+  const boundary = rounds.length > 2 ? rounds[rounds.length - 2] : 0;
+  let changed = false;
+  for (let index = 0; index < boundary; index++) {
+    const message = messages[index];
+    if (message.role !== 'tool' || typeof message.content !== 'string' || message.content.length < 2000) continue;
+    const step = task.steps.find((item) => item.toolCall?.callId === message.tool_call_id);
+    const content = JSON.stringify({ status: step?.status ?? 'unknown',
+      summary: step?.outputSummary || step?.toolCall?.resultSummary || '旧工具正文已裁剪，需用原工具重读',
+      ...(step?.toolCall?.resultReference ? { resultId: step.toolCall.resultReference.id } : {}), truncated: true });
+    if (content.length < message.content.length) { message.content = content; changed = true; }
+  }
+  return changed;
+}
+
 /** 工具轮次变长时在内存中做 Pi 式 checkpoint，原始工具记录与写入去重状态不动。 */
 export async function compactAgentMessages(
   taskId: string,
@@ -338,6 +358,10 @@ export async function compactAgentMessages(
 ): Promise<void> {
   const task = activeCompactionTask(taskId, signal);
   const { inputBudget } = resolveAssistantContextSpec(task.projectId);
+  if (estimateModelMessagesTokens(messages) >= inputBudget * 0.75) {
+    const pruned = pruneAgentToolMessages(messages, task);
+    if (pruned && estimateModelMessagesTokens(messages) < inputBudget * 0.9) return;
+  }
   if (!force && estimateModelMessagesTokens(messages) < inputBudget * 0.9) return;
 
   const currentUserIndex = messages.indexOf(currentUserMessage);
@@ -380,8 +404,12 @@ export async function compactAgentMessages(
   let text = '';
   let streamFailure: Error | undefined;
   const startedAt = Date.now();
+  let dispatch: AgentDispatchRecord | undefined;
+  let returned = false;
   emitAgentLifecycleEvent({ type: 'context.compression', taskId, conversationId: task.conversationId, phase: 'start' });
   try {
+    dispatch = await beginAgentDispatch({ taskId, kind: 'model', signal,
+      revalidate: () => { activeCompactionTask(taskId, signal); } });
     await streamAssistantReply({
       systemPrompt: SUMMARY_SYSTEM_PROMPT,
       userMessage: summaryInput,
@@ -397,6 +425,7 @@ export async function compactAgentMessages(
         });
       },
     });
+    returned = true;
     activeCompactionTask(taskId, signal);
     if (streamFailure) throw streamFailure;
     text = sanitizeDomainText(text.trim()).slice(0, SUMMARY_CHAR_LIMIT);
@@ -422,10 +451,12 @@ export async function compactAgentMessages(
     emitAgentLifecycleEvent({ type: 'context.compression', taskId, conversationId: task.conversationId, phase: 'end', outcome: 'succeeded' });
   } catch (error) {
     emitAgentLifecycleEvent({ type: 'context.compression', taskId, conversationId: task.conversationId, phase: 'end', outcome: 'failed' });
+    if (error instanceof AgentDurabilityError) throw error;
     if (signal.aborted || (error instanceof Error && error.name === 'AbortError')
       || error instanceof ContextBudgetError) throw error;
     throw new ContextBudgetError('CONTEXT_COMPRESSION_FAILED', '工具轮次上下文压缩失败，任务已暂停');
   } finally {
     addAgentTaskMetrics(taskId, { modelDurationMs: Date.now() - startedAt });
+    if (dispatch) await settleAgentDispatch(taskId, dispatch, !returned ? 'unknown' : streamFailure ? 'failed' : 'succeeded');
   }
 }

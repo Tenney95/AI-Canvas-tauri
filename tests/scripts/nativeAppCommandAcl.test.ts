@@ -63,4 +63,23 @@ describe('native application command ACL configuration', () => {
       expect(bridgePermission).not.toContain(`"${command}"`);
     }
   });
+
+  it('limits external Codex commands to the local main window and checks their native caller', () => {
+    const capability = capabilities.find((entry) => entry.identifier === 'external-agent');
+    expect(capability?.windows).toEqual(['main']);
+    expect(capability?.webviews).toBeUndefined();
+    expect(capability?.remote).toBeUndefined();
+    expect(capability?.local).toBe(true);
+    expect(capability?.permissions).toEqual(['allow-external-agent-commands']);
+    const permission = readFileSync(new URL('../../src-tauri/permissions/external-agent.toml', import.meta.url), 'utf8');
+    const firstParty = readFileSync(new URL('../../src-tauri/permissions/allow-first-party-app-commands.toml', import.meta.url), 'utf8');
+    for (const suffix of ['status', 'register', 'configure', 'remove', 'start', 'cancel', 'collect']) {
+      const command = `codex_runtime_${suffix}`;
+      expect(permission).toContain(`"${command}"`);
+      expect(firstParty).not.toContain(`"${command}"`);
+    }
+    const runtime = readFileSync(new URL('../../src-tauri/src/agent/codex_runtime.rs', import.meta.url), 'utf8');
+    expect(runtime).toContain('ensure_trusted_caller(webview)');
+    expect(runtime).toContain('webview.label() != "main"');
+  });
 });

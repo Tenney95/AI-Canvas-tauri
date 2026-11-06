@@ -98,6 +98,40 @@ beforeEach(() => {
 });
 
 describe('project snapshot updates', () => {
+  it('keeps episode creation references and role overrides in the persisted lightweight list', async () => {
+    const service = await import('../../src/services/indexedDbService');
+    const { createDefaultTeamProfile } = await import('../../src/services/chat/teams/teamProfileService');
+    const { toProjectSummaryRecord } = await import('../../src/services/indexedDb/projectSummary');
+    const creationProfile = { id: 'script-team', version: '1.0.0', sha256: 'a'.repeat(64) };
+    const teamProfileOverride = createDefaultTeamProfile('text');
+    const episode = { ...RECOVERY_PROJECT, parentId: 'series', creationProfile, teamProfileOverride };
+    await service.saveProjectToDb(episode);
+    const listed = (await service.getAllProjects())[0];
+    expect(listed.creationProfile).toEqual(creationProfile);
+    expect(listed.teamProfileOverride).toEqual(teamProfileOverride);
+    expect(listed).not.toHaveProperty('nodes');
+    expect((await service.getProjectById(episode.id))?.creationProfile).toEqual(creationProfile);
+    await service.saveProjectToDb({ ...episode, creationProfile: undefined, teamProfileOverride: undefined });
+    expect((await service.getAllProjects())[0]).not.toHaveProperty('creationProfile');
+    expect(toProjectSummaryRecord(RECOVERY_PROJECT)).not.toHaveProperty('teamProfileOverride');
+    const invalid = toProjectSummaryRecord({ ...episode, creationProfile: { ...creationProfile, apiKey: 'fixture-private' } });
+    expect(invalid?.creationProfile?.id).toBe('invalid-creation-profile');
+    expect(JSON.stringify(invalid)).not.toContain('fixture-private');
+  });
+
+  it('keeps creation selection CAS changes when an older conversation snapshot later saves', async () => {
+    const service = await import('../../src/services/indexedDbService');
+    const original = { id: 'conv-profile', projectId: 'project', title: '旧标题', titleSource: 'user' as const,
+      pinned: false, archived: false, agentMode: 'collaborative' as const, createdAt: 1, updatedAt: 1, messageCount: 0 };
+    await service.putChatConversation(original);
+    const selection = { id: 'creation', version: '1.0.0', sha256: 'a'.repeat(64) };
+    await service.setConversationCreationProfileCAS(original.id, undefined, selection, { executionSelection: { kind: 'team', templateId: 'outline' } });
+    await service.putChatConversation({ ...original, title: '新标题', messageCount: 3 });
+    const saved = (await service.getProjectConversations('project'))[0];
+    expect(saved.creationProfile).toEqual(selection); expect(saved.creationProfileRevision).toBe(1);
+    expect(saved.executionSelection).toEqual({ kind: 'team', templateId: 'outline' }); expect(saved.messageCount).toBe(3);
+    await expect(service.setConversationCreationProfileCAS(original.id, undefined, undefined)).rejects.toThrow('CONFLICT');
+  });
   it('clears only the preview for an empty canvas while keeping persisted data', async () => {
     const service = await import('../../src/services/indexedDbService');
     const { openDB } = await import('../../src/services/indexedDb/schema');

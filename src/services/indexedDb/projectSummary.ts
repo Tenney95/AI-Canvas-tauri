@@ -3,6 +3,10 @@
  */
 import type { EpisodeCreativeInfo, ProjectSeriesInfo, ProjectSettings } from '../../types';
 import { normalizeEpisodeAssetRoster, type EpisodeAssetRoster } from '../../types/episodeAssets';
+import type { CreationProfileSelection } from '../../types/creationProfile';
+import type { AgentTeamProfile } from '../../types/agentTeam';
+import { restoreCreationProfileSelection } from '../creationProfiles/creationProfileManifest';
+import { normalizeTeamProfile } from '../chat/teams/teamProfileService';
 
 /** 项目列表所需的轻量记录；禁止放入画布节点、连线、历史或角色库。 */
 export interface ProjectSummaryRecord {
@@ -20,6 +24,8 @@ export interface ProjectSummaryRecord {
   episodeScript?: string;
   episodeCreative?: EpisodeCreativeInfo;
   episodeAssetRoster?: EpisodeAssetRoster;
+  creationProfile?: CreationProfileSelection;
+  teamProfileOverride?: AgentTeamProfile;
   series?: ProjectSeriesInfo;
 }
 
@@ -78,6 +84,13 @@ export function toProjectSummaryRecord(record: unknown): ProjectSummaryRecord | 
   }
   if (source.series && typeof source.series === 'object') {
     summary.series = source.series as ProjectSeriesInfo;
+  }
+  const selection = restoreCreationProfileSelection(source.creationProfile);
+  if (selection) {
+    summary.creationProfile = selection;
+    if (source.teamProfileOverride && typeof source.teamProfileOverride === 'object') {
+      summary.teamProfileOverride = normalizeTeamProfile(source.teamProfileOverride);
+    }
   }
   return summary;
 }

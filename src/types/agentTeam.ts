@@ -2,6 +2,28 @@
 export type TeamTemplateId = 'outline' | 'script' | 'review' | 'general';
 export type TeamRoleId = 'architect' | 'writer' | 'continuity' | 'dialogue' | 'editor';
 
+export type TeamExecutionTarget =
+  | { kind: 'text-model'; modelId: string }
+  | { kind: 'external-agent'; providerId: 'codex-app-server'; modelId: string };
+
+export interface TeamGraphNode {
+  id: string;
+  roleId: TeamRoleId;
+  title: string;
+  kind: 'outline' | 'draft' | 'review' | 'decision' | 'revision';
+  dependsOn: string[];
+  /** 明确指定所审/所写正文，必须是依赖祖先，不读取其他分支的全部材料。 */
+  sourceTaskId?: string;
+  /** 覆盖该角色的文本模型；外部执行器沿角色显式绑定。 */
+  modelId?: string;
+}
+
+export interface TeamGraphDefinition {
+  version: 1;
+  nodes: TeamGraphNode[];
+  finalTaskId: string;
+}
+
 export type AssistantExecutionSelection =
   | { kind: 'single' }
   | { kind: 'team'; templateId: TeamTemplateId };
@@ -10,6 +32,8 @@ export interface AgentTeamProfile {
   version: 1;
   name: string;
   roles: Record<TeamRoleId, string>;
+  roleExecutors?: Partial<Record<TeamRoleId, TeamExecutionTarget>>;
+  graph?: TeamGraphDefinition;
   maxCalls: number;
   /** 含未知 usage 时的保守预算估算，不代表官方账单上限。 */
   maxTotalTokens: number;
@@ -81,6 +105,10 @@ export interface TeamStageRun {
   title: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   modelId: string;
+  executionTarget?: TeamExecutionTarget;
+  modelFingerprint?: string;
+  taskRevision?: number;
+  attemptId?: string;
   attempts: number;
   artifactId?: string;
   errorMessage?: string;
@@ -102,9 +130,11 @@ export interface TeamApplicationReceipt {
 }
 
 export interface AgentTeamRun {
-  version: 1;
+  version: 1 | 2;
   /** 同任务追加要求时递增，使旧执行段的迟到结果失效。 */
   revision: number;
+  graph?: TeamGraphDefinition;
+  boardRevision?: number;
   id: string;
   templateId: TeamTemplateId;
   source: TeamInvocationContext['source'];

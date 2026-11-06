@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-external-agent-commands"
+description = "Allows the fixed user-trusted Codex adviser through the local main window only."
+commands.allow = ["codex_runtime_status", "codex_runtime_register", "codex_runtime_configure", "codex_runtime_remove", "codex_runtime_start", "codex_runtime_cancel", "codex_runtime_collect"]
+
+[[permission]]
+identifier = "deny-external-agent-commands"
+description = "Denies the fixed Codex runtime commands."
+commands.deny = ["codex_runtime_status", "codex_runtime_register", "codex_runtime_configure", "codex_runtime_remove", "codex_runtime_start", "codex_runtime_cancel", "codex_runtime_collect"]

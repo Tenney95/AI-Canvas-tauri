@@ -2,11 +2,13 @@ import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../src/types/agent';
-import type { TeamApplicationReceipt, TeamArtifactReference } from '../../src/types/agentTeam';
+import type { TeamApplicationReceipt, TeamArtifactReference, TeamStageRun } from '../../src/types/agentTeam';
 import { createDefaultTeamProfile } from '../../src/services/chat/teams/teamProfileService';
 import TeamRunCard from '../../src/components/shared/agentTeams/TeamRunCard';
 import TeamResultReview from '../../src/components/shared/agentTeams/TeamResultReview';
 import AgentTaskCenter from '../../src/components/chat/AgentTaskCenter';
+import { TeamGraphEditor } from '../../src/components/shared/agentTeams/TeamExecutionPicker';
+import { createTemplateTeamGraph } from '../../src/services/chat/teams/teamGraphService';
 
 vi.mock('../../src/components/shared/ModalOverlay', () => ({
   default: ({ isOpen, children }: { isOpen: boolean; children: ReactNode }) => isOpen ? <div>{children}</div> : null,
@@ -88,5 +90,56 @@ describe('team result controls', () => {
     const html = renderToStaticMarkup(<AgentTaskCenter tasks={[completed]} conversations={[]} onClose={vi.fn()}
       focusRequest={{ taskId: completed.id, revision: 1 }} {...controls} />);
     expect(html).toContain(completed.goal);
+  });
+
+  it('edits dependencies and sources with common controls and shows a real graph validation error', () => {
+    const graph = createTemplateTeamGraph('general');
+    const onChange = vi.fn();
+    const html = renderToStaticMarkup(<TeamGraphEditor value={graph} onChange={onChange} />);
+    expect(html).toContain('最终交付任务');
+    expect(html).toContain('正文来源');
+    expect(html).toContain('ui-checkbox');
+    expect(html).toContain('ui-select');
+    const cyclic = structuredClone(graph);
+    cyclic.nodes[0].dependsOn = [cyclic.finalTaskId];
+    expect(renderToStaticMarkup(<TeamGraphEditor value={cyclic} onChange={onChange} />)).toContain('团队任务图不能包含循环');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('shows frozen owners, blocking dependencies and board revision, and only offers idle v2 edits', () => {
+    const graph = createTemplateTeamGraph('general');
+    const paused = { ...task(), status: 'paused' as const };
+    paused.teamRun = { ...paused.teamRun!, version: 2, boardRevision: 7, graph,
+      stages: graph.nodes.map((node): TeamStageRun => ({ id: node.id, title: node.title, roleId: node.roleId,
+        status: 'pending', modelId: 'gpt-6.1-sol', executionTarget: { kind: 'external-agent', providerId: 'codex-app-server', modelId: 'gpt-6.1-sol' },
+        attempts: 0, usageKnown: false })) };
+    const html = renderToStaticMarkup(<TeamRunCard task={paused} onEditGraph={vi.fn(async () => undefined)} />);
+    expect(html).toContain('任务图版本 7');
+    expect(html).toContain('负责人：主笔');
+    expect(html).toContain('等待依赖：');
+    expect(html).toContain('Codex App Server');
+    expect(html).toContain('编辑任务图');
+    expect(renderToStaticMarkup(<TeamRunCard task={{ ...paused, status: 'running' }} onEditGraph={vi.fn(async () => undefined)} />)).not.toContain('编辑任务图');
+    expect(renderToStaticMarkup(<TeamRunCard task={{ ...task(), status: 'paused' }} onEditGraph={vi.fn(async () => undefined)} />)).not.toContain('编辑任务图');
+  });
+
+  it('requires explicit unknown-result review without claiming abandoned means not executed', () => {
+    const paused = { ...task(), status: 'paused' as const,
+      dispatches: [{ id: 'dispatch', kind: 'team-model' as const, phase: 'outcome_unknown' as const, stepId: 'draft', preparedAt: 1 }] };
+    const html = renderToStaticMarkup(<TeamRunCard task={paused} onResume={vi.fn()} onResolveDispatch={vi.fn()} />);
+    expect(html).toContain('已核实完成');
+    expect(html).toContain('放弃原调用，不重新提交');
+    expect(html).toContain('放弃原调用不代表未执行');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>继续<\/button>/);
+    const completed = { ...paused, status: 'completed' as const };
+    const review = renderToStaticMarkup(<TeamResultReview task={completed} isOpen onClose={vi.fn()} onReadArtifact={vi.fn(async () => '')} onApply={vi.fn()} />);
+    expect(review).toContain('原调用结果待核实');
+    expect(review).not.toContain('应用到原位置');
+  });
+
+  it('does not label a live in-flight model dispatch as an unknown completed operation', () => {
+    const running = { ...task(), status: 'running' as const,
+      dispatches: [{ id: 'live', kind: 'team-model' as const, phase: 'dispatched' as const, preparedAt: 1 }] };
+    expect(renderToStaticMarkup(<TeamRunCard task={running} onResolveDispatch={vi.fn()} />)).not.toContain('原调用结果待核实');
   });
 });

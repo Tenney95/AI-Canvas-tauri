@@ -444,7 +444,11 @@ beforeEach(() => {
 describe('plugin execution cancellation and categorized budgets', () => {
   const notify = () => { for (const listener of mocks.subscribers) listener(); };
 
-  it.each(['project', 'node', 'revision', 'plugin', 'guard'])('cancels an active native tool after %s changes and releases listeners', async (change) => {
+  it.each(['project', 'node', 'revision', 'plugin', 'guard', 'dependency'])('cancels an active native tool after %s changes and releases listeners', async (change) => {
+    const dependent: InstalledPlugin = { ...plugin, manifest: { ...plugin.manifest, apiVersion: 2,
+      requiredCapabilities: ['plugin.dependencies'], dependencies: [{ pluginId: 'example.base' }] } };
+    const base: InstalledPlugin = { ...plugin, id: 'example.base', manifest: { ...plugin.manifest, id: 'example.base' } };
+    if (change === 'dependency') mocks.state.installedPlugins = [dependent, base];
     let finish!: (value: unknown) => void;
     mocks.invoke.mockImplementation((command) => command === 'execute_node_plugin_tool'
       ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve());
@@ -456,6 +460,7 @@ describe('plugin execution cancellation and categorized budgets', () => {
     if (change === 'revision') mocks.revision += 1;
     if (change === 'plugin') mocks.state.installedPlugins = [{ ...plugin, enabled: false }];
     if (change === 'guard') cancelProjectCanvasDerivations('project-1');
+    if (change === 'dependency') mocks.state.installedPlugins = [dependent, { ...base, revisionDigest: 'd'.repeat(64) }];
     notify();
     expect(mocks.invoke).toHaveBeenCalledWith('cancel_node_plugin_tool', expect.objectContaining({ pluginId: plugin.id }));
     finish({ data: { output: 'late' } });

@@ -152,3 +152,20 @@ export async function readGrantedTextFile(
     grant.activeReads.delete(controller);
   }
 }
+
+/** 续读绑定内容摘要，避免文件改动后把两份正文拼成同一份材料。 */
+export async function readGrantedTextFilePage(input: {
+  conversationId: string; grantId: string; offset?: number; limit?: number; snapshotDigest?: string; signal?: AbortSignal;
+}): Promise<{ summary: LocalFileGrantSummary; content: string; totalChars: number; nextOffset: number; snapshotDigest: string }> {
+  const offset = input.offset ?? 0;
+  const limit = input.limit ?? 12000;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 12000
+    || (offset > 0 && !/^[a-f0-9]{64}$/.test(input.snapshotDigest ?? ''))) throw new Error('续读需要有效的偏移、片段上限和原 snapshotDigest');
+  const result = await readGrantedTextFile(input.conversationId, input.grantId, input.signal);
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(result.content));
+  const snapshotDigest = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  if (input.snapshotDigest && input.snapshotDigest !== snapshotDigest) throw new Error('文件内容已变化，请从头重新读取');
+  if (!listConversationFileGrants(input.conversationId).some((grant) => grant.id === input.grantId)) throw new Error('文件授权已撤销');
+  const content = result.content.slice(offset, offset + limit);
+  return { summary: result.summary, content, totalChars: result.content.length, nextOffset: offset + content.length, snapshotDigest };
+}

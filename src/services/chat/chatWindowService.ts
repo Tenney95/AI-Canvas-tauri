@@ -30,7 +30,9 @@ import type {
 } from '../../types/agent';
 import type { LocalFileGrantSummary } from './fileGrantService';
 import type { McpClientOption } from '../../types/mcpClient';
-import type { AgentTeamProfile, AssistantExecutionSelection } from '../../types/agentTeam';
+import type { AgentTeamProfile, AssistantExecutionSelection, TeamGraphDefinition } from '../../types/agentTeam';
+import type { CreationProfileOption, CreationProfileSelection } from '../../types/creationProfile';
+import type { ExternalAgentDescriptor } from '../../types/externalAgent';
 import type { ReferencePreviewContent, ReferencePreviewSource } from '../../types/referencePreview';
 
 export const CHAT_SYNC_EVENT = 'chat:sync-state';
@@ -42,6 +44,19 @@ export const CHAT_MAIN_WINDOW_LABEL = 'main';
 export const CHAT_DETACHED_WINDOW_LABEL = 'chat-assistant';
 export const CHAT_REFERENCE_PREVIEW_EVENT = 'chat:reference-preview-result';
 export const CHAT_TEAM_ARTIFACT_EVENT = 'chat:team-artifact-result';
+export const CHAT_MANAGED_RESPONSE_EVENT = 'chat:managed-result';
+
+export type ChatManagedOperation =
+  | { kind: 'preview_creation_profile'; profile: CreationProfileOption }
+  | { kind: 'apply_creation_profile'; selection: CreationProfileSelection | null }
+  | { kind: 'save_team_profile'; profile: AgentTeamProfile }
+  | { kind: 'refresh_external_agents' }
+  | { kind: 'edit_team_graph'; taskId: string; graph: TeamGraphDefinition; expected: { revision: number; boardRevision: number } }
+  | { kind: 'resolve_dispatch'; taskId: string; dispatchId: string; decision: 'verified_completed' | 'abandoned' }
+  | { kind: 'branch_conversation'; messageId: string }
+  | { kind: 'team_result'; taskId: string; action: 'apply' | 'restore' | 'reconcile' }
+  | { kind: 'amend_team_task'; taskId: string; instruction: string };
+export interface ChatManagedResponse { requestId: string; scopeId: string; conversationId?: string; value?: unknown; error?: string }
 
 export interface ChatTeamArtifactResponse {
   requestId: string;
@@ -77,6 +92,8 @@ export interface ChatStateSnapshot {
   mediaModelOptions: MediaModelOption[];
   assistantModelId?: string;
   agentTeamProfile?: AgentTeamProfile;
+  creationProfiles?: CreationProfileOption[];
+  externalAgents?: ExternalAgentDescriptor[];
   assistantImageModelId?: string;
   assistantVideoModelId?: string;
   mediaModelAvailability?: Record<string, boolean>;
@@ -120,6 +137,8 @@ export interface ChatStatePatch {
     mediaModelOptions: MediaModelOption[];
     assistantModelId: string | null;
     agentTeamProfile: AgentTeamProfile | null;
+    creationProfiles: CreationProfileOption[] | null;
+    externalAgents: ExternalAgentDescriptor[] | null;
     assistantImageModelId: string | null;
     assistantVideoModelId: string | null;
     mediaModelAvailability: Record<string, boolean> | null;
@@ -234,6 +253,8 @@ export function createChatStatePatch(
   setChangedField(fields, 'mediaModelOptions', previous.mediaModelOptions, next.mediaModelOptions);
   setChangedField(fields, 'assistantModelId', previous.assistantModelId, next.assistantModelId);
   setChangedField(fields, 'agentTeamProfile', previous.agentTeamProfile, next.agentTeamProfile);
+  setChangedField(fields, 'creationProfiles', previous.creationProfiles, next.creationProfiles);
+  setChangedField(fields, 'externalAgents', previous.externalAgents, next.externalAgents);
   setChangedField(fields, 'assistantImageModelId', previous.assistantImageModelId, next.assistantImageModelId);
   setChangedField(fields, 'assistantVideoModelId', previous.assistantVideoModelId, next.assistantVideoModelId);
   setChangedField(
@@ -285,6 +306,8 @@ export function applyChatStatePatch(
       ? undefined
       : (fields.assistantModelId ?? current.assistantModelId),
     agentTeamProfile: fields.agentTeamProfile === null ? undefined : (fields.agentTeamProfile ?? current.agentTeamProfile),
+    creationProfiles: fields.creationProfiles === null ? undefined : (fields.creationProfiles ?? current.creationProfiles),
+    externalAgents: fields.externalAgents === null ? undefined : (fields.externalAgents ?? current.externalAgents),
     assistantImageModelId: fields.assistantImageModelId === null
       ? undefined
       : (fields.assistantImageModelId ?? current.assistantImageModelId),
@@ -318,6 +341,7 @@ export function applyChatStatePatch(
 // ============================================
 
 export type ChatAction =
+  | { type: 'managed_request'; requestId: string; scopeId: string; conversationId?: string; draft?: string; operation: ChatManagedOperation }
   | {
       type: 'send_message';
       content: string;
@@ -500,6 +524,37 @@ export async function requestTeamArtifactText(taskId: string, artifactId: string
 export async function emitTeamArtifactResponse(response: ChatTeamArtifactResponse): Promise<void> {
   const { emitTo } = await import('@tauri-apps/api/event');
   await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_TEAM_ARTIFACT_EVENT, response);
+}
+
+/** 保存成功必须等主窗口 ack；超时仅报未知，不自动重投。 */
+export async function requestManagedChatOperation<T = unknown>(scopeId: string, conversationId: string | undefined,
+  operation: ChatManagedOperation, draft?: string): Promise<T> {
+  const { emitTo, listen } = await import('@tauri-apps/api/event');
+  const requestId = crypto.randomUUID();
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let unlisten: (() => void) | undefined;
+    const finish = (response?: ChatManagedResponse, error?: string) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); unlisten?.();
+      if (error || response?.error) reject(new Error(error ?? response!.error)); else resolve(response?.value as T);
+    };
+    const timer = setTimeout(() => finish(undefined, '主窗口尚未确认操作结果，请核对最新状态；未自动重试'), 30000);
+    void (async () => {
+      unlisten = await listen<ChatManagedResponse>(CHAT_MANAGED_RESPONSE_EVENT, ({ payload }) => {
+        if (payload?.requestId !== requestId || payload.scopeId !== scopeId || payload.conversationId !== conversationId) return;
+        finish(payload);
+      });
+      if (settled) { unlisten(); return; }
+      await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT,
+        { type: 'managed_request', requestId, scopeId, conversationId, operation, draft } satisfies ChatAction);
+    })().catch(() => finish(undefined, '无法连接主窗口；未自动重试'));
+  });
+}
+
+export async function emitManagedChatResponse(response: ChatManagedResponse): Promise<void> {
+  const { emitTo } = await import('@tauri-apps/api/event');
+  await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_MANAGED_RESPONSE_EVENT, response);
 }
 
 /** 独立窗口通知主窗口：即将关闭 */

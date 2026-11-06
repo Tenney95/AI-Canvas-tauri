@@ -1,4 +1,5 @@
-import type { AgentTeamProfile, AssistantExecutionSelection, TeamRoleId, TeamTemplateId } from '../../../types/agentTeam';
+import type { AgentTeamProfile, AssistantExecutionSelection, TeamExecutionTarget, TeamRoleId, TeamTemplateId } from '../../../types/agentTeam';
+import { validateTeamGraph } from './teamGraphService';
 
 export const TEAM_ROLE_LABELS: Record<TeamRoleId, string> = {
   architect: '结构师', writer: '主笔', continuity: '连续性审阅', dialogue: '对白与制作审阅', editor: '主编',
@@ -25,10 +26,30 @@ export function normalizeTeamProfile(value: unknown): AgentTeamProfile {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return defaults;
   const raw = value as Partial<AgentTeamProfile>;
   const roles = raw.roles && typeof raw.roles === 'object' && !Array.isArray(raw.roles) ? raw.roles : defaults.roles;
+  const roleExecutors: Partial<Record<TeamRoleId, TeamExecutionTarget>> = {};
+  for (const role of TEAM_ROLES) {
+    const target = raw.roleExecutors?.[role];
+    if (!target) continue;
+    if (target.kind === 'text-model' && typeof target.modelId === 'string') {
+      roleExecutors[role] = { kind: 'text-model', modelId: target.modelId.trim().slice(0, 200) };
+    } else {
+      roleExecutors[role] = { kind: 'external-agent', providerId: 'codex-app-server',
+        modelId: target.kind === 'external-agent' && target.providerId === 'codex-app-server' && typeof target.modelId === 'string'
+          ? target.modelId.trim().slice(0, 200) : '' };
+    }
+  }
+  let graph: AgentTeamProfile['graph'];
+  if (raw.graph !== undefined) {
+    try { graph = validateTeamGraph(raw.graph); }
+    // 保留“存在但无效”的图，发起时明确拒绝；不能静默退回固定模板付费执行。
+    catch { graph = { version: 1, nodes: [], finalTaskId: '' }; }
+  }
   return { version: 1, name: typeof raw.name === 'string' ? raw.name.trim().slice(0, 60) || defaults.name : defaults.name,
     roles: Object.fromEntries(TEAM_ROLES.map((role) => [role,
       typeof roles[role] === 'string' ? roles[role].trim().slice(0, 200) : '',
     ])) as Record<TeamRoleId, string>,
+    ...(Object.keys(roleExecutors).length ? { roleExecutors } : {}),
+    ...(graph ? { graph } : {}),
     maxCalls: boundedInteger(raw.maxCalls, defaults.maxCalls, 4, 12),
     maxTotalTokens: boundedInteger(raw.maxTotalTokens, defaults.maxTotalTokens, 20000, 1000000),
     maxOutputChars: boundedInteger(raw.maxOutputChars, defaults.maxOutputChars, 2000, 64000),

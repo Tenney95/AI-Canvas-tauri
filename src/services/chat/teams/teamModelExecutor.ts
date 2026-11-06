@@ -1,6 +1,8 @@
 import { resolveAssistantModel, streamAssistantReply } from '../../ai/assistantStream';
 import { estimateTokens, resolveAssistantContextSpec } from '../contextManager';
 import { hashTeamText } from './teamArtifactService';
+import type { TeamExecutionTarget } from '../../../types/agentTeam';
+import { executeExternalAgent, getExternalAgentStatus } from '../externalAgents/externalAgentService';
 
 export interface TeamModelResult {
   text: string;
@@ -22,7 +24,20 @@ function teamModelIdentity(projectId: string, modelId: string): string {
   });
 }
 
-export async function fingerprintTeamModel(projectId: string, modelId: string): Promise<string> {
+async function externalTeamIdentity(projectId: string, target: TeamExecutionTarget) {
+  if (target.kind !== 'external-agent' || target.providerId !== 'codex-app-server') throw new Error('外部成员执行器不受支持');
+  const status = await getExternalAgentStatus();
+  if (!status.available || !status.executionFingerprint || !status.models.some((model) => model.id === target.modelId)) {
+    throw new Error('外部成员不可用，请检查登记、密钥、启用状态和模型');
+  }
+  return { fingerprint: status.executionFingerprint, identity: JSON.stringify({ projectId, target, fingerprint: status.executionFingerprint }) };
+}
+
+export async function fingerprintTeamModel(projectId: string, modelId: string, target?: TeamExecutionTarget): Promise<string> {
+  if (target?.kind === 'external-agent') {
+    if (target.modelId !== modelId) throw new Error('外部成员模型与任务快照不一致');
+    return hashTeamText((await externalTeamIdentity(projectId, target)).identity);
+  }
   return hashTeamText(teamModelIdentity(projectId, modelId));
 }
 
@@ -34,8 +49,29 @@ export async function executeTeamModel(input: {
   userPrompt: string;
   maxOutputChars: number;
   signal: AbortSignal;
+  target?: TeamExecutionTarget;
+  conversationId?: string;
+  taskId?: string;
+  stageId?: string;
+  runRevision?: number;
 }): Promise<TeamModelResult> {
   input.signal.throwIfAborted();
+  if (input.target?.kind === 'external-agent') {
+    if (!input.conversationId || !input.taskId || !input.stageId || !input.runRevision || input.modelId !== input.target.modelId) {
+      throw new Error('外部成员缺少冻结的任务归属');
+    }
+    const before = await externalTeamIdentity(input.projectId, input.target);
+    if (await hashTeamText(before.identity) !== input.expectedFingerprint) throw new Error('外部成员身份已变化，请重新确认');
+    input.signal.throwIfAborted();
+    const result = await executeExternalAgent({ providerId: input.target.providerId,
+      invocationId: `team-${crypto.randomUUID()}`, projectId: input.projectId, conversationId: input.conversationId,
+      taskId: input.taskId, stageId: input.stageId, runRevision: input.runRevision, modelId: input.modelId,
+      expectedFingerprint: before.fingerprint, systemPrompt: input.systemPrompt, userPrompt: input.userPrompt,
+      maxOutputChars: input.maxOutputChars, signal: input.signal });
+    input.signal.throwIfAborted();
+    if (await fingerprintTeamModel(input.projectId, input.modelId, input.target) !== input.expectedFingerprint) throw new Error('外部成员身份已变化，旧结果未被接纳');
+    return result;
+  }
   const identity = teamModelIdentity(input.projectId, input.modelId);
   if (await hashTeamText(identity) !== input.expectedFingerprint
     || teamModelIdentity(input.projectId, input.modelId) !== identity) {

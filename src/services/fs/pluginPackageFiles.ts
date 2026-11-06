@@ -63,7 +63,7 @@ async function readPackageText(
 }
 
 /** 只在用户提供的目录根部查清单，不递归查找开发仓库中的其他插件/文件。 */
-export async function readLocalPluginPackage(paths: string[], requireManifest = false) {
+export async function readLocalPluginPackage(paths: string[], requireManifest = false, options?: { verifyIntegrity?: boolean }) {
   const fs = await import('@tauri-apps/plugin-fs');
   const manifests = new Set<string>();
   for (const rawPath of paths) {
@@ -101,6 +101,18 @@ export async function readLocalPluginPackage(paths: string[], requireManifest = 
   for (const resource of manifest.resources ?? []) {
     const bytes = await readPackageFile(fs, prefix, resource.path, resource.bytes, resource.bytes);
     resourcePayloads.push({ id: resource.id, bytes: Array.from(bytes) });
+  }
+
+  // 生产安装由 Rust stage 校验；未安装的预览必须先在宿主核对全部产物。
+  if (options?.verifyIntegrity) {
+    const sha256 = async (bytes: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes).buffer)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    if (manifest.ui && uiSource !== undefined && await sha256(new TextEncoder().encode(uiSource)) !== manifest.ui.integrity.replace(/^sha256-/, '')) {
+      throw new Error('插件 UI 产物摘要不匹配，请重新构建');
+    }
+    for (const resource of manifest.resources ?? []) {
+      const payload = resourcePayloads.find((item) => item.id === resource.id)!;
+      if (await sha256(Uint8Array.from(payload.bytes)) !== resource.integrity.replace(/^sha256-/, '')) throw new Error('插件资源摘要不匹配');
+    }
   }
 
   return { manifestText, manifest, source, uiSource, resourcePayloads, directory: prefix };

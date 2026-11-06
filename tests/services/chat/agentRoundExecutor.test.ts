@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentApprovalResolution, AgentMode, AgentTask } from '../../../src/types/agent';
 import type { ProposedToolCall, ToolResultSummary } from '../../../src/types/chat';
+import * as taskService from '../../../src/services/chat/agentTaskService';
 import { executeRegisteredAgentToolCall } from '../../../src/services/chat/agentToolExecution';
 import { MCP_GLOBAL_TOOL_NAMES, MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_TOOL_NAMES } from '../../../src/services/mcp/mcpSettingsScope';
 
@@ -174,6 +175,18 @@ function arrangeCalls(calls: ProposedToolCall[], duringStream?: () => void) {
     calls.forEach((call) => onEvent({ type: 'tool.call.final', call }));
   });
 }
+
+it('does not call the model when the execution persistence barrier fails', async () => {
+  const saving = vi.spyOn(taskService, 'saveAgentTask').mockRejectedValue(new Error('injected storage failure'));
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    arrangeCalls([]);
+    await expect(runRound()).rejects.toMatchObject({ code: 'AGENT_DURABILITY_FAILED' });
+    expect(streamAssistantReplyMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0].status).toBe('paused');
+    await Promise.resolve();
+  } finally { saving.mockRestore(); warning.mockRestore(); }
+});
 
 it.each([false, true])('executes application settings without a project only under the closed allowlist (invalid %s)', async (invalid) => {
   const execute = vi.fn(async () => ({ status: 'success' as const, summary: 'preview', modelContent: 'preview' }));

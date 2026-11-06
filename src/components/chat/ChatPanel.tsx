@@ -37,6 +37,11 @@ import ChatHeader from './ChatHeader';
 import ChatMessages, { type ChatScrollRequest } from './ChatMessages';
 import ChatInput from './ChatInput';
 import TeamExecutionPicker from '../shared/agentTeams/TeamExecutionPicker';
+import CreationProfilePicker from '../shared/creationProfiles/CreationProfilePicker';
+import type { CreationProfileChoicePreview, CreationProfileOption, CreationProfileSelection } from '../../types/creationProfile';
+import type { ExternalAgentDescriptor } from '../../types/externalAgent';
+import { creationProfileOptions, resolveCreationTeamProfile } from '../../services/creationProfiles/creationProfileService';
+import { readExternalAgentCatalog } from '../../services/chat/externalAgents/externalAgentService';
 import McpConnectionPicker from './McpConnectionPicker';
 import { getMcpClientOptions } from '../../services/mcp/mcpClientService';
 import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../../services/mcp/mcpSettingsScope';
@@ -48,6 +53,8 @@ import {
   emitAction,
   emitCloseChatWindow,
   requestTeamArtifactText,
+  requestManagedChatOperation,
+  type ChatManagedOperation,
   type ChatStateSnapshot,
   type ChatComposerHandoff,
 } from '../../services/chat/chatWindowService';
@@ -72,9 +79,10 @@ import {
 import {
   createDetachedChatSyncController,
   buildChatModelCatalog,
+  executeManagedChatOperation,
 } from '../../services/chat/detachedChatSyncController';
 import type { AgentApprovalResolution, AgentMode } from '../../types/agent';
-import type { AgentTeamProfile, AssistantExecutionSelection, TeamArtifactReference } from '../../types/agentTeam';
+import type { AgentTeamProfile, AssistantExecutionSelection, TeamArtifactReference, TeamGraphDefinition } from '../../types/agentTeam';
 import { normalizeExecutionSelection, normalizeTeamProfile } from '../../services/chat/teams/teamProfileService';
 import { applyTeamResult, reconcileTeamResult, restoreTeamResult } from '../../services/chat/teams/teamResultApplyService';
 import { appendTeamInstruction, readTeamTaskArtifact } from '../../services/chat/teams/teamInvocationService';
@@ -262,6 +270,27 @@ export default function ChatPanel({
   );
   const settingsConversation = effectiveActiveConversationId === MCP_SETTINGS_CONVERSATION_ID;
   const [inputValue, setInputValue] = useState('');
+  const [externalCatalog, setExternalCatalog] = useState<ExternalAgentDescriptor[]>(() => readExternalAgentCatalog());
+  const localCreationProfiles = useMemo(() => config.creationProfiles ? creationProfileOptions() : [], [config.creationProfiles]);
+  const effectiveCreationProfiles = detached ? detachedSnapshot?.creationProfiles ?? [] : localCreationProfiles;
+  const effectiveExternalAgents = detached ? detachedSnapshot?.externalAgents ?? [] : externalCatalog;
+  const runManaged = useCallback(<T,>(operation: ChatManagedOperation, draft?: string): Promise<T> => {
+    const targetConversation = 'taskId' in operation
+      ? effectiveAgentTasks.find((task) => task.id === operation.taskId)?.conversationId ?? effectiveActiveConversationId ?? undefined
+      : effectiveActiveConversationId ?? undefined;
+    return detached ? requestManagedChatOperation<T>(chatScopeId, targetConversation, operation, draft)
+      : executeManagedChatOperation(operation, chatScopeId, targetConversation, draft) as Promise<T>;
+  }, [chatScopeId, detached, effectiveActiveConversationId, effectiveAgentTasks]);
+  const handleCreationPreview = useCallback((profile: CreationProfileOption) => runManaged<CreationProfileChoicePreview>({ kind: 'preview_creation_profile', profile }), [runManaged]);
+  const handleCreationChange = useCallback(async (selection: CreationProfileSelection | undefined) => {
+    await runManaged({ kind: 'apply_creation_profile', selection: selection ?? null }, inputValue);
+  }, [runManaged, inputValue]);
+  const handleBranchMessage = useCallback(async (messageId: string) => {
+    await runManaged({ kind: 'branch_conversation', messageId });
+  }, [runManaged]);
+  const refreshExternalAgents = useCallback(async () => {
+    setExternalCatalog(await runManaged<ExternalAgentDescriptor[]>({ kind: 'refresh_external_agents' }));
+  }, [runManaged]);
   const mcpOptions = detached ? detachedSnapshot?.mcpClientOptions ?? [] : getMcpClientOptions(config.mcpClientConnections ?? []);
   const handleMcpToggle = (serverId: string, enabled: boolean) => {
     if (detached) {
@@ -280,8 +309,14 @@ export default function ChatPanel({
   const effectiveAgentMode = effectiveActiveConversation?.agentMode ?? 'collaborative';
   const effectiveExecutionSelection = useMemo(() => normalizeExecutionSelection(effectiveActiveConversation?.executionSelection),
     [effectiveActiveConversation?.executionSelection]);
-  const effectiveTeamProfile = useMemo(() => normalizeTeamProfile(detached ? detachedSnapshot?.agentTeamProfile : config.agentTeamProfile),
-    [config.agentTeamProfile, detached, detachedSnapshot?.agentTeamProfile]);
+  const effectiveTeamProfile = useMemo(() => {
+    if (detached) return normalizeTeamProfile(detachedSnapshot?.agentTeamProfile);
+    if (effectiveActiveConversation?.creationProfile && !config.creationProfiles?.some((profile) => profile.id === effectiveActiveConversation?.creationProfile?.id
+      && profile.version === effectiveActiveConversation?.creationProfile?.version)) return normalizeTeamProfile(config.agentTeamProfile);
+    try { return resolveCreationTeamProfile(effectiveActiveConversation?.creationProfile, effectiveActiveConversation?.teamProfileOverride); }
+    catch { return normalizeTeamProfile(config.agentTeamProfile); }
+  }, [config.agentTeamProfile, config.creationProfiles, detached, detachedSnapshot?.agentTeamProfile,
+    effectiveActiveConversation?.creationProfile, effectiveActiveConversation?.teamProfileOverride]);
   const isEpisodeProject = detached ? detachedSnapshot?.isEpisodeProject === true : !!currentProject?.parentId;
   const teamContextHint = isEpisodeProject && effectiveExecutionSelection.kind === 'team'
     ? effectiveExecutionSelection.templateId === 'outline'
@@ -304,11 +339,8 @@ export default function ChatPanel({
     state.updateConversation(conversationId, { executionSelection: normalizeExecutionSelection(selection) });
   }, [chatScopeId, detached, effectiveActiveConversationId, inputValue]);
   const handleTeamProfileChange = useCallback(async (profile: AgentTeamProfile) => {
-    const normalized = normalizeTeamProfile(profile);
-    if (detached) { await emitAction({ type: 'set_team_profile', profile: normalized }); return; }
-    updateConfig({ agentTeamProfile: normalized });
-    await saveConfig({ silent: true, throwOnError: true });
-  }, [detached, saveConfig, updateConfig]);
+    await runManaged({ kind: 'save_team_profile', profile: normalizeTeamProfile(profile) });
+  }, [runManaged]);
   const hasActiveConversationTask = effectiveAgentTasks.some(
     (task) => task.conversationId === effectiveActiveConversationId
       && ['planning', 'running', 'waiting_tool', 'waiting_approval'].includes(task.status),
@@ -755,21 +787,27 @@ export default function ChatPanel({
       return readTeamTaskArtifact(taskId, artifact.id);
     },
     onApplyTeamResult: async (taskId: string) => {
-      if (detached) { await emitAction({ type: 'apply_team_result', taskId }); return; }
+      if (detached) { await runManaged({ kind: 'team_result', taskId, action: 'apply' }); return; }
       await applyTeamResult(taskId);
     },
     onRestoreTeamResult: async (taskId: string) => {
-      if (detached) { await emitAction({ type: 'restore_team_result', taskId }); return; }
+      if (detached) { await runManaged({ kind: 'team_result', taskId, action: 'restore' }); return; }
       await restoreTeamResult(taskId);
     },
     onReconcileTeamResult: async (taskId: string) => {
-      if (detached) { await emitAction({ type: 'reconcile_team_result', taskId }); return; }
+      if (detached) { showToast(await runManaged<string>({ kind: 'team_result', taskId, action: 'reconcile' }), 'info'); return; }
       const message = await reconcileTeamResult(taskId);
       showToast(message, 'info');
     },
     onAmendTeamTask: async (taskId: string, instruction: string) => {
-      if (detached) { await emitAction({ type: 'amend_team_task', taskId, instruction }); return; }
+      if (detached) { await runManaged({ kind: 'amend_team_task', taskId, instruction }); return; }
       await appendTeamInstruction(taskId, instruction);
+    },
+    onEditTeamGraph: async (taskId: string, graph: TeamGraphDefinition, expected: { revision: number; boardRevision: number }) => {
+      await runManaged({ kind: 'edit_team_graph', taskId, graph, expected });
+    },
+    onResolveDispatch: async (taskId: string, dispatchId: string, decision: 'verified_completed' | 'abandoned') => {
+      await runManaged({ kind: 'resolve_dispatch', taskId, dispatchId, decision });
     },
     onPause: (taskId: string) => {
       if (detached) { void emitAction({ type: 'pause_agent_task', taskId }); return; }
@@ -821,6 +859,7 @@ export default function ChatPanel({
     },
   }), [
     detached,
+    runManaged,
     effectiveMediaModelAvailability,
     handleResolveApproval,
     mediaModelOptions,
@@ -1063,6 +1102,8 @@ export default function ChatPanel({
                   generalModels={effectiveGeneralModels}
                   theme={appearanceMode}
                   controls="execution"
+                  externalAgents={effectiveExternalAgents}
+                  onRefreshExternalAgents={refreshExternalAgents}
                   compact
                 />
               ) : undefined}
@@ -1183,6 +1224,7 @@ export default function ChatPanel({
                     onRetryMediaSave={detached ? undefined : handleRetryMediaSave}
                     onEditMessage={handleEditMessage}
                     onRegenerateMessage={handleRegenerateMessage}
+                    onBranchMessage={handleBranchMessage}
                     onNodeActivate={handleNodeActivate}
                     onNodeHover={handleNodeHover}
                     onModelActivate={handleModelActivate}
@@ -1196,7 +1238,11 @@ export default function ChatPanel({
                       onAssistantModelChange={handleTextModelChange}
                       assistantModelGroups={effectiveAssistantModelGroups}
                       executionSelection={effectiveExecutionSelection}
-                      teamConfiguration={effectiveExecutionSelection.kind === 'team' ? (
+                      teamConfiguration={<div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <CreationProfilePicker profiles={effectiveCreationProfiles} selection={effectiveActiveConversation?.creationProfile}
+                          projectId={chatScopeId} disabled={!detachedInitialized || hasActiveConversationTask}
+                          onPreview={handleCreationPreview} onChange={handleCreationChange} />
+                        {effectiveExecutionSelection.kind === 'team' ? (
                         <TeamExecutionPicker
                           value={effectiveExecutionSelection}
                           onChange={handleExecutionSelectionChange}
@@ -1207,8 +1253,10 @@ export default function ChatPanel({
                           theme={appearanceMode}
                           controls="configuration"
                           compact
+                          externalAgents={effectiveExternalAgents}
+                          onRefreshExternalAgents={refreshExternalAgents}
                         />
-                      ) : undefined}
+                      ) : null}</div>}
                       teamContextHint={teamContextHint}
                       appearanceMode={appearanceMode}
                       mediaModels={effectiveGeneralModels}

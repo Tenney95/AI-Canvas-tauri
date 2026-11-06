@@ -1,7 +1,21 @@
 import type { AgentTeamRun, ReviewDecision, ReviewFinding, TeamArtifactReference, TeamDecisionReport, TeamReviewReport } from '../../../types/agentTeam';
 
 /** 只消费已完成的上游，不能因为下游 pending 节点存在就绕过结构产物。 */
-export function getTeamSourceArtifact(run: Pick<AgentTeamRun, 'stages' | 'artifacts' | 'inputArtifact'>): TeamArtifactReference {
+export function getTeamSourceArtifact(
+  run: Pick<AgentTeamRun, 'stages' | 'artifacts' | 'inputArtifact'> & Partial<Pick<AgentTeamRun, 'version' | 'graph'>>,
+  sourceTaskId?: string,
+): TeamArtifactReference {
+  if (run.version === 2) {
+    if (sourceTaskId) {
+      const stage = run.stages.find((item) => item.id === sourceTaskId && item.status === 'completed');
+      const reference = run.artifacts.find((item) => item.id === stage?.artifactId && item.stageId === sourceTaskId
+        && ['outline', 'draft', 'revision'].includes(item.kind));
+      if (!reference) throw new Error('指定的上游正文未完成或产物缺失，不能读取其他分支替代');
+      return reference;
+    }
+    return run.artifacts.find((artifact) => artifact.kind === 'original')
+      ?? run.artifacts.find((artifact) => artifact.kind === 'draft' && artifact.stageId === 'source') ?? run.inputArtifact;
+  }
   for (const stageId of ['draft', 'structure']) {
     const stage = run.stages.find((item) => item.id === stageId && item.status === 'completed');
     if (!stage) continue;

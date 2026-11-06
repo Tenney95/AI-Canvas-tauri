@@ -2,22 +2,30 @@ import { DEFAULT_AGENT_TASK_METRICS, type AgentTask, type AgentStep } from '../.
 import type {
   AgentTeamProfile, AgentTeamRun, TeamArtifactKind, TeamArtifactReference,
   TeamInvocationContext, TeamReviewReport, TeamRoleId, TeamTemplateId,
+  TeamGraphDefinition, TeamStageRun,
 } from '../../../types/agentTeam';
 import { useAppStore } from '../../../store/useAppStore';
 import { saveAgentTask } from '../agentTaskService';
 import type { AgentExecutionOutcome } from '../agentTaskControl';
 import { resolveAgentLifetimeBudget } from '../agentBudgetService';
 import { estimateTokens } from '../tokenEstimate';
+import { resolveAssistantContextSpec } from '../contextManager';
 import { sanitizeDomainText } from '../subAgentMaterials';
 import { hashTeamText, readTeamArtifactText, saveTeamArtifact } from './teamArtifactService';
 import { executeTeamModel, fingerprintTeamModel } from './teamModelExecutor';
 import { normalizeTeamProfile, TEAM_ROLE_LABELS, TEAM_ROLES, TEAM_TEMPLATES } from './teamProfileService';
 import { getTeamAmendmentStageIds, getTeamSourceArtifact, validateTeamDecision, validateTeamReview } from './teamValidation';
+import { createTemplateTeamGraph, getReadyTeamGraphNodes, getTeamNodeTarget, teamGraphInvalidation, validateTeamGraph } from './teamGraphService';
+import { updateTeamRunCAS } from '../../indexedDbService';
+import { AgentDurabilityError, beginAgentDispatch, settleAgentDispatch, unmaterializedTeamDispatches, unresolvedAgentDispatches } from '../agentDurabilityService';
+import type { AgentDispatchRecord } from '../../../types/agent';
+import { ExternalAgentExecutionError } from '../externalAgents/codexAppServerAdapter';
 
 interface TeamInputPacket { version: 1; prompt: string; materials: string }
-interface StageDefinition { id: string; roleId: TeamRoleId; title: string; kind: TeamArtifactKind }
+interface StageDefinition { id: string; roleId: TeamRoleId; title: string; kind: TeamArtifactKind; dependsOn?: string[]; sourceTaskId?: string }
 export const MAX_TEAM_INPUT_CHARS = 60000;
 const executions = new Map<string, Promise<AgentExecutionOutcome>>();
+const runWrites = new Map<string, Promise<unknown>>();
 let activeModelCalls = 0;
 const modelWaiters: Array<{ signal: AbortSignal; start: () => void }> = [];
 
@@ -32,16 +40,26 @@ function stagesFor(template: TeamTemplateId): StageDefinition[] {
   return steps;
 }
 
+function definitionsForRun(run: AgentTeamRun): StageDefinition[] {
+  return run.version === 2 ? validateTeamGraph(run.graph).nodes : stagesFor(run.templateId);
+}
+
+function graphForProfile(profile: AgentTeamProfile, template: TeamTemplateId): TeamGraphDefinition {
+  return profile.graph ? validateTeamGraph(profile.graph) : createTemplateTeamGraph(template);
+}
+
 export async function captureTeamModelFingerprints(
   projectId: string, profileValue: AgentTeamProfile, templateId: TeamTemplateId,
 ): Promise<Record<TeamRoleId, string>> {
   if (!TEAM_TEMPLATES.includes(templateId)) throw new Error('未知团队模板');
   const profile = normalizeTeamProfile(profileValue);
-  const required = new Set(stagesFor(templateId).map((stage) => stage.roleId));
+  const definitions = graphForProfile(profile, templateId).nodes;
+  const required = new Set(definitions.map((stage) => stage.roleId));
   const result = Object.fromEntries(TEAM_ROLES.map((role) => [role, ''])) as Record<TeamRoleId, string>;
   await Promise.all([...required].map(async (role) => {
-    if (!profile.roles[role]) throw new Error(`请为${TEAM_ROLE_LABELS[role]}选择文本模型`);
-    result[role] = await fingerprintTeamModel(projectId, profile.roles[role]);
+    const target = getTeamNodeTarget(profile, definitions.find((item) => item.roleId === role)!);
+    if (!target.modelId) throw new Error(`请为${TEAM_ROLE_LABELS[role]}选择文本模型`);
+    result[role] = await fingerprintTeamModel(projectId, target.modelId, target);
   }));
   return result;
 }
@@ -64,6 +82,8 @@ export async function prepareTeamRun(input: {
   const materials = sanitizeDomainText(input.materials ?? '');
   if (!prompt || prompt.length + materials.length > MAX_TEAM_INPUT_CHARS) throw new Error('团队任务要求为空或材料超过上限，请先精简');
   const profile = normalizeTeamProfile(input.profile);
+  const graph = graphForProfile(profile, input.templateId);
+  if (graph.nodes.length > profile.maxCalls) throw new Error('团队任务数量超过调用预算，请调整任务图或调用上限');
   const fingerprints = await captureTeamModelFingerprints(input.projectId, profile, input.templateId);
   if (input.modelFingerprints && TEAM_ROLES.some((role) => fingerprints[role] !== input.modelFingerprints?.[role])) {
     throw new Error('提交期间团队模型配置发生变化，请重新确认后发送');
@@ -85,19 +105,25 @@ export async function prepareTeamRun(input: {
     artifacts.push(await saveTeamArtifact({ projectId: input.projectId, runId: input.taskId, kind: 'draft',
       text: materials.trim() || prompt, label: '待审正文快照', stageId: 'source', parentArtifactIds: [inputArtifact.id] }));
   }
-  return { version: 1, revision: 1, id: input.taskId, templateId: input.templateId,
+  const stages = await Promise.all(graph.nodes.map(async (stage) => {
+    const target = getTeamNodeTarget(profile, stage);
+    return { id: stage.id, roleId: stage.roleId, title: stage.title, modelId: target.modelId,
+      executionTarget: target, modelFingerprint: await fingerprintTeamModel(input.projectId, target.modelId, target),
+      taskRevision: 0, status: 'pending' as const, attempts: 0, usageKnown: false };
+  }));
+  return { version: 2, revision: 1, graph, boardRevision: 0, id: input.taskId, templateId: input.templateId,
     source: input.context?.source ?? 'assistant', target: target ? { ...target, label: sanitizeDomainText(target.label).slice(0, 180) } : undefined, profile,
-    inputArtifact, modelFingerprints: fingerprints, stages: stagesFor(input.templateId).map((stage) => ({
-      id: stage.id, roleId: stage.roleId, title: stage.title, modelId: profile.roles[stage.roleId],
-      status: 'pending', attempts: 0, usageKnown: false,
-    })), artifacts, callsUsed: 0, budgetTokensUsed: 0, usageKnown: false,
+    inputArtifact, modelFingerprints: fingerprints, stages, artifacts, callsUsed: 0, budgetTokensUsed: 0, usageKnown: false,
     usageReportedCalls: 0, unknownUsageCalls: 0, createdAt: Date.now() };
 }
 
 function checkedTask(taskId: string, revision?: number, signal?: AbortSignal): AgentTask & { teamRun: AgentTeamRun } {
   signal?.throwIfAborted();
   const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
-  if (!task || task.executionKind !== 'team' || !task.teamRun || task.teamRun.version !== 1
+  if (signal && task && (task.status === 'paused' || ['completed', 'stopped', 'failed'].includes(task.status))) {
+    throw new DOMException('团队任务已停止或暂停', 'AbortError');
+  }
+  if (!task || task.executionKind !== 'team' || !task.teamRun || ![1, 2].includes(task.teamRun.version)
     || task.teamRun.id !== taskId || !TEAM_TEMPLATES.includes(task.teamRun.templateId)
     || !Number.isSafeInteger(task.teamRun.revision) || task.teamRun.revision < 1
     || (revision !== undefined && task.teamRun.revision !== revision)) throw new Error('团队任务快照已失效，请重新查看任务');
@@ -108,7 +134,8 @@ function checkedTask(taskId: string, revision?: number, signal?: AbortSignal): A
     || run.callsUsed < 0 || run.budgetTokensUsed < 0 || run.usageReportedCalls < 0 || run.unknownUsageCalls < 0) {
     throw new Error('团队任务快照损坏，不能继续');
   }
-  const expected = stagesFor(run.templateId);
+  const expected = definitionsForRun(run);
+  if (run.version === 2 && (!Number.isSafeInteger(run.boardRevision) || run.boardRevision! < 0)) throw new Error('团队任务图版本无效');
   const normalizedProfile = normalizeTeamProfile(run.profile);
   if (run.profile.version !== 1 || run.profile.maxCalls !== normalizedProfile.maxCalls
     || run.profile.maxTotalTokens !== normalizedProfile.maxTotalTokens || run.profile.maxOutputChars !== normalizedProfile.maxOutputChars
@@ -117,9 +144,13 @@ function checkedTask(taskId: string, revision?: number, signal?: AbortSignal): A
   }
   if (expected.length !== run.stages.length || expected.some((stage, index) => {
     const stored = run.stages[index];
-    return stored.id !== stage.id || stored.roleId !== stage.roleId || stored.modelId !== run.profile.roles[stage.roleId]
+    const target = run.version === 2 ? getTeamNodeTarget(run.profile, stage) : undefined;
+    return stored.id !== stage.id || stored.title !== stage.title || stored.roleId !== stage.roleId || stored.modelId !== (target?.modelId ?? run.profile.roles[stage.roleId])
       || !Number.isSafeInteger(stored.attempts) || stored.attempts < 0
-      || !/^[a-f0-9]{64}$/.test(run.modelFingerprints[stage.roleId]);
+      || !['pending', 'running', 'completed', 'failed'].includes(stored.status)
+      || (run.version === 2 ? !Number.isSafeInteger(stored.taskRevision) || stored.taskRevision! < 0
+        || JSON.stringify(stored.executionTarget) !== JSON.stringify(target)
+        || !/^[a-f0-9]{64}$/.test(stored.modelFingerprint ?? '') : !/^[a-f0-9]{64}$/.test(run.modelFingerprints[stage.roleId]));
   })) throw new Error('团队阶段或模型身份不一致，不能继续');
   return task as AgentTask & { teamRun: AgentTeamRun };
 }
@@ -137,17 +168,44 @@ function toAgentSteps(task: AgentTask, run: AgentTeamRun): AgentStep[] {
   return [...steps, ...others].map((step, index) => ({ ...step, index }));
 }
 
-function mutateRun(taskId: string, revision: number, change: (run: AgentTeamRun) => void, signal?: AbortSignal): AgentTask {
-  const current = checkedTask(taskId, revision, signal);
-  const run = structuredClone(current.teamRun);
-  change(run);
-  useAppStore.getState().updateAgentTask(taskId, { teamRun: run, steps: toAgentSteps(current, run),
-    currentStepId: run.stages.find((stage) => stage.status === 'running') ? `${taskId}-team-${run.stages.find((stage) => stage.status === 'running')!.id}` : undefined });
-  return checkedTask(taskId, revision, signal);
+export async function mutateTeamRun(taskId: string, revision: number, change: (run: AgentTeamRun) => void, signal?: AbortSignal): Promise<AgentTask> {
+  const operation = async () => {
+    const current = checkedTask(taskId, revision, signal);
+    const run = structuredClone(current.teamRun);
+    change(run);
+    if (run.version === 2) {
+      run.boardRevision = (current.teamRun.boardRevision ?? 0) + 1;
+      try {
+        await saveAgentTask(current);
+        checkedTask(taskId, revision, signal);
+        await updateTeamRunCAS(taskId, { revision, boardRevision: current.teamRun.boardRevision ?? 0 }, () => run);
+      } catch (error) {
+        if (signal?.aborted || (error instanceof Error && (error.name === 'AbortError' || error.message === 'TEAM_GRAPH_CAS_CONFLICT'))) throw error;
+        useAppStore.getState().updateAgentTask(taskId, { status: 'paused', pausedReason: 'durability_failed',
+          errorCode: 'AGENT_DURABILITY_FAILED', errorMessage: '团队执行记录无法保存，未启动后续调用，请先检查存储和原操作' });
+        throw new AgentDurabilityError();
+      }
+    }
+    const live = useAppStore.getState().agentTasks.find((task) => task.id === taskId) ?? current;
+    useAppStore.getState().updateAgentTask(taskId, { teamRun: run, steps: toAgentSteps(live, run),
+      currentStepId: run.stages.find((stage) => stage.status === 'running') ? `${taskId}-team-${run.stages.find((stage) => stage.status === 'running')!.id}` : undefined });
+    return checkedTask(taskId, run.revision, signal);
+  };
+  const promise = (runWrites.get(taskId) ?? Promise.resolve()).then(operation, operation);
+  runWrites.set(taskId, promise);
+  void promise.finally(() => { if (runWrites.get(taskId) === promise) runWrites.delete(taskId); }).catch(() => undefined);
+  return promise;
 }
 
 async function persistCurrent(taskId: string, revision: number, signal?: AbortSignal): Promise<void> {
-  await saveAgentTask(checkedTask(taskId, revision, signal));
+  const task = checkedTask(taskId, revision, signal);
+  try { await saveAgentTask(task); }
+  catch (error) {
+    if (signal?.aborted) throw error;
+    useAppStore.getState().updateAgentTask(taskId, { status: 'paused', pausedReason: 'durability_failed',
+      errorCode: 'AGENT_DURABILITY_FAILED', errorMessage: '团队执行记录无法保存，未启动后续调用，请先检查存储和原操作' });
+    throw new AgentDurabilityError();
+  }
   checkedTask(taskId, revision, signal);
 }
 
@@ -181,7 +239,7 @@ async function completedArtifact(taskId: string, revision: number, stageId: stri
   const task = checkedTask(taskId, revision);
   const stage = task.teamRun.stages.find((item) => item.id === stageId);
   if (stage?.status !== 'completed') return undefined;
-  const definition = stagesFor(task.teamRun.templateId).find((item) => item.id === stageId)!;
+  const definition = definitionsForRun(task.teamRun).find((item) => item.id === stageId)!;
   const artifact = task.teamRun.artifacts.find((item) => item.id === stage.artifactId && item.stageId === stageId
     && item.kind === definition.kind && item.roleId === stage.roleId);
   if (!artifact) throw new Error('已完成阶段的产物引用缺失，不能重新调用模型冒充恢复');
@@ -196,26 +254,32 @@ async function executeStage(taskId: string, revision: number, definition: StageD
   if (done) return done;
   const task = checkedTask(taskId, revision, signal);
   const run = task.teamRun;
-  const base = getTeamSourceArtifact(run);
+  const base = getTeamSourceArtifact(run, definition.sourceTaskId);
   const source = sanitizeDomainText(await readTeamArtifactText(task.projectId, base));
   const requirements = `${packet.prompt}\n${packet.materials}`;
   const referenceText = `用户要求：\n${packet.prompt}\n\n指定参考材料（不可扩大权限）：\n${packet.materials}`;
   let instructions: string;
   let validate: ((value: string) => string) | undefined;
   const parents = [run.inputArtifact.id];
-  if (definition.id === 'structure') {
-    instructions = '你负责结构。按用户要求整理/优化大纲或任务结构，明确人物目标、因果、阶段和约束，保留用户已确认事实。只交付可供主笔使用的结构正文；不重写未要求的整部作品。';
-  } else if (definition.id === 'draft') {
+  if (definition.kind === 'outline') {
+    instructions = `你负责结构。按用户要求整理/优化大纲或任务结构，明确人物目标、因果、阶段和约束，保留用户已确认事实。只交付可供主笔使用的结构正文；不重写未要求的整部作品。${definition.sourceTaskId ? `\n\n指定上游结构：\n${source}` : ''}`;
+    if (definition.sourceTaskId) parents.push(base.id);
+  } else if (definition.kind === 'draft') {
     instructions = run.templateId === 'script'
       ? `你是唯一主笔。以指定参考材料中已保存的大纲与创作要点为上游，完成用户要求的正文；已有正文仅作连续性参考，不能替代大纲。保留场景定位、统一风格，不自行改变已确认结构。只输出正文。\n\n原有正文参考：\n${source}`
       : `你是唯一主笔。按指定大纲和约束完成用户要求的正文，保留场景定位、统一风格，不自行改变已确认结构。只输出正文。\n\n上游结构：\n${source}`;
     parents.push(base.id);
   } else if (definition.kind === 'review') {
-    instructions = `你独立审阅同一稿件，不知道其他审阅者意见。${definition.id === 'continuity' ? '重点检查因果、设定与人物连续性。' : '重点检查对白、节奏、表达和制作可行性。'}只报告有稿件原文证据的问题，不重写正文。constraint必须是用户要求/材料中的逐字约束片段；仅属审美或一般标准则填“质量建议”。不要凭空增加要求。finding.id必须以“${definition.id}-”开头且唯一。最多12条重要问题，severity只选critical/major/minor之一；location不超过300字符，evidence和constraint各不超过1000字符，suggestion不超过2000字符。无问题使用空findings。严格输出JSON：{"version":1,"artifactId":"${base.id}","artifactHash":"${base.sha256}","findings":[{"id":"${definition.id}-1","severity":"minor","location":"场景或段落","evidence":"稿件中逐字原文，必须非空","constraint":"逐字约束或质量建议","suggestion":"具体建议"}]}。\n\n稿件：\n${source}`;
+    instructions = `你独立审阅同一稿件，不知道其他审阅者意见。${definition.roleId === 'continuity' ? '重点检查因果、设定与人物连续性。' : '重点检查对白、节奏、表达和制作可行性。'}只报告有稿件原文证据的问题，不重写正文。constraint必须是用户要求/材料中的逐字约束片段；仅属审美或一般标准则填“质量建议”。不要凭空增加要求。finding.id必须以“${definition.id}-”开头且唯一。最多12条重要问题，severity只选critical/major/minor之一；location不超过300字符，evidence和constraint各不超过1000字符，suggestion不超过2000字符。无问题使用空findings。严格输出JSON：{"version":1,"artifactId":"${base.id}","artifactHash":"${base.sha256}","findings":[{"id":"${definition.id}-1","severity":"minor","location":"场景或段落","evidence":"稿件中逐字原文，必须非空","constraint":"逐字约束或质量建议","suggestion":"具体建议"}]}。\n\n稿件：\n${source}`;
     validate = (value) => JSON.stringify(validateTeamReview(value, { artifactId: base.id, artifactHash: base.sha256, source, requirements, stageId: definition.id }));
     parents.push(base.id);
   } else {
-    const reviewReferences = ['continuity', 'dialogue'].map((id) => {
+    const decisionDefinition = run.version === 2 && definition.kind === 'revision'
+      ? run.graph!.nodes.find((node) => definition.dependsOn?.includes(node.id) && node.kind === 'decision') : undefined;
+    const reviewIds = run.version === 2
+      ? run.graph!.nodes.filter((node) => (decisionDefinition?.dependsOn ?? definition.dependsOn ?? []).includes(node.id) && node.kind === 'review').map((node) => node.id)
+      : ['continuity', 'dialogue'];
+    const reviewReferences = reviewIds.map((id) => {
       const stage = run.stages.find((item) => item.id === id && item.status === 'completed');
       const artifact = run.artifacts.find((item) => item.id === stage?.artifactId);
       if (!artifact) throw new Error('必需审阅尚未齐备，不能进入裁决');
@@ -227,11 +291,11 @@ async function executeStage(taskId: string, revision: number, definition: StageD
     }));
     parents.push(base.id, ...reviewReferences.map((item) => item.id));
     const ids = reports.flatMap((report) => report.findings.map((finding) => finding.id));
-    if (definition.id === 'decision') {
+    if (definition.kind === 'decision') {
       instructions = `你是主编，只对每个finding逐条裁决。不能通过多数投票决定审美，保留分歧；确需用户选择且没有充分依据时用clarify。action只选accept/reject/clarify之一，每条reason尽量不超过200字符，summary不超过1000字符。如果补充要求推翻了已确认结构或原设定，保留clarify并说明需从新结构发起，不擅自修改旧稿权威。严格输出JSON：{"version":1,"decisions":[{"findingId":"原finding ID","action":"accept","reason":"明确依据"}],"summary":"简要结论，不自称用户已验收"}。每个finding恰好出现一次，无finding时decisions=[]。\n\n稿件：\n${source}\n\n独立审阅：\n${JSON.stringify(reports)}`;
       validate = (value) => JSON.stringify(validateTeamDecision(value, ids));
     } else {
-      const decisionStage = run.stages.find((item) => item.id === 'decision' && item.status === 'completed');
+      const decisionStage = run.stages.find((item) => item.id === (decisionDefinition?.id ?? 'decision') && item.status === 'completed');
       const decisionReference = run.artifacts.find((item) => item.id === decisionStage?.artifactId);
       if (!decisionReference) throw new Error('主编尚未完成裁决');
       const decision = validateTeamDecision(await readTeamArtifactText(task.projectId, decisionReference), ids);
@@ -245,32 +309,59 @@ async function executeStage(taskId: string, revision: number, definition: StageD
   for (let attempt = 0; attempt < 2; attempt++) {
     const release = await acquireModelSlot(signal);
     let reserved = 0;
+    let dispatch: AgentDispatchRecord | undefined;
+    let externalTarget = false;
+    let lease: { taskRevision: number; attemptId: string } | undefined;
+    const assertLease = () => {
+      const live = checkedTask(taskId, revision, signal);
+      const stage = live.teamRun.stages.find((item) => item.id === definition.id);
+      if (lease && (!stage || stage.taskRevision !== lease.taskRevision || stage.attemptId !== lease.attemptId
+        || stage.status !== 'running')) throw new Error('团队节点租约已失效，未接纳迟到结果');
+    };
     try {
       const before = checkedTask(taskId, revision, signal);
-      if (await fingerprintTeamModel(before.projectId, definition.roleId ? before.teamRun.profile.roles[definition.roleId] : '') !== before.teamRun.modelFingerprints[definition.roleId]) {
+      const initialStage = before.teamRun.stages.find((item) => item.id === definition.id)!;
+      const target = initialStage.executionTarget ?? getTeamNodeTarget(before.teamRun.profile, definition);
+      externalTarget = target.kind === 'external-agent';
+      const expectedFingerprint = initialStage.modelFingerprint ?? before.teamRun.modelFingerprints[definition.roleId];
+      if (await fingerprintTeamModel(before.projectId, target.modelId, target) !== expectedFingerprint) {
         throw new Error('团队成员模型身份已改变，请重新确认后发起');
       }
       const estimate = estimateTokens(SYSTEM) + estimateTokens(userPrompt) + 32;
+      if (target.kind === 'text-model' && estimate > resolveAssistantContextSpec(task.projectId, target.modelId).inputBudget) {
+        throw new Error('团队材料超出该成员的上下文窗口，未启动调用；请精简材料或更换模型');
+      }
       const requestedReservation = estimate + before.teamRun.profile.maxOutputChars;
       const lifetime = resolveAgentLifetimeBudget(before.budget);
-      mutateRun(taskId, revision, (current) => {
+      await mutateTeamRun(taskId, revision, (current) => {
         if (current.callsUsed >= Math.min(current.profile.maxCalls, lifetime.maxTotalModelRounds)
           || current.budgetTokensUsed + requestedReservation > Math.min(current.profile.maxTotalTokens, lifetime.maxTotalTokens)) {
           throw new Error('团队调用或token预算不足，已保留当前产物');
         }
         current.callsUsed++; current.budgetTokensUsed += requestedReservation; current.usageKnown = false;
         const stage = current.stages.find((item) => item.id === definition.id)!;
+        if (current.version === 2) {
+          if (stage.status === 'running' || stage.status === 'completed') throw new Error('团队节点已被领取或完成');
+          if (!current.graph!.nodes.find((node) => node.id === definition.id)!.dependsOn.every((id) => current.stages.some((parent) => parent.id === id && parent.status === 'completed' && parent.artifactId))) {
+            throw new Error('团队依赖尚未完成，不能领取节点');
+          }
+          stage.taskRevision = (stage.taskRevision ?? 0) + 1; stage.attemptId = crypto.randomUUID();
+        }
         stage.status = 'running'; stage.attempts++; stage.startedAt = Date.now(); stage.errorMessage = undefined;
       }, signal);
       reserved = requestedReservation;
       const reservedTask = checkedTask(taskId, revision, signal);
+      const reservedStage = reservedTask.teamRun.stages.find((item) => item.id === definition.id)!;
+      if (run.version === 2) lease = { taskRevision: reservedStage.taskRevision!, attemptId: reservedStage.attemptId! };
       useAppStore.getState().updateAgentTask(taskId, { modelRounds: reservedTask.modelRounds + 1 });
       await persistCurrent(taskId, revision, signal);
-      const result = await executeTeamModel({ projectId: task.projectId, modelId: run.profile.roles[definition.roleId],
-        expectedFingerprint: run.modelFingerprints[definition.roleId], systemPrompt: SYSTEM, userPrompt,
+      dispatch = await beginAgentDispatch({ taskId, kind: 'team-model', stepId: definition.id, runRevision: revision, signal, revalidate: assertLease });
+      const result = await executeTeamModel({ projectId: task.projectId, modelId: target.modelId, target,
+        conversationId: task.conversationId, taskId, stageId: definition.id, runRevision: revision,
+        expectedFingerprint, systemPrompt: SYSTEM, userPrompt,
         maxOutputChars: run.profile.maxOutputChars, signal });
-      checkedTask(taskId, revision, signal);
-      mutateRun(taskId, revision, (current) => {
+      assertLease();
+      await mutateTeamRun(taskId, revision, (current) => {
         current.usageReportedCalls += result.usageKnown ? 1 : 0;
         current.unknownUsageCalls += result.usageKnown ? 0 : 1;
         current.usageKnown = current.unknownUsageCalls === 0 && current.usageReportedCalls === current.callsUsed;
@@ -290,40 +381,47 @@ async function executeStage(taskId: string, revision: number, definition: StageD
       try { if (validate) text = validate(text); }
       catch (error) {
         lastError = error;
+        await settleAgentDispatch(taskId, dispatch, 'failed');
         if (attempt === 0) {
+          await mutateTeamRun(taskId, revision, (current) => {
+            const stage = current.stages.find((item) => item.id === definition.id)!; stage.status = 'failed';
+          }, signal);
           userPrompt = `${referenceText}\n\n本阶段合同：\n${instructions}\n\n你的上次输出未通过本地结构、版本、证据或逐项完整性校验。只修正输出格式和引用，不改变任务范围。再次严格按合同输出，不增加字段。`;
           continue;
         }
         throw error;
       }
-      if (await fingerprintTeamModel(task.projectId, run.profile.roles[definition.roleId]) !== run.modelFingerprints[definition.roleId]) {
+      if (await fingerprintTeamModel(task.projectId, target.modelId, target) !== expectedFingerprint) {
         throw new Error('执行期间模型配置变化，未接纳旧成员结果');
       }
       const artifact = await saveTeamArtifact({ projectId: task.projectId, runId: taskId,
         kind: definition.kind, text, label: definition.title, stageId: definition.id,
         roleId: definition.roleId, parentArtifactIds: parents });
-      mutateRun(taskId, revision, (current) => {
+      assertLease();
+      await mutateTeamRun(taskId, revision, (current) => {
         if (!current.artifacts.some((item) => item.id === artifact.id)) current.artifacts.push(artifact);
         const stage = current.stages.find((item) => item.id === definition.id)!;
         stage.status = 'completed'; stage.artifactId = artifact.id; stage.completedAt = Date.now();
       }, signal);
       await persistCurrent(taskId, revision, signal);
+      await settleAgentDispatch(taskId, dispatch, 'succeeded');
       return artifact;
     } catch (error) {
       lastError = error;
+      if (dispatch) await settleAgentDispatch(taskId, dispatch,
+        externalTarget && error instanceof ExternalAgentExecutionError && error.knownNotStarted === true ? 'failed' : 'unknown');
       const live = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
       if (live?.teamRun?.revision === revision && live.executionKind === 'team') {
-        mutateRun(taskId, revision, (current) => {
+        await mutateTeamRun(taskId, revision, (current) => {
           if (reserved) { current.unknownUsageCalls++; current.usageKnown = false; }
           const stage = current.stages.find((item) => item.id === definition.id)!;
+          if (lease && (stage.taskRevision !== lease.taskRevision || stage.attemptId !== lease.attemptId)) return;
           stage.status = signal.aborted ? 'pending' : 'failed';
           stage.errorMessage = signal.aborted ? '当前阶段已中止，用量可能不完整'
             : sanitizeDomainText(error instanceof Error ? error.message : '团队阶段失败').slice(0, 400);
         });
         await persistCurrent(taskId, revision);
       }
-      const message = error instanceof Error ? error.message : '';
-      if (attempt === 0 && !signal.aborted && /network|fetch failed|网络|超时|timeout|(?:HTTP|状态码)[^\d]*(?:408|429|5\d\d)/i.test(message)) continue;
       throw error;
     } finally { release(); }
   }
@@ -334,27 +432,46 @@ async function executeRun(taskId: string, signal: AbortSignal): Promise<AgentExe
   const initial = checkedTask(taskId, undefined, signal);
   const revision = initial.teamRun.revision;
   try {
-    const packet = await readInput(initial);
-    const definitions = stagesFor(initial.teamRun.templateId);
-    for (const stage of definitions.filter((item) => item.id === 'structure' || item.id === 'draft')) {
-      await executeStage(taskId, revision, stage, packet, signal);
+    if (unmaterializedTeamDispatches(initial).length || unresolvedAgentDispatches(initial).some((item) => item.kind === 'team-model')) {
+      throw new Error('存在结果未知的团队调用，请先核实原任务，不会自动重投');
     }
-    const reviews = definitions.filter((item) => item.kind === 'review');
-    const outcomes = await Promise.allSettled(reviews.map((stage) => executeStage(taskId, revision, stage, packet, signal)));
-    const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
-    if (failure) throw failure.reason;
-    const decision = definitions.find((stage) => stage.id === 'decision')!;
-    const decisionArtifact = await executeStage(taskId, revision, decision, packet, signal);
-    const revisionStage = definitions.find((stage) => stage.id === 'revision');
-    const result = revisionStage ? await executeStage(taskId, revision, revisionStage, packet, signal) : decisionArtifact;
-    mutateRun(taskId, revision, (run) => { run.resultArtifactId = result.id; }, signal);
+    const packet = await readInput(initial);
+    const definitions = definitionsForRun(initial.teamRun);
+    let result: TeamArtifactReference;
+    if (initial.teamRun.version === 2) {
+      const attempted = new Set<string>();
+      while (!(await completedArtifact(taskId, revision, initial.teamRun.graph!.finalTaskId))) {
+        const live = checkedTask(taskId, revision, signal);
+        const ready = getReadyTeamGraphNodes(live.teamRun).filter((node) => !attempted.has(node.id)).slice(0, 2);
+        if (!ready.length) throw new Error('没有可执行的团队任务，请检查依赖、产物或失败节点');
+        ready.forEach((node) => attempted.add(node.id));
+        const outcomes = await Promise.allSettled(ready.map((node) => executeStage(taskId, revision, node, packet, signal)));
+        const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+        if (failure) throw failure.reason;
+      }
+      result = (await completedArtifact(taskId, revision, initial.teamRun.graph!.finalTaskId))!;
+    } else {
+      for (const stage of definitions.filter((item) => item.id === 'structure' || item.id === 'draft')) {
+        await executeStage(taskId, revision, stage, packet, signal);
+      }
+      const reviews = definitions.filter((item) => item.kind === 'review');
+      const outcomes = await Promise.allSettled(reviews.map((stage) => executeStage(taskId, revision, stage, packet, signal)));
+      const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+      if (failure) throw failure.reason;
+      const decision = definitions.find((stage) => stage.id === 'decision')!;
+      const decisionArtifact = await executeStage(taskId, revision, decision, packet, signal);
+      const revisionStage = definitions.find((stage) => stage.id === 'revision');
+      result = revisionStage ? await executeStage(taskId, revision, revisionStage, packet, signal) : decisionArtifact;
+    }
+    await mutateTeamRun(taskId, revision, (run) => { run.resultArtifactId = result.id; }, signal);
     useAppStore.getState().updateAgentTask(taskId, { resultSummary: '团队产物已就绪，等待查看或按原目标应用。',
       errorCode: undefined, errorMessage: undefined, pausedReason: undefined });
     await persistCurrent(taskId, revision, signal);
     return 'completed';
   } catch (error) {
     if (signal.aborted) return 'paused';
-    checkedTask(taskId, revision);
+    const latest = checkedTask(taskId, revision);
+    if (latest.status === 'paused' && latest.errorCode === 'AGENT_DURABILITY_FAILED') return 'paused';
     const message = sanitizeDomainText(error instanceof Error ? error.message : '团队执行暂停').slice(0, 400);
     useAppStore.getState().updateAgentTask(taskId, { pausedReason: 'team_needs_attention', errorCode: 'TEAM_PAUSED',
       errorMessage: message, resultSummary: '团队已保留完成的阶段，请查看原因后继续或补充要求。' });
@@ -384,6 +501,7 @@ export async function amendTeamRun(taskId: string, instruction: string): Promise
   const task = checkedTask(taskId);
   if (task.status !== 'paused' && task.status !== 'failed') throw new Error('请先暂停团队，再补充要求');
   if (task.teamRun.application) throw new Error('该任务已有成果应用记录，请先核对原稿，再从当前版本新建团队任务');
+  if (unresolvedAgentDispatches(task).some((item) => item.kind === 'team-model')) throw new Error('请先核实原调用，再明确补充新的要求；不会自动重投');
   const addition = sanitizeDomainText(instruction).trim();
   if (!addition) throw new Error('追加要求不能为空');
   const oldInput = await readInput(task);
@@ -394,7 +512,7 @@ export async function amendTeamRun(taskId: string, instruction: string): Promise
   let invalidatedStageIds = task.teamRun.stages.map((stage) => stage.id);
   const decisionStage = task.teamRun.stages.find((stage) => stage.id === 'decision' && stage.status === 'completed');
   const decisionArtifact = task.teamRun.artifacts.find((artifact) => artifact.id === decisionStage?.artifactId);
-  if (decisionArtifact) {
+  if (decisionArtifact && task.teamRun.version === 1) {
     const base = getTeamSourceArtifact(task.teamRun);
     const source = sanitizeDomainText(await readTeamArtifactText(task.projectId, base));
     const reviews: TeamReviewReport[] = [];
@@ -423,7 +541,54 @@ export async function amendTeamRun(taskId: string, instruction: string): Promise
     stages: current.teamRun.stages.map((stage) => invalidatedStageIds.includes(stage.id)
       ? { ...stage, status: 'pending', artifactId: undefined, errorMessage: undefined, startedAt: undefined, completedAt: undefined } : stage),
   };
-  useAppStore.getState().updateAgentTask(taskId, { teamRun: run, steps: toAgentSteps(current, run),
-    errorCode: undefined, errorMessage: undefined, pausedReason: 'team_requirements_updated' });
+  if (run.version === 2) await mutateTeamRun(taskId, current.teamRun.revision, (stored) => { Object.assign(stored, run); });
+  else useAppStore.getState().updateAgentTask(taskId, { teamRun: run, steps: toAgentSteps(current, run) });
+  useAppStore.getState().updateAgentTask(taskId, { errorCode: undefined, errorMessage: undefined, pausedReason: 'team_requirements_updated' });
   await saveAgentTask(checkedTask(taskId, run.revision));
+}
+
+/** 仅编辑暂停且静止的 v2 图；旧产物保留，受影响节点及其下游重新排队。 */
+export async function editTeamGraph(
+  taskId: string, value: TeamGraphDefinition, expected: { revision: number; boardRevision: number },
+): Promise<void> {
+  const task = checkedTask(taskId, expected.revision);
+  if (task.teamRun.version !== 2 || isTeamRunExecuting(taskId) || !['paused', 'failed'].includes(task.status)
+    || task.teamRun.application || (task.teamRun.boardRevision ?? 0) !== expected.boardRevision) {
+    throw new Error('请先暂停团队并重新读取当前任务图；旧版或已应用任务不能改图');
+  }
+  if (unmaterializedTeamDispatches(task).length || unresolvedAgentDispatches(task).some((item) => item.kind === 'team-model')) {
+    throw new Error('原调用没有可恢复成果，请核实后补充新要求或新建任务，不能借改图重投');
+  }
+  const graph = validateTeamGraph(value);
+  const oldGraph = validateTeamGraph(task.teamRun.graph);
+  const profile = { ...task.teamRun.profile, graph };
+  const changed = graph.nodes.filter((node) => JSON.stringify(node) !== JSON.stringify(oldGraph.nodes.find((item) => item.id === node.id))).map((node) => node.id);
+  const affected = teamGraphInvalidation(graph, changed);
+  let stages: TeamStageRun[] = await Promise.all(graph.nodes.map(async (node) => {
+    const target = getTeamNodeTarget(profile, node);
+    const fingerprint = await fingerprintTeamModel(task.projectId, target.modelId, target);
+    const old = task.teamRun.stages.find((stage) => stage.id === node.id);
+    if (old && !affected.has(node.id) && old.modelFingerprint === fingerprint) return structuredClone(old);
+    affected.add(node.id);
+    return { id: node.id, roleId: node.roleId, title: node.title, modelId: target.modelId,
+      executionTarget: target, modelFingerprint: fingerprint, status: 'pending' as const,
+      taskRevision: (old?.taskRevision ?? 0) + 1, attempts: old?.attempts ?? 0, usageKnown: false };
+  }));
+  const invalidated = teamGraphInvalidation(graph, [...affected]);
+  stages = stages.map((stage) => invalidated.has(stage.id) && stage.status !== 'pending'
+    ? { ...stage, status: 'pending', artifactId: undefined, attemptId: undefined,
+      taskRevision: (stage.taskRevision ?? 0) + 1, errorMessage: undefined, startedAt: undefined, completedAt: undefined } : stage);
+  if (task.teamRun.callsUsed + stages.filter((stage) => stage.status !== 'completed').length > profile.maxCalls) {
+    throw new Error('剩余调用预算无法完成修改后的任务图，请从当前材料新建任务');
+  }
+  await mutateTeamRun(taskId, expected.revision, (run) => {
+    const live = checkedTask(taskId, expected.revision);
+    if (isTeamRunExecuting(taskId) || !['paused', 'failed'].includes(live.status)
+      || run.boardRevision !== expected.boardRevision || run.application) throw new Error('TEAM_GRAPH_CAS_CONFLICT');
+    run.revision++; run.graph = graph; run.profile = profile; run.stages = stages;
+    run.modelFingerprints = Object.fromEntries(TEAM_ROLES.map((role) => [role, stages.find((stage) => stage.roleId === role)?.modelFingerprint ?? ''])) as Record<TeamRoleId, string>;
+    run.resultArtifactId = stages.find((stage) => stage.id === graph.finalTaskId && stage.status === 'completed')?.artifactId;
+  });
+  useAppStore.getState().updateAgentTask(taskId, { pausedReason: 'team_requirements_updated', errorCode: undefined, errorMessage: undefined });
+  await saveAgentTask(checkedTask(taskId));
 }

@@ -139,6 +139,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
   return [
     registerAgentTool<Record<string, never>>({
       id: 'series_get_state',
+      resultPolicy: { storage: 'project', source: 'project-derived' },
       title: '读取剧集与分集状态',
       description: '读取当前剧集元数据和分集清单，不返回原著路径或完整正文。',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },

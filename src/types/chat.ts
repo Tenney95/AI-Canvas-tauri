@@ -133,6 +133,7 @@ export interface ToolResultSummary {
   errorCode?: string;
   truncated: boolean;
   sources?: WebSource[];
+  resultReference?: import('./agentResult').AgentResultReference;
 }
 
 export interface WebSource {
@@ -363,6 +364,9 @@ export interface ChatConversation {
   agentMode: AgentMode;
   /** 执行方式独立于 Plan/B/C 权限；旧会话缺省为单模型。 */
   executionSelection?: AssistantExecutionSelection;
+  creationProfile?: import('./creationProfile').CreationProfileSelection;
+  creationProfileRevision?: number;
+  teamProfileOverride?: import('./agentTeam').AgentTeamProfile;
   /** 用户为本会话显式启用的外部 MCP 连接；默认全部关闭。 */
   mcpServerIds?: string[];
   /** 每次选择变化均轮换，撤销后重新勾选不能复活旧审批。 */
@@ -375,8 +379,16 @@ export interface ChatConversation {
   /** 最近一条消息预览文本 */
   lastMessagePreview?: string;
   messageCount: number;
+  branchSource?: ConversationBranchSource;
   /** 软删除时间戳，存在则在回收站中 */
   deletedAt?: number;
+}
+
+export interface ConversationBranchSource {
+  conversationId: string;
+  messageId: string;
+  sequence: number;
+  createdAt: number;
 }
 
 // ============================================

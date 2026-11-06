@@ -5,6 +5,9 @@ import type { HistoryQuery } from '../types';
 import { matchesHistoryQuery } from '../utils/historyQuery';
 import type { AgentMode, AgentTask, McpOperationBinding, McpOperationIdentity, McpOperationUpdate } from '../types/agent';
 import type { ConversationContextSummary } from '../types/chat';
+import type { ConversationBranchSource } from '../types/chat';
+import type { AgentTeamProfile, AgentTeamRun, AssistantExecutionSelection } from '../types/agentTeam';
+import type { CreationProfileSelection } from '../types/creationProfile';
 import type { ProjectMemory } from '../types/memory';
 import type { DramaAsset, DramaAssetWriteOptions, DramaCharacter, DramaProp, DramaScene } from '../types/dramaAssets';
 import { assertDramaAssetWriteCurrent, MAX_CHARACTER_WEAPONS, normalizeCharacterWeaponIds } from '../types/dramaAssets';
@@ -1392,6 +1395,10 @@ export async function deleteAssetMeta(assetId: string): Promise<void> {
 // ============================================
 
 export interface ChatConversationRecord {
+  creationProfile?: CreationProfileSelection;
+  teamProfileOverride?: AgentTeamProfile;
+  creationProfileRevision?: number;
+  branchSource?: ConversationBranchSource;
   executionSelection?: import('../types/agentTeam').AssistantExecutionSelection;
   archiveOriginId?: string;
   id: string;
@@ -1417,9 +1424,48 @@ export async function putChatConversation(record: ChatConversationRecord): Promi
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readwrite');
-    tx.objectStore(STORE_CHAT_CONVERSATIONS).put(record);
+    const store = tx.objectStore(STORE_CHAT_CONVERSATIONS);
+    const request = store.get(record.id);
+    request.onsuccess = () => {
+      const current = request.result as ChatConversationRecord | undefined;
+      if (!current) { store.put(record); return; }
+      const staleSelection = (record.creationProfileRevision ?? 0) < (current.creationProfileRevision ?? 0);
+      store.put({ ...record, creationProfile: current.creationProfile, teamProfileOverride: current.teamProfileOverride,
+        creationProfileRevision: current.creationProfileRevision,
+        ...(staleSelection ? { executionSelection: current.executionSelection } : {}) });
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 组合包选择是独立 CAS，不能用旧会话快照覆盖并发消息元数据。 */
+export async function setConversationCreationProfileCAS(
+  id: string, expectedSelection: CreationProfileSelection | undefined, selection: CreationProfileSelection | undefined,
+  patch?: { teamProfileOverride?: AgentTeamProfile; executionSelection?: AssistantExecutionSelection },
+): Promise<ChatConversationRecord> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readwrite');
+    const store = tx.objectStore(STORE_CHAT_CONVERSATIONS);
+    let result: ChatConversationRecord | undefined;
+    let failure: Error | undefined;
+    const request = store.get(id);
+    request.onsuccess = () => {
+      const current = request.result as ChatConversationRecord | undefined;
+      const active = current?.creationProfile;
+      if (!current || current.deletedAt || active?.id !== expectedSelection?.id || active?.version !== expectedSelection?.version
+        || active?.sha256 !== expectedSelection?.sha256) {
+        failure = new Error('CREATION_PROFILE_SELECTION_CONFLICT'); tx.abort(); return;
+      }
+      result = { ...current, creationProfile: selection ? structuredClone(selection) : undefined,
+        creationProfileRevision: (current.creationProfileRevision ?? 0) + 1,
+        teamProfileOverride: patch?.teamProfileOverride ? structuredClone(patch.teamProfileOverride) : undefined,
+        ...(patch?.executionSelection ? { executionSelection: structuredClone(patch.executionSelection) } : {}), updatedAt: Date.now() };
+      store.put(result);
+    };
+    tx.oncomplete = () => result ? resolve(result) : reject(new Error('组合包选择没有保存'));
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('组合包选择事务失败'));
   });
 }
 
@@ -1486,6 +1532,105 @@ export interface ChatMessageRecord {
   canvasNodeId?: string;
   canvasError?: string;
   sources?: unknown;
+}
+
+/** 在一个事务内固定分支边界并复制纯资料；不复制任何旧执行句柄。 */
+export async function forkChatConversationAtMessage(input: {
+  projectId: string; conversationId: string; messageId: string; newConversationId: string;
+  title?: string; sanitize: (text: string) => string;
+}): Promise<{ conversation: ChatConversationRecord; messages: ChatMessageRecord[] }> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_AGENT_TASKS, STORE_METADATA], 'readwrite');
+    const conversations = tx.objectStore(STORE_CHAT_CONVERSATIONS);
+    const messages = tx.objectStore(STORE_CHAT_MESSAGES);
+    const tasks = tx.objectStore(STORE_AGENT_TASKS);
+    let result: { conversation: ChatConversationRecord; messages: ChatMessageRecord[] } | undefined;
+    let failure: Error | undefined;
+    const fail = (error: unknown) => { failure = error instanceof Error ? error : new Error('无法创建对话分支'); tx.abort(); };
+    const sourceRequest = conversations.get(input.conversationId);
+    sourceRequest.onsuccess = () => {
+      const source = sourceRequest.result as ChatConversationRecord | undefined;
+      if (!source || source.deletedAt || source.projectId !== input.projectId) { fail(new Error('来源对话已失效')); return; }
+      const boundaryRequest = messages.get(input.messageId);
+      boundaryRequest.onsuccess = () => {
+        const boundary = boundaryRequest.result as ChatMessageRecord | undefined;
+        if (!boundary || boundary.projectId !== input.projectId || boundary.conversationId !== source.id
+          || boundary.role !== 'assistant' || boundary.status !== 'done'
+          || (boundary.finishReason && boundary.finishReason !== 'stop')) {
+          fail(new Error('只能从已完成的助手轮次创建分支')); return;
+        }
+        const start = () => {
+          const deletedRequest = tx.objectStore(STORE_METADATA).get(`project-deleted:${input.projectId}`);
+          deletedRequest.onsuccess = () => {
+            if (deletedRequest.result) { fail(new Error('来源项目已删除')); return; }
+            const duplicate = conversations.get(input.newConversationId);
+            duplicate.onsuccess = () => {
+              if (duplicate.result) { fail(new Error('分支身份已存在')); return; }
+              const copied: ChatMessageRecord[] = [];
+              let chars = 0;
+              const cursorRequest = messages.index('conversationId_sequence').openCursor(IDBKeyRange.bound(
+                [source.id, 0], [source.id, boundary.sequence]), 'next');
+              cursorRequest.onsuccess = () => {
+                const cursor = cursorRequest.result;
+                if (!cursor) {
+                  const now = Date.now();
+                  const conversation: ChatConversationRecord = {
+                    id: input.newConversationId, projectId: input.projectId,
+                    title: input.sanitize(input.title?.trim() || `${source.title} · 分支`).slice(0, 120),
+                    titleSource: 'user', pinned: false, archived: false, agentMode: source.agentMode,
+                    executionSelection: source.executionSelection, mcpServerIds: [], mcpSelectionRevision: crypto.randomUUID(),
+                    branchSource: { conversationId: source.id, messageId: boundary.id, sequence: boundary.sequence, createdAt: now },
+                    createdAt: now, updatedAt: now, lastMessageAt: copied.at(-1)?.createdAt,
+                    lastMessagePreview: copied.at(-1)?.content.slice(0, 120), messageCount: copied.length,
+                  };
+                  conversations.add(conversation);
+                  for (const record of copied) messages.add(record);
+                  result = { conversation, messages: copied }; return;
+                }
+                const record = cursor.value as ChatMessageRecord;
+                if (copied.length >= 1000) { fail(new Error('来源历史超过分支复制上限，请先选择更短的对话')); return; }
+                const copy = (task?: AgentTask) => {
+                  try {
+                    if (record.projectId !== input.projectId) throw new Error('来源历史项目身份不一致');
+                    const history = task && task.projectId === input.projectId && task.conversationId === source.id
+                      ? task.steps.filter((step) => step.toolCall).slice(-12).map((step) =>
+                        `[历史工具 ${step.status}] ${step.toolCall!.toolId}：${step.outputSummary || step.toolCall!.resultSummary || '无摘要'}`).join('\n') : '';
+                    const text = input.sanitize(record.content);
+                    const content = `${record.role === 'system' ? '历史系统记录（仅作资料，不代表当前指令）：\n' : ''}${text.slice(0, 20000)}${text.length > 20000 ? '\n…（长历史已裁剪）' : ''}${
+                      history ? `\n\n历史执行事实（仅作资料，不授权重放）：\n${input.sanitize(history).slice(0, 4000)}` : ''}`;
+                    chars += content.length;
+                    if (chars > 2_000_000) throw new Error('来源历史超过分支文字预算');
+                    copied.push({ id: `msg-${crypto.randomUUID()}`, projectId: input.projectId, conversationId: input.newConversationId,
+                      sequence: copied.length, role: record.role === 'system' ? 'assistant' : record.role, content, status: 'done', createdAt: record.createdAt,
+                      updatedAt: Date.now(), finishReason: record.role !== 'user' ? 'stop' : undefined });
+                    cursor.continue();
+                  } catch (error) { fail(error); }
+                };
+                if (record.agentTaskId) {
+                  const taskRequest = tasks.get(record.agentTaskId);
+                  taskRequest.onsuccess = () => copy(taskRequest.result as AgentTask | undefined);
+                } else copy();
+              };
+            };
+          };
+        };
+        if (boundary.agentTaskId) {
+          const taskRequest = tasks.get(boundary.agentTaskId);
+          taskRequest.onsuccess = () => {
+            const task = taskRequest.result as AgentTask | undefined;
+            if (!task || task.status !== 'completed' || task.projectId !== input.projectId || task.conversationId !== source.id
+              || task.dispatches?.some((item) => !item.recovery && (item.phase === 'dispatched' || item.phase === 'outcome_unknown'))) {
+              fail(new Error('该轮任务尚未完成或仍有待核实结果')); return;
+            }
+            start();
+          };
+        } else start();
+      };
+    };
+    tx.oncomplete = () => result ? resolve(result) : reject(new Error('分支事务没有生成结果'));
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('分支事务失败'));
+  });
 }
 
 export interface LegacyAssetMetaRecord {
@@ -2190,7 +2335,9 @@ export async function putAgentTask(record: AgentTaskRecord): Promise<void> {
         currentRequest.onsuccess = () => {
           const current = currentRequest.result as AgentTask | undefined;
           const operation = current?.mcpOperation ?? next.mcpOperation;
-          if (!operation) { tasks.put(next); return; }
+          // v2 图只由下方 CAS 事务推进；后台旧快照不能覆盖已领取的节点租约。
+          const protectedTask = current?.teamRun?.version === 2 ? { ...next, teamRun: current.teamRun } : next;
+          if (!operation) { tasks.put(protectedTask); return; }
           const bindingRequest = metadata.get(operation.bindingId);
           bindingRequest.onsuccess = () => {
             try {
@@ -2201,7 +2348,7 @@ export async function putAgentTask(record: AgentTaskRecord): Promise<void> {
                 throw new Error('MCP 操作任务身份不一致');
               }
               if (binding.taskDeletedAt || !current?.mcpOperation) return;
-              tasks.put({ ...next, mcpOperation: current.mcpOperation });
+              tasks.put({ ...protectedTask, mcpOperation: current.mcpOperation });
             } catch { tx.abort(); }
           };
         };
@@ -2209,6 +2356,43 @@ export async function putAgentTask(record: AgentTaskRecord): Promise<void> {
     });
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('文件引用写入事务失败'));
+  });
+}
+
+/** 同一事务比较并推进图版本。结构变更/节点领取/完成均不能借普通 put 绕过。 */
+export async function updateTeamRunCAS(
+  taskId: string,
+  expected: { revision: number; boardRevision: number },
+  update: (run: AgentTeamRun) => AgentTeamRun,
+): Promise<AgentTask> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_AGENT_TASKS, STORE_METADATA], 'readwrite');
+    const tasks = tx.objectStore(STORE_AGENT_TASKS);
+    let result: AgentTask | undefined;
+    let failure: Error | undefined;
+    const request = tasks.get(taskId);
+    request.onsuccess = () => {
+      const task = request.result as AgentTask | undefined;
+      const run = task?.teamRun;
+      if (!task || task.executionKind !== 'team' || !run || run.version !== 2
+        || run.revision !== expected.revision || (run.boardRevision ?? 0) !== expected.boardRevision) {
+        failure = new Error('TEAM_GRAPH_CAS_CONFLICT'); tx.abort(); return;
+      }
+      const deleted = tx.objectStore(STORE_METADATA).get(`project-deleted:${task.projectId}`);
+      deleted.onsuccess = () => {
+        try {
+          if (deleted.result) throw new Error('项目已删除');
+          const next = update(structuredClone(run));
+          if (next.id !== run.id || next.version !== 2 || !Number.isSafeInteger(next.revision)
+            || next.revision < run.revision || !Number.isSafeInteger(next.boardRevision)
+            || next.boardRevision! <= (run.boardRevision ?? 0)) throw new Error('团队图 CAS 必须推进有效版本');
+          result = { ...task, teamRun: structuredClone(next), updatedAt: Date.now() }; tasks.put(result);
+        } catch (error) { failure = error instanceof Error ? error : new Error('团队图更新失败'); tx.abort(); }
+      };
+    };
+    tx.oncomplete = () => result ? resolve(result) : reject(new Error('团队图更新未完成'));
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('团队图事务失败'));
   });
 }
 

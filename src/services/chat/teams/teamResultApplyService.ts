@@ -13,14 +13,25 @@ import { getActiveConversationAgentTaskId, scheduleConversationAgentExecution } 
 import { registerAgentTool } from '../toolRegistry';
 import { sanitizeDomainText } from '../subAgentMaterials';
 import { hashTeamText, readTeamArtifactText } from './teamArtifactService';
+import { validateTeamGraph } from './teamGraphService';
 
 const activeApplications = new Map<string, Promise<void>>();
 const TEXT_FIELDS = new Set(['outline', 'script']);
 
 function readTask(taskId: string): AgentTask {
   const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
-  if (task?.executionKind !== 'team' || task.teamRun?.id !== taskId || !task.teamRun.resultArtifactId) {
+  if (task?.executionKind !== 'team' || task.teamRun?.id !== taskId || ![1, 2].includes(task.teamRun.version) || !task.teamRun.resultArtifactId) {
     throw new Error('团队任务尚无可应用的最终候选');
+  }
+  if (task.teamRun.version === 2) {
+    const graph = validateTeamGraph(task.teamRun.graph);
+    const final = task.teamRun.stages.find((stage) => stage.id === graph.finalTaskId);
+    if (final?.status !== 'completed' || final.artifactId !== task.teamRun.resultArtifactId
+      || task.teamRun.stages.length !== graph.nodes.length || graph.nodes.some((node) => {
+        const stage = task.teamRun!.stages.find((item) => item.id === node.id && item.roleId === node.roleId);
+        return stage?.status !== 'completed' || !task.teamRun!.artifacts.some((item) => item.id === stage.artifactId
+          && item.stageId === node.id && item.roleId === node.roleId && item.kind === node.kind);
+      })) throw new Error('任务图尚未完整完成，不能应用候选');
   }
   return task;
 }
@@ -67,7 +78,11 @@ export async function captureEpisodeTeamContext(
 
 async function persistRunUpdate(taskId: string, application: TeamApplicationReceipt | undefined): Promise<void> {
   const task = readTask(taskId);
-  useAppStore.getState().updateAgentTask(taskId, { teamRun: { ...task.teamRun!, application } });
+  if (task.teamRun!.version === 2) {
+    const { mutateTeamRun } = await import('./teamRuntime');
+    await mutateTeamRun(taskId, task.teamRun!.revision, (run) => { run.application = application; });
+  }
+  else useAppStore.getState().updateAgentTask(taskId, { teamRun: { ...task.teamRun!, application } });
   await saveAgentTask(readTask(taskId));
 }
 

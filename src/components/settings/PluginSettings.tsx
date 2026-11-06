@@ -4,7 +4,7 @@
 import { t, useT } from '../../i18n';
 import { Icon } from '@iconify/react';
 import { motion } from 'framer-motion';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import pluginDeveloperGuide from '../../../doc/插件开发规范.md?raw';
 import { isTauriEnv, saveBinaryToLocalFile } from '../../services/fileService';
 import { readLocalPluginPackage, selectNativePluginDirectory } from '../../services/fs/pluginPackageFiles';
@@ -36,6 +36,9 @@ import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import DownloadProgress from '../shared/DownloadProgress';
 import ModelDownloadDialog from '../shared/ModelDownloadDialog';
+import PluginDiagnosticsPanel from './plugins/PluginDiagnosticsPanel';
+
+const PluginPreviewDialog = lazy(() => import('./plugins/PluginPreviewDialog'));
 
 const CATEGORY_LABELS: Record<PluginCategory, string> = {
   content: '内容处理',
@@ -363,6 +366,7 @@ async function resolveResourcePayloads(
 }
 
 export default function PluginSettings() {
+  const [previewOpen, setPreviewOpen] = useState(false);
   useT();
   const inputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
@@ -1028,6 +1032,11 @@ export default function PluginSettings() {
         </div>
       </section>
 
+      <section className="ui-card flex flex-wrap items-center gap-2 p-3">
+        <button type="button" className="ui-btn ui-btn--sm" onClick={() => setPreviewOpen(true)}>{t('开发界面预览')}</button>
+        <span className="text-xs text-canvas-text-muted">{t('使用模拟数据，不安装插件或运行主工具。')}</span>
+      </section>
+      {previewOpen && <Suspense fallback={null}><PluginPreviewDialog onClose={() => setPreviewOpen(false)} /></Suspense>}
       {pluginRegistryRepairRequired && (
         <section className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3">
           <div className="flex items-start gap-3">
@@ -1082,6 +1091,7 @@ export default function PluginSettings() {
                   <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary">
                     {plugin.manifest.description || t('未提供说明')}
                   </p>
+                  <PluginDiagnosticsPanel plugin={plugin} plugins={plugins} />
                   {pluginUsesSpeechModels(plugin.manifest) && speechModels.ready !== true && (
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span className="text-[11px] text-canvas-text-muted">{t('对白转写使用本地语音模型')}</span>

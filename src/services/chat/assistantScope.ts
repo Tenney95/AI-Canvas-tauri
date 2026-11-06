@@ -7,6 +7,7 @@ const GENERAL_ASSISTANT_TOOLS = [
   'skill_search', 'skill_load', 'skill_read_file',
   'mcp_tools_search', 'mcp_tools_describe', 'mcp_read_tool', 'mcp_call_tool',
   'provider_docs_read', 'provider_models_select', 'provider_config_preview', 'provider_config_apply',
+  'plugin_host_inspect', 'agent_result_read',
 ] as const;
 
 export function isGeneralAssistantScope(projectId: string | null | undefined): boolean {

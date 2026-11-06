@@ -76,7 +76,9 @@ export async function runAgentLoop({
   let messages: AssistantModelMessage[];
   let currentUserMessage: AssistantModelMessage;
   try {
-    const assembled = await assembleAgentContext({
+    const assembled = initialTask.creationProfile?.contextPolicyRef === 'explicit-materials'
+      ? { messages: [{ role: 'system' as const, content: systemPrompt }, { role: 'user' as const, content: userMessage }] }
+      : await assembleAgentContext({
       conversationId: initialTask.conversationId,
       projectId: initialTask.projectId,
       systemPrompt,
@@ -117,6 +119,7 @@ export async function runAgentLoop({
   }
   let fullText = '';
   let totalToolResultChars = 0;
+  let overflowRetried = false;
 
   clearSkillReadTask(taskId);
   openAgentInterjectionBuffer(taskId);
@@ -135,7 +138,8 @@ export async function runAgentLoop({
           return 'paused';
         }
       }
-      const round = await executeAgentRound({
+      let round: Awaited<ReturnType<typeof executeAgentRound>>;
+      try { round = await executeAgentRound({
         taskId,
         signal,
         messages,
@@ -144,7 +148,17 @@ export async function runAgentLoop({
         callbacks,
         transitionTask: transitionAgentTask,
         waitForApproval: waitForAgentApproval,
-      });
+      }); } catch (error) {
+        const code = error instanceof Error && 'code' in error ? String(error.code) : '';
+        const classifiedOverflow = /^(context_length_exceeded|context_window_exceeded|CONTEXT_LENGTH_EXCEEDED)$/.test(code);
+        if (classifiedOverflow && !overflowRetried && !signal.aborted) {
+          const before = JSON.stringify(messages);
+          await compactAgentMessages(taskId, messages, currentUserMessage, signal, true);
+          if (before !== JSON.stringify(messages)) { overflowRetried = true; continue; }
+        }
+        throw error;
+      }
+      overflowRetried = false;
       fullText = round.fullText;
       totalToolResultChars = round.totalToolResultChars;
       if (round.outcome !== 'continue') return round.outcome;

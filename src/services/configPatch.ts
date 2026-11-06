@@ -1,4 +1,5 @@
 /** 普通配置的三方比较。补丁仅在内存和事务间传递，不写日志或保存状态元数据。 */
+import { parseCreationProfile } from './creationProfiles/creationProfileManifest';
 export interface ConfigChange {
   path: string[];
   before: unknown;
@@ -27,6 +28,10 @@ export function configValuesEqual(a: unknown, b: unknown): boolean {
 
 export function configWithoutSecrets(value: unknown): Record<string, unknown> {
   const copy = structuredClone(record(value) ? value : {});
+  if (copy.creationProfiles !== undefined) {
+    if (!Array.isArray(copy.creationProfiles) || copy.creationProfiles.length > 64) throw new Error('创作组合包目录无效');
+    copy.creationProfiles = copy.creationProfiles.map(parseCreationProfile);
+  }
   if (record(copy.providers)) {
     for (const provider of Object.values(copy.providers)) {
       if (record(provider)) delete provider.apiKey;

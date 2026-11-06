@@ -28,6 +28,8 @@ import {
 import * as fileService from '../services/fileService';
 import { resumePendingTasks, clearProjectTasks, getPendingTasksForProject } from '../services/pollManager';
 import { normalizeProjectSettings } from '../services/projectSettingsService';
+import { normalizeCreationProfileSelection } from '../services/creationProfiles/creationProfileManifest';
+import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
 import { stopProjectAgentTasks } from '../services/chat/agentTaskControl';
 import { cancelProjectCanvasDerivations, completeCanvasDerivation, registerCanvasImport } from '../services/canvasDerivationGuard';
@@ -617,7 +619,8 @@ export interface ProjectSlice {
   /** 原子更新某一集的大纲、正文和创作要点。 */
   updateEpisodeCreative: (
     episodeId: string,
-    updates: { outline?: string; script?: string; creative?: EpisodeCreativeInfo },
+    updates: { outline?: string; script?: string; creative?: EpisodeCreativeInfo;
+      creationProfile?: import('../types/creationProfile').CreationProfileSelection | null; teamProfileOverride?: import('../types/agentTeam').AgentTeamProfile | null },
     options?: EpisodeCreativeWriteOptions,
   ) => Promise<boolean>;
   /** 只更新当前准确分集的提取清单；expectedRevision 防止覆盖较新的编辑。 */
@@ -1426,7 +1429,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         || current.switchingProjectName !== null || current.isCreatingProject || current.isReturningToStartPage) {
         throw new Error('目标内容已被修改，团队候选已保留；请比较当前稿件，不要覆盖新内容');
       }
-      if ((expected.field === 'outline' && (!('outline' in updates) || 'script' in updates || 'creative' in updates))
+      if ('creationProfile' in updates || 'teamProfileOverride' in updates
+        || (expected.field === 'outline' && (!('outline' in updates) || 'script' in updates || 'creative' in updates))
         || (expected.field === 'script' && (!('script' in updates) || 'outline' in updates || 'creative' in updates))) {
         throw new Error('团队成果只允许更新任务绑定的一个目标字段');
       }
@@ -1437,6 +1441,13 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if ('outline' in updates) patch.episodeOutline = updates.outline;
     if ('script' in updates) patch.episodeScript = updates.script;
     if ('creative' in updates) patch.episodeCreative = updates.creative;
+    if ('creationProfile' in updates) {
+      const selection = normalizeCreationProfileSelection(updates.creationProfile);
+      if (updates.creationProfile !== undefined && updates.creationProfile !== null && !selection) throw new Error('分集组合包选择无效');
+      patch.creationProfile = selection;
+      if (!('teamProfileOverride' in updates)) patch.teamProfileOverride = undefined;
+    }
+    if ('teamProfileOverride' in updates) patch.teamProfileOverride = updates.teamProfileOverride ? normalizeTeamProfile(updates.teamProfileOverride) : undefined;
     if (Object.keys(patch).length === 0) return true;
     return patchProjectRecord(set, get, episodeId, patch, false, assertCommitScope);
   }),

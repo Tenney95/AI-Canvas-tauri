@@ -87,6 +87,13 @@ function buildReplanDirective(task: AgentTask): string {
 
 export function buildAgentResumeContext(task: AgentTask): string {
   const sections: string[] = [];
+  const unknown = (task.dispatches ?? []).filter((item) => !item.recovery
+    && (item.phase === 'outcome_unknown' || item.phase === 'dispatched'));
+  if (unknown.length) sections.push(`以下调用结果未知，禁止重复提交，只能先只读核实：${
+    unknown.slice(-20).map((item) => `${item.toolId ?? item.kind}（${item.id}）`).join('；')}`);
+  const resolvedWrites = (task.dispatches ?? []).filter((item) => item.kind === 'tool' && item.effect !== 'read' && item.recovery);
+  if (resolvedWrites.length) sections.push(`以下原写入已有用户核实决定，仍禁止在本任务重投；新意图须由用户新建任务：${
+    resolvedWrites.slice(-20).map((item) => `${item.toolId}（${item.recovery!.decision === 'verified_completed' ? '用户标记已完成' : '用户放弃，不重投'}）`).join('；')}`);
   const replanDirective = buildReplanDirective(task);
   if (replanDirective) sections.push(replanDirective);
 

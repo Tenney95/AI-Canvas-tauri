@@ -19,6 +19,9 @@ import {
 } from './agentScheduler';
 import { appendAgentEvent } from './agentJournal';
 import { emitAgentLifecycleEvent } from './agentLifecycle';
+import { unmaterializedTeamDispatches, unresolvedAgentDispatches } from './agentDurabilityService';
+import { assertCreationProfileSnapshot } from '../creationProfiles/creationProfileService';
+import { clearAgentResults } from './agentResultService';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -195,6 +198,7 @@ export function prepareTeamTaskApplication(taskId: string): AgentTask {
 }
 
 export function stopAgentTask(taskId: string): AgentTask {
+  clearAgentResults({ taskId });
   activeControllers.get(taskId)?.abort();
   return transitionAgentTask(taskId, 'stopped', {
     pausedReason: undefined,
@@ -203,6 +207,7 @@ export function stopAgentTask(taskId: string): AgentTask {
 }
 
 export function stopConversationAgentTasks(conversationId: string): void {
+  clearAgentResults({ conversationId });
   cancelConversationAgentExecutions(conversationId);
   const tasks = useAppStore.getState().agentTasks.filter(
     (task) => task.conversationId === conversationId
@@ -222,6 +227,7 @@ export function stopConversationAgentTasks(conversationId: string): void {
 }
 
 export function stopProjectAgentTasks(projectId: string): void {
+  clearAgentResults({ projectId });
   const tasks = useAppStore.getState().agentTasks.filter(
     (task) => task.projectId === projectId
       && !AGENT_TERMINAL_STATUSES.has(task.status),
@@ -266,6 +272,19 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
   if (!['paused', 'failed'].includes(task.status)) {
     return { ok: false, errorCode: 'AGENT_RESUME_NOT_RESUMABLE', message: '任务当前状态不支持继续' };
   }
+  if (task.creationProfilePreparation && task.creationProfilePreparation !== 'ready') {
+    return { ok: false, errorCode: 'CREATION_PROFILE_NOT_PREPARED',
+      message: '组合包准备尚未成功完成，请等待准备完成或重新发起请求，不能跳过准备直接继续' };
+  }
+  try { assertCreationProfileSnapshot(task.creationProfile); }
+  catch (error) { return { ok: false, errorCode: 'CREATION_PROFILE_BINDING_CHANGED',
+    message: error instanceof Error ? error.message : '组合包绑定的能力已变化，请重新选择后发起任务' }; }
+  if (unresolvedAgentDispatches(task).some((item) => item.effect !== 'read')) {
+    return { ok: false, errorCode: 'AGENT_OUTCOME_REQUIRES_VERIFICATION',
+      message: '存在已进入调用但结果未知的操作，请先核实原操作；继续不会自动重投' };
+  }
+  if (unmaterializedTeamDispatches(task).length) return { ok: false, errorCode: 'TEAM_UNKNOWN_RESULT_NO_ARTIFACT',
+    message: '原团队调用已核实但没有可恢复成果，请补充新要求或新建任务；普通继续不会重投' };
   if (task.parentTaskId) {
     return {
       ok: false,

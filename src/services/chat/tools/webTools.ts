@@ -213,6 +213,12 @@ export function registerWebAgentTools(): Array<() => void> {
             ? `续读信息（始终使用原始 url=${input.url}）：${JSON.stringify({ readSessionId: result.readSessionId,
               nextCursor: result.nextCursor, nextOffset: result.nextOffset, totalTextChars: result.totalTextChars,
               sections: result.sections })}` : '';
+          const resultPolicy = { storage: 'memory' as const, source: 'web' as const, continuation,
+            authorize: () => {
+              const task = useAppStore.getState().agentTasks.find((item) => item.id === context.taskId);
+              return !!task && task.projectId === context.projectId && task.conversationId === context.conversationId
+                && isWebUrlAllowed(context.taskId, input.url, task.goal);
+            } };
           if (isSearchNavigation || !factPages.length) {
             const hasLinks = result.links.length > 0;
             return {
@@ -234,6 +240,7 @@ export function registerWebAgentTools(): Array<() => void> {
                   : '当前入口不可用。请立即调用 web_extract 打开先前路由指令中的下一个搜索入口。',
               ].join('\n'),
               truncated: result.truncated,
+              resultPolicy,
             };
           }
           const sources = assignWebSourceCitations(context.taskId, factPages.map((page) => page.source));
@@ -270,6 +277,7 @@ export function registerWebAgentTools(): Array<() => void> {
             ].join('\n'),
             truncated: result.truncated,
             sources,
+            resultPolicy,
           };
         } catch (error) {
           const nextUrl = nextSearchNavigationUrl(input.url);

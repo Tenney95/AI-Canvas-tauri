@@ -7,6 +7,7 @@ import { lstat, readFile } from '@tauri-apps/plugin-fs';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import type {
+  InstalledPlugin,
   PluginCustomNodePortManifest,
   PluginInvocationResources,
   PluginPackageResourceManifest,
@@ -15,6 +16,7 @@ import type {
   PluginResourceRef,
   PluginPermission,
 } from '../../types/plugin';
+import { resolvePluginDependencies } from './pluginDependencyService';
 import { getRelativeAssetPath, resolveIndexedAssetPath } from '../fs/assetIndex';
 import {
   getConvertFileSrc,
@@ -36,6 +38,7 @@ const MAX_NATIVE_MEDIA_INPUT_BYTES = 256 * 1024 * 1024;
 const DERIVED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 export interface PluginResourceStateSnapshot {
+  installedPlugins?: readonly InstalledPlugin[];
   currentProjectId: string | null;
   nodes: ReadonlyArray<Node<BaseNodeData>>;
   edges: ReadonlyArray<Edge>;
@@ -106,6 +109,7 @@ interface PluginResourceLease {
 }
 
 const resourceLeases = new Map<string, PluginResourceLease>();
+const dependencyLeases = new Map<string, { pluginId: string; fingerprint: string }>();
 
 function createResourceId(): string {
   return `plugin-resource-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
@@ -254,6 +258,11 @@ export async function mintPluginInvocationResources(
   if (options.state.getCurrentRevision() !== options.baseRevision) throw new Error('画布已变化，无法授权插件资源');
   const targetNode = options.state.nodes.find((node) => node.id === options.nodeId);
   if (!targetNode) throw new Error('插件目标节点不存在');
+  if (options.state.installedPlugins) {
+    const dependencies = resolvePluginDependencies(options.state.installedPlugins, options.pluginId);
+    if (!dependencies.ready) throw new Error('插件资源依赖不可用');
+    dependencyLeases.set(options.invocationId, { pluginId: options.pluginId, fingerprint: dependencies.fingerprint });
+  }
 
   const result: PluginInvocationResources = {
     self: [],
@@ -307,6 +316,11 @@ export async function mintPluginInvocationResources(
 }
 
 function requireLease(context: PluginResourceReadContext, resourceId: string): PluginResourceLease {
+  const dependency = dependencyLeases.get(context.invocationId);
+  if (dependency) {
+    const current = resolvePluginDependencies(context.state.installedPlugins ?? [], context.pluginId);
+    if (!current.ready || current.fingerprint !== dependency.fingerprint) throw new Error('插件资源依赖租约已失效');
+  }
   const lease = resourceLeases.get(resourceId);
   if (
     !lease
@@ -729,6 +743,7 @@ export function readPluginDerivedResourceForOutput(
 }
 
 export function clearPluginInvocationResources(invocationId: string): void {
+  dependencyLeases.delete(invocationId);
   clearPluginPromptReferences(invocationId);
   for (const [resourceId, lease] of resourceLeases) {
     if (lease.invocationId === invocationId) resourceLeases.delete(resourceId);
@@ -736,6 +751,7 @@ export function clearPluginInvocationResources(invocationId: string): void {
 }
 
 export function clearPluginResources(pluginId?: string): void {
+  for (const [id, lease] of dependencyLeases) if (!pluginId || lease.pluginId === pluginId) dependencyLeases.delete(id);
   clearPluginPromptReferencesForPlugin(pluginId);
   for (const [resourceId, lease] of resourceLeases) {
     if (!pluginId || lease.pluginId === pluginId) resourceLeases.delete(resourceId);

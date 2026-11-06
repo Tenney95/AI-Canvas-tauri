@@ -5,6 +5,7 @@ import type { AgentMode, AgentToolDisplaySnapshot } from '../../types/agent';
 import type { ProposedToolCall, ToolResultSummary, WebSource } from '../../types/chat';
 import type { McpContent } from '../../types/mcp';
 import type { SkillReadBudget } from './skillReadService';
+import type { AgentResultPolicy } from '../../types/agentResult';
 import { isGeneralAssistantScope, isGeneralAssistantTool } from './assistantScope';
 import {
   validateAgentToolInput,
@@ -51,6 +52,7 @@ export interface AgentToolExecutionResult {
   display?: AgentToolDisplaySnapshot;
   /** 仅由 MCP 控制层返回的瞬时富内容；不得进入模型上下文、消息或任务持久化。 */
   mcpContent?: McpContent[];
+  resultPolicy?: AgentResultPolicy;
 }
 
 export interface AgentToolDefinition<TInput = unknown> {
@@ -59,6 +61,8 @@ export interface AgentToolDefinition<TInput = unknown> {
   description: string;
   inputSchema: AgentToolSchema;
   effect: AgentToolEffect;
+  /** 宿主静态白名单；执行结果本身不能提升为持久化。 */
+  resultPolicy?: Omit<AgentResultPolicy, 'authorize'>;
   isAvailable?: (context: Omit<AgentToolContext, 'signal'>) => boolean;
   authorize?: (
     context: Omit<AgentToolContext, 'signal'>,

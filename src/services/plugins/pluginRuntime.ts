@@ -35,6 +35,8 @@ import type {
   PythonPluginRuntimeStatus,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
+import { resolvePluginDependencies } from './pluginDependencyService';
+import { createPluginLifecycleScope } from './pluginLifecycleScope';
 import { computeImageNodeDimensions, derivedNodePlacement, generateId } from '../../store/store.utils';
 import {
   completeCanvasDerivation,
@@ -212,6 +214,7 @@ function requireCurrentPluginRevision(pluginId: string, sourceDigest: string, re
   requirePluginSourceDigest(current.installedPlugins, pluginId, sourceDigest);
   requirePluginRevisionDigest(current.installedPlugins, pluginId, revisionDigest);
   assertPluginCompatibility(current.installedPlugins.find((plugin) => plugin.id === pluginId)!.manifest);
+  if (!resolvePluginDependencies(current.installedPlugins, pluginId).ready) throw new Error('插件依赖已失效');
   return current;
 }
 
@@ -224,22 +227,27 @@ function watchPluginExecution(
   pluginId: string, sourceDigest: string, revisionDigest: string,
   guard: CanvasDerivationGuard, upstream?: AbortSignal,
 ) {
+  const scope = createPluginLifecycleScope();
+  const dependencyFingerprint = resolvePluginDependencies(useAppStore.getState().installedPlugins, pluginId).fingerprint;
   const controller = new AbortController();
   const cancel = () => controller.abort();
   upstream?.addEventListener('abort', cancel, { once: true });
   const check = () => {
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || !scope.isActive()) return;
     try {
       const state = requireCurrentPluginRevision(pluginId, sourceDigest, revisionDigest);
+      if (resolvePluginDependencies(state.installedPlugins, pluginId).fingerprint !== dependencyFingerprint) cancel();
       if (!isCanvasDerivationFresh(guard, state)) cancel();
     } catch { cancel(); }
   };
   const unsubscribe = useAppStore.subscribe(check);
+  scope.defer(() => upstream?.removeEventListener('abort', cancel));
+  scope.defer(unsubscribe);
   if (upstream?.aborted) cancel();
   check();
   return {
     signal: controller.signal,
-    dispose: () => { unsubscribe(); upstream?.removeEventListener('abort', cancel); },
+    dispose: () => { cancel(); void scope.dispose().catch(() => undefined); },
   };
 }
 

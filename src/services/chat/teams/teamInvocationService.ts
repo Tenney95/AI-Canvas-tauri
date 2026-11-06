@@ -15,6 +15,8 @@ import { isWorkbenchTeamTaskInScope, readEpisodeWorkspaceScope } from '../../epi
 import { hashTeamText, readTeamArtifactText } from './teamArtifactService';
 import { normalizeTeamProfile, TEAM_TEMPLATE_LABELS } from './teamProfileService';
 import { amendTeamRun, captureTeamModelFingerprints, executeTeamRun, MAX_TEAM_INPUT_CHARS, prepareTeamRun, waitForTeamRunIdle } from './teamRuntime';
+import { captureCreationProfile, intersectCreationTools, resolveCreationTeamProfile } from '../../creationProfiles/creationProfileService';
+import { captureExplicitSkillBindings, expandSkillBindings, SKILL_CONTENT_LIMITS } from '../../skillPromptService';
 
 export interface TeamInvocationInput {
   content: string;
@@ -150,11 +152,17 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     || context.target.seriesId !== ownerId || (workbenchScope && context.target.seriesId !== workbenchScope.owner.id))) {
     throw new Error('团队成果目标与当前分集不一致');
   }
-  const profile = normalizeTeamProfile(structuredClone(input.profile ?? state.config.agentTeamProfile));
+  if (!conversation) conversation = state.conversations.find((item) => item.id === state.activeConversationId
+    && item.projectId === ownerId && !item.deletedAt && item.id.startsWith('conv-'));
+  const creationOwner = context.source === 'script-workbench'
+    ? state.projects.find((item) => item.id === projectId && !!item.parentId) : conversation;
+  const creationSelection = creationOwner?.creationProfile ? structuredClone(creationOwner.creationProfile) : undefined;
+  const profile = normalizeTeamProfile(structuredClone(input.profile
+    ?? resolveCreationTeamProfile(creationSelection, creationOwner?.teamProfileOverride)));
   const materials = input.materials ?? explicitNodeMaterials(content, projectId);
   if (content.length + materials.length > MAX_TEAM_INPUT_CHARS) throw new Error('团队目标与材料超过总上限，请按场景或章节拆分，不会截断原稿');
   const signature = JSON.stringify({ projectId, conversationId: input.conversationId, content,
-    profile, templateId: input.templateId, context, materials, originalText: input.originalText, mode: input.mode });
+    profile, creationSelection, templateId: input.templateId, context, materials, originalText: input.originalText, mode: input.mode });
   const previous = invocations.get(requestId);
   if (previous) {
     if (previous.signature !== signature) throw new Error('同一请求身份不能用于不同的团队任务');
@@ -182,6 +190,12 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
   const sourceAvailable = () => !cancellation.canceled && useAppStore.getState().conversations
     .some((item) => item.id === frozen.conversationId && !item.deletedAt && item.projectId === ownerId);
   const ready = (async () => {
+    const creation = await captureCreationProfile(creationSelection, projectId);
+    if (!sourceAvailable()) return;
+    const explicitSkills = captureExplicitSkillBindings(content, [...state.userSkills, ...state.agentPackageSkills]);
+    const skillBindings = [...new Map([...explicitSkills, ...creation.skillBindings].map((binding) => [binding.skillId, binding])).values()];
+    if (skillBindings.length > SKILL_CONTENT_LIMITS.maxExplicitBindings
+      || skillBindings.reduce((size, binding) => size + binding.content.length, 0) > SKILL_CONTENT_LIMITS.expansionTotalChars) throw new Error('团队 Skill 总量超出上限，请减少本次引用或组合包选择');
     const fingerprintsPromise = captureTeamModelFingerprints(projectId, profile, input.templateId)
       .then((value) => ({ value }), (error: unknown) => ({ error }));
     let runContext = context;
@@ -195,6 +209,7 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
       runMaterials = [captured.materials, materials].filter(Boolean).join('\n\n');
       originalText = captured.originalText;
     }
+    if (skillBindings.length) runMaterials = [runMaterials, expandSkillBindings(content, skillBindings)].filter(Boolean).join('\n\n');
     if (content.length + runMaterials.length > MAX_TEAM_INPUT_CHARS) throw new Error('材料超过团队总上限，请按场景拆分任务');
     const digest = await hashTeamText(JSON.stringify({ signature, context: runContext, materials: runMaterials, originalText }));
     const existing = useAppStore.getState().agentTasks.find((item) => item.id === taskId) ?? await loadAgentTask(taskId);
@@ -223,7 +238,8 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
       mode, goal: sanitizeDomainText(content).slice(0, 160),
       budget: { maxModelRounds: profile.maxCalls, maxTotalModelRounds: profile.maxCalls,
         maxTotalTokens: profile.maxTotalTokens, maxParallelReadTools: 2 },
-      toolAllowlist: ['agent_team_apply_result', 'agent_team_restore_result'],
+      toolAllowlist: intersectCreationTools(['agent_team_apply_result', 'agent_team_restore_result'], creation.snapshot?.toolAllowlist),
+      creationProfile: creation.snapshot, skillBindings,
     });
     await saveAgentTask(task);
     const teamRun = await prepareTeamRun({ taskId, projectId, conversationId: frozen.conversationId,

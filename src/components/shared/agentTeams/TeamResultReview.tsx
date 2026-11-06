@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { AgentTask } from '../../../types/agent';
 import type { TeamArtifactReference } from '../../../types/agentTeam';
+import { TEAM_ROLE_LABELS } from '../../../services/chat/teams/teamProfileService';
 import { useT } from '../../../i18n';
 import ModalOverlay from '../ModalOverlay';
 import Select from '../Select';
@@ -94,9 +95,11 @@ export default function TeamResultReview({ task, isOpen, onClose, onReadArtifact
 
   if (!run) return null;
   const applied = run.application?.status === 'applied';
+  const selectedStage = run.stages.find((stage) => stage.id === selected?.stageId);
+  const hasUnknownDispatch = task.dispatches?.some((record) => !record.recovery && ['outcome_unknown', 'dispatched'].includes(record.phase)) ?? false;
   const pendingApplication = !!run.application && !['applied', 'restored'].includes(run.application.status);
   const canApply = !!onApply && !!run.target && !!run.resultArtifactId && run.templateId !== 'review'
-    && selected?.id === run.resultArtifactId && task.status === 'completed' && task.mode !== 'plan' && !applied && !pendingApplication;
+    && selected?.id === run.resultArtifactId && task.status === 'completed' && task.mode !== 'plan' && !applied && !pendingApplication && !hasUnknownDispatch;
   const mutate = async (action: (taskId: string) => void | Promise<void>) => {
     if (busy) return;
     setBusy(true);
@@ -123,6 +126,9 @@ export default function TeamResultReview({ task, isOpen, onClose, onReadArtifact
           <span className="text-canvas-text-secondary">{pendingApplication ? t('保存结果待核对') : applied ? t('已应用、已保存') : run.application?.status === 'restored' ? t('已恢复原稿') : t('候选成果，尚未应用')}</span>
         </div>
         {run.target && <p className="break-words text-canvas-text-muted">{t('原目标：{name}', { name: run.target.label })}</p>}
+        {run.version === 2 && <p className="text-canvas-text-muted">{t('任务图版本 {version}', { version: run.boardRevision ?? 0 })}</p>}
+        {selectedStage && <p className="break-words text-canvas-text-secondary">{t('负责人：{role}', { role: t(TEAM_ROLE_LABELS[selectedStage.roleId]) })}
+          {' · '}{selectedStage.executionTarget?.kind === 'external-agent' ? 'Codex App Server · ' : ''}{selectedStage.modelId}</p>}
         {loading ? <p role="status" className="p-3 text-canvas-text-muted">{t('正在读取团队成果…')}</p> : selected ? (
           <div className={`grid min-w-0 gap-3 ${hasOriginal ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
             {hasOriginal && <section className="min-w-0 space-y-1"><h3 className="font-medium text-canvas-text-secondary">{t('应用前原稿')}</h3>
@@ -134,6 +140,7 @@ export default function TeamResultReview({ task, isOpen, onClose, onReadArtifact
           </div>
         ) : <p className="text-canvas-text-muted">{t('当前阶段尚无可查看的成果。')}</p>}
         {task.mode === 'plan' && <p className="text-canvas-text-muted">{t('规划模式只查看成果，不应用到项目。')}</p>}
+        {hasUnknownDispatch && <p role="status" className="ui-alert ui-alert--warning">{t('原调用结果待核实，请先在任务卡核对，再决定是否应用候选。')}</p>}
         {pendingApplication && <p role="status" className="text-warning-light">{t('上次保存的状态尚未确认，请先比较原稿与目标内容，不要重复应用。')}</p>}
         {loadError && <div role="alert" className="flex flex-wrap items-center gap-2 text-danger-light"><span className="break-words">{loadError}</span>
           <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => setLoaded({ key: '', text: '', original: '', error: '' })}>{t('重试读取')}</button>

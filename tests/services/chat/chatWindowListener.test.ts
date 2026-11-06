@@ -13,18 +13,37 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => set.delete(handler);
   }),
   emit: vi.fn(async () => undefined),
+  emitTo: vi.fn(async () => undefined),
 }));
 
-import { emit } from '@tauri-apps/api/event';
+import { emit, emitTo } from '@tauri-apps/api/event';
 
 import {
   CHAT_ACTION_EVENT,
   CHAT_CLOSE_REQUEST,
   emitCloseRequest,
   initMainWindowListener,
+  requestManagedChatOperation,
+  CHAT_MANAGED_RESPONSE_EVENT,
 } from '../../../src/services/chat/chatWindowService';
 
 describe('initMainWindowListener', () => {
+  it('waits for the matching main-window acknowledgement before reporting saved', async () => {
+    let completed = false;
+    const pending = requestManagedChatOperation('project-1', 'conversation-1', { kind: 'save_team_profile',
+      profile: { version: 1, name: 'team', roles: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' }, maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 } })
+      .then(() => { completed = true; });
+    await vi.waitFor(() => expect(emitTo).toHaveBeenCalled());
+    const args = vi.mocked(emitTo).mock.lastCall!;
+    const request = args[2] as { requestId: string };
+    expect(args[0]).toBe('main');
+    expect(completed).toBe(false);
+    for (const handler of listeners.get(CHAT_MANAGED_RESPONSE_EVENT) ?? []) handler({ payload: { requestId: request.requestId, scopeId: 'other', conversationId: 'conversation-1', value: true } });
+    await Promise.resolve(); expect(completed).toBe(false);
+    for (const handler of listeners.get(CHAT_MANAGED_RESPONSE_EVENT) ?? []) handler({ payload: { requestId: request.requestId, scopeId: 'project-1', conversationId: 'conversation-1', value: true } });
+    await pending; expect(completed).toBe(true);
+    expect(listeners.get(CHAT_MANAGED_RESPONSE_EVENT)?.size).toBe(0);
+  });
   it('carries the last composer edit with the close request', async () => {
     const onClose = vi.fn();
     const dispose = await initMainWindowListener(vi.fn(), onClose);

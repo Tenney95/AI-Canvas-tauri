@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../src/types';
 import type { PluginResourceStateSnapshot } from '../../src/services/plugins/pluginResourceService';
-import type { PluginInvocationResources } from '../../src/types/plugin';
+import type { InstalledPlugin, PluginInvocationResources } from '../../src/types/plugin';
 import type { PluginLineArtImage } from '../../src/services/plugins/pluginImageService';
 
 const mocks = vi.hoisted(() => ({
@@ -116,6 +116,19 @@ function lineArt(bytes = new Uint8Array([10, 20, 30])): PluginLineArtImage {
 }
 
 describe('pluginResourceService', () => {
+  it('rejects a resource lease after a resolved dependency revision changes', async () => {
+    const { state } = createState();
+    const installed = (id: string): InstalledPlugin => ({ id, source: '', sourceDigest: SOURCE_DIGEST, revisionDigest: REVISION_DIGEST,
+      enabled: true, installedAt: 1, updatedAt: 1, manifest: { apiVersion: 2, id, name: id, version: '1.0.0', runtime: 'javascript',
+        entry: 'main.js', category: 'utility', permissions: [], contributes: { nodeTools: [] } } });
+    const owner = installed('plugin-a'); const base = installed('plugin-b');
+    owner.manifest.dependencies = [{ pluginId: base.id }];
+    state.installedPlugins = [owner, base];
+    const resources = await mintPluginInvocationResources({ pluginId: owner.id, sourceDigest: SOURCE_DIGEST, revisionDigest: REVISION_DIGEST,
+      invocationId: 'invoke-1', projectId: 'project-1', nodeId: 'target', baseRevision: 7, access: { incoming: true }, state });
+    base.revisionDigest = 'd'.repeat(64);
+    await expect(readPluginResourceRange(readContext(state), resources.incoming[0].resourceId, 0, 1)).rejects.toThrow('依赖');
+  });
   it('replaces full derived batches without accumulating quota and restores old leases on failure', () => {
     const { state } = createState();
     const context = { ...readContext(state), permissions: ['files.connected.read', 'files.output.create'] as const };

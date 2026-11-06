@@ -17,6 +17,14 @@ use url::Url;
 
 #[path = "agent/package.rs"]
 mod agent_package;
+#[path = "agent/codex_contract.rs"]
+mod codex_contract;
+#[path = "agent/codex_process.rs"]
+mod codex_process;
+#[path = "agent/codex_protocol.rs"]
+mod codex_protocol;
+#[path = "agent/codex_runtime.rs"]
+mod codex_runtime;
 #[path = "agent/web.rs"]
 mod assistant_web;
 #[cfg_attr(not(windows), allow(dead_code, unused_imports))]
@@ -1797,6 +1805,7 @@ pub fn run() {
         .manage(blender_runtime::production_blender_job_core())
         .manage(mcp_bridge::McpBridgeState::default())
         .manage(mcp_client::McpClientState::default())
+        .manage(codex_runtime::CodexRuntimeState::default())
         .manage(project_asset_storage::ObjectStorageState::default())
         .manage(path_policy::UserStorageRoot::default())
         .manage(billing::BillingStoragePath::default())
@@ -1961,6 +1970,13 @@ pub fn run() {
             secret_store::secret_get,
             secret_store::secret_delete,
             secret_store::secret_store_available,
+            codex_runtime::codex_runtime_status,
+            codex_runtime::codex_runtime_register,
+            codex_runtime::codex_runtime_configure,
+            codex_runtime::codex_runtime_remove,
+            codex_runtime::codex_runtime_start,
+            codex_runtime::codex_runtime_cancel,
+            codex_runtime::codex_runtime_collect,
             local_fonts::list_local_fonts,
             plugin_registry::stage_plugin_revision,
             plugin_registry::activate_plugin_revision,
@@ -2050,6 +2066,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                codex_runtime::shutdown(app_handle);
                 comfyui::progress::shutdown_progress(app_handle);
                 comfyui::installer::shutdown_installation(app_handle);
                 comfyui::runtime_console::shutdown_runtime(app_handle);

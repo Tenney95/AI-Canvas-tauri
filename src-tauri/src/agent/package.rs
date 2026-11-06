@@ -164,7 +164,7 @@ fn unix_now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn agent_private_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+pub(crate) fn agent_private_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
         .map(|directory| directory.join(PRIVATE_DIR_NAME))

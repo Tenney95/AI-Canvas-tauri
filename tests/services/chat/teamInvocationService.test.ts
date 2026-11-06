@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationAgentExecution } from '../../../src/services/chat/agentScheduler';
 import type { AgentTeamRun } from '../../../src/types/agentTeam';
 import type { CanvasProject } from '../../../src/types';
+import type { CreationProfile, CreationProfileSnapshot } from '../../../src/types/creationProfile';
 
 const runtime = vi.hoisted(() => ({
   capture: vi.fn(), prepare: vi.fn(), execute: vi.fn(), save: vi.fn(), load: vi.fn(),
+  creationCapture: vi.fn(),
   scheduled: [] as ConversationAgentExecution[],
 }));
 
@@ -21,6 +23,10 @@ vi.mock('../../../src/services/chat/teams/teamArtifactService', () => ({
 }));
 vi.mock('../../../src/services/chat/agentTaskService', () => ({
   saveAgentTask: runtime.save, loadAgentTask: runtime.load,
+}));
+vi.mock('../../../src/services/creationProfiles/creationProfileService', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/services/creationProfiles/creationProfileService')>(),
+  captureCreationProfile: runtime.creationCapture,
 }));
 vi.mock('../../../src/services/chat/chatHistoryService', () => ({
   saveConversation: vi.fn(async () => {}),
@@ -60,6 +66,7 @@ beforeEach(() => {
   runtime.execute.mockResolvedValue('completed');
   runtime.save.mockResolvedValue(undefined);
   runtime.load.mockResolvedValue(null);
+  runtime.creationCapture.mockReset().mockResolvedValue({ skillBindings: [] });
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-team', projectLoadStatus: 'ready', activeConversationId: 'conv-team',
@@ -72,6 +79,23 @@ beforeEach(() => {
 });
 
 describe('团队共用发起入口', () => {
+  it('省略conversationId时仍冻结实际活动会话的组合包默认团队', async () => {
+    const profile: CreationProfile = { schemaVersion: 1, id: 'creation', version: '1.0.0', name: '组合',
+      pluginRefs: [], agentPackageRefs: [], skillRefs: [], contextPolicyRef: 'explicit-materials',
+      teamTemplateId: 'general', teamProfile: createDefaultTeamProfile('general/combo-model') };
+    const selection = { id: profile.id, version: profile.version, sha256: 'a'.repeat(64) };
+    const snapshot: CreationProfileSnapshot = { ...selection, name: profile.name, contextPolicyRef: profile.contextPolicyRef,
+      pluginRefs: [], agentPackageRefs: [], skillRefs: [] };
+    useAppStore.setState({ config: { ...useAppStore.getState().config, creationProfiles: [profile] },
+      conversations: useAppStore.getState().conversations.map((conversation) => ({ ...conversation, creationProfile: selection })) });
+    runtime.creationCapture.mockResolvedValueOnce({ profile, snapshot, skillBindings: [] });
+    const result = await startTeamInvocation({ content: '沿用活动会话组合', projectId: 'project-team',
+      templateId: 'general', requestId: 'request-team-active-creation' });
+    expect(runtime.creationCapture).toHaveBeenCalledWith(selection, 'project-team');
+    expect(runtime.prepare).toHaveBeenCalledWith(expect.objectContaining({ profile: expect.objectContaining({ roles: expect.objectContaining({ writer: 'general/combo-model' }) }) }));
+    expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.creationProfile).toEqual(snapshot);
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
   it('无普通助手模型也按角色准备，重复转发同一次请求只创建和排队一次', async () => {
     const input = { content: '共同审查开场结构', projectId: 'project-team', conversationId: 'conv-team',
       templateId: 'general' as const, requestId: 'request-team-duplicate' };

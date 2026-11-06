@@ -20,6 +20,7 @@ vi.mock(import('../../../src/services/indexedDbService'), () => ({
   getConversationAgentTasks: db.conversation, deleteAgentTask: db.deleteTask,
   deleteConversationAgentTasks: db.deleteConversation, deleteProjectAgentTasks: db.deleteProject,
   claimMcpAgentTask: db.claim,
+  updateTeamRunCAS: vi.fn(),
 }));
 
 import { removeConversationAgentTasks, removeProjectAgentTasks, repairInterruptedAgentTasks, saveAgentTask } from '../../../src/services/chat/agentTaskService';

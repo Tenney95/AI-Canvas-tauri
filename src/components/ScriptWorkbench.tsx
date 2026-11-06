@@ -32,6 +32,14 @@ import type { AgentMode } from '../types/agent';
 import type { AssistantExecutionSelection, TeamTemplateId } from '../types/agentTeam';
 import TeamExecutionPicker from './shared/agentTeams/TeamExecutionPicker';
 import TeamRunCard from './shared/agentTeams/TeamRunCard';
+import CreationProfilePicker from './shared/creationProfiles/CreationProfilePicker';
+import type { CreationProfileChoicePreview } from '../types/creationProfile';
+import { creationProfileOptions, captureCreationProfile, previewCreationProfileOption, resolveCreationTeamProfile } from '../services/creationProfiles/creationProfileService';
+import { getExternalAgentCatalog, readExternalAgentCatalog } from '../services/chat/externalAgents/externalAgentService';
+import { editTeamGraph } from '../services/chat/teams/teamRuntime';
+import { resolveAgentDispatchOutcome } from '../services/chat/agentDurabilityService';
+import { configValuesEqual } from '../services/configPatch';
+import { normalizeCreationProfileSelection } from '../services/creationProfiles/creationProfileManifest';
 import { normalizeExecutionSelection, normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
 import { appendTeamInstruction, startTeamInvocation, openTeamTaskInAssistant, readTeamTaskArtifact } from '../services/chat/teams/teamInvocationService';
 import { captureEpisodeTeamContext, applyTeamResult, restoreTeamResult, reconcileTeamResult } from '../services/chat/teams/teamResultApplyService';
@@ -367,7 +375,13 @@ export default function ScriptWorkbench({
     () => isEpisodeEditorWriteLocked(currentEpisode?.id), () => false);
   const unsettledEditor = useSyncExternalStore(subscribeEpisodeEditorWrites,
     () => hasUnsettledEpisodeEditorSession(currentEpisode?.id), () => false);
-  const teamProfile = useMemo(() => normalizeTeamProfile(config.agentTeamProfile), [config.agentTeamProfile]);
+  const teamProfile = useMemo(() => {
+    if (currentEpisode?.creationProfile && !config.creationProfiles?.some((profile) => profile.id === currentEpisode?.creationProfile?.id
+      && profile.version === currentEpisode?.creationProfile?.version)) return normalizeTeamProfile(config.agentTeamProfile);
+    try { return resolveCreationTeamProfile(currentEpisode?.creationProfile, currentEpisode?.teamProfileOverride); }
+    catch { return normalizeTeamProfile(config.agentTeamProfile); }
+  }, [config.agentTeamProfile, config.creationProfiles, currentEpisode?.creationProfile, currentEpisode?.teamProfileOverride]);
+  const [externalCatalog, setExternalCatalog] = useState(() => readExternalAgentCatalog());
   const modelCatalog = useMemo(() => buildChatModelCatalog({ config, workflows }), [config, workflows]);
   const episodeTeamTasks = currentEpisodeId
     ? agentTasks.filter((task) => task.teamRun?.target?.episodeId === currentEpisodeId)
@@ -656,7 +670,8 @@ export default function ScriptWorkbench({
     episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
     currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
       episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript,
-      episodeCreative: currentEpisode.episodeCreative, episodeAssetRoster: currentEpisode.episodeAssetRoster } : null,
+      episodeCreative: currentEpisode.episodeCreative, episodeAssetRoster: currentEpisode.episodeAssetRoster,
+      creationProfile: currentEpisode.creationProfile, teamProfileOverride: currentEpisode.teamProfileOverride } : null,
     canvasProjectId: currentProjectId, activeTab, draft, analysis, isDirty, isSaving, isStartingTeam,
     contextReady, editorWriteLocked, unsettledEditor, pendingAction, splitOpen, splitSource,
     targetEpisodeCount, targetDurationSec, sourceOpen, renamingEpisodeId, extractingAssetKind,
@@ -665,6 +680,7 @@ export default function ScriptWorkbench({
       .map((asset) => ({ name: asset.name, summary: asset.summary })),
     assetPanel: currentEpisode && (activeTab === 'characters' || activeTab === 'props') ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
     executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks,
+    creationProfiles: creationProfileOptions(), externalAgents: externalCatalog,
     theme: resolveAppearanceMode(config.appearance?.mode ?? config.theme), language: config.language,
     appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
     detached, openingWindow,
@@ -769,7 +785,59 @@ export default function ScriptWorkbench({
       case 'settle_editor': if (currentEpisode && !currentDirty() && !savingEpisodeRef.current) settleEpisodeEditorSessions(currentEpisode.id); return true;
       case 'set_execution': setExecutionSelection(normalizeExecutionSelection(action.value)); return true;
       case 'set_team_mode': if (['plan', 'collaborative', 'autonomous'].includes(action.value)) setTeamMode(action.value); return true;
-      case 'save_team_profile': updateConfig({ agentTeamProfile: normalizeTeamProfile(action.profile) }); await useAppStore.getState().saveConfig({ silent: true, throwOnError: true }); return true;
+      case 'preview_creation_profile': {
+        if (!currentEpisodeId) throw new Error(t('请选择工作台分集'));
+        const preview = await previewCreationProfileOption(action.profile, currentEpisodeId);
+        if (selectedEpisodeRef.current !== currentEpisodeId || !readEpisodeWorkspaceScope(useAppStore.getState(), currentEpisodeId)) throw new Error(t('工作台分集已变化'));
+        return { ...preview, profile: { id: preview.profile.id, version: preview.profile.version, name: preview.profile.name } } satisfies CreationProfileChoicePreview;
+      }
+      case 'apply_creation_profile': {
+        if (!currentEpisodeId || !currentEpisode) throw new Error(t('请选择工作台分集'));
+        const episodeId = currentEpisodeId;
+        const previous = currentEpisode.creationProfile;
+        const previousOverride = currentEpisode.teamProfileOverride;
+        const selection = normalizeCreationProfileSelection(action.selection);
+        if (action.selection !== null && !selection) throw new Error(t('组合包选择无效'));
+        const captured = await captureCreationProfile(selection, episodeId);
+        const assertScope = () => { if (selectedEpisodeRef.current !== episodeId || !readEpisodeWorkspaceScope(useAppStore.getState(), episodeId)) throw new Error(t('工作台分集已变化')); };
+        assertScope();
+        const saved = await updateEpisodeCreative(episodeId, { creationProfile: selection ?? null, teamProfileOverride: null }, {
+          allowSameSeries: true, assertCurrent: () => {
+            assertScope();
+            const latest = useAppStore.getState().projects.find((entry) => entry.id === episodeId);
+            if (!configValuesEqual(latest?.creationProfile, previous) || !configValuesEqual(latest?.teamProfileOverride, previousOverride)) throw new Error(t('组合包选择已变化，请重新预检'));
+          }, assertCommitCurrent: assertScope,
+        });
+        if (!saved) throw new Error(t('组合包未能保存，请重试'));
+        if (captured.profile?.teamTemplateId) setExecutionSelection({ kind: 'team', templateId: captured.profile.teamTemplateId });
+        return true;
+      }
+      case 'refresh_external_agents': { const catalog = await getExternalAgentCatalog(); setExternalCatalog(catalog); return catalog; }
+      case 'edit_team_graph': return editTeamGraph(action.taskId, action.graph, action.expected);
+      case 'resolve_dispatch': {
+        if (!['verified_completed', 'abandoned'].includes(action.decision)) throw new Error(t('请选择明确的调用核实结果'));
+        return resolveAgentDispatchOutcome(action.taskId, action.dispatchId, action.decision);
+      }
+      case 'save_team_profile': {
+        const profile = normalizeTeamProfile(action.profile);
+        if (currentEpisode?.creationProfile) {
+          const episodeId = currentEpisode.id;
+          const previous = currentEpisode.creationProfile;
+          const previousOverride = currentEpisode.teamProfileOverride;
+          const assertScope = () => { if (selectedEpisodeRef.current !== episodeId || !readEpisodeWorkspaceScope(useAppStore.getState(), episodeId)) throw new Error(t('工作台分集已变化')); };
+          await captureCreationProfile(previous, episodeId);
+          if (!await updateEpisodeCreative(episodeId, { teamProfileOverride: profile }, { allowSameSeries: true,
+            assertCurrent: () => { assertScope(); const latest = useAppStore.getState().projects.find((entry) => entry.id === episodeId);
+              if (!configValuesEqual(latest?.creationProfile, previous) || !configValuesEqual(latest?.teamProfileOverride, previousOverride)) throw new Error(t('组合包选择已变化，请重新配置')); },
+            assertCommitCurrent: assertScope })) throw new Error(t('团队配置未能保存，请重试'));
+        } else {
+          const previous = useAppStore.getState().config.agentTeamProfile;
+          updateConfig({ agentTeamProfile: profile });
+          try { await useAppStore.getState().saveConfig({ silent: true, throwOnError: true }); }
+          catch (error) { if (configValuesEqual(useAppStore.getState().config.agentTeamProfile, profile)) updateConfig({ agentTeamProfile: previous }); throw error; }
+        }
+        return true;
+      }
       case 'team_artifact': return readTeamTaskArtifact(action.taskId, action.artifactId);
       case 'team_amend': return appendTeamInstruction(action.taskId, action.instruction);
       case 'team_control': {
@@ -1347,6 +1415,10 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
 
             <div ref={teamControlsRef} className="mt-3 space-y-2 rounded-lg border border-canvas-border bg-canvas-card p-2">
               <p className="text-[11px] font-semibold text-canvas-text-secondary">{t('创作执行方式')}</p>
+              <CreationProfilePicker profiles={snapshot.creationProfiles ?? []} selection={currentEpisode?.creationProfile}
+                projectId={currentEpisode?.id ?? ''} disabled={!currentEpisode || isSaving || isStartingTeam || editorWriteLocked || !contextReady}
+                onPreview={async (profile) => await dispatch({ type: 'preview_creation_profile', profile }) as CreationProfileChoicePreview}
+                onChange={async (selection) => { await dispatch({ type: 'apply_creation_profile', selection: selection ?? null }); }} />
               {unsettledEditor && <div className="space-y-1 text-[11px] text-canvas-text-secondary" role="status">
                 <p>{t('上次编辑未确认结束，请核对当前已保存稿件后再应用团队成果。')}</p>
                 <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={isDirty || isSaving || editorWriteLocked}
@@ -1357,6 +1429,8 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   await dispatch({ type: 'save_team_profile', profile });
                 }}
                 modelGroups={snapshot.modelGroups}
+                externalAgents={snapshot.externalAgents ?? []}
+                onRefreshExternalAgents={async () => { await dispatch({ type: 'refresh_external_agents' }); }}
                 theme={snapshot.theme} disabled={isSaving || isStartingTeam || editorWriteLocked || !contextReady} compact defaultTemplateId="outline" />
               {executionSelection.kind === 'team' && <>
                 <div className="flex items-center justify-between gap-2 text-[11px] text-canvas-text-secondary">
@@ -1378,7 +1452,9 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
               onApply={async (taskId) => { await dispatch({ type: 'team_control', taskId, action: 'apply' }); }}
               onRestore={async (taskId) => { await dispatch({ type: 'team_control', taskId, action: 'restore' }); }}
               onReconcile={async (taskId) => { await dispatch({ type: 'team_control', taskId, action: 'reconcile' }); }}
-              onAmend={async (taskId, instruction) => { await dispatch({ type: 'team_amend', taskId, instruction }); }} />)}
+              onAmend={async (taskId, instruction) => { await dispatch({ type: 'team_amend', taskId, instruction }); }}
+              onEditGraph={async (graph, expected) => { await dispatch({ type: 'edit_team_graph', taskId: task.id, graph, expected }); }}
+              onResolveDispatch={async (dispatchId, decision) => { await dispatch({ type: 'resolve_dispatch', taskId: task.id, dispatchId, decision }); }} />)}
 
             <div className="mt-4 grid gap-3">
               {CREATIVE_ACTION_GROUPS.map((group) => (

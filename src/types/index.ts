@@ -21,6 +21,7 @@ import type { AiAppReference } from './aiApp';
 import type { ComfyRefmodAsset, ComfyRefmodSelection } from './comfyRefmod';
 import type { EpisodeAssetRoster } from './episodeAssets';
 import type { AgentTeamProfile } from './agentTeam';
+import type { CreationProfile, CreationProfileSelection } from './creationProfile';
 
 export type {
   CanvasDrawingTool,
@@ -430,6 +431,9 @@ export interface CanvasProject {
   episodeCreative?: EpisodeCreativeInfo;
   /** 本集人物/道具提取清单；与整部剧共享的正式创作资产库分开保存。 */
   episodeAssetRoster?: EpisodeAssetRoster;
+  creationProfile?: CreationProfileSelection;
+  /** 当前分集对组合包团队默认值的显式覆盖。 */
+  teamProfileOverride?: AgentTeamProfile;
   /** 剧集级原著与剧本；仅剧集项目有。 */
   series?: ProjectSeriesInfo;
 }
@@ -881,6 +885,7 @@ export interface AppConfig {
   assistantModelId?: string;  // 助手模型 ID：generalModels 中的 text 模型 id
   /** 用户配置的团队角色模型引用；不含连接地址或凭据。 */
   agentTeamProfile?: AgentTeamProfile;
+  creationProfiles?: CreationProfile[];
   assistantImageModelId?: string;  // 助手生图模型 ID：generalModels 中的 image 模型 id
   assistantVideoModelId?: string;  // 助手生视频模型 ID：generalModels 中的 video 模型 id
   cloudParseEnabled?: boolean; // 是否启用云端解析，默认 true；关闭后助手仅使用本地规则

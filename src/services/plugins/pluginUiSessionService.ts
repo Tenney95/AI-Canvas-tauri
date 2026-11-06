@@ -18,6 +18,8 @@ import type {
   PluginVideoReplicaJobSummary,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
+import { resolvePluginDependencies } from './pluginDependencyService';
+import { createPluginLifecycleScope } from './pluginLifecycleScope';
 import {
   completeCanvasDerivation,
   isCanvasDerivationFresh,
@@ -75,11 +77,13 @@ interface PluginUiRequestEnvelope {
 }
 
 interface PluginUiSession {
+  lifecycle: ReturnType<typeof createPluginLifecycleScope>;
   sessionId: string;
   surface: 'tool-dialog';
   pluginId: string;
   sourceDigest: string;
   revisionDigest: string;
+  dependencyFingerprint: string;
   uiDigest: string;
   tool: PluginNodeToolManifest;
   nodeId: string;
@@ -188,6 +192,8 @@ function resolveLivePlugin(session: PluginUiSession, checkCanvas = true): Instal
   if (plugin.sourceDigest !== session.sourceDigest || plugin.revisionDigest !== session.revisionDigest) {
     throw new Error('插件 revision 已变化');
   }
+  const dependencies = resolvePluginDependencies(state.installedPlugins, session.pluginId);
+  if (!dependencies.ready || dependencies.fingerprint !== session.dependencyFingerprint) throw new Error('插件依赖已变化');
   if (normalizeDigest(plugin.uiDigest ?? plugin.manifest.ui?.integrity, '插件界面摘要') !== session.uiDigest) {
     throw new Error('插件界面已更新');
   }
@@ -284,10 +290,7 @@ function closeSession(sessionId: string, notify: boolean, restart = false): void
   const session = sessions.get(sessionId);
   if (!session) return;
   sessions.delete(sessionId);
-  session.unsubscribe?.();
-  session.effectAbortController?.abort();
-  clearPluginInvocationResources(session.sessionId);
-  completeCanvasDerivation(session.guard);
+  void session.lifecycle.dispose().catch(() => undefined);
   if (notify) queueMicrotask(restart && session.onRestart ? session.onRestart : session.onClose);
 }
 
@@ -572,6 +575,7 @@ async function createSession(
   const state = useAppStore.getState();
   const plugin = state.installedPlugins.find((item) => item.id === options.plugin.id);
   if (!plugin?.enabled) throw new Error('插件已停用或卸载');
+  if (!resolvePluginDependencies(state.installedPlugins, plugin.id).ready) throw new Error('插件必需依赖不可用');
   const sourceDigest = normalizeDigest(plugin.sourceDigest, '插件源码摘要');
   const revisionDigest = normalizeDigest(plugin.revisionDigest, '插件 revision 摘要');
   if (normalizeDigest(options.plugin.sourceDigest, '插件源码摘要') !== sourceDigest
@@ -606,7 +610,9 @@ async function createSession(
     const targetNode = state.nodes.find((node) => node.id === options.nodeId);
     if (!targetNode || !tool.nodeTypes.includes(targetNode.data.type as NodeType)) throw new Error('插件目标节点无效');
     const session: PluginUiSession = {
+      lifecycle: createPluginLifecycleScope(),
       sessionId, surface: 'tool-dialog', pluginId: plugin.id, sourceDigest, revisionDigest, uiDigest,
+      dependencyFingerprint: resolvePluginDependencies(state.installedPlugins, plugin.id).fingerprint,
       tool, nodeId: options.nodeId, projectId, parameters, guard, transport,
       resources: { self: [], incoming: [], inputs: {}, package: [], derived: [] },
       ready: false, submitting: false, completed: false,
@@ -617,6 +623,10 @@ async function createSession(
       onClose: options.onClose,
       onRestart: options.onRestart,
     };
+    session.lifecycle.defer(() => completeCanvasDerivation(session.guard));
+    session.lifecycle.defer(() => clearPluginInvocationResources(session.sessionId));
+    session.lifecycle.defer(() => session.effectAbortController?.abort());
+    session.lifecycle.defer(() => { session.unsubscribe?.(); });
     // 在异步 mint 前占用配额并监听失效，避免关闭/切项目后再注册一个迟到会话。
     sessions.set(sessionId, session);
     session.unsubscribe = useAppStore.subscribe(() => {

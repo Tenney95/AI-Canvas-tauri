@@ -3,7 +3,7 @@
  *
  * 默认助手始终可用；外部智能体上传失败只在本面板提示，不改变聊天、画布或项目状态。
  */
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useAppStore } from '../../store/useAppStore';
 import type {
@@ -20,6 +20,8 @@ import { confirmAction } from '../../services/confirmDialog';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
+
+const CreationProfileManager = lazy(() => import('../shared/creationProfiles/CreationProfileManager'));
 
 interface AgentCenterPanelProps {
   onClose: () => void;
@@ -249,6 +251,7 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
   const showToast = useAppStore((state) => state.showToast);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [localError, setLocalError] = useState('');
+  const [profilesOpen, setProfilesOpen] = useState(false);
 
   const removeSourceBestEffort = async (sourceId: string) => {
     try {
@@ -356,7 +359,10 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
             {t('{count} 个已安装', { count: agentPackages.length })}
           </span>
         </div>
-        <PopupCloseButton onClick={onClose} />
+        <div className="flex items-center gap-2">
+          {allowInstall && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setProfilesOpen(true)}>{t('创作组合包')}</button>}
+          <PopupCloseButton onClick={onClose} />
+        </div>
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto overflow-x-hidden p-3">
@@ -452,6 +458,7 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
           </section>
         )}
       </div>
+      {allowInstall && profilesOpen && <Suspense fallback={<p role="status" className="ui-hint p-3">{t('正在加载创作组合包…')}</p>}><CreationProfileManager onClose={() => setProfilesOpen(false)} /></Suspense>}
     </div>
   );
 }

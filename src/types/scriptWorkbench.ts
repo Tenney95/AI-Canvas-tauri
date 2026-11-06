@@ -1,7 +1,9 @@
 /** 独立剧本工作台只接收创作视图快照；保存、模型与资产操作仍由主窗口执行。 */
 import type { CanvasProject, AppearanceUiSnapshot, AppConfig, ModelGroup } from './index';
 import type { AgentMode, AgentTask } from './agent';
-import type { AgentTeamProfile, AssistantExecutionSelection } from './agentTeam';
+import type { AgentTeamProfile, AssistantExecutionSelection, TeamGraphDefinition } from './agentTeam';
+import type { CreationProfileOption, CreationProfileSelection } from './creationProfile';
+import type { ExternalAgentDescriptor } from './externalAgent';
 import type { DramaAsset, DramaAssetKind } from './dramaAssets';
 import type { CreativeAnalysis, CreativeFieldId, EpisodeCreativeAction } from '../services/seriesCreativeService';
 import type { EpisodeAssetPanelAction, EpisodeAssetPanelSnapshot } from './episodeAssets';
@@ -14,7 +16,7 @@ export interface WorkbenchCreativeDraft {
   beats: string; targetDurationSec: string; sourceRange: string;
 }
 export interface WorkbenchDraft { outline: string; script: string; creative: WorkbenchCreativeDraft }
-export type WorkbenchEpisode = Pick<CanvasProject, 'id' | 'parentId' | 'name' | 'episodeOutline' | 'episodeScript' | 'episodeCreative' | 'episodeAssetRoster'>;
+export type WorkbenchEpisode = Pick<CanvasProject, 'id' | 'parentId' | 'name' | 'episodeOutline' | 'episodeScript' | 'episodeCreative' | 'episodeAssetRoster' | 'creationProfile' | 'teamProfileOverride'>;
 export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; draft: WorkbenchDraft }
 
 export interface ScriptWorkbenchSnapshot {
@@ -35,6 +37,8 @@ export interface ScriptWorkbenchSnapshot {
   assetPanel?: EpisodeAssetPanelSnapshot;
   executionSelection: AssistantExecutionSelection; teamMode: AgentMode; teamProfile: AgentTeamProfile;
   modelGroups: ModelGroup[]; episodeTeamTasks: AgentTask[];
+  creationProfiles?: CreationProfileOption[];
+  externalAgents?: ExternalAgentDescriptor[];
   theme?: 'dark' | 'light'; language?: AppConfig['language']; appearance: AppearanceUiSnapshot;
   detached: boolean; openingWindow: boolean;
 }
@@ -61,6 +65,11 @@ export type ScriptWorkbenchAction =
   | { type: 'settle_editor' }
   | { type: 'set_execution'; value: AssistantExecutionSelection }
   | { type: 'set_team_mode'; value: AgentMode } | { type: 'save_team_profile'; profile: AgentTeamProfile }
+  | { type: 'preview_creation_profile'; profile: CreationProfileOption }
+  | { type: 'apply_creation_profile'; selection: CreationProfileSelection | null }
+  | { type: 'refresh_external_agents' }
+  | { type: 'edit_team_graph'; taskId: string; graph: TeamGraphDefinition; expected: { revision: number; boardRevision: number } }
+  | { type: 'resolve_dispatch'; taskId: string; dispatchId: string; decision: 'verified_completed' | 'abandoned' }
   | { type: 'team_control'; taskId: string; action: 'pause' | 'stop' | 'resume' | 'view' | 'apply' | 'restore' | 'reconcile' }
   | { type: 'team_artifact'; taskId: string; artifactId: string }
   | { type: 'team_amend'; taskId: string; instruction: string };

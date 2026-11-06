@@ -34,6 +34,7 @@ interface MessageBubbleProps extends ChatReferenceHandlers {
   onEditMessage?: (content: string) => void;
   regeneratePrompt?: string;
   onRegenerate?: (content: string) => void;
+  onBranch?: (messageId: string) => Promise<void>;
   agentControls?: AgentTaskControls;
 }
 
@@ -81,6 +82,7 @@ function MessageBubbleContent({
   onEditMessage,
   regeneratePrompt,
   onRegenerate,
+  onBranch,
   onNodeActivate,
   onNodeHover,
   onModelActivate,
@@ -88,6 +90,8 @@ function MessageBubbleContent({
   recoveryTask,
 }: MessageBubbleProps & { recoveryTask?: MediaTaskSnapshot }) {
   const t = useT();
+  const [branching, setBranching] = useState(false);
+  const [branchError, setBranchError] = useState('');
   const [copied, setCopied] = useState(false);
   const [savingMedia, setSavingMedia] = useState(false);
   const isUser = message.role === 'user';
@@ -394,8 +398,17 @@ function MessageBubbleContent({
                 <Icon icon="mdi:refresh" width="15" />
               </button>
             )}
+            {message.role === 'assistant' && message.status === 'done' && onBranch && (
+              <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" disabled={branching}
+                aria-label={t('从这里分支继续')} onClick={() => {
+                  setBranching(true); setBranchError('');
+                  void onBranch(message.id).catch((error: unknown) => setBranchError(error instanceof Error ? error.message : t('创建分支失败')))
+                    .finally(() => setBranching(false));
+                }}><Icon icon="lucide:git-branch" width={14} />{t('从这里分支')}</button>
+            )}
           </div>
         )}
+        {branchError && <p role="alert" className="text-xs text-danger-light">{branchError}</p>}
       </div>
 
       {/* 悬停时间戳（助手消息在右侧） */}

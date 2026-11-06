@@ -46,12 +46,15 @@ import {
   createChatStatePatch,
   emitSyncState,
   emitTeamArtifactResponse,
+  emitManagedChatResponse,
   hasChatStatePatchChanges,
   initMainWindowListener,
   type ChatAction,
   type ChatStateSnapshot,
   type ChatStateSync,
   type ChatComposerHandoff,
+  type ChatManagedOperation,
+  type ChatManagedResponse,
 } from './chatWindowService';
 import { getAssistantTextModelCandidates } from '../projectSettingsService';
 import { projectSkillPickerOptions } from './skillCatalog';
@@ -63,6 +66,13 @@ import {
 import { cancelMainReferencePreview, handleDetachedReferencePreviewAction } from './chatReferencePreviewService';
 import { normalizeExecutionSelection, normalizeTeamProfile } from './teams/teamProfileService';
 import { appendTeamInstruction, readTeamTaskArtifact } from './teams/teamInvocationService';
+import { creationProfileOptions, previewCreationProfileOption, captureCreationProfile, resolveCreationTeamProfile } from '../creationProfiles/creationProfileService';
+import { getExternalAgentCatalog, readExternalAgentCatalog } from './externalAgents/externalAgentService';
+import { editTeamGraph } from './teams/teamRuntime';
+import { resolveAgentDispatchOutcome } from './agentDurabilityService';
+import { saveConversation } from './chatHistoryService';
+import { sanitizeDomainText } from './subAgentMaterials';
+import { configValuesEqual } from '../configPatch';
 
 const DEFAULT_SYNC_INTERVAL_MS = 150;
 const MAX_SYNC_RETRY_DELAY_MS = 5_000;
@@ -308,6 +318,12 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
   const conversations = cachedScopedConversations;
   const activeConversationId = conversations.some((conversation) => conversation.id === state.activeConversationId)
     ? state.activeConversationId : null;
+  const selectedConversation = conversations.find((conversation) => conversation.id === activeConversationId);
+  let effectiveTeamProfile = state.config.agentTeamProfile ? normalizeTeamProfile(state.config.agentTeamProfile) : undefined;
+  if (selectedConversation?.creationProfile || selectedConversation?.teamProfileOverride) {
+    try { effectiveTeamProfile = resolveCreationTeamProfile(selectedConversation.creationProfile, selectedConversation.teamProfileOverride); }
+    catch { /* 失效组合包由任务启动预检拒绝；展示仍保留可用配置。 */ }
+  }
   const composerDraft = activeConversationId ? state.chatComposerDrafts[activeConversationId] ?? ''
     : state.activeConversationId ? '' : state.chatComposerLiveDraft;
   const imageDrafts = activeConversationId ? state.chatImageDrafts[activeConversationId] ?? [] : [];
@@ -337,7 +353,9 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
       project?.settings,
       state.config.assistantModelId,
     )[0],
-    agentTeamProfile: state.config.agentTeamProfile ? normalizeTeamProfile(state.config.agentTeamProfile) : undefined,
+    agentTeamProfile: effectiveTeamProfile,
+    creationProfiles: creationProfileOptions(),
+    externalAgents: readExternalAgentCatalog(),
     assistantImageModelId: state.config.assistantImageModelId,
     assistantVideoModelId: state.config.assistantVideoModelId,
     localFileGrants: activeConversationId
@@ -381,6 +399,94 @@ function detachedSnapshotSourceChanged(
     || current.workflows !== previous.workflows;
 }
 
+/** 唯一宿主用户操作入口；子窗只传固定声明，不直接访问原生能力。 */
+export async function executeManagedChatOperation(operation: ChatManagedOperation, scopeId: string,
+  conversationId?: string, draft?: string): Promise<unknown> {
+  const allowedKeys: Record<ChatManagedOperation['kind'], readonly string[]> = {
+    preview_creation_profile: ['kind', 'profile'], apply_creation_profile: ['kind', 'selection'], save_team_profile: ['kind', 'profile'],
+    refresh_external_agents: ['kind'], edit_team_graph: ['kind', 'taskId', 'graph', 'expected'],
+    resolve_dispatch: ['kind', 'taskId', 'dispatchId', 'decision'], branch_conversation: ['kind', 'messageId'],
+    team_result: ['kind', 'taskId', 'action'], amend_team_task: ['kind', 'taskId', 'instruction'],
+  };
+  if (!operation || typeof operation !== 'object' || !Object.hasOwn(allowedKeys, operation.kind)
+    || Object.keys(operation).some((key) => !allowedKeys[operation.kind].includes(key))
+    || typeof scopeId !== 'string' || scopeId.length > 160
+    || (conversationId !== undefined && (typeof conversationId !== 'string' || conversationId.length > 160))
+    || (draft !== undefined && (typeof draft !== 'string' || draft.length > 120000))) throw new Error('窗口操作参数无效');
+  if (operation.kind === 'resolve_dispatch' && !['verified_completed', 'abandoned'].includes(operation.decision)) throw new Error('请选择明确的调用核实结果');
+  if (operation.kind === 'team_result' && !['apply', 'restore', 'reconcile'].includes(operation.action)) throw new Error('团队成果操作无效');
+  if (operation.kind === 'amend_team_task' && (typeof operation.instruction !== 'string' || operation.instruction.length > 4000)) throw new Error('补充要求超过上限');
+  const assertScope = () => {
+    const state = useAppStore.getState();
+    if ((state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) !== scopeId) throw new Error('项目已变化，请刷新后重试');
+    const owner = seriesOwnerId(state.projects, scopeId);
+    const conversation = conversationId ? state.conversations.find((item) => item.id === conversationId && !item.deletedAt && item.projectId === owner) : undefined;
+    if (conversationId && (!conversation || conversation.id === MCP_SETTINGS_CONVERSATION_ID)) throw new Error('会话已变化，请重新选择');
+    return { state, conversation, owner };
+  };
+  const initial = assertScope();
+  if (operation.kind === 'refresh_external_agents') return getExternalAgentCatalog();
+  if (operation.kind === 'preview_creation_profile') {
+    const preview = await previewCreationProfileOption(operation.profile, scopeId);
+    assertScope();
+    return { ...preview, profile: { id: preview.profile.id, version: preview.profile.version, name: preview.profile.name } };
+  }
+  if (operation.kind === 'apply_creation_profile') {
+    await captureCreationProfile(operation.selection ?? undefined, scopeId);
+    let { state, conversation } = assertScope();
+    if (!conversation) {
+      if (state.activeConversationId !== initial.state.activeConversationId) throw new Error('会话已变化，请重新选择组合包');
+      const id = state.createConversation(scopeId);
+      state = useAppStore.getState(); conversation = state.conversations.find((item) => item.id === id);
+      if (!conversation) throw new Error('会话尚未准备完成');
+      await saveConversation(conversation);
+      assertScope();
+      if (draft !== undefined) state.setChatComposerLiveDraft(draft, id);
+    }
+    await useAppStore.getState().setConversationCreationProfile(conversation.id, operation.selection ?? undefined);
+    return { conversationId: conversation.id };
+  }
+  if (operation.kind === 'save_team_profile') {
+    const profile = normalizeTeamProfile(operation.profile);
+    if (initial.conversation?.creationProfile) {
+      await initial.state.setConversationCreationProfile(initial.conversation.id, initial.conversation.creationProfile,
+        { teamProfileOverride: profile, executionSelection: initial.conversation.executionSelection });
+    } else {
+      const previous = initial.state.config.agentTeamProfile;
+      initial.state.updateConfig({ agentTeamProfile: profile });
+      try { await useAppStore.getState().saveConfig({ silent: true, throwOnError: true }); }
+      catch (error) {
+        if (configValuesEqual(useAppStore.getState().config.agentTeamProfile, profile)) useAppStore.getState().updateConfig({ agentTeamProfile: previous });
+        throw error;
+      }
+    }
+    return true;
+  }
+  if (operation.kind === 'branch_conversation') {
+    if (!initial.conversation) throw new Error('请先选择来源会话');
+    return initial.state.branchConversation(initial.conversation.id, operation.messageId);
+  }
+  const task = initial.state.agentTasks.find((entry) => entry.id === operation.taskId);
+  const ownerConversation = initial.state.conversations.find((entry) => entry.id === task?.conversationId && !entry.deletedAt && entry.projectId === initial.owner);
+  if (!task || !ownerConversation || (conversationId && task.conversationId !== conversationId)) throw new Error('任务不属于当前会话范围');
+  switch (operation.kind) {
+    case 'edit_team_graph': return editTeamGraph(task.id, operation.graph, operation.expected);
+    case 'resolve_dispatch': return resolveAgentDispatchOutcome(task.id, operation.dispatchId, operation.decision);
+    case 'amend_team_task': return appendTeamInstruction(task.id, operation.instruction);
+    case 'team_result': {
+      const service = await import('./teams/teamResultApplyService');
+      assertScope();
+      if (operation.action === 'apply') return service.applyTeamResult(task.id);
+      if (operation.action === 'restore') return service.restoreTeamResult(task.id);
+      return service.reconcileTeamResult(task.id);
+    }
+  }
+}
+
+const MANAGED_KINDS = new Set(['preview_creation_profile', 'apply_creation_profile', 'save_team_profile', 'refresh_external_agents',
+  'edit_team_graph', 'resolve_dispatch', 'branch_conversation', 'team_result', 'amend_team_task']);
+const managedRequests = new Map<string, { signature: string; result: Promise<ChatManagedResponse>; completed: boolean }>();
+
 export function handleDetachedChatAction(
   action: ChatAction,
   requestSync: (immediate?: boolean, forceSnapshot?: boolean) => void,
@@ -388,6 +494,32 @@ export function handleDetachedChatAction(
   const store = useAppStore.getState();
 
   switch (action.type) {
+    case 'managed_request': {
+      if (!/^[A-Za-z0-9_-]{8,120}$/u.test(action.requestId) || !action.operation || !MANAGED_KINDS.has(action.operation.kind)) break;
+      void (async () => {
+        const encoded = new TextEncoder().encode(JSON.stringify(action));
+        if (encoded.length > 128 * 1024) throw new Error('窗口请求超过上限');
+        const digest = await crypto.subtle.digest('SHA-256', encoded);
+        const signature = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        let accepted = managedRequests.get(action.requestId);
+        if (accepted && accepted.signature !== signature) throw new Error('请求身份已变化');
+        if (!accepted) {
+          if (managedRequests.size >= 128) for (const [id, record] of managedRequests) { if (record.completed) { managedRequests.delete(id); break; } }
+          if (managedRequests.size >= 128) throw new Error('主窗口正在处理过多请求');
+          const result = executeManagedChatOperation(action.operation, action.scopeId, action.conversationId, action.draft)
+            .then((value): ChatManagedResponse => ({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId, value }),
+              (error: unknown): ChatManagedResponse => ({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId,
+                error: sanitizeDomainText(error instanceof Error ? error.message : '操作未完成').slice(0, 300) }));
+          accepted = { signature, result, completed: false }; managedRequests.set(action.requestId, accepted);
+          void result.finally(() => { const record = managedRequests.get(action.requestId); if (record) record.completed = true; });
+        }
+        const response = await accepted.result;
+        requestSync(true);
+        await emitManagedChatResponse(response);
+      })().catch(() => emitManagedChatResponse({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId,
+        error: '窗口操作未确认，请核对最新状态；未自动重试' }).catch(() => undefined));
+      break;
+    }
     case 'set_team_profile':
       store.updateConfig({ agentTeamProfile: normalizeTeamProfile(action.profile) });
       void store.saveConfig({ silent: true, throwOnError: true }).catch(() => store.showToast('团队配置未能保存，请重试', 'error'));

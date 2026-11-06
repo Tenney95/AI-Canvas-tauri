@@ -24,6 +24,11 @@ const interjectionMocks = vi.hoisted(() => ({
 
 const mediaRuntimeMocks = vi.hoisted(() => ({ generate: vi.fn(), complete: vi.fn() }));
 const mediaHistoryMocks = vi.hoisted(() => ({ persist: vi.fn() }));
+const creationMocks = vi.hoisted(() => ({ capture: vi.fn() }));
+vi.mock('../../../src/services/creationProfiles/creationProfileService', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/services/creationProfiles/creationProfileService')>(),
+  captureCreationProfile: creationMocks.capture,
+}));
 vi.mock('../../../src/services/ai/generationRuntime', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../../src/services/ai/generationRuntime')>(),
   runMediaGeneration: mediaRuntimeMocks.generate,
@@ -64,6 +69,8 @@ import { getPendingTasksForProject, MediaTaskPausedError, savePendingTask } from
 import { imageBatchArtifactId } from '../../../src/services/imageBatchService';
 import type { MediaGenerationResult } from '../../../src/types/media';
 import type { ChatMessage } from '../../../src/types/chat';
+import type { CreationProfileSnapshot } from '../../../src/types/creationProfile';
+import { pauseAgentTask } from '../../../src/services/chat/agentTaskControl';
 
 function arrangeConversation(): void {
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -93,6 +100,7 @@ beforeEach(() => {
   mediaRuntimeMocks.complete.mockReset();
   mediaHistoryMocks.persist.mockReset();
   mediaHistoryMocks.persist.mockResolvedValue(undefined);
+  creationMocks.capture.mockReset().mockResolvedValue({ skillBindings: [] });
   arrangeConversation();
   schedulerMocks.activeTaskId = undefined;
   schedulerMocks.scheduledTaskIds.clear();
@@ -107,6 +115,47 @@ beforeEach(() => {
   );
   interjectionMocks.enqueue.mockReset();
   interjectionMocks.enqueue.mockReturnValue(true);
+});
+
+describe('creation profile preparation and scheduling', () => {
+  const selection = { id: 'creation', version: '1.0.0', sha256: 'a'.repeat(64) };
+  const snapshot: CreationProfileSnapshot = { ...selection, name: '组合', contextPolicyRef: 'explicit-materials',
+    pluginRefs: [], agentPackageRefs: [], skillRefs: [] };
+  const select = () => useAppStore.setState({ conversations: useAppStore.getState().conversations.map((conversation) => ({ ...conversation, creationProfile: selection })) });
+
+  it('keeps the original synchronous scheduling path without a selected profile', () => {
+    const result = submitConversationMessage({ content: '普通请求', conversationId: 'conversation-1' });
+    expect(result.status).toBe('started'); expect(schedulerMocks.schedule).toHaveBeenCalledTimes(1);
+    expect(creationMocks.capture).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0].creationProfilePreparation).toBeUndefined();
+  });
+
+  it('does not dispatch before preparation and cannot resume around a paused preparation', async () => {
+    select();
+    let complete!: (value: { snapshot: CreationProfileSnapshot; skillBindings: [] }) => void;
+    const preparing = new Promise<{ snapshot: CreationProfileSnapshot; skillBindings: [] }>((resolve) => { complete = resolve; });
+    creationMocks.capture.mockReturnValueOnce(preparing);
+    const result = submitConversationMessage({ content: '使用选定组合', conversationId: 'conversation-1' });
+    if (result.status !== 'started' || !result.taskId) throw new Error('Expected queued preparation');
+    expect(schedulerMocks.schedule).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0].creationProfilePreparation).toBe('pending');
+    pauseAgentTask(result.taskId);
+    expect(resumeAgentTaskExecution(result.taskId)).toMatchObject({ ok: false, errorCode: 'CREATION_PROFILE_NOT_PREPARED' });
+    complete({ snapshot, skillBindings: [] }); await preparing;
+    const task = useAppStore.getState().agentTasks.find((entry) => entry.id === result.taskId)!;
+    expect(task.creationProfilePreparation).toBe('ready'); expect(task.creationProfile).toEqual(snapshot);
+    expect(task.status).toBe('paused'); expect(schedulerMocks.schedule).not.toHaveBeenCalled();
+    expect(resumeAgentTaskExecution(result.taskId).ok).toBe(true);
+    expect(schedulerMocks.schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('preparation rejection stops the queued task without running the legacy path', async () => {
+    select(); creationMocks.capture.mockRejectedValueOnce(new Error('组合能力不可用'));
+    const result = submitConversationMessage({ content: '使用选定组合', conversationId: 'conversation-1' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(result.status).toBe('started'); expect(schedulerMocks.schedule).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0]).toMatchObject({ status: 'stopped', creationProfilePreparation: 'failed', errorCode: 'CREATION_PROFILE_PREPARATION_FAILED' });
+  });
 });
 
 describe('ordinary conversation media recovery', () => {

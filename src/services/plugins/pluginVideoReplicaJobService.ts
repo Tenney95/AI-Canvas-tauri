@@ -5,6 +5,7 @@ import type { PluginVideoReplicaJobSummary, PluginVideoReplicaStart, AvailableNo
 import type { VideoEditorTrackInput } from '../../types/videoEditorControl';
 import type { VideoModelCapability } from '../../types/aiTypes';
 import { useAppStore } from '../../store/useAppStore';
+import { resolvePluginDependencies } from './pluginDependencyService';
 import { LocalSpeechModelError } from '../onnxService';
 import { generateId } from '../../store/store.utils';
 import { getNodeBounds, videoNodeDimensionsForAspectRatio } from '../../utils/nodeBounds';
@@ -119,6 +120,7 @@ export async function executeReplicaPlan(plan: PluginVideoReplicaPlan, adapter: 
 function requireIdentity(identity: JobIdentity): void {
   const state = useAppStore.getState();
   const plugin = state.installedPlugins.find((item) => item.id === identity.pluginId);
+  if (!resolvePluginDependencies(state.installedPlugins, identity.pluginId).ready) throw new ReplicaFailure('插件依赖已失效，任务已停止');
   if (state.currentProjectId !== identity.projectId || !state.nodes.some((node) => node.id === identity.nodeId)
     || !plugin?.enabled || plugin.sourceDigest !== identity.sourceDigest || plugin.revisionDigest !== identity.revisionDigest) {
     throw new ReplicaFailure('项目、源节点或插件版本已变化，任务已停止');
@@ -353,8 +355,12 @@ export async function startPluginVideoReplicaJob(context: StartContext, request:
       totalSegments: plan.segments.length, completedSegments: 0, progress: 0, createdAt: now, updatedAt: now, segmentNodeIds: [], warnings: [
         ...plan.warnings, ...(!hasAudio ? ['源视频没有音轨，将仅生成画面。'] : []),
       ] } };
+    const dependencyFingerprint = resolvePluginDependencies(useAppStore.getState().installedPlugins, context.pluginId).fingerprint;
     const check = () => {
       requireIdentity(context);
+      if (resolvePluginDependencies(useAppStore.getState().installedPlugins, context.pluginId).fingerprint !== dependencyFingerprint) {
+        throw new ReplicaFailure('插件依赖版本已变化，任务已停止');
+      }
       if (job.controller.signal.aborted) throw new ReplicaFailure('任务已停止后续分段');
       if (sourceSignature(context.nodeId) !== original || modelSignature(request.modelId) !== selectedModel
         || (request.analysisModelId && modelSignature(request.analysisModelId) !== analysisSignature)) throw new ReplicaFailure('源视频或模型配置已变更，未提交下一段');

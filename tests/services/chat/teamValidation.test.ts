@@ -85,6 +85,8 @@ describe('阶段依赖只读取已完成产物', () => {
     expect(getTeamSourceArtifact(run).id).toBe(structure.id);
     stages[1] = { ...stages[1], status: 'completed', artifactId: draft.id };
     expect(getTeamSourceArtifact(run).id).toBe(draft.id);
+    expect(getTeamSourceArtifact({ ...run, version: 2 }, 'structure').id).toBe(structure.id);
+    expect(() => getTeamSourceArtifact({ ...run, version: 2, artifacts: [draft] }, 'structure')).toThrow('指定');
     expect(() => getTeamSourceArtifact({ ...run, artifacts: [structure] })).toThrow();
   });
 

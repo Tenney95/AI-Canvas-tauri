@@ -12,7 +12,7 @@ import type { CharacterLibraryOpenRequest } from '../types/dramaAssets';
 
 export type { ComfyNodeProgress, ComfyNodeProgressStage } from '../types/comfyProgress';
 
-export type SettingsTab = 'general' | 'appearance' | 'files' | 'api' | 'shortcuts' | 'comfyui' | 'storage' | 'plugins' | 'mcp';
+export type SettingsTab = 'general' | 'appearance' | 'files' | 'api' | 'shortcuts' | 'comfyui' | 'storage' | 'plugins' | 'mcp' | 'external-agents';
 export const NEW_API_KEY_CONNECTION_ID = '__new__';
 
 export interface UISlice {

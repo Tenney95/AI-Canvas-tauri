@@ -12,6 +12,7 @@ import {
   getConversationAgentTasks,
   getProjectAgentTasks,
   putAgentTask,
+  updateTeamRunCAS,
 } from '../indexedDbService';
 import {
   AGENT_RESTART_PAUSE_STATUSES,
@@ -19,7 +20,9 @@ import {
   DEFAULT_AGENT_TASK_METRICS,
   type AgentStep,
   type AgentTask,
+  type AgentDispatchRecord,
 } from '../../types/agent';
+import { clearAgentResults } from './agentResultService';
 
 const taskWrites = new Map<string, Promise<void>>();
 const removedTasks = new Set<string>();
@@ -109,6 +112,7 @@ export async function loadProjectAgentTasks(projectId: string): Promise<AgentTas
 }
 
 export async function removeAgentTask(taskId: string): Promise<void> {
+  clearAgentResults({ taskId });
   removedTasks.add(taskId);
   await queueTaskWrite(taskId, () => deleteAgentTask(taskId));
 }
@@ -135,11 +139,13 @@ async function removeScopeTasks(
 }
 
 export async function removeConversationAgentTasks(conversationId: string): Promise<void> {
+  clearAgentResults({ conversationId });
   await removeScopeTasks(`conversation:${conversationId}`, (scope) => scope.conversationId === conversationId,
     () => getConversationAgentTasks(conversationId), () => deleteConversationAgentTasks(conversationId));
 }
 
 export async function removeProjectAgentTasks(projectId: string): Promise<void> {
+  clearAgentResults({ projectId });
   await removeScopeTasks(`project:${projectId}`, (scope) => scope.projectId === projectId,
     () => getProjectAgentTasks(projectId), () => deleteProjectAgentTasks(projectId));
 }
@@ -154,11 +160,28 @@ export async function repairInterruptedAgentTasks(projectId: string): Promise<st
 
   await Promise.all(tasks.map(async (rawTask) => {
     const task = normalizeTask(rawTask);
-    if (!AGENT_RESTART_PAUSE_STATUSES.has(task.status)) return;
+    if (!AGENT_RESTART_PAUSE_STATUSES.has(task.status)
+      && !task.dispatches?.some((item) => item.phase === 'prepared' || item.phase === 'dispatched')) return;
 
     const now = Date.now();
+    const dispatches = (task.dispatches ?? []).map<AgentDispatchRecord>((item) => item.phase === 'prepared'
+      ? { ...item, phase: 'not_started' } : item.phase === 'dispatched' ? { ...item, phase: 'outcome_unknown' } : item);
+    // 旧快照没有精确执行边界，运行中的写入不能被推断为尚未开始。
+    for (const step of task.steps) {
+      if (step.status !== 'running' || !step.toolCall || step.toolCall.effect === 'read'
+        || dispatches.some((item) => item.stepId === step.id)) continue;
+      dispatches.push({ id: `legacy-${step.id}`, kind: 'tool', phase: 'outcome_unknown',
+        stepId: step.id, toolId: step.toolCall.toolId, effect: step.toolCall.effect,
+        preparedAt: step.toolCall.startedAt ?? step.createdAt });
+    }
     const teamRun = task.teamRun ? structuredClone(task.teamRun) : undefined;
     if (teamRun && Array.isArray(teamRun.stages)) {
+      for (const stage of teamRun.stages) {
+        if (stage.status === 'running' && !dispatches.some((item) => item.stepId === stage.id)) {
+          dispatches.push({ id: `legacy-team-${stage.id}-${stage.attempts}`, kind: 'team-model',
+            stepId: stage.id, runRevision: teamRun.revision, phase: 'outcome_unknown', preparedAt: stage.startedAt ?? now });
+        }
+      }
       teamRun.stages = teamRun.stages.map((stage) => stage.status === 'running'
         ? { ...stage, status: 'pending', errorMessage: '应用已重启，当前阶段待用户确认后继续' } : stage);
       const unreported = [teamRun.callsUsed, teamRun.usageReportedCalls, teamRun.unknownUsageCalls].every(Number.isSafeInteger)
@@ -170,10 +193,17 @@ export async function repairInterruptedAgentTasks(projectId: string): Promise<st
       ...task,
       status: 'paused',
       steps: task.steps.map((step) => pauseStepAfterRestart(step, now)),
+      dispatches,
       updatedAt: now,
       pausedReason: 'app_restarted',
       ...(teamRun ? { teamRun } : {}),
     };
+    if (teamRun?.version === 2) {
+      const persisted = await updateTeamRunCAS(task.id,
+        { revision: task.teamRun!.revision, boardRevision: task.teamRun!.boardRevision ?? 0 },
+        () => ({ ...teamRun, boardRevision: (teamRun.boardRevision ?? 0) + 1 }));
+      repaired.teamRun = persisted.teamRun;
+    }
     await saveAgentTask(repaired);
     repairedIds.push(repaired.id);
   }));

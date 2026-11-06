@@ -1,0 +1,7 @@
+{
+  "identifier": "external-agent",
+  "description": "Fixed Codex runtime, local main window only; native origin and lease checks are also required.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": ["allow-external-agent-commands"]
+}

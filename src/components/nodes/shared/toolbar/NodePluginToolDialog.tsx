@@ -7,6 +7,7 @@ import { Icon } from '@iconify/react';
 import { getLocale } from '../../../../i18n';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import pluginUiHostDocument from '../../../../../plugin-ui-host.html?raw';
+import { createPluginUiFrameDocument as buildFrameDocument } from '../../../../services/plugins/pluginUiFrameDocument';
 import type {
   AvailableNodePluginTool,
   PluginJsonValue,
@@ -40,42 +41,9 @@ interface PluginUiFrameDocument {
   src: string;
 }
 
-const PLUGIN_UI_BOOTSTRAP_MARKUP = 'src="/plugin-ui-bootstrap.js"';
-
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
-
 function createPluginUiFrameDocument(sessionSrc: string): PluginUiFrameDocument {
   const sessionUrl = new URL(sessionSrc, window.location.href);
-  const sessionParameters = sessionUrl.searchParams.toString();
-  if (!sessionParameters) throw new Error(t('插件界面会话参数缺失'));
-
-  const bootstrapUrl = escapeHtmlAttribute(
-    new URL('/plugin-ui-bootstrap.js', window.location.href).href,
-  );
-  // 沙箱页面是 opaque origin，不能靠 'self' 加载宿主的引导脚本。
-  const nonce = crypto.randomUUID().replaceAll('-', '');
-  const documentHtml = pluginUiHostDocument.replace(
-    PLUGIN_UI_BOOTSTRAP_MARKUP,
-    `nonce="${nonce}" src="${bootstrapUrl}"`,
-  ).replace("script-src 'self' ", `script-src 'nonce-${nonce}' `);
-  if (!documentHtml.includes(`nonce="${nonce}"`)
-    || !documentHtml.includes(`script-src 'nonce-${nonce}' `)) {
-    throw new Error(t('插件界面宿主页无效'));
-  }
-
-  const objectUrl = URL.createObjectURL(new Blob([documentHtml], {
-    type: 'text/html;charset=utf-8',
-  }));
-  return {
-    objectUrl,
-    src: `${objectUrl}#${sessionParameters}`,
-  };
+  return buildFrameDocument(pluginUiHostDocument, '/plugin-ui-bootstrap.js', sessionUrl.searchParams);
 }
 
 function initialFormValues(pluginTool: AvailableNodePluginTool): Record<string, FormValue> {

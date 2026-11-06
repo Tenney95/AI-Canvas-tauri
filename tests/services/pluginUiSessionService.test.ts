@@ -237,6 +237,20 @@ describe('pluginUiSessionService', () => {
     expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining('关闭') });
   });
 
+  it('revokes UI and resources when a dependency changes without changing the owner revision', async () => {
+    const dependent = { ...plugin, manifest: { ...plugin.manifest, apiVersion: 2 as const,
+      requiredCapabilities: ['plugin.dependencies'], dependencies: [{ pluginId: 'example.base' }] } };
+    const base = { ...plugin, id: 'example.base', manifest: { ...plugin.manifest, id: 'example.base' } };
+    const state = mocks.getState();
+    state.installedPlugins = [dependent, base];
+    const session = await native();
+    state.installedPlugins = [dependent, { ...base, revisionDigest: 'd'.repeat(64) }];
+    notify();
+    expect(session.isActive()).toBe(false);
+    expect(mocks.clearResources).toHaveBeenCalledWith(session.binding.sessionId);
+    expect(mocks.subscribers.size).toBe(0);
+  });
+
   it('does not resurrect a session when resource minting finishes after invalidation', async () => {
     let finish!: (value: PluginInvocationResources) => void;
     mocks.mintResources.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));

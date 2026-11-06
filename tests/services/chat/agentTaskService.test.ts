@@ -54,6 +54,27 @@ function createInterruptedTask(): AgentTask {
 }
 
 describe('repairInterruptedAgentTasks', () => {
+  it('does not turn an interrupted profile preparation into a resumable unbound task', async () => {
+    const service = await import('../../../src/services/chat/agentTaskService');
+    const db = await import('../../../src/services/indexedDbService');
+    const task = createInterruptedTask(); task.id = 'profile-preparing-restart';
+    task.status = 'queued'; task.creationProfilePreparation = 'pending';
+    await db.putAgentTask(task); await service.repairInterruptedAgentTasks(task.projectId);
+    expect(await db.getAgentTask(task.id)).toMatchObject({ status: 'paused', creationProfilePreparation: 'pending' });
+  });
+  it('distinguishes prepared from dispatched and keeps unknown writes paused', async () => {
+    const service = await import('../../../src/services/chat/agentTaskService');
+    const db = await import('../../../src/services/indexedDbService');
+    const task = createInterruptedTask(); task.id = 'dispatch-restart'; task.status = 'running';
+    task.dispatches = [
+      { id: 'prepared', kind: 'tool', phase: 'prepared', effect: 'canvas_write', preparedAt: 1 },
+      { id: 'sent', kind: 'tool', phase: 'dispatched', effect: 'media_generation', preparedAt: 1, dispatchedAt: 2 },
+    ];
+    await db.putAgentTask(task); await service.repairInterruptedAgentTasks(task.projectId);
+    const saved = await db.getAgentTask(task.id);
+    expect(saved?.status).toBe('paused');
+    expect(saved?.dispatches?.map((item) => item.phase)).toEqual(['not_started', 'outcome_unknown']);
+  });
   it('pauses an interrupted keyed task without discarding or reclaiming its operation identity', async () => {
     const service = await import('../../../src/services/chat/agentTaskService');
     const db = await import('../../../src/services/indexedDbService');

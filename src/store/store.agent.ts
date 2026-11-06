@@ -20,6 +20,7 @@ import {
 import type { McpOperationClaim } from '../services/indexedDbService';
 import * as agentTaskService from '../services/chat/agentTaskService';
 import { emitAgentLifecycleEvent } from '../services/chat/agentLifecycle';
+import type { CreationProfileSnapshot } from '../types/creationProfile';
 
 export interface CreateAgentTaskInput {
   /** 仅宿主团队入口用于同一发起请求的稳定身份。 */
@@ -34,6 +35,8 @@ export interface CreateAgentTaskInput {
   budget?: Partial<AgentTaskBudget>;
   toolAllowlist?: string[];
   skillBindings?: AgentSkillBinding[];
+  creationProfile?: CreationProfileSnapshot;
+  creationProfilePreparation?: AgentTask['creationProfilePreparation'];
   parentTaskId?: string;
   expertRole?: AgentExpertRole;
   expertDepth?: 1;
@@ -74,6 +77,8 @@ function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperation
     userMessageId: input.userMessageId, mode: input.mode, goal: input.goal,
     executionKind: input.executionKind,
     teamRequestDigest: input.teamRequestDigest,
+    creationProfile: input.creationProfile ? structuredClone(input.creationProfile) : undefined,
+    creationProfilePreparation: input.creationProfilePreparation,
     status: 'queued', steps: [], modelRounds: 0, toolCallCount: 0, resumeCount: 0,
     budget: { ...DEFAULT_AGENT_TASK_BUDGET, ...input.budget },
     toolAllowlist: input.toolAllowlist ? [...new Set(input.toolAllowlist)] : undefined,

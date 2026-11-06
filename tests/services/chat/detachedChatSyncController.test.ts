@@ -23,6 +23,7 @@ import {
   createDetachedChatSyncController,
   handleDetachedChatAction,
   projectChatNodes,
+  executeManagedChatOperation,
 } from '../../../src/services/chat/detachedChatSyncController';
 import { applyChatStatePatch, createChatStatePatch, receiveChatStateSync, type ChatStateSync, type ChatWindowState } from '../../../src/services/chat/chatWindowService';
 import { runAgentTask } from '../../../src/services/chat/agentTaskControl';
@@ -69,6 +70,19 @@ beforeEach(() => {
 });
 
 describe('detached chat sync controller', () => {
+  it('projects profile options and previews without exposing full configuration', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, creationProfiles: [{ schemaVersion: 1, id: 'writing', version: '1.0.0', name: 'Writing',
+      pluginRefs: [], agentPackageRefs: [], skillRefs: [], contextPolicyRef: 'project-default', toolAllowlist: ['web_search'] }] } }));
+    const snapshot = buildDetachedChatSnapshot(useAppStore.getState());
+    expect(snapshot.creationProfiles).toEqual([{ id: 'writing', version: '1.0.0', name: 'Writing' }]);
+    const preview = await executeManagedChatOperation({ kind: 'preview_creation_profile', profile: snapshot.creationProfiles![0] }, 'project-1', 'conversation-1') as { profile: unknown };
+    expect(preview.profile).toEqual({ id: 'writing', version: '1.0.0', name: 'Writing' });
+  });
+  it('rejects stale scopes and non-whitelisted managed fields before actions', async () => {
+    await expect(executeManagedChatOperation({ kind: 'refresh_external_agents' }, 'other-project', 'conversation-1')).rejects.toThrow('项目已变化');
+    await expect(executeManagedChatOperation({ kind: 'refresh_external_agents', executable: 'arbitrary' } as never, 'project-1')).rejects.toThrow('参数无效');
+    await expect(executeManagedChatOperation({ kind: 'resolve_dispatch', taskId: 'task', dispatchId: 'dispatch', decision: 'retry' } as never, 'project-1')).rejects.toThrow('核实结果');
+  });
   it('immediately sends a complete snapshot when switching projects despite a long sync interval', async () => {
     const frames: ChatStateSync[] = [];
     const controller = createDetachedChatSyncController({

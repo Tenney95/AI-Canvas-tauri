@@ -116,6 +116,21 @@ beforeEach(() => {
 });
 
 describe('插件由用户安装', () => {
+  it('revokes dependent grants but preserves their configured enabled choice', async () => {
+    const base = createInstalledPluginFixture('example.base');
+    const dependent = createInstalledPluginFixture('example.dependent');
+    dependent.manifest.apiVersion = 2;
+    dependent.manifest.requiredCapabilities = ['plugin.dependencies'];
+    dependent.manifest.dependencies = [{ pluginId: base.id }];
+    const { slice, getState } = createSlice([base, dependent]);
+    await slice.setPluginEnabled(base.id, false);
+    expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(base.id);
+    expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(dependent.id);
+    expect(getState().installedPlugins.find((item) => item.id === dependent.id)?.enabled).toBe(true);
+    nativeMocks.invoke.mockClear();
+    await expect(slice.setPluginEnabled(dependent.id, true)).rejects.toThrow('依赖');
+    expect(nativeMocks.invoke).not.toHaveBeenCalled();
+  });
   it('starts with no built-in plugins', () => {
     const { slice } = createSlice();
 

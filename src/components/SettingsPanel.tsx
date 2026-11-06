@@ -38,6 +38,7 @@ import { applyNativePerformanceMode, isNativePerformanceModeSupported } from '..
 import { applyMainWindowWorkArea } from '../services/mainWindowBoundsService';
 
 const SharedAssetStorageSettings = lazy(() => import('./settings/SharedAssetStorageSettings'));
+const ExternalAgentSettings = lazy(() => import('./settings/ExternalAgentSettings'));
 
 /** 窗口尺寸预设：每种比例给紧凑 / 标准 / 大屏三档主流尺寸 */
 const WINDOW_ASPECT_OPTIONS: {
@@ -1175,6 +1176,7 @@ export default function SettingsPanel() {
             {activeTab === 'mcp' && <McpSettings />}
 
             {activeTab === 'plugins' && <PluginSettings />}
+            {activeTab === 'external-agents' && <Suspense fallback={<p role="status" className="ui-hint">{t('正在加载外部 Agent 设置…')}</p>}><ExternalAgentSettings /></Suspense>}
           </div>
         </div>
     </ModalOverlay>

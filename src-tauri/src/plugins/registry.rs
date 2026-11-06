@@ -120,6 +120,8 @@ struct PluginRevision {
     min_host_version: Option<String>,
     #[serde(default)]
     required_capabilities: Vec<String>,
+    #[serde(default)]
+    dependencies: Vec<PluginDependency>,
     declared_tool_ids: Vec<String>,
     #[serde(default)]
     python_execution: BTreeMap<String, PluginPythonExecution>,
@@ -144,6 +146,16 @@ struct PluginPackageResource {
     digest: String,
     media_type: String,
     bytes: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginDependency {
+    plugin_id: String,
+    #[serde(default)]
+    min_version: Option<String>,
+    #[serde(default)]
+    optional: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -204,6 +216,9 @@ pub struct PluginRegistrationStatus {
     entry: Option<String>,
     permissions: Vec<String>,
     declared_tool_ids: Vec<String>,
+    snapshot_verified: bool,
+    health_code: String,
+    dependency_fingerprint: Option<String>,
 }
 
 pub(crate) struct PluginExecutionSource {
@@ -801,6 +816,18 @@ fn parse_revision_with_resources(
     };
     validate_compatibility_shape(min_host_version.as_deref(), &required_capabilities)?;
     ensure_host_compatibility(min_host_version.as_deref(), &required_capabilities)?;
+    let dependencies = match root.get("dependencies") {
+        None => Vec::new(),
+        Some(value) => {
+            if api_version != 2 || !required_capabilities.iter().any(|item| item == "plugin.dependencies") {
+                return Err("dependencies 要求 API 2 与 plugin.dependencies 能力声明".into());
+            }
+            let dependencies: Vec<PluginDependency> = serde_json::from_value(value.clone())
+                .map_err(|_| "插件依赖声明无效".to_string())?;
+            validate_dependencies(&dependencies, Some(&plugin_id))?;
+            dependencies
+        }
+    };
     let runtime = root
         .get("runtime")
         .and_then(Value::as_str)
@@ -872,6 +899,7 @@ fn parse_revision_with_resources(
             network_origins,
             min_host_version,
             required_capabilities,
+            dependencies,
             declared_tool_ids,
             python_execution,
             native_approved: false,
@@ -1678,6 +1706,10 @@ fn registry_backup_file(private_dir: &Path) -> PathBuf {
 }
 
 fn validate_stored_revision(revision: &PluginRevision) -> Result<(), String> {
+    validate_dependencies(&revision.dependencies, None)?;
+    if !revision.dependencies.is_empty() && !revision.required_capabilities.iter().any(|item| item == "plugin.dependencies") {
+        return Err("插件依赖缺少宿主能力声明".into());
+    }
     validate_compatibility_shape(
         revision.min_host_version.as_deref(),
         &revision.required_capabilities,
@@ -2273,6 +2305,7 @@ pub(crate) fn read_active_ui_source(
     validate_plugin_id(plugin_id)?;
     validate_source_digest(ui_digest)?;
     let registry = read_registry_at(private_dir)?;
+    dependency_fingerprint(&registry, plugin_id)?;
     let record = registry
         .plugins
         .get(plugin_id)
@@ -2318,6 +2351,7 @@ pub(crate) fn with_active_window_ui<T>(
     validate_tool_id(&identity.tool_id)?;
     let _lock = REGISTRY_LOCK.lock().map_err(|_| "插件信任注册表不可用")?;
     let registry = read_registry_at(private_dir)?;
+    dependency_fingerprint(&registry, &identity.plugin_id)?;
     let record = registry
         .plugins
         .get(&identity.plugin_id)
@@ -2359,6 +2393,79 @@ fn revision_is_referenced(record: &PluginRegistration, digest: &str) -> bool {
         .any(|revision| revision.revision_digest == digest)
 }
 
+fn validate_dependencies(dependencies: &[PluginDependency], plugin_id: Option<&str>) -> Result<(), String> {
+    if dependencies.len() > 16 { return Err("插件依赖最多 16 项".into()); }
+    let mut seen = BTreeSet::new();
+    for dependency in dependencies {
+        validate_plugin_id(&dependency.plugin_id)?;
+        if plugin_id == Some(dependency.plugin_id.as_str()) || !seen.insert(&dependency.plugin_id) {
+            return Err("插件依赖重复或引用自身".into());
+        }
+        if let Some(version) = &dependency.min_version { host_version_parts(version)?; }
+    }
+    Ok(())
+}
+
+/// 每次原生授权都从活动注册表重算；不是 Renderer 提交的授权证明。
+fn dependency_fingerprint(registry: &PluginRegistry, plugin_id: &str) -> Result<String, String> {
+    fn visit(registry: &PluginRegistry, id: &str, soft: bool, stack: &mut Vec<String>,
+        visited: &mut BTreeSet<(String, bool)>, identities: &mut BTreeSet<String>) -> Result<(), String> {
+        if stack.iter().any(|item| item == id) || stack.len() >= 32 { return Err("插件依赖存在循环或深度超限".into()); }
+        if !visited.insert((id.to_string(), soft)) { return Ok(()); }
+        let active = registry.plugins.get(id).filter(|item| item.enabled).and_then(|item| item.active.as_ref());
+        let Some(active) = active else { return if soft { Ok(()) } else { Err("必需插件依赖不可用".into()) }; };
+        if ensure_native_execution_approved(active).is_err() {
+            return if soft { Ok(()) } else { Err("必需插件依赖不兼容或未授权".into()) };
+        }
+        identities.insert(format!("{id}:{}:{}", active.source_digest, active.revision_digest));
+        stack.push(id.to_string());
+        for dependency in &active.dependencies {
+            let optional = soft || dependency.optional;
+            if let Some(minimum) = &dependency.min_version {
+                if let Some(candidate) = registry.plugins.get(&dependency.plugin_id).and_then(|item| item.active.as_ref()) {
+                    let valid = host_version_parts(&candidate.version).and_then(|current| Ok(current >= host_version_parts(minimum)?));
+                    if !valid.unwrap_or(false) {
+                        if optional { continue; }
+                        return Err("必需插件依赖版本不足或无效".into());
+                    }
+                }
+            }
+            visit(registry, &dependency.plugin_id, optional, stack, visited, identities)?;
+        }
+        stack.pop();
+        Ok(())
+    }
+    let mut identities = BTreeSet::new();
+    visit(registry, plugin_id, false, &mut Vec::new(), &mut BTreeSet::new(), &mut identities)?;
+    Ok(format!("{:x}", Sha256::digest(identities.into_iter().collect::<Vec<_>>().join("|").as_bytes())))
+}
+
+fn cancel_dependency_tree(registry: &PluginRegistry, changed_id: &str) {
+    let mut affected = BTreeSet::from([changed_id.to_string()]);
+    loop {
+        let before = affected.len();
+        for (id, registration) in &registry.plugins {
+            if registration.active.as_ref().is_some_and(|revision| revision.dependencies.iter().any(|dependency| affected.contains(&dependency.plugin_id))) {
+                affected.insert(id.clone());
+            }
+        }
+        if before == affected.len() { break; }
+    }
+    for id in affected { cancel_committed_plugin_invocations(&id); }
+}
+
+fn ensure_candidate_dependencies(registry: &PluginRegistry, plugin_id: &str, digest: &str, enabled: bool) -> Result<(), String> {
+    if !enabled { return Ok(()); }
+    let mut candidate = registry.clone();
+    let record = candidate.plugins.get_mut(plugin_id).ok_or("插件未注册")?;
+    switch_active_revision(record, digest)?;
+    record.enabled = true;
+    // 宿主批准由后面的原生授权流程处理；这里仅避免尚待批准的自身误判。
+    if let Some(revision) = record.active.as_mut() { revision.native_approved = revision_requests_native_approval(revision); }
+    dependency_fingerprint(&candidate, plugin_id)?;
+    Ok(())
+}
+
 fn status_for(plugin_id: &str, record: Option<&PluginRegistration>) -> PluginRegistrationStatus {
     let active = record.and_then(|item| item.active.as_ref());
     PluginRegistrationStatus {
@@ -2382,6 +2489,9 @@ fn status_for(plugin_id: &str, record: Option<&PluginRegistration>) -> PluginReg
         declared_tool_ids: active
             .map(|item| item.declared_tool_ids.clone())
             .unwrap_or_default(),
+        snapshot_verified: false,
+        health_code: "unavailable".into(),
+        dependency_fingerprint: None,
     }
 }
 
@@ -2405,6 +2515,7 @@ fn revision_security_manifest_matches(left: &PluginRevision, right: &PluginRevis
         && left.network_origins == right.network_origins
         && left.min_host_version == right.min_host_version
         && left.required_capabilities == right.required_capabilities
+        && left.dependencies == right.dependencies
         && left.declared_tool_ids == right.declared_tool_ids
         && left.python_execution == right.python_execution
         && left.ui_digest == right.ui_digest
@@ -2582,6 +2693,7 @@ fn commit_activation_at(
     enabled: bool,
     native_approval_granted: bool,
 ) -> Result<PluginRegistrationStatus, String> {
+    ensure_candidate_dependencies(registry, plugin_id, revision_digest, enabled)?;
     let record = registry
         .plugins
         .get_mut(plugin_id)
@@ -2633,7 +2745,7 @@ fn commit_activation_at(
     }
     let status = status_for(plugin_id, Some(current));
     if cancel_after_activation {
-        cancel_committed_plugin_invocations(plugin_id);
+        cancel_dependency_tree(registry, plugin_id);
     }
     Ok(status)
 }
@@ -2645,6 +2757,10 @@ fn commit_enabled_at(
     enabled: bool,
     native_approval_granted: bool,
 ) -> Result<PluginRegistrationStatus, String> {
+    if enabled {
+        let digest = registry.plugins.get(plugin_id).and_then(|record| record.active.as_ref()).ok_or("插件没有活动版本")?.revision_digest.clone();
+        ensure_candidate_dependencies(registry, plugin_id, &digest, true)?;
+    }
     let record = registry
         .plugins
         .get_mut(plugin_id)
@@ -2678,7 +2794,7 @@ fn commit_enabled_at(
     record.updated_at = unix_now_millis();
     write_registry_at(private_dir, registry)?;
     if !enabled {
-        cancel_committed_plugin_invocations(plugin_id);
+        cancel_dependency_tree(registry, plugin_id);
     }
     Ok(status_for(plugin_id, registry.plugins.get(plugin_id)))
 }
@@ -3028,7 +3144,7 @@ pub async fn remove_plugin_registration(
             registry.plugins.insert(plugin_id.clone(), record);
             return Err(error);
         }
-        cancel_committed_plugin_invocations(&plugin_id);
+        cancel_dependency_tree(&registry, &plugin_id);
         // 快照删除也受注册表锁保护，避免卸载与同 ID 的重新安装互相穿插。
         let directory = private_dir.join(REVISIONS_DIR_NAME).join(&record.plugin_id);
         let _ = fs::remove_dir_all(directory);
@@ -3082,11 +3198,27 @@ pub async fn get_plugin_registration_status(
     ensure_trusted_caller(&webview)?;
     validate_plugin_id(&plugin_id)?;
     let private_dir = plugin_private_dir(&app)?;
-    let _guard = REGISTRY_LOCK
-        .lock()
-        .map_err(|_| "插件信任注册表锁异常".to_string())?;
-    let registry = read_registry_at(&private_dir)?;
-    Ok(status_for(&plugin_id, registry.plugins.get(&plugin_id)))
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = REGISTRY_LOCK.lock().map_err(|_| "插件信任注册表锁异常".to_string())?;
+        let registry = read_registry_at(&private_dir)?;
+        Ok(health_status_at(&private_dir, &registry, &plugin_id))
+    }).await.map_err(|_| "插件诊断未完成".to_string())?
+}
+
+fn health_status_at(private_dir: &Path, registry: &PluginRegistry, plugin_id: &str) -> PluginRegistrationStatus {
+    let record = registry.plugins.get(plugin_id);
+    let mut status = status_for(plugin_id, record);
+    let Some(record) = record else { status.health_code = "missing".into(); return status; };
+    let Some(active) = record.active.as_ref() else { status.health_code = "invalid".into(); return status; };
+    status.snapshot_verified = read_verified_source_at(private_dir, plugin_id, active).is_ok()
+        && read_verified_ui_source_at(private_dir, plugin_id, active).is_ok()
+        && active.resources.iter().all(|resource| read_verified_resource_at(private_dir, plugin_id, active, &resource.id).is_ok());
+    status.dependency_fingerprint = dependency_fingerprint(registry, plugin_id).ok();
+    status.health_code = if !status.snapshot_verified || ensure_native_execution_approved(active).is_err() { "invalid" }
+        else if !record.enabled { "disabled" }
+        else if status.dependency_fingerprint.is_none() { "blocked" }
+        else { "ready" }.into();
+    status
 }
 
 pub(crate) fn load_plugin_for_execution<R: Runtime>(
@@ -3105,6 +3237,7 @@ pub(crate) fn load_plugin_for_execution<R: Runtime>(
         .lock()
         .map_err(|_| "插件信任注册表锁异常".to_string())?;
     let registry = read_registry_at(&private_dir)?;
+    dependency_fingerprint(&registry, plugin_id)?;
     let record = registry
         .plugins
         .get(plugin_id)
@@ -3158,6 +3291,7 @@ fn with_plugin_host_authority_at<T>(
     validate_source_digest(&identity.revision_digest)?;
     validate_tool_id(&identity.tool_id)?;
     let registry = read_registry_at(private_dir)?;
+    dependency_fingerprint(&registry, &identity.plugin_id)?;
     let record = registry
         .plugins
         .get(&identity.plugin_id)
@@ -3215,6 +3349,7 @@ pub async fn read_plugin_package_resource(
             .lock()
             .map_err(|_| "插件信任注册表锁异常".to_string())?;
         let registry = read_registry_at(&private_dir)?;
+        dependency_fingerprint(&registry, &plugin_id)?;
         let record = registry
             .plugins
             .get(&plugin_id)
@@ -3256,6 +3391,45 @@ pub async fn read_plugin_package_resource(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dependency_metadata_requires_capability_and_rejects_unknown_or_self_references() {
+        let mut value = manifest("javascript");
+        value["dependencies"] = json!([{ "pluginId": "example.base", "minVersion": "1.0.0" }]);
+        assert!(parse_revision(&value, "source", None).is_err());
+        value["apiVersion"] = json!(2);
+        value["requiredCapabilities"] = json!(["plugin.dependencies"]);
+        let (_, revision) = parse_revision(&value, "source", None).unwrap();
+        assert_eq!(revision.dependencies[0].plugin_id, "example.base");
+        value["dependencies"][0]["service"] = json!("internal");
+        assert!(parse_revision(&value, "source", None).is_err());
+        value["dependencies"] = json!([{ "pluginId": "example.plugin" }]);
+        assert!(parse_revision(&value, "source", None).is_err());
+    }
+
+    #[test]
+    fn dependency_graph_blocks_missing_versions_cycles_and_changes_fingerprint() {
+        let mut value = manifest("javascript");
+        value["apiVersion"] = json!(2);
+        value["requiredCapabilities"] = json!(["plugin.dependencies"]);
+        value["dependencies"] = json!([{ "pluginId": "example.base", "minVersion": "1.0.0" }]);
+        let (_, revision) = parse_revision(&value, "source", None).unwrap();
+        let mut registry = PluginRegistry::default();
+        let record = |id: &str, active: PluginRevision| PluginRegistration { plugin_id: id.into(), enabled: true,
+            active: Some(active), previous: None, staged: None, installed_at: 1, updated_at: 1 };
+        registry.plugins.insert("example.plugin".into(), record("example.plugin", revision));
+        assert!(dependency_fingerprint(&registry, "example.plugin").is_err());
+        let (_, base) = parse_revision(&manifest("javascript"), "base", None).unwrap();
+        registry.plugins.insert("example.base".into(), record("example.base", base));
+        let before = dependency_fingerprint(&registry, "example.plugin").unwrap();
+        let base = registry.plugins.get_mut("example.base").unwrap().active.as_mut().unwrap();
+        base.revision_digest = "d".repeat(64);
+        assert_ne!(before, dependency_fingerprint(&registry, "example.plugin").unwrap());
+        registry.plugins.get_mut("example.base").unwrap().active.as_mut().unwrap().dependencies = vec![PluginDependency {
+            plugin_id: "example.plugin".into(), min_version: None, optional: true,
+        }];
+        assert!(dependency_fingerprint(&registry, "example.plugin").is_err());
+    }
 
     fn temporary_directory(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
@@ -4273,6 +4447,7 @@ mod tests {
             network_origins: Vec::new(),
             min_host_version: None,
             required_capabilities: Vec::new(),
+            dependencies: Vec::new(),
             declared_tool_ids,
             python_execution: BTreeMap::new(),
             native_approved: false,

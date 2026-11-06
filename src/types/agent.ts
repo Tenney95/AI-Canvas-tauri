@@ -5,6 +5,8 @@
  */
 
 import type { AgentTeamRun } from './agentTeam';
+import type { AgentResultReference } from './agentResult';
+import type { CreationProfileSnapshot } from './creationProfile';
 
 export type AgentMode = 'collaborative' | 'autonomous' | 'plan';
 
@@ -220,6 +222,24 @@ export interface AgentToolCallSnapshot {
   effect?: AgentApprovalKind | 'read';
   inputFingerprint?: string;
   canvasCheckpoint?: AgentCanvasCheckpoint;
+  resultReference?: AgentResultReference;
+}
+
+/** 调用前后持久化的安全回执；dispatched 不证明远端已受理。 */
+export interface AgentDispatchRecord {
+  id: string;
+  kind: 'model' | 'tool' | 'team-model';
+  phase: 'prepared' | 'dispatched' | 'settled' | 'not_started' | 'outcome_unknown';
+  toolId?: string;
+  stepId?: string;
+  runRevision?: number;
+  effect?: AgentApprovalKind | 'read';
+  inputDigest?: string;
+  preparedAt: number;
+  dispatchedAt?: number;
+  settledAt?: number;
+  outcome?: 'succeeded' | 'failed';
+  recovery?: { decision: 'verified_completed' | 'abandoned'; decidedAt: number };
 }
 
 /** 供用户勾选的候选模型；category 用于在卡片里分组。 */
@@ -407,6 +427,10 @@ export interface AgentTask {
   goal: string;
   status: AgentTaskStatus;
   steps: AgentStep[];
+  dispatches?: AgentDispatchRecord[];
+  creationProfile?: CreationProfileSnapshot;
+  /** 组合包准备未完成时，暂停/重启不能绕过异步能力与持久化前置条件。 */
+  creationProfilePreparation?: 'pending' | 'ready' | 'failed';
   currentStepId?: string;
   modelRounds: number;
   toolCallCount: number;

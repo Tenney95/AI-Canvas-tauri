@@ -35,6 +35,15 @@ function shotlistButton(html: string): string | undefined {
 }
 
 describe('剧本工作台共享视图', () => {
+  it('renders only safe creation profile options without applying them or switching canvas', () => {
+    const state = { ...snapshot(), creationProfiles: [{ id: 'writing', version: '1.0.0', name: '创作组合包示例' }] };
+    const dispatch = vi.fn(async () => undefined);
+    const html = renderToStaticMarkup(<ScriptWorkbenchView snapshot={state} dispatch={dispatch} />);
+    expect(html).toContain('创作组合包');
+    expect(html).toContain('创作组合包示例');
+    expect(state.canvasProjectId).toBe('episode-a');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
   it('显示工作台选中集的数据，非当前画布集不能直接生成分镜', () => {
     const state = snapshot();
     const dispatch = vi.fn(async () => undefined);

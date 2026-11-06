@@ -48,6 +48,13 @@ function manifest(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('AI Canvas Plugin Manifest Standard', () => {
+  it('requires explicit API 2 capability for bounded dependency declarations', () => {
+    const dependency = { dependencies: [{ pluginId: 'example.base', minVersion: '1.0.0' }] };
+    expect(() => parsePluginBundle(manifest(dependency), 'source')).toThrow('API 2');
+    expect(() => parsePluginBundle(manifest({ ...dependency, apiVersion: 2 }), 'source')).toThrow('plugin.dependencies');
+    expect(parsePluginBundle(manifest({ ...dependency, apiVersion: 2, requiredCapabilities: ['plugin.dependencies'] }), 'source').dependencies)
+      .toEqual(dependency.dependencies);
+  });
   it('requires explicit API 2 prompt reference permission and capability', () => {
     const safe = manifest({ apiVersion: 2, permissions: ['node.read', 'node.write', 'prompt.references.read'], requiredCapabilities: ['prompt.mentions'] });
     expect(parsePluginBundle(safe, 'definePlugin({ tools: {} });').permissions).toContain('prompt.references.read');

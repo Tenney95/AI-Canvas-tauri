@@ -59,6 +59,8 @@ import { extendAgentSegmentBudget } from './agentBudgetService';
 import type { AssistantExecutionSelection } from '../../types/agentTeam';
 import { normalizeExecutionSelection } from './teams/teamProfileService';
 import { appendTeamInstruction, resumeTeamInvocation, submitTeamInvocation } from './teams/teamInvocationService';
+import { captureCreationProfile, intersectCreationTools } from '../creationProfiles/creationProfileService';
+import { beginAgentDispatch, settleAgentDispatch } from './agentDurabilityService';
 import type { MediaGenerationIntent } from '../../types/media';
 import {
   failMediaPlaceholderLifecycle,
@@ -331,6 +333,8 @@ function startAgentMessageExecution({
       throw new Error(`单个任务最多注入 ${SKILL_CONTENT_LIMITS.maxExplicitBindings} 个 Skill`);
     }
     const skillBindings = captureExplicitSkillBindings(text, runtimeSkills);
+    const selectedCreation = store.conversations.find((entry) => entry.id === conversationId)?.creationProfile;
+    const creationSelection = selectedCreation ? structuredClone(selectedCreation) : undefined;
     const task = store.createAgentTask({
       projectId,
       conversationId,
@@ -339,10 +343,35 @@ function startAgentMessageExecution({
       goal: text,
       toolAllowlist: resolveAssistantToolAllowlist(projectId, resolveSkillBindingToolAllowlist(skillBindings)),
       skillBindings,
+      creationProfilePreparation: creationSelection ? 'pending' : undefined,
     });
     taskId = task.id;
     store.updateMessage(assistantMessageId, { agentTaskId: task.id });
-    scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
+    if (creationSelection) {
+      // 准备期间只登记 queued；真正模型调用必须等待能力预检及不可变快照。
+      void captureCreationProfile(structuredClone(creationSelection), projectId).then((captured) => {
+        const current = useAppStore.getState();
+        const pending = current.agentTasks.find((entry) => entry.id === task.id);
+        if (!pending || !['queued', 'paused'].includes(pending.status)) return;
+        if (!current.conversations.some((entry) => entry.id === conversationId && !entry.deletedAt)
+          || (!isGeneralAssistantScope(projectId) && current.currentProjectId !== projectId)) throw new Error('组合包准备期间项目或会话已变化');
+        const bindings = [...new Map([...skillBindings, ...captured.skillBindings].map((binding) => [binding.skillId, binding])).values()];
+        if (bindings.length > SKILL_CONTENT_LIMITS.maxExplicitBindings
+          || bindings.reduce((total, binding) => total + binding.content.length, 0) > SKILL_CONTENT_LIMITS.expansionTotalChars) throw new Error('组合包与本次引用的 Skill 总量超出上限，请减少选择');
+        const allowed = intersectCreationTools(resolveSkillBindingToolAllowlist(skillBindings), resolveSkillBindingToolAllowlist(captured.skillBindings));
+        current.updateAgentTask(task.id, { creationProfile: captured.snapshot, creationProfilePreparation: 'ready', skillBindings: bindings,
+          toolAllowlist: resolveAssistantToolAllowlist(projectId, intersectCreationTools(allowed, captured.snapshot?.toolAllowlist)) });
+        if (pending.status === 'queued') scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
+      }).catch((error: unknown) => {
+        const current = useAppStore.getState();
+        const pending = current.agentTasks.find((entry) => entry.id === task.id);
+        if (!pending || !['queued', 'paused'].includes(pending.status)) return;
+        if (pending.status === 'queued') stopAgentTask(task.id);
+        current.updateAgentTask(task.id, { creationProfilePreparation: 'failed', errorCode: 'CREATION_PROFILE_PREPARATION_FAILED', errorMessage: sanitizeDomainText(error instanceof Error ? error.message : '组合包准备失败').slice(0, 300) });
+        current.updateMessage(assistantMessageId, { content: sanitizeDomainText(error instanceof Error ? error.message : '组合包准备失败').slice(0, 300), status: 'error', finishReason: 'error' });
+        onProgress?.();
+      });
+    } else scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
     return task.id;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : '未知错误';
@@ -436,6 +465,25 @@ export function resumeAgentTaskExecution(
   return { ok: true };
 }
 
+/** 兼容的旧 pipeline 也必须先落盘；异常保守留为未知，不能换路径重投。 */
+async function withLegacyDispatch<T>(taskId: string, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  const record = await beginAgentDispatch({ taskId, kind: 'model', signal });
+  try {
+    const result = await run();
+    await settleAgentDispatch(taskId, record, 'succeeded');
+    return result;
+  } catch (error) {
+    await settleAgentDispatch(taskId, record, 'unknown');
+    const state = useAppStore.getState();
+    const task = state.agentTasks.find((entry) => entry.id === taskId);
+    if (task && !['paused', 'stopped', 'completed'].includes(task.status)) state.updateAgentTask(taskId, {
+      status: 'paused', pausedReason: 'dispatch_outcome_unknown', errorCode: 'AGENT_DISPATCH_OUTCOME_UNKNOWN',
+      errorMessage: '原调用结果未知，请先核实；不会自动改走其他执行路径',
+    });
+    throw error;
+  }
+}
+
 function driveAgentTask(
   taskId: string,
   assistantMessageId: string,
@@ -476,6 +524,7 @@ function driveAgentTask(
           || isGeneralAssistantScope(projectId)
           || mode === 'plan'
           || task.toolAllowlist !== undefined
+          || !!task.creationProfile
         ) {
           const outcome = await runAgentLoop({
             taskId,
@@ -483,7 +532,8 @@ function driveAgentTask(
               agentTools: true,
               includeToolGuidance: false,
               projectId,
-              includeCanvasContext: useAppStore.getState().currentProjectId === projectId,
+              includeCanvasContext: task.creationProfile?.contextPolicyRef !== 'explicit-materials'
+                && useAppStore.getState().currentProjectId === projectId,
             }),
             userMessage: task.skillBindings === undefined
               ? expandSkillReferences(text, [...store.userSkills, ...store.agentPackageSkills])
@@ -556,7 +606,7 @@ function driveAgentTask(
           return outcome;
         }
 
-        await runStreamingPipeline(text, conversationId, {
+        await withLegacyDispatch(taskId, signal, async () => { await runStreamingPipeline(text, conversationId, {
           onTextDelta: streamingMessage.append,
           onReasoningDelta: streamingMessage.appendReasoning,
           onComplete: (fullText, results) => {
@@ -585,7 +635,7 @@ function driveAgentTask(
             void triggerMediaGeneration(assistantMessageId, intent);
           },
           signal,
-        }, projectId);
+        }, projectId); if (failed) throw new Error('旧对话执行未能返回完整结果'); });
         return failed ? 'failed' : 'completed';
       } finally {
         streamingMessage.flush();
@@ -604,7 +654,7 @@ function driveAgentTask(
       }
     }
 
-    if (isGeneralAssistantScope(projectId) || mode === 'plan' || task.toolAllowlist !== undefined) {
+    if (isGeneralAssistantScope(projectId) || mode === 'plan' || task.toolAllowlist !== undefined || task.creationProfile) {
       useAppStore.getState().updateMessage(assistantMessageId, {
         content: isGeneralAssistantScope(projectId)
           ? '未选择可用的对话文本模型，本次请求尚未处理。请在输入框下方选择已配置的文本模型后重试。'
@@ -619,7 +669,11 @@ function driveAgentTask(
     }
 
     try {
-      const result = await runAssistantPipeline(text, conversationId, projectId);
+      const result = await withLegacyDispatch(taskId, signal, async () => {
+        const response = await runAssistantPipeline(text, conversationId, projectId);
+        if (response.errorCode) throw new Error(response.reply);
+        return response;
+      });
       if (result.errorCode) throw new Error(result.reply);
       useAppStore.getState().updateMessage(assistantMessageId, {
         content: result.reply,
@@ -634,7 +688,7 @@ function driveAgentTask(
         status: 'error',
         finishReason: 'error',
       });
-      return 'failed';
+      return useAppStore.getState().agentTasks.find((item) => item.id === taskId)?.status === 'paused' ? 'paused' : 'failed';
     }
   }).then(() => undefined).catch((error) => {
     console.error('[AgentRuntime] failed to execute chat task:', error);

@@ -13,7 +13,8 @@ const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_ep
   'cancel_pending', 'discard_pending', 'save_pending', 'toggle_split', 'set_split_source', 'set_split_count', 'set_split_duration',
   'open_source', 'close_source', 'read_source', 'prepare_chapter', 'open_rename', 'close_rename', 'rename', 'creative', 'polish',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
-  'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend']);
+  'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend',
+  'preview_creation_profile', 'apply_creation_profile', 'refresh_external_agents', 'edit_team_graph', 'resolve_dispatch']);
 const isDesktop = () => typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
 
 /** 重复入口只聚焦固定窗口，不重建编辑会话。 */
@@ -129,7 +130,7 @@ export function createScriptWorkbenchWindowHost(options: {
         await publish().catch(() => {});
         await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, response).catch(() => {});
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。
-        if (['flush_draft', 'read_source', 'team_artifact'].includes(payload.action.type)) requests.delete(payload.requestId);
+        if (['flush_draft', 'read_source', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents'].includes(payload.action.type)) requests.delete(payload.requestId);
         options.onReplySent?.();
       }).catch(() => {});
       })().catch(() => {});

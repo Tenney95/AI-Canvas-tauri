@@ -1885,6 +1885,18 @@ describe('episode creative conditional writes', () => {
     });
   };
 
+  it('clears the old team override when a new creation profile is selected', async () => {
+    openEpisode();
+    const override = { version: 1 as const, name: '旧覆盖', roles: { architect: 'a', writer: 'b', continuity: 'c', dialogue: 'd', editor: 'e' },
+      maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 };
+    useAppStore.setState({ projects: useAppStore.getState().projects.map((project) => project.id === 'team-episode'
+      ? { ...project, teamProfileOverride: override } : project) });
+    const selection = { id: 'creation', version: '1.0.0', sha256: 'a'.repeat(64) };
+    expect(await useAppStore.getState().updateEpisodeCreative('team-episode', { creationProfile: selection })).toBe(true);
+    const episode = useAppStore.getState().projects.find((project) => project.id === 'team-episode')!;
+    expect(episode.creationProfile).toEqual(selection); expect(episode.teamProfileOverride).toBeUndefined();
+  });
+
   it('rejects a stale team candidate without saving or changing another field', async () => {
     openEpisode();
     const save = vi.fn(async () => 'team-episode');

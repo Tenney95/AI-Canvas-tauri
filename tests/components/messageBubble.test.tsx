@@ -79,6 +79,16 @@ beforeEach(() => {
 afterEach(() => { mocks.cleanup?.(); });
 
 describe('message media recovery subscription', () => {
+  it('offers branching only at completed assistant messages', () => {
+    const branch = vi.fn(async () => undefined);
+    mocks.stateIndex = 0;
+    expect(renderToStaticMarkup(<MessageBubble message={message} onBranch={branch} />)).toContain('从这里分支');
+    mocks.states = []; mocks.stateIndex = 0;
+    expect(renderToStaticMarkup(<MessageBubble message={{ ...message, status: 'partial' }} onBranch={branch} />)).not.toContain('从这里分支');
+    mocks.states = []; mocks.stateIndex = 0;
+    expect(renderToStaticMarkup(<MessageBubble message={{ ...message, role: 'user' }} onBranch={branch} />)).not.toContain('从这里分支');
+    expect(branch).not.toHaveBeenCalled();
+  });
   it.each(['user', 'system'] as const)('%s text never initializes or subscribes to the media ledger', async (role) => {
     expect(render({ ...message, role })).toContain('ordinary text');
     await flushEffects();

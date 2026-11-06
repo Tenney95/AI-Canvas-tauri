@@ -24,7 +24,8 @@ import type {
   MediaGenerationStatus,
 } from '../../types/media';
 import { isTransientMediaUrl, persistMediaUrlToProjectData } from '../fileService';
-import { normalizeExecutionSelection } from './teams/teamProfileService';
+import { normalizeExecutionSelection, normalizeTeamProfile } from './teams/teamProfileService';
+import { restoreCreationProfileSelection } from '../creationProfiles/creationProfileManifest';
 
 // ============================================
 // Type converters
@@ -92,6 +93,9 @@ function fromConversationRecord(r: ChatConversationRecord): ChatConversation {
     ...r,
     agentMode: r.agentMode ?? 'collaborative',
     executionSelection: normalizeExecutionSelection(r.executionSelection),
+    creationProfile: restoreCreationProfileSelection(r.creationProfile),
+    creationProfileRevision: Number.isSafeInteger(r.creationProfileRevision) && (r.creationProfileRevision ?? -1) >= 0 ? r.creationProfileRevision : 0,
+    teamProfileOverride: r.teamProfileOverride ? normalizeTeamProfile(r.teamProfileOverride) : undefined,
   };
 }
 

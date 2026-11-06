@@ -26,6 +26,7 @@ import type {
   AgentTaskStatus,
   AgentToolDisplaySnapshot,
   AgentToolDisplayValue,
+  AgentDispatchRecord,
 } from '../../types/agent';
 import { AGENT_TERMINAL_STATUSES } from '../../types/agent';
 import type {
@@ -37,6 +38,7 @@ import type {
 import type { McpContent } from '../../types/mcp';
 import {
   buildAssistantFunctionTools,
+  getAgentTool,
   prepareAgentToolCall,
   type AgentToolContext,
   type AgentToolEffect,
@@ -61,6 +63,8 @@ import {
 } from './agentCheckpointService';
 import { emitAgentLifecycleEvent } from './agentLifecycle';
 import { createSkillReadBudget } from './skillReadService';
+import { AgentDurabilityError, beginAgentDispatch, digestAgentDispatchInput, settleAgentDispatch } from './agentDurabilityService';
+import { captureAgentResult } from './agentResultService';
 
 // 每次 runAgentLoop 都创建自己的 messages 数组；恢复候选跨只读轮次保留，
 // 不包含当前执行段新完成的步骤，也不写入 Store/IndexedDB。数组释放后自动回收。
@@ -392,6 +396,7 @@ export async function executePreparedToolCall(
   let checkpointBefore: { historyIndex: number; revision: number } | undefined;
 
   while (true) {
+    let dispatch: AgentDispatchRecord | undefined;
     // 审批等待、前序读取和重试退避期间，停止/降级/撤权都必须即时生效。
     assertAgentTaskActive(taskId, context.signal);
     const currentTask = getTask(taskId);
@@ -462,10 +467,38 @@ export async function executePreparedToolCall(
     }
     try {
       assertAgentTaskActive(taskId, context.signal);
+      const inputDigest = await digestAgentDispatchInput(call.toolId, prepared.input);
+      dispatch = await beginAgentDispatch({
+        taskId, kind: 'tool', toolId: call.toolId, stepId: step.id,
+        effect: prepared.definition.effect, inputDigest, signal: context.signal,
+        revalidate: () => {
+          assertAgentTaskActive(taskId, context.signal);
+          const live = getTask(taskId);
+          if (getAgentTool(call.toolId) !== prepared.definition
+            || (live.toolAllowlist !== undefined && !live.toolAllowlist.includes(call.toolId))) {
+            throw new Error('保存执行记录期间工具已变更或被撤权，未执行工具');
+          }
+          executionContext.mode = resolveAgentExecutionMode(live, policyMode);
+          const freshPolicy = evaluateAgentToolPolicy(prepared.definition, prepared.input, executionContext);
+          const liveStep = live.steps.find((item) => item.id === step.id);
+          if (freshPolicy.outcome === 'deny'
+            || (freshPolicy.outcome === 'require_approval' && liveStep?.approval?.status !== 'approved')) {
+            throw new Error('保存执行记录期间权限已变化，未执行工具');
+          }
+          if (!globalScopeActive && !workbenchScopeActive && useAppStore.getState().currentProjectId !== context.projectId) {
+            throw new Error('保存执行记录期间项目已切换，未执行工具');
+          }
+          if (prepared.definition.effect === 'canvas_write' && context.baseRevision !== undefined
+            && useAppStore.getState().getCurrentRevision() !== context.baseRevision) {
+            throw new Error('保存执行记录期间画布已变化，未执行工具');
+          }
+        },
+      });
       const result = await prepared.definition.execute(executionContext, prepared.input);
       const revisionAfterExecution = useAppStore.getState().getCurrentRevision();
       const historyIndexAfterExecution = useAppStore.getState().historyIndex;
       if (result.status === 'error' && result.retryable && retryCount < maxRetries) {
+        await settleAgentDispatch(taskId, dispatch, 'failed');
         assertAgentTaskActive(taskId, context.signal);
         retryCount += 1;
         addAgentTaskMetrics(taskId, { retryCount: 1 });
@@ -483,6 +516,25 @@ export async function executePreparedToolCall(
 
       const status = result.status === 'success' ? 'succeeded' : 'failed';
       const persistentSummary = sanitizePersistentSummary(result.summary);
+      const persistResult = prepared.definition.resultPolicy?.storage === 'project'
+        && result.resultPolicy?.storage !== 'memory' && !result.resultPolicy?.authorize
+        && (result.resultPolicy?.source ?? prepared.definition.resultPolicy.source) === 'project-derived';
+      const authorizeResult = () => {
+        try {
+          const live = getTask(taskId);
+          const fresh = { ...executionContext, mode: resolveAgentExecutionMode(live, policyMode) };
+          return getAgentTool(call.toolId) === prepared.definition
+            && (live.toolAllowlist === undefined || live.toolAllowlist.includes(call.toolId))
+            && prepared.definition.isAvailable?.(fresh) !== false
+            && prepared.definition.authorize?.(fresh, prepared.input)?.allowed !== false
+            && result.resultPolicy?.authorize?.() !== false;
+        } catch { return false; }
+      };
+      const captured = call.toolId === 'agent_result_read'
+        ? { modelContent: result.modelContent, reference: undefined, truncated: result.truncated ?? false }
+        : await captureAgentResult({ scope: context, toolId: call.toolId, text: result.modelContent,
+          policy: { ...prepared.definition.resultPolicy, ...result.resultPolicy,
+            storage: persistResult ? 'project' : 'memory', ...(!persistResult ? { authorize: authorizeResult } : {}) } });
       const checkpointAfter = checkpointBefore && result.status === 'success'
         ? {
             historyIndex: historyIndexAfterExecution,
@@ -515,6 +567,7 @@ export async function executePreparedToolCall(
           resultDisplay: sanitizeToolDisplay(result.display),
           errorCode: result.errorCode,
           canvasCheckpoint,
+          resultReference: captured.reference,
         },
       });
       const durationMs = Date.now() - startedAt;
@@ -544,16 +597,17 @@ export async function executePreparedToolCall(
           ...canvasCheckpoint,
         });
       }
-      const modelContentLimit = 20_000;
-      const modelContent = result.modelContent.slice(0, modelContentLimit);
+      await settleAgentDispatch(taskId, dispatch, result.status === 'success' ? 'succeeded' : 'failed');
+      const modelContent = captured.modelContent;
       return {
         summary: {
           callId: call.callId,
           toolId: call.toolId,
           status: result.status,
           summary: persistentSummary,
-          truncated: (result.truncated ?? false) || result.modelContent.length > modelContentLimit,
+          truncated: (result.truncated ?? false) || captured.truncated,
           sources: result.sources,
+          resultReference: captured.reference,
         },
         modelContent,
         ...preserveMcpToolContent(result, context, prepared.definition.effect),
@@ -563,6 +617,8 @@ export async function executePreparedToolCall(
           : undefined,
       };
     } catch (error) {
+      if (error instanceof AgentDurabilityError) throw error;
+      if (dispatch) await settleAgentDispatch(taskId, dispatch, prepared.definition.effect === 'read' ? 'failed' : 'unknown');
       if (isAgentExecutionInactive(taskId, context.signal)) {
         emitAgentLifecycleEvent({
           type: 'tool.execution',
@@ -575,7 +631,8 @@ export async function executePreparedToolCall(
         });
         throw new DOMException('Agent 任务已取消或不再运行', 'AbortError');
       }
-      if (prepared.definition.effect === 'read' && retryCount < maxRetries) {
+      const transient = /network|fetch failed|网络|超时|timeout|(?:HTTP|状态码)[^\d]*(?:408|429|5\d\d)/i.test(error instanceof Error ? error.message : '');
+      if (prepared.definition.effect === 'read' && transient && retryCount < maxRetries) {
         retryCount += 1;
         addAgentTaskMetrics(taskId, { retryCount: 1 });
         const retryMessage = sanitizePersistentSummary(
@@ -628,14 +685,15 @@ export async function executePreparedToolCall(
         durationMs,
         errorCode: 'AGENT_TOOL_EXCEPTION',
       });
+      if (dispatch && prepared.definition.effect !== 'read') {
+        useAppStore.getState().updateAgentTask(taskId, {
+          status: 'paused', pausedReason: 'tool_outcome_unknown', errorCode: 'TOOL_OUTCOME_UNKNOWN',
+          errorMessage: '工具已进入调用但结果未知，请先核实原操作；不会自动重投',
+        });
+        throw error;
+      }
       return {
-        summary: {
-          callId: call.callId,
-          toolId: call.toolId,
-          status: 'error',
-          summary: message,
-          truncated: false,
-        },
+        summary: { callId: call.callId, toolId: call.toolId, status: 'error', summary: message, truncated: false },
         modelContent: message,
       };
     }
@@ -878,7 +936,10 @@ export async function executeAgentRound({
   let roundText = '';
   const completion: { reason: FinishReason } = { reason: 'stop' };
   let streamError: string | undefined;
+  let streamErrorCode: string | undefined;
   const modelStartedAt = Date.now();
+  let modelDispatch: AgentDispatchRecord | undefined;
+  let modelReturned = false;
   let roundInputTokens = 0;
   let roundOutputTokens = 0;
   appendAgentEvent(taskId, 'model_round_start');
@@ -889,6 +950,8 @@ export async function executeAgentRound({
     round: task.modelRounds + 1,
   });
   try {
+    modelDispatch = await beginAgentDispatch({ taskId, kind: 'model', signal,
+      revalidate: () => assertAgentTaskActive(taskId, signal) });
     await streamAssistantReply({
       systemPrompt: '',
       userMessage: '',
@@ -910,6 +973,7 @@ export async function executeAgentRound({
           completion.reason = event.finishReason;
         } else if (event.type === 'error') {
           streamError = event.message;
+          streamErrorCode = event.code;
           callbacks.onError?.(event.message);
         } else if (event.type === 'usage') {
           roundInputTokens += event.inputTokens ?? 0;
@@ -917,6 +981,7 @@ export async function executeAgentRound({
         }
       },
     });
+    modelReturned = true;
   } finally {
     const durationMs = Date.now() - modelStartedAt;
     addAgentTaskMetrics(taskId, {
@@ -938,11 +1003,14 @@ export async function executeAgentRound({
       outputTokens: roundOutputTokens,
       durationMs,
     });
+    if (modelDispatch) await settleAgentDispatch(taskId, modelDispatch,
+      !modelReturned || completion.reason === 'canceled' ? 'unknown'
+        : streamError || completion.reason === 'error' ? 'failed' : 'succeeded');
   }
 
   assertAgentTaskActive(taskId, signal);
   if (completion.reason === 'canceled') throw new DOMException('模型请求已取消', 'AbortError');
-  if (streamError || completion.reason === 'error') throw new Error(streamError || '模型请求失败');
+  if (streamError || completion.reason === 'error') throw Object.assign(new Error(streamError || '模型请求失败'), { code: streamErrorCode });
   if (completion.reason === 'length') {
     // 截断时即使参数碰巧能解析，也不能认为整轮工具提案已经完整。
     transitionTask(taskId, 'paused', {

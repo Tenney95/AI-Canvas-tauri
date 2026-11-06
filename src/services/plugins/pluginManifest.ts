@@ -3,6 +3,7 @@
  */
 import type { NodeType } from '../../types';
 import { assertPluginCompatibility } from './pluginHost';
+import { parsePluginDependencies } from './pluginDependencyService';
 import type {
   InstalledPlugin,
   PluginCategory,
@@ -782,6 +783,10 @@ function parseManifest(value: unknown): PluginManifest {
   }
 
   const category = nonEmptyString(root.category, '插件分类', 32) as PluginCategory;
+  const dependencies = parsePluginDependencies(root.dependencies, id);
+  if (dependencies !== undefined && (apiVersion !== 2 || !requiredCapabilities?.includes('plugin.dependencies'))) {
+    throw new Error('dependencies 需要 API 2 与 plugin.dependencies 能力声明');
+  }
   if (!CATEGORIES.has(category)) throw new Error('插件分类不受支持');
   const keywords = root.keywords === undefined ? undefined : stringArray(root.keywords, 'keywords', 12);
   const repository = root.repository === undefined
@@ -792,6 +797,7 @@ function parseManifest(value: unknown): PluginManifest {
     apiVersion,
     ...(minHostVersion !== undefined ? { minHostVersion } : {}),
     ...(requiredCapabilities !== undefined ? { requiredCapabilities } : {}),
+    ...(dependencies !== undefined ? { dependencies } : {}),
     runtime,
     id,
     name: nonEmptyString(root.name, '插件名称', 80),

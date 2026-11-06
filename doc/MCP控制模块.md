@@ -2,7 +2,9 @@
 
 负责外部客户端控制 AI Canvas，以及内部助手连接外部 MCP 服务。这两个方向独立；业务工具与外部调用均复用 Registry、Policy 与任务审计。
 
-外部 Agent 的 [Skill / CLI 与 Codex 接入规划](./plans/2026-11-06-external-agent-collaboration.md)已于 2026-11-06 登记，待排期、尚未实施：CLI 首期复用本机控制桥；画布委派 Codex 优先评估 Rust 管理 App Server stdio，认证与能力隔离须先核实。此规划不改变当前控制入口或权限。
+外部 Agent 的 [Skill / CLI 与 Codex 路线](./plans/2026-11-06-external-agent-collaboration.md)首期已写入，未运行测试或真实模型验收；现行合同与回退归 [Harness 专项](./plans/2026-11-06-harness-capabilities.md)。`scripts/ai-canvas-cli.mjs` 与 `.agents/skills/ai-canvas/SKILL.md` 复用 LoopbackClient，提供 status、tools search/describe、call、operation get，不新增 bridge method，不自动开启 MCP。令牌仅由环境注入，JSON 信封保留项目/revision/operationKey，失败先查原回执，不自动重投。命令用法可在仓库根目录运行 `node scripts/ai-canvas-cli.mjs --help` 查看（本轮未执行）。
+
+插件自描述与结果回读分别由 Registry 工具 `plugin_host_inspect` / `agent_result_read` 暴露，不依赖 taskId 做发现过滤；依然按本地 schema、授权与结果预算执行。外部 Codex 是主窗口管理的独立建议执行器，不向该进程提供画布 MCP 令牌或审批解决接口。
 
 2026-11-04 六项可靠性修复已实现并分别提交，范围、桌面验收与回退见[专项计划](./plans/2026-11-04-mcp-reliability.md)：配置截图脱敏、会话撤销与超时取消、完整有界业务结果、stdio 在途限额、外部凭据保存串行化及失效会话恢复。本次未运行测试，待用户验收。
 

@@ -41,6 +41,18 @@ function task(steps: AgentStep[]): AgentTask {
   };
 }
 
+it('keeps unknown and user-resolved write tombstones explicit in resume material', () => {
+  const value = task([]);
+  value.dispatches = [
+    { id: 'unknown', kind: 'tool', toolId: 'media_generate', effect: 'media_generation', phase: 'outcome_unknown', preparedAt: 1 },
+    { id: 'resolved', kind: 'tool', toolId: 'canvas_update_nodes', effect: 'canvas_write', phase: 'outcome_unknown', preparedAt: 1,
+      recovery: { decision: 'verified_completed', decidedAt: 2 } },
+  ];
+  const context = buildAgentResumeContext(value);
+  expect(context).toContain('media_generate'); expect(context).toContain('禁止重复提交');
+  expect(context).toContain('canvas_update_nodes'); expect(context).toContain('用户标记已完成'); expect(context).toContain('新建任务');
+});
+
 const replayContext = {
   callId: 'new-call', projectId: 'project-1', historyIndex: 3, revision: 5,
   checkpointReplayStepIds: new Set(['step-0']),

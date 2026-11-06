@@ -3,6 +3,14 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  // Harness collaboration, creation bundles, and external executors.
+  "请选择工作台分集": "Select an episode in the workbench",
+  "组合包选择无效": "Invalid bundle selection",
+  "组合包选择已变化，请重新预检": "The bundle selection changed. Run preflight again.",
+  "组合包未能保存，请重试": "Could not save the bundle. Try again.",
+  "请选择明确的调用核实结果": "Choose an explicit call verification outcome",
+  "组合包选择已变化，请重新配置": "The bundle selection changed. Configure it again.",
+  "团队配置未能保存，请重试": "Could not save team settings. Try again.",
   "从宫格取画面": "Get a frame from a grid",
   "关闭宫格取画面": "Close grid frame picker",
   "裁出真实图片并绑定当前镜头，原宫格保持不变。": "Crop a real image and bind it to this shot. The source grid stays unchanged.",

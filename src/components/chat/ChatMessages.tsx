@@ -39,6 +39,7 @@ interface ChatMessagesProps extends ChatReferenceHandlers {
   onExampleClick?: (text: string) => void;
   onEditMessage?: (content: string) => void;
   onRegenerateMessage?: (content: string) => void;
+  onBranchMessage?: (messageId: string) => Promise<void>;
 }
 
 const EMPTY_AGENT_TASKS: AgentTask[] = [];
@@ -98,6 +99,7 @@ export default function ChatMessages({
   agentControls,
   onExampleClick,
   onEditMessage,
+  onBranchMessage,
   onRegenerateMessage,
   onNodeActivate,
   onNodeHover,
@@ -177,6 +179,7 @@ export default function ChatMessages({
         onEditMessage={onEditMessage}
         regeneratePrompt={regeneratePrompt}
         onRegenerate={onRegenerateMessage}
+        onBranch={onBranchMessage}
         onNodeActivate={onNodeActivate}
         onNodeHover={onNodeHover}
         onModelActivate={onModelActivate}
@@ -190,6 +193,7 @@ export default function ChatMessages({
       onAddMediaToCanvas,
       onRetryMediaSave,
       onEditMessage,
+      onBranchMessage,
       onModelActivate,
       onNodeActivate,
       onNodeHover,

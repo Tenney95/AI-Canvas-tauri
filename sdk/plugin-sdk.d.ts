@@ -19,6 +19,11 @@ declare global {
 
 export type * from '../src/types/plugin';
 
+/** API 2 dependencies 仅声明执行前置条件；要求 plugin.dependencies 宿主能力。
+ * 必需依赖缺失、停用、版本不足或依赖环会阻止执行；可选缺项仅诊断。
+ * 任何已解析依赖换版都会撤销活动调用，不能用于跨插件 RPC 或共享内部服务。
+ */
+
 /**
  * video.playbackPreview：UI 用 video.preparePlayback 为当前 self 视频准备连续 MP4 预览。
  * 仅返回资源句柄、时长和 hasAudio；路径、源 URL 与容器标签不跨越隔离边界。

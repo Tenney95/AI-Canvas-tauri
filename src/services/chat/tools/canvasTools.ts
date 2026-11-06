@@ -1737,6 +1737,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
   return [
     registerAgentTool<QueryNodesInput>({
       id: 'canvas_query',
+      resultPolicy: { storage: 'memory', source: 'project-derived' },
       title: '查询画布',
       description: [
         '读取画布概况和节点名称索引；按 name 搜索可见名称、文件名别名或内部名称，默认包含匹配，nameMatch=exact 为精确匹配。',

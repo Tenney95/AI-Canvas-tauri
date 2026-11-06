@@ -22,7 +22,7 @@ import AgentExecutionRationale from './AgentExecutionRationale';
 import { AssistantActivityMark } from './AssistantActivity';
 import type { MediaModelOption } from '../nodes/shared/defaultModels';
 import { useT } from '../../i18n';
-import type { TeamArtifactReference } from '../../types/agentTeam';
+import type { TeamArtifactReference, TeamGraphDefinition } from '../../types/agentTeam';
 import TeamRunCard from '../shared/agentTeams/TeamRunCard';
 
 export interface AgentTaskControls {
@@ -40,6 +40,8 @@ export interface AgentTaskControls {
   onRestoreTeamResult?: (taskId: string) => void | Promise<void>;
   onReconcileTeamResult?: (taskId: string) => void | Promise<void>;
   onAmendTeamTask?: (taskId: string, instruction: string) => void | Promise<void>;
+  onEditTeamGraph?: (taskId: string, graph: TeamGraphDefinition, expected: { revision: number; boardRevision: number }) => Promise<void>;
+  onResolveDispatch?: (taskId: string, dispatchId: string, decision: 'verified_completed' | 'abandoned') => void | Promise<void>;
 }
 
 interface AgentTaskTimelineProps extends AgentTaskControls {
@@ -191,11 +193,24 @@ export default function AgentTaskTimeline({
   onRestoreTeamResult,
   onReconcileTeamResult,
   onAmendTeamTask,
+  onEditTeamGraph,
+  onResolveDispatch,
 }: AgentTaskTimelineProps) {
   const t = useT();
   const isTerminal = AGENT_TERMINAL_STATUSES.has(task.status);
   const isExpertTask = !!task.parentTaskId;
   const [expanded, setExpanded] = useState(!isTerminal);
+  const [resolving, setResolving] = useState<string | null>(null);
+  const [resolutionError, setResolutionError] = useState('');
+  const unknownDispatches = (task.dispatches ?? []).filter((dispatch) => !dispatch.recovery
+    && (dispatch.phase === 'outcome_unknown' || (dispatch.phase === 'dispatched' && ['paused', 'failed', 'stopped'].includes(task.status))));
+  const resolveDispatch = async (dispatchId: string, decision: 'verified_completed' | 'abandoned') => {
+    if (!onResolveDispatch || resolving) return;
+    setResolving(dispatchId); setResolutionError('');
+    try { await onResolveDispatch(task.id, dispatchId, decision); }
+    catch (error) { setResolutionError(error instanceof Error ? error.message : t('调用结果未能核实')); }
+    finally { setResolving(null); }
+  };
 
   const meta = STATUS_META[task.status];
   const isActive = ACTIVE_STATUSES.includes(task.status);
@@ -229,7 +244,9 @@ export default function AgentTaskTimeline({
     <>
       <TeamRunCard task={task} onPause={onPause} onResume={onResume} onStop={onStop}
         onReadArtifact={onReadTeamArtifact} onApply={onApplyTeamResult} onRestore={onRestoreTeamResult}
-        onReconcile={onReconcileTeamResult} onAmend={onAmendTeamTask} />
+        onReconcile={onReconcileTeamResult} onAmend={onAmendTeamTask}
+        onEditGraph={onEditTeamGraph ? (graph, expected) => onEditTeamGraph(task.id, graph, expected) : undefined}
+        onResolveDispatch={onResolveDispatch ? (dispatchId, decision) => onResolveDispatch(task.id, dispatchId, decision) : undefined} />
       {pendingApprovalStep && <AgentApprovalCard step={pendingApprovalStep} mediaModelOptions={mediaModelOptions}
         mediaModelAvailability={mediaModelAvailability} onResolve={onResolveApproval} />}
     </>
@@ -237,6 +254,17 @@ export default function AgentTaskTimeline({
 
   return (
     <div className="agent-task-timeline mt-2 max-w-full py-0.5">
+      {unknownDispatches.length > 0 && <div className="ui-alert ui-alert--warning mb-2 space-y-2">
+        <p>{t('存在结果未知的调用。请先核实，系统不会自动重投。')}</p>
+        {unknownDispatches.map((dispatch) => <div key={dispatch.id} className="flex flex-wrap items-center gap-2">
+          <span className="text-xs">{dispatch.kind === 'tool' ? t('工具调用') : t('模型调用')}</span>
+          {onResolveDispatch && <><button type="button" className="ui-btn ui-btn--sm" disabled={!!resolving || !['paused', 'failed', 'stopped'].includes(task.status)}
+            onClick={() => void resolveDispatch(dispatch.id, 'verified_completed')}>{t('已核实完成')}</button>
+          <button type="button" className="ui-btn ui-btn--sm" disabled={!!resolving || !['paused', 'failed', 'stopped'].includes(task.status)}
+            onClick={() => void resolveDispatch(dispatch.id, 'abandoned')}>{t('放弃本次调用')}</button></>}
+        </div>)}
+        {resolutionError && <p role="alert">{resolutionError}</p>}
+      </div>}
       {/* 当前活动：只展示可验证的任务和工具状态，不展示模型隐藏推理。 */}
       <button
         type="button"

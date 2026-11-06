@@ -33,6 +33,7 @@ import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
 import { hydrateRunningHubAliases, isRunningHubCredentialAlias } from '../services/runninghubSiteCredentials';
 import { normalizeComfyRefmodAssets } from '../utils/comfyRefmod';
 import { getProviderPolicy } from '../services/ai/providerPolicies';
+import { parseCreationProfile } from '../services/creationProfiles/creationProfileManifest';
 
 const defaultConfig: AppConfig = {
   providers: {},
@@ -439,6 +440,10 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     if (areSettingsMutationsFrozen()) return;
     set((state) => {
       const config = { ...state.config, ...partial };
+      if ('creationProfiles' in partial) {
+        if (partial.creationProfiles && partial.creationProfiles.length > 64) throw new Error('最多保存 64 个创作组合包');
+        config.creationProfiles = partial.creationProfiles?.map(parseCreationProfile);
+      }
       if ('comfyRefmodAssets' in partial) config.comfyRefmodAssets = normalizeComfyRefmodAssets(partial.comfyRefmodAssets);
       if ('canvasViewportMinZoom' in partial || 'canvasViewportMaxZoom' in partial || 'canvasViewportZoom' in partial) {
         const { minZoom, maxZoom } = getCanvasZoomRange(config);

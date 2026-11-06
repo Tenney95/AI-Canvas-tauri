@@ -19,6 +19,13 @@ import { stopConversationAgentTasks } from '../services/chat/agentTaskControl';
 import { cancelPendingTeamInvocations } from '../services/chat/teams/teamInvocationService';
 import * as chatHistoryService from '../services/chat/chatHistoryService';
 import { seriesOwnerId } from './store.utils';
+import type { AgentTeamProfile, AssistantExecutionSelection } from '../types/agentTeam';
+import type { CreationProfileSelection } from '../types/creationProfile';
+import { setConversationCreationProfileCAS } from '../services/indexedDbService';
+import { captureCreationProfile } from '../services/creationProfiles/creationProfileService';
+import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
+import { normalizeCreationProfileSelection } from '../services/creationProfiles/creationProfileManifest';
+import { createConversationBranch } from '../services/chat/conversationBranchService';
 
 // ============================================
 // 常量
@@ -121,6 +128,9 @@ export interface ChatSlice {
   setConversations: (conversations: ChatConversation[]) => void;
   addConversation: (conversation: ChatConversation) => void;
   updateConversation: (id: string, partial: Partial<ChatConversation>) => void;
+  setConversationCreationProfile: (id: string, selection: CreationProfileSelection | undefined,
+    patch?: { teamProfileOverride?: AgentTeamProfile; executionSelection?: AssistantExecutionSelection }) => Promise<void>;
+  branchConversation: (conversationId: string, messageId: string) => Promise<string>;
   setConversationMcpServer: (id: string, serverId: string, enabled: boolean) => void;
   removeConversation: (id: string) => void;
   setActiveConversation: (id: string | null) => void;
@@ -360,6 +370,40 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       if (changed) persistConv(changed);
       return { conversations: updated };
     }),
+
+  setConversationCreationProfile: async (id, selection, patch) => {
+    const state = get();
+    const conversation = state.conversations.find((entry) => entry.id === id);
+    if (!conversation || conversation.deletedAt || !isConversationInCurrentChatScope(state, conversation)) throw new Error('会话已变化，请重新选择组合包');
+    const normalized = normalizeCreationProfileSelection(selection);
+    if (selection !== undefined && !normalized) throw new Error('组合包选择无效');
+    const captured = await captureCreationProfile(normalized, state.currentProjectId ?? conversation.projectId);
+    const latest = get();
+    const currentConversation = latest.conversations.find((entry) => entry.id === id && !entry.deletedAt);
+    if (latest.currentProjectId !== state.currentProjectId || !currentConversation
+      || !isConversationInCurrentChatScope(latest, currentConversation)) throw new Error('组合包准备期间项目或会话已变化');
+    const profileOverride = patch?.teamProfileOverride ? normalizeTeamProfile(patch.teamProfileOverride) : undefined;
+    const executionSelection = patch?.executionSelection ?? (captured.profile?.teamTemplateId
+      ? { kind: 'team' as const, templateId: captured.profile.teamTemplateId } : undefined);
+    const saved = await setConversationCreationProfileCAS(id, conversation.creationProfile, normalized,
+      { teamProfileOverride: profileOverride, executionSelection });
+    set((current) => ({ conversations: current.conversations.map((entry) => entry.id === id ? { ...entry,
+      creationProfile: saved.creationProfile, creationProfileRevision: saved.creationProfileRevision,
+      teamProfileOverride: saved.teamProfileOverride, executionSelection: saved.executionSelection,
+      updatedAt: Math.max(entry.updatedAt, saved.updatedAt),
+    } : entry) }));
+  },
+
+  branchConversation: async (conversationId, messageId) => {
+    const source = get().conversations.find((entry) => entry.id === conversationId);
+    if (!source || !isConversationInCurrentChatScope(get(), source)) throw new Error('来源会话已变化');
+    const branch = await createConversationBranch({ projectId: source.projectId, conversationId, messageId });
+    if (isConversationInCurrentChatScope(get(), branch.conversation)) {
+      set((state) => ({ conversations: [...state.conversations, branch.conversation], messages: [...state.messages, ...branch.messages] }));
+      get().setActiveConversation(branch.conversation.id);
+    }
+    return branch.conversation.id;
+  },
 
   removeConversation: (id) => {
     clearConversationFileGrants(id);
