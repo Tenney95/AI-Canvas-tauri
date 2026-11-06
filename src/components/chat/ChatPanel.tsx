@@ -34,7 +34,7 @@ import { seriesOwnerId } from '../../store/store.utils';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../services/chat/assistantScope';
 import ConversationList from './ConversationList';
 import ChatHeader from './ChatHeader';
-import ChatMessages from './ChatMessages';
+import ChatMessages, { type ChatScrollRequest } from './ChatMessages';
 import ChatInput from './ChatInput';
 import McpConnectionPicker from './McpConnectionPicker';
 import { getMcpClientOptions } from '../../services/mcp/mcpClientService';
@@ -72,7 +72,7 @@ import {
   buildChatModelCatalog,
 } from '../../services/chat/detachedChatSyncController';
 import type { AgentApprovalResolution, AgentMode } from '../../types/agent';
-import type { ChatImageReference, ChatPanelView } from '../../types/chat';
+import type { ChatImageReference, ChatMessage, ChatPanelView } from '../../types/chat';
 import {
   listConversationFileGrants,
   revokeFileGrant,
@@ -269,20 +269,42 @@ export default function ChatPanel({
   const imageDrafts = useAppStore((state) => state.chatImageDrafts);
   const effectiveImageDrafts = detached ? (detachedSnapshot?.imageDrafts ?? EMPTY_IMAGE_DRAFTS)
     : effectiveActiveConversationId ? imageDrafts[effectiveActiveConversationId] ?? EMPTY_IMAGE_DRAFTS : EMPTY_IMAGE_DRAFTS;
+  const conversationMessages = useMemo(
+    () => effectiveActiveConversationId
+      ? effectiveMessages.filter((message) => message.conversationId === effectiveActiveConversationId)
+      : [],
+    [effectiveMessages, effectiveActiveConversationId],
+  );
+  const [getMessageImageFiles] = useState(() => {
+    const cache = new WeakMap<ChatMessage, { content: string; fileNames: string[] }>();
+    return (message: ChatMessage) => {
+      const previous = cache.get(message);
+      if (previous?.content === message.content) return previous.fileNames;
+      const fileNames = parseChatImageReferences(message.content).map((image) => image.fileName);
+      cache.set(message, { content: message.content, fileNames });
+      return fileNames;
+    };
+  });
+  const historyImageFileNames = useMemo(
+    () => conversationMessages.flatMap(getMessageImageFiles),
+    [conversationMessages, getMessageImageFiles],
+  );
+  const draftImageFileNames = useMemo(
+    () => parseChatImageReferences(inputValue).map((image) => image.fileName),
+    [inputValue],
+  );
   const imagePreviewVersion = useSyncExternalStore(subscribeChatImagePreviews, getChatImagePreviewVersion, getChatImagePreviewVersion);
-  const imageFileNames = useMemo(() => [
-    ...effectiveMessages.filter((message) => message.conversationId === effectiveActiveConversationId)
-      .flatMap((message) => parseChatImageReferences(message.content).map((image) => image.fileName)),
-    ...parseChatImageReferences(inputValue).map((image) => image.fileName),
+  const imageFileKey = JSON.stringify([...new Set([
+    ...historyImageFileNames,
+    ...draftImageFileNames,
     ...effectiveImageDrafts.map((image) => image.fileName),
-  ], [effectiveMessages, effectiveActiveConversationId, inputValue, effectiveImageDrafts]);
+  ])]);
   useEffect(() => {
-    if (!detached) void prepareChatImagePreviews(chatScopeId, imageFileNames);
-  }, [detached, chatScopeId, imageFileNames]);
-  const imageFileKey = [...new Set(imageFileNames)].join('|');
+    if (!detached) void prepareChatImagePreviews(chatScopeId, JSON.parse(imageFileKey) as string[]);
+  }, [detached, chatScopeId, imageFileKey]);
   const imagePreviewUrls = useMemo(() => {
     if (detached) return detachedSnapshot?.imagePreviewUrls;
-    return imagePreviewVersion === 0 ? {} : getChatImagePreviews(chatScopeId, imageFileKey ? imageFileKey.split('|') : []);
+    return imagePreviewVersion === 0 ? {} : getChatImagePreviews(chatScopeId, JSON.parse(imageFileKey) as string[]);
   }, [detached, detachedSnapshot?.imagePreviewUrls, chatScopeId, imageFileKey, imagePreviewVersion]);
   const pendingDraftsRef = useRef(new Map<string | null, string>());
   const pendingConversationDraftRef = useRef<string | null>(null);
@@ -520,11 +542,6 @@ export default function ChatPanel({
     updateConversation,
   ]);
 
-  // ── 消息过滤 ──
-  const conversationMessages = effectiveActiveConversationId
-    ? effectiveMessages.filter((m) => m.conversationId === effectiveActiveConversationId)
-    : [];
-
   // ── 上下文占用（估算），模型切换后按新上限重新计算 ──
   const contextUsage = useMemo(() => {
     if (!effectiveActiveConversationId) return null;
@@ -537,14 +554,12 @@ export default function ChatPanel({
       effectiveActiveConversation?.contextSummary,
       model,
     );
-    // conversationMessages 每次渲染都是新数组，依赖其来源 effectiveMessages
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     effectiveActiveConversationId,
     effectiveAssistantModelId,
     effectiveGeneralModels,
     effectiveActiveConversation?.contextSummary,
-    effectiveMessages,
+    conversationMessages,
   ]);
 
   // ── 会话操作 ──
@@ -677,13 +692,11 @@ export default function ChatPanel({
     }
   }, [detached, showToast, t]);
 
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
-      // 只滚动本面板的消息区，避免 scrollIntoView 连带移动外层窗口与面板。
-      const messages = chatPanelRef.current?.querySelector<HTMLElement>('.chat-panel-messages');
-      messages?.scrollTo({ top: messages.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' });
-    }, 100);
-  }, [reduceMotion]);
+  const [scrollRequest, setScrollRequest] = useState<ChatScrollRequest | null>(null);
+  const requestLatestMessages = useCallback((conversationId: string | null) => {
+    if (!conversationId) return;
+    setScrollRequest((previous) => ({ conversationId, sequence: (previous?.sequence ?? 0) + 1 }));
+  }, []);
 
   const agentControls = useMemo(() => ({
     onResolveApproval: handleResolveApproval,
@@ -697,7 +710,7 @@ export default function ChatPanel({
     },
     onResume: (taskId: string) => {
       if (detached) { void emitAction({ type: 'resume_agent_task', taskId }); return; }
-      const result = resumeAgentTaskExecution(taskId, scrollToBottom);
+      const result = resumeAgentTaskExecution(taskId);
       showToast(result.ok ? t('已继续任务') : (result.message ?? t('无法继续该任务')), result.ok ? 'info' : 'error');
     },
     onStop: (taskId: string) => {
@@ -725,7 +738,7 @@ export default function ChatPanel({
         showToast(t('该任务当前状态无法重新规划'), 'error');
         return;
       }
-      const result = resumeAgentTaskExecution(taskId, scrollToBottom);
+      const result = resumeAgentTaskExecution(taskId);
       showToast(
         result.ok ? t('正在重新规划任务') : (result.message ?? t('无法重新规划该任务')),
         result.ok ? 'info' : 'error',
@@ -743,7 +756,6 @@ export default function ChatPanel({
     handleResolveApproval,
     mediaModelOptions,
     showToast,
-    scrollToBottom,
     t,
   ]);
 
@@ -816,21 +828,22 @@ export default function ChatPanel({
         dispatchMode,
       });
       if (!imageFileNames.length) updateInputDraft('');
+      requestLatestMessages(effectiveActiveConversationId);
       return;
     }
 
+    const conversationId = effectiveActiveConversationId ?? createConversation(chatScopeId);
     const submitted = submitConversationMessage({
       content: text,
       imageFileNames,
       projectId: chatScopeId,
-      conversationId: effectiveActiveConversationId ?? createConversation(chatScopeId),
+      conversationId,
       mode: effectiveAgentMode,
       dispatchMode,
-      onProgress: scrollToBottom,
     });
     if (submitted.status === 'ignored') return;
     updateInputDraft('');
-    scrollToBottom();
+    requestLatestMessages(conversationId);
   }, [
     detached,
     effectiveActiveConversationId,
@@ -839,7 +852,7 @@ export default function ChatPanel({
     createConversation,
     effectiveImageDrafts,
     settingsConversation,
-    scrollToBottom,
+    requestLatestMessages,
     updateInputDraft,
   ]);
 
@@ -1066,6 +1079,8 @@ export default function ChatPanel({
                   <ChatMessages
                     hasCanvas={!!effectiveProjectId}
                     messages={conversationMessages}
+                    conversationId={effectiveActiveConversationId}
+                    scrollRequest={scrollRequest}
                     imagePreviewUrls={imagePreviewUrls}
                     agentTasks={effectiveAgentTasks}
                     showEmptyState={showEmptyState}

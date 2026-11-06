@@ -166,7 +166,7 @@ export default function AssetsPanel() {
     dramaAssetsPanelOpen,
     setDramaAssetsPanelOpen,
     markDramaAssetsViewed,
-    unreadDramaAssetCount,
+    dramaAssetsForCount,
     dramaAssetCount,
     canvasNodeCount,
     currentProjectId,
@@ -190,7 +190,7 @@ export default function AssetsPanel() {
         dramaAssetsPanelOpen: s.dramaAssetsPanelOpen,
         setDramaAssetsPanelOpen: s.setDramaAssetsPanelOpen,
         markDramaAssetsViewed: s.markDramaAssetsViewed,
-        unreadDramaAssetCount: countUnreadDramaAssets(s.dramaAssets),
+        dramaAssetsForCount: s.assetsPanelOpen ? s.dramaAssets : undefined,
         dramaAssetCount:
           s.dramaAssets.characters.length
           + s.dramaAssets.scenes.length
@@ -209,12 +209,21 @@ export default function AssetsPanel() {
       })),
     );
 
+  const unreadDramaAssetCount = useMemo(() => dramaAssetsForCount ? countUnreadDramaAssets(dramaAssetsForCount) : 0, [dramaAssetsForCount]);
+
   const [activeTab, setActiveTab] = useState<FileTabKey>('project');
   const [globalCreativeKind, setGlobalCreativeKind] = useState<DramaAssetCategory | null>(null);
   const [creativeFile, setCreativeFile] = useState<{ file: AssetFileEntry; kind: DramaAssetKind; scope: string } | null>(null);
-  const creativeCounts = useAppStore(useShallow((state) => ({ character: state.globalCharacters?.length ?? 0, scene: state.globalScenes?.length ?? 0,
-    prop: (state.globalProps ?? []).filter((asset) => matchesDramaAssetCategory(asset, 'prop')).length,
-    weapon: (state.globalProps ?? []).filter((asset) => matchesDramaAssetCategory(asset, 'weapon')).length })));
+  const { globalCharacterCount, globalSceneCount, globalPropsForCount } = useAppStore(useShallow((state) => ({
+    globalCharacterCount: state.assetsPanelOpen ? state.globalCharacters?.length ?? 0 : 0,
+    globalSceneCount: state.assetsPanelOpen ? state.globalScenes?.length ?? 0 : 0,
+    globalPropsForCount: state.assetsPanelOpen ? state.globalProps : undefined,
+  })));
+  const creativeCounts = useMemo(() => ({
+    character: globalCharacterCount, scene: globalSceneCount,
+    prop: globalPropsForCount?.filter((asset) => matchesDramaAssetCategory(asset, 'prop')).length ?? 0,
+    weapon: globalPropsForCount?.filter((asset) => matchesDramaAssetCategory(asset, 'weapon')).length ?? 0,
+  }), [globalCharacterCount, globalSceneCount, globalPropsForCount]);
   const loadGlobalDramaAssets = useAppStore((state) => state.loadGlobalDramaAssets);
   const [arkLibraryOpen, setArkLibraryOpen] = useState(false);
   const [refmodLibraryOpen, setRefmodLibraryOpen] = useState(false);

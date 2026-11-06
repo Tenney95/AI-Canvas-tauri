@@ -4,11 +4,13 @@
 import {
   Children,
   isValidElement,
+  type ComponentProps,
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../../src/types/chat';
+import type { AppState } from '../../src/store/useAppStore';
 
 const hooks = vi.hoisted(() => ({
   values: [] as unknown[],
@@ -16,18 +18,47 @@ const hooks = vi.hoisted(() => ({
   stateCursor: 0,
   refCursor: 0,
   layoutEffects: [] as Array<() => void | (() => void)>,
+  effectsEnabled: false,
+  effects: [] as Array<{ deps?: readonly unknown[]; cleanup?: () => void }>,
+  pendingEffects: [] as Array<() => void>,
+  effectCursor: 0,
+  memos: [] as Array<{ deps: readonly unknown[]; value: unknown }>,
+  memoCursor: 0,
+  dirty: false,
+  container: null as HTMLDivElement | null,
+  panelState: {} as AppState,
+  submit: vi.fn((_options: { content: string; conversationId: string; onProgress?: () => void }) => ({
+    status: 'started', userMessageId: 'sent-user', assistantMessageId: 'sent-assistant',
+  })),
 }));
 
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react');
+  const memo = <T,>(factory: () => T, deps: readonly unknown[]) => {
+    const index = hooks.memoCursor++;
+    const previous = hooks.memos[index];
+    if (!previous || deps.length !== previous.deps.length || deps.some((dep, i) => !Object.is(dep, previous.deps[i]))) {
+      hooks.memos[index] = { deps, value: factory() };
+    }
+    return hooks.memos[index].value as T;
+  };
   return {
     ...actual,
-    useCallback: <T,>(callback: T) => callback,
-    useEffect: vi.fn(),
+    useCallback: <T,>(callback: T, deps: readonly unknown[]) => memo(() => callback, deps),
+    useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
+      const index = hooks.effectCursor++;
+      if (!hooks.effectsEnabled) return;
+      const previous = hooks.effects[index];
+      if (previous && deps?.length === previous.deps?.length && deps?.every((dep, i) => Object.is(dep, previous.deps?.[i]))) return;
+      hooks.pendingEffects.push(() => {
+        previous?.cleanup?.();
+        hooks.effects[index] = { deps, cleanup: effect() ?? undefined };
+      });
+    },
     useLayoutEffect: (effect: () => void | (() => void)) => {
       hooks.layoutEffects.push(effect);
     },
-    useMemo: <T,>(factory: () => T) => factory(),
+    useMemo: memo,
     useRef: <T,>(initialValue: T) => {
       const index = hooks.refCursor;
       hooks.refCursor += 1;
@@ -44,9 +75,9 @@ vi.mock('react', async () => {
       }
       const setValue = (next: T | ((current: T) => T)) => {
         const current = hooks.values[index] as T;
-        hooks.values[index] = typeof next === 'function'
-          ? (next as (value: T) => T)(current)
-          : next;
+        const value = typeof next === 'function' ? (next as (value: T) => T)(current) : next;
+        hooks.dirty ||= !Object.is(value, current);
+        hooks.values[index] = value;
       };
       return [hooks.values[index] as T, setValue] as const;
     },
@@ -56,13 +87,45 @@ vi.mock('react', async () => {
 
 vi.mock('framer-motion', () => ({
   useReducedMotion: () => false,
+  motion: { aside: 'aside', div: 'div' },
+  AnimatePresence: 'animate-presence',
 }));
 
 vi.mock('../../src/components/chat/MessageBubble', () => ({
   default: vi.fn(() => null),
 }));
 
+vi.mock('../../src/store/useAppStore', () => ({ useAppStore: Object.assign(
+  (selector: (state: AppState) => unknown) => selector(hooks.panelState),
+  { getState: () => hooks.panelState, subscribe: () => () => {} },
+) }));
+vi.mock('../../src/services/chat/conversationExecutionController', () => ({
+  submitConversationMessage: hooks.submit, resumeAgentTaskExecution: vi.fn(() => ({ ok: true })),
+  getAgentModeToast: vi.fn(), resolveConversationAgentApproval: vi.fn(),
+}));
+vi.mock('../../src/services/chat/agentRuntime', () => ({
+  pauseAgentTask: vi.fn(), stopAgentTask: vi.fn(), skipAgentStep: vi.fn(), requestAgentReplan: vi.fn(),
+}));
+vi.mock('../../src/services/ai/generationRuntime', () => ({
+  completeMediaMessageDelivery: vi.fn(), getRecoverableMessageTask: vi.fn(),
+  retryMediaArtifactPersist: vi.fn(), retryMediaMessageTask: vi.fn(),
+}));
+vi.mock('../../src/services/chat/contextManager', () => ({ estimateConversationUsage: () => null }));
+vi.mock('../../src/services/chat/detachedChatSyncController', () => ({
+  buildChatModelCatalog: () => ({ assistantModelGroups: [], mediaModelOptions: [], mediaModelAvailability: {} }),
+  createDetachedChatSyncController: () => ({ start: async () => {}, dispose: () => {} }),
+}));
+vi.mock('../../src/components/chat/ChatInput', () => ({ default: 'chat-input' }));
+vi.mock('../../src/components/chat/ChatHeader', () => ({ default: 'chat-header' }));
+vi.mock('../../src/components/chat/ConversationList', () => ({ default: 'conversation-list' }));
+vi.mock('../../src/components/chat/ProjectMemoryPanel', () => ({ default: 'project-memory' }));
+vi.mock('../../src/components/chat/SubAgentPanel', () => ({ default: 'sub-agents' }));
+vi.mock('../../src/components/chat/AgentCenterPanel', () => ({ default: 'agent-center' }));
+vi.mock('../../src/components/chat/AgentTaskCenter', () => ({ default: 'agent-tasks' }));
+
 import ChatMessages from '../../src/components/chat/ChatMessages';
+import ChatPanel from '../../src/components/chat/ChatPanel';
+import * as chatImages from '../../src/services/chat/chatImageReferenceService';
 import MessageBubble from '../../src/components/chat/MessageBubble';
 import { setLocale } from '../../src/i18n';
 
@@ -91,19 +154,25 @@ function collectElements(node: ReactNode, elements: ReactElement[] = []): ReactE
   return elements;
 }
 
-function renderChat(messages: ChatMessage[]): ReactElement {
-  hooks.stateCursor = 0;
-  hooks.refCursor = 0;
-  hooks.layoutEffects = [];
-  const tree = ChatMessages({
-    messages,
-    showEmptyState: false,
-    detachedInitialized: true,
-    onNewConversation: vi.fn(),
-    onShowList: vi.fn(),
-  });
-  hooks.layoutEffects.forEach((effect) => effect());
-  return tree;
+function renderChat(messages: ChatMessage[], props: Partial<ComponentProps<typeof ChatMessages>> = {}): ReactElement {
+  let tree!: ReactElement;
+  for (let pass = 0; pass < 5; pass += 1) {
+    hooks.stateCursor = 0;
+    hooks.refCursor = 0;
+    hooks.memoCursor = 0;
+    hooks.effectCursor = 0;
+    hooks.layoutEffects = [];
+    hooks.pendingEffects = [];
+    hooks.dirty = false;
+    tree = ChatMessages({ messages, showEmptyState: false, detachedInitialized: true,
+      onNewConversation: vi.fn(), onShowList: vi.fn(), ...props });
+    const container = findMessagesContainer(tree);
+    (container.props as { ref: { current: HTMLDivElement | null } }).ref.current = hooks.container;
+    hooks.layoutEffects.forEach((effect) => effect());
+    hooks.pendingEffects.forEach((effect) => effect());
+    if (!hooks.dirty) return tree;
+  }
+  throw new Error('ChatMessages did not settle');
 }
 
 function collectMessageBubbles(tree: ReactNode): ReactElement[] {
@@ -128,6 +197,47 @@ function findMessagesContainer(tree: ReactNode): ReactElement {
   return container;
 }
 
+const frames = new Map<number, FrameRequestCallback>();
+let nextFrame = 0;
+function flushFrames() {
+  const callbacks = [...frames.values()];
+  frames.clear();
+  callbacks.forEach((callback) => callback(0));
+}
+function scrollContainer(): HTMLDivElement {
+  const container = { scrollHeight: 2_000, scrollTop: 1_600, clientHeight: 400,
+    style: { scrollBehavior: 'smooth' }, scrollTo: vi.fn() };
+  container.scrollTo.mockImplementation(({ top }: ScrollToOptions) => { container.scrollTop = top ?? 0; });
+  return container as unknown as HTMLDivElement;
+}
+
+function renderPanel(): ReactElement {
+  hooks.stateCursor = hooks.refCursor = hooks.memoCursor = hooks.effectCursor = 0;
+  hooks.pendingEffects = [];
+  const tree = ChatPanel();
+  hooks.pendingEffects.forEach((effect) => effect());
+  return tree;
+}
+function panelChild<T>(tree: ReactElement, type: unknown): T {
+  const element = collectElements(tree).find((candidate) => candidate.type === type);
+  if (!element) throw new Error(`panel child missing: ${String(type)}`);
+  return element.props as T;
+}
+function preparePanel(messages: ChatMessage[]) {
+  hooks.effectsEnabled = true;
+  hooks.panelState = { chatOpen: true, chatPanelDetached: false, chatPanelView: 'chat',
+    chatComposerDrafts: {}, chatComposerLiveDraft: '', chatImageDrafts: {},
+    activeConversationId: 'conversation-1', currentProjectId: 'project', configHydrated: true,
+    conversations: [{ id: 'conversation-1', projectId: 'project', title: 'Chat', agentMode: 'collaborative' }],
+    messages, agentTasks: [], projects: [{ id: 'project', name: 'Project' }], projectMemories: [], workflows: [],
+    config: { providers: {}, generalModels: [] }, setChatComposerLiveDraft: vi.fn(),
+  } as unknown as AppState;
+  vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+  vi.stubGlobal('document', { body: { classList: { remove: vi.fn() } } });
+  vi.spyOn(chatImages, 'prepareChatImagePreviews').mockResolvedValue(undefined);
+  return vi.spyOn(chatImages, 'parseChatImageReferences');
+}
+
 describe('ChatMessages', () => {
   beforeEach(() => {
     hooks.values = [];
@@ -135,8 +245,24 @@ describe('ChatMessages', () => {
     hooks.stateCursor = 0;
     hooks.refCursor = 0;
     hooks.layoutEffects = [];
+    hooks.effectsEnabled = false;
+    hooks.effects = [];
+    hooks.pendingEffects = [];
+    hooks.memos = [];
+    hooks.memoCursor = 0;
+    hooks.container = null;
+    hooks.submit.mockClear();
+    frames.clear();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = ++nextFrame;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
     setLocale('zh-CN');
   });
+
+  afterEach(() => hooks.effects.forEach((effect) => effect?.cleanup?.()));
 
   it('associates assistant messages with the latest user prompt in one message scan', () => {
     const messages = [
@@ -268,5 +394,99 @@ describe('ChatMessages', () => {
     const visible = collectMessageBubbles(tree);
     expect((visible[0].props as { message: ChatMessage }).message.id).toBe(firstVisibleId);
     expect(visible).toHaveLength(81);
+  });
+
+  it('keeps historical reading during streaming and follows only an explicit latest request', () => {
+    hooks.effectsEnabled = true;
+    const container = scrollContainer();
+    hooks.container = container;
+    const messages = [createMessage('m1', 'user', 'prompt'), createMessage('m2', 'assistant', 'part')];
+    let tree = renderChat(messages);
+    flushFrames();
+    container.scrollTop = 200;
+    (findMessagesContainer(tree).props as { onScroll: (event: unknown) => void }).onScroll({ currentTarget: container });
+    tree = renderChat(messages);
+    const streamed = [messages[0], { ...messages[1], content: 'part two' }];
+    tree = renderChat(streamed);
+    flushFrames();
+    expect(container.scrollTop).toBe(200);
+    expect(container.scrollTo).not.toHaveBeenCalled();
+    expect(collectElements(tree).some((element) => String((element.props as { 'aria-label'?: string })['aria-label']).includes('1 条未读'))).toBe(true);
+    tree = renderChat(streamed, { scrollRequest: { conversationId: 'conversation-1', sequence: 1 } });
+    flushFrames();
+    expect(container.scrollTo).toHaveBeenCalledOnce();
+    expect(container.scrollTop).toBe(container.scrollHeight);
+    expect(collectElements(tree).some((element) => String((element.props as { className?: string }).className).includes('absolute bottom-3'))).toBe(false);
+  });
+
+  it('cancels old scroll frames across conversation changes and drops requests for another conversation', () => {
+    hooks.effectsEnabled = true;
+    hooks.container = scrollContainer();
+    const first = [createMessage('a', 'assistant', 'first', 'a')];
+    renderChat(first, { conversationId: 'a' });
+    const oldFrame = [...frames.values()][0];
+    const secondContainer = scrollContainer();
+    hooks.container = secondContainer;
+    renderChat([], { conversationId: 'b', scrollRequest: { conversationId: 'a', sequence: 1 } });
+    secondContainer.scrollTop = 123;
+    oldFrame(0);
+    expect(secondContainer.scrollTop).toBe(123);
+    expect(secondContainer.scrollTo).not.toHaveBeenCalled();
+    renderChat(first, { conversationId: 'a', scrollRequest: { conversationId: 'a', sequence: 1 } });
+    expect(secondContainer.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('binds requests to an empty conversation and cancels pending work on unmount', () => {
+    hooks.effectsEnabled = true;
+    const container = scrollContainer();
+    hooks.container = container;
+    renderChat([], { conversationId: 'empty', scrollRequest: { conversationId: 'empty', sequence: 1 } });
+    expect(container.scrollTo).toHaveBeenCalledOnce();
+    expect(frames.size).toBe(1);
+    hooks.effects.forEach((effect) => effect?.cleanup?.());
+    expect(frames.size).toBe(0);
+  });
+
+  it('typing leaves historical message identity and image parsing/preview preparation unchanged', () => {
+    const history = [createMessage('m1', 'user', 'history'), createMessage('m2', 'assistant', 'answer')];
+    const parse = preparePanel(history);
+    let tree = renderPanel();
+    const previousMessages = panelChild<ComponentProps<typeof ChatMessages>>(tree, ChatMessages).messages;
+    parse.mockClear();
+    vi.mocked(chatImages.prepareChatImagePreviews).mockClear();
+    panelChild<{ onInputChange: (value: string) => void }>(tree, 'chat-input').onInputChange('中文草稿');
+    tree = renderPanel();
+    expect(panelChild<ComponentProps<typeof ChatMessages>>(tree, ChatMessages).messages).toBe(previousMessages);
+    expect(parse.mock.calls.map(([content]) => content)).toEqual(['中文草稿']);
+    expect(chatImages.prepareChatImagePreviews).not.toHaveBeenCalled();
+
+    parse.mockClear();
+    hooks.panelState = { ...hooks.panelState, messages: [history[0], { ...history[1], content: 'answer continued' }] };
+    renderPanel();
+    expect(parse.mock.calls.map(([content]) => content)).toEqual(['answer continued']);
+    expect(chatImages.prepareChatImagePreviews).not.toHaveBeenCalled();
+    hooks.panelState = { ...hooks.panelState, chatImageDrafts: { 'conversation-1': [
+      { fileName: 'chat-ref-00000000-0000-0000-0000-000000000000.png', label: 'Image', size: 1 },
+    ] } };
+    renderPanel();
+    expect(chatImages.prepareChatImagePreviews).toHaveBeenLastCalledWith('project', [
+      'chat-ref-00000000-0000-0000-0000-000000000000.png',
+    ]);
+    hooks.panelState = { ...hooks.panelState, chatImageDrafts: {} };
+    renderPanel();
+    expect(chatImages.prepareChatImagePreviews).toHaveBeenLastCalledWith('project', []);
+  });
+
+  it('sending requests latest only for the submitted conversation and does not pass a streaming scroll callback', () => {
+    preparePanel([createMessage('m1', 'user', 'history')]);
+    let tree = renderPanel();
+    panelChild<{ onInputChange: (value: string) => void }>(tree, 'chat-input').onInputChange('send');
+    tree = renderPanel();
+    panelChild<{ onSend: () => void }>(tree, 'chat-input').onSend();
+    tree = renderPanel();
+    expect(hooks.submit).toHaveBeenCalledWith(expect.objectContaining({ content: 'send', conversationId: 'conversation-1' }));
+    expect(hooks.submit.mock.calls[0][0]).not.toHaveProperty('onProgress');
+    expect(panelChild<ComponentProps<typeof ChatMessages>>(tree, ChatMessages).scrollRequest)
+      .toMatchObject({ conversationId: 'conversation-1', sequence: 1 });
   });
 });

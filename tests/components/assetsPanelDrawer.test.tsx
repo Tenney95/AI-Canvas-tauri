@@ -8,7 +8,7 @@ import type { AssetFileEntry, AssetFolderEntry } from '../../src/services/fileSe
 import type { AssetScanOptions } from '../../src/services/fs/assetLibrary';
 import { createUISlice } from '../../src/store/store.ui';
 import type { NodeType } from '../../src/types';
-import type { DramaAsset, DramaAssetWriteOptions } from '../../src/types/dramaAssets';
+import type { DramaAsset, DramaAssetWriteOptions, DramaCharacter, DramaProp } from '../../src/types/dramaAssets';
 
 interface Element { type: unknown; props: Record<string, unknown> & { children?: unknown } }
 const driver = vi.hoisted(() => ({
@@ -27,6 +27,8 @@ const driver = vi.hoisted(() => ({
   globalFolders: [] as AssetFolderEntry[],
   markUsed: vi.fn(),
   lastUsedTimes: vi.fn(),
+  countUnread: vi.fn(() => 0), actionMedia: vi.fn(),
+  voiceEligible: vi.fn((node: AppState['nodes'][number]) => Boolean(node.data.audioUrl)),
   exportDrama: vi.fn(), importDrama: vi.fn(), exportGlobalDrama: vi.fn(), importGlobalDrama: vi.fn(), uploadDrama: vi.fn(),
   monitorNativeDrag: false, cursor: vi.fn(), origin: vi.fn(), scale: vi.fn(),
   importFiles: vi.fn(), moveFile: vi.fn(),
@@ -128,7 +130,18 @@ vi.mock('../../src/services/indexedDbService', async () => ({
   getAllAssetMeta: async () => [], putAssetMeta: vi.fn(), deleteAssetMeta: vi.fn(),
   getAssetLastUsedTimes: driver.lastUsedTimes,
 }));
-vi.mock('../../src/store/store.dramaAssets', () => ({ countUnreadDramaAssets: () => 0 }));
+vi.mock('../../src/store/store.dramaAssets', () => ({
+  countUnreadDramaAssets: driver.countUnread, isEligibleCharacterVoiceNode: driver.voiceEligible,
+}));
+vi.mock('../../src/components/character/characterActionMedia', async () => {
+  const actual = await vi.importActual<typeof import('../../src/components/character/characterActionMedia')>('../../src/components/character/characterActionMedia');
+  return { actionMediaFromCanvasNode: (...args: Parameters<typeof actual.actionMediaFromCanvasNode>) => {
+    driver.actionMedia(...args); return actual.actionMediaFromCanvasNode(...args);
+  } };
+});
+vi.mock('../../src/components/CharacterAssetDialog', () => ({ default: 'character-dialog' }));
+vi.mock('../../src/components/character/CharacterDock', () => ({ default: 'character-dock' }));
+vi.mock('../../src/components/character/CharacterReferenceGallery', () => ({ default: 'character-gallery' }));
 vi.mock('../../src/utils/assetDrag', () => ({ startAssetDrag: driver.drag, prepareDragIcon: async () => {} }));
 vi.mock('../../src/utils/assetSearchWindow', () => ({ openAssetSearchWindow: vi.fn() }));
 vi.mock('../../src/utils/nodeAnimations', () => ({ playNodeExit: vi.fn() }));
@@ -158,6 +171,7 @@ vi.mock('../../src/components/shared/Select', () => ({ default: 'asset-select' }
 vi.mock('../../src/components/assets/AssetImagePreview', () => ({ default: 'asset-image-preview' }));
 
 import AssetsPanel from '../../src/components/AssetsPanel';
+import CharacterLibraryPanel from '../../src/components/CharacterLibraryPanel';
 import DramaAssetsPanel, { DramaAssetCard } from '../../src/components/DramaAssetsPanel';
 import GlobalCreativeAssetsPanel from '../../src/components/assets/GlobalCreativeAssetsPanel';
 import { setLocale } from '../../src/i18n';
@@ -294,6 +308,7 @@ beforeEach(() => {
   driver.portal.mockClear();
   driver.markUsed.mockReset().mockResolvedValue(true);
   driver.lastUsedTimes.mockReset().mockResolvedValue(new Map());
+  driver.countUnread.mockClear(); driver.actionMedia.mockClear(); driver.voiceEligible.mockClear();
   driver.exportDrama.mockReset().mockResolvedValue(null);
   driver.importDrama.mockReset().mockResolvedValue(null);
   driver.exportGlobalDrama.mockReset().mockResolvedValue(null);
@@ -1920,5 +1935,101 @@ describe('资产库 Tab 抽屉', () => {
     driver.store!.setState({ currentProjectId: 'project-2' });
     vi.advanceTimersByTime(300);
     expect(focus).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('retained panel work', () => {
+  it('counts assets only while open, reuses unchanged libraries and refreshes after reopening', () => {
+    const base = { key: 'prop', name: 'Prop', summary: '', visualNotes: '', importance: 'main', confirmed: true,
+      createdAt: 1, updatedAt: 1, source: 'manual' } as const;
+    const props: DramaProp[] = [{ ...base, kind: 'prop', id: 'prop' }, { ...base, kind: 'prop', id: 'weapon', propType: 'weapon' }];
+    const filter = vi.spyOn(props, 'filter');
+    driver.store!.setState({ globalProps: props });
+    render();
+    expect(driver.countUnread).not.toHaveBeenCalled();
+    expect(filter).not.toHaveBeenCalled();
+    driver.store!.getState().setAssetsPanelOpen(true);
+    render();
+    expect(driver.countUnread).toHaveBeenCalledExactlyOnceWith(driver.store!.getState().dramaAssets);
+    expect(filter).toHaveBeenCalledTimes(2);
+    driver.store!.setState({ nodes: [canvasNode('moving', 'ai-image')] }); render();
+    expect(driver.countUnread).toHaveBeenCalledOnce();
+    expect(filter).toHaveBeenCalledTimes(2);
+
+    driver.store!.getState().setAssetsPanelOpen(false); render();
+    const nextLibrary = { ...driver.store!.getState().dramaAssets, lastViewedAt: 2 };
+    const nextProps = props.slice(0, 1);
+    const nextFilter = vi.spyOn(nextProps, 'filter');
+    driver.store!.setState({ dramaAssets: nextLibrary, globalProps: nextProps }); render();
+    expect(driver.countUnread).toHaveBeenCalledOnce();
+    expect(nextFilter).not.toHaveBeenCalled();
+    driver.store!.getState().setAssetsPanelOpen(true); render();
+    expect(driver.countUnread).toHaveBeenLastCalledWith(nextLibrary);
+    expect(driver.countUnread).toHaveBeenCalledTimes(2);
+    expect(nextFilter).toHaveBeenCalledTimes(2);
+    filter.mockRestore(); nextFilter.mockRestore();
+  });
+
+  it('prepares character candidates on demand, retains the draft and binds current canvas data', async () => {
+    const character: DramaCharacter = { kind: 'character', id: 'hero', key: 'hero', name: 'Hero', identity: '',
+      summary: '', visualNotes: '', importance: 'main', confirmed: true, createdAt: 1, updatedAt: 1, source: 'manual',
+      actions: [{ id: 'stand', category: 'standing', name: 'Stand', prompt: '', createdAt: 1, updatedAt: 1, media: [] }] };
+    const addMedia = vi.fn().mockResolvedValue(true);
+    const initialNodes = [
+      { ...canvasNode('image', 'ai-image', 'Old image'), data: { type: 'ai-image' as const, label: 'Old image', imageUrl: 'old.png' } },
+      { ...canvasNode('audio', 'source-audio', 'Voice'), data: { type: 'source-audio' as const, label: 'Voice', audioUrl: 'voice.mp3' } },
+    ];
+    const filter = vi.spyOn(initialNodes, 'filter');
+    driver.store!.setState({ nodes: initialNodes, dramaAssets: { version: 2, characters: [character], scenes: [], props: [] },
+      globalCharacters: [], loadGlobalCharacters: vi.fn().mockResolvedValue(undefined), addCharacterActionMedia: addMedia, showToast: vi.fn() });
+    const renderCharacters = () => {
+      for (let pass = 0; pass < 5; pass++) {
+        driver.stateIndex = 0; driver.refIndex = 0; driver.effectIndex = 1; driver.memoIndex = 0; driver.dirty = false;
+        tree = CharacterLibraryPanel();
+        if (!driver.dirty) break;
+      }
+      const pending = driver.pending; driver.pending = []; pending.forEach((effect) => effect());
+    };
+    renderCharacters();
+    expect(filter).not.toHaveBeenCalled();
+    driver.store!.getState().setCharacterLibraryOpen(true); renderCharacters();
+    expect(filter).not.toHaveBeenCalled();
+    expect(driver.actionMedia).not.toHaveBeenCalled();
+    expect(driver.voiceEligible).not.toHaveBeenCalled();
+    click(button('从画布添加视角图')); renderCharacters();
+    expect(filter).toHaveBeenCalledOnce();
+    expect(all(tree, (element) => element.props.role === 'option').map(visibleText)).toEqual(['Old image']);
+
+    const draft = find((element) => element.props.placeholder === '例如：警戒站姿');
+    (draft.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'Keep draft' } });
+    renderCharacters();
+    driver.store!.getState().setCharacterLibraryOpen(false); renderCharacters();
+    const nextNodes = [{ ...initialNodes[0], data: { ...initialNodes[0].data, label: 'New image', imageUrl: 'new.png' } }, initialNodes[1]];
+    const nextFilter = vi.spyOn(nextNodes, 'filter');
+    driver.store!.setState({ nodes: nextNodes }); renderCharacters();
+    expect(nextFilter).not.toHaveBeenCalled();
+    expect(driver.actionMedia).not.toHaveBeenCalled();
+    driver.store!.getState().setCharacterLibraryOpen(true); renderCharacters();
+    expect(all(tree, (element) => element.props.role === 'option').map(visibleText)).toEqual(['New image']);
+    click(button('展开角色声音')); renderCharacters();
+    click(button('绑定画布音频节点')); renderCharacters();
+    expect(driver.voiceEligible).toHaveBeenCalled();
+    expect(all(tree, (element) => element.props.role === 'option').map(visibleText)).toEqual(['Voice']);
+    click(button('打开「Hero」的动作库')); renderCharacters();
+    expect(find((element) => element.props.placeholder === '例如：警戒站姿').props.value).toBe('Keep draft');
+    expect(driver.actionMedia).not.toHaveBeenCalled();
+    click(find((element) => element.type === 'button' && visibleText(element) === '从画布添加')); renderCharacters();
+    expect(driver.actionMedia).toHaveBeenCalled();
+    const add = button('New image：添加素材');
+    driver.store!.setState({ nodes: [{ ...nextNodes[0], data: { ...nextNodes[0].data, imageUrl: 'latest.png' } }] });
+    click(add);
+    expect(addMedia).toHaveBeenCalledWith('project', 'hero', 'stand',
+      [expect.objectContaining({ url: 'latest.png' })], { nodeId: 'image', hideNode: true });
+    driver.store!.setState({ currentProjectId: 'project-2' });
+    click(add);
+    expect(addMedia).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    filter.mockRestore(); nextFilter.mockRestore();
   });
 });

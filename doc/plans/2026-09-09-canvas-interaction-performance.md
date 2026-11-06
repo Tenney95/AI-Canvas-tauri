@@ -634,3 +634,81 @@ npx vitest run tests/store/history.test.ts tests/store/groupFolders.test.ts
 5. 连续移动、调整分组成员、创建/删除/连线，再撤销和重做；布局、成员、连线与文件恢复一致，最新模型输出保留。撤销后另做新操作应截断重做分支；保存重开及撤销恢复过程中切项目，不应回写旧项目状态。
 
 性能采样尚未进行：后续在同设备、同项目与同操作序列下比较长回答 React 挂载/提交、同步补丁体积和主线程时间、搜索首条可用时间与峰值扫描数、索引事务/put 次数、历史快照分配和提交耗时。没有采样结果前不宣称具体提速比例。回滚按本节前端、服务、测试和文档差异撤回，无数据库迁移。
+
+## 2026-11-06 前端交互续查（仅静态审查）
+
+审查基线：基于 `a76e252d` 后源码核对调用链，下表保留审查时的行为与建议；用户随后授权的 I01/I03/I05/I06 首批实施见本文末，其余条目仍待实施。本轮未运行测试、lint、类型检查、构建、性能基准或浏览器/Tauri 交互。表中的重复工作和缺失处理由源码确认；卡顿幅度、主线程耗时、帧率、内存峰值及交互现象尚未实测，不能据此承诺提速。已有拖拽合帧、连线集中绘制、LOD、历史缓存、Markdown 分块、独立窗口投影、资源搜索增量与资产索引批处理不重复列为待做。
+
+### 优先候选
+
+| 条目 | Before：当前行为 | After：建议行为 | Why：证据与影响 |
+|---|---|---|---|
+| I01 聊天滚动归属 | 每次流式进度安排 100ms 后无条件滚底，绕过消息区的近底部判断 | 跟随统一由当前会话消息区决定；主动发送/点击最新消息才强制滚动，旧会话计时器失效 | [ChatPanel.tsx:680](../../src/components/chat/ChatPanel.tsx#L680)、[controller:130](../../src/services/chat/conversationExecutionController.ts#L130) 与 [ChatMessages.tsx:271](../../src/components/chat/ChatMessages.tsx#L271) 两套滚动控制竞争；阅读历史被拉回和旧后台进度影响当前会话是静态风险，未实测 |
+| I02 媒体恢复显示 | 所有气泡（含纯文本）订阅媒体任务，快照与渲染均查恢复账本 | 普通文本不订阅；媒体显示读取一次发布的不可变快照/消息索引，快照读取不访问或写入存储 | [MessageBubble.tsx:66](../../src/components/chat/MessageBubble.tsx#L66) → [generationRuntime.ts:609](../../src/services/ai/generationRuntime.ts#L609) → [pollManager.ts:815](../../src/services/pollManager.ts#L815)：每次查询同步读取 localStorage、解析、脱敏及序列化，任务保存广播所有订阅者。长会话会重复处理同一账本 |
+| I03 输入与历史解耦 | 输入每字重新过滤当前会话消息、解析所有历史图片引用，新数组触发行和滚动逻辑 | 当前会话消息按真实消息变化派生；历史图片引用与草稿分别缓存并正确失效 | [ChatPanel.tsx:273](../../src/components/chat/ChatPanel.tsx#L273)、[:524](../../src/components/chat/ChatPanel.tsx#L524)、[ChatMessages.tsx:149](../../src/components/chat/ChatMessages.tsx#L149)。输入草稿本身无需重处理未变历史；保留 IME、附件和双窗口同步 |
+| I04 引用编辑器 | 订阅完整 nodes/edges；无关位移也使元数据变化，在布局阶段同步胶囊、克隆 DOM 历史 | 引用显示字段、当前编辑节点和展开候选分开订阅；无关位置变化不操作编辑 DOM | [MentionEditor.tsx:323](../../src/components/nodes/shared/MentionEditor.tsx#L323)、[:422](../../src/components/nodes/shared/MentionEditor.tsx#L422)、[ShotlistNode.tsx:828](../../src/components/nodes/ShotlistNode.tsx#L828)。多个分镜单元格可同时挂载，WeakMap 仅复用相同数组，不能过滤位移更新 |
+| I05 剧集资产浮层 | 整个 nodes 数组是加载依赖，任意位移/状态变化都取消重启整剧分集读取，期间显示加载态 | 当前分集仅按媒体字段刷新，未变化分集按数据版本复用；无关位移不重读 | [ProjectAssetsOverlay.tsx:74](../../src/components/ProjectAssetsOverlay.tsx#L74)、[:91](../../src/components/ProjectAssetsOverlay.tsx#L91)、[:135](../../src/components/ProjectAssetsOverlay.tsx#L135)。逐个 `loadProjectData` 读取完整分集，有重复 I/O 和列表闪回加载态的风险 |
+| I06 已关闭面板停算 | 首次打开后组件保留；角色库扫描全部 nodes 准备三类候选，资产 selector 每次通知扫描未读/道具分类 | 保留 UI 草稿/选择状态，关闭时停止无关展示计算；候选按需准备，纯计数按库引用复用 | [App.tsx:92](../../src/App.tsx#L92)、[CharacterLibraryPanel.tsx:182](../../src/components/CharacterLibraryPanel.tsx#L182)、[:356](../../src/components/CharacterLibraryPanel.tsx#L356)、[AssetsPanel.tsx:193](../../src/components/AssetsPanel.tsx#L193)。`useShallow` 不能省掉 selector 内扫描，角色动作过滤还会生成临时 ID |
+| I07 手绘预览合帧 | 每个有效移动复制全量点列，重新求边界/本地点位/path，并生成 React Flow 节点数组 | 保留完整采样，运行期保存原始点，预览按帧发布、增量维护边界，松手同步刷新最终草稿 | [useCanvasDrawing.ts:307](../../src/hooks/useCanvasDrawing.ts#L307)、[:343](../../src/hooks/useCanvasDrawing.ts#L343)、[Canvas.tsx:1337](../../src/components/Canvas.tsx#L1337)。长笔划成本随点数增长；不得以丢点或改变线形换取速度 |
+| I08 绘图取消 | 仅处理 down/move/up，无同项目 pointercancel、丢 capture、blur 或 Escape 收尾，额外指针可覆盖活动 pointerId | 统一取消草稿/预览帧/capture，拒绝额外触点；取消不新增节点或历史，随后能重新绘制 | [useCanvasDrawing.ts:262](../../src/hooks/useCanvasDrawing.ts#L262)、[Canvas.tsx:1634](../../src/components/Canvas.tsx#L1634)。这是手势中断后的残留路径，未实机复现；[App.tsx:621](../../src/App.tsx#L621) 按项目 key 卸载画布，不能据此误报跨项目写入 |
+
+建议首批优先 I01、I03、I05、I06，先减少交互争用、无关重读和关闭面板的后台工作。I02 与 I04 的潜在收益较高，但分别涉及任务账本和编辑器上下文，需独立补完整回归；不能把展示快照用作业务授权或写回依据。I07/I08 可合为绘图专项，保留全部采样、选择和一次历史语义。
+
+### 次优先候选
+
+| 条目 | Before：当前行为 | After：建议行为 | Why：证据与边界 |
+|---|---|---|---|
+| I09 多选拖线 | 每次 pointermove 更新 React state；拖动时隐藏的 anchor 仍计算，视口变化重复按数组查父链 | 选中几何和视口投影分离；拖线时跳过 anchor，用既有 Map/合帧工具发布预览 | [SelectionConnectionNode.tsx:32](../../src/components/canvas/SelectionConnectionNode.tsx#L32)、[:53](../../src/components/canvas/SelectionConnectionNode.tsx#L53)、[:66](../../src/components/canvas/SelectionConnectionNode.tsx#L66)。保留 displayId 顺序、起拖快照、松手真实坐标、项目复核、去重及一次历史 |
+| I10 橡皮擦手势 | 每命中新笔记都调用 deleteNode，重复扫描文件引用、历史检查和退场；长一笔可能形成多个撤销步 | 一次手势收集目标、保留即时反馈，结束时通过 Store 一次提交与清理 | [useCanvasDrawing.ts:252](../../src/hooks/useCanvasDrawing.ts#L252)、[store.nodes.ts:1481](../../src/store/store.nodes.ts#L1481)。这是交互语义调整，需独立确认；不能直接套用限制 50 根节点的批量 API，也不能丢共享文件/artifact 保护 |
+| I11 项目缩略图 | 全部可见项目卡片挂 src，图片无懒加载/异步解码；启动页仅靠高度裁两行 | 先复用原生 lazy/async 或现有视口媒体组件，保持固定比例与首屏可用 | [ProjectLibraryModal.tsx:84](../../src/components/ProjectLibraryModal.tsx#L84)、[:543](../../src/components/ProjectLibraryModal.tsx#L543)。离屏解码峰值是待测假设，不直接引入虚拟化；保留搜索、排序、键盘和缺失预览 |
+| I12 工具栏提示 | 每换一个目标均等待 800ms，没有连续浏览的热切换 | 首次延迟保留，短时间扫过相邻提示立即切换，离开后恢复延迟 | [useTooltipAutoPlacement.ts:11](../../src/hooks/useTooltipAutoPlacement.ts#L11)、[:214](../../src/hooks/useTooltipAutoPlacement.ts#L214)。主要改善感知等待，非帧率优化；保持悬浮/键盘焦点、边界定位和点击关闭 |
+
+共用 Select 还有较小候选：[Select.tsx:153](../../src/components/shared/Select.tsx#L153) 对每个未禁用控件（包括关闭菜单）都绑定 window keydown/keyup/blur，展开时滚动定位还读写几何。可评估只由当前聚焦/展开控件处理全局按键、定位按帧合并；必须保持先于父弹窗的 Escape 配对、IME、Tab、F12、Ctrl+S 和画布快捷键隔离，不能简单删监听。多控件页是否值得改应先采样。
+
+### 后续验收与采样入口
+
+以下步骤供用户在 Tauri 桌面端执行；本轮均未执行，涉及真实流式输出时使用测试会话和现有授权模型配置：
+
+1. 聊天：长会话流式输出期间向上阅读、切会话、暂停/继续和关闭面板，位置保持且未读提示正确；底部时正常跟随，主动发送/点最新仍能到尾部。在纯文本会话中让另一个媒体任务改变状态，比较账本读取次数、React 提交及主线程时间，媒体恢复入口和项目/会话身份不丢失。
+2. 输入/编辑：长历史连续输入、粘贴、IME 及附件增删，确认未变历史不重解析；在多行分镜中编辑含引用正文，同时拖动无关节点，光标/选区/撤销保持，引用改名、媒体换源及工作流/RefMod 更新仍及时显示。
+3. 资产：先对照角色库首次打开前与打开后关闭，再拖动同一画布；三个候选选择器重开时应取最新内容，徽标随资产真正变化更新。较多分集的剧集打开资产浮层，拖动无关节点不重读整剧，生成/替换/删除媒体仍刷新正确分集；关闭/切项目后迟到结果不写回。
+4. 绘图：同一画布连续绘制 10～20 秒，保留所有点与松手末端；中途 Escape、Alt+Tab、系统 pointercancel 和第二触点，取消不落历史且可立即重新操作。一次长擦除跨过多张笔记，检查一次 Undo/Redo、共享图片和项目边界。多选普通/嵌套组内节点拖线，检查真实落点、取消和一次撤销。
+5. 小体验：项目多页缩略图的首开/滚动，比较离屏解码及内存；连续扫工具栏提示，再检查键盘焦点、窗口边缘和点击关闭。多下拉页面检查键盘与父弹窗 Esc、Tab、IME、画布 Delete 隔离；深浅主题与减少动态效果分别回归。
+
+已有回归可复用：聊天 `tests/components/chatMessages.test.ts`、`tests/services/generationRuntime.test.ts`、`tests/services/chat/chatImageReferenceService.test.ts`、`tests/services/chat/detachedChatSyncController.test.ts`；编辑器 `tests/components/mentionEditorImageIndices.test.ts`、`tests/components/mentionEditorHistory.test.ts`、`tests/components/shotlistFieldEditor.test.tsx`；资产/项目 `tests/components/assetsPanelDrawer.test.tsx`、`tests/components/startupPage.test.tsx`、`tests/components/viewportImage.test.tsx`；绘图/连接 `tests/components/canvasNoteTools.test.tsx`、`tests/utils/canvasNoteGeometry.test.ts`、`tests/store/history.test.ts`；共用控件 `tests/hooks/tooltipAutoPlacement.test.ts`、`tests/components/select.test.tsx`、`tests/components/selectPortalBoundary.test.ts`。
+
+当前缺口：chatMessages 的 effect mock 不能覆盖父级滚动计时器竞争；没有纯文本气泡媒体订阅、无关节点位移下编辑 DOM 同步、剧集浮层重读次数、关闭角色面板计算、实时绘图/取消、多选指针及橡皮擦整手势的直接回归。asset 面板回归将未读计数模拟为固定值，不能证明扫描已避免。实施时补实际入口和取消/过期场景，不能只测新 helper。
+
+性能前后采样应使用同设备、同项目/历史/资产规模、同视口及操作序列，冷/热状态分开，记录输入延迟、长任务、React 提交/DOM 同步、账本/分集读取、帧与分配；未采样前不填提速比例。后续按批次分别确认文件、行为边界及回滚，不因本审查自动获得测试或实机操作授权。
+
+### 首批实施：I01 / I03 / I05 / I06（2026-11-06）
+
+状态：已实现，待用户验证。只调整五个前端组件及直接相关回归，不增加依赖、不修改持久化格式。完成了源码调用链、差异与 UTF-8 静态核对；本次未运行测试，待用户验收，未进行性能采样。
+
+| 条目 | 最终实现与保留边界 |
+|---|---|
+| I01 | `ChatPanel` 移除发送、继续任务和重新规划的持续滚动回调；主动发送改为携带会话 ID 的局部滚动请求。`ChatMessages` 统一处理近底跟随、历史未读和主动跳最新，待执行帧在离开底部、切会话或卸载时取消，并复核会话与容器。空会话也使用显式 ID，独立窗口沿用快照与动作协议。 |
+| I03 | 当前会话消息按来源 memo；历史图片引用按消息对象及正文复用，草稿独立解析。预览准备依赖有序去重后的文件名集合，使用 JSON 编码避免分隔符碰撞；保留附件增删、草稿及双窗口同步路径。 |
+| I05 | `ProjectAssetsOverlay` 复用既有媒体字段投影，当前分集媒体从就绪后的内存节点同步派生。非当前分集仍串行读取，按 ID、保存时间、归档代际和数据目录复用本次打开的条目；当前集保存不触发其他集重读。关闭或切换剧集/当前项目清缓存，异步返回前复核请求序号，保留分集顺序、折叠和预览。 |
+| I06 | `CharacterLibraryPanel` 关闭时不订阅完整节点，图片、声音和动作候选仅在对应入口展开时准备，保留原组件及草稿/选择状态。声音/动作绑定读取当前 Store 节点并复核项目归属。`AssetsPanel` 关闭时不扫描未读及全局道具分类，开启时按库引用 memo，重开读取最新库。 |
+
+改动文件：`src/components/chat/ChatPanel.tsx`、`src/components/chat/ChatMessages.tsx`、`src/components/ProjectAssetsOverlay.tsx`、`src/components/CharacterLibraryPanel.tsx`、`src/components/AssetsPanel.tsx`；回归为 `tests/components/chatMessages.test.ts`、`tests/components/assetsPanelDrawer.test.tsx` 与新增 `tests/components/projectAssetsOverlay.test.tsx`，文档仅本专项。其他任务已有差异不纳入本批。
+
+已补充但未执行的回归覆盖：历史阅读时流式不拉回、显式最新、旧会话帧/请求失效、空会话与卸载；真实聊天容器输入时历史消息引用及解析复用、正文/附件失效和发送归属；浮层无关更新不重读、未保存媒体即时变化、非当前分集版本失效、关闭重开与迟到结果；关闭面板免候选/计数扫描、重开最新、动作草稿保留及绑定读取实时节点。组件使用现有仓库的 headless hook driver，不能代替真实 React DOM、输入法和桌面窗口验收。
+
+用户验收步骤（Tauri 桌面端）：
+
+1. 准备超过 80 条消息、含图片引用的测试会话，使用已有授权模型发起流式回复。向上阅读时位置保持且出现未读提示；点最新或主动发送后到尾部，底部正常跟随。继续/重新规划后再次向上阅读，不能被强制拉回；切会话、关面板及主/独立窗口交接后，旧回复不能滚动当前会话。
+2. 在同一长会话连续中文输入、粘贴、编辑历史提示词及增删图片附件；草稿、预览、发送、重新生成和队列插话保持可用。切换会话/项目后，图片预览和草稿应各归原会话。减少动态效果开启/关闭分别检查滚动。
+3. 准备至少三个分集及图片/视频，打开剧集资产浮层，拖动无关节点或等待生成进度变化，列表不应重回加载态；当前集替换、删除、新增媒体即刻反映。保存并切换分集后读取正确媒体；折叠、图像/视频切换、预览保持可用。关闭重开会重新读取，快速换剧后不显示旧请求结果；项目尚未加载就绪时不把旧节点归给新分集。
+4. 角色库分别打开图片、声音和动作候选，填写未保存动作草稿后关闭，在画布生成/替换素材再重开，草稿保留且候选取最新内容。绑定、定位、隐藏/显示节点保持可用；切项目后旧视图绑定不可写新项目。资产面板关闭时新增/修改创作资产，重开后未读及道具/武器计数正确，打开短剧页后未读正常清零。
+
+可在仓库根目录手动执行以下命令（本轮均未执行）：
+
+```powershell
+npm run typecheck
+npm run test:typecheck
+npx vitest run tests/components/chatMessages.test.ts tests/components/assetsPanelDrawer.test.tsx tests/components/projectAssetsOverlay.test.tsx tests/services/chat/chatImageReferenceService.test.ts tests/services/chat/detachedChatSyncController.test.ts
+```
+
+剩余缺口：上述命令、Tauri 桌面回归及同设备前后采样均待执行；不宣称性能百分比或验收通过。I02/I04 和绘图等其他候选维持待实施。回滚仅撤回本批五个组件、三处测试及本文对应变更，无数据库迁移。

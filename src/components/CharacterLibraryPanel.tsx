@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { Swords } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
-import { generateId, useAppStore } from '../store/useAppStore';
+import { generateId, useAppStore, type AppState } from '../store/useAppStore';
 import { isEligibleCharacterVoiceNode } from '../store/store.dramaAssets';
 import {
   assertMediaDataUrlSize,
@@ -51,6 +51,7 @@ import { copyDramaAssetSelection } from '../services/dramaAssetBatchCopy';
 import { configValuesEqual } from '../services/configPatch';
 
 type CharacterLibraryScope = 'project' | 'global';
+const EMPTY_CANVAS_NODES: AppState['nodes'] = [];
 
 const CHARACTER_ACTION_CATEGORIES: Array<{
   id: CharacterActionCategory;
@@ -179,7 +180,7 @@ export default function CharacterLibraryPanel() {
       copyGlobalCharacterToProject: state.copyGlobalCharacterToProject,
       deleteDramaAsset: state.deleteDramaAsset,
       deleteGlobalCharacter: state.deleteGlobalCharacter,
-      nodes: state.nodes,
+      nodes: state.characterLibraryOpen || state.characterActionLibraryOpen ? state.nodes : EMPTY_CANVAS_NODES,
       setCharacterLibraryNodeHidden: state.setCharacterLibraryNodeHidden,
       createImageNodeFromCharacterReference: state.createImageNodeFromCharacterReference,
       bindAudioNodeToCharacterVoice: state.bindAudioNodeToCharacterVoice,
@@ -353,18 +354,18 @@ export default function CharacterLibraryPanel() {
     : 'lucide:square-plus';
 
   // 画布上还没进过角色库的图片节点，可当作新视角参考图
-  const pickableNodes = useMemo(() => nodes.filter((node) => (
+  const pickableNodes = useMemo(() => open && pickerOpen ? nodes.filter((node) => (
     !node.data.hiddenByCharacterLibrary
     && (node.data.imageUrl || node.data.thumbnailUrl)
-  )), [nodes]);
+  )) : [], [nodes, open, pickerOpen]);
   // 画布上带音频产物的节点，可绑定为角色声音
   const pickableAudioNodes = useMemo(
-    () => nodes.filter((node) => isEligibleCharacterVoiceNode(node)),
-    [nodes],
+    () => open && voicePickerOpen ? nodes.filter((node) => isEligibleCharacterVoiceNode(node)) : [],
+    [nodes, open, voicePickerOpen],
   );
   const pickableActionNodes = useMemo(
-    () => nodes.filter((node) => actionMediaFromCanvasNode(node) !== null),
-    [nodes],
+    () => actionLibraryOpen && actionNodePickerTargetId ? nodes.filter((node) => actionMediaFromCanvasNode(node) !== null) : [],
+    [nodes, actionLibraryOpen, actionNodePickerTargetId],
   );
   const voiceClips = selectedCharacter?.voiceClips ?? [];
   const voiceDockContext = `${open}:${scope}:${selectedCharacter?.id ?? ''}`;
@@ -374,9 +375,9 @@ export default function CharacterLibraryPanel() {
     setVoiceDockState({ context: voiceDockContext, expanded: false });
     if (voicePickerOpen) setVoicePickerOpen(false);
   }
-  const visibleActions = (selectedCharacter?.actions ?? []).filter((action) => (
+  const visibleActions = useMemo(() => actionLibraryOpen ? (selectedCharacter?.actions ?? []).filter((action) => (
     actionFilter === 'all' || action.category === actionFilter
-  ));
+  )) : [], [actionLibraryOpen, actionFilter, selectedCharacter?.actions]);
   const videoPreview = useResourceVideoPreview(
     JSON.stringify([open, actionLibraryOpen, scope, currentProjectId, selectedCharacter?.id, search, actionFilter, actionNodePickerTargetId]),
     [
@@ -431,7 +432,9 @@ export default function CharacterLibraryPanel() {
 
   const handleBindVoiceNode = async (nodeId: string) => {
     if (!selectedCharacter) return;
-    const node = nodes.find((item) => item.id === nodeId);
+    const state = useAppStore.getState();
+    if (state.currentProjectId !== currentProjectId) return;
+    const node = state.nodes.find((item) => item.id === nodeId);
     const audioUrl = node?.data.audioUrl;
     if (!audioUrl) {
       showToast(t('该节点没有可用的音频'), 'error');
@@ -578,8 +581,12 @@ export default function CharacterLibraryPanel() {
 
   const handleBindActionNode = async (nodeId: string) => {
     if (!selectedCharacter || !actionNodePickerTargetId) return;
-    const action = selectedCharacter.actions?.find((item) => item.id === actionNodePickerTargetId);
-    const node = nodes.find((item) => item.id === nodeId);
+    const state = useAppStore.getState();
+    if (state.currentProjectId !== currentProjectId) return;
+    const character = (scope === 'project' ? state.dramaAssets.characters : state.globalCharacters)
+      .find((item) => item.id === selectedCharacter.id);
+    const action = character?.actions?.find((item) => item.id === actionNodePickerTargetId);
+    const node = state.nodes.find((item) => item.id === nodeId);
     const media = node ? actionMediaFromCanvasNode(node) : null;
     if (!action || !media) {
       showToast(t('该节点没有可用的图片、GIF 或视频'), 'error');
