@@ -838,18 +838,20 @@ function AINodeDialog() {
           completeCanvasDerivation(cloudGuard);
           cloudGuard = registerCanvasDerivation(useAppStore.getState(), submittingNodeId);
         }
-        await recordOutputHistory(activeNodeId!, {
+        const textHistory = {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
           prompt: effectivePrompt,
           output: processed.output,
-          nodeType: 'ai-text',
+          nodeType: 'ai-text' as const,
           model: nodeModel,
           provider: nodeProvider,
-          status: 'success',
+          status: 'success' as const,
           ...(textReceipt ? { params: { comfyTextTaskId: textReceipt.taskId, comfyTextAttemptId: textReceipt.attemptId } } : {}),
-        }, ...(comfyTaskId ? [true, textReceipt] as const : []));
+        };
+        if (comfyTaskId) await recordOutputHistory(activeNodeId!, textHistory, true, textReceipt);
+        else await recordOutputHistory(activeNodeId!, textHistory);
         if (!isStillCurrentSubmission()) return;
         if (comfyTaskId) completeComfyNodeTask(submittingNodeId, comfyTaskId);
         if (processed.kind) {

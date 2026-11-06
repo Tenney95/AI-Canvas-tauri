@@ -713,11 +713,13 @@ export async function executeGeneration(
         completeCanvasDerivation(cloudGuard);
         cloudGuard = registerCanvasDerivation(useAppStore.getState(), nodeId);
       }
-      await store.recordOutputHistory(nodeId, {
+      const textHistory = {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: processed.output, nodeType: 'ai-text', model: nodeModel, provider: nodeProvider, status: 'success',
+        output: processed.output, nodeType: 'ai-text' as const, model: nodeModel, provider: nodeProvider, status: 'success' as const,
         ...(textReceipt ? { params: { comfyTextTaskId: textReceipt.taskId, comfyTextAttemptId: textReceipt.attemptId } } : {}),
-      }, ...(comfyTaskId ? [true, textReceipt] as const : []));
+      };
+      if (comfyTaskId) await store.recordOutputHistory(nodeId, textHistory, true, textReceipt);
+      else await store.recordOutputHistory(nodeId, textHistory);
       if (!isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       if (comfyTaskId) completeComfyNodeTask(nodeId, comfyTaskId);
       if (processed.kind) {
