@@ -221,7 +221,10 @@ export default function ChatPanel({
     () => detached ? (detachedSnapshot?.messages ?? []) : messages,
     [detached, detachedSnapshot?.messages, messages],
   );
-  const effectiveAgentTasks = detached ? (detachedSnapshot?.agentTasks ?? []) : agentTasks;
+  const effectiveAgentTasks = useMemo(
+    () => detached ? (detachedSnapshot?.agentTasks ?? []) : agentTasks,
+    [detached, detachedSnapshot?.agentTasks, agentTasks],
+  );
   const effectiveAgentTaskFocus = detached ? detachedSnapshot?.agentTaskFocus : agentTaskFocus;
   const effectiveProjectId = detached ? (detachedSnapshot?.projectId ?? null) : currentProjectId;
   const chatScopeId = effectiveProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
@@ -319,7 +322,7 @@ export default function ChatPanel({
     try { return resolveCreationTeamProfile(effectiveActiveConversation?.creationProfile, effectiveActiveConversation?.teamProfileOverride); }
     catch { return normalizeTeamProfile(config.agentTeamProfile); }
   }, [config.agentTeamProfile, config.creationProfiles, detached, detachedSnapshot?.agentTeamProfile,
-    effectiveActiveConversation?.creationProfile, effectiveActiveConversation?.teamProfileOverride]);
+    effectiveActiveConversation]);
   const isEpisodeProject = detached ? detachedSnapshot?.isEpisodeProject === true : !!currentProject?.parentId;
   const teamContextHint = isEpisodeProject && effectiveExecutionSelection.kind === 'team'
     ? effectiveExecutionSelection.templateId === 'outline'

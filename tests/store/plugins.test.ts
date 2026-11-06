@@ -640,15 +640,16 @@ describe('可信 Python 插件状态边界', () => {
     });
   });
 
-  it('keeps a plugin disabled when its persisted source digest is missing', async () => {
+  it.each([['sourceDigest', '插件源码摘要缺失'], ['revisionDigest', '插件 revision 摘要缺失']] as const)(
+    'keeps a plugin disabled when its persisted %s is missing', async (field, message) => {
     const plugin = {
       ...createInstalledPluginFixture('missing-digest'),
       enabled: false,
-      sourceDigest: undefined,
+      [field]: undefined,
     } as InstalledPlugin;
     const { slice, getState } = createSlice([plugin]);
 
-    await expect(slice.setPluginEnabled(plugin.id, true)).rejects.toThrow('插件源码摘要缺失');
+    await expect(slice.setPluginEnabled(plugin.id, true)).rejects.toThrow(message);
 
     expect(getState().installedPlugins).toEqual([plugin]);
     expect(nativeMocks.invoke).not.toHaveBeenCalled();

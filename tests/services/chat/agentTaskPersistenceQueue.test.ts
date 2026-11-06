@@ -15,7 +15,8 @@ const db = vi.hoisted(() => ({
   claim: vi.fn(),
 }));
 
-vi.mock(import('../../../src/services/indexedDbService'), () => ({
+vi.mock(import('../../../src/services/indexedDbService'), async (importOriginal) => ({
+  ...await importOriginal(),
   putAgentTask: db.put, getAgentTask: db.get, getProjectAgentTasks: db.project,
   getConversationAgentTasks: db.conversation, deleteAgentTask: db.deleteTask,
   deleteConversationAgentTasks: db.deleteConversation, deleteProjectAgentTasks: db.deleteProject,

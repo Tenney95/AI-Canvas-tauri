@@ -22,6 +22,7 @@ import { GENERAL_ASSISTANT_SCOPE_ID } from '../../../src/services/chat/assistant
 import { registerProviderConfigAgentTools } from '../../../src/services/chat/tools/providerConfigTools';
 import { getAgentTool } from '../../../src/services/chat/toolRegistry';
 import { clearProviderModelCatalogsForTests, clearProviderModelCatalogsForTask, createProviderModelCatalog } from '../../../src/services/chat/providerModelCatalogService';
+import { AGENT_RESULT_PREVIEW_CHARS, clearAgentResults, readAgentResult } from '../../../src/services/chat/agentResultService';
 
 function createTask(): AgentTask {
   return {
@@ -68,6 +69,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearAgentResults({ taskId: 'mcp-task-1' });
   clearProviderModelCatalogsForTests();
   vi.restoreAllMocks();
   clearAgentToolRegistryForTests();
@@ -175,7 +177,9 @@ describe('shared Agent tool execution for MCP', () => {
 
     const result = await executeBoundaryTool();
 
-    expect(result.modelContent).toHaveLength(20_000);
+    expect(result.modelContent.length).toBeLessThanOrEqual(AGENT_RESULT_PREVIEW_CHARS);
+    expect(result.summary.resultReference).toMatchObject({ storage: 'memory', chars: body.length });
+    expect(result.modelContent).toContain(result.summary.resultReference!.id);
     expect(result.summary.truncated).toBe(true);
     expect(result.mcpContent).toEqual([{ type: 'text', text: body }]);
     expect(JSON.parse((result.mcpContent![0] as { text: string }).text)).toEqual(JSON.parse(body));
@@ -196,7 +200,18 @@ describe('shared Agent tool execution for MCP', () => {
 
     const result = await executeBoundaryTool();
 
-    expect(result.modelContent).toHaveLength(20_000);
+    expect(result.modelContent.length).toBeLessThanOrEqual(AGENT_RESULT_PREVIEW_CHARS);
+    expect(result.summary.truncated).toBe(true);
+    const reference = result.summary.resultReference;
+    expect(reference).toMatchObject({ storage: 'memory', chars: 21_000 });
+    if (!reference) throw new Error('Expected a scoped result reference');
+    expect(result.modelContent).toContain(reference.id);
+    const scope = { taskId: 'mcp-task-1', projectId: 'project-1', conversationId: 'ordinary-conversation' };
+    const first = await readAgentResult(scope, reference.id);
+    const last = await readAgentResult(scope, reference.id, first.nextOffset);
+    expect(first.eof).toBe(false);
+    expect(last.eof).toBe(true);
+    expect(first.text + last.text).toBe('x'.repeat(21_000));
     expect(result.mcpContent).toBeUndefined();
     expect(result.mcpResultError).toBeUndefined();
   });

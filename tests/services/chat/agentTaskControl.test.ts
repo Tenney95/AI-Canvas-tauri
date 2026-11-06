@@ -114,7 +114,10 @@ describe('工作台绑定分集的任务控制范围', () => {
         { id: 'episode-a', parentId: 'series-workbench', name: '第一集', createdAt: 1, updatedAt: 1 },
         { id: 'episode-b', parentId: 'series-workbench', name: '第二集', createdAt: 1, updatedAt: 1 },
       ] });
-    useAppStore.getState().updateConversation(task.conversationId, { projectId: 'series-workbench' });
+    // 任务的来源会话本来就属于剧集，不能借 UI 更新接口搬迁会话身份。
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((conversation) => (
+      conversation.id === task.conversationId ? { ...conversation, projectId: 'series-workbench' } : conversation
+    )) }));
     return task;
   }
 

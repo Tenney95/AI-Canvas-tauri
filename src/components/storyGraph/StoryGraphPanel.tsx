@@ -15,7 +15,7 @@ import Tabs from '../shared/Tabs';
 import ModalOverlay from '../shared/ModalOverlay';
 import ModelSelector from '../nodes/shared/ModelSelector';
 import StoryGraphNode, { type StoryGraphFlowNode } from './StoryGraphNode';
-import StoryGraphEdge, { type StoryGraphFlowEdge } from './StoryGraphEdge';
+import StoryGraphRelationEdge, { type StoryGraphFlowEdge } from './StoryGraphEdge';
 import StoryGraphDetails from './StoryGraphDetails';
 import StoryGraphTimeline from './StoryGraphTimeline';
 
@@ -45,7 +45,7 @@ export interface StoryGraphPanelProps {
 }
 
 const NODE_TYPES = { 'story-record': StoryGraphNode };
-const EDGE_TYPES = { 'story-relation': StoryGraphEdge };
+const EDGE_TYPES = { 'story-relation': StoryGraphRelationEdge };
 const EMPTY_FILTER: StoryGraphFilter = {};
 const EMPTY_MODELS: [] = [];
 

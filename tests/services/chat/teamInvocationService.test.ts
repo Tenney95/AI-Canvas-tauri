@@ -61,8 +61,8 @@ function prepared(taskId: string): AgentTeamRun {
 beforeEach(() => {
   vi.clearAllMocks();
   runtime.scheduled.length = 0;
-  runtime.capture.mockResolvedValue({ architect: 'a', writer: 'a', continuity: 'a', dialogue: 'a', editor: 'a' });
-  runtime.prepare.mockImplementation(async (input: { taskId: string }) => prepared(input.taskId));
+  runtime.capture.mockReset().mockResolvedValue({ architect: 'a', writer: 'a', continuity: 'a', dialogue: 'a', editor: 'a' });
+  runtime.prepare.mockReset().mockImplementation(async (input: { taskId: string }) => prepared(input.taskId));
   runtime.execute.mockResolvedValue('completed');
   runtime.save.mockResolvedValue(undefined);
   runtime.load.mockResolvedValue(null);
@@ -145,10 +145,16 @@ describe('团队共用发起入口', () => {
   });
 
   it('清空来源消息撤销尚未创建任务的准备，但不封锁该会话的新请求', async () => {
+    let signalEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { signalEntered = resolve; });
     let release!: (value: AgentTeamRun['modelFingerprints']) => void;
-    runtime.capture.mockImplementationOnce(() => new Promise<AgentTeamRun['modelFingerprints']>((resolve) => { release = resolve; }));
+    runtime.capture.mockImplementationOnce(() => {
+      signalEntered();
+      return new Promise<AgentTeamRun['modelFingerprints']>((resolve) => { release = resolve; });
+    });
     const pending = startTeamInvocation({ content: '清空前的准备', projectId: 'project-team', conversationId: 'conv-team',
       templateId: 'general', requestId: 'request-team-clear-preparation' });
+    await entered;
     useAppStore.getState().clearMessages();
     release(prepared('unused').modelFingerprints);
     await pending;
@@ -180,7 +186,10 @@ describe('团队共用发起入口', () => {
         { id: 'episode-workbench', parentId: 'series-team', name: '工作台所选集', createdAt: 1, updatedAt: 1 },
       ],
     });
-    useAppStore.getState().updateConversation('conv-team', { projectId: 'series-team' });
+    // 会话项目身份不能由 updateConversation 更改；测试直接安排已有同剧会话。
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((conversation) => (
+      conversation.id === 'conv-team' ? { ...conversation, projectId: 'series-team' } : conversation
+    )) }));
     const nodesBefore = useAppStore.getState().nodes;
     const result = await startTeamInvocation({ content: '处理工作台选中集', projectId: 'episode-workbench',
       conversationId: 'conv-team', templateId: 'general', requestId: 'request-team-workbench-sibling',
@@ -212,10 +221,14 @@ describe('团队共用发起入口', () => {
   });
 
   it('拒绝跨项目会话和超过总上限的材料，未进入模型准备或队列', () => {
-    useAppStore.getState().updateConversation('conv-team', { projectId: 'other-project' });
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((conversation) => (
+      conversation.id === 'conv-team' ? { ...conversation, projectId: 'other-project' } : conversation
+    )) }));
     expect(() => submitTeamInvocation({ content: '不应发送', projectId: 'project-team', conversationId: 'conv-team',
       templateId: 'general', requestId: 'request-team-other-scope' })).toThrow('来源对话');
-    useAppStore.getState().updateConversation('conv-team', { projectId: 'project-team' });
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((conversation) => (
+      conversation.id === 'conv-team' ? { ...conversation, projectId: 'project-team' } : conversation
+    )) }));
     expect(() => submitTeamInvocation({ content: '不截断材料', materials: '长'.repeat(60000), projectId: 'project-team',
       conversationId: 'conv-team', templateId: 'general', requestId: 'request-team-over-limit' })).toThrow('总上限');
     expect(runtime.prepare).not.toHaveBeenCalled();

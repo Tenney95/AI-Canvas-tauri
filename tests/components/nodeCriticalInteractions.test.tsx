@@ -429,7 +429,8 @@ describe('audio node clock and waveform ownership', () => {
     vi.useRealTimers();
     for (const path of ['../../src/hooks/useViewportMediaSource', '../../src/components/nodes/shared/audio/useAudioNodeAsr',
       '../../src/components/nodes/shared/audio/audioWaveformCache', '../../src/components/nodes/shared/AudioNodeToolbar',
-      '../../src/components/nodes/shared/MediaTaskStatus', '../../src/components/shared/CanvasAudioPreview']) vi.doUnmock(path);
+      '../../src/components/nodes/shared/MediaTaskStatus', '../../src/components/shared/CanvasAudioPreview',
+      '../../src/components/shared/ModelDownloadDialog', '../../src/components/shared/FullscreenOverlay']) vi.doUnmock(path);
   });
   async function setup() {
     const effects: Array<() => void | (() => void)> = [];
@@ -447,6 +448,9 @@ describe('audio node clock and waveform ownership', () => {
     vi.doMock('../../src/components/nodes/shared/AudioNodeToolbar', () => ({ default: () => null }));
     vi.doMock('../../src/components/nodes/shared/MediaTaskStatus', () => ({ default: () => null }));
     vi.doMock('../../src/components/shared/CanvasAudioPreview', () => ({ default: () => null }));
+    // 这里只驱动父节点的播放时钟；未挂载的下载和全屏子树不应冷导入整套运行时。
+    vi.doMock('../../src/components/shared/ModelDownloadDialog', () => ({ default: () => null }));
+    vi.doMock('../../src/components/shared/FullscreenOverlay', () => ({ default: () => null }));
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());

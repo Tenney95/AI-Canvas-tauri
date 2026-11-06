@@ -81,6 +81,8 @@ describe('工作台智能调度入口', () => {
     '重复点击时复用仍处于 %s 的同目标同内容同模式任务，只定位原会话', (status) => {
       const input = { episodeId: 'episode-b', content: '检查本集节奏', mode: 'plan' as const };
       const first = startWorkbenchAgentInvocation(input);
+      const modelChecksAfterStart = runtimeMocks.model.mock.calls.length;
+      expect(modelChecksAfterStart).toBeGreaterThan(0);
       const state = useAppStore.getState();
       state.updateAgentTask(first.taskId, { status });
       state.setActiveConversation('conv-prior');
@@ -98,7 +100,8 @@ describe('工作台智能调度入口', () => {
       expect(latest.chatComposerDrafts['conv-prior']).toBe('原对话保留的草稿');
       expect(latest.currentProjectId).toBe('episode-a');
       expect(runtimeMocks.schedule).toHaveBeenCalledOnce();
-      expect(runtimeMocks.model).toHaveBeenCalledOnce();
+      // 首次入口和共享提交控制层均可校验模型；重复点击不能再次进入任一预检。
+      expect(runtimeMocks.model).toHaveBeenCalledTimes(modelChecksAfterStart);
     },
   );
 

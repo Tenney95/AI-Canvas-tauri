@@ -56,7 +56,7 @@ export function normalizeStoryGraphNode(value: unknown): StoryGraphNode {
   const result: StoryGraphNode = { ...common(item), kind: enumeration(item.kind, STORY_GRAPH_NODE_KINDS), aliases: unique(array(item.aliases, 16).map((alias) => string(alias, 120))) };
   if (item.storyOrder !== undefined) result.storyOrder = integer(item.storyOrder, 0, 1000000);
   if (item.storyTime !== undefined) result.storyTime = string(item.storyTime, 240, true);
-  if (item.foreshadowStatus !== undefined) result.foreshadowStatus = enumeration(item.foreshadowStatus, ['planted', 'developing', 'resolved']);
+  if (item.foreshadowStatus !== undefined) result.foreshadowStatus = enumeration<NonNullable<StoryGraphNode['foreshadowStatus']>>(item.foreshadowStatus, ['planted', 'developing', 'resolved']);
   if (item.asset !== undefined) { const asset = object(item.asset, ['kind', 'id']); result.asset = { kind: enumeration(asset.kind, ['character', 'scene', 'prop']), id: id(asset.id) }; }
   return result;
 }

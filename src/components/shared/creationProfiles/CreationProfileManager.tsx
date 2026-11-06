@@ -97,10 +97,20 @@ export default function CreationProfileManager({ onClose }: { onClose: () => voi
           <fieldset className="ui-card space-y-2 p-2"><legend className="ui-label">{t('引用已安装插件')}</legend>
             {plugins.map((plugin, index) => {
               const checked = editing.pluginRefs.some((reference) => reference.pluginId === plugin.id);
+              const revisionDigest = plugin.revisionDigest;
+              const sourceDigest = plugin.sourceDigest;
+              const hasValidDigests = typeof revisionDigest === 'string' && /^[a-f0-9]{64}$/.test(revisionDigest)
+                && typeof sourceDigest === 'string' && /^[a-f0-9]{64}$/.test(sourceDigest);
               return <div key={plugin.id}><input id={`${inputId}-plugin-${index}`} type="checkbox" className="ui-checkbox" checked={checked}
-                disabled={busy || (!checked && (!plugin.enabled || !plugin.revisionDigest || editing.pluginRefs.length >= 32))}
-                onChange={() => changeProfile({ ...editing, pluginRefs: checked ? editing.pluginRefs.filter((reference) => reference.pluginId !== plugin.id)
-                  : [...editing.pluginRefs, { pluginId: plugin.id, revisionDigest: plugin.revisionDigest }] })} />
+                disabled={busy || (!checked && (!plugin.enabled || !hasValidDigests || editing.pluginRefs.length >= 32))}
+                onChange={() => {
+                  if (checked) { changeProfile({ ...editing, pluginRefs: editing.pluginRefs.filter((reference) => reference.pluginId !== plugin.id) }); return; }
+                  if (!plugin.enabled || typeof revisionDigest !== 'string' || !/^[a-f0-9]{64}$/.test(revisionDigest)
+                    || typeof sourceDigest !== 'string' || !/^[a-f0-9]{64}$/.test(sourceDigest)) {
+                    setError(t('组合包能力摘要无效')); setPreview(undefined); return;
+                  }
+                  changeProfile({ ...editing, pluginRefs: [...editing.pluginRefs, { pluginId: plugin.id, revisionDigest }] });
+                }} />
                 <label htmlFor={`${inputId}-plugin-${index}`} className="break-words">{plugin.manifest.name} · {plugin.manifest.version}</label></div>;
             })}
           </fieldset>

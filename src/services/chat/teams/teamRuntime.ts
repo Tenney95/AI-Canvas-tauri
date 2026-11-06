@@ -407,7 +407,6 @@ async function executeStage(taskId: string, revision: number, definition: StageD
       await settleAgentDispatch(taskId, dispatch, 'succeeded');
       return artifact;
     } catch (error) {
-      lastError = error;
       if (dispatch) await settleAgentDispatch(taskId, dispatch,
         externalTarget && error instanceof ExternalAgentExecutionError && error.knownNotStarted === true ? 'failed' : 'unknown');
       const live = useAppStore.getState().agentTasks.find((item) => item.id === taskId);

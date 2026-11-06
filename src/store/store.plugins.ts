@@ -119,16 +119,20 @@ async function stagePluginRevision(
   };
 }
 
+function pluginExecutionIdentity(plugin: InstalledPlugin) {
+  if (!plugin.sourceDigest) throw new Error('插件源码摘要缺失');
+  if (!plugin.revisionDigest) throw new Error('插件 revision 摘要缺失');
+  return { sourceDigest: plugin.sourceDigest, revisionDigest: plugin.revisionDigest };
+}
+
 async function activatePluginRevision(
   plugin: InstalledPlugin,
   requestDirectoryAccess = false,
 ): Promise<void> {
-  if (!plugin.sourceDigest) throw new Error('插件源码摘要缺失');
-  if (!plugin.revisionDigest) throw new Error('插件 revision 摘要缺失');
+  const identity = pluginExecutionIdentity(plugin);
   await invoke('activate_plugin_revision', {
     pluginId: plugin.id,
-    sourceDigest: plugin.sourceDigest,
-    revisionDigest: plugin.revisionDigest,
+    ...identity,
     enabled: plugin.enabled,
     // 仅显式启用可请求目录授权；安装后的激活和失败补偿不重复提示。
     ...(requestDirectoryAccess ? { requestDirectoryAccess: true } : {}),
@@ -294,6 +298,8 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
     if (enabled && plugin.manifest.runtime === 'python' && options?.trustedPythonConfirmed !== true) {
       throw new Error('启用可信 Python 插件前必须确认其可访问本机资源');
     }
+    // 先验证插件自身的执行身份；缺失摘要不能伪装成依赖图故障。
+    if (enabled) pluginExecutionIdentity(plugin);
     const updated = { ...plugin, enabled, updatedAt: Date.now() };
     if (enabled && !resolvePluginDependencies(get().installedPlugins.map((item) => item.id === id ? updated : item), id).ready) {
       throw new Error('插件必需依赖不可用或存在循环，请先检查依赖配置');

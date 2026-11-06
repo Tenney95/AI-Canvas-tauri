@@ -500,7 +500,9 @@ export function resumeAgentTaskExecution(
   return { ok: true };
 }
 
-/** 兼容的旧 pipeline 也必须先落盘；异常保守留为未知，不能换路径重投。 */
+class LegacyPipelineNotStartedError extends Error {}
+
+/** 兼容的旧 pipeline 也必须先落盘；除明确未调用模型外，异常保守留为未知。 */
 async function withLegacyDispatch<T>(taskId: string, signal: AbortSignal, run: () => Promise<T>): Promise<T> {
   const record = await beginAgentDispatch({ taskId, kind: 'model', signal });
   try {
@@ -508,10 +510,11 @@ async function withLegacyDispatch<T>(taskId: string, signal: AbortSignal, run: (
     await settleAgentDispatch(taskId, record, 'succeeded');
     return result;
   } catch (error) {
-    await settleAgentDispatch(taskId, record, 'unknown');
+    const notStarted = error instanceof LegacyPipelineNotStartedError;
+    await settleAgentDispatch(taskId, record, notStarted ? 'failed' : 'unknown');
     const state = useAppStore.getState();
     const task = state.agentTasks.find((entry) => entry.id === taskId);
-    if (task && !['paused', 'stopped', 'completed'].includes(task.status)) state.updateAgentTask(taskId, {
+    if (!notStarted && task && !['paused', 'stopped', 'completed'].includes(task.status)) state.updateAgentTask(taskId, {
       status: 'paused', pausedReason: 'dispatch_outcome_unknown', errorCode: 'AGENT_DISPATCH_OUTCOME_UNKNOWN',
       errorMessage: '原调用结果未知，请先核实；不会自动改走其他执行路径',
     });
@@ -706,7 +709,7 @@ function driveAgentTask(
     try {
       const result = await withLegacyDispatch(taskId, signal, async () => {
         const response = await runAssistantPipeline(text, conversationId, projectId);
-        if (response.errorCode) throw new Error(response.reply);
+        if (response.errorCode === 'ASSISTANT_MODEL_UNAVAILABLE') throw new LegacyPipelineNotStartedError(response.reply);
         return response;
       });
       if (result.errorCode) throw new Error(result.reply);

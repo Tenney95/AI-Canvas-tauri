@@ -455,7 +455,7 @@ export default function ScriptWorkbench({
     draftVersions.current.set(episodeId, version);
     setDraftVersionByEpisode((previous) => ({ ...previous, [episodeId]: version }));
     setDraftsByEpisode(next);
-  }, [seriesId]);
+  }, [seriesId, setDraftVersionByEpisode, setDraftsByEpisode]);
 
   const onClose = () => {
     const episodeId = currentEpisode?.id;
@@ -735,7 +735,7 @@ export default function ScriptWorkbench({
       if (graphGeneration.current === generation) setGraphExtraction((previous) => ({ ...previous,
         status: controller.signal.aborted ? 'cancelled' : 'failed', runId, error: controller.signal.aborted ? undefined : error }));
       if (controller.signal.aborted) return false;
-      throw new Error(error);
+      throw new Error(error, { cause });
     } finally {
       if (graphController.current === controller) graphController.current = null;
     }
@@ -1022,7 +1022,7 @@ export default function ScriptWorkbench({
       case 'creative': return openCreativeAction(action.action, request?.requestId);
       case 'view_agent_task': {
         const task = useAppStore.getState().agentTasks.find((item) => item.id === action.taskId && !item.parentTaskId
-          && item.workbenchTarget?.episodeId === currentEpisode?.id && item.workbenchTarget.seriesId === seriesId);
+          && item.workbenchTarget?.episodeId === currentEpisode?.id && item.workbenchTarget?.seriesId === seriesId);
         if (!task || !readEpisodeWorkspaceScope(useAppStore.getState(), task.projectId)) throw new Error(t('任务不属于当前分集'));
         await openAgentTaskInAssistant(task.id);
         requestClose();

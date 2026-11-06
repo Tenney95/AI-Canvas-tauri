@@ -37,7 +37,10 @@ describe('isolated mock plugin preview', () => {
     deliver('context', null, {});
     expect(frame.postMessage).not.toHaveBeenCalled();
     deliver('context');
-    expect(frame.postMessage.mock.calls[0][0].value).toMatchObject({ models: [], node: { id: 'preview-node' } });
+    const context = frame.postMessage.mock.calls[0][0].value;
+    expect(context).toMatchObject({ node: { id: 'preview-node' } });
+    // 模型列表由预览 bootstrap 固定为空，不从主窗口传模型目录。
+    expect(context).not.toHaveProperty('models');
     deliver('effect', { type: 'network.request', url: 'https://example.com' });
     expect(frame.postMessage.mock.lastCall![0].ok).toBe(false);
     deliver('set-parameters', JSON.parse('{"__proto__":{"admin":true}}'));

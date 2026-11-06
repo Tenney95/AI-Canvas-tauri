@@ -441,6 +441,8 @@ describe('conversation execution controller', () => {
       await execution!.run();
       const state = useAppStore.getState();
       expect(state.agentTasks.find((task) => task.id === result.taskId)?.status).toBe('failed');
+      if (mode !== 'plan') expect(state.agentTasks.find((task) => task.id === result.taskId)?.dispatches)
+        .toEqual([expect.objectContaining({ phase: 'settled', outcome: 'failed' })]);
       const reply = state.messages.find((message) => message.id === result.assistantMessageId)!;
       expect(reply).toMatchObject({ status: 'error', finishReason: 'error' });
       expect(reply.content).toContain('文本模型');

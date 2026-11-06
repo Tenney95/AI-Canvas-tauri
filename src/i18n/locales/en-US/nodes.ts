@@ -497,8 +497,6 @@ const nodes = {
   "新建分区": "New section",
   "暂无快捷指令，可在下方管理中添加": "No shortcuts yet. Add one using Manage below.",
   "快捷指令已全部添加": "All shortcuts have been added",
-  "插件界面会话参数缺失": "Plugin UI session parameters are missing",
-  "插件界面宿主页无效": "Invalid plugin UI host page",
   "插件界面加载失败": "Failed to load plugin UI",
   "插件窗口打开失败": "Failed to open plugin window",
   "请勾选“{label}”": "Select “{label}”",

@@ -41,7 +41,7 @@ describe('完成轮次的原子会话分支', () => {
     expect(branch.conversation.mcpServerIds).toEqual([]);
     expect(branch.conversation.branchSource?.sequence).toBe(1);
     expect((await db.getProjectConversations('project')).map((item) => item.id)).toContain(branch.conversation.id);
-    expect((await db.getConversationMessages('conv-source')).length).toBe(3);
+    expect((await db.getConversationMessages('conv-source')).messages).toHaveLength(3);
   });
 
   it('拒绝用户消息切点，事务不留下半个新会话', async () => {

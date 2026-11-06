@@ -166,7 +166,6 @@ const chat = {
   '先保存当前改稿，再由团队生成候选；点击下方动作开始，不会自动覆盖正文。': 'Save the current edits before the team creates a candidate. Choose an action below to start; the script is not overwritten automatically.',
   '保存期间有新修改，已保留草稿，请重新发起创作请求': 'New edits were made while saving. The draft is preserved; submit the creative request again.',
   '团队任务已开始，可在工作台或助手查看同一任务': 'The team task has started. View the same task in the workbench or assistant.',
-  '这个创作动作暂用单模型，请切换执行方式': 'This creative action currently uses a single model. Switch execution methods.',
   '团队任务启动失败': 'Failed to start the team task',
   '请先处理工作台未保存修改，再应用团队成果': 'Resolve the unsaved workbench edits before applying the team result.',
   '重试读取': 'Retry reading',

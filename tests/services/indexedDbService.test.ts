@@ -115,7 +115,19 @@ describe('故事图原子保存', () => {
   it('归档代际变化或宿主守卫拒绝时不产生图写入', async () => {
     const db = await import('../../src/services/indexedDbService');
     const record = { id: 'series-epoch', name: '整部剧', exchangeEpoch: 3, createdAt: 1, updatedAt: 2, nodes: [], edges: [] };
-    await db.saveProjectToDb(record);
+    await db.saveProjectToDb({ ...record, exchangeEpoch: 0 });
+    // 非零代际由导入事务产生，普通保存不能创建带有导入代际的新记录。
+    const database = await openDatabase(DB_NAME);
+    const { toProjectSummaryRecord } = await import('../../src/services/indexedDb/projectSummary');
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(['projects', 'projectSummaries'], 'readwrite');
+        transaction.objectStore('projects').put(record);
+        transaction.objectStore('projectSummaries').put(toProjectSummaryRecord(record));
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = transaction.onerror = () => reject(transaction.error);
+      });
+    } finally { database.close(); }
     await expect(db.updateProjectStoryGraphCAS(record.id, { graphId: 'graph' }, 0, 2)).rejects.toThrow('已变化');
     await expect(db.updateProjectStoryGraphCAS(record.id, { graphId: 'graph' }, 0, 3,
       () => { throw new Error('编辑会话已关闭'); })).rejects.toThrow('会话已关闭');
