@@ -1524,6 +1524,25 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
   outline-offset: 2px;
 }
 
+/* 磨砂小弹窗：沿用外观背景，仅调整浅色内容层；实色弹窗显式退出。 */
+.ui-dialog-glass {
+  color: var(--theme-text);
+}
+[data-theme='light'] .ui-dialog-glass:not(.ui-dialog-surface) {
+  --theme-card: var(--dialog-glass-content-bg);
+  --theme-input-bg: var(--dialog-glass-content-bg);
+  --theme-hover: var(--dialog-glass-hover-bg);
+  --theme-text-secondary: var(--dialog-glass-text-secondary);
+  --theme-text-muted: var(--dialog-glass-text-muted);
+  --separator-color: color-mix(in srgb, var(--theme-border) 72%, transparent);
+  --border-subtle: color-mix(in srgb, var(--theme-border) 58%, transparent);
+  --border-secondary: color-mix(in srgb, var(--theme-border) 80%, var(--theme-text-muted));
+}
+/* 箭头盒复用数字输入底色，避免重复叠加半透明层。 */
+[data-theme='light'] .ui-dialog-glass:not(.ui-dialog-surface) .ui-stepper__actions {
+  background: transparent;
+}
+
 /* 弹窗面板：配合 glass-panel 的独立背景层，设置与业务弹窗共用同一底色。 */
 .ui-dialog-surface {
   --canvas-panel-bg: var(--dialog-surface-bg);

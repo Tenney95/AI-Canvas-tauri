@@ -482,6 +482,11 @@
   --glass-panel-bg: rgba(252, 253, 255, 0.86);
   --glass-ring: rgba(51, 54, 77, 0.10);
   --glass-ring-strong: rgba(51, 54, 77, 0.06);
+  /* 小弹窗内容先在主题层派生，再局部映射，避免变量自引用与全局配色变化。 */
+  --dialog-glass-content-bg: color-mix(in srgb, var(--theme-card) 44%, transparent);
+  --dialog-glass-hover-bg: color-mix(in srgb, var(--theme-hover) 72%, transparent);
+  --dialog-glass-text-secondary: color-mix(in srgb, var(--theme-text-secondary) 72%, var(--theme-text));
+  --dialog-glass-text-muted: color-mix(in srgb, var(--theme-text-muted) 86%, var(--theme-text));
   --floating-surface-bg: color-mix(in srgb, var(--theme-surface) 70%, transparent);
   --minimap-mask: color-mix(in srgb, var(--theme-text) 14%, transparent);
   --glass-bevel-border: linear-gradient(

@@ -120,7 +120,7 @@ export default function ModalOverlay({
             aria-modal="true"
             aria-label={ariaLabel}
             tabIndex={-1}
-            className={`relative glass-panel border rounded-2xl shadow-2xl overflow-hidden overscroll-contain flex flex-col ${className}`}
+            className={`relative glass-panel ui-dialog-glass border rounded-2xl shadow-2xl overflow-hidden overscroll-contain flex flex-col ${className}`}
             style={draggable ? { x: dragX, y: dragY } : undefined}
             {...panelMotion(Boolean(reduceMotion), quickMotion, draggable)}
             transition={reduceMotion || quickMotion ? fadeFast : springSmooth}

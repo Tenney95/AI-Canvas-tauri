@@ -10,6 +10,7 @@ import NumberStepper from '../shared/NumberStepper';
 const EXAMPLES = [
   { kind: 'basic', label: '普通弹窗', title: '普通弹窗示例' },
   { kind: 'form', label: '表单弹窗', title: '编辑示例配置' },
+  { kind: 'glass', label: '磨砂小弹窗', title: '磨砂小弹窗示例' },
   { kind: 'confirm', label: '确认弹窗', title: '确认此操作？' },
   { kind: 'long', label: '长内容弹窗', title: '长内容滚动示例' },
 ] as const;
@@ -28,6 +29,7 @@ export default function StyleGuideDialogs() {
   const [count, setCount] = useState(40);
   const [result, setResult] = useState('选择一个样例打开弹窗。');
   const example = EXAMPLES.find((item) => item.kind === kind)!;
+  const isForm = kind === 'form' || kind === 'glass';
   const close = useCallback(() => setIsOpen(false), []);
 
   const finish = () => {
@@ -82,7 +84,7 @@ export default function StyleGuideDialogs() {
         closeOnBackdrop={closeOnBackdrop}
         draggable={draggable}
         backdropBlur={backdropBlur}
-        className={`ui-dialog-surface max-h-[calc(100vh-32px)] ${kind === 'long' ? 'w-[min(640px,calc(100vw-32px))]' : 'w-[min(480px,calc(100vw-32px))]'}`}
+        className={`${kind === 'glass' ? '' : 'ui-dialog-surface'} max-h-[calc(100vh-32px)] ${kind === 'long' ? 'w-[min(640px,calc(100vw-32px))]' : 'w-[min(480px,calc(100vw-32px))]'}`}
       >
         <header data-modal-drag-handle className={`ui-card__header shrink-0 ${draggable ? 'cursor-grab' : ''}`}>
           <div className="min-w-0 flex-1">
@@ -103,7 +105,7 @@ export default function StyleGuideDialogs() {
               </div>
             </div>
           )}
-          {kind === 'form' && (
+          {isForm && (
             <form id="sg-dialog-form" className="ui-stack" onSubmit={submit}>
               <label className="ui-field">
                 <span className="ui-label">示例名称</span>
@@ -128,6 +130,16 @@ export default function StyleGuideDialogs() {
                   options={[{ value: 'color', label: '纯色' }, { value: 'image', label: '上传图片' }]} />
                 <span className="ui-hint">菜单可越过滚动区和弹窗边界显示；Esc 先收起菜单，再关闭弹窗。</span>
               </div>
+              {kind === 'glass' && (
+                <div className="ui-card ui-stack p-2">
+                  <h4 className="text-xs font-medium text-canvas-text">内部内容分组</h4>
+                  <p className="ui-hint">卡片、下拉与数字输入共用底色，文字与交互状态保持清晰层次。</p>
+                  <label className="ui-field">
+                    <span className="ui-label">禁用输入</span>
+                    <input className="ui-input" value="当前使用默认配置" disabled />
+                  </label>
+                </div>
+              )}
             </form>
           )}
           {kind === 'confirm' && (
@@ -156,13 +168,13 @@ export default function StyleGuideDialogs() {
           <div className="ui-card__footer-actions">
             <button type="button" className="ui-btn ui-btn--ghost" onClick={close}>取消</button>
             <button
-              type={kind === 'form' ? 'submit' : 'button'}
-              form={kind === 'form' ? 'sg-dialog-form' : undefined}
+              type={isForm ? 'submit' : 'button'}
+              form={isForm ? 'sg-dialog-form' : undefined}
               className={`ui-btn ${kind === 'confirm' ? 'ui-btn--danger' : 'ui-btn--primary'}`}
-              disabled={kind === 'form' && !name.trim()}
-              onClick={kind === 'form' ? undefined : finish}
+              disabled={isForm && !name.trim()}
+              onClick={isForm ? undefined : finish}
             >
-              {kind === 'form' ? '保存示例' : kind === 'confirm' ? '确认操作' : '完成'}
+              {isForm ? '保存示例' : kind === 'confirm' ? '确认操作' : '完成'}
             </button>
           </div>
         </footer>

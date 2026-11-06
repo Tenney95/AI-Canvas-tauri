@@ -1735,8 +1735,8 @@ function ReferencesSection() {
 
 function DialogsSection() {
   return (
-    <Section id="sg-dialogs" desc="复用 ModalOverlay、PopupCloseButton 和 UI Kit 的标题、表单、按钮样式；预览普通、表单、确认与长内容弹窗。">
-      <Demo label="弹窗交互演示" code="ModalOverlay / PopupCloseButton / ui-card__header / ui-card__body / ui-card__footer · closeOnBackdrop / draggable / backdropBlur">
+    <Section id="sg-dialogs" desc="复用 ModalOverlay、PopupCloseButton 和 UI Kit 的标题、表单、按钮样式；预览普通、表单、确认、长内容与磨砂小弹窗，核对深浅主题下的内部控件层次。">
+      <Demo label="弹窗交互演示" code="ModalOverlay / ui-dialog-surface / ui-dialog-glass / PopupCloseButton / ui-card__header / ui-card__body / ui-card__footer · closeOnBackdrop / draggable / backdropBlur">
         <StyleGuideDialogs />
       </Demo>
     </Section>
