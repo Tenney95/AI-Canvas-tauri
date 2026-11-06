@@ -162,6 +162,19 @@ describe('history key cursor pruning and cleanup', () => {
     expect((await service.getHistoryEntriesForExport('project-b')).map((record) => record.id)).toEqual(['foreign']);
   });
 
+  it.each(['project', 'node'] as const)('treats unmatched %s cleanup as a no-op', async (scope) => {
+    const service = await import('../../src/services/indexedDbService');
+    await service.putHistoryEntries([
+      historyRecord('existing', 'node-a', 1), historyRecord('foreign', 'node-a', 1, 'project-b'),
+    ]);
+    const cleanup = () => scope === 'project' ? service.clearAllHistoryEntries('missing-project')
+      : service.deleteNodeHistoryEntries('project-a', 'missing-node');
+    await expect(cleanup()).resolves.toBeUndefined();
+    await expect(cleanup()).resolves.toBeUndefined();
+    expect((await service.getHistoryEntriesForExport('project-a')).map((record) => record.id)).toEqual(['existing']);
+    expect((await service.getHistoryEntriesForExport('project-b')).map((record) => record.id)).toEqual(['foreign']);
+  });
+
   it.each(['project', 'node'] as const)('cleans %s history using keys and preserves other scopes', async (scope) => {
     const service = await import('../../src/services/indexedDbService');
     await service.putHistoryEntries([

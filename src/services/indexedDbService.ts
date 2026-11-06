@@ -727,6 +727,16 @@ export async function clearGlobalCharacters(): Promise<void> {
   });
 }
 
+/** 复用已有主键游标；事务、索引范围和错误处理仍由调用方负责。 */
+function deleteKeyCursorEntries(store: IDBObjectStore, request: IDBRequest<IDBCursor | null>): void {
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    store.delete(cursor.primaryKey);
+    cursor.continue();
+  };
+}
+
 /** 原子删除项目及其项目域持久化数据。 */
 export async function deleteProjectFromDb(id: string): Promise<void> {
   const db = await openDB();
@@ -763,12 +773,7 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
     const conversationCursor = conversationStore
       .index('projectId_updatedAt')
       .openKeyCursor(conversationRange);
-    conversationCursor.onsuccess = () => {
-      const cursor = conversationCursor.result;
-      if (!cursor) return;
-      conversationStore.delete(cursor.primaryKey);
-      cursor.continue();
-    };
+    deleteKeyCursorEntries(conversationStore, conversationCursor);
 
     // chatMessages 没有 projectId 索引；项目删除是低频操作，事务内全表扫描
     // 可以清理会话记录已损坏时留下的孤儿消息，同时避免为此升级 schema。
@@ -785,47 +790,27 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
     const taskCursor = taskStore
       .index('projectId_updatedAt')
       .openKeyCursor(taskRange);
-    taskCursor.onsuccess = () => {
-      const cursor = taskCursor.result;
-      if (!cursor) return;
-      taskStore.delete(cursor.primaryKey);
-      cursor.continue();
-    };
+    deleteKeyCursorEntries(taskStore, taskCursor);
 
     const memoryRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
     const memoryStore = tx.objectStore(STORE_PROJECT_MEMORIES);
     const memoryCursor = memoryStore
       .index('projectId_updatedAt')
       .openKeyCursor(memoryRange);
-    memoryCursor.onsuccess = () => {
-      const cursor = memoryCursor.result;
-      if (!cursor) return;
-      memoryStore.delete(cursor.primaryKey);
-      cursor.continue();
-    };
+    deleteKeyCursorEntries(memoryStore, memoryCursor);
 
     const historyStore = tx.objectStore(STORE_HISTORY);
     const historyCursor = historyStore
       .index('projectId_timestamp_id')
       .openKeyCursor(projectHistoryRange(id));
-    historyCursor.onsuccess = () => {
-      const cursor = historyCursor.result;
-      if (!cursor) return;
-      historyStore.delete(cursor.primaryKey);
-      cursor.continue();
-    };
+    deleteKeyCursorEntries(historyStore, historyCursor);
 
     const visualRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
     const visualStore = tx.objectStore(STORE_PROJECT_VISUAL_DESCRIPTIONS);
     const visualCursor = visualStore
       .index('projectId_updatedAt')
       .openKeyCursor(visualRange);
-    visualCursor.onsuccess = () => {
-      const cursor = visualCursor.result;
-      if (!cursor) return;
-      visualStore.delete(cursor.primaryKey);
-      cursor.continue();
-    };
+    deleteKeyCursorEntries(visualStore, visualCursor);
 
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error(`删除项目 ${id} 的持久化数据失败`));
@@ -1246,12 +1231,7 @@ export async function clearAllHistoryEntries(projectId: string): Promise<void> {
     const request = store
       .index('projectId_timestamp_id')
       .openKeyCursor(projectHistoryRange(projectId));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) return;
-      store.delete(cursor.primaryKey);
-      cursor.continue();
-    };
+    deleteKeyCursorEntries(store, request);
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('历史记录清理失败'));
   });
@@ -1266,12 +1246,7 @@ export async function deleteNodeHistoryEntries(projectId: string, nodeId: string
     const request = store
       .index('projectId_nodeId')
       .openKeyCursor(IDBKeyRange.only([projectId, nodeId]));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) return;
-      store.delete(cursor.primaryKey);
-      cursor.continue();
-    };
+    deleteKeyCursorEntries(store, request);
     request.onerror = () => reject(request.error);
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('节点历史记录清理失败'));
@@ -1973,13 +1948,7 @@ export async function deleteConversationMessages(conversationId: string): Promis
       [conversationId, Infinity],
     );
     const cursorReq = index.openKeyCursor(range);
-    cursorReq.onsuccess = () => {
-      const cursor = cursorReq.result;
-      if (cursor) {
-        store.delete(cursor.primaryKey);
-        cursor.continue();
-      }
-    };
+    deleteKeyCursorEntries(store, cursorReq);
     cursorReq.onerror = () => reject(cursorReq.error);
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('会话消息删除失败'));
@@ -2001,13 +1970,7 @@ export async function permanentlyDeleteConversation(convId: string): Promise<voi
     const msgIndex = msgStore.index('conversationId_sequence');
     const range = IDBKeyRange.bound([convId, 0], [convId, Infinity]);
     const cursorReq = msgIndex.openKeyCursor(range);
-    cursorReq.onsuccess = () => {
-      const cursor = cursorReq.result;
-      if (cursor) {
-        msgStore.delete(cursor.primaryKey);
-        cursor.continue();
-      }
-    };
+    deleteKeyCursorEntries(msgStore, cursorReq);
     // 删除该会话的 Agent 任务。
     const taskStore = tx.objectStore(STORE_AGENT_TASKS);
     const taskIndex = taskStore.index('conversationId_updatedAt');
@@ -2384,13 +2347,7 @@ export async function deleteProjectMemories(projectId: string): Promise<void> {
     const index = store.index('projectId_updatedAt');
     const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
     const cursorRequest = index.openKeyCursor(range);
-    cursorRequest.onsuccess = () => {
-      const cursor = cursorRequest.result;
-      if (cursor) {
-        store.delete(cursor.primaryKey);
-        cursor.continue();
-      }
-    };
+    deleteKeyCursorEntries(store, cursorRequest);
     cursorRequest.onerror = () => reject(cursorRequest.error);
     tx.oncomplete = () => resolve();
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('项目记忆清理失败'));

@@ -1396,74 +1396,115 @@ describe('critical canvas node interactions', () => {
     )).toThrow('Element not found');
   });
 
-  it('ImageNode cancels a pending crop when the canvas revision changes', async () => {
-    let revision = 1;
-    const store = createStore([{
-      id: 'image-source',
-      type: 'ai-image',
-      position: { x: 20, y: 30 },
-      data: { type: 'ai-image', label: 'Source image', imageUrl: 'data:image/png;base64,source' },
-    }], () => revision);
-    const saveResult = deferred<{ assetUrl: string; filePath: string }>();
+  describe.each(['crop', 'compose'] as const)('ImageNode %s result saving', (operation) => {
+    const suffix = operation === 'crop' ? 'cropped' : 'composed';
+    const failureMessage = operation === 'crop' ? '裁切失败，请重试' : '合成失败，请重试';
+    const successMessage = operation === 'crop' ? '裁切完成，已创建新节点' : '合成完成，已创建新节点';
 
-    // 强制打开裁切编辑器：按 ImageNode 里 useState 的声明顺序数，isCrop 是第 7 个（下标 6）。
-    // 在它之前增删 useState 会让本用例找不到裁切编辑器，届时按声明顺序重新数一次。
-    const IS_CROP_STATE_INDEX = 6;
-    await installReactHookDriver((initialValue, index) => (
-      index === IS_CROP_STATE_INDEX ? true : initialValue
-    ));
-    installStoreMock(store);
-    installCommonNodeMocks();
-    vi.doMock('../../src/components/nodes/shared/image/CropEditor', () => ({
-      default: function CropEditorMock() { return null; },
-    }));
-    vi.doMock('../../src/components/nodes/shared/image/imageUtils', () => ({
-      computeImageNodeDimensions: vi.fn().mockResolvedValue({ nodeWidth: 200, nodeHeight: 120 }),
-    }));
-    vi.doMock('../../src/services/fileService', () => ({
-      buildNodeFileName: () => 'crop.png',
-      saveDataUrlToProjectData: vi.fn(() => saveResult.promise),
-    }));
-    vi.doMock('../../src/services/clipboardService', () => ({ copyImage: vi.fn() }));
-    vi.doMock('../../src/services/apimartService', () => ({ generateOutpaintImage: vi.fn() }));
-    vi.doMock('../../src/services/onnxService', () => ({
-      imageUpscale: vi.fn(), subjectMatting: vi.fn(), checkModelExists: vi.fn(), downloadModel: vi.fn(),
-    }));
-    vi.doMock('../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
-    vi.doMock('../../src/store/store.utils', () => ({ blobToDataUrl: vi.fn() }));
-    vi.doMock('../../src/components/nodes/shared/toolbar/presetAction', () => ({ createPresetNode: vi.fn() }));
+    async function setup(projectId = 'project-a') {
+      let revision = 1;
+      const store = createStore([{
+        id: 'image-source', type: 'ai-image', position: { x: 20, y: 30 },
+        data: { type: 'ai-image', label: 'Source image', imageUrl: 'data:image/png;base64,source' },
+      }], () => revision);
+      store.currentProjectId = projectId;
+      const saved = { assetUrl: 'asset://result.png', filePath: 'data/result.png' };
+      const measured = { imageWidth: 640, imageHeight: 360, nodeWidth: 200, nodeHeight: 120 };
+      const saveFile = vi.fn<typeof import('../../src/services/fileService').saveDataUrlToProjectData>().mockResolvedValue(saved);
+      const dimensions = vi.fn<typeof import('../../src/components/nodes/shared/image/imageUtils').computeImageNodeDimensions>()
+        .mockResolvedValue(measured);
+      const buildName = vi.fn((_label: string, _extension: string, fallback: string) => `${fallback}.png`);
+      // The existing hook driver opens one lazy editor by its useState position.
+      const editorStateIndex = operation === 'crop' ? 6 : 8;
+      await installReactHookDriver((initialValue, index) => index === editorStateIndex ? true : initialValue);
+      installStoreMock(store);
+      installCommonNodeMocks();
+      vi.doMock('../../src/components/nodes/shared/image/imageUtils', () => ({ computeImageNodeDimensions: dimensions }));
+      vi.doMock('../../src/services/fileService', () => ({ buildNodeFileName: buildName, saveDataUrlToProjectData: saveFile }));
+      vi.doMock('../../src/services/clipboardService', () => ({ copyImage: vi.fn() }));
+      vi.doMock('../../src/services/apimartService', () => ({ generateOutpaintImage: vi.fn() }));
+      vi.doMock('../../src/services/onnxService', () => ({
+        imageUpscale: vi.fn(), subjectMatting: vi.fn(), checkModelExists: vi.fn(), downloadModel: vi.fn(),
+      }));
+      vi.doMock('../../src/services/generationService', () => ({ executeGeneration: vi.fn() }));
+      vi.doMock('../../src/store/store.utils', () => ({ blobToDataUrl: vi.fn() }));
+      vi.doMock('../../src/components/nodes/shared/toolbar/presetAction', () => ({ createPresetNode: vi.fn() }));
+      const ImageNode = (await import('../../src/components/nodes/ImageNode')).default as unknown as (
+        props: { id: string; data: Record<string, unknown>; selected: boolean },
+      ) => unknown;
+      const tree = ImageNode({ id: 'image-source', data: store.nodes[0].data, selected: true });
+      const editor = findElement(tree, (element) => (
+        typeof element.props.onStart === 'function' && typeof element.props.onSave === 'function'
+      ));
+      return { store, saved, measured, saveFile, dimensions, buildName,
+        start: editor.props.onStart as () => void,
+        save: editor.props.onSave as (url: string, metadata?: { width: number; height: number }) => Promise<void>,
+        invalidate: () => { revision += 1; } };
+    }
 
-    const ImageNode = (await import('../../src/components/nodes/ImageNode')).default as unknown as (
-      props: { id: string; data: Record<string, unknown>; selected: boolean },
-    ) => unknown;
-    const tree = ImageNode({ id: 'image-source', data: store.nodes[0].data, selected: true });
-    // CropEditor 已改为 lazy 加载，而本文件的 react stub 把所有 lazy 统一换成
-    // LazyComponentMock，按组件名找不到它。几个编辑器都是条件渲染，本用例只打开了
-    // 裁切，按裁切编辑器特有的 onStart + onSave 回调定位比按组件名更稳。
-    const cropEditor = findElement(tree, (element) => (
-      typeof element.props.onStart === 'function'
-      && typeof element.props.onSave === 'function'
-    ));
+    it.each(['saving', 'measuring'] as const)('cancels a result that becomes stale during %s', async (stage) => {
+      const current = await setup();
+      const saving = deferred<typeof current.saved>();
+      const measuring = deferred<typeof current.measured>();
+      if (stage === 'saving') current.saveFile.mockImplementationOnce(() => saving.promise);
+      else current.dimensions.mockImplementationOnce(() => measuring.promise);
+      current.start();
+      const completion = current.save('data:image/png;base64,result');
+      if (stage === 'measuring') await vi.waitFor(() => expect(current.dimensions).toHaveBeenCalledOnce());
+      else expect(current.saveFile).toHaveBeenCalledOnce();
+      current.invalidate();
+      if (stage === 'saving') saving.resolve(current.saved);
+      else measuring.resolve(current.measured);
+      await completion;
+      expect(current.store.nodes.map((node) => node.id)).toEqual(['image-source']);
+      expect(current.store.updateNodeDataTransient).not.toHaveBeenCalled();
+      expect(current.store.commitToHistory).not.toHaveBeenCalled();
+      expect(current.store.showToast).not.toHaveBeenCalled();
+      if (stage === 'saving') expect(current.dimensions).not.toHaveBeenCalled();
+    }, 20_000);
 
-    (cropEditor.props.onStart as () => void)();
-    expect(store.nodes.map((node) => node.id)).toContain('node-generated');
+    it.each(['saving', 'measuring'] as const)('removes its placeholder and reports a %s failure without committing', async (stage) => {
+      const current = await setup();
+      if (stage === 'saving') current.saveFile.mockRejectedValueOnce(new Error('save fixture'));
+      else current.dimensions.mockRejectedValueOnce(new Error('measure fixture'));
+      current.start();
+      await current.save('data:image/png;base64,result');
+      expect(current.store.nodes.map((node) => node.id)).toEqual(['image-source']);
+      expect(current.store.updateNodeDataTransient).not.toHaveBeenCalled();
+      expect(current.store.commitToHistory).not.toHaveBeenCalled();
+      expect(current.store.showToast).toHaveBeenCalledExactlyOnceWith(failureMessage, 'error');
+    }, 20_000);
 
-    const completion = (cropEditor.props.onSave as (url: string) => Promise<void>)('data:image/png;base64,crop');
-    await vi.waitFor(() => expect(store.nodes).toHaveLength(2));
-    revision = 2;
-    saveResult.resolve({ assetUrl: 'asset://crop.png', filePath: 'data/crop.png' });
-    await completion;
-
-    expect(store.nodes.map((node) => node.id)).toEqual(['image-source']);
-    expect(store.updateNodeDataTransient).not.toHaveBeenCalledWith(
-      'node-generated',
-      expect.objectContaining({ status: 'success' }),
-    );
-    expect(store.showToast).not.toHaveBeenCalledWith('裁切完成，已创建新节点');
-  },
-  // 该用例要 doMock 十余个模块并驱动 React hook，单跑约 2~3 秒；
-  // 全量并发时会被调度拖慢，默认 5s 超时不够用，这里放宽到 20s 避免偶发失败。
-  20_000);
+    it.each(['project-a', 'default'])('keeps naming, metadata priority and commit order in %s', async (projectId) => {
+      const current = await setup(projectId);
+      const metadata = projectId === 'default' ? undefined : { width: 1024, height: 512 };
+      const dataUrl = 'data:image/png;base64,result';
+      current.start();
+      await current.save(dataUrl, metadata);
+      expect(current.store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('node-generated', {
+        imageUrl: projectId === 'default' ? dataUrl : current.saved.assetUrl,
+        filePath: projectId === 'default' ? undefined : current.saved.filePath,
+        status: 'success', imageWidth: metadata?.width ?? current.measured.imageWidth,
+        imageHeight: metadata?.height ?? current.measured.imageHeight,
+        nodeWidth: current.measured.nodeWidth, nodeHeight: current.measured.nodeHeight,
+      });
+      if (projectId === 'default') {
+        expect(current.saveFile).not.toHaveBeenCalled();
+        expect(current.buildName).not.toHaveBeenCalled();
+      } else {
+        expect(current.buildName).toHaveBeenCalledExactlyOnceWith(
+          operation === 'crop' ? 'Source image 裁切' : 'Source image 合成', 'png', suffix,
+        );
+        expect(current.saveFile).toHaveBeenCalledExactlyOnceWith(dataUrl, projectId, `${suffix}.png`);
+      }
+      expect(current.store.commitToHistory).toHaveBeenCalledOnce();
+      expect(current.store.showToast).toHaveBeenCalledExactlyOnceWith(successMessage);
+      expect(current.store.updateNodeDataTransient.mock.invocationCallOrder[0])
+        .toBeLessThan(current.store.commitToHistory.mock.invocationCallOrder[0]);
+      expect(current.store.commitToHistory.mock.invocationCallOrder[0])
+        .toBeLessThan(current.store.showToast.mock.invocationCallOrder[0]);
+    }, 20_000);
+  });
 
   it('VideoNode does not create a frame node after its derivation becomes stale', async () => {
     let revision = 1;

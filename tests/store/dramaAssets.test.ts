@@ -1214,6 +1214,51 @@ describe('dramaAssets store', () => {
 });
 
 
+describe('scoped character lookups', () => {
+  const voiceClip = (audioUrl: string) => ({
+    id: 'voice', kind: 'timbre' as const, audioUrl, transcript: '', createdAt: 1, updatedAt: 1,
+  });
+
+  it.each(['project', 'global'] as const)('edits and reads only the %s character when both scopes share an ID', async (scope) => {
+    const project = sampleCharacter({ name: 'Project', voiceClips: [voiceClip('project-voice.mp3')] });
+    const global = sampleCharacter({ name: 'Global', voiceClips: [voiceClip('global-voice.mp3')] });
+    useAppStore.setState({
+      dramaAssets: { ...emptyDramaAssetLibrary(), characters: [project] }, globalCharacters: [global],
+    });
+    const added = { ...voiceClip('added.mp3'), id: 'added' };
+    expect(await useAppStore.getState().addCharacterVoiceClip(scope, 'char_1', added)).toBe(true);
+    const state = useAppStore.getState();
+    const updated = scope === 'project' ? state.dramaAssets.characters[0] : state.globalCharacters[0];
+    const untouched = scope === 'project' ? state.globalCharacters[0] : state.dramaAssets.characters[0];
+    expect(updated).toMatchObject({ name: scope === 'project' ? 'Project' : 'Global',
+      voiceClips: expect.arrayContaining([expect.objectContaining({ id: 'added', audioUrl: 'added.mp3' })]) });
+    expect(untouched).toBe(scope === 'project' ? global : project);
+
+    const sourceId = state.createAudioNodeFromCharacterVoice(scope, 'char_1', 'voice');
+    expect(sourceId).toBeTruthy();
+    expect(useAppStore.getState().nodes.find((node) => node.id === sourceId)?.data.audioUrl)
+      .toBe(`${scope}-voice.mp3`);
+  });
+
+  it.each(['project', 'global'] as const)('does not borrow the other scope when the %s character is missing', async (scope) => {
+    const other = sampleCharacter({ voiceClips: [voiceClip('other.mp3')] });
+    const save = vi.fn(async () => true);
+    const addNode = vi.fn();
+    useAppStore.setState({
+      dramaAssets: { ...emptyDramaAssetLibrary(), characters: scope === 'global' ? [other] : [] },
+      globalCharacters: scope === 'project' ? [other] : [], saveCharacterCard: save, addNode,
+    });
+    const before = useAppStore.getState();
+    expect(await before.addCharacterVoiceClip(scope, 'char_1', voiceClip('new.mp3'))).toBe(false);
+    expect(await before.addCharacterAction(scope, 'char_1', { category: 'standing', name: 'Stand', prompt: '' })).toBeNull();
+    expect(before.createAudioNodeFromCharacterVoice(scope, 'char_1', 'voice')).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+    expect(addNode).not.toHaveBeenCalled();
+    expect(useAppStore.getState().dramaAssets).toBe(before.dramaAssets);
+    expect(useAppStore.getState().globalCharacters).toBe(before.globalCharacters);
+  });
+});
+
 describe('canvas visibility membership cache', () => {
   const make = (id: string, data: Partial<BaseNodeData> = {}, parentId?: string): Node<BaseNodeData> => ({
     id, parentId, type: id === 'group' ? 'group' : 'ai-image', position: { x: 0, y: 0 },

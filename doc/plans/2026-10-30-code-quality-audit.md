@@ -461,3 +461,48 @@ Tauri 桌面验收（使用测试项目、已有角色、图片/GIF/视频节点
 自动回归供用户在仓库根目录执行：`npx vitest run tests/components/characterActionMedia.test.ts tests/store/dramaAssets.test.ts tests/services/dramaMentionPick.test.ts tests/components/videoParamSelectorProtocol.test.ts`；类型检查按需执行 `npm run typecheck` 与 `npm run test:typecheck`。以上命令本批均未运行。
 
 回滚：仅撤销上述五个业务源码文件、本批新增回归及本节文档差异；不回退 Q18 或其他任务的改动，无数据迁移需要回滚。
+
+## 2026-11-06 续查：Q20～Q25
+
+状态：Q20～Q22 已实现并补回归，Q23～Q25 仍为审查候选。已完成源码、引用、UTF-8 和差异空白静态核对；本次未运行测试，待用户验收。未运行 lint、类型检查、构建、性能基准或桌面实测。模型、Agent、生成执行器及发布准备的并行工作区改动未纳入本批。以下业务源码净减均扣除共享实现，不计测试和文档，不代表包体积或实测性能收益；未实现条目仍为估算。
+
+| 条目 | 当前证据与最小业务文件范围 | 业务源码净减 | 状态与建议 |
+|---|---|---|---|
+| Q20 角色查找 | [store.dramaAssets.ts:70](../../src/store/store.dramaAssets.ts#L70) 的私有纯函数复用 14 处作用域/ID 查找；仅此文件 | 33 行 | 已实现，待用户验收 |
+| Q21 图片保存 | [ImageNode.tsx:339](../../src/components/nodes/ImageNode.tsx#L339) 的共享保存流程供裁切与合成的两个稳定回调使用；仅此文件 | 49 行 | 已实现，待用户验收 |
+| Q22 数据库键游标删除 | [indexedDbService.ts:731](../../src/services/indexedDbService.ts#L731) 的私有循环复用六个函数的 10 组键游标删除；仅此文件 | 43 行 | 已实现，待用户验收 |
+| Q23 旧截图辅助 | [projectSnapshotService.ts:23](../../src/services/projectSnapshotService.ts#L23)、[:94](../../src/services/projectSnapshotService.ts#L94) 的旧过滤表、过滤函数和同步编码函数，仅旧测试引用；业务仅此文件，另调整对应测试 | 约 35 行 | 可清理，先核对兼容约定 |
+| Q24 视频窗口发送 | [videoEditorWindowService.ts:299](../../src/services/videoEditorWindowService.ts#L299) 起七个发送方法重复导入、事件目标及 envelope；仅此文件 | 约 15～30 行 | 次优先，收益有限 |
+| Q25 手工选区删除 | [useCanvasContextMenu.ts:198](../../src/hooks/useCanvasContextMenu.ts#L198)、[useKeyboardShortcuts.ts:288](../../src/hooks/useKeyboardShortcuts.ts#L288) 重复删除编排，拟归入 [store.nodes.ts](../../src/store/store.nodes.ts)；三个文件 | 纯去重约 30～40 行；修复后的实际值待定 | 单独设计，中风险 |
+
+Q20～Q22 本批业务源码实际净减 125 行，含空行及私有共享实现；修改三个业务文件、三个现有回归文件与本文，没有新增模块、依赖、数据库版本或持久化字段。具体边界：
+
+- Q20 只共享纯查找，接收原调用位置取得的 Store 快照，不缓存角色或改变 `get()`/`state` 的采样点。参考图、头像、声音、动作及来源节点 Action 的保存、取消和派生守卫继续由各调用方负责。`tests/store/dramaAssets.test.ts` 新增四个参数化场景，覆盖同 ID 项目/全局角色分别编辑、从正确库生成声音节点，以及目标作用域缺失时不跨库保存或创建节点；尚未执行。
+- Q21 保留两个稳定回调入口和独立 pending ref，只合并保存函数；文件命名、提示文案、`ensureFresh`、`clearPending`、历史提交与完成/取消顺序不变。扩图另有模型请求、进度和失败合同，不并入。`tests/components/nodeCriticalInteractions.test.tsx` 原裁切用例复用为两种操作共 12 个参数化场景，调用真实组件的 `onStart/onSave` 与派生守卫，覆盖保存/尺寸读取期间过期、两阶段异常、普通/默认项目、命名、元数据优先和回填/历史/提示顺序；尚未执行。空结果、保存返回 null、新旧 ref 交错、两操作并行及真实跨渲染回调身份仍未直接覆盖，不能将静态一致性当作实测通过。
+- Q22 只共享 `onsuccess` 内的 `store.delete(cursor.primaryKey)` 与 `cursor.continue()`，保留原 request、事务、索引范围、错误与终态处理。范围为 `deleteProjectFromDb` 的五组循环，以及 `clearAllHistoryEntries`、`deleteNodeHistoryEntries`、`deleteConversationMessages`、`permanentlyDeleteConversation`、`deleteProjectMemories` 各一组。不覆盖 `pruneProjectHistory` 的保留区跳跃或 AgentTask 删除的 MCP 墓碑写入。原有键游标、作用域隔离与事务中止回滚用例保持；`tests/services/imageGenerationHistory.test.ts` 新增两个参数化场景，确认空范围连续清理完成且不影响现有项目/节点记录；尚未执行。
+
+Q23 的实际入口是 `store.projects.ts → captureCurrentCanvasSnapshot → projectSnapshotWorker.ts`。旧 `shouldIncludeProjectSnapshotNode`、`encodeProjectSnapshot` 及专属常量只供 `tests/services/projectSnapshotService.test.ts` 的旧用例使用；删除时保留同模块仍在使用的数据 URL 校验、矩形换算及 Worker/媒体/几何回归。源码明确保留过兼容语义，因此先核对当前调用和兼容用途，不能仅凭函数较旧就删。预计另可减少约 40 行专属旧测试。
+
+Q24 必须保留“先动态导入 event，再构造/浅拷贝 payload”的时机。直接把预构造 message 传入 helper 会提前读取 `result/request`，不能当作严格等价；可用内部消息构造回调保留时序，并固定主窗口/编辑器的事件配对，继续透传导入与发送错误。保留七个语义化导出，不新增任意窗口目标或通用消息入口。现有 `tests/services/videoEditorWindowService.test.ts` 需补 ready、模型列表请求、AI 转场请求、发送失败及等待导入期间修改输入的时序用例。
+
+Q25 是修复行为分叉伴随精简，不能直接调用现有 `deleteNodesBatch`：
+
+- 两 Hook 仅保留存活节点顶层 `filePath`，Store 的 `collectKeepPaths` 还保护宫格、分镜、导演台和聊天产物引用，并排除 `artifactId` 节点文件。Hook 可能将仍被这些位置引用的同项目文件移入撤销暂存区；这是静态风险，尚未复现，底层项目归属校验仍在。
+- Hook 不处理删除最后成员后的空组及 `data.groupId` 映射，Store 的 `pruneDeletedNodesAndEmptyGroups` 会处理，同时保留手工空组，文件清理也会暂存对应组目录。
+- 既有批量 API 只取前 50 个显式根节点，不处理独立选中边，且选择清空与历史提交时机不同。应单独设计手工选区删除 Action，保留完整节点/边选择、即时清选择及一次撤销，批量 API 的限额继续保留。
+
+Q25 现有下游回归为 `tests/store/history.test.ts`、`tests/services/gridAssetRoundTrip.test.ts` 和 `tests/services/fsTrash.test.ts`；两个 Hook 需补直接入口回归。桌面必须覆盖超过 50 节点、纯边/混合选择、组后代/最后成员、手工空组、共享素材、连续删除、动画期间切项目和一次撤销。
+
+继续暂缓：角色声音播放的状态归属与 Effect 清理依赖不同，保留差异后只约净减 20～30 行且缺直接回归；ComfyUI 图片/音频/视频的待恢复状态、视频暂停和 finally 身份清理不同，整段统一会增加可变上下文；跨库复制合并只约净减 15～22 行。本轮扫描未发现足以支持再批量删除大模块的确定证据。
+
+### Q20～Q22 验收与回滚
+
+Tauri 桌面验收前准备测试项目、项目与全局各一份角色、可编辑图片、两份含历史/会话/记忆数据的测试项目；涉及永久删除时先导出备份。按以下顺序验收：
+
+1. 分别在项目/全局角色库追加参考图、设头像、添加/编辑/移除声音与动作，再从参考图/声音创建画布节点。预期编辑与媒体来源属于所选库，另一库保留原内容；保存重开后仍正确。角色已删除时操作应按原方式提示或拒绝，不借用另一库。
+2. 对同一图片分别裁切与合成，确认仍创建独立结果节点，原图不被覆盖，结果文件名、像素尺寸、显示尺寸和完成提示正确；保存重开、撤销/重做仍可用。分别取消、在处理中切项目或删除源节点/占位节点，迟到结果不得写回其他项目；用可控保存/测量失败核对占位清理和失败提示，过期操作不显示成功。扩图入口继续按原行为工作。
+3. 分别清理节点历史、项目历史、删除会话/消息/项目记忆及测试项目，预期只清目标范围，另一个项目与会话的数据仍可读；空范围连续清理正常完成，项目删除仍清理其关联数据。事务中止与失败回滚、MCP 墓碑及历史保留区优先由现有自动回归覆盖，不通过 UI 测试伪造通过结论。
+
+自动回归供用户在仓库根目录执行：`npx vitest run tests/store/dramaAssets.test.ts tests/components/nodeCriticalInteractions.test.tsx tests/services/chatMessageSequence.test.ts tests/services/imageGenerationHistory.test.ts`；按需执行 `npm run typecheck` 与 `npm run test:typecheck`。以上命令本批均未运行，桌面功能与性能仍待用户验收。
+
+回滚仅撤销本批三个业务文件、三个回归文件以及本文 Q20～Q22 状态差异；无数据迁移，不回退 Q18/Q19、Q23～Q25 审查或并行发布准备的改动。Q23～Q25 仍未实施，后续开始前重新核对工作区与范围。
