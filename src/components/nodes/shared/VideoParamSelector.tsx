@@ -751,6 +751,40 @@ export default function VideoParamSelector({
         ? t('{ratio} · {resolution} · 时长{duration}s', { ratio: genericRatio, resolution: legacyVideoResolution, duration: displayedDuration ?? '' })
         : t('时长{duration}s · 帧率{fps} · 分辨率{resolution}', { duration: displayedDuration ?? '', fps: legacyVideoFps, resolution: legacyVideoResolution });
 
+  const renderDurationSlider = (activeDuration: number | undefined) => (
+    <div className="rh-duration-slider">
+      <div className="rh-duration-track">
+        <div
+          className="rh-duration-fill"
+          style={{ width: activeDuration === undefined
+            ? '0%'
+            : `${((durationControlValue - minDuration) / Math.max(1, maxDuration - minDuration)) * 100}%` }}
+        />
+        <input
+          type="range"
+          className="rh-duration-input"
+          min={minDuration}
+          max={maxDuration}
+          step={1}
+          value={durationControlValue}
+          onChange={(e) => onChangeSeedanceDuration?.(Number(e.target.value))}
+          onBlur={onContinuousEditEnd}
+        />
+      </div>
+      <div className="rh-duration-labels">
+        {durationTicks.map((value) => (
+          <span
+            key={value}
+            className={`rh-duration-tick ${activeDuration !== undefined && activeDuration >= value ? 'active' : ''}`}
+            onClick={() => onChangeSeedanceDuration?.(value)}
+          >
+            {durationLabelValues.has(value) ? `${value}s` : ''}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+
   return (<>
     <div className="ui-schema-renderer" data-ui-schema-placement="videoParams" ref={ref}>
       <div className="ui-schema-quality-ratio-pill">
@@ -1030,35 +1064,7 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
                         )}
                         onBlur={onContinuousEditEnd}
                       />
-                    ) : (
-                    <div className="rh-duration-slider">
-                      <div className="rh-duration-track">
-                         <div
-                           className="rh-duration-fill"
-                           style={{ width: displayedDuration === undefined
-                             ? '0%'
-                             : `${((durationControlValue - minDuration) / Math.max(1, maxDuration - minDuration)) * 100}%` }}
-                         />
-                        <input
-                          type="range"
-                          className="rh-duration-input"
-                          min={minDuration}
-                          max={maxDuration}
-                          step={1}
-                          value={durationControlValue}
-                          onChange={(e) => onChangeSeedanceDuration?.(Number(e.target.value))}
-                          onBlur={onContinuousEditEnd}
-                        />
-                      </div>
-                      <div className="rh-duration-labels">
-                        {durationTicks.map((v) => (
-                          <span key={v} className={`rh-duration-tick ${displayedDuration !== undefined && displayedDuration >= v ? 'active' : ''}`} onClick={() => onChangeSeedanceDuration?.(v)}>
-                            {durationLabelValues.has(v) ? `${v}s` : ''}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    ))}
+                    ) : renderDurationSlider(displayedDuration))}
                   </div>}
 
 
@@ -1207,35 +1213,7 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
                       <span>{t('生成时长（秒）')}</span>
                       <span className="rh-tip" data-tooltip={t('整数秒，范围 {min}-{max}。提交时会根据帧率自动换算为模型需要的总帧数。', { min: minDuration, max: maxDuration })}>!</span>
                     </div>
-                    <div className="rh-duration-slider">
-                      <div className="rh-duration-track">
-                        <div
-                          className="rh-duration-fill"
-                          style={{ width: `${((durationControlValue - minDuration) / Math.max(1, maxDuration - minDuration)) * 100}%` }}
-                        />
-                        <input
-                          type="range"
-                          className="rh-duration-input"
-                          min={minDuration}
-                          max={maxDuration}
-                          step={1}
-                          value={durationControlValue}
-                          onChange={(e) => onChangeSeedanceDuration?.(Number(e.target.value))}
-                          onBlur={onContinuousEditEnd}
-                        />
-                      </div>
-                      <div className="rh-duration-labels">
-                        {durationTicks.map((value) => (
-                          <span
-                            key={value}
-                            className={`rh-duration-tick ${durationControlValue >= value ? 'active' : ''}`}
-                            onClick={() => onChangeSeedanceDuration?.(value)}
-                          >
-                            {durationLabelValues.has(value) ? `${value}s` : ''}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
+                    {renderDurationSlider(durationControlValue)}
                   </div>
                 </div>
               </>

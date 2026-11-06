@@ -413,3 +413,51 @@ Tauri 桌面验收（准备可回滚测试项目、中文文本/Markdown/媒体�
 3. **低收益统一与热点重构**：Q10、Q11 已实现；大模块只有在具体维护需求或性能证据出现时再按职责拆分。
 
 Q01～Q17 的实施范围与验收状态分别见上文；“保留的边界与暂缓的重构”仍为建议，不构成额外架构改动、删除文件、新增依赖或运行测试的授权。
+
+## Q18 局部重复续查与精简（2026-11-06）
+
+状态：两处局部等价清理已实现，完成调用链、差异、UTF-8 和差异空白静态核对；本次未运行测试，待用户验收。未运行 lint、类型检查、构建、性能基准或桌面交互。工作区其他任务的模型适配、计划索引及生成文件不属于本批。
+
+| 源码 | 精简内容 | 保留语义 |
+|---|---|---|
+| [assetImageDetails.ts](../../src/services/assetImageDetails.ts) | `resolvePromptImageReferences` 内统一三类引用的去重和返回字段构造，净减 25 行 | 资源、角色和节点仍按原分支解析；同 URL 保留首次出现的 ID、名称和位置，缺失引用跳过；指定参考图、动作媒体、历史回退、取消与错误处理沿用原逻辑 |
+| [store.config.ts](../../src/store/store.config.ts) | `setProviderKey`、`setProviderUrl` 委托已有 `setProviderConfig`，净减 25 行 | 新连接默认值、空 Key、已有连接其他字段、冻结检查、凭据变更标记、RunningHub 别名及 dirty/revision 继续经过原包装 `set`，每次 Action 仍只更新一次 |
+
+源码合计净减 50 行，含空行；未新增模块、依赖或存储迁移，未调整模块边界。参考图解析的顺序和查找次数、Store 写入次数不变，没有新增网络或磁盘操作；尚不能据此宣称包体积或运行性能已实测改善。
+
+Tauri 桌面验收：
+
+1. 准备包含节点、资产和角色图片引用的测试项目，在资产库打开图片详情与参考图预览。混用三类引用、让同一 URL 重复出现，预期按提示词出现顺序显示且只保留第一项；指定参考图失效不自动替换为主图，已删除节点仍按原历史回退，关闭预览或切换项目后不回填旧结果。
+2. 在设置中编辑测试连接的 Key、地址及其他字段，保存并重开应用，核对地址、模型选择和连接身份保持正确；清空 Key 后保存并重开仍为空。回归 RunningHub 站点切换、设置保存失败和凭据不可读提示，不应重复保存或把 Key 写入普通配置。现有自动回归涉及 Key 更新和持久化；两个快捷 Action 的新连接默认值、空值及 URL 更新仍缺直接回归，不能把设置界面验收当作这些入口的直接覆盖。
+
+自动回归供用户在仓库根目录执行：`npx vitest run tests/services/assetImageDetails.test.ts tests/store/config.test.ts tests/services/configSecretStorage.test.ts tests/components/apiKeyDeletionPersistence.test.tsx`；类型检查按需执行 `npm run typecheck` 与 `npm run test:typecheck`。以上命令本批均未运行。
+
+续查的角色动作媒体转换、会话项及视频时长滑条已在下述 Q19 实现，验收状态与 Q18 分开记录。角色声音播放生命周期、Agent Policy 与插件 revision 检查涉及资源所有权、延迟加载或信任边界，继续保留；大文件行数不是删除这些保护的依据。
+
+回滚：仅撤销本批两个源码文件和本节文档差异；无配置、数据库或素材回滚。更早批次与其他任务的改动保留。
+
+## Q19 角色媒体与重复渲染精简（2026-11-06）
+
+状态：三项已实现，新增角色转换的直接回归用例；本次未运行测试，待用户验收。仅完成调用链、源码差异、UTF-8 和差异空白静态核对，未运行 lint、类型检查、构建、性能基准或桌面交互。
+
+| 范围 | 共享实现与保留边界 | 业务源码净减 |
+|---|---|---|
+| [CharacterAssetDialog.tsx](../../src/components/CharacterAssetDialog.tsx)、[CharacterLibraryPanel.tsx](../../src/components/CharacterLibraryPanel.tsx)、新增 [characterActionMedia.ts](../../src/components/character/characterActionMedia.ts) | 两个入口共用节点转动作素材；视频优先、GIF/MIME、名称回退、素材身份、原始 URL 和 ID 规则保留，ID 直接复用轻量 `store.utils`；不引入 Store 运行时 | 62 行 |
+| [ConversationList.tsx](../../src/components/chat/ConversationList.tsx) | 置顶与普通会话共用普通渲染函数，保留 `ConversationItem` 类型、key、Fragment、AnimatePresence、订阅与事件回调 | 15 行 |
+| [VideoParamSelector.tsx](../../src/components/nodes/shared/VideoParamSelector.tsx) | 两份滑条共用普通渲染函数；input 和填充仍使用夹取后的值，刻度按各入口原值激活，未指定时长仍为 0% 填充且无激活刻度 | 22 行 |
+
+业务源码合计净减 99 行，含新增共享文件及空行；与 Q18 累计净减 149 行。数字不含回归和文档，不代表生产包体积或实测性能收益。未增加依赖、持久化字段、原生命令、网络/磁盘操作或 Store 订阅，也未改动其他任务的模型协议文件。
+
+时间戳统一在有效媒体完成类型识别、构造结果前采样一次；保留 `createdAt === updatedAt`，无媒体不读取时钟或生成 ID。角色收录弹窗原先在同步解析开始时采样，现在与角色库同样在构造结果前采样。角色库筛选仍使用原来的转换调用，未顺带改变临时 ID 分配或绑定流程。
+
+新增 [characterActionMedia.test.ts](../../tests/components/characterActionMedia.test.ts) 覆盖缺失节点/媒体、视频优先及文件名/路径/URL 扩展名顺序、GIF 与 data MIME、来源身份和 URL 原样保留、名称与缩略图回退、单次 ID/取时及不修改输入；尚未执行。会话列表本批没有新增直接交互回归，视频沿用现有组件回归，不能用静态核对替代桌面验收。
+
+Tauri 桌面验收（使用测试项目、已有角色、图片/GIF/视频节点、至少两条会话及可配置的视频模型，不必发起模型生成）：
+
+1. 分别通过节点角色收录弹窗的「动作素材 → 添加到动作库」和角色库已有动作的画布节点选择入口绑定同一组图片、GIF、视频；预期类型、名称、预览、重复提示及添加后隐藏节点保持原行为，保存重开后仍可用。回归仅有缩略图、没有媒体、已删除节点、取消选择及切换项目不写入旧目标。
+2. 在助手列表操作置顶与普通会话的选择、重命名、取消置顶、搜索、归档和删除，预期当前项、任务状态与编辑状态正确；主窗口和独立窗口分别检查，动画与减少动态效果下层级不变。
+3. 在视频参数中分别检查通用模型「模型默认」、有界时长滑条及 ComfyUI/RunningHub 旧节点的帧数/FPS 换算；未指定时长不误显示为已选，拖动/点刻度后按原秒数更新，切换 FPS 不改变已确认秒数。回归最小/最大值、旧越界值、禁用状态、失焦保存及深浅主题。
+
+自动回归供用户在仓库根目录执行：`npx vitest run tests/components/characterActionMedia.test.ts tests/store/dramaAssets.test.ts tests/services/dramaMentionPick.test.ts tests/components/videoParamSelectorProtocol.test.ts`；类型检查按需执行 `npm run typecheck` 与 `npm run test:typecheck`。以上命令本批均未运行。
+
+回滚：仅撤销上述五个业务源码文件、本批新增回归及本节文档差异；不回退 Q18 或其他任务的改动，无数据迁移需要回滚。

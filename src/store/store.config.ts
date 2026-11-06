@@ -465,33 +465,8 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
     }
   },
 
-  setProviderKey: (providerName, key) =>
-    set((state) => ({
-      config: {
-        ...state.config,
-        providers: {
-          ...state.config.providers,
-          [providerName]: {
-            ...(state.config.providers[providerName] || { name: providerName }),
-            apiKey: key,
-          },
-        },
-      },
-    })),
-
-  setProviderUrl: (providerName, url) =>
-    set((state) => ({
-      config: {
-        ...state.config,
-        providers: {
-          ...state.config.providers,
-          [providerName]: {
-            ...(state.config.providers[providerName] || { name: providerName, apiKey: '' }),
-            baseUrl: url,
-          },
-        },
-      },
-    })),
+  setProviderKey: (providerName, key) => get().setProviderConfig(providerName, { apiKey: key }),
+  setProviderUrl: (providerName, url) => get().setProviderConfig(providerName, { baseUrl: url }),
 
   setProviderConfig: (providerName, cfg) =>
     set((state) => ({
