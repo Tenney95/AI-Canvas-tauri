@@ -368,10 +368,10 @@ export default function ScriptWorkbench({
     () => hasUnsettledEpisodeEditorSession(currentEpisode?.id), () => false);
   const teamProfile = useMemo(() => normalizeTeamProfile(config.agentTeamProfile), [config.agentTeamProfile]);
   const modelCatalog = useMemo(() => buildChatModelCatalog({ config, workflows }), [config, workflows]);
-  const episodeTeamTasks = useMemo(() => currentEpisodeId
+  const episodeTeamTasks = currentEpisodeId
     ? agentTasks.filter((task) => task.teamRun?.target?.episodeId === currentEpisodeId)
       .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5)
-    : [], [agentTasks, currentEpisodeId]);
+    : [];
 
   useEffect(() => {
     if (!currentEpisodeId || !contextReady) return;
@@ -438,10 +438,7 @@ export default function ScriptWorkbench({
       };
     });
   }, [currentEpisodeId, isOpen, replaceEpisodeDraft]);
-  const analysis = useMemo(
-    () => analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative)),
-    [draft],
-  );
+  const analysis = analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative));
 
   const saveDraft = async (): Promise<boolean> => {
     if (!currentEpisode || savingEpisodeRef.current || editorWriteLocked || !contextReady) return false;
