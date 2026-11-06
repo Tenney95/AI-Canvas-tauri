@@ -146,7 +146,9 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(built.renderedBody).toMatchObject({ model: id, n: 1, resolution: extended ? '2k' : '1k',
       size: extended ? '1632x2040' : '1536x864', image: ['https://cdn.example/reference.png'] });
     expect(item.executionProfile).toEqual(original);
-    expect(item.executionProfile!.protocol!.response.result).toEqual({ urlPath: 'data.*.url', base64Path: 'data.*.b64_json', mimeType: 'image/png' });
+    const protocol = item.executionProfile?.protocol;
+    assert(protocol?.version === 2);
+    expect(protocol.response.result).toEqual({ urlPath: 'data.*.url', base64Path: 'data.*.b64_json', mimeType: 'image/png' });
     expect(() => relayonImageVariables(id, { imageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'] })).toThrow('最多接受 1 张');
     expect(() => relayonImageVariables(id, { n: 4 })).toThrow('仅提交一个结果');
     if (!extended) expect(() => relayonImageVariables(id, { imageSize: '2K' })).toThrow('没有已公布的像素尺寸');
@@ -159,8 +161,9 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(getRelayonImageOutputsPerJob('Midjourney v8.2-extra', profile)).toBe(1);
     expect(getRelayonImageOutputsPerJob('Midjourney v8.2', undefined)).toBe(1);
     const urlOnly = structuredClone(model('Midjourney v8.2').executionProfile!);
-    delete urlOnly.protocol!.response.result!.base64Path;
-    delete urlOnly.protocol!.response.result!.mimeType;
+    assert(urlOnly.protocol?.version === 2);
+    delete urlOnly.protocol.response.result!.base64Path;
+    delete urlOnly.protocol.response.result!.mimeType;
     expect(usesRelayonModelProtocol('Midjourney v8.2', urlOnly)).toBe(false);
     expect(getRelayonImageOutputsPerJob('Midjourney v8.2', urlOnly)).toBe(1);
     expect(resolveRelayonImageModelContract('Midjourney v8.2', urlOnly).executionProfile).toBe(urlOnly);

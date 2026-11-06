@@ -12,7 +12,7 @@ interface TestStore {
   currentProjectId: string | null;
   commitToHistory: ReturnType<typeof vi.fn>;
   addNodesTransient: ReturnType<typeof vi.fn>;
-  updateNodeDataTransient: ReturnType<typeof vi.fn>;
+  updateNodeDataTransient: ReturnType<typeof vi.fn<(nodeId: string, patch: Partial<BaseNodeData>) => void>>;
   recordOutputHistory: ReturnType<typeof vi.fn>;
   showToast: ReturnType<typeof vi.fn>;
 }
