@@ -6,12 +6,13 @@ import { useReactFlow, useViewport } from '@xyflow/react';
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
 import {
-  adjustAdjacentNodeGap,
-  distributeNodesWithEqualGap,
+  applyDistributionPositions,
+  prepareDistributionLayout,
   getDistributionItems,
   getItemGap,
   type DistributionAxis,
 } from '../../utils/distributionGeometry';
+import { createFrameCoalescer } from '../../utils/frameCoalescer';
 
 interface DistributionGapHandlesProps {
   axis: DistributionAxis;
@@ -21,7 +22,10 @@ interface DragSession {
   axis: DistributionAxis;
   gapIndex: number;
   selectedNodeIds: string[];
-  startNodes: ReturnType<typeof useAppStore.getState>['nodes'];
+  projectId: string | null;
+  pointerId: number;
+  parents: Map<string, string | undefined>;
+  layout: ReturnType<typeof prepareDistributionLayout>;
   startPointer: { x: number; y: number };
   startGap: number;
   adjacentOnly: boolean;
@@ -32,6 +36,7 @@ function DistributionGapHandles({ axis }: DistributionGapHandlesProps) {
   const t = useT();
   const nodes = useAppStore((state) => state.nodes);
   const selectedNodeIds = useAppStore((state) => state.selectedNodeIds);
+  const currentProjectId = useAppStore((state) => state.currentProjectId);
   const { flowToScreenPosition, screenToFlowPosition } = useReactFlow();
   const { zoom } = useViewport();
   const dragSessionRef = useRef<DragSession | null>(null);
@@ -68,93 +73,100 @@ function DistributionGapHandles({ axis }: DistributionGapHandlesProps) {
   })) : [];
 
   const finishDrag = useCallback(() => {
+    if (!dragSessionRef.current) return;
     dragSessionRef.current = null;
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
+    removeListenersRef.current();
   }, []);
 
   useEffect(() => () => {
-    removeListenersRef.current();
     finishDrag();
-  }, [finishDrag]);
+  }, [axis, currentProjectId, finishDrag]);
 
   const startDrag = useCallback((gapIndex: number, event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || dragSessionRef.current) return;
+    const state = useAppStore.getState();
+    if (state.currentProjectId !== currentProjectId) return;
+    const currentIds = state.selectedNodeIds;
+    const items = getDistributionItems(state.nodes, currentIds, axis);
+    const before = items[gapIndex], after = items[gapIndex + 1];
+    if (!before || !after) return;
     event.preventDefault();
     event.stopPropagation();
 
-    const state = useAppStore.getState();
-    const startNodes = state.nodes;
-    const currentIds = state.selectedNodeIds;
-    const items = getDistributionItems(startNodes, currentIds, axis);
-    const before = items[gapIndex];
-    const after = items[gapIndex + 1];
-    if (!before || !after) return;
-
-    const startPointer = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    dragSessionRef.current = {
-      axis,
-      gapIndex,
+    const target = event.currentTarget;
+    const session: DragSession = {
+      axis, gapIndex, projectId: currentProjectId, pointerId: event.pointerId,
       selectedNodeIds: [...currentIds],
-      startNodes,
-      startPointer,
+      parents: new Map(items.map(({ node }) => [node.id, node.parentId])),
+      layout: prepareDistributionLayout(items, axis),
+      startPointer: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
       startGap: Math.max(0, getItemGap(before, after)),
       adjacentOnly: event.shiftKey,
       historyCommitted: false,
     };
+    dragSessionRef.current = session;
 
-    const cursor = axis === 'horizontal' ? 'ew-resize' : 'ns-resize';
-    document.body.style.cursor = cursor;
-    document.body.style.userSelect = 'none';
-
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      const session = dragSessionRef.current;
-      if (!session) return;
-
-      const pointer = screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY });
+    const applyPointer = (point: { x: number; y: number }) => {
+      const latest = useAppStore.getState();
+      const nodeMap = new Map(latest.nodes.map((node) => [node.id, node]));
+      const selected = new Set(latest.selectedNodeIds);
+      if (dragSessionRef.current !== session || latest.currentProjectId !== session.projectId
+        || selected.size !== session.selectedNodeIds.length || session.selectedNodeIds.some((id) => !selected.has(id))
+        || [...session.parents].some(([id, parentId]) => !nodeMap.has(id) || nodeMap.get(id)?.parentId !== parentId)) {
+        finishDrag();
+        return;
+      }
+      const pointer = screenToFlowPosition(point);
       const delta = session.axis === 'horizontal'
-        ? pointer.x - session.startPointer.x
-        : pointer.y - session.startPointer.y;
-      if (Math.abs(delta) < 0.5) return;
-
+        ? pointer.x - session.startPointer.x : pointer.y - session.startPointer.y;
+      if (Math.abs(delta) < 0.5 && !session.historyCommitted) return;
+      const gap = Math.max(0, session.startGap + delta);
+      const positions = session.adjacentOnly
+        ? session.layout.adjacentGap(session.gapIndex, gap) : session.layout.equalGap(gap);
+      const updated = applyDistributionPositions(latest.nodes, session.axis, positions, nodeMap);
+      if (updated === latest.nodes) return;
       if (!session.historyCommitted) {
-        useAppStore.getState().commitToHistory();
+        latest.commitToHistory();
         session.historyCommitted = true;
       }
-
-      const requestedGap = Math.max(0, session.startGap + delta);
-      const updatedNodes = session.adjacentOnly
-        ? adjustAdjacentNodeGap(
-            session.startNodes,
-            session.selectedNodeIds,
-            session.axis,
-            session.gapIndex,
-            requestedGap,
-          )
-        : distributeNodesWithEqualGap(
-            session.startNodes,
-            session.selectedNodeIds,
-            session.axis,
-            requestedGap,
-          );
-      useAppStore.getState().setNodes(updatedNodes);
+      latest.setNodes(updated);
     };
-
-    const onPointerEnd = () => {
-      removeListenersRef.current();
+    const preview = createFrameCoalescer(applyPointer);
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId === session.pointerId) preview.schedule({ x: moveEvent.clientX, y: moveEvent.clientY });
+    };
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== session.pointerId) return;
+      preview.cancel();
+      applyPointer({ x: upEvent.clientX, y: upEvent.clientY });
       finishDrag();
     };
-
-    removeListenersRef.current();
+    const onPointerCancel = (cancelEvent: PointerEvent) => {
+      if (cancelEvent.pointerId === session.pointerId) finishDrag();
+    };
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = axis === 'horizontal' ? 'ew-resize' : 'ns-resize';
+    document.body.style.userSelect = 'none';
     removeListenersRef.current = () => {
+      preview.cancel();
       document.removeEventListener('pointermove', onPointerMove);
-      document.removeEventListener('pointerup', onPointerEnd);
-      document.removeEventListener('pointercancel', onPointerEnd);
+      document.removeEventListener('pointerup', onPointerUp);
+      document.removeEventListener('pointercancel', onPointerCancel);
+      target.removeEventListener('lostpointercapture', onPointerCancel);
+      window.removeEventListener('blur', finishDrag);
+      if (target.hasPointerCapture(session.pointerId)) target.releasePointerCapture(session.pointerId);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
       removeListenersRef.current = () => undefined;
     };
+    target.setPointerCapture(session.pointerId);
     document.addEventListener('pointermove', onPointerMove);
-    document.addEventListener('pointerup', onPointerEnd);
-    document.addEventListener('pointercancel', onPointerEnd);
-  }, [axis, finishDrag, screenToFlowPosition]);
+    document.addEventListener('pointerup', onPointerUp);
+    document.addEventListener('pointercancel', onPointerCancel);
+    target.addEventListener('lostpointercapture', onPointerCancel);
+    window.addEventListener('blur', finishDrag);
+  }, [axis, currentProjectId, finishDrag, screenToFlowPosition]);
 
   if (handles.length === 0) return null;
 

@@ -183,36 +183,33 @@ function MultiSelectToolbar() {
       const currentIds = useAppStore.getState().selectedNodeIds;
       if (currentIds.length < 2) return;
 
-      const sel = currentNodes.filter((n) => currentIds.includes(n.id) && n.type !== 'group');
+      const selectedIds = new Set(currentIds);
+      const nodeMap = new Map(currentNodes.map((node) => [node.id, node]));
+      const sel = currentNodes.filter((node) => selectedIds.has(node.id) && node.type !== 'group');
       if (sel.length < 2) return;
 
       const isX = key === 'left' || key === 'center' || key === 'right';
+      const boundsById = new Map(sel.map((node) => [node.id, getNodeBounds(node, nodeMap)]));
+      const bounds = [...boundsById.values()];
+      const target = key === 'left' ? Math.min(...bounds.map((b) => b.x))
+        : key === 'center' ? bounds.reduce((sum, b) => sum + b.centerX, 0) / bounds.length
+        : key === 'right' ? Math.max(...bounds.map((b) => b.right))
+        : key === 'top' ? Math.min(...bounds.map((b) => b.y))
+        : key === 'middle' ? bounds.reduce((sum, b) => sum + b.centerY, 0) / bounds.length
+        : Math.max(...bounds.map((b) => b.bottom));
 
       useAppStore.getState().commitToHistory();
 
-      const updated = currentNodes.map((n) => {
-        if (!currentIds.includes(n.id) || n.type === 'group') return n;
-        const b = getNodeBounds(n, currentNodes);
-        const po = getParentOffset(n, currentNodes);
-        const newPos = { ...n.position };
-
-        if (isX) {
-          const target =
-            key === 'left' ? Math.min(...sel.map((s) => getNodeBounds(s, currentNodes).x))
-            : key === 'center' ? sel.reduce((sum, s) => sum + getNodeBounds(s, currentNodes).centerX, 0) / sel.length
-            : Math.max(...sel.map((s) => getNodeBounds(s, currentNodes).right));
-          const edgeOffset = key === 'left' ? 0 : key === 'center' ? b.width / 2 : b.width;
-          newPos.x = target - po.x - edgeOffset;
-        } else {
-          const target =
-            key === 'top' ? Math.min(...sel.map((s) => getNodeBounds(s, currentNodes).y))
-            : key === 'middle' ? sel.reduce((sum, s) => sum + getNodeBounds(s, currentNodes).centerY, 0) / sel.length
-            : Math.max(...sel.map((s) => getNodeBounds(s, currentNodes).bottom));
-          const edgeOffset = key === 'top' ? 0 : key === 'middle' ? b.height / 2 : b.height;
-          newPos.y = target - po.y - edgeOffset;
-        }
-
-        return { ...n, position: newPos };
+      const updated = currentNodes.map((node) => {
+        const bounds = boundsById.get(node.id);
+        if (!bounds) return node;
+        const offset = getParentOffset(node, nodeMap);
+        const edgeOffset = key === 'left' || key === 'top' ? 0
+          : key === 'center' ? bounds.width / 2 : key === 'middle' ? bounds.height / 2
+            : isX ? bounds.width : bounds.height;
+        return { ...node, position: { ...node.position,
+          ...(isX ? { x: target - offset.x - edgeOffset } : { y: target - offset.y - edgeOffset }),
+        } };
       });
 
       applyNodePositions(updated, sel.map((node) => node.id));

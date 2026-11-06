@@ -292,6 +292,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
             ) : show360 ? (
               <XiaoLuoPanoramaViewer
                 ref={compactViewerRef}
+                nodeId={id}
                 imageUrl={panoramaUrl}
                 interactive={panoInteractive}
                 onActivate={() => setPanoActive(true)}

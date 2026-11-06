@@ -4,6 +4,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildEqualSpacingCandidates,
+  createAlignmentSnapQuery,
+  createEqualSpacingSnapQuery,
+  retainSnapLines,
+  type SnapLine,
   findBestEqualSpacingSnap,
   type EqualSpacingCandidate,
   type NodeBounds,
@@ -263,5 +267,83 @@ describe('equal-spacing candidate query equivalence', () => {
     expect(horizontal.length).toBeGreaterThan(0);
     expect(vertical.length).toBeGreaterThan(0);
     expect(geometryReads).toBeLessThan(count * 100);
+  });
+});
+
+
+describe('gesture-scoped snap queries', () => {
+  function linearAlignment(dragged: number[], points: number[]) {
+    let best: { value: number; targetValue: number; diff: number } | null = null;
+    for (const value of dragged) for (const targetValue of points) {
+      const diff = Math.abs(value - targetValue);
+      if (diff <= 8 && (!best || diff < best.diff)) best = { value, targetValue, diff };
+    }
+    return best;
+  }
+
+  it('preserves point order, duplicate ties and exact floating thresholds', () => {
+    for (const origin of [0, -100, 1e12, -1e12, 1e16, -1e16]) {
+      const points = [origin + 8, origin - 8, origin + 8, origin, origin + 8.0001, origin - 8.0001,
+        ...Array.from({ length: 128 }, (_, index) => origin + 1e8 + index * 1000)];
+      const query = createAlignmentSnapQuery(points);
+      for (const offset of [-8.0001, -8, -0, 0, 7.9999, 8, 8.0001, 100]) {
+        const dragged = [origin + offset, origin + offset + 8];
+        expect(query(dragged)).toEqual(linearAlignment(dragged, points));
+      }
+    }
+    for (const value of [NaN, Infinity, -Infinity]) {
+      const points = [value, -8, 8, 0];
+      expect(createAlignmentSnapQuery(points)([value, 0])).toEqual(linearAlignment([value, 0], points));
+    }
+  });
+
+  it('matches the original equal-spacing query for both axes and shuffled candidate ties', () => {
+    let seed = 91827;
+    const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 0x100000000; };
+    for (let round = 0; round < 80; round += 1) {
+      const bounds = Array.from({ length: 110 }, () => createBounds(
+        Math.floor(random() * 15) * 110, Math.floor(random() * 15) * 108, 100, 100,
+      ));
+      for (const axis of ['horizontal', 'vertical'] as const) {
+        const candidates = buildEqualSpacingCandidates(bounds, 80, axis).reverse();
+        const query = createEqualSpacingSnapQuery(candidates, axis);
+        for (const candidate of candidates.slice(0, 8)) for (const delta of [-8.0001, -8, 0, 8, 8.0001]) {
+          const dragged = axis === 'horizontal' ? createBounds(candidate.targetStart + delta, candidate.first.y, 80, 80)
+            : createBounds(candidate.first.x, candidate.targetStart + delta, 80, 80);
+          expect(query(dragged)).toEqual(findBestEqualSpacingSnap(dragged, candidates, axis));
+        }
+      }
+    }
+  });
+
+  it('does not reread every candidate coordinate for a distant pointer after building the index', () => {
+    const candidates = buildEqualSpacingCandidates(Array.from({ length: 500 }, (_, index) => createBounds(index * 110, 0, 100, 100)), 80, 'horizontal');
+    let reads = 0;
+    for (const candidate of candidates) {
+      const value = candidate.targetStart;
+      Object.defineProperty(candidate, 'targetStart', { get: () => { reads += 1; return value; } });
+    }
+    const query = createEqualSpacingSnapQuery(candidates, 'horizontal');
+    reads = 0;
+    expect(query(createBounds(-1e9, 0, 80, 80))).toBeNull();
+    expect(reads).toBe(0);
+    for (const value of [NaN, Infinity, -Infinity]) {
+      const altered = [{ ...candidates[0], targetStart: value }, ...candidates];
+      const dragged = createBounds(0, 0, 80, 80);
+      expect(createEqualSpacingSnapQuery(altered, 'horizontal')(dragged)).toEqual(findBestEqualSpacingSnap(dragged, altered, 'horizontal'));
+    }
+  });
+
+  it('retains identical empty/alignment/spacing guides and publishes each changed visible field', () => {
+    const empty: SnapLine[] = [];
+    expect(retainSnapLines(empty, [])).toBe(empty);
+    const lines: SnapLine[] = [{ kind: 'alignment', type: 'vertical', position: 20 },
+      { kind: 'spacing', type: 'horizontal', distance: 8, crossPosition: 30, segments: [{ start: 1, end: 9 }] }];
+    expect(retainSnapLines(lines, structuredClone(lines))).toBe(lines);
+    for (const next of [[], [{ kind: 'alignment', type: 'vertical', position: 21 }],
+      [lines[0], { ...lines[1], distance: 9 }], [lines[0], { ...lines[1], crossPosition: 31 }],
+      [lines[0], { ...lines[1], segments: [{ start: 2, end: 9 }] }]] as SnapLine[][]) {
+      expect(retainSnapLines(lines, next)).toBe(next);
+    }
   });
 });

@@ -138,6 +138,7 @@ export function createCanvasEdgeModelSelector() {
     geometry: CanvasEdgeGeometry;
     rfId: string;
     mountedNodeIds: ReadonlySet<string>;
+    viewportRevision?: object;
   } | undefined;
 
   return (
@@ -147,6 +148,23 @@ export function createCanvasEdgeModelSelector() {
     rfId: string,
     mountedNodeIds: ReadonlySet<string>,
   ): readonly CanvasEdgeModel[] => {
+    const fields = publicationValues(state);
+    const viewportRevision = geometry.getViewportRevision?.(state);
+    const sameViewportInputs = publication !== undefined
+      && state !== publication.state && state.transform !== publication.transform
+      && edgeIds === publication.edgeIds && geometry === publication.geometry
+      && rfId === publication.rfId && mountedNodeIds === publication.mountedNodeIds
+      && sameValues(publication.fields, fields);
+    const nextPublication = {
+      state, transform: state.transform, fields, edgeIds, geometry, rfId, mountedNodeIds, viewportRevision,
+    };
+    // Only the build adapter can attest to a transform-only publication. Other
+    // callers retain scalar snapshots, including in-place RF geometry changes.
+    if (sameViewportInputs && viewportRevision !== undefined
+      && viewportRevision === publication!.viewportRevision) {
+      publication = nextPublication;
+      return models;
+    }
     const nextNodes = new Map<string, NodeSnapshot>();
     let nodesChanged = nodes.size !== state.nodeLookup.size;
     for (const [id, node] of state.nodeLookup) {
@@ -156,15 +174,7 @@ export function createCanvasEdgeModelSelector() {
       nextNodes.set(id, next);
     }
     nodes = nextNodes;
-    const fields = publicationValues(state);
-    const viewportOnly = !nodesChanged && publication !== undefined
-      && state !== publication.state && state.transform !== publication.transform
-      && edgeIds === publication.edgeIds && geometry === publication.geometry
-      && rfId === publication.rfId && mountedNodeIds === publication.mountedNodeIds
-      && sameValues(publication.fields, fields);
-    const nextPublication = {
-      state, transform: state.transform, fields, edgeIds, geometry, rfId, mountedNodeIds,
-    };
+    const viewportOnly = viewportRevision === undefined && !nodesChanged && sameViewportInputs;
     // Only immutable RF publications changing transform alone take this path.
     // Direct same-object callers still inspect edge values for in-place changes.
     if (viewportOnly) {

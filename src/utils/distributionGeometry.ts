@@ -24,11 +24,12 @@ export function getDistributionItems(
 ): DistributionItem[] {
   const selectedIds = new Set(selectedNodeIds);
   const isHorizontal = axis === 'horizontal';
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
 
   return nodes
     .filter((node) => selectedIds.has(node.id) && node.type !== 'group')
     .map((node) => {
-      const bounds = getNodeBounds(node, nodes);
+      const bounds = getNodeBounds(node, nodeMap);
       return {
         node,
         start: isHorizontal ? bounds.left : bounds.top,
@@ -53,28 +54,57 @@ export function getItemGap(leftOrTop: DistributionItem, rightOrBottom: Distribut
   return rightOrBottom.start - leftOrTop.end;
 }
 
-function applyAbsoluteAxisPositions(
+/** 只合并位置，保留当前节点的数据、成员与其它轴坐标。 */
+export function applyDistributionPositions(
   nodes: RFNode<BaseNodeData>[],
   axis: DistributionAxis,
-  absolutePositions: Map<string, number>,
+  absolutePositions: ReadonlyMap<string, number>,
+  nodeMap = new Map(nodes.map((node) => [node.id, node])),
 ): RFNode<BaseNodeData>[] {
-  const isHorizontal = axis === 'horizontal';
-
-  return nodes.map((node) => {
+  if (absolutePositions.size === 0) return nodes;
+  const coordinate = axis === 'horizontal' ? 'x' : 'y';
+  let changed = false;
+  const next = nodes.map((node) => {
     const absolutePosition = absolutePositions.get(node.id);
     if (absolutePosition === undefined) return node;
-
-    const parentOffset = getParentOffset(node, nodes);
-    return {
-      ...node,
-      position: {
-        ...node.position,
-        ...(isHorizontal
-          ? { x: absolutePosition - parentOffset.x }
-          : { y: absolutePosition - parentOffset.y }),
-      },
-    };
+    const position = absolutePosition - getParentOffset(node, nodeMap)[coordinate];
+    if (node.position[coordinate] === position) return node;
+    changed = true;
+    return { ...node, position: { ...node.position, [coordinate]: position } };
   });
+  return changed ? next : nodes;
+}
+
+/** 起拖时固定排序和几何；连续输入只重算目标位置。 */
+export function prepareDistributionLayout(items: DistributionItem[], axis: DistributionAxis) {
+  const extentStart = items.length === 0 ? 0 : axis === 'horizontal'
+    ? items[0].start : Math.min(...items.map((item) => item.start));
+  const extentEnd = items.length === 0 ? 0 : axis === 'horizontal'
+    ? items[items.length - 1].end : Math.max(...items.map((item) => item.end));
+  const totalNodeSize = items.reduce((sum, item) => sum + item.size, 0);
+  const layoutCenter = (extentStart + extentEnd) / 2;
+  return {
+    equalGap(requestedGap?: number) {
+      const positions = new Map<string, number>();
+      if (items.length < 3) return positions;
+      const gap = Math.max(0, requestedGap ?? (extentEnd - extentStart - totalNodeSize) / (items.length - 1));
+      let cursor = layoutCenter - (totalNodeSize + gap * (items.length - 1)) / 2;
+      for (const item of items) {
+        positions.set(item.node.id, cursor);
+        cursor += item.size + gap;
+      }
+      return positions;
+    },
+    adjacentGap(gapIndex: number, requestedGap: number) {
+      const before = items[gapIndex], after = items[gapIndex + 1];
+      if (!before || !after) return new Map<string, number>();
+      const delta = Math.max(0, requestedGap) - getItemGap(before, after);
+      return new Map([
+        [before.node.id, before.start - delta / 2],
+        [after.node.id, after.start + delta / 2],
+      ]);
+    },
+  };
 }
 
 /** 按节点边缘而非中心点平均分布，保证不同尺寸的节点也拥有相同间距。 */
@@ -84,33 +114,8 @@ export function distributeNodesWithEqualGap(
   axis: DistributionAxis,
   requestedGap?: number,
 ): RFNode<BaseNodeData>[] {
-  const items = getDistributionItems(nodes, selectedNodeIds, axis);
-  if (items.length < 3) return nodes;
-
-  // 纵向项目不按 Y 排序，因此单独读取原始 Y 边界以保持原有占用范围。
-  const extentStart = axis === 'horizontal'
-    ? items[0].start
-    : Math.min(...items.map((item) => item.start));
-  const extentEnd = axis === 'horizontal'
-    ? items[items.length - 1].end
-    : Math.max(...items.map((item) => item.end));
-  const totalNodeSize = items.reduce((sum, item) => sum + item.size, 0);
-  const currentSpan = extentEnd - extentStart;
-  const gap = Math.max(
-    0,
-    requestedGap ?? (currentSpan - totalNodeSize) / (items.length - 1),
-  );
-  const layoutSize = totalNodeSize + gap * (items.length - 1);
-  const layoutCenter = (extentStart + extentEnd) / 2;
-  const absolutePositions = new Map<string, number>();
-  let cursor = layoutCenter - layoutSize / 2;
-
-  for (const item of items) {
-    absolutePositions.set(item.node.id, cursor);
-    cursor += item.size + gap;
-  }
-
-  return applyAbsoluteAxisPositions(nodes, axis, absolutePositions);
+  const layout = prepareDistributionLayout(getDistributionItems(nodes, selectedNodeIds, axis), axis);
+  return applyDistributionPositions(nodes, axis, layout.equalGap(requestedGap));
 }
 
 /** Shift 拖拽：只移动当前间距两侧的节点，并保持这两个节点的共同中心不变。 */
@@ -121,17 +126,6 @@ export function adjustAdjacentNodeGap(
   gapIndex: number,
   requestedGap: number,
 ): RFNode<BaseNodeData>[] {
-  const items = getDistributionItems(nodes, selectedNodeIds, axis);
-  const before = items[gapIndex];
-  const after = items[gapIndex + 1];
-  if (!before || !after) return nodes;
-
-  const currentGap = getItemGap(before, after);
-  const gapDelta = Math.max(0, requestedGap) - currentGap;
-  const absolutePositions = new Map<string, number>([
-    [before.node.id, before.start - gapDelta / 2],
-    [after.node.id, after.start + gapDelta / 2],
-  ]);
-
-  return applyAbsoluteAxisPositions(nodes, axis, absolutePositions);
+  const layout = prepareDistributionLayout(getDistributionItems(nodes, selectedNodeIds, axis), axis);
+  return applyDistributionPositions(nodes, axis, layout.adjacentGap(gapIndex, requestedGap));
 }

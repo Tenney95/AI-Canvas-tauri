@@ -373,9 +373,59 @@ function createSpacingGuide(
   };
 }
 
+/** 固定手势候选只建一次索引；阈值仍按原减法判断，局部结果恢复原输入顺序。 */
+function createThresholdQuery<T>(items: readonly T[], coordinate: (item: T) => number) {
+  const sorted = items.map((item, ordinal) => ({ item, ordinal, value: coordinate(item) }));
+  if (sorted.some(({ value }) => !Number.isFinite(value))) return (_value: number) => items;
+  sorted.sort((a, b) => a.value - b.value || a.ordinal - b.ordinal);
+  return (value: number): readonly T[] => {
+    if (!Number.isFinite(value)) return items;
+    let low = 0, high = sorted.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (value - sorted[middle].value > SNAP_THRESHOLD) low = middle + 1;
+      else high = middle;
+    }
+    const start = low;
+    high = sorted.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (sorted[middle].value - value <= SNAP_THRESHOLD) low = middle + 1;
+      else high = middle;
+    }
+    // 密集候选沿用原线性顺序，避免局部排序反而增加大重叠区域的成本。
+    if ((low - start) * 4 > items.length) return items;
+    return sorted.slice(start, low).sort((a, b) => a.ordinal - b.ordinal).map(({ item }) => item);
+  };
+}
+
+export function createEqualSpacingSnapQuery(candidates: EqualSpacingCandidate[], axis: SpacingAxis) {
+  const query = createThresholdQuery(candidates, (candidate) => candidate.targetStart);
+  return (bounds: NodeBounds) => findBestEqualSpacingSnap(bounds, query(getAxisStart(bounds, axis)), axis);
+}
+
+export function createAlignmentSnapQuery(points: readonly number[]) {
+  const query = createThresholdQuery(points, (point) => point);
+  return (dragged: number[]) => findBestSnap(dragged, query);
+}
+
+/** 同值提示线沿用原数组，不为未变化的空线或间距线触发渲染。 */
+export function retainSnapLines(previous: SnapLine[], next: SnapLine[]): SnapLine[] {
+  const same = previous.length === next.length && previous.every((line, index) => {
+    const other = next[index];
+    if (line.kind !== other.kind || line.type !== other.type) return false;
+    if (line.kind === 'alignment' && other.kind === 'alignment') return Object.is(line.position, other.position);
+    return line.kind === 'spacing' && other.kind === 'spacing'
+      && Object.is(line.distance, other.distance) && Object.is(line.crossPosition, other.crossPosition)
+      && line.segments.length === other.segments.length && line.segments.every((segment, i) =>
+        Object.is(segment.start, other.segments[i].start) && Object.is(segment.end, other.segments[i].end));
+  });
+  return same ? previous : next;
+}
+
 export function findBestEqualSpacingSnap(
   draggedBounds: NodeBounds,
-  candidates: EqualSpacingCandidate[],
+  candidates: readonly EqualSpacingCandidate[],
   axis: SpacingAxis,
 ): EqualSpacingSnap | null {
   const draggedStart = getAxisStart(draggedBounds, axis);
@@ -404,11 +454,11 @@ export function findBestEqualSpacingSnap(
 
 function findBestSnap(
   draggedPoints: number[],
-  otherPoints: number[]
+  otherPoints: (value: number) => readonly number[]
 ): SnapPoint | null {
   let best: SnapPoint | null = null;
   for (const dp of draggedPoints) {
-    for (const op of otherPoints) {
+    for (const op of otherPoints(dp)) {
       const diff = Math.abs(dp - op);
       if (diff <= SNAP_THRESHOLD) {
         if (!best || diff < best.diff) {
@@ -456,12 +506,12 @@ export function useNodeSnap() {
   const dragCtx = useRef<{
     nodeMap: Map<string, Node<BaseNodeData>>;
     draggedBounds: NodeBounds;
-    otherXEdges: number[];
-    otherXCenters: number[];
-    otherYEdges: number[];
-    otherYCenters: number[];
-    horizontalSpacingCandidates: EqualSpacingCandidate[];
-    verticalSpacingCandidates: EqualSpacingCandidate[];
+    otherXEdges: ReturnType<typeof createAlignmentSnapQuery>;
+    otherXCenters: ReturnType<typeof createAlignmentSnapQuery>;
+    otherYEdges: ReturnType<typeof createAlignmentSnapQuery>;
+    otherYCenters: ReturnType<typeof createAlignmentSnapQuery>;
+    horizontalSpacingCandidates: ReturnType<typeof createEqualSpacingSnapQuery>;
+    verticalSpacingCandidates: ReturnType<typeof createEqualSpacingSnapQuery>;
   } | null>(null);
   // 缩放期间不变的数据：被缩放节点固定的左/上边，以及其他节点的 X/Y 候选线
   const resizeCtx = useRef<{
@@ -469,12 +519,12 @@ export function useNodeSnap() {
     top: number;
     right: number;
     bottom: number;
-    otherX: number[];
-    otherY: number[];
+    otherX: ReturnType<typeof createAlignmentSnapQuery>;
+    otherY: ReturnType<typeof createAlignmentSnapQuery>;
   } | null>(null);
 
   const clearSnapLines = useCallback(() => {
-    setSnapLines([]);
+    setSnapLines((previous) => retainSnapLines(previous, []));
   }, []);
 
   // 预计算静止节点（排除 excludeId 与多选节点）的吸附候选点，做视口裁剪。
@@ -547,17 +597,17 @@ export function useNodeSnap() {
       const draggedBounds = getNodesBounds(draggedNodes, candidates.nodeMap);
       dragCtx.current = draggedBounds ? {
         ...candidates,
+        otherXEdges: createAlignmentSnapQuery(candidates.otherXEdges),
+        otherXCenters: createAlignmentSnapQuery(candidates.otherXCenters),
+        otherYEdges: createAlignmentSnapQuery(candidates.otherYEdges),
+        otherYCenters: createAlignmentSnapQuery(candidates.otherYCenters),
         draggedBounds,
-        horizontalSpacingCandidates: buildEqualSpacingCandidates(
-          candidates.otherBounds,
-          draggedBounds.width,
-          'horizontal',
-        ),
-        verticalSpacingCandidates: buildEqualSpacingCandidates(
-          candidates.otherBounds,
-          draggedBounds.height,
-          'vertical',
-        ),
+        horizontalSpacingCandidates: createEqualSpacingSnapQuery(buildEqualSpacingCandidates(
+          candidates.otherBounds, draggedBounds.width, 'horizontal',
+        ), 'horizontal'),
+        verticalSpacingCandidates: createEqualSpacingSnapQuery(buildEqualSpacingCandidates(
+          candidates.otherBounds, draggedBounds.height, 'vertical',
+        ), 'vertical'),
       } : null;
     },
     [buildCandidates]
@@ -610,14 +660,10 @@ export function useNodeSnap() {
 
       // Find best horizontal snap (Y axis alignment) —— 边吸边、中线吸中线
       const bestYSnap = pickCloser(
-        findBestSnap([draggedBounds.top, draggedBounds.bottom], otherYEdges),
-        findBestSnap([draggedBounds.centerY], otherYCenters),
+        otherYEdges([draggedBounds.top, draggedBounds.bottom]),
+        otherYCenters([draggedBounds.centerY]),
       );
-      const bestVerticalSpacing = findBestEqualSpacingSnap(
-        draggedBounds,
-        verticalSpacingCandidates,
-        'vertical',
-      );
+      const bestVerticalSpacing = verticalSpacingCandidates(draggedBounds);
       if (bestVerticalSpacing && (!bestYSnap || bestVerticalSpacing.diff <= bestYSnap.diff)) {
         correctionY = bestVerticalSpacing.targetStart - draggedBounds.top;
         lines.push(bestVerticalSpacing.guide);
@@ -628,14 +674,10 @@ export function useNodeSnap() {
 
       // Find best vertical snap (X axis alignment) —— 边吸边、中线吸中线
       const bestXSnap = pickCloser(
-        findBestSnap([draggedBounds.left, draggedBounds.right], otherXEdges),
-        findBestSnap([draggedBounds.centerX], otherXCenters),
+        otherXEdges([draggedBounds.left, draggedBounds.right]),
+        otherXCenters([draggedBounds.centerX]),
       );
-      const bestHorizontalSpacing = findBestEqualSpacingSnap(
-        draggedBounds,
-        horizontalSpacingCandidates,
-        'horizontal',
-      );
+      const bestHorizontalSpacing = horizontalSpacingCandidates(draggedBounds);
       if (bestHorizontalSpacing && (!bestXSnap || bestHorizontalSpacing.diff <= bestXSnap.diff)) {
         correctionX = bestHorizontalSpacing.targetStart - draggedBounds.left;
         lines.push(bestHorizontalSpacing.guide);
@@ -644,7 +686,7 @@ export function useNodeSnap() {
         lines.push({ kind: 'alignment', type: 'vertical', position: bestXSnap.targetValue });
       }
 
-      setSnapLines(lines);
+      setSnapLines((previous) => retainSnapLines(previous, lines));
 
       // 把选区吸附修正量加回主节点；Canvas 会把同一修正量应用到其它选中节点。
       return {
@@ -673,8 +715,8 @@ export function useNodeSnap() {
         top: b.top,
         right: b.right,
         bottom: b.bottom,
-        otherX: [...otherXEdges, ...otherXCenters],
-        otherY: [...otherYEdges, ...otherYCenters],
+        otherX: createAlignmentSnapQuery([...otherXEdges, ...otherXCenters]),
+        otherY: createAlignmentSnapQuery([...otherYEdges, ...otherYCenters]),
       };
     },
     [buildCandidates]
@@ -698,7 +740,7 @@ export function useNodeSnap() {
       // 移动的竖边：右拖 → left + width；左拖 → right - width（右边固定）
       if (direction.x !== 0) {
         const movingX = direction.x === 1 ? left + width : right - width;
-        const bestX = findBestSnap([movingX], otherX);
+        const bestX = otherX([movingX]);
         if (bestX) {
           snappedWidth = direction.x === 1 ? bestX.targetValue - left : right - bestX.targetValue;
           lines.push({ kind: 'alignment', type: 'vertical', position: bestX.targetValue });
@@ -707,27 +749,27 @@ export function useNodeSnap() {
       // 移动的横边：下拖 → top + height；上拖 → bottom - height（下边固定）
       if (direction.y !== 0) {
         const movingY = direction.y === 1 ? top + height : bottom - height;
-        const bestY = findBestSnap([movingY], otherY);
+        const bestY = otherY([movingY]);
         if (bestY) {
           snappedHeight = direction.y === 1 ? bestY.targetValue - top : bottom - bestY.targetValue;
           lines.push({ kind: 'alignment', type: 'horizontal', position: bestY.targetValue });
         }
       }
 
-      setSnapLines(lines);
+      setSnapLines((previous) => retainSnapLines(previous, lines));
       return { width: snappedWidth, height: snappedHeight };
     },
     []
   );
 
   const onResizeStop = useCallback(() => {
-    setSnapLines([]);
+    setSnapLines((previous) => retainSnapLines(previous, []));
     resizeCtx.current = null;
   }, []);
 
   const onNodeDragStop = useCallback(() => {
     dragStartPositions.current.clear();
-    setSnapLines([]);
+    setSnapLines((previous) => retainSnapLines(previous, []));
     // 延迟清理：松手时 React Flow 还会发一帧 dragging=false 的 position 变更，
     // 需要它仍能命中吸附缓存，否则节点会弹回未吸附的原始落点。
     queueMicrotask(() => {

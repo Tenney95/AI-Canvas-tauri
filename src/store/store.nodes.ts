@@ -34,7 +34,8 @@ import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData, getImageNodeDimensionsForAspectRatio } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
-import { getNodeSize, getParentOffset, videoNodeDimensionsForAspectRatio } from '../utils/nodeBounds';
+import { getNodeBounds, getNodeSize, getParentOffset, videoNodeDimensionsForAspectRatio } from '../utils/nodeBounds';
+import { getCanvasNodeById } from '../utils/canvasRenderProjection';
 import { resolveDirectorRuntime } from '../services/directorRuntimeRegistry';
 import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../services/nodeMediaCopy';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
@@ -330,6 +331,51 @@ function nodeCenter(node: Node<BaseNodeData>, nodes: Node<BaseNodeData>[]) {
   const position = absoluteNodePosition(node, nodes);
   const size = getNodeSize(node);
   return { x: position.x + size.width / 2, y: position.y + size.height / 2 };
+}
+
+/** 只缓存本次结算的几何；父链仍沿用共享工具的循环/缺失父级终止规则。 */
+function createGroupSettlementGeometry(nodes: Node<BaseNodeData>[]) {
+  const parents = new Map<string, Node<BaseNodeData>>();
+  // 与原数组 find 一致，即使旧数据意外包含重复 ID 也先命中第一项。
+  for (const node of nodes) if (!parents.has(node.id)) parents.set(node.id, node);
+  const cache = new WeakMap<Node<BaseNodeData>, ReturnType<typeof getNodeBounds>>();
+  const bounds = (node: Node<BaseNodeData>) => {
+    let value = cache.get(node);
+    if (!value) { value = getNodeBounds(node, parents); cache.set(node, value); }
+    return value;
+  };
+  return {
+    position: (node: Node<BaseNodeData>) => { const value = bounds(node); return { x: value.x, y: value.y }; },
+    center: (node: Node<BaseNodeData>) => { const value = bounds(node); return { x: value.centerX, y: value.centerY }; },
+    contains: (node: Node<BaseNodeData>, point: { x: number; y: number }) => {
+      const value = bounds(node);
+      return point.x >= value.left && point.x <= value.right && point.y >= value.top && point.y <= value.bottom;
+    },
+  };
+}
+
+/** 仅纯 position/select 批次省略同值项；其他变化完整交回 React Flow。 */
+function changedNodeInteractions(changes: NodeChange<Node<BaseNodeData>>[], nodes: Node<BaseNodeData>[]) {
+  if (!changes.every((change) => (change.type === 'position' || change.type === 'select')
+    && Object.keys(change).every((key) => (change.type === 'position' ? ['id', 'type', 'position', 'dragging'] : ['id', 'type', 'selected']).includes(key))
+    && (change.type !== 'position' || change.position === undefined || change.position !== null && Object.keys(change.position).every((key) => key === 'x' || key === 'y')))) return changes;
+  const projected = new Map<string, Pick<Node<BaseNodeData>, 'position' | 'dragging' | 'selected'>>();
+  const filtered = changes.filter((change) => {
+    if (change.type !== 'position' && change.type !== 'select') return true;
+    const node = projected.get(change.id) ?? getCanvasNodeById(nodes, change.id);
+    if (!node) return true;
+    if (change.type === 'select') {
+      if (Object.is(node.selected, change.selected)) return false;
+      projected.set(change.id, { position: node.position, dragging: node.dragging, selected: change.selected });
+    } else {
+      if ((change.position === undefined || Object.is(node.position.x, change.position.x) && Object.is(node.position.y, change.position.y))
+        && (change.dragging === undefined || Object.is(node.dragging, change.dragging))) return false;
+      projected.set(change.id, { position: change.position ?? node.position,
+        dragging: change.dragging === undefined ? node.dragging : change.dragging, selected: node.selected });
+    }
+    return true;
+  });
+  return filtered.length === changes.length ? changes : filtered;
 }
 
 /** 新建节点按画布位置加入展开分组，与插入本身共用一次历史快照。 */
@@ -919,7 +965,8 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
-  setSelectedNodeIds: (ids) => set({ selectedNodeIds: ids }),
+  setSelectedNodeIds: (ids) => set((state) => state.selectedNodeIds.length === ids.length
+    && state.selectedNodeIds.every((id, index) => id === ids[index]) ? state : { selectedNodeIds: ids }),
 
   addNode: (node) => {
     assertAiAppNodeInsertion([node]);
@@ -1719,9 +1766,10 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     }
 
     if (removedIds.length === 0) {
-      set((s) => ({
-        nodes: applyNodeChanges(changes, s.nodes) as Node<BaseNodeData>[],
-      }));
+      set((state) => {
+        const changed = changedNodeInteractions(changes, state.nodes);
+        return changed.length === 0 ? state : { nodes: applyNodeChanges(changed, state.nodes) as Node<BaseNodeData>[] };
+      });
       return;
     }
 
@@ -1782,7 +1830,18 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const hasRemoval = changes.some((c) => c.type === 'remove');
     if (hasRemoval) get().commitToHistory();
     set((s) => {
-      const edges = applyEdgeChanges(changes, s.edges) as Edge[];
+      let changed = changes;
+      if (changes.every((change) => change.type === 'select' && Object.keys(change).every((key) => ['id', 'type', 'selected'].includes(key)))) {
+        const selected = new Map(s.edges.map((edge) => [edge.id, edge.selected]));
+        changed = changes.filter((change) => {
+          if (change.type !== 'select' || !selected.has(change.id)) return true;
+          if (Object.is(selected.get(change.id), change.selected)) return false;
+          selected.set(change.id, change.selected);
+          return true;
+        });
+        if (changed.length === 0) return s;
+      }
+      const edges = applyEdgeChanges(changed, s.edges) as Edge[];
       if (!hasRemoval) return { edges };
       const remainingIds = new Set(edges.map((edge) => edge.id));
       return {
@@ -1813,17 +1872,18 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     if (!group || group.hidden || group.draggable === false || group.data.groupCollapsed || group.data.hiddenByCharacterLibrary
       || !state.groups.some((record) => record.id === group.data.groupId)) return;
 
-    const position = absoluteNodePosition(group, state.nodes);
+    const geometry = createGroupSettlementGeometry(state.nodes);
+    const position = geometry.position(group);
     const capturedIds = new Set(state.nodes.filter((node) => (
       node.type !== 'group' && !node.parentId && !node.hidden && node.draggable !== false
       && !node.data.hiddenByCharacterLibrary
-      && groupContainsPoint(group, nodeCenter(node, state.nodes), state.nodes)
+      && geometry.contains(group, geometry.center(node))
     )).map((node) => node.id));
     // 脱组前按完整父链换算画布坐标，解除绑定时不移动节点；空分组继续保留。
     const releasedPositions = new Map(state.nodes.filter((node) => (
       node.parentId === group.id
-      && !groupContainsPoint(group, nodeCenter(node, state.nodes), state.nodes)
-    )).map((node) => [node.id, absoluteNodePosition(node, state.nodes)] as const));
+      && !geometry.contains(group, geometry.center(node))
+    )).map((node) => [node.id, geometry.position(node)] as const));
 
     if (capturedIds.size > 0 || releasedPositions.size > 0) {
       const nodes = state.nodes.map((node) => {
@@ -1858,23 +1918,26 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const allNodes = state.nodes;
     const nodeMap = new Map(allNodes.map((node) => [node.id, node]));
     const groupNodes = allNodes.filter((candidate) => candidate.type === 'group' && !candidate.hidden);
+    const groupsById = new Map<string, Node<BaseNodeData>>();
+    for (const group of groupNodes) if (!groupsById.has(group.id)) groupsById.set(group.id, group);
+    const geometry = createGroupSettlementGeometry(allNodes);
     const updates = new Map<string, Node<BaseNodeData>>();
     const addedByGroup = new Map<string, Set<string>>();
     const oldParentIds = new Set<string>();
     for (const node of Array.isArray(nodes) ? nodes : [nodes]) {
       const stored = nodeMap.get(node.id);
       if (!stored || stored.type === 'group' || stored.hidden || stored.draggable === false) continue;
-      const oldParent = groupNodes.find((candidate) => candidate.id === node.parentId);
+      const oldParent = node.parentId === undefined ? undefined : groupsById.get(node.parentId);
       // 分镜等非普通分组的父子关系由对应业务入口管理。
       if (node.parentId && !oldParent) continue;
-      const center = nodeCenter(node, allNodes);
-      const parent = oldParent && groupContainsPoint(oldParent, center, allNodes)
+      const center = geometry.center(node);
+      const parent = oldParent && geometry.contains(oldParent, center)
         ? oldParent
-        : groupNodes.find((candidate) => groupContainsPoint(candidate, center, allNodes));
+        : groupNodes.find((candidate) => geometry.contains(candidate, center));
       if (parent?.id === node.parentId) continue;
 
-      const absPos = absoluteNodePosition(node, allNodes);
-      const parentPos = parent ? absoluteNodePosition(parent, allNodes) : { x: 0, y: 0 };
+      const absPos = geometry.position(node);
+      const parentPos = parent ? geometry.position(parent) : { x: 0, y: 0 };
       updates.set(node.id, {
         ...stored,
         parentId: parent?.id,
@@ -1899,9 +1962,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     });
 
     // 整批归属确定后再清理旧组，避免换组途中删除仍将接收其他成员的分组。
+    const childCounts = new Map<string, number>();
+    for (const node of newNodes) if (node.parentId !== undefined) childCounts.set(node.parentId, (childCounts.get(node.parentId) ?? 0) + 1);
     const emptyGroupIds = new Set(
       groupNodes
-        .filter((gn) => oldParentIds.has(gn.id) && !newNodes.some((n) => n.parentId === gn.id))
+        .filter((gn) => oldParentIds.has(gn.id) && !childCounts.has(gn.id))
         .map((gn) => gn.id),
     );
     if (emptyGroupIds.size > 0) {

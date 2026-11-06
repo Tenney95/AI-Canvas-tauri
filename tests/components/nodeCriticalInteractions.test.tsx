@@ -424,6 +424,75 @@ beforeEach(() => {
   vi.stubGlobal('document', { body: {}, documentElement: { getAttribute: () => null } });
 });
 
+describe('audio node clock and waveform ownership', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const path of ['../../src/hooks/useViewportMediaSource', '../../src/components/nodes/shared/audio/useAudioNodeAsr',
+      '../../src/components/nodes/shared/audio/audioWaveformCache', '../../src/components/nodes/shared/AudioNodeToolbar',
+      '../../src/components/nodes/shared/MediaTaskStatus', '../../src/components/shared/CanvasAudioPreview']) vi.doUnmock(path);
+  });
+  async function setup() {
+    const effects: Array<() => void | (() => void)> = [];
+    const setters: Array<ReturnType<typeof vi.fn>> = [];
+    await installReactHookDriver(undefined, effects, undefined, setters);
+    const node: TestNode = { id: 'audio', type: 'ai-audio', position: { x: 0, y: 0 }, data: { type: 'ai-audio', audioUrl: 'asset://tone.wav' } };
+    const store = createStore([node], () => 1);
+    installStoreMock(store); installCommonNodeMocks();
+    vi.doMock('@xyflow/react', () => ({ Handle: () => null, Position: { Left: 'left', Right: 'right' } }));
+    vi.doMock('../../src/hooks/useViewportMediaSource', () => ({ useViewportMediaSource: (source?: string) => source }));
+    vi.doMock('../../src/components/nodes/shared/audio/useAudioNodeAsr', () => ({ useAudioNodeAsr: () => ({}) }));
+    const pending = deferred<{ peaks: number[]; duration: number }>();
+    const acquire = vi.fn<(_source: string, _signal: AbortSignal) => Promise<{ peaks: number[]; duration: number }>>(() => pending.promise);
+    vi.doMock('../../src/components/nodes/shared/audio/audioWaveformCache', () => ({ WAVEFORM_COLUMNS: 220, acquireAudioWaveform: acquire }));
+    vi.doMock('../../src/components/nodes/shared/AudioNodeToolbar', () => ({ default: () => null }));
+    vi.doMock('../../src/components/nodes/shared/MediaTaskStatus', () => ({ default: () => null }));
+    vi.doMock('../../src/components/shared/CanvasAudioPreview', () => ({ default: () => null }));
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('document', { hidden: false, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    vi.stubGlobal('window', {});
+    const AudioNode = (await import('../../src/components/nodes/AudioNode')).default as unknown as (props: { id: string; data: Record<string, unknown>; selected: boolean }) => unknown;
+    const tree = AudioNode({ id: node.id, data: node.data, selected: true });
+    const audio = { currentTime: 1.875, duration: 60, paused: true,
+      play: vi.fn(async () => { audio.paused = false; }), pause: vi.fn(() => { audio.paused = true; }) };
+    const context = { clearRect: vi.fn() };
+    const canvas = { width: 220, height: 80, getContext: vi.fn(() => context) };
+    (findElement(tree, (element) => element.type === 'audio').props.ref as { current: unknown }).current = audio;
+    (findElement(tree, (element) => element.type === 'canvas').props.ref as { current: unknown }).current = canvas;
+    const waveform = findElement(tree, (element) => element.props.className === 'audio-waveform-wrapper');
+    return { effects, setters, frames, audio, canvas, waveform, pending, acquire };
+  }
+
+  it('publishes whole display seconds while fullscreen keeps the exact playback position', async () => {
+    const { waveform, frames, audio, setters } = await setup();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    (waveform.props.onPointerDownCapture as () => void)();
+    (waveform.props.onClick as (event: unknown) => void)({ detail: 1, stopPropagation: vi.fn() });
+    vi.advanceTimersByTime(250);
+    await Promise.resolve();
+    frames.at(-1)!(0);
+    expect(setters[2]).toHaveBeenLastCalledWith(1);
+    audio.currentTime = 2.875;
+    frames.at(-1)!(16);
+    expect(setters[2]).toHaveBeenLastCalledWith(2);
+    (waveform.props.onDoubleClick as (event: unknown) => void)({ preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(setters[4]).toHaveBeenLastCalledWith({ projectId: 'project-a', time: 2.875, playing: true });
+  });
+
+  it('releases its waveform consumer on unmount and ignores a late completed result', async () => {
+    const { effects, acquire, pending, canvas } = await setup();
+    const cleanup = effects[1]();
+    const signal = acquire.mock.calls[0][1] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    cleanup?.();
+    expect(signal.aborted).toBe(true);
+    pending.resolve({ peaks: [1], duration: 1 });
+    await pending.promise; await Promise.resolve();
+    expect(canvas.getContext).not.toHaveBeenCalled();
+  });
+});
+
 async function setupImageFullscreen() {
   const effects: Array<() => void | (() => void)> = [];
   const setters: Array<ReturnType<typeof vi.fn>> = [];
@@ -826,7 +895,7 @@ describe('critical canvas node interactions', () => {
     const effects: Array<() => void | (() => void)> = [];
     const setters: Array<ReturnType<typeof vi.fn>> = [];
     let previewState: unknown;
-    await installReactHookDriver((initial, index) => index % 6 === 5 ? previewState : initial, effects, undefined, setters);
+    await installReactHookDriver((initial, index) => index % 4 === 3 ? previewState : initial, effects, undefined, setters);
     const node: TestNode = {
       id: 'animation', type: 'ai-animation', position: { x: 0, y: 0 },
       data: { type: 'ai-animation', filePath: 'sprite.png', imageUrl: 'asset://original', animationPreviewMode: mode },
@@ -843,30 +912,30 @@ describe('critical canvas node interactions', () => {
     const AnimationNode = (await import('../../src/components/nodes/AnimationNode')).default as unknown as (props: { id: string; data: Record<string, unknown> }) => unknown;
     const props = { id: node.id, data: node.data };
     const pending = AnimationNode(props);
-    expect(() => findElement(pending, (element) => element.type === 'img')).toThrow('Element not found');
-    expect(findElement(pending, (element) => element.props.role === 'status').props.children).toBeDefined();
+    expect(findElement(pending, (element) => componentName(element) === 'AnimationNodePreview').props.displaySrc).toBeUndefined();
+    expect(findElement(pending, (element) => componentName(element) === 'AnimationNodePreview').props.preparingPreview).toBe(true);
     const cleanup = effects[0]();
     const preview = { url: 'blob:transparent-cache', cols: 4, rows: 2, cellWidth: 96, cellHeight: 96, warnings: [], dispose: vi.fn() };
     request.resolve(preview);
     await request.promise;
     await Promise.resolve();
     expect(prepare).toHaveBeenCalledExactlyOnceWith('sprite.png', expect.any(Object), expect.any(Object), 'project-a');
-    previewState = setters[5].mock.calls[0][0];
+    previewState = setters[3].mock.calls[0][0];
     const ready = AnimationNode(props);
-    expect(findElement(ready, (element) => element.type === 'img').props.src).toBe(preview.url);
+    expect(findElement(ready, (element) => componentName(element) === 'AnimationNodePreview').props.displaySrc).toBe(preview.url);
     // 相同路径在另一个项目，或换图/改处理参数，都不能沿用旧缓存或先闪原图。
     store.currentProjectId = 'project-b';
-    expect(() => findElement(AnimationNode(props), (element) => element.type === 'img')).toThrow('Element not found');
+    expect(findElement(AnimationNode(props), (element) => componentName(element) === 'AnimationNodePreview').props.displaySrc).toBeUndefined();
     store.currentProjectId = 'project-a';
     for (const patch of [{ filePath: 'new-sprite.png' }, { animationProcessing: { chromaKey: 'green' } }]) {
-      expect(() => findElement(AnimationNode({ ...props, data: { ...node.data, ...patch } }), (element) => element.type === 'img')).toThrow('Element not found');
+      expect(findElement(AnimationNode({ ...props, data: { ...node.data, ...patch } }), (element) => componentName(element) === 'AnimationNodePreview').props.displaySrc).toBeUndefined();
     }
     cleanup?.();
     expect(preview.dispose).toHaveBeenCalledOnce();
     previewState = undefined;
     const remounted = AnimationNode(props);
-    expect(() => findElement(remounted, (element) => element.type === 'img')).toThrow('Element not found');
-    expect(findElement(remounted, (element) => element.props.role === 'status').props.children).toBeDefined();
+    expect(findElement(remounted, (element) => componentName(element) === 'AnimationNodePreview').props.displaySrc).toBeUndefined();
+    expect(findElement(remounted, (element) => componentName(element) === 'AnimationNodePreview').props.preparingPreview).toBe(true);
     expect(store.updateNodeDataTransient).not.toHaveBeenCalled();
     expect(store.commitToHistory).not.toHaveBeenCalled();
   });
@@ -874,7 +943,7 @@ describe('critical canvas node interactions', () => {
     const effects: Array<() => void | (() => void)> = [];
     const setters: Array<ReturnType<typeof vi.fn>> = [];
     let previewState: unknown;
-    await installReactHookDriver((initial, index) => index % 6 === 5 ? previewState : initial, effects, undefined, setters);
+    await installReactHookDriver((initial, index) => index % 4 === 3 ? previewState : initial, effects, undefined, setters);
     const node: TestNode = {
       id: 'animation', type: 'ai-animation', position: { x: 0, y: 0 },
       data: { type: 'ai-animation', imageUrl: 'asset://original', ...(local ? { filePath: 'sprite.png' } : {}) },
@@ -892,10 +961,10 @@ describe('critical canvas node interactions', () => {
     effects[0]();
     if (local) {
       await Promise.resolve(); await Promise.resolve();
-      previewState = setters[5].mock.calls[0][0];
+      previewState = setters[3].mock.calls[0][0];
     } else expect(prepare).not.toHaveBeenCalled();
     const tree = AnimationNode(props);
-    expect(findElement(tree, (element) => element.type === 'img').props.src).toBe('asset://original');
+    expect(findElement(tree, (element) => componentName(element) === 'AnimationNodePreview').props.displaySrc).toBe('asset://original');
     if (local) expect(findElement(tree, (element) => element.props.className === 'animation-processing-hint').props.children).toBe('preview unavailable');
   });
   it('lets a custom Select type spaces and use input undo without triggering canvas shortcuts', async () => {

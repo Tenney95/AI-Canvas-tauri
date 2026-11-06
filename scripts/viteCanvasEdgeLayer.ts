@@ -25,7 +25,42 @@ const RETURN_PREFIX = `    return (jsxs("div", { className: "react-flow__edges",
 const RETURN_SUFFIX = ')] }));\n}';
 const GEOMETRY_NAME = '__aiCanvasEdgeGeometry';
 const LAYER_NAME = '__aiCanvasEdgeRenderLayer';
-const GEOMETRY_DECLARATION = `const ${GEOMETRY_NAME} = Object.freeze({ getEdgePosition, getElevatedEdgeZIndex, getMarkerId });`;
+const VIEWPORT_REVISIONS_NAME = '__aiCanvasEdgeViewportRevisions';
+const VIEWPORT_REVISION_NAME = '__aiCanvasEdgeViewportRevision';
+const VIEWPORT_SET_NAME = '__aiCanvasSetViewport';
+const VIEWPORT_SETTERS = [
+  ['store.setState({ transform });', `${VIEWPORT_SET_NAME}(store, transform);`],
+  ['store.setState({ transform: [viewport.x, viewport.y, viewport.zoom] });', `${VIEWPORT_SET_NAME}(store, [viewport.x, viewport.y, viewport.zoom]);`],
+] as const;
+const VIEWPORT_ENTRIES = [
+  `    const onTransformChange = useCallback((transform) => {
+        onViewportChange?.({ x: transform[0], y: transform[1], zoom: transform[2] });
+        if (!isControlledViewport) {
+            store.setState({ transform });
+        }
+    }, [onViewportChange, isControlledViewport]);`,
+  `function useViewportSync(viewport) {
+    const syncViewport = useStore(selector$8);
+    const store = useStoreApi();
+    useEffect(() => {
+        if (viewport) {
+            syncViewport?.(viewport);
+            store.setState({ transform: [viewport.x, viewport.y, viewport.zoom] });
+        }
+    }, [viewport, syncViewport]);
+    return null;
+}`,
+] as const;
+const GEOMETRY_DECLARATION = `const ${VIEWPORT_REVISIONS_NAME} = new WeakMap();
+const ${VIEWPORT_REVISION_NAME} = (state) => ${VIEWPORT_REVISIONS_NAME}.get(state) ?? state;
+function ${VIEWPORT_SET_NAME}(store, transform) {
+    store.setState((state) => {
+        const next = { ...state, transform };
+        ${VIEWPORT_REVISIONS_NAME}.set(next, ${VIEWPORT_REVISION_NAME}(state));
+        return next;
+    }, true);
+}
+const ${GEOMETRY_NAME} = Object.freeze({ getEdgePosition, getElevatedEdgeZIndex, getMarkerId, getViewportRevision: ${VIEWPORT_REVISION_NAME} });`;
 
 export interface CanvasEdgeLayerTransformResult {
   code: string;
@@ -64,7 +99,8 @@ export function transformCanvasEdgeLayer(
     uniqueIndex(source, '"data-canvas-edge-renderer":', '连线渲染诊断属性');
     return null;
   }
-  if (source.includes(GEOMETRY_NAME) || source.includes(LAYER_NAME)) {
+  if ([GEOMETRY_NAME, LAYER_NAME, VIEWPORT_REVISIONS_NAME, VIEWPORT_REVISION_NAME, VIEWPORT_SET_NAME]
+    .some((name) => source.includes(name))) {
     throw adapterError('适配器局部名称已被占用');
   }
 
@@ -74,6 +110,13 @@ export function transformCanvasEdgeLayer(
     || !['getEdgePosition', 'getElevatedEdgeZIndex', 'getMarkerId'].every((name) => helpers.includes(name))) {
     throw adapterError('原生几何函数导入结构已变化');
   }
+
+  // These two audited calls publish transform alone, after user callbacks have
+  // finished. All other RF publications get a fresh identity, including set({})
+  // after in-place measurements / handle updates. Record before synchronous
+  // subscribers run, and replace with the complete state to retain its identity.
+  for (const original of VIEWPORT_ENTRIES) uniqueIndex(source, original, '纯视口发布入口');
+  for (const [original] of VIEWPORT_SETTERS) uniqueIndex(source, original, '纯视口发布调用');
 
   const start = uniqueIndex(source, FUNCTION_SIGNATURE, 'EdgeRenderer 签名');
   const end = uniqueIndex(source, FUNCTION_END, 'EdgeRenderer 结束位置');
@@ -103,7 +146,9 @@ ${body.slice(0, returnStart)}    const renderEdge = ${renderEdge};
   // magic-string is not a direct project dependency. This small guarded adapter
   // intentionally returns no source map; the adapted dependency's debug lines
   // refer to generated code until a directly declared mapping utility is adopted.
-  return { code: source.slice(0, start) + adaptedBody + source.slice(end), map: null };
+  let code = source.slice(0, start) + adaptedBody + source.slice(end);
+  for (const [original, replacement] of VIEWPORT_SETTERS) code = code.replace(original, replacement);
+  return { code, map: null };
 }
 
 export function canvasEdgeLayerPlugin(): Plugin {

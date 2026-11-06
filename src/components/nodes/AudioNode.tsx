@@ -27,106 +27,9 @@ import { useCanvasNodeLodProtection } from '../../hooks/useCanvasNodeLod';
 import { useComfyMediaSource } from '../../hooks/useComfyMediaSource';
 import { useViewportMediaSource } from '../../hooks/useViewportMediaSource';
 import { shouldLoadNativeComfyMedia } from '../../services/comfyMediaSource';
-import { corsSafeFetch } from '../../services/ai/httpTransport';
-
-/* ── Waveform data ── */
-interface WaveformData {
-  peaks: number[];       // normalised [0..1] per column
-  duration: number;      // seconds
-}
-
-const WAVEFORM_COLUMNS = 220;
-const WAVEFORM_CACHE_LIMIT = 64;
-const waveformCache = new Map<string, Promise<WaveformData>>();
-let waveformDecodeContext: OfflineAudioContext | null = null;
+import { acquireAudioWaveform, WAVEFORM_COLUMNS, type WaveformData } from './shared/audio/audioWaveformCache';
 
 /* ── Waveform drawing helpers ── */
-
-function getWaveformDecodeContext() {
-  if (!waveformDecodeContext) {
-    waveformDecodeContext = new OfflineAudioContext(1, 1, 44_100);
-  }
-  return waveformDecodeContext;
-}
-
-async function decodeWaveform(audioUrl: string): Promise<WaveformData> {
-  const signal = AbortSignal.timeout(15_000);
-  // 波形需要完整文件，不能读取仅供播放器 Range 请求的分段地址。
-  const response = await (shouldLoadNativeComfyMedia(audioUrl) ? corsSafeFetch : fetch)(audioUrl, { signal });
-  if (!response.ok && response.status !== 0) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`Failed to load audio: ${response.status}`);
-  }
-  const maxBytes = 32 * 1024 * 1024;
-  if (Number(response.headers.get('content-length')) > maxBytes) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new RangeError('音频波形读取超过 32 MiB 限制');
-  }
-  const chunks: Uint8Array[] = [];
-  const reader = response.body?.getReader();
-  let total = 0;
-  if (reader) {
-    try {
-      while (true) {
-        signal.throwIfAborted();
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > maxBytes) throw new RangeError('音频波形读取超过 32 MiB 限制');
-        chunks.push(value);
-      }
-    } catch (error) { await reader.cancel().catch(() => undefined); throw error; }
-    finally { reader.releaseLock(); }
-  } else {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    total = bytes.byteLength;
-    if (total > maxBytes) throw new RangeError('音频波形读取超过 32 MiB 限制');
-    chunks.push(bytes);
-  }
-  signal.throwIfAborted();
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  const audioBuffer = await getWaveformDecodeContext().decodeAudioData(bytes.buffer);
-  const channelData = audioBuffer.getChannelData(0);
-  const step = Math.max(1, Math.floor(channelData.length / WAVEFORM_COLUMNS));
-  const peaks: number[] = [];
-
-  for (let index = 0; index < WAVEFORM_COLUMNS; index += 1) {
-    let max = 0;
-    const start = index * step;
-    const end = Math.min(start + step, channelData.length);
-    for (let sample = start; sample < end; sample += 1) {
-      const absoluteValue = Math.abs(channelData[sample]);
-      if (absoluteValue > max) max = absoluteValue;
-    }
-    peaks.push(max);
-  }
-
-  return { peaks, duration: audioBuffer.duration };
-}
-
-function getCachedWaveform(audioUrl: string) {
-  const cached = waveformCache.get(audioUrl);
-  if (cached) {
-    waveformCache.delete(audioUrl);
-    waveformCache.set(audioUrl, cached);
-    return cached;
-  }
-
-  const pending = decodeWaveform(audioUrl).catch((error) => {
-    if (waveformCache.get(audioUrl) === pending) waveformCache.delete(audioUrl);
-    throw error;
-  });
-  waveformCache.set(audioUrl, pending);
-
-  while (waveformCache.size > WAVEFORM_CACHE_LIMIT) {
-    const oldest = waveformCache.keys().next();
-    if (oldest.done) break;
-    waveformCache.delete(oldest.value);
-  }
-  return pending;
-}
 
 function drawWaveform(canvas: HTMLCanvasElement, data: WaveformData) {
   const ctx = canvas.getContext('2d');
@@ -375,15 +278,21 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
     let cancelled = false;
     let cancelScheduled: (() => void) | undefined;
+    let waveformRequest: AbortController | undefined;
 
     const loadWaveform = async () => {
+      if (waveformRequest && !waveformRequest.signal.aborted) return;
+      const request = new AbortController();
+      waveformRequest = request;
       try {
-        const waveform = await getCachedWaveform(audioUrl);
-        if (cancelled || document.hidden || canvasRef.current !== canvas) return;
+        const waveform = await acquireAudioWaveform(audioUrl, request.signal);
+        if (cancelled || request.signal.aborted || document.hidden || canvasRef.current !== canvas) return;
         waveformRef.current = waveform;
         drawWaveform(canvas, waveform);
       } catch {
-        if (!cancelled && canvasRef.current === canvas) drawEmptyWaveform(canvas);
+        if (!cancelled && !request.signal.aborted && canvasRef.current === canvas) drawEmptyWaveform(canvas);
+      } finally {
+        if (waveformRequest === request) waveformRequest = undefined;
       }
     };
 
@@ -406,6 +315,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       if (document.hidden) {
         cancelScheduled?.();
         cancelScheduled = undefined;
+        waveformRequest?.abort();
         const audio = audioRef.current;
         if (audio && !audio.paused) {
           audio.pause();
@@ -424,6 +334,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     return () => {
       cancelled = true;
       cancelScheduled?.();
+      waveformRequest?.abort();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [data.audioUrl, selected]);
@@ -446,7 +357,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     if (!audio || !canvas) return;
 
     const loop = () => {
-      setCurrentTime(audio.currentTime);
+      setCurrentTime(Math.floor(audio.currentTime));
       if (resumePosition.current) resumePosition.current.time = audio.currentTime;
       const dur = audio.duration;
       const p = dur > 0 ? audio.currentTime / dur : -1;

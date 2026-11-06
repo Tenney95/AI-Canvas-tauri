@@ -19,6 +19,8 @@ export type CanvasEdgePath = [path: string, labelX: number, labelY: number, offs
 
 /** Only the installed React Flow's geometry helpers cross the build adapter. */
 export interface CanvasEdgeGeometry {
+  /** Audited transform-only publications share this identity; others invalidate. */
+  getViewportRevision?(state: ReactFlowState): object;
   getEdgePosition(params: {
     id: string;
     sourceNode: InternalNode;

@@ -1550,3 +1550,59 @@ it('does not write a late undo result into another project with matching node id
   await undo;
   expect(useAppStore.getState().nodes[0]).toMatchObject({ position: { x: 20, y: 0 }, data: { output: '第二项目' } });
 });
+
+
+describe('strict interaction no-op boundaries', () => {
+  it('keeps Store and node identities for repeated snapped position/select while preserving the final dragging transition', () => {
+    const original = { ...node('dragged'), position: { x: 8, y: 16 }, selected: true, dragging: true };
+    useAppStore.setState({ nodes: [original], selectedNodeIds: ['dragged'] });
+    const before = useAppStore.getState(), notify = vi.fn();
+    const unsubscribe = useAppStore.subscribe(notify);
+    try {
+      before.onNodesChange([{ type: 'position', id: original.id, position: { x: 8, y: 16 }, dragging: true },
+        { type: 'select', id: original.id, selected: true }]);
+      before.setSelectedNodeIds(['dragged']);
+      expect(useAppStore.getState()).toBe(before);
+      expect(notify).not.toHaveBeenCalled();
+      before.onNodesChange([{ type: 'position', id: original.id, position: { x: 8, y: 16 }, dragging: false }]);
+      expect(useAppStore.getState().nodes[0]).toMatchObject({ position: original.position, dragging: false });
+      expect(notify).toHaveBeenCalledOnce();
+      expect(useAppStore.getState().history).toBe(before.history);
+    } finally { unsubscribe(); }
+  });
+
+  it('applies duplicate IDs in input order and leaves dimensions, mixed batches and absolute-position changes on the RF path', () => {
+    useAppStore.setState({ nodes: [node('a')] });
+    const state = useAppStore.getState();
+    state.onNodesChange([{ type: 'select', id: 'a', selected: true }, { type: 'select', id: 'a', selected: false },
+      { type: 'position', id: 'a', position: { x: 5, y: 6 } }, { type: 'position', id: 'a', position: { x: 5, y: 6 }, dragging: false }]);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({ selected: false, position: { x: 5, y: 6 }, dragging: false });
+    const previous = useAppStore.getState().nodes;
+    state.onNodesChange([{ type: 'position', id: 'a', position: { x: 5, y: 6 } },
+      { type: 'dimensions', id: 'a', dimensions: { width: 320, height: 180 }, setAttributes: true }]);
+    expect(useAppStore.getState().nodes).not.toBe(previous);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({ measured: { width: 320, height: 180 }, width: 320, height: 180 });
+    const resized = useAppStore.getState().nodes;
+    state.onNodesChange([{ type: 'position', id: 'a', positionAbsolute: { x: 30, y: 40 } }]);
+    expect(useAppStore.getState().nodes).not.toBe(resized);
+    const beforeMissing = useAppStore.getState().nodes;
+    state.onNodesChange([{ type: 'select', id: 'missing', selected: false }]);
+    expect(useAppStore.getState().nodes).toEqual(beforeMissing);
+  });
+
+  it('keeps selection order, undefined-to-false semantics and sequential edge selections', () => {
+    useAppStore.setState({ nodes: [node('a'), node('b')], selectedNodeIds: ['a', 'b'],
+      edges: [{ id: 'edge', source: 'a', target: 'b', selected: false }] });
+    const state = useAppStore.getState();
+    state.onEdgesChange([{ type: 'select', id: 'edge', selected: false }]);
+    expect(useAppStore.getState()).toBe(state);
+    state.onNodesChange([{ type: 'select', id: 'a', selected: false }]);
+    expect(useAppStore.getState().nodes[0].selected).toBe(false);
+    state.setSelectedNodeIds(['b', 'a']);
+    expect(useAppStore.getState().selectedNodeIds).toEqual(['b', 'a']);
+    state.onEdgesChange([{ type: 'select', id: 'edge', selected: true }, { type: 'select', id: 'edge', selected: false }]);
+    expect(useAppStore.getState().edges[0].selected).toBe(false);
+    expect(useAppStore.getState().edges).not.toBe(state.edges);
+    expect(useAppStore.getState().history).toBe(state.history);
+  });
+});

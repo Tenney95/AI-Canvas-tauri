@@ -1106,3 +1106,53 @@ describe('分组与本地文件夹同步', () => {
     expect(renameGroupFolder).not.toHaveBeenCalled();
   });
 });
+
+
+describe('action-scoped group settlement geometry', () => {
+  const groupNode = (id: string, parentId?: string): Node<BaseNodeData> => ({
+    ...node(id), type: 'group', parentId, width: 1000, height: 1000, data: { ...node(id).data, groupId: id },
+  });
+  const record = (id: string, nodeIds: string[]) => ({ id, name: id, nodeIds, color: '#888888', createdAt: 0 });
+
+  it('keeps the old overlapping group and reads its dimensions once for a whole dragged batch', () => {
+    const old = groupNode('old'), first = groupNode('first');
+    const reads = vi.fn(() => 1000);
+    Object.defineProperty(old, 'width', { get: reads, enumerable: true });
+    const members = Array.from({ length: 80 }, (_, index) => ({ ...node(`member-${index}`), parentId: old.id,
+      position: { x: 10 + index, y: 20 } }));
+    useAppStore.setState({ nodes: [first, old, ...members], groups: [record(first.id, []), record(old.id, members.map((member) => member.id))] });
+    const before = useAppStore.getState();
+    before.settleNodeGroupingOnDragStop(members);
+    expect(useAppStore.getState()).toBe(before);
+    expect(reads).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().nodes.slice(2)).toEqual(members);
+  });
+
+  it('retains first-hit group order for unowned nodes and removes an emptied old group only after the batch', () => {
+    const first = groupNode('first'), second = groupNode('second'), old = { ...groupNode('old'), position: { x: 2000, y: 0 } };
+    const fresh = { ...node('fresh'), position: { x: 30, y: 40 } };
+    const moved = { ...node('moved'), parentId: old.id, position: { x: -1980, y: 20 } };
+    useAppStore.setState({ nodes: [old, first, second, fresh, moved],
+      groups: [record(old.id, [moved.id]), record(first.id, []), record(second.id, [])] });
+    useAppStore.getState().settleNodeGroupingOnDragStop([fresh, moved]);
+    const state = useAppStore.getState();
+    expect(state.nodes.find((item) => item.id === fresh.id)).toMatchObject({ parentId: first.id, position: fresh.position });
+    expect(state.nodes.find((item) => item.id === moved.id)).toMatchObject({ parentId: first.id, position: { x: 20, y: 20 } });
+    expect(state.groups.map((item) => item.id)).toEqual([first.id, second.id]);
+    expect(state.groups[0].nodeIds).toEqual([fresh.id, moved.id]);
+    expect(state.history).toHaveLength(1);
+  });
+
+  it('preserves cycle-safe ancestor offsets and counts group children when deciding whether the old group is empty', () => {
+    const a = { ...groupNode('a', 'b'), position: { x: 100, y: 0 } };
+    const b = { ...groupNode('b', 'a'), position: { x: 0, y: 200 } };
+    const child = { ...node('child'), parentId: a.id, position: { x: 1600, y: 30 } };
+    useAppStore.setState({ nodes: [a, b, child], groups: [record(a.id, [child.id]), record(b.id, [])] });
+    useAppStore.getState().settleNodeGroupingOnDragStop(child);
+    const state = useAppStore.getState();
+    expect(state.nodes.find((item) => item.id === child.id)).toMatchObject({ parentId: undefined, position: { x: 1700, y: 230 } });
+    expect(state.nodes.find((item) => item.id === a.id)).toBe(a);
+    expect(state.nodes.find((item) => item.id === b.id)).toBe(b);
+    expect(state.groups.map((item) => item.id)).toEqual([a.id, b.id]);
+  });
+});

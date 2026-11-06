@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { createStore } from 'zustand/vanilla';
 import {
   CANVAS_EDGE_LAYER_ADAPTER_MARKER,
   CANVAS_EDGE_LAYER_REACT_FLOW_VERSION,
@@ -67,8 +68,10 @@ describe('React Flow 集中连线构建适配', () => {
     const originalEnd = entry.source.indexOf("\nEdgeRendererComponent.displayName = 'EdgeRenderer';", originalStart);
     const adaptedStart = result.code.indexOf(CANVAS_EDGE_LAYER_ADAPTER_MARKER);
     const adaptedEnd = result.code.indexOf("\nEdgeRendererComponent.displayName = 'EdgeRenderer';", adaptedStart);
-    expect(result.code.slice(0, adaptedStart)).toBe(entry.source.slice(0, originalStart));
-    expect(result.code.slice(adaptedEnd)).toBe(entry.source.slice(originalEnd));
+    expect(result.code.slice(0, adaptedStart)).toBe(entry.source.slice(0, originalStart)
+      .replace('store.setState({ transform });', '__aiCanvasSetViewport(store, transform);'));
+    expect(result.code.slice(adaptedEnd)).toBe(entry.source.slice(originalEnd)
+      .replace('store.setState({ transform: [viewport.x, viewport.y, viewport.zoom] });', '__aiCanvasSetViewport(store, [viewport.x, viewport.y, viewport.zoom]);'));
     expect(result.code).toContain('const renderEdge = (id) => {');
     expect(result.code).toContain('jsx(MarkerDefinitions$1, { defaultColor: defaultMarkerColor, rfId: rfId })');
     expect(result.map).toBeNull();
@@ -120,7 +123,8 @@ describe('React Flow 集中连线构建适配', () => {
     });
     const secondChildren = harness.render(props).props.children as ElementTree[];
     expect(children[1].props.geometry).toBe(secondChildren[1].props.geometry);
-    expect(children[1].props.geometry).toEqual(harness.geometry);
+    expect(children[1].props.geometry).toMatchObject(harness.geometry);
+    expect(children[1].props.geometry).toHaveProperty('getViewportRevision', expect.any(Function));
   });
 
   it('声明 reconnect 时完整回退原生 renderer', () => {
@@ -135,6 +139,30 @@ describe('React Flow 集中连线构建适配', () => {
     expect(tree.props['data-canvas-edge-renderer']).toBe('native');
     const children = tree.props.children as [ElementTree, ElementTree[]];
     expect(children[1][0].props).toMatchObject({ onReconnect, onReconnectStart, onReconnectEnd });
+  });
+
+  it('纯视口发布在同步通知前继承版本，任意其他发布均失效', () => {
+    const code = transformedEntry().code;
+    const declaration = code.slice(code.indexOf(CANVAS_EDGE_LAYER_ADAPTER_MARKER), code.indexOf('function EdgeRendererComponent('));
+    const helpers = new Function('getEdgePosition', 'getElevatedEdgeZIndex', 'getMarkerId',
+      `${declaration}\nreturn { publish: __aiCanvasSetViewport, revision: __aiCanvasEdgeViewportRevision };`)(vi.fn(), vi.fn(), vi.fn()) as {
+        publish: (store: unknown, transform: number[]) => void;
+        revision: (state: object) => object;
+      };
+    const store = createStore(() => ({ transform: [0, 0, 1], nodeLookup: new Map([['a', { x: 0 }]]) }));
+    const initial = store.getState();
+    const observed: object[] = [];
+    store.subscribe((state) => observed.push(helpers.revision(state)));
+    helpers.publish(store, [10, 20, 1]);
+    helpers.publish(store, [30, 40, 2]);
+    expect(observed).toEqual([initial, initial]);
+    expect(store.getState().nodeLookup).toBe(initial.nodeLookup);
+    store.getState().nodeLookup.get('a')!.x = 30;
+    store.setState({}); // RF publishes this after in-place measurements.
+    const measured = store.getState();
+    expect(helpers.revision(measured)).toBe(measured);
+    helpers.publish(store, [50, 60, 2]);
+    expect(observed.slice(-2)).toEqual([measured, measured]);
   });
 
   it('忽略非已核对的入口并接受 Vite query 与 Windows 路径', () => {
@@ -154,6 +182,7 @@ describe('React Flow 集中连线构建适配', () => {
     expect(() => transformCanvasEdgeLayer(entry.source.replace('className: "react-flow__edges", children:', 'className: "different", children:'), entry.id, version)).toThrow('原生连线容器');
     expect(() => transformCanvasEdgeLayer(entry.source.replace('const edgeIds = useVisibleEdgeIds(onlyRenderVisibleElements);', 'const edgeIds = [];'), entry.id, version)).toThrow('原生可见性订阅');
     expect(() => transformCanvasEdgeLayer(entry.source.replace('getMarkerId, getConnectionStatus', 'getMarkerId as renamedMarker, getConnectionStatus'), entry.id, version)).toThrow('原生几何函数导入结构');
+    expect(() => transformCanvasEdgeLayer(entry.source.replace('store.setState({ transform });', 'store.setState({ transform, nodes: [] });'), entry.id, version)).toThrow('纯视口发布入口');
     expect(() => transformCanvasEdgeLayer(CANVAS_EDGE_LAYER_ADAPTER_MARKER + entry.source, entry.id, version)).toThrow('共享几何能力');
   });
 

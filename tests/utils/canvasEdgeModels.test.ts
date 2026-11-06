@@ -56,6 +56,41 @@ function fixture() {
 }
 
 describe('canvas edge model selector', () => {
+  it('skips node and handle traversal only for attested viewport publications', () => {
+    const { state, geometry, mounted, nodes, edges } = fixture();
+    const revisions = new WeakMap<object, object>();
+    const trackedGeometry = { ...geometry, getViewportRevision: (published: ReactFlowState) => revisions.get(published) ?? published };
+    const select = createCanvasEdgeModelSelector();
+    const ids = ['ab', 'cd'];
+    const first = select(state, ids, trackedGeometry, 'flow', mounted);
+    const scan = vi.spyOn(state.nodeLookup, Symbol.iterator);
+    const position = nodes[0].internals.positionAbsolute;
+    const handleRead = vi.fn(() => position);
+    Object.defineProperty(nodes[0].internals, 'positionAbsolute', { configurable: true, get: handleRead });
+    let published = state;
+    for (let i = 0; i < 30; i += 1) {
+      published = { ...published, transform: [i + 1, 0, 1] };
+      revisions.set(published, state);
+      expect(select(published, ids, trackedGeometry, 'flow', mounted)).toBe(first);
+    }
+    expect(scan).not.toHaveBeenCalled();
+    expect(handleRead).not.toHaveBeenCalled();
+    nodes[0].internals.positionAbsolute.x = 90;
+    const measured = { ...published };
+    const moved = select(measured, ids, trackedGeometry, 'flow', mounted);
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect((moved[0] as CanvasSharedEdgeModel).props.sourceX).toBe(90);
+    expect(moved[1]).toBe(first[1]);
+    // React may consume only the final snapshot after a style/selection update
+    // followed immediately by pan. A changed revision must inspect edges too.
+    edges[0].selected = true;
+    const selected = { ...measured };
+    const panned = { ...selected, transform: [99, 0, 1] as [number, number, number] };
+    revisions.set(panned, selected);
+    expect(select(panned, ids, trackedGeometry, 'flow', mounted)[0]).toMatchObject({ props: { selected: true } });
+    scan.mockRestore();
+  });
+
   it('does not read any of 502 edge bodies across 100 transform-only publications', () => {
     const { state, geometry, mounted } = fixture();
     const getter = vi.fn(() => 'label');
