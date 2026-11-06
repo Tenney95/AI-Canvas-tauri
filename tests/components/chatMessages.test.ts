@@ -233,7 +233,10 @@ function preparePanel(messages: ChatMessage[]) {
     config: { providers: {}, generalModels: [] }, setChatComposerLiveDraft: vi.fn(),
   } as unknown as AppState;
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
-  vi.stubGlobal('document', { body: { classList: { remove: vi.fn() } } });
+  vi.stubGlobal('document', {
+    body: { classList: { remove: vi.fn() } },
+    documentElement: { dataset: { theme: 'dark' } },
+  });
   vi.spyOn(chatImages, 'prepareChatImagePreviews').mockResolvedValue(undefined);
   return vi.spyOn(chatImages, 'parseChatImageReferences');
 }

@@ -1,12 +1,14 @@
 ﻿/**
- * Header 顶部栏 — Logo、项目名编辑、侧边栏切换、设置入口、窗口拖拽区域
+ * Header 顶部栏 — Logo、项目名编辑、分集切换、窗口拖拽区域
  */
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
+import { listEpisodes } from '../store/store.utils';
 import { useT } from '../i18n';
 import EpisodeNameDialog from './shared/EpisodeNameDialog';
+import Select from './shared/Select';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 const isMacOS = typeof navigator !== 'undefined'
@@ -14,10 +16,12 @@ const isMacOS = typeof navigator !== 'undefined'
 
 export default function Header() {
   const t = useT();
-  const { projectName, setProjectName, isCreatingProject, returnToStartPage, isReturningToStartPage, switchingProjectName, currentProjectId, projectLoadStatus } = useAppStore(
+  const { projectName, setProjectName, projects, switchProject, isCreatingProject, returnToStartPage, isReturningToStartPage, switchingProjectName, currentProjectId, projectLoadStatus } = useAppStore(
     useShallow((s) => ({
       projectName: s.projectName,
       setProjectName: s.setProjectName,
+      projects: s.projects,
+      switchProject: s.switchProject,
       isCreatingProject: s.isCreatingProject,
       returnToStartPage: s.returnToStartPage,
       isReturningToStartPage: s.isReturningToStartPage,
@@ -29,13 +33,10 @@ export default function Header() {
   const [episodeNameOpen, setEpisodeNameOpen] = useState(false);
   const canCreateEpisode = !!currentProjectId && projectLoadStatus === 'ready'
     && !isCreatingProject && !isReturningToStartPage && switchingProjectName === null;
-  // 当前画布是一集时，名字前面挂上剧集名：「项目 4-第 1 集」。可编辑的仍然只有集名。
-  const seriesName = useAppStore((s) => {
-    const current = s.projects.find((project) => project.id === s.currentProjectId);
-    return current?.parentId
-      ? s.projects.find((project) => project.id === current.parentId)?.name ?? ''
-      : '';
-  });
+  const currentProject = projects.find((project) => project.id === currentProjectId);
+  const seriesId = currentProject?.parentId;
+  const seriesName = seriesId ? projects.find((project) => project.id === seriesId)?.name ?? '' : '';
+  const episodes = seriesId ? listEpisodes(projects, seriesId) : [];
   const macTauriPlacement = isTauri && isMacOS;
 
   return (
@@ -107,26 +108,45 @@ export default function Header() {
           <span className="text-[11px] text-canvas-text-muted">-</span>
         </>
       )}
-      <div
-        contentEditable
-        suppressContentEditableWarning
-        spellCheck={false}
-        onBlur={(e) => {
-          const name = e.currentTarget.textContent?.trim() || t('新项目');
-          setProjectName(name);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            (e.target as HTMLElement).blur();
-          }
-        }}
-        className={`text-[11px] text-canvas-text-secondary/80 ${seriesName ? 'pl-1 pr-2' : 'px-2'} py-0.5 rounded-md
-                   hover:bg-canvas-hover outline-none cursor-text min-w-[50px] max-w-[140px] truncate
-                   focus:text-canvas-text/90 transition-colors`}
-      >
-        {projectName}
-      </div>
+      {seriesId ? (
+        <Select
+          key={seriesId}
+          value={currentProjectId ?? ''}
+          onChange={(episodeId) => {
+            if (episodeId !== currentProjectId) void switchProject(episodeId);
+          }}
+          options={episodes.map((episode) => ({ value: episode.id, label: episode.name }))}
+          aria-label={t('分集')}
+          title={projectName}
+          size="sm"
+          className="w-[140px] shrink-0"
+          triggerClassName="[&&&]:border-0 [&&&]:bg-transparent [&&&]:shadow-none
+                            [&&&]:hover:bg-transparent [&&&]:focus-visible:bg-transparent
+                            [&&&]:focus-visible:ring-2 [&&&]:focus-visible:ring-indigo-400/50"
+          disabled={!canCreateEpisode || episodeNameOpen}
+        />
+      ) : (
+        <div
+          contentEditable
+          suppressContentEditableWarning
+          spellCheck={false}
+          onBlur={(e) => {
+            const name = e.currentTarget.textContent?.trim() || t('新项目');
+            setProjectName(name);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              (e.target as HTMLElement).blur();
+            }
+          }}
+          className="text-[11px] text-canvas-text-secondary/80 px-2 py-0.5 rounded-md
+                     hover:bg-canvas-hover outline-none cursor-text min-w-[50px] max-w-[140px] truncate
+                     focus:text-canvas-text/90 transition-colors"
+        >
+          {projectName}
+        </div>
+      )}
 
       {/* Divider */}
       <div className="w-px h-4 bg-[var(--separator-color)] mx-0.5" />

@@ -30,7 +30,7 @@ import { resumePendingTasks, clearProjectTasks, getPendingTasksForProject } from
 import { normalizeProjectSettings } from '../services/projectSettingsService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
 import { stopProjectAgentTasks } from '../services/chat/agentTaskControl';
-import { cancelProjectCanvasDerivations } from '../services/canvasDerivationGuard';
+import { cancelProjectCanvasDerivations, completeCanvasDerivation, registerCanvasImport } from '../services/canvasDerivationGuard';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 import { reassignProjectMemories } from '../services/chat/projectMemoryService';
 import { duplicateProjectArchive, exportProjectArchive, importProjectArchive } from '../services/projectTransferService';
@@ -60,6 +60,7 @@ import type { ProjectMergeSide } from '../services/projectMergeService';
 import type { TeamEpisodeTarget } from '../types/agentTeam';
 import { sha256BytesHex } from '../services/mediaDataUrl';
 import { episodeTeamSourceSnapshot } from '../services/seriesCreativeService';
+import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
 let activeProjectMetadataWrite: Promise<void> = Promise.resolve();
@@ -73,9 +74,15 @@ if (import.meta.hot) import.meta.hot.data.episodeCreativeWrites = episodeCreativ
 
 export interface EpisodeCreativeWriteOptions {
   expected?: TeamEpisodeTarget;
+  /** 仅可信工作台宿主可在已加载的同一剧集中保存明确目标，不代表画布写权限。 */
+  allowSameSeries?: boolean;
   /** 仅供宿主编辑会话使用；不得进入持久化。 */
   assertCurrent?: () => void;
+  /** 乐观更新后、磁盘读取及实际入队提交时的范围守卫，不重复检查提交前的脏稿。 */
+  assertCommitCurrent?: () => void;
 }
+
+export type EpisodeAssetRosterWriteOptions = Pick<EpisodeCreativeWriteOptions, 'allowSameSeries' | 'assertCurrent' | 'assertCommitCurrent'>;
 
 async function serializeEpisodeCreativeWrite<T>(episodeId: string, write: () => Promise<T>): Promise<T> {
   const previous = episodeCreativeWrites.get(episodeId) ?? Promise.resolve();
@@ -224,12 +231,15 @@ interface ProjectSaveWaiter {
 interface PendingProjectSave {
   record: ProjectSaveData;
   waiters: ProjectSaveWaiter[];
+  guard?: () => void;
 }
 
 interface ProjectSaveQueue {
   running: boolean;
   active: PendingProjectSave | null;
   pending: PendingProjectSave | null;
+  /** 条件元数据写独立保序，不能被后来的普通自动保存合并成另一份成功记录。 */
+  pendingBatches?: PendingProjectSave[];
   pendingSnapshot: { snapshot: string | undefined; waiters: ProjectSaveWaiter[] } | null;
   idleWaiters: Array<() => void>;
 }
@@ -324,7 +334,8 @@ async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue)
   queue.running = true;
 
   try {
-    while (queue.pending || queue.pendingSnapshot) {
+    while (queue.pending || queue.pendingBatches?.length || queue.pendingSnapshot) {
+      if (!queue.pending && queue.pendingBatches?.length) queue.pending = queue.pendingBatches.shift()!;
       if (!queue.pending) {
         const patch = queue.pendingSnapshot!;
         queue.pendingSnapshot = null;
@@ -338,12 +349,13 @@ async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue)
         continue;
       }
       const batch = queue.pending;
-      queue.pending = null;
+      queue.pending = queue.pendingBatches?.shift() ?? null;
       queue.active = batch;
 
       const epoch = seriesLibrarySaveEpoch;
       if (confirmedSeriesLibrary?.record.id === projectId) confirmedSeriesLibrary = undefined;
       try {
+        batch.guard?.();
         const savedProjectId = await fileService.saveProject(batch.record);
         const owner = seriesLibraryOwners.get(batch.record);
         // 记录队列实际写入的版本，不能把被后续 pending 覆盖的请求误认为已落库。
@@ -359,7 +371,7 @@ async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue)
     }
   } finally {
     queue.running = false;
-    if (queue.pending || queue.pendingSnapshot) {
+    if (queue.pending || queue.pendingBatches?.length || queue.pendingSnapshot) {
       void drainProjectSaveQueue(projectId, queue);
     } else if (projectSaveQueues.get(projectId) === queue) {
       projectSaveQueues.delete(projectId);
@@ -396,27 +408,31 @@ function enqueueProjectSnapshot(projectId: string, snapshot: string | undefined)
   });
 }
 
-function enqueueProjectSave(record: ProjectSaveData): Promise<string> {
+function enqueueProjectSave(record: ProjectSaveData, guard?: () => void): Promise<string> {
+  guard?.();
   if (projectImportsApplying.has(record.id)) return Promise.reject(new Error('正在应用项目更新，请稍后保存'));
   const barrier = projectAssetSyncBarriers.get(record.id);
   if (barrier) {
     // 屏障前已捕获的节点和项目元数据仍可保存；所属库必须改用屏障释放时的版本。
     return barrier.done.then(() => enqueueProjectSave({ ...record,
       ...(record.dramaAssets ? { dramaAssets: barrier.library } : {}),
-    }));
+    }, guard));
   }
   const queue = getProjectSaveQueue(record.id);
 
   return new Promise((resolve, reject) => {
     const waiter = { resolve, reject };
-    if (queue.pending) {
-      queue.pending.record = record;
-      queue.pending.waiters.push(waiter);
-    } else if (queue.active && hasSameProjectSaveContent(queue.active.record, record)) {
+    const tail = queue.pendingBatches?.at(-1) ?? queue.pending;
+    if (tail && !guard && !tail.guard) {
+      tail.record = record;
+      tail.waiters.push(waiter);
+    } else if (tail) {
+      (queue.pendingBatches ??= []).push({ record, waiters: [waiter], guard });
+    } else if (queue.active && !guard && !queue.active.guard && hasSameProjectSaveContent(queue.active.record, record)) {
       // 同一不可变画布的自动保存与返回保存共用在途写入；新版本仍排队。
       queue.active.waiters.push(waiter);
     } else {
-      queue.pending = { record, waiters: [waiter] };
+      queue.pending = { record, waiters: [waiter], guard };
     }
     void drainProjectSaveQueue(record.id, queue);
   });
@@ -605,7 +621,8 @@ export interface ProjectSlice {
     options?: EpisodeCreativeWriteOptions,
   ) => Promise<boolean>;
   /** 只更新当前准确分集的提取清单；expectedRevision 防止覆盖较新的编辑。 */
-  updateEpisodeAssetRoster: (episodeId: string, roster: EpisodeAssetRoster, expectedRevision?: number) => Promise<boolean>;
+  updateEpisodeAssetRoster: (episodeId: string, roster: EpisodeAssetRoster, expectedRevision?: number,
+    options?: EpisodeAssetRosterWriteOptions) => Promise<boolean>;
   /** 与相邻的一集交换集号；direction 为 -1 上移、1 下移。 */
   moveEpisode: (episodeId: string, direction: -1 | 1) => Promise<boolean>;
   exportProject: (id: string) => Promise<boolean>;
@@ -771,10 +788,17 @@ async function patchProjectRecord(
   projectId: string,
   patch: Partial<CanvasProject>,
   rollbackRosterOnly = false,
+  assertCurrent?: () => void,
 ): Promise<boolean> {
   const previous = get().projects.find((item) => item.id === projectId);
   if (!previous) return false;
   const updatedAt = Date.now();
+  let navigationCanceled = false;
+  const originProjectId = get().currentProjectId;
+  // 这里只复用项目离开时的取消生命周期，不以画布 revision 拒绝无关拖动。
+  const navigationGuard = originProjectId !== projectId
+    ? registerCanvasImport({ currentProjectId: originProjectId, nodes: [], getCurrentRevision: () => 0 },
+      () => { navigationCanceled = true; }) : null;
 
   set((state) => ({
     projects: state.projects.map((item) => (
@@ -783,13 +807,40 @@ async function patchProjectRecord(
   }));
 
   try {
+    const assertPatchCurrent = () => {
+      if (navigationCanceled) throw new Error('画布曾切换，未提交旧分集的磁盘快照');
+      assertCurrent?.();
+      const current = get().projects.find((item) => item.id === projectId);
+      if (!current || (Object.keys(patch) as Array<keyof CanvasProject>).some((field) => current[field] !== patch[field])) {
+        throw new Error('目标字段已变化，未确认旧稿保存');
+      }
+    };
     if (get().currentProjectId === projectId) {
       if (await get().saveCurrentProjectSilent() !== projectId) throw new Error('当前画布保存失败');
     } else {
+      // 刚离开的分集可能仍有完整画布自动保存在途，必须先读到它真正落盘后的节点。
+      await waitForProjectSaveQueue(projectId);
+      assertPatchCurrent();
       const record = await fileService.loadProjectData(projectId);
       if (!record) throw new Error('无法读取项目数据');
-      await enqueueProjectSave({ ...record, ...patch, updatedAt });
+      assertPatchCurrent();
+      const latest = get();
+      if (latest.projectLoadStatus !== 'ready' || latest.switchingProjectName !== null
+        || latest.isCreatingProject || latest.isReturningToStartPage) throw new Error('项目导航中，已保留稿件修改');
+      // 读取磁盘期间目标可能已被外部分集列表激活；此时只能保存实时画布，不能回写旧 nodes。
+      if (latest.currentProjectId === projectId) {
+        if (await latest.saveCurrentProjectSilent() !== projectId) throw new Error('当前画布保存失败');
+      } else {
+        await enqueueProjectSave({ ...record, ...patch, updatedAt }, () => {
+          assertPatchCurrent();
+          if (get().currentProjectId === projectId || get().projectLoadStatus !== 'ready'
+            || get().switchingProjectName !== null || get().isCreatingProject || get().isReturningToStartPage) {
+            throw new Error('画布已切换，未提交磁盘中的旧画布快照');
+          }
+        });
+      }
     }
+    assertPatchCurrent();
     return true;
   } catch (error) {
     console.warn('[项目元数据] 保存失败:', error);
@@ -814,6 +865,8 @@ async function patchProjectRecord(
     }));
     get().showToast('保存失败，改动已回滚', 'error');
     return false;
+  } finally {
+    if (navigationGuard) completeCanvasDerivation(navigationGuard);
   }
 }
 
@@ -909,10 +962,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     void get().renameProject(currentProjectId, name);
   },
 
-  renameProject: async (id, name) => {
+  renameProject: async (id, name) => serializeEpisodeCreativeWrite(id, async () => {
     const nextName = name.trim();
     if (!nextName) return false;
 
+    if (get().currentProjectId !== id) await waitForProjectSaveQueue(id);
     const initialState = get();
     const project = initialState.projects.find((item) => item.id === id);
     if (!project) return false;
@@ -1018,7 +1072,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       get().showToast('项目重命名失败，已恢复原名称', 'error');
       return false;
     }
-  },
+  }),
 
   updateProjectSettings: async (settings) => {
     const state = get();
@@ -1331,10 +1385,25 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   updateEpisodeCreative: async (episodeId, updates, options) => serializeEpisodeCreativeWrite(episodeId, async () => {
     const expected = options?.expected;
+    const canvasProjectId = get().currentProjectId;
+    const assertCommitScope = () => {
+      options?.assertCommitCurrent?.();
+      if (!expected) return;
+      const current = get();
+      const episode = current.projects.find((item) => item.id === episodeId);
+      const workspace = options?.allowSameSeries ? readEpisodeWorkspaceScope(current, episodeId) : null;
+      if (current.currentProjectId !== canvasProjectId || current.projectLoadStatus !== 'ready'
+        || current.switchingProjectName !== null || current.isCreatingProject || current.isReturningToStartPage
+        || episode?.parentId !== expected.seriesId || (current.currentProjectId !== episodeId && !workspace)) {
+        throw new Error('分集或所属剧集已变化，请重新核对团队成果');
+      }
+    };
     if (expected) {
       const state = get();
       const episode = state.projects.find((item) => item.id === episodeId);
-      if (state.projectLoadStatus !== 'ready' || state.currentProjectId !== episodeId
+      const workspace = options?.allowSameSeries ? readEpisodeWorkspaceScope(state, episodeId) : null;
+      if (expected.kind !== 'episode' || !['outline', 'script'].includes(expected.field)
+        || state.projectLoadStatus !== 'ready' || (state.currentProjectId !== episodeId && !workspace)
         || state.isCreatingProject || state.isReturningToStartPage || state.switchingProjectName !== null
         || expected.episodeId !== episodeId || episode?.parentId !== expected.seriesId) {
         throw new Error('分集或所属剧集已变化，请先回到原分集再应用成果');
@@ -1348,11 +1417,13 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const current = get();
       const latestEpisode = current.projects.find((item) => item.id === episodeId);
       const latestValue = expected.field === 'outline' ? latestEpisode?.episodeOutline ?? '' : latestEpisode?.episodeScript ?? '';
+      const latestWorkspace = options?.allowSameSeries ? readEpisodeWorkspaceScope(current, episodeId) : null;
       if (hash !== expected.expectedHash || latestValue !== fieldValue
         || (expected.sourceHash && (sourceHash !== expected.sourceHash || !latestEpisode
           || episodeTeamSourceSnapshot(latestEpisode, expected.field) !== sourceSnapshot))
-        || latestEpisode?.parentId !== expected.seriesId || current.currentProjectId !== episodeId
-        || current.projectLoadStatus !== 'ready' || current.switchingProjectName !== null) {
+        || latestEpisode?.parentId !== expected.seriesId || (current.currentProjectId !== episodeId && !latestWorkspace)
+        || current.currentProjectId !== state.currentProjectId || current.projectLoadStatus !== 'ready'
+        || current.switchingProjectName !== null || current.isCreatingProject || current.isReturningToStartPage) {
         throw new Error('目标内容已被修改，团队候选已保留；请比较当前稿件，不要覆盖新内容');
       }
       if ((expected.field === 'outline' && (!('outline' in updates) || 'script' in updates || 'creative' in updates))
@@ -1361,27 +1432,40 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
     }
     options?.assertCurrent?.();
+    assertCommitScope();
     const patch: Partial<CanvasProject> = {};
     if ('outline' in updates) patch.episodeOutline = updates.outline;
     if ('script' in updates) patch.episodeScript = updates.script;
     if ('creative' in updates) patch.episodeCreative = updates.creative;
     if (Object.keys(patch).length === 0) return true;
-    return patchProjectRecord(set, get, episodeId, patch);
+    return patchProjectRecord(set, get, episodeId, patch, false, assertCommitScope);
   }),
 
-  updateEpisodeAssetRoster: async (episodeId, roster, expectedRevision) => {
+  updateEpisodeAssetRoster: async (episodeId, roster, expectedRevision, options) => serializeEpisodeCreativeWrite(episodeId, async () => {
     const state = get();
+    const canvasProjectId = state.currentProjectId;
     const episode = state.projects.find((project) => project.id === episodeId);
     const owner = episode?.parentId ? state.projects.find((project) => project.id === episode.parentId) : undefined;
-    if (state.projectLoadStatus !== 'ready' || state.currentProjectId !== episodeId
+    const workspace = options?.allowSameSeries ? readEpisodeWorkspaceScope(state, episodeId) : null;
+    if (state.projectLoadStatus !== 'ready' || (state.currentProjectId !== episodeId && !workspace)
       || state.isCreatingProject || state.isReturningToStartPage || state.switchingProjectName !== null
       || !episode?.parentId || !owner || owner.parentId) return false;
     const current = normalizeEpisodeAssetRoster(episode.episodeAssetRoster);
     if ((expectedRevision ?? roster.revision) !== current.revision) return false;
     if (current.revision >= Number.MAX_SAFE_INTEGER) return false;
+    const assertCommitScope = () => {
+      options?.assertCommitCurrent?.();
+      const latest = get();
+      if (latest.currentProjectId !== canvasProjectId || !readEpisodeWorkspaceScope(latest, episodeId)
+        || (!options?.allowSameSeries && latest.currentProjectId !== episodeId)) {
+        throw new Error('项目已切换，未保存旧分集清单');
+      }
+    };
+    options?.assertCurrent?.();
+    assertCommitScope();
     const next = { ...normalizeEpisodeAssetRoster(roster), revision: current.revision + 1 };
-    return patchProjectRecord(set, get, episodeId, { episodeAssetRoster: next }, true);
-  },
+    return patchProjectRecord(set, get, episodeId, { episodeAssetRoster: next }, true, assertCommitScope);
+  }),
 
   moveEpisode: async (episodeId, direction) => {
     const state = get();
@@ -1395,9 +1479,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     // 集号可能有缺口或重复，按当前顺序取两者的位次交换，比直接加减更稳。
     const episodeNo = neighbour.episodeNo ?? index + 1 + direction;
     const neighbourNo = episode.episodeNo ?? index + 1;
-    const moved = await patchProjectRecord(set, get, episodeId, { episodeNo });
+    const moved = await serializeEpisodeCreativeWrite(episodeId, () => patchProjectRecord(set, get, episodeId, { episodeNo }));
     if (!moved) return false;
-    return patchProjectRecord(set, get, neighbour.id, { episodeNo: neighbourNo });
+    return serializeEpisodeCreativeWrite(neighbour.id, () => patchProjectRecord(set, get, neighbour.id, { episodeNo: neighbourNo }));
   },
 
   exportProject: async (id) => {

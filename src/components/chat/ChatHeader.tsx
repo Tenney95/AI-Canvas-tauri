@@ -25,6 +25,8 @@ interface ChatHeaderProps {
   agentMode: AgentMode;
   onAgentModeChange: (mode: AgentMode) => void;
   agentModeDisabled?: boolean;
+  /** 当前会话的执行方式与团队配置入口。 */
+  executionControls?: ReactNode;
   /** 打开项目记忆管理面板；不提供时不显示入口（如独立窗口） */
   onOpenMemory?: () => void;
   /** 打开子智能体配置面板；不提供时不显示入口（如独立窗口） */
@@ -50,6 +52,7 @@ export default function ChatHeader({
   agentMode,
   onAgentModeChange,
   agentModeDisabled,
+  executionControls,
   onOpenMemory,
   onOpenSubAgents,
   onOpenAgents,
@@ -93,12 +96,14 @@ export default function ChatHeader({
         </div>
       </div>
 
-      <div className="chat-panel-header-actions ml-auto flex items-center gap-1">
+      <div className="chat-panel-header-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
         <AgentModeSelector
           mode={agentMode}
           onChange={onAgentModeChange}
           disabled={agentModeDisabled}
         />
+
+        {executionControls}
 
         <span className="mx-0.5 h-4 w-px bg-canvas-border" aria-hidden="true" />
 

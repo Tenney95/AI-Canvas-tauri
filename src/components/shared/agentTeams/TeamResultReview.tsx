@@ -4,6 +4,7 @@ import type { AgentTask } from '../../../types/agent';
 import type { TeamArtifactReference } from '../../../types/agentTeam';
 import { useT } from '../../../i18n';
 import ModalOverlay from '../ModalOverlay';
+import Select from '../Select';
 
 export interface TeamResultReviewProps {
   task: AgentTask;
@@ -115,10 +116,10 @@ export default function TeamResultReview({ task, isOpen, onClose, onReadArtifact
       </header>
       <div className="min-h-0 space-y-3 overflow-y-auto p-3 text-xs">
         <div className="flex flex-wrap items-center gap-2">
-          <select className="ui-select__control min-w-0 max-w-full flex-1" aria-label={t('查看团队产物')} value={selected?.id ?? ''}
-            disabled={loading || busy} onChange={(event) => setArtifactId(event.target.value)}>
-            {run.artifacts.filter((artifact) => artifact.kind !== 'input').map((artifact) => <option key={artifact.id} value={artifact.id}>{t(artifact.label)}</option>)}
-          </select>
+          <Select className="min-w-0 max-w-full flex-1" aria-label={t('查看团队产物')} value={selected?.id ?? ''}
+            disabled={loading || busy} onChange={setArtifactId}
+            options={run.artifacts.filter((artifact) => artifact.kind !== 'input')
+              .map((artifact) => ({ value: artifact.id, label: t(artifact.label) }))} />
           <span className="text-canvas-text-secondary">{pendingApplication ? t('保存结果待核对') : applied ? t('已应用、已保存') : run.application?.status === 'restored' ? t('已恢复原稿') : t('候选成果，尚未应用')}</span>
         </div>
         {run.target && <p className="break-words text-canvas-text-muted">{t('原目标：{name}', { name: run.target.label })}</p>}

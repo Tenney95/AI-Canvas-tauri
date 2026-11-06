@@ -3,18 +3,17 @@
  *
  * 常驻对话模型选择器；媒体模型通过轻量 @model mention 按轮覆盖。
  */
-import { lazy, Suspense, useRef, useEffect, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useRef, useEffect, useCallback, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import LazyLoadBoundary from '../shared/LazyLoadBoundary';
 import SendShortcutMenu from '../shared/SendShortcutMenu';
 import ModelSelector from '../nodes/shared/ModelSelector';
-import TeamExecutionPicker from '../shared/agentTeams/TeamExecutionPicker';
 import ContextUsageIndicator from './ContextUsageIndicator';
 import ChatComposerEditor, { getChatComposerNodeIds, type ChatComposerEditorHandle, type ChatComposerReference } from './ChatComposerEditor';
 import ChatImageAttachments from './ChatImageAttachments';
 import type { ChatImageReference } from '../../types/chat';
-import type { AgentTeamProfile, AssistantExecutionSelection } from '../../types/agentTeam';
+import type { AssistantExecutionSelection } from '../../types/agentTeam';
 import { parseChatImageReferences } from '../../services/chat/chatImageReferenceService';
 import MentionPicker, { type MentionPickerItem } from '../shared/MentionPicker';
 import { resolveDramaMentionItems } from '../nodes/shared/mentionEditorSources';
@@ -40,13 +39,6 @@ import { getPerformanceModeEnabled, subscribePerformanceMode } from '../../servi
 import { getPromptSubmitShortcutHint } from '../../utils/promptSubmitShortcut';
 
 const MetalFx = lazy(() => import('../nodes/shared/PolishMetalFx'));
-// 独立窗口的外观由窗口运行时投影到 DOM，不从本窗口默认 Store 配置推断。
-const getInputTheme = (): 'dark' | 'light' => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
-function subscribeInputTheme(onChange: () => void) {
-  const observer = new MutationObserver(onChange);
-  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-  return () => observer.disconnect();
-}
 
 type ReferenceScope = 'all' | 'nodes' | 'models' | 'assets';
 type PickerTab = 'nodes' | 'assets' | 'models';
@@ -179,10 +171,9 @@ interface ChatInputProps {
   /** 独立窗口由主窗口下发的脱敏文本模型分组。 */
   assistantModelGroups?: ModelGroup[];
   executionSelection?: AssistantExecutionSelection;
-  onExecutionSelectionChange?: (selection: AssistantExecutionSelection) => void;
-  teamProfile?: AgentTeamProfile;
-  onTeamProfileChange?: (profile: AgentTeamProfile) => void | Promise<void>;
+  teamConfiguration?: ReactNode;
   teamContextHint?: string;
+  appearanceMode: 'dark' | 'light';
   mediaModels: GeneralModelConfig[];
   mediaModelOptions: MediaModelOption[];
   mediaModelAvailability: Record<string, boolean>;
@@ -214,10 +205,9 @@ export default function ChatInput({
   onAssistantModelChange,
   assistantModelGroups,
   executionSelection,
-  onExecutionSelectionChange,
-  teamProfile,
-  onTeamProfileChange,
+  teamConfiguration,
   teamContextHint,
+  appearanceMode,
   mediaModels,
   mediaModelOptions,
   mediaModelAvailability,
@@ -244,7 +234,6 @@ export default function ChatInput({
   const inputRef = useRef<ChatComposerEditorHandle>(null);
   const reduceMotion = useReducedMotion();
   const performanceMode = useSyncExternalStore(subscribePerformanceMode, getPerformanceModeEnabled, getPerformanceModeEnabled);
-  const appearanceMode = useSyncExternalStore(subscribeInputTheme, getInputTheme, getInputTheme);
   const [shortcutMenuAnchor, setShortcutMenuAnchor] = useState<HTMLElement | null>(null);
   const closeShortcutMenu = useCallback(() => setShortcutMenuAnchor(null), []);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -734,16 +723,8 @@ export default function ChatInput({
           />
         </div>
 
-        {executionSelection && onExecutionSelectionChange && teamProfile && onTeamProfileChange && (
-          <div className="min-w-0 px-2 pb-1">
-            <TeamExecutionPicker value={executionSelection} onChange={onExecutionSelectionChange}
-              profile={teamProfile} onProfileChange={onTeamProfileChange} compact
-              modelGroups={assistantModelGroups} generalModels={mediaModels} groupAvailability={modelGroupAvailability}
-              theme={appearanceMode} disabled={disabled} />
-            {executionSelection.kind === 'team' && teamContextHint && (
-              <p className="mt-1 text-xs leading-relaxed text-canvas-text-secondary">{teamContextHint}</p>
-            )}
-          </div>
+        {executionSelection?.kind === 'team' && teamContextHint && (
+          <p className="min-w-0 px-2 pb-1 text-xs leading-relaxed text-canvas-text-secondary">{teamContextHint}</p>
         )}
         <div className="ui-ai-input__footer ui-ai-input__footer--single-row chat-panel-input-toolbar">
           <AnimatePresence>
@@ -875,6 +856,8 @@ export default function ChatInput({
             </motion.div>
           )}
           </AnimatePresence>
+
+          {teamConfiguration}
 
           {/* 助手只显示实际绑定；不能借用节点历史偏好冒充已选择的对话模型。 */}
           {executionSelection?.kind !== 'team' && <ModelSelector

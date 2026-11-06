@@ -9,6 +9,7 @@ import { estimateTokens } from './tokenEstimate';
 import { isMcpGlobalToolContext } from '../mcp/mcpSettingsScope';
 import { isGeneralAssistantToolContext } from './assistantScope';
 import { useAppStore } from '../../store/useAppStore';
+import { isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
 import { getPreparedProviderCatalogApproval, MAX_PROVIDER_MODEL_SELECTION, validateProviderModelSelection } from './providerModelCatalogService';
 import {
   streamAssistantReply,
@@ -402,7 +403,10 @@ export async function executePreparedToolCall(
       || (isGeneralAssistantToolContext(executionContext, prepared.definition.id)
         && isGeneralAssistantToolContext(currentTask, prepared.definition.id)
         && currentTask.conversationId === context.conversationId);
-    const reverifyReason = !globalScopeActive
+    const workbenchScopeActive = prepared.definition.effect === 'file_write'
+      && currentTask.projectId === context.projectId && currentTask.conversationId === context.conversationId
+      && isWorkbenchTeamTaskInScope(useAppStore.getState(), currentTask, prepared.definition.id);
+    const reverifyReason = !globalScopeActive && !workbenchScopeActive
       && useAppStore.getState().currentProjectId !== context.projectId
       ? '目标项目已切换，已取消该工具执行'
       : policy.outcome === 'deny'

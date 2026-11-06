@@ -24,6 +24,7 @@ import {
 } from '../../../src/services/chat/agentScheduler';
 import { useAppStore } from '../../../src/store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../../src/services/chat/assistantScope';
+import { createDefaultTeamProfile } from '../../../src/services/chat/teams/teamProfileService';
 
 function createTask(
   id: string,
@@ -91,6 +92,63 @@ function arrangeTask(task: AgentTask): AgentTask {
 function readTask(id: string): AgentTask {
   return useAppStore.getState().agentTasks.find((task) => task.id === id)!;
 }
+
+describe('工作台绑定分集的任务控制范围', () => {
+  function arrangeSiblingTeam(status: AgentTaskStatus = 'paused'): AgentTask {
+    const task = createTask('workbench-team', 'episode-b', 'conv-workbench', status);
+    task.executionKind = 'team';
+    task.teamRun = { version: 1, revision: 1, id: task.id, templateId: 'script', source: 'script-workbench',
+      target: { kind: 'episode', seriesId: 'series-workbench', episodeId: 'episode-b', field: 'script',
+        expectedHash: 'a'.repeat(64), label: '第二集正文' },
+      profile: createDefaultTeamProfile('general/test'),
+      inputArtifact: { id: 'input', kind: 'input', label: '材料', relativePath: 'input.json',
+        sha256: 'a'.repeat(64), bytes: 1, createdAt: 1, parentArtifactIds: [] },
+      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' },
+      artifacts: [], stages: [], callsUsed: 0, budgetTokensUsed: 0, usageKnown: false,
+      usageReportedCalls: 0, unknownUsageCalls: 0, createdAt: 1,
+    };
+    arrangeTask(task);
+    useAppStore.setState({ currentProjectId: 'episode-a', projectLoadStatus: 'ready',
+      activeConversationId: task.conversationId, projects: [
+        { id: 'series-workbench', name: '剧集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-a', parentId: 'series-workbench', name: '第一集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-b', parentId: 'series-workbench', name: '第二集', createdAt: 1, updatedAt: 1 },
+      ] });
+    useAppStore.getState().updateConversation(task.conversationId, { projectId: 'series-workbench' });
+    return task;
+  }
+
+  it('同剧集工作台任务可继续，普通助手任务和其他剧集仍被拒绝', () => {
+    const task = arrangeSiblingTeam();
+    expect(validateTaskResumable(task.id).ok).toBe(true);
+    useAppStore.setState({ agentTasks: [{ ...task, teamRun: { ...task.teamRun!, source: 'assistant' } }] });
+    expect(validateTaskResumable(task.id).errorCode).toBe('AGENT_RESUME_PROJECT_NOT_ACTIVE');
+    useAppStore.setState({ agentTasks: [task], projects: [
+      ...useAppStore.getState().projects,
+      { id: 'unrelated-project', name: '其他项目', createdAt: 1, updatedAt: 1 },
+    ], currentProjectId: 'unrelated-project' });
+    expect(validateTaskResumable(task.id).errorCode).toBe('AGENT_RESUME_PROJECT_NOT_ACTIVE');
+  });
+
+  it('审批例外只允许原团队成果保存，不能批准其他画布工具', async () => {
+    for (const toolId of ['agent_team_apply_result', 'canvas_create_nodes']) {
+      const task = arrangeSiblingTeam('waiting_approval');
+      task.steps = [{ id: 'workbench-step', taskId: task.id, index: 0, kind: 'approval', title: '保存团队候选',
+        status: 'waiting_approval', createdAt: 1, updatedAt: 1,
+        approval: { id: 'workbench-approval', kind: 'file_write', status: 'pending', summary: '保存', requestedAt: 1 },
+        toolCall: { callId: 'workbench-call', toolId, effect: 'file_write', inputSummary: '保存候选', retryCount: 0 },
+      }];
+      useAppStore.setState({ agentTasks: [task] });
+      const controller = new AbortController();
+      const pending = waitForAgentApproval('workbench-approval', controller.signal);
+      const accepted = resolveAgentApproval('workbench-approval', { approved: true });
+      expect(accepted).toBe(toolId === 'agent_team_apply_result');
+      if (accepted) await expect(pending).resolves.toMatchObject({ approved: true });
+      else { controller.abort(); await expect(pending).rejects.toMatchObject({ name: 'AbortError' }); }
+      expect(useAppStore.getState().currentProjectId).toBe('episode-a');
+    }
+  });
+});
 
 it('allows global settings choices only from their active conversation and approved tool scope', async () => {
   const task = { ...createTask('global-choice', MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_CONVERSATION_ID, 'waiting_approval'),

@@ -4,6 +4,7 @@
 import { isMcpSettingsToolContext } from '../mcp/mcpSettingsScope';
 import { isGeneralAssistantScope, isGeneralAssistantToolContext } from './assistantScope';
 import { useAppStore } from '../../store/useAppStore';
+import { isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
 import {
   AGENT_TERMINAL_STATUSES,
   type AgentApprovalResolution,
@@ -272,7 +273,8 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
       message: '专家子任务不能单独继续，请从上级任务重新规划',
     };
   }
-  if (store.currentProjectId !== task.projectId && !isGeneralAssistantScope(task.projectId)) {
+  if (store.currentProjectId !== task.projectId && !isGeneralAssistantScope(task.projectId)
+    && !isWorkbenchTeamTaskInScope(store, task)) {
     return {
       ok: false,
       errorCode: 'AGENT_RESUME_PROJECT_NOT_ACTIVE',
@@ -281,7 +283,8 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
   }
   const conversation = store.conversations.find((item) => item.id === task.conversationId);
   if (!conversation || conversation.deletedAt
-    || (isGeneralAssistantScope(task.projectId) && conversation.projectId !== task.projectId)) {
+    || (isGeneralAssistantScope(task.projectId) && conversation.projectId !== task.projectId)
+    || (task.teamRun?.source === 'script-workbench' && conversation.projectId !== task.teamRun.target?.seriesId)) {
     return {
       ok: false,
       errorCode: 'AGENT_RESUME_CONVERSATION_GONE',
@@ -309,11 +312,15 @@ export function resolveAgentApproval(
   const generalApproval = !!task && isGeneralAssistantToolContext(task, step?.toolCall?.toolId ?? '')
     && store.conversations.some((conversation) => conversation.id === task.conversationId
       && conversation.projectId === task.projectId && !conversation.deletedAt);
+  const workbenchApproval = !!task && isWorkbenchTeamTaskInScope(store, task, step?.toolCall?.toolId ?? '')
+    && store.conversations.some((conversation) => conversation.id === task.conversationId
+      && conversation.projectId === task.teamRun?.target?.seriesId && !conversation.deletedAt);
   if (
     !task
     || store.activeConversationId !== task.conversationId
     || (store.currentProjectId !== task.projectId
       && !generalApproval
+      && !workbenchApproval
       && !task.steps.some((step) => step.approval?.id === approvalId
         && step.approval.kind === 'user_choice'
         && isMcpSettingsToolContext(task, step.toolCall?.toolId ?? '')))

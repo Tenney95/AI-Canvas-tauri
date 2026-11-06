@@ -180,12 +180,19 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
   loadAgentTasksForProject: async (projectId) => {
     try {
       const tasks = await agentTaskService.loadProjectAgentTasks(projectId);
-      set((state) => ({
-        agentTasks: [
+      set((state) => {
+        const loaded = new Map(tasks.filter((task) => task.projectId === projectId).map((task) => [task.id, task]));
+        // 读库期间工作台团队仍可推进；迟到快照不能回退阶段/预算，同毫秒也以实时状态为准。
+        for (const live of state.agentTasks) {
+          if (live.projectId !== projectId) continue;
+          const persisted = loaded.get(live.id);
+          if (!persisted || live.updatedAt >= persisted.updatedAt) loaded.set(live.id, live);
+        }
+        return { agentTasks: [
           ...state.agentTasks.filter((task) => task.projectId !== projectId),
-          ...tasks,
-        ],
-      }));
+          ...loaded.values(),
+        ] };
+      });
     } catch (error) {
       console.warn('[agent] 加载项目任务失败:', error);
     }

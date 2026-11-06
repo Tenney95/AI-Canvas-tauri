@@ -150,8 +150,11 @@ describe('本集资产清单持久化门禁', () => {
   it('保存失败只撤回本次清单，保留期间修改的正文', async () => {
     const store = arrange();
     let rejectSave!: (reason: Error) => void;
-    store.setState({ saveCurrentProjectSilent: () => new Promise<string | undefined>((_, reject) => { rejectSave = reject; }) });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    store.setState({ saveCurrentProjectSilent: () => new Promise<string | undefined>((_, reject) => { rejectSave = reject; entered(); }) });
     const saving = store.getState().updateEpisodeAssetRoster('episode-1', roster(), 0);
+    await started;
     store.setState((state) => ({ projects: state.projects.map((project) => project.id === 'episode-1'
       ? { ...project, episodeScript: '后来修改的剧本' } : project) }));
     rejectSave(new Error('模拟保存失败'));
@@ -160,33 +163,42 @@ describe('本集资产清单持久化门禁', () => {
       .toMatchObject({ episodeScript: '后来修改的剧本', episodeAssetRoster: undefined });
   });
 
-  it('旧保存失败不能撤回后来已经保存的新清单', async () => {
+  it('清单按分集串行保存，旧保存失败后再接受下一份明确版本', async () => {
     const store = arrange();
     let rejectSave!: (reason: Error) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
     const save = vi.fn<AppState['saveCurrentProjectSilent']>()
-      .mockImplementationOnce(() => new Promise<string | undefined>((_, reject) => { rejectSave = reject; }))
+      .mockImplementationOnce(() => new Promise<string | undefined>((_, reject) => { rejectSave = reject; entered(); }))
       .mockResolvedValue('episode-1');
     store.setState({ saveCurrentProjectSilent: save });
     const oldSave = store.getState().updateEpisodeAssetRoster('episode-1', roster(), 0);
+    await started;
     const newer = { ...roster(), characters: [entry({ notes: '后来确认的新备注' })] };
-    await expect(store.getState().updateEpisodeAssetRoster('episode-1', newer, 1)).resolves.toBe(true);
+    const nextSave = store.getState().updateEpisodeAssetRoster('episode-1', newer, 0);
+    expect(save).toHaveBeenCalledTimes(1);
     rejectSave(new Error('旧保存失败'));
     await expect(oldSave).resolves.toBe(false);
+    await expect(nextSave).resolves.toBe(true);
     expect(store.getState().projects.find((project) => project.id === 'episode-1')?.episodeAssetRoster)
-      .toMatchObject({ revision: 2, characters: [expect.objectContaining({ notes: '后来确认的新备注' })] });
+      .toMatchObject({ revision: 1, characters: [expect.objectContaining({ notes: '后来确认的新备注' })] });
   });
 
   it('先前正文保存失败不能连带撤销后来已经接受的清单', async () => {
     const store = arrange();
     let rejectSave!: (reason: Error) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
     store.setState({ saveCurrentProjectSilent: vi.fn<AppState['saveCurrentProjectSilent']>()
-      .mockImplementationOnce(() => new Promise<string | undefined>((_, reject) => { rejectSave = reject; }))
+      .mockImplementationOnce(() => new Promise<string | undefined>((_, reject) => { rejectSave = reject; entered(); }))
       .mockResolvedValue('episode-1'),
     });
     const savingText = store.getState().updateEpisodeCreative('episode-1', { script: '尚未保存的正文' });
-    await expect(store.getState().updateEpisodeAssetRoster('episode-1', roster(), 0)).resolves.toBe(true);
+    await started;
+    const savingRoster = store.getState().updateEpisodeAssetRoster('episode-1', roster(), 0);
     rejectSave(new Error('正文保存失败'));
     await expect(savingText).resolves.toBe(false);
+    await expect(savingRoster).resolves.toBe(true);
     expect(store.getState().projects.find((project) => project.id === 'episode-1')?.episodeAssetRoster?.revision).toBe(1);
   });
 });

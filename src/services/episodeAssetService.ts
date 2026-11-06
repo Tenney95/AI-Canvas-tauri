@@ -1,7 +1,7 @@
 /** 本集清单的提取、编辑及显式资产库绑定；模型输出从不直接入库。 */
 import { t } from '../i18n';
 import { useAppStore } from '../store/useAppStore';
-import { seriesOwnerId } from '../store/store.utils';
+import { readEpisodeWorkspaceScope } from './episodeWorkspaceScope';
 import type { DramaAsset, DramaCharacter, DramaProp } from '../types/dramaAssets';
 import {
   EPISODE_ASSET_LIMITS, episodeScriptFingerprint, normalizeEpisodeAssetRoster,
@@ -27,35 +27,63 @@ interface EpisodeContext {
   script: string;
   revision: number;
   version: number;
+  sourceVersion: number;
 }
 const candidateSources = new Map<string, { context: EpisodeContext; kind: EpisodeAssetKind }>();
+const episodeSourceVersions = new Map<string, number>();
+let stopSourceObservation: (() => void) | undefined;
+
+/** 非画布当前集也要识别“修改后又恢复正文”，而非只比最后一次文本。 */
+function episodeSourceVersion(episodeId: string): number {
+  if (!stopSourceObservation) {
+    stopSourceObservation = useAppStore.subscribe((state, previous) => {
+      if (state.projects === previous.projects) return;
+      for (const [id, version] of episodeSourceVersions) {
+        const before = previous.projects.find((episode) => episode.id === id);
+        const after = state.projects.find((episode) => episode.id === id);
+        if (before?.episodeScript !== after?.episodeScript || before?.parentId !== after?.parentId) {
+          episodeSourceVersions.set(id, version + 1);
+        }
+      }
+    });
+  }
+  if (!episodeSourceVersions.has(episodeId)) episodeSourceVersions.set(episodeId, 0);
+  return episodeSourceVersions.get(episodeId)!;
+}
+if (import.meta.hot) import.meta.hot.dispose(() => stopSourceObservation?.());
 
 function readContext(episodeId: string, expectedRevision?: number): { context: EpisodeContext; roster: EpisodeAssetRoster } {
   const state = useAppStore.getState();
-  const episode = state.projects.find((project) => project.id === episodeId);
-  const owner = state.projects.find((project) => project.id === episode?.parentId);
-  if (!episode?.parentId || !owner || owner.parentId || state.currentProjectId !== episodeId
-    || state.projectLoadStatus !== 'ready' || state.isCreatingProject || state.isReturningToStartPage
-    || state.switchingProjectName !== null) {
-    throw new Error(t('项目已切换'));
-  }
+  const workspace = readEpisodeWorkspaceScope(state, episodeId);
+  if (!workspace) throw new Error(t('项目已切换'));
+  const { episode, owner } = workspace;
   const roster = normalizeEpisodeAssetRoster(episode.episodeAssetRoster);
   if (expectedRevision !== undefined && roster.revision !== expectedRevision) {
     throw new Error(t('本集清单已变化，请重新操作'));
   }
-  return { roster, context: { episodeId, ownerId: seriesOwnerId(state.projects, episodeId),
-    script: episode.episodeScript ?? '', revision: roster.revision, version: getAssetExtractionContextVersion() } };
+  return { roster, context: { episodeId, ownerId: owner.id,
+    script: episode.episodeScript ?? '', revision: roster.revision, version: getAssetExtractionContextVersion(),
+    sourceVersion: episodeSourceVersion(episodeId) } };
 }
 
 function assertContext(context: EpisodeContext): void {
   const current = readContext(context.episodeId, context.revision).context;
   if (current.ownerId !== context.ownerId || current.script !== context.script
-    || current.version !== context.version) throw new Error(t('提取来源已变化，请重新提取'));
+    || current.version !== context.version || current.sourceVersion !== context.sourceVersion) throw new Error(t('提取来源已变化，请重新提取'));
 }
 
 async function saveRoster(context: EpisodeContext, roster: EpisodeAssetRoster): Promise<void> {
   assertContext(context);
-  if (!await useAppStore.getState().updateEpisodeAssetRoster(context.episodeId, roster, context.revision)) {
+  const canvasProjectId = useAppStore.getState().currentProjectId;
+  if (!await useAppStore.getState().updateEpisodeAssetRoster(context.episodeId, roster, context.revision,
+    { allowSameSeries: true, assertCurrent: () => assertContext(context), assertCommitCurrent: () => {
+      const state = useAppStore.getState();
+      const scope = readEpisodeWorkspaceScope(state, context.episodeId);
+      if (!scope || state.currentProjectId !== canvasProjectId || scope.owner.id !== context.ownerId
+        || (scope.episode.episodeScript ?? '') !== context.script || episodeSourceVersion(context.episodeId) !== context.sourceVersion) {
+        throw new Error(t('提取来源已变化，请重新提取'));
+      }
+    } })) {
     throw new Error(t('保存失败'));
   }
 }
@@ -131,6 +159,7 @@ export async function mergeEpisodeAssetCandidates(episodeId: string, kind: Episo
     const source = candidate?.context;
     if (!source || candidate?.kind !== kind || source.episodeId !== episodeId || source.revision !== expectedRevision
       || source.ownerId !== context.ownerId || source.script !== context.script || source.version !== context.version
+      || source.sourceVersion !== context.sourceVersion
       || entry.kind !== kind) throw new Error(t('提取来源已变化，请重新提取'));
   }
   const existing = roster[listKey(kind)];

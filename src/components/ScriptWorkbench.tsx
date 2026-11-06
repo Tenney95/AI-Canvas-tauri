@@ -1,7 +1,7 @@
 /**
  * ScriptWorkbench — 提供剧本创作工作台界面与交互。
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EpisodeCreativeInfo } from '../types';
@@ -18,48 +18,45 @@ import {
 import { useT } from '../i18n';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
-import EpisodeNameDialog from './shared/EpisodeNameDialog';
 import Select from './shared/Select';
+import NumberStepper from './shared/NumberStepper';
 import { createEpisodeShotlist } from '../services/shotlistService';
-import SeriesSourceBrowser from './SeriesSourceBrowser';
+import SeriesSourceBrowser, { type SeriesSourceBrowserRemote } from './SeriesSourceBrowser';
 import type { DramaAssetKind } from '../types/dramaAssets';
 import { commitSeriesAssetCandidates, extractSeriesAssetsFromFullScript, type SeriesAssetExtractionResult } from '../services/seriesAssetExtractionService';
 import { normalizeEpisodeAssetRoster } from '../types/episodeAssets';
-import EpisodeAssetPanel from './series/EpisodeAssetPanel';
+import EpisodeAssetPanel, { buildEpisodeAssetPanelSnapshot, executeEpisodeAssetPanelAction, type EpisodeAssetPanelActionResult } from './series/EpisodeAssetPanel';
 import AssetExtractionPreviewDialog from './series/AssetExtractionPreviewDialog';
 import type { AgentMode } from '../types/agent';
 import type { AssistantExecutionSelection, TeamTemplateId } from '../types/agentTeam';
 import TeamExecutionPicker from './shared/agentTeams/TeamExecutionPicker';
 import TeamRunCard from './shared/agentTeams/TeamRunCard';
-import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
+import { normalizeExecutionSelection, normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
 import { appendTeamInstruction, startTeamInvocation, openTeamTaskInAssistant, readTeamTaskArtifact } from '../services/chat/teams/teamInvocationService';
 import { captureEpisodeTeamContext, applyTeamResult, restoreTeamResult, reconcileTeamResult } from '../services/chat/teams/teamResultApplyService';
 import { pauseAgentTask, stopAgentTask } from '../services/chat/agentTaskControl';
 import { cancelScheduledAgentExecution } from '../services/chat/agentScheduler';
 import { resumeAgentTaskExecution } from '../services/chat/conversationExecutionController';
-import { buildChatModelCatalog } from '../services/chat/detachedChatSyncController';
+import { buildChatModelCatalog, projectChatNodes } from '../services/chat/detachedChatSyncController';
 import { hasUnsettledEpisodeEditorSession, isEpisodeEditorWriteLocked, registerEpisodeEditorSession, settleEpisodeEditorSessions,
   subscribeEpisodeEditorWrites } from '../services/episodeEditorSessionService';
+import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
+import { createAppearanceUiSnapshot } from '../services/appearance/appearanceWindowSync';
+import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
+import { createScriptWorkbenchWindowHost, type ScriptWorkbenchWindowHost } from '../services/scriptWorkbenchWindowService';
+import { loadProjectAgentTasks } from '../services/chat/agentTaskService';
+import { buildSeriesChapterPrompt, readSeriesChapter, readSeriesSource } from '../services/seriesSourceService';
+import type { SeriesSourceSnapshot } from '../types/seriesSource';
+import type { ScriptWorkbenchAction, ScriptWorkbenchDispatch, ScriptWorkbenchRequest, ScriptWorkbenchSnapshot,
+  WorkbenchCreativeDraft, WorkbenchDraft, WorkbenchEditorTab, WorkbenchPendingAction } from '../types/scriptWorkbench';
 
-type EditorTab = 'outline' | 'script' | 'creative' | 'characters' | 'props';
-type PendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
+type EditorTab = WorkbenchEditorTab;
+type PendingAction = WorkbenchPendingAction;
+type CreativeDraft = WorkbenchCreativeDraft;
 
-interface CreativeDraft {
-  task: string;
-  coreConflict: string;
-  openingHook: string;
-  reversal: string;
-  endingHook: string;
-  beats: string;
-  targetDurationSec: string;
-  sourceRange: string;
-}
-
-interface WorkbenchDraft {
-  outline: string;
-  script: string;
-  creative: CreativeDraft;
-}
+// 非持久化恢复副本：宿主因切项目卸载时不把未确认丢弃的稿件当作已经放弃。
+const workbenchDraftCache = new Map<string, Record<string, WorkbenchDraft>>();
+const EMPTY_WORKBENCH_NODES: [] = [];
 
 const EMPTY_CREATIVE_DRAFT: CreativeDraft = {
   task: '',
@@ -182,6 +179,8 @@ function CreativeField({
   value,
   placeholder,
   multiline = false,
+  readOnly = false,
+  numberInput,
   onChange,
   onAiAction,
   aiDisabled = false,
@@ -190,6 +189,8 @@ function CreativeField({
   value: string;
   placeholder: string;
   multiline?: boolean;
+  readOnly?: boolean;
+  numberInput?: { min: number; max?: number; step?: number };
   onChange: (value: string) => void;
   onAiAction?: () => void;
   aiDisabled?: boolean;
@@ -227,10 +228,15 @@ function CreativeField({
           </button>
         ) : null}
       </span>
-      {multiline ? (
+      {numberInput ? (
+        <NumberStepper id={inputId} value={Number.parseFloat(value) || numberInput.min}
+          onChange={(next) => onChange(String(next))} min={numberInput.min} max={numberInput.max} step={numberInput.step ?? 1}
+          disabled={readOnly} aria-label={label} className="w-full" />
+      ) : multiline ? (
         <textarea
           id={inputId}
           value={value}
+          readOnly={readOnly}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           className={`${fieldClass} min-h-24 resize-y py-2.5 leading-relaxed`}
@@ -239,6 +245,7 @@ function CreativeField({
         <input
           id={inputId}
           value={value}
+          readOnly={readOnly}
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           className={`${fieldClass} h-9`}
@@ -252,17 +259,20 @@ export default function ScriptWorkbench({
   isOpen,
   onClose: onCloseRequest,
   startWithSplit = false,
+  openRequestRevision = 0,
+  requestSplit = false,
 }: {
   isOpen: boolean;
   onClose: () => void;
   startWithSplit?: boolean;
+  openRequestRevision?: number;
+  requestSplit?: boolean;
 }) {
   const t = useT();
   const {
     projects,
     currentProjectId,
     projectLoadStatus,
-    switchProject,
     updateEpisodeCreative,
     openChatWithDraft,
     showToast,
@@ -275,7 +285,6 @@ export default function ScriptWorkbench({
     projects: state.projects,
     currentProjectId: state.currentProjectId,
     projectLoadStatus: state.projectLoadStatus,
-    switchProject: state.switchProject,
     updateEpisodeCreative: state.updateEpisodeCreative,
     openChatWithDraft: state.openChatWithDraft,
     showToast: state.showToast,
@@ -286,28 +295,42 @@ export default function ScriptWorkbench({
     updateConfig: state.updateConfig,
   })));
 
-  const seriesId = currentProjectId ? seriesOwnerId(projects, currentProjectId) : null;
+  const [seriesId] = useState(() => currentProjectId ? seriesOwnerId(projects, currentProjectId) : null);
   const series = projects.find((project) => project.id === seriesId) ?? null;
   const episodes = useMemo(
     () => (seriesId ? listEpisodes(projects, seriesId) : []),
     [projects, seriesId],
   );
-  const currentEpisode = episodes.find((episode) => episode.id === currentProjectId)
-    ?? episodes[0]
-    ?? null;
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState(() => episodes.find((episode) => episode.id === currentProjectId)?.id ?? episodes[0]?.id ?? null);
+  const selectedEpisodeRef = useRef(selectedEpisodeId);
+  const currentEpisode = episodes.find((episode) => episode.id === selectedEpisodeId) ?? null;
+  const currentEpisodeId = currentEpisode?.id;
+  const [sessionId] = useState(() => crypto.randomUUID());
+  const [detached, setDetached] = useState(false);
+  const [openingWindow, setOpeningWindow] = useState(false);
+  const [closingWorkbench, setClosingWorkbench] = useState(false);
+  const windowHost = useRef<ScriptWorkbenchWindowHost | null>(null);
+  const afterReply = useRef<'close' | 'dock' | null>(null);
+  const acceptedEditSequence = useRef(0);
+  const workspaceState = useAppStore.getState();
+  const contextReady = !!series && !!currentProjectId && seriesOwnerId(projects, currentProjectId) === seriesId
+    && projectLoadStatus === 'ready' && !workspaceState.isCreatingProject && !workspaceState.isReturningToStartPage
+    && workspaceState.switchingProjectName === null;
   const [activeTab, setActiveTab] = useState<EditorTab>('outline');
-  const [draftsByEpisode, setDraftsByEpisode] = useState<Record<string, WorkbenchDraft>>({});
-  const draftsRef = useRef<Record<string, WorkbenchDraft>>({});
+  const [draftsByEpisode, setDraftsByEpisode] = useState<Record<string, WorkbenchDraft>>(() => seriesId ? workbenchDraftCache.get(seriesId) ?? {} : {});
+  const draftsRef = useRef<Record<string, WorkbenchDraft>>(draftsByEpisode);
   const draftVersions = useRef(new Map<string, number>());
   const savingEpisodeRef = useRef<string | null>(null);
   const startingTeamRef = useRef(false);
-  const teamControlsRef = useRef<HTMLDivElement>(null);
   const [executionSelection, setExecutionSelection] = useState<AssistantExecutionSelection>({ kind: 'single' });
   const [teamMode, setTeamMode] = useState<AgentMode>('collaborative');
   const [isStartingTeam, setIsStartingTeam] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [splitOpen, setSplitOpen] = useState(startWithSplit);
+  useEffect(() => {
+    if (openRequestRevision && requestSplit) setSplitOpen(true);
+  }, [openRequestRevision, requestSplit]);
   const [splitSource, setSplitSource] = useState<'script' | 'original'>(
     series?.series?.script?.trim() ? 'script' : 'original',
   );
@@ -319,14 +342,13 @@ export default function ScriptWorkbench({
   const extractingAssetKindRef = useRef<DramaAssetKind | null>(null);
   const [seriesAssetPreview, setSeriesAssetPreview] = useState<SeriesAssetExtractionResult | null>(null);
   const extractionGeneration = useRef(0);
-  useEffect(() => () => { extractionGeneration.current += 1; }, [isOpen, currentProjectId]);
-  const episodeAssetRoster = useMemo(
-    () => normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster),
-    [currentEpisode?.episodeAssetRoster],
-  );
-  const splitSourceAvailable = splitSource === 'script'
-    ? Boolean(series?.series?.script?.trim())
-    : Boolean(series?.series?.originalWork);
+  useEffect(() => () => { extractionGeneration.current += 1; }, [isOpen, selectedEpisodeId, seriesId]);
+  const assetSource = useAppStore(useShallow((state) => ({ projects: state.projects, currentProjectId: state.currentProjectId,
+    projectLoadStatus: state.projectLoadStatus, isCreatingProject: state.isCreatingProject, isReturningToStartPage: state.isReturningToStartPage,
+    switchingProjectName: state.switchingProjectName, dramaAssets: state.dramaAssets,
+    globalCharacters: state.globalCharacters, globalProps: state.globalProps,
+    nodes: (activeTab === 'characters' || activeTab === 'props') && selectedEpisodeId === state.currentProjectId
+      ? projectChatNodes(state.nodes) : EMPTY_WORKBENCH_NODES })));
 
   const persistedDraft = createDraft(currentEpisode);
   const draft = currentEpisode
@@ -346,14 +368,34 @@ export default function ScriptWorkbench({
       .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5)
     : [], [agentTasks, currentEpisode]);
 
+  useEffect(() => {
+    if (!currentEpisodeId || !contextReady) return;
+    let current = true;
+    const episodeId = currentEpisodeId;
+    void loadProjectAgentTasks(episodeId).then((tasks) => {
+      const state = useAppStore.getState();
+      if (!current || selectedEpisodeRef.current !== episodeId || !readEpisodeWorkspaceScope(state, episodeId)) return;
+      for (const task of tasks) {
+        if (task.teamRun?.target?.episodeId !== episodeId || task.teamRun.target.seriesId !== seriesId) continue;
+        const live = state.agentTasks.find((item) => item.id === task.id);
+        if (!live || live.updatedAt < task.updatedAt) state.upsertAgentTask(task);
+      }
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [currentEpisodeId, currentProjectId, projectLoadStatus, contextReady, seriesId]);
+
   const replaceEpisodeDraft = useCallback((episodeId: string, value: WorkbenchDraft | undefined) => {
     const next = { ...draftsRef.current };
     if (value) next[episodeId] = value;
     else delete next[episodeId];
     draftsRef.current = next;
+    if (seriesId) {
+      if (Object.keys(next).length) workbenchDraftCache.set(seriesId, next);
+      else workbenchDraftCache.delete(seriesId);
+    }
     draftVersions.current.set(episodeId, (draftVersions.current.get(episodeId) ?? 0) + 1);
     setDraftsByEpisode(next);
-  }, []);
+  }, [seriesId]);
 
   const onClose = () => {
     const episodeId = currentEpisode?.id;
@@ -362,11 +404,18 @@ export default function ScriptWorkbench({
     if (episodeId && local && draftSignature(local) === draftSignature(createDraft(saved ?? null))) {
       replaceEpisodeDraft(episodeId, undefined);
     }
-    onCloseRequest();
+    if (detached) afterReply.current = 'close';
+    else onCloseRequest();
+  };
+
+  const currentDirty = () => {
+    const episodeId = selectedEpisodeRef.current;
+    const local = episodeId ? draftsRef.current[episodeId] : undefined;
+    return !!local && draftSignature(local) !== draftSignature(createDraft(useAppStore.getState().projects.find((item) => item.id === episodeId) ?? null));
   };
 
   useEffect(() => {
-    const episodeId = currentEpisode?.id;
+    const episodeId = currentEpisodeId;
     if (!isOpen || !episodeId) return;
     return registerEpisodeEditorSession(episodeId, () => {
       const episode = useAppStore.getState().projects.find((item) => item.id === episodeId);
@@ -381,16 +430,15 @@ export default function ScriptWorkbench({
         }
       };
     });
-  }, [currentEpisode?.id, isOpen, replaceEpisodeDraft]);
+  }, [currentEpisodeId, isOpen, replaceEpisodeDraft]);
   const analysis = useMemo(
     () => analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative)),
     [draft.creative, draft.script],
   );
 
   const saveDraft = async (): Promise<boolean> => {
-    if (!currentEpisode || savingEpisodeRef.current || editorWriteLocked || projectLoadStatus !== 'ready') return false;
+    if (!currentEpisode || savingEpisodeRef.current || editorWriteLocked || !contextReady) return false;
     const episodeId = currentEpisode.id;
-    const startingProjectId = useAppStore.getState().currentProjectId;
     const version = draftVersions.current.get(episodeId) ?? 0;
     const savingDraft = draftsRef.current[episodeId] ?? createDraft(currentEpisode);
     const signature = draftSignature(savingDraft);
@@ -401,7 +449,12 @@ export default function ScriptWorkbench({
         outline: savingDraft.outline,
         script: savingDraft.script,
         creative: toCreativeInfo(savingDraft.creative),
-      });
+      }, { allowSameSeries: true, assertCurrent: () => {
+        if (selectedEpisodeRef.current !== episodeId || !readEpisodeWorkspaceScope(useAppStore.getState(), episodeId)) throw new Error(t('工作台分集或剧集已变化，请重新保存'));
+      }, assertCommitCurrent: () => {
+        const scope = readEpisodeWorkspaceScope(useAppStore.getState(), episodeId);
+        if (!scope || scope.owner.id !== seriesId || selectedEpisodeRef.current !== episodeId) throw new Error(t('工作台分集或剧集已变化，请重新保存'));
+      } });
       if (saved) {
         const latest = draftsRef.current[episodeId];
         if ((draftVersions.current.get(episodeId) ?? 0) !== version
@@ -412,7 +465,7 @@ export default function ScriptWorkbench({
         replaceEpisodeDraft(episodeId, undefined);
         settleEpisodeEditorSessions(episodeId);
       }
-      return saved && useAppStore.getState().currentProjectId === startingProjectId;
+      return saved && selectedEpisodeRef.current === episodeId && !!readEpisodeWorkspaceScope(useAppStore.getState(), episodeId);
     } finally {
       savingEpisodeRef.current = null;
       setIsSaving(false);
@@ -423,36 +476,38 @@ export default function ScriptWorkbench({
     if (savingEpisodeRef.current || isEpisodeEditorWriteLocked(currentEpisode?.id)) return;
     setPendingAction(null);
     setSeriesAssetPreview(null);
-    if (currentEpisode) {
-      replaceEpisodeDraft(currentEpisode.id, undefined);
-      settleEpisodeEditorSessions(currentEpisode.id);
+    if (selectedEpisodeRef.current) {
+      replaceEpisodeDraft(selectedEpisodeRef.current, undefined);
+      settleEpisodeEditorSessions(selectedEpisodeRef.current);
     }
     if (action.type === 'close') {
       onClose();
       return;
     }
-    void switchProject(action.episodeId);
+    selectedEpisodeRef.current = action.episodeId;
+    setSelectedEpisodeId(action.episodeId);
   };
 
   const requestClose = () => {
-    if (savingEpisodeRef.current || editorWriteLocked) return;
-    if (isDirty) setPendingAction({ type: 'close' });
+    if (savingEpisodeRef.current || editorWriteLocked) return false;
+    if (currentDirty()) { setPendingAction({ type: 'close' }); return false; }
     else {
       setSeriesAssetPreview(null);
       onClose();
+      return true;
     }
   };
 
   const requestEpisodeSwitch = (episodeId: string) => {
     if (savingEpisodeRef.current || editorWriteLocked) return;
-    if (episodeId === currentProjectId) return;
+    if (episodeId === selectedEpisodeRef.current || !episodes.some((episode) => episode.id === episodeId)) return;
     setSeriesAssetPreview(null);
-    if (isDirty) setPendingAction({ type: 'switch', episodeId });
-    else void switchProject(episodeId);
+    if (currentDirty()) setPendingAction({ type: 'switch', episodeId });
+    else { selectedEpisodeRef.current = episodeId; setSelectedEpisodeId(episodeId); }
   };
 
-  const openCreativeAction = async (action: EpisodeCreativeAction) => {
-    if (!series || !currentEpisode) return;
+  const openCreativeAction = async (action: EpisodeCreativeAction, requestId?: string) => {
+    if (!series || !currentEpisode || !contextReady) return;
     if (executionSelection.kind === 'team') {
       const templateId: TeamTemplateId | undefined = action === 'optimize-outline' ? 'outline'
         : action === 'write-script' ? 'script' : action === 'diagnose' ? 'review' : undefined;
@@ -462,10 +517,10 @@ export default function ScriptWorkbench({
       setIsStartingTeam(true);
       try {
         const episodeId = currentEpisode.id;
-        if (isDirty && !await saveDraft()) return;
+        if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
         const captured = await captureEpisodeTeamContext(episodeId, templateId === 'outline' ? 'outline' : 'script');
         setExecutionSelection({ kind: 'team', templateId });
-        await startTeamInvocation({ projectId: episodeId, mode: teamMode, templateId,
+        await startTeamInvocation({ projectId: episodeId, mode: teamMode, templateId, requestId,
           content: templateId === 'outline' ? t('优化本集大纲，保留已确认设定与有效结构，只返回本集候选。')
             : templateId === 'script' ? t('根据已保存的大纲与创作要点写出本集完整剧本，保留人物设定并检查可拍性。')
               : t('联合审阅本集剧本的因果、人物连续性、对白与可拍性，只返回定位问题和裁决，不改写正文。'),
@@ -473,13 +528,14 @@ export default function ScriptWorkbench({
         showToast(t('团队任务已开始，可在工作台或助手查看同一任务'));
       } catch (error) {
         showToast(error instanceof Error ? error.message : t('团队任务启动失败'), 'error');
+        throw error;
       } finally {
         startingTeamRef.current = false;
         setIsStartingTeam(false);
       }
       return;
     }
-    if (isDirty && !await saveDraft()) return;
+    if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
     openChatWithDraft(buildEpisodeCreativePrompt(action, {
       seriesName: series.name,
       episodeId: currentEpisode.id,
@@ -489,13 +545,15 @@ export default function ScriptWorkbench({
   };
 
   const openEpisodeShotlist = async () => {
-    if (!currentEpisode || isSaving || projectLoadStatus !== 'ready') return;
+    if (!currentEpisode || isSaving || !contextReady) return;
     const startingProjectId = useAppStore.getState().currentProjectId;
     const episodeId = currentEpisode.id;
     try {
-      if (isDirty && !await saveDraft()) return;
+      if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
       if (useAppStore.getState().currentProjectId !== startingProjectId) return;
-      if (startingProjectId !== episodeId) await switchProject(episodeId);
+      if (startingProjectId !== episodeId) {
+        throw new Error(t('请先在剧集栏切换到本集画布，再生成分镜'));
+      }
       const state = useAppStore.getState();
       const { shotlistId } = createEpisodeShotlist({ projectId: episodeId, baseRevision: state.getCurrentRevision() }, episodeId);
       onClose();
@@ -503,12 +561,13 @@ export default function ScriptWorkbench({
       useAppStore.getState().openNodeDialog(shotlistId);
     } catch (error) {
       showToast(error instanceof Error ? error.message : t('创建本集分镜失败'), 'error');
+      throw error;
     }
   };
 
   const openFieldPolish = async (field: CreativeFieldId, label: string, hasValue: boolean) => {
-    if (!series || !currentEpisode) return;
-    if (isDirty && !await saveDraft()) return;
+    if (!series || !currentEpisode || !contextReady) return;
+    if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
     openChatWithDraft(buildCreativeFieldPolishPrompt(field, {
       seriesName: series.name,
       episodeId: currentEpisode.id,
@@ -532,7 +591,7 @@ export default function ScriptWorkbench({
   };
 
   const extractFullScriptAssets = async (kind: DramaAssetKind, label: string) => {
-    if (!series || !currentProjectId || extractingAssetKindRef.current) return;
+    if (!series || !currentProjectId || !contextReady || extractingAssetKindRef.current) return;
     const generation = ++extractionGeneration.current;
     extractingAssetKindRef.current = kind;
     setExtractingAssetKind(kind);
@@ -548,6 +607,7 @@ export default function ScriptWorkbench({
     } catch (error) {
       if (generation !== extractionGeneration.current) return;
       showToast(error instanceof Error ? error.message : t('全剧资产提取失败'), 'error');
+      throw error;
     } finally {
       extractingAssetKindRef.current = null;
       setExtractingAssetKind(null);
@@ -555,25 +615,25 @@ export default function ScriptWorkbench({
   };
 
   const setCreative = (field: keyof CreativeDraft, value: string) => {
-    if (!currentEpisode || isEpisodeEditorWriteLocked(currentEpisode.id)) return;
+    if (!currentEpisode || !contextReady || isEpisodeEditorWriteLocked(currentEpisode.id)) return;
     const currentDraft = draftsRef.current[currentEpisode.id] ?? createDraft(currentEpisode);
     replaceEpisodeDraft(currentEpisode.id, { ...currentDraft, creative: { ...currentDraft.creative, [field]: value } });
   };
 
   const setTextDraft = (field: 'outline' | 'script', value: string) => {
-    if (!currentEpisode || isEpisodeEditorWriteLocked(currentEpisode.id)) return;
+    if (!currentEpisode || !contextReady || isEpisodeEditorWriteLocked(currentEpisode.id)) return;
     const currentDraft = draftsRef.current[currentEpisode.id] ?? createDraft(currentEpisode);
     replaceEpisodeDraft(currentEpisode.id, { ...currentDraft, [field]: value });
   };
 
   const viewTeamTask = async (taskId: string) => {
-    if (isDirty && !await saveDraft()) return;
+    if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
     onClose();
     await openTeamTaskInAssistant(taskId);
   };
 
   const mutateTeamResult = async (taskId: string, restore: boolean) => {
-    if (isDirty || savingEpisodeRef.current) throw new Error(t('请先处理工作台未保存修改，再应用团队成果'));
+    if (currentDirty() || savingEpisodeRef.current) throw new Error(t('请先处理工作台未保存修改，再应用团队成果'));
     onClose();
     try {
       await openTeamTaskInAssistant(taskId);
@@ -584,8 +644,242 @@ export default function ScriptWorkbench({
     }
   };
 
+  const snapshot: ScriptWorkbenchSnapshot = {
+    sessionId, revision: 0, acceptedEditSequence: acceptedEditSequence.current,
+    draftVersion: currentEpisode ? draftVersions.current.get(currentEpisode.id) ?? 0 : 0,
+    series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork } : null,
+    episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
+    currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
+      episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript,
+      episodeCreative: currentEpisode.episodeCreative, episodeAssetRoster: currentEpisode.episodeAssetRoster } : null,
+    canvasProjectId: currentProjectId, activeTab, draft, analysis, isDirty, isSaving, isStartingTeam,
+    contextReady, editorWriteLocked, unsettledEditor, pendingAction, splitOpen, splitSource,
+    targetEpisodeCount, targetDurationSec, sourceOpen, renamingEpisodeId, extractingAssetKind,
+    seriesAssetPreview: seriesAssetPreview && contextReady ? { kind: seriesAssetPreview.kind, assets: seriesAssetPreview.assets } : null,
+    existingAssets: (seriesAssetPreview?.kind === 'character' ? dramaAssets.characters : seriesAssetPreview?.kind === 'scene' ? dramaAssets.scenes : dramaAssets.props)
+      .map((asset) => ({ name: asset.name, summary: asset.summary })),
+    assetPanel: currentEpisode && (activeTab === 'characters' || activeTab === 'props') ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
+    executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks,
+    theme: config.theme, language: config.language, appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
+    detached, openingWindow,
+  };
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
+  const requestRef = useRef<(request: ScriptWorkbenchRequest) => Promise<unknown>>(async () => undefined);
+  const actionRef = useRef<(action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest) => Promise<unknown>>(async () => undefined);
+  const onCloseRequestRef = useRef(onCloseRequest);
+  onCloseRequestRef.current = onCloseRequest;
+  const dispatchView = useCallback<ScriptWorkbenchDispatch>((action) => actionRef.current(action), []);
+
+  const handleAction = async (action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest): Promise<unknown> => {
+    if (request) {
+      if (request.episodeId !== selectedEpisodeRef.current) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
+      const handoff = request.handoff;
+      if (handoff && handoff.sequence > acceptedEditSequence.current) {
+        const value = handoff.draft;
+        if (handoff.episodeId !== selectedEpisodeRef.current || !Number.isSafeInteger(handoff.sequence)
+          || !value || typeof value.outline !== 'string' || typeof value.script !== 'string' || !value.creative
+          || Object.keys(EMPTY_CREATIVE_DRAFT).some((field) => typeof value.creative[field as keyof CreativeDraft] !== 'string')) {
+          throw new Error(t('最后编辑的交接内容无效，已保留原稿'));
+        }
+        if (isEpisodeEditorWriteLocked(handoff.episodeId)) throw new Error(t('团队成果正在保存，修改仍保留在独立窗口，请稍后重试'));
+        replaceEpisodeDraft(handoff.episodeId, structuredClone(value));
+        acceptedEditSequence.current = handoff.sequence;
+      }
+    }
+    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview'];
+    if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
+    if ('taskId' in action && !episodeTeamTasks.some((task) => task.id === action.taskId)) throw new Error(t('团队任务不属于工作台当前分集'));
+    switch (action.type) {
+      case 'flush_draft': return true;
+      case 'edit_text': if ((action.field === 'outline' || action.field === 'script') && typeof action.value === 'string') setTextDraft(action.field, action.value); return true;
+      case 'edit_creative': if (Object.hasOwn(EMPTY_CREATIVE_DRAFT, action.field) && typeof action.value === 'string') setCreative(action.field, action.value); return true;
+      case 'select_episode': requestEpisodeSwitch(action.episodeId); return true;
+      case 'set_tab': if (['outline', 'script', 'creative', 'characters', 'props'].includes(action.tab)) setActiveTab(action.tab); return true;
+      case 'save': {
+        if (!await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
+        return true;
+      }
+      case 'close': return requestClose();
+      case 'dock': afterReply.current = 'dock'; return true;
+      case 'detach': {
+        if (openingWindow) return false;
+        setOpeningWindow(true);
+        try { await windowHost.current?.open(); return true; }
+        finally { setOpeningWindow(false); }
+      }
+      case 'cancel_pending': setPendingAction(null); return true;
+      case 'discard_pending': if (pendingAction) performPendingAction(pendingAction); return true;
+      case 'save_pending': {
+        if (!pendingAction) return false;
+        if (!await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
+        performPendingAction(pendingAction); return true;
+      }
+      case 'toggle_split': setSplitOpen((value) => !value); return true;
+      case 'set_split_source': if (action.value === 'script' || action.value === 'original') setSplitSource(action.value); return true;
+      case 'set_split_count': setTargetEpisodeCount(String(action.value).slice(0, 8)); return true;
+      case 'set_split_duration': setTargetDurationSec(String(action.value).slice(0, 8)); return true;
+      case 'open_source': setSourceOpen(true); return true;
+      case 'close_source': setSourceOpen(false); return true;
+      case 'read_source': {
+        const state = useAppStore.getState();
+        const canvasId = state.currentProjectId;
+        if (!canvasId || seriesOwnerId(state.projects, canvasId) !== seriesId) throw new Error(t('当前剧集已变化'));
+        return readSeriesSource(canvasId, action.part, new AbortController().signal);
+      }
+      case 'prepare_chapter': {
+        if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
+        const state = useAppStore.getState();
+        const canvasId = state.currentProjectId;
+        if (!canvasId || seriesOwnerId(state.projects, canvasId) !== seriesId || action.reference.seriesId !== seriesId) throw new Error(t('当前剧集已变化'));
+        const source = await readSeriesSource(canvasId, action.reference.part, new AbortController().signal);
+        readSeriesChapter(source, action.reference, 0, 1);
+        const prompt = buildSeriesChapterPrompt(source, action.reference.chapterId);
+        setSourceOpen(false); onClose(); openChatWithDraft(prompt); return true;
+      }
+      case 'open_rename': if (episodes.some((episode) => episode.id === action.episodeId)) setRenamingEpisodeId(action.episodeId); return true;
+      case 'close_rename': setRenamingEpisodeId(null); return true;
+      case 'rename': {
+        const episodeId = renamingEpisodeId;
+        const name = typeof action.name === 'string' ? action.name.trim() : '';
+        if (!episodeId || !name || name.length > 120 || !readEpisodeWorkspaceScope(useAppStore.getState(), episodeId)) throw new Error(t('请输入有效的分集名称'));
+        if (!await useAppStore.getState().renameProject(episodeId, name)) throw new Error(t('修改名称失败'));
+        setRenamingEpisodeId(null); return true;
+      }
+      case 'creative': return openCreativeAction(action.action, request?.requestId);
+      case 'polish': return openFieldPolish(action.field, action.label, action.hasValue);
+      case 'shotlist': return openEpisodeShotlist();
+      case 'split_draft': openSplitDraft(); return true;
+      case 'extract_series': return extractFullScriptAssets(action.kind, action.label);
+      case 'close_asset_preview': setSeriesAssetPreview(null); return true;
+      case 'commit_asset_preview': {
+        if (!seriesAssetPreview) throw new Error(t('提取预览已变化，请重新提取'));
+        const count = await commitSeriesAssetCandidates(seriesAssetPreview, action.selectedIds);
+        setSeriesAssetPreview(null); showToast(t('已将 {count} 项资产加入本剧资产库', { count })); return true;
+      }
+      case 'asset': {
+        if (action.episodeId !== selectedEpisodeRef.current) throw new Error(t('工作台分集已变化'));
+        return executeEpisodeAssetPanelAction(action.episodeId, action.kind, action.action);
+      }
+      case 'settle_editor': if (currentEpisode && !currentDirty() && !savingEpisodeRef.current) settleEpisodeEditorSessions(currentEpisode.id); return true;
+      case 'set_execution': setExecutionSelection(normalizeExecutionSelection(action.value)); return true;
+      case 'set_team_mode': if (['plan', 'collaborative', 'autonomous'].includes(action.value)) setTeamMode(action.value); return true;
+      case 'save_team_profile': updateConfig({ agentTeamProfile: normalizeTeamProfile(action.profile) }); await useAppStore.getState().saveConfig({ silent: true, throwOnError: true }); return true;
+      case 'team_artifact': return readTeamTaskArtifact(action.taskId, action.artifactId);
+      case 'team_amend': return appendTeamInstruction(action.taskId, action.instruction);
+      case 'team_control': {
+        switch (action.action) {
+          case 'pause': cancelScheduledAgentExecution(action.taskId); pauseAgentTask(action.taskId); return true;
+          case 'stop': cancelScheduledAgentExecution(action.taskId); stopAgentTask(action.taskId); return true;
+          case 'resume': { const result = resumeAgentTaskExecution(action.taskId); if (!result.ok) throw new Error(result.message ?? t('任务当前不能继续')); return true; }
+          case 'view': return viewTeamTask(action.taskId);
+          case 'apply': return mutateTeamResult(action.taskId, false);
+          case 'restore': return mutateTeamResult(action.taskId, true);
+          case 'reconcile': return reconcileTeamResult(action.taskId);
+        }
+      }
+    }
+  };
+  actionRef.current = handleAction;
+  requestRef.current = (request) => actionRef.current(request.action, request);
+  useEffect(() => {
+    const host = createScriptWorkbenchWindowHost({ sessionId, getSnapshot: () => snapshotRef.current,
+      onRequest: (request) => requestRef.current(request), onDetachedChange: setDetached,
+      onReplySent: () => {
+        const action = afterReply.current;
+        if (!action) return;
+        afterReply.current = null;
+        if (action === 'close') setClosingWorkbench(true);
+        void host.close().catch(() => {}).finally(() => { if (action === 'close') onCloseRequestRef.current(); });
+      },
+    });
+    windowHost.current = host;
+    return () => { windowHost.current = null; host.dispose(); };
+  }, [sessionId]);
+  useEffect(() => { void windowHost.current?.publish().catch(() => {}); });
+  return !isOpen || detached || closingWorkbench ? null : <ScriptWorkbenchView snapshot={snapshot} dispatch={dispatchView} />;
+}
+
+function WorkbenchFrame({ standalone, children, ...props }: {
+  standalone: boolean; isOpen: boolean; onClose: () => void; ariaLabel: string; closeOnBackdrop: boolean; className: string; children: ReactNode;
+}) {
+  if (standalone) return <div className="ui-dialog-surface flex h-screen w-screen flex-col overflow-hidden text-canvas-text">{children}</div>;
+  return <ModalOverlay {...props}>{children}</ModalOverlay>;
+}
+
+function WorkbenchRenameDialog({ name, onClose, onSave }: { name: string; onClose: () => void; onSave: (name: string) => Promise<void> }) {
+  const t = useT();
+  const inputId = useId();
+  const [draft, setDraft] = useState(name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return <ModalOverlay isOpen onClose={() => { if (!busy) onClose(); }} ariaLabel={t('修改分集名称')} zIndex={340} className="ui-dialog-surface w-full max-w-sm mx-3">
+    <form className="space-y-3 p-3" onSubmit={(event) => {
+      event.preventDefault();
+      if (busy || !draft.trim()) return;
+      setBusy(true); setError('');
+      void onSave(draft.trim()).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t('修改名称失败'))).finally(() => setBusy(false));
+    }}>
+      <div className="ui-field"><label className="ui-label" htmlFor={inputId}>{t('分集名称')}</label>
+        <input id={inputId} className="ui-input w-full" value={draft} maxLength={120} disabled={busy} autoFocus
+          onChange={(event) => setDraft(event.target.value)} /></div>
+      {error && <p className="ui-error" role="alert">{error}</p>}
+      <div className="flex justify-end gap-2"><button type="button" className="ui-btn ui-btn--ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>
+        <button type="submit" className="ui-btn ui-btn--primary" disabled={busy || !draft.trim()}>{busy ? t('保存中…') : t('保存')}</button></div>
+    </form>
+  </ModalOverlay>;
+}
+
+/** 两种展示共用的纯视图；所有保存、模型与资产能力均通过主窗口 dispatch。 */
+export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, externalError = '', onDismissError }: {
+  snapshot: ScriptWorkbenchSnapshot; dispatch: ScriptWorkbenchDispatch; standalone?: boolean;
+  externalError?: string; onDismissError?: () => void;
+}) {
+  const t = useT();
+  const teamControlsRef = useRef<HTMLDivElement>(null);
+  const splitCountId = useId();
+  const splitDurationId = useId();
+  const [error, setError] = useState('');
+  const { series, episodes, currentEpisode, activeTab, draft, analysis, isDirty, isSaving, isStartingTeam,
+    contextReady, editorWriteLocked, unsettledEditor, pendingAction, splitOpen, splitSource, targetEpisodeCount,
+    targetDurationSec, sourceOpen, renamingEpisodeId, extractingAssetKind, seriesAssetPreview, executionSelection,
+    teamMode, teamProfile, episodeTeamTasks } = snapshot;
+  const isOpen = true;
+  const projectLoadStatus = contextReady ? 'ready' : 'loading';
+  const episodeAssetRoster = normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster);
+  const splitSourceAvailable = splitSource === 'script' ? !!series?.hasScript : !!series?.hasOriginal;
+  const fire = (action: ScriptWorkbenchAction) => { void dispatch(action).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t('工作台操作未完成'))); };
+  const report = async (action: ScriptWorkbenchAction) => {
+    try { return await dispatch(action); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : t('工作台操作未完成')); return false; }
+  };
+  const setActiveTab = (tab: EditorTab) => fire({ type: 'set_tab', tab });
+  const setTextDraft = (field: 'outline' | 'script', value: string) => fire({ type: 'edit_text', field, value });
+  const setCreative = (field: keyof CreativeDraft, value: string) => fire({ type: 'edit_creative', field, value });
+  const requestClose = () => fire({ type: 'close' });
+  const requestEpisodeSwitch = (episodeId: string) => fire({ type: 'select_episode', episodeId });
+  const setRenamingEpisodeId = (episodeId: string | null) => fire(episodeId ? { type: 'open_rename', episodeId } : { type: 'close_rename' });
+  const setSourceOpen = (open: boolean) => fire({ type: open ? 'open_source' : 'close_source' });
+  const setPendingAction = (_value: null) => fire({ type: 'cancel_pending' });
+  const performPendingAction = (_value: PendingAction) => fire({ type: 'discard_pending' });
+  const saveDraft = async () => await report({ type: 'save' }) === true;
+  const openCreativeAction = (action: EpisodeCreativeAction) => report({ type: 'creative', action });
+  const openFieldPolish = (field: CreativeFieldId, label: string, hasValue: boolean) => report({ type: 'polish', field, label, hasValue });
+  const openEpisodeShotlist = () => report({ type: 'shotlist' });
+  const openSplitDraft = () => fire({ type: 'split_draft' });
+  const extractFullScriptAssets = (kind: DramaAssetKind, label: string) => report({ type: 'extract_series', kind, label });
+  const setExecutionSelection = (value: AssistantExecutionSelection) => fire({ type: 'set_execution', value });
+  const setSplitSource = (value: 'script' | 'original') => fire({ type: 'set_split_source', value });
+  const setTargetEpisodeCount = (value: string) => fire({ type: 'set_split_count', value });
+  const setTargetDurationSec = (value: string) => fire({ type: 'set_split_duration', value });
+  const sourceRemote = useMemo<SeriesSourceBrowserRemote>(() => ({
+    contextKey: `${snapshot.sessionId}:${series?.id ?? ''}`, ready: snapshot.contextReady,
+    readSource: async (part, signal) => { signal.throwIfAborted(); const result = await dispatch({ type: 'read_source', part }); signal.throwIfAborted(); return result as SeriesSourceSnapshot; },
+    prepareChapter: async (reference) => { await dispatch({ type: 'prepare_chapter', reference }); },
+  }), [dispatch, series?.id, snapshot.contextReady, snapshot.sessionId]);
+
   return (
-    <ModalOverlay
+    <WorkbenchFrame standalone={standalone}
       isOpen={isOpen}
       onClose={requestClose}
       ariaLabel={t('剧本创作工作台')}
@@ -619,24 +913,34 @@ export default function ScriptWorkbench({
               teamControlsRef.current?.scrollIntoView({ block: 'nearest' });
             }}>
             <Icon icon="lucide:users-round" className="h-3.5 w-3.5" />
-            {t('团队协作')}
+            {t('Agent协作')}
           </button>
           <button
             type="button"
-            onClick={() => setSplitOpen((open) => !open)}
-            className={`flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs transition-colors ${
-              splitOpen
-                ? 'border-indigo-400/50 bg-indigo-500/15 text-indigo-300'
-                : 'border-canvas-border text-canvas-text-secondary hover:bg-canvas-hover'
-            }`}
+            onClick={() => fire({ type: 'toggle_split' })}
+            className={`ui-btn ui-btn--sm ui-btn--secondary${splitOpen ? ' is-active' : ''}`}
+            aria-pressed={splitOpen}
           >
             <Icon icon="lucide:wand-sparkles" className="h-3.5 w-3.5" />
             {t('AI 拆分草案')}
           </button>
           <button type="button" className="ui-btn ui-btn--sm" disabled={projectLoadStatus !== 'ready'}
             onClick={() => setSourceOpen(true)}>{t('章节浏览')}</button>
+          <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+            disabled={isSaving || editorWriteLocked || snapshot.openingWindow}
+            onClick={() => fire({ type: standalone ? 'dock' : 'detach' })}
+            aria-label={standalone ? t('收回主窗口') : t('独立窗口显示')}>
+            <Icon icon={standalone ? 'lucide:panel-top-close' : 'lucide:external-link'} className="h-3.5 w-3.5" />
+            {snapshot.openingWindow ? t('正在打开…') : standalone ? t('收回主窗口') : t('独立窗口')}
+          </button>
           <PopupCloseButton ariaLabel={t('关闭剧本创作工作台')} onClick={requestClose} />
         </header>
+
+        {!contextReady && <p role="status" className="ui-hint shrink-0 border-b border-canvas-border p-3">{t('画布已离开本剧集，请先回到原剧集处理工作台修改')}</p>}
+        {(error || externalError) && <div role="alert" className="ui-error flex shrink-0 items-center gap-2 p-3">
+          <span className="min-w-0 flex-1 break-words">{error || externalError}</span>
+          <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => { setError(''); onDismissError?.(); }}>{t('关闭')}</button>
+        </div>}
 
         {pendingAction ? (
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-400/20 bg-amber-500/10 px-4 py-2">
@@ -662,11 +966,7 @@ export default function ScriptWorkbench({
             <button
               type="button"
               disabled={isSaving}
-              onClick={() => {
-                void saveDraft().then((saved) => {
-                  if (saved) performPendingAction(pendingAction);
-                });
-              }}
+              onClick={() => fire({ type: 'save_pending' })}
               className="h-7 rounded-md bg-amber-400/90 px-3 text-[11px] font-medium text-black
                          hover:bg-amber-300 disabled:cursor-wait disabled:opacity-60"
             >
@@ -690,28 +990,30 @@ export default function ScriptWorkbench({
                 aria-label={t('拆分素材')}
               />
             </div>
-            <label className="grid gap-1">
-              <span className="text-[10px] text-canvas-text-muted">{t('目标总集数')}</span>
-              <input
-                type="number"
+            <div className="ui-field">
+              <label htmlFor={splitCountId} className="ui-label">{t('目标总集数')}</label>
+              <NumberStepper
+                id={splitCountId}
+                aria-label={t('目标总集数')}
                 min={1}
                 max={100}
-                value={targetEpisodeCount}
-                onChange={(event) => setTargetEpisodeCount(event.target.value)}
-                className="h-8 rounded-lg border border-canvas-border bg-canvas-card px-2 text-xs outline-none"
+                value={Number.parseInt(targetEpisodeCount, 10) || 24}
+                onChange={(value) => setTargetEpisodeCount(String(value))}
+                disabled={!contextReady}
               />
-            </label>
-            <label className="grid gap-1">
-              <span className="text-[10px] text-canvas-text-muted">{t('单集秒数')}</span>
-              <input
-                type="number"
+            </div>
+            <div className="ui-field">
+              <label htmlFor={splitDurationId} className="ui-label">{t('单集秒数')}</label>
+              <NumberStepper
+                id={splitDurationId}
+                aria-label={t('单集秒数')}
                 min={15}
                 max={600}
-                value={targetDurationSec}
-                onChange={(event) => setTargetDurationSec(event.target.value)}
-                className="h-8 rounded-lg border border-canvas-border bg-canvas-card px-2 text-xs outline-none"
+                value={Number.parseInt(targetDurationSec, 10) || 90}
+                onChange={(value) => setTargetDurationSec(String(value))}
+                disabled={!contextReady}
               />
-            </label>
+            </div>
             <button
               type="button"
               disabled={!splitSourceAvailable}
@@ -760,9 +1062,9 @@ export default function ScriptWorkbench({
                     >
                       <span className="block truncate text-[11px] font-medium text-canvas-text">{episode.name}</span>
                       <span className="mt-1 block truncate text-[10px] text-canvas-text-muted">
-                        {episode.episodeScript?.trim()
-                          ? t('正文 {count} 字', { count: episode.episodeScript.length })
-                          : episode.episodeOutline?.trim()
+                        {episode.scriptLength > 0
+                          ? t('正文 {count} 字', { count: episode.scriptLength })
+                          : episode.hasOutline
                             ? t('已有大纲')
                             : t('尚未创作')}
                       </span>
@@ -819,22 +1121,17 @@ export default function ScriptWorkbench({
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-auto">
-                  {activeTab === 'characters' || activeTab === 'props' ? (
-                    currentProjectId === currentEpisode.id ? (
+                  {(activeTab === 'characters' || activeTab === 'props') && snapshot.assetPanel ? (
                       <EpisodeAssetPanel key={`${currentEpisode.id}-${activeTab}`} episodeId={currentEpisode.id}
                         kind={activeTab === 'characters' ? 'character' : 'prop'}
+                        remoteHost={{ snapshot: snapshot.assetPanel, dispatchAction: async (action) => await dispatch({ type: 'asset', episodeId: currentEpisode.id,
+                          kind: activeTab === 'characters' ? 'character' : 'prop', action }) as EpisodeAssetPanelActionResult }}
                         onBeforeExtract={async () => !isDirty || await saveDraft()} />
-                    ) : (
-                      <div className="p-3">
-                        <button type="button" className="ui-btn ui-btn--sm ui-btn--primary"
-                          onClick={() => requestEpisodeSwitch(currentEpisode.id)}>{t('切换到本集管理资产')}</button>
-                      </div>
-                    )
                   ) : null}
                   {activeTab === 'outline' ? (
                     <textarea
                       value={draft.outline}
-                      readOnly={editorWriteLocked}
+                      readOnly={editorWriteLocked || !contextReady}
                       onChange={(event) => setTextDraft('outline', event.target.value)}
                       spellCheck={false}
                       placeholder={t('写下本集任务、核心冲突、主要情节点和结尾卡点…')}
@@ -845,7 +1142,7 @@ export default function ScriptWorkbench({
                   {activeTab === 'script' ? (
                     <textarea
                       value={draft.script}
-                      readOnly={editorWriteLocked}
+                      readOnly={editorWriteLocked || !contextReady}
                       onChange={(event) => setTextDraft('script', event.target.value)}
                       spellCheck={false}
                       placeholder={t('按场号、场景、人物、动作和对白写本集完整正文…')}
@@ -854,7 +1151,7 @@ export default function ScriptWorkbench({
                     />
                   ) : null}
                   {activeTab === 'creative' ? (
-                    <div className="grid gap-4 p-4 md:grid-cols-2">
+                    <fieldset disabled={!contextReady || editorWriteLocked} className="grid gap-4 p-4 md:grid-cols-2">
                       <CreativeField
                         label={t('本集任务')}
                         value={draft.creative.task}
@@ -912,11 +1209,13 @@ export default function ScriptWorkbench({
                       />
                       <CreativeField
                         label={t('目标时长（秒）')}
+                        readOnly={editorWriteLocked || !contextReady}
+                        numberInput={{ min: 1 }}
                         value={draft.creative.targetDurationSec}
                         placeholder="90"
                         onChange={(value) => setCreative('targetDurationSec', value)}
                       />
-                    </div>
+                    </fieldset>
                   ) : null}
                 </div>
 
@@ -927,10 +1226,10 @@ export default function ScriptWorkbench({
                   <span className="hidden text-[10px] text-canvas-text-muted sm:inline">Ctrl+S</span>
                   <button
                     type="button"
-                    disabled={!draft.script.trim() || isSaving || projectLoadStatus !== 'ready'}
+                    disabled={!draft.script.trim() || isSaving || projectLoadStatus !== 'ready' || currentEpisode.id !== snapshot.canvasProjectId}
                     onClick={() => { void openEpisodeShotlist(); }}
                     className="ui-btn ui-btn--sm ml-auto"
-                    title={t('用已保存的本集剧本创建分镜表，并选择模型生成')}
+                    title={currentEpisode.id !== snapshot.canvasProjectId ? t('请先在剧集栏切换到本集画布，再生成分镜') : t('用已保存的本集剧本创建分镜表，并选择模型生成')}
                   >
                     <Icon icon="lucide:list-video" className="h-3.5 w-3.5" />
                     {t('生成本集分镜')}
@@ -1003,7 +1302,7 @@ export default function ScriptWorkbench({
                 </span>
               </div>
               <p className="mt-1.5 text-[10px] leading-4 text-canvas-text-muted">
-                {series?.series?.script?.trim()
+                {series?.hasScript
                   ? t('读取全剧剧本，提取结果先预览，仅将所选条目加入本剧资产库。')
                   : t('请先填写全剧剧本。')}
               </p>
@@ -1016,7 +1315,7 @@ export default function ScriptWorkbench({
                       key={action.kind}
                       type="button"
                       aria-busy={running}
-                      disabled={!series?.series?.script?.trim()
+                      disabled={!series?.hasScript
                         || extractingAssetKind !== null
                         || projectLoadStatus !== 'ready'}
                       onClick={() => { void extractFullScriptAssets(action.kind, label); }}
@@ -1042,44 +1341,35 @@ export default function ScriptWorkbench({
               {unsettledEditor && <div className="space-y-1 text-[11px] text-canvas-text-secondary" role="status">
                 <p>{t('上次编辑未确认结束，请核对当前已保存稿件后再应用团队成果。')}</p>
                 <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={isDirty || isSaving || editorWriteLocked}
-                  onClick={() => { if (currentEpisode) settleEpisodeEditorSessions(currentEpisode.id); }}>{t('已核对当前稿件')}</button>
+                  onClick={() => fire({ type: 'settle_editor' })}>{t('已核对当前稿件')}</button>
               </div>}
               <TeamExecutionPicker value={executionSelection} onChange={setExecutionSelection}
                 profile={teamProfile} onProfileChange={async (profile) => {
-                  updateConfig({ agentTeamProfile: profile });
-                  await useAppStore.getState().saveConfig({ silent: true, throwOnError: true });
+                  await dispatch({ type: 'save_team_profile', profile });
                 }}
-                modelGroups={modelCatalog.assistantModelGroups} generalModels={config.generalModels}
-                theme={config.theme} disabled={isSaving || isStartingTeam || editorWriteLocked} compact defaultTemplateId="outline" />
+                modelGroups={snapshot.modelGroups}
+                theme={snapshot.theme} disabled={isSaving || isStartingTeam || editorWriteLocked || !contextReady} compact defaultTemplateId="outline" />
               {executionSelection.kind === 'team' && <>
-                <label className="flex items-center justify-between gap-2 text-[11px] text-canvas-text-secondary">
+                <div className="flex items-center justify-between gap-2 text-[11px] text-canvas-text-secondary">
                   <span>{t('任务权限')}</span>
-                  <select value={teamMode} onChange={(event) => setTeamMode(event.target.value as AgentMode)}
-                    disabled={isStartingTeam} className="ui-select__control min-w-0">
-                    <option value="plan">{t('规划')}</option>
-                    <option value="collaborative">{t('协作')}</option>
-                    <option value="autonomous">{t('自主')}</option>
-                  </select>
-                </label>
+                  <Select<AgentMode> aria-label={t('任务权限')} value={teamMode}
+                    onChange={(value) => fire({ type: 'set_team_mode', value })} disabled={isStartingTeam || !contextReady}
+                    options={[{ value: 'plan', label: t('规划') }, { value: 'collaborative', label: t('协作') }, { value: 'autonomous', label: t('自主') }]} />
+                </div>
                 <p className="text-[10px] leading-4 text-canvas-text-muted">{t('先保存当前改稿，再由团队生成候选；点击下方动作开始，不会自动覆盖正文。')}</p>
               </>}
             </div>
 
             {episodeTeamTasks.map((task) => <TeamRunCard key={task.id} task={task} compact
-              onPause={(id) => { cancelScheduledAgentExecution(id); pauseAgentTask(id); }}
-              onStop={(id) => { cancelScheduledAgentExecution(id); stopAgentTask(id); }}
-              onResume={(id) => {
-                const result = resumeAgentTaskExecution(id);
-                if (!result.ok) showToast(result.message ?? t('任务当前不能继续'), 'error');
-              }}
-              onView={(id) => { void viewTeamTask(id).catch((error) => showToast(error instanceof Error ? error.message : t('打开团队任务失败'), 'error')); }}
-              onReadArtifact={(id, artifact) => readTeamTaskArtifact(id, artifact.id)}
-              onApply={(id) => mutateTeamResult(id, false)} onRestore={(id) => mutateTeamResult(id, true)}
-              onReconcile={async (id) => { showToast(await reconcileTeamResult(id)); }}
-              onAmend={async (id, instruction) => {
-                try { await appendTeamInstruction(id, instruction); }
-                catch (error) { showToast(error instanceof Error ? error.message : t('追加团队要求失败'), 'error'); throw error; }
-              }} />)}
+              onPause={(taskId) => fire({ type: 'team_control', taskId, action: 'pause' })}
+              onStop={(taskId) => fire({ type: 'team_control', taskId, action: 'stop' })}
+              onResume={(taskId) => fire({ type: 'team_control', taskId, action: 'resume' })}
+              onView={(taskId) => fire({ type: 'team_control', taskId, action: 'view' })}
+              onReadArtifact={async (taskId, artifact) => await dispatch({ type: 'team_artifact', taskId, artifactId: artifact.id }) as string}
+              onApply={async (taskId) => { await dispatch({ type: 'team_control', taskId, action: 'apply' }); }}
+              onRestore={async (taskId) => { await dispatch({ type: 'team_control', taskId, action: 'restore' }); }}
+              onReconcile={async (taskId) => { await dispatch({ type: 'team_control', taskId, action: 'reconcile' }); }}
+              onAmend={async (taskId, instruction) => { await dispatch({ type: 'team_amend', taskId, instruction }); }} />)}
 
             <div className="mt-4 grid gap-3">
               {CREATIVE_ACTION_GROUPS.map((group) => (
@@ -1110,29 +1400,19 @@ export default function ScriptWorkbench({
           </aside>
         </main>
       </div>
-      {isOpen && renamingEpisodeId && (
-        <EpisodeNameDialog episodeId={renamingEpisodeId} onClose={() => setRenamingEpisodeId(null)} />
-      )}
-      {isOpen && seriesAssetPreview && currentProjectId === seriesAssetPreview.projectId && (
+      {isOpen && renamingEpisodeId && <WorkbenchRenameDialog key={renamingEpisodeId}
+        name={episodes.find((episode) => episode.id === renamingEpisodeId)?.name ?? ''}
+        onClose={() => setRenamingEpisodeId(null)} onSave={async (name) => { await dispatch({ type: 'rename', name }); }} />}
+      {isOpen && seriesAssetPreview && contextReady && (
         <AssetExtractionPreviewDialog title={t('全剧资产提取预览')} items={seriesAssetPreview.assets}
-          existingItems={(() => {
-            return seriesAssetPreview.kind === 'character' ? dramaAssets.characters
-              : seriesAssetPreview.kind === 'scene' ? dramaAssets.scenes : dramaAssets.props;
-          })()}
+          existingItems={snapshot.existingAssets}
           confirmLabel={t('将所选条目加入本剧资产库')}
-          onClose={() => setSeriesAssetPreview(null)}
+          onClose={() => fire({ type: 'close_asset_preview' })}
           onConfirm={async (selectedIds) => {
-            const count = await commitSeriesAssetCandidates(seriesAssetPreview, selectedIds);
-            setSeriesAssetPreview(null);
-            showToast(t('已将 {count} 项资产加入本剧资产库', { count }));
+            await dispatch({ type: 'commit_asset_preview', selectedIds });
           }} />
       )}
-      {sourceOpen && <SeriesSourceBrowser initialPart={splitSource} onClose={() => setSourceOpen(false)}
-        beforeAssistant={async () => {
-          if (isDirty && !await saveDraft()) return false;
-          onClose();
-          return true;
-        }} />}
-    </ModalOverlay>
+      {sourceOpen && <SeriesSourceBrowser initialPart={splitSource} onClose={() => setSourceOpen(false)} remote={sourceRemote} />}
+    </WorkbenchFrame>
   );
 }

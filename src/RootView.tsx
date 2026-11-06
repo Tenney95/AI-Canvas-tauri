@@ -9,6 +9,7 @@ import ReferencePreviewHost from './components/shared/ReferencePreviewHost';
 const App = lazy(() => import('./App'));
 const AssetSearchWindow = lazy(() => import('./components/AssetSearchWindow'));
 const ChatWindow = lazy(() => import('./components/chat/ChatWindow'));
+const ScriptWorkbenchWindow = lazy(() => import('./components/ScriptWorkbenchWindow'));
 // 懒加载：视频编辑器引入 mediabunny（体积大户），只有编辑器窗口才加载
 const VideoEditorWindow = lazy(() => import('./components/videoEditor/VideoEditorWindow'));
 // 懒加载：样式预览只在开发者/设计手动唤起时用到，不进主窗口首屏
@@ -22,6 +23,7 @@ interface RootViewProps {
 const VIEW_LABELS: Record<string, string> = {
   assets: '资产搜索窗口',
   chat: '独立聊天窗口',
+  'script-workbench': '独立剧本工作台',
   'video-editor': '视频编辑器窗口',
   'style-guide': '样式预览窗口',
   'comfyui-settings': 'ComfyUI 管理窗口',
@@ -38,6 +40,8 @@ export default function RootView({ view }: RootViewProps) {
             ? <AssetSearchWindow />
             : view === 'chat'
               ? <ChatWindow />
+              : view === 'script-workbench'
+                ? <ScriptWorkbenchWindow />
               : view === 'video-editor'
                 ? <VideoEditorWindow />
                 : view === 'style-guide'
@@ -48,9 +52,9 @@ export default function RootView({ view }: RootViewProps) {
         </Suspense>
       </LazyLoadBoundary>
       <OverlayScrollbarLayer />
-      <LazyLoadBoundary label="引用内容预览">
+      {view !== 'script-workbench' && <LazyLoadBoundary label="引用内容预览">
         <ReferencePreviewHost detached={view === 'chat'} />
-      </LazyLoadBoundary>
+      </LazyLoadBoundary>}
     </>
   );
 }

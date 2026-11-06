@@ -147,6 +147,46 @@ describe('团队共用发起入口', () => {
     expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.status).toBe('stopped');
   });
 
+  it('工作台可为同剧集另一个明确分集发起团队，保留当前画布与节点', async () => {
+    useAppStore.setState({
+      currentProjectId: 'episode-canvas',
+      projects: [
+        { id: 'series-team', name: '剧集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-canvas', parentId: 'series-team', name: '画布当前集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-workbench', parentId: 'series-team', name: '工作台所选集', createdAt: 1, updatedAt: 1 },
+      ],
+    });
+    useAppStore.getState().updateConversation('conv-team', { projectId: 'series-team' });
+    const nodesBefore = useAppStore.getState().nodes;
+    const result = await startTeamInvocation({ content: '处理工作台选中集', projectId: 'episode-workbench',
+      conversationId: 'conv-team', templateId: 'general', requestId: 'request-team-workbench-sibling',
+      context: { source: 'script-workbench', target: { kind: 'episode', seriesId: 'series-team',
+        episodeId: 'episode-workbench', field: 'script', expectedHash: 'a'.repeat(64), label: '工作台所选集正文' } },
+      materials: '已保存材料', originalText: '原稿',
+    });
+    expect(useAppStore.getState().currentProjectId).toBe('episode-canvas');
+    expect(useAppStore.getState().nodes).toBe(nodesBefore);
+    expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.projectId).toBe('episode-workbench');
+    expect(runtime.prepare).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'episode-workbench' }));
+  });
+
+  it('普通助手不能借目标字段取得非当前分集权限，工作台也不能跨剧集', () => {
+    useAppStore.setState({ projects: [
+      ...useAppStore.getState().projects,
+      { id: 'other-series', name: '其他剧集', createdAt: 1, updatedAt: 1 },
+      { id: 'other-episode', parentId: 'other-series', name: '其他分集', createdAt: 1, updatedAt: 1 },
+    ] });
+    const target = { kind: 'episode' as const, seriesId: 'other-series', episodeId: 'other-episode',
+      field: 'script' as const, expectedHash: 'a'.repeat(64), label: '其他分集正文' };
+    for (const source of ['assistant', 'script-workbench'] as const) {
+      expect(() => submitTeamInvocation({ content: '不得越界', projectId: 'other-episode',
+        templateId: 'general', requestId: `request-team-invalid-${source}`,
+        context: { source, target }, materials: '材料', originalText: '原稿',
+      })).toThrow('请先打开');
+    }
+    expect(runtime.prepare).not.toHaveBeenCalled();
+  });
+
   it('拒绝跨项目会话和超过总上限的材料，未进入模型准备或队列', () => {
     useAppStore.getState().updateConversation('conv-team', { projectId: 'other-project' });
     expect(() => submitTeamInvocation({ content: '不应发送', projectId: 'project-team', conversationId: 'conv-team',

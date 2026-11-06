@@ -3,7 +3,7 @@
  * 收起只能通过面板右上角的关闭按钮。分集各自是一张画布，点一下就切过去；
  * 原著与剧本挂在剧集项目上，整部剧共用。
  */
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
@@ -16,6 +16,7 @@ import ProjectAssetsOverlay from './ProjectAssetsOverlay';
 import ScriptWorkbench from './ScriptWorkbench';
 import SeriesSourceBrowser from './SeriesSourceBrowser';
 import { useT } from '../i18n';
+import { focusScriptWorkbenchWindow } from '../services/scriptWorkbenchWindowService';
 
 /** 原著文件落在项目数据目录里，只存相对路径，换机器或导入后仍能定位。 */
 function toProjectRelativePath(filePath: string, projectDir: string | null): string {
@@ -101,6 +102,22 @@ function TextEditorDialog({
 }
 
 export default function SeriesRail() {
+  const [workbenchMode, setWorkbenchMode] = useState<'editor' | 'split' | null>(null);
+  const [workbenchRequest, setWorkbenchRequest] = useState({ revision: 0, split: false });
+  const closeWorkbench = useCallback(() => setWorkbenchMode(null), []);
+  const openWorkbench = useCallback((mode: 'editor' | 'split') => {
+    setWorkbenchMode((current) => current ?? mode);
+    setWorkbenchRequest((current) => ({ revision: current.revision + 1, split: mode === 'split' }));
+    void focusScriptWorkbenchWindow().catch(() => {});
+  }, []);
+  return <>
+    <SeriesRailPanel onOpenWorkbench={openWorkbench} />
+    {workbenchMode && <ScriptWorkbench isOpen startWithSplit={workbenchMode === 'split'}
+      openRequestRevision={workbenchRequest.revision} requestSplit={workbenchRequest.split} onClose={closeWorkbench} />}
+  </>;
+}
+
+function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor' | 'split') => void }) {
   const t = useT();
   const {
     projects, currentProjectId, projectLoadStatus,
@@ -127,7 +144,6 @@ export default function SeriesRail() {
   const singleClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 打开编辑器时就把草稿装好，弹窗内部不用再和外部值同步
   const [editorDraft, setEditorDraft] = useState<string | null>(null);
-  const [workbenchMode, setWorkbenchMode] = useState<'editor' | 'split' | null>(null);
   const [episodeNameDialog, setEpisodeNameDialog] = useState<{ episodeId?: string } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -235,7 +251,7 @@ export default function SeriesRail() {
             </div>
             <button
               type="button"
-              onClick={() => setWorkbenchMode('editor')}
+              onClick={() => onOpenWorkbench('editor')}
               data-tooltip={t('打开剧本创作工作台')}
               aria-label={t('打开剧本创作工作台')}
               className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-canvas-text-muted
@@ -311,7 +327,7 @@ export default function SeriesRail() {
               <button
                 type="button"
                 disabled={!ready}
-                onClick={() => setWorkbenchMode('editor')}
+                onClick={() => onOpenWorkbench('editor')}
                 className="flex h-9 items-center justify-center gap-2 rounded-lg border border-indigo-400/30
                            bg-indigo-500/10 text-[11px] font-medium text-indigo-400 transition-colors
                            hover:border-indigo-400/50 hover:bg-indigo-500/15 disabled:cursor-not-allowed
@@ -436,7 +452,7 @@ export default function SeriesRail() {
               <button
                 type="button"
                 disabled={!ready || busy !== null}
-                onClick={() => setWorkbenchMode('split')}
+                onClick={() => onOpenWorkbench('split')}
                 className="flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px]
                            text-canvas-text-muted transition-colors hover:bg-canvas-hover
                            hover:text-canvas-text-secondary disabled:cursor-not-allowed disabled:opacity-40"
@@ -454,7 +470,7 @@ export default function SeriesRail() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setWorkbenchMode('editor')}
+                  onClick={() => onOpenWorkbench('editor')}
                   className="flex min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-canvas-border bg-canvas-card
                              px-2.5 py-2 text-left transition-colors hover:bg-canvas-hover"
                 >
@@ -485,13 +501,6 @@ export default function SeriesRail() {
         />
       )}
       {sourceOpen && <SeriesSourceBrowser onClose={() => setSourceOpen(false)} />}
-      {workbenchMode ? (
-        <ScriptWorkbench
-          isOpen
-          startWithSplit={workbenchMode === 'split'}
-          onClose={() => setWorkbenchMode(null)}
-        />
-      ) : null}
       {assetsOpen && (
         <ProjectAssetsOverlay
           isOpen={assetsOpen}

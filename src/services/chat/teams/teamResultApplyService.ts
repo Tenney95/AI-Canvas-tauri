@@ -2,7 +2,7 @@
 import type { AgentTask } from '../../../types/agent';
 import type { TeamApplicationReceipt, TeamEpisodeTarget, TeamInvocationContext } from '../../../types/agentTeam';
 import { useAppStore } from '../../../store/useAppStore';
-import { seriesOwnerId } from '../../../store/store.utils';
+import { isWorkbenchTeamTaskInScope, readEpisodeWorkspaceScope } from '../../episodeWorkspaceScope';
 import { loadProjectData } from '../../fileService';
 import { episodeTeamSourceSnapshot } from '../../seriesCreativeService';
 import { assertEpisodeEditorReady, prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
@@ -25,10 +25,11 @@ function readTask(taskId: string): AgentTask {
   return task;
 }
 
-function readTargetValue(target: TeamEpisodeTarget): string {
+function readTargetValue(target: TeamEpisodeTarget, allowSameSeries = false): string {
   const state = useAppStore.getState();
   const episode = state.projects.find((item) => item.id === target.episodeId);
-  if (state.projectLoadStatus !== 'ready' || state.currentProjectId !== target.episodeId
+  const workspace = allowSameSeries ? readEpisodeWorkspaceScope(state, target.episodeId) : null;
+  if (state.projectLoadStatus !== 'ready' || (state.currentProjectId !== target.episodeId && !workspace)
     || !episode || episode.parentId !== target.seriesId || !TEXT_FIELDS.has(target.field)
     || state.switchingProjectName !== null || state.isCreatingProject || state.isReturningToStartPage) {
     throw new Error('请先回到任务绑定的原分集，再比较或应用团队成果');
@@ -41,13 +42,11 @@ export async function captureEpisodeTeamContext(
   field: TeamEpisodeTarget['field'],
 ): Promise<{ context: TeamInvocationContext; materials: string; originalText: string }> {
   const state = useAppStore.getState();
-  const episode = state.projects.find((item) => item.id === episodeId);
-  const ownerId = seriesOwnerId(state.projects, episodeId);
-  const series = state.projects.find((item) => item.id === ownerId);
-  if (!episode?.parentId || !series || episode.parentId !== series.id || !TEXT_FIELDS.has(field)
-    || state.currentProjectId !== episodeId || state.projectLoadStatus !== 'ready') {
+  const workspace = readEpisodeWorkspaceScope(state, episodeId);
+  if (!workspace || !TEXT_FIELDS.has(field)) {
     throw new Error('请先打开要处理的准确分集');
   }
+  const { episode, owner: series } = workspace;
   assertEpisodeEditorReady(episodeId);
   const originalText = field === 'outline' ? episode.episodeOutline ?? '' : episode.episodeScript ?? '';
   const sourceSnapshot = episodeTeamSourceSnapshot(episode, field);
@@ -55,7 +54,7 @@ export async function captureEpisodeTeamContext(
   const target: TeamEpisodeTarget = { kind: 'episode', seriesId: series.id, episodeId, field, expectedHash,
     sourceHash,
     label: `${series.name} · ${episode.name} · ${field === 'outline' ? '本集大纲' : '本集剧本'}` };
-  if (readTargetValue(target) !== originalText) throw new Error('保存后分集内容又有变化，请重新发起');
+  if (readTargetValue(target, true) !== originalText) throw new Error('保存后分集内容又有变化，请重新发起');
   const latest = useAppStore.getState().projects.find((item) => item.id === episodeId);
   if (!latest || episodeTeamSourceSnapshot(latest, field) !== sourceSnapshot) throw new Error('创作材料已变化，请重新发起');
   assertEpisodeEditorReady(episodeId);
@@ -102,7 +101,17 @@ async function executeResultWrite(taskId: string, restore: boolean, signal: Abor
   const nextText = restore ? originalText : resultText;
   await withEpisodeEditorWrite(target.episodeId, async () => {
     if (signal.aborted) throw new Error('团队成果应用已取消');
-    const currentText = readTargetValue(target);
+    const canvasProjectId = useAppStore.getState().currentProjectId;
+    const assertCommitCurrent = () => {
+      if (signal.aborted) throw new Error('请求已取消');
+      const latest = readTask(taskId);
+      if (useAppStore.getState().currentProjectId !== canvasProjectId
+        || latest.teamRun!.revision !== run.revision || latest.teamRun!.resultArtifactId !== run.resultArtifactId) {
+        throw new Error('保存期间画布或团队成果已变化，请核对原稿后重试');
+      }
+      readTargetValue(target, run.source === 'script-workbench');
+    };
+    const currentText = readTargetValue(target, run.source === 'script-workbench');
     if (await hashTeamText(currentText) !== expectedHash) throw new Error('当前稿件已变化，团队成果已保留，请先比较差异');
     assertEpisodeEditorReady(target.episodeId);
     const rebaseEditors = prepareEpisodeEditorRebase(target.episodeId);
@@ -117,7 +126,9 @@ async function executeResultWrite(taskId: string, restore: boolean, signal: Abor
     const saved = await useAppStore.getState().updateEpisodeCreative(target.episodeId,
       target.field === 'outline' ? { outline: nextText } : { script: nextText }, {
         expected: { ...target, expectedHash },
-        assertCurrent: () => { if (signal.aborted) throw new Error('请求已取消'); assertEpisodeEditorReady(target.episodeId); },
+        allowSameSeries: run.source === 'script-workbench',
+        assertCurrent: () => { assertCommitCurrent(); assertEpisodeEditorReady(target.episodeId); },
+        assertCommitCurrent,
       });
     if (!saved) throw new Error('保存未确认成功，候选与恢复点已保留，请先核对保存状态');
     rebaseEditors();
@@ -137,8 +148,11 @@ export function registerTeamResultTools(): Array<() => void> {
     summarizeInput: () => restore ? '恢复原分集字段的应用前版本' : '应用已选择的团队最终候选到原分集字段',
     authorize: (context) => {
       const task = useAppStore.getState().agentTasks.find((item) => item.id === context.taskId);
+      const state = useAppStore.getState();
       return task?.teamRun?.target && task.projectId === context.projectId
-        && task.conversationId === context.conversationId && useAppStore.getState().currentProjectId === context.projectId
+        && task.conversationId === context.conversationId
+        && (state.currentProjectId === context.projectId || isWorkbenchTeamTaskInScope(state, task,
+          restore ? 'agent_team_restore_result' : 'agent_team_apply_result'))
         ? { allowed: true } : { allowed: false, reason: '此工具只接受任务绑定的原分集，不接受模型指定其他目标' };
     },
     execute: async (context) => {
@@ -160,7 +174,7 @@ async function dispatchResultWrite(taskId: string, restore: boolean): Promise<vo
   const operation = (async () => {
     const task = readTask(taskId);
     const target = targetForTask(task);
-    readTargetValue(target);
+    readTargetValue(target, task.teamRun!.source === 'script-workbench');
     if (task.mode === 'plan') throw new Error('规划模式只提供建议，不能应用或恢复原稿');
     const status = task.teamRun!.application?.status;
     if ((!restore && status === 'applied') || (restore && status === 'restored')) return;
@@ -219,12 +233,13 @@ export async function reconcileTeamResult(taskId: string): Promise<string> {
   const target = targetForTask(task);
   const receipt = task.teamRun!.application;
   if (!receipt || !['pending', 'restore-pending'].includes(receipt.status)) return '当前没有待核对的成果保存';
-  const inMemory = readTargetValue(target);
+  const allowSameSeries = task.teamRun!.source === 'script-workbench';
+  const inMemory = readTargetValue(target, allowSameSeries);
   const record = await loadProjectData(target.episodeId);
   if (!record || record.parentId !== target.seriesId) throw new Error('无法核对原分集保存记录');
   const persisted = target.field === 'outline' ? record.episodeOutline ?? '' : record.episodeScript ?? '';
   const [memoryHash, savedHash] = await Promise.all([hashTeamText(inMemory), hashTeamText(persisted)]);
-  if (readTargetValue(target) !== inMemory) throw new Error('核对期间分集内容发生变化，请重新核对');
+  if (readTargetValue(target, allowSameSeries) !== inMemory) throw new Error('核对期间分集内容发生变化，请重新核对');
   if (memoryHash !== savedHash) throw new Error('当前编辑状态与保存记录不一致，请先处理保存问题，未重新应用成果');
   const restoring = receipt.status === 'restore-pending';
   if (savedHash === (restoring ? receipt.targetHashBefore : receipt.targetHashAfter)) {

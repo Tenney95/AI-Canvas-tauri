@@ -1,0 +1,10 @@
+{
+  "identifier": "script-workbench",
+  "description": "Script workbench display window; project writes and model execution stay in the main window",
+  "windows": ["script-workbench"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit-to"
+  ]
+}

@@ -1,5 +1,34 @@
 /** 本集提取清单与正式创作资产分开保存；绑定只指向所属剧集的业务卡片 ID。 */
+import type { CanvasProject } from './index';
+import type { DramaAssetLibrary, DramaCharacter, DramaProp } from './dramaAssets';
+
 export type EpisodeAssetKind = 'character' | 'prop';
+
+export interface EpisodeAssetPickerSnapshot {
+  library: DramaAssetLibrary;
+  globalCharacters: DramaCharacter[];
+  globalProps: DramaProp[];
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>;
+}
+
+export interface EpisodeAssetPanelSnapshot extends EpisodeAssetPickerSnapshot {
+  episode: Pick<CanvasProject, 'id' | 'parentId' | 'name' | 'episodeScript' | 'episodeAssetRoster'> | null;
+  ready: boolean;
+}
+
+export type EpisodeAssetPanelAction =
+  | { type: 'extract' }
+  | { type: 'load-global' }
+  | { type: 'save-entry'; entry: EpisodeAssetEntry; expectedRevision: number }
+  | { type: 'remove-entry'; entryId: string; expectedRevision: number }
+  | { type: 'bind'; entryId: string; targetId: string | null; scope: 'project' | 'global'; expectedRevision: number }
+  | { type: 'add-library'; targetId: string; scope: 'project' | 'global'; expectedRevision: number }
+  | { type: 'promote'; entryIds: string[] }
+  | { type: 'merge-candidates'; candidateIds: string[]; expectedRevision: number; fingerprint: string };
+
+export type EpisodeAssetPanelActionResult =
+  | { type: 'candidates'; items: EpisodeAssetEntry[]; revision: number; fingerprint: string }
+  | { type: 'updated'; count?: number };
 
 export interface EpisodeAssetEntry {
   id: string;

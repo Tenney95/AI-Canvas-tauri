@@ -66,6 +66,27 @@ beforeEach(() => {
 });
 
 describe('本集候选提取与显式保存', () => {
+  it('可编辑同剧集非画布当前集，始终按目标分集保存', async () => {
+    useAppStore.setState((state) => ({ projects: [...state.projects,
+      { id: 'episode-2', parentId: 'series-1', name: '第二集', createdAt: 1, updatedAt: 1 }], currentProjectId: 'episode-2' }));
+    await saveEpisodeAssetEntry('episode-1', entry(), 0);
+    expect(saveRoster).toHaveBeenCalledWith('episode-1', expect.anything(), 0,
+      expect.objectContaining({ allowSameSeries: true, assertCommitCurrent: expect.any(Function) }));
+    expect(useAppStore.getState().currentProjectId).toBe('episode-2');
+    expect(roster().props[0].name).toBe('旧茶杯');
+  });
+
+  it('非当前集修改正文后恢复，也使旧提取候选失效', async () => {
+    useAppStore.setState((state) => ({ projects: [...state.projects,
+      { id: 'episode-2', parentId: 'series-1', name: '第二集', createdAt: 1, updatedAt: 1 }], currentProjectId: 'episode-2' }));
+    generateText.mockResolvedValue(JSON.stringify({ kind: 'prop', items: [{ name: '旧茶杯' }] }));
+    const candidates = await extractEpisodeAssetCandidates({ episodeId: 'episode-1', kind: 'prop' });
+    for (const text of ['改稿', script]) useAppStore.setState((state) => ({ projects: state.projects.map((project) => project.id === 'episode-1'
+      ? { ...project, episodeScript: text } : project) }));
+    await expect(mergeEpisodeAssetCandidates('episode-1', 'prop', candidates, 0)).rejects.toThrow('提取来源已变化');
+    expect(saveRoster).not.toHaveBeenCalled();
+  });
+
   it('提取只返回候选，选择后才加入本集清单，始终不直接入库', async () => {
     generateText.mockResolvedValue(JSON.stringify({ kind: 'prop', items: [{ name: '旧茶杯', summary: '有缺口的茶杯' }] }));
     const candidates = await extractEpisodeAssetCandidates({ episodeId: 'episode-1', kind: 'prop' });

@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useId, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { GeneralModelConfig, ModelGroup } from '../../../types';
 import type { AgentTeamProfile, AssistantExecutionSelection, TeamRoleId, TeamTemplateId } from '../../../types/agentTeam';
@@ -6,6 +6,8 @@ import { TEAM_ROLE_LABELS, TEAM_TEMPLATE_LABELS } from '../../../services/chat/t
 import { useT } from '../../../i18n';
 import ModelSelector from '../../nodes/shared/ModelSelector';
 import ModalOverlay from '../ModalOverlay';
+import NumberStepper from '../NumberStepper';
+import Select from '../Select';
 
 export interface TeamExecutionPickerProps {
   value: AssistantExecutionSelection;
@@ -18,6 +20,8 @@ export interface TeamExecutionPickerProps {
   theme?: 'dark' | 'light';
   disabled?: boolean;
   compact?: boolean;
+  /** 助手可分别在顶部展示执行方式、在输入区展示团队配置。 */
+  controls?: 'all' | 'execution' | 'configuration';
   defaultTemplateId?: TeamTemplateId;
 }
 
@@ -26,9 +30,10 @@ const TEMPLATES: readonly TeamTemplateId[] = ['general', 'outline', 'script', 'r
 
 function TeamExecutionPicker({
   value, onChange, profile, onProfileChange, modelGroups, generalModels, groupAvailability,
-  theme, disabled = false, compact = false, defaultTemplateId = 'general',
+  theme, disabled = false, compact = false, controls = 'all', defaultTemplateId = 'general',
 }: TeamExecutionPickerProps) {
   const t = useT();
+  const templateInputId = useId();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(profile);
   const [templateId, setTemplateId] = useState<TeamTemplateId>(value.kind === 'team' ? value.templateId : defaultTemplateId);
@@ -64,21 +69,21 @@ function TeamExecutionPicker({
   };
 
   return (
-    <div className={`flex min-w-0 items-center gap-1 ${compact ? '' : 'flex-wrap'}`}>
-      <div className="ui-btn-group shrink-0" role="group" aria-label={t('执行方式')}>
-        <button type="button" className={`ui-btn ui-btn--sm ui-btn--ghost ${value.kind === 'single' ? 'is-active' : ''}`}
+    <div className={`flex min-w-0 max-w-full items-center gap-1 ${compact ? '' : 'flex-wrap'}`}>
+      {controls !== 'configuration' && <div className="ui-segmented shrink-0" role="group" aria-label={t('执行方式')}>
+        <button type="button" className={`ui-segmented__item${value.kind === 'single' ? ' is-active' : ''}`}
           disabled={disabled} aria-pressed={value.kind === 'single'} onClick={() => onChange({ kind: 'single' })}>
           {t('单模型')}
         </button>
-        <button type="button" className={`ui-btn ui-btn--sm ui-btn--ghost ${value.kind === 'team' ? 'is-active' : ''}`}
+        <button type="button" className={`ui-segmented__item${value.kind === 'team' ? ' is-active' : ''}`}
           disabled={disabled} aria-pressed={value.kind === 'team'} onClick={() => {
             onChange({ kind: 'team', templateId: value.kind === 'team' ? value.templateId : defaultTemplateId });
             if (configuredCount === 0) openConfiguration();
           }}>
           {t('团队')}
         </button>
-      </div>
-      {value.kind === 'team' && (
+      </div>}
+      {controls !== 'execution' && value.kind === 'team' && (
         <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost min-w-0" disabled={disabled}
           onClick={openConfiguration} title={t('配置团队角色与预算')} aria-label={t('配置团队角色与预算')}>
           <Icon icon="mdi:account-group-outline" width="15" className="shrink-0" />
@@ -97,12 +102,11 @@ function TeamExecutionPicker({
           </button>
         </header>
         <div className="min-h-0 space-y-3 overflow-y-auto p-3 text-xs text-canvas-text">
-          <label className="block space-y-1">
-            <span className="ui-label">{t('团队模板')}</span>
-            <select className="ui-select__control w-full" value={templateId} disabled={saving} onChange={(event) => setTemplateId(event.target.value as TeamTemplateId)}>
-              {TEMPLATES.map((id) => <option key={id} value={id}>{t(TEAM_TEMPLATE_LABELS[id])}</option>)}
-            </select>
-          </label>
+          <div className="ui-field">
+            <label className="ui-label" htmlFor={templateInputId}>{t('团队模板')}</label>
+            <Select<TeamTemplateId> id={templateInputId} className="w-full" value={templateId} disabled={saving}
+              onChange={setTemplateId} options={TEMPLATES.map((id) => ({ value: id, label: t(TEAM_TEMPLATE_LABELS[id]) }))} />
+          </div>
           <p className="text-canvas-text-muted">{t('每个角色可选择不同模型；团队执行方式不会改变规划、协作或自主权限。')}</p>
           <div className="space-y-2">
             {ROLES.map((role) => {
@@ -127,10 +131,12 @@ function TeamExecutionPicker({
               ['maxTotalTokens', 'Token 预算', 20000, 1000000, 1000],
               ['maxOutputChars', '单次输出字符上限', 2000, 64000, 1000],
             ] as const).map(([key, label, min, max, step]) => (
-              <label key={key} className="block space-y-1"><span className="ui-label">{t(label)}</span>
-                <input type="number" className="ui-input w-full" min={min} max={max} step={step} value={draft[key]} disabled={saving}
-                  onChange={(event) => setDraft((current) => ({ ...current, [key]: Number(event.target.value) }))} />
-              </label>
+              <div key={key} className="ui-field">
+                <label className="ui-label" htmlFor={`${templateInputId}-${key}`}>{t(label)}</label>
+                <NumberStepper id={`${templateInputId}-${key}`} className="w-full" aria-label={t(label)}
+                  min={min} max={max} step={step} value={draft[key]} disabled={saving}
+                  onChange={(value) => setDraft((current) => ({ ...current, [key]: value }))} />
+              </div>
             ))}
           </div>
           <p className="text-canvas-text-muted">{t('预算用于限制任务；实际费用以模型服务商账单为准，未知用量不会记为零。')}</p>

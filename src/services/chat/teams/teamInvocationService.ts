@@ -11,6 +11,7 @@ import { scheduleConversationAgentExecution } from '../agentScheduler';
 import { saveConversation } from '../chatHistoryService';
 import { extractMentionedNodeIds, sanitizeDomainText } from '../subAgentMaterials';
 import { MAX_INTERJECTION_CHARS } from '../agentInterjection';
+import { isWorkbenchTeamTaskInScope, readEpisodeWorkspaceScope } from '../../episodeWorkspaceScope';
 import { hashTeamText, readTeamArtifactText } from './teamArtifactService';
 import { normalizeTeamProfile, TEAM_TEMPLATE_LABELS } from './teamProfileService';
 import { amendTeamRun, captureTeamModelFingerprints, executeTeamRun, MAX_TEAM_INPUT_CHARS, prepareTeamRun, waitForTeamRunIdle } from './teamRuntime';
@@ -133,8 +134,11 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
   const requestId = input.requestId ?? crypto.randomUUID();
   if (!/^[A-Za-z0-9_-]{8,120}$/.test(requestId)) throw new Error('团队发起请求身份无效');
   const projectId = input.projectId ?? state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
+  const context = structuredClone(input.context ?? { source: 'assistant' as const });
+  const workbenchScope = context.source === 'script-workbench' && context.target?.episodeId === projectId
+    ? readEpisodeWorkspaceScope(state, projectId) : null;
   if (!isGeneralAssistantScope(projectId) && (!state.projects.some((item) => item.id === projectId)
-    || state.currentProjectId !== projectId || state.projectLoadStatus !== 'ready')) {
+    || (state.currentProjectId !== projectId && !workbenchScope) || state.projectLoadStatus !== 'ready')) {
     throw new Error('请先打开团队任务所属项目');
   }
   const ownerId = seriesOwnerId(state.projects, projectId);
@@ -142,9 +146,10 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
   if (input.conversationId && (!conversation || conversation.projectId !== ownerId || !conversation.id.startsWith('conv-'))) {
     throw new Error('来源对话与任务项目不一致');
   }
-  const context = structuredClone(input.context ?? { source: 'assistant' as const });
   if (context.target && (isGeneralAssistantScope(projectId) || context.target.episodeId !== projectId
-    || context.target.seriesId !== ownerId)) throw new Error('团队成果目标与当前分集不一致');
+    || context.target.seriesId !== ownerId || (workbenchScope && context.target.seriesId !== workbenchScope.owner.id))) {
+    throw new Error('团队成果目标与当前分集不一致');
+  }
   const profile = normalizeTeamProfile(structuredClone(input.profile ?? state.config.agentTeamProfile));
   const materials = input.materials ?? explicitNodeMaterials(content, projectId);
   if (content.length + materials.length > MAX_TEAM_INPUT_CHARS) throw new Error('团队目标与材料超过总上限，请按场景或章节拆分，不会截断原稿');
@@ -316,7 +321,16 @@ export async function openTeamTaskInAssistant(taskId: string): Promise<void> {
   if (latest.chatPanelDetached) {
     const { openDetachedChatWindow } = await import('../chatWindowLifecycle');
     await openDetachedChatWindow();
-  } else useAppStore.getState().openChat();
+  } else {
+    useAppStore.getState().openChat();
+    if (typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)) {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const mainWindow = getCurrentWindow();
+      await mainWindow.show().catch(() => {});
+      await mainWindow.unminimize().catch(() => {});
+      await mainWindow.setFocus().catch(() => {});
+    }
+  }
 }
 
 /** 对外只接受任务/产物 ID，不接受窗口提交的路径、摘要或任意文件引用。 */
@@ -332,8 +346,12 @@ export async function readTeamTaskArtifact(taskId: string, artifactId: string): 
   if (!artifact || artifact.kind === 'input') throw new Error('该产物不可在任务详情中读取');
   const text = await readTeamArtifactText(task.projectId, artifact);
   const current = useAppStore.getState();
-  if ((current.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) !== scope
-    || !current.agentTasks.some((item) => item.id === taskId && item.teamRun?.id === task.teamRun!.id)) {
+  const latestTask = current.agentTasks.find((item) => item.id === taskId && item.teamRun?.id === task.teamRun!.id);
+  if (((current.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) !== scope
+      && (!latestTask || !isWorkbenchTeamTaskInScope(current, latestTask)))
+    || !latestTask?.teamRun?.artifacts.some((item) => item.id === artifact.id && item.sha256 === artifact.sha256)
+    || !current.conversations.some((item) => item.id === conversation.id && !item.deletedAt
+      && item.projectId === seriesOwnerId(current.projects, current.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID))) {
     throw new Error('项目或任务已经变化，请重新查看成果');
   }
   return text;

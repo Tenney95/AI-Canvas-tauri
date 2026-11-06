@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
 import { episodeTeamSourceSnapshot } from '../../src/services/seriesCreativeService';
+import { cancelProjectCanvasDerivations } from '../../src/services/canvasDerivationGuard';
 import type { BaseNodeData } from '../../src/types';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
@@ -1968,5 +1969,102 @@ describe('episode creative conditional writes', () => {
     expect(await update).toBe(false);
     expect(useAppStore.getState().projects.find((item) => item.id === 'team-episode'))
       .toMatchObject({ name: '用户新名称', updatedAt: 99, episodeScript: '原稿', episodeOutline: '原大纲' });
+  });
+
+  it('only an explicit host option permits conditional saving a non-canvas episode in the loaded series', async () => {
+    openEpisode();
+    useAppStore.setState((state) => ({ currentProjectId: 'canvas-episode', projects: [...state.projects,
+      { id: 'canvas-episode', parentId: 'team-series', name: '画布当前集', createdAt: 1, updatedAt: 1 }] }));
+    fileMocks.loadProjectData.mockResolvedValue({ id: 'team-episode', parentId: 'team-series', name: '第一集',
+      createdAt: 1, updatedAt: 1, nodes: [], edges: [], groups: [], episodeScript: '原稿' });
+    const expected = { kind: 'episode' as const, seriesId: 'team-series', episodeId: 'team-episode', field: 'script' as const,
+      expectedHash: await sha256BytesHex(new TextEncoder().encode('原稿')), label: '第一集正文' };
+    await expect(useAppStore.getState().updateEpisodeCreative('team-episode', { script: '候选' }, { expected })).rejects.toThrow('分集或所属剧集');
+    await expect(useAppStore.getState().updateEpisodeCreative('team-episode', { script: '候选' }, { expected, allowSameSeries: true })).resolves.toBe(true);
+    expect(useAppStore.getState().currentProjectId).toBe('canvas-episode');
+    expect(fileMocks.saveProject).toHaveBeenCalledWith(expect.objectContaining({ id: 'team-episode', episodeScript: '候选' }));
+  });
+
+  it('rejects a late off-canvas record after navigation instead of writing the old canvas snapshot', async () => {
+    openEpisode();
+    useAppStore.setState((state) => ({ currentProjectId: 'canvas-episode', projects: [...state.projects,
+      { id: 'canvas-episode', parentId: 'team-series', name: '当前集', createdAt: 1, updatedAt: 1 },
+      { id: 'other-project', name: '另一项目', createdAt: 1, updatedAt: 1 }] }));
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: (record: ProjectSaveData) => void;
+    fileMocks.loadProjectData.mockImplementationOnce(() => { entered(); return new Promise<ProjectSaveData>((resolve) => { release = resolve; }); });
+    const expected = { kind: 'episode' as const, seriesId: 'team-series', episodeId: 'team-episode', field: 'script' as const,
+      expectedHash: await sha256BytesHex(new TextEncoder().encode('原稿')), label: '第一集正文' };
+    const saving = useAppStore.getState().updateEpisodeCreative('team-episode', { script: '候选' }, { expected, allowSameSeries: true });
+    await started;
+    useAppStore.setState({ currentProjectId: 'other-project' });
+    release({ id: 'team-episode', name: '第一集', parentId: 'team-series', createdAt: 1, updatedAt: 1,
+      nodes: [], edges: [], groups: [], episodeScript: '原稿' });
+    await expect(saving).resolves.toBe(false);
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+    expect(useAppStore.getState().currentProjectId).toBe('other-project');
+  });
+
+  it('serializes an off-canvas rename behind the script write and reads its actually saved record', async () => {
+    openEpisode();
+    useAppStore.setState((state) => ({ currentProjectId: 'canvas-episode', projects: [...state.projects,
+      { id: 'canvas-episode', parentId: 'team-series', name: '画布当前集', createdAt: 1, updatedAt: 1 }] }));
+    let disk: ProjectSaveData = { id: 'team-episode', parentId: 'team-series', name: '第一集',
+      createdAt: 1, updatedAt: 1, nodes: [], edges: [], groups: [], episodeScript: '原稿' };
+    fileMocks.loadProjectData.mockImplementation(async () => structuredClone(disk));
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    const saved: ProjectSaveData[] = [];
+    fileMocks.saveProject.mockImplementation(async (record) => {
+      const value = record as ProjectSaveData;
+      if (first) { first = false; entered(); await gate; }
+      disk = structuredClone(value); saved.push(disk); return value.id;
+    });
+    const expected = { kind: 'episode' as const, seriesId: 'team-series', episodeId: 'team-episode', field: 'script' as const,
+      expectedHash: await sha256BytesHex(new TextEncoder().encode('原稿')), label: '第一集正文' };
+    const writing = useAppStore.getState().updateEpisodeCreative('team-episode', { script: '已确认候选' }, { expected, allowSameSeries: true });
+    await started;
+    const renaming = useAppStore.getState().renameProject('team-episode', '用户新集名');
+    expect(fileMocks.loadProjectData).toHaveBeenCalledTimes(1);
+    release();
+    expect(await writing).toBe(true);
+    expect(await renaming).toBe(true);
+    expect(saved).toHaveLength(2);
+    expect(disk).toMatchObject({ id: 'team-episode', name: '用户新集名', episodeScript: '已确认候选' });
+    expect(useAppStore.getState().currentProjectId).toBe('canvas-episode');
+  });
+
+  it('rejects a no-op script write after canvas A-to-B-to-A navigation so stale B nodes cannot overwrite a newer saved graph', async () => {
+    openEpisode();
+    useAppStore.setState((state) => ({ currentProjectId: 'canvas-episode', projects: [...state.projects,
+      { id: 'canvas-episode', parentId: 'team-series', name: '画布A', createdAt: 1, updatedAt: 1 }] }));
+    const oldRecord: ProjectSaveData = { id: 'team-episode', parentId: 'team-series', name: '第一集',
+      createdAt: 1, updatedAt: 1, nodes: [], edges: [], groups: [], episodeScript: '原稿' };
+    let disk = structuredClone(oldRecord);
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: (record: ProjectSaveData) => void;
+    fileMocks.loadProjectData.mockImplementationOnce(() => { entered(); return new Promise<ProjectSaveData>((resolve) => { release = resolve; }); });
+    fileMocks.saveProject.mockImplementation(async (record) => { disk = structuredClone(record as ProjectSaveData); return record.id; });
+    const expected = { kind: 'episode' as const, seriesId: 'team-series', episodeId: 'team-episode', field: 'script' as const,
+      expectedHash: await sha256BytesHex(new TextEncoder().encode('原稿')), label: '相同正文候选' };
+    const saving = useAppStore.getState().updateEpisodeCreative('team-episode', { script: '原稿' }, { expected, allowSameSeries: true });
+    await started;
+    // SeriesRail 切图会先取消离开画布的派生登记；模拟 B 编辑保存后回 A，最终 ID 与正文均恢复相同。
+    cancelProjectCanvasDerivations('canvas-episode');
+    useAppStore.setState({ currentProjectId: 'team-episode' });
+    disk = { ...disk, updatedAt: 2, nodes: [{ id: 'new-b-node', position: { x: 50, y: 60 }, data: {
+      type: 'source-text', label: 'B的新节点', role: 'source', status: 'success', output: '新图内容',
+    } }] };
+    cancelProjectCanvasDerivations('team-episode');
+    useAppStore.setState({ currentProjectId: 'canvas-episode' });
+    release(oldRecord);
+    await expect(saving).resolves.toBe(false);
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+    expect(disk.nodes).toEqual([expect.objectContaining({ id: 'new-b-node' })]);
   });
 });

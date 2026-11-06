@@ -36,6 +36,7 @@ import ConversationList from './ConversationList';
 import ChatHeader from './ChatHeader';
 import ChatMessages, { type ChatScrollRequest } from './ChatMessages';
 import ChatInput from './ChatInput';
+import TeamExecutionPicker from '../shared/agentTeams/TeamExecutionPicker';
 import McpConnectionPicker from './McpConnectionPicker';
 import { getMcpClientOptions } from '../../services/mcp/mcpClientService';
 import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../../services/mcp/mcpSettingsScope';
@@ -93,6 +94,13 @@ import type { PromptSubmitShortcut } from '../../types';
 import { normalizePromptSubmitShortcut } from '../../utils/promptSubmitShortcut';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+// 主窗口与独立窗口均读取窗口运行时已经应用的外观。
+const getChatTheme = (): 'dark' | 'light' => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+function subscribeChatTheme(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  return () => observer.disconnect();
+}
 const DRAFT_SYNC_DEBOUNCE_MS = 300;
 const CHAT_PANEL_DEFAULT_WIDTH = 480;
 const CHAT_PANEL_MIN_WIDTH = 320;
@@ -227,6 +235,7 @@ export default function ChatPanel({
     () => detached ? (detachedSnapshot?.generalModels ?? []) : generalModels,
     [detached, detachedSnapshot?.generalModels, generalModels],
   );
+  const appearanceMode = useSyncExternalStore(subscribeChatTheme, getChatTheme, getChatTheme);
   const effectiveSubmitShortcut = normalizePromptSubmitShortcut(detached ? detachedSnapshot?.promptSubmitShortcut : config.promptSubmitShortcut);
   const submitShortcutSettingsDisabled = detached ? detachedSnapshot?.promptSubmitShortcut === undefined : !configHydrated;
   const handleSubmitShortcutChange = useCallback((shortcut: PromptSubmitShortcut) => {
@@ -1044,6 +1053,19 @@ export default function ChatPanel({
               agentMode={effectiveAgentMode}
               onAgentModeChange={handleAgentModeChange}
               agentModeDisabled={!effectiveActiveConversationId || settingsConversation}
+              executionControls={viewMode === 'chat' && !showTaskCenter && !settingsConversation ? (
+                <TeamExecutionPicker
+                  value={effectiveExecutionSelection}
+                  onChange={handleExecutionSelectionChange}
+                  profile={effectiveTeamProfile}
+                  onProfileChange={handleTeamProfileChange}
+                  modelGroups={effectiveAssistantModelGroups}
+                  generalModels={effectiveGeneralModels}
+                  theme={appearanceMode}
+                  controls="execution"
+                  compact
+                />
+              ) : undefined}
               mcpConnectionPicker={viewMode === 'chat' && !showTaskCenter && !settingsConversation ? (
                 <McpConnectionPicker
                   options={mcpOptions}
@@ -1174,10 +1196,21 @@ export default function ChatPanel({
                       onAssistantModelChange={handleTextModelChange}
                       assistantModelGroups={effectiveAssistantModelGroups}
                       executionSelection={effectiveExecutionSelection}
-                      onExecutionSelectionChange={handleExecutionSelectionChange}
-                      teamProfile={effectiveTeamProfile}
-                      onTeamProfileChange={handleTeamProfileChange}
+                      teamConfiguration={effectiveExecutionSelection.kind === 'team' ? (
+                        <TeamExecutionPicker
+                          value={effectiveExecutionSelection}
+                          onChange={handleExecutionSelectionChange}
+                          profile={effectiveTeamProfile}
+                          onProfileChange={handleTeamProfileChange}
+                          modelGroups={effectiveAssistantModelGroups}
+                          generalModels={effectiveGeneralModels}
+                          theme={appearanceMode}
+                          controls="configuration"
+                          compact
+                        />
+                      ) : undefined}
                       teamContextHint={teamContextHint}
+                      appearanceMode={appearanceMode}
                       mediaModels={effectiveGeneralModels}
                       mediaModelOptions={mediaModelOptions}
                       mediaModelAvailability={effectiveMediaModelAvailability}

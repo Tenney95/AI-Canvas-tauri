@@ -6,7 +6,8 @@ import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../i18n';
 import { useAppStore } from '../../store/useAppStore';
-import type { EpisodeAssetKind } from '../../types/episodeAssets';
+import type { EpisodeAssetKind, EpisodeAssetPickerSnapshot } from '../../types/episodeAssets';
+export type { EpisodeAssetPickerSnapshot } from '../../types/episodeAssets';
 import { resolveDramaAssetImageRef } from '../../services/dramaAssetPrompt';
 import MentionPicker, { type MentionPickerItem } from '../shared/MentionPicker';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -17,16 +18,31 @@ interface EpisodeAssetPickerProps {
   initialQuery?: string;
   onSelect: (assetId: string, scope: 'project' | 'global') => Promise<void>;
   onClose: () => void;
+  snapshot?: EpisodeAssetPickerSnapshot;
+  onLoadGlobal?: () => Promise<void>;
 }
 
-/** 选择业务卡片，与视频输入选择不同：无图片的角色、道具也可以绑定。 */
-export default function EpisodeAssetPicker({ kind, initialQuery = '', onSelect, onClose }: EpisodeAssetPickerProps) {
-  const t = useT();
-  const listId = useId();
-  const { library, globalCharacters, globalProps, nodes, loadGlobalCharacters, loadGlobalDramaAssets } = useAppStore(useShallow((state) => ({
+export default function EpisodeAssetPicker(props: EpisodeAssetPickerProps) {
+  return props.snapshot
+    ? <EpisodeAssetPickerView {...props} snapshot={props.snapshot} />
+    : <LocalEpisodeAssetPicker {...props} />;
+}
+
+function LocalEpisodeAssetPicker(props: EpisodeAssetPickerProps) {
+  const data = useAppStore(useShallow((state) => ({
     library: state.dramaAssets, globalCharacters: state.globalCharacters, globalProps: state.globalProps,
     nodes: state.nodes, loadGlobalCharacters: state.loadGlobalCharacters, loadGlobalDramaAssets: state.loadGlobalDramaAssets,
   })));
+  return <EpisodeAssetPickerView {...props} snapshot={data}
+    onLoadGlobal={() => props.kind === 'character' ? data.loadGlobalCharacters() : data.loadGlobalDramaAssets()} />;
+}
+
+/** 选择业务卡片，与视频输入选择不同：无图片的角色、道具也可以绑定。 */
+function EpisodeAssetPickerView({ kind, initialQuery = '', onSelect, onClose, snapshot, onLoadGlobal }:
+  EpisodeAssetPickerProps & { snapshot: EpisodeAssetPickerSnapshot }) {
+  const t = useT();
+  const listId = useId();
+  const { library, globalCharacters, globalProps, nodes } = snapshot;
   const [scope, setScope] = useState<'project' | 'global'>('project');
   const [query, setQuery] = useState(initialQuery);
   const [loading, setLoading] = useState(false);
@@ -43,7 +59,8 @@ export default function EpisodeAssetPicker({ kind, initialQuery = '', onSelect, 
     setLoading(true);
     setLoadError('');
     try {
-      await (kind === 'character' ? loadGlobalCharacters() : loadGlobalDramaAssets());
+      if (!onLoadGlobal) throw new Error(t('加载资产失败，请重试'));
+      await onLoadGlobal();
     } catch (cause) {
       if (aliveRef.current && loadRequestRef.current === request) setLoadError(cause instanceof Error ? cause.message : t('加载资产失败，请重试'));
     } finally {
