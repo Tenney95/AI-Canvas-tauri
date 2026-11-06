@@ -42,7 +42,7 @@ vi.mock('react', async () => {
     }
     return hooks.memos[index].value as T;
   };
-  return {
+  const mocked = {
     ...actual,
     useCallback: <T,>(callback: T, deps: readonly unknown[]) => memo(() => callback, deps),
     useEffect: (effect: () => void | (() => void), deps?: readonly unknown[]) => {
@@ -83,6 +83,7 @@ vi.mock('react', async () => {
     },
     useSyncExternalStore: <T,>(_subscribe: unknown, getSnapshot: () => T) => getSnapshot(),
   };
+  return { ...mocked, default: mocked };
 });
 
 vi.mock('framer-motion', () => ({

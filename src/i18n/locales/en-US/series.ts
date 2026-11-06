@@ -207,7 +207,6 @@ const series = {
   "保存本集条目失败": "Could not save the episode item",
   "全剧资产提取预览": "Series asset extraction preview",
   "出现场次": "Appearances",
-  "切换到本集管理资产": "Manage episode assets",
   "别名": "Aliases",
   "剧本依据": "Script evidence",
   "加入本集清单": "Add to episode list",

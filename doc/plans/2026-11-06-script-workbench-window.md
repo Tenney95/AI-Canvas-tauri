@@ -1,6 +1,6 @@
 # 剧本工作台独立窗口与选集解耦
 
-日期：2026-11-06。状态：用户已确认完整方案，首版代码已实现，待用户验收；仅完成静态核对，未运行测试、类型检查、构建、桌面交互或模型调用。
+日期：2026-11-06。状态：用户已确认完整方案，首版代码已实现，原生桌面交互与模型调用待用户验收。实现阶段仅静态核对；提交推送阶段按仓库规则执行 `npm run ci`，覆盖全仓 ESLint、应用与测试类型检查、全量 Vitest 和生产构建，门禁通过后才允许推送。
 
 用户要求：在剧本工作台标题栏增加独立窗口按钮；工作台左侧选择分集只切换工作台的数据，画布分集继续由剧集栏的分集列表切换。不是底部逐镜视频批次工作台。
 
@@ -46,7 +46,7 @@
 | `tests/services/episodeAssetService.test.ts`、`tests/store/projects.test.ts`、`tests/services/chat/teamInvocationService.test.ts`、`tests/services/chat/agentTaskControl.test.ts` | 同剧集准确目标、最窄审批与冲突回归 |
 | `tests/services/episodeWorkspaceScope.test.ts`、`tests/services/episodeAssetRoster.test.ts`、`tests/components/episodeAssetPanelSnapshot.test.tsx`、`tests/store/agentTaskLoading.test.ts` | 同剧集域、清单串行、跨窗字段投影与迟到任务加载 |
 
-新增测试只编写、不自动运行。普通小修不重复写其他专项进度；先前 UI Kit 两个组件的改动和其他任务已有改动保持原样。
+新增测试纳入现有 Vitest，由推送前完整前端门禁统一执行。普通小修不重复写其他专项进度；先前 UI Kit 两个组件的改动和其他任务已有改动保持原样。
 
 ## 当前实现边界
 
@@ -63,7 +63,7 @@
 
 打开独立窗口应只出现一个工作台，模板/预算沿用公用 Select/NumberStepper。主窗与独立窗分别编辑、保存、收回、关闭、连续点击、重开，最后编辑不能丢失或重复提交任务；同时验收深浅主题、窄窗、键盘与减少动态效果。跨剧集/删除分集/主窗退出时拒绝旧操作。非当前图的生成分镜不自动换图。
 
-用户可在仓库根目录运行以下定向用例与类型检查；命令未由助手执行，不能据此视为通过：
+用户可在仓库根目录按需运行以下定向用例与类型检查；完整前端 CI 不替代原生桌面验收：
 
 ```powershell
 npx vitest run tests/components/scriptWorkbench.test.tsx tests/services/scriptWorkbenchWindowService.test.ts tests/services/episodeWorkspaceScope.test.ts tests/components/episodeAssetPanelSnapshot.test.tsx tests/services/episodeAssetService.test.ts tests/services/episodeAssetRoster.test.ts tests/store/projects.test.ts tests/store/agentTaskLoading.test.ts tests/services/chat/teamInvocationService.test.ts tests/services/chat/agentTaskControl.test.ts
@@ -71,6 +71,6 @@ npm run typecheck
 npm run test:typecheck
 ```
 
-窗口创建/握手超时、重复请求、迟到确认和最后编辑关闭仍须按上述桌面步骤验收；当前自动化用例不代表已覆盖全部原生故障分支。**本次未运行测试，待用户验收。**
+窗口创建/握手超时、重复请求、迟到确认和最后编辑关闭仍须按上述桌面步骤验收；当前自动化用例不代表已覆盖全部原生故障分支。**原生桌面与模型调用待用户验收。**
 
-回退关闭独立入口并恢复内嵌展示，保留稿件与任务；新增 capability 可随入口一并撤回，无数据库升级或用户内容删除。运行验证仍按仓库授权规则执行，当前没有测试通过结论。
+回退关闭独立入口并恢复内嵌展示，保留稿件与任务；新增 capability 可随入口一并撤回，无数据库升级或用户内容删除。运行验证仍按仓库授权规则执行，不将前端门禁结果表述为原生桌面或模型调用验收通过。

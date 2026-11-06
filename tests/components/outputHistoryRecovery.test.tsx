@@ -1,3 +1,4 @@
+import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OutputHistoryEntry } from '../../src/types';
@@ -10,10 +11,10 @@ const hooks = vi.hoisted(() => ({ snapshots: [] as Array<{ subscribe: unknown; g
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react');
   return { ...actual, useSyncExternalStore: <T,>(subscribe: (notify: () => void) => () => void,
-    getSnapshot: () => T, getServerSnapshot?: () => T) => {
+    getSnapshot: () => T, _getServerSnapshot?: () => T) => {
     const media = subscribe === pollManager.subscribeMediaTasks;
     if (media) hooks.snapshots.push({ subscribe, getSnapshot });
-    return actual.useSyncExternalStore(subscribe, getSnapshot, media ? getSnapshot : getServerSnapshot);
+    return actual.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   } };
 });
 
@@ -21,7 +22,14 @@ const entry: OutputHistoryEntry = { id: 'history-1', projectId: 'p', nodeId: 'n'
   prompt: '原提示词', output: '', nodeType: 'ai-image', provider: 'runninghubwf', model: 'wf', status: 'download_pending',
   recoveryTask: { projectId: 'p', nodeId: 'n', taskId: 'task-1', attemptId: 'attempt-1' } };
 const noop = () => undefined;
-beforeEach(() => setLocale('zh-CN'));
+beforeEach(() => {
+  setLocale('zh-CN');
+  // 通过 SSR 模拟客户端快照；Zustand 的默认 React 导入不会经过上面的命名导出 mock。
+  const originalUseSyncExternalStore = React.useSyncExternalStore;
+  vi.spyOn(React, 'useSyncExternalStore').mockImplementation(<T,>(
+    subscribe: (notify: () => void) => () => void, getSnapshot: () => T,
+  ) => originalUseSyncExternalStore(subscribe, getSnapshot, getSnapshot));
+});
 
 describe('输出历史的下载按钮', () => {
   it('keeps a stable empty recovery snapshot while hidden and reads the latest snapshot after opening', () => {
