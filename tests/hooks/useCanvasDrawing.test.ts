@@ -59,9 +59,10 @@ class Surface extends EventTarget {
 }
 let surface: Surface, win: EventTarget, frames: Map<number, FrameRequestCallback>, frameId: number;
 let modalOpen: boolean;
+function DrawingHarness() { return useCanvasDrawing(); }
 function render() {
   driver.stateIndex = driver.refIndex = driver.memoIndex = driver.effectIndex = 0;
-  const view = useCanvasDrawing();
+  const view = DrawingHarness();
   driver.pending.splice(0).forEach((effect) => effect());
   return view;
 }

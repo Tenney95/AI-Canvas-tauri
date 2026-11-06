@@ -1,12 +1,14 @@
 /** 本集清单的提取、编辑及显式资产库绑定；模型输出从不直接入库。 */
 import { t } from '../i18n';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, type AppState } from '../store/useAppStore';
 import { readEpisodeWorkspaceScope } from './episodeWorkspaceScope';
 import type { DramaAsset, DramaCharacter, DramaProp } from '../types/dramaAssets';
 import {
   EPISODE_ASSET_LIMITS, episodeScriptFingerprint, normalizeEpisodeAssetRoster,
   type EpisodeAssetEntry, type EpisodeAssetKind, type EpisodeAssetRoster,
+  type EpisodeAssetPanelSnapshot, type EpisodeAssetPanelAction, type EpisodeAssetPanelActionResult,
 } from '../types/episodeAssets';
+import { resolveDramaAssetImageRef } from './dramaAssetPrompt';
 import { generateText } from './ai/generateText';
 import { normalizeAssetKey } from './dramaAssetExtract';
 import { copyGlobalDramaAssetsToProject } from './dramaAssetTransferService';
@@ -30,8 +32,103 @@ interface EpisodeContext {
   sourceVersion: number;
 }
 const candidateSources = new Map<string, { context: EpisodeContext; kind: EpisodeAssetKind }>();
+const panelExtractions = new Map<string, { items: EpisodeAssetEntry[]; revision: number; fingerprint: string }>();
 const episodeSourceVersions = new Map<string, number>();
 let stopSourceObservation: (() => void) | undefined;
+
+function displayImageUrl(value: unknown): string | undefined {
+  return typeof value === 'string' && /^(?:https?:|asset:|tauri:|blob:|data:image\/)/iu.test(value) ? value : undefined;
+}
+
+function projectPanelAsset<T extends DramaAsset>(asset: T, nodes: EpisodeAssetPanelSnapshot['nodes']): T {
+  // 只发送卡片展示所需字段。参考图、声音、动作中的 filePath 与原始 prompt 不跨窗。
+  const base = { id: asset.id, kind: asset.kind, name: asset.name, key: asset.key, summary: asset.summary,
+    visualNotes: asset.visualNotes, importance: asset.importance, confirmed: asset.confirmed,
+    createdAt: asset.createdAt, updatedAt: asset.updatedAt, source: asset.source,
+    imageUrl: displayImageUrl(resolveDramaAssetImageRef(asset, nodes)?.imageUrl) };
+  return { ...base, ...(asset.kind === 'character' ? { identity: asset.identity, aliases: asset.aliases }
+    : asset.kind === 'prop' ? { ownerName: asset.ownerName, propType: asset.propType } : {}) } as T;
+}
+
+/** 只投影目标分集与当前剧集资产；非画布当前集不能借用当前图节点解释资产引用。 */
+type EpisodeAssetPanelState = Pick<AppState, 'projects' | 'currentProjectId' | 'projectLoadStatus' | 'isCreatingProject'
+  | 'isReturningToStartPage' | 'switchingProjectName' | 'dramaAssets' | 'globalCharacters' | 'globalProps' | 'nodes'>;
+
+export function buildEpisodeAssetPanelSnapshot(state: EpisodeAssetPanelState, episodeId: string): EpisodeAssetPanelSnapshot {
+  const scope = readEpisodeWorkspaceScope(state, episodeId);
+  const episode = scope?.episode;
+  const nodes = scope && state.currentProjectId === episodeId ? state.nodes.map((node) => ({ id: node.id,
+    data: { imageUrl: displayImageUrl(node.data.imageUrl), thumbnailUrl: displayImageUrl(node.data.thumbnailUrl) } })) : [];
+  return {
+    episode: episode ? { id: episode.id, parentId: episode.parentId, name: episode.name,
+      episodeScript: episode.episodeScript, episodeAssetRoster: episode.episodeAssetRoster } : null,
+    ready: !!scope,
+    library: { version: 2,
+      characters: scope ? state.dramaAssets.characters.map((asset) => projectPanelAsset(asset, nodes)) : [],
+      scenes: scope ? state.dramaAssets.scenes.map((asset) => projectPanelAsset(asset, nodes)) : [],
+      props: scope ? state.dramaAssets.props.map((asset) => projectPanelAsset(asset, nodes)) : [] },
+    globalCharacters: scope ? state.globalCharacters.map((asset) => projectPanelAsset(asset, [])) : [],
+    globalProps: scope ? state.globalProps.map((asset) => projectPanelAsset(asset, [])) : [],
+    nodes,
+  };
+}
+
+/** 主窗口唯一执行入口；窗口只能提交业务 ID，候选正文从主窗口保存的原始提取结果取得。 */
+export async function executeEpisodeAssetPanelAction(
+  episodeId: string, kind: EpisodeAssetKind, action: EpisodeAssetPanelAction,
+): Promise<EpisodeAssetPanelActionResult> {
+  const state = useAppStore.getState();
+  const scope = readEpisodeWorkspaceScope(state, episodeId);
+  if (!scope || (kind !== 'character' && kind !== 'prop')) throw new Error('项目已切换');
+  const key = `${episodeId}:${kind}`;
+  switch (action.type) {
+    case 'extract': {
+      const revision = scope.episode.episodeAssetRoster?.revision ?? 0;
+      const fingerprint = episodeScriptFingerprint(scope.episode.episodeScript ?? '');
+      const items = await extractEpisodeAssetCandidates({ episodeId, kind });
+      const result = { items, revision, fingerprint };
+      panelExtractions.set(key, result);
+      while (panelExtractions.size > 20) panelExtractions.delete(panelExtractions.keys().next().value!);
+      return { type: 'candidates', ...result };
+    }
+    case 'load-global':
+      await (kind === 'character' ? state.loadGlobalCharacters() : state.loadGlobalDramaAssets());
+      break;
+    case 'save-entry':
+      if (action.entry.kind !== kind) throw new Error('资产已变化，请重新选择');
+      await saveEpisodeAssetEntry(episodeId, action.entry, action.expectedRevision);
+      break;
+    case 'remove-entry':
+      await removeEpisodeAssetEntry(episodeId, action.entryId, kind, action.expectedRevision);
+      break;
+    case 'bind':
+      await bindEpisodeAsset(episodeId, action.entryId, kind, action.targetId, action.scope, action.expectedRevision);
+      break;
+    case 'add-library':
+      await addLibraryAssetToEpisode(episodeId, kind, action.targetId, action.scope, action.expectedRevision);
+      break;
+    case 'promote': {
+      const count = await promoteEpisodeAssetEntries(episodeId, kind, action.entryIds);
+      useAppStore.getState().showToast(t('已入库并绑定 {count} 项', { count }));
+      return { type: 'updated', count };
+    }
+    case 'merge-candidates': {
+      const extraction = panelExtractions.get(key);
+      if (!extraction || extraction.revision !== action.expectedRevision || extraction.fingerprint !== action.fingerprint
+        || !Array.isArray(action.candidateIds) || action.candidateIds.length > EPISODE_ASSET_LIMITS.entriesPerKind) {
+        throw new Error('提取来源已变化，请重新提取');
+      }
+      const ids = new Set(action.candidateIds);
+      const candidates = extraction.items.filter((entry) => ids.has(entry.id));
+      if (candidates.length !== ids.size) throw new Error('提取来源已变化，请重新提取');
+      await mergeEpisodeAssetCandidates(episodeId, kind, candidates, action.expectedRevision);
+      panelExtractions.delete(key);
+      break;
+    }
+    default: throw new Error('资产操作无效');
+  }
+  return { type: 'updated' };
+}
 
 /** 非画布当前集也要识别“修改后又恢复正文”，而非只比最后一次文本。 */
 function episodeSourceVersion(episodeId: string): number {

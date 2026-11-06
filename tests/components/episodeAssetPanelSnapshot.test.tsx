@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { DramaCharacter } from '../../src/types/dramaAssets';
-import { buildEpisodeAssetPanelSnapshot } from '../../src/components/series/EpisodeAssetPanel';
+import { buildEpisodeAssetPanelSnapshot } from '../../src/services/episodeAssetService';
 
 const character: DramaCharacter = {
   id: 'character', kind: 'character', name: '林夏', key: '林夏', summary: '乘车人', visualNotes: '蓝色外套',

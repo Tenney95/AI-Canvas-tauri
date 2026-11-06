@@ -408,7 +408,7 @@ describe('ChatMessages', () => {
     flushFrames();
     container.scrollTop = 200;
     (findMessagesContainer(tree).props as { onScroll: (event: unknown) => void }).onScroll({ currentTarget: container });
-    tree = renderChat(messages);
+    renderChat(messages);
     const streamed = [messages[0], { ...messages[1], content: 'part two' }];
     tree = renderChat(streamed);
     flushFrames();

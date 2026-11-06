@@ -1,7 +1,7 @@
 /**
  * ScriptWorkbench — 提供剧本创作工作台界面与交互。
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EpisodeCreativeInfo } from '../types';
@@ -24,8 +24,9 @@ import { createEpisodeShotlist } from '../services/shotlistService';
 import SeriesSourceBrowser, { type SeriesSourceBrowserRemote } from './SeriesSourceBrowser';
 import type { DramaAssetKind } from '../types/dramaAssets';
 import { commitSeriesAssetCandidates, extractSeriesAssetsFromFullScript, type SeriesAssetExtractionResult } from '../services/seriesAssetExtractionService';
-import { normalizeEpisodeAssetRoster } from '../types/episodeAssets';
-import EpisodeAssetPanel, { buildEpisodeAssetPanelSnapshot, executeEpisodeAssetPanelAction, type EpisodeAssetPanelActionResult } from './series/EpisodeAssetPanel';
+import { normalizeEpisodeAssetRoster, type EpisodeAssetPanelActionResult } from '../types/episodeAssets';
+import EpisodeAssetPanel from './series/EpisodeAssetPanel';
+import { buildEpisodeAssetPanelSnapshot, executeEpisodeAssetPanelAction } from '../services/episodeAssetService';
 import AssetExtractionPreviewDialog from './series/AssetExtractionPreviewDialog';
 import type { AgentMode } from '../types/agent';
 import type { AssistantExecutionSelection, TeamTemplateId } from '../types/agentTeam';
@@ -311,7 +312,8 @@ export default function ScriptWorkbench({
   const [closingWorkbench, setClosingWorkbench] = useState(false);
   const windowHost = useRef<ScriptWorkbenchWindowHost | null>(null);
   const afterReply = useRef<'close' | 'dock' | null>(null);
-  const acceptedEditSequence = useRef(0);
+  const acceptedEditSequenceRef = useRef(0);
+  const [acceptedEditSequence, setAcceptedEditSequence] = useState(0);
   const workspaceState = useAppStore.getState();
   const contextReady = !!series && !!currentProjectId && seriesOwnerId(projects, currentProjectId) === seriesId
     && projectLoadStatus === 'ready' && !workspaceState.isCreatingProject && !workspaceState.isReturningToStartPage
@@ -320,6 +322,7 @@ export default function ScriptWorkbench({
   const [draftsByEpisode, setDraftsByEpisode] = useState<Record<string, WorkbenchDraft>>(() => seriesId ? workbenchDraftCache.get(seriesId) ?? {} : {});
   const draftsRef = useRef<Record<string, WorkbenchDraft>>(draftsByEpisode);
   const draftVersions = useRef(new Map<string, number>());
+  const [draftVersionByEpisode, setDraftVersionByEpisode] = useState<Record<string, number>>({});
   const savingEpisodeRef = useRef<string | null>(null);
   const startingTeamRef = useRef(false);
   const [executionSelection, setExecutionSelection] = useState<AssistantExecutionSelection>({ kind: 'single' });
@@ -327,10 +330,12 @@ export default function ScriptWorkbench({
   const [isStartingTeam, setIsStartingTeam] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [splitOpen, setSplitOpen] = useState(startWithSplit);
-  useEffect(() => {
+  const [splitOpen, setSplitOpen] = useState(startWithSplit || Boolean(openRequestRevision && requestSplit));
+  const [previousOpenRequest, setPreviousOpenRequest] = useState({ revision: openRequestRevision, split: requestSplit });
+  if (previousOpenRequest.revision !== openRequestRevision || previousOpenRequest.split !== requestSplit) {
+    setPreviousOpenRequest({ revision: openRequestRevision, split: requestSplit });
     if (openRequestRevision && requestSplit) setSplitOpen(true);
-  }, [openRequestRevision, requestSplit]);
+  }
   const [splitSource, setSplitSource] = useState<'script' | 'original'>(
     series?.series?.script?.trim() ? 'script' : 'original',
   );
@@ -363,10 +368,10 @@ export default function ScriptWorkbench({
     () => hasUnsettledEpisodeEditorSession(currentEpisode?.id), () => false);
   const teamProfile = useMemo(() => normalizeTeamProfile(config.agentTeamProfile), [config.agentTeamProfile]);
   const modelCatalog = useMemo(() => buildChatModelCatalog({ config, workflows }), [config, workflows]);
-  const episodeTeamTasks = useMemo(() => currentEpisode
-    ? agentTasks.filter((task) => task.teamRun?.target?.episodeId === currentEpisode.id)
+  const episodeTeamTasks = useMemo(() => currentEpisodeId
+    ? agentTasks.filter((task) => task.teamRun?.target?.episodeId === currentEpisodeId)
       .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5)
-    : [], [agentTasks, currentEpisode]);
+    : [], [agentTasks, currentEpisodeId]);
 
   useEffect(() => {
     if (!currentEpisodeId || !contextReady) return;
@@ -393,7 +398,9 @@ export default function ScriptWorkbench({
       if (Object.keys(next).length) workbenchDraftCache.set(seriesId, next);
       else workbenchDraftCache.delete(seriesId);
     }
-    draftVersions.current.set(episodeId, (draftVersions.current.get(episodeId) ?? 0) + 1);
+    const version = (draftVersions.current.get(episodeId) ?? 0) + 1;
+    draftVersions.current.set(episodeId, version);
+    setDraftVersionByEpisode((previous) => ({ ...previous, [episodeId]: version }));
     setDraftsByEpisode(next);
   }, [seriesId]);
 
@@ -433,7 +440,7 @@ export default function ScriptWorkbench({
   }, [currentEpisodeId, isOpen, replaceEpisodeDraft]);
   const analysis = useMemo(
     () => analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative)),
-    [draft.creative, draft.script],
+    [draft],
   );
 
   const saveDraft = async (): Promise<boolean> => {
@@ -645,8 +652,8 @@ export default function ScriptWorkbench({
   };
 
   const snapshot: ScriptWorkbenchSnapshot = {
-    sessionId, revision: 0, acceptedEditSequence: acceptedEditSequence.current,
-    draftVersion: currentEpisode ? draftVersions.current.get(currentEpisode.id) ?? 0 : 0,
+    sessionId, revision: 0, acceptedEditSequence,
+    draftVersion: currentEpisodeId ? draftVersionByEpisode[currentEpisodeId] ?? 0 : 0,
     series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork } : null,
     episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
     currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
@@ -664,18 +671,16 @@ export default function ScriptWorkbench({
     detached, openingWindow,
   };
   const snapshotRef = useRef(snapshot);
-  snapshotRef.current = snapshot;
   const requestRef = useRef<(request: ScriptWorkbenchRequest) => Promise<unknown>>(async () => undefined);
   const actionRef = useRef<(action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest) => Promise<unknown>>(async () => undefined);
   const onCloseRequestRef = useRef(onCloseRequest);
-  onCloseRequestRef.current = onCloseRequest;
   const dispatchView = useCallback<ScriptWorkbenchDispatch>((action) => actionRef.current(action), []);
 
   const handleAction = async (action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest): Promise<unknown> => {
     if (request) {
       if (request.episodeId !== selectedEpisodeRef.current) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
       const handoff = request.handoff;
-      if (handoff && handoff.sequence > acceptedEditSequence.current) {
+      if (handoff && handoff.sequence > acceptedEditSequenceRef.current) {
         const value = handoff.draft;
         if (handoff.episodeId !== selectedEpisodeRef.current || !Number.isSafeInteger(handoff.sequence)
           || !value || typeof value.outline !== 'string' || typeof value.script !== 'string' || !value.creative
@@ -684,7 +689,8 @@ export default function ScriptWorkbench({
         }
         if (isEpisodeEditorWriteLocked(handoff.episodeId)) throw new Error(t('团队成果正在保存，修改仍保留在独立窗口，请稍后重试'));
         replaceEpisodeDraft(handoff.episodeId, structuredClone(value));
-        acceptedEditSequence.current = handoff.sequence;
+        acceptedEditSequenceRef.current = handoff.sequence;
+        setAcceptedEditSequence(handoff.sequence);
       }
     }
     const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview'];
@@ -780,8 +786,12 @@ export default function ScriptWorkbench({
       }
     }
   };
-  actionRef.current = handleAction;
-  requestRef.current = (request) => actionRef.current(request.action, request);
+  useLayoutEffect(() => {
+    snapshotRef.current = snapshot;
+    onCloseRequestRef.current = onCloseRequest;
+    actionRef.current = handleAction;
+    requestRef.current = (request) => handleAction(request.action, request);
+  });
   useEffect(() => {
     const host = createScriptWorkbenchWindowHost({ sessionId, getSnapshot: () => snapshotRef.current,
       onRequest: (request) => requestRef.current(request), onDetachedChange: setDetached,

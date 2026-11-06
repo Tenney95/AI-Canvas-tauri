@@ -219,12 +219,12 @@ export async function connectScriptWorkbenchWindow(
   let disposed = false;
   let revision = 0;
   let connected = false;
-  let buffered: ScriptWorkbenchSnapshot | undefined;
+  const buffered: { snapshot?: ScriptWorkbenchSnapshot } = {};
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const stopState = await listen<ScriptWorkbenchSnapshot>(STATE_EVENT, ({ payload }) => {
     if (disposed || payload?.sessionId !== sessionId || !Number.isSafeInteger(payload.revision) || payload.revision <= revision) return;
     revision = payload.revision;
-    if (!connected) buffered = payload;
+    if (!connected) buffered.snapshot = payload;
     else { onSnapshot(payload); void emitTo('main', READY_EVENT, { sessionId }).catch(() => {}); }
   });
   let stopResponse: () => void;
@@ -238,7 +238,11 @@ export async function connectScriptWorkbenchWindow(
     });
   } catch (error) { stopState(); throw error; }
   connected = true;
-  if (buffered) { onSnapshot(buffered); void emitTo('main', READY_EVENT, { sessionId }).catch(() => {}); buffered = undefined; }
+  if (buffered.snapshot) {
+    onSnapshot(buffered.snapshot);
+    void emitTo('main', READY_EVENT, { sessionId }).catch(() => {});
+    delete buffered.snapshot;
+  }
   const hello = () => { void emitTo('main', HELLO_EVENT, { sessionId }).catch(() => {}); };
   const handshake = setInterval(() => { if (!revision) hello(); }, 500);
   hello();

@@ -85,7 +85,7 @@ export async function executeTeamModel(input: {
     return { text, inputTokens, outputTokens,
       usageKnown: inputTokens !== undefined && outputTokens !== undefined };
   } catch (error) {
-    if (failure) throw new Error(failure);
+    if (failure) throw new Error(failure, { cause: error });
     throw error;
   } finally { clearTimeout(timeout); input.signal.removeEventListener('abort', abort); }
 }
