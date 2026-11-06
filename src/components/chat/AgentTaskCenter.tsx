@@ -1,9 +1,9 @@
 /**
  * 汇总当前项目的 Agent 任务，按会话和状态筛选并复用时间线提供任务控制入口。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
-import type { AgentTask } from '../../types/agent';
+import type { AgentTask, AgentTaskFocusRequest } from '../../types/agent';
 import type { ChatConversation } from '../../types/chat';
 import AgentTaskTimeline, { type AgentTaskControls } from './AgentTaskTimeline';
 import { AGENT_EXPERT_ROLE_LABELS } from '../../services/chat/expertTaskService';
@@ -13,6 +13,7 @@ interface AgentTaskCenterProps extends AgentTaskControls {
   tasks: AgentTask[];
   conversations: ChatConversation[];
   onClose: () => void;
+  focusRequest?: AgentTaskFocusRequest | null;
 }
 
 const TERMINAL = new Set(['completed', 'failed', 'stopped']);
@@ -21,10 +22,20 @@ export default function AgentTaskCenter({
   tasks,
   conversations,
   onClose,
+  focusRequest,
   ...controls
 }: AgentTaskCenterProps) {
   const t = useT();
-  const [view, setView] = useState<'active' | 'all'>('active');
+  const [viewSelection, setViewSelection] = useState<{ view: 'active' | 'all'; focusRevision?: number }>({ view: 'active' });
+  const rowRefs = useRef(new Map<string, HTMLElement>());
+  const focusedTaskId = focusRequest?.taskId;
+  const focusRevision = focusRequest?.revision;
+  const hasFocusedTask = !!focusedTaskId && tasks.some((task) => task.id === focusedTaskId);
+  const view = hasFocusedTask && focusRevision !== viewSelection.focusRevision ? 'all' : viewSelection.view;
+  useEffect(() => {
+    if (!focusedTaskId || focusRevision === undefined || !hasFocusedTask) return;
+    rowRefs.current.get(focusedTaskId)?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
+  }, [focusRevision, focusedTaskId, hasFocusedTask]);
   const conversationNames = useMemo(
     () => new Map(conversations.map((conversation) => [conversation.id, conversation.title])),
     [conversations],
@@ -71,7 +82,7 @@ export default function AgentTaskCenter({
               type="button"
               role="tab"
               aria-selected={view === item}
-              onClick={() => setView(item)}
+              onClick={() => setViewSelection({ view: item, focusRevision })}
               className={`agent-task-center__tab min-h-7 rounded px-2 text-[11px] transition-colors ${
                 view === item ? 'is-active text-canvas-text' : 'text-canvas-text-muted hover:text-canvas-text'
               }`}
@@ -91,6 +102,7 @@ export default function AgentTaskCenter({
         ) : visible.map((task) => (
           <section
             key={task.id}
+            ref={(element) => { if (element) rowRefs.current.set(task.id, element); else rowRefs.current.delete(task.id); }}
             className={`agent-task-center__item border-b px-3 py-3 ${
               task.parentTaskId ? 'agent-task-center__item--child ml-4 border-l' : ''
             }`}

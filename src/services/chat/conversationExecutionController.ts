@@ -56,6 +56,9 @@ import {
   type AgentMode,
 } from '../../types/agent';
 import { extendAgentSegmentBudget } from './agentBudgetService';
+import type { AssistantExecutionSelection } from '../../types/agentTeam';
+import { normalizeExecutionSelection } from './teams/teamProfileService';
+import { appendTeamInstruction, resumeTeamInvocation, submitTeamInvocation } from './teams/teamInvocationService';
 import type { MediaGenerationIntent } from '../../types/media';
 import {
   failMediaPlaceholderLifecycle,
@@ -75,6 +78,8 @@ interface StreamingMessageBuffer {
 }
 
 export interface SubmitConversationMessageOptions {
+  executionSelection?: AssistantExecutionSelection;
+  requestId?: string;
   content: string;
   imageFileNames?: string[];
   conversationId: string;
@@ -207,6 +212,8 @@ export function submitConversationMessage({
   projectId,
   mode,
   dispatchMode = 'queue',
+  executionSelection,
+  requestId,
   onProgress,
 }: SubmitConversationMessageOptions): SubmitConversationMessageResult {
   const store = useAppStore.getState();
@@ -226,6 +233,12 @@ export function submitConversationMessage({
     store.showToast('文字与参考图引用超过当前任务追加上限，请缩短文字或使用排队发送', 'error');
     return { status: 'ignored' };
   }
+  const activeTaskId = dispatchMode === 'interject' ? getActiveConversationAgentTaskId(conversationId) : undefined;
+  if (activeTaskId && store.agentTasks.some((task) => task.id === activeTaskId && task.executionKind === 'team')
+    && parseChatImageReferences(text).length > 0) {
+    store.showToast('团队首期仅处理文字材料，追加要求前请先移除参考图', 'error');
+    return { status: 'ignored' };
+  }
 
   const interjectedTaskId = dispatchMode === 'interject'
     ? tryInterjectConversationMessage(conversationId, text)
@@ -240,6 +253,24 @@ export function submitConversationMessage({
   // 窗口快照可能晚于项目切换；通用会话绝不能因此继承新画布权限。
   const executionProjectId = isGeneralAssistantScope(conversation?.projectId)
     ? GENERAL_ASSISTANT_SCOPE_ID : projectId ?? conversation?.projectId ?? store.currentProjectId ?? '';
+  const selection = normalizeExecutionSelection(executionSelection ?? conversation?.executionSelection);
+  if (selection.kind === 'team') {
+    if (images.length || parseChatImageReferences(text).length) {
+      store.showToast('团队首期仅处理文字材料，请先移除参考图，或切回单模型', 'error');
+      return { status: 'ignored' };
+    }
+    try {
+      const result = submitTeamInvocation({ content: text, projectId: executionProjectId, conversationId,
+        mode: mode ?? conversation?.agentMode ?? 'collaborative', templateId: selection.templateId,
+        requestId, context: { source: 'assistant' }, onProgress });
+      store.removeChatImageDrafts(conversationId, images.map((image) => image.fileName));
+      onProgress?.();
+      return { status: 'started', ...result };
+    } catch (error) {
+      store.showToast(sanitizeDomainText(error instanceof Error ? error.message : '团队未能发起').slice(0, 300), 'error');
+      return { status: 'ignored' };
+    }
+  }
   const userMessage: ChatMessage = {
     id: createMessageId(),
     conversationId,
@@ -378,6 +409,11 @@ export function resumeAgentTaskExecution(
 
   const store = useAppStore.getState();
   const task = store.agentTasks.find((item) => item.id === taskId)!;
+  if (task.executionKind === 'team') {
+    try { resumeTeamInvocation(taskId); onProgress?.(); return { ok: true }; }
+    catch (error) { return { ok: false, errorCode: 'TEAM_RESUME_FAILED',
+      message: sanitizeDomainText(error instanceof Error ? error.message : '团队无法继续').slice(0, 300) }; }
+  }
   const message = store.messages.find(
     (item) => item.agentTaskId === taskId && item.role === 'assistant',
   );
@@ -610,6 +646,16 @@ function tryInterjectConversationMessage(
   content: string,
 ): string | undefined {
   const taskId = getActiveConversationAgentTaskId(conversationId);
+  const team = useAppStore.getState().agentTasks.find((item) => item.id === taskId && item.executionKind === 'team');
+  if (team) {
+    if (!content.trim() || content.length > MAX_INTERJECTION_CHARS) return undefined;
+    useAppStore.getState().addMessage({ id: createMessageId(), conversationId, role: 'user', content,
+      timestamp: Date.now(), status: 'done', agentTaskId: team.id });
+    void appendTeamInstruction(team.id, content).catch((error: unknown) => {
+      useAppStore.getState().showToast(sanitizeDomainText(error instanceof Error ? error.message : '追加要求未能应用').slice(0, 300), 'error');
+    });
+    return team.id;
+  }
   if (!taskId || !enqueueAgentInterjection(taskId, content)) return undefined;
   useAppStore.getState().addMessage({
     id: createMessageId(),

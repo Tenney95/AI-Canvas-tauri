@@ -16,6 +16,7 @@ import type {
 import { AGENT_TERMINAL_STATUSES } from '../types/agent';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 import { stopConversationAgentTasks } from '../services/chat/agentTaskControl';
+import { cancelPendingTeamInvocations } from '../services/chat/teams/teamInvocationService';
 import * as chatHistoryService from '../services/chat/chatHistoryService';
 import { seriesOwnerId } from './store.utils';
 
@@ -362,6 +363,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
 
   removeConversation: (id) => {
     clearConversationFileGrants(id);
+    cancelPendingTeamInvocations(id);
     // 停止该会话仍在后台运行的 Agent 任务，避免删除后继续产生副作用
     stopConversationAgentTasks(id);
     // 删除来源对话不删除已确认记忆，只标记来源不可用
@@ -579,9 +581,13 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     if (changed) scheduleMessagePersist(id, get);
   },
 
-  clearMessages: () =>
+  clearMessages: () => {
+    const convId = get().activeConversationId;
+    if (convId) {
+      cancelPendingTeamInvocations(convId);
+      stopConversationAgentTasks(convId);
+    }
     set((s) => {
-      const convId = s.activeConversationId;
       if (convId) {
         chatHistoryService.clearConversationMessages(convId).catch((e) =>
           console.warn('[chat] 清空消息失败:', e),
@@ -595,7 +601,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
           )
         : s.conversations;
       return { messages: [], conversations };
-    }),
+    });
+  },
 
   setActiveRequestAbort: (ctrl) => set({ activeRequestAbort: ctrl }),
 

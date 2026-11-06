@@ -1392,6 +1392,7 @@ export async function deleteAssetMeta(assetId: string): Promise<void> {
 // ============================================
 
 export interface ChatConversationRecord {
+  executionSelection?: import('../types/agentTeam').AssistantExecutionSelection;
   archiveOriginId?: string;
   id: string;
   projectId: string;

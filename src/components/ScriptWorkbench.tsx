@@ -1,7 +1,7 @@
 /**
  * ScriptWorkbench — 提供剧本创作工作台界面与交互。
  */
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EpisodeCreativeInfo } from '../types';
@@ -27,6 +27,19 @@ import { commitSeriesAssetCandidates, extractSeriesAssetsFromFullScript, type Se
 import { normalizeEpisodeAssetRoster } from '../types/episodeAssets';
 import EpisodeAssetPanel from './series/EpisodeAssetPanel';
 import AssetExtractionPreviewDialog from './series/AssetExtractionPreviewDialog';
+import type { AgentMode } from '../types/agent';
+import type { AssistantExecutionSelection, TeamTemplateId } from '../types/agentTeam';
+import TeamExecutionPicker from './shared/agentTeams/TeamExecutionPicker';
+import TeamRunCard from './shared/agentTeams/TeamRunCard';
+import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
+import { appendTeamInstruction, startTeamInvocation, openTeamTaskInAssistant, readTeamTaskArtifact } from '../services/chat/teams/teamInvocationService';
+import { captureEpisodeTeamContext, applyTeamResult, restoreTeamResult, reconcileTeamResult } from '../services/chat/teams/teamResultApplyService';
+import { pauseAgentTask, stopAgentTask } from '../services/chat/agentTaskControl';
+import { cancelScheduledAgentExecution } from '../services/chat/agentScheduler';
+import { resumeAgentTaskExecution } from '../services/chat/conversationExecutionController';
+import { buildChatModelCatalog } from '../services/chat/detachedChatSyncController';
+import { hasUnsettledEpisodeEditorSession, isEpisodeEditorWriteLocked, registerEpisodeEditorSession, settleEpisodeEditorSessions,
+  subscribeEpisodeEditorWrites } from '../services/episodeEditorSessionService';
 
 type EditorTab = 'outline' | 'script' | 'creative' | 'characters' | 'props';
 type PendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
@@ -237,7 +250,7 @@ function CreativeField({
 
 export default function ScriptWorkbench({
   isOpen,
-  onClose,
+  onClose: onCloseRequest,
   startWithSplit = false,
 }: {
   isOpen: boolean;
@@ -254,6 +267,10 @@ export default function ScriptWorkbench({
     openChatWithDraft,
     showToast,
     dramaAssets,
+    config,
+    workflows,
+    agentTasks,
+    updateConfig,
   } = useAppStore(useShallow((state) => ({
     projects: state.projects,
     currentProjectId: state.currentProjectId,
@@ -263,6 +280,10 @@ export default function ScriptWorkbench({
     openChatWithDraft: state.openChatWithDraft,
     showToast: state.showToast,
     dramaAssets: state.dramaAssets,
+    config: state.config,
+    workflows: state.workflows,
+    agentTasks: state.agentTasks,
+    updateConfig: state.updateConfig,
   })));
 
   const seriesId = currentProjectId ? seriesOwnerId(projects, currentProjectId) : null;
@@ -276,6 +297,14 @@ export default function ScriptWorkbench({
     ?? null;
   const [activeTab, setActiveTab] = useState<EditorTab>('outline');
   const [draftsByEpisode, setDraftsByEpisode] = useState<Record<string, WorkbenchDraft>>({});
+  const draftsRef = useRef<Record<string, WorkbenchDraft>>({});
+  const draftVersions = useRef(new Map<string, number>());
+  const savingEpisodeRef = useRef<string | null>(null);
+  const startingTeamRef = useRef(false);
+  const teamControlsRef = useRef<HTMLDivElement>(null);
+  const [executionSelection, setExecutionSelection] = useState<AssistantExecutionSelection>({ kind: 'single' });
+  const [teamMode, setTeamMode] = useState<AgentMode>('collaborative');
+  const [isStartingTeam, setIsStartingTeam] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [splitOpen, setSplitOpen] = useState(startWithSplit);
@@ -306,42 +335,97 @@ export default function ScriptWorkbench({
   const isDirty = currentEpisode !== null
     && draftsByEpisode[currentEpisode.id] !== undefined
     && draftSignature(draft) !== draftSignature(persistedDraft);
+  const editorWriteLocked = useSyncExternalStore(subscribeEpisodeEditorWrites,
+    () => isEpisodeEditorWriteLocked(currentEpisode?.id), () => false);
+  const unsettledEditor = useSyncExternalStore(subscribeEpisodeEditorWrites,
+    () => hasUnsettledEpisodeEditorSession(currentEpisode?.id), () => false);
+  const teamProfile = useMemo(() => normalizeTeamProfile(config.agentTeamProfile), [config.agentTeamProfile]);
+  const modelCatalog = useMemo(() => buildChatModelCatalog({ config, workflows }), [config, workflows]);
+  const episodeTeamTasks = useMemo(() => currentEpisode
+    ? agentTasks.filter((task) => task.teamRun?.target?.episodeId === currentEpisode.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5)
+    : [], [agentTasks, currentEpisode]);
+
+  const replaceEpisodeDraft = useCallback((episodeId: string, value: WorkbenchDraft | undefined) => {
+    const next = { ...draftsRef.current };
+    if (value) next[episodeId] = value;
+    else delete next[episodeId];
+    draftsRef.current = next;
+    draftVersions.current.set(episodeId, (draftVersions.current.get(episodeId) ?? 0) + 1);
+    setDraftsByEpisode(next);
+  }, []);
+
+  const onClose = () => {
+    const episodeId = currentEpisode?.id;
+    const local = episodeId ? draftsRef.current[episodeId] : undefined;
+    const saved = useAppStore.getState().projects.find((item) => item.id === episodeId);
+    if (episodeId && local && draftSignature(local) === draftSignature(createDraft(saved ?? null))) {
+      replaceEpisodeDraft(episodeId, undefined);
+    }
+    onCloseRequest();
+  };
+
+  useEffect(() => {
+    const episodeId = currentEpisode?.id;
+    if (!isOpen || !episodeId) return;
+    return registerEpisodeEditorSession(episodeId, () => {
+      const episode = useAppStore.getState().projects.find((item) => item.id === episodeId);
+      const local = draftsRef.current[episodeId];
+      return { dirty: !!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null)),
+        saving: savingEpisodeRef.current === episodeId };
+    }, () => {
+      const version = draftVersions.current.get(episodeId) ?? 0;
+      return () => {
+        if ((draftVersions.current.get(episodeId) ?? 0) === version && draftsRef.current[episodeId]) {
+          replaceEpisodeDraft(episodeId, undefined);
+        }
+      };
+    });
+  }, [currentEpisode?.id, isOpen, replaceEpisodeDraft]);
   const analysis = useMemo(
     () => analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative)),
     [draft.creative, draft.script],
   );
 
   const saveDraft = async (): Promise<boolean> => {
-    if (!currentEpisode || isSaving || projectLoadStatus !== 'ready') return false;
+    if (!currentEpisode || savingEpisodeRef.current || editorWriteLocked || projectLoadStatus !== 'ready') return false;
+    const episodeId = currentEpisode.id;
+    const startingProjectId = useAppStore.getState().currentProjectId;
+    const version = draftVersions.current.get(episodeId) ?? 0;
+    const savingDraft = draftsRef.current[episodeId] ?? createDraft(currentEpisode);
+    const signature = draftSignature(savingDraft);
+    savingEpisodeRef.current = episodeId;
     setIsSaving(true);
     try {
-      const saved = await updateEpisodeCreative(currentEpisode.id, {
-        outline: draft.outline,
-        script: draft.script,
-        creative: toCreativeInfo(draft.creative),
+      const saved = await updateEpisodeCreative(episodeId, {
+        outline: savingDraft.outline,
+        script: savingDraft.script,
+        creative: toCreativeInfo(savingDraft.creative),
       });
       if (saved) {
-        setDraftsByEpisode((current) => {
-          const next = { ...current };
-          delete next[currentEpisode.id];
-          return next;
-        });
+        const latest = draftsRef.current[episodeId];
+        if ((draftVersions.current.get(episodeId) ?? 0) !== version
+          || (latest && draftSignature(latest) !== signature)) {
+          showToast(t('保存期间有新修改，已保留草稿，请重新发起创作请求'));
+          return false;
+        }
+        replaceEpisodeDraft(episodeId, undefined);
+        settleEpisodeEditorSessions(episodeId);
       }
-      return saved;
+      return saved && useAppStore.getState().currentProjectId === startingProjectId;
     } finally {
+      savingEpisodeRef.current = null;
       setIsSaving(false);
     }
   };
 
   const performPendingAction = (action: PendingAction) => {
+    if (savingEpisodeRef.current || isEpisodeEditorWriteLocked(currentEpisode?.id)) return;
     setPendingAction(null);
     setSeriesAssetPreview(null);
     if (currentEpisode) {
-      setDraftsByEpisode((current) => {
-        const next = { ...current };
-        delete next[currentEpisode.id];
-        return next;
-      });
+      replaceEpisodeDraft(currentEpisode.id, undefined);
+      settleEpisodeEditorSessions(currentEpisode.id);
     }
     if (action.type === 'close') {
       onClose();
@@ -351,6 +435,7 @@ export default function ScriptWorkbench({
   };
 
   const requestClose = () => {
+    if (savingEpisodeRef.current || editorWriteLocked) return;
     if (isDirty) setPendingAction({ type: 'close' });
     else {
       setSeriesAssetPreview(null);
@@ -359,6 +444,7 @@ export default function ScriptWorkbench({
   };
 
   const requestEpisodeSwitch = (episodeId: string) => {
+    if (savingEpisodeRef.current || editorWriteLocked) return;
     if (episodeId === currentProjectId) return;
     setSeriesAssetPreview(null);
     if (isDirty) setPendingAction({ type: 'switch', episodeId });
@@ -367,6 +453,32 @@ export default function ScriptWorkbench({
 
   const openCreativeAction = async (action: EpisodeCreativeAction) => {
     if (!series || !currentEpisode) return;
+    if (executionSelection.kind === 'team') {
+      const templateId: TeamTemplateId | undefined = action === 'optimize-outline' ? 'outline'
+        : action === 'write-script' ? 'script' : action === 'diagnose' ? 'review' : undefined;
+      if (!templateId) { showToast(t('这个创作动作暂用单模型，请切换执行方式')); return; }
+      if (startingTeamRef.current || savingEpisodeRef.current || editorWriteLocked) return;
+      startingTeamRef.current = true;
+      setIsStartingTeam(true);
+      try {
+        const episodeId = currentEpisode.id;
+        if (isDirty && !await saveDraft()) return;
+        const captured = await captureEpisodeTeamContext(episodeId, templateId === 'outline' ? 'outline' : 'script');
+        setExecutionSelection({ kind: 'team', templateId });
+        await startTeamInvocation({ projectId: episodeId, mode: teamMode, templateId,
+          content: templateId === 'outline' ? t('优化本集大纲，保留已确认设定与有效结构，只返回本集候选。')
+            : templateId === 'script' ? t('根据已保存的大纲与创作要点写出本集完整剧本，保留人物设定并检查可拍性。')
+              : t('联合审阅本集剧本的因果、人物连续性、对白与可拍性，只返回定位问题和裁决，不改写正文。'),
+          ...captured, profile: teamProfile });
+        showToast(t('团队任务已开始，可在工作台或助手查看同一任务'));
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : t('团队任务启动失败'), 'error');
+      } finally {
+        startingTeamRef.current = false;
+        setIsStartingTeam(false);
+      }
+      return;
+    }
     if (isDirty && !await saveDraft()) return;
     openChatWithDraft(buildEpisodeCreativePrompt(action, {
       seriesName: series.name,
@@ -443,28 +555,33 @@ export default function ScriptWorkbench({
   };
 
   const setCreative = (field: keyof CreativeDraft, value: string) => {
-    if (!currentEpisode) return;
-    setDraftsByEpisode((current) => {
-      const currentDraft = current[currentEpisode.id] ?? createDraft(currentEpisode);
-      return {
-        ...current,
-        [currentEpisode.id]: {
-          ...currentDraft,
-          creative: { ...currentDraft.creative, [field]: value },
-        },
-      };
-    });
+    if (!currentEpisode || isEpisodeEditorWriteLocked(currentEpisode.id)) return;
+    const currentDraft = draftsRef.current[currentEpisode.id] ?? createDraft(currentEpisode);
+    replaceEpisodeDraft(currentEpisode.id, { ...currentDraft, creative: { ...currentDraft.creative, [field]: value } });
   };
 
   const setTextDraft = (field: 'outline' | 'script', value: string) => {
-    if (!currentEpisode) return;
-    setDraftsByEpisode((current) => {
-      const currentDraft = current[currentEpisode.id] ?? createDraft(currentEpisode);
-      return {
-        ...current,
-        [currentEpisode.id]: { ...currentDraft, [field]: value },
-      };
-    });
+    if (!currentEpisode || isEpisodeEditorWriteLocked(currentEpisode.id)) return;
+    const currentDraft = draftsRef.current[currentEpisode.id] ?? createDraft(currentEpisode);
+    replaceEpisodeDraft(currentEpisode.id, { ...currentDraft, [field]: value });
+  };
+
+  const viewTeamTask = async (taskId: string) => {
+    if (isDirty && !await saveDraft()) return;
+    onClose();
+    await openTeamTaskInAssistant(taskId);
+  };
+
+  const mutateTeamResult = async (taskId: string, restore: boolean) => {
+    if (isDirty || savingEpisodeRef.current) throw new Error(t('请先处理工作台未保存修改，再应用团队成果'));
+    onClose();
+    try {
+      await openTeamTaskInAssistant(taskId);
+      await (restore ? restoreTeamResult(taskId) : applyTeamResult(taskId));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('团队成果保存失败'), 'error');
+      throw error;
+    }
   };
 
   return (
@@ -495,6 +612,15 @@ export default function ScriptWorkbench({
               {series?.name ?? t('当前剧集')} · {currentEpisode?.name ?? t('还没有分集')}
             </p>
           </div>
+          <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+            disabled={!currentEpisode || isSaving || isStartingTeam || editorWriteLocked}
+            onClick={() => {
+              setExecutionSelection({ kind: 'team', templateId: activeTab === 'outline' ? 'outline' : 'script' });
+              teamControlsRef.current?.scrollIntoView({ block: 'nearest' });
+            }}>
+            <Icon icon="lucide:users-round" className="h-3.5 w-3.5" />
+            {t('团队协作')}
+          </button>
           <button
             type="button"
             onClick={() => setSplitOpen((open) => !open)}
@@ -527,6 +653,7 @@ export default function ScriptWorkbench({
             </button>
             <button
               type="button"
+              disabled={isSaving || editorWriteLocked}
               onClick={() => performPendingAction(pendingAction)}
               className="h-7 rounded-md px-2.5 text-[11px] text-red-300 hover:bg-red-500/15"
             >
@@ -707,6 +834,7 @@ export default function ScriptWorkbench({
                   {activeTab === 'outline' ? (
                     <textarea
                       value={draft.outline}
+                      readOnly={editorWriteLocked}
                       onChange={(event) => setTextDraft('outline', event.target.value)}
                       spellCheck={false}
                       placeholder={t('写下本集任务、核心冲突、主要情节点和结尾卡点…')}
@@ -717,6 +845,7 @@ export default function ScriptWorkbench({
                   {activeTab === 'script' ? (
                     <textarea
                       value={draft.script}
+                      readOnly={editorWriteLocked}
                       onChange={(event) => setTextDraft('script', event.target.value)}
                       spellCheck={false}
                       placeholder={t('按场号、场景、人物、动作和对白写本集完整正文…')}
@@ -732,7 +861,7 @@ export default function ScriptWorkbench({
                         placeholder={t('这一集必须完成什么叙事推进？')}
                         onChange={(value) => setCreative('task', value)}
                         onAiAction={() => { void openFieldPolish('task', t('本集任务'), Boolean(draft.creative.task.trim())); }}
-                        aiDisabled={isSaving || projectLoadStatus !== 'ready'}
+                        aiDisabled={isSaving || editorWriteLocked || executionSelection.kind === 'team' || projectLoadStatus !== 'ready'}
                       />
                       <CreativeField
                         label={t('核心冲突')}
@@ -740,7 +869,7 @@ export default function ScriptWorkbench({
                         placeholder={t('谁与谁争夺什么，失败代价是什么？')}
                         onChange={(value) => setCreative('coreConflict', value)}
                         onAiAction={() => { void openFieldPolish('coreConflict', t('核心冲突'), Boolean(draft.creative.coreConflict.trim())); }}
-                        aiDisabled={isSaving || projectLoadStatus !== 'ready'}
+                        aiDisabled={isSaving || editorWriteLocked || executionSelection.kind === 'team' || projectLoadStatus !== 'ready'}
                       />
                       <CreativeField
                         label={t('开场钩子')}
@@ -748,7 +877,7 @@ export default function ScriptWorkbench({
                         placeholder={t('开场 3-5 秒发生什么？')}
                         onChange={(value) => setCreative('openingHook', value)}
                         onAiAction={() => { void openFieldPolish('openingHook', t('开场钩子'), Boolean(draft.creative.openingHook.trim())); }}
-                        aiDisabled={isSaving || projectLoadStatus !== 'ready'}
+                        aiDisabled={isSaving || editorWriteLocked || executionSelection.kind === 'team' || projectLoadStatus !== 'ready'}
                       />
                       <CreativeField
                         label={t('反转或情绪爆点')}
@@ -756,7 +885,7 @@ export default function ScriptWorkbench({
                         placeholder={t('本集最强的变化是什么？')}
                         onChange={(value) => setCreative('reversal', value)}
                         onAiAction={() => { void openFieldPolish('reversal', t('反转或情绪爆点'), Boolean(draft.creative.reversal.trim())); }}
-                        aiDisabled={isSaving || projectLoadStatus !== 'ready'}
+                        aiDisabled={isSaving || editorWriteLocked || executionSelection.kind === 'team' || projectLoadStatus !== 'ready'}
                       />
                       <CreativeField
                         label={t('结尾卡点')}
@@ -764,7 +893,7 @@ export default function ScriptWorkbench({
                         placeholder={t('观众必须继续看的未完成事件')}
                         onChange={(value) => setCreative('endingHook', value)}
                         onAiAction={() => { void openFieldPolish('endingHook', t('结尾卡点'), Boolean(draft.creative.endingHook.trim())); }}
-                        aiDisabled={isSaving || projectLoadStatus !== 'ready'}
+                        aiDisabled={isSaving || editorWriteLocked || executionSelection.kind === 'team' || projectLoadStatus !== 'ready'}
                       />
                       <CreativeField
                         label={t('原著来源范围')}
@@ -779,7 +908,7 @@ export default function ScriptWorkbench({
                         multiline
                         onChange={(value) => setCreative('beats', value)}
                         onAiAction={() => { void openFieldPolish('beats', t('主要情节点（每行一条）'), Boolean(draft.creative.beats.trim())); }}
-                        aiDisabled={isSaving || projectLoadStatus !== 'ready'}
+                        aiDisabled={isSaving || editorWriteLocked || executionSelection.kind === 'team' || projectLoadStatus !== 'ready'}
                       />
                       <CreativeField
                         label={t('目标时长（秒）')}
@@ -793,7 +922,7 @@ export default function ScriptWorkbench({
 
                 <footer className="flex h-12 shrink-0 items-center gap-3 border-t border-border-subtle px-3">
                   <span className={`text-[11px] ${isDirty ? 'text-amber-300' : 'text-canvas-text-muted'}`}>
-                    {isDirty ? t('有未保存修改') : t('已保存')}
+                    {editorWriteLocked ? t('团队成果保存中…') : isDirty ? t('有未保存修改') : t('已保存')}
                   </span>
                   <span className="hidden text-[10px] text-canvas-text-muted sm:inline">Ctrl+S</span>
                   <button
@@ -808,7 +937,7 @@ export default function ScriptWorkbench({
                   </button>
                   <button
                     type="button"
-                    disabled={!isDirty || isSaving || projectLoadStatus !== 'ready'}
+                    disabled={!isDirty || isSaving || editorWriteLocked || projectLoadStatus !== 'ready'}
                     onClick={() => { void saveDraft(); }}
                     className="h-8 rounded-lg bg-indigo-500/90 px-4 text-xs font-medium text-white
                                hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
@@ -908,6 +1037,50 @@ export default function ScriptWorkbench({
               </div>
             </section>
 
+            <div ref={teamControlsRef} className="mt-3 space-y-2 rounded-lg border border-canvas-border bg-canvas-card p-2">
+              <p className="text-[11px] font-semibold text-canvas-text-secondary">{t('创作执行方式')}</p>
+              {unsettledEditor && <div className="space-y-1 text-[11px] text-canvas-text-secondary" role="status">
+                <p>{t('上次编辑未确认结束，请核对当前已保存稿件后再应用团队成果。')}</p>
+                <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={isDirty || isSaving || editorWriteLocked}
+                  onClick={() => { if (currentEpisode) settleEpisodeEditorSessions(currentEpisode.id); }}>{t('已核对当前稿件')}</button>
+              </div>}
+              <TeamExecutionPicker value={executionSelection} onChange={setExecutionSelection}
+                profile={teamProfile} onProfileChange={async (profile) => {
+                  updateConfig({ agentTeamProfile: profile });
+                  await useAppStore.getState().saveConfig({ silent: true, throwOnError: true });
+                }}
+                modelGroups={modelCatalog.assistantModelGroups} generalModels={config.generalModels}
+                theme={config.theme} disabled={isSaving || isStartingTeam || editorWriteLocked} compact defaultTemplateId="outline" />
+              {executionSelection.kind === 'team' && <>
+                <label className="flex items-center justify-between gap-2 text-[11px] text-canvas-text-secondary">
+                  <span>{t('任务权限')}</span>
+                  <select value={teamMode} onChange={(event) => setTeamMode(event.target.value as AgentMode)}
+                    disabled={isStartingTeam} className="ui-select__control min-w-0">
+                    <option value="plan">{t('规划')}</option>
+                    <option value="collaborative">{t('协作')}</option>
+                    <option value="autonomous">{t('自主')}</option>
+                  </select>
+                </label>
+                <p className="text-[10px] leading-4 text-canvas-text-muted">{t('先保存当前改稿，再由团队生成候选；点击下方动作开始，不会自动覆盖正文。')}</p>
+              </>}
+            </div>
+
+            {episodeTeamTasks.map((task) => <TeamRunCard key={task.id} task={task} compact
+              onPause={(id) => { cancelScheduledAgentExecution(id); pauseAgentTask(id); }}
+              onStop={(id) => { cancelScheduledAgentExecution(id); stopAgentTask(id); }}
+              onResume={(id) => {
+                const result = resumeAgentTaskExecution(id);
+                if (!result.ok) showToast(result.message ?? t('任务当前不能继续'), 'error');
+              }}
+              onView={(id) => { void viewTeamTask(id).catch((error) => showToast(error instanceof Error ? error.message : t('打开团队任务失败'), 'error')); }}
+              onReadArtifact={(id, artifact) => readTeamTaskArtifact(id, artifact.id)}
+              onApply={(id) => mutateTeamResult(id, false)} onRestore={(id) => mutateTeamResult(id, true)}
+              onReconcile={async (id) => { showToast(await reconcileTeamResult(id)); }}
+              onAmend={async (id, instruction) => {
+                try { await appendTeamInstruction(id, instruction); }
+                catch (error) { showToast(error instanceof Error ? error.message : t('追加团队要求失败'), 'error'); throw error; }
+              }} />)}
+
             <div className="mt-4 grid gap-3">
               {CREATIVE_ACTION_GROUPS.map((group) => (
                 <section key={group.label}>
@@ -920,13 +1093,14 @@ export default function ScriptWorkbench({
                       <button
                         key={action.id}
                         type="button"
-                        disabled={!currentEpisode || isSaving || projectLoadStatus !== 'ready'}
+                        disabled={!currentEpisode || isSaving || isStartingTeam || editorWriteLocked || projectLoadStatus !== 'ready'
+                          || (executionSelection.kind === 'team' && !['optimize-outline', 'write-script', 'diagnose'].includes(action.id))}
                         onClick={() => { void openCreativeAction(action.id); }}
                         className="rounded-lg border border-canvas-border bg-canvas-card px-2.5 py-1.5
                                    text-[10px] text-canvas-text-secondary transition-colors hover:border-indigo-400/40
                                    hover:bg-indigo-500/10 hover:text-indigo-200 disabled:cursor-not-allowed disabled:opacity-40"
                       >
-                        {t(action.label)}
+                        {executionSelection.kind === 'team' && action.id === 'diagnose' ? t('联合审稿') : t(action.label)}
                       </button>
                     ))}
                   </div>

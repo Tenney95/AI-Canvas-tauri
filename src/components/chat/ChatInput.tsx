@@ -9,10 +9,12 @@ import { Icon } from '@iconify/react';
 import LazyLoadBoundary from '../shared/LazyLoadBoundary';
 import SendShortcutMenu from '../shared/SendShortcutMenu';
 import ModelSelector from '../nodes/shared/ModelSelector';
+import TeamExecutionPicker from '../shared/agentTeams/TeamExecutionPicker';
 import ContextUsageIndicator from './ContextUsageIndicator';
 import ChatComposerEditor, { getChatComposerNodeIds, type ChatComposerEditorHandle, type ChatComposerReference } from './ChatComposerEditor';
 import ChatImageAttachments from './ChatImageAttachments';
 import type { ChatImageReference } from '../../types/chat';
+import type { AgentTeamProfile, AssistantExecutionSelection } from '../../types/agentTeam';
 import { parseChatImageReferences } from '../../services/chat/chatImageReferenceService';
 import MentionPicker, { type MentionPickerItem } from '../shared/MentionPicker';
 import { resolveDramaMentionItems } from '../nodes/shared/mentionEditorSources';
@@ -176,6 +178,11 @@ interface ChatInputProps {
   onAssistantModelChange: (modelId?: string) => void;
   /** 独立窗口由主窗口下发的脱敏文本模型分组。 */
   assistantModelGroups?: ModelGroup[];
+  executionSelection?: AssistantExecutionSelection;
+  onExecutionSelectionChange?: (selection: AssistantExecutionSelection) => void;
+  teamProfile?: AgentTeamProfile;
+  onTeamProfileChange?: (profile: AgentTeamProfile) => void | Promise<void>;
+  teamContextHint?: string;
   mediaModels: GeneralModelConfig[];
   mediaModelOptions: MediaModelOption[];
   mediaModelAvailability: Record<string, boolean>;
@@ -206,6 +213,11 @@ export default function ChatInput({
   assistantModelId,
   onAssistantModelChange,
   assistantModelGroups,
+  executionSelection,
+  onExecutionSelectionChange,
+  teamProfile,
+  onTeamProfileChange,
+  teamContextHint,
   mediaModels,
   mediaModelOptions,
   mediaModelAvailability,
@@ -722,6 +734,17 @@ export default function ChatInput({
           />
         </div>
 
+        {executionSelection && onExecutionSelectionChange && teamProfile && onTeamProfileChange && (
+          <div className="min-w-0 px-2 pb-1">
+            <TeamExecutionPicker value={executionSelection} onChange={onExecutionSelectionChange}
+              profile={teamProfile} onProfileChange={onTeamProfileChange} compact
+              modelGroups={assistantModelGroups} generalModels={mediaModels} groupAvailability={modelGroupAvailability}
+              theme={appearanceMode} disabled={disabled} />
+            {executionSelection.kind === 'team' && teamContextHint && (
+              <p className="mt-1 text-xs leading-relaxed text-canvas-text-secondary">{teamContextHint}</p>
+            )}
+          </div>
+        )}
         <div className="ui-ai-input__footer ui-ai-input__footer--single-row chat-panel-input-toolbar">
           <AnimatePresence>
             {modelMenuOpen && (
@@ -854,7 +877,7 @@ export default function ChatInput({
           </AnimatePresence>
 
           {/* 助手只显示实际绑定；不能借用节点历史偏好冒充已选择的对话模型。 */}
-          <ModelSelector
+          {executionSelection?.kind !== 'team' && <ModelSelector
             appearance="pill"
             theme={appearanceMode}
             nodeType="ai-text"
@@ -863,7 +886,7 @@ export default function ChatInput({
             configuredGroupsOverride={assistantModelGroups}
             generalModelsOverride={assistantModelGroups ? [] : mediaModels}
             groupAvailability={modelGroupAvailability}
-          />
+          />}
 
           <div className="ui-ai-input__tools">
             <div className="ui-ai-input__actions">

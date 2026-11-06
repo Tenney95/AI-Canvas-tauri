@@ -14,6 +14,7 @@ import {
   type AgentSkillBinding,
   type AgentTask,
   type AgentTaskBudget,
+  type AgentTaskFocusRequest,
   type McpOperationRecord,
 } from '../types/agent';
 import type { McpOperationClaim } from '../services/indexedDbService';
@@ -21,6 +22,10 @@ import * as agentTaskService from '../services/chat/agentTaskService';
 import { emitAgentLifecycleEvent } from '../services/chat/agentLifecycle';
 
 export interface CreateAgentTaskInput {
+  /** 仅宿主团队入口用于同一发起请求的稳定身份。 */
+  taskId?: string;
+  executionKind?: 'team';
+  teamRequestDigest?: string;
   projectId: string;
   conversationId: string;
   userMessageId: string;
@@ -35,6 +40,8 @@ export interface CreateAgentTaskInput {
 }
 
 export interface AgentSlice {
+  agentTaskFocus: AgentTaskFocusRequest | null;
+  focusAgentTask: (taskId: string) => void;
   agentTasks: AgentTask[];
   createAgentTask: (input: CreateAgentTaskInput) => AgentTask;
   claimMcpAgentTask: (input: CreateAgentTaskInput, operation: McpOperationRecord) => Promise<McpOperationClaim>;
@@ -61,10 +68,12 @@ function createTaskId(): string {
 
 function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperationRecord): AgentTask {
   const now = Date.now();
-  const taskId = createTaskId();
+  const taskId = input.taskId ?? createTaskId();
   return {
     id: taskId, projectId: input.projectId, conversationId: input.conversationId,
     userMessageId: input.userMessageId, mode: input.mode, goal: input.goal,
+    executionKind: input.executionKind,
+    teamRequestDigest: input.teamRequestDigest,
     status: 'queued', steps: [], modelRounds: 0, toolCallCount: 0, resumeCount: 0,
     budget: { ...DEFAULT_AGENT_TASK_BUDGET, ...input.budget },
     toolAllowlist: input.toolAllowlist ? [...new Set(input.toolAllowlist)] : undefined,
@@ -79,6 +88,10 @@ function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperation
 }
 
 export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set) => ({
+  agentTaskFocus: null,
+  focusAgentTask: (taskId) => set((state) => ({ agentTaskFocus: {
+    taskId, revision: (state.agentTaskFocus?.revision ?? 0) + 1,
+  } })),
   agentTasks: [],
 
   createAgentTask: (input) => {
@@ -195,5 +208,5 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
     }
   },
 
-  clearAgentTasks: () => set({ agentTasks: [] }),
+  clearAgentTasks: () => set({ agentTasks: [], agentTaskFocus: null }),
 });

@@ -57,6 +57,9 @@ import { normalizeEpisodeAssetRoster, type EpisodeAssetRoster } from '../types/e
 import { prepareProjectImport, previewProjectImport, applyProjectImport, type PreparedProjectImport,
   restoreProjectImportRecovery, type ProjectImportPreview, type ProjectImportOptions } from '../services/projectImportService';
 import type { ProjectMergeSide } from '../services/projectMergeService';
+import type { TeamEpisodeTarget } from '../types/agentTeam';
+import { sha256BytesHex } from '../services/mediaDataUrl';
+import { episodeTeamSourceSnapshot } from '../services/seriesCreativeService';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
 let activeProjectMetadataWrite: Promise<void> = Promise.resolve();
@@ -65,6 +68,25 @@ const projectInitializations: WeakMap<() => AppState, Promise<void>> = import.me
 if (import.meta.hot) import.meta.hot.data.projectInitializations = projectInitializations;
 const pendingProjectSaves: Map<string, Set<Promise<string | undefined>>> = import.meta.hot?.data.pendingProjectSaves ?? new Map();
 if (import.meta.hot) import.meta.hot.data.pendingProjectSaves = pendingProjectSaves;
+const episodeCreativeWrites: Map<string, Promise<unknown>> = import.meta.hot?.data.episodeCreativeWrites ?? new Map();
+if (import.meta.hot) import.meta.hot.data.episodeCreativeWrites = episodeCreativeWrites;
+
+export interface EpisodeCreativeWriteOptions {
+  expected?: TeamEpisodeTarget;
+  /** 仅供宿主编辑会话使用；不得进入持久化。 */
+  assertCurrent?: () => void;
+}
+
+async function serializeEpisodeCreativeWrite<T>(episodeId: string, write: () => Promise<T>): Promise<T> {
+  const previous = episodeCreativeWrites.get(episodeId) ?? Promise.resolve();
+  const pending = previous.catch(() => undefined).then(write);
+  episodeCreativeWrites.set(episodeId, pending);
+  try {
+    return await pending;
+  } finally {
+    if (episodeCreativeWrites.get(episodeId) === pending) episodeCreativeWrites.delete(episodeId);
+  }
+}
 
 function trackProjectSave(projectId: string | null, save: (projectId: string | null) => Promise<string | undefined>): Promise<string | undefined> {
   const operation = save(projectId);
@@ -580,6 +602,7 @@ export interface ProjectSlice {
   updateEpisodeCreative: (
     episodeId: string,
     updates: { outline?: string; script?: string; creative?: EpisodeCreativeInfo },
+    options?: EpisodeCreativeWriteOptions,
   ) => Promise<boolean>;
   /** 只更新当前准确分集的提取清单；expectedRevision 防止覆盖较新的编辑。 */
   updateEpisodeAssetRoster: (episodeId: string, roster: EpisodeAssetRoster, expectedRevision?: number) => Promise<boolean>;
@@ -780,9 +803,13 @@ async function patchProjectRecord(
             updatedAt: item.updatedAt === updatedAt ? previous.updatedAt : item.updatedAt,
           } : item;
         }
-        // 普通元数据保存失败也不能顺带撤销后来已接受的本集清单。
-        return item.episodeAssetRoster === previous.episodeAssetRoster
-          ? previous : { ...previous, episodeAssetRoster: item.episodeAssetRoster };
+        // 失败只撤回仍属于本次补丁的字段，不能用整份旧元数据覆盖后来的修改。
+        const restored = { ...item };
+        for (const field of Object.keys(patch) as Array<keyof CanvasProject>) {
+          if (item[field] === patch[field]) Object.assign(restored, { [field]: previous[field] });
+        }
+        if (item.updatedAt === updatedAt) restored.updatedAt = previous.updatedAt;
+        return restored;
       }),
     }));
     get().showToast('保存失败，改动已回滚', 'error');
@@ -1300,18 +1327,47 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     });
   },
 
-  updateEpisodeOutline: async (episodeId, outline) => (
-    patchProjectRecord(set, get, episodeId, { episodeOutline: outline })
-  ),
+  updateEpisodeOutline: async (episodeId, outline) => get().updateEpisodeCreative(episodeId, { outline }),
 
-  updateEpisodeCreative: async (episodeId, updates) => {
+  updateEpisodeCreative: async (episodeId, updates, options) => serializeEpisodeCreativeWrite(episodeId, async () => {
+    const expected = options?.expected;
+    if (expected) {
+      const state = get();
+      const episode = state.projects.find((item) => item.id === episodeId);
+      if (state.projectLoadStatus !== 'ready' || state.currentProjectId !== episodeId
+        || state.isCreatingProject || state.isReturningToStartPage || state.switchingProjectName !== null
+        || expected.episodeId !== episodeId || episode?.parentId !== expected.seriesId) {
+        throw new Error('分集或所属剧集已变化，请先回到原分集再应用成果');
+      }
+      const fieldValue = expected.field === 'outline' ? episode.episodeOutline ?? '' : episode.episodeScript ?? '';
+      const sourceSnapshot = episodeTeamSourceSnapshot(episode, expected.field);
+      const [hash, sourceHash] = await Promise.all([
+        sha256BytesHex(new TextEncoder().encode(fieldValue)),
+        expected.sourceHash ? sha256BytesHex(new TextEncoder().encode(sourceSnapshot)) : Promise.resolve(undefined),
+      ]);
+      const current = get();
+      const latestEpisode = current.projects.find((item) => item.id === episodeId);
+      const latestValue = expected.field === 'outline' ? latestEpisode?.episodeOutline ?? '' : latestEpisode?.episodeScript ?? '';
+      if (hash !== expected.expectedHash || latestValue !== fieldValue
+        || (expected.sourceHash && (sourceHash !== expected.sourceHash || !latestEpisode
+          || episodeTeamSourceSnapshot(latestEpisode, expected.field) !== sourceSnapshot))
+        || latestEpisode?.parentId !== expected.seriesId || current.currentProjectId !== episodeId
+        || current.projectLoadStatus !== 'ready' || current.switchingProjectName !== null) {
+        throw new Error('目标内容已被修改，团队候选已保留；请比较当前稿件，不要覆盖新内容');
+      }
+      if ((expected.field === 'outline' && (!('outline' in updates) || 'script' in updates || 'creative' in updates))
+        || (expected.field === 'script' && (!('script' in updates) || 'outline' in updates || 'creative' in updates))) {
+        throw new Error('团队成果只允许更新任务绑定的一个目标字段');
+      }
+    }
+    options?.assertCurrent?.();
     const patch: Partial<CanvasProject> = {};
     if ('outline' in updates) patch.episodeOutline = updates.outline;
     if ('script' in updates) patch.episodeScript = updates.script;
     if ('creative' in updates) patch.episodeCreative = updates.creative;
     if (Object.keys(patch).length === 0) return true;
     return patchProjectRecord(set, get, episodeId, patch);
-  },
+  }),
 
   updateEpisodeAssetRoster: async (episodeId, roster, expectedRevision) => {
     const state = get();

@@ -61,6 +61,25 @@ export interface SplitDraftOptions {
   existingEpisodeCount: number;
 }
 
+/** 固定字段顺序的非目标材料签名；只用于宿主内容摘要，不进入任务元数据正文。 */
+export function episodeTeamSourceSnapshot(episode: {
+  episodeOutline?: string;
+  episodeScript?: string;
+  episodeCreative?: EpisodeCreativeInfo;
+}, targetField: 'outline' | 'script'): string {
+  const creative = episode.episodeCreative;
+  return JSON.stringify({
+    outline: targetField === 'outline' ? null : episode.episodeOutline ?? '',
+    script: targetField === 'script' ? null : episode.episodeScript ?? '',
+    creative: {
+      task: creative?.task ?? '', coreConflict: creative?.coreConflict ?? '',
+      openingHook: creative?.openingHook ?? '', reversal: creative?.reversal ?? '',
+      endingHook: creative?.endingHook ?? '', beats: creative?.beats ?? [],
+      targetDurationSec: creative?.targetDurationSec ?? null, sourceRange: creative?.sourceRange ?? '',
+    },
+  });
+}
+
 const ACTION_INSTRUCTIONS: Record<EpisodeCreativeAction, string> = {
   'optimize-outline': '诊断并优化本集大纲，保留人物关系、关键事件顺序和结局，不扩写其他分集。',
   'adjust-beats': '把本集整理为 3-5 个递进情节点，明确每个情节点推进的信息、关系或情绪。',

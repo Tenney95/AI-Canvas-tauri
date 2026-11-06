@@ -45,6 +45,7 @@ import {
 import {
   createChatStatePatch,
   emitSyncState,
+  emitTeamArtifactResponse,
   hasChatStatePatchChanges,
   initMainWindowListener,
   type ChatAction,
@@ -60,6 +61,8 @@ import {
   prepareChatImagePreviews, subscribeChatImagePreviews,
 } from './chatImageReferenceService';
 import { cancelMainReferencePreview, handleDetachedReferencePreviewAction } from './chatReferencePreviewService';
+import { normalizeExecutionSelection, normalizeTeamProfile } from './teams/teamProfileService';
+import { appendTeamInstruction, readTeamTaskArtifact } from './teams/teamInvocationService';
 
 const DEFAULT_SYNC_INTERVAL_MS = 150;
 const MAX_SYNC_RETRY_DELAY_MS = 5_000;
@@ -87,6 +90,7 @@ interface DetachedChatSyncControllerOptions {
 }
 
 interface DetachedSnapshotSource {
+  agentTaskFocus: AppState['agentTaskFocus'];
   conversations: ChatConversation[];
   activeConversationId: string | null;
   messages: ChatMessage[];
@@ -323,14 +327,17 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
     activeConversationId,
     messages: state.messages,
     agentTasks: projectChatAgentTasks(state.agentTasks),
+    agentTaskFocus: state.agentTaskFocus,
     projectId: state.currentProjectId,
     projectName: project?.name,
+    isEpisodeProject: !!project?.parentId,
     generalModels: state.config.generalModels ?? [],
     ...buildChatModelCatalog(state),
     assistantModelId: getAssistantTextModelCandidates(
       project?.settings,
       state.config.assistantModelId,
     )[0],
+    agentTeamProfile: state.config.agentTeamProfile ? normalizeTeamProfile(state.config.agentTeamProfile) : undefined,
     assistantImageModelId: state.config.assistantImageModelId,
     assistantVideoModelId: state.config.assistantVideoModelId,
     localFileGrants: activeConversationId
@@ -354,6 +361,7 @@ function detachedSnapshotSourceChanged(
   previous: DetachedSnapshotSource,
 ): boolean {
   return current.chatPanelDetached !== previous.chatPanelDetached
+    || current.agentTaskFocus !== previous.agentTaskFocus
     || current.conversations !== previous.conversations
     || current.activeConversationId !== previous.activeConversationId
     || current.messages !== previous.messages
@@ -380,6 +388,55 @@ export function handleDetachedChatAction(
   const store = useAppStore.getState();
 
   switch (action.type) {
+    case 'set_team_profile':
+      store.updateConfig({ agentTeamProfile: normalizeTeamProfile(action.profile) });
+      void store.saveConfig({ silent: true, throwOnError: true }).catch(() => store.showToast('团队配置未能保存，请重试', 'error'));
+      requestSync(true);
+      break;
+    case 'set_execution_selection': {
+      const scopeId = store.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
+      if (action.scopeId !== scopeId || (action.conversationId && action.conversationId !== store.activeConversationId)) break;
+      const owner = seriesOwnerId(store.projects, scopeId);
+      const current = store.conversations.find((item) => item.id === store.activeConversationId && item.projectId === owner && !item.deletedAt);
+      const conversationId = action.conversationId ?? current?.id ?? store.createConversation(scopeId);
+      const conversation = useAppStore.getState().conversations.find((item) => item.id === conversationId && !item.deletedAt);
+      if (conversation?.projectId !== owner || !conversation.id.startsWith('conv-')) break;
+      store.updateConversation(conversationId, { executionSelection: normalizeExecutionSelection(action.selection) });
+      if (!action.conversationId && action.draft !== undefined) store.setChatComposerLiveDraft(action.draft, conversationId);
+      requestSync(true);
+      break;
+    }
+    case 'read_team_artifact': {
+      if (typeof action.requestId !== 'string' || !/^[A-Za-z0-9_-]{8,120}$/.test(action.requestId)) break;
+      void readTeamTaskArtifact(action.taskId, action.artifactId)
+        .then((text) => emitTeamArtifactResponse({ requestId: action.requestId, taskId: action.taskId,
+          artifactId: action.artifactId, ...(text.length <= 120000 ? { text } : { error: '产物超过窗口预览上限，请在主窗口查看' }) }))
+        .catch(() => emitTeamArtifactResponse({ requestId: action.requestId, taskId: action.taskId,
+          artifactId: action.artifactId, error: '无法读取原任务产物，请检查项目与成果版本后重试' }).catch(() => {}));
+      break;
+    }
+    case 'apply_team_result':
+    case 'restore_team_result':
+    case 'reconcile_team_result':
+    case 'amend_team_task': {
+      const scopeId = store.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
+      const task = store.agentTasks.find((item) => item.id === action.taskId && item.executionKind === 'team');
+      const conversation = store.conversations.find((item) => item.id === task?.conversationId && !item.deletedAt);
+      if (!task || !conversation || conversation.projectId !== seriesOwnerId(store.projects, scopeId)) break;
+      if (action.type === 'amend_team_task') {
+        void appendTeamInstruction(action.taskId, action.instruction)
+          .catch((error: unknown) => store.showToast(error instanceof Error ? error.message.slice(0, 300) : '补充要求未能应用', 'error'))
+          .finally(() => requestSync(true));
+        break;
+      }
+      void import('./teams/teamResultApplyService').then(async (service) => {
+        if (action.type === 'apply_team_result') await service.applyTeamResult(action.taskId);
+        else if (action.type === 'restore_team_result') await service.restoreTeamResult(action.taskId);
+        else store.showToast(await service.reconcileTeamResult(action.taskId), 'info');
+      }).catch((error: unknown) => store.showToast(error instanceof Error ? error.message.slice(0, 300) : '团队成果操作未完成，请核对原任务', 'error'))
+        .finally(() => requestSync(true));
+      break;
+    }
     case 'preview_reference':
     case 'cancel_reference_preview':
       handleDetachedReferencePreviewAction(action);
@@ -430,6 +487,8 @@ export function handleDetachedChatAction(
         conversationId,
         mode: conversation?.agentMode ?? 'collaborative',
         dispatchMode: action.dispatchMode,
+        executionSelection: action.executionSelection,
+        requestId: action.requestId,
       });
       if (action.imageFileNames?.length) {
         store.setChatComposerLiveDraft(submitted?.status === 'ignored' ? action.content : '', conversationId);

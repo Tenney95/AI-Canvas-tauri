@@ -167,6 +167,32 @@ export function pauseAgentTask(taskId: string, reason = 'user_paused'): AgentTas
   return transitionAgentTask(taskId, 'paused', { pausedReason: reason });
 }
 
+/** 显式应用已有团队成果；不放宽普通已完成任务的状态机或重新调用模型。 */
+export function prepareTeamTaskApplication(taskId: string): AgentTask {
+  const task = getTask(taskId);
+  if (task.executionKind !== 'team' || !task.teamRun?.resultArtifactId) {
+    throw new Error('该任务没有可应用的团队成果');
+  }
+  if (activeControllers.has(taskId) || isAgentExecutionScheduled(taskId)
+    || !['completed', 'failed', 'stopped', 'paused'].includes(task.status)) {
+    throw new Error('任务仍在执行，请等待当前操作完成');
+  }
+  if (task.status !== 'completed') {
+    return transitionAgentTask(taskId, 'queued', {
+      pausedReason: undefined, errorCode: undefined, errorMessage: undefined,
+    });
+  }
+  const next: AgentTask = {
+    ...task, status: 'queued', updatedAt: Date.now(), completedAt: undefined,
+    pausedReason: undefined, errorCode: undefined, errorMessage: undefined,
+  };
+  useAppStore.getState().upsertAgentTask(next);
+  appendAgentEvent(taskId, 'task_status', { status: 'queued' });
+  emitAgentLifecycleEvent({ type: 'task.status', taskId, projectId: task.projectId,
+    conversationId: task.conversationId, status: 'queued' });
+  return next;
+}
+
 export function stopAgentTask(taskId: string): AgentTask {
   activeControllers.get(taskId)?.abort();
   return transitionAgentTask(taskId, 'stopped', {

@@ -24,6 +24,7 @@ import type {
   MediaGenerationStatus,
 } from '../../types/media';
 import { isTransientMediaUrl, persistMediaUrlToProjectData } from '../fileService';
+import { normalizeExecutionSelection } from './teams/teamProfileService';
 
 // ============================================
 // Type converters
@@ -90,6 +91,7 @@ function fromConversationRecord(r: ChatConversationRecord): ChatConversation {
   return {
     ...r,
     agentMode: r.agentMode ?? 'collaborative',
+    executionSelection: normalizeExecutionSelection(r.executionSelection),
   };
 }
 

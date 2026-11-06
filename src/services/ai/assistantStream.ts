@@ -155,6 +155,8 @@ export interface StreamingCallOptions {
   projectId?: string;
   /** 本次调用显式选择的文本模型；不可用时拒绝，不回退或修改默认配置。 */
   modelId?: string;
+  /** 冻结材料的无工具执行器设 false，避免参考文本中的 @ 再读取文件或发起视觉描述。 */
+  resolveVisualReferences?: boolean;
 }
 
 export interface AssistantModelToolCall {
@@ -295,7 +297,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   try {
     controller.signal.throwIfAborted();
     const state = useAppStore.getState();
-    const requestMessages = await prepareAssistantVisualMessages({
+    const requestMessages = options.resolveVisualReferences === false ? messages : await prepareAssistantVisualMessages({
       messages,
       projectId: projectId ?? state.currentProjectId,
       supportsVision: modelConfig.supportsVision,

@@ -28,6 +28,7 @@ import { registerMcpDiscoveryTools } from './mcpDiscoveryTools';
 import { registerExternalMcpTools } from './externalMcpTools';
 import { registerShotlistAgentTools } from './shotlistTools';
 import { registerSeriesSourceTools } from './seriesSourceTools';
+import { registerTeamResultTools } from '../teams/teamResultApplyService';
 import { removeAgentToolsById, snapshotAgentToolIds } from '../toolRegistry';
 
 type AgentToolRegistrationFactory = () => Array<() => void>;
@@ -67,6 +68,7 @@ function getRegistrationFactories(): AgentToolRegistrationFactory[] {
     registerPresetAgentTools,
     registerDramaAssetAgentTools,
     registerSeriesAgentTools,
+    registerTeamResultTools,
     registerSeriesSourceTools,
     registerShotlistAgentTools,
     registerExpertAgentTools,

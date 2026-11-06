@@ -22,6 +22,8 @@ import AgentExecutionRationale from './AgentExecutionRationale';
 import { AssistantActivityMark } from './AssistantActivity';
 import type { MediaModelOption } from '../nodes/shared/defaultModels';
 import { useT } from '../../i18n';
+import type { TeamArtifactReference } from '../../types/agentTeam';
+import TeamRunCard from '../shared/agentTeams/TeamRunCard';
 
 export interface AgentTaskControls {
   onResolveApproval: (approvalId: string, resolution: AgentApprovalResolution) => void;
@@ -33,6 +35,11 @@ export interface AgentTaskControls {
   onSkip: (taskId: string, stepId: string) => void;
   onReplan: (taskId: string) => void;
   onRewind: (taskId: string) => void;
+  onReadTeamArtifact?: (taskId: string, artifact: TeamArtifactReference) => Promise<string>;
+  onApplyTeamResult?: (taskId: string) => void | Promise<void>;
+  onRestoreTeamResult?: (taskId: string) => void | Promise<void>;
+  onReconcileTeamResult?: (taskId: string) => void | Promise<void>;
+  onAmendTeamTask?: (taskId: string, instruction: string) => void | Promise<void>;
 }
 
 interface AgentTaskTimelineProps extends AgentTaskControls {
@@ -179,6 +186,11 @@ export default function AgentTaskTimeline({
   onSkip,
   onReplan,
   onRewind,
+  onReadTeamArtifact,
+  onApplyTeamResult,
+  onRestoreTeamResult,
+  onReconcileTeamResult,
+  onAmendTeamTask,
 }: AgentTaskTimelineProps) {
   const t = useT();
   const isTerminal = AGENT_TERMINAL_STATUSES.has(task.status);
@@ -212,6 +224,16 @@ export default function AgentTaskTimeline({
     ? Math.max(0, (task.completedAt ?? task.updatedAt) - task.startedAt)
     : 0;
   const terminalLabel = task.status === 'completed' ? t('运行记录') : t(meta.label);
+
+  if (task.teamRun) return (
+    <>
+      <TeamRunCard task={task} onPause={onPause} onResume={onResume} onStop={onStop}
+        onReadArtifact={onReadTeamArtifact} onApply={onApplyTeamResult} onRestore={onRestoreTeamResult}
+        onReconcile={onReconcileTeamResult} onAmend={onAmendTeamTask} />
+      {pendingApprovalStep && <AgentApprovalCard step={pendingApprovalStep} mediaModelOptions={mediaModelOptions}
+        mediaModelAvailability={mediaModelAvailability} onResolve={onResolveApproval} />}
+    </>
+  );
 
   return (
     <div className="agent-task-timeline mt-2 max-w-full py-0.5">

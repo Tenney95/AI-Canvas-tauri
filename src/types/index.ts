@@ -20,6 +20,7 @@ import type { AnimationFrameEdit, AnimationProcessing, AnimationSheet } from './
 import type { AiAppReference } from './aiApp';
 import type { ComfyRefmodAsset, ComfyRefmodSelection } from './comfyRefmod';
 import type { EpisodeAssetRoster } from './episodeAssets';
+import type { AgentTeamProfile } from './agentTeam';
 
 export type {
   CanvasDrawingTool,
@@ -878,6 +879,8 @@ export interface AppConfig {
   jianyingPath?: string;     // 剪映专业版安装路径，自动检测失败时手动配置
   premierePath?: string;     // Adobe Premiere Pro 安装路径，自动检测失败时手动配置
   assistantModelId?: string;  // 助手模型 ID：generalModels 中的 text 模型 id
+  /** 用户配置的团队角色模型引用；不含连接地址或凭据。 */
+  agentTeamProfile?: AgentTeamProfile;
   assistantImageModelId?: string;  // 助手生图模型 ID：generalModels 中的 image 模型 id
   assistantVideoModelId?: string;  // 助手生视频模型 ID：generalModels 中的 video 模型 id
   cloudParseEnabled?: boolean; // 是否启用云端解析，默认 true；关闭后助手仅使用本地规则

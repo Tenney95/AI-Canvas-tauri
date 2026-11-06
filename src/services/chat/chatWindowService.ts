@@ -26,9 +26,11 @@ import type {
   AgentApprovalResolution,
   AgentMode,
   AgentTask,
+  AgentTaskFocusRequest,
 } from '../../types/agent';
 import type { LocalFileGrantSummary } from './fileGrantService';
 import type { McpClientOption } from '../../types/mcpClient';
+import type { AgentTeamProfile, AssistantExecutionSelection } from '../../types/agentTeam';
 import type { ReferencePreviewContent, ReferencePreviewSource } from '../../types/referencePreview';
 
 export const CHAT_SYNC_EVENT = 'chat:sync-state';
@@ -39,6 +41,15 @@ export const CHAT_CLOSE_EVENT = 'chat:close';
 export const CHAT_MAIN_WINDOW_LABEL = 'main';
 export const CHAT_DETACHED_WINDOW_LABEL = 'chat-assistant';
 export const CHAT_REFERENCE_PREVIEW_EVENT = 'chat:reference-preview-result';
+export const CHAT_TEAM_ARTIFACT_EVENT = 'chat:team-artifact-result';
+
+export interface ChatTeamArtifactResponse {
+  requestId: string;
+  taskId: string;
+  artifactId: string;
+  text?: string;
+  error?: string;
+}
 
 /** 仅按需返回给独立窗口，不进入快照、补丁、消息或项目持久化。 */
 export interface ChatReferencePreviewResponse {
@@ -56,13 +67,16 @@ export interface ChatStateSnapshot {
   activeConversationId: string | null;
   messages: ChatMessage[];
   agentTasks: AgentTask[];
+  agentTaskFocus?: AgentTaskFocusRequest | null;
   projectId: string | null;
   projectName?: string;
+  isEpisodeProject?: boolean;
   generalModels: GeneralModelConfig[];
   /** 主窗口按配置投影的文本模型分组；仅含选择器元数据，不含厂商凭据或地址。 */
   assistantModelGroups: ModelGroup[];
   mediaModelOptions: MediaModelOption[];
   assistantModelId?: string;
+  agentTeamProfile?: AgentTeamProfile;
   assistantImageModelId?: string;
   assistantVideoModelId?: string;
   mediaModelAvailability?: Record<string, boolean>;
@@ -97,12 +111,15 @@ export interface ChatStatePatch {
   nodes?: ChatEntityPatch<Node<BaseNodeData>>;
   fields: Partial<{
     activeConversationId: string | null;
+    agentTaskFocus: AgentTaskFocusRequest | null;
     projectId: string | null;
     projectName: string | null;
+    isEpisodeProject: boolean;
     generalModels: GeneralModelConfig[];
     assistantModelGroups: ModelGroup[];
     mediaModelOptions: MediaModelOption[];
     assistantModelId: string | null;
+    agentTeamProfile: AgentTeamProfile | null;
     assistantImageModelId: string | null;
     assistantVideoModelId: string | null;
     mediaModelAvailability: Record<string, boolean> | null;
@@ -208,12 +225,15 @@ export function createChatStatePatch(
 ): ChatStatePatch {
   const fields: ChatStatePatch['fields'] = {};
   setChangedField(fields, 'activeConversationId', previous.activeConversationId, next.activeConversationId);
+  setChangedField(fields, 'agentTaskFocus', previous.agentTaskFocus, next.agentTaskFocus);
   setChangedField(fields, 'projectId', previous.projectId, next.projectId);
   setChangedField(fields, 'projectName', previous.projectName, next.projectName);
+  setChangedField(fields, 'isEpisodeProject', previous.isEpisodeProject, next.isEpisodeProject);
   setChangedField(fields, 'generalModels', previous.generalModels, next.generalModels);
   setChangedField(fields, 'assistantModelGroups', previous.assistantModelGroups, next.assistantModelGroups);
   setChangedField(fields, 'mediaModelOptions', previous.mediaModelOptions, next.mediaModelOptions);
   setChangedField(fields, 'assistantModelId', previous.assistantModelId, next.assistantModelId);
+  setChangedField(fields, 'agentTeamProfile', previous.agentTeamProfile, next.agentTeamProfile);
   setChangedField(fields, 'assistantImageModelId', previous.assistantImageModelId, next.assistantImageModelId);
   setChangedField(fields, 'assistantVideoModelId', previous.assistantVideoModelId, next.assistantVideoModelId);
   setChangedField(
@@ -264,6 +284,7 @@ export function applyChatStatePatch(
     assistantModelId: fields.assistantModelId === null
       ? undefined
       : (fields.assistantModelId ?? current.assistantModelId),
+    agentTeamProfile: fields.agentTeamProfile === null ? undefined : (fields.agentTeamProfile ?? current.agentTeamProfile),
     assistantImageModelId: fields.assistantImageModelId === null
       ? undefined
       : (fields.assistantImageModelId ?? current.assistantImageModelId),
@@ -304,6 +325,8 @@ export type ChatAction =
       /** 首次发送由主窗口创建当前范围的会话。 */
       conversationId?: string;
       dispatchMode?: 'queue' | 'interject';
+      executionSelection?: AssistantExecutionSelection;
+      requestId?: string;
     }
   | { type: 'switch_conversation'; conversationId: string }
   | { type: 'create_conversation'; projectId: string; title?: string }
@@ -312,6 +335,13 @@ export type ChatAction =
   | { type: 'archive_conversation'; conversationId: string }
   | { type: 'delete_conversation'; conversationId: string }
   | { type: 'set_agent_mode'; conversationId: string; mode: AgentMode }
+  | { type: 'set_execution_selection'; scopeId: string; conversationId?: string; selection: AssistantExecutionSelection; draft?: string }
+  | { type: 'set_team_profile'; profile: AgentTeamProfile }
+  | { type: 'read_team_artifact'; requestId: string; taskId: string; artifactId: string }
+  | { type: 'apply_team_result'; taskId: string }
+  | { type: 'restore_team_result'; taskId: string }
+  | { type: 'reconcile_team_result'; taskId: string }
+  | { type: 'amend_team_task'; taskId: string; instruction: string }
   | {
       type: 'resolve_agent_approval';
       approvalId: string;
@@ -435,6 +465,41 @@ export async function emitAction(action: ChatAction): Promise<void> {
   } catch {
     console.warn('[chatWindow] failed to emit action');
   }
+}
+
+/** 独立助手只请求主窗口已登记产物，不接收文件路径或直接读取项目目录。 */
+export async function requestTeamArtifactText(taskId: string, artifactId: string): Promise<string> {
+  if (!taskId || !artifactId || taskId.length > 160 || artifactId.length > 160) throw new Error('团队产物身份无效');
+  const { emit, listen } = await import('@tauri-apps/api/event');
+  const requestId = crypto.randomUUID();
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let unlisten: (() => void) | undefined;
+    const finish = (text?: string, error?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unlisten?.();
+      if (error) reject(new Error(error)); else resolve(text ?? '');
+    };
+    const timer = setTimeout(() => finish(undefined, '主窗口未返回团队成果，请回到主窗口核对后重试'), 20000);
+    void (async () => {
+      unlisten = await listen<ChatTeamArtifactResponse>(CHAT_TEAM_ARTIFACT_EVENT, (event) => {
+        const response = event.payload;
+        if (response.requestId !== requestId || response.taskId !== taskId || response.artifactId !== artifactId) return;
+        if (typeof response.text === 'string' && response.text.length > 120000) {
+          finish(undefined, '产物超过窗口预览上限，请在主窗口查看');
+        } else finish(response.text, response.error);
+      });
+      if (settled) { unlisten(); return; }
+      await emit(CHAT_ACTION_EVENT, { type: 'read_team_artifact', requestId, taskId, artifactId } satisfies ChatAction);
+    })().catch(() => finish(undefined, '无法连接主窗口读取团队成果'));
+  });
+}
+
+export async function emitTeamArtifactResponse(response: ChatTeamArtifactResponse): Promise<void> {
+  const { emitTo } = await import('@tauri-apps/api/event');
+  await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_TEAM_ARTIFACT_EVENT, response);
 }
 
 /** 独立窗口通知主窗口：即将关闭 */

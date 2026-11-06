@@ -2,6 +2,9 @@
  * projects — 回归测试：project bootstrap lifetime。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
+import { sha256BytesHex } from '../../src/services/mediaDataUrl';
+import { episodeTeamSourceSnapshot } from '../../src/services/seriesCreativeService';
 import type { BaseNodeData } from '../../src/types';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
@@ -1864,5 +1867,106 @@ describe('confirmed shared series library saves', () => {
     });
     await useAppStore.getState().saveCurrentProjectSilent();
     expect(libraryCalls()).toHaveLength(2);
+  });
+});
+
+describe('episode creative conditional writes', () => {
+  const openEpisode = () => {
+    vi.stubGlobal('crypto', webcrypto);
+    useAppStore.setState({
+      currentProjectId: 'team-episode',
+      projectLoadStatus: 'ready',
+      projects: [
+        { id: 'team-series', name: '剧集', createdAt: 1, updatedAt: 1 },
+        { id: 'team-episode', parentId: 'team-series', name: '第一集', createdAt: 1, updatedAt: 1,
+          episodeOutline: '原大纲', episodeScript: '原稿' },
+      ],
+    });
+  };
+
+  it('rejects a stale team candidate without saving or changing another field', async () => {
+    openEpisode();
+    const save = vi.fn(async () => 'team-episode');
+    useAppStore.setState({ saveCurrentProjectSilent: save });
+    const expectedHash = await sha256BytesHex(new TextEncoder().encode('较早的稿件'));
+    await expect(useAppStore.getState().updateEpisodeCreative('team-episode', { script: '候选' }, {
+      expected: { kind: 'episode', seriesId: 'team-series', episodeId: 'team-episode', field: 'script',
+        expectedHash, label: '第一集正文' },
+    })).rejects.toThrow('目标内容已被修改');
+    expect(save).not.toHaveBeenCalled();
+    expect(useAppStore.getState().projects.find((item) => item.id === 'team-episode'))
+      .toMatchObject({ episodeScript: '原稿', episodeOutline: '原大纲' });
+  });
+
+  it('serializes two competing candidates so the second cannot pass the same old hash', async () => {
+    openEpisode();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const saving = new Promise<void>((resolve) => { started = resolve; });
+    const save = vi.fn(async () => { started(); await gate; return 'team-episode'; });
+    useAppStore.setState({ saveCurrentProjectSilent: save });
+    const expectedHash = await sha256BytesHex(new TextEncoder().encode('原稿'));
+    const expected = { kind: 'episode' as const, seriesId: 'team-series', episodeId: 'team-episode',
+      field: 'script' as const, expectedHash, label: '第一集正文' };
+    const first = useAppStore.getState().updateEpisodeCreative('team-episode', { script: '候选甲' }, { expected });
+    await saving;
+    const second = useAppStore.getState().updateEpisodeCreative('team-episode', { script: '候选乙' }, { expected });
+    release();
+    expect(await first).toBe(true);
+    await expect(second).rejects.toThrow('目标内容已被修改');
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().projects.find((item) => item.id === 'team-episode')?.episodeScript).toBe('候选甲');
+  });
+
+  it('rejects applying a script based on an outline that changed after capture', async () => {
+    openEpisode();
+    const save = vi.fn(async () => 'team-episode');
+    useAppStore.setState({ saveCurrentProjectSilent: save });
+    const episode = useAppStore.getState().projects.find((item) => item.id === 'team-episode')!;
+    const [expectedHash, sourceHash] = await Promise.all([
+      sha256BytesHex(new TextEncoder().encode('原稿')),
+      sha256BytesHex(new TextEncoder().encode(episodeTeamSourceSnapshot(episode, 'script'))),
+    ]);
+    useAppStore.setState((state) => ({ projects: state.projects.map((item) => item.id === episode.id
+      ? { ...item, episodeOutline: '用户重新设计的大纲' } : item) }));
+    await expect(useAppStore.getState().updateEpisodeCreative(episode.id, { script: '按旧大纲写的正文' }, {
+      expected: { kind: 'episode', seriesId: 'team-series', episodeId: episode.id, field: 'script',
+        expectedHash, sourceHash, label: '第一集正文' },
+    })).rejects.toThrow('目标内容已被修改');
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('can restore the target field without treating its own previous application as changed upstream material', async () => {
+    openEpisode();
+    useAppStore.setState({ saveCurrentProjectSilent: vi.fn(async () => 'team-episode') });
+    const episode = useAppStore.getState().projects.find((item) => item.id === 'team-episode')!;
+    const sourceHash = await sha256BytesHex(new TextEncoder().encode(episodeTeamSourceSnapshot(episode, 'script')));
+    const target = { kind: 'episode' as const, seriesId: 'team-series', episodeId: episode.id,
+      field: 'script' as const, sourceHash, label: '第一集正文' };
+    expect(await useAppStore.getState().updateEpisodeCreative(episode.id, { script: '候选' }, {
+      expected: { ...target, expectedHash: await sha256BytesHex(new TextEncoder().encode('原稿')) },
+    })).toBe(true);
+    expect(await useAppStore.getState().updateEpisodeCreative(episode.id, { script: '原稿' }, {
+      expected: { ...target, expectedHash: await sha256BytesHex(new TextEncoder().encode('候选')) },
+    })).toBe(true);
+    expect(useAppStore.getState().projects.find((item) => item.id === episode.id)?.episodeScript).toBe('原稿');
+  });
+
+  it('only rolls back its own failed field rather than overwriting a later project rename', async () => {
+    openEpisode();
+    let rejectSave!: (error: Error) => void;
+    let started!: () => void;
+    const saving = new Promise<void>((resolve) => { started = resolve; });
+    const pending = new Promise<string>((_resolve, reject) => { rejectSave = reject; });
+    useAppStore.setState({ saveCurrentProjectSilent: vi.fn(() => { started(); return pending; }) });
+    const update = useAppStore.getState().updateEpisodeCreative('team-episode', { script: '候选' });
+    await saving;
+    useAppStore.setState((state) => ({ projects: state.projects.map((item) => item.id === 'team-episode'
+      ? { ...item, name: '用户新名称', updatedAt: 99 } : item) }));
+    rejectSave(new Error('disk full'));
+    expect(await update).toBe(false);
+    expect(useAppStore.getState().projects.find((item) => item.id === 'team-episode'))
+      .toMatchObject({ name: '用户新名称', updatedAt: 99, episodeScript: '原稿', episodeOutline: '原大纲' });
   });
 });

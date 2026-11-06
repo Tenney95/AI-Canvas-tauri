@@ -4,6 +4,8 @@
  * 本文件只描述可持久化的任务状态，不包含 AbortController、窗口句柄等运行时对象。
  */
 
+import type { AgentTeamRun } from './agentTeam';
+
 export type AgentMode = 'collaborative' | 'autonomous' | 'plan';
 
 export const AGENT_EXPERT_ROLES = [
@@ -396,6 +398,11 @@ export interface AgentTask {
   projectId: string;
   conversationId: string;
   userMessageId: string;
+  /** 团队任务不得在缺少/损坏团队快照时回退为普通单模型执行。 */
+  executionKind?: 'team';
+  teamRun?: AgentTeamRun;
+  /** 同一次团队提交的非敏感摘要，用于断线后的查重；不是调用模型的重试许可。 */
+  teamRequestDigest?: string;
   mode: AgentMode;
   goal: string;
   status: AgentTaskStatus;
@@ -427,6 +434,12 @@ export interface AgentTask {
   errorCode?: string;
   errorMessage?: string;
   mcpOperation?: McpOperationRecord;
+}
+
+/** 主窗口发起的任务定位请求，只用于当前 UI，不进入任务持久化。 */
+export interface AgentTaskFocusRequest {
+  taskId: string;
+  revision: number;
 }
 
 export const AGENT_TERMINAL_STATUSES = new Set<AgentTaskStatus>([
