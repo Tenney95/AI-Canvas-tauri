@@ -81,6 +81,7 @@ export async function runAgentLoop({
       : await assembleAgentContext({
       conversationId: initialTask.conversationId,
       projectId: initialTask.projectId,
+      includeProjectContext: !initialTask.workbenchTarget,
       systemPrompt,
       userMessage,
       excludeMessageIds,

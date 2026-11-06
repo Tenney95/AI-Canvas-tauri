@@ -663,6 +663,17 @@ describe('assistant custom protocol boundary', () => {
 });
 
 describe('Agent 工具说明与执行策略', () => {
+  it('按需求主动选择专业能力，保留简单任务、真实执行与授权边界', () => {
+    const prompt = buildAssistantToolGuidance(['skill_search', 'skill_load', 'agent_run_sub_agent']);
+    expect(prompt).toContain('用户无需先指定智能体或 Skill');
+    expect(prompt).toContain('不为每条消息强行调用');
+    expect(prompt).toContain('不要求用户再次手动引用');
+    expect(prompt).toContain('不把只读流程资料称为已经运行了独立智能体');
+    expect(prompt).toContain('只有收到成功的工具结果后');
+    expect(prompt).toContain('未授权自动调用');
+    expect(prompt).toContain('通用对话不读取任何项目画布或资产');
+  });
+
   it('只说明本轮开放的工具，不注入禁用工具的规则和索引', () => {
     const prompt = buildAssistantToolGuidance(['file_read_text'], 'plan');
     expect(prompt).toContain('Plan 规划模式');

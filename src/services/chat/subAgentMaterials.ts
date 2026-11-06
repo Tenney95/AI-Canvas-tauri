@@ -11,6 +11,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { DRAMA_ASSET_KIND_LABEL, type DramaAssetBase } from '../../types/dramaAssets';
 import type { AgentTask } from '../../types/agent';
 import type { SubAgentMaterial } from '../../types/subAgent';
+import { isGeneralAssistantScope } from './assistantScope';
 
 export const SUB_AGENT_MATERIAL_LIMITS = {
   /** 单个节点正文上限。 */
@@ -166,9 +167,14 @@ export interface SubAgentMaterialsResult {
 
 /** 按配置勾选的来源组装材料；没有勾选任何来源时返回空内容。 */
 export function buildSubAgentMaterials(
-  parentTask: Pick<AgentTask, 'goal'>,
+  parentTask: Pick<AgentTask, 'goal' | 'projectId' | 'workbenchTarget'>,
   materials: SubAgentMaterial[],
 ): SubAgentMaterialsResult {
+  // 通用会话与后台旧项目不得读取当前窗口正在展示的另一张画布。
+  if (parentTask.workbenchTarget || !parentTask.projectId || isGeneralAssistantScope(parentTask.projectId)
+    || parentTask.projectId !== useAppStore.getState().currentProjectId) {
+    return { content: '', truncated: false };
+  }
   const sections: string[] = [];
   let truncated = false;
 

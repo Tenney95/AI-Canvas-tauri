@@ -10,6 +10,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { UserSkill } from '../../types';
 import type {
   AgentPackageSkill,
+  AgentPackageInstallation,
   RuntimeSkill,
   SkillPickerOption,
 } from '../../types/agentPackage';
@@ -67,22 +68,22 @@ export function sanitizeSkillLabel(
 export type SkillCatalogSurface = 'assistant-model' | 'assistant-user' | 'mcp';
 
 /**
- * MCP 授权以当前安装记录为准，不能只信任异步构建的运行时 Skill 快照。
+ * 各调用面以当前安装记录为准，不能只信任异步构建的运行时 Skill 快照。
  * 关闭授权、停用、删除或重新导入内容后，即使目录刷新尚未完成也必须立即拒绝。
  */
-function hasCurrentAgentPackageMcpGrant(skill: AgentPackageSkill): boolean {
+function currentAgentPackageInstallation(skill: AgentPackageSkill): AgentPackageInstallation | undefined {
   const installation = useAppStore.getState().agentPackages.find(
     (item) => item.id === skill.installationId,
   );
-  return !!installation
+  return installation
     && installation.enabled
     && installation.health !== 'invalid'
     && installation.health !== 'missing'
-    && installation.mcpSkillReadEnabled
     && installation.packageId === skill.packageId
     && installation.source.sourceId === skill.sourceId
     && installation.contentHash === skill.packageContentHash
-    && installation.entrypoints.includes(skill.entryPath);
+    && installation.entrypoints.includes(skill.entryPath)
+    ? installation : undefined;
 }
 
 export function isSkillAvailableOnSurface(
@@ -93,15 +94,19 @@ export function isSkillAvailableOnSurface(
     if (surface === 'assistant-user') return skill.manifest?.userInvocable !== false;
     return skill.manifest?.disableModelInvocation !== true;
   }
+  const installation = currentAgentPackageInstallation(skill);
+  if (!installation) return false;
   if (surface === 'assistant-user') {
-    return skill.packageUserInvocable && skill.manifest?.userInvocable !== false;
+    return skill.packageUserInvocable && installation.manifest.routing.userInvocable
+      && skill.manifest?.userInvocable !== false;
   }
   if (surface === 'mcp') {
     return skill.mcpSkillReadEnabled
-      && hasCurrentAgentPackageMcpGrant(skill)
+      && installation.mcpSkillReadEnabled
       && skill.manifest?.disableModelInvocation !== true;
   }
-  return skill.packageAutoInvoke && skill.manifest?.disableModelInvocation !== true;
+  return skill.packageAutoInvoke && installation.manifest.routing.autoInvoke
+    && skill.manifest?.disableModelInvocation !== true;
 }
 
 export function isSkillModelInvocable(skill: RuntimeSkill): boolean {

@@ -70,6 +70,23 @@ beforeEach(() => {
 });
 
 describe('detached chat sync controller', () => {
+  it('会话分集绑定经快照和补丁传递，但独立窗口发送不能声明或改绑目标', () => {
+    const target = { seriesId: 'project-1', episodeId: 'episode-1' };
+    useAppStore.setState({ projectLoadStatus: 'ready', isCreatingProject: false, isReturningToStartPage: false,
+      switchingProjectName: null, projects: [...useAppStore.getState().projects,
+        { id: 'episode-1', parentId: 'project-1', name: '第一集', createdAt: 1, updatedAt: 1 }] });
+    const before = buildDetachedChatSnapshot(useAppStore.getState());
+    useAppStore.getState().updateConversation('conversation-1', { workbenchTarget: target });
+    const next = buildDetachedChatSnapshot(useAppStore.getState());
+    expect(next.conversations[0].workbenchTarget).toEqual(target);
+    expect(applyChatStatePatch(before, createChatStatePatch(before, next)).conversations[0].workbenchTarget).toEqual(target);
+    handleDetachedChatAction({ type: 'send_message', conversationId: 'conversation-1', content: '继续检查',
+      workbenchTarget: { seriesId: 'project-1', episodeId: 'forged-episode' } } as never, vi.fn());
+    expect(conversationControllerMocks.submit).toHaveBeenCalledOnce();
+    expect(conversationControllerMocks.submit.mock.calls[0][0]).not.toHaveProperty('workbenchTarget');
+    expect(useAppStore.getState().conversations[0].workbenchTarget).toEqual(target);
+  });
+
   it('projects profile options and previews without exposing full configuration', async () => {
     useAppStore.setState((state) => ({ config: { ...state.config, creationProfiles: [{ schemaVersion: 1, id: 'writing', version: '1.0.0', name: 'Writing',
       pluginRefs: [], agentPackageRefs: [], skillRefs: [], contextPolicyRef: 'project-default', toolAllowlist: ['web_search'] }] } }));
@@ -415,6 +432,29 @@ describe('detached chat sync controller', () => {
     controller.dispose();
   });
 
+  it('publishes the bound workbench episode model while preserving canvas scope and rejects text model changes', () => {
+    const updateSettings = vi.fn(async () => true);
+    useAppStore.setState((state) => ({ currentProjectId: 'episode-a',
+      projects: [...state.projects,
+        { id: 'episode-a', parentId: 'project-1', name: '画布A', createdAt: 1, updatedAt: 1,
+          settings: { defaultModels: { text: 'general/model-a' } } },
+        { id: 'episode-b', parentId: 'project-1', name: '目标B', createdAt: 1, updatedAt: 1,
+          settings: { defaultModels: { text: 'general/model-b' } } }],
+      conversations: state.conversations.map((conversation) => ({ ...conversation,
+        workbenchTarget: { seriesId: 'project-1', episodeId: 'episode-b' } })),
+      updateProjectSettings: updateSettings,
+    }));
+    const snapshot = buildDetachedChatSnapshot(useAppStore.getState());
+    expect(snapshot.assistantModelId).toBe('general/model-b');
+    expect(snapshot.projectId).toBe('episode-a');
+    expect(snapshot.conversations[0].projectId).toBe('project-1');
+    const beforeConfig = useAppStore.getState().config;
+    handleDetachedChatAction({ type: 'select_model', category: 'text', modelId: 'general/other' }, vi.fn());
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toBe(beforeConfig);
+    expect(useAppStore.getState().currentProjectId).toBe('episode-a');
+  });
+
   it('projects configured text model groups without provider credentials', () => {
     useAppStore.setState((state) => ({
       config: {
@@ -620,6 +660,13 @@ describe('detached chat sync controller', () => {
         sourceType: 'file',
         createdAt: 1,
       }],
+      agentPackages: [{ id: 'agent-package-1', packageId: 'com.example.drama',
+        manifest: { schemaVersion: 1, id: 'com.example.drama', name: 'AI短剧知识库', version: '1.4.1',
+          entrypoints: { instructions: '01-国内短剧/开场钩子/SKILL.md' }, supportedScopes: ['global'], supportedSurfaces: ['assistant'],
+          routing: { userInvocable: true, autoInvoke: false } },
+        source: { sourceId: 'opaque-source-secret', sourceType: 'folder', displayName: 'AI短剧知识库' },
+        entrypoints: ['01-国内短剧/开场钩子/SKILL.md'], skillCount: 1, fileCount: 1, totalBytes: 1, warnings: [],
+        health: 'ready', contentHash: 'package-hash', enabled: true, mcpSkillReadEnabled: false, installedAt: 1, updatedAt: 1 }],
       agentPackageSkills: [{
         id: 'ap-skill-1',
         name: '短剧开场钩子',

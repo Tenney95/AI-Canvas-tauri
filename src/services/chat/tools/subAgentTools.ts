@@ -50,7 +50,8 @@ export function registerSubAgentAgentTools(): Array<() => void> {
       authorize: (context, input) => {
         const store = useAppStore.getState();
         const parent = store.agentTasks.find((task) => task.id === context.taskId);
-        if (!parent || parent.conversationId !== context.conversationId) {
+        if (!parent || parent.conversationId !== context.conversationId
+          || parent.projectId !== context.projectId) {
           return { allowed: false, reason: '子智能体的父任务上下文已失效' };
         }
         if (parent.parentTaskId || parent.expertDepth) {

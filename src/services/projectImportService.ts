@@ -17,6 +17,7 @@ import { configValuesEqual } from './configPatch';
 import { sha256BytesHex } from './mediaDataUrl';
 import { toProjectSummaryRecord } from './indexedDb/projectSummary';
 import { selectArchiveImportPaths } from './projectArchiveValidation';
+import { normalizeConversationWorkbenchTarget } from './chat/workbenchConversationScope';
 
 export interface PreparedProjectImport {
   id: string; stagingProjectId: string; stagingFolder: string; archivePath: string; directory: string;
@@ -238,10 +239,23 @@ async function historyRows(session: PreparedProjectImport, records: ProjectSaveD
     const projectId = projectMap.get(session.records[index].id); if (!projectId) continue;
     const localConversations = new Set(payload.conversations.map((conversation) => conversation.id));
     if (options.appendChat) {
-      for (const conversation of payload.conversations) rows.push({ store: 'chatConversations', value: {
-        id: conversations.get(conversation.id)!, archiveOriginId: await origin('conversation', conversation), projectId, title: conversation.title, titleSource: conversation.titleSource,
-        pinned: false, archived: conversation.archived === true, agentMode: 'plan', createdAt: conversation.createdAt,
-        updatedAt: conversation.updatedAt, messageCount: payload.messages.filter((message) => message.conversationId === conversation.id).length } });
+      for (const conversation of payload.conversations) {
+        const sourceTarget = normalizeConversationWorkbenchTarget(conversation.workbenchTarget, conversation.projectId);
+        let workbenchTarget: typeof sourceTarget;
+        if (sourceTarget) {
+          const seriesId = projectMap.get(sourceTarget.seriesId), episodeId = projectMap.get(sourceTarget.episodeId);
+          if (!seriesId || !episodeId || seriesId !== projectId
+            || records.find((record) => record.id === episodeId)?.parentId !== seriesId) {
+            throw new Error('工作台历史的目标分集未保留在导入项目中，无法恢复只读绑定');
+          }
+          workbenchTarget = { seriesId, episodeId };
+        }
+        rows.push({ store: 'chatConversations', value: {
+          id: conversations.get(conversation.id)!, archiveOriginId: await origin('conversation', conversation), projectId, title: conversation.title, titleSource: conversation.titleSource,
+          workbenchTarget,
+          pinned: false, archived: conversation.archived === true, agentMode: 'plan', createdAt: conversation.createdAt,
+          updatedAt: conversation.updatedAt, messageCount: payload.messages.filter((message) => message.conversationId === conversation.id).length } });
+      }
       for (const message of payload.messages) {
         if (!localConversations.has(message.conversationId)) continue;
         rows.push({ store: 'chatMessages', value: { id: messages.get(message.id)!, archiveOriginId: await origin('message', message), projectId, conversationId: conversations.get(message.conversationId)!,

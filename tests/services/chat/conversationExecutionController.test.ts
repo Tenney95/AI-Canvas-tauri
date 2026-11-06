@@ -71,6 +71,7 @@ import type { MediaGenerationResult } from '../../../src/types/media';
 import type { ChatMessage } from '../../../src/types/chat';
 import type { CreationProfileSnapshot } from '../../../src/types/creationProfile';
 import { pauseAgentTask } from '../../../src/services/chat/agentTaskControl';
+import { WORKBENCH_AGENT_READ_TOOLS } from '../../../src/services/episodeWorkspaceScope';
 
 function arrangeConversation(): void {
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -155,6 +156,137 @@ describe('creation profile preparation and scheduling', () => {
     await Promise.resolve(); await Promise.resolve();
     expect(result.status).toBe('started'); expect(schedulerMocks.schedule).not.toHaveBeenCalled();
     expect(useAppStore.getState().agentTasks[0]).toMatchObject({ status: 'stopped', creationProfilePreparation: 'failed', errorCode: 'CREATION_PROFILE_PREPARATION_FAILED' });
+  });
+});
+
+describe('工作台分集 Agent 接线', () => {
+  const target = { seriesId: 'series', episodeId: 'episode-b' };
+  const episodeSelection = { id: 'episode-profile', version: '1.0.0', sha256: 'b'.repeat(64) };
+  const conversationSelection = { id: 'conversation-profile', version: '1.0.0', sha256: 'c'.repeat(64) };
+  const snapshot: CreationProfileSnapshot = { ...episodeSelection, name: '本集组合', contextPolicyRef: 'explicit-materials',
+    pluginRefs: [], agentPackageRefs: [], skillRefs: [], toolAllowlist: ['episode_read', 'skill_load', 'canvas_query', 'media_generate'] };
+
+  beforeEach(() => {
+    useAppStore.setState({
+      currentProjectId: 'episode-a', projectLoadStatus: 'ready', isCreatingProject: false,
+      isReturningToStartPage: false, switchingProjectName: null,
+      projects: [
+        { id: 'series', name: '剧集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-a', parentId: 'series', name: '第一集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-b', parentId: 'series', name: '第二集', createdAt: 1, updatedAt: 1 },
+        { id: 'other-series', name: '其他剧集', createdAt: 1, updatedAt: 1 },
+      ],
+      conversations: useAppStore.getState().conversations.map((conversation) => ({ ...conversation, projectId: 'series',
+        creationProfile: conversationSelection, executionSelection: { kind: 'team' as const, templateId: 'review' as const } })),
+    });
+  });
+
+  const submit = () => submitConversationMessage({ content: '检查本集结构', projectId: 'episode-b',
+    conversationId: 'conversation-1', workbenchTarget: target, executionSelection: { kind: 'single' } });
+
+  it('允许离画布同剧集分集任务，仅开放固定只读工具，不继承会话组合或团队', () => {
+    const result = submit();
+    expect(result.status).toBe('started');
+    const task = useAppStore.getState().agentTasks[0];
+    expect(task).toMatchObject({ projectId: 'episode-b', conversationId: 'conversation-1', workbenchTarget: target,
+      toolAllowlist: [...WORKBENCH_AGENT_READ_TOOLS] });
+    expect(task.executionKind).toBeUndefined();
+    expect(task.creationProfile).toBeUndefined();
+    expect(creationMocks.capture).not.toHaveBeenCalled();
+    expect(schedulerMocks.schedule).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().currentProjectId).toBe('episode-a');
+  });
+
+  it('准备本集组合包后仍与只读固定集合及显式 Skill 限制取交集', async () => {
+    useAppStore.setState({
+      projects: useAppStore.getState().projects.map((project) => project.id === 'episode-b'
+        ? { ...project, creationProfile: episodeSelection } : project),
+      userSkills: [{ id: 'restrict', name: '只读规则', description: '', fileName: 'SKILL.md', sourceType: 'file', createdAt: 1,
+        content: '按证据分析', manifest: { allowedTools: ['skill_load', 'canvas_query'] } }],
+    });
+    let finish!: (value: { snapshot: CreationProfileSnapshot; skillBindings: [] }) => void;
+    const preparing = new Promise<{ snapshot: CreationProfileSnapshot; skillBindings: [] }>((resolve) => { finish = resolve; });
+    creationMocks.capture.mockReturnValueOnce(preparing);
+    const result = submitConversationMessage({ content: '检查本集 @skill{restrict|只读规则}', projectId: 'episode-b',
+      conversationId: 'conversation-1', workbenchTarget: target, executionSelection: { kind: 'single' } });
+    if (result.status !== 'started' || !result.taskId) throw new Error('Expected workbench task');
+    expect(creationMocks.capture).toHaveBeenCalledWith(episodeSelection, 'episode-b');
+    expect(schedulerMocks.schedule).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0]).toMatchObject({ creationProfilePreparation: 'pending', toolAllowlist: ['skill_load'] });
+    finish({ snapshot, skillBindings: [] });
+    await preparing;
+    const task = useAppStore.getState().agentTasks.find((entry) => entry.id === result.taskId)!;
+    expect(task).toMatchObject({ creationProfile: snapshot, creationProfilePreparation: 'ready', toolAllowlist: ['skill_load'], workbenchTarget: target });
+    expect(task.toolAllowlist).not.toContain('canvas_query');
+    expect(task.toolAllowlist).not.toContain('media_generate');
+    expect(schedulerMocks.schedule).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().currentProjectId).toBe('episode-a');
+  });
+
+  it('清理旧任务后续聊仍继承会话分集，当前画布参数不能改变只读目标', () => {
+    const first = submit();
+    expect(first.status).toBe('started');
+    useAppStore.getState().updateConversation('conversation-1', { executionSelection: { kind: 'single' } });
+    useAppStore.setState({ agentTasks: [] });
+    const next = submitConversationMessage({ content: '继续检查人物动机', projectId: 'episode-a', conversationId: 'conversation-1' });
+    expect(next.status).toBe('started');
+    expect(useAppStore.getState().conversations[0].workbenchTarget).toEqual(target);
+    expect(useAppStore.getState().agentTasks[0]).toMatchObject({ projectId: 'episode-b', workbenchTarget: target,
+      toolAllowlist: [...WORKBENCH_AGENT_READ_TOOLS] });
+    expect(useAppStore.getState().currentProjectId).toBe('episode-a');
+  });
+
+  it('已绑定会话不能通过新提交参数改绑另一个分集', () => {
+    submit();
+    const before = useAppStore.getState();
+    expect(submitConversationMessage({ content: '换一集', projectId: 'episode-a', conversationId: 'conversation-1',
+      executionSelection: { kind: 'single' }, workbenchTarget: { seriesId: 'series', episodeId: 'episode-a' } }))
+      .toEqual({ status: 'ignored' });
+    expect(useAppStore.getState().conversations[0].workbenchTarget).toEqual(target);
+    expect(useAppStore.getState().agentTasks).toHaveLength(before.agentTasks.length);
+    expect(useAppStore.getState().messages).toHaveLength(before.messages.length);
+  });
+
+  it('离开所属剧集后插话也不能绕过绑定范围进入旧任务', () => {
+    const first = submit();
+    if (first.status !== 'started' || !first.taskId) throw new Error('Expected workbench task');
+    schedulerMocks.activeTaskId = first.taskId;
+    useAppStore.getState().updateConversation('conversation-1', { executionSelection: { kind: 'single' } });
+    useAppStore.setState({ currentProjectId: 'other-series' });
+    expect(submitConversationMessage({ content: '继续分析', conversationId: 'conversation-1', dispatchMode: 'interject' }))
+      .toEqual({ status: 'ignored' });
+    expect(interjectionMocks.enqueue).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks).toHaveLength(1);
+    expect(useAppStore.getState().messages).toHaveLength(2);
+  });
+
+  it.each(['global', 'wrong-series', 'deleted-conversation', 'missing-conversation'] as const)('%s 不能声明工作台分集授权', (reason) => {
+    if (reason === 'global') useAppStore.setState({ conversations: useAppStore.getState().conversations.map((conversation) => ({ ...conversation, projectId: GENERAL_ASSISTANT_SCOPE_ID })) });
+    if (reason === 'wrong-series') useAppStore.setState({ currentProjectId: 'other-series' });
+    if (reason === 'deleted-conversation') useAppStore.setState({ conversations: useAppStore.getState().conversations.map((conversation) => ({ ...conversation, deletedAt: 2 })) });
+    if (reason === 'missing-conversation') useAppStore.setState({ conversations: [] });
+    expect(submit()).toEqual({ status: 'ignored' });
+    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+    expect(useAppStore.getState().messages).toHaveLength(0);
+    expect(schedulerMocks.schedule).not.toHaveBeenCalled();
+    expect(creationMocks.capture).not.toHaveBeenCalled();
+  });
+
+  it.each(['wrong-series', 'deleted-conversation'] as const)('组合包准备期间 %s 不再调度', async (reason) => {
+    useAppStore.setState({ projects: useAppStore.getState().projects.map((project) => project.id === 'episode-b'
+      ? { ...project, creationProfile: episodeSelection } : project) });
+    let finish!: (value: { snapshot: CreationProfileSnapshot; skillBindings: [] }) => void;
+    const preparing = new Promise<{ snapshot: CreationProfileSnapshot; skillBindings: [] }>((resolve) => { finish = resolve; });
+    creationMocks.capture.mockReturnValueOnce(preparing);
+    const result = submit();
+    expect(result.status).toBe('started');
+    if (reason === 'wrong-series') useAppStore.setState({ currentProjectId: 'other-series' });
+    else useAppStore.setState({ conversations: useAppStore.getState().conversations.map((conversation) => ({ ...conversation, deletedAt: 2 })) });
+    finish({ snapshot, skillBindings: [] });
+    await preparing;
+    await Promise.resolve();
+    expect(schedulerMocks.schedule).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0]).toMatchObject({ status: 'stopped', creationProfilePreparation: 'failed' });
   });
 });
 

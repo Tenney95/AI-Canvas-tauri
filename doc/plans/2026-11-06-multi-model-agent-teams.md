@@ -1,6 +1,7 @@
 # 多模型 Agent 集群：同任务协作与剧本团队规划
 
 > 日期：2026-11-06。状态：首期通用 API 团队与双入口之后，用户已确认并实施 [Harness 专项](./2026-11-06-harness-capabilities.md)中的 v2 任务图、组合包与固定 Codex 建议执行器。未运行本轮测试、类型检查、构建或真实模型调用，待用户验收；多模型质量对照仍未完成。
+> 2026-11-07 补充：按需求选用智能体与 Skill 的实现、当前边界及验收见第 11 节；其「智能调度」替代下文旧界面中的「单模型」名称，工作台普通创作动作改为直接发起只读任务。
 > 用户目标：多个主流模型共同完成同一任务，初步考虑 GPT 负责结构、千问负责剧本，Kimi、豆包、DeepSeek 等分工参与；各家模型通过通用协议接入，不限定「小黑马」为单独厂商。角色分工为可调整候选，尚无实测能力排名。
 > 同日补充：用户要求 AI 助手与剧本创作工作台都能发起、查看和继续协作任务。两处共用 Team Run，首个可用版本须同时提供入口，不只将工作台动作转成助手待发送草稿。界面参考用户提供的两张截图，截图内稿件仅为布局参考，不是需要修改的内容。
 > 调研阶段只读取公开 GitHub 源码和本仓库；用户随后明确要求「开始实施吧」。本轮按已批准范围编写代码和回归用例，未安装依赖；验证执行仍遵守仓库 `AGENTS.md`。下文设计与实施前基线用于解释边界，实际交付及缺口以第 8、10 节为准。
@@ -245,3 +246,36 @@ npm run test:typecheck
 回退：关闭团队入口、阻止新阶段并取消在途角色，保留已生成版本和脱敏历史，单模型与原只读专家继续工作。涉及新增记录时保留旧版本可读性并提供明确迁移/回退边界，不删用户稿件，不以禁用开关冒充数据库回滚。
 
 当前交付为通用文本 API 团队、助手/工作台双入口及分集大纲/正文受控应用的首版代码。外部协作与质量验证继续分别归各专项维护。**本次未运行测试，待用户验收。**
+
+## 11. 按需求智能调度（2026-11-07）
+
+状态：已实现并编写回归用例，仅完成源码、调用链、UTF-8 和差异静态核对。**本次未运行测试，待用户验收。**
+
+- 两个入口共用的执行选项将「单模型」显示为「智能调度」，内部 `single/team` 数据合同兼容。助手按需求主动加载匹配的 Skill、读取附属资料及派出只读领域智能体；简单请求直接完成。不自动安装、启用或绕过 Skill／智能体包的自动调用授权，包入口资料不等于运行独立智能体。
+- `workbenchAgentInvocationService.ts` 将工作台结构创作、剧本写作和字段润色直接提交到 `conversationExecutionController.ts`。先保存脏稿，复核原选集，再创建独立创作会话；目标为所选分集，会话仍归剧集。工作台摘要展示任务状态和最近调用，「查看调用与结果」打开同一会话，不重投请求。
+- 会话与 `AgentTask.workbenchTarget` 仅保存剧集／分集 ID，续聊和资料分支保留同一绑定，不能随画布或新提交参数改绑。权限固定为 `episode_read`、Skill 检索／读取、只读子智能体和任务结果回读，再与显式 Skill／组合包限制取交集。`episodeWorkspaceScope.ts` 在模型与工具调用、返回、回读和恢复时复核当前已加载剧集、目标与会话；`episode_read` 只读绑定分集。普通 Agent/MCP 不获得跨分集权限。相同目标、内容和模式的活动创作请求复用原任务。
+- 会话目标随历史保存、分支及项目归档保留；导入沿已有项目映射重建剧集／分集关联，目标未保留时明确拒绝追加该历史，不能丢掉绑定后当普通会话恢复。其他产品的待发送草稿另开普通会话，保留原创作会话。
+- 主窗口和独立助手显示目标分集实际模型及上下文预算；工作台创作会话沿用分集模型设置，不能在当前另一集的输入框误改模型或切换固定团队。创作组合配置仍从工作台调整，会话内不展示无效的组合包选择。
+- 工作台任务保留本会话历史，不注入其他会话历史、项目记忆、学习样本或画布摘要；执行和上下文压缩都不解析稿件／Skill 中的隐式画布、图片和资产引用。子任务继承目标，工具进一步收窄，不可读取当前画布／资产或嵌套派工；所需正文从绑定分集按页读取，或由父模型提供必要片段。
+- 智能体包 Skill 的显式／自动／MCP 读取均复核当前安装身份及各调用面授权；异步读取和大结果回读也复核同一授权，停用、更新或撤权后旧读取失效。已经进入模型上下文的文字无法撤回，冻结的显式 Skill 快照仍沿用原有任务合同。
+- 通用助手开放只读子智能体，父子工具范围取交集；无项目或后台旧项目不注入当前画布材料。选择、执行、错误与用量仍走 Registry、Policy、持久化回执和原有任务组预算，未知调用不自动重投。
+- 固定「团队」保持已有角色、模型、图和预算合同，不自动切到整队调用；团队成员仍无工具循环，Skill 仍来自显式绑定或组合包。全剧拆分、章节浏览和资产提取沿用既有入口，不纳入本次分集只读任务。智能调度只交付诊断／候选，不自动覆盖已保存剧本。
+
+源码入口：`ScriptWorkbench.tsx`、`TeamExecutionPicker.tsx`、`workbenchAgentInvocationService.ts`、`conversationExecutionController.ts`、`agentRuntime.ts`、`agentRoundExecutor.ts`、`agentPromptGuidance.ts`、`episodeWorkspaceScope.ts`、`subAgentService.ts`、`subAgentMaterials.ts`、`tools/seriesTools.ts`。
+
+桌面验收前置：准备同剧集 A/B 两集短稿、可用文本模型、已允许自动调用且用途明确的 Skill，以及可用的只读子智能体。按以下顺序操作：
+
+1. 画布保持 A，工作台选 B，在「智能调度」点击优化大纲、对白润色或创作字段按钮；脏稿先保存，随后直接出现任务，不再等待手动发送草稿。模型按目标选择能力，匹配时有真实 Skill／派工步骤；草案只使用 B 的内容，A 画布与两集原稿不被覆盖。简单请求无需强行派工。
+2. 点击任务「查看调用与结果」，应定位原会话、查看真实工具结果与最终草案，不新建第二次调用；快速双击同动作仅一个活动任务。在原会话继续要求修改时仍处理 B 集并保留前文，即使旧任务已清理也不切回 A。主／独立助手应显示 B 集模型及预算，模型选择被锁定且提示如何到该集设置调整，不改 A 的模型。回归独立工作台、独立助手、关闭／收回、深浅主题及三语界面。
+3. 在项目助手与启动页通用助手发出适合现有专长的请求；无需手工 `@skill`，有匹配能力时主动调用，通用助手及其子任务看不到项目画布。停用／关闭自动调用授权后，原能力不再可用；明确限制工具的 Skill／组合包不能被派工绕过。
+4. 覆盖缺文本模型、保存失败、准备期间切集／切到其他剧集、删除来源会话、读取长稿、停止、预算耗尽与重启。缺模型不创建付费任务；保存失败不开始；离开原剧集后旧响应不继续执行／写回；重启只恢复暂停，回到原剧集后按原预算继续。
+5. 切到固定团队，回归角色配置、三类模板、同任务应用／恢复和原权限；普通助手与 MCP 仍不能通过工作台目标越权读取其他分集。
+
+自动回归用例已编写，尚未执行。用户可在仓库根目录运行：
+
+```powershell
+npx vitest run tests/services/chat/workbenchAgentInvocationService.test.ts tests/services/chat/workbenchConversationScope.test.ts tests/services/chat/conversationExecutionController.test.ts tests/services/workbenchAgentScope.test.ts tests/services/chat/seriesTools.test.ts tests/services/chat/subAgentMaterials.test.ts tests/services/chat/subAgentService.test.ts tests/services/chat/subAgentTools.test.ts tests/services/chat/skillCatalog.test.ts tests/services/chat/skillTools.test.ts tests/services/chat/agentConversationContext.test.ts tests/services/chat/conversationBranchService.test.ts tests/services/chat/detachedChatSyncController.test.ts tests/services/assistantStreamProtocol.test.ts tests/components/agentTeamControls.test.tsx tests/components/scriptWorkbench.test.tsx tests/components/chatMessages.test.ts tests/store/chat.test.ts
+npx vitest run tests/services/projectArchiveValidation.test.ts tests/services/projectTransferService.test.ts tests/services/projectImportService.test.ts
+```
+
+回滚：撤销本节对应智能调度入口、工作台目标接线与只读范围扩展，恢复工作台的待发送草稿行为；保留已保存稿件、会话及任务记录，不删除原团队图与产物。不需要原生权限、依赖或数据库版本变更。

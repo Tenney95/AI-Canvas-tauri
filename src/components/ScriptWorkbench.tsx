@@ -41,7 +41,8 @@ import { resolveAgentDispatchOutcome } from '../services/chat/agentDurabilitySer
 import { configValuesEqual } from '../services/configPatch';
 import { normalizeCreationProfileSelection } from '../services/creationProfiles/creationProfileManifest';
 import { normalizeExecutionSelection, normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
-import { appendTeamInstruction, startTeamInvocation, openTeamTaskInAssistant, readTeamTaskArtifact } from '../services/chat/teams/teamInvocationService';
+import { appendTeamInstruction, startTeamInvocation, openAgentTaskInAssistant, openTeamTaskInAssistant, readTeamTaskArtifact } from '../services/chat/teams/teamInvocationService';
+import { startWorkbenchAgentInvocation } from '../services/chat/workbenchAgentInvocationService';
 import { captureEpisodeTeamContext, applyTeamResult, restoreTeamResult, reconcileTeamResult } from '../services/chat/teams/teamResultApplyService';
 import { pauseAgentTask, stopAgentTask } from '../services/chat/agentTaskControl';
 import { cancelScheduledAgentExecution } from '../services/chat/agentScheduler';
@@ -387,6 +388,12 @@ export default function ScriptWorkbench({
     ? agentTasks.filter((task) => task.teamRun?.target?.episodeId === currentEpisodeId)
       .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5)
     : [];
+  const episodeAgentTasks = currentEpisodeId ? agentTasks
+    .filter((task) => !task.parentTaskId && task.workbenchTarget?.episodeId === currentEpisodeId
+      && task.workbenchTarget.seriesId === seriesId)
+    .sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5)
+    .map((task) => ({ id: task.id, status: task.status, title: t('智能调度'),
+      activity: task.steps.find((step) => step.id === task.currentStepId)?.title ?? task.steps.at(-1)?.title ?? '' })) : [];
 
   useEffect(() => {
     if (!currentEpisodeId || !contextReady) return;
@@ -396,7 +403,8 @@ export default function ScriptWorkbench({
       const state = useAppStore.getState();
       if (!current || selectedEpisodeRef.current !== episodeId || !readEpisodeWorkspaceScope(state, episodeId)) return;
       for (const task of tasks) {
-        if (task.teamRun?.target?.episodeId !== episodeId || task.teamRun.target.seriesId !== seriesId) continue;
+        const target = task.teamRun?.target ?? task.workbenchTarget;
+        if (target?.episodeId !== episodeId || target.seriesId !== seriesId) continue;
         const live = state.agentTasks.find((item) => item.id === task.id);
         if (!live || live.updatedAt < task.updatedAt) state.upsertAgentTask(task);
       }
@@ -525,12 +533,31 @@ export default function ScriptWorkbench({
     else { selectedEpisodeRef.current = episodeId; setSelectedEpisodeId(episodeId); }
   };
 
+  const startAutomaticCreativeRequest = async (content: string) => {
+    if (!currentEpisode || !contextReady || startingTeamRef.current || savingEpisodeRef.current || editorWriteLocked) return;
+    const episodeId = currentEpisode.id;
+    startingTeamRef.current = true;
+    setIsStartingTeam(true);
+    try {
+      if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
+      if (selectedEpisodeRef.current !== episodeId) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
+      startWorkbenchAgentInvocation({ episodeId, content, mode: teamMode });
+      showToast(t('智能调度已开始，可查看调用与结果'));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('创作任务启动失败'), 'error');
+      throw error;
+    } finally {
+      startingTeamRef.current = false;
+      setIsStartingTeam(false);
+    }
+  };
+
   const openCreativeAction = async (action: EpisodeCreativeAction, requestId?: string) => {
     if (!series || !currentEpisode || !contextReady) return;
     if (executionSelection.kind === 'team') {
       const templateId: TeamTemplateId | undefined = action === 'optimize-outline' ? 'outline'
         : action === 'write-script' ? 'script' : action === 'diagnose' ? 'review' : undefined;
-      if (!templateId) { showToast(t('这个创作动作暂用单模型，请切换执行方式')); return; }
+      if (!templateId) { showToast(t('这个创作动作请使用智能调度')); return; }
       if (startingTeamRef.current || savingEpisodeRef.current || editorWriteLocked) return;
       startingTeamRef.current = true;
       setIsStartingTeam(true);
@@ -554,13 +581,11 @@ export default function ScriptWorkbench({
       }
       return;
     }
-    if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
-    openChatWithDraft(buildEpisodeCreativePrompt(action, {
+    await startAutomaticCreativeRequest(buildEpisodeCreativePrompt(action, {
       seriesName: series.name,
       episodeId: currentEpisode.id,
       episodeName: currentEpisode.name,
     }));
-    showToast(t('已把创作请求放入对话输入框'));
   };
 
   const openEpisodeShotlist = async () => {
@@ -584,15 +609,13 @@ export default function ScriptWorkbench({
     }
   };
 
-  const openFieldPolish = async (field: CreativeFieldId, label: string, hasValue: boolean) => {
+  const openFieldPolish = async (field: CreativeFieldId, hasValue: boolean) => {
     if (!series || !currentEpisode || !contextReady) return;
-    if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
-    openChatWithDraft(buildCreativeFieldPolishPrompt(field, {
+    await startAutomaticCreativeRequest(buildCreativeFieldPolishPrompt(field, {
       seriesName: series.name,
       episodeId: currentEpisode.id,
       episodeName: currentEpisode.name,
     }, hasValue));
-    showToast(t('已准备{name}的 AI 创作请求', { name: label }));
   };
 
   const openSplitDraft = () => {
@@ -679,7 +702,7 @@ export default function ScriptWorkbench({
     existingAssets: (seriesAssetPreview?.kind === 'character' ? dramaAssets.characters : seriesAssetPreview?.kind === 'scene' ? dramaAssets.scenes : dramaAssets.props)
       .map((asset) => ({ name: asset.name, summary: asset.summary })),
     assetPanel: currentEpisode && (activeTab === 'characters' || activeTab === 'props') ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
-    executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks,
+    executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks, episodeAgentTasks,
     creationProfiles: creationProfileOptions(), externalAgents: externalCatalog,
     theme: resolveAppearanceMode(config.appearance?.mode ?? config.theme), language: config.language,
     appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
@@ -710,7 +733,8 @@ export default function ScriptWorkbench({
     }
     const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview'];
     if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
-    if ('taskId' in action && !episodeTeamTasks.some((task) => task.id === action.taskId)) throw new Error(t('团队任务不属于工作台当前分集'));
+    if ('taskId' in action && !(action.type === 'view_agent_task' ? episodeAgentTasks : episodeTeamTasks)
+      .some((task) => task.id === action.taskId)) throw new Error(t('任务不属于当前分集'));
     switch (action.type) {
       case 'flush_draft': return true;
       case 'edit_text': if ((action.field === 'outline' || action.field === 'script') && typeof action.value === 'string') setTextDraft(action.field, action.value); return true;
@@ -768,7 +792,15 @@ export default function ScriptWorkbench({
         setRenamingEpisodeId(null); return true;
       }
       case 'creative': return openCreativeAction(action.action, request?.requestId);
-      case 'polish': return openFieldPolish(action.field, action.label, action.hasValue);
+      case 'view_agent_task': {
+        const task = useAppStore.getState().agentTasks.find((item) => item.id === action.taskId && !item.parentTaskId
+          && item.workbenchTarget?.episodeId === currentEpisode?.id && item.workbenchTarget.seriesId === seriesId);
+        if (!task || !readEpisodeWorkspaceScope(useAppStore.getState(), task.projectId)) throw new Error(t('任务不属于当前分集'));
+        await openAgentTaskInAssistant(task.id);
+        requestClose();
+        return true;
+      }
+      case 'polish': return openFieldPolish(action.field, action.hasValue);
       case 'shotlist': return openEpisodeShotlist();
       case 'split_draft': openSplitDraft(); return true;
       case 'extract_series': return extractFullScriptAssets(action.kind, action.label);
@@ -1432,6 +1464,9 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                 externalAgents={snapshot.externalAgents ?? []}
                 onRefreshExternalAgents={async () => { await dispatch({ type: 'refresh_external_agents' }); }}
                 theme={snapshot.theme} disabled={isSaving || isStartingTeam || editorWriteLocked || !contextReady} compact defaultTemplateId="outline" />
+              {executionSelection.kind === 'single' && <p className="text-[10px] leading-4 text-canvas-text-muted">
+                {t('点击创作动作后自动选用已授权的智能体与 Skill，调用与草案可在助手查看，不会覆盖正文。')}
+              </p>}
               {executionSelection.kind === 'team' && <>
                 <div className="flex items-center justify-between gap-2 text-[11px] text-canvas-text-secondary">
                   <span>{t('任务权限')}</span>
@@ -1442,6 +1477,17 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                 <p className="text-[10px] leading-4 text-canvas-text-muted">{t('先保存当前改稿，再由团队生成候选；点击下方动作开始，不会自动覆盖正文。')}</p>
               </>}
             </div>
+
+            {(snapshot.episodeAgentTasks ?? []).map((task) => <section key={task.id} className="ui-card mt-2 space-y-2 p-2" aria-label={t('智能调度任务')}>
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <span className="ui-label truncate">{task.title}</span>
+                <span className="ui-badge">{t(task.status === 'completed' ? '已完成' : task.status === 'failed' ? '失败'
+                  : task.status === 'stopped' ? '已停止' : task.status === 'paused' ? '已暂停' : task.status === 'queued' ? '排队中' : '执行中')}</span>
+              </div>
+              {task.activity && <p className="truncate text-xs text-canvas-text-secondary" title={task.activity}>{task.activity}</p>}
+              <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={!contextReady}
+                onClick={() => fire({ type: 'view_agent_task', taskId: task.id })}>{t('查看调用与结果')}</button>
+            </section>)}
 
             {episodeTeamTasks.map((task) => <TeamRunCard key={task.id} task={task} compact
               onPause={(taskId) => fire({ type: 'team_control', taskId, action: 'pause' })}

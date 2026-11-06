@@ -85,6 +85,27 @@ afterEach(async () => {
 });
 
 describe('项目导入历史追加编排', () => {
+  it('新版历史追加把工作台会话目标映射到接收端剧集和分集', async () => {
+    const source = project('source'), episode = project('episode', source.id);
+    const payload = chat(source.id, 'workbench');
+    payload.conversations[0].workbenchTarget = { seriesId: source.id, episodeId: episode.id };
+    const session = await prepareArchive([source, episode], [payload, emptyChat()]);
+    await applyProjectImport(session, null, {}, { appendChat: true, appendMemories: false });
+    const { records, history } = committed(), owner = records.find((record) => !record.parentId)!;
+    const importedEpisode = records.find((record) => record.parentId === owner.id)!;
+    expect(history.find((row) => row.store === 'chatConversations')!.value.workbenchTarget)
+      .toEqual({ seriesId: owner.id, episodeId: importedEpisode.id });
+  });
+
+  it('新版无法映射工作台历史目标时拒绝追加，不提交失去限制的会话', async () => {
+    const source = project('source'), payload = chat(source.id, 'workbench');
+    payload.conversations[0].workbenchTarget = { seriesId: source.id, episodeId: 'missing-episode' };
+    const session = await prepareArchive([source], [payload]);
+    await expect(applyProjectImport(session, null, {}, { appendChat: true, appendMemories: false }))
+      .rejects.toThrow('无法恢复只读绑定');
+    expect(mocks.commit).not.toHaveBeenCalled();
+  });
+
   it('关闭预览立即失效，物理清理失败后重试仍会删除，成功后不再重复删除', async () => {
     const source = project('source'), session = await prepareArchive([source], [emptyChat()]);
     mocks.delete.mockRejectedValueOnce(new Error('文件被占用'));

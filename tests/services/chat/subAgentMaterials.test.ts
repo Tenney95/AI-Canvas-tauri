@@ -10,6 +10,7 @@ import {
   SUB_AGENT_MATERIAL_LIMITS,
 } from '../../../src/services/chat/subAgentMaterials';
 import { emptyDramaAssetLibrary } from '../../../src/types/dramaAssets';
+import { GENERAL_ASSISTANT_SCOPE_ID } from '../../../src/services/chat/assistantScope';
 
 function textNode(id: string, output: string, label = '剧本') {
   return {
@@ -38,7 +39,7 @@ function character(name: string, summary: string) {
 }
 
 beforeEach(() => {
-  useAppStore.setState({ nodes: [], dramaAssets: emptyDramaAssetLibrary() });
+  useAppStore.setState({ currentProjectId: 'project-1', nodes: [], dramaAssets: emptyDramaAssetLibrary() });
 });
 
 describe('sanitizeDomainText', () => {
@@ -88,31 +89,31 @@ describe('buildSubAgentMaterials', () => {
         textNode('node-b', '不该出现的机密内容'),
       ] as never,
     });
-    const result = buildSubAgentMaterials({ goal: '分析 @{node-a:剧本}' }, ['mentioned_nodes']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '分析 @{node-a:剧本}' }, ['mentioned_nodes']);
     expect(result.content).toContain('被引用的剧本内容');
     expect(result.content).not.toContain('不该出现的机密内容');
   });
 
   it('带不可信边界说明', () => {
     useAppStore.setState({ nodes: [textNode('node-a', '正文')] as never });
-    const result = buildSubAgentMaterials({ goal: '@{node-a:剧本}' }, ['mentioned_nodes']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '@{node-a:剧本}' }, ['mentioned_nodes']);
     expect(result.content).toContain('不可信');
   });
 
   it('没有引用任何节点时明确说明而不是留空', () => {
-    const result = buildSubAgentMaterials({ goal: '写个分镜' }, ['mentioned_nodes']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '写个分镜' }, ['mentioned_nodes']);
     expect(result.content).toContain('没有 @ 引用任何节点');
   });
 
   it('引用了已删除的节点时跳过而不抛错', () => {
-    const result = buildSubAgentMaterials({ goal: '@{gone:旧节点}' }, ['mentioned_nodes']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '@{gone:旧节点}' }, ['mentioned_nodes']);
     expect(result.content).toContain('已不存在');
   });
 
   it('单节点正文按上限截断', () => {
     const long = 'a'.repeat(SUB_AGENT_MATERIAL_LIMITS.nodeChars + 500);
     useAppStore.setState({ nodes: [textNode('node-a', long)] as never });
-    const result = buildSubAgentMaterials({ goal: '@{node-a:剧本}' }, ['mentioned_nodes']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '@{node-a:剧本}' }, ['mentioned_nodes']);
     expect(result.truncated).toBe(true);
     expect(result.content).toContain('已截断');
     expect(result.content).not.toContain('a'.repeat(SUB_AGENT_MATERIAL_LIMITS.nodeChars + 1));
@@ -128,7 +129,7 @@ describe('buildSubAgentMaterials', () => {
       ] as never,
     });
     const result = buildSubAgentMaterials(
-      { goal: '@{n1:一} @{n2:二} @{n3:三}' },
+      { projectId: 'project-1', goal: '@{n1:一} @{n2:二} @{n3:三}' },
       ['mentioned_nodes'],
     );
     // 第三个节点仍然列出，只是内容被压到剩余额度内，而不是整条丢弃。
@@ -149,13 +150,13 @@ describe('buildSubAgentMaterials', () => {
         characters: [character('小美', '女主角')],
       } as never,
     });
-    const result = buildSubAgentMaterials({ goal: '做分镜' }, ['drama_assets']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '做分镜' }, ['drama_assets']);
     expect(result.content).toContain('人物：');
     expect(result.content).toContain('小美');
   });
 
   it('资产为空时明确说明', () => {
-    const result = buildSubAgentMaterials({ goal: '做分镜' }, ['drama_assets']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '做分镜' }, ['drama_assets']);
     expect(result.content).toContain('还没有已确认');
   });
 
@@ -167,7 +168,7 @@ describe('buildSubAgentMaterials', () => {
     useAppStore.setState({
       dramaAssets: { ...emptyDramaAssetLibrary(), characters: many } as never,
     });
-    const result = buildSubAgentMaterials({ goal: '做分镜' }, ['drama_assets']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '做分镜' }, ['drama_assets']);
     expect(result.truncated).toBe(true);
     expect(result.content).not.toContain(`角色${SUB_AGENT_MATERIAL_LIMITS.assetsPerKind}`);
   });
@@ -180,7 +181,7 @@ describe('buildSubAgentMaterials', () => {
         characters: [character('小美', '女主角')],
       } as never,
     });
-    const result = buildSubAgentMaterials({ goal: '@{node-a:剧本}' }, [
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '@{node-a:剧本}' }, [
       'mentioned_nodes',
       'drama_assets',
     ]);
@@ -189,7 +190,7 @@ describe('buildSubAgentMaterials', () => {
   });
 
   it('没有勾选任何材料时返回空内容', () => {
-    expect(buildSubAgentMaterials({ goal: '@{node-a:剧本}' }, []))
+    expect(buildSubAgentMaterials({ projectId: 'project-1', goal: '@{node-a:剧本}' }, []))
       .toEqual({ content: '', truncated: false });
   });
 
@@ -197,8 +198,24 @@ describe('buildSubAgentMaterials', () => {
     useAppStore.setState({
       nodes: [textNode('node-a', '配置 sk-abcdefghijklmnopqr 用于调用')] as never,
     });
-    const result = buildSubAgentMaterials({ goal: '@{node-a:剧本}' }, ['mentioned_nodes']);
+    const result = buildSubAgentMaterials({ projectId: 'project-1', goal: '@{node-a:剧本}' }, ['mentioned_nodes']);
     expect(result.content).toContain('[已脱敏密钥]');
     expect(result.content).not.toContain('sk-abcdefghijklmnopqr');
+  });
+
+  it.each([GENERAL_ASSISTANT_SCOPE_ID, 'other-project'])('%s 不读取当前画布或短剧资产', (projectId) => {
+    useAppStore.setState({
+      nodes: [textNode('node-a', '当前画布私有正文')] as never,
+      dramaAssets: { ...emptyDramaAssetLibrary(), characters: [character('私有角色', '私有资产')] } as never,
+    });
+    const result = buildSubAgentMaterials({ projectId, goal: '@{node-a:剧本}' }, ['mentioned_nodes', 'drama_assets']);
+    expect(result).toEqual({ content: '', truncated: false });
+  });
+
+  it('工作台分集任务即使项目已加载也不混入画布材料', () => {
+    useAppStore.setState({ nodes: [textNode('node-a', '画布正文')] as never });
+    expect(buildSubAgentMaterials({ projectId: 'project-1', goal: '@{node-a:剧本}',
+      workbenchTarget: { seriesId: 'series-1', episodeId: 'episode-1' } }, ['mentioned_nodes', 'drama_assets']))
+      .toEqual({ content: '', truncated: false });
   });
 });

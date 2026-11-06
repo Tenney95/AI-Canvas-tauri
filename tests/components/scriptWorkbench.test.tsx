@@ -35,6 +35,26 @@ function shotlistButton(html: string): string | undefined {
 }
 
 describe('剧本工作台共享视图', () => {
+  it('展示本集智能调度状态、活动和查看入口，渲染不重新调用任务或切换画布', () => {
+    const state: ScriptWorkbenchSnapshot = { ...snapshot(), episodeAgentTasks: [
+      { id: 'agent-running', status: 'waiting_tool', title: '本集对白润色', activity: '加载 Skill：对白设计' },
+      { id: 'agent-completed', status: 'completed', title: '本集结构诊断', activity: '结构诊断已完成' },
+    ] };
+    const dispatch = vi.fn(async () => undefined);
+    const html = renderToStaticMarkup(<ScriptWorkbenchView standalone snapshot={state} dispatch={dispatch} />);
+    const cards = html.match(/<section[^>]*aria-label="智能调度任务"[^>]*>[\s\S]*?<\/section>/g) ?? [];
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toContain('本集对白润色');
+    expect(cards[0]).toContain('执行中');
+    expect(cards[0]).toContain('加载 Skill：对白设计');
+    expect(cards[1]).toContain('本集结构诊断');
+    expect(cards[1]).toContain('已完成');
+    expect(cards.every((card) => card.includes('查看调用与结果'))).toBe(true);
+    expect(state.canvasProjectId).toBe('episode-a');
+    expect(state.currentEpisode?.id).toBe('episode-b');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('renders only safe creation profile options without applying them or switching canvas', () => {
     const state = { ...snapshot(), creationProfiles: [{ id: 'writing', version: '1.0.0', name: '创作组合包示例' }] };
     const dispatch = vi.fn(async () => undefined);

@@ -3,6 +3,7 @@ import type { ProjectSaveData } from './storageService';
 import type { ProjectArchiveChatPayload } from './projectTransferService';
 import type { ProjectExchangeSnapshot, ProjectExchangeState } from '../types/projectExchange';
 import { safeExchangePath, type ArchiveAssetDigest } from './projectExchangeDomain';
+import { normalizeConversationWorkbenchTarget } from './chat/workbenchConversationScope';
 
 const privateFields = new Set(['filepath', 'imagefilepath', 'directorcapturefilepaths', 'taskid', 'agenttaskid',
   'apikey', 'apikeyref', 'accesskeyid', 'secretaccesskey', 'sessiontoken', 'token', 'accesstoken', 'refreshtoken',
@@ -55,6 +56,7 @@ export function portableArchiveChat(payload: ProjectArchiveChatPayload): Project
   for (const message of payload.messages) counts.set(message.conversationId, (counts.get(message.conversationId) ?? 0) + 1);
   return {
     conversations: payload.conversations.map((row) => ({ id: row.id, ...origin(row), projectId: text(row.projectId),
+      workbenchTarget: normalizeConversationWorkbenchTarget(row.workbenchTarget, text(row.projectId)),
       title: text(row.title), titleSource: row.titleSource === 'user' ? 'user' : 'auto', pinned: false,
       archived: row.archived === true, agentMode: 'plan', messageCount: counts.get(row.id) ?? 0,
       createdAt: timestamp(row.createdAt), updatedAt: timestamp(row.updatedAt) })),

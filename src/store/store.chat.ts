@@ -26,6 +26,8 @@ import { captureCreationProfile } from '../services/creationProfiles/creationPro
 import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
 import { normalizeCreationProfileSelection } from '../services/creationProfiles/creationProfileManifest';
 import { createConversationBranch } from '../services/chat/conversationBranchService';
+import { normalizeConversationWorkbenchTarget } from '../services/chat/workbenchConversationScope';
+import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
 
 // ============================================
 // 常量
@@ -302,16 +304,22 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     historyPanelOpen: false,
     dramaAssetsPanelOpen: false,
   }),
-  openChatWithDraft: (draft) => set({
-    chatOpen: true,
-    chatPanelDetached: false,
-    chatComposerDraft: draft,
-    settingsOpen: false,
-    assetsPanelOpen: false,
-    characterLibraryOpen: false,
-    historyPanelOpen: false,
-    dramaAssetsPanelOpen: false,
-  }),
+  openChatWithDraft: (draft) => {
+    const state = get();
+    if (state.conversations.find((conversation) => conversation.id === state.activeConversationId)?.workbenchTarget) {
+      state.createConversation(state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
+    }
+    set({
+      chatOpen: true,
+      chatPanelDetached: false,
+      chatComposerDraft: draft,
+      settingsOpen: false,
+      assetsPanelOpen: false,
+      characterLibraryOpen: false,
+      historyPanelOpen: false,
+      dramaAssetsPanelOpen: false,
+    });
+  },
   clearChatComposerDraft: () => set({ chatComposerDraft: null }),
   closeChat: () => set({ chatOpen: false }),
   toggleChat: () => set((s) => (s.chatOpen
@@ -343,7 +351,9 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   // Conversation Actions
   // ==========================================
 
-  setConversations: (conversations) => set({ conversations }),
+  setConversations: (conversations) => set({ conversations: conversations.map((conversation) => ({ ...conversation,
+    workbenchTarget: normalizeConversationWorkbenchTarget(conversation.workbenchTarget, conversation.projectId),
+  })) }),
   setConversationMcpServer: (id, serverId, enabled) => {
     const state = get();
     const conversation = state.conversations.find((item) => item.id === id && !item.deletedAt && item.id.startsWith('conv-'));
@@ -357,15 +367,27 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   },
 
   addConversation: (conversation) => {
-    set((s) => ({ conversations: [...s.conversations, conversation] }));
-    persistConv(conversation);
+    const normalized = { ...conversation,
+      workbenchTarget: normalizeConversationWorkbenchTarget(conversation.workbenchTarget, conversation.projectId) };
+    set((s) => ({ conversations: [...s.conversations, normalized] }));
+    persistConv(normalized);
   },
 
   updateConversation: (id, partial) =>
     set((s) => {
-      const updated = s.conversations.map((c) =>
-        c.id === id ? { ...c, ...partial, updatedAt: Date.now() } : c,
-      );
+      const updated = s.conversations.map((c) => {
+        if (c.id !== id) return c;
+        const currentTarget = normalizeConversationWorkbenchTarget(c.workbenchTarget, c.projectId);
+        const requestedTarget = normalizeConversationWorkbenchTarget(partial.workbenchTarget, c.projectId);
+        if (currentTarget && requestedTarget && (currentTarget.seriesId !== requestedTarget.seriesId
+          || currentTarget.episodeId !== requestedTarget.episodeId)) throw new Error('工作台会话不能更换目标分集');
+        if (!currentTarget && requestedTarget) {
+          const scope = readEpisodeWorkspaceScope(s, requestedTarget.episodeId);
+          if (c.deletedAt || !scope || scope.owner.id !== requestedTarget.seriesId) throw new Error('工作台分集范围已变化');
+        }
+        return { ...c, ...partial, id: c.id, projectId: c.projectId,
+          workbenchTarget: currentTarget ?? requestedTarget, updatedAt: Date.now() };
+      });
       const changed = updated.find((c) => c.id === id);
       if (changed) persistConv(changed);
       return { conversations: updated };

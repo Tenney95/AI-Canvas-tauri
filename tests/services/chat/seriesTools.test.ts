@@ -2,6 +2,8 @@
  * 剧集工具：读剧本分段回传、按模型给的清单批量建分集画布。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentTask } from '../../../src/types/agent';
+import { WORKBENCH_AGENT_READ_TOOLS } from '../../../src/services/episodeWorkspaceScope';
 
 const fileMocks = vi.hoisted(() => ({
   getProjectDataDir: vi.fn(async () => '/data/moon'),
@@ -46,6 +48,32 @@ beforeEach(() => {
     ],
   });
   fileMocks.readAgentAuthorizedTextFile.mockClear();
+});
+
+describe('工作台精确分集读取授权', () => {
+  it('仅目标分集可跨画布读取，普通任务、其他分集与写工具仍拒绝', async () => {
+    const task = { id: 'workbench-task', projectId: 'ep-2', conversationId: 'conversation', status: 'running',
+      workbenchTarget: { seriesId: 'series', episodeId: 'ep-2' }, toolAllowlist: [...WORKBENCH_AGENT_READ_TOOLS],
+    } as AgentTask;
+    useAppStore.setState((state) => ({
+      projects: [...state.projects, { id: 'ep-2', parentId: 'series', name: '第二集',
+        createdAt: 1, updatedAt: 1, episodeScript: '第二集的剧本正文' }],
+      agentTasks: [task],
+      conversations: [{ id: 'conversation', projectId: 'series', workbenchTarget: task.workbenchTarget, title: '工作台', titleSource: 'auto',
+        pinned: false, archived: false, agentMode: 'collaborative', createdAt: 1, updatedAt: 1, messageCount: 0 }],
+    }));
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_read')!;
+    const workbenchContext = { ...context(), projectId: 'ep-2', conversationId: 'conversation', taskId: task.id };
+    expect(definition.authorize?.(workbenchContext, { episodeId: 'ep-2', part: 'script' }).allowed).toBe(true);
+    expect((await definition.execute(workbenchContext, { episodeId: 'ep-2', part: 'script' })).modelContent).toContain('第二集的剧本正文');
+    expect(definition.authorize?.(workbenchContext, { episodeId: 'ep-1' }).allowed).toBe(false);
+    expect(definition.authorize?.({ ...workbenchContext, taskId: 'ordinary-task' }, { episodeId: 'ep-2' }).allowed).toBe(false);
+    expect(getAgentTool('episode_update_script')!.authorize?.(workbenchContext, { episodeId: 'ep-2', script: '新正文' }).allowed).toBe(false);
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((item) => ({ ...item, deletedAt: 1 })) }));
+    expect(definition.authorize?.(workbenchContext, { episodeId: 'ep-2' }).allowed).toBe(false);
+    unregisters.forEach((unregister) => unregister());
+  });
 });
 
 describe('series_read', () => {

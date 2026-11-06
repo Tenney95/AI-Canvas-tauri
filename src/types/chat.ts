@@ -2,7 +2,7 @@
  * Chat 类型定义 — 对话助手相关的 CommandId、Selector AST、CommandIntent、
  * CommandPlan、CommandResult、ChatMessage、ChatConversation 等核心类型
  */
-import type { AgentMode, ProviderModelCatalogSummary } from './agent';
+import type { AgentMode, AgentTask, ProviderModelCatalogSummary } from './agent';
 import type { AssistantExecutionSelection } from './agentTeam';
 
 export type ChatPanelView = 'chat' | 'list' | 'tasks';
@@ -355,6 +355,8 @@ export interface ConversationContextSummary {
 export interface ChatConversation {
   id: string;
   projectId: string;
+  /** 主窗口建立的工作台会话持续绑定分集；任务清理后仍保留只读创作范围。 */
+  workbenchTarget?: AgentTask['workbenchTarget'];
   title: string;
   /** 标题来源：auto=自动生成，user=用户手动命名 */
   titleSource: 'auto' | 'user';

@@ -7,9 +7,9 @@ import { estimateTokens } from './tokenEstimate';
  * 任务预算、审批等待和步骤快照在此轮次边界内统一更新。
  */
 import { isMcpGlobalToolContext } from '../mcp/mcpSettingsScope';
-import { isGeneralAssistantToolContext } from './assistantScope';
+import { isGeneralAssistantScope, isGeneralAssistantToolContext } from './assistantScope';
 import { useAppStore } from '../../store/useAppStore';
-import { isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
+import { isWorkbenchAgentTaskInScope, isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
 import { getPreparedProviderCatalogApproval, MAX_PROVIDER_MODEL_SELECTION, validateProviderModelSelection } from './providerModelCatalogService';
 import {
   streamAssistantReply,
@@ -411,7 +411,12 @@ export async function executePreparedToolCall(
     const workbenchScopeActive = prepared.definition.effect === 'file_write'
       && currentTask.projectId === context.projectId && currentTask.conversationId === context.conversationId
       && isWorkbenchTeamTaskInScope(useAppStore.getState(), currentTask, prepared.definition.id);
-    const reverifyReason = !globalScopeActive && !workbenchScopeActive
+    const workbenchAgentScopeActive = prepared.definition.effect === 'read'
+      && currentTask.projectId === context.projectId && currentTask.conversationId === context.conversationId
+      && isWorkbenchAgentTaskInScope(useAppStore.getState(), currentTask, prepared.definition.id);
+    const reverifyReason = currentTask.workbenchTarget && !workbenchAgentScopeActive
+      ? '工作台目标、会话或只读工具范围已失效，已取消该工具执行'
+      : !globalScopeActive && !workbenchScopeActive && !workbenchAgentScopeActive
       && useAppStore.getState().currentProjectId !== context.projectId
       ? '目标项目已切换，已取消该工具执行'
       : policy.outcome === 'deny'
@@ -485,7 +490,14 @@ export async function executePreparedToolCall(
             || (freshPolicy.outcome === 'require_approval' && liveStep?.approval?.status !== 'approved')) {
             throw new Error('保存执行记录期间权限已变化，未执行工具');
           }
-          if (!globalScopeActive && !workbenchScopeActive && useAppStore.getState().currentProjectId !== context.projectId) {
+          const liveWorkbenchAgentScope = prepared.definition.effect === 'read'
+            && live.projectId === context.projectId && live.conversationId === context.conversationId
+            && isWorkbenchAgentTaskInScope(useAppStore.getState(), live, call.toolId);
+          if (live.workbenchTarget && !liveWorkbenchAgentScope) {
+            throw new Error('保存执行记录期间工作台目标或只读工具范围已失效，未执行工具');
+          }
+          if (!globalScopeActive && !workbenchScopeActive && !liveWorkbenchAgentScope
+            && useAppStore.getState().currentProjectId !== context.projectId) {
             throw new Error('保存执行记录期间项目已切换，未执行工具');
           }
           if (prepared.definition.effect === 'canvas_write' && context.baseRevision !== undefined
@@ -495,6 +507,11 @@ export async function executePreparedToolCall(
         },
       });
       const result = await prepared.definition.execute(executionContext, prepared.input);
+      const taskAfterExecution = getTask(taskId);
+      if (taskAfterExecution.workbenchTarget
+        && !isWorkbenchAgentTaskInScope(useAppStore.getState(), taskAfterExecution, call.toolId)) {
+        throw new Error('工具响应期间工作台目标或会话已失效，未接纳该结果');
+      }
       const revisionAfterExecution = useAppStore.getState().getCurrentRevision();
       const historyIndexAfterExecution = useAppStore.getState().historyIndex;
       if (result.status === 'error' && result.retryable && retryCount < maxRetries) {
@@ -524,6 +541,7 @@ export async function executePreparedToolCall(
           const live = getTask(taskId);
           const fresh = { ...executionContext, mode: resolveAgentExecutionMode(live, policyMode) };
           return getAgentTool(call.toolId) === prepared.definition
+            && (!live.workbenchTarget || isWorkbenchAgentTaskInScope(useAppStore.getState(), live, call.toolId))
             && (live.toolAllowlist === undefined || live.toolAllowlist.includes(call.toolId))
             && prepared.definition.isAvailable?.(fresh) !== false
             && prepared.definition.authorize?.(fresh, prepared.input)?.allowed !== false
@@ -840,6 +858,9 @@ export async function executeAgentRound({
 }: AgentRoundOptions): Promise<AgentRoundResult> {
   assertAgentTaskActive(taskId, signal);
   const initialTask = getTask(taskId);
+  if (initialTask.workbenchTarget && !isWorkbenchAgentTaskInScope(useAppStore.getState(), initialTask)) {
+    throw new Error('工作台目标或会话已失效，请返回所属剧集后继续');
+  }
   const contextBase = {
     taskId,
     projectId: initialTask.projectId,
@@ -951,7 +972,13 @@ export async function executeAgentRound({
   });
   try {
     modelDispatch = await beginAgentDispatch({ taskId, kind: 'model', signal,
-      revalidate: () => assertAgentTaskActive(taskId, signal) });
+      revalidate: () => {
+        assertAgentTaskActive(taskId, signal);
+        const live = getTask(taskId);
+        if (live.workbenchTarget && !isWorkbenchAgentTaskInScope(useAppStore.getState(), live)) {
+          throw new Error('保存执行记录期间工作台目标或会话已失效，未调用模型');
+        }
+      } });
     await streamAssistantReply({
       systemPrompt: '',
       userMessage: '',
@@ -959,6 +986,7 @@ export async function executeAgentRound({
       projectId: task.projectId,
       modelId,
       tools,
+      resolveVisualReferences: !task.workbenchTarget && !(task.parentTaskId && isGeneralAssistantScope(task.projectId)),
       signal,
       onEvent: (event: AssistantStreamEvent) => {
         if (event.type === 'text.delta') {
@@ -1009,6 +1037,10 @@ export async function executeAgentRound({
   }
 
   assertAgentTaskActive(taskId, signal);
+  const completedRoundTask = getTask(taskId);
+  if (completedRoundTask.workbenchTarget && !isWorkbenchAgentTaskInScope(useAppStore.getState(), completedRoundTask)) {
+    throw new Error('模型响应期间工作台目标或会话已失效，未继续处理结果');
+  }
   if (completion.reason === 'canceled') throw new DOMException('模型请求已取消', 'AbortError');
   if (streamError || completion.reason === 'error') throw Object.assign(new Error(streamError || '模型请求失败'), { code: streamErrorCode });
   if (completion.reason === 'length') {

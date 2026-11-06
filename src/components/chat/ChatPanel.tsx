@@ -225,6 +225,11 @@ export default function ChatPanel({
   const effectiveAgentTaskFocus = detached ? detachedSnapshot?.agentTaskFocus : agentTaskFocus;
   const effectiveProjectId = detached ? (detachedSnapshot?.projectId ?? null) : currentProjectId;
   const chatScopeId = effectiveProjectId ?? GENERAL_ASSISTANT_SCOPE_ID;
+  const effectiveActiveConversation = effectiveConversations.find(
+    (conversation) => conversation.id === effectiveActiveConversationId,
+  );
+  const workbenchTarget = effectiveActiveConversation?.workbenchTarget;
+  const modelProjectId = workbenchTarget?.episodeId ?? chatScopeId;
   const effectiveProjectName = detached ? detachedSnapshot?.projectName : projects.find((item) => item.id === currentProjectId)?.name;
   useEffect(() => {
     if (!detached && currentProjectId === null) {
@@ -232,8 +237,9 @@ export default function ChatPanel({
     }
   }, [detached, currentProjectId]);
   const currentProject = projects.find((item) => item.id === currentProjectId);
+  const modelProject = projects.find((item) => item.id === modelProjectId);
   const projectAssistantModelId = getAssistantTextModelCandidates(
-    currentProject?.settings,
+    modelProject?.settings,
     assistantModelId,
   )[0];
   const effectiveAssistantModelId = detached
@@ -265,9 +271,6 @@ export default function ChatPanel({
   const effectiveMediaModelAvailability = useMemo(() => detached
     ? (detachedSnapshot?.mediaModelAvailability ?? {})
     : (localModelCatalog.mediaModelAvailability ?? {}), [detached, detachedSnapshot?.mediaModelAvailability, localModelCatalog.mediaModelAvailability]);
-  const effectiveActiveConversation = effectiveConversations.find(
-    (conversation) => conversation.id === effectiveActiveConversationId,
-  );
   const settingsConversation = effectiveActiveConversationId === MCP_SETTINGS_CONVERSATION_ID;
   const [inputValue, setInputValue] = useState('');
   const [externalCatalog, setExternalCatalog] = useState<ExternalAgentDescriptor[]>(() => readExternalAgentCatalog());
@@ -328,6 +331,7 @@ export default function ChatPanel({
           : undefined
     : undefined;
   const handleExecutionSelectionChange = useCallback((selection: AssistantExecutionSelection) => {
+    if (workbenchTarget) return;
     if (detached) {
       void emitAction({ type: 'set_execution_selection', conversationId: effectiveActiveConversationId ?? undefined,
         scopeId: chatScopeId, selection, draft: inputValue });
@@ -337,7 +341,7 @@ export default function ChatPanel({
     const conversationId = effectiveActiveConversationId ?? state.createConversation(chatScopeId);
     if (!effectiveActiveConversationId) state.setChatComposerLiveDraft(inputValue, conversationId);
     state.updateConversation(conversationId, { executionSelection: normalizeExecutionSelection(selection) });
-  }, [chatScopeId, detached, effectiveActiveConversationId, inputValue]);
+  }, [chatScopeId, detached, effectiveActiveConversationId, inputValue, workbenchTarget]);
   const handleTeamProfileChange = useCallback(async (profile: AgentTeamProfile) => {
     await runManaged({ kind: 'save_team_profile', profile: normalizeTeamProfile(profile) });
   }, [runManaged]);
@@ -586,6 +590,7 @@ export default function ChatPanel({
   }, [canonicalDraft, effectiveActiveConversationId, effectiveImageDrafts, ownsComposer, updateInputDraft]);
 
   const handleTextModelChange = useCallback((modelId?: string) => {
+    if (workbenchTarget) return;
     if (detached) {
       void emitAction({ type: 'select_model', modelId, category: 'text' });
     } else if (currentProject) {
@@ -600,7 +605,7 @@ export default function ChatPanel({
       updateConfig({ assistantModelId: modelId });
       void saveConfig({ silent: true });
     }
-  }, [currentProject, detached, saveConfig, updateConfig, updateProjectSettings]);
+  }, [currentProject, detached, saveConfig, updateConfig, updateProjectSettings, workbenchTarget]);
 
   const handleAgentModeChange = useCallback((mode: AgentMode) => {
     if (!effectiveActiveConversationId || mode === effectiveAgentMode) return;
@@ -1104,6 +1109,7 @@ export default function ChatPanel({
                   controls="execution"
                   externalAgents={effectiveExternalAgents}
                   onRefreshExternalAgents={refreshExternalAgents}
+                  disabled={!!workbenchTarget}
                   compact
                 />
               ) : undefined}
@@ -1236,12 +1242,14 @@ export default function ChatPanel({
                     <ChatInput
                       assistantModelId={effectiveAssistantModelId}
                       onAssistantModelChange={handleTextModelChange}
+                      assistantModelDisabled={!!workbenchTarget}
+                      assistantModelHint={workbenchTarget ? t('模型沿用目标分集设置；如需修改，请切到该分集的项目设置。') : undefined}
                       assistantModelGroups={effectiveAssistantModelGroups}
                       executionSelection={effectiveExecutionSelection}
                       teamConfiguration={<div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <CreationProfilePicker profiles={effectiveCreationProfiles} selection={effectiveActiveConversation?.creationProfile}
+                        {!workbenchTarget && <CreationProfilePicker profiles={effectiveCreationProfiles} selection={effectiveActiveConversation?.creationProfile}
                           projectId={chatScopeId} disabled={!detachedInitialized || hasActiveConversationTask}
-                          onPreview={handleCreationPreview} onChange={handleCreationChange} />
+                          onPreview={handleCreationPreview} onChange={handleCreationChange} />}
                         {effectiveExecutionSelection.kind === 'team' ? (
                         <TeamExecutionPicker
                           value={effectiveExecutionSelection}

@@ -7,8 +7,9 @@ import { createDefaultTeamProfile } from '../../src/services/chat/teams/teamProf
 import TeamRunCard from '../../src/components/shared/agentTeams/TeamRunCard';
 import TeamResultReview from '../../src/components/shared/agentTeams/TeamResultReview';
 import AgentTaskCenter from '../../src/components/chat/AgentTaskCenter';
-import { TeamGraphEditor } from '../../src/components/shared/agentTeams/TeamExecutionPicker';
+import TeamExecutionPicker, { TeamGraphEditor } from '../../src/components/shared/agentTeams/TeamExecutionPicker';
 import { createTemplateTeamGraph } from '../../src/services/chat/teams/teamGraphService';
+import { setLocale } from '../../src/i18n';
 
 vi.mock('../../src/components/shared/ModalOverlay', () => ({
   default: ({ isOpen, children }: { isOpen: boolean; children: ReactNode }) => isOpen ? <div>{children}</div> : null,
@@ -40,6 +41,34 @@ const receipt = (status: TeamApplicationReceipt['status']): TeamApplicationRecei
 });
 
 describe('team result controls', () => {
+  it('distinguishes smart dispatch from a fixed team without requiring team configuration', () => {
+    const props = { onChange: vi.fn(), profile: createDefaultTeamProfile(), onProfileChange: vi.fn() };
+    const html = renderToStaticMarkup(<TeamExecutionPicker value={{ kind: 'single' }} {...props} />);
+    expect(html).toContain('title="根据需求自动选用已授权的智能体与 Skill；简单任务直接完成"');
+    expect(html).toMatch(/aria-pressed="true"[^>]*>智能调度<\/button>/);
+    expect(html).not.toContain('配置团队角色与预算');
+    const teamHtml = renderToStaticMarkup(<TeamExecutionPicker value={{ kind: 'team', templateId: 'outline' }} {...props} />);
+    expect(teamHtml).toMatch(/aria-pressed="true"[^>]*>团队<\/button>/);
+    expect(teamHtml).toContain('配置团队角色与预算');
+  });
+
+  it('localizes the shared smart dispatch label and explanation', () => {
+    try {
+      for (const [locale, label, explanation] of [
+        ['en-US', 'Smart dispatch', 'Automatically choose authorized agents and Skills'],
+        ['ja-JP', 'スマート振り分け', '許可済みのエージェントと Skill'],
+        ['ko-KR', '스마트 배정', '허용된 에이전트와 Skill'],
+      ]) {
+        setLocale(locale);
+        const html = renderToStaticMarkup(<TeamExecutionPicker value={{ kind: 'single' }} onChange={vi.fn()}
+          profile={createDefaultTeamProfile()} onProfileChange={vi.fn()} compact controls="execution" />);
+        expect(html).toContain(label);
+        expect(html).toContain(explanation);
+        expect(html).not.toContain('根据需求自动选用');
+      }
+    } finally { setLocale('zh-CN'); }
+  });
+
   it('keeps unknown usage explicit and does not expose artifact storage paths', () => {
     const html = renderToStaticMarkup(<TeamRunCard task={task()} />);
     expect(html).toContain('实际用量待核对');

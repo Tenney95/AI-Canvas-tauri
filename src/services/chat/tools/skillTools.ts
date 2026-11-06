@@ -128,7 +128,21 @@ const pageProperties = {
   reread: { type: 'boolean' as const },
 };
 
-function pagedResult(context: AgentToolContext, skill: RuntimeSkill, resource: string, content: string, input: SkillReadInput, resources: string[] = [], includeMetadata = false): AgentToolExecutionResult {
+/** 调用级只读租约仅留内存；撤权后重新授权也不接纳旧调用的结果。 */
+function captureReadAuthorization(context: AgentToolContext, skill: RuntimeSkill): () => boolean {
+  const identity = JSON.stringify(skill);
+  const installation = isAgentPackageSkill(skill)
+    ? useAppStore.getState().agentPackages.find((item) => item.id === skill.installationId) : undefined;
+  return () => {
+    const current = resolveReadableSkill(context, skill.id);
+    return !!current && JSON.stringify(current) === identity
+      && (!isAgentPackageSkill(skill) || useAppStore.getState().agentPackages
+        .find((item) => item.id === skill.installationId) === installation);
+  };
+}
+
+function pagedResult(context: AgentToolContext, skill: RuntimeSkill, resource: string, content: string, input: SkillReadInput, resources: string[] = [], includeMetadata = false, authorize = captureReadAuthorization(context, skill)): AgentToolExecutionResult {
+  if (!authorize()) return toolError('Skill 授权或内容已变化，本次旧读取结果未返回，请重新选择', 'SKILL_READ_STALE');
   const reason = claimTaskSkill(context.taskId, skill.id);
   if (reason) return toolError(reason, 'SKILL_COUNT_EXHAUSTED');
   const metadata = includeMetadata ? safeSkillMetadata(skill) : { id: skill.id, name: sanitizeSkillLabel(skill.name, 40) };
@@ -154,6 +168,7 @@ function pagedResult(context: AgentToolContext, skill: RuntimeSkill, resource: s
   try {
     const page = readSkillPage(context.taskId, isAgentPackageSkill(skill) ? `${resource}@${skill.packageContentHash}` : resource, content, input, context.skillReadBudget, serialize);
     return { status: 'success', summary: page.limited ? 'Skill 读取受上下文预算限制' : page.alreadyRead ? 'Skill 页面已在上下文中' : `已读取 Skill「${sanitizeSkillLabel(skill.name, 40)}」`,
+      resultPolicy: { storage: 'memory', authorize },
       truncated: !page.complete, modelContent: serialize(page) };
   } catch {
     return toolError('Skill 游标已失效或不属于当前资料，请从头读取或重新检索', 'SKILL_CURSOR_INVALID');
@@ -227,6 +242,7 @@ export function registerSkillAgentTools(): Array<() => void> {
           return toolError('Skill 不存在或当前调用面未获只读授权', 'SKILL_NOT_AVAILABLE');
         }
 
+        const authorize = captureReadAuthorization(context, skill);
         const content = stripSkillFrontmatter(skill.content);
         let resources: string[] = [];
         try {
@@ -235,7 +251,7 @@ export function registerSkillAgentTools(): Array<() => void> {
           // 正文仍可使用；资源枚举失败不应泄露内部来源或使整个 Skill 加载失败。
         }
 
-        return pagedResult(context, skill, 'SKILL.md', content, input, resources);
+        return pagedResult(context, skill, 'SKILL.md', content, input, resources, false, authorize);
       },
     }),
     registerAgentTool<SkillReadInput & { path: string }>({
@@ -274,6 +290,7 @@ export function registerSkillAgentTools(): Array<() => void> {
           return toolError('Skill 不存在或当前调用面未获只读授权', 'SKILL_NOT_AVAILABLE');
         }
 
+        const authorize = captureReadAuthorization(context, skill);
         let raw: string;
         try {
           if (isAgentPackageSkill(skill)) {
@@ -291,7 +308,7 @@ export function registerSkillAgentTools(): Array<() => void> {
           return toolError(message, 'SKILL_RESOURCE_REJECTED');
         }
 
-        return pagedResult(context, skill, input.path, raw, input);
+        return pagedResult(context, skill, input.path, raw, input, [], false, authorize);
       },
     }),
     registerAgentTool<Record<string, never>>({

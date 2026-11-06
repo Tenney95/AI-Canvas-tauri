@@ -168,6 +168,8 @@ interface ChatInputProps {
   /** 当前选中的文本模型 ID */
   assistantModelId?: string;
   onAssistantModelChange: (modelId?: string) => void;
+  assistantModelDisabled?: boolean;
+  assistantModelHint?: string;
   /** 独立窗口由主窗口下发的脱敏文本模型分组。 */
   assistantModelGroups?: ModelGroup[];
   executionSelection?: AssistantExecutionSelection;
@@ -203,6 +205,8 @@ interface ChatInputProps {
 export default function ChatInput({
   assistantModelId,
   onAssistantModelChange,
+  assistantModelDisabled = false,
+  assistantModelHint,
   assistantModelGroups,
   executionSelection,
   teamConfiguration,
@@ -386,11 +390,12 @@ export default function ChatInput({
   );
 
   const handleTextModelSelect = useCallback((model: ModelOption) => {
+    if (assistantModelDisabled) return;
     const modelId = model.value.startsWith('general/')
       ? model.value.slice('general/'.length)
       : model.value;
     onAssistantModelChange(modelId);
-  }, [onAssistantModelChange]);
+  }, [assistantModelDisabled, onAssistantModelChange]);
 
   const selectedTextModel = useMemo(() => {
     if (!assistantModelId || assistantModelId.startsWith('general/')) return assistantModelId;
@@ -726,6 +731,7 @@ export default function ChatInput({
         {executionSelection?.kind === 'team' && teamContextHint && (
           <p className="min-w-0 px-2 pb-1 text-xs leading-relaxed text-canvas-text-secondary">{teamContextHint}</p>
         )}
+        {assistantModelHint && <p className="ui-hint px-2 pb-1">{assistantModelHint}</p>}
         <div className="ui-ai-input__footer ui-ai-input__footer--single-row chat-panel-input-toolbar">
           <AnimatePresence>
             {modelMenuOpen && (
@@ -865,6 +871,7 @@ export default function ChatInput({
             theme={appearanceMode}
             nodeType="ai-text"
             selectedModel={selectedTextModel ?? ''}
+            disabled={assistantModelDisabled}
             onSelect={handleTextModelSelect}
             configuredGroupsOverride={assistantModelGroups}
             generalModelsOverride={assistantModelGroups ? [] : mediaModels}

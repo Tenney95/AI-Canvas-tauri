@@ -257,6 +257,8 @@ export interface AssembleAgentContextOptions {
   conversationId: string;
   /** 当前项目 ID；用于注入项目记忆 */
   projectId?: string;
+  /** 工作台会话保留本会话历史，但不注入项目记忆和提示词学习样本。 */
+  includeProjectContext?: boolean;
   systemPrompt: string;
   userMessage: string;
   /** 当前轮已在界面新建的消息（当前用户消息、助手占位），从历史中排除 */
@@ -372,11 +374,11 @@ export async function assembleAgentContext(
   // 对话历史与提示词样本互不依赖，并行读取可避免给每轮 Agent 响应叠加串行存储延迟。
   const [persistedResult, learnedPromptBlock] = await Promise.all([
     loadMessages(conversationId, 0, 200),
-    projectId ? buildLearnedPromptContext(projectId, userMessage) : Promise.resolve(''),
+    projectId && options.includeProjectContext !== false ? buildLearnedPromptContext(projectId, userMessage) : Promise.resolve(''),
   ]);
   // 学习样本复用记忆块的预算入口，使后续裁剪和压缩仍由统一上下文预算控制。
   const memoryBlock = [
-    projectId ? buildMemoryBlock(projectId, userMessage) : '',
+    projectId && options.includeProjectContext !== false ? buildMemoryBlock(projectId, userMessage) : '',
     learnedPromptBlock,
   ].filter(Boolean).join('\n\n');
 

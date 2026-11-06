@@ -11,10 +11,10 @@ beforeEach(() => {
   vi.resetModules(); fixture.conversations = [];
 });
 
-async function seed() {
+async function seed(workbenchTarget?: ChatConversation['workbenchTarget']) {
   const db = await import('../../../src/services/indexedDbService');
   const source: ChatConversation = { id: 'conv-source', projectId: 'project', title: '来源', titleSource: 'user',
-    pinned: false, archived: false, agentMode: 'collaborative', mcpServerIds: ['external'], createdAt: 1, updatedAt: 1, messageCount: 3 };
+    pinned: false, archived: false, agentMode: 'collaborative', mcpServerIds: ['external'], workbenchTarget, createdAt: 1, updatedAt: 1, messageCount: 3 };
   fixture.conversations.push(source); await db.putChatConversation(source);
   for (const [id, role, content] of [['first', 'user', '开始 @image{chat-ref-x.png|图}'], ['boundary', 'assistant', '已完成'], ['future', 'user', '不应进入分支']] as const) {
     await db.putChatMessageWithSequence({ id, role, content, projectId: 'project', conversationId: source.id,
@@ -24,6 +24,14 @@ async function seed() {
 }
 
 describe('完成轮次的原子会话分支', () => {
+  it('工作台会话分支继续保留原分集只读绑定', async () => {
+    const target = { seriesId: 'project', episodeId: 'episode' };
+    await seed(target);
+    const service = await import('../../../src/services/chat/conversationBranchService');
+    const branch = await service.createConversationBranch({ projectId: 'project', conversationId: 'conv-source', messageId: 'boundary' });
+    expect(branch.conversation.workbenchTarget).toEqual(target);
+  });
+
   it('只复制切点内资料，分配新ID并去掉执行和外部授权', async () => {
     const db = await seed();
     const service = await import('../../../src/services/chat/conversationBranchService');

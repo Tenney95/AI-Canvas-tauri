@@ -436,7 +436,8 @@ describe('projectTransferService', () => {
     mocks.getAllProjects.mockResolvedValue(records);
     mocks.getProjectById.mockImplementation(async (id: string) => records.find((record) => record.id === id));
     mocks.getProjectChatForExport.mockImplementation(async (projectId: string) => ({
-      conversations: [{ id: `conv-${projectId}`, projectId, title: projectId, messageCount: 1 }],
+      conversations: [{ id: `conv-${projectId}`, projectId, title: projectId, messageCount: 1,
+        ...(projectId === SERIES_RECORD.id ? { workbenchTarget: { seriesId: SERIES_RECORD.id, episodeId: EPISODE_RECORD.id } } : {}) }],
       messages: [{ id: `msg-conv-${projectId}`, projectId, conversationId: `conv-${projectId}`,
         sequence: 1, content: '讨论', agentTaskId: 'old-task' }],
       memories: projectId === SERIES_RECORD.id ? [{
@@ -486,6 +487,7 @@ describe('projectTransferService', () => {
     const conversations = mocks.putChatConversation.mock.calls.map(([conversation]) => conversation);
     const messages = mocks.putChatMessage.mock.calls.map(([message]) => message);
     expect(conversations.map((conversation) => conversation.projectId)).toEqual([root.id, first.id, next.id]);
+    expect(conversations[0].workbenchTarget).toEqual({ seriesId: root.id, episodeId: first.id });
     expect(messages.map((message) => message.conversationId)).toEqual(conversations.map((conversation) => conversation.id));
     expect(messages.map((message) => message.projectId)).toEqual([root.id, first.id, next.id]);
     expect(messages.every((message) => message.agentTaskId === undefined)).toBe(true);
@@ -648,6 +650,15 @@ describe('projectTransferService', () => {
     expect(createdIds).not.toContain(EPISODE_RECORD.id);
     expect(mocks.deleteProjectDataDir).toHaveBeenCalledExactlyOnceWith(createdIds[0]);
     expect(mocks.notifyProjectDiskChanged).not.toHaveBeenCalled();
+  });
+
+  it('目标分集不在归档时拒绝恢复工作台历史，不移除绑定后导入', async () => {
+    mocks.invoke.mockResolvedValue({ texts: archiveTexts({ project: SERIES_RECORD, episodes: [], chat: {
+      ...EMPTY_CHAT, conversations: [{ id: 'workbench', projectId: SERIES_RECORD.id,
+        workbenchTarget: { seriesId: SERIES_RECORD.id, episodeId: 'missing-episode' } }],
+    } }), assetPaths: [], assetBytes: 0 });
+    await expect(restoreProjectArchive('/in/missing-target.aicanvas')).rejects.toThrow('无法恢复只读绑定');
+    expect(mocks.putChatConversation).not.toHaveBeenCalled();
   });
 
   it('retains assets and reports incomplete cleanup when database rollback fails', async () => {

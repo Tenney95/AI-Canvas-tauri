@@ -406,6 +406,19 @@ describe('Skill surface 与 MCP 智能体包兼容', () => {
 });
 
 describe('skill_load', () => {
+  it.each(['update', 'delete'] as const)('读取目录期间用户Skill %s后不返回旧正文', async (change) => {
+    const original = folderSkill();
+    setSkills([original]);
+    let release!: (files: string[]) => void;
+    listSkillResourceFilesMock.mockImplementationOnce(() => new Promise<string[]>((resolve) => { release = resolve; }));
+    const pending = run('skill_load', { skillId: original.id });
+    useAppStore.setState({ userSkills: change === 'delete' ? [] : [{ ...original, content: '更新后的内容' }] });
+    release(['references/checklist.md']);
+    const result = await pending;
+    expect(result).toMatchObject({ status: 'error', errorCode: 'SKILL_READ_STALE' });
+    expect(result.modelContent).not.toContain(original.content);
+  });
+
   it('返回去除 frontmatter 的正文并带不可信边界说明', async () => {
     setSkills([skill()]);
     const result = await run('skill_load', { skillId: 'skill-1' });
@@ -479,6 +492,36 @@ describe('skill_load', () => {
 });
 
 describe('skill_read_file', () => {
+  it('包资料读取期间安装更新后拒绝旧身份结果，即使旧目录仍存在', async () => {
+    const original = packageSkill();
+    setSkills([], [original]);
+    let release!: (result: { content: string }) => void;
+    readAgentPackageSkillResourceMock.mockImplementationOnce(() => new Promise<{ content: string }>((resolve) => { release = resolve; }));
+    const pending = run('skill_read_file', { skillId: original.id, path: 'references/checklist.md' });
+    useAppStore.setState((state) => ({ agentPackages: state.agentPackages.map((item) => ({ ...item, contentHash: 'd'.repeat(64) })) }));
+    release({ content: '不得返回的旧版本正文' });
+    const result = await pending;
+    expect(result).toMatchObject({ status: 'error', errorCode: 'SKILL_READ_STALE' });
+    expect(result.modelContent).not.toContain('不得返回的旧版本正文');
+  });
+
+  it('MCP读取撤权后重新授权不能接纳先前调用或复用其结果授权', async () => {
+    const original = packageSkill();
+    setSkills([], [original]);
+    const mcpContext = { conversationId: 'mcp-control-project-1' };
+    const completed = await run('skill_read_file', { skillId: original.id, path: 'references/checklist.md' }, mcpContext);
+    expect(completed.resultPolicy?.authorize?.()).toBe(true);
+    let release!: (result: { content: string }) => void;
+    readAgentPackageSkillResourceMock.mockImplementationOnce(() => new Promise<{ content: string }>((resolve) => { release = resolve; }));
+    const pending = run('skill_read_file', { skillId: original.id, path: 'references/checklist.md', reread: true }, mcpContext);
+    const installation = useAppStore.getState().agentPackages[0];
+    useAppStore.setState({ agentPackages: [{ ...installation, mcpSkillReadEnabled: false }] });
+    useAppStore.setState({ agentPackages: [{ ...installation, mcpSkillReadEnabled: true }] });
+    release({ content: '已撤权调用的旧正文' });
+    expect((await pending).errorCode).toBe('SKILL_READ_STALE');
+    expect(completed.resultPolicy?.authorize?.()).toBe(false);
+  });
+
   it('读取附属资料并带不可信边界说明', async () => {
     setSkills([folderSkill()]);
     const result = await run('skill_read_file', {

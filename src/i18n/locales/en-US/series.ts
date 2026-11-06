@@ -3,6 +3,16 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  "智能调度": "Smart dispatch",
+  "模型沿用目标分集设置；如需修改，请切到该分集的项目设置。": "The model follows the target episode's settings. To change it, open that episode's project settings.",
+  "智能调度已开始，可查看调用与结果": "Smart dispatch started. View calls and results in the assistant.",
+  "创作任务启动失败": "Could not start the writing task",
+  "这个创作动作请使用智能调度": "Use smart dispatch for this writing action",
+  "任务不属于当前分集": "The task does not belong to the selected episode",
+  "点击创作动作后自动选用已授权的智能体与 Skill，调用与草案可在助手查看，不会覆盖正文。": "Writing actions automatically use authorized agents and Skills. View calls and drafts in the assistant; the script stays unchanged.",
+  "智能调度任务": "Smart dispatch task",
+  "查看调用与结果": "View calls and results",
+  "根据需求自动选用已授权的智能体与 Skill；简单任务直接完成": "Automatically choose authorized agents and Skills for the request; complete simple tasks directly.",
   // Harness collaboration, creation bundles, and external executors.
   "请选择工作台分集": "Select an episode in the workbench",
   "组合包选择无效": "Invalid bundle selection",

@@ -423,6 +423,8 @@ export interface AgentTask {
   teamRun?: AgentTeamRun;
   /** 同一次团队提交的非敏感摘要，用于断线后的查重；不是调用模型的重试许可。 */
   teamRequestDigest?: string;
+  /** 工作台发起的只读创作任务，仅授权目标分集正文，不授予其画布权限。 */
+  workbenchTarget?: { seriesId: string; episodeId: string };
   mode: AgentMode;
   goal: string;
   status: AgentTaskStatus;

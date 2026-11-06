@@ -54,6 +54,7 @@ import type { ChatMessage } from '../../types/chat';
 import {
   type AgentApprovalResolution,
   type AgentMode,
+  type AgentTask,
 } from '../../types/agent';
 import { extendAgentSegmentBudget } from './agentBudgetService';
 import type { AssistantExecutionSelection } from '../../types/agentTeam';
@@ -62,6 +63,7 @@ import { appendTeamInstruction, resumeTeamInvocation, submitTeamInvocation } fro
 import { captureCreationProfile, intersectCreationTools } from '../creationProfiles/creationProfileService';
 import { beginAgentDispatch, settleAgentDispatch } from './agentDurabilityService';
 import type { MediaGenerationIntent } from '../../types/media';
+import { isWorkbenchAgentTaskInScope, readEpisodeWorkspaceScope, WORKBENCH_AGENT_READ_TOOLS } from '../episodeWorkspaceScope';
 import {
   failMediaPlaceholderLifecycle,
   MEDIA_PLACEHOLDER_STALE_ERROR,
@@ -80,6 +82,8 @@ interface StreamingMessageBuffer {
 }
 
 export interface SubmitConversationMessageOptions {
+  /** 仅由主窗口工作台入口提供；模型和独立助手操作不能声明此授权。 */
+  workbenchTarget?: AgentTask['workbenchTarget'];
   executionSelection?: AssistantExecutionSelection;
   requestId?: string;
   content: string;
@@ -102,6 +106,7 @@ export type SubmitConversationMessageResult =
     };
 
 interface StartAgentMessageExecutionOptions {
+  workbenchTarget?: AgentTask['workbenchTarget'];
   text: string;
   projectId: string;
   conversationId: string;
@@ -208,6 +213,7 @@ export function resolveConversationAgentApproval(
 }
 
 export function submitConversationMessage({
+  workbenchTarget,
   content,
   imageFileNames = [],
   conversationId,
@@ -235,6 +241,31 @@ export function submitConversationMessage({
     store.showToast('文字与参考图引用超过当前任务追加上限，请缩短文字或使用排队发送', 'error');
     return { status: 'ignored' };
   }
+  const conversation = store.conversations.find((item) => item.id === conversationId);
+  const boundTarget = conversation?.workbenchTarget;
+  if (workbenchTarget && boundTarget && (workbenchTarget.seriesId !== boundTarget.seriesId
+    || workbenchTarget.episodeId !== boundTarget.episodeId)) {
+    store.showToast('工作台创作会话不能更换目标分集，请从工作台发起新任务', 'error');
+    return { status: 'ignored' };
+  }
+  workbenchTarget = boundTarget ?? workbenchTarget;
+  // 工作台会话持续绑定原分集；独立窗口提供的当前画布 ID 不能覆盖它。
+  const executionProjectId = workbenchTarget?.episodeId ?? (isGeneralAssistantScope(conversation?.projectId)
+    ? GENERAL_ASSISTANT_SCOPE_ID : projectId ?? conversation?.projectId ?? store.currentProjectId ?? '');
+  const selection = normalizeExecutionSelection(executionSelection ?? conversation?.executionSelection);
+  if (workbenchTarget) {
+    const scope = readEpisodeWorkspaceScope(store, workbenchTarget.episodeId);
+    if (!scope || scope.owner.id !== workbenchTarget.seriesId
+      || !conversation || conversation.deletedAt || conversation.projectId !== scope.owner.id) {
+      store.showToast('工作台分集或会话已变化，请重新发起创作任务', 'error');
+      return { status: 'ignored' };
+    }
+    if (selection.kind !== 'single' || images.length || parseChatImageReferences(text).length) {
+      store.showToast('工作台创作会话仅支持只读文字智能调度，请新建对话使用团队或图片', 'error');
+      return { status: 'ignored' };
+    }
+    if (!boundTarget) store.updateConversation(conversationId, { workbenchTarget: { ...workbenchTarget } });
+  }
   const activeTaskId = dispatchMode === 'interject' ? getActiveConversationAgentTaskId(conversationId) : undefined;
   if (activeTaskId && store.agentTasks.some((task) => task.id === activeTaskId && task.executionKind === 'team')
     && parseChatImageReferences(text).length > 0) {
@@ -251,11 +282,6 @@ export function submitConversationMessage({
     return { status: 'interjected', taskId: interjectedTaskId };
   }
 
-  const conversation = store.conversations.find((item) => item.id === conversationId);
-  // 窗口快照可能晚于项目切换；通用会话绝不能因此继承新画布权限。
-  const executionProjectId = isGeneralAssistantScope(conversation?.projectId)
-    ? GENERAL_ASSISTANT_SCOPE_ID : projectId ?? conversation?.projectId ?? store.currentProjectId ?? '';
-  const selection = normalizeExecutionSelection(executionSelection ?? conversation?.executionSelection);
   if (selection.kind === 'team') {
     if (images.length || parseChatImageReferences(text).length) {
       store.showToast('团队首期仅处理文字材料，请先移除参考图，或切回单模型', 'error');
@@ -295,6 +321,7 @@ export function submitConversationMessage({
   store.addMessage(assistantMessage);
 
   const taskId = startAgentMessageExecution({
+    workbenchTarget,
     text,
     projectId: executionProjectId,
     conversationId,
@@ -314,6 +341,7 @@ export function submitConversationMessage({
 }
 
 function startAgentMessageExecution({
+  workbenchTarget,
   text,
   projectId,
   conversationId,
@@ -333,15 +361,21 @@ function startAgentMessageExecution({
       throw new Error(`单个任务最多注入 ${SKILL_CONTENT_LIMITS.maxExplicitBindings} 个 Skill`);
     }
     const skillBindings = captureExplicitSkillBindings(text, runtimeSkills);
-    const selectedCreation = store.conversations.find((entry) => entry.id === conversationId)?.creationProfile;
+    const selectedCreation = workbenchTarget
+      ? store.projects.find((entry) => entry.id === workbenchTarget.episodeId)?.creationProfile
+      : store.conversations.find((entry) => entry.id === conversationId)?.creationProfile;
     const creationSelection = selectedCreation ? structuredClone(selectedCreation) : undefined;
+    const resolveTools = (requested?: string[]) => workbenchTarget
+      ? [...WORKBENCH_AGENT_READ_TOOLS].filter((id) => requested === undefined || requested.includes(id))
+      : resolveAssistantToolAllowlist(projectId, requested);
     const task = store.createAgentTask({
+      workbenchTarget,
       projectId,
       conversationId,
       userMessageId,
       mode,
       goal: text,
-      toolAllowlist: resolveAssistantToolAllowlist(projectId, resolveSkillBindingToolAllowlist(skillBindings)),
+      toolAllowlist: resolveTools(resolveSkillBindingToolAllowlist(skillBindings)),
       skillBindings,
       creationProfilePreparation: creationSelection ? 'pending' : undefined,
     });
@@ -354,13 +388,14 @@ function startAgentMessageExecution({
         const pending = current.agentTasks.find((entry) => entry.id === task.id);
         if (!pending || !['queued', 'paused'].includes(pending.status)) return;
         if (!current.conversations.some((entry) => entry.id === conversationId && !entry.deletedAt)
-          || (!isGeneralAssistantScope(projectId) && current.currentProjectId !== projectId)) throw new Error('组合包准备期间项目或会话已变化');
+          || (workbenchTarget ? !isWorkbenchAgentTaskInScope(current, pending)
+            : !isGeneralAssistantScope(projectId) && current.currentProjectId !== projectId)) throw new Error('组合包准备期间项目或会话已变化');
         const bindings = [...new Map([...skillBindings, ...captured.skillBindings].map((binding) => [binding.skillId, binding])).values()];
         if (bindings.length > SKILL_CONTENT_LIMITS.maxExplicitBindings
           || bindings.reduce((total, binding) => total + binding.content.length, 0) > SKILL_CONTENT_LIMITS.expansionTotalChars) throw new Error('组合包与本次引用的 Skill 总量超出上限，请减少选择');
         const allowed = intersectCreationTools(resolveSkillBindingToolAllowlist(skillBindings), resolveSkillBindingToolAllowlist(captured.skillBindings));
         current.updateAgentTask(task.id, { creationProfile: captured.snapshot, creationProfilePreparation: 'ready', skillBindings: bindings,
-          toolAllowlist: resolveAssistantToolAllowlist(projectId, intersectCreationTools(allowed, captured.snapshot?.toolAllowlist)) });
+          toolAllowlist: resolveTools(intersectCreationTools(allowed, captured.snapshot?.toolAllowlist)) });
         if (pending.status === 'queued') scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
       }).catch((error: unknown) => {
         const current = useAppStore.getState();
@@ -528,13 +563,13 @@ function driveAgentTask(
         ) {
           const outcome = await runAgentLoop({
             taskId,
-            systemPrompt: buildAssistantSystemPrompt({
+            systemPrompt: [buildAssistantSystemPrompt({
               agentTools: true,
               includeToolGuidance: false,
               projectId,
-              includeCanvasContext: task.creationProfile?.contextPolicyRef !== 'explicit-materials'
+              includeCanvasContext: !task.workbenchTarget && task.creationProfile?.contextPolicyRef !== 'explicit-materials'
                 && useAppStore.getState().currentProjectId === projectId,
-            }),
+            }), task.workbenchTarget ? `当前为只读工作台创作会话，唯一目标分集为 ${task.workbenchTarget.episodeId}。通过 episode_read 读取该集需要的素材，不使用当前画布或其他分集。只给出诊断和候选，不能写入；根据需求选用已授权的 Skill 和只读智能体。` : ''].filter(Boolean).join('\n'),
             userMessage: task.skillBindings === undefined
               ? expandSkillReferences(text, [...store.userSkills, ...store.agentPackageSkills])
               : expandSkillBindings(text, task.skillBindings),

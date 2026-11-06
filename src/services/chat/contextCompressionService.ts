@@ -20,6 +20,7 @@ import { sanitizeDomainText } from './subAgentMaterials';
 import { addAgentTaskMetrics } from './agentJournal';
 import { AgentDurabilityError, beginAgentDispatch, settleAgentDispatch } from './agentDurabilityService';
 import type { AgentDispatchRecord } from '../../types/agent';
+import { isWorkbenchAgentTaskInScope, readEpisodeWorkspaceScope } from '../episodeWorkspaceScope';
 
 /** 压缩时保留原文、不进入摘要的最近消息条数 */
 export const RECENT_KEEP_COUNT = 8;
@@ -190,7 +191,7 @@ export function compressConversationContext(
   options: CompressConversationOptions = {},
 ): Promise<ConversationContextSummary | null> {
   const conversation = useAppStore.getState().conversations.find((item) => item.id === conversationId);
-  const projectId = options.projectId ?? conversation?.projectId;
+  const projectId = options.projectId ?? conversation?.workbenchTarget?.episodeId ?? conversation?.projectId;
   const requestKey = JSON.stringify([conversationId, projectId]);
   const existing = inFlight.get(requestKey);
   if (existing) return existing;
@@ -238,12 +239,28 @@ async function doCompress(
     return null;
   }
   const projectId = options.projectId ?? conversation.projectId;
+  const workbenchTarget = conversation.workbenchTarget ? { ...conversation.workbenchTarget } : undefined;
+  const assertWorkbenchScope = () => {
+    const currentStore = useAppStore.getState();
+    const current = currentStore.conversations.find((item) => item.id === conversationId);
+    if (!workbenchTarget && !current?.workbenchTarget) return;
+    const scope = workbenchTarget && readEpisodeWorkspaceScope(currentStore, workbenchTarget.episodeId);
+    if (!workbenchTarget || !scope || scope.owner.id !== workbenchTarget.seriesId
+      || projectId !== workbenchTarget.episodeId || !current || current.deletedAt
+      || current.projectId !== workbenchTarget.seriesId
+      || current.workbenchTarget?.episodeId !== workbenchTarget.episodeId
+      || current.workbenchTarget.seriesId !== workbenchTarget.seriesId) {
+      throw new ContextBudgetError('CONTEXT_COMPRESSION_FAILED', '工作台目标或会话已失效，已取消上下文压缩');
+    }
+  };
+  assertWorkbenchScope();
   if (seriesOwnerId(store.projects, projectId) !== conversation.projectId) {
     throw new Error('执行项目不属于该会话，无法压缩上下文');
   }
   const previousSummary = conversation.contextSummary;
 
   const { messages: persisted } = await loadMessages(conversationId, 0, 200);
+  assertWorkbenchScope();
   const excludeIds = new Set(options.excludeMessageIds ?? []);
   const tasks = store.agentTasks.filter((task) =>
     task.conversationId === conversationId && task.projectId === projectId);
@@ -271,11 +288,13 @@ async function doCompress(
     toSummarize,
     sanitizeDomainText(buildTaskStateForSummary(conversationId, projectId)),
   );
+  assertWorkbenchScope();
   await streamAssistantReply({
     systemPrompt: SUMMARY_SYSTEM_PROMPT,
     userMessage: summaryInput,
     tools: [],
     trackAbort: false,
+    resolveVisualReferences: false,
     projectId,
     signal: options.signal,
     onEvent: (event) => {
@@ -283,6 +302,7 @@ async function doCompress(
       if (event.type === 'text.delta') summaryText += event.delta;
     },
   });
+  assertWorkbenchScope();
   if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   if (streamFailure) throw streamFailure;
   summaryText = sanitizeDomainText(summaryText.trim()).slice(0, SUMMARY_CHAR_LIMIT);
@@ -324,9 +344,13 @@ async function doCompress(
 
 // 压缩服务也用于普通对话界面，不能为这项复核提前加载重型执行器。
 function activeCompactionTask(taskId: string, signal: AbortSignal): AgentTask {
-  const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
+  const state = useAppStore.getState();
+  const task = state.agentTasks.find((item) => item.id === taskId);
   if (signal.aborted || !task || task.status === 'paused' || AGENT_TERMINAL_STATUSES.has(task.status)) {
     throw new DOMException('任务不再运行，已取消上下文压缩', 'AbortError');
+  }
+  if (task.workbenchTarget && !isWorkbenchAgentTaskInScope(state, task)) {
+    throw new DOMException('工作台目标或会话已失效，已取消上下文压缩', 'AbortError');
   }
   return task;
 }
@@ -410,11 +434,13 @@ export async function compactAgentMessages(
   try {
     dispatch = await beginAgentDispatch({ taskId, kind: 'model', signal,
       revalidate: () => { activeCompactionTask(taskId, signal); } });
+    activeCompactionTask(taskId, signal);
     await streamAssistantReply({
       systemPrompt: SUMMARY_SYSTEM_PROMPT,
       userMessage: summaryInput,
       tools: [],
       trackAbort: false,
+      resolveVisualReferences: false,
       projectId: task.projectId,
       signal,
       onEvent: (event) => {

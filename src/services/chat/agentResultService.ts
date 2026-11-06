@@ -5,7 +5,7 @@ import { readVerifiedProjectFile, sha256Hex, writeImmutableProjectFile } from '.
 import { sanitizeDomainText } from './subAgentMaterials';
 import { isGeneralAssistantScope } from './assistantScope';
 import { isMcpGlobalContext } from '../mcp/mcpSettingsScope';
-import { isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
+import { isWorkbenchAgentTaskInScope, isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
 
 export const AGENT_RESULT_PREVIEW_CHARS = 6000;
 export const AGENT_RESULT_PAGE_CHARS = 12000;
@@ -26,8 +26,10 @@ function assertScope(scope: AgentResultScope): void {
   const state = useAppStore.getState();
   const task = state.agentTasks.find((item) => item.id === scope.taskId);
   if (!task || task.projectId !== scope.projectId || task.conversationId !== scope.conversationId
+    || (task.workbenchTarget && !isWorkbenchAgentTaskInScope(state, task))
     || (state.currentProjectId !== scope.projectId && !isGeneralAssistantScope(scope.projectId)
-      && !isMcpGlobalContext(task) && !isWorkbenchTeamTaskInScope(state, task))) {
+      && !isMcpGlobalContext(task) && !isWorkbenchTeamTaskInScope(state, task)
+      && !isWorkbenchAgentTaskInScope(state, task))) {
     throw new Error('结果不属于当前项目、对话或任务');
   }
 }

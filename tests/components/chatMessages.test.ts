@@ -27,6 +27,7 @@ const hooks = vi.hoisted(() => ({
   dirty: false,
   container: null as HTMLDivElement | null,
   panelState: {} as AppState,
+  estimateUsage: vi.fn((_messages: unknown, _summary: unknown, _model: unknown) => null),
   submit: vi.fn((_options: { content: string; conversationId: string; onProgress?: () => void }) => ({
     status: 'started', userMessageId: 'sent-user', assistantMessageId: 'sent-assistant',
   })),
@@ -111,7 +112,7 @@ vi.mock('../../src/services/ai/generationRuntime', () => ({
   completeMediaMessageDelivery: vi.fn(), getRecoverableMessageTask: vi.fn(),
   retryMediaArtifactPersist: vi.fn(), retryMediaMessageTask: vi.fn(),
 }));
-vi.mock('../../src/services/chat/contextManager', () => ({ estimateConversationUsage: () => null }));
+vi.mock('../../src/services/chat/contextManager', () => ({ estimateConversationUsage: hooks.estimateUsage }));
 vi.mock('../../src/services/chat/detachedChatSyncController', () => ({
   buildChatModelCatalog: () => ({ assistantModelGroups: [], mediaModelOptions: [], mediaModelAvailability: {} }),
   createDetachedChatSyncController: () => ({ start: async () => {}, dispose: () => {} }),
@@ -128,6 +129,8 @@ import ChatMessages from '../../src/components/chat/ChatMessages';
 import ChatPanel from '../../src/components/chat/ChatPanel';
 import * as chatImages from '../../src/services/chat/chatImageReferenceService';
 import MessageBubble from '../../src/components/chat/MessageBubble';
+import CreationProfilePicker from '../../src/components/shared/creationProfiles/CreationProfilePicker';
+import type { ChatStateSnapshot } from '../../src/services/chat/chatWindowService';
 import { setLocale } from '../../src/i18n';
 
 function createMessage(
@@ -212,10 +215,10 @@ function scrollContainer(): HTMLDivElement {
   return container as unknown as HTMLDivElement;
 }
 
-function renderPanel(): ReactElement {
+function renderPanel(props: ComponentProps<typeof ChatPanel> = {}): ReactElement {
   hooks.stateCursor = hooks.refCursor = hooks.memoCursor = hooks.effectCursor = 0;
   hooks.pendingEffects = [];
-  const tree = ChatPanel();
+  const tree = ChatPanel(props);
   hooks.pendingEffects.forEach((effect) => effect());
   return tree;
 }
@@ -256,6 +259,7 @@ describe('ChatMessages', () => {
     hooks.memoCursor = 0;
     hooks.container = null;
     hooks.submit.mockClear();
+    hooks.estimateUsage.mockClear();
     frames.clear();
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       const id = ++nextFrame;
@@ -479,6 +483,44 @@ describe('ChatMessages', () => {
     hooks.panelState = { ...hooks.panelState, chatImageDrafts: {} };
     renderPanel();
     expect(chatImages.prepareChatImagePreviews).toHaveBeenLastCalledWith('project', []);
+  });
+
+  it.each([false, true])('uses the bound episode model and locks model and bundle controls (detached: %s)', (detached) => {
+    preparePanel([createMessage('m1', 'user', '检查目标分集')]);
+    hooks.effectsEnabled = false;
+    const modelA = { id: 'model-a', name: 'Model A', modelId: 'a', category: 'text' as const,
+      providerConfigId: 'test-provider', contextWindow: 8192 };
+    const modelB = { id: 'model-b', name: 'Model B', modelId: 'b', category: 'text' as const,
+      providerConfigId: 'test-provider', contextWindow: 32768 };
+    const updateSettings = vi.fn();
+    const updateConfig = vi.fn();
+    hooks.panelState = { ...hooks.panelState, currentProjectId: 'episode-a',
+      projects: [hooks.panelState.projects[0],
+        { id: 'episode-a', parentId: 'project', name: '画布A', createdAt: 1, updatedAt: 1,
+          settings: { defaultModels: { text: 'general/model-a' } } },
+        { id: 'episode-b', parentId: 'project', name: '目标B', createdAt: 1, updatedAt: 1,
+          settings: { defaultModels: { text: 'general/model-b' } } }],
+      conversations: [{ ...hooks.panelState.conversations[0], workbenchTarget: { seriesId: 'project', episodeId: 'episode-b' } }],
+      config: { ...hooks.panelState.config, generalModels: [modelA, modelB] },
+      updateProjectSettings: updateSettings, updateConfig,
+    };
+    const detachedSnapshot: ChatStateSnapshot = { conversations: hooks.panelState.conversations,
+      activeConversationId: 'conversation-1', messages: hooks.panelState.messages, agentTasks: [], projectId: 'episode-a',
+      generalModels: [modelA, modelB], assistantModelGroups: [], mediaModelOptions: [], assistantModelId: 'general/model-b',
+      nodes: [], dramaAssets: { version: 2, characters: [], scenes: [], props: [] }, skillOptions: [],
+      composerDraft: '', composerDrafts: {}, panelView: 'chat' };
+    const tree = renderPanel(detached ? { detached, detachedSnapshot } : {});
+    const input = panelChild<{ assistantModelId: string; assistantModelDisabled: boolean; assistantModelHint: string;
+      onAssistantModelChange: (modelId: string) => void; teamConfiguration: ReactNode }>(tree, 'chat-input');
+    expect(input.assistantModelId).toBe('general/model-b');
+    expect(input.assistantModelDisabled).toBe(true);
+    expect(input.assistantModelHint).toContain('目标分集设置');
+    expect(collectElements(input.teamConfiguration).some((element) => element.type === CreationProfilePicker)).toBe(false);
+    expect(hooks.estimateUsage).toHaveBeenCalledWith(expect.any(Array), undefined, modelB);
+    input.onAssistantModelChange('general/other');
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(updateConfig).not.toHaveBeenCalled();
+    expect(hooks.panelState.currentProjectId).toBe('episode-a');
   });
 
   it('sending requests latest only for the submitted conversation and does not pass a streaming scroll callback', () => {

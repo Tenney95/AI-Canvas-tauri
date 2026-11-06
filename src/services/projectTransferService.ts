@@ -406,6 +406,7 @@ async function restoreChatPayload(
   payload: ProjectArchiveChatPayload | null,
   projectId: string,
   identities: ArchiveChatIdentityMap,
+  projectIds: ReadonlyMap<string, string>,
 ): Promise<{ conversationCount: number; memoryCount: number }> {
   if (!payload) return { conversationCount: 0, memoryCount: 0 };
 
@@ -415,7 +416,16 @@ async function restoreChatPayload(
     if (!isRecord(conversation) || typeof conversation.id !== 'string' || !conversation.id) continue;
     const nextId = identities.conversations.get(conversation.id)!;
     conversationIdMap.set(conversation.id, nextId);
-    await putChatConversation({ ...conversation, id: nextId, projectId });
+    let workbenchTarget: ChatConversationRecord['workbenchTarget'];
+    if (conversation.workbenchTarget) {
+      const seriesId = projectIds.get(conversation.workbenchTarget.seriesId);
+      const episodeId = projectIds.get(conversation.workbenchTarget.episodeId);
+      if (!seriesId || !episodeId || seriesId !== projectId || episodeId === seriesId) {
+        throw new Error('工作台历史的目标分集未包含在导入项目中，无法恢复只读绑定');
+      }
+      workbenchTarget = { seriesId, episodeId };
+    }
+    await putChatConversation({ ...conversation, id: nextId, projectId, workbenchTarget });
   }
 
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
@@ -555,6 +565,8 @@ export async function restoreProjectArchive(
       dramaAssets: undefined,
     } satisfies ProjectSaveData))];
 
+    const projectIds = new Map<string, string>([[source.id, record.id], ...sourceEpisodes.map((episode, index): [string, string] => [episode.project.id, records[index + 1].id])]);
+
     // 同一归档 assets 根中的相对路径是文件身份；主图投影与参考图不能重复计数。
     const relativeKey = (path: string) => path.replace(/\\/g, '/').split('/').filter((part) => part !== '.').join('/');
     const extractedAssets = new Set(unpacked.assetPaths.map(relativeKey));
@@ -571,7 +583,7 @@ export async function restoreProjectArchive(
       // 保存失败也可能已部分写入，回滚必须包含正在写入的 ID。
       createdProjectIds.push(next.id);
       await fileService.saveProject(next);
-      const counts = await restoreChatPayload(payloads[index], next.id, chatIdentities);
+      const counts = await restoreChatPayload(payloads[index], next.id, chatIdentities, projectIds);
       conversationCount += counts.conversationCount;
       memoryCount += counts.memoryCount;
     }

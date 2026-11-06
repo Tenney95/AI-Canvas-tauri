@@ -27,6 +27,7 @@ export interface CreateAgentTaskInput {
   taskId?: string;
   executionKind?: 'team';
   teamRequestDigest?: string;
+  workbenchTarget?: AgentTask['workbenchTarget'];
   projectId: string;
   conversationId: string;
   userMessageId: string;
@@ -77,6 +78,7 @@ function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperation
     userMessageId: input.userMessageId, mode: input.mode, goal: input.goal,
     executionKind: input.executionKind,
     teamRequestDigest: input.teamRequestDigest,
+    workbenchTarget: input.workbenchTarget ? { ...input.workbenchTarget } : undefined,
     creationProfile: input.creationProfile ? structuredClone(input.creationProfile) : undefined,
     creationProfilePreparation: input.creationProfilePreparation,
     status: 'queued', steps: [], modelRounds: 0, toolCallCount: 0, resumeCount: 0,

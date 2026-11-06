@@ -130,14 +130,16 @@ describe('模型可见性', () => {
   });
 
   it('legacy 包 Skill 只允许用户显式选择，不自动进入模型目录', () => {
-    useAppStore.setState({ agentPackageSkills: [packageSkill()] });
+    const runtimeSkill = packageSkill();
+    useAppStore.setState({ agentPackageSkills: [runtimeSkill], agentPackages: [packageInstallation(runtimeSkill)] });
 
     expect(listModelInvocableSkills()).toEqual([]);
     expect(listUserInvocableSkills().map((item) => item.id)).toEqual(['ap-skill-1']);
   });
 
   it('显式 autoInvoke 的包 Skill 可进入模型目录，但提示词不泄露来源句柄或路径', () => {
-    useAppStore.setState({ agentPackageSkills: [packageSkill({ packageAutoInvoke: true })] });
+    const runtimeSkill = packageSkill({ packageAutoInvoke: true });
+    useAppStore.setState({ agentPackageSkills: [runtimeSkill], agentPackages: [packageInstallation(runtimeSkill)] });
 
     expect(listModelInvocableSkills().map((item) => item.id)).toEqual(['ap-skill-1']);
     const prompt = buildSkillCatalogPrompt();
@@ -169,8 +171,46 @@ describe('模型可见性', () => {
     expect(listMcpReadableSkills()).toEqual([]);
   });
 
+  it('助手自动与显式调用分别复核当前安装路由，不信旧目录授权', () => {
+    const runtimeSkill = packageSkill({ packageAutoInvoke: true, mcpSkillReadEnabled: true });
+    const installation = packageInstallation(runtimeSkill);
+    useAppStore.setState({ agentPackageSkills: [runtimeSkill], agentPackages: [{ ...installation,
+      manifest: { ...installation.manifest, routing: { userInvocable: true, autoInvoke: false } },
+    }] });
+    expect(listModelInvocableSkills()).toEqual([]);
+    expect(listUserInvocableSkills()).toHaveLength(1);
+    expect(listMcpReadableSkills()).toHaveLength(1);
+    useAppStore.setState({ agentPackages: [{ ...installation,
+      manifest: { ...installation.manifest, routing: { userInvocable: false, autoInvoke: true } },
+    }] });
+    expect(listModelInvocableSkills()).toHaveLength(1);
+    expect(listUserInvocableSkills()).toEqual([]);
+  });
+
+  it('包停用、身份/入口变化或安装缺失时所有调用面均拒绝旧目录', () => {
+    const runtimeSkill = packageSkill({ packageAutoInvoke: true, mcpSkillReadEnabled: true });
+    const installation = packageInstallation(runtimeSkill);
+    const changed: AgentPackageInstallation[] = [
+      { ...installation, enabled: false },
+      { ...installation, health: 'missing' },
+      { ...installation, health: 'invalid' },
+      { ...installation, packageId: 'other-package' },
+      { ...installation, source: { ...installation.source, sourceId: 'changed-source' } },
+      { ...installation, contentHash: 'c'.repeat(64) },
+      { ...installation, entrypoints: [] },
+    ];
+    for (const agentPackages of [[], ...changed.map((item) => [item])]) {
+      useAppStore.setState({ agentPackages, agentPackageSkills: [runtimeSkill] });
+      expect(listModelInvocableSkills()).toEqual([]);
+      expect(listUserInvocableSkills()).toEqual([]);
+      expect(listMcpReadableSkills()).toEqual([]);
+    }
+  });
+
   it('聊天选择器投影不包含正文、sourceId 或入口路径', () => {
-    const options = projectSkillPickerOptions([skill()], [packageSkill()]);
+    const runtimeSkill = packageSkill();
+    useAppStore.setState({ agentPackages: [packageInstallation(runtimeSkill)] });
+    const options = projectSkillPickerOptions([skill()], [runtimeSkill]);
     expect(options).toEqual([
       expect.objectContaining({ sourceKind: 'user', sourceLabel: '我的 Skill' }),
       expect.objectContaining({ sourceKind: 'agent-package', sourceLabel: 'AI短剧知识库' }),

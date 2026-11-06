@@ -13,6 +13,7 @@ import {
   type CreativeFieldId,
 } from '../../seriesCreativeService';
 import type { EpisodeCreativeInfo } from '../../../types';
+import { isWorkbenchAgentTaskInScope } from '../../episodeWorkspaceScope';
 
 /** 单次回给模型的正文上限；原著动辄几十万字，必须分段读。 */
 const MAX_TEXT_CHUNK = 6000;
@@ -166,7 +167,16 @@ export function registerSeriesAgentTools(): Array<() => void> {
       description: '读取指定分集的大纲、完整剧本正文或结构化创作要点；长正文可按 offset 续读。',
       inputSchema: episodeReadInputSchema,
       effect: 'read',
-      authorize: authorizeCurrentProject,
+      authorize: (context, input) => {
+        const state = useAppStore.getState();
+        const task = state.agentTasks.find((item) => item.id === context.taskId);
+        if (!task?.workbenchTarget) return authorizeCurrentProject(context);
+        return task.projectId === context.projectId && task.conversationId === context.conversationId
+          && task.workbenchTarget.episodeId === input.episodeId
+          && isWorkbenchAgentTaskInScope(state, task, 'episode_read')
+          ? { allowed: true }
+          : { allowed: false, reason: '工作台只允许读取当前任务明确绑定的分集' };
+      },
       summarizeInput: (input) => `读取分集 ${input.episodeId} 的${input.part === 'script' ? '正文' : input.part === 'creative' ? '创作要点' : '大纲'}`,
       execute: async (_context, input) => {
         const { state, series } = currentSeries();

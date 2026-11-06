@@ -200,8 +200,10 @@ function TeamExecutionPicker({
     <div className={`flex min-w-0 max-w-full items-center gap-1 ${compact ? '' : 'flex-wrap'}`}>
       {controls !== 'configuration' && <div className="ui-segmented shrink-0" role="group" aria-label={t('执行方式')}>
         <button type="button" className={`ui-segmented__item${value.kind === 'single' ? ' is-active' : ''}`}
-          disabled={disabled} aria-pressed={value.kind === 'single'} onClick={() => onChange({ kind: 'single' })}>
-          {t('单模型')}
+          disabled={disabled} aria-pressed={value.kind === 'single'}
+          title={t('根据需求自动选用已授权的智能体与 Skill；简单任务直接完成')}
+          onClick={() => onChange({ kind: 'single' })}>
+          {t('智能调度')}
         </button>
         <button type="button" className={`ui-segmented__item${value.kind === 'team' ? ' is-active' : ''}`}
           disabled={disabled} aria-pressed={value.kind === 'team'} onClick={() => {

@@ -26,6 +26,7 @@ import { resolveSkillForSurface, sanitizeSkillLabel } from './skillCatalog';
 import { stripSkillFrontmatter } from './skillManifest';
 import { truncateSkillContent } from '../skillPromptService';
 import type { AssistantModelMessage } from '../ai/assistantStream';
+import { isGeneralAssistantScope, resolveAssistantToolAllowlist } from './assistantScope';
 
 /**
  * 子智能体可用的只读工具子集。
@@ -110,6 +111,9 @@ function buildSubAgentMessages(
       content: [
         `你的角色是「${label}」。`,
         SUB_AGENT_BASE_RULES,
+        parentTask.workbenchTarget
+          ? `本次唯一获准分集 episodeId=${parentTask.workbenchTarget.episodeId}；材料不足时可用 episode_read 读取该集，不使用当前画布或其他分集。`
+          : '',
         '',
         '角色说明书：',
         resolveRoleInstructions(profile),
@@ -167,14 +171,24 @@ export async function runSubAgent(
 
   const label = sanitizeSkillLabel(profile.name, SUB_AGENT_LIMITS.nameChars);
   const messages = buildSubAgentMessages(profile, parent, assignment);
+  const hasCurrentCanvas = !!parent.projectId && !parent.workbenchTarget && !isGeneralAssistantScope(parent.projectId)
+    && parent.projectId === store.currentProjectId;
+  const readTools = parent.workbenchTarget
+    ? ['episode_read', 'skill_search', 'skill_load', 'skill_read_file', 'agent_result_read']
+    : SUB_AGENT_TOOL_ALLOWLIST;
+  const toolAllowlist = readTools.filter((toolId) => (
+    (parent.toolAllowlist === undefined || parent.toolAllowlist.includes(toolId))
+    && (toolId !== 'canvas_query' || hasCurrentCanvas)
+  ));
   const child = store.createAgentTask({
     projectId: parent.projectId,
     conversationId: parent.conversationId,
     userMessageId: parent.userMessageId,
     mode: 'plan',
     goal: `${label}：${sanitizeSkillLabel(assignment, 120)}`,
-    toolAllowlist: [...SUB_AGENT_TOOL_ALLOWLIST],
+    toolAllowlist: resolveAssistantToolAllowlist(parent.projectId, toolAllowlist),
     parentTaskId: parent.id,
+    workbenchTarget: parent.workbenchTarget,
     expertDepth: 1,
     budget: {
       maxModelRounds: profile.maxRounds,

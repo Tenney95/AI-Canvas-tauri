@@ -4,7 +4,7 @@
 import { isMcpSettingsToolContext } from '../mcp/mcpSettingsScope';
 import { isGeneralAssistantScope, isGeneralAssistantToolContext } from './assistantScope';
 import { useAppStore } from '../../store/useAppStore';
-import { isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
+import { isWorkbenchAgentTaskInScope, isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
 import {
   AGENT_TERMINAL_STATUSES,
   type AgentApprovalResolution,
@@ -293,7 +293,7 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
     };
   }
   if (store.currentProjectId !== task.projectId && !isGeneralAssistantScope(task.projectId)
-    && !isWorkbenchTeamTaskInScope(store, task)) {
+    && !isWorkbenchTeamTaskInScope(store, task) && !isWorkbenchAgentTaskInScope(store, task)) {
     return {
       ok: false,
       errorCode: 'AGENT_RESUME_PROJECT_NOT_ACTIVE',
@@ -302,6 +302,7 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
   }
   const conversation = store.conversations.find((item) => item.id === task.conversationId);
   if (!conversation || conversation.deletedAt
+    || (task.workbenchTarget && !isWorkbenchAgentTaskInScope(store, task))
     || (isGeneralAssistantScope(task.projectId) && conversation.projectId !== task.projectId)
     || (task.teamRun?.source === 'script-workbench' && conversation.projectId !== task.teamRun.target?.seriesId)) {
     return {

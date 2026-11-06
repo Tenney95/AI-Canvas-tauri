@@ -10,6 +10,14 @@ const project = (data: Record<string, unknown> = {}): ProjectSaveData => ({ id: 
   nodes: [{ id: 'node', type: 'source-image', position: { x: 0, y: 0 }, data }], edges: [], groups: [], createdAt: 1, updatedAt: 1 });
 
 describe('项目归档输入与导出边界', () => {
+  it('工作台会话的只读目标进入可移植历史，非法归属不降级为普通会话', () => {
+    const payload = { conversations: [{ id: 'workbench', projectId: 'series', title: '本集',
+      workbenchTarget: { seriesId: 'series', episodeId: 'episode-b', canvasWrite: true } }], messages: [], memories: [] } as unknown as ProjectArchiveChatPayload;
+    expect(portableArchiveChat(payload).conversations[0].workbenchTarget).toEqual({ seriesId: 'series', episodeId: 'episode-b' });
+    expect(() => portableArchiveChat({ ...payload, conversations: [{ ...payload.conversations[0],
+      workbenchTarget: { seriesId: 'another-series', episodeId: 'episode-b' } }] })).toThrow('目标无效');
+  });
+
   it('扫描范围采用活身份和当前引用，排除恢复点、失败残留及删除墓碑', () => {
     const files = ['imports/old/附件.txt', 'imports/deleted/旧图.png'].map((path) => ({ path, bytes: 1, sha256: 'a'.repeat(64) }));
     const baseline = captureExchangeSnapshot([project()], files.map((file) => ({ ...file, path: file.path.replace('imports/', '原稿/') })), null);

@@ -13,7 +13,7 @@ const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_ep
   'cancel_pending', 'discard_pending', 'save_pending', 'toggle_split', 'set_split_source', 'set_split_count', 'set_split_duration',
   'open_source', 'close_source', 'read_source', 'prepare_chapter', 'open_rename', 'close_rename', 'rename', 'creative', 'polish',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
-  'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend',
+  'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend', 'view_agent_task',
   'preview_creation_profile', 'apply_creation_profile', 'refresh_external_agents', 'edit_team_graph', 'resolve_dispatch']);
 const isDesktop = () => typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window);
 

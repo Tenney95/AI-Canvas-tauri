@@ -26,13 +26,14 @@ import type {
 import { isTransientMediaUrl, persistMediaUrlToProjectData } from '../fileService';
 import { normalizeExecutionSelection, normalizeTeamProfile } from './teams/teamProfileService';
 import { restoreCreationProfileSelection } from '../creationProfiles/creationProfileManifest';
+import { normalizeConversationWorkbenchTarget } from './workbenchConversationScope';
 
 // ============================================
 // Type converters
 // ============================================
 
 function toConversationRecord(c: ChatConversation): ChatConversationRecord {
-  return { ...c };
+  return { ...c, workbenchTarget: normalizeConversationWorkbenchTarget(c.workbenchTarget, c.projectId) };
 }
 
 /** persistence 是后加的字段，旧记录按有无 filePath 推断，避免历史消息误报未保存。 */
@@ -91,6 +92,7 @@ async function normalizeMessageMediaRecord(record: ChatMessageRecord): Promise<C
 function fromConversationRecord(r: ChatConversationRecord): ChatConversation {
   return {
     ...r,
+    workbenchTarget: normalizeConversationWorkbenchTarget(r.workbenchTarget, r.projectId),
     agentMode: r.agentMode ?? 'collaborative',
     executionSelection: normalizeExecutionSelection(r.executionSelection),
     creationProfile: restoreCreationProfileSelection(r.creationProfile),

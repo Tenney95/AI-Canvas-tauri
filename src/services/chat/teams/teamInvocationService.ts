@@ -318,10 +318,10 @@ export async function appendTeamInstruction(taskId: string, instruction: string)
 }
 
 /** 只打开原任务；不会把它再塞回输入框或重新发起模型调用。 */
-export async function openTeamTaskInAssistant(taskId: string): Promise<void> {
+export async function openAgentTaskInAssistant(taskId: string): Promise<void> {
   const state = useAppStore.getState();
-  const task = state.agentTasks.find((item) => item.id === taskId && item.executionKind === 'team');
-  if (!task) throw new Error('团队任务不存在');
+  const task = state.agentTasks.find((item) => item.id === taskId);
+  if (!task) throw new Error('任务不存在');
   const owner = seriesOwnerId(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
   const conversation = state.conversations.find((item) => item.id === task.conversationId && item.projectId === owner && !item.deletedAt);
   if (!conversation) throw new Error('请先回到任务所属项目再查看');
@@ -333,7 +333,7 @@ export async function openTeamTaskInAssistant(taskId: string): Promise<void> {
     || !latest.conversations.some((item) => item.id === conversation.id && !item.deletedAt)
     || !latest.agentTasks.some((item) => item.id === taskId)) return;
   latest.focusAgentTask(taskId);
-  latest.setChatPanelView('tasks');
+  latest.setChatPanelView(task.executionKind === 'team' ? 'tasks' : 'chat');
   if (latest.chatPanelDetached) {
     const { openDetachedChatWindow } = await import('../chatWindowLifecycle');
     await openDetachedChatWindow();
@@ -348,6 +348,8 @@ export async function openTeamTaskInAssistant(taskId: string): Promise<void> {
     }
   }
 }
+
+export const openTeamTaskInAssistant = openAgentTaskInAssistant;
 
 /** 对外只接受任务/产物 ID，不接受窗口提交的路径、摘要或任意文件引用。 */
 export async function readTeamTaskArtifact(taskId: string, artifactId: string): Promise<string> {

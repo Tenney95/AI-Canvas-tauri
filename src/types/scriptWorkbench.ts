@@ -37,6 +37,7 @@ export interface ScriptWorkbenchSnapshot {
   assetPanel?: EpisodeAssetPanelSnapshot;
   executionSelection: AssistantExecutionSelection; teamMode: AgentMode; teamProfile: AgentTeamProfile;
   modelGroups: ModelGroup[]; episodeTeamTasks: AgentTask[];
+  episodeAgentTasks?: Array<Pick<AgentTask, 'id' | 'status'> & { title: string; activity: string }>;
   creationProfiles?: CreationProfileOption[];
   externalAgents?: ExternalAgentDescriptor[];
   theme?: 'dark' | 'light'; language?: AppConfig['language']; appearance: AppearanceUiSnapshot;
@@ -72,6 +73,7 @@ export type ScriptWorkbenchAction =
   | { type: 'resolve_dispatch'; taskId: string; dispatchId: string; decision: 'verified_completed' | 'abandoned' }
   | { type: 'team_control'; taskId: string; action: 'pause' | 'stop' | 'resume' | 'view' | 'apply' | 'restore' | 'reconcile' }
   | { type: 'team_artifact'; taskId: string; artifactId: string }
+  | { type: 'view_agent_task'; taskId: string }
   | { type: 'team_amend'; taskId: string; instruction: string };
 
 export type ScriptWorkbenchDispatch = (action: ScriptWorkbenchAction) => Promise<unknown>;

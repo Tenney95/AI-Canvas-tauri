@@ -70,6 +70,58 @@ beforeEach(() => {
   historyMocks.loadMessages.mockReset();
 });
 
+describe('工作台会话持久范围', () => {
+  const target = { seriesId: 'project-1', episodeId: 'episode-a' };
+  beforeEach(() => {
+    historyMocks.saveConversation.mockClear();
+    useAppStore.setState({ projectLoadStatus: 'ready', isCreatingProject: false, isReturningToStartPage: false,
+      switchingProjectName: null, projects: [
+        { id: 'project-1', name: '剧集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-a', parentId: 'project-1', name: '第一集', createdAt: 1, updatedAt: 1 },
+        { id: 'episode-b', parentId: 'project-1', name: '第二集', createdAt: 1, updatedAt: 1 },
+      ], conversations: [conversation('conv-workbench', 1)], activeConversationId: 'conv-workbench' });
+  });
+
+  it('首次绑定只接受当前剧集分集，后续元数据更新和任务清理都保留目标', () => {
+    const state = useAppStore.getState();
+    state.updateConversation('conv-workbench', { workbenchTarget: target });
+    useAppStore.setState({ agentTasks: [] });
+    state.updateConversation('conv-workbench', { title: '新标题', workbenchTarget: undefined,
+      id: 'forged-id', projectId: 'forged-project' });
+    expect(useAppStore.getState().conversations[0]).toMatchObject({ id: 'conv-workbench', projectId: 'project-1',
+      title: '新标题', workbenchTarget: target });
+    expect(historyMocks.saveConversation).toHaveBeenLastCalledWith(expect.objectContaining({ workbenchTarget: target }));
+    expect(() => state.updateConversation('conv-workbench', { workbenchTarget: { ...target, episodeId: 'episode-b' } }))
+      .toThrow('不能更换');
+    expect(useAppStore.getState().conversations[0].workbenchTarget).toEqual(target);
+  });
+
+  it('错误归属、已离开的剧集或不存在的分集不能建立绑定', () => {
+    const state = useAppStore.getState();
+    expect(() => state.updateConversation('conv-workbench', { workbenchTarget: { ...target, seriesId: 'other-series' } }))
+      .toThrow('目标无效');
+    expect(() => state.updateConversation('conv-workbench', { workbenchTarget: { ...target, episodeId: 'missing' } }))
+      .toThrow('范围已变化');
+    useAppStore.setState({ currentProjectId: null });
+    expect(() => state.updateConversation('conv-workbench', { workbenchTarget: target })).toThrow('范围已变化');
+    expect(useAppStore.getState().conversations[0].workbenchTarget).toBeUndefined();
+  });
+
+  it('其他产品入口的新草稿进入普通会话，保留原工作台会话与其草稿', () => {
+    const state = useAppStore.getState();
+    state.updateConversation('conv-workbench', { workbenchTarget: target });
+    state.setChatComposerLiveDraft('工作台尚未发送的要求', 'conv-workbench');
+    state.openChatWithDraft('读取全剧并拆分章节');
+    const latest = useAppStore.getState();
+    expect(latest.activeConversationId).not.toBe('conv-workbench');
+    expect(latest.conversations.find((entry) => entry.id === latest.activeConversationId)?.workbenchTarget).toBeUndefined();
+    expect(latest.conversations.find((entry) => entry.id === 'conv-workbench')?.workbenchTarget).toEqual(target);
+    expect(latest.chatComposerDrafts['conv-workbench']).toBe('工作台尚未发送的要求');
+    expect(latest.chatComposerDraft).toBe('读取全剧并拆分章节');
+    expect(latest.chatOpen).toBe(true);
+  });
+});
+
 describe('chat conversation restoration', () => {
   it('rejects a delayed selection from another project without replacing the current draft', () => {
     const old = conversation('conv-old-project', 1);

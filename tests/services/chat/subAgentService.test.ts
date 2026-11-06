@@ -20,6 +20,7 @@ import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/ag
 import { emptyDramaAssetLibrary } from '../../../src/types/dramaAssets';
 import type { UserSkill } from '../../../src/types';
 import type { AgentPackageSkill } from '../../../src/types/agentPackage';
+import { GENERAL_ASSISTANT_SCOPE_ID, resolveAssistantToolAllowlist } from '../../../src/services/chat/assistantScope';
 
 function uploadedSkill(partial: Partial<UserSkill> = {}): UserSkill {
   return {
@@ -59,6 +60,19 @@ function packageSkill(partial: Partial<AgentPackageSkill> = {}): AgentPackageSki
     readOnly: true,
     ...partial,
   };
+}
+
+function setPackageSkill(skill: AgentPackageSkill): void {
+  useAppStore.setState({ agentPackageSkills: [skill], agentPackages: [{
+    id: skill.installationId, packageId: skill.packageId,
+    manifest: { schemaVersion: 1, id: skill.packageId, name: skill.packageName, version: skill.packageVersion,
+      entrypoints: { instructions: 'AGENTS.md' }, supportedScopes: ['global'], supportedSurfaces: ['assistant'],
+      routing: { userInvocable: skill.packageUserInvocable, autoInvoke: skill.packageAutoInvoke } },
+    source: { sourceId: skill.sourceId, sourceType: 'folder', displayName: skill.packageName },
+    entrypoints: [skill.entryPath], skillCount: 1, fileCount: 1, totalBytes: 1, warnings: [],
+    health: 'ready', contentHash: skill.packageContentHash, enabled: true, mcpSkillReadEnabled: false,
+    installedAt: 1, updatedAt: 1,
+  }] });
 }
 
 function profile(partial: Partial<SubAgentProfile> = {}): SubAgentProfile {
@@ -143,6 +157,46 @@ describe('权限与嵌套边界', () => {
     expect(SUB_AGENT_TOOL_ALLOWLIST).not.toContain('file_write_text');
   });
 
+  it('子任务不能借派遣绕过父任务的工具限制', async () => {
+    useAppStore.setState({ agentTasks: [parentTask({ toolAllowlist: ['agent_run_sub_agent', 'skill_load'] })] });
+    const result = await runSubAgent('parent-1', profile(), '分析结构', signal());
+    const child = useAppStore.getState().agentTasks.find((task) => task.id === result.childTaskId)!;
+    expect(child.toolAllowlist).toEqual(['skill_load']);
+  });
+
+  it('通用对话可派出子智能体，但子任务不继承当前画布工具和材料', async () => {
+    useAppStore.setState({ agentTasks: [parentTask({ projectId: GENERAL_ASSISTANT_SCOPE_ID,
+      conversationId: 'conv-general', toolAllowlist: resolveAssistantToolAllowlist(GENERAL_ASSISTANT_SCOPE_ID) })] });
+    const result = await runSubAgent('parent-1', profile({ materials: ['mentioned_nodes', 'drama_assets'] }), '分析这段已提供文字', signal());
+    const child = useAppStore.getState().agentTasks.find((task) => task.id === result.childTaskId)!;
+    expect(child.toolAllowlist).toEqual(['skill_load', 'skill_read_file']);
+    expect(child.projectId).toBe(GENERAL_ASSISTANT_SCOPE_ID);
+    const messages = executeAgentRoundMock.mock.calls[0][0].messages;
+    expect(messages).toHaveLength(2);
+    expect(JSON.stringify(messages)).not.toContain('第一场，小美出场。');
+  });
+
+  it('工作台子任务保留本集目标且只继承父任务开放的本集读取能力', async () => {
+    const workbenchTarget = { seriesId: 'series-1', episodeId: 'episode-1' };
+    useAppStore.setState({ agentTasks: [parentTask({ workbenchTarget,
+      toolAllowlist: ['episode_read', 'skill_load', 'agent_run_sub_agent', 'canvas_query'] })] });
+    const result = await runSubAgent('parent-1', profile(), '检查本集结构', signal());
+    const child = useAppStore.getState().agentTasks.find((task) => task.id === result.childTaskId)!;
+    expect(child.workbenchTarget).toEqual(workbenchTarget);
+    expect(child.toolAllowlist).toEqual(['episode_read', 'skill_load']);
+    expect(JSON.stringify(executeAgentRoundMock.mock.calls[0][0].messages)).not.toContain('第一场，小美出场。');
+  });
+
+  it('父任务所属项目未加载时不读取另一项目的工具和材料', async () => {
+    useAppStore.setState({ currentProjectId: 'other-project' });
+    const result = await runSubAgent('parent-1', profile({ materials: ['mentioned_nodes', 'drama_assets'] }), '分析结构', signal());
+    const child = useAppStore.getState().agentTasks.find((task) => task.id === result.childTaskId)!;
+    expect(child.toolAllowlist).not.toContain('canvas_query');
+    const messages = executeAgentRoundMock.mock.calls[0][0].messages;
+    expect(messages).toHaveLength(2);
+    expect(JSON.stringify(messages)).not.toContain('第一场，小美出场。');
+  });
+
   it('子智能体不能再派子智能体', async () => {
     useAppStore.setState({
       agentTasks: [parentTask({ id: 'child-1', parentTaskId: 'parent-1', expertDepth: 1 })],
@@ -200,9 +254,7 @@ describe('隔离上下文', () => {
   });
 
   it('从共享目录读取绑定的智能体包 Skill，显式绑定不依赖自动调用开关', async () => {
-    useAppStore.setState({
-      agentPackageSkills: [packageSkill({ manifest: { disableModelInvocation: true } })],
-    });
+    setPackageSkill(packageSkill({ manifest: { disableModelInvocation: true } }));
     await runSubAgent('parent-1', profile({ skillId: 'ap-skill-1' }), '分析', signal());
     const system = executeAgentRoundMock.mock.calls[0][0].messages[0].content;
     expect(system).toContain('包内角色正文：检查人物动机。');
@@ -214,7 +266,7 @@ describe('隔离上下文', () => {
     ['Skill 文档声明', packageSkill({ manifest: { userInvocable: false } })],
     ['智能体包路由', packageSkill({ packageUserInvocable: false })],
   ])('%s禁止显式调用时回退到内联角色提示词', async (_label, skill) => {
-    useAppStore.setState({ agentPackageSkills: [skill] });
+    setPackageSkill(skill);
     await runSubAgent('parent-1', profile({ skillId: skill.id }), '分析', signal());
     const system = executeAgentRoundMock.mock.calls[0][0].messages[0].content;
     expect(system).toContain('分析剧本结构。');
@@ -230,7 +282,7 @@ describe('隔离上下文', () => {
   });
 
   it('包内 Skill 从共享目录撤下后，下次执行不使用之前的正文', async () => {
-    useAppStore.setState({ agentPackageSkills: [packageSkill()] });
+    setPackageSkill(packageSkill());
     await runSubAgent('parent-1', profile({ skillId: 'ap-skill-1' }), '分析', signal());
     useAppStore.setState({ agentPackageSkills: [] });
     await runSubAgent('parent-1', profile({ skillId: 'ap-skill-1' }), '再分析', signal());

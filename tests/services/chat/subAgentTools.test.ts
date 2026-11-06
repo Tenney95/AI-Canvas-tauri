@@ -23,6 +23,7 @@ import {
 } from '../../../src/services/chat/toolRegistry';
 import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/agent';
 import type { SubAgentProfile } from '../../../src/types/subAgent';
+import { GENERAL_ASSISTANT_SCOPE_ID, resolveAssistantToolAllowlist } from '../../../src/services/chat/assistantScope';
 
 const context: AgentToolContext = {
   taskId: 'parent-1',
@@ -94,6 +95,22 @@ describe('可用性与权限边界', () => {
   it('内置典范存在时工具始终可用', () => {
     expect(getAvailableAgentTools(context).map((item) => item.id))
       .toContain('agent_run_sub_agent');
+  });
+
+  it('通用助手可发现并授权只读子智能体工具', () => {
+    const general = { ...context, projectId: GENERAL_ASSISTANT_SCOPE_ID, conversationId: 'conv-general',
+      toolAllowlist: resolveAssistantToolAllowlist(GENERAL_ASSISTANT_SCOPE_ID) };
+    useAppStore.setState({ agentTasks: [parentTask({ projectId: general.projectId, conversationId: general.conversationId })] });
+    expect(getAvailableAgentTools(general).map((item) => item.id)).toContain('agent_run_sub_agent');
+    expect(getAgentTool('agent_run_sub_agent')?.authorize?.(general, {
+      profileId: 'built-in:script-analyst', assignment: '分析',
+    })?.allowed).toBe(true);
+  });
+
+  it('项目身份与父任务不一致时拒绝派遣', () => {
+    expect(getAgentTool('agent_run_sub_agent')?.authorize?.({ ...context, projectId: 'other-project' }, {
+      profileId: 'built-in:script-analyst', assignment: '分析',
+    })?.allowed).toBe(false);
   });
 
   it('父任务 toolAllowlist 不含该工具时不可用', () => {

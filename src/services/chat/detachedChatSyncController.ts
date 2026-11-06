@@ -338,6 +338,8 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
   ])];
   void prepareChatImagePreviews(chatScopeId, imageFileNames);
   const project = state.projects.find((item) => item.id === state.currentProjectId);
+  const modelProject = selectedConversation?.workbenchTarget
+    ? state.projects.find((item) => item.id === selectedConversation.workbenchTarget?.episodeId) : project;
   return {
     conversations,
     activeConversationId,
@@ -350,7 +352,7 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
     generalModels: state.config.generalModels ?? [],
     ...buildChatModelCatalog(state),
     assistantModelId: getAssistantTextModelCandidates(
-      project?.settings,
+      modelProject?.settings,
       state.config.assistantModelId,
     )[0],
     agentTeamProfile: effectiveTeamProfile,
@@ -425,6 +427,10 @@ export async function executeManagedChatOperation(operation: ChatManagedOperatio
     return { state, conversation, owner };
   };
   const initial = assertScope();
+  if (initial.conversation?.workbenchTarget
+    && ['preview_creation_profile', 'apply_creation_profile', 'save_team_profile'].includes(operation.kind)) {
+    throw new Error('请在剧本工作台调整本集创作组合配置');
+  }
   if (operation.kind === 'refresh_external_agents') return getExternalAgentCatalog();
   if (operation.kind === 'preview_creation_profile') {
     const preview = await previewCreationProfileOption(operation.profile, scopeId);
@@ -532,7 +538,7 @@ export function handleDetachedChatAction(
       const current = store.conversations.find((item) => item.id === store.activeConversationId && item.projectId === owner && !item.deletedAt);
       const conversationId = action.conversationId ?? current?.id ?? store.createConversation(scopeId);
       const conversation = useAppStore.getState().conversations.find((item) => item.id === conversationId && !item.deletedAt);
-      if (conversation?.projectId !== owner || !conversation.id.startsWith('conv-')) break;
+      if (conversation?.projectId !== owner || !conversation.id.startsWith('conv-') || conversation.workbenchTarget) break;
       store.updateConversation(conversationId, { executionSelection: normalizeExecutionSelection(action.selection) });
       if (!action.conversationId && action.draft !== undefined) store.setChatComposerLiveDraft(action.draft, conversationId);
       requestSync(true);
@@ -758,6 +764,8 @@ export function handleDetachedChatAction(
       if (category === 'image') config.assistantImageModelId = action.modelId;
       else if (category === 'video') config.assistantVideoModelId = action.modelId;
       else {
+        if (store.conversations.some((conversation) => conversation.id === store.activeConversationId
+          && !conversation.deletedAt && conversation.workbenchTarget)) break;
         const project = store.projects.find((item) => item.id === store.currentProjectId);
         if (project) {
           void store.updateProjectSettings({

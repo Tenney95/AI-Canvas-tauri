@@ -45,6 +45,7 @@ import { withRelocatedMedia } from './indexedDb/mediaRelocations';
 import { localMediaUrlToPath } from '../utils/mediaUrl';
 import { stripVerbatimPrefix } from './fs/core';
 import { isProjectSnapshotDataUrl } from './projectSnapshotValidation';
+import { normalizeConversationWorkbenchTarget } from './chat/workbenchConversationScope';
 
 const LAST_ACTIVE_PROJECT_KEY = 'last-active-project';
 const RECENT_ASSET_USAGE_KEY = 'recent-asset-usage';
@@ -1395,6 +1396,7 @@ export async function deleteAssetMeta(assetId: string): Promise<void> {
 // ============================================
 
 export interface ChatConversationRecord {
+  workbenchTarget?: AgentTask['workbenchTarget'];
   creationProfile?: CreationProfileSelection;
   teamProfileOverride?: AgentTeamProfile;
   creationProfileRevision?: number;
@@ -1421,21 +1423,35 @@ export interface ChatConversationRecord {
 
 /** 保存 / 更新会话 */
 export async function putChatConversation(record: ChatConversationRecord): Promise<void> {
+  record = { ...record, workbenchTarget: normalizeConversationWorkbenchTarget(record.workbenchTarget, record.projectId) };
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readwrite');
     const store = tx.objectStore(STORE_CHAT_CONVERSATIONS);
+    let failure: Error | undefined;
     const request = store.get(record.id);
     request.onsuccess = () => {
       const current = request.result as ChatConversationRecord | undefined;
       if (!current) { store.put(record); return; }
+      let currentTarget: ChatConversationRecord['workbenchTarget'];
+      try { currentTarget = normalizeConversationWorkbenchTarget(current.workbenchTarget, current.projectId); }
+      catch (error) { failure = error instanceof Error ? error : new Error('工作台会话目标无效'); tx.abort(); return; }
+      // 旧元数据快照不能清除已建立的只读分集绑定。
+      if (currentTarget) {
+        if (record.projectId !== current.projectId || (record.workbenchTarget
+          && (record.workbenchTarget.seriesId !== currentTarget.seriesId
+            || record.workbenchTarget.episodeId !== currentTarget.episodeId))) {
+          failure = new Error('工作台会话不能更换目标分集'); tx.abort(); return;
+        }
+        record = { ...record, projectId: current.projectId, workbenchTarget: currentTarget };
+      }
       const staleSelection = (record.creationProfileRevision ?? 0) < (current.creationProfileRevision ?? 0);
       store.put({ ...record, creationProfile: current.creationProfile, teamProfileOverride: current.teamProfileOverride,
         creationProfileRevision: current.creationProfileRevision,
         ...(staleSelection ? { executionSelection: current.executionSelection } : {}) });
     };
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('会话保存失败'));
   });
 }
 
@@ -1552,6 +1568,9 @@ export async function forkChatConversationAtMessage(input: {
     sourceRequest.onsuccess = () => {
       const source = sourceRequest.result as ChatConversationRecord | undefined;
       if (!source || source.deletedAt || source.projectId !== input.projectId) { fail(new Error('来源对话已失效')); return; }
+      let workbenchTarget: ChatConversationRecord['workbenchTarget'];
+      try { workbenchTarget = normalizeConversationWorkbenchTarget(source.workbenchTarget, source.projectId); }
+      catch (error) { fail(error); return; }
       const boundaryRequest = messages.get(input.messageId);
       boundaryRequest.onsuccess = () => {
         const boundary = boundaryRequest.result as ChatMessageRecord | undefined;
@@ -1577,6 +1596,7 @@ export async function forkChatConversationAtMessage(input: {
                   const now = Date.now();
                   const conversation: ChatConversationRecord = {
                     id: input.newConversationId, projectId: input.projectId,
+                    workbenchTarget,
                     title: input.sanitize(input.title?.trim() || `${source.title} · 分支`).slice(0, 120),
                     titleSource: 'user', pinned: false, archived: false, agentMode: source.agentMode,
                     executionSelection: source.executionSelection, mcpServerIds: [], mcpSelectionRevision: crypto.randomUUID(),
