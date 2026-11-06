@@ -43,6 +43,7 @@ import { hasUnsettledEpisodeEditorSession, isEpisodeEditorWriteLocked, registerE
   subscribeEpisodeEditorWrites } from '../services/episodeEditorSessionService';
 import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
 import { createAppearanceUiSnapshot } from '../services/appearance/appearanceWindowSync';
+import { resolveAppearanceMode } from '../services/appearance/appearanceRuntime';
 import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
 import { createScriptWorkbenchWindowHost, type ScriptWorkbenchWindowHost } from '../services/scriptWorkbenchWindowService';
 import { loadProjectAgentTasks } from '../services/chat/agentTaskService';
@@ -664,7 +665,8 @@ export default function ScriptWorkbench({
       .map((asset) => ({ name: asset.name, summary: asset.summary })),
     assetPanel: currentEpisode && (activeTab === 'characters' || activeTab === 'props') ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
     executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks,
-    theme: config.theme, language: config.language, appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
+    theme: resolveAppearanceMode(config.appearance?.mode ?? config.theme), language: config.language,
+    appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
     detached, openingWindow,
   };
   const snapshotRef = useRef(snapshot);
