@@ -12,6 +12,8 @@ const RESPONSE_EVENT = 'script-workbench:response';
 const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_episode', 'set_tab', 'save', 'close', 'dock', 'detach',
   'cancel_pending', 'discard_pending', 'save_pending', 'toggle_split', 'set_split_source', 'set_split_count', 'set_split_duration',
   'open_source', 'close_source', 'read_source', 'prepare_chapter', 'open_rename', 'close_rename', 'rename', 'creative', 'polish',
+  'original_open', 'original_edit', 'original_save', 'original_reload', 'original_generate', 'original_apply',
+  'original_discard_candidate', 'original_cancel',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
   'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend', 'view_agent_task',
   'preview_creation_profile', 'apply_creation_profile', 'refresh_external_agents', 'edit_team_graph', 'resolve_dispatch',
@@ -102,7 +104,10 @@ export function createScriptWorkbenchWindowHost(options: {
         || !ACTIONS.has(payload.action.type) || !/^[A-Za-z0-9_-]{8,160}$/.test(payload.requestId)
         || !Number.isSafeInteger(payload.revision) || payload.revision < 1 || payload.revision > revision) return;
       const encoded = new TextEncoder().encode(JSON.stringify(payload));
-      if (encoded.byteLength > 2 * 1024 * 1024) {
+      // UTF-8 原文经 JSON 转义可能放大；原文交接留出有界开销，普通请求维持原上限。
+      const maxPayloadBytes = payload.originalHandoff || payload.action.type === 'original_edit'
+        ? 16 * 1024 * 1024 : 2 * 1024 * 1024;
+      if (encoded.byteLength > maxPayloadBytes) {
         await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, { sessionId: options.sessionId, requestId: payload.requestId,
           error: '本次修改超过窗口传输上限，已保留本地草稿，请分段处理' } satisfies ScriptWorkbenchResponse);
         return;
@@ -144,6 +149,12 @@ export function createScriptWorkbenchWindowHost(options: {
         if (disposed) return;
         await publish().catch(() => {});
         await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, response).catch(() => {});
+        // 原文只在本次 RPC 中传输；付费/保存的去重记录只留完成标记，不缓存正文或候选。
+        if (payload.action.type.startsWith('original_') && requests.get(payload.requestId) === accepted) {
+          if (payload.action.type === 'original_open' || payload.action.type === 'original_edit') requests.delete(payload.requestId);
+          else requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId,
+            requestId: payload.requestId, ...(response.error ? { error: response.error } : { value: true }) }) });
+        }
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。
         if (['flush_draft', 'read_source', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents',
           'story_graph_detail', 'story_graph_resolve_evidence', 'story_graph_filter', 'story_graph_locate'].includes(payload.action.type)) requests.delete(payload.requestId);

@@ -23,6 +23,10 @@ import NumberStepper from './shared/NumberStepper';
 import { LazyLoadBoundary, LazyLoadFallback } from './shared/LazyLoadBoundary';
 import { createEpisodeShotlist } from '../services/shotlistService';
 import SeriesSourceBrowser, { type SeriesSourceBrowserRemote } from './SeriesSourceBrowser';
+import OriginalWritingEditor from './OriginalWritingEditor';
+import { createOriginalWritingSession } from '../services/originalWritingService';
+import WorkbenchContextSummary from './series/WorkbenchContextSummary';
+import WorkbenchCollaborationDialog from './series/WorkbenchCollaborationDialog';
 import type { DramaAssetKind } from '../types/dramaAssets';
 import { commitSeriesAssetCandidates, extractSeriesAssetsFromFullScript, type SeriesAssetExtractionResult } from '../services/seriesAssetExtractionService';
 import { normalizeEpisodeAssetRoster, type EpisodeAssetPanelActionResult } from '../types/episodeAssets';
@@ -31,9 +35,7 @@ import { buildEpisodeAssetPanelSnapshot, executeEpisodeAssetPanelAction } from '
 import AssetExtractionPreviewDialog from './series/AssetExtractionPreviewDialog';
 import type { AgentMode } from '../types/agent';
 import type { AssistantExecutionSelection, TeamTemplateId } from '../types/agentTeam';
-import TeamExecutionPicker from './shared/agentTeams/TeamExecutionPicker';
 import TeamRunCard from './shared/agentTeams/TeamRunCard';
-import CreationProfilePicker from './shared/creationProfiles/CreationProfilePicker';
 import type { CreationProfileChoicePreview } from '../types/creationProfile';
 import { creationProfileOptions, captureCreationProfile, previewCreationProfileOption, resolveCreationTeamProfile } from '../services/creationProfiles/creationProfileService';
 import { getExternalAgentCatalog, readExternalAgentCatalog } from '../services/chat/externalAgents/externalAgentService';
@@ -79,6 +81,12 @@ type CreativeDraft = WorkbenchCreativeDraft;
 // 非持久化恢复副本：宿主因切项目卸载时不把未确认丢弃的稿件当作已经放弃。
 const workbenchDraftCache = new Map<string, Record<string, WorkbenchDraft>>();
 const EMPTY_WORKBENCH_NODES: [] = [];
+
+const WORKBENCH_ACTIONS_BY_TAB: Partial<Record<WorkbenchEditorTab, EpisodeCreativeAction[]>> = {
+  outline: ['optimize-outline', 'adjust-beats', 'diagnose', 'strengthen-opening', 'strengthen-conflict', 'design-reversal', 'strengthen-ending'],
+  script: ['write-script', 'rewrite-script', 'polish-dialogue', 'visualize-action', 'add-performance-cues', 'diagnose'],
+  creative: ['adjust-beats', 'strengthen-opening', 'strengthen-conflict', 'design-reversal', 'strengthen-ending', 'diagnose'],
+};
 
 const EMPTY_CREATIVE_DRAFT: CreativeDraft = {
   task: '',
@@ -185,15 +193,6 @@ function createDraft(episode: {
 
 function draftSignature(value: WorkbenchDraft): string {
   return JSON.stringify(value);
-}
-
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 rounded-lg border border-canvas-border bg-canvas-card px-2.5 py-2">
-      <p className="truncate text-[10px] text-canvas-text-muted">{label}</p>
-      <p className="mt-0.5 truncate text-xs font-semibold text-canvas-text">{value}</p>
-    </div>
-  );
 }
 
 function CreativeField({
@@ -328,6 +327,14 @@ export default function ScriptWorkbench({
   const currentEpisode = episodes.find((episode) => episode.id === selectedEpisodeId) ?? null;
   const currentEpisodeId = currentEpisode?.id;
   const [sessionId] = useState(() => crypto.randomUUID());
+  const [, refreshOriginalWriting] = useState(0);
+  const [originalWriting, setOriginalWriting] = useState<ReturnType<typeof createOriginalWritingSession> | null>(null);
+  useEffect(() => {
+    if (!seriesId) return;
+    const session = createOriginalWritingSession({ seriesId, onChange: () => refreshOriginalWriting((version) => version + 1) });
+    setOriginalWriting(session);
+    return () => session.dispose();
+  }, [seriesId]);
   const [detached, setDetached] = useState(false);
   const [openingWindow, setOpeningWindow] = useState(false);
   const [closingWorkbench, setClosingWorkbench] = useState(false);
@@ -370,6 +377,7 @@ export default function ScriptWorkbench({
   const [isStartingTeam, setIsStartingTeam] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const pendingOriginalVersion = useRef('');
   const [splitOpen, setSplitOpen] = useState(startWithSplit || Boolean(openRequestRevision && requestSplit));
   const [previousOpenRequest, setPreviousOpenRequest] = useState({ revision: openRequestRevision, split: requestSplit });
   if (previousOpenRequest.revision !== openRequestRevision || previousOpenRequest.split !== requestSplit) {
@@ -458,6 +466,11 @@ export default function ScriptWorkbench({
   }, [seriesId, setDraftVersionByEpisode, setDraftsByEpisode]);
 
   const onClose = () => {
+    if (originalWriting?.isDirty() || originalWriting?.isBusy()) {
+      setActiveTab('original');
+      showToast(t('请先保存原文或处理未保存修改，再离开工作台'), 'error');
+      return;
+    }
     const episodeId = currentEpisode?.id;
     const local = episodeId ? draftsRef.current[episodeId] : undefined;
     const saved = useAppStore.getState().projects.find((item) => item.id === episodeId);
@@ -480,8 +493,8 @@ export default function ScriptWorkbench({
     return registerEpisodeEditorSession(episodeId, () => {
       const episode = useAppStore.getState().projects.find((item) => item.id === episodeId);
       const local = draftsRef.current[episodeId];
-      return { dirty: (!!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null))) || graphEditorLease.current !== null,
-        saving: savingEpisodeRef.current === episodeId || graphWritesInFlight.current > 0 };
+      return { dirty: (!!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null))) || graphEditorLease.current !== null || !!originalWriting?.isDirty(),
+        saving: savingEpisodeRef.current === episodeId || graphWritesInFlight.current > 0 || !!originalWriting?.isBusy() };
     }, () => {
       const version = draftVersions.current.get(episodeId) ?? 0;
       const lease = graphEditorLease.current;
@@ -492,7 +505,7 @@ export default function ScriptWorkbench({
         if (lease && graphEditorLease.current === lease) { graphEditorLease.current = null; setGraphEditorOpen(false); }
       };
     });
-  }, [currentEpisodeId, isOpen, replaceEpisodeDraft]);
+  }, [currentEpisodeId, isOpen, replaceEpisodeDraft, originalWriting]);
   const analysis = analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative));
 
   const saveDraft = async (): Promise<boolean> => {
@@ -540,6 +553,7 @@ export default function ScriptWorkbench({
       settleEpisodeEditorSessions(selectedEpisodeRef.current);
     }
     if (action.type === 'close') {
+      originalWriting?.discard();
       onClose();
       return;
     }
@@ -549,6 +563,11 @@ export default function ScriptWorkbench({
 
   const requestClose = () => {
     if (savingEpisodeRef.current || editorWriteLocked) return false;
+    if (originalWriting?.isBusy()) {
+      setActiveTab('original');
+      showToast(t('请先等待原文保存完成，或停止生成，再关闭工作台'), 'error');
+      return false;
+    }
     if (graphEditorLease.current || graphWritesInFlight.current > 0) {
       showToast(t('请先保存或关闭关系图详情，再离开工作台'), 'error');
       setActiveTab('story-graph'); return false;
@@ -558,7 +577,11 @@ export default function ScriptWorkbench({
       setActiveTab('story-graph');
       return false;
     }
-    if (currentDirty()) { setPendingAction({ type: 'close' }); return false; }
+    if (currentDirty() || originalWriting?.isDirty()) {
+      const original = originalWriting?.summary();
+      pendingOriginalVersion.current = JSON.stringify([original?.documentId, original?.revision]);
+      setPendingAction({ type: 'close' }); return false;
+    }
     else {
       setSeriesAssetPreview(null);
       onClose();
@@ -928,6 +951,7 @@ export default function ScriptWorkbench({
     storyGraphView: graphView, storyGraphFilter: effectiveGraphFilter,
     storyGraphAssets: graphView && contextReady ? graphAssets : undefined,
     storyGraphExtraction: graphView ? graphExtraction : undefined, storyGraphEditorOpen: graphEditorOpen, sourceLocation,
+    originalWriting: originalWriting?.summary(),
     theme: resolveAppearanceMode(config.appearance?.mode ?? config.theme), language: config.language,
     appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
     detached, openingWindow,
@@ -940,7 +964,14 @@ export default function ScriptWorkbench({
 
   const handleAction = async (action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest): Promise<unknown> => {
     if (request) {
-      if (request.episodeId !== selectedEpisodeRef.current) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
+      if (request.originalHandoff && !(action.type === 'original_reload' && action.discard)) {
+        try { originalWriting?.flush(request.originalHandoff); }
+        catch (error) {
+          // 无法接受的末次输入不能阻塞停止生成或用户明确放弃；其余操作仍须完成交接。
+          if (!['original_cancel', 'original_discard_candidate', 'discard_pending'].includes(action.type)) throw error;
+        }
+      }
+      if (!action.type.startsWith('original_') && request.episodeId !== selectedEpisodeRef.current) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
       const handoff = request.handoff;
       if (handoff && handoff.sequence > acceptedEditSequenceRef.current) {
         const value = handoff.draft;
@@ -955,8 +986,22 @@ export default function ScriptWorkbench({
         setAcceptedEditSequence(handoff.sequence);
       }
     }
-    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor'];
+    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate'];
     if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
+    if (action.type.startsWith('original_')) {
+      if (!originalWriting) throw new Error(t('当前没有可编辑的原著文件'));
+      // 所有原文读取、保存和生成仍由主窗口执行；快照只发布状态与统计。
+      return originalWriting.handle(action as Parameters<typeof originalWriting.handle>[0]);
+    }
+    if (pendingAction?.type === 'close' && (action.type === 'discard_pending' || action.type === 'save_pending')) {
+      if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再关闭工作台'));
+      const original = originalWriting?.summary();
+      const version = JSON.stringify([original?.documentId, original?.revision]);
+      if (version !== pendingOriginalVersion.current) {
+        pendingOriginalVersion.current = version;
+        throw new Error(t('原文在确认期间有新修改，请核对当前草稿后重试'));
+      }
+    }
     if ('taskId' in action && !(action.type === 'view_agent_task' ? episodeAgentTasks : episodeTeamTasks)
       .some((task) => task.id === action.taskId)) throw new Error(t('任务不属于当前分集'));
     switch (action.type) {
@@ -974,8 +1019,12 @@ export default function ScriptWorkbench({
         return true;
       }
       case 'close': return requestClose();
-      case 'dock': if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口')); afterReply.current = 'dock'; return true;
+      case 'dock':
+        if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再切换窗口'));
+        if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口'));
+        afterReply.current = 'dock'; return true;
       case 'detach': {
+        if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再切换窗口'));
         if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口'));
         if (openingWindow) return false;
         setOpeningWindow(true);
@@ -986,6 +1035,10 @@ export default function ScriptWorkbench({
       case 'discard_pending': if (pendingAction) performPendingAction(pendingAction); return true;
       case 'save_pending': {
         if (!pendingAction) return false;
+        if (pendingAction.type === 'close' && originalWriting?.isDirty()) {
+          await originalWriting.handle({ type: 'original_save' });
+          if (originalWriting.isDirty()) throw new Error(t('原文保存期间有新修改，草稿已保留，请重新保存'));
+        }
         if (!await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
         performPendingAction(pendingAction); return true;
       }
@@ -1309,20 +1362,32 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   externalError?: string; onDismissError?: () => void;
 }) {
   const t = useT();
-  const teamControlsRef = useRef<HTMLDivElement>(null);
   const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
   const locatedSourceSequence = useRef(0);
   const graphViewLease = useRef<{ graphId: string; epoch: number } | null>(null);
+  const [originalToolsContainer, setOriginalToolsContainer] = useState<HTMLDivElement | null>(null);
+  const [collaborationEpisodeId, setCollaborationEpisodeId] = useState<string | null>(null);
   const splitCountId = useId();
   const splitDurationId = useId();
   const [error, setError] = useState('');
-  const { series, episodes, currentEpisode, activeTab, draft, analysis, isDirty, isSaving, isStartingTeam,
-    contextReady, editorWriteLocked, unsettledEditor, pendingAction, splitOpen, splitSource, targetEpisodeCount,
+  const { series, episodes, currentEpisode, activeTab, draft, isDirty, isSaving, isStartingTeam,
+    contextReady, editorWriteLocked, pendingAction, splitOpen, splitSource, targetEpisodeCount,
     targetDurationSec, sourceOpen, renamingEpisodeId, extractingAssetKind, seriesAssetPreview, executionSelection,
-    teamMode, teamProfile, episodeTeamTasks } = snapshot;
+    episodeTeamTasks } = snapshot;
+  const collaborationOpen = !!collaborationEpisodeId && collaborationEpisodeId === currentEpisode?.id && contextReady;
+  useEffect(() => {
+    if (!contextReady || collaborationEpisodeId !== currentEpisode?.id) setCollaborationEpisodeId(null);
+  }, [collaborationEpisodeId, contextReady, currentEpisode?.id]);
   const isOpen = true;
   const projectLoadStatus = contextReady ? 'ready' : 'loading';
   const episodeAssetRoster = normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster);
+  const creationToolsVisible = activeTab === 'outline' || activeTab === 'script' || activeTab === 'creative';
+  const creativeActions = WORKBENCH_ACTIONS_BY_TAB[activeTab] ?? [];
+  const creativeGroups = CREATIVE_ACTION_GROUPS.map((group) => ({ ...group,
+    actions: group.actions.filter((action) => creativeActions.includes(action.id)),
+  })).filter((group) => group.actions.length > 0);
+  const extractionActions = SERIES_ASSET_EXTRACTION_ACTIONS.filter((action) => activeTab === 'script'
+    || (activeTab === 'characters' && action.kind === 'character') || (activeTab === 'props' && action.kind === 'prop'));
   const splitSourceAvailable = splitSource === 'script' ? !!series?.hasScript : !!series?.hasOriginal;
   const fire = (action: ScriptWorkbenchAction) => { void dispatch(action).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t('工作台操作未完成'))); };
   const report = async (action: ScriptWorkbenchAction) => {
@@ -1344,7 +1409,6 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   const openEpisodeShotlist = () => report({ type: 'shotlist' });
   const openSplitDraft = () => fire({ type: 'split_draft' });
   const extractFullScriptAssets = (kind: DramaAssetKind, label: string) => report({ type: 'extract_series', kind, label });
-  const setExecutionSelection = (value: AssistantExecutionSelection) => fire({ type: 'set_execution', value });
   const setSplitSource = (value: 'script' | 'original') => fire({ type: 'set_split_source', value });
   const setTargetEpisodeCount = (value: string) => fire({ type: 'set_split_count', value });
   const setTargetDurationSec = (value: string) => fire({ type: 'set_split_duration', value });
@@ -1380,7 +1444,8 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
         onKeyDown={(event) => {
           if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
             event.preventDefault();
-            void saveDraft();
+            if (activeTab === 'original') fire({ type: 'original_save' });
+            else void saveDraft();
           }
         }}
       >
@@ -1395,11 +1460,9 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
             </p>
           </div>
           <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
-            disabled={!currentEpisode || isSaving || isStartingTeam || editorWriteLocked}
-            onClick={() => {
-              setExecutionSelection({ kind: 'team', templateId: activeTab === 'outline' ? 'outline' : 'script' });
-              teamControlsRef.current?.scrollIntoView({ block: 'nearest' });
-            }}>
+            disabled={!currentEpisode || !contextReady || isSaving || isStartingTeam || editorWriteLocked}
+            aria-haspopup="dialog" aria-expanded={collaborationOpen}
+            onClick={() => setCollaborationEpisodeId(currentEpisode?.id ?? null)}>
             <Icon icon="lucide:users-round" className="h-3.5 w-3.5" />
             {t('Agent协作')}
           </button>
@@ -1454,7 +1517,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
             </button>
             <button
               type="button"
-              disabled={isSaving || editorWriteLocked}
+              disabled={isSaving || editorWriteLocked || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating || snapshot.originalWriting?.loading}
               onClick={() => performPendingAction(pendingAction)}
               className="h-7 rounded-md px-2.5 text-[11px] text-red-300 hover:bg-red-500/15"
             >
@@ -1462,7 +1525,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
             </button>
             <button
               type="button"
-              disabled={isSaving}
+              disabled={isSaving || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating || snapshot.originalWriting?.loading}
               onClick={() => fire({ type: 'save_pending' })}
               className="h-7 rounded-md bg-amber-400/90 px-3 text-[11px] font-medium text-black
                          hover:bg-amber-300 disabled:cursor-wait disabled:opacity-60"
@@ -1620,10 +1683,9 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-auto">
-                  {activeTab === 'original' && <section className="h-full min-h-80 min-w-0 overflow-hidden" aria-label={t('原文')}>
-                    {!contextReady ? <p role="status" className="ui-hint p-3">{t('项目尚未就绪，暂时无法读取原文。')}</p>
-                      : !series?.hasOriginal ? <p role="status" className="ui-hint p-3">{t('还没有原文，请在剧集栏添加原著文件。')}</p>
-                        : <SeriesSourceBrowser key={sourceRemote.contextKey} embedded fixedPart="original" remote={sourceRemote} />}
+                  {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
+                    {!series?.hasOriginal ? <p role="status" className="ui-hint p-3">{t('还没有原文，请在剧集栏添加原著文件。')}</p>
+                      : <OriginalWritingEditor summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady} active={activeTab === 'original'} toolsContainer={originalToolsContainer} />}
                   </section>}
                   {activeTab === 'story-graph' && snapshot.storyGraphView ? (
                     <LazyLoadBoundary label={t('故事关系图')} resetKey={snapshot.sessionId}>
@@ -1750,7 +1812,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   ) : null}
                 </div>
 
-                <footer className="flex h-12 shrink-0 items-center gap-3 border-t border-border-subtle px-3">
+                {activeTab !== 'original' && <footer className="flex h-12 shrink-0 items-center gap-3 border-t border-border-subtle px-3">
                   <span className={`text-[11px] ${isDirty ? 'text-amber-300' : 'text-canvas-text-muted'}`}>
                     {editorWriteLocked ? t('团队成果保存中…') : isDirty ? t('有未保存修改') : t('已保存')}
                   </span>
@@ -1774,7 +1836,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   >
                     {isSaving ? t('保存中…') : t('保存本集')}
                   </button>
-                </footer>
+                </footer>}
               </>
             ) : (
               <div className="grid min-h-80 flex-1 place-items-center p-6 text-center">
@@ -1789,42 +1851,10 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
 
           <aside className="min-h-0 overflow-auto border-t border-border-subtle p-3
                             lg:col-span-2 lg:max-h-64 xl:col-span-1 xl:max-h-none xl:border-t-0">
-            <div className="flex items-center gap-2">
-              <Icon icon="lucide:scan-search" className="h-4 w-4 text-indigo-400" />
-              <h3 className="text-[11px] font-semibold text-canvas-text-secondary">{t('创作诊断')}</h3>
-              <span className="ml-auto text-[9px] text-canvas-text-muted">{t('仅提示，不阻断')}</span>
-            </div>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <MetricCard label={t('正文')} value={t('{count} 字', { count: analysis.metrics.characterCount })} />
-              <MetricCard label={t('场景')} value={String(analysis.metrics.sceneCount)} />
-              <MetricCard
-                label={t('对白占比')}
-                value={analysis.metrics.dialogueRatio === null
-                  ? '—'
-                  : `${Math.round(analysis.metrics.dialogueRatio * 100)}%`}
-              />
-              <MetricCard
-                label={t('预计时长')}
-                value={analysis.metrics.estimatedDurationSec === null
-                  ? '—'
-                  : t('约 {count} 秒', { count: analysis.metrics.estimatedDurationSec })}
-              />
-            </div>
-            <div className="mt-2 grid gap-1.5">
-              {analysis.diagnostics.slice(0, 4).map((item) => (
-                <div key={item.id} className="rounded-lg border border-canvas-border bg-canvas-card p-2.5">
-                  <p className="text-[11px] font-medium text-canvas-text-secondary">{t(item.title)}</p>
-                  <p className="mt-1 text-[10px] leading-4 text-canvas-text-muted">{t(item.detail)}</p>
-                </div>
-              ))}
-              {analysis.diagnostics.length === 0 ? (
-                <p className="rounded-lg border border-canvas-border bg-canvas-card p-2.5 text-[10px] text-canvas-text-muted">
-                  {t('暂未发现明显的静态格式问题；人物动机、冲突强度等仍需创作判断。')}
-                </p>
-              ) : null}
-            </div>
+            <WorkbenchContextSummary snapshot={snapshot} dispatch={report} />
+            {activeTab === 'original' && <div ref={setOriginalToolsContainer} className="mt-3 space-y-3" />}
 
-            <section className="mt-4 rounded-xl border border-canvas-border bg-canvas-card p-2.5">
+            {extractionActions.length > 0 && <section className="ui-card mt-4 p-3">
               <div className="flex items-center gap-1.5">
                 <Icon icon="lucide:scan-text" className="h-3.5 w-3.5 text-indigo-400" />
                 <h3 className="text-[10px] font-semibold text-canvas-text-secondary">{t('全剧资产提取')}</h3>
@@ -1837,8 +1867,8 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   ? t('读取全剧剧本，提取结果先预览，仅将所选条目加入本剧资产库。')
                   : t('请先填写全剧剧本。')}
               </p>
-              <div className="mt-2 grid grid-cols-3 gap-1.5">
-                {SERIES_ASSET_EXTRACTION_ACTIONS.map((action) => {
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {extractionActions.map((action) => {
                   const running = extractingAssetKind === action.kind;
                   const label = t(action.label);
                   return (
@@ -1865,41 +1895,9 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   );
                 })}
               </div>
-            </section>
+            </section>}
 
-            <div ref={teamControlsRef} className="mt-3 space-y-2 rounded-lg border border-canvas-border bg-canvas-card p-2">
-              <p className="text-[11px] font-semibold text-canvas-text-secondary">{t('创作执行方式')}</p>
-              <CreationProfilePicker profiles={snapshot.creationProfiles ?? []} selection={currentEpisode?.creationProfile}
-                projectId={currentEpisode?.id ?? ''} disabled={!currentEpisode || isSaving || isStartingTeam || editorWriteLocked || !contextReady}
-                onPreview={async (profile) => await dispatch({ type: 'preview_creation_profile', profile }) as CreationProfileChoicePreview}
-                onChange={async (selection) => { await dispatch({ type: 'apply_creation_profile', selection: selection ?? null }); }} />
-              {unsettledEditor && <div className="space-y-1 text-[11px] text-canvas-text-secondary" role="status">
-                <p>{t('上次编辑未确认结束，请核对当前已保存稿件后再应用团队成果。')}</p>
-                <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={isDirty || isSaving || editorWriteLocked}
-                  onClick={() => fire({ type: 'settle_editor' })}>{t('已核对当前稿件')}</button>
-              </div>}
-              <TeamExecutionPicker value={executionSelection} onChange={setExecutionSelection}
-                profile={teamProfile} onProfileChange={async (profile) => {
-                  await dispatch({ type: 'save_team_profile', profile });
-                }}
-                modelGroups={snapshot.modelGroups}
-                externalAgents={snapshot.externalAgents ?? []}
-                onRefreshExternalAgents={async () => { await dispatch({ type: 'refresh_external_agents' }); }}
-                theme={snapshot.theme} disabled={isSaving || isStartingTeam || editorWriteLocked || !contextReady} compact defaultTemplateId="outline" />
-              {executionSelection.kind === 'single' && <p className="text-[10px] leading-4 text-canvas-text-muted">
-                {t('点击创作动作后自动选用已授权的智能体与 Skill，调用与草案可在助手查看，不会覆盖正文。')}
-              </p>}
-              {executionSelection.kind === 'team' && <>
-                <div className="flex items-center justify-between gap-2 text-[11px] text-canvas-text-secondary">
-                  <span>{t('任务权限')}</span>
-                  <Select<AgentMode> aria-label={t('任务权限')} value={teamMode}
-                    onChange={(value) => fire({ type: 'set_team_mode', value })} disabled={isStartingTeam || !contextReady}
-                    options={[{ value: 'plan', label: t('规划') }, { value: 'collaborative', label: t('协作') }, { value: 'autonomous', label: t('自主') }]} />
-                </div>
-                <p className="text-[10px] leading-4 text-canvas-text-muted">{t('先保存当前改稿，再由团队生成候选；点击下方动作开始，不会自动覆盖正文。')}</p>
-              </>}
-            </div>
-
+            {creationToolsVisible && <>
             {(snapshot.episodeAgentTasks ?? []).map((task) => <section key={task.id} className="ui-card mt-2 space-y-2 p-2" aria-label={t('智能调度任务')}>
               <div className="flex min-w-0 items-center justify-between gap-2">
                 <span className="ui-label truncate">{task.title}</span>
@@ -1925,7 +1923,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
               onResolveDispatch={async (dispatchId, decision) => { await dispatch({ type: 'resolve_dispatch', taskId: task.id, dispatchId, decision }); }} />)}
 
             <div className="script-workbench-actions mt-4 grid gap-3">
-              {CREATIVE_ACTION_GROUPS.map((group) => (
+              {creativeGroups.map((group) => (
                 <section key={group.label}>
                   <div className="ui-label mb-1.5 flex items-center gap-1.5">
                     <Icon icon={group.icon} className="h-3.5 w-3.5" />
@@ -1947,10 +1945,12 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   </div>
                 </section>
               ))}
-            </div>
+            </div></>}
           </aside>
         </main>
       </div>
+      {collaborationOpen && <WorkbenchCollaborationDialog key={collaborationEpisodeId} snapshot={snapshot} dispatch={dispatch}
+        onClose={() => setCollaborationEpisodeId(null)} />}
       {isOpen && renamingEpisodeId && <WorkbenchRenameDialog key={renamingEpisodeId}
         name={episodes.find((episode) => episode.id === renamingEpisodeId)?.name ?? ''}
         onClose={() => setRenamingEpisodeId(null)} onSave={async (name) => { await dispatch({ type: 'rename', name }); }} />}

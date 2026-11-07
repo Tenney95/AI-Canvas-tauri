@@ -8,6 +8,7 @@ import type { DramaAsset, DramaAssetKind } from './dramaAssets';
 import type { CreativeAnalysis, CreativeFieldId, EpisodeCreativeAction } from '../services/seriesCreativeService';
 import type { EpisodeAssetPanelAction, EpisodeAssetPanelSnapshot } from './episodeAssets';
 import type { SeriesSourcePart, SeriesSourceReference } from './seriesSource';
+import type { OriginalWritingAction, OriginalWritingHandoff, OriginalWritingSummary } from './originalWriting';
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
   StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
 
@@ -33,6 +34,7 @@ export interface ScriptWorkbenchSnapshot {
   pendingAction: WorkbenchPendingAction | null;
   splitOpen: boolean; splitSource: SeriesSourcePart; targetEpisodeCount: string; targetDurationSec: string;
   sourceOpen: boolean; renamingEpisodeId: string | null;
+  originalWriting?: OriginalWritingSummary;
   extractingAssetKind: DramaAssetKind | null;
   seriesAssetPreview: { kind: DramaAssetKind; assets: DramaAsset[] } | null;
   existingAssets: Array<Pick<DramaAsset, 'name' | 'summary'>>;
@@ -53,6 +55,7 @@ export interface ScriptWorkbenchSnapshot {
 }
 
 export type ScriptWorkbenchAction =
+  | OriginalWritingAction
   | { type: 'flush_draft' }
   | { type: 'edit_text'; field: 'outline' | 'script'; value: string }
   | { type: 'edit_creative'; field: keyof WorkbenchCreativeDraft; value: string }
@@ -97,5 +100,6 @@ export type ScriptWorkbenchDispatch = (action: ScriptWorkbenchAction) => Promise
 export interface ScriptWorkbenchRequest {
   sessionId: string; requestId: string; revision: number; episodeId: string | null;
   action: ScriptWorkbenchAction; handoff?: WorkbenchDraftHandoff;
+  originalHandoff?: OriginalWritingHandoff;
 }
 export interface ScriptWorkbenchResponse { sessionId: string; requestId: string; value?: unknown; error?: string }

@@ -35,6 +35,35 @@ function shotlistButton(html: string): string | undefined {
 }
 
 describe('剧本工作台共享视图', () => {
+  it('切换大纲和剧本时显示对应工具，只有剧本展示正文格式诊断', () => {
+    const state = snapshot();
+    const dispatch = vi.fn(async () => undefined);
+    const outline = renderToStaticMarkup(<ScriptWorkbenchView snapshot={state} dispatch={dispatch} />);
+    expect(outline).toContain('大纲助手');
+    expect(outline).toContain('优化本集大纲');
+    expect(outline).not.toContain('重写本集剧本');
+    expect(outline).not.toContain('没有识别到标准场号');
+    const script = renderToStaticMarkup(<ScriptWorkbenchView snapshot={{ ...state, activeTab: 'script' }} dispatch={dispatch} />);
+    expect(script).toContain('剧本诊断');
+    expect(script).toContain('重写本集剧本');
+    expect(script).not.toContain('优化本集大纲');
+    expect(script).toContain('没有识别到标准场号');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('原文只发布写作状态，隐藏本集执行配置与正文诊断', () => {
+    const state: ScriptWorkbenchSnapshot = { ...snapshot(), activeTab: 'original',
+      originalWriting: { loaded: false, loading: false, dirty: false, saving: false, generating: false,
+        revision: 0, acceptedSequence: 0, characterCount: 0, chapterCount: 0, hasCandidate: false } };
+    const dispatch = vi.fn(async () => undefined);
+    const html = renderToStaticMarkup(<ScriptWorkbenchView snapshot={state} dispatch={dispatch} />);
+    expect(html).toContain('原文写作');
+    expect(html).not.toContain('创作执行方式');
+    expect(html).not.toContain('全剧资产提取');
+    expect(html).not.toContain('保存本集');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('展示本集智能调度状态、活动和查看入口，渲染不重新调用任务或切换画布', () => {
     const state: ScriptWorkbenchSnapshot = { ...snapshot(), episodeAgentTasks: [
       { id: 'agent-running', status: 'waiting_tool', title: '本集对白润色', activity: '加载 Skill：对白设计' },
@@ -64,12 +93,16 @@ describe('剧本工作台共享视图', () => {
     expect(state.currentEpisode?.id).toBe('episode-b');
     expect(dispatch).not.toHaveBeenCalled();
   });
-  it('renders only safe creation profile options without applying them or switching canvas', () => {
+  it('协作配置统一由顶部弹窗入口打开，初始渲染不展开组合包或改变执行方式', () => {
     const state = { ...snapshot(), creationProfiles: [{ id: 'writing', version: '1.0.0', name: '创作组合包示例' }] };
     const dispatch = vi.fn(async () => undefined);
     const html = renderToStaticMarkup(<ScriptWorkbenchView snapshot={state} dispatch={dispatch} />);
-    expect(html).toContain('创作组合包');
-    expect(html).toContain('创作组合包示例');
+    const collaboration = html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g)?.find((button) => button.includes('Agent协作'));
+    expect(collaboration).toContain('aria-haspopup="dialog"');
+    expect(collaboration).toContain('aria-expanded="false"');
+    expect(html).not.toContain('创作执行方式');
+    expect(html).not.toContain('创作组合包示例');
+    expect(state.executionSelection).toEqual({ kind: 'single' });
     expect(state.canvasProjectId).toBe('episode-a');
     expect(dispatch).not.toHaveBeenCalled();
   });
