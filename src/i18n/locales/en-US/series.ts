@@ -4,7 +4,6 @@
  */
 const series = {
   "原文": "Original text",
-  "还没有原文，请在剧集栏添加原著文件。": "No original text yet. Add an original file in the series rail.",
   "智能调度": "Smart dispatch",
   "模型沿用目标分集设置；如需修改，请切到该分集的项目设置。": "The model follows the target episode's settings. To change it, open that episode's project settings.",
   "智能调度已开始，可查看调用与结果": "Smart dispatch started. View calls and results in the assistant.",

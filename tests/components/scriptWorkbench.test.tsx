@@ -51,13 +51,17 @@ describe('剧本工作台共享视图', () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it('原文只发布写作状态，隐藏本集执行配置与正文诊断', () => {
+  it('没有原著文件也展示编辑器与起稿工具，隐藏本集执行配置与正文诊断', () => {
     const state: ScriptWorkbenchSnapshot = { ...snapshot(), activeTab: 'original',
       originalWriting: { loaded: false, loading: false, dirty: false, saving: false, generating: false,
         revision: 0, acceptedSequence: 0, characterCount: 0, chapterCount: 0, hasCandidate: false } };
     const dispatch = vi.fn(async () => undefined);
     const html = renderToStaticMarkup(<ScriptWorkbenchView snapshot={state} dispatch={dispatch} />);
     expect(html).toContain('原文写作');
+    expect(html).toContain('从零起稿');
+    expect(html).toContain('按要求起笔');
+    expect(html).toContain('保存原文');
+    expect(html).not.toContain('请在剧集栏添加原著文件');
     expect(html).not.toContain('创作执行方式');
     expect(html).not.toContain('全剧资产提取');
     expect(html).not.toContain('保存本集');

@@ -30,6 +30,7 @@ import type { ProjectSaveData } from './storageService';
 import { normalizeProjectSettings } from './projectSettingsService';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
 import { normalizeEpisodeAssetRoster } from '../types/episodeAssets';
+import { normalizeProjectTextFileReference } from '../utils/manuscriptFileReference';
 import type { CanvasProject } from '../types';
 import { serializeProjectArchiveEntries, type ProjectArchiveJsonEntry } from './projectArchiveSerialization';
 import { portableArchiveChat, sanitizeLegacyArchiveProject, selectArchiveAssets, selectArchiveImportPaths } from './projectArchiveValidation';
@@ -190,6 +191,7 @@ function collectAssetReferences(record: ProjectSaveData): AssetReferenceLike[] {
   }
   pushReference(record.settings?.visualStyle?.styleReference);
   pushReference(record.series?.originalWork);
+  pushReference(record.episodeScriptFile);
   record.dramaAssets?.characters?.forEach((character) => {
     pushReference(character);
     character.referenceImages?.forEach((reference) => pushReference(reference));
@@ -231,6 +233,7 @@ export function readArchiveProject(value: unknown, label: string): ProjectSaveDa
   return {
     ...value,
     ...(value.series !== undefined ? { series: normalizeProjectSeriesInfo(value.series) } : {}),
+    ...(value.episodeScriptFile !== undefined ? { episodeScriptFile: normalizeProjectTextFileReference(value.episodeScriptFile) } : {}),
     ...(value.episodeAssetRoster !== undefined ? {
       episodeAssetRoster: typeof value.parentId === 'string' && value.parentId
         ? normalizeEpisodeAssetRoster(value.episodeAssetRoster) : undefined,

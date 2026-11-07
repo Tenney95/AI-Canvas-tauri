@@ -63,6 +63,20 @@ function scanResult(overrides: Partial<AssetDirectoryScanResult> = {}): AssetDir
 }
 
 describe('故事图正式资料的保存与加载', () => {
+  it('保存加载保留 TXT 稿件引用，只留可移植字段而不回写本机路径', async () => {
+    mocks.getProjectDataDir.mockResolvedValue(null);
+    const record: ProjectSaveData = { id: `manuscript-storage-${Date.now()}`, name: '第一集', parentId: 'series',
+      createdAt: 1, updatedAt: 2, nodes: [], edges: [], episodeScript: '本集正文', episodeScriptFile: {
+        fileName: '旧名称.txt', relativePath: 'imports/op/第一集.txt', digest: 'A'.repeat(64), sourceName: '第一集.txt',
+        ...{ filePath: 'C:/private/第一集.txt', token: 'fixture-private' },
+      } };
+    await saveProject(record);
+    const reference = { fileName: '第一集.txt', relativePath: 'imports/op/第一集.txt', digest: 'a'.repeat(64), sourceName: '第一集.txt' };
+    expect((await getProjectById(record.id))?.episodeScriptFile).toEqual(reference);
+    expect((await loadProjectData(record.id))?.episodeScriptFile).toEqual(reference);
+    expect(record.episodeScriptFile).toHaveProperty('filePath');
+  });
+
   it('无媒体目录的项目也保留正式图，运行态图字段在落盘前拒绝', async () => {
     mocks.getProjectDataDir.mockResolvedValue(null);
     const graph = { ...createEmptyStoryGraph('graph'), revision: 4 };

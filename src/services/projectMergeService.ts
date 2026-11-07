@@ -19,6 +19,7 @@ const geometry = ['position', 'parentId', 'extent', 'expandParent'];
 const dimensions = ['width', 'height', 'style'];
 const output = ['relativePath', 'imageRelativePath', 'imageUrl', 'videoUrl', 'audioUrl', 'url', 'output', 'outputs',
   'directorScene', 'directorPrevisScene', 'directorResultManifest', 'directorCaptureUrls', 'storyboardOverrides', 'status'];
+const episodeScriptFields = ['episodeScript', 'episodeScriptFile'];
 function partition(entity: ProjectExchangeEntity): Slots {
   const data = entity.data, slots: Slots = new Map();
   if (entity.kind === 'file') { slots.set('文件内容', data); return slots; }
@@ -39,7 +40,11 @@ function partition(entity: ProjectExchangeEntity): Slots {
     }
     return slots;
   }
+  if (entity.kind === 'project' && episodeScriptFields.some((field) => field in data)) {
+    slots.set('本集剧本与文件', Object.fromEntries(episodeScriptFields.filter((field) => field in data).map((field) => [field, data[field]])));
+  }
   for (const [key, value] of Object.entries(data)) {
+    if (entity.kind === 'project' && episodeScriptFields.includes(key)) continue;
     if (entity.kind === 'project' && ['settings', 'series'].includes(key) && value && typeof value === 'object' && !Array.isArray(value)) {
       // 故事图整体为一个原子槽，不能把不同版本的节点/边拆开拼接。
       Object.entries(value).forEach(([field, item]) => slots.set(`${key}.${field}`, item));
@@ -51,7 +56,7 @@ function assemble(entity: ProjectExchangeEntity, slots: Slots): ProjectExchangeE
   if (entity.kind === 'file') return { ...entity, data: slots.get('文件内容') as ProjectExchangeObject };
   const data: ProjectExchangeObject = {};
   for (const [key, value] of slots) {
-    if (['位置与分组', '尺寸', '连接结构'].includes(key)) Object.assign(data, value);
+    if (['位置与分组', '尺寸', '连接结构', '本集剧本与文件'].includes(key)) Object.assign(data, value);
     else if (key === 'data.媒体产物') data.data = { ...(data.data as ProjectExchangeObject ?? {}), ...value as ProjectExchangeObject };
     else if (key.startsWith('data.') || key.startsWith('settings.') || key.startsWith('series.')) {
       const [section, field] = key.split('.');

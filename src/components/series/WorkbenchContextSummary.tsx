@@ -36,8 +36,10 @@ export default function WorkbenchContextSummary({ snapshot, dispatch }: {
       break;
     case 'original':
       metrics = [['原文字数', originalWriting?.loaded ? String(originalWriting.characterCount) : '—'], ['章节', originalWriting?.loaded ? String(originalWriting.chapterCount) : '—'],
-        ['文档状态', t(originalWriting?.saving ? '保存中…' : originalWriting?.dirty ? '未保存' : originalWriting?.loaded ? '已加载' : '待读取')], ['续写候选', t(originalWriting?.generating ? '生成中…' : originalWriting?.hasCandidate ? '待采用' : '暂无')]];
-      hint = '选择章节直接写作，或选中片段润色；续写候选采用后，点击保存原文写入原著文件。';
+        ['文档状态', t(originalWriting?.saving ? '保存中…' : originalWriting?.isNew ? '待首次保存' : originalWriting?.dirty ? '未保存' : originalWriting?.loaded ? '已加载' : '待读取')], ['续写候选', t(originalWriting?.generating ? '生成中…' : originalWriting?.hasCandidate ? '待采用' : '暂无')]];
+      hint = originalWriting?.isNew || !snapshot.series?.hasOriginal
+        ? '直接在空白原文中写作，或填写要求让 AI 起笔；首次保存会创建并关联原著文件。'
+        : '选择章节直接写作，或选中片段润色；续写候选采用后，点击保存原文写入原著文件。';
       break;
     case 'script':
       metrics = [['正文', `${analysis.metrics.characterCount} ${t('字')}`], ['场景', String(analysis.metrics.sceneCount)],

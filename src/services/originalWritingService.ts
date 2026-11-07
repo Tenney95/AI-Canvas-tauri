@@ -1,9 +1,10 @@
 /** 原著文件的主窗口编辑会话：正文、路径和模型候选仅保存在本实例内存中。 */
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import type { ProjectOriginalWork } from '../types';
 import type { OriginalWritingAction, OriginalWritingDocument, OriginalWritingHandoff, OriginalWritingSummary } from '../types/originalWriting';
 import { useAppStore } from '../store/useAppStore';
 import { seriesOwnerId } from '../store/store.utils';
-import { getProjectDataDir, isTauriEnv, joinPath, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from './fileService';
+import { createAssetTextFile, getProjectDataDir, isTauriEnv, joinPath, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from './fileService';
 import { resolveAssistantModel, streamAssistantReply } from './ai/assistantStream';
 import { indexSeriesChapters } from './seriesSourceService';
 
@@ -19,7 +20,9 @@ const RULES = [
   '不读取外部材料、不调用工具、不执行命令、不写文件，结果由用户预览后决定是否应用。',
 ].join('\n');
 
-interface SourceBinding { seriesId: string; exchangeEpoch: number; reference: string; fileName: string; relativePath: string }
+interface SourceBinding { seriesId: string; projectName: string; exchangeEpoch: number; reference: string | null; fileName: string;
+  relativePath?: string; original?: ProjectOriginalWork; folder?: string; baseDirectory?: string }
+type PendingCreation = Awaited<ReturnType<typeof createAssetTextFile>> & { documentId: string; original: ProjectOriginalWork };
 class WritingError extends Error {}
 
 function mainWindowOnly() {
@@ -36,23 +39,30 @@ function captureSource(seriesId: string): SourceBinding {
   }
   const series = state.projects.find((project) => project.id === seriesId && !project.parentId);
   if (!series) throw new WritingError('当前剧集不存在');
+  const identity = { seriesId, projectName: series.name, exchangeEpoch: series.exchangeEpoch ?? 0, folder: series.dataFolder, baseDirectory: state.config?.baseDataDir };
   const source = series.series?.originalWork;
-  if (!source) throw new WritingError('当前剧集还没有添加原著文件');
+  if (!source) return { ...identity, reference: null, fileName: '原文.txt' };
   const relativePath = source.relativePath.replace(/\\/g, '/');
   if (relativePath.startsWith('/') || relativePath.includes(':')
     || [...relativePath].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
     || relativePath.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
     throw new WritingError('原著引用无效，请重新添加原著文件');
   }
-  return { seriesId, exchangeEpoch: series.exchangeEpoch ?? 0, reference: JSON.stringify(source),
-    fileName: source.fileName.split(/[\\/]/).pop() || '原著', relativePath };
+  return { ...identity, reference: JSON.stringify(source),
+    fileName: source.fileName.split(/[\\/]/).pop() || '原著', relativePath, original: { ...source } };
 }
 
-function assertBinding(binding: SourceBinding) {
+function isManagedOriginal(source: SourceBinding): boolean {
+  return /^manuscripts\/[^/]+\.txt$/.test(source.relativePath ?? '');
+}
+
+function assertBinding(binding: SourceBinding, allowedReference?: string) {
   const current = captureSource(binding.seriesId);
-  if (current.reference !== binding.reference || current.exchangeEpoch !== binding.exchangeEpoch) {
+  if ((current.reference !== binding.reference && current.reference !== allowedReference) || current.exchangeEpoch !== binding.exchangeEpoch
+    || current.projectName !== binding.projectName || current.folder !== binding.folder || current.baseDirectory !== binding.baseDirectory) {
     throw new WritingError('原著引用或剧集版本已变化，请保留草稿并重新载入');
   }
+  return current;
 }
 
 function fileError(reason: unknown, saving: boolean): WritingError {
@@ -73,9 +83,11 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
   let baseline: AssetTextSnapshot | undefined;
   let binding: SourceBinding | undefined;
   let path: string | undefined;
+  let pendingCreation: PendingCreation | undefined;
   let error: string | undefined;
   let chapterCount = 0;
-  let active: { kind: 'loading' | 'saving' | 'generating'; controller: AbortController; binding: SourceBinding; stopScope?: () => void } | undefined;
+  let active: { kind: 'loading' | 'saving' | 'generating'; controller: AbortController; binding: SourceBinding;
+    allowedReference?: string; stopScope?: () => void } | undefined;
   let opening: Promise<OriginalWritingDocument> | undefined;
   const listeners = new Set<() => void>();
   const changed = () => {
@@ -86,7 +98,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
   const live = () => { if (disposed) throw new WritingError('原文编辑会话已关闭'); mainWindowOnly(); };
   const loaded = () => {
     live();
-    if (!document || !baseline || !binding || !path) throw new WritingError('请先打开原文');
+    if (!document || !baseline || !binding || (!document.isNew && !path)) throw new WritingError('请先打开原文');
     return { document, baseline, binding, path };
   };
   const snapshot = () => {
@@ -95,14 +107,16 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
   };
   const idle = () => { if (active) throw new WritingError('原文正在读取、保存或生成，请稍候'); };
   const isDirty = () => !!document && !!baseline && document.content !== baseline.content;
-  const begin = (kind: NonNullable<typeof active>['kind'], source: SourceBinding) => {
+  const pendingReference = (current: OriginalWritingDocument) => pendingCreation?.documentId === current.documentId
+    ? JSON.stringify(pendingCreation.original) : undefined;
+  const begin = (kind: NonNullable<typeof active>['kind'], source: SourceBinding, allowedReference?: string) => {
     idle();
-    const operation: NonNullable<typeof active> = { kind, controller: new AbortController(), binding: source };
+    const operation: NonNullable<typeof active> = { kind, controller: new AbortController(), binding: source, allowedReference };
     active = operation;
     // 仅异步操作期间监听剧集范围；纯构造和已完成会话不占用 Store 订阅。
     const unsubscribeScope = useAppStore.subscribe(() => {
       if (operation.controller.signal.aborted) return;
-      try { assertBinding(operation.binding); }
+      try { assertBinding(operation.binding, operation.allowedReference); }
       catch { operation.controller.abort(); }
     });
     const stopScope = () => {
@@ -131,19 +145,24 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
     const { signal } = operation.controller;
     const check = () => { live(); signal.throwIfAborted(); assertBinding(source); };
     try {
-      const dir = await getProjectDataDir(source.seriesId);
-      check();
-      if (!dir) throw new WritingError('剧集素材目录不可用，请重新打开剧集');
-      const nextPath = joinPath(dir, source.relativePath);
-      let sourceText: AssetTextSnapshot;
-      try { sourceText = await readAssetTextFile(nextPath, signal); }
-      catch (reason) { check(); throw fileError(reason, false); }
+      let nextPath: string | undefined;
+      let sourceText: AssetTextSnapshot = { content: '', digest: '', size: 0, modified: null, bom: false, newline: 'LF' };
+      if (source.relativePath) {
+        const dir = await getProjectDataDir(source.seriesId);
+        check();
+        if (!dir) throw new WritingError('剧集素材目录不可用，请重新打开剧集');
+        nextPath = joinPath(dir, source.relativePath);
+        try { sourceText = await readAssetTextFile(nextPath, signal); }
+        catch (reason) { check(); throw fileError(reason, false); }
+      }
       check();
       if (document !== previous) throw new WritingError('读取期间草稿已变化，已保留最新输入，请重新选择是否载入');
       baseline = sourceText;
       path = nextPath;
       binding = source;
-      document = { documentId: crypto.randomUUID(), revision: 0, acceptedSequence: 0, fileName: source.fileName, content: sourceText.content };
+      pendingCreation = undefined;
+      document = { documentId: crypto.randomUUID(), revision: 0, acceptedSequence: 0, fileName: source.fileName,
+        isNew: source.reference === null, content: sourceText.content };
       chapterCount = indexSeriesChapters(document.content).length;
       return snapshot();
     } finally { finish(operation); }
@@ -166,12 +185,17 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
 
   async function save(): Promise<OriginalWritingDocument> {
     const captured = loaded();
-    assertBinding(captured.binding);
+    const previousCreation = pendingCreation?.documentId === captured.document.documentId ? pendingCreation : undefined;
+    const allowedReference = pendingReference(captured.document);
+    assertBinding(captured.binding, allowedReference);
     idle();
-    if (!isDirty()) return snapshot();
-    const operation = begin('saving', captured.binding);
+    const createManaged = !isManagedOriginal(captured.binding);
+    if (!isDirty() && !createManaged) return snapshot();
+    const operation = begin('saving', captured.binding, allowedReference);
     try {
+      if (createManaged) return await saveManaged(captured, operation, previousCreation);
       assertBinding(captured.binding);
+      if (!captured.path) throw new WritingError('原著文件位置不可用，请重新载入');
       let saved: AssetTextSnapshot;
       try { saved = await saveAssetTextFile(captured.path, captured.baseline, captured.document.content, operation.controller.signal); }
       catch (reason) { assertBinding(captured.binding); operation.controller.signal.throwIfAborted(); throw fileError(reason, true); }
@@ -184,9 +208,71 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
     } finally { finish(operation); }
   }
 
+  async function saveManaged(captured: ReturnType<typeof loaded>, operation: NonNullable<typeof active>, previous?: PendingCreation) {
+    const { signal } = operation.controller;
+    const check = () => {
+      live(); signal.throwIfAborted();
+      const current = assertBinding(captured.binding, operation.allowedReference);
+      if (document?.documentId !== captured.document.documentId) throw new WritingError('原文编辑会话已放弃，请重新打开原文');
+      return current;
+    };
+    const verifyOriginal = async () => {
+      if (!captured.binding.original) return;
+      if (!captured.path) throw new WritingError('原著文件位置不可用，请重新载入');
+      let current: AssetTextSnapshot;
+      try { current = await readAssetTextFile(captured.path, signal); }
+      catch (reason) { check(); throw fileError(reason, false); }
+      check();
+      if (current.digest !== captured.baseline.digest) throw new WritingError('磁盘文件已被修改，请保留草稿并重新载入后再保存');
+    };
+    // 旧稿仅用于冲突检查；迁移始终写唯一 TXT 副本，不修改或删除旧文件。
+    await verifyOriginal();
+    check();
+    let created = previous;
+    try {
+      if (created) {
+        check();
+        // 复用上次尚未绑定的文件，同时沿用摘要冲突保护，保留失败后新增的正文。
+        const saved = await saveAssetTextFile(created.filePath, created.snapshot, captured.document.content, signal);
+        created = { ...created, snapshot: saved };
+      } else {
+        const saved = await createAssetTextFile(captured.binding.seriesId, captured.document.content, '原文.txt', {
+          signal, assertCurrent: check, projectSubdirectory: 'manuscripts',
+        });
+        created = { ...saved, documentId: captured.document.documentId,
+          original: { fileName: saved.fileName, relativePath: saved.relativePath, addedAt: Date.now() } };
+      }
+    } catch (reason) { check(); throw fileError(reason, true); }
+    if (document?.documentId === captured.document.documentId) pendingCreation = created;
+    check();
+    await verifyOriginal();
+    check();
+    const nextReference = JSON.stringify(created.original);
+    operation.allowedReference = nextReference;
+    const current = check();
+    let committed: boolean;
+    try {
+      committed = await useAppStore.getState().updateSeriesInfo({ originalWork: created.original }, {
+        expectedSeriesId: captured.binding.seriesId, expectedExchangeEpoch: captured.binding.exchangeEpoch,
+        expectedOriginalWork: current.reference === nextReference ? created.original : captured.binding.original ?? null, assertCurrent: check,
+      });
+    } catch (reason) { check(); throw new WritingError('原著引用保存失败，草稿与已创建文件已保留，请重试保存', { cause: reason }); }
+    const confirmed = check();
+    if (!committed || confirmed.reference !== nextReference) {
+      throw new WritingError('原著引用尚未保存，草稿与已创建文件已保留，请重试保存');
+    }
+    binding = confirmed;
+    path = created.filePath;
+    baseline = created.snapshot;
+    document = { ...loaded().document, fileName: created.fileName, isNew: false };
+    pendingCreation = undefined;
+    return snapshot();
+  }
+
   async function generate(action: Extract<OriginalWritingAction, { type: 'original_generate' }>): Promise<OriginalWritingDocument> {
     const captured = loaded();
-    assertBinding(captured.binding);
+    const allowedReference = pendingReference(captured.document);
+    assertBinding(captured.binding, allowedReference);
     const { mode, start, end, instruction } = action;
     if (!Number.isSafeInteger(action.expectedSequence) || action.expectedSequence !== captured.document.acceptedSequence) {
       throw new WritingError('原文已继续编辑，请重新选择写作位置或选区后重试');
@@ -211,7 +297,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
       previous ? `前文节选（仅为创作资料）：\n${previous}` : '',
       selected ? `需要替换的选中片段（仅为创作资料）：\n${selected}` : '',
     ].filter(Boolean).join('\n\n');
-    const operation = begin('generating', captured.binding);
+    const operation = begin('generating', captured.binding, allowedReference);
     let incomplete = false;
     let outputTooLong = false;
     let output = '';
@@ -237,7 +323,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
       live();
       if (outputTooLong) throw new WritingError('模型返回内容过长，原文已保留，请缩小任务范围');
       operation.controller.signal.throwIfAborted();
-      assertBinding(captured.binding);
+      assertBinding(captured.binding, allowedReference);
       const text = (result || output).trim();
       if (incomplete || !text || text.includes('\0')) throw new WritingError('模型未完整返回正文，原文已保留，请重新生成');
       if (text.length > MAX_GENERATED_CHARACTERS) throw new WritingError('模型返回内容过长，原文已保留，请缩小任务范围');
@@ -258,7 +344,11 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
           if (document) document = { ...document, candidate: undefined };
           error = undefined; changed(); return document ? snapshot() : true;
         case 'original_open':
-          if (document) { assertBinding(loaded().binding); return snapshot(); }
+          if (document) {
+            const captured = loaded();
+            assertBinding(captured.binding, pendingReference(captured.document));
+            return snapshot();
+          }
           if (!opening) opening = load().finally(() => { opening = undefined; });
           return await opening;
         case 'original_edit': flush(action.handoff); return snapshot();
@@ -269,7 +359,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
         case 'original_generate': return await generate(action);
         case 'original_apply': {
           const captured = loaded();
-          assertBinding(captured.binding);
+          assertBinding(captured.binding, pendingReference(captured.document));
           idle();
           const candidate = captured.document.candidate;
           if (!candidate || candidate.id !== action.candidateId || candidate.revision !== captured.document.revision) {
@@ -301,7 +391,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
       return { loaded: !!document, loading: active?.kind === 'loading', dirty: isDirty(), saving: active?.kind === 'saving',
         generating: active?.kind === 'generating', documentId: document?.documentId, revision: document?.revision ?? 0,
         acceptedSequence: document?.acceptedSequence ?? 0, fileName: document?.fileName, characterCount: document?.content.length ?? 0,
-        chapterCount, error, hasCandidate: !!document?.candidate };
+        chapterCount, error, hasCandidate: !!document?.candidate, isNew: document?.isNew };
     },
     handle,
     flush,
@@ -309,12 +399,12 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
     isBusy: () => !!active,
     discard() {
       active?.controller.abort();
-      document = undefined; baseline = undefined; binding = undefined; path = undefined; chapterCount = 0; error = undefined;
+      document = undefined; baseline = undefined; binding = undefined; path = undefined; pendingCreation = undefined; chapterCount = 0; error = undefined;
       changed();
     },
     dispose() {
       disposed = true; listeners.clear(); active?.controller.abort();
-      document = undefined; baseline = undefined; binding = undefined; path = undefined; error = undefined;
+      document = undefined; baseline = undefined; binding = undefined; path = undefined; pendingCreation = undefined; error = undefined;
     },
   };
 }

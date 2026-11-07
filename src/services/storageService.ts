@@ -35,7 +35,8 @@ import {
   type CustomStyleRecord,
 } from './indexedDbService';
 import { exists, mkdir, writeFile } from '@tauri-apps/plugin-fs';
-import type { BaseNodeData, ProjectSettings } from '../types';
+import type { BaseNodeData, ProjectSettings, ProjectTextFileReference } from '../types';
+import { normalizeProjectTextFileReference } from '../utils/manuscriptFileReference';
 import {
   getAssetUrlFromPath,
   getProjectDataDir,
@@ -798,6 +799,7 @@ async function serializeProjectDramaAssets(
 }
 
 export async function serializeProjectRecord(data: ProjectSaveData): Promise<ProjectSaveData> {
+  if (data.episodeScriptFile !== undefined) data = { ...data, episodeScriptFile: normalizeProjectTextFileReference(data.episodeScriptFile) };
   if (data.series !== undefined) {
     const series = normalizeProjectSeriesInfo(data.series);
     if (data.parentId && series?.storyGraph) throw new Error('故事关系图只能由所属剧集保存');
@@ -890,6 +892,7 @@ export interface ProjectSaveData {
   episodeNo?: number;
   episodeOutline?: string;
   episodeScript?: string;
+  episodeScriptFile?: ProjectTextFileReference;
   episodeCreative?: import('../types').EpisodeCreativeInfo;
   episodeAssetRoster?: EpisodeAssetRoster;
   /** 剧集级原著与剧本；仅剧集项目有 */
@@ -960,6 +963,7 @@ export async function loadProjectData(id: string): Promise<ProjectSaveData | nul
       console.warn('[项目加载] 角色库本地文件恢复未完成，已使用原始角色数据', { projectId: id });
     }
     return { ...persistedRecord, nodes, settings, dramaAssets, series: normalizeProjectSeriesInfo(persistedRecord.series),
+      ...(persistedRecord.episodeScriptFile !== undefined ? { episodeScriptFile: normalizeProjectTextFileReference(persistedRecord.episodeScriptFile) } : {}),
       ...(persistedRecord.episodeAssetRoster !== undefined ? {
         episodeAssetRoster: persistedRecord.parentId ? normalizeEpisodeAssetRoster(persistedRecord.episodeAssetRoster) : undefined,
       } : {}),

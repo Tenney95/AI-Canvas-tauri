@@ -1,8 +1,7 @@
 /** 原文编辑器回归：真实按钮与受控编辑回调的异步交接，文件及模型由受限 RPC 替身提供。 */
-import type { ComponentProps, ReactElement } from 'react';
+import type { ChangeEvent, ComponentProps, KeyboardEvent, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OriginalWritingAction, OriginalWritingDocument, OriginalWritingSummary } from '../../src/types/originalWriting';
-import type { MarkdownEditorProps } from '../../src/components/shared/MarkdownEditor';
 
 const values: unknown[] = [];
 const effects: Array<{ deps?: readonly unknown[]; cleanup?: () => void }> = [];
@@ -40,7 +39,6 @@ vi.mock('../../src/i18n', async (original) => {
   return { ...actual, useT: () => actual.t };
 });
 vi.mock('../../src/services/seriesSourceService', () => ({ indexSeriesChapters: () => [] }));
-vi.mock('../../src/components/shared/MarkdownEditor', () => ({ default: 'markdown-editor' }));
 
 import OriginalWritingEditor from '../../src/components/OriginalWritingEditor';
 
@@ -59,7 +57,7 @@ function document(content = '原文', overrides: Partial<OriginalWritingDocument
 function summary(): OriginalWritingSummary {
   return { loaded: true, loading: false, dirty: hostDocument.content !== savedContent, saving: false, generating: false,
     documentId: hostDocument.documentId, revision: hostDocument.revision, acceptedSequence: hostDocument.acceptedSequence,
-    fileName: hostDocument.fileName, characterCount: hostDocument.content.length, chapterCount: 1, hasCandidate: !!hostDocument.candidate };
+    fileName: hostDocument.fileName, isNew: hostDocument.isNew, characterCount: hostDocument.content.length, chapterCount: 1, hasCandidate: !!hostDocument.candidate };
 }
 function publish() { props.summary = summary(); }
 function replyToEdit(action: EditAction) {
@@ -70,7 +68,7 @@ function replyToEdit(action: EditAction) {
 }
 async function hostReply(action: OriginalWritingAction): Promise<unknown> {
   if (action.type === 'original_edit') return replyToEdit(action);
-  if (action.type === 'original_save') { savedContent = hostDocument.content; publish(); }
+  if (action.type === 'original_save') { savedContent = hostDocument.content; hostDocument = { ...hostDocument, isNew: false }; publish(); }
   if (action.type === 'original_generate') {
     hostDocument = { ...hostDocument, candidate: { id: 'candidate-a', mode: action.mode, text: '，继续前行。',
       start: action.end, end: action.end, revision: hostDocument.revision } };
@@ -106,10 +104,16 @@ function button(label: string): Element {
   expect(found, `缺少按钮：${label}`).toBeDefined();
   return found!;
 }
-function editor(): MarkdownEditorProps {
-  const found = elements(tree).find((element) => element.type === 'markdown-editor');
+function editor(): ComponentProps<'textarea'> {
+  const found = elements(tree).find((element) => element.type === 'textarea' && typeof element.props['aria-label'] === 'string'
+    && (element.props['aria-label'] === '编辑整篇原文' || element.props['aria-label'].startsWith('编辑原文章节：')));
   expect(found).toBeDefined();
-  return found!.props as unknown as MarkdownEditorProps;
+  return found!.props as ComponentProps<'textarea'>;
+}
+function status(): string {
+  const found = elements(tree).find((element) => element.type === 'span' && element.props.role === 'status');
+  expect(found, '缺少原文保存状态').toBeDefined();
+  return text(found!.props.children);
 }
 function render() {
   stateIndex = effectIndex = 0;
@@ -124,7 +128,13 @@ function click(label: string) {
   (control.props.onClick as () => void)();
   render();
 }
-function change(value: string) { editor().onChange(value); render(); }
+function change(value: string) { editor().onChange!({ target: { value } } as ChangeEvent<HTMLTextAreaElement>); render(); }
+function writeInstruction(value: string) {
+  const field = elements(tree).find((element) => element.type === 'textarea' && element.props.maxLength === 2000);
+  expect(field, '缺少写作要求输入框').toBeDefined();
+  (field!.props.onChange as (event: { target: { value: string } }) => void)({ target: { value } });
+  render();
+}
 function actions(type: OriginalWritingAction['type']) { return dispatch.mock.calls.map(([action]) => action).filter((action) => action.type === type); }
 
 beforeEach(() => {
@@ -142,6 +152,77 @@ afterEach(() => {
 });
 
 describe('原文写作编辑与异步交接', () => {
+  it('使用普通文本框保留原始文字，Ctrl+S 保存且原生撤销重做不被拦截', async () => {
+    hostDocument = document('已有原文', { fileName: '导入的原文.md' });
+    savedContent = hostDocument.content; publish();
+    render(); await settle();
+    expect(elements(tree).filter((element) => element.props.role === 'toolbar')).toHaveLength(0);
+    expect(text(tree)).not.toContain('Markdown');
+    expect(text(tree)).not.toContain('查找替换');
+    expect(elements(tree).filter((element) => element.type === 'button').map((element) => text(element.props.children)))
+      .not.toEqual(expect.arrayContaining(['编辑', '预览', '分栏']));
+    const value = '# 这仍是原文\n**只是文字，不转换格式**';
+    change(value); await settle();
+    expect(editor().value).toBe(value);
+
+    const saveEvent = { key: 's', ctrlKey: true, metaKey: false, defaultPrevented: false,
+      nativeEvent: { isComposing: false, keyCode: 83 }, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+    editor().onKeyDown!(saveEvent as unknown as KeyboardEvent<HTMLTextAreaElement>);
+    render(); await settle();
+    expect(saveEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(saveEvent.stopPropagation).toHaveBeenCalledOnce();
+    expect(actions('original_save')).toHaveLength(1);
+    expect(savedContent).toBe(value);
+    expect(status()).toContain('已保存');
+
+    for (const key of ['z', 'y']) {
+      const nativeEvent = { ...saveEvent, key, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+      editor().onKeyDown!(nativeEvent as unknown as KeyboardEvent<HTMLTextAreaElement>);
+      expect(nativeEvent.preventDefault).not.toHaveBeenCalled();
+      expect(nativeEvent.stopPropagation).not.toHaveBeenCalled();
+    }
+  });
+
+  it('没有原文文件时展示可手写的空白草稿，首次保存后更新为已保存', async () => {
+    hostDocument = document('', { fileName: '新原文.txt', isNew: true });
+    savedContent = ''; publish();
+    render(); await settle();
+    expect(editor().value).toBe('');
+    expect(editor().readOnly).toBe(false);
+    expect(text(tree)).toContain('未保存的新原文');
+    expect(text(tree)).toContain('从零起稿');
+    expect(button('按要求起笔').props.disabled).toBe(true);
+
+    change('第一章 雨夜\n快递员停在一扇陌生的门前。'); await settle();
+    expect(actions('original_edit')).toEqual([{ type: 'original_edit', handoff: { documentId: 'document-a', sequence: 1, content: '第一章 雨夜\n快递员停在一扇陌生的门前。' } }]);
+    expect(status()).toContain('新原文草稿');
+    click('保存原文'); await settle();
+    expect(actions('original_save')).toHaveLength(1);
+    expect(editor().value).toBe('第一章 雨夜\n快递员停在一扇陌生的门前。');
+    expect(status()).toContain('已保存');
+    expect(text(tree)).not.toContain('未保存的新原文');
+  });
+
+  it('空白原文按写作要求生成开篇，明确采用后才进入新稿并可首次保存', async () => {
+    hostDocument = document('', { fileName: '新原文.txt', isNew: true });
+    savedContent = ''; publish();
+    render(); await settle();
+    writeInstruction('写一段雨夜快递员收到未来包裹的悬疑开场');
+    click('按要求起笔'); await settle();
+    expect(actions('original_generate')).toEqual([{ type: 'original_generate', mode: 'continue', start: 0, end: 0,
+      instruction: '写一段雨夜快递员收到未来包裹的悬疑开场', expectedSequence: 0 }]);
+    expect(editor().value).toBe('');
+    expect(text(tree)).toContain('续写候选');
+    expect(actions('original_apply')).toHaveLength(0);
+    click('采用到原文草稿'); await settle();
+    expect(editor().value).toBe('，继续前行。');
+    expect(status()).toContain('新原文草稿');
+    expect(actions('original_save')).toHaveLength(0);
+    click('保存原文'); await settle();
+    expect(editor().value).toBe('，继续前行。');
+    expect(status()).toContain('已保存');
+  });
+
   it('编辑稿保存完成前锁定输入，续写候选只有明确采用后才进入原文草稿', async () => {
     const saving = deferred<OriginalWritingDocument>();
     dispatch.mockImplementation((action) => action.type === 'original_save' ? saving.promise : hostReply(action));
@@ -158,7 +239,7 @@ describe('原文写作编辑与异步交接', () => {
     savedContent = hostDocument.content; publish();
     saving.resolve(structuredClone(hostDocument)); await settle();
     expect(editor().readOnly).toBe(false);
-    expect(editor().status).toContain('已保存');
+    expect(status()).toContain('已保存');
 
     click('从光标续写'); await settle();
     expect(actions('original_generate')).toEqual([expect.objectContaining({ type: 'original_generate', mode: 'continue', start: 4, end: 4, expectedSequence: 1 })]);
@@ -168,7 +249,7 @@ describe('原文写作编辑与异步交接', () => {
     click('采用到原文草稿'); await settle();
     expect(actions('original_apply')).toEqual([{ type: 'original_apply', candidateId: 'candidate-a' }]);
     expect(editor().value).toBe('原文补写，继续前行。');
-    expect(editor().status).toContain('草稿未保存');
+    expect(status()).toContain('草稿未保存');
     expect(actions('original_save')).toHaveLength(1);
   });
 
@@ -207,7 +288,7 @@ describe('原文写作编辑与异步交接', () => {
     const calls = dispatch.mock.calls.map(([action]) => action.type);
     expect(calls.slice(-2)).toEqual(['original_edit', 'original_save']);
     expect(editor().value).toBe('失败后仍要保留的新稿');
-    expect(editor().status).toContain('已保存');
+    expect(status()).toContain('已保存');
   });
 
   it('生成等待旧编辑同步时若又有新输入，拒绝使用旧偏移发起模型调用', async () => {

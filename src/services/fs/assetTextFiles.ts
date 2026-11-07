@@ -1,8 +1,8 @@
 /**
  * assetTextFiles — 读取资产文本快照并保存文本修改。
  */
-import { lstat, open, writeFile } from '@tauri-apps/plugin-fs';
-import { getFileCategory, invalidateTextPreview, isTauriEnv, notifyProjectDiskChanged, stripVerbatimPrefix } from './core';
+import { exists, lstat, mkdir, open, writeFile } from '@tauri-apps/plugin-fs';
+import { ensureProjectDataDir, getFileCategory, invalidateTextPreview, isTauriEnv, joinPath, notifyProjectDiskChanged, resolveUniqueDestPath, sanitizeFileName, stripVerbatimPrefix } from './core';
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 export interface AssetTextSnapshot {
@@ -15,6 +15,52 @@ export interface AssetTextSnapshot {
 }
 
 function checkAbort(signal?: AbortSignal) { signal?.throwIfAborted(); }
+
+/** 首次保存时在目标项目内创建唯一 UTF-8 文本文件，不覆盖同名文件。 */
+export async function createAssetTextFile(projectId: string, content: string, suggestedName: string, options: {
+  signal?: AbortSignal; assertCurrent?: () => void; projectSubdirectory?: 'manuscripts';
+} = {}): Promise<{ filePath: string; relativePath: string; fileName: string; snapshot: AssetTextSnapshot }> {
+  if (!isTauriEnv()) throw new Error('请在桌面应用中保存原文');
+  const check = () => { checkAbort(options.signal); options.assertCurrent?.(); };
+  if (options.projectSubdirectory !== undefined && options.projectSubdirectory !== 'manuscripts') throw new Error('稿件目录无效');
+  const fileName = sanitizeFileName(suggestedName) || '原文.txt';
+  if (/[\\/]/.test(fileName)) throw new Error('文本文件名不能包含目录');
+  if (getFileCategory(fileName) !== 'text') throw new Error('此文件不是受支持的文本文件');
+  const normalized = content.replace(/\r\n/g, '\n');
+  if (normalized.includes('\0')) throw new Error('文本不能包含二进制空字符');
+  const bytes = new TextEncoder().encode(normalized);
+  if (bytes.byteLength > MAX_TEXT_BYTES) throw new Error('内容超过 2 MB，无法保存');
+  check();
+  let directory = await ensureProjectDataDir(projectId, { throwOnError: true });
+  check();
+  if (!directory) throw new Error('剧集素材目录不可用，请重新打开剧集');
+  if (options.projectSubdirectory !== undefined) {
+    directory = joinPath(directory, 'manuscripts');
+    const present = await exists(directory);
+    check();
+    if (!present) {
+      try { await mkdir(directory); }
+      catch (reason) { if (!await exists(directory)) throw new Error('无法创建稿件目录，草稿已保留', { cause: reason }); }
+    }
+    check();
+    const info = await lstat(directory);
+    check();
+    if (!info.isDirectory || info.isSymlink) throw new Error('稿件目录必须是普通文件夹');
+  }
+  const filePath = await resolveUniqueDestPath(directory, fileName, true);
+  check();
+  try { await writeFile(filePath, bytes, { createNew: true }); }
+  catch (reason) { throw new Error('新建原文失败，草稿已保留，请检查文件权限和磁盘空间', { cause: reason }); }
+  notifyProjectDiskChanged();
+  // 写入开始后等待真实读回；调用方在绑定原著前继续复核项目，取消不会误报尚未写入。
+  let snapshot: AssetTextSnapshot;
+  try { snapshot = await readAssetTextFile(filePath); }
+  catch (reason) { throw new Error('原文文件已创建，但无法读回确认；草稿已保留，请检查项目文件', { cause: reason }); }
+  if (snapshot.content !== normalized || snapshot.bom) throw new Error('新建原文读回复核失败，草稿已保留，请检查项目文件');
+  const actualName = filePath.split(/[\\/]/).pop()!;
+  const relativePath = options.projectSubdirectory ? `manuscripts/${actualName}` : actualName;
+  return { filePath, relativePath, fileName: actualName, snapshot };
+}
 
 /** 只接受已授权的普通文本文件；不把完整正文写入数据库、日志或元数据。 */
 export async function readAssetTextFile(path: string, signal?: AbortSignal): Promise<AssetTextSnapshot> {

@@ -71,6 +71,7 @@ import { applyStoryGraphPatch, createEmptyStoryGraph, hashStoryGraphSource, proj
 import { buildStoryGraphCandidatePatch, extractStoryGraphCandidates } from '../services/storyGraphExtractionService';
 import { resolveAssistantModel } from '../services/ai/assistantStream';
 import { sanitizeDomainText } from '../services/chat/subAgentMaterials';
+import { needsEpisodeScriptFileSync } from '../utils/manuscriptFileReference';
 
 const StoryGraphPanel = lazy(() => import('./storyGraph/StoryGraphPanel'));
 
@@ -931,7 +932,7 @@ export default function ScriptWorkbench({
       originalAddedAt: series.series?.originalWork?.addedAt, exchangeEpoch: series.exchangeEpoch ?? 0 } : null,
     episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
     currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
-      episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript,
+      episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript, episodeScriptFile: currentEpisode.episodeScriptFile,
       episodeCreative: currentEpisode.episodeCreative, episodeAssetRoster: currentEpisode.episodeAssetRoster,
       creationProfile: currentEpisode.creationProfile, teamProfileOverride: currentEpisode.teamProfileOverride } : null,
     canvasProjectId: currentProjectId, activeTab, draft, analysis, isDirty, isSaving, isStartingTeam,
@@ -1374,6 +1375,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   const isOpen = true;
   const projectLoadStatus = contextReady ? 'ready' : 'loading';
   const episodeAssetRoster = normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster);
+  const scriptFileSyncNeeded = !!currentEpisode && needsEpisodeScriptFileSync(currentEpisode);
   const creationToolsVisible = activeTab === 'outline' || activeTab === 'script' || activeTab === 'creative';
   const creativeActions = WORKBENCH_ACTIONS_BY_TAB[activeTab] ?? [];
   const creativeGroups = CREATIVE_ACTION_GROUPS.map((group) => ({ ...group,
@@ -1677,8 +1679,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
 
                 <div className="min-h-0 flex-1 overflow-auto">
                   {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
-                    {!series?.hasOriginal ? <p role="status" className="ui-hint p-3">{t('还没有原文，请在剧集栏添加原著文件。')}</p>
-                      : <OriginalWritingEditor summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady} active={activeTab === 'original'} toolsContainer={originalToolsContainer} />}
+                    <OriginalWritingEditor summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady} active={activeTab === 'original'} toolsContainer={originalToolsContainer} />
                   </section>}
                   {activeTab === 'story-graph' && snapshot.storyGraphView ? (
                     <LazyLoadBoundary label={t('故事关系图')} resetKey={snapshot.sessionId}>
@@ -1807,7 +1808,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
 
                 {activeTab !== 'original' && <footer className="flex h-12 shrink-0 items-center gap-3 border-t border-border-subtle px-3">
                   <span className={`text-[11px] ${isDirty ? 'text-amber-300' : 'text-canvas-text-muted'}`}>
-                    {editorWriteLocked ? t('团队成果保存中…') : isDirty ? t('有未保存修改') : t('已保存')}
+                    {editorWriteLocked ? t('团队成果保存中…') : isDirty ? t('有未保存修改') : scriptFileSyncNeeded ? t('待保存 TXT') : t('已保存')}
                   </span>
                   <span className="hidden text-[10px] text-canvas-text-muted sm:inline">Ctrl+S</span>
                   <button
@@ -1822,7 +1823,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   </button>
                   <button
                     type="button"
-                    disabled={!isDirty || isSaving || editorWriteLocked || projectLoadStatus !== 'ready'}
+                    disabled={(!isDirty && !scriptFileSyncNeeded) || isSaving || editorWriteLocked || projectLoadStatus !== 'ready'}
                     onClick={() => { void saveDraft(); }}
                     className="h-8 rounded-lg bg-indigo-500/90 px-4 text-xs font-medium text-white
                                hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"

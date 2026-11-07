@@ -19,7 +19,7 @@ export interface WorkbenchCreativeDraft {
   beats: string; targetDurationSec: string; sourceRange: string;
 }
 export interface WorkbenchDraft { outline: string; script: string; creative: WorkbenchCreativeDraft }
-export type WorkbenchEpisode = Pick<CanvasProject, 'id' | 'parentId' | 'name' | 'episodeOutline' | 'episodeScript' | 'episodeCreative' | 'episodeAssetRoster' | 'creationProfile' | 'teamProfileOverride'>;
+export type WorkbenchEpisode = Pick<CanvasProject, 'id' | 'parentId' | 'name' | 'episodeOutline' | 'episodeScript' | 'episodeScriptFile' | 'episodeCreative' | 'episodeAssetRoster' | 'creationProfile' | 'teamProfileOverride'>;
 export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; draft: WorkbenchDraft }
 
 export interface ScriptWorkbenchSnapshot {

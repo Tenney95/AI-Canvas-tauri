@@ -23,6 +23,39 @@ function fixture() {
   return { base: base.snapshot, state, capture };
 }
 describe('项目业务三方合并', () => {
+  it('本集正文与 TXT 文件作为同一冲突单元，选择后不会拼接不同来源的正文和引用', () => {
+    const owner = project();
+    const episode: ProjectSaveData = { ...project(), id: 'episode', parentId: owner.id, name: '第一集', episodeScript: '原稿',
+      episodeScriptFile: { fileName: '第一集.txt', relativePath: 'manuscripts/第一集.txt', digest: 'a'.repeat(64), sourceName: '第一集.txt' } };
+    const assets = [{ path: 'manuscripts/第一集.txt', bytes: 6, sha256: 'a'.repeat(64) },
+      { path: 'manuscripts/第一集_1.txt', bytes: 6, sha256: 'b'.repeat(64) }];
+    const captured = captureExchangeSnapshot([owner, episode], assets, null);
+    const state: ProjectExchangeState = { ownerId: owner.id, lineageId: captured.snapshot.lineageId, rootProjectId: owner.id,
+      headRevisionId: 'a'.repeat(64), stateVersion: 1, identities: captured.identities };
+    const local = { ...episode, episodeScript: '本地新稿' };
+    const incoming = { ...episode, episodeScriptFile: { ...episode.episodeScriptFile!, fileName: '第一集_1.txt',
+      relativePath: 'manuscripts/第一集_1.txt', digest: 'b'.repeat(64) } };
+    const capture = (record: ProjectSaveData) => captureExchangeSnapshot([owner, record], assets, state, captured.snapshot).snapshot;
+    const localSnapshot = capture(local), incomingSnapshot = capture(incoming);
+    const plan = buildProjectMergePlan(captured.snapshot, localSnapshot, incomingSnapshot);
+    const conflicts = plan.changes.filter((change) => change.conflict);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].field).toBe('本集剧本与文件');
+    expect(() => resolveProjectMerge(plan, {})).toThrow('还有冲突');
+    for (const side of ['local', 'incoming'] as const) {
+      const resolved = resolveProjectMerge(plan, { [conflicts[0].id]: side });
+      const actual = resolved.entities.find((entity) => entity.kind === 'project' && entity.id === episode.id)!.data;
+      const selected = (side === 'local' ? localSnapshot : incomingSnapshot).entities.find((entity) => entity.kind === 'project' && entity.id === episode.id)!.data;
+      expect(actual.episodeScript).toBe(selected.episodeScript);
+      expect(actual.episodeScriptFile).toEqual(selected.episodeScriptFile);
+    }
+    const paths = new Map([...captured.files].map(([id, path]) => [id, `imports/op/${id}/${path.split('/').pop()}`]));
+    const restored = materializeExchangeSnapshot(resolveProjectMerge(plan, { [conflicts[0].id]: 'incoming' }), [], [], '新目录', paths);
+    expect(restored.find((record) => record.episodeScriptFile)?.episodeScriptFile).toMatchObject({
+      relativePath: expect.stringMatching(/^imports\/op\/.+\/第一集_1\.txt$/), sourceName: '第一集.txt', digest: 'b'.repeat(64),
+    });
+  });
+
   it('全剧正文和故事图独立合并，双方改图时整张图为一个冲突单元', () => {
     const graph = createEmptyStoryGraph('graph');
     const original = { ...project(), series: { script: '原稿', storyGraph: graph } };

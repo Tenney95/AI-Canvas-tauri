@@ -1,7 +1,8 @@
 /**
  * projectSummary — 将项目记录转换为列表用摘要。
  */
-import type { EpisodeCreativeInfo, ProjectSeriesInfo, ProjectSettings } from '../../types';
+import type { EpisodeCreativeInfo, ProjectSeriesInfo, ProjectSettings, ProjectTextFileReference } from '../../types';
+import { normalizeProjectTextFileReference } from '../../utils/manuscriptFileReference';
 import { normalizeEpisodeAssetRoster, type EpisodeAssetRoster } from '../../types/episodeAssets';
 import type { CreationProfileSelection } from '../../types/creationProfile';
 import type { AgentTeamProfile } from '../../types/agentTeam';
@@ -23,6 +24,7 @@ export interface ProjectSummaryRecord {
   episodeNo?: number;
   episodeOutline?: string;
   episodeScript?: string;
+  episodeScriptFile?: ProjectTextFileReference;
   episodeCreative?: EpisodeCreativeInfo;
   episodeAssetRoster?: EpisodeAssetRoster;
   creationProfile?: CreationProfileSelection;
@@ -85,6 +87,8 @@ export function toProjectSummaryRecord(record: unknown): ProjectSummaryRecord | 
   }
   if (typeof source.episodeOutline === 'string') summary.episodeOutline = source.episodeOutline;
   if (typeof source.episodeScript === 'string') summary.episodeScript = source.episodeScript;
+  const scriptFile = normalizeProjectTextFileReference(source.episodeScriptFile);
+  if (scriptFile) summary.episodeScriptFile = scriptFile;
   if (source.episodeCreative && typeof source.episodeCreative === 'object') {
     summary.episodeCreative = source.episodeCreative as EpisodeCreativeInfo;
   }

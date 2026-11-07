@@ -401,6 +401,15 @@ export interface EpisodeCreativeInfo {
   sourceRange?: string;
 }
 
+/** 项目数据目录内的可移植 TXT 文件引用；不保存本机绝对路径。 */
+export interface ProjectTextFileReference {
+  fileName: string;
+  relativePath: string;
+  digest?: string;
+  /** 生成此稿件时按分集名称清洗后的目标文件名；与唯一后缀无关。 */
+  sourceName?: string;
+}
+
 export interface CanvasProject {
   /** 归档更新后提升；旧窗口/旧保存快照不能跨此代际写回。 */
   exchangeEpoch?: number;
@@ -427,6 +436,8 @@ export interface CanvasProject {
   episodeOutline?: string;
   /** 本集完整剧本正文；与大纲分开保存。 */
   episodeScript?: string;
+  /** 与本集剧本正文一起保存的 TXT 稿件引用。 */
+  episodeScriptFile?: ProjectTextFileReference;
   /** 本集结构化创作要点。 */
   episodeCreative?: EpisodeCreativeInfo;
   /** 本集人物/道具提取清单；与整部剧共享的正式创作资产库分开保存。 */

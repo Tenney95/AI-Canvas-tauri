@@ -9,6 +9,7 @@ export interface OriginalWritingSummary {
   revision: number;
   acceptedSequence: number;
   fileName?: string;
+  isNew?: boolean;
   characterCount: number;
   chapterCount: number;
   error?: string;
@@ -37,6 +38,7 @@ export interface OriginalWritingDocument {
   revision: number;
   acceptedSequence: number;
   fileName: string;
+  isNew?: boolean;
   content: string;
   candidate?: OriginalWritingCandidate;
 }

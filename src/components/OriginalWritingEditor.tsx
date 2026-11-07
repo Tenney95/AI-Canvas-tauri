@@ -5,7 +5,6 @@ import { Icon } from '@iconify/react';
 import { useT } from '../i18n';
 import { indexSeriesChapters } from '../services/seriesSourceService';
 import type { OriginalWritingAction, OriginalWritingDocument, OriginalWritingSummary } from '../types/originalWriting';
-import MarkdownEditor, { type MarkdownSourceEditor } from './shared/MarkdownEditor';
 import Select from './shared/Select';
 
 interface OriginalWritingEditorProps {
@@ -29,6 +28,7 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
   const t = useT();
   const instructionId = useId();
   const targetId = useId();
+  const statusId = useId();
   const [document, setDocument] = useState<OriginalWritingDocument | null>(null);
   const [range, setRange] = useState<{ start: number; end: number; title: string } | null>(null);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
@@ -89,6 +89,10 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
   const working = !!busy || summary.saving || summary.generating;
   const candidate = document?.candidate;
   const candidateStale = !!candidate && (candidate.revision !== document?.revision || editPending);
+  const isNew = summary.documentId === document?.documentId
+    ? summary.isNew ?? document?.isNew ?? false : document?.isNew ?? false;
+  const fileName = summary.documentId === document?.documentId
+    ? summary.fileName ?? document?.fileName : document?.fileName;
   const dirty = summary.dirty || editPending;
   const message = error || summary.error;
 
@@ -200,27 +204,21 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
     const scope = mode === 'polish' && start === end ? { start: range?.start ?? 0, end: range?.end ?? content.length } : { start: mode === 'continue' ? end : start, end };
     void run({ type: 'original_generate', mode, ...scope, instruction: instruction.trim(), expectedSequence: sequence.current }, 'generate');
   };
-  const sourceEditor: MarkdownSourceEditor = {
-    getInput: () => sourceInput.current,
-    render: ({ value, onChange, onBlur, readOnly, label }) => <textarea ref={sourceInput}
-      className="h-full w-full resize-none border-0 bg-transparent font-sans text-base leading-loose text-canvas-text outline-none"
-      aria-label={label} value={value} readOnly={readOnly} spellCheck onBlur={onBlur}
-      placeholder={t('从这里开始写作。使用「第一章 标题」或 Markdown 标题组织章节。')}
-      onChange={(event) => onChange(event.target.value)}
-      onSelect={(event) => {
-        const offset = currentRange.current?.start ?? 0;
-        setSelection({ start: offset + event.currentTarget.selectionStart, end: offset + event.currentTarget.selectionEnd });
-      }} />,
-  };
-
   const writingTools = focused ? <p className="p-2 text-xs leading-relaxed text-canvas-text-secondary" role="status">{t('专注写作已开启。点击编辑区顶部的「退出专注」返回写作工具。')}</p> : <>
-    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-canvas-border p-2">
-      <label htmlFor={instructionId} className="text-xs text-canvas-text-secondary">{t('写作要求')}</label>
-      <input id={instructionId} className="ui-input ui-input--sm min-w-0 flex-1" maxLength={2000} placeholder={t('例如：保持人物语气，补充动作与细节')} value={instruction} onChange={(event) => setInstruction(event.target.value)} />
-      <button type="button" className="ui-btn ui-btn--sm" disabled={unavailable || working || !!candidate || (!content.trim() && !instruction.trim())} onClick={() => generate('continue')}><Icon icon="lucide:sparkles" />{content.trim() ? t('从光标续写') : t('按要求起笔')}</button>
-      <button type="button" className="ui-btn ui-btn--sm" disabled={unavailable || working || !!candidate || !visibleContent.trim()} onClick={() => generate('polish')}>{selection.end > selection.start ? t('润色选中片段') : range ? t('润色当前章节') : t('润色全文')}</button>
-      {(summary.generating || busy === 'generate') && <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => void run({ type: 'original_cancel' }, 'cancel')}>{t('停止生成')}</button>}
-      <p className="w-full break-words text-xs leading-relaxed text-canvas-text-muted">{selection.end > selection.start ? t('已选中 {count} 字，润色仅替换此片段。', { count: selection.end - selection.start }) : t('续写插入光标处，润色作用于当前章节或全文。生成后先预览，再决定是否采用。')}</p>
+    <div className="ui-card m-2 shrink-0">
+      <div className="ui-card__header"><Icon icon="lucide:pen-line" className="shrink-0" /><h3 className="ui-card__title">{content.trim() ? t('写作助手') : t('从零起稿')}</h3></div>
+      <div className="ui-card__body flex flex-col gap-2">
+        <label htmlFor={instructionId} className="text-xs font-medium text-canvas-text-secondary">{t('写作要求')}</label>
+        <textarea id={instructionId} className="ui-textarea min-w-0 resize-y" rows={3} maxLength={2000}
+          placeholder={content.trim() ? t('例如：保持人物语气，补充动作与细节') : t('写下题材、人物和开场情境，例如：雨夜，一位快递员收到来自未来的包裹。')}
+          value={instruction} onChange={(event) => setInstruction(event.target.value)} />
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="ui-btn ui-btn--sm ui-btn--primary" disabled={unavailable || working || !!candidate || (!content.trim() && !instruction.trim())} onClick={() => generate('continue')}><Icon icon="lucide:sparkles" />{content.trim() ? t('从光标续写') : t('按要求起笔')}</button>
+          <button type="button" className="ui-btn ui-btn--sm" disabled={unavailable || working || !!candidate || !visibleContent.trim()} onClick={() => generate('polish')}>{selection.end > selection.start ? t('润色选中片段') : range ? t('润色当前章节') : t('润色全文')}</button>
+          {(summary.generating || busy === 'generate') && <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => void run({ type: 'original_cancel' }, 'cancel')}>{t('停止生成')}</button>}
+        </div>
+        <p className="break-words text-xs leading-relaxed text-canvas-text-muted">{!content.trim() ? t('可以直接在编辑区写作，也可以填写要求后生成开篇。候选采用后进入草稿，首次保存会创建原文文件。') : selection.end > selection.start ? t('已选中 {count} 字，润色仅替换此片段。', { count: selection.end - selection.start }) : t('续写插入光标处，润色作用于当前章节或全文。生成后先预览，再决定是否采用。')}</p>
+      </div>
     </div>
     {candidate && <div className="ui-card m-2 max-h-64 shrink-0" aria-label={t('AI 写作候选')}>
       <div className="ui-card__header shrink-0 flex-wrap">
@@ -238,8 +236,8 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
   return <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden" aria-label={t('原文写作')}>
     <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-canvas-border p-2">
       <Icon icon="lucide:book-open-text" className="shrink-0 text-canvas-text-secondary" />
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-canvas-text" title={document?.fileName ?? summary.fileName}>{document?.fileName ?? summary.fileName ?? t('原文写作')}</span>
-      <span className={`ui-badge ${dirty ? 'ui-badge--warning' : ''}`}>{!document ? t('未载入') : dirty ? t('未保存') : t('已保存')}</span>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-canvas-text" title={fileName ?? summary.fileName}>{fileName ?? summary.fileName ?? t('原文写作')}</span>
+      <span className={`ui-badge ${dirty || isNew ? 'ui-badge--warning' : ''}`}>{!document ? t('未载入') : isNew ? t('未保存的新原文') : dirty ? t('未保存') : t('已保存')}</span>
       <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" aria-pressed={focused} onClick={() => setFocused(!focused)}>
         <Icon icon={focused ? 'lucide:minimize-2' : 'lucide:maximize-2'} />{focused ? t('退出专注') : t('专注写作')}
       </button>
@@ -282,11 +280,30 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
         {!document ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-3 text-sm text-canvas-text-secondary" role="status">
           <Icon icon={loading || summary.loading ? 'lucide:loader-circle' : 'lucide:book-open'} />{loading || summary.loading ? t('正在载入原文…') : message ? t('原文暂不可用，请重新打开') : t('等待工作台就绪…')}
           {ready && !loading && !summary.loading && <button type="button" className="ui-btn ui-btn--sm" onClick={() => setOpenAttempt((attempt) => attempt + 1)}>{t('重试打开')}</button>}
-        </div> : <MarkdownEditor key={`${document.documentId}:${range?.start ?? 'all'}`} value={visibleContent} onChange={changeContent} markdown={/\.(?:md|markdown|mdown)$/i.test(document.fileName)}
-          initialMode="source" label={range ? t('编辑原文章节：{title}', { title: chapterTitle ?? range.title }) : t('编辑整篇原文')}
-          readOnly={!ready || summary.saving || busy === 'save' || busy === 'reload' || busy === 'apply'} sourceEditor={sourceEditor}
-          onSave={() => { if (!working) void run({ type: 'original_save' }, 'save'); }}
-          status={summary.saving || busy === 'save' ? t('正在保存…') : dirty ? t('草稿未保存 · Ctrl+S 保存原文') : t('已保存 · Ctrl+F 查找替换')} />}
+        </div> : <>
+          <textarea key={`${document.documentId}:${range?.start ?? 'all'}`} ref={sourceInput}
+            className="ui-textarea min-h-0 flex-1 resize-none p-3 font-sans text-base leading-loose"
+            aria-label={range ? t('编辑原文章节：{title}', { title: chapterTitle ?? range.title }) : t('编辑整篇原文')}
+            aria-describedby={statusId} value={visibleContent} spellCheck
+            readOnly={!ready || summary.saving || busy === 'save' || busy === 'reload' || busy === 'apply'}
+            placeholder={t('从这里开始写作。使用「第一章 标题」组织章节。')}
+            onChange={(event) => changeContent(event.target.value)}
+            onSelect={(event) => {
+              const offset = currentRange.current?.start ?? 0;
+              setSelection({ start: offset + event.currentTarget.selectionStart, end: offset + event.currentTarget.selectionEnd });
+            }}
+            onKeyDown={(event) => {
+              if (event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+              if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+                event.preventDefault(); event.stopPropagation();
+                if (!working) void run({ type: 'original_save' }, 'save');
+              }
+            }} />
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 pt-2 text-xs text-canvas-text-secondary">
+            <span>{t('{characters} 字符 · {lines} 行', { characters: visibleContent.length.toLocaleString(), lines: visibleContent.split('\n').length.toLocaleString() })}</span>
+            <span id={statusId} role="status">{summary.saving || busy === 'save' ? t('正在保存…') : isNew ? t('新原文草稿 · Ctrl+S 创建并保存') : dirty ? t('草稿未保存 · Ctrl+S 保存原文') : t('已保存 · Ctrl+S 保存原文')}</span>
+          </footer>
+        </>}
       </div>
     </div>
   </section>;

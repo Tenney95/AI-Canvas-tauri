@@ -167,6 +167,23 @@ function mockArchiveRoundTrip(assetPaths: string[] = []) {
 }
 
 describe('projectTransferService', () => {
+  it.each([false, true])('恢复分集 TXT 引用并统计缺失的稿件文件（文件存在=%s）', async (present) => {
+    const reference = { fileName: '不可信展示名.txt', relativePath: 'manuscripts/第一集.txt', digest: 'a'.repeat(64), sourceName: '第一集.txt',
+      filePath: 'C:/private/第一集.txt', token: 'fixture-private' };
+    mocks.invoke.mockResolvedValue({ texts: archiveTexts({ project: SERIES_RECORD, chat: EMPTY_CHAT,
+      manifest: { formatVersion: 2 }, episodes: [{ project: { ...EPISODE_RECORD, nodes: [], edges: [], groups: [], episodeScriptFile: reference }, chat: EMPTY_CHAT }] }),
+      assetPaths: present ? ['manuscripts/第一集.txt'] : [], assetBytes: present ? 6 : 0 });
+
+    const result = await restoreProjectArchive('/incoming/manuscripts.aicanvas');
+
+    expect(result.missingAssetCount).toBe(present ? 0 : 1);
+    const saved = mocks.saveProject.mock.calls[1][0];
+    expect(saved.episodeScript).toBe(EPISODE_RECORD.episodeScript);
+    expect(saved.episodeScriptFile).toEqual({ fileName: '第一集.txt', relativePath: 'manuscripts/第一集.txt', digest: 'a'.repeat(64), sourceName: '第一集.txt' });
+    expect(result.episodes[0].episodeScriptFile).toEqual(saved.episodeScriptFile);
+    expect(JSON.stringify(saved.episodeScriptFile)).not.toContain('fixture-private');
+  });
+
   it('旧包故事图的出处随分集新身份迁移，不指回原项目', async () => {
     const graph = createEmptyStoryGraph('graph');
     graph.nodes.push({ id: 'event', kind: 'event', label: '关键点', description: '', aliases: [],
