@@ -225,7 +225,8 @@ describe('故事关系图 UI 边界', () => {
     state = selectionProps(); render();
     const snapshot = structuredClone(state.view);
     const cardPositions = flow.current!.nodes.map((entry) => ({ id: entry.id, position: { ...entry.position } }));
-    const instances = [...hooks.frames.keys()].filter((id) => id.includes(':ReactFlowProvider:') || id.includes(':ReactFlow:'));
+    const isFlowInstance = (id: string) => /:(?:ReactFlowProvider|ReactFlow):[^:]*$/.test(id);
+    const instances = [...hooks.frames.keys()].filter(isFlowInstance);
     expect(instances).toHaveLength(2);
     expect(button('卡片').element.props['aria-pressed']).toBe(true);
     expect(button('点阵').element.props['aria-pressed']).toBe(false);
@@ -240,7 +241,7 @@ describe('故事关系图 UI 边界', () => {
     expect(entries(view).some(({ element }) => element.type === 'section' && String(element.props.className).includes('story-graph--dots'))).toBe(true);
     await click('卡片');
     expect(flow.current!.nodes.map((entry) => ({ id: entry.id, position: entry.position }))).toEqual(cardPositions);
-    expect([...hooks.frames.keys()].filter((id) => id.includes(':ReactFlowProvider:') || id.includes(':ReactFlow:'))).toEqual(instances);
+    expect([...hooks.frames.keys()].filter(isFlowInstance)).toEqual(instances);
     expect(state.view).toEqual(snapshot);
     expect(state.onReadDetail).not.toHaveBeenCalled(); expect(state.onPatch).not.toHaveBeenCalled(); expect(state.onExtract).not.toHaveBeenCalled();
     expect(state.onDirtyChange).not.toHaveBeenCalled(); expect(state.onEditorStateChange).not.toHaveBeenCalled();

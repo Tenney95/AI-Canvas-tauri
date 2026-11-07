@@ -340,14 +340,20 @@ describe('uploadService 内存上传治理', () => {
   });
 
   it('失败上传会释放串行队列，后续素材仍可继续', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => responseFor(new Blob([new Uint8Array([7, 8, 9])], {
+    const fetchMock = vi.fn(async () => responseFor(new Blob([new Uint8Array([7, 8, 9])], {
       type: 'image/png',
-    }))));
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    let releaseFailure: () => void = () => undefined;
+    const failureGate = new Promise<void>((resolve) => { releaseFailure = resolve; });
     let proxyCalls = 0;
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command !== 'proxy_fetch') return true;
       proxyCalls += 1;
-      if (proxyCalls === 1) throw new Error('模拟上传失败');
+      if (proxyCalls === 1) {
+        await failureGate;
+        throw new Error('模拟上传失败');
+      }
       return {
         status: 200,
         body: btoa(JSON.stringify({ success: true, files: [{ url: 'https://cdn.example/recovered.png' }] })),
@@ -355,10 +361,18 @@ describe('uploadService 内存上传治理', () => {
     });
 
     const failed = uploadToRemote('asset://localhost/failing-source.png');
+    const failedOutcome = expect(failed).rejects.toThrow('模拟上传失败');
+    // 身份摘要异步完成，不假设调用顺序即入队顺序；先确认失败项实际占用队列。
+    await vi.waitFor(() => expect(proxyCalls).toBe(1));
     const recovered = uploadToRemote('asset://localhost/recovered-source.png');
-    await expect(failed).rejects.toThrow('模拟上传失败');
-    await expect(recovered).resolves.toBe('https://cdn.example/recovered.png');
+    const recoveredOutcome = expect(recovered).resolves.toBe('https://cdn.example/recovered.png');
+    await vi.waitFor(() => expect(mocks.lstat).toHaveBeenCalledTimes(2));
+    expect(proxyCalls).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    releaseFailure();
+    await Promise.all([failedOutcome, recoveredOutcome]);
     expect(proxyCalls).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('缓存隔离 provider/kind，且旧 32 位碰撞 payload 不会串用结果', async () => {

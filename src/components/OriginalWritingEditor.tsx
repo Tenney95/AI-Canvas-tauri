@@ -6,6 +6,7 @@ import { useT } from '../i18n';
 import { indexSeriesChapters } from '../services/seriesSourceService';
 import type { OriginalWritingAction, OriginalWritingDocument, OriginalWritingSummary } from '../types/originalWriting';
 import MarkdownEditor, { type MarkdownSourceEditor } from './shared/MarkdownEditor';
+import Select from './shared/Select';
 
 interface OriginalWritingEditorProps {
   summary: OriginalWritingSummary;
@@ -270,9 +271,10 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
       </nav>}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col p-2">
         <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2 text-xs text-canvas-text-secondary">
-          <select className={`ui-select__control ui-select__control--sm min-w-0 max-w-52${focused ? ' hidden' : ' lg:hidden'}`} aria-label={t('选择原文章节')} value={range ? String(chapters.findIndex((chapter) => chapter.start === range.start)) : '-1'} onChange={(event) => chooseChapter(Number(event.target.value))}>
-            <option value="-1">{t('整篇原文')}</option>{chapters.map((chapter, index) => <option key={chapter.id} value={index}>{chapter.title}</option>)}
-          </select>
+          <Select size="sm" className={`min-w-0 max-w-52${focused ? ' hidden' : ' lg:hidden'}`} aria-label={t('选择原文章节')}
+            value={range ? String(chapters.findIndex((chapter) => chapter.start === range.start)) : '-1'}
+            onChange={(value) => chooseChapter(Number(value))}
+            options={[{ value: '-1', label: t('整篇原文') }, ...chapters.map((chapter, index) => ({ value: String(index), label: chapter.title }))]} />
           <span className="min-w-0 flex-1 truncate">{chapterTitle ?? t('整篇原文')} · {t('{count} 字', { count })}{range && ` / ${t('全文 {count} 字', { count: wholeCount })}`}</span>
           <label htmlFor={targetId}>{t('目标')}</label><input id={targetId} type="number" className="ui-input ui-input--sm w-20" min={1} max={1000000} step={100} placeholder="—" value={target} onChange={(event) => setTarget(event.target.value)} />
           <span>{targetCount > 0 ? `${Math.min(100, Math.floor(count / targetCount * 100))}%` : t('字')}</span>

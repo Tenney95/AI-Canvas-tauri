@@ -163,7 +163,7 @@ const chat = {
   '创作执行方式': 'Creative execution method',
   '任务权限': 'Task permissions',
   '团队成果保存中…': 'Saving team result…',
-  '先保存当前改稿，再由团队生成候选；点击下方动作开始，不会自动覆盖正文。': 'Save the current edits before the team creates a candidate. Choose an action below to start; the script is not overwritten automatically.',
+  '先保存当前改稿，再由团队生成候选；设置完成后，从右侧创作动作开始。': 'Save the current edits before the team creates a candidate. After setup, choose a creative action on the right to start.',
   '保存期间有新修改，已保留草稿，请重新发起创作请求': 'New edits were made while saving. The draft is preserved; submit the creative request again.',
   '团队任务已开始，可在工作台或助手查看同一任务': 'The team task has started. View the same task in the workbench or assistant.',
   '团队任务启动失败': 'Failed to start the team task',
