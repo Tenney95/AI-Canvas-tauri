@@ -1,4 +1,4 @@
-/** 备份类型往返、完整性与完成标记边界；本阶段只编写，不自动运行。 */
+/** 备份类型往返、完整性、旧journal兼容与完成标记边界。 */
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -9,6 +9,13 @@ import {
   type ProjectModelBackupSource,
 } from '../../src/services/projectModelBackup';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
+import { IDBFactory } from 'fake-indexeddb';
+import { openProjectModelFixtureDatabase, createProjectModelStagingRepository } from '../../src/services/indexedDb/projectModelStagingRepository';
+import { beginProjectModelFixtureBusinessSession } from '../../src/services/indexedDb/projectModelBusinessRepository';
+import { readLegacyMigrationSnapshot } from '../../src/services/indexedDb/projectModelMigrationRepository';
+import { projectModelSourceToken, readProjectModelSourceToken } from '../../src/services/projectModelComparisonMaterial';
+import { fingerprintProjectModelSource } from '../../src/services/projectModelSourceFingerprint';
+import type { ProjectModelStagingJournal } from '../../src/types/projectModelJournal';
 
 beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => vi.unstubAllGlobals());
@@ -29,8 +36,164 @@ function memoryPort() {
   };
   return { files, order, port };
 }
+async function rewriteCheckedChunk(memory: ReturnType<typeof memoryPort>, path: string, value: unknown): Promise<void> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value)); memory.files.set(path, bytes);
+  const manifest = JSON.parse(new TextDecoder().decode(memory.files.get('manifest.json')!));
+  const descriptor = manifest.files.find((file: { path: string }) => file.path === path);
+  descriptor.bytes = bytes.byteLength; descriptor.sha256 = await sha256BytesHex(bytes);
+  manifest.totalBytes = manifest.files.reduce((sum: number, file: { bytes: number }) => sum + file.bytes, 0);
+  const encoded = new TextEncoder().encode(JSON.stringify(manifest)); memory.files.set('manifest.json', encoded);
+  memory.files.set('complete.json', new TextEncoder().encode(JSON.stringify({ format: manifest.format,
+    operationId: manifest.operationId, manifestSha256: await sha256BytesHex(encoded) })));
+}
+
+async function fixtureSource(options: { empty?: boolean; business?: boolean } = {}) {
+  const factory = new IDBFactory(), name = 'ai-canvas-model-fixture-backup-codec';
+  const original = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open(name, 27);
+    request.onupgradeneeded = () => { for (const store of ['projects', 'metadata', 'agentTasks']) request.result.createObjectStore(store, { keyPath: 'id' }); };
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  if (!options.empty) await new Promise<void>((resolve, reject) => {
+    const tx = original.transaction(['projects', 'metadata', 'agentTasks'], 'readwrite');
+    tx.objectStore('projects').put({ id: 'P', name: '旧项目', createdAt: 1, updatedAt: 2, nodes: [], edges: [], dataFolder: 'old-folder' });
+    const buffer = new Uint8Array([1, 2, 3, 4]).buffer, child = { text: '原值' }, sparse = new Array(3); sparse[1] = undefined;
+    tx.objectStore('metadata').put({ id: 'mcp-operation:original', sequence: 1,
+      material: { missing: undefined, sparse, negative: -0, nan: NaN, infinite: Infinity, date: new Date(4), invalid: new Date(NaN),
+        amount: 3n, buffer, view: new Uint16Array(buffer), dataView: new DataView(buffer, 1, 2), child, repeated: child,
+        map: new Map([['item', child]]), set: new Set([child]) } });
+    tx.objectStore('agentTasks').put({ id: 'paid', sequence: 1, toolCallCount: 3 });
+    tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+  });
+  const snapshot = await readLegacyMigrationSnapshot(original, { localStorage: { getItem: () => '[]' } }); original.close();
+  const backup = await createProjectModelBackup(snapshot.source, { operationId: 'original-backup', createdAt: 0 });
+  const database = await openProjectModelFixtureDatabase({ factory, name }), staging = createProjectModelStagingRepository(database);
+  try {
+    await staging.prepare({ operationId: 'old-journal', generation: 1, source: snapshot.source,
+      sourceDigest: await fingerprintProjectModelSource(backup.manifest), backupOperationId: 'original-backup', backupManifestDigest: 'a'.repeat(64) });
+    await staging.stageNextBatch({ operationId: 'old-journal', batchSize: 500 }); await staging.verify({ operationId: 'old-journal' });
+    if (options.business) await beginProjectModelFixtureBusinessSession(database, { operationId: 'old-journal', generation: 1, sessionId: 'business-session' });
+    const names = Array.from(database.objectStoreNames);
+    const captured = await new Promise<ProjectModelBackupSource['stores']>((resolve, reject) => {
+      const tx = database.transaction(names, 'readonly');
+      const stores = names.map((name) => { const store = tx.objectStore(name), keys = store.getAllKeys(), rows = store.getAll();
+        const indexes = Array.from(store.indexNames).map((name) => { const index = store.index(name); return { name, keyPath: index.keyPath, unique: index.unique, multiEntry: index.multiEntry }; });
+        return { name, keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes, keys, rows }; });
+      tx.oncomplete = () => resolve(stores.map(({ name, keyPath, autoIncrement, indexes, keys, rows }) => ({ name, keyPath, autoIncrement, indexes,
+        records: keys.result.map((key, index) => ({ key, value: rows.result[index] })) })));
+      tx.onabort = () => reject(tx.error);
+    });
+    const source: ProjectModelBackupSource = { databaseName: name, schemaVersion: 28, databaseStoreNames: names, stores: captured,
+      localStorage: [{ key: 'ai_canvas_pending_tasks', value: '[]' }] };
+    const journal = source.stores.find((store) => store.name === 'projectModelMigrations')!.records[0].value as ProjectModelStagingJournal;
+    return { source, journal };
+  } finally { database.close(); }
+}
 
 describe('项目模型本地备份', () => {
+  it('真实旧P2 journal无损往返，比较材料编码与新备份来源指纹稳定', async () => {
+    const original = await fixtureSource(), before = projectModelSourceToken(original.source);
+    const bundle = await createProjectModelBackup(original.source, { operationId: 'journal-roundtrip', createdAt: 10 }), memory = memoryPort();
+    const checked = await writeVerifiedProjectModelBackup(bundle, memory.port);
+    expect(checked.source).toEqual(original.source);
+    expect(projectModelSourceToken(original.source)).toBe(before);
+    const copied = await createProjectModelBackup(checked.source, { operationId: 'journal-roundtrip', createdAt: 10 });
+    expect(copied).toEqual(bundle);
+    expect(await fingerprintProjectModelSource(copied.manifest)).toBe(await fingerprintProjectModelSource(bundle.manifest));
+    const sourceValue = original.source.stores.find((store) => store.name === 'metadata')!.records.find((record) => record.key === 'mcp-operation:original')!.value;
+    const comparison = original.journal.sourceStores.find((store) => store.name === 'metadata')!.records.find((record) => record.key === 'mcp-operation:original')!.token;
+    expect(readProjectModelSourceToken(comparison)).toEqual(sourceValue);
+  });
+
+  it('旧v2空journal保持raw编码和指纹，不因兼容转义制造新来源', async () => {
+    const original = await fixtureSource({ empty: true }), memory = memoryPort();
+    const bundle = await createProjectModelBackup(original.source, { operationId: 'empty-journal', createdAt: 10 });
+    expect(original.journal.rows).toHaveLength(0);
+    expect(original.journal.sourceStores.every((store) => store.records.length === 0)).toBe(true);
+    const chunk = bundle.manifest.stores.find((store) => store.name === 'projectModelMigrations')!.chunks[0];
+    expect(new TextDecoder().decode(bundle.files.get(chunk)!)).not.toContain('project-model-staging-journal-backup-v1');
+    const checked = await writeVerifiedProjectModelBackup(bundle, memory.port);
+    expect(checked.source).toEqual(original.source);
+    expect(await createProjectModelBackup(checked.source, { operationId: 'empty-journal', createdAt: 10 })).toEqual(bundle);
+  });
+
+  it('P2源冻结仍核原表/行闭包；失败、回滚和业务后的历史比较值原样保留', async () => {
+    const healthy = await fixtureSource(), before = projectModelSourceToken(healthy.journal);
+    healthy.source.stores.find((store) => store.name === 'agentTasks')!.records[0].value = { id: 'paid', sequence: 2 };
+    await expect(createProjectModelBackup(healthy.source, { operationId: 'changed-live' })).rejects.toThrow('staging_source_changed');
+    expect(projectModelSourceToken(healthy.journal)).toBe(before);
+    for (const stage of ['failed', 'rolled_back'] as const) {
+      const source = structuredClone(healthy.source), journal = source.stores.find((store) => store.name === 'projectModelMigrations')!.records[0].value as ProjectModelStagingJournal;
+      journal.stage = stage; if (stage === 'failed') journal.failureCode = 'source-changed';
+      source.stores = source.stores.filter((store) => store.name !== 'agentTasks'); source.databaseStoreNames = source.databaseStoreNames.filter((name) => name !== 'agentTasks');
+      const memory = memoryPort(), bundle = await createProjectModelBackup(source, { operationId: `historical-${stage.replace('_', '-')}` });
+      expect((await writeVerifiedProjectModelBackup(bundle, memory.port)).source).toEqual(source);
+    }
+    const missingRecord = await fixtureSource(); missingRecord.journal.sourceStores.find((store) => store.name === 'projects')!.records = [];
+    await expect(createProjectModelBackup(missingRecord.source, { operationId: 'missing-record' })).rejects.toThrow('staging_source_changed');
+    const missingStore = await fixtureSource(); missingStore.journal.sourceStores = missingStore.journal.sourceStores.filter((store) => store.name !== 'agentTasks');
+    await expect(createProjectModelBackup(missingStore.source, { operationId: 'missing-store' })).rejects.toThrow('staging_source_changed');
+    const business = await fixtureSource({ business: true }), frozen = projectModelSourceToken(business.journal);
+    business.source.stores.find((store) => store.name === 'agentTasks')!.records[0].value = { id: 'paid', sequence: 9, toolCallCount: 8 };
+    business.source.stores.find((store) => store.name === 'metadata')!.records.push({ key: 'mcp-operation:new-receipt', value: { id: 'mcp-operation:new-receipt', sequence: 1 } });
+    const memory = memoryPort(), bundle = await createProjectModelBackup(business.source, { operationId: 'business-audit' });
+    const checked = await writeVerifiedProjectModelBackup(bundle, memory.port);
+    expect(checked.source).toEqual(business.source); expect(projectModelSourceToken(business.journal)).toBe(frozen);
+  });
+
+  it('journal token豁免不能扩散到伪造材料、业务/metadata token或嵌套凭据', async () => {
+    const original = await fixtureSource({ business: true });
+    for (const mutate of [
+      (journal: ProjectModelStagingJournal) => { journal.rows[0].token = 'opaque-secret'; },
+      (journal: ProjectModelStagingJournal) => { journal.rows[0].value.provider = { apiKey: 'private-value' }; },
+      (journal: ProjectModelStagingJournal) => { journal.sourceStores.find((store) => store.name === 'agentTasks')!.records[0].token = projectModelSourceToken({ id: 'paid', provider: { token: 'private-value' } }); },
+      (journal: ProjectModelStagingJournal) => { journal.sourceStores.find((store) => store.name === 'agentTasks')!.records[0].token = projectModelSourceToken({ id: 'another-task' }); },
+      (journal: ProjectModelStagingJournal) => { journal.activationAllowed = true as false; },
+    ]) {
+      const source = structuredClone(original.source), journal = source.stores.find((store) => store.name === 'projectModelMigrations')!.records[0].value as ProjectModelStagingJournal;
+      mutate(journal); await expect(createProjectModelBackup(source, { operationId: 'malicious-journal' })).rejects.toThrow();
+    }
+    for (const name of ['metadata', 'projects']) {
+      const source = structuredClone(original.source), store = source.stores.find((store) => store.name === name)!;
+      store.records[0].value = { ...store.records[0].value as object, token: 'private-value' };
+      await expect(createProjectModelBackup(source, { operationId: `outside-${name}` })).rejects.toThrow('plaintext_credential_field');
+    }
+    for (const patch of [{ operationId: 'missing-journal' }, { sessionId: 'invalid:session' }, { sourceJournalSequence: 999 }]) {
+      const source = structuredClone(original.source), marker = source.stores.find((store) => store.name === 'metadata')!.records.find((record) => record.key === 'project-model-business-fixture')!;
+      marker.value = { ...marker.value as object, ...patch };
+      await expect(createProjectModelBackup(source, { operationId: 'unbound-marker' })).rejects.toThrow('invalid_business_journal');
+    }
+    expect(() => readProjectModelSourceToken('["ref",0]')).toThrow('invalid-source-material');
+    expect(() => readProjectModelSourceToken('["number","not-a-number"]')).toThrow('invalid-source-material');
+  });
+
+  it('恶意journal即便重签全部文件摘要也不能通过读回的比较材料/凭据校验', async () => {
+    const original = await fixtureSource({ business: true });
+    const bundle = await createProjectModelBackup(original.source, { operationId: 'tampered-journal' });
+    const path = bundle.manifest.stores.find((store) => store.name === 'projectModelMigrations')!.chunks[0];
+    for (const credential of [false, true]) {
+      const memory = memoryPort(); await writeVerifiedProjectModelBackup(bundle, memory.port);
+      const items = JSON.parse(new TextDecoder().decode(memory.files.get(path)!));
+      const field = (node: { entries: Array<[string, unknown]> }, name: string) => node.entries.find(([key]) => key === name)![1];
+      if (credential) {
+        const wrapper = field(items[0], 'value') as { entries: Array<[string, unknown]> };
+        const journal = field(wrapper, 'journal') as { entries: Array<[string, unknown]> };
+        journal.entries.push(['token', 'private-value']);
+      } else {
+        const replace = (node: unknown): boolean => {
+          if (Array.isArray(node)) {
+            if (node[0] === 'comparisonMaterial') { node[1] = 'not-canonical-comparison'; return true; }
+            return node.some(replace);
+          }
+          return !!node && typeof node === 'object' && Object.values(node).some(replace);
+        };
+        expect(replace(items)).toBe(true);
+      }
+      await rewriteCheckedChunk(memory, path, items);
+      await expect(readVerifiedProjectModelBackup(memory.port)).rejects.toThrow(credential ? 'plaintext_credential_field' : 'invalid-source-material');
+    }
+  });
+
   it('fixture v2不能用于正式库，schema28也不能伪造旧v1或省略新表覆盖', async () => {
     const formal = source(); formal.schemaVersion = 28;
     await expect(createProjectModelBackup(formal, { operationId: 'formal-v2' })).rejects.toThrow('invalid_source');

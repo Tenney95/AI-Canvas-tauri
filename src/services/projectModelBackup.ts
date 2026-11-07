@@ -4,6 +4,8 @@ import { DB_NAME, DB_VERSION } from './indexedDb/schema';
 import { isProjectModelFixtureDatabaseName, PROJECT_MODEL_STAGING_STORES, PROJECT_MODEL_STAGING_VERSION,
   PROJECT_MODEL_SOURCE_FREEZE_KEY } from '../types/projectModelJournal';
 import { PROJECT_MODEL_BUSINESS_FIXTURE_KEY } from '../types/projectModelBusiness';
+import { PROJECT_MODEL_GENERATION_STORES } from '../types/projectModelJournal';
+import { projectModelSourceToken, readProjectModelSourceToken } from './projectModelComparisonMaterial';
 import {
   isProjectModelBackupStore,
   isKnownExcludedProjectModelBackupStore,
@@ -496,6 +498,130 @@ function decodeValue(input: unknown, binary: ReadonlyMap<string, Uint8Array>, us
   return visit(input, 0);
 }
 
+const STAGING_JOURNAL_ENCODING = 'project-model-staging-journal-backup-v1';
+/** 只转义固定journal的比较字段；凭据检测始终作用于原业务值和其余所有字段。 */
+function journalObject(value: unknown, fields: string[], optional: string[] = []): ObjectRecord {
+  const result = object(value, fields, fields.filter((field) => !optional.includes(field)));
+  if (Object.values(Object.getOwnPropertyDescriptors(result)).some((descriptor) => !descriptor.enumerable || !own(descriptor, 'value'))) fail('invalid_staging_journal');
+  return result;
+}
+function journalFields(value: ObjectRecord, replacements: Record<string, unknown>, rename?: [string, string]): ObjectRecord {
+  const target = Object.create(Object.getPrototypeOf(value)) as ObjectRecord;
+  for (const field of Object.keys(value)) Object.defineProperty(target, rename?.[0] === field ? rename[1] : field,
+    { value: own(replacements, field) ? replacements[field] : value[field], enumerable: true, writable: true, configurable: true });
+  return target;
+}
+function mapJournalComparisons(value: unknown, restore: boolean): ObjectRecord {
+  const materialField = restore ? 'comparisonMaterial' : 'token';
+  const journal = journalObject(value, ['operationId', 'generation', 'sourceSchemaVersion', 'targetModelVersion', 'adapterVersion',
+    'sourceDigest', 'backupOperationId', 'backupManifestDigest', 'stage', 'sequence', 'nextRow', 'createdAt', 'updatedAt',
+    'projectIds', 'sourceStores', 'rows', 'manifestDigest', 'diagnostics', 'quarantinedRecordIds', 'activationAllowed', 'failureCode'], ['failureCode']);
+  const rename: [string, string] = [materialField, restore ? 'token' : 'comparisonMaterial'];
+  const rows = array(journal.rows, PROJECT_MODEL_BACKUP_LIMITS.maxRecords).map((input) => {
+    const row = journalObject(input, ['store', 'key', 'value', materialField, 'sha256']);
+    return journalFields(row, {}, rename);
+  });
+  let count = rows.length;
+  const sourceStores = array(journal.sourceStores, 128).map((input) => {
+    const source = journalObject(input, ['name', 'schemaToken', 'records']);
+    const inputs = array(source.records, PROJECT_MODEL_BACKUP_LIMITS.maxRecords);
+    if ((count += inputs.length) > PROJECT_MODEL_BACKUP_LIMITS.maxRecords * 2) fail('record_limit');
+    const records = inputs.map((input) =>
+      journalFields(journalObject(input, ['key', materialField]), {}, rename));
+    return journalFields(source, { records });
+  });
+  return journalFields(journal, { rows, sourceStores });
+}
+function fixtureBusinessJournal(stores: ProjectModelBackupStore[]): ObjectRecord | undefined {
+  const value = stores.find((store) => store.name === 'metadata')?.records.find((record) => record.key === PROJECT_MODEL_BUSINESS_FIXTURE_KEY)?.value;
+  if (value === undefined) return;
+  const marker = journalObject(value, ['id', 'operationId', 'generation', 'sessionId', 'sourceJournalSequence', 'sourceDigest', 'targetManifestDigest', 'revision', 'dirty']);
+  const journal = stores.find((store) => store.name === 'projectModelMigrations')?.records.find((record) => record.key === marker.operationId)?.value as ObjectRecord | undefined;
+  if (marker.id !== PROJECT_MODEL_BUSINESS_FIXTURE_KEY || typeof marker.dirty !== 'boolean'
+    || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(shortString(marker.sessionId, 128))
+    || !journal || journal.stage !== 'ready' || marker.generation !== journal.generation || marker.operationId !== journal.operationId
+    || marker.sourceJournalSequence !== journal.sequence || marker.sourceDigest !== journal.sourceDigest || marker.targetManifestDigest !== journal.manifestDigest) fail('invalid_business_journal');
+  integer(marker.revision); integer(marker.sourceJournalSequence);
+  return marker;
+}
+async function checkedStagingJournal(value: unknown, key: unknown, source: Pick<ProjectModelBackupSource, 'stores'>): Promise<ObjectRecord> {
+  // 检查未知/额外字段，不因一段外部数据自称journal而获得任意token豁免。
+  mapJournalComparisons(value, false);
+  const journal = value as ObjectRecord;
+  const operationId = shortString(journal.operationId, 128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(operationId) || key !== operationId || journal.targetModelVersion !== 2
+    || journal.adapterVersion !== 1 || journal.activationAllowed !== false) fail('invalid_staging_journal');
+  if (integer(journal.generation) < 1 || integer(journal.generation) >= Number.MAX_SAFE_INTEGER
+    || integer(journal.sourceSchemaVersion, DB_VERSION) < 1 || !['schema_ready', 'staging', 'verifying', 'ready', 'failed', 'quarantined', 'rolled_back'].includes(String(journal.stage))) fail('invalid_staging_journal');
+  for (const field of ['sequence', 'nextRow', 'createdAt', 'updatedAt']) integer(journal[field]);
+  for (const field of ['sourceDigest', 'backupManifestDigest', 'manifestDigest']) digest(journal[field]);
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(shortString(journal.backupOperationId, 128))) fail('invalid_staging_journal');
+  for (const field of ['projectIds', 'quarantinedRecordIds']) array(journal[field], PROJECT_MODEL_BACKUP_LIMITS.maxRecords).forEach((id) => shortString(id));
+  array(journal.diagnostics, PROJECT_MODEL_BACKUP_LIMITS.maxRecords);
+  const rows = journal.rows as ObjectRecord[], rowKeys = new Set<string>();
+  if ((journal.nextRow as number) > rows.length || ['verifying', 'ready'].includes(String(journal.stage)) && journal.nextRow !== rows.length
+    || ['schema_ready', 'quarantined'].includes(String(journal.stage)) && journal.nextRow !== 0
+    || journal.failureCode !== undefined && !['source-changed', 'staging-conflict', 'verification-failed', 'transaction-failed'].includes(String(journal.failureCode))
+    || journal.stage === 'failed' && journal.failureCode === undefined) fail('invalid_staging_journal');
+  for (const row of rows) {
+    if (!PROJECT_MODEL_GENERATION_STORES.includes(row.store as typeof PROJECT_MODEL_GENERATION_STORES[number])
+      || !row.value || ![Object.prototype, null].includes(Object.getPrototypeOf(row.value))) fail('invalid_staging_journal');
+    const body = row.value as ObjectRecord, identity = String(row.store) + '\0' + normalizedKey(row.key);
+    assertNoProjectModelCredentials(body);
+    if (body.generation !== journal.generation || body.operationId !== operationId || rowKeys.has(identity)
+      || typeof row.token !== 'string' || projectModelSourceToken(body) !== row.token
+      || await sha256BytesHex(encoder.encode(row.token)) !== digest(row.sha256)) fail('invalid_staging_journal');
+    assertRecordKey({ keyPath: fixtureStoreKeys[String(row.store)] }, row.key, body); rowKeys.add(identity);
+  }
+  if (await sha256BytesHex(encoder.encode(JSON.stringify(rows.map(({ store, key, sha256 }) => ({ store, key, sha256 }))))) !== journal.manifestDigest) fail('invalid_staging_journal');
+  const names = new Set<string>(); let sourceRecords = 0;
+  const marker = source.stores.find((store) => store.name === 'metadata')?.records.find((record) => record.key === PROJECT_MODEL_BUSINESS_FIXTURE_KEY)?.value as ObjectRecord | undefined;
+  const businessSource = journal.stage === 'ready' && marker?.operationId === operationId && marker.generation === journal.generation
+    && marker.sourceJournalSequence === journal.sequence && marker.sourceDigest === journal.sourceDigest && marker.targetManifestDigest === journal.manifestDigest;
+  // 已进入业务session后，预算/回执/历史可合法前进；保留原P2证据，不拿当前值重算。
+  const historicalSource = journal.stage === 'failed' && journal.failureCode === 'source-changed' || journal.stage === 'rolled_back' || businessSource;
+  for (const entry of journal.sourceStores as ObjectRecord[]) {
+    const name = shortString(entry.name), store = source.stores.find((store) => store.name === name);
+    if (!isProjectModelBackupStore(name) || names.has(name) || !store && !historicalSource) fail('invalid_staging_source'); names.add(name);
+    const schemaValue = journalObject(readProjectModelSourceToken(entry.schemaToken), ['keyPath', 'autoIncrement', 'indexes']);
+    const historicalSchema = parseSchema({ name, ...schemaValue });
+    if (!historicalSource && (!store || entry.schemaToken !== projectModelSourceToken({ keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes: store.indexes }))) fail('staging_source_changed');
+    if ((sourceRecords += store?.records.length ?? 0) > PROJECT_MODEL_BACKUP_LIMITS.maxRecords) fail('record_limit');
+    const originalRecords = (store?.records ?? []).filter((record) => name !== 'metadata' || isProjectModelBackupMetadataKey(record.key));
+    const available = new Map(originalRecords.map((record) => [normalizedKey(record.key), record.value]));
+    const keys = new Set<string>();
+    for (const record of entry.records as ObjectRecord[]) {
+      const identity = normalizedKey(record.key);
+      if (keys.has(identity)) fail('invalid_staging_source'); keys.add(identity);
+      const historical = readProjectModelSourceToken(record.token); assertNoProjectModelCredentials(historical);
+      assertRecordKey(historicalSchema, record.key, historical);
+      if ((!available.has(identity) || projectModelSourceToken(available.get(identity)) !== record.token) && !historicalSource) fail('staging_source_changed');
+    }
+    if (!historicalSource && keys.size !== available.size) fail('staging_source_changed');
+  }
+  if (!names.has('projects') || !names.has('metadata')) fail('invalid_staging_source');
+  if (!historicalSource && source.stores.filter((store) => isProjectModelBackupStore(store.name)).some((store) => !names.has(store.name))) fail('staging_source_changed');
+  return journal;
+}
+async function encodeStagingJournal(value: unknown, key: unknown, source: ProjectModelBackupSource): Promise<ObjectRecord> {
+  const journal = await checkedStagingJournal(value, key, source);
+  // 旧v2已经能编码没有任何token属性的空journal；保留原字节及来源指纹。
+  if ((journal.rows as unknown[]).length === 0 && (journal.sourceStores as ObjectRecord[]).every((store) => (store.records as unknown[]).length === 0)) return journal;
+  return { format: STAGING_JOURNAL_ENCODING, operationId: journal.operationId, journal: mapJournalComparisons(journal, false) };
+}
+async function restoreStagingJournals(stores: ProjectModelBackupStore[]): Promise<void> {
+  for (const record of stores.find((store) => store.name === 'projectModelMigrations')?.records ?? []) {
+    // 已存在的v2可编码空journal（没有任何非空token属性）；仍按精确旧schema核验原值。
+    if (record.value && typeof record.value === 'object' && !own(record.value, 'format')) {
+      record.value = await checkedStagingJournal(record.value, record.key, { stores }); continue;
+    }
+    const encoded = journalObject(record.value, ['format', 'operationId', 'journal']);
+    if (encoded.format !== STAGING_JOURNAL_ENCODING || encoded.operationId !== record.key) fail('invalid_staging_journal_encoding');
+    const journal = mapJournalComparisons(encoded.journal, true);
+    record.value = await checkedStagingJournal(journal, record.key, { stores });
+  }
+}
+
 export async function createProjectModelBackup(source: ProjectModelBackupSource,
   options: { operationId: string; createdAt?: number; signal?: AbortSignal }): Promise<ProjectModelBackupBundle> {
   checkAbort(options.signal);
@@ -504,6 +630,7 @@ export async function createProjectModelBackup(source: ProjectModelBackupSource,
     || !Number.isSafeInteger(source.schemaVersion) || source.schemaVersion < 1 || !fixture && source.schemaVersion > DB_VERSION) fail('invalid_source');
   const schemas = source.stores.map((store) => parseSchema({ name: store.name, keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes: store.indexes }, fixture));
   validateCoverage(source.databaseStoreNames, schemas, fixture);
+  if (fixture) fixtureBusinessJournal(source.stores);
   if (source.localStorage.length !== 1 || source.localStorage[0].key !== 'ai_canvas_pending_tasks'
     || (source.localStorage[0].value !== null && typeof source.localStorage[0].value !== 'string')) fail('incomplete_local_storage');
   assertPendingQueue(source.localStorage[0].value);
@@ -535,7 +662,8 @@ export async function createProjectModelBackup(source: ProjectModelBackupSource,
       if (keys.has(key)) fail('duplicate_record_key'); keys.add(key);
       assertRecordKey(store, record.key, record.value);
       if (store.name === 'metadata' && !(fixture ? isProjectModelFixtureBackupMetadataKey(record.key) : isProjectModelBackupMetadataKey(record.key))) fail('unsupported_metadata');
-      const encoded = await encodeValue({ key: record.key, value: record.value }, context);
+      const value = fixture && store.name === 'projectModelMigrations' ? await encodeStagingJournal(record.value, record.key, source) : record.value;
+      const encoded = await encodeValue({ key: record.key, value }, context);
       const text = JSON.stringify(encoded), count = encoder.encode(text).byteLength;
       if (count + 2 > PROJECT_MODEL_BACKUP_LIMITS.maxFileBytes) fail('record_limit');
       if (pending.length && pendingBytes + count + 1 > PROJECT_MODEL_BACKUP_LIMITS.chunkTargetBytes) await flush();
@@ -578,6 +706,7 @@ async function readMaterial(port: ProjectModelBackupPort, manifest: ProjectModel
     if (records.length !== store.recordCount) fail('record_count_mismatch');
     return { name: store.name, keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes: store.indexes, records };
   });
+  if (manifest.format === PROJECT_MODEL_FIXTURE_BACKUP_FORMAT) { await restoreStagingJournals(stores); fixtureBusinessJournal(stores); }
   if (used.size !== binary.size) fail('unreferenced_binary');
   const local = object(readJson(files.get('local-storage.json')!, PROJECT_MODEL_BACKUP_LIMITS.maxFileBytes), ['key', 'value']);
   if (local.key !== 'ai_canvas_pending_tasks' || (local.value !== null && typeof local.value !== 'string')) fail('invalid_local_storage');

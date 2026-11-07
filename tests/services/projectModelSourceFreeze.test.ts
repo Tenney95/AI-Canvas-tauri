@@ -95,9 +95,9 @@ it.each([
   const journal = { id: 'media-relocations', moves: [move], pending: [move] };
   await put('metadata', journal);
   await put('metadata', marker);
-  await expect(persistMediaRelocation(move)).rejects.toThrow('冻结');
-  await expect(persistAssetRepairBatch([repair], [before])).rejects.toThrow('冻结');
-  await expect(completeMediaRelocation(move)).rejects.toThrow('冻结');
+  await expect(persistMediaRelocation(move)).rejects.toThrow('旧项目写入已停止');
+  await expect(persistAssetRepairBatch([repair], [before])).rejects.toThrow('旧项目写入已停止');
+  await expect(completeMediaRelocation(move)).rejects.toThrow('旧项目写入已停止');
   let wrote = false;
   await expect(new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(['projects', 'metadata'], 'readwrite');

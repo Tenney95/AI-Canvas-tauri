@@ -52,8 +52,8 @@ export async function projectModelArchiveMediaPrefix(operationId: string): Promi
 /** 物理旧根可为恢复保留；只有当前head声明或正文正在使用的根进入新的业务包。 */
 export function projectModelArchiveStorageContext(capture: ProjectModelTransferCapture) {
   const head = capture.exchange?.bundle.revisions.find((item) => refKey(item) === refKey(capture.exchange!.localHead));
-  const declared = head?.canonicalVersion === 2 ? (head.snapshot.entities.find((item) => item.kind === 'project')?.data.storageRoots
-    as unknown as ProjectArchiveBusinessV4['project']['storageRoots']) : undefined;
+  const declared = (head?.canonicalVersion === 2
+    ? head.snapshot.entities.find((item) => item.kind === 'project')?.data.storageRoots : undefined) as unknown as ProjectArchiveBusinessV4['project']['storageRoots'] | undefined;
   const local = (sourceId: string) => capture.exchange?.identities.find((item) => item.kind === 'storage-root' && item.sourceId === sourceId)?.localId;
   const primary = declared ? local((declared.find((item) => item.role === 'shared') ?? declared[0]).id) ?? capture.aggregate.project.storageRootRef
     : capture.aggregate.project.storageRootRef;

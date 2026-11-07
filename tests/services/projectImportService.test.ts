@@ -233,7 +233,7 @@ describe('项目导入历史追加编排', () => {
     mocks.delete.mockRejectedValueOnce(new Error('文件被占用'));
     await expect(closePreparedProjectImport(session)).rejects.toThrow('文件被占用');
     expect(session.disposed).toBe(true);
-    await expect(applyProjectImport(session, null, {}, { appendChat: false, appendMemories: false })).rejects.toThrow('预览已关闭');
+    expect(() => applyProjectImport(session, null, {}, { appendChat: false, appendMemories: false })).toThrow('预览已关闭');
     await closePreparedProjectImport(session);
     await closePreparedProjectImport(session);
     expect(mocks.delete).toHaveBeenCalledTimes(2);

@@ -1,6 +1,6 @@
 # 项目、分集与画布数据模型重构方案
 
-> 日期：2026-11-07。状态：**P0～P5 阶段代码已实施，未运行测试，待用户验收；P6～P7 未实施**。
+> 日期：2026-11-07。状态：**P0～P5 阶段代码已实施，P5 相关隔离回归已执行；原生与完整桌面验收待完成，P6～P7 未实施**。
 > 用户已继续授权 P5，重点项目导入导出、旧数据兼容和失败恢复。正式数据库仍为 v27、正式项目包仍为 v3；v4 与新模型写入只允许隔离 fixture。正式迁移、恢复写入和激活开关保持关闭，未迁移真实数据，未接入正式界面/启动。
 > 两轮方案复审见第 16 节；P0/P1、P2、P3 的当时范围见第 17～19 节；P4 与后续修复见第 20 节；P5 的实际范围与未验收项见第 21 节。代码已写入不代表迁移、恢复、桌面行为或原生停写已验收通过。
 > 主模块：[画布与项目](../画布与项目模块.md)。架构取舍：[ADR-0012](../adr/0012-project-episode-canvas-model.md)。存储、Agent/MCP、插件、导演台仅在本方案维护必要协同边界。
@@ -938,3 +938,35 @@ npm run test:typecheck
 5. 恢复前故意令备份写入、读回、封存或提交前复验失败，正文应完整保留。成功内容恢复后当前审计、收费回执、预算、pending task 与 SQLite 不回退，旧 canvas／正文条件失效，accepted lineage 保留；篡改备份与将 fixture-v2 交给旧恢复器均拒绝。
 
 自动化入口供用户在仓库根目录执行：`npx vitest run tests/services/projectArchiveV4.test.ts tests/services/projectExchangeV2.test.ts tests/services/projectModelTransferRepository.test.ts tests/services/projectModelArchiveService.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/projectArchiveFixtureFiles.test.ts tests/services/projectArchiveRepository.test.ts tests/services/projectTransferService.test.ts tests/services/projectImportService.test.ts tests/services/projectImportResumeService.test.ts tests/services/projectImportRepository.test.ts tests/services/projectImportRecoveryService.test.ts tests/services/projectImportPersistence.test.ts tests/services/projectArchiveRoundTrip.test.ts tests/services/projectModelBackup.test.ts tests/store/projects.test.ts`。恢复前专用备份回归也包含在 transfer 仓储用例中。原生归档／备份与真实窗口／断电语义须在明确授权的桌面演练中另验，前端 mock 不替代该证据。
+
+### 21.5 2026-11-07 用户授权测试结果
+
+用户授权在当前打开的桌面项目和隔离测试环境验收。桌面端可看到原 EP000 画布的文本与图像，从 EP000 切到 EP001 再切回成功，界面出现保存成功提示；项目库可打开，项目文件面板显示 104 个文件，角色库显示 6 个本项目角色并可切换预览。导出入口打开了保存对话框，本次取消，尚未完成实际打包和导入往返；未对真实项目执行删除、覆盖或数据迁移。
+
+正式源码仍使用 DB27 和旧 `projects` 仓储，迁移、激活、恢复写入及 v4 正式运行开关均为 false。现有画布可打开不能证明已完成新模型转换；本次未直接读取该用户数据库的激活标记，也没有执行转换。
+
+在仓库根目录执行的两个隔离 Vitest 批次存在重叠，不能将结果相加：
+
+- 项目模型、迁移与 fixture 仓储 9 文件：7 通过、2 失败；82 项中 68 通过、14 失败。
+- 项目归档、导入恢复与 Store 21 文件：16 通过、5 失败；已收集 429 项中 417 通过、12 失败，另有 2 个失败文件因源码解析错误未能收集用例。
+
+实际执行命令（仓库根目录）：
+
+```powershell
+npx vitest run tests/services/projectModelCompatibility.test.ts tests/services/projectModelSettings.test.ts tests/services/projectModelMigrationRepository.test.ts tests/services/projectModelMigration.test.ts tests/services/projectModelSourceFreeze.test.ts tests/services/projectModelStagingRepository.test.ts tests/services/projectModelStaging.test.ts tests/services/projectModelBusinessRepository.test.ts tests/services/projectModelTransferRepository.test.ts
+npm run test -- tests/services/projectArchiveV4.test.ts tests/services/projectExchangeV2.test.ts tests/services/projectModelTransferRepository.test.ts tests/services/projectModelArchiveService.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/projectArchiveFixtureFiles.test.ts tests/services/projectArchiveRepository.test.ts tests/services/projectImportRepository.test.ts tests/services/projectImportResumeService.test.ts tests/services/projectImportService.test.ts tests/services/projectImportRecoveryService.test.ts tests/services/projectImportPersistence.test.ts tests/services/projectArchiveRoundTrip.test.ts tests/services/projectTransferService.test.ts tests/services/projectArchiveValidation.test.ts tests/services/projectArchiveSerialization.test.ts tests/services/projectExchangeFormat.test.ts tests/services/projectExchangeRoundTrip.test.ts tests/services/projectMergeService.test.ts tests/services/projectChatExport.test.ts tests/store/projects.test.ts
+```
+
+已定位两个需修复的源码阻断：`projectModelArchiveService.ts` 的断言换行在测试转换时产生语法解析错误，使两个 v4 编排测试文件无法运行；P2 迁移 journal 中用于比较的普通 `token` 字段被备份编码器当作凭据拒绝，使 fixture 恢复前安全备份失败。不能为此直接放宽通用凭据过滤。其余失败涉及错误文案断言、同步抛错断言，以及旧 canvas epoch／`revisionScope` 和正文容器测试夹具，需要修正或复核后重跑。本轮未修改上述源码，未执行完整构建、Rust 检查或原生故障注入；不能将局部通过解读为完整验收通过。
+
+### 21.6 阻断修复与相关测试重跑
+
+用户授权修复上述问题并继续测试。已修正 v4 归档模块的 TypeScript 解析错误；fixture 备份 v2 对 P2 journal 两处固定比较字段使用可逆编码，读回保留原 `token` 值及 P2 比较合同。旧 v2 空 journal 继续使用原编码，避免现存备份证明的指纹漂移。v1 及普通业务、metadata 的通用凭据检查未放宽；新增覆盖旧 journal 精确往返、伪造／嵌套凭据拒绝、失败／回滚后的历史证据及业务运行后审计前进。
+
+修正错误文案、同步异常断言和 canvas 版本／规范字段等测试夹具后，以下合并上次两批范围并增加备份测试的命令在仓库根目录执行：
+
+```powershell
+npx vitest run tests/services/projectModelCompatibility.test.ts tests/services/projectModelSettings.test.ts tests/services/projectModelMigrationRepository.test.ts tests/services/projectModelMigration.test.ts tests/services/projectModelSourceFreeze.test.ts tests/services/projectModelStagingRepository.test.ts tests/services/projectModelStaging.test.ts tests/services/projectModelBusinessRepository.test.ts tests/services/projectModelTransferRepository.test.ts tests/services/projectArchiveV4.test.ts tests/services/projectExchangeV2.test.ts tests/services/projectModelArchiveService.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/projectArchiveFixtureFiles.test.ts tests/services/projectArchiveRepository.test.ts tests/services/projectImportRepository.test.ts tests/services/projectImportResumeService.test.ts tests/services/projectImportService.test.ts tests/services/projectImportRecoveryService.test.ts tests/services/projectImportPersistence.test.ts tests/services/projectArchiveRoundTrip.test.ts tests/services/projectTransferService.test.ts tests/services/projectArchiveValidation.test.ts tests/services/projectArchiveSerialization.test.ts tests/services/projectExchangeFormat.test.ts tests/services/projectExchangeRoundTrip.test.ts tests/services/projectMergeService.test.ts tests/services/projectChatExport.test.ts tests/store/projects.test.ts tests/services/projectModelBackup.test.ts
+```
+
+结果：**30 文件、525 项全部通过**。测试使用 fake IndexedDB 和模拟原生端口，不能替代原生耐久性、断电、真实文件或桌面导入导出验收。本轮未运行类型检查、完整构建、Rust 检查或桌面交互；正式 DB27、迁移／激活／恢复写入开关和 v4 正式运行开关不变，未迁移真实用户数据。此前 21.5 的失败数保留为当次记录，不代表本次重跑结果。

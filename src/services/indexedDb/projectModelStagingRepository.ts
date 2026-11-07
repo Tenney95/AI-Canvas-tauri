@@ -1,8 +1,10 @@
 /** P2 隔离样本暂存器。正式库、正常 openDB 和 activeDataModel 均不在此处写入。 */
 import { DB_VERSION } from './schema';
+import { projectModelSourceToken } from '../projectModelComparisonMaterial';
+export { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { PROJECT_MODEL_BUSINESS_FIXTURE_KEY } from '../../types/projectModelBusiness';
 import {
-  estimateLegacyBackupValueBytes, isKnownExcludedProjectModelBackupMetadataKey,
+  isKnownExcludedProjectModelBackupMetadataKey,
   isProjectModelBackupMetadataKey, isProjectModelBackupStore,
 } from './projectModelMigrationRepository';
 import { projectLegacyRecords } from '../projectModelCompatibility';
@@ -39,56 +41,6 @@ const identifier = (value: unknown): value is string => typeof value === 'string
 const hash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const positive = (value: number) => Number.isSafeInteger(value) && value > 0;
 const digest = (value: string) => sha256BytesHex(new TextEncoder().encode(value));
-
-/** 同步、带类型的精确比较材料；Blob 不能在活跃 IDB 事务内读字节，故明确阻断。 */
-export function projectModelSourceToken(value: unknown): string {
-  estimateLegacyBackupValueBytes(value, 128 * 1024 * 1024);
-  const seen = new Map<object, number>();
-  const active = new Set<object>();
-  let count = 0;
-  function encode(item: unknown, depth: number): unknown {
-    if (++count > 4_000_000 || depth > 64) throw error('source-capacity');
-    if (item === undefined) return ['undefined'];
-    if (item === null || typeof item === 'string' || typeof item === 'boolean') return [typeof item, item];
-    if (typeof item === 'number') return ['number', Number.isNaN(item) ? 'NaN' : Object.is(item, -0) ? '-0' : String(item)];
-    if (typeof item === 'bigint') return ['bigint', String(item)];
-    if (typeof item !== 'object' || item === null) throw error('unsupported-source-type');
-    if (active.has(item)) throw error('cyclic-source');
-    if (seen.has(item)) return ['ref', seen.get(item)];
-    const id = seen.size; seen.set(item, id); active.add(item);
-    let result: unknown;
-    if (item instanceof Date) result = ['date', id, String(item.getTime())];
-    else if (item instanceof ArrayBuffer) result = ['buffer', id, Array.from(new Uint8Array(item))];
-    else if (ArrayBuffer.isView(item)) result = ['view', id, Object.getPrototypeOf(item).constructor.name,
-      item.byteOffset, item.byteLength, encode(item.buffer, depth + 1)];
-    else if (item instanceof Map) result = ['map', id, Array.from(item, ([key, entry]) => [encode(key, depth + 1), encode(entry, depth + 1)])];
-    else if (item instanceof Set) result = ['set', id, Array.from(item, (entry) => encode(entry, depth + 1))];
-    else if (Array.isArray(item)) {
-      count += item.length;
-      if (count > 4_000_000) throw error('source-capacity');
-      if (Object.getOwnPropertySymbols(item).length) throw error('unsupported-source-type');
-      const descriptors = Object.getOwnPropertyDescriptors(item);
-      result = ['array', id, item.length, Object.keys(descriptors).filter((key) => key !== 'length').sort().map((key) => {
-        const descriptor = descriptors[key];
-        if (!('value' in descriptor)) throw error('unsupported-source-type');
-        return [key, encode(descriptor.value, depth + 1)];
-      })];
-    } else {
-      if (![Object.prototype, null].includes(Object.getPrototypeOf(item))) throw error('unsupported-source-type');
-      if (Object.getOwnPropertySymbols(item).length) throw error('unsupported-source-type');
-      const descriptors = Object.getOwnPropertyDescriptors(item);
-      result = ['object', id, Object.keys(descriptors).sort().map((key) => {
-        const descriptor = descriptors[key];
-        if (!('value' in descriptor)) throw error('unsupported-source-type');
-        return [key, encode(descriptor.value, depth + 1)];
-      })];
-    }
-    active.delete(item); return result;
-  }
-  const encoded = JSON.stringify(encode(value, 0));
-  if (encoded.length > 256 * 1024 * 1024) throw error('source-capacity');
-  return encoded;
-}
 
 function assertFixture(database: IDBDatabase): void {
   if (!isProjectModelFixtureDatabaseName(database.name) || database.version !== PROJECT_MODEL_STAGING_VERSION) throw error('fixture-only');

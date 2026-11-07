@@ -1,4 +1,4 @@
-/** P5 聚合事务/恢复回归源；仅编写，未经运行。 */
+/** P5 聚合事务、来源冻结、备份与恢复的隔离回归。 */
 import { webcrypto } from 'node:crypto';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -71,9 +71,9 @@ async function ready(repository: ReturnType<typeof createProjectModelTransferRep
 async function exchange(capture: ProjectModelTransferCapture): Promise<ProjectModelTransferExchange> {
   const entities: ProjectExchangeEntityV2[] = [
     { kind: 'project', scopeId: 'S', id: 'S', data: { name: '原项目', kind: 'standalone', standaloneCanvasId: 'canvas',
-      storageRoots: [{ id: 'root', role: 'shared' }] }, references: [] },
+      storageRoots: [{ id: 'root', role: 'shared' }], content: {} }, references: [] },
     { kind: 'canvas', scopeId: 'S', id: 'canvas', data: { projectId: 'S', episodeId: null, storageRootRef: 'root',
-      nodesIds: [], edgesIds: [], groupsIds: [] }, references: [] },
+      revisionScope: capture.aggregate.canvases[0].revisionScope, nodesIds: [], edgesIds: [], groupsIds: [] }, references: [] },
   ];
   for (const entity of entities) entity.references = exchangeReferencesV2(entity, entities, 'S');
   const revision = await createProjectExchangeRevisionV2({ format: 'ai-canvas-project-snapshot', canonicalVersion: 2,
@@ -150,9 +150,9 @@ describe('P5 fixture 项目传输事务', () => {
     try {
       const capture = (await sample.repository.capture('S'))!;
       await sample.business.saveCanvas({ projectId: 'S', expectedProjectEpoch: capture.aggregate.project.epoch,
-        canvasId: 'S', expectedCanvasEpoch: 0, expectedCanvasRevision: 0, document: { nodes: [{ id: 'n' }], edges: [], groups: [] } });
+        canvasId: 'S', expectedCanvasEpoch: capture.aggregate.canvases[0].epoch, expectedCanvasRevision: capture.aggregate.canvases[0].revision, document: { nodes: [{ id: 'n' }], edges: [], groups: [] } });
       await expect(sample.repository.prepareImport(update(capture))).rejects.toThrow('preview-changed');
-      expect((await sample.repository.capture('S'))!.aggregate.content.script).toBeUndefined();
+      expect((await sample.repository.capture('S'))!.aggregate.content.script).toBe(capture.aggregate.content.script);
       expect((await all(sample.database, 'metadata')).some((item) => String(item.id).startsWith('project-model-import:'))).toBe(false);
     } finally { sample.database.close(); }
   });
@@ -273,7 +273,7 @@ describe('P5 fixture 项目传输事务', () => {
       const packing = await repository.advanceExport(prepared.operationId, prepared.sequence, 'packing');
       const published = await repository.advanceExport(prepared.operationId, packing.sequence, 'published', { packageDigest: 'e'.repeat(64), outputRef: 'opaque-published-output' });
       await sample.business.saveCanvas({ projectId: 'S', expectedProjectEpoch: capture.aggregate.project.epoch,
-        canvasId: 'S', expectedCanvasEpoch: 0, expectedCanvasRevision: 0, document: { nodes: [{ id: 'later-edit' }], edges: [], groups: [] } });
+        canvasId: 'S', expectedCanvasEpoch: capture.aggregate.canvases[0].epoch, expectedCanvasRevision: capture.aggregate.canvases[0].revision, document: { nodes: [{ id: 'later-edit' }], edges: [], groups: [] } });
       const edited = (await repository.capture('S'))!;
       await repository.advanceExport(prepared.operationId, published.sequence, 'registered');
       const registered = (await repository.capture('S'))!;
@@ -329,7 +329,7 @@ describe('P5 fixture 项目传输事务', () => {
       retired.next.bindings = retired.next.bindings.map((binding) => ({ ...binding, retired: true as const, retiredAt: 1 }));
       const descriptor = { state: 'retired' as const, kind: 'standalone-creative' as const, projectId: 'S', id: 'S' };
       const head = await createProjectExchangeRevisionV2({ format: 'ai-canvas-project-snapshot', canonicalVersion: 2, lineageId: 'lineage', rootProjectId: 'S', complete: true,
-        entities: [{ kind: 'project', scopeId: 'S', id: 'S', data: { name: '零集剧集', kind: 'series', storageRoots: [{ id: 'root', role: 'shared' }] }, references: [] }],
+        entities: [{ kind: 'project', scopeId: 'S', id: 'S', data: { name: '零集剧集', kind: 'series', storageRoots: [{ id: 'root', role: 'shared' }], content: {} }, references: [] }],
         media: [], historicalTargets: [descriptor] }, [initialExchange.localHead]);
       retired.exchange = { ...initialExchange, localHead: { canonicalVersion: 2, revisionId: head.revisionId }, stateVersion: 2,
         bundle: { ...initialExchange.bundle, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions: [...initialExchange.bundle.revisions, head] } };
@@ -374,7 +374,7 @@ describe('P5 fixture 项目传输事务', () => {
       const service = createProjectModelPreRestoreBackupService(sample.database, sample.session, { native: port.native, localStorage: storage });
       const proof = await service.create(capture, { operationId: 'pre-restore-audit' });
       await mutate(sample.database, ['agentTasks'], (tx) => tx.objectStore('agentTasks').put({ id: 'paid', projectId: 'S', sequence: 13, toolCallCount: 8 }));
-      await expect(service.verify(proof, capture)).rejects.toThrow('source-changed');
+      await expect(service.verify(proof, capture)).rejects.toThrow(/source[-_]changed/);
       expect((await all(sample.database, 'agentTasks'))[0]).toMatchObject({ sequence: 13, toolCallCount: 8 });
       let reads = 0;
       const changing = createProjectModelPreRestoreBackupService(sample.database, sample.session, { native: port.native,

@@ -15,7 +15,7 @@ describe('P5 fixture file boundary', () => {
     expect(mocks.lease).not.toHaveBeenCalled(); expect(mocks.mkdir).not.toHaveBeenCalled();
   });
   it('refuses a different profile and reverifies the cold lease even when a source directory is missing', async () => {
-    await expect(projectArchiveFixtureDirectory('ai-canvas-model-fixture-other', 'assets')).rejects.toThrow('隔离');
+    await expect(projectArchiveFixtureDirectory('ai-canvas-model-fixture-other', 'assets')).rejects.toThrow('不能访问真实项目目录');
     expect(mocks.mkdir).not.toHaveBeenCalled();
     await projectArchiveFixtureDirectory('ai-canvas-model-fixture-p5', 'incoming/assets');
     expect(mocks.verify).toHaveBeenCalledTimes(2);
