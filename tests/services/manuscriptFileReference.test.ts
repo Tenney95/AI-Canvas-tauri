@@ -11,8 +11,7 @@ describe('项目 TXT 稿件引用', () => {
   });
 
   it.each(['C:/private/剧本.txt', '/private/剧本.txt', '\\\\server\\share\\剧本.txt', '../剧本.txt', 'manuscripts/../剧本.txt',
-    'manuscripts//剧本.txt', 'manuscripts/剧本.md', 'manuscripts/坏\0名称.txt', 'manuscripts/CON.txt', 'manuscripts/剧本.txt '])
-  ('拒绝不可移植或非 TXT 的引用：%s', (relativePath) => {
+    'manuscripts//剧本.txt', 'manuscripts/剧本.md', 'manuscripts/坏\0名称.txt', 'manuscripts/CON.txt', 'manuscripts/剧本.txt '])('拒绝不可移植或非 TXT 的引用：%s', (relativePath) => {
     expect(normalizeProjectTextFileReference({ fileName: '剧本.txt', relativePath })).toBeUndefined();
   });
 
