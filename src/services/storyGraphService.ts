@@ -131,6 +131,65 @@ export function layoutStoryGraphNodes(nodes: readonly StoryGraphNode[], saved: R
   }
   return result;
 }
+/** 点阵仅计算当前投影的临时位置，不读取或写回卡片布局。 */
+export function layoutStoryGraphConstellation(nodes: readonly Pick<StoryGraphNode, 'id'>[], edges: readonly Pick<StoryGraphEdge, 'source' | 'target'>[]): Record<string, StoryGraphPosition> {
+  if (nodes.length > STORY_GRAPH_LIMITS.visibleNodes || edges.length > STORY_GRAPH_LIMITS.edges) return fail();
+  const ordered = unique(nodes.map((node) => id(node.id))).sort(compareText);
+  if (!ordered.length) return {};
+  if (ordered.length === 1) return Object.fromEntries([[ordered[0], { x: 0, y: 0 }]]);
+  const indices = new Map(ordered.map((nodeId, index) => [nodeId, index]));
+  const pairs: Array<{ source: number; target: number }> = [];
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    const source = indices.get(edge.source), target = indices.get(edge.target);
+    if (source === undefined || target === undefined || source === target) continue;
+    const left = Math.min(source, target), right = Math.max(source, target), key = `${left}:${right}`;
+    if (!seen.has(key)) { seen.add(key); pairs.push({ source: left, target: right }); }
+  }
+  pairs.sort((left, right) => left.source - right.source || left.target - right.target);
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const points = ordered.map((_, index) => {
+    const radius = 25 * Math.sqrt(index + 1), angle = index * goldenAngle;
+    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+  });
+  // ponytail: 最多 200 点、80 轮 O(n²) 静态布局；更大投影才考虑 worker 或专用布局库。
+  for (let iteration = 0; iteration < 80; iteration += 1) {
+    const forces = points.map((point) => ({ x: -point.x * 0.006, y: -point.y * 0.006 }));
+    for (let left = 0; left < points.length; left += 1) {
+      for (let right = left + 1; right < points.length; right += 1) {
+        let dx = points[left].x - points[right].x, dy = points[left].y - points[right].y;
+        let distance = Math.hypot(dx, dy);
+        if (distance < 1) { dx = Math.cos((left * 31 + right) * goldenAngle); dy = Math.sin((left * 31 + right) * goldenAngle); distance = 1; }
+        const strength = 2500 / (distance * distance);
+        forces[left].x += dx * strength; forces[left].y += dy * strength;
+        forces[right].x -= dx * strength; forces[right].y -= dy * strength;
+      }
+    }
+    for (const { source, target } of pairs) {
+      const dx = points[target].x - points[source].x, dy = points[target].y - points[source].y;
+      const distance = Math.max(1, Math.hypot(dx, dy)), strength = (distance - 80) * 0.06 / distance;
+      forces[source].x += dx * strength; forces[source].y += dy * strength;
+      forces[target].x -= dx * strength; forces[target].y -= dy * strength;
+    }
+    const step = 6 * (1 - iteration / 80) + 0.5;
+    points.forEach((point, index) => {
+      const force = forces[index], scale = Math.min(1, step / Math.max(1, Math.hypot(force.x, force.y)));
+      point.x += force.x * scale; point.y += force.y * scale;
+    });
+  }
+  // 每次仅向右越过一个冲突点；已越过的点不会再次冲突，最多 n 次即可分开。
+  const separated: StoryGraphPosition[] = [];
+  for (const point of points) {
+    for (let attempt = 0; attempt < points.length; attempt += 1) {
+      const collision = separated.find((other) => Math.hypot(point.x - other.x, point.y - other.y) < 24);
+      if (!collision) break;
+      point.x = collision.x + 25;
+    }
+    separated.push(point);
+  }
+  const center = points.reduce((sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }), { x: 0, y: 0 });
+  return Object.fromEntries(ordered.map((nodeId, index) => [nodeId, { x: points[index].x - center.x, y: points[index].y - center.y }]));
+}
 export function projectStoryGraphView(graph: StoryGraph, filter: StoryGraphFilter = {}): StoryGraphView {
   const current = normalizeStoryGraph(graph);
   const query = object(filter, ['episodeIds', 'search', 'nodeKinds', 'edgeKinds', 'focusNodeId', 'neighbors', 'limitNodes', 'limitEdges']);

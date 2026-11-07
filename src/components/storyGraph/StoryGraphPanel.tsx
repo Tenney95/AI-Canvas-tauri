@@ -1,15 +1,17 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { ReactFlow, ReactFlowProvider, Background, BackgroundVariant, type Connection, type NodeChange, type ReactFlowInstance } from '@xyflow/react';
+// 独立工作台不加载主画布；图谱需自行声明 React Flow 的基础布局样式。
+import '@xyflow/react/dist/style.css';
 import { useReducedMotion } from 'framer-motion';
 import { useT } from '../../i18n';
 import { useDialogFocus } from '../../hooks/useDialogFocus';
 import type { CanvasProject, ModelGroup } from '../../types';
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphCandidates, StoryGraphDetail, StoryGraphEdge,
   StoryGraphEdgeKind, StoryGraphEvidence, StoryGraphEvidenceQuery, StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter,
-  StoryGraphNode as StoryRecord, StoryGraphNodeKind, StoryGraphPatch, StoryGraphPosition, StoryGraphSelection, StoryGraphView } from '../../types/storyGraph';
+  StoryGraphNode as StoryRecord, StoryGraphNodeKind, StoryGraphPatch, StoryGraphPosition, StoryGraphPresentation, StoryGraphSelection, StoryGraphView } from '../../types/storyGraph';
 import { STORY_GRAPH_NODE_KINDS, STORY_GRAPH_EDGE_KINDS } from '../../types/storyGraph';
-import { STORY_GRAPH_NODE_LABELS, STORY_GRAPH_EDGE_LABELS } from '../../services/storyGraphService';
+import { layoutStoryGraphConstellation, STORY_GRAPH_NODE_LABELS, STORY_GRAPH_EDGE_LABELS, STORY_GRAPH_CERTAINTY_LABELS } from '../../services/storyGraphService';
 import Select from '../shared/Select';
 import Tabs from '../shared/Tabs';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -48,6 +50,8 @@ const NODE_TYPES = { 'story-record': StoryGraphNode };
 const EDGE_TYPES = { 'story-relation': StoryGraphRelationEdge };
 const EMPTY_FILTER: StoryGraphFilter = {};
 const EMPTY_MODELS: [] = [];
+const CARD_ORIGIN: [number, number] = [0, 0];
+const DOT_ORIGIN: [number, number] = [0.5, 0.5];
 
 function CandidateReview({ candidate, nodes, disabled, onAdopt, onDiscard, onClose, onLocate }: {
   candidate: StoryGraphCandidates;
@@ -70,6 +74,7 @@ function CandidateReview({ candidate, nodes, disabled, onAdopt, onDiscard, onClo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const candidates = tab === 'nodes' ? candidate.nodes : candidate.edges;
+  const unverifiedCount = [...candidate.nodes, ...candidate.edges].filter((item) => item.certainty === 'unknown' && item.evidence.length === 0).length;
   const lastPage = Math.max(0, Math.ceil(candidates.length / 20) - 1);
   const visible = candidates.slice(Math.min(page, lastPage) * 20, (Math.min(page, lastPage) + 1) * 20);
   const names = new Map([...nodes, ...candidate.nodes].map((node) => [node.id, node.label]));
@@ -97,6 +102,7 @@ function CandidateReview({ candidate, nodes, disabled, onAdopt, onDiscard, onClo
       <p className="ui-hint">{t('候选不会自动覆盖正式记录。同名人物须显式选择合并目标。')}</p>
       <p className="ui-hint">{t('采纳表示用户选择，不等于原文已经证明该推断。')}</p>
       <p className="ui-hint">{t('仅处理勾选项；采纳成功后，本批未选候选将被丢弃。')}</p>
+      {unverifiedCount > 0 && <p role="status" className="ui-alert ui-alert--warning text-xs">{t('有 {count} 项候选缺少可定位的原文证据，已标为待核实；请核对后再采纳。', { count: unverifiedCount })}</p>}
       {candidate.hasMore && <p role="status" className="ui-alert ui-alert--info text-xs">{t('本批只分析部分材料；处理完候选后，可手动继续下一批。')}</p>}
       <Tabs size="sm" value={tab} onChange={(value) => { setTab(value); setPage(0); }} aria-label={t('候选记录类型')}
         items={[{ value: 'nodes', label: t('记录'), count: candidate.nodes.length }, { value: 'edges', label: t('关系'), count: candidate.edges.length }]} />
@@ -112,8 +118,10 @@ function CandidateReview({ candidate, nodes, disabled, onAdopt, onDiscard, onClo
           <div className="flex min-w-0 items-start justify-between gap-2">
             <span className="relative min-w-0 flex-1"><input id={`${id}-${item.id}`} className="ui-checkbox" type="checkbox" checked={checked} disabled={disabled || busy} onChange={(event) => toggle(item, event.target.checked)} />
               <label htmlFor={`${id}-${item.id}`}><span className="break-words text-xs">{item.label}</span></label></span>
+            <span className={`ui-badge shrink-0 ${item.certainty === 'unknown' ? 'ui-badge--warning' : item.certainty === 'explicit' ? 'ui-badge--info' : ''}`}>{t(STORY_GRAPH_CERTAINTY_LABELS[item.certainty])}</span>
             <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost shrink-0" onClick={() => setExpandedId((current) => current === item.id ? null : item.id)}>{t('详情')}</button>
           </div>
+          {item.certainty === 'unknown' && item.evidence.length === 0 && <p className="ui-hint">{t('尚无原文证据')}</p>}
           {isEdge ? <p className="ui-hint break-words">{names.get(item.source) ?? item.source} {item.directed ? '→' : '—'} {names.get(item.target) ?? item.target}</p>
             : <div className="ui-field"><label className="ui-label" htmlFor={`${id}-mapping-${item.id}`}>{t('与已有记录合并')}</label>
               <Select id={`${id}-mapping-${item.id}`} size="sm" value={mappings[item.id] ?? ''} disabled={disabled || busy}
@@ -159,6 +167,9 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
   const dragPositionsRef = useRef<{ graphId: string; positions: Record<string, StoryGraphPosition> }>({ graphId: view.id, positions: {} });
   const operationInFlight = useRef(false);
   const [mode, setMode] = useState<'graph' | 'timeline' | 'list'>('graph');
+  const [presentation, setPresentation] = useState<StoryGraphPresentation>('cards');
+  const [dragging, setDragging] = useState(false);
+  const [dotPositions, setDotPositions] = useState<{ graphId: string; revision: number; positions: Record<string, StoryGraphPosition> }>({ graphId: view.id, revision: view.revision, positions: {} });
   const [search, setSearch] = useState(filter.search ?? '');
   const [showLabels, setShowLabels] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -182,6 +193,17 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
   const writeLocked = disabled || busy || running || readingDetail || closingEditor;
   const selection = selected?.graphId === view.id ? selected.selection : null;
   const currentEditor = editor?.graphId === view.id ? editor : null;
+  useEffect(() => {
+    if (mode !== 'graph') return;
+    let secondFrame: number | undefined;
+    // 等节点尺寸与 Handle bounds 更新后适配，不重挂载详情或图谱实例。
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        void flowRef.current?.fitView({ padding: 0.2, duration: reducedMotion ? 0 : 150 });
+      });
+    });
+    return () => { cancelAnimationFrame(firstFrame); if (secondFrame !== undefined) cancelAnimationFrame(secondFrame); };
+  }, [presentation, mode, view.id, reducedMotion]);
   const notifyDirty = () => {
     const dirty = detailDirtyRef.current || (dragPositionsRef.current.graphId === view.id && Object.keys(dragPositionsRef.current.positions).length > 0);
     if (notifiedDirtyRef.current !== dirty) { notifiedDirtyRef.current = dirty; onDirtyChange?.(dirty); }
@@ -216,7 +238,13 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
     } catch (reason) { if (sequence === readSequence.current) setError(reason instanceof Error ? reason.message : t('故事关系图操作失败')); }
     finally { if (sequence === readSequence.current) setReadingDetail(false); }
   };
-  const select = (next: StoryGraphSelection) => navigate(() => selectRecord(next));
+  const clearSelection = () => {
+    if (selection || currentEditor) navigate(() => {}, true);
+  };
+  const select = (next: StoryGraphSelection) => {
+    if (selection?.kind === next.kind && selection.id === next.id) clearSelection();
+    else navigate(() => selectRecord(next));
+  };
   const beginNode = () => navigate(async () => {
     const sequence = ++readSequence.current;
     const item: StoryRecord = { id: crypto.randomUUID(), kind: 'event', label: '', description: '', aliases: [], episodeIds: currentEpisodeId ? [currentEpisodeId] : [], evidence: [], origin: 'manual', certainty: 'unknown' };
@@ -244,12 +272,18 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
     if (selection?.kind !== 'node') return null;
     return new Set([selection.id, ...view.edges.flatMap((edge) => edge.source === selection.id ? [edge.target] : edge.target === selection.id ? [edge.source] : [])]);
   }, [selection, view.edges]);
+  const dotLayout = useMemo<Record<string, StoryGraphPosition>>(() => presentation === 'dots'
+    ? layoutStoryGraphConstellation(view.nodes, view.edges) : {}, [presentation, view.nodes, view.edges]);
   const flowNodes = useMemo<StoryGraphFlowNode[]>(() => view.nodes.map((node, index) => ({
-    id: node.id, type: 'story-record', position: (dragPositions.graphId === view.id ? dragPositions.positions[node.id] : undefined)
-      ?? view.positions[node.id] ?? { x: Math.cos(index * Math.PI * 2 / Math.max(view.nodes.length, 1)) * 240, y: Math.sin(index * Math.PI * 2 / Math.max(view.nodes.length, 1)) * 240 },
+    id: node.id, type: 'story-record', origin: presentation === 'dots' ? DOT_ORIGIN : CARD_ORIGIN,
+    position: presentation === 'dots'
+      ? (dotPositions.graphId === view.id && dotPositions.revision === view.revision ? dotPositions.positions[node.id] : undefined)
+        ?? dotLayout[node.id] ?? { x: 0, y: 0 }
+      : (dragPositions.graphId === view.id ? dragPositions.positions[node.id] : undefined)
+        ?? view.positions[node.id] ?? { x: Math.cos(index * Math.PI * 2 / Math.max(view.nodes.length, 1)) * 240, y: Math.sin(index * Math.PI * 2 / Math.max(view.nodes.length, 1)) * 240 },
     selected: selection?.kind === 'node' && selection.id === node.id,
-    data: { label: node.label, kind: node.kind, certainty: node.certainty, evidenceCount: node.evidenceCount, dimmed: !!connected && !connected.has(node.id) },
-  })), [view, dragPositions, selection, connected]);
+    data: { label: node.label, kind: node.kind, certainty: node.certainty, evidenceCount: node.evidenceCount, presentation, dimmed: !!connected && !connected.has(node.id) },
+  })), [view, dragPositions, dotPositions, dotLayout, presentation, selection, connected]);
   const flowEdges = useMemo<StoryGraphFlowEdge[]>(() => {
     const pairs = new Map<string, string[]>();
     for (const edge of view.edges) { const key = [edge.source, edge.target].sort().join('|'); pairs.set(key, [...(pairs.get(key) ?? []), edge.id]); }
@@ -259,13 +293,21 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
       const index = pair.indexOf(edge.id);
       return { id: edge.id, type: 'story-relation', source: edge.source, target: edge.target,
         selected: selection?.kind === 'edge' && selection.id === edge.id,
-        data: { label: edge.label || t(STORY_GRAPH_EDGE_LABELS[edge.kind]), kind: edge.kind, directed: edge.directed, showLabel: showLabels,
+        data: { label: edge.label || t(STORY_GRAPH_EDGE_LABELS[edge.kind]), kind: edge.kind, directed: edge.directed, showLabel: showLabels, presentation,
           dimmed: !!connected && !(connected.has(edge.source) && connected.has(edge.target)), parallelIndex: edge.source <= edge.target ? index : pair.length - 1 - index, parallelCount: pair.length } };
     });
-  }, [view.edges, selection, showLabels, connected, t]);
+  }, [view.edges, selection, showLabels, presentation, connected, t]);
   const nodeChanges = (changes: NodeChange<StoryGraphFlowNode>[]) => {
     const positions = changes.flatMap((change) => change.type === 'position' && change.position ? [[change.id, change.position] as const] : []);
     if (positions.length) {
+      if (presentation === 'dots') {
+        const visibleIds = new Set(view.nodes.map((node) => node.id));
+        setDotPositions((previous) => ({ graphId: view.id, revision: view.revision, positions: Object.fromEntries(
+          [...Object.entries(previous.graphId === view.id && previous.revision === view.revision ? previous.positions : {}), ...positions]
+            .filter(([id]) => visibleIds.has(id)),
+        ) }));
+        return;
+      }
       const current = dragPositionsRef.current;
       const next = { graphId: view.id, positions: { ...(current.graphId === view.id ? current.positions : {}), ...Object.fromEntries(positions) } };
       dragPositionsRef.current = next; setDragPositions(next); notifyDirty();
@@ -280,7 +322,7 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
     setClosingEditor(true);
     try {
       await onEditorStateChange(false);
-      if (sequence === readSequence.current) { readSequence.current += 1; setEditor(null); markDetailDirty(false); }
+      if (sequence === readSequence.current) { readSequence.current += 1; setEditor(null); setSelected(null); markDetailDirty(false); }
     } finally {
       setClosingEditor(false);
       if (ownsOperation) { operationInFlight.current = false; setBusy(false); }
@@ -297,7 +339,7 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
   const locateEvidence = async (evidence: StoryGraphEvidence) => {
     navigate(() => onLocateEvidence(evidence), true);
   };
-  const content = <section ref={panelRef} className={`story-graph${fullscreen ? ' is-fullscreen' : ''}`} aria-label={t('故事关系图')}
+  const content = <section ref={panelRef} className={`story-graph${presentation === 'dots' ? ' story-graph--dots' : ''}${fullscreen ? ' is-fullscreen' : ''}`} aria-label={t('故事关系图')}
     role={fullscreen ? 'dialog' : undefined} aria-modal={fullscreen ? true : undefined} tabIndex={-1}>
     <div className="story-graph-toolbar">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -318,7 +360,7 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
         <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={busy} onClick={() => { setSearch(''); void run(() => onFilterChange(currentEpisodeId ? { episodeIds: [currentEpisodeId] } : {})); }}>{t('重置筛选')}</button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Tabs size="sm" value={mode} onChange={setMode} aria-label={t('图谱展示方式')} items={[{ value: 'graph', label: t('关系图') }, { value: 'timeline', label: t('时间线') }, { value: 'list', label: t('列表') }]} />
+        <Tabs size="sm" value={mode} onChange={setMode} aria-label={t('图谱展示方式')} items={[{ value: 'graph', label: t('关系图'), disabled: dragging }, { value: 'timeline', label: t('时间线'), disabled: dragging }, { value: 'list', label: t('列表'), disabled: dragging }]} />
         <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={writeLocked} onClick={beginNode}><Icon icon="lucide:plus" width="13" />{t('新增记录')}</button>
         <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={writeLocked || !view.nodes.length} onClick={() => beginEdge()}>{t('新增关系')}</button>
         <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary" disabled={writeLocked || !!currentEditor || !!extraction?.candidate}
@@ -329,7 +371,10 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
     <div className="flex flex-wrap items-center gap-2 border-b border-canvas-border px-3 py-2 text-[11px] text-canvas-text-muted">
       <span>{t('{visible} / {total} 条记录', { visible: view.counts.visibleNodes, total: view.counts.totalNodes })}</span>
       <span>{t('{visible} / {total} 条关系', { visible: view.counts.visibleEdges, total: view.counts.totalEdges })}</span>
-      {mode === 'graph' && <><button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => { void flowRef.current?.fitView({ padding: 0.2, duration: reducedMotion ? 0 : 150 }); }}>{t('适配视图')}</button>
+      {mode === 'graph' && <><div className="ui-segmented shrink-0" role="group" aria-label={t('图谱显示形态')}>
+        <button type="button" className={`ui-segmented__item${presentation === 'cards' ? ' is-active' : ''}`} aria-pressed={presentation === 'cards'} disabled={dragging} onClick={() => setPresentation('cards')}>{t('卡片')}</button>
+        <button type="button" className={`ui-segmented__item${presentation === 'dots' ? ' is-active' : ''}`} aria-pressed={presentation === 'dots'} disabled={dragging} onClick={() => setPresentation('dots')}>{t('点阵')}</button>
+      </div><button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => { void flowRef.current?.fitView({ padding: 0.2, duration: reducedMotion ? 0 : 150 }); }}>{t('适配视图')}</button>
         <button type="button" className={`ui-btn ui-btn--sm ui-btn--ghost${showLabels ? ' is-active' : ''}`} aria-pressed={showLabels} onClick={() => setShowLabels((value) => !value)}>{t('关系标签')}</button></>}
       <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={busy || selection?.kind !== 'node'} onClick={() => { if (selection?.kind === 'node') updateFilter({ focusNodeId: selection.id, neighbors: true }); }}>{t('展开一层关联')}</button>
       {filter.focusNodeId && <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={busy} onClick={() => updateFilter({ focusNodeId: undefined, neighbors: undefined })}>{t('显示筛选范围')}</button>}
@@ -348,13 +393,18 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
     <div className="story-graph-body">
       <div className="story-graph-stage">
         {mode === 'graph' ? <ReactFlow<StoryGraphFlowNode, StoryGraphFlowEdge> nodes={flowNodes} edges={flowEdges} nodeTypes={NODE_TYPES} edgeTypes={EDGE_TYPES}
-          onInit={(instance) => { flowRef.current = instance; }} onNodesChange={nodeChanges}
+          onInit={(instance) => { flowRef.current = instance; }} onNodesChange={nodeChanges} onPaneClick={clearSelection}
           onNodeClick={(_, node) => void select({ kind: 'node', id: node.id })} onEdgeClick={(_, edge) => void select({ kind: 'edge', id: edge.id })}
-          onConnect={(connection) => { if (!writeLocked) beginEdge(connection); }} onNodeDragStop={(_, node) => { if (!writeLocked) void run(async () => {
-            await onPatch({ graphId: view.id, positions: { [node.id]: node.position } }, view.revision);
-            const next = { graphId: view.id, positions: { ...(dragPositionsRef.current.graphId === view.id ? dragPositionsRef.current.positions : {}) } };
-            delete next.positions[node.id]; dragPositionsRef.current = next; setDragPositions(next); notifyDirty();
-          }); }} nodesDraggable={!writeLocked && !currentEditor} nodesConnectable={!writeLocked && !currentEditor} edgesReconnectable={false} elementsSelectable
+          onNodeDragStart={() => setDragging(true)}
+          onConnect={(connection) => { if (!writeLocked) beginEdge(connection); }} onNodeDragStop={(_, node) => {
+            setDragging(false);
+            if (presentation === 'dots') return;
+            if (!writeLocked) void run(async () => {
+              await onPatch({ graphId: view.id, positions: { [node.id]: node.position } }, view.revision);
+              const next = { graphId: view.id, positions: { ...(dragPositionsRef.current.graphId === view.id ? dragPositionsRef.current.positions : {}) } };
+              delete next.positions[node.id]; dragPositionsRef.current = next; setDragPositions(next); notifyDirty();
+            });
+          }} nodesDraggable={!writeLocked && !currentEditor} nodesConnectable={!writeLocked && !currentEditor} edgesReconnectable={false} elementsSelectable
           deleteKeyCode={null} panOnDrag zoomOnScroll minZoom={0.1} maxZoom={2.5} fitView fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}>
           <Background variant={BackgroundVariant.Dots} gap={22} size={1} className="story-graph-background" />
@@ -371,7 +421,7 @@ function StoryGraphPanelContent({ view, filter = EMPTY_FILTER, episodes, current
         <div className="story-graph-legend" aria-label={t('记录类型图例')}>{STORY_GRAPH_NODE_KINDS.map((kind) => <span key={kind}><i className={`story-graph-legend-dot story-graph-kind-${kind}`} />{t(STORY_GRAPH_NODE_LABELS[kind])}</span>)}</div>
       </div>
       {currentEditor && <StoryGraphDetails key={currentEditor.key} detail={currentEditor.detail} revision={currentEditor.revision} currentRevision={view.revision} isNew={currentEditor.isNew}
-        nodes={view.nodes} episodes={episodes} assets={assets} disabled={writeLocked} onClose={() => navigate(() => {}, true)} onDirtyChange={markDetailDirty} onResolveEvidence={onResolveEvidence} onLocateEvidence={locateEvidence}
+        nodes={view.nodes} episodes={episodes} assets={assets} disabled={writeLocked} onClose={clearSelection} onDirtyChange={markDetailDirty} onResolveEvidence={onResolveEvidence} onLocateEvidence={locateEvidence}
         onSave={(item) => commitEditor(currentEditor.key, () => onPatch({ graphId: view.id, ...('source' in item ? { upsertEdges: [item] } : { upsertNodes: [item] }) }, currentEditor.revision))}
         onDelete={(next) => commitEditor(currentEditor.key, () => onPatch({ graphId: view.id, ...(next.kind === 'node' ? { removeNodeIds: [next.id] } : { removeEdgeIds: [next.id] }) }, currentEditor.revision))} />}
     </div>

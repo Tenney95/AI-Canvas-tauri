@@ -8,6 +8,7 @@ import { buildStoryGraphCandidatePatch, extractStoryGraphCandidates, splitStoryG
 vi.mock('../../src/services/ai/generateText', () => ({ generateText: vi.fn() }));
 const generate = vi.mocked(generateText);
 function node(id: string, label = id): StoryGraphNode { return { id, kind: 'character', label, description: '', aliases: [], episodeIds: ['episode-a'], evidence: [], origin: 'ai', certainty: 'inferred' }; }
+function modelNode(id: string, label = id) { return { id, kind: 'character', label, description: '', aliases: [], evidence: [], certainty: 'inferred' }; }
 async function request(text = '甲隐瞒了真相。'): Promise<StoryGraphExtractionRequest> {
   return { seriesId: 'series-a', sessionId: 'session-a', graphId: 'graph-a', graphRevision: 0, model: { model: 'general/text-model', provider: 'general', fingerprint: 'f'.repeat(64) }, sources: [{ episodeId: 'episode-a', part: 'script', sourceHash: await hashStoryGraphSource(text), text }] };
 }
@@ -29,7 +30,7 @@ describe('story graph extraction boundaries', () => {
     expect(params.prompt).not.toContain('@');
     expect(params.prompt).toContain('\\u0040');
     const material = JSON.parse(params.prompt.split('材料JSON：\n')[1]) as { text: string };
-    expect(material.text).toBe(input.sources[0].text);
+    expect(material).toEqual({ text: input.sources[0].text });
     expect(params.nodeId).toBeUndefined();
     expect(params.imageUrls).toBeUndefined();
     expect(result.callsUsed).toBe(1);
@@ -67,13 +68,51 @@ describe('story graph extraction boundaries', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it('asks for saved source material before making a model call', async () => {
+    const input = await request();
+    input.sources = [];
+    await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow('请先保存所选分集的大纲或正文');
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it.each(['source count', 'source characters'])('rejects excessive %s before making a model call', async (limit) => {
+    const input = await request();
+    if (limit === 'source count') {
+      input.sources = Array.from({ length: 65 }, (_, index) => ({ ...input.sources[0], episodeId: `episode-${index}` }));
+    } else {
+      input.sources[0].text = '甲'.repeat(2000001);
+    }
+    await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow('所选图谱材料超过提取上限');
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it('does not retry paid calls or malformed responses', async () => {
     const input = await request();
     generate.mockRejectedValue(new Error('temporary network error'));
     await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow('temporary network error');
     expect(generate).toHaveBeenCalledTimes(1);
-    generate.mockReset().mockResolvedValue('```json\n{"nodes":[],"edges":[]}\n```');
-    await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow('候选格式');
+    generate.mockReset().mockResolvedValue('{"nodes":[],"edges":');
+    await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow('完整的故事图谱 JSON');
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['', 'json', 'JSON'])('accepts one complete %s JSON fence without another model call', async (language) => {
+    generate.mockResolvedValue(`  \n\`\`\`${language}\n${empty()}\n\`\`\`\n  `);
+    const result = await extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() });
+    expect(result.nodes).toEqual([]);
+    expect(result.edges).toEqual([]);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { shape: 'leading explanation', raw: `提取结果如下：\n${empty()}` },
+    { shape: 'trailing explanation', raw: `${empty()}\n以上为提取结果。` },
+    { shape: 'multiple JSON objects', raw: `${empty()}\n${empty()}` },
+    { shape: 'explanation around a fence', raw: `提取结果：\n\`\`\`json\n${empty()}\n\`\`\`` },
+    { shape: 'multiple fences', raw: `\`\`\`json\n${empty()}\n\`\`\`\n\`\`\`json\n${empty()}\n\`\`\`` },
+  ])('rejects $shape instead of selecting an arbitrary JSON fragment', async ({ raw }) => {
+    generate.mockResolvedValue(raw);
+    await expect(extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() })).rejects.toThrow('完整的故事图谱 JSON');
     expect(generate).toHaveBeenCalledTimes(1);
   });
 
@@ -89,11 +128,13 @@ describe('story graph extraction boundaries', () => {
     expect(generate).toHaveBeenCalledTimes(1);
   });
 
-  it('validates exact evidence and rejects invented assets and unsupported response fields', async () => {
+  it('marks unverifiable evidence unknown while rejecting invented assets and unsupported response fields', async () => {
     const input = await request();
     const evidence = { episodeId: 'episode-a', part: 'script', sourceHash: input.sources[0].sourceHash, start: 0, end: 1, quote: '乙' };
     generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...node('a'), evidence: [evidence], certainty: 'explicit' }], edges: [] }));
-    await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow();
+    const result = await extractStoryGraphCandidates(input, { assertCurrent: vi.fn() });
+    expect(result.nodes[0].certainty).toBe('unknown');
+    expect(result.nodes[0].evidence).toEqual([]);
     generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...node('a'), asset: { kind: 'character', id: 'invented' } }], edges: [] }));
     await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow();
     generate.mockResolvedValue(JSON.stringify({ nodes: [], edges: [], commands: ['untrusted'] }));
@@ -114,9 +155,173 @@ describe('story graph extraction boundaries', () => {
     expect(result.edges[0].target).toBe(result.nodes[1].id);
   });
 
+  it('binds quote-only nodes and relationships to the captured source rather than model metadata', async () => {
+    const input = await request('甲对乙说：“真相只有一个。”');
+    input.sources[0].episodeId = 'episode-b';
+    input.sources[0].part = 'outline';
+    const quote = '甲对乙说：“真相只有一个。”';
+    generate.mockResolvedValue(JSON.stringify({
+      nodes: [{ ...modelNode('a', '甲'), certainty: 'explicit', evidence: [{ quote: '甲' }] }, modelNode('b', '乙')],
+      edges: [{ id: 'e1', source: 'a', target: 'b', kind: 'related', directed: false, label: '对话', description: '', certainty: 'explicit', evidence: [{ quote }] }],
+    }));
+    const result = await extractStoryGraphCandidates(input, { assertCurrent: vi.fn() });
+    for (const entry of [...result.nodes, ...result.edges]) {
+      expect(entry.origin).toBe('ai');
+      expect(entry.episodeIds).toEqual(['episode-b']);
+    }
+    expect(result.nodes[0].evidence).toEqual([{ episodeId: 'episode-b', part: 'outline', sourceHash: input.sources[0].sourceHash, start: 0, end: 1, quote: '甲' }]);
+    expect(result.edges[0].evidence).toEqual([{ episodeId: 'episode-b', part: 'outline', sourceHash: input.sources[0].sourceHash, start: 0, end: quote.length, quote }]);
+    expect(result.edges[0].source).toBe(result.nodes[0].id);
+    expect(result.edges[0].target).toBe(result.nodes[1].id);
+    expect(result.sourceBindings).toEqual([{ episodeId: 'episode-b', part: 'outline', sourceHash: input.sources[0].sourceHash }]);
+  });
+
+  it('derives absolute UTF-16 offsets in a later chunk without changing emoji or CRLF', async () => {
+    const quote = '前😀后\r\n尾声';
+    const input = await request(`${'序'.repeat(12000)}开场\r\n${quote}`);
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...modelNode('a'), certainty: 'explicit', evidence: [{ quote }] }], edges: [] }));
+    const result = await extractStoryGraphCandidates({ ...input, startChunk: 1 }, { assertCurrent: vi.fn() });
+    const evidence = result.nodes[0].evidence[0];
+    expect(evidence).toEqual({ episodeId: 'episode-a', part: 'script', sourceHash: input.sources[0].sourceHash, start: 12004, end: 12004 + quote.length, quote });
+    expect(input.sources[0].text.slice(evidence.start, evidence.end)).toBe(quote);
+    expect(result.totalChunks).toBe(2);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks overlapping repeated quotes unknown rather than binding to the first occurrence', async () => {
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...modelNode('a'), certainty: 'explicit', evidence: [{ quote: 'aa' }] }], edges: [] }));
+    const result = await extractStoryGraphCandidates(await request('aaa'), { assertCurrent: vi.fn() });
+    expect(result.nodes[0].certainty).toBe('unknown');
+    expect(result.nodes[0].evidence).toEqual([]);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { failure: 'missing', source: '甲隐瞒了真相。', quote: '原文不存在的摘录' },
+    { failure: 'empty', source: '甲隐瞒了真相。', quote: '' },
+    { failure: 'blank', source: '甲隐瞒了真相。', quote: '  ' },
+    { failure: 'too long', source: '甲'.repeat(241), quote: '甲'.repeat(241) },
+    { failure: 'normalized line endings', source: '甲\r\n乙', quote: '甲\n乙' },
+  ])('keeps a $failure quote as an unknown candidate without inventing evidence', async ({ source, quote }) => {
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...modelNode('a'), certainty: 'explicit', evidence: [{ quote }] }], edges: [] }));
+    const result = await extractStoryGraphCandidates(await request(source), { assertCurrent: vi.fn() });
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0].certainty).toBe('unknown');
+    expect(result.nodes[0].evidence).toEqual([]);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears all evidence on one record while preserving verified records and relationship identities through adoption', async () => {
+    const input = await request('甲收到了旧信。乙看见了钥匙。');
+    const firstQuote = '甲收到了旧信。', secondQuote = '乙看见了钥匙。';
+    generate.mockResolvedValue(JSON.stringify({
+      nodes: [
+        { ...modelNode('a', '甲'), description: '保留的候选说明', certainty: 'explicit', evidence: [{ quote: firstQuote }, { quote: '甲毁掉了旧信。' }] },
+        { ...modelNode('b', '乙'), certainty: 'explicit', evidence: [{ quote: secondQuote }] },
+      ],
+      edges: [{ ...batch().edges[0], source: 'a', target: 'b', certainty: 'explicit', evidence: [{ quote: firstQuote }] }],
+    }));
+    const candidates = await extractStoryGraphCandidates(input, { assertCurrent: vi.fn() });
+    expect(candidates.nodes).toHaveLength(2);
+    expect(candidates.nodes[0]).toMatchObject({ label: '甲', description: '保留的候选说明', certainty: 'unknown', evidence: [] });
+    expect(candidates.nodes[1].certainty).toBe('explicit');
+    expect(candidates.nodes[1].evidence).toEqual([{ episodeId: 'episode-a', part: 'script', sourceHash: input.sources[0].sourceHash,
+      start: firstQuote.length, end: input.sources[0].text.length, quote: secondQuote }]);
+    expect(candidates.edges).toHaveLength(1);
+    expect(candidates.edges[0]).toMatchObject({ source: candidates.nodes[0].id, target: candidates.nodes[1].id, certainty: 'explicit' });
+    expect(candidates.edges[0].evidence).toEqual([{ episodeId: 'episode-a', part: 'script', sourceHash: input.sources[0].sourceHash,
+      start: 0, end: firstQuote.length, quote: firstQuote }]);
+    const graph = createEmptyStoryGraph('graph-a');
+    const patch = buildStoryGraphCandidatePatch(graph, candidates, { nodeIds: candidates.nodes.map((entry) => entry.id), edgeIds: candidates.edges.map((entry) => entry.id) });
+    const adopted = applyStoryGraphPatch(graph, patch, 0);
+    expect(adopted.nodes).toEqual(candidates.nodes);
+    expect(adopted.nodes[0].certainty).toBe('unknown');
+    expect(adopted.nodes[0].evidence).toEqual([]);
+    expect(adopted.edges).toEqual(candidates.edges);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not hide an invalid certainty when evidence would otherwise be downgraded', async () => {
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...modelNode('a'), certainty: 'proven', evidence: [{ quote: '原文不存在的摘录' }] }], edges: [] }));
+    await expect(extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() })).rejects.toThrow('结构或字段无效');
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks explicit nodes and relationships without evidence unknown while leaving inferred records unchanged', async () => {
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...modelNode('a'), certainty: 'explicit' }, modelNode('b')],
+      edges: [{ ...batch().edges[0], source: 'a', target: 'b', certainty: 'explicit', evidence: [] }] }));
+    const result = await extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() });
+    expect(result.nodes[0]).toMatchObject({ certainty: 'unknown', evidence: [] });
+    expect(result.nodes[1]).toMatchObject({ certainty: 'inferred', evidence: [] });
+    expect(result.edges[0]).toMatchObject({ certainty: 'unknown', evidence: [] });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a verified legacy offset when the same quote appears more than once', async () => {
+    const input = await request('甲乙甲乙');
+    const evidence = { episodeId: 'episode-a', part: 'script', sourceHash: input.sources[0].sourceHash, start: 2, end: 4, quote: '甲乙' };
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...node('a'), certainty: 'explicit', evidence: [evidence] }], edges: [] }));
+    const result = await extractStoryGraphCandidates(input, { assertCurrent: vi.fn() });
+    expect(result.nodes[0].evidence).toEqual([evidence]);
+  });
+
+  it.each([
+    { mismatch: 'hash', overrides: { sourceHash: '0'.repeat(64) } },
+    { mismatch: 'episode', overrides: { episodeId: 'episode-b' } },
+    { mismatch: 'part', overrides: { part: 'outline' } },
+  ])('does not repair an explicit legacy $mismatch mismatch using a valid quote', async ({ overrides }) => {
+    const quote = '甲隐瞒了真相。';
+    const input = await request(`序章：${quote}`);
+    const evidence = { episodeId: 'episode-a', part: 'script', sourceHash: input.sources[0].sourceHash, start: 3, end: 3 + quote.length, quote, ...overrides };
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...node('a'), certainty: 'explicit', evidence: [evidence] }], edges: [] }));
+    await expect(extractStoryGraphCandidates(input, { assertCurrent: vi.fn() })).rejects.toThrow('模型证据来源与所选稿件不一致');
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('still rejects another source identity when the quote is also unverifiable', async () => {
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...modelNode('a'), certainty: 'explicit', evidence: [{ quote: '', episodeId: 'episode-b' }] }], edges: [] }));
+    await expect(extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() })).rejects.toThrow('模型证据来源与所选稿件不一致');
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks an inaccurate legacy offset unknown without replacing it with another quote location', async () => {
+    const quote = '甲隐瞒了真相。';
+    const input = await request(`序章：${quote}`);
+    const evidence = { episodeId: 'episode-a', part: 'script', sourceHash: input.sources[0].sourceHash, start: 0, end: quote.length, quote };
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...node('a'), certainty: 'explicit', evidence: [evidence] }], edges: [] }));
+    const result = await extractStoryGraphCandidates(input, { assertCurrent: vi.fn() });
+    expect(result.nodes[0]).toMatchObject({ certainty: 'unknown', evidence: [] });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([{ start: 0 }, { end: 8 }])('marks a partially supplied legacy offset %j unknown without falling back to quote matching', async (offset) => {
+    const quote = '甲隐瞒了真相。';
+    generate.mockResolvedValue(JSON.stringify({ nodes: [{ ...modelNode('a'), certainty: 'explicit', evidence: [{ quote, ...offset }] }], edges: [] }));
+    const result = await extractStoryGraphCandidates(await request(quote), { assertCurrent: vi.fn() });
+    expect(result.nodes[0]).toMatchObject({ certainty: 'unknown', evidence: [] });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('still rejects a relationship whose endpoint is absent from this candidate chunk', async () => {
+    generate.mockResolvedValue(JSON.stringify({ nodes: [modelNode('a')], edges: [{ ...batch().edges[0], source: 'a', target: 'missing' }] }));
+    await expect(extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() })).rejects.toThrow('结构或字段无效');
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('measures response capacity as actual UTF-8 instead of a JSON-escaped string literal', async () => {
+    const raw = `${'\n'.repeat(64 * 1024)}${empty()}`;
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThan(128 * 1024);
+    expect(new TextEncoder().encode(JSON.stringify(raw)).byteLength).toBeGreaterThan(128 * 1024);
+    generate.mockResolvedValue(raw);
+    const result = await extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() });
+    expect(result.nodes).toEqual([]);
+    expect(result.edges).toEqual([]);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects oversized candidate responses instead of returning a silently cut batch', async () => {
-    generate.mockResolvedValue('x'.repeat(128 * 1024));
-    await expect(extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() })).rejects.toThrow();
+    generate.mockResolvedValue(`${empty()}${' '.repeat(128 * 1024)}`);
+    await expect(extractStoryGraphCandidates(await request(), { assertCurrent: vi.fn() })).rejects.toThrow('超过容量上限');
     expect(generate).toHaveBeenCalledTimes(1);
   });
 

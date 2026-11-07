@@ -1372,7 +1372,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
       onClose={requestClose}
       ariaLabel={t('剧本创作工作台')}
       closeOnBackdrop={false}
-      className="ui-dialog-surface h-[min(88vh,860px)] w-[min(1180px,calc(100vw-24px))]
+      className="ui-dialog-surface h-[min(88vh,860px)] w-[min(1440px,calc(100vw-24px))]
                  border-[var(--glass-ring)] text-canvas-text"
     >
       <div
@@ -1587,10 +1587,10 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
             </div>
           </aside>
 
-          <section className="flex min-h-0 flex-col border-border-subtle xl:border-r">
+          <section className="flex min-h-0 min-w-0 flex-col border-border-subtle xl:border-r">
             {currentEpisode ? (
               <>
-                <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-1 border-b border-border-subtle px-3 py-1">
+                <div className="flex min-h-11 min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto border-b border-border-subtle px-3 py-1">
                   {([
                     ['outline', '本集大纲', 'lucide:list-tree'],
                     ['original', '原文', 'lucide:book-open'],
@@ -1604,7 +1604,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                       key={id}
                       type="button"
                       onClick={() => setActiveTab(id)}
-                      className={`flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs transition-colors ${
+                      className={`flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-xs transition-colors ${
                         activeTab === id
                           ? 'bg-indigo-500/15 text-indigo-300'
                           : 'text-canvas-text-muted hover:bg-canvas-hover hover:text-canvas-text-secondary'
@@ -1665,7 +1665,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                       onChange={(event) => setTextDraft('outline', event.target.value)}
                       spellCheck={false}
                       placeholder={t('写下本集任务、核心冲突、主要情节点和结尾卡点…')}
-                      className="h-full min-h-80 w-full resize-none bg-transparent p-4 text-[13px] leading-7
+                      className="block h-full min-h-80 w-full resize-none bg-transparent p-4 text-[13px] leading-7
                                  text-canvas-text outline-none placeholder:text-canvas-text-muted"
                     />
                   ) : null}
@@ -1677,7 +1677,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                       onChange={(event) => setTextDraft('script', event.target.value)}
                       spellCheck={false}
                       placeholder={t('按场号、场景、人物、动作和对白写本集完整正文…')}
-                      className="h-full min-h-80 w-full resize-none bg-transparent p-4 font-mono text-[13px]
+                      className="block h-full min-h-80 w-full resize-none bg-transparent p-4 font-mono text-[13px]
                                  leading-7 text-canvas-text outline-none placeholder:text-canvas-text-muted"
                     />
                   ) : null}

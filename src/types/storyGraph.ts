@@ -80,6 +80,8 @@ export interface StoryGraphDetail { item: StoryGraphNode | StoryGraphEdge; evide
 export interface StoryGraphEvidenceQuery { episodeId: string; part: StoryGraphPart; quote: string }
 export type StoryGraphViewNode = StoryGraphNode & { evidenceCount: number };
 export type StoryGraphViewEdge = StoryGraphEdge & { evidenceCount: number };
+/** 仅供工作台展示，不写入正式图谱或交换快照。 */
+export type StoryGraphPresentation = 'cards' | 'dots';
 export interface StoryGraphView {
   schemaVersion: 1;
   id: string;

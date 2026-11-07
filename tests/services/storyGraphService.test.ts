@@ -1,7 +1,7 @@
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoryGraphEdge, StoryGraphNode } from '../../src/types/storyGraph';
-import { applyStoryGraphPatch, createEmptyStoryGraph, hashStoryGraphSource, normalizeStoryGraph, projectStoryGraphView, STORY_GRAPH_LIMITS, storyGraphCanonicalSnapshot, storyGraphJsonBytes, validateStoryGraphEvidence } from '../../src/services/storyGraphService';
+import { applyStoryGraphPatch, createEmptyStoryGraph, hashStoryGraphSource, layoutStoryGraphConstellation, normalizeStoryGraph, projectStoryGraphView, STORY_GRAPH_LIMITS, storyGraphCanonicalSnapshot, storyGraphJsonBytes, validateStoryGraphEvidence } from '../../src/services/storyGraphService';
 
 function node(id: string, label = id): StoryGraphNode { return { id, kind: 'character', label, description: '', aliases: [], episodeIds: ['episode-a'], evidence: [], origin: 'manual', certainty: 'unknown' }; }
 function edge(id: string, source: string, target: string): StoryGraphEdge { return { id, source, target, kind: 'character_relationship', directed: true, label: '信任', description: '', episodeIds: ['episode-a'], evidence: [], origin: 'manual', certainty: 'inferred' }; }
@@ -96,5 +96,51 @@ describe('story graph domain boundaries', () => {
     expect(validateStoryGraphEvidence(proof, { ...source, sourceHash: 'b'.repeat(64) })).toBe(false);
     expect(validateStoryGraphEvidence(proof, { ...source, text: '前甲乙后' })).toBe(false);
     expect(validateStoryGraphEvidence(proof, { ...source, part: 'outline' })).toBe(false);
+  });
+});
+
+describe('story graph constellation layout', () => {
+  it('is deterministic across node and relationship ordering without changing input or saved positions', () => {
+    const graph = { ...createEmptyStoryGraph('graph-a'), nodes: [node('c'), node('a'), node('b')], edges: [edge('ab', 'a', 'b'), edge('bc', 'b', 'c')], positions: { a: { x: 71, y: 83 } } };
+    const original = structuredClone(graph), canonical = storyGraphCanonicalSnapshot(graph);
+    const first = layoutStoryGraphConstellation(graph.nodes, graph.edges);
+    expect(layoutStoryGraphConstellation(graph.nodes, graph.edges)).toEqual(first);
+    expect(layoutStoryGraphConstellation([...graph.nodes].reverse(), [...graph.edges].reverse())).toEqual(first);
+    expect(graph).toEqual(original);
+    expect(storyGraphCanonicalSnapshot(graph)).toEqual(canonical);
+    expect(projectStoryGraphView(graph).positions.a).toEqual({ x: 71, y: 83 });
+  });
+
+  it('handles empty, singleton and disconnected nodes with finite separated positions', () => {
+    expect(layoutStoryGraphConstellation([], [])).toEqual({});
+    expect(layoutStoryGraphConstellation([{ id: 'only' }], [])).toEqual({ only: { x: 0, y: 0 } });
+    const positions = Object.values(layoutStoryGraphConstellation(Array.from({ length: 20 }, (_, index) => ({ id: `n${index}` })), []));
+    expect(positions).toHaveLength(20);
+    positions.forEach((point, index) => {
+      expect(Number.isFinite(point.x) && Number.isFinite(point.y)).toBe(true);
+      positions.slice(index + 1).forEach((other) => expect(Math.hypot(point.x - other.x, point.y - other.y)).toBeGreaterThanOrEqual(23.99));
+    });
+  });
+
+  it('uses topology while ignoring self loops, unknown endpoints and parallel or reversed spring duplicates', () => {
+    const nodes = [{ id: 'a' }, { id: 'b' }];
+    const relationship = { source: 'a', target: 'b' };
+    const linked = layoutStoryGraphConstellation(nodes, [relationship]);
+    expect(layoutStoryGraphConstellation(nodes, [relationship, relationship, { source: 'b', target: 'a' }, { source: 'a', target: 'a' }, { source: 'a', target: 'missing' }])).toEqual(linked);
+    expect(layoutStoryGraphConstellation(nodes, [{ source: 'a', target: 'a' }])).toEqual(layoutStoryGraphConstellation(nodes, []));
+    const disconnected = layoutStoryGraphConstellation(nodes, []);
+    const distance = (positions: typeof linked) => Math.hypot(positions.a.x - positions.b.x, positions.a.y - positions.b.y);
+    expect(distance(linked)).toBeLessThan(distance(disconnected));
+  });
+
+  it('lays out the full visible limit and rejects unbounded or ambiguous input', () => {
+    const nodes = Array.from({ length: STORY_GRAPH_LIMITS.visibleNodes }, (_, index) => ({ id: `n${index}` }));
+    const positions = Object.values(layoutStoryGraphConstellation(nodes, nodes.slice(1).map((entry) => ({ source: 'n0', target: entry.id }))));
+    expect(positions).toHaveLength(STORY_GRAPH_LIMITS.visibleNodes);
+    expect(positions.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(true);
+    expect(() => layoutStoryGraphConstellation([...nodes, { id: 'overflow' }], [])).toThrow();
+    expect(() => layoutStoryGraphConstellation([{ id: 'same' }, { id: 'same' }], [])).toThrow();
+    expect(() => layoutStoryGraphConstellation([{ id: '__proto__' }], [])).toThrow();
+    expect(() => layoutStoryGraphConstellation([], Array.from({ length: STORY_GRAPH_LIMITS.edges + 1 }, () => ({ source: 'a', target: 'b' })))).toThrow();
   });
 });

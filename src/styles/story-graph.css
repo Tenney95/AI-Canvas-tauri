@@ -53,6 +53,16 @@
 .story-graph-node.is-dimmed { opacity: 0.32; }
 .story-graph-node .react-flow__handle { width: 8px; height: 8px; border: 2px solid var(--theme-card); background: var(--story-color); opacity: 0.5; }
 .story-graph-node:hover .react-flow__handle, .story-graph-node.is-selected .react-flow__handle { opacity: 1; }
+.story-graph-node--dots { justify-content: center; width: calc(var(--ui-control-h-sm) + 2px); height: calc(var(--ui-control-h-sm) + 2px); min-height: 0; gap: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; box-shadow: none; }
+.story-graph-node--dots.is-selected, .story-graph .react-flow__node:focus-visible .story-graph-node--dots { box-shadow: none; }
+.story-graph-node__dot { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--story-color); box-shadow: 0 0 0 2px var(--theme-bg); }
+.story-graph-node--dots:hover .story-graph-node__dot { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 4px color-mix(in srgb, var(--story-color) 20%, transparent); }
+.story-graph-node--dots.is-selected .story-graph-node__dot, .story-graph .react-flow__node:focus-visible .story-graph-node--dots .story-graph-node__dot { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 4px var(--brand); }
+.story-graph-node__dot-label { position: absolute; top: 100%; left: 50%; max-width: 120px; overflow: hidden; color: var(--theme-text-secondary); font-size: var(--ui-font-sm); line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; transform: translateX(-50%); }
+.story-graph-node--dots.is-selected .story-graph-node__dot-label, .story-graph-node--dots:hover .story-graph-node__dot-label { color: var(--theme-text); }
+/* 两个连接点留在圆点中央区域，避免与主画布的 Handle 边缘定位覆盖冲突。 */
+.story-graph-node__ports { position: absolute; top: 50%; left: 50%; width: 8px; height: 0; transform: translate(-50%, -50%); }
+.story-graph-node--dots .react-flow__handle { width: 6px; height: 12px; min-width: 0; min-height: 0; border: 0; border-radius: 0; background: transparent; opacity: 1; }
 .story-graph-edge { --story-color: var(--theme-text-muted); }
 .story-graph-relation-character_relationship, .story-graph-relation-member_of { --story-color: var(--node-text-light); }
 .story-graph-relation-causes, .story-graph-relation-precedes { --story-color: var(--node-video-light); }
@@ -65,6 +75,9 @@
 .story-graph-edge.is-dimmed, .story-graph-edge__label.is-dimmed { opacity: 0.18; }
 .story-graph-edge__label { position: absolute; top: 0; left: 0; max-width: 130px; overflow: hidden; padding: 2px 5px; border: 1px solid var(--theme-border); border-radius: var(--ui-radius-sm); background: var(--theme-surface); color: var(--theme-text-secondary); font-size: var(--ui-font-sm); line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
 .story-graph-edge__label.is-selected { border-color: var(--brand); color: var(--brand-light); }
+.story-graph-edge--dots .story-graph-edge__path { stroke-width: 1; opacity: 0.36; }
+.story-graph-edge--dots.is-selected .story-graph-edge__path { stroke-width: 1.75; opacity: 1; }
+.story-graph-edge__label--dots { max-width: 100px; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .story-graph-timeline, .story-graph-list { height: 100%; overflow-y: auto; padding: 12px 12px 56px; }
 .story-graph-timeline__item, .story-graph-list__item { display: flex; flex-direction: row; width: 100%; min-width: 0; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--theme-border); border-radius: var(--ui-radius); background: var(--theme-card); color: var(--theme-text); text-align: left; font-size: var(--ui-font-sm); cursor: var(--cursor-pointer, pointer); }
 .story-graph-timeline__item:hover, .story-graph-list__item:hover { background: var(--theme-hover); }
