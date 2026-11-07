@@ -1,0 +1,8 @@
+Visual reference: Windows 11 Cursors Concept HD v2.2 by Jepri Creations.
+Author: https://www.deviantart.com/jepricreations
+
+The SVG cursors are geometric redraws, not embedded or traced pixel grids.
+They retain the app's existing theme mapping, natural size and cursor hotspots.
+The source pack's Agreement.txt permits personal use and personal modification,
+prohibits redistribution of its files, and requires author attribution.
+Changing file format does not establish permission to redistribute the design.

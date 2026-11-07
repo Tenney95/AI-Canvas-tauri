@@ -1,38 +1,68 @@
 /* ============================================
-   Custom cursors - "regular" set, 32/64px, hotspots taken from the .cur headers.
-   The pack ships white cursors under light/ and black under dark/; each is mapped
-   to the UI theme that needs the contrast, so the folder names below are the app
-   theme, not the pack's.
-   Animated states (wait/progress) are .ani and unusable in CSS - left native, as
-   are grab/grabbing/copy/cell, which the pack has no glyph for.
+   Vector redraws of the "regular" set; see assets/cursors/NOTICE.txt for source.
+   Each SVG has a 32px natural size and is rasterized at the display's pixel
+   density by the browser. Hotspots retain the original 32px .cur coordinates.
+   Folder names identify the app theme, keeping its existing contrast mapping.
+   Animated states (wait/progress) and grab/grabbing/copy/cell remain native.
    ============================================ */
 
 :root {
-  --cursor-default: image-set(url('../assets/cursors/dark/default.png') 1x, url('../assets/cursors/dark/default@2x.png') 2x) 3 9, default;
-  --cursor-pointer: image-set(url('../assets/cursors/dark/pointer.png') 1x, url('../assets/cursors/dark/pointer@2x.png') 2x) 13 7, pointer;
-  --cursor-text: image-set(url('../assets/cursors/dark/text.png') 1x, url('../assets/cursors/dark/text@2x.png') 2x) 15 15, text;
-  --cursor-not-allowed: image-set(url('../assets/cursors/dark/not-allowed.png') 1x, url('../assets/cursors/dark/not-allowed@2x.png') 2x) 15 15, not-allowed;
-  --cursor-move: image-set(url('../assets/cursors/dark/move.png') 1x, url('../assets/cursors/dark/move@2x.png') 2x) 15 15, move;
-  --cursor-crosshair: image-set(url('../assets/cursors/dark/crosshair.png') 1x, url('../assets/cursors/dark/crosshair@2x.png') 2x) 15 15, crosshair;
-  --cursor-ew-resize: image-set(url('../assets/cursors/dark/ew-resize.png') 1x, url('../assets/cursors/dark/ew-resize@2x.png') 2x) 15 15, ew-resize;
-  --cursor-ns-resize: image-set(url('../assets/cursors/dark/ns-resize.png') 1x, url('../assets/cursors/dark/ns-resize@2x.png') 2x) 15 15, ns-resize;
-  --cursor-nwse-resize: image-set(url('../assets/cursors/dark/nwse-resize.png') 1x, url('../assets/cursors/dark/nwse-resize@2x.png') 2x) 15 15, nwse-resize;
-  --cursor-nesw-resize: image-set(url('../assets/cursors/dark/nesw-resize.png') 1x, url('../assets/cursors/dark/nesw-resize@2x.png') 2x) 15 15, nesw-resize;
-  --cursor-help: image-set(url('../assets/cursors/dark/help.png') 1x, url('../assets/cursors/dark/help@2x.png') 2x) 3 9, help;
+  --cursor-default: url('../assets/cursors/dark/default.svg') 3 9, default;
+  --cursor-pointer: url('../assets/cursors/dark/pointer.svg') 13 7, pointer;
+  --cursor-text: url('../assets/cursors/dark/text.svg') 15 15, text;
+  --cursor-not-allowed: url('../assets/cursors/dark/not-allowed.svg') 15 15, not-allowed;
+  --cursor-move: url('../assets/cursors/dark/move.svg') 15 15, move;
+  --cursor-crosshair: url('../assets/cursors/dark/crosshair.svg') 15 15, crosshair;
+  --cursor-ew-resize: url('../assets/cursors/dark/ew-resize.svg') 15 15, ew-resize;
+  --cursor-ns-resize: url('../assets/cursors/dark/ns-resize.svg') 15 15, ns-resize;
+  --cursor-nwse-resize: url('../assets/cursors/dark/nwse-resize.svg') 15 15, nwse-resize;
+  --cursor-nesw-resize: url('../assets/cursors/dark/nesw-resize.svg') 15 15, nesw-resize;
+  --cursor-help: url('../assets/cursors/dark/help.svg') 3 9, help;
 }
 
 [data-theme='light'] {
-  --cursor-default: image-set(url('../assets/cursors/light/default.png') 1x, url('../assets/cursors/light/default@2x.png') 2x) 3 9, default;
-  --cursor-pointer: image-set(url('../assets/cursors/light/pointer.png') 1x, url('../assets/cursors/light/pointer@2x.png') 2x) 13 7, pointer;
-  --cursor-text: image-set(url('../assets/cursors/light/text.png') 1x, url('../assets/cursors/light/text@2x.png') 2x) 15 15, text;
-  --cursor-not-allowed: image-set(url('../assets/cursors/light/not-allowed.png') 1x, url('../assets/cursors/light/not-allowed@2x.png') 2x) 15 15, not-allowed;
-  --cursor-move: image-set(url('../assets/cursors/light/move.png') 1x, url('../assets/cursors/light/move@2x.png') 2x) 15 15, move;
-  --cursor-crosshair: image-set(url('../assets/cursors/light/crosshair.png') 1x, url('../assets/cursors/light/crosshair@2x.png') 2x) 15 15, crosshair;
-  --cursor-ew-resize: image-set(url('../assets/cursors/light/ew-resize.png') 1x, url('../assets/cursors/light/ew-resize@2x.png') 2x) 15 15, ew-resize;
-  --cursor-ns-resize: image-set(url('../assets/cursors/light/ns-resize.png') 1x, url('../assets/cursors/light/ns-resize@2x.png') 2x) 15 15, ns-resize;
-  --cursor-nwse-resize: image-set(url('../assets/cursors/light/nwse-resize.png') 1x, url('../assets/cursors/light/nwse-resize@2x.png') 2x) 15 15, nwse-resize;
-  --cursor-nesw-resize: image-set(url('../assets/cursors/light/nesw-resize.png') 1x, url('../assets/cursors/light/nesw-resize@2x.png') 2x) 15 15, nesw-resize;
-  --cursor-help: image-set(url('../assets/cursors/light/help.png') 1x, url('../assets/cursors/light/help@2x.png') 2x) 3 9, help;
+  --cursor-default: url('../assets/cursors/light/default.svg') 3 9, default;
+  --cursor-pointer: url('../assets/cursors/light/pointer.svg') 13 7, pointer;
+  --cursor-text: url('../assets/cursors/light/text.svg') 15 15, text;
+  --cursor-not-allowed: url('../assets/cursors/light/not-allowed.svg') 15 15, not-allowed;
+  --cursor-move: url('../assets/cursors/light/move.svg') 15 15, move;
+  --cursor-crosshair: url('../assets/cursors/light/crosshair.svg') 15 15, crosshair;
+  --cursor-ew-resize: url('../assets/cursors/light/ew-resize.svg') 15 15, ew-resize;
+  --cursor-ns-resize: url('../assets/cursors/light/ns-resize.svg') 15 15, ns-resize;
+  --cursor-nwse-resize: url('../assets/cursors/light/nwse-resize.svg') 15 15, nwse-resize;
+  --cursor-nesw-resize: url('../assets/cursors/light/nesw-resize.svg') 15 15, nesw-resize;
+  --cursor-help: url('../assets/cursors/light/help.svg') 3 9, help;
+}
+
+/* 原生光标不支持 transform 补间；按压仅切换预生成的缩小 SVG，热点保持不动。 */
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  :root[data-cursor-pressed]:not([data-native-cursor]) {
+    --cursor-default: var(--cursor-pressed-dark-default, default);
+    --cursor-pointer: var(--cursor-pressed-dark-pointer, pointer);
+    --cursor-text: var(--cursor-pressed-dark-text, text);
+    --cursor-not-allowed: var(--cursor-pressed-dark-not-allowed, not-allowed);
+    --cursor-move: var(--cursor-pressed-dark-move, move);
+    --cursor-crosshair: var(--cursor-pressed-dark-crosshair, crosshair);
+    --cursor-ew-resize: var(--cursor-pressed-dark-ew-resize, ew-resize);
+    --cursor-ns-resize: var(--cursor-pressed-dark-ns-resize, ns-resize);
+    --cursor-nwse-resize: var(--cursor-pressed-dark-nwse-resize, nwse-resize);
+    --cursor-nesw-resize: var(--cursor-pressed-dark-nesw-resize, nesw-resize);
+    --cursor-help: var(--cursor-pressed-dark-help, help);
+  }
+
+  :root[data-theme='light'][data-cursor-pressed]:not([data-native-cursor]) {
+    --cursor-default: var(--cursor-pressed-light-default, default);
+    --cursor-pointer: var(--cursor-pressed-light-pointer, pointer);
+    --cursor-text: var(--cursor-pressed-light-text, text);
+    --cursor-not-allowed: var(--cursor-pressed-light-not-allowed, not-allowed);
+    --cursor-move: var(--cursor-pressed-light-move, move);
+    --cursor-crosshair: var(--cursor-pressed-light-crosshair, crosshair);
+    --cursor-ew-resize: var(--cursor-pressed-light-ew-resize, ew-resize);
+    --cursor-ns-resize: var(--cursor-pressed-light-ns-resize, ns-resize);
+    --cursor-nwse-resize: var(--cursor-pressed-light-nwse-resize, nwse-resize);
+    --cursor-nesw-resize: var(--cursor-pressed-light-nesw-resize, nesw-resize);
+    --cursor-help: var(--cursor-pressed-light-help, help);
+  }
 }
 
 html,

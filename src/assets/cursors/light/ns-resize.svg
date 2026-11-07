@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <defs><path id="arrows" d="M11.75 8.5l4.75-5 4.75 5M16.5 3.5v7M11.75 23.5l4.75 5 4.75-5M16.5 21.5v7"/></defs>
+  <g transform="translate(-1.5 -1)">
+  <use href="#arrows" stroke="#f9f9f9" stroke-width="4.5"/>
+  <use href="#arrows" stroke="#000" stroke-width="1.75"/>
+  </g>
+</svg>

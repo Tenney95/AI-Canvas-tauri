@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <defs>
+    <path id="ticks" d="M16 4v3.5M16 24.5V28M4 16h3.5M24.5 16H28"/>
+    <circle id="ring" cx="16" cy="16" r="8.5"/>
+  </defs>
+  <g transform="translate(-1 -1)">
+  <use href="#ticks" stroke="#f9f9f9" stroke-width="3.5"/>
+  <use href="#ticks" stroke="#000" stroke-width="1.5"/>
+  <use href="#ring" stroke="#f9f9f9" stroke-width="4"/>
+  <use href="#ring" stroke="#000" stroke-width="1.5"/>
+  <circle cx="16" cy="16" r="1.5" fill="#000" stroke="#f9f9f9" stroke-width="1.3"/>
+  </g>
+</svg>
