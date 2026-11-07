@@ -14,7 +14,7 @@
 
 AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, Markdown, shot lists, 360° panoramas and hand-drawn notes into connectable canvas nodes. In a single project you can orchestrate generation pipelines, manage characters, scenes, props and local media assets, run ComfyUI workflows, and use the conversational assistant to query or modify the canvas, generate media, dispatch read-only sub-agents, read authorized files, and accumulate project memory. Projects can also be split into series and episodes — each episode of an AI short drama gets its own canvas, while the character library and assets are shared across the whole series.
 
-![Version](https://img.shields.io/badge/version-0.10.28-6366f1)
+![Version](https://img.shields.io/badge/version-0.10.29-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
@@ -68,9 +68,10 @@ AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, 
 | Preset workflows & sharing | Reference the original input or the previous step, run advanced steps sequentially or by dependency, and copy, export or import JSON as independent presets. |
 | Video parameter retention | Keep the chosen aspect ratio and compatible resolution, frame rate, duration and audio settings when switching video models. Review them against the selected model before generating. |
 | User plugins | Install plugins from local files, the marketplace or GitHub Releases to extend tools, nodes and interfaces. JavaScript runs with restricted capabilities; trusted Python plugins run with your user permissions. |
-| Scripts & shot production | Browse source material, write episode scripts, generate and revise shots, and prepare voice and video assets for the editing timeline. |
+| Scripts & source writing | Write outlines, episode scripts and source material in the main or separate workbench, with tools that follow the active tab. The plain text source editor supports AI openings, continuation and polishing; review candidates and save explicitly. Source material and episode scripts are saved as TXT files in the project's `manuscripts` folder. |
+| Story relationships | Organize characters, events, foreshadowing and relationships in graph, timeline or list views, with source evidence. Preview AI extraction results before adding them to the graph. |
 | Built-in video editing | Arrange multiple tracks and edit clips, transitions, captions, stickers and volume in a separate editor. Supports video export and MCP control. |
-| Conversational Agent | Query and edit the canvas, generate media and manage tasks through conversation. Supports multiple conversations, Plan/B/C modes, project memory, separate windows and read-only sub-agents. |
+| Conversational Agent & collaboration | The assistant and script workbench can select authorized agents and Skills for the task, with multi-model teams and reviewable results. Configure execution, members, models and task permissions through the workbench's Agent collaboration button, within the existing Plan/B/C, project memory and read-only sub-agent boundaries. |
 | AI app nodes | Create interactive apps through the Agent or MCP. Apps access only bound canvas assets, run read-only actions and save results. |
 | Project asset cloud sync | Connect a shared project through S3-compatible storage, preview and manually sync project media, characters, scenes, props and related data. Cloud-only clearing and deletion keep local assets; global assets and automatic sync are not included. |
 | RelayOnAPI groups | Manage separate connections and API keys by group, and choose supported text, image and video models. |

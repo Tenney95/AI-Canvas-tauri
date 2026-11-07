@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.10.28 操作说明书：万象 MJ 四候选、MiniMax 官方视频与语音、GPT Image 2.6、CCC 香蕉参考图、MCP 操作回执与原结果交付。">
-<title>AI Canvas 0.10.28 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.10.29 操作说明书：剧本工作台、Agent 协作、故事关系图、原文普通文本写作与项目 TXT 稿件保存。">
+<title>AI Canvas 0.10.29 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -34,7 +34,7 @@ dialog .character-actions-shot{width:1912px}
 <body>
 <a class="skip" href="#main">跳到正文</a>
 <nav class="toc" aria-label="说明书目录">
-<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.28 · 操作说明书<br>从素材整理到逐镜制作</small>
+<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.10.29 · 操作说明书<br>从素材整理到逐镜制作</small>
 <a class="back" href="index.html">← 返回软件首页</a>
 <label for="search">查找章节或操作</label><input id="search" type="search" placeholder="如：文件夹、回收站、视频批次" autocomplete="off" aria-describedby="search-status" aria-controls="search-results toc-links">
 <p id="search-status" class="search-status" role="status">支持空格分隔关键词；Ctrl + F 查找全文。</p>
@@ -47,6 +47,8 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
+<div class="group">0.10.29 更新入口</div>
+<a href="#workbench-collaboration-0-10-29">↳ 工作台与 Agent 协作</a><a href="#story-graph-0-10-29">↳ 故事关系图与原文证据</a><a href="#manuscripts-0-10-29">↳ 原文写作与 TXT 稿件</a><a href="#performance-0-10-29">↳ 画布、聊天与预览</a>
 <div class="group">0.10.28 更新入口</div>
 <a href="#relayon-candidates-0-10-28">↳ 万象 MJ 四候选与续存</a><a href="#minimax-official-0-10-28">↳ MiniMax 官方与素材直传</a><a href="#image-models-0-10-28">↳ GPT Image 2.6 与 CCC 香蕉</a><a href="#mcp-receipts-0-10-28">↳ MCP 精确改稿与操作回执</a><a href="#media-delivery-0-10-28">↳ 云资产、文件与视频播放</a>
 <div class="group">0.10.27 更新入口</div>
@@ -82,10 +84,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.10.28 说明书</span><span class="badge">2026-11-06 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.10.29 说明书</span><span class="badge">2026-11-07 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
-<aside class="tip"><b>0.10.28 · 多厂商创作与原结果交付：</b>新增<a href="#relayon-candidates-0-10-28">万象 MJ 四候选</a>、<a href="#minimax-official-0-10-28">MiniMax 官方 H3 与语音</a>及<a href="#image-models-0-10-28">多厂商 GPT Image 2.6／CCC 香蕉参考图</a>；原结果续存、<a href="#mcp-receipts-0-10-28">MCP 精确操作与回执</a>以及<a href="#media-delivery-0-10-28">云资产和播放</a>同步完善。功能与待验收边界见本版更新入口。</aside>
+<aside class="tip"><b>0.10.29 · 剧本协作与原文写作：</b>从<a href="#workbench-collaboration-0-10-29">工作台与 Agent 协作</a>开始，按页签使用创作工具，借助<a href="#story-graph-0-10-29">故事关系图</a>追踪剧情与证据；在<a href="#manuscripts-0-10-29">原文写作</a>中直接起稿、续写、润色，并将原文和分集剧本保存为项目内 TXT。功能与待验收边界见本版更新入口。</aside>
 <aside class="tip"><b>0.10.27 · ComfyUI 保存与任务保护：</b>普通保存更新原工作流，另存才创建副本；提交或取消结果未知时保留原任务，避免重复生成。操作与边界见<a href="#comfy-protection-0-10-27">本版更新入口</a>。此前结果继续保存操作见<a href="#comfy-recovery-0-10-26">结果恢复说明</a>。</aside>
 <aside class="tip"><b>0.10.25 · 工作流输入与项目导出：</b>选择 RH 工作流或 AI 应用后，可从 <b>@ → ComfyUI</b> 选择定向输入，按类型和原节点编号筛选；操作见<a href="#runninghub-inputs-0-10-25">本版更新入口</a>。</aside>
 <aside class="tip"><b>工作流种子与项目导出：</b><a href="#workflow-seeds-0-10-24">随机或固定种子与最近工作流</a>、<a href="#history-download-0-10-24">重新下载原任务结果</a>，以及项目导出、Markdown 上传和多选入组修复。四项旧 H3 模板退役说明见<a href="#project-export-0-10-24">本版操作说明</a>。</aside>
@@ -220,12 +222,12 @@ dialog .character-actions-shot{width:1912px}
 <aside class="tip"><b>按钮变灰或提取失败：</b>先检查全剧剧本是否已保存、项目是否加载完成，以及当前项目是否配置文本模型。模型返回无法解析时会提示失败；提取过程中切换剧集或改动全剧剧本，结果不会写入资产库。提取资产不会自动生成角色图，也不会自动创建分集。</aside>
 
 <h3>3.7 · 右侧 AI 写作按钮怎样使用</h3>
-<p>这些按钮共用同一套流程：<b>选择分集 → 点击创作按钮 → 回到对话核对并发送 → 审阅草案 → 确认写回或手动粘贴 → 检查保存结果</b>。点击创作按钮时，工作台会先尝试保存当前未保存的编辑；保存失败则不继续准备请求。工作台仍挡住对话时，先关闭工作台再查看输入框。</p>
+<p>这些按钮共用同一套流程：<b>选择分集 → 在顶部 Agent协作设置执行方式 → 点击右侧创作按钮 → 在助手查看任务或团队成果 → 审阅并采用 → 检查保存结果</b>。工作台会先保存当前未保存的编辑；保存失败则不开始任务。智能调度按需求选用已授权的智能体与 Skill，团队按配置分工生成候选；两种方式都保留当前正文，结果需审阅后采用。详细操作见<a href="#workbench-collaboration-0-10-29">本版协作入口</a>。右上角 <b>AI 拆分草案</b>仍是准备对话输入后由用户发送。</p>
 <div class="table-scroll"><table><thead><tr><th>按钮</th><th>适合什么时候用</th></tr></thead><tbody><tr><td>优化本集大纲</td><td>调整本集结构，同时保留人物关系、关键事件顺序和结局。</td></tr><tr><td>调整情节点</td><td>把内容整理为有递进关系的主要事件。</td></tr><tr><td>深度创作诊断</td><td>让 AI 从结构、冲突、节奏、对白可拍性、开场和结尾提出建议。</td></tr><tr><td>根据集纲写正文</td><td>已有大纲与创作要点，需要完整、可拍的本集剧本。</td></tr><tr><td>重写本集剧本</td><td>已有正文，希望先诊断，再得到完整修订稿。</td></tr><tr><td>对白润色</td><td>改善口语感、人物区分和对抗效率。</td></tr><tr><td>动作可拍化</td><td>把小说化心理或作者解释改成可见动作、对白、OS、道具或画面证据。</td></tr><tr><td>加强开场钩子</td><td>让开场更快建立冲突、悬念或异常信息。</td></tr><tr><td>加强核心冲突</td><td>明确对立双方、目标和代价，让矛盾有升级。</td></tr><tr><td>设计反转</td><td>设计有前置铺垫的反转或情绪爆点。</td></tr><tr><td>加强结尾卡点</td><td>把结尾收在未完成动作、强台词、证据揭露或关系变化上。</td></tr><tr><td>补表演标注</td><td>为关键情绪补充少量自然、可见的表演提示。</td></tr></tbody></table></div>
 <aside class="tip"><b>先审稿，再写回：</b>这些按钮准备的请求会要求 AI 先给出建议或草案，等待确认，不直接覆盖当前剧本。聊天里出现了正文后，可以明确要求“只把这版写入当前集的本集剧本，保留大纲和其他分集”，也可自行粘贴后点“保存本集”。写回后重新打开该集，检查实际内容。</aside>
 
 <h3 id="script-diagnostics">3.8 · 看懂创作诊断</h3>
-<p>右侧顶部的<b>正文、场景、对白占比、预计时长</b>和简短提示，会根据当前编辑内容做本地静态分析，不调用 AI。下方<b>深度创作诊断</b>则准备一条需要发送给模型的创作请求，两者的用途不同。</p>
+<p>切到<b>本集剧本</b>时，右侧顶部的<b>正文、场景、对白占比、预计时长</b>和简短提示会根据当前编辑内容做本地静态分析，不调用 AI；其他页签显示对应的统计和工具。<b>深度创作诊断</b>会按顶部「Agent协作」中的执行方式启动模型任务，两者的用途不同。</p>
 <div class="table-scroll"><table><thead><tr><th>指标 / 提示</th><th>如何理解</th></tr></thead><tbody><tr><td>正文</td><td>按去除空白后的正文字符数统计。正文为空时显示 0，不代表分集没建立。</td></tr><tr><td>场景</td><td>识别类似 <code>1-1 场景名 内/外 日/夜</code> 的场号。已有场景但统计为 0 时，先检查标题格式。</td></tr><tr><td>对白占比</td><td>按“人物名：台词”等可识别格式估算。比例低时检查是否有大量叙述或格式未被识别。</td></tr><tr><td>预计时长</td><td>按正文长度粗略估计，供节奏参考；不是朗读实测，也不是最终剪辑时长。</td></tr><tr><td>长对白、破折号或静态结尾</td><td>提示可能需要复核的写法，并不意味着每一处都必须修改。</td></tr><tr><td>长度与目标时长存在偏差</td><td>根据目标秒数给出字数参考，结合表演、动作和镜头节奏判断。</td></tr></tbody></table></div>
 <p><b>“仅提示，不阻断”</b>表示这些提示不会阻止保存。没有发现静态格式问题，也不代表人物动机、剧情逻辑和情绪强度已经合格，仍需审稿。</p>
 <div class="code-head"><span>本集正文的格式示意 · 可按作品修改</span><button class="action copy" type="button" data-copy="script-format-example">复制</button></div><pre><code id="script-format-example">1-1 旧书店 内 日
@@ -1123,6 +1125,21 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
+<section id="updates-0-10-29"><h2>0.10.29 · 剧本协作与原文写作</h2>
+<h3 id="workbench-collaboration-0-10-29">工作台、独立窗口与 Agent 协作</h3>
+<ol class="steps"><li>从剧集栏打开<b>剧本创作工作台</b>，选择左侧分集。大纲、原文、剧本、创作要点、角色、道具和故事关系图共用这一入口；右侧统计与工具随当前页签切换。</li><li>点击顶部<b>Agent协作</b>，统一选择创作组合包、<b>智能调度／团队</b>、团队成员与模型、预算及任务权限。这些设置用于本集大纲、剧本与创作要点；打开设置本身不会开始任务。</li><li>设置完成后点击右侧创作动作。智能调度在助手中选择已授权的智能体与 Skill；团队按配置协同生成候选，可在助手查看任务、调用和成果。先审阅再采用，不把生成草案直接当作当前正文已保存。</li><li>点击<b>独立窗口</b>可将工作台移到单独窗口，再用<b>收回主窗口</b>返回。编辑与保存沿用同一份主窗口状态；切换展示方式不重新启动创作任务。需要时从顶栏分集选择器切换同剧其他分集。</li></ol>
+<p>规划模式只读；协作与自主模式按各自任务权限处理写入，智能调度不会扩大已授权材料和工具范围。原文页的起笔、续写和润色使用项目配置的助手文本模型，候选先在原文工具区预览。</p>
+<h3 id="story-graph-0-10-29">故事关系图与来源证据</h3>
+<ol class="steps"><li>切到<b>故事关系图</b>，手动整理人物、事件、伏笔等记录及相互关系，或从已保存的材料发起 AI 提取。</li><li>在图、时间线和列表之间切换；图形可切换卡片或点阵，按类型和范围筛选，再点击记录查看详情。</li><li>AI 结果先进入预览，核对名称、关系和原文证据后选择采纳；缺少可定位证据的内容应继续人工核实。点击出处查看材料，不会切走分集画布。</li></ol>
+<p>关系图属于整部剧，与画布节点分别管理；来源改变后需重新核对证据。采纳候选表示用户选择，不代表模型推断已被原文证明。</p>
+<h3 id="manuscripts-0-10-29">普通文本原文写作与 TXT 稿件</h3>
+<ol class="steps"><li>切到<b>原文</b>，即使没有上传原著也可直接在普通文本框写作。可整篇或按章节编辑，查看字数、使用原生撤销；这里不解析 Markdown，也没有格式预览。</li><li>在右侧填写<b>写作要求</b>并点击<b>按要求起笔</b>，已有正文时可<b>从光标续写</b>或<b>润色选中片段／当前章节</b>。生成后先预览，再点击<b>采用到原文草稿</b>。</li><li>点击<b>保存原文</b>或按 <kbd>Ctrl + S</kbd>，首次保存才在剧集项目目录创建 <code>manuscripts/原文.txt</code> 并关联。只打开或编辑未保存时不创建文件。已有其他目录的 TXT 或 Markdown 原著在下次显式保存时转存为该目录内 TXT，原文件保留。</li><li>分别选择分集并点击<b>保存本集</b>，本集正文同步到 <code>manuscripts/&lt;分集名&gt;.txt</code>。例如 <code>EP001 第一集.txt</code>；旧正文尚无文件时也可以直接保存。</li></ol>
+<p>分集改名后，下次保存按新集名生成文件，旧稿保留；同名文件使用唯一名称，后续保存继续写实际绑定的文件。文件均为 UTF-8，单份文本最多 2 MiB。外部修改已绑定 TXT 后出现摘要冲突时会拒绝覆盖并保留草稿，当前不监听外部文件反向自动更新应用正文。已有原著读取失败会提示错误，不会用空稿替换。</p>
+<aside class="tip"><b>桌面端核对：</b>保存原文和两集剧本后，在项目目录查看 <code>manuscripts</code>，再重新打开工作台核对正文。回归主／独立窗口交接、分集改名、旧稿转存、外部修改冲突和项目归档导入。本版自动化检查不能代替文件与桌面验收，实际结果见<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-07-release-0.10.29.md">发布计划</a>。</aside>
+<h3 id="performance-0-10-29">画布、聊天与素材预览</h3>
+<p>画布交互、长对话滚动、媒体订阅和资产面板减少重复处理；引用编辑、手绘操作以及浅色弹窗和独立窗口主题同步调整。未提供跨设备性能基准，不承诺固定加速比例。原有撤销、项目保存、权限和媒体调用规则继续保留。</p>
+</section>
+
 <section id="updates-0-10-28"><h2>0.10.28 · 多厂商创作与原结果交付</h2>
 <h3 id="relayon-candidates-0-10-28">万象 MJ 四候选与原结果续存</h3>
 <ol class="steps"><li>进入<b>设置 → API Key → 万象 API</b>，在 <b>image 图片分组</b>选择需要启用的 Midjourney v6、v6.1、v7、v8.1 或 v8.2，并保存对应分组 Key。新增型号默认只展示，不自动勾选；也可按当前 Key 拉取可用目录。</li><li>在图片节点或提示词窗口选择 MJ。一次作业向平台提交 <code>n=1</code>，接收四张候选；画布分别创建结果节点，对话／MCP 分别保留单图消息。数量设为 K 次作业时，依次提交 K 次，共接收 4K 张候选，不把一次作业误拆成四次付费请求。</li><li>部分候选下载或保存失败时，保留整组原回执。使用<b>继续查询／保存</b>续取原结果，复用已保存项；全部完成后才清理回执，不自动重新生成。若返回的是 Base64 且没有远端任务 ID，未保存的内联结果不能保证跨重启取回。</li></ol>
@@ -1186,8 +1203,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.10.28「多厂商创作与原结果交付」</b>，<b>2026-11-06</b> 按源码增量核对万象 MJ 四候选、MiniMax 官方视频与语音、多厂商 GPT Image 2.6、CCC 香蕉参考图、MCP 操作回执、云资产及播放，并保留此前工作流编辑保存、结果取回、项目导入与重开保存等说明。旧锚点和截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.10.28">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-06-release-0.10.28.md">0.10.28 发布计划</a>，旧版本门禁不作为本轮通过证据。当前数据库为 <b>v27</b>、项目归档为 <b>v3</b>；升级前备份项目与应用数据，安装旧程序不能直接回退已升级的数据。真实 S3 读写与清理、模型调用、各平台安装升级和双客户端交互仍需按发布计划验收；本次说明书更新不代表桌面验收通过。</p>
+<p>本说明书面向 <b>0.10.29「剧本协作与原文写作」</b>，<b>2026-11-07</b> 按源码增量核对独立工作台、Agent 协作、故事关系图、原文普通文本编辑与项目 TXT 保存，并保留此前模型接入、工作流、素材、项目往返等说明。旧锚点和截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.10.29">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
+<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-07-release-0.10.29.md">0.10.29 发布计划</a>，旧版本门禁不作为本轮通过证据。当前数据库为 <b>v27</b>、项目归档为 <b>v3</b>；升级前备份项目与应用数据，安装旧程序不能直接回退已升级的数据。原文与剧本文件保存、多窗口交接、真实模型、云同步和各平台安装升级仍需按发布计划在桌面验收；本次说明书更新不代表桌面验收通过。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>
@@ -1203,7 +1220,7 @@ dialog .character-actions-shot{width:1912px}
 <p>内容依据当前版本的启动页、资源库、设置界面、应用帮助与相关操作实现核对。接口示例用于本地配置校验，<b>未调用真实厂商接口</b>；所有 example.com 地址与示例模型 ID 均为占位内容。按钮准备草稿、创建节点、实际模型生成和媒体保存是不同步骤，请按各章检查实际结果。</p>
 <p class="small">页面所需样式、脚本和十一张截图均在当前 HTML 内，无外部字体或 CDN 依赖。可直接双击离线打开；点击“返回软件首页”需同时保留 site 目录中的首页。打印按钮使用浏览器打印功能，可选择保存为 PDF。</p>
 </section>
-<footer>AI Canvas · 0.10.28 操作说明书 · 2026-11-06 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
+<footer>AI Canvas · 0.10.29 操作说明书 · 2026-11-07 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
 </main>
 <dialog id="zoom" aria-label="放大界面截图"><button class="action" id="zoom-close" type="button">关闭放大图（Esc）</button><div class="zoom-box"></div></dialog>
 <script>
