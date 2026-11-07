@@ -89,6 +89,7 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-a', showToast: vi.fn(),
+    projectLoadStatus: 'ready', projects: [{ id: 'project-a', name: '测试项目', createdAt: 1, updatedAt: 1 }],
     nodes: [{ id: 'director-1', type: 'ai-director', position: { x: 10, y: 20 },
       data: { type: 'ai-director', label: '导演台', directorRuntimeKind: 'blender',
         directorInstanceId: 'director-1', directorScene: sceneReference, status: 'idle' } }],
@@ -252,13 +253,14 @@ describe('shared director operation lifecycle', () => {
     pending.resolve(opened());
   });
 
-  it.each(['project', 'revision', 'node', 'instance', 'scene', 'manifest', 'runtime'] as const)(
+  it.each(['project', 'revision', 'epoch', 'node', 'instance', 'scene', 'manifest', 'runtime'] as const)(
     'aborts and refuses results when the %s binding changes, including changes restored before completion', async (binding) => {
       const pending = pendingEditor();
       const operation = await start();
       const previous = useAppStore.getState();
       if (binding === 'project') useAppStore.setState({ currentProjectId: 'project-b' });
       if (binding === 'revision') previous.incrementRevision();
+      if (binding === 'epoch') useAppStore.setState({ projects: previous.projects.map((project) => ({ ...project, exchangeEpoch: 1 })) });
       if (binding === 'node') useAppStore.setState({ nodes: [] });
       if (binding === 'instance') previous.updateNodeDataTransient('director-1', { directorInstanceId: 'changed' });
       if (binding === 'scene') previous.updateNodeDataTransient('director-1', { directorScene: undefined });

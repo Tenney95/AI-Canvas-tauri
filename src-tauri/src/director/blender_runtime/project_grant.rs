@@ -28,6 +28,8 @@ const MAX_PROJECT_ROOT_CHARS: usize = 32_768;
 pub struct CreateProjectGrantRequest {
     project_id: String,
     project_root: String,
+    #[serde(default, deserialize_with = "crate::project_execution_context::optional_canvas_context")]
+    expected_context: Option<crate::project_execution_context::CanvasExecutionContext>,
 }
 
 #[derive(Serialize)]
@@ -51,6 +53,7 @@ pub struct RevokeProjectGrantResponse {
 struct ProjectGrantRecord {
     project_id: String,
     canonical_root: PathBuf,
+    expected_context: Option<crate::project_execution_context::CanvasExecutionContext>,
 }
 
 #[derive(Default)]
@@ -99,6 +102,7 @@ impl ProjectGrantState {
         jobs: &BlenderJobCore,
         project_id: String,
         canonical_root: PathBuf,
+        expected_context: Option<crate::project_execution_context::CanvasExecutionContext>,
     ) -> Result<String, String> {
         let project_grant_id = self.next_grant_id();
         let mut grants = self
@@ -122,6 +126,7 @@ impl ProjectGrantState {
             ProjectGrantRecord {
                 project_id,
                 canonical_root,
+                expected_context,
             },
         );
         Ok(project_grant_id)
@@ -149,6 +154,7 @@ impl ProjectGrantState {
         app: &AppHandle<R>,
         project_id: &str,
         project_grant_id: &str,
+        expected_context: Option<&crate::project_execution_context::CanvasExecutionContext>,
         operation: F,
     ) -> Result<T, String>
     where
@@ -164,7 +170,7 @@ impl ProjectGrantState {
             .map_err(|_| "Blender 项目授权状态不可用".to_string())?;
         let record = grants
             .get(project_grant_id)
-            .filter(|record| record.project_id == project_id)
+            .filter(|record| record.project_id == project_id && record.expected_context.as_ref() == expected_context)
             .ok_or_else(|| "Blender 项目授权不存在或已失效".to_string())?;
         let revalidated =
             crate::path_policy::reauthorize_existing_plain_directory(app, &record.canonical_root)?;
@@ -187,11 +193,15 @@ fn create_project_grant(
     jobs: &BlenderJobCore,
     project_id: String,
     canonical_root: PathBuf,
+    expected_context: Option<crate::project_execution_context::CanvasExecutionContext>,
 ) -> Result<CreateProjectGrantResponse, String> {
     if !valid_project_id(&project_id) {
         return Err("项目标识无效".to_string());
     }
-    let project_grant_id = state.create(jobs, project_id, canonical_root)?;
+    if expected_context.as_ref().is_some_and(|context| !context.matches_canvas(&project_id, None)) {
+        return Err("Blender 项目上下文无效".to_string());
+    }
+    let project_grant_id = state.create(jobs, project_id, canonical_root, expected_context)?;
     Ok(CreateProjectGrantResponse { project_grant_id })
 }
 
@@ -212,7 +222,7 @@ pub fn create_blender_project_grant(
         webview.app_handle(),
         &request.project_root,
     )?;
-    create_project_grant(&state, &jobs, request.project_id, canonical_root)
+    create_project_grant(&state, &jobs, request.project_id, canonical_root, request.expected_context)
 }
 
 #[tauri::command]

@@ -5,6 +5,8 @@ import {
   buildDirectorDeskWindowUrl,
   type DirectorExtensionAction,
 } from './directorDeskService';
+import type { CanvasContext } from '../types/project';
+import { captureLegacyCanvasContext, isProjectExpectedContextCurrent, parseProjectExpectedContext } from './projectExecutionContext';
 
 export const DIRECTOR_DESK_WINDOW_LABEL = 'director-desk';
 export const DIRECTOR_DESK_HOST_EVENT = 'director-desk:host-message';
@@ -40,6 +42,17 @@ const pendingRequests = new Map<string, PendingRequest>();
 let mainListenerPromise: Promise<void> | null = null;
 let unlistenMain: (() => void) | null = null;
 let activeInstanceId: string | null = null;
+let activeTargetCurrent: (() => boolean) | null = null;
+let unsubscribeTarget: (() => void) | null = null;
+let activeWindowGeneration = 0;
+
+function rejectPendingRequests(message: string) {
+  for (const pending of pendingRequests.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error(message));
+  }
+  pendingRequests.clear();
+}
 
 function normalizeInstanceId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -72,6 +85,11 @@ export function isTauriDirectorWindowAvailable(): boolean {
 
 function dispatchDirectorMessage(envelope: DirectorDeskWindowEnvelope) {
   const { instanceId, message } = envelope;
+  if (activeInstanceId !== instanceId) return;
+  if (!activeTargetCurrent?.()) {
+    rejectPendingRequests('导演台目标上下文已变化，请重新打开');
+    return;
+  }
   if (message.type === 'storyai:director-desk:response') {
     const requestId = typeof message.payload?.requestId === 'string'
       ? message.payload.requestId
@@ -141,9 +159,11 @@ async function emitHostMessage(envelope: DirectorDeskWindowEnvelope): Promise<vo
 export async function openDirectorDeskWindow({
   instanceId,
   theme = 'dark',
+  expectedContext: requestedContext,
 }: {
   instanceId: string;
   theme?: 'dark' | 'light';
+  expectedContext?: Readonly<CanvasContext>;
 }): Promise<void> {
   const normalizedInstanceId = normalizeInstanceId(instanceId);
   if (!normalizedInstanceId) throw new Error('导演台节点标识无效');
@@ -151,14 +171,43 @@ export async function openDirectorDeskWindow({
     throw new Error('3D 导演台独立窗口仅支持 Tauri 桌面端');
   }
 
+  // 只在主窗口打开时捕获；接到迟到事件或重载旧runtime时不能补造新租约。
+  const parsedContext = requestedContext === undefined ? undefined : parseProjectExpectedContext(requestedContext);
+  const { useAppStore } = await import('../store/useAppStore');
+  const expectedContext = parsedContext ?? captureLegacyCanvasContext(useAppStore.getState());
+  if (!expectedContext || expectedContext.kind !== 'canvas') throw new Error('导演台目标画布上下文无效');
+  const targetCurrent = () => {
+    const state = useAppStore.getState();
+    return isProjectExpectedContextCurrent(expectedContext, state, { checkCanvasRevision: false })
+      && state.nodes.some((node) => node.type === 'ai-director'
+        && (node.data.directorRuntimeKind ?? 'lightweight-web') === 'lightweight-web'
+        && (node.data.directorInstanceId || node.id) === normalizedInstanceId);
+  };
+  if (!targetCurrent()) throw new Error('导演台目标节点已变化');
+
   await ensureMainListener();
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
   const existing = await WebviewWindow.getByLabel(DIRECTOR_DESK_WINDOW_LABEL);
+  if (!targetCurrent()) throw new Error('导演台目标上下文已变化');
+  if (existing && !activeTargetCurrent?.()) {
+    rejectPendingRequests('导演台旧窗口上下文已变化');
+    await existing.close();
+    throw new Error('旧导演台窗口已撤销，请从当前节点重新打开');
+  }
   setActiveInstance(normalizedInstanceId);
+  unsubscribeTarget?.();
+  let revoked = false;
+  activeTargetCurrent = () => !revoked && targetCurrent();
+  unsubscribeTarget = useAppStore.subscribe(() => {
+    if (revoked || targetCurrent()) return;
+    revoked = true;
+    rejectPendingRequests('导演台目标上下文已变化，请重新打开');
+  });
   if (existing) {
     await existing.show().catch(() => {});
     await existing.unminimize().catch(() => {});
     await existing.setFocus();
+    if (activeInstanceId !== normalizedInstanceId || !activeTargetCurrent?.()) throw new Error('导演台目标上下文已变化');
     await emitHostMessage({
       instanceId: normalizedInstanceId,
       message: {
@@ -169,6 +218,7 @@ export async function openDirectorDeskWindow({
     return;
   }
 
+  const windowGeneration = ++activeWindowGeneration;
   const directorWindow = new WebviewWindow(DIRECTOR_DESK_WINDOW_LABEL, {
     url: buildDirectorDeskWindowUrl(normalizedInstanceId, theme),
     title: '3D 导演台',
@@ -186,21 +236,33 @@ export async function openDirectorDeskWindow({
   await new Promise<void>((resolve, reject) => {
     void directorWindow.once('tauri://created', () => resolve());
     void directorWindow.once('tauri://error', (event) => {
-      activeInstanceId = null;
+      if (windowGeneration === activeWindowGeneration) {
+        activeInstanceId = null; activeTargetCurrent = null;
+        unsubscribeTarget?.(); unsubscribeTarget = null;
+        rejectPendingRequests('导演台窗口创建失败');
+      }
       reject(new Error(`创建 3D 导演台窗口失败：${String(event.payload ?? 'unknown')}`));
     });
   });
 
   void directorWindow.once('tauri://destroyed', () => {
+    if (windowGeneration !== activeWindowGeneration) return;
     const closedInstanceId = activeInstanceId;
-    activeInstanceId = null;
     if (closedInstanceId) {
       dispatchDirectorMessage({
         instanceId: closedInstanceId,
         message: { type: 'storyai:director-desk-close' },
       });
     }
+    activeInstanceId = null;
+    activeTargetCurrent = null;
+    unsubscribeTarget?.(); unsubscribeTarget = null;
+    rejectPendingRequests('导演台窗口已关闭');
   });
+  if (activeInstanceId !== normalizedInstanceId || !activeTargetCurrent?.()) {
+    await directorWindow.close();
+    throw new Error('导演台目标上下文已变化');
+  }
 }
 
 export function subscribeDirectorDeskWindow(
@@ -227,6 +289,9 @@ export function requestDirectorWindowAction(
   options?: Record<string, unknown>,
   timeoutMs = 30_000,
 ): Promise<unknown> {
+  if (activeInstanceId !== instanceId || !activeTargetCurrent?.()) {
+    return Promise.reject(new Error('导演台会话已失效，请从当前节点重新打开'));
+  }
   const requestId = crypto.randomUUID();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -235,13 +300,16 @@ export function requestDirectorWindowAction(
     }, timeoutMs);
     pendingRequests.set(requestId, { instanceId, resolve, reject, timer });
     void ensureMainListener()
-      .then(() => emitHostMessage({
-        instanceId,
-        message: {
-          type: 'storyai:director-desk:request',
-          payload: { requestId, action, ...(options ? { options } : {}) },
-        },
-      }))
+      .then(() => {
+        if (activeInstanceId !== instanceId || !activeTargetCurrent?.()) throw new Error('导演台目标上下文已变化');
+        return emitHostMessage({
+          instanceId,
+          message: {
+            type: 'storyai:director-desk:request',
+            payload: { requestId, action, ...(options ? { options } : {}) },
+          },
+        });
+      })
       .catch((error) => {
         clearTimeout(timer);
         pendingRequests.delete(requestId);
@@ -251,6 +319,10 @@ export function requestDirectorWindowAction(
 }
 
 export async function closeDirectorDeskWindow(): Promise<void> {
+  activeInstanceId = null;
+  activeTargetCurrent = null;
+  unsubscribeTarget?.(); unsubscribeTarget = null;
+  rejectPendingRequests('导演台窗口已关闭');
   try {
     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
     const directorWindow = await WebviewWindow.getByLabel(DIRECTOR_DESK_WINDOW_LABEL);
@@ -265,6 +337,9 @@ export function __resetDirectorDeskWindowServiceForTests() {
   unlistenMain = null;
   mainListenerPromise = null;
   activeInstanceId = null;
+  activeTargetCurrent = null;
+  unsubscribeTarget?.(); unsubscribeTarget = null;
+  activeWindowGeneration += 1;
   subscribers.clear();
   for (const pending of pendingRequests.values()) clearTimeout(pending.timer);
   pendingRequests.clear();

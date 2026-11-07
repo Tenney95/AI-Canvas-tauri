@@ -8,6 +8,8 @@ const tauriMocks = vi.hoisted(() => ({
   eventHandler: null as null | ((event: { payload: unknown }) => void),
   existingWindow: null as MockWindow | null,
   created: [] as MockWindow[],
+  exchangeEpoch: 0,
+  projectId: 'project-a', subscribers: new Set<() => void>(),
 }));
 
 class MockWindow {
@@ -33,6 +35,12 @@ class MockWindow {
 }
 
 vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: MockWindow }));
+vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => ({
+  currentProjectId: tauriMocks.projectId, projects: [{ id: 'project-a', exchangeEpoch: tauriMocks.exchangeEpoch }],
+  getCurrentRevision: () => 0, nodes: ['node-14', 'node-22'].map((id) => ({ id, type: 'ai-director', data: { directorInstanceId: id } })),
+}), subscribe: (listener: () => void) => {
+  tauriMocks.subscribers.add(listener); return () => tauriMocks.subscribers.delete(listener);
+} } }));
 vi.mock('@tauri-apps/api/event', () => ({
   emitTo: tauriMocks.emitTo,
   listen: vi.fn(async (_event: string, handler: (event: { payload: unknown }) => void) => {
@@ -59,6 +67,8 @@ describe('directorDeskWindowService', () => {
     tauriMocks.eventHandler = null;
     tauriMocks.existingWindow = null;
     tauriMocks.created.length = 0;
+    tauriMocks.exchangeEpoch = 0;
+    tauriMocks.projectId = 'project-a'; tauriMocks.subscribers.clear();
     MockWindow.getByLabel.mockClear();
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
@@ -93,7 +103,8 @@ describe('directorDeskWindowService', () => {
   });
 
   it('focuses an existing window and switches its scoped session', async () => {
-    const existing = new MockWindow(DIRECTOR_DESK_WINDOW_LABEL);
+    await openDirectorDeskWindow({ instanceId: 'node-14' });
+    const existing = tauriMocks.created[0]!;
     tauriMocks.created.length = 0;
     tauriMocks.existingWindow = existing;
 
@@ -130,6 +141,7 @@ describe('directorDeskWindowService', () => {
     const node22 = vi.fn();
     const un14 = subscribeDirectorDeskWindow('node-14', node14);
     const un22 = subscribeDirectorDeskWindow('node-22', node22);
+    await openDirectorDeskWindow({ instanceId: 'node-14' });
     await vi.waitFor(() => expect(tauriMocks.eventHandler).not.toBeNull());
 
     expect(DIRECTOR_DESK_MESSAGE_EVENT).toBe('director-desk:message');
@@ -147,6 +159,8 @@ describe('directorDeskWindowService', () => {
   });
 
   it('correlates an extension response by request id', async () => {
+    await openDirectorDeskWindow({ instanceId: 'node-14' });
+    tauriMocks.emitTo.mockClear();
     const request = requestDirectorWindowAction('node-14', 'project.get');
     await vi.waitFor(() => expect(tauriMocks.emitTo).toHaveBeenCalled());
     const emittedCalls = tauriMocks.emitTo.mock.calls as unknown as Array<[
@@ -170,5 +184,28 @@ describe('directorDeskWindowService', () => {
     });
 
     await expect(request).resolves.toEqual({ version: 1 });
+  });
+
+  it('drops late captures and rejects pending requests after same-id restore changes the epoch', async () => {
+    const received = vi.fn();
+    subscribeDirectorDeskWindow('node-14', received);
+    await openDirectorDeskWindow({ instanceId: 'node-14' });
+    const pending = requestDirectorWindowAction('node-14', 'project.get');
+    const rejected = expect(pending).rejects.toThrow('上下文');
+    await vi.waitFor(() => expect(tauriMocks.emitTo).toHaveBeenCalled());
+    tauriMocks.exchangeEpoch += 1;
+    tauriMocks.eventHandler?.({ payload: { instanceId: 'node-14', message: { type: 'storyai:director-desk-captures-sent', payload: { captures: [] } } } });
+    await rejected;
+    expect(received).not.toHaveBeenCalled();
+    await expect(requestDirectorWindowAction('node-14', 'project.get')).rejects.toThrow('失效');
+  });
+
+  it('does not resurrect an old window lease after switching away and back to the same IDs', async () => {
+    await openDirectorDeskWindow({ instanceId: 'node-14' });
+    tauriMocks.projectId = 'project-b';
+    for (const listener of tauriMocks.subscribers) listener();
+    tauriMocks.projectId = 'project-a';
+    for (const listener of tauriMocks.subscribers) listener();
+    await expect(requestDirectorWindowAction('node-14', 'project.get')).rejects.toThrow('失效');
   });
 });

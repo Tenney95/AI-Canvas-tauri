@@ -50,6 +50,18 @@ beforeEach(() => {
   fileMocks.readAgentAuthorizedTextFile.mockClear();
 });
 
+it('Store拒绝末集删除或删除失败时工具不得报告成功', async () => {
+  const deleteProject = vi.fn(async () => {});
+  useAppStore.setState({ deleteProject });
+  const unregisters = registerSeriesAgentTools();
+  try {
+    const result = await getAgentTool('episode_delete')!.execute(context(), { episodeId: 'ep-1' });
+    expect(result).toMatchObject({ status: 'error', errorCode: 'EPISODE_DELETE_FAILED' });
+    expect(deleteProject).toHaveBeenCalledWith('ep-1');
+    expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['series', 'ep-1']);
+  } finally { unregisters.forEach((unregister) => unregister()); }
+});
+
 describe('工作台精确分集读取授权', () => {
   it('仅目标分集可跨画布读取，普通任务、其他分集与写工具仍拒绝', async () => {
     const task = { id: 'workbench-task', projectId: 'ep-2', conversationId: 'conversation', status: 'running',

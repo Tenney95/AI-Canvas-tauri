@@ -58,6 +58,7 @@ import { createAppearanceUiSnapshot } from '../services/appearance/appearanceWin
 import { resolveAppearanceMode } from '../services/appearance/appearanceRuntime';
 import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
 import { createScriptWorkbenchWindowHost, type ScriptWorkbenchWindowHost } from '../services/scriptWorkbenchWindowService';
+import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../services/projectWindowContext';
 import { loadProjectAgentTasks } from '../services/chat/agentTaskService';
 import { buildSeriesChapterPrompt, readSeriesChapter, readSeriesSource } from '../services/seriesSourceService';
 import type { SeriesSourceSnapshot } from '../types/seriesSource';
@@ -764,11 +765,12 @@ export default function ScriptWorkbench({
   const startAutomaticCreativeRequest = async (content: string) => {
     if (!currentEpisode || !contextReady || startingTeamRef.current || savingEpisodeRef.current || editorWriteLocked) return;
     const episodeId = currentEpisode.id;
+    const expected = captureProjectWindowContext(useAppStore.getState(), episodeId);
     startingTeamRef.current = true;
     setIsStartingTeam(true);
     try {
       if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
-      if (selectedEpisodeRef.current !== episodeId) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
+      if (selectedEpisodeRef.current !== episodeId || !isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
       startWorkbenchAgentInvocation({ episodeId, content, mode: teamMode });
       showToast(t('智能调度已开始，可查看调用与结果'));
     } catch (error) {
@@ -791,8 +793,10 @@ export default function ScriptWorkbench({
       setIsStartingTeam(true);
       try {
         const episodeId = currentEpisode.id;
+        const expected = captureProjectWindowContext(useAppStore.getState(), episodeId);
         if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
         const captured = await captureEpisodeTeamContext(episodeId, templateId === 'outline' ? 'outline' : 'script');
+        if (selectedEpisodeRef.current !== episodeId || !isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error(t('工作台分集已变化，请等待最新内容后重试'));
         setExecutionSelection({ kind: 'team', templateId });
         await startTeamInvocation({ projectId: episodeId, mode: teamMode, templateId, requestId,
           content: templateId === 'outline' ? t('优化本集大纲，保留已确认设定与有效结构，只返回本集候选。')
@@ -820,9 +824,11 @@ export default function ScriptWorkbench({
     if (!currentEpisode || isSaving || !contextReady) return;
     const startingProjectId = useAppStore.getState().currentProjectId;
     const episodeId = currentEpisode.id;
+    const expected = captureProjectWindowContext(useAppStore.getState(), episodeId);
     try {
       if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
-      if (useAppStore.getState().currentProjectId !== startingProjectId) return;
+      if (useAppStore.getState().currentProjectId !== startingProjectId
+        || !isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error(t('画布上下文已变化，请重新生成分镜'));
       if (startingProjectId !== episodeId) {
         throw new Error(t('请先在剧集栏切换到本集画布，再生成分镜'));
       }
@@ -863,6 +869,7 @@ export default function ScriptWorkbench({
   const extractFullScriptAssets = async (kind: DramaAssetKind, label: string) => {
     if (!series || !currentProjectId || !contextReady || extractingAssetKindRef.current) return;
     const generation = ++extractionGeneration.current;
+    const expected = captureProjectWindowContext(useAppStore.getState(), selectedEpisodeRef.current);
     extractingAssetKindRef.current = kind;
     setExtractingAssetKind(kind);
     try {
@@ -871,7 +878,7 @@ export default function ScriptWorkbench({
         seriesId: series.id,
         projectId: currentProjectId,
       });
-      if (generation !== extractionGeneration.current) return;
+      if (generation !== extractionGeneration.current || !isProjectWindowContextCurrent(expected, useAppStore.getState())) return;
       setSeriesAssetPreview(result);
       showToast(t('已提取 {count} 项{name}，请预览后选择入库', { count: result.count, name: label }));
     } catch (error) {
@@ -926,6 +933,7 @@ export default function ScriptWorkbench({
   ].slice(0, 500), [dramaAssets]);
 
   const snapshot: ScriptWorkbenchSnapshot = {
+    schemaVersion: 2, windowContext: captureProjectWindowContext(useAppStore.getState(), currentEpisodeId),
     sessionId, revision: 0, acceptedEditSequence,
     draftVersion: currentEpisodeId ? draftVersionByEpisode[currentEpisodeId] ?? 0 : 0,
     series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork,
@@ -1306,6 +1314,7 @@ export default function ScriptWorkbench({
   });
   useEffect(() => {
     const host = createScriptWorkbenchWindowHost({ sessionId, getSnapshot: () => snapshotRef.current,
+      getContext: () => captureProjectWindowContext(useAppStore.getState(), selectedEpisodeRef.current),
       onRequest: (request) => requestRef.current(request), onDetachedChange: setDetached,
       onReplySent: () => {
         const action = afterReply.current;

@@ -51,6 +51,8 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-1',
+    projectLoadStatus: 'ready',
+    projects: [{ id: 'project-1', name: '项目', createdAt: 1, updatedAt: 1 }],
     activeConversationId: 'mcp-control-project-1',
     conversations: [{
       id: 'mcp-control-project-1',
@@ -109,6 +111,22 @@ function setBoundaryMode(mode: AgentMode) {
 }
 
 describe('shared Agent tool execution for MCP', () => {
+  it('保留切集后迟到的已知effect结论和原预算，不将已完成提交降为unknown或重投', async () => {
+    const execute = vi.fn(async () => {
+      useAppStore.setState({ currentProjectId: 'project-2' });
+      return { status: 'success' as const, summary: '原提交已完成', modelContent: '不得投影到另一集' };
+    });
+    registerBoundaryTool({ effect: 'media_generation', execute });
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task, modelRounds: 7, toolCallCount: 9, resumeCount: 2 })) }));
+    transitionAgentTask('mcp-task-1', 'planning');
+    const result = await executeBoundaryTool();
+    const task = useAppStore.getState().agentTasks[0];
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ effectOutcome: 'success', summary: { status: 'error', errorCode: 'CONTEXT_REFRESH_REQUIRED' } });
+    expect(task).toMatchObject({ projectId: 'project-1', modelRounds: 7, toolCallCount: 10, resumeCount: 2, status: 'paused' });
+    expect(task.dispatches?.at(-1)).toMatchObject({ phase: 'settled', outcome: 'succeeded' });
+    expect(task.steps[0]).toMatchObject({ status: 'succeeded', outputSummary: '原提交已完成' });
+  });
   it.each(['project', 'revision'] as const)('rejects a changed %s during dynamic executor loading before counting or executing the call', async (change) => {
     const execute = registerBoundaryTool();
     transitionAgentTask('mcp-task-1', 'planning');

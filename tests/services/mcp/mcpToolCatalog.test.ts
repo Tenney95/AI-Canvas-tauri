@@ -516,4 +516,17 @@ describe('MCP tool catalog', () => {
       expect(() => decodeMcpToolCallEnvelope({ ...envelope, operationKey })).toThrow();
     }
   });
+
+  it('strictly carries the versioned context while preserving nullable standalone canvas identity', () => {
+    const expectedContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'runtime-1',
+      projectId: 'owner', projectEpoch: 0, canvasId: 'legacy-canvas', episodeId: null, canvasEpoch: 2, canvasRevision: 4 };
+    const input = { schemaVersion: 2, name: 'canvas_update_nodes', arguments: {}, expectedContext, operationKey: 'original-intent' };
+    expect(decodeMcpToolCallEnvelope(input)).toEqual(input);
+    for (const change of [{ expectedProjectId: 'legacy-canvas' }, { expectedRevision: 4 }, { schemaVersion: 3 },
+      { expectedContext: { ...expectedContext, canvasRevision: '4' } },
+      { expectedContext: { ...expectedContext, episodeId: undefined } },
+      { expectedContext: { ...expectedContext, ownerId: 'guessed-owner' } }]) {
+      expect(() => decodeMcpToolCallEnvelope({ ...input, ...change })).toThrow();
+    }
+  });
 });

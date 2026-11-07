@@ -21,6 +21,9 @@ import type { McpOperationClaim } from '../services/indexedDbService';
 import * as agentTaskService from '../services/chat/agentTaskService';
 import { emitAgentLifecycleEvent } from '../services/chat/agentLifecycle';
 import type { CreationProfileSnapshot } from '../types/creationProfile';
+import { parseProjectExpectedContext, ProjectExecutionContextError } from '../services/projectExecutionContext';
+import { captureAgentProjectScope } from '../services/chat/agentProjectContext';
+import type { ProjectExecutionContextState } from '../types/projectExecutionContext';
 
 export interface CreateAgentTaskInput {
   /** 仅宿主团队入口用于同一发起请求的稳定身份。 */
@@ -29,6 +32,7 @@ export interface CreateAgentTaskInput {
   teamRequestDigest?: string;
   workbenchTarget?: AgentTask['workbenchTarget'];
   projectId: string;
+  executionContext?: AgentTask['executionContext'];
   conversationId: string;
   userMessageId: string;
   mode: AgentMode;
@@ -70,11 +74,22 @@ function createTaskId(): string {
   return `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperationRecord): AgentTask {
+function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperationRecord, state?: AppState): AgentTask {
+  const executionContext = input.executionContext === undefined ? undefined : parseProjectExpectedContext(input.executionContext);
+  if (executionContext && executionContext.modelGeneration !== 0) throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
+  const contextState: ProjectExecutionContextState | undefined = state;
+  if (contextState?.projectExecutionContext !== undefined
+    && parseProjectExpectedContext(contextState.projectExecutionContext).modelGeneration !== 0) {
+    throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
+  }
+  const projectScope = executionContext ?? (state ? captureAgentProjectScope(state, input) : undefined);
+  if (projectScope && projectScope.modelGeneration !== 0) throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
   const now = Date.now();
   const taskId = input.taskId ?? createTaskId();
   return {
     id: taskId, projectId: input.projectId, conversationId: input.conversationId,
+    ...(executionContext ? { executionContext } : {}),
+    ...(projectScope ? { projectScope } : {}),
     userMessageId: input.userMessageId, mode: input.mode, goal: input.goal,
     executionKind: input.executionKind,
     teamRequestDigest: input.teamRequestDigest,
@@ -94,7 +109,7 @@ function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperation
   };
 }
 
-export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set) => ({
+export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set, get) => ({
   agentTaskFocus: null,
   focusAgentTask: (taskId) => set((state) => ({ agentTaskFocus: {
     taskId, revision: (state.agentTaskFocus?.revision ?? 0) + 1,
@@ -102,7 +117,7 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
   agentTasks: [],
 
   createAgentTask: (input) => {
-    const task = buildAgentTask(input);
+    const task = buildAgentTask(input, undefined, get());
     set((state) => ({ agentTasks: [...state.agentTasks, task] }));
     persistTask(task);
     emitAgentLifecycleEvent({
@@ -116,7 +131,7 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
   },
 
   claimMcpAgentTask: async (input, operation) => {
-    const result = await agentTaskService.claimMcpOperationTask(buildAgentTask(input, operation));
+    const result = await agentTaskService.claimMcpOperationTask(buildAgentTask(input, operation, get()));
     if (result.task) {
       const task = result.task;
       set((state) => state.agentTasks.some((item) => item.id === task.id)

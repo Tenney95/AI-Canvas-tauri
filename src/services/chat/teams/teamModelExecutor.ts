@@ -11,6 +11,13 @@ export interface TeamModelResult {
   usageKnown: boolean;
 }
 
+/** Provider 已明确返回，后续本地复核失败；事实只在运行时结算，不把正文写入错误摘要。 */
+export class TeamModelReturnedError extends Error {
+  constructor(message: string, readonly result: TeamModelResult, readonly knownCompleted: boolean, options?: ErrorOptions) {
+    super(message, options); this.name = 'TeamModelReturnedError';
+  }
+}
+
 /** 仅摘要执行身份。模型地址、协议和凭据本身不进入任务记录。 */
 function teamModelIdentity(projectId: string, modelId: string): string {
   const model = resolveAssistantModel(projectId, modelId);
@@ -54,6 +61,7 @@ export async function executeTeamModel(input: {
   taskId?: string;
   stageId?: string;
   runRevision?: number;
+  assertCurrent?: () => void;
 }): Promise<TeamModelResult> {
   input.signal.throwIfAborted();
   if (input.target?.kind === 'external-agent') {
@@ -63,13 +71,18 @@ export async function executeTeamModel(input: {
     const before = await externalTeamIdentity(input.projectId, input.target);
     if (await hashTeamText(before.identity) !== input.expectedFingerprint) throw new Error('外部成员身份已变化，请重新确认');
     input.signal.throwIfAborted();
+    input.assertCurrent?.();
     const result = await executeExternalAgent({ providerId: input.target.providerId,
       invocationId: `team-${crypto.randomUUID()}`, projectId: input.projectId, conversationId: input.conversationId,
       taskId: input.taskId, stageId: input.stageId, runRevision: input.runRevision, modelId: input.modelId,
       expectedFingerprint: before.fingerprint, systemPrompt: input.systemPrompt, userPrompt: input.userPrompt,
       maxOutputChars: input.maxOutputChars, signal: input.signal });
-    input.signal.throwIfAborted();
-    if (await fingerprintTeamModel(input.projectId, input.modelId, input.target) !== input.expectedFingerprint) throw new Error('外部成员身份已变化，旧结果未被接纳');
+    try {
+      input.signal.throwIfAborted();
+      if (await fingerprintTeamModel(input.projectId, input.modelId, input.target) !== input.expectedFingerprint) throw new Error('外部成员身份已变化，旧结果未被接纳');
+    } catch (error) {
+      throw new TeamModelReturnedError(error instanceof Error ? error.message : '外部成员返回后复核失败', result, false, { cause: error });
+    }
     return result;
   }
   const identity = teamModelIdentity(input.projectId, input.modelId);
@@ -93,6 +106,7 @@ export async function executeTeamModel(input: {
   let outputTokens: number | undefined;
   const timeout = setTimeout(() => { failure = '团队成员响应超时，已保留其他阶段成果'; controller.abort(); }, 180000);
   try {
+    input.assertCurrent?.();
     const text = await streamAssistantReply({ projectId: input.projectId, modelId: input.modelId,
       systemPrompt: input.systemPrompt, userMessage: input.userPrompt,
       messages: [{ role: 'system', content: input.systemPrompt }, { role: 'user', content: input.userPrompt }],
@@ -112,15 +126,21 @@ export async function executeTeamModel(input: {
         } else if (event.type === 'done') finishReason = event.finishReason;
       },
     });
-    input.signal.throwIfAborted();
-    if (failure) throw new Error(failure);
-    if (finishReason === 'length') throw new Error('团队成员输出未完成，请更换模型或缩小任务范围');
-    if (finishReason === 'error' || finishReason === 'canceled') throw new Error('团队成员没有完成当前阶段');
-    if (!text.trim() || text.length > input.maxOutputChars) throw new Error('团队成员未返回有效的有界正文');
-    // JSON 由宿主先校验、再逐个字符串字段脱敏；不能用正则破坏 JSON 结构。
-    return { text, inputTokens, outputTokens,
+    const result: TeamModelResult = { text, inputTokens, outputTokens,
       usageKnown: inputTokens !== undefined && outputTokens !== undefined };
+    try {
+      input.signal.throwIfAborted();
+      if (failure) throw new Error(failure);
+      if (finishReason === 'length') throw new Error('团队成员输出未完成，请更换模型或缩小任务范围');
+      if (finishReason === 'error' || finishReason === 'canceled') throw new Error('团队成员没有完成当前阶段');
+      if (!text.trim() || text.length > input.maxOutputChars) throw new Error('团队成员未返回有效的有界正文');
+    } catch (error) {
+      throw new TeamModelReturnedError(error instanceof Error ? error.message : '团队成员返回后复核失败', result, false, { cause: error });
+    }
+    // JSON 由宿主先校验、再逐个字符串字段脱敏；不能用正则破坏 JSON 结构。
+    return result;
   } catch (error) {
+    if (error instanceof TeamModelReturnedError) throw error;
     if (failure) throw new Error(failure, { cause: error });
     throw error;
   } finally { clearTimeout(timeout); input.signal.removeEventListener('abort', abort); }

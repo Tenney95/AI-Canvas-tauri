@@ -13,6 +13,7 @@ import { normalizeStoryGraph } from '../storyGraphService';
 /** 项目列表所需的轻量记录；禁止放入画布节点、连线、历史或角色库。 */
 export interface ProjectSummaryRecord {
   exchangeEpoch?: number;
+  revisionScope?: 'project' | 'global';
   id: string;
   name: string;
   createdAt: number;
@@ -77,6 +78,7 @@ export function toProjectSummaryRecord(record: unknown): ProjectSummaryRecord | 
     updatedAt: finiteNumber(source.updatedAt, createdAt),
   };
   if (typeof source.exchangeEpoch === 'number') summary.exchangeEpoch = source.exchangeEpoch;
+  if (source.revisionScope === 'project' || source.revisionScope === 'global') summary.revisionScope = source.revisionScope;
   if (typeof source.snapshot === 'string') summary.snapshot = source.snapshot;
   if (typeof source.dataFolder === 'string') summary.dataFolder = source.dataFolder;
   const settings = sanitizeProjectSettings(source.settings);

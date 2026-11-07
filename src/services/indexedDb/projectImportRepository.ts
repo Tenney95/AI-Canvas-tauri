@@ -8,6 +8,7 @@ import type { ArchiveAssetDigest } from '../projectExchangeDomain';
 import { toProjectSummaryRecord } from './projectSummary';
 import { openDB, STORE_PROJECTS, STORE_PROJECT_SUMMARIES, STORE_METADATA, STORE_PROJECT_EXCHANGE_STATES,
   STORE_PROJECT_EXCHANGE_SNAPSHOTS, STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_PROJECT_MEMORIES } from './schema';
+import { withLegacyProjectWrite } from './legacyProjectWriteGuard';
 
 export interface ProjectImportHistoryRow { store: 'chatConversations' | 'chatMessages' | 'projectMemories'; value: { id: string; projectId: string; [key: string]: unknown } }
 export interface ProjectImportRecovery {
@@ -83,75 +84,77 @@ export async function commitProjectImport(input: ProjectImportCommit): Promise<v
     const cleanup = () => input.signal?.removeEventListener('abort', abort);
     const guard = (run: () => void) => { try { run(); } catch (error) { failure = error; tx.abort(); } };
     const projects = tx.objectStore(STORE_PROJECTS), summaries = tx.objectStore(STORE_PROJECT_SUMMARIES), metadata = tx.objectStore(STORE_METADATA);
-    const found = new Set<string>(), cursor = projects.openCursor();
-    cursor.onsuccess = () => guard(() => {
-      const row = cursor.result;
-      if (row) {
-        const record = row.value as ProjectSaveData;
-        if (record.id === ownerId || record.parentId === ownerId) {
-          if (!configValuesEqual(record, expected.get(record.id))) throw new Error('项目在预览后发生变化，请重新对比');
-          found.add(record.id);
-        } else if (input.records.some((item) => item.id === record.id)) throw new Error('新增分集身份已被使用');
-        row.continue(); return;
-      }
-      if (found.size !== expected.size) throw new Error('项目或分集已被删除，请重新对比');
-      const stateRequest = tx.objectStore(STORE_PROJECT_EXCHANGE_STATES).get(ownerId);
-      stateRequest.onsuccess = () => guard(() => {
-        input.assertCurrent?.();
-        const currentState = stateRequest.result ? parseProjectExchangeState(stateRequest.result) : null;
-        if (!configValuesEqual(currentState, expectedState)) throw new Error('协作基线已变化，请重新对比');
-        if (input.expectedRecords.length) {
-          const recovery: ProjectImportRecovery = { id: `project-import-recovery:${input.operationId}`, ownerId, operationId: input.operationId,
-            createdAt: Date.now(), records: input.recoveryRecords ?? input.expectedRecords, identities: input.recoveryIdentities, assets: input.recoveryAssets,
-            state: expectedState, afterEpoch: epoch, label: input.label };
-          metadata.put(recovery);
+    withLegacyProjectWrite(tx, () => {
+      const found = new Set<string>(), cursor = projects.openCursor();
+      cursor.onsuccess = () => guard(() => {
+        const row = cursor.result;
+        if (row) {
+          const record = row.value as ProjectSaveData;
+          if (record.id === ownerId || record.parentId === ownerId) {
+            if (!configValuesEqual(record, expected.get(record.id))) throw new Error('项目在预览后发生变化，请重新对比');
+            found.add(record.id);
+          } else if (input.records.some((item) => item.id === record.id)) throw new Error('新增分集身份已被使用');
+          row.continue(); return;
         }
-        const retained = new Set(input.records.map((record) => record.id));
-        for (const record of input.expectedRecords) if (!retained.has(record.id)) {
-          projects.delete(record.id); summaries.delete(record.id);
-          metadata.put({ id: `project-deleted:${record.id}`, deletedAt: Date.now() });
-        }
-        for (const record of input.records) {
-          const next = { ...record, exchangeEpoch: epoch }, summary = toProjectSummaryRecord(next);
-          if (!summary) throw new Error('合并结果缺少项目摘要');
-          projects.put(next); summaries.put(summary); metadata.delete(`project-deleted:${record.id}`);
-        }
-        const states = tx.objectStore(STORE_PROJECT_EXCHANGE_STATES);
-        if (state) states.put(state); else states.delete(ownerId);
-        for (const revision of [...verified, ...headers]) {
-          const snapshots = tx.objectStore(STORE_PROJECT_EXCHANGE_SNAPSHOTS), request = snapshots.get(revision.revisionId);
-          request.onsuccess = () => guard(() => {
-            if (request.result) {
-              const previous = request.result;
-              const { snapshot: _before, ...before } = previous;
-              const { snapshot: _after, ...after } = revision as ProjectExchangeRevision;
-              if (!configValuesEqual(before, after) || previous.snapshot && 'snapshot' in revision && !configValuesEqual(previous.snapshot, revision.snapshot)) throw new Error('不可变协作版本发生冲突');
-              if (previous.snapshot || !('snapshot' in revision)) return;
-            }
-            snapshots.put(revision);
-          });
-        }
-        // 稳定来源 ID 只追加一次；已存在的历史不覆盖本机编辑。
-        for (const row of input.history) {
-          if (!retained.has(row.value.projectId)) throw new Error('历史归属不在合并范围内');
-          const store = tx.objectStore(row.store), request = store.get(row.value.id);
-          request.onsuccess = () => {
-            if (request.result) return;
-            store.add(row.value);
-            if (row.store === STORE_CHAT_MESSAGES && typeof row.value.conversationId === 'string') {
-              const conversations = tx.objectStore(STORE_CHAT_CONVERSATIONS), conversation = conversations.get(row.value.conversationId);
-              conversation.onsuccess = () => {
-                if (!conversation.result) return;
-                const count = tx.objectStore(STORE_CHAT_MESSAGES).index('conversationId_sequence').count(IDBKeyRange.bound([row.value.conversationId, 0], [row.value.conversationId, Infinity]));
-                count.onsuccess = () => conversations.put({ ...conversation.result, messageCount: count.result });
-              };
-            }
-          };
-        }
-        metadata.put({ id: `project-import-operation:${input.operationId}`, ownerId, phase: 'committed', createdAt: Date.now(),
-          incomingRevision: input.state?.headRevisionId ?? null });
+        if (found.size !== expected.size) throw new Error('项目或分集已被删除，请重新对比');
+        const stateRequest = tx.objectStore(STORE_PROJECT_EXCHANGE_STATES).get(ownerId);
+        stateRequest.onsuccess = () => guard(() => {
+          input.assertCurrent?.();
+          const currentState = stateRequest.result ? parseProjectExchangeState(stateRequest.result) : null;
+          if (!configValuesEqual(currentState, expectedState)) throw new Error('协作基线已变化，请重新对比');
+          if (input.expectedRecords.length) {
+            const recovery: ProjectImportRecovery = { id: `project-import-recovery:${input.operationId}`, ownerId, operationId: input.operationId,
+              createdAt: Date.now(), records: input.recoveryRecords ?? input.expectedRecords, identities: input.recoveryIdentities, assets: input.recoveryAssets,
+              state: expectedState, afterEpoch: epoch, label: input.label };
+            metadata.put(recovery);
+          }
+          const retained = new Set(input.records.map((record) => record.id));
+          for (const record of input.expectedRecords) if (!retained.has(record.id)) {
+            projects.delete(record.id); summaries.delete(record.id);
+            metadata.put({ id: `project-deleted:${record.id}`, deletedAt: Date.now() });
+          }
+          for (const record of input.records) {
+            const next = { ...record, exchangeEpoch: epoch }, summary = toProjectSummaryRecord(next);
+            if (!summary) throw new Error('合并结果缺少项目摘要');
+            projects.put(next); summaries.put(summary); metadata.delete(`project-deleted:${record.id}`);
+          }
+          const states = tx.objectStore(STORE_PROJECT_EXCHANGE_STATES);
+          if (state) states.put(state); else states.delete(ownerId);
+          for (const revision of [...verified, ...headers]) {
+            const snapshots = tx.objectStore(STORE_PROJECT_EXCHANGE_SNAPSHOTS), request = snapshots.get(revision.revisionId);
+            request.onsuccess = () => guard(() => {
+              if (request.result) {
+                const previous = request.result;
+                const { snapshot: _before, ...before } = previous;
+                const { snapshot: _after, ...after } = revision as ProjectExchangeRevision;
+                if (!configValuesEqual(before, after) || previous.snapshot && 'snapshot' in revision && !configValuesEqual(previous.snapshot, revision.snapshot)) throw new Error('不可变协作版本发生冲突');
+                if (previous.snapshot || !('snapshot' in revision)) return;
+              }
+              snapshots.put(revision);
+            });
+          }
+          // 稳定来源 ID 只追加一次；已存在的历史不覆盖本机编辑。
+          for (const row of input.history) {
+            if (!retained.has(row.value.projectId)) throw new Error('历史归属不在合并范围内');
+            const store = tx.objectStore(row.store), request = store.get(row.value.id);
+            request.onsuccess = () => {
+              if (request.result) return;
+              store.add(row.value);
+              if (row.store === STORE_CHAT_MESSAGES && typeof row.value.conversationId === 'string') {
+                const conversations = tx.objectStore(STORE_CHAT_CONVERSATIONS), conversation = conversations.get(row.value.conversationId);
+                conversation.onsuccess = () => {
+                  if (!conversation.result) return;
+                  const count = tx.objectStore(STORE_CHAT_MESSAGES).index('conversationId_sequence').count(IDBKeyRange.bound([row.value.conversationId, 0], [row.value.conversationId, Infinity]));
+                  count.onsuccess = () => conversations.put({ ...conversation.result, messageCount: count.result });
+                };
+              }
+            };
+          }
+          metadata.put({ id: `project-import-operation:${input.operationId}`, ownerId, phase: 'committed', createdAt: Date.now(),
+            incomingRevision: input.state?.headRevisionId ?? null });
+        });
       });
-    });
+    }, (error) => { failure = error; });
     tx.oncomplete = () => { cleanup(); resolve(); }; tx.onerror = () => { failure ??= tx.error; };
     tx.onabort = () => { cleanup(); reject(failure ?? tx.error ?? new Error('项目更新未提交')); };
     if (input.signal?.aborted) abort();
@@ -171,8 +174,11 @@ export async function listProjectImportRecoveries(ownerId: string): Promise<Proj
 export async function beginProjectImportOperation(operationId: string, ownerId: string, stagingProjectId: string, stagingFolder: string): Promise<void> {
   const db = await openDB(); await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_METADATA, 'readwrite');
-    tx.objectStore(STORE_METADATA).add({ id: `project-import-operation:${operationId}`, operationId, ownerId,
-      stagingProjectId, stagingFolder, phase: 'publishing', createdAt: Date.now() });
-    tx.oncomplete = () => resolve(); tx.onabort = tx.onerror = () => reject(tx.error);
+    let failure: Error | undefined;
+    withLegacyProjectWrite(tx, () => {
+      tx.objectStore(STORE_METADATA).add({ id: `project-import-operation:${operationId}`, operationId, ownerId,
+        stagingProjectId, stagingFolder, phase: 'publishing', createdAt: Date.now() });
+    }, (error) => { failure = error; });
+    tx.oncomplete = () => resolve(); tx.onabort = tx.onerror = () => reject(failure ?? tx.error);
   });
 }

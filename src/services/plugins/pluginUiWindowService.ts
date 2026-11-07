@@ -6,6 +6,7 @@ import type {
   PluginUiWindowBinding, PluginUiWindowEvent,
 } from '../../types/plugin';
 import { createPluginUiNativeSession } from './pluginUiSessionService';
+import { captureLegacyCanvasContext, isProjectExpectedContextCurrent, parseProjectExpectedContext } from '../projectExecutionContext';
 
 // Windows WebView2 实机已验证专用窗口、CSP/IPC 拒绝、桥接与写回；详见插件实施记录。
 // 点击入口与 MCP 共用该发布状态；原生注册、会话租约和 capability 校验仍独立执行。
@@ -31,6 +32,7 @@ interface WindowRecord {
   key: string;
   target: Pick<PluginUiWindowBinding, 'projectId' | 'nodeId'>
     & Pick<PluginUiWindowBinding['identity'], 'pluginId' | 'toolId'>;
+  expectedContext: PluginUiWindowBinding['expectedContext'];
   session?: NativeSession;
   channel: Channel<PluginUiWindowEvent>;
   ready: Promise<PluginUiWindowBinding>;
@@ -63,6 +65,13 @@ function isReplicaStatusRequest(request: { kind: PluginUiRequestKind; payload: u
 function sameBinding(value: unknown, expected: PluginUiWindowBinding): boolean {
   if (!value || typeof value !== 'object') return false;
   const binding = value as Partial<PluginUiWindowBinding>;
+  try {
+    if (binding.expectedContext !== undefined || expected.expectedContext !== undefined) {
+      const actualContext = parseProjectExpectedContext(binding.expectedContext);
+      const expectedContext = parseProjectExpectedContext(expected.expectedContext);
+      if (!isProjectExpectedContextCurrent(expectedContext, actualContext)) return false;
+    }
+  } catch { return false; }
   return binding.sessionId === expected.sessionId && binding.projectId === expected.projectId
     && binding.nodeId === expected.nodeId && binding.canvasRevision === expected.canvasRevision
     && binding.identity?.pluginId === expected.identity.pluginId
@@ -105,6 +114,7 @@ async function restartRecord(record: WindowRecord, options: OpenWindowOptions): 
     const state = useAppStore.getState();
     const plugin = state.installedPlugins.find((item) => item.id === options.plugin.id);
     if (state.currentProjectId !== record.target.projectId || !plugin?.enabled
+      || (record.expectedContext && !isProjectExpectedContextCurrent(record.expectedContext, state, { checkCanvasRevision: false }))
       || plugin.sourceDigest !== options.plugin.sourceDigest || plugin.revisionDigest !== options.plugin.revisionDigest
       || plugin.uiDigest !== options.plugin.uiDigest) throw new Error('插件重开身份已变化');
     if (restarting.get(record.key) === closed) restarting.delete(record.key);
@@ -218,6 +228,13 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
   if (!isTauri()) throw new Error('插件独立窗口仅支持 Tauri 桌面环境');
   const projectId = useAppStore.getState().currentProjectId;
   if (!projectId) throw new Error('当前项目不存在');
+  const expectedContext = captureLegacyCanvasContext(useAppStore.getState());
+  if (!expectedContext) throw new Error('项目上下文已失效，请重新打开');
+  const assertTargetCurrent = () => {
+    if (!isProjectExpectedContextCurrent(expectedContext, useAppStore.getState(), { checkCanvasRevision: false })) {
+      throw new Error('项目上下文已变化，请从当前节点重新打开');
+    }
+  };
   const livePlugin = useAppStore.getState().installedPlugins.find((plugin) => plugin.id === options.plugin.id);
   if (!livePlugin?.enabled || livePlugin.sourceDigest !== options.plugin.sourceDigest
     || livePlugin.revisionDigest !== options.plugin.revisionDigest) throw new Error('插件 revision 已变化');
@@ -225,12 +242,14 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
   const closing = restarting.get(key);
   if (closing) {
     if (!await closing) throw new Error('旧插件窗口尚未确认关闭，请先手动关闭后重试');
+    assertTargetCurrent();
     if (useAppStore.getState().currentProjectId !== projectId) throw new Error('当前项目已变化');
     return openPluginUiWindow(options);
   }
   const existing = windows.get(key);
   if (existing) {
     const binding = await existing.ready;
+    assertTargetCurrent();
     options.signal?.throwIfAborted();
     if (existing.disposed || !existing.session?.isActive()) throw new Error('插件窗口会话已失效');
     try {
@@ -249,13 +268,14 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
   }
   const channel = new Channel<PluginUiWindowEvent>();
   const record: WindowRecord = {
-    key, target: { projectId, nodeId: options.nodeId, pluginId: options.plugin.id, toolId: options.tool.id },
+    key, target: { projectId, nodeId: options.nodeId, pluginId: options.plugin.id, toolId: options.tool.id }, expectedContext,
     channel, disposed: false, nativeStarted: false, opened: false, contextResponded: false,
     seenRequests: new Set(), replicaStatusRequests: 0, closeRequested: false, pending: 0,
     // 推迟到 microtask，先完成登记；重复调用共享同一创建 Promise，不重复 mint。
     ready: Promise.resolve().then(async () => {
       try {
         if (record.disposed) throw new Error('插件窗口启动已取消');
+        assertTargetCurrent();
         if (useAppStore.getState().currentProjectId !== projectId) throw new Error('当前项目已变化');
         const session = await createPluginUiNativeSession({
           ...options, onClose: () => disposeRecord(record, true),

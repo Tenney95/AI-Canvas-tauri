@@ -4,17 +4,20 @@
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import type { AiAppDefinition, AiAppReference, AiAppResourceSnapshot } from '../../types/aiApp';
+import type { CanvasContext } from '../../types/project';
 import { useAppStore } from '../../store/useAppStore';
 import { allowAiAppNodeInsertion } from './aiAppCreation';
 import { AI_APP_MAX_DEFINITION_BYTES, normalizeAiAppDefinition, normalizeAiAppInputIds, normalizeAiAppJson, normalizeAiAppReference } from './aiAppSchema';
 import { readBoundedProjectFile, readVerifiedProjectFile, sha256Hex, writeImmutableProjectFile } from '../fs/projectFiles';
 import { arrayBufferToBase64, getProjectDataDir } from '../fileService';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
-import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../canvasDerivationGuard';
+import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation, registerCanvasImport } from '../canvasDerivationGuard';
+import { assertProjectExpectedContextCurrent } from '../projectExecutionContext';
 
 export interface AiAppMutationContext {
   projectId: string;
   baseRevision?: number;
+  expectedContext?: Readonly<CanvasContext>;
   signal?: AbortSignal;
 }
 
@@ -22,6 +25,12 @@ export function assertAiAppContext(context: AiAppMutationContext): void {
   context.signal?.throwIfAborted();
   const state = useAppStore.getState();
   if (!context.projectId || state.currentProjectId !== context.projectId) throw new Error('目标项目当前未加载');
+  if (context.expectedContext !== undefined) {
+    assertProjectExpectedContextCurrent(context.expectedContext, state, { checkCanvasRevision: false });
+    if (context.expectedContext.kind !== 'canvas' || context.expectedContext.canvasId !== context.projectId) {
+      throw new Error('应用目标画布上下文无效');
+    }
+  }
   if (context.baseRevision !== undefined && state.getCurrentRevision() !== context.baseRevision) {
     throw new Error('画布已变化，请重新读取应用后再操作');
   }
@@ -87,34 +96,39 @@ export async function createAiAppNode(input: {
   const definition = normalizeAiAppDefinition(input.definition);
   const inputNodeIds = normalizeAiAppInputIds(input.inputNodeIds ?? []);
   const savedState = normalizeAiAppJson(input.state ?? {});
-  const initialRevision = useAppStore.getState().getCurrentRevision();
-  const resources = captureAiAppResources(inputNodeIds);
-  const assertFresh = () => {
-    assertAiAppContext({ ...context, baseRevision: initialRevision });
-    if (captureAiAppResources(inputNodeIds).fingerprint !== resources.fingerprint) throw new Error('绑定素材已变化');
-  };
-  const position = input.position ?? { x: 300, y: 300 };
-  if (![position.x, position.y].every((value) => Number.isFinite(value) && Math.abs(value) <= 1_000_000)) {
-    throw new Error('应用节点坐标无效');
-  }
-  const { validateAiAppCandidate } = await import('./aiAppRuntime');
-  assertFresh();
-  await validateAiAppCandidate({ definition, inputNodeIds, savedState, assertFresh, signal: context.signal });
-  assertFresh();
-  const reference = await writeDefinition(context.projectId, definition);
-  assertFresh();
-  const id = `ai-app-${crypto.randomUUID()}`;
-  const app: AiAppReference = {
-    version: 1, instanceId: id, definition: reference, title: definition.title, description: definition.description,
-    revision: 1, actions: definition.actions, inputNodeIds, savedState,
-  };
-  const node: Node<BaseNodeData> = {
-    id, type: 'ai-app', position,
-    data: { type: 'ai-app', label: definition.title, aiApp: app, status: 'idle', nodeWidth: 320, nodeHeight: 220 },
-  };
-  allowAiAppNodeInsertion(node, () => useAppStore.getState().addNode(node));
-  useAppStore.getState().incrementRevision();
-  return id;
+  const guard = registerCanvasImport(useAppStore.getState());
+  if (!guard) throw new Error('无法创建应用目标保护');
+  try {
+    const initialRevision = useAppStore.getState().getCurrentRevision();
+    const resources = captureAiAppResources(inputNodeIds);
+    const assertFresh = () => {
+      assertAiAppContext({ ...context, baseRevision: initialRevision });
+      if (!isCanvasDerivationFresh(guard, useAppStore.getState())) throw new Error('应用目标画布已变化');
+      if (captureAiAppResources(inputNodeIds).fingerprint !== resources.fingerprint) throw new Error('绑定素材已变化');
+    };
+    const position = input.position ?? { x: 300, y: 300 };
+    if (![position.x, position.y].every((value) => Number.isFinite(value) && Math.abs(value) <= 1_000_000)) {
+      throw new Error('应用节点坐标无效');
+    }
+    const { validateAiAppCandidate } = await import('./aiAppRuntime');
+    assertFresh();
+    await validateAiAppCandidate({ definition, inputNodeIds, savedState, assertFresh, signal: context.signal });
+    assertFresh();
+    const reference = await writeDefinition(context.projectId, definition);
+    assertFresh();
+    const id = `ai-app-${crypto.randomUUID()}`;
+    const app: AiAppReference = {
+      version: 1, instanceId: id, definition: reference, title: definition.title, description: definition.description,
+      revision: 1, actions: definition.actions, inputNodeIds, savedState,
+    };
+    const node: Node<BaseNodeData> = {
+      id, type: 'ai-app', position,
+      data: { type: 'ai-app', label: definition.title, aiApp: app, status: 'idle', nodeWidth: 320, nodeHeight: 220 },
+    };
+    allowAiAppNodeInsertion(node, () => useAppStore.getState().addNode(node));
+    useAppStore.getState().incrementRevision();
+    return id;
+  } finally { completeCanvasDerivation(guard); }
 }
 
 export async function updateAiAppNode(nodeId: string, input: {

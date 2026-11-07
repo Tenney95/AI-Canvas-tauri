@@ -36,6 +36,8 @@ import { serializeProjectArchiveEntries, type ProjectArchiveJsonEntry } from './
 import { portableArchiveChat, sanitizeLegacyArchiveProject, selectArchiveAssets, selectArchiveImportPaths } from './projectArchiveValidation';
 import { configValuesEqual } from './configPatch';
 import { remapStoryGraphBindings, type ArchiveAssetDigest } from './projectExchangeDomain';
+import { openDB } from './indexedDb/schema';
+import { assertLegacyProjectWritesAllowed } from './indexedDb/legacyProjectWriteGuard';
 
 export const PROJECT_ARCHIVE_EXTENSION = 'aicanvas';
 /** 归档格式版本；解包时拒绝更高版本，避免旧版本误读新结构。 */
@@ -310,6 +312,7 @@ async function packProjectArchive(
   projectId: string,
   outputPath: string,
 ): Promise<PackResult & { episodeCount: number }> {
+  await assertLegacyProjectWritesAllowed(await openDB());
   const projectRecord = await getArchiveProject(projectId);
   const chat = await collectChatPayload(projectRecord.id);
   const summaries = (await getAllProjects())
@@ -381,6 +384,7 @@ async function packProjectArchive(
  */
 export async function exportProjectArchive(projectId: string): Promise<ProjectExportResult | null> {
   if (!fileService.isTauriEnv()) throw new Error('项目导出仅在桌面版可用');
+  await assertLegacyProjectWritesAllowed(await openDB());
 
   // 保存对话框只需要名字与归属；用户确认后再读取最新完整画布和对话。
   const summaries = await getAllProjects();
@@ -480,6 +484,7 @@ export async function restoreProjectArchive(
   historyOptions: { appendChat: boolean; appendMemories: boolean; signal?: AbortSignal } = { appendChat: true, appendMemories: true },
   preview?: { manifest: ProjectArchiveManifest; records: ProjectSaveData[]; chat: Array<ProjectArchiveChatPayload | null>; assets: ArchiveAssetDigest[] },
 ): Promise<ProjectImportResult> {
+  await assertLegacyProjectWritesAllowed(await openDB());
   const projectId = createRecordId();
   const stagingFolder = fileService.buildProjectFolderName('导入中', projectId);
   fileService.registerProjectFolder(projectId, stagingFolder);
@@ -664,6 +669,7 @@ export async function duplicateProjectArchive(
   name: string,
 ): Promise<ProjectImportResult> {
   if (!fileService.isTauriEnv()) throw new Error('项目复制仅在桌面版可用');
+  await assertLegacyProjectWritesAllowed(await openDB());
 
   const baseDir = await fileService.getBaseDir();
   if (!baseDir) throw new Error('无法定位应用数据目录');

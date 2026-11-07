@@ -106,4 +106,20 @@ describe('项目协作持久化', () => {
       state: { ...state, stateVersion: 2, headRevisionId: next.revisionId }, revisions: [next] });
     expect((await repo.loadProjectExchangeState('owner'))!.headRevisionId).toBe(next.revisionId);
   });
+
+  it.each(['project-model-source-freeze', 'activeDataModel', 'project-model-business-fixture'])(
+    '%s 阻止旧导出准备推进协作状态或插入不可变候选', async (key) => {
+      const repo = await import('../../src/services/indexedDb/projectExchangeRepository');
+      const { revision, state } = await fixture();
+      const db = await (await import('../../src/services/indexedDb/schema')).openDB();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('metadata', 'readwrite'); tx.objectStore('metadata').put({ id: key, malformed: true });
+        tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+      });
+      await expect(repo.saveProjectExchangeCheckpoint({ expectedState: null, state, revisions: [revision] }))
+        .rejects.toThrow('旧项目写入已停止');
+      expect(await repo.loadProjectExchangeState('owner')).toBeNull();
+      expect((await repo.loadProjectExchangeGraph('lineage')).revisions).toEqual([]);
+    },
+  );
 });

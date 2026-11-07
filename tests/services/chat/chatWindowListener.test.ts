@@ -4,6 +4,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
+const nativeWindow = vi.hoisted(() => ({ getByLabel: vi.fn(async () => ({} as object | null)) }));
+vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: nativeWindow.getByLabel } }));
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
@@ -21,6 +23,8 @@ import { emit, emitTo } from '@tauri-apps/api/event';
 import {
   CHAT_ACTION_EVENT,
   CHAT_CLOSE_REQUEST,
+  CHAT_CLOSE_EVENT,
+  emitCloseChatWindow,
   emitCloseRequest,
   initMainWindowListener,
   requestManagedChatOperation,
@@ -28,6 +32,18 @@ import {
 } from '../../../src/services/chat/chatWindowService';
 
 describe('initMainWindowListener', () => {
+  it('收回窗口等待草稿交接 ack，拒绝时保留窗口；已关闭窗口不等待不存在的回执', async () => {
+    const closing = emitCloseChatWindow();
+    const rejected = expect(closing).rejects.toThrow('草稿仍保留');
+    await vi.waitFor(() => expect(vi.mocked(emitTo).mock.calls.some((call) => call[1] === CHAT_CLOSE_EVENT)).toBe(true));
+    const sent = vi.mocked(emitTo).mock.calls.find((call) => call[1] === CHAT_CLOSE_EVENT)![2] as { requestId: string };
+    for (const handler of listeners.get('chat:close-ack') ?? []) handler({ payload: { requestId: sent.requestId, accepted: false } });
+    await rejected;
+    expect(listeners.get('chat:close-ack')?.size).toBe(0);
+    nativeWindow.getByLabel.mockResolvedValueOnce(null);
+    await expect(emitCloseChatWindow()).resolves.toBeUndefined();
+    vi.mocked(emitTo).mockClear();
+  });
   it('waits for the matching main-window acknowledgement before reporting saved', async () => {
     let completed = false;
     const pending = requestManagedChatOperation('project-1', 'conversation-1', { kind: 'save_team_profile',

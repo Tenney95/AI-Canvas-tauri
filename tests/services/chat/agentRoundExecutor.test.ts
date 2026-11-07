@@ -137,6 +137,8 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-1',
+    projectLoadStatus: 'ready',
+    projects: [{ id: 'project-1', name: '项目', createdAt: 1, updatedAt: 1 }],
     activeConversationId: 'conversation-1',
     conversations: [{
       id: 'conversation-1',

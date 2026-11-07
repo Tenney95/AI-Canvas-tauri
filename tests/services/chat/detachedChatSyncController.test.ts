@@ -29,12 +29,25 @@ import { applyChatStatePatch, createChatStatePatch, receiveChatStateSync, type C
 import { runAgentTask } from '../../../src/services/chat/agentTaskControl';
 import { useAppStore } from '../../../src/store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../../src/services/chat/assistantScope';
+import type { ProjectWindowFrame } from '../../../src/types/projectWindow';
+
+function windowActions(handler: (action: ChatAction) => void, frame: () => ProjectWindowFrame | null | undefined) {
+  let sequence = 0;
+  return (action: ChatAction) => {
+    const windowFrame = frame() ?? undefined;
+    handler({ ...action, windowFrame, sequence: ++sequence,
+      ...((action.type === 'dock_window' || action.type === 'close_window') && action.composerDraft
+        ? { composerDraft: { ...action.composerDraft, windowFrame } } : {}) });
+  };
+}
+const syncFrame = (sync?: ChatStateSync) => sync?.type === 'snapshot' ? sync.snapshot.windowFrame : sync?.patch.fields.windowFrame;
 
 function arrangeDetachedState(): void {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     chatOpen: false,
     chatPanelDetached: true,
+    projectLoadStatus: 'ready', switchingProjectName: null,
     currentProjectId: 'project-1',
     activeConversationId: 'conversation-1',
     projects: [{
@@ -70,6 +83,31 @@ beforeEach(() => {
 });
 
 describe('detached chat sync controller', () => {
+  it('原生窗口入口拒绝旧协议和同 ID 替换后的迟到写入，保留原草稿', async () => {
+    useAppStore.setState({ projectLoadStatus: 'ready', switchingProjectName: null,
+      chatComposerLiveDraft: '保留草稿', chatComposerDrafts: { 'conversation-1': '保留草稿' } });
+    const frames: ChatStateSync[] = [];
+    let dispatch!: (action: ChatAction) => void;
+    const controller = createDetachedChatSyncController({ enabled: true, syncIntervalMs: 0,
+      emitSync: async (sync) => { frames.push(sync); },
+      initListener: async (onAction) => { dispatch = onAction; return () => {}; } });
+    await controller.start();
+    try {
+      await Promise.resolve();
+      const first = frames.find((item) => item.type === 'snapshot');
+      if (!first || first.type !== 'snapshot' || !first.snapshot.windowFrame) throw new Error('missing published context');
+      const captured = first.snapshot.windowFrame;
+      dispatch({ type: 'send_message', conversationId: 'conversation-1', content: '旧协议' });
+      expect(conversationControllerMocks.submit).not.toHaveBeenCalled();
+      dispatch({ type: 'send_message', conversationId: 'conversation-1', content: '正常请求', windowFrame: captured, sequence: 1 });
+      expect(conversationControllerMocks.submit).toHaveBeenCalledOnce();
+      useAppStore.setState((state) => ({ projects: state.projects.map((item) => ({ ...item, exchangeEpoch: 1 })),
+        chatComposerDrafts: { 'conversation-1': '替换后草稿' } }));
+      dispatch({ type: 'send_message', conversationId: 'conversation-1', content: '迟到旧请求', windowFrame: captured, sequence: 2 });
+      expect(conversationControllerMocks.submit).toHaveBeenCalledOnce();
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('替换后草稿');
+    } finally { controller.dispose(); }
+  });
   it('会话分集绑定经快照和补丁传递，但独立窗口发送不能声明或改绑目标', () => {
     const target = { seriesId: 'project-1', episodeId: 'episode-1' };
     useAppStore.setState({ projectLoadStatus: 'ready', isCreatingProject: false, isReturningToStartPage: false,
@@ -207,7 +245,7 @@ describe('detached chat sync controller', () => {
     const controller = createDetachedChatSyncController({
       enabled: true, syncIntervalMs: 0,
       emitSync: async (sync) => { mirror = receiveChatStateSync(mirror, structuredClone(sync)); },
-      initListener: async (handler) => { onAction = handler; return () => undefined; },
+      initListener: async (handler) => { onAction = windowActions(handler, () => readMirror()?.snapshot.windowFrame); return () => undefined; },
     });
     await controller.start();
     try {
@@ -298,7 +336,7 @@ describe('detached chat sync controller', () => {
     const controller = createDetachedChatSyncController({
       enabled: true, syncIntervalMs: 0,
       emitSync: async (sync) => { mirror = receiveChatStateSync(mirror, structuredClone(sync)); },
-      initListener: async (handler) => { onAction = handler; return () => undefined; },
+      initListener: async (handler) => { onAction = windowActions(handler, () => readMirror()?.snapshot.windowFrame); return () => undefined; },
     });
     await controller.start();
     try {
@@ -328,22 +366,24 @@ describe('detached chat sync controller', () => {
     }
   });
 
-  it('binds delayed drafts to their original conversation and carries final edits on close', async () => {
+  it('拒绝没有原帧的迟到草稿，当前会话的有效交接仍可收回', async () => {
     useAppStore.setState((state) => ({ conversations: [...state.conversations, { ...state.conversations[0], id: 'conversation-2' }] }));
     useAppStore.getState().setActiveConversation('conversation-2');
     useAppStore.getState().setChatComposerLiveDraft('乙的草稿');
     let onAction!: (action: ChatAction) => void;
+    let rawAction!: (action: ChatAction) => void;
     let onClose!: (draft?: { conversationId: string | null; draft: string }) => void;
+    let publishedFrame: ProjectWindowFrame | null | undefined;
     const controller = createDetachedChatSyncController({
-      enabled: true, syncIntervalMs: 0, emitSync: async () => undefined,
-      initListener: async (action, close) => { onAction = action; onClose = close; return () => undefined; },
+      enabled: true, syncIntervalMs: 0, emitSync: async (sync) => { publishedFrame = sync.type === 'snapshot' ? sync.snapshot.windowFrame : sync.patch.fields.windowFrame; },
+      initListener: async (action, close) => { rawAction = action; onAction = windowActions(action, () => publishedFrame); onClose = close; return () => undefined; },
     });
     await controller.start();
-    onAction({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: '甲的迟到输入' });
+    rawAction({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: '甲的迟到输入' });
     expect(useAppStore.getState().chatComposerLiveDraft).toBe('乙的草稿');
     onClose({ conversationId: 'conversation-1', draft: '甲的最后一次输入' });
     expect(buildDetachedChatSnapshot(useAppStore.getState()).composerDrafts).toEqual({
-      'conversation-1': '甲的最后一次输入', 'conversation-2': '乙的草稿',
+      'conversation-2': '乙的草稿',
     });
     onAction({ type: 'set_panel_view', view: 'tasks' });
     onAction({ type: 'dock_window', composerDraft: { conversationId: 'conversation-2', draft: '' } });
@@ -414,12 +454,13 @@ describe('detached chat sync controller', () => {
       .toBe('general/project-model');
 
     let onAction: ((action: ChatAction) => void) | undefined;
+    let publishedFrame: ProjectWindowFrame | null | undefined;
     const controller = createDetachedChatSyncController({
       enabled: true,
       syncIntervalMs: 0,
-      emitSync: vi.fn(async () => undefined),
+      emitSync: vi.fn(async (sync: ChatStateSync) => { publishedFrame = syncFrame(sync); }),
       initListener: vi.fn(async (handler) => {
-        onAction = handler;
+        onAction = windowActions(handler, () => publishedFrame);
         return () => undefined;
       }),
     });
@@ -535,7 +576,7 @@ describe('detached chat sync controller', () => {
       syncIntervalMs: 0,
       emitSync,
       initListener: vi.fn(async (actionHandler, closeHandler) => {
-        onAction = actionHandler;
+        onAction = windowActions(actionHandler, () => syncFrame(emitSync.mock.lastCall?.[0]));
         onDetachClosed = closeHandler;
         return cleanup;
       }),
@@ -741,7 +782,7 @@ describe('detached chat sync controller', () => {
       syncIntervalMs: 0,
       emitSync,
       initListener: vi.fn(async (handler) => {
-        onAction = handler;
+        onAction = windowActions(handler, () => syncFrame(emitSync.mock.lastCall?.[0]));
         return () => undefined;
       }),
       now: () => 1,

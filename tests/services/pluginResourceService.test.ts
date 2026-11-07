@@ -7,6 +7,7 @@ import type { BaseNodeData } from '../../src/types';
 import type { PluginResourceStateSnapshot } from '../../src/services/plugins/pluginResourceService';
 import type { InstalledPlugin, PluginInvocationResources } from '../../src/types/plugin';
 import type { PluginLineArtImage } from '../../src/services/plugins/pluginImageService';
+import { captureLegacyCanvasContext } from '../../src/services/projectExecutionContext';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -47,6 +48,7 @@ import {
   clearPluginResources,
   getPluginLineArtResource,
   mintPluginInvocationResources,
+  assertPluginResourceContextCurrent,
   readPluginDerivedResourceForOutput,
   readPluginResourceRange,
   readPluginPlaybackRange,
@@ -169,6 +171,18 @@ describe('pluginResourceService', () => {
     const context = { ...readContext(state), permissions: ['files.connected.read', 'files.output.create'] as const };
     return { state, setRevision, resources, context };
   }
+
+  it('uses the live Store rather than a captured resource snapshot after same-id restore', () => {
+    const state = { ...createState().state, projects: [{ id: 'project-1', exchangeEpoch: 0 }] };
+    let actual = state;
+    const expectedContext = captureLegacyCanvasContext(state)!;
+    const context = { ...readContext(state), expectedContext, getState: () => actual };
+    expect(() => assertPluginResourceContextCurrent(context)).not.toThrow();
+    actual = { ...state, projects: [{ id: 'project-1', exchangeEpoch: 1 }] };
+    expect(context.state.projects?.[0].exchangeEpoch).toBe(0);
+    expect(() => assertPluginResourceContextCurrent(context)).toThrow('上下文');
+    expect(() => assertPluginResourceContextCurrent({ ...context, expectedContext: undefined })).toThrow('上下文');
+  });
 
   it('binds one playback preview to its source without exposing it as an output image', async () => {
     const { resources, context } = await workspaceSetup();

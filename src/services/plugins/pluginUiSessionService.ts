@@ -23,6 +23,7 @@ import { createPluginLifecycleScope } from './pluginLifecycleScope';
 import {
   completeCanvasDerivation,
   isCanvasDerivationFresh,
+  isCanvasDerivationTargetCurrent,
   registerCanvasDerivation,
   type CanvasDerivationGuard,
 } from '../canvasDerivationGuard';
@@ -198,6 +199,7 @@ function resolveLivePlugin(session: PluginUiSession, checkCanvas = true): Instal
     throw new Error('插件界面已更新');
   }
   if (state.currentProjectId !== session.projectId || !state.nodes.some((node) => node.id === session.nodeId)
+    || !isCanvasDerivationTargetCurrent(session.guard, state)
     || (checkCanvas && !isCanvasDerivationFresh(session.guard, state))) {
     throw new Error('画布或项目已变化，插件界面会话已失效');
   }
@@ -234,6 +236,8 @@ function resourceReadContext(session: PluginUiSession, plugin: InstalledPlugin):
     projectId: session.projectId,
     nodeId: session.nodeId,
     baseRevision: session.guard.baseRevision,
+    expectedContext: session.guard.expectedContext,
+    getState: useAppStore.getState,
     permissions: plugin.manifest.permissions,
     state: useAppStore.getState(),
   };
@@ -242,6 +246,7 @@ function resourceReadContext(session: PluginUiSession, plugin: InstalledPlugin):
 function replicaJobIdentity(session: PluginUiSession) {
   return {
     projectId: session.projectId, pluginId: session.pluginId, nodeId: session.nodeId,
+    expectedContext: session.guard.expectedContext,
     sourceDigest: session.sourceDigest, revisionDigest: session.revisionDigest,
   };
 }
@@ -253,7 +258,8 @@ function supportsReplicaJobs(plugin: InstalledPlugin): boolean {
 
 function updateReplicaJobParameter(session: PluginUiSession, summary: PluginVideoReplicaJobSummary): void {
   if (session.replicaJobId && summary.jobId !== session.replicaJobId) throw new Error('复刻任务摘要与当前观察任务不匹配');
-  if (Object.entries(replicaJobIdentity(session)).some(([key, value]) => summary[key as keyof PluginVideoReplicaJobSummary] !== value)) {
+  if (Object.entries(replicaJobIdentity(session)).some(([key, value]) => key !== 'expectedContext'
+    && summary[key as keyof PluginVideoReplicaJobSummary] !== value)) {
     throw new Error('复刻任务不属于当前插件界面会话');
   }
   const normalized = normalizeJson(summary);
@@ -666,6 +672,8 @@ async function createSession(
       projectId,
       nodeId: options.nodeId,
       baseRevision: guard.baseRevision,
+      expectedContext: guard.expectedContext,
+      getState: useAppStore.getState,
       access: tool.resourceAccess,
       packageResources: plugin.manifest.resources,
       state,
@@ -736,6 +744,7 @@ export async function createPluginUiNativeSession(options: CreatePluginUiSession
       uiDigest: session.uiDigest, toolId: session.tool.id,
     }),
     projectId: session.projectId, nodeId: session.nodeId, canvasRevision: session.guard.baseRevision,
+    ...(session.guard.expectedContext ? { expectedContext: session.guard.expectedContext } : {}),
   });
   return {
     binding,

@@ -1,6 +1,8 @@
 /** 主窗口持有全片任务；ReShot 仍是插件执行，媒体生成和合成复用宿主平台。 */
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
+import type { CanvasContext } from '../../types/project';
+import { isProjectExpectedContextCurrent } from '../projectExecutionContext';
 import type { PluginVideoReplicaJobSummary, PluginVideoReplicaStart, AvailableNodePluginTool, PluginInvocationResources, PluginJsonValue } from '../../types/plugin';
 import type { VideoEditorTrackInput } from '../../types/videoEditorControl';
 import type { VideoModelCapability } from '../../types/aiTypes';
@@ -34,7 +36,11 @@ import { extractReplicaSegmentAudio, inspectReplicaSpeechModels, prepareReplicaS
 import { planPluginVideoReplica, ReplicaPlanningError, type PluginVideoReplicaPlan, type PluginVideoReplicaSegmentPlan } from './pluginVideoReplicaPlanning';
 import { readPluginVideoReplicaJobs, recoverPluginVideoReplicaJob, savePluginVideoReplicaJob } from './pluginVideoReplicaJobRepository';
 
-interface JobIdentity { projectId: string; pluginId: string; nodeId: string; sourceDigest: string; revisionDigest: string }
+interface JobIdentity {
+  projectId: string; pluginId: string; nodeId: string; sourceDigest: string; revisionDigest: string;
+  /** 仅宿主内存租约；不写入旧任务summary，也不复活重启后的任务。 */
+  expectedContext?: Readonly<CanvasContext>;
+}
 interface StartContext extends JobIdentity {
   tool: AvailableNodePluginTool;
   resources: PluginInvocationResources;
@@ -122,6 +128,7 @@ function requireIdentity(identity: JobIdentity): void {
   const plugin = state.installedPlugins.find((item) => item.id === identity.pluginId);
   if (!resolvePluginDependencies(state.installedPlugins, identity.pluginId).ready) throw new ReplicaFailure('插件依赖已失效，任务已停止');
   if (state.currentProjectId !== identity.projectId || !state.nodes.some((node) => node.id === identity.nodeId)
+    || identity.expectedContext !== undefined && !isProjectExpectedContextCurrent(identity.expectedContext, state, { checkCanvasRevision: false })
     || !plugin?.enabled || plugin.sourceDigest !== identity.sourceDigest || plugin.revisionDigest !== identity.revisionDigest) {
     throw new ReplicaFailure('项目、源节点或插件版本已变化，任务已停止');
   }
@@ -505,11 +512,13 @@ async function runJob(job: ReplicaJob, context: StartContext, request: PluginVid
       if (!batchGuard) throw new ReplicaFailure('无法建立素材执行守卫');
       let resources: PluginInvocationResources | undefined;
       try {
-        resources = await mintPluginInvocationResources({ ...context, invocationId, baseRevision: batchGuard.baseRevision, state: useAppStore.getState(),
+        resources = await mintPluginInvocationResources({ ...context, invocationId, baseRevision: batchGuard.baseRevision,
+          expectedContext: batchGuard.expectedContext, getState: useAppStore.getState, state: useAppStore.getState(),
           access: context.tool.tool.resourceAccess });
         const source = resources.self.find((item) => item.mediaType.startsWith('video/') && item.source?.nodeId === context.nodeId);
         if (!source) throw new ReplicaFailure('参考视频授权已不可用');
-        const readContext: PluginResourceReadContext = { ...context, invocationId, baseRevision: batchGuard.baseRevision, permissions: context.tool.permissions, state: useAppStore.getState() };
+        const readContext: PluginResourceReadContext = { ...context, invocationId, baseRevision: batchGuard.baseRevision,
+          expectedContext: batchGuard.expectedContext, getState: useAppStore.getState, permissions: context.tool.permissions, state: useAppStore.getState() };
         const inputPath = (await resolvePluginMediaWorkspaceInputs(readContext, resources))[0].path;
         if (normalizeReplicaPath(inputPath) !== normalizeReplicaPath(sourcePath)) throw new ReplicaFailure('分段授权源视频已变化，未提交生成');
         const effect = (payload: Parameters<typeof executePluginUiHostEffect>[0]['effect']) => executePluginUiHostEffect({ ...context, toolId: context.tool.tool.id,

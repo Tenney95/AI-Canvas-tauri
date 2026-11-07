@@ -27,6 +27,20 @@ import {
   saveVideoEditorProject,
 } from './indexedDbService';
 import { openVideoEditorWindow } from './videoEditorWindowService';
+import { useAppStore } from '../store/useAppStore';
+import { captureLegacyCanvasContext, assertProjectExpectedContextCurrent } from './projectExecutionContext';
+import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
+
+function captureEditorOrigin(projectId: string) {
+  const expectedContext = captureLegacyCanvasContext(useAppStore.getState());
+  if (!expectedContext || expectedContext.canvasId !== projectId) throw new Error('剪辑来源画布上下文无效');
+  const guard = registerCanvasImport(useAppStore.getState());
+  if (!guard) throw new Error('无法建立剪辑打开保护');
+  return { expectedContext, release: () => completeCanvasDerivation(guard), assertCurrent: () => {
+    assertProjectExpectedContextCurrent(expectedContext, useAppStore.getState());
+    if (!isCanvasDerivationFresh(guard, useAppStore.getState())) throw new Error('剪辑来源画布曾切换，请重新打开');
+  } };
+}
 
 /** 可进入剪辑时间轴的节点类型 */
 const VIDEO_NODE_TYPES: NodeType[] = ['ai-video', 'source-video'];
@@ -103,65 +117,70 @@ export async function openVideoEditorForNodes(params: {
 }): Promise<void> {
   const { projectId, nodes, theme } = params;
   if (!projectId) throw new Error('请先打开一个项目再编辑视频');
+  const origin = captureEditorOrigin(projectId);
+  try {
 
-  const usable = nodes.filter(isEditableMediaNode);
-  if (usable.length === 0) throw new Error('选中的节点没有可编辑的素材');
-  if (!hasVideoSource(usable)) throw new Error('至少需要选中一个视频节点');
+    const usable = nodes.filter(isEditableMediaNode);
+    if (usable.length === 0) throw new Error('选中的节点没有可编辑的素材');
+    if (!hasVideoSource(usable)) throw new Error('至少需要选中一个视频节点');
 
-  const anchor = usable[0];
-  const id = buildVideoEditorProjectId(projectId, anchor.id);
-  const existing = await getVideoEditorProject(id);
+    const anchor = usable[0];
+    const id = buildVideoEditorProjectId(projectId, anchor.id);
+    const existing = await getVideoEditorProject(id, origin.expectedContext);
+    origin.assertCurrent();
 
-  if (existing) {
-    // 锚点节点可能已有旧工程（例如之前单独打开过）。这次选择里多出来的素材
-    // 要追加进时间轴，否则用户多选了却只看到旧的那一个片段；
-    // 追加而非重建，是为了保住已有的裁剪与分割结果。
-    const known = new Set(existing.nodeIds ?? [existing.nodeId]);
-    const missing = usable.filter((node) => !known.has(node.id));
+    if (existing) {
+      // 锚点节点可能已有旧工程（例如之前单独打开过）。这次选择里多出来的素材
+      // 要追加进时间轴，否则用户多选了却只看到旧的那一个片段；
+      // 追加而非重建，是为了保住已有的裁剪与分割结果。
+      const known = new Set(existing.nodeIds ?? [existing.nodeId]);
+      const missing = usable.filter((node) => !known.has(node.id));
 
-    if (missing.length > 0) {
-      const videoTrack = existing.tracks.find((track) => track.kind === 'video');
-      const offset = videoTrack?.clips.length ?? 0;
-      const appended = [
-        ...(videoTrack?.clips ?? []),
-        ...missing.map((node, index) => buildClip(node, offset + index)),
-      ];
-      await saveVideoEditorProject({
-        ...existing,
-        nodeIds: [...(existing.nodeIds ?? [existing.nodeId]), ...missing.map((node) => node.id)],
-        tracks: existing.tracks.map((track) => (
-          track.kind === 'video' ? { ...track, clips: relayoutSequential(appended) } : track
-        )),
-        updatedAt: Date.now(),
-      });
+      if (missing.length > 0) {
+        const videoTrack = existing.tracks.find((track) => track.kind === 'video');
+        const offset = videoTrack?.clips.length ?? 0;
+        const appended = [
+          ...(videoTrack?.clips ?? []),
+          ...missing.map((node, index) => buildClip(node, offset + index)),
+        ];
+        await saveVideoEditorProject({
+          ...existing,
+          nodeIds: [...(existing.nodeIds ?? [existing.nodeId]), ...missing.map((node) => node.id)],
+          tracks: existing.tracks.map((track) => (
+            track.kind === 'video' ? { ...track, clips: relayoutSequential(appended) } : track
+          )),
+          updatedAt: Date.now(),
+        }, origin.expectedContext);
+      }
+    } else {
+      const now = Date.now();
+      const anchorName = (typeof anchor.data.label === 'string' && anchor.data.label)
+        || (typeof anchor.data.fileName === 'string' && anchor.data.fileName)
+        || '未命名剪辑';
+      const name = usable.length > 1 ? `${anchorName} 等 ${usable.length} 个素材` : anchorName;
+
+      const record: VideoEditorProjectRecord = {
+        id,
+        schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION,
+        projectId,
+        nodeId: anchor.id,
+        nodeIds: usable.map((node) => node.id),
+        name,
+        tracks: [{
+          id: 'video-1',
+          kind: 'video',
+          name: '视频轨 1',
+          clips: relayoutSequential(usable.map(buildClip)),
+        }],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await saveVideoEditorProject(record, origin.expectedContext);
     }
-  } else {
-    const now = Date.now();
-    const anchorName = (typeof anchor.data.label === 'string' && anchor.data.label)
-      || (typeof anchor.data.fileName === 'string' && anchor.data.fileName)
-      || '未命名剪辑';
-    const name = usable.length > 1 ? `${anchorName} 等 ${usable.length} 个素材` : anchorName;
 
-    const record: VideoEditorProjectRecord = {
-      id,
-      schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION,
-      projectId,
-      nodeId: anchor.id,
-      nodeIds: usable.map((node) => node.id),
-      name,
-      tracks: [{
-        id: 'video-1',
-        kind: 'video',
-        name: '视频轨 1',
-        clips: relayoutSequential(usable.map(buildClip)),
-      }],
-      createdAt: now,
-      updatedAt: now,
-    };
-    await saveVideoEditorProject(record);
-  }
-
-  await openVideoEditorWindow({ instanceId: id, projectId, nodeId: anchor.id, theme });
+    origin.assertCurrent();
+    await openVideoEditorWindow({ instanceId: id, projectId, nodeId: anchor.id, theme, expectedContext: origin.expectedContext, assertCurrent: origin.assertCurrent });
+  } finally { origin.release(); }
 }
 
 // ── 分镜表 → 时间轴 ──
@@ -295,40 +314,45 @@ export async function openVideoEditorForShotlist(params: {
 }): Promise<void> {
   const { projectId, nodeId, label, rows, theme, assertCurrent } = params;
   if (!projectId) throw new Error('请先打开一个项目再推送分镜表');
-  assertCurrent?.();
+  const origin = captureEditorOrigin(projectId);
+  try {
+    assertCurrent?.();
 
-  // 缺失生成视频的行不以参考图或文字补位，字幕和配音共用这一有效行列表。
-  const usable = rows.filter(hasReadyShotVideo);
-  if (usable.length === 0) throw new Error('分镜表还没有可推送的生成视频');
+    // 缺失生成视频的行不以参考图或文字补位，字幕和配音共用这一有效行列表。
+    const usable = rows.filter(hasReadyShotVideo);
+    if (usable.length === 0) throw new Error('分镜表还没有可推送的生成视频');
 
-  const id = buildVideoEditorProjectId(projectId, nodeId);
-  const existing = await getVideoEditorProject(id);
-  assertCurrent?.();
-  const now = Date.now();
-  const clips = relayoutSequential(usable.map(buildShotClip));
-  const dialogueTrack = params.includeDialogueCaptions ? buildDialogueTrack(usable, clips) : null;
-  const voiceoverTrack = params.voiceoverNodes ? buildVoiceoverTrack(usable, clips, nodeId, params.voiceoverNodes) : null;
-  if (params.voiceoverNodes && !voiceoverTrack) throw new Error('没有可用配音，请先完成语音生成或取消附带配音');
-  const sourceNodeIds = [...new Set([...usable
-    .map((row) => row.video.nodeId)
-    .filter((value): value is string => !!value), ...(voiceoverTrack?.clips.map((clip) => clip.nodeId!) ?? [])])];
+    const id = buildVideoEditorProjectId(projectId, nodeId);
+    const existing = await getVideoEditorProject(id, origin.expectedContext);
+    origin.assertCurrent();
+    assertCurrent?.();
+    const now = Date.now();
+    const clips = relayoutSequential(usable.map(buildShotClip));
+    const dialogueTrack = params.includeDialogueCaptions ? buildDialogueTrack(usable, clips) : null;
+    const voiceoverTrack = params.voiceoverNodes ? buildVoiceoverTrack(usable, clips, nodeId, params.voiceoverNodes) : null;
+    if (params.voiceoverNodes && !voiceoverTrack) throw new Error('没有可用配音，请先完成语音生成或取消附带配音');
+    const sourceNodeIds = [...new Set([...usable
+      .map((row) => row.video.nodeId)
+      .filter((value): value is string => !!value), ...(voiceoverTrack?.clips.map((clip) => clip.nodeId!) ?? [])])];
 
-  await saveVideoEditorProject({
-    id,
-    schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION,
-    projectId,
-    nodeId,
-    nodeIds: sourceNodeIds,
-    name: label || '分镜表',
-    tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips }, ...(dialogueTrack ? [dialogueTrack] : []), ...(voiceoverTrack ? [voiceoverTrack] : [])],
-    createdAt: existing?.createdAt ?? now,
-    automationRevision: existing?.automationRevision,
-    output: existing?.output,
-    updatedAt: now,
-  } satisfies VideoEditorProjectRecord);
+    await saveVideoEditorProject({
+      id,
+      schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION,
+      projectId,
+      nodeId,
+      nodeIds: sourceNodeIds,
+      name: label || '分镜表',
+      tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips }, ...(dialogueTrack ? [dialogueTrack] : []), ...(voiceoverTrack ? [voiceoverTrack] : [])],
+      createdAt: existing?.createdAt ?? now,
+      automationRevision: existing?.automationRevision,
+      output: existing?.output,
+      updatedAt: now,
+    } satisfies VideoEditorProjectRecord, origin.expectedContext);
 
-  assertCurrent?.();
-  await openVideoEditorWindow({ instanceId: id, projectId, nodeId, theme });
+    assertCurrent?.();
+    origin.assertCurrent();
+    await openVideoEditorWindow({ instanceId: id, projectId, nodeId, theme, expectedContext: origin.expectedContext, assertCurrent: origin.assertCurrent });
+  } finally { origin.release(); }
 }
 
 /**
@@ -342,25 +366,30 @@ export async function openVideoEditorBlank(params: {
 }): Promise<void> {
   const { projectId, theme } = params;
   if (!projectId) throw new Error('请先打开一个项目再进入视频编辑器');
+  const origin = captureEditorOrigin(projectId);
+  try {
 
-  const nodeId = 'canvas-quick';
-  const id = buildVideoEditorProjectId(projectId, nodeId);
-  if (!(await getVideoEditorProject(id))) {
-    const now = Date.now();
-    await saveVideoEditorProject({
-      id,
-      schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION,
-      projectId,
-      nodeId,
-      nodeIds: [],
-      name: '快速剪辑',
-      tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips: [] }],
-      createdAt: now,
-      updatedAt: now,
-    } satisfies VideoEditorProjectRecord);
-  }
+    const nodeId = 'canvas-quick';
+    const id = buildVideoEditorProjectId(projectId, nodeId);
+    if (!(await getVideoEditorProject(id, origin.expectedContext))) {
+      origin.assertCurrent();
+      const now = Date.now();
+      await saveVideoEditorProject({
+        id,
+        schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION,
+        projectId,
+        nodeId,
+        nodeIds: [],
+        name: '快速剪辑',
+        tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips: [] }],
+        createdAt: now,
+        updatedAt: now,
+      } satisfies VideoEditorProjectRecord, origin.expectedContext);
+    }
 
-  await openVideoEditorWindow({ instanceId: id, projectId, nodeId, theme });
+    origin.assertCurrent();
+    await openVideoEditorWindow({ instanceId: id, projectId, nodeId, theme, expectedContext: origin.expectedContext, assertCurrent: origin.assertCurrent });
+  } finally { origin.release(); }
 }
 
 /** 单节点入口，保留给只右键一个视频节点的场景 */

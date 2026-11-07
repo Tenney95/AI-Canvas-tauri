@@ -15,11 +15,15 @@ import { emptyDramaAssetLibrary } from '../../types/dramaAssets';
 import type { AppConfig } from '../../types';
 import { setLocale, useT } from '../../i18n';
 import ChatPanel from './ChatPanel';
+import { sameProjectWindowContext } from '../../services/projectWindowContext';
 import {
   receiveChatStateSync,
   emitAction,
   emitCloseRequest,
   initChatWindowListener,
+  setChatReferenceWindowFrame,
+  requestChatMessage,
+  emitChatCloseAcknowledgement,
   type ChatStateSnapshot,
   type ChatWindowState,
   type ChatComposerHandoff,
@@ -56,13 +60,15 @@ export default function ChatWindow() {
   const composerHandoffRef = useRef<ChatComposerHandoff | undefined>(undefined);
   const handleComposerDraftChange = useCallback((draft: ChatComposerHandoff) => { composerHandoffRef.current = draft; }, []);
   const resyncRequestedRef = useRef(false);
+  const closeAuthorizedRef = useRef(false);
 
   useEffect(() => {
     const handoff = composerHandoffRef.current;
-    if (handoff && (handoff.conversationId ? snapshot.composerDrafts[handoff.conversationId] ?? '' : snapshot.composerDraft) === handoff.draft) {
+    if (handoff && sameProjectWindowContext(handoff.windowFrame?.context, snapshot.windowFrame?.context)
+      && (handoff.conversationId ? snapshot.composerDrafts[handoff.conversationId] ?? '' : snapshot.composerDraft) === handoff.draft) {
       composerHandoffRef.current = undefined;
     }
-  }, [snapshot.composerDraft, snapshot.composerDrafts]);
+  }, [snapshot.composerDraft, snapshot.composerDrafts, snapshot.windowFrame]);
 
   useEffect(() => {
     let disposed = false;
@@ -107,10 +113,17 @@ export default function ChatWindow() {
     });
   }, [snapshot.nodes, snapshot.dramaAssets, snapshot.projectId]);
 
-  const closeWindow = useCallback(() => {
+  const closeWindow = useCallback((closeRequestId?: string) => {
     void (async () => {
       try {
-        await emitCloseRequest(composerHandoffRef.current);
+        const draft = composerHandoffRef.current;
+        const frame = draft?.windowFrame ?? syncStateRef.current?.snapshot.windowFrame;
+        if (syncStateRef.current || draft) {
+          const accepted = await requestChatMessage({ type: 'close_window', composerDraft: draft }, frame);
+          if (!accepted) { if (closeRequestId) await emitChatCloseAcknowledgement(closeRequestId, false); return; }
+        }
+        if (closeRequestId) await emitChatCloseAcknowledgement(closeRequestId, true);
+        closeAuthorizedRef.current = true;
         await invoke('close_chat_window');
       } catch (error) {
         console.error('[ChatWindow] failed to close window:', error);
@@ -121,13 +134,28 @@ export default function ChatWindow() {
   const dockWindow = useCallback(() => {
     void (async () => {
       try {
-        await emitAction({ type: 'dock_window', composerDraft: composerHandoffRef.current });
+        const draft = composerHandoffRef.current;
+        if (!await requestChatMessage({ type: 'dock_window', composerDraft: draft }, draft?.windowFrame ?? syncStateRef.current?.snapshot.windowFrame)) return;
+        closeAuthorizedRef.current = true;
         await invoke('close_chat_window');
       } catch (error) {
         console.error('[ChatWindow] failed to dock window:', error);
       }
     })();
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
+      const dispose = await getCurrentWindow().onCloseRequested((event) => {
+        if (closeAuthorizedRef.current) return;
+        event.preventDefault(); closeWindow();
+      });
+      if (disposed) dispose(); else stop = dispose;
+    }).catch(() => {});
+    return () => { disposed = true; stop?.(); };
+  }, [closeWindow]);
 
   const handleToggleLock = useCallback(async () => {
     const next = !isLockedRef.current;
@@ -164,6 +192,7 @@ export default function ChatWindow() {
         }
         if (next === syncStateRef.current) return;
         syncStateRef.current = next;
+        setChatReferenceWindowFrame(next.snapshot.windowFrame ?? null);
         resyncRequestedRef.current = false;
         setSnapshot(next.snapshot);
         stopHandshake();
@@ -195,6 +224,7 @@ export default function ChatWindow() {
       disposed = true;
       stopHandshake();
       cleanup?.();
+      setChatReferenceWindowFrame(null);
     };
   }, [closeWindow]);
 
@@ -233,7 +263,7 @@ export default function ChatWindow() {
         className="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md
                    text-canvas-text-muted hover:text-canvas-text hover:bg-red-500/20 transition-colors"
         aria-label={t('关闭独立窗口')}
-        onClick={closeWindow}
+        onClick={() => closeWindow()}
       >
         <Icon icon="mdi:close" width="16" height="16" />
       </button>

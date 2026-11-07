@@ -39,4 +39,19 @@ describe('整部剧导入事务', () => {
       revisions: [], ancestors: [], history: [{ store: 'chatConversations', value: { id: 'foreign', projectId: 'outside' } }], label: '导入更新前' })).rejects.toThrow('历史归属');
     expect(await repo.listProjectImportRecoveries('owner')).toEqual([]); expect((await repo.readProjectImportScope('owner'))[0].exchangeEpoch).toBeUndefined();
   });
+
+  it.each(['project-model-source-freeze', 'activeDataModel', 'project-model-business-fixture'])(
+    '%s 阻止旧导入/恢复提交及发布journal，不改作品或历史', async (key) => {
+      const { repo, owner, episode, db } = await setup();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('metadata', 'readwrite'); tx.objectStore('metadata').put({ id: key, malformed: true });
+        tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error);
+      });
+      await expect(repo.commitProjectImport({ operationId: 'frozen', expectedRecords: [owner, episode], records: [{ ...owner, name: '不得覆盖' }],
+        expectedState: null, state: null, revisions: [], ancestors: [], history: [], label: '恢复前' })).rejects.toThrow('旧项目写入已停止');
+      await expect(repo.beginProjectImportOperation('frozen-publish', owner.id, 'temporary', 'temporary-folder')).rejects.toThrow('旧项目写入已停止');
+      expect(await repo.readProjectImportScope('owner')).toEqual([owner, episode]);
+      expect(await repo.listProjectImportRecoveries('owner')).toEqual([]);
+    },
+  );
 });

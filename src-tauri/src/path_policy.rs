@@ -164,6 +164,7 @@ fn is_private_app_path<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path) -
         || crate::agent_package::is_agent_private_path(app, resolved)
         || crate::plugin_registry::is_plugin_private_path(app, resolved)
         || crate::comfyui::installation::is_private_path(app, resolved)
+        || crate::project_model_safety::is_private_path(app, resolved, false)
 }
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
@@ -188,6 +189,7 @@ fn overlaps_private_app_path<R: Runtime>(
         || crate::plugin_registry::is_plugin_private_path_overlap(app, resolved)
         || crate::blender_runtime::is_blender_private_path_overlap(app, resolved)
         || crate::comfyui::installation::overlaps_private_path(app, resolved)
+        || crate::project_model_safety::is_private_path(app, resolved, true)
 }
 
 /// 凭据目录可能尚未创建（无法 canonicalize），因此同时按原始路径与解析后路径比对。

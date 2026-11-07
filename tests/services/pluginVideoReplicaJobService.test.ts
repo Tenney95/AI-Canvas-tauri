@@ -226,6 +226,29 @@ it.each(['unknown', 'error'] as const)('stops after a %s submission, without ret
   expect(mocks.generate).toHaveBeenCalledTimes(1); expect(mocks.materials).toHaveBeenCalledTimes(1); expect(mocks.export).not.toHaveBeenCalled();
 });
 
+it('keeps a background job bound to its starting epoch before every paid segment', async () => {
+  const expectedContext = { kind: 'canvas' as const, schemaVersion: 2 as const, modelGeneration: 0,
+    runtimeEpoch: 'fixture-process', projectId: 'project', projectEpoch: 0, canvasId: 'project', episodeId: null,
+    canvasEpoch: 0, canvasRevision: 1 };
+  mocks.state.projectExecutionContext = expectedContext;
+  mocks.generate.mockImplementationOnce(async (_projectId, _preflight, lease?: GenerationLease) => {
+    mocks.state.projectExecutionContext = { ...expectedContext, canvasEpoch: 1 };
+    for (const subscriber of mocks.subscribers) subscriber();
+    await lease?.assertFresh();
+    mocks.paidVideo();
+    return { items: [{ status: 'success' }] };
+  });
+  const service = await import('../../src/services/plugins/pluginVideoReplicaJobService');
+  const summary = await service.startPluginVideoReplicaJob(Object.assign(context(), { expectedContext }), request);
+  expect(summary).toHaveProperty('jobId');
+  await vi.waitFor(() => expect(mocks.saved.at(-1)?.status).toMatch(/failed|cancelled|unknown/));
+  expect(mocks.generate).toHaveBeenCalledOnce();
+  expect(mocks.paidVideo).not.toHaveBeenCalled();
+  expect(mocks.videoWrite).not.toHaveBeenCalled();
+  expect(mocks.export).not.toHaveBeenCalled();
+  expect(JSON.stringify(mocks.saved)).not.toContain('runtimeEpoch');
+});
+
 it('keeps transport exceptions uncertain and blocks a second paid start', async () => {
   mocks.generate.mockRejectedValueOnce(new Error('private transport details'));
   const { service, final } = await start();

@@ -4,6 +4,7 @@
 import { openDB, STORE_METADATA } from './schema';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { assertDramaAssetWriteCurrent, type DramaAssetWriteOptions } from '../../types/dramaAssets';
+import { withLegacyProjectWrite as withLegacyRelocationWrite } from './legacyProjectWriteGuard';
 import { t } from '../../i18n';
 
 export interface MediaRelocation {
@@ -23,6 +24,11 @@ export interface MediaRelocation {
 const JOURNAL_ID = 'media-relocations';
 const STORES = ['projects', 'history', 'chatMessages', 'assetIndex', 'assetMeta', 'assetMetaV2',
   'globalCharacters', 'globalDramaAssets', 'videoEditorProjects', 'agentTasks', 'workflows', 'presets', 'projectExchangeStates'];
+
+/** metadata 其余域是审计/恢复/墓碑或稳定身份，不能递归改写其中的冻结材料。 */
+function isMutableRelocationMetadata(key: IDBValidKey): boolean {
+  return typeof key === 'string' && key.startsWith('asset-image:') && key.length > 'asset-image:'.length;
+}
 const pathKey = (path: string) => {
   const normalized = path.replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\//, '');
   return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
@@ -228,8 +234,10 @@ function relocateJournalReferences<T>(value: T, moves: readonly MediaRelocation[
 
 /** Read the relocation journal inside the writer's transaction so stale saves cannot resurrect old paths. */
 export function withRelocatedMedia<T>(tx: IDBTransaction, value: T, write: (next: T) => void): void {
-  const request = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
-  request.onsuccess = () => write(relocateJournalReferences(value, request.result?.moves ?? []));
+  withLegacyRelocationWrite(tx, () => {
+    const request = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
+    request.onsuccess = () => write(relocateJournalReferences(value, request.result?.moves ?? []));
+  });
 }
 
 export function relocateOwnedMediaReferences<T>(value: T, move: MediaRelocation, nodeId: string): T {
@@ -258,31 +266,34 @@ export async function persistMediaRelocation(move: MediaRelocation, sharedNodeId
   const stores = STORES.filter((name) => db.objectStoreNames.contains(name));
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([...stores, STORE_METADATA], 'readwrite');
-    const journal = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
-    journal.onsuccess = () => {
-      const moves = [...(journal.result?.moves ?? []), { ...move, ownerId: sharedNodeId }];
-      const pending = [...(journal.result?.pending ?? []), { ...move, ownerId: sharedNodeId }];
-      tx.objectStore(STORE_METADATA).put({ id: JOURNAL_ID, moves, pending });
-      for (const name of stores) {
-        const store = tx.objectStore(name);
-        const request = store.openCursor();
-        request.onsuccess = () => {
-          const cursor = request.result;
-          if (!cursor) return;
-          const value = sharedNodeId ? relocateOwnedMediaReferences(cursor.value, move, sharedNodeId)
-            : relocateMediaReferences(cursor.value, [move]);
-          if (value !== cursor.value) {
-            if (typeof store.keyPath === 'string' && value[store.keyPath] !== cursor.value[store.keyPath]) {
-              cursor.delete();
-              store.put(value);
-            } else cursor.update(value);
-          }
-          cursor.continue();
-        };
-      }
-    };
+    let failure: Error | undefined;
+    withLegacyRelocationWrite(tx, () => {
+      const journal = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
+      journal.onsuccess = () => {
+        const moves = [...(journal.result?.moves ?? []), { ...move, ownerId: sharedNodeId }];
+        const pending = [...(journal.result?.pending ?? []), { ...move, ownerId: sharedNodeId }];
+        tx.objectStore(STORE_METADATA).put({ id: JOURNAL_ID, moves, pending });
+        for (const name of stores) {
+          const store = tx.objectStore(name);
+          const request = store.openCursor();
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return;
+            const value = sharedNodeId ? relocateOwnedMediaReferences(cursor.value, move, sharedNodeId)
+              : relocateMediaReferences(cursor.value, [move]);
+            if (value !== cursor.value) {
+              if (typeof store.keyPath === 'string' && value[store.keyPath] !== cursor.value[store.keyPath]) {
+                cursor.delete();
+                store.put(value);
+              } else cursor.update(value);
+            }
+            cursor.continue();
+          };
+        }
+      };
+    }, (error) => { failure = error; tx.abort(); });
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('文件引用迁移失败'));
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('文件引用迁移失败'));
   });
 }
 
@@ -308,41 +319,43 @@ export async function persistAssetRepairBatch(
     const cleanup = () => options.signal?.removeEventListener('abort', abort);
     tx.oncomplete = () => { cleanup(); resolve(); };
     tx.onerror = tx.onabort = () => { cleanup(); reject(failure ?? tx.error ?? new Error(t('素材修复保存失败'))); };
-    const indexes = tx.objectStore('assetIndex').getAll();
-    indexes.onsuccess = () => {
-      try {
-        assertDramaAssetWriteCurrent(options);
-        const records = indexes.result as Array<{ assetId: string; path: string; fingerprint: string; contentDigest?: string }>;
-        for (const before of expected) {
-          const current = records.find((entry) => entry.assetId === before.assetId);
-          const move = moves.find((entry) => entry.assetMove?.assetId === before.assetId);
-          if (!current || !move || pathKey(current.path) !== pathKey(before.path) || current.fingerprint !== before.fingerprint || current.contentDigest !== before.contentDigest
-            || records.some((entry) => entry.assetId !== before.assetId && mediaFileAllocationKey(entry.path) === mediaFileAllocationKey(move.newPath))) throw new Error(t('素材身份或位置已变化，请重新预览'));
-        }
-        const journal = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
-        journal.onsuccess = () => {
-          try {
-            assertDramaAssetWriteCurrent(options);
-            tx.objectStore(STORE_METADATA).put({ id: JOURNAL_ID, moves: [...(journal.result?.moves ?? []), ...moves], pending: journal.result?.pending ?? [] });
-            for (const name of [...stores, STORE_METADATA]) {
-              const store = tx.objectStore(name);
-              const request = store.openCursor();
-              request.onsuccess = () => {
-                const cursor = request.result;
-                if (!cursor) return;
-                if (name === STORE_METADATA && cursor.primaryKey === JOURNAL_ID) { cursor.continue(); return; }
-                const value = relocateMediaReferences(cursor.value, moves);
-                if (value !== cursor.value) {
-                  if (typeof store.keyPath === 'string' && value[store.keyPath] !== cursor.value[store.keyPath]) { cursor.delete(); store.put(value); }
-                  else cursor.update(value);
-                }
-                cursor.continue();
-              };
-            }
-          } catch (error) { fail(error); }
-        };
-      } catch (error) { fail(error); }
-    };
+    withLegacyRelocationWrite(tx, () => {
+      const indexes = tx.objectStore('assetIndex').getAll();
+      indexes.onsuccess = () => {
+        try {
+          assertDramaAssetWriteCurrent(options);
+          const records = indexes.result as Array<{ assetId: string; path: string; fingerprint: string; contentDigest?: string }>;
+          for (const before of expected) {
+            const current = records.find((entry) => entry.assetId === before.assetId);
+            const move = moves.find((entry) => entry.assetMove?.assetId === before.assetId);
+            if (!current || !move || pathKey(current.path) !== pathKey(before.path) || current.fingerprint !== before.fingerprint || current.contentDigest !== before.contentDigest
+              || records.some((entry) => entry.assetId !== before.assetId && mediaFileAllocationKey(entry.path) === mediaFileAllocationKey(move.newPath))) throw new Error(t('素材身份或位置已变化，请重新预览'));
+          }
+          const journal = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
+          journal.onsuccess = () => {
+            try {
+              assertDramaAssetWriteCurrent(options);
+              tx.objectStore(STORE_METADATA).put({ id: JOURNAL_ID, moves: [...(journal.result?.moves ?? []), ...moves], pending: journal.result?.pending ?? [] });
+              for (const name of [...stores, STORE_METADATA]) {
+                const store = tx.objectStore(name);
+                const request = store.openCursor();
+                request.onsuccess = () => {
+                  const cursor = request.result;
+                  if (!cursor) return;
+                  if (name === STORE_METADATA && !isMutableRelocationMetadata(cursor.primaryKey)) { cursor.continue(); return; }
+                  const value = relocateMediaReferences(cursor.value, moves);
+                  if (value !== cursor.value) {
+                    if (typeof store.keyPath === 'string' && value[store.keyPath] !== cursor.value[store.keyPath]) { cursor.delete(); store.put(value); }
+                    else cursor.update(value);
+                  }
+                  cursor.continue();
+                };
+              }
+            } catch (error) { fail(error); }
+          };
+        } catch (error) { fail(error); }
+      };
+    }, fail);
   });
 }
 
@@ -380,12 +393,15 @@ export async function completeMediaRelocation(move: MediaRelocation): Promise<vo
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_METADATA, 'readwrite');
-    const request = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
-    request.onsuccess = () => {
-      if (request.result) tx.objectStore(STORE_METADATA).put({ ...request.result,
-        pending: request.result.pending.filter((item: MediaRelocation) => item.oldPath !== move.oldPath || item.newPath !== move.newPath) });
-    };
+    let failure: Error | undefined;
+    withLegacyRelocationWrite(tx, () => {
+      const request = tx.objectStore(STORE_METADATA).get(JOURNAL_ID);
+      request.onsuccess = () => {
+        if (request.result) tx.objectStore(STORE_METADATA).put({ ...request.result,
+          pending: request.result.pending.filter((item: MediaRelocation) => item.oldPath !== move.oldPath || item.newPath !== move.newPath) });
+      };
+    }, (error) => { failure = error; tx.abort(); });
     tx.oncomplete = () => resolve();
-    tx.onerror = tx.onabort = () => reject(tx.error);
+    tx.onerror = tx.onabort = () => reject(failure ?? tx.error);
   });
 }

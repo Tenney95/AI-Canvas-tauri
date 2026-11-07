@@ -10,6 +10,10 @@ import { useAppStore } from '../../store/useAppStore';
 import type { CreateAgentTaskInput } from '../../store/store.agent';
 import type { ChatConversation, ChatMessage } from '../../types/chat';
 import type { AgentStep, AgentTask, McpOperationIdentity, McpOperationReceipt } from '../../types/agent';
+import type { ProjectExpectedContext } from '../../types/project';
+import { captureLegacyEpisodeContext, captureLegacyProjectExpectedContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
+import { validateAgentToolInput } from '../chat/agentToolSchemas';
+import { getMcpProjectContextRequirement, isMcpProjectContextCompatible } from './mcpProjectContext';
 import type {
   McpBridgeRequestEvent,
   McpToolCallResult,
@@ -53,7 +57,7 @@ import {
   MCP_SETTINGS_TOOL_NAMES,
 } from './mcpSettingsScope';
 import {
-  claimMcpOperation, finishMcpOperation, identifyMcpOperation, readMcpOperation, startMcpOperation,
+  claimMcpOperation, finishMcpOperation, getHistoricalMcpOperationReceipt, identifyMcpOperation, readMcpOperation, startMcpOperation,
 } from './mcpOperationService';
 
 const MCP_CONVERSATION_TITLE = 'MCP 控制';
@@ -209,6 +213,7 @@ export async function listMcpTools(
     conversationId: `mcp-control-${projectId}`,
     mode: MCP_EXECUTION_MODE,
     baseRevision: store.getCurrentRevision(),
+    projectScope: captureLegacyProjectExpectedContext(store),
     ...(!store.currentProjectId ? { toolAllowlist: [...MCP_GLOBAL_TOOL_NAMES] } : {}),
   };
   // 两种模式都保留稳定入口，客户端缓存启动页目录后仍能重新发现当前项目能力。
@@ -227,16 +232,10 @@ export async function listMcpTools(
     MCP_CALL_DESCRIPTOR,
   ];
   if (exposure === 'compact') return discovery;
-  const current = getCurrentMcpContext();
-  if (!current) return discovery;
-  const tools = getAvailableAgentTools({
-    taskId: MCP_TOOL_DISCOVERY_TASK_ID,
-    projectId: current.projectId,
-    conversationId: current.conversation.id,
-    mode: MCP_EXECUTION_MODE,
-    baseRevision: useAppStore.getState().getCurrentRevision(),
-    toolAllowlist: current.toolAllowlist,
-  }).filter((definition) => !isMcpDiscoveryTool(definition.id)).map(toMcpToolDescriptor);
+  // 发现没有业务调用，不创建任何持久化审计域；fixture也不能污染正式DB。
+  const tools = getAvailableAgentTools(discoveryContext).filter((definition) => !isMcpDiscoveryTool(definition.id)
+    && (getMcpProjectContextRequirement(definition) !== 'canvas' || discoveryContext.projectScope.kind === 'canvas'))
+    .map(toMcpToolDescriptor);
   return [...discovery, ...tools];
 }
 
@@ -285,32 +284,83 @@ function revealMcpUserChoice(projectId: string, conversationId: string, step: Ag
 async function callMcpTool(
   request: McpBridgeRequestEvent,
   active: ActiveMcpRequest,
-  expectation?: Pick<McpToolCallEnvelope, 'expectedProjectId' | 'expectedRevision' | 'operationKey'>,
+  expectation?: Pick<McpToolCallEnvelope, 'schemaVersion' | 'expectedContext' | 'expectedProjectId' | 'expectedRevision' | 'operationKey'>,
 ): Promise<McpToolCallResult> {
   await ensureToolsRegistered();
   assertMcpRequestActive(request, active);
   const expectedProjectId = expectation?.expectedProjectId;
   const expectedRevision = expectation?.expectedRevision;
   const operationKey = expectation?.operationKey;
+  const expectedContext = expectation?.expectedContext;
+  const name = typeof request.params.name === 'string' ? request.params.name : '';
+  const input: Record<string, unknown> = request.params.arguments && typeof request.params.arguments === 'object'
+    ? request.params.arguments as Record<string, unknown> : {};
+  const definition = getAgentTool(name);
+  const historicalReceiptRead = name === 'mcp_operation_get' && Object.hasOwn(input, 'legacyProjectId');
+  const typed = expectation?.schemaVersion === 2;
+  const protocolError = (errorCode: string, summary: string): McpToolCallResult => ({
+    isError: true, summary, content: [{ type: 'text', text: JSON.stringify({ errorCode, summary, retryable: false }) }],
+  });
+  const legacyState = useAppStore.getState();
+  if (expectedProjectId !== undefined && legacyState.currentProjectId !== expectedProjectId
+    || operationKey === undefined && expectedRevision !== undefined && legacyState.getCurrentRevision() !== expectedRevision) {
+    const summary = '读取后旧画布身份或版本已变化，请重新读取并判断原意图';
+    return { isError: true, summary, content: [{ type: 'text', text: JSON.stringify({ errorCode: 'MCP_CONTEXT_CHANGED',
+      summary, retryable: false, current: { projectId: legacyState.currentProjectId, revision: legacyState.getCurrentRevision() } }) }] };
+  }
+  let readContext: ProjectExpectedContext;
+  try { readContext = captureLegacyProjectExpectedContext(useAppStore.getState()); }
+  catch { return protocolError('CONTEXT_REFRESH_REQUIRED', '当前项目上下文尚未就绪，请重新读取后判断原请求'); }
+  // 新模型协议仅供fixture与开发，绝不向正式旧数据库创建新代际task、key或审计会话。
+  if (readContext.modelGeneration > 0 || expectedContext && expectedContext.modelGeneration > 0) {
+    return protocolError('PROJECT_MODEL_EXECUTION_DISABLED', '正式新项目模型执行开关保持关闭');
+  }
+  if (isMcpGlobalTool(name) && !isMcpDiscoveryTool(name)) {
+    readContext = captureLegacyProjectExpectedContext(useAppStore.getState(), 'global');
+  } else if (name === 'episode_read' && typeof input.episodeId === 'string') {
+    readContext = captureLegacyEpisodeContext(useAppStore.getState(), input.episodeId) ?? readContext;
+  }
+  if (typed && definition?.effect !== 'read' && !expectedContext) {
+    return protocolError('CONTEXT_REFRESH_REQUIRED', '新版变更必须携带先前读取的expectedContext，请重新读取并判断原意图');
+  }
+  if (expectedContext && definition && !historicalReceiptRead && !isMcpProjectContextCompatible(definition, expectedContext, input)) {
+    return protocolError('CONTEXT_REFRESH_REQUIRED', '上下文种类或目标与工具不匹配，请重新读取目标上下文');
+  }
+  if (definition && getMcpProjectContextRequirement(definition) === 'canvas' && readContext.kind !== 'canvas') {
+    return protocolError('NO_ACTIVE_CANVAS', '当前没有活动画布，不能提交画布或付费媒体操作');
+  }
   const contextChanged = (includeRevision = true) => {
     const state = useAppStore.getState();
-    return (expectedProjectId !== undefined && state.currentProjectId !== expectedProjectId)
+    return (expectedContext !== undefined && !isProjectExpectedContextCurrent(expectedContext, state, { checkCanvasRevision: includeRevision }))
+      || (expectedProjectId !== undefined && state.currentProjectId !== expectedProjectId)
       || (includeRevision && expectedRevision !== undefined && state.getCurrentRevision() !== expectedRevision);
   };
   const contextError = (): McpToolCallResult => {
     const readState = useAppStore.getState();
-    const summary = '读取后项目或画布版本已变化，未创建执行任务；请重新读取后规划，不要自动重投写入';
+    const summary = '读取后项目或画布版本已变化，未继续执行旧请求；请重新读取后规划，不要自动重投写入';
     return {
       isError: true, summary,
       content: [{ type: 'text', text: JSON.stringify({
-        errorCode: 'MCP_CONTEXT_CHANGED', summary, retryable: false,
+        errorCode: typed ? 'CONTEXT_REFRESH_REQUIRED' : 'MCP_CONTEXT_CHANGED', summary, retryable: false,
         current: { projectId: readState.currentProjectId, revision: readState.getCurrentRevision() },
       }) }],
     };
   };
   // 已存在的同项目操作只是读取回执；原写入已推进 revision，不能因此阻止核实旧 key。
-  if (contextChanged(operationKey === undefined)) return contextError();
-  const name = typeof request.params.name === 'string' ? request.params.name : '';
+  if (contextChanged(operationKey === undefined && !historicalReceiptRead)) return contextError();
+  // 显式历史查询只读原alias的binding/task，不为被删目标或另一个分集制造新的scope任务。
+  if (historicalReceiptRead) {
+    if (!definition || !validateAgentToolInput(definition.inputSchema, input).valid || operationKey !== undefined) {
+      return protocolError('MCP_OPERATION_QUERY_FAILED', '历史操作查询参数无效');
+    }
+    try {
+      const operation = await getHistoricalMcpOperationReceipt(input as unknown as Parameters<typeof getHistoricalMcpOperationReceipt>[0]);
+      assertMcpRequestActive(request, active);
+      if (contextChanged(false)) return contextError();
+      return operation ? { summary: `原操作状态：${operation.status}`, content: [{ type: 'text', text: JSON.stringify({ readOnlyAudit: true, operation }) }] }
+        : protocolError('MCP_OPERATION_NOT_FOUND', '没有找到原回执；这不证明原付费操作未提交，请先只读核实，勿重投');
+    } catch { return protocolError('MCP_OPERATION_QUERY_FAILED', '历史操作回执读取失败，请核对同剧旧画布身份或显式删除审计范围'); }
+  }
   const current = getCurrentMcpContext(name);
   if (!current) {
     return {
@@ -319,10 +369,6 @@ async function callMcpTool(
       content: [{ type: 'text', text: '该工具需要打开项目；请用 project_create 创建项目，或用 project_list 读取列表后通过 project_open 或 project_switch 打开项目。启动页也可管理厂商和模型设置。' }],
     };
   }
-  const input = request.params.arguments && typeof request.params.arguments === 'object'
-    ? request.params.arguments
-    : {};
-  const definition = getAgentTool(name);
   let operationIdentity: McpOperationIdentity | undefined;
   const replay = (operation: McpOperationReceipt): McpToolCallResult => ({
     isError: ['partial', 'failed', 'unknown'].includes(operation.status),
@@ -384,6 +430,8 @@ async function callMcpTool(
     conversationId: current.conversation.id,
     userMessageId,
     mode: MCP_EXECUTION_MODE,
+    ...(expectedContext ? { executionContext: structuredClone(expectedContext) }
+      : typed ? { executionContext: structuredClone(readContext) } : {}),
     goal: `MCP 请求：${title}。${inputSummary}`,
     toolAllowlist: current.toolAllowlist,
     budget: {
@@ -397,13 +445,14 @@ async function callMcpTool(
     try {
       const claim = await claimMcpOperation(operationIdentity, taskInput, () => {
         assertMcpRequestActive(request, active);
-        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error('MCP_CONTEXT_CHANGED');
+        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error(typed ? 'CONTEXT_REFRESH_REQUIRED' : 'MCP_CONTEXT_CHANGED');
       });
       if (!claim.claimed) return replay(claim.receipt);
       if (!claim.task) throw new Error('MCP 操作占位没有任务，不能执行');
       task = claim.task;
     } catch (error) {
       const summary = error instanceof Error ? error.message : 'MCP 操作占位未持久化，未开始执行';
+      if (typed && (summary === 'CONTEXT_REFRESH_REQUIRED' || contextChanged())) return contextError();
       return { isError: true, summary, content: [{ type: 'text', text: JSON.stringify({
         errorCode: summary === 'MCP_OPERATION_KEY_CONFLICT' ? summary : 'MCP_OPERATION_CLAIM_FAILED', summary, retryable: false,
       }) }] };
@@ -429,11 +478,12 @@ async function callMcpTool(
     const finalTask = await runAgentTask(task.id, async (signal) => {
       const { executeRegisteredAgentToolCall } = await import('../chat/agentToolExecution');
       assertMcpRequestActive(request, active);
+      if (contextChanged()) throw new Error(typed ? 'CONTEXT_REFRESH_REQUIRED' : 'MCP_CONTEXT_CHANGED');
       if (operationIdentity) {
-        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error('MCP_CONTEXT_CHANGED');
+        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error(typed ? 'CONTEXT_REFRESH_REQUIRED' : 'MCP_CONTEXT_CHANGED');
         await startMcpOperation(task.id);
         assertMcpRequestActive(request, active);
-        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error('MCP_CONTEXT_CHANGED');
+        if (contextChanged() || useAppStore.getState().currentProjectId !== current.projectId) throw new Error(typed ? 'CONTEXT_REFRESH_REQUIRED' : 'MCP_CONTEXT_CHANGED');
       }
       executionResult = await executeRegisteredAgentToolCall({
         taskId: task.id,
@@ -468,15 +518,24 @@ async function callMcpTool(
     let operation: McpOperationReceipt | null = null;
     if (operationIdentity) {
       try {
-        operation = await finishMcpOperation(task.id, { status: executionResult?.summary.status === 'success' ? 'success' : 'error',
+        operation = await finishMcpOperation(task.id, { status: (executionResult?.effectOutcome ?? executionResult?.summary.status) === 'success' ? 'success' : 'error',
           knownNoEffect: executionResult?.summary.status === 'denied', errorCode: executionResult?.summary.errorCode });
       } catch {
         // 业务可能已经成功，保存回执失败也不能重投；尽量返回已持久化的旧状态。
         operation = await readMcpOperation(operationIdentity).catch(() => null);
       }
     }
-    const content = executionResult?.mcpContent?.length ? executionResult.mcpContent
-      : [{ type: 'text' as const, text: executionResult?.modelContent ?? summary }];
+    const refreshRequired = typed && (executionResult?.summary.errorCode === 'CONTEXT_REFRESH_REQUIRED'
+      || !executionResult && (finalTask.errorMessage === 'CONTEXT_REFRESH_REQUIRED' || contextChanged(false)));
+    const resultContent = refreshRequired
+      ? [{ type: 'text' as const, text: JSON.stringify({ errorCode: 'CONTEXT_REFRESH_REQUIRED', summary: '执行上下文已变化，请先核对原操作并重新读取，勿自动重投', retryable: false }) }]
+      : executionResult?.mcpContent?.length ? executionResult.mcpContent
+        : [{ type: 'text' as const, text: executionResult?.modelContent ?? summary }];
+    // 只读结果的上下文属于开始读取的同一快照，不能附上切换后的新上下文误导下一次写入。
+    const readStillCurrent = definition?.effect !== 'read' || isProjectExpectedContextCurrent(readContext, useAppStore.getState());
+    if (!readStillCurrent && !operationIdentity) return protocolError('CONTEXT_REFRESH_REQUIRED', '读取期间项目上下文已变化，请重新读取后判断原意图');
+    const content = definition?.effect === 'read' && !isError
+      ? [...resultContent, { type: 'text' as const, text: JSON.stringify({ expectedContext: readContext }) }] : resultContent;
     return {
       isError,
       summary,
@@ -549,10 +608,18 @@ export async function handleMcpBridgeRequest(
             envelope = decodeMcpToolCallEnvelope(request.params.arguments);
           } catch (error) {
             const summary = error instanceof Error ? error.message : 'MCP 调用信封无效';
-            return { isError: true, summary, content: [{ type: 'text', text: summary }] };
+            const input = request.params.arguments;
+            const versioned = input && typeof input === 'object' && ('schemaVersion' in input || 'expectedContext' in input);
+            return { isError: true, summary, content: [{ type: 'text', text: versioned
+              ? JSON.stringify({ errorCode: 'CONTEXT_REFRESH_REQUIRED', summary: '新版上下文无效，请重新读取并判断原请求', retryable: false }) : summary }] };
           }
           // 只解包一次，保留原 requestId 的取消关联。校验、effect 和审计均属于真实工具。
           return await callMcpTool({ ...request, params: { name: envelope.name, arguments: envelope.arguments } }, active, envelope);
+        }
+        if (['schemaVersion', 'expectedContext', 'expectedProjectId', 'expectedRevision', 'operationKey'].some((key) => Object.hasOwn(request.params, key))) {
+          return { isError: true, summary: '上下文条件必须放入tools_call信封', content: [{ type: 'text', text: JSON.stringify({
+            errorCode: 'CONTEXT_REFRESH_REQUIRED', summary: '请保留原上下文条件并通过tools_call信封提交', retryable: false,
+          }) }] };
         }
         return await callMcpTool(request, active);
       } finally {

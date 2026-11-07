@@ -9,7 +9,8 @@ import { useAppStore } from '../store/useAppStore';
 import { getMediaModelOptions } from '../components/nodes/shared/defaultModels';
 import { generateVideo } from './ai/generateVideo';
 import { persistMediaUrlToProjectData } from './fileService';
-import type { MediaReference } from '../types/aiTypes';
+import type { MediaReference, MediaTaskReceipt } from '../types/aiTypes';
+import { pauseMediaTask } from './pollManager';
 import type {
   VideoEditorAiTransitionRequest,
   VideoEditorModelOption,
@@ -32,6 +33,7 @@ export interface VideoEditorAiTransitionOutcome {
   videoUrl: string;
   filePath?: string;
   fileName: string;
+  taskReceipt?: MediaTaskReceipt;
 }
 
 /** 首/尾帧转成生成入口认识的参考媒体；顺序即角色顺序 */
@@ -61,7 +63,9 @@ export async function runVideoEditorAiTransition(
   request: VideoEditorAiTransitionRequest,
   projectId: string,
   signal?: AbortSignal,
+  assertCurrent?: () => void,
 ): Promise<VideoEditorAiTransitionOutcome> {
+  assertCurrent?.();
   const prompt = request.prompt.trim();
   if (!prompt) throw new Error('转场提示词不能为空');
   if (!request.model || !request.provider) throw new Error('请先选择用于生成转场的视频模型');
@@ -82,14 +86,23 @@ export async function runVideoEditorAiTransition(
     seedanceResolution: directGeneralProtocol ? undefined : projectSettings?.generation?.videoResolution,
     seedanceDuration: request.duration
       ?? (directGeneralProtocol ? undefined : projectSettings?.generation?.videoDuration),
-  }, signal);
+  }, signal, assertCurrent);
+  try {
+    assertCurrent?.();
 
-  const baseName = `AI转场-${Date.now().toString(36)}`;
-  const persisted = await persistMediaUrlToProjectData(result.url, projectId, 'ai-video', baseName);
+    const baseName = `AI转场-${Date.now().toString(36)}`;
+    const persisted = await persistMediaUrlToProjectData(result.url, projectId, 'ai-video', baseName,
+      { assertCurrent, signal, mediaDownloadAccess: result.mediaDownloadAccess });
+    assertCurrent?.();
 
-  return {
-    videoUrl: persisted.mediaUrl,
-    filePath: persisted.filePath,
-    fileName: persisted.filePath?.replace(/\\/g, '/').split('/').pop() || `${baseName}.mp4`,
-  };
+    return {
+      videoUrl: persisted.mediaUrl,
+      filePath: persisted.filePath,
+      fileName: persisted.filePath?.replace(/\\/g, '/').split('/').pop() || `${baseName}.mp4`,
+      ...(result.taskReceipt ? { taskReceipt: result.taskReceipt } : {}),
+    };
+  } catch (error) {
+    if (result.taskReceipt) pauseMediaTask(result.taskReceipt, error, 'delivery_pending');
+    throw error;
+  }
 }

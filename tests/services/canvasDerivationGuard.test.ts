@@ -8,6 +8,7 @@ import {
   completeCanvasDerivation,
   createOrReuseCanvasDerivationRuntime,
   isCanvasDerivationFresh,
+  isCanvasDerivationTargetCurrent,
   registerCanvasDerivation,
   registerCanvasImport,
 } from '../../src/services/canvasDerivationGuard';
@@ -26,6 +27,42 @@ function createState(projectId = 'project-a') {
 }
 
 describe('canvasDerivationGuard', () => {
+  it('binds a legacy episode canvas to its owner and both exchange epochs', () => {
+    const { state, setRevision } = createState('episode-a');
+    const bound = { ...state, projects: [{ id: 'series', exchangeEpoch: 2 }, { id: 'episode-a', parentId: 'series', exchangeEpoch: 3 }] };
+    const guard = registerCanvasDerivation(bound, 'source')!;
+    expect(guard.expectedContext).toMatchObject({ projectId: 'series', canvasId: 'episode-a', episodeId: 'episode-a', projectEpoch: 2, canvasEpoch: 3 });
+    expect(isCanvasDerivationFresh(guard, bound)).toBe(true);
+    setRevision(4);
+    expect(isCanvasDerivationTargetCurrent(guard, bound)).toBe(true);
+    expect(isCanvasDerivationFresh(guard, bound)).toBe(false);
+    setRevision(3);
+    bound.projects[1].exchangeEpoch++;
+    expect(isCanvasDerivationTargetCurrent(guard, bound)).toBe(false);
+    bound.projects[1].exchangeEpoch--;
+    bound.projects[0].exchangeEpoch++;
+    expect(isCanvasDerivationFresh(guard, bound)).toBe(false);
+    completeCanvasDerivation(guard);
+  });
+
+  it('rejects missing owners, deleted targets and a series container instead of assuming owner is canvas', () => {
+    const state = createState('episode-a').state;
+    expect(registerCanvasImport({ ...state, projects: [] })).toBeNull();
+    expect(registerCanvasImport({ ...state, projects: [{ id: 'episode-a', parentId: 'missing' }] })).toBeNull();
+    const projects = [{ id: 'series' }, { id: 'episode-a', parentId: 'series' }];
+    expect(registerCanvasImport({ ...state, currentProjectId: 'series', projects })).toBeNull();
+  });
+
+  it('does not turn a copied or restored runtime guard into an execution lease', () => {
+    const { state } = createState();
+    const guard = registerCanvasDerivation(state, 'source')!;
+    const restored = structuredClone(guard);
+    expect(isCanvasDerivationFresh(restored, state)).toBe(false);
+    completeCanvasDerivation(restored);
+    cancelCanvasDerivation(restored);
+    expect(isCanvasDerivationFresh(guard, state)).toBe(true);
+    completeCanvasDerivation(guard);
+  });
   it('guards an empty-canvas import and invalidates it on project lifecycle cancellation', () => {
     const { state, setRevision } = createState();
     state.nodes = [];

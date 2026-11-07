@@ -34,17 +34,22 @@ import type { AgentTeamProfile, AssistantExecutionSelection, TeamGraphDefinition
 import type { CreationProfileOption, CreationProfileSelection } from '../../types/creationProfile';
 import type { ExternalAgentDescriptor } from '../../types/externalAgent';
 import type { ReferencePreviewContent, ReferencePreviewSource } from '../../types/referencePreview';
+import type { ProjectWindowFrame } from '../../types/projectWindow';
 
 export const CHAT_SYNC_EVENT = 'chat:sync-state';
 export const CHAT_ACTION_EVENT = 'chat:action';
 export const CHAT_CLOSE_REQUEST = 'chat:close-request';
 export const CHAT_CLOSE_EVENT = 'chat:close';
+const CHAT_CLOSE_ACK_EVENT = 'chat:close-ack';
 /** 原生窗口 label 由 lib.rs 的 open_chat_window 固定创建。 */
 export const CHAT_MAIN_WINDOW_LABEL = 'main';
 export const CHAT_DETACHED_WINDOW_LABEL = 'chat-assistant';
 export const CHAT_REFERENCE_PREVIEW_EVENT = 'chat:reference-preview-result';
 export const CHAT_TEAM_ARTIFACT_EVENT = 'chat:team-artifact-result';
 export const CHAT_MANAGED_RESPONSE_EVENT = 'chat:managed-result';
+let mainWindowSessionId: string | undefined;
+export const CHAT_SEND_RESPONSE_EVENT = 'chat:send-result';
+interface ChatSendResponse { requestId: string; accepted: boolean }
 
 export type ChatManagedOperation =
   | { kind: 'preview_creation_profile'; profile: CreationProfileOption }
@@ -78,6 +83,8 @@ export interface ChatReferencePreviewResponse {
 // ============================================
 
 export interface ChatStateSnapshot {
+  /** 仅用于窗口协议；旧只读快照可展示，缺少此帧的写请求失败关闭。 */
+  windowFrame?: ProjectWindowFrame | null;
   conversations: ChatConversation[];
   activeConversationId: string | null;
   messages: ChatMessage[];
@@ -127,6 +134,7 @@ export interface ChatStatePatch {
   /** 新补丁按节点 ID 同步；fields.nodes 保留旧完整补丁的读取兼容。 */
   nodes?: ChatEntityPatch<Node<BaseNodeData>>;
   fields: Partial<{
+    windowFrame: ProjectWindowFrame | null;
     activeConversationId: string | null;
     agentTaskFocus: AgentTaskFocusRequest | null;
     projectId: string | null;
@@ -243,6 +251,7 @@ export function createChatStatePatch(
   next: ChatStateSnapshot,
 ): ChatStatePatch {
   const fields: ChatStatePatch['fields'] = {};
+  setChangedField(fields, 'windowFrame', previous.windowFrame, next.windowFrame);
   setChangedField(fields, 'activeConversationId', previous.activeConversationId, next.activeConversationId);
   setChangedField(fields, 'agentTaskFocus', previous.agentTaskFocus, next.agentTaskFocus);
   setChangedField(fields, 'projectId', previous.projectId, next.projectId);
@@ -340,7 +349,7 @@ export function applyChatStatePatch(
 // 用户操作（独立窗口 → 主窗口）
 // ============================================
 
-export type ChatAction =
+export type ChatAction = (
   | { type: 'managed_request'; requestId: string; scopeId: string; conversationId?: string; draft?: string; operation: ChatManagedOperation }
   | {
       type: 'send_message';
@@ -390,14 +399,15 @@ export type ChatAction =
   | { type: 'set_prompt_submit_shortcut'; shortcut: PromptSubmitShortcut }
   | { type: 'preview_reference'; requestId: string; projectId: string | null; source: ReferencePreviewSource }
   | { type: 'cancel_reference_preview'; requestId: string; projectId: string | null }
-  | { type: 'dock_window'; composerDraft?: ChatComposerHandoff }
+  | { type: 'dock_window' | 'close_window'; requestId?: string; composerDraft?: ChatComposerHandoff }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }
-  | { type: 'request_sync' };
+  | { type: 'request_sync' }) & { windowFrame?: ProjectWindowFrame; sequence?: number };
 
 export interface ChatComposerHandoff {
   conversationId: string | null;
   draft: string;
+  windowFrame?: ProjectWindowFrame;
 }
 
 export interface ChatWindowState {
@@ -407,6 +417,11 @@ export interface ChatWindowState {
 
 /** 旧帧直接忽略；补丁缺前帧时返回 null，让窗口重新请求完整快照。 */
 export function receiveChatStateSync(current: ChatWindowState | null, sync: ChatStateSync): ChatWindowState | null {
+  const frame = sync.type === 'snapshot' ? sync.snapshot.windowFrame : sync.patch.fields.windowFrame;
+  if (frame && (frame.schemaVersion !== 2 || frame.revision !== sync.revision)) return null;
+  if (frame && current?.snapshot.windowFrame && frame.sessionId !== current.snapshot.windowFrame.sessionId) {
+    return sync.type === 'snapshot' ? { revision: sync.revision, snapshot: sync.snapshot } : null;
+  }
   if (current && sync.revision <= current.revision) return current;
   if (sync.type === 'snapshot') return { revision: sync.revision, snapshot: sync.snapshot };
   if (!current || sync.baseRevision !== current.revision) return null;
@@ -444,16 +459,34 @@ export async function initMainWindowListener(
 
 /** 主窗口广播首次快照或后续增量补丁（独立窗口 listen 此事件） */
 export async function emitSyncState(sync: ChatStateSync): Promise<void> {
+  const frame = sync.type === 'snapshot' ? sync.snapshot.windowFrame : sync.patch.fields.windowFrame;
+  if (frame) mainWindowSessionId = frame.sessionId;
   const { emit } = await import('@tauri-apps/api/event');
   await emit(CHAT_SYNC_EVENT, sync);
 }
 
 /** 主窗口要求独立窗口关闭 */
 export async function emitCloseChatWindow(): Promise<void> {
-  try {
-    const { emit } = await import('@tauri-apps/api/event');
-    await emit(CHAT_CLOSE_EVENT, {});
-  } catch { /* ignore */ }
+  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+  // 关闭子窗保留 detached 展示偏好；窗口已经不存在时没有待交接输入。
+  if (!await WebviewWindow.getByLabel(CHAT_DETACHED_WINDOW_LABEL)) return;
+  const { emitTo, listen } = await import('@tauri-apps/api/event');
+  const requestId = crypto.randomUUID();
+  await new Promise<void>((resolve, reject) => {
+    let stop: (() => void) | undefined;
+    let settled = false;
+    const timer = setTimeout(() => { settled = true; stop?.(); reject(new Error('独立窗口尚未确认草稿交接，已保留窗口')); }, 30000);
+    void listen<{ requestId: string; accepted: boolean }>(CHAT_CLOSE_ACK_EVENT, ({ payload }) => {
+      if (settled || payload.requestId !== requestId) return;
+      settled = true; clearTimeout(timer); stop?.();
+      if (payload.accepted) resolve(); else reject(new Error('窗口上下文已变化，草稿仍保留在独立窗口'));
+    }).then(async (dispose) => {
+      stop = dispose;
+      if (settled) { dispose(); return; }
+      await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_CLOSE_EVENT, { requestId, sessionId: mainWindowSessionId });
+    })
+      .catch((error: unknown) => { clearTimeout(timer); stop?.(); reject(error); });
+  });
 }
 
 // ============================================
@@ -463,7 +496,7 @@ export async function emitCloseChatWindow(): Promise<void> {
 /** 启动独立窗口监听：接收来自主窗口的状态同步（同样由调用方管生命周期） */
 export async function initChatWindowListener(
   onSync: (sync: ChatStateSync) => void,
-  onCloseRequest: () => void,
+  onCloseRequest: (requestId?: string) => void,
 ): Promise<() => void> {
   const { listen } = await import('@tauri-apps/api/event');
 
@@ -471,8 +504,13 @@ export async function initChatWindowListener(
     onSync(event.payload);
   });
 
-  const unlistenClose = await listen(CHAT_CLOSE_EVENT, () => {
-    onCloseRequest();
+  const unlistenClose = await listen<{ requestId?: string; sessionId?: string }>(CHAT_CLOSE_EVENT, ({ payload }) => {
+    const currentSession = getChatReferenceWindowFrame()?.sessionId;
+    if (currentSession && payload?.sessionId !== currentSession) {
+      if (payload?.requestId) void emitChatCloseAcknowledgement(payload.requestId, false).catch(() => {});
+      return;
+    }
+    onCloseRequest(payload?.requestId);
   });
 
   return () => {
@@ -482,17 +520,53 @@ export async function initChatWindowListener(
 }
 
 /** 独立窗口发送 action 到主窗口 */
-export async function emitAction(action: ChatAction): Promise<void> {
+let clientSequence = 0;
+let readOnlyWindowFrame: ProjectWindowFrame | null = null;
+/** 只供无业务写入的引用预览捕获当前帧；写动作必须由原视图显式传入帧。 */
+export function setChatReferenceWindowFrame(frame: ProjectWindowFrame | null): void { readOnlyWindowFrame = frame; }
+export function getChatReferenceWindowFrame(): ProjectWindowFrame | null { return readOnlyWindowFrame; }
+export async function emitAction(action: ChatAction, windowFrame?: ProjectWindowFrame | null): Promise<void> {
   try {
-    const { emit } = await import('@tauri-apps/api/event');
-    await emit(CHAT_ACTION_EVENT, action);
+    const { emitTo } = await import('@tauri-apps/api/event');
+    await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT, { ...action, windowFrame: windowFrame ?? action.windowFrame,
+      sequence: ++clientSequence });
   } catch {
     console.warn('[chatWindow] failed to emit action');
   }
 }
 
+/** 发送成功由主窗口确认；拒绝、超时或断线均保留原输入，不自动重投。 */
+export async function requestChatMessage(action: Extract<ChatAction, { type: 'send_message' | 'dock_window' | 'close_window' }>, windowFrame?: ProjectWindowFrame | null): Promise<boolean> {
+  const { listen } = await import('@tauri-apps/api/event');
+  const requestId = action.requestId ?? crypto.randomUUID();
+  return new Promise<boolean>((resolve) => {
+    let stop: (() => void) | undefined;
+    let settled = false;
+    const finish = (accepted: boolean) => { if (settled) return; settled = true; clearTimeout(timer); stop?.(); resolve(accepted); };
+    const timer = setTimeout(() => finish(false), 30000);
+    void listen<ChatSendResponse>(CHAT_SEND_RESPONSE_EVENT, ({ payload }) => {
+      if (payload.requestId === requestId) finish(payload.accepted === true);
+    }).then(async (dispose) => {
+      stop = dispose;
+      if (settled) { dispose(); return; }
+      await emitAction({ ...action, requestId }, windowFrame);
+    }).catch(() => finish(false));
+  });
+}
+
+export async function emitChatCloseAcknowledgement(requestId: string, accepted: boolean): Promise<void> {
+  const { emitTo } = await import('@tauri-apps/api/event');
+  await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_CLOSE_ACK_EVENT, { requestId, accepted });
+}
+
+export async function emitChatSendResponse(requestId: string | undefined, accepted: boolean): Promise<void> {
+  if (!requestId) return;
+  const { emitTo } = await import('@tauri-apps/api/event');
+  await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_SEND_RESPONSE_EVENT, { requestId, accepted } satisfies ChatSendResponse);
+}
+
 /** 独立助手只请求主窗口已登记产物，不接收文件路径或直接读取项目目录。 */
-export async function requestTeamArtifactText(taskId: string, artifactId: string): Promise<string> {
+export async function requestTeamArtifactText(taskId: string, artifactId: string, windowFrame?: ProjectWindowFrame | null): Promise<string> {
   if (!taskId || !artifactId || taskId.length > 160 || artifactId.length > 160) throw new Error('团队产物身份无效');
   const { emit, listen } = await import('@tauri-apps/api/event');
   const requestId = crypto.randomUUID();
@@ -516,7 +590,8 @@ export async function requestTeamArtifactText(taskId: string, artifactId: string
         } else finish(response.text, response.error);
       });
       if (settled) { unlisten(); return; }
-      await emit(CHAT_ACTION_EVENT, { type: 'read_team_artifact', requestId, taskId, artifactId } satisfies ChatAction);
+      await emit(CHAT_ACTION_EVENT, { type: 'read_team_artifact', requestId, taskId, artifactId,
+        windowFrame: windowFrame ?? undefined, sequence: ++clientSequence } satisfies ChatAction);
     })().catch(() => finish(undefined, '无法连接主窗口读取团队成果'));
   });
 }
@@ -528,7 +603,7 @@ export async function emitTeamArtifactResponse(response: ChatTeamArtifactRespons
 
 /** 保存成功必须等主窗口 ack；超时仅报未知，不自动重投。 */
 export async function requestManagedChatOperation<T = unknown>(scopeId: string, conversationId: string | undefined,
-  operation: ChatManagedOperation, draft?: string): Promise<T> {
+  operation: ChatManagedOperation, draft?: string, windowFrame?: ProjectWindowFrame | null): Promise<T> {
   const { emitTo, listen } = await import('@tauri-apps/api/event');
   const requestId = crypto.randomUUID();
   return new Promise<T>((resolve, reject) => {
@@ -547,7 +622,8 @@ export async function requestManagedChatOperation<T = unknown>(scopeId: string, 
       });
       if (settled) { unlisten(); return; }
       await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT,
-        { type: 'managed_request', requestId, scopeId, conversationId, operation, draft } satisfies ChatAction);
+        { type: 'managed_request', requestId, scopeId, conversationId, operation, draft,
+          windowFrame: windowFrame ?? undefined, sequence: ++clientSequence } satisfies ChatAction);
     })().catch(() => finish(undefined, '无法连接主窗口；未自动重试'));
   });
 }

@@ -1,0 +1,27 @@
+[[permission]]
+identifier = "allow-project-model-maintenance"
+description = "Only the native cold-maintenance window may inspect its exclusive fixture lease and managed backup materials."
+commands.allow = [
+  "project_model_get_maintenance_lease",
+  "project_model_verify_maintenance_lease",
+  "project_model_get_production_stop_evidence",
+  "project_model_open_backup",
+  "project_model_write_backup_entry",
+  "project_model_read_backup_entry",
+  "project_model_seal_backup",
+  "project_model_verify_backup_seal"
+]
+
+[[permission]]
+identifier = "deny-project-model-maintenance"
+description = "Deny cold-maintenance commands."
+commands.deny = [
+  "project_model_get_maintenance_lease",
+  "project_model_verify_maintenance_lease",
+  "project_model_get_production_stop_evidence",
+  "project_model_open_backup",
+  "project_model_write_backup_entry",
+  "project_model_read_backup_entry",
+  "project_model_seal_backup",
+  "project_model_verify_backup_seal"
+]

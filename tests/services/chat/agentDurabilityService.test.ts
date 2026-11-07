@@ -8,7 +8,7 @@ vi.mock('../../../src/store/useAppStore', () => ({ useAppStore: { getState: () =
   updateAgentTask: (id: string, patch: Partial<AgentTask>) => { Object.assign(fixture.tasks.find((task) => task.id === id)!, patch); },
 }) } }));
 vi.mock('../../../src/services/chat/agentTaskService', () => ({ saveAgentTask: fixture.save }));
-import { beginAgentDispatch, settleAgentDispatch, resolveAgentDispatchOutcome, AgentDurabilityError } from '../../../src/services/chat/agentDurabilityService';
+import { beginAgentDispatch, settleAgentDispatch, resolveAgentDispatchOutcome, unmaterializedTeamDispatches, AgentDurabilityError } from '../../../src/services/chat/agentDurabilityService';
 
 beforeEach(() => {
   fixture.tasks = [{ id: 'dispatch-task', projectId: 'project', conversationId: 'conv', userMessageId: 'message',
@@ -18,6 +18,31 @@ beforeEach(() => {
 });
 
 describe('Agent 执行持久化屏障', () => {
+  it('P4 已明确完成但没有可接纳产物的团队阶段保留原回执，普通继续不能重新付费', async () => {
+    const task = fixture.tasks[0];
+    task.teamRun = { revision: 1, stages: [], artifacts: [] } as unknown as AgentTeamRun;
+    task.dispatches = [{ id: 'known-completed', kind: 'team-model', stepId: 'draft', runRevision: 1,
+      phase: 'settled', outcome: 'succeeded', preparedAt: 1, settledAt: 2 }];
+    expect(unmaterializedTeamDispatches(task).map((item) => item.id)).toEqual(['known-completed']);
+    await expect(beginAgentDispatch({ taskId: task.id, kind: 'team-model', stepId: 'draft', runRevision: 1 }))
+      .rejects.toThrow('普通继续不会重投');
+    expect(fixture.save).not.toHaveBeenCalled();
+  });
+  it('P4 终态容量裁剪仍保留materializationBlocked证明', async () => {
+    const task = fixture.tasks[0];
+    task.dispatches = [{ id: 'blocked', kind: 'team-model', phase: 'settled', outcome: 'failed', preparedAt: 1, materializationBlocked: true },
+      ...Array.from({ length: 256 }, (_, index) => ({ id: `done-${index}`, kind: 'model' as const, phase: 'settled' as const, outcome: 'succeeded' as const, preparedAt: index + 2 }))];
+    await beginAgentDispatch({ taskId: task.id, kind: 'model' });
+    expect(task.dispatches?.find((item) => item.id === 'blocked')).toMatchObject({ materializationBlocked: true, outcome: 'failed' });
+  });
+  it('P4 终态只单调补记产物阻断，不改原outcome/settledAt或预算', async () => {
+    const record = await beginAgentDispatch({ taskId: 'dispatch-task', kind: 'team-model', stepId: 'draft' });
+    await settleAgentDispatch('dispatch-task', record, 'succeeded');
+    const settled = structuredClone(fixture.tasks[0].dispatches![0]);
+    await settleAgentDispatch('dispatch-task', record, 'failed', { materializationBlocked: true });
+    expect(fixture.tasks[0].dispatches![0]).toEqual({ ...settled, materializationBlocked: true });
+    expect(fixture.tasks[0].modelRounds).toBe(0);
+  });
   it('cannot dispatch a profile task whose preparation is still pending or failed', async () => {
     for (const preparation of ['pending', 'failed'] as const) {
       fixture.tasks[0].creationProfilePreparation = preparation;

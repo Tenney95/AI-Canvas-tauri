@@ -1,0 +1,6 @@
+{
+  "identifier": "project-model-maintenance",
+  "description": "Native-created cold-maintenance surface; no business, file, shell, or window-creation capability.",
+  "windows": ["project-model-maintenance"],
+  "permissions": ["allow-project-model-maintenance"]
+}

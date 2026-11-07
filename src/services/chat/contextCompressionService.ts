@@ -8,6 +8,7 @@
 import { useAppStore } from '../../store/useAppStore';
 import { seriesOwnerId } from '../../store/store.utils';
 import { streamAssistantReply, resolveAssistantModel } from '../ai/assistantStream';
+import { assertAgentProjectContext, captureAgentProjectScope } from './agentProjectContext';
 import { loadMessages } from './chatHistoryService';
 import { estimateTokens } from './tokenEstimate';
 import { ContextBudgetError, estimateModelMessagesTokens, resolveAssistantContextSpec } from './contextManager';
@@ -172,6 +173,7 @@ function selectCompressibleMessages(
 }
 
 export interface CompressConversationOptions {
+  assertCurrent?: () => void;
   /** 本次任务所在的画布项目；分集会话归剧集，但模型仍沿用执行分集的选择。 */
   projectId?: string;
   excludeMessageIds?: string[];
@@ -190,6 +192,7 @@ export function compressConversationContext(
   conversationId: string,
   options: CompressConversationOptions = {},
 ): Promise<ConversationContextSummary | null> {
+  try { options.assertCurrent?.(); } catch (error) { return Promise.reject(error); }
   const conversation = useAppStore.getState().conversations.find((item) => item.id === conversationId);
   const projectId = options.projectId ?? conversation?.workbenchTarget?.episodeId ?? conversation?.projectId;
   const requestKey = JSON.stringify([conversationId, projectId]);
@@ -240,8 +243,11 @@ async function doCompress(
   }
   const projectId = options.projectId ?? conversation.projectId;
   const workbenchTarget = conversation.workbenchTarget ? { ...conversation.workbenchTarget } : undefined;
+  const projectScope = captureAgentProjectScope(store, { projectId, workbenchTarget });
   const assertWorkbenchScope = () => {
+    options.assertCurrent?.();
     const currentStore = useAppStore.getState();
+    assertAgentProjectContext(currentStore, { projectId, projectScope }, { checkRevision: false });
     const current = currentStore.conversations.find((item) => item.id === conversationId);
     if (!workbenchTarget && !current?.workbenchTarget) return;
     const scope = workbenchTarget && readEpisodeWorkspaceScope(currentStore, workbenchTarget.episodeId);
@@ -379,8 +385,12 @@ export async function compactAgentMessages(
   currentUserMessage: AssistantModelMessage,
   signal: AbortSignal,
   force = false,
+  assertRunCurrent?: () => void,
 ): Promise<void> {
   const task = activeCompactionTask(taskId, signal);
+  const projectScope = task.projectScope ?? captureAgentProjectScope(useAppStore.getState(), task);
+  const assertProject = () => { assertRunCurrent?.(); assertAgentProjectContext(useAppStore.getState(), { ...task, projectScope }, { checkRevision: false }); };
+  assertProject();
   const { inputBudget } = resolveAssistantContextSpec(task.projectId);
   if (estimateModelMessagesTokens(messages) >= inputBudget * 0.75) {
     const pruned = pruneAgentToolMessages(messages, task);
@@ -433,8 +443,9 @@ export async function compactAgentMessages(
   emitAgentLifecycleEvent({ type: 'context.compression', taskId, conversationId: task.conversationId, phase: 'start' });
   try {
     dispatch = await beginAgentDispatch({ taskId, kind: 'model', signal,
-      revalidate: () => { activeCompactionTask(taskId, signal); } });
+      revalidate: () => { activeCompactionTask(taskId, signal); assertProject(); } });
     activeCompactionTask(taskId, signal);
+    assertProject();
     await streamAssistantReply({
       systemPrompt: SUMMARY_SYSTEM_PROMPT,
       userMessage: summaryInput,
@@ -453,6 +464,7 @@ export async function compactAgentMessages(
     });
     returned = true;
     activeCompactionTask(taskId, signal);
+    assertProject();
     if (streamFailure) throw streamFailure;
     text = sanitizeDomainText(text.trim()).slice(0, SUMMARY_CHAR_LIMIT);
     if (!validateConversationSummary(text, summaryInput).valid) {

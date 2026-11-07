@@ -45,6 +45,7 @@ import {
 } from './indexedDb/projectSummary';
 
 import { withRelocatedMedia } from './indexedDb/mediaRelocations';
+import { withLegacyProjectWrite } from './indexedDb/legacyProjectWriteGuard';
 import { localMediaUrlToPath } from '../utils/mediaUrl';
 import { stripVerbatimPrefix } from './fs/core';
 import { isProjectSnapshotDataUrl } from './projectSnapshotValidation';
@@ -351,11 +352,11 @@ export async function updateProjectStoryGraphCAS(
     || !Number.isSafeInteger(expectedExchangeEpoch) || expectedExchangeEpoch < 0) throw new Error('故事图保存版本无效');
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_PROJECTS, STORE_PROJECT_SUMMARIES], 'readwrite');
+    const tx = db.transaction([STORE_PROJECTS, STORE_PROJECT_SUMMARIES, STORE_METADATA], 'readwrite');
     let result: StoryGraph | undefined;
     let failure: unknown;
     const request = tx.objectStore(STORE_PROJECTS).get(seriesId);
-    request.onsuccess = () => {
+    request.onsuccess = () => withLegacyProjectWrite(tx, () => {
       try {
         assertCurrent?.();
         const before = request.result as ProjectRecord | undefined;
@@ -371,7 +372,7 @@ export async function updateProjectStoryGraphCAS(
         tx.objectStore(STORE_PROJECTS).put(next);
         tx.objectStore(STORE_PROJECT_SUMMARIES).put(summary);
       } catch (error) { failure = error; tx.abort(); }
-    };
+    }, (error) => { failure = error; });
     tx.oncomplete = () => result ? resolve(result) : reject(new Error('故事图未提交'));
     tx.onerror = tx.onabort = () => reject(failure ?? tx.error ?? new Error('故事图提交失败'));
   });
@@ -384,7 +385,7 @@ export async function updateProjectSnapshot(id: string, snapshot: string | undef
   }
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_PROJECTS, STORE_PROJECT_SUMMARIES], 'readwrite');
+    const tx = db.transaction([STORE_PROJECTS, STORE_PROJECT_SUMMARIES, STORE_METADATA], 'readwrite');
     const projects = tx.objectStore(STORE_PROJECTS);
     const request = projects.get(id);
     let updated = false;
@@ -394,7 +395,7 @@ export async function updateProjectSnapshot(id: string, snapshot: string | undef
       settled = true;
       reject(error ?? new Error('项目缩略图保存失败'));
     };
-    request.onsuccess = () => {
+    request.onsuccess = () => withLegacyProjectWrite(tx, () => {
       const current = request.result as ProjectRecord | undefined;
       if (!current) return;
       try {
@@ -408,7 +409,7 @@ export async function updateProjectSnapshot(id: string, snapshot: string | undef
         tx.abort();
         fail(error);
       }
-    };
+    }, fail);
     request.onerror = () => fail(request.error);
     tx.oncomplete = () => {
       if (settled) return;

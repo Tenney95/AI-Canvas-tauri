@@ -31,7 +31,7 @@ describe('AI Canvas thin CLI', () => {
     expect(client.request).toHaveBeenCalledTimes(1);
     expect(client.request.mock.calls[0][1]).toEqual({ name: 'tools_call', arguments: input });
     const receipt = parseCli(['operation', 'get', input.operationKey, '--project-id', 'p1'], env);
-    expect(receipt.request.params.arguments).toEqual({ name: 'mcp_operation_get', arguments: { operationKey: 'intent:123' }, expectedProjectId: 'p1' });
+    expect(receipt.request.params.arguments).toEqual({ name: 'mcp_operation_get', arguments: { operationKey: 'intent:123', legacyProjectId: 'p1' } });
   });
 
   it('rejects invalid UTF-8, oversized input and misplaced envelope fields', async () => {
@@ -50,5 +50,36 @@ describe('AI Canvas thin CLI', () => {
     const client = { request: vi.fn().mockRejectedValue(new DOMException('Aborted', 'AbortError')) };
     await expect(executeCli(parseCli(['status'], env), client, undefined, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(client.request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { kind: 'global', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'runtime-1', catalogRevision: 4 },
+    { kind: 'project', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'runtime-1', projectId: 'owner', projectEpoch: 2 },
+    { kind: 'episode', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'runtime-1', projectId: 'owner', projectEpoch: 2, episodeId: 'episode-a', episodeRevision: 3 },
+    { kind: 'canvas', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'runtime-1', projectId: 'owner', projectEpoch: 2, canvasId: 'canvas-a', episodeId: null, canvasEpoch: 3, canvasRevision: 9 },
+  ])('passes the original $kind context across separate connections without discovering or refreshing it', async (expectedContext) => {
+    const input = { schemaVersion: 2, name: 'project_save', arguments: {}, expectedContext };
+    const parsed = parseEnvelope(JSON.stringify(input));
+    for (const response of [{ content: [] }, { isError: true, content: [{ type: 'text', text: '{"errorCode":"CONTEXT_REFRESH_REQUIRED"}' }] }]) {
+      const client = { request: vi.fn().mockResolvedValue(response) };
+      expect(await executeCli(parseCli(['call'], env), client, parsed)).toBe(response);
+      expect(client.request).toHaveBeenCalledTimes(1);
+      expect(client.request).toHaveBeenCalledWith('tools/call', { name: 'tools_call', arguments: input }, { signal: undefined });
+    }
+    expect(parsed).toEqual(input);
+  });
+
+  it('rejects future, mixed and malformed typed contexts without guessing an owner', () => {
+    const expectedContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 0, projectId: 'owner', projectEpoch: 0,
+      canvasId: 'old-canvas', episodeId: null, canvasEpoch: 0, canvasRevision: 1 };
+    const input = { schemaVersion: 2, name: 'canvas_query', arguments: {}, expectedContext };
+    for (const changed of [{ ...input, schemaVersion: 3 }, { ...input, expectedProjectId: 'old-canvas' },
+      { ...input, schemaVersion: undefined }, { ...input, expectedContext: { ...expectedContext, alias: 'owner' } },
+      { ...input, expectedContext: { ...expectedContext, episodeId: undefined } },
+      { ...input, expectedContext: { ...expectedContext, runtimeEpoch: 'bad/path' } }]) {
+      expect(() => parseEnvelope(JSON.stringify(changed))).toThrow();
+    }
+    const receipt = parseCli(['operation', 'get', 'original-key', '--project-id', 'deleted-canvas', '--audit-scope', 'deleted-target'], env);
+    expect(receipt.request.params.arguments.arguments).toEqual({ operationKey: 'original-key', legacyProjectId: 'deleted-canvas', auditScope: 'deleted-target' });
   });
 });

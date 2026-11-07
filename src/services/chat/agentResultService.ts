@@ -6,6 +6,7 @@ import { sanitizeDomainText } from './subAgentMaterials';
 import { isGeneralAssistantScope } from './assistantScope';
 import { isMcpGlobalContext } from '../mcp/mcpSettingsScope';
 import { isWorkbenchAgentTaskInScope, isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
+import { assertAgentProjectContext } from './agentProjectContext';
 
 export const AGENT_RESULT_PREVIEW_CHARS = 6000;
 export const AGENT_RESULT_PAGE_CHARS = 12000;
@@ -32,6 +33,7 @@ function assertScope(scope: AgentResultScope): void {
       && !isWorkbenchAgentTaskInScope(state, task))) {
     throw new Error('结果不属于当前项目、对话或任务');
   }
+  assertAgentProjectContext(state, task, { checkRevision: false });
 }
 
 function sameScope(left: AgentResultScope, right: AgentResultScope): boolean {
@@ -77,7 +79,10 @@ export async function captureAgentResult(input: {
     const hash = await sha256Hex(data);
     const projectFile = { relativePath: `agent-results/${input.scope.taskId}/${id}-${hash}.json`, sha256: hash, bytes: data.byteLength };
     try {
-      await writeImmutableProjectFile({ projectId: input.scope.projectId, reference: projectFile, data, maxBytes: MAX_PROJECT_RESULT_BYTES });
+      const assertCurrent = () => { assertScope(input.scope); if (input.policy?.authorize?.() === false) throw new Error('原始授权已撤销'); };
+      assertCurrent();
+      await writeImmutableProjectFile({ projectId: input.scope.projectId, reference: projectFile, data, maxBytes: MAX_PROJECT_RESULT_BYTES, assertCurrent });
+      assertCurrent();
       assertScope(input.scope);
       reference = { id, storage: 'project', chars: text.length, createdAt, projectFile };
     } catch {

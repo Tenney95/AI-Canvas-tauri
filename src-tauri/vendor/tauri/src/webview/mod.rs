@@ -151,6 +151,13 @@ pub struct InvokeRequest {
 #[cfg_attr(docsrs, doc(cfg(feature = "wry")))]
 pub struct PlatformWebview(tauri_runtime_wry::Webview);
 
+// AI Canvas cold-maintenance extension: reuse the already pinned WebView2 bindings.
+// Normal webview/environment construction remains unchanged.
+#[cfg(all(feature = "wry", windows))]
+mod exclusive_environment;
+#[cfg(all(feature = "wry", windows))]
+pub use exclusive_environment::create_exclusive_webview2_environment;
+
 #[cfg(feature = "wry")]
 impl PlatformWebview {
   /// Returns [`webkit2gtk::WebView`] handle.

@@ -367,7 +367,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
     registerAgentTool<{ episodeId: string }>({
       id: 'episode_delete',
       title: '删除分集',
-      description: '永久删除指定分集画布；共享剧集素材不会随单集删除。',
+      description: '删除指定分集记录；共享素材和历史回执保留。旧项目格式暂不允许删除最后一集。',
       inputSchema: { type: 'object', required: ['episodeId'], additionalProperties: false, properties: { episodeId: { type: 'string', minLength: 1, maxLength: 160 } } },
       effect: 'permanent_delete',
       authorize: (context, input) => { const state = useAppStore.getState(); const ownerId = seriesOwnerId(state.projects, context.projectId); const episode = state.projects.find((item) => item.id === input.episodeId); return { allowed: state.currentProjectId === context.projectId && episode?.parentId === ownerId, reason: '分集不存在或不属于当前剧集' }; },
@@ -375,6 +375,9 @@ export function registerSeriesAgentTools(): Array<() => void> {
         const episode = useAppStore.getState().projects.find((item) => item.id === input.episodeId);
         if (!episode?.parentId) return { status: 'error', summary: '分集不存在', modelContent: '分集不存在', errorCode: 'EPISODE_NOT_FOUND' };
         await useAppStore.getState().deleteProject(episode.id);
+        if (useAppStore.getState().projects.some((item) => item.id === episode.id)) {
+          return { status: 'error', summary: '分集未删除，已保留原记录', modelContent: '删除被阻止或未完成，请重新核对分集状态；旧格式最后一集不会删除。', errorCode: 'EPISODE_DELETE_FAILED' };
+        }
         return { status: 'success', summary: `已删除分集“${episode.name}”`, modelContent: JSON.stringify({ deleted: true, episodeId: episode.id }) };
       },
     }),

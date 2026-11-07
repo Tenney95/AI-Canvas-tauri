@@ -1195,6 +1195,28 @@ mod tests {
     }
 
     #[test]
+    fn versioned_expected_context_stays_inside_arguments_without_connection_identity() {
+        let context = serde_json::json!({
+            "kind": "canvas", "schemaVersion": 2, "modelGeneration": 0,
+            "runtimeEpoch": "runtime-epoch", "projectId": "owner", "projectEpoch": 3,
+            "canvasId": "legacy-canvas", "episodeId": null, "canvasEpoch": 4, "canvasRevision": 9
+        });
+        let params = serde_json::json!({
+            "name": "tools_call", "arguments": {
+                "schemaVersion": 2, "name": "canvas_update_nodes", "arguments": {},
+                "expectedContext": context, "operationKey": "original-intent"
+            }
+        });
+        for id in ["first-connection", "second-connection"] {
+            let encoded = encoded_request(id, params.clone());
+            let line = String::from_utf8(encoded).unwrap();
+            let request = parse_request(line.trim_end(), TOKEN).unwrap();
+            assert_eq!(request.params, params);
+            assert_eq!(request.params["arguments"]["expectedContext"], context);
+        }
+    }
+
+    #[test]
     fn upload_frame_preserves_bytes_across_would_block_and_timeout() {
         let data = format!("{}==", "A".repeat(349_526));
         let encoded = encoded_request(

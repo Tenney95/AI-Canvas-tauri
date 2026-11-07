@@ -4,6 +4,7 @@
 import { VideoEditorControlError } from "../types/videoEditorControl";
 /** 当前项目的剪辑控制：共享工程模型、来源绑定、原子版本比较；不打开窗口。 */
 import { useAppStore } from '../store/useAppStore';
+import { captureLegacyCanvasContext, assertProjectExpectedContextCurrent } from './projectExecutionContext';
 import { generateId } from '../store/store.utils';
 import {
   buildVideoEditorProjectId, compareAndSaveVideoEditorProject,
@@ -168,6 +169,8 @@ export function bindVideoEditorTracks(tracks: VideoEditorTrackInput[]): VideoEdi
 
 export async function createControlledEditor(context: VideoEditorControlContext, input: VideoEditorCreateInput) {
   assertVideoEditorContext(context);
+  const expectedContext = captureLegacyCanvasContext(useAppStore.getState());
+  if (!expectedContext || expectedContext.canvasId !== context.projectId) throw new VideoEditorControlError('剪辑目标画布上下文无效');
   await assertEditorWindowClosed();
   assertVideoEditorContext(context);
   const store = useAppStore.getState();
@@ -208,11 +211,15 @@ export async function createControlledEditor(context: VideoEditorControlContext,
     createdAt: now, updatedAt: now, automationRevision: 1, output: { ...DEFAULT_VIDEO_EDITOR_OUTPUT },
   };
   assertVideoEditorContext(context);
-  await compareAndSaveVideoEditorProject(record, null);
+  assertProjectExpectedContextCurrent(expectedContext, useAppStore.getState());
+  await compareAndSaveVideoEditorProject(record, null, expectedContext);
   return describeControlledEditor(record);
 }
 
 export async function updateControlledEditor(context: VideoEditorControlContext, input: VideoEditorUpdateInput) {
+  assertVideoEditorContext(context);
+  const expectedContext = captureLegacyCanvasContext(useAppStore.getState());
+  if (!expectedContext || expectedContext.canvasId !== context.projectId) throw new VideoEditorControlError('剪辑目标画布上下文无效');
   await assertEditorWindowClosed();
   const current = await readControlledEditor(context, input.editorId);
   if (await videoEditorVersion(current) !== input.expectedVersion) throw new VideoEditorControlError('剪辑工程版本已变化，请重新读取后提交');
@@ -225,7 +232,8 @@ export async function updateControlledEditor(context: VideoEditorControlContext,
     automationRevision: (current.automationRevision ?? 0) + 1, updatedAt: Math.max(Date.now(), current.updatedAt + 1),
   };
   assertVideoEditorContext(context);
-  await compareAndSaveVideoEditorProject(next, current);
+  assertProjectExpectedContextCurrent(expectedContext, useAppStore.getState());
+  await compareAndSaveVideoEditorProject(next, current, expectedContext);
   return describeControlledEditor(next);
 }
 

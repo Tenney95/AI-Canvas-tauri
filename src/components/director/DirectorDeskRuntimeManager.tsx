@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { t } from '../../i18n';
 import { useAppStore } from '../../store/useAppStore';
+import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../../services/projectExecutionContext';
 import {
   cancelDirectorDeskInstall,
   getDirectorDeskRuntimeStatus,
@@ -58,6 +59,7 @@ function DirectorDeskRuntimeRequestController({
   const theme = useAppStore((state) => state.config.theme);
   const showToast = useAppStore((state) => state.showToast);
   const runtimeAvailable = isDirectorDeskRuntimeAvailable();
+  const [requestedContext] = useState(() => captureLegacyCanvasContext(useAppStore.getState()));
   const [phase, setPhase] = useState<DirectorDeskDialogPhase | 'checking'>(
     runtimeAvailable ? 'checking' : 'error',
   );
@@ -154,6 +156,7 @@ function DirectorDeskRuntimeRequestController({
         : null;
       if (
         request.openAfterInstall
+        && requestedContext && isProjectExpectedContextCurrent(requestedContext, useAppStore.getState(), { checkCanvasRevision: false })
         && matchingNode
         && runtimeResolution?.supported
         && runtimeResolution.kind === 'lightweight-web'
@@ -161,6 +164,7 @@ function DirectorDeskRuntimeRequestController({
         await openDirectorRuntime(matchingNode.data.directorRuntimeKind, {
           instanceId: request.instanceId,
           theme: theme === 'light' ? 'light' : 'dark',
+          expectedContext: requestedContext,
         });
       }
     } catch (reason) {
@@ -179,7 +183,7 @@ function DirectorDeskRuntimeRequestController({
       installStartedRef.current = false;
       if (mountedRef.current) setCancelling(false);
     }
-  }, [clearRequest, request, theme]);
+  }, [clearRequest, request, requestedContext, theme]);
 
   const handleSelectArchive = useCallback(async () => {
     try {

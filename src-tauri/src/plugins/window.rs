@@ -45,6 +45,8 @@ pub struct PluginWindowBinding {
     pub project_id: String,
     pub node_id: String,
     pub canvas_revision: u64,
+    #[serde(default, deserialize_with = "crate::project_execution_context::optional_canvas_context", skip_serializing_if = "Option::is_none")]
+    pub expected_context: Option<crate::project_execution_context::CanvasExecutionContext>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -189,6 +191,9 @@ fn validate_open(options: &OpenPluginWindow) -> Result<(), String> {
         || !valid_id(&binding.project_id)
         || !valid_id(&binding.node_id)
         || binding.canvas_revision > MAX_SAFE_INTEGER
+        || binding.expected_context.as_ref().is_some_and(|context| {
+            !context.matches_canvas(&binding.project_id, Some(binding.canvas_revision))
+        })
         || options.title.is_empty()
         || options.title.len() > 240
         || options.title.chars().any(char::is_control)
@@ -439,7 +444,8 @@ pub async fn open_plugin_ui_window<R: Runtime>(
                     && current.project_id == options.binding.project_id
                     && current.node_id == options.binding.node_id
             }) {
-                if existing.options.binding.canvas_revision != options.binding.canvas_revision {
+                if existing.options.binding.canvas_revision != options.binding.canvas_revision
+                    || existing.options.binding.expected_context != options.binding.expected_context {
                     return Err("画布已变化，请先关闭旧插件会话".into());
                 }
                 return Ok((
@@ -793,6 +799,7 @@ mod tests {
                 project_id: "project-1".into(),
                 node_id: "node-1".into(),
                 canvas_revision: 7,
+                expected_context: None,
             },
             export_name: "Review".into(),
             title: "逐帧拉片".into(),
@@ -835,6 +842,33 @@ mod tests {
         ] {
             assert!(!is_main_surface(label, window));
         }
+    }
+
+    #[test]
+    fn canvas_context_is_part_of_the_native_lease_and_never_substitutes_owner_id() {
+        let mut scoped = session();
+        scoped.options.binding.expected_context = Some(serde_json::from_value(json!({
+            "kind":"canvas", "schemaVersion":2, "modelGeneration":0, "runtimeEpoch":"process-a",
+            "projectId":"owner", "projectEpoch":2, "canvasId":"project-1", "episodeId":"episode-1",
+            "canvasEpoch":3, "canvasRevision":7
+        })).unwrap());
+        assert!(validate_open(&scoped.options).is_ok());
+        let binding = scoped.options.binding.clone();
+        let mut sessions = WindowSessions::default();
+        sessions.sessions.insert(binding.session_id.clone(), scoped);
+        assert!(sessions.bound_mut(&binding).is_ok());
+        let mut restored = binding.clone();
+        restored.expected_context.as_mut().unwrap().canvas_epoch += 1;
+        assert!(sessions.bound_mut(&restored).is_err());
+        restored.expected_context = None;
+        assert!(sessions.bound_mut(&restored).is_err());
+        let mut invalid = options();
+        invalid.binding = binding;
+        invalid.binding.project_id = "owner".into();
+        assert!(validate_open(&invalid).is_err());
+        let mut encoded = serde_json::to_value(options()).unwrap();
+        encoded["binding"]["expectedContext"] = Value::Null;
+        assert!(serde_json::from_value::<OpenPluginWindow>(encoded).is_err());
     }
 
     #[test]

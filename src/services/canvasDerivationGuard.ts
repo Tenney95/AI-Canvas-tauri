@@ -1,10 +1,14 @@
 /**
  * 跟踪异步画布派生操作的项目、源节点和 revision，阻止过期结果写回当前画布。
  */
-interface CanvasDerivationState {
-  currentProjectId: string | null;
+import type { CanvasContext } from '../types/project';
+import type { ProjectExecutionContextState } from '../types/projectExecutionContext';
+import {
+  captureLegacyCanvasContext, isProjectExpectedContextCurrent, parseProjectExpectedContext,
+} from './projectExecutionContext';
+
+interface CanvasDerivationState extends ProjectExecutionContextState {
   nodes: ReadonlyArray<{ id: string }>;
-  getCurrentRevision: () => number;
 }
 
 export interface CanvasDerivationGuard {
@@ -13,6 +17,25 @@ export interface CanvasDerivationGuard {
   readonly sourceNodeId: string | null;
   readonly baseRevision: number;
   readonly placeholderNodeId?: string;
+  readonly expectedContext?: Readonly<CanvasContext>;
+}
+
+function captureContext(state: CanvasDerivationState): CanvasContext | null {
+  if (state.projectExecutionContext !== undefined) {
+    try {
+      const parsed = parseProjectExpectedContext(state.projectExecutionContext);
+      return parsed.kind === 'canvas' && parsed.canvasId === state.currentProjectId
+        && parsed.canvasRevision === state.getCurrentRevision() ? parsed : null;
+    } catch { return null; }
+  }
+  return captureLegacyCanvasContext(state);
+}
+
+/** 仅核对目标身份/代际；不是执行租约，不能替代isCanvasDerivationFresh。 */
+export function isCanvasDerivationTargetCurrent(guard: CanvasDerivationGuard, state: CanvasDerivationState): boolean {
+  if (state.currentProjectId !== guard.projectId) return false;
+  if (!guard.expectedContext) return state.projects === undefined && state.projectExecutionContext === undefined;
+  return isProjectExpectedContextCurrent(guard.expectedContext, state.projectExecutionContext ?? state, { checkCanvasRevision: false });
 }
 
 interface PendingCanvasDerivation {
@@ -41,11 +64,15 @@ export function createOrReuseCanvasDerivationRuntime(
   ): CanvasDerivationGuard | null {
     const projectId = state.currentProjectId;
     if (!projectId || !state.nodes.some((node) => node.id === sourceNodeId)) return null;
+    const context = captureContext(state);
+    if (!context && (state.projects !== undefined || state.projectExecutionContext !== undefined)) return null;
     const guard: CanvasDerivationGuard = {
       operationId: `canvas-derivation-${Date.now()}-${runtime.operationSequence++}`,
       projectId, sourceNodeId, baseRevision: state.getCurrentRevision(),
       placeholderNodeId: options.placeholderNodeId,
+      ...(context ? { expectedContext: Object.freeze(structuredClone(context)) } : {}),
     };
+    Object.freeze(guard);
     runtime.pendingDerivations.set(guard.operationId, { guard, onCancel: options.onCancel });
     return guard;
   }
@@ -53,29 +80,33 @@ export function createOrReuseCanvasDerivationRuntime(
   /** 新素材导入没有源节点，仍绑定项目、revision 和项目切换取消生命周期。 */
   function registerCanvasImport(state: CanvasDerivationState, onCancel?: () => void): CanvasDerivationGuard | null {
     if (!state.currentProjectId) return null;
+    const context = captureContext(state);
+    if (!context && (state.projects !== undefined || state.projectExecutionContext !== undefined)) return null;
     const guard: CanvasDerivationGuard = {
       operationId: `canvas-import-${Date.now()}-${runtime.operationSequence++}`,
       projectId: state.currentProjectId, sourceNodeId: null, baseRevision: state.getCurrentRevision(),
+      ...(context ? { expectedContext: Object.freeze(structuredClone(context)) } : {}),
     };
+    Object.freeze(guard);
     runtime.pendingDerivations.set(guard.operationId, { guard, onCancel });
     return guard;
   }
 
   function isCanvasDerivationFresh(guard: CanvasDerivationGuard, state: CanvasDerivationState): boolean {
-    if (!runtime.pendingDerivations.has(guard.operationId)) return false;
-    if (state.currentProjectId !== guard.projectId) return false;
+    if (runtime.pendingDerivations.get(guard.operationId)?.guard !== guard) return false;
+    if (!isCanvasDerivationTargetCurrent(guard, state)) return false;
     if (state.getCurrentRevision() !== guard.baseRevision) return false;
     if (guard.sourceNodeId !== null && !state.nodes.some((node) => node.id === guard.sourceNodeId)) return false;
     return !guard.placeholderNodeId || state.nodes.some((node) => node.id === guard.placeholderNodeId);
   }
 
   function completeCanvasDerivation(guard: CanvasDerivationGuard): void {
-    runtime.pendingDerivations.delete(guard.operationId);
+    if (runtime.pendingDerivations.get(guard.operationId)?.guard === guard) runtime.pendingDerivations.delete(guard.operationId);
   }
 
   function cancelCanvasDerivation(guard: CanvasDerivationGuard): void {
     const pending = runtime.pendingDerivations.get(guard.operationId);
-    if (!pending) return;
+    if (pending?.guard !== guard) return;
     runtime.pendingDerivations.delete(guard.operationId);
     pending.onCancel?.();
   }

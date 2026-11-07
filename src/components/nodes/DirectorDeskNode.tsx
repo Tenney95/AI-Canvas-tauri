@@ -51,6 +51,7 @@ import {
 import type { DirectorNodeOperationRequest, DirectorOperationSnapshot } from '../../types/directorOperation';
 import { loadDirectorPrevisScene, saveDirectorPrevisOutput, subscribeDirectorPrevisOpen } from '../../services/directorPrevisService';
 import LazyLoadBoundary, { LazyLoadFallback } from '../shared/LazyLoadBoundary';
+import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation, type CanvasDerivationGuard } from '../../services/canvasDerivationGuard';
 
 const DirectorPrevisDialog = lazy(() => import('../director/DirectorPrevisDialog'));
 
@@ -246,88 +247,103 @@ function DirectorDeskNode({
   }, [id]);
 
   const persistCaptures = useCallback(
-    async (captures: DirectorRuntimeCapture[]) => {
+    async (captures: DirectorRuntimeCapture[], operationGuard?: CanvasDerivationGuard) => {
       if (!captures.length) return;
       const initialState = useAppStore.getState();
       const projectId = initialState.currentProjectId;
       const initialNode = initialState.nodes.find((node) => node.id === id);
       const initialData = initialNode?.data as BaseNodeData | undefined;
       if (!initialData) return;
-      const nextUrls: string[] = Array.isArray(initialData.directorCaptureUrls)
-        ? [...(initialData.directorCaptureUrls as string[])]
-        : [];
-      const nextPaths: string[] = Array.isArray(initialData.directorCaptureFilePaths)
-        ? [...(initialData.directorCaptureFilePaths as string[])]
-        : [];
+      const guard = operationGuard ?? registerCanvasDerivation(initialState, id);
+      if (!guard) return;
+      const assertFresh = () => {
+        const state = useAppStore.getState();
+        const current = state.nodes.find((node) => node.id === id)?.data;
+        if (!isCanvasDerivationFresh(guard, state) || (current?.directorInstanceId || id) !== instanceId
+          || current?.directorRuntimeKind !== initialData.directorRuntimeKind) throw new Error('导演台目标画布已变化');
+      };
+      try {
+        assertFresh();
+        const nextUrls: string[] = Array.isArray(initialData.directorCaptureUrls)
+          ? [...(initialData.directorCaptureUrls as string[])]
+          : [];
+        const nextPaths: string[] = Array.isArray(initialData.directorCaptureFilePaths)
+          ? [...(initialData.directorCaptureFilePaths as string[])]
+          : [];
 
-      let added = 0;
-      let latestManifestReference: DirectorResultManifestReference | undefined;
-      for (const capture of captures) {
-        const dataUrl = capture.dataUrl?.trim();
-        const nativeMediaUrl = capture.mediaUrl?.trim();
-        let imageUrl: string;
-        let filePath = capture.filePath?.trim() || undefined;
-        if (dataUrl?.startsWith('data:image/')) {
-          imageUrl = dataUrl;
-        } else if (nativeMediaUrl && filePath) {
-          imageUrl = nativeMediaUrl;
-        } else {
-          continue;
-        }
-
-        if (dataUrl?.startsWith('data:image/') && projectId) {
-          try {
-            const fileName = buildNodeFileName(
-              (initialData.label as string) || '导演台',
-              'png',
-              'director',
-            );
-            const saved = await saveDataUrlToProjectData(dataUrl, projectId, fileName);
-            if (saved?.assetUrl) imageUrl = saved.assetUrl;
-            if (saved?.filePath) filePath = saved.filePath;
-          } catch (err) {
-            console.warn('[DirectorDeskNode] 截图落盘失败，使用 data URL', err);
+        let added = 0;
+        let latestManifestReference: DirectorResultManifestReference | undefined;
+        for (const capture of captures) {
+          assertFresh();
+          const dataUrl = capture.dataUrl?.trim();
+          const nativeMediaUrl = capture.mediaUrl?.trim();
+          let imageUrl: string;
+          let filePath = capture.filePath?.trim() || undefined;
+          if (dataUrl?.startsWith('data:image/')) {
+            imageUrl = dataUrl;
+          } else if (nativeMediaUrl && filePath) {
+            imageUrl = nativeMediaUrl;
+          } else {
+            continue;
           }
+
+          if (dataUrl?.startsWith('data:image/') && projectId) {
+            try {
+              const fileName = buildNodeFileName(
+                (initialData.label as string) || '导演台',
+                'png',
+                'director',
+              );
+              const saved = await saveDataUrlToProjectData(dataUrl, projectId, fileName);
+              assertFresh();
+              if (saved?.assetUrl) imageUrl = saved.assetUrl;
+              if (saved?.filePath) filePath = saved.filePath;
+            } catch (err) {
+              assertFresh();
+              console.warn('[DirectorDeskNode] 截图落盘失败，使用 data URL', err);
+            }
+          }
+
+          nextUrls.push(imageUrl);
+          if (filePath) nextPaths.push(filePath);
+          if (capture.manifestReference) {
+            latestManifestReference = normalizeDirectorResultManifestReference(
+              capture.manifestReference,
+            );
+          }
+          added += 1;
         }
 
-        nextUrls.push(imageUrl);
-        if (filePath) nextPaths.push(filePath);
-        if (capture.manifestReference) {
-          latestManifestReference = normalizeDirectorResultManifestReference(
-            capture.manifestReference,
-          );
+        if (added === 0) {
+          showToast(t('未收到有效截图'), 'error');
+          return;
         }
-        added += 1;
-      }
 
-      if (added === 0) {
-        showToast(t('未收到有效截图'), 'error');
-        return;
-      }
-
-      const latest = nextUrls[nextUrls.length - 1];
-      const latestPath = nextPaths[nextPaths.length - 1];
-      const liveState = useAppStore.getState();
-      if (liveState.currentProjectId !== projectId || !liveState.nodes.some((node) => node.id === id)) {
-        return;
-      }
-      liveState.updateNodeData(id, {
-        directorCaptureUrls: nextUrls.slice(-12),
-        directorCaptureFilePaths: nextPaths.slice(-12),
-        imageUrl: latest,
-        filePath: latestPath,
-        thumbnailUrl: latest,
-        ...(latestManifestReference
-          ? { directorResultManifest: latestManifestReference }
-          : {}),
-        status: 'success',
-        error: undefined,
-        directorStatus: 'ready',
-      });
-      liveState.incrementRevision();
-      showToast(t('已同步 {count} 张导演台截图到节点', { count: added }));
+        const latest = nextUrls[nextUrls.length - 1];
+        const latestPath = nextPaths[nextPaths.length - 1];
+        const liveState = useAppStore.getState();
+        assertFresh();
+        if (liveState.currentProjectId !== projectId || !liveState.nodes.some((node) => node.id === id)) {
+          return;
+        }
+        liveState.updateNodeData(id, {
+          directorCaptureUrls: nextUrls.slice(-12),
+          directorCaptureFilePaths: nextPaths.slice(-12),
+          imageUrl: latest,
+          filePath: latestPath,
+          thumbnailUrl: latest,
+          ...(latestManifestReference
+            ? { directorResultManifest: latestManifestReference }
+            : {}),
+          status: 'success',
+          error: undefined,
+          directorStatus: 'ready',
+        });
+        liveState.incrementRevision();
+        showToast(t('已同步 {count} 张导演台截图到节点', { count: added }));
+      } finally { completeCanvasDerivation(guard); }
     },
-    [id, showToast],
+    [id, instanceId, showToast],
   );
 
   useEffect(() => {
@@ -347,7 +363,7 @@ function DirectorDeskNode({
       }
 
       if (event.type === 'captures') {
-        void persistCaptures(event.captures);
+        void persistCaptures(event.captures).catch(() => {});
       }
     });
   }, [captureUrls.length, data.directorRuntimeKind, id, instanceId, persistCaptures, updateNodeDataTransient]);
@@ -363,17 +379,21 @@ function DirectorDeskNode({
       return;
     }
     setReady(false);
+    const guard = registerCanvasDerivation(useAppStore.getState(), id);
+    if (!guard) return;
     updateNodeDataTransient(id, { directorStatus: 'open' });
     try {
       const availability = await getDirectorRuntimeAvailability(data.directorRuntimeKind);
+      if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
       if (availability.state === 'setup-required') {
         updateNodeDataTransient(id, { directorStatus: 'idle', error: undefined });
         useAppStore.getState().requestDirectorDeskRuntime(instanceId, true);
         return;
       }
       if (availability.state === 'unavailable') throw new Error(availability.reason);
-      await openDirectorRuntime('lightweight-web', { instanceId, theme: deskTheme });
+      await openDirectorRuntime('lightweight-web', { instanceId, theme: deskTheme, expectedContext: guard.expectedContext });
     } catch (error) {
+      if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
       if (isAbortError(error)) {
         updateNodeDataTransient(id, { directorStatus: captureUrls.length ? 'ready' : 'idle', error: undefined });
         return;
@@ -383,6 +403,7 @@ function DirectorDeskNode({
       updateNodeDataTransient(id, { directorStatus: 'idle', error: message });
       showToast(message, 'error');
     } finally {
+      completeCanvasDerivation(guard);
       setBusy(null);
     }
   }, [busy, captureUrls.length, data.directorRuntimeKind, deskTheme, id, instanceId, runBlenderOperation, runtimeKind, showToast, updateNodeDataTransient]);
@@ -402,17 +423,22 @@ function DirectorDeskNode({
       return;
     }
     setBusy('导出当前帧…');
+    const guard = registerCanvasDerivation(useAppStore.getState(), id);
+    if (!guard) { setBusy(null); return; }
     try {
       const result = await exportDirectorRuntimeFrame(data.directorRuntimeKind, instanceId, {
         position: 'current', quality: '1080p',
         fileName: `${(data.label as string) || 'director'}-frame.png`,
       });
-      await persistCaptures([result]);
+      if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
+      await persistCaptures([result], guard);
     } catch (error) {
+      if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
       const message = error instanceof Error ? error.message : t('导出帧失败');
       showToast(message, 'error');
       updateNodeDataTransient(id, { error: message });
     } finally {
+      completeCanvasDerivation(guard);
       setBusy(null);
     }
   }, [busy, data.directorRuntimeKind, data.label, id, instanceId, persistCaptures, ready, runBlenderOperation, runtimeKind, showToast, updateNodeDataTransient]);
@@ -433,23 +459,28 @@ function DirectorDeskNode({
     }
     videoExportPendingRef.current = true;
     setBusy('导出参考视频…');
+    const guard = registerCanvasDerivation(useAppStore.getState(), id);
+    if (!guard) { videoExportPendingRef.current = false; setBusy(null); return; }
     try {
       const result = await exportDirectorRuntimeVideo(data.directorRuntimeKind, instanceId, {
         quality: '720p', fps: 24,
         fileName: `${(data.label as string) || 'director'}-ref.mp4`,
       });
+      if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
       let videoUrl = result.mediaUrl;
       let filePath = result.filePath;
-      const projectId = useAppStore.getState().currentProjectId;
+      const projectId = guard.projectId;
       if (projectId && videoUrl.startsWith('data:')) {
         try {
           const saved = await saveDataUrlToProjectData(videoUrl, projectId,
             buildNodeFileName((data.label as string) || '导演台', 'mp4', 'director-ref'));
+          if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
           if (saved?.assetUrl) videoUrl = saved.assetUrl;
           if (saved?.filePath) filePath = saved.filePath;
         } catch { /* 轻量导演台保留原有 data URL 回退。 */ }
       }
       const state = useAppStore.getState();
+      if (!isCanvasDerivationFresh(guard, state)) return;
       const node = state.nodes.find((item) => item.id === id);
       if (!node || state.currentProjectId !== projectId) return;
       state.commitToHistory();
@@ -460,10 +491,12 @@ function DirectorDeskNode({
       state.incrementRevision();
       showToast(t('参考视频已写入节点；图生视频请优先使用同步的截图/帧'));
     } catch (error) {
+      if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
       const message = error instanceof Error ? error.message : t('导出视频失败');
       showToast(message, 'error');
       updateNodeDataTransient(id, { error: message });
     } finally {
+      completeCanvasDerivation(guard);
       videoExportPendingRef.current = false;
       setBusy(null);
     }

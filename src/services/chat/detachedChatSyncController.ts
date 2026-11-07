@@ -47,6 +47,7 @@ import {
   emitSyncState,
   emitTeamArtifactResponse,
   emitManagedChatResponse,
+  emitChatSendResponse,
   hasChatStatePatchChanges,
   initMainWindowListener,
   type ChatAction,
@@ -73,6 +74,8 @@ import { resolveAgentDispatchOutcome } from './agentDurabilityService';
 import { saveConversation } from './chatHistoryService';
 import { sanitizeDomainText } from './subAgentMaterials';
 import { configValuesEqual } from '../configPatch';
+import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../projectWindowContext';
+import type { ProjectWindowFrame } from '../../types/projectWindow';
 
 const DEFAULT_SYNC_INTERVAL_MS = 150;
 const MAX_SYNC_RETRY_DELAY_MS = 5_000;
@@ -106,6 +109,10 @@ interface DetachedSnapshotSource {
   messages: ChatMessage[];
   agentTasks: AgentTask[];
   currentProjectId: string | null;
+  projectLoadStatus: AppState['projectLoadStatus'];
+  switchingProjectName: string | null;
+  isCreatingProject: boolean;
+  isReturningToStartPage: boolean;
   projects: AppState['projects'];
   config: AppState['config'];
   configHydrated: boolean;
@@ -387,6 +394,10 @@ function detachedSnapshotSourceChanged(
     || current.messages !== previous.messages
     || current.agentTasks !== previous.agentTasks
     || current.currentProjectId !== previous.currentProjectId
+    || current.projectLoadStatus !== previous.projectLoadStatus
+    || current.switchingProjectName !== previous.switchingProjectName
+    || current.isCreatingProject !== previous.isCreatingProject
+    || current.isReturningToStartPage !== previous.isReturningToStartPage
     || current.projects !== previous.projects
     || current.config !== previous.config
     || current.configHydrated !== previous.configHydrated
@@ -403,7 +414,7 @@ function detachedSnapshotSourceChanged(
 
 /** 唯一宿主用户操作入口；子窗只传固定声明，不直接访问原生能力。 */
 export async function executeManagedChatOperation(operation: ChatManagedOperation, scopeId: string,
-  conversationId?: string, draft?: string): Promise<unknown> {
+  conversationId?: string, draft?: string, assertCurrent?: () => void): Promise<unknown> {
   const allowedKeys: Record<ChatManagedOperation['kind'], readonly string[]> = {
     preview_creation_profile: ['kind', 'profile'], apply_creation_profile: ['kind', 'selection'], save_team_profile: ['kind', 'profile'],
     refresh_external_agents: ['kind'], edit_team_graph: ['kind', 'taskId', 'graph', 'expected'],
@@ -419,6 +430,7 @@ export async function executeManagedChatOperation(operation: ChatManagedOperatio
   if (operation.kind === 'team_result' && !['apply', 'restore', 'reconcile'].includes(operation.action)) throw new Error('团队成果操作无效');
   if (operation.kind === 'amend_team_task' && (typeof operation.instruction !== 'string' || operation.instruction.length > 4000)) throw new Error('补充要求超过上限');
   const assertScope = () => {
+    assertCurrent?.();
     const state = useAppStore.getState();
     if ((state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID) !== scopeId) throw new Error('项目已变化，请刷新后重试');
     const owner = seriesOwnerId(state.projects, scopeId);
@@ -496,6 +508,7 @@ const managedRequests = new Map<string, { signature: string; result: Promise<Cha
 export function handleDetachedChatAction(
   action: ChatAction,
   requestSync: (immediate?: boolean, forceSnapshot?: boolean) => void,
+  assertCurrent?: () => void,
 ): void {
   const store = useAppStore.getState();
 
@@ -507,12 +520,13 @@ export function handleDetachedChatAction(
         if (encoded.length > 128 * 1024) throw new Error('窗口请求超过上限');
         const digest = await crypto.subtle.digest('SHA-256', encoded);
         const signature = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        assertCurrent?.();
         let accepted = managedRequests.get(action.requestId);
         if (accepted && accepted.signature !== signature) throw new Error('请求身份已变化');
         if (!accepted) {
           if (managedRequests.size >= 128) for (const [id, record] of managedRequests) { if (record.completed) { managedRequests.delete(id); break; } }
           if (managedRequests.size >= 128) throw new Error('主窗口正在处理过多请求');
-          const result = executeManagedChatOperation(action.operation, action.scopeId, action.conversationId, action.draft)
+          const result = executeManagedChatOperation(action.operation, action.scopeId, action.conversationId, action.draft, assertCurrent)
             .then((value): ChatManagedResponse => ({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId, value }),
               (error: unknown): ChatManagedResponse => ({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId,
                 error: sanitizeDomainText(error instanceof Error ? error.message : '操作未完成').slice(0, 300) }));
@@ -568,6 +582,7 @@ export function handleDetachedChatAction(
         break;
       }
       void import('./teams/teamResultApplyService').then(async (service) => {
+        assertCurrent?.();
         if (action.type === 'apply_team_result') await service.applyTeamResult(action.taskId);
         else if (action.type === 'restore_team_result') await service.restoreTeamResult(action.taskId);
         else store.showToast(await service.reconcileTeamResult(action.taskId), 'info');
@@ -607,8 +622,10 @@ export function handleDetachedChatAction(
       break;
     }
     case 'send_message': {
-      if (!action.content.trim() && !action.imageFileNames?.length) break;
-      if (action.conversationId && !store.conversations.some((item) => item.id === action.conversationId && !item.deletedAt)) break;
+      if ((!action.content.trim() && !action.imageFileNames?.length)
+        || (action.conversationId && !store.conversations.some((item) => item.id === action.conversationId && !item.deletedAt))) {
+        void emitChatSendResponse(action.requestId, false).catch(() => {}); break;
+      }
       const conversationId = action.conversationId
         ?? store.createConversation(store.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
       if (conversationId !== store.activeConversationId) {
@@ -628,10 +645,11 @@ export function handleDetachedChatAction(
         executionSelection: action.executionSelection,
         requestId: action.requestId,
       });
-      if (action.imageFileNames?.length) {
-        store.setChatComposerLiveDraft(submitted?.status === 'ignored' ? action.content : '', conversationId);
+      if (submitted?.status !== 'ignored') {
+        store.setChatComposerLiveDraft('', conversationId);
         requestSync(true);
       }
+      void emitChatSendResponse(action.requestId, submitted?.status !== 'ignored').catch(() => {});
       break;
     }
 
@@ -815,11 +833,12 @@ export function handleDetachedChatAction(
       requestSync(true);
       break;
 
+    case 'close_window':
     case 'dock_window':
       if (action.composerDraft) store.setChatComposerLiveDraft(action.composerDraft.draft, action.composerDraft.conversationId);
       store.setHoveredMentionNodeId(null);
-      store.setChatPanelDetached(false);
-      store.openChat();
+      void emitChatSendResponse(action.requestId, true).catch(() => {});
+      if (action.type === 'dock_window') { store.setChatPanelDetached(false); store.openChat(); }
       break;
 
     case 'request_sync':
@@ -852,6 +871,9 @@ export function createDetachedChatSyncController(
   let forceSnapshotPending = false;
   let consecutiveFailures = 0;
   let generation = 0;
+  let sessionId = crypto.randomUUID();
+  let acceptedSequence = 0;
+  const frames = new Map<number, ProjectWindowFrame>();
   let cleanupListener: (() => void) | undefined;
   let unsubscribeStore: (() => void) | undefined;
   let unsubscribeFileGrants: (() => void) | undefined;
@@ -859,6 +881,9 @@ export function createDetachedChatSyncController(
 
   const resetSyncState = () => {
     generation += 1;
+    sessionId = crypto.randomUUID();
+    acceptedSequence = 0;
+    frames.clear();
     // 已发出的旧帧可能还在路上，重新打开窗口时不能复用它的版本号。
     if (inFlight) revision += 1;
     pending = false;
@@ -888,6 +913,11 @@ export function createDetachedChatSyncController(
 
     try {
       const nextSnapshot = buildDetachedChatSnapshot(state);
+      const conversation = state.conversations.find((item) => item.id === nextSnapshot.activeConversationId);
+      const context = captureProjectWindowContext(state, conversation?.workbenchTarget?.episodeId);
+      const nextFrame: ProjectWindowFrame | null = context ? { schemaVersion: 2, sessionId,
+        revision: revision + 1, context, conversationId: nextSnapshot.activeConversationId } : null;
+      nextSnapshot.windowFrame = nextFrame;
       const previousSnapshot = lastSnapshot;
       const forceSnapshot = forceSnapshotPending || !previousSnapshot;
 
@@ -901,6 +931,8 @@ export function createDetachedChatSyncController(
 
         const baseRevision = revision;
         const nextRevision = revision + 1;
+        if (nextFrame) frames.set(nextRevision, nextFrame);
+        if (frames.size > 64) frames.delete(frames.keys().next().value!);
         await emitSync({ type: 'patch', baseRevision, revision: nextRevision, patch });
         if (disposed || generation !== startedGeneration) return;
         lastSnapshot = nextSnapshot;
@@ -911,6 +943,8 @@ export function createDetachedChatSyncController(
 
       const nextRevision = revision + 1;
       forceSnapshotPending = false;
+      if (nextFrame) frames.set(nextRevision, nextFrame);
+      if (frames.size > 64) frames.delete(frames.keys().next().value!);
       await emitSync({ type: 'snapshot', revision: nextRevision, snapshot: nextSnapshot });
       if (disposed || generation !== startedGeneration) return;
       lastSnapshot = nextSnapshot;
@@ -982,17 +1016,69 @@ export function createDetachedChatSyncController(
       if (!detachedSnapshotSourceChanged(state, previous)) return;
       const justDetached = !previous.chatPanelDetached;
       const projectChanged = state.currentProjectId !== previous.currentProjectId;
-      sync(justDetached || projectChanged, justDetached || projectChanged);
+      const contextReadinessChanged = state.projectLoadStatus !== previous.projectLoadStatus
+        || state.switchingProjectName !== previous.switchingProjectName
+        || state.isCreatingProject !== previous.isCreatingProject || state.isReturningToStartPage !== previous.isReturningToStartPage;
+      sync(justDetached || projectChanged || contextReadinessChanged, justDetached || projectChanged || contextReadinessChanged);
     });
     unsubscribeFileGrants = subscribeFileGrants(() => sync());
     unsubscribeImagePreviews = subscribeChatImagePreviews(() => sync());
 
     const listenerCleanup = await initListener(
-      (action) => handleDetachedChatAction(action, sync),
+      (action) => {
+        if (action?.type === 'request_sync') { sync(true, true); return; }
+        const frame = action?.windowFrame;
+        const published = frame && frames.get(frame.revision);
+        const state = useAppStore.getState();
+        const activeOwner = seriesOwnerId(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
+        const activeConversationId = state.conversations.find((item) => item.id === state.activeConversationId
+          && (item.projectId === activeOwner || item.id === MCP_SETTINGS_CONVERSATION_ID))?.id ?? null;
+        const valid = frame?.schemaVersion === 2 && frame.sessionId === sessionId
+          && !!published && JSON.stringify(frame) === JSON.stringify(published)
+          && Number.isSafeInteger(action.sequence) && action.sequence! > acceptedSequence
+          && frame.conversationId === activeConversationId
+          && isProjectWindowContextCurrent(frame.context, state);
+        if (!valid || !frame) {
+          // 拒绝旧/过期协议，不把旧输入或任务动作补绑到当前项目。
+          if (action?.type === 'managed_request') void emitManagedChatResponse({ requestId: action.requestId,
+            scopeId: action.scopeId, conversationId: action.conversationId,
+            error: '窗口上下文已变化，请刷新后核对；草稿仍保留，未自动重试' }).catch(() => {});
+          if (action?.type === 'read_team_artifact') void emitTeamArtifactResponse({ requestId: action.requestId,
+            taskId: action.taskId, artifactId: action.artifactId, error: '窗口上下文已变化，请重新打开原任务' }).catch(() => {});
+          if (['send_message', 'dock_window', 'close_window'].includes(action?.type)) void emitChatSendResponse('requestId' in action ? action.requestId : undefined, false).catch(() => {});
+          sync(true, true);
+          return;
+        }
+        acceptedSequence = action.sequence!;
+        const ownerId = frame.context.target.kind === 'global' ? GENERAL_ASSISTANT_SCOPE_ID : frame.context.target.projectId;
+        if ('conversationId' in action && action.conversationId
+          && !state.conversations.some((item) => item.id === action.conversationId && !item.deletedAt
+            && (item.projectId === ownerId || item.id === MCP_SETTINGS_CONVERSATION_ID))) { sync(true, true); return; }
+        if ('taskId' in action) {
+          const task = state.agentTasks.find((item) => item.id === action.taskId);
+          const conversation = state.conversations.find((item) => item.id === task?.conversationId && !item.deletedAt);
+          if (!task || !conversation || conversation.projectId !== ownerId) { sync(true, true); return; }
+        }
+        if ((action.type === 'dock_window' || action.type === 'close_window') && action.composerDraft
+          && (action.composerDraft.conversationId !== frame.conversationId
+            || JSON.stringify(action.composerDraft.windowFrame) !== JSON.stringify(frame))) {
+          void emitChatSendResponse(action.requestId, false).catch(() => {}); sync(true, true); return;
+        }
+        const assertCurrent = () => {
+          if (!isProjectWindowContextCurrent(frame.context, useAppStore.getState())) throw new Error('窗口上下文已变化，已停止原操作');
+        };
+        handleDetachedChatAction(action, sync, assertCurrent);
+      },
       (draft) => {
         cancelMainReferencePreview();
         const store = useAppStore.getState();
-        if (draft) store.setChatComposerLiveDraft(draft.draft, draft.conversationId);
+        if (draft?.windowFrame?.sessionId === sessionId
+          && JSON.stringify(frames.get(draft.windowFrame.revision)) === JSON.stringify(draft.windowFrame)
+          && draft.conversationId === draft.windowFrame.conversationId
+          && isProjectWindowContextCurrent(draft.windowFrame.context, store)) {
+          const conversation = draft.conversationId && store.conversations.find((item) => item.id === draft.conversationId && !item.deletedAt);
+          if (!draft.conversationId || conversation) store.setChatComposerLiveDraft(draft.draft, draft.conversationId);
+        }
         store.setHoveredMentionNodeId(null);
       },
     );

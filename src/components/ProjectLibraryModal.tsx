@@ -149,6 +149,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
   // 项目库只列顶层项目；分集在画布右侧的分集栏里管理。
   const topLevelProjects = useMemo(() => listTopLevelProjects(projects), [projects]);
   const activeProjectId = currentProjectId ? seriesOwnerId(projects, currentProjectId) : null;
+  const deleteEpisodeCount = deleteTarget ? projects.filter((project) => project.parentId === deleteTarget.id).length : 0;
 
   const deletableProjectCount = useMemo(
     () => topLevelProjects.filter((project) => project.id !== 'default').length,
@@ -809,9 +810,13 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                   <Icon icon="mdi:alert-outline" width="21" height="21" aria-hidden="true" />
                 </span>
                 <div className="min-w-0">
-                  <h3 id="delete-project-title" className="text-sm font-semibold text-canvas-text">{t('删除“{name}”？', { name: deleteTarget.name })}</h3>
+                  <h3 id="delete-project-title" className="text-sm font-semibold text-canvas-text">{deleteEpisodeCount > 0
+                    ? t('删除整部剧“{name}”？', { name: deleteTarget.name })
+                    : t('删除“{name}”？', { name: deleteTarget.name })}</h3>
                   <p id="delete-project-description" className="mt-1.5 text-xs leading-5 text-canvas-text-secondary">
-                    {t('项目画布及本地项目数据将被删除，此操作不可撤销。')}
+                    {deleteEpisodeCount > 0
+                      ? t('将移除整部剧及其 {count} 个分集的项目记录；历史回执和素材文件保留。本操作不能直接撤销。', { count: deleteEpisodeCount })
+                      : t('将移除此项目的项目记录；历史回执和素材文件保留。本操作不能直接撤销。')}
                   </p>
                 </div>
               </div>

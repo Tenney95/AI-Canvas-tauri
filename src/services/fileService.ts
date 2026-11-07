@@ -54,6 +54,8 @@ export interface NodeOutputDownloadProgress {
 }
 
 export interface FileTransferOptions {
+  /** 调用方的运行时/持久代际复核，不序列化；可在系统对话框后撤销原写入。 */
+  assertCurrent?: () => void | Promise<void>;
   /** 仅本次生成交付使用；原任务恢复时从当前连接重建鉴权，不保存 Key。 */
   mediaDownloadAccess?: import('../types/aiTypes').MediaDownloadAccess;
   /** 创作资产集中放到项目的 Library 文件夹。 */
@@ -411,7 +413,11 @@ async function runNativeFileTransfer<T = NativeFileTransferResult>(
     }
     options?.signal?.addEventListener('abort', cancel, { once: true });
     if (options?.signal?.aborted) throw new DOMException('File transfer aborted', 'AbortError');
-    return await invoke<T>(command, { taskId, ...args });
+    await options?.assertCurrent?.();
+    if (options?.signal?.aborted) throw new DOMException('File transfer aborted', 'AbortError');
+    const result = await invoke<T>(command, { taskId, ...args });
+    await options?.assertCurrent?.();
+    return result;
   } finally {
     options?.signal?.removeEventListener('abort', cancel);
     unlisten?.();
@@ -513,6 +519,7 @@ export * from './fs/assetFileMove';
 export * from './fs/skillFiles';
 export * from './fs/externalEditors';
 export * from './fs/jsonFileTransfer';
+export { createProjectModelBackupPort, openProjectModelBackupPort } from './fs/projectModelBackupFiles';
 
 /**
  * 同步用户明确选择的文件目录白名单。
@@ -697,6 +704,7 @@ async function saveProjectBytes(
   bytes: Uint8Array,
   deduplicateByContent = false,
   signal?: AbortSignal,
+  assertCurrent?: () => void | Promise<void>,
 ): Promise<string> {
   const save = async () => {
     throwIfMediaReadAborted(signal);
@@ -741,14 +749,16 @@ async function saveProjectBytes(
         if (matches) {
           const latestRetired = await retiredMediaPaths();
           throwIfMediaReadAborted(signal);
-          if (!latestRetired.has(mediaFileAllocationKey(path))) return path;
+          if (!latestRetired.has(mediaFileAllocationKey(path))) { await assertCurrent?.(); return path; }
         }
       }
     }
     throwIfMediaReadAborted(signal);
     const destPath = await resolveUniqueDestPath(dataDir, fileName, true);
     throwIfMediaReadAborted(signal);
+    await assertCurrent?.();
     await writeFile(destPath, bytes, { createNew: true });
+    await assertCurrent?.();
     notifyProjectDiskChanged();
     return destPath;
   };
@@ -766,11 +776,14 @@ export async function copyFileToProjectData(
   options?: FileTransferOptions,
 ): Promise<{ filePath: string; assetUrl: string; fileName: string } | null> {
   if (!isTauriEnv()) return null;
+  await options?.assertCurrent?.();
 
   let dataDir = await ensureProjectDataDir(projectId);
+  await options?.assertCurrent?.();
   if (!dataDir) return null;
   if (options?.projectSubdirectory) {
     dataDir = joinPath(dataDir, options.projectSubdirectory);
+    await options.assertCurrent?.();
     await mkdir(dataDir, { recursive: true });
   }
 
@@ -795,6 +808,7 @@ export async function copyFileToProjectData(
       notifyProjectDiskChanged();
     }
   } catch (err) {
+    if (options?.assertCurrent) throw err;
     if (!options?.redactErrors) console.error('Failed to copy file to project data:', sourcePath, err);
     // Don't fallback to convertFileSrc on external paths — asset protocol won't serve them
     // Return null so caller can fallback to readFile → base64 in-memory loading
@@ -819,11 +833,13 @@ export async function saveDataUrlToProjectData(
   dataUrl: string,
   projectId: string,
   fileName: string,
-  options: Pick<FileTransferOptions, 'deduplicateByContent' | 'throwOnError'> = {},
+  options: Pick<FileTransferOptions, 'deduplicateByContent' | 'throwOnError' | 'assertCurrent'> = {},
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
+  await options.assertCurrent?.();
 
   const dataDir = await ensureProjectDataDir(projectId, { throwOnError: options.throwOnError });
+  await options.assertCurrent?.();
   if (!dataDir) return null;
 
   try {
@@ -835,7 +851,7 @@ export async function saveDataUrlToProjectData(
       label: fileName,
     });
 
-    const destPath = await saveProjectBytes(dataDir, fileName, bytes, options.deduplicateByContent);
+    const destPath = await saveProjectBytes(dataDir, fileName, bytes, options.deduplicateByContent, undefined, options.assertCurrent);
 
     const convertFileSrc = await getConvertFileSrc();
     const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
@@ -856,20 +872,24 @@ export async function saveBinaryToProjectData(
   data: Uint8Array,
   projectId: string,
   fileName: string,
-  options: Pick<FileTransferOptions, 'throwOnError'> = {},
+  options: Pick<FileTransferOptions, 'throwOnError' | 'assertCurrent'> = {},
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
+  await options.assertCurrent?.();
 
   const dataDir = await ensureProjectDataDir(projectId, { throwOnError: options.throwOnError });
+  await options.assertCurrent?.();
   if (!dataDir) return null;
 
   let destPath: string;
   try {
     destPath = await resolveUniqueDestPath(dataDir, fileName, true);
+    await options.assertCurrent?.();
     await writeFile(destPath, data, { createNew: true });
+    await options.assertCurrent?.();
     notifyProjectDiskChanged();
   } catch (err) {
-    if (options.throwOnError) throw err;
+    if (options.throwOnError || options.assertCurrent) throw err;
     console.error('Failed to save binary to project data:', fileName, err);
     return null;
   }
@@ -904,11 +924,15 @@ export async function saveBinaryToLocalFile(
   filters: { name: string; extensions: string[] }[] = [
     { name: '视频文件', extensions: ['mp4'] },
   ],
+  options: Pick<FileTransferOptions, 'assertCurrent'> = {},
 ): Promise<string | null> {
   if (!isTauriEnv()) return null;
+  await options.assertCurrent?.();
   const destPath = await save({ defaultPath: fileName, filters });
   if (!destPath) return null;
+  await options.assertCurrent?.();
   await writeFile(destPath, data);
+  await options.assertCurrent?.();
   return destPath;
 }
 
@@ -1087,6 +1111,7 @@ export async function downloadUrlAndSave(
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
   try {
+    await options?.assertCurrent?.();
     throwIfMediaReadAborted(options?.signal);
     if (isMediaDataUrl(url)) {
       const mime = /^data:([^;,]+)/i.exec(url)?.[1];
@@ -1115,7 +1140,7 @@ export async function downloadUrlAndSave(
         const dataDir = await ensureProjectDataDir(projectId, { throwOnError: options.throwOnError });
         if (!dataDir) return null;
         throwIfMediaReadAborted(options?.signal);
-        const destPath = await saveProjectBytes(dataDir, fileName, bytes, true, options?.signal);
+        const destPath = await saveProjectBytes(dataDir, fileName, bytes, true, options?.signal, options.assertCurrent);
         const convertFileSrc = await getConvertFileSrc();
         return {
           filePath: destPath,
@@ -1461,8 +1486,10 @@ export async function uploadSourceFileToProject(
   accept?: string,
   projectId?: string | null,
   projectSubdirectory?: 'Library',
+  options: Pick<FileTransferOptions, 'assertCurrent'> = {},
 ): Promise<UploadResult & { filePath?: string } | null> {
   try {
+    await options.assertCurrent?.();
     if (isTauriEnv()) {
       if (projectSubdirectory && (!projectId || projectId === 'default')) {
         throw new Error('请先保存项目，再上传创作资产');
@@ -1479,6 +1506,7 @@ export async function uploadSourceFileToProject(
       });
 
       if (!filePath) return null;
+      await options.assertCurrent?.();
 
       const fileName = filePath.split(/[\\/]/).pop() || 'file';
       if (projectSubdirectory && !/\.(png|jpe?g|webp|gif|bmp)$/i.test(fileName)) {
@@ -1496,7 +1524,8 @@ export async function uploadSourceFileToProject(
 
       // If projectId is provided, copy to project data dir
       if (projectId && projectId !== 'default') {
-        const result = await copyFileToProjectData(filePath, projectId, { projectSubdirectory, redactErrors: Boolean(projectSubdirectory) });
+        const result = await copyFileToProjectData(filePath, projectId, { projectSubdirectory, redactErrors: Boolean(projectSubdirectory), assertCurrent: options.assertCurrent });
+        await options.assertCurrent?.();
         if (result && (!projectSubdirectory || result.assetUrl)) {
           return { dataUrl: result.assetUrl, fileName: result.fileName, fileSize, filePath: result.filePath };
         }

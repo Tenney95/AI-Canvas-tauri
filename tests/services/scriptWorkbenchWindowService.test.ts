@@ -1,6 +1,7 @@
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScriptWorkbenchRequest, ScriptWorkbenchSnapshot } from '../../src/types/scriptWorkbench';
+import type { ProjectWindowContext } from '../../src/types/projectWindow';
 
 const events = vi.hoisted(() => ({
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
@@ -33,10 +34,23 @@ const cleanups: Array<() => void> = [];
 const deliver = (name: string, payload: unknown) => {
   for (const listener of events.listeners.get(name) ?? []) listener({ payload });
 };
-const frame = (sessionId: string, revision: number) => ({ sessionId, revision }) as ScriptWorkbenchSnapshot;
+const context: ProjectWindowContext = { schemaVersion: 2,
+  target: { kind: 'episode', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'test-runtime', projectId: 'series', projectEpoch: 0, episodeId: 'episode-b', episodeRevision: 0 },
+  canvas: { kind: 'canvas', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'test-runtime', projectId: 'series', projectEpoch: 0,
+    canvasId: 'episode-a', episodeId: 'episode-a', canvasEpoch: 0, canvasRevision: 1 } };
+const frame = (sessionId: string, revision: number) => ({ sessionId, revision, schemaVersion: 2,
+  windowContext: context, currentEpisode: { id: 'episode-b' }, canvasProjectId: 'episode-a' }) as ScriptWorkbenchSnapshot;
+const requestSequences = new Map<string, number>();
+const deliverRequest = (request: ScriptWorkbenchRequest) => {
+  if (!requestSequences.has(request.requestId)) requestSequences.set(request.requestId, requestSequences.size + 1);
+  const stamped = { ...request, schemaVersion: 2, sequence: requestSequences.get(request.requestId), windowContext: context };
+  deliver('script-workbench:request', stamped);
+  return stamped;
+};
 
 beforeEach(() => {
   events.listeners.clear();
+  requestSequences.clear();
   events.emitTo.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal('crypto', webcrypto);
 });
@@ -76,10 +90,10 @@ describe('独立工作台客户端协议', () => {
     expect(sent).toMatchObject({ sessionId: 'session-handoff', episodeId: 'episode-b', handoff });
     let completed = false;
     void saving.then(() => { completed = true; }, () => {});
-    deliver('script-workbench:response', { sessionId: 'different-session', requestId: sent.requestId, value: true });
+    deliver('script-workbench:response', { sessionId: 'different-session', requestId: sent.requestId, sequence: sent.sequence, value: true });
     await Promise.resolve();
     expect(completed).toBe(false);
-    deliver('script-workbench:response', { sessionId: 'session-handoff', requestId: sent.requestId, value: true });
+    deliver('script-workbench:response', { sessionId: 'session-handoff', requestId: sent.requestId, sequence: sent.sequence, value: true });
     await expect(saving).resolves.toBe(true);
   });
 
@@ -90,7 +104,7 @@ describe('独立工作台客户端协议', () => {
     const failed = bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'save' } });
     const sent = events.emitTo.mock.calls.find((call) => call[1] === 'script-workbench:request')?.[2] as ScriptWorkbenchRequest;
     const failure = expect(failed).rejects.toThrow('原分集已变化');
-    deliver('script-workbench:response', { sessionId: 'session-errors', requestId: sent.requestId, error: '原分集已变化' });
+    deliver('script-workbench:response', { sessionId: 'session-errors', requestId: sent.requestId, sequence: sent.sequence, error: '原分集已变化' });
     await failure;
     const pending = bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'flush_draft' } });
     const canceled = expect(pending).rejects.toThrow('工作台窗口已关闭');
@@ -98,6 +112,21 @@ describe('独立工作台客户端协议', () => {
     await canceled;
     expect([...events.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
     await expect(bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'save' } })).rejects.toThrow('尚未连接');
+  });
+
+  it('请求保留原 revision 的目标，切换后迟到结果不能被当作新分集结果', async () => {
+    const bridge = await connectScriptWorkbenchWindow('session-late-result', vi.fn());
+    cleanups.push(bridge.dispose);
+    deliver('script-workbench:state', frame('session-late-result', 1));
+    const reading = bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'read_source', part: 'script' } });
+    const rejected = expect(reading).rejects.toThrow('目标已切换');
+    const sent = events.emitTo.mock.calls.find((call) => call[1] === 'script-workbench:request')?.[2] as ScriptWorkbenchRequest;
+    deliver('script-workbench:state', { ...frame('session-late-result', 2), windowContext: { ...context,
+      target: { ...context.target, episodeId: 'episode-c' } } });
+    expect(sent.windowContext).toEqual(context);
+    deliver('script-workbench:response', { sessionId: 'session-late-result', requestId: sent.requestId, sequence: sent.sequence, value: '旧结果' });
+    await rejected;
+    expect(events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:request')).toHaveLength(1);
   });
 });
 
@@ -108,6 +137,34 @@ describe('关系图宿主写入边界', () => {
       storyGraphView: { schemaVersion: 1, id: 'graph', revision, nodes: [], edges: [], positions: {},
         counts: { totalNodes: 0, totalEdges: 0, matchedNodes: 0, matchedEdges: 0, visibleNodes: 0, visibleEdges: 0, truncated: false } } };
   }
+
+  it.each(['valid-b', 'legacy', 'future', 'canvas', 'episode', 'epoch'] as const)('通用保存 RPC 检查 %s 边界', async (boundary) => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    let current = graphFrame(1);
+    const onRequest = vi.fn(async () => true);
+    let respond!: (value: { error?: string; value?: unknown }) => void;
+    const replied = new Promise<{ error?: string; value?: unknown }>((resolve) => { respond = resolve; });
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:response') respond(payload as { error?: string });
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => current,
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    if (boundary === 'canvas') current = { ...current, canvasProjectId: 'episode-c', windowContext: { ...context,
+      canvas: { ...context.canvas!, canvasId: 'episode-c', episodeId: 'episode-c' } } };
+    if (boundary === 'episode') current = { ...current, currentEpisode: { ...current.currentEpisode!, id: 'episode-c' }, windowContext: { ...context,
+      target: { ...context.target, episodeId: 'episode-c' } } as ProjectWindowContext };
+    if (boundary === 'epoch') current = { ...current, windowContext: { ...context,
+      target: { ...context.target, projectEpoch: 1 } } as ProjectWindowContext };
+    const request: ScriptWorkbenchRequest = { sessionId: 'graph-host-session', requestId: 'save_scope_boundary', revision: 1,
+      episodeId: 'episode-b', action: { type: 'save' }, schemaVersion: 2, sequence: 1, windowContext: context };
+    deliver('script-workbench:request', { ...request, schemaVersion: boundary === 'legacy' ? undefined : boundary === 'future' ? 3 : 2 });
+    const response = await replied;
+    if (boundary === 'valid-b') { expect(response.value).toBe(true); expect(onRequest).toHaveBeenCalledWith(request); }
+    else { expect(response.error).toContain('窗口上下文已变化'); expect(onRequest).not.toHaveBeenCalled(); }
+  });
 
   it('拒绝从旧图快照发起的写入，不进入主窗口执行器', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
@@ -125,7 +182,7 @@ describe('关系图宿主写入边界', () => {
     await host.open();
     current = graphFrame(2);
     await host.publish();
-    deliver('script-workbench:request', { sessionId: 'graph-host-session', requestId: 'old_graph_write_001', revision: 1,
+    deliverRequest({ sessionId: 'graph-host-session', requestId: 'old_graph_write_001', revision: 1,
       episodeId: 'episode-b', action: { type: 'story_graph_patch', patch: { graphId: 'graph', positions: {} }, expectedRevision: 1 } });
     expect((await replied).error).toContain('确认内容已变化');
     expect(onRequest).not.toHaveBeenCalled();
@@ -150,14 +207,14 @@ describe('关系图宿主写入边界', () => {
     await host.open();
     const request: ScriptWorkbenchRequest = { sessionId: 'graph-host-session', requestId: 'extract_graph_001', revision: 1,
       episodeId: 'episode-b', action: { type: 'story_graph_extract', request: { episodeIds: ['episode-b'], parts: ['script'], modelId: 'text-model' } } };
-    deliver('script-workbench:request', request);
-    deliver('script-workbench:request', request);
+    const stamped = deliverRequest(request);
+    deliverRequest(request);
     await started;
     expect(events.emitTo.mock.calls.some((call) => call[1] === 'script-workbench:response')).toBe(false);
     finish();
     expect((await replied).value).toBe(true);
     expect(onRequest).toHaveBeenCalledTimes(1);
-    expect(onRequest).toHaveBeenCalledWith(request);
+    expect(onRequest).toHaveBeenCalledWith(stamped);
   });
 
   it.each(['epoch', 'run'] as const)('拒绝旧 %s 快照对空图或新提取的操作', async (boundary) => {
@@ -180,7 +237,7 @@ describe('关系图宿主写入边界', () => {
     const action: ScriptWorkbenchRequest['action'] = boundary === 'epoch'
       ? { type: 'story_graph_patch', expectedRevision: 0, patch: { graphId: 'graph', positions: {} } }
       : { type: 'story_graph_cancel', runId: 'run-before' };
-    deliver('script-workbench:request', { sessionId: 'graph-host-session', requestId: 'old_boundary_request', revision: 1, episodeId: 'episode-b', action });
+    deliverRequest({ sessionId: 'graph-host-session', requestId: 'old_boundary_request', revision: 1, episodeId: 'episode-b', action });
     expect((await replied).error).toContain('确认内容已变化');
     expect(onRequest).not.toHaveBeenCalled();
   });

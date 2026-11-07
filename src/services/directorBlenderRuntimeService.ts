@@ -4,6 +4,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { DirectorSceneSource } from '../types/directorOperation';
+import type { CanvasContext } from '../types/project';
+import { assertProjectExpectedContextCurrent, parseProjectExpectedContext } from './projectExecutionContext';
 import type {
   DirectorBlendProjectArtifact,
   DirectorFrameImageArtifact,
@@ -76,6 +78,7 @@ export interface DirectorBlenderJobStatus {
 export interface DirectorBlenderRunInput {
   operation: DirectorBlenderOperation;
   projectId: string;
+  expectedContext?: Readonly<CanvasContext>;
   directorInstanceId: string;
   sceneReference: DirectorSceneReference;
   previousManifestReference?: DirectorResultManifestReference;
@@ -420,14 +423,27 @@ export async function runDirectorBlenderOperation(
 ): Promise<DirectorBlenderRunResult> {
   assertDesktopRuntime();
   const { sceneReference, previousManifestReference, sceneSource } = normalizeRunInput(input);
+  const expectedContext = input.expectedContext === undefined ? undefined : parseProjectExpectedContext(input.expectedContext);
+  if (expectedContext && (expectedContext.kind !== 'canvas' || expectedContext.canvasId !== input.projectId)) {
+    throw new Error('Blender 目标画布上下文无效');
+  }
+  const contextStore = expectedContext ? (await import('../store/useAppStore')).useAppStore : null;
+  const assertCurrent = () => {
+    options.signal?.throwIfAborted();
+    if (expectedContext && contextStore) assertProjectExpectedContextCurrent(expectedContext, contextStore.getState());
+  };
+  assertCurrent();
   if (options.signal?.aborted) throw abortError();
 
   const installation = await prepareDirectorBlenderInstallation();
+  assertCurrent();
   if (sceneSource === 'saved-blender') {
     if (supportsSavedScene === null) await discoverInstallations();
+    assertCurrent();
     if (!supportsSavedScene) throw new Error('保存 Blender 工程模式需要更新并重启桌面软件');
   }
   const projectRoot = await ensureProjectDataDir(input.projectId);
+  assertCurrent();
   if (!projectRoot) throw new Error('无法准备 Blender 项目目录');
 
   let projectGrantId: string | null = null;
@@ -452,11 +468,13 @@ export async function runDirectorBlenderOperation(
   options.signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
+    assertCurrent();
     if (options.signal?.aborted) throw abortError();
     const grant = await invokeBlender<{ projectGrantId: string }>('create_blender_project_grant', {
-      request: { projectId: input.projectId, projectRoot },
+      request: { projectId: input.projectId, projectRoot, ...(expectedContext ? { expectedContext } : {}) },
     });
     projectGrantId = grant.projectGrantId;
+    assertCurrent();
 
     if (options.signal?.aborted) throw abortError();
     let status = await invokeBlender<DirectorBlenderJobStatus>('start_blender_job', {
@@ -467,6 +485,7 @@ export async function runDirectorBlenderOperation(
         ...(sceneSource === 'saved-blender' ? { sceneSource } : {}),
         projectGrantId,
         projectId: input.projectId,
+        ...(expectedContext ? { expectedContext } : {}),
         directorInstanceId: input.directorInstanceId,
         sceneId: sceneReference.sceneId,
         sceneRevision: sceneReference.revision,
@@ -480,6 +499,7 @@ export async function runDirectorBlenderOperation(
     reportStatus(options.onStatus, status);
 
     for (;;) {
+      assertCurrent();
       if (options.signal?.aborted) {
         await cancelActiveJob().catch(() => undefined);
         throw abortError();
@@ -489,6 +509,7 @@ export async function runDirectorBlenderOperation(
         const collected = await invokeBlender<CollectedBlenderResult>('collect_blender_job_result', {
           request: { jobId },
         });
+        assertCurrent();
         operationResult = normalizeCollectedResult(
           collected,
           projectRoot,
@@ -528,6 +549,7 @@ export async function runDirectorBlenderOperation(
   }
 
   if (operationFailed) throw operationFailure;
+  assertCurrent();
   if (cleanupFailure) throw cleanupFailure;
   if (!operationResult) throw new Error('Blender Job 未返回结果');
   return operationResult;

@@ -53,9 +53,17 @@
             "csp": "default-src 'self'; script-src 'self' http://plugin-ui.localhost plugin-ui:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: theme-image: comfy-media: asset: http://asset.localhost https://asset.localhost http: https:; media-src 'self' data: blob: comfy-media: asset: http://asset.localhost https://asset.localhost http: https:; connect-src 'self' data: blob: theme-image: comfy-media: ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost http: https: ws: wss:; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
             "assetProtocol": {
                 "enable": true,
-                "scope": [
-                    "$APPDATA/**"
-                ]
+                "scope": {
+                    "allow": ["$APPDATA/**"],
+                    "deny": [
+                        "$APPDATA/project-model-backups",
+                        "$APPDATA/project-model-backups/**",
+                        "$APPDATA/project-model-maintenance",
+                        "$APPDATA/project-model-maintenance/**",
+                        "$APPLOCALDATA/project-model-maintenance",
+                        "$APPLOCALDATA/project-model-maintenance/**"
+                    ]
+                }
             }
         },
         "windows": [

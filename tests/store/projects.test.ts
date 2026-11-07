@@ -31,6 +31,11 @@ const fileMocks = vi.hoisted(() => ({
 }));
 const pollMocks = vi.hoisted(() => ({
   resumePendingTasks: vi.fn(async () => undefined),
+  stopPollingForDeletedProjects: vi.fn(),
+}));
+const lifecycleMocks = vi.hoisted(() => ({ deleteContent: vi.fn() }));
+vi.mock('../../src/services/indexedDb/legacyProjectLifecycleRepository', () => ({
+  deleteLegacyProjectContent: lifecycleMocks.deleteContent, swapLegacyEpisodeOrder: vi.fn(),
 }));
 const snapshotMocks = vi.hoisted(() => ({
   captureCurrentCanvasSnapshot: vi.fn(async () => null as string | null),
@@ -54,6 +59,7 @@ vi.mock('../../src/services/pollManager', () => ({
   cancelNodePolling: vi.fn(),
   clearProjectTasks: vi.fn(),
   resumePendingTasks: pollMocks.resumePendingTasks,
+  stopPollingForDeletedProjects: pollMocks.stopPollingForDeletedProjects,
 }));
 
 vi.mock('../../src/services/projectSnapshotService', () => snapshotMocks);
@@ -95,6 +101,10 @@ beforeEach(() => {
   fileMocks.renameProjectDataDir.mockClear();
   fileMocks.revertProjectDataDirRename.mockClear();
   pollMocks.resumePendingTasks.mockClear();
+  pollMocks.stopPollingForDeletedProjects.mockClear();
+  lifecycleMocks.deleteContent.mockReset().mockImplementation(async (input: {
+    expectedProjects: Array<{ id: string }>; assertCurrent?: () => void;
+  }) => { input.assertCurrent?.(); return input.expectedProjects.map((item) => item.id); });
   snapshotMocks.captureCurrentCanvasSnapshot.mockReset();
   snapshotMocks.captureCurrentCanvasSnapshot.mockResolvedValue(null);
   metadataMocks.getLastActiveProjectId.mockReset();
@@ -533,6 +543,27 @@ describe('project creation', () => {
 });
 
 describe('project switching', () => {
+  it('从旧摘要切换后保留完整记录的revisionScope及创作配置，再保存不丢字段', async () => {
+    stubInitializationActions();
+    const selection = { id: 'creation-preserved', version: '1.0.0', sha256: 'a'.repeat(64) };
+    const team = { version: 1 as const, name: '已保存团队',
+      roles: { architect: 'a', writer: 'b', continuity: 'c', dialogue: 'd', editor: 'e' },
+      maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 };
+    const target = { id: 'metadata-preserved', name: '目标', createdAt: 2, updatedAt: 2 };
+    fileMocks.loadProjectData.mockResolvedValue({ ...target, nodes: [], edges: [], groups: [],
+      revisionScope: 'global', creationProfile: selection, teamProfileOverride: team });
+    useAppStore.setState({ currentProjectId: 'metadata-origin', projectName: '原项目',
+      projects: [{ id: 'metadata-origin', name: '原项目', createdAt: 1, updatedAt: 1 }, target],
+      saveCurrentProject: vi.fn(async () => 'metadata-origin') });
+    expect(await useAppStore.getState().switchProject(target.id)).toBe(target.id);
+    expect(useAppStore.getState().projects.find((project) => project.id === target.id))
+      .toMatchObject({ revisionScope: 'global', creationProfile: selection, teamProfileOverride: team });
+    expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe(target.id);
+    expect(fileMocks.saveProject).toHaveBeenCalledWith(expect.objectContaining({
+      id: target.id, revisionScope: 'global', creationProfile: selection, teamProfileOverride: team,
+    }));
+  });
+
   it('keeps unsaved canvas data and reports no opened project when saving before switching fails', async () => {
     const showToast = vi.fn();
     const saveCurrentProject = vi.fn(async () => undefined);
@@ -1181,7 +1212,8 @@ describe('project switching', () => {
     expect(useAppStore.getState().messages.map((message) => message.id)).toEqual(['message-next']);
     expect(useAppStore.getState().activeConversationId).toBeNull();
     expect(loadConversationsForProject).toHaveBeenCalledWith('project-next');
-    expect(fileMocks.deleteProjectData).toHaveBeenCalledWith('project-old');
+    expect(lifecycleMocks.deleteContent).toHaveBeenCalledWith(expect.objectContaining({ targetId: 'project-old' }));
+    expect(fileMocks.deleteProjectData).not.toHaveBeenCalled();
   });
 
   it('rolls back the name, data folder and asset paths when the rename save fails', async () => {
@@ -1241,9 +1273,9 @@ describe('project switching', () => {
     expect(showToast).toHaveBeenCalledWith('项目重命名失败，已恢复原名称', 'error');
   });
 
-  it('keeps the project visible when persistent cascade deletion fails', async () => {
+  it('keeps the project visible and polling recoverable when logical deletion fails', async () => {
     const showToast = vi.fn();
-    fileMocks.deleteProjectData.mockRejectedValueOnce(new Error('indexeddb unavailable'));
+    lifecycleMocks.deleteContent.mockRejectedValueOnce(new Error('indexeddb unavailable'));
     useAppStore.setState({
       projects: [{ id: 'project-old', name: 'Old project', createdAt: 1, updatedAt: 1 }],
       currentProjectId: 'project-old',
@@ -1254,7 +1286,8 @@ describe('project switching', () => {
 
     expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['project-old']);
     expect(fileMocks.deleteProjectDataDir).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith('项目删除失败，本地数据未清理', 'error');
+    expect(pollMocks.stopPollingForDeletedProjects).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith('项目未删除；已停止的任务不会自动重启', 'error');
   });
 
   it('blocks persistence when the current project did not load successfully', async () => {

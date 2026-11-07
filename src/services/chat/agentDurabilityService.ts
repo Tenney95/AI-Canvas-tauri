@@ -30,8 +30,11 @@ function replaceDispatch(taskId: string, record: AgentDispatchRecord): AgentTask
   const previous = task.dispatches ?? [];
   // 未核实记录绝不因容量裁剪而消失；正常终态回执只保留最近 256 项。
   const retained = previous.filter((item) => item.id !== record.id);
-  const completed = retained.filter((item) => item.phase === 'settled' && !item.recovery).slice(-255);
-  const unfinished = retained.filter((item) => item.phase !== 'settled' || item.recovery);
+  const unmaterialized = new Set(unmaterializedTeamDispatches({ ...task, dispatches: retained }).map((item) => item.id));
+  const protectedReceipt = (item: AgentDispatchRecord) => item.phase !== 'settled' || !!item.recovery
+    || item.materializationBlocked === true || unmaterialized.has(item.id);
+  const completed = retained.filter((item) => !protectedReceipt(item)).slice(-255);
+  const unfinished = retained.filter(protectedReceipt);
   if (unfinished.length >= 512) throw new Error('待核实调用记录过多，请先核实任务');
   state.updateAgentTask(taskId, { dispatches: [...completed, ...unfinished, record] });
   return useAppStore.getState().agentTasks.find((item) => item.id === taskId)!;
@@ -77,7 +80,8 @@ export function unmaterializedTeamDispatches(task: AgentTask): AgentDispatchReco
   const run = task.teamRun;
   return (task.dispatches ?? []).filter((record) => record.kind === 'team-model'
     && (record.runRevision ?? 1) === run.revision
-    && (record.phase === 'outcome_unknown' || record.phase === 'dispatched' || !!record.recovery)
+    && (record.phase === 'outcome_unknown' || record.phase === 'dispatched'
+      || record.phase === 'settled' && record.outcome === 'succeeded' || record.materializationBlocked === true || !!record.recovery)
     && !run.stages.some((stage) => stage.id === record.stepId && stage.status === 'completed'
       && run.artifacts.some((artifact) => artifact.id === stage.artifactId && artifact.stageId === stage.id)));
 }
@@ -119,13 +123,21 @@ export async function beginAgentDispatch(input: {
 
 export async function settleAgentDispatch(
   taskId: string, record: AgentDispatchRecord, outcome: 'succeeded' | 'failed' | 'unknown',
+  options: { materializationBlocked?: boolean } = {},
 ): Promise<void> {
   const current = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
   if (!current) throw new DOMException('任务已删除', 'AbortError');
   const stored = current.dispatches?.find((item) => item.id === record.id);
-  if (!stored || stored.phase === 'settled') return;
+  if (!stored) return;
+  if (stored.phase === 'settled') {
+    if (options.materializationBlocked === true && stored.materializationBlocked !== true) {
+      await persistBarrier(taskId, { ...stored, materializationBlocked: true });
+    }
+    return;
+  }
   await persistBarrier(taskId, {
     ...stored, phase: outcome === 'unknown' ? 'outcome_unknown' : 'settled', settledAt: Date.now(),
+    ...(options.materializationBlocked === true ? { materializationBlocked: true as const } : {}),
     ...(outcome !== 'unknown' ? { outcome } : {}),
   });
 }

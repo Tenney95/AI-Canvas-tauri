@@ -30,6 +30,7 @@ import {
   buildVideoEditorProjectId,
   getVideoEditorProject,
   saveVideoEditorProject,
+  assertVideoEditorProjectContext,
 } from '../../services/indexedDbService';
 import {
   createVideoInput,
@@ -52,6 +53,8 @@ import {
   postVideoEditorModelsRequest,
   postVideoEditorReady,
   subscribeVideoEditorHost,
+  readVideoEditorWindowBinding,
+  type VideoEditorWindowBinding,
   type VideoEditorAiTransitionResult,
   type VideoEditorModelOption,
 } from '../../services/videoEditorWindowService';
@@ -230,6 +233,14 @@ interface SessionParams {
   projectId: string;
   nodeId: string;
   theme: 'dark' | 'light';
+  binding?: VideoEditorWindowBinding;
+}
+
+function persistWindowProject(record: VideoEditorProjectRecord): Promise<void> {
+  return saveVideoEditorProject(record, readVideoEditorWindowBinding()?.expectedContext);
+}
+function assertWindowProjectCurrent(projectId: string): Promise<void> {
+  return assertVideoEditorProjectContext(projectId, readVideoEditorWindowBinding()?.expectedContext);
 }
 
 function readSessionParams(): SessionParams | null {
@@ -238,10 +249,14 @@ function readSessionParams(): SessionParams | null {
   const projectId = params.get('projectId')?.trim();
   const nodeId = params.get('nodeId')?.trim();
   if (!instanceId || !projectId || !nodeId) return null;
+  let binding: VideoEditorWindowBinding | undefined;
+  try { binding = readVideoEditorWindowBinding(); } catch { return null; }
+  if (instanceId !== buildVideoEditorProjectId(projectId, nodeId) || binding && binding.expectedContext.canvasId !== projectId) return null;
   return {
     instanceId,
     projectId,
     nodeId,
+    binding,
     theme: params.get('theme') === 'light' ? 'light' : 'dark',
   };
 }
@@ -296,7 +311,7 @@ export default function VideoEditorWindow() {
     setRecord((previous) => {
       if (!previous) return previous;
       const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void saveVideoEditorProject(next).catch((reason) => {
+      void persistWindowProject(next).catch((reason) => {
         console.error('[videoEditor] 工程保存失败:', reason);
       });
       return next;
@@ -311,7 +326,7 @@ export default function VideoEditorWindow() {
       const nextTracks = mutate(previous.tracks);
       if (nextTracks === previous.tracks) return previous;
       const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void saveVideoEditorProject(next).catch((reason) => {
+      void persistWindowProject(next).catch((reason) => {
         console.error('[videoEditor] 工程保存失败:', reason);
       });
       return next;
@@ -342,7 +357,7 @@ export default function VideoEditorWindow() {
       });
       if (!changed) return previous;
       const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void saveVideoEditorProject(next).catch((reason) => {
+      void persistWindowProject(next).catch((reason) => {
         console.error('[videoEditor] 工程保存失败:', reason);
       });
       return next;
@@ -427,7 +442,7 @@ export default function VideoEditorWindow() {
 
         // 工程由主窗口在开窗前写入共享库，这里只按 ID 取回
         const projectRecordId = buildVideoEditorProjectId(session.projectId, session.nodeId);
-        const loaded = await getVideoEditorProject(projectRecordId);
+        const loaded = await getVideoEditorProject(projectRecordId, session.binding?.expectedContext);
         if (!loaded) throw new Error('未找到该节点的剪辑工程');
         if (!active) return;
 
@@ -594,7 +609,8 @@ export default function VideoEditorWindow() {
     setUploadingSticker(true);
     setNotice(null);
     try {
-      const uploaded = await uploadSourceFileToProject('.png,.jpg,.jpeg,.webp,.gif', record.projectId);
+      const uploaded = await uploadSourceFileToProject('.png,.jpg,.jpeg,.webp,.gif', record.projectId, undefined,
+        { assertCurrent: () => assertWindowProjectCurrent(record.projectId) });
       if (!uploaded) return;
       const source: VideoEditorProjectImageSource = {
         nodeId: `local-${Date.now().toString(36)}`,
@@ -670,6 +686,7 @@ export default function VideoEditorWindow() {
       const uploaded = await uploadSourceFileToProject(
         '.mp4,.mov,.m4v,.webm,.avi,.mkv,.png,.jpg,.jpeg,.webp,.gif',
         record.projectId,
+        undefined, { assertCurrent: () => assertWindowProjectCurrent(record.projectId) },
       );
       if (!uploaded) return;
       const isImage = /\.(?:png|jpe?g|webp|gif)$/i.test(uploaded.fileName);
@@ -771,7 +788,7 @@ export default function VideoEditorWindow() {
       });
 
       const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void saveVideoEditorProject(next).catch((reason) => {
+      void persistWindowProject(next).catch((reason) => {
         console.error('[videoEditor] 工程保存失败:', reason);
       });
       return next;
@@ -797,7 +814,7 @@ export default function VideoEditorWindow() {
         };
       });
       const next = { ...previous, tracks: nextTracks, updatedAt: Date.now() };
-      void saveVideoEditorProject(next).catch((reason) => {
+      void persistWindowProject(next).catch((reason) => {
         console.error('[videoEditor] 工程保存失败:', reason);
       });
       return next;
@@ -842,7 +859,7 @@ export default function VideoEditorWindow() {
         tracks: [...nextTracks, newTrack],
         updatedAt: Date.now(),
       };
-      void saveVideoEditorProject(next).catch((reason) => {
+      void persistWindowProject(next).catch((reason) => {
         console.error('[videoEditor] 工程保存失败:', reason);
       });
       return next;
@@ -926,6 +943,7 @@ export default function VideoEditorWindow() {
 
     const opened: Input[] = [];
     try {
+      await assertWindowProjectCurrent(record.projectId);
       // 打开每个片段的素材；同一素材只开一次
       const inputsByUrl = new Map<string, Input>();
       await withStage('打开素材', async () => {
@@ -1047,8 +1065,10 @@ export default function VideoEditorWindow() {
       }
 
       const fileName = buildNodeFileName(record.name, 'mp4', 'edited');
+      await assertWindowProjectCurrent(record.projectId);
       if (destination === 'local') {
-        const savedPath = await withStage('保存到本地', () => saveBinaryToLocalFile(bytes, fileName));
+        const savedPath = await withStage('保存到本地', () => saveBinaryToLocalFile(bytes, fileName, undefined,
+          { assertCurrent: () => assertWindowProjectCurrent(record.projectId) }));
         if (!savedPath) {
           setNotice(t('已取消保存到本地'));
           return;
@@ -1056,10 +1076,12 @@ export default function VideoEditorWindow() {
         notes.push(t('已保存到本地：{fileName}', { fileName }));
       } else {
         const saved = await withStage('写入项目目录', async () => {
-          const result = await saveBinaryToProjectData(bytes, record.projectId, fileName);
+          const result = await saveBinaryToProjectData(bytes, record.projectId, fileName,
+            { assertCurrent: () => assertWindowProjectCurrent(record.projectId) });
           if (!result) throw new Error('项目数据目录不可写');
           return result;
         });
+        await assertWindowProjectCurrent(record.projectId);
 
         await withStage('输出到画布', () => postVideoEditorExported(session.instanceId, {
           videoUrl: saved.assetUrl,
@@ -1176,15 +1198,18 @@ export default function VideoEditorWindow() {
 
     try {
       const bytes = await renderTimelineFramePng(playhead, '当前帧');
+      await assertWindowProjectCurrent(record.projectId);
 
       // 同一工程会反复导帧，文件名带上时刻才不至于全靠去重后缀区分
       const stamp = `${Math.round(playhead * 1000)}ms`;
       const fileName = buildNodeFileName(`${record.name} 帧${stamp}`, 'png', `frame-${stamp}`);
       const saved = await withStage('写入项目目录', async () => {
-        const result = await saveBinaryToProjectData(bytes, record.projectId, fileName);
+        const result = await saveBinaryToProjectData(bytes, record.projectId, fileName,
+          { assertCurrent: () => assertWindowProjectCurrent(record.projectId) });
         if (!result) throw new Error('项目数据目录不可写');
         return result;
       });
+      await assertWindowProjectCurrent(record.projectId);
 
       await withStage('输出到画布', () => postVideoEditorFrameExported(session.instanceId, {
         imageUrl: saved.assetUrl,
@@ -1267,13 +1292,16 @@ export default function VideoEditorWindow() {
         setAiTransitionError(payload.error || t('AI 转场生成失败'));
         return;
       }
-      const inserted = insertAiTransitionClip(pending.beforeClipId, {
-        videoUrl: payload.videoUrl,
-        filePath: typeof payload.filePath === 'string' ? payload.filePath : undefined,
-        fileName: payload.fileName || 'AI 转场',
-      });
-      setAiTransitionError(inserted ? null : t('转场已生成，但原片段已不在主轨上，未能插入'));
-      if (inserted) setNotice(t('AI 转场已插入主轨'));
+      void (async () => {
+        await assertWindowProjectCurrent(session.projectId);
+        const inserted = insertAiTransitionClip(pending.beforeClipId, {
+          videoUrl: payload.videoUrl,
+          filePath: typeof payload.filePath === 'string' ? payload.filePath : undefined,
+          fileName: payload.fileName || 'AI 转场',
+        });
+        setAiTransitionError(inserted ? null : t('转场已生成，但原片段已不在主轨上，未能插入'));
+        if (inserted) setNotice(t('AI 转场已插入主轨'));
+      })().catch((reason) => setAiTransitionError(reason instanceof Error ? reason.message : String(reason)));
     });
 
     void postVideoEditorModelsRequest(session.instanceId).catch((reason) => {
@@ -1346,6 +1374,7 @@ export default function VideoEditorWindow() {
 
     try {
       // 已有的预设转场会让边界附近的画面处在淡入中，取到的参考帧就是半透明的。
+      await assertWindowProjectCurrent(record.projectId);
       // 采样时先摘掉转场，拿到两段各自的干净画面。
       const cleanTracks = tracksRef.current.map((track) => ({
         ...track,
@@ -1368,13 +1397,16 @@ export default function VideoEditorWindow() {
       );
 
       const stamp = Date.now().toString(36);
+      await assertWindowProjectCurrent(record.projectId);
       setAiTransitionStatus(t('正在暂存首尾帧…'));
       const savedFirst = await saveBinaryToProjectData(
-        firstFrame, record.projectId, `AI转场首帧-${stamp}.png`,
+        firstFrame, record.projectId, `AI转场首帧-${stamp}.png`, { assertCurrent: () => assertWindowProjectCurrent(record.projectId) },
       );
+      await assertWindowProjectCurrent(record.projectId);
       const savedLast = await saveBinaryToProjectData(
-        lastFrame, record.projectId, `AI转场尾帧-${stamp}.png`,
+        lastFrame, record.projectId, `AI转场尾帧-${stamp}.png`, { assertCurrent: () => assertWindowProjectCurrent(record.projectId) },
       );
+      await assertWindowProjectCurrent(record.projectId);
       if (!savedFirst || !savedLast) throw new Error('项目数据目录不可写，无法暂存首尾帧');
 
       const requestId = `ait-${stamp}-${Math.random().toString(36).slice(2, 8)}`;

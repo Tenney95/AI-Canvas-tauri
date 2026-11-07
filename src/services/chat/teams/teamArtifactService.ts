@@ -30,7 +30,10 @@ export async function saveTeamArtifact(input: {
   stageId?: string;
   roleId?: TeamRoleId;
   parentArtifactIds?: string[];
+  /** 主窗口捕获的项目/分集租约；仅运行时使用。 */
+  assertCurrent?: () => void;
 }): Promise<TeamArtifactReference> {
+  input.assertCurrent?.();
   if (!/^[A-Za-z0-9_-]{1,160}$/.test(input.runId) || !ARTIFACT_KINDS.includes(input.kind)) {
     throw new Error('团队产物身份无效');
   }
@@ -43,12 +46,14 @@ export async function saveTeamArtifact(input: {
     stageId: input.stageId, roleId: input.roleId, parentArtifactIds, text }));
   if (data.byteLength > MAX_ARTIFACT_BYTES) throw new Error('团队产物超过保存上限');
   const sha256 = await sha256Hex(data);
+  input.assertCurrent?.();
   const reference = {
     relativePath: `agent-teams/${input.runId}/${input.kind}-${sha256}.json`,
     sha256, bytes: data.byteLength,
   };
-  try { await writeImmutableProjectFile({ projectId: input.projectId, reference, data, maxBytes: MAX_ARTIFACT_BYTES }); }
+  try { await writeImmutableProjectFile({ projectId: input.projectId, reference, data, maxBytes: MAX_ARTIFACT_BYTES, assertCurrent: input.assertCurrent }); }
   catch (error) { throw new Error('无法保存团队产物，请在桌面端检查项目存储设置；不会自动重投模型', { cause: error }); }
+  input.assertCurrent?.();
   return { ...reference, id: `${input.kind}-${sha256}`, kind: input.kind,
     label: sanitizeDomainText(input.label).slice(0, 100), createdAt: Date.now(),
     stageId: input.stageId, roleId: input.roleId, parentArtifactIds,

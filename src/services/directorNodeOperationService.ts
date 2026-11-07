@@ -322,6 +322,7 @@ async function runOperation(record: OperationRecord, request: DirectorNodeOperat
     emit(record, { scene: sceneIdentity(record.sceneReference!) });
     const blender = {
       projectId: record.owner.projectId,
+      expectedContext: record.guard.expectedContext,
       sceneReference: record.sceneReference!,
       previousManifestReference: record.previousManifestReference,
       sceneSource: record.snapshot.sceneSource,

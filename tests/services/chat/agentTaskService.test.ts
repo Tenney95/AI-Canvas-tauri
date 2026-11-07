@@ -54,6 +54,23 @@ function createInterruptedTask(): AgentTask {
 }
 
 describe('repairInterruptedAgentTasks', () => {
+  it('P4 owner历史聚合按原Canvas alias读取并保留退役回执、排序与原预算，不写回任务', async () => {
+    const service = await import('../../../src/services/chat/agentTaskService');
+    const db = await import('../../../src/services/indexedDbService');
+    const first = { ...createInterruptedTask(), id: 'old-a', projectId: 'A', updatedAt: 1, modelRounds: 5, toolCallCount: 19, resumeCount: 4 };
+    const retired = { ...createInterruptedTask(), id: 'old-b', projectId: 'B', updatedAt: 2, modelRounds: 8, toolCallCount: 23 };
+    await db.putAgentTask(first); await db.putAgentTask(retired);
+    const before = await db.getAgentTask(retired.id);
+    const bindings: import('../../../src/types/project').LegacyProjectBinding[] = [
+      { namespace: 'legacy-canvas', legacyId: 'A', projectId: 'S', canvasId: 'A', episodeId: 'A', sourceEpoch: 1, storageRootRef: 'root' },
+      { namespace: 'legacy-canvas', legacyId: 'B', projectId: 'S', canvasId: 'B', episodeId: 'B', sourceEpoch: 2, storageRootRef: 'root', retired: true },
+    ];
+    const views = await service.readOwnerLegacyAgentTaskViews('S', bindings);
+    expect(views.map((view) => view.record.id)).toEqual(['old-b', 'old-a']);
+    expect(views[0].scope).toMatchObject({ state: 'retired', access: 'history-readonly' });
+    expect(views[1].record).toMatchObject({ projectId: 'A', modelRounds: 5, toolCallCount: 19, resumeCount: 4 });
+    expect(await db.getAgentTask(retired.id)).toEqual(before);
+  });
   it('does not turn an interrupted profile preparation into a resumable unbound task', async () => {
     const service = await import('../../../src/services/chat/agentTaskService');
     const db = await import('../../../src/services/indexedDbService');

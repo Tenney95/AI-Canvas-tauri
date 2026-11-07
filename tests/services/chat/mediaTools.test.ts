@@ -31,6 +31,7 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-1',
+    projectLoadStatus: 'ready',
     nodes: [{
       id: 'n1',
       type: 'source-image',
@@ -52,6 +53,29 @@ beforeEach(() => {
     }],
   });
   registerMediaAgentTools();
+});
+
+describe('read-only pending task source', () => {
+  it('does not migrate legacy storage during a query and refuses corrupted source without claiming no paid tasks', async () => {
+    const query = getAgentTool('media_pending_tasks')!;
+    const raw = JSON.stringify([{ projectId: 'project-1', nodeId: 'old-node', taskId: 'old-task', nodeType: 'ai-image',
+      taskType: 'apimart', provider: 'apimart', submitted: true, apiKey: 'private-key' }]);
+    localStorage.setItem('ai_canvas_pending_tasks', raw);
+    const write = vi.spyOn(localStorage, 'setItem');
+    try {
+      const read = await query.execute({ ...context, signal: new AbortController().signal }, {});
+      expect(read.status).toBe('success');
+      expect(read.modelContent).not.toContain('private-key');
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+      expect(write).not.toHaveBeenCalled();
+      localStorage.setItem('ai_canvas_pending_tasks', '{broken');
+      write.mockClear();
+      const broken = await query.execute({ ...context, signal: new AbortController().signal }, {});
+      expect(broken).toMatchObject({ status: 'error', errorCode: 'MEDIA_PENDING_SOURCE_INVALID' });
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe('{broken');
+      expect(write).not.toHaveBeenCalled();
+    } finally { write.mockRestore(); }
+  });
 });
 
 describe('keyed media operation progress', () => {

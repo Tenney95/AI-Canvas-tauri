@@ -222,6 +222,8 @@ export async function writeImmutableProjectFile(input: {
   reference: ProjectFileReference;
   data: Uint8Array;
   maxBytes: number;
+  /** 调用方的运行时租约；不序列化、不代替路径/摘要验证。 */
+  assertCurrent?: () => void;
 }): Promise<ImmutableWriteResult> {
   const reference = assertProjectFileReference(input.reference, input.maxBytes);
   const data = Uint8Array.from(input.data);
@@ -230,16 +232,21 @@ export async function writeImmutableProjectFile(input: {
   }
 
   return withImmutableWriteLock(`${input.projectId}\n${reference.relativePath}`, async () => {
+    input.assertCurrent?.();
     const root = await ensureCheckedProjectRoot(input.projectId);
+    input.assertCurrent?.();
     await ensureCheckedParents(root, reference.relativePath);
+    input.assertCurrent?.();
     const target = joinPath(root, reference.relativePath);
 
     if (await checkedExists(target, reference.relativePath)) {
       const existing = await readVerifiedFromRoot(root, reference);
+      input.assertCurrent?.();
       if (!bytesEqual(existing, data)) fail(`项目文件 ${reference.relativePath} 存在不可变内容冲突`);
       return { ...reference, created: false };
     }
 
+    input.assertCurrent?.();
     try {
       await writeFile(target, data, { createNew: true });
     } catch {
@@ -247,11 +254,13 @@ export async function writeImmutableProjectFile(input: {
         fail(`项目文件 ${reference.relativePath} 写入失败`);
       }
       const existing = await readVerifiedFromRoot(root, reference);
+      input.assertCurrent?.();
       if (!bytesEqual(existing, data)) fail(`项目文件 ${reference.relativePath} 存在不可变内容冲突`);
       return { ...reference, created: false };
     }
 
     const persisted = await readVerifiedFromRoot(root, reference);
+    input.assertCurrent?.();
     if (!bytesEqual(persisted, data)) fail(`项目文件 ${reference.relativePath} 写后复核失败`);
     notifyProjectDiskChanged();
     return { ...reference, created: true };

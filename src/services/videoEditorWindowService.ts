@@ -4,6 +4,50 @@
  * 与 3D 导演台不同，编辑器和主窗口同源、共享同一个 IndexedDB，
  * 因此工程数据由编辑器自行读写，本服务只负责窗口生命周期与导出结果回传。
  */
+import type { CanvasContext } from '../types/project';
+import { isProjectExpectedContextCurrent, parseProjectExpectedContext } from './projectExecutionContext';
+
+export interface VideoEditorWindowBinding {
+  sessionId: string;
+  expectedContext: Readonly<CanvasContext>;
+}
+let activeBinding: VideoEditorWindowBinding | null = null;
+let activeInstanceId: string | null = null;
+let targetCurrent: (() => boolean) | null = null;
+let unsubscribeTarget: (() => void) | null = null;
+
+export function parseVideoEditorWindowBinding(value: unknown): VideoEditorWindowBinding {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('剪辑窗口上下文无效');
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== 'sessionId' && key !== 'expectedContext')
+    || typeof record.sessionId !== 'string' || !/^[a-f0-9-]{36}$/i.test(record.sessionId)) throw new Error('剪辑窗口会话无效');
+  const expectedContext = parseProjectExpectedContext(record.expectedContext);
+  if (expectedContext.kind !== 'canvas' || expectedContext.modelGeneration !== 0) throw new Error('剪辑窗口需要旧画布上下文');
+  return Object.freeze({ sessionId: record.sessionId, expectedContext: Object.freeze(expectedContext) });
+}
+
+export function readVideoEditorWindowBinding(): VideoEditorWindowBinding | undefined {
+  const raw = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('executionBinding');
+  return raw === null ? undefined : parseVideoEditorWindowBinding(JSON.parse(raw));
+}
+
+function sameBinding(left: VideoEditorWindowBinding | undefined | null, right: VideoEditorWindowBinding | undefined | null): boolean {
+  return !!left && !!right && left.sessionId === right.sessionId
+    && isProjectExpectedContextCurrent(left.expectedContext, right.expectedContext);
+}
+export function isVideoEditorWindowBindingCurrent(instanceId: string, binding: VideoEditorWindowBinding): boolean {
+  return activeInstanceId === instanceId && sameBinding(activeBinding, binding) && targetCurrent?.() === true;
+}
+function requireBinding(instanceId: string, expected?: VideoEditorWindowBinding): VideoEditorWindowBinding {
+  const binding = expected ?? activeBinding;
+  if (!binding || !isVideoEditorWindowBindingCurrent(instanceId, binding)) throw new Error('剪辑窗口原上下文已撤销，请重新打开');
+  return binding;
+}
+function childBinding(instanceId: string): VideoEditorWindowBinding {
+  const binding = readVideoEditorWindowBinding();
+  if (!binding || !instanceId.startsWith(`${binding.expectedContext.canvasId}::`)) throw new Error('旧剪辑窗口仅保留读取与草稿，请从画布重新打开');
+  return binding;
+}
 
 export const VIDEO_EDITOR_WINDOW_LABEL = 'video-editor';
 export const VIDEO_EDITOR_HOST_EVENT = 'video-editor:host-message';
@@ -16,6 +60,7 @@ export type VideoEditorProtocolMessage = {
 
 export type VideoEditorWindowEnvelope = {
   instanceId: string;
+  binding?: VideoEditorWindowBinding;
   message: VideoEditorProtocolMessage;
 };
 
@@ -83,7 +128,7 @@ export type VideoEditorAiTransitionResult = {
   error?: string;
 };
 
-type Subscriber = (message: VideoEditorProtocolMessage) => void;
+type Subscriber = (message: VideoEditorProtocolMessage, binding?: VideoEditorWindowBinding) => void;
 
 /** 编辑器 → 主窗口 */
 const ALLOWED_VIDEO_EDITOR_MESSAGE_TYPES = new Set([
@@ -126,6 +171,8 @@ function parseEnvelope(
   const instanceId = normalizeInstanceId(candidate.instanceId);
   if (!instanceId || !candidate.message || typeof candidate.message !== 'object') return null;
   const message = candidate.message as Record<string, unknown>;
+  let binding: VideoEditorWindowBinding | undefined;
+  if (candidate.binding !== undefined) { try { binding = parseVideoEditorWindowBinding(candidate.binding); } catch { return null; } }
   if (typeof message.type !== 'string') return null;
   if (!allowedTypes.has(message.type)) return null;
   if (message.payload !== undefined && (!message.payload || typeof message.payload !== 'object')) {
@@ -133,6 +180,7 @@ function parseEnvelope(
   }
   return {
     instanceId,
+    ...(binding ? { binding } : {}),
     message: {
       type: message.type,
       ...(message.payload ? { payload: message.payload as Record<string, unknown> } : {}),
@@ -157,9 +205,10 @@ function notifySubscribers(
   registry: Map<string, Set<Subscriber>>,
   instanceId: string,
   message: VideoEditorProtocolMessage,
+  binding?: VideoEditorWindowBinding,
 ) {
   for (const subscriber of registry.get(instanceId) ?? []) {
-    subscriber(message);
+    subscriber(message, binding);
   }
 }
 
@@ -169,7 +218,9 @@ async function ensureMainListener(): Promise<void> {
     const { listen } = await import('@tauri-apps/api/event');
     unlistenMain = await listen<unknown>(VIDEO_EDITOR_MESSAGE_EVENT, (event) => {
       const envelope = parseVideoEditorWindowEnvelope(event.payload);
-      if (envelope) notifySubscribers(subscribers, envelope.instanceId, envelope.message);
+      if (envelope?.binding && isVideoEditorWindowBindingCurrent(envelope.instanceId, envelope.binding)) {
+        notifySubscribers(subscribers, envelope.instanceId, envelope.message, envelope.binding);
+      }
     });
   })().catch((error) => {
     mainListenerPromise = null;
@@ -185,7 +236,9 @@ async function ensureHostListener(): Promise<void> {
     const { listen } = await import('@tauri-apps/api/event');
     unlistenHost = await listen<unknown>(VIDEO_EDITOR_HOST_EVENT, (event) => {
       const envelope = parseVideoEditorHostEnvelope(event.payload);
-      if (envelope) notifySubscribers(hostSubscribers, envelope.instanceId, envelope.message);
+      if (envelope?.binding && sameBinding(envelope.binding, readVideoEditorWindowBinding())) {
+        notifySubscribers(hostSubscribers, envelope.instanceId, envelope.message, envelope.binding);
+      }
     });
   })().catch((error) => {
     hostListenerPromise = null;
@@ -200,6 +253,7 @@ export function buildVideoEditorWindowUrl(params: {
   projectId: string;
   nodeId: string;
   theme: 'dark' | 'light';
+  binding?: VideoEditorWindowBinding;
 }): string {
   const search = new URLSearchParams({
     view: 'video-editor',
@@ -208,6 +262,7 @@ export function buildVideoEditorWindowUrl(params: {
     nodeId: params.nodeId,
     theme: params.theme,
   });
+  if (params.binding) search.set('executionBinding', JSON.stringify(params.binding));
   return `index.html?${search.toString()}`;
 }
 
@@ -217,6 +272,8 @@ export async function openVideoEditorWindow(params: {
   projectId: string;
   nodeId: string;
   theme?: 'dark' | 'light';
+  expectedContext?: Readonly<CanvasContext>;
+  assertCurrent?: () => void;
 }): Promise<void> {
   const instanceId = normalizeInstanceId(params.instanceId);
   if (!instanceId) throw new Error('剪辑工程标识无效');
@@ -225,18 +282,39 @@ export async function openVideoEditorWindow(params: {
   }
 
   const theme = params.theme === 'light' ? 'light' : 'dark';
+  const expected = parseProjectExpectedContext(params.expectedContext);
+  params.assertCurrent?.();
+  if (expected.kind !== 'canvas' || expected.modelGeneration !== 0 || expected.canvasId !== params.projectId
+    || instanceId !== `${params.projectId}::${params.nodeId}`) throw new Error('剪辑窗口目标上下文无效');
+  const { useAppStore } = await import('../store/useAppStore');
+  params.assertCurrent?.();
+  const current = () => {
+    const state = useAppStore.getState();
+    return isProjectExpectedContextCurrent(expected, state, { checkCanvasRevision: false })
+      && (params.nodeId === 'canvas-quick' || state.nodes.some((node) => node.id === params.nodeId));
+  };
+  if (!current()) throw new Error('剪辑窗口原画布已变化');
   await ensureMainListener();
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
 
   const existing = await WebviewWindow.getByLabel(VIDEO_EDITOR_WINDOW_LABEL);
+  params.assertCurrent?.();
   if (existing) {
+    if (!current() || activeInstanceId !== instanceId || !activeBinding || !targetCurrent?.()
+      || !isProjectExpectedContextCurrent(activeBinding.expectedContext, expected, { checkCanvasRevision: false })) {
+      if (!targetCurrent?.()) { targetCurrent = null; unsubscribeTarget?.(); unsubscribeTarget = null; }
+      // 旧窗口可能仍有保存失败的本地草稿，不能为打开另一工程而无确认关闭它。
+      throw new Error('原剪辑窗口不能改绑；请保留草稿并手动关闭，再从当前画布重新打开');
+    }
     await existing.show().catch(() => {});
     await existing.unminimize().catch(() => {});
     await existing.setFocus().catch(() => {});
-    // 已开着的窗口切换到另一个节点：让编辑器自行换工程，避免重建窗口
+    // 仅复用同一原会话；其他工程必须重新打开，不能把旧子窗绑定改写成新授权。
     const { emitTo } = await import('@tauri-apps/api/event');
+    params.assertCurrent?.();
     await emitTo(VIDEO_EDITOR_WINDOW_LABEL, VIDEO_EDITOR_HOST_EVENT, {
       instanceId,
+      binding: requireBinding(instanceId),
       message: {
         type: 'storyai:video-editor-session',
         payload: { instanceId, projectId: params.projectId, nodeId: params.nodeId, theme },
@@ -245,12 +323,21 @@ export async function openVideoEditorWindow(params: {
     return;
   }
 
+  if (!current()) throw new Error('剪辑窗口原画布已变化');
+  const binding = parseVideoEditorWindowBinding({ sessionId: crypto.randomUUID(), expectedContext: expected });
+  activeBinding = binding; activeInstanceId = instanceId;
+  unsubscribeTarget?.();
+  let revoked = false;
+  targetCurrent = () => !revoked && current();
+  unsubscribeTarget = useAppStore.subscribe(() => { if (!current()) revoked = true; });
+
   const editorWindow = new WebviewWindow(VIDEO_EDITOR_WINDOW_LABEL, {
     url: buildVideoEditorWindowUrl({
       instanceId,
       projectId: params.projectId,
       nodeId: params.nodeId,
       theme,
+      binding,
     }),
     title: '视频编辑器',
     width: 1440,
@@ -268,13 +355,29 @@ export async function openVideoEditorWindow(params: {
   await new Promise<void>((resolve, reject) => {
     void editorWindow.once('tauri://created', () => resolve());
     void editorWindow.once('tauri://error', (event) => {
+      if (activeBinding === binding) {
+        targetCurrent = null; activeBinding = null; activeInstanceId = null;
+        unsubscribeTarget?.(); unsubscribeTarget = null;
+      }
       reject(new Error(`创建视频编辑器窗口失败：${String(event.payload ?? 'unknown')}`));
     });
   });
 
   void editorWindow.once('tauri://destroyed', () => {
-    notifySubscribers(subscribers, instanceId, { type: 'storyai:video-editor-close' });
+    if (activeBinding !== binding) return;
+    notifySubscribers(subscribers, instanceId, { type: 'storyai:video-editor-close' }, binding);
+    targetCurrent = null; activeBinding = null; activeInstanceId = null;
+    unsubscribeTarget?.(); unsubscribeTarget = null;
   });
+  try { requireBinding(instanceId, binding); params.assertCurrent?.(); }
+  catch (error) {
+    if (activeBinding === binding) {
+      targetCurrent = null; activeBinding = null; activeInstanceId = null;
+      unsubscribeTarget?.(); unsubscribeTarget = null;
+    }
+    await editorWindow.close().catch(() => {});
+    throw error;
+  }
 }
 
 export function subscribeVideoEditorWindow(
@@ -300,9 +403,11 @@ export async function postVideoEditorExported(
   instanceId: string,
   result: VideoEditorExportResult,
 ): Promise<void> {
+  const binding = childBinding(instanceId);
   const { emitTo } = await import('@tauri-apps/api/event');
   await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
     instanceId,
+    binding,
     message: {
       type: 'storyai:video-editor-exported',
       payload: { ...result },
@@ -315,9 +420,11 @@ export async function postVideoEditorFrameExported(
   instanceId: string,
   result: VideoEditorFrameExportResult,
 ): Promise<void> {
+  const binding = childBinding(instanceId);
   const { emitTo } = await import('@tauri-apps/api/event');
   await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
     instanceId,
+    binding,
     message: {
       type: 'storyai:video-editor-frame-exported',
       payload: { ...result },
@@ -327,18 +434,22 @@ export async function postVideoEditorFrameExported(
 
 /** 编辑器窗口内调用：通知主窗口自己已就绪 */
 export async function postVideoEditorReady(instanceId: string): Promise<void> {
+  const binding = childBinding(instanceId);
   const { emitTo } = await import('@tauri-apps/api/event');
   await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
     instanceId,
+    binding,
     message: { type: 'storyai:video-editor-ready' },
   } satisfies VideoEditorWindowEnvelope);
 }
 
 /** 编辑器窗口内调用：向主窗口要一份当前可用的视频模型列表 */
 export async function postVideoEditorModelsRequest(instanceId: string): Promise<void> {
+  const binding = childBinding(instanceId);
   const { emitTo } = await import('@tauri-apps/api/event');
   await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
     instanceId,
+    binding,
     message: { type: 'storyai:video-editor-models-request' },
   } satisfies VideoEditorWindowEnvelope);
 }
@@ -348,9 +459,11 @@ export async function postVideoEditorAiTransitionRequest(
   instanceId: string,
   request: VideoEditorAiTransitionRequest,
 ): Promise<void> {
+  const binding = childBinding(instanceId);
   const { emitTo } = await import('@tauri-apps/api/event');
   await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
     instanceId,
+    binding,
     message: {
       type: 'storyai:video-editor-ai-transition-request',
       payload: { ...request },
@@ -382,9 +495,12 @@ export async function postVideoEditorModels(
   instanceId: string,
   models: VideoEditorModelOption[],
 ): Promise<void> {
+  const binding = requireBinding(instanceId);
   const { emitTo } = await import('@tauri-apps/api/event');
+  requireBinding(instanceId, binding);
   await emitTo(VIDEO_EDITOR_WINDOW_LABEL, VIDEO_EDITOR_HOST_EVENT, {
     instanceId,
+    binding,
     message: {
       type: 'storyai:video-editor-models',
       payload: { models },
@@ -396,10 +512,14 @@ export async function postVideoEditorModels(
 export async function postVideoEditorAiTransitionResult(
   instanceId: string,
   result: VideoEditorAiTransitionResult,
+  expectedBinding?: VideoEditorWindowBinding,
 ): Promise<void> {
+  const binding = requireBinding(instanceId, expectedBinding);
   const { emitTo } = await import('@tauri-apps/api/event');
+  requireBinding(instanceId, binding);
   await emitTo(VIDEO_EDITOR_WINDOW_LABEL, VIDEO_EDITOR_HOST_EVENT, {
     instanceId,
+    binding,
     message: {
       type: 'storyai:video-editor-ai-transition-result',
       payload: { ...result },
@@ -408,6 +528,8 @@ export async function postVideoEditorAiTransitionResult(
 }
 
 export function __resetVideoEditorWindowServiceForTests() {
+  activeBinding = null; activeInstanceId = null; targetCurrent = null;
+  unsubscribeTarget?.(); unsubscribeTarget = null;
   unlistenMain?.();
   unlistenMain = null;
   mainListenerPromise = null;

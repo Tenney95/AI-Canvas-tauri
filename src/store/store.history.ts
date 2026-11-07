@@ -387,7 +387,7 @@ function enqueueHistoryTransition(operation: () => Promise<boolean>): Promise<bo
 export interface HistorySlice {
   history: HistoryEntry[];
   historyIndex: number;
-  undo: () => Promise<boolean>;
+  undo: (options?: { isCurrent?: () => boolean }) => Promise<boolean>;
   redo: () => Promise<boolean>;
   commitToHistory: () => void;
 }
@@ -396,11 +396,14 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
   history: [],
   historyIndex: -1,
 
-  undo: () => enqueueHistoryTransition(async () => {
+  undo: (options) => enqueueHistoryTransition(async () => {
+    if (options?.isCurrent?.() === false) return false;
     // 删除会在退场动画结束后落状态。先等待，确保捕获到真实的删除后状态，避免回调覆盖撤销结果。
     await waitForPendingNodeExits();
     // 文件暂存不等动画，必须单独等：还原跑在暂存前面的话，文件会在节点复活之后才进 .trash
     await fileService.waitForPendingNodeFileDeletions();
+
+    if (options?.isCurrent?.() === false) return false;
 
     const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
     if (historyIndex < 0 || history.length === 0) return false;
@@ -456,7 +459,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);
-    if (latest.currentProjectId !== currentProjectId || latest.history !== history
+    if (options?.isCurrent?.() === false || latest.currentProjectId !== currentProjectId || latest.history !== history
       || latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
 
     const restored = restoreStructuralSnapshot(entry, latestSnapshot);

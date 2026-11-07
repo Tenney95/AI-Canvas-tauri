@@ -874,6 +874,7 @@ async function restoreProjectDramaAssets(
 
 export interface ProjectSaveData {
   exchangeEpoch?: number;
+  revisionScope?: 'project' | 'global';
   id: string;
   name: string;
   createdAt: number;
@@ -895,6 +896,8 @@ export interface ProjectSaveData {
   episodeScriptFile?: ProjectTextFileReference;
   episodeCreative?: import('../types').EpisodeCreativeInfo;
   episodeAssetRoster?: EpisodeAssetRoster;
+  creationProfile?: import('../types/creationProfile').CreationProfileSelection;
+  teamProfileOverride?: import('../types/agentTeam').AgentTeamProfile;
   /** 剧集级原著与剧本；仅剧集项目有 */
   series?: import('../types').ProjectSeriesInfo;
 }

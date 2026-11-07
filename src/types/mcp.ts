@@ -3,6 +3,7 @@
  */
 import type { AgentToolSchema } from '../services/chat/agentToolSchemas';
 import type { AgentToolEffect } from '../services/chat/toolRegistry';
+import type { ProjectExpectedContext } from './project';
 
 export type McpTransport = 'stdio' | 'streamable-http';
 export type McpToolExposure = 'compact' | 'full';
@@ -20,11 +21,13 @@ export interface McpToolDescribeInput {
 }
 
 export interface McpToolCallEnvelope {
+  schemaVersion?: 2;
   name: string;
   arguments: Record<string, unknown>;
   expectedProjectId?: string;
   expectedRevision?: number;
   operationKey?: string;
+  expectedContext?: ProjectExpectedContext;
 }
 
 export interface McpToolCatalogEntry {

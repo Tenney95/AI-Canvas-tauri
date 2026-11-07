@@ -91,6 +91,27 @@ function readRecord(db: IDBDatabase, store: string, key: string): Promise<unknow
 }
 
 describe('故事图原子保存', () => {
+  it.each(['project-model-source-freeze', 'activeDataModel', 'project-model-business-fixture'])(
+    '%s 阻止旧故事图与迟到封面写入冻结源', async (marker) => {
+      const service = await import('../../src/services/indexedDbService');
+      const graph = createEmptyStoryGraph('frozen-graph');
+      const record = { ...RECOVERY_PROJECT, nodes: [], series: { script: '原剧本', storyGraph: graph } };
+      await service.saveProjectToDb(record);
+      const database = await openDatabase(DB_NAME);
+      try {
+        const before = await readRecord(database, 'projects', record.id);
+        await new Promise<void>((resolve, reject) => {
+          const transaction = database.transaction('metadata', 'readwrite');
+          transaction.objectStore('metadata').put({ id: marker });
+          transaction.oncomplete = () => resolve(); transaction.onabort = () => reject(transaction.error);
+        });
+        await expect(service.updateProjectStoryGraphCAS(record.id, { graphId: graph.id }, 0, 0)).rejects.toThrow('旧项目写入已停止');
+        await expect(service.updateProjectSnapshot(record.id, 'data:image/webp;base64,LATE')).rejects.toThrow('旧项目写入已停止');
+        expect(await readRecord(database, 'projects', record.id)).toEqual(before);
+      } finally { database.close(); }
+    },
+  );
+
   it('并发 CAS 只有一个成功，迟到的普通保存不能覆盖正式图或项目摘要', async () => {
     const db = await import('../../src/services/indexedDbService');
     const graph = { ...createEmptyStoryGraph('graph'), revision: 6 };

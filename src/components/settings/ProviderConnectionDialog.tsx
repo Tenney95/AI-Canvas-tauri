@@ -470,7 +470,10 @@ export default function ProviderConnectionDialog({
 
   const handleAssistantAdd = async () => {
     const store = useAppStore.getState();
-    if (store.chatPanelDetached) await emitCloseChatWindow();
+    if (store.chatPanelDetached) {
+      try { await emitCloseChatWindow(); }
+      catch (error) { store.showToast(error instanceof Error ? error.message : t('独立窗口尚未确认草稿交接'), 'error'); return; }
+    }
     store.openChatWithDraft(
       buildRelayAssistantPrompt(
         connectionName.trim(),

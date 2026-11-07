@@ -35,6 +35,8 @@ import type {
   PythonPluginRuntimeStatus,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
+import type { CanvasContext } from '../../types/project';
+import { isProjectExpectedContextCurrent } from '../projectExecutionContext';
 import { resolvePluginDependencies } from './pluginDependencyService';
 import { createPluginLifecycleScope } from './pluginLifecycleScope';
 import { computeImageNodeDimensions, derivedNodePlacement, generateId } from '../../store/store.utils';
@@ -55,6 +57,7 @@ import type { VideoPreflightItem } from '../../types/videoBatch';
 import {
   clearPluginInvocationResources,
   mintPluginInvocationResources,
+  assertPluginResourceContextCurrent,
   readPluginResourceRange,
   readPluginResourceText,
   readPluginDerivedResourceForOutput,
@@ -1305,6 +1308,7 @@ async function executeHostEffect(
     const lease = context.resourceReadContext;
     if (!lease) throw new Error('插件资源会话已失效');
     const current = requireCurrentPluginRevision(context.pluginId, lease.sourceDigest, lease.revisionDigest);
+    assertPluginResourceContextCurrent({ ...lease, state: current });
     if (current.currentProjectId !== context.projectId || current.getCurrentRevision() !== lease.baseRevision
       || !current.nodes.some((node) => node.id === nodeId)) throw new Error('画布已变化，插件操作已撤销');
   };
@@ -1612,6 +1616,8 @@ export async function executePluginNode(
       projectId,
       nodeId,
       baseRevision: guard.baseRevision,
+      expectedContext: guard.expectedContext,
+      getState: useAppStore.getState,
       access: pluginNode.node.resourceAccess,
       inputPorts: pluginNode.node.inputs,
       packageResources: installedPlugin.manifest.resources,
@@ -1638,6 +1644,8 @@ export async function executePluginNode(
       projectId,
       nodeId,
       baseRevision: guard.baseRevision,
+      expectedContext: guard.expectedContext,
+      getState: useAppStore.getState,
       permissions: pluginNode.permissions,
       state: useAppStore.getState(),
     });
@@ -1719,12 +1727,18 @@ interface PreparedPluginNodeSet {
 }
 
 function dispatchPluginVideoBatch(identity: PluginInvocationIdentity, projectId: string,
-  batch: { items: VideoPreflightItem[]; assertModelsFresh: () => void }): void {
+  batch: { items: VideoPreflightItem[]; assertModelsFresh: () => void }, expectedContext?: Readonly<CanvasContext>): void {
   try {
-    const state = requireCurrentPluginRevision(identity.pluginId, identity.sourceDigest, identity.revisionDigest);
-    if (state.currentProjectId !== projectId) throw new Error('项目已切换');
-    batch.assertModelsFresh();
-    void state.startVideoBatch(projectId, batch.items).catch(() => {
+    const assertFresh = () => {
+      const state = requireCurrentPluginRevision(identity.pluginId, identity.sourceDigest, identity.revisionDigest);
+      if (state.currentProjectId !== projectId) throw new Error('项目已切换');
+      if (expectedContext && !isProjectExpectedContextCurrent(expectedContext, state, { checkCanvasRevision: false })) {
+        throw new Error('视频批次目标上下文已变化');
+      }
+      batch.assertModelsFresh();
+    };
+    assertFresh();
+    void useAppStore.getState().startVideoBatch(projectId, batch.items, { assertFresh }).catch(() => {
       useAppStore.getState().showToast('视频批次未完成，请检查已创建的视频节点；未自动重新提交');
     });
   } catch {
@@ -2098,6 +2112,8 @@ export async function executeNodePluginTool(
       projectId,
       nodeId,
       baseRevision: guard.baseRevision,
+      expectedContext: guard.expectedContext,
+      getState: useAppStore.getState,
       access: pluginTool.tool.resourceAccess,
       packageResources: installedPlugin.manifest.resources,
       state: before,
@@ -2110,6 +2126,8 @@ export async function executeNodePluginTool(
       projectId,
       nodeId,
       baseRevision: guard.baseRevision,
+      expectedContext: guard.expectedContext,
+      getState: useAppStore.getState,
       permissions: pluginTool.permissions,
       state: useAppStore.getState(),
     });
@@ -2286,7 +2304,7 @@ export async function executeNodePluginTool(
     }
     if (pendingVideoBatch) {
       // 画布已提交；新视频归宿主批次管理，不能再用提交前的 revision/界面取消信号守卫。
-      dispatchPluginVideoBatch(identity, projectId, pendingVideoBatch);
+      dispatchPluginVideoBatch(identity, projectId, pendingVideoBatch, guard.expectedContext);
     }
   }
 }

@@ -25,6 +25,53 @@ async function setup(projectId = 'project-operation') {
 }
 
 describe('MCP operation durable claims', () => {
+  it('reads an original episode receipt from the same owner without creating tasks or resetting its budget', async () => {
+    const { api, db, useAppStore, input, identity, projectId } = await setup('historical-episode-a');
+    const claim = await api.claimMcpOperation(identity, input);
+    await api.startMcpOperation(claim.receipt.taskId);
+    const before = await api.finishMcpOperation(claim.receipt.taskId, { status: 'success' });
+    const persistedBefore = await db.getAgentTask(claim.receipt.taskId);
+    useAppStore.setState({ currentProjectId: 'historical-episode-b', projects: [
+      { id: 'historical-owner', name: 'owner', createdAt: 1, updatedAt: 1 },
+      { id: projectId, parentId: 'historical-owner', name: 'a', createdAt: 1, updatedAt: 1 },
+      { id: 'historical-episode-b', parentId: 'historical-owner', name: 'b', createdAt: 1, updatedAt: 1 },
+    ] });
+    expect(await api.getHistoricalMcpOperationReceipt({ legacyProjectId: projectId, operationKey: 'opaque-key-do-not-persist' }))
+      .toMatchObject({ operationId: before!.operationId, taskId: before!.taskId, sequence: before!.sequence, status: before!.status });
+    expect(await db.getAgentTask(claim.receipt.taskId)).toEqual(persistedBefore);
+    expect(useAppStore.getState().agentTasks).toHaveLength(1);
+    await expect(api.readMcpOperation(identity)).rejects.toThrow('当前项目');
+    await expect(api.claimMcpOperation(identity, input)).rejects.toThrow('当前项目');
+  });
+
+  it('requires an explicit tombstone-backed deleted-target scope and never reclaims its old key', async () => {
+    const { api, db, useAppStore, input, identity, projectId } = await setup('historical-deleted-canvas');
+    const claim = await api.claimMcpOperation(identity, input);
+    await api.startMcpOperation(claim.receipt.taskId);
+    await db.deleteAgentTask(claim.receipt.taskId);
+    useAppStore.setState({ currentProjectId: null, projects: [], agentTasks: [] });
+    await expect(api.getHistoricalMcpOperationReceipt({ legacyProjectId: projectId, operationId: claim.receipt.operationId }))
+      .rejects.toThrow('显式');
+    await expect(api.getHistoricalMcpOperationReceipt({ legacyProjectId: projectId, operationId: claim.receipt.operationId, auditScope: 'deleted-target' }))
+      .rejects.toThrow('删除标记');
+    const { openDB, STORE_METADATA } = await import('../../../src/services/indexedDb/schema');
+    const database = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = database.transaction(STORE_METADATA, 'readwrite');
+      tx.objectStore(STORE_METADATA).put({ id: `project-deleted:${projectId}`, retainedAudit: true, deletedAt: 1 });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    const result = await api.getHistoricalMcpOperationReceipt({ legacyProjectId: projectId, operationKey: 'opaque-key-do-not-persist', auditScope: 'deleted-target' });
+    expect(result).toMatchObject({ operationId: claim.receipt.operationId, taskId: claim.receipt.taskId, projectId,
+      status: 'unknown', retryable: false, resultAvailable: false });
+    expect(result!.sequence).toBeGreaterThan(claim.receipt.sequence);
+    expect(result!.nextAction).toContain('不恢复任务');
+    expect(await db.getMcpOperationBinding(identity.bindingId)).toMatchObject({ taskId: claim.receipt.taskId });
+    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+    await expect(api.claimMcpOperation(identity, input)).rejects.toThrow('当前项目');
+  });
+
   it('atomically claims one task for concurrent same-key calls and never stores the key or arguments', async () => {
     const { api, db, useAppStore, input, identity, projectId } = await setup();
     const reordered = await api.identifyMcpOperation({ projectId, toolId: 'canvas_update_nodes', effect: 'canvas_write',
@@ -171,8 +218,7 @@ describe('MCP operation durable claims', () => {
       if (stored !== undefined) await api.recordMcpOperationProgress(claim.receipt.taskId, { revisionAfter: stored });
       useAppStore.setState({ canvasRevision: 999, ...(switchProject ? { currentProjectId: 'other-project' } : {}) });
       const finished = api.finishMcpOperation(claim.receipt.taskId, { status: 'success' });
-      if (switchProject) await expect(finished).rejects.toThrow('当前项目');
-      else await expect(finished).resolves.toMatchObject({ revisionAfter: stored });
+      await expect(finished).resolves.toMatchObject({ projectId, status: 'succeeded', ...(stored === undefined ? {} : { revisionAfter: stored }) });
       expect((await db.getAgentTask(claim.receipt.taskId))?.mcpOperation?.revisionAfter).toBe(stored);
     });
 

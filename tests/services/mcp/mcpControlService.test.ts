@@ -35,6 +35,7 @@ import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../../../sr
 import * as chatHistory from '../../../src/services/chat/chatHistoryService';
 import * as mcpBridge from '../../../src/services/mcp/mcpBridgeService';
 import { MCP_CATALOG_MAX_BYTES } from '../../../src/services/mcp/mcpToolCatalog';
+import { captureLegacyProjectExpectedContext } from '../../../src/services/projectExecutionContext';
 
 const { getChatWindow } = vi.hoisted(() => ({ getChatWindow: vi.fn() }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: getChatWindow } }));
@@ -113,6 +114,7 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-mcp',
+    projectLoadStatus: 'ready',
     projects: [{
       id: 'project-mcp',
       name: 'MCP project',
@@ -1409,6 +1411,94 @@ describe('MCP control service', () => {
   });
 });
 
+describe('MCP versioned execution context', () => {
+  it('permits explicit deleted receipt auditing with a fresh global context without creating a scope task', async () => {
+    useAppStore.setState({ currentProjectId: null });
+    const operations = await import('../../../src/services/mcp/mcpOperationService');
+    const read = vi.spyOn(operations, 'getHistoricalMcpOperationReceipt').mockResolvedValueOnce({ operationId: 'original-binding',
+      taskId: 'original-task', projectId: 'deleted-canvas', toolId: 'media_generate', status: 'unknown', sequence: 7,
+      resultAvailable: false, retryable: false, requiresReadVerification: true, nextAction: '只读核实，勿重投' });
+    const result = await mcpCall('tools_call', { schemaVersion: 2, name: 'mcp_operation_get',
+      arguments: { operationId: 'original-binding', legacyProjectId: 'deleted-canvas', auditScope: 'deleted-target' },
+      expectedContext: captureLegacyProjectExpectedContext(useAppStore.getState(), 'global') }, 'typed:deleted-audit');
+    expect(result.isError).not.toBe(true);
+    expect(read).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+    expect(useAppStore.getState().conversations).toHaveLength(0);
+  });
+
+  it('rejects a missing or stale v2 write context before task creation without upgrading the old Canvas ID', async () => {
+    const execute = registerDispatchProbe();
+    const expectedContext = captureLegacyProjectExpectedContext(useAppStore.getState());
+    const missing = await mcpCall('tools_call', { schemaVersion: 2, name: 'mcp_dispatch_probe', arguments: { value: 'ok' } }, 'typed:missing');
+    expect(JSON.stringify(missing)).toContain('CONTEXT_REFRESH_REQUIRED');
+    useAppStore.getState().incrementRevision();
+    const stale = await mcpCall('tools_call', { schemaVersion: 2, name: 'mcp_dispatch_probe', arguments: { value: 'ok' }, expectedContext }, 'typed:stale');
+    expect(JSON.stringify(stale)).toContain('CONTEXT_REFRESH_REQUIRED');
+    expect(execute).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+  });
+
+  it('returns a reusable context from a read and preserves its value across another physical connection', async () => {
+    registerDispatchProbe({ effect: 'read' });
+    const result = await mcpCall('mcp_dispatch_probe', { value: 'read' }, 'typed:read');
+    const block = result.content.find((item) => item.type === 'text' && item.text.includes('expectedContext'));
+    if (!block || block.type !== 'text') throw new Error('Missing reusable context');
+    const { expectedContext } = JSON.parse(block.text);
+    const execute = registerDispatchProbe({ id: 'mcp_typed_write' });
+    const written = await handleMcpBridgeRequest({ sessionId: 'second-physical-connection', requestId: 'typed:write', method: 'tools/call',
+      params: { name: 'tools_call', arguments: { schemaVersion: 2, name: 'mcp_typed_write', arguments: { value: 'write' }, expectedContext } } }) as McpToolCallResult;
+    expect(written.isError).toBe(false);
+    expect(execute).toHaveBeenCalledOnce();
+    const task = useAppStore.getState().agentTasks.find((item) => item.goal.includes('分发测试') && item.executionContext);
+    expect(task).toMatchObject({ projectId: 'project-mcp', conversationId: 'mcp-control-project-mcp', executionContext: expectedContext });
+  });
+
+  it('blocks a target epoch change during asynchronous operation identification without claiming a new key', async () => {
+    const execute = registerDispatchProbe({ id: 'canvas_typed_race', effect: 'canvas_write' });
+    const expectedContext = captureLegacyProjectExpectedContext(useAppStore.getState());
+    const operations = await import('../../../src/services/mcp/mcpOperationService');
+    const identify = operations.identifyMcpOperation;
+    vi.spyOn(operations, 'identifyMcpOperation').mockImplementationOnce(async (input) => {
+      const identity = await identify(input);
+      useAppStore.setState({ projects: useAppStore.getState().projects.map((item) => ({ ...item, exchangeEpoch: (item.exchangeEpoch ?? 0) + 1 })) });
+      return identity;
+    });
+    const result = await mcpCall('tools_call', { schemaVersion: 2, name: 'canvas_typed_race', arguments: { value: 'ok' },
+      expectedContext, operationKey: 'typed-epoch-race' }, 'typed:epoch-race');
+    expect(JSON.stringify(result)).toContain('CONTEXT_REFRESH_REQUIRED');
+    expect(execute).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+  });
+
+  it('keeps new-model fixture contexts dormant before creating audit scopes or consulting default operation storage', async () => {
+    const execute = registerDispatchProbe();
+    const actual = useAppStore.getState();
+    const fixture = { ...captureLegacyProjectExpectedContext(actual), modelGeneration: 1 };
+    vi.spyOn(useAppStore, 'getState').mockReturnValue({ ...actual, projectExecutionContext: fixture } as typeof actual);
+    const result = await mcpCall('tools_call', { schemaVersion: 2, name: 'mcp_dispatch_probe', arguments: { value: 'fixture' }, expectedContext: fixture }, 'typed:dormant');
+    expect(JSON.stringify(result)).toContain('PROJECT_MODEL_EXECUTION_DISABLED');
+    expect(execute).not.toHaveBeenCalled();
+    expect(actual.agentTasks).toHaveLength(0);
+    expect(actual.conversations).toHaveLength(0);
+  });
+
+  it('hides Canvas capabilities on a series without a Canvas and rejects paid chat delivery before task creation', async () => {
+    useAppStore.setState({ currentProjectId: 'series-owner', projects: [
+      { id: 'series-owner', name: 'series', createdAt: 1, updatedAt: 1 },
+      { id: 'episode-a', parentId: 'series-owner', name: 'episode', createdAt: 1, updatedAt: 1 },
+    ] });
+    const execute = registerDispatchProbe({ id: 'media_paid_probe', effect: 'media_generation' });
+    const tools = await listMcpTools('full');
+    expect(tools.map((item) => item.name)).not.toContain('canvas_query');
+    expect(tools.map((item) => item.name)).not.toContain('media_paid_probe');
+    const result = await mcpCall('media_paid_probe', { value: 'ok', delivery: 'chat' }, 'typed:no-canvas-media');
+    expect(JSON.stringify(result)).toContain('NO_ACTIVE_CANVAS');
+    expect(execute).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks).toHaveLength(0);
+  });
+});
+
 describe('MCP keyed operation receipts', () => {
   function project(id: string) {
     useAppStore.setState({ currentProjectId: id, projects: [{ id, name: id, createdAt: 1, updatedAt: 1 }] });
@@ -1420,6 +1510,49 @@ describe('MCP keyed operation receipts', () => {
     }
     throw new Error('Missing operation receipt');
   }
+
+  it('reads an explicit historical alias after switching episodes without creating another task or resetting counters', async () => {
+    const projects = [
+      { id: 'receipt-owner', name: 'owner', createdAt: 1, updatedAt: 1 },
+      { id: 'receipt-episode-a', parentId: 'receipt-owner', name: 'a', createdAt: 1, updatedAt: 1 },
+      { id: 'receipt-episode-b', parentId: 'receipt-owner', name: 'b', createdAt: 1, updatedAt: 1 },
+    ];
+    useAppStore.setState({ currentProjectId: 'receipt-episode-a', projects });
+    const execute = registerDispatchProbe({ id: 'canvas_historical_once', effect: 'canvas_write' });
+    const first = await mcpCall('tools_call', { name: 'canvas_historical_once', arguments: { value: 'ok' }, operationKey: 'historical-once' }, 'historical:first');
+    const original = operation(first);
+    const tasks = structuredClone(useAppStore.getState().agentTasks);
+    const conversations = useAppStore.getState().conversations.map((item) => item.id);
+    useAppStore.setState({ currentProjectId: 'receipt-episode-b' });
+    const result = await mcpCall('mcp_operation_get', { operationKey: 'historical-once', legacyProjectId: 'receipt-episode-a' }, 'historical:query');
+    expect(operation(result)).toMatchObject({ operationId: original.operationId, taskId: original.taskId,
+      projectId: 'receipt-episode-a', sequence: original.sequence, retryable: false });
+    expect(useAppStore.getState().agentTasks).toEqual(tasks);
+    expect(useAppStore.getState().conversations.map((item) => item.id)).toEqual(conversations);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a known paid effect on its original receipt when context changes before result delivery', async () => {
+    project('receipt-paid-original');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const execute = vi.fn<AgentToolDefinition['execute']>(async () => {
+      await gate;
+      return { status: 'success', summary: '原付费操作已明确返回', modelContent: 'private-paid-result' };
+    });
+    registerDispatchProbe({ id: 'media_paid_delivery_context', effect: 'media_generation', execute });
+    const pending = mcpCall('tools_call', { name: 'media_paid_delivery_context', arguments: { value: 'ok' }, operationKey: 'known-paid-result' }, 'paid:original');
+    try {
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      useAppStore.setState({ currentProjectId: 'receipt-paid-other', canvasRevision: 999 });
+    } finally { release(); }
+    const result = await pending;
+    expect(result.isError).toBe(true);
+    expect(operation(result)).toMatchObject({ projectId: 'receipt-paid-original', status: 'succeeded', retryable: false });
+    expect(operation(result)).not.toHaveProperty('revisionAfter', 999);
+    expect(JSON.stringify(result)).not.toContain('private-paid-result');
+    expect(execute).toHaveBeenCalledOnce();
+  });
 
   it('executes a keyed write once and returns its durable receipt after the write changed revision', async () => {
     project('receipt-control-once');

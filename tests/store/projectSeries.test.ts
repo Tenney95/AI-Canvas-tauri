@@ -33,6 +33,14 @@ const memoryMocks = vi.hoisted(() => ({
   reassignProjectMemories: vi.fn(async () => undefined),
 }));
 const scriptFileMocks = vi.hoisted(() => ({ prepare: vi.fn() }));
+const lifecycleMocks = vi.hoisted(() => ({
+  swap: vi.fn(),
+  deleteContent: vi.fn(async (input: { expectedProjects: Array<{ id: string }> }) => input.expectedProjects.map((item) => item.id)),
+}));
+vi.mock('../../src/services/indexedDb/legacyProjectLifecycleRepository', () => ({
+  swapLegacyEpisodeOrder: lifecycleMocks.swap,
+  deleteLegacyProjectContent: lifecycleMocks.deleteContent,
+}));
 vi.mock('../../src/services/episodeScriptFileService', () => ({ prepareEpisodeScriptFileWrite: scriptFileMocks.prepare }));
 
 vi.mock('../../src/services/fileService', () => ({
@@ -43,6 +51,7 @@ vi.mock('../../src/services/fileService', () => ({
 vi.mock('../../src/services/pollManager', () => ({
   cancelNodePolling: vi.fn(),
   clearProjectTasks: vi.fn(),
+  stopPollingForDeletedProjects: vi.fn(),
   resumePendingTasks: vi.fn(async () => undefined),
 }));
 vi.mock('../../src/services/projectSnapshotService', () => ({
@@ -121,6 +130,19 @@ beforeEach(() => {
   fileMocks.deleteProjectDataDir.mockClear();
   memoryMocks.reassignProjectMemories.mockClear();
   scriptFileMocks.prepare.mockReset().mockResolvedValue(undefined);
+  lifecycleMocks.swap.mockReset().mockImplementation(async (input: {
+    episodeId: string; direction: number; expectedEpisodes: Array<{ id: string; episodeNo: number; exchangeEpoch?: number }>; assertCurrent?: () => void;
+  }) => {
+    input.assertCurrent?.();
+    const ordered = input.expectedEpisodes.slice().sort((left, right) => left.episodeNo - right.episodeNo);
+    const index = ordered.findIndex((item) => item.id === input.episodeId);
+    const current = ordered[index], neighbour = ordered[index + input.direction];
+    return [{ id: current.id, episodeNo: neighbour.episodeNo, updatedAt: 3, exchangeEpoch: (current.exchangeEpoch ?? 0) + 1 },
+      { id: neighbour.id, episodeNo: current.episodeNo, updatedAt: 3, exchangeEpoch: (neighbour.exchangeEpoch ?? 0) + 1 }];
+  });
+  lifecycleMocks.deleteContent.mockReset().mockImplementation(async (input: {
+    expectedProjects: Array<{ id: string }>; assertCurrent?: () => void;
+  }) => { input.assertCurrent?.(); return input.expectedProjects.map((item) => item.id); });
 });
 
 describe('新增分集', () => {
@@ -412,6 +434,18 @@ describe('原著 / 剧本 / 大纲', () => {
     // 到顶了就不再动
     await expect(useAppStore.getState().moveEpisode('ep-2', -1)).resolves.toBe(false);
   });
+
+  it('原子排序失败不先改内存中的第一集，也不回写整条旧画布', async () => {
+    useAppStore.setState({ projects: [
+      { id: 'series', name: '整剧', createdAt: 1, updatedAt: 1 },
+      { id: 'ep-1', name: '一', parentId: 'series', episodeNo: 1, createdAt: 1, updatedAt: 1 },
+      { id: 'ep-2', name: '二', parentId: 'series', episodeNo: 2, createdAt: 1, updatedAt: 1 },
+    ], currentProjectId: 'ep-1', projectName: '一' });
+    lifecycleMocks.swap.mockRejectedValueOnce(new Error('fixture quota'));
+    await expect(useAppStore.getState().moveEpisode('ep-2', -1)).resolves.toBe(false);
+    expect(useAppStore.getState().projects.filter((item) => item.parentId).map((item) => item.episodeNo)).toEqual([1, 2]);
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+  });
 });
 
 describe('剧集原著的条件保存', () => {
@@ -586,7 +620,7 @@ describe('本集正文与 TXT 保存回执', () => {
 });
 
 describe('删除剧集', () => {
-  it('连分集一起删，且只清一次共用素材目录', async () => {
+  it('整剧业务聚合删除，保留共用素材与审计资料，不按分集逐条级联', async () => {
     useAppStore.setState({
       projects: [
         { id: 'series', name: '月球列车', createdAt: 1, updatedAt: 1, dataFolder: 'moon' },
@@ -605,13 +639,15 @@ describe('删除剧集', () => {
 
     const state = useAppStore.getState();
     expect(state.projects.map((project) => project.id)).toEqual(['plain']);
-    expect(fileMocks.deleteProjectData.mock.calls.map((call) => call[0]).sort())
+    expect(lifecycleMocks.deleteContent).toHaveBeenCalledTimes(1);
+    expect(lifecycleMocks.deleteContent.mock.calls[0][0].expectedProjects.map((item) => item.id).sort())
       .toEqual(['ep-1', 'ep-2', 'series']);
-    expect(fileMocks.deleteProjectDataDir.mock.calls.map((call) => call[0])).toEqual(['series']);
+    expect(fileMocks.deleteProjectData).not.toHaveBeenCalled();
+    expect(fileMocks.deleteProjectDataDir).not.toHaveBeenCalled();
     expect(state.currentProjectId).toBe('plain');
   });
 
-  it('删掉最后一集时剧集项目一并清掉', async () => {
+  it('旧格式拒删最后一集，绝不顺带删除整部剧或素材目录', async () => {
     useAppStore.setState({
       projects: [
         { id: 'series', name: '月球列车', createdAt: 1, updatedAt: 1, dataFolder: 'moon' },
@@ -624,7 +660,50 @@ describe('删除剧集', () => {
 
     await useAppStore.getState().deleteProject('ep-1');
 
-    expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['plain']);
-    expect(fileMocks.deleteProjectDataDir.mock.calls.map((call) => call[0])).toEqual(['series']);
+    expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['series', 'ep-1', 'plain']);
+    expect(lifecycleMocks.deleteContent).not.toHaveBeenCalled();
+    expect(fileMocks.deleteProjectData).not.toHaveBeenCalled();
+    expect(fileMocks.deleteProjectDataDir).not.toHaveBeenCalled();
+  });
+
+  it('删除替补加载迟到时不覆盖已经打开的其他项目', async () => {
+    let finish!: (record: SavedRecord) => void;
+    const loading = new Promise<SavedRecord>((resolve) => { finish = resolve; });
+    useAppStore.setState({ projects: [
+      { id: 'delete-me', name: '待删', createdAt: 1, updatedAt: 1 },
+      { id: 'fallback', name: '替补', createdAt: 1, updatedAt: 1 },
+      { id: 'other', name: '新打开', createdAt: 1, updatedAt: 1 },
+    ], currentProjectId: 'delete-me', projectName: '待删' });
+    fileMocks.loadProjectData.mockImplementation(async () => loading);
+    const deleting = useAppStore.getState().deleteProject('delete-me');
+    // 等到逻辑删除提交且替补读取已开始；不运行真实应用或持久化。
+    await vi.waitUntil(() => fileMocks.loadProjectData.mock.calls.length > 0);
+    useAppStore.setState({ currentProjectId: 'other', projectName: '新打开', projectLoadStatus: 'ready',
+      nodes: [{ id: 'new-canvas', type: 'source-text', position: { x: 0, y: 0 }, data: { type: 'source-text', label: '新画布', output: '保留新画布' } }] });
+    finish(emptyCanvas('fallback', '旧替补'));
+    await deleting;
+    expect(useAppStore.getState().currentProjectId).toBe('other');
+    expect(useAppStore.getState().projectName).toBe('新打开');
+    expect(useAppStore.getState().nodes[0].id).toBe('new-canvas');
+  });
+
+  it('删除等待期间其他项目的新消息和改名仍从最新状态保留', async () => {
+    let committed!: (ids: string[]) => void;
+    const commit = new Promise<string[]>((resolve) => { committed = resolve; });
+    lifecycleMocks.deleteContent.mockImplementationOnce(async () => commit);
+    useAppStore.setState({ projects: [
+      { id: 'delete-me', name: '待删', createdAt: 1, updatedAt: 1 },
+      { id: 'active', name: '原名称', createdAt: 1, updatedAt: 1 },
+    ], currentProjectId: 'active', projectName: '原名称', messages: [] });
+    const deleting = useAppStore.getState().deleteProject('delete-me');
+    await vi.waitUntil(() => lifecycleMocks.deleteContent.mock.calls.length > 0);
+    const message = { id: 'new-message', conversationId: 'active-chat', role: 'assistant' as const,
+      content: '后台新到的回复', status: 'done' as const, timestamp: 3 };
+    useAppStore.setState({ projects: useAppStore.getState().projects.map((item) => item.id === 'active'
+      ? { ...item, name: '最新名称', updatedAt: 3 } : item), projectName: '最新名称', messages: [message] });
+    committed(['delete-me']); await deleting;
+    expect(useAppStore.getState().projects).toMatchObject([{ id: 'active', name: '最新名称' }]);
+    expect(useAppStore.getState().messages).toEqual([message]);
+    expect(useAppStore.getState().projectName).toBe('最新名称');
   });
 });

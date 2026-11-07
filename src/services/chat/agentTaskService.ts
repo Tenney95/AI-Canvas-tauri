@@ -23,6 +23,8 @@ import {
   type AgentDispatchRecord,
 } from '../../types/agent';
 import { clearAgentResults } from './agentResultService';
+import type { LegacyProjectBinding } from '../../types/project';
+import { getLegacyCanvasAliases, readLegacyExecutionScope } from '../projectExecutionCompatibility';
 
 const taskWrites = new Map<string, Promise<void>>();
 const removedTasks = new Set<string>();
@@ -109,6 +111,17 @@ export async function loadAgentTask(taskId: string): Promise<AgentTask | null> {
 
 export async function loadProjectAgentTasks(projectId: string): Promise<AgentTask[]> {
   return sortNewestFirst(await getProjectAgentTasks(projectId));
+}
+
+/** 显式owner历史读取，不代替现有原Canvas执行仓储，也不修复/迁移旧任务。先汇总再排序去重。 */
+export async function readOwnerLegacyAgentTaskViews(projectId: string, bindings: readonly LegacyProjectBinding[]) {
+  const aliases = [...new Set([projectId, ...getLegacyCanvasAliases(projectId, bindings)])];
+  if (aliases.length > 512) throw new Error('项目历史画布数量超过单次任务汇总上限，请按原画布查询');
+  const batches = await Promise.all(aliases.map((alias) => getProjectAgentTasks(alias)));
+  const rows = [...new Map(batches.flat().map((task) => [task.id, task])).values()];
+  return rows.map((record) => ({ record, scope: readLegacyExecutionScope(record, bindings) }))
+    .filter((view) => view.scope.state !== 'unresolved' && view.scope.ownerProjectId === projectId)
+    .sort((a, b) => b.record.updatedAt - a.record.updatedAt || a.record.id.localeCompare(b.record.id));
 }
 
 export async function removeAgentTask(taskId: string): Promise<void> {

@@ -46,7 +46,8 @@ vi.mock('../../src/services/fs/core', () => ({
   stripVerbatimPrefix: (p: string) => p,
 }));
 
-import { saveNodeOutputToFile, type NodeOutputDownloadProgress } from '../../src/services/fileService';
+import { saveNodeOutputToFile, saveBinaryToLocalFile, saveBinaryToProjectData, type NodeOutputDownloadProgress } from '../../src/services/fileService';
+import { ensureProjectDataDir, resolveUniqueDestPath } from '../../src/services/fs/core';
 import { githubMirrorUrl } from '../../src/services/githubDownloadService';
 
 /** mac 的 asset URL 形如 asset://localhost/<encoded path>；Windows 是 http://asset.localhost/… */
@@ -461,6 +462,23 @@ describe('saveNodeOutputToFile', () => {
       nodeType: 'ai-audio',
     })).resolves.toBeNull();
     expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale local export after the save dialog without writing bytes', async () => {
+    let current = true;
+    mocks.save.mockImplementationOnce(async () => { current = false; return '/selected/stale.mp4'; });
+    await expect(saveBinaryToLocalFile(new Uint8Array([1]), 'out.mp4', undefined,
+      { assertCurrent: () => { if (!current) throw new Error('剪辑窗口已撤销'); } })).rejects.toThrow('撤销');
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('checks the original scope after allocating the project path and before physical output', async () => {
+    let current = true;
+    vi.mocked(ensureProjectDataDir).mockResolvedValueOnce('/project');
+    vi.mocked(resolveUniqueDestPath).mockImplementationOnce(async () => { current = false; return '/project/stale.mp4'; });
+    await expect(saveBinaryToProjectData(new Uint8Array([1]), 'project', 'out.mp4',
+      { assertCurrent: () => { if (!current) throw new Error('原项目代际已变化'); } })).rejects.toThrow('代际');
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 });

@@ -29,15 +29,19 @@ function publicTask(id: string, details = false) {
 export function registerConversationAgentTools(): Array<() => void> {
   const common = { isAvailable: mcpOnly, authorize };
   return [
-    registerAgentTool<{ operationKey?: string; operationId?: string }>({
+    registerAgentTool<{ operationKey?: string; operationId?: string; legacyProjectId?: string; auditScope?: 'deleted-target' }>({
       id: 'mcp_operation_get', title: '查询原 MCP 操作回执', effect: 'read', ...common,
-      description: '查询当前项目已持久化的 MCP 操作；operationKey 与 operationId 只传一个。查询示例：tools_call({name:"mcp_operation_get",arguments:{operationKey:"原key"}})，查询条件放 arguments。运行中等待后重查；partial/unknown 时先只读核实，不能用新 key 重投。任务已删除或重启后也不重放写入；完整正文不持久化，resultAvailable=false 不代表原操作未完成。',
+      description: '查询原 MCP 操作；operationKey 与 operationId 只传一个。查询条件放 arguments。跨分集查询显式传原legacyProjectId（旧Canvas ID），只允许同整剧别名；已删除目标另须auditScope=deleted-target及保留审计的删除标记。历史查询不创建任务、不变更原key/binding/预算、不重投。运行中等待后重查；partial/unknown 时先只读核实，不能用新 key 重投。完整正文不持久化，resultAvailable=false 不代表原操作未完成。',
       inputSchema: { type: 'object', additionalProperties: false, properties: {
         operationKey: { type: 'string', minLength: 1, maxLength: 128 },
         operationId: { type: 'string', minLength: 1, maxLength: 128 },
+        legacyProjectId: { type: 'string', minLength: 1, maxLength: 180 },
+        auditScope: { type: 'string', enum: ['deleted-target'] },
       } },
       summarizeInput: () => '读取当前项目的原 MCP 操作回执',
       execute: async (context, input) => {
+        // 历史范围只由MCP主窗口控制层只读处理，普通工具执行器不能借参数绕过scope。
+        if (input.legacyProjectId !== undefined || input.auditScope !== undefined) return fail('历史回执须通过MCP只读审计入口查询', 'MCP_OPERATION_QUERY_FAILED');
         if (context.signal.aborted) return fail('操作查询已取消', 'MCP_OPERATION_QUERY_ABORTED');
         try {
           const operation = await getMcpOperationReceipt(context.projectId, input);

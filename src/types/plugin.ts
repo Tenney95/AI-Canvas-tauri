@@ -4,6 +4,7 @@
 import type { GeneralModelCategory, NodeType } from './index';
 import type { Locale } from '../i18n';
 import type { VideoModelCapability } from './aiTypes';
+import type { CanvasContext } from './project';
 
 export type PluginPermission =
   | 'node.read'
@@ -271,6 +272,8 @@ export interface PluginUiWindowBinding {
   readonly projectId: string;
   readonly nodeId: string;
   readonly canvasRevision: number;
+  /** 进程内捕获的目标代际；旧 projectId 仍表示画布 ID。 */
+  readonly expectedContext?: Readonly<CanvasContext>;
 }
 
 export type PluginUiRequestKind = 'context' | 'effect' | 'set-parameters' | 'submit' | 'close' | 'toast';

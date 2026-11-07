@@ -6,6 +6,8 @@ import type {
   McpOperationRecord, McpOperationUpdate,
 } from '../../types/agent';
 import { getAgentTask, getMcpOperationBinding, updateMcpOperationTask } from '../indexedDbService';
+import { openDB, STORE_METADATA } from '../indexedDb/schema';
+import { isProjectExpectedContextCurrent } from '../projectExecutionContext';
 
 const activeOperations = new Set<string>();
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -182,6 +184,10 @@ export async function finishMcpOperation(taskId: string, outcome: {
   const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
   if (!task?.mcpOperation) { activeOperations.delete(taskId); return null; }
   const operation = task.mcpOperation;
+  const state = useAppStore.getState();
+  const taskContext = task.executionContext ?? task.projectScope;
+  const canReadRevision = state.currentProjectId === task.projectId && (!taskContext
+    || isProjectExpectedContextCurrent(taskContext, state, { checkCanvasRevision: false, checkRuntimeEpoch: false }));
   const partial = operation.persistence === 'failed' || operation.items?.some((item) => item.status === 'succeeded')
     && operation.items.some((item) => item.status !== 'succeeded')
     || outcome.status === 'success' && operation.items?.some((item) => item.status !== 'succeeded')
@@ -192,9 +198,15 @@ export async function finishMcpOperation(taskId: string, outcome: {
   try {
     await recordMcpOperationProgress(taskId, { phase, errorCode: outcome.errorCode,
       ...(outcome.status === 'success' && operation.revisionAfter === undefined
-        && useAppStore.getState().currentProjectId === task.projectId ? { revisionAfter: useAppStore.getState().getCurrentRevision() } : {}) });
+        && canReadRevision ? { revisionAfter: state.getCurrentRevision() } : {}) });
   } finally { activeOperations.delete(taskId); }
-  return getMcpOperationReceipt(task.projectId, { operationId: operation.bindingId });
+  // 这是原已授权调用的结算，只读回原binding；切集不能掩盖已明确返回的付费事实。
+  // 通用查询、lookup和claim仍保持各自active/same-owner/删除审计门禁。
+  const binding = await getMcpOperationBinding(operation.bindingId);
+  if (!binding) throw new Error('MCP 原操作绑定已不可读，请只读核实');
+  assertBinding(operation, binding);
+  const savedTask = binding.taskDeletedAt ? null : await getAgentTask(binding.taskId);
+  return receipt(binding, savedTask);
 }
 
 export async function getMcpOperationReceipt(projectId: string, input: { operationKey?: string; operationId?: string }): Promise<McpOperationReceipt | null> {
@@ -206,4 +218,62 @@ export async function getMcpOperationReceipt(projectId: string, input: { operati
   const task = binding.taskDeletedAt ? null : await getAgentTask(binding.taskId);
   assertProject(projectId);
   return receipt(binding, task);
+}
+
+export interface HistoricalMcpOperationQuery {
+  /** 历史Canvas alias，绝不能替换为整剧owner或当前分集。 */
+  legacyProjectId: string;
+  operationKey?: string;
+  operationId?: string;
+  auditScope?: 'deleted-target';
+}
+
+/** 只读历史回执入口。没有任务创建、key重新占位或媒体续投能力。 */
+export async function getHistoricalMcpOperationReceipt(input: HistoricalMcpOperationQuery): Promise<McpOperationReceipt | null> {
+  const projectId = input.legacyProjectId;
+  if (typeof projectId !== 'string' || !projectId.trim() || projectId.length > 180
+    || /[\u0000-\u001f]/.test(projectId) || Boolean(input.operationKey) === Boolean(input.operationId)
+    || input.auditScope !== undefined && input.auditScope !== 'deleted-target') throw new Error('历史回执查询条件无效');
+  const initial = useAppStore.getState();
+  const target = initial.projects.find((item) => item.id === projectId);
+  const active = initial.projects.find((item) => item.id === initial.currentProjectId);
+  const owner = target && initial.projects.find((item) => item.id === (target.parentId ?? target.id));
+  const sameOwner = Boolean(target && active && owner && !owner.parentId
+    && owner.id === (active.parentId ?? active.id));
+  const signature = () => {
+    const state = useAppStore.getState();
+    const current = state.projects.find((item) => item.id === state.currentProjectId);
+    const original = state.projects.find((item) => item.id === projectId);
+    const currentOwner = current?.parentId ? state.projects.find((item) => item.id === current.parentId) : current;
+    const originalOwner = original?.parentId ? state.projects.find((item) => item.id === original.parentId) : original;
+    return JSON.stringify([state.currentProjectId, current?.parentId, current?.exchangeEpoch,
+      original?.id, original?.parentId, original?.exchangeEpoch, currentOwner?.exchangeEpoch, originalOwner?.exchangeEpoch]);
+  };
+  const initialSignature = signature();
+  const assertReadScope = () => {
+    if (signature() !== initialSignature) throw new Error('CONTEXT_REFRESH_REQUIRED');
+  };
+  if (!sameOwner) {
+    if (target || input.auditScope !== 'deleted-target') throw new Error('历史回执只允许同剧旧画布或显式已删除目标审计');
+    const database = await openDB();
+    const tombstone = await new Promise<unknown>((resolve, reject) => {
+      const transaction = database.transaction(STORE_METADATA, 'readonly');
+      const request = transaction.objectStore(STORE_METADATA).get(`project-deleted:${projectId}`);
+      request.onerror = () => reject(new Error('删除审计标记不可读'));
+      request.onsuccess = () => resolve(request.result);
+    });
+    if (!tombstone || typeof tombstone !== 'object' || !('retainedAudit' in tombstone)
+      || tombstone.retainedAudit !== true) throw new Error('没有保留审计的删除标记，不能读取其他项目回执');
+    assertReadScope();
+  }
+  const bindingId = input.operationId ?? (await keyIdentity(projectId, input.operationKey!)).bindingId;
+  assertReadScope();
+  const binding = await getMcpOperationBinding(bindingId);
+  assertReadScope();
+  if (!binding || binding.projectId !== projectId) return null;
+  const task = binding.taskDeletedAt ? null : await getAgentTask(binding.taskId);
+  assertReadScope();
+  return { ...receipt(binding, task), nextAction: !sameOwner
+    ? '目标已删除，此回执仅供只读审计；保留原key与任务身份，不恢复任务、不创建scope、不重投'
+    : '原旧画布回执仅供只读核实；需要进一步操作时先切回原画布并重新读取上下文，不把原key或任务改绑到当前分集' };
 }

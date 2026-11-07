@@ -2736,7 +2736,7 @@ describe('plugin node-set video generation', () => {
     mocks.rewritePromptReferences.mockImplementation(async (text: string) => text.replace(opaque, '@{ref-image:角色}'));
     await run();
     expect(mocks.addNodesWithEdges.mock.calls[0][0][0].data.prompt).toBe('替换为 @{ref-image:角色}');
-    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [expect.objectContaining({ issues: [] })]);
+    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [expect.objectContaining({ issues: [] })], expect.objectContaining({ assertFresh: expect.any(Function) }));
     expect(mocks.rewritePromptReferences).toHaveBeenCalledWith(expect.stringContaining(opaque), expect.objectContaining({ resources: expect.any(Object) }));
   });
   it('rejects an expired prompt reference before media persistence or batch submission', async () => {
@@ -2782,7 +2782,7 @@ describe('plugin node-set video generation', () => {
       model: modelId.startsWith('comfyui/') ? 'comfyui/workflow' : modelId, provider: modelId.startsWith('comfyui/') ? 'comfyui' : 'general' });
     if (modelId.startsWith('comfyui/')) expect(node.data.workflowId).toBe('local');
     expect(node.data).not.toHaveProperty('videoUrl');
-    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [expect.objectContaining({ nodeId: node.id, issues: [], existing: false })]);
+    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [expect.objectContaining({ nodeId: node.id, issues: [], existing: false })], expect.objectContaining({ assertFresh: expect.any(Function) }));
     expect(mocks.resolveMediaModel).toHaveBeenCalledWith('video', modelId);
     expect(mocks.moveToTrash).not.toHaveBeenCalled();
   });
@@ -2809,7 +2809,17 @@ describe('plugin node-set video generation', () => {
     const nodes = mocks.state.nodes as Array<{ id: string; data: { type: string } }>;
     const video = nodes.find((node) => node.data.type === 'ai-video')!;
     const { inspectVideoNode } = await import('../../src/services/videoBatchPlanning');
-    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [inspectVideoNode(video as never, mocks.state as never)]);
+    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [inspectVideoNode(video as never, mocks.state as never)], expect.objectContaining({ assertFresh: expect.any(Function) }));
+  });
+  it('keeps the submitted host batch on its original epoch after its own canvas commit', async () => {
+    const { run } = setup();
+    mocks.state.projects = [{ id: 'project-1', exchangeEpoch: 0 }];
+    await run();
+    const lease = mocks.startVideoBatch.mock.calls[0][2] as { assertFresh: () => void };
+    expect(() => lease.assertFresh()).not.toThrow();
+    mocks.state.projects = [{ id: 'project-1', exchangeEpoch: 1 }];
+    expect(() => lease.assertFresh()).toThrow('上下文');
+    expect(mocks.startVideoBatch).toHaveBeenCalledOnce();
   });
   it('rejects workflow changes during media persistence and rolls back saved frames', async () => {
     const { run, payload } = setup('comfyui/local');

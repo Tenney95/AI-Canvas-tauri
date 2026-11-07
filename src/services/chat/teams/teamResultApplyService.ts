@@ -14,6 +14,8 @@ import { registerAgentTool } from '../toolRegistry';
 import { sanitizeDomainText } from '../subAgentMaterials';
 import { hashTeamText, readTeamArtifactText } from './teamArtifactService';
 import { validateTeamGraph } from './teamGraphService';
+import { assertAgentProjectContext, captureAgentProjectScope } from '../agentProjectContext';
+import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../../projectWindowContext';
 
 const activeApplications = new Map<string, Promise<void>>();
 const TEXT_FIELDS = new Set(['outline', 'script']);
@@ -58,10 +60,12 @@ export async function captureEpisodeTeamContext(
     throw new Error('请先打开要处理的准确分集');
   }
   const { episode, owner: series } = workspace;
+  const expected = captureProjectWindowContext(state, episodeId);
   assertEpisodeEditorReady(episodeId);
   const originalText = field === 'outline' ? episode.episodeOutline ?? '' : episode.episodeScript ?? '';
   const sourceSnapshot = episodeTeamSourceSnapshot(episode, field);
   const [expectedHash, sourceHash] = await Promise.all([hashTeamText(originalText), hashTeamText(sourceSnapshot)]);
+  if (!isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error('工作台项目或分集版本已变化，请重新发起');
   const target: TeamEpisodeTarget = { kind: 'episode', seriesId: series.id, episodeId, field, expectedHash,
     sourceHash,
     label: `${series.name} · ${episode.name} · ${field === 'outline' ? '本集大纲' : '本集剧本'}` };
@@ -76,11 +80,13 @@ export async function captureEpisodeTeamContext(
   };
 }
 
-async function persistRunUpdate(taskId: string, application: TeamApplicationReceipt | undefined): Promise<void> {
+async function persistRunUpdate(taskId: string, application: TeamApplicationReceipt | undefined, assertCurrent?: () => void): Promise<void> {
+  assertCurrent?.();
   const task = readTask(taskId);
   if (task.teamRun!.version === 2) {
     const { mutateTeamRun } = await import('./teamRuntime');
-    await mutateTeamRun(taskId, task.teamRun!.revision, (run) => { run.application = application; });
+    assertCurrent?.();
+    await mutateTeamRun(taskId, task.teamRun!.revision, (run) => { assertCurrent?.(); run.application = application; }, undefined, assertCurrent);
   }
   else useAppStore.getState().updateAgentTask(taskId, { teamRun: { ...task.teamRun!, application } });
   await saveAgentTask(readTask(taskId));
@@ -95,6 +101,14 @@ function targetForTask(task: AgentTask): TeamEpisodeTarget {
 
 async function executeResultWrite(taskId: string, restore: boolean, signal: AbortSignal): Promise<void> {
   const initial = readTask(taskId);
+  const projectScope = initial.projectScope ?? captureAgentProjectScope(useAppStore.getState(), initial);
+  const canvasProjectId = useAppStore.getState().currentProjectId;
+  const expected = captureProjectWindowContext(useAppStore.getState(), initial.teamRun?.target?.episodeId);
+  const assertProject = () => {
+    assertAgentProjectContext(useAppStore.getState(), { ...initial, projectScope }, { checkRevision: false });
+    if (!isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error('团队成果所在项目或分集已变化，请核对原任务');
+  };
+  assertProject();
   const run = initial.teamRun!;
   const target = targetForTask(initial);
   const result = run.artifacts.find((item) => item.id === run.resultArtifactId);
@@ -111,13 +125,14 @@ async function executeResultWrite(taskId: string, restore: boolean, signal: Abor
     readTeamArtifactText(initial.projectId, result), readTeamArtifactText(initial.projectId, original),
   ]);
   const [resultHash, originalHash] = await Promise.all([hashTeamText(resultText), hashTeamText(originalText)]);
+  assertProject();
   if (originalHash !== target.expectedHash) throw new Error('原稿恢复点与任务目标不一致，已阻止保存');
   const expectedHash = restore ? run.application!.targetHashAfter : target.expectedHash;
   const nextText = restore ? originalText : resultText;
   await withEpisodeEditorWrite(target.episodeId, async () => {
     if (signal.aborted) throw new Error('团队成果应用已取消');
-    const canvasProjectId = useAppStore.getState().currentProjectId;
     const assertCommitCurrent = () => {
+      assertProject();
       if (signal.aborted) throw new Error('请求已取消');
       const latest = readTask(taskId);
       if (useAppStore.getState().currentProjectId !== canvasProjectId
@@ -136,7 +151,7 @@ async function executeResultWrite(taskId: string, restore: boolean, signal: Abor
       appliedAt: run.application?.appliedAt ?? Date.now(),
     };
     // 先持久化意图与恢复点；保存失败时保持待核对，不自动重放写操作。
-    await persistRunUpdate(taskId, receipt);
+    await persistRunUpdate(taskId, receipt, assertCommitCurrent);
     if (signal.aborted) throw new Error('保存前请求已取消，请核对原任务状态');
     const saved = await useAppStore.getState().updateEpisodeCreative(target.episodeId,
       target.field === 'outline' ? { outline: nextText } : { script: nextText }, {
@@ -146,10 +161,11 @@ async function executeResultWrite(taskId: string, restore: boolean, signal: Abor
         assertCommitCurrent,
       });
     if (!saved) throw new Error('保存未确认成功，候选与恢复点已保留，请先核对保存状态');
+    assertCommitCurrent();
     rebaseEditors();
     await persistRunUpdate(taskId, { ...receipt, status: restore ? 'restored' : 'applied',
       ...(restore ? { restoredAt: Date.now() } : {}),
-    });
+    }, assertCommitCurrent);
   });
 }
 
@@ -188,6 +204,13 @@ async function dispatchResultWrite(taskId: string, restore: boolean): Promise<vo
   if (existing) return existing;
   const operation = (async () => {
     const task = readTask(taskId);
+    const projectScope = task.projectScope ?? captureAgentProjectScope(useAppStore.getState(), task);
+    const expected = captureProjectWindowContext(useAppStore.getState(), task.teamRun?.target?.episodeId);
+    const assertCurrent = () => {
+      assertAgentProjectContext(useAppStore.getState(), { ...task, projectScope }, { checkRevision: false });
+      if (!isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error('成果应用上下文已变化，请重新核对原任务');
+    };
+    assertCurrent();
     const target = targetForTask(task);
     readTargetValue(target, task.teamRun!.source === 'script-workbench');
     if (task.mode === 'plan') throw new Error('规划模式只提供建议，不能应用或恢复原稿');
@@ -196,6 +219,7 @@ async function dispatchResultWrite(taskId: string, restore: boolean): Promise<vo
     if (status === 'pending' || status === 'restore-pending') throw new Error('请先核对上次保存状态');
     const tools = await import('../tools');
     await tools.ensureAgentToolsRegistered();
+    assertCurrent();
     let errorMessage: string | undefined;
     const activeConversationTaskId = getActiveConversationAgentTaskId(task.conversationId);
     if (activeConversationTaskId) throw new Error('本对话还有任务正在执行，请等待完成后再应用成果');
@@ -204,6 +228,7 @@ async function dispatchResultWrite(taskId: string, restore: boolean): Promise<vo
       scheduleConversationAgentExecution({ taskId, conversationId: task.conversationId,
         onError: reject,
         run: async () => {
+          assertCurrent();
           if (useAppStore.getState().agentTasks.find((item) => item.id === taskId)?.status !== 'queued') {
             reject(new Error('成果应用已被暂停或取消'));
             return;
@@ -245,6 +270,13 @@ export const restoreTeamResult = (taskId: string): Promise<void> => dispatchResu
 export async function reconcileTeamResult(taskId: string): Promise<string> {
   if (activeApplications.has(taskId)) throw new Error('成果仍在保存，请等待完成后核对');
   const task = readTask(taskId);
+  const projectScope = task.projectScope ?? captureAgentProjectScope(useAppStore.getState(), task);
+  const expected = captureProjectWindowContext(useAppStore.getState(), task.teamRun?.target?.episodeId);
+  const assertCurrent = () => {
+    assertAgentProjectContext(useAppStore.getState(), { ...task, projectScope }, { checkRevision: false });
+    if (!isProjectWindowContextCurrent(expected, useAppStore.getState())) throw new Error('核对期间项目或分集版本已变化');
+  };
+  assertCurrent();
   const target = targetForTask(task);
   const receipt = task.teamRun!.application;
   if (!receipt || !['pending', 'restore-pending'].includes(receipt.status)) return '当前没有待核对的成果保存';
@@ -254,17 +286,18 @@ export async function reconcileTeamResult(taskId: string): Promise<string> {
   if (!record || record.parentId !== target.seriesId) throw new Error('无法核对原分集保存记录');
   const persisted = target.field === 'outline' ? record.episodeOutline ?? '' : record.episodeScript ?? '';
   const [memoryHash, savedHash] = await Promise.all([hashTeamText(inMemory), hashTeamText(persisted)]);
+  assertCurrent();
   if (readTargetValue(target, allowSameSeries) !== inMemory) throw new Error('核对期间分集内容发生变化，请重新核对');
   if (memoryHash !== savedHash) throw new Error('当前编辑状态与保存记录不一致，请先处理保存问题，未重新应用成果');
   const restoring = receipt.status === 'restore-pending';
   if (savedHash === (restoring ? receipt.targetHashBefore : receipt.targetHashAfter)) {
     await persistRunUpdate(taskId, { ...receipt, status: restoring ? 'restored' : 'applied',
       ...(restoring ? { restoredAt: Date.now() } : {}),
-    });
+    }, assertCurrent);
     return restoring ? '已核对原稿已保存恢复' : '已核对团队成果已保存';
   }
   if (savedHash === (restoring ? receipt.targetHashAfter : receipt.targetHashBefore)) {
-    await persistRunUpdate(taskId, restoring ? { ...receipt, status: 'applied' } : undefined);
+    await persistRunUpdate(taskId, restoring ? { ...receipt, status: 'applied' } : undefined, assertCurrent);
     return '已核对上次没有改动目标字段；如需保存，请再次明确应用，不会自动重投';
   }
   throw new Error('原分集已出现其他修改，保存状态不能自动判定；候选和恢复点已保留，请人工比较');

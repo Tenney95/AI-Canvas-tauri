@@ -176,6 +176,10 @@ mod plugin_ui;
 mod plugin_window;
 #[path = "files/project_archive.rs"]
 mod project_archive;
+#[path = "files/project_model_safety.rs"]
+mod project_model_safety;
+#[path = "files/project_execution_context.rs"]
+mod project_execution_context;
 #[path = "files/skill_archive.rs"]
 mod skill_archive;
 #[path = "agent/provider_docs.rs"]
@@ -1762,6 +1766,12 @@ async fn dreamina_login(app: tauri::AppHandle) -> Result<DreaminaLoginPayload, S
 pub fn run() {
     #[allow(unused_mut)]
     let mut context = tauri::generate_context!();
+    let maintenance_request = project_model_safety::cold_request()
+        .expect("项目模型维护启动参数无效或此构建不允许维护");
+    if maintenance_request.is_some() {
+        // Must happen before Builder creates any configured webview, on every OS.
+        for window in &mut context.config_mut().app.windows { window.create = false; }
+    }
     #[cfg(windows)]
     let main_window_config = native_rendering::defer_main_window(context.config_mut());
     // Windows WebView2/Chromium 渲染优化：
@@ -1809,6 +1819,8 @@ pub fn run() {
         .manage(project_asset_storage::ObjectStorageState::default())
         .manage(path_policy::UserStorageRoot::default())
         .manage(billing::BillingStoragePath::default())
+        .manage(project_model_safety::ProjectModelMaintenanceState::default())
+        .register_uri_scheme_protocol("project-model-maintenance", project_model_safety::handle_protocol)
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .register_uri_scheme_protocol("plugin-ui", plugin_ui::handle_protocol)
         .register_uri_scheme_protocol("plugin-window", plugin_window::handle_protocol)
@@ -1824,6 +1836,14 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(canvas_input::init())
         .invoke_handler(tauri::generate_handler![
+            project_model_safety::project_model_get_maintenance_lease,
+            project_model_safety::project_model_verify_maintenance_lease,
+            project_model_safety::project_model_get_production_stop_evidence,
+            project_model_safety::project_model_open_backup,
+            project_model_safety::project_model_write_backup_entry,
+            project_model_safety::project_model_read_backup_entry,
+            project_model_safety::project_model_seal_backup,
+            project_model_safety::project_model_verify_backup_seal,
             theme_assets::store_theme_image,
             reference_image_upload::optimize_reference_png,
             reference_image_upload::optimize_reference_jpeg,
@@ -2000,6 +2020,7 @@ pub fn run() {
             plugin_runtime::get_python_plugin_runtime_status,
         ])
         .on_window_event(|window, event| {
+            project_model_safety::on_window_event(window, event);
             plugin_window::on_window_event(window, event);
             comfyui::progress::on_window_event(window, event);
             comfyui::media_source::on_window_event(window, event);
@@ -2054,6 +2075,11 @@ pub fn run() {
             agent_package::deny_agent_private_dir_access(_app.handle());
             // 插件入口源码与活动/回滚版本只保存在 Rust 私有注册表中。
             plugin_registry::deny_plugin_private_dir_access(_app.handle());
+            project_model_safety::deny_private_access(_app.handle()).map_err(std::io::Error::other)?;
+            if let Some(request) = maintenance_request {
+                project_model_safety::start_maintenance(_app, request).map_err(std::io::Error::other)?;
+                return Ok(());
+            }
             if let Err(error) = blender_runtime::prepare_blender_private_runtime(_app.handle()) {
                 eprintln!("[blender-runtime] {error}");
             }

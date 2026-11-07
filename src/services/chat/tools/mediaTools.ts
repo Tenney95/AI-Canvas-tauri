@@ -33,7 +33,7 @@ import {
   completeMediaMessageDelivery,
   ensureMediaMessageRecoveryHandler,
 } from '../../ai/generationRuntime';
-import { canResumeMediaTask, getPendingTasksForProject, isMediaTaskPausedError, resumeMediaNodeTask } from '../../pollManager';
+import { canResumeMediaTask, getPendingTasksForProject, isMediaTaskPausedError, readPendingMediaTaskViews, resumeMediaNodeTask } from '../../pollManager';
 import { completeCanvasDerivation, isCanvasDerivationFresh } from '../../canvasDerivationGuard';
 import { recordMcpOperationProgress } from '../../mcp/mcpOperationService';
 import { generationInputSnapshot } from '../canvasNodeVersion';
@@ -238,12 +238,12 @@ export function registerMediaAgentTools(): Array<() => void> {
       description: '列出当前项目已保留的媒体任务身份和阶段，不返回凭据、文件路径、请求正文或媒体地址。canResume=true 时可用 media_resume_task 续取，其余任务沿用原专用恢复入口；不能重新调用 media_generate。',
       inputSchema: { type: 'object', additionalProperties: false, properties: {} },
       authorize: (context) => ({ allowed: context.projectId === useAppStore.getState().currentProjectId, reason: '只能读取当前项目的待恢复任务' }),
-      execute: async (context) => ({ status: 'success', summary: '已读取待恢复媒体任务', modelContent: JSON.stringify(
-        getPendingTasksForProject(context.projectId).map((task) => ({ nodeId: task.nodeId, taskId: task.taskId,
-          provider: task.provider, category: task.nodeType, stage: task.mediaRecoveryState ?? task.videoRecoveryState ?? 'querying',
-          messageId: task.mediaContext?.messageId, conversationId: task.mediaContext?.conversationId,
-          canResume: canResumeMediaTask(task) })),
-      ) }),
+      execute: async (context) => {
+        const view = readPendingMediaTaskViews([context.projectId]);
+        return view.status === 'ok' ? { status: 'success', summary: '已只读查询待恢复媒体任务', modelContent: JSON.stringify(view.tasks) }
+          : { status: 'error', summary: '原待恢复任务源不可读或包含未知记录，已保留原数据，请先核实，勿重投',
+            modelContent: '待恢复任务源未被修改，不能将此状态当作没有已提交任务。', errorCode: view.errorCode };
+      },
     }),
     registerAgentTool<{ nodeId: string; taskId: string }>({
       id: 'media_resume_task', title: '续取原媒体任务', effect: 'canvas_write',

@@ -41,10 +41,13 @@ import {
   registerCanvasDerivation,
 } from '../../services/canvasDerivationGuard';
 import { buildVideoEditorProjectId } from '../../services/indexedDbService';
+import { pauseMediaTask, completeMediaNodeTask } from '../../services/pollManager';
+import type { MediaTaskReceipt } from '../../types/aiTypes';
 import {
   postVideoEditorAiTransitionResult,
   postVideoEditorModels,
   subscribeVideoEditorWindow,
+  isVideoEditorWindowBindingCurrent,
   type VideoEditorAiTransitionRequest,
   type VideoEditorExportResult,
   type VideoEditorFrameExportResult,
@@ -583,7 +586,11 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     if (!projectId) return;
 
     const instanceId = buildVideoEditorProjectId(projectId, id);
-    return subscribeVideoEditorWindow(instanceId, (message) => {
+    return subscribeVideoEditorWindow(instanceId, (message, binding) => {
+      if (!binding || !isVideoEditorWindowBindingCurrent(instanceId, binding)) return;
+      const assertCurrent = () => {
+        if (!isVideoEditorWindowBindingCurrent(instanceId, binding)) throw new Error('剪辑窗口原画布上下文已撤销');
+      };
       // 编辑器没有 Store 也没有 API Key：模型目录与转场生成都由主窗口代跑
       if (message.type === 'storyai:video-editor-models-request') {
         void postVideoEditorModels(instanceId, listVideoEditorVideoModels())
@@ -596,18 +603,28 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         const requestId = typeof request.requestId === 'string' ? request.requestId : '';
         if (!requestId) return;
         void (async () => {
+          let receipt: MediaTaskReceipt | undefined;
           try {
             const outcome = await runVideoEditorAiTransition(
               request as VideoEditorAiTransitionRequest,
               projectId,
+              undefined,
+              assertCurrent,
             );
-            await postVideoEditorAiTransitionResult(instanceId, { requestId, ...outcome });
+            receipt = outcome.taskReceipt;
+            assertCurrent();
+            await postVideoEditorAiTransitionResult(instanceId, { requestId, videoUrl: outcome.videoUrl,
+              filePath: outcome.filePath, fileName: outcome.fileName }, binding);
+            if (receipt) completeMediaNodeTask(receipt);
           } catch (error) {
+            if (receipt) pauseMediaTask(receipt, error,
+              isVideoEditorWindowBindingCurrent(instanceId, binding) ? 'delivery_pending' : 'canvas_changed');
             console.error('[videoEditor] AI 转场生成失败:', error);
+            if (!isVideoEditorWindowBindingCurrent(instanceId, binding)) return;
             await postVideoEditorAiTransitionResult(instanceId, {
               requestId,
               error: error instanceof Error ? error.message : String(error),
-            }).catch(() => {});
+            }, binding).catch(() => {});
           }
         })();
         return;

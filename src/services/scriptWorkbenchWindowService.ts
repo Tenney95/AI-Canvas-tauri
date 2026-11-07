@@ -1,6 +1,8 @@
 /** 剧本工作台窗口的固定路由、握手与受限 RPC；本模块不读文件、不执行模型。 */
 import type { ScriptWorkbenchRequest, ScriptWorkbenchResponse, ScriptWorkbenchSnapshot } from '../types/scriptWorkbench';
 import { sanitizeDomainText } from './chat/subAgentMaterials';
+import type { ProjectWindowContext } from '../types/projectWindow';
+import { sameProjectWindowContext } from './projectWindowContext';
 
 export const SCRIPT_WORKBENCH_WINDOW_LABEL = 'script-workbench';
 const STATE_EVENT = 'script-workbench:state';
@@ -44,6 +46,8 @@ export interface ScriptWorkbenchWindowHost {
 export function createScriptWorkbenchWindowHost(options: {
   sessionId: string;
   getSnapshot: () => ScriptWorkbenchSnapshot;
+  /** 主窗口从实际 Store/工作台选择捕获；不由请求者提供或从当前画布补出分集。 */
+  getContext?: () => ProjectWindowContext | null;
   onRequest: (request: ScriptWorkbenchRequest) => Promise<unknown>;
   onDetachedChange: (detached: boolean) => void;
   onReplySent?: () => void;
@@ -59,13 +63,17 @@ export function createScriptWorkbenchWindowHost(options: {
   let openingTimer: ReturnType<typeof setTimeout> | undefined;
   const stops: Array<() => void> = [];
   const requests = new Map<string, { signature: string; result: Promise<ScriptWorkbenchResponse> }>();
-  const bases = new Map<number, { pending: string; draftVersion: number; rename: string; preview: number; graph: string; graphEpoch: string; graphCandidate: string; graphExtraction: string }>();
+  let acceptedSequence = 0;
+  const bases = new Map<number, { context: ProjectWindowContext | null; episodeId: string | null; canvasId: string | null;
+    pending: string; draftVersion: number; rename: string; preview: number; graph: string; graphEpoch: string; graphCandidate: string; graphExtraction: string }>();
   const previews = new WeakMap<object, number>();
   let previewSequence = 0;
   const basis = (snapshot: ScriptWorkbenchSnapshot) => {
     const assets = snapshot.seriesAssetPreview?.assets;
     if (assets && !previews.has(assets)) previews.set(assets, ++previewSequence);
-    return { pending: JSON.stringify(snapshot.pendingAction), draftVersion: snapshot.draftVersion,
+    return { context: options.getContext ? options.getContext() : snapshot.windowContext ?? null,
+      episodeId: snapshot.currentEpisode?.id ?? null, canvasId: snapshot.canvasProjectId,
+      pending: JSON.stringify(snapshot.pendingAction), draftVersion: snapshot.draftVersion,
       rename: JSON.stringify([snapshot.renamingEpisodeId, snapshot.episodes.find((episode) => episode.id === snapshot.renamingEpisodeId)?.name]),
       preview: assets ? previews.get(assets)! : 0,
       graph: JSON.stringify([snapshot.series?.id, snapshot.series?.exchangeEpoch ?? 0, snapshot.storyGraphView?.id, snapshot.storyGraphView?.revision]),
@@ -80,9 +88,11 @@ export function createScriptWorkbenchWindowHost(options: {
     if (disposed || !visible) return;
     const snapshot = options.getSnapshot();
     const nextRevision = ++revision;
-    bases.set(nextRevision, basis(snapshot));
+    const nextBasis = basis(snapshot);
+    bases.set(nextRevision, nextBasis);
     if (bases.size > 40) bases.delete(bases.keys().next().value!);
-    await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, STATE_EVENT, { ...snapshot, sessionId: options.sessionId, revision: nextRevision });
+    await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, STATE_EVENT, { ...snapshot, schemaVersion: 2,
+      windowContext: nextBasis.context, sessionId: options.sessionId, revision: nextRevision });
   };
   const listen = () => listening ??= (async () => {
     const { listen: subscribe, emitTo } = await import('@tauri-apps/api/event');
@@ -109,6 +119,7 @@ export function createScriptWorkbenchWindowHost(options: {
         ? 16 * 1024 * 1024 : 2 * 1024 * 1024;
       if (encoded.byteLength > maxPayloadBytes) {
         await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, { sessionId: options.sessionId, requestId: payload.requestId,
+          sequence: payload.sequence,
           error: '本次修改超过窗口传输上限，已保留本地草稿，请分段处理' } satisfies ScriptWorkbenchResponse);
         return;
       }
@@ -122,6 +133,15 @@ export function createScriptWorkbenchWindowHost(options: {
         const result = Promise.resolve().then(() => {
           const previous = bases.get(payload.revision);
           const current = basis(options.getSnapshot());
+          if (payload.schemaVersion !== 2 || !Number.isSafeInteger(payload.sequence) || payload.sequence! <= acceptedSequence
+            || !previous || payload.episodeId !== previous.episodeId || current.episodeId !== previous.episodeId
+            || current.canvasId !== previous.canvasId
+            || !sameProjectWindowContext(payload.windowContext, previous.context)
+            || (payload.handoff && !sameProjectWindowContext(payload.handoff.windowContext, previous.context))
+            || !sameProjectWindowContext(previous.context, current.context)) {
+            throw new Error('工作台窗口上下文已变化，请刷新核对；修改仍保留在本窗口，未自动重试');
+          }
+          acceptedSequence = payload.sequence!;
           const graphScoped = payload.action.type.startsWith('story_graph_')
             && !['story_graph_cancel', 'story_graph_discard'].includes(payload.action.type)
             && !(payload.action.type === 'story_graph_editor' && !payload.action.open);
@@ -138,8 +158,8 @@ export function createScriptWorkbenchWindowHost(options: {
           }
           return options.onRequest(payload);
         }).then(
-          (value): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, requestId: payload.requestId, value }),
-          (error: unknown): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, requestId: payload.requestId,
+          (value): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, requestId: payload.requestId, sequence: payload.sequence, value }),
+          (error: unknown): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, requestId: payload.requestId, sequence: payload.sequence,
             error: sanitizeDomainText(error instanceof Error ? error.message : '工作台操作未完成').slice(0, 300) }),
         );
         accepted = { signature, result };
@@ -153,7 +173,7 @@ export function createScriptWorkbenchWindowHost(options: {
         if (payload.action.type.startsWith('original_') && requests.get(payload.requestId) === accepted) {
           if (payload.action.type === 'original_open' || payload.action.type === 'original_edit') requests.delete(payload.requestId);
           else requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId,
-            requestId: payload.requestId, ...(response.error ? { error: response.error } : { value: true }) }) });
+            requestId: payload.requestId, sequence: payload.sequence, ...(response.error ? { error: response.error } : { value: true }) }) });
         }
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。
         if (['flush_draft', 'read_source', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents',
@@ -247,11 +267,17 @@ export async function connectScriptWorkbenchWindow(
   let disposed = false;
   let revision = 0;
   let connected = false;
+  let sequence = 0;
+  const contexts = new Map<number, ProjectWindowContext | null>();
   const buffered: { snapshot?: ScriptWorkbenchSnapshot } = {};
-  const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  const pending = new Map<string, { sequence: number; context: ProjectWindowContext | null; allowsContextChange: boolean;
+    resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const stopState = await listen<ScriptWorkbenchSnapshot>(STATE_EVENT, ({ payload }) => {
-    if (disposed || payload?.sessionId !== sessionId || !Number.isSafeInteger(payload.revision) || payload.revision <= revision) return;
+    if (disposed || payload?.sessionId !== sessionId || (payload.schemaVersion !== undefined && payload.schemaVersion !== 2)
+      || !Number.isSafeInteger(payload.revision) || payload.revision <= revision) return;
     revision = payload.revision;
+    contexts.set(revision, payload.schemaVersion === 2 ? payload.windowContext ?? null : null);
+    if (contexts.size > 40) contexts.delete(contexts.keys().next().value!);
     if (!connected) buffered.snapshot = payload;
     else { onSnapshot(payload); void emitTo('main', READY_EVENT, { sessionId }).catch(() => {}); }
   });
@@ -260,9 +286,11 @@ export async function connectScriptWorkbenchWindow(
     stopResponse = await listen<ScriptWorkbenchResponse>(RESPONSE_EVENT, ({ payload }) => {
       if (disposed || payload?.sessionId !== sessionId) return;
       const operation = pending.get(payload.requestId);
-      if (!operation) return;
+      if (!operation || payload.sequence !== operation.sequence) return;
       pending.delete(payload.requestId); clearTimeout(operation.timer);
-      if (payload.error) operation.reject(new Error(payload.error)); else operation.resolve(payload.value);
+      if (payload.error) operation.reject(new Error(payload.error));
+      else if (!operation.allowsContextChange && !sameProjectWindowContext(operation.context, contexts.get(revision))) operation.reject(new Error('工作台目标已切换，请核对原操作回执；本地修改仍保留'));
+      else operation.resolve(payload.value);
     });
   } catch (error) { stopState(); throw error; }
   connected = true;
@@ -275,14 +303,18 @@ export async function connectScriptWorkbenchWindow(
   const handshake = setInterval(() => { if (!revision) hello(); }, 500);
   hello();
   const envelope = (request: Omit<ScriptWorkbenchRequest, 'sessionId' | 'requestId'>): ScriptWorkbenchRequest => ({
-    ...request, sessionId, requestId: crypto.randomUUID(),
+    ...request, schemaVersion: 2, windowContext: contexts.get(request.revision) ?? null,
+    sequence: ++sequence, sessionId, requestId: crypto.randomUUID(),
   });
   return {
     request: (request) => new Promise((resolve, reject) => {
       if (disposed || !revision) { reject(new Error('工作台尚未连接主窗口')); return; }
       const value = envelope(request);
+      if (!value.windowContext) { reject(new Error('窗口协议需要刷新，修改仍保留在本窗口')); return; }
       const timer = setTimeout(() => { pending.delete(value.requestId); reject(new Error('主窗口未确认完成，请核对当前状态后再操作')); }, 200000);
-      pending.set(value.requestId, { resolve, reject, timer });
+      pending.set(value.requestId, { sequence: value.sequence!, context: value.windowContext,
+        allowsContextChange: ['select_episode', 'story_graph_locate', 'save_pending', 'discard_pending', 'close', 'dock'].includes(value.action.type),
+        resolve, reject, timer });
       void emitTo('main', REQUEST_EVENT, value).catch(() => {
         const operation = pending.get(value.requestId);
         if (!operation) return;
@@ -293,7 +325,7 @@ export async function connectScriptWorkbenchWindow(
     dispose: () => {
       disposed = true; clearInterval(handshake); stopState(); stopResponse();
       for (const operation of pending.values()) { clearTimeout(operation.timer); operation.reject(new Error('工作台窗口已关闭')); }
-      pending.clear();
+      pending.clear(); contexts.clear();
     },
   };
 }

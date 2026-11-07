@@ -5,6 +5,7 @@ import type { AiAppDefinition, AiAppJson, AiAppUiSession, AiAppUiSnapshot } from
 import { useAppStore } from '../../store/useAppStore';
 import { validateAgentToolInput } from '../chat/agentToolSchemas';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../canvasDerivationGuard';
+import { captureLegacyCanvasContext, assertProjectExpectedContextCurrent } from '../projectExecutionContext';
 import { assertAiAppContext, captureAiAppResources, getAiAppNode, loadAiAppDefinition, readAiAppImage, saveAiAppState, type AiAppMutationContext } from './aiAppService';
 import { normalizeAiAppJson } from './aiAppSchema';
 
@@ -269,10 +270,13 @@ export async function createAiAppUiSession(options: {
   const initial = getAiAppNode(options.nodeId);
   let app = initial.app;
   const projectId = initial.projectId;
+  const expectedContext = captureLegacyCanvasContext(useAppStore.getState());
+  if (!expectedContext) throw new Error('应用目标画布上下文已失效');
   let identity = JSON.stringify(app);
   const inputs = captureAiAppResources(app.inputNodeIds, options.nodeId);
   const assertFresh = () => {
     options.signal?.throwIfAborted();
+    assertProjectExpectedContextCurrent(expectedContext, useAppStore.getState(), { checkCanvasRevision: false });
     const current = getAiAppNode(options.nodeId, projectId).app;
     if (JSON.stringify(current) !== identity
       || captureAiAppResources(app.inputNodeIds, options.nodeId).fingerprint !== inputs.fingerprint) {
@@ -310,7 +314,7 @@ export async function createAiAppUiSession(options: {
       saving = true;
       try {
         saveAiAppState(options.nodeId, session.getState(), session.getResult(), app.revision,
-          { projectId, baseRevision: useAppStore.getState().getCurrentRevision(), signal: options.signal });
+          { projectId, expectedContext, baseRevision: useAppStore.getState().getCurrentRevision(), signal: options.signal });
         app = getAiAppNode(options.nodeId, projectId).app;
         identity = JSON.stringify(app);
       } finally { saving = false; }

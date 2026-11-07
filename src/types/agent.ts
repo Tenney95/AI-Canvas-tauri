@@ -239,6 +239,8 @@ export interface AgentDispatchRecord {
   dispatchedAt?: number;
   settledAt?: number;
   outcome?: 'succeeded' | 'failed';
+  /** 已返回但无法接纳产物；事实已结算，普通继续仍不能再次提交该阶段。 */
+  materializationBlocked?: true;
   recovery?: { decision: 'verified_completed' | 'abandoned'; decidedAt: number };
 }
 
@@ -416,6 +418,10 @@ export interface McpOperationReceipt {
 export interface AgentTask {
   id: string;
   projectId: string;
+  /** 新请求原样捕获的跨连接并发前提；旧projectId仍保留原Canvas命名空间。 */
+  executionContext?: import('./project').ProjectExpectedContext;
+  /** legacy任务的持久身份/代际边界；正文和画布版本仍由既有专用守卫管理。 */
+  projectScope?: import('./project').ProjectExpectedContext;
   conversationId: string;
   userMessageId: string;
   /** 团队任务不得在缺少/损坏团队快照时回退为普通单模型执行。 */

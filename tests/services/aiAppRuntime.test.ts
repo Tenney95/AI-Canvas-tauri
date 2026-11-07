@@ -39,6 +39,7 @@ interface HiddenFrame {
 let app: AiAppReference;
 let revision: number;
 let projectId: string;
+let exchangeEpoch: number;
 let nodes: Array<{ id: string }>;
 let fingerprint: string;
 let sessions: AiAppUiSession[];
@@ -89,6 +90,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   revision = 3;
   projectId = 'project-1';
+  exchangeEpoch = 0;
   nodes = [{ id: 'app-node' }, { id: 'source-1' }];
   fingerprint = 'resources-1';
   sessions = [];
@@ -101,7 +103,7 @@ beforeEach(() => {
     title: definition.title, description: definition.description, revision: 1,
     actions: definition.actions, inputNodeIds: ['source-1'], savedState: { count: 0 },
   };
-  mocks.state.mockImplementation(() => ({ currentProjectId: projectId, nodes, getCurrentRevision: () => revision }));
+  mocks.state.mockImplementation(() => ({ currentProjectId: projectId, projects: [{ id: projectId, exchangeEpoch }], nodes, getCurrentRevision: () => revision }));
   mocks.node.mockImplementation((nodeId: string, expectedProject = projectId) => {
     if (projectId !== expectedProject || !nodes.some((node) => node.id === nodeId)) throw new Error('节点或项目已失效');
     return { app: structuredClone(app), projectId };
@@ -251,13 +253,14 @@ describe('AI app host runtime', () => {
     expect(mocks.save).not.toHaveBeenCalled();
   });
 
-  it.each(['code', 'state', 'binding', 'input', 'project', 'node'])('invalidates an idle app when its %s identity changes', async (kind) => {
+  it.each(['code', 'state', 'binding', 'input', 'project', 'epoch', 'node'])('invalidates an idle app when its %s identity changes', async (kind) => {
     const host = await ready();
     if (kind === 'code') app = { ...app, definition: { ...app.definition, sha256: 'b'.repeat(64) } };
     if (kind === 'state') app = { ...app, savedState: { count: 99 } };
     if (kind === 'binding') app = { ...app, inputNodeIds: [] };
     if (kind === 'input') fingerprint = 'resources-2';
     if (kind === 'project') projectId = 'project-2';
+    if (kind === 'epoch') exchangeEpoch += 1;
     if (kind === 'node') nodes = [];
     changed();
     expect(subscribers.size).toBe(0);

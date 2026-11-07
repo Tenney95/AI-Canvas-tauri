@@ -27,6 +27,16 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('billing storage follows the file save root', () => {
+  it('P4 owner汇总把退役Canvas alias原值交给SQLite统一分页，不逐集分页拼装或重写账本', async () => {
+    const { queryOwnerBillingRuns } = await import('../../src/services/billing/volcengineBillingService');
+    await queryOwnerBillingRuns('S', [
+      { namespace: 'legacy-canvas', legacyId: 'A', projectId: 'S', canvasId: 'A', sourceEpoch: 1, storageRootRef: 'root' },
+      { namespace: 'legacy-canvas', legacyId: 'B', projectId: 'S', canvasId: 'B', sourceEpoch: 2, storageRootRef: 'root', retired: true },
+    ], { modelType: 'video' }, 3, 30);
+    expect(driver.invoke).toHaveBeenCalledOnce();
+    expect(driver.invoke).toHaveBeenCalledWith('billing_query', { filter: { appProjectIds: ['A', 'B'], modelType: 'video' }, page: 3, pageSize: 30 });
+    expect(driver.mkdir).not.toHaveBeenCalled();
+  });
   it('uses the billing subdirectory, avoids redundant migrations and follows root changes', async () => {
     const { syncBillingStoragePath } = await import('../../src/services/billing/volcengineBillingService');
     await syncBillingStoragePath({});

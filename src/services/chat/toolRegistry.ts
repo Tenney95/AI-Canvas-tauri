@@ -7,6 +7,7 @@ import type { McpContent } from '../../types/mcp';
 import type { SkillReadBudget } from './skillReadService';
 import type { AgentResultPolicy } from '../../types/agentResult';
 import { isGeneralAssistantScope, isGeneralAssistantTool } from './assistantScope';
+import { isAgentToolProjectContextCompatible } from './agentProjectContext';
 import {
   validateAgentToolInput,
   type AgentToolSchema,
@@ -28,6 +29,8 @@ export type AgentToolEffect =
 export interface AgentToolContext {
   taskId: string;
   projectId: string;
+  executionContext?: import('../../types/project').ProjectExpectedContext;
+  projectScope?: import('../../types/project').ProjectExpectedContext;
   conversationId: string;
   mode: AgentMode;
   /** 任务级工具上限；缺省表示不额外限制，空数组表示无工具。 */
@@ -135,6 +138,7 @@ export function getAvailableAgentTools(
   context: Omit<AgentToolContext, 'signal'>,
 ): AgentToolDefinition[] {
   return [...registry.values()].filter((definition) => {
+    if (!isAgentToolProjectContextCompatible(definition, context)) return false;
     if (isGeneralAssistantScope(context.projectId) && !isGeneralAssistantTool(definition.id)) return false;
     if (context.mode === 'plan' && definition.effect !== 'read') return false;
     if (
@@ -171,6 +175,7 @@ export function prepareAgentToolCall(
 ): PrepareAgentToolCallResult {
   const definition = registry.get(call.toolId);
   const unavailable = !definition
+    || !isAgentToolProjectContextCompatible(definition, context, call.input)
     || (isGeneralAssistantScope(context.projectId) && !isGeneralAssistantTool(call.toolId))
     || (context.mode === 'plan' && definition.effect !== 'read')
     || (

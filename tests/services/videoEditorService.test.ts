@@ -33,6 +33,38 @@ import {
   type VideoEditorTrack,
 } from '../../src/types/videoEditor';
 import type { BaseNodeData } from '../../src/types';
+import { useAppStore } from '../../src/store/useAppStore';
+import { captureLegacyCanvasContext } from '../../src/services/projectExecutionContext';
+import { openDB, STORE_PROJECTS, STORE_VIDEO_EDITOR_PROJECTS } from '../../src/services/indexedDb/schema';
+
+/** 保留原Canvas复合键；Store与真实IDB提供同一owner/Canvas代际，不能只stub项目ID。 */
+async function activateCanvas(projectId: string) {
+  const owner = { id: `owner-${projectId}`, name: '测试整剧', createdAt: 1, updatedAt: 1, exchangeEpoch: 11 };
+  const canvas = { id: projectId, parentId: owner.id, name: '测试分集', createdAt: 1, updatedAt: 1, exchangeEpoch: 7 };
+  const database = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STORE_PROJECTS, 'readwrite');
+    for (const project of [owner, canvas]) transaction.objectStore(STORE_PROJECTS).put({ ...project, nodes: [], edges: [] });
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error('测试项目准备失败'));
+  });
+  useAppStore.setState({ currentProjectId: projectId, projects: [owner, canvas], projectLoadStatus: 'ready',
+    switchingProjectName: null, isCreatingProject: false, isReturningToStartPage: false, canvasRevision: 0 });
+  const context = captureLegacyCanvasContext(useAppStore.getState());
+  if (!context) throw new Error('测试画布上下文准备失败');
+  return context;
+}
+
+/** 模拟已在旧数据库中的记录；未来schema不可经当前仓储伪装成新写入。 */
+async function seedEditorRecord(record: VideoEditorProjectRecord): Promise<void> {
+  const database = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STORE_VIDEO_EDITOR_PROJECTS, 'readwrite');
+    transaction.objectStore(STORE_VIDEO_EDITOR_PROJECTS).put(record);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error('测试旧工程准备失败'));
+  });
+}
 
 function buildRecord(overrides: Partial<VideoEditorProjectRecord> = {}): VideoEditorProjectRecord {
   return {
@@ -64,6 +96,7 @@ function buildRecord(overrides: Partial<VideoEditorProjectRecord> = {}): VideoEd
 // openDB() 在模块级缓存连接，换 IDBFactory 也换不掉它，
 // 因此全文件共用一个库，靠各用例的独立 id 保持互不干扰。
 globalThis.indexedDB = new IDBFactory();
+beforeEach(() => { useAppStore.setState(useAppStore.getInitialState(), true); });
 
 describe('videoEditor 数据层', () => {
 
@@ -72,38 +105,44 @@ describe('videoEditor 数据层', () => {
   });
 
   it('round-trips a project record', async () => {
-    await saveVideoEditorProject(buildRecord({ id: 'rt::node', nodeId: 'node' }));
+    const context = await activateCanvas('rt');
+    await saveVideoEditorProject(buildRecord({ id: 'rt::node', projectId: 'rt', nodeId: 'node' }), context);
     const loaded = await getVideoEditorProject('rt::node');
     expect(loaded?.name).toBe('测试剪辑');
     expect(getPrimaryClip(loaded!.tracks)?.sourceOut).toBe(5);
   });
 
   it('treats records written by a newer schema as absent', async () => {
-    await saveVideoEditorProject(buildRecord({
+    await activateCanvas('future');
+    await seedEditorRecord(buildRecord({
       id: 'future::node',
+      projectId: 'future', nodeId: 'node',
       schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION + 1,
     }));
     expect(await getVideoEditorProject('future::node')).toBeNull();
   });
 
   it('lists only the requested canvas project, newest first', async () => {
+    const contextA = await activateCanvas('list-a');
     await saveVideoEditorProject(buildRecord({
       id: 'list-a::n1', projectId: 'list-a', nodeId: 'n1', updatedAt: 10,
-    }));
+    }), contextA);
     await saveVideoEditorProject(buildRecord({
       id: 'list-a::n2', projectId: 'list-a', nodeId: 'n2', updatedAt: 20,
-    }));
+    }), contextA);
+    const contextB = await activateCanvas('list-b');
     await saveVideoEditorProject(buildRecord({
       id: 'list-b::n3', projectId: 'list-b', nodeId: 'n3', updatedAt: 30,
-    }));
+    }), contextB);
 
     const listed = await listVideoEditorProjectsByProject('list-a');
     expect(listed.map((record) => record.nodeId)).toEqual(['n2', 'n1']);
   });
 
   it('deletes a project record', async () => {
-    await saveVideoEditorProject(buildRecord({ id: 'del::node', nodeId: 'node' }));
-    await deleteVideoEditorProject('del::node');
+    const context = await activateCanvas('del');
+    await saveVideoEditorProject(buildRecord({ id: 'del::node', projectId: 'del', nodeId: 'node' }), context);
+    await deleteVideoEditorProject('del::node', context);
     expect(await getVideoEditorProject('del::node')).toBeNull();
   });
 });
@@ -162,6 +201,7 @@ describe('openVideoEditorForNode', () => {
   });
 
   it('creates the project before opening the window', async () => {
+    const context = await activateCanvas('open-new');
     await openVideoEditorForNode({
       projectId: 'open-new',
       nodeId: 'node-1',
@@ -180,11 +220,12 @@ describe('openVideoEditorForNode', () => {
     expect(clip?.filePath).toBe('/data/a.mp4');
     expect(clip?.sourceOut).toBe(8);
     expect(windowMocks.openVideoEditorWindow).toHaveBeenCalledWith(
-      expect.objectContaining({ instanceId: 'open-new::node-1', nodeId: 'node-1' }),
+      expect.objectContaining({ instanceId: 'open-new::node-1', nodeId: 'node-1', expectedContext: context, assertCurrent: expect.any(Function) }),
     );
   });
 
   it('leaves the out point at 0 for the editor to backfill when duration is unknown', async () => {
+    await activateCanvas('open-nodur');
     await openVideoEditorForNode({
       projectId: 'open-nodur',
       nodeId: 'node-2',
@@ -196,8 +237,9 @@ describe('openVideoEditorForNode', () => {
   });
 
   it('reuses an existing project instead of resetting its trim', async () => {
-    await saveVideoEditorProject(buildRecord({
-      id: 'open-reuse::node-1', projectId: 'open-reuse', name: '旧工程',
+    await activateCanvas('open-reuse');
+    await seedEditorRecord(buildRecord({
+      id: 'open-reuse::node-1', projectId: 'open-reuse', name: '旧工程', automationRevision: 4,
     }));
 
     await openVideoEditorForNode({
@@ -209,6 +251,7 @@ describe('openVideoEditorForNode', () => {
     const loaded = await getVideoEditorProject('open-reuse::node-1');
     expect(loaded?.name).toBe('旧工程');
     expect(getPrimaryClip(loaded!.tracks)?.sourceIn).toBe(1);
+    expect(loaded?.automationRevision).toBe(4);
     expect(windowMocks.openVideoEditorWindow).toHaveBeenCalled();
   });
 });
@@ -230,6 +273,7 @@ describe('openVideoEditorForNodes', () => {
   });
 
   it('lays multiple selected clips out head to tail in selection order', async () => {
+    await activateCanvas('multi-a');
     await openVideoEditorForNodes({
       projectId: 'multi-a',
       nodes: [videoNode('n1', '镜头一'), videoNode('n2', '镜头二')],
@@ -243,6 +287,7 @@ describe('openVideoEditorForNodes', () => {
   });
 
   it('anchors the project on the first node so the export writes back there', async () => {
+    await activateCanvas('multi-b');
     await openVideoEditorForNodes({
       projectId: 'multi-b',
       nodes: [videoNode('n1', '镜头一'), videoNode('n2', '镜头二')],
@@ -256,6 +301,7 @@ describe('openVideoEditorForNodes', () => {
   });
 
   it('accepts images alongside videos and gives them a fixed duration', async () => {
+    await activateCanvas('multi-c');
     await openVideoEditorForNodes({
       projectId: 'multi-c',
       nodes: [videoNode('n1', '镜头一'), imageNode('img1')],
@@ -268,6 +314,7 @@ describe('openVideoEditorForNodes', () => {
   });
 
   it('rejects a selection that has no video at all', async () => {
+    await activateCanvas('multi-d');
     await expect(openVideoEditorForNodes({
       projectId: 'multi-d',
       nodes: [imageNode('img1'), imageNode('img2')],
@@ -275,6 +322,7 @@ describe('openVideoEditorForNodes', () => {
   });
 
   it('skips nodes that carry no usable media', async () => {
+    await activateCanvas('multi-e');
     await openVideoEditorForNodes({
       projectId: 'multi-e',
       nodes: [
@@ -288,6 +336,7 @@ describe('openVideoEditorForNodes', () => {
   });
 
   it('names the project after the anchor plus the clip count', async () => {
+    await activateCanvas('multi-f');
     await openVideoEditorForNodes({
       projectId: 'multi-f',
       nodes: [videoNode('n1', '镜头一'), videoNode('n2', '镜头二'), videoNode('n3', '镜头三')],
@@ -309,6 +358,7 @@ describe('openVideoEditorForNodes 合并已有工程', () => {
   });
 
   it('appends newly selected clips to a project opened earlier with fewer nodes', async () => {
+    await activateCanvas('merge-a');
     // 先只打开 n1，再多选 [n1, n2]：n2 必须出现在时间轴上
     await openVideoEditorForNodes({
       projectId: 'merge-a',
@@ -326,6 +376,7 @@ describe('openVideoEditorForNodes 合并已有工程', () => {
   });
 
   it('keeps existing trims when appending', async () => {
+    const context = await activateCanvas('merge-b');
     await openVideoEditorForNodes({
       projectId: 'merge-b',
       nodes: [videoNode('n1', '镜头一')],
@@ -333,7 +384,7 @@ describe('openVideoEditorForNodes 合并已有工程', () => {
 
     const before = (await getVideoEditorProject('merge-b::n1'))!;
     before.tracks[0].clips[0] = { ...before.tracks[0].clips[0], sourceIn: 1, sourceOut: 3 };
-    await saveVideoEditorProject(before);
+    await saveVideoEditorProject(before, context);
 
     await openVideoEditorForNodes({
       projectId: 'merge-b',
@@ -348,6 +399,7 @@ describe('openVideoEditorForNodes 合并已有工程', () => {
   });
 
   it('leaves the project untouched when the selection is already covered', async () => {
+    await activateCanvas('merge-c');
     await openVideoEditorForNodes({
       projectId: 'merge-c',
       nodes: [videoNode('n1', '镜头一'), videoNode('n2', '镜头二')],
@@ -366,6 +418,7 @@ describe('openVideoEditorForNodes 合并已有工程', () => {
   });
 
   it('does not duplicate a clip when the same node is selected again', async () => {
+    await activateCanvas('merge-d');
     await openVideoEditorForNodes({
       projectId: 'merge-d',
       nodes: [videoNode('n1', '镜头一'), videoNode('n2', '镜头二')],

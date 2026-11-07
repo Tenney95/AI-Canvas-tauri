@@ -11,6 +11,7 @@ import type {
 } from '../types';
 import type { DirectorBlenderJobStatus } from './directorBlenderRuntimeService';
 import type { DirectorSceneSource } from '../types/directorOperation';
+import type { CanvasContext } from '../types/project';
 import type { DirectorDeskProtocolMessage } from './directorDeskWindowService';
 
 export const DEFAULT_DIRECTOR_RUNTIME_KIND: DirectorRuntimeKind = 'lightweight-web';
@@ -65,11 +66,13 @@ export type DirectorRuntimeResolution =
 export interface DirectorRuntimeOpenRequest {
   instanceId: string;
   theme: 'dark' | 'light';
+  expectedContext?: Readonly<CanvasContext>;
   blender?: DirectorRuntimeBlenderContext;
 }
 
 export interface DirectorRuntimeBlenderContext {
   projectId: string;
+  expectedContext?: Readonly<CanvasContext>;
   sceneReference: DirectorSceneReference;
   previousManifestReference?: DirectorResultManifestReference;
   sceneSource?: DirectorSceneSource;
@@ -221,7 +224,8 @@ export async function openDirectorRuntime(
   const kind = requireSupportedRuntime(value);
   if (kind === 'lightweight-web') {
     const { openDirectorDeskWindow } = await import('./directorDeskWindowService');
-    await openDirectorDeskWindow({ instanceId: request.instanceId, theme: request.theme });
+    await openDirectorDeskWindow({ instanceId: request.instanceId, theme: request.theme,
+      ...(request.expectedContext === undefined ? {} : { expectedContext: request.expectedContext }) });
     return;
   }
   if (kind === 'ai-threejs') {
@@ -236,6 +240,7 @@ export async function openDirectorRuntime(
     operation: 'open-editor',
     sceneSource: context.sceneSource,
     projectId: context.projectId,
+    expectedContext: context.expectedContext,
     directorInstanceId: request.instanceId,
     sceneReference: context.sceneReference,
     previousManifestReference: context.previousManifestReference,
@@ -329,6 +334,7 @@ export async function exportDirectorRuntimeFrame(
       operation: 'render-frame',
       sceneSource: context.sceneSource,
       projectId: context.projectId,
+      expectedContext: context.expectedContext,
       directorInstanceId: instanceId,
       sceneReference: context.sceneReference,
       previousManifestReference: context.previousManifestReference,
@@ -381,6 +387,7 @@ export async function exportDirectorRuntimeVideo(
       operation: 'render-video',
       sceneSource: context.sceneSource,
       projectId: context.projectId,
+      expectedContext: context.expectedContext,
       directorInstanceId: instanceId,
       sceneReference: context.sceneReference,
       previousManifestReference: context.previousManifestReference,

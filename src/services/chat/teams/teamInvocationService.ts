@@ -17,6 +17,7 @@ import { normalizeTeamProfile, TEAM_TEMPLATE_LABELS } from './teamProfileService
 import { amendTeamRun, captureTeamModelFingerprints, executeTeamRun, MAX_TEAM_INPUT_CHARS, prepareTeamRun, waitForTeamRunIdle } from './teamRuntime';
 import { captureCreationProfile, intersectCreationTools, resolveCreationTeamProfile } from '../../creationProfiles/creationProfileService';
 import { captureExplicitSkillBindings, expandSkillBindings, SKILL_CONTENT_LIMITS } from '../../skillPromptService';
+import { assertAgentProjectContext, captureAgentProjectScope } from '../agentProjectContext';
 
 export interface TeamInvocationInput {
   content: string;
@@ -152,6 +153,10 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     || context.target.seriesId !== ownerId || (workbenchScope && context.target.seriesId !== workbenchScope.owner.id))) {
     throw new Error('团队成果目标与当前分集不一致');
   }
+  const projectScope = captureAgentProjectScope(state, { projectId,
+    ...(context.target ? { teamRun: { target: context.target } } : {}) });
+  const assertCurrent = () => assertAgentProjectContext(useAppStore.getState(), { projectId, projectScope }, { checkRevision: false });
+  assertCurrent();
   if (!conversation) conversation = state.conversations.find((item) => item.id === state.activeConversationId
     && item.projectId === ownerId && !item.deletedAt && item.id.startsWith('conv-'));
   const creationOwner = context.source === 'script-workbench'
@@ -187,8 +192,11 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     content: '正在准备团队任务快照。', timestamp: now + 1, status: 'queued', agentTaskId: taskId });
   const frozen = { ...input, content, projectId, context, profile, materials, mode, conversationId: conversation.id };
   const cancellation = { canceled: false };
-  const sourceAvailable = () => !cancellation.canceled && useAppStore.getState().conversations
-    .some((item) => item.id === frozen.conversationId && !item.deletedAt && item.projectId === ownerId);
+  const sourceAvailable = () => {
+    if (cancellation.canceled) return false;
+    assertCurrent();
+    return useAppStore.getState().conversations.some((item) => item.id === frozen.conversationId && !item.deletedAt && item.projectId === ownerId);
+  };
   const ready = (async () => {
     const creation = await captureCreationProfile(creationSelection, projectId);
     if (!sourceAvailable()) return;
@@ -244,11 +252,14 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     await saveAgentTask(task);
     const teamRun = await prepareTeamRun({ taskId, projectId, conversationId: frozen.conversationId,
       prompt: content, profile, templateId: frozen.templateId, context: runContext, materials: runMaterials,
-      originalText, modelFingerprints,
+      originalText, modelFingerprints, assertCurrent,
     });
     const current = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
     if (!current) return;
-    useAppStore.getState().updateAgentTask(taskId, { teamRun });
+    assertCurrent();
+    const preparedScope = captureAgentProjectScope(useAppStore.getState(), { ...current, teamRun });
+    assertAgentProjectContext(useAppStore.getState(), { ...current, projectScope: preparedScope }, { checkRevision: false });
+    useAppStore.getState().updateAgentTask(taskId, { teamRun, projectScope: preparedScope });
     await saveAgentTask(useAppStore.getState().agentTasks.find((item) => item.id === taskId)!);
     if (!sourceAvailable() || useAppStore.getState().agentTasks.find((item) => item.id === taskId)?.status !== 'queued') return;
     scheduleTeamTaskExecution(taskId, result.assistantMessageId, frozen.onProgress);

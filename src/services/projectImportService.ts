@@ -19,6 +19,8 @@ import { toProjectSummaryRecord } from './indexedDb/projectSummary';
 import { normalizeStoryGraph } from './storyGraphService';
 import { selectArchiveImportPaths } from './projectArchiveValidation';
 import { normalizeConversationWorkbenchTarget } from './chat/workbenchConversationScope';
+import { openDB } from './indexedDb/schema';
+import { assertLegacyProjectWritesAllowed } from './indexedDb/legacyProjectWriteGuard';
 
 /** 接收端重建本机令牌；可交换语义不含该令牌，旧候选还受 exchangeEpoch 约束。 */
 function restoreImportedGraphRevisions(records: ProjectSaveData[], before: readonly ProjectSaveData[]): ProjectSaveData[] {
@@ -116,6 +118,7 @@ export async function prepareProjectImport(): Promise<PreparedProjectImport | nu
 }
 
 export async function prepareExchangeExport(records: ProjectSaveData[], assets: ArchiveAssetDigest[], directory?: string): Promise<ProjectExchangeBundle> {
+  await assertLegacyProjectWritesAllowed(await openDB());
   const ownerId = records[0].id, previous = await loadProjectExchangeState(ownerId);
   const graph = previous ? await loadProjectExchangeGraph(previous.lineageId) : { revisions: [], ancestors: [] };
   const oldHead = graph.revisions.find((revision) => revision.revisionId === previous?.headRevisionId);
@@ -309,6 +312,7 @@ async function freezeRecovery(capture: ExchangeCapture, records: ProjectSaveData
 export async function applyProjectImport(session: PreparedProjectImport, preview: ProjectImportPreview | null,
   choices: Readonly<Record<string, ProjectMergeSide>>, options: ProjectImportOptions, assertCurrent?: () => void): Promise<ProjectImportResult> {
   requireSession(session);
+  await assertLegacyProjectWritesAllowed(await openDB());
   if (!preview && !session.bundle) return restoreProjectArchive(session.archivePath, undefined, options, session);
   if (preview && preview.sessionId !== session.id) throw new Error('预览会话已变化');
   if (preview?.plan.alreadyApplied) throw new Error('该版本已经处理，未重复写入项目');
@@ -378,6 +382,7 @@ export async function applyProjectImport(session: PreparedProjectImport, preview
 
 /** 恢复也是一次新的本机修订；不倒退写入代际，也不撤销已经处理的远端父链。 */
 export async function restoreProjectImportRecovery(ownerId: string, recoveryId: string, assertCurrent?: () => void): Promise<void> {
+  await assertLegacyProjectWritesAllowed(await openDB());
   const recovery = (await listProjectImportRecoveries(ownerId)).find((item) => item.id === recoveryId);
   if (!recovery) throw new Error('恢复点不存在');
   const expectedRecords = await readProjectImportScope(ownerId), expectedState = await loadProjectExchangeState(ownerId);

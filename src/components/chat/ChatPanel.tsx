@@ -27,7 +27,6 @@ import {
 } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
-import { invoke } from '@tauri-apps/api/core';
 import { openDetachedChatWindow } from '../../services/chat/chatWindowLifecycle';
 import { useAppStore } from '../../store/useAppStore';
 import { seriesOwnerId } from '../../store/store.utils';
@@ -50,13 +49,15 @@ import SubAgentPanel from './SubAgentPanel';
 import AgentCenterPanel from './AgentCenterPanel';
 import AgentTaskCenter from './AgentTaskCenter';
 import {
-  emitAction,
+  emitAction as emitWindowAction,
+  requestChatMessage,
   emitCloseChatWindow,
   requestTeamArtifactText,
   requestManagedChatOperation,
   type ChatManagedOperation,
   type ChatStateSnapshot,
   type ChatComposerHandoff,
+  type ChatAction,
 } from '../../services/chat/chatWindowService';
 import {
   pauseAgentTask,
@@ -100,6 +101,7 @@ import { getAssistantTextModelCandidates } from '../../services/projectSettingsS
 import { useT } from '../../i18n';
 import type { PromptSubmitShortcut } from '../../types';
 import { normalizePromptSubmitShortcut } from '../../utils/promptSubmitShortcut';
+import { sameProjectWindowContext } from '../../services/projectWindowContext';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 // 主窗口与独立窗口均读取窗口运行时已经应用的外观。
@@ -138,6 +140,10 @@ export default function ChatPanel({
   detachedHeaderActions,
   onComposerDraftChange,
 }: ChatPanelProps = {}) {
+  const windowFrame = detachedSnapshot?.windowFrame;
+  const emitAction = useCallback((action: ChatAction) => emitWindowAction(action, windowFrame), [windowFrame]);
+  const latestWindowFrame = useRef(windowFrame);
+  latestWindowFrame.current = windowFrame;
   const t = useT();
   const reduceMotion = useReducedMotion();
   const {
@@ -263,7 +269,7 @@ export default function ChatPanel({
     if (!configHydrated) return;
     updateConfig({ promptSubmitShortcut: shortcut });
     void saveConfig({ silent: true }).catch(() => {});
-  }, [configHydrated, detached, saveConfig, updateConfig]);
+  }, [configHydrated, detached, saveConfig, updateConfig, emitAction]);
   const localModelCatalog = useMemo(() => buildChatModelCatalog({ config, workflows }), [config, workflows]);
   const effectiveAssistantModelGroups = detached
     ? (detachedSnapshot?.assistantModelGroups ?? [])
@@ -284,9 +290,9 @@ export default function ChatPanel({
     const targetConversation = 'taskId' in operation
       ? effectiveAgentTasks.find((task) => task.id === operation.taskId)?.conversationId ?? effectiveActiveConversationId ?? undefined
       : effectiveActiveConversationId ?? undefined;
-    return detached ? requestManagedChatOperation<T>(chatScopeId, targetConversation, operation, draft)
+    return detached ? requestManagedChatOperation<T>(chatScopeId, targetConversation, operation, draft, windowFrame)
       : executeManagedChatOperation(operation, chatScopeId, targetConversation, draft) as Promise<T>;
-  }, [chatScopeId, detached, effectiveActiveConversationId, effectiveAgentTasks]);
+  }, [chatScopeId, detached, effectiveActiveConversationId, effectiveAgentTasks, windowFrame]);
   const handleCreationPreview = useCallback((profile: CreationProfileOption) => runManaged<CreationProfileChoicePreview>({ kind: 'preview_creation_profile', profile }), [runManaged]);
   const handleCreationChange = useCallback(async (selection: CreationProfileSelection | undefined) => {
     await runManaged({ kind: 'apply_creation_profile', selection: selection ?? null }, inputValue);
@@ -344,7 +350,7 @@ export default function ChatPanel({
     const conversationId = effectiveActiveConversationId ?? state.createConversation(chatScopeId);
     if (!effectiveActiveConversationId) state.setChatComposerLiveDraft(inputValue, conversationId);
     state.updateConversation(conversationId, { executionSelection: normalizeExecutionSelection(selection) });
-  }, [chatScopeId, detached, effectiveActiveConversationId, inputValue, workbenchTarget]);
+  }, [chatScopeId, detached, effectiveActiveConversationId, inputValue, workbenchTarget, emitAction]);
   const handleTeamProfileChange = useCallback(async (profile: AgentTeamProfile) => {
     await runManaged({ kind: 'save_team_profile', profile: normalizeTeamProfile(profile) });
   }, [runManaged]);
@@ -394,6 +400,8 @@ export default function ChatPanel({
     return imagePreviewVersion === 0 ? {} : getChatImagePreviews(chatScopeId, JSON.parse(imageFileKey) as string[]);
   }, [detached, detachedSnapshot?.imagePreviewUrls, chatScopeId, imageFileKey, imagePreviewVersion]);
   const pendingDraftsRef = useRef(new Map<string | null, string>());
+  const pendingDraftFramesRef = useRef(new Map<string | null, typeof windowFrame>());
+  const pendingSendsRef = useRef(new Set<string>());
   const pendingConversationDraftRef = useRef<string | null>(null);
   const effectivePanelView = detached ? detachedSnapshot?.panelView ?? 'chat' : chatPanelView;
   const viewMode = effectivePanelView === 'list' ? 'list' : 'chat';
@@ -401,7 +409,7 @@ export default function ChatPanel({
   const setPanelView = useCallback((view: ChatPanelView) => {
     if (detached) void emitAction({ type: 'set_panel_view', view });
     else useAppStore.getState().setChatPanelView(view);
-  }, [detached]);
+  }, [detached, emitAction]);
   const setViewMode = setPanelView;
   const setShowTaskCenter = useCallback((show: boolean) => setPanelView(show ? 'tasks' : 'chat'), [setPanelView]);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
@@ -528,7 +536,7 @@ export default function ChatPanel({
     if (pending.value == null) return;
     const value = pending.value;
     pending.value = null;
-    if (detached) void emitAction({ type: 'set_composer_draft', ...value });
+    if (detached) void emitWindowAction({ type: 'set_composer_draft', ...value }, value.windowFrame);
     else useAppStore.getState().setChatComposerLiveDraft(value.draft, value.conversationId);
   }, [detached]);
 
@@ -539,13 +547,13 @@ export default function ChatPanel({
       return;
     }
     if (pending.value && pending.value.conversationId !== effectiveActiveConversationId) flushDraftSync();
-    pending.value = { draft: value, conversationId: effectiveActiveConversationId };
+    pending.value = { draft: value, conversationId: effectiveActiveConversationId, windowFrame: windowFrame ?? undefined };
     if (pending.timer) return;
     pending.timer = setTimeout(() => {
       pending.timer = null;
       flushDraftSync();
     }, DRAFT_SYNC_DEBOUNCE_MS);
-  }, [detached, effectiveActiveConversationId, flushDraftSync]);
+  }, [detached, effectiveActiveConversationId, flushDraftSync, windowFrame]);
 
   // 关窗时 React 的清理未必来得及跑，beforeunload 兜住独立窗口这一侧
   useEffect(() => {
@@ -558,10 +566,13 @@ export default function ChatPanel({
 
   const updateInputDraft = useCallback((value: string) => {
     setInputValue(value);
-    if (detached) pendingDraftsRef.current.set(effectiveActiveConversationId, value);
+    if (detached) {
+      pendingDraftsRef.current.set(effectiveActiveConversationId, value);
+      pendingDraftFramesRef.current.set(effectiveActiveConversationId, windowFrame);
+    }
     queueDraftSync(value);
-    onComposerDraftChange?.({ draft: value, conversationId: effectiveActiveConversationId });
-  }, [detached, effectiveActiveConversationId, onComposerDraftChange, queueDraftSync]);
+    onComposerDraftChange?.({ draft: value, conversationId: effectiveActiveConversationId, windowFrame: windowFrame ?? undefined });
+  }, [detached, effectiveActiveConversationId, onComposerDraftChange, queueDraftSync, windowFrame]);
 
   const canonicalDraft = effectiveActiveConversationId
     ? (detached ? detachedSnapshot?.composerDrafts : chatComposerDrafts)?.[effectiveActiveConversationId] ?? ''
@@ -579,6 +590,7 @@ export default function ChatPanel({
       return () => cancelAnimationFrame(frame);
     }
     pendingDraftsRef.current.delete(conversationId);
+    pendingDraftFramesRef.current.delete(conversationId);
     const frame = requestAnimationFrame(() => {
       if (pendingDraftsRef.current.has(conversationId)) return;
       if (conversationId && pendingConversationDraftRef.current != null) {
@@ -608,7 +620,7 @@ export default function ChatPanel({
       updateConfig({ assistantModelId: modelId });
       void saveConfig({ silent: true });
     }
-  }, [currentProject, detached, saveConfig, updateConfig, updateProjectSettings, workbenchTarget]);
+  }, [currentProject, detached, saveConfig, updateConfig, updateProjectSettings, workbenchTarget, emitAction]);
 
   const handleAgentModeChange = useCallback((mode: AgentMode) => {
     if (!effectiveActiveConversationId || mode === effectiveAgentMode) return;
@@ -628,6 +640,7 @@ export default function ChatPanel({
     effectiveAgentMode,
     showToast,
     updateConversation,
+    emitAction,
   ]);
 
   // ── 上下文占用（估算），模型切换后按新上限重新计算 ──
@@ -658,7 +671,7 @@ export default function ChatPanel({
       createConversation(chatScopeId);
     }
     setViewMode('chat');
-  }, [detached, chatScopeId, createConversation, setViewMode]);
+  }, [detached, chatScopeId, createConversation, setViewMode, emitAction]);
 
   const handleSelectConversation = useCallback(
     (id: string) => {
@@ -670,7 +683,7 @@ export default function ChatPanel({
       }
       setViewMode('chat');
     },
-    [detached, setActiveConversation, loadConversationMessages, setViewMode],
+    [detached, setActiveConversation, loadConversationMessages, setViewMode, emitAction],
   );
 
   const handleShowList = useCallback(() => setViewMode('list'), [setViewMode]);
@@ -778,7 +791,7 @@ export default function ChatPanel({
     if (!resolveConversationAgentApproval(approvalId, resolution)) {
       showToast(t('该确认已过期，请重新发起操作'), 'info');
     }
-  }, [detached, showToast, t]);
+  }, [detached, showToast, t, emitAction]);
 
   const [scrollRequest, setScrollRequest] = useState<ChatScrollRequest | null>(null);
   const requestLatestMessages = useCallback((conversationId: string | null) => {
@@ -791,7 +804,7 @@ export default function ChatPanel({
     mediaModelOptions,
     mediaModelAvailability: effectiveMediaModelAvailability,
     onReadTeamArtifact: async (taskId: string, artifact: TeamArtifactReference) => {
-      if (detached) return requestTeamArtifactText(taskId, artifact.id);
+      if (detached) return requestTeamArtifactText(taskId, artifact.id, windowFrame);
       return readTeamTaskArtifact(taskId, artifact.id);
     },
     onApplyTeamResult: async (taskId: string) => {
@@ -873,6 +886,8 @@ export default function ChatPanel({
     mediaModelOptions,
     showToast,
     t,
+    emitAction,
+    windowFrame,
   ]);
 
   const handleAuthorizeLocalFiles = useCallback(() => {
@@ -900,7 +915,7 @@ export default function ChatPanel({
         error instanceof Error ? error.message : t('文件授权失败'),
         'error',
       ));
-  }, [detached, effectiveActiveConversationId, createConversation, chatScopeId, inputValue, showToast, t]);
+  }, [detached, effectiveActiveConversationId, createConversation, chatScopeId, inputValue, showToast, t, emitAction]);
 
   const handleRevokeLocalFile = useCallback((grantId: string) => {
     if (!effectiveActiveConversationId) return;
@@ -913,13 +928,13 @@ export default function ChatPanel({
       return;
     }
     revokeFileGrant(effectiveActiveConversationId, grantId);
-  }, [detached, effectiveActiveConversationId]);
+  }, [detached, effectiveActiveConversationId, emitAction]);
 
   const handleRemoveImage = useCallback((fileName: string) => {
     if (!effectiveActiveConversationId) return;
     if (detached) void emitAction({ type: 'remove_image_attachment', conversationId: effectiveActiveConversationId, fileName });
     else useAppStore.getState().removeChatImageDrafts(effectiveActiveConversationId, [fileName]);
-  }, [detached, effectiveActiveConversationId]);
+  }, [detached, effectiveActiveConversationId, emitAction]);
 
   // ── 发送消息 ──
   const sendMessageText = useCallback((content: string, dispatchMode: 'queue' | 'interject' = 'queue', includePendingImages = true) => {
@@ -929,15 +944,23 @@ export default function ChatPanel({
     const requestId = effectiveExecutionSelection.kind === 'team' ? crypto.randomUUID() : undefined;
 
     if (detached) {
-      if (imageFileNames.length) {
-        // 图片提交由主窗口消费成功后清空；本地不提前丢掉可能被校验拒绝的文字。
-        const pending = draftSyncRef.current;
-        if (pending.timer) clearTimeout(pending.timer);
-        pending.timer = null;
-        pending.value = null;
-        pendingDraftsRef.current.delete(effectiveActiveConversationId);
+      if (pendingDraftsRef.current.has(effectiveActiveConversationId)
+        && !sameProjectWindowContext(pendingDraftFramesRef.current.get(effectiveActiveConversationId)?.context, windowFrame?.context)) {
+        showToast(t('项目已变化，草稿仍保留，请核对原目标后重新编辑或复制'), 'error'); return;
       }
-      void emitAction({
+      const target = windowFrame?.context.target;
+      const sendKey = JSON.stringify([windowFrame?.sessionId, target?.runtimeEpoch, target?.kind,
+        target && target.kind !== 'global' ? [target.projectId, target.projectEpoch] : null,
+        target?.kind === 'episode' ? [target.episodeId, target.episodeRevision] : null,
+        windowFrame?.context.canvas?.canvasId, windowFrame?.context.canvas?.canvasEpoch,
+        effectiveActiveConversationId, content, imageFileNames, dispatchMode]);
+      if (pendingSendsRef.current.has(sendKey)) return;
+      pendingSendsRef.current.add(sendKey);
+      const pending = draftSyncRef.current;
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.timer = null;
+      pending.value = null;
+      void requestChatMessage({
         type: 'send_message',
         content: text,
         imageFileNames,
@@ -945,8 +968,13 @@ export default function ChatPanel({
         dispatchMode,
         executionSelection: effectiveExecutionSelection,
         requestId,
-      });
-      if (!imageFileNames.length) updateInputDraft('');
+      }, windowFrame).then((accepted) => {
+        if (!accepted || latestWindowFrame.current?.sessionId !== windowFrame?.sessionId
+          || latestWindowFrame.current?.conversationId !== windowFrame?.conversationId
+          || !sameProjectWindowContext(latestWindowFrame.current?.context, windowFrame?.context)
+          || pendingDraftsRef.current.get(effectiveActiveConversationId) !== content) return;
+        updateInputDraft('');
+      }).finally(() => { pendingSendsRef.current.delete(sendKey); });
       requestLatestMessages(effectiveActiveConversationId);
       return;
     }
@@ -976,6 +1004,9 @@ export default function ChatPanel({
     settingsConversation,
     requestLatestMessages,
     updateInputDraft,
+    windowFrame,
+    showToast,
+    t,
   ]);
 
   const handleSend = useCallback(() => {
@@ -1006,7 +1037,7 @@ export default function ChatPanel({
       return;
     }
     window.dispatchEvent(new CustomEvent('canvas-focus-node', { detail: { nodeId } }));
-  }, [detached, showToast, t]);
+  }, [detached, showToast, t, emitAction]);
 
   const handleNodeHover = useCallback((nodeId: string | null) => {
     if (detached) {
@@ -1014,7 +1045,7 @@ export default function ChatPanel({
       return;
     }
     useAppStore.getState().setHoveredMentionNodeId(nodeId);
-  }, [detached]);
+  }, [detached, emitAction]);
 
   const handleModelActivate = useCallback((modelId: string) => {
     window.dispatchEvent(new CustomEvent('chat-open-reference-menu', {
@@ -1039,9 +1070,8 @@ export default function ChatPanel({
     if (chatPanelDetached) {
       try {
         await emitCloseChatWindow();
-        await invoke('close_chat_window');
-      } catch { /* ignore */ }
-      setChatPanelDetached(false);
+        setChatPanelDetached(false);
+      } catch (error) { showToast(error instanceof Error ? error.message : t('独立窗口尚未确认草稿交接'), 'error'); }
     } else {
       // 必须先置位：独立窗口一加载就会来要快照，而同步器在 detached 为假时会把请求丢掉
       flushDraftSync();

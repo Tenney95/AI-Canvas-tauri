@@ -11,8 +11,11 @@ const HELP = `AI Canvas CLI（只连接 127.0.0.1，令牌从 AI_CANVAS_MCP_TOKE
   node scripts/ai-canvas-cli.mjs --port <端口> tools search [查询词] [--category <ID>] [--offset <数值>] [--limit <数值>] [--detail summary|schema]
   node scripts/ai-canvas-cli.mjs --port <端口> tools describe <工具名> [工具名...最多3个]
   node scripts/ai-canvas-cli.mjs --port <端口> call [--file <UTF-8 JSON文件>]
-  node scripts/ai-canvas-cli.mjs --port <端口> operation get <原operationKey> --project-id <项目ID>
-call 默认读取 stdin，完整信封：{name,arguments,expectedProjectId?,expectedRevision?,operationKey?}
+  node scripts/ai-canvas-cli.mjs --port <端口> operation get <原operationKey> --project-id <旧画布ID> [--audit-scope deleted-target]
+call 默认读取 stdin，旧信封：{name,arguments,expectedProjectId?,expectedRevision?,operationKey?}
+新版信封：{schemaVersion:2,name,arguments,expectedContext?,operationKey?}；expectedContext使用上次读取的global/project/episode/canvas对象。
+CLI原样传递上下文，跨连接仍有效；CONTEXT_REFRESH_REQUIRED后重新读取并判断原意图，不自动刷新或重投。
+operation get保留原旧画布ID，不改为整剧ID；同剧可跨集只读，已删除目标须显式声明deleted-target且宿主保留删除审计。
 端口也可由 AI_CANVAS_MCP_PORT 提供；--timeout-ms 范围 100–600000，默认 600000。
 超时/中断可能已经产生副作用；查询原回执，不要自动换 key 重投。`;
 
@@ -28,7 +31,7 @@ export function parseCli(args, env = process.env) {
   if (args.includes('--help') || args.includes('-h')) return { help: true };
   const positional = [];
   const flags = {};
-  const allowed = new Set(['--port', '--timeout-ms', '--file', '--category', '--offset', '--limit', '--detail', '--project-id']);
+  const allowed = new Set(['--port', '--timeout-ms', '--file', '--category', '--offset', '--limit', '--detail', '--project-id', '--audit-scope']);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg.startsWith('--')) { positional.push(arg); continue; }
@@ -71,10 +74,13 @@ export function parseCli(args, env = process.env) {
     checkFlags(['--file']);
     file = flags['--file'];
   } else if (command === 'operation' && subcommand === 'get' && rest.length === 1 && flags['--project-id']) {
-    checkFlags(['--project-id']);
+    checkFlags(['--project-id', '--audit-scope']);
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(rest[0])) throw new Error('operationKey 格式不合法');
+    if (!flags['--project-id'].trim() || flags['--project-id'].length > 180 || /[\u0000-\u001f]/.test(flags['--project-id'])) throw new Error('旧画布ID格式不合法');
+    if (flags['--audit-scope'] !== undefined && flags['--audit-scope'] !== 'deleted-target') throw new Error('audit-scope仅支持deleted-target');
     request = { method: 'tools/call', params: { name: 'tools_call', arguments: {
-      name: 'mcp_operation_get', arguments: { operationKey: rest[0] }, expectedProjectId: flags['--project-id'],
+      name: 'mcp_operation_get', arguments: { operationKey: rest[0], legacyProjectId: flags['--project-id'],
+        ...(flags['--audit-scope'] ? { auditScope: flags['--audit-scope'] } : {}) },
     } } };
   } else {
     throw new Error('命令格式不正确；使用 --help 查看用法');
@@ -88,7 +94,7 @@ export function parseEnvelope(text) {
   try { input = JSON.parse(text.replace(/^\uFEFF/, '')); }
   catch (cause) { throw new Error('输入必须为有效 UTF-8 JSON 信封', { cause }); }
   const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const fields = ['name', 'arguments', 'expectedProjectId', 'expectedRevision', 'operationKey'];
+  const fields = ['name', 'arguments', 'expectedProjectId', 'expectedRevision', 'operationKey', 'schemaVersion', 'expectedContext'];
   if (!isObject(input) || Object.keys(input).some((key) => !fields.includes(key))
     || typeof input.name !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(input.name) || !isObject(input.arguments)) {
     throw new Error('call 需要且仅接受完整 tools_call 信封，参数放在 arguments 中');
@@ -97,6 +103,36 @@ export function parseEnvelope(text) {
   if (input.expectedProjectId !== undefined && (typeof input.expectedProjectId !== 'string' || !input.expectedProjectId || input.expectedProjectId.length > 180)) throw new Error('expectedProjectId 格式不合法');
   if (input.expectedRevision !== undefined && (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || !input.expectedProjectId)) throw new Error('expectedRevision 需要有效项目ID及非负整数');
   if (input.operationKey !== undefined && (typeof input.operationKey !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.operationKey))) throw new Error('operationKey 格式不合法');
+  if (input.schemaVersion !== undefined && input.schemaVersion !== 2) throw new Error('不支持的上下文信封版本');
+  if (input.expectedContext !== undefined) {
+    if (input.schemaVersion !== 2 || input.expectedProjectId !== undefined || input.expectedRevision !== undefined) throw new Error('expectedContext需要版本2信封，不能与旧上下文字段混用');
+    parseExpectedContext(input.expectedContext);
+  } else if (input.schemaVersion === 2 && (input.expectedProjectId !== undefined || input.expectedRevision !== undefined)) {
+    throw new Error('版本2信封不能把旧画布ID条件当作新版上下文');
+  }
+  return input;
+}
+
+/** 固定传输合同，不发现或刷新当前选择，也不重建任何业务工具schema。 */
+export function parseExpectedContext(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || input.schemaVersion !== 2) throw new Error('expectedContext格式或版本无效');
+  const common = ['kind', 'schemaVersion', 'modelGeneration', 'runtimeEpoch'];
+  const project = [...common, 'projectId', 'projectEpoch'];
+  const fields = input.kind === 'global' ? [...common, 'catalogRevision']
+    : input.kind === 'project' ? project
+      : input.kind === 'episode' ? [...project, 'episodeId', 'episodeRevision', 'sourceHash']
+        : input.kind === 'canvas' ? [...project, 'canvasId', 'episodeId', 'canvasEpoch', 'canvasRevision'] : null;
+  if (!fields || Object.keys(input).some((key) => !fields.includes(key))) throw new Error('expectedContext种类或字段无效');
+  const id = (value) => typeof value === 'string' && value.length > 0 && value === value.trim() && value.length <= 256
+    && ![...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) >= 127 && character.charCodeAt(0) <= 159);
+  const number = (value) => Number.isSafeInteger(value) && value >= 0;
+  if (!number(input.modelGeneration) || input.runtimeEpoch !== undefined && (typeof input.runtimeEpoch !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(input.runtimeEpoch))
+    || input.kind === 'global' && !number(input.catalogRevision)
+    || input.kind !== 'global' && (!id(input.projectId) || !number(input.projectEpoch))
+    || input.kind === 'episode' && (!id(input.episodeId) || !number(input.episodeRevision)
+      || input.sourceHash !== undefined && (typeof input.sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.sourceHash)))
+    || input.kind === 'canvas' && (!id(input.canvasId) || input.episodeId !== null && !id(input.episodeId)
+      || !number(input.canvasEpoch) || !number(input.canvasRevision))) throw new Error('expectedContext身份或版本无效');
   return input;
 }
 

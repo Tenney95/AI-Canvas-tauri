@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationAgentExecution } from '../../../src/services/chat/agentScheduler';
-import type { AgentTeamRun } from '../../../src/types/agentTeam';
+import type { AgentTeamRun, TeamInvocationContext } from '../../../src/types/agentTeam';
 import type { CanvasProject } from '../../../src/types';
 import type { CreationProfile, CreationProfileSnapshot } from '../../../src/types/creationProfile';
 
@@ -62,7 +62,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   runtime.scheduled.length = 0;
   runtime.capture.mockReset().mockResolvedValue({ architect: 'a', writer: 'a', continuity: 'a', dialogue: 'a', editor: 'a' });
-  runtime.prepare.mockReset().mockImplementation(async (input: { taskId: string }) => prepared(input.taskId));
+  runtime.prepare.mockReset().mockImplementation(async (input: { taskId: string; context?: TeamInvocationContext }) => ({
+    ...prepared(input.taskId), source: input.context?.source ?? 'assistant', target: input.context?.target }));
   runtime.execute.mockResolvedValue('completed');
   runtime.save.mockResolvedValue(undefined);
   runtime.load.mockResolvedValue(null);
@@ -200,7 +201,29 @@ describe('团队共用发起入口', () => {
     expect(useAppStore.getState().currentProjectId).toBe('episode-canvas');
     expect(useAppStore.getState().nodes).toBe(nodesBefore);
     expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.projectId).toBe('episode-workbench');
+    expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.projectScope).toMatchObject({
+      kind: 'episode', projectId: 'series-team', episodeId: 'episode-workbench' });
     expect(runtime.prepare).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'episode-workbench' }));
+  });
+
+  it('准备期间同 ID 项目被替换后，不接纳迟到 teamRun 或进入付费队列', async () => {
+    let enter!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    runtime.prepare.mockImplementationOnce(async (input: { taskId: string; assertCurrent: () => void }) => {
+      enter(); await pending; input.assertCurrent(); return prepared(input.taskId);
+    });
+    const starting = startTeamInvocation({ content: '保留原项目目标', projectId: 'project-team', conversationId: 'conv-team',
+      templateId: 'general', requestId: 'request-team-replaced-epoch' });
+    const rejected = expect(starting).rejects.toThrow('上下文已变化');
+    await entered;
+    useAppStore.setState((state) => ({ projects: state.projects.map((project) => ({ ...project, exchangeEpoch: 1 })) }));
+    finish(); await rejected;
+    expect(runtime.scheduled).toHaveLength(0);
+    expect(runtime.execute).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0].modelRounds).toBe(0);
+    expect(useAppStore.getState().agentTasks[0].teamRun).toBeUndefined();
   });
 
   it('普通助手不能借目标字段取得非当前分集权限，工作台也不能跨剧集', () => {

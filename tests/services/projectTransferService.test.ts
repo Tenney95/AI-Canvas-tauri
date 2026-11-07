@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   getBaseDir: vi.fn(async () => '/data'),
   remove: vi.fn(async () => undefined),
   serializeEntries: vi.fn(),
+  legacyWriteGuard: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
@@ -33,6 +34,7 @@ vi.mock('@tauri-apps/api/app', () => ({ getVersion: mocks.getVersion }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open, save: mocks.save }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ remove: mocks.remove }));
 vi.mock('../../src/services/projectArchiveSerialization', () => ({ serializeProjectArchiveEntries: mocks.serializeEntries }));
+vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.legacyWriteGuard }));
 // 本文件保留旧包恢复/目录回滚的回归；v3 内核与事务在各自的专用用例覆盖。
 vi.mock('../../src/services/indexedDb/projectExchangeRepository', () => ({
   loadProjectExchangeState: async () => ({ headRevisionId: 'export-head', lineageId: 'export-lineage', rootProjectId: 'export-root', identities: [] }),
@@ -202,6 +204,7 @@ describe('projectTransferService', () => {
   beforeEach(() => {
     Object.values(mocks).forEach((mock) => mock.mockReset());
     mocks.isTauriEnv.mockReturnValue(true);
+    mocks.legacyWriteGuard.mockResolvedValue(undefined);
     mocks.getVersion.mockResolvedValue('0.6.13');
     mocks.getAllProjects.mockResolvedValue([{ id: PROJECT_RECORD.id, name: PROJECT_RECORD.name,
       createdAt: PROJECT_RECORD.createdAt, updatedAt: PROJECT_RECORD.updatedAt }]);
@@ -908,5 +911,15 @@ describe('projectTransferService', () => {
 
     await expect(importProjectArchive()).resolves.toBeNull();
     expect(mocks.ensureProjectDataDir).not.toHaveBeenCalled();
+  });
+
+  it('冻结/新模型状态在导出、复制和旧恢复文件effect之前拒绝，不生成临时材料', async () => {
+    mocks.legacyWriteGuard.mockRejectedValue(new Error('旧项目写入已停止'));
+    await expect(exportProjectArchive('source-project')).rejects.toThrow('旧项目写入已停止');
+    await expect(duplicateProjectArchive('source-project', '副本')).rejects.toThrow('旧项目写入已停止');
+    await expect(restoreProjectArchive('/fixture/legacy.aicanvas')).rejects.toThrow('旧项目写入已停止');
+    expect(mocks.save).not.toHaveBeenCalled(); expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.registerProjectFolder).not.toHaveBeenCalled(); expect(mocks.ensureProjectDataDir).not.toHaveBeenCalled();
+    expect(mocks.saveProject).not.toHaveBeenCalled(); expect(mocks.remove).not.toHaveBeenCalled();
   });
 });

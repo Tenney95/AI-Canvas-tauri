@@ -4,8 +4,9 @@
 import { useAppStore } from '../../store/useAppStore';
 import type { ReferencePreviewContent, ReferencePreviewSource } from '../../types/referencePreview';
 import {
-  CHAT_ACTION_EVENT, CHAT_DETACHED_WINDOW_LABEL, CHAT_MAIN_WINDOW_LABEL, CHAT_REFERENCE_PREVIEW_EVENT,
+  CHAT_DETACHED_WINDOW_LABEL, CHAT_REFERENCE_PREVIEW_EVENT,
   type ChatAction, type ChatReferencePreviewResponse,
+  emitAction, getChatReferenceWindowFrame,
 } from './chatWindowService';
 
 export const CHAT_REFERENCE_PREVIEW_TIMEOUT_MS = 15_000;
@@ -103,17 +104,17 @@ export async function requestDetachedReferencePreview(
   if (signal?.aborted || useAppStore.getState().currentProjectId !== projectId) throw abortError();
   if (!supportedSource(source)) return unavailable(source.label || '引用内容', '独立聊天窗口暂不支持此类引用');
   cancelClientRequest?.();
-  const { listen, emitTo } = await import('@tauri-apps/api/event');
+  const { listen } = await import('@tauri-apps/api/event');
   if (signal?.aborted || useAppStore.getState().currentProjectId !== projectId) throw abortError();
   cancelClientRequest?.();
   const requestId = crypto.randomUUID();
+  const windowFrame = getChatReferenceWindowFrame();
   return new Promise<ReferencePreviewContent>((resolve, reject) => {
     let finished = false;
     let sent = false;
     let unlisten: (() => void) | undefined;
     const sendCancel = () => {
-      if (sent) void emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT,
-        { type: 'cancel_reference_preview', requestId, projectId } satisfies ChatAction).catch(() => {});
+      if (sent) void emitAction({ type: 'cancel_reference_preview', requestId, projectId }, windowFrame).catch(() => {});
     };
     const finish = (content?: ReferencePreviewContent, error?: Error) => {
       if (finished) return;
@@ -150,10 +151,10 @@ export async function requestDetachedReferencePreview(
       unlisten = dispose;
       if (signal?.aborted || useAppStore.getState().currentProjectId !== projectId) { abort(); return; }
       sent = true;
-      return emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT, {
+      return emitAction({
         type: 'preview_reference', requestId, projectId,
         source: { kind: source.kind, id: source.id, label: source.label },
-      } satisfies ChatAction);
+      } satisfies ChatAction, windowFrame);
     }).catch(() => finish(undefined, new Error('无法连接主窗口读取引用内容')));
   });
 }

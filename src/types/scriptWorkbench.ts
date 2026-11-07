@@ -11,6 +11,7 @@ import type { SeriesSourcePart, SeriesSourceReference } from './seriesSource';
 import type { OriginalWritingAction, OriginalWritingHandoff, OriginalWritingSummary } from './originalWriting';
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
   StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
+import type { ProjectWindowContext } from './projectWindow';
 
 export type WorkbenchEditorTab = 'outline' | 'original' | 'script' | 'creative' | 'characters' | 'props' | 'story-graph';
 export type WorkbenchPendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
@@ -20,9 +21,11 @@ export interface WorkbenchCreativeDraft {
 }
 export interface WorkbenchDraft { outline: string; script: string; creative: WorkbenchCreativeDraft }
 export type WorkbenchEpisode = Pick<CanvasProject, 'id' | 'parentId' | 'name' | 'episodeOutline' | 'episodeScript' | 'episodeScriptFile' | 'episodeCreative' | 'episodeAssetRoster' | 'creationProfile' | 'teamProfileOverride'>;
-export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; draft: WorkbenchDraft }
+export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; draft: WorkbenchDraft; windowContext?: ProjectWindowContext | null }
 
 export interface ScriptWorkbenchSnapshot {
+  schemaVersion?: 2;
+  windowContext?: ProjectWindowContext | null;
   sessionId: string; revision: number; acceptedEditSequence: number; draftVersion: number;
   series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; originalAddedAt?: number; exchangeEpoch?: number } | null;
   episodes: Array<{ id: string; name: string; scriptLength: number; hasOutline: boolean }>;
@@ -98,8 +101,11 @@ export type ScriptWorkbenchAction =
 
 export type ScriptWorkbenchDispatch = (action: ScriptWorkbenchAction) => Promise<unknown>;
 export interface ScriptWorkbenchRequest {
+  schemaVersion?: 2;
+  sequence?: number;
+  windowContext?: ProjectWindowContext | null;
   sessionId: string; requestId: string; revision: number; episodeId: string | null;
   action: ScriptWorkbenchAction; handoff?: WorkbenchDraftHandoff;
   originalHandoff?: OriginalWritingHandoff;
 }
-export interface ScriptWorkbenchResponse { sessionId: string; requestId: string; value?: unknown; error?: string }
+export interface ScriptWorkbenchResponse { sessionId: string; requestId: string; sequence?: number; value?: unknown; error?: string }

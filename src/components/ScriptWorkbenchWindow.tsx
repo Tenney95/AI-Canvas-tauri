@@ -7,6 +7,8 @@ import { getBuiltinAppearanceTheme } from '../services/appearance/appearanceDefa
 import { setLocale, useT } from '../i18n';
 import type { ScriptWorkbenchDispatch, ScriptWorkbenchSnapshot, WorkbenchDraftHandoff } from '../types/scriptWorkbench';
 import type { OriginalWritingHandoff } from '../types/originalWriting';
+import { sameProjectWindowContext } from '../services/projectWindowContext';
+import type { ProjectWindowContext } from '../types/projectWindow';
 
 type WindowConnection = Awaited<ReturnType<typeof connectScriptWorkbenchWindow>>;
 
@@ -17,6 +19,7 @@ export default function ScriptWorkbenchWindow() {
   const connection = useRef<WindowConnection | null>(null);
   const handoff = useRef<WorkbenchDraftHandoff | undefined>(undefined);
   const originalHandoff = useRef<OriginalWritingHandoff | undefined>(undefined);
+  const originalWindowContext = useRef<ProjectWindowContext | null | undefined>(undefined);
   const [optimisticDraft, setOptimisticDraft] = useState<WorkbenchDraftHandoff | undefined>(undefined);
   const editSequence = useRef(0);
   const [closing, setClosing] = useState(false);
@@ -26,10 +29,15 @@ export default function ScriptWorkbenchWindow() {
     const current = snapshotRef.current;
     const bridge = connection.current;
     if (!current || !bridge) throw new Error('工作台尚未连接主窗口');
+    if ((handoff.current && !sameProjectWindowContext(handoff.current.windowContext, current.windowContext))
+      || (originalHandoff.current && !sameProjectWindowContext(originalWindowContext.current, current.windowContext))) {
+      throw new Error('工作台目标已变化，原草稿仍保留在本窗口，请先核对原分集；未将旧修改写入新目标');
+    }
     let command = action;
     if (action.type === 'original_edit') {
       if (!originalHandoff.current || action.handoff.documentId !== originalHandoff.current.documentId
         || action.handoff.sequence > originalHandoff.current.sequence) originalHandoff.current = action.handoff;
+      originalWindowContext.current = current.windowContext;
     }
     if (action.type === 'edit_text' || action.type === 'edit_creative') {
       if (!current.currentEpisode || !current.contextReady || current.editorWriteLocked) throw new Error('当前分集暂不能编辑');
@@ -37,7 +45,7 @@ export default function ScriptWorkbenchWindow() {
       if (action.type === 'edit_text') draft[action.field] = action.value;
       else draft.creative[action.field] = action.value;
       editSequence.current = Math.max(editSequence.current, current.acceptedEditSequence) + 1;
-      handoff.current = { episodeId: current.currentEpisode.id, sequence: editSequence.current, draft };
+      handoff.current = { episodeId: current.currentEpisode.id, sequence: editSequence.current, draft, windowContext: current.windowContext };
       setOptimisticDraft(handoff.current);
       command = { type: 'flush_draft' };
     }
@@ -46,9 +54,14 @@ export default function ScriptWorkbenchWindow() {
     const discardedOriginal = action.type === 'original_reload' && action.discard ? originalHandoff.current : undefined;
     if (closeIntent) setClosing(true);
     try {
+      const submittedHandoff = handoff.current;
       const value = await bridge.request({ revision: current.revision, episodeId: current.currentEpisode?.id ?? null,
-        action: command, handoff: handoff.current,
+        action: command, handoff: submittedHandoff,
         originalHandoff: discardedOriginal || command.type === 'original_edit' ? undefined : originalHandoff.current });
+      if (submittedHandoff && handoff.current === submittedHandoff
+        && (snapshotRef.current?.acceptedEditSequence ?? 0) >= submittedHandoff.sequence) {
+        handoff.current = undefined; setOptimisticDraft(undefined);
+      }
       if (discardedOriginal && originalHandoff.current === discardedOriginal) originalHandoff.current = undefined;
       if (closeIntent && (value !== true || snapshotRef.current?.pendingAction)) setClosing(false);
       return value;
@@ -68,7 +81,8 @@ export default function ScriptWorkbenchWindow() {
       snapshotRef.current = next;
       if (next.pendingAction) setClosing(false);
       editSequence.current = Math.max(editSequence.current, next.acceptedEditSequence);
-      if (handoff.current && next.acceptedEditSequence >= handoff.current.sequence) {
+      if (handoff.current && next.acceptedEditSequence >= handoff.current.sequence
+        && sameProjectWindowContext(handoff.current.windowContext, next.windowContext)) {
         handoff.current = undefined; setOptimisticDraft(undefined);
       }
       if (originalHandoff.current && next.originalWriting?.documentId === originalHandoff.current.documentId

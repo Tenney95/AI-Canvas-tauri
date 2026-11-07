@@ -21,6 +21,7 @@ import { clearProviderDocsTask } from './providerDocsGrantService';
 import { clearWebAccessTask } from './webAccessGrantService';
 import { clearSkillReadTask, takeSkillCompactionRequest } from './skillReadService';
 import { clearSkillCatalogTask } from './skillCatalog';
+import { assertAgentProjectContext, captureAgentProjectScope } from './agentProjectContext';
 import { clearProviderModelCatalogsForTask } from './providerModelCatalogService';
 import {
   executeAgentRound,
@@ -71,6 +72,9 @@ export async function runAgentLoop({
 }: AgentLoopOptions): Promise<AgentExecutionOutcome> {
   const initialTask = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
   if (!initialTask) throw new Error(`未找到 Agent 任务: ${taskId}`);
+  const projectScope = initialTask.projectScope ?? captureAgentProjectScope(useAppStore.getState(), initialTask);
+  const assertProject = () => assertAgentProjectContext(useAppStore.getState(), { ...initialTask, projectScope }, { checkRevision: false });
+  assertProject();
 
   // 按当前模型上下文预算组装历史；接近上限时自动压缩，压缩失败不发送超限请求
   let messages: AssistantModelMessage[];
@@ -86,6 +90,7 @@ export async function runAgentLoop({
       userMessage,
       excludeMessageIds,
       signal,
+      assertCurrent: assertProject,
     });
     messages = assembled.messages;
     const resumeContext = buildAgentResumeContext(initialTask);
@@ -126,11 +131,12 @@ export async function runAgentLoop({
   openAgentInterjectionBuffer(taskId);
   try {
     while (!signal.aborted) {
+      assertProject();
       const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
       if (task && task.modelRounds < task.budget.maxModelRounds && !evaluateAgentLifetimeUsage(task).exceeded) {
         try {
           const before = [...messages];
-          await compactAgentMessages(taskId, messages, currentUserMessage, signal, takeSkillCompactionRequest(taskId));
+          await compactAgentMessages(taskId, messages, currentUserMessage, signal, takeSkillCompactionRequest(taskId), assertProject);
           if (before.length !== messages.length || before.some((message, index) => message !== messages[index])) clearSkillReadTask(taskId);
         } catch (error) {
           if (signal.aborted || !(error instanceof ContextBudgetError)) throw error;
@@ -140,8 +146,9 @@ export async function runAgentLoop({
         }
       }
       let round: Awaited<ReturnType<typeof executeAgentRound>>;
-      try { round = await executeAgentRound({
+      try { assertProject(); round = await executeAgentRound({
         taskId,
+        projectScope,
         signal,
         messages,
         fullText,
@@ -154,7 +161,7 @@ export async function runAgentLoop({
         const classifiedOverflow = /^(context_length_exceeded|context_window_exceeded|CONTEXT_LENGTH_EXCEEDED)$/.test(code);
         if (classifiedOverflow && !overflowRetried && !signal.aborted) {
           const before = JSON.stringify(messages);
-          await compactAgentMessages(taskId, messages, currentUserMessage, signal, true);
+          await compactAgentMessages(taskId, messages, currentUserMessage, signal, true, assertProject);
           if (before !== JSON.stringify(messages)) { overflowRetried = true; continue; }
         }
         throw error;

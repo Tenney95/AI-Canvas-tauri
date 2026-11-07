@@ -31,6 +31,17 @@ beforeEach(() => {
 });
 
 describe('团队产物文件与恢复原稿', () => {
+  it('哈希等待期间原租约失效则不写文件，物理写入复用同一个运行时守卫', async () => {
+    let current = true;
+    const assertCurrent = vi.fn(() => { if (!current) throw new Error('原分集租约失效'); });
+    const pending = saveTeamArtifact({ projectId: 'p', runId: 'lease-run', kind: 'draft', text: '旧候选', label: '候选', assertCurrent });
+    current = false;
+    await expect(pending).rejects.toThrow('租约失效');
+    expect(files.write).not.toHaveBeenCalled();
+    current = true;
+    await saveTeamArtifact({ projectId: 'p', runId: 'lease-current', kind: 'draft', text: '当前候选', label: '候选', assertCurrent });
+    expect(files.write).toHaveBeenCalledWith(expect.objectContaining({ assertCurrent }));
+  });
   it('原稿恢复点逐字保留正文，也能保存空正文', async () => {
     const original = '场景一\r\nAPI_KEY=这只是剧本里的示例文字\n';
     const reference = await saveTeamArtifact({ projectId: 'p', runId: 'original-run', kind: 'original',

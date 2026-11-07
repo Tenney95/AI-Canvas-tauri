@@ -27,7 +27,7 @@ import {
   seriesOwnerId,
 } from './store.utils';
 import * as fileService from '../services/fileService';
-import { resumePendingTasks, clearProjectTasks, getPendingTasksForProject } from '../services/pollManager';
+import { resumePendingTasks, stopPollingForDeletedProjects, getPendingTasksForProject } from '../services/pollManager';
 import { normalizeProjectSettings } from '../services/projectSettingsService';
 import { normalizeCreationProfileSelection } from '../services/creationProfiles/creationProfileManifest';
 import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
@@ -69,6 +69,7 @@ import type { StoryGraph, StoryGraphPatch } from '../types/storyGraph';
 import { normalizeStoryGraph } from '../services/storyGraphService';
 import { prepareEpisodeScriptFileWrite, type EpisodeScriptFileReceipt } from '../services/episodeScriptFileService';
 import { normalizeProjectTextFileReference } from '../utils/manuscriptFileReference';
+import { deleteLegacyProjectContent, swapLegacyEpisodeOrder } from '../services/indexedDb/legacyProjectLifecycleRepository';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
 let activeProjectMetadataWrite: Promise<void> = Promise.resolve();
@@ -182,7 +183,7 @@ function withLoadedProjectSummaries(projects: CanvasProject[], ...records: (Proj
   const loaded = new Map(records.filter((record): record is ProjectSaveData => !!record).map((record) => [record.id, record]));
   return withInheritedDataFolders(projects.map((project) => {
     const record = loaded.get(project.id);
-    return record ? { ...toCanvasProjectSummary(record), revisionScope: project.revisionScope } : project;
+    return record ? { ...toCanvasProjectSummary(record), revisionScope: project.revisionScope ?? record.revisionScope } : project;
   }));
 }
 
@@ -483,6 +484,9 @@ function createCurrentProjectSaveRecord(state: AppState): ProjectSaveData | null
     episodeScriptFile: project.episodeScriptFile,
     episodeCreative: project.episodeCreative,
     episodeAssetRoster: project.episodeAssetRoster,
+    creationProfile: project.creationProfile,
+    teamProfileOverride: project.teamProfileOverride,
+    revisionScope: project.revisionScope,
     series: project.series,
     nodes: state.nodes,
     edges: state.edges,
@@ -512,6 +516,9 @@ function createSeriesLibraryRecord(state: AppState): ProjectSaveData | null {
     snapshot: series.snapshot,
     dataFolder: series.dataFolder,
     settings: series.settings,
+    creationProfile: series.creationProfile,
+    teamProfileOverride: series.teamProfileOverride,
+    revisionScope: series.revisionScope,
     series: series.series,
     nodes: EMPTY_SERIES_CANVAS,
     edges: EMPTY_SERIES_CANVAS,
@@ -1334,6 +1341,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const state = get();
     const currentId = state.currentProjectId;
     if (!currentId || entries.length === 0) return [];
+    if (projectImportsApplying.has(currentId) || projectImportsApplying.has(seriesOwnerId(state.projects, currentId))) {
+      get().showToast('项目正在更新分集结构，请稍后重试', 'error'); return [];
+    }
     if (state.projectLoadStatus !== 'ready') {
       get().showToast('项目尚未成功加载，已阻止新增分集', 'error');
       return [];
@@ -1353,11 +1363,17 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const latest = get();
     const series = latest.projects.find((item) => item.id === seriesId);
     if (!series) return [];
+    if (projectImportsApplying.has(seriesId)) {
+      get().showToast('项目正在更新分集结构，请稍后重试', 'error'); return [];
+    }
     let nextNo = listEpisodes(latest.projects, seriesId)
       .reduce((max, item) => Math.max(max, item.episodeNo ?? 0), 0);
 
     const created: CanvasProject[] = [];
     for (const entry of entries) {
+      if (projectImportsApplying.has(seriesId) || !get().projects.some((item) => item.id === seriesId)) {
+        get().showToast('剧集结构已变化，已停止新增分集', 'error'); break;
+      }
       nextNo += 1;
       const now = Date.now();
       const episode: CanvasProject = {
@@ -1675,18 +1691,54 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   moveEpisode: async (episodeId, direction) => {
     const state = get();
     const episode = state.projects.find((item) => item.id === episodeId);
-    if (!episode?.parentId) return false;
+    if (!episode?.parentId || state.projectLoadStatus !== 'ready' || state.switchingProjectName !== null
+      || state.isCreatingProject || state.isReturningToStartPage || ![-1, 1].includes(direction)) return false;
     const episodes = listEpisodes(state.projects, episode.parentId);
     const index = episodes.findIndex((item) => item.id === episodeId);
     const neighbour = episodes[index + direction];
     if (!neighbour) return false;
 
-    // 集号可能有缺口或重复，按当前顺序取两者的位次交换，比直接加减更稳。
-    const episodeNo = neighbour.episodeNo ?? index + 1 + direction;
-    const neighbourNo = episode.episodeNo ?? index + 1;
-    const moved = await serializeEpisodeCreativeWrite(episodeId, () => patchProjectRecord(set, get, episodeId, { episodeNo }));
-    if (!moved) return false;
-    return serializeEpisodeCreativeWrite(neighbour.id, () => patchProjectRecord(set, get, neighbour.id, { episodeNo: neighbourNo }));
+    const ownerId = episode.parentId;
+    const ids = [ownerId, ...episodes.map((item) => item.id)];
+    if (ids.some((id) => projectImportsApplying.has(id) || projectAssetSyncBarriers.has(id))) return false;
+    const sequence = projectSwitchSequence;
+    // 旧格式只有集号一条排序轴。缺号/重号保持原值，不能借排序重新编号覆盖用户语义。
+    const numbers = episodes.map((item) => item.episodeNo);
+    if (numbers.some((value) => !Number.isSafeInteger(value) || value! < 1) || new Set(numbers).size !== numbers.length) {
+      get().showToast('旧集号重复或缺失，已保留原顺序', 'error'); return false;
+    }
+    ids.forEach((id) => projectImportsApplying.add(id));
+    try {
+      // 屏障阻断新的整条旧记录保存，先排空已接受的保存/稿件，再原子打排序补丁。
+      await Promise.all(ids.map((id) => waitForProjectSaveQueue(id)));
+      await Promise.all(ids.map((id) => episodeCreativeWrites.get(id)?.catch(() => undefined)));
+      const assertCurrent = () => {
+        const current = get();
+        if (projectSwitchSequence !== sequence || current.projectLoadStatus !== 'ready'
+          || current.switchingProjectName !== null || current.isCreatingProject || current.isReturningToStartPage
+          || listEpisodes(current.projects, ownerId).length !== episodes.length
+          || episodes.some((before) => {
+            const after = current.projects.find((item) => item.id === before.id);
+            return !after || after.parentId !== ownerId || after.episodeNo !== before.episodeNo
+              || (after.exchangeEpoch ?? 0) !== (before.exchangeEpoch ?? 0);
+          })) throw new Error('分集列表已变化，已取消旧排序');
+      };
+      assertCurrent();
+      const patches = await swapLegacyEpisodeOrder({ ownerId,
+        expectedOwnerEpoch: state.projects.find((item) => item.id === ownerId)?.exchangeEpoch,
+        expectedEpisodes: episodes, episodeId, direction, assertCurrent });
+      // 已提交的补丁仅投影到仍有相同旧排序的目录，不覆盖导航或后来的元数据。
+      set((current) => ({ projects: current.projects.map((item) => {
+        const before = episodes.find((entry) => entry.id === item.id);
+        const patch = patches.find((entry) => entry.id === item.id);
+        return before && patch && item.parentId === ownerId && item.episodeNo === before.episodeNo
+          && (item.exchangeEpoch ?? 0) === (before.exchangeEpoch ?? 0) ? { ...item, ...patch } : item;
+      }) }));
+      return true;
+    } catch (error) {
+      get().showToast(error instanceof Error ? error.message : '分集排序失败，原顺序已保留', 'error');
+      return false;
+    } finally { ids.forEach((id) => projectImportsApplying.delete(id)); }
   },
 
   exportProject: async (id) => {
@@ -1902,46 +1954,60 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   deleteProject: async (id) => {
-    invalidateSeriesLibrarySave();
-    projectSwitchSequence += 1;
     const state = get();
     const target = state.projects.find((project) => project.id === id);
     if (!target) return;
-    // 删剧集要连分集一起删；删掉最后一集时剧集项目也没有存在意义，一并清掉。
+    if (state.projectLoadStatus !== 'ready' || state.switchingProjectName !== null
+      || state.isCreatingProject || state.isReturningToStartPage) {
+      get().showToast('项目导航中，已取消删除', 'error'); return;
+    }
     const siblings = target.parentId ? listEpisodes(state.projects, target.parentId) : [];
+    // v3 不能无损表示零集剧集。新模型启用前拒绝该操作，绝不能顺带删除整部剧。
+    if (target.parentId && siblings.length <= 1) {
+      get().showToast('当前旧项目格式暂不支持删除最后一集，已保留整部剧', 'error'); return;
+    }
     const removedIds = [
       id,
       ...listEpisodes(state.projects, id).map((episode) => episode.id),
-      ...(target.parentId && siblings.length <= 1 ? [target.parentId] : []),
     ];
     const removedIdSet = new Set(removedIds);
-    // 分集共用剧集的素材目录，只有整部剧（或普通项目）被删掉时才能删目录。
-    // ponytail: 单删一集会把它的素材留在共享目录里，需要清理时走资产库回收。
-    const dataDirOwnerIds = removedIds.filter((removedId) => (
-      !state.projects.find((project) => project.id === removedId)?.parentId
-    ));
-    const filtered = state.projects.filter((p) => !removedIdSet.has(p.id));
-    const isCurrent = Boolean(state.currentProjectId && removedIdSet.has(state.currentProjectId));
+    const lockedIds = target.parentId ? [...removedIds, target.parentId] : removedIds;
+    if (lockedIds.some((projectId) => projectImportsApplying.has(projectId) || projectAssetSyncBarriers.has(projectId))) {
+      get().showToast('项目正在更新，已取消删除', 'error'); return;
+    }
+    invalidateSeriesLibrarySave();
+    const deletionSequence = ++projectSwitchSequence;
+    lockedIds.forEach((projectId) => projectImportsApplying.add(projectId));
     removedIds.forEach((removedId) => {
       cancelProjectCanvasDerivations(removedId);
-      clearProjectTasks(removedId);
-      // 先中止仍在运行的 Agent，再做最终级联删除，避免事务完成后再次写入项目任务。
       stopProjectAgentTasks(removedId);
     });
     try {
-      for (const removedId of removedIds) {
-        await fileService.deleteProjectData(removedId);
-      }
+      await Promise.all(lockedIds.map((projectId) => waitForProjectSaveQueue(projectId)));
+      await Promise.all(lockedIds.map((projectId) => episodeCreativeWrites.get(projectId)?.catch(() => undefined)));
+      await deleteLegacyProjectContent({ targetId: id,
+        expectedProjects: state.projects.filter((project) => removedIdSet.has(project.id)),
+        assertCurrent: () => {
+          if (projectSwitchSequence !== deletionSequence || get().currentProjectId !== state.currentProjectId
+            || get().switchingProjectName !== null || get().isCreatingProject || get().isReturningToStartPage) {
+            throw new Error('项目已切换，已取消旧删除请求');
+          }
+        } });
     } catch (error) {
-      console.warn('[删除项目] 清理持久化数据失败:', error);
-      get().showToast('项目删除失败，本地数据未清理', 'error');
+      console.warn('[删除项目] 逻辑删除失败:', error);
+      get().showToast('项目未删除；已停止的任务不会自动重启', 'error');
       return;
-    }
+    } finally { lockedIds.forEach((projectId) => projectImportsApplying.delete(projectId)); }
+    // 永久停写只在业务删除真正提交后登记；失败项目仍可正常继续查询原回执。
+    stopPollingForDeletedProjects(removedIds);
+    const viewState = get();
+    const filtered = viewState.projects.filter((project) => !removedIdSet.has(project.id));
+    const isCurrent = Boolean(viewState.currentProjectId && removedIdSet.has(viewState.currentProjectId));
     const deletedConversationIds = new Set([
-      ...state.conversations
+      ...viewState.conversations
         .filter((conversation) => removedIdSet.has(conversation.projectId))
         .map((conversation) => conversation.id),
-      ...state.agentTasks
+      ...viewState.agentTasks
         .filter((task) => removedIdSet.has(task.projectId))
         .map((task) => task.conversationId),
     ]);
@@ -1949,12 +2015,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       clearConversationFileGrants(conversationId);
     }
     const retainedChatState = {
-      conversations: state.conversations.filter((conversation) => !removedIdSet.has(conversation.projectId)),
-      messages: state.messages.filter((message) => !deletedConversationIds.has(message.conversationId)),
-      activeConversationId: state.activeConversationId
-        && deletedConversationIds.has(state.activeConversationId)
+      conversations: viewState.conversations.filter((conversation) => !removedIdSet.has(conversation.projectId)),
+      messages: viewState.messages.filter((message) => !deletedConversationIds.has(message.conversationId)),
+      activeConversationId: viewState.activeConversationId
+        && deletedConversationIds.has(viewState.activeConversationId)
         ? null
-        : state.activeConversationId,
+        : viewState.activeConversationId,
     };
 
     if (isCurrent && filtered.length === 1 && filtered[0]?.id === 'default') {
@@ -1969,6 +2035,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         projectLoadStatus: 'ready',
         nodes: [],
         edges: [],
+        groups: [],
         history: [],
         historyIndex: -1,
         dramaAssets: { version: 2 as const, characters: [], scenes: [], props: [] },
@@ -1984,10 +2051,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const fallbackId = listTopLevelProjects(filtered)[0]?.id;
       const nextId = isCurrent
         ? (fallbackId ? resolveOpenTargetId(filtered, fallbackId) : null)
-        : state.currentProjectId;
+        : viewState.currentProjectId;
       const nextName = isCurrent
         ? filtered.find((project) => project.id === nextId)?.name ?? ''
-        : state.projectName;
+        : viewState.projectName;
 
       set({
         projects: filtered,
@@ -1999,6 +2066,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
               projectName: nextName,
               nodes: [],
               edges: [],
+              groups: [],
               history: [],
               historyIndex: -1,
               dramaAssets: { version: 2 as const, characters: [], scenes: [], props: [] },
@@ -2009,10 +2077,21 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
       if (isCurrent && nextId) {
         const data = await fileService.loadProjectData(nextId);
+        const isCurrentReplacement = () => projectSwitchSequence === deletionSequence
+          && get().currentProjectId === nextId && get().projects.some((project) => project.id === nextId);
+        if (!isCurrentReplacement()) return;
         const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
+        if (!isCurrentReplacement()) return;
         if (hasProjectCanvasData(data)) {
           const ownerId = data.parentId ?? nextId;
           const ownerData = ownerId === nextId ? data : await fileService.loadProjectData(ownerId);
+          if (!isCurrentReplacement()) return;
+          if (!hasProjectCanvasData(ownerData) || ownerData.parentId || ownerData.id !== ownerId
+            || (ownerData.exchangeEpoch ?? 0) < (get().projects.find((item) => item.id === ownerId)?.exchangeEpoch ?? 0)) {
+            set({ projectLoadStatus: 'error' });
+            get().showToast('替代项目的所属剧集加载失败，已阻止空共享资料覆盖原数据', 'error');
+            return;
+          }
           set({
             projects: withLoadedProjectSummaries(get().projects, data, ownerData),
             projectName: data.name,
@@ -2035,13 +2114,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
     }
 
-    removedIds.forEach((removedId) => {
-      get().removeProjectAgentTasks(removedId);
-      get().removeProjectMemories(removedId);
-    });
-    dataDirOwnerIds.forEach((ownerId) => {
-      fileService.deleteProjectDataDir(ownerId).catch((e) => console.warn('[删除项目] 清理目录失败:', e));
-    });
+    // 目录和审计材料不与业务删除级联。历史费用/回执可能仍引用它们，后续显式恢复/清理处理。
   },
 
   switchProject: async (requestedId, options) => {
@@ -2049,11 +2122,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (options?.signal?.aborted || get().isReturningToStartPage || get().isCreatingProject
       || get().projectLoadStatus === 'loading') return;
     if (!get().projects.some((project) => project.id === requestedId)) return;
+    if (projectImportsApplying.has(requestedId)
+      || projectImportsApplying.has(seriesOwnerId(get().projects, requestedId))) return;
     // 剧集项目自身没有画布，点它等于打开它的分集。
     // ponytail: 固定开第一集；要「回到上次打开的那集」再往剧集记录里存一个 lastEpisodeId。
     const id = resolveOpenTargetId(get().projects, requestedId);
     const switchSequence = ++projectSwitchSequence;
-    const isLatestSwitch = () => switchSequence === projectSwitchSequence && !options?.signal?.aborted;
+    const isLatestSwitch = () => switchSequence === projectSwitchSequence && !options?.signal?.aborted
+      && !projectImportsApplying.has(id) && !projectImportsApplying.has(seriesOwnerId(get().projects, id));
     const currentProjectId = get().currentProjectId;
     const previousOwnerId = currentProjectId
       ? seriesOwnerId(get().projects, currentProjectId)
@@ -2092,7 +2168,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (!isLatestSwitch()) return;
       const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
       if (!isLatestSwitch()) return;
-      if (!hasProjectCanvasData(data)) {
+      if (!hasProjectCanvasData(data) || data.id !== id
+        || (data.exchangeEpoch ?? 0) < (get().projects.find((item) => item.id === id)?.exchangeEpoch ?? 0)) {
         get().showToast('项目加载失败，已保留当前画布并阻止覆盖保存', 'error');
         return;
       }
@@ -2104,7 +2181,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (ownerId === id || ownerId !== previousOwnerId) {
         ownerData = ownerId === id ? data : await fileService.loadProjectData(ownerId);
         if (!isLatestSwitch()) return;
-        dramaAssets = ownerData?.dramaAssets ?? emptyDramaAssetLibrary();
+        if (!hasProjectCanvasData(ownerData) || ownerData.parentId || ownerData.id !== ownerId
+          || (ownerData.exchangeEpoch ?? 0) < (get().projects.find((item) => item.id === ownerId)?.exchangeEpoch ?? 0)) {
+          get().showToast('所属项目加载失败，已保留当前画布与共享资料', 'error');
+          return;
+        }
+        dramaAssets = ownerData.dramaAssets ?? emptyDramaAssetLibrary();
       }
 
       set({
@@ -2121,7 +2203,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       });
       rememberActiveProject(id);
       // 恢复当前项目的待续轮询任务
-      resumePendingTasks(id).catch((e) => console.warn('[切换项目] 恢复待续任务失败:', e));
+      // finally清除切换标记后才能取得本次恢复租约，不能在loading边界重绑。
+      queueMicrotask(() => {
+        if (switchSequence !== projectSwitchSequence || get().currentProjectId !== id || get().switchingProjectName !== null) return;
+        resumePendingTasks(id).catch((e) => console.warn('[切换项目] 恢复待续任务失败:', e));
+      });
       // 加载聊天会话
       get().loadConversationsForProject(id).catch((e) => console.warn('[切换项目] 加载会话失败:', e));
       get().repairInterruptedForProject(id).catch((e) => console.warn('[切换项目] 修复中断消息失败:', e));

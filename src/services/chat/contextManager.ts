@@ -254,6 +254,8 @@ function buildMemoryBlock(projectId: string, query: string): string {
 // ============================================
 
 export interface AssembleAgentContextOptions {
+  /** 本次执行段冻结的运行时前提；不进入消息/摘要持久化。 */
+  assertCurrent?: () => void;
   conversationId: string;
   /** 当前项目 ID；用于注入项目记忆 */
   projectId?: string;
@@ -369,6 +371,7 @@ export async function assembleAgentContext(
   options: AssembleAgentContextOptions,
 ): Promise<AssembledAgentContext> {
   const { conversationId, projectId, systemPrompt, userMessage, signal } = options;
+  options.assertCurrent?.();
   const excludeIds = new Set(options.excludeMessageIds ?? []);
   const spec = resolveAssistantContextSpec(projectId);
   // 对话历史与提示词样本互不依赖，并行读取可避免给每轮 Agent 响应叠加串行存储延迟。
@@ -376,6 +379,7 @@ export async function assembleAgentContext(
     loadMessages(conversationId, 0, 200),
     projectId && options.includeProjectContext !== false ? buildLearnedPromptContext(projectId, userMessage) : Promise.resolve(''),
   ]);
+  options.assertCurrent?.();
   // 学习样本复用记忆块的预算入口，使后续裁剪和压缩仍由统一上下文预算控制。
   const memoryBlock = [
     projectId && options.includeProjectContext !== false ? buildMemoryBlock(projectId, userMessage) : '',
@@ -407,7 +411,9 @@ export async function assembleAgentContext(
         projectId,
         excludeMessageIds: options.excludeMessageIds,
         signal,
+        assertCurrent: options.assertCurrent,
       });
+      options.assertCurrent?.();
       if (compressed) {
         forcedCompression = true;
         summary = compressed;
@@ -426,6 +432,7 @@ export async function assembleAgentContext(
     void compressConversationContext(conversationId, {
       projectId,
       excludeMessageIds: options.excludeMessageIds,
+      assertCurrent: options.assertCurrent,
     }).catch(() => { /* 预压缩失败不影响本次请求，下次达到 90% 时再强制压缩 */ });
   }
 

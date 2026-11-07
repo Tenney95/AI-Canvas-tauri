@@ -4,7 +4,8 @@ import type { ProjectExchangeRevision, ProjectExchangeRevisionHeader, ProjectExc
 import { parseProjectExchangeReference, PROJECT_EXCHANGE_LIMITS, projectExchangeEntityKey, projectExchangeId,
   projectExchangeRevisionHeader, serializeProjectExchangeValue, verifyProjectExchangeHeader,
   verifyProjectExchangeRevision } from '../projectExchangeFormat';
-import { openDB, STORE_PROJECTS, STORE_PROJECT_EXCHANGE_STATES, STORE_PROJECT_EXCHANGE_SNAPSHOTS } from './schema';
+import { openDB, STORE_PROJECTS, STORE_PROJECT_EXCHANGE_STATES, STORE_PROJECT_EXCHANGE_SNAPSHOTS, STORE_METADATA } from './schema';
+import { withLegacyProjectWrite } from './legacyProjectWriteGuard';
 import { safeExchangePath } from '../projectExchangeDomain';
 
 const changed = () => new Error('项目协作版本已变化，请重新读取后处理');
@@ -119,7 +120,7 @@ export async function saveProjectExchangeCheckpoint(input: ProjectExchangeCheckp
   const db = await openDB();
   return new Promise<void>((resolve, reject) => {
     let tx: IDBTransaction;
-    const stores = [STORE_PROJECTS, STORE_PROJECT_EXCHANGE_STATES, STORE_PROJECT_EXCHANGE_SNAPSHOTS];
+    const stores = [STORE_PROJECTS, STORE_PROJECT_EXCHANGE_STATES, STORE_PROJECT_EXCHANGE_SNAPSHOTS, STORE_METADATA];
     try { tx = db.transaction(stores, 'readwrite', { durability: 'strict' }); }
     catch (error) {
       if (!(error instanceof TypeError) && !(error instanceof DOMException && error.name === 'NotSupportedError')) throw error;
@@ -130,41 +131,43 @@ export async function saveProjectExchangeCheckpoint(input: ProjectExchangeCheckp
     const guard = (run: () => void) => {
       try { run(); } catch (error) { failure ??= error; tx.abort(); }
     };
-    const owner = tx.objectStore(STORE_PROJECTS).get(state.ownerId);
-    owner.onsuccess = () => guard(() => {
-      if (!owner.result || owner.result.parentId) throw invalid();
-      const request = states.get(state.ownerId);
-      request.onsuccess = () => guard(() => {
-        const current = request.result ? stateRecord(request.result) : null;
-        if (!same(current, expected)) throw changed();
-        const head = snapshots.get(state.headRevisionId);
-        head.onsuccess = () => guard(() => {
-          const proposed = candidates.get(state.headRevisionId);
-          const candidate = proposed?.snapshot ? proposed : head.result as ProjectExchangeStoredRevision | undefined;
-          if (!candidate?.snapshot || candidate.lineageId !== state.lineageId
-            || candidate.snapshot.rootProjectId !== state.rootProjectId) throw invalid();
-          if (expected && expected.headRevisionId !== candidate.revisionId
-            && !candidate.parentRevisionIds.includes(expected.headRevisionId)) throw changed();
-          // 状态写入与下方不可变版本检查同事务；任何失败都会回滚状态。
-          states.put(state);
-        });
-        for (const row of candidates.values()) {
-          const previous = snapshots.get(row.revisionId);
-          previous.onsuccess = () => guard(() => {
-            const existing = previous.result as ProjectExchangeStoredRevision | undefined;
-            if (existing) {
-              const existingHeader = { lineageId: existing.lineageId, canonicalVersion: existing.canonicalVersion,
-                revisionId: existing.revisionId, parentRevisionIds: existing.parentRevisionIds, contentDigest: existing.contentDigest };
-              const nextHeader = row.snapshot ? projectExchangeRevisionHeader(row as ProjectExchangeRevision) : row;
-              if (!same(existingHeader, nextHeader) || existing.snapshot && row.snapshot && !same(existing.snapshot, row.snapshot)) throw changed();
-              // 不用只有父链的薄描述覆盖已保存的基线正文。
-              if (existing.snapshot || !row.snapshot) return;
-            }
-            snapshots.put(row);
+    withLegacyProjectWrite(tx, () => {
+      const owner = tx.objectStore(STORE_PROJECTS).get(state.ownerId);
+      owner.onsuccess = () => guard(() => {
+        if (!owner.result || owner.result.parentId) throw invalid();
+        const request = states.get(state.ownerId);
+        request.onsuccess = () => guard(() => {
+          const current = request.result ? stateRecord(request.result) : null;
+          if (!same(current, expected)) throw changed();
+          const head = snapshots.get(state.headRevisionId);
+          head.onsuccess = () => guard(() => {
+            const proposed = candidates.get(state.headRevisionId);
+            const candidate = proposed?.snapshot ? proposed : head.result as ProjectExchangeStoredRevision | undefined;
+            if (!candidate?.snapshot || candidate.lineageId !== state.lineageId
+              || candidate.snapshot.rootProjectId !== state.rootProjectId) throw invalid();
+            if (expected && expected.headRevisionId !== candidate.revisionId
+              && !candidate.parentRevisionIds.includes(expected.headRevisionId)) throw changed();
+            // 状态写入与下方不可变版本检查同事务；任何失败都会回滚状态。
+            states.put(state);
           });
-        }
+          for (const row of candidates.values()) {
+            const previous = snapshots.get(row.revisionId);
+            previous.onsuccess = () => guard(() => {
+              const existing = previous.result as ProjectExchangeStoredRevision | undefined;
+              if (existing) {
+                const existingHeader = { lineageId: existing.lineageId, canonicalVersion: existing.canonicalVersion,
+                  revisionId: existing.revisionId, parentRevisionIds: existing.parentRevisionIds, contentDigest: existing.contentDigest };
+                const nextHeader = row.snapshot ? projectExchangeRevisionHeader(row as ProjectExchangeRevision) : row;
+                if (!same(existingHeader, nextHeader) || existing.snapshot && row.snapshot && !same(existing.snapshot, row.snapshot)) throw changed();
+                // 不用只有父链的薄描述覆盖已保存的基线正文。
+                if (existing.snapshot || !row.snapshot) return;
+              }
+              snapshots.put(row);
+            });
+          }
+        });
       });
-    });
+    }, (error) => { failure ??= error; });
     tx.oncomplete = () => resolve();
     tx.onerror = () => { failure ??= tx.error; };
     tx.onabort = () => reject(failure ?? tx.error ?? changed());

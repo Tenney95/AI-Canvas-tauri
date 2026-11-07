@@ -6,6 +6,8 @@ import type { BaseNodeData } from '../../src/types';
 import {
   getPendingTaskCoveredNodeIds,
   getPendingTasksForProject,
+  readPendingMediaTaskViews,
+  registerPendingTaskContextGuard,
   getMediaTaskSnapshot,
   hasPendingMessageMediaTask,
   initializeMediaTaskSnapshot,
@@ -30,7 +32,10 @@ import {
   registerMediaNodeOperation,
   registerNodePolling,
   cleanupNodePolling,
+  stopPollingForDeletedProjects,
+  removePendingTask,
   resumeMediaNodeTask,
+  resumeRunningHubNodeTask,
   settleMediaTaskQueries,
   updatePendingTask,
   type PendingTask,
@@ -57,7 +62,148 @@ beforeEach(async () => {
   vi.mocked(tauriCore.invoke).mockReset().mockImplementation(native.invoke);
   localStorage.clear();
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'project-1' });
+  useAppStore.setState({ currentProjectId: 'project-1', projectLoadStatus: 'ready',
+    projects: [{ id: 'project-1', name: 'project', createdAt: 1, updatedAt: 1 }] });
+});
+
+describe('pending task read compatibility and runtime context', () => {
+  it('projects old identities without normalizing or writing the original paid/unknown queue', () => {
+    const raw = JSON.stringify([{ projectId: 'project-1', nodeId: 'old-node', taskId: 'already-submitted',
+      nodeType: 'ai-image', taskType: 'apimart', provider: 'apimart', submitted: true,
+      apiKey: 'legacy-private-key', resultUrls: ['https://private.example/output'], videoGeneration: { prompt: 'private-prompt' } },
+    { projectId: 'project-1', nodeId: 'unknown-node', nodeType: 'ai-video', taskType: 'general',
+      provider: 'general', mediaSubmissionUncertain: true }]);
+    localStorage.setItem('ai_canvas_pending_tasks', raw);
+    const write = vi.spyOn(localStorage, 'setItem');
+    try {
+      const result = readPendingMediaTaskViews(['project-1']);
+      expect(result).toMatchObject({ status: 'ok', tasks: [{ nodeId: 'old-node', taskId: 'already-submitted' },
+        { nodeId: 'unknown-node', taskId: '', stage: 'submit_unknown', canResume: false }] });
+      expect(JSON.stringify(result)).not.toMatch(/private|apiKey|resultUrls|videoGeneration/);
+      expect(write).not.toHaveBeenCalled();
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+    } finally { write.mockRestore(); }
+  });
+
+  it.each(['{invalid-json', '{}', '[{"projectId":"project-1","taskType":"future-provider"}]'])('keeps unsupported source %s and reports a read error rather than an empty success', (raw) => {
+    localStorage.setItem('ai_canvas_pending_tasks', raw);
+    const write = vi.spyOn(localStorage, 'setItem');
+    try {
+      expect(readPendingMediaTaskViews(['project-1'])).toEqual({ status: 'invalid', errorCode: 'MEDIA_PENDING_SOURCE_INVALID' });
+      expect(write).not.toHaveBeenCalled();
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+      expect(() => getPendingTasksForProject('project-1')).toThrow('原待恢复任务源');
+      expect(() => savePendingTask({ projectId: 'project-1', nodeId: 'new-node', taskId: 'new-task', nodeType: 'ai-image',
+        provider: 'apimart', taskType: 'apimart', submitted: true })).toThrow('原待恢复任务源');
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+    } finally { write.mockRestore(); }
+  });
+
+  it.each(['version', 'schemaVersion', 'modelGeneration', 'expectedContext', 'executionContext', 'projectScope'])('does not interpret future execution field %s as a legacy recovery grant', (field) => {
+    const raw = JSON.stringify([{ projectId: 'project-1', nodeId: 'future-node', taskId: 'paid-task', nodeType: 'ai-video',
+      taskType: 'general', provider: 'general', submitted: true, [field]: 2 }]);
+    localStorage.setItem('ai_canvas_pending_tasks', raw);
+    expect(readPendingMediaTaskViews(['project-1'])).toEqual({ status: 'invalid', errorCode: 'MEDIA_PENDING_SOURCE_INVALID' });
+    expect(() => getPendingTasksForProject('project-1')).toThrow('原待恢复任务源');
+    expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+  });
+
+  it.each(['switch', 'epoch'] as const)('invalidates original query/message callbacks on %s without editing their receipt', (change) => {
+    const task = { projectId: 'project-1', nodeId: 'lease-node' };
+    const raw = '["original-unknown-receipt"]';
+    localStorage.setItem('ai_canvas_pending_tasks', raw);
+    const signal = registerNodePolling(task.nodeId);
+    const lease = registerPendingTaskContextGuard(task, signal);
+    try {
+      expect(lease.isCurrent()).toBe(true);
+      useAppStore.getState().incrementRevision();
+      expect(lease.isCurrent()).toBe(true); // 仅消息交付不因同画布编辑改绑；画布写仍有派生revision守卫。
+      useAppStore.setState(change === 'switch' ? { currentProjectId: 'other-canvas' }
+        : { projects: useAppStore.getState().projects.map((item) => ({ ...item, exchangeEpoch: 1 })) });
+      expect(signal.aborted).toBe(true);
+      useAppStore.setState({ currentProjectId: 'project-1', projects: [{ id: 'project-1', name: 'project', createdAt: 1, updatedAt: 1 }] });
+      expect(lease.isCurrent()).toBe(false);
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+    } finally { lease.complete(); cleanupNodePolling(task.nodeId, signal); }
+  });
+
+  it.each(['switch', 'epoch'] as const)('keeps an original RunningHub result out of a replacement Canvas after %s', async (change) => {
+    const runninghub = await import('../../src/services/ai/providers/runninghubWorkflow');
+    const execution = await import('../../src/services/workflowExecutionService');
+    let release: ((outputs: Awaited<ReturnType<typeof runninghub.queryRunningHubWorkflow>>) => void) | undefined;
+    const query = vi.spyOn(runninghub, 'queryRunningHubWorkflow').mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const save = vi.spyOn(runninghub, 'saveRunningHubOutputs');
+    const connection = vi.spyOn(execution, 'runningHubConnection').mockReturnValue({ apiKey: 'fixture-key', baseUrl: 'https://runninghub.example' });
+    const nodeId = `pending-context-${change}`;
+    useAppStore.setState({ nodes: [{ id: nodeId, type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: 'original', status: 'loading' } }] });
+    savePendingTask({ projectId: 'project-1', nodeId, taskId: 'original-paid-task', nodeType: 'ai-image', provider: 'runninghubwf',
+      taskType: 'runninghub-workflow', submitted: true });
+    const raw = localStorage.getItem('ai_canvas_pending_tasks');
+    const pending = resumeRunningHubNodeTask(nodeId);
+    try {
+      await vi.waitFor(() => expect(query).toHaveBeenCalledOnce());
+      const signal = query.mock.calls[0][4];
+      useAppStore.setState({ ...(change === 'switch' ? { currentProjectId: 'another-canvas' }
+        : { projects: useAppStore.getState().projects.map((item) => ({ ...item, exchangeEpoch: 1 })) }),
+        nodes: [{ id: nodeId, type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image', label: 'replacement', output: 'replacement-result' } }] });
+      release!([{ url: 'https://private.example/original-paid-output', kind: 'image' }]);
+      await pending;
+      expect(signal?.aborted).toBe(true);
+      expect(save).not.toHaveBeenCalled();
+      expect(useAppStore.getState().nodes[0].data.output).toBe('replacement-result');
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+    } finally {
+      release?.([]); await pending;
+      query.mockRestore(); save.mockRestore(); connection.mockRestore();
+    }
+  });
+});
+
+it('逻辑删除只撤销对应运行租约和查询，保留原始付费/unknown队列，不影响另一项目', () => {
+  const deletedId = 'deleted-preserve-receipts';
+  const otherId = 'retained-polling-project';
+  const task: PendingTask = { projectId: deletedId, nodeId: 'deleted-polling-node', nodeType: 'ai-video',
+    provider: 'apimart', taskType: 'apimart', taskId: 'already-paid', attemptId: 'attempt-one', submitted: true };
+  const raw = JSON.stringify([task, { ...task, nodeId: 'unknown-node', taskId: undefined,
+    submitted: false, mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown' }]);
+  localStorage.setItem('ai_canvas_pending_tasks', raw);
+  const unbind = bindMediaTaskContext(task.nodeId, { projectId: deletedId });
+  const unbindOther = bindMediaTaskContext('other-polling-node', { projectId: otherId });
+  const operation = registerMediaNodeOperation(task.nodeId, true);
+  const otherOperation = registerMediaNodeOperation('other-polling-node', true);
+  const signal = registerNodePolling(task.nodeId);
+  const otherSignal = registerNodePolling('other-polling-node');
+  const read = vi.spyOn(localStorage, 'getItem');
+  const write = vi.spyOn(localStorage, 'setItem');
+  try {
+    stopPollingForDeletedProjects([deletedId]);
+    expect(signal.aborted).toBe(true); expect(otherSignal.aborted).toBe(false);
+    expect(operation.isCurrent()).toBe(false); expect(otherOperation.isCurrent()).toBe(true);
+    const receipt = { projectId: deletedId, nodeId: task.nodeId, taskId: task.taskId, attemptId: task.attemptId };
+    pauseMediaTask(receipt); completeMediaNodeTask(receipt); removePendingTask(task.nodeId, task.taskId, task.attemptId);
+    expect(read).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
+    expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(raw);
+    expect(() => registerNodePolling(task.nodeId)).toThrow();
+  } finally {
+    cleanupNodePolling(task.nodeId); cleanupNodePolling('other-polling-node');
+    operation(); otherOperation(); unbind(); unbindOther();
+    read.mockRestore(); write.mockRestore();
+  }
+});
+
+it('删除当前画布不会取消另一项目同名nodeId的轮询', () => {
+  const projectId = 'deleted-colliding-node-project';
+  const nodeId = 'same-id-across-projects';
+  useAppStore.setState({ currentProjectId: projectId,
+    nodes: [{ id: nodeId, type: 'ai-video', position: { x: 0, y: 0 }, data: { type: 'ai-video', label: '同名节点' } }] });
+  const unbind = bindMediaTaskContext(nodeId, { projectId: 'retained-colliding-node-project' });
+  const signal = registerNodePolling(nodeId);
+  const operation = registerMediaNodeOperation(nodeId, true);
+  try {
+    stopPollingForDeletedProjects([projectId]);
+    expect(signal.aborted).toBe(false); expect(operation.isCurrent()).toBe(true);
+  } finally { cleanupNodePolling(nodeId); operation(); unbind(); }
 });
 
 describe('media task display snapshot', () => {

@@ -50,11 +50,19 @@ pub struct BillingRun {
 #[serde(rename_all = "camelCase")]
 pub struct BillingFilter {
     pub app_project_id: Option<String>,
+    /// 仅新模型owner只读汇总使用，原app_project_id列及历史值不变。
+    #[serde(default, deserialize_with = "present_project_ids")]
+    pub app_project_ids: Option<Vec<String>>,
     pub model_type: Option<String>,
     pub model_id: Option<String>,
     pub status: Option<String>,
     pub from: Option<i64>,
     pub to: Option<i64>,
+}
+
+// 缺省兼容旧调用；显式null不是省略，不能把坏聚合条件降成全账本。
+fn present_project_ids<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(input).map(Some)
 }
 
 #[derive(Serialize)]
@@ -238,6 +246,15 @@ pub fn billing_upsert(webview: Webview, app: tauri::AppHandle, run: BillingRun) 
 fn where_clause(filter: &BillingFilter) -> (String, Vec<Value>) {
     let mut conditions = vec!["1=1".to_string()];
     let mut values = Vec::new();
+    if let Some(ids) = &filter.app_project_ids {
+        if ids.is_empty() || ids.len() > 512 || ids.iter().any(|id| id.is_empty() || id.len() > 1024 || id.trim() != id || id.chars().any(char::is_control)) {
+            // 空/异常集合绝不能退化成全账本查询。
+            conditions.push("0=1".into());
+        } else {
+            conditions.push(format!("app_project_id IN ({})", vec!["?"; ids.len()].join(",")));
+            values.extend(ids.iter().map(|id| Value::Text(id.clone())));
+        }
+    }
     for (column, value) in [
         ("app_project_id", &filter.app_project_id),
         ("model_type", &filter.model_type),
@@ -311,6 +328,7 @@ pub fn billing_get_by_task(webview: Webview, app: tauri::AppHandle, task_id: Str
 #[tauri::command]
 pub fn billing_clear(webview: Webview, app: tauri::AppHandle, filter: BillingFilter, expected_count: i64) -> Result<usize, String> {
     ensure_trusted_caller(&webview)?;
+    if filter.app_project_ids.is_some() { return Err("作品聚合查询不能作为账本清理范围".into()); }
     let _operation = lock_operations()?;
     let mut connection = open(&app)?;
     let (condition, values) = where_clause(&filter);
@@ -329,6 +347,7 @@ pub fn billing_clear(webview: Webview, app: tauri::AppHandle, filter: BillingFil
 #[tauri::command]
 pub fn billing_clear_preview(webview: Webview, app: tauri::AppHandle, filter: BillingFilter) -> Result<BillingPage, String> {
     ensure_trusted_caller(&webview)?;
+    if filter.app_project_ids.is_some() { return Err("作品聚合查询不能作为账本清理范围".into()); }
     let _operation = lock_operations()?;
     let filter = filter;
     if let Some(status) = filter.status.as_deref() {
@@ -410,6 +429,18 @@ pub fn billing_export(webview: Webview, app: tauri::AppHandle, filter: BillingFi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_alias_query_binds_original_canvas_ids_and_empty_is_not_global() {
+        let filter = BillingFilter { app_project_ids: Some(vec!["canvas-a".into(), "canvas-b".into()]), ..Default::default() };
+        let (condition, values) = where_clause(&filter);
+        assert!(condition.contains("app_project_id IN (?,?)"));
+        assert_eq!(values, vec![Value::Text("canvas-a".into()), Value::Text("canvas-b".into())]);
+        let empty = BillingFilter { app_project_ids: Some(Vec::new()), ..Default::default() };
+        assert!(where_clause(&empty).0.contains("0=1"));
+        assert!(serde_json::from_value::<BillingFilter>(serde_json::json!({"appProjectIds": null})).is_err());
+        assert!(serde_json::from_value::<BillingFilter>(serde_json::json!({})).unwrap().app_project_ids.is_none());
+    }
 
     #[test]
     fn query_filter_keeps_project_and_model_type_separate() {

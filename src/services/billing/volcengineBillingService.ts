@@ -7,6 +7,8 @@ import { getBaseDir, isTauriEnv, joinPath } from '../fs/core';
 import { useAppStore } from '../../store/useAppStore';
 import type { AppConfig } from '../../types';
 import type { PriceQuote } from './volcenginePricing';
+import type { LegacyProjectBinding } from '../../types/project';
+import { getLegacyCanvasAliases } from '../projectExecutionCompatibility';
 
 export type BillingStatus = 'submitting' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
 
@@ -123,6 +125,13 @@ export function sanitizeBillingError(message: string): string {
 
 export const queryBillingRuns = (filter: BillingFilter, page = 1, pageSize = 30) =>
   invoke<BillingPage>('billing_query', { filter, page, pageSize });
+/** 只读owner汇总：在SQLite原Canvas alias集合上统一分页/求和，不搬账、不重算费用。 */
+export function queryOwnerBillingRuns(projectId: string, bindings: readonly LegacyProjectBinding[],
+  filter: Omit<BillingFilter, 'appProjectId'> = {}, page = 1, pageSize = 30) {
+  const appProjectIds = getLegacyCanvasAliases(projectId, bindings);
+  if (appProjectIds.length > 512) throw new Error('项目历史画布数量超过单次账本查询上限，请按画布查询');
+  return invoke<BillingPage>('billing_query', { filter: { ...filter, appProjectIds }, page, pageSize });
+}
 export const findBillingRunByTask = (taskId: string, appProjectId: string) =>
   invoke<BillingRun | null>('billing_get_by_task', { taskId, appProjectId });
 export const previewBillingClear = (filter: BillingFilter) =>

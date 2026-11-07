@@ -1513,10 +1513,12 @@ pub fn start_blender_job(
         .map_err(|error| error.to_string())?;
     let project_id = request.project_id.clone();
     let project_grant_id = request.project_grant_id.clone();
+    let expected_context = request.expected_context.clone();
     project_grants.with_revalidated_project_root(
         webview.app_handle(),
         &project_id,
         &project_grant_id,
+        expected_context.as_ref(),
         |project_root| {
             jobs.start(
                 request,

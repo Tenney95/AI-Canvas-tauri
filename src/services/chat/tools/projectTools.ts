@@ -504,13 +504,13 @@ export function registerProjectAgentTools(): Array<() => void> {
     }),
     registerAgentTool<ProjectIdInput>({
       id: 'project_delete',
-      title: '永久删除项目',
-      description: '永久删除项目及其关联项目域数据；删除剧集会级联删除分集。此操作不可撤销。',
+      title: '删除项目记录',
+      description: '删除项目及其分集的业务记录；保留历史回执和素材文件。本操作不能直接撤销。',
       inputSchema: projectIdSchema,
       effect: 'permanent_delete',
       isAvailable: isMcpControlContext,
       authorize: authorizeCurrentProject,
-      summarizeInput: (input) => `永久删除项目 ${input.projectId}`,
+      summarizeInput: (input) => `删除项目记录 ${input.projectId}`,
       execute: async (_context, input) => {
         const store = useAppStore.getState();
         const project = store.projects.find((candidate) => candidate.id === input.projectId);
@@ -519,7 +519,7 @@ export function registerProjectAgentTools(): Array<() => void> {
         if (useAppStore.getState().projects.some((candidate) => candidate.id === input.projectId)) {
           return failure('项目删除失败', 'PROJECT_DELETE_FAILED');
         }
-        return success(`已永久删除项目“${project.name}”`, {
+        return success(`已删除项目“${project.name}”的记录`, {
           projectId: project.id,
           currentProjectId: useAppStore.getState().currentProjectId,
         });

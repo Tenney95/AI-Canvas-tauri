@@ -6,6 +6,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { lstat, readFile } from '@tauri-apps/plugin-fs';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
+import type { CanvasContext } from '../../types/project';
+import type { ProjectExecutionContextState } from '../../types/projectExecutionContext';
+import { isProjectExpectedContextCurrent } from '../projectExecutionContext';
 import type {
   InstalledPlugin,
   PluginCustomNodePortManifest,
@@ -37,7 +40,7 @@ const MAX_DERIVED_RESOURCES = 25;
 const MAX_NATIVE_MEDIA_INPUT_BYTES = 256 * 1024 * 1024;
 const DERIVED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
-export interface PluginResourceStateSnapshot {
+export interface PluginResourceStateSnapshot extends ProjectExecutionContextState {
   installedPlugins?: readonly InstalledPlugin[];
   currentProjectId: string | null;
   nodes: ReadonlyArray<Node<BaseNodeData>>;
@@ -53,6 +56,8 @@ export interface MintPluginInvocationResourcesOptions {
   projectId: string;
   nodeId: string;
   baseRevision: number;
+  expectedContext?: Readonly<CanvasContext>;
+  getState?: () => PluginResourceStateSnapshot;
   access?: PluginResourceAccessManifest;
   inputPorts?: readonly PluginCustomNodePortManifest[];
   packageResources?: readonly PluginPackageResourceManifest[];
@@ -67,6 +72,8 @@ export interface PluginResourceReadContext {
   projectId: string;
   nodeId: string;
   baseRevision: number;
+  expectedContext?: Readonly<CanvasContext>;
+  getState?: () => PluginResourceStateSnapshot;
   permissions: readonly PluginPermission[];
   state: PluginResourceStateSnapshot;
 }
@@ -89,6 +96,7 @@ interface PluginResourceLease {
   projectId: string;
   nodeId: string;
   baseRevision: number;
+  expectedContext?: Readonly<CanvasContext>;
   path?: string;
   relativePath?: string;
   mtimeMs?: number;
@@ -196,6 +204,7 @@ function addLease(
   identity: ProjectResourceIdentity,
   source: { nodeId: string; edgeId?: string; portId?: string },
 ): PluginResourceRef {
+  assertPluginResourceContextCurrent(options);
   const ref: PluginResourceRef = {
     resourceId: createResourceId(),
     origin,
@@ -214,6 +223,7 @@ function addLease(
     projectId: options.projectId,
     nodeId: options.nodeId,
     baseRevision: options.baseRevision,
+    expectedContext: options.expectedContext,
     path: identity.path,
     relativePath: identity.relativePath,
     mtimeMs: identity.mtimeMs,
@@ -228,6 +238,7 @@ function addPackageLease(
   options: MintPluginInvocationResourcesOptions,
   resource: PluginPackageResourceManifest,
 ): PluginResourceRef {
+  assertPluginResourceContextCurrent(options);
   const ref: PluginResourceRef = {
     resourceId: createResourceId(),
     origin: 'package',
@@ -246,14 +257,29 @@ function addPackageLease(
     projectId: options.projectId,
     nodeId: options.nodeId,
     baseRevision: options.baseRevision,
+    expectedContext: options.expectedContext,
     packageResourceId: resource.id,
   });
   return ref;
 }
 
+/** 真实宿主每次读当前Store；旧快照不能证明同ID导入后的授权仍有效。 */
+export function assertPluginResourceContextCurrent(context: Pick<PluginResourceReadContext,
+  'projectId' | 'nodeId' | 'baseRevision' | 'expectedContext' | 'state' | 'getState'>): PluginResourceStateSnapshot {
+  const state = context.getState?.() ?? context.state;
+  if (state.currentProjectId !== context.projectId || state.getCurrentRevision() !== context.baseRevision
+    || !state.nodes.some((node) => node.id === context.nodeId)
+    || (context.expectedContext !== undefined ? !isProjectExpectedContextCurrent(context.expectedContext, state)
+      || context.expectedContext.kind !== 'canvas' || context.expectedContext.canvasId !== context.projectId : state.projects !== undefined)) {
+    throw new Error('画布上下文已变化，插件资源授权已撤销');
+  }
+  return state;
+}
+
 export async function mintPluginInvocationResources(
   options: MintPluginInvocationResourcesOptions,
 ): Promise<PluginInvocationResources> {
+  assertPluginResourceContextCurrent(options);
   if (options.state.currentProjectId !== options.projectId) throw new Error('插件资源项目已切换');
   if (options.state.getCurrentRevision() !== options.baseRevision) throw new Error('画布已变化，无法授权插件资源');
   const targetNode = options.state.nodes.find((node) => node.id === options.nodeId);
@@ -316,9 +342,10 @@ export async function mintPluginInvocationResources(
 }
 
 function requireLease(context: PluginResourceReadContext, resourceId: string): PluginResourceLease {
+  const currentState = assertPluginResourceContextCurrent(context);
   const dependency = dependencyLeases.get(context.invocationId);
   if (dependency) {
-    const current = resolvePluginDependencies(context.state.installedPlugins ?? [], context.pluginId);
+    const current = resolvePluginDependencies(currentState.installedPlugins ?? [], context.pluginId);
     if (!current.ready || current.fingerprint !== dependency.fingerprint) throw new Error('插件资源依赖租约已失效');
   }
   const lease = resourceLeases.get(resourceId);
@@ -331,18 +358,20 @@ function requireLease(context: PluginResourceReadContext, resourceId: string): P
     || lease.projectId !== context.projectId
     || lease.nodeId !== context.nodeId
     || lease.baseRevision !== context.baseRevision
+    || (lease.expectedContext !== undefined || context.expectedContext !== undefined)
+      && (!lease.expectedContext || !context.expectedContext || !isProjectExpectedContextCurrent(lease.expectedContext, context.expectedContext))
   ) {
     throw new Error('插件资源授权不存在、已失效或不属于当前调用');
   }
   if (
-    context.state.currentProjectId !== context.projectId
-    || context.state.getCurrentRevision() !== context.baseRevision
-    || !context.state.nodes.some((node) => node.id === context.nodeId)
+    currentState.currentProjectId !== context.projectId
+    || currentState.getCurrentRevision() !== context.baseRevision
+    || !currentState.nodes.some((node) => node.id === context.nodeId)
   ) {
     throw new Error('画布已变化，插件资源授权已撤销');
   }
   if (lease.edgeId) {
-    const edge = context.state.edges.find((item) => item.id === lease.edgeId);
+    const edge = currentState.edges.find((item) => item.id === lease.edgeId);
     if (!edge || edge.source !== lease.sourceNodeId || edge.target !== context.nodeId) {
       throw new Error('插件资源连线已变化，授权已撤销');
     }
@@ -351,7 +380,7 @@ function requireLease(context: PluginResourceReadContext, resourceId: string): P
       : undefined;
     if (lease.portId && currentPortId !== lease.portId) throw new Error('插件资源端口已变化，授权已撤销');
   }
-  if (lease.sourceNodeId && !context.state.nodes.some((node) => node.id === lease.sourceNodeId)) {
+  if (lease.sourceNodeId && !currentState.nodes.some((node) => node.id === lease.sourceNodeId)) {
     throw new Error('插件资源来源节点已删除，授权已撤销');
   }
   if (lease.packageResourceId) {
@@ -487,13 +516,7 @@ export function registerPluginDerivedResource(
     bytes: Uint8Array;
   },
 ): PluginResourceRef {
-  if (
-    context.state.currentProjectId !== context.projectId
-    || context.state.getCurrentRevision() !== context.baseRevision
-    || !context.state.nodes.some((node) => node.id === context.nodeId)
-  ) {
-    throw new Error('画布已变化，不能登记派生资源');
-  }
+  assertPluginResourceContextCurrent(context);
   if (
     !context.permissions.includes('files.connected.read')
     || !context.permissions.includes('files.output.create')
@@ -532,6 +555,7 @@ export function registerPluginDerivedResource(
     projectId: context.projectId,
     nodeId: context.nodeId,
     baseRevision: context.baseRevision,
+    expectedContext: context.expectedContext,
     bytes: options.bytes.slice(),
   });
   resources.derived.push(ref);
@@ -567,9 +591,10 @@ async function revalidateProjectLease(
   lease: PluginResourceLease,
 ): Promise<ProjectResourceIdentity> {
   if (!lease.sourceNodeId || !lease.path || !lease.relativePath) throw new Error('插件项目资源租约无效');
-  const node = context.state.nodes.find((item) => item.id === lease.sourceNodeId);
+  const node = assertPluginResourceContextCurrent(context).nodes.find((item) => item.id === lease.sourceNodeId);
   if (!node) throw new Error('插件资源来源节点已删除，授权已撤销');
   const current = await resolveNodeProjectResource(context.projectId, node);
+  assertPluginResourceContextCurrent(context);
   if (
     !current
     || current.relativePath !== lease.relativePath
@@ -652,6 +677,7 @@ export async function readPluginResourceRange(
     : lease.packageResourceId
       ? await readPackageRange(context, lease, offset, safeLength)
       : await readProjectRange(await revalidateProjectLease(context, lease), offset, safeLength);
+  requireLease(context, resourceId);
   return { resource: lease.ref, offset, bytes: bytes.byteLength, base64: bytesToBase64(bytes) };
 }
 
@@ -674,6 +700,7 @@ export async function readPluginResourceText(
     : lease.packageResourceId
       ? await readPackageRange(context, lease, 0, lease.ref.size)
       : await readFile((await revalidateProjectLease(context, lease)).path);
+  requireLease(context, resourceId);
   let content: string;
   try {
     content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -718,6 +745,7 @@ export async function resolvePluginResourceHostUrl(
   const identity = await revalidateProjectLease(context, lease);
   const convert = getConvertFileSrc();
   if (!convert) throw new Error('当前环境不能解析本地媒体资源');
+  requireLease(context, resourceId);
   return convert(identity.path);
 }
 

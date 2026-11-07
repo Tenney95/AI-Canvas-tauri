@@ -349,7 +349,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                     />
                     <button
                       type="button"
-                      disabled={busy !== null}
+                      disabled={!ready || busy !== null}
                       onClick={() => { if (!isCurrent) void switchProject(episode.id); }}
                       aria-current={isCurrent}
                       data-tooltip={episode.name}
@@ -374,7 +374,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                                     group-hover/episode:opacity-100 group-focus-within/episode:opacity-100">
                       <button
                         type="button"
-                        disabled={index === 0 || busy !== null}
+                        disabled={!ready || index === 0 || busy !== null}
                         onClick={() => { void runBusy('move', () => moveEpisode(episode.id, -1)); }}
                         aria-label={t('把 {name} 上移', { name: episode.name })}
                         className="grid h-5 w-5 place-items-center rounded text-canvas-text-muted
@@ -385,7 +385,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                       </button>
                       <button
                         type="button"
-                        disabled={index === episodes.length - 1 || busy !== null}
+                        disabled={!ready || index === episodes.length - 1 || busy !== null}
                         onClick={() => { void runBusy('move', () => moveEpisode(episode.id, 1)); }}
                         aria-label={t('把 {name} 下移', { name: episode.name })}
                         className="grid h-5 w-5 place-items-center rounded text-canvas-text-muted
@@ -396,8 +396,9 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                       </button>
                       <button
                         type="button"
-                        disabled={busy !== null}
+                        disabled={!ready || busy !== null || episodes.length <= 1}
                         onClick={() => {
+                          if (!ready || episodes.length <= 1) return;
                           if (confirmDeleteId === episode.id) {
                             setConfirmDeleteId(null);
                             void runBusy('delete', () => deleteProject(episode.id));
@@ -408,7 +409,9 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                         aria-label={confirmDeleteId === episode.id
                           ? t('确认删除 {name}', { name: episode.name })
                           : t('删除 {name}', { name: episode.name })}
-                        data-tooltip={confirmDeleteId === episode.id ? t('再点一次确认删除') : t('删除这一集')}
+                        data-tooltip={episodes.length <= 1
+                          ? t('最后一集暂不可删除，整部剧请在项目库管理')
+                          : confirmDeleteId === episode.id ? t('再点一次确认删除') : t('删除这一集')}
                         className={`grid h-5 w-5 place-items-center rounded transition-colors
                                     disabled:cursor-not-allowed disabled:opacity-25 ${
                                       confirmDeleteId === episode.id
@@ -422,6 +425,12 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                   </div>
                 );
               })}
+
+              {episodes.length === 1 ? (
+                <p className="px-1.5 text-[10px] leading-4 text-canvas-text-muted">
+                  {t('最后一集暂不可删除，整部剧请在项目库管理。')}
+                </p>
+              ) : null}
 
               <button
                 type="button"

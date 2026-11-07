@@ -3,6 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentTask } from '../../../src/types/agent';
+import { captureLegacyCanvasContext } from '../../../src/services/projectExecutionContext';
 
 const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
 const assembleAgentContextMock = vi.hoisted(() => vi.fn());
@@ -76,6 +77,8 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-1',
+    projectLoadStatus: 'ready',
+    projects: [{ id: 'project-1', name: '项目', createdAt: 1, updatedAt: 1 }],
     activeConversationId: 'conversation-1',
     conversations: [{
       id: 'conversation-1', projectId: 'project-1', title: 'Diagnostics', titleSource: 'auto',
@@ -118,6 +121,7 @@ function arrangeStream() {
 function restoreCheckpointTask() {
   const restoredTask = createTask(true);
   restoredTask.resumeCount = 1;
+  restoredTask.projectScope = captureLegacyCanvasContext(useAppStore.getState())!;
   restoredTask.steps[0].toolCall!.canvasCheckpoint = {
     historyIndexBefore: 0, historyIndexAfter: 1, revisionBefore: 0, revisionAfter: 1,
   };
@@ -126,6 +130,16 @@ function restoreCheckpointTask() {
 }
 
 describe('agent runtime diagnostics', () => {
+  it('P4 无scope旧任务在异步材料读取期间换epoch后不重新绑定或调用模型', async () => {
+    assembleAgentContextMock.mockImplementationOnce(async () => {
+      useAppStore.setState((state) => ({ projects: state.projects.map((item) => ({ ...item, exchangeEpoch: 9 })) }));
+      return { messages: [{ role: 'user', content: '旧材料' }], usage: {} };
+    });
+    await expect(runAgentLoop({ taskId: 'task-diagnostics', systemPrompt: 'system', userMessage: '原请求', signal: new AbortController().signal }))
+      .rejects.toThrow('上下文');
+    expect(streamAssistantReplyMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().agentTasks[0]).toMatchObject({ modelRounds: 0, toolCallCount: 0 });
+  });
   it('applies requirements added during a tool-free response before completing', async () => {
     const requests: Array<Array<{ role: string; content: string }>> = [];
     streamAssistantReplyMock.mockImplementation(async ({ onEvent, messages }) => {

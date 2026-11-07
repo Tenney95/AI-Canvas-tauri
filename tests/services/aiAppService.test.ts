@@ -48,7 +48,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   files.clear();
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: context.projectId, nodes: [inputNode()] });
+  useAppStore.setState({ currentProjectId: context.projectId, projectLoadStatus: 'ready',
+    projects: [{ id: context.projectId, name: '测试项目', createdAt: 1, updatedAt: 1 }], nodes: [inputNode()] });
   vi.mocked(validateAiAppCandidate).mockResolvedValue(undefined);
   vi.mocked(getProjectDataDir).mockImplementation(async (projectId) => `/projects/${projectId}`);
   vi.mocked(writeImmutableProjectFile).mockImplementation(async ({ projectId, reference, data }) => {
@@ -94,10 +95,11 @@ describe('AI 应用定义生命周期', () => {
     expect(useAppStore.getState().history).toEqual([]);
   });
 
-  it.each(['project', 'revision', 'input', 'removed'])('创建期间 %s 变化后丢弃迟到结果', async (change) => {
+  it.each(['project', 'revision', 'epoch', 'input', 'removed'])('创建期间 %s 变化后丢弃迟到结果', async (change) => {
     vi.mocked(validateAiAppCandidate).mockImplementationOnce(async () => {
       if (change === 'project') useAppStore.setState({ currentProjectId: 'project-b' });
       if (change === 'revision') useAppStore.getState().incrementRevision();
+      if (change === 'epoch') useAppStore.setState({ projects: useAppStore.getState().projects.map((project) => ({ ...project, exchangeEpoch: 1 })) });
       if (change === 'input') useAppStore.getState().updateNodeDataTransient('input', { output: '已修改' });
       if (change === 'removed') useAppStore.setState({ nodes: [] });
     });
