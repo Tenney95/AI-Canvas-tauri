@@ -420,7 +420,8 @@ function sanitizeMediaParameters(value: MediaTaskContext['parameters']): MediaTa
 function sanitizeEditorTransition(value: MediaTaskContext['editorTransition']): MediaTaskContext['editorTransition'] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const safeId = (id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length <= 256
-    && !/[\\/\u0000-\u001f\u007f:]/.test(id) && id !== '.' && id !== '..';
+    && !/[\\/:]/.test(id) && ![...id].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+    && id !== '.' && id !== '..';
   if (!safeId(value.anchorNodeId) || !safeId(value.requestId)) return;
   return { anchorNodeId: value.anchorNodeId, requestId: value.requestId,
     ...(safeId(value.fileName) ? { fileName: value.fileName } : {}),
@@ -1058,7 +1059,10 @@ export function readPendingMediaTaskViews(projectIds: readonly string[]): Pendin
     const parsed = parseLegacyPendingTaskSource(raw);
     const ids = new Set(projectIds);
     const validId = (value: unknown): value is string => typeof value === 'string' && value.length > 0
-      && value === value.trim() && value.length <= 512 && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+      && value === value.trim() && value.length <= 512 && ![...value].some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code >= 127 && code <= 159;
+      });
     const types = LEGACY_PENDING_TASK_TYPES;
     const categories = new Set(['ai-image', 'ai-video', 'ai-audio', 'ai-text', 'ai-panorama', 'ai-animation']);
     if (!Array.isArray(parsed) || parsed.some((item) => !item || typeof item !== 'object' || Array.isArray(item)

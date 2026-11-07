@@ -232,7 +232,7 @@ export interface HistoricalMcpOperationQuery {
 export async function getHistoricalMcpOperationReceipt(input: HistoricalMcpOperationQuery): Promise<McpOperationReceipt | null> {
   const projectId = input.legacyProjectId;
   if (typeof projectId !== 'string' || !projectId.trim() || projectId.length > 180
-    || /[\u0000-\u001f]/.test(projectId) || Boolean(input.operationKey) === Boolean(input.operationId)
+    || [...projectId].some((character) => character.charCodeAt(0) < 32) || Boolean(input.operationKey) === Boolean(input.operationId)
     || input.auditScope !== undefined && input.auditScope !== 'deleted-target') throw new Error('历史回执查询条件无效');
   const initial = useAppStore.getState();
   const target = initial.projects.find((item) => item.id === projectId);

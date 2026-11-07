@@ -1734,7 +1734,7 @@ describe('pending generation task recovery', () => {
         status: 'success', videoUrl: 'asset://recovered-video.mp4',
       });
       expect(getPendingTasksForProject('project-1')).toEqual([]);
-    });
+    }, { timeout: 4000 }); // 历史记录异步落入 IndexedDB 后才允许确认并清空待续队列。
     expect(persistMedia).toHaveBeenCalledWith('data:video/mp4;base64,AQID', 'project-1', 'ai-video', 'Video', {
       mediaDownloadAccess: { providerConfigId: 'custom-video', origin: 'https://gateway.example' },
       signal: expect.any(AbortSignal),

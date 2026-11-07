@@ -212,7 +212,7 @@ describe('MCP operation durable claims', () => {
 
   it.each([{ stored: undefined, switchProject: true }, { stored: 7, switchProject: true }, { stored: 7, switchProject: false }])(
     'preserves committed revision and never borrows another project revision (%o)', async ({ stored, switchProject }) => {
-      const { api, db, useAppStore, input, identity } = await setup();
+      const { api, db, useAppStore, input, identity, projectId } = await setup();
       const claim = await api.claimMcpOperation(identity, input);
       await api.startMcpOperation(claim.receipt.taskId);
       if (stored !== undefined) await api.recordMcpOperationProgress(claim.receipt.taskId, { revisionAfter: stored });

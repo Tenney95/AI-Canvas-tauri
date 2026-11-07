@@ -1,6 +1,6 @@
 /** P5 fixture 聚合事务与传输 journal；不打开正式库，不发布/删除文件，不恢复审计或LS。 */
 import type { CanvasDocument, CanvasPreview, EpisodeContent, EpisodeRecord, LegacyProjectBinding, ProjectContent, ProjectRecord } from '../../types/project';
-import { PROJECT_MODEL_BUSINESS_FIXTURE_KEY, type ProjectModelFixtureBusinessSession, type ProjectModelStored } from '../../types/projectModelBusiness';
+import type { ProjectModelFixtureBusinessSession, ProjectModelStored } from '../../types/projectModelBusiness';
 import type {
   ProjectModelArchiveHistoryBinding, ProjectModelExportPhase, ProjectModelImportPhase, ProjectModelTransferAggregate,
   ProjectModelTransferCapture, ProjectModelTransferExchange, ProjectModelTransferExportJournal, ProjectModelTransferHistoryKind,
@@ -24,7 +24,7 @@ const IMPORT_PHASES: ProjectModelImportPhase[] = ['prepared', 'media_publishing'
 const EXPORT_PHASES: ProjectModelExportPhase[] = ['prepared', 'packing', 'published', 'registered', 'aborted'];
 const error = (code: string) => new Error('项目模型隔离传输未完成：' + code);
 const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256
-  && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value);
+  && value === value.trim() && ![...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
 const operation = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(value);
 const hash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const opaque = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{8,160}$/.test(value);

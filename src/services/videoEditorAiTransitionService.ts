@@ -137,7 +137,9 @@ export async function runVideoEditorAiTransition(
   assertCurrent?.();
   if (useAppStore.getState().currentProjectId !== projectId) throw new Error('原画布已切换，请重新打开剪辑窗口');
   if (![request.requestId, anchorNodeId].every((value) => typeof value === 'string' && value.length > 0
-    && value.length <= 256 && !/[\\/:\u0000-\u001f\u007f]/.test(value) && value !== '.' && value !== '..')) throw new Error('转场请求身份无效');
+    && value.length <= 256 && !/[\\/:]/.test(value)
+    && !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+    && value !== '.' && value !== '..')) throw new Error('转场请求身份无效');
   const prompt = request.prompt.trim();
   if (!prompt) throw new Error('转场提示词不能为空');
   if (!request.model || !request.provider) throw new Error('请先选择用于生成转场的视频模型');

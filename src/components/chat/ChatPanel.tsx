@@ -18,6 +18,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useMemo,
   useRef,
@@ -143,7 +144,7 @@ export default function ChatPanel({
   const windowFrame = detachedSnapshot?.windowFrame;
   const emitAction = useCallback((action: ChatAction) => emitWindowAction(action, windowFrame), [windowFrame]);
   const latestWindowFrame = useRef(windowFrame);
-  latestWindowFrame.current = windowFrame;
+  useLayoutEffect(() => { latestWindowFrame.current = windowFrame; }, [windowFrame]);
   const t = useT();
   const reduceMotion = useReducedMotion();
   const {

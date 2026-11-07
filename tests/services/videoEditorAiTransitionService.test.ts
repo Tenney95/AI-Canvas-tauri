@@ -44,6 +44,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('video editor transition identity and delivery', () => {
+  it('rejects unsafe request and anchor identities before submitting media', async () => {
+    for (const identity of ['', '.', '..', 'a/b', 'a\\b', 'a:b', `a${String.fromCharCode(0)}b`,
+      `a${String.fromCharCode(31)}b`, `a${String.fromCharCode(127)}b`, 'x'.repeat(257)]) {
+      await expect(runVideoEditorAiTransition({ ...request, requestId: identity }, 'project-1', 'anchor')).rejects.toThrow('身份无效');
+      await expect(runVideoEditorAiTransition(request, 'project-1', identity)).rejects.toThrow('身份无效');
+    }
+    expect(mocks.generateVideo).not.toHaveBeenCalled();
+  });
+
   it('uses an independent bounded tracking identity and leaves general defaults unset', async () => {
     const outcome = await runVideoEditorAiTransition(request, 'project-1', 'anchor');
     expect(mocks.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ model: request.model, provider: 'general',
@@ -161,7 +170,7 @@ describe('real generateVideo provider receipts', () => {
       submit: { method: 'POST', path: '/videos', body: { model: '{{model}}', prompt: '{{prompt}}',
         first_frame: '{{firstImage}}', last_frame: '{{lastImage}}' } },
       response: mode === 'async' ? { type: 'json', taskIdPath: 'id' } : { type: 'json', result: { urlPath: 'url' } },
-      ...(mode === 'async' ? { poll: { method: 'GET' as const, path: '/videos/{{taskId}}', intervalMs: 1,
+      ...(mode === 'async' ? { poll: { method: 'GET' as const, path: '/videos/{{submit.id}}', intervalMs: 1000,
         response: { statusPath: 'status', successValues: ['succeeded'], failureValues: ['failed'], result: { urlPath: 'url' } } } } : {}),
     } };
     useAppStore.setState((state) => ({ config: { ...state.config,
@@ -190,7 +199,10 @@ describe('real generateVideo provider receipts', () => {
     const task = getPendingTasksForProject('project-1')[0];
     expect(task).toMatchObject({ nodeId: expect.stringContaining('video-editor-transition:'), providerConfigId: 'original',
       taskType: 'custom-protocol', submitted: true, resultUrls: ['https://cdn.example/paid-result.mp4'], mediaRecoveryState: 'delivery_pending' });
-    if (mode === 'async') expect(task.taskId).toBe('remote-original-task');
+    if (mode === 'async') {
+      expect(task.taskId).toBe('remote-original-task');
+      expect(fetchMock.mock.calls.some(([url, options]) => options?.method === 'GET' && url.endsWith('/videos/remote-original-task'))).toBe(true);
+    }
     expect(JSON.stringify(task)).not.toContain('fixture-secret');
     current = true;
     revoke = false;

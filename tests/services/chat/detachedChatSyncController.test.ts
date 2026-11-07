@@ -276,10 +276,21 @@ describe('detached chat sync controller', () => {
   });
 
   it('retains detached text when image validation rejects the submission', () => {
+    useAppStore.getState().setChatComposerLiveDraft('保留我的输入', 'conversation-1');
     conversationControllerMocks.submit.mockReturnValueOnce({ status: 'ignored' });
     handleDetachedChatAction({ type: 'send_message', content: '保留我的输入', conversationId: 'conversation-1',
       imageFileNames: ['chat-ref-11111111-1111-4111-8111-111111111111.png'] }, vi.fn());
+    expect(conversationControllerMocks.submit).toHaveBeenCalledOnce();
     expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('保留我的输入');
+    expect(useAppStore.getState().chatComposerLiveDraft).toBe('保留我的输入');
+  });
+
+  it('does not replace a newer detached draft with rejected submitted text', () => {
+    useAppStore.getState().setChatComposerLiveDraft('发送后继续编辑', 'conversation-1');
+    conversationControllerMocks.submit.mockReturnValueOnce({ status: 'ignored' });
+    handleDetachedChatAction({ type: 'send_message', content: '之前发送的内容', conversationId: 'conversation-1',
+      imageFileNames: ['chat-ref-11111111-1111-4111-8111-111111111111.png'] }, vi.fn());
+    expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('发送后继续编辑');
   });
 
   it('synchronizes pending image metadata through snapshots and patches and routes removal to the main store', () => {
