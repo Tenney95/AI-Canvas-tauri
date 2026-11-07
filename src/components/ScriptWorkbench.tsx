@@ -328,13 +328,8 @@ export default function ScriptWorkbench({
   const currentEpisodeId = currentEpisode?.id;
   const [sessionId] = useState(() => crypto.randomUUID());
   const [, refreshOriginalWriting] = useState(0);
-  const [originalWriting, setOriginalWriting] = useState<ReturnType<typeof createOriginalWritingSession> | null>(null);
-  useEffect(() => {
-    if (!seriesId) return;
-    const session = createOriginalWritingSession({ seriesId, onChange: () => refreshOriginalWriting((version) => version + 1) });
-    setOriginalWriting(session);
-    return () => session.dispose();
-  }, [seriesId]);
+  const [originalWriting] = useState(() => seriesId ? createOriginalWritingSession({ seriesId }) : null);
+  useEffect(() => originalWriting?.subscribe(() => refreshOriginalWriting((version) => version + 1)), [originalWriting]);
   const [detached, setDetached] = useState(false);
   const [openingWindow, setOpeningWindow] = useState(false);
   const [closingWorkbench, setClosingWorkbench] = useState(false);
@@ -1375,9 +1370,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
     targetDurationSec, sourceOpen, renamingEpisodeId, extractingAssetKind, seriesAssetPreview, executionSelection,
     episodeTeamTasks } = snapshot;
   const collaborationOpen = !!collaborationEpisodeId && collaborationEpisodeId === currentEpisode?.id && contextReady;
-  useEffect(() => {
-    if (!contextReady || collaborationEpisodeId !== currentEpisode?.id) setCollaborationEpisodeId(null);
-  }, [collaborationEpisodeId, contextReady, currentEpisode?.id]);
+  if (collaborationEpisodeId && (!contextReady || collaborationEpisodeId !== currentEpisode?.id)) setCollaborationEpisodeId(null);
   const isOpen = true;
   const projectLoadStatus = contextReady ? 'ready' : 'loading';
   const episodeAssetRoster = normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster);

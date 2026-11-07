@@ -67,7 +67,7 @@ function fileError(reason: unknown, saving: boolean): WritingError {
     : '无法读取原著文件，请检查文件是否可用且为 UTF-8 文本');
 }
 
-export function createOriginalWritingSession(options: { seriesId: string; onChange: () => void }) {
+export function createOriginalWritingSession(options: { seriesId: string; onChange?: () => void }) {
   let disposed = false;
   let document: OriginalWritingDocument | undefined;
   let baseline: AssetTextSnapshot | undefined;
@@ -75,9 +75,14 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
   let path: string | undefined;
   let error: string | undefined;
   let chapterCount = 0;
-  let active: { kind: 'loading' | 'saving' | 'generating'; controller: AbortController; binding: SourceBinding } | undefined;
+  let active: { kind: 'loading' | 'saving' | 'generating'; controller: AbortController; binding: SourceBinding; stopScope?: () => void } | undefined;
   let opening: Promise<OriginalWritingDocument> | undefined;
-  const changed = () => { if (!disposed) options.onChange(); };
+  const listeners = new Set<() => void>();
+  const changed = () => {
+    if (disposed) return;
+    options.onChange?.();
+    listeners.forEach((listener) => listener());
+  };
   const live = () => { if (disposed) throw new WritingError('原文编辑会话已关闭'); mainWindowOnly(); };
   const loaded = () => {
     live();
@@ -92,23 +97,29 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
   const isDirty = () => !!document && !!baseline && document.content !== baseline.content;
   const begin = (kind: NonNullable<typeof active>['kind'], source: SourceBinding) => {
     idle();
-    const operation = { kind, controller: new AbortController(), binding: source };
+    const operation: NonNullable<typeof active> = { kind, controller: new AbortController(), binding: source };
     active = operation;
+    // 仅异步操作期间监听剧集范围；纯构造和已完成会话不占用 Store 订阅。
+    const unsubscribeScope = useAppStore.subscribe(() => {
+      if (operation.controller.signal.aborted) return;
+      try { assertBinding(operation.binding); }
+      catch { operation.controller.abort(); }
+    });
+    const stopScope = () => {
+      unsubscribeScope();
+      operation.controller.signal.removeEventListener('abort', stopScope);
+    };
+    operation.stopScope = stopScope;
+    operation.controller.signal.addEventListener('abort', stopScope, { once: true });
     error = undefined;
     changed();
     return operation;
   };
   const finish = (operation: NonNullable<typeof active>) => {
+    operation.stopScope?.();
     if (active === operation) active = undefined;
     changed();
   };
-
-  // 项目切换、归档更新或原著替换在异步文件调用期间也立即撤销继续写入的资格。
-  const unsubscribe = useAppStore.subscribe(() => {
-    if (!active || active.controller.signal.aborted) return;
-    try { assertBinding(active.binding); }
-    catch { active.controller.abort(); }
-  });
 
   async function load(discard = false): Promise<OriginalWritingDocument> {
     live();
@@ -276,11 +287,16 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
       const cancelled = reason instanceof DOMException && reason.name === 'AbortError';
       error = cancelled ? undefined : reason instanceof WritingError ? reason.message : '原文操作未完成，已有草稿已保留';
       changed();
-      throw new Error(cancelled ? '原文操作已取消，已有草稿已保留' : error);
+      throw new Error(cancelled ? '原文操作已取消，已有草稿已保留' : error, { cause: reason });
     }
   }
 
   return {
+    subscribe(listener: () => void): () => void {
+      live();
+      listeners.add(listener);
+      return () => { listeners.delete(listener); if (!listeners.size) active?.controller.abort(); };
+    },
     summary(): OriginalWritingSummary {
       return { loaded: !!document, loading: active?.kind === 'loading', dirty: isDirty(), saving: active?.kind === 'saving',
         generating: active?.kind === 'generating', documentId: document?.documentId, revision: document?.revision ?? 0,
@@ -297,7 +313,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
       changed();
     },
     dispose() {
-      disposed = true; unsubscribe(); active?.controller.abort();
+      disposed = true; listeners.clear(); active?.controller.abort();
       document = undefined; baseline = undefined; binding = undefined; path = undefined; error = undefined;
     },
   };

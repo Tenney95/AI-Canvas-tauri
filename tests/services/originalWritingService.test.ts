@@ -60,6 +60,45 @@ beforeEach(() => {
 });
 
 describe('原文主窗口编辑会话', () => {
+  it('纯构造不订阅 Store，监听生命周期中止操作但保留正文且只通知当前监听者', async () => {
+    const editor = createOriginalWritingSession({ seriesId: 'series' });
+    expect(mocks.listeners.size).toBe(0);
+    const first = vi.fn();
+    const stopFirst = editor.subscribe(first);
+    const opening = editor.handle({ type: 'original_open' });
+    expect(mocks.listeners.size).toBe(1);
+    const opened = documentResult(await opening);
+    expect(mocks.listeners.size).toBe(0);
+    stopFirst();
+    const firstCalls = first.mock.calls.length;
+    const second = vi.fn();
+    const stopSecond = editor.subscribe(second);
+    editor.flush({ documentId: opened.documentId, sequence: 1, content: '重新订阅后继续写作' });
+    expect(first).toHaveBeenCalledTimes(firstCalls);
+    expect(second).toHaveBeenCalledOnce();
+    const pending = deferred<string>();
+    mocks.stream.mockReturnValueOnce(pending.promise);
+    const generating = editor.handle({ type: 'original_generate', mode: 'continue', start: 0, end: 0,
+      instruction: '', expectedSequence: 1 });
+    const signal = (mocks.stream.mock.calls[0][0] as StreamingCallOptions).signal!;
+    stopSecond();
+    expect(signal.aborted).toBe(true);
+    expect(mocks.listeners.size).toBe(0);
+    const secondCalls = second.mock.calls.length;
+    const third = vi.fn();
+    const stopThird = editor.subscribe(third);
+    pending.resolve('取消后不得采用的正文');
+    await expect(generating).rejects.toThrow('原文操作已取消');
+    expect(second).toHaveBeenCalledTimes(secondCalls);
+    expect(third).toHaveBeenCalled();
+    const retained = documentResult(await editor.handle({ type: 'original_open' }));
+    expect(retained.documentId).toBe(opened.documentId);
+    expect(retained.content).toBe('重新订阅后继续写作');
+    expect(retained.candidate).toBeUndefined();
+    stopThird();
+    editor.dispose();
+  });
+
   it('摘要不含正文、文件路径和候选文本；编辑序列拒绝旧副本覆盖新输入', async () => {
     const editor = session();
     const opened = documentResult(await editor.handle({ type: 'original_open' }));

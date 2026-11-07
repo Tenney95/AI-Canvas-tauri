@@ -48,8 +48,6 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
   const busyOperation = useRef<string | null>(null);
   const request = useRef(0);
   const latestEdit = useRef<Promise<unknown> | null>(null);
-  currentDocument.current = document;
-  currentRange.current = range;
 
   useEffect(() => { lifetime.current += 1; return () => { lifetime.current += 1; }; }, []);
   useEffect(() => {
@@ -64,6 +62,7 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
       latestEdit.current = null;
       currentDocument.current = next;
       setDocument(next);
+      currentRange.current = null;
       setRange(null);
       setSelection({ start: next.content.length, end: next.content.length });
     }).catch((reason: unknown) => {
@@ -98,6 +97,7 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
     sequence.current = replaceIdentity ? next.acceptedSequence : Math.max(sequence.current, next.acceptedSequence);
     if (replaceIdentity) { latestEdit.current = null; setEditPending(false); }
     if (current?.content !== next.content) {
+      currentRange.current = null;
       setRange(null);
       setSelection({ start: next.content.length, end: next.content.length });
       requestAnimationFrame(() => sourceInput.current?.setSelectionRange(next.content.length, next.content.length));
@@ -162,7 +162,11 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
     const nextDocument = { ...current, content: nextContent };
     currentDocument.current = nextDocument;
     setDocument(nextDocument);
-    if (selected) setRange({ ...selected, end: start + next.length });
+    if (selected) {
+      const nextRange = { ...selected, end: start + next.length };
+      currentRange.current = nextRange;
+      setRange(nextRange);
+    }
     setSelection({ start: start + (sourceInput.current?.selectionStart ?? next.length), end: start + (sourceInput.current?.selectionEnd ?? next.length) });
     setReloadConfirm(false);
     setEditPending(true);
@@ -182,6 +186,7 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
   const chooseChapter = (index: number) => {
     const chapter = chapters[index];
     const nextRange = chapter ? { start: chapter.start, end: chapter.end, title: chapter.title } : null;
+    currentRange.current = nextRange;
     setRange(nextRange);
     const cursor = nextRange?.end ?? content.length;
     setSelection({ start: cursor, end: cursor });
