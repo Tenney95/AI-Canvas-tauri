@@ -459,7 +459,7 @@ describe('pluginUiWindowService', () => {
     await expect(openPluginUiWindow({ ...options, plugin: { ...plugin, revisionDigest: 'd'.repeat(64) } })).rejects.toThrow('revision');
     const pending = openPluginUiWindow(options);
     mocks.getState().currentProjectId = 'project-2';
-    await expect(pending).rejects.toThrow('项目已变化');
+    await expect(pending).rejects.toThrow('项目上下文已变化');
     expect(mocks.create).not.toHaveBeenCalled();
   });
 });

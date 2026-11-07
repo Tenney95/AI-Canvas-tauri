@@ -73,7 +73,8 @@ beforeEach(() => {
   driver.pending.mockReset().mockResolvedValue([]);
   driver.waitForSaves.mockReset().mockResolvedValue(true);
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready', nodes: [mediaNode()],
+  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready',
+    projects: [{ id: 'p1', name: '项目一', createdAt: 1, updatedAt: 1 }, { id: 'p2', name: '项目二', createdAt: 1, updatedAt: 1 }], nodes: [mediaNode()],
     saveCurrentProjectSilent: vi.fn(async () => 'p1') });
 });
 afterEach(async () => {

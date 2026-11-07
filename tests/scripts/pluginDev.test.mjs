@@ -20,10 +20,15 @@ describe('plugin developer CLI', () => {
       await expect(initPlugin(root)).rejects.toThrow();
       const sdk = await readFile(join(root, 'host.d.ts'), 'utf8');
       expect(sdk).toContain('interface PluginUISurfaceProps');
+      expect(sdk).toContain('interface ProjectContext');
+      expect(sdk).toContain('interface CanvasContext');
       expect(sdk).toContain('function definePlugin');
       expect(sdk).not.toMatch(/from ['"]\.\.?\//);
       await writeFile(join(root, 'src/helper.ts'), 'export const transform = (value: string) => value.toUpperCase();', 'utf8');
       await writeFile(join(root, 'src/main.ts'), `import { transform } from './helper';
+        import type { PluginUiWindowBinding } from '../host';
+        const revision = (context: NonNullable<PluginUiWindowBinding['expectedContext']>): number => context.projectEpoch + context.canvasRevision;
+        void revision;
         definePlugin({ tools: { uppercase: async (input) => ({ data: { output: transform(String(input.node.data.output ?? '')) } }) } });`, 'utf8');
       await buildPlugin(root);
       expect(await readFile(join(root, 'main.js'), 'utf8')).not.toContain("from './helper'");

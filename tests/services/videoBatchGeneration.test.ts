@@ -12,7 +12,9 @@ import { executeGeneration } from '../../src/services/generationService';
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'p', showToast: vi.fn(), recordOutputHistory: vi.fn(async () => {}),
+  useAppStore.setState({ currentProjectId: 'p', projectLoadStatus: 'ready',
+    projects: [{ id: 'p', name: '项目', createdAt: 1, updatedAt: 1 }, { id: 'other', name: '另一项目', createdAt: 1, updatedAt: 1 }],
+    showToast: vi.fn(), recordOutputHistory: vi.fn(async () => {}),
     nodes: [{ id: 'v', type: 'ai-video', position: { x: 0, y: 0 }, data: {
       type: 'ai-video', label: 'SH001', prompt: '动作', model: 'general/test', provider: 'general', seedanceDuration: 9,
     } }] });

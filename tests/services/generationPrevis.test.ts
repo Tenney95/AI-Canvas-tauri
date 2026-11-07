@@ -24,7 +24,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState((state) => ({
-    currentProjectId: 'project-a', showToast: vi.fn(), recordOutputHistory: vi.fn(),
+    currentProjectId: 'project-a', projectLoadStatus: 'ready', showToast: vi.fn(), recordOutputHistory: vi.fn(),
     projects: [{ id: 'project-a', name: '电影', createdAt: 1, updatedAt: 1, settings: { defaultModels: { text: 'general/vision' } } }],
     config: { ...state.config, providers: { ...state.config.providers,
       'vision-provider': { name: '视觉测试连接', baseUrl: 'https://vision.example', apiKey: 'test-key' } },

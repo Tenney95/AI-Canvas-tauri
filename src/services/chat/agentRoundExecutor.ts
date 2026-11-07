@@ -64,7 +64,7 @@ import {
 import { emitAgentLifecycleEvent } from './agentLifecycle';
 import { createSkillReadBudget } from './skillReadService';
 import { AgentDurabilityError, beginAgentDispatch, digestAgentDispatchInput, settleAgentDispatch } from './agentDurabilityService';
-import { captureAgentResult } from './agentResultService';
+import { AGENT_RESULT_PREVIEW_CHARS, captureAgentResult } from './agentResultService';
 import { assertAgentProjectContext, captureAgentProjectScope } from './agentProjectContext';
 import { isProjectExpectedContextCurrent, ProjectExecutionContextError } from '../projectExecutionContext';
 
@@ -520,6 +520,8 @@ export async function executePreparedToolCall(
         },
       });
       const result = await prepared.definition.execute(executionContext, prepared.input);
+      // 只读结果没有外部副作用；取消后不能写入完成步骤或交付迟到正文。
+      if (prepared.definition.effect === 'read') assertAgentTaskActive(taskId, context.signal);
       returnedResult = result;
       const status = result.status === 'success' ? 'succeeded' : 'failed';
       const persistentSummary = sanitizePersistentSummary(result.summary);
@@ -531,6 +533,7 @@ export async function executePreparedToolCall(
         toolCall: { ...currentToolCall, callId: call.callId, toolId: call.toolId, effect: prepared.definition.effect,
           retryCount, finishedAt: Date.now(), resultSummary: persistentSummary, errorCode: result.errorCode },
       } });
+      if (prepared.definition.effect === 'read') assertAgentTaskActive(taskId, context.signal);
       // 导航/结构工具有意改变上下文；其后下一次工具仍按原意图复核，不自动改绑。
       const changesContext = /^(?:project_(?:create|open|switch|delete|rename)|episode_(?:move|delete)|series_split_episodes)$/.test(call.toolId);
       if (!changesContext) assertAgentProjectContext(useAppStore.getState(), executionContext, { checkRevision: false });
@@ -570,13 +573,16 @@ export async function executePreparedToolCall(
             && (!live.workbenchTarget || isWorkbenchAgentTaskInScope(useAppStore.getState(), live, call.toolId))
             && (live.toolAllowlist === undefined || live.toolAllowlist.includes(call.toolId))
             && prepared.definition.isAvailable?.(fresh) !== false
-            && prepared.definition.authorize?.(fresh, prepared.input)?.allowed !== false
+            // 短写入回执可能消费一次性草稿；大结果仍需原工具授权，才允许缓存或回读。
+            && (prepared.definition.effect !== 'read' && result.modelContent.length <= AGENT_RESULT_PREVIEW_CHARS
+              || prepared.definition.authorize?.(fresh, prepared.input)?.allowed !== false)
             && result.resultPolicy?.authorize?.() !== false;
         } catch { return false; }
       };
+      if (call.toolId === 'agent_result_read' && !authorizeResult()) throw new Error('结果读取授权已撤销，未交付结果');
       const captured = call.toolId === 'agent_result_read'
         ? { modelContent: result.modelContent, reference: undefined, truncated: result.truncated ?? false }
-        : await captureAgentResult({ scope: context, toolId: call.toolId, text: result.modelContent,
+        : await captureAgentResult({ scope: context, toolId: call.toolId, text: result.modelContent, navigationContextChange: changesContext,
           policy: { ...prepared.definition.resultPolicy, ...result.resultPolicy,
             storage: persistResult ? 'project' : 'memory', authorize: authorizeResult } });
       if (!changesContext) assertAgentProjectContext(useAppStore.getState(), executionContext, { checkRevision: false });
@@ -663,6 +669,9 @@ export async function executePreparedToolCall(
       if (returnedResult && dispatch) {
         // 工具已明确返回，交付/保存引用失败不降为unknown，也不重试原effect。
         await settleAgentDispatch(taskId, dispatch, returnedResult.status === 'success' ? 'succeeded' : 'failed');
+        if (prepared.definition.effect === 'read' && isAgentExecutionInactive(taskId, context.signal)) {
+          assertAgentTaskActive(taskId, context.signal);
+        }
         const errorCode = error instanceof ProjectExecutionContextError ? error.code : 'AGENT_RESULT_DELIVERY_FAILED';
         const message = '工具已返回，执行事实保留在原任务；上下文变化或结果交付失败，已暂停且不会自动重投';
         const liveCall = getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall ?? step.toolCall!;

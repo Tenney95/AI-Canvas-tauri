@@ -35,6 +35,7 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-1',
+    projectLoadStatus: 'ready',
     projects: [{ id: 'project-1', name: 'Project 1', createdAt: 1, updatedAt: 1 }],
     nodes: [],
     edges: [],

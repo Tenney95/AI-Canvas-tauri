@@ -6,6 +6,9 @@ export interface AgentResultReference {
   createdAt: number;
   expiresAt?: number;
   projectFile?: { relativePath: string; sha256: string; bytes: number };
+  /** 结果创建时冻结的项目上下文；旧记录缺少证明时不能重新绑定。 */
+  executionContext?: import('./project').ProjectExpectedContext;
+  projectScope?: import('./project').ProjectExpectedContext;
 }
 
 export interface AgentResultScope {

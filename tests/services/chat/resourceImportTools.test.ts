@@ -42,7 +42,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearAgentToolRegistryForTests();
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'p1', nodes: [], edges: [] });
+  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready',
+    projects: [{ id: 'p1', name: '项目一', createdAt: 1, updatedAt: 1 }, { id: 'p2', name: '项目二', createdAt: 1, updatedAt: 1 },
+      { id: 'series', name: '剧集', createdAt: 1, updatedAt: 1 },
+      ...['episode-1', 'episode-2'].map((id, index) => ({ id, name: id, parentId: 'series', episodeNo: index + 1, createdAt: 1, updatedAt: 1 }))],
+    nodes: [], edges: [] });
   vi.stubGlobal('navigator', { clipboard: { read: mocks.read } });
   vi.stubGlobal('window', { __TAURI__: {} });
   mocks.copy.mockImplementation(async (path: string) => ({

@@ -88,6 +88,8 @@ function directorNode(
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
+  useAppStore.setState({ projectLoadStatus: 'ready', projects: ['a', 'b', 'project-a', 'project-b']
+    .map((id) => ({ id, name: id, createdAt: 1, updatedAt: 1 })) });
   fileMocks.copyFileToProjectData.mockReset();
   fileMocks.copyFileToProjectData.mockImplementation(async (_source: string, projectId: string) => ({
     filePath: `/data/${projectId}/copied.png`,

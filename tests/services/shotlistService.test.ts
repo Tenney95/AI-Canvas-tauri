@@ -19,7 +19,7 @@ beforeEach(() => {
     currentProjectId: 'ep', projectLoadStatus: 'ready', recordOutputHistory: vi.fn(), showToast: vi.fn(),
     projects: [{ id: 'ep', name: '第 1 集', parentId: 'series', createdAt: 1, updatedAt: 1,
       episodeScript: '林夏在站台等列车。', episodeCreative: { targetDurationSec: 90 },
-      settings: { defaultModels: { text: 'general/text' } } }],
+      settings: { defaultModels: { text: 'general/text' } } }, { id: 'series', name: '剧集', createdAt: 1, updatedAt: 1 }],
     nodes: [{ id: 'sheet', type: 'ai-shotlist', position: { x: 0, y: 0 }, data: {
       type: 'ai-shotlist', label: '表', prompt: '拆剧本', shotlistRows: [structuredClone(row)],
     } }],

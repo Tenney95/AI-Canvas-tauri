@@ -26,7 +26,9 @@ let serial = 0;
 const submitted = () => mocks.fetch.mock.calls.filter(([url]) => !String(url).endsWith('/query') && !String(url).endsWith('/upload/binary'));
 function setup(next: RunningHubMediaKind = 'image') {
   kind = next;
-  useAppStore.setState({ currentProjectId: 'p1', config: { ...useAppStore.getState().config, providers: { 'runninghub-model': { name: 'RH', apiKey: connection.apiKey } } },
+  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready',
+    projects: [{ id: 'p1', name: '项目一', createdAt: 1, updatedAt: 1 }],
+    config: { ...useAppStore.getState().config, providers: { 'runninghub-model': { name: 'RH', apiKey: connection.apiKey } } },
     nodes: [{ id: 'n1', type: `ai-${kind}`, position: { x: 0, y: 0 }, data: { type: `ai-${kind}`, label: '模型测试', provider: 'runninghub', model: ids[kind], status: 'loading' } }],
   });
 }

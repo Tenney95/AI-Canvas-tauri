@@ -25,7 +25,9 @@ const getData = () => useAppStore.getState().nodes.find((node) => node.id === no
 beforeEach(() => {
   vi.resetAllMocks();
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'project-a', nodes: [{ id: nodeId, type: 'ai-director', position: { x: 0, y: 0 },
+  useAppStore.setState({ currentProjectId: 'project-a', projectLoadStatus: 'ready',
+    projects: [{ id: 'project-a', name: '项目 A', createdAt: 1, updatedAt: 1 }, { id: 'project-b', name: '项目 B', createdAt: 1, updatedAt: 1 }],
+    nodes: [{ id: nodeId, type: 'ai-director', position: { x: 0, y: 0 },
     data: { type: 'ai-director', label: '导演台', directorRuntimeKind: 'ai-threejs', directorInstanceId: 'instance-a' } }] });
   vi.mocked(generateText).mockResolvedValue(JSON.stringify(createDefaultPrevisScene()));
   vi.mocked(writeImmutableProjectFile).mockImplementation(async ({ reference }) => ({ ...reference, created: true }));

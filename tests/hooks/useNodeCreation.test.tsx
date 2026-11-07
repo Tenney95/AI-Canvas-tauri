@@ -34,7 +34,9 @@ beforeEach(async () => {
   driver.effects = []; driver.ids = 0; driver.onDrag = undefined;
   driver.copy.mockReset().mockResolvedValue({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
   driver.read.mockReset().mockResolvedValue(new Uint8Array([0])); driver.mark.mockReset().mockResolvedValue(true);
-  driver.state = { getCurrentRevision: () => 0, currentProjectId: 'project', projects: [], nodes: [], workflowPanelOpen: false, showToast: vi.fn(), markAssetUsed: driver.mark,
+  driver.state = { getCurrentRevision: () => 0, currentProjectId: 'project', projectLoadStatus: 'ready',
+    projects: [{ id: 'project', name: '项目', createdAt: 1, updatedAt: 1 }, { id: 'other', name: '另一项目', createdAt: 1, updatedAt: 1 }],
+    nodes: [], workflowPanelOpen: false, showToast: vi.fn(), markAssetUsed: driver.mark,
     addNode: vi.fn((node: AppState['nodes'][number]) => { driver.state.nodes = [...driver.state.nodes, node]; }),
     updateNodeDataTransient: vi.fn((id: string, patch: Record<string, unknown>) => {
       driver.state.nodes = driver.state.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);

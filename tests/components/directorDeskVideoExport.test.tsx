@@ -180,6 +180,11 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'project-a',
+    projectLoadStatus: 'ready',
+    projects: [
+      { id: 'project-a', name: '项目 A', createdAt: 1, updatedAt: 1 },
+      { id: 'project-b', name: '项目 B', createdAt: 1, updatedAt: 1 },
+    ],
     nodes: [{
       id: 'director-1',
       type: 'ai-director',

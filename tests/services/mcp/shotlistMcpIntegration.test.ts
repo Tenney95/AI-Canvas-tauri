@@ -43,7 +43,8 @@ beforeEach(() => {
   clearAgentToolRegistryForTests();
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'ep', projectLoadStatus: 'ready', showToast: vi.fn(), recordOutputHistory: vi.fn(),
-    projects: [{ id: 'ep', name: '测试分集', parentId: 'series', createdAt: 1, updatedAt: 1,
+    projects: [{ id: 'series', name: '测试剧集', createdAt: 1, updatedAt: 1 },
+      { id: 'ep', name: '测试分集', parentId: 'series', createdAt: 1, updatedAt: 1,
       episodeScript: '月台上，林夏等到了列车。', settings: { defaultModels: { image: 'image/model' } } }] });
   media.generate.mockReset().mockResolvedValue({ url: 'generated', width: 100, height: 100 });
   media.persist.mockReset().mockResolvedValue({ mediaUrl: 'local-image', sourceUrl: 'generated', filePath: 'PRIVATE_PATH' });

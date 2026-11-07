@@ -15,7 +15,9 @@ beforeEach(() => {
   mocks.save.mockReset().mockResolvedValue({ filePath: 'PRIVATE_PATH', assetUrl: 'asset://crop.png' });
   mocks.tauri.mockReset().mockReturnValue(true);
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'ep', projectLoadStatus: 'ready', showToast: vi.fn(), nodes: [
+  useAppStore.setState({ currentProjectId: 'ep', projectLoadStatus: 'ready', showToast: vi.fn(),
+    projects: [{ id: 'ep', name: '第 1 集', parentId: 'series', createdAt: 1, updatedAt: 1 },
+      { id: 'series', name: '剧集', createdAt: 1, updatedAt: 1 }], nodes: [
     { id: 'sheet', type: 'ai-shotlist', position: { x: 0, y: 0 }, data: { type: 'ai-shotlist', label: '表', shotlistRows: [
       { id: 'r1', shotNo: '1', content: '甲', frame: null }, { id: 'r2', shotNo: '2', content: '乙' },
     ] } },

@@ -179,7 +179,8 @@ describe('生成入口的文本与参考分离', () => {
     vi.spyOn(mediaProviderRegistry, 'getAudioAdapter').mockReturnValue(adapter);
     const history = vi.fn().mockResolvedValue(undefined);
     const projectId = 'audio-test-project';
-    useAppStore.setState({ currentProjectId: projectId, recordOutputHistory: history });
+    useAppStore.setState({ currentProjectId: projectId, projectLoadStatus: 'ready',
+      projects: [{ id: projectId, name: '音频测试', createdAt: 1, updatedAt: 1 }], recordOutputHistory: history });
     useAppStore.getState().updateNodeData('target', { model: 'test', provider: 'test', prompt: '台词', audioSpeechSettings: settings });
     const state = useAppStore.getState();
     if (entry === 'batch') {

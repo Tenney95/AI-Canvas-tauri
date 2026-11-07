@@ -1,7 +1,7 @@
 /** P4 隔离新代际不能创建默认DB27任务；本轮未执行。 */
 import { afterEach, expect, it, vi } from 'vitest';
-import { createAgentSlice } from '../../src/store/store.agent';
 import { useAppStore } from '../../src/store/useAppStore';
+import { createAgentSlice } from '../../src/store/store.agent';
 import * as taskService from '../../src/services/chat/agentTaskService';
 import type { CanvasContext } from '../../src/types/project';
 afterEach(() => vi.restoreAllMocks());

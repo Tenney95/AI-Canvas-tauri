@@ -155,7 +155,7 @@ describe('独立窗口按需引用预览桥接', () => {
     useAppStore.setState({ currentProjectId: 'other-project' });
     await rejected;
     expect(readSignal?.aborted).toBe(true);
-    expect(bus.frames.some((frame) => (frame.payload as ChatAction).type === 'cancel_reference_preview')).toBe(true);
+    await vi.waitFor(() => expect(bus.frames.some((frame) => (frame.payload as ChatAction).type === 'cancel_reference_preview')).toBe(true));
     finish('data:image/png;base64,bGF0ZQ==');
     await Promise.resolve();
     await Promise.resolve();

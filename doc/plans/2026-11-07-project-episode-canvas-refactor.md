@@ -1001,3 +1001,7 @@ P7 前置清单 `scripts/project-model-boundaries.json` 登记 33 个已识别�
 进一步隔离复现发现：同一文件被大小写不同的路径引用时，原生重复路径检查会拒绝导出；旧 head 附件或其素材根缺失时，导出和恢复前备份可能错误地把附件视为删除。现对原生验证指向同一真实文件的别名进行合并，并在打包前和发布前复核别名身份及素材摘要；不同真实文件仍失败关闭。旧 head 的文件绑定、素材根和文件必须在嵌套根过滤后仍可定位，否则阻断导出及恢复前备份。文件系统未全程加锁，最终复核与发布之间仍存在外部并发变更的短暂窗口，不能声称跨进程原子冻结。
 
 仓库根目录执行 `npx vitest run tests/services/projectModelArchiveIntegration.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/projectModelArchiveService.test.ts tests/services/projectModelArchiveMissingAssets.test.ts`，4 文件 27 项通过；测试使用模拟 IPC 和隔离素材。修复后在 `src-tauri` 目录重跑 `cargo test --lib project_archive::tests -- --test-threads=1`，34 项通过，包括 Windows 临时目录别名及发布前文件变化阻断。独立缺失附件用例还覆盖嵌套根和主／非主根映射，不能代替真实桌面导入导出。
+
+全量测试进一步发现旧 Agent 任务的大结果在交付时可能被误判上下文变化。新结果在引用和持久文件中冻结原执行上下文；旧持久结果只有在原文件和已保存任务的作用域相符时才能恢复，没有原始证明时失败关闭，不使用当前项目重绑定。读写期间分别核对实时任务与冻结上下文；并发读取在异步操作后重新核算剩余预算，避免重复发放；结果清理撤销在途读取，停止任务或撤回 `agent_result_read` 授权后不交付迟到正文。带运行期 epoch 的租约在重启后可能失效；异常路径若允许同 ID、同 epoch 重建，现有持久身份无法区分，仍需上游身份合同与恢复策略补充证明。此处不把不明身份结果静默绑定到当前画布。
+
+持久结果重启后不会恢复原工具的内存授权回调；目前已知项目持久结果来自 `series_get_state`，回读仍校验任务和上下文，但不会重新执行原工具的授权或 allowlist。原工具授权变更后的回读策略需要单独设计和验证，不能宣称重启后已重新核准原授权。

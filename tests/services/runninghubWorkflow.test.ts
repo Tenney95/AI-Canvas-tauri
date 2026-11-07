@@ -145,7 +145,9 @@ let outputs: Array<{ fileUrl: string; fileType: string; nodeId: string }>;
 
 function setup(kind: RunningHubMediaKind = 'image') {
   const store = useAppStore.getState();
-  useAppStore.setState({ currentProjectId: 'p1', config: { ...store.config, providers: { runninghub: { name: 'RH', apiKey: connection.apiKey } } },
+  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready',
+    projects: [{ id: 'p1', name: '项目一', createdAt: 1, updatedAt: 1 }, { id: 'p2', name: '项目二', createdAt: 1, updatedAt: 1 }],
+    config: { ...store.config, providers: { runninghub: { name: 'RH', apiKey: connection.apiKey } } },
     nodes: [{ id: 'n1', type: `ai-${kind}`, position: { x: 0, y: 0 }, data: { type: `ai-${kind}`, label: '测试云工作流', provider: 'runninghubwf', model: 'runninghubwf/wf1', workflowId: 'wf1', status: 'loading' } }],
     workflows: [{ id: 'wf1', name: '测试云工作流', category: `ai-${kind}`, createdAt: 1, fileContent: '', fileName: 'RH', adapterType: 'runninghub', runninghub: manifest }],
   });

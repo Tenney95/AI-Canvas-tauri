@@ -47,6 +47,7 @@ beforeEach(() => {
     saveCurrentProjectSilent: vi.fn(async () => 'p1'),
     showToast: vi.fn(),
     currentProjectId: 'p1',
+    projectLoadStatus: 'ready',
     projects: [{ id: 'p1', name: 'Test', createdAt: 1, updatedAt: 1 }],
   });
 });

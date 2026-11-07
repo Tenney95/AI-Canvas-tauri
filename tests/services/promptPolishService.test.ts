@@ -42,7 +42,8 @@ beforeEach(() => {
   mocks.model.mockReturnValue({ selectionId: 'text-model' });
   mocks.packageRead.mockResolvedValue({ relativePath: 'AGENTS.md', content: '采用简洁、明确的语言。', sha256: 'b'.repeat(64) });
   respond('暮色里，少女站在窗前。');
-  useAppStore.setState({ currentProjectId: 'p1', activeNodeId: 'n1', projects: [], nodes: [{ id: 'n1', type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image', label: '图像', prompt: '少女在窗前' } }], edges: [], groups: [], history: [], historyIndex: -1, userSkills: [skill], agentPackages: [], agentPackageSkills: [], subAgentProfiles: [], conversations: [], messages: [], agentTasks: [] });
+  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready', activeNodeId: 'n1',
+    projects: [{ id: 'p1', name: '测试项目', createdAt: 1, updatedAt: 1 }], nodes: [{ id: 'n1', type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image', label: '图像', prompt: '少女在窗前' } }], edges: [], groups: [], history: [], historyIndex: -1, userSkills: [skill], agentPackages: [], agentPackageSkills: [], subAgentProfiles: [], conversations: [], messages: [], agentTasks: [] });
 });
 
 describe('节点提示词润色', () => {

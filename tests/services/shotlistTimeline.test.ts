@@ -13,6 +13,8 @@ vi.mock('../../src/services/videoEditorWindowService', () => ({
 }));
 
 import { getVideoEditorProject } from '../../src/services/indexedDb/videoEditorRepository';
+import { openDB, STORE_PROJECTS } from '../../src/services/indexedDb/schema';
+import { useAppStore } from '../../src/store/useAppStore';
 import {
   hasShotlistTimeline,
   openVideoEditorForShotlist,
@@ -36,8 +38,18 @@ async function pushAndLoad(nodeId: string, rows: ShotRow[]) {
   return getVideoTrack(record!.tracks)!.clips;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   windowMocks.openVideoEditorWindow.mockClear();
+  useAppStore.setState(useAppStore.getInitialState(), true);
+  useAppStore.setState({ currentProjectId: 'proj-1', projectLoadStatus: 'ready',
+    projects: [{ id: 'proj-1', name: '项目', createdAt: 1, updatedAt: 1 }] });
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(STORE_PROJECTS, 'readwrite');
+    transaction.objectStore(STORE_PROJECTS).put({ id: 'proj-1', name: '项目', createdAt: 1, updatedAt: 1 });
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = transaction.onabort = () => reject(transaction.error);
+  });
 });
 
 describe('分镜表推送时间轴', () => {

@@ -235,7 +235,7 @@ describe('pluginResourceService', () => {
       : { isDirectory: false, isFile: true, isSymlink: false, size: 12, mtime: new Date(1_000) });
     await expect(resolvePluginMediaWorkspaceInputs(context, resources)).rejects.toThrow('文件已变化');
     setRevision(8);
-    await expect(resolvePluginMediaWorkspaceInputs(context, resources)).rejects.toThrow('画布已变化');
+    await expect(resolvePluginMediaWorkspaceInputs(context, resources)).rejects.toThrow('画布上下文已变化');
   });
 
   it('rejects media workspace inputs above 256 MiB before copying or decoding bytes', async () => {

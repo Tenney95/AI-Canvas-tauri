@@ -1481,6 +1481,7 @@ describe('critical canvas node interactions', () => {
         data: { type: 'ai-image', label: 'Source image', imageUrl: 'data:image/png;base64,source' },
       }], () => revision);
       store.currentProjectId = projectId;
+      if (projectId === 'default') store.projects.push({ id: 'default' });
       const saved = { assetUrl: 'asset://result.png', filePath: 'data/result.png' };
       const measured = { imageWidth: 640, imageHeight: 360, nodeWidth: 200, nodeHeight: 120 };
       const saveFile = vi.fn<typeof import('../../src/services/fileService').saveDataUrlToProjectData>().mockResolvedValue(saved);

@@ -48,7 +48,8 @@ beforeEach(() => {
   resetAgentToolsRegistrationForTests();
   clearAgentToolRegistryForTests();
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'project-a' });
+  useAppStore.setState({ currentProjectId: 'project-a', projectLoadStatus: 'ready',
+    projects: [{ id: 'project-a', name: '项目一', createdAt: 1, updatedAt: 1 }, { id: 'project-b', name: '项目二', createdAt: 1, updatedAt: 1 }] });
   unregisters = registerDirectorAgentTools();
   vi.mocked(startDirectorNodeOperation).mockResolvedValue(snapshot);
   vi.mocked(getDirectorOperation).mockReturnValue(snapshot);

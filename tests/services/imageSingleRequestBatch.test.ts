@@ -6,8 +6,9 @@ import type { AppConfig, BaseNodeData } from '../../src/types';
 
 const mocks = vi.hoisted(() => ({
   store: {
-    currentProjectId: 'p', nodes: [] as Array<{ id: string; type: string; position: { x: number; y: number }; data: BaseNodeData }>,
-    config: { providers: {}, generalModels: [], theme: 'dark' } satisfies AppConfig, workflows: [], projects: [], customStyles: [],
+    currentProjectId: 'p', projectLoadStatus: 'ready', nodes: [] as Array<{ id: string; type: string; position: { x: number; y: number }; data: BaseNodeData }>,
+    config: { providers: {}, generalModels: [], theme: 'dark' } satisfies AppConfig, workflows: [],
+    projects: [{ id: 'p', name: '项目', createdAt: 1, updatedAt: 1 }, { id: 'other', name: '另一项目', createdAt: 1, updatedAt: 1 }], customStyles: [],
     getCurrentRevision: vi.fn(), commitToHistory: vi.fn(), addNodesTransient: vi.fn(),
     updateNodeDataTransient: vi.fn(), updateNodeData: vi.fn(), recordOutputHistory: vi.fn(), showToast: vi.fn(),
   },

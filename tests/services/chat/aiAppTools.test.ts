@@ -60,7 +60,8 @@ beforeEach(() => {
   resetAgentToolsRegistrationForTests();
   clearAgentToolRegistryForTests();
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'project-a' });
+  useAppStore.setState({ currentProjectId: 'project-a', projectLoadStatus: 'ready',
+    projects: [{ id: 'project-a', name: '测试项目', createdAt: 1, updatedAt: 1 }] });
   unregisters = registerAiAppAgentTools();
   vi.mocked(createAiAppNode).mockResolvedValue('app-1');
   vi.mocked(getAiAppNode).mockImplementation(() => ({

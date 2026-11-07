@@ -69,7 +69,8 @@ beforeEach(() => {
   files.read.mockReset();
   files.save.mockReset().mockImplementation(async (_path: string, _baseline: AssetTextSnapshot, content: string) => snapshot(content));
   useAppStore.setState(useAppStore.getInitialState(), true);
-  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready', showToast: vi.fn(), nodes: [
+  useAppStore.setState({ currentProjectId: 'p1', projectLoadStatus: 'ready',
+    projects: [{ id: 'p1', name: '测试项目', createdAt: 1, updatedAt: 1 }], showToast: vi.fn(), nodes: [
     node('a', { prompt: '甲旧词', nodeWidth: 320, nodeHeight: 320, seedanceRatio: '1:1' }),
     node('b', { type: 'ai-image', prompt: '乙原文' }, { x: 400, y: 50 }),
   ], edges: [] });

@@ -771,7 +771,8 @@ describe('RunningHub 模型提交失败分类', () => {
   function configureRunningHub() {
     removePendingTask('runninghub-rejection-node');
     const model = 'seedream-v5-pro/text-to-image';
-    useAppStore.setState((state) => ({ currentProjectId: 'runninghub-rejection-project', config: { ...state.config,
+    useAppStore.setState((state) => ({ currentProjectId: 'runninghub-rejection-project', projectLoadStatus: 'ready',
+      projects: [{ id: 'runninghub-rejection-project', name: 'RunningHub 测试项目', createdAt: 1, updatedAt: 1 }], config: { ...state.config,
       providers: { 'runninghub-model': { name: 'RunningHub', apiKey: 'runninghub-rejection-fixture', baseUrl: 'https://www.runninghub.cn' } } },
       nodes: [{ id: 'runninghub-rejection-node', type: 'ai-image', position: { x: 0, y: 0 },
         data: { type: 'ai-image', label: 'RunningHub 图片', status: 'loading', model, provider: 'runninghub' } }],

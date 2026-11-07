@@ -38,8 +38,11 @@ const project = {
   '没有找到项目': 'No projects found',
   '清除搜索': 'Clear search',
   '删除“{name}”？': 'Delete "{name}"?',
-  '项目画布及本地项目数据将被删除，此操作不可撤销。':
-    'The project canvas and its local data will be deleted. This action cannot be undone.',
+  '删除整部剧“{name}”？': 'Delete the entire series "{name}"?',
+  '将移除整部剧及其 {count} 个分集的项目记录；历史回执和素材文件保留。本操作不能直接撤销。':
+    'The series and its {count} episode records will be removed; historical receipts and media files will be kept. This cannot be directly undone.',
+  '将移除此项目的项目记录；历史回执和素材文件保留。本操作不能直接撤销。':
+    'The project record will be removed; historical receipts and media files will be kept. This cannot be directly undone.',
   '正在删除': 'Deleting',
   '确认删除': 'Delete',
   '今天 {time}': 'Today {time}',
@@ -78,7 +81,8 @@ const project = {
   '项目保存失败，已取消导出': 'Saving the project failed, so export was cancelled',
   '项目尚未成功加载，已阻止复制': 'The project has not loaded successfully, so duplication was blocked',
   '项目保存失败，已取消复制': 'Saving the project failed, so duplication was cancelled',
-  '项目删除失败，本地数据未清理': 'Deleting the project failed; local data was not cleaned up',
+  '项目未删除；已停止的任务不会自动重启': 'The project was not deleted; stopped tasks will not restart automatically',
+  '当前旧项目格式暂不支持删除最后一集，已保留整部剧': 'The current legacy project format cannot delete the last episode; the entire series has been kept',
   '替代项目加载失败，已阻止空画布覆盖原数据': 'Loading the replacement project failed; an empty canvas was prevented from overwriting the original data',
   '项目加载失败，已保留当前画布并阻止覆盖保存': 'Loading the project failed; the current canvas is kept and overwriting saves are blocked',
   '项目尚未成功加载，暂时无法返回启动页': 'The project has not loaded successfully, so returning to the start page is unavailable for now',

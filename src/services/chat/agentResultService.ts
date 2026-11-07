@@ -6,7 +6,8 @@ import { sanitizeDomainText } from './subAgentMaterials';
 import { isGeneralAssistantScope } from './assistantScope';
 import { isMcpGlobalContext } from '../mcp/mcpSettingsScope';
 import { isWorkbenchAgentTaskInScope, isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
-import { assertAgentProjectContext } from './agentProjectContext';
+import { assertAgentProjectContext, captureAgentProjectScope } from './agentProjectContext';
+import { ProjectExecutionContextError } from '../projectExecutionContext';
 
 export const AGENT_RESULT_PREVIEW_CHARS = 6000;
 export const AGENT_RESULT_PAGE_CHARS = 12000;
@@ -20,10 +21,33 @@ const RESULT_PATH = /^agent-results\/[A-Za-z0-9_-]{1,160}\/result-[a-f0-9-]{36}-
 interface Entry {
   scope: AgentResultScope; reference: AgentResultReference; text: string; authorize?: () => boolean;
 }
+class AgentResultScopeError extends Error {}
 const entries = new Map<string, Entry>();
 const readBudgets = new Map<string, number>();
+const activeGenerations = new Map<string, { scope: AgentResultScope; generation: number; active: number }>();
 
-function assertScope(scope: AgentResultScope): void {
+/** 清理撤销进行中的读写；同任务以后重新开始的操作使用新代次。 */
+function beginResultLease(scope: AgentResultScope) {
+  const key = JSON.stringify([scope.taskId, scope.projectId, scope.conversationId]);
+  let state = activeGenerations.get(key);
+  if (!state) {
+    state = { scope: { taskId: scope.taskId, projectId: scope.projectId, conversationId: scope.conversationId }, generation: 0, active: 0 };
+    activeGenerations.set(key, state);
+  }
+  const record = state, generation = record.generation;
+  record.active++;
+  return {
+    assert() {
+      if (record.generation !== generation) throw new DOMException('结果已撤销，不能交付旧内容', 'AbortError');
+    },
+    release() {
+      record.active--;
+      if (record.active === 0 && activeGenerations.get(key) === record) activeGenerations.delete(key);
+    },
+  };
+}
+
+function scopeTask(scope: AgentResultScope) {
   const state = useAppStore.getState();
   const task = state.agentTasks.find((item) => item.id === scope.taskId);
   if (!task || task.projectId !== scope.projectId || task.conversationId !== scope.conversationId
@@ -31,9 +55,24 @@ function assertScope(scope: AgentResultScope): void {
     || (state.currentProjectId !== scope.projectId && !isGeneralAssistantScope(scope.projectId)
       && !isMcpGlobalContext(task) && !isWorkbenchTeamTaskInScope(state, task)
       && !isWorkbenchAgentTaskInScope(state, task))) {
-    throw new Error('结果不属于当前项目、对话或任务');
+    throw new AgentResultScopeError('结果不属于当前项目、对话或任务');
   }
-  assertAgentProjectContext(state, task, { checkRevision: false });
+  return task;
+}
+
+function assertScope(scope: AgentResultScope, binding?: Pick<AgentResultReference, 'executionContext' | 'projectScope'>): void {
+  const task = scopeTask(scope);
+  const state = useAppStore.getState();
+  if (task.executionContext || task.projectScope || !binding?.executionContext && !binding?.projectScope) {
+    assertAgentProjectContext(state, task, { checkRevision: false });
+  }
+  if (binding?.executionContext || binding?.projectScope) {
+    assertAgentProjectContext(state, { projectId: task.projectId, ...binding }, { checkRevision: false });
+  }
+}
+
+function taskContextSignature(task: ReturnType<typeof scopeTask>): string {
+  return JSON.stringify([task.executionContext ?? null, task.projectScope ?? null, task.workbenchTarget ?? null]);
 }
 
 function sameScope(left: AgentResultScope, right: AgentResultScope): boolean {
@@ -57,79 +96,144 @@ function boundedPreview(text: string): string {
 
 export async function captureAgentResult(input: {
   scope: AgentResultScope; toolId: string; text: string; policy?: AgentResultPolicy;
+  /** 仅宿主确认的导航/结构工具可在有意改变目标后返回有界结果。 */
+  navigationContextChange?: boolean;
 }): Promise<{ modelContent: string; reference?: AgentResultReference; truncated: boolean }> {
+  const lease = beginResultLease(input.scope);
+  try {
   const text = sanitizeDomainText(input.text);
+  if (input.navigationContextChange) {
+    if (!/^(?:project_(?:create|open|switch|delete|rename)|episode_(?:move|delete)|series_split_episodes)$/.test(input.toolId)) {
+      throw new Error('该工具不能绕过原项目上下文');
+    }
+    lease.assert();
+    return { modelContent: boundedPreview(text), truncated: text.length > AGENT_RESULT_PREVIEW_CHARS };
+  }
+  const task = scopeTask(input.scope);
+  const supplied = input.scope as AgentResultScope & Pick<AgentResultReference, 'executionContext' | 'projectScope'>;
+  const executionContext = supplied.executionContext ?? task.executionContext;
+  const projectScope = supplied.projectScope ?? task.projectScope ?? (executionContext ? undefined : captureAgentProjectScope(useAppStore.getState(), task));
+  const binding = structuredClone({ ...(executionContext ? { executionContext } : {}), ...(projectScope ? { projectScope } : {}) });
+  const taskContext = taskContextSignature(task);
+  const assertCapturedScope = () => {
+    lease.assert();
+    assertScope(input.scope, binding);
+    if (taskContextSignature(scopeTask(input.scope)) !== taskContext) throw new ProjectExecutionContextError();
+  };
+  assertCapturedScope();
+  if (input.policy?.authorize?.() === false) throw new DOMException('原始授权已撤销', 'AbortError');
   if (text.length <= AGENT_RESULT_PREVIEW_CHARS) return { modelContent: text, truncated: false };
-  assertScope(input.scope);
   const preview = boundedPreview(text);
   const continuation = input.policy?.continuation ? `\n原工具续读：${sanitizeDomainText(input.policy.continuation).slice(0, 800)}` : '';
   if (text.length > MAX_RESULT_CHARS) return { modelContent: `${preview}\n结果超过缓存上限，请使用原工具缩小范围。${continuation}`, truncated: true };
-  if (input.policy?.authorize?.() === false) return { modelContent: `${preview}\n原始授权已撤销，未保存可回读引用。`, truncated: true };
   const id = `result-${crypto.randomUUID()}`;
   const createdAt = Date.now();
-  let reference: AgentResultReference = { id, storage: 'memory', chars: text.length, createdAt,
+  let reference: AgentResultReference = { id, storage: 'memory', chars: text.length, createdAt, ...binding,
     expiresAt: createdAt + AGENT_RESULT_TTL_MS };
   if (input.policy?.storage === 'project') {
     if (input.policy.source !== 'project-derived' || isGeneralAssistantScope(input.scope.projectId)
       || !/^[A-Za-z0-9_-]{1,160}$/.test(input.scope.taskId)) {
       throw new Error('只有显式声明的项目派生产物允许持久化');
     }
-    const data = new TextEncoder().encode(JSON.stringify({ version: 1, ...input.scope, id, toolId: input.toolId, text }));
+    const data = new TextEncoder().encode(JSON.stringify({ version: 1, taskId: input.scope.taskId, projectId: input.scope.projectId,
+      conversationId: input.scope.conversationId, id, toolId: input.toolId, text, resultContext: binding }));
     if (data.byteLength > MAX_PROJECT_RESULT_BYTES) return { modelContent: `${preview}\n结果超过项目保存上限，请缩小原查询。`, truncated: true };
     const hash = await sha256Hex(data);
+    lease.assert();
     const projectFile = { relativePath: `agent-results/${input.scope.taskId}/${id}-${hash}.json`, sha256: hash, bytes: data.byteLength };
+    const assertCurrent = () => { assertCapturedScope(); if (input.policy?.authorize?.() === false) throw new DOMException('原始授权已撤销', 'AbortError'); };
     try {
-      const assertCurrent = () => { assertScope(input.scope); if (input.policy?.authorize?.() === false) throw new Error('原始授权已撤销'); };
       assertCurrent();
       await writeImmutableProjectFile({ projectId: input.scope.projectId, reference: projectFile, data, maxBytes: MAX_PROJECT_RESULT_BYTES, assertCurrent });
       assertCurrent();
-      assertScope(input.scope);
-      reference = { id, storage: 'project', chars: text.length, createdAt, projectFile };
-    } catch {
+      assertCapturedScope();
+      reference = { id, storage: 'project', chars: text.length, createdAt, projectFile, ...binding };
+    } catch (error) {
+      if (error instanceof ProjectExecutionContextError || error instanceof AgentResultScopeError
+        || error instanceof DOMException && error.name === 'AbortError') throw error;
+      assertCurrent();
       return { modelContent: `${preview}\n结果保存失败，未提供可恢复引用；请检查项目存储后缩小范围读取，不会重复执行原操作。`, truncated: true };
     }
   }
+  lease.assert();
   trimEntries(text.length);
-  entries.set(id, { scope: { ...input.scope }, reference, text, authorize: input.policy?.authorize });
+  entries.set(id, { scope: { ...input.scope }, reference: structuredClone(reference), text, authorize: input.policy?.authorize });
   return { modelContent: `${preview}\nresultId=${id}，共 ${text.length} 字；调用 agent_result_read 分段读取。${continuation}`,
     reference, truncated: true };
+  } finally { lease.release(); }
 }
 
 export async function readAgentResult(
   scope: AgentResultScope, resultId: string, offset = 0, limit = AGENT_RESULT_PAGE_CHARS,
 ): Promise<AgentResultPage> {
-  assertScope(scope);
+  const lease = beginResultLease(scope);
+  try {
+  scopeTask(scope);
   if (!/^result-[a-f0-9-]{36}$/.test(resultId) || !Number.isSafeInteger(offset) || offset < 0
     || !Number.isSafeInteger(limit) || limit < 1 || limit > AGENT_RESULT_PAGE_CHARS) throw new Error('结果分段读取参数无效');
-  const used = readBudgets.get(scope.taskId) ?? 0;
-  if (used >= MAX_READ_CHARS_PER_TASK) throw new Error('结果回读达到任务预算，请缩小读取范围');
+  if ((readBudgets.get(scope.taskId) ?? 0) >= MAX_READ_CHARS_PER_TASK) throw new Error('结果回读达到任务预算，请缩小读取范围');
   let entry = entries.get(resultId);
   if (entry && !sameScope(entry.scope, scope)) throw new Error('结果不属于本任务');
+  if (entry) assertScope(scope, entry.reference);
   if (entry?.authorize?.() === false) { entries.delete(resultId); throw new Error('原始授权已撤销，结果已失效'); }
   if (entry?.reference.expiresAt && entry.reference.expiresAt <= Date.now()) { entries.delete(resultId); entry = undefined; }
   if (!entry) {
-    const task = useAppStore.getState().agentTasks.find((item) => item.id === scope.taskId)!;
+    const task = scopeTask(scope);
+    const taskContext = taskContextSignature(task);
     const reference = task.steps.flatMap((step) => step.toolCall?.resultReference ?? []).find((item) => item.id === resultId);
     const file = reference?.storage === 'project' ? reference.projectFile : undefined;
     if (!reference || !file || !RESULT_PATH.test(file.relativePath) || !file.relativePath.startsWith(`agent-results/${scope.taskId}/`)
       || !file.relativePath.endsWith(`/${resultId}-${file.sha256}.json`)) throw new Error('结果已过期或不可恢复，请用原工具重新读取或重新授权');
+    const referenceBinding = { ...(reference.executionContext ? { executionContext: reference.executionContext } : {}),
+      ...(reference.projectScope ? { projectScope: reference.projectScope } : {}) };
+    const hasReferenceBinding = !!(reference.executionContext || reference.projectScope);
+    if (hasReferenceBinding) assertScope(scope, referenceBinding);
+    else if (task.executionContext || task.projectScope) assertScope(scope);
+    else if (useAppStore.getState().projects !== undefined) throw new ProjectExecutionContextError();
     const data = await readVerifiedProjectFile({ projectId: scope.projectId, reference: file, maxBytes: MAX_PROJECT_RESULT_BYTES });
+    lease.assert();
+    if (taskContextSignature(scopeTask(scope)) !== taskContext) throw new ProjectExecutionContextError();
     const document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data)) as Record<string, unknown>;
     if (document.version !== 1 || document.id !== resultId || typeof document.text !== 'string'
       || document.text.length !== reference.chars || document.text.length > MAX_RESULT_CHARS
       || document.taskId !== scope.taskId || document.projectId !== scope.projectId || document.conversationId !== scope.conversationId) {
       throw new Error('结果内容与引用不一致');
     }
-    assertScope(scope); trimEntries(document.text.length);
-    entry = { scope: { ...scope }, reference, text: document.text }; entries.set(resultId, entry);
+    const savedContext = document.resultContext && typeof document.resultContext === 'object'
+      ? document.resultContext as Pick<AgentResultReference, 'executionContext' | 'projectScope'>
+      : { ...(document.executionContext ? { executionContext: document.executionContext as AgentResultReference['executionContext'] } : {}),
+        ...(document.projectScope ? { projectScope: document.projectScope as AgentResultReference['projectScope'] } : {}) };
+    if (!savedContext.executionContext && !savedContext.projectScope && useAppStore.getState().projects !== undefined) {
+      throw new ProjectExecutionContextError();
+    }
+    if (hasReferenceBinding && JSON.stringify(savedContext) !== JSON.stringify(referenceBinding)) {
+      throw new Error('结果上下文与原始记录不一致');
+    }
+    if (!hasReferenceBinding && (task.executionContext && JSON.stringify(savedContext.executionContext) !== JSON.stringify(task.executionContext)
+      || task.projectScope && JSON.stringify(savedContext.projectScope) !== JSON.stringify(task.projectScope))) {
+      throw new Error('结果上下文与原始记录不一致');
+    }
+    assertScope(scope, savedContext); lease.assert(); trimEntries(document.text.length);
+    entry = { scope: { ...scope }, reference: { ...reference, ...structuredClone(savedContext) }, text: document.text }; entries.set(resultId, entry);
   }
+  // 文件读取可能并发；预算检查与计数必须在最后一次 await 后连续完成。
+  lease.assert();
+  const used = readBudgets.get(scope.taskId) ?? 0;
+  if (used >= MAX_READ_CHARS_PER_TASK) throw new Error('结果回读达到任务预算，请缩小读取范围');
   const text = entry.text.slice(offset, offset + Math.min(limit, MAX_READ_CHARS_PER_TASK - used));
   readBudgets.set(scope.taskId, used + text.length);
   return { resultId, text, offset, nextOffset: offset + text.length, totalChars: entry.text.length,
     eof: offset + text.length >= entry.text.length };
+  } finally { lease.release(); }
 }
 
 export function clearAgentResults(scope: Partial<AgentResultScope>): void {
+  for (const state of activeGenerations.values()) {
+    if (Object.entries(scope).every(([key, value]) => state.scope[key as keyof AgentResultScope] === value)) {
+      state.generation++;
+      readBudgets.delete(state.scope.taskId);
+    }
+  }
   for (const [id, entry] of entries) if (Object.entries(scope).every(([key, value]) => entry.scope[key as keyof AgentResultScope] === value)) entries.delete(id);
   if (scope.taskId) readBudgets.delete(scope.taskId);
   else if (scope.projectId || scope.conversationId) {
@@ -137,4 +241,5 @@ export function clearAgentResults(scope: Partial<AgentResultScope>): void {
       if ((!scope.projectId || task.projectId === scope.projectId) && (!scope.conversationId || task.conversationId === scope.conversationId)) readBudgets.delete(task.id);
     }
   }
+  else readBudgets.clear();
 }

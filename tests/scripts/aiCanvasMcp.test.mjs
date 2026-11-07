@@ -30,7 +30,7 @@ afterEach(async () => {
 describe('AI Canvas MCP stdio adapter', () => {
   it('supports on-demand discovery and rich results through the existing MCP SDK server', async () => {
     useAppStore.setState(useAppStore.getInitialState(), true);
-    useAppStore.setState({ currentProjectId: 'sdk-project', projects: [{ id: 'sdk-project', name: 'SDK test', createdAt: 1, updatedAt: 1 }] });
+    useAppStore.setState({ currentProjectId: 'sdk-project', projectLoadStatus: 'ready', projects: [{ id: 'sdk-project', name: 'SDK test', createdAt: 1, updatedAt: 1 }] });
     let sequence = 0;
     const server = createMcpServer({ request: (method, params) => handleMcpBridgeRequest({
       sessionId: 'sdk-session', requestId: `sdk:${sequence++}`, method, params,
@@ -55,7 +55,8 @@ describe('AI Canvas MCP stdio adapter', () => {
         execute: async () => ({ status: 'success', summary: '已读取图像', modelContent: '已读取图像', mcpContent: [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }] }),
       });
       const image = await client.callTool({ name: 'tools_call', arguments: { name: 'sdk_image_probe', arguments: {} } });
-      expect(image).toMatchObject({ isError: false, content: [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }] });
+      expect(image.isError).toBe(false);
+      expect(image.content).toEqual(expect.arrayContaining([{ type: 'image', data: 'YWJj', mimeType: 'image/png' }]));
       const bad = await client.callTool({ name: 'tools_call', arguments: { name: 'tools_call', arguments: {} } });
       expect(bad.isError).toBe(true);
     } finally {

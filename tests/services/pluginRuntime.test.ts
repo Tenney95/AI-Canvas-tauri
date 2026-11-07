@@ -2689,7 +2689,8 @@ describe('plugin node-set video generation', () => {
         generation: { modelId, parameters: { duration: 5, aspectRatio: '16:9', resolution: '720p', videoResolution: 832, videoFps: 24, videoFrames: 121, generateAudio: false } } }], edges: [],
     } };
     mocks.buildModelCatalog.mockReturnValue([{ id: modelId, name: '视频模型', provider: modelId.startsWith('comfyui/') ? 'comfyui' : 'general', category: 'video' }]);
-    mocks.state = { ...mocks.state, installedPlugins: [generationPlugin], projects: [], workflows: [{ id: 'local', fileContent: '{}', category: 'ai-video' }],
+    mocks.state = { ...mocks.state, installedPlugins: [generationPlugin], projectLoadStatus: 'ready',
+      projects: [{ id: 'project-1', name: '测试项目', createdAt: 1, updatedAt: 1 }], workflows: [{ id: 'local', fileContent: '{}', category: 'ai-video' }],
       config: { generalModels: [], providers: {}, comfyUIUrl: 'http://127.0.0.1:8188' }, videoBatchBusy: false,
       nodes: [{ id: 'node-1', type: 'source-video', position: { x: 0, y: 0 }, data: { type: 'source-video', label: '参考视频' } }] };
     mocks.addNodesWithEdges.mockImplementation((nodes, edges) => {

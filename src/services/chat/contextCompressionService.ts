@@ -247,22 +247,23 @@ async function doCompress(
   const assertWorkbenchScope = () => {
     options.assertCurrent?.();
     const currentStore = useAppStore.getState();
-    assertAgentProjectContext(currentStore, { projectId, projectScope }, { checkRevision: false });
     const current = currentStore.conversations.find((item) => item.id === conversationId);
-    if (!workbenchTarget && !current?.workbenchTarget) return;
-    const scope = workbenchTarget && readEpisodeWorkspaceScope(currentStore, workbenchTarget.episodeId);
-    if (!workbenchTarget || !scope || scope.owner.id !== workbenchTarget.seriesId
-      || projectId !== workbenchTarget.episodeId || !current || current.deletedAt
-      || current.projectId !== workbenchTarget.seriesId
-      || current.workbenchTarget?.episodeId !== workbenchTarget.episodeId
-      || current.workbenchTarget.seriesId !== workbenchTarget.seriesId) {
-      throw new ContextBudgetError('CONTEXT_COMPRESSION_FAILED', '工作台目标或会话已失效，已取消上下文压缩');
+    if (workbenchTarget || current?.workbenchTarget) {
+      const scope = workbenchTarget && readEpisodeWorkspaceScope(currentStore, workbenchTarget.episodeId);
+      if (!workbenchTarget || !scope || scope.owner.id !== workbenchTarget.seriesId
+        || projectId !== workbenchTarget.episodeId || !current || current.deletedAt
+        || current.projectId !== workbenchTarget.seriesId
+        || current.workbenchTarget?.episodeId !== workbenchTarget.episodeId
+        || current.workbenchTarget.seriesId !== workbenchTarget.seriesId) {
+        throw new ContextBudgetError('CONTEXT_COMPRESSION_FAILED', '工作台目标或会话已失效，已取消上下文压缩');
+      }
     }
+    assertAgentProjectContext(currentStore, { projectId, projectScope }, { checkRevision: false });
   };
-  assertWorkbenchScope();
   if (seriesOwnerId(store.projects, projectId) !== conversation.projectId) {
     throw new Error('执行项目不属于该会话，无法压缩上下文');
   }
+  assertWorkbenchScope();
   const previousSummary = conversation.contextSummary;
 
   const { messages: persisted } = await loadMessages(conversationId, 0, 200);

@@ -31,6 +31,7 @@ import { clearAgentToolRegistryForTests, registerAgentTool } from '../../../src/
 import { buildLearnedPromptContext } from '../../../src/services/chat/promptLearningService';
 import * as memoryRetrieval from '../../../src/services/chat/memoryRetrieval';
 import { WORKBENCH_AGENT_READ_TOOLS } from '../../../src/services/episodeWorkspaceScope';
+import { captureLegacyProjectExpectedContext } from '../../../src/services/projectExecutionContext';
 
 function task(overrides: Partial<AgentTask> = {}): AgentTask {
   return {
@@ -64,7 +65,9 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   const config = useAppStore.getState().config;
   useAppStore.setState({
-    currentProjectId: 'project-1', activeConversationId: 'conversation-1', agentTasks: [task()],
+    currentProjectId: 'project-1', projectLoadStatus: 'ready',
+    projects: [{ id: 'project-1', name: '项目', createdAt: 1, updatedAt: 1 }],
+    activeConversationId: 'conversation-1', agentTasks: [task()],
     config: { ...config, assistantModelId: 'general/test-model', generalModels: [{
       id: 'test-model', name: 'Test', modelId: 'test', category: 'text',
       providerConfigId: 'test-provider', contextWindow: 8192,
@@ -181,22 +184,18 @@ describe('compression through the real assistant stream protocol', () => {
 });
 
 describe('episode conversation compression recovery', () => {
-  it('uses the execution project model and tool progress for a shared series conversation after switching projects', async () => {
+  it('does not write a shared series summary after switching away from its execution project', async () => {
     await configureEpisodeContext();
     useAppStore.setState({ currentProjectId: 'unrelated-project' });
     const messages = Array.from({ length: 12 }, (_, i) => chat(i + 1, i % 2 ? 'assistant' : 'user',
       `历史${i} ${'长'.repeat(650)}`, i === 1 ? { agentTaskId: 'task-1' } : {}));
     loadMessages.mockResolvedValue({ messages, total: messages.length });
 
-    const assembled = await assembleAgentContext({
+    await expect(assembleAgentContext({
       conversationId: 'conversation-1', projectId: 'episode-1', systemPrompt: 'system', userMessage: '继续',
-    });
-
-    expect(assembled.forcedCompression).toBe(true);
-    expect(assembled.usage.estimatedTokens).toBeLessThan(assembled.usage.inputBudget);
-    expect(stream.mock.calls[0][0]).toMatchObject({ projectId: 'episode-1', tools: [], trackAbort: false });
-    expect(stream.mock.calls[0][0].userMessage).toContain('succeeded');
-    expect(stream.mock.calls[0][0].userMessage).toContain('node-3');
+    })).rejects.toThrow('上下文');
+    expect(stream).not.toHaveBeenCalled();
+    expect(useAppStore.getState().conversations[0].contextSummary).toBeUndefined();
     expect(useAppStore.getState().conversations[0].projectId).toBe('project-1');
   });
 
@@ -265,14 +264,15 @@ describe('episode conversation compression recovery', () => {
     expect(stream).not.toHaveBeenCalled();
   });
 
-  it('does not reuse another episode model request for concurrent compression', async () => {
+  it('rejects concurrent compression targeting a different active episode', async () => {
     await configureEpisodeContext();
     const messages = Array.from({ length: 12 }, (_, i) => chat(i + 1, i % 2 ? 'assistant' : 'user', `历史${i}`));
     loadMessages.mockResolvedValue({ messages, total: messages.length });
     const first = compressConversationContext('conversation-1', { projectId: 'episode-1' });
     const second = compressConversationContext('conversation-1', { projectId: 'episode-2' });
-    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-    expect(stream.mock.calls.map(([options]) => options.projectId)).toEqual(['episode-1', 'episode-2']);
+    await expect(second).rejects.toThrow('上下文');
+    await expect(first).resolves.toBeTruthy();
+    expect(stream.mock.calls.map(([options]) => options.projectId)).toEqual(['episode-1']);
     expect(useAppStore.getState().conversations[0].contextSummary?.coveredMessageCount).toBe(4);
   });
 
@@ -387,18 +387,14 @@ describe('conversation continuity', () => {
     expect(stream).not.toHaveBeenCalled();
   });
 
-  it('compresses complete turns with tool progress and uses the conversation model when the active project changes', async () => {
+  it('does not compress a previous conversation after the active project changes', async () => {
     useAppStore.setState({ currentProjectId: 'other-project' });
     const messages = Array.from({ length: 12 }, (_, i) => chat(i + 1, i % 2 ? 'assistant' : 'user', `消息${i}`,
       i === 1 ? { agentTaskId: 'task-1' } : {}));
     loadMessages.mockResolvedValue({ messages, total: 12 });
-    const compressed = await compressConversationContext('conversation-1');
-    expect(compressed?.coveredUntilMessageId).toBe('message-4');
-    expect(compressed?.text).toContain('#3');
-    expect(resolveModel).toHaveBeenCalledWith('project-1');
-    expect(stream.mock.calls[0][0]).toMatchObject({ projectId: 'project-1', tools: [], trackAbort: false });
-    expect(stream.mock.calls[0][0].userMessage).toContain('succeeded');
-    expect(stream.mock.calls[0][0].userMessage).toContain('node-3');
+    await expect(compressConversationContext('conversation-1')).rejects.toThrow('上下文');
+    expect(stream).not.toHaveBeenCalled();
+    expect(useAppStore.getState().conversations[0].contextSummary).toBeUndefined();
   });
 
   it('does not publish a summary after cancellation or after the conversation disappears', async () => {
@@ -633,6 +629,7 @@ describe('in-flight context checkpoints', () => {
 
   it('preserves restored write deduplication across a context checkpoint', async () => {
     const restored = task({ resumeCount: 1 });
+    restored.projectScope = captureLegacyProjectExpectedContext(useAppStore.getState(), 'canvas');
     restored.steps[0].toolCall = {
       callId: 'old-write', toolId: 'canvas_write_test', retryCount: 0, effect: 'canvas_write',
       inputFingerprint: fingerprintToolInput('canvas_write_test', {}),

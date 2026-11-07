@@ -79,6 +79,11 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'p1',
+    projectLoadStatus: 'ready',
+    projects: [
+      { id: 'p1', name: '项目一', createdAt: 1, updatedAt: 1 },
+      { id: 'p2', name: '项目二', createdAt: 1, updatedAt: 1 },
+    ],
     config: { ...useAppStore.getState().config, comfyUIUrl: task.baseUrl },
     nodes: [{ id: 'n1', type: 'ai-image', position: { x: 0, y: 0 }, data: { type: 'ai-image', label: 'test', provider: 'comfyui', status: 'loading' } }],
     workflows: [{ id: 'wf-1', name: 'test', category: 'ai-image', createdAt: 1, fileName: 'test.json', fileContent: JSON.stringify({ '9': { class_type: 'SaveImage', inputs: {} } }) }],

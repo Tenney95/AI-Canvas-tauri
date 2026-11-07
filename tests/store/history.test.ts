@@ -830,7 +830,8 @@ describe('multi-selection connections', () => {
 
 describe('batch canvas history', () => {
   it('undo and redo preserve the independent file created by media duplication', async () => {
-    useAppStore.setState({ currentProjectId: 'p', nodes: [{ ...node('source'), type: 'ai-image',
+    useAppStore.setState({ currentProjectId: 'p', projectLoadStatus: 'ready',
+      projects: [{ id: 'p', name: '测试项目', createdAt: 1, updatedAt: 1 }], nodes: [{ ...node('source'), type: 'ai-image',
       data: { type: 'ai-image', label: 'image', filePath: 'project/original.png', imageUrl: 'asset://project/original.png' } }],
       history: [], historyIndex: -1 });
     await useAppStore.getState().duplicateNode('source');

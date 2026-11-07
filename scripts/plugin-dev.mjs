@@ -27,6 +27,22 @@ async function manifestParser() {
   return validator;
 }
 
+function localTypeDeclarations(source, roots, label) {
+  const declarations = new Map(source.statements.filter((node) => ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node))
+    .map((node) => [node.name.text, node]));
+  const names = new Set(roots);
+  for (const name of names) {
+    const declaration = declarations.get(name);
+    if (!declaration) throw new Error(`缺少${label}声明：${name}`);
+    const visit = (node) => {
+      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && declarations.has(node.typeName.text)) names.add(node.typeName.text);
+      ts.forEachChild(node, visit);
+    };
+    visit(declaration);
+  }
+  return source.statements.filter((node) => node.name && names.has(node.name.text)).map((node) => node.getFullText());
+}
+
 // 类型直接来自宿主源码；初始化时生成可独立携带的声明，避免手写第二套 API。
 async function portableSdk() {
   const parse = async (path) => ts.createSourceFile(path, await text(join(repository, path)), ts.ScriptTarget.Latest, true);
@@ -38,25 +54,13 @@ async function portableSdk() {
     .find((node) => node.name.getText() === 'LOCALES').initializer.expression.elements;
   const plugin = await parse('src/types/plugin.ts');
   const aiTypes = await parse('src/types/aiTypes.ts');
-  const aiDeclarations = new Map(aiTypes.statements.filter((node) => ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node))
-    .map((node) => [node.name.text, node]));
-  const capabilityNames = new Set(['VideoModelCapability']);
-  for (const name of capabilityNames) {
-    const declaration = aiDeclarations.get(name);
-    if (!declaration) throw new Error(`缺少视频能力声明：${name}`);
-    const visit = (node) => {
-      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && aiDeclarations.has(node.typeName.text)) {
-        capabilityNames.add(node.typeName.text);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(declaration);
-  }
+  const projectTypes = await parse('src/types/project.ts');
   const sdk = await parse('sdk/plugin-sdk.d.ts');
   return [
     '// 由 plugin-dev 生成；更新宿主后用 sdk 命令刷新。',
     ...aliases, `export type Locale = ${locales.map((node) => node.getText()).join(' | ')};`,
-    ...aiTypes.statements.filter((node) => node.name && capabilityNames.has(node.name.text)).map((node) => node.getFullText()),
+    ...localTypeDeclarations(aiTypes, ['VideoModelCapability'], '视频能力'),
+    ...localTypeDeclarations(projectTypes, ['CanvasContext'], '项目上下文'),
     ...plugin.statements.filter((node) => !ts.isImportDeclaration(node)).map((node) => node.getFullText()),
     ...sdk.statements.filter((node) => !ts.isImportDeclaration(node) && !ts.isExportDeclaration(node)).map((node) => node.getFullText()),
   ].join('\n');

@@ -77,6 +77,8 @@ beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({
     currentProjectId: 'p1',
+    projectLoadStatus: 'ready',
+    projects: [{ id: 'p1', name: '测试项目', createdAt: 1, updatedAt: 1 }],
     nodes: [
       node('n1', { displayId: 1, prompt: '一只猫', imageUrl: 'asset://localhost/D:/data/cat.png' }),
       node('n2', { displayId: 2, type: 'source-text', output: '剧本正文' }, { x: 500, y: 220 }),

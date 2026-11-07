@@ -126,6 +126,9 @@ function createContext(): TestContext {
 
 function batchExecuteNodes(ids: string[], nodes: Node<BaseNodeData>[], edges: Edge[], ctx: TestContext) {
   if (!mocks.liveState.nodes.length) mocks.liveState = { currentProjectId: ctx.currentProjectId, nodes, revision: 0 };
+  if (ctx.currentProjectId && !mocks.projects.some((project) => project.id === ctx.currentProjectId)) {
+    mocks.projects.push({ id: ctx.currentProjectId, name: '测试项目', createdAt: 1, updatedAt: 1 });
+  }
   mocks.actions = ctx;
   mocks.edges = edges;
   return executeBatch(ids, nodes, edges, ctx);
