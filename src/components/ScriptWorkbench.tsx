@@ -909,7 +909,8 @@ export default function ScriptWorkbench({
   const snapshot: ScriptWorkbenchSnapshot = {
     sessionId, revision: 0, acceptedEditSequence,
     draftVersion: currentEpisodeId ? draftVersionByEpisode[currentEpisodeId] ?? 0 : 0,
-    series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork, exchangeEpoch: series.exchangeEpoch ?? 0 } : null,
+    series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork,
+      originalAddedAt: series.series?.originalWork?.addedAt, exchangeEpoch: series.exchangeEpoch ?? 0 } : null,
     episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
     currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
       episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript,
@@ -965,7 +966,7 @@ export default function ScriptWorkbench({
       case 'select_episode': requestEpisodeSwitch(action.episodeId); return true;
       case 'set_tab': {
         if (action.tab !== 'story-graph' && (graphEditorLease.current || graphWritesInFlight.current > 0)) throw new Error(t('请先保存或关闭关系图详情，再切换页签'));
-        if (['outline', 'script', 'creative', 'characters', 'props', 'story-graph'].includes(action.tab)) setActiveTab(action.tab);
+        if (['outline', 'original', 'script', 'creative', 'characters', 'props', 'story-graph'].includes(action.tab)) setActiveTab(action.tab);
         return true;
       }
       case 'save': {
@@ -1348,10 +1349,10 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   const setTargetEpisodeCount = (value: string) => fire({ type: 'set_split_count', value });
   const setTargetDurationSec = (value: string) => fire({ type: 'set_split_duration', value });
   const sourceRemote = useMemo<SeriesSourceBrowserRemote>(() => ({
-    contextKey: `${snapshot.sessionId}:${series?.id ?? ''}`, ready: snapshot.contextReady,
+    contextKey: `${snapshot.sessionId}:${series?.id ?? ''}:${series?.exchangeEpoch ?? 0}:${series?.originalAddedAt ?? 0}`, ready: snapshot.contextReady,
     readSource: async (part, signal) => { signal.throwIfAborted(); const result = await dispatch({ type: 'read_source', part }); signal.throwIfAborted(); return result as SeriesSourceSnapshot; },
     prepareChapter: async (reference) => { await dispatch({ type: 'prepare_chapter', reference }); },
-  }), [dispatch, series?.id, snapshot.contextReady, snapshot.sessionId]);
+  }), [dispatch, series?.id, series?.exchangeEpoch, series?.originalAddedAt, snapshot.contextReady, snapshot.sessionId]);
   useLayoutEffect(() => {
     const location = snapshot.sourceLocation;
     const editor = sourceEditorRef.current;
@@ -1592,6 +1593,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                 <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-1 border-b border-border-subtle px-3 py-1">
                   {([
                     ['outline', '本集大纲', 'lucide:list-tree'],
+                    ['original', '原文', 'lucide:book-open'],
                     ['script', '本集剧本', 'lucide:scroll-text'],
                     ['creative', '创作要点', 'lucide:lightbulb'],
                     ['characters', '本集角色', 'lucide:users-round'],
@@ -1618,6 +1620,11 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-auto">
+                  {activeTab === 'original' && <section className="h-full min-h-80 min-w-0 overflow-hidden" aria-label={t('原文')}>
+                    {!contextReady ? <p role="status" className="ui-hint p-3">{t('项目尚未就绪，暂时无法读取原文。')}</p>
+                      : !series?.hasOriginal ? <p role="status" className="ui-hint p-3">{t('还没有原文，请在剧集栏添加原著文件。')}</p>
+                        : <SeriesSourceBrowser key={sourceRemote.contextKey} embedded fixedPart="original" remote={sourceRemote} />}
+                  </section>}
                   {activeTab === 'story-graph' && snapshot.storyGraphView ? (
                     <LazyLoadBoundary label={t('故事关系图')} resetKey={snapshot.sessionId}>
                       <Suspense fallback={<LazyLoadFallback label={t('故事关系图')} />}>

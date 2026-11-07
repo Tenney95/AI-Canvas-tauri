@@ -19,9 +19,11 @@ export interface SeriesSourceBrowserRemote {
   prepareChapter: (reference: SeriesSourceReference) => Promise<void>;
 }
 
-export default function SeriesSourceBrowser({ initialPart = 'original', onClose, beforeAssistant, remote }: {
+export default function SeriesSourceBrowser({ initialPart = 'original', fixedPart, embedded = false, onClose, beforeAssistant, remote }: {
   initialPart?: SeriesSourcePart;
-  onClose: () => void;
+  fixedPart?: SeriesSourcePart;
+  embedded?: boolean;
+  onClose?: () => void;
   beforeAssistant?: () => Promise<boolean>;
   remote?: SeriesSourceBrowserRemote;
 }) {
@@ -30,7 +32,8 @@ export default function SeriesSourceBrowser({ initialPart = 'original', onClose,
   const localReady = useAppStore((state) => !remote && state.projectLoadStatus === 'ready');
   const ready = remote?.ready ?? localReady;
   const series = useAppStore((state) => remote ? undefined : state.projects.find((item) => item.id === seriesOwnerId(state.projects, state.currentProjectId ?? '')));
-  const [part, setPart] = useState<SeriesSourcePart>(initialPart);
+  const [selectedPart, setPart] = useState<SeriesSourcePart>(initialPart);
+  const part = fixedPart ?? selectedPart;
   const [reload, setReload] = useState(0);
   const [loaded, setLoaded] = useState<{ key: string; source?: SeriesSourceSnapshot; error?: string }>();
   const [query, setQuery] = useState('');
@@ -66,14 +69,14 @@ export default function SeriesSourceBrowser({ initialPart = 'original', onClose,
       if (beforeAssistant && !await beforeAssistant()) return;
       if (remote) {
         await remote.prepareChapter({ seriesId: source.seriesId, part: source.part, version: source.version, chapterId: chapter.id });
-        onClose();
+        onClose?.();
         return;
       }
       const draft = buildSeriesChapterPrompt(source, chapter.id);
       const state = useAppStore.getState();
       if (state.currentProjectId !== source.projectId || state.projectLoadStatus !== 'ready') throw new Error(t('项目已切换，请重新选择章节'));
       state.openChatWithDraft(draft);
-      onClose();
+      onClose?.();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : t('读取材料失败');
       if (remote) setActionError(message);
@@ -81,15 +84,18 @@ export default function SeriesSourceBrowser({ initialPart = 'original', onClose,
     } finally { setPreparing(false); }
   };
 
-  return <ModalOverlay isOpen onClose={onClose} ariaLabel={t('章节浏览')}>
-    <div className="ui-card flex h-[min(80vh,720px)] w-[min(960px,calc(100vw-32px))] flex-col overflow-hidden text-canvas-text">
-      <header className="ui-card__header flex shrink-0 items-center gap-3">
+  const content = (
+    <div className={embedded
+      ? 'flex h-full min-h-0 min-w-0 flex-col overflow-hidden text-canvas-text'
+      : 'ui-card flex h-[min(80vh,720px)] w-[min(960px,calc(100vw-32px))] flex-col overflow-hidden text-canvas-text'}>
+      {!embedded && <header className="ui-card__header flex shrink-0 items-center gap-3">
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{t('章节浏览')}</h2>
-        <PopupCloseButton onClick={onClose} ariaLabel={t('关闭章节浏览')} />
-      </header>
+        <PopupCloseButton onClick={() => onClose?.()} ariaLabel={t('关闭章节浏览')} />
+      </header>}
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-canvas-border p-3">
-        <Select value={part} onChange={(value) => { setPart(value); setSelected(''); setOffset(0); }}
-          aria-label={t('素材来源')} options={[{ value: 'original', label: t('原著') }, { value: 'script', label: t('全剧剧本') }]} />
+        {fixedPart ? <span className="ui-label">{t(fixedPart === 'original' ? '原著' : '全剧剧本')}</span>
+          : <Select value={part} onChange={(value) => { setPart(value); setSelected(''); setOffset(0); }}
+            aria-label={t('素材来源')} options={[{ value: 'original', label: t('原著') }, { value: 'script', label: t('全剧剧本') }]} />}
         <input className="ui-input min-w-40 flex-1" value={query} maxLength={120}
           aria-label={t('搜索章节或正文')} placeholder={t('搜索章节或正文')}
           onChange={(event) => { setQuery(event.target.value); setOffset(0); setShown(50); }} />
@@ -122,5 +128,6 @@ export default function SeriesSourceBrowser({ initialPart = 'original', onClose,
           </section>
         </div>}
     </div>
-  </ModalOverlay>;
+  );
+  return embedded ? content : <ModalOverlay isOpen onClose={() => onClose?.()} ariaLabel={t('章节浏览')}>{content}</ModalOverlay>;
 }

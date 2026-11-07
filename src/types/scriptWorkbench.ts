@@ -11,7 +11,7 @@ import type { SeriesSourcePart, SeriesSourceReference } from './seriesSource';
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
   StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
 
-export type WorkbenchEditorTab = 'outline' | 'script' | 'creative' | 'characters' | 'props' | 'story-graph';
+export type WorkbenchEditorTab = 'outline' | 'original' | 'script' | 'creative' | 'characters' | 'props' | 'story-graph';
 export type WorkbenchPendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
 export interface WorkbenchCreativeDraft {
   task: string; coreConflict: string; openingHook: string; reversal: string; endingHook: string;
@@ -23,7 +23,7 @@ export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; dr
 
 export interface ScriptWorkbenchSnapshot {
   sessionId: string; revision: number; acceptedEditSequence: number; draftVersion: number;
-  series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; exchangeEpoch?: number } | null;
+  series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; originalAddedAt?: number; exchangeEpoch?: number } | null;
   episodes: Array<{ id: string; name: string; scriptLength: number; hasOutline: boolean }>;
   currentEpisode: WorkbenchEpisode | null;
   canvasProjectId: string | null;
