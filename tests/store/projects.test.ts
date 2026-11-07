@@ -11,6 +11,8 @@ import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
 import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sharedAssetSyncRepository';
 import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
+import { ProjectImportCommittedError } from '../../src/services/projectImportOutcome';
+import type { PreparedProjectImport, ProjectImportPreview } from '../../src/services/projectImportService';
 
 const fileMocks = vi.hoisted(() => ({
   deleteProjectData: vi.fn(async () => undefined),
@@ -32,7 +34,11 @@ const fileMocks = vi.hoisted(() => ({
 const pollMocks = vi.hoisted(() => ({
   resumePendingTasks: vi.fn(async () => undefined),
   stopPollingForDeletedProjects: vi.fn(),
+  getPendingTasksForProject: vi.fn(() => []),
 }));
+const importMocks = vi.hoisted(() => ({ prepare: vi.fn(), preview: vi.fn(), apply: vi.fn(), restore: vi.fn() }));
+vi.mock('../../src/services/projectImportService', () => ({ prepareProjectImport: importMocks.prepare,
+  previewProjectImport: importMocks.preview, applyProjectImport: importMocks.apply, restoreProjectImportRecovery: importMocks.restore }));
 const lifecycleMocks = vi.hoisted(() => ({ deleteContent: vi.fn() }));
 vi.mock('../../src/services/indexedDb/legacyProjectLifecycleRepository', () => ({
   deleteLegacyProjectContent: lifecycleMocks.deleteContent, swapLegacyEpisodeOrder: vi.fn(),
@@ -60,6 +66,7 @@ vi.mock('../../src/services/pollManager', () => ({
   clearProjectTasks: vi.fn(),
   resumePendingTasks: pollMocks.resumePendingTasks,
   stopPollingForDeletedProjects: pollMocks.stopPollingForDeletedProjects,
+  getPendingTasksForProject: pollMocks.getPendingTasksForProject,
 }));
 
 vi.mock('../../src/services/projectSnapshotService', () => snapshotMocks);
@@ -114,6 +121,35 @@ beforeEach(() => {
   metadataMocks.updateProjectStoryGraphCAS.mockReset();
   recoveryMock.mockReset().mockResolvedValue(false);
   assetSyncMocks.applySharedAssetSyncCommit.mockReset();
+  Object.values(importMocks).forEach((mock) => mock.mockReset());
+});
+
+describe('项目提交后交接保护', () => {
+  it.each(['committed', 'unknown'] as const)('导入返回 %s 时保留 error，不能把旧画布恢复 ready', async (outcome) => {
+    const owner = { id: `import-owner-${outcome}`, name: '整部剧', createdAt: 1, updatedAt: 1 };
+    const episode = { id: `import-episode-${outcome}`, parentId: owner.id, name: '第一集', createdAt: 1, updatedAt: 1 };
+    const session = { id: 'session' } as PreparedProjectImport;
+    const preview = { sessionId: session.id, targetId: owner.id } as ProjectImportPreview;
+    importMocks.preview.mockResolvedValue(preview);
+    importMocks.apply.mockRejectedValue(new ProjectImportCommittedError('import-operation', owner.id, outcome, new Error('回执丢失')));
+    useAppStore.setState({ projects: [owner, episode], currentProjectId: episode.id, projectLoadStatus: 'ready',
+      saveCurrentProjectSilent: vi.fn(async () => episode.id), showToast: vi.fn() });
+    await useAppStore.getState().previewProjectImport(session, owner.id);
+    await expect(useAppStore.getState().importProject(session, preview)).rejects.toBeInstanceOf(ProjectImportCommittedError);
+    expect(useAppStore.getState().projectLoadStatus).toBe('error');
+    expect(fileMocks.loadProjectsList).not.toHaveBeenCalled();
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+  });
+
+  it('恢复操作已提交但交接失败时不解锁旧稿为 ready', async () => {
+    const owner = { id: 'restore-owner', name: '作品', createdAt: 1, updatedAt: 1 };
+    importMocks.restore.mockRejectedValue(new ProjectImportCommittedError('restore-operation', owner.id, 'committed', new Error('回执丢失')));
+    useAppStore.setState({ projects: [owner], currentProjectId: owner.id, projectLoadStatus: 'ready',
+      saveCurrentProjectSilent: vi.fn(async () => owner.id) });
+    await expect(useAppStore.getState().restoreProjectImport(owner.id, 'recovery')).rejects.toBeInstanceOf(ProjectImportCommittedError);
+    expect(useAppStore.getState().projectLoadStatus).toBe('error');
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+  });
 });
 
 function stubInitializationActions(store = useAppStore) {

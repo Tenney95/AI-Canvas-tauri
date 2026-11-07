@@ -137,6 +137,7 @@ export interface ProjectArchiveCanvasV4 {
   projectId: string;
   episodeId: string | null;
   storageRootRef: string;
+  revisionScope?: 'project' | 'global';
   nodes: ProjectExchangeObject[];
   edges: ProjectExchangeObject[];
   groups: ProjectExchangeObject[];
@@ -159,6 +160,35 @@ export interface ProjectArchiveHistoryV4 {
     conversations: Array<Omit<ProjectArchiveChatPayload['conversations'][number], 'workbenchTarget'>>;
   };
   workbenchTargets: Array<{ conversationId: string; target: ProjectArchiveWorkbenchTargetV4 }>;
+}
+
+/** 每个素材逻辑身份绑定来源根；物理载荷可按 mediaId 去重。 */
+export interface ProjectArchiveFileV4 {
+  id: string;
+  rootRef: string;
+  relativePath: string;
+  mediaId: string;
+}
+
+export interface ProjectArchiveBusinessV4 {
+  project: ProjectArchiveProjectV4;
+  episodes: ProjectArchiveEpisodeV4[];
+  canvases: ProjectArchiveCanvasV4[];
+  contents: ProjectArchiveContentsV4;
+}
+
+export interface ProjectArchivePayloadV4 extends ProjectArchiveBusinessV4 {
+  exchange: ProjectExchangeBundleV2;
+  history?: ProjectArchiveHistoryV4;
+}
+
+/** 已校验的纯归档材料，不构成写入正式数据库或执行历史目标的授权。 */
+export interface ValidatedProjectArchiveV4 {
+  manifest: ProjectArchiveManifestV4;
+  payload: ProjectArchivePayloadV4;
+  snapshot: ProjectExchangeSnapshotV2;
+  files: ProjectArchiveFileV4[];
+  assets: Array<{ path: string; bytes: number; sha256: string }>;
 }
 
 export type ProjectArchiveOperation = 'in-place-upgrade' | 'import-new' | 'update-existing'

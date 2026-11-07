@@ -31,7 +31,7 @@ const metadataKeys = new Set(['last-active-project', 'recent-asset-usage', 'medi
 const metadataPrefixes = [
   'project-deleted:', 'output-history-v1:', 'video-batches:', 'video-replica-jobs:',
   'asset-image:', 'forgotten-missing-asset:', 'forgotten-missing-path:', 'forgotten-missing-history:',
-  'project-import-recovery:', 'project-import-operation:', 'mcp-operation:',
+  'project-import-recovery:', 'project-import-operation:', 'project-export-operation:', 'archive-history-binding:', 'mcp-operation:',
 ];
 
 export const isProjectModelBackupStore = (name: string): boolean => backupStores.has(name);

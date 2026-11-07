@@ -572,6 +572,12 @@ pub trait Manager<R: Runtime>: sealed::ManagerBase<R> {
     self.manager().webviews()
   }
 
+  /// Count all managed windows and webviews without exposing unstable creation APIs.
+  /// Unlike `webview_windows`, this includes plain windows and child webviews.
+  fn managed_surface_counts(&self) -> (usize, usize) {
+    (self.manager().windows().len(), self.manager().webviews().len())
+  }
+
   /// Fetch a single webview window from the manager.
   fn get_webview_window(&self, label: &str) -> Option<WebviewWindow<R>> {
     self.manager().get_webview(label).and_then(|webview| {

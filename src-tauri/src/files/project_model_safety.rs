@@ -270,7 +270,7 @@ pub fn deny_private_access<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), 
 
 #[cfg(windows)]
 pub fn start_maintenance(app: &mut tauri::App, request: ColdMaintenanceRequest) -> Result<(), String> {
-    if !cfg!(debug_assertions) || !app.webviews().is_empty() { return Err(ERROR.into()); }
+    if !cfg!(debug_assertions) || app.managed_surface_counts() != (0, 0) { return Err(ERROR.into()); }
     let (root, lock, profile, profile_id, mode) = match request {
         ColdMaintenanceRequest::Fixture(id) => {
             let local = app.path().app_local_data_dir().map_err(|_| ERROR)?;
@@ -353,9 +353,16 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         window.app_handle().state::<ProjectModelMaintenanceState>().revoked.store(true, Ordering::Release);
     }
 }
+fn only_maintenance_surface(webview: &Webview) -> bool {
+    // 不能用 webview_windows() 推断全量：它会过滤纯窗口和带子 WebView 的宿主。
+    if webview.app_handle().managed_surface_counts() != (1, 1) { return false; }
+    let window = webview.window();
+    let views = window.webviews();
+    window.label() == WINDOW && views.len() == 1 && views[0].label() == WINDOW
+}
 async fn checked_session(webview: &Webview, lease_id: Option<&str>, fixture: bool) -> Result<(MaintenanceLease, Option<PathBuf>), String> {
     if !cfg!(debug_assertions) || webview.label() != WINDOW || !maintenance_url(&webview.url().map_err(|_| ERROR)?)
-        || webview.app_handle().webviews().len() != 1 { return Err(ERROR.into()); }
+        || !only_maintenance_surface(webview) { return Err(ERROR.into()); }
     let state = webview.app_handle().state::<ProjectModelMaintenanceState>();
     if state.revoked.load(Ordering::Acquire) { return Err(ERROR.into()); }
     let result = {
@@ -384,7 +391,7 @@ async fn checked_session(webview: &Webview, lease_id: Option<&str>, fixture: boo
     {
         if state.revoked.load(Ordering::Acquire)
             || state.session.lock().map_err(|_| ERROR)?.as_ref().ok_or(ERROR)?.environment_revoked.load(Ordering::Acquire)
-            || webview.app_handle().webviews().len() != 1 { return Err(ERROR.into()); }
+            || !only_maintenance_surface(webview) { return Err(ERROR.into()); }
         Ok(result)
     }
 }
@@ -466,12 +473,17 @@ fn verify_materials(root: &Path, lease: &MaintenanceLease, operation_id: &str, c
     let complete: Complete = serde_json::from_slice(complete_bytes).map_err(|_| ERROR)?;
     let manifest_bytes = read_bounded(root, "manifest.json", MAX_MANIFEST)?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|_| ERROR)?;
-    if complete.format != "project-model-backup-v1" || complete.operation_id != operation_id
+    let supported_format = match complete.format.as_str() {
+        "project-model-backup-v1" => manifest.schema_version > 0 && manifest.schema_version <= 27,
+        "project-model-fixture-backup-v2" => manifest.schema_version == 28,
+        _ => false,
+    };
+    if !supported_format || complete.operation_id != operation_id
         || manifest.format != complete.format || manifest.operation_id != operation_id
         || complete.manifest_sha256 != digest(&manifest_bytes)
         || manifest.database_name != format!("ai-canvas-model-fixture-{}", lease.profile_id)
         || manifest.files.len() > 20_000 || manifest.total_bytes > MAX_TOTAL
-        || manifest.schema_version > 27 || manifest.created_at > 9_007_199_254_740_991
+        || manifest.created_at > 9_007_199_254_740_991
         || manifest.database_store_names.len() > 128 || manifest.stores.len() > 128 || manifest.local_storage.len() != 1 {
         return Err(ERROR.into());
     }
@@ -609,6 +621,24 @@ mod tests {
         lease.profile_id = "different".into();
         assert!(verify_materials(&root, &lease, "fixture-operation", &complete).is_err());
         lease.profile_id = "safe".into();
+        // v2 仅为同一隔离 profile 的真实 schema28；v1 和正式库不能借格式升级越界。
+        for (format, schema, database, accepted) in [
+            ("project-model-fixture-backup-v2", 28, "ai-canvas-model-fixture-safe", true),
+            ("project-model-backup-v1", 28, "ai-canvas-model-fixture-safe", false),
+            ("project-model-fixture-backup-v2", 27, "ai-canvas-model-fixture-safe", false),
+            ("project-model-fixture-backup-v2", 28, "ai-canvas-db", false),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+            value["format"] = serde_json::json!(format);
+            value["schemaVersion"] = serde_json::json!(schema);
+            value["databaseName"] = serde_json::json!(database);
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(root.join("manifest.json"), &bytes).unwrap();
+            let marker = serde_json::to_vec(&serde_json::json!({"format":format,
+                "operationId":"fixture-operation", "manifestSha256":digest(&bytes)})).unwrap();
+            assert_eq!(verify_materials(&root, &lease, "fixture-operation", &marker).is_ok(), accepted);
+        }
+        fs::write(root.join("manifest.json"), &manifest).unwrap();
         fs::write(root.join("records.json"), b"{}").unwrap();
         assert!(verify_materials(&root, &lease, "fixture-operation", &complete).is_err());
         for name in ["records.json", "pending.json", "manifest.json"] { fs::remove_file(root.join(name)).unwrap(); }

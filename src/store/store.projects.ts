@@ -70,6 +70,7 @@ import { normalizeStoryGraph } from '../services/storyGraphService';
 import { prepareEpisodeScriptFileWrite, type EpisodeScriptFileReceipt } from '../services/episodeScriptFileService';
 import { normalizeProjectTextFileReference } from '../utils/manuscriptFileReference';
 import { deleteLegacyProjectContent, swapLegacyEpisodeOrder } from '../services/indexedDb/legacyProjectLifecycleRepository';
+import { ProjectImportCommittedError } from '../services/projectImportOutcome';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
 let activeProjectMetadataWrite: Promise<void> = Promise.resolve();
@@ -1841,7 +1842,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   importProject: async (session, preview, choices = {}, options = { appendChat: false, appendMemories: false }) => {
     invalidateSeriesLibrarySave();
     let result: Awaited<ReturnType<typeof importProjectArchive>>;
-    let committed = false, lockedCanvas = false;
+    let committed = false, lockedCanvas = false, commitUncertain = false;
     const affected = preview ? get().projects.filter((item) => item.id === preview.targetId || item.parentId === preview.targetId).map((item) => item.id) : [];
     try {
       if (preview) {
@@ -1860,6 +1861,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       result = session ? await applyProjectImport(session, preview ?? null, choices, options, preview ? importPreviewGuards.get(preview) : undefined) : await importProjectArchive();
       committed = !!result;
     } catch (error) {
+      if (error instanceof ProjectImportCommittedError) {
+        commitUncertain = true;
+        if (lockedCanvas) set({ projectLoadStatus: 'error' });
+      }
       console.error('[项目导入] 失败:', error);
       get().showToast(error instanceof Error ? t('项目导入失败：{reason}', { reason: error.message }) : '项目导入失败', 'error');
       if (session) throw error;
@@ -1867,7 +1872,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     } finally {
       invalidateSeriesLibrarySave();
       affected.forEach((id) => projectImportsApplying.delete(id));
-      if (lockedCanvas && !committed) set({ projectLoadStatus: 'ready' });
+      if (lockedCanvas && !committed) set({ projectLoadStatus: commitUncertain ? 'error' : 'ready' });
     }
     if (!result) return undefined;
 
@@ -1925,7 +1930,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const id = get().currentProjectId; if (await get().saveCurrentProjectSilent() !== id) throw new Error('当前画布保存失败');
     }
     affected.forEach((id) => projectImportsApplying.add(id));
-    let lockedCanvas = false, committed = false, projected = false;
+    let lockedCanvas = false, committed = false, projected = false, commitUncertain = false;
     try {
       await Promise.all(affected.map(waitForProjectSaveQueue));
       const before = get();
@@ -1946,10 +1951,13 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       invalidateSeriesLibrarySave();
       affected.forEach((id) => projectImportsApplying.delete(id));
       await get().switchProject(ownerId); get().showToast('已恢复项目，恢复前的状态也已保存为恢复点');
+    } catch (error) {
+      if (error instanceof ProjectImportCommittedError) commitUncertain = true;
+      throw error;
     } finally {
       invalidateSeriesLibrarySave();
       affected.forEach((id) => projectImportsApplying.delete(id));
-      if (lockedCanvas && !projected) set({ projectLoadStatus: committed ? 'error' : 'ready' });
+      if (lockedCanvas && !projected) set({ projectLoadStatus: committed || commitUncertain ? 'error' : 'ready' });
     }
   },
 

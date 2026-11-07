@@ -4,6 +4,7 @@ import type {
   ProjectContent, ProjectRecord, ProjectExpectedContext,
 } from '../../types/project';
 import type { ProjectSettings } from '../../types';
+import type { ProjectModelTransferAggregate } from '../../types/projectModelTransfer';
 import {
   PROJECT_MODEL_BUSINESS_FIXTURE_KEY,
   type ProjectModelBusinessReadOptions, type ProjectModelBusinessSelection, type ProjectModelBusinessTombstone,
@@ -198,6 +199,129 @@ function assertSession(value: unknown): asserts value is ProjectModelFixtureBusi
       'sourceDigest', 'targetManifestDigest', 'revision', 'dirty'].includes(field))) fail('invalid-business-marker');
 }
 
+/** 归档聚合事务与普通业务使用同一个fixture权威，不另签活跃模型授权。 */
+export async function readProjectModelBusinessMarker(tx: IDBTransaction,
+  expected: ProjectModelFixtureBusinessSession): Promise<ProjectModelFixtureBusinessSession> {
+  if (await request(tx.objectStore(META).get(PROJECT_MODEL_ACTIVE_MARKER_KEY)) !== undefined) fail('formal-model-present');
+  const marker: unknown = await request(tx.objectStore(META).get(PROJECT_MODEL_BUSINESS_FIXTURE_KEY));
+  assertSession(marker);
+  if (marker.sessionId !== expected.sessionId || marker.operationId !== expected.operationId
+    || marker.generation !== expected.generation) fail('stale-business-session');
+  const frozen = await request(tx.objectStore(META).get(PROJECT_MODEL_SOURCE_FREEZE_KEY)) as ProjectModelSourceFreeze | undefined;
+  if (!frozen || frozen.operationId !== marker.operationId || frozen.generation !== marker.generation
+    || frozen.state !== 'frozen' || frozen.sourceDigest !== marker.sourceDigest) fail('source-not-frozen');
+  return marker;
+}
+
+/** 导入/复制/恢复复用业务字段规则，拒绝不完整聚合；旧引用只能以原值保留。 */
+export function validateProjectModelTransferAggregate(input: ProjectModelTransferAggregate,
+  previous?: ProjectModelTransferAggregate): ProjectModelTransferAggregate {
+  const next = data(input);
+  shape(next, ['project', 'content', 'episodes', 'episodeContents', 'canvases', 'previews', 'bindings'], 'invalid-transfer-aggregate');
+  const project = next.project, contents = next.content;
+  shape(project, ['id', 'name', 'kind', 'createdAt', 'updatedAt', 'epoch', 'dataFolder', 'storageRootRef',
+    'storageBindings', 'defaultSettings', 'lastOpenedCanvasId'], 'invalid-transfer-project');
+  assertId(project.id);
+  if (!['standalone', 'series'].includes(project.kind) || typeof project.name !== 'string' || !project.name.trim()
+    || project.name.length > 256 || !Array.isArray(project.storageBindings)) fail('invalid-transfer-project');
+  const integer = (value: number) => Number.isSafeInteger(value) && value >= 0;
+  for (const value of [project.createdAt, project.updatedAt, project.epoch]) if (!integer(value)) fail('invalid-transfer-version');
+  portableReference(project.dataFolder); assertId(project.storageRootRef);
+  const roots = new Set<string>();
+  for (const root of project.storageBindings) {
+    shape(root, ['rootRef', 'folderName', 'sourceRecordIds', 'source'], 'invalid-storage-binding');
+    assertId(root.rootRef); portableReference(root.folderName);
+    if (roots.has(root.rootRef) || !['legacy-folder-rule', 'project-managed'].includes(root.source)
+      || !Array.isArray(root.sourceRecordIds) || root.sourceRecordIds.some((id) => !identity(id))) fail('invalid-storage-binding');
+    roots.add(root.rootRef);
+  }
+  if (!roots.has(project.storageRootRef)) fail('missing-storage-binding');
+  if (project.defaultSettings) persistedStyle(project.defaultSettings, previous?.project.defaultSettings);
+  shape(contents, ['projectId', 'originalWork', 'script', 'storyGraph', 'dramaAssets', 'standaloneCreative', 'revisions'], 'invalid-project-content');
+  if (contents.projectId !== project.id) fail('broken-project-content');
+  shape(contents.revisions, ['source', 'script', 'storyGraph', 'assets'], 'invalid-project-content');
+  if (Object.values(contents.revisions).length !== 4 || Object.values(contents.revisions).some((value) => !integer(value))) fail('invalid-transfer-version');
+  if (contents.script !== undefined && typeof contents.script !== 'string') fail('invalid-project-script');
+  if (contents.originalWork) {
+    shape(contents.originalWork, ['fileName', 'relativePath', 'addedAt'], 'invalid-source-file-reference');
+    portableReference(contents.originalWork.relativePath);
+    if (contents.originalWork.fileName !== contents.originalWork.relativePath.split('/').at(-1)
+      || !integer(contents.originalWork.addedAt)) fail('invalid-source-file-reference');
+  }
+  if (contents.storyGraph) sameNormalized(contents.storyGraph, normalizeStoryGraph(contents.storyGraph), 'invalid-story-graph');
+  if (contents.dramaAssets) {
+    sameNormalized(contents.dramaAssets, normalizeDramaAssetLibrary(contents.dramaAssets), 'invalid-drama-assets');
+    canvasReferences(contents.dramaAssets, previous?.content.dramaAssets);
+  }
+  const creative = (value: EpisodeContent | NonNullable<ProjectContent['standaloneCreative']>, extra: string[]) => {
+    shape(value, ['outline', 'script', 'scriptFile', 'creative', 'assetRoster', 'revision', 'storageRootRef', ...extra], 'invalid-transfer-creative');
+    if (!integer(value.revision) || !roots.has(value.storageRootRef)) fail('invalid-transfer-creative');
+    creativeFields(value as unknown as Record<string, unknown>);
+  };
+  if (contents.standaloneCreative) {
+    if (project.kind !== 'standalone') fail('series-has-standalone-content');
+    creative(contents.standaloneCreative, ['creationProfile', 'teamProfileOverride']);
+  }
+  if (![next.episodes, next.episodeContents, next.canvases, next.previews, next.bindings].every(Array.isArray)) fail('invalid-transfer-collections');
+  const episodeIds = new Set<string>(), canvasIds = new Set<string>(), order = new Set<number>();
+  for (const episode of next.episodes) {
+    shape(episode, ['id', 'projectId', 'canvasId', 'name', 'orderRank', 'displayNo', 'createdAt', 'updatedAt', 'epoch', 'revision',
+      'settingsPolicy', 'creationProfile', 'teamProfileOverride'], 'invalid-transfer-episode');
+    assertId(episode.id); assertId(episode.canvasId);
+    if (episode.projectId !== project.id || episodeIds.has(episode.id) || order.has(episode.orderRank)
+      || typeof episode.name !== 'string' || !episode.name.trim()
+      || ![episode.orderRank, episode.createdAt, episode.updatedAt, episode.epoch, episode.revision].every(integer)
+      || episode.displayNo !== undefined && (!integer(episode.displayNo) || episode.displayNo < 1)) fail('invalid-transfer-episode');
+    assertProjectModelSettingsPolicy(episode.settingsPolicy);
+    const oldPolicy = previous?.episodes.find((item) => item.id === episode.id)?.settingsPolicy;
+    if (episode.settingsPolicy.mode === 'legacy-pinned') persistedStyle(episode.settingsPolicy.snapshot,
+      oldPolicy?.mode === 'legacy-pinned' ? oldPolicy.snapshot : undefined);
+    canvasReferences(episode.settingsPolicy, oldPolicy);
+    creativeFields({ creationProfile: episode.creationProfile, teamProfileOverride: episode.teamProfileOverride });
+    episodeIds.add(episode.id); order.add(episode.orderRank);
+  }
+  for (const canvas of next.canvases) {
+    shape(canvas, ['id', 'projectId', 'episodeId', 'storageRootRef', 'nodes', 'edges', 'groups', 'epoch', 'revision', 'revisionScope'], 'invalid-transfer-canvas');
+    assertId(canvas.id);
+    if (canvasIds.has(canvas.id) || canvas.projectId !== project.id || !roots.has(canvas.storageRootRef)
+      || !integer(canvas.epoch) || !integer(canvas.revision) || !['project', 'global'].includes(canvas.revisionScope)
+      || ![canvas.nodes, canvas.edges, canvas.groups].every(Array.isArray)) fail('invalid-transfer-canvas');
+    const target = next.episodes.find((episode) => episode.canvasId === canvas.id);
+    if (project.kind === 'series' ? !target || canvas.episodeId !== target.id : canvas.episodeId !== null) fail('broken-canvas-membership');
+    canvasShape(canvas); canvasReferences(canvas, previous?.canvases.find((item) => item.id === canvas.id)); canvasIds.add(canvas.id);
+  }
+  if (project.kind === 'standalone' ? episodeIds.size !== 0 || canvasIds.size !== 1
+    : canvasIds.size !== episodeIds.size || next.episodes.some((episode) => !canvasIds.has(episode.canvasId))) fail('broken-transfer-membership');
+  const contentIds = new Set<string>();
+  for (const content of next.episodeContents) {
+    if (!episodeIds.has(content.episodeId) || contentIds.has(content.episodeId)) fail('broken-episode-content');
+    creative(content, ['episodeId']); contentIds.add(content.episodeId);
+  }
+  if (contentIds.size !== episodeIds.size) fail('missing-episode-content');
+  const previewIds = new Set<string>();
+  for (const preview of next.previews) {
+    shape(preview, ['canvasId', 'snapshot', 'updatedAt'], 'invalid-canvas-preview');
+    if (!canvasIds.has(preview.canvasId) || previewIds.has(preview.canvasId) || typeof preview.snapshot !== 'string'
+      || !integer(preview.updatedAt)) fail('invalid-canvas-preview');
+    previewIds.add(preview.canvasId);
+  }
+  const bindingKeys = new Set<string>();
+  for (const binding of next.bindings) {
+    shape(binding, ['namespace', 'legacyId', 'projectId', 'episodeId', 'canvasId', 'storageRootRef', 'sourceEpoch', 'retired', 'retiredAt'], 'invalid-legacy-binding');
+    assertId(binding.legacyId);
+    const key = JSON.stringify([binding.namespace, binding.legacyId]);
+    if (bindingKeys.has(key) || !['legacy-root', 'legacy-episode', 'legacy-canvas'].includes(binding.namespace)
+      || binding.projectId !== project.id || !roots.has(binding.storageRootRef) || !integer(binding.sourceEpoch)
+      || binding.retired !== undefined && binding.retired !== true
+      || binding.retiredAt !== undefined && !integer(binding.retiredAt)
+      || !binding.retired && (binding.episodeId !== undefined && !episodeIds.has(binding.episodeId)
+        || binding.canvasId !== undefined && !canvasIds.has(binding.canvasId))) fail('invalid-legacy-binding');
+    bindingKeys.add(key);
+  }
+  if (project.lastOpenedCanvasId !== undefined && !canvasIds.has(project.lastOpenedCanvasId)) fail('invalid-last-opened-canvas');
+  return next;
+}
+
 /** P2 ready本身没有业务可写权威；显式fixture session才开放这一组新表。 */
 export async function beginProjectModelFixtureBusinessSession(database: IDBDatabase, input: {
   operationId: string; generation: number; sessionId?: string; signal?: AbortSignal;
@@ -252,15 +376,7 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
   const ownerRange = (id: string) => IDBKeyRange.bound([generation, id], [generation, id, []]);
   const stored = <T extends object>(value: T): ProjectModelStored<T> => ({ ...value, generation, operationId: session.operationId });
   async function guard(tx: IDBTransaction): Promise<ProjectModelFixtureBusinessSession> {
-    if (await request(tx.objectStore(META).get(PROJECT_MODEL_ACTIVE_MARKER_KEY)) !== undefined) fail('formal-model-present');
-    const marker: unknown = await request(tx.objectStore(META).get(PROJECT_MODEL_BUSINESS_FIXTURE_KEY));
-    assertSession(marker);
-    if (marker.sessionId !== session.sessionId || marker.operationId !== session.operationId || marker.generation !== generation) fail('stale-business-session');
-    // 接管后业务权威是新表+轻量marker；列表不能每次克隆含整库正文的P2 journal。
-    const frozen = await request(tx.objectStore(META).get(PROJECT_MODEL_SOURCE_FREEZE_KEY)) as ProjectModelSourceFreeze | undefined;
-    if (!frozen || frozen.operationId !== marker.operationId || frozen.generation !== generation || frozen.state !== 'frozen'
-      || frozen.sourceDigest !== marker.sourceDigest) fail('source-not-frozen');
-    return marker;
+    return readProjectModelBusinessMarker(tx, session);
   }
   async function touch(tx: IDBTransaction, marker: ProjectModelFixtureBusinessSession): Promise<void> {
     await request(tx.objectStore(META).put({ ...marker, revision: increment(marker.revision), dirty: true }));

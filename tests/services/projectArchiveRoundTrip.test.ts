@@ -77,7 +77,8 @@ beforeEach(async () => {
       });
       // 后续 unpack 使用本次真实导出的全部文本与字节，不手写 exchange/state/manifest。
       native.archives.set(input.outputPath!, structuredClone({ entries: input.entries!, files }));
-      return { assetCount: files.length, assetBytes: files.reduce((sum, file) => sum + file.bytes.length, 0), archiveBytes: 100 };
+      return { assetCount: files.length, assetBytes: files.reduce((sum, file) => sum + file.bytes.length, 0), archiveBytes: 100,
+        operationId: input.operationId, publicationRef: `native-${input.operationId}`, archiveSha256: 'a'.repeat(64) };
     }
     if (command === 'unpack_project_archive') {
       expect(filesUnder(input.assetsDir!)).toHaveLength(0);

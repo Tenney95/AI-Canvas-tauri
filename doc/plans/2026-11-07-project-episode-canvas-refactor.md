@@ -1,8 +1,8 @@
 # 项目、分集与画布数据模型重构方案
 
-> 日期：2026-11-07。状态：**P0～P4 阶段代码已实施，未运行测试，待用户验收；P5～P7 未实施**。
-> 用户已继续授权 P4，重点 Agent/MCP/CLI、多窗口、原生项目上下文及旧 ID/回执/预算兼容。正式数据库仍为 v27、项目包仍为 v3，正式迁移开关关闭，不迁移真实数据；新模型业务只允许隔离 fixture，不自动接入正式界面/启动。
-> 两轮方案复审见第 16 节；P0/P1、P2、P3 的当时范围见第 17～19 节；P4 的实际实现、阻断边界与验收入口见第 20 节。代码已写入不代表迁移、恢复、桌面行为或原生停写已验收通过。
+> 日期：2026-11-07。状态：**P0～P5 阶段代码已实施，未运行测试，待用户验收；P6～P7 未实施**。
+> 用户已继续授权 P5，重点项目导入导出、旧数据兼容和失败恢复。正式数据库仍为 v27、正式项目包仍为 v3；v4 与新模型写入只允许隔离 fixture。正式迁移、恢复写入和激活开关保持关闭，未迁移真实数据，未接入正式界面/启动。
+> 两轮方案复审见第 16 节；P0/P1、P2、P3 的当时范围见第 17～19 节；P4 与后续修复见第 20 节；P5 的实际范围与未验收项见第 21 节。代码已写入不代表迁移、恢复、桌面行为或原生停写已验收通过。
 > 主模块：[画布与项目](../画布与项目模块.md)。架构取舍：[ADR-0012](../adr/0012-project-episode-canvas-model.md)。存储、Agent/MCP、插件、导演台仅在本方案维护必要协同边界。
 
 ## 1. 目标与范围
@@ -452,7 +452,7 @@ Journal 持久化 operationId、目标身份/代际、新分配 ID映射、暂�
 
 删集后保留的工作台会话/故事证据必须可往返。v4 为历史目标提供显式 retired/tombstoned 逻辑身份（kind、logicalId、owner 和不可执行状态），与活动实体引用闭包分开。工作台历史目标为 active 或 retired 的判别式；失效集仍保留只读出处，导入不创建恢复集，不删除绑定把会话降成普通可执行会话。
 
-该历史目标描述是已接受历史的显示材料，不是删除证明、跨项目关联授权或执行 target。v4 收件校验、可选历史导入、三方合并、再次导出均需认识此表示；v1/v2/v3 的旧规则仍按原格式校验，不放松旧解析器以接受未知版本。原生运行任务、文件 grant、插件信任和凭据不随历史传播。
+该历史目标描述是已接受历史的显示材料，不是删除证明、跨项目关联授权或执行 target。显式内容恢复重新出现同一逻辑实体时，原 retired 历史仍可共存并保持只读，不能据活动实体存在就重新激活旧会话绑定。v4 收件校验、可选历史导入、三方合并、再次导出均需认识此表示；v1/v2/v3 的旧规则仍按原格式校验，不放松旧解析器以接受未知版本。原生运行任务、文件 grant、插件信任和凭据不随历史传播。
 
 ### 10.8 旧多根素材与不可变文件
 
@@ -508,7 +508,7 @@ IDB 提交后若 localStorage 合并未完成，重启进入恢复页并根据 j
 
 ## 12. 分阶段实施计划
 
-P0～P4 阶段代码已写入，实际范围见第 17～20 节；以下阶段的退出条件仍须用户验收，不以代码写入替代检查结果。自动化和 Tauri 验收由用户执行或在用户明确授权后执行。推送时按仓库规则由 pre-push 运行完整 npm run ci，不能以本表作为额外 Rust/桌面测试授权。
+P0～P5 阶段代码已写入，实际范围见第 17～21 节；以下阶段的退出条件仍须用户验收，不以代码写入替代检查结果。自动化和 Tauri 验收由用户执行或在用户明确授权后执行。推送时按仓库规则由 pre-push 运行完整 npm run ci，不能以本表作为额外 Rust/桌面测试授权。
 
 | 阶段 | 具体任务与主要文件 | 退出条件 |
 |---|---|---|
@@ -893,3 +893,48 @@ npm run test:typecheck
 针对新增源码的命令入口（在仓库根目录，当前不执行）为 `npx vitest run tests/services/videoEditorControl.test.ts tests/services/videoEditorAiTransitionService.test.ts tests/services/scriptWorkbenchWindowService.test.ts tests/services/chat/chatWindowLifecycle.test.ts tests/services/chat/chatWindowListener.test.ts tests/services/chat/detachedChatSyncController.test.ts tests/services/chat/chatReferencePreviewService.test.ts tests/services/chat/agentDurabilityService.test.ts tests/services/chat/agentRoundExecutor.test.ts tests/services/chat/agentTaskControl.test.ts tests/services/chat/agentTaskService.test.ts tests/services/projectExecutionContext.test.ts tests/services/canvasDerivationGuard.test.ts`；原生及归档回归沿用 20.3 的未执行入口。
 
 **本次未运行测试，待用户验收**。本轮静态阅读和交叉复查不能代替类型、自动化、原生窗口、真实存储故障及项目归档往返验收。
+
+## 21. P5 归档与恢复实际实施
+
+本节记录 2026-11-07 的 P5 代码范围。进入本阶段前，上一轮四项缺陷及剪辑夹具上下文修复已提交为 `3fe5f186`；本节随 P5 实现及后续 Rust 编译修复按用户要求一并本地提交，未推送。没有运行测试、类型检查、lint、构建、Rust 检查或桌面程序，也没有调用真实迁移、备份、项目导入导出或恢复。
+
+### 21.1 格式、身份和旧包
+
+- `projectArchiveV4.ts` 实现 v4 manifest、正文 sidecar、canonical2 head 和素材清单的同一收件校验。条目名称、UTF-8 字节数、SHA-256、实体引用、工作台历史目标和素材闭包必须一致；未知字段、重复身份、双权威及缺失材料失败关闭。序列化沿用固定 Worker，并再次经过同一接收器。
+- `projectExchangeV2Format/Domain`、`projectMergeV2Service` 保留 canonical1 原修订和原摘要，canonical2 通过带版本父引用连接旧图；没有共同完整基线、未知 adapter 或无法证明旧根／路径映射时拒绝自动合并。v2 历史不能装进 v3 包后伪装成可降级。带点或保留名称的 JSON 字段独立合并，同 mediaId 的不同摘要不得互相覆盖。
+- `readProjectModelArchive` 接收 v1～v4；v1/v2 经过原校验与确定性适配，旧孤立分集文稿保留，v3 保原 lineage／canonical1 图，只追加 adapter 修订。新建分配本机作品／分集／画布／根身份，更新沿用当前身份和目录；独立复制建立新 lineage。`archiveHistoryBindings` 用来源命名空间、类型与稳定 origin 去重，不用名称／正文猜身份，不覆盖已有本机历史编辑；退役目标只保留阅读材料，不复活分集或执行授权。
+
+### 21.2 一致捕获和发布
+
+- 新模型 `projectModelTransferRepository` 在同一只读事务捕获作品、各正文域、分集、画布、预览、旧 ID 绑定、协作状态与有界历史。JSON／媒体准备后复核捕获 token；导出 journal 为 `prepared → packing → published → registered`，未发布不得推进协作 head。
+- 正式旧路径 `projectArchiveRepository` 同事务捕获整剧、各集历史和协作图；导出检查所有分集的受保护工作台稿件并持锁打包。只保存当前画布不能绕过另一集的脏稿或失联稿件。`projectArchiveRoots` 在旧 v3 导出／更新／恢复前检查真实第二素材根及其当前 imports 引用，无法无损表达时明确拒绝，不静默漏文件或把子目录改绑到主根。
+- 同作品未完成导出串行；准备事务核对 expected exchange，导入不能越过尚未登记的外发分支。原生归档先在私有发布记录内冻结原操作，再独占发布输出，提供 opaque publicationRef 和真实包摘要。前端 journal 不保存输出绝对路径。发布后业务编辑可以继续，但登记只 CAS 原协作状态，不能覆盖业务 working copy 或倒退另一条已接受分支。
+- 发布结果未知只通过 `reconcileProjectArchiveExport`／fixture `recoverExport` 核对原生原回执，不重新 pack、覆盖文件或冒称未发布。仅尚未进入原生副作用的 prepared 可显式撤销；packing/published 保留核对。内部复制的临时包不登记为源项目外发、不推进源 head。
+
+### 21.3 导入 journal、多根素材和恢复
+
+- 新模型统一 `prepared → media_publishing → media_ready → db_committed → projected → finalized`。首次准备冻结 intent、分配的 ID、目标聚合、来源相对暂存引用、原包文件映射和恢复证明；重试只推进原 journal，不重新合并、生成 ID 或创建第二份安全备份。已提交直接读取原结果，界面投影失败不删媒体、不降回旧画布 ready。
+- 各素材根保留独立 rootRef。更新不重绑现有 dataFolder／storageBindings，新增文件发布到各根本操作唯一的 imports 子目录；一根发布成功而另一根失败时，重启先核对已有目录字节，再处理缺失根，全部核验后才能提交数据库。fileBindings 双向投影逻辑路径与本机路径；素材 JSON／Scene／Manifest 的字节与摘要保持不变，不对提示词或完整正文作字符串替换。恢复点和失败发布残留不作为普通附件再次出包。
+- 旧 v1/v2 新建、v3 新建／更新及旧恢复均登记阶段，正文、摘要、历史、恢复点和版本用单事务提交，不再逐行保存后反向删除。v3 发布前冻结首次完整提交与媒体清单，v1/v2 解包后、数据库提交前冻结首次分配；旧 CAS 源记录仅存精确摘要，续行先重新读取核对，合法遗留绝对媒体路径不另写入 journal。`resumeProjectImportOperation` 只核原媒体后继续原提交，尚未冻结完整材料的旧 prepared 明确拒绝自动恢复。已提交／提交状态未知通过结构化结果保留原 operationId；当前受影响画布阻断旧状态写入。原操作读回失败不能推断数据库未提交，更不能清理已发布媒体。关闭预览立即撤销运行中提交，但有未成功确认尝试时保留原暂存来源。
+- `projectModelPreRestoreBackup` 使用独立 `project-model-fixture-backup-v2`，捕获 fixture 业务及审计侧表、journal 和 pending-task localStorage，写入原生耐久目录、读回校验并封存。恢复准备核完整来源；真正提交前再次核原 sealed 备份和业务 CAS，允许等待期间预算／真实回执前进并原样保留。媒体仍保留原位，不把这份数据库／队列备份称为媒体全量副本；原预览的完整根／文件／字节／摘要清单另以 sourceMediaDigest 冻结并在备份及提交前复核，缺失引用或外部改动即拒绝恢复，不清理旧字节。旧 `project-model-backup-v1` 的格式／表白名单不放宽，旧迁移和 staging 恢复拒绝误用 fixture-v2。
+- `restore-content` 直接恢复所选业务快照，保留本机根、当前审计／预算／队列及已接受 lineage，以新的内容域 revision／结构 epoch 和后继修订提交；不把恢复执行成三方合并，不恢复旧任务授权，不切全局 generation。此接口只恢复单作品业务内容，不是全库回滚入口。
+
+### 21.4 正式门禁、回退和验收缺口
+
+正式 `DB_VERSION=27`，`productionMigration/automaticMigration/activation/restoreWrites=false`，v4 `runtimeEnabled=false`。v4 的真实文件适配只允许 `ai-canvas-model-fixture-*` v28 与相匹配的原生 cold-maintenance lease；目录限定在独立 fixture 资产根，不能把真实项目 dataFolder 作为 fixture 源。缺少 lease、专用备份验证器、可信媒体／发布验证器或未知提交状态均失败关闭。
+
+本轮不将正式 Store、Agent／MCP 执行仓储切到新表，不开放真实数据迁移、全库恢复、旧二进制降级或自动清理待核对素材。正式 UI 的 v4 路由、新模型执行仓储和平台停写能力继续是 P6 激活前门禁。回退代码须先检查本轮 journal 和原输出，保留发布文件、暂存与备份；不能删 journal、回退预算或把正式 DB27 改为 v28 代替回滚。本轮没有执行这些操作。
+
+**本次未运行测试，待用户验收**。新增／更新的回归源码覆盖 v1/v2 adapter 与跨版本祖先、v4 篡改／引用／多根、事务 CAS、来源冻结、同操作重试、已提交投影失败、发布状态未知和恢复备份。静态阅读、UTF-8 与差异核对不构成这些用例通过。
+
+用户随后编译反馈归档回归源的一处逗号式 `let` 语法错误，以及维护模块三处调用未启用 `unstable` 的 `Manager::webviews()`。已拆分变量声明，并在现有 vendored Tauri 的 `Manager` 补充只读 `managed_surface_counts()`，分别核对启动前 `(0,0)` 和维护时 `(1,1)` 的窗口／WebView 全量计数，再复核实际宿主及唯一 WebView 的固定维护标签。不能改用会过滤纯窗口和子 WebView 宿主的 `webview_windows()` 冒充全量证明；未开启新依赖特性或窗口权限。此修复尚未重新编译，不能据此宣称 Rust 构建或维护停写已验证。
+
+后续验收使用可丢弃 fixture 和项目／素材副本；禁止拿真实用户库试迁移。Tauri 桌面端依次验证：
+
+1. 读取普通 v1、孤立分集 v1、带两集的 v2／v3，转为 fixture v4 后重新导入、导出；核对旧 ID 映射、全剧／各集原稿、画布、共享资产、中文、附件和不可变产物字节。零集整剧可往返，未来格式与损坏材料拒绝。
+2. 两素材根放同名不同字节文件；新建、更新与独立复制后根归属不串，目录绑定保留。当前引用的新 imports 文件纳入，恢复点／失败残留排除。预览后改素材或子集正文应拒绝旧提交；工作台另一集未保存／失联应阻断导出。
+3. 在各 journal 阶段模拟取消、配额不足、响应丢失与重启；某一素材根已发布时核原目录后续行，同操作 ID 与目标映射不变。数据库已提交但界面失败时仅重读／重投影，不重合并或清理媒体；读取 marker 失败显示待核对。
+4. 打包发布后丢响应，再通过原 operation 核对文件登记；未知／丢失输出不自动重发。并发第二次导出／导入不能抢先推进 head，准备态可撤销，内部复制不产生外发 checkpoint。
+5. 恢复前故意令备份写入、读回、封存或提交前复验失败，正文应完整保留。成功内容恢复后当前审计、收费回执、预算、pending task 与 SQLite 不回退，旧 canvas／正文条件失效，accepted lineage 保留；篡改备份与将 fixture-v2 交给旧恢复器均拒绝。
+
+自动化入口供用户在仓库根目录执行：`npx vitest run tests/services/projectArchiveV4.test.ts tests/services/projectExchangeV2.test.ts tests/services/projectModelTransferRepository.test.ts tests/services/projectModelArchiveService.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/projectArchiveFixtureFiles.test.ts tests/services/projectArchiveRepository.test.ts tests/services/projectTransferService.test.ts tests/services/projectImportService.test.ts tests/services/projectImportResumeService.test.ts tests/services/projectImportRepository.test.ts tests/services/projectImportRecoveryService.test.ts tests/services/projectImportPersistence.test.ts tests/services/projectArchiveRoundTrip.test.ts tests/services/projectModelBackup.test.ts tests/store/projects.test.ts`。恢复前专用备份回归也包含在 transfer 仓储用例中。原生归档／备份与真实窗口／断电语义须在明确授权的桌面演练中另验，前端 mock 不替代该证据。

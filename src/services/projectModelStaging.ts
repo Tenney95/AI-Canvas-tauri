@@ -104,7 +104,7 @@ async function inspectDurableBackup(lease: ProjectModelMaintenanceLease, operati
   const backup = await readVerifiedProjectModelBackup(port, { signal });
   const manifestDigest = await sha256BytesHex(await port.read('manifest.json', PROJECT_MODEL_BACKUP_LIMITS.maxManifestBytes));
   signal?.throwIfAborted();
-  if (backup.manifest.operationId !== operationId || seal.operationId !== operationId
+  if (backup.manifest.format !== 'project-model-backup-v1' || backup.manifest.operationId !== operationId || seal.operationId !== operationId
     || seal.profileId !== lease.profileId || seal.manifestSha256 !== manifestDigest
     || seal.durability !== 'fsync-and-directory-barrier' || seal.canActivate !== false
     || backup.source.databaseName !== 'ai-canvas-model-fixture-' + lease.profileId) {

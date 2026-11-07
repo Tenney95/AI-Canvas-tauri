@@ -9,11 +9,15 @@ import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), read: vi.fn(), recoveries: vi.fn(), commit: vi.fn(), notify: vi.fn(), state: vi.fn(), graph: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, convertFileSrc: (value: string) => value }));
-vi.mock('../../src/services/fileService', () => ({ ensureProjectDataDir: async () => '/projects/renamed', notifyProjectDiskChanged: mocks.notify }));
+vi.mock('../../src/services/fileService', () => ({ ensureProjectDataDir: async () => '/projects/renamed',
+  getProjectDataDir: async () => '/projects/renamed', registerProjectFolders: vi.fn(), notifyProjectDiskChanged: mocks.notify }));
 vi.mock('../../src/services/projectTransferService', () => ({}));
 vi.mock('../../src/services/indexedDb/projectExchangeRepository', () => ({ loadProjectExchangeState: mocks.state, loadProjectExchangeGraph: mocks.graph }));
 vi.mock('../../src/services/indexedDb/projectImportRepository', () => ({
   readProjectImportScope: mocks.read, listProjectImportRecoveries: mocks.recoveries, commitProjectImport: mocks.commit,
+  beginProjectImportOperation: vi.fn(async () => undefined), advanceProjectImportOperation: vi.fn(async () => undefined),
+  readProjectImportOperation: vi.fn(async () => ({ phase: 'media_ready' })),
+  savePreparedProjectImportOperation: vi.fn(async () => undefined),
 }));
 vi.mock('../../src/services/projectMergeWorkerClient', () => ({ captureProjectSnapshot: (...args: Parameters<typeof captureExchangeSnapshot>) => captureExchangeSnapshot(...args) }));
 import { restoreProjectImportRecovery } from '../../src/services/projectImportService';

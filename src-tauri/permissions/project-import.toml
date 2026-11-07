@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-project-import"
 description = "主窗口项目归档摘要与隔离素材发布；命令内部仍校验来源和路径授权。"
-commands.allow = ["inspect_project_archive_assets", "publish_project_import_assets"]
+commands.allow = ["inspect_project_archive_assets", "publish_project_import_assets", "verify_project_archive_publication"]

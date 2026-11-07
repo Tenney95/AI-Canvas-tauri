@@ -14,13 +14,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { remove } from '@tauri-apps/plugin-fs';
 import * as fileService from './fileService';
 import {
-  deleteProjectFromDb,
   getAllProjects,
-  getProjectById,
-  getProjectChatForExport,
-  putChatConversation,
-  putChatMessage,
-  putProjectMemory,
   type ChatConversationRecord,
   type ChatMessageRecord,
   type ProjectMemoryRecord,
@@ -38,6 +32,15 @@ import { configValuesEqual } from './configPatch';
 import { remapStoryGraphBindings, type ArchiveAssetDigest } from './projectExchangeDomain';
 import { openDB } from './indexedDb/schema';
 import { assertLegacyProjectWritesAllowed } from './indexedDb/legacyProjectWriteGuard';
+import { captureLegacyProjectArchive, assertLegacyProjectArchiveCurrent, type LegacyProjectArchiveCapture } from './indexedDb/projectArchiveRepository';
+import { advanceLegacyArchiveExport, prepareLegacyArchiveExport, readLegacyArchiveExport } from './indexedDb/projectArchiveOperationRepository';
+import { loadProjectExchangeState, saveProjectExchangeCheckpoint } from './indexedDb/projectExchangeRepository';
+import { advanceProjectImportOperation, beginProjectImportOperation, savePreparedProjectImportOperation, commitProjectImport, readProjectImportOperation,
+  type ProjectImportCommit, type ProjectImportHistoryRow } from './indexedDb/projectImportRepository';
+import { sha256BytesHex } from './mediaDataUrl';
+import { withEpisodeEditorWrite } from './episodeEditorSessionService';
+import { assertLegacyProjectArchiveRoots } from './projectArchiveRoots';
+import { ProjectImportCommittedError } from './projectImportOutcome';
 
 export const PROJECT_ARCHIVE_EXTENSION = 'aicanvas';
 /** 归档格式版本；解包时拒绝更高版本，避免旧版本误读新结构。 */
@@ -47,8 +50,6 @@ const MANIFEST_ENTRY = 'manifest.json';
 const PROJECT_ENTRY = 'project.json';
 const CHAT_ENTRY = 'chat.json';
 const EPISODES_ENTRY = 'episodes.json';
-/** 单个会话读取上限；超出时中止导出，避免把截断记录声明为完整材料。 */
-const MAX_MESSAGES_PER_CONVERSATION = 100_000;
 
 export interface ProjectArchiveManifest {
   formatVersion: number;
@@ -80,6 +81,9 @@ interface PackResult {
   assetCount: number;
   assetBytes: number;
   archiveBytes: number;
+  operationId?: string;
+  publicationRef?: string;
+  archiveSha256?: string;
 }
 
 interface UnpackResult {
@@ -94,6 +98,7 @@ export interface ProjectExportResult {
   assetCount: number;
   archiveBytes: number;
   episodeCount: number;
+  operationId?: string;
 }
 
 export interface ProjectImportResult {
@@ -222,10 +227,6 @@ function detachSourceAssetIdentity(record: ProjectSaveData): void {
   });
 }
 
-async function collectChatPayload(projectId: string): Promise<ProjectArchiveChatPayload> {
-  return portableArchiveChat(await getProjectChatForExport(projectId, MAX_MESSAGES_PER_CONVERSATION));
-}
-
 export function readArchiveProject(value: unknown, label: string): ProjectSaveData {
   if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim()
     || typeof value.name !== 'string' || !Array.isArray(value.nodes) || !Array.isArray(value.edges)
@@ -298,34 +299,27 @@ export function readArchiveEpisodes(
   });
 }
 
-/** 分集入口也导出所属剧集，避免生成依赖源项目的孤立分集包。 */
-async function getArchiveProject(projectId: string): Promise<ProjectSaveData> {
-  const source = await getProjectById(projectId);
-  if (!source) throw new Error('未找到项目数据，无法导出');
-  const record = source.parentId ? await getProjectById(source.parentId) : source;
-  if (!record || record.parentId) throw new Error('未找到所属剧集，无法导出');
-  return readArchiveProject(record, '项目记录');
-}
-
 /** 把项目记录、对话与素材目录打包到指定归档路径；调用方保证项目已落盘。 */
 async function packProjectArchive(
   projectId: string,
   outputPath: string,
+  purpose: 'external' | 'temporary' = 'external',
 ): Promise<PackResult & { episodeCount: number }> {
   await assertLegacyProjectWritesAllowed(await openDB());
-  const projectRecord = await getArchiveProject(projectId);
-  const chat = await collectChatPayload(projectRecord.id);
-  const summaries = (await getAllProjects())
-    .filter((project) => project.parentId === projectRecord.id)
-    .sort((left, right) => (left.episodeNo ?? 0) - (right.episodeNo ?? 0));
-  const episodes: ProjectArchiveEpisode[] = [];
-  for (const summary of summaries) {
-    const project = readArchiveProject(await getProjectById(summary.id), '分集记录');
-    if (project.id !== summary.id || project.parentId !== projectRecord.id) {
-      throw new Error('分集归属已变化，请重新导出');
-    }
-    episodes.push({ project, chat: await collectChatPayload(project.id) });
-  }
+  const capture = await captureLegacyProjectArchive(projectId);
+  // 所有分集都要握手，包括工作台正在查看但主画布未打开的分集；失联脏稿保持阻断。
+  const lock = (index: number): Promise<PackResult & { episodeCount: number }> => index === capture.records.length
+    ? packCapturedProjectArchive(capture, outputPath, purpose)
+    : withEpisodeEditorWrite(capture.records[index].id, () => lock(index + 1));
+  return lock(0);
+}
+
+async function packCapturedProjectArchive(capture: LegacyProjectArchiveCapture, outputPath: string,
+  purpose: 'external' | 'temporary'): Promise<PackResult & { episodeCount: number }> {
+  const projectRecord = readArchiveProject(capture.records[0], '项目记录'), chat = capture.chat[0];
+  const episodes: ProjectArchiveEpisode[] = capture.records.slice(1).map((record, index) => ({
+    project: readArchiveProject(record, '分集记录'), chat: capture.chat[index + 1],
+  }));
   const manifest: ProjectArchiveManifest = {
     formatVersion: PROJECT_ARCHIVE_FORMAT_VERSION,
     appVersion: await getVersion().catch(() => undefined),
@@ -336,18 +330,19 @@ async function packProjectArchive(
   };
 
   // 用 ensure 而不是 get：老项目可能还没建过数据目录，直接打包会卡在路径校验上。
+  fileService.registerProjectFolders(capture.records);
   const assetsDir = await fileService.ensureProjectDataDir(projectRecord.id);
   if (!assetsDir) throw new Error('无法读取项目素材目录，已取消导出');
-  const { prepareExchangeExport, readProjectArchiveContents } = await import('./projectImportService');
-  const { loadProjectExchangeState, loadProjectExchangeGraph } = await import('./indexedDb/projectExchangeRepository');
-  const previous = await loadProjectExchangeState(projectRecord.id);
-  const previousGraph = previous ? await loadProjectExchangeGraph(previous.lineageId) : undefined;
+  // v3只有一个assets根；旧子集真实独立目录有内容时不能悄悄遗漏第二个根。
+  await assertLegacyProjectArchiveRoots(capture.records, assetsDir);
+  const { prepareExchangeExportMaterial, readProjectArchiveContents } = await import('./projectImportService');
+  const previous = capture.state;
+  const previousGraph = { revisions: capture.graph.filter((row) => row.snapshot) };
   const previousHead = previousGraph?.revisions.find((revision) => revision.revisionId === previous?.headRevisionId)?.snapshot;
   const includeImportPaths = selectArchiveImportPaths([projectRecord, ...episodes.map((episode) => episode.project)], previous, previousHead, assetsDir);
   const assets = await invoke<import('./projectExchangeDomain').ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir, includeImportPaths });
-  const exchange = await prepareExchangeExport([projectRecord, ...episodes.map((episode) => episode.project)], assets, assetsDir);
-  const exchangeState = await loadProjectExchangeState(projectRecord.id);
-  if (exchangeState?.headRevisionId !== exchange.headRevisionId) throw new Error('协作版本在导出准备期间变化，请重试');
+  const prepared = await prepareExchangeExportMaterial([projectRecord, ...episodes.map((episode) => episode.project)], assets, assetsDir, capture);
+  const exchange = prepared.bundle, exchangeState = prepared.checkpoint.state;
   const { materializeExchangeSnapshot } = await import('./projectExchangeDomain');
   const head = exchange.revisions.find((revision) => revision.revisionId === exchange.headRevisionId)!;
   const portable = materializeExchangeSnapshot(head.snapshot, structuredClone(exchangeState.identities),
@@ -369,12 +364,30 @@ async function packProjectArchive(
     const detail = error instanceof Error ? error.message : typeof error === 'string' ? error : '归档内容校验失败';
     throw new Error(`项目导出前收件校验失败：${detail}`, { cause: error });
   }
+  await assertLegacyProjectArchiveCurrent(capture);
+  // 内部复制只借用受限归档传输，不是向协作者发布，不能推进来源项目的协作 head。
+  if (purpose === 'temporary') {
+    const result = await invoke<PackResult>('pack_project_archive', { entries, assetsDir, outputPath, expectedAssets });
+    return { ...result, episodeCount: episodes.length };
+  }
+  const operationId = crypto.randomUUID();
+  let operation = await prepareLegacyArchiveExport(operationId, prepared.checkpoint);
+  operation = await advanceLegacyArchiveExport(operationId, operation.sequence, 'packing');
   const result = await invoke<PackResult>('pack_project_archive', {
+    operationId,
     entries,
     assetsDir,
     outputPath,
     expectedAssets,
   });
+  if (result.operationId !== operationId || !result.publicationRef || !result.archiveSha256) {
+    throw new Error(`归档发布结果尚未确认，请核对原操作 ${operationId}；未推进协作版本，未自动重发`);
+  }
+  operation = await advanceLegacyArchiveExport(operationId, operation.sequence, 'published', {
+    publicationRef: result.publicationRef, archiveSha256: result.archiveSha256,
+  });
+  await saveProjectExchangeCheckpoint(operation.checkpoint);
+  await advanceLegacyArchiveExport(operationId, operation.sequence, 'registered');
   return { ...result, episodeCount: episodes.length };
 }
 
@@ -406,7 +419,38 @@ export async function exportProjectArchive(projectId: string): Promise<ProjectEx
     assetCount: result.assetCount,
     archiveBytes: result.archiveBytes,
     episodeCount: result.episodeCount,
+    operationId: result.operationId,
   };
+}
+
+/** 只核实原文件并补登记；packing 不确定时绝不再次 pack 或覆盖输出。 */
+export async function reconcileProjectArchiveExport(operationId: string): Promise<void> {
+  let operation = await readLegacyArchiveExport(operationId);
+  if (!operation) throw new Error('原导出操作记录不存在');
+  if (operation.phase === 'registered' || operation.phase === 'aborted') return;
+  if (operation.phase === 'prepared') throw new Error('原导出尚未开始发布，请重新选择输出');
+  const receipt = await invoke<{ status: string; publicationRef?: string; archiveSha256?: string }>('verify_project_archive_publication', {
+    operationId, publicationRef: operation.publicationRef,
+  });
+  if (receipt.status !== 'published' || !receipt.publicationRef || !receipt.archiveSha256) {
+    throw new Error('无法确认原归档文件，已保留待核对状态；不会自动覆盖或重新发布');
+  }
+  if (operation.phase === 'packing') operation = await advanceLegacyArchiveExport(operationId, operation.sequence, 'published', {
+    publicationRef: receipt.publicationRef, archiveSha256: receipt.archiveSha256,
+  });
+  if (operation.publicationRef !== receipt.publicationRef || operation.archiveSha256 !== receipt.archiveSha256) throw new Error('原发布回执不一致');
+  if (!configValuesEqual(await loadProjectExchangeState(operation.ownerId), operation.checkpoint.state)) {
+    await saveProjectExchangeCheckpoint(operation.checkpoint);
+  }
+  await advanceLegacyArchiveExport(operationId, operation.sequence, 'registered');
+}
+
+/** 仅可撤销还没进入原生发布的 prepared；packing 必须保留并核对原回执。 */
+export async function abandonPreparedProjectArchiveExport(operationId: string): Promise<void> {
+  const operation = await readLegacyArchiveExport(operationId);
+  if (!operation) throw new Error('原导出操作记录不存在');
+  if (operation.phase === 'aborted') return;
+  await advanceLegacyArchiveExport(operationId, operation.sequence, 'aborted');
 }
 
 /** 把归档里的对话与项目记忆重映射到新项目下写回 IndexedDB。 */
@@ -415,8 +459,12 @@ async function restoreChatPayload(
   projectId: string,
   identities: ArchiveChatIdentityMap,
   projectIds: ReadonlyMap<string, string>,
-): Promise<{ conversationCount: number; memoryCount: number }> {
-  if (!payload) return { conversationCount: 0, memoryCount: 0 };
+  sourceRootId: string,
+): Promise<{ conversationCount: number; memoryCount: number; rows: ProjectImportHistoryRow[] }> {
+  const rows: ProjectImportHistoryRow[] = [];
+  if (!payload) return { conversationCount: 0, memoryCount: 0, rows };
+  const origin = (kind: string, value: { id: string; archiveOriginId?: string }) => value.archiveOriginId
+    ?? sha256BytesHex(new TextEncoder().encode(JSON.stringify([`legacy-project:${sourceRootId}`, kind, value.id])));
 
   const conversationIdMap = new Map<string, string>();
   const conversations = Array.isArray(payload.conversations) ? payload.conversations : [];
@@ -433,7 +481,8 @@ async function restoreChatPayload(
       }
       workbenchTarget = { seriesId, episodeId };
     }
-    await putChatConversation({ ...conversation, id: nextId, projectId, workbenchTarget });
+    rows.push({ store: 'chatConversations', value: { ...conversation, id: nextId, projectId, workbenchTarget,
+      archiveOriginId: await origin('conversation', conversation) } });
   }
 
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
@@ -444,7 +493,8 @@ async function restoreChatPayload(
     const nextId = identities.messages.get(message.id)!;
     // agentTaskId 指向未导出的运行时任务，保留会让时间线找不到任务。
     const { agentTaskId: _agentTaskId, ...rest } = message;
-    await putChatMessage({ ...rest, id: nextId, projectId, conversationId: nextConversationId });
+    rows.push({ store: 'chatMessages', value: { ...rest, id: nextId, projectId, conversationId: nextConversationId,
+      archiveOriginId: await origin('message', message) } });
   }
 
   const memories = Array.isArray(payload.memories) ? payload.memories : [];
@@ -455,9 +505,10 @@ async function restoreChatPayload(
     const nextConversationId = sourceConversationId
       ? identities.conversations.get(sourceConversationId)
       : undefined;
-    await putProjectMemory({
+    rows.push({ store: 'projectMemories', value: {
       ...memory,
       id: createRecordId(),
+      archiveOriginId: await origin('memory', memory),
       projectId,
       source: {
         ...memory.source,
@@ -467,11 +518,11 @@ async function restoreChatPayload(
         // 来源会话没能一起导入时标记不可回溯，与删除会话后的处理保持一致。
         unavailable: nextConversationId ? memory.source?.unavailable : true,
       },
-    });
+    } });
     memoryCount += 1;
   }
 
-  return { conversationCount: conversationIdMap.size, memoryCount };
+  return { conversationCount: conversationIdMap.size, memoryCount, rows };
 }
 
 /**
@@ -481,18 +532,22 @@ async function restoreChatPayload(
 export async function restoreProjectArchive(
   archivePath: string,
   overrideName?: string,
-  historyOptions: { appendChat: boolean; appendMemories: boolean; signal?: AbortSignal } = { appendChat: true, appendMemories: true },
+  historyOptions: { appendChat: boolean; appendMemories: boolean; signal?: AbortSignal; onTransfer?: (operationId: string) => void } = { appendChat: true, appendMemories: true },
   preview?: { manifest: ProjectArchiveManifest; records: ProjectSaveData[]; chat: Array<ProjectArchiveChatPayload | null>; assets: ArchiveAssetDigest[] },
 ): Promise<ProjectImportResult> {
   await assertLegacyProjectWritesAllowed(await openDB());
   const projectId = createRecordId();
   const stagingFolder = fileService.buildProjectFolderName('导入中', projectId);
   fileService.registerProjectFolder(projectId, stagingFolder);
+  const operationId = createRecordId();
+  historyOptions.onTransfer?.(operationId);
+  await beginProjectImportOperation(operationId, projectId, projectId, stagingFolder);
 
   let stagingCreated = false;
-  const createdProjectIds: string[] = [];
+  let committed = false;
   try {
     historyOptions.signal?.throwIfAborted();
+    await advanceProjectImportOperation(operationId, 'media_publishing');
     const stagingDir = await fileService.ensureProjectDataDir(projectId);
     if (!stagingDir) throw new Error('无法创建项目数据目录');
     stagingCreated = true;
@@ -508,6 +563,11 @@ export async function restoreProjectArchive(
     }
     if (manifest.formatVersion > PROJECT_ARCHIVE_FORMAT_VERSION) {
       throw new Error('项目包由更新版本导出，请先升级应用');
+    }
+    if (manifest.formatVersion === 3) {
+      // 独立复制也须经过同一收件校验，不能只相信并存的旧记录而忽略规范 head。
+      const { readProjectArchiveContents } = await import('./projectImportService');
+      await readProjectArchiveContents({ texts: unpacked.texts, assets: unpacked.assets });
     }
     const source = sanitizeLegacyArchiveProject(readArchiveProject(parseJson<unknown>(unpacked.texts[PROJECT_ENTRY], '项目记录'), '项目记录'));
     if (manifest.projectId !== source.id) {
@@ -589,17 +649,26 @@ export async function restoreProjectArchive(
       .filter((path) => !extractedAssets.has(path))).size;
     let conversationCount = 0;
     let memoryCount = 0;
+    const history: ProjectImportHistoryRow[] = [];
     for (const [index, next] of records.entries()) {
       historyOptions.signal?.throwIfAborted();
       fileService.registerProjectFolder(next.id, dataFolder);
       detachSourceAssetIdentity(next);
-      // 保存失败也可能已部分写入，回滚必须包含正在写入的 ID。
-      createdProjectIds.push(next.id);
-      await fileService.saveProject(next);
-      const counts = await restoreChatPayload(payloads[index], next.id, chatIdentities, projectIds);
+      const counts = await restoreChatPayload(payloads[index], next.id, chatIdentities, projectIds, manifest.projectId);
       conversationCount += counts.conversationCount;
       memoryCount += counts.memoryCount;
+      history.push(...counts.rows);
     }
+    await advanceProjectImportOperation(operationId, 'media_ready');
+    const commit: ProjectImportCommit = { operationId, expectedRecords: [], records, expectedState: null, state: null,
+      revisions: [], ancestors: [], history, label: '旧包新建导入', signal: historyOptions.signal };
+    await savePreparedProjectImportOperation(operationId, { commit, media: { mode: 'already-ready', targetFolder: dataFolder,
+      assets: [], required: unpacked.assets ?? [],
+      verified: Array.isArray(unpacked.assets) && unpacked.assets.length === unpacked.assetPaths.length } });
+    await commitProjectImport(commit);
+    committed = true;
+    await advanceProjectImportOperation(operationId, 'projected');
+    await advanceProjectImportOperation(operationId, 'finalized');
     fileService.notifyProjectDiskChanged();
 
     const warnings: string[] = [];
@@ -628,23 +697,16 @@ export async function restoreProjectArchive(
       memoryCount,
     };
   } catch (error) {
-    let cleanupFailed = false;
-    for (const id of createdProjectIds.reverse()) {
-      try {
-        await deleteProjectFromDb(id);
-      } catch {
-        cleanupFailed = true;
-        console.warn('[项目导入] 清理新建项目记录失败');
-      }
-    }
-    // 解包已经落过盘时必须清掉半成品目录，否则数据目录会残留导入中的文件夹。
-    // 数据库清理失败时保留素材，避免留下引用已被删除文件的项目。
-    if (stagingCreated && !cleanupFailed) {
+    // 提交回执丢失时先读原 marker；无法读取也保留媒体，绝不猜测“未提交”。
+    const operation = await readProjectImportOperation(operationId).catch(() => undefined);
+    const applied = committed || operation && ['db_committed', 'projected', 'finalized', 'committed'].includes(operation.phase);
+    if (applied) throw new ProjectImportCommittedError(operationId, projectId, 'committed', error);
+    if (!operation) throw new ProjectImportCommittedError(operationId, projectId, 'unknown', error);
+    if (stagingCreated && operation && !operation.prepared) {
       await fileService.deleteProjectDataDir(projectId).catch((cleanupError) => {
         console.warn('[项目导入] 清理临时数据目录失败:', cleanupError);
       });
     }
-    if (cleanupFailed) throw new Error('项目导入失败，部分记录未能清理；已保留素材，请重启后检查项目库', { cause: error });
     throw error;
   }
 }
@@ -676,7 +738,7 @@ export async function duplicateProjectArchive(
   const tempPath = fileService.joinPath(baseDir, `.duplicate-${createRecordId()}.${PROJECT_ARCHIVE_EXTENSION}`);
 
   try {
-    await packProjectArchive(projectId, tempPath);
+    await packProjectArchive(projectId, tempPath, 'temporary');
     return await restoreProjectArchive(tempPath, name);
   } finally {
     await remove(tempPath).catch(() => undefined);

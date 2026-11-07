@@ -1,0 +1,198 @@
+/** P5 编排回归源：真实 portable 投影/校验，仓储和文件发行只替换 I/O；尚未运行。 */
+import { webcrypto } from 'node:crypto';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ProjectArchiveBusinessV4, ProjectArchivePayloadV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
+import type { ProjectModelTransferCapture, ProjectModelTransferImportInput, ProjectModelTransferImportJournal, ProjectModelTransferExportJournal } from '../../src/types/projectModelTransfer';
+import type { ProjectModelFixtureBusinessSession } from '../../src/types/projectModelBusiness';
+import type { createProjectModelTransferRepository } from '../../src/services/indexedDb/projectModelTransferRepository';
+import { createProjectModelArchiveService, type ProjectModelArchivePort } from '../../src/services/projectModelArchiveService';
+import { buildProjectExchangeSnapshotV2, readProjectArchiveV4, serializeProjectArchiveV4 } from '../../src/services/projectArchiveV4';
+import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
+import { readProjectArchiveContents } from '../../src/services/projectImportService';
+import { readProjectModelArchive } from '../../src/services/projectModelArchiveService';
+import { registerEpisodeEditorSession } from '../../src/services/episodeEditorSessionService';
+
+const shared = vi.hoisted(() => ({ repository: null as unknown as ReturnType<typeof createProjectModelTransferRepository> }));
+vi.mock('../../src/services/indexedDb/projectModelTransferRepository', () => ({ createProjectModelTransferRepository: () => shared.repository }));
+vi.mock('../../src/services/fileService', () => ({ buildProjectFolderName: (_name: string, id: string) => `project-${id}` }));
+vi.mock('../../src/services/projectImportService', () => ({ readProjectArchiveContents: vi.fn() }));
+vi.mock('../../src/services/projectMergeWorkerClient', async () => {
+  const { captureExchangeSnapshot } = await import('../../src/services/projectExchangeDomain');
+  return { captureProjectSnapshot: vi.fn(async (...args: Parameters<typeof captureExchangeSnapshot>) => captureExchangeSnapshot(...args)) };
+});
+vi.mock('../../src/services/projectArchiveSerialization', () => ({ serializeProjectArchiveEntries: async (entries: Array<{ path: string; value: unknown }>) =>
+  entries.map((entry) => ({ path: entry.path, content: JSON.stringify(entry.value) })) }));
+
+const hash = 'a'.repeat(64);
+const session = { operationId: 'fixture', sessionId: 'session', generation: 1 } as ProjectModelFixtureBusinessSession;
+const textsOf = (entries: Array<{ path: string; content: string }>) => Object.fromEntries(entries.map((entry) => [entry.path, entry.content]));
+async function archive(): Promise<ValidatedProjectArchiveV4> {
+  const business: ProjectArchiveBusinessV4 = { project: { id: 'P', name: '双根项目', kind: 'standalone', standaloneCanvasId: 'C',
+    storageRoots: [{ id: 'shared', role: 'shared' }, { id: 'canvas-root', role: 'canvas' }] }, episodes: [],
+    canvases: [{ id: 'C', projectId: 'P', episodeId: null, storageRootRef: 'canvas-root', revisionScope: 'global',
+      nodes: [{ id: 'n', type: 'source-image', position: { x: 0, y: 0 }, data: { type: 'source-image', relativePath: 'same.png', prompt: 'same.png' } }], edges: [], groups: [] }],
+    contents: { project: { projectId: 'P', data: { originalWork: { relativePath: 'same.png', fileName: 'same.png', addedAt: 1 }, script: 'same.png',
+      storyGraph: { schemaVersion: 1, id: 'graph', nodes: [], edges: [], positions: {} } } }, episodes: [] } };
+  const snapshot = buildProjectExchangeSnapshotV2(business, 'lineage', [{ id: 'original-media-id', kind: 'image', extension: 'png', bytes: 3, sha256: hash }],
+    [{ id: 'F1', rootRef: 'shared', relativePath: 'same.png', mediaId: 'original-media-id' },
+      { id: 'F2', rootRef: 'canvas-root', relativePath: 'same.png', mediaId: 'original-media-id' }]);
+  const head = await createProjectExchangeRevisionV2(snapshot);
+  const payload: ProjectArchivePayloadV4 = { ...business, exchange: { format: 'ai-canvas-project-exchange', version: 2, packageId: 'package', lineageId: 'lineage',
+    head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions: [head], ancestors: [],
+    files: [{ mediaId: 'original-media-id', archivePath: 'assets/original-payload.png' }] } };
+  const assets = [{ path: 'original-payload.png', bytes: 3, sha256: hash }];
+  return readProjectArchiveV4(textsOf(await serializeProjectArchiveV4(payload, { packageId: 'package', exportedAt: 1 }, assets)), assets);
+}
+function harness(initial: ProjectModelTransferCapture | null = null) {
+  let capture = initial, exported: ValidatedProjectArchiveV4 | undefined;
+  const imports = new Map<string, ProjectModelTransferImportJournal>(), exports = new Map<string, ProjectModelTransferExportJournal>();
+  const port: ProjectModelArchivePort = {
+    inspectAssets: vi.fn(async (value) => value.exchange!.fileBindings.map((binding) => ({ rootRef: value.exchange!.identities.find((item) =>
+      item.kind === 'storage-root' && item.sourceId === binding.rootRef)!.localId, path: binding.localRelativePath, bytes: 3, sha256: hash }))),
+    captureImportSource: vi.fn(async (source) => ({ sourceRef: 'unpacked/original/assets', sourceFiles: source.files.map((file) => ({
+      id: file.id, rootRef: file.rootRef, relativePath: file.relativePath, archivePath: 'assets/original-payload.png', bytes: 3, sha256: hash,
+    })) })),
+    publishMedia: vi.fn(async (operation) => operation.operationId), verifyMediaPublication: vi.fn(async () => {}),
+    pack: vi.fn(async (operation, entries) => {
+      exported = await readProjectArchiveV4(textsOf(entries), operation.exchange.bundle.files.map((file) => ({ path: file.archivePath.slice(7), bytes: 3, sha256: hash })));
+      return { outputRef: 'opaque-publication', packageDigest: hash };
+    }), verifyExportPublication: vi.fn(async () => {}), recoverExportPublication: vi.fn(async () => ({ outputRef: 'opaque-publication', packageDigest: hash })),
+  };
+  const repository = {
+    capture: vi.fn(async () => capture), findImport: vi.fn(async (id: string) => imports.get(id) ?? null),
+    readImport: vi.fn(async (id: string) => { const journal = imports.get(id); if (!journal) throw new Error('missing'); return journal; }),
+    prepareImport: vi.fn(async (input: ProjectModelTransferImportInput) => {
+      const journal = { ...input, id: input.operationId, schemaVersion: 1 as const, kind: 'project-model-import' as const, phase: 'prepared' as const, sequence: 0,
+        generation: 1, sessionId: 'session', createdAt: 1, updatedAt: 1, cleanup: 'retain-until-unreferenced' as const };
+      imports.set(input.operationId, journal); return journal;
+    }),
+    advanceImport: vi.fn(async (id: string, _sequence: number, phase: ProjectModelTransferImportJournal['phase'], fields: object = {}) => {
+      const journal = { ...imports.get(id)!, ...fields, phase, sequence: imports.get(id)!.sequence + 1 }; imports.set(id, journal); return journal;
+    }),
+    commitImport: vi.fn(async (id: string) => {
+      const journal = { ...imports.get(id)!, phase: 'db_committed' as const }; imports.set(id, journal);
+      capture = { schemaVersion: 1, generation: 1, sessionId: 'session', sessionRevision: 1, sourceToken: `committed-${id}`, includesHistory: true,
+        aggregate: journal.next, exchange: journal.exchange, history: [], historyBindings: [] }; return journal;
+    }),
+    prepareExport: vi.fn(async (input: { operationId: string; capture: ProjectModelTransferCapture; exchange: ProjectModelTransferExportJournal['exchange'] }) => {
+      const journal: ProjectModelTransferExportJournal = { id: input.operationId, schemaVersion: 1, kind: 'project-model-export', operationId: input.operationId,
+        generation: 1, sessionId: 'session', targetProjectId: input.capture.aggregate.project.id, expectedToken: input.capture.sourceToken,
+        expectedExchange: input.capture.exchange, includesHistory: true,
+        head: input.exchange.localHead, exchange: input.exchange, phase: 'prepared', sequence: 0, createdAt: 1, updatedAt: 1 };
+      exports.set(input.operationId, journal); return journal;
+    }),
+    advanceExport: vi.fn(async (id: string, _sequence: number, phase: ProjectModelTransferExportJournal['phase'], fields: object = {}) => {
+      const journal = { ...exports.get(id)!, ...fields, phase, sequence: exports.get(id)!.sequence + 1 }; exports.set(id, journal);
+      if (phase === 'registered') capture = { ...capture!, exchange: journal.exchange, sourceToken: `exported-${id}` }; return journal;
+    }),
+  };
+  shared.repository = repository as unknown as ReturnType<typeof createProjectModelTransferRepository>;
+  const service = createProjectModelArchiveService({} as IDBDatabase, session, port);
+  return { service, repository, port, imports, get capture() { return capture; }, get exported() { return exported; } };
+}
+
+beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto); });
+describe('P5 portable/本机双向编排', () => {
+  it('新导入再导出保来源project/canvas/file/media身份、canonical路径和storyGraph语义', async () => {
+    const source = await archive(), sample = harness(), preview = await sample.service.preview(source);
+    const operation = await sample.service.apply(preview, { operationId: 'first-import', mode: 'import-new' });
+    expect(operation.next.project.id).not.toBe('P');
+    expect(operation.exchange!.fileBindings.map((item) => item.id)).toEqual(['F1', 'F2']);
+    expect(operation.exchange!.fileBindings.every((item) => item.localRelativePath.startsWith('imports/first-import-root-'))).toBe(true);
+    expect(operation.next.content.script).toBe('same.png');
+    expect(operation.next.content.storyGraph?.revision).toBe(0);
+    expect(operation.next.project.storageBindings[0].folderName).toBe(operation.next.project.dataFolder);
+    await sample.service.exportProject(operation.targetProjectId, 'first-export');
+    const head = sample.exported!.payload.exchange.revisions.find((item) => item.revisionId === sample.exported!.payload.exchange.head.revisionId)!;
+    const importedHead = operation.exchange!.bundle.revisions.find((item) => item.revisionId === operation.exchange!.localHead.revisionId)!;
+    expect(head.contentDigest).toBe(importedHead.contentDigest);
+    expect(sample.exported!.files).toEqual(source.files);
+    expect(sample.exported!.snapshot.media).toEqual(source.snapshot.media);
+    expect(JSON.stringify(sample.exported!.payload)).not.toContain('first-import');
+  });
+  it('同名异根更新保全部本机绑定和旧物理文件；已提交operation重放没有二次来源捕获/分配/发布', async () => {
+    const source = await archive(), sample = harness();
+    const first = await sample.service.apply(await sample.service.preview(source), { operationId: 'seed', mode: 'import-new' });
+    const bindings = structuredClone(first.next.project.storageBindings), fileBindings = structuredClone(first.exchange!.fileBindings);
+    const preview = await sample.service.preview(source, first.targetProjectId);
+    const updated = await sample.service.apply(preview, { operationId: 'update', mode: 'update-existing' });
+    expect(updated.next.project.storageBindings).toEqual(bindings);
+    expect(updated.next.project.dataFolder).toBe(first.next.project.dataFolder);
+    expect(updated.next.project.storageRootRef).toBe(first.next.project.storageRootRef);
+    expect(updated.exchange!.fileBindings).toEqual(fileBindings);
+    expect(updated.media).toEqual([]);
+    const prepares = sample.repository.prepareImport.mock.calls.length, publishes = vi.mocked(sample.port.publishMedia).mock.calls.length;
+    expect(await sample.service.apply(preview, { operationId: 'update', mode: 'update-existing' })).toEqual(updated);
+    expect(sample.repository.prepareImport).toHaveBeenCalledTimes(prepares);
+    expect(sample.port.publishMedia).toHaveBeenCalledTimes(publishes);
+  });
+  it('未提交的重启重投只复用首次journal.next/idMap/source映射，不重做随机分配', async () => {
+    const source = await archive(), sample = harness(), preview = await sample.service.preview(source);
+    vi.mocked(sample.port.publishMedia).mockRejectedValueOnce(new Error('response lost'));
+    await expect(sample.service.apply(preview, { operationId: 'resume', mode: 'import-new' })).rejects.toThrow('response lost');
+    const frozen = structuredClone(sample.imports.get('resume')!);
+    const result = await sample.service.resumeImport('resume');
+    expect(result.next).toEqual(frozen.next); expect(result.idMap).toEqual(frozen.idMap); expect(result.sourceFiles).toEqual(frozen.sourceFiles);
+    expect(sample.repository.prepareImport).toHaveBeenCalledTimes(1);
+    expect(sample.port.captureImportSource).toHaveBeenCalledTimes(1);
+  });
+  it('首次P3导出先把冒号root/项目/画布ID映射为稳定safe portable身份', async () => {
+    const capture: ProjectModelTransferCapture = { schemaVersion: 1, generation: 1, sessionId: 'session', sessionRevision: 1, sourceToken: 'legacy',
+      includesHistory: true, exchange: null, history: [], historyBindings: [], aggregate: {
+        project: { id: 'local:project', name: '旧定位', kind: 'standalone', epoch: 0, createdAt: 1, updatedAt: 1, dataFolder: 'legacy-folder',
+          storageRootRef: 'legacy-root:uuid', storageBindings: [{ rootRef: 'legacy-root:uuid', folderName: 'legacy-folder', source: 'legacy-folder-rule', sourceRecordIds: ['local:project'] }] },
+        content: { projectId: 'local:project', revisions: { source: 1, script: 9, storyGraph: 0, assets: 0 } }, episodes: [], episodeContents: [],
+        canvases: [{ id: 'local:canvas', projectId: 'local:project', episodeId: null, storageRootRef: 'legacy-root:uuid', revisionScope: 'project', epoch: 2, revision: 13,
+          nodes: [], edges: [], groups: [] }], previews: [], bindings: [],
+      } };
+    const sample = harness(capture); vi.mocked(sample.port.inspectAssets).mockResolvedValue([]);
+    await sample.service.exportProject(capture.aggregate.project.id, 'legacy-export');
+    const identities = sample.repository.prepareExport.mock.calls[0][0].exchange.identities;
+    expect(identities.every((item) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(item.sourceId))).toBe(true);
+    expect(identities.find((item) => item.kind === 'storage-root')!.localId).toBe('legacy-root:uuid');
+    expect(JSON.stringify(sample.exported!.payload)).not.toContain('local:');
+  });
+  it('已登记的脏稿阻止导出，锁覆盖owner和全部child直到打包完成', async () => {
+    const source = await archive(), sample = harness();
+    const operation = await sample.service.apply(await sample.service.preview(source), { operationId: 'dirty-seed', mode: 'import-new' });
+    let dirty = true;
+    const release = registerEpisodeEditorSession(operation.targetProjectId, () => ({ dirty, saving: false }));
+    try {
+      await expect(sample.service.exportProject(operation.targetProjectId, 'dirty-export')).rejects.toThrow('未保存');
+      expect(sample.repository.prepareExport).not.toHaveBeenCalled(); expect(sample.port.pack).not.toHaveBeenCalled();
+    } finally { dirty = false; release(); }
+  });
+  it('已导入会话的目标删除后转retired并读回，不能用旧binding重建活动分集', async () => {
+    const source = await archive(), sample = harness();
+    const operation = await sample.service.apply(await sample.service.preview(source), { operationId: 'history-seed', mode: 'import-new' });
+    const capture = sample.capture!;
+    capture.aggregate.project.kind = 'series'; capture.aggregate.canvases = [];
+    capture.exchange!.identities.push({ kind: 'episode', sourceId: 'deleted-episode', localId: 'deleted-local' });
+    capture.history.push({ kind: 'conversation', sourceNamespace: 'lineage', archiveOriginId: 'b'.repeat(64),
+      historicalTarget: { state: 'active', kind: 'episode', projectId: 'P', episodeId: 'deleted-episode' },
+      value: { id: 'history', projectId: operation.targetProjectId, title: '旧工作台', titleSource: 'user', agentMode: 'plan',
+        archived: true, pinned: false, messageCount: 0, createdAt: 1, updatedAt: 1 } });
+    await sample.service.exportProject(operation.targetProjectId, 'history-export');
+    const target = sample.exported!.payload.history!.workbenchTargets[0].target;
+    expect(target).toEqual({ state: 'retired', kind: 'episode', projectId: 'P', id: 'deleted-episode' });
+    expect(sample.exported!.snapshot.historicalTargets).toContainEqual(target);
+    expect(sample.exported!.payload.episodes).toEqual([]);
+  });
+  it.each([1, 2])('无来源证明的v%s包重复读取产生相同lineage、文件身份、包映射和历史origin', async (formatVersion) => {
+    const record = { id: 'legacy-project', name: '旧项目', createdAt: 1, updatedAt: 2, nodes: [{ id: 'n', type: 'source-image',
+      position: { x: 0, y: 0 }, data: { type: 'source-image', relativePath: 'same.png' } }], edges: [], groups: [] };
+    const manifest = { formatVersion, projectId: record.id, projectName: record.name, exportedAt: 1 };
+    const conversation = { id: 'legacy-chat', projectId: record.id, title: '旧对话', titleSource: 'user' as const, archived: false, pinned: false,
+      agentMode: 'plan' as const, messageCount: 0, createdAt: 1, updatedAt: 1 };
+    vi.mocked(readProjectArchiveContents).mockResolvedValue({ manifest, records: [record], chat: [{ conversations: [conversation], messages: [], memories: [] }],
+      assets: [{ path: 'same.png', bytes: 3, sha256: hash }], bundle: null, sourceState: null } as Awaited<ReturnType<typeof readProjectArchiveContents>>);
+    const texts = { 'manifest.json': JSON.stringify(manifest), 'project.json': JSON.stringify(record) }, assets = [{ path: 'same.png', bytes: 3, sha256: hash }];
+    const first = await readProjectModelArchive(texts, assets), second = await readProjectModelArchive(texts, assets);
+    expect(second).toEqual(first);
+    expect(first.snapshot.lineageId).toMatch(/^legacy_[a-f0-9]{64}$/);
+    expect(first.payload.exchange.revisions).toHaveLength(1);
+    expect(first.payload.history!.payload.conversations[0].archiveOriginId).toMatch(/^[a-f0-9]{64}$/);
+    const changed = await readProjectModelArchive({ ...texts, 'project.json': JSON.stringify({ ...record, name: '另一个旧包' }) }, assets);
+    expect(changed.snapshot.lineageId).not.toBe(first.snapshot.lineageId);
+  });
+});

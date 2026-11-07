@@ -1887,6 +1887,7 @@ pub fn run() {
             agent_package::agent_source_remove,
             agent_package::agent_source_read_text,
             project_archive::pack_project_archive,
+            project_archive::verify_project_archive_publication,
             project_archive::unpack_project_archive,
             project_archive::inspect_project_archive_assets,
             project_archive::publish_project_import_assets,

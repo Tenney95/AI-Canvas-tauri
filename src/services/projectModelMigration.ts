@@ -136,6 +136,7 @@ export async function prepareProjectModelRestore(input: {
 }): Promise<ProjectModelRestorePreparation> {
   input.signal?.throwIfAborted();
   const verified = await inspectProjectModelBackup(input.operationId, { signal: input.signal });
+  if (verified.manifest.format !== 'project-model-backup-v1') throw new ProjectModelPreparationError('incomplete-source');
   input.signal?.throwIfAborted();
   const source = projectLegacyRecords(sourceRecords(verified.source));
   const requestedProjectId = input.scope?.kind === 'project' ? input.scope.projectId : null;

@@ -1,7 +1,9 @@
 /** 项目模型迁移的有界本地备份；不调用归档脱敏器、不写数据库，也不激活迁移。 */
 import { sha256BytesHex } from './mediaDataUrl';
 import { DB_NAME, DB_VERSION } from './indexedDb/schema';
-import { isProjectModelFixtureDatabaseName } from '../types/projectModelJournal';
+import { isProjectModelFixtureDatabaseName, PROJECT_MODEL_STAGING_STORES, PROJECT_MODEL_STAGING_VERSION,
+  PROJECT_MODEL_SOURCE_FREEZE_KEY } from '../types/projectModelJournal';
+import { PROJECT_MODEL_BUSINESS_FIXTURE_KEY } from '../types/projectModelBusiness';
 import {
   isProjectModelBackupStore,
   isKnownExcludedProjectModelBackupStore,
@@ -9,6 +11,25 @@ import {
 } from './indexedDb/projectModelMigrationRepository';
 
 export const PROJECT_MODEL_BACKUP_FORMAT = 'project-model-backup-v1' as const;
+export const PROJECT_MODEL_FIXTURE_BACKUP_FORMAT = 'project-model-fixture-backup-v2' as const;
+const fixtureStoreKeys: Record<string, string | string[]> = {
+  projectRoots: ['generation', 'id'], projectContents: ['generation', 'projectId'], episodes: ['generation', 'id'],
+  episodeContents: ['generation', 'episodeId'], canvasDocuments: ['generation', 'id'], canvasPreviews: ['generation', 'canvasId'],
+  legacyProjectBindings: ['generation', 'namespace', 'legacyId'], archiveHistoryBindings: ['destinationProjectId', 'sourceNamespace', 'kind', 'archiveOriginId'],
+  projectModelMigrations: 'operationId',
+};
+const fixtureStoreIndexes: Record<string, Record<string, string | string[]>> = {
+  episodes: { projectId_orderRank: ['generation', 'projectId', 'orderRank'] },
+  canvasDocuments: { projectId: ['generation', 'projectId'], episodeId: ['generation', 'episodeId'] },
+  legacyProjectBindings: { projectId: ['generation', 'projectId'], canvasId: ['generation', 'canvasId'] },
+  projectModelMigrations: { generation: 'generation', stage: 'stage' },
+};
+export const isProjectModelFixtureBackupStore = (name: string): boolean => isProjectModelBackupStore(name) || Object.hasOwn(fixtureStoreKeys, name);
+export const isProjectModelFixtureBackupMetadataKey = (key: unknown): key is string => isProjectModelBackupMetadataKey(key)
+  || key === PROJECT_MODEL_BUSINESS_FIXTURE_KEY || key === PROJECT_MODEL_SOURCE_FREEZE_KEY
+  || typeof key === 'string' && ['project-model-business-tombstone:', 'project-model-business-cleanup:',
+    'project-model-import:', 'project-model-export:', 'project-model-exchange:', 'project-model-recovery:',
+    'project-model-pre-restore:'].some((prefix) => key.startsWith(prefix) && key.length > prefix.length);
 /** P1 在内存准备材料，超限明确拒绝；大库流式迁移属于后续阶段。 */
 export const PROJECT_MODEL_BACKUP_LIMITS = {
   maxFileBytes: 128 * 1024 * 1024,
@@ -53,7 +74,7 @@ export interface ProjectModelBackupStoreManifest extends Omit<ProjectModelBackup
   chunks: string[];
 }
 export interface ProjectModelBackupManifest {
-  format: typeof PROJECT_MODEL_BACKUP_FORMAT;
+  format: typeof PROJECT_MODEL_BACKUP_FORMAT | typeof PROJECT_MODEL_FIXTURE_BACKUP_FORMAT;
   operationId: string;
   createdAt: number;
   databaseName: string;
@@ -163,10 +184,10 @@ function keyPath(value: unknown, nullable: boolean): string | string[] | null {
   };
   return Array.isArray(value) ? array(value, 32).map(one) : one(value);
 }
-function parseSchema(value: unknown): Omit<ProjectModelBackupStore, 'records'> {
+function parseSchema(value: unknown, fixture = false): Omit<ProjectModelBackupStore, 'records'> {
   const row = object(value, ['name', 'keyPath', 'autoIncrement', 'indexes']);
   const name = shortString(row.name);
-  if (!isProjectModelBackupStore(name)) fail('unsupported_store');
+  if (!(fixture ? isProjectModelFixtureBackupStore(name) : isProjectModelBackupStore(name))) fail('unsupported_store');
   // 标准 IDB 不公开内部 key generator；不能把未保存它的备份称为可还原 schema。
   if (boolean(row.autoIncrement)) fail('unsupported_auto_increment');
   const indexes = array(row.indexes, 64).map((item) => {
@@ -175,24 +196,35 @@ function parseSchema(value: unknown): Omit<ProjectModelBackupStore, 'records'> {
       unique: boolean(index.unique), multiEntry: boolean(index.multiEntry) };
   });
   if (new Set(indexes.map((index) => index.name)).size !== indexes.length) fail('duplicate_index');
-  return { name, keyPath: keyPath(row.keyPath, true), autoIncrement: boolean(row.autoIncrement), indexes };
+  const parsedKeyPath = keyPath(row.keyPath, true);
+  if (Object.hasOwn(fixtureStoreKeys, name) && JSON.stringify(parsedKeyPath) !== JSON.stringify(fixtureStoreKeys[name])) fail('invalid_fixture_key_path');
+  if (Object.hasOwn(fixtureStoreKeys, name)) {
+    const expected = fixtureStoreIndexes[name] ?? {};
+    if (indexes.length !== Object.keys(expected).length || indexes.some((index) => index.unique || index.multiEntry
+      || !Object.hasOwn(expected, index.name) || JSON.stringify(index.keyPath) !== JSON.stringify(expected[index.name]))) fail('invalid_fixture_index');
+  }
+  return { name, keyPath: parsedKeyPath, autoIncrement: boolean(row.autoIncrement), indexes };
 }
-function validateCoverage(namesInput: unknown, stores: readonly { name: string }[]): string[] {
+function validateCoverage(namesInput: unknown, stores: readonly { name: string }[], fixture = false): string[] {
   const names = array(namesInput, 128).map((name) => shortString(name));
   if (new Set(names).size !== names.length || new Set(stores.map((store) => store.name)).size !== stores.length) fail('duplicate_store');
-  if (!names.includes('projects') || names.some((name) => !isProjectModelBackupStore(name) && !isKnownExcludedProjectModelBackupStore(name))) fail('unknown_store_coverage');
-  const expected = names.filter(isProjectModelBackupStore).sort();
+  const included = fixture ? isProjectModelFixtureBackupStore : isProjectModelBackupStore;
+  if (!names.includes('projects') || names.some((name) => !included(name) && !isKnownExcludedProjectModelBackupStore(name))) fail('unknown_store_coverage');
+  if (fixture && (!names.includes('metadata') || PROJECT_MODEL_STAGING_STORES.some((name) => !names.includes(name)))) fail('incomplete_fixture_coverage');
+  const expected = names.filter(included).sort();
   if (JSON.stringify(expected) !== JSON.stringify(stores.map((store) => store.name).sort())) fail('incomplete_store_coverage');
   return names;
 }
 function parseManifest(value: unknown): ProjectModelBackupManifest {
   const row = object(value, ['format', 'operationId', 'createdAt', 'databaseName', 'schemaVersion', 'databaseStoreNames', 'stores', 'localStorage', 'files', 'totalBytes']);
-  if (row.format !== PROJECT_MODEL_BACKUP_FORMAT
+  const fixture = row.format === PROJECT_MODEL_FIXTURE_BACKUP_FORMAT;
+  if (row.format !== PROJECT_MODEL_BACKUP_FORMAT && !fixture
     || row.databaseName !== DB_NAME && !isProjectModelFixtureDatabaseName(row.databaseName)) fail('unsupported_format');
   const operationId = shortString(row.operationId, 128);
   if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(operationId)) fail('invalid_operation');
   const schemaVersion = integer(row.schemaVersion);
-  if (!schemaVersion || schemaVersion > DB_VERSION) fail('unsupported_schema');
+  if (!schemaVersion || (fixture ? !isProjectModelFixtureDatabaseName(row.databaseName) || schemaVersion !== PROJECT_MODEL_STAGING_VERSION
+    : schemaVersion > DB_VERSION)) fail('unsupported_schema');
   const files = array(row.files, PROJECT_MODEL_BACKUP_LIMITS.maxFiles).map((item): ProjectModelBackupFile => {
     const file = object(item, ['path', 'kind', 'bytes', 'sha256']);
     const path = assertProjectModelBackupPath(file.path);
@@ -204,14 +236,14 @@ function parseManifest(value: unknown): ProjectModelBackupManifest {
   if (new Set(files.map((file) => file.path)).size !== files.length) fail('duplicate_file');
   const stores = array(row.stores, 128).map((item): ProjectModelBackupStoreManifest => {
     const store = object(item, ['name', 'keyPath', 'autoIncrement', 'indexes', 'recordCount', 'chunks']);
-    const schema = parseSchema({ name: store.name, keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes: store.indexes });
+    const schema = parseSchema({ name: store.name, keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes: store.indexes }, fixture);
     const chunks = array(store.chunks, PROJECT_MODEL_BACKUP_LIMITS.maxFiles).map(assertProjectModelBackupPath);
     if (new Set(chunks).size !== chunks.length || chunks.some((path) => !path.startsWith('stores/' + schema.name + '/')
       || !files.some((file) => file.path === path && file.kind === 'records'))) fail('invalid_chunk');
     return { ...schema, recordCount: integer(store.recordCount, PROJECT_MODEL_BACKUP_LIMITS.maxRecords), chunks };
   });
   if (stores.reduce((sum, store) => sum + store.recordCount, 0) > PROJECT_MODEL_BACKUP_LIMITS.maxRecords) fail('record_limit');
-  const databaseStoreNames = validateCoverage(row.databaseStoreNames, stores);
+  const databaseStoreNames = validateCoverage(row.databaseStoreNames, stores, fixture);
   const localStorage = array(row.localStorage, 1).map((item) => {
     const local = object(item, ['key', 'path']);
     if (local.key !== 'ai_canvas_pending_tasks' || local.path !== 'local-storage.json') fail('unsupported_local_storage');
@@ -222,7 +254,7 @@ function parseManifest(value: unknown): ProjectModelBackupManifest {
   if (files.some((file) => file.kind === 'records' && !chunkPaths.has(file.path))) fail('unowned_chunk');
   const totalBytes = integer(row.totalBytes, PROJECT_MODEL_BACKUP_LIMITS.maxTotalBytes);
   if (files.reduce((sum, file) => sum + file.bytes, 0) !== totalBytes) fail('invalid_total');
-  return { format: PROJECT_MODEL_BACKUP_FORMAT, operationId, createdAt: integer(row.createdAt), databaseName: row.databaseName as string, schemaVersion,
+  return { format: fixture ? PROJECT_MODEL_FIXTURE_BACKUP_FORMAT : PROJECT_MODEL_BACKUP_FORMAT, operationId, createdAt: integer(row.createdAt), databaseName: row.databaseName as string, schemaVersion,
     databaseStoreNames, stores, localStorage, files, totalBytes };
 }
 function jsonBytes(value: unknown, max: number): Uint8Array {
@@ -467,10 +499,11 @@ function decodeValue(input: unknown, binary: ReadonlyMap<string, Uint8Array>, us
 export async function createProjectModelBackup(source: ProjectModelBackupSource,
   options: { operationId: string; createdAt?: number; signal?: AbortSignal }): Promise<ProjectModelBackupBundle> {
   checkAbort(options.signal);
+  const fixture = isProjectModelFixtureDatabaseName(source.databaseName) && source.schemaVersion === PROJECT_MODEL_STAGING_VERSION;
   if (source.databaseName !== DB_NAME && !isProjectModelFixtureDatabaseName(source.databaseName)
-    || !Number.isSafeInteger(source.schemaVersion) || source.schemaVersion < 1 || source.schemaVersion > DB_VERSION) fail('invalid_source');
-  const schemas = source.stores.map((store) => parseSchema({ name: store.name, keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes: store.indexes }));
-  validateCoverage(source.databaseStoreNames, schemas);
+    || !Number.isSafeInteger(source.schemaVersion) || source.schemaVersion < 1 || !fixture && source.schemaVersion > DB_VERSION) fail('invalid_source');
+  const schemas = source.stores.map((store) => parseSchema({ name: store.name, keyPath: store.keyPath, autoIncrement: store.autoIncrement, indexes: store.indexes }, fixture));
+  validateCoverage(source.databaseStoreNames, schemas, fixture);
   if (source.localStorage.length !== 1 || source.localStorage[0].key !== 'ai_canvas_pending_tasks'
     || (source.localStorage[0].value !== null && typeof source.localStorage[0].value !== 'string')) fail('incomplete_local_storage');
   assertPendingQueue(source.localStorage[0].value);
@@ -501,7 +534,7 @@ export async function createProjectModelBackup(source: ProjectModelBackupSource,
       const key = normalizedKey(record.key);
       if (keys.has(key)) fail('duplicate_record_key'); keys.add(key);
       assertRecordKey(store, record.key, record.value);
-      if (store.name === 'metadata' && (typeof record.key !== 'string' || !isProjectModelBackupMetadataKey(record.key))) fail('unsupported_metadata');
+      if (store.name === 'metadata' && !(fixture ? isProjectModelFixtureBackupMetadataKey(record.key) : isProjectModelBackupMetadataKey(record.key))) fail('unsupported_metadata');
       const encoded = await encodeValue({ key: record.key, value: record.value }, context);
       const text = JSON.stringify(encoded), count = encoder.encode(text).byteLength;
       if (count + 2 > PROJECT_MODEL_BACKUP_LIMITS.maxFileBytes) fail('record_limit');
@@ -511,7 +544,7 @@ export async function createProjectModelBackup(source: ProjectModelBackupSource,
     await flush(); stores.push({ ...schemas[index], recordCount: store.records.length, chunks });
   }
   await add('local-storage.json', 'localStorage', jsonBytes(source.localStorage[0], PROJECT_MODEL_BACKUP_LIMITS.maxFileBytes));
-  const manifest = parseManifest({ format: PROJECT_MODEL_BACKUP_FORMAT, operationId: options.operationId, createdAt: options.createdAt ?? Date.now(),
+  const manifest = parseManifest({ format: fixture ? PROJECT_MODEL_FIXTURE_BACKUP_FORMAT : PROJECT_MODEL_BACKUP_FORMAT, operationId: options.operationId, createdAt: options.createdAt ?? Date.now(),
     databaseName: source.databaseName, schemaVersion: source.schemaVersion, databaseStoreNames: source.databaseStoreNames, stores,
     localStorage: [{ key: 'ai_canvas_pending_tasks', path: 'local-storage.json' }], files: descriptors, totalBytes });
   jsonBytes(manifest, PROJECT_MODEL_BACKUP_LIMITS.maxManifestBytes);
@@ -537,7 +570,8 @@ async function readMaterial(port: ProjectModelBackupPort, manifest: ProjectModel
       const key = normalizedKey(record.key);
       if (keys.has(key)) fail('duplicate_record_key'); keys.add(key);
       assertRecordKey(store, record.key, record.value);
-      if (store.name === 'metadata' && (typeof record.key !== 'string' || !isProjectModelBackupMetadataKey(record.key))) fail('unsupported_metadata');
+      if (store.name === 'metadata' && !(manifest.format === PROJECT_MODEL_FIXTURE_BACKUP_FORMAT
+        ? isProjectModelFixtureBackupMetadataKey(record.key) : isProjectModelBackupMetadataKey(record.key))) fail('unsupported_metadata');
       records.push({ key: record.key as IDBValidKey, value: record.value });
       if (records.length > store.recordCount) fail('record_count_mismatch');
     }
@@ -557,12 +591,12 @@ export async function readVerifiedProjectModelBackup(port: ProjectModelBackupPor
   checkAbort(options.signal);
   const complete = object(readJson(await port.read(COMPLETE_PATH, PROJECT_MODEL_BACKUP_LIMITS.maxCompleteBytes), PROJECT_MODEL_BACKUP_LIMITS.maxCompleteBytes),
     ['format', 'operationId', 'manifestSha256']);
-  if (complete.format !== PROJECT_MODEL_BACKUP_FORMAT) fail('missing_completion');
+  if (complete.format !== PROJECT_MODEL_BACKUP_FORMAT && complete.format !== PROJECT_MODEL_FIXTURE_BACKUP_FORMAT) fail('missing_completion');
   const bytes = await port.read(MANIFEST_PATH, PROJECT_MODEL_BACKUP_LIMITS.maxManifestBytes);
   checkAbort(options.signal);
   if (await sha256BytesHex(bytes) !== digest(complete.manifestSha256)) fail('manifest_digest_mismatch');
   const manifest = parseManifest(readJson(bytes, PROJECT_MODEL_BACKUP_LIMITS.maxManifestBytes));
-  if (complete.operationId !== manifest.operationId) fail('operation_mismatch');
+  if (complete.operationId !== manifest.operationId || complete.format !== manifest.format) fail('operation_mismatch');
   const source = await readMaterial(port, manifest, options.signal);
   checkAbort(options.signal);
   return { status: 'verified', manifest, source };
@@ -587,7 +621,7 @@ export async function writeVerifiedProjectModelBackup(bundle: ProjectModelBackup
   const persisted = await port.read(MANIFEST_PATH, PROJECT_MODEL_BACKUP_LIMITS.maxManifestBytes);
   if (await sha256BytesHex(persisted) !== await sha256BytesHex(manifestBytes)) fail('manifest_digest_mismatch');
   await readMaterial(port, parseManifest(readJson(persisted, PROJECT_MODEL_BACKUP_LIMITS.maxManifestBytes)), options.signal);
-  const completion = jsonBytes({ format: PROJECT_MODEL_BACKUP_FORMAT, operationId: manifest.operationId,
+  const completion = jsonBytes({ format: manifest.format, operationId: manifest.operationId,
     manifestSha256: await sha256BytesHex(manifestBytes) }, PROJECT_MODEL_BACKUP_LIMITS.maxCompleteBytes);
   checkAbort(options.signal);
   await port.publishComplete(COMPLETE_PATH, completion);

@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tar::{Archive, Builder, Header};
 use tauri::{AppHandle, Emitter, Runtime, Webview};
@@ -38,12 +39,196 @@ pub struct ProjectArchiveTextEntry {
     content: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectArchivePackResult {
     asset_count: usize,
     asset_bytes: u64,
     archive_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publication_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_sha256: Option<String>,
+}
+
+static ARCHIVE_PUBLICATION_LOCK: Mutex<()> = Mutex::new(());
+const PUBLICATION_ERROR: &str = "归档发布结果尚未确认，请核对原导出操作；未重复打包或覆盖文件";
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArchivePublicationReceipt {
+    operation_id: String, publication_ref: String, output_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<ProjectArchivePackResult>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivePublicationStatus {
+    status: &'static str, operation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publication_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_bytes: Option<u64>,
+}
+struct ArchivePublicationPlan { directory: PathBuf, receipt: ArchivePublicationReceipt,
+    recheck: Option<Box<dyn Fn() -> Result<(), String> + Send>> }
+
+fn publication_id(id: &str) -> bool {
+    (1..=128).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+fn publication_path(directory: &Path, id: &str, phase: &str) -> PathBuf { directory.join(format!("{id}.{phase}.json")) }
+fn sync_publication_directory(directory: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    File::open(directory).and_then(|file| file.sync_all()).map_err(|_| PUBLICATION_ERROR)?;
+    #[cfg(not(unix))]
+    let _ = directory; // Windows uses MOVEFILE_WRITE_THROUGH at publication, below.
+    Ok(())
+}
+fn sync_asset_parents(root: &Path, parent: &Path) -> Result<(), String> {
+    if !parent.starts_with(root) { return Err(PUBLICATION_ERROR.into()); }
+    let mut current = parent;
+    loop {
+        sync_publication_directory(current)?;
+        if current == root { return Ok(()); }
+        current = current.parent().ok_or(PUBLICATION_ERROR)?;
+    }
+}
+fn write_publication_receipt(path: &Path, receipt: &ArchivePublicationReceipt) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new(); options.write(true).create_new(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    #[cfg(windows)]
+    { use std::os::windows::fs::OpenOptionsExt; options.custom_flags(0x80000000 | 0x00200000).share_mode(0); }
+    let bytes = serde_json::to_vec(receipt).map_err(|_| PUBLICATION_ERROR)?;
+    let temporary = path.with_extension("publishing");
+    let mut file = options.open(&temporary).map_err(|_| PUBLICATION_ERROR)?;
+    file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|_| PUBLICATION_ERROR)?;
+    drop(file);
+    publish_archive_exclusive(&temporary, path)
+}
+fn publish_archive_exclusive(temporary: &Path, output: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::{core::PCWSTR, Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH}};
+        let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = output.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVEFILE_WRITE_THROUGH) }.map_err(|_| PUBLICATION_ERROR)?;
+    }
+    #[cfg(not(windows))]
+    {
+        fs::hard_link(temporary, output).map_err(|_| PUBLICATION_ERROR)?;
+        sync_publication_directory(output.parent().ok_or(PUBLICATION_ERROR)?)?;
+        fs::remove_file(temporary).map_err(|_| PUBLICATION_ERROR)?;
+    }
+    sync_publication_directory(output.parent().ok_or(PUBLICATION_ERROR)?)
+}
+
+/// std::fs::rename 在 Unix 可替换已有空目录；导入发布必须使用平台的 no-replace 合同。
+fn publish_import_directory_exclusive(temporary: &Path, output: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    { return publish_archive_exclusive(temporary, output); }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt, os::raw::{c_char, c_int, c_uint}};
+        let from = CString::new(temporary.as_os_str().as_bytes()).map_err(|_| PUBLICATION_ERROR)?;
+        let to = CString::new(output.as_os_str().as_bytes()).map_err(|_| PUBLICATION_ERROR)?;
+        #[cfg(target_os = "linux")]
+        let status = {
+            extern "C" { fn renameat2(old_dir: c_int, old: *const c_char, new_dir: c_int, new: *const c_char, flags: c_uint) -> c_int; }
+            // Linux uapi/linux/fs.h: RENAME_NOREPLACE=1; uapi/linux/fcntl.h: AT_FDCWD=-100.
+            unsafe { renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) }
+        };
+        #[cfg(target_os = "macos")]
+        let status = {
+            extern "C" { fn renamex_np(old: *const c_char, new: *const c_char, flags: c_uint) -> c_int; }
+            // Apple xnu/bsd/sys/stdio.h: RENAME_EXCL=0x00000004 (macOS 10.12+).
+            unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 4) }
+        };
+        if status != 0 { return Err("导入目录已存在或文件系统不能安全发布，原素材未被覆盖".into()); }
+        sync_publication_directory(output.parent().ok_or(PUBLICATION_ERROR)?)?;
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    { let _ = (temporary, output); Err("当前系统不支持安全发布导入目录".into()) }
+}
+fn validate_v4_entry_names<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Result<(), String> {
+    let entries: HashMap<&str, &str> = entries.into_iter().collect();
+    let Some(manifest) = entries.get("manifest.json") else { return Ok(()); };
+    let value: serde_json::Value = match serde_json::from_str(manifest) { Ok(value) => value, Err(_) => return Ok(()) };
+    if value.get("formatVersion").and_then(serde_json::Value::as_u64) != Some(4) { return Ok(()); }
+    const REQUIRED: [&str; 6] = ["manifest.json", "project.json", "episodes.json", "canvases.json", "contents.json", "exchange.json"];
+    if REQUIRED.iter().any(|name| !entries.contains_key(name))
+        || entries.keys().any(|name| !REQUIRED.contains(name) && *name != "history.json") {
+        return Err("项目 v4 归档 JSON 条目缺失或包含未知正文".into());
+    }
+    Ok(())
+}
+fn publication_directory<R: Runtime>(app: &AppHandle<R>, create: bool) -> Result<PathBuf, String> {
+    // 复用已在 fs/asset scope 与 path_policy 中禁止公开访问的维护私有根。
+    let root = crate::project_model_safety::private_root(app)?;
+    let directory = root.join("archive-publications");
+    let chain: Vec<_> = directory.ancestors().collect();
+    for path in chain.into_iter().rev().filter(|path| !path.as_os_str().is_empty()) {
+        if !path.exists() {
+            if !create || path != root.as_path() && path != directory.as_path() { return Err(PUBLICATION_ERROR.into()); }
+            fs::create_dir(path).map_err(|_| PUBLICATION_ERROR)?;
+            #[cfg(unix)]
+            { use std::os::unix::fs::PermissionsExt; fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|_| PUBLICATION_ERROR)?; }
+        }
+        if !plain_asset_metadata(path)?.is_some_and(|metadata| metadata.is_dir()) { return Err(PUBLICATION_ERROR.into()); }
+    }
+    Ok(directory)
+}
+fn read_publication_receipt(path: &Path) -> Result<ArchivePublicationReceipt, String> {
+    if !plain_asset_metadata(path)?.is_some_and(|metadata| metadata.is_file() && metadata.len() <= 64 * 1024) { return Err(PUBLICATION_ERROR.into()); }
+    let bytes = fs::read(path).map_err(|_| PUBLICATION_ERROR)?;
+    serde_json::from_slice(&bytes).map_err(|_| PUBLICATION_ERROR.into())
+}
+fn begin_publication<R: Runtime>(app: &AppHandle<R>, operation_id: &str, output: &Path) -> Result<ArchivePublicationPlan, String> {
+    if !publication_id(operation_id) || output.exists() { return Err("归档发布需要新的操作身份和未占用的输出文件".into()); }
+    let directory = publication_directory(app, true)?;
+    let path = publication_path(&directory, operation_id, "prepared");
+    let output_path = output.to_str().ok_or(PUBLICATION_ERROR)?.to_owned();
+    let publication_ref = format!("{:x}", Sha256::digest(format!("{operation_id}\0{output_path}\0{}", SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| PUBLICATION_ERROR)?.as_nanos()).as_bytes()));
+    let receipt = ArchivePublicationReceipt { operation_id: operation_id.into(), publication_ref, output_path, result: None };
+    write_publication_receipt(&path, &receipt)?;
+    let handle = app.clone(); let output = output.to_path_buf();
+    Ok(ArchivePublicationPlan { directory, receipt, recheck: Some(Box::new(move || reauthorize_archive_path(&handle, &output, PathAccess::Write))) })
+}
+
+/** 仅核对本操作私有回执绑定的原文件；不接受 Renderer 提交的新路径或重新发布。 */
+#[tauri::command]
+pub async fn verify_project_archive_publication<R: Runtime>(webview: Webview<R>, app: AppHandle<R>,
+    operation_id: String, publication_ref: Option<String>) -> Result<ArchivePublicationStatus, String> {
+    ensure_trusted_caller(&webview)?;
+    if webview.label() != "main" || !publication_id(&operation_id) { return Err(PUBLICATION_ERROR.into()); }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = ARCHIVE_PUBLICATION_LOCK.lock().map_err(|_| PUBLICATION_ERROR)?;
+        let unknown = |status| ArchivePublicationStatus { status, operation_id: operation_id.clone(), publication_ref: None,
+            archive_sha256: None, archive_bytes: None };
+        let directory = match publication_directory(&app, false) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
+        let prepared_path = publication_path(&directory, &operation_id, "prepared");
+        if !prepared_path.exists() { return Ok(unknown("missing")); }
+        let prepared = match read_publication_receipt(&prepared_path) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
+        if prepared.operation_id != operation_id || publication_ref.as_ref().is_some_and(|reference| *reference != prepared.publication_ref) { return Ok(unknown("unknown")); }
+        let ready = match read_publication_receipt(&publication_path(&directory, &operation_id, "ready")) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
+        if ready.operation_id != operation_id || ready.publication_ref != prepared.publication_ref || ready.output_path != prepared.output_path { return Ok(unknown("unknown")); }
+        let Some(result) = &ready.result else { return Ok(unknown("unknown")); };
+        if result.operation_id.as_deref() != Some(operation_id.as_str()) || result.publication_ref.as_deref() != Some(ready.publication_ref.as_str()) { return Ok(unknown("unknown")); }
+        let output = match authorize_path(&app, &ready.output_path, PathAccess::Read) { Ok(path) => path, Err(_) => return Ok(unknown("unknown")) };
+        if !plain_asset_metadata(&output)?.is_some_and(|metadata| metadata.is_file()) { return Ok(unknown("unknown")); }
+        let (bytes, digest) = match hash_file_with_limit(&output, &mut Vec::new(), MAX_EXPANDED_BYTES + MAX_TEXT_BYTES) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
+        if result.archive_sha256.as_ref() != Some(&digest) || result.archive_bytes != bytes { return Ok(unknown("unknown")); }
+        if authorize_path(&app, &ready.output_path, PathAccess::Read).ok().as_ref() != Some(&output) { return Ok(unknown("unknown")); }
+        let completed_path = publication_path(&directory, &operation_id, "published");
+        if !completed_path.exists() { write_publication_receipt(&completed_path, &ready)?; }
+        Ok(ArchivePublicationStatus { status: "published", operation_id, publication_ref: Some(ready.publication_ref),
+            archive_sha256: Some(digest), archive_bytes: Some(bytes) })
+    }).await.map_err(|_| PUBLICATION_ERROR.to_string())?
 }
 
 #[derive(Serialize)]
@@ -59,11 +244,40 @@ pub struct ProjectArchiveUnpackResult {
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ArchiveAssetDigest { path: String, bytes: u64, sha256: String }
+pub struct ArchiveAssetDigest {
+    path: String, bytes: u64, sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_root_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_relative_path: Option<String>,
+}
+impl ArchiveAssetDigest {
+    fn portable(&self) -> Self { Self { path: self.path.clone(), bytes: self.bytes, sha256: self.sha256.clone(), source_root_ref: None, source_relative_path: None } }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProjectImportAsset { path: String, destination_path: String, bytes: u64, sha256: String }
+pub struct ProjectArchiveSourceRoot { root_ref: String, directory: String }
+fn authorize_source_roots<R: Runtime>(app: &AppHandle<R>, roots: Vec<ProjectArchiveSourceRoot>) -> Result<HashMap<String, PathBuf>, String> {
+    if roots.len() > MAX_ARCHIVE_ENTRIES { return Err("素材来源根数量超过上限".into()); }
+    let mut result = HashMap::new();
+    for root in roots {
+        if !(1..=128).contains(&root.root_ref.len())
+            || !root.root_ref.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+            return Err("素材来源根身份无效".into());
+        }
+        let path = authorize_path(app, &root.directory, PathAccess::Read)?;
+        if !plain_asset_metadata(&path)?.is_some_and(|metadata| metadata.is_dir()) || result.insert(root.root_ref, path).is_some() {
+            return Err("素材来源根重复或不是普通目录".into());
+        }
+    }
+    Ok(result)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectImportAsset { path: String, destination_path: String, bytes: u64, sha256: String,
+    #[serde(default)] source_root_ref: Option<String> }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,12 +292,15 @@ fn reauthorize_archive_path<R: Runtime>(app: &AppHandle<R>, path: &Path, access:
 }
 
 fn hash_file(path: &Path, buffer: &mut Vec<u8>) -> Result<(u64, String), String> {
+    hash_file_with_limit(path, buffer, MAX_EXPANDED_BYTES)
+}
+fn hash_file_with_limit(path: &Path, buffer: &mut Vec<u8>, limit: u64) -> Result<(u64, String), String> {
     let mut file = File::open(path).map_err(|_| "无法读取项目素材")?;
     let mut digest = Sha256::new(); let mut bytes = 0_u64;
     buffer.resize(IO_BUFFER_BYTES, 0);
     loop { let count = file.read(buffer).map_err(|_| "读取素材失败")?; if count == 0 { break; }
         digest.update(&buffer[..count]); bytes += count as u64;
-        if bytes > MAX_EXPANDED_BYTES { return Err("素材超过体积限制".into()); }
+        if bytes > limit { return Err("素材超过体积限制".into()); }
     }
     Ok((bytes, format!("{:x}", digest.finalize())))
 }
@@ -167,7 +384,7 @@ impl AssetScan {
         let (bytes, sha256) = hash_file(&file, &mut self.buffer)?;
         self.bytes = self.bytes.checked_add(bytes).ok_or("项目素材体积无效")?;
         if self.bytes > self.max_bytes { return Err("项目素材体积超过上限".into()); }
-        self.rows.push(ArchiveAssetDigest { path: to_archive_text(relative), bytes, sha256 });
+        self.rows.push(ArchiveAssetDigest { path: to_archive_text(relative), bytes, sha256, source_root_ref: None, source_relative_path: None });
         Ok(())
     }
 
@@ -257,21 +474,26 @@ fn create_import_destination(
 /// 只向全新子目录发布；逐文件复核已预览的字节，不覆盖目标的任何已有素材。
 #[tauri::command]
 pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app: AppHandle<R>, staging_dir: String,
-    project_dir: String, operation_id: String, assets: Vec<ProjectImportAsset>) -> Result<(), String> {
+    project_dir: String, operation_id: String, assets: Vec<ProjectImportAsset>, source_roots: Option<Vec<ProjectArchiveSourceRoot>>) -> Result<(), String> {
     ensure_trusted_caller(&webview)?;
     if webview.label() != "main" || operation_id.len() > 128 || operation_id.is_empty()
         || !operation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { return Err("导入操作身份无效".into()); }
     let staging = authorize_path(&app, &staging_dir, PathAccess::Read)?;
     let root = authorize_path(&app, &project_dir, PathAccess::Write)?;
+    let sources = authorize_source_roots(&app, source_roots.unwrap_or_default())?;
     let cancellation_id = operation_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let _guard = ARCHIVE_PUBLICATION_LOCK.lock().map_err(|_| PUBLICATION_ERROR)?;
         reauthorize_archive_path(&app, &staging, PathAccess::Read)?;
         reauthorize_archive_path(&app, &root, PathAccess::Write)?;
+        for source in sources.values() { reauthorize_archive_path(&app, source, PathAccess::Read)?; }
         let total_bytes = assets.iter().try_fold(0_u64, |total, asset| total.checked_add(asset.bytes)).ok_or("素材体积无效")?;
         if assets.len() > MAX_ARCHIVE_ENTRIES || total_bytes > MAX_EXPANDED_BYTES { return Err("导入素材超过上限".into()); }
         crate::file_transfer::ensure_disk_space(&root, Some(total_bytes))?;
         if crate::file_transfer::is_cancelled(&operation_id)? { return Err("项目导入已取消".into()); }
-        let destination = create_import_destination(&root, &operation_id, |path, existing_plain| {
+        let final_destination = root.join("imports").join(&operation_id);
+        if final_destination.exists() { return Err("导入目录已存在，请核对原操作，未重复发布".into()); }
+        let destination = create_import_destination(&root, &format!("{operation_id}-publishing"), |path, existing_plain| {
             if existing_plain { reauthorize_existing_plain_directory(&app, path) }
             else { authorize_path(&app, &path.to_string_lossy(), PathAccess::Write) }
         })?;
@@ -285,8 +507,10 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
                 if !seen.insert(to_archive_text(&published).to_lowercase()) || relative.as_os_str().is_empty() || published.as_os_str().is_empty() { return Err("导入素材路径重复".into()); }
                 total = total.saturating_add(asset.bytes);
                 if seen.len() > MAX_ARCHIVE_ENTRIES || total > MAX_EXPANDED_BYTES { return Err("导入素材超过上限".into()); }
-                let source = authorize_path(&app, &staging.join(&relative).to_string_lossy(), PathAccess::Read)?;
-                if !source.starts_with(&staging) { return Err("素材不在本次暂存目录内".into()); }
+                let source_root = match &asset.source_root_ref { Some(reference) => sources.get(reference).ok_or("导入素材来源根缺失")?, None => &staging };
+                reauthorize_archive_path(&app, source_root, PathAccess::Read)?;
+                let source = selected_asset_file(source_root, &relative)?.ok_or("导入素材已缺失")?;
+                if authorize_path(&app, &source.to_string_lossy(), PathAccess::Read)? != source { return Err("素材来源已变化".into()); }
                 let target = destination.join(&published);
                 fs::create_dir_all(target.parent().ok_or("素材目录无效")?).map_err(|_| "无法创建素材目录")?;
                 let mut input = File::open(&source).map_err(|_| "无法打开暂存素材")?;
@@ -303,9 +527,17 @@ pub async fn publish_project_import_assets<R: Runtime>(webview: Webview<R>, app:
                     let _ = app.emit_to("main", "file-transfer-progress", ImportProgress { task_id: operation_id.clone(), transferred_bytes: transferred, total_bytes });
                 }
                 output.sync_all().map_err(|_| "素材落盘失败")?; drop(output);
+                sync_asset_parents(&destination, target.parent().ok_or(PUBLICATION_ERROR)?)?;
                 let sha256 = format!("{:x}", digest.finalize());
                 if bytes != asset.bytes || sha256 != asset.sha256 { return Err("素材内容已变化，请重新导入".into()); }
             }
+            reauthorize_archive_path(&app, &root, PathAccess::Write)?;
+            let imports = reauthorize_existing_plain_directory(&app, &root.join("imports"))?;
+            if imports != root.join("imports") || final_destination.exists()
+                || authorize_path(&app, &final_destination.to_string_lossy(), PathAccess::Write)? != final_destination {
+                return Err("导入发布位置已变化，未覆盖已有素材".into());
+            }
+            publish_import_directory_exclusive(&destination, &final_destination)?;
             Ok(())
         })();
         if result.is_err() { let _ = fs::remove_dir_all(&destination); }
@@ -385,6 +617,27 @@ fn append_selected_assets<W: Write>(builder: &mut Builder<W>, root: &Path, paths
     Ok(())
 }
 
+fn multi_root_asset_sources(assets: &[ArchiveAssetDigest], roots: &HashMap<String, PathBuf>, default_root: Option<&Path>) -> Result<Vec<(PathBuf, PathBuf, PathBuf)>, String> {
+    let total = assets.iter().try_fold(0_u64, |bytes, asset| bytes.checked_add(asset.bytes)).ok_or("素材体积无效")?;
+    if assets.len() > MAX_ARCHIVE_ENTRIES || total > MAX_EXPANDED_BYTES { return Err("素材数量或体积超过限制".into()); }
+    let mut result = Vec::new(); let mut seen = HashSet::new();
+    for asset in assets {
+        let archive = normalize_archive_path(Path::new(&asset.path))?;
+        if archive.as_os_str().is_empty() || !seen.insert(to_archive_text(&archive).to_lowercase()) { return Err("归档素材路径重复".into()); }
+        let (root, relative) = match (&asset.source_root_ref, &asset.source_relative_path) {
+            (Some(root), Some(path)) => (roots.get(root).ok_or("素材来源根缺失")?.as_path(), normalize_archive_path(Path::new(path))?),
+            (None, None) => (default_root.ok_or("素材来源根缺失")?, archive.clone()),
+            _ => return Err("素材来源根与源相对路径必须同时提供".into()),
+        };
+        if relative.as_os_str().is_empty() { return Err("源素材路径为空".into()); }
+        let source = selected_asset_file(root, &relative)?.ok_or("源素材已缺失")?;
+        let (bytes, digest) = hash_file(&source, &mut Vec::new())?;
+        if bytes != asset.bytes || digest != asset.sha256 { return Err("素材已变化，请重新捕获导出内容".into()); }
+        result.push((root.to_path_buf(), relative, archive));
+    }
+    Ok(result)
+}
+
 /// 递归打包项目数据目录。符号链接既不是文件也不是目录，会被跳过，
 /// 避免把项目目录之外的内容打进归档。
 fn append_assets_dir<W: Write>(
@@ -436,8 +689,11 @@ pub async fn pack_project_archive<R: Runtime>(
     assets_dir: Option<String>,
     output_path: String,
     expected_assets: Option<Vec<ArchiveAssetDigest>>,
+    operation_id: Option<String>,
+    source_roots: Option<Vec<ProjectArchiveSourceRoot>>,
 ) -> Result<ProjectArchivePackResult, String> {
     ensure_trusted_caller(&webview)?;
+    if (operation_id.is_some() || source_roots.is_some()) && webview.label() != "main" { return Err(PUBLICATION_ERROR.into()); }
     let output = authorize_path(&app, &output_path, PathAccess::Write)?;
     let assets_root = match assets_dir
         .as_deref()
@@ -447,14 +703,29 @@ pub async fn pack_project_archive<R: Runtime>(
         Some(raw) => Some(authorize_path(&app, raw, PathAccess::Read)?),
         None => None,
     };
+    let sources = authorize_source_roots(&app, source_roots.unwrap_or_default())?;
     if assets_root.as_ref().is_some_and(|root| output.starts_with(root)) { return Err("项目包不能导出到被打包的素材目录内".into()); }
+    if sources.values().any(|root| output.starts_with(root)) { return Err("项目包不能导出到被打包的素材目录内".into()); }
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = ARCHIVE_PUBLICATION_LOCK.lock().map_err(|_| PUBLICATION_ERROR)?;
         reauthorize_archive_path(&app, &output, PathAccess::Write)?;
         if let Some(root) = &assets_root { reauthorize_archive_path(&app, root, PathAccess::Read)?; }
-        pack_archive(entries, assets_root, output, expected_assets, MAX_ARCHIVE_ENTRIES)
+        for root in sources.values() { reauthorize_archive_path(&app, root, PathAccess::Read)?; }
+        let mut publication = operation_id.as_deref().map(|id| begin_publication(&app, id, &output)).transpose()?;
+        if let Some(plan) = publication.as_mut() {
+            let handle = app.clone(); let output = output.clone(); let source_roots = sources.clone(); let assets = assets_root.clone();
+            plan.recheck = Some(Box::new(move || {
+                reauthorize_archive_path(&handle, &output, PathAccess::Write)?;
+                if let Some(root) = &assets { reauthorize_archive_path(&handle, root, PathAccess::Read)?; }
+                for root in source_roots.values() { reauthorize_archive_path(&handle, root, PathAccess::Read)?; }
+                Ok(())
+            }));
+        }
+        pack_archive_with_publication(entries, assets_root, output, expected_assets, MAX_ARCHIVE_ENTRIES, publication, &sources)
     }).await.map_err(|_| "项目归档打包任务失败".to_string())?
 }
 
+#[cfg(test)]
 fn pack_archive(
     entries: Vec<ProjectArchiveTextEntry>,
     assets_root: Option<PathBuf>,
@@ -462,13 +733,22 @@ fn pack_archive(
     expected_assets: Option<Vec<ArchiveAssetDigest>>,
     entry_limit: usize,
 ) -> Result<ProjectArchivePackResult, String> {
+    pack_archive_with_publication(entries, assets_root, output, expected_assets, entry_limit, None, &HashMap::new())
+}
+
+fn pack_archive_with_publication(entries: Vec<ProjectArchiveTextEntry>, assets_root: Option<PathBuf>, output: PathBuf,
+    expected_assets: Option<Vec<ArchiveAssetDigest>>, entry_limit: usize, publication: Option<ArchivePublicationPlan>, source_roots: &HashMap<String, PathBuf>,
+) -> Result<ProjectArchivePackResult, String> {
+    validate_v4_entry_names(entries.iter().map(|entry| (entry.path.as_str(), entry.content.as_str())))?;
     let selected_names = expected_assets.as_ref().map(|assets| assets.iter().map(|asset| asset.path.clone()).collect::<Vec<_>>());
     let selected = selected_names.as_deref().map(|paths| selected_asset_paths(paths, false)).transpose()?;
-    if let (Some(root), Some(expected)) = (&assets_root, &expected_assets) {
+    let multiple_roots = expected_assets.as_ref().is_some_and(|assets| assets.iter().any(|asset| asset.source_root_ref.is_some() || asset.source_relative_path.is_some()));
+    let multi_sources = if multiple_roots { Some(multi_root_asset_sources(expected_assets.as_ref().unwrap(), source_roots, assets_root.as_deref())?) } else { None };
+    if !multiple_roots { if let (Some(root), Some(expected)) = (&assets_root, &expected_assets) {
         let mut actual = inspect_assets_scoped(root, None, selected_names.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)?;
         let mut expected = expected.clone(); expected.sort_by(|a, b| a.path.cmp(&b.path)); actual.sort_by(|a, b| a.path.cmp(&b.path));
         if actual != expected { return Err("素材在导出前已变化，请重新导出".into()); }
-    }
+    } }
     let temporary = output.with_extension(format!("{}.part", SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| "系统时间无效")?.as_nanos()));
     let file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|error| format!("创建导出文件失败: {error}"))?;
     let result = (|| {
@@ -496,7 +776,12 @@ fn pack_archive(
     }
 
     let mut stats = AssetStats { count: 0, bytes: 0 };
-    if let Some(root) = &assets_root {
+    if let Some(sources) = &multi_sources {
+        for (root, source_path, relative) in sources {
+            let source = selected_asset_file(root, source_path)?.ok_or("导出素材已缺失")?;
+            append_asset_file(&mut builder, &source, &Path::new(ASSETS_PREFIX).join(relative), &mut stats)?;
+        }
+    } else if let Some(root) = &assets_root {
         if let Some(paths) = &selected { append_selected_assets(&mut builder, root, paths, &mut stats)?; }
         else { append_assets_dir(&mut builder, root, Path::new(ASSETS_PREFIX), &mut stats, None)?; }
     }
@@ -510,6 +795,7 @@ fn pack_archive(
     writer
         .flush()
         .map_err(|error| format!("写入项目归档失败: {error}"))?;
+    writer.get_ref().sync_all().map_err(|_| PUBLICATION_ERROR)?;
     drop(writer);
 
     {
@@ -529,21 +815,37 @@ fn pack_archive(
                 buffer.resize(IO_BUFFER_BYTES, 0);
                 let mut digest = Sha256::new(); let mut bytes = 0_u64;
                 loop { let count = entry.read(&mut buffer).map_err(|_| "归档素材读取失败")?; if count == 0 { break; } digest.update(&buffer[..count]); bytes += count as u64; }
-                actual.push(ArchiveAssetDigest { path: path.into(), bytes, sha256: format!("{:x}", digest.finalize()) });
+                actual.push(ArchiveAssetDigest { path: path.into(), bytes, sha256: format!("{:x}", digest.finalize()), source_root_ref: None, source_relative_path: None });
             }
         }
         if let Some(expected) = &expected_assets {
-            let mut expected = expected.clone(); actual.sort_by(|a, b| a.path.cmp(&b.path)); expected.sort_by(|a, b| a.path.cmp(&b.path));
+            let mut expected: Vec<_> = expected.iter().map(ArchiveAssetDigest::portable).collect(); actual.sort_by(|a, b| a.path.cmp(&b.path)); expected.sort_by(|a, b| a.path.cmp(&b.path));
             if actual != expected { return Err("素材在导出中发生变化，未发布归档".into()); }
         }
     }
-    fs::rename(&temporary, &output).map_err(|_| "无法发布归档，目标可能正被占用")?;
-    let archive_bytes = fs::metadata(&output).map(|meta| meta.len()).unwrap_or(0);
-    Ok(ProjectArchivePackResult {
+    let (archive_bytes, archive_sha256) = if publication.is_some() {
+        hash_file_with_limit(&temporary, &mut Vec::new(), MAX_EXPANDED_BYTES + MAX_TEXT_BYTES)?
+    } else { (fs::metadata(&temporary).map_err(|_| "无法读取归档大小")?.len(), String::new()) };
+    let mut result = ProjectArchivePackResult {
         asset_count: stats.count,
         asset_bytes: stats.bytes,
         archive_bytes,
-    })
+        operation_id: None, publication_ref: None, archive_sha256: None,
+    };
+    if let Some(plan) = &publication {
+        result.operation_id = Some(plan.receipt.operation_id.clone());
+        result.publication_ref = Some(plan.receipt.publication_ref.clone());
+        result.archive_sha256 = Some(archive_sha256);
+        let mut receipt = plan.receipt.clone(); receipt.result = Some(result.clone());
+        // 发布之前先耐久保留最终字节摘要；发布后响应丢失时只核同一文件。
+        write_publication_receipt(&publication_path(&plan.directory, &receipt.operation_id, "ready"), &receipt)?;
+        if let Some(recheck) = &plan.recheck { recheck()?; }
+        publish_archive_exclusive(&temporary, &output)?;
+        write_publication_receipt(&publication_path(&plan.directory, &receipt.operation_id, "published"), &receipt)?;
+    } else {
+        fs::rename(&temporary, &output).map_err(|_| "无法发布归档，目标可能正被占用")?;
+    }
+    Ok(result)
     })();
     if result.is_err() { let _ = fs::remove_file(&temporary); }
     result
@@ -685,11 +987,15 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
             fs::create_dir_all(parent).map_err(|error| format!("创建素材目录失败: {error}"))?;
         }
         let mut target = fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|_| "无法创建暂存素材")?;
-        std::io::copy(&mut entry, &mut target).map_err(|_| "解压素材失败")?; target.flush().map_err(|_| "暂存素材写入失败")?; drop(target);
+        std::io::copy(&mut entry, &mut target).map_err(|_| "解压素材失败")?; target.sync_all().map_err(|_| "暂存素材写入失败")?; drop(target);
+        sync_asset_parents(target_dir, destination.parent().ok_or(PUBLICATION_ERROR)?)?;
         let path = to_archive_text(&inner); let (bytes, sha256) = hash_file(&destination, &mut buffer)?;
-        asset_paths.push(path.clone()); assets.push(ArchiveAssetDigest { path, bytes, sha256 });
+        asset_paths.push(path.clone()); assets.push(ArchiveAssetDigest { path, bytes, sha256, source_root_ref: None, source_relative_path: None });
     }
 
+    sync_publication_directory(target_dir)?;
+    if let Some(parent) = target_dir.parent() { sync_publication_directory(parent)?; }
+    validate_v4_entry_names(texts.iter().map(|(path, content)| (path.as_str(), content.as_str())))?;
     Ok(ProjectArchiveUnpackResult {
         texts,
         asset_paths,
@@ -704,6 +1010,82 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn v4_text_allowlist_does_not_expand_the_legacy_archive_contract() {
+        let valid = [("manifest.json", "{\"formatVersion\":4}"), ("project.json", "{}"), ("episodes.json", "[]"),
+            ("canvases.json", "[]"), ("contents.json", "{}"), ("exchange.json", "{}")];
+        validate_v4_entry_names(valid).unwrap();
+        let mut unknown = valid.to_vec(); unknown.push(("chat.json", "{}"));
+        assert!(validate_v4_entry_names(unknown).is_err());
+        assert!(validate_v4_entry_names(valid.into_iter().filter(|(name, _)| *name != "canvases.json")).is_err());
+        validate_v4_entry_names([("manifest.json", "{\"formatVersion\":3}"), ("legacy-extension.json", "{}")]).unwrap();
+    }
+
+    #[test]
+    fn publication_is_exclusive_and_keeps_a_durable_ready_receipt_before_output() {
+        let fixture = Fixture::new();
+        let output = fixture.0.join("result.aicanvas");
+        let operation_id = "archive-operation-1";
+        let receipt = ArchivePublicationReceipt { operation_id: operation_id.into(), publication_ref: "a".repeat(64),
+            output_path: output.to_str().unwrap().into(), result: None };
+        let prepared = publication_path(&fixture.0, operation_id, "prepared");
+        write_publication_receipt(&prepared, &receipt).unwrap();
+        assert!(write_publication_receipt(&prepared, &receipt).is_err());
+        let result = pack_archive_with_publication(vec![ProjectArchiveTextEntry { path: "manifest.json".into(), content: "{}".into() }],
+            None, output.clone(), None, MAX_ARCHIVE_ENTRIES, Some(ArchivePublicationPlan { directory: fixture.0.clone(), receipt, recheck: None }), &HashMap::new()).unwrap();
+        let ready = read_publication_receipt(&publication_path(&fixture.0, operation_id, "ready")).unwrap();
+        assert_eq!(ready.result.as_ref().unwrap().archive_sha256, result.archive_sha256);
+        assert!(publication_path(&fixture.0, operation_id, "published").exists());
+        let before = fs::read(&output).unwrap();
+        let other = fixture.0.join("other.tmp"); fs::write(&other, b"different").unwrap();
+        assert!(publish_archive_exclusive(&other, &output).is_err());
+        assert_eq!(fs::read(output).unwrap(), before);
+        assert_eq!(hash_file_with_limit(&fixture.0.join("result.aicanvas"), &mut Vec::new(), MAX_EXPANDED_BYTES + MAX_TEXT_BYTES).unwrap().1,
+            result.archive_sha256.unwrap());
+    }
+
+    #[test]
+    fn multi_root_sources_keep_equal_relative_names_separate_and_never_serialize_source_locations() {
+        let fixture = Fixture::new();
+        fixture.write("left/same.txt", b"left"); fixture.write("right/same.txt", b"right");
+        let roots = HashMap::from([("left".to_string(), fixture.0.join("left")), ("right".to_string(), fixture.0.join("right"))]);
+        let descriptor = |root: &str, path: &str| {
+            let (bytes, sha256) = hash_file(&roots[root].join("same.txt"), &mut Vec::new()).unwrap();
+            ArchiveAssetDigest { path: path.into(), bytes, sha256, source_root_ref: Some(root.into()), source_relative_path: Some("same.txt".into()) }
+        };
+        let assets = vec![descriptor("left", "one.txt"), descriptor("right", "two.txt")];
+        let output = fixture.0.join("multi.aicanvas");
+        pack_archive_with_publication(vec![ProjectArchiveTextEntry { path: "manifest.json".into(), content: "{}".into() }],
+            None, output.clone(), Some(assets.clone()), MAX_ARCHIVE_ENTRIES, None, &roots).unwrap();
+        let target = fixture.0.join("unpacked"); fs::create_dir(&target).unwrap();
+        let unpacked = unpack_archive(&output, &target).unwrap();
+        assert_eq!(fs::read(target.join("one.txt")).unwrap(), b"left");
+        assert_eq!(fs::read(target.join("two.txt")).unwrap(), b"right");
+        assert!(unpacked.assets.iter().all(|asset| asset.source_root_ref.is_none() && asset.source_relative_path.is_none()));
+        let mut invalid = assets.clone(); invalid[0].source_relative_path = Some("../right/same.txt".into());
+        assert!(multi_root_asset_sources(&invalid, &roots, None).is_err());
+        invalid[0].source_relative_path = None;
+        assert!(multi_root_asset_sources(&invalid, &roots, None).is_err());
+        fixture.write("left/same.txt", b"changed");
+        assert!(multi_root_asset_sources(&assets, &roots, None).is_err());
+    }
+
+    #[test]
+    fn import_directory_publication_does_not_replace_even_an_existing_empty_directory() {
+        let fixture = Fixture::new();
+        fixture.write("staged/note.txt", b"complete-content");
+        let staged = fixture.0.join("staged");
+        let occupied = fixture.0.join("occupied");
+        fs::create_dir(&occupied).unwrap();
+        assert!(publish_import_directory_exclusive(&staged, &occupied).is_err());
+        assert!(staged.join("note.txt").exists());
+        assert!(fs::read_dir(&occupied).unwrap().next().is_none());
+        let published = fixture.0.join("published");
+        publish_import_directory_exclusive(&staged, &published).unwrap();
+        assert!(!staged.exists());
+        assert_eq!(fs::read(published.join("note.txt")).unwrap(), b"complete-content");
+    }
 
     #[test]
     fn effective_entry_size_is_budgeted_before_reading_content() {
@@ -891,7 +1273,7 @@ mod tests {
             let (bytes, sha256) = hash_file(&fixture.0.join(path), &mut Vec::new()).unwrap();
             let output = fixture.0.with_extension("aicanvas");
             assert!(pack_archive(vec![], Some(fixture.0.clone()), output.clone(),
-                Some(vec![ArchiveAssetDigest { path: path.to_owned(), bytes, sha256 }]), MAX_ARCHIVE_ENTRIES)
+                Some(vec![ArchiveAssetDigest { path: path.to_owned(), bytes, sha256, source_root_ref: None, source_relative_path: None }]), MAX_ARCHIVE_ENTRIES)
                 .err().unwrap().contains("回收站或派生缓存"));
             assert!(!output.exists());
             assert_eq!(fs::read(fixture.0.join(path)).unwrap(), b"img");
@@ -910,7 +1292,7 @@ mod tests {
             }
             let (bytes, sha256) = hash_file(&fixture.0.join(path), &mut Vec::new()).unwrap();
             assert!(pack_archive(vec![], Some(fixture.0.clone()), fixture.0.with_extension("aicanvas"),
-                Some(vec![ArchiveAssetDigest { path: alias, bytes, sha256 }]), MAX_ARCHIVE_ENTRIES).is_err());
+                Some(vec![ArchiveAssetDigest { path: alias, bytes, sha256, source_root_ref: None, source_relative_path: None }]), MAX_ARCHIVE_ENTRIES).is_err());
         }
     }
 

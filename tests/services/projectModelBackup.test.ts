@@ -31,6 +31,21 @@ function memoryPort() {
 }
 
 describe('项目模型本地备份', () => {
+  it('fixture v2不能用于正式库，schema28也不能伪造旧v1或省略新表覆盖', async () => {
+    const formal = source(); formal.schemaVersion = 28;
+    await expect(createProjectModelBackup(formal, { operationId: 'formal-v2' })).rejects.toThrow('invalid_source');
+    const incompleteFixture = source(); incompleteFixture.databaseName = 'ai-canvas-model-fixture-v2'; incompleteFixture.schemaVersion = 28;
+    await expect(createProjectModelBackup(incompleteFixture, { operationId: 'incomplete-v2' })).rejects.toThrow('incomplete_fixture_coverage');
+    const bundle = await createProjectModelBackup(source(), { operationId: 'old-source' }), memory = memoryPort();
+    await writeVerifiedProjectModelBackup(bundle, memory.port);
+    const manifest = JSON.parse(new TextDecoder().decode(memory.files.get('manifest.json')!));
+    manifest.format = 'project-model-fixture-backup-v2';
+    const bytes = new TextEncoder().encode(JSON.stringify(manifest));
+    memory.files.set('manifest.json', bytes);
+    memory.files.set('complete.json', new TextEncoder().encode(JSON.stringify({ format: manifest.format,
+      operationId: 'old-source', manifestSha256: await sha256BytesHex(bytes) })));
+    await expect(readVerifiedProjectModelBackup(memory.port)).rejects.toThrow('unsupported_schema');
+  });
   it('保留旧稿件、schema、原始媒体队列且完成标记最后发布', async () => {
     const original = source(), bundle = await createProjectModelBackup(original, { operationId: 'backup-a', createdAt: 10 });
     const memory = memoryPort();

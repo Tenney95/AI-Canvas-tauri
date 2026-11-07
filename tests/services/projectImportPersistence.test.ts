@@ -11,6 +11,7 @@ import type { ProjectExchangeRevision, ProjectExchangeState } from '../../src/ty
 const native = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), assets: new Map<string, Array<{ path: string; bytes: number; sha256: string }>>() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke, convertFileSrc: (value: string) => value }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: native.open }));
+vi.mock('@tauri-apps/plugin-fs', () => ({ exists: async (path: string) => native.assets.has(path) }));
 vi.mock('../../src/services/fileService', () => ({
   isTauriEnv: () => true, buildProjectFolderName: (name: string, id: string) => `${name}-${id}`,
   registerProjectFolder: vi.fn(), registerProjectFolders: vi.fn(), notifyProjectDiskChanged: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('../../src/services/fileService', () => ({
     return directory;
   },
   deleteProjectDataDir: async (id: string) => { native.assets.delete(`/projects/${id}`); },
+  getProjectDataDir: async (id: string) => `/projects/${id}`,
 }));
 vi.mock('../../src/services/projectMergeWorkerClient', () => ({
   captureProjectSnapshot: async (...args: Parameters<typeof import('../../src/services/projectExchangeDomain').captureExchangeSnapshot>) =>
@@ -151,8 +153,11 @@ async function assertExport(context: Runtime, ownerId: string) {
   const graph = await context.exchange.loadProjectExchangeGraph(state.lineageId), head = graph.revisions.find((revision) => revision.revisionId === state.headRevisionId)!;
   const directory = `/projects/${ownerId}`, assets = native.assets.get(directory)!;
   expect(context.domain.captureExchangeSnapshot(records, assets, state, head.snapshot, directory).snapshot).toEqual(head.snapshot);
-  const exported = await context.service.prepareExchangeExport(records, assets, directory);
-  expect(exported.headRevisionId).toBe(head.revisionId);
+  const prepared = await context.service.prepareExchangeExportMaterial(records, assets, directory);
+  expect(prepared.bundle.headRevisionId).toBe(head.revisionId);
+  // 准备归档不推进本机协作头；这里只在模拟原生发布已确认之后登记 checkpoint。
+  expect((await context.exchange.loadProjectExchangeState(ownerId))!.stateVersion).toBe(state.stateVersion);
+  await context.exchange.saveProjectExchangeCheckpoint(prepared.checkpoint);
   expect((await context.exchange.loadProjectExchangeState(ownerId))!.stateVersion).toBe(state.stateVersion + 1);
 }
 

@@ -519,6 +519,7 @@ export * from './fs/assetFileMove';
 export * from './fs/skillFiles';
 export * from './fs/externalEditors';
 export * from './fs/jsonFileTransfer';
+export { projectArchiveFixtureDirectory } from './fs/projectArchiveFixtureFiles';
 export { createProjectModelBackupPort, openProjectModelBackupPort } from './fs/projectModelBackupFiles';
 
 /**
