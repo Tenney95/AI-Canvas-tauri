@@ -104,7 +104,7 @@ describe('independent editor transition recovery', () => {
 
   it('refreshes an expired URL using the saved remote protocol without writing a canvas, message, or new generation request', async () => {
     useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
-      original: { apiKey: 'fixture-key', baseUrl: 'https://gateway.example' } } } }));
+      original: { name: '测试连接', apiKey: 'fixture-key', baseUrl: 'https://gateway.example' } } } }));
     const unbind = bindMediaTaskContext('editor-readonly', { projectId: 'project-1',
       editorTransition: { requestId: 'original-request', anchorNodeId: 'anchor' } });
     const receipt = savePendingTask({ nodeId: 'editor-readonly', projectId: 'project-1', nodeType: 'ai-video',

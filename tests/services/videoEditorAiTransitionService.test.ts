@@ -214,7 +214,7 @@ describe('real generateVideo provider receipts', () => {
 
   it('preserves the actual Ark remote ID and reuses its completed result without another submission', async () => {
     useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
-      volcengine: { apiKey: 'ark-fixture', baseUrl: 'https://ark.example/api/v3' } } } }));
+      volcengine: { name: '测试火山方舟', apiKey: 'ark-fixture', baseUrl: 'https://ark.example/api/v3' } } } }));
     const actual = await vi.importActual<typeof import('../../src/services/ai/generateVideo')>('../../src/services/ai/generateVideo');
     mocks.generateVideo.mockImplementation(actual.generateVideo);
     vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => urls);

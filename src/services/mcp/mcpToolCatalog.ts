@@ -154,7 +154,11 @@ function availableTools(context: Omit<AgentToolContext, 'signal'>): AgentToolDef
 /** 初始简介仅展示潜在能力，不改变真实 MCP 上下文或执行阶段的允许列表。 */
 export function buildMcpToolOverview(context: Omit<AgentToolContext, 'signal'>): string {
   const currentIds = new Set(availableTools(context).map((tool) => tool.id));
-  const candidates = availableTools({ ...context, toolAllowlist: undefined })
+  const candidates = (isMcpGlobalContext(context)
+    ? getAvailableAgentTools({ taskId: context.taskId, projectId: context.projectId,
+      conversationId: context.conversationId, mode: context.mode, baseRevision: context.baseRevision, skillReadBudget: context.skillReadBudget })
+      .filter((tool) => !isMcpDiscoveryTool(tool.id))
+    : availableTools({ ...context, toolAllowlist: undefined }))
     .sort((a, b) => a.id.localeCompare(b.id));
   const introduction = [
     `当前环境工具简介目录（${candidates.length} 项），简介不含参数。`,

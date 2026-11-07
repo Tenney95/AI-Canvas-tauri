@@ -288,8 +288,11 @@ describe('P6 v4真实fixture集成', () => {
     await createProjectModelBusinessRepository(sample.database, sample.session).saveCanvas({
       projectId: saved.aggregate.project.id, expectedProjectEpoch: saved.aggregate.project.epoch,
       canvasId: savedCanvas.id, expectedCanvasEpoch: savedCanvas.epoch, expectedCanvasRevision: savedCanvas.revision,
-      document: { nodes: savedCanvas.nodes.map((node) => node.id === 'ordinary-alias'
-        ? { ...node, data: { ...node.data, relativePath: 'Capture.png' } } : node), edges: savedCanvas.edges, groups: savedCanvas.groups },
+      document: { nodes: savedCanvas.nodes.map((node) => {
+        if (!node || typeof node !== 'object' || !('id' in node) || node.id !== 'ordinary-alias'
+          || !('data' in node) || !node.data || typeof node.data !== 'object') return node;
+        return { ...node, data: { ...node.data, relativePath: 'Capture.png' } };
+      }), edges: savedCanvas.edges, groups: savedCanvas.groups },
     });
     const again = createProjectModelArchiveService(sample.database, sample.session,
       createNativeProjectModelArchivePort(sample.database, sample.session, { outputPath: '/output/ordinary-case-again.aicanvas' }));

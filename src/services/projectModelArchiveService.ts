@@ -487,7 +487,7 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
     return repository.commitImport(operation.operationId, operation.sequence, { signal });
   }
   return { repository, preview,
-    async exportProject(projectId: string, operationId = crypto.randomUUID()) {
+    async exportProject(projectId: string, operationId: string = crypto.randomUUID()) {
       const capture = await repository.capture(projectId, { history: true }); if (!capture) throw new Error('项目不存在');
       return withCaptureEditorLocks(capture, async () => {
         const prepared = await prepareCapture(capture);

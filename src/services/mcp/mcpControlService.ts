@@ -357,7 +357,7 @@ async function callMcpTool(
       const operation = await getHistoricalMcpOperationReceipt(input as unknown as Parameters<typeof getHistoricalMcpOperationReceipt>[0]);
       assertMcpRequestActive(request, active);
       if (contextChanged(false)) return contextError();
-      return operation ? { summary: `原操作状态：${operation.status}`, content: [{ type: 'text', text: JSON.stringify({ readOnlyAudit: true, operation }) }] }
+      return operation ? { isError: false, summary: `原操作状态：${operation.status}`, content: [{ type: 'text', text: JSON.stringify({ readOnlyAudit: true, operation }) }] }
         : protocolError('MCP_OPERATION_NOT_FOUND', '没有找到原回执；这不证明原付费操作未提交，请先只读核实，勿重投');
     } catch { return protocolError('MCP_OPERATION_QUERY_FAILED', '历史操作回执读取失败，请核对同剧旧画布身份或显式删除审计范围'); }
   }

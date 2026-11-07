@@ -487,7 +487,8 @@ describe('MCP on-demand discovery', () => {
     const text = preview.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n');
     const draftId = /draftId: (provider-draft-[\w-]+)/.exec(text)?.[1];
     expect(draftId).toBeTruthy();
-    useAppStore.setState({ currentProjectId: 'another-project' });
+    useAppStore.setState((state) => ({ currentProjectId: 'another-project', projects: [...state.projects,
+      { id: 'another-project', name: 'another project', createdAt: 1, updatedAt: 1 }] }));
     expect(await mcpCall('tools_call', { name: 'provider_config_apply', arguments: { draftId } }, 'global-apply')).toMatchObject({ isError: false });
     expect(saveConfig).toHaveBeenCalledOnce();
     expect(useAppStore.getState().config.generalModels?.[0].imageCapability?.resolutions).toEqual(['1K']);
@@ -643,7 +644,8 @@ describe('MCP on-demand discovery', () => {
   it('rechecks the active project instead of reusing an earlier catalog context', async () => {
     const execute = registerDispatchProbe({ authorize: (context) => ({ allowed: context.projectId === 'project-mcp', reason: '项目不匹配' }) });
     catalogResult(await mcpCall('tools_describe', { names: ['mcp_dispatch_probe'] }, 'describe'));
-    useAppStore.setState({ currentProjectId: 'other-project' });
+    useAppStore.setState((state) => ({ currentProjectId: 'other-project', projects: [...state.projects,
+      { id: 'other-project', name: 'other project', createdAt: 1, updatedAt: 1 }] }));
     expect(await mcpCall('tools_call', { name: 'mcp_dispatch_probe', arguments: { value: 'ok' } })).toMatchObject({ isError: true, summary: '项目不匹配' });
     expect(execute).not.toHaveBeenCalled();
   });
@@ -922,6 +924,8 @@ describe('MCP control service', () => {
       'director_cancel_operation',
     ]));
     expect(tools.every((tool) => tool.inputSchema.type === 'object')).toBe(true);
+    expect(useAppStore.getState().conversations).toHaveLength(0);
+    expect(await mcpCall('canvas_query', {}, 'discovery-read')).toMatchObject({ isError: false });
     expect(useAppStore.getState().conversations).toContainEqual(
       expect.objectContaining({
         id: 'mcp-control-project-mcp',
@@ -1014,7 +1018,8 @@ describe('MCP control service', () => {
     expect(result).toEqual({
       isError: false,
       summary: '状态读取完成',
-      content: [{ type: 'text', text: JSON.stringify({ revision: 3 }) }],
+      content: [{ type: 'text', text: JSON.stringify({ revision: 3 }) },
+        { type: 'text', text: expect.stringContaining('"expectedContext"') }],
     });
     expect(execute).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().agentTasks[0]).toMatchObject({
@@ -1230,7 +1235,8 @@ describe('MCP control service', () => {
     expect(result).toEqual({
       isError: false,
       summary: '图像已生成',
-      content: [{ type: 'image', data: 'YWJj', mimeType: 'image/jpeg' }],
+      content: [{ type: 'image', data: 'YWJj', mimeType: 'image/jpeg' },
+        { type: 'text', text: expect.stringContaining('"expectedContext"') }],
     });
     expect(JSON.stringify(useAppStore.getState().messages)).not.toContain('YWJj');
     expect(JSON.stringify(useAppStore.getState().agentTasks)).not.toContain('YWJj');
@@ -1255,7 +1261,8 @@ describe('MCP control service', () => {
       expect(execute).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-mcp',
         conversationId: 'mcp-control-project-mcp' }), args);
       expect(result).toMatchObject({ isError: false, summary: '已返回原文件字节块' });
-      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(chunk) }]);
+      expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(chunk) },
+        { type: 'text', text: expect.stringContaining('"expectedContext"') }]);
       const persisted = JSON.stringify([useAppStore.getState().messages, useAppStore.getState().agentTasks]);
       expect(persisted).not.toContain(data);
       expect(persisted).not.toContain(chunk.downloadId);
@@ -1525,6 +1532,7 @@ describe('MCP keyed operation receipts', () => {
     const conversations = useAppStore.getState().conversations.map((item) => item.id);
     useAppStore.setState({ currentProjectId: 'receipt-episode-b' });
     const result = await mcpCall('mcp_operation_get', { operationKey: 'historical-once', legacyProjectId: 'receipt-episode-a' }, 'historical:query');
+    expect(result.isError).toBe(false);
     expect(operation(result)).toMatchObject({ operationId: original.operationId, taskId: original.taskId,
       projectId: 'receipt-episode-a', sequence: original.sequence, retryable: false });
     expect(useAppStore.getState().agentTasks).toEqual(tasks);

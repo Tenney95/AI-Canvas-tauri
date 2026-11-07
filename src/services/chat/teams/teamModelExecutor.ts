@@ -13,8 +13,11 @@ export interface TeamModelResult {
 
 /** Provider 已明确返回，后续本地复核失败；事实只在运行时结算，不把正文写入错误摘要。 */
 export class TeamModelReturnedError extends Error {
-  constructor(message: string, readonly result: TeamModelResult, readonly knownCompleted: boolean, options?: ErrorOptions) {
+  readonly result: TeamModelResult;
+  readonly knownCompleted: boolean;
+  constructor(message: string, result: TeamModelResult, knownCompleted: boolean, options?: ErrorOptions) {
     super(message, options); this.name = 'TeamModelReturnedError';
+    this.result = result; this.knownCompleted = knownCompleted;
   }
 }
 

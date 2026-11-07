@@ -33,8 +33,12 @@ export const PROJECT_MODEL_STAGING_CAPABILITIES = Object.freeze({
 type FailureCode = 'production-disabled' | 'invalid-context' | 'backup-mismatch'
   | 'source-changed' | 'incomplete-source' | 'cancelled' | 'staging-failed' | 'business-session-present';
 export class ProjectModelStagingError extends Error {
-  constructor(readonly code: FailureCode, readonly operationId?: string) {
+  readonly code: FailureCode;
+  readonly operationId?: string;
+  constructor(code: FailureCode, operationId?: string) {
     super('项目模型隔离暂存未完成：' + code);
+    this.code = code;
+    this.operationId = operationId;
     this.name = code === 'cancelled' ? 'AbortError' : 'ProjectModelStagingError';
   }
 }

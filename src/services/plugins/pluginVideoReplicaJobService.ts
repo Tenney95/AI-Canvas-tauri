@@ -250,7 +250,7 @@ export async function getPluginVideoReplicaJobUiParameters(identity: JobIdentity
 export async function getPluginVideoReplicaJob(identity: JobIdentity, jobId: string): Promise<PluginVideoReplicaJobSummary> {
   requireIdentity(identity);
   const job = jobs.get(jobId)?.summary ?? (await readPluginVideoReplicaJobs(identity.projectId)).find((item) => item.jobId === jobId);
-  if (!job || ['projectId', 'pluginId', 'nodeId', 'sourceDigest', 'revisionDigest'].some((key) => job[key as keyof JobIdentity] !== identity[key as keyof JobIdentity])) {
+  if (!job || (['projectId', 'pluginId', 'nodeId', 'sourceDigest', 'revisionDigest'] as const).some((key) => job[key] !== identity[key])) {
     throw new ReplicaFailure('该复刻任务不属于当前插件会话');
   }
   return jobs.has(jobId) ? { ...job, segmentNodeIds: [...job.segmentNodeIds] } : recoverPluginVideoReplicaJob(job);

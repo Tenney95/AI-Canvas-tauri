@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectArchiveBusinessV4, ProjectArchivePayloadV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
 import type { ProjectModelTransferCapture, ProjectModelTransferImportInput, ProjectModelTransferImportJournal, ProjectModelTransferExportJournal } from '../../src/types/projectModelTransfer';
 import type { ProjectModelFixtureBusinessSession } from '../../src/types/projectModelBusiness';
+import type { ProjectArchiveTextEntry } from '../../src/services/projectArchiveSerialization';
 import type { createProjectModelTransferRepository } from '../../src/services/indexedDb/projectModelTransferRepository';
 import { createProjectModelArchiveService, type ProjectModelArchivePort } from '../../src/services/projectModelArchiveService';
 import { buildProjectExchangeSnapshotV2, readProjectArchiveV4, serializeProjectArchiveV4 } from '../../src/services/projectArchiveV4';
@@ -47,13 +48,13 @@ function harness(initial: ProjectModelTransferCapture | null = null) {
   let capture = initial, exported: ValidatedProjectArchiveV4 | undefined;
   const imports = new Map<string, ProjectModelTransferImportJournal>(), exports = new Map<string, ProjectModelTransferExportJournal>();
   const port: ProjectModelArchivePort = {
-    inspectAssets: vi.fn(async (value) => value.exchange!.fileBindings.map((binding) => ({ rootRef: value.exchange!.identities.find((item) =>
+    inspectAssets: vi.fn(async (value: ProjectModelTransferCapture) => value.exchange!.fileBindings.map((binding) => ({ rootRef: value.exchange!.identities.find((item) =>
       item.kind === 'storage-root' && item.sourceId === binding.rootRef)!.localId, path: binding.localRelativePath, bytes: 3, sha256: hash }))),
-    captureImportSource: vi.fn(async (source) => ({ sourceRef: 'unpacked/original/assets', sourceFiles: source.files.map((file) => ({
+    captureImportSource: vi.fn(async (source: ValidatedProjectArchiveV4) => ({ sourceRef: 'unpacked/original/assets', sourceFiles: source.files.map((file) => ({
       id: file.id, rootRef: file.rootRef, relativePath: file.relativePath, archivePath: 'assets/original-payload.png', bytes: 3, sha256: hash,
     })) })),
     publishMedia: vi.fn(async (operation) => operation.operationId), verifyMediaPublication: vi.fn(async () => {}),
-    pack: vi.fn(async (operation, entries) => {
+    pack: vi.fn(async (operation: ProjectModelTransferExportJournal, entries: ProjectArchiveTextEntry[]) => {
       exported = await readProjectArchiveV4(textsOf(entries), operation.exchange.bundle.files.map((file) => ({ path: file.archivePath.slice(7), bytes: 3, sha256: hash })));
       return { outputRef: 'opaque-publication', packageDigest: hash };
     }), verifyExportPublication: vi.fn(async () => {}), recoverExportPublication: vi.fn(async () => ({ outputRef: 'opaque-publication', packageDigest: hash })),

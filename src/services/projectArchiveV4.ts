@@ -33,7 +33,7 @@ const object = (value: unknown, allowed?: readonly string[]): Record<string, unk
   if (allowed && Object.keys(value).some((key) => !allowed.includes(key))) return fail('包含未知字段');
   return value as Record<string, unknown>;
 };
-const array = (value: unknown, limit = PROJECT_EXCHANGE_LIMITS.entities): unknown[] => {
+const array = (value: unknown, limit: number = PROJECT_EXCHANGE_LIMITS.entities): unknown[] => {
   if (!Array.isArray(value) || value.length > limit) return fail('集合缺失或超过上限');
   return value;
 };

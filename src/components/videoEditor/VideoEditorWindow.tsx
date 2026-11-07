@@ -1292,10 +1292,11 @@ export default function VideoEditorWindow() {
         setAiTransitionError(payload.error || t('AI 转场生成失败'));
         return;
       }
+      const videoUrl = payload.videoUrl;
       void (async () => {
         await assertWindowProjectCurrent(session.projectId);
         const inserted = insertAiTransitionClip(pending.beforeClipId, {
-          videoUrl: payload.videoUrl,
+          videoUrl,
           filePath: typeof payload.filePath === 'string' ? payload.filePath : undefined,
           fileName: payload.fileName || 'AI 转场',
         });

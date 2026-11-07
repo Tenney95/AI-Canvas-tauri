@@ -344,9 +344,12 @@ const UNSUPPORTED_PENDING_EXECUTION_FIELDS = ['version', 'schemaVersion', 'model
   'projectScope', 'contextVersion', 'runtimeEpoch', 'projectEpoch', 'canvasEpoch'];
 
 export class PendingMediaTaskSourceError extends Error {
-  constructor(readonly code: 'MEDIA_PENDING_SOURCE_INVALID' | 'MEDIA_PENDING_SOURCE_UNAVAILABLE' = 'MEDIA_PENDING_SOURCE_INVALID') {
+  readonly code: 'MEDIA_PENDING_SOURCE_INVALID' | 'MEDIA_PENDING_SOURCE_UNAVAILABLE';
+
+  constructor(code: 'MEDIA_PENDING_SOURCE_INVALID' | 'MEDIA_PENDING_SOURCE_UNAVAILABLE' = 'MEDIA_PENDING_SOURCE_INVALID') {
     super('原待恢复任务源损坏、版本不受支持或暂不可读；原数据已保留，请先核实，勿重新提交生成');
     this.name = 'PendingMediaTaskSourceError';
+    this.code = code;
   }
 }
 

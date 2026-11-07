@@ -86,8 +86,8 @@ describe('旧 head 附件丢失时拒绝归档与恢复前备份', () => {
       { id: 'media', kind: 'image', extension: 'png', bytes: 1, sha256: 'a'.repeat(64) },
     ], [{ id: 'F', rootRef: 'S', relativePath: '附件.png', mediaId: 'media' }]);
     const revision = await createProjectExchangeRevisionV2(snapshot);
-    exchange.localHead = { canonicalVersion: 2, revisionId: revision.revisionId };
-    exchange.bundle.head = exchange.localHead; exchange.bundle.revisions = [revision];
+    const head = { canonicalVersion: 2 as const, revisionId: revision.revisionId };
+    exchange.localHead = head; exchange.bundle.head = head; exchange.bundle.revisions = [revision];
     exchange.identities.push({ kind: 'storage-root', sourceId: 'S', localId: 'missing-root' });
     exchange.fileBindings[0].rootRef = 'S';
     await expect(createNativeProjectModelArchivePort(database, session).inspectAssets(capture)).rejects.toThrow();

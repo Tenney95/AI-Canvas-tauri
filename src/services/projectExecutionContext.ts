@@ -3,9 +3,11 @@ import type { CanvasContext, EpisodeContext, ProjectExpectedContext, ProjectCont
 import type { ProjectExecutionContextState } from '../types/projectExecutionContext';
 
 export class ProjectExecutionContextError extends Error {
-  constructor(readonly code: 'CONTEXT_REFRESH_REQUIRED' | 'NO_ACTIVE_CANVAS' | 'PROJECT_MODEL_EXECUTION_DISABLED' = 'CONTEXT_REFRESH_REQUIRED') {
+  readonly code: 'CONTEXT_REFRESH_REQUIRED' | 'NO_ACTIVE_CANVAS' | 'PROJECT_MODEL_EXECUTION_DISABLED';
+  constructor(code: ProjectExecutionContextError['code'] = 'CONTEXT_REFRESH_REQUIRED') {
     super(code === 'NO_ACTIVE_CANVAS' ? '当前没有活动画布' : code === 'PROJECT_MODEL_EXECUTION_DISABLED'
       ? '正式新模型执行尚未开放' : '项目执行上下文已变化，请重新读取并判断原请求');
+    this.code = code;
     this.name = 'ProjectExecutionContextError';
   }
 }
