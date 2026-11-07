@@ -39,6 +39,7 @@ function arrange() {
       { id: 'episode-2', parentId: 'owner', name: '第二集', createdAt: 1, updatedAt: 1 },
     ],
     currentProjectId: 'episode-1', projectName: '第一集', projectLoadStatus: 'ready', projectInitialized: true,
+    config: { baseDataDir: '' },
     nodes: [], edges: [], groups: [], dramaAssets: { version: 2, characters: [], scenes: [], props: [] },
     showToast: vi.fn(),
   } as unknown as AppState));

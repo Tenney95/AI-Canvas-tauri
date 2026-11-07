@@ -34,6 +34,7 @@ describe('项目 TXT 稿件引用', () => {
     expect(buildEpisodeScriptFileName('  第一/集:夜?  ')).toBe('第一_集_夜_.txt');
     expect(buildEpisodeScriptFileName('CON')).toBe('_CON.txt');
     expect(buildEpisodeScriptFileName('第一集.txt')).toBe('第一集.txt');
+    expect(buildEpisodeScriptFileName('第一集：回家')).toBe('第一集：回家.txt');
     const episodeScriptFile = { fileName: '第一集_1.txt', relativePath: 'manuscripts/第一集_1.txt', sourceName: '第一集.txt' };
     expect(needsEpisodeScriptFileSync({ name: '第一集', episodeScriptFile })).toBe(false);
     expect(needsEpisodeScriptFileSync({ name: '第二集', episodeScriptFile })).toBe(true);

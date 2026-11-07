@@ -96,7 +96,7 @@ describe('分集剧本 TXT 同步', () => {
   it('分集改名后另存新的 TXT，原名字的文件继续保留', async () => {
     const bound = reference();
     mocks.files.set('/project/manuscripts/第一集.txt', snapshot('旧剧本'));
-    const next = receipt(await prepareEpisodeScriptFileWrite(options({ name: '第一集：回家', reference: bound })));
+    const next = receipt(await prepareEpisodeScriptFileWrite(options({ name: '第一集:回家', reference: bound })));
     expect(next.reference.sourceName).toBe('第一集_回家.txt');
     expect(next.reference.relativePath).toBe('manuscripts/第一集_回家_1.txt');
     expect(mocks.files.get('/project/manuscripts/第一集.txt')?.content).toBe('旧剧本');
