@@ -116,4 +116,3 @@ export function readProjectModelSourceToken(input: unknown): unknown {
   if (projectModelSourceToken(result) !== input) return invalid();
   return result;
 }
-

@@ -1,6 +1,6 @@
 # 项目、分集与画布数据模型重构方案
 
-> 日期：2026-11-07。状态：**P0～P5 阶段代码已实施，P5 相关隔离回归已执行；原生与完整桌面验收待完成，P6～P7 未实施**。
+> 日期：2026-11-07。状态：**P0～P5 阶段代码已实施；P6 隔离演练和 P7 前置审计进行中，正式激活与旧数据清理均未实施**。
 > 用户已继续授权 P5，重点项目导入导出、旧数据兼容和失败恢复。正式数据库仍为 v27、正式项目包仍为 v3；v4 与新模型写入只允许隔离 fixture。正式迁移、恢复写入和激活开关保持关闭，未迁移真实数据，未接入正式界面/启动。
 > 两轮方案复审见第 16 节；P0/P1、P2、P3 的当时范围见第 17～19 节；P4 与后续修复见第 20 节；P5 的实际范围与未验收项见第 21 节。代码已写入不代表迁移、恢复、桌面行为或原生停写已验收通过。
 > 主模块：[画布与项目](../画布与项目模块.md)。架构取舍：[ADR-0012](../adr/0012-project-episode-canvas-model.md)。存储、Agent/MCP、插件、导演台仅在本方案维护必要协同边界。
@@ -970,3 +970,34 @@ npx vitest run tests/services/projectModelCompatibility.test.ts tests/services/p
 ```
 
 结果：**30 文件、525 项全部通过**。测试使用 fake IndexedDB 和模拟原生端口，不能替代原生耐久性、断电、真实文件或桌面导入导出验收。本轮未运行类型检查、完整构建、Rust 检查或桌面交互；正式 DB27、迁移／激活／恢复写入开关和 v4 正式运行开关不变，未迁移真实用户数据。此前 21.5 的失败数保留为当次记录，不代表本次重跑结果。
+
+## 22. P6 隔离演练与 P7 前置收敛
+
+本轮保留正式 DB27、关闭正式迁移／自动迁移／激活／恢复写入和 v4 运行开关；仅操作可丢弃 fixture，不读取或迁移真实用户数据库。P6 正式业务接线与发布验收、P7 旧消费者收敛与稳定期观察尚未完成；不能删除旧表、备份或恢复材料。
+
+隔离生命周期回归连接 P1 旧源读取和备份编码、P2 暂存及 journal、P3 业务仓储：模拟配额失败、备份篡改和按原操作续接，检查旧源、备份、后到预算／任务回执、媒体队列及其他 generation；还检查普通项目转剧集、删除末集保留剧集，以及业务接管后拒绝旧写与 P2 回滚。仓库根目录运行以下命令，7 文件 72 项通过；其后仅调整导入别名，单独复跑该新文件 3 项通过：
+
+```powershell
+npx vitest run tests/services/projectModelFixtureLifecycle.test.ts tests/services/projectModelStaging.test.ts tests/services/projectModelStagingRepository.test.ts tests/services/projectModelBusinessRepository.test.ts tests/services/projectModelTransferRepository.test.ts tests/services/projectModelBackup.test.ts tests/services/projectModelMigration.test.ts
+```
+
+归档集成把真实 fixture 业务／传输仓储、归档服务和原生端口编排串接，覆盖两素材根同名异内容、导入发布和导出回执丢失后的续接、同源更新与历史去重、删除末集后的零集往返。隔离测试发现 `imports` 目录大小写变体下当前引用可能漏出归档；已与 Rust 扫描规则对齐为大小写不敏感识别，并保留实际路径拼写。以下命令在仓库根目录运行，18 文件 309 项通过；随后增加已接受附件断言，单独复跑集成与原生端口 2 文件 9 项通过：
+
+```powershell
+npm run test -- tests/services/projectArchiveRoundTrip.test.ts tests/services/projectArchiveValidation.test.ts tests/services/projectArchiveV4.test.ts tests/services/projectArchiveSerialization.test.ts tests/services/projectArchiveRepository.test.ts tests/services/projectArchiveFixtureFiles.test.ts tests/services/projectModelArchiveService.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/projectModelArchiveIntegration.test.ts tests/services/projectModelTransferRepository.test.ts tests/services/projectModelBackup.test.ts tests/services/projectModelBackupFiles.test.ts tests/services/projectImportService.test.ts tests/services/projectTransferService.test.ts tests/services/projectExchangeV2.test.ts tests/services/projectExchangeRoundTrip.test.ts tests/services/projectExchangeFormat.test.ts tests/services/projectExchangeRepository.test.ts
+npm run test -- tests/services/projectModelArchiveIntegration.test.ts tests/services/projectModelArchiveNativePort.test.ts
+```
+
+在 `src-tauri` 目录分别运行 `cargo test --lib project_archive::tests -- --test-threads=1` 和 `cargo test --lib project_model_safety::tests -- --test-threads=1`，临时目录原生文件测试分别为 31 项和 4 项通过。这些 Rust 单元测试实际操作临时文件；上述前端集成使用 fake IndexedDB 和内存文件／IPC／租约替身。两类证据不能组合冒充真实 Tauri 端到端验收，也不能证明跨进程停写、真实窗口重启、断电和文件系统耐久性。旧 v1～v3 包到新模型的完整桌面往返仍须在独立 fixture 中验收。
+
+P7 前置清单 `scripts/project-model-boundaries.json` 登记 33 个已识别的旧表、旧门面和备份依赖模块，标注收敛优先级、保留原因和移除前提；`scripts/audit-project-model-boundaries.mjs` 只读检查已登记访问类型、部分新模型回退写法和当前正式开关。在仓库根目录运行 `node scripts/audit-project-model-boundaries.mjs`，扫描 1180 个源码文件未报告违规；`npm run test -- tests/scripts/projectModelBoundaries.test.mjs` 的 8 项通过。扫描范围为 `src` 和 `scripts` 中的 JS／TS，且仅识别已知静态表名、门面及有限语法，不覆盖所有动态访问、任意别名、已有模块内同类新增访问或原生行为；清单通过不证明 P7 完成，也不授权清理。
+
+后续正式激活前仍须完成 Store/UI、Agent／MCP 执行仓储和正式归档的统一模型路由，并在独立 Tauri profile 验证真实冷启动、停写、原生备份读回、各故障点续接及回滚。P7 应在正式切换后继续收敛消费者并观察恢复案例，单独确认保留期、降级和清理范围；保留原幂等回执、预算、journal 和备份，禁止将此次前置审计视为允许自动删除的依据。
+
+### 22.1 桌面烟雾验证
+
+用户授权桌面测试后，在当前已打开的旧项目中观察 EP000 → EP001 → EP000 切换，两集画布均可显示。这不能证明旧数据已转换。另用现有 debug 可执行文件启动独立 fixture 维护窗口，页面显示正式迁移关闭且不加载业务脚本；窗口存续时 fixture 锁独占、退出后锁释放。该二进制未重新构建，源码身份未复核；此结果仅为维护入口烟雾测试，不能代替当前源码的维护窗口验收或迁移／回滚／归档端到端测试。正常主窗口仍保持原有项目与运行状态。
+
+进一步隔离复现发现：同一文件被大小写不同的路径引用时，原生重复路径检查会拒绝导出；旧 head 附件或其素材根缺失时，导出和恢复前备份可能错误地把附件视为删除。现对原生验证指向同一真实文件的别名进行合并，并在打包前和发布前复核别名身份及素材摘要；不同真实文件仍失败关闭。旧 head 的文件绑定、素材根和文件必须在嵌套根过滤后仍可定位，否则阻断导出及恢复前备份。文件系统未全程加锁，最终复核与发布之间仍存在外部并发变更的短暂窗口，不能声称跨进程原子冻结。
+
+仓库根目录执行 `npx vitest run tests/services/projectModelArchiveIntegration.test.ts tests/services/projectModelArchiveNativePort.test.ts tests/services/projectModelArchiveService.test.ts tests/services/projectModelArchiveMissingAssets.test.ts`，4 文件 27 项通过；测试使用模拟 IPC 和隔离素材。修复后在 `src-tauri` 目录重跑 `cargo test --lib project_archive::tests -- --test-threads=1`，34 项通过，包括 Windows 临时目录别名及发布前文件变化阻断。独立缺失附件用例还覆盖嵌套根和主／非主根映射，不能代替真实桌面导入导出。

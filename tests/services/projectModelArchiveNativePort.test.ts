@@ -88,11 +88,13 @@ describe('P5 native file projection', () => {
     capture.exchange!.fileBindings.push({ id: 'stale-file', rootRef: 'A', relativePath: 'orphan.png', localRelativePath: 'imports/failed/orphan.png' });
     native.existing.add('fixture/primary'); native.existing.add('fixture/primary/roots/secondary');
     native.invoke.mockImplementation(async (_command: string, args: Record<string, unknown>) => args.assetsDir === 'fixture/primary'
-      ? [{ path: 'attachment.txt', bytes: 3, sha256: hash }, { path: 'roots/secondary/same.png', bytes: 3, sha256: hash }]
+      ? [{ path: 'attachment.txt', bytes: 3, sha256: hash }, { path: 'roots/secondary/same.png', bytes: 3, sha256: hash },
+        { path: 'imports/import-op-root-0/same.png', bytes: 3, sha256: hash }, { path: 'imports/new-output/generated.png', bytes: 3, sha256: hash }]
       : [{ path: 'imports/import-op-root-1/same.png', bytes: 3, sha256: hash }]);
     const result = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture);
     expect(result.map((item) => [item.rootRef, item.path])).toEqual([
-      ['legacy-root:A', 'attachment.txt'], ['legacy-root:B', 'imports/import-op-root-1/same.png'],
+      ['legacy-root:A', 'attachment.txt'], ['legacy-root:A', 'imports/import-op-root-0/same.png'],
+      ['legacy-root:A', 'imports/new-output/generated.png'], ['legacy-root:B', 'imports/import-op-root-1/same.png'],
     ]);
     const calls = native.invoke.mock.calls.map(([, args]) => args);
     expect(calls.map((args) => args.includeImportPaths)).toEqual([

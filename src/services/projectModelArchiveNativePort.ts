@@ -89,7 +89,7 @@ export function createNativeProjectModelArchivePort(database: IDBDatabase, sessi
     const directories = new Map<string, string>();
     for (const root of projectModelArchiveStorageContext(capture).roots) directories.set(root.rootRef, await directory(root.folderName));
     for (const [rootRef, paths] of currentStoragePaths(capture, directories)) for (const path of paths) {
-      if (!assets.some((asset) => asset.rootRef === rootRef && asset.path === path)) throw new Error('恢复前的旧素材引用缺失，无法证明内容可恢复');
+      if (!assets.some((asset) => asset.rootRef === rootRef && (asset.path === path || asset.aliases?.includes(path)))) throw new Error('恢复前的旧素材引用缺失，无法证明内容可恢复');
     }
     return inventoryDigest(assets);
   }
@@ -139,20 +139,37 @@ export function createNativeProjectModelArchivePort(database: IDBDatabase, sessi
       const activeRoots = projectModelArchiveStorageContext(capture).roots;
       for (const root of activeRoots) directories.set(root.rootRef, await directory(root.folderName));
       const current = currentStoragePaths(capture, directories);
-      const activeFiles = capture.exchange ? new Set(headFiles(capture.exchange).files.map((item) => item.id)) : new Set<string>();
+      const head = capture.exchange ? headFiles(capture.exchange) : null;
+      for (const file of head?.files ?? []) {
+        const rootId = capture.exchange?.identities.find((item) => item.kind === 'storage-root' && item.sourceId === file.rootRef)?.localId;
+        if (!rootId || !directories.has(rootId)) throw new Error('旧版本附件所在素材根缺失，无法安全导出');
+      }
       for (const root of activeRoots) {
         const assetsDir = directories.get(root.rootRef)!;
-        if (!(await exists(assetsDir))) continue;
         const logicalRoot = capture.exchange?.identities.find((item) => item.kind === 'storage-root' && item.localId === root.rootRef)?.sourceId;
-        const includeImportPaths = [...new Set([...(capture.exchange?.fileBindings ?? []).filter((item) => activeFiles.has(item.id) && item.rootRef === logicalRoot
-          && item.localRelativePath.startsWith('imports/')).map((item) => safeExchangePath(item.localRelativePath)),
-          ...[...(current.get(root.rootRef) ?? [])].filter((path) => path.startsWith('imports/'))])];
-        const assets = await invoke<ArchiveAssetDigest[]>('inspect_project_archive_assets', { assetsDir, includeImportPaths });
+        const required = (head?.files ?? []).filter((item) => item.rootRef === logicalRoot).map((file) => {
+          const binding = capture.exchange?.fileBindings.find((item) => item.id === file.id && item.rootRef === file.rootRef && item.relativePath === file.relativePath);
+          if (!binding) throw new Error('旧版本附件缺少路径绑定，无法安全导出');
+          return safeExchangePath(binding.localRelativePath);
+        });
+        if (!(await exists(assetsDir))) {
+          if (required.length) throw new Error('旧版本附件所在素材根缺失，无法安全导出');
+          continue;
+        }
+        const referencePaths = [...new Set([...required, ...(current.get(root.rootRef) ?? [])])];
+        const includeImportPaths = referencePaths.filter((path) => /^imports\//i.test(path));
+        const assets = await invoke<Array<ArchiveAssetDigest & { aliases?: string[] }>>('inspect_project_archive_assets', {
+          assetsDir, includeImportPaths, resolveImportAliases: true, referencePaths,
+        });
         // 新项目的第二个根可位于 primary/roots 下，不能再按 primary 根捕获一次。
         const nestedRoots = capture.aggregate.project.storageBindings.filter((item) => item.folderName.startsWith(`${root.folderName}/`))
           .map((item) => item.folderName.slice(root.folderName.length + 1) + '/');
-        result.push(...assets.filter((asset) => !nestedRoots.some((prefix) => asset.path.startsWith(prefix)))
-          .map((asset) => ({ path: asset.path, bytes: asset.bytes, sha256: asset.sha256, rootRef: root.rootRef,
+        const retained = assets.filter((asset) => !nestedRoots.some((prefix) => asset.path.startsWith(prefix)));
+        for (const path of required) if (!retained.some((asset) => asset.path === path || asset.aliases?.includes(path))) {
+          throw new Error('旧版本附件缺失，无法安全导出');
+        }
+        result.push(...retained
+          .map((asset) => ({ path: asset.path, bytes: asset.bytes, sha256: asset.sha256, rootRef: root.rootRef, aliases: asset.aliases,
             localAbsolutePath: `${assetsDir.replace(/\\/g, '/').replace(/\/$/, '')}/${asset.path}` })));
       }
       return result;
@@ -227,7 +244,8 @@ export function createNativeProjectModelArchivePort(database: IDBDatabase, sessi
         const localRoot = operation.exchange.identities.find((mapping) => mapping.kind === 'storage-root' && mapping.sourceId === file.rootRef)?.localId;
         const binding = operation.exchange.fileBindings.find((item) => item.id === file.id && item.rootRef === file.rootRef && item.relativePath === file.relativePath);
         const rootIndex = capture.aggregate.project.storageBindings.findIndex((item) => item.rootRef === localRoot);
-        const asset = assets.find((item) => item.rootRef === localRoot && item.path === binding?.localRelativePath);
+        const asset = assets.find((item) => item.rootRef === localRoot && (item.path === binding?.localRelativePath
+          || !!binding && item.aliases?.includes(binding.localRelativePath)));
         if (!asset) throw new Error('导出素材捕获不完整');
         const archivePath = operation.exchange.bundle.files.find((item) => item.mediaId === file.mediaId)?.archivePath;
         if (rootIndex < 0 || !archivePath?.startsWith('assets/')) throw new Error('导出素材缺少原包路径或本机来源根');
@@ -235,8 +253,13 @@ export function createNativeProjectModelArchivePort(database: IDBDatabase, sessi
           sourceRootRef: `root-${rootIndex}`, sourceRelativePath: asset.path });
       }
       const assetsDir = sourceRoots[0]?.directory ?? await directory(capture.aggregate.project.dataFolder, true);
+      const aliasChecks = assets.filter((asset) => asset.aliases?.length).map((asset) => {
+        const index = capture.aggregate.project.storageBindings.findIndex((root) => root.rootRef === asset.rootRef);
+        if (index < 0) throw new Error('素材别名来源根缺失');
+        return { rootRef: `root-${index}`, path: asset.path, aliases: asset.aliases, bytes: asset.bytes, sha256: asset.sha256 };
+      });
       const result = await invoke<{ operationId?: string; publicationRef?: string; archiveSha256?: string }>('pack_project_archive', {
-        operationId: operation.operationId, entries, assetsDir, sourceRoots, outputPath: options.outputPath, expectedAssets,
+        operationId: operation.operationId, entries, assetsDir, sourceRoots, outputPath: options.outputPath, expectedAssets, aliasChecks,
       });
       if (result.operationId !== operation.operationId || !result.publicationRef || !result.archiveSha256) throw new Error('原归档发布回执未知，未登记交接，禁止自动重发');
       return { outputRef: result.publicationRef, packageDigest: result.archiveSha256 };

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "policy": "只登记现有旧表与兼容依赖；不将登记或审计通过视为已完成迁移。",
+  "priorities": {
+    "P1": "正式激活前完成模型路由：启动、Store、保存、导航、上下文与归档入口；旧路径仍需保留并显式选择。",
+    "P2": "正式激活前适配支持域：素材、共享同步、剪辑及健康检查，禁止新模型错误回退旧projectId。",
+    "P3": "兼容、恢复与审计长期保留；业务切换后仍不能按未引用或过期日期自动清理。"
+  },
+  "consumers": [
+    { "file": "src/services/indexedDb/schema.ts", "category": "legacy-authority", "allowed": ["table"], "priority": "P1", "reason": "正式DB27建表、旧摘要回填及默认openDB权威仍在此。", "removeAfter": "冷启动模型选择、正式schema升级与降级恢复已验证；旧库独立恢复入口保留。" },
+    { "file": "src/services/indexedDbService.ts", "category": "legacy-authority", "allowed": ["table"], "priority": "P1", "reason": "旧项目保存、故事图CAS、预览、目录、详情和删除直接访问旧表。", "removeAfter": "所有正式调用按显式模型仓储路由；旧包/旧库恢复仍有独立兼容实现。" },
+    { "file": "src/services/storageService.ts", "category": "legacy-authority", "allowed": ["facade"], "priority": "P1", "reason": "旧ProjectSaveData序列化、媒体引用恢复、项目CRUD门面。", "removeAfter": "新领域保存/内容/预览各自仓储与媒体映射接线完成，保留旧格式转换。" },
+    { "file": "src/store/store.projects.ts", "category": "legacy-authority", "allowed": ["facade"], "priority": "P1", "reason": "正式项目初始化、切换、保存、转换、导入导出仍是旧Store语义。", "removeAfter": "新模型导航/零集/分域保存和异步守卫完整接管，禁止catch旧路径fallback。" },
+    { "file": "src/store/store.config.ts", "category": "legacy-authority", "allowed": ["facade"], "priority": "P1", "reason": "配置与项目目录迁移衔接仍读取并保存旧项目。", "removeAfter": "配置变化/目录变更按活动模型明确选择仓储，真实路径journal可恢复。" },
+    { "file": "src/services/webviewRecoveryService.ts", "category": "legacy-navigation", "allowed": ["facade"], "priority": "P1", "reason": "重建窗口仍通过旧lastActiveProjectId恢复导航。", "removeAfter": "版本化ProjectSelection/CanvasContext恢复覆盖普通/零集项目，旧值只做显式兼容。" },
+    { "file": "src/services/indexedDb/legacyProjectLifecycleRepository.ts", "category": "legacy-authority", "allowed": ["table"], "priority": "P1", "reason": "旧分集原子换序、删除和墓碑处理；禁止删末集连删整剧。", "removeAfter": "正式生命周期路由新仓储且旧操作与墓碑可读；旧库路径不再承载新业务。" },
+    { "file": "src/services/indexedDb/projectArchiveRepository.ts", "category": "legacy-archive", "allowed": ["table"], "priority": "P1", "reason": "旧整剧/历史/协作图同事务捕获，仍是v3导出权威。", "removeAfter": "正式v4路由及全部旧包适配完成；保留明确旧库捕获入口供兼容恢复。" },
+    { "file": "src/services/indexedDb/projectArchiveOperationRepository.ts", "category": "recovery-retained", "allowed": ["table"], "priority": "P3", "reason": "旧归档外发状态CAS、未完成发布与不透明回执登记。", "removeAfter": "所有原operation已核对且旧journal恢复桥仍可读；不得删除未知发布材料。" },
+    { "file": "src/services/indexedDb/projectExchangeRepository.ts", "category": "recovery-retained", "allowed": ["table"], "priority": "P3", "reason": "旧canonical1协作头CAS与已接受修订保持不可变。", "removeAfter": "旧来源映射及混版本父链全部可从新仓储读回，不重算旧hash或丢已接受父链。" },
+    { "file": "src/services/indexedDb/projectImportRepository.ts", "category": "recovery-retained", "allowed": ["table"], "priority": "P3", "reason": "旧导入原子提交、精确CAS、冻结材料、原操作恢复及审计历史。", "removeAfter": "原journal/恢复点与提交回执可通过专用兼容桥继续，未知状态仍保留源和媒体。" },
+    { "file": "src/services/projectImportService.ts", "category": "legacy-archive", "allowed": ["facade"], "priority": "P1", "reason": "正式v1-v3预览、新建、更新及旧恢复的编排。", "removeAfter": "项目包版本和活动数据模型双路由明确，v4正式收发与旧历史适配已验收。" },
+    { "file": "src/services/projectImportResumeService.ts", "category": "recovery-retained", "allowed": ["facade"], "priority": "P3", "reason": "必须读原旧作用域并核CAS摘要，不能重合并或重新发号。", "removeAfter": "旧操作续行接口有等价可核证明；材料缺失仍明确拒绝，不能自动删除。" },
+    { "file": "src/services/projectTransferService.ts", "category": "legacy-archive", "allowed": ["facade"], "priority": "P1", "reason": "正式v3导出/复制/旧包恢复入口及原生发布回执。", "removeAfter": "正式入口按模型及归档版本路由；临时复制仍不冒充外发协作head。" },
+    { "file": "src/services/chat/teams/teamResultApplyService.ts", "category": "legacy-execution", "allowed": ["facade"], "priority": "P1", "reason": "团队成果应用读取旧分集完整画布，需保留任务回执与编辑器握手。", "removeAfter": "Agent/任务/预算/operation仓储及typed上下文同时路由新模型，不能只改projectId。" },
+    { "file": "src/services/indexedDb/sharedAssetSyncRepository.ts", "category": "legacy-support", "allowed": ["table"], "priority": "P2", "reason": "共享资产同步提交仍检查并改旧owner记录和摘要。", "removeAfter": "新共享资料域与outbox/冲突CAS统一；真实远端回执保持单调。" },
+    { "file": "src/services/indexedDb/videoEditorRepository.ts", "category": "legacy-support", "allowed": ["table"], "priority": "P2", "reason": "剪辑工程通过旧项目读取核owner及分集上下文。", "removeAfter": "视频工程仓储接受活动模型generation/owner/Canvas身份，迟到保存仍拒绝。" },
+    { "file": "src/services/indexedDb/mediaRelocations.ts", "category": "legacy-support", "allowed": ["table"], "priority": "P2", "reason": "旧活动表媒体重定位扫描白名单，冻结源和审计材料不递归改写。", "removeAfter": "新模型独立typed媒体重定位完成并保留恢复闭包；旧材料仍只读。" },
+    { "file": "src/components/assets/AssetTextPreview.tsx", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "文本素材预览通过旧记录解析项目文件。", "removeAfter": "预览以显式模型、逻辑rootRef和已验证文件绑定读取。" },
+    { "file": "src/components/AssetSearchWindow.tsx", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "资产搜索独立窗口读取旧项目目录。", "removeAfter": "窗口接收版本化项目目录快照，不自行访问默认旧库。" },
+    { "file": "src/components/ProjectAssetsOverlay.tsx", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "项目资产覆盖层读取旧完整项目数据。", "removeAfter": "共享资料、分集资料和Canvas资产按新领域分别读取。" },
+    { "file": "src/components/videoEditor/VideoEditorWindow.tsx", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "剪辑独立窗口通过旧目录及项目画布初始化工程。", "removeAfter": "主窗口唯一写入和剪辑工程typed上下文统一接线完成。" },
+    { "file": "src/services/assetImageDetails.ts", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "图片详情从旧记录查节点和提示词。", "removeAfter": "显式Canvas/共享资产作用域与按需内容查询替代旧整项目读取。" },
+    { "file": "src/services/assetUsageService.ts", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "素材引用统计扫描旧项目及详情。", "removeAfter": "活动模型引用图和多root文件绑定完整，不能只扫描旧projects判断未引用。" },
+    { "file": "src/services/fs/sharedAssetSync.ts", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "共享素材同步编排读取旧项目目录以选择目标。", "removeAfter": "同步按新根/分集上下文和不可变回执路由，保留兼容来源。" },
+    { "file": "src/services/fs/storageHealth.ts", "category": "legacy-support", "allowed": ["facade"], "priority": "P2", "reason": "存储健康依赖旧项目目录和完整内容，直接影响修复/清理判断。", "removeAfter": "新模型当前引用、备份、恢复点、journal、隔离材料都纳入存活闭包。" },
+    { "file": "src/services/indexedDb/projectModelMigrationRepository.ts", "category": "backup-audit-retained", "allowed": ["table"], "priority": "P3", "reason": "按原schema读取旧源快照和全部已分类侧表；不能以摘要代替正文。", "removeAfter": "旧库升级/恢复支持范围另行结束并有用户授权；正式迁移前不可移除。" },
+    { "file": "src/services/indexedDb/projectModelStagingRepository.ts", "category": "fixture-source-retained", "allowed": ["table"], "priority": "P3", "reason": "仅fixture新表暂存，反复核旧源未变化且拒activeDataModel。", "removeAfter": "正式activation/恢复合同具等价源证明；不得以P7清理删除旧源或未知generation。" },
+    { "file": "src/services/indexedDb/projectModelTransferRepository.ts", "category": "backup-audit-retained", "allowed": ["material"], "priority": "P3", "reason": "专用恢复前备份动态捕获已分类业务/审计/旧表/journal全集。", "removeAfter": "备份覆盖与恢复支持范围明确；原幂等key、预算、真实回执永不以作品回滚倒退。" },
+    { "file": "src/services/indexedDb/projectRepository.ts", "category": "legacy-readonly-adapter", "allowed": ["table"], "priority": "P3", "reason": "P1旧projects只读领域投影；不是正式新模型仓储。", "removeAfter": "所有正式消费者显式选择新仓储；旧源审查和恢复可继续使用独立只读适配。" },
+    { "file": "src/services/projectModelBackup.ts", "category": "backup-audit-retained", "allowed": ["table", "material"], "priority": "P3", "reason": "旧backup-v1与fixture-backup-v2完整覆盖、凭据过滤及旧projects来源要求。", "removeAfter": "旧备份格式有明确弃用周期和可验证转换/恢复；不放宽旧白名单或自动删备份。" },
+    { "file": "src/services/projectModelMigration.ts", "category": "legacy-readonly-adapter", "allowed": ["table"], "priority": "P3", "reason": "P1只读备份和恢复准备，明确不授权正式激活或恢复写入。", "removeAfter": "正式冷启动/专用恢复入口完整替代准备合同，同时仍识别旧备份。" },
+    { "file": "src/services/projectModelStaging.ts", "category": "fixture-source-retained", "allowed": ["table"], "priority": "P3", "reason": "fixture耐久备份、源比较和P2暂存协调，不能改成正式默认迁移。", "removeAfter": "P6经过另行评审的正式协调器与原生证据接线完成；保留fixture隔离演练入口。" }
+  ],
+  "closedGates": [
+    { "file": "src/services/indexedDb/schema.ts", "export": "DB_VERSION", "expected": 27 },
+    { "file": "src/services/projectModelStaging.ts", "export": "PROJECT_MODEL_STAGING_CAPABILITIES", "field": "productionMigration", "expected": false },
+    { "file": "src/services/projectModelStaging.ts", "export": "PROJECT_MODEL_STAGING_CAPABILITIES", "field": "automaticMigration", "expected": false },
+    { "file": "src/services/projectModelStaging.ts", "export": "PROJECT_MODEL_STAGING_CAPABILITIES", "field": "activation", "expected": false },
+    { "file": "src/services/projectModelStaging.ts", "export": "PROJECT_MODEL_STAGING_CAPABILITIES", "field": "restoreWrites", "expected": false },
+    { "file": "src/types/projectArchiveV4.ts", "export": "PROJECT_ARCHIVE_V4_CONTRACT", "field": "runtimeEnabled", "expected": false }
+  ],
+  "cleanupPrerequisites": [
+    "P6正式Store、项目/分集/画布导航与保存、归档及Agent/MCP/原生执行仓储已统一按模型路由且没有静默fallback。",
+    "原生停写、耐久备份读回、各journal断点恢复、多根媒体闭包、旧包及退役历史往返有真实隔离桌面证据。",
+    "旧ID别名、幂等key、预算及真实任务回执保留单调语义；旧数据和审计材料未被重新解释为可执行新目标。",
+    "数据保留期和旧二进制降级边界明确，用户另行授权具体清理范围，并有可验证恢复副本。"
+  ]
+}

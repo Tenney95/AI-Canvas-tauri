@@ -29,6 +29,8 @@ export interface ProjectModelArchiveAsset extends ArchiveAssetDigest {
   rootRef: string;
   /** 仅当前受信文件端口的内存证据，不能进入portable正文、exchange或journal。 */
   localAbsolutePath?: string;
+  /** 原生逐项确认指向同一文件的其他相对路径，仅用于本次捕获。 */
+  aliases?: string[];
 }
 export interface ProjectModelArchivePort {
   inspectAssets(capture: ProjectModelTransferCapture): Promise<ProjectModelArchiveAsset[]>;
@@ -196,8 +198,12 @@ function aggregateBusiness(capture: ProjectModelTransferCapture, mappings = capt
   const aggregate = capture.aggregate;
   const logical = (kind: ProjectModelTransferIdMapEntry['kind'], localId: string) => mappings.find((row) => row.kind === kind && row.localId === localId)?.sourceId ?? localId;
   const projectId = logical('project', aggregate.project.id), root = (id: string) => logical('storage-root', id);
-  const path = (rootRef: string, relativePath: string) => fileBindings.find((binding) => binding.rootRef === root(rootRef)
-    && binding.localRelativePath === relativePath)?.relativePath ?? relativePath;
+  const path = (rootRef: string, relativePath: string) => {
+    const asset = assets.find((item) => item.rootRef === rootRef && (item.path === relativePath || item.aliases?.includes(relativePath)));
+    const actual = asset?.path ?? relativePath;
+    return fileBindings.find((binding) => binding.rootRef === root(rootRef) && (binding.localRelativePath === actual
+      || asset?.aliases?.includes(binding.localRelativePath)))?.relativePath ?? actual;
+  };
   const storage = projectModelArchiveStorageContext(capture), projectRoot = storage.primary;
   const portable = (value: unknown, rootRef = projectRoot) => storageReferences(value, rootRef, root, path);
   const sanitized = <T>(value: T, rootRef = projectRoot): ProjectExchangeObject => json(sanitizeLegacyArchiveProject(
@@ -419,7 +425,8 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
       if (!roots.some((root) => root.rootRef === asset.rootRef)) throw new Error('素材来源根不属于捕获项目');
       safeExchangePath(asset.path);
       const rootRef = logicalRoot(asset.rootRef);
-      const previous = capture.exchange?.fileBindings.find((binding) => binding.rootRef === rootRef && binding.localRelativePath === asset.path);
+      const previous = capture.exchange?.fileBindings.find((binding) => binding.rootRef === rootRef
+        && (binding.localRelativePath === asset.path || asset.aliases?.includes(binding.localRelativePath)));
       const relativePath = previous?.relativePath ?? asset.path;
       const extension = relativePath.split('.').pop()?.toLowerCase() ?? 'bin', ext = /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'bin';
       const previousHead = capture.exchange?.bundle.revisions.find((item) => refKey(item) === refKey(capture.exchange!.localHead));
@@ -432,7 +439,7 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
         kind: /^(png|jpe?g|webp|gif|avif)$/.test(ext) ? 'image' : /^(mp4|mov|webm|mkv)$/.test(ext) ? 'video' : /^(mp3|wav|ogg|m4a|flac)$/.test(ext) ? 'audio' : 'file' });
       const id = previous?.id ?? `file_${await digest([lineageId, rootRef, relativePath])}`;
       files.push({ id, rootRef, relativePath, mediaId });
-      fileBindings.push({ id, rootRef, relativePath, localRelativePath: asset.path });
+      fileBindings.push({ id, rootRef, relativePath, localRelativePath: previous?.localRelativePath ?? asset.path });
     }
     const history = await captureHistory(capture, business, identities);
     const previous = capture.exchange?.bundle.revisions.find((revision) => refKey(revision) === refKey(capture.exchange!.localHead));

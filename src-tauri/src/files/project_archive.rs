@@ -258,6 +258,31 @@ impl ArchiveAssetDigest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectArchiveSourceRoot { root_ref: String, directory: String }
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectArchiveAliasCheck { root_ref: String, path: String, aliases: Vec<String>, bytes: u64, sha256: String }
+
+fn verify_export_aliases(checks: &[ProjectArchiveAliasCheck], roots: &HashMap<String, PathBuf>) -> Result<(), String> {
+    if checks.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材清单超过上限".into()); }
+    let mut count = 0usize;
+    for check in checks {
+        count = count.checked_add(check.aliases.len()).ok_or("项目素材清单超过上限")?;
+        if count > MAX_ARCHIVE_ENTRIES || check.aliases.is_empty() { return Err("项目素材清单无效".into()); }
+        let root = roots.get(&check.root_ref).ok_or("素材来源根缺失")?;
+        let path = normalize_archive_path(Path::new(&check.path))?;
+        let source = selected_asset_file(root, &path)?.ok_or("源素材已缺失")?;
+        for value in &check.aliases {
+            let alias = normalize_archive_path(Path::new(value))?;
+            if to_archive_text(&path).to_lowercase() != to_archive_text(&alias).to_lowercase()
+                || selected_asset_file(root, &alias)?.ok_or("素材别名已缺失")? != source {
+                return Err("素材别名已变化，请重新捕获导出内容".into());
+            }
+        }
+        let (bytes, digest) = hash_file(&source, &mut Vec::new())?;
+        if bytes != check.bytes || digest != check.sha256 { return Err("素材已变化，请重新捕获导出内容".into()); }
+    }
+    Ok(())
+}
 fn authorize_source_roots<R: Runtime>(app: &AppHandle<R>, roots: Vec<ProjectArchiveSourceRoot>) -> Result<HashMap<String, PathBuf>, String> {
     if roots.len() > MAX_ARCHIVE_ENTRIES { return Err("素材来源根数量超过上限".into()); }
     let mut result = HashMap::new();
@@ -426,6 +451,32 @@ fn inspect_assets_scoped(root: &Path, include_import_paths: Option<&[String]>, s
     Ok(scan.rows)
 }
 
+// 只有逐个经过原生路径校验且解析到同一真实路径的写法才能合并；相同摘要不能证明身份。
+fn resolve_import_path_aliases(paths: &[String], mut resolve: impl FnMut(&Path) -> Result<PathBuf, String>)
+    -> Result<(Vec<String>, HashMap<String, Vec<String>>), String> {
+    if paths.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材清单超过上限".into()); }
+    let mut unique = Vec::new(); let mut groups: HashMap<String, String> = HashMap::new();
+    let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+    for value in paths {
+        let path = selected_asset_paths(std::slice::from_ref(value), true)?.pop().ok_or("项目素材路径无效")?;
+        let name = to_archive_text(&path); let folded = name.to_lowercase();
+        if let Some(first) = groups.get(&folded) {
+            if resolve(&path)? != resolve(Path::new(first))? { return Err("项目素材清单存在重复路径".into()); }
+            aliases.entry(first.clone()).or_default().push(name);
+        } else {
+            groups.insert(folded, name.clone()); unique.push(name);
+        }
+    }
+    Ok((unique, aliases))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveAssetInspection {
+    #[serde(flatten)] asset: ArchiveAssetDigest,
+    #[serde(skip_serializing_if = "Vec::is_empty")] aliases: Vec<String>,
+}
+
 #[cfg(test)]
 fn inspect_assets(root: &Path, relative: &Path, rows: &mut Vec<ArchiveAssetDigest>) -> Result<(), String> {
     if !relative.as_os_str().is_empty() { return Err("测试扫描入口只接受项目根".into()); }
@@ -435,13 +486,43 @@ fn inspect_assets(root: &Path, relative: &Path, rows: &mut Vec<ArchiveAssetDiges
 
 #[tauri::command]
 pub async fn inspect_project_archive_assets<R: Runtime>(webview: Webview<R>, app: AppHandle<R>, assets_dir: String,
-    include_import_paths: Option<Vec<String>>, selected_paths: Option<Vec<String>>) -> Result<Vec<ArchiveAssetDigest>, String> {
+    include_import_paths: Option<Vec<String>>, selected_paths: Option<Vec<String>>,
+    resolve_import_aliases: Option<bool>, reference_paths: Option<Vec<String>>) -> Result<Vec<ArchiveAssetInspection>, String> {
     ensure_trusted_caller(&webview)?;
     if webview.label() != "main" { return Err("仅主窗口可以准备项目归档".into()); }
     let root = authorize_path(&app, &assets_dir, PathAccess::Read)?;
     tauri::async_runtime::spawn_blocking(move || {
         reauthorize_archive_path(&app, &root, PathAccess::Read)?;
-        inspect_assets_scoped(&root, include_import_paths.as_deref(), selected_paths.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)
+        let mut aliases = HashMap::new();
+        let imports = if resolve_import_aliases.unwrap_or(false) {
+            if selected_paths.is_some() { return Err("项目素材扫描范围无效".into()); }
+            let paths = include_import_paths.as_ref().ok_or("项目素材扫描范围无效")?;
+            let canonical_root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
+            let (unique, mapped) = resolve_import_path_aliases(paths, |path| selected_asset_file(&canonical_root, path)?
+                .ok_or_else(|| "项目素材引用缺失".to_string()))?;
+            aliases = mapped; Some(unique)
+        } else { include_import_paths };
+        let rows = inspect_assets_scoped(&root, imports.as_deref(), selected_paths.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)?;
+        if let Some(references) = reference_paths {
+            if !resolve_import_aliases.unwrap_or(false) || selected_paths.is_some() || references.len() > MAX_ARCHIVE_ENTRIES {
+                return Err("项目素材扫描范围无效".into());
+            }
+            let canonical_root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
+            let by_name: HashMap<String, &str> = rows.iter().map(|row| (row.path.to_lowercase(), row.path.as_str())).collect();
+            for value in references {
+                let path = normalize_archive_path(Path::new(&value))?; let name = to_archive_text(&path);
+                if name.is_empty() { return Err("项目素材路径无效".into()); }
+                if let Some(first) = by_name.get(&name.to_lowercase()) {
+                    if *first == name { continue; }
+                    let first_file = selected_asset_file(&canonical_root, Path::new(first))?.ok_or("项目素材引用缺失")?;
+                    let alias_file = selected_asset_file(&canonical_root, &path)?.ok_or("项目素材引用缺失")?;
+                    if first_file != alias_file { return Err("项目素材清单存在重复路径".into()); }
+                    let list = aliases.entry((*first).to_string()).or_default();
+                    if !list.contains(&name) { list.push(name); }
+                }
+            }
+        }
+        Ok(rows.into_iter().map(|asset| ArchiveAssetInspection { aliases: aliases.remove(&asset.path).unwrap_or_default(), asset }).collect())
     }).await.map_err(|_| "项目素材扫描任务失败".to_string())?
 }
 
@@ -691,6 +772,7 @@ pub async fn pack_project_archive<R: Runtime>(
     expected_assets: Option<Vec<ArchiveAssetDigest>>,
     operation_id: Option<String>,
     source_roots: Option<Vec<ProjectArchiveSourceRoot>>,
+    alias_checks: Option<Vec<ProjectArchiveAliasCheck>>,
 ) -> Result<ProjectArchivePackResult, String> {
     ensure_trusted_caller(&webview)?;
     if (operation_id.is_some() || source_roots.is_some()) && webview.label() != "main" { return Err(PUBLICATION_ERROR.into()); }
@@ -704,6 +786,8 @@ pub async fn pack_project_archive<R: Runtime>(
         None => None,
     };
     let sources = authorize_source_roots(&app, source_roots.unwrap_or_default())?;
+    let checks = alias_checks.unwrap_or_default();
+    if !checks.is_empty() && operation_id.is_none() { return Err(PUBLICATION_ERROR.into()); }
     if assets_root.as_ref().is_some_and(|root| output.starts_with(root)) { return Err("项目包不能导出到被打包的素材目录内".into()); }
     if sources.values().any(|root| output.starts_with(root)) { return Err("项目包不能导出到被打包的素材目录内".into()); }
     tauri::async_runtime::spawn_blocking(move || {
@@ -711,13 +795,15 @@ pub async fn pack_project_archive<R: Runtime>(
         reauthorize_archive_path(&app, &output, PathAccess::Write)?;
         if let Some(root) = &assets_root { reauthorize_archive_path(&app, root, PathAccess::Read)?; }
         for root in sources.values() { reauthorize_archive_path(&app, root, PathAccess::Read)?; }
+        verify_export_aliases(&checks, &sources)?;
         let mut publication = operation_id.as_deref().map(|id| begin_publication(&app, id, &output)).transpose()?;
         if let Some(plan) = publication.as_mut() {
-            let handle = app.clone(); let output = output.clone(); let source_roots = sources.clone(); let assets = assets_root.clone();
+            let handle = app.clone(); let output = output.clone(); let source_roots = sources.clone(); let assets = assets_root.clone(); let checks = checks.clone();
             plan.recheck = Some(Box::new(move || {
                 reauthorize_archive_path(&handle, &output, PathAccess::Write)?;
                 if let Some(root) = &assets { reauthorize_archive_path(&handle, root, PathAccess::Read)?; }
                 for root in source_roots.values() { reauthorize_archive_path(&handle, root, PathAccess::Read)?; }
+                verify_export_aliases(&checks, &source_roots)?;
                 Ok(())
             }));
         }
@@ -1010,6 +1096,57 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn import_aliases_require_same_verified_path_and_preserve_first_spelling() {
+        let paths = vec!["imports/op/asset.png".to_owned(), "Imports/op/asset.png".to_owned()];
+        let (unique, aliases) = resolve_import_path_aliases(&paths, |_| Ok(PathBuf::from("same-canonical-file"))).unwrap();
+        assert_eq!(unique, vec![paths[0].clone()]);
+        assert_eq!(aliases.get(&paths[0]).unwrap(), &vec![paths[1].clone()]);
+        assert!(resolve_import_path_aliases(&paths, |path| Ok(path.to_path_buf())).is_err());
+        assert!(resolve_import_path_aliases(&paths, |_| Err("missing".into())).is_err());
+        assert!(selected_asset_paths(&paths, true).is_err()); // 旧调用仍严格拒绝大小写冲突。
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn import_aliases_are_verified_on_actual_windows_filesystem() {
+        let fixture = Fixture::new(); fixture.write("imports/op/asset.png", b"fixture");
+        let paths = vec!["imports/op/asset.png".to_owned(), "Imports/op/asset.png".to_owned()];
+        let (unique, aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)?
+            .ok_or_else(|| "missing".to_string())).unwrap();
+        assert_eq!(unique, vec![paths[0].clone()]); assert_eq!(aliases.get(&paths[0]).unwrap(), &vec![paths[1].clone()]);
+        let rows = inspect_assets_scoped(&fixture.0, Some(&unique), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
+        assert_eq!(rows.len(), 1); assert_eq!(rows[0].path, paths[0]);
+        let (bytes, sha256) = hash_file(&fixture.0.join(&paths[0]), &mut Vec::new()).unwrap();
+        let checks = vec![ProjectArchiveAliasCheck { root_ref: "root".into(), path: paths[0].clone(), aliases: vec![paths[1].clone()], bytes, sha256 }];
+        let roots = HashMap::from([("root".to_string(), fixture.0.clone())]);
+        verify_export_aliases(&checks, &roots).unwrap();
+        fs::write(fixture.0.join(&paths[0]), b"changed").unwrap();
+        assert!(verify_export_aliases(&checks, &roots).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn alias_change_at_publication_keeps_output_unpublished() {
+        let fixture = Fixture::new(); fixture.write("imports/op/asset.png", b"original");
+        let root = fixture.0.clone(); let source = root.join("imports/op/asset.png");
+        let (bytes, sha256) = hash_file(&source, &mut Vec::new()).unwrap();
+        let checks = vec![ProjectArchiveAliasCheck { root_ref: "root".into(), path: "imports/op/asset.png".into(),
+            aliases: vec!["Imports/op/asset.png".into()], bytes, sha256 }];
+        let roots = HashMap::from([("root".to_string(), root.clone())]);
+        verify_export_aliases(&checks, &roots).unwrap();
+        let output = root.join("result.aicanvas");
+        let receipt = ArchivePublicationReceipt { operation_id: "alias-change".into(), publication_ref: "a".repeat(64),
+            output_path: output.to_str().unwrap().into(), result: None };
+        let plan = ArchivePublicationPlan { directory: root, receipt, recheck: Some(Box::new(move || {
+            fs::write(&source, b"changed").map_err(|_| "fixture write failed")?;
+            verify_export_aliases(&checks, &roots)
+        })) };
+        assert!(pack_archive_with_publication(vec![ProjectArchiveTextEntry { path: "manifest.json".into(), content: "{}".into() }],
+            None, output.clone(), None, MAX_ARCHIVE_ENTRIES, Some(plan), &HashMap::new()).is_err());
+        assert!(!output.exists());
+    }
 
     #[test]
     fn v4_text_allowlist_does_not_expand_the_legacy_archive_contract() {
