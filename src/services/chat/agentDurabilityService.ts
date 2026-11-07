@@ -1,9 +1,14 @@
 /** 持久化成功才允许进入调用；不承诺外部系统恰好执行一次。 */
 import { useAppStore } from '../../store/useAppStore';
-import type { AgentDispatchRecord, AgentTask } from '../../types/agent';
+import type { AgentDispatchRecord, AgentStep, AgentTask } from '../../types/agent';
 import { AGENT_TERMINAL_STATUSES } from '../../types/agent';
 import { saveAgentTask } from './agentTaskService';
 import { assertCreationProfileSnapshot } from '../creationProfiles/creationProfileService';
+import { unmaterializedToolDispatches } from './agentCheckpointService';
+
+type ToolStepSettlement = Pick<AgentStep, 'id' | 'outputSummary' | 'errorCode' | 'toolCall'> & {
+  status: 'succeeded' | 'failed';
+};
 
 export class AgentDurabilityError extends Error {
   readonly code = 'AGENT_DURABILITY_FAILED';
@@ -23,25 +28,28 @@ function taskForDispatch(taskId: string, signal?: AbortSignal): AgentTask {
   return task;
 }
 
-function replaceDispatch(taskId: string, record: AgentDispatchRecord): AgentTask {
+function replaceDispatch(taskId: string, record: AgentDispatchRecord, toolStep?: ToolStepSettlement): AgentTask {
   const state = useAppStore.getState();
   const task = state.agentTasks.find((item) => item.id === taskId);
   if (!task) throw new DOMException('任务已删除', 'AbortError');
+  const steps = toolStep ? task.steps.map((step) => step.id === toolStep.id
+    ? { ...step, ...toolStep, updatedAt: Date.now() } : step) : task.steps;
   const previous = task.dispatches ?? [];
   // 未核实记录绝不因容量裁剪而消失；正常终态回执只保留最近 256 项。
   const retained = previous.filter((item) => item.id !== record.id);
-  const unmaterialized = new Set(unmaterializedTeamDispatches({ ...task, dispatches: retained }).map((item) => item.id));
+  const snapshot = { ...task, steps, dispatches: retained };
+  const unmaterialized = new Set([...unmaterializedTeamDispatches(snapshot), ...unmaterializedToolDispatches(snapshot)].map((item) => item.id));
   const protectedReceipt = (item: AgentDispatchRecord) => item.phase !== 'settled' || !!item.recovery
     || item.materializationBlocked === true || unmaterialized.has(item.id);
   const completed = retained.filter((item) => !protectedReceipt(item)).slice(-255);
   const unfinished = retained.filter(protectedReceipt);
   if (unfinished.length >= 512) throw new Error('待核实调用记录过多，请先核实任务');
-  state.updateAgentTask(taskId, { dispatches: [...completed, ...unfinished, record] });
+  state.updateAgentTask(taskId, { steps, dispatches: [...completed, ...unfinished, record] });
   return useAppStore.getState().agentTasks.find((item) => item.id === taskId)!;
 }
 
-async function persistBarrier(taskId: string, record: AgentDispatchRecord): Promise<void> {
-  try { await saveAgentTask(replaceDispatch(taskId, record)); }
+async function persistBarrier(taskId: string, record: AgentDispatchRecord, toolStep?: ToolStepSettlement): Promise<void> {
+  try { await saveAgentTask(replaceDispatch(taskId, record, toolStep)); }
   catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     const state = useAppStore.getState();
@@ -96,6 +104,10 @@ export async function beginAgentDispatch(input: {
   if (input.kind === 'team-model' && unmaterializedTeamDispatches(task).some((record) => record.stepId === input.stepId)) {
     throw new Error('原团队阶段没有可恢复成果，请明确补充新要求或新建任务，普通继续不会重投');
   }
+  if (input.kind === 'tool' && input.effect !== 'read' && unmaterializedToolDispatches(task).some((record) =>
+    record.toolId === input.toolId && (!record.inputDigest || record.inputDigest === input.inputDigest))) {
+    throw new Error('原工具已成功返回但成功步骤不完整，请先只读核实或新建任务，普通继续不会重投');
+  }
   if (input.effect && input.effect !== 'read' && (task.dispatches ?? []).some((record) =>
     record.kind === 'tool' && record.effect !== 'read' && record.toolId === input.toolId
     && (record.phase === 'outcome_unknown' || record.phase === 'dispatched' || !!record.recovery)
@@ -123,15 +135,28 @@ export async function beginAgentDispatch(input: {
 
 export async function settleAgentDispatch(
   taskId: string, record: AgentDispatchRecord, outcome: 'succeeded' | 'failed' | 'unknown',
-  options: { materializationBlocked?: boolean } = {},
+  options: { materializationBlocked?: boolean; toolStep?: ToolStepSettlement } = {},
 ): Promise<void> {
   const current = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
   if (!current) throw new DOMException('任务已删除', 'AbortError');
   const stored = current.dispatches?.find((item) => item.id === record.id);
   if (!stored) return;
+  const toolStep = options.toolStep;
+  if (toolStep) {
+    const step = current.steps.find((item) => item.id === stored.stepId);
+    if (stored.kind !== 'tool' || toolStep.id !== stored.stepId || !step?.toolCall || !toolStep.toolCall
+      || step.toolCall.callId !== toolStep.toolCall.callId || step.toolCall.toolId !== stored.toolId
+      || toolStep.toolCall.toolId !== stored.toolId || step.toolCall.effect !== stored.effect
+      || toolStep.toolCall.effect !== stored.effect
+      || (stored.phase === 'settled' ? stored.outcome : outcome) !== toolStep.status) {
+      throw new Error('工具结算步骤与原调用身份或执行结论不匹配');
+    }
+  }
   if (stored.phase === 'settled') {
-    if (options.materializationBlocked === true && stored.materializationBlocked !== true) {
-      await persistBarrier(taskId, { ...stored, materializationBlocked: true });
+    if (toolStep || options.materializationBlocked === true && stored.materializationBlocked !== true) {
+      await persistBarrier(taskId, { ...stored,
+        ...(options.materializationBlocked === true ? { materializationBlocked: true as const } : {}),
+      }, toolStep);
     }
     return;
   }
@@ -139,7 +164,7 @@ export async function settleAgentDispatch(
     ...stored, phase: outcome === 'unknown' ? 'outcome_unknown' : 'settled', settledAt: Date.now(),
     ...(options.materializationBlocked === true ? { materializationBlocked: true as const } : {}),
     ...(outcome !== 'unknown' ? { outcome } : {}),
-  });
+  }, toolStep);
 }
 
 /** 仅用户在宿主界面核实后调用。模型/MCP 工具没有该写入口。 */

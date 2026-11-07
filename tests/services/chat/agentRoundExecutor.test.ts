@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentApprovalResolution, AgentMode, AgentTask } from '../../../src/types/agent';
 import type { ProposedToolCall, ToolResultSummary } from '../../../src/types/chat';
 import * as taskService from '../../../src/services/chat/agentTaskService';
+import * as resultService from '../../../src/services/chat/agentResultService';
 import { executeRegisteredAgentToolCall } from '../../../src/services/chat/agentToolExecution';
 import { MCP_GLOBAL_TOOL_NAMES, MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_TOOL_NAMES } from '../../../src/services/mcp/mcpSettingsScope';
 
@@ -188,6 +189,77 @@ it('does not call the model when the execution persistence barrier fails', async
     expect(useAppStore.getState().agentTasks[0].status).toBe('paused');
     await Promise.resolve();
   } finally { saving.mockRestore(); warning.mockRestore(); }
+});
+
+it.each(['success', 'error'] as const)('先耐久保存真实%s步骤，再进入大结果交付；交付失败不改写effect结论', async (returnedStatus) => {
+  const execute = vi.fn(async () => ({ status: returnedStatus, summary: '原工具执行结论', modelContent: '大结果'.repeat(4000) }));
+  registerAgentTool({ id: 'paid_result_boundary', title: '生成', description: '生成', effect: 'media_generation',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  const durableSnapshots: AgentTask[] = [];
+  const capture = vi.spyOn(resultService, 'captureAgentResult').mockImplementation(async () => {
+    const snapshot = await taskService.loadAgentTask('task-round');
+    if (!snapshot) throw new Error('工具结算尚未落盘');
+    durableSnapshots.push(snapshot);
+    throw new Error('模拟成功结算后进程中断或交付失败');
+  });
+  const call = { callId: 'original-paid-call', toolId: 'paid_result_boundary', input: {} };
+  const result = await executeRegisteredAgentToolCall({ taskId: 'task-round', call,
+    signal: new AbortController().signal, transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }) });
+  const terminalStatus = returnedStatus === 'success' ? 'succeeded' : 'failed';
+  expect(durableSnapshots[0]).toMatchObject({ toolCallCount: 1,
+    steps: [{ status: terminalStatus, outputSummary: '原工具执行结论',
+      toolCall: { callId: call.callId, resultSummary: '原工具执行结论', finishedAt: expect.any(Number) } }],
+    dispatches: [{ phase: 'settled', outcome: terminalStatus }],
+  });
+  expect(result).toMatchObject({ effectOutcome: returnedStatus, summary: { status: 'error', errorCode: 'AGENT_RESULT_DELIVERY_FAILED' } });
+  expect(useAppStore.getState().agentTasks[0]).toMatchObject({ status: 'paused', steps: [{ status: terminalStatus }],
+    dispatches: [{ phase: 'settled', outcome: terminalStatus }] });
+  expect(execute).toHaveBeenCalledOnce();
+  if (returnedStatus === 'success') {
+    // 只恢复结算落盘时的快照，丢弃进程中其后全部交付更新，重放原call仍不能重新付费。
+    const interrupted = durableSnapshots[0];
+    useAppStore.setState({ agentTasks: [{ ...interrupted, status: 'running' }] });
+    capture.mockRestore();
+    const replay = await executeRegisteredAgentToolCall({ taskId: 'task-round', call,
+      signal: new AbortController().signal, transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }) });
+    expect(replay.summary).toMatchObject({ status: 'success', summary: expect.stringContaining('复用先前成功结果') });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().agentTasks[0].dispatches).toEqual(interrupted.dispatches);
+  }
+});
+
+it('旧只读成功回执和本轮retryable错误不阻止只读重试', async () => {
+  const execute = vi.fn()
+    .mockResolvedValueOnce({ status: 'error', summary: '网络超时', modelContent: 'retry', retryable: true })
+    .mockResolvedValueOnce({ status: 'success', summary: '读取完成', modelContent: 'done' });
+  registerAgentTool({ id: 'read_retry_boundary', title: '读取', description: '读取', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  useAppStore.getState().updateAgentTask('task-round', { dispatches: [{ id: 'old-read', kind: 'tool',
+    toolId: 'read_retry_boundary', effect: 'read', stepId: 'missing-old-step', phase: 'settled', outcome: 'succeeded', preparedAt: 1 }] });
+  const result = await executeRegisteredAgentToolCall({ taskId: 'task-round',
+    call: { callId: 'read-again', toolId: 'read_retry_boundary', input: {} }, signal: new AbortController().signal,
+    transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }) });
+  expect(result.summary.status).toBe('success');
+  expect(execute).toHaveBeenCalledTimes(2);
+  expect(useAppStore.getState().agentTasks[0].steps[0]).toMatchObject({ status: 'succeeded', toolCall: { retryCount: 1 } });
+  expect(useAppStore.getState().agentTasks[0].dispatches?.slice(-2).map((item) => item.outcome)).toEqual(['failed', 'succeeded']);
+});
+
+it('最小工具结算保存失败时暂停，不启动后续付费调用', async () => {
+  const execute = vi.fn(async () => ({ status: 'success' as const, summary: '已生成', modelContent: 'done' }));
+  registerAgentTool({ id: 'settlement_failure_boundary', title: '生成', description: '生成', effect: 'media_generation',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  const save = taskService.saveAgentTask;
+  vi.spyOn(taskService, 'saveAgentTask').mockImplementation(async (task) => {
+    if (task.dispatches?.some((item) => item.kind === 'tool' && item.phase === 'settled')) throw new Error('结算存储失败');
+    await save(task);
+  });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  arrangeCalls([{ callId: 'first-paid', toolId: 'settlement_failure_boundary', input: {} },
+    { callId: 'next-paid', toolId: 'settlement_failure_boundary', input: {} }]);
+  await expect(runRound()).rejects.toMatchObject({ code: 'AGENT_DURABILITY_FAILED' });
+  expect(execute).toHaveBeenCalledOnce();
+  expect(useAppStore.getState().agentTasks[0]).toMatchObject({ status: 'paused', pausedReason: 'durability_failed' });
 });
 
 it.each([false, true])('executes application settings without a project only under the closed allowlist (invalid %s)', async (invalid) => {

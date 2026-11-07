@@ -25,6 +25,9 @@ export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; dr
 
 export interface ScriptWorkbenchSnapshot {
   schemaVersion?: 2;
+  /** 真实 WebView 实例的会话；业务 sessionId 在收回/重开间保持不变。 */
+  windowSessionId?: string;
+  acceptedRequestSequence?: number;
   windowContext?: ProjectWindowContext | null;
   sessionId: string; revision: number; acceptedEditSequence: number; draftVersion: number;
   series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; originalAddedAt?: number; exchangeEpoch?: number } | null;
@@ -102,10 +105,11 @@ export type ScriptWorkbenchAction =
 export type ScriptWorkbenchDispatch = (action: ScriptWorkbenchAction) => Promise<unknown>;
 export interface ScriptWorkbenchRequest {
   schemaVersion?: 2;
+  windowSessionId?: string;
   sequence?: number;
   windowContext?: ProjectWindowContext | null;
   sessionId: string; requestId: string; revision: number; episodeId: string | null;
   action: ScriptWorkbenchAction; handoff?: WorkbenchDraftHandoff;
   originalHandoff?: OriginalWritingHandoff;
 }
-export interface ScriptWorkbenchResponse { sessionId: string; requestId: string; sequence?: number; value?: unknown; error?: string }
+export interface ScriptWorkbenchResponse { sessionId: string; windowSessionId?: string; requestId: string; sequence?: number; value?: unknown; error?: string }

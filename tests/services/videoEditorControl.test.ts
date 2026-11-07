@@ -8,7 +8,9 @@ import type { BaseNodeData } from '../../src/types';
 import { createShotRow } from '../../src/types/shotlist';
 import type { VideoEditorTrackInput } from '../../src/types/videoEditorControl';
 const mocks = vi.hoisted(() => ({
-  store: { currentProjectId: 'p', nodes: [] as Node<BaseNodeData>[], getCurrentRevision: () => 1 },
+  store: { currentProjectId: 'p', nodes: [] as Node<BaseNodeData>[], getCurrentRevision: () => 1,
+    projectLoadStatus: 'ready', switchingProjectName: null,
+    projects: [] as Array<{ id: string; parentId?: string; exchangeEpoch: number }> },
   windows: vi.fn(async (): Promise<Array<{ label: string }>> => []),
   probe: vi.fn(async () => ({ duration: 8 })),
 }));
@@ -23,18 +25,38 @@ import { clearAgentToolRegistryForTests, getAgentTool, getAvailableAgentTools } 
 import { registerVideoEditorAgentTools } from '../../src/services/chat/tools/videoEditorTools';
 import { validateAgentToolInput } from '../../src/services/chat/agentToolSchemas';
 import { searchMcpToolCatalog } from '../../src/services/mcp/mcpToolCatalog';
+import { captureLegacyCanvasContext } from '../../src/services/projectExecutionContext';
+import { openDB, STORE_PROJECTS, STORE_VIDEO_EDITOR_PROJECTS } from '../../src/services/indexedDb/schema';
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const context = () => ({ projectId: 'p', baseRevision: 1, signal: new AbortController().signal });
+const canvasContext = () => {
+  const expected = captureLegacyCanvasContext(mocks.store);
+  if (!expected) throw new Error('测试画布上下文未就绪');
+  return expected;
+};
 const mediaNode = (id: string, type: BaseNodeData['type'] = 'source-image'): Node<BaseNodeData> => ({ id, type,
   position: { x: 0, y: 0 }, data: { type, label: id, status: 'success', filePath: `G:/private/${id}.png`, imageUrl: `asset://private/${id}` } });
 const track = (): VideoEditorTrackInput => ({ id: 'main', kind: 'video', name: '主轨', clips: [
   { id: 'c1', kind: 'image', nodeId: 'image', sourceIn: 0, sourceOut: 4, timelineStart: 0 },
 ] });
-beforeEach(() => {
+beforeEach(async () => {
   vi.unstubAllGlobals();
   mocks.store.currentProjectId = 'p'; mocks.store.nodes = [mediaNode('image'), mediaNode('audio', 'source-audio')];
+  mocks.store.projects = [{ id: 'owner-p', exchangeEpoch: 3 }, { id: 'p', parentId: 'owner-p', exchangeEpoch: 7 }];
+  mocks.store.projectLoadStatus = 'ready'; mocks.store.switchingProjectName = null;
+  const database = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction([STORE_PROJECTS, STORE_VIDEO_EDITOR_PROJECTS], 'readwrite');
+    transaction.objectStore(STORE_PROJECTS).clear();
+    transaction.objectStore(STORE_VIDEO_EDITOR_PROJECTS).clear();
+    for (const project of mocks.store.projects) transaction.objectStore(STORE_PROJECTS).put({
+      ...project, name: project.id, createdAt: 1, updatedAt: 1, nodes: [], edges: [],
+    });
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error('测试项目准备失败'));
+  });
   mocks.windows.mockReset().mockResolvedValue([]); mocks.probe.mockReset().mockResolvedValue({ duration: 8 });
 });
 
@@ -134,12 +156,41 @@ describe('MCP 剪辑工程', () => {
     const created = await createControlledEditor(context(), { nodeIds: ['image'] });
     const original = (await getVideoEditorProject(created.editorId))!;
     const next = { ...original, name: 'A', automationRevision: 2 };
-    const results = await Promise.allSettled([compareAndSaveVideoEditorProject(next, original),
-      compareAndSaveVideoEditorProject({ ...next, name: 'B' }, original)]);
+    const expected = canvasContext();
+    const results = await Promise.allSettled([compareAndSaveVideoEditorProject(next, original, expected),
+      compareAndSaveVideoEditorProject({ ...next, name: 'B' }, original, expected)]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    await expect(saveVideoEditorProject({ ...original, name: 'old window' })).rejects.toThrow('MCP');
+    await expect(saveVideoEditorProject({ ...original, name: 'old window' }, expected)).rejects.toThrow('MCP');
     expect((await getVideoEditorProject(created.editorId))?.automationRevision).toBe(2);
-    await saveVideoEditorProject({ ...(await getVideoEditorProject(created.editorId))!, name: 'fresh window' });
+    await saveVideoEditorProject({ ...(await getVideoEditorProject(created.editorId))!, name: 'fresh window' }, expected);
+  });
+  it.each(['owner-p', 'p'])('repository writers reject a stale %s epoch without changing the editor', async (projectId) => {
+    const created = await createControlledEditor(context(), { nodeIds: ['image'] });
+    const original = (await getVideoEditorProject(created.editorId))!;
+    const expected = canvasContext();
+    const database = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE_PROJECTS, 'readwrite');
+      const store = transaction.objectStore(STORE_PROJECTS);
+      const request = store.get(projectId);
+      request.onsuccess = () => store.put({ ...request.result, exchangeEpoch: request.result.exchangeEpoch + 1 });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = transaction.onabort = () => reject(transaction.error ?? new Error('测试项目代际更新失败'));
+    });
+    await expect(compareAndSaveVideoEditorProject({ ...original, name: 'stale CAS' }, original, expected)).rejects.toThrow('代际');
+    await expect(saveVideoEditorProject({ ...original, name: 'stale window' }, expected)).rejects.toThrow('代际');
+    expect(await getVideoEditorProject(created.editorId)).toEqual(original);
+  });
+  it('repository writers require the captured owner and canvas context', async () => {
+    const created = await createControlledEditor(context(), { nodeIds: ['image'] });
+    const original = (await getVideoEditorProject(created.editorId))!;
+    const expected = canvasContext();
+    await expect(saveVideoEditorProject({ ...original, name: 'missing context' })).rejects.toThrow();
+    await expect(compareAndSaveVideoEditorProject({ ...original, name: 'wrong canvas' }, original,
+      { ...expected, canvasId: 'foreign' })).rejects.toThrow('画布');
+    await expect(saveVideoEditorProject({ ...original, name: 'wrong owner' },
+      { ...expected, projectId: 'foreign' })).rejects.toThrow('画布');
+    expect(await getVideoEditorProject(created.editorId)).toEqual(original);
   });
   it('refuses foreign projects, stale canvas revisions, aborted requests and open editor windows', async () => {
     const created = await createControlledEditor(context(), { nodeIds: ['image'] });

@@ -48,6 +48,10 @@ import {
   emitTeamArtifactResponse,
   emitManagedChatResponse,
   emitChatSendResponse,
+  endChatWindowSession,
+  getMainChatWindowSessionId,
+  nextChatWindowRevision,
+  subscribeChatWindowSession,
   hasChatStatePatchChanges,
   initMainWindowListener,
   type ChatAction,
@@ -97,7 +101,7 @@ interface DetachedChatSyncControllerOptions {
   emitSync?: (sync: ChatStateSync) => Promise<void>;
   initListener?: (
     onAction: (action: ChatAction) => void,
-    onDetachClosed: (draft?: ChatComposerHandoff) => void,
+    onDetachClosed: (draft?: ChatComposerHandoff, sessionId?: string) => void,
   ) => Promise<() => void>;
   now?: () => number;
 }
@@ -527,8 +531,8 @@ export function handleDetachedChatAction(
           if (managedRequests.size >= 128) for (const [id, record] of managedRequests) { if (record.completed) { managedRequests.delete(id); break; } }
           if (managedRequests.size >= 128) throw new Error('主窗口正在处理过多请求');
           const result = executeManagedChatOperation(action.operation, action.scopeId, action.conversationId, action.draft, assertCurrent)
-            .then((value): ChatManagedResponse => ({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId, value }),
-              (error: unknown): ChatManagedResponse => ({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId,
+            .then((value): ChatManagedResponse => ({ requestId: action.requestId, sessionId: action.windowFrame?.sessionId, scopeId: action.scopeId, conversationId: action.conversationId, value }),
+              (error: unknown): ChatManagedResponse => ({ requestId: action.requestId, sessionId: action.windowFrame?.sessionId, scopeId: action.scopeId, conversationId: action.conversationId,
                 error: sanitizeDomainText(error instanceof Error ? error.message : '操作未完成').slice(0, 300) }));
           accepted = { signature, result, completed: false }; managedRequests.set(action.requestId, accepted);
           void result.finally(() => { const record = managedRequests.get(action.requestId); if (record) record.completed = true; });
@@ -536,7 +540,7 @@ export function handleDetachedChatAction(
         const response = await accepted.result;
         requestSync(true);
         await emitManagedChatResponse(response);
-      })().catch(() => emitManagedChatResponse({ requestId: action.requestId, scopeId: action.scopeId, conversationId: action.conversationId,
+      })().catch(() => emitManagedChatResponse({ requestId: action.requestId, sessionId: action.windowFrame?.sessionId, scopeId: action.scopeId, conversationId: action.conversationId,
         error: '窗口操作未确认，请核对最新状态；未自动重试' }).catch(() => undefined));
       break;
     }
@@ -561,9 +565,9 @@ export function handleDetachedChatAction(
     case 'read_team_artifact': {
       if (typeof action.requestId !== 'string' || !/^[A-Za-z0-9_-]{8,120}$/.test(action.requestId)) break;
       void readTeamTaskArtifact(action.taskId, action.artifactId)
-        .then((text) => emitTeamArtifactResponse({ requestId: action.requestId, taskId: action.taskId,
+        .then((text) => emitTeamArtifactResponse({ requestId: action.requestId, sessionId: action.windowFrame?.sessionId, taskId: action.taskId,
           artifactId: action.artifactId, ...(text.length <= 120000 ? { text } : { error: '产物超过窗口预览上限，请在主窗口查看' }) }))
-        .catch(() => emitTeamArtifactResponse({ requestId: action.requestId, taskId: action.taskId,
+        .catch(() => emitTeamArtifactResponse({ requestId: action.requestId, sessionId: action.windowFrame?.sessionId, taskId: action.taskId,
           artifactId: action.artifactId, error: '无法读取原任务产物，请检查项目与成果版本后重试' }).catch(() => {}));
       break;
     }
@@ -624,7 +628,7 @@ export function handleDetachedChatAction(
     case 'send_message': {
       if ((!action.content.trim() && !action.imageFileNames?.length)
         || (action.conversationId && !store.conversations.some((item) => item.id === action.conversationId && !item.deletedAt))) {
-        void emitChatSendResponse(action.requestId, false).catch(() => {}); break;
+        void emitChatSendResponse(action.requestId, false, action.windowFrame?.sessionId).catch(() => {}); break;
       }
       const conversationId = action.conversationId
         ?? store.createConversation(store.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
@@ -649,7 +653,7 @@ export function handleDetachedChatAction(
         store.setChatComposerLiveDraft('', conversationId);
         requestSync(true);
       }
-      void emitChatSendResponse(action.requestId, submitted?.status !== 'ignored').catch(() => {});
+      void emitChatSendResponse(action.requestId, submitted?.status !== 'ignored', action.windowFrame?.sessionId).catch(() => {});
       break;
     }
 
@@ -837,7 +841,8 @@ export function handleDetachedChatAction(
     case 'dock_window':
       if (action.composerDraft) store.setChatComposerLiveDraft(action.composerDraft.draft, action.composerDraft.conversationId);
       store.setHoveredMentionNodeId(null);
-      void emitChatSendResponse(action.requestId, true).catch(() => {});
+      void emitChatSendResponse(action.requestId, true, action.windowFrame?.sessionId)
+        .then(() => endChatWindowSession(action.windowFrame?.sessionId)).catch(() => {});
       if (action.type === 'dock_window') { store.setChatPanelDetached(false); store.openChat(); }
       break;
 
@@ -871,17 +876,18 @@ export function createDetachedChatSyncController(
   let forceSnapshotPending = false;
   let consecutiveFailures = 0;
   let generation = 0;
-  let sessionId = crypto.randomUUID();
+  let sessionId = getMainChatWindowSessionId();
   let acceptedSequence = 0;
   const frames = new Map<number, ProjectWindowFrame>();
   let cleanupListener: (() => void) | undefined;
   let unsubscribeStore: (() => void) | undefined;
   let unsubscribeFileGrants: (() => void) | undefined;
   let unsubscribeImagePreviews: (() => void) | undefined;
+  let unsubscribeSession: (() => void) | undefined;
 
   const resetSyncState = () => {
     generation += 1;
-    sessionId = crypto.randomUUID();
+    sessionId = getMainChatWindowSessionId();
     acceptedSequence = 0;
     frames.clear();
     // 已发出的旧帧可能还在路上，重新打开窗口时不能复用它的版本号。
@@ -900,7 +906,7 @@ export function createDetachedChatSyncController(
     if (disposed || inFlight || !pending) return;
 
     const state = useAppStore.getState();
-    if (!state.chatPanelDetached) {
+    if (!state.chatPanelDetached || !sessionId) {
       resetSyncState();
       return;
     }
@@ -913,10 +919,11 @@ export function createDetachedChatSyncController(
 
     try {
       const nextSnapshot = buildDetachedChatSnapshot(state);
+      const nextRevision = nextChatWindowRevision();
       const conversation = state.conversations.find((item) => item.id === nextSnapshot.activeConversationId);
       const context = captureProjectWindowContext(state, conversation?.workbenchTarget?.episodeId);
       const nextFrame: ProjectWindowFrame | null = context ? { schemaVersion: 2, sessionId,
-        revision: revision + 1, context, conversationId: nextSnapshot.activeConversationId } : null;
+        revision: nextRevision, context, conversationId: nextSnapshot.activeConversationId } : null;
       nextSnapshot.windowFrame = nextFrame;
       const previousSnapshot = lastSnapshot;
       const forceSnapshot = forceSnapshotPending || !previousSnapshot;
@@ -930,10 +937,9 @@ export function createDetachedChatSyncController(
         }
 
         const baseRevision = revision;
-        const nextRevision = revision + 1;
         if (nextFrame) frames.set(nextRevision, nextFrame);
         if (frames.size > 64) frames.delete(frames.keys().next().value!);
-        await emitSync({ type: 'patch', baseRevision, revision: nextRevision, patch });
+        await emitSync({ type: 'patch', sessionId, acceptedSequence, baseRevision, revision: nextRevision, patch });
         if (disposed || generation !== startedGeneration) return;
         lastSnapshot = nextSnapshot;
         revision = nextRevision;
@@ -941,11 +947,10 @@ export function createDetachedChatSyncController(
         return;
       }
 
-      const nextRevision = revision + 1;
       forceSnapshotPending = false;
       if (nextFrame) frames.set(nextRevision, nextFrame);
       if (frames.size > 64) frames.delete(frames.keys().next().value!);
-      await emitSync({ type: 'snapshot', revision: nextRevision, snapshot: nextSnapshot });
+      await emitSync({ type: 'snapshot', sessionId, acceptedSequence, revision: nextRevision, snapshot: nextSnapshot });
       if (disposed || generation !== startedGeneration) return;
       lastSnapshot = nextSnapshot;
       revision = nextRevision;
@@ -978,7 +983,7 @@ export function createDetachedChatSyncController(
 
   const sync = (immediate = false, forceSnapshot = false): void => {
     if (!enabled || disposed) return;
-    if (!useAppStore.getState().chatPanelDetached) {
+    if (!useAppStore.getState().chatPanelDetached || !sessionId) {
       resetSyncState();
       return;
     }
@@ -1007,6 +1012,7 @@ export function createDetachedChatSyncController(
 
   const start = async (): Promise<void> => {
     if (!enabled || disposed || unsubscribeStore) return;
+    unsubscribeSession = subscribeChatWindowSession(() => { cancelMainReferencePreview(); resetSyncState(); sync(true, true); });
 
     unsubscribeStore = useAppStore.subscribe((state, previous) => {
       if (!state.chatPanelDetached) {
@@ -1026,26 +1032,29 @@ export function createDetachedChatSyncController(
 
     const listenerCleanup = await initListener(
       (action) => {
-        if (action?.type === 'request_sync') { sync(true, true); return; }
+        if (action?.type === 'request_sync') {
+          if (sessionId && action.sessionId === sessionId) sync(true, true);
+          return;
+        }
         const frame = action?.windowFrame;
         const published = frame && frames.get(frame.revision);
         const state = useAppStore.getState();
         const activeOwner = seriesOwnerId(state.projects, state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
         const activeConversationId = state.conversations.find((item) => item.id === state.activeConversationId
           && (item.projectId === activeOwner || item.id === MCP_SETTINGS_CONVERSATION_ID))?.id ?? null;
-        const valid = frame?.schemaVersion === 2 && frame.sessionId === sessionId
+        const valid = !disposed && state.chatPanelDetached && sessionId && frame?.schemaVersion === 2 && frame.sessionId === sessionId
           && !!published && JSON.stringify(frame) === JSON.stringify(published)
           && Number.isSafeInteger(action.sequence) && action.sequence! > acceptedSequence
           && frame.conversationId === activeConversationId
           && isProjectWindowContextCurrent(frame.context, state);
         if (!valid || !frame) {
           // 拒绝旧/过期协议，不把旧输入或任务动作补绑到当前项目。
-          if (action?.type === 'managed_request') void emitManagedChatResponse({ requestId: action.requestId,
+          if (action?.type === 'managed_request') void emitManagedChatResponse({ requestId: action.requestId, sessionId: frame?.sessionId,
             scopeId: action.scopeId, conversationId: action.conversationId,
             error: '窗口上下文已变化，请刷新后核对；草稿仍保留，未自动重试' }).catch(() => {});
-          if (action?.type === 'read_team_artifact') void emitTeamArtifactResponse({ requestId: action.requestId,
+          if (action?.type === 'read_team_artifact') void emitTeamArtifactResponse({ requestId: action.requestId, sessionId: frame?.sessionId,
             taskId: action.taskId, artifactId: action.artifactId, error: '窗口上下文已变化，请重新打开原任务' }).catch(() => {});
-          if (['send_message', 'dock_window', 'close_window'].includes(action?.type)) void emitChatSendResponse('requestId' in action ? action.requestId : undefined, false).catch(() => {});
+          if (['send_message', 'dock_window', 'close_window'].includes(action?.type)) void emitChatSendResponse('requestId' in action ? action.requestId : undefined, false, frame?.sessionId).catch(() => {});
           sync(true, true);
           return;
         }
@@ -1062,14 +1071,16 @@ export function createDetachedChatSyncController(
         if ((action.type === 'dock_window' || action.type === 'close_window') && action.composerDraft
           && (action.composerDraft.conversationId !== frame.conversationId
             || JSON.stringify(action.composerDraft.windowFrame) !== JSON.stringify(frame))) {
-          void emitChatSendResponse(action.requestId, false).catch(() => {}); sync(true, true); return;
+          void emitChatSendResponse(action.requestId, false, frame.sessionId).catch(() => {}); sync(true, true); return;
         }
         const assertCurrent = () => {
-          if (!isProjectWindowContextCurrent(frame.context, useAppStore.getState())) throw new Error('窗口上下文已变化，已停止原操作');
+          if (disposed || frame.sessionId !== sessionId || !useAppStore.getState().chatPanelDetached
+            || !isProjectWindowContextCurrent(frame.context, useAppStore.getState())) throw new Error('窗口上下文已变化，已停止原操作');
         };
         handleDetachedChatAction(action, sync, assertCurrent);
       },
-      (draft) => {
+      (draft, closedSessionId) => {
+        if (!sessionId || closedSessionId !== sessionId) return;
         cancelMainReferencePreview();
         const store = useAppStore.getState();
         if (draft?.windowFrame?.sessionId === sessionId
@@ -1080,6 +1091,7 @@ export function createDetachedChatSyncController(
           if (!draft.conversationId || conversation) store.setChatComposerLiveDraft(draft.draft, draft.conversationId);
         }
         store.setHoveredMentionNodeId(null);
+        endChatWindowSession(closedSessionId);
       },
     );
     if (disposed) {
@@ -1102,6 +1114,8 @@ export function createDetachedChatSyncController(
     unsubscribeFileGrants = undefined;
     unsubscribeImagePreviews?.();
     unsubscribeImagePreviews = undefined;
+    unsubscribeSession?.();
+    unsubscribeSession = undefined;
     cleanupListener?.();
     cleanupListener = undefined;
   };

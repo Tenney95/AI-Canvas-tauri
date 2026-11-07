@@ -427,6 +427,14 @@ export interface MediaTaskContext {
   deliveryMode?: 'node' | 'message' | 'node+message';
   canvasNodeId?: string;
   modelId?: string;
+  /** 剪辑转场使用独立跟踪 ID；锚点只供用户主动取回，不是画布写入授权。 */
+  editorTransition?: {
+    anchorNodeId: string;
+    requestId: string;
+    /** 项目数据根目录内的实际文件名，不保存本机绝对路径。 */
+    fileName?: string;
+    delivered?: true;
+  };
   /** 原任务恢复与回填所需的媒体参数，不包含提示词或素材。 */
   parameters?: import('./media').MediaGenerationParameters;
 }

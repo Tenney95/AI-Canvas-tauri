@@ -25,6 +25,7 @@ import {
 import { clearAgentResults } from './agentResultService';
 import type { LegacyProjectBinding } from '../../types/project';
 import { getLegacyCanvasAliases, readLegacyExecutionScope } from '../projectExecutionCompatibility';
+import { unmaterializedToolDispatches } from './agentCheckpointService';
 
 const taskWrites = new Map<string, Promise<void>>();
 const removedTasks = new Set<string>();
@@ -174,7 +175,8 @@ export async function repairInterruptedAgentTasks(projectId: string): Promise<st
   await Promise.all(tasks.map(async (rawTask) => {
     const task = normalizeTask(rawTask);
     if (!AGENT_RESTART_PAUSE_STATUSES.has(task.status)
-      && !task.dispatches?.some((item) => item.phase === 'prepared' || item.phase === 'dispatched')) return;
+      && !task.dispatches?.some((item) => item.phase === 'prepared' || item.phase === 'dispatched')
+      && !unmaterializedToolDispatches(task).length) return;
 
     const now = Date.now();
     const dispatches = (task.dispatches ?? []).map<AgentDispatchRecord>((item) => item.phase === 'prepared'

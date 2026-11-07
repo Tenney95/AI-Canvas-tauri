@@ -9,6 +9,7 @@ vi.mock('../../../src/store/useAppStore', () => ({ useAppStore: { getState: () =
 }) } }));
 vi.mock('../../../src/services/chat/agentTaskService', () => ({ saveAgentTask: fixture.save }));
 import { beginAgentDispatch, settleAgentDispatch, resolveAgentDispatchOutcome, unmaterializedTeamDispatches, AgentDurabilityError } from '../../../src/services/chat/agentDurabilityService';
+import { unmaterializedToolDispatches } from '../../../src/services/chat/agentCheckpointService';
 
 beforeEach(() => {
   fixture.tasks = [{ id: 'dispatch-task', projectId: 'project', conversationId: 'conv', userMessageId: 'message',
@@ -18,6 +19,93 @@ beforeEach(() => {
 });
 
 describe('Agent 执行持久化屏障', () => {
+  it('工具结论与原成功步骤在同一快照落盘，进程中断后仍保留身份与预算', async () => {
+    const task = fixture.tasks[0];
+    task.modelRounds = 7; task.toolCallCount = 19; task.resumeCount = 3;
+    const step = { id: 'paid-step', taskId: task.id, index: 0, kind: 'tool' as const, title: '生成',
+      status: 'running' as const, createdAt: 1, updatedAt: 1,
+      toolCall: { callId: 'original-call', toolId: 'media_generate', effect: 'media_generation' as const,
+        retryCount: 0, inputFingerprint: 'original-fingerprint' } };
+    task.steps = [step];
+    const record = await beginAgentDispatch({ taskId: task.id, kind: 'tool', stepId: step.id,
+      toolId: step.toolCall.toolId, effect: step.toolCall.effect, inputDigest: 'a'.repeat(64) });
+    fixture.save.mockClear();
+    let persisted: AgentTask | undefined;
+    fixture.save.mockImplementation(async (snapshot: AgentTask) => { persisted = structuredClone(snapshot); });
+    await settleAgentDispatch(task.id, record, 'succeeded', { toolStep: {
+      id: step.id, status: 'succeeded', outputSummary: '生成已完成',
+      toolCall: { ...step.toolCall, resultSummary: '生成已完成', finishedAt: 2 },
+    } });
+    expect(fixture.save).toHaveBeenCalledOnce();
+    expect(persisted).toMatchObject({ modelRounds: 7, toolCallCount: 19, resumeCount: 3,
+      steps: [{ id: step.id, status: 'succeeded', outputSummary: '生成已完成',
+        toolCall: { callId: 'original-call', inputFingerprint: 'original-fingerprint', finishedAt: 2 } }],
+      dispatches: [{ id: record.id, phase: 'settled', outcome: 'succeeded' }],
+    });
+    expect(unmaterializedToolDispatches(persisted!)).toEqual([]);
+  });
+
+  it.each(['running', 'pending', 'missing'] as const)('旧成功回执的%s步骤不可按同摘要重投且不会降为未知', async (state) => {
+    const task = fixture.tasks[0];
+    task.modelRounds = 6; task.toolCallCount = 20; task.resumeCount = 2;
+    task.steps = state === 'missing' ? [] : [{ id: 'old-step', taskId: task.id, index: 0, kind: 'tool',
+      title: '生成', status: state, createdAt: 1, updatedAt: 1,
+      toolCall: { callId: 'old-call', toolId: 'media_generate', effect: 'media_generation', retryCount: 0 } }];
+    const record = { id: 'old-dispatch', kind: 'tool' as const, stepId: 'old-step', toolId: 'media_generate',
+      effect: 'media_generation' as const, inputDigest: 'a'.repeat(64), phase: 'settled' as const,
+      outcome: 'succeeded' as const, preparedAt: 1, settledAt: 2 };
+    task.dispatches = [record];
+    await expect(beginAgentDispatch({ taskId: task.id, kind: 'tool', toolId: record.toolId,
+      effect: record.effect, inputDigest: record.inputDigest })).rejects.toThrow('普通继续不会重投');
+    await settleAgentDispatch(task.id, record, 'unknown');
+    expect(task.dispatches).toEqual([record]);
+    expect(task).toMatchObject({ modelRounds: 6, toolCallCount: 20, resumeCount: 2 });
+    expect(fixture.save).not.toHaveBeenCalled();
+  });
+
+  it('裁剪终态回执时保留旧成功但缺原步骤的写入证明，只读工具仍可调用', async () => {
+    const task = fixture.tasks[0];
+    task.dispatches = [{ id: 'missing-tool-step', kind: 'tool', stepId: 'missing', toolId: 'media_generate',
+      effect: 'media_generation', phase: 'settled', outcome: 'succeeded', preparedAt: 1 },
+      ...Array.from({ length: 256 }, (_, index) => ({ id: `settled-${index}`, kind: 'model' as const,
+        phase: 'settled' as const, outcome: 'succeeded' as const, preparedAt: index + 2 }))];
+    await beginAgentDispatch({ taskId: task.id, kind: 'tool', toolId: 'media_generate', effect: 'read' });
+    expect(task.dispatches?.find((item) => item.id === 'missing-tool-step')).toMatchObject({ outcome: 'succeeded' });
+  });
+
+  it.each(['call', 'tool', 'outcome'] as const)('不把不匹配的%s步骤补进已结算成功回执', async (mismatch) => {
+    const task = fixture.tasks[0];
+    const toolCall = { callId: 'original-call', toolId: 'media_generate', effect: 'media_generation' as const, retryCount: 0 };
+    task.steps = [{ id: 'original-step', taskId: task.id, index: 0, kind: 'tool', title: '生成',
+      status: 'pending', createdAt: 1, updatedAt: 1, toolCall }];
+    const record = { id: 'settled-tool', kind: 'tool' as const, phase: 'settled' as const, outcome: 'succeeded' as const,
+      stepId: 'original-step', toolId: toolCall.toolId, effect: toolCall.effect, preparedAt: 1, settledAt: 2 };
+    task.dispatches = [record];
+    await expect(settleAgentDispatch(task.id, record, 'succeeded', { toolStep: {
+      id: 'original-step', status: mismatch === 'outcome' ? 'failed' : 'succeeded', outputSummary: '完成',
+      toolCall: { ...toolCall, ...(mismatch === 'call' ? { callId: 'other-call' } : {}),
+        ...(mismatch === 'tool' ? { toolId: 'other-tool' } : {}) },
+    } })).rejects.toThrow('不匹配');
+    expect(task.dispatches).toEqual([record]);
+    expect(task.steps[0].status).toBe('pending');
+    expect(fixture.save).not.toHaveBeenCalled();
+  });
+
+  it('已结算成功只能补原步骤，不反转原outcome或settledAt', async () => {
+    const task = fixture.tasks[0];
+    const toolCall = { callId: 'original-call', toolId: 'media_generate', effect: 'media_generation' as const, retryCount: 0 };
+    task.steps = [{ id: 'original-step', taskId: task.id, index: 0, kind: 'tool', title: '生成',
+      status: 'pending', createdAt: 1, updatedAt: 1, toolCall }];
+    const record = { id: 'settled-tool', kind: 'tool' as const, phase: 'settled' as const, outcome: 'succeeded' as const,
+      stepId: 'original-step', toolId: toolCall.toolId, effect: toolCall.effect, preparedAt: 1, settledAt: 2 };
+    task.dispatches = [record];
+    await settleAgentDispatch(task.id, record, 'failed', { toolStep: {
+      id: 'original-step', status: 'succeeded', outputSummary: '完成', toolCall: { ...toolCall, resultSummary: '完成' },
+    } });
+    expect(task.dispatches).toEqual([record]);
+    expect(task.steps[0]).toMatchObject({ status: 'succeeded', toolCall: { callId: 'original-call' } });
+  });
+
   it('P4 已明确完成但没有可接纳产物的团队阶段保留原回执，普通继续不能重新付费', async () => {
     const task = fixture.tasks[0];
     task.teamRun = { revision: 1, stages: [], artifacts: [] } as unknown as AgentTeamRun;

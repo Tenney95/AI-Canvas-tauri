@@ -521,8 +521,16 @@ export async function executePreparedToolCall(
       });
       const result = await prepared.definition.execute(executionContext, prepared.input);
       returnedResult = result;
-      // 先保留真实执行结论，再判断可否交付。切集不能抹掉付费/提交事实。
-      await settleAgentDispatch(taskId, dispatch, result.status === 'success' ? 'succeeded' : 'failed');
+      const status = result.status === 'success' ? 'succeeded' : 'failed';
+      const persistentSummary = sanitizePersistentSummary(result.summary);
+      const currentToolCall = getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall
+        ?? step.toolCall!;
+      // 最小成功步骤与真实执行结论同一快照落盘；大结果保存、切集或交付失败不能留下可重投窗口。
+      await settleAgentDispatch(taskId, dispatch, status, { toolStep: {
+        id: step.id, status, outputSummary: persistentSummary, errorCode: result.errorCode,
+        toolCall: { ...currentToolCall, callId: call.callId, toolId: call.toolId, effect: prepared.definition.effect,
+          retryCount, finishedAt: Date.now(), resultSummary: persistentSummary, errorCode: result.errorCode },
+      } });
       // 导航/结构工具有意改变上下文；其后下一次工具仍按原意图复核，不自动改绑。
       const changesContext = /^(?:project_(?:create|open|switch|delete|rename)|episode_(?:move|delete)|series_split_episodes)$/.test(call.toolId);
       if (!changesContext) assertAgentProjectContext(useAppStore.getState(), executionContext, { checkRevision: false });
@@ -534,11 +542,11 @@ export async function executePreparedToolCall(
       const revisionAfterExecution = useAppStore.getState().getCurrentRevision();
       const historyIndexAfterExecution = useAppStore.getState().historyIndex;
       if (result.status === 'error' && result.retryable && retryCount < maxRetries) {
-        await settleAgentDispatch(taskId, dispatch, 'failed');
         assertAgentTaskActive(taskId, context.signal);
         retryCount += 1;
         addAgentTaskMetrics(taskId, { retryCount: 1 });
         updateStep(taskId, step.id, {
+          status: 'running',
           toolCall: {
             ...step.toolCall!,
             retryCount,
@@ -550,8 +558,6 @@ export async function executePreparedToolCall(
         continue;
       }
 
-      const status = result.status === 'success' ? 'succeeded' : 'failed';
-      const persistentSummary = sanitizePersistentSummary(result.summary);
       const persistResult = prepared.definition.resultPolicy?.storage === 'project'
         && result.resultPolicy?.storage !== 'memory' && !result.resultPolicy?.authorize
         && (result.resultPolicy?.source ?? prepared.definition.resultPolicy.source) === 'project-derived';
@@ -592,8 +598,6 @@ export async function executePreparedToolCall(
             revisionAfter: checkpointAfter.revision,
           }
         : undefined;
-      const currentToolCall = getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall
-        ?? step.toolCall!;
       updateStep(taskId, step.id, {
         status,
         outputSummary: persistentSummary,
@@ -636,7 +640,6 @@ export async function executePreparedToolCall(
           ...canvasCheckpoint,
         });
       }
-      await settleAgentDispatch(taskId, dispatch, result.status === 'success' ? 'succeeded' : 'failed');
       const modelContent = captured.modelContent;
       return {
         summary: {

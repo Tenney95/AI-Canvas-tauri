@@ -54,6 +54,29 @@ function createInterruptedTask(): AgentTask {
 }
 
 describe('repairInterruptedAgentTasks', () => {
+  it('旧成功dispatch缺原成功步骤时保持已知结论、原ID与累计预算，恢复后拒绝普通继续', async () => {
+    const service = await import('../../../src/services/chat/agentTaskService');
+    const db = await import('../../../src/services/indexedDbService');
+    const { useAppStore } = await import('../../../src/store/useAppStore');
+    const { validateTaskResumable } = await import('../../../src/services/chat/agentTaskControl');
+    const task = createInterruptedTask(); task.status = 'running'; task.mode = 'autonomous';
+    task.modelRounds = 9; task.toolCallCount = 21; task.resumeCount = 4;
+    task.steps[0] = { ...task.steps[0], kind: 'tool', status: 'running', approval: undefined,
+      toolCall: { callId: 'original-paid-call', toolId: 'media_generate', effect: 'media_generation', retryCount: 0 } };
+    task.dispatches = [{ id: 'original-dispatch', stepId: task.steps[0].id, kind: 'tool',
+      toolId: 'media_generate', effect: 'media_generation', inputDigest: 'a'.repeat(64),
+      phase: 'settled', outcome: 'succeeded', preparedAt: 1, settledAt: 2 }];
+    await db.putAgentTask(task);
+    await service.repairInterruptedAgentTasks(task.projectId);
+    const repaired = await service.loadAgentTask(task.id);
+    expect(repaired).toMatchObject({ status: 'paused', modelRounds: 9, toolCallCount: 21, resumeCount: 4,
+      steps: [{ id: task.steps[0].id, status: 'pending', toolCall: { callId: 'original-paid-call' } }],
+      dispatches: task.dispatches });
+    useAppStore.setState({ agentTasks: [repaired!] });
+    expect(validateTaskResumable(task.id)).toMatchObject({ ok: false, errorCode: 'AGENT_SUCCESS_STEP_INCOMPLETE' });
+    expect(await db.getAgentTask(task.id)).toMatchObject({ modelRounds: 9, toolCallCount: 21, resumeCount: 4, dispatches: task.dispatches });
+  });
+
   it('P4 owner历史聚合按原Canvas alias读取并保留退役回执、排序与原预算，不写回任务', async () => {
     const service = await import('../../../src/services/chat/agentTaskService');
     const db = await import('../../../src/services/indexedDbService');

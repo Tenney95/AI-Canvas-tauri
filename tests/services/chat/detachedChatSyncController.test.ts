@@ -2,7 +2,7 @@
  * detachedChatSyncController — 回归测试：detached chat sync controller。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatAction } from '../../../src/services/chat/chatWindowService';
+import type { ChatAction, ChatComposerHandoff } from '../../../src/services/chat/chatWindowService';
 
 const conversationControllerMocks = vi.hoisted(() => ({
   submit: vi.fn(),
@@ -25,7 +25,7 @@ import {
   projectChatNodes,
   executeManagedChatOperation,
 } from '../../../src/services/chat/detachedChatSyncController';
-import { applyChatStatePatch, createChatStatePatch, receiveChatStateSync, type ChatStateSync, type ChatWindowState } from '../../../src/services/chat/chatWindowService';
+import { applyChatStatePatch, beginChatWindowSession, createChatStatePatch, getMainChatWindowSessionId, receiveChatStateSync, type ChatStateSync, type ChatWindowState } from '../../../src/services/chat/chatWindowService';
 import { runAgentTask } from '../../../src/services/chat/agentTaskControl';
 import { useAppStore } from '../../../src/store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../../src/services/chat/assistantScope';
@@ -74,6 +74,7 @@ function arrangeDetachedState(): void {
 }
 
 beforeEach(() => {
+  beginChatWindowSession();
   arrangeDetachedState();
   conversationControllerMocks.submit.mockReset();
   conversationControllerMocks.resolveApproval.mockReset();
@@ -83,6 +84,70 @@ beforeEach(() => {
 });
 
 describe('detached chat sync controller', () => {
+  it('旧窗已接收但尚未执行的异步请求不能在重开后获准执行', async () => {
+    let releaseDigest!: (value: ArrayBuffer) => void;
+    const hashing = new Promise<ArrayBuffer>((resolve) => { releaseDigest = resolve; });
+    const digest = vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(() => hashing);
+    const updateConfig = vi.spyOn(useAppStore.getState(), 'updateConfig');
+    const emissions: ChatStateSync[] = [];
+    let dispatch!: (action: ChatAction) => void;
+    const controller = createDetachedChatSyncController({ enabled: true, syncIntervalMs: 0,
+      emitSync: async (sync) => { emissions.push(sync); },
+      initListener: async (handler) => { dispatch = handler; return () => {}; } });
+    await controller.start();
+    try {
+      const frame = syncFrame(emissions.at(-1))!;
+      dispatch({ type: 'managed_request', requestId: 'delayed_old_window_request', scopeId: 'project-1', conversationId: 'conversation-1',
+        windowFrame: frame, sequence: 1, operation: { kind: 'save_team_profile', profile: { version: 1, name: '旧窗配置',
+          roles: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' }, maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 } } });
+      expect(digest).toHaveBeenCalledOnce();
+      beginChatWindowSession();
+      releaseDigest(new ArrayBuffer(32));
+      await hashing;
+      await Promise.resolve();
+      expect(updateConfig).not.toHaveBeenCalled();
+    } finally { releaseDigest(new ArrayBuffer(32)); digest.mockRestore(); updateConfig.mockRestore(); controller.dispose(); }
+  });
+
+  it.each(['close_window', 'dock_window'] as const)('编辑后 %s 再打开允许新窗从低序号操作，拒绝旧窗握手和迟到写入', async (closeType) => {
+    const emissions: ChatStateSync[] = [];
+    let dispatch!: (action: ChatAction) => void;
+    let closed!: (draft?: ChatComposerHandoff, sessionId?: string) => void;
+    const controller = createDetachedChatSyncController({ enabled: true, syncIntervalMs: 0,
+      emitSync: async (sync) => { emissions.push(sync); },
+      initListener: async (onAction, onClosed) => { dispatch = onAction; closed = onClosed; return () => {}; } });
+    await controller.start();
+    try {
+      await vi.waitFor(() => expect(syncFrame(emissions.at(-1))).toBeTruthy());
+      const oldFrame = syncFrame(emissions.at(-1))!;
+      dispatch({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: '原窗输入', windowFrame: oldFrame, sequence: 40 });
+      dispatch({ type: 'request_sync', sessionId: oldFrame.sessionId });
+      await vi.waitFor(() => expect(emissions.at(-1)?.acceptedSequence).toBe(40));
+      expect(syncFrame(emissions.at(-1))?.sessionId).toBe(oldFrame.sessionId);
+      dispatch({ type: closeType, windowFrame: oldFrame, sequence: 41,
+        composerDraft: { conversationId: 'conversation-1', draft: '关闭前最后输入', windowFrame: oldFrame } });
+      await vi.waitFor(() => expect(getMainChatWindowSessionId()).toBeUndefined());
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('关闭前最后输入');
+      const sessionId = beginChatWindowSession();
+      useAppStore.getState().setChatPanelDetached(true);
+      await vi.waitFor(() => expect(syncFrame(emissions.at(-1))?.sessionId).toBe(sessionId));
+      const nextFrame = syncFrame(emissions.at(-1))!;
+      const count = emissions.length;
+      dispatch({ type: 'request_sync', sessionId: oldFrame.sessionId });
+      closed(undefined, oldFrame.sessionId);
+      expect(emissions).toHaveLength(count);
+      expect(getMainChatWindowSessionId()).toBe(sessionId);
+      dispatch({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: '新窗输入', windowFrame: nextFrame, sequence: 1 });
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('新窗输入');
+      dispatch({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: '旧窗迟到输入', windowFrame: oldFrame, sequence: 100 });
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('新窗输入');
+      dispatch({ type: 'request_sync', sessionId });
+      await vi.waitFor(() => expect(emissions.at(-1)?.acceptedSequence).toBe(1));
+      dispatch({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: '同窗重复序号', windowFrame: nextFrame, sequence: 1 });
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('新窗输入');
+    } finally { controller.dispose(); }
+  });
+
   it('原生窗口入口拒绝旧协议和同 ID 替换后的迟到写入，保留原草稿', async () => {
     useAppStore.setState({ projectLoadStatus: 'ready', switchingProjectName: null,
       chatComposerLiveDraft: '保留草稿', chatComposerDrafts: { 'conversation-1': '保留草稿' } });
@@ -351,6 +416,8 @@ describe('detached chat sync controller', () => {
       expect(useAppStore.getState().agentTasks[0].status).toBe('running');
       expect(executor.mock.calls[0][0].aborted).toBe(false);
       useAppStore.setState((state) => ({ messages: state.messages.map((message) => ({ ...message, content: '回答继续更新' })) }));
+      mirror = null;
+      beginChatWindowSession();
       useAppStore.getState().setChatPanelDetached(true);
       await vi.waitFor(() => expect(readMirror()?.snapshot.messages[0].content).toBe('回答继续更新'));
       expect(readMirror()?.snapshot.composerDraft).toBe('追加问题');
@@ -541,9 +608,10 @@ describe('detached chat sync controller', () => {
 
     await controller.start();
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(1));
+    const initialRevision = emitSync.mock.calls[0][0].revision;
     expect(emitSync).toHaveBeenNthCalledWith(1, expect.objectContaining({
       type: 'snapshot',
-      revision: 1,
+      revision: initialRevision,
     }));
 
     useAppStore.setState({
@@ -560,15 +628,16 @@ describe('detached chat sync controller', () => {
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(2));
     expect(emitSync).toHaveBeenNthCalledWith(2, expect.objectContaining({
       type: 'patch',
-      baseRevision: 1,
-      revision: 2,
+      baseRevision: initialRevision,
+      revision: expect.any(Number),
     }));
+    expect(emitSync.mock.calls[1][0].revision).toBeGreaterThan(initialRevision);
     controller.dispose();
   });
 
   it('routes detached actions, keeps detached mode on close, and only docks explicitly', async () => {
     let onAction: ((action: ChatAction) => void) | undefined;
-    let onDetachClosed: (() => void) | undefined;
+    let onDetachClosed: ((draft?: ChatComposerHandoff, sessionId?: string) => void) | undefined;
     const emitSync = vi.fn(async (_sync: ChatStateSync) => undefined);
     const cleanup = vi.fn();
     const controller = createDetachedChatSyncController({
@@ -598,16 +667,18 @@ describe('detached chat sync controller', () => {
       dispatchMode: 'interject',
     });
 
-    onAction?.({ type: 'request_sync' });
+    onAction?.({ type: 'request_sync', sessionId: getMainChatWindowSessionId() });
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalled());
 
-    onDetachClosed?.();
+    onDetachClosed?.(undefined, getMainChatWindowSessionId());
     expect(useAppStore.getState()).toMatchObject({
       chatOpen: false,
       chatPanelDetached: true,
       hoveredMentionNodeId: null,
     });
 
+    beginChatWindowSession();
+    await vi.waitFor(() => expect(syncFrame(emitSync.mock.lastCall?.[0])?.sessionId).toBe(getMainChatWindowSessionId()));
     onAction?.({ type: 'dock_window' });
     expect(useAppStore.getState()).toMatchObject({
       chatOpen: true,
@@ -867,7 +938,7 @@ describe('detached chat sync controller', () => {
     expect(removed).toHaveLength(1);
   });
 
-  it('retries a failed emission with the same revision as a full snapshot', async () => {
+  it('retries a failed emission with a newer revision as a full snapshot', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const emitSync = vi.fn()
       .mockRejectedValueOnce(new Error('event bus unavailable'))
@@ -884,12 +955,13 @@ describe('detached chat sync controller', () => {
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(2));
     expect(emitSync).toHaveBeenNthCalledWith(1, expect.objectContaining({
       type: 'snapshot',
-      revision: 1,
+      revision: expect.any(Number),
     }));
     expect(emitSync).toHaveBeenNthCalledWith(2, expect.objectContaining({
       type: 'snapshot',
-      revision: 1,
+      revision: expect.any(Number),
     }));
+    expect((emitSync.mock.calls[1][0] as ChatStateSync).revision).toBeGreaterThan((emitSync.mock.calls[0][0] as ChatStateSync).revision);
 
     controller.dispose();
     warning.mockRestore();

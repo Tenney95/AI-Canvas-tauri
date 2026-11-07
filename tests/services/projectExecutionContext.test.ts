@@ -32,7 +32,8 @@ describe('P4 类型化执行前提', () => {
   });
   it('启动页与零集剧集有不同scope；损坏关系和loading不制造画布', () => {
     expect(captureLegacyProjectExpectedContext({ ...state(), currentProjectId: null }).kind).toBe('global');
-    const empty = { ...state(), currentProjectId: 'S', projects: [{ id: 'S', series: { script: '保留全剧资料' } }] };
+    const empty: ProjectExecutionContextState = { ...state(), currentProjectId: 'S', projects: [{ id: 'S', series: { script: '保留全剧资料' } }],
+      projectExecutionContext: { kind: 'project', schemaVersion: 2, modelGeneration: 1, projectId: 'S', projectEpoch: 2 } };
     expect(captureLegacyCanvasContext(empty)).toBeNull();
     expect(captureLegacyProjectExpectedContext(empty)).toMatchObject({ kind: 'project', projectId: 'S' });
     expect(captureLegacyCanvasContext({ ...state(), projectLoadStatus: 'loading' })).toBeNull();
@@ -41,6 +42,14 @@ describe('P4 类型化执行前提', () => {
     expect(captureLegacyCanvasContext({ ...state(), projectExecutionContext: null })).toBeNull();
     expect(() => captureLegacyProjectExpectedContext({ ...state(), projectExecutionContext: null })).toThrow();
     expect(captureLegacyCanvasContext({ ...state(), projects: [{ id: 'A', parentId: 'missing' }] })).toBeNull();
+  });
+  it('旧普通画布添加原著/全剧稿仍保留原Canvas，真正存在子集的根仍是容器', () => {
+    const current: ProjectExecutionContextState = { ...state(), currentProjectId: 'P',
+      projects: [{ id: 'P', exchangeEpoch: 6, series: { originalWork: { fileName: '原著.txt' }, script: '全剧稿' } }] };
+    const expected = captureLegacyCanvasContext(current)!;
+    expect(expected).toMatchObject({ kind: 'canvas', projectId: 'P', canvasId: 'P', episodeId: null, canvasEpoch: 6 });
+    expect(captureLegacyProjectExpectedContext(current)).toEqual(expected);
+    expect(captureLegacyCanvasContext({ ...current, projects: [...current.projects!, { id: 'E', parentId: 'P' }] })).toBeNull();
   });
   it('拒绝未知字段、未来格式、访问器和控制字符，不执行getter或刷新旧意图', () => {
     const valid = captureLegacyCanvasContext(state())!;

@@ -41,7 +41,7 @@ import {
   registerCanvasDerivation,
 } from '../../services/canvasDerivationGuard';
 import { buildVideoEditorProjectId } from '../../services/indexedDbService';
-import { pauseMediaTask, completeMediaNodeTask } from '../../services/pollManager';
+import { pauseMediaTask } from '../../services/pollManager';
 import type { MediaTaskReceipt } from '../../types/aiTypes';
 import {
   postVideoEditorAiTransitionResult,
@@ -59,6 +59,7 @@ import {
 import { useT } from '../../i18n';
 import NodeGenerationProgress from './shared/NodeGenerationProgress';
 import VideoTaskStatus from './shared/VideoTaskStatus';
+import VideoEditorTransitionRecovery from './shared/VideoEditorTransitionRecovery';
 import { COMFY_REFMOD_MIME } from '../../utils/comfyRefmod';
 import { readComfyRefmodDragPayload } from '../../utils/comfyRefmodDrag';
 import { appendRefmodsToVideoNode } from '../../services/comfyRefmodNodeService';
@@ -608,6 +609,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             const outcome = await runVideoEditorAiTransition(
               request as VideoEditorAiTransitionRequest,
               projectId,
+              id,
               undefined,
               assertCurrent,
             );
@@ -615,7 +617,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             assertCurrent();
             await postVideoEditorAiTransitionResult(instanceId, { requestId, videoUrl: outcome.videoUrl,
               filePath: outcome.filePath, fileName: outcome.fileName }, binding);
-            if (receipt) completeMediaNodeTask(receipt);
+            // emitTo 成功不等于剪辑器已接纳片段；原目标可能被删除，保留主动取回入口。
           } catch (error) {
             if (receipt) pauseMediaTask(receipt, error,
               isVideoEditorWindowBindingCurrent(instanceId, binding) ? 'delivery_pending' : 'canvas_changed');
@@ -1073,6 +1075,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <GooeyBtn className="gooey-btn-right" hue={217} />
         </Handle>
       </div>
+
+      {selected && projectId && <VideoEditorTransitionRecovery projectId={projectId} anchorNodeId={id} />}
 
       <ResizeHandle
         nodeId={id}

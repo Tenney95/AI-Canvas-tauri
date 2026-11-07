@@ -27,6 +27,19 @@ function createState(projectId = 'project-a') {
 }
 
 describe('canvasDerivationGuard', () => {
+  it('keeps legacy canvas generation and imports available after uploading an original or full-series script', () => {
+    const { state } = createState();
+    const legacy = { ...state, projects: [{ id: 'project-a', exchangeEpoch: 4,
+      series: { originalWork: { fileName: 'original.txt' }, script: '全剧稿' } }] };
+    const generation = registerCanvasDerivation(legacy, 'source')!;
+    const imported = registerCanvasImport(legacy)!;
+    expect(generation).not.toBeNull();
+    expect(imported).not.toBeNull();
+    expect(generation.expectedContext).toMatchObject({ projectId: 'project-a', canvasId: 'project-a', episodeId: null, canvasEpoch: 4 });
+    expect(isCanvasDerivationFresh(generation, legacy)).toBe(true);
+    expect(isCanvasDerivationFresh(imported, legacy)).toBe(true);
+    completeCanvasDerivation(generation); completeCanvasDerivation(imported);
+  });
   it('binds a legacy episode canvas to its owner and both exchange epochs', () => {
     const { state, setRevision } = createState('episode-a');
     const bound = { ...state, projects: [{ id: 'series', exchangeEpoch: 2 }, { id: 'episode-a', parentId: 'series', exchangeEpoch: 3 }] };

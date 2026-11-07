@@ -3,6 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatAction, ChatReferencePreviewResponse } from '../../../src/services/chat/chatWindowService';
+import type { ProjectWindowFrame } from '../../../src/types/projectWindow';
 
 interface Frame { target: string; event: string; payload: unknown }
 const bus = vi.hoisted(() => ({
@@ -41,7 +42,8 @@ import { handleDetachedChatAction, projectChatNodes } from '../../../src/service
 import {
   cancelMainReferencePreview, CHAT_REFERENCE_PREVIEW_TIMEOUT_MS, requestDetachedReferencePreview,
 } from '../../../src/services/chat/chatReferencePreviewService';
-import { CHAT_ACTION_EVENT, CHAT_REFERENCE_PREVIEW_EVENT } from '../../../src/services/chat/chatWindowService';
+import { beginChatWindowSession, CHAT_ACTION_EVENT, CHAT_REFERENCE_PREVIEW_EVENT, endChatWindowSession,
+  getMainChatWindowSessionId, setChatReferenceWindowFrame } from '../../../src/services/chat/chatWindowService';
 
 const source = { kind: 'node' as const, id: 'node', label: '原文' };
 const image = { kind: 'chat-image' as const, id: 'chat-ref-00000000-0000-0000-0000-000000000000.png', label: '参考图' };
@@ -54,6 +56,8 @@ function deliver(response: ChatReferencePreviewResponse) {
 
 beforeEach(() => {
   cancelMainReferencePreview();
+  endChatWindowSession(getMainChatWindowSessionId());
+  setChatReferenceWindowFrame(null);
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'project', chatPanelDetached: true,
     nodes: [{ id: 'node', type: 'source-text', position: { x: 0, y: 0 }, data: { type: 'source-text', label: '完整原文', output: text } }] });
@@ -69,12 +73,30 @@ beforeEach(() => {
 
 afterEach(() => {
   cancelMainReferencePreview();
+  endChatWindowSession(getMainChatWindowSessionId());
+  setChatReferenceWindowFrame(null);
   bus.releaseListen?.();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 describe('独立窗口按需引用预览桥接', () => {
+  it('新窗同项目同请求 ID 也拒绝旧会话迟到的预览响应', async () => {
+    bus.route = undefined;
+    const sessionId = beginChatWindowSession();
+    setChatReferenceWindowFrame({ sessionId } as ProjectWindowFrame);
+    let completed = false;
+    const pending = requestDetachedReferencePreview(source, 'project').then((content) => { completed = true; return content; });
+    await vi.waitFor(() => expect(requests()).toHaveLength(1));
+    const request = requests()[0].payload as Extract<ChatAction, { type: 'preview_reference' }>;
+    expect(request.windowFrame?.sessionId).toBe(sessionId);
+    deliver({ requestId: request.requestId, sessionId: 'old-window-session', projectId: 'project', content: { kind: 'text', title: '旧窗口', text: '迟到旧结果' } });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    deliver({ requestId: request.requestId, sessionId, projectId: 'project', content: { kind: 'text', title: '新窗口', text } });
+    expect((await pending).text).toBe(text);
+  });
+
   it('先监听再向 main 发送，主窗口仅向 chat-assistant 返回完整内容，不扩充节点快照或写 Store', async () => {
     const state = useAppStore.getState();
     expect(projectChatNodes(state.nodes)[0].data.output).toBeUndefined();

@@ -219,6 +219,27 @@ describe('agent replan requests', () => {
 });
 
 describe('agent resume validation', () => {
+  it.each(['pending', 'missing'] as const)('拒绝继续旧成功回执但%s原步骤的普通任务，保留原预算', (stepState) => {
+    const task = createTask('success-without-step', 'project-1', 'conversation-1', 'paused');
+    task.modelRounds = 5; task.toolCallCount = 17; task.resumeCount = 2;
+    task.dispatches = [{ id: 'old-dispatch', kind: 'tool', stepId: 'old-step', toolId: 'media_generate',
+      effect: 'media_generation', phase: 'settled', outcome: 'succeeded', preparedAt: 1, settledAt: 2 }];
+    task.steps = stepState === 'missing' ? [] : [{ id: 'old-step', taskId: task.id, index: 0, kind: 'tool',
+      title: '生成', status: 'pending', createdAt: 1, updatedAt: 1,
+      toolCall: { callId: 'old-call', toolId: 'media_generate', effect: 'media_generation', retryCount: 0 } }];
+    arrangeTask(task);
+    expect(validateTaskResumable(task.id)).toMatchObject({ ok: false, errorCode: 'AGENT_SUCCESS_STEP_INCOMPLETE' });
+    expect(readTask(task.id)).toMatchObject({ modelRounds: 5, toolCallCount: 17, resumeCount: 2, dispatches: task.dispatches });
+  });
+
+  it('缺步骤的只读成功回执仍可普通继续', () => {
+    const task = createTask('read-without-step', 'project-1', 'conversation-1', 'paused');
+    task.dispatches = [{ id: 'old-read', kind: 'tool', stepId: 'missing', toolId: 'canvas_get_state',
+      effect: 'read', phase: 'settled', outcome: 'succeeded', preparedAt: 1 }];
+    arrangeTask(task);
+    expect(validateTaskResumable(task.id)).toEqual({ ok: true });
+  });
+
   it('can resume a general conversation without opening a project', () => {
     const task = createTask('general-paused', GENERAL_ASSISTANT_SCOPE_ID, 'conv-general', 'paused');
     arrangeTask(task);

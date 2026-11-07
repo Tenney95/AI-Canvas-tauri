@@ -6,6 +6,10 @@ import type { ProjectWindowContext } from '../../src/types/projectWindow';
 const events = vi.hoisted(() => ({
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
   emitTo: vi.fn<(target: string, event: string, payload: unknown) => Promise<void>>(),
+  nativeWindow: null as object | null,
+  lookupGate: undefined as Promise<void> | undefined,
+  onLookup: undefined as (() => void) | undefined,
+  destroyGate: undefined as Promise<void> | undefined,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -19,12 +23,22 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
   WebviewWindow: class {
-    static getByLabel = async () => null;
+    private destroyed = new Set<() => void>();
+    constructor(_label: string, _options: unknown) { events.nativeWindow = this; }
+    static getByLabel = async () => { events.onLookup?.(); await events.lookupGate; return events.nativeWindow; };
+    show = async () => {};
+    unminimize = async () => {};
+    setFocus = async () => {};
     once = async (name: string, callback: () => void) => {
       if (name === 'tauri://created') queueMicrotask(callback);
-      return () => {};
+      if (name === 'tauri://destroyed') this.destroyed.add(callback);
+      return () => { this.destroyed.delete(callback); };
     };
-    destroy = async () => {};
+    destroy = async () => {
+      if (events.nativeWindow === this) events.nativeWindow = null;
+      for (const callback of this.destroyed) callback();
+      await events.destroyGate;
+    };
   },
 }));
 
@@ -38,18 +52,23 @@ const context: ProjectWindowContext = { schemaVersion: 2,
   target: { kind: 'episode', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'test-runtime', projectId: 'series', projectEpoch: 0, episodeId: 'episode-b', episodeRevision: 0 },
   canvas: { kind: 'canvas', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: 'test-runtime', projectId: 'series', projectEpoch: 0,
     canvasId: 'episode-a', episodeId: 'episode-a', canvasEpoch: 0, canvasRevision: 1 } };
-const frame = (sessionId: string, revision: number) => ({ sessionId, revision, schemaVersion: 2,
+const clientWindowSession = 'window-client-session';
+const frame = (sessionId: string, revision: number) => ({ sessionId, windowSessionId: clientWindowSession, revision, schemaVersion: 2,
   windowContext: context, currentEpisode: { id: 'episode-b' }, canvasProjectId: 'episode-a' }) as ScriptWorkbenchSnapshot;
 const requestSequences = new Map<string, number>();
+const latestHostFrame = () => events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:state').at(-1)![2] as ScriptWorkbenchSnapshot;
 const deliverRequest = (request: ScriptWorkbenchRequest) => {
   if (!requestSequences.has(request.requestId)) requestSequences.set(request.requestId, requestSequences.size + 1);
-  const stamped = { ...request, schemaVersion: 2, sequence: requestSequences.get(request.requestId), windowContext: context };
+  const stamped = { ...request, windowSessionId: request.windowSessionId ?? latestHostFrame().windowSessionId,
+    schemaVersion: 2, sequence: request.sequence ?? requestSequences.get(request.requestId), windowContext: context };
   deliver('script-workbench:request', stamped);
   return stamped;
 };
 
 beforeEach(() => {
   events.listeners.clear();
+  events.nativeWindow = null;
+  events.lookupGate = undefined; events.onLookup = undefined; events.destroyGate = undefined;
   requestSequences.clear();
   events.emitTo.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal('crypto', webcrypto);
@@ -68,9 +87,10 @@ describe('独立工作台客户端协议', () => {
       }
     });
     const onSnapshot = vi.fn();
-    const bridge = await connectScriptWorkbenchWindow('session-workbench', onSnapshot);
+    const bridge = await connectScriptWorkbenchWindow('session-workbench', onSnapshot, clientWindowSession);
     cleanups.push(bridge.dispose);
     deliver('script-workbench:state', frame('different-session', 5));
+    deliver('script-workbench:state', { ...frame('session-workbench', 8), windowSessionId: 'old-window-session' });
     deliver('script-workbench:state', frame('session-workbench', 2));
     deliver('script-workbench:state', frame('session-workbench', 1));
     deliver('script-workbench:state', frame('session-workbench', 2));
@@ -79,7 +99,7 @@ describe('独立工作台客户端协议', () => {
   });
 
   it('将最后一次草稿随保存请求交接，只有匹配会话与请求的回复才能完成保存', async () => {
-    const bridge = await connectScriptWorkbenchWindow('session-handoff', vi.fn());
+    const bridge = await connectScriptWorkbenchWindow('session-handoff', vi.fn(), clientWindowSession);
     cleanups.push(bridge.dispose);
     deliver('script-workbench:state', frame('session-handoff', 3));
     const handoff = { episodeId: 'episode-b', sequence: 7, draft: { outline: '集纲', script: '最后输入',
@@ -90,21 +110,24 @@ describe('独立工作台客户端协议', () => {
     expect(sent).toMatchObject({ sessionId: 'session-handoff', episodeId: 'episode-b', handoff });
     let completed = false;
     void saving.then(() => { completed = true; }, () => {});
-    deliver('script-workbench:response', { sessionId: 'different-session', requestId: sent.requestId, sequence: sent.sequence, value: true });
+    deliver('script-workbench:response', { sessionId: 'different-session', windowSessionId: clientWindowSession, requestId: sent.requestId, sequence: sent.sequence, value: true });
     await Promise.resolve();
     expect(completed).toBe(false);
-    deliver('script-workbench:response', { sessionId: 'session-handoff', requestId: sent.requestId, sequence: sent.sequence, value: true });
+    deliver('script-workbench:response', { sessionId: 'session-handoff', windowSessionId: 'old-window-session', requestId: sent.requestId, sequence: sent.sequence, value: true });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    deliver('script-workbench:response', { sessionId: 'session-handoff', windowSessionId: clientWindowSession, requestId: sent.requestId, sequence: sent.sequence, value: true });
     await expect(saving).resolves.toBe(true);
   });
 
   it('传递主窗口保存错误，断开时取消未完成请求并清理监听', async () => {
-    const bridge = await connectScriptWorkbenchWindow('session-errors', vi.fn());
+    const bridge = await connectScriptWorkbenchWindow('session-errors', vi.fn(), clientWindowSession);
     cleanups.push(bridge.dispose);
     deliver('script-workbench:state', frame('session-errors', 1));
     const failed = bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'save' } });
     const sent = events.emitTo.mock.calls.find((call) => call[1] === 'script-workbench:request')?.[2] as ScriptWorkbenchRequest;
     const failure = expect(failed).rejects.toThrow('原分集已变化');
-    deliver('script-workbench:response', { sessionId: 'session-errors', requestId: sent.requestId, sequence: sent.sequence, error: '原分集已变化' });
+    deliver('script-workbench:response', { sessionId: 'session-errors', windowSessionId: clientWindowSession, requestId: sent.requestId, sequence: sent.sequence, error: '原分集已变化' });
     await failure;
     const pending = bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'flush_draft' } });
     const canceled = expect(pending).rejects.toThrow('工作台窗口已关闭');
@@ -114,8 +137,20 @@ describe('独立工作台客户端协议', () => {
     await expect(bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'save' } })).rejects.toThrow('尚未连接');
   });
 
+  it('同一真实窗口重连沿主窗口已接受序号继续，不从零复用旧请求', async () => {
+    const bridge = await connectScriptWorkbenchWindow('session-reconnect', vi.fn(), clientWindowSession);
+    cleanups.push(bridge.dispose);
+    deliver('script-workbench:state', { ...frame('session-reconnect', 8), acceptedRequestSequence: 53 });
+    const operation = bridge.request({ revision: 8, episodeId: 'episode-b', action: { type: 'save' } });
+    const sent = events.emitTo.mock.calls.find((call) => call[1] === 'script-workbench:request')![2] as ScriptWorkbenchRequest;
+    expect(sent.sequence).toBe(54);
+    deliver('script-workbench:response', { sessionId: sent.sessionId, windowSessionId: clientWindowSession,
+      requestId: sent.requestId, sequence: 54, value: true });
+    await expect(operation).resolves.toBe(true);
+  });
+
   it('请求保留原 revision 的目标，切换后迟到结果不能被当作新分集结果', async () => {
-    const bridge = await connectScriptWorkbenchWindow('session-late-result', vi.fn());
+    const bridge = await connectScriptWorkbenchWindow('session-late-result', vi.fn(), clientWindowSession);
     cleanups.push(bridge.dispose);
     deliver('script-workbench:state', frame('session-late-result', 1));
     const reading = bridge.request({ revision: 1, episodeId: 'episode-b', action: { type: 'read_source', part: 'script' } });
@@ -124,7 +159,7 @@ describe('独立工作台客户端协议', () => {
     deliver('script-workbench:state', { ...frame('session-late-result', 2), windowContext: { ...context,
       target: { ...context.target, episodeId: 'episode-c' } } });
     expect(sent.windowContext).toEqual(context);
-    deliver('script-workbench:response', { sessionId: 'session-late-result', requestId: sent.requestId, sequence: sent.sequence, value: '旧结果' });
+    deliver('script-workbench:response', { sessionId: 'session-late-result', windowSessionId: clientWindowSession, requestId: sent.requestId, sequence: sent.sequence, value: '旧结果' });
     await rejected;
     expect(events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:request')).toHaveLength(1);
   });
@@ -138,6 +173,110 @@ describe('关系图宿主写入边界', () => {
         counts: { totalNodes: 0, totalEdges: 0, matchedNodes: 0, matchedEdges: 0, visibleNodes: 0, visibleEdges: 0, truncated: false } } };
   }
 
+  it('关闭取消仍在查询原生窗口的打开操作，不创建迟到窗口', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    let release!: () => void;
+    let markLookup!: () => void;
+    const lookedUp = new Promise<void>((resolve) => { markLookup = resolve; });
+    events.lookupGate = new Promise<void>((resolve) => { release = resolve; });
+    events.onLookup = markLookup;
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => graphFrame(1),
+      onRequest: vi.fn(async () => true), onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    const opening = host.open();
+    const canceled = expect(opening).rejects.toThrow('打开已取消');
+    await lookedUp; await host.close(); release();
+    await canceled;
+    expect(events.nativeWindow).toBeNull();
+    expect(events.emitTo).not.toHaveBeenCalled();
+  });
+
+  it('旧窗口销毁返回迟到时仍保留重开窗口的销毁句柄', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => graphFrame(1),
+      onRequest: vi.fn(async () => true), onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    let finishDestroy!: () => void;
+    events.destroyGate = new Promise<void>((resolve) => { finishDestroy = resolve; });
+    const closing = host.close();
+    expect(events.nativeWindow).toBeNull();
+    await host.open();
+    const reopened = events.nativeWindow;
+    expect(reopened).not.toBeNull();
+    finishDestroy(); await closing;
+    events.destroyGate = undefined;
+    await host.close();
+    expect(events.nativeWindow).toBeNull();
+  });
+
+  it('同一业务会话重开窗口后接受序号 1，并拒绝原窗口握手、关闭和 RPC', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const onRequest = vi.fn(async (_request: ScriptWorkbenchRequest) => true);
+    let reply!: () => void;
+    let response = new Promise<void>((resolve) => { reply = resolve; });
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
+      if (event === 'script-workbench:response') reply();
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => graphFrame(1),
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    const original = latestHostFrame();
+    const oldRequest = deliverRequest({ sessionId: original.sessionId, requestId: 'old_window_request', revision: original.revision,
+      episodeId: 'episode-b', sequence: 41, action: { type: 'save' } });
+    await response;
+    await host.close();
+    await host.open();
+    const reopened = latestHostFrame();
+    expect(reopened.sessionId).toBe(original.sessionId);
+    expect(reopened.windowSessionId).not.toBe(original.windowSessionId);
+    const publicationCount = events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:state').length;
+    deliver('script-workbench:hello', original);
+    deliver('script-workbench:early-close', original);
+    deliver('script-workbench:request', { ...oldRequest, requestId: 'late_old_request', revision: reopened.revision, sequence: 42 });
+    await Promise.resolve();
+    expect(events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:state')).toHaveLength(publicationCount);
+    expect(events.nativeWindow).not.toBeNull();
+    response = new Promise<void>((resolve) => { reply = resolve; });
+    deliverRequest({ sessionId: reopened.sessionId, requestId: 'new_window_first', revision: reopened.revision,
+      episodeId: 'episode-b', sequence: 1, action: { type: 'save' } });
+    await response;
+    expect(onRequest).toHaveBeenCalledTimes(2);
+    expect(onRequest.mock.calls[1][0]).toMatchObject({ sequence: 1, windowSessionId: reopened.windowSessionId });
+  });
+
+  it('旧窗口已开始操作的迟到结果不能向重开窗口回复或触发收回', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    let finish!: () => void;
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    const settled = new Promise<void>((resolve) => { finish = resolve; });
+    const onRequest = vi.fn(async () => { start(); await settled; return true; });
+    const onReplySent = vi.fn();
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => graphFrame(1),
+      onRequest, onReplySent, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    const original = latestHostFrame();
+    deliverRequest({ sessionId: original.sessionId, requestId: 'pending_old_window', revision: original.revision,
+      episodeId: 'episode-b', action: { type: 'save' } });
+    await started;
+    await host.close(); await host.open();
+    finish(); await settled;
+    // 只排空该 Promise 回调链，不使用计时或运行应用。
+    for (let index = 0; index < 8; index++) await Promise.resolve();
+    expect(events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:response')).toHaveLength(0);
+    expect(onReplySent).not.toHaveBeenCalled();
+  });
+
   it.each(['valid-b', 'legacy', 'future', 'canvas', 'episode', 'epoch'] as const)('通用保存 RPC 检查 %s 边界', async (boundary) => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
     let current = graphFrame(1);
@@ -145,7 +284,7 @@ describe('关系图宿主写入边界', () => {
     let respond!: (value: { error?: string; value?: unknown }) => void;
     const replied = new Promise<{ error?: string; value?: unknown }>((resolve) => { respond = resolve; });
     events.emitTo.mockImplementation(async (_target, event, payload) => {
-      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
       if (event === 'script-workbench:response') respond(payload as { error?: string });
     });
     const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => current,
@@ -158,7 +297,7 @@ describe('关系图宿主写入边界', () => {
       target: { ...context.target, episodeId: 'episode-c' } } as ProjectWindowContext };
     if (boundary === 'epoch') current = { ...current, windowContext: { ...context,
       target: { ...context.target, projectEpoch: 1 } } as ProjectWindowContext };
-    const request: ScriptWorkbenchRequest = { sessionId: 'graph-host-session', requestId: 'save_scope_boundary', revision: 1,
+    const request: ScriptWorkbenchRequest = { sessionId: 'graph-host-session', windowSessionId: latestHostFrame().windowSessionId, requestId: 'save_scope_boundary', revision: 1,
       episodeId: 'episode-b', action: { type: 'save' }, schemaVersion: 2, sequence: 1, windowContext: context };
     deliver('script-workbench:request', { ...request, schemaVersion: boundary === 'legacy' ? undefined : boundary === 'future' ? 3 : 2 });
     const response = await replied;
@@ -173,7 +312,7 @@ describe('关系图宿主写入边界', () => {
     let response!: (value: { error?: string }) => void;
     const replied = new Promise<{ error?: string }>((resolve) => { response = resolve; });
     events.emitTo.mockImplementation(async (_target, event, payload) => {
-      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
       if (event === 'script-workbench:response') response(payload as { error?: string });
     });
     const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => current,
@@ -198,7 +337,7 @@ describe('关系图宿主写入边界', () => {
     const replied = new Promise<{ value?: unknown }>((resolve) => { reply = resolve; });
     const onRequest = vi.fn(async () => { markStarted(); await persisted; return true; });
     events.emitTo.mockImplementation(async (_target, event, payload) => {
-      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
       if (event === 'script-workbench:response') reply(payload as { value?: unknown });
     });
     const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => graphFrame(1),
@@ -224,7 +363,7 @@ describe('关系图宿主写入边界', () => {
     let respond!: (value: { error?: string }) => void;
     const replied = new Promise<{ error?: string }>((resolve) => { respond = resolve; });
     events.emitTo.mockImplementation(async (_target, event, payload) => {
-      if (event === 'script-workbench:state') deliver('script-workbench:ready', { sessionId: 'graph-host-session' });
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
       if (event === 'script-workbench:response') respond(payload as { error?: string });
     });
     const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => current,

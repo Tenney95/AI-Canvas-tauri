@@ -11,7 +11,7 @@ import { pollTask } from '../../pollTask';
 import { runningHubConnection } from '../../workflowExecutionService';
 import { runningHubSiteId } from '../../runninghubSiteCredentials';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../../canvasDerivationGuard';
-import { registerNodePolling, cleanupNodePolling, getPendingTasksForProject, savePendingTask, updatePendingTask, removeFailedMediaTask } from '../../pollManager';
+import { registerNodePolling, cleanupNodePolling, getPendingTasksForProject, getVideoEditorTransitionAnchor, savePendingTask, updatePendingTask, removeFailedMediaTask } from '../../pollManager';
 import { uploadRunningHubMedia } from './runninghubClient';
 import { saveRunningHubOutputs, RunningHubTaskFailed, type RunningHubReferences } from './runninghubWorkflow';
 import { getRunningHubModel, isLegacyRunningHubModel, parseRunningHubModelParameter, runningHubFrameRole, type RunningHubModelDefinition, type RunningHubModelValue } from './runninghubModelManifest';
@@ -233,14 +233,15 @@ export async function executeRunningHubModel(params: ModelParams, kind: RunningH
   const context = params.runninghubTaskContext;
   const projectId = context?.projectId ?? store.currentProjectId;
   const nodeId = params.nodeId;
+  const editorAnchor = getVideoEditorTransitionAnchor(nodeId);
   const trackingId = nodeId ?? (context ? `runninghub-message-${context.messageId}` : undefined);
   if (trackingId && projectId && getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId)) throw new Error('已有 RunningHub 任务，请先继续查询或确认远端任务结束');
   const nodeSignal = trackingId ? registerNodePolling(trackingId) : undefined;
   const signal = nodeSignal && externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal ?? externalSignal;
-  const guard = nodeId ? registerCanvasDerivation(store, nodeId) : null;
+  const guard = nodeId ? registerCanvasDerivation(store, editorAnchor ?? nodeId) : null;
   const fresh = () => !signal?.aborted && (!nodeId || (!!guard && isCanvasDerivationFresh(guard, useAppStore.getState())))
     && (!context || (useAppStore.getState().currentProjectId === context.projectId && useAppStore.getState().messages.some((message) => message.id === context.messageId && message.conversationId === context.conversationId)));
-  const stage = (runninghubStage: string) => { if (nodeId && fresh()) useAppStore.getState().updateNodeDataTransient(nodeId, { runninghubStage }); };
+  const stage = (runninghubStage: string) => { if (nodeId && !editorAnchor && fresh()) useAppStore.getState().updateNodeDataTransient(nodeId, { runninghubStage }); };
   const taskIds: string[] = [];
   let receipt: MediaTaskReceipt | undefined;
   let submitting = false;
@@ -279,6 +280,8 @@ export async function executeRunningHubModel(params: ModelParams, kind: RunningH
       if (trackingId) receipt = updatePendingTask(trackingId, { taskId: taskIds[0], taskIds: [...taskIds], submitted: true, runninghubRecoveryState: 'disconnected', runninghubSubmissionUncertain: false }, receipt?.taskId, receipt?.attemptId) ?? receipt;
     }
     const outputs = await queryRunningHubModel(connection, taskIds, kind, signal, stage);
+    // 转场结果由宿主统一耐久保存和交付；查询成功后不再用旧锚点租约丢弃原付费结果。
+    if (editorAnchor) return outputs;
     if (!fresh()) throw new Error('画布或对话已变化，任务已保留');
     if (trackingId) updatePendingTask(trackingId, { runninghubRecoveryState: 'save_pending' }, taskIds[0]);
     stage('保存产物');

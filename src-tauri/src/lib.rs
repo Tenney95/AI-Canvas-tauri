@@ -1560,8 +1560,15 @@ async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
 
 /// 打开独立的 AI 对话助手窗口
 #[tauri::command]
-async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn open_chat_window(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
     let _guard = CHAT_WINDOW_LIFECYCLE_LOCK.lock().await;
+    if !(8..=160).contains(&session_id.len())
+        || !session_id
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || value == b'_' || value == b'-')
+    {
+        return Err("对话窗口会话无效".to_string());
+    }
     // 复用当前窗口，保留输入、同步握手及位置锁；close 是异步事件，不能同名立即重建。
     if let Some(window) = app.get_webview_window("chat-assistant") {
         window
@@ -1579,10 +1586,11 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 
     #[cfg(debug_assertions)]
     let url = WebviewUrl::External(
-        Url::parse("http://localhost:1420/?view=chat").map_err(|e| e.to_string())?,
+        Url::parse(&format!("http://localhost:1420/?view=chat&session={session_id}"))
+            .map_err(|e| e.to_string())?,
     );
     #[cfg(not(debug_assertions))]
-    let url = WebviewUrl::App("index.html?view=chat".into());
+    let url = WebviewUrl::App(format!("index.html?view=chat&session={session_id}").into());
 
     let main_window = app.get_webview_window("main");
     let (chat_width, chat_height) = load_chat_window_size(&app, main_window.as_ref());

@@ -31,9 +31,9 @@ export async function focusScriptWorkbenchWindow(): Promise<void> {
   if (existing) { await existing.show(); await existing.unminimize(); await existing.setFocus(); }
 }
 
-export async function closeUninitializedScriptWorkbench(sessionId: string): Promise<void> {
+export async function closeUninitializedScriptWorkbench(sessionId: string, windowSessionId: string): Promise<void> {
   const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo('main', EARLY_CLOSE_EVENT, { sessionId });
+  await emitTo('main', EARLY_CLOSE_EVENT, { sessionId, windowSessionId });
 }
 
 export interface ScriptWorkbenchWindowHost {
@@ -53,10 +53,12 @@ export function createScriptWorkbenchWindowHost(options: {
   onReplySent?: () => void;
 }): ScriptWorkbenchWindowHost {
   let disposed = false;
+  let lifecycleGeneration = 0;
   let revision = 0;
   let opening: Promise<void> | undefined;
   let listening: Promise<void> | undefined;
   let visible = false;
+  let windowSessionId: string | undefined;
   let closeWindow: (() => Promise<void>) | undefined;
   let resolveReady: (() => void) | undefined;
   let cancelOpening: ((error: Error) => void) | undefined;
@@ -83,42 +85,48 @@ export function createScriptWorkbenchWindowHost(options: {
   };
 
   const publish = async () => {
-    if (disposed || !visible) return;
+    const session = windowSessionId;
+    if (disposed || !visible || !session) return;
     const { emitTo } = await import('@tauri-apps/api/event');
-    if (disposed || !visible) return;
+    if (disposed || !visible || session !== windowSessionId) return;
     const snapshot = options.getSnapshot();
     const nextRevision = ++revision;
     const nextBasis = basis(snapshot);
     bases.set(nextRevision, nextBasis);
     if (bases.size > 40) bases.delete(bases.keys().next().value!);
     await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, STATE_EVENT, { ...snapshot, schemaVersion: 2,
-      windowContext: nextBasis.context, sessionId: options.sessionId, revision: nextRevision });
+      windowContext: nextBasis.context, sessionId: options.sessionId, windowSessionId: session,
+      acceptedRequestSequence: acceptedSequence, revision: nextRevision });
   };
   const listen = () => listening ??= (async () => {
     const { listen: subscribe, emitTo } = await import('@tauri-apps/api/event');
     const retain = (stop: () => void) => { if (disposed) stop(); else stops.push(stop); };
-    retain(await subscribe<{ sessionId?: string }>(HELLO_EVENT, ({ payload }) => {
-      if (!disposed && payload?.sessionId === options.sessionId) void publish().catch(() => {});
+    const matches = (payload: { sessionId?: string; windowSessionId?: string } | undefined) =>
+      !disposed && visible && !!windowSessionId && payload?.sessionId === options.sessionId && payload.windowSessionId === windowSessionId;
+    retain(await subscribe<{ sessionId?: string; windowSessionId?: string }>(HELLO_EVENT, ({ payload }) => {
+      if (matches(payload)) void publish().catch(() => {});
     }));
-    retain(await subscribe<{ sessionId?: string }>(READY_EVENT, ({ payload }) => {
-      if (disposed || !visible || payload?.sessionId !== options.sessionId) return;
+    retain(await subscribe<{ sessionId?: string; windowSessionId?: string }>(READY_EVENT, ({ payload }) => {
+      if (!matches(payload)) return;
       options.onDetachedChange(true);
       resolveReady?.();
     }));
-    retain(await subscribe<{ sessionId?: string }>(EARLY_CLOSE_EVENT, ({ payload }) => {
-      if (!disposed && payload?.sessionId === options.sessionId) void close().catch(() => {});
+    retain(await subscribe<{ sessionId?: string; windowSessionId?: string }>(EARLY_CLOSE_EVENT, ({ payload }) => {
+      if (matches(payload)) void close().catch(() => {});
     }));
     retain(await subscribe<ScriptWorkbenchRequest>(REQUEST_EVENT, ({ payload }) => {
       void (async () => {
-      if (disposed || !visible || payload?.sessionId !== options.sessionId || !payload.action
+      if (!matches(payload) || !payload.action
         || !ACTIONS.has(payload.action.type) || !/^[A-Za-z0-9_-]{8,160}$/.test(payload.requestId)
         || !Number.isSafeInteger(payload.revision) || payload.revision < 1 || payload.revision > revision) return;
+      const session = windowSessionId!;
+      const active = () => !disposed && visible && windowSessionId === session;
       const encoded = new TextEncoder().encode(JSON.stringify(payload));
       // UTF-8 原文经 JSON 转义可能放大；原文交接留出有界开销，普通请求维持原上限。
       const maxPayloadBytes = payload.originalHandoff || payload.action.type === 'original_edit'
         ? 16 * 1024 * 1024 : 2 * 1024 * 1024;
       if (encoded.byteLength > maxPayloadBytes) {
-        await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, { sessionId: options.sessionId, requestId: payload.requestId,
+        await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, { sessionId: options.sessionId, windowSessionId: session, requestId: payload.requestId,
           sequence: payload.sequence,
           error: '本次修改超过窗口传输上限，已保留本地草稿，请分段处理' } satisfies ScriptWorkbenchResponse);
         return;
@@ -126,11 +134,12 @@ export function createScriptWorkbenchWindowHost(options: {
       // 只保留摘要用于请求身份比较，不让每次键入的完整稿件留在去重目录。
       const digest = await crypto.subtle.digest('SHA-256', encoded);
       const signature = Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
-      if (disposed || !visible) return;
+      if (!active()) return;
       let accepted = requests.get(payload.requestId);
       if (accepted && accepted.signature !== signature) return;
       if (!accepted) {
         const result = Promise.resolve().then(() => {
+          if (!active()) throw new Error('原工作台窗口已关闭，请核对原操作回执');
           const previous = bases.get(payload.revision);
           const current = basis(options.getSnapshot());
           if (payload.schemaVersion !== 2 || !Number.isSafeInteger(payload.sequence) || payload.sequence! <= acceptedSequence
@@ -158,21 +167,23 @@ export function createScriptWorkbenchWindowHost(options: {
           }
           return options.onRequest(payload);
         }).then(
-          (value): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, requestId: payload.requestId, sequence: payload.sequence, value }),
-          (error: unknown): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, requestId: payload.requestId, sequence: payload.sequence,
+          (value): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, windowSessionId: session, requestId: payload.requestId, sequence: payload.sequence, value }),
+          (error: unknown): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, windowSessionId: session, requestId: payload.requestId, sequence: payload.sequence,
             error: sanitizeDomainText(error instanceof Error ? error.message : '工作台操作未完成').slice(0, 300) }),
         );
         accepted = { signature, result };
         requests.set(payload.requestId, accepted);
       }
       void accepted.result.then(async (response) => {
-        if (disposed) return;
+        if (!active()) return;
         await publish().catch(() => {});
+        if (!active()) return;
         await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, response).catch(() => {});
+        if (!active()) return;
         // 原文只在本次 RPC 中传输；付费/保存的去重记录只留完成标记，不缓存正文或候选。
         if (payload.action.type.startsWith('original_') && requests.get(payload.requestId) === accepted) {
           if (payload.action.type === 'original_open' || payload.action.type === 'original_edit') requests.delete(payload.requestId);
-          else requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId,
+          else requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId, windowSessionId: session,
             requestId: payload.requestId, sequence: payload.sequence, ...(response.error ? { error: response.error } : { value: true }) }) });
         }
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。
@@ -188,26 +199,40 @@ export function createScriptWorkbenchWindowHost(options: {
     throw error;
   });
   const close = async () => {
+    lifecycleGeneration++;
     cancelOpening?.(new Error('独立窗口打开已取消，已保留内嵌工作台'));
     visible = false;
-    options.onDetachedChange(false);
-    await closeWindow?.();
+    windowSessionId = undefined;
+    const destroy = closeWindow;
     closeWindow = undefined;
+    options.onDetachedChange(false);
+    await destroy?.();
   };
   return {
     publish,
     close,
     open: () => opening ??= (async () => {
+      const generation = lifecycleGeneration;
+      const assertOpening = () => {
+        if (disposed || generation !== lifecycleGeneration) throw new Error('工作台窗口打开已取消');
+      };
       if (!isDesktop()) throw new Error('独立窗口仅在 Tauri 桌面端可用');
       await listen();
-      if (disposed) throw new Error('工作台已关闭');
+      assertOpening();
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      assertOpening();
       const existing = await WebviewWindow.getByLabel(SCRIPT_WORKBENCH_WINDOW_LABEL);
+      assertOpening();
       if (existing) {
         if (!visible) throw new Error('已有工作台窗口，请先关闭原窗口再打开');
         await existing.show(); await existing.unminimize(); await existing.setFocus();
         return;
       }
+      // 仅真实创建新 WebView 才换会话；旧窗口的 HELLO/迟到 RPC 不能重签授权。
+      const session = crypto.randomUUID();
+      windowSessionId = session;
+      acceptedSequence = 0;
+      requests.clear(); bases.clear();
       const ready = new Promise<void>((resolve) => {
         resolveReady = resolve;
       });
@@ -217,7 +242,7 @@ export function createScriptWorkbenchWindowHost(options: {
       });
       void failure.catch(() => {});
       const win = new WebviewWindow(SCRIPT_WORKBENCH_WINDOW_LABEL, {
-        url: `index.html?view=script-workbench&session=${encodeURIComponent(options.sessionId)}`,
+        url: `index.html?view=script-workbench&session=${encodeURIComponent(options.sessionId)}&windowSession=${encodeURIComponent(session)}`,
         title: '剧本创作工作台', width: 1280, height: 860, minWidth: 760, minHeight: 560,
         center: true, resizable: true, decorations: true, parent: 'main',
       });
@@ -229,7 +254,11 @@ export function createScriptWorkbenchWindowHost(options: {
           void win.once('tauri://error', () => reject(new Error('无法创建独立工作台窗口'))).catch(reject);
         }), failure]);
         const stop = await win.once('tauri://destroyed', () => {
+          if (windowSessionId !== session) return;
+          lifecycleGeneration++;
+          cancelOpening?.(new Error('工作台窗口已关闭'));
           visible = false; closeWindow = undefined;
+          windowSessionId = undefined;
           if (!disposed) options.onDetachedChange(false);
         });
         if (disposed) stop(); else stops.push(stop);
@@ -243,6 +272,7 @@ export function createScriptWorkbenchWindowHost(options: {
     })().finally(() => { opening = undefined; }),
     dispose: () => {
       disposed = true;
+      windowSessionId = undefined;
       cancelOpening?.(new Error('工作台已关闭'));
       if (openingTimer) clearTimeout(openingTimer);
       for (const stop of stops.splice(0)) stop();
@@ -258,11 +288,15 @@ export function createScriptWorkbenchWindowHost(options: {
 export async function connectScriptWorkbenchWindow(
   sessionId: string,
   onSnapshot: (snapshot: ScriptWorkbenchSnapshot) => void,
+  windowSessionId: string,
 ): Promise<{
   request: (request: Omit<ScriptWorkbenchRequest, 'sessionId' | 'requestId'>) => Promise<unknown>;
   handoff: (request: Omit<ScriptWorkbenchRequest, 'sessionId' | 'requestId'>) => void;
   dispose: () => void;
 }> {
+  if (![sessionId, windowSessionId].every((value) => typeof value === 'string' && /^[A-Za-z0-9_-]{8,160}$/.test(value))) {
+    throw new Error('工作台窗口会话无效，请重新打开窗口');
+  }
   const { emitTo, listen } = await import('@tauri-apps/api/event');
   let disposed = false;
   let revision = 0;
@@ -273,18 +307,21 @@ export async function connectScriptWorkbenchWindow(
   const pending = new Map<string, { sequence: number; context: ProjectWindowContext | null; allowsContextChange: boolean;
     resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const stopState = await listen<ScriptWorkbenchSnapshot>(STATE_EVENT, ({ payload }) => {
-    if (disposed || payload?.sessionId !== sessionId || (payload.schemaVersion !== undefined && payload.schemaVersion !== 2)
+    if (disposed || payload?.sessionId !== sessionId || payload.windowSessionId !== windowSessionId || (payload.schemaVersion !== undefined && payload.schemaVersion !== 2)
       || !Number.isSafeInteger(payload.revision) || payload.revision <= revision) return;
     revision = payload.revision;
+    if (Number.isSafeInteger(payload.acceptedRequestSequence) && payload.acceptedRequestSequence! >= 0) {
+      sequence = Math.max(sequence, payload.acceptedRequestSequence!);
+    }
     contexts.set(revision, payload.schemaVersion === 2 ? payload.windowContext ?? null : null);
     if (contexts.size > 40) contexts.delete(contexts.keys().next().value!);
     if (!connected) buffered.snapshot = payload;
-    else { onSnapshot(payload); void emitTo('main', READY_EVENT, { sessionId }).catch(() => {}); }
+    else { onSnapshot(payload); void emitTo('main', READY_EVENT, { sessionId, windowSessionId }).catch(() => {}); }
   });
   let stopResponse: () => void;
   try {
     stopResponse = await listen<ScriptWorkbenchResponse>(RESPONSE_EVENT, ({ payload }) => {
-      if (disposed || payload?.sessionId !== sessionId) return;
+      if (disposed || payload?.sessionId !== sessionId || payload.windowSessionId !== windowSessionId) return;
       const operation = pending.get(payload.requestId);
       if (!operation || payload.sequence !== operation.sequence) return;
       pending.delete(payload.requestId); clearTimeout(operation.timer);
@@ -296,15 +333,15 @@ export async function connectScriptWorkbenchWindow(
   connected = true;
   if (buffered.snapshot) {
     onSnapshot(buffered.snapshot);
-    void emitTo('main', READY_EVENT, { sessionId }).catch(() => {});
+    void emitTo('main', READY_EVENT, { sessionId, windowSessionId }).catch(() => {});
     delete buffered.snapshot;
   }
-  const hello = () => { void emitTo('main', HELLO_EVENT, { sessionId }).catch(() => {}); };
+  const hello = () => { void emitTo('main', HELLO_EVENT, { sessionId, windowSessionId }).catch(() => {}); };
   const handshake = setInterval(() => { if (!revision) hello(); }, 500);
   hello();
   const envelope = (request: Omit<ScriptWorkbenchRequest, 'sessionId' | 'requestId'>): ScriptWorkbenchRequest => ({
     ...request, schemaVersion: 2, windowContext: contexts.get(request.revision) ?? null,
-    sequence: ++sequence, sessionId, requestId: crypto.randomUUID(),
+    sequence: ++sequence, sessionId, windowSessionId, requestId: crypto.randomUUID(),
   });
   return {
     request: (request) => new Promise((resolve, reject) => {

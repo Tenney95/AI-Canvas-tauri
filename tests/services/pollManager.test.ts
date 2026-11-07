@@ -37,6 +37,7 @@ import {
   resumeMediaNodeTask,
   resumeRunningHubNodeTask,
   settleMediaTaskQueries,
+  readVideoEditorTransitionTaskResult,
   updatePendingTask,
   type PendingTask,
 } from '../../src/services/pollManager';
@@ -64,6 +65,69 @@ beforeEach(async () => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'project-1', projectLoadStatus: 'ready',
     projects: [{ id: 'project-1', name: 'project', createdAt: 1, updatedAt: 1 }] });
+});
+
+describe('independent editor transition recovery', () => {
+  it('keeps submitted and confirmed-failed transition identities so old window events cannot become new generation requests', async () => {
+    const unbind = bindMediaTaskContext('terminal-editor-tracking', { projectId: 'project-1',
+      editorTransition: { requestId: 'failed-original-request', anchorNodeId: 'anchor' } });
+    const receipt = savePendingTask({ nodeId: 'terminal-editor-tracking', projectId: 'project-1', nodeType: 'ai-video',
+      provider: 'volcengine', taskType: 'volcengine', taskId: 'original-failed-remote-task', submitted: true });
+    unbind();
+    removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject(receipt);
+    removeFailedMediaTask(receipt);
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ ...receipt, terminalFailure: true });
+    await resumePendingTasks('project-1');
+    await expect(readVideoEditorTransitionTaskResult(receipt)).rejects.toThrow('服务商已明确拒绝');
+    expect(getPendingTasksForProject('project-1')[0].attemptId).toBe(receipt.attemptId);
+    expect(useAppStore.getState().nodes).toEqual([]);
+  });
+
+  it('keeps a missing-anchor transition receipt across startup scanning and sanitizes its local reference', async () => {
+    const unbind = bindMediaTaskContext('editor-tracking', { projectId: 'project-1',
+      editorTransition: { requestId: 'original-request', anchorNodeId: 'removed-anchor', fileName: 'C:\\private\\result.mp4' } });
+    const receipt = savePendingTask({ nodeId: 'editor-tracking', projectId: 'project-1', nodeType: 'ai-video',
+      provider: 'general', providerConfigId: 'original', taskType: 'custom-protocol', taskId: 'paid-remote-task', submitted: true,
+      resultUrls: ['https://cdn.example/paid-result.mp4'], mediaRecoveryState: 'delivery_pending' });
+    unbind();
+    await resumePendingTasks('project-1');
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ ...receipt,
+      mediaContext: { editorTransition: { requestId: 'original-request', anchorNodeId: 'removed-anchor' } } });
+    expect(JSON.stringify(getPendingTasksForProject('project-1'))).not.toContain('private');
+    expect(useAppStore.getState().nodes).toEqual([]);
+    completeMediaNodeTask(receipt);
+    expect(getMediaTaskSnapshot()[0].mediaContext?.editorTransition).toMatchObject({ delivered: true });
+    // 已主动取回仍保留入口身份：Store 自动保存前崩溃后可再次显式取回。
+    expect(getPendingTasksForProject('project-1')[0].taskId).toBe(receipt.taskId);
+  });
+
+  it('refreshes an expired URL using the saved remote protocol without writing a canvas, message, or new generation request', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      original: { apiKey: 'fixture-key', baseUrl: 'https://gateway.example' } } } }));
+    const unbind = bindMediaTaskContext('editor-readonly', { projectId: 'project-1',
+      editorTransition: { requestId: 'original-request', anchorNodeId: 'anchor' } });
+    const receipt = savePendingTask({ nodeId: 'editor-readonly', projectId: 'project-1', nodeType: 'ai-video',
+      provider: 'general', providerConfigId: 'original', taskType: 'custom-protocol', taskId: 'paid-task', submitted: true,
+      resultUrls: ['https://cdn.example/expired.mp4'], mediaRecoveryState: 'delivery_pending',
+      mediaDownloadAccess: { providerConfigId: 'original', origin: 'https://gateway.example', auth: { type: 'bearer' } },
+      protocolPoll: { method: 'GET', url: 'https://gateway.example/tasks/paid-task', statusPath: 'status',
+        successValues: ['completed'], failureValues: ['failed'], resultUrlPath: 'url', intervalMs: 1 } });
+    unbind();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'completed', url: 'https://cdn.example/original.mp4' })));
+    vi.stubGlobal('fetch', fetchMock);
+    const persist = vi.spyOn(fileService, 'persistMediaUrlToProjectData');
+    try {
+      await expect(readVideoEditorTransitionTaskResult(receipt)).resolves.toMatchObject({ url: 'https://cdn.example/original.mp4' });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
+      expect(persist).not.toHaveBeenCalled();
+      expect(useAppStore.getState().nodes).toEqual([]);
+      expect(useAppStore.getState().messages).toEqual([]);
+      expect(getPendingTasksForProject('project-1')[0]).toMatchObject({ ...receipt,
+        resultUrls: ['https://cdn.example/original.mp4'], mediaRecoveryState: 'delivery_pending' });
+    } finally { persist.mockRestore(); vi.unstubAllGlobals(); }
+  });
 });
 
 describe('pending task read compatibility and runtime context', () => {

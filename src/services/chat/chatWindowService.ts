@@ -48,8 +48,32 @@ export const CHAT_REFERENCE_PREVIEW_EVENT = 'chat:reference-preview-result';
 export const CHAT_TEAM_ARTIFACT_EVENT = 'chat:team-artifact-result';
 export const CHAT_MANAGED_RESPONSE_EVENT = 'chat:managed-result';
 let mainWindowSessionId: string | undefined;
+let mainWindowRevision = 0;
+const sessionListeners = new Set<() => void>();
+/** 只由主窗口真实创建入口分配；子窗口握手不能产生新的写授权。 */
+export function beginChatWindowSession(): string {
+  mainWindowSessionId = crypto.randomUUID();
+  for (const listener of sessionListeners) listener();
+  return mainWindowSessionId;
+}
+export function getMainChatWindowSessionId(): string | undefined { return mainWindowSessionId; }
+export function endChatWindowSession(sessionId: string | undefined): void {
+  if (!sessionId || sessionId !== mainWindowSessionId) return;
+  mainWindowSessionId = undefined;
+  for (const listener of sessionListeners) listener();
+}
+export function subscribeChatWindowSession(listener: () => void): () => void {
+  sessionListeners.add(listener);
+  return () => { sessionListeners.delete(listener); };
+}
+export function nextChatWindowRevision(): number { return ++mainWindowRevision; }
+export function getChatClientSessionId(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const sessionId = new URLSearchParams(window.location.search).get('session') ?? '';
+  return /^[A-Za-z0-9_-]{8,160}$/.test(sessionId) ? sessionId : undefined;
+}
 export const CHAT_SEND_RESPONSE_EVENT = 'chat:send-result';
-interface ChatSendResponse { requestId: string; accepted: boolean }
+interface ChatSendResponse { requestId: string; sessionId?: string; accepted: boolean }
 
 export type ChatManagedOperation =
   | { kind: 'preview_creation_profile'; profile: CreationProfileOption }
@@ -61,10 +85,11 @@ export type ChatManagedOperation =
   | { kind: 'branch_conversation'; messageId: string }
   | { kind: 'team_result'; taskId: string; action: 'apply' | 'restore' | 'reconcile' }
   | { kind: 'amend_team_task'; taskId: string; instruction: string };
-export interface ChatManagedResponse { requestId: string; scopeId: string; conversationId?: string; value?: unknown; error?: string }
+export interface ChatManagedResponse { requestId: string; sessionId?: string; scopeId: string; conversationId?: string; value?: unknown; error?: string }
 
 export interface ChatTeamArtifactResponse {
   requestId: string;
+  sessionId?: string;
   taskId: string;
   artifactId: string;
   text?: string;
@@ -74,6 +99,7 @@ export interface ChatTeamArtifactResponse {
 /** 仅按需返回给独立窗口，不进入快照、补丁、消息或项目持久化。 */
 export interface ChatReferencePreviewResponse {
   requestId: string;
+  sessionId?: string;
   projectId: string | null;
   content: ReferencePreviewContent;
 }
@@ -165,9 +191,11 @@ export interface ChatStatePatch {
 }
 
 export type ChatStateSync =
-  | { type: 'snapshot'; revision: number; snapshot: ChatStateSnapshot }
+  | { type: 'snapshot'; sessionId?: string; acceptedSequence?: number; revision: number; snapshot: ChatStateSnapshot }
   | {
       type: 'patch';
+      sessionId?: string;
+      acceptedSequence?: number;
       baseRevision: number;
       revision: number;
       patch: ChatStatePatch;
@@ -402,7 +430,7 @@ export type ChatAction = (
   | { type: 'dock_window' | 'close_window'; requestId?: string; composerDraft?: ChatComposerHandoff }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }
-  | { type: 'request_sync' }) & { windowFrame?: ProjectWindowFrame; sequence?: number };
+  | { type: 'request_sync'; sessionId?: string }) & { windowFrame?: ProjectWindowFrame; sequence?: number };
 
 export interface ChatComposerHandoff {
   conversationId: string | null;
@@ -411,6 +439,7 @@ export interface ChatComposerHandoff {
 }
 
 export interface ChatWindowState {
+  sessionId?: string;
   revision: number;
   snapshot: ChatStateSnapshot;
 }
@@ -418,14 +447,15 @@ export interface ChatWindowState {
 /** 旧帧直接忽略；补丁缺前帧时返回 null，让窗口重新请求完整快照。 */
 export function receiveChatStateSync(current: ChatWindowState | null, sync: ChatStateSync): ChatWindowState | null {
   const frame = sync.type === 'snapshot' ? sync.snapshot.windowFrame : sync.patch.fields.windowFrame;
+  const sessionId = sync.sessionId ?? frame?.sessionId;
+  if (frame && sync.sessionId && frame.sessionId !== sync.sessionId) return null;
+  const currentSessionId = current?.sessionId ?? current?.snapshot.windowFrame?.sessionId;
+  if (currentSessionId && sessionId && currentSessionId !== sessionId) return current;
   if (frame && (frame.schemaVersion !== 2 || frame.revision !== sync.revision)) return null;
-  if (frame && current?.snapshot.windowFrame && frame.sessionId !== current.snapshot.windowFrame.sessionId) {
-    return sync.type === 'snapshot' ? { revision: sync.revision, snapshot: sync.snapshot } : null;
-  }
   if (current && sync.revision <= current.revision) return current;
-  if (sync.type === 'snapshot') return { revision: sync.revision, snapshot: sync.snapshot };
+  if (sync.type === 'snapshot') return { sessionId, revision: sync.revision, snapshot: sync.snapshot };
   if (!current || sync.baseRevision !== current.revision) return null;
-  return { revision: sync.revision, snapshot: applyChatStatePatch(current.snapshot, sync.patch) };
+  return { sessionId: sessionId ?? current.sessionId, revision: sync.revision, snapshot: applyChatStatePatch(current.snapshot, sync.patch) };
 }
 
 // ============================================
@@ -439,7 +469,7 @@ export function receiveChatStateSync(current: ChatWindowState | null, sync: Chat
  */
 export async function initMainWindowListener(
   onAction: (action: ChatAction) => void,
-  onDetachClosed: (draft?: ChatComposerHandoff) => void,
+  onDetachClosed: (draft?: ChatComposerHandoff, sessionId?: string) => void,
 ): Promise<() => void> {
   const { listen } = await import('@tauri-apps/api/event');
 
@@ -447,8 +477,8 @@ export async function initMainWindowListener(
     onAction(event.payload);
   });
 
-  const unlistenClose = await listen<{ composerDraft?: ChatComposerHandoff }>(CHAT_CLOSE_REQUEST, (event) => {
-    onDetachClosed(event.payload.composerDraft);
+  const unlistenClose = await listen<{ composerDraft?: ChatComposerHandoff; sessionId?: string }>(CHAT_CLOSE_REQUEST, (event) => {
+    onDetachClosed(event.payload.composerDraft, event.payload.sessionId);
   });
 
   return () => {
@@ -459,8 +489,6 @@ export async function initMainWindowListener(
 
 /** 主窗口广播首次快照或后续增量补丁（独立窗口 listen 此事件） */
 export async function emitSyncState(sync: ChatStateSync): Promise<void> {
-  const frame = sync.type === 'snapshot' ? sync.snapshot.windowFrame : sync.patch.fields.windowFrame;
-  if (frame) mainWindowSessionId = frame.sessionId;
   const { emit } = await import('@tauri-apps/api/event');
   await emit(CHAT_SYNC_EVENT, sync);
 }
@@ -472,18 +500,21 @@ export async function emitCloseChatWindow(): Promise<void> {
   if (!await WebviewWindow.getByLabel(CHAT_DETACHED_WINDOW_LABEL)) return;
   const { emitTo, listen } = await import('@tauri-apps/api/event');
   const requestId = crypto.randomUUID();
+  const sessionId = mainWindowSessionId;
+  if (!sessionId) throw new Error('独立窗口会话已失效，请核对窗口中的草稿');
   await new Promise<void>((resolve, reject) => {
     let stop: (() => void) | undefined;
     let settled = false;
     const timer = setTimeout(() => { settled = true; stop?.(); reject(new Error('独立窗口尚未确认草稿交接，已保留窗口')); }, 30000);
-    void listen<{ requestId: string; accepted: boolean }>(CHAT_CLOSE_ACK_EVENT, ({ payload }) => {
-      if (settled || payload.requestId !== requestId) return;
+    void listen<{ requestId: string; sessionId?: string; accepted: boolean }>(CHAT_CLOSE_ACK_EVENT, ({ payload }) => {
+      if (settled || payload.requestId !== requestId || payload.sessionId !== sessionId) return;
       settled = true; clearTimeout(timer); stop?.();
+      if (mainWindowSessionId && mainWindowSessionId !== sessionId) { reject(new Error('独立窗口已重新打开，请核对新窗口中的草稿')); return; }
       if (payload.accepted) resolve(); else reject(new Error('窗口上下文已变化，草稿仍保留在独立窗口'));
     }).then(async (dispose) => {
       stop = dispose;
       if (settled) { dispose(); return; }
-      await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_CLOSE_EVENT, { requestId, sessionId: mainWindowSessionId });
+      await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_CLOSE_EVENT, { requestId, sessionId });
     })
       .catch((error: unknown) => { clearTimeout(timer); stop?.(); reject(error); });
   });
@@ -499,14 +530,22 @@ export async function initChatWindowListener(
   onCloseRequest: (requestId?: string) => void,
 ): Promise<() => void> {
   const { listen } = await import('@tauri-apps/api/event');
+  const sessionId = getChatClientSessionId();
 
   const unlistenSync = await listen<ChatStateSync>(CHAT_SYNC_EVENT, (event) => {
+    if (!sessionId || event.payload.sessionId !== sessionId) return;
+    const frame = event.payload.type === 'snapshot' ? event.payload.snapshot.windowFrame : event.payload.patch.fields.windowFrame;
+    if (frame && frame.sessionId !== sessionId) return;
+    // 同一真实窗口刷新/重连沿用 nonce，从宿主已接受的序号继续；request_sync 本身不重置授权。
+    if (Number.isSafeInteger(event.payload.acceptedSequence) && event.payload.acceptedSequence! >= 0) {
+      clientSequence = Math.max(clientSequence, event.payload.acceptedSequence!);
+    }
     onSync(event.payload);
   });
 
   const unlistenClose = await listen<{ requestId?: string; sessionId?: string }>(CHAT_CLOSE_EVENT, ({ payload }) => {
-    const currentSession = getChatReferenceWindowFrame()?.sessionId;
-    if (currentSession && payload?.sessionId !== currentSession) {
+    const currentSession = sessionId;
+    if (!currentSession || payload?.sessionId !== currentSession) {
       if (payload?.requestId) void emitChatCloseAcknowledgement(payload.requestId, false).catch(() => {});
       return;
     }
@@ -529,6 +568,7 @@ export async function emitAction(action: ChatAction, windowFrame?: ProjectWindow
   try {
     const { emitTo } = await import('@tauri-apps/api/event');
     await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT, { ...action, windowFrame: windowFrame ?? action.windowFrame,
+      ...(action.type === 'request_sync' ? { sessionId: getChatClientSessionId() } : {}),
       sequence: ++clientSequence });
   } catch {
     console.warn('[chatWindow] failed to emit action');
@@ -545,7 +585,7 @@ export async function requestChatMessage(action: Extract<ChatAction, { type: 'se
     const finish = (accepted: boolean) => { if (settled) return; settled = true; clearTimeout(timer); stop?.(); resolve(accepted); };
     const timer = setTimeout(() => finish(false), 30000);
     void listen<ChatSendResponse>(CHAT_SEND_RESPONSE_EVENT, ({ payload }) => {
-      if (payload.requestId === requestId) finish(payload.accepted === true);
+      if (payload.requestId === requestId && payload.sessionId === (windowFrame ?? action.windowFrame)?.sessionId) finish(payload.accepted === true);
     }).then(async (dispose) => {
       stop = dispose;
       if (settled) { dispose(); return; }
@@ -556,13 +596,13 @@ export async function requestChatMessage(action: Extract<ChatAction, { type: 'se
 
 export async function emitChatCloseAcknowledgement(requestId: string, accepted: boolean): Promise<void> {
   const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_CLOSE_ACK_EVENT, { requestId, accepted });
+  await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_CLOSE_ACK_EVENT, { requestId, sessionId: getChatClientSessionId(), accepted });
 }
 
-export async function emitChatSendResponse(requestId: string | undefined, accepted: boolean): Promise<void> {
+export async function emitChatSendResponse(requestId: string | undefined, accepted: boolean, sessionId?: string): Promise<void> {
   if (!requestId) return;
   const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_SEND_RESPONSE_EVENT, { requestId, accepted } satisfies ChatSendResponse);
+  await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_SEND_RESPONSE_EVENT, { requestId, sessionId, accepted } satisfies ChatSendResponse);
 }
 
 /** 独立助手只请求主窗口已登记产物，不接收文件路径或直接读取项目目录。 */
@@ -584,7 +624,8 @@ export async function requestTeamArtifactText(taskId: string, artifactId: string
     void (async () => {
       unlisten = await listen<ChatTeamArtifactResponse>(CHAT_TEAM_ARTIFACT_EVENT, (event) => {
         const response = event.payload;
-        if (response.requestId !== requestId || response.taskId !== taskId || response.artifactId !== artifactId) return;
+        if (response.requestId !== requestId || response.sessionId !== windowFrame?.sessionId
+          || response.taskId !== taskId || response.artifactId !== artifactId) return;
         if (typeof response.text === 'string' && response.text.length > 120000) {
           finish(undefined, '产物超过窗口预览上限，请在主窗口查看');
         } else finish(response.text, response.error);
@@ -617,7 +658,8 @@ export async function requestManagedChatOperation<T = unknown>(scopeId: string, 
     const timer = setTimeout(() => finish(undefined, '主窗口尚未确认操作结果，请核对最新状态；未自动重试'), 30000);
     void (async () => {
       unlisten = await listen<ChatManagedResponse>(CHAT_MANAGED_RESPONSE_EVENT, ({ payload }) => {
-        if (payload?.requestId !== requestId || payload.scopeId !== scopeId || payload.conversationId !== conversationId) return;
+        if (payload?.requestId !== requestId || payload.sessionId !== windowFrame?.sessionId
+          || payload.scopeId !== scopeId || payload.conversationId !== conversationId) return;
         finish(payload);
       });
       if (settled) { unlisten(); return; }
@@ -637,6 +679,6 @@ export async function emitManagedChatResponse(response: ChatManagedResponse): Pr
 export async function emitCloseRequest(composerDraft?: ChatComposerHandoff): Promise<void> {
   try {
     const { emit } = await import('@tauri-apps/api/event');
-    await emit(CHAT_CLOSE_REQUEST, { composerDraft });
+    await emit(CHAT_CLOSE_REQUEST, { composerDraft, sessionId: getChatClientSessionId() });
   } catch { /* ignore */ }
 }

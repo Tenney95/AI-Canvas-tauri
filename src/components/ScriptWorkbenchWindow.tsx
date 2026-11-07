@@ -74,8 +74,10 @@ export default function ScriptWorkbenchWindow() {
   useEffect(() => {
     let disposed = false;
     let closeStop: (() => void) | undefined;
-    const sessionId = new URLSearchParams(window.location.search).get('session') ?? '';
-    if (!/^[A-Za-z0-9_-]{8,160}$/.test(sessionId)) return;
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get('session') ?? '';
+    const windowSessionId = params.get('windowSession') ?? '';
+    if (![sessionId, windowSessionId].every((value) => /^[A-Za-z0-9_-]{8,160}$/.test(value))) return;
     void connectScriptWorkbenchWindow(sessionId, (next) => {
       if (disposed) return;
       snapshotRef.current = next;
@@ -88,13 +90,13 @@ export default function ScriptWorkbenchWindow() {
       if (originalHandoff.current && next.originalWriting?.documentId === originalHandoff.current.documentId
         && next.originalWriting.acceptedSequence >= originalHandoff.current.sequence) originalHandoff.current = undefined;
       setSnapshot(next);
-    }).then(async (bridge) => {
+    }, windowSessionId).then(async (bridge) => {
       if (disposed) { bridge.dispose(); return; }
       connection.current = bridge;
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const stop = await getCurrentWindow().onCloseRequested((event) => {
         event.preventDefault();
-        if (!snapshotRef.current) { void closeUninitializedScriptWorkbench(sessionId).catch(() => {}); return; }
+        if (!snapshotRef.current) { void closeUninitializedScriptWorkbench(sessionId, windowSessionId).catch(() => {}); return; }
         void dispatch({ type: 'close' }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : '关闭工作台失败'));
       });
       if (disposed) stop(); else closeStop = stop;

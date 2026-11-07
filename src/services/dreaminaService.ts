@@ -7,7 +7,7 @@
  */
 import { mapImageDimensions } from './aiDimensions';
 import { pollTask } from './pollTask';
-import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from './pollManager';
+import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling, getVideoEditorTransitionAnchor } from './pollManager';
 import { useAppStore } from '../store/useAppStore';
 import { logAiRequest } from './ai/httpTransport';
 import { getDreaminaImageModel, getDreaminaVideoCapability } from './ai/dreaminaModels';
@@ -306,7 +306,7 @@ export async function generateDreaminaVideo(opts: {
   } finally {
     if (opts.nodeId) {
       cleanupNodePolling(opts.nodeId);
-      removePendingTask(opts.nodeId);
+      if (!getVideoEditorTransitionAnchor(opts.nodeId)) removePendingTask(opts.nodeId);
     }
   }
 }

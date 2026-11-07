@@ -77,8 +77,9 @@ export function captureLegacyCanvasContext(state: ProjectExecutionContextState):
   const target = legacyTarget(state);
   if (!target) return null;
   const { current, owner } = target;
-  const series = !current.parentId && ((state.projects ?? []).some((item) => item.parentId === current.id)
-    || !!current.series && typeof current.series === 'object' && Object.values(current.series).some((value) => value != null));
+  // 旧普通画布也可先上传原著/保存全剧稿；series资料不证明它已成为无画布容器。
+  // 真正零集的新模型由上方权威project上下文表达，不从旧元数据猜测。
+  const series = !current.parentId && (state.projects ?? []).some((item) => item.parentId === current.id);
   const revision = state.getCurrentRevision();
   if (series || !integer(revision)) return null;
   return { kind: 'canvas', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: epoch(),

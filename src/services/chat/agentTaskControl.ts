@@ -20,6 +20,7 @@ import {
 import { appendAgentEvent } from './agentJournal';
 import { emitAgentLifecycleEvent } from './agentLifecycle';
 import { unmaterializedTeamDispatches, unresolvedAgentDispatches } from './agentDurabilityService';
+import { unmaterializedToolDispatches } from './agentCheckpointService';
 import { assertCreationProfileSnapshot } from '../creationProfiles/creationProfileService';
 import { clearAgentResults } from './agentResultService';
 
@@ -283,6 +284,8 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
     return { ok: false, errorCode: 'AGENT_OUTCOME_REQUIRES_VERIFICATION',
       message: '存在已进入调用但结果未知的操作，请先核实原操作；继续不会自动重投' };
   }
+  if (unmaterializedToolDispatches(task).length) return { ok: false, errorCode: 'AGENT_SUCCESS_STEP_INCOMPLETE',
+    message: '原工具已成功返回但成功步骤不完整，请先只读核实或新建任务；普通继续不会重投' };
   if (unmaterializedTeamDispatches(task).length) return { ok: false, errorCode: 'TEAM_UNKNOWN_RESULT_NO_ARTIFACT',
     message: '原团队调用已核实但没有可恢复成果，请补充新要求或新建任务；普通继续不会重投' };
   if (task.parentTaskId) {

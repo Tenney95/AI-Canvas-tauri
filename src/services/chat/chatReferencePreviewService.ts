@@ -6,7 +6,7 @@ import type { ReferencePreviewContent, ReferencePreviewSource } from '../../type
 import {
   CHAT_DETACHED_WINDOW_LABEL, CHAT_REFERENCE_PREVIEW_EVENT,
   type ChatAction, type ChatReferencePreviewResponse,
-  emitAction, getChatReferenceWindowFrame,
+  emitAction, getChatReferenceWindowFrame, getMainChatWindowSessionId,
 } from './chatWindowService';
 
 export const CHAT_REFERENCE_PREVIEW_TIMEOUT_MS = 15_000;
@@ -15,6 +15,7 @@ type PreviewRequest = Extract<PreviewAction, { type: 'preview_reference' }>;
 
 interface MainPreviewRequest {
   requestId: string;
+  sessionId?: string;
   projectId: string | null;
   controller: AbortController;
   dispose: () => void;
@@ -38,6 +39,7 @@ function unavailable(title: string, message: string): ReferencePreviewContent {
 function mainRequestFresh(request: MainPreviewRequest): boolean {
   const state = useAppStore.getState();
   return activeMainRequest === request && !request.controller.signal.aborted
+    && request.sessionId === getMainChatWindowSessionId()
     && state.chatPanelDetached && state.currentProjectId === request.projectId;
 }
 
@@ -58,13 +60,13 @@ async function readMainPreview(action: PreviewRequest): Promise<void> {
   if (typeof action.requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(action.requestId)) return;
   const state = useAppStore.getState();
   if (!supportedSource(action.source) || !state.chatPanelDetached || state.currentProjectId !== action.projectId) {
-    await emitPreviewResult({ requestId: action.requestId, projectId: action.projectId,
+    await emitPreviewResult({ requestId: action.requestId, sessionId: action.windowFrame?.sessionId, projectId: action.projectId,
       content: unavailable('引用内容', '当前项目或引用已不可用，请在当前对话重新打开') }, () => true).catch(() => {});
     return;
   }
   cancelMainReferencePreview();
   const controller = new AbortController();
-  const request: MainPreviewRequest = { requestId: action.requestId, projectId: action.projectId, controller, dispose: () => {} };
+  const request: MainPreviewRequest = { requestId: action.requestId, sessionId: action.windowFrame?.sessionId, projectId: action.projectId, controller, dispose: () => {} };
   activeMainRequest = request;
   const unsubscribe = useAppStore.subscribe((next) => {
     if (activeMainRequest === request && (!next.chatPanelDetached || next.currentProjectId !== request.projectId)) cancelMainReferencePreview();
@@ -77,9 +79,9 @@ async function readMainPreview(action: PreviewRequest): Promise<void> {
     // 不接收工作流值或本地路径参数，只读当前主窗口中已存在的聊天引用。
     const source = { kind: action.source.kind, id: action.source.id, label: action.source.label };
     const content = await resolveReferencePreview(source, { signal: controller.signal });
-    await emitPreviewResult({ requestId: action.requestId, projectId: action.projectId, content }, () => mainRequestFresh(request));
+    await emitPreviewResult({ requestId: action.requestId, sessionId: request.sessionId, projectId: action.projectId, content }, () => mainRequestFresh(request));
   } catch {
-    if (mainRequestFresh(request)) await emitPreviewResult({ requestId: action.requestId, projectId: action.projectId,
+    if (mainRequestFresh(request)) await emitPreviewResult({ requestId: action.requestId, sessionId: request.sessionId, projectId: action.projectId,
       content: unavailable(action.source.label || '引用内容', '引用内容读取失败，请稍后重新打开') }, () => mainRequestFresh(request)).catch(() => {});
   } finally {
     if (activeMainRequest === request) cancelMainReferencePreview();
@@ -141,7 +143,7 @@ export async function requestDetachedReferencePreview(
       window.addEventListener('beforeunload', abort);
     }
     void listen<ChatReferencePreviewResponse>(CHAT_REFERENCE_PREVIEW_EVENT, ({ payload }) => {
-      if (finished || payload?.requestId !== requestId || payload.projectId !== projectId) return;
+      if (finished || payload?.requestId !== requestId || payload.sessionId !== windowFrame?.sessionId || payload.projectId !== projectId) return;
       if (signal?.aborted || useAppStore.getState().currentProjectId !== projectId) { abort(); return; }
       const content = payload.content;
       if (!content || !['text', 'markdown', 'image', 'video', 'audio'].includes(content.kind) || typeof content.title !== 'string') return;

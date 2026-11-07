@@ -4,14 +4,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+const nativeWindow = vi.hoisted(() => ({ getByLabel: vi.fn(async () => null as object | null) }));
+vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: nativeWindow.getByLabel } }));
 
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../../src/store/useAppStore';
 import { openDetachedChatWindow } from '../../../src/services/chat/chatWindowLifecycle';
+import { getMainChatWindowSessionId } from '../../../src/services/chat/chatWindowService';
 
 describe('detached chat window lifecycle', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
+    nativeWindow.getByLabel.mockReset().mockResolvedValue(null);
     useAppStore.setState(useAppStore.getInitialState(), true);
     useAppStore.setState({
       activeConversationId: 'conversation-1', chatComposerLiveDraft: '未发送的草稿',
@@ -28,14 +32,55 @@ describe('detached chat window lifecycle', () => {
     const first = openDetachedChatWindow();
     const second = openDetachedChatWindow();
     expect(second).toBe(first);
-    await Promise.resolve();
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('open_chat_window');
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledExactlyOnceWith('open_chat_window', { sessionId: getMainChatWindowSessionId() }));
     complete();
     await first;
     expect(useAppStore.getState()).toMatchObject({
       chatPanelDetached: true, activeConversationId: 'conversation-1',
       chatComposerLiveDraft: '未发送的草稿', chatPanelView: 'tasks',
     });
+  });
+
+  it('真实重开分配新会话，已有窗口重复入口保持原 nonce', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await openDetachedChatWindow();
+    const firstSession = getMainChatWindowSessionId();
+    nativeWindow.getByLabel.mockResolvedValue({});
+    await openDetachedChatWindow();
+    expect(getMainChatWindowSessionId()).toBe(firstSession);
+    nativeWindow.getByLabel.mockResolvedValue(null);
+    await openDetachedChatWindow();
+    expect(getMainChatWindowSessionId()).not.toBe(firstSession);
+    expect(vi.mocked(invoke).mock.lastCall).toEqual(['open_chat_window', { sessionId: getMainChatWindowSessionId() }]);
+  });
+
+  it('等待窗口查询时被收回，随后重新置位也不复活旧打开请求', async () => {
+    let resolveWindow!: (window: object | null) => void;
+    nativeWindow.getByLabel.mockImplementationOnce(() => new Promise((resolve) => { resolveWindow = resolve; }));
+    const opening = openDetachedChatWindow();
+    const cancelled = expect(opening).rejects.toThrow('打开已取消');
+    await vi.waitFor(() => expect(nativeWindow.getByLabel).toHaveBeenCalled());
+    useAppStore.getState().setChatPanelDetached(false);
+    useAppStore.getState().setChatPanelDetached(true);
+    resolveWindow(null);
+    await cancelled;
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useAppStore.getState().chatPanelDetached).toBe(false);
+  });
+
+  it('原生创建尚未结束时收回，撤销会话并回收迟到的新窗口', async () => {
+    let created!: () => void;
+    vi.mocked(invoke).mockImplementation((command) => command === 'open_chat_window'
+      ? new Promise<void>((resolve) => { created = resolve; }) : Promise.resolve(undefined));
+    const opening = openDetachedChatWindow();
+    const cancelled = expect(opening).rejects.toThrow('打开已取消');
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('open_chat_window', { sessionId: getMainChatWindowSessionId() }));
+    useAppStore.getState().setChatPanelDetached(false);
+    expect(getMainChatWindowSessionId()).toBeUndefined();
+    created();
+    await cancelled;
+    expect(invoke).toHaveBeenLastCalledWith('close_chat_window');
+    expect(useAppStore.getState().chatPanelDetached).toBe(false);
   });
 
   it.each([false, true])('recovers the docked panel after opening fails (previously detached: %s)', async (detached) => {

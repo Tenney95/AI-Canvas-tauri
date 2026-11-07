@@ -866,3 +866,30 @@ npm run test:typecheck
 7. 查询旧媒体队列、已删集回执和 owner 费用汇总；查询不改 pending 原串，坏源可见且不当空队列。续查期间切集后不得写到同 nodeId 的另一集；旧未知提交不能重投。全剧费用包含退役 Canvas，分页及总额按原行计算，聚合清理请求拒绝。隔离零集样本仍能查原任务，新媒体/截图/插件/Director均不可用。
 
 **本次未运行测试，待用户验收**。源码静态核对不构成跨窗口、原生进程、耐久恢复、真实费用或归档往返的验收证据；上述门禁通过前，正式迁移继续关闭。
+
+### 20.4 P4 缺陷修复与静态复查
+
+2026-11-07 修复 `1dd201d7` 静态审查确认的四项缺陷，并补齐剪辑控制夹具。以下为已实现、待用户验证的状态，不是运行验收结论。
+
+- Agent 工具的最小成功步骤、脱敏摘要与真实 dispatch 结论在同一次任务快照保存中结算，再保存大结果或交付；保存屏障失败停止后续调用。旧版“成功回执存在但原成功步骤缺失”的非只读记录在重启修复、普通继续和相同请求提交边界保守阻断，裁剪不能删除这类防重证据；不修改成功结论、原 ID、预算或已有 settledAt，只读瞬时失败重试沿用原规则。
+- AI 转场使用独立的请求跟踪身份，真实生成入口取得原远端 taskId/attemptId；同请求并发在同步登记边界排他，已保存请求只查原回执。返回的安全 HTTP 结果先写原待续记录，再复核交付租约；其他结果先保存原项目文件，并仅记录安全文件名。RunningHub 使用真实锚点校验提交、独立跟踪回执，Dreamina 不再删除未交付转场回执；恢复分支在普通节点/消息写回前截获结果。原视频节点的“取回 AI 转场”仅查询、下载原任务，由用户重新取得画布派生租约后创建素材节点；不会重新生成、自动改绑旧剪辑窗口或覆盖锚点任务。事件发送成功不当作剪辑器接纳成功，已取回标记也不隐藏再次取回入口，避免窗口拒收或画布自动保存前中断后无法找到原结果。未知提交及损坏队列失败关闭，已删锚点不自动投影；没有远端 ID 的不确定提交仍需到原平台核对，存储失败也不承诺可以恢复唯一内嵌结果。
+- 旧模型普通画布的原著/全剧稿等 series 元数据不再被当作无画布容器的证明；仅实际子分集关系改变旧根的画布判定。新模型零集继续依赖权威 project 上下文，不能借旧适配器恢复出虚构画布。
+- 聊天窗口及工作台的真实新 WebView 各取得新窗口会话，业务 session、任务身份与草稿语义保持原规则。HELLO/request_sync 不产生新授权，快照、请求、回复及关闭事件均核对原窗口会话；同一真实窗口重连从主窗口已接受序号继续。旧响应不能关闭新窗口或清除新草稿；关闭还取消等待中的打开操作，并防止旧销毁回调清掉新窗口句柄。聊天原生命令只增加固定 URL 会话参数，未扩大 capability 或路径权限。
+- `tests/services/videoEditorControl.test.ts` 通过 fake IndexedDB 显式准备 owner/Canvas 项目及各自 exchangeEpoch，仓储写入传入捕获的 CanvasContext。保留并发 CAS、旧人工作业版本、工程键与权限断言，并补缺失上下文、错误归属、owner/Canvas 过期后原工程不变的回归源。
+
+修复同时补充 Agent durability/round/control/restart、旧画布派生、转场真实生成回执及恢复、双窗口会话/重开/迟到响应的回归源；这些文件均未执行。正式 DB_VERSION 仍为 27，正式迁移/恢复写入/激活开关保持 false，未调用 fixture 迁移、真实备份、恢复或项目导入导出；P2 停写确认、耐久备份、journal 和 P3 business marker 门禁均未放宽。v1～v3 读取、v3 导出及 v4 未开放边界维持原合同。
+
+交叉静态复查额外修正了窗口打开等待取消/旧销毁句柄交错、同转场请求并发提交、事件已发送却隐藏恢复入口、过期签名 URL 不重新查询原任务，以及同步结果被误当作远端可查询任务的问题。真实协议回归夹具保留参考素材校验，补全首尾帧变量。已保存到项目文件的结果优先读原文件；只有具备原查询合同的转场才在主动取回时刷新地址，不用生成接口冒充恢复。
+
+普通 Provider 清理不再移除已提交或未知提交的转场身份；明确失败的转场回执保留 terminalFailure，重复旧事件不能把原远端任务变成新生成。未提交且无不确定证据的准备记录仍可沿既有逻辑移除，不能把它伪装成已经收费。最后一轮调用链与交叉静态复查未发现仍待修复的确定阻断项；36 个任务文件严格 UTF-8 核对无替换字符，任务差异的 `git diff --check` 无空白错误。以上均未执行测试或类型检查。
+
+后续验收仍以 Tauri 桌面端的可丢弃 profile 和旧项目副本进行，先不用真实收费任务重放：
+
+1. 普通旧画布上传原著/全剧稿后，确认生成、派生导入和剪辑入口仍可用；旧多集根及权威零集样本仍无可写画布。v3 导出、导入副本后字段与媒体关联保持一致。
+2. 在工具返回后、大结果交付前模拟保存失败/重启，确认原成功事实、步骤、预算和回执保留；普通继续不重复提交旧写入。旧成功缺步骤快照明确要求核对，只读瞬时错误仍按原预算重试。
+3. 转场提交期间切集或关闭旧剪辑窗，再返回原视频节点主动取回，预期使用原 taskId 查询/下载并创建新素材节点，既不重新付费也不写新分集或旧剪辑工程。另核对重复 requestId 并发、未知提交、下载失败、磁盘失败及原锚点删除，原回执不被清空。
+4. 聊天与工作台编辑多次后关闭、收回、重开，新窗口首个请求正常；同窗重连继续递增序号。注入旧会话 HELLO/RPC/ACK、打开等待中关闭、旧销毁迟到、旧付费结果迟到，预期拒绝旧写入、保留草稿并不关闭新窗口。
+
+针对新增源码的命令入口（在仓库根目录，当前不执行）为 `npx vitest run tests/services/videoEditorControl.test.ts tests/services/videoEditorAiTransitionService.test.ts tests/services/scriptWorkbenchWindowService.test.ts tests/services/chat/chatWindowLifecycle.test.ts tests/services/chat/chatWindowListener.test.ts tests/services/chat/detachedChatSyncController.test.ts tests/services/chat/chatReferencePreviewService.test.ts tests/services/chat/agentDurabilityService.test.ts tests/services/chat/agentRoundExecutor.test.ts tests/services/chat/agentTaskControl.test.ts tests/services/chat/agentTaskService.test.ts tests/services/projectExecutionContext.test.ts tests/services/canvasDerivationGuard.test.ts`；原生及归档回归沿用 20.3 的未执行入口。
+
+**本次未运行测试，待用户验收**。本轮静态阅读和交叉复查不能代替类型、自动化、原生窗口、真实存储故障及项目归档往返验收。
