@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
 };
+#[cfg(windows)]
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,7 +23,12 @@ const ERROR: &str = "项目模型维护条件不满足，已停止且保留原�
 const PAGE: &str = "<!doctype html><html lang=zh-CN><head><meta charset=utf-8><title>项目模型隔离维护</title></head><body><p>隔离维护环境已启动。正式迁移关闭，本页不加载画布、队列或业务脚本。</p></body></html>";
 
 #[derive(Clone)]
-pub enum ColdMaintenanceRequest { Fixture(String), ProductionProofOnly }
+pub enum ColdMaintenanceRequest {
+    // 各平台都解析启动参数，但只有 Windows 会读取 fixture ID。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Fixture(String),
+    ProductionProofOnly,
+}
 
 /// 仅命令行冷启动可选择；release 永远拒绝。普通启动不创建目录、不访问用户资料。
 pub fn cold_request() -> Result<Option<ColdMaintenanceRequest>, &'static str> {
@@ -365,7 +371,7 @@ async fn checked_session(webview: &Webview, lease_id: Option<&str>, fixture: boo
         || !only_maintenance_surface(webview) { return Err(ERROR.into()); }
     let state = webview.app_handle().state::<ProjectModelMaintenanceState>();
     if state.revoked.load(Ordering::Acquire) { return Err(ERROR.into()); }
-    let result = {
+    let _result = {
         let guard = state.session.lock().map_err(|_| ERROR)?;
         let session = guard.as_ref().ok_or(ERROR)?;
         if session.environment_revoked.load(Ordering::Acquire) || lease_id.is_some_and(|value| value != session.lease.lease_id)
@@ -392,7 +398,7 @@ async fn checked_session(webview: &Webview, lease_id: Option<&str>, fixture: boo
         if state.revoked.load(Ordering::Acquire)
             || state.session.lock().map_err(|_| ERROR)?.as_ref().ok_or(ERROR)?.environment_revoked.load(Ordering::Acquire)
             || !only_maintenance_surface(webview) { return Err(ERROR.into()); }
-        Ok(result)
+        Ok(_result)
     }
 }
 async fn operation_root(webview: &Webview, lease_id: &str, operation_id: &str) -> Result<(MaintenanceLease, PathBuf), String> {

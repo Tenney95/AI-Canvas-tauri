@@ -283,7 +283,9 @@ pub(super) fn run(mut command: Command, control: Control) -> Result<(), Failure>
     command.creation_flags(super::super::CREATE_NO_WINDOW);
     #[cfg(unix)]
     command.process_group(0);
-    let mut child = command.spawn().map_err(|_| Failure::new(FailureKind::Environment))?;
+    let child = command.spawn().map_err(|_| Failure::new(FailureKind::Environment))?;
+    #[cfg(windows)]
+    let mut child = child;
     #[cfg(windows)]
     let job = match super::ProcessJob::attach(&child) {
         Ok(job) => job,

@@ -501,6 +501,7 @@ pub fn get_onnx_gpu_status() -> Result<String, String> {
 
 #[derive(Debug)]
 enum WorkerFailure {
+    #[cfg(windows)]
     UpdateShutdown,
     Failed(String),
 }
@@ -508,6 +509,7 @@ enum WorkerFailure {
 impl WorkerFailure {
     fn into_message(self) -> String {
         match self {
+            #[cfg(windows)]
             Self::UpdateShutdown => "应用正在更新，本地推理已停止".to_string(),
             Self::Failed(error) => error,
         }
@@ -991,6 +993,7 @@ async fn probe_gpu(model_path: &Path) -> Result<OnnxGpuConfig, WorkerFailure> {
     .map_err(|e| format!("GPU 探针任务执行失败: {e}"))?;
     let resp = match worker_result {
         Ok(v) => v,
+        #[cfg(windows)]
         Err(WorkerFailure::UpdateShutdown) => return Err(WorkerFailure::UpdateShutdown),
         Err(e) => {
             // 保存 CPU 配置避免下次再探
@@ -1092,6 +1095,7 @@ async fn get_or_probe_gpu_config(model_path: &Path) -> Result<OnnxGpuConfig, Str
                 let _ = cfg.save();
                 config = cfg;
             }
+            #[cfg(windows)]
             Err(WorkerFailure::UpdateShutdown) => {
                 return Err(WorkerFailure::UpdateShutdown.into_message());
             }
@@ -1168,6 +1172,7 @@ async fn run_in_worker(
             }
         });
         session.classify_result(result).map_err(|error| match error {
+            #[cfg(windows)]
             WorkerFailure::UpdateShutdown => (false, WorkerFailure::UpdateShutdown.into_message()),
             WorkerFailure::Failed(error) => (true, error),
         })
