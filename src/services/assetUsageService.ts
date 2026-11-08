@@ -154,7 +154,7 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
     } else {
       const stored = await getProjectById(project.id); check(signal);
       if (!stored || !Array.isArray(stored.nodes)) throw new Error(t('项目引用读取不完整，请重试'));
-      storedProjects.set(project.id, stored);
+      storedProjects.set(project.id, { nodes: stored.nodes, dramaAssets: stored.dramaAssets });
     }
   }
   const storedGlobals = [...await getAllGlobalCharacters(), ...await getAllGlobalDramaAssets()]; check(signal);

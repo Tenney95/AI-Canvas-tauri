@@ -3329,7 +3329,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           if (!nextLibrary) throw new Error('共享资料无法序列化');
           assertCurrent();
         }
-        const { signal: _signal, assertCurrent: _assertCurrent, onCommitted: _onCommitted, nativeAuthority: _authority,
+        const { signal: _signal, assertCurrent: _assertCurrent, nativeAuthority: _authority,
           ...commitRecords } = input.commit;
         const receiptDigest = await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken({
           projectId: native.projectId, projectEpoch: source.project.epoch, expectedContent: source.content,
@@ -3362,7 +3362,6 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             unsubscribe(); unsubscribe = () => undefined;
             if (input.nextLibrary) set({ dramaAssets: input.nextLibrary });
           }
-          input.commit.onCommitted?.(result);
           return result;
         } catch (error) {
           if (journalPrepared) {

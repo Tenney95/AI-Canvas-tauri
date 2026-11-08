@@ -3,7 +3,7 @@ import { stat } from '@tauri-apps/plugin-fs';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import type { CanvasContext } from '../types/project';
 import type { ModelProtocolVariables } from './ai/modelProtocol';
-import type { MediaReference } from '../types/aiTypes';
+import type { MediaReference, ProtocolJsonValue } from '../types/aiTypes';
 import type { VideoEditorAiTransitionRequest } from './videoEditorWindowService';
 import { useAppStore } from '../store/useAppStore';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
@@ -70,6 +70,24 @@ async function probeStoredVideo(root: string, relativePath: string): Promise<num
 }
 
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));
+/** 厂商构建器可以省略未设置参数；传给声明式协议前转换为真正的JSON数据。 */
+function jsonRequest(value: Record<string, unknown>): Record<string, ProtocolJsonValue> {
+  const convert = (item: unknown, depth: number): ProtocolJsonValue => {
+    if (depth > 32) throw new Error('转场请求JSON层级过深');
+    if (item === null || typeof item === 'string' || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)) return item;
+    if (Array.isArray(item)) return item.map((child) => convert(child, depth + 1));
+    if (!item || typeof item !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(item))) throw new Error('转场请求包含非JSON值');
+    const result: Record<string, ProtocolJsonValue> = {};
+    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(item))) {
+      if (!('value' in descriptor) || ['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('转场请求包含不受支持的属性');
+      if (descriptor.value !== undefined) result[key] = convert(descriptor.value, depth + 1);
+    }
+    return result;
+  };
+  const result = convert(value, 0);
+  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('转场请求必须是JSON对象');
+  return result;
+}
 function currentContext(): CanvasContext {
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1) throw new Error('请返回原新项目画布');
@@ -194,12 +212,12 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
     requestBody = await buildRunningHubModelRequest(selected.rawConnection, selected.definition, request.prompt,
       request.duration !== undefined && selected.definition.parameters.some((field) => field.name === 'duration') ? { duration: String(request.duration) } : {},
       { image: [first.dataUrl, last.dataUrl], imageRoles: ['first_frame', 'last_frame'] }, signal);
-    variables = { model: selected.model.modelId, request: requestBody };
+    variables = { model: selected.model.modelId, request: jsonRequest(requestBody) };
   } else if (selected.kind === 'dreamina') {
     requestBody = buildDreaminaVideoParams({ model: selected.model.modelId, prompt: request.prompt, references,
       duration: params.seedanceDuration, resolution: params.seedanceResolution, ratio: params.seedanceRatio });
     if (requestBody.kind !== 'frames2video') throw new Error('即梦未生成明确首尾帧合同，未提交转场');
-    variables = { request: requestBody };
+    variables = { request: jsonRequest(requestBody) };
   } else {
     if (selected.kind === 'volcengine') requestBody = buildVolcengineVideoRequestBody(selected.model.modelId, request.prompt, references, true, params);
     else {
@@ -211,7 +229,7 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
           : { firstFrameUrl: uploaded[0], lastFrameUrl: uploaded[1] }) }) ?? undefined;
     }
     if (!requestBody) throw new Error('所选视频模型缺少首尾帧请求合同');
-    variables = { request: JSON.parse(JSON.stringify(requestBody)) };
+    variables = { request: jsonRequest(requestBody) };
   }
   const options = { apiKey: selected.apiKey, baseUrl: selected.baseUrl, protocol: selected.protocol, variables, signal,
     ...(selected.protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => ({
@@ -382,6 +400,7 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
       signal: activeSignal, interval: 3000, maxDuration: 60 * 60 * 1000, onFetchError: 'throw',
     }) } : selected.kind === 'runninghub' ? { urls: (await queryRunningHubModel(selected.rawConnection, [row.remoteTaskId!], 'video', activeSignal)).map((output) => output.url) }
       : await (async () => {
+        if (selected.kind !== 'general') throw new Error('原转场查询合同未匹配，未查询其他厂商');
         const poll = resolvePoll(selected.baseUrl, selected.protocol.poll!, selected.protocol.auth,
           resolveNativeProtocolContext(selected.protocol, row.remoteTaskId!, row.pollContext));
         if (selected.catalogId === 'relayonapi' && usesRelayonModelProtocol(selected.model.modelId, selected.profile)) poll.resultUrlFallbackPaths = [...RELAYON_VIDEO_RESULT_URL_PATHS];

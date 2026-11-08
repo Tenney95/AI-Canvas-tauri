@@ -24,9 +24,10 @@ export function buildNativeMediaCollectionCanvas(canvas: CanvasDocument, record:
   const sourceType = record.targetNodeType ?? `ai-${record.category}`;
   if (matches.length !== 1 || !source?.data || source.data.type !== sourceType || !source.position
     || !Number.isFinite(source.position.x) || !Number.isFinite(source.position.y)) throw new Error('原媒体节点类型或位置已变化，产物保留');
+  const sourceData = source.data, sourcePosition = source.position;
   const ids = new Set(canvas.nodes.map((node) => (node as { id?: unknown })?.id));
-  const width = typeof source.data.nodeWidth === 'number' && source.data.nodeWidth > 0 ? source.data.nodeWidth : 280;
-  const height = typeof source.data.nodeHeight === 'number' && source.data.nodeHeight > 0 ? source.data.nodeHeight : 280;
+  const width = typeof sourceData.nodeWidth === 'number' && sourceData.nodeWidth > 0 ? sourceData.nodeWidth : 280;
+  const height = typeof sourceData.nodeHeight === 'number' && sourceData.nodeHeight > 0 ? sourceData.nodeHeight : 280;
   const firstDisplayId = getNextDisplayId(canvas.nodes as Node<BaseNodeData>[]);
   const output = results.map((file, ordinal) => {
     const id = ordinal === 0 ? source.id : nativeMediaOutputNodeId(record, ordinal);
@@ -35,19 +36,19 @@ export function buildNativeMediaCollectionCanvas(canvas: CanvasDocument, record:
     const type = ordinal ? `${sameCategory ? 'ai' : 'source'}-${file.category}` : sourceType;
     const inherited = ordinal ? Object.fromEntries((sameCategory
       ? ['prompt', 'model', 'provider', 'imageSize', 'imageQuality', 'imageBackground', 'aspectRatio', 'style', 'nodeWidth', 'nodeHeight'] : [])
-      .filter((key) => Object.hasOwn(source.data!, key)).map((key) => [key, structuredClone(source.data![key])])) : structuredClone(source.data);
+      .filter((key) => Object.hasOwn(sourceData, key)).map((key) => [key, structuredClone(sourceData[key])])) : structuredClone(sourceData);
     const mediaKey = file.category === 'image' ? 'imageUrl' : file.category === 'video' ? 'videoUrl' : 'audioUrl';
     const data: Record<string, unknown> = { ...inherited, type, [mediaKey]: file.relativePath, relativePath: file.relativePath, storageRootRef: resultRootRef,
       sourceUrl: file.relativePath, output: file.relativePath, ...(file.category !== 'audio' ? { thumbnailUrl: file.relativePath } : {}),
       artifactId: nativeMediaOutputArtifactId(record.operationId, ordinal), batchGroupId: `${record.apimartImageBatch ? 'native-image' : 'native-media'}-batch-${record.operationId}`,
-      ...(ordinal ? { batchCount: 1, displayId: firstDisplayId + ordinal - 1, label: `${source.data.label || (file.category === 'image' ? '图片' : '媒体')} ${ordinal + 1}`,
+      ...(ordinal ? { batchCount: 1, displayId: firstDisplayId + ordinal - 1, label: `${sourceData.label || (file.category === 'image' ? '图片' : '媒体')} ${ordinal + 1}`,
         ...(sameCategory ? {} : { role: 'source' }) } : {}),
-      ...(type === 'ai-animation' ? animationResultPatch(source.data as unknown as BaseNodeData) : {}),
+      ...(type === 'ai-animation' ? animationResultPatch(sourceData as unknown as BaseNodeData) : {}),
       status: 'success', error: undefined, mediaTaskState: undefined, mediaTaskStage: undefined, videoTaskState: undefined };
     for (const key of ['filePath', 'assetId', 'mattingMask', 'annotation', 'annotationLayer', 'imageWidth', 'imageHeight']) delete data[key];
     return { ...(ordinal ? {} : structuredClone(source)), id, type, ...(ordinal ? { selected: false,
-      position: { x: source.position!.x + ((ordinal - 1) % BATCH_COLUMNS_RIGHT_OF_SOURCE + 1) * (width + BATCH_NODE_GAP),
-        y: source.position!.y + Math.floor((ordinal - 1) / BATCH_COLUMNS_RIGHT_OF_SOURCE) * (height + BATCH_NODE_GAP) } } : {}), data };
+      position: { x: sourcePosition.x + ((ordinal - 1) % BATCH_COLUMNS_RIGHT_OF_SOURCE + 1) * (width + BATCH_NODE_GAP),
+        y: sourcePosition.y + Math.floor((ordinal - 1) / BATCH_COLUMNS_RIGHT_OF_SOURCE) * (height + BATCH_NODE_GAP) } } : {}), data };
   });
   return { nodes: [...canvas.nodes.map((node) => (node as { id?: unknown })?.id === source.id ? output[0] : node), ...output.slice(1)], edges: canvas.edges, groups: canvas.groups };
 }

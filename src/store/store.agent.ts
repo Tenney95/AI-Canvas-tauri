@@ -90,7 +90,7 @@ function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperation
   if (executionContext && executionContext.modelGeneration > 0 && (!contextState
     || !executionContext.runtimeEpoch || !isProjectExpectedContextCurrent(executionContext, contextState))) throw new ProjectExecutionContextError();
   if (authoritative && authoritative.modelGeneration > 0 && !global) {
-    if (!contextState || !projectScope || projectScope.modelGeneration !== authoritative.modelGeneration || !projectScope.runtimeEpoch
+    if (!contextState || authoritative.kind === 'global' || !projectScope || projectScope.modelGeneration !== authoritative.modelGeneration || !projectScope.runtimeEpoch
       || input.projectId !== contextState.currentProjectId && (!initialTarget
         || initialTarget.episodeId !== input.projectId || initialTarget.seriesId !== authoritative.projectId)
       || !isProjectExpectedContextCurrent(projectScope, contextState, { checkCanvasRevision: false })) throw new ProjectExecutionContextError();

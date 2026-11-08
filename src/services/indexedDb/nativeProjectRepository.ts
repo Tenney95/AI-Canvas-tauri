@@ -1095,7 +1095,7 @@ options: NativeProjectOptions = {}): Promise<NativeProjectExportJournal> {
         || stored && stored.projectId !== fixed.projectId || !configValuesEqual(stored?.exchange ?? null, fixed.expectedExchange)) return fail('project-version-conflict');
       if (existing) return fail('operation-id-used');
       if (transfers.some((item) => !(item.kind === 'native-content-recovery' && item.phase === 'ready')
-        && !['registered', 'aborted', 'finalized'].includes(item.phase))) return fail('project-transfer-present');
+        && (item.phase === undefined || !['registered', 'aborted', 'finalized'].includes(item.phase)))) return fail('project-transfer-present');
       const now = Date.now();
       const journal: NativeProjectExportJournal = { id: fixed.operationId, operationId: fixed.operationId, projectId: fixed.projectId,
         schemaVersion: 1, kind: 'project-model-export', generation: 1, sessionId: 'native-project', targetProjectId: fixed.projectId,
