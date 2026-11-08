@@ -275,7 +275,6 @@ jobs:
       RELEASE_TAG: ${{ needs.quality.outputs.tag }}
       RELEASE_SHA: ${{ needs.quality.outputs.sha }}
       REQUIRE_DRAFT: 'true'
-      LEGACY_ARTIFACT_DIRECTORY: ${{ runner.temp }}/legacy-installers
     steps:
       - uses: actions/checkout@v4
         with:
@@ -291,6 +290,8 @@ jobs:
           path: ${{ runner.temp }}/legacy-installers
       - name: Upload Legacy and make release public after every platform passes
         shell: bash
+        env:
+          LEGACY_ARTIFACT_DIRECTORY: ${{ runner.temp }}/legacy-installers
         run: |
           set -euo pipefail
           node scripts/release-workflow.mjs assert-publishable
