@@ -125,8 +125,8 @@ vi.mock('../../src/services/dramaAssetTransferService', () => ({
   exportProjectDramaAssets: driver.exportDrama, importProjectDramaAssets: driver.importDrama,
   exportGlobalDramaAssets: driver.exportGlobalDrama, importGlobalDramaAssets: driver.importGlobalDrama,
 }));
-vi.mock('../../src/services/indexedDbService', async () => ({
-  imageHistoryReferenceKey: (await vi.importActual<typeof import('../../src/services/indexedDbService')>('../../src/services/indexedDbService')).imageHistoryReferenceKey,
+vi.mock('../../src/services/indexedDbService', async (original) => ({
+  ...await original<typeof import('../../src/services/indexedDbService')>(),
   getAllAssetMeta: async () => [], putAssetMeta: vi.fn(), deleteAssetMeta: vi.fn(),
   getAssetLastUsedTimes: driver.lastUsedTimes,
 }));
