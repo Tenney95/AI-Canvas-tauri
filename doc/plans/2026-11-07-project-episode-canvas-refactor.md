@@ -1005,3 +1005,42 @@ P7 前置清单 `scripts/project-model-boundaries.json` 登记 33 个已识别�
 全量测试进一步发现旧 Agent 任务的大结果在交付时可能被误判上下文变化。新结果在引用和持久文件中冻结原执行上下文；旧持久结果只有在原文件和已保存任务的作用域相符时才能恢复，没有原始证明时失败关闭，不使用当前项目重绑定。读写期间分别核对实时任务与冻结上下文；并发读取在异步操作后重新核算剩余预算，避免重复发放；结果清理撤销在途读取，停止任务或撤回 `agent_result_read` 授权后不交付迟到正文。带运行期 epoch 的租约在重启后可能失效；异常路径若允许同 ID、同 epoch 重建，现有持久身份无法区分，仍需上游身份合同与恢复策略补充证明。此处不把不明身份结果静默绑定到当前画布。
 
 持久结果重启后不会恢复原工具的内存授权回调；目前已知项目持久结果来自 `series_get_state`，回读仍校验任务和上下文，但不会重新执行原工具的授权或 allowlist。原工具授权变更后的回读策略需要单独设计和验证，不能宣称重启后已重新核准原授权。
+
+### 22.2 2026-11-08 桌面控制桥验收
+
+用户授权测试后，使用当前运行的 Tauri 开发版本机 MCP 控制桥，在新建测试项目中实际执行以下操作并回读结果：
+
+- 普通项目新建、重命名、设置修改与保存；文本节点中的中文、换行和 emoji 保留。
+- 普通项目转为剧集并追加两集，原记录作为第 1 集保留节点；新增分集继承设置，A 集后续修改的提示词后缀不影响 B 集。
+- A／B 集各自写入节点，保存、切走再打开后内容独立保留；从其他测试项目打开剧集进入第 1 集，在同剧 B 集再次打开剧集时保留 B 集。
+- 全剧剧本和项目角色在同剧分集间共享；独立对照项目不包含这些角色、画布或设置。章节目录及按版本读取有效，正文更新后旧章节引用被拒绝。
+- 过期 revision 与跨分集的旧上下文写入被拒绝；跨集查询原画布的操作回执只返回只读审计。项目列表分页返回连续偏移且两页 ID 不重复。
+
+原有两个项目未打开或写入，前后列表中的名称和更新时间一致。保留「桌面验收-项目结构-1108-改名」（3 集）与「桌面验收-隔离对照-1108」供复核，结束时停留在测试 B 集、主面板关闭。以上是桌面进程真实工具调用及保存后重新打开的证据，没有重启应用，不证明冷启动恢复。运行上下文的 modelGeneration 为 0；正式新模型迁移、激活和 v4 运行边界没有打开。
+
+发现截图验收缺口：`ui_set_layout(panel=characters)` 与 `ui_get_layout` 均报告角色库已打开，但两次 `ui_capture_window` 截图都未包含该弹窗。源码中 `mcpUiRuntimeService.renderCurrentDocument` 优先采集 `#root`，而 `ModalOverlay` 将角色库挂到 `document.body`，因此该截图不是完整窗口可见内容，不能据此判定角色库显示失败或视觉验收通过。本次只记录问题，未修改截图实现。
+
+同次测试授权下，在仓库根目录执行以下命令，42 文件、613 项通过；它们使用隔离 IndexedDB／模拟端口，不作为桌面真实归档往返的证据：
+
+```sh
+npx vitest run tests/services/projectModel*.test.ts tests/services/projectArchive*.test.ts tests/services/projectTransferService.test.ts tests/services/projectImport*.test.ts tests/services/projectExchange*.test.ts tests/services/projectMergeService.test.ts tests/services/projectChatExport.test.ts tests/services/episode*.test.ts tests/store/projects.test.ts tests/scripts/projectModelBoundaries.test.mjs
+node scripts/audit-project-model-boundaries.mjs
+```
+
+边界审计扫描 1179 个源码文件、登记 33 个旧依赖模块，未报告违规，仍明确正式激活未就绪。`src-tauri` 中 `cargo check --lib` 通过；`cargo test --lib project_model_safety::tests -- --test-threads=1` 为 4 项通过；`cargo test --lib project_archive::tests -- --test-threads=1` 为 29 项通过、2 项失败。失败的 `round_trips_long_chinese_paths_and_preserves_bytes` 和 `rejects_complete_asset_path_byte_overflow_before_replacing_export` 均在创建 fixture 目录时返回路径过长，尚未进入归档调用；8 层中文目录加本机临时目录及 fixture 前缀约为 1088 字节，超过本机 PATH_MAX=1024。须修正跨平台夹具后重跑，不能视为原生归档已完整通过。Rust 测试编译另报告 `native_rendering.rs` 的 `GPU_MEMORY_ARGUMENT` 未使用警告，普通 lib 检查未报告该警告。
+
+待验收：正式模型激活、旧数据实际迁移、分集换序／删除末集、项目复制、桌面归档导入导出往返、原生对话框、冷启动和故障恢复，以及弹窗的实际视觉与鼠标交互。本次公开控制桥没有提供项目归档／复制／换序的执行入口；没有用内部 Store 调用或真实数据迁移绕过这些边界，也未调用付费模型。此前浏览器尝试只新建了单独的浏览器测试项目，用户明确要求桌面后已停止，未计入上述桌面通过项。
+
+### 22.3 截图／跨平台夹具修复与原文、剧本保存验收
+
+截图采集根改为 `document.body`，保留既有敏感元素过滤、尺寸和编码预算，覆盖 Portal 弹窗；补充根节点外弹窗的回归。在当前 Tauri 开发版重新打开角色库，截图已显示弹窗及测试角色。仓库根目录运行 `npx vitest run tests/services/mcp/mcpUiRuntimeService.test.ts`，12 项通过。
+
+原生归档的长中文路径往返夹具缩短每层目录名，仍覆盖超过 255 字节的中文路径及文件字节往返；超长完整归档名用既有多根映射指向短路径真实文件，继续验证拒绝超限路径、保留原导出及清除临时包，不放宽生产校验。`src-tauri` 中运行 `cargo test --lib project_archive::tests -- --test-threads=1`，31 项通过，上节两项 macOS 夹具失败已消除。
+
+用户另行明确授权 AppleScript 后，仅按当前开发进程定位桌面控件，在新建的「桌面验收-原文剧本-1108」测试剧集中通过实际编辑器操作：
+
+- 新建并保存 `原文.txt`，169 个字符、2 章；通过 `series_read(part=original)` 从真实文件回读，与输入全文逐字一致，中文、换行、引号和 emoji 保留。
+- 新建并保存本集剧本 138 个字符，通过 `episode_read(part=script)` 回读一致；全剧剧本通过剧集栏编辑器保存 107 个字符，`series_read(part=script)` 回读一致。
+- 切到对照集后，原文和全剧剧本内容一致，对照集的本集正文仍为空。再切到其他测试项目并返回，重新打开原文、本集剧本与全剧剧本编辑器，三份全文均与原输入一致；原文和本集界面显示已保存。
+
+保留测试剧集及两集记录，结束时停在第 1 集工作台的原文页；原有两个用户项目的名称、更新时间未变化。本轮没有在保存这些新正文后重启应用，不把切换重开当成冷启动恢复验证；正式迁移、激活和付费模型调用仍未执行。

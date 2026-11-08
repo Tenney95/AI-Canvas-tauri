@@ -142,7 +142,8 @@ async function encodeOnMainThread(source: HTMLCanvasElement, quality: number): P
 }
 
 async function renderCurrentDocument(options: Omit<CaptureOptions, 'target'>): Promise<WindowCaptureResult> {
-  const root = document.getElementById('root') ?? document.body;
+  // 弹窗通过 Portal 挂在 body 上，只截 #root 会漏掉它们。
+  const root = document.body;
   const sourceWidth = Math.max(1, root.clientWidth || window.innerWidth);
   const sourceHeight = Math.max(1, root.clientHeight || window.innerHeight);
   const width = Math.min(sourceWidth, options.maxWidth);

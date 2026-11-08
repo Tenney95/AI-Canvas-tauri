@@ -1594,7 +1594,8 @@ mod tests {
     fn round_trips_long_chinese_paths_and_preserves_bytes() {
         let fixture = Fixture::new();
         let source = fixture.0.join("source");
-        let relative = format!("{}/制作总览.md", vec!["汉".repeat(40); 8].join("/"));
+        let relative = format!("{}/制作总览.md", vec!["汉".repeat(20); 8].join("/"));
+        assert!(relative.len() > 255);
         let file = source.join(&relative);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, "# 中文原稿\n连续性待核对").unwrap();
@@ -1628,10 +1629,15 @@ mod tests {
         let source = fixture.0.join("source");
         let relative = format!("{}/{}.md", vec!["汉".repeat(40); 8].join("/"), "文".repeat(16));
         assert!(relative.len() <= 1024 && format!("assets/{relative}").len() > 1024);
-        let file = source.join(relative); fs::create_dir_all(file.parent().unwrap()).unwrap(); fs::write(file, b"text").unwrap();
-        let mut assets = Vec::new(); inspect_assets(&source, Path::new(""), &mut assets).unwrap();
+        // 用多根映射保留超长归档名，避免先撞上本机文件系统的路径上限。
+        fixture.write("source/note.md", b"text");
+        let (bytes, sha256) = hash_file(&source.join("note.md"), &mut Vec::new()).unwrap();
+        let assets = vec![ArchiveAssetDigest { path: relative, bytes, sha256,
+            source_root_ref: Some("root".into()), source_relative_path: Some("note.md".into()) }];
+        let roots = HashMap::from([("root".to_string(), source)]);
         let output = fixture.0.join("project.aicanvas"); fs::write(&output, b"existing export").unwrap();
-        let error = pack_archive(vec![], Some(source), output.clone(), Some(assets), MAX_ARCHIVE_ENTRIES).err().unwrap();
+        let error = pack_archive_with_publication(vec![], None, output.clone(), Some(assets),
+            MAX_ARCHIVE_ENTRIES, None, &roots).err().unwrap();
         assert!(error.contains("不安全路径"));
         assert_eq!(fs::read(output).unwrap(), b"existing export");
         assert!(!fs::read_dir(&fixture.0).unwrap().any(|item| item.unwrap().path().extension().is_some_and(|value| value == "part")));

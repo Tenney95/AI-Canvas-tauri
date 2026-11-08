@@ -40,6 +40,7 @@ beforeEach(() => {
   vi.stubGlobal('window', { innerWidth: 1000, innerHeight: 600, setTimeout, clearTimeout });
   vi.stubGlobal('document', {
     getElementById: () => ({ clientWidth: 1000, clientHeight: 600 }),
+    body: { clientWidth: 1000, clientHeight: 600 },
     documentElement: {},
     createElement: vi.fn(() => fakeCanvas()),
   });
@@ -52,6 +53,21 @@ afterEach(() => {
 });
 
 describe('MCP screenshot capture', () => {
+  it('captures portal siblings of the app root as part of the window', async () => {
+    const portal = new ElementStub();
+    const body = {
+      clientWidth: 1000, clientHeight: 600,
+      children: [document.getElementById('root'), portal],
+    };
+    vi.stubGlobal('document', { ...document, body });
+
+    await captureAppWindow(options);
+
+    expect(mocks.captureDom).toHaveBeenCalledWith(body, expect.objectContaining({
+      canvasWidth: 640, canvasHeight: 384, filter: expect.any(Function),
+    }));
+  });
+
   it('filters Text, SVG, password, API key and sensitive elements on the single DOM capture', async () => {
     mocks.captureDom.mockImplementation(async (_root, input) => {
       expect(input.filter({ nodeType: 3, textContent: '普通文字' })).toBe(true);
