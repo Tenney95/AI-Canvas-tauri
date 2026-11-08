@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertEpisodeEditorReady,
+  EpisodeEditorWriteBlockedError,
   isEpisodeEditorWriteLocked,
   prepareEpisodeEditorRebase,
   registerEpisodeEditorSession,
@@ -13,6 +14,7 @@ describe('episode editor write coordination', () => {
     let dirty = true;
     const close = registerEpisodeEditorSession('dirty-original', () => ({ dirty, saving: false }));
     expect(() => assertEpisodeEditorReady('dirty-original')).toThrow('未保存');
+    expect(() => assertEpisodeEditorReady('dirty-original')).toThrow(EpisodeEditorWriteBlockedError);
     expect(() => assertEpisodeEditorReady('another-episode')).not.toThrow();
     dirty = false;
     expect(() => assertEpisodeEditorReady('dirty-original')).not.toThrow();
@@ -23,6 +25,7 @@ describe('episode editor write coordination', () => {
     const close = registerEpisodeEditorSession('lost-editor', () => ({ dirty: true, saving: false }));
     close();
     expect(() => assertEpisodeEditorReady('lost-editor')).toThrow('未保存');
+    expect(() => assertEpisodeEditorReady('lost-editor')).toThrow(EpisodeEditorWriteBlockedError);
     settleEpisodeEditorSessions('lost-editor');
     expect(() => assertEpisodeEditorReady('lost-editor')).not.toThrow();
   });
@@ -44,7 +47,9 @@ describe('episode editor write coordination', () => {
       throw new Error('storage unavailable');
     });
     expect(isEpisodeEditorWriteLocked('write-lease')).toBe(true);
-    await expect(withEpisodeEditorWrite('write-lease', async () => undefined)).rejects.toThrow('正在保存');
+    await expect(withEpisodeEditorWrite('write-lease', async () => undefined)).rejects.toMatchObject({
+      code: 'EPISODE_EDITOR_WRITE_BLOCKED', message: expect.stringContaining('正在保存'),
+    });
     finish?.();
     await expect(operation).rejects.toThrow('storage unavailable');
     expect(isEpisodeEditorWriteLocked('write-lease')).toBe(false);

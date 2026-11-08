@@ -1128,3 +1128,21 @@ Tauri 桌面验收前保留现有未保存测试稿及其临时备份，使用�
 源码中 `episodeEditorSessionService.assertEpisodeEditorReady` 在调用写入回调之前抛错，`seriesTools.writeEpisodeContent` 让异常继续上抛；`agentRoundExecutor` 对已登记 dispatch 的非 read 工具异常统一进入 `TOOL_OUTCOME_UNKNOWN`。因此保护生效，但调用方无法从结果知道本次是写入前的明确拒绝。这一反馈问题本轮仅记录，尚未修复；后续应区分可证明未开始写入的冲突与真正的副作用未知，不能把全部写异常都改成可重试失败。
 
 仍未完成：首帧始终未到且宿主失联的桌面故障注入、应用临时目录不可写、缓存草稿与其他合法入口并发提交的专门 CAS 场景，以及本轮新稿的冷启动恢复。正常返回启动页的清理通过不等于已复现并验收所有失联路径。正式迁移、激活、v4 实际往返与付费生成仍不在通过范围。结束时停在启动页，测试内容均已保存，无独立工作台遗留；原有四个 schema 生成文件改动继续保留。
+
+### 22.8 脏稿拒绝反馈修复实现（待验收）
+
+用户授权修复 22.7 的剩余反馈缺陷后，在编辑会话守卫中增加专用 `EpisodeEditorWriteBlockedError`，保留原脏稿／失联稿件／保存中拒绝条件和提示。三个分集写工具复用的 `writeEpisodeContent` 仅在实际写回调尚未开始、且异常属于该专用类型时，返回 `EPISODE_EDITOR_WRITE_BLOCKED`、明确原因及 `retryable=false` 的结构化失败。
+
+通用执行器和副作用未知处理没有调整。写入回调开始后，即使再抛出同一专用错误，也继续上抛，由原执行链保留 `TOOL_OUTCOME_UNKNOWN`、暂停与禁止自动重投；不按报错文案猜测写入事实，不重分类或清理既有未知结果任务。已保存稿件、工作台本地稿和外部写入权限边界沿用原实现。
+
+回归源码覆盖三个工具的脏稿拒绝、保存中／失联编辑会话、同集写锁冲突、成功后的干净副本同步，以及写入开始后的普通／专用错误继续上抛。另在完整 MCP 调用链中核对明确冲突返回错误码、任务为 failed 且响应消息为 done，而写入后异常仍 paused/unknown 且只调用一次。
+
+**自动化已验证，桌面待验收。** 实现阶段仅做静态核对；用户随后授权提交推送，本次修复已通过推送钩子的完整 `npm run ci`：全仓 ESLint、应用与测试类型检查、711 个测试文件／12,732 项 Vitest，以及生产构建。此前桌面通过结论不能代替本次改动的桌面验收。定向回归入口为仓库根目录：
+
+```sh
+npx vitest run tests/services/episodeEditorSessionService.test.ts tests/services/chat/seriesTools.test.ts tests/services/mcp/mcpControlService.test.ts tests/services/chat/agentRoundExecutor.test.ts
+npm run typecheck
+npm run test:typecheck
+```
+
+桌面验收继续使用测试副本和用户已开启的 MCP 服务：在工作台修改本集正文但不保存，先读取对应 episode 上下文，再分别发起正文、大纲和创作字段写入，应明确返回 `EPISODE_EDITOR_WRITE_BLOCKED` 与未保存稿原因，不应将该次任务暂停为 `tool_outcome_unknown`；读回保存内容和本地草稿均应保持原样。保存或明确丢弃后，重新读取上下文并由用户发起新的写入，应成功并同步干净工作台。正在保存／失联稿件仍应阻止外部写入。副作用开始后的异常边界使用上述隔离测试验证，不在用户真实数据上注入存储故障。

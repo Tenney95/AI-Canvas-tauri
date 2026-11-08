@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentTask } from '../../../src/types/agent';
 import { WORKBENCH_AGENT_READ_TOOLS } from '../../../src/services/episodeWorkspaceScope';
-import { isEpisodeEditorWriteLocked, registerEpisodeEditorSession, settleEpisodeEditorSessions } from '../../../src/services/episodeEditorSessionService';
+import { EpisodeEditorWriteBlockedError, isEpisodeEditorWriteLocked, registerEpisodeEditorSession, settleEpisodeEditorSessions } from '../../../src/services/episodeEditorSessionService';
 
 const fileMocks = vi.hoisted(() => ({
   getProjectDataDir: vi.fn(async () => '/data/moon'),
@@ -75,7 +75,10 @@ describe('分集写工具与工作台草稿握手', () => {
     const stop = registerEpisodeEditorSession('ep-1', () => ({ dirty: true, saving: false }));
     const unregisters = registerSeriesAgentTools();
     try {
-      await expect(getAgentTool(toolId)!.execute(context(), input)).rejects.toThrow('未保存');
+      const result = await getAgentTool(toolId)!.execute(context(), input);
+      expect(result).toMatchObject({ status: 'error', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED',
+        summary: expect.stringContaining('未保存'), retryable: false });
+      expect(JSON.parse(result.modelContent)).toMatchObject({ episodeId: 'ep-1', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED', retryable: false });
       expect(updateEpisodeCreative).not.toHaveBeenCalled();
       expect(updateEpisodeOutline).not.toHaveBeenCalled();
       expect(isEpisodeEditorWriteLocked('ep-1')).toBe(false);
@@ -83,6 +86,20 @@ describe('分集写工具与工作台草稿握手', () => {
       stop(); settleEpisodeEditorSessions('ep-1');
       unregisters.forEach((unregister) => unregister());
     }
+  });
+
+  it.each(['saving', 'unsettled'] as const)('写入前的 %s 编辑会话同样返回明确拒绝', async (state) => {
+    const write = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative: write });
+    const close = registerEpisodeEditorSession('ep-1', () => ({ dirty: state === 'unsettled', saving: state === 'saving' }));
+    if (state === 'unsettled') close();
+    const unregisters = registerSeriesAgentTools();
+    try {
+      await expect(getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'ep-1', script: '新正文' })).resolves.toMatchObject({
+        status: 'error', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED', retryable: false,
+      });
+      expect(write).not.toHaveBeenCalled();
+    } finally { close(); settleEpisodeEditorSessions('ep-1'); unregisters.forEach((unregister) => unregister()); }
   });
 
   it.each([true, false])('写入返回 %s 时，只在成功后同步干净编辑副本并释放锁', async (saved) => {
@@ -98,7 +115,9 @@ describe('分集写工具与工作台草稿握手', () => {
     try {
       expect(isEpisodeEditorWriteLocked('ep-1')).toBe(true);
       expect(rebase).not.toHaveBeenCalled();
-      await expect(getAgentTool('episode_update_outline')!.execute(context(), { episodeId: 'ep-1', outline: '另一份稿' })).rejects.toThrow('正在保存');
+      await expect(getAgentTool('episode_update_outline')!.execute(context(), { episodeId: 'ep-1', outline: '另一份稿' })).resolves.toMatchObject({
+        status: 'error', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED', summary: expect.stringContaining('正在保存'), retryable: false,
+      });
       expect(updateEpisodeOutline).not.toHaveBeenCalled();
       finish(saved);
       expect((await writing).status).toBe(saved ? 'success' : 'error');
@@ -108,6 +127,18 @@ describe('分集写工具与工作台草稿握手', () => {
       finish(false); await writing;
       stop(); unregisters.forEach((unregister) => unregister());
     }
+  });
+
+  it.each([false, true])('写入开始后的异常继续上抛，不误判为写入前拒绝（专用错误：%s）', async (typed) => {
+    const failure = typed ? new EpisodeEditorWriteBlockedError('写入之后出现冲突') : new Error('写入结果尚未确认');
+    const updateEpisodeCreative = vi.fn(async () => { throw failure; });
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    try {
+      await expect(getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'ep-1', script: '新正文' })).rejects.toBe(failure);
+      expect(updateEpisodeCreative).toHaveBeenCalledTimes(1);
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(false);
+    } finally { unregisters.forEach((unregister) => unregister()); }
   });
 });
 

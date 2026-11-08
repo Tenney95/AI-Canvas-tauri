@@ -35,7 +35,8 @@ import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../../../sr
 import * as chatHistory from '../../../src/services/chat/chatHistoryService';
 import * as mcpBridge from '../../../src/services/mcp/mcpBridgeService';
 import { MCP_CATALOG_MAX_BYTES } from '../../../src/services/mcp/mcpToolCatalog';
-import { captureLegacyProjectExpectedContext } from '../../../src/services/projectExecutionContext';
+import { captureLegacyEpisodeContext, captureLegacyProjectExpectedContext } from '../../../src/services/projectExecutionContext';
+import { registerEpisodeEditorSession } from '../../../src/services/episodeEditorSessionService';
 
 const { getChatWindow } = vi.hoisted(() => ({ getChatWindow: vi.fn() }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: getChatWindow } }));
@@ -1166,6 +1167,52 @@ describe('MCP control service', () => {
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).not.toContain('先检查核心冲突。');
     expect(JSON.stringify(result)).not.toContain(staleSkill.sourceId);
+  });
+
+  it.each([
+    ['episode_update_script', { episodeId: 'project-mcp', script: '外部新正文' }],
+    ['episode_update_outline', { episodeId: 'project-mcp', outline: '外部新大纲' }],
+    ['episode_update_creative_field', { episodeId: 'project-mcp', field: 'task', value: '外部新要点' }],
+  ] as const)('%s 的脏稿拒绝经过完整 MCP 执行链后仍是明确失败', async (name, input) => {
+    const write = vi.fn(async () => true);
+    useAppStore.setState({ projects: [
+      { id: 'series-mcp', name: '测试剧集', createdAt: 1, updatedAt: 1 },
+      { id: 'project-mcp', parentId: 'series-mcp', name: '测试分集', createdAt: 1, updatedAt: 1 },
+    ], updateEpisodeCreative: write, updateEpisodeOutline: write });
+    let dirty = true;
+    const close = registerEpisodeEditorSession('project-mcp', () => ({ dirty, saving: false }));
+    try {
+      const result = await mcpCall('tools_call', { schemaVersion: 2, name, arguments: input,
+        expectedContext: captureLegacyEpisodeContext(useAppStore.getState(), 'project-mcp') }, `editor-blocked:${name}`);
+      expect(result).toMatchObject({ isError: true, summary: expect.stringContaining('未保存') });
+      const content = result.content[0];
+      if (content.type !== 'text') throw new Error('Expected structured editor conflict');
+      expect(JSON.parse(content.text)).toMatchObject({ episodeId: 'project-mcp', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED', retryable: false });
+      expect(write).not.toHaveBeenCalled();
+      expect(useAppStore.getState().agentTasks[0]).toMatchObject({ status: 'failed', steps: [
+        expect.objectContaining({ status: 'failed', errorCode: 'EPISODE_EDITOR_WRITE_BLOCKED' }),
+      ] });
+      expect(useAppStore.getState().agentTasks[0].pausedReason).not.toBe('tool_outcome_unknown');
+      expect(useAppStore.getState().messages).toContainEqual(expect.objectContaining({
+        role: 'assistant', status: 'done', content: expect.stringContaining('未保存'),
+      }));
+    } finally { dirty = false; close(); }
+  });
+
+  it('本集写入开始后抛错仍按结果未知暂停，且不自动重试', async () => {
+    const write = vi.fn(async () => { throw new Error('写入结果尚未确认'); });
+    useAppStore.setState({ projects: [
+      { id: 'series-mcp', name: '测试剧集', createdAt: 1, updatedAt: 1 },
+      { id: 'project-mcp', parentId: 'series-mcp', name: '测试分集', createdAt: 1, updatedAt: 1 },
+    ], updateEpisodeCreative: write });
+    const result = await mcpCall('tools_call', { schemaVersion: 2, name: 'episode_update_script',
+      arguments: { episodeId: 'project-mcp', script: '新正文' },
+      expectedContext: captureLegacyEpisodeContext(useAppStore.getState(), 'project-mcp') }, 'episode-write-unknown');
+    expect(result).toMatchObject({ isError: true, summary: expect.stringContaining('结果未知') });
+    expect(useAppStore.getState().agentTasks[0]).toMatchObject({
+      status: 'paused', pausedReason: 'tool_outcome_unknown', errorCode: 'TOOL_OUTCOME_UNKNOWN',
+    });
+    expect(write).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a structured tool failure distinct from a failed response', async () => {

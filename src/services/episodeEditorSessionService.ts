@@ -10,6 +10,14 @@ interface EditorSession {
   prepareRebase?: () => () => void;
 }
 
+export class EpisodeEditorWriteBlockedError extends Error {
+  readonly code = 'EPISODE_EDITOR_WRITE_BLOCKED';
+  constructor(message: string) {
+    super(message);
+    this.name = 'EpisodeEditorWriteBlockedError';
+  }
+}
+
 const sessions: Map<symbol, EditorSession> = import.meta.hot?.data.episodeEditorSessions ?? new Map();
 const writingEpisodes: Set<string> = import.meta.hot?.data.episodeEditorWrites ?? new Set();
 const listeners: Set<() => void> = import.meta.hot?.data.episodeEditorListeners ?? new Set();
@@ -75,14 +83,14 @@ export function assertEpisodeEditorReady(episodeId: string): void {
     if (session.episodeId !== episodeId) continue;
     const state = session.read?.();
     if (!state || state.dirty || state.saving) {
-      throw new Error('本集工作台还有未保存或尚未确认处理的修改，请先保存或明确丢弃，再应用团队成果');
+      throw new EpisodeEditorWriteBlockedError('本集工作台还有未保存或尚未确认处理的修改，请先保存或明确丢弃，再应用团队成果');
     }
   }
 }
 
 /** 锁定期间编辑器拒绝新输入，避免条件校验后、实际保存前又出现局部脏稿。 */
 export async function withEpisodeEditorWrite<T>(episodeId: string, write: () => Promise<T>): Promise<T> {
-  if (writingEpisodes.has(episodeId)) throw new Error('本集已有成果正在保存，请等待完成');
+  if (writingEpisodes.has(episodeId)) throw new EpisodeEditorWriteBlockedError('本集已有成果正在保存，请等待完成');
   assertEpisodeEditorReady(episodeId);
   writingEpisodes.add(episodeId);
   try {

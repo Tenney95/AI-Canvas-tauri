@@ -14,7 +14,7 @@ import {
 } from '../../seriesCreativeService';
 import type { EpisodeCreativeInfo } from '../../../types';
 import { isWorkbenchAgentTaskInScope } from '../../episodeWorkspaceScope';
-import { prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
+import { EpisodeEditorWriteBlockedError, prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
 
 /** 单次回给模型的正文上限；原著动辄几十万字，必须分段读。 */
 const MAX_TEXT_CHUNK = 6000;
@@ -56,13 +56,22 @@ function currentSeries() {
   return { state, series };
 }
 
-async function writeEpisodeContent(episodeId: string, write: () => Promise<boolean>): Promise<boolean> {
-  return withEpisodeEditorWrite(episodeId, async () => {
-    const rebaseEditors = prepareEpisodeEditorRebase(episodeId);
-    const saved = await write();
-    if (saved) rebaseEditors();
-    return saved;
-  });
+async function writeEpisodeContent(episodeId: string, write: () => Promise<boolean>): Promise<boolean | AgentToolExecutionResult> {
+  let writeStarted = false;
+  try {
+    return await withEpisodeEditorWrite(episodeId, async () => {
+      const rebaseEditors = prepareEpisodeEditorRebase(episodeId);
+      writeStarted = true;
+      const saved = await write();
+      if (saved) rebaseEditors();
+      return saved;
+    });
+  } catch (error) {
+    // 只把写入前的明确冲突交付为业务拒绝；写入后的任何异常仍交给执行器核实。
+    if (writeStarted || !(error instanceof EpisodeEditorWriteBlockedError)) throw error;
+    return { status: 'error', errorCode: error.code, summary: error.message, retryable: false,
+      modelContent: JSON.stringify({ episodeId, errorCode: error.code, message: error.message, retryable: false }) };
+  }
 }
 
 /** 正文一律按"不可信资料"回传，防止原著或剧本里的句子被当成指令执行。 */
@@ -260,6 +269,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
         const episode = series && listEpisodes(state.projects, series.id).find((item) => item.id === input.episodeId);
         if (!episode) return { status: 'error', summary: '分集不存在', modelContent: '分集不存在', errorCode: 'EPISODE_NOT_FOUND' };
         const saved = await writeEpisodeContent(episode.id, () => state.updateEpisodeOutline(episode.id, input.outline));
+        if (typeof saved !== 'boolean') return saved;
         return saved ? { status: 'success', summary: `已更新“${episode.name}”`, modelContent: JSON.stringify({ episodeId: episode.id, outlineLength: input.outline.length }) } : { status: 'error', summary: '分集更新失败', modelContent: '分集更新失败', errorCode: 'EPISODE_UPDATE_FAILED' };
       },
     }),
@@ -292,6 +302,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
           };
         }
         const saved = await writeEpisodeContent(episode.id, () => state.updateEpisodeCreative(episode.id, { script: input.script }));
+        if (typeof saved !== 'boolean') return saved;
         return saved
           ? {
               status: 'success',
@@ -344,6 +355,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
           ? creative
           : undefined;
         const saved = await writeEpisodeContent(episode.id, () => state.updateEpisodeCreative(episode.id, { creative: nextCreative }));
+        if (typeof saved !== 'boolean') return saved;
         return saved
           ? {
               status: 'success',
