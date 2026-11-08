@@ -7,6 +7,7 @@ const events = vi.hoisted(() => ({
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
   emitTo: vi.fn<(target: string, event: string, payload: unknown) => Promise<void>>(),
   nativeWindow: null as object | null,
+  nativeOptions: undefined as unknown,
   lookupGate: undefined as Promise<void> | undefined,
   onLookup: undefined as (() => void) | undefined,
   destroyGate: undefined as Promise<void> | undefined,
@@ -24,7 +25,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
   WebviewWindow: class {
     private destroyed = new Set<() => void>();
-    constructor(_label: string, _options: unknown) { events.nativeWindow = this; }
+    constructor(_label: string, options: unknown) { events.nativeWindow = this; events.nativeOptions = options; }
     static getByLabel = async () => { events.onLookup?.(); await events.lookupGate; return events.nativeWindow; };
     show = async () => {};
     unminimize = async () => {};
@@ -68,6 +69,7 @@ const deliverRequest = (request: ScriptWorkbenchRequest) => {
 beforeEach(() => {
   events.listeners.clear();
   events.nativeWindow = null;
+  events.nativeOptions = undefined;
   events.lookupGate = undefined; events.onLookup = undefined; events.destroyGate = undefined;
   requestSequences.clear();
   events.emitTo.mockReset().mockResolvedValue(undefined);
@@ -213,7 +215,7 @@ describe('关系图宿主写入边界', () => {
     expect(events.nativeWindow).toBeNull();
   });
 
-  it('同一业务会话重开窗口后接受序号 1，并拒绝原窗口握手、关闭和 RPC', async () => {
+  it('独立窗口不绑定主窗口；重开后接受序号 1，并拒绝原窗口握手和 RPC', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
     const onRequest = vi.fn(async (_request: ScriptWorkbenchRequest) => true);
     let reply!: () => void;
@@ -226,6 +228,7 @@ describe('关系图宿主写入边界', () => {
       onRequest, onDetachedChange: vi.fn() });
     cleanups.push(host.dispose);
     await host.open();
+    expect(events.nativeOptions).not.toHaveProperty('parent');
     const original = latestHostFrame();
     const oldRequest = deliverRequest({ sessionId: original.sessionId, requestId: 'old_window_request', revision: original.revision,
       episodeId: 'episode-b', sequence: 41, action: { type: 'save' } });
@@ -237,7 +240,6 @@ describe('关系图宿主写入边界', () => {
     expect(reopened.windowSessionId).not.toBe(original.windowSessionId);
     const publicationCount = events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:state').length;
     deliver('script-workbench:hello', original);
-    deliver('script-workbench:early-close', original);
     deliver('script-workbench:request', { ...oldRequest, requestId: 'late_old_request', revision: reopened.revision, sequence: 42 });
     await Promise.resolve();
     expect(events.emitTo.mock.calls.filter((call) => call[1] === 'script-workbench:state')).toHaveLength(publicationCount);

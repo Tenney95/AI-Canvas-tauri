@@ -8,7 +8,6 @@ export const SCRIPT_WORKBENCH_WINDOW_LABEL = 'script-workbench';
 const STATE_EVENT = 'script-workbench:state';
 const HELLO_EVENT = 'script-workbench:hello';
 const READY_EVENT = 'script-workbench:ready';
-const EARLY_CLOSE_EVENT = 'script-workbench:early-close';
 const REQUEST_EVENT = 'script-workbench:request';
 const RESPONSE_EVENT = 'script-workbench:response';
 const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_episode', 'set_tab', 'save', 'close', 'dock', 'detach',
@@ -29,11 +28,6 @@ export async function focusScriptWorkbenchWindow(): Promise<void> {
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
   const existing = await WebviewWindow.getByLabel(SCRIPT_WORKBENCH_WINDOW_LABEL);
   if (existing) { await existing.show(); await existing.unminimize(); await existing.setFocus(); }
-}
-
-export async function closeUninitializedScriptWorkbench(sessionId: string, windowSessionId: string): Promise<void> {
-  const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo('main', EARLY_CLOSE_EVENT, { sessionId, windowSessionId });
 }
 
 export interface ScriptWorkbenchWindowHost {
@@ -110,9 +104,6 @@ export function createScriptWorkbenchWindowHost(options: {
       if (!matches(payload)) return;
       options.onDetachedChange(true);
       resolveReady?.();
-    }));
-    retain(await subscribe<{ sessionId?: string; windowSessionId?: string }>(EARLY_CLOSE_EVENT, ({ payload }) => {
-      if (matches(payload)) void close().catch(() => {});
     }));
     retain(await subscribe<ScriptWorkbenchRequest>(REQUEST_EVENT, ({ payload }) => {
       void (async () => {
@@ -244,7 +235,7 @@ export function createScriptWorkbenchWindowHost(options: {
       const win = new WebviewWindow(SCRIPT_WORKBENCH_WINDOW_LABEL, {
         url: `index.html?view=script-workbench&session=${encodeURIComponent(options.sessionId)}&windowSession=${encodeURIComponent(session)}`,
         title: '剧本创作工作台', width: 1280, height: 860, minWidth: 760, minHeight: 560,
-        center: true, resizable: true, decorations: true, parent: 'main',
+        center: true, resizable: true, decorations: true,
       });
       visible = true;
       closeWindow = async () => { await win.destroy(); };

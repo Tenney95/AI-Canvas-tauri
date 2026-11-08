@@ -1,7 +1,7 @@
 /** 独立工作台仅显示主窗口快照；短暂本地输入保留到主窗口确认，禁止自行保存或调模型。 */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ScriptWorkbenchView } from './ScriptWorkbench';
-import { closeUninitializedScriptWorkbench, connectScriptWorkbenchWindow } from '../services/scriptWorkbenchWindowService';
+import { connectScriptWorkbenchWindow } from '../services/scriptWorkbenchWindowService';
 import { applyAppearanceTheme } from '../services/appearance/appearanceRuntime';
 import { getBuiltinAppearanceTheme } from '../services/appearance/appearanceDefaults';
 import { setLocale, useT } from '../i18n';
@@ -24,6 +24,7 @@ export default function ScriptWorkbenchWindow() {
   const editSequence = useRef(0);
   const [closing, setClosing] = useState(false);
   const [error, setError] = useState('');
+  const hasSnapshot = snapshot !== null;
 
   const dispatch = useCallback<ScriptWorkbenchDispatch>(async (action) => {
     const current = snapshotRef.current;
@@ -73,7 +74,6 @@ export default function ScriptWorkbenchWindow() {
 
   useEffect(() => {
     let disposed = false;
-    let closeStop: (() => void) | undefined;
     const params = new URLSearchParams(window.location.search);
     const sessionId = params.get('session') ?? '';
     const windowSessionId = params.get('windowSession') ?? '';
@@ -90,16 +90,9 @@ export default function ScriptWorkbenchWindow() {
       if (originalHandoff.current && next.originalWriting?.documentId === originalHandoff.current.documentId
         && next.originalWriting.acceptedSequence >= originalHandoff.current.sequence) originalHandoff.current = undefined;
       setSnapshot(next);
-    }, windowSessionId).then(async (bridge) => {
+    }, windowSessionId).then((bridge) => {
       if (disposed) { bridge.dispose(); return; }
       connection.current = bridge;
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const stop = await getCurrentWindow().onCloseRequested((event) => {
-        event.preventDefault();
-        if (!snapshotRef.current) { void closeUninitializedScriptWorkbench(sessionId, windowSessionId).catch(() => {}); return; }
-        void dispatch({ type: 'close' }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : '关闭工作台失败'));
-      });
-      if (disposed) stop(); else closeStop = stop;
     }).catch(() => { if (!disposed) setError('无法连接主窗口，已保留原工作台，请回到主窗口重试'); });
     const beforeUnload = () => {
       const current = snapshotRef.current;
@@ -110,9 +103,25 @@ export default function ScriptWorkbenchWindow() {
     window.addEventListener('beforeunload', beforeUnload);
     return () => {
       disposed = true; window.removeEventListener('beforeunload', beforeUnload);
-      closeStop?.(); connection.current?.dispose(); connection.current = null;
+      connection.current?.dispose(); connection.current = null;
     };
   }, [dispatch]);
+
+  useEffect(() => {
+    // 首帧到达前没有可编辑稿件，让系统直接关闭，不等待可能已离线的宿主。
+    if (!hasSnapshot) return;
+    let disposed = false;
+    let closeStop: (() => void) | undefined;
+    void import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
+      if (disposed) return;
+      const stop = await getCurrentWindow().onCloseRequested((event) => {
+        event.preventDefault();
+        void dispatch({ type: 'close' }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : '关闭工作台失败'));
+      });
+      if (disposed) stop(); else closeStop = stop;
+    }).catch(() => { if (!disposed) setError('无法连接主窗口，已保留原工作台，请回到主窗口重试'); });
+    return () => { disposed = true; closeStop?.(); };
+  }, [dispatch, hasSnapshot]);
 
   const appearance = snapshot?.appearance;
   const language = snapshot?.language;
