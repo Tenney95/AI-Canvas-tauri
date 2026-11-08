@@ -1,5 +1,6 @@
 /** 固定合同仅使用受控 HTTP 替身，不读取项目或提交真实媒体。 */
 import { beforeEach, expect, it, vi } from 'vitest';
+import type { ProtocolJsonValue } from '../../src/types/aiTypes';
 const transport = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: transport.fetch }));
 import { buildModelProtocolRequest, submitModelProtocol } from '../../src/services/ai/modelProtocol';
@@ -9,7 +10,7 @@ import { getRunningHubModel, runningHubFrameRole } from '../../src/services/ai/p
 beforeEach(() => transport.fetch.mockReset());
 
 it('火山保持原api/v3路径、首尾帧字节与提示词原文，不把提示词当成模板再次执行', () => {
-  const request = { model: 'doubao-seedance-2-5', content: [{ type: 'text', text: '保留 {{notAVariable}}' },
+  const request: Record<string, ProtocolJsonValue> = { model: 'doubao-seedance-2-5', content: [{ type: 'text', text: '保留 {{notAVariable}}' },
     { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' }, role: 'first_frame' },
     { type: 'image_url', image_url: { url: 'data:image/png;base64,BAUG' }, role: 'last_frame' }] };
   const built = buildModelProtocolRequest({ apiKey: 'ephemeral-key', baseUrl: 'https://ark.example/api/v3', protocol: VOLCENGINE_EDITOR_PROTOCOL, variables: { request } });

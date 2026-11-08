@@ -55,7 +55,7 @@ async function updateInput(expected: ProjectModelTransferCapture, operationId: s
     backup: { operationId: `backup-${operationId}`, outputRef: 'fixture-backup', packageDigest: 'e'.repeat(64) }, oldAssets: [] };
 }
 
-async function ready(input: Awaited<ReturnType<typeof updateInput>>) {
+async function ready(input: Parameters<typeof prepareNativeProjectUpdate>[0]) {
   let operation = await prepareNativeProjectUpdate(input, { factory });
   operation = await advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'media_publishing', undefined, { factory });
   return advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'media_ready', `media_v1_${operation.operationId}`, { factory });

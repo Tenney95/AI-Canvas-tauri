@@ -400,7 +400,8 @@ describe('shared Agent tool execution for MCP', () => {
     const reordered = { ...reference, projectFile: Object.fromEntries(Object.entries(reference.projectFile!).reverse()) as typeof reference.projectFile,
       executionContext: Object.fromEntries(Object.entries(reference.executionContext!).reverse()) as typeof reference.executionContext,
       projectScope: Object.fromEntries(Object.entries(reference.projectScope!).reverse()) as typeof reference.projectScope };
-    const reorderedReference = Object.fromEntries(Object.entries(reordered).reverse()) as typeof reference;
+    // 仅改变自有字段的插入顺序，Object.fromEntries 不会保留已知键的静态类型。
+    const reorderedReference = Object.fromEntries(Object.entries(reordered).reverse()) as unknown as typeof reference;
     useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task,
       executionContext: reordered.executionContext, projectScope: reordered.projectScope, steps: [{ ...step,
       toolCall: { ...step.toolCall, resultReference: reorderedReference } }] })) }));

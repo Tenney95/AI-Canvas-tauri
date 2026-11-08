@@ -119,6 +119,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
       expectedCanvasEpoch: 1, expectedCanvasRevision: 0, document: { nodes: [sourceNode()], edges: [], groups: [] } });
     const entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }> = { dataModel: 'native', project: aggregate.project,
       episodes: aggregate.episodes, episodeIds: aggregate.episodes.map((episode) => episode.id), canvasIds: aggregate.canvases.map((canvas) => canvas.id) };
+    // 项目与历史 slice 使用真实 action；未参与本夹具的其他 slice 仅提供下方最小替身。
     const store = createStore<AppState>()((set, get, api) => ({
       ...createProjectSlice(set, get, api), ...createHistorySlice(set, get, api),
       currentProjectId: null, projectLoadStatus: 'ready', projectInitialized: true, projects: projectNativeCatalogEntry(entry),
@@ -133,7 +134,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
       },
       showToast: vi.fn(), loadConversationsForProject: vi.fn(async () => {}), repairInterruptedForProject: vi.fn(async () => {}),
       loadAgentTasksForProject: vi.fn(async () => {}), loadProjectMemoriesForProject: vi.fn(async () => {}),
-    } as AppState));
+    } as unknown as AppState));
     expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
     const context = store.getState().projectExecutionContext;
     if (context?.kind !== 'canvas') throw new Error('fixture canvas unavailable');
