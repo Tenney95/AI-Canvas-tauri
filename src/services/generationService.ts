@@ -31,7 +31,9 @@ import { getCloudWorkflowPersistedOutput } from './workflowExecutionService';
 import { completeWorkflowApiNodeTask } from './workflowApi/workflowApiAdapter';
 import { completeRunningHubNodeTask } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
-import { videoInputFingerprint } from './videoBatchPlanning';
+import { videoInputFingerprint, videoInputFingerprintMaterial } from './videoBatchPlanning';
+import { registerNativeVideoSubmissionGuard } from './nativeVideoSubmission';
+import { nativeMediaInputMaterial } from './nativeMediaInput';
 import { beginComfyNodeDelivery, cancelNodePolling, cleanupNodePolling, completeComfyNodeTask, completeMediaNodeTask, getPendingTasksForProject, pauseComfyNodeDelivery, pauseMediaNodeTask, pauseMediaTask, prepareMediaNodeGeneration, registerMediaNodeOperation, registerNodePolling, isMediaTaskPausedError } from './pollManager';
 import { resolveGenerationNodeData } from '../utils/nodeGeneration';
 import { applyGenerationCameraPrompt } from './shotlistPromptService';
@@ -251,6 +253,15 @@ export async function executeGeneration(
 
   const nodeType = data?.type;
   const rawPrompt = overridePrompt ?? (data?.prompt as string) ?? '';
+  if (nodeType === 'ai-video' && store.projectExecutionContext?.modelGeneration === 1) {
+    const original = store.nodes.find((node) => node.id === nodeId);
+    if (!original || rawPrompt !== (original.data.prompt ?? '')
+      || videoInputFingerprintMaterial({ ...original, data }, store) !== videoInputFingerprintMaterial(original, store)) {
+      const message = '新项目视频任务需要先保存节点输入，临时覆盖不能安全恢复，未提交请求';
+      notify(message, 'error');
+      return { success: false, message };
+    }
+  }
 
   if (data.model === '' && !data.workflowId) {
     notify('请先在底部模型选择器中选择一个模型', 'error');
@@ -346,6 +357,10 @@ export async function executeGeneration(
   const videoNode = store.nodes.find((n) => n.id === nodeId);
   const videoFingerprint = nodeType === 'ai-video' && videoNode
     ? videoInputFingerprint({ ...videoNode, data: { ...data, prompt: rawPrompt } }, store) : undefined;
+  const nativeVideoMaterial = nodeType === 'ai-video' && store.projectExecutionContext?.modelGeneration === 1 && videoNode
+    ? videoInputFingerprintMaterial(videoNode, store) : undefined;
+  const nativeMediaMaterial = ['ai-image', 'ai-audio'].includes(nodeType) && store.projectExecutionContext?.modelGeneration === 1 && videoNode
+    ? nativeMediaInputMaterial(videoNode, store) : undefined;
   const hasShotReference = nodeType === 'ai-video'
     && `${rawPrompt}\n${JSON.stringify(data.workflowInputs ?? {})}`.includes('/shot/');
   const hasProtectedVideoInputs = hasShotReference || (nodeType === 'ai-video'
@@ -368,6 +383,11 @@ export async function executeGeneration(
 
   // 文本和分镜也领取节点运行所有权，旧请求的取消收尾不能清掉新一轮的 loading。
   const endOperation = registerMediaNodeOperation(nodeId, true);
+  const nativeMediaGuard = nativeMediaMaterial === undefined ? undefined : registerNativeVideoSubmissionGuard(async () => {
+    if (lease) await assertLease();
+    const current = useAppStore.getState(), node = current.nodes.find((item) => item.id === nodeId);
+    if (!isStillCurrentSubmission() || !node || nativeMediaInputMaterial(node, current) !== nativeMediaMaterial) throw new Error('原媒体输入已变化，未提交请求');
+  });
   store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
   let batchNodeIds: string[] | undefined;
   let taskReceipt: MediaTaskReceipt | undefined;
@@ -393,6 +413,14 @@ export async function executeGeneration(
       if (isAnimation) effectivePrompt = buildAnimationSpritePrompt(effectivePrompt, animationAction, animationFrames, aspectRatio, spriteProcessing);
       const batchCount = cloudWorkflow || isAnimation ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
       const outputsPerJob = workflowId || isAnimation ? 1 : resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config);
+      if (nativeMediaGuard && nodeProvider === 'apimart') {
+        if (postProcess || workflowId || isAnimation) throw new Error('原生图片批次暂不支持额外后处理或动画工作流，未提交请求');
+        await generateImagesBatch({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
+          imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId },
+        batchCount, lease?.signal, nativeMediaGuard);
+        throw new Error('原生图片批次缺少耐久原回执，未确认交付');
+      }
+      if (nativeMediaGuard && (batchCount > 1 || outputsPerJob > 1 || postProcess)) throw new Error('新项目可恢复图片暂需单张且无额外后处理，未提交请求');
       if (batchCount > 1 || outputsPerJob > 1) {
         if (postProcess) throw new Error(outputsPerJob > 1
           ? '固定多候选模型暂不支持图片后处理，请选择单图模型' : '批量生成暂不支持图片后处理，请将数量设为 1');
@@ -446,7 +474,8 @@ export async function executeGeneration(
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       };
       if (lease) await assertLease();
-      const result = lease ? await generateImage(imageOptions, lease.signal) : await generateImage(imageOptions);
+      const result = nativeMediaGuard ? await generateImage(imageOptions, lease?.signal, nativeMediaGuard)
+        : lease ? await generateImage(imageOptions, lease.signal) : await generateImage(imageOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
       if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);
@@ -586,8 +615,13 @@ export async function executeGeneration(
       const assertVideoSubmission = async () => {
         if (lease) await assertLease();
         if (!isStillCurrentSubmission()) throw new Error('镜头或生成输入已变化，请重新生成');
+        if (nativeVideoMaterial !== undefined) {
+          const current = useAppStore.getState(), node = current.nodes.find((item) => item.id === nodeId);
+          if (!node || nativeVideoMaterial !== videoInputFingerprintMaterial(node, current)) throw new Error('视频输入已变化，未提交请求');
+        }
       };
-      const result = lease || hasProtectedVideoInputs
+      if (nativeVideoMaterial !== undefined) registerNativeVideoSubmissionGuard(assertVideoSubmission);
+      const result = lease || hasProtectedVideoInputs || nativeVideoMaterial !== undefined
         ? await generateVideo(videoOptions, lease?.signal, assertVideoSubmission)
         : await generateVideo(videoOptions);
       taskReceipt = result.taskReceipt;
@@ -640,7 +674,8 @@ export async function executeGeneration(
         workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       };
       if (lease) await assertLease();
-      const result = lease ? await generateAudio(audioOptions, lease.signal) : await generateAudio(audioOptions);
+      const result = nativeMediaGuard ? await generateAudio(audioOptions, lease?.signal, nativeMediaGuard)
+        : lease ? await generateAudio(audioOptions, lease.signal) : await generateAudio(audioOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
       if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);
@@ -737,7 +772,17 @@ export async function executeGeneration(
     return { success: true };
   } catch (err) {
     comfyDeliveryError = err;
+    if (err instanceof Error && err.name === 'NativeMediaTaskDelivered') {
+      mediaDelivered = true; return { success: true };
+    }
     const pausedError = isMediaTaskPausedError(err);
+    if (err instanceof Error && (err.name === 'NativeVolcengineTaskPending' || err.name === 'NativeMediaTaskPending')) {
+      if (isStillCurrentSubmission()) {
+        store.updateNodeDataTransient(nodeId, { status: 'idle', error: err.message, mediaTaskState: 'paused', mediaTaskStage: undefined });
+        notify(err.message);
+      }
+      return { success: false, message: err.message };
+    }
     const paused = !mediaDelivered && taskReceipt && !pausedError ? pauseMediaTask(taskReceipt, err, 'delivery_pending') : undefined;
     const expectedReceipt = taskReceipt ?? (pausedError ? err.taskReceipt : undefined);
     const retained = !mediaDelivered && submittingProjectId && (expectedReceipt || isHistoryMediaDownloadFailure(err))

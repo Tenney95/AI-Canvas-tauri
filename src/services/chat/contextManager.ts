@@ -11,7 +11,7 @@
  * 只影响发送给模型的上下文，不修改、不删除原始消息历史。
  */
 import { useAppStore } from '../../store/useAppStore';
-import { seriesOwnerId } from '../../store/store.utils';
+import { projectMemoryOwnerId } from '../../store/store.utils';
 import {
   getConfiguredModelGroups,
   resolveTextModelContextSpec,
@@ -236,7 +236,7 @@ function buildMemoryBlock(projectId: string, query: string): string {
   const memories = selectProjectMemoriesForContext(
     state.projectMemories,
     // 记忆整部剧共用，挂在剧集项目上
-    seriesOwnerId(state.projects, projectId),
+    projectMemoryOwnerId(state.projects, projectId),
     query,
   );
   if (memories.length === 0) return '';

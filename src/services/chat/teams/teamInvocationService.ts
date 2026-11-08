@@ -243,6 +243,7 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     if (!sourceAvailable()) return;
     const task = useAppStore.getState().createAgentTask({ taskId, executionKind: 'team', teamRequestDigest: digest,
       projectId, conversationId: frozen.conversationId, userMessageId: result.userMessageId,
+      ...(context.source === 'script-workbench' && context.target ? { initialTeamTarget: context.target } : {}),
       mode, goal: sanitizeDomainText(content).slice(0, 160),
       budget: { maxModelRounds: profile.maxCalls, maxTotalModelRounds: profile.maxCalls,
         maxTotalTokens: profile.maxTotalTokens, maxParallelReadTools: 2 },

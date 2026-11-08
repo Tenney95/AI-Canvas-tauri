@@ -573,6 +573,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
           ].map((message) => [message.id, message])).values()].sort((a, b) => a.timestamp - b.timestamp),
         ],
       }));
+      const { projectNativeMediaMessages } = await import('../services/nativeMediaMessages');
+      await projectNativeMediaMessages(conversationId);
     } catch (e) {
       console.warn('[chat] 加载消息失败:', e);
     }
@@ -709,9 +711,14 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     const state = get();
     const nextCanvas = state.canvasRevision + 1;
     const nextGlobal = state.globalCanvasRevision + 1;
+    const context = state.projectExecutionContext;
+    const project = state.projects.find((item) => item.id === state.currentProjectId);
     set({
       canvasRevision: nextCanvas,
       globalCanvasRevision: nextGlobal,
+      ...(context?.kind === 'canvas' && context.canvasId === state.currentProjectId
+        ? { projectExecutionContext: { ...context, canvasRevision: project?.revisionScope === 'global' ? nextGlobal : nextCanvas } }
+        : {}),
     });
     return nextCanvas;
   },
@@ -725,6 +732,16 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     return state.canvasRevision;
   },
 
-  setCanvasRevision: (rev) => set({ canvasRevision: rev }),
-  setGlobalCanvasRevision: (rev) => set({ globalCanvasRevision: rev }),
+  setCanvasRevision: (rev) => set((state) => {
+    const context = state.projectExecutionContext;
+    const project = state.projects.find((item) => item.id === state.currentProjectId);
+    return { canvasRevision: rev, ...(context?.kind === 'canvas' && context.canvasId === state.currentProjectId
+      && project?.revisionScope !== 'global' ? { projectExecutionContext: { ...context, canvasRevision: rev } } : {}) };
+  }),
+  setGlobalCanvasRevision: (rev) => set((state) => {
+    const context = state.projectExecutionContext;
+    const project = state.projects.find((item) => item.id === state.currentProjectId);
+    return { globalCanvasRevision: rev, ...(context?.kind === 'canvas' && context.canvasId === state.currentProjectId
+      && project?.revisionScope === 'global' ? { projectExecutionContext: { ...context, canvasRevision: rev } } : {}) };
+  }),
 });

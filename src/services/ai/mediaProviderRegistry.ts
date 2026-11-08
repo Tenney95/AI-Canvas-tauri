@@ -22,6 +22,7 @@ export interface ImageProviderRequest {
   referenceMedia?: import('../../types/aiTypes').MediaReference[];
   requestedCount: number;
   signal?: AbortSignal;
+  beforeSubmit?: () => void | Promise<void>;
 }
 
 export interface VideoProviderRequest {

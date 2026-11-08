@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import { getProjectDataDir, isTauriEnv, revealFileInFolder } from '../../services/fileService';
 import {
-  scanStorageHealth, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, collectNodeFilePaths, StorageHealthScanError,
+  scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, collectNodeFilePaths, StorageHealthScanError,
   type StorageHealthReport, type TrashInfo, type OrphanFileInfo, type DuplicateFileGroup, type CleanupResult,
 } from '../../services/fs/storageHealth';
 import { estimateBrowserStorage, formatBytes, STORAGE_PRESSURE_RATIO, type StorageEstimate } from '../../services/storageQuota';
@@ -13,6 +13,7 @@ import AssetRepairDialog from '../assets/AssetRepairDialog';
 import type { AssetRepairTarget } from '../../services/fs/assetRepair';
 import ModalOverlay from '../shared/ModalOverlay';
 import Tabs from '../shared/Tabs';
+import NativeProjectRecovery from './NativeProjectRecovery';
 
 type Section = 'overview' | 'trash' | 'orphans' | 'duplicates' | 'offline';
 type CleanupSelection = (
@@ -187,9 +188,33 @@ export default function StorageHealthCenter() {
     };
   }, [handleScan]);
 
-  const requestCleanup = (request: CleanupSelection) => {
+  const requestCleanup = async (request: CleanupSelection) => {
     if (scanLock.current || cleanupLock.current || !report?.complete || !request.entries.length) return;
-    setPendingCleanup({ ...request, projectId: useAppStore.getState().currentProjectId });
+    const projectId = useAppStore.getState().currentProjectId;
+    if (request.kind !== 'trash') { setPendingCleanup({ ...request, projectId }); return; }
+    scanLock.current = true;
+    const controller = new AbortController();
+    scanController.current = controller;
+    setScanning(true);
+    try {
+      const fresh = await scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(projectId), [], {
+        includeDuplicates: false, signal: controller.signal,
+      });
+      if (!fresh.complete || !mounted.current || useAppStore.getState().currentProjectId !== projectId) throw new Error('引用未能确认');
+      for (const entry of request.entries) for (const selected of entry.files.filter((file) => !file.referenced && file.size > 0)) {
+        const current = fresh.trashes.find((trash) => trash.trashDir === entry.trashDir)?.files.find((file) => file.path === selected.path);
+        if (!current || current.referenced || current.size !== selected.size) throw new Error('回收站文件已变化');
+      }
+      const prepared = await prepareTrashCleanup(request.entries, controller.signal);
+      if (!mounted.current || controller.signal.aborted || useAppStore.getState().currentProjectId !== projectId) return;
+      setPendingCleanup({ kind: 'trash', entries: prepared, projectId });
+    } catch {
+      if (mounted.current && !controller.signal.aborted) showToast(t('无法确认回收站文件，请重新扫描'), 'error');
+    } finally {
+      scanLock.current = false;
+      scanController.current = null;
+      if (mounted.current) setScanning(false);
+    }
   };
 
   const applyCleanup = async () => {
@@ -229,7 +254,7 @@ export default function StorageHealthCenter() {
       for (const entry of request.entries) {
         const name = 'name' in entry ? entry.name : entry.projectName;
         if (!mounted.current || useAppStore.getState().currentProjectId !== request.projectId) {
-          result.failedCount += 'fileCount' in entry ? entry.fileCount : 1;
+          result.failedCount += 'fileCount' in entry ? entry.reclaimableCount : 1;
           result.failedNames.push(name);
           continue;
         }
@@ -239,11 +264,26 @@ export default function StorageHealthCenter() {
               includeDuplicates: false, signal: controller.signal,
             });
             if (!fresh.complete || !fresh.trashes.some((trash) => trash.trashDir === entry.trashDir)) {
-              result.failedCount += Math.max(1, entry.fileCount);
+              result.failedCount += Math.max(1, entry.reclaimableCount);
               result.failedNames.push(name);
               continue;
             }
-            const cleared = await clearTrashDir(entry.trashDir);
+            const confirmedFiles = entry.files.filter((file): file is { path: string; size: number; referenced: boolean; digest: string } =>
+              !file.referenced && typeof file.digest === 'string');
+            const cleared = await clearTrashDir(entry.trashDir, async (path, size) => {
+              if (!mounted.current || useAppStore.getState().currentProjectId !== request.projectId) return false;
+              const freshCheck = await scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), [], {
+                includeDuplicates: false, signal: controller.signal,
+              });
+              if (!freshCheck.complete) return false;
+              const current = freshCheck.trashes.find((trash) => trash.trashDir === entry.trashDir)?.files.find((file) => file.path === path);
+              const live = await collectLiveReferences(request.projectId);
+              const key = [...collectNodeFilePaths([{ data: { filePath: path } }])][0];
+              if (!key) return false;
+              const referencedLive = live.has(key) || [...live].some((reference) => reference.endsWith('/') && key.startsWith(reference));
+              return mounted.current && useAppStore.getState().currentProjectId === request.projectId
+                && !!current && !current.referenced && current.size === size && !referencedLive;
+            }, confirmedFiles, controller.signal);
             result.deletedCount += cleared.deletedCount;
             result.failedCount += cleared.failedCount;
             result.reclaimedSize += cleared.reclaimedSize;
@@ -256,7 +296,7 @@ export default function StorageHealthCenter() {
             else { result.failedCount++; result.failedNames.push(name); }
           }
         } catch {
-          result.failedCount += 'fileCount' in entry ? Math.max(1, entry.fileCount) : 1;
+          result.failedCount += 'fileCount' in entry ? Math.max(1, entry.reclaimableCount) : 1;
           result.failedNames.push(name);
         }
       }
@@ -291,8 +331,8 @@ export default function StorageHealthCenter() {
     key: 'path' in entry ? entry.path : entry.trashDir,
     name: 'name' in entry ? entry.name : t('项目回收站'),
     projectName: entry.projectName,
-    size: 'size' in entry ? entry.size : entry.trashSize,
-    count: 'fileCount' in entry ? entry.fileCount : 1,
+    size: 'size' in entry ? entry.size : entry.reclaimableSize,
+    count: 'fileCount' in entry ? entry.reclaimableCount : 1,
   })) ?? [];
   const cleanupCount = cleanupEntries.reduce((sum, entry) => sum + entry.count, 0);
   const cleanupSize = cleanupEntries.reduce((sum, entry) => sum + entry.size, 0);
@@ -312,6 +352,7 @@ export default function StorageHealthCenter() {
       </div>
     </div>
 
+    {desktop && <NativeProjectRecovery />}
     {!desktop && <p className="ui-alert ui-alert--info">{t('Web 演示仅展示应用数据配额；项目文件扫描与清理请在桌面端使用。')}</p>}
     {scanError && <p role="alert" className={`ui-alert ${scanError.cancelled ? 'ui-alert--info' : 'ui-alert--danger'}`}>
       {scanError.cancelled ? t('扫描已取消，尚未完成核对。重新扫描后可查看清理建议。')
@@ -361,7 +402,7 @@ export default function StorageHealthCenter() {
         <div className="ui-stat">
           <span className="ui-stat__label">{t('预计可释放')}</span>
           <span className="ui-stat__value">{report.complete ? formatBytes(report.reclaimableSize) : t('待完整扫描')}</span>
-          <span className="ui-hint mt-1">{report.complete ? t('未引用文件与回收站；重复文件不重复计入') : t('未扫描项不视为零占用或无引用')}</span>
+          <span className="ui-hint mt-1">{report.complete ? t('未引用文件与回收站中未引用的文件；重复文件不重复计入') : t('未扫描项不视为零占用或无引用')}</span>
         </div>
       </div>
       <p className="ui-hint">{t('{projects} 个项目 · {files} 个文件；共享目录按文件去重', {
@@ -393,9 +434,9 @@ export default function StorageHealthCenter() {
 
         {activeSection === 'trash' && <section className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="ui-hint">{t('回收站 {size}；清空后无法通过应用恢复', { size: formatBytes(report.trashSize) })}</p>
-            <button type="button" className="ui-btn ui-btn--danger ui-btn--sm" disabled={!canClean || !report.trashes.length}
-              onClick={() => requestCleanup({ kind: 'trash', entries: report.trashes })}>{t('清空全部')}</button>
+            <p className="ui-hint">{t('回收站 {size}；清理未引用文件后无法通过应用恢复', { size: formatBytes(report.trashSize) })}</p>
+            <button type="button" className="ui-btn ui-btn--danger ui-btn--sm" disabled={!canClean || !report.trashes.some((trash) => trash.reclaimableCount > 0)}
+              onClick={() => void requestCleanup({ kind: 'trash', entries: report.trashes.filter((trash) => trash.reclaimableCount > 0) })}>{t('清理全部未引用文件')}</button>
           </div>
           {report.trashes.length === 0 && <p className="ui-hint py-3">{report.complete ? t('回收站为空') : t('已读取范围内暂无回收站文件')}</p>}
           {report.trashes.map((trash) => <div key={trash.trashDir} className="ui-card p-2">
@@ -403,9 +444,10 @@ export default function StorageHealthCenter() {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs text-canvas-text">{trash.projectName}</p>
                 <p className="ui-hint mt-1">{t('{count} 个文件 · {size}', { count: trash.fileCount, size: formatBytes(trash.trashSize) })}</p>
+                <p className="ui-hint mt-1">{t('可清理 {count} 个 · {size}；被引用、空文件或无法核对的文件会保留', { count: trash.reclaimableCount, size: formatBytes(trash.reclaimableSize) })}</p>
               </div>
-              <button type="button" className="ui-btn ui-btn--danger ui-btn--sm shrink-0" disabled={!canClean}
-                onClick={() => requestCleanup({ kind: 'trash', entries: [trash] })}>{t('清空')}</button>
+              <button type="button" className="ui-btn ui-btn--danger ui-btn--sm shrink-0" disabled={!canClean || trash.reclaimableCount === 0}
+                onClick={() => void requestCleanup({ kind: 'trash', entries: [trash] })}>{t('清理未引用文件')}</button>
             </div>
           </div>)}
         </section>}
@@ -414,7 +456,7 @@ export default function StorageHealthCenter() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="ui-hint">{t('未发现应用内引用，不代表文件没有其他用途；删除前请核对。')}</p>
             <button type="button" className="ui-btn ui-btn--danger ui-btn--sm" disabled={!canClean || !report.orphans.length}
-              onClick={() => requestCleanup({ kind: 'orphans', entries: report.orphans })}>{t('清理全部未引用文件')}</button>
+              onClick={() => void requestCleanup({ kind: 'orphans', entries: report.orphans })}>{t('清理全部未引用文件')}</button>
           </div>
           {report.orphans.length === 0 && <p className="ui-hint py-3">{report.complete ? t('未发现可清理的未引用文件') : t('完整扫描后才能确认未引用文件')}</p>}
           <ul className="space-y-2">
@@ -432,7 +474,7 @@ export default function StorageHealthCenter() {
                     });
                   }}>{t('打开所在位置')}</button>
                 <button type="button" className="ui-btn ui-btn--danger ui-btn--sm shrink-0" disabled={!canClean}
-                  onClick={() => requestCleanup({ kind: 'orphans', entries: [file] })}>{t('删除')}</button>
+                  onClick={() => void requestCleanup({ kind: 'orphans', entries: [file] })}>{t('删除')}</button>
               </div>
             </li>)}
           </ul>
@@ -454,7 +496,7 @@ export default function StorageHealthCenter() {
                 </span>
                 <span className="tabular-nums text-canvas-text-secondary">{formatBytes(file.size)}</span>
                 {file.canDelete && <button type="button" className="ui-btn ui-btn--danger ui-btn--sm" disabled={!canClean}
-                  onClick={() => requestCleanup({ kind: 'duplicates', entries: [file], groupKey: group.key })}>{t('删除')}</button>}
+                  onClick={() => void requestCleanup({ kind: 'duplicates', entries: [file], groupKey: group.key })}>{t('删除')}</button>}
               </li>)}
             </ul>
           </div>)}
@@ -513,7 +555,7 @@ export default function StorageHealthCenter() {
       </header>
       <div className="ui-card__body ui-scroll min-h-0 space-y-3">
         <p className="ui-alert ui-alert--warning">{pendingCleanup.kind === 'trash'
-          ? t('清空后无法通过应用恢复。请确认这些回收站文件已不再需要。')
+          ? t('未引用文件将永久删除，仍被引用、发生变化或未能确认的文件会保留。请确认不再需要这些文件。')
           : t('文件将从磁盘永久删除，不进入回收站。执行前会再次核对引用，仍被引用或无法确认的文件会保留。')}</p>
         <ul className="space-y-2">
           {cleanupEntries.map((entry) => <li key={entry.key} className="ui-card p-2">

@@ -1,18 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentTask } from '../../../src/types/agent';
 const fixture = vi.hoisted(() => ({ tasks: [] as AgentTask[], write: vi.fn(), read: vi.fn() }));
-vi.mock('../../../src/store/useAppStore', () => ({ useAppStore: { getState: () => ({ agentTasks: fixture.tasks, currentProjectId: 'project' }) } }));
+vi.mock('../../../src/store/useAppStore', () => ({ useAppStore: { getState: () => ({ agentTasks: fixture.tasks,
+  currentProjectId: 'project', projectLoadStatus: 'ready', getCurrentRevision: () => 0,
+  projects: [{ id: 'project', name: '测试项目', createdAt: 1, updatedAt: 1 }], conversations: [] }) } }));
 vi.mock('../../../src/services/fs/projectFiles', () => ({
   writeImmutableProjectFile: fixture.write, readVerifiedProjectFile: fixture.read,
   sha256Hex: vi.fn(async () => 'a'.repeat(64)),
 }));
 import { captureAgentResult, clearAgentResults, readAgentResult, AGENT_RESULT_TTL_MS } from '../../../src/services/chat/agentResultService';
+import { clearAgentToolRegistryForTests, registerAgentTool } from '../../../src/services/chat/toolRegistry';
 const scope = { taskId: 'task', projectId: 'project', conversationId: 'conversation' };
 
 beforeEach(() => {
   vi.restoreAllMocks(); clearAgentResults({});
+  clearAgentToolRegistryForTests();
+  registerAgentTool({ id: 'series_get_state', title: '剧集', description: '读取剧集', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    resultPolicy: { storage: 'project', source: 'project-derived' },
+    authorize: (context) => ({ allowed: context.projectId === 'project' }),
+    execute: async () => ({ status: 'success', summary: 'unused', modelContent: 'unused' }) });
   fixture.write.mockReset().mockResolvedValue({}); fixture.read.mockReset();
-  fixture.tasks = [{ id: scope.taskId, projectId: scope.projectId, conversationId: scope.conversationId, steps: [] } as unknown as AgentTask];
+  fixture.tasks = [{ id: scope.taskId, projectId: scope.projectId, conversationId: scope.conversationId, mode: 'plan', steps: [] } as unknown as AgentTask];
 });
 
 describe('有界工具结果', () => {

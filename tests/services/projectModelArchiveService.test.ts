@@ -6,7 +6,8 @@ import type { ProjectModelTransferCapture, ProjectModelTransferImportInput, Proj
 import type { ProjectModelFixtureBusinessSession } from '../../src/types/projectModelBusiness';
 import type { ProjectArchiveTextEntry } from '../../src/services/projectArchiveSerialization';
 import type { createProjectModelTransferRepository } from '../../src/services/indexedDb/projectModelTransferRepository';
-import { createProjectModelArchiveService, type ProjectModelArchivePort } from '../../src/services/projectModelArchiveService';
+import { createProjectModelArchiveService, materializeProjectModelArchiveBusiness, prepareProjectModelArchiveCapture, importProjectModelArchiveHistory,
+  type ProjectModelArchivePort } from '../../src/services/projectModelArchiveService';
 import { buildProjectExchangeSnapshotV2, readProjectArchiveV4, serializeProjectArchiveV4 } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
 import { readProjectArchiveContents } from '../../src/services/projectImportService';
@@ -94,6 +95,69 @@ function harness(initial: ProjectModelTransferCapture | null = null) {
 
 beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto); });
 describe('P5 portable/本机双向编排', () => {
+  it('新副本保留会话的画布归属和已删除工作台的只读来源', async () => {
+    const source = await archive();
+    source.payload.history = { payload: { conversations: [{ id: 'conversation', projectId: 'P', title: '旧工作台', titleSource: 'user',
+      pinned: false, archived: false, agentMode: 'plan', messageCount: 1, createdAt: 1, updatedAt: 1 }],
+      messages: [{ id: 'message', projectId: 'P', conversationId: 'conversation', sequence: 1,
+        role: 'user', content: '正文', status: 'done', createdAt: 1, updatedAt: 1 }], memories: [] },
+      workbenchTargets: [{ conversationId: 'conversation', target: { state: 'retired', kind: 'episode', projectId: 'P', id: 'old-episode' } }],
+      scopes: [{ kind: 'conversation', id: 'conversation', canvasId: 'C' }] };
+    const rows = await importProjectModelArchiveHistory(source, 'new-project', 'lineage', null,
+      { appendChat: true, appendMemories: false }, { identities: [{ kind: 'canvas', sourceId: 'C', localId: 'new-canvas' }], episodes: [] });
+    const conversation = rows.find((row) => row.kind === 'conversation')!, message = rows.find((row) => row.kind === 'message')!;
+    expect(conversation.value).toMatchObject({ projectId: 'new-canvas', archiveHistoricalTarget: { state: 'retired', id: 'old-episode' } });
+    expect(conversation.value.workbenchTarget).toBeUndefined();
+    expect(message.value).toMatchObject({ projectId: 'new-canvas', conversationId: conversation.value.id });
+  });
+  it('新结构导入保留双根同名素材的逻辑身份和独立落盘路径，导出复用原协作身份', async () => {
+    let source = await archive();
+    const other = { ...source.snapshot.media[0], id: 'other-media', sha256: 'b'.repeat(64) };
+    const snapshot = buildProjectExchangeSnapshotV2(source.payload, source.snapshot.lineageId, [...source.snapshot.media, other],
+      source.files.map((file) => file.rootRef === 'canvas-root' ? { ...file, mediaId: other.id } : file));
+    const head = await createProjectExchangeRevisionV2(snapshot);
+    const exchange = { ...source.payload.exchange, head: { canonicalVersion: 2 as const, revisionId: head.revisionId }, revisions: [head],
+      files: [{ mediaId: 'original-media-id', archivePath: 'assets/original-payload.png' },
+        { mediaId: other.id, archivePath: 'assets/other-payload.png' }] };
+    const payload = { ...source.payload, exchange };
+    const archivedAssets = [{ path: 'original-payload.png', bytes: 3, sha256: hash }, { path: 'other-payload.png', bytes: 3, sha256: other.sha256 }];
+    source = await readProjectArchiveV4(textsOf(await serializeProjectArchiveV4(payload, { packageId: exchange.packageId, exportedAt: 1 }, archivedAssets)), archivedAssets);
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    let nextId = 1;
+    const allocated = (kind: 'episode' | 'canvas' | 'storage-root') => {
+      const prefix = kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2';
+      return `${prefix}-00000000-0000-4000-8000-${String(nextId++).padStart(12, '0')}`;
+    };
+    const material = await materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, projectId, 'native-import', undefined,
+      { allocateId: allocated, folderName: `project-${projectId}` });
+    const roots = material.identities.filter((item) => item.kind === 'storage-root');
+    expect(roots).toHaveLength(2);
+    expect(new Set(roots.map((item) => item.localId)).size).toBe(2);
+    expect(material.fileBindings.map((item) => item.relativePath)).toEqual(['same.png', 'same.png']);
+    expect(new Set(material.fileBindings.map((item) => item.localRelativePath)).size).toBe(2);
+    expect(material.aggregate.project.storageBindings.every((binding) => binding.folderName === `project-${projectId}`
+      || binding.folderName.startsWith(`project-${projectId}/roots/`))).toBe(true);
+    const savedExchange = { lineageId: source.snapshot.lineageId, localHead: source.payload.exchange.head, stateVersion: 1,
+      bundle: source.payload.exchange, identities: material.identities, fileBindings: material.fileBindings, published: [] };
+    const capture: ProjectModelTransferCapture = { schemaVersion: 1, generation: 1, sessionId: 'native-capture', sessionRevision: 0,
+      sourceToken: 'snapshot', aggregate: material.aggregate, exchange: savedExchange, history: [], historyBindings: [], includesHistory: false };
+    const projection = await prepareProjectModelArchiveCapture(capture, material.media.map((item) => ({ ...item, path: item.relativePath })));
+    expect(projection.snapshot.entities).toEqual(source.snapshot.entities);
+    expect(projection.snapshot.media).toEqual(source.snapshot.media);
+    expect(projection.exchange.identities).toEqual(material.identities);
+  });
+
+  it('新结构归档草案拒绝不受控目标、重复本机身份与非法操作名', async () => {
+    const source = await archive(), projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    const allocateId = (kind: 'episode' | 'canvas' | 'storage-root') => `${kind === 'storage-root' ? 'r2' : kind === 'canvas' ? 'c2' : 'e2'}-00000000-0000-4000-8000-000000000002`;
+    await expect(materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, projectId, '../unsafe', undefined,
+      { allocateId, folderName: `project-${projectId}` })).rejects.toThrow('操作身份无效');
+    await expect(materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, projectId, 'import', undefined,
+      { allocateId, folderName: 'other-project' })).rejects.toThrow('目标身份或目录无效');
+    await expect(materializeProjectModelArchiveBusiness(source.payload, source.snapshot, null, projectId, 'import', undefined,
+      { allocateId, folderName: `project-${projectId}` })).rejects.toThrow('本机身份冲突');
+  });
+
   it('新导入再导出保来源project/canvas/file/media身份、canonical路径和storyGraph语义', async () => {
     const source = await archive(), sample = harness(), preview = await sample.service.preview(source);
     const operation = await sample.service.apply(preview, { operationId: 'first-import', mode: 'import-new' });

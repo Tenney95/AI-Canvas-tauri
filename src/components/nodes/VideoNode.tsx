@@ -625,7 +625,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             if (!isVideoEditorWindowBindingCurrent(instanceId, binding)) return;
             await postVideoEditorAiTransitionResult(instanceId, {
               requestId,
-              error: error instanceof Error ? error.message : String(error),
+              ...(error instanceof Error && error.name === 'NativeEditorTransitionPending'
+                ? { pending: true } : { error: error instanceof Error ? error.message : String(error) }),
             }, binding).catch(() => {});
           }
         })();

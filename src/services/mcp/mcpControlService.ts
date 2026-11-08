@@ -311,10 +311,6 @@ async function callMcpTool(
   let readContext: ProjectExpectedContext;
   try { readContext = captureLegacyProjectExpectedContext(useAppStore.getState()); }
   catch { return protocolError('CONTEXT_REFRESH_REQUIRED', '当前项目上下文尚未就绪，请重新读取后判断原请求'); }
-  // 新模型协议仅供fixture与开发，绝不向正式旧数据库创建新代际task、key或审计会话。
-  if (readContext.modelGeneration > 0 || expectedContext && expectedContext.modelGeneration > 0) {
-    return protocolError('PROJECT_MODEL_EXECUTION_DISABLED', '正式新项目模型执行开关保持关闭');
-  }
   if (isMcpGlobalTool(name) && !isMcpDiscoveryTool(name)) {
     readContext = captureLegacyProjectExpectedContext(useAppStore.getState(), 'global');
   } else if (name === 'episode_read' && typeof input.episodeId === 'string') {
@@ -323,7 +319,11 @@ async function callMcpTool(
   if (typed && definition?.effect !== 'read' && !expectedContext) {
     return protocolError('CONTEXT_REFRESH_REQUIRED', '新版变更必须携带先前读取的expectedContext，请重新读取并判断原意图');
   }
-  if (expectedContext && definition && !historicalReceiptRead && !isMcpProjectContextCompatible(definition, expectedContext, input)) {
+  // 工具旧协议接收画布别名；类型化分集上下文使用独立 episodeId，仅在同一活动作品内解析别名。
+  const typedInput = expectedContext?.kind === 'episode' && typeof input.episodeId === 'string'
+    && captureLegacyEpisodeContext(useAppStore.getState(), input.episodeId)?.episodeId === expectedContext.episodeId
+    ? { ...input, episodeId: expectedContext.episodeId } : input;
+  if (expectedContext && definition && !historicalReceiptRead && !isMcpProjectContextCompatible(definition, expectedContext, typedInput)) {
     return protocolError('CONTEXT_REFRESH_REQUIRED', '上下文种类或目标与工具不匹配，请重新读取目标上下文');
   }
   if (definition && getMcpProjectContextRequirement(definition) === 'canvas' && readContext.kind !== 'canvas') {
@@ -332,6 +332,8 @@ async function callMcpTool(
   const contextChanged = (includeRevision = true) => {
     const state = useAppStore.getState();
     return (expectedContext !== undefined && !isProjectExpectedContextCurrent(expectedContext, state, { checkCanvasRevision: includeRevision }))
+      || (readContext.kind !== 'global' && readContext.modelGeneration > 0
+        && !isProjectExpectedContextCurrent(readContext, state, { checkCanvasRevision: includeRevision }))
       || (expectedProjectId !== undefined && state.currentProjectId !== expectedProjectId)
       || (includeRevision && expectedRevision !== undefined && state.getCurrentRevision() !== expectedRevision);
   };

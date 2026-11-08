@@ -1,0 +1,6 @@
+{
+  "identifier": "native-video-editor-root",
+  "description": "Video editor can resolve its active native project media root.",
+  "windows": ["video-editor"],
+  "permissions": ["allow-video-editor-native-root-read"]
+}

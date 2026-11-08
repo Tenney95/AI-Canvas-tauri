@@ -39,6 +39,10 @@ import { parseRasterImageDimensions } from './rasterImageDimensions';
 import { inferComfyPromptRoles } from './comfyPromptRoles';
 import { comfyComboOptions } from './comfyInputSpecs';
 import { PollTaskFailedError } from './pollTask';
+import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
+import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
+import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
+import { NATIVE_COMFY_VIDEO_PROTOCOL_DIGEST } from './nativeComfyRecovery';
 
 /** ComfyUI 已注册的节点类型；同一次会话里短暂缓存，装完插件重开也能很快看到变化 */
 let nodeClassCache: { baseUrl: string; classes: Set<string>; fetchedAt: number } | null = null;
@@ -1460,6 +1464,7 @@ async function promptComfyUIWorkflow(
   beforeSubmit?: () => void | Promise<void>,
   finalCheck?: () => void,
   receipt?: MediaTaskReceipt,
+  native?: { sending: () => void; received: (taskId: string) => Promise<void>; rejected: () => void },
 ): Promise<string> {
   await progressSession?.waitUntilReady();
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
@@ -1469,6 +1474,7 @@ async function promptComfyUIWorkflow(
   if (receipt && !updatePendingTask(receipt.nodeId, { mediaSubmissionUncertain: true }, '', receipt.attemptId)) {
     throw new Error('ComfyUI 提交记录已变化，请核对原任务后重新操作');
   }
+  native?.sending();
   const promptRes = await comfyFetch(`${baseUrl}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1480,6 +1486,7 @@ async function promptComfyUIWorkflow(
   });
 
   if (!promptRes.ok) {
+    if (promptRes.status >= 400 && promptRes.status < 500 && ![408, 429].includes(promptRes.status)) native?.rejected();
     // 网关超时或 5xx 可能发生在后端已排队之后，不能据此解除防重。
     if (receipt && promptRes.status >= 400 && promptRes.status < 500 && promptRes.status !== 408) {
       updatePendingTask(receipt.nodeId, { mediaSubmissionUncertain: false }, '', receipt.attemptId);
@@ -1489,7 +1496,9 @@ async function promptComfyUIWorkflow(
   }
 
   const promptResult = (await promptRes.json()) as { prompt_id?: string; error?: string };
+  if (typeof promptResult.prompt_id === 'string' && promptResult.prompt_id.trim()) await native?.received(promptResult.prompt_id);
   if (promptResult.error) {
+    if (!promptResult.prompt_id) native?.rejected();
     if (receipt) updatePendingTask(receipt.nodeId, { mediaSubmissionUncertain: false }, '', receipt.attemptId);
     throw new Error(`ComfyUI 错误: ${promptResult.error}`);
   }
@@ -1795,10 +1804,24 @@ export async function executeComfyUIVideoGenerate(
   let submittedTaskId: string | undefined;
   let retainPending = false;
   let pendingReceipt: MediaTaskReceipt | undefined;
+  const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
+  const nativeMode = nativeContext?.modelGeneration === 1;
+  let nativeTask: NativeMediaTaskRecord | undefined;
+  let nativeSent = false, nativeRejected = false, nativeRemoteId: string | undefined;
 
   try {
+    if (nativeMode) {
+      if (!params.nodeId || !isNativeVideoSubmissionGuard(beforeSubmit)) throw new Error('请从原画布发起 ComfyUI 视频任务');
+      if (referenceAudioUrls.length || promptMedia.imageUrls?.length || promptMedia.videoUrls?.length || params.referenceMedia?.length || params.comfyRefmods?.length) {
+        throw new Error('带参考素材的 ComfyUI 视频尚不能安全恢复，未提交任务');
+      }
+      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, params.nodeId);
+      nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: params.nodeId,
+        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision, providerConfigId: 'comfyui',
+        providerBase: comfyUrl, protocolDigest: await NATIVE_COMFY_VIDEO_PROTOCOL_DIGEST(workflowId!), category: 'video' });
+    }
     // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
-    if (params.nodeId) {
+    if (params.nodeId && !nativeTask) {
       if (projectId) {
         pendingReceipt = savePendingTask({
           nodeId: params.nodeId,
@@ -1841,22 +1864,49 @@ export async function executeComfyUIVideoGenerate(
     );
     applyParameters(true);
 
+    if (nativeTask && Object.values(workflowObj).some((node) => /(?:LoadImage|LoadVideo|LoadAudio|VHS_LoadVideo)/i.test(String(node.class_type ?? '')))) {
+      throw new Error('工作流包含外部素材加载节点，尚不能安全恢复，未提交任务');
+    }
+
     if (params.nodeId && projectId) {
       progressSession = createComfyProgressSession({ baseUrl, projectId, nodeId: params.nodeId, signal, workflow: workflowObj });
     }
 
     // 提交工作流
-    const refmodBeforeSubmit = params.comfyRefmods?.length ? async () => {
+    const refmodBeforeSubmit = nativeTask && nativeContext ? async () => {
+      await beforeSubmit?.();
+      await assertNativeVideoSubmissionInput(nativeTask!, nativeContext);
+      await assertNativeMediaPrepared(nativeTask!);
+      if (comfyBaseUrlFor(workflowId) !== baseUrl) throw new Error('原 ComfyUI 服务地址已变化，未提交任务');
+      if (await NATIVE_COMFY_VIDEO_PROTOCOL_DIGEST(workflowId!) !== nativeTask!.protocolDigest) throw new Error('原 ComfyUI 工作流已变化，未提交任务');
+      const currentWorkflow = useAppStore.getState().workflows.find((item) => item.id === capturedWorkflow.id);
+      if (!currentWorkflow || currentWorkflow.fileContent !== capturedWorkflow.fileContent || currentWorkflow.serverId !== capturedWorkflow.serverId) throw new Error('原 ComfyUI 执行图已变化，未提交任务');
+      await beforeSubmit?.();
+      await assertNativeVideoSubmissionInput(nativeTask!, nativeContext);
+    } : params.comfyRefmods?.length ? async () => {
       await beforeSubmit?.();
       await assertComfyRefmodSubmissionFresh(capturedWorkflow, params.comfyRefmods!, baseUrl);
     } : beforeSubmit;
     const finalNodeCheck = checkRefmodNode;
-    const finalCheck = finalNodeCheck ? () => {
+    const finalCheck = nativeTask && nativeContext ? () => {
+      const current = useAppStore.getState(), workflow = current.workflows.find((item) => item.id === capturedWorkflow.id);
+      if (!isProjectExpectedContextCurrent(nativeContext, current, { checkCanvasRevision: false })
+        || !workflow || workflow.fileContent !== capturedWorkflow.fileContent || workflow.serverId !== capturedWorkflow.serverId
+        || comfyBaseUrlFor(workflowId) !== baseUrl) throw new Error('原 ComfyUI 画布或工作流在提交前已变化');
+    } : finalNodeCheck ? () => {
       assertComfyRefmodSubmissionTargetFresh(capturedWorkflow, baseUrl);
       finalNodeCheck();
     } : undefined;
-    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, refmodBeforeSubmit, finalCheck, pendingReceipt);
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, refmodBeforeSubmit, finalCheck, pendingReceipt,
+      nativeTask ? { sending: () => { nativeSent = true; }, rejected: () => { nativeRejected = true; }, received: async (taskId) => {
+        nativeRemoteId = taskId; await recordNativeMediaSubmission(nativeTask!.operationId, nativeTask!.lease, { taskId });
+      } } : undefined);
     submittedTaskId = promptId;
+    if (nativeTask) {
+      const pending = new Error('ComfyUI 视频任务已提交，请在存储健康中继续查询原任务。');
+      pending.name = 'NativeMediaTaskPending';
+      throw pending;
+    }
 
     // 回执只描述已真实提交的执行副本；不让过期提交覆盖另一个项目或新参数的说明。
     if (params.nodeId && memoryReportLease && !signal?.aborted) {
@@ -1886,6 +1936,14 @@ export async function executeComfyUIVideoGenerate(
     await applyConfiguredComfyMemoryPolicy(baseUrl);
     return { url: result.url };
   } catch (error) {
+    if (nativeTask) {
+      if (error instanceof Error && error.name === 'NativeMediaTaskPending') throw error;
+      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, nativeRemoteId ? { taskId: nativeRemoteId }
+        : !nativeSent || nativeRejected ? { notStarted: true } : { unknown: true }).catch(() => {});
+      throw new Error(nativeSent && !nativeRejected
+        ? `ComfyUI 原任务待核对，操作 ID：${nativeTask.operationId}；不会自动重新提交。`
+        : error instanceof Error ? error.message : 'ComfyUI 视频未提交');
+    }
     const interrupted = interruptedComfySubmission(pendingReceipt, submittedTaskId);
     if (interrupted) {
       retainPending = true;
@@ -1910,7 +1968,7 @@ export async function executeComfyUIVideoGenerate(
     throw error;
   } finally {
     progressSession?.close();
-    if (params.nodeId && cleanupNodePolling(params.nodeId, nodeSignal) !== false && !retainPending) {
+    if (params.nodeId && cleanupNodePolling(params.nodeId, nodeSignal) !== false && !retainPending && !nativeMode) {
       removePendingTask(params.nodeId, submittedTaskId, pendingReceipt?.attemptId);
     }
   }

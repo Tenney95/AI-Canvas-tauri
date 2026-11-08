@@ -768,6 +768,9 @@ export async function triggerMediaGeneration(
   const store = useAppStore.getState();
   const projectId = store.currentProjectId;
   const originMessage = store.messages.find((message) => message.id === messageId);
+  if (store.projectExecutionContext?.modelGeneration === 1 && originMessage?.mediaResult) {
+    store.showToast('此消息已有媒体产物，请从新消息发起生成', 'info'); return;
+  }
   const apiWorkflow = store.workflows.find((workflow) => workflow.adapterType === 'workflow-api' && `workflow-api/${workflow.id}` === intent.modelRef);
   const taskContext = projectId && originMessage ? {
     projectId, conversationId: originMessage.conversationId, messageId, deliveryMode: intent.deliveryMode,
@@ -850,6 +853,28 @@ export async function triggerMediaGeneration(
     }
   } catch (error) {
     if (!isCurrentApiMessage()) return;
+    const { captureLegacyCanvasContext } = await import('../projectExecutionContext');
+    const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
+    if (nativeContext?.modelGeneration === 1 && nativeContext.canvasId === projectId) {
+      const { listNativeMediaTasks } = await import('../indexedDb/nativeMediaTaskRepository');
+      const pending = (await listNativeMediaTasks(nativeContext.projectId)).find((row) => row.canvasId === nativeContext.canvasId
+        && row.origin?.messageId === messageId && row.origin.conversationId === originMessage?.conversationId
+        && (['prepared', 'submitted', 'outcome-unknown'].includes(row.status)
+          || error instanceof Error && error.name === 'NativeMediaTaskDelivered' && row.status === 'delivered'));
+      if (pending) {
+        if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
+        if (pending.status === 'delivered') {
+          const { projectNativeMediaMessages } = await import('../nativeMediaMessages');
+          await projectNativeMediaMessages(originMessage?.conversationId); return;
+        }
+        if (isCurrentApiMessage()) useAppStore.getState().updateMessage(messageId, {
+          mediaStatus: pending.status === 'submitted' ? 'paused' : 'submit_unknown',
+          mediaError: `原任务已保留（${pending.operationId}），请续查原回执，不要重新生成。`,
+          canvasStatus: targetNodeId ? 'pending' : 'none', canvasNodeId: targetNodeId,
+        });
+        return;
+      }
+    }
     const recoverable = isMediaTaskPausedError(error);
     const submissionUnknown = recoverable && 'reason' in error && error.reason === 'submit_unknown';
     const message = error instanceof Error ? error.message : '未知错误';

@@ -8,6 +8,10 @@
 import { useAppStore } from '../store/useAppStore';
 import { getMediaModelOptions } from '../components/nodes/shared/defaultModels';
 import { generateVideo } from './ai/generateVideo';
+import { resolveGeneralModel, resolveGeneralModelConnection } from './ai/helpers';
+import { resolveModelExecutionProfile } from './ai/modelProtocol';
+import { resolveProviderCatalogId } from './ai/providerPolicies';
+import { resolveMinimaxExecutionProfile } from './ai/providers/minimaxModelManifest';
 import { getAssetUrlFromPath, getProjectDataDir, getRelativeAssetPath, joinPath, openMediaFileReader, persistMediaUrlToProjectData } from './fileService';
 import type { MediaDownloadAccess, MediaReference, MediaTaskReceipt } from '../types/aiTypes';
 import { sanitizeMediaResultUrls } from './ai/mediaDownloadAccess';
@@ -146,6 +150,10 @@ export async function runVideoEditorAiTransition(
 
   const references = buildFrameReferences(request);
   if (references.length < 2) throw new Error('缺少首帧或尾帧，无法生成转场');
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1) {
+    const { submitNativeEditorTransition } = await import('./nativeEditorTransitionService');
+    return submitNativeEditorTransition(request, anchorNodeId, signal, assertCurrent);
+  }
 
   const projectSettings = useAppStore.getState().projects
     .find((project) => project.id === projectId)?.settings;
@@ -159,6 +167,20 @@ export async function runVideoEditorAiTransition(
   const pending = getPendingTasksForProject(projectId).find((task) => task.nodeId === trackingId);
   if (pending) return recoverVideoEditorAiTransition({ projectId, nodeId: trackingId, taskId: pending.taskId,
     attemptId: pending.attemptId }, anchorNodeId, signal, assertCurrent);
+  // 这些视频适配器均依赖旧队列恢复远端异步任务，提前阻断避免创建误报未知的占位回执。
+  const projectContext = useAppStore.getState().projectExecutionContext;
+  if (projectContext && projectContext.modelGeneration > 0) {
+    let knownAsync = ['apimart', 'dreamina', 'volcengine', 'runninghub', 'grsai'].includes(request.provider);
+    if (request.provider === 'general') {
+      const model = resolveGeneralModel(request.model);
+      const connection = resolveGeneralModelConnection(request.model);
+      const catalogId = connection && (connection.definition?.id ?? resolveProviderCatalogId(connection.providerConfigId, connection.provider));
+      const profile = model && (catalogId === 'minimax'
+        ? resolveMinimaxExecutionProfile(model.modelId, model.executionProfile) : model.executionProfile);
+      knownAsync = resolveModelExecutionProfile(profile)?.mode === 'async';
+    }
+    if (knownAsync) throw new Error('新项目暂不支持异步转场任务恢复，未提交请求');
+  }
   let receipt: MediaTaskReceipt | undefined;
   let completed = false;
   const releaseOperation = registerMediaNodeOperation(trackingId, true);

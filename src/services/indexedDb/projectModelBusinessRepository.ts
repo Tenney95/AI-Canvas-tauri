@@ -390,7 +390,15 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
     return project;
   }
   async function episodes(tx: IDBTransaction, projectId: string): Promise<Array<ProjectModelStored<EpisodeRecord>>> {
-    return request(tx.objectStore('episodes').index('projectId_orderRank').getAll(ownerRange(projectId)));
+    const list = await request<Array<ProjectModelStored<EpisodeRecord>>>(tx.objectStore('episodes').index('projectId_orderRank').getAll(ownerRange(projectId)));
+    const ranks = new Set<number>();
+    for (const item of list) {
+      if (item.projectId !== projectId || item.generation !== generation || item.operationId !== session.operationId
+        || !identity(item.id) || !identity(item.canvasId) || !Number.isSafeInteger(item.orderRank) || item.orderRank < 0
+        || ranks.has(item.orderRank)) fail('broken-episode-membership');
+      ranks.add(item.orderRank);
+    }
+    return list;
   }
   async function content(tx: IDBTransaction, projectId: string): Promise<ProjectModelStored<ProjectContent>> {
     const result = await request(tx.objectStore('projectContents').get(key(projectId))) as ProjectModelStored<ProjectContent> | undefined;
@@ -403,6 +411,13 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
     if (!result || result.projectId !== projectId || result.id !== episodeId
       || result.generation !== generation || result.operationId !== session.operationId) fail('episode-unavailable');
     if (revision !== undefined && result.revision !== revision) fail('episode-version-conflict');
+    return result;
+  }
+  async function episodeContent(tx: IDBTransaction, episodeId: string): Promise<ProjectModelStored<EpisodeContent>> {
+    const result = await request(tx.objectStore('episodeContents').get(key(episodeId))) as ProjectModelStored<EpisodeContent> | undefined;
+    if (!result || result.episodeId !== episodeId || result.generation !== generation || result.operationId !== session.operationId) {
+      fail('episode-content-unavailable');
+    }
     return result;
   }
   async function canvas(tx: IDBTransaction, projectId: string, canvasId: string): Promise<ProjectModelStored<CanvasDocument>> {
@@ -509,6 +524,8 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
       if (target.kind === 'project') return { kind: 'project', ...common };
       if (target.kind === 'episode') {
         const result = await episode(tx, project.id, target.episodeId);
+        const linkedCanvas = await canvas(tx, project.id, result.canvasId);
+        if (project.kind !== 'series' || linkedCanvas.episodeId !== result.id) fail('episode-unavailable');
         return { kind: 'episode', ...common, episodeId: result.id, episodeRevision: result.revision };
       }
       const result = await canvas(tx, project.id, target.canvasId);
@@ -534,8 +551,7 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
     }, options),
     readEpisodeContent: (projectId: string, episodeId: string, options?: ProjectModelBusinessReadOptions) => read(['projectRoots', 'episodes', 'episodeContents'], async (tx) => {
       await root(tx, projectId); await episode(tx, projectId, episodeId);
-      const result = await request(tx.objectStore('episodeContents').get(key(episodeId))) as ProjectModelStored<EpisodeContent> | undefined;
-      if (!result || result.episodeId !== episodeId) fail('episode-content-unavailable'); return result;
+      return episodeContent(tx, episodeId);
     }, options),
     readCanvas: (projectId: string, canvasId: string, options?: ProjectModelBusinessReadOptions) => read(['projectRoots', 'episodes', 'canvasDocuments'], async (tx) => {
       await root(tx, projectId); return canvas(tx, projectId, canvasId);
@@ -582,8 +598,8 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
       return write(['episodes', 'episodeContents'], input, async (tx, _marker, project, now, input) => {
         if (!Number.isSafeInteger(input.expectedEpisodeRevision) || input.expectedEpisodeRevision < 0) fail('invalid-episode-version');
         const target = await episode(tx, project.id, input.episodeId, input.expectedEpisodeRevision);
-        const before = await request(tx.objectStore('episodeContents').get(key(target.id))) as ProjectModelStored<EpisodeContent> | undefined;
-        if (!before || before.episodeId !== target.id || before.revision !== input.expectedContentRevision) fail('episode-content-version-conflict');
+        const before = await episodeContent(tx, target.id);
+        if (before.revision !== input.expectedContentRevision) fail('episode-content-version-conflict');
         const next = { ...before, ...patch, revision: increment(before.revision) };
         await request(tx.objectStore('episodeContents').put(next));
         await request(tx.objectStore('episodes').put({ ...target, revision: increment(target.revision), updatedAt: now }));
@@ -715,6 +731,7 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
       if (!Number.isSafeInteger(input.expectedEpisodeRevision) || input.expectedEpisodeRevision < 0) fail('invalid-episode-version');
       const target = await episode(tx, project.id, input.episodeId, input.expectedEpisodeRevision), current = await canvas(tx, project.id, target.canvasId);
       if (current.episodeId !== target.id || current.epoch !== input.expectedCanvasEpoch || current.revision !== input.expectedCanvasRevision) fail('canvas-version-conflict');
+      await episodeContent(tx, target.id);
       await tombstone(tx, 'episode', project.id, target.id, target.epoch, now); await tombstone(tx, 'canvas', project.id, current.id, current.epoch, now);
       await retireBindings(tx, project.id, new Set([current.id]), new Set([target.id]), now);
       await request(tx.objectStore('episodes').delete(key(target.id))); await request(tx.objectStore('episodeContents').delete(key(target.id)));
@@ -734,6 +751,7 @@ export function createProjectModelBusinessRepository(database: IDBDatabase, sess
       const canvases = await request(tx.objectStore('canvasDocuments').index('projectId').getAll([generation, project.id])) as Array<ProjectModelStored<CanvasDocument>>;
       await tombstone(tx, 'project', project.id, project.id, project.epoch, now);
       for (const target of list) {
+        await episodeContent(tx, target.id);
         await tombstone(tx, 'episode', project.id, target.id, target.epoch, now);
         await request(tx.objectStore('episodes').delete(key(target.id))); await request(tx.objectStore('episodeContents').delete(key(target.id)));
       }

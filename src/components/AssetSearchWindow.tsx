@@ -10,8 +10,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   loadConfigWithoutSecrets as loadConfig,
   saveConfig,
-  loadProjectsList,
   registerProjectFolders,
+  registerNativeProjectFolders,
+  useNativeAssetSearchContext,
   setBaseDataDir,
   syncAuthorizedDirectories,
   revealFileInFolder,
@@ -34,6 +35,8 @@ import { distributeToColumns } from './assets/waterfallColumns';
 import { applyAppearanceTheme } from '../services/appearance/appearanceRuntime';
 import { getAppearanceForConfig } from '../services/appearance/appearanceMigration';
 import { syncPerformanceModeRuntime } from '../services/performanceModeRuntime';
+import { listProjectCatalog } from '../services/projectModelRouter';
+import { projectNativeCatalogEntry } from '../store/nativeProjectView';
 
 /** 单页渲染数量（增量加载步长）*/
 const PAGE_SIZE = 60;
@@ -85,9 +88,18 @@ export default function AssetSearchWindow() {
       setBaseDataDir(cfg?.baseDataDir);
       await syncAuthorizedDirectories(cfg ?? {});
       signal.throwIfAborted();
-      const projects = await loadProjectsList();
+      const catalog = await listProjectCatalog();
       signal.throwIfAborted();
-      registerProjectFolders(projects);
+      const legacy = catalog.filter((entry) => entry.dataModel === 'legacy').map((entry) => entry.project);
+      registerProjectFolders(legacy);
+      useNativeAssetSearchContext();
+      const native = catalog.filter((entry) => entry.dataModel === 'native');
+      for (const entry of native) {
+        registerNativeProjectFolders([entry.project.id, ...entry.episodeIds, ...entry.canvasIds]
+          .map((id) => ({ id, projectId: entry.project.id })));
+      }
+      // 每个新作品只扫描一次共享根；旧项目继续保留原有分集来源。
+      const projects = [...legacy, ...native.map((entry) => projectNativeCatalogEntry(entry)[0])];
       const folders = cfg?.assetFolders ?? [];
       const opts: SourceOption[] = [{ key: 'all', label: '全部来源' }];
       for (const p of projects) opts.push({ key: `project:${p.id}`, label: p.name, group: '项目' });

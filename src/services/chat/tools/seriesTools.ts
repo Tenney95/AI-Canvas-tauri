@@ -12,7 +12,9 @@ import {
   CREATIVE_FIELD_IDS,
   type CreativeFieldId,
 } from '../../seriesCreativeService';
-import type { EpisodeCreativeInfo } from '../../../types';
+import type { CanvasProject, EpisodeCreativeInfo } from '../../../types';
+import type { NativeProjectViewBinding } from '../../../store/nativeProjectView';
+import { captureLegacyEpisodeContext } from '../../projectExecutionContext';
 import { isWorkbenchAgentTaskInScope } from '../../episodeWorkspaceScope';
 import { EpisodeEditorWriteBlockedError, prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
 
@@ -54,6 +56,17 @@ function currentSeries() {
     : null;
   const series = state.projects.find((project) => project.id === seriesId) ?? null;
   return { state, series };
+}
+
+/** 接受旧画布别名及新分集 ID，只在当前作品内解析唯一目标。 */
+function nativeEpisodeId(item: CanvasProject): string | null | undefined {
+  return (item as CanvasProject & { nativeView?: NativeProjectViewBinding }).nativeView?.episodeId;
+}
+
+function resolveEpisode(state: ReturnType<typeof useAppStore.getState>, seriesId: string, episodeId: string) {
+  const episodes = listEpisodes(state.projects, seriesId);
+  const matching = episodes.filter((item) => item.id === episodeId || nativeEpisodeId(item) === episodeId);
+  return matching.length === 1 ? matching[0] : undefined;
 }
 
 async function writeEpisodeContent(episodeId: string, write: () => Promise<boolean>): Promise<boolean | AgentToolExecutionResult> {
@@ -170,6 +183,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
         if (!series) return { status: 'error', summary: '当前项目没有剧集信息', modelContent: '当前项目没有剧集信息', errorCode: 'SERIES_NOT_FOUND' };
         const episodes = listEpisodes(state.projects, series.id).map((episode) => ({
           id: episode.id,
+          ...(nativeEpisodeId(episode) ? { episodeId: nativeEpisodeId(episode), canvasId: episode.id } : {}),
           episodeNo: episode.episodeNo,
           name: episode.name,
           outline: episode.episodeOutline ?? '',
@@ -191,7 +205,9 @@ export function registerSeriesAgentTools(): Array<() => void> {
         const task = state.agentTasks.find((item) => item.id === context.taskId);
         if (!task?.workbenchTarget) return authorizeCurrentProject(context);
         return task.projectId === context.projectId && task.conversationId === context.conversationId
-          && task.workbenchTarget.episodeId === input.episodeId
+          && (task.workbenchTarget.episodeId === input.episodeId
+            || !!captureLegacyEpisodeContext(state, input.episodeId)
+              && captureLegacyEpisodeContext(state, input.episodeId)?.episodeId === captureLegacyEpisodeContext(state, task.workbenchTarget.episodeId)?.episodeId)
           && isWorkbenchAgentTaskInScope(state, task, 'episode_read')
           ? { allowed: true }
           : { allowed: false, reason: '工作台只允许读取当前任务明确绑定的分集' };
@@ -199,8 +215,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
       summarizeInput: (input) => `读取分集 ${input.episodeId} 的${input.part === 'script' ? '正文' : input.part === 'creative' ? '创作要点' : '大纲'}`,
       execute: async (_context, input) => {
         const { state, series } = currentSeries();
-        const episode = series && listEpisodes(state.projects, series.id)
-          .find((item) => item.id === input.episodeId);
+        const episode = series && resolveEpisode(state, series.id, input.episodeId);
         if (!episode) {
           return {
             status: 'error',
@@ -266,7 +281,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
       authorize: authorizeCurrentProject,
       execute: async (_context, input) => {
         const { state, series } = currentSeries();
-        const episode = series && listEpisodes(state.projects, series.id).find((item) => item.id === input.episodeId);
+        const episode = series && resolveEpisode(state, series.id, input.episodeId);
         if (!episode) return { status: 'error', summary: '分集不存在', modelContent: '分集不存在', errorCode: 'EPISODE_NOT_FOUND' };
         const saved = await writeEpisodeContent(episode.id, () => state.updateEpisodeOutline(episode.id, input.outline));
         if (typeof saved !== 'boolean') return saved;
@@ -291,8 +306,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
       summarizeInput: (input) => `更新本集剧本（${input.script.length} 字）`,
       execute: async (_context, input) => {
         const { state, series } = currentSeries();
-        const episode = series && listEpisodes(state.projects, series.id)
-          .find((item) => item.id === input.episodeId);
+        const episode = series && resolveEpisode(state, series.id, input.episodeId);
         if (!episode) {
           return {
             status: 'error',
@@ -330,8 +344,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
       summarizeInput: (input) => `更新分集 ${input.episodeId} 的 ${input.field}`,
       execute: async (_context, input) => {
         const { state, series } = currentSeries();
-        const episode = series && listEpisodes(state.projects, series.id)
-          .find((item) => item.id === input.episodeId);
+        const episode = series && resolveEpisode(state, series.id, input.episodeId);
         if (!episode) {
           return {
             status: 'error',
@@ -382,7 +395,9 @@ export function registerSeriesAgentTools(): Array<() => void> {
       effect: 'canvas_write',
       authorize: authorizeCurrentProject,
       execute: async (_context, input) => {
-        const moved = await useAppStore.getState().moveEpisode(input.episodeId, input.direction);
+        const { state, series } = currentSeries();
+        const episode = series && resolveEpisode(state, series.id, input.episodeId);
+        const moved = episode ? await state.moveEpisode(episode.id, input.direction) : false;
         return moved ? { status: 'success', summary: '已调整分集顺序', modelContent: JSON.stringify({ episodeId: input.episodeId, direction: input.direction }) } : { status: 'error', summary: '分集无法继续移动', modelContent: '分集不存在或已位于边界', errorCode: 'EPISODE_MOVE_FAILED' };
       },
     }),
@@ -392,9 +407,10 @@ export function registerSeriesAgentTools(): Array<() => void> {
       description: '删除指定分集记录；共享素材和历史回执保留。旧项目格式暂不允许删除最后一集。',
       inputSchema: { type: 'object', required: ['episodeId'], additionalProperties: false, properties: { episodeId: { type: 'string', minLength: 1, maxLength: 160 } } },
       effect: 'permanent_delete',
-      authorize: (context, input) => { const state = useAppStore.getState(); const ownerId = seriesOwnerId(state.projects, context.projectId); const episode = state.projects.find((item) => item.id === input.episodeId); return { allowed: state.currentProjectId === context.projectId && episode?.parentId === ownerId, reason: '分集不存在或不属于当前剧集' }; },
+      authorize: (context, input) => { const state = useAppStore.getState(); const ownerId = seriesOwnerId(state.projects, context.projectId); const episode = ownerId ? resolveEpisode(state, ownerId, input.episodeId) : undefined; return { allowed: state.currentProjectId === context.projectId && episode?.parentId === ownerId, reason: '分集不存在或不属于当前剧集' }; },
       execute: async (_context, input) => {
-        const episode = useAppStore.getState().projects.find((item) => item.id === input.episodeId);
+        const { state, series } = currentSeries();
+        const episode = series && resolveEpisode(state, series.id, input.episodeId);
         if (!episode?.parentId) return { status: 'error', summary: '分集不存在', modelContent: '分集不存在', errorCode: 'EPISODE_NOT_FOUND' };
         await useAppStore.getState().deleteProject(episode.id);
         if (useAppStore.getState().projects.some((item) => item.id === episode.id)) {

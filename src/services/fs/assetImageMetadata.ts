@@ -1,20 +1,43 @@
 /**
  * assetImageMetadata — 计算图片身份并管理图片提示词与参考图元数据。
  */
-import { exists, lstat, open as openFile, stat } from '@tauri-apps/plugin-fs';
+import { exists, lstat, mkdir, open as openFile, stat } from '@tauri-apps/plugin-fs';
 import { open } from '@tauri-apps/plugin-dialog';
-import { copyAssetImageReference, type AssetFileEntry, type FileTransferOptions } from '../fileService';
+import { copyAssetImageReference, copyLocalFileStreamed, type AssetFileEntry, type FileTransferOptions } from '../fileService';
 import { getAssetImageRecords, getAssetIndexById, putAssetImageRecord } from '../indexedDbService';
 import { sha256BytesHex } from '../mediaDataUrl';
 import { CATEGORY_EXTENSIONS, getAssetUrlFromPath, getBaseDir, isTauriEnv, joinPath, stripVerbatimPrefix } from './core';
 import { identifyAsset } from './assetIndex';
 import type { AssetImageIdentity, AssetImageRecord, AssetImageReference, AssetImageReferenceView, AssetImageSaveInput } from '../../types/assetImage';
+import { isNativeAssetId } from '../indexedDb/nativeAssetRepository';
+import { safeExchangePath } from '../projectExchangeDomain';
 
 const CHUNK_SIZE = 256 * 1024;
 export const MAX_ASSET_IMAGE_REFERENCES = 16;
 export const MAX_ASSET_IMAGE_PROMPT = 30_000;
 const REFERENCE_PATH = /^asset-image-references\/[a-f0-9-]{36}\.[a-z0-9]{1,8}$/;
 const checkAbort = (signal?: AbortSignal) => { if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError'); };
+const samePath = (a: string, b: string) => {
+  const key = (value: string) => { const path = stripVerbatimPrefix(value).replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(path) ? path.toLowerCase() : path; };
+  return key(a) === key(b);
+};
+async function referenceRoot(assetId?: string, originalPath?: string): Promise<string> {
+  if (isNativeAssetId(assetId)) {
+    const index = await getAssetIndexById(assetId);
+    if (!index?.rootPath || index.source !== 'project' || originalPath && !samePath(index.path, originalPath)) throw new Error('原图片素材归属已变化');
+    return index.rootPath;
+  }
+  const root = await getBaseDir(); if (!root) throw new Error('参考图目录不可用'); return root;
+}
+async function copyReference(source: string, relative: string, root: string, assetId: string, options?: FileTransferOptions): Promise<void> {
+  if (!isNativeAssetId(assetId)) { await copyAssetImageReference(source, relative, root, options); return; }
+  if (!REFERENCE_PATH.test(relative) || !samePath(root, await referenceRoot(assetId))) throw new Error('参考图目标归属已变化');
+  await mkdir(joinPath(root, 'asset-image-references'), { recursive: true });
+  await copyLocalFileStreamed(source, joinPath(root, relative), { ...options, assertCurrent: async () => {
+    await options?.assertCurrent?.();
+    if (!samePath(root, await referenceRoot(assetId))) throw new Error('参考图目标目录已变化');
+  } });
+}
 
 /** 固定块 SHA-256 链校验全部内容；不是 size/mtime 指纹，内存占用不随文件大小增长。 */
 export async function fingerprintAssetImage(path: string, signal?: AbortSignal): Promise<{ digest: string; bytes: number }> {
@@ -69,10 +92,11 @@ function validRecord(record: AssetImageRecord): boolean {
     && typeof record.prompt === 'string' && record.prompt.length <= MAX_ASSET_IMAGE_PROMPT
     && Number.isSafeInteger(record.revision) && record.revision > 0
     && Array.isArray(record.references) && record.references.length <= MAX_ASSET_IMAGE_REFERENCES
-    && record.references.every(validReference);
+    && record.references.every((reference) => validReference(reference, isNativeAssetId(record.assetId)));
 }
-function validReference(reference: AssetImageReference): boolean {
-  return !!reference && REFERENCE_PATH.test(reference.relativePath) && typeof reference.id === 'string'
+function validReference(reference: AssetImageReference, native = false): boolean {
+  return !!reference && (REFERENCE_PATH.test(reference.relativePath) || native && typeof reference.relativePath === 'string'
+    && /^imports\//.test(reference.relativePath) && safeExchangePath(reference.relativePath) === reference.relativePath) && typeof reference.id === 'string'
     && typeof reference.name === 'string' && /^[a-f0-9]{64}$/.test(reference.digest)
     && Number.isSafeInteger(reference.bytes) && reference.bytes > 0;
 }
@@ -95,13 +119,19 @@ export async function findSavedAssetImage(identity: AssetImageIdentity, signal?:
     contentChanged: records.some((record) => record.assetId === identity.assetId && record.contentDigest !== identity.digest) };
 }
 
-export async function resolveAssetImageReferences(references: AssetImageReference[], signal?: AbortSignal): Promise<AssetImageReferenceView[]> {
-  const root = await getBaseDir();
-  if (!root) throw new Error('参考图目录不可用');
+export async function resolveAssetImageReferences(references: AssetImageReference[], signal?: AbortSignal, assetId?: string): Promise<AssetImageReferenceView[]> {
+  const root = await referenceRoot(assetId), native = isNativeAssetId(assetId);
+  if (native) {
+    const owned = (await getAssetImageRecords(signal)).filter((record) => record.assetId === assetId);
+    if (references.some((reference) => !owned.some((record) => record.references.some((saved) => saved.id === reference.id
+      && saved.relativePath === reference.relativePath && saved.digest === reference.digest && saved.bytes === reference.bytes && saved.name === reference.name)))) {
+      throw new Error('参考图不属于原图片素材');
+    }
+  }
   const resolved: AssetImageReferenceView[] = [];
   for (const reference of references) {
     checkAbort(signal);
-    if (!validReference(reference)) throw new Error('参考图记录无效');
+    if (!validReference(reference, native)) throw new Error('参考图记录无效');
     let url: string | null = null;
     try {
       const path = joinPath(root, reference.relativePath);
@@ -110,6 +140,7 @@ export async function resolveAssetImageReferences(references: AssetImageReferenc
     } catch { checkAbort(signal); /* 缺失、替换或权限失败均明确展示不可用，不回退到别的图片。 */ }
     resolved.push({ ...reference, url });
   }
+  if (!samePath(root, await referenceRoot(assetId))) throw new Error('原参考图目录已变化');
   return resolved;
 }
 
@@ -135,15 +166,14 @@ export async function saveAssetImageMetadata(file: AssetFileEntry, input: AssetI
   checkAbort(signal);
   if (input.prompt.length > MAX_ASSET_IMAGE_PROMPT) throw new Error('提示词最多 30000 字符');
   if (input.references.length + input.newReferencePaths.length > MAX_ASSET_IMAGE_REFERENCES) throw new Error('最多添加 16 张参考图');
-  if (!input.references.every(validReference) || input.record && !validRecord(input.record)) throw new Error('图片信息无效');
+  if (!input.references.every((reference) => validReference(reference, isNativeAssetId(input.identity.assetId))) || input.record && !validRecord(input.record)) throw new Error('图片信息无效');
   const before = await fingerprintAssetImage(file.path, signal);
   if (before.digest !== input.identity.digest || input.record && input.record.contentDigest !== before.digest) throw new Error('原图内容已变化，请重新打开；旧信息仍保留');
   // 用户只能保留已保存的引用；不能注入或接管其他图片的相对文件。
   if (input.references.some((reference) => !input.record?.references.some((saved) => saved.id === reference.id
     && saved.relativePath === reference.relativePath && saved.digest === reference.digest
     && saved.bytes === reference.bytes && saved.name === reference.name))) throw new Error('参考图关联已变化，请重新读取');
-  const root = await getBaseDir();
-  if (!root) throw new Error('保存目录不可用');
+  const root = await referenceRoot(input.identity.assetId, file.path);
   const references = [...input.references];
   for (const source of input.newReferencePaths) {
     checkAbort(signal);
@@ -153,13 +183,13 @@ export async function saveAssetImageMetadata(file: AssetFileEntry, input: AssetI
     const content = await fingerprintAssetImage(source, signal);
     const id = crypto.randomUUID();
     const relativePath = `asset-image-references/${id}${extension}`;
-    await copyAssetImageReference(source, relativePath, root, options);
+    await copyReference(source, relativePath, root, input.identity.assetId, options);
     const copied = await fingerprintAssetImage(joinPath(root, relativePath), signal);
     if (copied.digest !== content.digest) throw new Error('参考图复制校验失败，请重试');
     references.push({ id, name, relativePath, ...content });
   }
   const after = await fingerprintAssetImage(file.path, signal);
-  if (after.digest !== before.digest || root !== await getBaseDir()) throw new Error('原图或保存目录已变化，请重试');
+  if (after.digest !== before.digest || !samePath(root, await referenceRoot(input.identity.assetId, file.path))) throw new Error('原图或保存目录已变化，请重试');
   const record: AssetImageRecord = {
     id: input.record?.id ?? `asset-image:${encodeURIComponent(input.identity.assetId)}:${after.digest}`,
     assetId: input.identity.assetId, contentDigest: after.digest, fileName: file.name,
@@ -197,7 +227,7 @@ export async function readSharedAssetImageMetadata(
   const matches = saved.filter((record) => record.contentDigest === content.digest);
   if (!matches.length) return null;
   if (matches.length !== 1) throw new Error('项目图片专属信息不唯一，请先修复');
-  const root = await getBaseDir();
+  const root = await referenceRoot(file.assetId, file.path);
   checkAbort(signal);
   if (!root) throw new Error('参考图目录不可用');
   const record = matches[0];
@@ -208,7 +238,7 @@ export async function readSharedAssetImageMetadata(
     if (actual.digest !== reference.digest || actual.bytes !== reference.bytes) throw new Error('图片专属参考图缺失或已变化');
     references.push({ id: reference.id, name: reference.name, filePath, bytes: reference.bytes });
   }
-  if (root !== await getBaseDir()) throw new Error('参考图目录已变化，请重新同步');
+  if (!samePath(root, await referenceRoot(file.assetId, file.path))) throw new Error('参考图目录已变化，请重新同步');
   checkAbort(signal);
   return { record, references };
 }
@@ -224,7 +254,7 @@ export async function prepareSharedAssetImageMetadata(
   if (!file.assetId || file.source !== 'project' || file.category !== 'image'
     || typeof input.prompt !== 'string' || input.prompt.length > MAX_ASSET_IMAGE_PROMPT
     || input.references.length > MAX_ASSET_IMAGE_REFERENCES) throw new Error('共享图片专属信息无效');
-  const root = await getBaseDir();
+  const root = await referenceRoot(file.assetId, file.path);
   if (!root) throw new Error('参考图目录不可用');
   const before = await fingerprintAssetImage(file.path, signal);
   const ids = new Set<string>();
@@ -240,13 +270,13 @@ export async function prepareSharedAssetImageMetadata(
     if (!CATEGORY_EXTENSIONS.image.includes(extension)) throw new Error('共享参考图类型无效');
     const original = await fingerprintAssetImage(reference.filePath, signal);
     const relativePath = `asset-image-references/${crypto.randomUUID()}${extension}`;
-    await copyAssetImageReference(reference.filePath, relativePath, root, options);
+    await copyReference(reference.filePath, relativePath, root, file.assetId, options);
     const copied = await fingerprintAssetImage(joinPath(root, relativePath), signal);
     if (copied.digest !== original.digest || copied.bytes !== original.bytes) throw new Error('共享参考图复制校验失败');
     references.push({ id: reference.id, name: reference.name, relativePath, ...copied });
   }
   const after = await fingerprintAssetImage(file.path, signal);
-  if (before.digest !== after.digest || root !== await getBaseDir()) throw new Error('项目图片或参考图目录已变化');
+  if (before.digest !== after.digest || !samePath(root, await referenceRoot(file.assetId, file.path))) throw new Error('项目图片或参考图目录已变化');
   checkAbort(signal);
   return { id: `asset-image:${encodeURIComponent(file.assetId)}:${after.digest}`, assetId: file.assetId,
     contentDigest: after.digest, fileName: file.name, prompt: input.prompt, references, revision: 1, updatedAt: Date.now() };

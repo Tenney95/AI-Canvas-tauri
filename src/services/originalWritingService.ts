@@ -21,7 +21,10 @@ const RULES = [
 ].join('\n');
 
 interface SourceBinding { seriesId: string; projectName: string; exchangeEpoch: number; reference: string | null; fileName: string;
-  relativePath?: string; original?: ProjectOriginalWork; folder?: string; baseDirectory?: string }
+  relativePath?: string; original?: ProjectOriginalWork; folder?: string; baseDirectory?: string;
+  /** 新普通画布首次绑定原文时允许经验证转换为同一作品的首集。 */
+  nativeStandalone?: { projectId: string; canvasId: string } }
+type NativeViewBinding = { projectId: string; canvasId: string | null; episodeId: string | null };
 type PendingCreation = Awaited<ReturnType<typeof createAssetTextFile>> & { documentId: string; original: ProjectOriginalWork };
 class WritingError extends Error {}
 
@@ -39,7 +42,11 @@ function captureSource(seriesId: string): SourceBinding {
   }
   const series = state.projects.find((project) => project.id === seriesId && !project.parentId);
   if (!series) throw new WritingError('当前剧集不存在');
-  const identity = { seriesId, projectName: series.name, exchangeEpoch: series.exchangeEpoch ?? 0, folder: series.dataFolder, baseDirectory: state.config?.baseDataDir };
+  const native = (series as typeof series & { nativeView?: NativeViewBinding }).nativeView;
+  const nativeStandalone = native && native.projectId !== seriesId && native.canvasId === seriesId && native.episodeId === null
+    ? { projectId: native.projectId, canvasId: seriesId } : undefined;
+  const identity = { seriesId, projectName: series.name, exchangeEpoch: series.exchangeEpoch ?? 0, folder: series.dataFolder,
+    baseDirectory: state.config?.baseDataDir, ...(nativeStandalone ? { nativeStandalone } : {}) };
   const source = series.series?.originalWork;
   if (!source) return { ...identity, reference: null, fileName: '原文.txt' };
   const relativePath = source.relativePath.replace(/\\/g, '/');
@@ -57,8 +64,23 @@ function isManagedOriginal(source: SourceBinding): boolean {
 }
 
 function assertBinding(binding: SourceBinding, allowedReference?: string) {
-  const current = captureSource(binding.seriesId);
-  if ((current.reference !== binding.reference && current.reference !== allowedReference) || current.exchangeEpoch !== binding.exchangeEpoch
+  let current: SourceBinding;
+  try { current = captureSource(binding.seriesId); }
+  catch (error) {
+    // 普通画布首次保存原文会变成首集；只接受同一作品、同一画布及本次刚写入的原文。
+    const target = binding.nativeStandalone;
+    if (!target || !allowedReference) throw error;
+    const state = useAppStore.getState();
+    const canvas = state.projects.find((item) => item.id === target.canvasId) as (typeof state.projects[number] & { nativeView?: NativeViewBinding }) | undefined;
+    const native = canvas?.nativeView;
+    if (state.currentProjectId !== target.canvasId || canvas?.parentId !== target.projectId
+      || !native || native.projectId !== target.projectId || native.canvasId !== target.canvasId
+      || !native.episodeId) throw error;
+    current = captureSource(target.projectId);
+    if (current.reference !== allowedReference || current.exchangeEpoch !== binding.exchangeEpoch + 1) throw error;
+  }
+  if ((current.reference !== binding.reference && current.reference !== allowedReference)
+    || current.exchangeEpoch !== binding.exchangeEpoch + (current.seriesId === binding.seriesId ? 0 : 1)
     || current.projectName !== binding.projectName || current.folder !== binding.folder || current.baseDirectory !== binding.baseDirectory) {
     throw new WritingError('原著引用或剧集版本已变化，请保留草稿并重新载入');
   }
@@ -79,6 +101,7 @@ function fileError(reason: unknown, saving: boolean): WritingError {
 
 export function createOriginalWritingSession(options: { seriesId: string; onChange?: () => void }) {
   let disposed = false;
+  let sessionSeriesId = options.seriesId;
   let document: OriginalWritingDocument | undefined;
   let baseline: AssetTextSnapshot | undefined;
   let binding: SourceBinding | undefined;
@@ -139,7 +162,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
     live();
     idle();
     if (!discard && (isDirty() || document?.candidate)) throw new WritingError('请先保存草稿或明确放弃草稿与候选，再重新载入');
-    const source = captureSource(options.seriesId);
+    const source = captureSource(binding?.seriesId ?? sessionSeriesId);
     const previous = document;
     const operation = begin('loading', source);
     const { signal } = operation.controller;
@@ -262,6 +285,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
       throw new WritingError('原著引用尚未保存，草稿与已创建文件已保留，请重试保存');
     }
     binding = confirmed;
+    sessionSeriesId = confirmed.seriesId;
     path = created.filePath;
     baseline = created.snapshot;
     document = { ...loaded().document, fileName: created.fileName, isNew: false };

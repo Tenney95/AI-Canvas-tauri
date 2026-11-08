@@ -262,6 +262,7 @@ export function relocateOwnedMediaReferences<T>(value: T, move: MediaRelocation,
 }
 
 export async function persistMediaRelocation(move: MediaRelocation, sharedNodeId?: string): Promise<void> {
+  if (move.assetMove?.assetId.startsWith('na2-')) throw new Error('旧素材移动不能改写新项目恢复身份');
   const db = await openDB();
   const stores = STORES.filter((name) => db.objectStoreNames.contains(name));
   await new Promise<void>((resolve, reject) => {

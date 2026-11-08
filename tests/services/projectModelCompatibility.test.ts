@@ -16,6 +16,33 @@ describe('旧项目领域只读投影', () => {
     expect(result.projects[0].bindings.map((binding) => binding.namespace)).toEqual(['legacy-root', 'legacy-canvas']);
   });
 
+  it.each([false, true])('无子集的旧画布即使有共享稿也保持普通项目（空画布：%s）', (emptyCanvas) => {
+    const originalWork = { fileName: '原著.txt', relativePath: 'manuscripts/原著.txt', addedAt: 3 };
+    const source = row('ordinary-shared', { series: { script: '全剧共享稿', originalWork },
+      episodeScript: '顶层创作稿', episodeOutline: '顶层大纲',
+      nodes: emptyCanvas ? [] : [{ id: 'node', data: { text: '原画布' } }],
+      snapshot: '原预览' });
+    const result = projectLegacyRecords([source]);
+    expect(result.quarantinedRecordIds).toEqual([]);
+    expect(result.projects[0]).toMatchObject({ project: { id: source.id, kind: 'standalone' }, episodes: [],
+      content: { script: '全剧共享稿', originalWork, standaloneCreative: { script: '顶层创作稿', outline: '顶层大纲' } },
+      standaloneCanvas: { id: source.id, projectId: source.id, episodeId: null, nodes: source.nodes },
+      standalonePreview: { canvasId: source.id, snapshot: '原预览' } });
+    expect(result.sourceRecords).toEqual([source]);
+    expect(result.projects[0].bindings).toContainEqual(expect.objectContaining({ namespace: 'legacy-canvas', legacyId: source.id }));
+  });
+
+  it('无子集且只有共享稿的空画布无法证明是普通项目还是中断的旧容器', () => {
+    const source = row('ambiguous', { series: { script: '保留的共享稿' }, snapshot: '保留的预览' });
+    const result = projectLegacyRecords([source]);
+    expect(result.projects).toEqual([]);
+    expect(result.quarantinedRecordIds).toEqual(['ambiguous']);
+    expect(result.sourceRecords).toEqual([source]);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'ambiguous_childless_series', severity: 'blocking', recordIds: ['ambiguous'],
+    }));
+  });
+
   it('已导入的孤立旧分集保留文稿、TXT原引用、组合包及未知源字段', () => {
     const source = row('legacy-episode', { episodeOutline: '旧集纲', episodeScript: '\uFEFF第一行\r\n第二行',
       episodeScriptFile: { fileName: '旧集.txt', relativePath: 'imports/legacy/旧集.txt', digest: 'A'.repeat(64) },

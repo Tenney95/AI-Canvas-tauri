@@ -8,7 +8,7 @@ import {
 } from './indexedDb/projectModelMigrationRepository';
 import {
   createProjectModelStagingRepository, openProjectModelFixtureDatabase,
-  projectModelSourceToken,
+  projectModelSourceToken, assertProjectModelStagingRollbackPlan,
 } from './indexedDb/projectModelStagingRepository';
 import {
   createProjectModelBackup, readVerifiedProjectModelBackup, writeVerifiedProjectModelBackup,
@@ -241,7 +241,7 @@ export async function rollbackProjectModelFixtureStaging(input: ProjectModelFixt
   assertInput(input);
   const lease = await getProjectModelMaintenanceLease();
   assertLease(lease, input.databaseName);
-  await inspectDurableBackup(lease, input.operationId, input.signal);
+  const checked = await inspectDurableBackup(lease, input.operationId, input.signal);
   const database = await openExistingProjectDatabase({ name: input.databaseName, factory: input.factory,
     allowFixtureStaging: true, signal: input.signal });
   if (!database) throw new ProjectModelStagingError('incomplete-source', input.operationId);
@@ -250,8 +250,15 @@ export async function rollbackProjectModelFixtureStaging(input: ProjectModelFixt
     const repository = createProjectModelStagingRepository(database);
     const journal = await repository.readJournal(input.operationId);
     if (!journal || journal.generation !== input.generation) throw new ProjectModelStagingError('invalid-context', input.operationId);
+    if (journal.backupOperationId !== input.operationId || journal.backupManifestDigest !== checked.manifestDigest
+      || journal.sourceDigest !== checked.sourceDigest || journal.sourceSchemaVersion !== checked.backup.source.schemaVersion) {
+      throw new ProjectModelStagingError('backup-mismatch', input.operationId);
+    }
+    try { await assertProjectModelStagingRollbackPlan(journal, projectionOf(checked.backup.source)); }
+    catch { throw new ProjectModelStagingError('backup-mismatch', input.operationId); }
     const current = await verifyProjectModelMaintenanceLease(lease.leaseId);
     assertLease(current, input.databaseName);
-    return report(await repository.rollback({ operationId: input.operationId, signal: input.signal }));
+    if (current.leaseId !== lease.leaseId) throw new ProjectModelStagingError('invalid-context', input.operationId);
+    return report(await repository.rollback({ operationId: input.operationId, expected: journal, signal: input.signal }));
   } finally { database.close(); }
 }

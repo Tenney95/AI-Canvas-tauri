@@ -1,0 +1,6 @@
+{
+  "identifier": "native-project-media",
+  "description": "Native project media roots are managed by the main window.",
+  "windows": ["main"],
+  "permissions": ["allow-native-project-media"]
+}

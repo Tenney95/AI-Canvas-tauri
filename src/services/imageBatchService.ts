@@ -13,6 +13,7 @@ import { runBatchTasks } from './ai/batchUtils';
 import { completeRunningHubNodeTask, getRunningHubPersistedOutput } from './ai/providers/runninghubWorkflow';
 import { completeComfyNodeTask, completeMediaNodeTask, pauseMediaTask } from './pollManager';
 import { getNodeHistoryEntries } from './indexedDbService';
+import { BATCH_NODE_GAP, BATCH_COLUMNS_RIGHT_OF_SOURCE } from './imageBatchLayout';
 
 interface ApplyImageBatchParams {
   model?: string;
@@ -62,8 +63,6 @@ interface SavedBatchItem {
   persisted: PersistedProjectMedia;
 }
 
-const BATCH_NODE_GAP = 40;
-const BATCH_COLUMNS_RIGHT_OF_SOURCE = 4;
 const MISSING_BATCH_RESULT_ERROR = '批量生成未返回结果';
 
 /** 每个远端作业的第 index 个产物，首次交付与续存使用相同身份。 */

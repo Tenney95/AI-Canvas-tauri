@@ -1146,3 +1146,109 @@ npm run test:typecheck
 ```
 
 桌面验收继续使用测试副本和用户已开启的 MCP 服务：在工作台修改本集正文但不保存，先读取对应 episode 上下文，再分别发起正文、大纲和创作字段写入，应明确返回 `EPISODE_EDITOR_WRITE_BLOCKED` 与未保存稿原因，不应将该次任务暂停为 `tool_outcome_unknown`；读回保存内容和本地草稿均应保持原样。保存或明确丢弃后，重新读取上下文并由用户发起新的写入，应成功并同步干净工作台。正在保存／失联稿件仍应阻止外部写入。副作用开始后的异常边界使用上述隔离测试验证，不在用户真实数据上注入存储故障。
+
+### 22.9 P6 隔离宿主与 P7 边界补强（待验证）
+
+继续实施 P6／P7 时保持正式 DB27、正式迁移／自动迁移／激活／恢复写入及 v4 运行开关关闭，不迁移真实用户数据。新增显式 `project-model-fixture-host` Cargo feature：仅 Windows debug 构建、以 `--project-model-maintenance-selftest=<fixture-id>` 冷启动时，原生维护窗口才加载内嵌的固定隔离脚本。普通维护页仍禁止脚本；原有 capability、正式数据库入口及通用文件权限没有扩大。脚本绑定唯一 fixture profile 和原生租约，使用固定合成旧项目、Agent 任务及媒体队列；不接受用户文件、数据库或任意路径作为测试输入。构建脚本限制输入模块与外部调用，产物仅写入 Cargo 构建目录。
+
+宿主编排实际 P2 fixture 暂存和原生备份接口：首次注入第二批事务异常并显示 `restart-required`；冷重启取得新租约后，按原 operation 续接或复核已提交回滚，并验证备份、合成源记录、后到的合成任务预算与队列。账本和队列均为原始固定样本时，也允许经 P2 再次核验后续接中断于 `staging`／`verifying` 的原操作；跨存储中断只有已知且可验证的固定样本状态才续接，其余失败关闭并保留材料。这是为后续验收准备的入口，不代表真实配额、断电、完整正式 v27 schema、真实 MCP 绑定或激活后恢复已验证；尚未接入 v1～v4 的原生归档往返，首次初始化和未知 checkpoint 仍可能需要人工核对。
+
+项目持久 Agent 结果新增原工具授权复核：只对来源可证明、零参数且仍符合持久策略的 `series_get_state` 恢复，在读取前后、缓存回读和结果交付前重新检查任务、工具和当前授权；未知来源、权限撤销或缺少原上下文证明继续失败关闭，原文件及历史回执保留。引用／上下文按值比较以兼容键顺序变化，并发读取同一持久结果时复用一致缓存项。此范围不承诺任意历史工具结果均可重启恢复；运行期 epoch 和同 ID／同 epoch 重建仍有上一节所列限制。
+
+P7 旧依赖清单增加按文件、命名作用域、操作和目标的静态调用数量上限；已登记模块新增可识别的旧表／旧门面调用须重新审查，减少调用时报告待收紧余量。隔离宿主单独归类为合成 fixture 消费者。动态别名、未知门面、同一作用域等量替换及未收紧的历史余量仍需人工审查；旧兼容入口没有删除，P7 未进入正式切换后的稳定期。
+
+**本次未运行测试、lint、类型检查、构建或桌面验收，待用户验收。** 相关回归源码入口：
+
+```powershell
+npx vitest run tests/services/projectModelFixtureRecovery.test.ts tests/scripts/projectModelBoundaries.test.mjs tests/services/chat/agentResultService.test.ts tests/services/chat/agentToolExecution.test.ts tests/services/chat/resultTools.test.ts tests/services/chat/agentRoundExecutor.test.ts tests/services/mcp/mcpControlService.test.ts
+npm run typecheck
+npm run test:typecheck
+```
+
+授权桌面隔离演练后，在 Windows 的 `src-tauri` 目录使用独立构建目录，避免覆盖正在运行的应用；以下 PowerShell 中两个变量须在两次启动间保持不变：
+
+```powershell
+$fixtureTarget = Join-Path $env:TEMP ('ai-canvas-fixture-build-' + [guid]::NewGuid().ToString('N'))
+$fixtureId = 'p6-' + [guid]::NewGuid().ToString('N')
+cargo build --bin ai-canvas-tauri --features project-model-fixture-host --target-dir $fixtureTarget
+$fixtureExe = Join-Path $fixtureTarget 'debug/ai-canvas-tauri.exe'
+& $fixtureExe "--project-model-maintenance-selftest=$fixtureId"
+```
+
+仅当首次窗口显示 `restart-required`，正常关闭后以同一命令重开，应显示 `complete`；第三次重开只读复核迁移与回滚状态，但 22.10 的归档容器探针可能另行创建固定合成材料。`blocked`、编译失败或任何非预期结果均须保留隔离材料并排查，不能改用真实 profile 或开启正式迁移。首次实际构建、WebView/ACL、真实跨进程停写、持久化与故障行为均待验证。Rust 回归入口为 `src-tauri` 目录的 `cargo test --lib --features project-model-fixture-host --target-dir $fixtureTarget project_model_safety::tests -- --test-threads=1`；它不替代桌面演练。
+
+### 22.10 隔离断点和归档容器补强（待验证）
+
+保持正式 DB27 和迁移／激活／恢复写入及 v4 运行开关关闭。本次没有打开真实数据库、运行迁移、导入导出或访问真实项目素材。
+
+- 首次初始化仅接受固定三表的完全空白状态或完整原始合成样本；样本初始化与核验在同一 IndexedDB 事务中进行。部分写入、陌生 schema 或未知队列保留并阻断。若预期故障已写入 journal 而界面阶段尚未写入，仅在新的冷启动租约下核验原始样本、队列和已封印备份后续接。备份未封印、journal 未生成和其他未知阶段仍可能阻断，不能推断所有中断均可自动恢复。
+- Windows debug 且显式启用 fixture feature 时，维护宿主在独占 fixture profile 后用固定合成材料调用原生归档容器打包和解包，核对 v1～v4 标记下的条目、双素材根同名不同字节、ready／published 回执文件与包摘要；不接受页面传入路径或项目数据，不扩大普通窗口命令权限。JSON 为占位材料，**不证明 v1～v4 业务解析、原生对话框、正式命令授权或发布回执丢失后的恢复**。同一 fixture 最多保留八次探针材料，失败或达到上限时保留材料并报告 `archiveContainers: false`，迁移恢复可继续；`true` 只表示本次容器探针完成。
+- P7 静态审计补充可解析的动态导入、简单门面别名、计算属性和表名数组／展开，并按词法遮蔽追踪绑定；补登记短剧素材导出的旧项目读取和旧协作仓储事务。运行时赋值、跨文件转发、未知门面和同作用域等量替换仍需人工审查。原有旧业务路径与恢复材料继续保留，清单和调用预算均须实际运行审计后再确认。
+
+**本次未运行测试、lint、类型检查、构建或桌面验收，待用户验收。** 验收时先按 22.9 的隔离流程使用全新 fixture ID；每次窗口应独立检查 `archiveContainers`，只有 `true` 表示本次合成容器检查完成，`false` 不代表容器检查通过。中断初始化、故障 journal 与跨存储续接须分别在可丢弃 fixture 中演练，保留 blocked 材料。前端定向回归和类型检查沿用 22.9；归档原生回归还需在 `src-tauri` 目录使用同一隔离 `$fixtureTarget` 执行：
+
+```powershell
+cargo test --lib --features project-model-fixture-host --target-dir $fixtureTarget project_archive::tests -- --test-threads=1
+```
+
+仍需完成真实 v1～v4 业务归档往返、正式发布回执恢复链、完整真实 schema 与多平台停写演练、Store／UI 与 Agent／MCP 正式仓储路由、激活后恢复及稳定期观察；缺少实际证据前不能开放正式迁移或退役旧材料。
+
+### 22.11 结构完整性与恢复边界补强（待验证）
+
+继续保持正式 DB27、迁移／自动迁移／激活／恢复写入及 v4 运行开关关闭。本轮没有打开真实用户数据库、项目目录或归档，也没有执行迁移或恢复。
+
+- P2 隔离暂存撤销先核验原生封印和备份，从备份重新投影并核对 journal 暂存计划、原操作、manifest／来源摘要及源 schema，再复核租约；删除暂存行的事务中条件比较 journal 版本和备份身份，并逐表核对已提交的暂存行。缺失、多余或变化的行均保留并中止撤销；后到任务、预算及队列不回退。该条件检查依赖合法写入按合同推进 sequence，不等于已验证真实断电或跨进程停写。
+- fixture 业务仓储检查已索引分集的操作归属和排序唯一性；读取／保存／删除正文前核对正文的 generation 和操作，产生分集上下文前核对画布及双向关系，整剧删除也在事务中核对正文。异常中止事务并保留记录；这些仍是隔离仓储能力，没有接入正式 Store/UI。
+- 正式归档发布确认与固定 fixture 共用 `prepared → ready → 文件身份及摘要核验 → published` 核心。合成探针保留原 published 回执，再模拟标记缺失并核验同一操作，不重新打包；正式命令原有窗口、路径授权及锁保留。22.10 所述探针现已覆盖这一合成恢复核心，但正式 IPC、系统对话框、真实进程中断及 v1～v4 业务格式往返仍未验收。
+- 旧存储健康扫描和清理在使用旧项目引用前以及文件删除前复核冻结／活动模型标记；扫描中标记变化不产出可清理结果。回收站总量与可清理量分别统计；用户发起清理时按需为选中的非空文件捕获内容摘要，确认后每次删除前重新核对摘要以及旧项目、历史、恢复点和实时引用，包含已知相对路径字段。未确认、新增、变化、空文件或被引用的文件保留。该检查只是失败关闭的预检，IndexedDB 与文件删除并非同一事务，也没有覆盖全部媒体版本 pin 和备份闭包，不能替代正式激活前的跨进程停写与清理设计。
+
+另补 v1 孤立分集、v2 剧集、v3 旧修订经隔离仓储导入并再导出 v4 的集成测试源码，以及损坏修订保留原材料的断言；没有实际执行，不能当作业务往返已通过。
+
+**本次未运行测试、lint、类型检查、构建或桌面验收，待用户验收。** 用户可在仓库根目录运行 `npx vitest run tests/services/projectModelBusinessRepository.test.ts tests/services/projectModelStagingRepository.test.ts tests/services/projectModelStaging.test.ts tests/services/projectModelArchiveIntegration.test.ts tests/services/storageHealth.test.ts tests/services/projectThumbnailExclusion.test.ts`，并按 22.9～22.10 的独立 Windows fixture 构建和原生回归步骤验收。正式模型路由、完整归档业务往返、真实故障恢复和稳定期清理仍需完成及验证，不能因这些准备代码而开放正式迁移。
+
+### 22.12 新建项目与旧项目并存（实施中）
+
+用户明确要求：新建项目直接采用项目／分集／画布分离的结构；已有项目继续按原结构使用，不自动转换。新建项目使用新结构不代表开放旧数据正式迁移，也不允许在新旧表间双写同一作品。
+
+旧流程的 `currentProjectId`、持久化、图片文件、Agent／MCP 和 v3 归档均把旧项目 ID 当作画布 ID；隔离业务仓储还依赖迁移 journal 与源冻结，不能直接用于正式新建，否则会冻结旧作品或产生不能重开的半项目。现已增加独立新库及新旧来源识别：新库原子创建项目根、共享内容和画布，支持零集剧集、保根转剧集、分集新增／排序／删除及条件保存；联合目录以轻量身份核对旧源和新源同 ID、墓碑冲突或读取失败，不依前缀猜测或回退到另一边。下述接口和接线尚待本轮测试验收；跨两个 IndexedDB 的检查不是原子写入授权，实际写入仍需原子身份权威或可恢复协调。
+
+新库现提供按需读取项目、目标画布与正文的接口，通过单调项目版本检查多次读取是否属于同一次提交；自动保存所需的画布、共享资料及分集正文也有单事务条件写入接口。导航投影保留项目、分集、画布的独立身份，以及相互独立的显示集号和排序；删除整项时保留身份墓碑和文件材料，删除最后一集保留剧集根。原生素材根增加用户目录及归属校验；Windows 素材字节读写有受限接口，尚需验证目录句柄与中断恢复。归档已接新模型投影、绑定目录的文件端口、素材冻结、历史捕获及可恢复传输 journal，具体边界见下文。
+
+当前桌面 Store 已将新建和默认作品创建接入独立新库；列表、打开、切换、自动保存、项目与分集名称、设置、正文和排序／删除按明确的新旧身份分流。旧项目继续使用原库，删除新剧最后一集保留剧集根；画布运行时上下文与编辑 revision 同步。素材通过显式的画布／作品归属解析新根，常用文件引用在保存时相对化并在重开时恢复；跨集素材浮层、独立资源搜索和使用位置查询已分流新旧项目。新项目可导出 v4 和创建独立副本；导入对话框可接收符合转换校验的 v1～v4 包并将新副本写入新库，旧包更新已有旧项目仍走原有流程。新导入和导出保留原操作 journal、素材暂存及回执，存储健康提供按操作 ID 续接或核验的入口。
+
+**补充实现，待用户验证：** 新项目同源更新已接入素材和分集结构变更：先保存独立归档备份并读回，冻结独立来源和 journal，再分阶段发布素材、核验摘要，最后在严格耐久事务中比较原聚合并提交画布、分集、剪辑工程、墓碑和恢复点。用户需要明确选择保留本机或项目包中的剪辑工程；可在存储健康按原操作继续，或撤销未提交操作并保留材料。旧任务、预算与聊天不随更新回滚。
+
+恢复点保存原本机聚合与剪辑，恢复前逐项核验原素材及独立备份；原分集／画布已经退役时，恢复会在可验证映射闭包内分配新逻辑和本机身份，保留原墓碑、历史任务和原生正文；含未知身份引用时拒绝。带 `assetId` 的恢复采用新项目库中的 `na2` 副本索引，和项目、剪辑、恢复点及回执同事务提交；索引仅持久化受控根与相对路径。全局素材先冻结原字节和元数据为项目副本，恢复不改写原全局索引或旧素材。带索引的恢复素材发布到本次操作的新目录，避免同路径多身份及元数据混淆。旧恢复点未冻结素材元数据时继续保留原身份；原素材缺失且无法证明历史元数据时拒绝重绑，不推断原标签或提示词。未知历史剪辑以及会丢失本机字段的更新仍明确拒绝。未变化的本机节点原样保留；变化内容如无法证明不丢本机字段则拒绝。
+
+当前作品本身引用的文件缺失时，只对当前权威协作 head 和所选恢复点均证明同一文件 ID、根、路径、大小及 SHA-256 的情形建立缺失备份证明。先复制原字节到新操作目录，备份读取端以该受控副本提供原逻辑文件，原缺失路径不覆盖；续接和公开提交入口重新核验缺失事实、来源恢复点及副本摘要。参考图重新冻结后，便携投影使用新文件，原缺失证明仍对原冻结状态核验。全局素材的同操作发布只在完整目录清单、大小和摘要相同时复用，发布成功但响应丢失时不覆盖原副本；原全局来源独立核验。权限错误或未知版本不能当作缺失，也不能用另一版本素材替代。
+
+新项目 V4 包可携带活动与已退役画布的剪辑工程，历史工程只绑定墓碑、不能取得编辑权限；新建导入按新本机身份保留，未知或冲突的历史工程更新仍拒绝。新增可选 `asset-metadata.json` 附件，以逻辑文件 ID 携带标签、图片提示词与参考图，不携带本机素材 ID 或绝对路径；附件参与 manifest 大小和摘要校验。图片参考图按原固定块链摘要及独立文件原始 SHA-256 双重核验，冻结到所属项目主根或子根，恢复和导入均按文件绑定重映射。旧素材的参考图继续位于应用目录，`na2` 参考图按受控项目根解析。更新默认保留同一文件的本机元数据，不以不同字节的同名文件套用旧标签。旧版应用可能拒绝新增附件，新读取端继续接受缺少附件的旧包。
+
+Agent 显式继续只在原持久身份及代际满足时重新绑定运行租约，不重置模型轮次、工具次数、预算或原回执；显式请求的 revision 条件继续核验。新画布检查点绑定捕获时的运行租约，重启或重新加载画布后不能凭相同数值重放旧历史。已有项目派生结果文件仍需验证原工具授权、文件摘要和原任务范围，不能因重新绑定而扩大历史结果权限。
+
+共享素材同步为 `na2` 源在同一新库事务冻结索引、标签和图片元数据基线；旧库提交入口独立核对原 journal 与收据，只跳过已证明的原生只读／不变条件，新目标仍使用新身份，不向旧库写入 `na2` 镜像。终止标记继续与旧库提交争用同一事务，阻止迟到提交。固定恢复副本的旧改名、移动、修复和清理入口仍拒绝直接改写，需先复制为普通素材。
+
+剪辑异步转场已接独立新库账本，覆盖声明式异步模型、火山和具备明确首尾帧合同的 APIMart 模型，冻结原工程、接缝、模型协议及原远端任务 ID；查询返回后先保存产物及真实时长，再以原工程 CAS 和 automationRevision 提交插入及时间轴重排。火山沿原费用任务更新用量，不以恢复生成新计费任务。工程已变化时保留产物，不覆盖用户剪辑；已保存产物可不依赖远端凭据再次核验后插入。状态未知须用户核对，结束跟踪不代表服务商已取消，迟到 ID 不重新取得投递权限。
+
+火山、APIMart、GRSAI H3、无引用 Comfy 视频和仅凭原任务 ID 可重建查询的声明式异步协议已接独立耐久任务账本；声明式单结果覆盖图片、视频和音频，绑定原站点及查询协议摘要，Comfy 还核验原工作流。图片／音频采用独立版本的完整输入指纹，旧视频沿用原算法。Agent、MCP 和对话沿同一工具策略接入 `chat`／`canvas`／`both`，纯对话任务不创建隐藏节点，提交前核验原消息已耐久保存；产物与完成回执先提交新库，再按原会话消息幂等投影。原消息媒体槽已占用时在付费前拒绝复用。火山另支持一张经原生读取和 SHA 校验的项目内 source-image 连线。其他远端或多图、未冻结素材和自定义样式引用在提交前拒绝；文件核验与数据库提交并非同一物理事务。切集、持久代际变化或另一窗口取得新租约阻断旧投递；提交未知不自动重投。已完成媒体与已保留剪辑产物进入归档文件闭包，不把任务或预算作为可回滚内容。没有原任务 ID、查询依赖提交响应其他字段，或原站点／协议无法核实时，仍需核对原平台。未适配的提供商与批量协议继续在付费前拒绝；新账本不自动重建用户已删除的旧媒体历史条目。各实现及回归源码未运行测试，也未经过桌面验收。
+
+APIMart 图片另接多提交／多任务／多候选账本：每次 POST 之前先耐久标记该槽位可能已提交，全部原 task ID 与每个 task 的完整本机候选集合分别保留，不按请求张数截断返回结果。重启只查询原任务；可证明未发出的槽位记录为未开始，未知提交须用户核对后才能交付已确认部分。全部候选与原节点／本批稳定节点身份在同一画布事务发布，对话按稳定序号投影，候选全部进入归档文件闭包。部分失败、未知或未开始的数量进入 UI 与 Agent／MCP 回执，不能把局部成功描述为整批成功；全部本机候选齐全时可无凭据离线交付。迟到 task ID 仅补记，不改变已经交付的候选身份或重新取得投递权限。
+
+媒体画布交付使用专用条件事务，不再借用会拒绝活动 Agent／加载节点的项目更新屏障，也不重新激活整个画布。提交期间订阅画布编辑与切换，中止时保留文件及原任务；成功后保留运行租约并追加一次历史。排队在交付之后执行的旧自动保存重新取当前视图，防止旧快照覆盖已交付结果。
+
+声明式同步单结果也区分为本机产物合同：调用前建立耐久记录，不伪造远端任务 ID；结果以内容摘要文件保存后，可在重启时只核验原文件并完成原目的地交付，不再请求 Provider。尚未取得本机产物且没有远端 ID 的未知调用仍需核对，不能自动重投。设置中的恢复入口同时列出媒体与剪辑回执；已提交任务的原节点或剪辑锚点不可用时，仍可由用户核对后结束本机跟踪并保留原回执与产物，不取消远端任务。结束跟踪后再次显式取回仍须原持久身份有效，且原节点／消息没有后续任务，不能跨任务或新代际写入。
+
+**其他边界：** 新旧库身份冲突检查并非跨库原子授权；旧库历史等记录的捕获与新库更新提交不在同一事务，仍需核对并发写入屏障。更新仓储在提交前独立读回备份、原素材和已发布文件，之后在事务中复核 journal 与项目版本；文件校验与事务之间仍有替换窗口。存储健康清理、非 Windows 内嵌媒体、目录认领和搬迁中断恢复仍需处理。正式旧数据迁移、自动迁移及迁移激活开关保持关闭，本轮没有操作真实用户数据。
+
+当前定向回归入口（仓库根目录，使用 fake IndexedDB 或测试替身）：`npx vitest run tests/services/nativeProjectRepository.test.ts tests/services/nativeProjectNavigation.test.ts tests/services/projectModelRouter.test.ts tests/store/nativeProjectView.test.ts tests/store/projects.test.ts tests/services/storageServiceProjectLoad.test.ts tests/services/projectImportService.test.ts tests/services/projectArchiveV4.test.ts`。这些测试不能替代独立 Tauri profile 下的新旧项目往返、素材检查及中断恢复验收。
+
+本轮新增回归源码入口（同目录，尚未运行）：`npx vitest run tests/services/nativeAssetRepository.test.ts tests/services/nativeAssetReferenceFiles.test.ts tests/services/nativeMissingAssetBackup.test.ts tests/services/nativeProjectArchiveGlobalAssets.test.ts tests/services/projectArchiveAssetMetadata.test.ts tests/services/nativeSharedAssetSources.test.ts tests/services/nativeEditorMediaTaskRepository.test.ts tests/services/nativeEditorProtocols.test.ts tests/services/nativeMediaTaskRepository.test.ts tests/services/nativeImageBatchRepository.test.ts tests/services/nativeMediaMessages.test.ts tests/services/nativeMediaMessageBatch.test.ts tests/services/nativeModelProtocolTask.test.ts tests/services/nativeComfyRecovery.test.ts tests/services/chat/agentResumeContext.test.ts tests/components/nativeProjectRecovery.test.tsx`。`tests/store/nativeProjectView.test.ts` 同时覆盖活动任务交付、编辑／切集中止、旧自动保存重基与重复回执后的持续保存；`tests/services/projectModelArchiveIntegration.test.ts` 包含仅被素材元数据引用的旧根闭包回归。
+
+桌面验收前置为独立 Tauri 数据环境、合成两集项目、测试模型接口或本地工作流，不能用真实用户目录注入故障：
+
+1. 添加本机与全局素材、标签、图片提示词及参考图，保存剪辑工程；导出后更新分集结构并更新导入，检查本机元数据选择、剪辑和原全局素材，删除最后一集仍保留作品根。
+2. 在隔离目录删除可由恢复点证明版本的素材，再恢复；检查新文件／素材身份、参考图和标签均完整，原缺失路径未被覆盖。改动摘要、权限或文件版本时应拒绝；中断后在存储健康用原操作 ID 续接，不生成新操作替代未知提交。
+3. 发起带原任务 ID 的媒体调用，切集、重启后返回原画布／对话续查；测试接口不应因恢复再次收到生成 POST，产物只进入原目的地。同步已保存产物应可离线交付，无已保存产物的未知请求不得自动重投。APIMart 图片返回多个 task 和超出请求张数的候选时，检查全部候选进入画布、对话与归档；混入失败／未知子提交时回执需如实显示，删除候选消息后重开不应重建。交付中编辑或切集应中止；交付前排队的自动保存不得覆盖新结果。
+4. 发起剪辑转场后改变工程或删除锚点，检查结果保留但不覆盖工程；存储健康仍可核对并结束跟踪。原工程未变时取回后按真实时长重排，旧窗口不能覆盖新工程。Agent 显式继续保持累计预算，旧画布检查点不能回退重启后的新历史。
+
+**本次未运行测试，待用户验收。** 源码接线、静态核对与实际桌面验收分开记录；正式迁移相关开关保持关闭。

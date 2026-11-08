@@ -13,6 +13,8 @@ import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sh
 import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import { ProjectImportCommittedError } from '../../src/services/projectImportOutcome';
 import type { PreparedProjectImport, ProjectImportPreview } from '../../src/services/projectImportService';
+import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
+import type { NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 
 const fileMocks = vi.hoisted(() => ({
   deleteProjectData: vi.fn(async () => undefined),
@@ -23,6 +25,9 @@ const fileMocks = vi.hoisted(() => ({
   loadProjectsList: vi.fn(),
   registerProjectFolder: vi.fn(),
   registerProjectFolders: vi.fn(),
+  registerNativeProjectFolders: vi.fn(),
+  syncNativeAssetSearchRoots: vi.fn(async () => undefined),
+  claimNativeProjectDataDir: vi.fn(async () => 'native-project-dir'),
   saveProject: vi.fn(async (record: { id: string }) => record.id),
   buildProjectFolderName: vi.fn((name: string, projectId: string) => (
     `${name}-${projectId.replace(/-/g, '').slice(0, 8)}`
@@ -30,6 +35,38 @@ const fileMocks = vi.hoisted(() => ({
   renameProjectDataDir: vi.fn(async (): Promise<ProjectDataDirRenameResult | null> => null),
   revertProjectDataDirRename: vi.fn(async () => undefined),
   getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
+}));
+const nativeMocks = vi.hoisted(() => ({
+  projects: new Map<string, NativeProjectAggregate>(),
+  create: vi.fn(),
+  save: vi.fn(),
+}));
+vi.mock('../../src/services/projectModelRouter', () => ({
+  listProjectCatalog: async (): Promise<ProjectCatalogEntry[]> => [
+    ...((await fileMocks.loadProjectsList()) ?? []).map((project: Extract<ProjectCatalogEntry, { dataModel: 'legacy' }>['project']) => ({ dataModel: 'legacy' as const, project })),
+    ...[...nativeMocks.projects.values()].map(({ project, episodes, canvases }): ProjectCatalogEntry => ({ dataModel: 'native', project,
+      episodes, episodeIds: episodes.map((episode) => episode.id), canvasIds: canvases.map((canvas) => canvas.id) })),
+  ],
+  resolveProjectModel: async () => ({ dataModel: 'missing' as const }),
+}));
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/indexedDb/nativeProjectRepository')>('../../src/services/indexedDb/nativeProjectRepository'),
+  createNativeProject: nativeMocks.create,
+  saveNativeProjectView: nativeMocks.save,
+}));
+vi.mock('../../src/services/nativeProjectNavigation', () => ({
+  readNativeProjectView: async (projectId: string) => {
+    const aggregate = nativeMocks.projects.get(projectId);
+    if (!aggregate) return null;
+    const { project, canvas, episodes, content } = aggregate;
+    return { selection: { project, canvas, episodes, episode: null, changeRevision: 0,
+      context: { projectId, projectEpoch: project.epoch, episodeId: null, canvasId: canvas?.id ?? null,
+        canvasEpoch: canvas?.epoch ?? null, canvasRevision: canvas?.revision ?? null } }, content, episodeContent: null };
+  },
+}));
+vi.mock('../../src/services/storageService', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/storageService')>('../../src/services/storageService'),
+  restoreProjectRecord: async (record: unknown) => record,
 }));
 const pollMocks = vi.hoisted(() => ({
   resumePendingTasks: vi.fn(async () => undefined),
@@ -89,6 +126,7 @@ import type { AppState } from '../../src/store/useAppStore';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.stubGlobal('crypto', webcrypto);
   vi.stubGlobal('window', { dispatchEvent: vi.fn() });
   vi.stubGlobal('CustomEvent', class TestCustomEvent {
     type: string;
@@ -101,6 +139,29 @@ beforeEach(() => {
   useAppStore.setState({ projectLoadStatus: 'ready' });
   fileMocks.loadProjectData.mockReset();
   fileMocks.loadProjectsList.mockReset();
+  nativeMocks.projects.clear();
+  nativeMocks.create.mockReset().mockImplementation(async ({ projectId, canvasId, name }: { projectId: string; canvasId: string; name: string }) => {
+    const now = Date.now(), rootRef = `r2-${projectId.slice(3)}`, dataFolder = `project-${projectId}`;
+    const project = { id: projectId, name, kind: 'standalone' as const, epoch: 1, createdAt: now, updatedAt: now,
+      dataFolder, storageRootRef: rootRef, lastOpenedCanvasId: canvasId,
+      storageBindings: [{ rootRef, folderName: dataFolder, sourceRecordIds: [], source: 'project-managed' as const }] };
+    const canvas = { id: canvasId, projectId, episodeId: null, storageRootRef: rootRef, nodes: [], edges: [], groups: [],
+      epoch: 1, revision: 0, revisionScope: 'project' as const };
+    const aggregate: NativeProjectAggregate = { project, canvas, canvases: [canvas], episodes: [], episodeContents: [],
+      content: { projectId, revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 } } };
+    nativeMocks.projects.set(projectId, aggregate);
+    return aggregate;
+  });
+  nativeMocks.save.mockReset().mockImplementation(async (input: { projectId: string; canvasId: string;
+    expectedCanvasRevision: number; document: { nodes: unknown[]; edges: unknown[]; groups: unknown[] } }) => {
+    const aggregate = nativeMocks.projects.get(input.projectId);
+    if (!aggregate?.canvas || aggregate.canvas.id !== input.canvasId || aggregate.canvas.revision !== input.expectedCanvasRevision) throw new Error('canvas-version-conflict');
+    const canvas = { ...aggregate.canvas, ...input.document, revision: aggregate.canvas.revision + 1 };
+    nativeMocks.projects.set(input.projectId, { ...aggregate, canvas, canvases: [canvas] });
+    return { canvas, content: null, episodeContent: null, changeRevision: canvas.revision };
+  });
+  fileMocks.registerNativeProjectFolders.mockClear();
+  fileMocks.claimNativeProjectDataDir.mockClear();
   fileMocks.deleteProjectData.mockClear();
   fileMocks.deleteProjectDataDir.mockClear();
   fileMocks.saveProject.mockReset();
@@ -211,6 +272,29 @@ function refreshProjectInitializer() {
 
 describe('project bootstrap lifetime', () => {
   const storedProject = { id: 'boot-project', name: 'Stored', createdAt: 1, updatedAt: 1 };
+
+  it('keeps a newly created canvas when an earlier startup finishes late', async () => {
+    stubInitializationActions();
+    fileMocks.loadProjectsList.mockResolvedValue([storedProject]);
+    let finishDetection!: (recovering: boolean) => void;
+    recoveryMock.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishDetection = resolve; }));
+    const initializing = useAppStore.getState().initFromDb();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(recoveryMock).toHaveBeenCalledOnce();
+    const creating = useAppStore.getState().createProject('新建画布');
+    await vi.advanceTimersByTimeAsync(100);
+    const canvasId = await creating;
+    expect(canvasId).toBeDefined();
+    const nodes = [{ id: 'later-edit', type: 'ai-text' as const, position: { x: 0, y: 0 }, data: { type: 'ai-text' as const, label: '保留' } }];
+    useAppStore.setState({ nodes });
+    finishDetection(false);
+    await initializing;
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: canvasId, projectName: '新建画布', projectLoadStatus: 'ready', projectInitialized: true });
+    expect(useAppStore.getState().nodes).toBe(nodes);
+    expect(fileMocks.loadProjectData).not.toHaveBeenCalled();
+    await useAppStore.getState().initFromDb();
+    expect(useAppStore.getState().nodes).toBe(nodes);
+  });
 
   it('waits for native recovery detection before reopening the last project', async () => {
     stubInitializationActions();
@@ -470,38 +554,40 @@ describe('project creation', () => {
   });
 
   it('keeps a project persisted during cancellation discoverable without switching the startup page', async () => {
-    let finishSave: ((id: string) => void) | undefined;
+    let finishSave: (() => void) | undefined;
     let markSaveStarted: (() => void) | undefined;
     const saveStarted = new Promise<void>((resolve) => { markSaveStarted = resolve; });
-    fileMocks.saveProject.mockImplementation(() => {
+    const create = nativeMocks.create.getMockImplementation()!;
+    nativeMocks.create.mockImplementationOnce(async (input) => {
       markSaveStarted?.();
-      return new Promise<string>((resolve) => { finishSave = resolve; });
+      await new Promise<void>((resolve) => { finishSave = resolve; });
+      return create(input);
     });
     useAppStore.setState({ currentProjectId: null, projects: [] });
     const controller = new AbortController();
     const creating = useAppStore.getState().createProject('Cancelled', { signal: controller.signal });
     await saveStarted;
     controller.abort();
-    const id = fileMocks.saveProject.mock.calls[0]![0].id;
-    finishSave?.(id);
+    const { canvasId } = nativeMocks.create.mock.calls[0]![0];
+    finishSave?.();
     await expect(creating).resolves.toBeUndefined();
     expect(useAppStore.getState()).toMatchObject({ currentProjectId: null, isCreatingProject: false,
-      projects: [{ id, name: 'Cancelled' }] });
+      projects: [{ id: canvasId, name: 'Cancelled' }] });
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
     expect(metadataMocks.setLastActiveProjectId).not.toHaveBeenCalled();
   });
 
   it('saves the current project and persists the new project before switching', async () => {
-    let resolveNewProjectSave: ((projectId: string) => void) | undefined;
+    let resolveNewProjectSave: (() => void) | undefined;
     let markNewProjectSaveStarted: (() => void) | undefined;
     const newProjectSaveStarted = new Promise<void>((resolve) => {
       markNewProjectSaveStarted = resolve;
     });
-    fileMocks.saveProject.mockImplementation(async (record: { id: string }) => {
-      if (record.id === 'project-old') return record.id;
+    const create = nativeMocks.create.getMockImplementation()!;
+    nativeMocks.create.mockImplementationOnce(async (input) => {
       markNewProjectSaveStarted?.();
-      return new Promise<string>((resolve) => {
-        resolveNewProjectSave = resolve;
-      });
+      await new Promise<void>((resolve) => { resolveNewProjectSave = resolve; });
+      return create(input);
     });
     useAppStore.setState({
       projects: [{ id: 'project-old', name: 'Old project', createdAt: 1, updatedAt: 1 }],
@@ -520,25 +606,20 @@ describe('project creation', () => {
     const creating = useAppStore.getState().createProject('New project');
     await newProjectSaveStarted;
 
-    expect(fileMocks.saveProject).toHaveBeenCalledTimes(2);
+    expect(fileMocks.saveProject).toHaveBeenCalledTimes(1);
     expect(fileMocks.saveProject.mock.calls[0]?.[0]).toMatchObject({
       id: 'project-old',
       nodes: [{ id: 'unsaved-node' }],
     });
-    expect(fileMocks.saveProject.mock.calls[1]?.[0]).toMatchObject({
-      name: 'New project',
-      nodes: [],
-      edges: [],
-      groups: [],
-    });
+    expect(nativeMocks.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'New project' }));
     expect(useAppStore.getState().currentProjectId).toBe('project-old');
 
-    const newProjectId = fileMocks.saveProject.mock.calls[1]?.[0].id;
-    resolveNewProjectSave?.(newProjectId);
+    const newProjectId = nativeMocks.create.mock.calls[0]![0].canvasId;
+    resolveNewProjectSave?.();
     await expect(creating).resolves.toBe(newProjectId);
 
     expect(fileMocks.saveProject.mock.invocationCallOrder[0]).toBeLessThan(
-      fileMocks.saveProject.mock.invocationCallOrder[1],
+      nativeMocks.create.mock.invocationCallOrder[0],
     );
     expect(useAppStore.getState()).toMatchObject({
       currentProjectId: newProjectId,
@@ -575,6 +656,46 @@ describe('project creation', () => {
     expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['project-old']);
     expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['unsaved-node']);
     expect(showToast).toHaveBeenCalledWith('当前项目保存失败，已取消新建项目', 'error');
+  });
+
+  it('新建作品写入新仓储，保存后切换到旧项目再打开仍保留画布', async () => {
+    stubInitializationActions();
+    const old = { id: 'legacy-project', name: '旧项目', createdAt: 1, updatedAt: 1 };
+    fileMocks.loadProjectsList.mockResolvedValue([old]);
+    fileMocks.loadProjectData.mockResolvedValue({ ...old, nodes: [], edges: [], groups: [] });
+    useAppStore.setState({ projects: [old], currentProjectId: null });
+    const canvasId = await useAppStore.getState().createProject('新作品');
+    expect(canvasId).toMatch(/^c2-/);
+    expect(nativeMocks.create).toHaveBeenCalledOnce();
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+    const projectId = nativeMocks.create.mock.calls[0]![0].projectId;
+    useAppStore.setState({ nodes: [{ id: 'node', type: 'ai-text', position: { x: 0, y: 0 },
+      data: { label: '保留内容', type: 'ai-text' } }] });
+    expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe(canvasId);
+    expect(nativeMocks.save).toHaveBeenCalledWith(expect.objectContaining({ projectId, canvasId,
+      document: expect.objectContaining({ nodes: [expect.objectContaining({ id: 'node' })] }) }));
+    expect(await useAppStore.getState().switchProject(old.id)).toBe(old.id);
+    expect(await useAppStore.getState().switchProject(canvasId!)).toBe(canvasId);
+    expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['node']);
+  });
+
+  it('零集新剧集可以打开项目根，不会创建旧画布或删除作品', async () => {
+    stubInitializationActions();
+    const projectId = 'p2-11111111-1111-4111-8111-111111111111';
+    const rootRef = 'r2-11111111-1111-4111-8111-111111111111', dataFolder = `project-${projectId}`;
+    nativeMocks.projects.set(projectId, { project: { id: projectId, name: '零集剧集', kind: 'series', epoch: 1,
+      createdAt: 1, updatedAt: 1, dataFolder, storageRootRef: rootRef,
+      storageBindings: [{ rootRef, folderName: dataFolder, sourceRecordIds: [], source: 'project-managed' }] },
+      content: { projectId, script: '保留正文', revisions: { source: 0, script: 1, storyGraph: 0, assets: 0 } },
+      canvas: null, canvases: [], episodes: [], episodeContents: [] });
+    fileMocks.loadProjectsList.mockResolvedValue([]);
+    useAppStore.setState({ config: { ...useAppStore.getState().config, startupView: 'last-project' } });
+    await useAppStore.getState().initFromDb();
+    expect(useAppStore.getState()).toMatchObject({ currentProjectId: projectId, projectLoadStatus: 'ready',
+      projectExecutionContext: { kind: 'project', projectId }, nodes: [], edges: [], groups: [] });
+    expect(useAppStore.getState().projects[0].series?.script).toBe('保留正文');
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
+    expect(nativeMocks.create).not.toHaveBeenCalled();
   });
 });
 

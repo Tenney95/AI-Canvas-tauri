@@ -22,11 +22,21 @@ export function seriesOwnerId(
   return projects.find((item) => item.id === projectId)?.parentId ?? projectId;
 }
 
+/** 新普通项目的画布与作品身份不同；项目记忆始终归作品所有。 */
+export function projectMemoryOwnerId(projects: CanvasProject[], projectId: string): string {
+  const project = projects.find((item) => item.id === projectId) as (CanvasProject & { nativeView?: { projectId: string } }) | undefined;
+  return project?.nativeView?.projectId ?? seriesOwnerId(projects, projectId);
+}
+
 /** 某个剧集项目下的分集，按集号升序。 */
 export function listEpisodes(projects: CanvasProject[], seriesId: string): CanvasProject[] {
-  return projects
-    .filter((item) => item.parentId === seriesId)
-    .sort((a, b) => (a.episodeNo ?? 0) - (b.episodeNo ?? 0));
+  const episodes = projects.filter((item) => item.parentId === seriesId);
+  // 新模型的显示集号与排序独立，旧项目仍按旧集号排序。
+  const rank = (item: CanvasProject) => (item as CanvasProject & { nativeView?: { projectId: string; orderRank?: number } }).nativeView;
+  const native = episodes.every((item) => rank(item)?.projectId === seriesId && Number.isSafeInteger(rank(item)?.orderRank));
+  return episodes.sort((a, b) => native
+    ? rank(a)!.orderRank! - rank(b)!.orderRank!
+    : (a.episodeNo ?? 0) - (b.episodeNo ?? 0));
 }
 
 /** 项目标签与项目库只列顶层项目：普通项目和剧集项目，不列分集。 */

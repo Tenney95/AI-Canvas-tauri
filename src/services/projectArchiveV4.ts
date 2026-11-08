@@ -14,9 +14,11 @@ import { safeExchangePath, type ArchiveAssetDigest } from './projectExchangeDoma
 import { portableArchiveChat } from './projectArchiveValidation';
 import { serializeProjectArchiveEntries, type ProjectArchiveTextEntry } from './projectArchiveSerialization';
 import { sha256BytesHex } from './mediaDataUrl';
+import { validateArchiveVideoEditorProjects } from './videoEditorArchive';
+import { validateArchiveAssetMetadata } from './projectArchiveAssetMetadata';
 
 const encoder = new TextEncoder();
-const JSON_ENTRIES = [...PROJECT_ARCHIVE_V4_ENTRIES, 'history.json'] as const;
+const JSON_ENTRIES = [...PROJECT_ARCHIVE_V4_ENTRIES, 'history.json', 'video-editor.json', 'asset-metadata.json'] as const;
 const digestPattern = /^[a-f0-9]{64}$/;
 const fileToken = 'exchange-file:';
 const collectionKinds: ReadonlyArray<readonly [string, ProjectExchangeKindV2]> = [
@@ -249,7 +251,7 @@ export function projectArchivePayloadFromSnapshotV2(input: ProjectExchangeSnapsh
 
 function validateHistory(history: ProjectArchiveHistoryV4 | undefined, snapshot: ProjectExchangeSnapshotV2): void {
   if (!history) return;
-  const value = object(history, ['payload', 'workbenchTargets']), payload = object(value.payload, ['conversations', 'messages', 'memories']);
+  const value = object(history, ['payload', 'workbenchTargets', 'scopes']), payload = object(value.payload, ['conversations', 'messages', 'memories']);
   array(payload.conversations, 100_000); array(payload.messages, 100_000); array(payload.memories, 100_000);
   if ((payload.conversations as unknown[]).some((row) => Object.hasOwn(object(row), 'workbenchTarget'))) return fail('历史同时包含旧版和新版目标');
   const portable = JSON.parse(JSON.stringify(portableArchiveChat(history.payload))) as unknown;
@@ -268,6 +270,18 @@ function validateHistory(history: ProjectArchiveHistoryV4 | undefined, snapshot:
     if (row.source.unavailable) continue;
     if (!conversationIds.has(row.source.conversationId) || row.source.messageId
       && messages.get(row.source.messageId)?.conversationId !== row.source.conversationId) return fail('记忆来源闭包不完整');
+  }
+  const scoped = new Set<string>();
+  for (const item of value.scopes === undefined ? [] : array(value.scopes, 100_000)) {
+    const scope = object(item, ['kind', 'id', 'canvasId', 'retired']);
+    const id = identity(scope.id), canvasId = identity(scope.canvasId), key = JSON.stringify([scope.kind, id]);
+    const canvasPresent = scope.retired === true
+      ? snapshot.historicalTargets.some((entry) => entry.kind === 'canvas' && entry.id === canvasId && entry.projectId === snapshot.rootProjectId)
+      : scope.retired === undefined && snapshot.entities.some((entry) => entry.kind === 'canvas' && entry.id === canvasId);
+    if (scoped.has(key) || !canvasPresent
+      || (scope.kind === 'conversation' ? !conversationIds.has(id)
+        : scope.kind === 'memory' ? !history.payload.memories.some((row) => row.id === id) : true)) return fail('历史画布归属无效');
+    scoped.add(key);
   }
   const seen = new Set<string>();
   for (const item of array(value.workbenchTargets, 100_000)) {
@@ -333,6 +347,13 @@ export async function readProjectArchiveV4(texts: Record<string, string>, assets
   const canonical = projectArchivePayloadFromSnapshotV2(snapshot);
   const history = seen.has('history.json') ? parse('history.json') as ProjectArchiveHistoryV4 : undefined;
   validateHistory(history, snapshot);
+  const videoEditor = seen.has('video-editor.json') ? parse('video-editor.json') as ProjectArchivePayloadV4['videoEditor'] : undefined;
+  const assetMetadata = seen.has('asset-metadata.json') ? parse('asset-metadata.json') : undefined;
+  validateArchiveAssetMetadata(assetMetadata, files, snapshot.media);
+  validateArchiveVideoEditorProjects(videoEditor, canonical.canvases.map((canvas) => canvas.id), files,
+    canonical.project.storageRoots.find((root) => root.role === 'shared')?.id ?? canonical.project.storageRoots[0]?.id,
+    snapshot.historicalTargets.filter((entry) => entry.kind === 'canvas' && entry.state === 'retired'
+      && entry.projectId === snapshot.rootProjectId).map((entry) => entry.id));
   const byPath = new Map<string, ArchiveAssetDigest>();
   let assetBytes = 0;
   for (const asset of assets) {
@@ -349,7 +370,8 @@ export async function readProjectArchiveV4(texts: Record<string, string>, assets
     if (!asset || asset.path !== file.archivePath.slice('assets/'.length) || !media
       || asset.bytes !== media.bytes || asset.sha256 !== media.sha256) return fail('素材载荷与规范摘要不一致');
   }
-  return { manifest: manifest as unknown as ProjectArchiveManifestV4, payload: { ...canonical, exchange, ...(history ? { history } : {}) }, snapshot, files, assets };
+  return { manifest: manifest as unknown as ProjectArchiveManifestV4, payload: { ...canonical, exchange, ...(history ? { history } : {}),
+    ...(videoEditor ? { videoEditor } : {}), ...(assetMetadata ? { assetMetadata } : {}) }, snapshot, files, assets };
 }
 
 /** manifest 摘要取实际 Worker 产出的 UTF-8 字节，导出前再走同一接收端校验。 */
@@ -359,6 +381,8 @@ export async function serializeProjectArchiveV4(payload: ProjectArchivePayloadV4
     { path: 'project.json', value: payload.project }, { path: 'episodes.json', value: payload.episodes },
     { path: 'canvases.json', value: payload.canvases }, { path: 'contents.json', value: payload.contents },
     { path: 'exchange.json', value: payload.exchange }, ...(payload.history ? [{ path: 'history.json', value: payload.history }] : []),
+    ...(payload.videoEditor ? [{ path: 'video-editor.json', value: payload.videoEditor }] : []),
+    ...(payload.assetMetadata ? [{ path: 'asset-metadata.json', value: payload.assetMetadata }] : []),
   ]);
   const manifest: ProjectArchiveManifestV4 = { formatVersion: 4, ...meta, projectId: payload.project.id,
     projectName: payload.project.name, projectKind: payload.project.kind, episodeCount: payload.episodes.length,

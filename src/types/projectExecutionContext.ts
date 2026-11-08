@@ -3,13 +3,14 @@ import type { ProjectExpectedContext, ProjectExecutionTarget } from './project';
 
 export interface ProjectExecutionContextState {
   currentProjectId: string | null;
-  projects?: ReadonlyArray<{ id: string; parentId?: string; exchangeEpoch?: number; name?: string; episodeNo?: number; series?: unknown }>;
+  projects?: ReadonlyArray<{ id: string; parentId?: string; exchangeEpoch?: number; name?: string; episodeNo?: number; series?: unknown;
+    nativeView?: { projectId: string; episodeId: string | null; canvasId: string | null; episodeRevision?: number } }>;
   getCurrentRevision: () => number;
   projectLoadStatus?: string;
   switchingProjectName?: string | null;
   isCreatingProject?: boolean;
   isReturningToStartPage?: boolean;
-  /** 仅受信隔离宿主可供应；null表示暂不可用，不得降回旧模型。普通AppState未激活该数据源。 */
+  /** 新模型由项目 Store 或受信隔离宿主提供；null 表示暂不可用，不得降回旧模型。 */
   projectExecutionContext?: ProjectExpectedContext | null;
 }
 export interface ProjectExecutionBinding {

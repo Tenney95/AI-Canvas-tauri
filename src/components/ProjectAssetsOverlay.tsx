@@ -15,7 +15,9 @@ import {
   type AssetFileEntry,
   type FileCategory,
 } from '../services/fileService';
-import { loadProjectData } from '../services/storageService';
+import { loadProjectData, restoreProjectRecord } from '../services/storageService';
+import { readNativeProjectView } from '../services/nativeProjectNavigation';
+import type { NativeProjectViewBinding, NativeProjectViewItem } from '../store/nativeProjectView';
 import PopupCloseButton from './shared/PopupCloseButton';
 import ViewportImage from './shared/ViewportImage';
 import ResourceVideoPreview from './shared/ResourceVideoPreview';
@@ -32,7 +34,9 @@ const TABS: Array<{ key: FileCategory; label: string }> = [
 /** 资产条目（继承自 AssetFileEntry，附带所属分集 id）*/
 type EpisodeFile = AssetFileEntry & { episodeId: string };
 
-type EpisodeFileSource = Pick<CanvasProject, 'id' | 'updatedAt' | 'exchangeEpoch' | 'dataFolder'>;
+type EpisodeFileSource = Pick<CanvasProject, 'id' | 'updatedAt' | 'exchangeEpoch' | 'dataFolder'> & {
+  nativeView?: NativeProjectViewBinding;
+};
 type ConvertFileSrc = ReturnType<typeof getConvertFileSrc>;
 
 function filesFromNodes(nodes: ReadonlyArray<{ data: unknown }>, episodeId: string, convertFileSrc: ConvertFileSrc): EpisodeFile[] {
@@ -117,6 +121,7 @@ export default function ProjectAssetsOverlay({
   // 只把其他分集的真实保存版本作为读取依赖；当前分集的自动保存不重读其他集。
   const sourcesKey = JSON.stringify(episodes.filter((ep) => ep.id !== currentProjectId).map((ep) => ({
     id: ep.id, updatedAt: ep.updatedAt, exchangeEpoch: ep.exchangeEpoch, dataFolder: ep.dataFolder,
+    nativeView: (ep as Partial<NativeProjectViewItem>).nativeView,
   } satisfies EpisodeFileSource)));
   const episodeCache = useRef(new Map<string, { version: string; files: EpisodeFile[] }>());
   const cacheScope = useRef<{ ownerId: string | null; projectId: string | null } | undefined>(undefined);
@@ -144,19 +149,40 @@ export default function ProjectAssetsOverlay({
       // 仍按顺序读取，只缓存本次打开且版本未变的非当前分集。
       for (const source of sources) {
         if (loadRequestRef.current !== requestId) return;
-        const version = JSON.stringify(source);
-        const cached = episodeCache.current.get(source.id);
-        if (cached?.version === version) {
-          results.set(source.id, cached.files);
-          continue;
+        try {
+          let version = JSON.stringify(source);
+          let data: Awaited<ReturnType<typeof loadProjectData>>;
+          if (source.nativeView) {
+            const binding = source.nativeView;
+            if (binding.projectId !== ownerId || binding.canvasId !== source.id || !binding.episodeId) throw new Error('分集素材身份不匹配');
+            const loaded = await readNativeProjectView(binding.projectId, binding.canvasId);
+            if (loadRequestRef.current !== requestId) return;
+            const canvas = loaded?.selection.canvas, episode = loaded?.selection.episode;
+            if (!loaded || loaded.selection.project.id !== binding.projectId || !canvas || canvas.id !== binding.canvasId
+              || canvas.episodeId !== binding.episodeId || !episode || episode.id !== binding.episodeId
+              || source.exchangeEpoch !== undefined && episode.epoch !== source.exchangeEpoch) throw new Error('分集素材版本已变化');
+            version = JSON.stringify([source, canvas.epoch, canvas.revision]);
+            const cached = episodeCache.current.get(source.id);
+            if (cached?.version === version) { results.set(source.id, cached.files); continue; }
+            data = await restoreProjectRecord({ id: source.id, name: episode.name, createdAt: episode.createdAt,
+              updatedAt: episode.updatedAt, parentId: ownerId, dataFolder: source.dataFolder,
+              nodes: canvas.nodes, edges: canvas.edges, groups: canvas.groups });
+          } else {
+            const cached = episodeCache.current.get(source.id);
+            if (cached?.version === version) { results.set(source.id, cached.files); continue; }
+            data = await loadProjectData(source.id);
+          }
+          if (loadRequestRef.current !== requestId) return;
+          const epNodes = (data?.nodes as Array<{ data: unknown }> | undefined) ?? [];
+          const entries = filesFromNodes(epNodes, source.id, convertFileSrc);
+          // 读取失败不建立缓存基线，下次刷新或重开仍可重试。
+          if (data) episodeCache.current.set(source.id, { version, files: entries });
+          results.set(source.id, entries);
+        } catch {
+          if (loadRequestRef.current !== requestId) return;
+          results.set(source.id, []);
+          console.warn('[项目资产] 分集素材读取失败，稍后可重试');
         }
-        const data = await loadProjectData(source.id);
-        if (loadRequestRef.current !== requestId) return;
-        const epNodes = (data?.nodes as Array<{ data: unknown }> | undefined) ?? [];
-        const entries = filesFromNodes(epNodes, source.id, convertFileSrc);
-        // 读取失败不建立缓存基线，下次刷新或重开仍可重试。
-        if (data) episodeCache.current.set(source.id, { version, files: entries });
-        results.set(source.id, entries);
       }
       if (loadRequestRef.current === requestId) setLoaded({ ownerId, currentProjectId, files: results, convertFileSrc });
     } finally {

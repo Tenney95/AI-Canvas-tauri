@@ -128,6 +128,7 @@ interface AssetReferenceLike {
   imageAssetId?: string;
   imageRelativePath?: string;
   filePath?: string;
+  directorCaptureRelativePaths?: string[];
   storyboardOverrides?: (AssetReferenceLike | null)[];
   directorScene?: AssetReferenceLike;
   directorPrevisScene?: AssetReferenceLike;
@@ -644,8 +645,9 @@ export async function restoreProjectArchive(
     const relativeKey = (path: string) => path.replace(/\\/g, '/').split('/').filter((part) => part !== '.').join('/');
     const extractedAssets = new Set(unpacked.assetPaths.map(relativeKey));
     const missingAssetCount = new Set(records.flatMap(collectAssetReferences)
-      .flatMap((reference) => typeof reference.relativePath === 'string' && reference.relativePath
-        ? [relativeKey(reference.relativePath)] : [])
+      .flatMap((reference) => [reference.relativePath, reference.imageRelativePath,
+        ...(Array.isArray(reference.directorCaptureRelativePaths) ? reference.directorCaptureRelativePaths : [])]
+        .filter((path): path is string => typeof path === 'string' && !!path).map(relativeKey))
       .filter((path) => !extractedAssets.has(path))).size;
     let conversationCount = 0;
     let memoryCount = 0;

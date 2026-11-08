@@ -74,6 +74,8 @@ export function findSucceededDuplicateWrite(
     return context.checkpointReplayStepIds?.has(step.id) === true
       && call.effect === 'canvas_write'
       && !!checkpoint
+      && (!(task.executionContext ?? task.projectScope)?.modelGeneration
+        || !!checkpoint.runtimeEpoch && checkpoint.runtimeEpoch === (task.executionContext ?? task.projectScope)?.runtimeEpoch)
       && checkpoint.historyIndexAfter === context.historyIndex
       && checkpoint.revisionAfter === context.revision;
   });

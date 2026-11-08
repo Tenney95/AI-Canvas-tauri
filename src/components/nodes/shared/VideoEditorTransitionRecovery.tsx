@@ -1,9 +1,10 @@
-import { memo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useAppStore } from '../../../store/useAppStore';
 import { derivedNodePlacement, generateId } from '../../../store/store.utils';
 import { cancelCanvasDerivation, completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../../services/canvasDerivationGuard';
 import { completeMediaNodeTask, getMediaTaskSnapshot, subscribeMediaTasks, type MediaTaskSnapshot } from '../../../services/pollManager';
 import { recoverVideoEditorAiTransition } from '../../../services/videoEditorAiTransitionService';
+import type { NativeEditorMediaTask } from '../../../services/indexedDb/nativeEditorMediaTaskRepository';
 
 /** 仅选中的原锚点显示恢复入口；每次取回都由用户重新领取派生写入租约。 */
 function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId: string; anchorNodeId: string }) {
@@ -11,6 +12,43 @@ function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId:
     .filter((task) => task.projectId === projectId && task.mediaContext?.editorTransition?.anchorNodeId === anchorNodeId);
   const busy = useRef(false);
   const [recovering, setRecovering] = useState(false);
+  const context = useAppStore((state) => state.projectExecutionContext);
+  const native = context?.kind === 'canvas' && context.modelGeneration === 1 && context.canvasId === projectId;
+  const [nativeTasks, setNativeTasks] = useState<NativeEditorMediaTask[]>([]);
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let active = true;
+    if (native) void import('../../../services/nativeEditorTransitionService').then(({ listNativeEditorTransitions }) => listNativeEditorTransitions(anchorNodeId))
+      .then((rows) => { if (active) setNativeTasks(rows.filter((row) => !['delivered', 'failed', 'reviewed'].includes(row.status))); })
+      .catch(() => { if (active) setNativeTasks([]); });
+    return () => { active = false; };
+  }, [anchorNodeId, native, context, refresh]);
+  const recoverNative = async (task: NativeEditorMediaTask) => {
+    if (busy.current) return;
+    busy.current = true; setRecovering(true);
+    try {
+      const { recoverNativeEditorTransition } = await import('../../../services/nativeEditorTransitionService');
+      await recoverNativeEditorTransition(task.operationId, anchorNodeId);
+      useAppStore.getState().showToast('已取回到原剪辑工程，请重新打开剪辑器查看', 'success');
+    } catch (error) {
+      useAppStore.getState().showToast(error instanceof Error ? error.message : '转场取回失败，原任务保留', 'error');
+    } finally { busy.current = false; setRecovering(false); setRefresh((value) => value + 1); }
+  };
+  const reviewNative = async (task: NativeEditorMediaTask) => {
+    if (busy.current) return;
+    const { ask } = await import('@tauri-apps/plugin-dialog');
+    const confirmed = await ask(task.resultPath ? '仅保留已取回的独立素材，不插入原剪辑工程，并结束本次跟踪？'
+      : '请确认已在原平台核对任务。结束跟踪不会取消远端任务，原回执会保留。', { title: '结束转场跟踪', kind: 'warning', okLabel: '已核对，结束跟踪', cancelLabel: '继续保留' });
+    if (!confirmed) return;
+    busy.current = true; setRecovering(true);
+    try {
+      const { reviewNativeEditorTransition } = await import('../../../services/nativeEditorTransitionService');
+      await reviewNativeEditorTransition(task.operationId, anchorNodeId);
+      useAppStore.getState().showToast('已结束跟踪，原回执和已取回素材仍保留', 'info');
+    } catch (error) {
+      useAppStore.getState().showToast(error instanceof Error ? error.message : '未能结束跟踪', 'error');
+    } finally { busy.current = false; setRecovering(false); setRefresh((value) => value + 1); }
+  };
   const recover = async (task: MediaTaskSnapshot) => {
     if (busy.current) return;
     const store = useAppStore.getState();
@@ -47,8 +85,21 @@ function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId:
       setRecovering(false);
     }
   };
-  if (!tasks.length) return null;
+  if (!tasks.length && !native) return null;
   return <div className="ui-card nodrag nopan mt-2 flex flex-col gap-2 p-2">
+    {native && <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering}
+      onClick={() => setRefresh((value) => value + 1)}>检查转场任务</button>}
+    {native && nativeTasks.map((task) => <div key={task.operationId} className="flex flex-col gap-1">
+      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering || task.status !== 'submitted'}
+        onClick={() => { void recoverNative(task); }}>{recovering ? '正在取回原转场…' : '取回 AI 转场'}</button>
+      <span className="text-xs text-canvas-text-secondary">{task.status === 'submitted'
+        ? task.resultPath ? '视频素材已取回；原工程变化时可仅保留独立素材。' : '结果将保存到原剪辑工程；工程变化时保留结果，不覆盖编辑。'
+        : '提交状态待核对，请先到原平台查询原任务。'}</span>
+      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering}
+        onClick={() => { void reviewNative(task).catch((error) => useAppStore.getState().showToast(error instanceof Error ? error.message : '无法打开确认', 'error')); }}>
+        {task.resultPath ? '仅保留独立素材' : '已核对，结束跟踪'}
+      </button>
+    </div>)}
     {tasks.map((task, index) => {
       const unknown = !task.submitted || !task.taskId || task.mediaSubmissionUncertain || task.mediaRecoveryState === 'submit_unknown';
       return <div key={`${task.nodeId}:${task.attemptId}`} className="flex flex-col gap-1">

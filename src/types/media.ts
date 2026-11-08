@@ -6,6 +6,22 @@ export type MediaKind = 'image' | 'video' | 'audio';
 export type AudioGenerationPurpose = 'music' | 'speech';
 
 export type MediaDeliveryMode = 'chat' | 'canvas' | 'both';
+/** 新媒体回执只保存原目的地身份，不保存请求正文或凭据。 */
+export interface NativeMediaOrigin {
+  conversationId: string;
+  messageId: string;
+  agentTaskId?: string;
+  modelId?: string;
+  deliveryMode: MediaDeliveryMode;
+}
+export interface NativeMediaLocalResult { relativePath: string; bytes: number; sha256: string }
+export interface NativeApimartImageBatch {
+  version: 1;
+  requestedCount: number;
+  submissions: Array<{ id: string; state: 'prepared' | 'unknown' | 'submitted' | 'not-started' | 'failed'; taskIds: string[] }>;
+  tasks: Array<{ taskId: string; state: 'submitted' | 'completed' | 'failed'; results?: NativeMediaLocalResult[] }>;
+  uncertainAcknowledged?: true;
+}
 
 /** 用户显式选择或审批前锁定的媒体参数；不包含提示词、素材和凭据。 */
 export interface MediaGenerationParameters {

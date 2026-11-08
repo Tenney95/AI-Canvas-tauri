@@ -68,7 +68,7 @@ function session(id: string): PreparedProjectImport {
   return { id, stagingProjectId: `stage-${id}`, stagingFolder: id, archivePath: `${id}.aicanvas`, directory: id,
     manifest: { formatVersion: 2, exportedAt: 0, projectId: id, projectName: id },
     records: [{ id, name: id, nodes: [], edges: [], createdAt: 0, updatedAt: 0 }], chat: [], assets: [],
-    bundle: null, sourceState: null, disposed: false };
+    bundle: null, sourceState: null, nativeSource: {} as NonNullable<PreparedProjectImport['nativeSource']>, disposed: false };
 }
 async function mount() {
   container = node('root');
@@ -130,4 +130,18 @@ it('导入已提交后清理失败只提示，不误报业务导入失败', asyn
   expect(driver.toast).toHaveBeenCalledWith('项目已导入，暂存目录清理失败，可在存储健康中检查', 'info');
   expect(driver.onImported).toHaveBeenCalledOnce(); expect(driver.onClose).not.toHaveBeenCalled();
   expect(nodes(container).filter((value) => value.props.role === 'alert')).toHaveLength(0);
+});
+
+it('v4 零集项目包支持选择更新或新建，分集数量不会显示负数', async () => {
+  const prepared = session('零集剧集');
+  prepared.manifest = { ...prepared.manifest, formatVersion: 4, episodeCount: 0 };
+  prepared.records = [];
+  driver.prepare.mockResolvedValueOnce(prepared); driver.apply.mockResolvedValueOnce('new-project');
+  await mount(); await click('选择项目包');
+  expect(text(container)).toContain('零集剧集 · 0 个分集');
+  expect(text(container)).not.toContain('旧项目包没有可靠共同版本');
+  const radios = nodes(container).filter((value) => value.type === 'input' && value.props.type === 'radio');
+  expect(radios[1].props.disabled).not.toBe(true);
+  await click('导入为新项目');
+  expect(driver.apply).toHaveBeenCalledWith(prepared, null, {}, expect.anything());
 });

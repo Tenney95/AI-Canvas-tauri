@@ -162,7 +162,7 @@ fn validate_v4_entry_names<'a>(entries: impl IntoIterator<Item = (&'a str, &'a s
     if value.get("formatVersion").and_then(serde_json::Value::as_u64) != Some(4) { return Ok(()); }
     const REQUIRED: [&str; 6] = ["manifest.json", "project.json", "episodes.json", "canvases.json", "contents.json", "exchange.json"];
     if REQUIRED.iter().any(|name| !entries.contains_key(name))
-        || entries.keys().any(|name| !REQUIRED.contains(name) && *name != "history.json") {
+        || entries.keys().any(|name| !REQUIRED.contains(name) && *name != "history.json" && *name != "video-editor.json" && *name != "asset-metadata.json") {
         return Err("项目 v4 归档 JSON 条目缺失或包含未知正文".into());
     }
     Ok(())
@@ -200,6 +200,31 @@ fn begin_publication<R: Runtime>(app: &AppHandle<R>, operation_id: &str, output:
     Ok(ArchivePublicationPlan { directory, receipt, recheck: Some(Box::new(move || reauthorize_archive_path(&handle, &output, PathAccess::Write))) })
 }
 
+// 核对 prepared、ready 与实际输出的共同实现。调用方负责确定私有回执目录、持锁并提供路径授权。
+fn reconcile_publication<F>(directory: &Path, operation_id: &str, publication_ref: Option<&str>, authorize: F)
+    -> Result<ArchivePublicationStatus, String>
+where F: Fn(&str) -> Result<PathBuf, String> {
+    let unknown = |status| ArchivePublicationStatus { status, operation_id: operation_id.to_owned(), publication_ref: None,
+        archive_sha256: None, archive_bytes: None };
+    let prepared_path = publication_path(directory, operation_id, "prepared");
+    if !prepared_path.exists() { return Ok(unknown("missing")); }
+    let prepared = match read_publication_receipt(&prepared_path) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
+    if prepared.operation_id != operation_id || publication_ref.is_some_and(|reference| reference != prepared.publication_ref.as_str()) { return Ok(unknown("unknown")); }
+    let ready = match read_publication_receipt(&publication_path(directory, operation_id, "ready")) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
+    if ready.operation_id != operation_id || ready.publication_ref != prepared.publication_ref || ready.output_path != prepared.output_path { return Ok(unknown("unknown")); }
+    let Some(result) = &ready.result else { return Ok(unknown("unknown")); };
+    if result.operation_id.as_deref() != Some(operation_id) || result.publication_ref.as_deref() != Some(ready.publication_ref.as_str()) { return Ok(unknown("unknown")); }
+    let output = match authorize(&ready.output_path) { Ok(path) => path, Err(_) => return Ok(unknown("unknown")) };
+    if !plain_asset_metadata(&output)?.is_some_and(|metadata| metadata.is_file()) { return Ok(unknown("unknown")); }
+    let (bytes, digest) = match hash_file_with_limit(&output, &mut Vec::new(), MAX_EXPANDED_BYTES + MAX_TEXT_BYTES) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
+    if result.archive_sha256.as_ref() != Some(&digest) || result.archive_bytes != bytes { return Ok(unknown("unknown")); }
+    if authorize(&ready.output_path).ok().as_ref() != Some(&output) { return Ok(unknown("unknown")); }
+    let completed_path = publication_path(directory, operation_id, "published");
+    if !completed_path.exists() { write_publication_receipt(&completed_path, &ready)?; }
+    Ok(ArchivePublicationStatus { status: "published", operation_id: operation_id.to_owned(), publication_ref: Some(ready.publication_ref),
+        archive_sha256: Some(digest), archive_bytes: Some(bytes) })
+}
+
 /** 仅核对本操作私有回执绑定的原文件；不接受 Renderer 提交的新路径或重新发布。 */
 #[tauri::command]
 pub async fn verify_project_archive_publication<R: Runtime>(webview: Webview<R>, app: AppHandle<R>,
@@ -208,26 +233,9 @@ pub async fn verify_project_archive_publication<R: Runtime>(webview: Webview<R>,
     if webview.label() != "main" || !publication_id(&operation_id) { return Err(PUBLICATION_ERROR.into()); }
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = ARCHIVE_PUBLICATION_LOCK.lock().map_err(|_| PUBLICATION_ERROR)?;
-        let unknown = |status| ArchivePublicationStatus { status, operation_id: operation_id.clone(), publication_ref: None,
-            archive_sha256: None, archive_bytes: None };
-        let directory = match publication_directory(&app, false) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
-        let prepared_path = publication_path(&directory, &operation_id, "prepared");
-        if !prepared_path.exists() { return Ok(unknown("missing")); }
-        let prepared = match read_publication_receipt(&prepared_path) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
-        if prepared.operation_id != operation_id || publication_ref.as_ref().is_some_and(|reference| *reference != prepared.publication_ref) { return Ok(unknown("unknown")); }
-        let ready = match read_publication_receipt(&publication_path(&directory, &operation_id, "ready")) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
-        if ready.operation_id != operation_id || ready.publication_ref != prepared.publication_ref || ready.output_path != prepared.output_path { return Ok(unknown("unknown")); }
-        let Some(result) = &ready.result else { return Ok(unknown("unknown")); };
-        if result.operation_id.as_deref() != Some(operation_id.as_str()) || result.publication_ref.as_deref() != Some(ready.publication_ref.as_str()) { return Ok(unknown("unknown")); }
-        let output = match authorize_path(&app, &ready.output_path, PathAccess::Read) { Ok(path) => path, Err(_) => return Ok(unknown("unknown")) };
-        if !plain_asset_metadata(&output)?.is_some_and(|metadata| metadata.is_file()) { return Ok(unknown("unknown")); }
-        let (bytes, digest) = match hash_file_with_limit(&output, &mut Vec::new(), MAX_EXPANDED_BYTES + MAX_TEXT_BYTES) { Ok(value) => value, Err(_) => return Ok(unknown("unknown")) };
-        if result.archive_sha256.as_ref() != Some(&digest) || result.archive_bytes != bytes { return Ok(unknown("unknown")); }
-        if authorize_path(&app, &ready.output_path, PathAccess::Read).ok().as_ref() != Some(&output) { return Ok(unknown("unknown")); }
-        let completed_path = publication_path(&directory, &operation_id, "published");
-        if !completed_path.exists() { write_publication_receipt(&completed_path, &ready)?; }
-        Ok(ArchivePublicationStatus { status: "published", operation_id, publication_ref: Some(ready.publication_ref),
-            archive_sha256: Some(digest), archive_bytes: Some(bytes) })
+        let directory = match publication_directory(&app, false) { Ok(value) => value, Err(_) => return Ok(ArchivePublicationStatus {
+            status: "unknown", operation_id, publication_ref: None, archive_sha256: None, archive_bytes: None }) };
+        reconcile_publication(&directory, &operation_id, publication_ref.as_deref(), |path| authorize_path(&app, path, PathAccess::Read))
     }).await.map_err(|_| PUBLICATION_ERROR.to_string())?
 }
 
@@ -1090,12 +1098,119 @@ fn unpack_archive(archive_file: &Path, target_dir: &Path) -> Result<ProjectArchi
     })
 }
 
+/// 固定合成材料的原生容器演练。调用方必须先独占创建空的私有 fixture 目录；不接收 Renderer 数据。
+/// 这里验证 tar/素材与发布回执，不把占位 JSON 冒充各版本业务格式验收。
+#[cfg(all(windows, debug_assertions, feature = "project-model-fixture-host"))]
+pub(crate) fn run_fixture_archive_container_probe(root: &Path) -> Result<(), String> {
+    if fs::read_dir(root).map_err(|_| PUBLICATION_ERROR)?.next().is_some() { return Err(PUBLICATION_ERROR.into()); }
+    for version in 1..=4 {
+        let run = root.join(format!("v{version}"));
+        let left = run.join("left"); let right = run.join("right"); let imported = run.join("imported");
+        fs::create_dir(&run).map_err(|_| PUBLICATION_ERROR)?;
+        for dir in [&left, &right, &imported] { fs::create_dir(dir).map_err(|_| PUBLICATION_ERROR)?; }
+        for (dir, bytes) in [(&left, b"left synthetic".as_slice()), (&right, b"right synthetic".as_slice())] {
+            let mut file = fs::OpenOptions::new().write(true).create_new(true).open(dir.join("same.txt")).map_err(|_| PUBLICATION_ERROR)?;
+            file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|_| PUBLICATION_ERROR)?;
+        }
+        let roots = HashMap::from([("left".to_string(), left), ("right".to_string(), right)]);
+        let assets = [("left", b"left synthetic".as_slice()), ("right", b"right synthetic".as_slice())]
+            .into_iter().map(|(name, bytes)| ArchiveAssetDigest { path: format!("{name}/same.txt"), bytes: bytes.len() as u64,
+                sha256: format!("{:x}", Sha256::digest(bytes)), source_root_ref: Some(name.into()), source_relative_path: Some("same.txt".into()) })
+            .collect::<Vec<_>>();
+        let mut expected = HashMap::from([("manifest.json".to_string(), format!("{{\"formatVersion\":{version}}}")),
+            ("project.json".to_string(), "{\"synthetic\":true}".to_string())]);
+        if version == 4 {
+            for name in ["episodes.json", "canvases.json", "contents.json", "exchange.json"] { expected.insert(name.into(), "{}".into()); }
+        }
+        let entries = expected.iter().map(|(path, content)| ProjectArchiveTextEntry { path: path.clone(), content: content.clone() }).collect();
+        let output = run.join("synthetic.aicanvas"); let operation_id = format!("fixture-v{version}");
+        let publication_ref = "a".repeat(64);
+        let receipt = ArchivePublicationReceipt { operation_id: operation_id.clone(), publication_ref: publication_ref.clone(),
+            output_path: output.to_str().ok_or(PUBLICATION_ERROR)?.to_owned(), result: None };
+        write_publication_receipt(&publication_path(&run, &operation_id, "prepared"), &receipt)?;
+        let result = pack_archive_with_publication(entries, None, output.clone(), Some(assets.clone()), MAX_ARCHIVE_ENTRIES,
+            Some(ArchivePublicationPlan { directory: run.clone(), receipt, recheck: None }), &roots)?;
+        // 模拟发布完成但回执未确认；保留原回执，再用正式恢复核心核同一文件，不重复打包。
+        let ready = read_publication_receipt(&publication_path(&run, &operation_id, "ready"))?;
+        let published_path = publication_path(&run, &operation_id, "published");
+        fs::rename(&published_path, run.join("published-captured.json")).map_err(|_| PUBLICATION_ERROR)?;
+        let recovered = reconcile_publication(&run, &operation_id, Some(&publication_ref), |path| {
+            if Path::new(path) != output.as_path() { return Err(PUBLICATION_ERROR.into()); }
+            Ok(output.clone())
+        })?;
+        let published = read_publication_receipt(&published_path)?;
+        let (_, actual_digest) = hash_file_with_limit(&output, &mut Vec::new(), MAX_EXPANDED_BYTES + MAX_TEXT_BYTES)?;
+        if recovered.status != "published" || recovered.operation_id != operation_id
+            || recovered.publication_ref.as_deref() != Some(publication_ref.as_str())
+            || recovered.archive_sha256.as_ref() != Some(&actual_digest)
+            || ready.result.as_ref().and_then(|value| value.archive_sha256.as_ref()) != Some(&actual_digest)
+            || published.result.as_ref().and_then(|value| value.archive_sha256.as_ref()) != Some(&actual_digest)
+            || result.archive_sha256.as_ref() != Some(&actual_digest) { return Err(PUBLICATION_ERROR.into()); }
+        let unpacked = unpack_archive(&output, &imported)?;
+        let mut actual_assets = unpacked.assets; actual_assets.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut portable = assets.iter().map(ArchiveAssetDigest::portable).collect::<Vec<_>>(); portable.sort_by(|a, b| a.path.cmp(&b.path));
+        if unpacked.texts != expected || actual_assets != portable
+            || fs::read(imported.join("left/same.txt")).map_err(|_| PUBLICATION_ERROR)? != b"left synthetic"
+            || fs::read(imported.join("right/same.txt")).map_err(|_| PUBLICATION_ERROR)? != b"right synthetic" { return Err(PUBLICATION_ERROR.into()); }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(all(windows, debug_assertions, feature = "project-model-fixture-host"))]
+    #[test]
+    fn fixture_archive_container_probe_uses_only_an_empty_isolated_root() {
+        let fixture = Fixture::new();
+        run_fixture_archive_container_probe(&fixture.0).unwrap();
+        // 已有结果不能复用或覆盖；失败时材料保留供人工核对。
+        assert!(run_fixture_archive_container_probe(&fixture.0).is_err());
+        assert!(fixture.0.join("v4/synthetic.aicanvas").is_file());
+    }
+
+    #[test]
+    fn publication_recovery_binds_original_operation_receipt_and_file() {
+        let fixture = Fixture::new();
+        let operation_id = "recovery-example";
+        let output = fixture.0.join("project.aicanvas");
+        let receipt = ArchivePublicationReceipt { operation_id: operation_id.into(), publication_ref: "a".repeat(64),
+            output_path: output.to_str().unwrap().into(), result: None };
+        write_publication_receipt(&publication_path(&fixture.0, operation_id, "prepared"), &receipt).unwrap();
+        let original = pack_archive_with_publication(
+            vec![ProjectArchiveTextEntry { path: "manifest.json".into(), content: "{}".into() }],
+            None, output.clone(), Some(vec![]), MAX_ARCHIVE_ENTRIES,
+            Some(ArchivePublicationPlan { directory: fixture.0.clone(), receipt, recheck: None }), &HashMap::new(),
+        ).unwrap();
+        let published = publication_path(&fixture.0, operation_id, "published");
+        fs::rename(&published, fixture.0.join("published-preserved.json")).unwrap();
+        let authorize = |path: &str| {
+            if Path::new(path) != output.as_path() { return Err(PUBLICATION_ERROR.into()); }
+            Ok(output.clone())
+        };
+        assert_eq!(reconcile_publication(&fixture.0, operation_id, Some("wrong"), authorize).unwrap().status, "unknown");
+        assert!(!published.exists());
+        let authorizations = std::cell::Cell::new(0);
+        let revoked = |path: &str| {
+            authorizations.set(authorizations.get() + 1);
+            if authorizations.get() != 1 || Path::new(path) != output.as_path() { return Err(PUBLICATION_ERROR.into()); }
+            Ok(output.clone())
+        };
+        assert_eq!(reconcile_publication(&fixture.0, operation_id, original.publication_ref.as_deref(), revoked).unwrap().status, "unknown");
+        assert!(!published.exists());
+        let recovered = reconcile_publication(&fixture.0, operation_id, original.publication_ref.as_deref(), authorize).unwrap();
+        assert_eq!(recovered.status, "published");
+        assert_eq!(recovered.archive_sha256, original.archive_sha256);
+        assert!(published.is_file());
+        assert_eq!(reconcile_publication(&fixture.0, operation_id, original.publication_ref.as_deref(), authorize).unwrap().status, "published");
+        fs::write(&output, b"changed synthetic file").unwrap();
+        assert_eq!(reconcile_publication(&fixture.0, operation_id, original.publication_ref.as_deref(), authorize).unwrap().status, "unknown");
+        assert!(fixture.0.join("published-preserved.json").is_file());
+    }
 
     #[test]
     fn import_aliases_require_same_verified_path_and_preserve_first_spelling() {
@@ -1152,6 +1267,10 @@ mod tests {
     fn v4_text_allowlist_does_not_expand_the_legacy_archive_contract() {
         let valid = [("manifest.json", "{\"formatVersion\":4}"), ("project.json", "{}"), ("episodes.json", "[]"),
             ("canvases.json", "[]"), ("contents.json", "{}"), ("exchange.json", "{}")];
+        let mut with_editor = valid.to_vec(); with_editor.push(("video-editor.json", "{}"));
+        validate_v4_entry_names(with_editor).unwrap();
+        let mut with_metadata = valid.to_vec(); with_metadata.push(("asset-metadata.json", "{}"));
+        validate_v4_entry_names(with_metadata).unwrap();
         validate_v4_entry_names(valid).unwrap();
         let mut unknown = valid.to_vec(); unknown.push(("chat.json", "{}"));
         assert!(validate_v4_entry_names(unknown).is_err());

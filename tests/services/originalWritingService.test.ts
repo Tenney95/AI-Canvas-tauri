@@ -73,6 +73,34 @@ beforeEach(() => {
 });
 
 describe('原文主窗口编辑会话', () => {
+  it('新普通画布首次保存原文后可安全交接为同作品首集，并支持重新载入', async () => {
+    const standalone = { id: 'canvas', name: '作品', createdAt: 1, updatedAt: 1, exchangeEpoch: 1,
+      dataFolder: 'project-root', nativeView: { projectId: 'project', canvasId: 'canvas', episodeId: null } };
+    mocks.state.currentProjectId = 'canvas';
+    mocks.state.projects = [standalone];
+    mocks.updateSeries.mockImplementationOnce(async (info: { originalWork: ProjectOriginalWork }, options?: { assertCurrent?: () => void }) => {
+      options?.assertCurrent?.();
+      mocks.state.projects = [
+        { id: 'project', name: '作品', createdAt: 1, updatedAt: 2, exchangeEpoch: 2, dataFolder: 'project-root',
+          series: { originalWork: info.originalWork }, nativeView: { projectId: 'project', canvasId: null, episodeId: null } } as CanvasProject,
+        { id: 'canvas', parentId: 'project', name: '第 1 集', createdAt: 1, updatedAt: 2, dataFolder: 'project-root',
+          nativeView: { projectId: 'project', canvasId: 'canvas', episodeId: 'episode' } } as CanvasProject,
+      ];
+      notify();
+      return true;
+    });
+    const editor = createOriginalWritingSession({ seriesId: 'canvas' });
+    const opened = documentResult(await editor.handle({ type: 'original_open' }));
+    editor.flush({ documentId: opened.documentId, sequence: 1, content: '新的原文' });
+    const saved = documentResult(await editor.handle({ type: 'original_save' }));
+    expect(saved).toMatchObject({ content: '新的原文', isNew: false });
+    expect(mocks.create).toHaveBeenCalledOnce();
+    mocks.read.mockResolvedValue(textSnapshot('新的原文', 'created'));
+    expect(documentResult(await editor.handle({ type: 'original_reload' })).content).toBe('新的原文');
+    editor.discard();
+    expect(documentResult(await editor.handle({ type: 'original_open' })).content).toBe('新的原文');
+    editor.dispose();
+  });
   it.each([
     { fileName: '旧原文.txt', relativePath: 'old.txt' },
     { fileName: '旧原文.md', relativePath: 'old.md' },

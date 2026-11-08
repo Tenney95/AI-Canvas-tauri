@@ -299,7 +299,7 @@ export default function AssetImagePreview({ files: sourceFiles, initialPath, pro
       setSavedTags({ key, tags: nextTags });
       onTagsSaved?.(file, nextTags);
       setDraft(null); draftRef.current = false; setLeaveRequest(null); setOperation({ key, message: '已保存', busy: false });
-      const references = await resolveAssetImageReferences(record.references, controller.signal).catch(() => record.references.map((reference) => ({ ...reference, url: null })));
+      const references = await resolveAssetImageReferences(record.references, controller.signal, record.assetId).catch(() => record.references.map((reference) => ({ ...reference, url: null })));
       if (activeKeyRef.current !== key) return;
       setMetadata({ key, history, saved: { ...saved, record, references, warning: null }, error: false });
     } catch {

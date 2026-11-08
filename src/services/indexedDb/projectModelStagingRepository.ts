@@ -182,6 +182,16 @@ async function buildRows(projection: LegacyProjectProjection, generation: number
   return rows;
 }
 
+/** 用已封印备份的投影重建原计划；journal 自带的 token/摘要不能作为其真实性证明。 */
+export async function assertProjectModelStagingRollbackPlan(journal: ProjectModelStagingJournal,
+  projection: LegacyProjectProjection): Promise<void> {
+  const rows = await buildRows(projection, journal.generation, journal.operationId);
+  const manifest = await digest(JSON.stringify(rows.map(({ store, key, sha256 }) => ({ store, key, sha256 }))));
+  if (manifest !== journal.manifestDigest || projectModelSourceToken(rows) !== projectModelSourceToken(journal.rows)) {
+    throw error('rollback-plan-mismatch');
+  }
+}
+
 async function assertSource(tx: IDBTransaction, journal: ProjectModelStagingJournal): Promise<void> {
   try {
     for (const expected of journal.sourceStores) {
@@ -256,6 +266,10 @@ export interface PrepareProjectModelStagingInput {
   projection?: LegacyProjectProjection;
   now?: number;
 }
+
+/** 外层核验原生封印后传入；撤销事务须复核同一个 journal，不能使用过期快照。 */
+export type ProjectModelStagingRollbackExpectation = Pick<ProjectModelStagingJournal,
+  'sequence' | 'generation' | 'stage' | 'nextRow' | 'sourceDigest' | 'sourceSchemaVersion' | 'backupOperationId' | 'backupManifestDigest' | 'manifestDigest' | 'rows'>;
 
 export function createProjectModelStagingRepository(database: IDBDatabase) {
   assertFixture(database);
@@ -417,28 +431,51 @@ export function createProjectModelStagingRepository(database: IDBDatabase) {
       } catch (failure) { await failJournal(input.operationId, failure); throw failure; }
     },
     /** 仅撤销本次未激活暂存；不回写旧作品、不回滚任务/回执/队列。 */
-    async rollback(input: { operationId: string; signal?: AbortSignal }): Promise<ProjectModelStagingJournal> {
+    async rollback(input: { operationId: string; expected: ProjectModelStagingRollbackExpectation; signal?: AbortSignal }): Promise<ProjectModelStagingJournal> {
       if (!identifier(input.operationId)) throw error('invalid-operation');
       return transaction(database, scope, 'readwrite', async (tx) => {
         const store = tx.objectStore(journalStore), item: unknown = await request(store.get(input.operationId));
         assertJournal(item, input.operationId);
-        if (await request(tx.objectStore('metadata').get(PROJECT_MODEL_BUSINESS_FIXTURE_KEY)) !== undefined) throw error('business-session-present');
-        if (item.stage === 'rolled_back') return item;
+        if (!input.expected || item.sequence !== input.expected.sequence || item.generation !== input.expected.generation
+          || item.stage !== input.expected.stage || item.nextRow !== input.expected.nextRow
+          || item.sourceSchemaVersion !== input.expected.sourceSchemaVersion || item.sourceDigest !== input.expected.sourceDigest
+          || item.backupOperationId !== input.expected.backupOperationId || item.backupManifestDigest !== input.expected.backupManifestDigest
+          || item.manifestDigest !== input.expected.manifestDigest || projectModelSourceToken(item.rows) !== projectModelSourceToken(input.expected.rows)) {
+          throw error('staging-conflict');
+        }
+        const metadata = tx.objectStore('metadata');
+        if (await request(metadata.get(PROJECT_MODEL_BUSINESS_FIXTURE_KEY)) !== undefined) throw error('business-session-present');
+        if (await request(metadata.get(PROJECT_MODEL_ACTIVE_MARKER_KEY)) !== undefined) throw error('active-model-present');
+        if (item.stage === 'rolled_back') {
+          // 已完成不代表此后不会出现同代异常数据；重试只能在原代仍为空时确认。
+          for (const name of PROJECT_MODEL_GENERATION_STORES) {
+            if ((await cursorRows(tx.objectStore(name))).some(({ value }) =>
+              (value as Record<string, unknown>).generation === item.generation)) throw error('staging-conflict');
+          }
+          return item;
+        }
         await assertFrozen(tx, item);
         for (const name of PROJECT_MODEL_GENERATION_STORES) {
-          for (const { key, value } of await cursorRows(tx.objectStore(name))) {
+          // nextRow 与对应批次在同一事务提交，已提交行必须一个不少、不多且内容完整。
+          const expected = new Map(item.rows.slice(0, item.nextRow).filter((row) => row.store === name)
+            .map((row) => [projectModelSourceToken(row.key), row.token]));
+          const actual = (await cursorRows(tx.objectStore(name))).filter(({ value }) =>
+            (value as Record<string, unknown>).generation === item.generation);
+          if (actual.length !== expected.size) throw error('staging-conflict');
+          for (const { key, value } of actual) {
             const row = value as Record<string, unknown>;
-            if (row.generation === item.generation) {
-              if (row.operationId !== item.operationId) throw error('staging-conflict');
-              await request(tx.objectStore(name).delete(key));
+            // 不能仅凭代次和 operationId 清除未知或受损行；它们仍可能是唯一证据。
+            if (row.operationId !== item.operationId || expected.get(projectModelSourceToken(key)) !== projectModelSourceToken(value)) {
+              throw error('staging-conflict');
             }
+            await request(tx.objectStore(name).delete(key));
           }
         }
         const others = await cursorRows(store);
         if (others.some(({ value }) => (value as ProjectModelStagingJournal).operationId !== item.operationId
           && (value as ProjectModelStagingJournal).stage !== 'rolled_back')) throw error('freeze-conflict');
         const updated: ProjectModelStagingJournal = { ...item, stage: 'rolled_back', sequence: item.sequence + 1, updatedAt: Date.now() };
-        await request(store.put(updated)); await request(tx.objectStore('metadata').delete(PROJECT_MODEL_SOURCE_FREEZE_KEY)); return updated;
+        await request(store.put(updated)); await request(metadata.delete(PROJECT_MODEL_SOURCE_FREEZE_KEY)); return updated;
       }, input.signal);
     },
   };

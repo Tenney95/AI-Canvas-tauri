@@ -28,6 +28,7 @@ import {
 } from '../../src/services/projectModelStaging';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
 import { PROJECT_MODEL_SOURCE_FREEZE_KEY } from '../../src/types/projectModelJournal';
+import { projectModelSourceToken } from '../../src/services/indexedDb/projectModelStagingRepository';
 
 const profileId = 'staging-test';
 const databaseName = 'ai-canvas-model-fixture-' + profileId;
@@ -208,6 +209,43 @@ it('撤销仅删除本操作暂存，保留其他项目、后到付费回执和�
   } finally { current.close(); }
   expect(queue).toBe(JSON.stringify([receipt])); expect(operations.get('rollback-one')!.has('complete.json')).toBe(true);
   expect((await rollbackProjectModelFixtureStaging(input('rollback-one'))).sequence).toBe(rolledBack.sequence);
+});
+
+it('撤销前原生封印与 journal 备份身份不一致时保留暂存与冻结标记', async () => {
+  await stageProjectModelFixture(input('rollback-binding'));
+  const database = await databaseNow();
+  try {
+    const journal = (await read<ProjectModelStagingJournal>(database, 'projectModelMigrations', 'rollback-binding'))!;
+    await write(database, 'projectModelMigrations', [{ ...journal, backupManifestDigest: '0'.repeat(64) }]);
+  } finally { database.close(); }
+  await expect(rollbackProjectModelFixtureStaging(input('rollback-binding'))).rejects.toMatchObject({ code: 'backup-mismatch' });
+  const after = await databaseNow();
+  try {
+    expect(await read(after, 'projectRoots', [1, 'p'])).toBeDefined();
+    expect(await read(after, 'metadata', PROJECT_MODEL_SOURCE_FREEZE_KEY)).toBeDefined();
+    expect((await read<ProjectModelStagingJournal>(after, 'projectModelMigrations', 'rollback-binding'))?.stage).toBe('ready');
+  } finally { after.close(); }
+});
+
+it('即使 journal 与当前行被同时篡改，也不能脱离已封印备份的原计划撤销', async () => {
+  await stageProjectModelFixture(input('rollback-plan'));
+  const database = await databaseNow();
+  let altered: Record<string, unknown> | undefined;
+  try {
+    const journal = (await read<ProjectModelStagingJournal>(database, 'projectModelMigrations', 'rollback-plan'))!;
+    const index = journal.rows.findIndex((row) => row.store === 'projectRoots');
+    altered = { ...journal.rows[index].value, name: '未知的替换内容' };
+    const rows = journal.rows.map((row, position) => position === index
+      ? { ...row, value: altered, token: projectModelSourceToken(altered) } : row);
+    await write(database, 'projectRoots', [altered]);
+    await write(database, 'projectModelMigrations', [{ ...journal, rows }]);
+  } finally { database.close(); }
+  await expect(rollbackProjectModelFixtureStaging(input('rollback-plan'))).rejects.toMatchObject({ code: 'backup-mismatch' });
+  const after = await databaseNow();
+  try {
+    expect(await read(after, 'projectRoots', [1, 'p'])).toEqual(altered);
+    expect(await read(after, 'metadata', PROJECT_MODEL_SOURCE_FREEZE_KEY)).toBeDefined();
+  } finally { after.close(); }
 });
 
 it('不接受相同前缀但与原生租约profile不同的目标库', async () => {

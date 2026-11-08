@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { useT } from '../../i18n';
 import { useAppStore } from '../../store/useAppStore';
-import { seriesOwnerId } from '../../store/store.utils';
+import { projectMemoryOwnerId } from '../../store/store.utils';
 import { isTauriEnv } from '../../services/fs/core';
 import { getSharedProjectPrefix, parseSharedProjectCode, sharedStorageErrorMessage } from '../../services/fs/sharedAssetStorage';
 import { confirmAction } from '../../services/confirmDialog';
@@ -32,7 +32,7 @@ function currentOwnerId(): string | null {
   const state = useAppStore.getState();
   return state.projectInitialized && state.projectLoadStatus === 'ready' && state.currentProjectId
     && state.projects.some((project) => project.id === state.currentProjectId)
-    ? seriesOwnerId(state.projects, state.currentProjectId) : null;
+    ? projectMemoryOwnerId(state.projects, state.currentProjectId) : null;
 }
 
 /** 绑定、校验与显式同步始终作用于当前项目所属 owner。 */
@@ -46,7 +46,7 @@ export default function SharedProjectBindingDialog({ localOwnerId, ownerName, au
   const resetStage = resetStatus?.stage ?? 'idle';
   const activeOwner = useAppStore((state) => state.projectInitialized && state.projectLoadStatus === 'ready' && state.currentProjectId
     && state.projects.some((project) => project.id === state.currentProjectId)
-    ? seriesOwnerId(state.projects, state.currentProjectId) : null);
+    ? projectMemoryOwnerId(state.projects, state.currentProjectId) : null);
   const [chosenConnectionId, setChosenConnectionId] = useState<string>();
   const [mode, setMode] = useState<'create' | 'join'>('create');
   const [joinCode, setJoinCode] = useState('');

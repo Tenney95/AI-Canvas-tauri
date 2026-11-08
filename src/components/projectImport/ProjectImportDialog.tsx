@@ -5,6 +5,8 @@ import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../../store/useAppStore';
 import { closePreparedProjectImport, projectImportMediaPreview, type PreparedProjectImport, type ProjectImportPreview } from '../../services/projectImportService';
 import { resolveProjectMerge, type ProjectMergeChange, type ProjectMergeSide } from '../../services/projectMergeService';
+import { resolveProjectMergeV2 } from '../../services/projectMergeV2Service';
+import { NATIVE_EDITOR_CHOICE_KEY } from '../../services/videoEditorArchive';
 import type { ProjectExchangeValue } from '../../types/projectExchange';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
@@ -40,7 +42,7 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
   const transfer = useRef<{ id?: string; controller: AbortController } | null>(null);
   const [progress, setProgress] = useState<number | null>(null), [canCancel, setCanCancel] = useState(false);
   const [independent, setIndependent] = useState(false), [conflictsOnly, setConflictsOnly] = useState(true), [query, setQuery] = useState(''), [page, setPage] = useState(0);
-  const candidates = projects.filter((project) => !project.parentId);
+  const candidates = projects.filter((project) => !project.parentId && (session?.manifest.formatVersion !== 4 || 'nativeView' in project));
   useEffect(() => {
     let active = true, unlisten: (() => void) | undefined;
     void listen<{ taskId: string; transferredBytes: number; totalBytes: number }>('file-transfer-progress', (event) => {
@@ -51,10 +53,12 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
   const filtered = useMemo(() => preview?.plan.changes.filter((change) => (!conflictsOnly || change.conflict)
     && `${change.label} ${change.field} ${labels[change.kind]}`.toLowerCase().includes(query.toLowerCase())) ?? [], [preview, conflictsOnly, query]);
   const conflicts = preview?.plan.changes.filter((change) => change.conflict) ?? [];
-  const unresolved = conflicts.filter((change) => !choices[change.id]).length;
+  const editorChoiceRequired = !!preview?.nativeUpdate?.editorChoiceRequired;
+  const unresolved = conflicts.filter((change) => !choices[change.id]).length
+    + (editorChoiceRequired && !choices[NATIVE_EDITOR_CHOICE_KEY] ? 1 : 0);
   const dependencyError = useMemo(() => {
     if (!preview || unresolved || preview.plan.alreadyApplied) return '';
-    try { resolveProjectMerge(preview.plan, choices); return ''; } catch (cause) { return cause instanceof Error ? cause.message : t('合并依赖不完整'); }
+    try { if (preview.nativeUpdate) resolveProjectMergeV2(preview.nativeUpdate.plan, choices); else resolveProjectMerge(preview.plan, choices); return ''; } catch (cause) { return cause instanceof Error ? cause.message : t('合并依赖不完整'); }
   }, [preview, choices, unresolved, t]);
   const cleanupSession = async (prepared: PreparedProjectImport) => {
     pendingCleanup.current.add(prepared);
@@ -85,6 +89,7 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
       if (baselineRef.current) await cleanupSession(baselineRef.current);
       baselineRef.current = null; setBaseline(null); setBaseConfirmed(false);
       sessionRef.current = next; setSession(next); setPreview(null); setChoices({});
+      if (next.manifest.formatVersion === 4) setMode('new');
       next = null;
     } catch (cause) {
       if (next) await cleanupSession(next).catch(() => undefined);
@@ -102,6 +107,7 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
     try {
       await retryCleanup();
       next = await prepare(); if (!next) return;
+      if (next.manifest.formatVersion === 4) throw new Error(t('新结构项目包暂不能作为旧项目更新的共同版本'));
       if (baselineRef.current) await cleanupSession(baselineRef.current);
       baselineRef.current = next; setBaseline(next); setBaseConfirmed(false); setPreview(null);
       next = null;
@@ -133,25 +139,37 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
     <div className="min-h-0 space-y-3 overflow-y-auto p-3" aria-busy={busy}>
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className="ui-btn ui-btn--secondary" disabled={busy} onClick={() => void chooseFile()}>{t(session ? '重新选择项目包' : '选择项目包')}</button>
-        {session && <span className="min-w-0 break-all text-xs text-canvas-text-secondary">{session.manifest.projectName} · {session.records.length - 1} {t('个分集')} · {session.assets.length} {t('个素材')} · v{session.manifest.formatVersion}</span>}
+        {session && <span className="min-w-0 break-all text-xs text-canvas-text-secondary">{session.manifest.projectName} · {session.manifest.episodeCount ?? Math.max(0, session.records.length - 1)} {t('个分集')} · {session.assets.length} {t('个素材')} · v{session.manifest.formatVersion}</span>}
       </div>
       {session && <>
         <fieldset disabled={busy} className="flex flex-wrap gap-3 text-sm"><legend className="sr-only">{t('导入方式')}</legend>
           <label className="flex items-center gap-2"><input type="radio" name="project-import-mode" checked={mode === 'new'} onChange={() => { setMode('new'); setPreview(null); }} />{t('导入为新项目')}</label>
           <label className="flex items-center gap-2"><input type="radio" name="project-import-mode" checked={mode === 'update'} onChange={() => setMode('update')} />{t('更新已有项目')}</label>
         </fieldset>
+        {session.manifest.formatVersion === 4 && mode === 'update' && <p className="text-xs text-canvas-text-secondary">{t('更新前会核对共同来源并保存恢复点；素材、分集和剪辑工程的冲突需要明确选择。')}</p>}
+        {session.nativeSourceError && mode === 'new' && <p role="alert" className="ui-alert ui-alert--danger text-xs">{t(session.nativeSourceError)}</p>}
         {mode === 'new' ? <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={independent} disabled={busy} onChange={(event) => setIndependent(event.target.checked)} />{t('作为独立副本，开始新的协作来源')}</label>
           : <div className="flex flex-wrap items-center gap-2"><Select aria-label={t('要更新的项目')} value={targetId} disabled={busy} onChange={(value) => { setTargetId(value); setPreview(null); setChoices({}); }} className="min-w-0 flex-1">
             <option value="">{t('请选择目标项目或整部剧')}</option>{candidates.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.id.slice(0, 8)}</option>)}
           </Select><button type="button" className="ui-btn ui-btn--secondary" disabled={busy || !targetId} onClick={() => void runCompare()}>{t(preview ? '重新对比' : '对比改动')}</button></div>}
-        {!session.bundle && <div className="space-y-2"><p className="ui-alert text-xs">{t('旧项目包没有可靠共同版本。更新时每项差异都需要人工选择；请仔细核对分集与删除项。')}</p>
+        {session.manifest.formatVersion !== 4 && !session.bundle && <div className="space-y-2"><p className="ui-alert text-xs">{t('旧项目包没有可靠共同版本。更新时每项差异都需要人工选择；请仔细核对分集与删除项。')}</p>
           {mode === 'update' && <><button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy} onClick={() => void chooseBaseline()}>{t('补充最初交接的项目包')}</button>
             {baseline && <label className="flex items-start gap-2 text-xs"><input type="checkbox" checked={baseConfirmed} disabled={busy} onChange={(event) => { setBaseConfirmed(event.target.checked); setPreview(null); }} />
               <span>{baseline.manifest.projectName} · {t('我确认这是双方开始修改前的共同版本；选择错误会影响自动合并和删除判断。')}</span></label>}</>}
         </div>}
         {preview && mode === 'update' && <>
+          {editorChoiceRequired && <fieldset disabled={busy} className="ui-card space-y-2 p-3 text-xs">
+            <legend className="font-medium text-canvas-text">{t('选择剪辑工程版本')}</legend>
+            <p className="text-canvas-text-secondary">{t('剪辑工程没有可核验的共同版本。请选择保留本机全部工程，或替换为项目包中的全部工程；更新前的工程会保存到恢复点；被删除画布的本机工程会作为历史保留。')}</p>
+            <label className="flex items-center gap-2"><input type="radio" name="native-editor-update-choice"
+              checked={choices[NATIVE_EDITOR_CHOICE_KEY] === 'local'} onChange={() => setChoices((current) => ({ ...current, [NATIVE_EDITOR_CHOICE_KEY]: 'local' }))} />
+              {t('保留本机剪辑工程')} · {preview.nativeUpdate?.expected.editorRecords?.length ?? 0}</label>
+            <label className="flex items-center gap-2"><input type="radio" name="native-editor-update-choice"
+              checked={choices[NATIVE_EDITOR_CHOICE_KEY] === 'incoming'} onChange={() => setChoices((current) => ({ ...current, [NATIVE_EDITOR_CHOICE_KEY]: 'incoming' }))} />
+              {t('使用项目包剪辑工程')} · {preview.nativeUpdate?.source.payload.videoEditor?.records.length ?? 0}</label>
+          </fieldset>}
           <p className="text-xs text-canvas-text-secondary" role="status">{preview.plan.alreadyApplied ? t('该版本已处理；重复导入不会覆盖之后的本机修改。')
-            : t('可自动合并 {auto} 项，冲突 {conflicts} 项，尚有 {remaining} 项未选择', { auto: preview.plan.changes.length - conflicts.length, conflicts: conflicts.length, remaining: unresolved })}
+            : t('可自动合并 {auto} 项，冲突 {conflicts} 项，尚有 {remaining} 项未选择', { auto: preview.plan.changes.length - conflicts.length, conflicts: conflicts.length + (editorChoiceRequired ? 1 : 0), remaining: unresolved })}
             {preview.baseStatus === 'externalConfirmed' ? ` · ${t('使用已确认的原始交接包作为共同版本')}` : preview.baseStatus !== 'found' && !preview.plan.alreadyApplied && ` · ${t('共同版本不可用，采用人工对照')}`}</p>
           {!preview.plan.alreadyApplied && <>
             <div className="flex flex-wrap items-center gap-2">
@@ -176,7 +194,7 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
           <label className="flex items-center gap-2"><input type="checkbox" checked={appendChat} onChange={(event) => setAppendChat(event.target.checked)} />{t('聊天记录')}</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={appendMemories} onChange={(event) => setAppendMemories(event.target.checked)} />{t('项目记忆')}</label>
         </fieldset>
-        {mode === 'update' && <p className="text-xs text-canvas-text-secondary">{t('应用后保留原项目及其目录，保存更新前恢复点。素材发布到新目录，原文件不覆盖。')}</p>}
+        {mode === 'update' && <p className="text-xs text-canvas-text-secondary">{t(preview?.nativeUpdate ? '应用前保存恢复点；新项目更新暂不支持追加聊天或项目记忆。' : '应用后保留原项目及其目录，保存更新前恢复点。素材发布到新目录，原文件不覆盖。')}</p>}
       </>}
       {(error || dependencyError) && <p role="alert" className="ui-alert ui-alert--danger whitespace-pre-wrap text-xs">{error || `${dependencyError}。${t('请取消“只看冲突”，调整关联节点、分组、连线或素材的选择。')}`}</p>}
     </div>
@@ -187,7 +205,7 @@ export default function ProjectImportDialog({ onClose, onImported }: { onClose: 
         if (current?.id) void invoke('cancel_file_transfer', { taskId: current.id }).catch(() => undefined);
       }}>{t('取消导入')}</button>}
       <button type="button" className="ui-btn ui-btn--secondary" disabled={busy} onClick={() => void close()}>{t('取消')}</button>
-      <button type="button" className="ui-btn ui-btn--primary" disabled={busy || !session || mode === 'update' && (!preview || unresolved > 0 || !!dependencyError || preview.plan.alreadyApplied)} onClick={() => void runApply()}>{t(mode === 'update' ? '应用更新' : '导入为新项目')}</button>
+      <button type="button" className="ui-btn ui-btn--primary" disabled={busy || !session || mode === 'new' && !session.nativeSource || mode === 'update' && (!preview || unresolved > 0 || !!dependencyError || preview.plan.alreadyApplied)} onClick={() => void runApply()}>{t(mode === 'update' ? '应用更新' : '导入为新项目')}</button>
     </footer>
   </ModalOverlay>;
 }

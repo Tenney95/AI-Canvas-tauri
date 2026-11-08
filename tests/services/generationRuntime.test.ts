@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   pauseMediaTask: vi.fn(),
   updatePendingTask: vi.fn(),
   persistMessage: vi.fn(),
+  persistNativeMediaOrigin: vi.fn(),
   storeState: {
     config: {
       generalModels: [] as GeneralModelConfig[],
@@ -88,6 +89,7 @@ vi.mock('../../src/services/pollManager', () => ({
   updatePendingTask: mocks.updatePendingTask,
 }));
 vi.mock('../../src/services/chat/chatHistoryService', () => ({ persistMessage: mocks.persistMessage }));
+vi.mock('../../src/services/nativeMediaOriginPersistence', () => ({ persistNativeMediaOrigin: mocks.persistNativeMediaOrigin }));
 
 import {
   MEDIA_PERSIST_FAILED_MESSAGE,
@@ -117,6 +119,7 @@ beforeEach(() => {
   mocks.getMediaTaskSnapshot.mockReturnValue([]);
   mocks.getMediaTaskReceipt.mockReset();
   mocks.storeState.currentProjectId = 'project-1';
+  Object.assign(mocks.storeState, { projectExecutionContext: undefined });
   mocks.storeState.projects = [];
   mocks.storeState.customStyles = [];
   mocks.storeState.workflows = [];
@@ -141,6 +144,14 @@ beforeEach(() => {
 });
 
 describe('media generation cancellation', () => {
+  it('未适配的直接图片模型及缺少原目的地的新对话请求在提交前失败关闭', async () => {
+    Object.assign(mocks.storeState, { projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
+      projectId: 'p', projectEpoch: 0, canvasId: 'project-1', canvasEpoch: 0, canvasRevision: 0, episodeId: null, runtimeEpoch: 'run' } });
+    await expect(runMediaGeneration({ kind: 'image', prompt: '猫', modelRef: 'openai/image-model', deliveryMode: 'chat' }, 'project-1'))
+      .rejects.toThrow('未提交请求');
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(mocks.bindMediaTaskContext).not.toHaveBeenCalled();
+  });
   it.each(['image', 'video'] as const)('passes %s download access and cancellation to persistence without adding it to the artifact', async (kind) => {
     const mediaDownloadAccess = { providerConfigId: 'relay-image', origin: 'https://relayonapi.com', auth: { type: 'bearer' as const } };
     (kind === 'image' ? mocks.generateImage : mocks.generateVideo).mockResolvedValueOnce({ url: 'https://relayonapi.com/result', mediaDownloadAccess });

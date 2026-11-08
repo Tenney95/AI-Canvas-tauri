@@ -105,21 +105,20 @@ async function generateFlowMusic(
     ? AbortSignal.any([nodeSignal, externalSignal])
     : nodeSignal ?? externalSignal;
 
-  if (params.nodeId && projectId) {
-    receipt = savePendingTask({
-      nodeId: params.nodeId,
-      projectId,
-      nodeType: 'ai-audio',
-      provider: 'apimart',
-      providerConfigId: 'apimart',
-      taskId: '',
-      taskType: 'apimart-flow-music',
-      audioTaskStage: initialStage,
-      submitted: false,
-    });
-  }
-
   try {
+    if (params.nodeId && projectId) {
+      receipt = savePendingTask({
+        nodeId: params.nodeId,
+        projectId,
+        nodeType: 'ai-audio',
+        provider: 'apimart',
+        providerConfigId: 'apimart',
+        taskId: '',
+        taskType: 'apimart-flow-music',
+        audioTaskStage: initialStage,
+        submitted: false,
+      });
+    }
     let generatedLyrics: { title: string; lyrics: string } | undefined;
     if (shouldGenerateLyrics) {
       signal?.throwIfAborted();
@@ -211,7 +210,7 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
   providerId: 'apimart',
   capabilities: ['image', 'video', 'audio'],
 
-  async generateImage({ params, prompt, imageUrls, requestedCount, signal }) {
+  async generateImage({ params, prompt, imageUrls, requestedCount, signal, beforeSubmit }) {
     const { apiKey, baseUrl } = resolveApimartConnection();
     const imageSize = params.imageSize ?? '2K';
     const aspectRatio = params.aspectRatio ?? '1:1';
@@ -229,6 +228,7 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
       signal,
       params.imageQuality,
       params.imageBackground,
+      beforeSubmit,
     );
   },
 
@@ -243,7 +243,7 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
       signal?.throwIfAborted();
       if (beforeSubmit) await beforeSubmit();
       signal?.throwIfAborted();
-      return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId, {}, signal);
+      return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId, {}, signal, beforeSubmit);
     }
     if (
       !referenceInput.prompt.trim()
@@ -359,7 +359,7 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
       videoUrls,
       audioUrls,
       operation: referenceInput.operation,
-    }, signal);
+    }, signal, beforeSubmit);
   },
 
   generateAudio({ params, prompt, referenceAudioUrls, signal }) {

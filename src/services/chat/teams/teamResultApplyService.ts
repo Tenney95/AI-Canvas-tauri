@@ -4,6 +4,8 @@ import type { TeamApplicationReceipt, TeamEpisodeTarget, TeamInvocationContext }
 import { useAppStore } from '../../../store/useAppStore';
 import { isWorkbenchTeamTaskInScope, readEpisodeWorkspaceScope } from '../../episodeWorkspaceScope';
 import { loadProjectData } from '../../fileService';
+import { readNativeProjectView } from '../../nativeProjectNavigation';
+import type { NativeProjectViewItem } from '../../../store/nativeProjectView';
 import { episodeTeamSourceSnapshot } from '../../seriesCreativeService';
 import { assertEpisodeEditorReady, prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
 import { executeRegisteredAgentToolCall } from '../agentToolExecution';
@@ -282,9 +284,20 @@ export async function reconcileTeamResult(taskId: string): Promise<string> {
   if (!receipt || !['pending', 'restore-pending'].includes(receipt.status)) return '当前没有待核对的成果保存';
   const allowSameSeries = task.teamRun!.source === 'script-workbench';
   const inMemory = readTargetValue(target, allowSameSeries);
-  const record = await loadProjectData(target.episodeId);
-  if (!record || record.parentId !== target.seriesId) throw new Error('无法核对原分集保存记录');
-  const persisted = target.field === 'outline' ? record.episodeOutline ?? '' : record.episodeScript ?? '';
+  const view = useAppStore.getState().projects.find((item) => item.id === target.episodeId) as NativeProjectViewItem | undefined;
+  let persisted: string;
+  if (view?.nativeView) {
+    if (view.nativeView.projectId !== target.seriesId || view.nativeView.canvasId !== target.episodeId || !view.nativeView.episodeId) {
+      throw new Error('无法核对原分集保存记录');
+    }
+    const native = await readNativeProjectView(target.seriesId, target.episodeId);
+    if (!native?.episodeContent || native.selection.episode?.id !== view.nativeView.episodeId) throw new Error('无法核对原分集保存记录');
+    persisted = target.field === 'outline' ? native.episodeContent.outline ?? '' : native.episodeContent.script ?? '';
+  } else {
+    const record = await loadProjectData(target.episodeId);
+    if (!record || record.parentId !== target.seriesId) throw new Error('无法核对原分集保存记录');
+    persisted = target.field === 'outline' ? record.episodeOutline ?? '' : record.episodeScript ?? '';
+  }
   const [memoryHash, savedHash] = await Promise.all([hashTeamText(inMemory), hashTeamText(persisted)]);
   assertCurrent();
   if (readTargetValue(target, allowSameSeries) !== inMemory) throw new Error('核对期间分集内容发生变化，请重新核对');

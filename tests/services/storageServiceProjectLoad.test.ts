@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   exists: vi.fn(async (_path: string) => true),
   getProjectDataDir: vi.fn(async (_projectId: string): Promise<string | null> => '/project/data'),
+  getNativeProjectOwner: vi.fn((_projectId: string): string | undefined => undefined),
   identifyAsset: vi.fn(),
   resolveIndexedAssetPath: vi.fn(async (_assetId: string): Promise<string | null> => null),
   scanDirectoryFiles: vi.fn(),
@@ -28,6 +29,8 @@ vi.mock('../../src/services/fs/core', () => ({
   buildNodeFileName: (label: string | undefined, ext: string, fallback: string) => `${label || fallback}${ext}`,
   getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
   getProjectDataDir: mocks.getProjectDataDir,
+  getNativeProjectOwner: mocks.getNativeProjectOwner,
+  getMimeType: (extension: string) => extension === 'png' ? 'image/png' : 'application/octet-stream',
   joinPath: (...parts: string[]) => parts.join('/'),
   notifyProjectDiskChanged: mocks.notifyProjectDiskChanged,
   resolveUniqueDestPath: mocks.resolveUniqueDestPath,
@@ -39,6 +42,7 @@ vi.mock('../../src/services/fs/assetLibrary', () => ({
 vi.mock('../../src/services/fs/assetIndex', () => ({
   identifyAsset: mocks.identifyAsset,
   resolveIndexedAssetPath: mocks.resolveIndexedAssetPath,
+  getRelativeAssetPath: (path: string, root: string) => path.startsWith(`${root}/`) ? path.slice(root.length + 1) : undefined,
 }));
 
 import {
@@ -50,7 +54,7 @@ import {
   saveProjectToDb,
   setLastActiveProjectId,
 } from '../../src/services/indexedDbService';
-import { loadProjectData, saveProject, type ProjectSaveData } from '../../src/services/storageService';
+import { loadProjectData, restoreProjectRecord, saveProject, serializeProjectRecord, type ProjectSaveData } from '../../src/services/storageService';
 import { normalizeDramaAssetLibrary, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary, type DramaScene } from '../../src/types/dramaAssets';
 import { captureExchangeSnapshot, materializeExchangeSnapshot } from '../../src/services/projectExchangeDomain';
 import { resolveDramaAssetImageRef } from '../../src/services/dramaAssetPrompt';
@@ -92,6 +96,7 @@ describe('故事图正式资料的保存与加载', () => {
 
 describe('project loading tolerates asset recovery failures', () => {
   beforeEach(() => {
+    mocks.getNativeProjectOwner.mockReturnValue(undefined);
     mocks.exists.mockResolvedValue(true);
     mocks.getProjectDataDir.mockResolvedValue('/project/data');
     mocks.identifyAsset.mockRejectedValue(new Error('asset index unavailable'));
@@ -102,6 +107,45 @@ describe('project loading tolerates asset recovery failures', () => {
     mocks.mkdir.mockResolvedValue(undefined);
     mocks.stat.mockReset();
     mocks.readDir.mockReset();
+  });
+
+  it('新结构将本地展示地址保存为相对素材引用并恢复同一画布的地址', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'n1', type: 'ai-image', data: { type: 'ai-image', assetId: 'asset-1', relativePath: 'image.png',
+        filePath: '/project/data/image.png', imageUrl: 'asset:///project/data/image.png', output: 'asset:///project/data/image.png' } }] };
+    const persisted = await serializeProjectRecord(record);
+    expect(persisted.nodes).toMatchObject([{ data: { assetId: 'asset-1', relativePath: 'image.png', imageUrl: 'image.png', output: 'image.png' } }]);
+    expect((persisted.nodes as Array<{ data: object }>)[0].data).not.toHaveProperty('filePath');
+    const restored = await restoreProjectRecord(persisted);
+    expect(restored.nodes).toMatchObject([{ data: { filePath: '/project/data/image.png',
+      imageUrl: 'asset:///project/data/image.png', output: 'asset:///project/data/image.png' } }]);
+  });
+
+  it('新结构素材缺失时不把相对路径当网络地址，仍保留身份供文件恢复', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    mocks.exists.mockResolvedValue(false);
+    const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'n1', type: 'ai-image', data: { type: 'ai-image', assetId: 'asset-1', relativePath: 'image.png',
+        imageUrl: 'image.png', output: 'image.png' } }] };
+    const restored = await restoreProjectRecord(record);
+    expect(restored.nodes).toMatchObject([{ data: { assetId: 'asset-1', relativePath: 'image.png', imageUrl: undefined, output: undefined } }]);
+    const saved = await serializeProjectRecord(restored);
+    expect(saved.nodes).toMatchObject([{ data: { assetId: 'asset-1', relativePath: 'image.png', output: 'image.png' } }]);
+  });
+
+  it('新结构风格参考图仅用模型允许的字段持久化，并恢复可用文件', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    mocks.identifyAsset.mockResolvedValue({ assetId: 'style-asset', relativePath: 'style.png' });
+    const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [], nodes: [],
+      settings: { visualStyle: { styleReference: { filePath: '/project/data/style.png', imageUrl: 'asset:///project/data/style.png',
+        fileName: 'style.png', enabled: true } } } };
+    const persisted = await serializeProjectRecord(record);
+    expect(persisted.settings?.visualStyle?.styleReference).toEqual({ filePath: 'style.png', imageUrl: 'style.png',
+      fileName: 'style.png', enabled: true });
+    const restored = await restoreProjectRecord(persisted);
+    expect(restored.settings?.visualStyle?.styleReference).toEqual({ filePath: '/project/data/style.png',
+      imageUrl: 'asset:///project/data/style.png', fileName: 'style.png', enabled: true });
   });
 
   it('全局来源标记经重复归一化及 JSON 往返保留，明确改绑项目后不复活旧来源', () => {

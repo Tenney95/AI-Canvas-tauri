@@ -1,7 +1,7 @@
 /** P5 原生 IPC 适配回归源；不触碰真实文件或原生服务，尚未运行。 */
 import { webcrypto } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createNativeProjectModelArchivePort } from '../../src/services/projectModelArchiveNativePort';
+import { createBoundProjectModelArchiveExportPort, createNativeProjectModelArchivePort } from '../../src/services/projectModelArchiveNativePort';
 import { buildProjectExchangeSnapshotV2 } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
 import type { ProjectArchiveBusinessV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
@@ -60,6 +60,48 @@ beforeEach(() => {
   });
 });
 describe('P5 native file projection', () => {
+  it('新项目导出只使用原生绑定的主根和逻辑子根，不接受其他目录', async () => {
+    const { capture } = await setup();
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    const rootA = 'r2-00000000-0000-4000-8000-000000000002', rootB = 'r2-00000000-0000-4000-8000-000000000003';
+    capture.aggregate.project.id = projectId;
+    capture.aggregate.project.dataFolder = `project-${projectId}`;
+    capture.aggregate.project.storageRootRef = rootA;
+    capture.aggregate.project.storageBindings = [
+      { rootRef: rootA, folderName: `project-${projectId}`, sourceRecordIds: [], source: 'project-managed' },
+      { rootRef: rootB, folderName: `project-${projectId}/roots/${rootB}`, sourceRecordIds: [], source: 'project-managed' },
+    ];
+    capture.exchange!.identities.find((item) => item.sourceId === 'A')!.localId = rootA;
+    capture.exchange!.identities.find((item) => item.sourceId === 'B')!.localId = rootB;
+    native.existing.add('authorized/main'); native.existing.add('authorized/secondary');
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return 'authorized/main';
+      if (command === 'resolve_native_project_media_subroot') return 'authorized/secondary';
+      if (command === 'inspect_project_archive_assets') return [
+        ...(args.includeImportPaths as string[]).map((path) => ({ path, bytes: 3, sha256: hash })),
+        ...(args.assetsDir === 'authorized/main' ? [{ path: '.ai-canvas-native-project.json', bytes: 3, sha256: hash },
+          { path: 'roots/unfinished/retained.png', bytes: 3, sha256: hash }] : []),
+      ];
+      throw new Error('unexpected command');
+    });
+    const port = createBoundProjectModelArchiveExportPort(projectId, 'output');
+    const result = await port.inspectAssets(capture);
+    expect(result.map((item) => item.rootRef)).toEqual([rootA, rootB]);
+    expect(native.invoke).toHaveBeenCalledWith('resolve_native_project_media_subroot', { projectId, rootRef: rootB, create: false });
+    capture.aggregate.project.storageBindings[1].folderName = `project-${projectId}/roots/../../outside`;
+    await expect(port.inspectAssets(capture)).rejects.toThrow('素材根不属于该新项目');
+  });
+
+  it('扫描结果缺少当前正文引用时禁止打包', async () => {
+    const { capture } = await setup();
+    capture.exchange = null;
+    capture.aggregate.project.storageBindings = capture.aggregate.project.storageBindings.slice(0, 1);
+    capture.aggregate.content.originalWork = { relativePath: 'missing.png' } as NonNullable<typeof capture.aggregate.content.originalWork>;
+    native.existing.add('fixture/primary');
+    native.invoke.mockResolvedValue([]);
+    await expect(createNativeProjectModelArchivePort(database, session).inspectAssets(capture)).rejects.toThrow('项目引用的素材缺失');
+  });
+
   it('capture冻结原物理包映射；重启忽略新incomingFolder，逐root核原child后只补未发布root', async () => {
     const { operation, source } = await setup();
     const original = createNativeProjectModelArchivePort(database, session, { incomingFolder: 'unpacked/original/assets' });

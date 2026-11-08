@@ -10,11 +10,54 @@ import { parseProjectExpectedContext } from '../projectExecutionContext';
 import { withRelocatedMedia } from './mediaRelocations';
 import { openDB, STORE_METADATA, STORE_PROJECTS, STORE_VIDEO_EDITOR_PROJECTS } from './schema';
 import { withLegacyProjectWrite } from './legacyProjectWriteGuard';
+import { isNativeCanvasId } from './nativeProjectRepository';
+import { resolveProjectModel } from '../projectModelRouter';
+import { prepareNativeVideoEditorRecord, restoreNativeVideoEditorRecord } from '../nativeVideoEditorMedia';
+import { assertNativeVideoEditorContext, deleteNativeVideoEditorProject, listNativeVideoEditorProjectsForProject,
+  readNativeRetiredCanvasOwner, readNativeVideoEditorProject, writeNativeVideoEditorProject } from './nativeVideoEditorRepository';
+
+const nativeEditorWrites: Map<string, Promise<void>> = import.meta.hot?.data.nativeEditorWrites ?? new Map();
+if (import.meta.hot) import.meta.hot.data.nativeEditorWrites = nativeEditorWrites;
+async function serializeNativeEditorWrite(id: string, write: () => Promise<void>): Promise<void> {
+  const previous = nativeEditorWrites.get(id) ?? Promise.resolve();
+  const pending = previous.catch(() => undefined).then(write);
+  nativeEditorWrites.set(id, pending);
+  try { await pending; } finally { if (nativeEditorWrites.get(id) === pending) nativeEditorWrites.delete(id); }
+}
 
 function captureExpected(context: Readonly<CanvasContext> | undefined): CanvasContext {
   const expected = parseProjectExpectedContext(context);
-  if (expected.kind !== 'canvas' || expected.modelGeneration !== 0) throw new Error('剪辑工程缺少有效的旧画布上下文');
+  if (expected.kind !== 'canvas' || expected.modelGeneration > 1) throw new Error('剪辑工程缺少有效的画布上下文');
   return expected;
+}
+
+/** 未带上下文的旧只读入口也须核对权威来源，不能凭 ID 前缀回退。 */
+async function nativeReadScope(canvasId: string): Promise<{ context?: CanvasContext; retiredOwner?: string } | null> {
+  if (!isNativeCanvasId(canvasId)) return null;
+  const source = await resolveProjectModel(canvasId);
+  if (source.dataModel === 'legacy') return null;
+  if (source.dataModel === 'native') {
+    const canvas = source.aggregate.canvases.find((item) => item.id === canvasId);
+    if (!canvas) throw new Error('剪辑原画布不存在');
+    return { context: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: source.aggregate.project.id,
+      projectEpoch: source.aggregate.project.epoch, canvasId, canvasEpoch: canvas.epoch,
+      episodeId: canvas.episodeId, canvasRevision: canvas.revision } };
+  }
+  const owner = await readNativeRetiredCanvasOwner(canvasId);
+  if (!owner) return null;
+  // 已删除旧身份和新墓碑同时存在时不能猜测来源。
+  const db = await openDB();
+  const occupied = await new Promise<boolean>((resolve, reject) => {
+    const tx = db.transaction([STORE_PROJECTS, STORE_METADATA], 'readonly');
+    let legacy = false;
+    const project = tx.objectStore(STORE_PROJECTS).getKey(canvasId), deleted = tx.objectStore(STORE_METADATA).getKey(`project-deleted:${canvasId}`);
+    project.onsuccess = () => { legacy ||= project.result !== undefined; };
+    deleted.onsuccess = () => { legacy ||= deleted.result !== undefined; };
+    tx.oncomplete = () => resolve(legacy);
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('无法核对旧画布身份'));
+  });
+  if (occupied) throw new Error('新旧画布身份冲突');
+  return { retiredOwner: owner };
 }
 
 function withCurrentCanvas(transaction: IDBTransaction, projectId: string, context: Readonly<CanvasContext> | undefined,
@@ -40,8 +83,13 @@ function withCurrentCanvas(transaction: IDBTransaction, projectId: string, conte
 }
 
 /** 独立窗口只有持久化代际，不继承主窗口Store或运行时授权。文件effect前仍需此只读预检。 */
-export async function assertVideoEditorProjectContext(projectId: string, context: Readonly<CanvasContext> | undefined): Promise<void> {
+export async function assertVideoEditorProjectContext(projectId: string, context: Readonly<CanvasContext> | undefined, sessionId?: string): Promise<void> {
   context = captureExpected(context);
+  if (context.modelGeneration === 1) {
+    if (context.canvasId !== projectId) throw new Error('剪辑工程原画布已变化');
+    await assertNativeVideoEditorContext(context, {}, sessionId);
+    return;
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction([STORE_PROJECTS, STORE_METADATA], 'readonly');
@@ -58,11 +106,20 @@ export function buildVideoEditorProjectId(projectId: string, nodeId: string): st
   return `${projectId}::${nodeId}`;
 }
 
-export async function saveVideoEditorProject(record: VideoEditorProjectRecord, context?: Readonly<CanvasContext>): Promise<void> {
+export async function saveVideoEditorProject(record: VideoEditorProjectRecord, context?: Readonly<CanvasContext>, sessionId?: string): Promise<void> {
   context = captureExpected(context);
   record = structuredClone(record);
   if (!record.id.startsWith(`${record.projectId}::`)) throw new Error('剪辑工程键与原画布不一致');
   if ((record.schemaVersion ?? 0) > VIDEO_EDITOR_SCHEMA_VERSION) throw new Error('不能保存更高版本的剪辑工程');
+  if (context.modelGeneration === 1) {
+    const expected = context;
+    await serializeNativeEditorWrite(record.id, async () => {
+      const guard = () => assertVideoEditorProjectContext(record.projectId, expected, sessionId);
+      const prepared = await prepareNativeVideoEditorRecord(record, guard);
+      await writeNativeVideoEditorProject(prepared, expected, null, {}, sessionId);
+    });
+    return;
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction([STORE_VIDEO_EDITOR_PROJECTS, STORE_PROJECTS, STORE_METADATA], 'readwrite');
@@ -99,6 +156,16 @@ export async function compareAndSaveVideoEditorProject(
   record = structuredClone(record); expected = structuredClone(expected);
   if (!record.id.startsWith(`${record.projectId}::`)) throw new Error('剪辑工程键与原画布不一致');
   if ((record.schemaVersion ?? 0) > VIDEO_EDITOR_SCHEMA_VERSION) throw new Error('不能保存更高版本的剪辑工程');
+  if (context.modelGeneration === 1) {
+    const target = context;
+    await serializeNativeEditorWrite(record.id, async () => {
+      const guard = () => assertVideoEditorProjectContext(record.projectId, target);
+      const prepared = await prepareNativeVideoEditorRecord(record, guard);
+      const prior = expected ? await prepareNativeVideoEditorRecord(expected, guard) : null;
+      await writeNativeVideoEditorProject(prepared, target, { expected: prior });
+    });
+    return;
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction([STORE_VIDEO_EDITOR_PROJECTS, STORE_PROJECTS, STORE_METADATA], 'readwrite');
@@ -124,9 +191,17 @@ export async function compareAndSaveVideoEditorProject(
   });
 }
 
-export async function getVideoEditorProject(id: string, context?: Readonly<CanvasContext>): Promise<VideoEditorProjectRecord | null> {
+export async function getVideoEditorProject(id: string, context?: Readonly<CanvasContext>, sessionId?: string): Promise<VideoEditorProjectRecord | null> {
   context = context === undefined ? undefined : captureExpected(context);
   if (context && !id.startsWith(`${context.canvasId}::`)) throw new Error('剪辑工程键与原画布不一致');
+  const canvasId = id.split('::', 1)[0];
+  const scope = !context ? await nativeReadScope(canvasId) : null;
+  if (scope?.retiredOwner) return null;
+  const nativeContext = context?.modelGeneration === 1 ? context : scope?.context;
+  if (nativeContext) {
+    const record = await readNativeVideoEditorProject(id, nativeContext, {}, sessionId);
+    return record ? restoreNativeVideoEditorRecord(record, () => assertNativeVideoEditorContext(nativeContext, {}, sessionId)) : null;
+  }
   const db = await openDB();
   const record = await new Promise<VideoEditorProjectRecord | undefined>((resolve, reject) => {
     const transaction = db.transaction(context === undefined ? STORE_VIDEO_EDITOR_PROJECTS
@@ -158,6 +233,14 @@ export async function getVideoEditorProject(id: string, context?: Readonly<Canva
 export async function listVideoEditorProjectsByProject(
   projectId: string,
 ): Promise<VideoEditorProjectRecord[]> {
+  const scope = await nativeReadScope(projectId);
+  if (scope?.retiredOwner) return (await listNativeVideoEditorProjectsForProject(scope.retiredOwner)).filter((record) => record.projectId === projectId);
+  if (scope?.context) {
+    const context = scope.context;
+    const records = (await listNativeVideoEditorProjectsForProject(context.projectId)).filter((record) => record.projectId === projectId);
+    return Promise.all(records.sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((record) => restoreNativeVideoEditorRecord(record, () => assertNativeVideoEditorContext(context))));
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const index = db
@@ -179,6 +262,11 @@ export async function listVideoEditorProjectsByProject(
 export async function deleteVideoEditorProject(id: string, context?: Readonly<CanvasContext>): Promise<void> {
   context = captureExpected(context);
   if (!id.startsWith(`${context.canvasId}::`)) throw new Error('剪辑工程键与原画布不一致');
+  if (context.modelGeneration === 1) {
+    const expected = context;
+    await serializeNativeEditorWrite(id, () => deleteNativeVideoEditorProject(id, expected));
+    return;
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction([STORE_VIDEO_EDITOR_PROJECTS, STORE_PROJECTS, STORE_METADATA], 'readwrite');

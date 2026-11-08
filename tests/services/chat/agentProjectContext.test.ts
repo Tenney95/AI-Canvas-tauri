@@ -13,8 +13,31 @@ describe('P4 Agent项目执行前提', () => {
     expect(() => assertAgentProjectContext(current, { projectScope: { ...projectScope, runtimeEpoch: 'old-process' } })).not.toThrow();
     expect(() => assertAgentProjectContext({ ...current, currentProjectId: 'B' }, { projectScope })).toThrow();
     expect(() => assertAgentProjectContext({ ...current, projects: current.projects!.map((item) => item.id === 'S' ? { ...item, exchangeEpoch: 9 } : item) }, { projectScope })).toThrow();
-    expect(() => assertAgentProjectContext(current, { executionContext: { ...projectScope, modelGeneration: 1 } })).toThrow('尚未开放');
+    expect(() => assertAgentProjectContext(current, { executionContext: { ...projectScope, modelGeneration: 1 } })).toThrow();
     expect(() => assertAgentProjectContext({ ...current, projectLoadStatus: 'loading' }, { projectId: 'A' })).toThrow();
+  });
+  it('新画布任务绑定作品、分集、画布和运行租约，切集或重开后旧回调不能写入', () => {
+    const canvas = { kind: 'canvas' as const, schemaVersion: 2 as const, modelGeneration: 1, runtimeEpoch: 'run-a',
+      projectId: 'p', projectEpoch: 2, canvasId: 'canvas-a', episodeId: 'episode-a', canvasEpoch: 3, canvasRevision: 8 };
+    const current: ProjectExecutionContextState = { currentProjectId: 'canvas-a', projectLoadStatus: 'ready', getCurrentRevision: () => 8,
+      projectExecutionContext: canvas, projects: [{ id: 'p' }, { id: 'canvas-a', parentId: 'p',
+        nativeView: { projectId: 'p', episodeId: 'episode-a', canvasId: 'canvas-a', episodeRevision: 4 } }] };
+    const scope = captureAgentProjectScope(current, { projectId: 'canvas-a' })!;
+    expect(scope).toEqual(canvas);
+    expect(isAgentToolProjectContextCompatible({ id: 'media_generate_image', effect: 'media_generation' }, { projectScope: scope })).toBe(false);
+    expect(isAgentToolProjectContextCompatible({ id: 'media_generate', effect: 'media_generation' }, { projectScope: scope })).toBe(true);
+    expect(isAgentToolProjectContextCompatible({ id: 'media_generate', effect: 'media_generation' }, { projectScope: scope }, { kind: 'video', deliveryMode: 'chat' })).toBe(true);
+    expect(isAgentToolProjectContextCompatible({ id: 'media_generate', effect: 'media_generation' }, { projectScope: scope }, { kind: 'image', deliveryMode: 'canvas' })).toBe(true);
+    expect(isAgentToolProjectContextCompatible({ id: 'media_generate', effect: 'media_generation' }, { projectScope: scope }, { kind: 'other', deliveryMode: 'canvas' })).toBe(false);
+    expect(() => assertAgentProjectContext(current, { projectScope: scope })).not.toThrow();
+    expect(() => assertAgentProjectContext({ ...current, currentProjectId: 'other' }, { projectScope: scope })).toThrow();
+    expect(() => assertAgentProjectContext({ ...current, projectExecutionContext: { ...canvas, runtimeEpoch: 'run-b' } }, { projectScope: scope })).toThrow();
+    const episodeScope = captureAgentProjectScope(current, { projectId: 'canvas-a', workbenchTarget: { seriesId: 'p', episodeId: 'canvas-a' } })!;
+    expect(episodeScope).toMatchObject({ kind: 'episode', projectId: 'p', episodeId: 'episode-a', episodeRevision: 4 });
+    const tool = { id: 'episode_update_script', effect: 'file_write' } as const;
+    expect(isAgentToolProjectContextCompatible(tool, { projectScope: episodeScope }, { episodeId: 'canvas-a' }, current)).toBe(true);
+    expect(isAgentToolProjectContextCompatible(tool, { projectScope: episodeScope }, { episodeId: 'episode-a' }, current)).toBe(true);
+    expect(isAgentToolProjectContextCompatible(tool, { projectScope: episodeScope }, { episodeId: 'other' }, current)).toBe(false);
   });
   it('显式v2条件不能借旧任务恢复语义跳过runtime/revision，工作台scope只给选中集正文', () => {
     const current = state(), canvas = captureLegacyCanvasContext(current)!;

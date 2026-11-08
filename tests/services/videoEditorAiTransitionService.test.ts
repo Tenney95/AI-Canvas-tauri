@@ -44,6 +44,15 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('video editor transition identity and delivery', () => {
+  it('新项目已知异步转场在创建占位及请求前停止', async () => {
+    useAppStore.setState({ projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
+      projectId: 'p', projectEpoch: 1, canvasId: 'project-1', canvasEpoch: 1, canvasRevision: 0, episodeId: null, runtimeEpoch: 'run' } });
+    await expect(runVideoEditorAiTransition({ ...request, provider: 'volcengine' }, 'project-1', 'anchor'))
+      .rejects.toThrow('未提交请求');
+    expect(mocks.generateVideo).not.toHaveBeenCalled();
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
+  });
+
   it('rejects unsafe request and anchor identities before submitting media', async () => {
     for (const identity of ['', '.', '..', 'a/b', 'a\\b', 'a:b', `a${String.fromCharCode(0)}b`,
       `a${String.fromCharCode(31)}b`, `a${String.fromCharCode(127)}b`, 'x'.repeat(257)]) {

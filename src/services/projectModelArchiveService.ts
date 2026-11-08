@@ -24,6 +24,8 @@ import type { ProjectContent, EpisodeContent } from '../types/project';
 import type { StoryGraph } from '../types/storyGraph';
 import { storyGraphCanonicalSnapshot } from './storyGraphService';
 import { withEpisodeEditorWrite } from './episodeEditorSessionService';
+import { captureArchiveVideoEditorProjects } from './videoEditorArchive';
+import { captureArchiveAssetMetadata } from './projectArchiveAssetMetadata';
 
 export interface ProjectModelArchiveAsset extends ArchiveAssetDigest {
   rootRef: string;
@@ -31,6 +33,8 @@ export interface ProjectModelArchiveAsset extends ArchiveAssetDigest {
   localAbsolutePath?: string;
   /** 原生逐项确认指向同一文件的其他相对路径，仅用于本次捕获。 */
   aliases?: string[];
+  /** 仅本次备份读回的实际来源；逻辑path保留原缺失状态，不是文件别名。 */
+  backupSourceRelativePath?: string;
 }
 export interface ProjectModelArchivePort {
   inspectAssets(capture: ProjectModelTransferCapture): Promise<ProjectModelArchiveAsset[]>;
@@ -38,7 +42,7 @@ export interface ProjectModelArchivePort {
   publishMedia(operation: ProjectModelTransferImportJournal, source?: ValidatedProjectArchiveV4): Promise<string>;
   verifyMediaPublication(operation: ProjectModelTransferImportJournal, reference: string): Promise<void>;
   pack(operation: ProjectModelTransferExportJournal, entries: ProjectArchiveTextEntry[], capture: ProjectModelTransferCapture,
-    files: ProjectArchiveFileV4[], assets: ProjectModelArchiveAsset[]): Promise<{ outputRef: string; packageDigest: string }>;
+    files: ProjectArchiveFileV4[], assets: ProjectModelArchiveAsset[]): Promise<{ outputRef: string; packageDigest: string; archiveBytes?: number }>;
   verifyExportPublication(operation: ProjectModelTransferExportJournal, receipt: { outputRef: string; packageDigest: string }): Promise<void>;
   recoverExportPublication(operation: ProjectModelTransferExportJournal): Promise<{ outputRef: string; packageDigest: string }>;
   createRestoreBackup?(capture: ProjectModelTransferCapture, expectedAssets?: ProjectModelArchiveAsset[]): Promise<ProjectModelVerifiedRestoreProof>;
@@ -51,7 +55,7 @@ const refKey = (value: { canonicalVersion: number; revisionId: string }) => `${v
 export async function projectModelArchiveMediaPrefix(operationId: string): Promise<string> {
   return operationId.length <= 110 ? operationId : `import-${await digest(['media-child', operationId])}`;
 }
-/** 物理旧根可为恢复保留；只有当前head声明或正文正在使用的根进入新的业务包。 */
+/** 保留当前head、正文及元数据／剪辑文件闭包使用的受控根，不因分集退役遗漏历史素材。 */
 export function projectModelArchiveStorageContext(capture: ProjectModelTransferCapture) {
   const head = capture.exchange?.bundle.revisions.find((item) => refKey(item) === refKey(capture.exchange!.localHead));
   const declared = (head?.canonicalVersion === 2
@@ -68,6 +72,8 @@ export function projectModelArchiveStorageContext(capture: ProjectModelTransferC
     }
   };
   walk(capture.aggregate.content); walk(capture.aggregate.project.defaultSettings); walk(capture.aggregate.episodeContents); walk(capture.aggregate.canvases);
+  for (const asset of capture.assetMetadata ?? []) used.add(asset.rootRef);
+  walk(capture.editorRecords); walk(capture.retiredEditorRecords);
   const roots = capture.aggregate.project.storageBindings.filter((binding) => !declared || used.has(binding.rootRef)
     || declared.some((item) => local(item.id) === binding.rootRef));
   return { roots, primary, role: (rootRef: string) => declared?.find((item) => local(item.id) === rootRef)?.role
@@ -83,9 +89,15 @@ function localFileReferences(value: unknown, rootRef: string, assets: ProjectMod
   const relative = (path: unknown): string => {
     if (typeof path !== 'string' || !path) throw new Error('素材本机路径缺少可证明的相对映射');
     const normalized = path.replace(/\\/g, '/');
-    const match = assets.find((asset) => asset.rootRef === bound && (asset.localAbsolutePath
-      && (/^[a-z]:\//i.test(normalized) ? asset.localAbsolutePath.replace(/\\/g, '/').toLowerCase() === normalized.toLowerCase()
-        : asset.localAbsolutePath.replace(/\\/g, '/') === normalized) || asset.rootRef === bound && asset.path === normalized));
+    const match = assets.find((asset) => {
+      if (asset.rootRef !== bound) return false;
+      const actual = asset.localAbsolutePath?.replace(/\\/g, '/');
+      const original = asset.backupSourceRelativePath && actual?.endsWith('/' + asset.backupSourceRelativePath)
+        ? actual.slice(0, -asset.backupSourceRelativePath.length) + asset.path : undefined;
+      const equal = (candidate: string | undefined) => candidate !== undefined
+        && (/^[a-z]:\//i.test(normalized) ? candidate.toLowerCase() === normalized.toLowerCase() : candidate === normalized);
+      return equal(actual) || equal(original) || asset.path === normalized;
+    });
     if (!match) throw new Error('素材只有未证明来源的本机路径，请重新保存引用后归档');
     return safeExchangePath(match.path);
   };
@@ -140,13 +152,23 @@ export async function readProjectModelArchive(texts: Record<string, string>, ass
   });
   const files = readProjectArchiveV4Files(snapshot);
   const conversations: ProjectArchiveHistoryV4['payload']['conversations'] = [], messages: ProjectArchiveHistoryV4['payload']['messages'] = [],
-    memories: ProjectArchiveHistoryV4['payload']['memories'] = [], targets: ProjectArchiveHistoryV4['workbenchTargets'] = [];
+    memories: ProjectArchiveHistoryV4['payload']['memories'] = [], targets: ProjectArchiveHistoryV4['workbenchTargets'] = [],
+    scopes: NonNullable<ProjectArchiveHistoryV4['scopes']> = [];
+  const canvasForLegacy = async (id: string) => {
+    const logical = legacy.sourceState?.identities.find((identity) => identity.kind === 'project' && identity.localId === id)?.id
+      ?? captured.identities.find((identity) => identity.kind === 'project' && identity.localId === id)?.id;
+    if (!logical) return undefined;
+    const canvasId = await deriveLegacyExchangeIdentity(snapshot.lineageId, logical, 'canvas');
+    return snapshot.entities.some((entry) => entry.kind === 'canvas' && entry.id === canvasId) ? canvasId : undefined;
+  };
   const origin = async (kind: string, value: { id: string; archiveOriginId?: string }) => value.archiveOriginId && /^[a-f0-9]{64}$/.test(value.archiveOriginId)
     ? value.archiveOriginId : digest([`legacy-project:${legacy.manifest.projectId}`, kind, value.id]);
   for (const payload of legacy.chat) if (payload) {
     for (const conversation of payload.conversations) {
       const { workbenchTarget, ...row } = conversation;
       conversations.push({ ...row, projectId: snapshot.rootProjectId, archiveOriginId: await origin('conversation', row) });
+      const canvasId = await canvasForLegacy(row.projectId);
+      if (canvasId) scopes.push({ kind: 'conversation', id: row.id, canvasId });
       if (workbenchTarget) {
         const logicalEpisode = legacy.sourceState?.identities.find((identity) => identity.kind === 'project' && identity.localId === workbenchTarget.episodeId)?.id
           ?? captured.identities.find((identity) => identity.kind === 'project' && identity.localId === workbenchTarget.episodeId)?.id
@@ -158,7 +180,11 @@ export async function readProjectModelArchive(texts: Record<string, string>, ass
       }
     }
     for (const row of payload.messages) messages.push({ ...row, projectId: snapshot.rootProjectId, archiveOriginId: await origin('message', row) });
-    for (const row of payload.memories) memories.push({ ...row, projectId: snapshot.rootProjectId, archiveOriginId: await origin('memory', row) });
+    for (const row of payload.memories) {
+      memories.push({ ...row, projectId: snapshot.rootProjectId, archiveOriginId: await origin('memory', row) });
+      const canvasId = await canvasForLegacy(row.projectId);
+      if (canvasId) scopes.push({ kind: 'memory', id: row.id, canvasId });
+    }
   }
   const retired = new Map(snapshot.historicalTargets.map((target) => [JSON.stringify([target.kind, target.id]), target]));
   for (const { target } of targets) if (target.state === 'retired') retired.set(JSON.stringify([target.kind, target.id]), target);
@@ -172,7 +198,8 @@ export async function readProjectModelArchive(texts: Record<string, string>, ass
       return legacy.bundle?.files.find((item) => item.mediaId === media.id) ?? { mediaId: media.id, archivePath: `assets/${file.relativePath}` };
     }) });
   const payload: ProjectArchivePayloadV4 = { ...projectArchivePayloadFromSnapshotV2(snapshot), exchange,
-    ...(conversations.length || memories.length ? { history: { payload: { conversations, messages, memories }, workbenchTargets: targets } } : {}) };
+    ...(conversations.length || memories.length ? { history: { payload: { conversations, messages, memories }, workbenchTargets: targets,
+      ...(scopes.length ? { scopes } : {}) } } : {}) };
   const entries = await serializeProjectArchiveV4(payload, { packageId: exchange.packageId, exportedAt: legacy.manifest.exportedAt }, assets);
   return readProjectArchiveV4(Object.fromEntries(entries.map((entry) => [entry.path, entry.content])), assets);
 }
@@ -229,18 +256,31 @@ function aggregateBusiness(capture: ProjectModelTransferCapture, mappings = capt
     })) } }) as ProjectArchiveBusinessV4;
 }
 
-async function materializeBusiness(business: ProjectArchiveBusinessV4, snapshot: ProjectExchangeSnapshotV2, expected: ProjectModelTransferCapture | null,
-  targetId: string, operationId: string, available?: { exchange: ProjectModelTransferExchange; snapshot: ProjectExchangeSnapshotV2 }): Promise<{
+/** 仅映射受校验归档到本机草案；不发布素材、不写仓储，也不构成身份占用授权。 */
+export async function materializeProjectModelArchiveBusiness(business: ProjectArchiveBusinessV4, snapshot: ProjectExchangeSnapshotV2, expected: ProjectModelTransferCapture | null,
+  targetId: string, operationId: string, available?: { exchange: ProjectModelTransferExchange; snapshot: ProjectExchangeSnapshotV2 },
+  native?: { allocateId: (kind: Exclude<ProjectModelTransferIdMapEntry['kind'], 'project'>) => string; folderName: string }): Promise<{
     aggregate: ProjectModelTransferAggregate; identities: ProjectModelTransferIdMapEntry[];
     fileBindings: ProjectModelTransferExchange['fileBindings']; media: ProjectModelTransferImportJournal['media'];
   }> {
+  const nativeUuid = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(operationId)) throw new Error('项目归档操作身份无效');
+  if (native && (!new RegExp(`^p2-${nativeUuid}$`).test(targetId) || native.folderName !== `project-${targetId}`)) {
+    throw new Error('新项目归档目标身份或目录无效');
+  }
   const identities = [...(available?.exchange.identities ?? expected?.exchange?.identities ?? [])];
   const local = (kind: ProjectModelTransferIdMapEntry['kind'], sourceId: string): string => {
     let mapping = identities.find((entry) => entry.kind === kind && entry.sourceId === sourceId);
-    if (!mapping) { mapping = { kind, sourceId, localId: kind === 'project' ? targetId : crypto.randomUUID() }; identities.push(mapping); }
+    if (!mapping) {
+      const localId = kind === 'project' ? targetId : native?.allocateId(kind) ?? crypto.randomUUID();
+      const prefix = kind === 'episode' ? 'e2' : kind === 'canvas' ? 'c2' : 'r2';
+      if (native && kind !== 'project' && !new RegExp(`^${prefix}-${nativeUuid}$`).test(localId)
+        || identities.some((entry) => entry.kind === kind && entry.localId === localId)) throw new Error('项目归档本机身份冲突');
+      mapping = { kind, sourceId, localId }; identities.push(mapping);
+    }
     return mapping.localId;
   };
-  const projectId = local('project', business.project.id), folder = expected?.aggregate.project.dataFolder ?? buildProjectFolderName(business.project.name, targetId);
+  const projectId = local('project', business.project.id), folder = expected?.aggregate.project.dataFolder ?? native?.folderName ?? buildProjectFolderName(business.project.name, targetId);
   if (projectId !== targetId) throw new Error('项目逻辑映射与所选目标不一致');
   const root = (id: string) => local('storage-root', id), now = Date.now();
   const primary = business.project.storageRoots.find((entry) => entry.role === 'shared')?.id ?? business.project.storageRoots[0].id;
@@ -318,8 +358,24 @@ async function captureHistory(capture: ProjectModelTransferCapture, business: Pr
     return mappings.find((mapping) => mapping.kind === 'episode' && mapping.localId === localId)?.sourceId ?? localId;
   };
   const workbenchTargets: ProjectArchiveHistoryV4['workbenchTargets'] = [];
+  const scopes: NonNullable<ProjectArchiveHistoryV4['scopes']> = [];
+  for (const row of capture.history) if (row.kind === 'conversation' || row.kind === 'memory') {
+    const archivedScope = row.value.archiveCanvasScope as { canvasId?: unknown } | undefined;
+    const localId = row.kind === 'memory' && typeof archivedScope?.canvasId === 'string' ? archivedScope.canvasId : row.value.projectId;
+    if (localId === capture.aggregate.project.id) continue;
+    const canvas = mappings.find((mapping) => mapping.kind === 'canvas' && mapping.localId === localId);
+    if (canvas && business.canvases.some((item) => item.id === canvas.sourceId)) scopes.push({ kind: row.kind, id: row.value.id, canvasId: canvas.sourceId });
+    else {
+      const retired = capture.aggregate.bindings.find((binding) => binding.legacyId === localId && binding.namespace === 'legacy-canvas' && binding.retired);
+      if (retired) scopes.push({ kind: row.kind, id: row.value.id, canvasId: canvas?.sourceId ?? retired.canvasId ?? retired.legacyId, retired: true });
+      else if (!capture.aggregate.bindings.some((binding) => binding.legacyId === localId)) throw new Error('历史记录的画布归属无法确认');
+    }
+  }
   const conversations = await Promise.all(payload.conversations.map(async ({ workbenchTarget, ...row }) => {
-    const stored = source.get(`conversation:${row.id}`)?.historicalTarget;
+    const original = source.get(`conversation:${row.id}`);
+    const archived = original?.value.archiveHistoricalTarget as ProjectArchiveHistoryV4['workbenchTargets'][number]['target'] | undefined;
+    const stored = original?.historicalTarget ?? (archived?.state === 'retired'
+      ? { ...archived, projectId: business.project.id } : undefined);
     if (stored) {
       const active = stored.state === 'active' && (stored.kind === 'episode'
         ? business.episodes.some((item) => item.id === stored.episodeId)
@@ -339,11 +395,12 @@ async function captureHistory(capture: ProjectModelTransferCapture, business: Pr
   return { payload: { conversations,
     messages: await Promise.all(payload.messages.map(async (row) => ({ ...row, projectId: business.project.id, archiveOriginId: await origin('message', row.id) }))),
     memories: await Promise.all(payload.memories.map(async (row) => ({ ...row, projectId: business.project.id, archiveOriginId: await origin('memory', row.id) }))),
-  }, workbenchTargets };
+  }, workbenchTargets, ...(scopes.length ? { scopes } : {}) };
 }
 
-async function importHistory(source: ValidatedProjectArchiveV4, targetId: string, namespace: string,
-  expected: ProjectModelTransferCapture | null, options: { appendChat: boolean; appendMemories: boolean }): Promise<ProjectModelTransferHistoryRow[]> {
+export async function importProjectModelArchiveHistory(source: ValidatedProjectArchiveV4, targetId: string, namespace: string,
+  expected: ProjectModelTransferCapture | null, options: { appendChat: boolean; appendMemories: boolean },
+  native?: { identities: ProjectModelTransferIdMapEntry[]; episodes: ProjectModelTransferAggregate['episodes']; defaultCanvasId?: string }): Promise<ProjectModelTransferHistoryRow[]> {
   const history = source.payload.history; if (!history) return [];
   const rows: ProjectModelTransferHistoryRow[] = [], ids = new Map<string, string>();
   const origin = (kind: string, row: { id: string; archiveOriginId?: string }) => row.archiveOriginId ?? digest([source.snapshot.lineageId, kind, row.id]);
@@ -360,8 +417,34 @@ async function importHistory(source: ValidatedProjectArchiveV4, targetId: string
     const local = expected?.historyBindings.find((binding) => binding.sourceNamespace === namespace && binding.kind === kind
       && binding.archiveOriginId === archiveOriginId)?.localId ?? existing.get(`${kind}:${archiveOriginId}`);
     const historicalTarget = kind === 'conversation' ? history.workbenchTargets.find((binding) => binding.conversationId === value.id)?.target : undefined;
+    let owner = targetId;
+    if (native && kind === 'conversation') {
+      const scope = history.scopes?.find((item) => item.kind === kind && item.id === value.id);
+      owner = scope ? native.identities.find((item) => item.kind === 'canvas' && item.sourceId === scope.canvasId)?.localId ?? ''
+        : native.defaultCanvasId ?? targetId;
+      if (!owner) throw new Error('项目包会话缺少画布身份映射');
+      if (historicalTarget?.state === 'retired') {
+        // 已删除目标只是只读来源，不恢复为可执行的工作台租约。
+        value = { ...value, archiveHistoricalTarget: historicalTarget };
+      }
+      if (historicalTarget?.state === 'active' && historicalTarget.kind === 'episode') {
+        const episodeId = native.identities.find((item) => item.kind === 'episode' && item.sourceId === historicalTarget.episodeId)?.localId;
+        const canvasId = native.episodes.find((item) => item.id === episodeId)?.canvasId;
+        if (!canvasId) throw new Error('工作台历史缺少分集画布映射');
+        owner = targetId;
+        value = { ...value, workbenchTarget: { seriesId: targetId, episodeId: canvasId } };
+      }
+    }
+    if (native && kind === 'memory') {
+      const scope = history.scopes?.find((item) => item.kind === kind && item.id === value.id);
+      if (scope) {
+        const canvasId = native.identities.find((item) => item.kind === 'canvas' && item.sourceId === scope.canvasId)?.localId;
+        if (!canvasId) throw new Error('项目包记忆缺少画布身份映射');
+        value = { ...value, archiveCanvasScope: { canvasId, ...(scope.retired ? { retired: true } : {}) } };
+      }
+    }
     rows.push({ kind, sourceNamespace: namespace, archiveOriginId, ...(local ? { existingLocalId: local } : {}),
-      ...(historicalTarget ? { historicalTarget } : {}), value: { ...value, id, projectId: targetId } });
+      ...(historicalTarget ? { historicalTarget } : {}), value: { ...value, id, projectId: owner } });
   };
   if (options.appendChat) {
     for (const row of history.payload.conversations) await add('conversation', { ...row, agentMode: 'plan', pinned: false });
@@ -369,7 +452,14 @@ async function importHistory(source: ValidatedProjectArchiveV4, targetId: string
   }
   if (options.appendMemories) for (const row of history.payload.memories) await add('memory', { ...row });
   for (const row of rows) {
-    if (row.kind === 'message') row.value.conversationId = ids.get(`conversation:${row.value.conversationId}`);
+    if (row.kind === 'message') {
+      row.value.conversationId = ids.get(`conversation:${row.value.conversationId}`);
+      if (native) {
+        const conversation = rows.find((item) => item.kind === 'conversation' && item.value.id === row.value.conversationId);
+        if (!conversation) throw new Error('项目包消息缺少来源会话');
+        row.value.projectId = conversation.value.projectId;
+      }
+    }
     if (row.kind === 'memory') {
       const previous = row.value.source as { conversationId: string; messageId?: string; unavailable?: boolean };
       const conversationId = options.appendChat ? ids.get(`conversation:${previous.conversationId}`) : undefined;
@@ -378,6 +468,78 @@ async function importHistory(source: ValidatedProjectArchiveV4, targetId: string
     }
   }
   return rows;
+}
+
+/** 仅构造可序列化的捕获投影；调用者必须核验原材料、源版本和原生发布回执。 */
+export async function prepareProjectModelArchiveCapture(capture: ProjectModelTransferCapture, assets: ProjectModelArchiveAsset[]) {
+  const lineageId = capture.exchange?.lineageId ?? crypto.randomUUID();
+  const roots = capture.aggregate.project.storageBindings;
+  const identities = [...(capture.exchange?.identities ?? [])];
+  const retiredEditorCanvasIds = [...new Set((capture.retiredEditorRecords ?? []).map((record) => record.projectId))];
+  if (retiredEditorCanvasIds.some((id) => capture.aggregate.canvases.some((canvas) => canvas.id === id)
+    || !capture.aggregate.bindings.some((binding) => binding.namespace === 'legacy-canvas' && binding.retired
+      && binding.projectId === capture.aggregate.project.id && binding.canvasId === id))) {
+    throw new Error('历史剪辑工程缺少对应墓碑');
+  }
+  // P3 的 legacy-root:UUID 是本机定位，不是 portable ID；首次投影必须在构造业务正文前冻结映射。
+  for (const [kind, ids] of [['project', [capture.aggregate.project.id]], ['episode', capture.aggregate.episodes.map((item) => item.id)],
+    ['canvas', [...capture.aggregate.canvases.map((item) => item.id), ...retiredEditorCanvasIds]], ['storage-root', roots.map((item) => item.rootRef)]] as const) {
+    for (const localId of ids) if (!identities.some((entry) => entry.kind === kind && entry.localId === localId)) identities.push({ kind,
+      sourceId: kind !== 'storage-root' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(localId)
+        ? localId : `${kind === 'storage-root' ? 'root' : kind}_${await digest([lineageId, kind, localId])}`, localId });
+  }
+  const business = aggregateBusiness(capture, identities, capture.exchange?.fileBindings, assets);
+  const logicalRoot = (id: string) => identities.find((mapping) => mapping.kind === 'storage-root' && mapping.localId === id)!.sourceId;
+  const media = new Map<string, ProjectExchangeMedia>(), files: ProjectArchiveFileV4[] = [];
+  const fileBindings: ProjectModelTransferExchange['fileBindings'] = [];
+  for (const asset of assets) {
+    if (!roots.some((root) => root.rootRef === asset.rootRef)) throw new Error('素材来源根不属于捕获项目');
+    safeExchangePath(asset.path);
+    const rootRef = logicalRoot(asset.rootRef);
+    const previous = capture.exchange?.fileBindings.find((binding) => binding.rootRef === rootRef
+      && (binding.localRelativePath === asset.path || asset.aliases?.includes(binding.localRelativePath)));
+    const relativePath = previous?.relativePath ?? asset.path;
+    const extension = relativePath.split('.').pop()?.toLowerCase() ?? 'bin', ext = /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'bin';
+    const previousHead = capture.exchange?.bundle.revisions.find((item) => refKey(item) === refKey(capture.exchange!.localHead));
+    const previousFile = previousHead?.canonicalVersion === 2 && previous
+      ? readProjectArchiveV4Files(previousHead.snapshot).find((item) => item.id === previous.id) : undefined;
+    const oldMedia = previousHead?.canonicalVersion === 2 && previousFile
+      ? previousHead.snapshot.media.find((item) => item.id === previousFile.mediaId && item.sha256 === asset.sha256 && item.bytes === asset.bytes) : undefined;
+    const mediaId = oldMedia?.id ?? `${asset.sha256}_${ext}`;
+    media.set(mediaId, oldMedia ?? { id: mediaId, bytes: asset.bytes, sha256: asset.sha256, extension: ext,
+      kind: /^(png|jpe?g|webp|gif|avif)$/.test(ext) ? 'image' : /^(mp4|mov|webm|mkv)$/.test(ext) ? 'video' : /^(mp3|wav|ogg|m4a|flac)$/.test(ext) ? 'audio' : 'file' });
+    const id = previous?.id ?? `file_${await digest([lineageId, rootRef, relativePath])}`;
+    files.push({ id, rootRef, relativePath, mediaId });
+    fileBindings.push({ id, rootRef, relativePath, localRelativePath: previous?.localRelativePath ?? asset.path });
+  }
+  const history = await captureHistory(capture, business, identities);
+  const previous = capture.exchange?.bundle.revisions.find((revision) => refKey(revision) === refKey(capture.exchange!.localHead));
+  const retired = new Map(previous?.canonicalVersion === 2 ? previous.snapshot.historicalTargets.map((target) => [JSON.stringify([target.kind, target.id]), target]) : []);
+  for (const binding of history?.workbenchTargets ?? []) if (binding.target.state === 'retired') retired.set(JSON.stringify([binding.target.kind, binding.target.id]), binding.target);
+  for (const scope of history?.scopes ?? []) if (scope.retired) {
+    const target = { state: 'retired' as const, kind: 'canvas' as const, projectId: business.project.id, id: scope.canvasId };
+    retired.set(JSON.stringify([target.kind, target.id]), target);
+  }
+  for (const id of retiredEditorCanvasIds) {
+    const logical = identities.find((item) => item.kind === 'canvas' && item.localId === id)?.sourceId;
+    if (!logical) throw new Error('历史剪辑画布身份缺失');
+    const target = { state: 'retired' as const, kind: 'canvas' as const, projectId: business.project.id, id: logical };
+    retired.set(JSON.stringify([target.kind, target.id]), target);
+  }
+  const snapshot = buildProjectExchangeSnapshotV2(business, lineageId, [...media.values()], files, [...retired.values()]);
+  const createdHead = await createProjectExchangeRevisionV2(snapshot, capture.exchange ? [capture.exchange.localHead] : []);
+  const head = previous?.canonicalVersion === 2 && previous.contentDigest === createdHead.contentDigest ? previous : createdHead;
+  const revisions = [...(capture.exchange?.bundle.revisions ?? []).filter((revision) => refKey(revision) !== refKey(head)), head];
+  const bundle = await parseProjectExchangeBundleV2({ format: 'ai-canvas-project-exchange', version: 2, packageId: crypto.randomUUID(),
+    lineageId, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions, ancestors: capture.exchange?.bundle.ancestors ?? [],
+    files: [...media.values()].map((value) => ({ mediaId: value.id, archivePath: `assets/${value.id}.${value.extension}` })) });
+  const exchange: ProjectModelTransferExchange = { lineageId, localHead: bundle.head, bundle,
+    stateVersion: (capture.exchange?.stateVersion ?? 0) + 1, identities, fileBindings, published: capture.exchange?.published ?? [] };
+  const videoEditor = captureArchiveVideoEditorProjects(capture.editorRecords ?? [], capture.aggregate.canvases.map((canvas) => canvas.id),
+    capture.aggregate.project.storageRootRef, identities, fileBindings, assets, capture.retiredEditorRecords ?? [], retiredEditorCanvasIds);
+  const assetMetadata = captureArchiveAssetMetadata(capture.assetMetadata ?? [], exchange, files, snapshot.media);
+  return { assets, files, snapshot, exchange, payload: { ...business, exchange: bundle, ...(history ? { history } : {}),
+    ...(videoEditor ? { videoEditor } : {}), ...(assetMetadata ? { assetMetadata } : {}) } as ProjectArchivePayloadV4 };
 }
 
 export interface ProjectModelArchivePreview {
@@ -407,60 +569,18 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
     if ((await repository.capture(capture.aggregate.project.id, { history: capture.includesHistory }))?.sourceToken !== capture.sourceToken) throw new Error('项目或历史在归档期间变化，请重新预览');
   };
   async function prepareCapture(capture: ProjectModelTransferCapture) {
-    const lineageId = capture.exchange?.lineageId ?? crypto.randomUUID();
-    const roots = capture.aggregate.project.storageBindings;
-    const identities = [...(capture.exchange?.identities ?? [])];
-    // P3 的 legacy-root:UUID 是本机定位，不是 portable ID；首次投影必须在构造业务正文前冻结映射。
-    for (const [kind, ids] of [['project', [capture.aggregate.project.id]], ['episode', capture.aggregate.episodes.map((item) => item.id)],
-      ['canvas', capture.aggregate.canvases.map((item) => item.id)], ['storage-root', roots.map((item) => item.rootRef)]] as const) {
-      for (const localId of ids) if (!identities.some((entry) => entry.kind === kind && entry.localId === localId)) identities.push({ kind,
-        sourceId: kind !== 'storage-root' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(localId)
-          ? localId : `${kind === 'storage-root' ? 'root' : kind}_${await digest([lineageId, kind, localId])}`, localId });
-    }
-    const assets = await port.inspectAssets(capture), business = aggregateBusiness(capture, identities, capture.exchange?.fileBindings, assets);
-    const logicalRoot = (id: string) => identities.find((mapping) => mapping.kind === 'storage-root' && mapping.localId === id)!.sourceId;
-    const media = new Map<string, ProjectExchangeMedia>(), files: ProjectArchiveFileV4[] = [];
-    const fileBindings: ProjectModelTransferExchange['fileBindings'] = [];
-    for (const asset of assets) {
-      if (!roots.some((root) => root.rootRef === asset.rootRef)) throw new Error('素材来源根不属于捕获项目');
-      safeExchangePath(asset.path);
-      const rootRef = logicalRoot(asset.rootRef);
-      const previous = capture.exchange?.fileBindings.find((binding) => binding.rootRef === rootRef
-        && (binding.localRelativePath === asset.path || asset.aliases?.includes(binding.localRelativePath)));
-      const relativePath = previous?.relativePath ?? asset.path;
-      const extension = relativePath.split('.').pop()?.toLowerCase() ?? 'bin', ext = /^[a-z0-9]{1,16}$/.test(extension) ? extension : 'bin';
-      const previousHead = capture.exchange?.bundle.revisions.find((item) => refKey(item) === refKey(capture.exchange!.localHead));
-      const previousFile = previousHead?.canonicalVersion === 2 && previous
-        ? readProjectArchiveV4Files(previousHead.snapshot).find((item) => item.id === previous.id) : undefined;
-      const oldMedia = previousHead?.canonicalVersion === 2 && previousFile
-        ? previousHead.snapshot.media.find((item) => item.id === previousFile.mediaId && item.sha256 === asset.sha256 && item.bytes === asset.bytes) : undefined;
-      const mediaId = oldMedia?.id ?? `${asset.sha256}_${ext}`;
-      media.set(mediaId, oldMedia ?? { id: mediaId, bytes: asset.bytes, sha256: asset.sha256, extension: ext,
-        kind: /^(png|jpe?g|webp|gif|avif)$/.test(ext) ? 'image' : /^(mp4|mov|webm|mkv)$/.test(ext) ? 'video' : /^(mp3|wav|ogg|m4a|flac)$/.test(ext) ? 'audio' : 'file' });
-      const id = previous?.id ?? `file_${await digest([lineageId, rootRef, relativePath])}`;
-      files.push({ id, rootRef, relativePath, mediaId });
-      fileBindings.push({ id, rootRef, relativePath, localRelativePath: previous?.localRelativePath ?? asset.path });
-    }
-    const history = await captureHistory(capture, business, identities);
-    const previous = capture.exchange?.bundle.revisions.find((revision) => refKey(revision) === refKey(capture.exchange!.localHead));
-    const retired = new Map(previous?.canonicalVersion === 2 ? previous.snapshot.historicalTargets.map((target) => [JSON.stringify([target.kind, target.id]), target]) : []);
-    for (const binding of history?.workbenchTargets ?? []) if (binding.target.state === 'retired') retired.set(JSON.stringify([binding.target.kind, binding.target.id]), binding.target);
-    const snapshot = buildProjectExchangeSnapshotV2(business, lineageId, [...media.values()], files, [...retired.values()]);
-    const createdHead = await createProjectExchangeRevisionV2(snapshot, capture.exchange ? [capture.exchange.localHead] : []);
-    const head = previous?.canonicalVersion === 2 && previous.contentDigest === createdHead.contentDigest ? previous : createdHead;
-    const revisions = [...(capture.exchange?.bundle.revisions ?? []).filter((revision) => refKey(revision) !== refKey(head)), head];
-    const bundle = await parseProjectExchangeBundleV2({ format: 'ai-canvas-project-exchange', version: 2, packageId: crypto.randomUUID(),
-      lineageId, head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions, ancestors: capture.exchange?.bundle.ancestors ?? [],
-      files: [...media.values()].map((value) => ({ mediaId: value.id, archivePath: `assets/${value.id}.${value.extension}` })) });
+    const assets = await port.inspectAssets(capture);
+    const prepared = await prepareProjectModelArchiveCapture(capture, assets);
     await current(capture);
-    const exchange: ProjectModelTransferExchange = { lineageId, localHead: bundle.head, bundle,
-      stateVersion: (capture.exchange?.stateVersion ?? 0) + 1, identities, fileBindings, published: capture.exchange?.published ?? [] };
-    return { assets, files, snapshot, exchange, payload: { ...business, exchange: bundle, ...(history ? { history } : {}) } as ProjectArchivePayloadV4 };
+    return prepared;
   }
   async function preview(source: ValidatedProjectArchiveV4, targetId?: string): Promise<ProjectModelArchivePreview> {
     // 重新经过收件校验，不能拿任意伪造的 Validated 类型对象取得写入。
     const entries = await serializeProjectArchiveV4(source.payload, source.manifest, source.assets);
     source = await readProjectArchiveV4(Object.fromEntries(entries.map((entry) => [entry.path, entry.content])), source.assets);
+    if (source.payload.videoEditor?.records.length || source.payload.videoEditor?.retiredRecords?.length) {
+      throw new Error('隔离项目模型暂不支持剪辑工程导入，未写入项目');
+    }
     const expected = targetId ? await repository.capture(targetId, { history: true }) : null;
     if (targetId && !expected) throw new Error('更新目标已删除');
     let plan: ProjectMergePlanV2 | null = null, localSnapshot: ProjectExchangeSnapshotV2 | undefined, localExchange: ProjectModelTransferExchange | undefined,
@@ -519,7 +639,7 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
       const expected = previewed.expected, targetId = expected?.aggregate.project.id ?? crypto.randomUUID();
       if ((options.mode === 'update-existing' || options.mode === 'restore-content') !== !!expected) throw new Error('操作模式与所选更新目标不一致');
       if (options.mode === 'independent-copy') snapshot = { ...snapshot, lineageId: crypto.randomUUID() };
-      const material = await materializeBusiness(projectArchivePayloadFromSnapshotV2(snapshot), snapshot, expected, targetId, options.operationId,
+      const material = await materializeProjectModelArchiveBusiness(projectArchivePayloadFromSnapshotV2(snapshot), snapshot, expected, targetId, options.operationId,
         previewed.localExchange && previewed.localSnapshot ? { exchange: previewed.localExchange, snapshot: previewed.localSnapshot } : undefined);
       const source = port.captureImportSource ? await port.captureImportSource(previewed.source) : { sourceRef: undefined, sourceFiles: [] };
       if (previewed.source.files.length && (!source.sourceRef || !source.sourceFiles?.length)) throw new Error('缺少可恢复的隔离素材来源，未准备导入');
@@ -542,7 +662,7 @@ export function createProjectModelArchiveService(database: IDBDatabase, session:
       const exchange: ProjectModelTransferExchange = { lineageId: snapshot.lineageId, localHead: bundle.head, bundle,
         identities: material.identities, fileBindings: material.fileBindings,
         stateVersion: (expected?.exchange?.stateVersion ?? 0) + 1, published: expected?.exchange?.published ?? [] };
-      const history = options.mode === 'restore-content' ? [] : await importHistory(previewed.source, targetId, snapshot.lineageId, expected,
+      const history = options.mode === 'restore-content' ? [] : await importProjectModelArchiveHistory(previewed.source, targetId, snapshot.lineageId, expected,
         { appendChat: options.appendChat === true, appendMemories: options.appendMemories === true });
       const operation = await repository.prepareImport({ operationId: options.operationId, mode: options.mode, packageDigest: previewed.packageDigest,
         intentDigest, sourceLineageId: previewed.source.snapshot.lineageId, ...source,

@@ -16,6 +16,8 @@ debug = 1
 [features]
 default = ["local-onnx"]
 local-onnx = ["dep:ort"]
+# 仅供 Windows debug 冷维护隔离演练；不开放正式迁移或应用窗口权限。
+project-model-fixture-host = []
 # 仅供离线 MockRuntime 安全回归；普通构建不包含测试支架。
 tauri-channel-tests = ["tauri/test"]
 

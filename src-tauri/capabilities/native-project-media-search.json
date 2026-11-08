@@ -1,0 +1,6 @@
+{
+  "identifier": "native-project-media-search",
+  "description": "The asset search window can resolve existing native project media roots.",
+  "windows": ["asset-search"],
+  "permissions": ["allow-native-project-media-root-read"]
+}

@@ -66,6 +66,30 @@ describe('structured submission failures', () => {
     poll: { method: 'GET', path: '/tasks/{{submit.id}}', retry: { maxRetries: 0 },
       response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed'], result: { urlPath: 'url' } } } };
 
+  it('新项目同步与异步声明式媒体缺少宿主提交守卫时拒绝，不创建旧待续回执', async () => {
+    const previous = useAppStore.getState();
+    localStorage.clear();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    useAppStore.setState({ currentProjectId: 'new-canvas', projectExecutionContext: { kind: 'canvas', schemaVersion: 2,
+      modelGeneration: 1, projectId: 'p', projectEpoch: 1, canvasId: 'new-canvas', canvasEpoch: 1,
+      canvasRevision: 0, episodeId: null, runtimeEpoch: 'run' },
+      config: { ...previous.config, providers: { ...previous.config.providers,
+        'structured-submit': { name: 'Fixture', baseUrl: 'https://gateway.example/v1', apiKey: 'fixture' } } } });
+    try {
+      await expect(runConfiguredModelProtocol({ category: 'image', nodeId: 'new-node',
+        model: { id: 'structured', name: 'Fixture', modelId: 'fixture', category: 'image', providerConfigId: 'structured-submit',
+          executionProfile: { preset: 'custom', protocol } }, variables: { prompt: 'scene' } })).rejects.toThrow('未提交请求');
+      const synchronous: ModelExecutionProtocol = { version: 2, mode: 'sync', submit: protocol.submit,
+        response: { type: 'json', result: { urlPath: 'url' } } };
+      await expect(runConfiguredModelProtocol({ category: 'image', nodeId: 'new-node',
+        model: { id: 'structured', name: 'Fixture', modelId: 'fixture', category: 'image', providerConfigId: 'structured-submit',
+          executionProfile: { preset: 'custom', protocol: synchronous } }, variables: { prompt: 'scene' } })).rejects.toThrow('未提交请求');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getPendingTasksForProject('new-canvas')).toEqual([]);
+    } finally { localStorage.clear(); useAppStore.setState(previous, true); }
+  });
+
   async function configuredRequest(response: Response | Error, queryResponse?: Response) {
     const previous = useAppStore.getState();
     localStorage.clear();

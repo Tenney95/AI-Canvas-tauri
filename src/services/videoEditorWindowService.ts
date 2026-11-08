@@ -22,7 +22,7 @@ export function parseVideoEditorWindowBinding(value: unknown): VideoEditorWindow
   if (Object.keys(record).some((key) => key !== 'sessionId' && key !== 'expectedContext')
     || typeof record.sessionId !== 'string' || !/^[a-f0-9-]{36}$/i.test(record.sessionId)) throw new Error('剪辑窗口会话无效');
   const expectedContext = parseProjectExpectedContext(record.expectedContext);
-  if (expectedContext.kind !== 'canvas' || expectedContext.modelGeneration !== 0) throw new Error('剪辑窗口需要旧画布上下文');
+  if (expectedContext.kind !== 'canvas' || expectedContext.modelGeneration > 1) throw new Error('剪辑窗口需要受支持的画布上下文');
   return Object.freeze({ sessionId: record.sessionId, expectedContext: Object.freeze(expectedContext) });
 }
 
@@ -100,6 +100,8 @@ export type VideoEditorModelOption = {
  */
 export type VideoEditorAiTransitionRequest = {
   requestId: string;
+  /** 原工程中的接缝片段；原生转场恢复只能写回同一接缝。 */
+  beforeClipId?: string;
   prompt: string;
   /** MediaModelOption.value，例如 "volcengine/seedance-1-0-pro" */
   model: string;
@@ -122,6 +124,7 @@ export type VideoEditorAiTransitionRequest = {
  */
 export type VideoEditorAiTransitionResult = {
   requestId: string;
+  pending?: boolean;
   videoUrl?: string;
   filePath?: string;
   fileName?: string;
@@ -284,7 +287,7 @@ export async function openVideoEditorWindow(params: {
   const theme = params.theme === 'light' ? 'light' : 'dark';
   const expected = parseProjectExpectedContext(params.expectedContext);
   params.assertCurrent?.();
-  if (expected.kind !== 'canvas' || expected.modelGeneration !== 0 || expected.canvasId !== params.projectId
+  if (expected.kind !== 'canvas' || expected.modelGeneration > 1 || expected.canvasId !== params.projectId
     || instanceId !== `${params.projectId}::${params.nodeId}`) throw new Error('剪辑窗口目标上下文无效');
   const { useAppStore } = await import('../store/useAppStore');
   params.assertCurrent?.();
@@ -328,8 +331,33 @@ export async function openVideoEditorWindow(params: {
   activeBinding = binding; activeInstanceId = instanceId;
   unsubscribeTarget?.();
   let revoked = false;
+  const revokeNativeRoot = () => {
+    if (expected.modelGeneration !== 1) return;
+    void import('./indexedDb/nativeVideoEditorRepository')
+      .then(({ revokeNativeVideoEditorSession }) => revokeNativeVideoEditorSession(expected.canvasId, binding.sessionId))
+      .catch(() => undefined);
+    void import('@tauri-apps/api/core').then(({ invoke }) => invoke('revoke_video_editor_native_root', { sessionId: binding.sessionId })).catch(() => undefined);
+  };
   targetCurrent = () => !revoked && current();
-  unsubscribeTarget = useAppStore.subscribe(() => { if (!current()) revoked = true; });
+  unsubscribeTarget = useAppStore.subscribe(() => {
+    if (!revoked && !current()) { revoked = true; revokeNativeRoot(); }
+  });
+
+  if (expected.modelGeneration === 1) {
+    try {
+      const { bindNativeVideoEditorSession } = await import('./indexedDb/nativeVideoEditorRepository');
+      await bindNativeVideoEditorSession(expected, binding.sessionId);
+      if (!targetCurrent()) throw new Error('剪辑窗口原画布已变化');
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('bind_video_editor_native_root', { projectId: expected.projectId, canvasId: expected.canvasId, sessionId: binding.sessionId });
+      if (!targetCurrent()) throw new Error('剪辑窗口原画布已变化');
+      params.assertCurrent?.();
+    } catch (error) {
+      revokeNativeRoot();
+      if (activeBinding === binding) { targetCurrent = null; activeBinding = null; activeInstanceId = null; unsubscribeTarget?.(); unsubscribeTarget = null; }
+      throw error;
+    }
+  }
 
   const editorWindow = new WebviewWindow(VIDEO_EDITOR_WINDOW_LABEL, {
     url: buildVideoEditorWindowUrl({
@@ -356,6 +384,7 @@ export async function openVideoEditorWindow(params: {
     void editorWindow.once('tauri://created', () => resolve());
     void editorWindow.once('tauri://error', (event) => {
       if (activeBinding === binding) {
+        revokeNativeRoot();
         targetCurrent = null; activeBinding = null; activeInstanceId = null;
         unsubscribeTarget?.(); unsubscribeTarget = null;
       }
@@ -365,6 +394,7 @@ export async function openVideoEditorWindow(params: {
 
   void editorWindow.once('tauri://destroyed', () => {
     if (activeBinding !== binding) return;
+    revokeNativeRoot();
     notifySubscribers(subscribers, instanceId, { type: 'storyai:video-editor-close' }, binding);
     targetCurrent = null; activeBinding = null; activeInstanceId = null;
     unsubscribeTarget?.(); unsubscribeTarget = null;
@@ -372,6 +402,7 @@ export async function openVideoEditorWindow(params: {
   try { requireBinding(instanceId, binding); params.assertCurrent?.(); }
   catch (error) {
     if (activeBinding === binding) {
+      revokeNativeRoot();
       targetCurrent = null; activeBinding = null; activeInstanceId = null;
       unsubscribeTarget?.(); unsubscribeTarget = null;
     }

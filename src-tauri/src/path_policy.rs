@@ -83,7 +83,12 @@ pub fn ensure_trusted_caller<R: Runtime>(webview: &Webview<R>) -> Result<(), Str
     if !TRUSTED_WINDOW_LABELS.contains(&label) {
         return Err(format!("窗口 {label} 无权调用该命令"));
     }
+    ensure_local_frontend_caller(webview)
+}
 
+/// 校验来源；调用方必须另外明确限制允许的窗口标签。
+pub(crate) fn ensure_local_frontend_caller<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
+    let label = webview.label();
     // 窗口即使标签可信，也可能被导航到远程地址，必须再确认当前来源仍是本地前端。
     let url = webview
         .url()
@@ -638,7 +643,14 @@ pub fn authorize_launch_target<R: Runtime>(
 /// `sync_authorized_directories` 重新带入。需要落到用户目录的派生数据
 /// （例如智能体压缩包解压目录）通过它定位，避免默认写进系统盘。
 #[derive(Default)]
-pub struct UserStorageRoot(pub Mutex<Option<PathBuf>>);
+pub struct UserStorageRoot(Mutex<UserStorageRootValue>);
+
+#[derive(Default)]
+struct UserStorageRootValue {
+    root: Option<PathBuf>,
+    synced: bool,
+    configured: bool,
+}
 
 /// 记录用户设置的保存根目录；传入空值表示回退到应用自有目录。
 ///
@@ -646,14 +658,15 @@ pub struct UserStorageRoot(pub Mutex<Option<PathBuf>>);
 /// 私有子树内。校验失败时静默清空并回退，不阻断设置同步 —— 否则用户把一个
 /// 暂时不可用的盘符设为保存根目录后，整个设置面板都会报错。
 pub fn set_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>, raw: Option<&str>) {
-    let next = raw
+    let configured = raw.map(str::trim).is_some_and(|value| !value.is_empty());
+    let root = raw
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .and_then(|value| resolve_user_storage_root(app, value));
 
     if let Some(state) = app.try_state::<UserStorageRoot>() {
         if let Ok(mut guard) = state.0.lock() {
-            *guard = next;
+            *guard = UserStorageRootValue { root, configured, synced: true };
         }
     }
 }
@@ -685,7 +698,15 @@ pub fn user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBu
         .0
         .lock()
         .ok()
-        .and_then(|guard| guard.clone())
+        .and_then(|guard| guard.root.clone())
+}
+
+/// 新项目不能在配置尚未同步或自定义目录失效时静默写到默认盘。
+pub fn verified_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<Option<PathBuf>, String> {
+    let state = app.try_state::<UserStorageRoot>().ok_or("项目存储配置不可用")?;
+    let value = state.0.lock().map_err(|_| "项目存储配置不可用")?;
+    if !value.synced || value.configured && value.root.is_none() { return Err("项目存储目录尚未同步或不可用".into()); }
+    Ok(value.root.clone())
 }
 
 #[cfg(test)]

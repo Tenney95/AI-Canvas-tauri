@@ -72,6 +72,11 @@ beforeEach(() => {
     }],
     agentTasks: [createTask()],
   });
+  registerAgentTool({ id: 'series_get_state', title: '剧集状态', description: '测试持久结果来源', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    resultPolicy: { storage: 'project', source: 'project-derived' },
+    authorize: (context) => ({ allowed: useAppStore.getState().currentProjectId === context.projectId }),
+    execute: async () => ({ status: 'success', summary: 'unused', modelContent: 'unused' }) });
 });
 
 afterEach(() => {
@@ -238,12 +243,12 @@ describe('shared Agent tool execution for MCP', () => {
       saved = Uint8Array.from(data); return { ...reference, created: true };
     });
     const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => saved);
-    const captured = await captureAgentResult({ scope, toolId: 'boundary_test', text: '原作品'.repeat(3000),
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '原作品'.repeat(3000),
       policy: { storage: 'project', source: 'project-derived' } });
     expect(captured.reference).toMatchObject({ storage: 'project', projectScope: { projectId: 'project-1', projectEpoch: 0 } });
     useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value, steps: [{
       id: 'step', taskId: value.id, index: 0, kind: 'tool', title: '保存结果', status: 'succeeded', createdAt: 1, updatedAt: 1,
-      toolCall: { callId: 'call', toolId: 'boundary_test', retryCount: 0, resultReference: captured.reference },
+      toolCall: { callId: 'call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
     }] })) }));
     clearAgentResults({ taskId: scope.taskId });
     expect((await readAgentResult(scope, captured.reference!.id)).text).toContain('原作品');
@@ -264,7 +269,7 @@ describe('shared Agent tool execution for MCP', () => {
       saved = Uint8Array.from(data); return { ...reference, created: true };
     });
     vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => saved);
-    const captured = await captureAgentResult({ scope, toolId: 'boundary_test', text: '旧作品'.repeat(3000),
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '旧作品'.repeat(3000),
       policy: { storage: 'project', source: 'project-derived' } });
     const reference = captured.reference!;
     if (!reference.projectScope || reference.projectScope.kind !== 'canvas') throw new Error('缺少原画布上下文');
@@ -275,7 +280,7 @@ describe('shared Agent tool execution for MCP', () => {
     const oldReference = { ...reference }; delete oldReference.projectScope;
     useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value, projectScope, steps: [{
       id: 'legacy-step', taskId: value.id, index: 0, kind: 'tool', title: '旧结果', status: 'succeeded', createdAt: 1, updatedAt: 1,
-      toolCall: { callId: 'legacy', toolId: 'boundary_test', retryCount: 0, resultReference: oldReference },
+      toolCall: { callId: 'legacy', toolId: 'series_get_state', retryCount: 0, resultReference: oldReference },
     }] })) }));
     clearAgentResults({ taskId: scope.taskId });
     expect((await readAgentResult(scope, reference.id)).text).toContain('旧作品');
@@ -283,6 +288,157 @@ describe('shared Agent tool execution for MCP', () => {
     document.projectScope = { ...projectScope, projectEpoch: 1 };
     saved = new TextEncoder().encode(JSON.stringify(document));
     await expect(readAgentResult(scope, reference.id)).rejects.toThrow('原始记录不一致');
+  });
+
+  it('重启冷读和缓存命中都复核原工具授权，交付等待期间撤权也不能返回正文', async () => {
+    const scope = { taskId: 'mcp-task-1', projectId: 'project-1', conversationId: 'mcp-control-project-1' };
+    let saved = new Uint8Array(), release!: () => void;
+    vi.spyOn(projectFiles, 'writeImmutableProjectFile').mockImplementation(async ({ data, reference }) => {
+      saved = Uint8Array.from(data); return { ...reference, created: true };
+    });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementationOnce(async () => { await gate; return saved; })
+      .mockImplementation(async () => saved);
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '不得越权交付'.repeat(1000),
+      policy: { storage: 'project', source: 'project-derived' } });
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value,
+      toolAllowlist: ['agent_result_read', 'series_get_state'], steps: [{
+        id: 'origin', taskId: value.id, index: 0, kind: 'tool', title: '读取剧集', status: 'succeeded', createdAt: 1, updatedAt: 1,
+        toolCall: { callId: 'origin-call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
+      }] })) }));
+    clearAgentResults({ taskId: scope.taskId });
+    const pending = readAgentResult(scope, captured.reference!.id);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    useAppStore.getState().updateAgentTask(scope.taskId, { toolAllowlist: ['agent_result_read'] });
+    release();
+    await expect(pending).rejects.toThrow('原始工具授权');
+
+    useAppStore.getState().updateAgentTask(scope.taskId, { toolAllowlist: ['agent_result_read', 'series_get_state'] });
+    let authorize: (() => boolean) | undefined;
+    const page = await readAgentResult(scope, captured.reference!.id, 0, 10, (check) => { authorize = check; });
+    expect(page.text).toBe('不得越权交付不得越权');
+    expect(authorize?.()).toBe(true);
+    useAppStore.getState().updateAgentTask(scope.taskId, { toolAllowlist: ['agent_result_read'] });
+    expect(authorize?.()).toBe(false);
+    await expect(readAgentResult(scope, captured.reference!.id)).rejects.toThrow('原始工具授权');
+    useAppStore.getState().updateAgentTask(scope.taskId, { toolAllowlist: ['agent_result_read', 'series_get_state'] });
+    const origin = getAgentTool('series_get_state')!;
+    origin.isAvailable = () => false;
+    await expect(readAgentResult(scope, captured.reference!.id)).rejects.toThrow('原始工具授权');
+    origin.isAvailable = () => true;
+    origin.authorize = () => ({ allowed: false });
+    await expect(readAgentResult(scope, captured.reference!.id)).rejects.toThrow('原始工具授权');
+  });
+
+  it('冷读拒绝重复来源步骤和文件中不匹配的工具身份', async () => {
+    const scope = { taskId: 'mcp-task-1', projectId: 'project-1', conversationId: 'mcp-control-project-1' };
+    let saved = new Uint8Array();
+    vi.spyOn(projectFiles, 'writeImmutableProjectFile').mockImplementation(async ({ data, reference }) => {
+      saved = Uint8Array.from(data); return { ...reference, created: true };
+    });
+    const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => saved);
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '原作品'.repeat(3000),
+      policy: { storage: 'project', source: 'project-derived' } });
+    const step = { id: 'origin', taskId: scope.taskId, index: 0, kind: 'tool' as const, title: '读取', status: 'succeeded' as const,
+      createdAt: 1, updatedAt: 1, toolCall: { callId: 'origin-call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference } };
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task, steps: [step, { ...step, id: 'duplicate' }] })) }));
+    clearAgentResults({ taskId: scope.taskId });
+    await expect(readAgentResult(scope, captured.reference!.id)).rejects.toThrow('不可恢复');
+    expect(read).not.toHaveBeenCalled();
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task, steps: [step] })) }));
+    const document = JSON.parse(new TextDecoder().decode(saved));
+    document.toolId = 'different_tool';
+    saved = new TextEncoder().encode(JSON.stringify(document));
+    await expect(readAgentResult(scope, captured.reference!.id)).rejects.toThrow('结果内容与引用不一致');
+  });
+
+  it('冷读期间原工具卸载并以同名定义替换时不交付旧正文', async () => {
+    const scope = { taskId: 'mcp-task-1', projectId: 'project-1', conversationId: 'mcp-control-project-1' };
+    let saved = new Uint8Array(), release!: () => void;
+    vi.spyOn(projectFiles, 'writeImmutableProjectFile').mockImplementation(async ({ data, reference }) => {
+      saved = Uint8Array.from(data); return { ...reference, created: true };
+    });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => { await gate; return saved; });
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '原作品'.repeat(3000),
+      policy: { storage: 'project', source: 'project-derived' } });
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task, steps: [{
+      id: 'origin', taskId: task.id, index: 0, kind: 'tool', title: '读取', status: 'succeeded', createdAt: 1, updatedAt: 1,
+      toolCall: { callId: 'origin-call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
+    }] })) }));
+    clearAgentResults({ taskId: scope.taskId });
+    const pending = readAgentResult(scope, captured.reference!.id);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    const old = getAgentTool('series_get_state')!;
+    clearAgentToolRegistryForTests();
+    registerAgentTool({ ...old });
+    release();
+    await expect(pending).rejects.toThrow('原始工具授权');
+  });
+
+  it('冷读期间仅重排引用及嵌套上下文键不改变原授权，真实字段变化仍拒绝', async () => {
+    const scope = { taskId: 'mcp-task-1', projectId: 'project-1', conversationId: 'mcp-control-project-1' };
+    let saved = new Uint8Array(), release!: () => void;
+    vi.spyOn(projectFiles, 'writeImmutableProjectFile').mockImplementation(async ({ data, reference }) => {
+      saved = Uint8Array.from(data); return { ...reference, created: true };
+    });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementationOnce(async () => { await gate; return saved; })
+      .mockImplementation(async () => saved);
+    const context = captureLegacyProjectExpectedContext(useAppStore.getState(), 'canvas');
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task, executionContext: context, projectScope: context })) }));
+    const capturedScope = { ...scope, executionContext: context, projectScope: context };
+    const captured = await captureAgentResult({ scope: capturedScope, toolId: 'series_get_state', text: '原作品'.repeat(3000),
+      policy: { storage: 'project', source: 'project-derived' } });
+    const reference = captured.reference!;
+    const step = { id: 'origin', taskId: scope.taskId, index: 0, kind: 'tool' as const, title: '读取', status: 'succeeded' as const,
+      createdAt: 1, updatedAt: 1, toolCall: { callId: 'origin-call', toolId: 'series_get_state', retryCount: 0, resultReference: reference } };
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task, steps: [step] })) }));
+    clearAgentResults({ taskId: scope.taskId });
+    const pending = readAgentResult(scope, reference.id);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    const reordered = { ...reference, projectFile: Object.fromEntries(Object.entries(reference.projectFile!).reverse()) as typeof reference.projectFile,
+      executionContext: Object.fromEntries(Object.entries(reference.executionContext!).reverse()) as typeof reference.executionContext,
+      projectScope: Object.fromEntries(Object.entries(reference.projectScope!).reverse()) as typeof reference.projectScope };
+    const reorderedReference = Object.fromEntries(Object.entries(reordered).reverse()) as typeof reference;
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task,
+      executionContext: reordered.executionContext, projectScope: reordered.projectScope, steps: [{ ...step,
+      toolCall: { ...step.toolCall, resultReference: reorderedReference } }] })) }));
+    release();
+    expect((await pending).text).toContain('原作品');
+    clearAgentResults({ taskId: scope.taskId });
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task, steps: [{ ...step,
+      toolCall: { ...step.toolCall, resultReference: { ...reorderedReference, chars: reference.chars + 1 } } }] })) }));
+    await expect(readAgentResult(scope, reference.id)).rejects.toThrow('结果内容与引用不一致');
+  });
+
+  it('并发冷读同一结果后，两次工具交付的授权都保持有效，清理后均撤销', async () => {
+    const scope = { taskId: 'mcp-task-1', projectId: 'project-1', conversationId: 'mcp-control-project-1' };
+    let saved = new Uint8Array(), release!: () => void;
+    vi.spyOn(projectFiles, 'writeImmutableProjectFile').mockImplementation(async ({ data, reference }) => {
+      saved = Uint8Array.from(data); return { ...reference, created: true };
+    });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => { await gate; return saved; });
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '原作品'.repeat(3000),
+      policy: { storage: 'project', source: 'project-derived' } });
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((task) => ({ ...task,
+      toolAllowlist: ['agent_result_read', 'series_get_state'], steps: [{
+        id: 'origin', taskId: task.id, index: 0, kind: 'tool', title: '读取', status: 'succeeded', createdAt: 1, updatedAt: 1,
+        toolCall: { callId: 'origin-call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
+      }] })) }));
+    clearAgentResults({ taskId: scope.taskId });
+    registerResultAgentTools();
+    const tool = getAgentTool('agent_result_read')!;
+    const context = { ...scope, mode: 'autonomous' as const, signal: new AbortController().signal };
+    const pending = [tool.execute(context, { resultId: captured.reference!.id }), tool.execute(context, { resultId: captured.reference!.id })];
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    release();
+    const results = await Promise.all(pending);
+    expect(results.map((result) => result.status)).toEqual(['success', 'success']);
+    expect(results.map((result) => result.resultPolicy?.authorize?.())).toEqual([true, true]);
+    clearAgentResults({ taskId: scope.taskId });
+    expect(results.map((result) => result.resultPolicy?.authorize?.())).toEqual([false, false]);
   });
 
   it('rejects a persistent result when the task scope changes while its file is loading', async () => {
@@ -293,13 +449,13 @@ describe('shared Agent tool execution for MCP', () => {
     });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => { await gate; return saved; });
-    const captured = await captureAgentResult({ scope, toolId: 'boundary_test', text: '原作品'.repeat(80_000),
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '原作品'.repeat(80_000),
       policy: { storage: 'project', source: 'project-derived' } });
     const original = captured.reference!.projectScope;
     if (!original || original.kind !== 'canvas') throw new Error('缺少原画布上下文');
     useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value, projectScope: original, steps: [{
       id: 'step', taskId: value.id, index: 0, kind: 'tool', title: '保存结果', status: 'succeeded', createdAt: 1, updatedAt: 1,
-      toolCall: { callId: 'call', toolId: 'boundary_test', retryCount: 0, resultReference: captured.reference },
+      toolCall: { callId: 'call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
     }] })) }));
     clearAgentResults({ taskId: scope.taskId });
     const pending = readAgentResult(scope, captured.reference!.id);
@@ -342,11 +498,11 @@ describe('shared Agent tool execution for MCP', () => {
     });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => { await gate; return saved; });
-    const captured = await captureAgentResult({ scope, toolId: 'boundary_test', text: '原结果'.repeat(3000),
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '原结果'.repeat(3000),
       policy: { storage: 'project', source: 'project-derived' } });
     useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value, steps: [{
       id: 'step', taskId: value.id, index: 0, kind: 'tool', title: '保存结果', status: 'succeeded', createdAt: 1, updatedAt: 1,
-      toolCall: { callId: 'call', toolId: 'boundary_test', retryCount: 0, resultReference: captured.reference },
+      toolCall: { callId: 'call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
     }] })) }));
     clearAgentResults({ taskId: scope.taskId });
     const pending = readAgentResult(scope, captured.reference!.id);
@@ -424,11 +580,11 @@ describe('shared Agent tool execution for MCP', () => {
     });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => { await gate; return saved; });
-    const captured = await captureAgentResult({ scope, toolId: 'boundary_test', text: '不能泄露的旧正文'.repeat(2000),
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '不能泄露的旧正文'.repeat(2000),
       policy: { storage: 'project', source: 'project-derived' } });
-    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value, toolAllowlist: ['agent_result_read'], steps: [{
+    useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value, toolAllowlist: ['agent_result_read', 'series_get_state'], steps: [{
       id: 'saved-step', taskId: value.id, index: 0, kind: 'tool', title: '保存结果', status: 'succeeded', createdAt: 1, updatedAt: 1,
-      toolCall: { callId: 'saved', toolId: 'boundary_test', retryCount: 0, resultReference: captured.reference },
+      toolCall: { callId: 'saved', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
     }] })) }));
     clearAgentResults({ taskId: scope.taskId });
     registerResultAgentTools();
@@ -454,11 +610,11 @@ describe('shared Agent tool execution for MCP', () => {
     });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementation(async () => { await gate; return saved; });
-    const captured = await captureAgentResult({ scope, toolId: 'boundary_test', text: 'x'.repeat(220_000),
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: 'x'.repeat(220_000),
       policy: { storage: 'project', source: 'project-derived' } });
     useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value, steps: [{
       id: 'step', taskId: value.id, index: 0, kind: 'tool', title: '保存结果', status: 'succeeded', createdAt: 1, updatedAt: 1,
-      toolCall: { callId: 'call', toolId: 'boundary_test', retryCount: 0, resultReference: captured.reference },
+      toolCall: { callId: 'call', toolId: 'series_get_state', retryCount: 0, resultReference: captured.reference },
     }] })) }));
     clearAgentResults({ taskId: scope.taskId });
     const pending = Array.from({ length: 18 }, () => readAgentResult(scope, captured.reference!.id));

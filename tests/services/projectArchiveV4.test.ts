@@ -110,4 +110,34 @@ describe('v4 archive receiving and serialization', () => {
       state: 'active', kind: 'episode', projectId: 'P', episodeId: 'deleted-episode' } }] };
     await expect(readProjectArchiveV4(await replaceEntry(texts, 'history.json', history))).rejects.toThrow('不存在');
   });
+
+  it('保留会话所属画布并拒绝指向其他作品的画布', async () => {
+    const business: ProjectArchiveBusinessV4 = { project: { id: 'P', name: '普通项目', kind: 'standalone', standaloneCanvasId: 'C',
+      storageRoots: [{ id: 'shared', role: 'shared' }] }, episodes: [],
+      canvases: [{ id: 'C', projectId: 'P', episodeId: null, storageRootRef: 'shared', nodes: [], edges: [], groups: [] }],
+      contents: { project: { projectId: 'P', data: {} }, episodes: [] } };
+    const input = await payload(business);
+    input.history = { payload: { conversations: [{ id: 'conversation', projectId: 'P', title: '画布会话', titleSource: 'user',
+      pinned: false, archived: false, agentMode: 'plan', messageCount: 0, createdAt: 1, updatedAt: 1 }], messages: [], memories: [] },
+      workbenchTargets: [], scopes: [{ kind: 'conversation', id: 'conversation', canvasId: 'C' }] };
+    const texts = textsOf(await serializeProjectArchiveV4(input, { packageId: 'package', exportedAt: 1 }));
+    expect((await readProjectArchiveV4(texts)).payload.history?.scopes).toEqual(input.history.scopes);
+    const bad = { ...input.history, scopes: [{ kind: 'conversation', id: 'conversation', canvasId: 'other' }] };
+    await expect(readProjectArchiveV4(await replaceEntry(texts, 'history.json', bad))).rejects.toThrow('归属');
+  });
+
+  it('已删除画布作用域只接受被 head 明确保留的历史身份', async () => {
+    const business = emptySeries(), target = { state: 'retired' as const, kind: 'canvas' as const, projectId: 'P', id: 'old-canvas' };
+    const snapshot = buildProjectExchangeSnapshotV2(business, 'lineage', [], [], [target]);
+    const head = await createProjectExchangeRevisionV2(snapshot);
+    const input: ProjectArchivePayloadV4 = { ...business, exchange: { format: 'ai-canvas-project-exchange', version: 2,
+      packageId: 'package', lineageId: 'lineage', head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions: [head], ancestors: [], files: [] },
+      history: { payload: { conversations: [{ id: 'conversation', projectId: 'P', title: '已删除画布会话', titleSource: 'user',
+        pinned: false, archived: false, agentMode: 'plan', messageCount: 0, createdAt: 1, updatedAt: 1 }], messages: [], memories: [] },
+        workbenchTargets: [], scopes: [{ kind: 'conversation', id: 'conversation', canvasId: 'old-canvas', retired: true }] } };
+    const texts = textsOf(await serializeProjectArchiveV4(input, { packageId: 'package', exportedAt: 1 }));
+    expect((await readProjectArchiveV4(texts)).payload.history?.scopes?.[0]).toMatchObject({ canvasId: 'old-canvas', retired: true });
+    const bad = { ...input.history!, scopes: [{ kind: 'conversation', id: 'conversation', canvasId: 'unknown', retired: true }] };
+    await expect(readProjectArchiveV4(await replaceEntry(texts, 'history.json', bad))).rejects.toThrow('归属');
+  });
 });

@@ -1,6 +1,7 @@
 /**
  * mediaDownloadAccess — 规范化媒体下载凭据与请求并清理结果 URL。
  */
+import { APIMART_BASE_URL, GRSAI_BASE_URL } from '../../constants/api';
 import type { MediaDownloadAccess, ModelProtocolAuthConfig } from '../../types/aiTypes';
 import { applyQueryAuthentication, renderRequestHeaders } from './modelProtocolRequest';
 import { validateAuthentication } from './modelProtocolValidation';
@@ -57,7 +58,8 @@ export async function resolveMediaDownloadRequest(url: string, access?: MediaDow
   if (target.origin !== safe.origin || safe.auth?.type === 'none') return { url };
   const { useAppStore } = await import('../../store/useAppStore');
   const provider = useAppStore.getState().config.providers[safe.providerConfigId];
-  if (!provider || !provider.baseUrl || httpUrl(provider.baseUrl).origin !== safe.origin) {
+  const currentBaseUrl = provider?.baseUrl || (safe.providerConfigId === 'apimart' ? APIMART_BASE_URL : safe.providerConfigId === 'grsai' ? GRSAI_BASE_URL : '');
+  if (!provider || !currentBaseUrl || httpUrl(currentBaseUrl).origin !== safe.origin) {
     throw new Error('原媒体连接或接口地址已变化，请检查原连接配置');
   }
   if (!provider.apiKey) throw new Error('原媒体连接尚未填写 API Key，请补填后继续保存');

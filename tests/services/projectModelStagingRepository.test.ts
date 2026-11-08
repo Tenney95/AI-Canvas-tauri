@@ -50,7 +50,12 @@ async function fixture(factory: IDBFactory, name: string, records: LegacyProject
       sourceDigest: await fingerprintProjectModelSource(checked.manifest),
       backupOperationId: 'backup-one', backupManifestDigest: 'b'.repeat(64), now: 10 });
   };
-  return { database, repository, source: captured.source, prepare };
+  const rollback = async () => {
+    const expected = await repository.readJournal('migration-one');
+    if (!expected) throw new Error('fixture journal missing');
+    return repository.rollback({ operationId: 'migration-one', expected });
+  };
+  return { database, repository, source: captured.source, prepare, rollback };
 }
 
 beforeEach(() => vi.stubGlobal('crypto', webcrypto));
@@ -133,14 +138,124 @@ describe('P2 隔离项目模型暂存仓储', () => {
       await sample.repository.markFailed({ operationId: 'migration-one', code: 'transaction-failed' });
       expect(await sample.repository.readJournal('migration-one')).toMatchObject({ stage: 'failed', failureCode: 'source-changed' });
       const auditBefore = await all(sample.database, 'agentTasks');
-      const rolledBack = await sample.repository.rollback({ operationId: 'migration-one' });
+      const rolledBack = await sample.rollback();
       expect(rolledBack.stage).toBe('rolled_back');
       expect(await all(sample.database, 'canvasDocuments')).toEqual([]);
       expect(await all(sample.database, 'projects')).toEqual([record('P', { name: '后来的编辑' })]);
       expect(await all(sample.database, 'agentTasks')).toEqual(auditBefore);
       expect(await all(sample.database, 'metadata')).toEqual([{ id: 'mcp-operation:old-key', sequence: 9, operationId: 'paid-operation' }]);
-      expect(await sample.repository.rollback({ operationId: 'migration-one' })).toEqual(rolledBack);
+      expect(await sample.rollback()).toEqual(rolledBack);
       expect(await all(sample.database, 'projectModelMigrations')).toHaveLength(1);
+    } finally { sample.database.close(); }
+  });
+
+  it('撤销事务拒绝核验后已推进的 journal，保留新批次与来源冻结', async () => {
+    const sample = await fixture(new IDBFactory(), 'ai-canvas-model-fixture-rollback-cas', [record('P')]);
+    try {
+      const expected = await sample.prepare();
+      const advanced = await sample.repository.stageNextBatch({ operationId: 'migration-one', batchSize: 1 });
+      await expect(sample.repository.rollback({ operationId: 'migration-one', expected })).rejects.toThrow('staging-conflict');
+      expect(await sample.repository.readJournal('migration-one')).toEqual(advanced);
+      expect(await all(sample.database, advanced.rows[0].store)).toHaveLength(1);
+      expect(await all(sample.database, 'metadata')).toContainEqual(expect.objectContaining({ id: PROJECT_MODEL_SOURCE_FREEZE_KEY }));
+      expect((await sample.rollback()).stage).toBe('rolled_back');
+    } finally { sample.database.close(); }
+  });
+
+  it.each(['unexpected', 'modified'] as const)('撤销遇到%s同代材料时整批阻断并保留证据', async (variant) => {
+    const sample = await fixture(new IDBFactory(), `ai-canvas-model-fixture-rollback-${variant}`, [record('P')]);
+    try {
+      await sample.prepare();
+      const staged = await sample.repository.stageNextBatch({ operationId: 'migration-one', batchSize: 500 });
+      const planned = staged.rows.find((row) => row.store === 'projectRoots')!;
+      const suspicious = variant === 'unexpected'
+        ? { ...planned.value, id: 'unknown-root' }
+        : { ...planned.value, name: '未核实的新内容' };
+      await mutation(sample.database, ['projectRoots'], (tx) => tx.objectStore('projectRoots').put(suspicious));
+      const before = await all(sample.database, 'projectRoots');
+      const canvases = await all(sample.database, 'canvasDocuments');
+      await expect(sample.rollback()).rejects.toThrow('staging-conflict');
+      expect(await all(sample.database, 'projectRoots')).toEqual(before);
+      expect(await all(sample.database, 'canvasDocuments')).toEqual(canvases);
+      expect(await sample.repository.readJournal('migration-one')).toEqual(staged);
+      expect(await all(sample.database, 'metadata')).toContainEqual(expect.objectContaining({ id: PROJECT_MODEL_SOURCE_FREEZE_KEY }));
+    } finally { sample.database.close(); }
+  });
+
+  it('撤销期间 journal 行被修改但序号未推进时，仍拒绝删除对应材料', async () => {
+    const sample = await fixture(new IDBFactory(), 'ai-canvas-model-fixture-rollback-journal', [record('P')]);
+    try {
+      await sample.prepare();
+      const expected = await sample.repository.stageNextBatch({ operationId: 'migration-one', batchSize: 500 });
+      const index = expected.rows.findIndex((row) => row.store === 'projectRoots');
+      const altered = { ...expected.rows[index].value, name: '未知的后续修改' };
+      const rows = expected.rows.map((row, position) => position === index
+        ? { ...row, value: altered, token: projectModelSourceToken(altered) } : row);
+      await mutation(sample.database, ['projectModelMigrations', 'projectRoots'], (tx) => {
+        tx.objectStore('projectModelMigrations').put({ ...expected, rows });
+        tx.objectStore('projectRoots').put(altered);
+      });
+      await expect(sample.repository.rollback({ operationId: 'migration-one', expected })).rejects.toThrow('staging-conflict');
+      expect(await all(sample.database, 'projectRoots')).toContainEqual(altered);
+      expect(await all(sample.database, 'metadata')).toContainEqual(expect.objectContaining({ id: PROJECT_MODEL_SOURCE_FREEZE_KEY }));
+    } finally { sample.database.close(); }
+  });
+
+  it('撤销期间进度改变但序号未推进时，仍拒绝删除对应材料', async () => {
+    const sample = await fixture(new IDBFactory(), 'ai-canvas-model-fixture-rollback-progress', [record('P')]);
+    try {
+      await sample.prepare();
+      const expected = await sample.repository.stageNextBatch({ operationId: 'migration-one', batchSize: 1 });
+      const before = await all(sample.database, expected.rows[0].store);
+      await mutation(sample.database, ['projectModelMigrations'], (tx) => {
+        tx.objectStore('projectModelMigrations').put({ ...expected, nextRow: 0 });
+      });
+      await expect(sample.repository.rollback({ operationId: 'migration-one', expected })).rejects.toThrow('staging-conflict');
+      expect(await all(sample.database, expected.rows[0].store)).toEqual(before);
+      expect(await all(sample.database, 'metadata')).toContainEqual(expect.objectContaining({ id: PROJECT_MODEL_SOURCE_FREEZE_KEY }));
+    } finally { sample.database.close(); }
+  });
+
+  it('已提交行缺失时不清理其他暂存材料或解除来源冻结', async () => {
+    const sample = await fixture(new IDBFactory(), 'ai-canvas-model-fixture-rollback-missing', [record('P')]);
+    try {
+      await sample.prepare();
+      const staged = await sample.repository.stageNextBatch({ operationId: 'migration-one', batchSize: 500 });
+      const missing = staged.rows.find((row) => row.store === 'projectRoots')!;
+      await mutation(sample.database, [missing.store], (tx) => tx.objectStore(missing.store).delete(missing.key));
+      const before = await all(sample.database, 'canvasDocuments');
+      await expect(sample.rollback()).rejects.toThrow('staging-conflict');
+      expect(await all(sample.database, 'canvasDocuments')).toEqual(before);
+      expect(await sample.repository.readJournal('migration-one')).toEqual(staged);
+      expect(await all(sample.database, 'metadata')).toContainEqual(expect.objectContaining({ id: PROJECT_MODEL_SOURCE_FREEZE_KEY }));
+    } finally { sample.database.close(); }
+  });
+
+  it('已撤销后出现同代异常行时，重复确认不能报告完成或删除该行', async () => {
+    const sample = await fixture(new IDBFactory(), 'ai-canvas-model-fixture-rollback-recheck', [record('P')]);
+    try {
+      await sample.prepare();
+      const staged = await sample.repository.stageNextBatch({ operationId: 'migration-one', batchSize: 1 });
+      const rolled = await sample.rollback();
+      const planned = staged.rows.find((row) => row.store === 'projectRoots')!;
+      await mutation(sample.database, ['projectRoots'], (tx) => tx.objectStore('projectRoots').put(planned.value));
+      await expect(sample.rollback()).rejects.toThrow('staging-conflict');
+      expect(await all(sample.database, 'projectRoots')).toEqual([planned.value]);
+      expect(await sample.repository.readJournal('migration-one')).toEqual(rolled);
+    } finally { sample.database.close(); }
+  });
+
+  it('已撤销后出现活动模型标记时，重复确认不能报告未激活撤销完成', async () => {
+    const sample = await fixture(new IDBFactory(), 'ai-canvas-model-fixture-rollback-active', [record('P')]);
+    try {
+      await sample.prepare();
+      await sample.repository.stageNextBatch({ operationId: 'migration-one', batchSize: 1 });
+      const rolled = await sample.rollback();
+      const marker = { id: 'activeDataModel', modelVersion: 2, generation: 1 };
+      await mutation(sample.database, ['metadata'], (tx) => tx.objectStore('metadata').put(marker));
+      await expect(sample.rollback()).rejects.toThrow('active-model-present');
+      expect(await sample.repository.readJournal('migration-one')).toEqual(rolled);
+      expect(await all(sample.database, 'metadata')).toContainEqual(marker);
     } finally { sample.database.close(); }
   });
 
@@ -154,7 +269,7 @@ describe('P2 隔离项目模型暂存仓储', () => {
       await expect(sample.repository.verify({ operationId: 'migration-one' })).rejects.toThrow('verification-failed');
       expect(await sample.repository.readJournal('migration-one')).toMatchObject({ stage: 'failed', failureCode: 'verification-failed' });
       await mutation(sample.database, ['metadata'], (tx) => tx.objectStore('metadata').put({ id: 'activeDataModel', modelVersion: 2, generation: 1 }));
-      await expect(sample.repository.rollback({ operationId: 'migration-one' })).rejects.toThrow('active-model-present');
+      await expect(sample.rollback()).rejects.toThrow('active-model-present');
       expect(await all(sample.database, 'canvasPreviews')).toHaveLength(1);
     } finally { sample.database.close(); }
   });
@@ -168,7 +283,7 @@ describe('P2 隔离项目模型暂存仓储', () => {
       expect((await sample.repository.readJournal('migration-one'))?.stage).toBe('quarantined');
       expect(await all(sample.database, 'projects')).toEqual([record('E', { parentId: 'missing' })]);
       expect(await all(sample.database, 'projectRoots')).toEqual([]);
-      await sample.repository.rollback({ operationId: 'migration-one' });
+      await sample.rollback();
     } finally { sample.database.close(); }
   });
 
@@ -201,7 +316,7 @@ describe('P2 隔离项目模型暂存仓储', () => {
       }));
       await expect(sample.repository.stageNextBatch({ operationId: 'migration-one' })).rejects.toThrow('source-changed');
       expect(await all(sample.database, 'projectRoots')).toEqual([]);
-      await sample.repository.rollback({ operationId: 'migration-one' });
+      await sample.rollback();
       const tasks = await all(sample.database, 'agentTasks');
       expect(tasks).toContainEqual(expect.objectContaining({ receipt: 'new-receipt', modelRounds: 5 }));
       await mutation(sample.database, ['projectModelMigrations'], (tx) => tx.objectStore('projectModelMigrations').put({

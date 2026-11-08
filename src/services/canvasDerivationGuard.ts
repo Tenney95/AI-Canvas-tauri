@@ -3,9 +3,7 @@
  */
 import type { CanvasContext } from '../types/project';
 import type { ProjectExecutionContextState } from '../types/projectExecutionContext';
-import {
-  captureLegacyCanvasContext, isProjectExpectedContextCurrent, parseProjectExpectedContext,
-} from './projectExecutionContext';
+import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 
 interface CanvasDerivationState extends ProjectExecutionContextState {
   nodes: ReadonlyArray<{ id: string }>;
@@ -23,9 +21,8 @@ export interface CanvasDerivationGuard {
 function captureContext(state: CanvasDerivationState): CanvasContext | null {
   if (state.projectExecutionContext !== undefined) {
     try {
-      const parsed = parseProjectExpectedContext(state.projectExecutionContext);
-      return parsed.kind === 'canvas' && parsed.canvasId === state.currentProjectId
-        && parsed.canvasRevision === state.getCurrentRevision() ? parsed : null;
+      const parsed = captureLegacyCanvasContext(state);
+      return parsed && parsed.canvasRevision === state.getCurrentRevision() ? parsed : null;
     } catch { return null; }
   }
   return captureLegacyCanvasContext(state);
@@ -34,6 +31,9 @@ function captureContext(state: CanvasDerivationState): CanvasContext | null {
 /** 仅核对目标身份/代际；不是执行租约，不能替代isCanvasDerivationFresh。 */
 export function isCanvasDerivationTargetCurrent(guard: CanvasDerivationGuard, state: CanvasDerivationState): boolean {
   if (state.currentProjectId !== guard.projectId) return false;
+  if (state.projectExecutionContext !== undefined) {
+    try { if (!captureLegacyCanvasContext(state)) return false; } catch { return false; }
+  }
   if (!guard.expectedContext) return state.projects === undefined && state.projectExecutionContext === undefined;
   return isProjectExpectedContextCurrent(guard.expectedContext, state.projectExecutionContext ?? state, { checkCanvasRevision: false });
 }

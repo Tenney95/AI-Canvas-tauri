@@ -11,6 +11,8 @@ export interface ProjectModelMaintenanceLease {
   mode: 'isolated-fixture';
   coldStart: true;
   productionAllowed: false;
+  /** true：本次固定合成容器往返完成；false：未能完成或达到保留上限，不能据此阻止迁移恢复。 */
+  fixtureArchiveContainer?: boolean;
 }
 export interface ProjectModelDurableBackupSeal {
   format: 'project-model-durable-seal-v1';

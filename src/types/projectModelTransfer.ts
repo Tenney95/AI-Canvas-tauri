@@ -41,6 +41,7 @@ export interface ProjectModelTransferExchange {
   published: Array<{ operationId: string; packageDigest: string; outputRef: string; head: ProjectExchangeRevisionReference }>;
 }
 export interface ProjectModelTransferCapture {
+  assetMetadata?: import('../services/nativeProjectAssetRecovery').NativeAssetSnapshot[];
   schemaVersion: 1;
   generation: number;
   sessionId: string;
@@ -52,6 +53,14 @@ export interface ProjectModelTransferCapture {
   /** 同一只读事务中的精确材料；用于CAS，不是摘要或执行租约。 */
   sourceToken: string;
   includesHistory: boolean;
+  /** 新项目剪辑快照，使用本机相对素材引用；仅归档投影使用。 */
+  editorRecords?: import('./videoEditor').VideoEditorProjectRecord[];
+  /** 墓碑画布剪辑只能归档或显式恢复，不授予活动画布权限。 */
+  retiredEditorRecords?: import('./videoEditor').VideoEditorProjectRecord[];
+  /** 新库完成回执冻结的产物闭包，任务和预算本身不导出或回滚。 */
+  nativeMediaResults?: Array<{ operationId: string; ordinal?: number; canvasId: string; relativePath: string; category: 'image' | 'video' | 'audio';
+    providerConfigId: string; createdAt: number; origin?: import('./media').NativeMediaOrigin }>;
+  nativeEditorMediaArtifacts?: Array<{ operationId: string; canvasId: string; path: string }>;
 }
 export interface ProjectModelTransferMedia {
   rootRef: string;

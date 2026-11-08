@@ -1,6 +1,11 @@
 /** GRSAI H3 复用声明式提交、轮询与恢复；生成提交不重试。 */
 import { GRSAI_BASE_URL } from '../../../constants/api';
 import { useAppStore } from '../../../store/useAppStore';
+import { captureLegacyCanvasContext } from '../../projectExecutionContext';
+import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
+import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../../indexedDb/nativeMediaTaskRepository';
+import { sha256BytesHex } from '../../mediaDataUrl';
+import { projectModelSourceToken } from '../../projectModelComparisonMaterial';
 import { captureVideoTaskGeneration, cleanupNodePolling, pauseMediaTask, registerNodePolling, removeFailedMediaTask, savePendingTask, updatePendingTask } from '../../pollManager';
 import { PollTaskFailedError } from '../../pollTask';
 import { getHttpResponseError } from '../httpUtils';
@@ -43,6 +48,9 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
     let receipt: MediaTaskReceipt | undefined;
     let requestSent = false;
     let rejected = false;
+    let nativeTask: NativeMediaTaskRecord | undefined;
+    let nativeRemoteId: string | undefined;
+    const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
     const signal = nodeSignal && externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal ?? externalSignal;
     try {
       signal?.throwIfAborted();
@@ -50,14 +58,32 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
       const audioReferences = input.references?.filter((ref) => ref.kind === 'audio');
       const images = imageReferences?.length ? imageReferences.map(getMediaReferenceUrl) : input.imageUrls;
       const audios = audioReferences?.length ? audioReferences.map(getMediaReferenceUrl) : input.audioUrls;
+      if (useAppStore.getState().projectExecutionContext !== undefined && !nativeContext) throw new Error('当前画布尚未就绪，未提交视频任务');
+      if (nativeContext?.modelGeneration === 1) {
+        if (!isNativeVideoSubmissionGuard(beforeSubmit) || !params.nodeId) throw new Error('请从原画布视频节点发起任务，无法验证输入时不提交');
+        if (images.length || audios.length || input.videoUrls.length || params.referenceMedia?.length) throw new Error('新项目暂不支持带素材引用的视频任务，未提交请求');
+        const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, params.nodeId);
+        const protocolDigest = await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(GRSAI_H3_PROTOCOL)));
+        nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: params.nodeId,
+          inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
+          providerConfigId: 'grsai', providerBase: baseUrl, protocolDigest, category: 'video' });
+      }
       const imageUrls = await resolveImageUrlArray(images, 'grsai', signal);
       const audioUrls: string[] = [];
       for (const url of audios) audioUrls.push(await resolveMediaReferenceUrl(url, { provider: 'grsai', kind: 'audio', signal }));
       signal?.throwIfAborted();
       if (beforeSubmit) await beforeSubmit();
       signal?.throwIfAborted();
-      if (params.nodeId && projectId) receipt = savePendingTask({ nodeId: params.nodeId, projectId, nodeType: 'ai-video',
+      if (!nativeTask && params.nodeId && projectId) receipt = savePendingTask({ nodeId: params.nodeId, projectId, nodeType: 'ai-video',
         provider: 'grsai', providerConfigId: 'grsai', taskId: '', taskType: 'custom-protocol', videoGeneration, submitted: false });
+      if (nativeTask) {
+        if (!nativeContext) throw new Error('原媒体画布已变化');
+        await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
+        await assertNativeMediaPrepared(nativeTask);
+        await beforeSubmit?.();
+        await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
+        signal?.throwIfAborted();
+      }
       requestSent = true;
       const submitted = await submitModelProtocol({ apiKey: provider.apiKey, baseUrl, protocol: GRSAI_H3_PROTOCOL, signal,
         variables: { model, prompt: input.prompt, resolution, duration, aspectRatio: ratio === '9:16' ? 'portrait' : 'landscape', imageUrls, audioUrls },
@@ -70,6 +96,13 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
         },
       });
       if (!submitted.taskId || !submitted.poll) throw new Error('GRSAI H3 未返回任务 ID');
+      if (nativeTask) {
+        nativeRemoteId = submitted.taskId;
+        await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId: nativeRemoteId });
+        const pending = new Error(`GRSAI 视频任务已提交，操作 ID：${nativeTask.operationId}。请在设置的存储健康中继续查询原任务。`);
+        pending.name = 'NativeMediaTaskPending';
+        throw pending;
+      }
       if (params.nodeId) receipt = updatePendingTask(params.nodeId, { taskId: submitted.taskId,
         protocolPoll: submitted.poll, submitted: true }, receipt?.taskId, receipt?.attemptId) ?? receipt;
       const result = await pollResolvedModelProtocol(submitted.poll, provider.apiKey, signal, baseUrl);
@@ -78,7 +111,13 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
       if (receipt) receipt = updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId) ?? receipt;
       return { url, ...(receipt ? { taskReceipt: receipt } : {}) };
     } catch (error) {
+      if (error instanceof Error && error.name === 'NativeMediaTaskPending') throw error;
       const certainHttpRejection = !receipt?.taskId && getHttpResponseError(error)?.definitiveFailure === true;
+      if (nativeTask) {
+        await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
+          nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || rejected || certainHttpRejection ? { notStarted: true } : { unknown: true }).catch(() => undefined);
+        if (requestSent && !rejected && !certainHttpRejection) throw new Error(`GRSAI 视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`);
+      }
       if (receipt) {
         if (rejected || !requestSent || certainHttpRejection || error instanceof PollTaskFailedError) {
           removeFailedMediaTask(receipt);

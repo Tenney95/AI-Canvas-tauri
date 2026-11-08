@@ -8,6 +8,10 @@ import { isMcpGlobalContext } from '../mcp/mcpSettingsScope';
 import { isWorkbenchAgentTaskInScope, isWorkbenchTeamTaskInScope } from '../episodeWorkspaceScope';
 import { assertAgentProjectContext, captureAgentProjectScope } from './agentProjectContext';
 import { ProjectExecutionContextError } from '../projectExecutionContext';
+import { getAgentTool, prepareAgentToolCall, type AgentToolContext } from './toolRegistry';
+import { evaluateAgentToolPolicy } from './policyEngine';
+import { configValuesEqual } from '../configPatch';
+import { nativeAgentResumeContext } from './agentResumeContext';
 
 export const AGENT_RESULT_PREVIEW_CHARS = 6000;
 export const AGENT_RESULT_PAGE_CHARS = 12000;
@@ -20,6 +24,10 @@ const MAX_PROJECT_RESULT_BYTES = 2 * 1024 * 1024;
 const RESULT_PATH = /^agent-results\/[A-Za-z0-9_-]{1,160}\/result-[a-f0-9-]{36}-[a-f0-9]{64}\.json$/;
 interface Entry {
   scope: AgentResultScope; reference: AgentResultReference; text: string; authorize?: () => boolean;
+  /** 文件中有摘要保护的来源工具 ID；只在宿主内存中使用。 */
+  originToolId?: string;
+  /** 旧引用的原始范围来自已验证文件，不能回写或替换旧任务引用。 */
+  binding?: Pick<AgentResultReference, 'executionContext' | 'projectScope'>;
 }
 class AgentResultScopeError extends Error {}
 const entries = new Map<string, Entry>();
@@ -67,16 +75,57 @@ function assertScope(scope: AgentResultScope, binding?: Pick<AgentResultReferenc
     assertAgentProjectContext(state, task, { checkRevision: false });
   }
   if (binding?.executionContext || binding?.projectScope) {
-    assertAgentProjectContext(state, { projectId: task.projectId, ...binding }, { checkRevision: false });
+    // 原文件/引用仍保留旧租约；仅已显式继续的同任务可按持久身份验证后读取历史结果。
+    const historicalNative = (binding.executionContext ?? binding.projectScope)?.modelGeneration === 1;
+    const effective = historicalNative && (task.resumeCount ?? 0) > 0
+      ? { ...binding, ...nativeAgentResumeContext(state, { ...task, executionContext: binding.executionContext, projectScope: binding.projectScope }) }
+      : binding;
+    assertAgentProjectContext(state, { projectId: task.projectId, ...effective }, { checkRevision: false });
   }
 }
 
-function taskContextSignature(task: ReturnType<typeof scopeTask>): string {
-  return JSON.stringify([task.executionContext ?? null, task.projectScope ?? null, task.workbenchTarget ?? null]);
+function taskContextSignature(task: ReturnType<typeof scopeTask>): unknown {
+  return structuredClone([task.executionContext ?? null, task.projectScope ?? null, task.workbenchTarget ?? null]);
 }
 
 function sameScope(left: AgentResultScope, right: AgentResultScope): boolean {
   return left.taskId === right.taskId && left.projectId === right.projectId && left.conversationId === right.conversationId;
+}
+
+/** 旧文件只保存工具 ID 而未保存原始输入；当前仅空输入的剧集状态可安全重验。 */
+function projectResultAuthorization(scope: AgentResultScope, reference: AgentResultReference, originToolId: string,
+  binding: Pick<AgentResultReference, 'executionContext' | 'projectScope'> = reference): () => boolean {
+  const original = getAgentTool(originToolId);
+  const expectedReference = structuredClone(reference);
+  return () => {
+    try {
+      const task = scopeTask(scope);
+      const state = useAppStore.getState();
+      const matches = task.steps.filter((step) => step.toolCall?.resultReference?.id === reference.id);
+      const toolCall = matches[0]?.toolCall;
+      if (matches.length !== 1 || matches[0].kind !== 'tool' || matches[0].status !== 'succeeded'
+        || toolCall?.toolId !== originToolId || !configValuesEqual(toolCall.resultReference, expectedReference)
+        || originToolId !== 'series_get_state' || !original || getAgentTool(originToolId) !== original
+        || original.effect !== 'read' || original.resultPolicy?.storage !== 'project'
+        || original.resultPolicy.source !== 'project-derived' || typeof original.authorize !== 'function' || original.resolveInput
+        || original.inputSchema.type !== 'object' || original.inputSchema.additionalProperties !== false
+        || Object.keys(original.inputSchema.properties ?? {}).length !== 0 || (original.inputSchema.required?.length ?? 0) !== 0
+        || task.workbenchTarget && !isWorkbenchAgentTaskInScope(state, task, originToolId)) return false;
+      assertScope(scope, binding);
+      const mode = state.conversations?.find((item) => item.id === task.conversationId)?.agentMode ?? task.mode;
+      if (mode !== 'plan' && mode !== 'collaborative' && mode !== 'autonomous') return false;
+      const context: Omit<AgentToolContext, 'signal'> = {
+        taskId: task.id, projectId: task.projectId, conversationId: task.conversationId, mode,
+        toolAllowlist: task.toolAllowlist,
+        executionContext: task.executionContext ?? binding.executionContext,
+        projectScope: task.projectScope ?? binding.projectScope,
+      };
+      const call = { callId: toolCall.callId, toolId: originToolId, input: {} };
+      const prepared = prepareAgentToolCall(call, context);
+      return prepared.ok && prepared.prepared.definition === original
+        && evaluateAgentToolPolicy(original, prepared.prepared.input, context).outcome === 'allow';
+    } catch { return false; }
+  };
 }
 
 function trimEntries(incomingChars: number): void {
@@ -118,7 +167,7 @@ export async function captureAgentResult(input: {
   const assertCapturedScope = () => {
     lease.assert();
     assertScope(input.scope, binding);
-    if (taskContextSignature(scopeTask(input.scope)) !== taskContext) throw new ProjectExecutionContextError();
+    if (!configValuesEqual(taskContextSignature(scopeTask(input.scope)), taskContext)) throw new ProjectExecutionContextError();
   };
   assertCapturedScope();
   if (input.policy?.authorize?.() === false) throw new DOMException('原始授权已撤销', 'AbortError');
@@ -157,7 +206,8 @@ export async function captureAgentResult(input: {
   }
   lease.assert();
   trimEntries(text.length);
-  entries.set(id, { scope: { ...input.scope }, reference: structuredClone(reference), text, authorize: input.policy?.authorize });
+  entries.set(id, { scope: { ...input.scope }, reference: structuredClone(reference), text,
+    authorize: input.policy?.authorize, ...(reference.storage === 'project' ? { originToolId: input.toolId } : {}) });
   return { modelContent: `${preview}\nresultId=${id}，共 ${text.length} 字；调用 agent_result_read 分段读取。${continuation}`,
     reference, truncated: true };
   } finally { lease.release(); }
@@ -165,6 +215,7 @@ export async function captureAgentResult(input: {
 
 export async function readAgentResult(
   scope: AgentResultScope, resultId: string, offset = 0, limit = AGENT_RESULT_PAGE_CHARS,
+  onAuthorize?: (authorize: () => boolean) => void,
 ): Promise<AgentResultPage> {
   const lease = beginResultLease(scope);
   try {
@@ -174,16 +225,27 @@ export async function readAgentResult(
   if ((readBudgets.get(scope.taskId) ?? 0) >= MAX_READ_CHARS_PER_TASK) throw new Error('结果回读达到任务预算，请缩小读取范围');
   let entry = entries.get(resultId);
   if (entry && !sameScope(entry.scope, scope)) throw new Error('结果不属于本任务');
-  if (entry) assertScope(scope, entry.reference);
+  let originAuthorization: (() => boolean) | undefined;
+  if (entry) {
+    assertScope(scope, entry.binding ?? entry.reference);
+    if (entry.reference.storage === 'project') {
+      originAuthorization = projectResultAuthorization(scope, entry.reference, entry.originToolId ?? '', entry.binding ?? entry.reference);
+      if (!originAuthorization()) throw new Error('原始工具授权或上下文已变化，无法验证');
+    }
+  }
   if (entry?.authorize?.() === false) { entries.delete(resultId); throw new Error('原始授权已撤销，结果已失效'); }
   if (entry?.reference.expiresAt && entry.reference.expiresAt <= Date.now()) { entries.delete(resultId); entry = undefined; }
   if (!entry) {
     const task = scopeTask(scope);
     const taskContext = taskContextSignature(task);
-    const reference = task.steps.flatMap((step) => step.toolCall?.resultReference ?? []).find((item) => item.id === resultId);
+    const matches = task.steps.filter((step) => step.toolCall?.resultReference?.id === resultId);
+    const reference = matches.length === 1 ? matches[0].toolCall?.resultReference : undefined;
+    const originToolId = matches.length === 1 ? matches[0].toolCall?.toolId : undefined;
     const file = reference?.storage === 'project' ? reference.projectFile : undefined;
     if (!reference || !file || !RESULT_PATH.test(file.relativePath) || !file.relativePath.startsWith(`agent-results/${scope.taskId}/`)
       || !file.relativePath.endsWith(`/${resultId}-${file.sha256}.json`)) throw new Error('结果已过期或不可恢复，请用原工具重新读取或重新授权');
+    originAuthorization = projectResultAuthorization(scope, reference, originToolId ?? '');
+    if (!originAuthorization()) throw new Error('原始工具授权或上下文已变化，无法验证');
     const referenceBinding = { ...(reference.executionContext ? { executionContext: reference.executionContext } : {}),
       ...(reference.projectScope ? { projectScope: reference.projectScope } : {}) };
     const hasReferenceBinding = !!(reference.executionContext || reference.projectScope);
@@ -192,9 +254,9 @@ export async function readAgentResult(
     else if (useAppStore.getState().projects !== undefined) throw new ProjectExecutionContextError();
     const data = await readVerifiedProjectFile({ projectId: scope.projectId, reference: file, maxBytes: MAX_PROJECT_RESULT_BYTES });
     lease.assert();
-    if (taskContextSignature(scopeTask(scope)) !== taskContext) throw new ProjectExecutionContextError();
+    if (!configValuesEqual(taskContextSignature(scopeTask(scope)), taskContext)) throw new ProjectExecutionContextError();
     const document = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data)) as Record<string, unknown>;
-    if (document.version !== 1 || document.id !== resultId || typeof document.text !== 'string'
+    if (document.version !== 1 || document.id !== resultId || document.toolId !== originToolId || typeof document.text !== 'string'
       || document.text.length !== reference.chars || document.text.length > MAX_RESULT_CHARS
       || document.taskId !== scope.taskId || document.projectId !== scope.projectId || document.conversationId !== scope.conversationId) {
       throw new Error('结果内容与引用不一致');
@@ -206,15 +268,30 @@ export async function readAgentResult(
     if (!savedContext.executionContext && !savedContext.projectScope && useAppStore.getState().projects !== undefined) {
       throw new ProjectExecutionContextError();
     }
-    if (hasReferenceBinding && JSON.stringify(savedContext) !== JSON.stringify(referenceBinding)) {
+    if (hasReferenceBinding && !configValuesEqual(savedContext, referenceBinding)) {
       throw new Error('结果上下文与原始记录不一致');
     }
-    if (!hasReferenceBinding && (task.executionContext && JSON.stringify(savedContext.executionContext) !== JSON.stringify(task.executionContext)
-      || task.projectScope && JSON.stringify(savedContext.projectScope) !== JSON.stringify(task.projectScope))) {
+    if (!hasReferenceBinding && (task.executionContext && !configValuesEqual(savedContext.executionContext, task.executionContext)
+      || task.projectScope && !configValuesEqual(savedContext.projectScope, task.projectScope))) {
       throw new Error('结果上下文与原始记录不一致');
     }
-    assertScope(scope, savedContext); lease.assert(); trimEntries(document.text.length);
-    entry = { scope: { ...scope }, reference: { ...reference, ...structuredClone(savedContext) }, text: document.text }; entries.set(resultId, entry);
+    assertScope(scope, savedContext); lease.assert();
+    if (!originAuthorization()) throw new Error('原始工具授权或上下文已变化，无法验证');
+    const cached = entries.get(resultId);
+    const cachedBinding = cached?.binding ?? (cached ? {
+      ...(cached.reference.executionContext ? { executionContext: cached.reference.executionContext } : {}),
+      ...(cached.reference.projectScope ? { projectScope: cached.reference.projectScope } : {}),
+    } : undefined);
+    if (cached && (!sameScope(cached.scope, scope) || !configValuesEqual(cached.reference, reference)
+      || !configValuesEqual(cachedBinding, savedContext) || cached.text !== document.text || cached.originToolId !== originToolId)) {
+      throw new Error('结果缓存与原始记录不一致');
+    }
+    if (cached) entry = cached;
+    else {
+      trimEntries(document.text.length);
+      entry = { scope: { ...scope }, reference: structuredClone(reference), binding: structuredClone(savedContext), text: document.text, originToolId };
+      entries.set(resultId, entry);
+    }
   }
   // 文件读取可能并发；预算检查与计数必须在最后一次 await 后连续完成。
   lease.assert();
@@ -222,6 +299,16 @@ export async function readAgentResult(
   if (used >= MAX_READ_CHARS_PER_TASK) throw new Error('结果回读达到任务预算，请缩小读取范围');
   const text = entry.text.slice(offset, offset + Math.min(limit, MAX_READ_CHARS_PER_TASK - used));
   readBudgets.set(scope.taskId, used + text.length);
+  const selectedEntry = entry;
+  const deliveryScope = { taskId: scope.taskId, projectId: scope.projectId, conversationId: scope.conversationId };
+  onAuthorize?.(() => {
+    try {
+      if (entries.get(resultId) !== selectedEntry || !sameScope(selectedEntry.scope, deliveryScope)) return false;
+      assertScope(deliveryScope, selectedEntry.binding ?? selectedEntry.reference);
+      return selectedEntry.authorize?.() !== false && originAuthorization?.() !== false
+        && (!selectedEntry.reference.expiresAt || selectedEntry.reference.expiresAt > Date.now());
+    } catch { return false; }
+  });
   return { resultId, text, offset, nextOffset: offset + text.length, totalChars: entry.text.length,
     eof: offset + text.length >= entry.text.length };
   } finally { lease.release(); }

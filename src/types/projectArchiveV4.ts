@@ -3,6 +3,7 @@
  * 本机迁移备份另用 project-model-backup-v1，不得调用项目包脱敏器替代完整备份。
  */
 import type { ProjectArchiveChatPayload } from '../services/projectTransferService';
+import type { VideoEditorProjectRecord } from './videoEditor';
 import type {
   ProjectExchangeEntityKind,
   ProjectExchangeObject,
@@ -23,7 +24,7 @@ export const PROJECT_ARCHIVE_V4_ENTRIES = [
   'project.json', 'episodes.json', 'canvases.json', 'contents.json', 'exchange.json',
 ] as const;
 
-export type ProjectArchiveV4Entry = typeof PROJECT_ARCHIVE_V4_ENTRIES[number] | 'history.json';
+export type ProjectArchiveV4Entry = typeof PROJECT_ARCHIVE_V4_ENTRIES[number] | 'history.json' | 'video-editor.json' | 'asset-metadata.json';
 export type ProjectExchangeKindV2 = ProjectExchangeEntityKind | 'episode' | 'canvas';
 
 /** scopeId 是逻辑作用域；Canvas 内容不再用本机项目 ID 隐式指定目标。 */
@@ -160,6 +161,8 @@ export interface ProjectArchiveHistoryV4 {
     conversations: Array<Omit<ProjectArchiveChatPayload['conversations'][number], 'workbenchTarget'>>;
   };
   workbenchTargets: Array<{ conversationId: string; target: ProjectArchiveWorkbenchTargetV4 }>;
+  /** 会话与记忆原本所属画布；缺省时属于项目根。消息沿用所属会话。 */
+  scopes?: Array<{ kind: 'conversation' | 'memory'; id: string; canvasId: string; retired?: true }>;
 }
 
 /** 每个素材逻辑身份绑定来源根；物理载荷可按 mediaId 去重。 */
@@ -180,7 +183,20 @@ export interface ProjectArchiveBusinessV4 {
 export interface ProjectArchivePayloadV4 extends ProjectArchiveBusinessV4 {
   exchange: ProjectExchangeBundleV2;
   history?: ProjectArchiveHistoryV4;
+  videoEditor?: ProjectArchiveVideoEditorV4;
+  assetMetadata?: ProjectArchiveAssetMetadataV4;
 }
+
+/** 元数据只引用包内逻辑文件，不携带本机素材 ID、路径或执行权限。 */
+export interface ProjectArchiveAssetMetadataV4 {
+  version: 1;
+  records: Array<{ fileId: string; tags?: { tags: string[]; taggedBy?: 'manual' | 'comfyui' | 'vision'; updatedAt: number };
+    images?: Array<{ contentDigest: string; fileName: string; prompt: string;
+      /** digest 是图片固定块链摘要；文件原始 SHA-256 由 fileId 所属 media 验证。 */
+      references: Array<{ id: string; name: string; fileId: string; digest: string; bytes: number }>; revision: number; updatedAt: number }> }>;
+}
+
+export interface ProjectArchiveVideoEditorV4 { records: VideoEditorProjectRecord[]; retiredRecords?: VideoEditorProjectRecord[] }
 
 /** 已校验的纯归档材料，不构成写入正式数据库或执行历史目标的授权。 */
 export interface ValidatedProjectArchiveV4 {

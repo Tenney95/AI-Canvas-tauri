@@ -41,6 +41,10 @@ vi.mock('../../src/services/indexedDbService', async (importOriginal) => ({
   getProjectById: mocks.getProjectById,
 }));
 vi.mock('../../src/services/indexedDb/projectImportRepository', () => ({ listProjectImportRecoveries: async () => [] }));
+vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/indexedDb/legacyProjectWriteGuard')>(),
+  assertLegacyProjectWritesAllowed: async () => undefined,
+}));
 vi.mock('../../src/services/fs/core', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/fs/core')>(),
   isTauriEnv: () => true,

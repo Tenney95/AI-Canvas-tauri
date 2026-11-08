@@ -131,6 +131,27 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=permissions");
+    // 仅显式 feature 的 Windows debug 构建编译固定 fixture 页；输出只放 Cargo OUT_DIR。
+    // 正式/普通构建不会运行 Node 或包含此演练脚本。
+    if std::env::var_os("CARGO_FEATURE_PROJECT_MODEL_FIXTURE_HOST").is_some()
+        && std::env::var("PROFILE").as_deref() == Ok("debug")
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+    {
+        println!("cargo:rerun-if-changed=../scripts/build-project-model-fixture-host.mjs");
+        // 编译链可间接依赖 utils 等目录；不能因只跟踪入口而复用旧演练脚本。
+        println!("cargo:rerun-if-changed=../src");
+        println!("cargo:rerun-if-changed=../package.json");
+        println!("cargo:rerun-if-changed=../package-lock.json");
+        println!("cargo:rerun-if-changed=../tsconfig.json");
+        let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("fixture OUT_DIR 缺失"))
+            .join("project-model-fixture-host.js");
+        let status = std::process::Command::new("node")
+            .arg("../scripts/build-project-model-fixture-host.mjs")
+            .arg(&output)
+            .status()
+            .expect("无法启动 fixture 构建，请确认 Node 可用");
+        assert!(status.success() && output.is_file(), "fixture 脚本构建失败");
+    }
     let registered =
         registered_commands(include_str!("src/lib.rs")).expect("无法读取应用命令注册列表");
     let declared = permission_directory_commands(std::path::Path::new("permissions"))

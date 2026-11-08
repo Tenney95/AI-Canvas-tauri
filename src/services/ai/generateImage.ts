@@ -48,6 +48,7 @@ import { aigcsiImageExecutionProfile, usesAigcsiModelProtocol } from './provider
 import { resolveImageOutputsPerJob, resolveImageParameterCapability } from './mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
 import { compileVideoReferencePrompt } from './referencePrompt';
+import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
 
 function hasReferenceImageFile(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
@@ -60,12 +61,13 @@ function hasReferenceImageFile(value: unknown): boolean {
 export async function generateImage(
   params: AIImageGenParams,
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<ImageGenerationResult> {
   if (!params.collectCandidates && !params.workflowId
     && resolveImageOutputsPerJob(params.model, params.provider, useAppStore.getState().config) > 1) {
     throw new Error('所选模型一次返回多张候选图，请在图片节点或对话中生成');
   }
-  const batch = await generateImagesBatch(params, 1, signal);
+  const batch = await generateImagesBatch(params, 1, signal, beforeSubmit);
   const result = batch.results[0];
   if (!result) throw new Error('图片生成返回结果为空');
   return { ...result,
@@ -153,9 +155,17 @@ export async function generateImagesBatch(
   params: AIImageGenParams,
   count: number,
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
   const { model, provider } = params;
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1) {
+    const connection = provider === 'general' ? resolveGeneralModelConnection(model) : undefined;
+    const profile = connection && resolveModelExecutionProfile(connection.model.executionProfile);
+    if ((provider === 'apimart' ? !isNativeVideoSubmissionGuard(beforeSubmit) : !profile || requestedCount !== 1 || !isNativeVideoSubmissionGuard(beforeSubmit))) {
+      throw new Error('此原生图片模型或批量合同没有可耐久续查的完整回执，未提交请求');
+    }
+  }
   let rawPrompt = params.prompt;
   const rawWorkflowPrompt = rawPrompt;
   let imageSize = params.imageSize ?? '2K';
@@ -407,6 +417,7 @@ export async function generateImagesBatch(
       referenceMedia,
       requestedCount,
       signal,
+      beforeSubmit,
     });
   }
 
@@ -441,6 +452,7 @@ export async function generateImagesBatch(
         category: 'image',
         nodeId: params.nodeId,
         signal,
+        beforeSubmit,
         ...(outputsPerJob > 1 ? { expectedImageOutputs: outputsPerJob } : {}),
         variables: usesLibapiProtocol ? libapiImageVariables(modelName, variables)
           : usesRelayonProtocol ? relayonImageVariables(modelName, variables) : variables,

@@ -21,9 +21,11 @@ import type { McpOperationClaim } from '../services/indexedDbService';
 import * as agentTaskService from '../services/chat/agentTaskService';
 import { emitAgentLifecycleEvent } from '../services/chat/agentLifecycle';
 import type { CreationProfileSnapshot } from '../types/creationProfile';
-import { parseProjectExpectedContext, ProjectExecutionContextError } from '../services/projectExecutionContext';
+import { isProjectExpectedContextCurrent, parseProjectExpectedContext, ProjectExecutionContextError } from '../services/projectExecutionContext';
 import { captureAgentProjectScope } from '../services/chat/agentProjectContext';
 import type { ProjectExecutionContextState } from '../types/projectExecutionContext';
+import { isGeneralAssistantScope } from '../services/chat/assistantScope';
+import { MCP_SETTINGS_SCOPE_ID } from '../services/mcp/mcpSettingsScope';
 
 export interface CreateAgentTaskInput {
   /** 仅宿主团队入口用于同一发起请求的稳定身份。 */
@@ -31,6 +33,8 @@ export interface CreateAgentTaskInput {
   executionKind?: 'team';
   teamRequestDigest?: string;
   workbenchTarget?: AgentTask['workbenchTarget'];
+  /** 团队工作台预备阶段的只读目标，团队运行记录落盘后由其 target 接替。 */
+  initialTeamTarget?: AgentTask['workbenchTarget'];
   projectId: string;
   executionContext?: AgentTask['executionContext'];
   conversationId: string;
@@ -76,14 +80,21 @@ function createTaskId(): string {
 
 function buildAgentTask(input: CreateAgentTaskInput, mcpOperation?: McpOperationRecord, state?: AppState): AgentTask {
   const executionContext = input.executionContext === undefined ? undefined : parseProjectExpectedContext(input.executionContext);
-  if (executionContext && executionContext.modelGeneration !== 0) throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
   const contextState: ProjectExecutionContextState | undefined = state;
-  if (contextState?.projectExecutionContext !== undefined
-    && parseProjectExpectedContext(contextState.projectExecutionContext).modelGeneration !== 0) {
-    throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
-  }
-  const projectScope = executionContext ?? (state ? captureAgentProjectScope(state, input) : undefined);
-  if (projectScope && projectScope.modelGeneration !== 0) throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
+  const authoritative = contextState?.projectExecutionContext == null ? undefined
+    : parseProjectExpectedContext(contextState.projectExecutionContext);
+  const initialTarget = input.workbenchTarget ?? (input.executionKind === 'team' ? input.initialTeamTarget : undefined);
+  const projectScope = executionContext ?? (state ? captureAgentProjectScope(state, { ...input, workbenchTarget: initialTarget }) : undefined);
+  const global = isGeneralAssistantScope(input.projectId) || input.projectId === MCP_SETTINGS_SCOPE_ID;
+  if (!global && contextState?.projectExecutionContext === null && contextState.currentProjectId) throw new ProjectExecutionContextError();
+  if (executionContext && executionContext.modelGeneration > 0 && (!contextState
+    || !executionContext.runtimeEpoch || !isProjectExpectedContextCurrent(executionContext, contextState))) throw new ProjectExecutionContextError();
+  if (authoritative && authoritative.modelGeneration > 0 && !global) {
+    if (!contextState || !projectScope || projectScope.modelGeneration !== authoritative.modelGeneration || !projectScope.runtimeEpoch
+      || input.projectId !== contextState.currentProjectId && (!initialTarget
+        || initialTarget.episodeId !== input.projectId || initialTarget.seriesId !== authoritative.projectId)
+      || !isProjectExpectedContextCurrent(projectScope, contextState, { checkCanvasRevision: false })) throw new ProjectExecutionContextError();
+  } else if (projectScope && projectScope.modelGeneration > 0) throw new ProjectExecutionContextError();
   const now = Date.now();
   const taskId = input.taskId ?? createTaskId();
   return {

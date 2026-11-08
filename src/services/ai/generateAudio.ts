@@ -21,6 +21,8 @@ import { resolveMediaReferenceUrl } from '../uploadService';
 import type { AIAudioGenParams, AudioGenerationResult, MediaReference } from '../../types/aiTypes';
 import type { MediaPersistenceStatus } from '../../types/media';
 import { resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
+import { resolveModelExecutionProfile } from './modelProtocol';
+import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
 import { resolveProviderCatalogId } from './providerPolicies';
 import {
   collectConnectedReferenceMedia,
@@ -150,11 +152,18 @@ export async function persistAudioGenerationResult(
 export async function generateAudio(
   params: AIAudioGenParams,
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<AudioGenerationResult> {
   const { model, provider } = params;
   let rawPrompt = params.prompt;
   const rawWorkflowPrompt = rawPrompt;
   const state = useAppStore.getState();
+  if (state.projectExecutionContext?.modelGeneration === 1) {
+    const connection = provider === 'general' ? resolveGeneralModelConnection(model) : undefined;
+    const profile = connection && resolveModelExecutionProfile(connection.model.executionProfile);
+    if (!profile || !isNativeVideoSubmissionGuard(beforeSubmit)) throw new Error('此原生音频模型没有可耐久续查的完整回执，未提交请求');
+  }
+  if (state.projectExecutionContext?.modelGeneration === 1 && params.autoGenerateLyrics) throw new Error('可恢复音频任务须使用已确定的歌词，未提交自动写词请求');
   const globalAssets = await loadGlobalDramaAssetsForPrompt(`${rawPrompt}\n${JSON.stringify(params.workflowInputs ?? {})}`, state);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   if (useAppStore.getState().currentProjectId !== state.currentProjectId) throw new Error('项目已切换，请重新生成音频');
@@ -266,6 +275,7 @@ export async function generateAudio(
         category: 'audio',
         nodeId: params.nodeId,
         signal,
+        beforeSubmit,
         variables: {
           ...effectiveVariables,
           audioUrls: protocolAudioUrls,

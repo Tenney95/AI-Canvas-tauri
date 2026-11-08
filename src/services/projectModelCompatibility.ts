@@ -148,14 +148,19 @@ export function projectLegacyRecords(records: readonly LegacyProjectRecord[]): L
   }
   for (const source of byId.values()) {
     const children = childrenByOwner.get(source.id) ?? [];
-    if (!source.parentId && (children.length > 0 || hasSeriesInfo(source))
-      && (Array.isArray(source.nodes) && source.nodes.length > 0
-        || Array.isArray(source.edges) && source.edges.length > 0
-        || Array.isArray(source.groups) && source.groups.length > 0)) {
+    const hasCanvasContent = Array.isArray(source.nodes) && source.nodes.length > 0
+      || Array.isArray(source.edges) && source.edges.length > 0
+      || Array.isArray(source.groups) && source.groups.length > 0;
+    const hasEpisodeContent = creativeFields.some((field) => source[field] !== undefined);
+    // 旧转换先写空 owner、后写子集 parentId；中断残留与空普通画布无法可靠区分。
+    if (!source.parentId && children.length === 0 && hasSeriesInfo(source) && !hasCanvasContent && !hasEpisodeContent) {
+      note('ambiguous_childless_series', 'blocking', [source.id], '无分集且无画布或集级内容，不能区分普通项目与转换中断的剧集');
+    }
+    // 旧模型允许普通画布先保存全剧稿/原文；仅有 series 字段并不证明它已转为容器。
+    if (!source.parentId && children.length > 0 && hasCanvasContent) {
       note('owner_has_canvas', 'blocking', [source.id], '剧集容器仍有真实画布内容，不能静默丢弃');
     }
-    if (!source.parentId && (children.length > 0 || hasSeriesInfo(source))
-      && creativeFields.some((field) => source[field] !== undefined)) {
+    if (!source.parentId && children.length > 0 && hasEpisodeContent) {
       note('owner_has_episode_fields', 'blocking', [source.id], '剧集容器同时持有集级资料，需明确其目标后恢复');
     }
     const owner = source.parentId ? byId.get(source.parentId) : undefined;
@@ -178,7 +183,8 @@ export function projectLegacyRecords(records: readonly LegacyProjectRecord[]): L
   for (const owner of byId.values()) {
     if (owner.parentId || quarantined.has(owner.id)) continue;
     const children = [...(childrenByOwner.get(owner.id) ?? [])];
-    const isSeries = children.length > 0 || hasSeriesInfo(owner);
+    // 旧版本以父子记录区分画布与剧集，不能仅凭共享资料丢掉普通画布。
+    const isSeries = children.length > 0;
     const storageBindings: ProjectStorageBinding[] = [];
     const roots = new Map<string, ProjectStorageBinding>();
     const storage = (source: LegacyProjectRecord) => {

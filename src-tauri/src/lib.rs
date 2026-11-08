@@ -45,6 +45,8 @@ mod director_desk_runtime;
 mod dreamina;
 #[path = "files/transfer.rs"]
 mod file_transfer;
+#[path = "files/native_project_media.rs"]
+mod native_project_media;
 #[path = "files/object_storage/mod.rs"]
 mod project_asset_storage;
 #[path = "files/github_fallback.rs"]
@@ -1826,6 +1828,8 @@ pub fn run() {
         .manage(codex_runtime::CodexRuntimeState::default())
         .manage(project_asset_storage::ObjectStorageState::default())
         .manage(path_policy::UserStorageRoot::default())
+        .manage(native_project_media::AssetSearchNativeRoots::default())
+        .manage(native_project_media::VideoEditorNativeRoot::default())
         .manage(billing::BillingStoragePath::default())
         .manage(project_model_safety::ProjectModelMaintenanceState::default())
         .register_uri_scheme_protocol("project-model-maintenance", project_model_safety::handle_protocol)
@@ -1844,6 +1848,16 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(canvas_input::init())
         .invoke_handler(tauri::generate_handler![
+            native_project_media::claim_native_project_media_root,
+            native_project_media::resolve_native_project_media_root,
+            native_project_media::sync_native_asset_search_roots,
+            native_project_media::resolve_asset_search_native_project_root,
+            native_project_media::bind_video_editor_native_root,
+            native_project_media::revoke_video_editor_native_root,
+            native_project_media::resolve_video_editor_native_root,
+            native_project_media::resolve_native_project_media_subroot,
+            native_project_media::write_native_project_media,
+            native_project_media::read_native_project_media,
             project_model_safety::project_model_get_maintenance_lease,
             project_model_safety::project_model_verify_maintenance_lease,
             project_model_safety::project_model_get_production_stop_evidence,

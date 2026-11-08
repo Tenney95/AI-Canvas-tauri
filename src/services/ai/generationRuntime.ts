@@ -54,6 +54,11 @@ import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDeriva
 import { persistMessage } from '../chat/chatHistoryService';
 import { applyImageBatchResults, imageBatchArtifactId } from '../imageBatchService';
 import type { CanvasDerivationGuard } from '../canvasDerivationGuard';
+import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
+import { registerNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
+import { bindNativeMediaOrigin } from '../nativeMediaOrigin';
+import { videoInputFingerprintMaterial } from '../videoBatchPlanning';
+import { nativeMediaInputMaterial } from '../nativeMediaInput';
 
 const MODEL_MENTION_RE = /@model\{([^|}\s]+)(?:\|[^}]*)?\}/i;
 
@@ -314,7 +319,9 @@ export async function runMediaGeneration(
   targetNodeId?: string,
   runninghubTaskContext?: import('../../types/runninghub').RunningHubTaskContext,
 ): Promise<MediaGenerationDelivery> {
+  intent = structuredClone(intent);
   throwIfAborted(signal);
+  const projectContext = useAppStore.getState().projectExecutionContext;
   if (intent.kind !== 'audio' && [intent.audioVoice, intent.audioFormat, intent.audioSpeed, intent.musicTitle, intent.musicLyrics]
     .some((value) => value !== undefined)) throw new Error('音频参数只能用于音频生成');
   if (!stripModelMentions(intent.prompt)) throw new Error('媒体生成提示词不能为空');
@@ -323,6 +330,43 @@ export async function runMediaGeneration(
   const parameters = mediaParameters(intent, model, projectId);
   assertSafeMediaParameterStrings(parameters);
   assertExplicitMediaParameters(intent, model);
+  if (projectContext && projectContext.modelGeneration > 0) {
+    const context = captureLegacyCanvasContext(useAppStore.getState());
+    if (!context || context.modelGeneration !== 1 || projectId !== context.canvasId
+      || (intent.kind === 'video' ? !['volcengine', 'apimart', 'grsai', 'comfyui', 'general'].includes(model.provider)
+        : intent.kind === 'image' ? !['apimart', 'general'].includes(model.provider) : model.provider !== 'general')
+      || intent.deliveryMode !== 'chat' && !targetNodeId || !runninghubTaskContext) {
+      throw new Error('此新项目媒体目的地尚不能安全续查，未提交请求');
+    }
+    const trackingNodeId = targetNodeId ?? `media-message-${crypto.randomUUID()}`;
+    const state = useAppStore.getState(), node = state.nodes.find((item) => item.id === targetNodeId);
+    if (intent.deliveryMode !== 'chat' && !node || !state.messages.some((message) => message.id === runninghubTaskContext.messageId
+      && message.conversationId === runninghubTaskContext.conversationId)) throw new Error('原媒体消息或占位节点已变化');
+    if (intent.deliveryMode === 'chat' && /@\{|@asset\{|@drama\{|@refmod\{/.test(intent.prompt)) throw new Error('对话原生媒体引用尚不能安全冻结，未提交请求');
+    const messageMaterial = (current: ReturnType<typeof useAppStore.getState>) => JSON.stringify([intent, parameters,
+      current.projects.find((item) => item.id === context.canvasId)?.settings, current.customStyles,
+      current.config.generalModels?.find((item) => item.id === model.configId.replace(/^general\//, ''))]);
+    const inputMaterial = intent.kind === 'video' ? videoInputFingerprintMaterial : nativeMediaInputMaterial;
+    const material = node ? inputMaterial(node, state) : messageMaterial(state);
+    const guard = registerNativeVideoSubmissionGuard(() => {
+      throwIfAborted(signal);
+      const current = useAppStore.getState(), next = current.nodes.find((item) => item.id === targetNodeId);
+      if (!isProjectExpectedContextCurrent(context, current, { checkCanvasRevision: false })
+        || (intent.deliveryMode === 'chat' ? messageMaterial(current) !== material : !next || inputMaterial(next, current) !== material)
+        || !current.messages.some((message) => message.id === runninghubTaskContext.messageId
+          && message.conversationId === runninghubTaskContext.conversationId)) throw new Error('原媒体输入、消息或画布已变化，未提交请求');
+    });
+    const message = state.messages.find((entry) => entry.id === runninghubTaskContext.messageId)!;
+    const origin = { conversationId: runninghubTaskContext.conversationId,
+      messageId: runninghubTaskContext.messageId, ...(message.agentTaskId ? { agentTaskId: message.agentTaskId } : {}),
+      modelId: model.configId,
+      deliveryMode: intent.deliveryMode };
+    const { persistNativeMediaOrigin } = await import('../nativeMediaOriginPersistence');
+    await persistNativeMediaOrigin(context, origin); guard();
+    const unbind = bindNativeMediaOrigin(context.canvasId, trackingNodeId, origin, intent.deliveryMode === 'chat' ? { material, assertCurrent: guard } : undefined);
+    try { return await generateMediaArtifact(intent, projectId, signal, trackingNodeId, runninghubTaskContext, model, parameters, guard); }
+    finally { unbind(); }
+  }
   ensureMediaMessageRecoveryHandler();
   const nativeCloud = ['runninghubwf', 'runninghub', 'workflow-api'].includes(model.provider);
   const trackingId = targetNodeId ?? (!nativeCloud && runninghubTaskContext
@@ -378,6 +422,7 @@ async function generateMediaArtifact(
   runninghubTaskContext: import('../../types/runninghub').RunningHubTaskContext | undefined,
   model: ResolvedMediaModel,
   parameters?: MediaGenerationParameters,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<MediaGenerationDelivery> {
   throwIfAborted(signal);
 
@@ -425,7 +470,7 @@ async function generateMediaArtifact(
   const id = `media-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   if (intent.kind === 'image') {
-    const result = await generateImage({
+    const imageOptions = {
       prompt: effectivePrompt,
       model: model.requestModel,
       provider: model.provider,
@@ -440,7 +485,8 @@ async function generateMediaArtifact(
       runninghubTaskContext,
 
       workflowApiTaskContext: model.provider === 'workflow-api' ? runninghubTaskContext : undefined,
-    }, signal);
+    };
+    const result = beforeSubmit ? await generateImage(imageOptions, signal, beforeSubmit) : await generateImage(imageOptions, signal);
     const taskReceipt = result.taskReceipt ?? (result.comfyTaskId && targetNodeId ? getMediaTaskReceipt(targetNodeId, result.comfyTaskId) : undefined);
     const candidates = [result, ...(result.additionalResults ?? [])];
     const expectedOutputCount = result.expectedOutputCount ?? candidates.length;
@@ -479,7 +525,7 @@ async function generateMediaArtifact(
     const aspectRatio = parameters?.aspectRatio;
     const resolution = parameters?.resolution;
     const duration = parameters?.duration;
-    const result = await generateVideo({
+    const videoOptions = {
       prompt: effectivePrompt,
       model: model.requestModel,
       provider: model.provider,
@@ -495,7 +541,8 @@ async function generateMediaArtifact(
       nodeId: targetNodeId,
       runninghubTaskContext,
       workflowApiTaskContext: model.provider === 'workflow-api' ? runninghubTaskContext : undefined,
-    }, signal);
+    };
+    const result = beforeSubmit ? await generateVideo(videoOptions, signal, beforeSubmit) : await generateVideo(videoOptions, signal);
     const taskReceipt = result.taskReceipt ?? (result.comfyTaskId && targetNodeId ? getMediaTaskReceipt(targetNodeId, result.comfyTaskId) : undefined);
     throwIfAborted(signal);
     const savedCloud = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url);
@@ -524,7 +571,7 @@ async function generateMediaArtifact(
     };
   }
 
-  const result = await generateAudio({
+  const audioOptions = {
     prompt: effectivePrompt,
     model: model.requestModel,
     provider: model.provider,
@@ -539,7 +586,8 @@ async function generateMediaArtifact(
     runninghubTaskContext,
 
     workflowApiTaskContext: model.provider === 'workflow-api' ? runninghubTaskContext : undefined,
-  }, signal);
+  };
+    const result = beforeSubmit ? await generateAudio(audioOptions, signal, beforeSubmit) : await generateAudio(audioOptions, signal);
   const taskReceipt = result.taskReceipt ?? (result.comfyTaskId && targetNodeId ? getMediaTaskReceipt(targetNodeId, result.comfyTaskId) : undefined);
   throwIfAborted(signal);
   const persisted = await persistAudioGenerationResult(

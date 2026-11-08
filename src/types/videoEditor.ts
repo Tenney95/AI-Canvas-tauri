@@ -98,6 +98,8 @@ export interface VideoEditorClip {
   textStyle?: VideoEditorTextStyle;
   /** 素材在项目 data 目录下的路径；离开本机后用 assetId 重新定位 */
   filePath?: string;
+  /** 新项目持久化时以作品素材根为基准，避免把本机路径写入工程。 */
+  relativePath?: string;
   /** 稳定资产身份，filePath 仅表示当前位置 */
   assetId?: string;
   /** 无本地文件时的回退播放地址（例如尚未落盘的远端结果） */

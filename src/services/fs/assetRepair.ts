@@ -154,6 +154,7 @@ export async function applyAssetRepairs(
   onCommitted: (moves: readonly MediaRelocation[]) => void, options: DramaAssetWriteOptions = {},
 ): Promise<number> {
   const selected = preview.candidates.filter((candidate) => assetIds.includes(candidate.index.assetId));
+  if (selected.some((candidate) => candidate.index.assetId.startsWith('na2-'))) throw new Error(t('新项目恢复素材请通过项目恢复点重建，不能沿用旧素材修复入口'));
   if (!selected.length || selected.length !== new Set(assetIds).size || selected.some((candidate) => candidate.status !== 'ready' || !candidate.digest || !candidate.targetPath)) throw new Error(t('请选择已核对的可修复项'));
   if (new Set(selected.map((candidate) => key(candidate.targetPath!))).size !== selected.length) throw new Error(t('多个素材选择了同一个目标，请分别选择文件'));
   const globalRoot = await guarded(getGlobalFilesDir, options);

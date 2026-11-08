@@ -152,6 +152,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
     [projects, seriesId],
   );
   const currentEpisode = projects.find((project) => project.id === currentProjectId) ?? null;
+  const nativeSeries = (series as typeof series & { nativeView?: { canvasId: string | null } })?.nativeView?.canvasId === null;
   const originalWork = series?.series?.originalWork;
   const script = series?.series?.script ?? '';
 
@@ -396,9 +397,9 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                       </button>
                       <button
                         type="button"
-                        disabled={!ready || busy !== null || episodes.length <= 1}
+                        disabled={!ready || busy !== null || (episodes.length <= 1 && !nativeSeries)}
                         onClick={() => {
-                          if (!ready || episodes.length <= 1) return;
+                          if (!ready || (episodes.length <= 1 && !nativeSeries)) return;
                           if (confirmDeleteId === episode.id) {
                             setConfirmDeleteId(null);
                             void runBusy('delete', () => deleteProject(episode.id));
@@ -409,7 +410,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                         aria-label={confirmDeleteId === episode.id
                           ? t('确认删除 {name}', { name: episode.name })
                           : t('删除 {name}', { name: episode.name })}
-                        data-tooltip={episodes.length <= 1
+                        data-tooltip={episodes.length <= 1 && !nativeSeries
                           ? t('最后一集暂不可删除，整部剧请在项目库管理')
                           : confirmDeleteId === episode.id ? t('再点一次确认删除') : t('删除这一集')}
                         className={`grid h-5 w-5 place-items-center rounded transition-colors
@@ -426,7 +427,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                 );
               })}
 
-              {episodes.length === 1 ? (
+              {episodes.length === 1 && !nativeSeries ? (
                 <p className="px-1.5 text-[10px] leading-4 text-canvas-text-muted">
                   {t('最后一集暂不可删除，整部剧请在项目库管理。')}
                 </p>
@@ -442,7 +443,7 @@ function SeriesRailPanel({ onOpenWorkbench }: { onOpenWorkbench: (mode: 'editor'
                            disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Icon icon="lucide:plus" className="h-3.5 w-3.5" />
-                {episodes.length > 0 ? t('新增分集') : t('转为剧集并新增分集')}
+                {episodes.length > 0 || nativeSeries ? t('新增分集') : t('转为剧集并新增分集')}
               </button>
 
               <button

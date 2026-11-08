@@ -2235,6 +2235,18 @@
           "markdownDescription": "Allows the main window to consume its one-shot WebContent recovery status."
         },
         {
+          "description": "主窗口的新项目素材目录绑定；命令内部核验用户配置及原生目录归属。",
+          "type": "string",
+          "const": "allow-native-project-media",
+          "markdownDescription": "主窗口的新项目素材目录绑定；命令内部核验用户配置及原生目录归属。"
+        },
+        {
+          "description": "资源搜索窗口只可解析已绑定的新项目素材根。",
+          "type": "string",
+          "const": "allow-native-project-media-root-read",
+          "markdownDescription": "资源搜索窗口只可解析已绑定的新项目素材根。"
+        },
+        {
           "description": "Allows only the native-registered plugin window session bridge.",
           "type": "string",
           "const": "allow-plugin-ui-window-request",
@@ -2257,6 +2269,12 @@
           "type": "string",
           "const": "allow-project-model-maintenance",
           "markdownDescription": "Only the native cold-maintenance window may inspect its exclusive fixture lease and managed backup materials."
+        },
+        {
+          "description": "剪辑窗口仅可解析主窗口绑定的原会话素材根。",
+          "type": "string",
+          "const": "allow-video-editor-native-root-read",
+          "markdownDescription": "剪辑窗口仅可解析主窗口绑定的原会话素材根。"
         },
         {
           "description": "Denies the fixed Codex runtime commands.",

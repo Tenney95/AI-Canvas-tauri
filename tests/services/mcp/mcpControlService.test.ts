@@ -1525,13 +1525,13 @@ describe('MCP versioned execution context', () => {
     expect(useAppStore.getState().agentTasks).toHaveLength(0);
   });
 
-  it('keeps new-model fixture contexts dormant before creating audit scopes or consulting default operation storage', async () => {
+  it('rejects a stale new-model context before creating audit scopes or consulting operation storage', async () => {
     const execute = registerDispatchProbe();
     const actual = useAppStore.getState();
     const fixture = { ...captureLegacyProjectExpectedContext(actual), modelGeneration: 1 };
-    vi.spyOn(useAppStore, 'getState').mockReturnValue({ ...actual, projectExecutionContext: fixture } as typeof actual);
+    vi.spyOn(useAppStore, 'getState').mockReturnValue({ ...actual, projectExecutionContext: { ...fixture, runtimeEpoch: 'different-runtime' } } as typeof actual);
     const result = await mcpCall('tools_call', { schemaVersion: 2, name: 'mcp_dispatch_probe', arguments: { value: 'fixture' }, expectedContext: fixture }, 'typed:dormant');
-    expect(JSON.stringify(result)).toContain('PROJECT_MODEL_EXECUTION_DISABLED');
+    expect(JSON.stringify(result)).toContain('CONTEXT_REFRESH_REQUIRED');
     expect(execute).not.toHaveBeenCalled();
     expect(actual.agentTasks).toHaveLength(0);
     expect(actual.conversations).toHaveLength(0);

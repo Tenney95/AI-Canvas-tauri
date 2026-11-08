@@ -4,8 +4,11 @@
 import { getLocale, t, useT } from '../../i18n';
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
-import { isTauriEnv, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot, type AssetFileEntry } from '../../services/fileService';
+import { invoke } from '@tauri-apps/api/core';
+import { getProjectDataDir, getRelativeAssetPath, isTauriEnv, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot, type AssetFileEntry } from '../../services/fileService';
 import { getNodeHistoryEntries, getProjectById, imageHistoryReferenceKey } from '../../services/indexedDbService';
+import { readNativeProjectSelection } from '../../services/indexedDb/nativeProjectRepository';
+import type { NativeProjectViewItem } from '../../store/nativeProjectView';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 import { useAppStore } from '../../store/useAppStore';
 import { formatSize } from '../../utils/assetFormat';
@@ -66,17 +69,51 @@ export default function AssetTextPreview({ file: sourceFile, projectId, onClose,
     const load = async () => {
       if (!projectId || !fileKey) return null;
       const state = useAppStore.getState();
-      const projectNodes = state.currentProjectId === projectId ? state.nodes : (await getProjectById(projectId))?.nodes;
+      const project = state.projects?.find((item) => item.id === projectId);
+      const binding = (project as NativeProjectViewItem | undefined)?.nativeView;
+      const assertScope = () => {
+        const latest = useAppStore.getState();
+        if (latest.currentProjectId !== state.currentProjectId || state.currentProjectId === projectId && latest.nodes !== state.nodes
+          || binding && (latest.projects?.find((item) => item.id === projectId) as NativeProjectViewItem | undefined)?.nativeView !== binding) {
+          throw new Error('项目已变化，请重新打开');
+        }
+      };
+      let relativeFile: string | null = null;
+      let projectNodes: unknown;
+      if (state.currentProjectId === projectId) projectNodes = state.nodes;
+      else if (binding) {
+        if (!binding.canvasId) return null;
+        const selection = await readNativeProjectSelection(binding.projectId, binding.canvasId, { signal: controller.signal });
+        controller.signal.throwIfAborted();
+        if (!selection || selection.context.episodeId !== binding.episodeId || selection.context.canvasId !== projectId
+          || selection.project.epoch !== (project?.parentId
+            ? state.projects.find((item) => item.id === project.parentId)?.exchangeEpoch : project?.exchangeEpoch)) throw new Error('项目已变化，请重新打开');
+        const root = selection.canvas?.storageRootRef !== selection.project.storageRootRef
+          ? await invoke<string>('resolve_native_project_media_subroot', { projectId: binding.projectId, rootRef: selection.canvas?.storageRootRef, create: false })
+          : await getProjectDataDir(projectId);
+        controller.signal.throwIfAborted();
+        if (!root) throw new Error('项目素材目录不可用');
+        relativeFile = getRelativeAssetPath(file.path, root) ?? null;
+        assertScope();
+        if (!relativeFile) return null;
+        projectNodes = selection.canvas?.nodes;
+      } else projectNodes = (await getProjectById(projectId))?.nodes;
+      controller.signal.throwIfAborted();
+      assertScope();
       const nodes: unknown[] = Array.isArray(projectNodes) ? projectNodes : [];
       const matches = nodes.filter((node): node is { id: string; data: Record<string, unknown> } => {
         if (!node || typeof node !== 'object' || !('id' in node) || typeof node.id !== 'string'
           || !('data' in node) || !node.data || typeof node.data !== 'object') return false;
         const path = (node.data as Record<string, unknown>).filePath;
-        return typeof path === 'string' && imageHistoryReferenceKey(path) === fileKey;
+        const relative = (node.data as Record<string, unknown>).relativePath;
+        return typeof path === 'string' && imageHistoryReferenceKey(path) === fileKey
+          || relativeFile !== null && typeof relative === 'string' && imageHistoryReferenceKey(relative) === imageHistoryReferenceKey(relativeFile);
       });
       if (matches.length !== 1) return null;
       const node = matches[0];
       const records = await getNodeHistoryEntries(projectId, node.id);
+      controller.signal.throwIfAborted();
+      assertScope();
       const record = records.filter((entry) => entry.status === 'success' && imageHistoryReferenceKey(entry.filePath) === fileKey)
         .sort((a, b) => b.timestamp - a.timestamp)[0];
       if (record?.prompt?.trim()) return { text: record.prompt, source: '生成记录' };

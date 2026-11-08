@@ -971,6 +971,19 @@ describe('projectTransferService', () => {
     expect(mocks.saveProject.mock.calls[0][0].nodes[0].data.directorPrevisScene).toEqual(reference);
   });
 
+  it.each([true, false])('导入带相对路径的导演截图时保留路径并准确统计缺失素材（均存在=%s）', async (allPresent) => {
+    const captures = ['director/captures/first.png', 'director/captures/second.png', 'director/captures/second.png'];
+    const project = { ...PROJECT_RECORD, nodes: [{ id: 'director-captures', data: {
+      type: 'ai-director', directorCaptureRelativePaths: captures,
+    } }] };
+    mocks.open.mockResolvedValue('/in/director-captures.aicanvas');
+    mocks.invoke.mockResolvedValue({ texts: archiveTexts({ project }),
+      assetPaths: allPresent ? captures.slice(0, 2) : [captures[0]], assetBytes: 2 });
+    const result = await importProjectArchive();
+    expect(result!.missingAssetCount).toBe(allPresent ? 0 : 1);
+    expect(mocks.saveProject.mock.calls[0][0].nodes[0].data.directorCaptureRelativePaths).toEqual(captures);
+  });
+
   it('does not infer new Director references from legacy capture arrays', async () => {
     const project = {
       ...PROJECT_RECORD,

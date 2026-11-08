@@ -29,18 +29,27 @@ export function captureAgentProjectScope(state: ProjectExecutionContextState,
 
 /** 旧任务缺显式字段时保留原工具合同；有类型上下文后禁止以空项目启动画布/付费能力。 */
 export function isAgentToolProjectContextCompatible(tool: Pick<AgentToolDefinition, 'id' | 'effect'>,
-  context: Pick<AgentToolContext, 'executionContext' | 'projectScope'>, input?: unknown): boolean {
+  context: Pick<AgentToolContext, 'executionContext' | 'projectScope'>, input?: unknown,
+  state?: ProjectExecutionContextState): boolean {
   const target = context.executionContext ?? context.projectScope;
   if (!target) return true;
+  // 只开放已接耐久原回执的统一媒体入口；发现阶段无input，实际参数仍由authorize和Provider复核。
+  if (target.modelGeneration > 0 && tool.effect === 'media_generation') {
+    if (target.modelGeneration !== 1 || target.kind !== 'canvas' || tool.id !== 'media_generate') return false;
+    if (input !== undefined && (!input || typeof input !== 'object' || !['image', 'video', 'audio'].includes(String((input as { kind?: unknown }).kind))
+      || !['chat', 'canvas', 'both'].includes(String((input as { deliveryMode?: unknown }).deliveryMode)))) return false;
+  }
   const requirement = getMcpProjectContextRequirement(tool);
   if (requirement === 'global') return true;
   if (requirement === 'canvas') return target.kind === 'canvas';
   if (requirement === 'episode') {
     const episodeId = input && typeof input === 'object' ? (input as Record<string, unknown>).episodeId : undefined;
-    if (target.kind === 'episode') return episodeId === undefined || episodeId === target.episodeId;
+    const resolvedId = typeof episodeId === 'string' && state
+      ? captureLegacyEpisodeContext(state, episodeId)?.episodeId ?? episodeId : episodeId;
+    if (target.kind === 'episode') return resolvedId === undefined || resolvedId === target.episodeId;
     // 未携v2请求条件的旧画布任务仍可操作当前集；显式v2正文写要求episode条件。
     return !context.executionContext && target.kind === 'canvas' && target.episodeId !== null
-      && (episodeId === undefined || episodeId === target.episodeId);
+      && (resolvedId === undefined || resolvedId === target.episodeId);
   }
   // 通用助手的网页/文件/配置等能力仍由原白名单限制，不继承活动画布。
   return target.kind !== 'global' || tool.effect !== 'canvas_write' && tool.effect !== 'media_generation';
@@ -54,17 +63,18 @@ export function assertAgentProjectContext(state: ProjectExecutionContextState,
     throw new ProjectExecutionContextError();
   }
   const explicit = context.executionContext === undefined ? undefined : parseProjectExpectedContext(context.executionContext);
-  if (explicit && explicit.modelGeneration !== 0) throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
   if (explicit && !isProjectExpectedContextCurrent(explicit, state, { checkCanvasRevision: options.checkRevision !== false })) {
     throw new ProjectExecutionContextError();
   }
   if (context.projectScope) {
     const scope = parseProjectExpectedContext(context.projectScope);
-    if (scope.modelGeneration !== 0) throw new ProjectExecutionContextError('PROJECT_MODEL_EXECUTION_DISABLED');
     if (scope.kind === 'global') return; // 普通全局对话不因无关目录变化中断；显式请求仍核上方catalog条件。
     // 已持久化的legacy任务可经显式继续恢复；不把旧进程epoch当成新租约，
     // 原Canvas/owner和持久epoch必须仍匹配，计数/回执原样保留。
-    if (!isProjectExpectedContextCurrent(scope, state, { checkCanvasRevision: false, checkRuntimeEpoch: false })) {
+    // 新结构每次激活画布都会更换运行租约；切走后再切回也不能让旧回调复活。
+    // 旧任务继续沿用原有重启语义，不更改其预算和回执。
+    if (scope.modelGeneration > 0 && !scope.runtimeEpoch
+      || !isProjectExpectedContextCurrent(scope, state, { checkCanvasRevision: false, checkRuntimeEpoch: scope.modelGeneration > 0 })) {
       throw new ProjectExecutionContextError();
     }
   }

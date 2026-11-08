@@ -110,7 +110,7 @@ export async function loadAssetImageDetails(file: AssetFileEntry, projectId?: st
   if (!isTauriEnv()) return { identity: null, record: null, references: [], history, contentChanged: false, warning: '编辑和添加参考图仅支持桌面应用' };
   const identity = await identifyAssetImage(file, projectId, signal);
   const saved = await findSavedAssetImage(identity, signal);
-  const references = saved.record ? await resolveAssetImageReferences(saved.record.references, signal) : [];
+  const references = saved.record ? await resolveAssetImageReferences(saved.record.references, signal, saved.record.assetId) : [];
   return { identity, record: saved.record, references, contentChanged: saved.contentChanged,
     history: saved.contentChanged && !saved.record ? null : history,
     warning: saved.ambiguous ? '找到多个相同内容的信息记录，未自动关联' : saved.contentChanged && !saved.record ? '原图内容已变化，旧提示词与参考图仍保留' : null };

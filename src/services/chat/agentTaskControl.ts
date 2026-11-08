@@ -23,6 +23,7 @@ import { unmaterializedTeamDispatches, unresolvedAgentDispatches } from './agent
 import { unmaterializedToolDispatches } from './agentCheckpointService';
 import { assertCreationProfileSnapshot } from '../creationProfiles/creationProfileService';
 import { clearAgentResults } from './agentResultService';
+import { nativeAgentResumeContext } from './agentResumeContext';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -318,6 +319,9 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
   if (lifetime.exceeded) {
     return { ok: false, errorCode: lifetime.errorCode, message: lifetime.message };
   }
+  try { nativeAgentResumeContext(store, task); }
+  catch { return { ok: false, errorCode: 'AGENT_RESUME_CONTEXT_CHANGED',
+    message: '原项目、分集或画布版本已变化，请核对原任务；不会把任务绑定到当前其他画布' }; }
   return { ok: true };
 }
 
@@ -359,7 +363,10 @@ export function resolveAgentApproval(
  * 注意不要清除 replanRequest：它要一直留到 Runtime 把重新规划要求写进模型上下文为止。
  */
 export function prepareAgentTaskResume(taskId: string): AgentTask {
+  const store = useAppStore.getState(), task = getTask(taskId);
+  const context = nativeAgentResumeContext(store, task);
   return transitionAgentTask(taskId, 'queued', {
+    ...context,
     pausedReason: undefined,
     errorCode: undefined,
     errorMessage: undefined,

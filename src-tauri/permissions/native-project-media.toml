@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-native-project-media"
+description = "主窗口的新项目素材目录绑定；命令内部核验用户配置及原生目录归属。"
+commands.allow = ["claim_native_project_media_root", "resolve_native_project_media_root", "resolve_native_project_media_subroot", "write_native_project_media", "read_native_project_media", "sync_native_asset_search_roots", "bind_video_editor_native_root", "revoke_video_editor_native_root"]
+
+[[permission]]
+identifier = "allow-native-project-media-root-read"
+description = "资源搜索窗口只可解析已绑定的新项目素材根。"
+commands.allow = ["resolve_asset_search_native_project_root"]
+
+[[permission]]
+identifier = "allow-video-editor-native-root-read"
+description = "剪辑窗口仅可解析主窗口绑定的原会话素材根。"
+commands.allow = ["resolve_video_editor_native_root"]

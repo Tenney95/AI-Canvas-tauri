@@ -11,6 +11,8 @@ const driver = vi.hoisted(() => ({
   effects: [] as Array<{ deps: readonly unknown[]; cleanup?: () => void }>, pending: [] as Array<() => void>,
   stateIndex: 0, refIndex: 0, memoIndex: 0, effectIndex: 0,
   load: vi.fn<(id: string) => Promise<{ nodes: AppState['nodes'] } | null>>(),
+  nativeLoad: vi.fn<(projectId: string, canvasId: string) => Promise<unknown>>(),
+  restore: vi.fn<(record: { nodes: AppState['nodes'] }) => Promise<{ nodes: AppState['nodes'] }>>(),
 }));
 vi.mock('react', async () => {
   const memo = <T,>(factory: () => T, deps: readonly unknown[]) => {
@@ -48,7 +50,8 @@ vi.mock('react', async () => {
 });
 vi.mock('zustand/react/shallow', () => ({ useShallow: <T,>(selector: T) => selector }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: OverlayState) => unknown) => selector(driver.state) }));
-vi.mock('../../src/services/storageService', () => ({ loadProjectData: driver.load }));
+vi.mock('../../src/services/storageService', () => ({ loadProjectData: driver.load, restoreProjectRecord: driver.restore }));
+vi.mock('../../src/services/nativeProjectNavigation', () => ({ readNativeProjectView: driver.nativeLoad }));
 vi.mock('../../src/services/fileService', () => ({
   getConvertFileSrc: () => (path: string) => `asset://${path}`,
   CATEGORY_LABELS: { image: '图片', video: '视频' },
@@ -108,10 +111,66 @@ beforeEach(() => {
     ],
   };
   driver.load.mockReset().mockImplementation(async (id) => ({ nodes: [node(`saved-${id}`, `${id}.png`)] }));
+  driver.nativeLoad.mockReset();
+  driver.restore.mockReset().mockImplementation(async (record) => record);
 });
 afterEach(() => { driver.effects.forEach((effect) => effect.cleanup?.()); });
 
 describe('ProjectAssetsOverlay loading scope', () => {
+  it('reads another native episode from its bound canvas and restores media without querying the legacy project', async () => {
+    driver.state.projects = driver.state.projects.map((ep) => ep.id === 'ep2' ? {
+      ...ep, exchangeEpoch: 3, nativeView: { projectId: 'series', episodeId: 'episode-2', canvasId: 'ep2', orderRank: 1 },
+    } : ep);
+    let revision = 1;
+    driver.nativeLoad.mockImplementation(async () => ({ selection: { project: { id: 'series' },
+      episode: { id: 'episode-2', name: 'Episode 2', createdAt: 1, updatedAt: 1, epoch: 3 },
+      canvas: { id: 'ep2', episodeId: 'episode-2', epoch: 1, revision, nodes: [node('native', `native-${revision}.png`)], edges: [], groups: [] } } }));
+    render();
+    expect(files(await settled()).map((file) => file.name)).toEqual(['current.png', 'native-1.png', 'ep3.png']);
+    expect(driver.nativeLoad).toHaveBeenCalledWith('series', 'ep2');
+    expect(driver.load.mock.calls.map(([id]) => id)).toEqual(['ep3']);
+    expect(driver.restore).toHaveBeenCalledOnce();
+    revision = 2;
+    driver.state.projects = driver.state.projects.map((ep) => ep.id === 'ep2' ? { ...ep, updatedAt: 2 } : ep);
+    render();
+    expect(files(await settled()).map((file) => file.name)).toEqual(['current.png', 'native-2.png', 'ep3.png']);
+    expect(driver.restore).toHaveBeenCalledTimes(2);
+    expect(driver.load).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a late native-episode result after switching projects', async () => {
+    driver.state.projects = driver.state.projects.map((ep) => ep.id === 'ep2' ? {
+      ...ep, nativeView: { projectId: 'series', episodeId: 'episode-2', canvasId: 'ep2' },
+    } : ep);
+    const pending = deferred<unknown>();
+    driver.nativeLoad.mockImplementationOnce(() => pending.promise);
+    render();
+    await vi.waitFor(() => expect(driver.nativeLoad).toHaveBeenCalledExactlyOnceWith('series', 'ep2'));
+    driver.state.currentProjectId = 'other';
+    driver.state.projects = [{ id: 'new-series', name: 'New', createdAt: 1, updatedAt: 1 },
+      { id: 'other', name: 'Other', parentId: 'new-series', episodeNo: 1, createdAt: 1, updatedAt: 1 }];
+    driver.state.nodes = [node('current', 'new.png')];
+    render();
+    pending.resolve({ selection: { project: { id: 'series' }, episode: { id: 'episode-2', epoch: 1 },
+      canvas: { id: 'ep2', episodeId: 'episode-2', epoch: 1, revision: 0, nodes: [node('late', 'late.png')] } } });
+    await pending.promise;
+    expect(files(await settled()).map((file) => file.name)).toEqual(['new.png']);
+    expect(driver.restore).not.toHaveBeenCalled();
+    expect(driver.load).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to legacy storage if the native episode binding changes', async () => {
+    driver.state.projects = driver.state.projects.map((ep) => ep.id === 'ep2' ? {
+      ...ep, exchangeEpoch: 3, nativeView: { projectId: 'series', episodeId: 'episode-2', canvasId: 'ep2' },
+    } : ep);
+    driver.nativeLoad.mockResolvedValue({ selection: { project: { id: 'series' },
+      episode: { id: 'wrong-episode', epoch: 3 }, canvas: { id: 'ep2', episodeId: 'wrong-episode', epoch: 1, revision: 0 } } });
+    render();
+    expect(files(await settled()).map((file) => file.name)).toEqual(['current.png', 'ep3.png']);
+    expect(driver.load.mock.calls.map(([id]) => id)).toEqual(['ep3']);
+    expect(driver.restore).not.toHaveBeenCalled();
+  });
+
   it('keeps unsaved media live without rereading other episodes on movement, status or current saves', async () => {
     render();
     expect(files(await settled()).map((file) => file.name)).toEqual(['current.png', 'ep2.png', 'ep3.png']);

@@ -12,7 +12,14 @@ import {
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { fingerprintAssetImage } from './assetImageMetadata';
 import { listProjectImportRecoveries } from '../indexedDb/projectImportRepository';
+import { openDB } from '../indexedDb/schema';
+import { assertLegacyProjectWritesAllowed } from '../indexedDb/legacyProjectWriteGuard';
 import { safeExchangePath } from '../projectExchangeDomain';
+
+/** 旧引用集合无法证明迁移冻结或新模型下的文件可清理。此预检不替代跨进程停写。 */
+async function assertLegacyStorageHealthScope(): Promise<void> {
+  await assertLegacyProjectWritesAllowed(await openDB());
+}
 
 function pathKey(value: string): string {
   const path = (localMediaUrlToPath(value) ?? value).replace(/\\/g, '/').replace(/^\/\/\?\//, '');
@@ -36,8 +43,21 @@ function collectReferences(value: unknown, paths: Set<string>, root?: string): v
     value.forEach((item) => collectReferences(item, paths, root));
   } else if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    if (root && typeof record.relativePath === 'string') {
-      paths.add(pathKey(joinPath(root, record.relativePath)));
+    if (root) {
+      const localReference = (path: string) => {
+        if (!path) return;
+        const local = localMediaUrlToPath(path) ?? path;
+        if (/^(?:[a-z]:[\\/]|[\\/])/i.test(local)) paths.add(pathKey(local));
+        else if (!/^[a-z][a-z0-9+.-]*:/i.test(local)) paths.add(pathKey(joinPath(root, local)));
+      };
+      for (const field of ['relativePath', 'imageRelativePath', 'filePath', 'imageFilePath'] as const) {
+        if (typeof record[field] === 'string') localReference(record[field]);
+      }
+      for (const field of ['directorCaptureRelativePaths', 'directorCaptureFilePaths'] as const) {
+        if (Array.isArray(record[field])) for (const path of record[field]) {
+          if (typeof path === 'string') localReference(path);
+        }
+      }
     }
     if (root && typeof record.sceneId === 'string') {
       paths.add(`${pathKey(joinPath(root, 'director', 'scenes', record.sceneId))}/`);
@@ -85,6 +105,10 @@ export interface TrashInfo {
   trashSize: number;
   /** 文件数量 */
   fileCount: number;
+  /** 全部已读取文件及其项目、历史、恢复点或实时状态引用标记。 */
+  files: Array<{ path: string; size: number; referenced: boolean; digest?: string }>;
+  reclaimableSize: number;
+  reclaimableCount: number;
 }
 
 export interface OrphanFileInfo {
@@ -179,7 +203,7 @@ function issueReason(error: unknown): StorageHealthIssueReason {
   if (/permission|forbidden|not allowed|denied|not permitted|权限|未授权/i.test(text)) return 'permission';
   if (/no such file|not found|does not exist|enoent|os error [23]\b|不存在/i.test(text)) return 'missing';
   if (/symlink|symbolic link|符号链接/i.test(text)) return 'symlink';
-  if (/changed|变化|切换/i.test(text)) return 'changed';
+  if (/changed|变化|改变|切换/i.test(text)) return 'changed';
   return 'unavailable';
 }
 
@@ -361,6 +385,8 @@ export async function scanStorageHealth(
   const references = new Set<string>();
   const roots = new Map<string, string | null>();
   try {
+    await assertLegacyStorageHealthScope();
+    checkAbort(signal);
     const allProjects = new Map(projects.map((project) => [project.id, project]));
     for (const project of await getAllProjects()) {
       checkAbort(signal);
@@ -481,17 +507,24 @@ export async function scanStorageHealth(
     });
     if (!trashFiles.length) continue;
     const trashSize = trashFiles.reduce((sum, file) => sum + file.size, 0);
+    const checked: TrashInfo['files'] = trashFiles.map((file) => ({ path: file.path, size: file.size, referenced: isReferenced(file.path, references) }));
+    // 现有流式摘要器拒绝空文件；空文件保留，不能仅凭大小证明身份。
+    const reclaimable = checked.filter((file) => !file.referenced && file.size > 0);
     report.trashes.push({ projectId: project.id, projectName: project.name, trashDir,
-      trashSize, fileCount: trashFiles.length });
+      trashSize, fileCount: trashFiles.length, files: checked,
+      reclaimableSize: reclaimable.reduce((sum, file) => sum + file.size, 0), reclaimableCount: reclaimable.length });
     report.trashSize += trashSize;
   }
+  try { await assertLegacyStorageHealthScope(); }
+  catch { throw new StorageHealthScanError('changed'); }
   checkAbort(signal);
   report.orphans = files.filter((file) => !isReferenced(file.path, references));
   if (includeDuplicates) report.duplicates = await scanDuplicateFiles(files, references,
     (file, reason) => addIssue('duplicates', file.projectName, file.name, reason), signal);
   report.totalSize = report.projectSize + report.trashSize;
   // 重复文件里的可删项本来就是未引用文件，不再加第二遍。
-  report.reclaimableSize = report.trashSize + report.orphans.reduce((sum, file) => sum + file.size, 0);
+  report.reclaimableSize = report.trashes.reduce((sum, trash) => sum + trash.reclaimableSize, 0)
+    + report.orphans.reduce((sum, file) => sum + file.size, 0);
 
   // 外部目录状态只用于提示，不把读取失败伪装成正常结果。
   for (const folder of assetFolders) {
@@ -525,6 +558,8 @@ export async function scanStorageHealth(
       addIssue('project', project.name, project.name, issueReason(error));
     }
   }
+  try { await assertLegacyStorageHealthScope(); }
+  catch { throw new StorageHealthScanError('changed'); }
   checkAbort(signal);
   report.scannedAt = Date.now();
   return report;
@@ -534,44 +569,100 @@ export async function scanStorageHealth(
 // 清理操作
 // ============================================
 
-/** 清空项目回收站，按实际删除结果计数；失败的内容留在原处。 */
-export async function clearTrashDir(trashDir: string): Promise<CleanupResult> {
+/** 仅在用户选择清理后捕获确认快照；默认扫描不读取回收站文件的全部内容。 */
+export async function prepareTrashCleanup(entries: readonly TrashInfo[], signal?: AbortSignal): Promise<TrashInfo[]> {
+  const prepared: TrashInfo[] = [];
+  checkAbort(signal);
+  await assertLegacyStorageHealthScope();
+  for (const entry of entries) {
+    const files: TrashInfo['files'] = [];
+    for (const file of entry.files) {
+      checkAbort(signal);
+      const item = { ...file };
+      if (!item.referenced && item.size > 0) {
+        const fingerprint = await fingerprintAssetImage(item.path, signal);
+        checkAbort(signal);
+        if (fingerprint.bytes !== item.size || !/^[a-f0-9]{64}$/.test(fingerprint.digest)) throw new Error('回收站文件已变化');
+        item.digest = fingerprint.digest;
+      }
+      files.push(item);
+    }
+    prepared.push({ ...entry, files });
+  }
+  await assertLegacyStorageHealthScope();
+  checkAbort(signal);
+  return prepared;
+}
+
+/** 逐文件重新核对引用；预检不能代替跨进程停写或文件系统原子租约。 */
+export async function clearTrashDir(trashDir: string, verify?: (path: string, size: number) => Promise<boolean>,
+  confirmedFiles?: ReadonlyArray<{ path: string; size: number; digest: string }>, signal?: AbortSignal): Promise<CleanupResult> {
   const result: CleanupResult = { deletedCount: 0, failedCount: 0, reclaimedSize: 0 };
   if (!isTauriEnv()) return result;
   if (pathKey(trashDir).replace(/\/+$/, '').split('/').at(-1) !== '.trash') throw new Error('只能清理项目回收站目录');
+  if (!verify || !confirmedFiles) { result.failedCount++; return result; }
+  if (signal?.aborted) { result.failedCount++; return result; }
+  const confirmed = new Map(confirmedFiles.map((file) => [pathKey(file.path), file]));
+  const confirmedDirectories = new Set<string>();
+  for (const path of confirmed.keys()) {
+    for (let end = path.lastIndexOf('/'); end > 0; end = path.lastIndexOf('/', end - 1)) confirmedDirectories.add(path.slice(0, end));
+  }
   try {
-    if (!await exists(trashDir)) return result;
+    await assertLegacyStorageHealthScope();
+    if (!await exists(trashDir)) { result.failedCount += confirmed.size; return result; }
     const info = await lstat(trashDir);
     if (!info.isDirectory || info.isSymlink) throw new Error('回收站不是普通目录');
   } catch {
     result.failedCount++;
     return result;
   }
-  if (await removeDirContents(trashDir, result)) {
-    try { await remove(trashDir); } catch { result.failedCount++; }
+  const progress = { seen: new Set<string>(), incomplete: false };
+  const empty = await removeDirContents(trashDir, result, verify, confirmed, confirmedDirectories, progress, signal);
+  if (!progress.incomplete) for (const path of confirmed.keys()) if (!progress.seen.has(path)) result.failedCount++;
+  if (empty && result.failedCount === 0) {
+    try { await assertLegacyStorageHealthScope(); checkAbort(signal); await remove(trashDir); } catch { result.failedCount++; }
   }
   return result;
 }
 
-async function removeDirContents(dirPath: string, result: CleanupResult): Promise<boolean> {
+async function removeDirContents(dirPath: string, result: CleanupResult, verify: (path: string, size: number) => Promise<boolean>,
+  confirmed: ReadonlyMap<string, { size: number; digest: string }>, confirmedDirectories: ReadonlySet<string>,
+  progress: { seen: Set<string>; incomplete: boolean }, signal?: AbortSignal): Promise<boolean> {
   const failuresBefore = result.failedCount;
+  let retained = false;
   let entries;
-  try { entries = await readDir(dirPath); } catch { result.failedCount++; return false; }
+  try { checkAbort(signal); entries = await readDir(dirPath); } catch { result.failedCount++; progress.incomplete = true; return false; }
   for (const entry of entries) {
     const entryPath = joinPath(dirPath, entry.name);
+    progress.seen.add(pathKey(entryPath));
     try {
       const info = await lstat(entryPath);
       if (info.isSymlink || !info.isDirectory && !info.isFile) throw new Error('回收站条目不是普通文件或目录');
       if (info.isDirectory) {
-        if (await removeDirContents(entryPath, result)) await remove(entryPath);
+        const directoryKey = pathKey(entryPath).replace(/\/+$/, '');
+        if (confirmed.has(directoryKey)) { result.failedCount++; retained = true; continue; }
+        if (!confirmedDirectories.has(directoryKey)) { retained = true; continue; }
+        if (await removeDirContents(entryPath, result, verify, confirmed, confirmedDirectories, progress, signal)) { await assertLegacyStorageHealthScope(); checkAbort(signal); await remove(entryPath); }
+        else retained = true;
       } else {
+        const expected = confirmed.get(pathKey(entryPath));
+        if (!expected) { retained = true; continue; }
+        if (expected.size !== info.size || !/^[a-f0-9]{64}$/.test(expected.digest)
+          || !await verify(entryPath, info.size)) { result.failedCount++; retained = true; continue; }
+        checkAbort(signal);
+        const fingerprint = await fingerprintAssetImage(entryPath, signal);
+        if (fingerprint.bytes !== expected.size || fingerprint.digest !== expected.digest) { result.failedCount++; retained = true; continue; }
+        const current = await lstat(entryPath);
+        if (!current.isFile || current.isSymlink || current.size !== expected.size) { result.failedCount++; retained = true; continue; }
+        await assertLegacyStorageHealthScope();
+        checkAbort(signal);
         await remove(entryPath);
         result.deletedCount++;
         result.reclaimedSize += info.size;
       }
-    } catch { result.failedCount++; }
+    } catch { result.failedCount++; progress.incomplete = true; }
   }
-  return result.failedCount === failuresBefore;
+  return !retained && result.failedCount === failuresBefore;
 }
 
 /**
@@ -580,9 +671,11 @@ async function removeDirContents(dirPath: string, result: CleanupResult): Promis
 export async function deleteOrphanFile(filePath: string, verify?: (path: string) => Promise<boolean>): Promise<boolean> {
   if (!isTauriEnv()) return false;
   try {
+    await assertLegacyStorageHealthScope();
     if (!verify || !await verify(filePath)) return false;
     const info = await lstat(filePath);
     if (!info.isFile || info.isSymlink) return false;
+    await assertLegacyStorageHealthScope();
     await remove(filePath);
     return true;
   } catch {

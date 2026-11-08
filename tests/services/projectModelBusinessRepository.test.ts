@@ -58,6 +58,59 @@ beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('P3 隔离新模型业务仓储', () => {
+  it('分集正文属于其他暂存操作时拒绝读取、保存和删除，保留原项目和证据', async () => {
+    const sample = await setup([legacy('S', { series: { script: '共享' } }), legacy('E', { parentId: 'S', episodeNo: 1, episodeScript: '原稿' })]);
+    try {
+      const project = (await sample.repository.readProject('S')).project;
+      const target = await sample.repository.readEpisode('S', 'E'), canvas = await sample.repository.readCanvas('S', 'E');
+      const body = await sample.repository.readEpisodeContent('S', 'E');
+      await mutate(sample.database, ['episodeContents'], (tx) => tx.objectStore('episodeContents').put({ ...body, operationId: 'other-operation' }));
+      await expect(sample.repository.readEpisodeContent('S', 'E')).rejects.toThrow('episode-content-unavailable');
+      await expect(sample.repository.saveEpisodeContent({ projectId: 'S', expectedProjectEpoch: project.epoch, episodeId: 'E',
+        expectedEpisodeRevision: target.revision, expectedContentRevision: body.revision, patch: { script: '不应覆盖' } })).rejects.toThrow('episode-content-unavailable');
+      await expect(sample.repository.deleteEpisode({ projectId: 'S', expectedProjectEpoch: project.epoch, episodeId: 'E',
+        expectedEpisodeRevision: target.revision, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision }))
+        .rejects.toThrow('episode-content-unavailable');
+      expect(await sample.repository.readEpisode('S', 'E')).toMatchObject({ id: 'E', revision: target.revision });
+      expect((await all(sample.database, 'episodeContents'))[0]).toMatchObject({ episodeId: 'E', script: '原稿', operationId: 'other-operation' });
+      expect((await all(sample.database, 'metadata')).some((row) => String(row.id).startsWith('project-model-business-tombstone:'))).toBe(false);
+    } finally { sample.database.close(); }
+  });
+
+  it('分集列表发现其他操作的记录或重复排序时拒绝排序和选择，不能修补未知数据', async () => {
+    const sample = await setup([legacy('S', { series: { script: '共享' } }), legacy('A', { parentId: 'S', episodeNo: 1 }),
+      legacy('B', { parentId: 'S', episodeNo: 2 })]);
+    try {
+      const project = (await sample.repository.readProject('S')).project, before = await sample.repository.listEpisodes('S');
+      const rows = await all(sample.database, 'episodes');
+      const b = rows.find((row) => row.id === 'B')!;
+      await mutate(sample.database, ['episodes'], (tx) => tx.objectStore('episodes').put({ ...b, operationId: 'other-operation' }));
+      await expect(sample.repository.listEpisodes('S')).rejects.toThrow('broken-episode-membership');
+      await expect(sample.repository.reorderEpisodes({ projectId: 'S', expectedProjectEpoch: project.epoch,
+        expectedEpisodes: before.map(({ id, revision }) => ({ id, revision })), orderedEpisodeIds: ['B', 'A'] }))
+        .rejects.toThrow('broken-episode-membership');
+      await mutate(sample.database, ['episodes'], (tx) => tx.objectStore('episodes').put({ ...b, orderRank: before[0].orderRank }));
+      await expect(sample.repository.openProject('S')).rejects.toThrow('broken-episode-membership');
+      expect((await sample.repository.readProject('S')).project.epoch).toBe(project.epoch);
+      expect(await sample.repository.readSession()).toMatchObject({ revision: 0, dirty: false });
+    } finally { sample.database.close(); }
+  });
+
+  it('缺少对应画布的孤立分集不能产生可执行上下文', async () => {
+    const sample = await setup([legacy('S', { series: { script: '共享' } }), legacy('E', { parentId: 'S', episodeNo: 1 })]);
+    try {
+      const linked = await sample.repository.readCanvas('S', 'E');
+      await mutate(sample.database, ['canvasDocuments'], (tx) => tx.objectStore('canvasDocuments').put({ ...linked, operationId: 'other-operation' }));
+      await expect(sample.repository.readExpectedContext({ kind: 'episode', projectId: 'S', episodeId: 'E' }))
+        .rejects.toThrow('canvas-unavailable');
+      await mutate(sample.database, ['canvasDocuments'], (tx) => tx.objectStore('canvasDocuments').delete([1, 'E']));
+      await expect(sample.repository.readExpectedContext({ kind: 'episode', projectId: 'S', episodeId: 'E' }))
+        .rejects.toThrow('canvas-unavailable');
+      expect(await sample.repository.readEpisode('S', 'E')).toMatchObject({ id: 'E' });
+      expect(await sample.repository.readSession()).toMatchObject({ revision: 0, dirty: false });
+    } finally { sample.database.close(); }
+  });
+
   it('P4只读上下文按同事务新表版本读取，退役alias可查历史而不能再取活动Canvas', async () => {
     const sample = await setup([legacy('S', { series: { script: '共享' } }), legacy('E', { parentId: 'S', episodeNo: 1 })]);
     try {
@@ -90,7 +143,8 @@ describe('P3 隔离新模型业务仓储', () => {
       expect(await sample.repository.readProjectContent('P')).toMatchObject({ script: '新的全剧稿',
         originalWork: { relativePath: 'manuscripts/原著.txt' }, revisions: { script: 1, source: 1 } });
       expect(await sample.repository.readSession()).toMatchObject({ dirty: true, revision: 3 });
-      await expect(sample.staging.rollback({ operationId: 'business-migration' })).rejects.toThrow();
+      const expected = (await sample.staging.readJournal('business-migration'))!;
+      await expect(sample.staging.rollback({ operationId: 'business-migration', expected })).rejects.toThrow();
       expect(await all(sample.database, 'projects')).toEqual(sample.originalRecords);
       expect((await all(sample.database, 'metadata')).some((row) => row.id === 'activeDataModel')).toBe(false);
     } finally { sample.database.close(); }

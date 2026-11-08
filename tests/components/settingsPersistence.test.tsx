@@ -58,10 +58,12 @@ vi.mock('../../src/services/backgroundService', () => ({}));
 vi.mock('../../src/services/fileService', () => ({
   loadConfigWithoutSecrets: driver.readOrdinary, saveConfig: driver.saveOrdinary, pickAssetFolder: driver.pick,
   loadProjectsList: async () => [], listGlobalFiles: async () => [], listExternalFolderFiles: async () => [],
-  listProjectFiles: async () => [], registerProjectFolders: vi.fn(), setBaseDataDir: vi.fn(), syncAuthorizedDirectories: async () => {},
+  listProjectFiles: async () => [], registerProjectFolders: vi.fn(), registerNativeProjectFolders: vi.fn(), useNativeAssetSearchContext: vi.fn(),
+  setBaseDataDir: vi.fn(), syncAuthorizedDirectories: async () => {},
   revealFileInFolder: vi.fn(), addAssetFilesToGlobal: vi.fn(), CATEGORY_LABELS: {},
 }));
 vi.mock('../../src/services/indexedDbService', () => ({ getAllAssetMeta: async () => [] }));
+vi.mock('../../src/services/projectModelRouter', () => ({ listProjectCatalog: async () => [] }));
 vi.mock('../../src/utils/assetDrag', () => ({ startAssetDrag: vi.fn(), prepareDragIcon: vi.fn() }));
 vi.mock('../../src/components/shared/AssetThumb', () => ({ default: 'asset-thumb' }));
 

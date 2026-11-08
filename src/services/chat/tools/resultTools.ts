@@ -14,9 +14,11 @@ export function registerResultAgentTools(): Array<() => void> {
     summarizeInput: (input) => `读取结果 ${input.resultId}，偏移 ${input.offset ?? 0}`,
     execute: async (context, input) => {
       try {
-        const page = await readAgentResult(context, input.resultId, input.offset, input.limit);
+        let authorize: (() => boolean) | undefined;
+        const page = await readAgentResult(context, input.resultId, input.offset, input.limit, (check) => { authorize = check; });
         return { status: 'success', summary: `已读取结果 ${page.offset}-${page.nextOffset} 字（共 ${page.totalChars} 字）`,
-          modelContent: JSON.stringify({ ...page, untrusted: true }), truncated: !page.eof };
+          modelContent: JSON.stringify({ ...page, untrusted: true }), truncated: !page.eof,
+          resultPolicy: { storage: 'memory', authorize } };
       } catch (error) {
         return { status: 'error', summary: error instanceof Error ? error.message : '结果不可读取',
           modelContent: '结果不可读取，请按原始授权使用原工具重新读取。', errorCode: 'AGENT_RESULT_UNAVAILABLE', retryable: false };

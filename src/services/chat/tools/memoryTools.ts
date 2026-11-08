@@ -2,7 +2,7 @@
  * 注册项目记忆建议工具；候选内容裁剪后，由 Policy 按当前模式决定是否确认。
  */
 import { useAppStore } from '../../../store/useAppStore';
-import { seriesOwnerId } from '../../../store/store.utils';
+import { projectMemoryOwnerId } from '../../../store/store.utils';
 import { registerAgentTool } from '../toolRegistry';
 import {
   PROJECT_MEMORY_CONTENT_LIMIT,
@@ -60,7 +60,7 @@ export function registerMemoryAgentTools(): Array<() => void> {
         const task = store.agentTasks.find((item) => item.id === context.taskId);
         const memory = store.createProjectMemory({
           // 记忆整部剧共用，写在剧集项目上，换集也读得到
-          projectId: seriesOwnerId(store.projects, context.projectId),
+          projectId: projectMemoryOwnerId(store.projects, context.projectId),
           kind: input.kind,
           content: input.content,
           source: {
@@ -91,7 +91,7 @@ export function registerMemoryAgentTools(): Array<() => void> {
       authorize: (context) => ({ allowed: useAppStore.getState().currentProjectId === context.projectId && context.conversationId.startsWith('mcp-control-'), reason: '项目记忆管理只允许当前项目的 MCP 控制会话调用' }),
       execute: async (context) => {
         const store = useAppStore.getState();
-        const ownerId = seriesOwnerId(store.projects, context.projectId);
+        const ownerId = projectMemoryOwnerId(store.projects, context.projectId);
         const memories = store.projectMemories.filter((memory) => memory.projectId === ownerId).map((memory) => ({ id: memory.id, kind: memory.kind, content: memory.content, enabled: memory.enabled, sourceUnavailable: memory.source.unavailable === true, createdAt: memory.createdAt, updatedAt: memory.updatedAt }));
         return { status: 'success', summary: `找到 ${memories.length} 条项目记忆`, modelContent: JSON.stringify({ projectId: ownerId, memories }) };
       },
@@ -103,7 +103,7 @@ export function registerMemoryAgentTools(): Array<() => void> {
       inputSchema: { type: 'object', required: ['memoryId'], additionalProperties: false, properties: { memoryId: { type: 'string', minLength: 1, maxLength: 160 } } },
       effect: 'read',
       isAvailable: (context) => context.conversationId.startsWith('mcp-control-'),
-      authorize: (context, input) => { const store = useAppStore.getState(); const ownerId = seriesOwnerId(store.projects, context.projectId); return { allowed: context.conversationId.startsWith('mcp-control-') && store.projectMemories.some((memory) => memory.id === input.memoryId && memory.projectId === ownerId), reason: '记忆不存在或不属于当前项目' }; },
+      authorize: (context, input) => { const store = useAppStore.getState(); const ownerId = projectMemoryOwnerId(store.projects, context.projectId); return { allowed: context.conversationId.startsWith('mcp-control-') && store.projectMemories.some((memory) => memory.id === input.memoryId && memory.projectId === ownerId), reason: '记忆不存在或不属于当前项目' }; },
       execute: async (_context, input) => {
         const memory = useAppStore.getState().projectMemories.find((item) => item.id === input.memoryId);
         if (!memory) return { status: 'error', summary: '项目记忆不存在', modelContent: '项目记忆不存在', errorCode: 'MEMORY_NOT_FOUND' };
@@ -117,7 +117,7 @@ export function registerMemoryAgentTools(): Array<() => void> {
       inputSchema: { type: 'object', required: ['memoryId'], additionalProperties: false, properties: { memoryId: { type: 'string', minLength: 1, maxLength: 160 }, kind: { type: 'string', enum: KIND_ENUM }, content: { type: 'string', minLength: 1, maxLength: PROJECT_MEMORY_CONTENT_LIMIT }, enabled: { type: 'boolean' } } },
       effect: 'memory_write',
       isAvailable: (context) => context.conversationId.startsWith('mcp-control-'),
-      authorize: (context, input) => { const store = useAppStore.getState(); const ownerId = seriesOwnerId(store.projects, context.projectId); return { allowed: context.conversationId.startsWith('mcp-control-') && store.projectMemories.some((memory) => memory.id === input.memoryId && memory.projectId === ownerId), reason: '记忆不存在或不属于当前项目' }; },
+      authorize: (context, input) => { const store = useAppStore.getState(); const ownerId = projectMemoryOwnerId(store.projects, context.projectId); return { allowed: context.conversationId.startsWith('mcp-control-') && store.projectMemories.some((memory) => memory.id === input.memoryId && memory.projectId === ownerId), reason: '记忆不存在或不属于当前项目' }; },
       execute: async (_context, input) => {
         const { memoryId, ...changes } = input;
         if (Object.keys(changes).length === 0) return { status: 'error', summary: '没有提供需要修改的字段', modelContent: '没有提供需要修改的字段', errorCode: 'MEMORY_NO_CHANGES' };
@@ -133,7 +133,7 @@ export function registerMemoryAgentTools(): Array<() => void> {
       inputSchema: { type: 'object', required: ['memoryId'], additionalProperties: false, properties: { memoryId: { type: 'string', minLength: 1, maxLength: 160 } } },
       effect: 'permanent_delete',
       isAvailable: (context) => context.conversationId.startsWith('mcp-control-'),
-      authorize: (context, input) => { const store = useAppStore.getState(); const ownerId = seriesOwnerId(store.projects, context.projectId); return { allowed: context.conversationId.startsWith('mcp-control-') && store.projectMemories.some((memory) => memory.id === input.memoryId && memory.projectId === ownerId), reason: '记忆不存在或不属于当前项目' }; },
+      authorize: (context, input) => { const store = useAppStore.getState(); const ownerId = projectMemoryOwnerId(store.projects, context.projectId); return { allowed: context.conversationId.startsWith('mcp-control-') && store.projectMemories.some((memory) => memory.id === input.memoryId && memory.projectId === ownerId), reason: '记忆不存在或不属于当前项目' }; },
       execute: async (_context, input) => {
         const memory = useAppStore.getState().projectMemories.find((item) => item.id === input.memoryId);
         if (!memory) return { status: 'error', summary: '项目记忆不存在', modelContent: '项目记忆不存在', errorCode: 'MEMORY_NOT_FOUND' };

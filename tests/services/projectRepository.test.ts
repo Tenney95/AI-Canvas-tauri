@@ -107,6 +107,20 @@ describe('项目领域旧仓储适配', () => {
     } finally { database.close(); }
   });
 
+  it('无子集时共享原稿不将普通画布误判为剧集容器', async () => {
+    const original = project('ordinary-with-source', { series: { script: '全剧共享稿' }, episodeScript: '顶层创作稿',
+      nodes: [{ id: 'node', data: { text: '原画布' } }] });
+    const database = await databaseFor([original]);
+    try {
+      const repository = createLegacyProjectRepository(database);
+      expect((await repository.listProjects())[0]).toMatchObject({ id: original.id, kind: 'standalone' });
+      expect(await repository.listEpisodes(original.id)).toEqual([]);
+      expect(await repository.readProjectAggregate(original.id)).toMatchObject({ project: { id: original.id, kind: 'standalone' },
+        content: { script: '全剧共享稿', standaloneCreative: { script: '顶层创作稿' } }, standaloneCanvas: { nodes: original.nodes } });
+      expect(await repository.readRawRecords(original.id)).toEqual([original]);
+    } finally { database.close(); }
+  });
+
   it('缺失记录不补空图，断父链可读诊断但不成为可写聚合', async () => {
     const database = await databaseFor([project('orphan', { parentId: 'missing-owner' })]);
     try {

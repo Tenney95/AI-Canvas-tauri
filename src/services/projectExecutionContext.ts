@@ -72,9 +72,11 @@ function projectPart(context: Exclude<ProjectExpectedContext, { kind: 'global' }
 }
 export function captureLegacyCanvasContext(state: ProjectExecutionContextState): CanvasContext | null {
   if (state.projectExecutionContext !== undefined) {
+    if (!state.currentProjectId || state.projectLoadStatus !== undefined && state.projectLoadStatus !== 'ready'
+      || state.switchingProjectName != null || state.isCreatingProject || state.isReturningToStartPage) return null;
     if (state.projectExecutionContext === null) return null;
     const current = parseProjectExpectedContext(state.projectExecutionContext);
-    return current.kind === 'canvas' ? current : null;
+    return current.kind === 'canvas' && current.canvasId === state.currentProjectId ? current : null;
   }
   const target = legacyTarget(state);
   if (!target) return null;
@@ -92,7 +94,16 @@ export function captureLegacyEpisodeContext(state: ProjectExecutionContextState,
   if (state.projectExecutionContext !== undefined) {
     if (state.projectExecutionContext === null) return null;
     const context = parseProjectExpectedContext(state.projectExecutionContext);
-    return context.kind === 'episode' && context.episodeId === episodeId ? context : null;
+    if (context.kind === 'episode') return context.episodeId === episodeId ? context : null;
+    if (context.kind !== 'canvas' || context.modelGeneration !== 1 || !captureLegacyCanvasContext(state)) return null;
+    const candidates = (state.projects ?? []).filter((item) => item.nativeView?.projectId === context.projectId
+      && (item.id === episodeId || item.nativeView.episodeId === episodeId));
+    if (candidates.length !== 1) return null;
+    const view = candidates[0].nativeView;
+    if (!view?.episodeId || !view.canvasId || candidates[0].id !== view.canvasId || !integer(view.episodeRevision)) return null;
+    return { kind: 'episode', schemaVersion: 2, modelGeneration: context.modelGeneration,
+      projectId: context.projectId, projectEpoch: context.projectEpoch, episodeId: view.episodeId,
+      episodeRevision: view.episodeRevision, ...(context.runtimeEpoch === undefined ? {} : { runtimeEpoch: context.runtimeEpoch }) };
   }
   const target = legacyTarget(state), episode = state.projects?.find((item) => item.id === episodeId);
   if (!target || !episode?.parentId || episode.parentId !== target.owner.id || !integer(episode.exchangeEpoch ?? 0)) return null;
@@ -102,14 +113,19 @@ export function captureLegacyEpisodeContext(state: ProjectExecutionContextState,
 }
 export function captureLegacyProjectExpectedContext(state: ProjectExecutionContextState,
   kind?: 'global' | 'project' | 'canvas'): ProjectExpectedContext {
-  const authoritative = state.projectExecutionContext !== undefined ? parseProjectExpectedContext(state.projectExecutionContext) : null;
+  if (kind === 'global') return { kind: 'global', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: epoch(), catalogRevision: catalogRevision(state) };
+  if (state.projectExecutionContext === null && state.currentProjectId) return fail();
+  const authoritative = state.projectExecutionContext != null ? parseProjectExpectedContext(state.projectExecutionContext) : null;
   if (authoritative) {
+    if (state.projectLoadStatus !== undefined && state.projectLoadStatus !== 'ready'
+      || state.switchingProjectName != null || state.isCreatingProject || state.isReturningToStartPage) return fail();
+    if (authoritative.kind === 'canvas' && authoritative.canvasId !== state.currentProjectId) return fail();
     if (kind === undefined || kind === authoritative.kind) return authoritative;
     if (kind === 'project' && authoritative.kind !== 'global') return projectPart(authoritative);
     if (kind === 'canvas') throw new ProjectExecutionContextError('NO_ACTIVE_CANVAS');
     return fail();
   }
-  if (kind === 'global' || !state.currentProjectId && kind !== 'canvas' && kind !== 'project') {
+  if (!state.currentProjectId && kind !== 'canvas' && kind !== 'project') {
     return { kind: 'global', schemaVersion: 2, modelGeneration: 0, runtimeEpoch: epoch(), catalogRevision: catalogRevision(state) };
   }
   const canvas = captureLegacyCanvasContext(state);

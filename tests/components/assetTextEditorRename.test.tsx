@@ -4,7 +4,9 @@
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const driver = vi.hoisted(() => ({ read: vi.fn(), save: vi.fn(), rename: vi.fn(), desktop: true }));
+const driver = vi.hoisted(() => ({ read: vi.fn(), save: vi.fn(), rename: vi.fn(), desktop: true,
+  native: vi.fn(), oldProject: vi.fn(), history: vi.fn(), root: vi.fn(), relative: vi.fn(),
+  state: { currentProjectId: 'p', nodes: [] as unknown[], projects: [] as unknown[] } }));
 const values: unknown[] = [];
 const effects: Array<{ deps?: readonly unknown[]; cleanup?: () => void }> = [];
 let stateIndex = 0;
@@ -36,14 +38,16 @@ vi.mock('react', async (original) => ({
 }));
 vi.mock('../../src/services/fileService', () => ({
   isTauriEnv: () => driver.desktop, readAssetTextFile: driver.read, saveAssetTextFile: driver.save,
+  getProjectDataDir: driver.root, getRelativeAssetPath: driver.relative,
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: Object.assign(
   (select: (state: unknown) => unknown) => select({ renameAssetFile: driver.rename }),
-  { getState: () => ({ currentProjectId: 'p', nodes: [] }) },
+  { getState: () => driver.state },
 ) }));
 vi.mock('../../src/services/indexedDbService', () => ({
-  imageHistoryReferenceKey: (path: string) => path, getProjectById: vi.fn(), getNodeHistoryEntries: vi.fn(),
+  imageHistoryReferenceKey: (path: string) => path, getProjectById: driver.oldProject, getNodeHistoryEntries: driver.history,
 }));
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ readNativeProjectSelection: driver.native }));
 vi.mock('../../src/components/shared/MarkdownEditor', () => ({ default: 'markdown-editor' }));
 vi.mock('../../src/components/shared/ModalOverlay', () => ({ default: 'preview-modal' }));
 
@@ -83,11 +87,27 @@ beforeEach(() => {
   driver.read.mockReset().mockResolvedValue(snapshot);
   driver.save.mockReset().mockImplementation(async (_path, _baseline, content) => ({ ...snapshot, content }));
   driver.rename.mockReset().mockImplementation(async (file, name) => ({ file: { ...file, name: `${name}.md`, path: `/library/${name}.md` } }));
+  driver.state = { currentProjectId: 'p', nodes: [], projects: [] };
+  driver.native.mockReset(); driver.oldProject.mockReset(); driver.history.mockReset().mockResolvedValue([]);
+  driver.root.mockReset().mockResolvedValue('/native'); driver.relative.mockReset().mockReturnValue('a.txt');
   props = { file: { name: '原文.md', path: '/library/原文.md', category: 'text', size: 6, source: 'global', assetId: 'stable' },
     projectId: 'p', onClose: vi.fn(), onRenamed: vi.fn(), onSaved: vi.fn() };
   vi.stubGlobal('window', new EventTarget());
 });
 afterEach(() => { effects.forEach((effect) => effect.cleanup?.()); vi.unstubAllGlobals(); });
+
+it('非当前新画布按显式作品和画布身份读取相对素材提示词，不回退旧库', async () => {
+  const nativeView = { projectId: 'p2-owner', episodeId: null, canvasId: 'c2-canvas' };
+  driver.state.projects = [{ id: 'c2-canvas', exchangeEpoch: 2, nativeView }];
+  driver.native.mockResolvedValue({ project: { id: 'p2-owner', epoch: 2, storageRootRef: 'root' },
+    context: { episodeId: null, canvasId: 'c2-canvas' },
+    canvas: { storageRootRef: 'root', nodes: [{ id: 'node', data: { relativePath: 'a.txt', prompt: '新画布提示词' } }] } });
+  props.projectId = 'c2-canvas'; props.file = { ...props.file, path: '/native/a.txt', name: 'a.txt' };
+  render(); await settle(); await settle();
+  expect(driver.native).toHaveBeenCalledWith('p2-owner', 'c2-canvas', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(driver.oldProject).not.toHaveBeenCalled();
+  expect(elements(tree).some((element) => element.props.children === '新画布提示词')).toBe(true);
+});
 
 it.each(['txt', 'md', 'json'])('在 .%s 预览中改名并使用新路径继续保存正文', async (extension) => {
   props.file = { ...props.file, name: `原文.${extension}`, path: `/library/原文.${extension}` };

@@ -17,4 +17,17 @@ describe('结果回读工具合同', () => {
     const result = await getAgentTool('agent_result_read')!.execute(context, { resultId: `result-${'a'.repeat(36)}` });
     expect(result.status).toBe('error'); expect(result.retryable).toBe(false);
   });
+  it('交付前保留内存授权复核，不将回调放入模型正文', async () => {
+    let allowed = true;
+    read.mockImplementationOnce(async (_context, resultId, _offset, _limit, onAuthorize) => {
+      onAuthorize(() => allowed);
+      return { resultId, text: '结果正文', offset: 0, nextOffset: 4, totalChars: 4, eof: true };
+    });
+    const result = await getAgentTool('agent_result_read')!.execute(context, { resultId: `result-${'a'.repeat(36)}` });
+    expect(result.status).toBe('success');
+    expect(result.resultPolicy?.authorize?.()).toBe(true);
+    allowed = false;
+    expect(result.resultPolicy?.authorize?.()).toBe(false);
+    expect(JSON.parse(result.modelContent)).not.toHaveProperty('authorize');
+  });
 });

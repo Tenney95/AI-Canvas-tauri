@@ -67,6 +67,26 @@ beforeEach(async () => {
     projects: [{ id: 'project-1', name: 'project', createdAt: 1, updatedAt: 1 }] });
 });
 
+describe('新画布异步任务提交边界', () => {
+  it.each(['apimart', 'apimart-flow-music', 'dreamina', 'volcengine', 'runninghub-workflow', 'runninghub-model', 'workflow-api'] as const)(
+    '%s 提交前失败关闭，保留已有旧任务', (taskType) => {
+      savePendingTask({ projectId: 'old-project', nodeId: 'old-node', nodeType: 'ai-image', provider: 'apimart',
+        taskId: 'paid-old-task', taskType: 'apimart', submitted: true });
+      const old = localStorage.getItem('ai_canvas_pending_tasks');
+      useAppStore.setState({ projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
+        projectId: 'p', projectEpoch: 1, canvasId: 'project-1', canvasEpoch: 1, canvasRevision: 0, episodeId: null, runtimeEpoch: 'run' } });
+      expect(() => savePendingTask({ projectId: 'project-1', nodeId: 'new-node', nodeType: 'ai-image', provider: taskType,
+        taskId: '', taskType, submitted: false })).toThrow('未提交请求');
+      expect(localStorage.getItem('ai_canvas_pending_tasks')).toBe(old);
+      // 前台切到新画布不改变旧项目后台请求的存储语义。
+      expect(() => savePendingTask({ projectId: 'old-project', nodeId: 'old-background', nodeType: 'ai-image', provider: taskType,
+        taskId: '', taskType, submitted: false })).not.toThrow();
+      expect(() => savePendingTask({ projectId: 'project-1', nodeId: 'comfy-text', nodeType: 'ai-text', provider: 'comfyui',
+        taskId: '', taskType: 'comfyui', submitted: false })).not.toThrow();
+    },
+  );
+});
+
 describe('independent editor transition recovery', () => {
   it('keeps submitted and confirmed-failed transition identities so old window events cannot become new generation requests', async () => {
     const unbind = bindMediaTaskContext('terminal-editor-tracking', { projectId: 'project-1',

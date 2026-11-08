@@ -5,6 +5,7 @@ import * as files from './fileService';
 import { readArchiveProject, readArchiveChat, readArchiveEpisodes, restoreProjectArchive,
   type ProjectArchiveManifest, type ProjectArchiveChatPayload, type ProjectImportResult } from './projectTransferService';
 import type { ProjectSaveData } from './storageService';
+import type { ValidatedProjectArchiveV4 } from '../types/projectArchiveV4';
 import type { ProjectExchangeBundle, ProjectExchangeIdentity, ProjectExchangeRevision, ProjectExchangeState } from '../types/projectExchange';
 import { materializeExchangeSnapshot, safeExchangePath, exchangeEqual, type ArchiveAssetDigest, type ExchangeCapture } from './projectExchangeDomain';
 import { createProjectExchangeRevision, parseProjectExchangeBundle, findProjectExchangeBase, verifyProjectExchangeRevision,
@@ -42,11 +43,26 @@ export interface PreparedProjectImport {
   id: string; stagingProjectId: string; stagingFolder: string; archivePath: string; directory: string;
   manifest: ProjectArchiveManifest; records: ProjectSaveData[]; chat: Array<ProjectArchiveChatPayload | null>;
   assets: ArchiveAssetDigest[]; bundle: ProjectExchangeBundle | null; sourceState: ProjectExchangeState | null; disposed: boolean;
+  /** 已校验的新结构来源；旧包不能投影时仍允许使用原有旧项目更新流程。 */
+  nativeSource: ValidatedProjectArchiveV4 | null;
+  nativeSourceError?: string;
 }
 export interface ProjectImportPreview {
   sessionId: string; targetId: string; expectedRecords: ProjectSaveData[]; expectedState: ProjectExchangeState | null;
   local: ExchangeCapture; incoming: ExchangeCapture; plan: ProjectMergePlan; baseStatus: string; localDirectory: string;
   incomingHead: ProjectExchangeRevision | null; localHead: ProjectExchangeRevision | null;
+  nativeUpdate?: import('./nativeProjectUpdateService').NativeProjectUpdatePreview;
+}
+/** V2 差异只投影显示字段；应用时仍使用原始 V2 计划。 */
+export function nativeImportPreview(sessionId: string, targetId: string,
+  nativeUpdate: import('./nativeProjectUpdateService').NativeProjectUpdatePreview): ProjectImportPreview {
+  const changes = nativeUpdate.plan.changes.map((change) => ({ ...change,
+    kind: change.kind === 'episode' || change.kind === 'canvas' ? 'project' as const : change.kind,
+    label: change.entityKey }));
+  return { sessionId, targetId, expectedRecords: [], expectedState: null,
+    local: null as unknown as ExchangeCapture, incoming: null as unknown as ExchangeCapture,
+    plan: { ...nativeUpdate.plan, changes, alreadyApplied: changes.length === 0 && !nativeUpdate.editorChoiceRequired } as unknown as ProjectMergePlan,
+    baseStatus: 'found', localDirectory: '', incomingHead: null, localHead: null, nativeUpdate };
 }
 export interface ProjectImportOptions {
   appendChat: boolean; appendMemories: boolean; independent?: boolean;
@@ -58,6 +74,7 @@ const sessionCleanups = new WeakMap<PreparedProjectImport, Promise<void>>();
 const importAttempts = new WeakMap<PreparedProjectImport, { intent: string; result: Promise<ProjectImportResult> }>();
 const successfulImportSessions = new WeakSet<PreparedProjectImport>();
 const sessionControllers = new WeakMap<PreparedProjectImport, AbortController>();
+const sessionReaders = new WeakMap<PreparedProjectImport, Set<Promise<void>>>();
 /** 改绑文件位置后保留旧路径墓碑，防止仍在磁盘的旧原稿被下次扫描当成新附件。 */
 function remapImportIdentities(current: readonly ProjectExchangeIdentity[], updates: readonly ProjectExchangeIdentity[],
   previousPaths: readonly ProjectExchangeIdentity[] = current): ProjectExchangeIdentity[] {
@@ -72,10 +89,26 @@ function remapImportIdentities(current: readonly ProjectExchangeIdentity[], upda
 function requireSession(session: PreparedProjectImport) {
   if (session.disposed || sessions.get(session.id) !== session) throw new Error('项目包预览已关闭，请重新选择');
 }
+/** 读取预览暂存期间禁止清理；关闭先撤销会话，待现有读取退出后再清理。 */
+export async function withPreparedProjectImportRead<T>(session: PreparedProjectImport, work: () => Promise<T>): Promise<T> {
+  requireSession(session);
+  const readers = sessionReaders.get(session) ?? new Set<Promise<void>>();
+  sessionReaders.set(session, readers);
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  readers.add(pending);
+  try { return await work(); }
+  finally {
+    readers.delete(pending);
+    if (!readers.size && sessionReaders.get(session) === readers) sessionReaders.delete(session);
+    release();
+  }
+}
 export async function closePreparedProjectImport(session: PreparedProjectImport): Promise<void> {
   if (cleanedSessions.has(session)) return;
   session.disposed = true; sessions.delete(session.id);
   sessionControllers.get(session)?.abort();
+  await Promise.all([...(sessionReaders.get(session) ?? [])]);
   // journal 已冻结原暂存引用；pending/失败/未知提交都不能因关闭预览丢掉恢复来源。
   if (importAttempts.has(session) && !successfulImportSessions.has(session)) return;
   let pending = sessionCleanups.get(session);
@@ -122,8 +155,21 @@ export async function prepareProjectImport(): Promise<PreparedProjectImport | nu
   try {
     const directory = await files.ensureProjectDataDir(stagingProjectId); if (!directory) throw new Error('无法准备导入目录');
     const unpacked = await invoke<{ texts: Record<string, string>; assets: ArchiveAssetDigest[] }>('unpack_project_archive', { archivePath, assetsDir: directory });
-    const contents = await readProjectArchiveContents(unpacked);
-    const session: PreparedProjectImport = { id: crypto.randomUUID(), stagingProjectId, stagingFolder, archivePath, directory, ...contents, disposed: false };
+    const manifest = JSON.parse(unpacked.texts['manifest.json'] ?? 'null') as ProjectArchiveManifest | null;
+    const isV4 = manifest?.formatVersion === 4;
+    const contents = isV4 ? null : await readProjectArchiveContents(unpacked);
+    let nativeSource: ValidatedProjectArchiveV4 | null = null, nativeSourceError: string | undefined;
+    try {
+      nativeSource = await (await import('./projectModelArchiveService')).readProjectModelArchive(unpacked.texts, unpacked.assets);
+    } catch (error) {
+      if (isV4) throw error;
+      // 新模型额外校验失败不能改变旧包更新既有旧项目的行为。
+      nativeSourceError = '该旧项目包无法转换为新结构，可继续用于更新旧项目';
+    }
+    if (isV4 && !nativeSource) throw new Error('项目包校验失败');
+    const source = contents ?? { manifest: nativeSource!.manifest, records: [], chat: [], assets: nativeSource!.assets, bundle: null, sourceState: null };
+    const session: PreparedProjectImport = { id: crypto.randomUUID(), stagingProjectId, stagingFolder, archivePath, directory,
+      ...source, nativeSource, ...(nativeSourceError ? { nativeSourceError } : {}), disposed: false };
     sessions.set(session.id, session); return session;
   } catch (error) { await files.deleteProjectDataDir(stagingProjectId, { throwOnError: true }).catch(() => undefined); throw error; }
 }
@@ -165,6 +211,7 @@ export async function prepareExchangeExport(records: ProjectSaveData[], assets: 
 /** 旧包只按仍保留的源 ID 人工对照；从不据此宣称找到了共同版本。 */
 export async function previewProjectImport(session: PreparedProjectImport, targetId: string, confirmedBase?: PreparedProjectImport): Promise<ProjectImportPreview> {
   requireSession(session);
+  if (session.manifest.formatVersion === 4 || confirmedBase?.manifest.formatVersion === 4) throw new Error('新结构项目包暂不支持更新已有项目');
   const expectedRecords = await readProjectImportScope(targetId), expectedState = await loadProjectExchangeState(targetId);
   files.registerProjectFolders(expectedRecords);
   const directory = await files.ensureProjectDataDir(targetId); if (!directory) throw new Error('无法读取目标项目素材');
@@ -229,7 +276,7 @@ export async function previewProjectImport(session: PreparedProjectImport, targe
 
 /** 只为已校验的本地文件生成预览地址；不加载包内任意网络 URL。 */
 export function projectImportMediaPreview(session: PreparedProjectImport, preview: ProjectImportPreview, side: 'local' | 'incoming', value: unknown): { url: string; kind: string } | null {
-  if (value === undefined) return null;
+  if (preview.nativeUpdate || value === undefined) return null;
   const capture = side === 'local' ? preview.local : preview.incoming;
   const token = JSON.stringify(value).match(/exchange-file:([A-Za-z0-9_-]+)/)?.[1];
   const entity = token ? capture.snapshot.entities.find((item) => item.kind === 'file' && item.id === token)
@@ -335,6 +382,7 @@ async function freezeRecovery(capture: ExchangeCapture, records: ProjectSaveData
 export function applyProjectImport(session: PreparedProjectImport, preview: ProjectImportPreview | null,
   choices: Readonly<Record<string, ProjectMergeSide>>, options: ProjectImportOptions, assertCurrent?: () => void): Promise<ProjectImportResult> {
   requireSession(session);
+  if (session.manifest.formatVersion === 4) return Promise.reject(new Error('新结构项目包不能通过旧项目更新入口应用'));
   const intent = JSON.stringify([preview?.expectedRecords, preview?.expectedState, choices, options.appendChat, options.appendMemories, options.independent]);
   const previous = importAttempts.get(session);
   if (previous) {

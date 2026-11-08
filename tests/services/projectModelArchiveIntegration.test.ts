@@ -5,9 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectArchiveBusinessV4, ProjectArchivePayloadV4 } from '../../src/types/projectArchiveV4';
 import type { ProjectArchiveTextEntry } from '../../src/services/projectArchiveSerialization';
 import type { ArchiveAssetDigest } from '../../src/services/projectExchangeDomain';
+import type { ProjectSaveData } from '../../src/services/storageService';
+import type { ProjectExchangeState } from '../../src/types/projectExchange';
+import { captureExchangeSnapshot } from '../../src/services/projectExchangeDomain';
+import { createProjectExchangeRevision } from '../../src/services/projectExchangeFormat';
 import { buildProjectExchangeSnapshotV2, readProjectArchiveV4, serializeProjectArchiveV4 } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
-import { createProjectModelArchiveService } from '../../src/services/projectModelArchiveService';
+import { createProjectModelArchiveService, projectModelArchiveStorageContext } from '../../src/services/projectModelArchiveService';
 import { createNativeProjectModelArchivePort, prepareProjectModelArchiveFixtureImport } from '../../src/services/projectModelArchiveNativePort';
 import { createProjectModelStagingRepository, openProjectModelFixtureDatabase, projectModelSourceToken } from '../../src/services/indexedDb/projectModelStagingRepository';
 import { beginProjectModelFixtureBusinessSession, createProjectModelBusinessRepository } from '../../src/services/indexedDb/projectModelBusinessRepository';
@@ -54,6 +58,13 @@ vi.mock('../../src/services/projectModelNativeSafety', () => {
 });
 vi.mock('../../src/services/projectArchiveSerialization', () => ({ serializeProjectArchiveEntries: async (entries: Array<{ path: string; value: unknown }>) =>
   entries.map((entry) => ({ path: entry.path, content: JSON.stringify(entry.value) })) }));
+// 旧包仍经真实 canonical1 捕获；只省去测试环境不可用的 Worker 线程。
+vi.mock('../../src/services/projectMergeWorkerClient', async () => {
+  const { captureExchangeSnapshot: capture } = await import('../../src/services/projectExchangeDomain');
+  const { buildProjectMergePlan } = await import('../../src/services/projectMergeService');
+  return { captureProjectSnapshot: vi.fn(async (...args: Parameters<typeof capture>) => capture(...args)),
+    compareProjectSnapshots: vi.fn(async (...args: Parameters<typeof buildProjectMergePlan>) => buildProjectMergePlan(...args)) };
+});
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -203,6 +214,34 @@ async function sourceArchive() {
   const archive = { texts: Object.fromEntries(entries.map((entry) => [entry.path, entry.content])), assets };
   memory.archives.set('/input/source.aicanvas', archive); return { archive, snapshot, shared, episode };
 }
+async function legacyArchive(version: 1 | 2 | 3) {
+  const owner: ProjectSaveData = { id: 'legacy-owner', name: '旧项目', createdAt: 1, updatedAt: 2,
+    nodes: [], edges: [], groups: [], ...(version === 1 ? { parentId: 'lost-parent', episodeScript: '孤立分集原稿' }
+      : { series: { script: '旧全剧原稿' } }) };
+  const episode: ProjectSaveData = { id: 'legacy-episode', parentId: owner.id, name: '第一集', episodeNo: 1,
+    createdAt: 1, updatedAt: 2, nodes: [], edges: [], groups: [], episodeScript: '旧分集原稿' };
+  const records = version === 1 ? [owner] : [owner, episode];
+  const manifest = { formatVersion: version, projectId: owner.id, projectName: owner.name, exportedAt: 1,
+    ...(version === 1 ? {} : { episodeCount: 1 }) };
+  const chat = { conversations: [{ id: 'legacy-chat', projectId: owner.id, title: '旧会话', titleSource: 'user',
+    agentMode: 'plan', pinned: false, archived: false, messageCount: 0, createdAt: 1, updatedAt: 1 }], messages: [], memories: [] };
+  const texts: Record<string, string> = { 'manifest.json': JSON.stringify(manifest), 'project.json': JSON.stringify(owner), 'chat.json': JSON.stringify(chat) };
+  if (version !== 1) texts['episodes.json'] = JSON.stringify([{ project: episode, chat: null }]);
+  let oldRevisionId: string | undefined;
+  if (version === 3) {
+    const captured = captureExchangeSnapshot(records, [], null);
+    const head = await createProjectExchangeRevision(captured.snapshot);
+    oldRevisionId = head.revisionId;
+    const state: ProjectExchangeState = { ownerId: owner.id, lineageId: captured.snapshot.lineageId,
+      rootProjectId: captured.snapshot.rootProjectId, headRevisionId: head.revisionId, stateVersion: 1, identities: captured.identities };
+    texts['exchange-state.json'] = JSON.stringify(state);
+    texts['exchange.json'] = JSON.stringify({ format: 'ai-canvas-project-exchange', version: 1, packageId: 'legacy-package',
+      lineageId: state.lineageId, headRevisionId: head.revisionId, revisions: [head], ancestors: [], files: [] });
+  }
+  const archive: MemoryArchive = { texts, assets: new Map() };
+  memory.archives.set('/input/legacy.aicanvas', archive);
+  return { archive, oldRevisionId };
+}
 async function received(outputPath: string) {
   const archive = memory.archives.get(outputPath)!;
   return readProjectArchiveV4(archive.texts, [...archive.assets].map(([path, bytes]) => descriptor(path, bytes)));
@@ -222,6 +261,76 @@ beforeEach(() => {
 afterEach(() => { for (const database of opened) database.close(); opened.clear(); vi.unstubAllGlobals(); });
 
 describe('P6 v4真实fixture集成', () => {
+  it.each([1, 2, 3] as const)('真实 v%s 业务包经隔离仓储导入并导出 v4，保留正文和旧协作身份', async (version) => {
+    const sample = await setup(), legacy = await legacyArchive(version);
+    const beforeProjects = projectModelSourceToken(await records(sample.database, 'projects'));
+    const beforeTasks = projectModelSourceToken(await records(sample.database, 'agentTasks'));
+    const incoming = await prepareProjectModelArchiveFixtureImport(sample.database, sample.session,
+      { archivePath: '/input/legacy.aicanvas', operationId: `legacy-preview-${version}`, outputPath: `/output/legacy-${version}.aicanvas` });
+    const service = createProjectModelArchiveService(sample.database, sample.session, incoming.port);
+    const saved = await service.apply(await service.preview(incoming.source),
+      { operationId: `legacy-import-${version}`, mode: 'import-new', appendChat: true, appendMemories: true });
+    expect(saved.targetProjectId).not.toBe('legacy-owner');
+    if (version === 1) {
+      expect(saved.next.project.kind).toBe('standalone');
+      expect(saved.next.content.standaloneCreative?.script).toBe('孤立分集原稿');
+    } else {
+      expect(saved.next.project.kind).toBe('series');
+      expect(saved.next.content.script).toBe('旧全剧原稿');
+      expect(saved.next.episodeContents[0].script).toBe('旧分集原稿');
+    }
+    await service.exportProject(saved.targetProjectId, `legacy-export-${version}`);
+    const exported = await received(`/output/legacy-${version}.aicanvas`);
+    expect(exported.snapshot.lineageId).toBe(incoming.source.snapshot.lineageId);
+    expect(exported.snapshot.entities).toEqual(incoming.source.snapshot.entities);
+    expect(exported.payload.history?.payload.conversations).toHaveLength(1);
+    expect(exported.payload.history?.payload.conversations[0].archiveOriginId)
+      .toBe(incoming.source.payload.history?.payload.conversations[0].archiveOriginId);
+    if (version === 3) {
+      expect(exported.payload.exchange.revisions).toContainEqual(expect.objectContaining({
+        canonicalVersion: 1, revisionId: legacy.oldRevisionId,
+      }));
+    }
+    expect(projectModelSourceToken(await records(sample.database, 'projects'))).toBe(beforeProjects);
+    expect(projectModelSourceToken(await records(sample.database, 'agentTasks'))).toBe(beforeTasks);
+  });
+
+  it('损坏的 v3 协作修订在导入准备阶段被拒绝，不写入作品或原审计', async () => {
+    const sample = await setup(), legacy = await legacyArchive(3);
+    const beforeProjects = projectModelSourceToken(await records(sample.database, 'projectRoots'));
+    const beforeTasks = projectModelSourceToken(await records(sample.database, 'agentTasks'));
+    const exchange = JSON.parse(legacy.archive.texts['exchange.json']) as { headRevisionId: string };
+    exchange.headRevisionId = '0'.repeat(64);
+    legacy.archive.texts['exchange.json'] = JSON.stringify(exchange);
+    await expect(prepareProjectModelArchiveFixtureImport(sample.database, sample.session,
+      { archivePath: '/input/legacy.aicanvas', operationId: 'bad-v3-preview' })).rejects.toThrow();
+    expect(projectModelSourceToken(await records(sample.database, 'projectRoots'))).toBe(beforeProjects);
+    expect(projectModelSourceToken(await records(sample.database, 'agentTasks'))).toBe(beforeTasks);
+    expect(memory.invoke.mock.calls.filter(([command]) => command === 'publish_project_import_assets')).toHaveLength(0);
+  });
+
+  it('当前 head 已不声明的受控旧根仍因独立素材元数据保留在归档闭包中', async () => {
+    const sample = await imported(), capture = (await sample.service.repository.capture(sample.operation.targetProjectId))!;
+    const extraRoot = 'r2-11111111-1111-4111-8111-111111111111';
+    const binding = { rootRef: extraRoot, folderName: `${capture.aggregate.project.dataFolder}/roots/${extraRoot}`,
+      sourceRecordIds: [], source: 'project-managed' as const };
+    capture.aggregate.project.storageBindings.push(binding);
+    capture.exchange!.identities.push({ kind: 'storage-root', sourceId: 'retired-asset-root', localId: extraRoot });
+    const head = capture.exchange!.bundle.revisions.find((revision) => revision.canonicalVersion === capture.exchange!.localHead.canonicalVersion
+      && revision.revisionId === capture.exchange!.localHead.revisionId)!;
+    expect(head.canonicalVersion).toBe(2);
+    expect(projectModelArchiveStorageContext(capture).roots).not.toContainEqual(binding);
+    const frozenHead = projectModelSourceToken(head);
+    capture.assetMetadata = [{ assetId: 'na2-22222222-2222-4222-8222-222222222222', rootRef: extraRoot,
+      path: 'imports/retained/独立素材.png', ownerId: capture.aggregate.project.id, bytes: 3, sha256: hash(new Uint8Array([7, 8, 9])) }];
+
+    const context = projectModelArchiveStorageContext(capture);
+    expect(context.roots).toContainEqual(binding);
+    expect(context.roots).toHaveLength(capture.aggregate.project.storageBindings.length);
+    expect(context.primary).toBe(capture.aggregate.project.storageRootRef);
+    expect(projectModelSourceToken(head)).toBe(frozenHead);
+  });
+
   it('原生确认同一素材的大小写别名后可导出，保留旧文件身份', async () => {
     const sample = await imported(), capture = (await sample.service.repository.capture(sample.operation.targetProjectId))!;
     const canvas = capture.aggregate.canvases[0];

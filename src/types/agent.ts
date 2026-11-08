@@ -151,6 +151,8 @@ export interface AgentEvent {
 }
 
 export interface AgentCanvasCheckpoint {
+  /** 新项目历史只在捕获检查点的原运行租约下可重放/回退。 */
+  runtimeEpoch?: string;
   revisionBefore: number;
   revisionAfter: number;
   historyIndexBefore: number;

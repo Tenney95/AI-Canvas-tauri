@@ -54,8 +54,8 @@ function referencedInput(data: BaseNodeData, state: Workspace, nodeId: string) {
   return { text, error, mentionedIds, ids };
 }
 
-/** Non-security change detector. Persist only the digest, never the input payload. */
-export function videoInputFingerprint(node: Node<BaseNodeData>, state: Workspace): string {
+/** 原始材料仅供即时计算，不得持久化或输出。 */
+export function videoInputFingerprintMaterial(node: Node<BaseNodeData>, state: Workspace): string {
   const d = videoInputData(node, state);
   const input = referencedInput(d, state, node.id);
   const refs = input.ids.map((id) => {
@@ -75,10 +75,15 @@ export function videoInputFingerprint(node: Node<BaseNodeData>, state: Workspace
       return [id, asset, asset ? resolveDramaAssetImageRef(asset, state.nodes, parsed.referenceImageId) : undefined,
         asset && parsed.mergeAll ? collectCharacterReferenceUrls(asset, state.nodes) : undefined];
     }) : [];
-  const payload = JSON.stringify([d.prompt, input.text, input.error, d.model, d.provider, d.workflowId, d.workflowInputs,
+  return JSON.stringify([d.prompt, input.text, input.error, d.model, d.provider, d.workflowId, d.workflowInputs,
     d.videoResolution, d.videoFrames, d.videoFps, d.seedanceDuration, d.seedanceRatio, d.seedanceResolution,
     d.generateAudio, d.videoReferences, d.runninghubModelParameters, d.comfyRefmods, d.comfyH3MemoryPreset, d.cameraSettings, refs, dramaRefs,
     state.projects.find((p) => p.id === state.currentProjectId)?.settings]);
+}
+
+/** 运行时快速变化检测，持久授权必须另用 SHA-256。 */
+export function videoInputFingerprint(node: Node<BaseNodeData>, state: Workspace): string {
+  const payload = videoInputFingerprintMaterial(node, state);
   let hash = 2166136261;
   for (let i = 0; i < payload.length; i++) hash = Math.imul(hash ^ payload.charCodeAt(i), 16777619);
   return (hash >>> 0).toString(16);

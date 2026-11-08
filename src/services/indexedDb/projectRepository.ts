@@ -34,7 +34,7 @@ function readDirectory(database: IDBDatabase): Promise<LegacyProjectDirectoryEnt
   // 摘要是可重建缓存，缺行不能掩盖完整旧项目。这里只保留轻量 DTO，不假称 IDB 支持字段投影。
   return new Promise((resolve, reject) => {
     const transaction = database.transaction('projects', 'readonly');
-    const rows: Array<LegacyProjectDirectoryEntry & { hasSeriesContent: boolean }> = [];
+    const rows: LegacyProjectDirectoryEntry[] = [];
     let failure: Error | undefined;
     let bytes = 0;
     const request = transaction.objectStore('projects').openCursor();
@@ -51,14 +51,12 @@ function readDirectory(database: IDBDatabase): Promise<LegacyProjectDirectoryEnt
         if (record.episodeNo !== undefined && (typeof record.episodeNo !== 'number' || !Number.isFinite(record.episodeNo))) {
           throw new Error('旧项目目录的集号无效');
         }
-        const entry: LegacyProjectDirectoryEntry & { hasSeriesContent: boolean } = {
+        const entry: LegacyProjectDirectoryEntry = {
           id: record.id as string, name: typeof record.name === 'string' ? record.name : '',
           createdAt: time(record.createdAt), updatedAt: time(record.updatedAt),
           ...(typeof record.parentId === 'string' ? { parentId: record.parentId } : {}),
           ...(typeof record.episodeNo === 'number' ? { episodeNo: record.episodeNo } : {}),
           kind: record.parentId ? 'episode' : 'standalone', hasPreview: typeof record.snapshot === 'string' && record.snapshot.length > 0,
-          hasSeriesContent: !!record.series && typeof record.series === 'object'
-            && Object.values(record.series).some((value) => value !== undefined && value !== null),
         };
         bytes += estimateLegacyBackupValueBytes(entry);
         if (bytes > 256 * 1024 * 1024) throw new Error('旧项目目录超过只读准备容量');
@@ -71,8 +69,9 @@ function readDirectory(database: IDBDatabase): Promise<LegacyProjectDirectoryEnt
     };
     transaction.oncomplete = () => {
       const owners = new Set(rows.flatMap((row) => row.parentId ? [row.parentId] : []));
-      resolve(rows.map(({ hasSeriesContent, ...row }) => ({ ...row,
-        kind: row.parentId ? 'episode' : owners.has(row.id) || hasSeriesContent ? 'series' : 'standalone' })));
+      // 与旧画布选择一致：没有子记录时仍是普通画布，共享稿不能单独证明剧集容器。
+      resolve(rows.map((row) => ({ ...row,
+        kind: row.parentId ? 'episode' : owners.has(row.id) ? 'series' : 'standalone' })));
     };
     transaction.onerror = () => { failure ??= new Error('旧项目目录读取失败'); };
     transaction.onabort = () => reject(failure ?? new Error('旧项目目录读取未完成'));

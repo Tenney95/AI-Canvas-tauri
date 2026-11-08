@@ -21,29 +21,44 @@ const MAX_MANIFEST: u64 = 2 * 1024 * 1024;
 const MAX_IPC: u64 = 8 * 1024 * 1024;
 const ERROR: &str = "项目模型维护条件不满足，已停止且保留原材料";
 const PAGE: &str = "<!doctype html><html lang=zh-CN><head><meta charset=utf-8><title>项目模型隔离维护</title></head><body><p>隔离维护环境已启动。正式迁移关闭，本页不加载画布、队列或业务脚本。</p></body></html>";
+#[cfg(all(windows, debug_assertions, feature = "project-model-fixture-host"))]
+const FIXTURE_PAGE: &str = "<!doctype html><html lang=zh-CN><head><meta charset=utf-8><title>项目模型隔离演练</title></head><body><pre id=result>正在核验隔离条件</pre><script src=fixture-host.js></script></body></html>";
+#[cfg(all(windows, debug_assertions, feature = "project-model-fixture-host"))]
+const FIXTURE_SCRIPT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/project-model-fixture-host.js"));
+#[cfg(windows)]
+const FIXTURE_MARKER: &[u8] = b"ai-canvas-project-model-fixture-host-v1";
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ColdMaintenanceRequest {
     // 各平台都解析启动参数，但只有 Windows 会读取 fixture ID。
     #[cfg_attr(not(windows), allow(dead_code))]
     Fixture(String),
+    #[cfg_attr(not(windows), allow(dead_code))]
+    FixtureSelftest(String),
     ProductionProofOnly,
 }
 
 /// 仅命令行冷启动可选择；release 永远拒绝。普通启动不创建目录、不访问用户资料。
 pub fn cold_request() -> Result<Option<ColdMaintenanceRequest>, &'static str> {
+    parse_cold_request(std::env::args().skip(1), cfg!(debug_assertions),
+        cfg!(all(windows, debug_assertions, feature = "project-model-fixture-host")))
+}
+fn parse_cold_request(args: impl IntoIterator<Item = String>, debug: bool, self_test_available: bool) -> Result<Option<ColdMaintenanceRequest>, &'static str> {
     let mut request = None;
-    for arg in std::env::args().skip(1) {
+    for arg in args {
         let candidate = if let Some(id) = arg.strip_prefix("--project-model-maintenance-fixture=") {
             if !safe_id(id) || id.len() > 64 { return Err(ERROR); }
             Some(ColdMaintenanceRequest::Fixture(id.to_owned()))
+        } else if let Some(id) = arg.strip_prefix("--project-model-maintenance-selftest=") {
+            if !self_test_available || !safe_id(id) || id.len() > 64 { return Err(ERROR); }
+            Some(ColdMaintenanceRequest::FixtureSelftest(id.to_owned()))
         } else if arg == "--project-model-maintenance-production-proof" {
             Some(ColdMaintenanceRequest::ProductionProofOnly)
         } else if arg.starts_with("--project-model-maintenance") {
             return Err(ERROR);
         } else { None };
         if let Some(candidate) = candidate {
-            if !cfg!(debug_assertions) || request.is_some() { return Err(ERROR); }
+            if !debug || request.is_some() { return Err(ERROR); }
             request = Some(candidate);
         }
     }
@@ -58,6 +73,7 @@ pub struct ProjectModelMaintenanceState {
 struct Session {
     lease: MaintenanceLease,
     root: Option<PathBuf>,
+    self_test: bool,
     _lock: Option<File>,
     created_operations: HashMap<String, WriteBudget>,
     environment_revoked: Arc<AtomicBool>,
@@ -72,6 +88,8 @@ pub struct MaintenanceLease {
     mode: &'static str,
     cold_start: bool,
     production_allowed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fixture_archive_container: Option<bool>,
 }
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -275,14 +293,38 @@ pub fn deny_private_access<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), 
 }
 
 #[cfg(windows)]
+fn prepare_selftest_root(root: &Path) -> Result<(), String> {
+    match fs::create_dir(root) {
+        Ok(()) => {
+            plain(root, true)?;
+            create_synced(&root.join("fixture-selftest-v1"), FIXTURE_MARKER)?;
+            sync_directory(root)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            plain(root, true)?;
+            if read_bounded(root, "fixture-selftest-v1", 128)?.as_slice() != FIXTURE_MARKER { return Err(ERROR.into()); }
+        }
+        Err(_) => return Err(ERROR.into()),
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 pub fn start_maintenance(app: &mut tauri::App, request: ColdMaintenanceRequest) -> Result<(), String> {
     if !cfg!(debug_assertions) || app.managed_surface_counts() != (0, 0) { return Err(ERROR.into()); }
+    let self_test = matches!(&request, ColdMaintenanceRequest::FixtureSelftest(_));
+    if self_test && !cfg!(all(windows, debug_assertions, feature = "project-model-fixture-host")) { return Err(ERROR.into()); }
     let (root, lock, profile, profile_id, mode) = match request {
-        ColdMaintenanceRequest::Fixture(id) => {
+        ColdMaintenanceRequest::Fixture(id) | ColdMaintenanceRequest::FixtureSelftest(id) => {
             let local = app.path().app_local_data_dir().map_err(|_| ERROR)?;
             plain_chain(&local)?;
             let base = private_root(app.handle())?; directory(&base)?;
-            let root = base.join(&id); directory(&root)?;
+            let root = base.join(&id);
+            if self_test {
+                prepare_selftest_root(&root)?;
+            } else {
+                directory(&root)?;
+            }
             let lock_path = root.join("maintenance.lock");
             if lock_path.exists() { plain(&lock_path, false)?; }
             let mut options = OpenOptions::new(); options.create(true).read(true).write(true).truncate(false);
@@ -309,10 +351,35 @@ pub fn start_maintenance(app: &mut tauri::App, request: ColdMaintenanceRequest) 
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok().map_err(|_| ERROR)?;
     let (environment, environment_revoked) = tauri::webview::create_exclusive_webview2_environment(&profile).map_err(|_| ERROR)?;
     let lease_id = digest(format!("{}-{:?}", std::process::id(), std::time::SystemTime::now()).as_bytes());
+    #[cfg(all(windows, debug_assertions, feature = "project-model-fixture-host"))]
+    let fixture_archive_container = if self_test {
+        // 归档演练是附加证据，失败或达到次数上限时保留材料，不能阻止同一 fixture 恢复迁移。
+        let attempt = || -> Result<(), String> {
+            // 不接收页面提供的路径。每次冷启动独占新目录，失败或中断材料永不覆盖。
+            let container = root.as_ref().ok_or(ERROR)?.join("archive-probes");
+            directory(&container)?; plain_chain(&container)?;
+            let mut prior = 0usize;
+            for entry in fs::read_dir(&container).map_err(|_| ERROR)? {
+                let entry = entry.map_err(|_| ERROR)?;
+                let name = entry.file_name().into_string().map_err(|_| ERROR)?;
+                if !valid_digest(&name) { return Err(ERROR.into()); }
+                plain(&entry.path(), true)?;
+                prior += 1;
+                if prior >= 8 { return Err(ERROR.into()); }
+            }
+            let run = container.join(&lease_id);
+            fs::create_dir(&run).map_err(|_| ERROR)?; plain_chain(&run)?;
+            crate::project_archive::run_fixture_archive_container_probe(&run).map_err(|_| ERROR)?;
+            Ok(())
+        };
+        Some(attempt().is_ok())
+    } else { None };
+    #[cfg(not(all(windows, debug_assertions, feature = "project-model-fixture-host")))]
+    let fixture_archive_container = None;
     let state = app.state::<ProjectModelMaintenanceState>();
     *state.session.lock().map_err(|_| ERROR)? = Some(Session {
-        lease: MaintenanceLease { lease_id, profile_id, mode, cold_start: true, production_allowed: false },
-        root, _lock: lock, created_operations: HashMap::new(), environment_revoked,
+        lease: MaintenanceLease { lease_id, profile_id, mode, cold_start: true, production_allowed: false, fixture_archive_container },
+        root, self_test, _lock: lock, created_operations: HashMap::new(), environment_revoked,
     });
     let navigation_app = app.handle().clone();
     tauri::WebviewWindowBuilder::new(app, WINDOW, tauri::WebviewUrl::CustomProtocol(
@@ -342,16 +409,60 @@ fn maintenance_url(url: &url::Url) -> bool {
         && (url.scheme() == "project-model-maintenance" && url.host_str() == Some("localhost")
             || url.scheme() == "http" && url.host_str() == Some("project-model-maintenance.localhost"))
 }
+#[derive(Debug, PartialEq)]
+enum MaintenanceResource { Page, FixturePage, FixtureScript, Denied }
+fn maintenance_resource(label: &str, scheme: Option<&str>, authority: Option<&str>, path: &str, has_query: bool, get: bool, self_test: bool) -> MaintenanceResource {
+    let origin = matches!((scheme, authority), (Some("http"), Some("project-model-maintenance.localhost"))
+        | (Some("project-model-maintenance"), Some("localhost")));
+    if label != WINDOW || !get || has_query || !origin {
+        return MaintenanceResource::Denied;
+    }
+    match (self_test, path) {
+        (true, "/index.html") => MaintenanceResource::FixturePage,
+        (true, "/fixture-host.js") => MaintenanceResource::FixtureScript,
+        (false, "/index.html") => MaintenanceResource::Page,
+        _ => MaintenanceResource::Denied,
+    }
+}
 pub fn handle_protocol(context: tauri::UriSchemeContext<'_, tauri::Wry>, request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
-    let accepted = context.webview_label() == WINDOW && request.uri().path() == "/index.html"
-        && request.uri().query().is_none()
-        && matches!(request.uri().authority().map(|authority| authority.as_str()), Some("localhost" | "project-model-maintenance.localhost"));
+    let self_test = cfg!(all(windows, debug_assertions, feature = "project-model-fixture-host"))
+        && context.app_handle().try_state::<ProjectModelMaintenanceState>().is_some_and(|state| {
+            !state.revoked.load(Ordering::Acquire) && state.session.lock().ok().and_then(|session| session.as_ref()
+                .map(|value| value.self_test && value.lease.mode == "isolated-fixture" && !value.environment_revoked.load(Ordering::Acquire))).unwrap_or(false)
+        });
+    let resource = maintenance_resource(context.webview_label(), request.uri().scheme_str(), request.uri().authority().map(|authority| authority.as_str()),
+        request.uri().path(), request.uri().query().is_some(), request.method().as_str() == "GET", self_test);
+    let mut status = 200;
+    #[allow(unused_mut)]
+    let mut content_type = "text/html; charset=utf-8";
+    #[allow(unused_mut)]
+    let mut csp = "default-src 'none'; script-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src ipc: http://ipc.localhost";
+    let mut body: &[u8] = &[];
+    match resource {
+        MaintenanceResource::Page => body = PAGE.as_bytes(),
+        MaintenanceResource::FixturePage => {
+            #[cfg(all(windows, debug_assertions, feature = "project-model-fixture-host"))]
+            {
+                csp = "default-src 'none'; script-src 'self'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src ipc: http://ipc.localhost";
+                body = FIXTURE_PAGE.as_bytes();
+            }
+            #[cfg(not(all(windows, debug_assertions, feature = "project-model-fixture-host")))]
+            { status = 403; }
+        }
+        MaintenanceResource::FixtureScript => {
+            #[cfg(all(windows, debug_assertions, feature = "project-model-fixture-host"))]
+            { content_type = "text/javascript; charset=utf-8"; body = FIXTURE_SCRIPT; }
+            #[cfg(not(all(windows, debug_assertions, feature = "project-model-fixture-host")))]
+            { status = 403; }
+        }
+        MaintenanceResource::Denied => status = 403,
+    }
     tauri::http::Response::builder()
-        .status(if accepted { 200 } else { 403 })
-        .header("Content-Type", "text/html; charset=utf-8")
+        .status(status)
+        .header("Content-Type", content_type)
         .header("Cache-Control", "no-store")
-        .header("Content-Security-Policy", "default-src 'none'; script-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src ipc: http://ipc.localhost")
-        .body(if accepted { PAGE.as_bytes().to_vec() } else { Vec::new() })
+        .header("Content-Security-Policy", csp)
+        .body(body.to_vec())
         .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
 }
 pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
@@ -579,6 +690,56 @@ pub async fn project_model_verify_backup_seal(webview: Webview, lease_id: String
 mod tests {
     use super::*;
     #[test]
+    fn fixture_host_requires_debug_feature_and_explicit_cold_request() {
+        let arg = || vec!["--project-model-maintenance-selftest=safe-profile".to_string()];
+        assert!(parse_cold_request(arg(), false, true).is_err());
+        assert!(parse_cold_request(arg(), true, false).is_err());
+        assert_eq!(parse_cold_request(arg(), true, true).unwrap(),
+            Some(ColdMaintenanceRequest::FixtureSelftest("safe-profile".into())));
+        assert!(parse_cold_request(vec!["--project-model-maintenance-selftest=../profile".into()], true, true).is_err());
+        assert!(parse_cold_request(vec!["--project-model-maintenance-selftest=safe".into(),
+            "--project-model-maintenance-production-proof".into()], true, true).is_err());
+    }
+    #[test]
+    fn fixture_script_is_only_available_to_the_explicit_fixture_surface() {
+        let classify = |label, scheme, authority, path, query, get, fixture| maintenance_resource(label, scheme, authority, path, query, get, fixture);
+        let scheme = Some("http");
+        let authority = Some("project-model-maintenance.localhost");
+        assert_eq!(classify(WINDOW, scheme, authority, "/index.html", false, true, false), MaintenanceResource::Page);
+        assert_eq!(classify(WINDOW, Some("project-model-maintenance"), Some("localhost"), "/index.html", false, true, false), MaintenanceResource::Page);
+        assert_eq!(classify(WINDOW, scheme, authority, "/fixture-host.js", false, true, false), MaintenanceResource::Denied);
+        assert_eq!(classify(WINDOW, scheme, authority, "/fixture-host.js", false, true, true), MaintenanceResource::FixtureScript);
+        for (label, protocol, host, path, query, get) in [
+            ("main", scheme, authority, "/fixture-host.js", false, true),
+            (WINDOW, Some("https"), authority, "/fixture-host.js", false, true),
+            (WINDOW, Some("http"), Some("localhost"), "/fixture-host.js", false, true),
+            (WINDOW, Some("project-model-maintenance"), authority, "/fixture-host.js", false, true),
+            (WINDOW, scheme, Some("example.test"), "/fixture-host.js", false, true),
+            (WINDOW, scheme, authority, "/fixture-host.js", true, true),
+            (WINDOW, scheme, authority, "/fixture-host.js", false, false),
+            (WINDOW, scheme, authority, "/index.html", false, false),
+            (WINDOW, scheme, authority, "/other.js", false, true),
+        ] {
+            assert_eq!(classify(label, protocol, host, path, query, get, true), MaintenanceResource::Denied);
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn selftest_refuses_unmarked_or_tampered_existing_fixture() {
+        let parent = std::env::temp_dir().join(format!("project-model-host-fixture-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&parent).unwrap();
+        let unknown = parent.join("unknown"); fs::create_dir(&unknown).unwrap();
+        assert!(prepare_selftest_root(&unknown).is_err());
+        assert!(!unknown.join("fixture-selftest-v1").exists());
+        let fresh = parent.join("fresh"); prepare_selftest_root(&fresh).unwrap();
+        assert!(prepare_selftest_root(&fresh).is_ok());
+        fs::write(fresh.join("fixture-selftest-v1"), b"changed").unwrap();
+        assert!(prepare_selftest_root(&fresh).is_err());
+        fs::remove_file(fresh.join("fixture-selftest-v1")).unwrap();
+        fs::remove_dir(fresh).unwrap(); fs::remove_dir(unknown).unwrap(); fs::remove_dir(parent).unwrap();
+    }
+    #[test]
     fn rejects_paths_and_reserved_device_names() {
         for path in ["../x", "/x", "a\\b", "a/./b", "CON.txt", "a/lpt1.json", "a/..", "a."] { assert!(!safe_path(path)); }
         for path in ["manifest.json", "records/projects-000001.json", "binary/1.bin"] { assert!(safe_path(path)); }
@@ -622,7 +783,7 @@ mod tests {
         })).unwrap();
         create_synced(&root.join("manifest.json"), &manifest).unwrap();
         let complete = serde_json::to_vec(&serde_json::json!({"format":"project-model-backup-v1", "operationId":"fixture-operation", "manifestSha256":digest(&manifest)})).unwrap();
-        let mut lease = MaintenanceLease { lease_id:"test".into(), profile_id:"safe".into(), mode:"isolated-fixture", cold_start:true, production_allowed:false };
+        let mut lease = MaintenanceLease { lease_id:"test".into(), profile_id:"safe".into(), mode:"isolated-fixture", cold_start:true, production_allowed:false, fixture_archive_container:None };
         assert!(verify_materials(&root, &lease, "fixture-operation", &complete).is_ok());
         lease.profile_id = "different".into();
         assert!(verify_materials(&root, &lease, "fixture-operation", &complete).is_err());

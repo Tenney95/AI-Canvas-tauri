@@ -74,6 +74,7 @@ function cleanupTimestamp(value: unknown): number | undefined {
 
 /** Old identities stay retired; an explicit new import receives an independent asset ID. */
 export function withActiveAsset(tx: IDBTransaction, assetId: string, write: () => void, onForgotten: () => void): void {
+  if (assetId.startsWith('na2-')) { onForgotten(); tx.abort(); return; }
   const request = tx.objectStore(STORE_METADATA).get(forgottenAssetKey(assetId));
   request.onsuccess = () => {
     if (request.result !== undefined) {
@@ -215,6 +216,15 @@ export async function getRecentAssetUsage(): Promise<AssetUsageRecord[]> {
 
 /** 只读取当前列表的稳定 ID；旧库仍保留的最近十项可作为时间回退，不补造更早历史。 */
 export async function getAssetLastUsedTimes(assetIds: readonly string[]): Promise<Map<string, number>> {
+  if (assetIds.some((id) => id.startsWith('na2-'))) {
+    const native = await import('./indexedDb/nativeAssetRepository');
+    const result = await getAssetLastUsedTimes(assetIds.filter((id) => !id.startsWith('na2-')));
+    for (const id of assetIds.filter((id) => id.startsWith('na2-'))) {
+      const row = await native.readNativeAsset(id);
+      if (row?.lastUsedAt !== undefined) result.set(id, row.lastUsedAt);
+    }
+    return result;
+  }
   const ids = new Set(assetIds.filter((id) => typeof id === 'string' && id.trim() && id.length <= 256));
   if (!ids.size) return new Map<string, number>();
   const db = await openDB();
@@ -244,6 +254,8 @@ export async function getAssetLastUsedTimes(assetIds: readonly string[]): Promis
 /** 原子维护最近十项与全量索引时间，多个窗口/旧扫描不能覆盖较新的使用记录。 */
 export async function recordRecentAssetUsage(assetId: string, usedAt = Date.now()): Promise<void> {
   if (normalizeAssetUsage([{ assetId, usedAt }]).length !== 1) throw new Error('最近使用记录无效');
+  if (assetId.startsWith('na2-')) return (await import('./indexedDb/nativeAssetRepository')).updateNativeAsset(assetId,
+    (record) => ({ ...record, lastUsedAt: Math.max(record.lastUsedAt ?? 0, usedAt) }));
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_METADATA, STORE_ASSET_INDEX], 'readwrite');
@@ -1325,7 +1337,7 @@ export interface AssetMetaRecord {
 // 图片编辑信息按资产身份及内容摘要独立存放，避免标签更新或历史裁剪覆盖它。
 const ASSET_IMAGE_PREFIX = 'asset-image:';
 
-export async function getAssetImageRecords(signal?: AbortSignal): Promise<import('../types/assetImage').AssetImageRecord[]> {
+async function legacy_getAssetImageRecords(signal?: AbortSignal): Promise<import('../types/assetImage').AssetImageRecord[]> {
   if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
   const db = await openDB();
   if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -1354,6 +1366,20 @@ export async function putAssetImageRecord(record: import('../types/assetImage').
     || record.revision !== expectedRevision + 1) throw new Error('图片信息无效');
   const replacement = options?.tagReplacement;
   if (replacement && (replacement.tags.length > 16 || replacement.tags.some((tag) => !tag.trim() || tag.length > 40))) throw new Error('标签信息无效');
+  if (record.assetId.startsWith('na2-')) {
+    return (await import('./indexedDb/nativeAssetRepository')).updateNativeAsset(record.assetId, (asset) => {
+      const current = asset.images?.find((image) => image.id === record.id);
+      if ((current?.revision ?? 0) !== expectedRevision || current && current.contentDigest !== record.contentDigest) throw new Error('图片信息已变化，请重新读取');
+      if (replacement) {
+        const tags = asset.tags;
+        if (replacement.expected ? !tags || tags.updatedAt !== replacement.expected.updatedAt
+          || JSON.stringify(tags.tags) !== JSON.stringify(replacement.expected.tags) : !!tags) throw new Error('标签已变化，请重新读取');
+        asset.tags = { assetId: record.assetId, tags: [...replacement.tags], taggedBy: 'vision', updatedAt: Date.now() };
+      }
+      asset.images = [...(asset.images ?? []).filter((image) => image.id !== record.id), structuredClone(record)];
+      return asset;
+    }, { signal: options?.signal });
+  }
   options?.signal?.throwIfAborted();
   const db = await openDB();
   options?.signal?.throwIfAborted();
@@ -1398,7 +1424,7 @@ export async function putAssetImageRecord(record: import('../types/assetImage').
 }
 
 /** 获取全部资产元数据（一次性读入，组件侧建 Map 合并） */
-export async function getAllAssetMeta(): Promise<AssetMetaRecord[]> {
+async function legacy_getAllAssetMeta(): Promise<AssetMetaRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_ASSET_META_V2, 'readonly');
@@ -1411,6 +1437,7 @@ export async function getAllAssetMeta(): Promise<AssetMetaRecord[]> {
 
 /** 批量任务逐项捕获当前标签基线，避免为每张图片读取整个标签目录。 */
 export async function getAssetMetaById(assetId: string): Promise<AssetMetaRecord | undefined> {
+  if (assetId.startsWith('na2-')) return (await (await import('./indexedDb/nativeAssetRepository')).readNativeAsset(assetId))?.tags;
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db.transaction(STORE_ASSET_META_V2, 'readonly').objectStore(STORE_ASSET_META_V2).get(assetId);
@@ -1421,6 +1448,10 @@ export async function getAssetMetaById(assetId: string): Promise<AssetMetaRecord
 
 /** 写入/更新单个文件的标签元数据 */
 export async function putAssetMeta(record: AssetMetaRecord): Promise<void> {
+  if (record.assetId.startsWith('na2-')) {
+    const { path: _path, ...tags } = record;
+    return (await import('./indexedDb/nativeAssetRepository')).updateNativeAsset(record.assetId, (asset) => ({ ...asset, tags }));
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_ASSET_META_V2, STORE_METADATA], 'readwrite');
@@ -1435,6 +1466,7 @@ export async function putAssetMeta(record: AssetMetaRecord): Promise<void> {
 
 /** 删除单个文件的标签元数据 */
 export async function deleteAssetMeta(assetId: string): Promise<void> {
+  if (assetId.startsWith('na2-')) return (await import('./indexedDb/nativeAssetRepository')).updateNativeAsset(assetId, (asset) => { delete asset.tags; return asset; });
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_ASSET_META_V2, 'readwrite');
@@ -1742,6 +1774,11 @@ export interface AssetIndexRecord {
 }
 
 export async function getAssetIndexById(assetId: string): Promise<AssetIndexRecord | undefined> {
+  if (assetId.startsWith('na2-')) {
+    const native = await import('./indexedDb/nativeAssetRepository');
+    const record = await native.readNativeAsset(assetId);
+    return record ? native.resolveNativeAssetIndex(record) : undefined;
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_ASSET_INDEX, 'readonly');
@@ -1751,7 +1788,7 @@ export async function getAssetIndexById(assetId: string): Promise<AssetIndexReco
   });
 }
 
-export async function getAllAssetIndexes(): Promise<AssetIndexRecord[]> {
+async function legacy_getAllAssetIndexes(): Promise<AssetIndexRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db.transaction(STORE_ASSET_INDEX, 'readonly').objectStore(STORE_ASSET_INDEX).getAll();
@@ -1760,7 +1797,7 @@ export async function getAllAssetIndexes(): Promise<AssetIndexRecord[]> {
   });
 }
 
-export async function getAssetIndexByPath(path: string): Promise<AssetIndexRecord | undefined> {
+async function legacy_getAssetIndexByPath(path: string): Promise<AssetIndexRecord | undefined> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_ASSET_INDEX, 'readonly');
@@ -1770,7 +1807,7 @@ export async function getAssetIndexByPath(path: string): Promise<AssetIndexRecor
   });
 }
 
-export async function getAssetIndexesByFingerprint(fingerprint: string): Promise<AssetIndexRecord[]> {
+async function legacy_getAssetIndexesByFingerprint(fingerprint: string): Promise<AssetIndexRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_ASSET_INDEX, 'readonly');
@@ -1781,7 +1818,7 @@ export async function getAssetIndexesByFingerprint(fingerprint: string): Promise
 }
 
 /** 目录扫描的小批路径查询；一次事务读取，按输入顺序返回，不扫描整张索引表。 */
-export async function getAssetIndexesByPaths(paths: readonly string[]): Promise<Array<AssetIndexRecord | undefined>> {
+async function legacy_getAssetIndexesByPaths(paths: readonly string[]): Promise<Array<AssetIndexRecord | undefined>> {
   if (!paths.length) return [];
   if (paths.length > 128) throw new Error('资产索引查询批次过大');
   const db = await openDB();
@@ -1805,6 +1842,20 @@ export async function putAssetIndexes(
 ): Promise<AssetIndexRecord[]> {
   if (!records.length) return [];
   if (records.length > 128) throw new Error('资产索引保存批次过大');
+  if (records.some((record) => record.assetId.startsWith('na2-'))) {
+    const verified = new Map<string, AssetIndexRecord>();
+    const normalize = (value: string) => { const path = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(path) ? path.toLowerCase() : path; };
+    for (const record of records) {
+      if (!record.assetId.startsWith('na2-')) continue;
+      const current = await getAssetIndexById(record.assetId);
+      if (!current || normalize(current.path) !== normalize(record.path)
+        || current.size !== record.size || current.projectId !== record.projectId) throw new Error('恢复素材的身份或字节已变化，不能覆盖原索引');
+      verified.set(record.assetId, current);
+    }
+    const legacy = await putAssetIndexes(records.filter((record) => !record.assetId.startsWith('na2-')), options);
+    let position = 0;
+    return records.map((record) => verified.get(record.assetId) ?? legacy[position++]);
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const stores = options.migrateLegacyTags
@@ -1879,6 +1930,7 @@ export async function forgetMissingAssetRecords(
 ): Promise<{ assetIds: string[]; historyIds: string[]; deletedHistoryCounts: Record<string, number> }> {
   assertDramaAssetWriteCurrent(options);
   const snapshot = expected.map((record) => ({ ...record }));
+  if (snapshot.some((record) => record.assetId.startsWith('na2-'))) throw new Error('新项目恢复素材需从项目恢复入口处理，旧素材清理不能改写其身份');
   const assetIds = new Set(snapshot.map((record) => record.assetId));
   if (snapshot.length > 500 || assetIds.size !== snapshot.length || snapshot.some((record) => (
     typeof record.assetId !== 'string' || !record.assetId.trim() || record.assetId.length > 256
@@ -1985,6 +2037,7 @@ export async function forgetMissingAssetRecords(
 /** 仅回收尚未提交的资产包索引；位置已改变的记录不属于本轮可清理范围。 */
 export async function deleteImportedAssetIndexes(entries: readonly { assetId: string; path: string }[]): Promise<void> {
   if (!entries.length) return;
+  if (entries.some((entry) => entry.assetId.startsWith('na2-'))) throw new Error('旧导入清理不能删除新项目恢复素材索引');
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_ASSET_INDEX, 'readwrite');
@@ -2734,4 +2787,55 @@ export async function putProjectVisualDescription(
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+/** 新项目恢复索引优先，旧索引保持原记录与原身份。 */
+export async function getAllAssetIndexes(): Promise<AssetIndexRecord[]> {
+  const [legacy, rows] = await Promise.all([legacy_getAllAssetIndexes(), availableNativeAssetIndexes()]);
+  return [...legacy, ...rows];
+}
+export async function getAssetIndexByPath(path: string): Promise<AssetIndexRecord | undefined> {
+  const [legacy, native] = await Promise.all([legacy_getAssetIndexByPath(path), availableNativeAssetIndexes([path])]);
+  const normalize = (value: string) => { const path = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(path) ? path.toLowerCase() : path; };
+  const matches = native.filter((index) => normalize(index.path) === normalize(path));
+  if (matches.length > 1) throw new Error('同一文件存在多个恢复素材身份，请按原ID核对');
+  // 新库提交的恢复副本是该路径的权威；旧扫描提前发现的索引仍留给旧历史按ID读取。
+  return matches[0] ?? legacy;
+}
+export async function getAssetIndexesByFingerprint(fingerprint: string): Promise<AssetIndexRecord[]> {
+  const [legacy, rows] = await Promise.all([legacy_getAssetIndexesByFingerprint(fingerprint), availableNativeAssetIndexes()]);
+  return [...legacy, ...rows.filter((row) => row.fingerprint === fingerprint)];
+}
+export async function getAssetIndexesByPaths(paths: readonly string[]): Promise<Array<AssetIndexRecord | undefined>> {
+  if (paths.length > 128) throw new Error('资产索引查询批次过大');
+  const [legacy, indexes] = await Promise.all([legacy_getAssetIndexesByPaths(paths), availableNativeAssetIndexes(paths)]);
+  const normalize = (value: string) => { const path = value.replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(path) ? path.toLowerCase() : path; };
+  return paths.map((path, i) => {
+    const matches = indexes.filter((row) => normalize(row.path) === normalize(path));
+    if (matches.length > 1) throw new Error('同一文件存在多个恢复素材身份，请按原ID核对');
+    return matches[0] ?? legacy[i];
+  });
+}
+async function availableNativeAssetIndexes(paths?: readonly string[]): Promise<AssetIndexRecord[]> {
+  const native = await import('./indexedDb/nativeAssetRepository');
+  const roots = new Map<string, string | null>(), indexes: AssetIndexRecord[] = [];
+  for (const row of await native.readNativeAssets()) {
+    if (paths && !paths.some((path) => path.replace(/\\/g, '/').toLowerCase().endsWith('/' + row.relativePath.toLowerCase()))) continue;
+    const rootKey = JSON.stringify([row.projectId, row.rootRef]);
+    if (roots.get(rootKey) === null) continue;
+    try {
+      const index = await native.resolveNativeAssetIndex(row, roots.get(rootKey) ?? undefined);
+      roots.set(rootKey, index.rootPath!); indexes.push(index);
+    } catch { roots.set(rootKey, null); /* 不可用的新项目根不能阻断旧项目目录；显式按ID读取仍会报告错误。 */ }
+  }
+  return indexes;
+}
+export async function getAllAssetMeta(): Promise<AssetMetaRecord[]> {
+  const [legacy, native] = await Promise.all([legacy_getAllAssetMeta(), (await import('./indexedDb/nativeAssetRepository')).readNativeAssets()]);
+  return [...legacy, ...native.flatMap((asset) => asset.tags ? [asset.tags] : [])];
+}
+export async function getAssetImageRecords(signal?: AbortSignal): Promise<import('../types/assetImage').AssetImageRecord[]> {
+  signal?.throwIfAborted();
+  const [legacy, native] = await Promise.all([legacy_getAssetImageRecords(signal), (await import('./indexedDb/nativeAssetRepository')).readNativeAssets({ signal })]);
+  signal?.throwIfAborted(); return [...legacy, ...native.flatMap((asset) => asset.images ?? [])];
 }

@@ -19,6 +19,7 @@ vi.mock('../../src/services/chat/chatHistoryService', () => historyMocks);
 import { useAppStore } from '../../src/store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../src/services/chat/assistantScope';
 import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../../src/services/mcp/mcpSettingsScope';
+import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasImport } from '../../src/services/canvasDerivationGuard';
 
 const storageValues = new Map<string, string>();
 const localStorageMock = {
@@ -68,6 +69,52 @@ beforeEach(() => {
   useAppStore.setState({ currentProjectId: 'project-1' });
   historyMocks.loadProjectConversations.mockReset();
   historyMocks.loadMessages.mockReset();
+});
+
+describe('新项目画布版本与派生结果', () => {
+  it('编辑后同步运行时上下文，使旧结果失效且新操作仍可登记', () => {
+    useAppStore.setState({ currentProjectId: 'canvas-a', projectLoadStatus: 'ready', switchingProjectName: null,
+      isCreatingProject: false, isReturningToStartPage: false, canvasRevision: 3, globalCanvasRevision: 10,
+      projects: [{ id: 'canvas-a', name: '画布', createdAt: 1, updatedAt: 1 }],
+      projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+        projectId: 'project-a', projectEpoch: 1, episodeId: 'episode-a', canvasId: 'canvas-a', canvasEpoch: 1, canvasRevision: 3 } });
+    const previous = registerCanvasImport(useAppStore.getState())!;
+    expect(previous).not.toBeNull();
+    useAppStore.getState().incrementRevision();
+    expect(isCanvasDerivationFresh(previous, useAppStore.getState())).toBe(false);
+    const current = registerCanvasImport(useAppStore.getState())!;
+    expect(current?.expectedContext?.canvasRevision).toBe(4);
+    expect(isCanvasDerivationFresh(current, useAppStore.getState())).toBe(true);
+    completeCanvasDerivation(previous); completeCanvasDerivation(current);
+  });
+
+  it('按当前画布的版本模式同步，且不修改其他画布的上下文', () => {
+    const context = { kind: 'canvas' as const, schemaVersion: 2 as const, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'project-a', projectEpoch: 1, episodeId: null, canvasId: 'canvas-a', canvasEpoch: 1, canvasRevision: 10 };
+    useAppStore.setState({ currentProjectId: 'canvas-a', canvasRevision: 3, globalCanvasRevision: 10,
+      projects: [{ id: 'canvas-a', name: '画布', createdAt: 1, updatedAt: 1, revisionScope: 'global' }], projectExecutionContext: context });
+    useAppStore.getState().setCanvasRevision(8);
+    expect(useAppStore.getState().projectExecutionContext).toEqual(context);
+    useAppStore.getState().setGlobalCanvasRevision(12);
+    expect(useAppStore.getState().projectExecutionContext).toMatchObject({ canvasRevision: 12 });
+    useAppStore.setState({ currentProjectId: 'canvas-b' });
+    useAppStore.getState().incrementRevision();
+    expect(useAppStore.getState().projectExecutionContext).toMatchObject({ canvasId: 'canvas-a', canvasRevision: 12 });
+  });
+
+  it('切换过程中拒绝登记和写回当前新画布的派生操作', () => {
+    useAppStore.setState({ currentProjectId: 'canvas-a', projectLoadStatus: 'ready', switchingProjectName: null,
+      isCreatingProject: false, isReturningToStartPage: false, canvasRevision: 3,
+      projects: [{ id: 'canvas-a', name: '画布', createdAt: 1, updatedAt: 1 }],
+      projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+        projectId: 'project-a', projectEpoch: 1, episodeId: null, canvasId: 'canvas-a', canvasEpoch: 1, canvasRevision: 3 } });
+    const pending = registerCanvasImport(useAppStore.getState())!;
+    expect(pending).not.toBeNull();
+    useAppStore.setState({ switchingProjectName: '另一项目' });
+    expect(registerCanvasImport(useAppStore.getState())).toBeNull();
+    expect(isCanvasDerivationFresh(pending, useAppStore.getState())).toBe(false);
+    completeCanvasDerivation(pending);
+  });
 });
 
 describe('工作台会话持久范围', () => {

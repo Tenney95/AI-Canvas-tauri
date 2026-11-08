@@ -30,7 +30,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { openDetachedChatWindow } from '../../services/chat/chatWindowLifecycle';
 import { useAppStore } from '../../store/useAppStore';
-import { seriesOwnerId } from '../../store/store.utils';
+import { projectMemoryOwnerId, seriesOwnerId } from '../../store/store.utils';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../services/chat/assistantScope';
 import ConversationList from './ConversationList';
 import ChatHeader from './ChatHeader';
@@ -509,7 +509,7 @@ export default function ChatPanel({
   }, []);
   // 记忆挂在剧集项目上，分集画布要按归属项目取
   const memoryOwnerId = useAppStore((s) => (
-    effectiveProjectId ? seriesOwnerId(s.projects, effectiveProjectId) : null
+    effectiveProjectId ? projectMemoryOwnerId(s.projects, effectiveProjectId) : null
   ));
   const currentProjectMemories = memoryOwnerId
     ? projectMemories.filter((memory) => memory.projectId === memoryOwnerId)

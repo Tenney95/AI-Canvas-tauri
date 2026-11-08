@@ -131,7 +131,7 @@ function validateExchange(value: ProjectModelTransferExchange | null): void {
     reference(item.head);
   }
 }
-async function verifiedExchange(value: ProjectModelTransferExchange | null, previous: ProjectModelTransferExchange | null = null): Promise<void> {
+export async function verifiedExchange(value: ProjectModelTransferExchange | null, previous: ProjectModelTransferExchange | null = null): Promise<void> {
   validateExchange(value);
   if (!value) { if (previous) throw error('cannot-drop-exchange-history'); return; }
   if (value.stateVersion !== (previous?.stateVersion ?? 0) + 1) throw error('exchange-state-version-conflict');

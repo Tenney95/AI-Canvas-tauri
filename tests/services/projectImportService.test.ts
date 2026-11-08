@@ -35,8 +35,12 @@ vi.mock('../../src/services/projectMergeWorkerClient', () => ({
   captureProjectSnapshot: (...args: Parameters<typeof captureExchangeSnapshot>) => captureExchangeSnapshot(...args),
   compareProjectSnapshots: (...args: Parameters<typeof buildProjectMergePlan>) => buildProjectMergePlan(...args),
 }));
+vi.mock('../../src/services/projectArchiveSerialization', () => ({
+  serializeProjectArchiveEntries: async (entries: Array<{ path: string; value: unknown }>) =>
+    entries.map((entry) => ({ path: entry.path, content: JSON.stringify(entry.value) })),
+}));
 import { applyProjectImport, closePreparedProjectImport, prepareProjectImport, previewProjectImport,
-  restoreProjectImportRecovery, type PreparedProjectImport } from '../../src/services/projectImportService';
+  restoreProjectImportRecovery, withPreparedProjectImportRead, type PreparedProjectImport } from '../../src/services/projectImportService';
 import { ProjectImportCommittedError } from '../../src/services/projectImportOutcome';
 
 const sessions: PreparedProjectImport[] = [];
@@ -97,6 +101,51 @@ afterEach(async () => {
 });
 
 describe('项目导入历史追加编排', () => {
+  it('v4 预览使用已验证的新结构来源，不能走旧项目更新入口', async () => {
+    const { buildProjectExchangeSnapshotV2, serializeProjectArchiveV4 } = await import('../../src/services/projectArchiveV4');
+    const { createProjectExchangeRevisionV2 } = await import('../../src/services/projectExchangeV2Format');
+    const business = { project: { id: 'P', name: '零集剧集', kind: 'series' as const,
+      storageRoots: [{ id: 'shared', role: 'shared' as const }] }, episodes: [], canvases: [],
+      contents: { project: { projectId: 'P', data: {} }, episodes: [] } };
+    const snapshot = buildProjectExchangeSnapshotV2(business, 'lineage', [], []);
+    const revision = await createProjectExchangeRevisionV2(snapshot);
+    const exchange = { format: 'ai-canvas-project-exchange' as const, version: 2 as const, packageId: 'package', lineageId: 'lineage',
+      head: { canonicalVersion: 2 as const, revisionId: revision.revisionId }, revisions: [revision], ancestors: [], files: [] };
+    const entries = await serializeProjectArchiveV4({ ...business, exchange }, { packageId: 'package', exportedAt: 1 });
+    const texts = Object.fromEntries(entries.map((entry) => [entry.path, entry.content]));
+    mocks.invoke.mockResolvedValueOnce({ texts, assets: [] });
+    const session = await prepareProjectImport();
+    expect(session?.manifest).toMatchObject({ formatVersion: 4, episodeCount: 0 });
+    expect(session?.nativeSource?.payload.project.kind).toBe('series');
+    expect(session?.records).toEqual([]);
+    await expect(previewProjectImport(session!, 'legacy')).rejects.toThrow('暂不支持更新');
+    await expect(applyProjectImport(session!, null, {}, { appendChat: false, appendMemories: false })).rejects.toThrow('不能通过旧项目');
+    await closePreparedProjectImport(session!);
+  });
+
+  it('关闭预览先禁止新读取，并等待正在冻结的来源后清理目录', async () => {
+    const session = await prepareArchive([project('source')], [emptyChat()], 2);
+    let release!: () => void;
+    const pending = withPreparedProjectImportRead(session, () => new Promise<void>((resolve) => { release = resolve; }));
+    const closing = closePreparedProjectImport(session);
+    expect(session.disposed).toBe(true);
+    await expect(withPreparedProjectImportRead(session, async () => undefined)).rejects.toThrow('预览已关闭');
+    expect(mocks.delete).not.toHaveBeenCalled();
+    release(); await pending; await closing;
+    expect(mocks.delete).toHaveBeenCalledOnce();
+  });
+
+  it('旧包不能投影新结构时仍保留旧项目更新路径', async () => {
+    const archive = await import('../../src/services/projectModelArchiveService');
+    const projection = vi.spyOn(archive, 'readProjectModelArchive').mockRejectedValueOnce(new Error('unsupported projection'));
+    try {
+      const session = await prepareArchive([project('source')], [emptyChat()], 2);
+      expect(session.nativeSource).toBeNull();
+      expect(session.nativeSourceError).toContain('可继续用于更新旧项目');
+      mocks.read.mockResolvedValue([project('recipient')]);
+      await expect(previewProjectImport(session, 'recipient')).resolves.toMatchObject({ targetId: 'recipient' });
+    } finally { projection.mockRestore(); }
+  });
   it('旧目标分集仅独立root的typed imports文件非空时拒绝有损预览和更新', async () => {
     const source = project('source'), session = await prepareArchive([source], [emptyChat()], 2);
     const local = project('recipient'), episode = { ...project('local-episode', local.id),

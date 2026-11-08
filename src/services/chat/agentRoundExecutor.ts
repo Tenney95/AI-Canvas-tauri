@@ -602,6 +602,8 @@ export async function executePreparedToolCall(
             historyIndexAfter: checkpointAfter.historyIndex,
             revisionBefore: checkpointBefore.revision,
             revisionAfter: checkpointAfter.revision,
+            ...((context.executionContext ?? context.projectScope)?.modelGeneration
+              ? { runtimeEpoch: (context.executionContext ?? context.projectScope)?.runtimeEpoch } : {}),
           }
         : undefined;
       updateStep(taskId, step.id, {

@@ -53,6 +53,26 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('project asset scans with committed group relocations', () => {
+  it('扫描嵌套素材根时保留已有分集与素材根身份', async () => {
+    const db = await import('../../src/services/indexedDbService');
+    const nestedRoot = `${root}/roots/r2-extra`;
+    const path = `${nestedRoot}/image.png`;
+    await db.putAssetIndex({ ...record('nested-asset', path), rootPath: nestedRoot,
+      relativePath: 'image.png', projectId: 'canvas' });
+    fs.readDir.mockImplementation(async (directory: string) => {
+      if (directory === root) return [{ name: 'roots', isFile: false, isDirectory: true, isSymlink: false }];
+      if (directory === `${root}/roots`) return [{ name: 'r2-extra', isFile: false, isDirectory: true, isSymlink: false }];
+      if (directory === nestedRoot) return [{ name: 'image.png', isFile: true, isDirectory: false, isSymlink: false }];
+      throw new Error('unexpected directory');
+    });
+    const { scanDirectoryFiles } = await import('../../src/services/fs/assetLibrary');
+    const result = await scanDirectoryFiles(root, { source: 'project', projectId: 'project',
+      projectIdentityScope: ['project', 'canvas'], preserveProjectIdentity: true });
+    expect(result.complete).toBe(true);
+    expect(result.files[0]).toMatchObject({ assetId: 'nested-asset', relativePath: 'image.png' });
+    expect(await db.getAssetIndexById('nested-asset')).toMatchObject({ projectId: 'canvas', rootPath: nestedRoot, relativePath: 'image.png' });
+  });
+
   it.each([
     { strict: false, directory: root },
     { strict: true, directory: root },

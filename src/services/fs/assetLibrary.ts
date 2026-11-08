@@ -8,6 +8,7 @@ import {
   isTauriEnv,
   joinPath,
   getBaseDir,
+  getNativeProjectOwner,
   getConvertFileSrc,
   resolveUniqueDestPath,
   getFileCategory,
@@ -42,6 +43,8 @@ export interface AssetScanOptions {
   excludedFilePaths?: readonly string[];
   /** 精确项目路径模式：只复用这些项目的现有身份，新路径不从丢失指纹候选接管身份。 */
   projectIdentityScope?: readonly string[];
+  /** 跨素材根扫描时保留已登记索引的原始归属和相对路径基准。 */
+  preserveProjectIdentity?: boolean;
   /** 已完成稳定身份识别的新增条目；完整列表仍通过返回值获取。 */
   onFiles?: (batch: AssetFileEntry[]) => void;
 }
@@ -219,6 +222,9 @@ export async function scanDirectoryFiles(
     const fileEntries: typeof entries = [];
     for (const entry of entries) {
       if (!entry.isFile || entry.isSymlink) continue;
+      // 原生归属标记不是用户素材；删除它会让整个作品根无法验证。
+      if (depth === 0 && entry.name === '.ai-canvas-native-project.json'
+        && opts.projectId && getNativeProjectOwner(opts.projectId)) continue;
       const filePath = getFilePath(dir, entry.name);
       if (excludedFiles.has(comparablePath(filePath))) continue;
       if (retiredPaths?.has(mediaFileAllocationKey(filePath))) {
@@ -282,6 +288,7 @@ export async function scanDirectoryFiles(
         const ext = `.${r.name.split('.').pop()?.toLowerCase()}`;
         const assetUrl = CATEGORY_EXTENSIONS.image.includes(ext) && convertFileSrc ? convertFileSrc(r.filePath) : undefined;
         let assetId: string | undefined;
+        let existingIdentity: AssetIndexRecord | undefined;
         if (opts.projectIdentityScope) {
           const relativePath = getRelativeAssetPath(r.filePath, rootDir);
           if (opts.source !== 'project' || !opts.projectId || !opts.projectIdentityScope.includes(opts.projectId) || !relativePath) {
@@ -292,6 +299,13 @@ export async function scanDirectoryFiles(
             throw new Error('项目文件包含其他来源的资产身份，请先复制为独立项目资产');
           }
           assetId = indexed?.assetId ?? crypto.randomUUID();
+          if (indexed && opts.preserveProjectIdentity) {
+            if (!indexed.rootPath || !getRelativeAssetPath(r.filePath, indexed.rootPath)
+              || comparablePath(indexed.rootPath) !== comparablePath(rootDir) && !getRelativeAssetPath(indexed.rootPath, rootDir)) {
+              throw new Error('项目文件的素材根与当前项目不一致，请先修复身份');
+            }
+            existingIdentity = indexed;
+          }
           if (!indexed) {
             // 先登记全新身份，让既有识别器仅刷新精确路径，不接管其他来源的丢失记录。
             // path 唯一索引会拒绝并发登记，保留原记录。
@@ -304,9 +318,9 @@ export async function scanDirectoryFiles(
         }
         const identity = identitiesByPath?.get(r.filePath) ?? await identifyAsset(r.filePath, {
           assetId,
-          rootPath: rootDir,
+          rootPath: existingIdentity?.rootPath ?? rootDir,
           source: opts.source ?? 'folder',
-          projectId: opts.projectId,
+          projectId: existingIdentity?.projectId ?? opts.projectId,
           size: r.size,
           mtimeMs: r.mtimeMs,
         });

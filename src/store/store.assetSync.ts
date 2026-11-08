@@ -1,7 +1,7 @@
 /** 项目云存储状态只由原生 catalog 投影；凭据、请求与取消句柄不进入 Store。 */
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import { seriesOwnerId } from './store.utils';
+import { projectMemoryOwnerId } from './store.utils';
 import { areSettingsMutationsFrozen, enqueueConfigPersistence } from '../services/configPersistenceQueue';
 import {
   bindSharedStorageProject, cancelSharedStorageTask, loadSharedStorageSnapshot,
@@ -76,8 +76,10 @@ export const createAssetSyncSlice: StateCreator<AppState, [], [], AssetSyncSlice
     const state = get();
     if (!state.projectInitialized || state.projectLoadStatus !== 'ready'
       || !state.currentProjectId || !state.projects.some((project) => project.id === state.currentProjectId)) return null;
-    const ownerId = seriesOwnerId(state.projects, state.currentProjectId);
-    return state.projects.some((project) => project.id === ownerId) ? ownerId : null;
+    const current = state.projects.find((project) => project.id === state.currentProjectId);
+    const ownerId = projectMemoryOwnerId(state.projects, state.currentProjectId);
+    const native = (current as typeof current & { nativeView?: { projectId: string } })?.nativeView;
+    return native?.projectId === ownerId || state.projects.some((project) => project.id === ownerId) ? ownerId : null;
   };
   const requireOwner = (ownerId: string) => {
     if (currentOwner() !== ownerId) throw new Error(sharedStorageErrorMessage('conflict'));

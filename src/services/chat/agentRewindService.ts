@@ -20,6 +20,11 @@ export async function rewindAgentTaskCanvas(taskId: string): Promise<AgentRewind
     && isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false });
   if (!isCurrent()) return { ok: false, errorCode: 'AGENT_REWIND_CONTEXT_UNPROVEN',
     message: '原画布历史租约无法证明或已经失效，旧检查点仅供查看，不能回退当前画布' };
+  if (context?.modelGeneration && task.steps.some((step) => step.status === 'succeeded'
+    && step.toolCall?.effect === 'canvas_write' && step.toolCall.canvasCheckpoint
+    && step.toolCall.canvasCheckpoint.runtimeEpoch !== context.runtimeEpoch)) {
+    return { ok: false, errorCode: 'AGENT_REWIND_HISTORY_REPLACED', message: '原画布历史已重新加载，旧检查点仅供查看' };
+  }
   const validation = validateAgentTaskCanvasRewind(
     task,
     store.currentProjectId,

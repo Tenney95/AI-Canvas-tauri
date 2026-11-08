@@ -1270,6 +1270,7 @@ export async function renameAssetFile(
     const { getGlobalFilesDir } = await import('./fs/assetLibrary');
     const { fingerprintAssetImage } = await import('./fs/assetImageMetadata');
     const indexed = file.assetId ? await getAssetIndexById(file.assetId) : await getAssetIndexByPath(path);
+    if (indexed?.assetId.startsWith('na2-')) throw new Error('此文件属于项目恢复点的固定素材副本，请先复制为普通素材再改名');
     const samePath = (value: string) => /^[a-z]:\//i.test(value) ? value.toLowerCase() : value;
     if (indexed && samePath(indexed.path.replace(/\\/g, '/')) !== samePath(path)) throw new Error('文件位置已变化，请刷新后重试');
     const source = indexed?.source ?? file.source;

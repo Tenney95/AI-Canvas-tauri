@@ -13,7 +13,7 @@ export interface LegacyProjectRecord extends CanvasProject {
 }
 export type ProjectMigrationDiagnosticCode =
   | 'invalid_record' | 'duplicate_record_id' | 'invalid_field' | 'invalid_canvas'
-  | 'missing_owner' | 'nested_parent' | 'owner_has_canvas' | 'owner_has_episode_fields' | 'child_has_series'
+  | 'missing_owner' | 'nested_parent' | 'owner_has_canvas' | 'owner_has_episode_fields' | 'child_has_series' | 'ambiguous_childless_series'
   | 'unsafe_folder' | 'non_standard_episode_no' | 'duplicate_episode_no'
   | 'child_asset_copy' | 'unknown_legacy_fields';
 export interface ProjectMigrationDiagnostic {

@@ -1133,6 +1133,21 @@ export function savePendingTask(task: PendingTask): MediaTaskReceipt {
   const mediaContext = task.mediaContext ?? mediaTaskContexts.get(task.nodeId);
   task = { ...task, projectId: mediaContext?.projectId ?? task.projectId,
     attemptId: task.attemptId ?? generateId(), mediaContext };
+  // 这些 Provider 在建立此占位后才提交远端异步任务。旧队列没有新画布代际，
+  // 在提交前明确拒绝，不要留下无法恢复的付费任务；同步结果和本地 Comfy 保持原路径。
+  const state = useAppStore.getState();
+  const projectContext = state.projectExecutionContext;
+  const target = state.projects.find((project) => project.id === task.projectId) as
+    { nativeView?: { canvasId?: string | null } } | undefined;
+  const nativeTarget = projectContext?.kind === 'canvas' && projectContext.modelGeneration > 0
+    && projectContext.canvasId === task.projectId || target?.nativeView?.canvasId === task.projectId;
+  const knownAsync = ['apimart', 'apimart-flow-music', 'dreamina', 'volcengine',
+    'runninghub-workflow', 'runninghub-model'].includes(task.taskType)
+    || task.taskType === 'workflow-api' && task.workflowApi?.manifest?.protocol.mode !== 'sync'
+    || task.taskType === 'custom-protocol' && task.provider === 'grsai';
+  if (!task.submitted && knownAsync && nativeTarget) {
+    throw new Error('新项目暂不支持异步媒体任务恢复，未提交请求');
+  }
   task = sanitizePendingTask(task);
   const tasks = loadAll().filter((t) => t.nodeId !== task.nodeId || t.projectId !== task.projectId);
   if (task.nodeType === 'ai-video') {

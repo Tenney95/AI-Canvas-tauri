@@ -20,9 +20,11 @@ import { sha256BytesHex } from '../mediaDataUrl';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
 import { preferDramaLibraryReferences } from '../dramaAssetPrompt';
 import { copyAssetFileToFolder, listProjectFiles } from '../fileService';
-import { getAssetUrlFromPath, getFileCategory, getProjectDataDir, joinPath, stripVerbatimPrefix,
+import { getAssetUrlFromPath, getFileCategory, getNativeProjectOwner, getProjectDataDir, joinPath, stripVerbatimPrefix,
   type AssetFileEntry } from './core';
 import { getRelativeAssetPath } from './assetIndex';
+import { listProjectCatalog } from '../projectModelRouter';
+import { projectNativeCatalogEntry, type NativeProjectViewItem } from '../../store/nativeProjectView';
 import { scanDirectoryFiles, type AssetScanOptions } from './assetLibrary';
 import { prepareSharedAssetImageMetadata, readSharedAssetImageMetadata } from './assetImageMetadata';
 import { acknowledgeSharedAssetApply, downloadSharedAssetRevision, listSharedAssetHeads,
@@ -199,6 +201,14 @@ export async function sharedAssetSyncContentDigest(revision: Pick<SharedSyncRevi
 }
 
 async function ownerState(projectId: string) {
+  const nativeOwner = getNativeProjectOwner(projectId);
+  if (nativeOwner) {
+    const entry = (await listProjectCatalog()).find((item) => item.dataModel === 'native' && item.project.id === nativeOwner);
+    if (!entry || entry.dataModel !== 'native') throw new Error('所属项目已变化，请重新预览');
+    const ids = [entry.project.id, ...entry.episodeIds, ...entry.canvasIds];
+    if (!ids.includes(projectId)) throw new Error('项目归属已变化，请重新预览');
+    return { ownerId: nativeOwner, projectIds: ids, state: await loadSharedAssetSyncState(nativeOwner) };
+  }
   const projects = await getAllProjects();
   const project = projects.find((entry) => entry.id === projectId);
   const ownerId = project?.parentId ?? projectId;
@@ -221,7 +231,7 @@ export async function sharedAssetSyncExcludedPaths(projectId: string): Promise<s
 /** 原生下载目录不参加扫描；只有已原子接受的当前文件版本进入资源列表。 */
 export async function projectSharedFileView(projectId: string, files: AssetFileEntry[], options: AssetScanOptions = {}): Promise<AssetFileEntry[]> {
   options.signal?.throwIfAborted();
-  const { state } = await ownerState(projectId);
+  const { state, projectIds } = await ownerState(projectId);
   const root = await getProjectDataDir(projectId);
   options.signal?.throwIfAborted();
   if (!root) return files;
@@ -233,7 +243,8 @@ export async function projectSharedFileView(projectId: string, files: AssetFileE
   for (const mapping of current) {
     options.signal?.throwIfAborted();
     const index = await getAssetIndexById(mapping.currentFileAssetId!);
-    if (!index || index.source !== 'project' || index.projectId !== projectId || index.status !== 'online'
+    if (!index || index.source !== 'project' || (getNativeProjectOwner(projectId)
+      ? !index.projectId || !projectIds.includes(index.projectId) : index.projectId !== projectId) || index.status !== 'online'
       || !getRelativeAssetPath(index.path, root)) continue;
     try {
       const info = await lstat(index.path);
@@ -442,9 +453,17 @@ export async function buildSharedAssetSyncPreview(context: SharedAssetSyncContex
   guard(context);
   if (!context.binding.capabilities.multiplayerWritable) throw new Error('目标存储未通过多人条件写校验');
   const ownerId = context.binding.ownerId;
-  if (!context.projects.some((project) => project.id === context.originProjectId && (project.parentId ?? project.id) === ownerId)) {
+  if (!context.projects.some((project) => {
+    if (project.id !== context.originProjectId) return false;
+    const native = (project as Partial<NativeProjectViewItem>).nativeView;
+    return native ? native.projectId === ownerId && (native.canvasId ?? native.projectId) === project.id
+      : (project.parentId ?? project.id) === ownerId;
+  })) {
     throw new Error('项目归属已变化，请重新预览');
   }
+  const nativeCatalog = getNativeProjectOwner(context.originProjectId) ? await listProjectCatalog() : null;
+  const entry = nativeCatalog?.find((row) => row.dataModel === 'native' && row.project.id === ownerId);
+  if (nativeCatalog && entry?.dataModel !== 'native') throw new Error('项目归属已变化，请重新预览');
   const rootDirectory = await getProjectDataDir(ownerId);
   if (!rootDirectory) throw new Error('项目素材目录不可用');
   const rootInfo = await lstat(rootDirectory);
@@ -490,14 +509,19 @@ export async function buildSharedAssetSyncPreview(context: SharedAssetSyncContex
   const files = new Map<string, LocalFile>();
   const tags = new Map((await getAllAssetMeta()).map((record) => [record.assetId, record]));
   const imageRecords = await getAssetImageRecords(context.signal);
-  const projectIds = context.projects.filter((project) => project.id === ownerId || project.parentId === ownerId).map((project) => project.id);
+  const projectIds = entry?.dataModel === 'native'
+    ? [entry.project.id, ...projectNativeCatalogEntry(entry).map((project) => project.id)]
+    : context.projects.filter((project) => project.id === ownerId || project.parentId === ownerId).map((project) => project.id);
   const projectRoots = new Map<string, string>();
   for (const projectId of projectIds) {
     const directory = await getProjectDataDir(projectId);
     if (!directory) throw new Error('项目素材目录不可用');
     projectRoots.set(projectId, directory);
+    // 新项目全部逻辑素材根均在作品主根内，重复按画布扫描会重写已有文件归属。
+    if (entry?.dataModel === 'native' && projectId !== ownerId) continue;
     const excludedFilePaths = await sharedAssetSyncExcludedPaths(projectId);
-    const scan = await scanProjectFiles(projectId, { signal: context.signal, excludedFilePaths, projectIdentityScope: projectIds });
+    const scan = await scanProjectFiles(projectId, { signal: context.signal, excludedFilePaths, projectIdentityScope: projectIds,
+      preserveProjectIdentity: entry?.dataModel === 'native' });
     guard(context);
     if (!scan.complete) throw new Error('项目文件读取不完整，未开始同步，请整理目录后重试');
     // 旧代已接受的文件仍是本地资产；只借其文件投影，不能沿用旧代共享身份或基线。

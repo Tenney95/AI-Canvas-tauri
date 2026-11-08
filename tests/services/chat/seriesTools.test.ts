@@ -63,6 +63,26 @@ it('Store拒绝末集删除或删除失败时工具不得报告成功', async ()
   } finally { unregisters.forEach((unregister) => unregister()); }
 });
 
+it('新分集 ID 与画布别名指向同一分集，写入仍使用画布作用域', async () => {
+  const updateEpisodeCreative = vi.fn(async () => true);
+  useAppStore.setState((state) => ({
+    updateEpisodeCreative,
+    projects: state.projects.map((item) => item.id === 'ep-1' ? { ...item,
+      nativeView: { projectId: 'series', episodeId: 'episode-1', canvasId: 'ep-1', episodeRevision: 1 },
+      episodeScript: '原稿',
+    } : item),
+  }));
+  const unregisters = registerSeriesAgentTools();
+  try {
+    const read = await getAgentTool('episode_read')!.execute(context(), { episodeId: 'episode-1', part: 'script' });
+    expect(read.modelContent).toContain('原稿');
+    const write = await getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'episode-1', script: '新稿' });
+    expect(write.status).toBe('success');
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', { script: '新稿' });
+    expect((await getAgentTool('episode_read')!.execute(context(), { episodeId: 'another-episode' })).status).toBe('error');
+  } finally { unregisters.forEach((unregister) => unregister()); }
+});
+
 describe('分集写工具与工作台草稿握手', () => {
   it.each([
     ['episode_update_script', { episodeId: 'ep-1', script: '外部新稿' }],
