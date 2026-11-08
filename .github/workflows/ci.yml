@@ -33,6 +33,20 @@ jobs:
       - name: Lint, typecheck, test and build
         run: npm run ci
 
+      - name: Stamp release frontend artifact
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: node scripts/release-workflow.mjs stamp-frontend
+
+      - name: Keep verified release frontend
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 1
+
   rust:
     name: Rust check
     runs-on: windows-latest
@@ -43,6 +57,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust check dependencies
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: src-tauri -> target
+          shared-key: ci-windows-check
+          save-if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
       - name: Check Tauri library
         working-directory: src-tauri
-        run: cargo check --lib
+        run: cargo check --lib --locked

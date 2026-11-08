@@ -1,0 +1,10 @@
+{
+  "productName": "AI Canvas Legacy",
+  "build": {
+    "beforeBuildCommand": "npm run build:mcp-adapter"
+  },
+  "plugins": {
+    "updater": { "endpoints": [] }
+  },
+  "bundle": { "createUpdaterArtifacts": false }
+}

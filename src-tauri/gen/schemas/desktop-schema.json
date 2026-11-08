@@ -2217,6 +2217,12 @@
           "markdownDescription": "Allows only scoped local ComfyUI management commands."
         },
         {
+          "description": "Allows the fixed user-trusted Codex adviser through the local main window only.",
+          "type": "string",
+          "const": "allow-external-agent-commands",
+          "markdownDescription": "Allows the fixed user-trusted Codex adviser through the local main window only."
+        },
+        {
           "description": "Allows registered AI Canvas application commands for trusted first-party windows.",
           "type": "string",
           "const": "allow-first-party-app-commands",
@@ -2247,10 +2253,28 @@
           "markdownDescription": "主窗口项目归档摘要与隔离素材发布；命令内部仍校验来源和路径授权。"
         },
         {
+          "description": "Only the native cold-maintenance window may inspect its exclusive fixture lease and managed backup materials.",
+          "type": "string",
+          "const": "allow-project-model-maintenance",
+          "markdownDescription": "Only the native cold-maintenance window may inspect its exclusive fixture lease and managed backup materials."
+        },
+        {
+          "description": "Denies the fixed Codex runtime commands.",
+          "type": "string",
+          "const": "deny-external-agent-commands",
+          "markdownDescription": "Denies the fixed Codex runtime commands."
+        },
+        {
           "description": "Denies all project-scoped object storage commands.",
           "type": "string",
           "const": "deny-project-asset-storage",
           "markdownDescription": "Denies all project-scoped object storage commands."
+        },
+        {
+          "description": "Deny cold-maintenance commands.",
+          "type": "string",
+          "const": "deny-project-model-maintenance",
+          "markdownDescription": "Deny cold-maintenance commands."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:channel:default`\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
