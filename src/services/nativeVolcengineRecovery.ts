@@ -225,7 +225,7 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
       const run = isVolcengine ? await findBillingRunByTask(record.remoteTaskId!, record.canvasId).catch(() => null) : null;
       await updateBillingRun(run, { status: remoteFailed, finishedAt: Date.now(), calculatedMicros: 0,
         amountConfidence: 'calculated', errorMessage: '火山任务已确认失败或取消' });
-      throw new Error('服务商已确认原任务失败或取消，原回执已保留');
+      throw new Error('服务商已确认原任务失败或取消，原回执已保留', { cause: error });
     }
     throw error;
   } finally { unsubscribe(); controller.abort(); externalSignal?.removeEventListener('abort', stop); }

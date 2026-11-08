@@ -1,5 +1,6 @@
 import { nativeGlobalAssetReferenceRows } from './nativeGlobalAssetReferences';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
+import { hasControlCharacters } from '../utils/controlCharacters';
 /** 新项目归档入口；旧项目继续使用 projectTransferService 的原路径。 */
 import { save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -284,8 +285,8 @@ export async function exportNativeProjectArchive(projectId: string): Promise<Pro
   catch (error) {
     let operation: Awaited<ReturnType<typeof readNativeProjectExport>>;
     try { operation = await readNativeProjectExport(operationId); }
-    catch { throw new Error(`导出结果未知，原操作 ${operationId} 已保留，请先核对`); }
-    if (operation) throw new Error(`导出未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`);
+    catch (cause) { throw new Error(`导出结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
+    if (operation) throw new Error(`导出未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
     throw error;
   }
 }
@@ -309,7 +310,7 @@ export async function reconcileNativeProjectArchiveExport(operationId: string): 
 /** 复制使用独立来源和导入 journal，不修改源项目的协作 head。 */
 export async function duplicateNativeProjectArchive(projectId: string, name: string): Promise<ProjectImportResult> {
   if (!isTauriEnv()) throw new Error('项目复制仅在桌面版可用');
-  if (typeof name !== 'string' || !name.trim() || name.trim().length > 256 || /[\u0000-\u001f\u007f-\u009f]/u.test(name)) throw new Error('副本名称无效');
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > 256 || hasControlCharacters(name)) throw new Error('副本名称无效');
   const source = await captureNativeProjectArchive(projectId), operationId = crypto.randomUUID();
   const owners = [...new Set([projectId, ...source.value.aggregate.episodes.map((item) => item.id),
     ...source.value.aggregate.canvases.map((item) => item.id)])].sort();

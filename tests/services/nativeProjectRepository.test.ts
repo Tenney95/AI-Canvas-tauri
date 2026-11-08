@@ -118,7 +118,7 @@ describe('独立新项目仓储', () => {
     journal = await commitNativeProjectImport(journal.operationId, journal.sequence, { factory });
     expect((await readNativeProjectCapture(target, { factory }))?.aggregate.canvas?.id).toBe(id('c2', '5'));
     expect(await listNativeVideoEditorProjectsForProject(target, { factory })).toEqual([editor]);
-    journal = await advanceNativeProjectImport(journal.operationId, journal.sequence, 'finalized', undefined, { factory });
+    await advanceNativeProjectImport(journal.operationId, journal.sequence, 'finalized', undefined, { factory });
     await deleteNativeProject({ projectId: target, expectedProjectEpoch: material.aggregate.project.epoch, expectedChangeRevision: 0 }, { factory });
     expect(await readNativeProject(target, { factory })).toBeNull();
   });

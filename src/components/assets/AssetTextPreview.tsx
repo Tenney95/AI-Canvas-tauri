@@ -123,7 +123,7 @@ export default function AssetTextPreview({ file: sourceFile, projectId, onClose,
       if (!controller.signal.aborted) setPromptError(true);
     });
     return () => controller.abort();
-  }, [fileKey, projectId, reload]);
+  }, [file.path, fileKey, projectId, reload]);
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };

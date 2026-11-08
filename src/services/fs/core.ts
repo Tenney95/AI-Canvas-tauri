@@ -452,10 +452,10 @@ let nativeVideoEditorContext: { projectId: string; canvasId: string; sessionId: 
 let searchRootSync: Promise<void> = import.meta.hot?.data.nativeSearchRootSync ?? Promise.resolve();
 
 /** 独立搜索窗口只使用原生受限查询，不取得主窗口的素材操作权限。 */
-export function useNativeAssetSearchContext(): void { nativeSearchContext = true; }
+export function activateNativeAssetSearchContext(): void { nativeSearchContext = true; }
 
 /** 子窗口只能解析主窗口为该剪辑会话绑定的作品根。 */
-export function useNativeVideoEditorContext(binding: { projectId: string; canvasId: string; sessionId: string }): void {
+export function bindNativeVideoEditorContext(binding: { projectId: string; canvasId: string; sessionId: string }): void {
   if (!nativeOwnerId.test(binding.projectId) || !nativeId.test(binding.canvasId) || !binding.canvasId.startsWith('c2-')
     || !/^[a-f0-9-]{36}$/i.test(binding.sessionId)) throw new Error('剪辑窗口素材身份无效');
   nativeVideoEditorContext = { ...binding };

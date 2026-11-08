@@ -6,7 +6,7 @@
  *
  * 时间轴支持多片段（多选打开、分割），导出走关键帧对齐的无损直通。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import {
   loadConfigWithoutSecrets as loadConfig,
@@ -17,7 +17,7 @@ import {
   listProjectFiles,
   registerProjectFolders,
   registerNativeProjectFolders,
-  useNativeVideoEditorContext,
+  bindNativeVideoEditorContext,
   setBaseDataDir,
   syncAuthorizedDirectories,
   saveBinaryToLocalFile,
@@ -279,7 +279,7 @@ export default function VideoEditorWindow() {
   );
   const [record, setRecord] = useState<VideoEditorProjectRecord | null>(null);
   const liveRecordRef = useRef(record);
-  liveRecordRef.current = record;
+  useLayoutEffect(() => { liveRecordRef.current = record; }, [record]);
   const [projectImages, setProjectImages] = useState<VideoEditorProjectImageSource[]>([]);
   const [libraryAssets, setLibraryAssets] = useState<AssetFileEntry[]>([]);
   const [addingMedia, setAddingMedia] = useState(false);
@@ -442,7 +442,7 @@ export default function VideoEditorWindow() {
           const source = await resolveProjectModel(session.projectId);
           if (!active) return;
           if (source.dataModel !== 'native' || source.aggregate.project.id !== expected.projectId) throw new Error('剪辑原画布身份已变化');
-          useNativeVideoEditorContext({ projectId: expected.projectId, canvasId: expected.canvasId, sessionId: session.binding!.sessionId });
+          bindNativeVideoEditorContext({ projectId: expected.projectId, canvasId: expected.canvasId, sessionId: session.binding!.sessionId });
           registerNativeProjectFolders([{ id: expected.projectId, projectId: expected.projectId },
             { id: expected.canvasId, projectId: expected.projectId }]);
           await assertWindowProjectCurrent(session.projectId);

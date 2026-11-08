@@ -8,6 +8,7 @@ import { validateNativeMediaLocalOutputs } from '../nativeMediaCollection';
 import { validateNativeProtocolContext } from '../nativeModelProtocolTask';
 import { configValuesEqual } from '../configPatch';
 import { isNativeMediaContentPath } from '../nativeMediaContentPath';
+import { hasControlCharacters } from '../../utils/controlCharacters';
 import type { CanvasContext, CanvasDocument, ProjectRecord } from '../../types/project';
 import { assertNoPendingNativeSharedSync, CANVASES, EXCHANGE, ROOTS, TRANSFER, isNativeCanvasId, isNativeProjectId, openNativeProjectDatabase,
   transact, REVISIONS, type NativeProjectOptions } from './nativeProjectRepository';
@@ -15,7 +16,7 @@ import { assertNoPendingNativeSharedSync, CANVASES, EXCHANGE, ROOTS, TRANSFER, i
 const PREFIX = 'media-task:';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256
-  && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+  && !hasControlCharacters(value);
 const validEpoch = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const req = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);

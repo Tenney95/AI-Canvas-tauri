@@ -1140,7 +1140,7 @@ async function generateVolcengineVideo(
       errorMessage: error instanceof Error ? error.message.slice(0, 500) : '视频请求失败',
     });
     if (nativeTask && requestSent && !remoteFailed) {
-      throw new Error(`火山视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`);
+      throw new Error(`火山视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`, { cause: error });
     }
     if (receipt) {
       if (remoteFailed || !requestSent) {

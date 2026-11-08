@@ -65,7 +65,7 @@ it('任务候选已保存后重启可在原workflow和凭据均移除时离线�
     recovery: { kind: 'workflow', workflowId: descriptor.workflowId, digest: descriptor.digest } });
   let receipt = await createNativeWorkflowReceipt(record, descriptor, 1);
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id));
-  ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'persisted-original-prompt' }));
+  ({ record } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'persisted-original-prompt' }));
   ({ record } = await retainNativeWorkflowTaskOutputs(record, 'persisted-original-prompt', { outputs: [output('a'), output('b')] }));
   driver.state = { ...driver.state, workflows: [], config: { providers: {} }, projectExecutionContext: { ...context, runtimeEpoch: 'restarted-runtime' } };
   await resumeNativeWorkflowTask(record.operationId);

@@ -66,7 +66,7 @@ export function validateNativeAsset(record: NativeAssetRecord): void {
   }
   for (const image of record.images ?? []) {
     if (!plain(image, ['id', 'assetId', 'contentDigest', 'fileName', 'prompt', 'references', 'revision', 'updatedAt'])
-      || !text(image.fileName, 512) || /[\\/\u0000]/.test(image.fileName) || !text(image.prompt, 1_000_000)
+      || !text(image.fileName, 512) || /[\\/]/.test(image.fileName) || image.fileName.includes(String.fromCharCode(0)) || !text(image.prompt, 1_000_000)
       || !integer(image.revision) || !integer(image.updatedAt) || image.references.length > 1000) throw new Error('恢复图片元数据无效');
     const references = new Set<string>();
     for (const reference of image.references) {

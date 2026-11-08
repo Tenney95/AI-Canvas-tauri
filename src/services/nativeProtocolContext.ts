@@ -10,7 +10,7 @@ export function validateNativeProtocolContext(value: Record<string, unknown>): v
     if (++count > 256 || depth > 16) throw new Error('原查询上下文超过安全上限');
     if (item === null || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)) return;
     if (typeof item === 'string') {
-      if (item.length > 512 || !/^[\p{L}\p{N}_.:@+\/-]*$/u.test(item) || /^[\/]|^[A-Za-z]:[\/]|:\/\//.test(item)
+      if (item.length > 512 || !/^[\p{L}\p{N}_.:@+/-]*$/u.test(item) || /^[/]|^[A-Za-z]:[/]|:\/\//.test(item)
         || item.split('/').some((part) => part === '..') || item.includes('\\')) throw new Error('查询恢复字段包含不可持久化的地址或正文');
       return;
     }

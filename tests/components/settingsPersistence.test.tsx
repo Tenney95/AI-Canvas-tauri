@@ -58,7 +58,7 @@ vi.mock('../../src/services/backgroundService', () => ({}));
 vi.mock('../../src/services/fileService', () => ({
   loadConfigWithoutSecrets: driver.readOrdinary, saveConfig: driver.saveOrdinary, pickAssetFolder: driver.pick,
   loadProjectsList: async () => [], listGlobalFiles: async () => [], listExternalFolderFiles: async () => [],
-  listProjectFiles: async () => [], registerProjectFolders: vi.fn(), registerNativeProjectFolders: vi.fn(), useNativeAssetSearchContext: vi.fn(),
+  listProjectFiles: async () => [], registerProjectFolders: vi.fn(), registerNativeProjectFolders: vi.fn(), activateNativeAssetSearchContext: vi.fn(),
   setBaseDataDir: vi.fn(), syncAuthorizedDirectories: async () => {},
   revealFileInFolder: vi.fn(), addAssetFilesToGlobal: vi.fn(), CATEGORY_LABELS: {},
 }));

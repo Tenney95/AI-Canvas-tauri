@@ -35,7 +35,7 @@ export function validateArchiveAssetMetadata(input: unknown, files: readonly Pro
       for (const value of row.images) {
         const image = object(value, ['contentDigest', 'fileName', 'prompt', 'references', 'revision', 'updatedAt']);
         if (typeof image.contentDigest !== 'string' || !/^[a-f0-9]{64}$/.test(image.contentDigest) || versions.has(image.contentDigest)
-          || typeof image.fileName !== 'string' || image.fileName.length > 512 || /[\\/\u0000]/.test(image.fileName)
+          || typeof image.fileName !== 'string' || image.fileName.length > 512 || /[\\/]/.test(image.fileName) || image.fileName.includes(String.fromCharCode(0))
           || typeof image.prompt !== 'string' || image.prompt.length > 30_000 || !integer(image.revision) || !integer(image.updatedAt)
           || !Array.isArray(image.references) || image.references.length > 16) throw new Error('图片元数据或参考素材闭包无效');
         const refs = new Set<string>();

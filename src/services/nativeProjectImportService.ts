@@ -174,13 +174,13 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
     // 提交回执丢失时先查原 journal；连查询也失败则保留原操作身份，不能自动重新分配。
     let existing: NativeProjectImportJournal | null;
     try { existing = await readNativeProjectImport(operationId); }
-    catch { onOperation?.(operationId); throw new Error(`导入准备结果未知，原操作 ${operationId} 已保留，请先核对`); }
-    if (existing) { onOperation?.(operationId); throw new Error(`导入准备已保存，原操作 ${operationId} 可续接`); }
+    catch (cause) { onOperation?.(operationId); throw new Error(`导入准备结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
+    if (existing) { onOperation?.(operationId); throw new Error(`导入准备已保存，原操作 ${operationId} 可续接`, { cause: error }); }
     throw error;
   }
   onOperation?.(operationId);
   try { return result(await finishImport(operation, options.signal)); }
-  catch (error) { throw new Error(`导入未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`); }
+  catch (error) { throw new Error(`导入未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error }); }
 }
 
 /** 仅由受信调用方传入已校验包与隔离副本；仍重新核验正文和素材字节。 */

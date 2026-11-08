@@ -30,7 +30,8 @@ async function fixture(count = 2, sync = false) {
 }
 
 it('每个POST先耐久写未知，原ID和所有额外候选都保留，部分失败不冒充完整成功', async () => {
-  let { record, receipt, context } = await fixture();
+  const initial = await fixture(), { context } = initial;
+  let { record, receipt } = initial;
   const before = (await readNativeProjectCapture(context.projectId, { factory }))!.changeRevision;
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
   expect(record.status).toBe('outcome-unknown');
@@ -38,7 +39,7 @@ it('每个POST先耐久写未知，原ID和所有额外候选都保留，部分�
   ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'task-1' }, { factory }));
   expect(record.status).toBe('prepared');
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[1].id, { factory }));
-  ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[1].id, { failed: true }, { factory }));
+  ({ record } = await retainNativeWorkflowSubmission(record, receipt.submissions[1].id, { failed: true }, { factory }));
   expect(record.status).toBe('submitted');
   record = await claimNativeMediaRecovery(record.operationId, { ...context, runtimeEpoch: 'after-restart' }, { factory });
   ({ record, receipt } = await retainNativeWorkflowTaskOutputs(record, 'task-1', { outputs: [output('d'), output('e'), output('f')] }, { factory }));
@@ -50,16 +51,17 @@ it('每个POST先耐久写未知，原ID和所有额外候选都保留，部分�
 });
 
 it('未知槽位不自动续查；用户核对后仅认原ID，新租约拒绝旧窗口写结果', async () => {
-  let { record, receipt, context } = await fixture();
+  const initial = await fixture(), { context } = initial;
+  let { record, receipt } = initial;
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
   ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'original-task' }, { factory }));
-  ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[1].id, { factory }));
+  ({ record } = await beginNativeWorkflowSubmission(record, receipt.submissions[1].id, { factory }));
   const old = record;
   await reviewNativeMediaTask(record.operationId, context, { factory });
   record = (await listNativeMediaTasks(context.projectId, { factory }))[0];
   ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context, { factory }));
   expect(receipt.uncertainAcknowledged).toBe(true);
-  record = await claimNativeMediaRecovery(record.operationId, context, { factory });
+  await claimNativeMediaRecovery(record.operationId, context, { factory });
   await expect(retainNativeWorkflowTaskOutputs(old, 'original-task', { outputs: [output('a')] }, { factory })).rejects.toThrow('租约');
   const late = await retainNativeWorkflowSubmission(old, receipt.submissions[1].id, { taskId: 'late-task' }, { factory });
   expect(late.receipt.lateTaskIds).toEqual([{ submissionId: receipt.submissions[1].id, taskId: 'late-task' }]);
@@ -67,9 +69,10 @@ it('未知槽位不自动续查；用户核对后仅认原ID，新租约拒绝�
 });
 
 it('重启将可证明未发送的槽位标记未开始，不补发；跨集上下文不能取得回执', async () => {
-  let { record, receipt, context } = await fixture();
+  const initial = await fixture(), { context } = initial;
+  let { record, receipt } = initial;
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
-  ({ record, receipt } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'known-task' }, { factory }));
+  ({ record } = await retainNativeWorkflowSubmission(record, receipt.submissions[0].id, { taskId: 'known-task' }, { factory }));
   await expect(sealNativeWorkflowSubmissions(record, { ...context, canvasId: `c2-${crypto.randomUUID()}` }, { factory })).rejects.toThrow();
   ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context, { factory }));
   expect(receipt.submissions[1].state).toBe('not-started'); expect(record.remoteTaskId).toBe('known-task');
@@ -77,7 +80,8 @@ it('重启将可证明未发送的槽位标记未开始，不补发；跨集上�
 });
 
 it('同步响应只保留真实本机集合，无伪造taskId；丢失文件不能写完成收据', async () => {
-  let { record, receipt, context } = await fixture(1, true);
+  const initial = await fixture(1, true), { context } = initial;
+  let { record, receipt } = initial;
   ({ record, receipt } = await beginNativeWorkflowSubmission(record, receipt.submissions[0].id, { factory }));
   files.read.mockRejectedValueOnce(new Error('missing original bytes'));
   await expect(retainNativeWorkflowSyncOutputs(record, receipt.submissions[0].id, [output('a')], { factory })).rejects.toThrow('missing');

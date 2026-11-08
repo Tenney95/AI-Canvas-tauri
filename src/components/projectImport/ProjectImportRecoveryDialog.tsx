@@ -12,12 +12,13 @@ export default function ProjectImportRecoveryDialog({ ownerId, onClose }: { owne
   const t = useT(), restore = useAppStore((state) => state.restoreProjectImport);
   const project = useAppStore((state) => state.projects.find((item) => item.id === ownerId));
   const binding = project && 'nativeView' in project ? (project as NativeProjectViewItem).nativeView : undefined;
+  const nativeProjectId = binding?.projectId;
   const [rows, setRows] = useState<Array<{ id: string; createdAt: number; label: string; episodeCount: number }>>([]), [selected, setSelected] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [loading, setLoading] = useState(true);
   const [operationId, setOperationId] = useState(''), [operationStatus, setOperationStatus] = useState('');
   useEffect(() => {
     let active = true;
-    const load = binding ? listNativeContentRecoveryPoints(binding.projectId).then((items) => items.map((item) => ({
+    const load = nativeProjectId ? listNativeContentRecoveryPoints(nativeProjectId).then((items) => items.map((item) => ({
       id: item.operationId, createdAt: item.createdAt, label: '更新前', episodeCount: item.aggregate.episodes.length })))
       : listProjectImportRecoveries(ownerId).then((items) => items.map((item) => ({ id: item.id,
         createdAt: item.createdAt, label: item.label, episodeCount: item.records.length - 1 })));
@@ -25,7 +26,7 @@ export default function ProjectImportRecoveryDialog({ ownerId, onClose }: { owne
       if (active) setError(cause instanceof Error ? cause.message : t('读取恢复点失败'));
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [ownerId, binding?.projectId, t]);
+  }, [ownerId, nativeProjectId, t]);
   const runRestore = async () => { if (!selected) return; setBusy(true); setError('');
     try { await restore(ownerId, selected); onClose(); } catch (cause) { setError(cause instanceof Error ? cause.message : t('恢复失败')); }
     finally { setBusy(false); } };

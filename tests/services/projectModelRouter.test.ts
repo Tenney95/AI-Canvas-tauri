@@ -81,8 +81,7 @@ describe('新旧项目只读路由', () => {
     expect(mocks.readNativeProject).not.toHaveBeenCalled();
   });
 
-  it.each([['native-root', 'project'], ['native-episode', 'episode'], ['native-canvas', 'canvas']] as const)
-  ('解析 %s 时只读取所属新作品并核对身份', async (id, target) => {
+  it.each([['native-root', 'project'], ['native-episode', 'episode'], ['native-canvas', 'canvas']] as const)('解析 %s 时只读取所属新作品并核对身份', async (id, target) => {
     expect(await resolveProjectModel(id)).toEqual({ dataModel: 'native', target, aggregate: native });
     expect(mocks.readNativeProject).toHaveBeenCalledExactlyOnceWith('native-root');
   });

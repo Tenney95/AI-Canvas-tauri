@@ -54,7 +54,7 @@ describe('项目模型旧消费者与正式门禁只读审计', () => {
       { file: importer, scope: 'commitHistory::work', kind: 'table', operation: 'objectStore', target: 'projects', max: 1 },
     ];
     expect(audit(importer, importSource, ['table'], importBudgets).violations).toEqual([]);
-    expect(audit(importer, importSource.replace("getKey('id')", "put({ id: 'id' })"), ['table'], [])).violations)
+    expect(audit(importer, importSource.replace("getKey('id')", "put({ id: 'id' })"), ['table'], []).violations)
       .toContainEqual(expect.objectContaining({ code: 'legacy-call-budget-exceeded', scope: 'commitHistory::work', target: 'projects' }));
   });
 

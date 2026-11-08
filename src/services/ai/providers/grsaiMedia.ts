@@ -125,7 +125,7 @@ export const grsaiMediaProviderAdapter: MediaProviderAdapter = {
       if (nativeTask) {
         await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
           nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || rejected || certainHttpRejection ? { notStarted: true } : { unknown: true }).catch(() => undefined);
-        if (requestSent && !rejected && !certainHttpRejection) throw new Error(`GRSAI 视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`);
+        if (requestSent && !rejected && !certainHttpRejection) throw new Error(`GRSAI 视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`, { cause: error });
       }
       if (receipt) {
         if (rejected || !requestSent || certainHttpRejection || error instanceof PollTaskFailedError) {

@@ -29,7 +29,9 @@ export interface NativeEditorMediaTask {
 }
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const identity = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256
-  && value === value.trim() && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+  && value === value.trim() && Array.from(value).every((character) => {
+    const code = character.charCodeAt(0); return code > 31 && (code < 127 || code > 159);
+  });
 function validate(row: NativeEditorMediaTask): NativeEditorMediaTask {
   if (!row || row.kind !== 'native-editor-media-v1' || !uuid.test(row.operationId) || !uuid.test(row.lease) || !uuid.test(row.submissionLease)
     || row.projectId !== `${PREFIX}${row.operationId}` || !['prepared', 'submitted', 'outcome-unknown', 'failed', 'delivered', 'reviewed'].includes(row.status)
@@ -79,7 +81,7 @@ async function editor(tx: IDBTransaction, context: Readonly<CanvasContext>, id: 
   if (row?.kind !== 'video-editor-v1' || row.ownerProjectId !== context.projectId || row.canvasId !== context.canvasId || !row.record) throw new Error('原剪辑工程已不存在');
   validateNativeVideoEditorRecord(row.record, context.canvasId); return row.record;
 }
-async function useDb<T>(mode: IDBTransactionMode, work: (tx: IDBTransaction) => Promise<T>, options: NativeProjectOptions): Promise<T> {
+async function withDb<T>(mode: IDBTransactionMode, work: (tx: IDBTransaction) => Promise<T>, options: NativeProjectOptions): Promise<T> {
   const db = await openNativeProjectDatabase(false, options); if (!db) throw new Error('新项目数据库不存在');
   try { return await transact(db, mode, options, async (tx) => {
     if (mode === 'readwrite' && tx.durability !== 'strict') throw new Error('转场账本需要耐久事务');
@@ -88,7 +90,7 @@ async function useDb<T>(mode: IDBTransactionMode, work: (tx: IDBTransaction) => 
 }
 export async function listNativeEditorMediaTasks(context: Readonly<CanvasContext>, anchorNodeId?: string,
   options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask[]> {
-  return useDb('readonly', async (tx) => {
+  return withDb('readonly', async (tx) => {
     await target(tx, context);
     const rows = await request(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound(PREFIX, `${PREFIX}\uffff`))) as NativeEditorMediaTask[];
     if (rows.length > 100_000) throw new Error('转场账本超过核验上限');
@@ -100,7 +102,7 @@ export async function prepareNativeEditorMediaTask(input: { context: Readonly<Ca
   beforeClipId: string; modelRef: string; providerConfigId: string; providerBase: string; protocolDigest: string; queryDigest?: string; submissionKind?: 'async' | 'sync' },
 options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
   const fixed = structuredClone(input), operationId = crypto.randomUUID(), now = Date.now();
-  return useDb('readwrite', async (tx) => {
+  return withDb('readwrite', async (tx) => {
     await target(tx, fixed.context);
     const store = tx.objectStore(EXCHANGE), rows = await request(store.getAll(IDBKeyRange.bound(PREFIX, `${PREFIX}\uffff`))) as NativeEditorMediaTask[];
     if (rows.map(validate).some((row) => row.canvasId === fixed.context.canvasId && row.anchorNodeId === fixed.anchorNodeId
@@ -122,7 +124,7 @@ options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
 export async function recordNativeEditorMediaSubmission(row: NativeEditorMediaTask,
   outcome: { taskId: string; pollContext?: Record<string, unknown> } | { unknown: true } | { notStarted: true }, options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
   if ('taskId' in outcome && outcome.pollContext) validateNativeProtocolContext(outcome.pollContext);
-  return useDb('readwrite', async (tx) => {
+  return withDb('readwrite', async (tx) => {
     const store = tx.objectStore(EXCHANGE), current = validate(await request(store.get(row.projectId)) as NativeEditorMediaTask);
     if ('unknown' in outcome && current.status === 'prepared') {
       const original: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: current.ownerProjectId,
@@ -142,7 +144,7 @@ export async function recordNativeEditorMediaSubmission(row: NativeEditorMediaTa
 }
 export async function claimNativeEditorMediaTask(context: Readonly<CanvasContext>, operationId: string,
   options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
-  return useDb('readwrite', async (tx) => {
+  return withDb('readwrite', async (tx) => {
     await target(tx, context);
     const store = tx.objectStore(EXCHANGE), row = validate(await request(store.get(`${PREFIX}${operationId}`)) as NativeEditorMediaTask);
     if (row.ownerProjectId !== context.projectId || row.canvasId !== context.canvasId || row.projectEpoch !== context.projectEpoch
@@ -160,7 +162,7 @@ export async function retainNativeEditorMediaOutputs(row: NativeEditorMediaTask,
   const files = structuredClone(outputs) as NativeMediaLocalOutput[]; validateNativeMediaLocalOutputs(files);
   if (files.some((file) => file.category !== 'video')) throw new Error('剪辑转场只能保留视频候选');
   for (const file of files) await readNativeMediaLocalResult(row.canvasId, file);
-  return useDb('readwrite', async (tx) => {
+  return withDb('readwrite', async (tx) => {
     const store = tx.objectStore(EXCHANGE), current = validate(await request(store.get(row.projectId)) as NativeEditorMediaTask);
     if (current.lease !== row.lease || current.submissionLease !== row.submissionLease) throw new Error('原转场保留租约已变化');
     if (current.localResults) { if (!configValuesEqual(current.localResults, files) || !configValuesEqual(current.completion, options.completion)) throw new Error('原转场候选已冻结'); return current; }
@@ -178,7 +180,7 @@ export async function retainNativeEditorMediaOutputs(row: NativeEditorMediaTask,
 export async function retainNativeEditorMediaOutput(context: Readonly<CanvasContext>, row: NativeEditorMediaTask,
   relativePath: string, duration: number, options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
   if (!relativePath || safeExchangePath(relativePath) !== relativePath || !Number.isFinite(duration) || duration <= 0) throw new Error('转场素材或时长无效');
-  return useDb('readwrite', async (tx) => {
+  return withDb('readwrite', async (tx) => {
     await target(tx, context);
     const store = tx.objectStore(EXCHANGE), live = validate(await request(store.get(row.projectId)) as NativeEditorMediaTask);
     if (live.ownerProjectId !== context.projectId || live.canvasId !== context.canvasId || live.lease !== row.lease
@@ -194,7 +196,7 @@ export async function retainNativeEditorMediaOutput(context: Readonly<CanvasCont
 }
 /** 导出/恢复素材闭包只读取已经冻结的项目相对路径，不改写原任务回执。 */
 export async function listNativeEditorMediaArtifactsForProject(projectId: string, options: NativeProjectOptions = {}): Promise<Array<{ operationId: string; canvasId: string; path: string }>> {
-  return useDb('readonly', async (tx) => {
+  return withDb('readonly', async (tx) => {
     const rows = await request(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound(PREFIX, `${PREFIX}\uffff`))) as NativeEditorMediaTask[];
     if (rows.length > 100_000) throw new Error('转场账本超过核验上限');
     return rows.map(validate).filter((row) => row.ownerProjectId === projectId)
@@ -205,7 +207,7 @@ export async function listNativeEditorMediaArtifactsForProject(projectId: string
 /** 用户已核对平台或决定只保留素材；此状态不代表远端已取消，也不删除原 ID 和产物。 */
 export async function reviewNativeEditorMediaTask(context: Readonly<CanvasContext>, operationId: string,
   options: NativeProjectOptions = {}): Promise<void> {
-  await useDb('readwrite', async (tx) => {
+  await withDb('readwrite', async (tx) => {
     await target(tx, context);
     const store = tx.objectStore(EXCHANGE), row = validate(await request(store.get(`${PREFIX}${operationId}`)) as NativeEditorMediaTask);
     if (row.ownerProjectId !== context.projectId || row.canvasId !== context.canvasId || row.projectEpoch !== context.projectEpoch
@@ -215,7 +217,7 @@ export async function reviewNativeEditorMediaTask(context: Readonly<CanvasContex
 }
 export async function assertNativeEditorMediaPrepared(context: Readonly<CanvasContext>, row: NativeEditorMediaTask,
   options: NativeProjectOptions = {}): Promise<void> {
-  await useDb('readonly', async (tx) => {
+  await withDb('readonly', async (tx) => {
     await target(tx, context);
     const current = validate(await request(tx.objectStore(EXCHANGE).get(row.projectId)) as NativeEditorMediaTask);
     if (current.status !== 'prepared' || current.lease !== row.lease || current.revision !== row.revision
@@ -223,7 +225,7 @@ export async function assertNativeEditorMediaPrepared(context: Readonly<CanvasCo
   }, options);
 }
 export async function failNativeEditorMediaTask(row: NativeEditorMediaTask, options: NativeProjectOptions = {}): Promise<void> {
-  await useDb('readwrite', async (tx) => {
+  await withDb('readwrite', async (tx) => {
     const store = tx.objectStore(EXCHANGE), live = validate(await request(store.get(row.projectId)) as NativeEditorMediaTask);
     if (live.lease !== row.lease || live.remoteTaskId !== row.remoteTaskId || live.status !== 'submitted') throw new Error('原转场回执已变化');
     await request(store.put(validate({ ...live, status: 'failed', revision: live.revision + 1, updatedAt: Date.now() })));
@@ -232,7 +234,7 @@ export async function failNativeEditorMediaTask(row: NativeEditorMediaTask, opti
 export async function commitNativeEditorMediaResult(context: Readonly<CanvasContext>, row: NativeEditorMediaTask,
   relativePath: string, options: NativeProjectOptions = {}): Promise<void> {
   if (!relativePath || safeExchangePath(relativePath) !== relativePath) throw new Error('转场结果路径无效');
-  await useDb('readwrite', async (tx) => {
+  await withDb('readwrite', async (tx) => {
     await target(tx, context);
     const store = tx.objectStore(EXCHANGE), live = validate(await request(store.get(row.projectId)) as NativeEditorMediaTask);
     if (live.ownerProjectId !== context.projectId || live.canvasId !== context.canvasId || live.projectEpoch !== context.projectEpoch

@@ -13,6 +13,7 @@ import { addNativeAssetsInTransaction, validateNativeAsset, type NativeAssetReco
 import { applyNativeGlobalRecoveryFiles, remapNativeAssetImageReferences, rebindNativeAssetReferenceFiles, type NativeAssetSnapshot } from '../nativeProjectAssetRecovery';
 import type { NativeGlobalRecoveryFile } from '../nativeProjectArchiveService';
 import { validateNativeMissingAssetProof, type NativeMissingAssetProof } from '../nativeMissingAssetBackup';
+import { hasControlCharacters } from '../../utils/controlCharacters';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
 export const NATIVE_PROJECT_DATABASE_VERSION = 1 as const;
@@ -198,7 +199,7 @@ export async function createNativeProject(input: NativeProjectCreateInput, optio
   options.signal?.throwIfAborted();
   if (!input || typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 256
     || input.kind !== undefined && input.kind !== 'standalone' && input.kind !== 'series'
-    || /[\u0000-\u001f\u007f-\u009f]/u.test(input.name)) return fail('invalid-name');
+    || hasControlCharacters(input.name)) return fail('invalid-name');
   const projectId = input.projectId ?? `p2-${crypto.randomUUID()}`;
   const canvasId = input.kind === 'series' ? undefined : input.canvasId ?? `c2-${crypto.randomUUID()}`;
   const now = input.now ?? Date.now();
@@ -556,7 +557,7 @@ export const increment = (value: number): number => {
   return value + 1;
 };
 const nameValue = (value: string): string => {
-  if (typeof value !== 'string' || !value.trim() || value.trim().length > 256 || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return fail('invalid-name');
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > 256 || hasControlCharacters(value)) return fail('invalid-name');
   return value.trim();
 };
 const timestamp = (value?: number): number => {

@@ -225,8 +225,8 @@ export async function applyNativeProjectUpdate(preview: NativeProjectUpdatePrevi
   } catch (error) {
     let operation: NativeProjectUpdateJournal | null;
     try { operation = await readNativeProjectUpdate(preview.operationId); }
-    catch { throw new Error(`更新结果未知，原操作 ${preview.operationId} 已保留，请先核对`); }
-    if (operation) throw new Error(`更新未完成，原操作 ${preview.operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`);
+    catch (cause) { throw new Error(`更新结果未知，原操作 ${preview.operationId} 已保留，请先核对`, { cause }); }
+    if (operation) throw new Error(`更新未完成，原操作 ${preview.operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
     throw error;
   }
 }
@@ -374,8 +374,8 @@ export async function restoreNativeContentRecovery(projectId: string, recoveryId
   catch (error) {
     let operation: NativeProjectUpdateJournal | null;
     try { operation = await readNativeProjectUpdate(operationId); }
-    catch { throw new Error(`恢复结果未知，原操作 ${operationId} 已保留，请先核对`); }
-    if (operation) throw new Error(`恢复未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`);
+    catch (cause) { throw new Error(`恢复结果未知，原操作 ${operationId} 已保留，请先核对`, { cause }); }
+    if (operation) throw new Error(`恢复未完成，原操作 ${operationId} 已保留；${error instanceof Error ? error.message : '请核对后续接'}`, { cause: error });
     throw error;
   }
 }

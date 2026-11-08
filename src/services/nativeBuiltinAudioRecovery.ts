@@ -15,7 +15,7 @@ import { persistNativeMediaOrigin } from './nativeMediaOriginPersistence';
 import { assertNativeMediaPrepared, assertNativeMediaResultRetention, claimNativeMediaRecovery, failNativeMediaTask,
   listNativeMediaTasks, normalizeNativeMediaProviderBase, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { beginNativeApimartMusicStage, prepareNativeApimartMusicState, readNativeApimartMusicState, recordNativeApimartMusicStage,
-  validateNativeAudioContentFile, type NativeApimartMusicState, type NativeAudioContentFile } from './indexedDb/nativeApimartMusicRepository';
+  validateNativeAudioContentFile, type NativeAudioContentFile } from './indexedDb/nativeApimartMusicRepository';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
@@ -146,7 +146,7 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
     try { await resumeNativeBuiltinAudioTask(record.operationId, input.signal, input.beforeSubmit); }
     catch (error) { if (error instanceof Error && error.name === 'NativeMediaTaskDelivered') throw error;
       const latest = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
-      if (latest?.status === 'failed') throw new Error('原音频任务已确认失败，回执保留'); throw taskError(record); }
+      if (latest?.status === 'failed') throw new Error('原音频任务已确认失败，回执保留', { cause: error }); throw taskError(record); }
     throw taskError(record, true);
   }
   let sent = false, retained = false;
@@ -173,7 +173,7 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
     if (!retained) {
       record = await recordNativeMediaSubmission(record.operationId, record.lease,
         !sent || getHttpResponseError(error)?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => record);
-      if (record.status === 'failed') throw new Error('原同步音频未成功提交，原回执保留');
+      if (record.status === 'failed') throw new Error('原同步音频未成功提交，原回执保留', { cause: error });
     }
     throw taskError(record);
   }

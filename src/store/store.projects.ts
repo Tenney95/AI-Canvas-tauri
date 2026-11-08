@@ -362,8 +362,8 @@ async function runNativeImportMutation(set: ProjectSliceSet, get: ProjectSliceGe
       set(unchanged ? { projectLoadStatus: 'ready', projectExecutionContext: previousContext }
         : { projectLoadStatus: 'error', projectExecutionContext: null });
     }
-    if (completed) throw new Error('项目已更新，但重新加载失败，请从项目库重新打开');
-    if (!unchanged) throw new Error(`项目更新结果无法确认，原操作 ${operationId}；请重新打开项目并检查恢复点，勿直接重试`);
+    if (completed) throw new Error('项目已更新，但重新加载失败，请从项目库重新打开', { cause: error });
+    if (!unchanged) throw new Error(`项目更新结果无法确认，原操作 ${operationId}；请重新打开项目并检查恢复点，勿直接重试`, { cause: error });
     throw error;
   } finally {
     [projectId, ...affected].forEach((id) => projectImportsApplying.delete(id));
@@ -1778,6 +1778,24 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const assertCurrent = () => {
         if (get().currentProjectId !== currentId || projectSwitchSequence !== sequence) throw new Error('项目已切换，停止新增分集');
       };
+      const restoreView = async () => {
+        try {
+          assertCurrent();
+          const catalog = await loadProjectCatalog();
+          const entry = catalog.native.find((item) => item.project.id === native.projectId);
+          if (!entry) throw new Error('项目目录不可用');
+          const target = currentId === native.projectId && entry.canvasIds.length ? entry.canvasIds[0] : currentId;
+          await activateNativeProject(set, get, entry, target, assertCurrent, target === currentId);
+          if (target !== currentId) {
+            rememberActiveProject(target);
+            get().loadConversationsForProject(target).catch((e) => console.warn('[新增分集] 加载会话失败:', e));
+            get().loadAgentTasksForProject(target).catch((e) => console.warn('[新增分集] 加载任务失败:', e));
+          }
+        } catch (error) {
+          set({ projectLoadStatus: 'error', projectExecutionContext: null });
+          get().showToast(error instanceof Error ? error.message : '项目恢复失败，请重新打开', 'error');
+        }
+      };
       const created: string[] = [];
       projectImportsApplying.add(native.projectId);
       set({ switchingProjectName: '正在更新分集', projectExecutionContext: null });
@@ -1819,24 +1837,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       } catch (error) {
         get().showToast(error instanceof Error ? error.message : '新增分集失败', 'error');
       } finally {
-        try {
-          assertCurrent();
-          const catalog = await loadProjectCatalog();
-          const entry = catalog.native.find((item) => item.project.id === native.projectId);
-          if (!entry) throw new Error('项目目录不可用');
-          const target = currentId === native.projectId && entry.canvasIds.length ? entry.canvasIds[0] : currentId;
-          await activateNativeProject(set, get, entry, target, assertCurrent, target === currentId);
-          if (target !== currentId) {
-            rememberActiveProject(target);
-            get().loadConversationsForProject(target).catch((e) => console.warn('[新增分集] 加载会话失败:', e));
-            get().loadAgentTasksForProject(target).catch((e) => console.warn('[新增分集] 加载任务失败:', e));
-          }
-        } catch (error) {
-          set({ projectLoadStatus: 'error', projectExecutionContext: null });
-          get().showToast(error instanceof Error ? error.message : '项目恢复失败，请重新打开', 'error');
+        try { await restoreView(); }
+        finally {
+          projectImportsApplying.delete(native.projectId);
+          set({ switchingProjectName: null });
         }
-        projectImportsApplying.delete(native.projectId);
-        set({ switchingProjectName: null });
       }
       return created;
     }

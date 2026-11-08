@@ -630,7 +630,7 @@ export async function generateApimartVideo(
     if (nativeTask) {
       await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
         nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || rejected ? { notStarted: true } : { unknown: true }).catch(() => undefined);
-      if (requestSent && !rejected) throw new Error(`APIMart 视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`);
+      if (requestSent && !rejected) throw new Error(`APIMart 视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`, { cause: error });
     }
     if (rejected || !requestSent || error instanceof PollTaskFailedError) discardFailedTask(receipt);
     else if (receipt) {

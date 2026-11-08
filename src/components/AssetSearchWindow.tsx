@@ -12,7 +12,7 @@ import {
   saveConfig,
   registerProjectFolders,
   registerNativeProjectFolders,
-  useNativeAssetSearchContext,
+  activateNativeAssetSearchContext,
   setBaseDataDir,
   syncAuthorizedDirectories,
   revealFileInFolder,
@@ -92,7 +92,7 @@ export default function AssetSearchWindow() {
       signal.throwIfAborted();
       const legacy = catalog.filter((entry) => entry.dataModel === 'legacy').map((entry) => entry.project);
       registerProjectFolders(legacy);
-      useNativeAssetSearchContext();
+      activateNativeAssetSearchContext();
       const native = catalog.filter((entry) => entry.dataModel === 'native');
       for (const entry of native) {
         registerNativeProjectFolders([entry.project.id, ...entry.episodeIds, ...entry.canvasIds]

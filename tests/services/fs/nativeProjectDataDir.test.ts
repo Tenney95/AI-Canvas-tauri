@@ -24,7 +24,7 @@ describe('新旧项目素材根路由', () => {
     const core = await import('../../../src/services/fs/core');
     await core.syncNativeAssetSearchRoots([projectId]);
     core.registerNativeProjectFolders([{ id: canvasId, projectId }]);
-    core.useNativeAssetSearchContext();
+    core.activateNativeAssetSearchContext();
     expect(await core.getProjectDataDir(canvasId)).toBe('/bound/project');
     expect(native.invoke).toHaveBeenNthCalledWith(1, 'sync_native_asset_search_roots', { projectIds: [projectId] });
     expect(native.invoke).toHaveBeenNthCalledWith(2, 'resolve_asset_search_native_project_root', { projectId });

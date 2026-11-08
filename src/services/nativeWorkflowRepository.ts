@@ -28,7 +28,8 @@ export interface NativeWorkflowReceipt {
 }
 const PREFIX = 'workflow-task:';
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const bounded = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/.test(value);
+const bounded = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256
+  && ![...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
 const fail = (): never => { throw new Error('原工作流回执或租约已变化，已保存材料保留，不会重新提交生成'); };
 const req = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
 function fields(value: unknown, allowed: readonly string[]): boolean {

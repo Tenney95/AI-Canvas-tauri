@@ -26,7 +26,9 @@ function expectedCanvas(context: Readonly<CanvasContext>): CanvasContext {
 }
 function validEditorId(id: string, canvasId: string): boolean {
   return typeof id === 'string' && id.startsWith(`${canvasId}::`) && id.length <= 256
-    && !/[\u0000-\u001f\u007f-\u009f]/u.test(id) && id.length > canvasId.length + 2;
+    && Array.from(id).every((character) => {
+      const code = character.charCodeAt(0); return code > 31 && (code < 127 || code > 159);
+    }) && id.length > canvasId.length + 2;
 }
 async function assertTarget(tx: IDBTransaction, context: CanvasContext): Promise<void> {
   const { project, canvas } = await readCanvasTarget(tx, context.projectId, context.canvasId);
@@ -60,7 +62,7 @@ async function bump(tx: IDBTransaction, projectId: string): Promise<void> {
     || row.changeRevision >= Number.MAX_SAFE_INTEGER) throw new Error('项目版本无效');
   await req(store.put({ ...row, changeRevision: row.changeRevision + 1 }));
 }
-async function useDatabase<T>(context: Readonly<CanvasContext>, mode: IDBTransactionMode,
+async function withDatabase<T>(context: Readonly<CanvasContext>, mode: IDBTransactionMode,
   work: (tx: IDBTransaction, expected: CanvasContext) => Promise<T>, options: NativeProjectOptions = {}): Promise<T> {
   const expected = expectedCanvas(context), db = await openNativeProjectDatabase(false, options);
   if (!db) throw new Error('新项目不存在');
@@ -69,10 +71,10 @@ async function useDatabase<T>(context: Readonly<CanvasContext>, mode: IDBTransac
 }
 
 export async function assertNativeVideoEditorContext(context: Readonly<CanvasContext>, options: NativeProjectOptions = {}, sessionId?: string): Promise<void> {
-  await useDatabase(context, 'readonly', async (tx, expected) => assertSession(tx, expected, sessionId), options);
+  await withDatabase(context, 'readonly', async (tx, expected) => assertSession(tx, expected, sessionId), options);
 }
 export async function readNativeVideoEditorProject(id: string, context: Readonly<CanvasContext>, options: NativeProjectOptions = {}, sessionId?: string): Promise<VideoEditorProjectRecord | null> {
-  return useDatabase(context, 'readonly', async (tx, expected) => {
+  return withDatabase(context, 'readonly', async (tx, expected) => {
     await assertSession(tx, expected, sessionId);
     if (!validEditorId(id, expected.canvasId)) throw new Error('剪辑工程键与原画布不一致');
     return unwrap(await req(tx.objectStore(EXCHANGE).get(keyFor(id))), expected, id);
@@ -81,7 +83,7 @@ export async function readNativeVideoEditorProject(id: string, context: Readonly
 export async function writeNativeVideoEditorProject(record: VideoEditorProjectRecord, context: Readonly<CanvasContext>,
   compare: { expected: VideoEditorProjectRecord | null } | null, options: NativeProjectOptions = {}, sessionId?: string): Promise<void> {
   const fixed = structuredClone(record), prior = compare ? structuredClone(compare.expected) : undefined;
-  await useDatabase(context, 'readwrite', async (tx, expected) => {
+  await withDatabase(context, 'readwrite', async (tx, expected) => {
     await assertSession(tx, expected, sessionId);
     validateStored(fixed, expected.canvasId);
     const store = tx.objectStore(EXCHANGE), existing = unwrap(await req(store.get(keyFor(fixed.id))), expected, fixed.id);
@@ -98,7 +100,7 @@ export async function writeNativeVideoEditorProject(record: VideoEditorProjectRe
 /** 主窗口创建会话后写入租约；画布切换时条件撤销，不能误撤销更新的会话。 */
 export async function bindNativeVideoEditorSession(context: Readonly<CanvasContext>, sessionId: string, options: NativeProjectOptions = {}): Promise<void> {
   if (!/^[a-f0-9-]{36}$/i.test(sessionId) || !context.runtimeEpoch) throw new Error('剪辑窗口会话无效');
-  await useDatabase(context, 'readwrite', async (tx, expected) => {
+  await withDatabase(context, 'readwrite', async (tx, expected) => {
     await req(tx.objectStore(EXCHANGE).put({ projectId: `${LEASE_PREFIX}${expected.canvasId}`, kind: 'video-editor-lease-v1',
       ownerProjectId: expected.projectId, canvasId: expected.canvasId, sessionId, runtimeEpoch: expected.runtimeEpoch }));
   }, options);
@@ -116,7 +118,7 @@ export async function revokeNativeVideoEditorSession(canvasId: string, sessionId
   } finally { db.close(); }
 }
 export async function deleteNativeVideoEditorProject(id: string, context: Readonly<CanvasContext>, options: NativeProjectOptions = {}): Promise<void> {
-  await useDatabase(context, 'readwrite', async (tx, expected) => {
+  await withDatabase(context, 'readwrite', async (tx, expected) => {
     if (!validEditorId(id, expected.canvasId)) throw new Error('剪辑工程键与原画布不一致');
     const store = tx.objectStore(EXCHANGE), existing = unwrap(await req(store.get(keyFor(id))), expected, id);
     if (existing) { await req(store.delete(keyFor(id))); await bump(tx, expected.projectId); }

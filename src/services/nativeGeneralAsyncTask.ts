@@ -150,7 +150,7 @@ export async function executeNativeGeneralAsyncTask(input: { apiKey: string; bas
     }
     const latest = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
     if (latest?.status === 'delivered') throw receiptError(latest, true);
-    if (latest?.status === 'failed') throw new Error('原通用媒体任务已确认失败，回执保留');
+    if (latest?.status === 'failed') throw new Error('原通用媒体任务已确认失败，回执保留', { cause: error });
     throw receiptError(record);
   }
 }

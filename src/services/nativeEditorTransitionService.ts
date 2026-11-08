@@ -280,7 +280,7 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
       : !sent || getHttpResponseError(error)?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => {});
     await updateBillingRun(billingRun, { ...(remoteId ? { taskId: remoteId } : {}), status: remoteId || sent && !getHttpResponseError(error)?.definitiveFailure ? 'unknown' : 'failed',
       ...(!sent || getHttpResponseError(error)?.definitiveFailure ? { calculatedMicros: 0, amountConfidence: 'calculated' as const, finishedAt: Date.now() } : {}) });
-    throw new Error(`转场原操作已保留（${row.operationId}）；请从原视频节点取回，不要重新提交。`);
+    throw new Error(`转场原操作已保留（${row.operationId}）；请从原视频节点取回，不要重新提交。`, { cause: error });
   }
   try {
     assertCurrent(context, anchorNodeId); assertWindowCurrent?.(); signal?.throwIfAborted();
