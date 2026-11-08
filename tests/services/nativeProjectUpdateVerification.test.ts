@@ -12,7 +12,10 @@ vi.mock('../../src/services/projectModelArchiveNativePort', () => ({
   createBoundProjectModelArchiveExportPort: () => ({ inspectAssets: probes.inspect }),
   createBoundProjectModelArchiveImportPort: () => ({ verifyMediaPublication: probes.publish }),
 }));
-vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ listNativeContentRecoveryPoints: probes.points }));
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original) => ({
+  ...await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(),
+  listNativeContentRecoveryPoints: probes.points,
+}));
 vi.mock('../../src/services/nativeProjectUpdateMedia', () => ({ verifyNativeUpdateBackup: probes.backup,
   verifyNativeRestoreAssets: probes.restore, openNativeUpdateBackup: probes.openBackup, nativeUpdateInventory: (assets: unknown) => assets }));
 import { verifyNativeProjectUpdateCommit } from '../../src/services/nativeProjectUpdateVerification';

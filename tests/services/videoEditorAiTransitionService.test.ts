@@ -44,13 +44,16 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('video editor transition identity and delivery', () => {
-  it('新项目已知异步转场在创建占位及请求前停止', async () => {
-    useAppStore.setState({ projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
-      projectId: 'p', projectEpoch: 1, canvasId: 'project-1', canvasEpoch: 1, canvasRevision: 0, episodeId: null, runtimeEpoch: 'run' } });
-    await expect(runVideoEditorAiTransition({ ...request, provider: 'volcengine' }, 'project-1', 'anchor'))
-      .rejects.toThrow('未提交请求');
+  it('新项目缺少原剪辑接缝时在创建占位及请求前停止', async () => {
+    const projectId = 'p2-11111111-1111-4111-8111-111111111111', canvasId = 'c2-22222222-2222-4222-8222-222222222222';
+    useAppStore.setState({ currentProjectId: canvasId, projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
+      projectId, projectEpoch: 1, canvasId, canvasEpoch: 1, canvasRevision: 0, episodeId: null, runtimeEpoch: 'run' } });
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+    await expect(runVideoEditorAiTransition({ ...request, model: 'volcengine/doubao-seedance-2-5', provider: 'volcengine' }, canvasId, 'anchor'))
+      .rejects.toThrow('缺少原剪辑接缝');
     expect(mocks.generateVideo).not.toHaveBeenCalled();
-    expect(getPendingTasksForProject('project-1')).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(getPendingTasksForProject(canvasId)).toEqual([]);
   });
 
   it('rejects unsafe request and anchor identities before submitting media', async () => {

@@ -89,10 +89,7 @@ export function modelProtocolUsesVariable(source: string, ...variables: string[]
   });
 }
 
-/** 返回协议片段中出现的模板路径；调用方可据此区分整数组与 `.0` 等局部引用。 */
-export function collectModelProtocolTemplatePaths(source: string): string[] {
-  return [...source.matchAll(TEMPLATE_RE)].map((match) => match[1]);
-}
+export { collectModelProtocolTemplatePaths } from './modelProtocolShared';
 
 /** 返回协议中实际使用 `$forEach` 展开的受信数组变量。 */
 export function collectModelProtocolForEachVariables(value: unknown): string[] {

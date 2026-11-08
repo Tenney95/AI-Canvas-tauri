@@ -13,7 +13,7 @@ it('火山保持原api/v3路径、首尾帧字节与提示词原文，不把提�
   const request: Record<string, ProtocolJsonValue> = { model: 'doubao-seedance-2-5', content: [{ type: 'text', text: '保留 {{notAVariable}}' },
     { type: 'image_url', image_url: { url: 'data:image/png;base64,AQID' }, role: 'first_frame' },
     { type: 'image_url', image_url: { url: 'data:image/png;base64,BAUG' }, role: 'last_frame' }] };
-  const built = buildModelProtocolRequest({ apiKey: 'ephemeral-key', baseUrl: 'https://ark.example/api/v3', protocol: VOLCENGINE_EDITOR_PROTOCOL, variables: { request } });
+  const built = buildModelProtocolRequest({ apiKey: 'ephemeral-key', baseUrl: 'https://ark.example/api/v3', protocol: VOLCENGINE_EDITOR_PROTOCOL, variables: { parameters: request } });
   expect(built.url).toBe('https://ark.example/api/v3/contents/generations/tasks');
   expect(JSON.parse(built.init.body as string)).toEqual(request);
   expect(JSON.stringify(request)).not.toContain('ephemeral-key');
@@ -22,7 +22,7 @@ it('火山保持原api/v3路径、首尾帧字节与提示词原文，不把提�
 it('APIMart用既有videos/generations与data[0].task_id解析原回执', async () => {
   transport.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ code: 200, data: [{ task_id: 'original-task', status: 'submitted' }] }), { status: 200 }));
   const submitted = await submitModelProtocol({ apiKey: 'ephemeral-key', baseUrl: 'https://api.example/v1', protocol: APIMART_EDITOR_PROTOCOL,
-    variables: { request: { model: 'seedance-2.5', prompt: '转场', image_with_roles: [{ url: 'https://media.example/first.png', role: 'first_frame' },
+    variables: { parameters: { model: 'seedance-2.5', prompt: '转场', image_with_roles: [{ url: 'https://media.example/first.png', role: 'first_frame' },
       { url: 'https://media.example/last.png', role: 'last_frame' }] } } });
   expect(submitted.taskId).toBe('original-task');
   expect(submitted.poll?.url).toBe('https://api.example/v1/tasks/original-task');
@@ -32,7 +32,7 @@ it('APIMart用既有videos/generations与data[0].task_id解析原回执', async 
 it('网络中断仅传播提交未知，不自动重试付费POST', async () => {
   transport.fetch.mockRejectedValueOnce(new Error('connection closed'));
   await expect(submitModelProtocol({ apiKey: 'ephemeral-key', baseUrl: 'https://ark.example/api/v3', protocol: VOLCENGINE_EDITOR_PROTOCOL,
-    variables: { request: { model: 'doubao-seedance-2-5', content: [] } } })).rejects.toThrow();
+    variables: { parameters: { model: 'doubao-seedance-2-5', content: [] } } })).rejects.toThrow();
   expect(transport.fetch).toHaveBeenCalledOnce();
 });
 

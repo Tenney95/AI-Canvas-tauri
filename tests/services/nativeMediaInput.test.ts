@@ -5,7 +5,7 @@ import type { AppConfig, BaseNodeData } from '../../src/types';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 
 const fixture = () => ({ projects: [{ id: 'canvas', name: 'fixture', createdAt: 1, updatedAt: 1 }],
-  currentProjectId: 'canvas', customStyles: [], config: { generalModels: [{ id: 'model', name: 'fixture', modelId: 'request-model',
+  currentProjectId: 'canvas', customStyles: [], config: { providers: { provider: { apiKey: 'fixture-only-key', baseUrl: 'https://fixture.example' } }, generalModels: [{ id: 'model', name: 'fixture', modelId: 'request-model',
     category: 'audio', providerConfigId: 'provider' }] } as AppConfig });
 const node = (): Node<BaseNodeData> => ({ id: 'node', type: 'ai-audio', position: { x: 0, y: 0 },
   data: { type: 'ai-audio', label: 'fixture', model: 'general/model', provider: 'general', prompt: 'fixture',

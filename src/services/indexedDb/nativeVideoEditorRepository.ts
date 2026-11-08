@@ -11,7 +11,8 @@ import { CANVASES, EPISODES, EXCHANGE, REVISIONS, RETIRED, ROOTS, TRANSFER, asse
 const PREFIX = 'video-editor:';
 const LEASE_PREFIX = 'video-editor-lease:';
 type EditorEnvelope = { projectId: string; kind: 'video-editor-v1'; ownerProjectId: string; canvasId: string; record: VideoEditorProjectRecord };
-const stores = [ROOTS, CANVASES, EPISODES, REVISIONS, EXCHANGE, TRANSFER] as const;
+// 新库与剪辑恢复相互引用；按调用期读取活绑定，避免模块初始化期间捕获未完成的常量。
+const stores = () => [ROOTS, CANVASES, EPISODES, REVISIONS, EXCHANGE, TRANSFER] as const;
 const req = <T>(request: IDBRequest<T>): Promise<T> => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error ?? new Error('剪辑工程读取失败'));
@@ -66,7 +67,7 @@ async function withDatabase<T>(context: Readonly<CanvasContext>, mode: IDBTransa
   work: (tx: IDBTransaction, expected: CanvasContext) => Promise<T>, options: NativeProjectOptions = {}): Promise<T> {
   const expected = expectedCanvas(context), db = await openNativeProjectDatabase(false, options);
   if (!db) throw new Error('新项目不存在');
-  try { return await transact(db, mode, options, async (tx) => { await assertTarget(tx, expected); return work(tx, expected); }, stores); }
+  try { return await transact(db, mode, options, async (tx) => { await assertTarget(tx, expected); return work(tx, expected); }, stores()); }
   finally { db.close(); }
 }
 

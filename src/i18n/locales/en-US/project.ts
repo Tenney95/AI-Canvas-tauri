@@ -72,7 +72,6 @@ const project = {
   '项目设置已保存': 'Project settings saved',
   '项目设置保存失败': 'Failed to save the project settings',
   '当前项目保存失败，已取消新建项目': 'Saving the current project failed, so creating a new project was cancelled',
-  '新项目创建失败，已保留当前项目': 'Creating the new project failed; the current project is kept',
   '项目尚未成功加载，已阻止新增分集': 'The project has not loaded successfully, so adding an episode was blocked',
   '当前画布保存失败，已取消新增分集': 'Saving the current canvas failed, so adding an episode was cancelled',
   '剧集创建失败，已取消新增分集': 'Creating the episode failed, so adding an episode was cancelled',

@@ -20,8 +20,9 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 
 vi.mock('../../src/services/fs/core', () => ({
-  getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
+  getAssetUrlFromPath: vi.fn(async (path: string) => `asset://localhost${path}`),
   getProjectDataDir: vi.fn(async () => '/p'),
+  getNativeProjectOwner: () => null,
   joinPath: (...parts: string[]) => parts.join('/'),
   stripVerbatimPrefix: (path: string) => path,
 }));
@@ -61,7 +62,7 @@ function imageNode(id: string, label: string, filePath: string): Node<BaseNodeDa
     id,
     type: 'ai-image',
     position: { x: 0, y: 0 },
-    data: { label, type: 'ai-image', status: 'success', imageUrl: `asset://${filePath}`, filePath },
+    data: { label, type: 'ai-image', status: 'success', imageUrl: `asset://localhost${filePath}`, filePath },
   };
 }
 
@@ -75,7 +76,7 @@ function gridNode(id: string, label: string, filePath: string): Node<BaseNodeDat
       label,
       type: 'ai-storyboard',
       status: 'success',
-      imageUrl: `asset://${filePath}`,
+      imageUrl: `asset://localhost${filePath}`,
       filePath,
       storyboardRows: 3,
       storyboardCols: 3,
@@ -103,7 +104,7 @@ async function roundTrip(projectId: string): Promise<Node<BaseNodeData>[]> {
 function regenerate(nodeId: string, filePath: string): void {
   writeFile(filePath);
   useAppStore.getState().updateNodeData(nodeId, {
-    imageUrl: `asset://${filePath}`,
+    imageUrl: `asset://localhost${filePath}`,
     filePath,
     thumbnailUrl: 'https://remote/last.png',
     output: 'https://remote/last.png',
@@ -196,7 +197,7 @@ describe('宫格节点与源图共用文件时的重新生成', () => {
 
   it('删除其他节点时不回收宫格格子仍在显示的图', () => {
     const grid = gridNode('grid', '宫格', '/p/宫格.png');
-    grid.data.storyboardOverrides = [{ url: 'asset:///p/格子.png', filePath: '/p/格子.png' }];
+    grid.data.storyboardOverrides = [{ url: 'asset://localhost/p/格子.png', filePath: '/p/格子.png' }];
     const doomed = imageNode('doomed', '格子', '/p/格子.png');
 
     const keepPaths = collectKeepPaths([grid, doomed], new Set(['doomed']), []);
@@ -214,7 +215,7 @@ describe('宫格节点与源图共用文件时的重新生成', () => {
         data: {
           ...gridNode('grid', '宫格', '/p/宫格.png').data,
           storyboardExtracted: [true, false, false, false, false, false, false, false, false],
-          storyboardOverrides: [{ url: 'asset:///p/格子.png', filePath: '/p/格子.png' }, null, null, null, null, null, null, null, null],
+          storyboardOverrides: [{ url: 'asset://localhost/p/格子.png', filePath: '/p/格子.png' }, null, null, null, null, null, null, null, null],
         } as BaseNodeData,
       }],
     });

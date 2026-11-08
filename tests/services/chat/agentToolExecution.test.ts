@@ -299,7 +299,7 @@ describe('shared Agent tool execution for MCP', () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const read = vi.spyOn(projectFiles, 'readVerifiedProjectFile').mockImplementationOnce(async () => { await gate; return saved; })
       .mockImplementation(async () => saved);
-    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '不得越权交付'.repeat(1000),
+    const captured = await captureAgentResult({ scope, toolId: 'series_get_state', text: '不得越权交付'.repeat(AGENT_RESULT_PREVIEW_CHARS),
       policy: { storage: 'project', source: 'project-derived' } });
     useAppStore.setState((state) => ({ agentTasks: state.agentTasks.map((value) => ({ ...value,
       toolAllowlist: ['agent_result_read', 'series_get_state'], steps: [{

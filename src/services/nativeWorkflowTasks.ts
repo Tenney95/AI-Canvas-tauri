@@ -19,8 +19,7 @@ import { persistMediaUrlToProjectData } from './fileService';
 import { PollTaskFailedError } from './pollTask';
 import { getHttpResponseError } from './ai/httpUtils';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
-import { validateNativeProtocolContext } from './nativeModelProtocolTask';
-import { isSafeNativeProtocolTaskId } from './nativeProtocolContext';
+import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from './nativeProtocolContext';
 import { findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputs } from './comfyOutputs';
 import type { MediaDownloadAccess } from '../types/aiTypes';
 

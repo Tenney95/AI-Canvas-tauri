@@ -6,9 +6,9 @@ import type { VideoEditorProjectRecord } from '../../src/types/videoEditor';
 import { VIDEO_EDITOR_SCHEMA_VERSION } from '../../src/types/videoEditor';
 
 const holder = vi.hoisted(() => ({ database: null as IDBDatabase | null }));
-vi.mock('../../src/services/indexedDb/schema', () => ({
-  openDB: vi.fn(async () => holder.database!), STORE_METADATA: 'metadata', STORE_PROJECTS: 'projects',
-  STORE_VIDEO_EDITOR_PROJECTS: 'videoEditorProjects',
+vi.mock('../../src/services/indexedDb/schema', async (original) => ({
+  ...await original<typeof import('../../src/services/indexedDb/schema')>(),
+  openDB: vi.fn(async () => holder.database!),
 }));
 import { openDB } from '../../src/services/indexedDb/schema';
 import { assertVideoEditorProjectContext, saveVideoEditorProject, getVideoEditorProject,

@@ -35,7 +35,7 @@ it('重启后只按原站点和原 prompt_id 查询并交付，未再次提交�
   await resumeNativeComfyTask('operation');
   expect(probes.poll).toHaveBeenCalledWith('http://127.0.0.1:8188', 'original-prompt-id', expect.any(String), expect.any(Function), expect.any(AbortSignal));
   expect(probes.persist).toHaveBeenCalledOnce();
-  expect(probes.commit).toHaveBeenCalledWith(probes.rows[0], 'media/video.mp4', expect.objectContaining({ canvasId: 'c2-canvas', runtimeEpoch: 'restarted' }));
+  expect(probes.commit).toHaveBeenCalledWith(probes.rows[0], 'media/video.mp4', expect.objectContaining({ canvasId: 'c2-canvas', runtimeEpoch: 'restarted' }), expect.any(AbortSignal));
 });
 
 it('服务器或查询合同变化时不向替代服务发送原任务 ID', async () => {

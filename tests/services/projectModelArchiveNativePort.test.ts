@@ -183,6 +183,6 @@ describe('P5 native file projection', () => {
     native.invoke.mockImplementation(async (_command: string, args: Record<string, unknown>) =>
       ((args.selectedPaths ?? args.includeImportPaths) as string[]).map((path) => ({ path, bytes: 3, sha256: hash })));
     capture.aggregate.content.originalWork = { relativePath: 'missing.txt', fileName: 'missing.txt', addedAt: 1 };
-    await expect(port.createRestoreBackup!(capture, expected)).rejects.toThrow('旧素材引用缺失');
+    await expect(port.createRestoreBackup!(capture, expected)).rejects.toThrow('项目引用的素材缺失，无法安全导出');
   });
 });

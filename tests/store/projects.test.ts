@@ -9,6 +9,7 @@ import { cancelProjectCanvasDerivations } from '../../src/services/canvasDerivat
 import type { BaseNodeData } from '../../src/types';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import type { ProjectDataDirRenameResult } from '../../src/services/fs/core';
+import { registerNativeProjectFolders as registerNativeProjectFoldersInCore } from '../../src/services/fs/core';
 import type { SharedAssetSyncCommitInput } from '../../src/services/indexedDb/sharedAssetSyncRepository';
 import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
 import { ProjectImportCommittedError } from '../../src/services/projectImportOutcome';
@@ -25,7 +26,7 @@ const fileMocks = vi.hoisted(() => ({
   loadProjectsList: vi.fn(),
   registerProjectFolder: vi.fn(),
   registerProjectFolders: vi.fn(),
-  registerNativeProjectFolders: vi.fn(),
+  registerNativeProjectFolders: vi.fn((_bindings: ReadonlyArray<{ id: string; projectId: string }>) => {}),
   syncNativeAssetSearchRoots: vi.fn(async () => undefined),
   claimNativeProjectDataDir: vi.fn(async () => 'native-project-dir'),
   saveProject: vi.fn(async (record: { id: string }) => record.id),
@@ -160,7 +161,8 @@ beforeEach(() => {
     nativeMocks.projects.set(input.projectId, { ...aggregate, canvas, canvases: [canvas] });
     return { canvas, content: null, episodeContent: null, changeRevision: canvas.revision };
   });
-  fileMocks.registerNativeProjectFolders.mockClear();
+  // 文件 IO 已隔离，但真实 serializer 仍依赖核心目录登记提供同一画布的归属证明。
+  fileMocks.registerNativeProjectFolders.mockReset().mockImplementation(registerNativeProjectFoldersInCore);
   fileMocks.claimNativeProjectDataDir.mockClear();
   fileMocks.deleteProjectData.mockClear();
   fileMocks.deleteProjectDataDir.mockClear();

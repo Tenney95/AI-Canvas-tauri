@@ -5,7 +5,7 @@ import { safeExchangePath } from '../projectExchangeDomain';
 import type { NativeMediaLocalResult, NativeMediaLocalOutput, NativeMediaRecoveryBinding, NativeMediaCompletion, NativeApimartImageBatch } from '../../types/media';
 import { validateNativeImageBatch, nativeImageBatchResults } from '../nativeImageBatch';
 import { validateNativeMediaLocalOutputs } from '../nativeMediaCollection';
-import { validateNativeProtocolContext } from '../nativeModelProtocolTask';
+import { validateNativeProtocolContext } from '../nativeProtocolContext';
 import { configValuesEqual } from '../configPatch';
 import { isNativeMediaContentPath } from '../nativeMediaContentPath';
 import { hasControlCharacters } from '../../utils/controlCharacters';

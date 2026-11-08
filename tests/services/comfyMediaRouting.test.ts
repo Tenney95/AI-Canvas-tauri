@@ -44,13 +44,13 @@ describe('ComfyUI 图片和音频输出入口的三类参考', () => {
 
   it('图片入口按提示词顺序传图并去重连线，同时传视频和音频', async () => {
     await generateImage({ prompt: '@{i2:二} @{v:视频} @{i1:一} @{a:音频}', provider: 'comfyui', model: 'wf', workflowId: 'wf', nodeId: 'out', image_urls: [urls.i1] });
-    expect(mocks.image).toHaveBeenCalledWith(expect.anything(), undefined, [urls.i2, urls.i1], { videoUrls: [urls.v], audioUrls: [urls.a] });
+    expect(mocks.image).toHaveBeenCalledWith(expect.anything(), undefined, [urls.i2, urls.i1], { videoUrls: [urls.v], audioUrls: [urls.a] }, undefined);
     expect(mocks.image.mock.calls[0][0].prompt).toContain('图片1');
   });
 
   it('音频入口也能引用图片、视频和音频，按同类顺序去重', async () => {
     await generateAudio({ prompt: '@{i2:二} @{a:音频} @{i1:一} @{v:视频} 台词', provider: 'comfyui', model: 'wf', workflowId: 'wf', nodeId: 'out' });
-    expect(mocks.audio).toHaveBeenCalledWith(expect.anything(), undefined, [urls.a], { imageUrls: [urls.i2, urls.i1], videoUrls: [urls.v] });
+    expect(mocks.audio).toHaveBeenCalledWith(expect.anything(), undefined, [urls.a], { imageUrls: [urls.i2, urls.i1], videoUrls: [urls.v] }, undefined);
   });
 
   it('Comfy图片入口将项目风格母图排在直接引用后且标注正确序号', async () => {

@@ -294,7 +294,7 @@ describe('项目导入历史追加编排', () => {
     let rejectCleanup!: (error: Error) => void;
     mocks.delete.mockReturnValueOnce(new Promise<void>((_resolve, reject) => { rejectCleanup = reject; }));
     const first = closePreparedProjectImport(session), second = closePreparedProjectImport(session);
-    expect(mocks.delete).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(mocks.delete).toHaveBeenCalledTimes(1));
     const rejected = Promise.allSettled([first, second]); rejectCleanup(new Error('暂存目录占用'));
     expect((await rejected).every((result) => result.status === 'rejected')).toBe(true);
     await Promise.all([closePreparedProjectImport(session), closePreparedProjectImport(session)]);

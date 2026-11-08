@@ -13,7 +13,7 @@ import { CANVASES, EPISODES, EXCHANGE, REVISIONS, ROOTS, TRANSFER, assertNoPendi
   isNativeCanvasId, isNativeEpisodeId, isNativeProjectId, openNativeProjectDatabase, readCanvasTarget, transact, type NativeProjectOptions } from './nativeProjectRepository';
 
 const PREFIX = 'editor-task:';
-const stores = [ROOTS, CANVASES, EPISODES, REVISIONS, EXCHANGE, TRANSFER] as const;
+const stores = () => [ROOTS, CANVASES, EPISODES, REVISIONS, EXCHANGE, TRANSFER] as const;
 const request = <T>(value: IDBRequest<T>): Promise<T> => new Promise((resolve, reject) => {
   value.onsuccess = () => resolve(value.result); value.onerror = () => reject(value.error ?? new Error('转场账本读取失败'));
 });
@@ -86,7 +86,7 @@ async function withDb<T>(mode: IDBTransactionMode, work: (tx: IDBTransaction) =>
   try { return await transact(db, mode, options, async (tx) => {
     if (mode === 'readwrite' && tx.durability !== 'strict') throw new Error('转场账本需要耐久事务');
     return work(tx);
-  }, stores, mode === 'readwrite'); } finally { db.close(); }
+  }, stores(), mode === 'readwrite'); } finally { db.close(); }
 }
 export async function listNativeEditorMediaTasks(context: Readonly<CanvasContext>, anchorNodeId?: string,
   options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask[]> {

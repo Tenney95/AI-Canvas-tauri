@@ -8,6 +8,10 @@ import { PROTOCOL_VARIABLE_NAMES } from './modelProtocolVariables';
 import type { ModelProtocolAuthConfig, ProtocolJsonValue } from '../../types/aiTypes';
 
 export const TEMPLATE_RE = /{{\s*([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)*)\s*}}/g;
+/** 查询身份投影也使用此纯函数，避免为读取模板路径加载协议执行器。 */
+export function collectModelProtocolTemplatePaths(source: string): string[] {
+  return [...source.matchAll(TEMPLATE_RE)].map((match) => match[1]);
+}
 export const FULL_TEMPLATE_RE = /^{{\s*([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)*)\s*}}$/;
 export const WHEN_PRESENT_KEY = '$whenPresent';
 export const FOR_EACH_KEY = '$forEach';

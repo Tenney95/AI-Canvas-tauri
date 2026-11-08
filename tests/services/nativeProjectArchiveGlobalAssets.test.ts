@@ -7,7 +7,9 @@ const io = vi.hoisted(() => ({ invoke: vi.fn(), index: vi.fn(), exists: vi.fn(),
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke }));
 vi.mock('@tauri-apps/plugin-fs', async (original) => ({ ...await original<typeof import('@tauri-apps/plugin-fs')>(), exists: io.exists }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ save: vi.fn() }));
-vi.mock('../../src/services/indexedDbService', () => ({ getAssetIndexById: io.index }));
+vi.mock('../../src/services/indexedDbService', async (original) => ({
+  ...await original<typeof import('../../src/services/indexedDbService')>(), getAssetIndexById: io.index,
+}));
 vi.mock('../../src/services/fs/assetLibrary', () => ({ getGlobalFilesDir: vi.fn(async () => 'C:/global') }));
 vi.mock('../../src/services/fs/assetIndex', () => ({ getRelativeAssetPath: (path: string, root: string) => path.startsWith(root + '/') ? path.slice(root.length + 1) : undefined }));
 vi.mock('../../src/services/projectModelArchiveNativePort', () => ({ createBoundProjectModelArchiveExportPort: vi.fn() }));

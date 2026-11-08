@@ -212,12 +212,12 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
     requestBody = await buildRunningHubModelRequest(selected.rawConnection, selected.definition, request.prompt,
       request.duration !== undefined && selected.definition.parameters.some((field) => field.name === 'duration') ? { duration: String(request.duration) } : {},
       { image: [first.dataUrl, last.dataUrl], imageRoles: ['first_frame', 'last_frame'] }, signal);
-    variables = { model: selected.model.modelId, request: jsonRequest(requestBody) };
+    variables = { model: selected.model.modelId, parameters: jsonRequest(requestBody) };
   } else if (selected.kind === 'dreamina') {
     requestBody = buildDreaminaVideoParams({ model: selected.model.modelId, prompt: request.prompt, references,
       duration: params.seedanceDuration, resolution: params.seedanceResolution, ratio: params.seedanceRatio });
     if (requestBody.kind !== 'frames2video') throw new Error('即梦未生成明确首尾帧合同，未提交转场');
-    variables = { request: jsonRequest(requestBody) };
+    variables = { parameters: jsonRequest(requestBody) };
   } else {
     if (selected.kind === 'volcengine') requestBody = buildVolcengineVideoRequestBody(selected.model.modelId, request.prompt, references, true, params);
     else {
@@ -229,7 +229,7 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
           : { firstFrameUrl: uploaded[0], lastFrameUrl: uploaded[1] }) }) ?? undefined;
     }
     if (!requestBody) throw new Error('所选视频模型缺少首尾帧请求合同');
-    variables = { request: jsonRequest(requestBody) };
+    variables = { parameters: jsonRequest(requestBody) };
   }
   const options = { apiKey: selected.apiKey, baseUrl: selected.baseUrl, protocol: selected.protocol, variables, signal,
     ...(selected.protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => ({

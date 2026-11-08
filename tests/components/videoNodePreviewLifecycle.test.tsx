@@ -59,7 +59,9 @@ vi.mock('../../src/components/nodes/shared/useSourceFileUpload', () => ({ useSou
 vi.mock('../../src/services/fileService', () => ({ downloadUrlAndSave: vi.fn(), saveDataUrlToProjectData: vi.fn(), buildNodeFileName: () => 'frame.jpg' }));
 vi.mock('../../src/services/clipboardService', () => ({ copyFile: vi.fn() }));
 vi.mock('../../src/services/indexedDbService', () => ({ buildVideoEditorProjectId: () => 'editor' }));
-vi.mock('../../src/services/videoEditorWindowService', () => ({
+vi.mock('../../src/services/videoEditorWindowService', async (original) => ({
+  // 本预览夹具不创建剪辑窗口；沿用真实绑定校验，缺少活动session时不能取得写入权。
+  ...await original<typeof import('../../src/services/videoEditorWindowService')>(),
   postVideoEditorAiTransitionResult: vi.fn(), postVideoEditorModels: vi.fn(), subscribeVideoEditorWindow: () => vi.fn(),
 }));
 vi.mock('../../src/services/videoEditorAiTransitionService', () => ({ listVideoEditorVideoModels: vi.fn(), runVideoEditorAiTransition: vi.fn() }));

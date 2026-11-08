@@ -1,6 +1,6 @@
 /** 原任务查询只使用原 ID 与经过校验的必要字段；协议正文不进入媒体账本。 */
 import type { NormalizedModelExecutionProtocol } from '../types/aiTypes';
-import { collectModelProtocolTemplatePaths } from './ai/modelProtocol';
+import { collectModelProtocolTemplatePaths } from './ai/modelProtocolShared';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { sha256BytesHex } from './mediaDataUrl';
 

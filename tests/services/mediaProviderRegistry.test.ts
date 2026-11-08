@@ -151,6 +151,7 @@ describe('MediaProviderRegistry', () => {
       signal,
       'high',
       'transparent',
+      undefined,
     );
   });
 
@@ -200,6 +201,7 @@ describe('MediaProviderRegistry', () => {
         operation: 'image-to-video',
       },
       signal,
+      undefined,
     );
   });
 
@@ -231,6 +233,7 @@ describe('MediaProviderRegistry', () => {
       'node-resolved prompt',
       undefined,
       {},
+      undefined,
       undefined,
     );
   });
@@ -327,7 +330,7 @@ describe('MediaProviderRegistry', () => {
     mocks.storeState.config.providers.apimart.apiKey = '';
     const adapter = mediaProviderRegistry.getAudioAdapter('apimart');
 
-    expect(() => adapter?.generateAudio({
+    await expect(adapter?.generateAudio({
       params: {
         prompt: 'speech',
         model: 'apimart/gpt-4o-mini-tts',
@@ -335,6 +338,6 @@ describe('MediaProviderRegistry', () => {
       },
       prompt: 'speech',
       referenceAudioUrls: [],
-    })).toThrow('未配置 apimart 的 API Key');
+    })).rejects.toThrow('未配置 apimart 的 API Key');
   });
 });

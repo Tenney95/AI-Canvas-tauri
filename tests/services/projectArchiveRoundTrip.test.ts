@@ -263,7 +263,7 @@ it('序列化后的业务投影被破坏时，真实收件门禁阻止 native pa
 });
 
 it.each([false, true].flatMap((series) => (['loadProject', 'initFromDb'] as const).map((reload) => ({ series, reload }))))(
-  '真实 Store 导入后 $reload 保留保存代际并拒绝过期窗口（剧集=$series）', async ({ series, reload }) => {
+  '真实旧结构导入后 Store $reload 保留保存代际并拒绝过期窗口（剧集=$series）', async ({ series, reload }) => {
     const context = await runtime();
     const owner = project();
     owner.dramaAssets = context.drama.normalizeDramaAssetLibrary({ characters: [{ id: 'character', name: '原角色' }] });
@@ -275,8 +275,12 @@ it.each([false, true].flatMap((series) => (['loadProject', 'initFromDb'] as cons
     const exported = (await context.transfer.exportProjectArchive(owner.id))!;
     native.open.mockResolvedValueOnce(exported.filePath);
     const prepared = (await context.imports.prepareProjectImport())!; sessions.push(prepared);
+    // 本组验证旧库导入后的代际；Store 的“新副本导入”入口现已默认使用新结构。
+    const imported = await context.imports.applyProjectImport(prepared, null, {}, { appendChat: false, appendMemories: false });
+    const importedId = imported.projectId;
     const useAppStore = await resetAppStore();
-    const importedId = await useAppStore.getState().importProject(prepared, null, {}, { appendChat: false, appendMemories: false });
+    useAppStore.setState({ currentProjectId: importedId });
+    await useAppStore.getState().loadProject();
     expect(importedId).toBeDefined();
     const activeId = useAppStore.getState().currentProjectId!;
     expect(activeId).toBe(series ? useAppStore.getState().projects.find((item) => item.parentId === importedId)!.id : importedId);
@@ -325,8 +329,11 @@ it('切换用实际读取的完整记录同步摘要，不把旧元数据和未�
   const exported = (await context.transfer.exportProjectArchive(owner.id))!;
   native.open.mockResolvedValueOnce(exported.filePath);
   const prepared = (await context.imports.prepareProjectImport())!; sessions.push(prepared);
+  // 显式使用旧库导入契约，随后由真实 Store 加载，保留旧摘要/共享库的回归边界。
+  const importedId = (await context.imports.applyProjectImport(prepared, null, {}, { appendChat: false, appendMemories: false })).projectId;
   const useAppStore = await resetAppStore();
-  const importedId = (await useAppStore.getState().importProject(prepared, null, {}, { appendChat: false, appendMemories: false }))!;
+  useAppStore.setState({ currentProjectId: importedId });
+  await useAppStore.getState().loadProject();
   const imported = await context.records.readProjectImportScope(importedId);
   const first = imported.find((record) => record.episodeNo === 1)!;
   const second = imported.find((record) => record.episodeNo === 2)!;

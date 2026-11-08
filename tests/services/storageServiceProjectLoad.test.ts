@@ -23,11 +23,11 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 vi.mock('../../src/services/fs/core', () => ({
   isTauriEnv: () => true,
-  getConvertFileSrc: async () => (path: string) => `asset://${path}`,
+  getConvertFileSrc: async () => (path: string) => `asset://localhost${path}`,
   getFileCategory: () => 'image',
   CATEGORY_EXTENSIONS: { image: ['.png'] },
   buildNodeFileName: (label: string | undefined, ext: string, fallback: string) => `${label || fallback}${ext}`,
-  getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
+  getAssetUrlFromPath: vi.fn(async (path: string) => `asset://localhost${path}`),
   getProjectDataDir: mocks.getProjectDataDir,
   getNativeProjectOwner: mocks.getNativeProjectOwner,
   getMimeType: (extension: string) => extension === 'png' ? 'image/png' : 'application/octet-stream',
@@ -113,13 +113,13 @@ describe('project loading tolerates asset recovery failures', () => {
     mocks.getNativeProjectOwner.mockReturnValue('native-owner');
     const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [],
       nodes: [{ id: 'n1', type: 'ai-image', data: { type: 'ai-image', assetId: 'asset-1', relativePath: 'image.png',
-        filePath: '/project/data/image.png', imageUrl: 'asset:///project/data/image.png', output: 'asset:///project/data/image.png' } }] };
+        filePath: '/project/data/image.png', imageUrl: 'asset://localhost/project/data/image.png', output: 'asset://localhost/project/data/image.png' } }] };
     const persisted = await serializeProjectRecord(record);
     expect(persisted.nodes).toMatchObject([{ data: { assetId: 'asset-1', relativePath: 'image.png', imageUrl: 'image.png', output: 'image.png' } }]);
     expect((persisted.nodes as Array<{ data: object }>)[0].data).not.toHaveProperty('filePath');
     const restored = await restoreProjectRecord(persisted);
     expect(restored.nodes).toMatchObject([{ data: { filePath: '/project/data/image.png',
-      imageUrl: 'asset:///project/data/image.png', output: 'asset:///project/data/image.png' } }]);
+      imageUrl: 'asset://localhost/project/data/image.png', output: 'asset://localhost/project/data/image.png' } }]);
   });
 
   it('新结构素材缺失时不把相对路径当网络地址，仍保留身份供文件恢复', async () => {
@@ -138,14 +138,14 @@ describe('project loading tolerates asset recovery failures', () => {
     mocks.getNativeProjectOwner.mockReturnValue('native-owner');
     mocks.identifyAsset.mockResolvedValue({ assetId: 'style-asset', relativePath: 'style.png' });
     const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [], nodes: [],
-      settings: { visualStyle: { styleReference: { filePath: '/project/data/style.png', imageUrl: 'asset:///project/data/style.png',
+      settings: { visualStyle: { styleReference: { filePath: '/project/data/style.png', imageUrl: 'asset://localhost/project/data/style.png',
         fileName: 'style.png', enabled: true } } } };
     const persisted = await serializeProjectRecord(record);
     expect(persisted.settings?.visualStyle?.styleReference).toEqual({ filePath: 'style.png', imageUrl: 'style.png',
       fileName: 'style.png', enabled: true });
     const restored = await restoreProjectRecord(persisted);
     expect(restored.settings?.visualStyle?.styleReference).toEqual({ filePath: '/project/data/style.png',
-      imageUrl: 'asset:///project/data/style.png', fileName: 'style.png', enabled: true });
+      imageUrl: 'asset://localhost/project/data/style.png', fileName: 'style.png', enabled: true });
   });
 
   it('全局来源标记经重复归一化及 JSON 往返保留，明确改绑项目后不复活旧来源', () => {
@@ -181,7 +181,7 @@ describe('project loading tolerates asset recovery failures', () => {
       dramaAssets: { version: 2, characters: [], props: [], scenes: [{ id: 'scene', kind: 'scene', name: '场景', key: 'scene',
         summary: '', visualNotes: '', importance: 'main', confirmed: true, source: 'manual', createdAt: 1, updatedAt: 2,
         referenceImages: [{ id: 'global-ref', label: '', prompt: '', assetId, assetSource: 'global', relativePath,
-          imageUrl: 'asset:///old/same.png', createdAt: 1, updatedAt: 2 }], primaryReferenceImageId: 'global-ref' }],
+          imageUrl: 'asset://localhost/old/same.png', createdAt: 1, updatedAt: 2 }], primaryReferenceImageId: 'global-ref' }],
       } } as Parameters<typeof saveProjectToDb>[0]);
     const loaded = await loadProjectData(projectId);
     expect(loaded?.dramaAssets?.scenes[0].referenceImages?.[0]).toMatchObject({ assetId, assetSource: 'global', imageUrl: undefined });
@@ -196,15 +196,15 @@ describe('project loading tolerates asset recovery failures', () => {
       rootPath: '/global', source: 'global', fingerprint: '1:1', size: 1, mtimeMs: 1, status: 'online', updatedAt: 1 });
     const scene = { id: 'scene', kind: 'scene' as const, name: '客厅', key: 'scene', summary: '', visualNotes: '',
       importance: 'main' as const, confirmed: true, source: 'manual' as const, createdAt: 1, updatedAt: 2,
-      imageAssetId: 'global-scene-shared', imageRelativePath: 'old-scene.png', imageUrl: 'asset:///global/old-scene.png' };
+      imageAssetId: 'global-scene-shared', imageRelativePath: 'old-scene.png', imageUrl: 'asset://localhost/global/old-scene.png' };
     mocks.identifyAsset.mockClear(); mocks.writeFile.mockClear();
     await saveProject({ id: projectId, name: '全局复用', createdAt: 1, updatedAt: 2, nodes: [], edges: [],
       dramaAssets: { version: 2, characters: [], scenes: [scene], props: [{ ...scene, id: 'prop', kind: 'prop' }] } });
     const persisted = await getProjectById(projectId) as ProjectSaveData | null;
     expect(persisted?.dramaAssets?.scenes[0]).toMatchObject({ imageAssetId: 'global-scene-shared', imageRelativePath: 'new-scene.png' });
     const loaded = await loadProjectData(projectId);
-    expect(loaded?.dramaAssets?.scenes[0].imageUrl).toBe('asset:///global/new-scene.png');
-    expect(loaded?.dramaAssets?.props[0].imageUrl).toBe('asset:///global/new-scene.png');
+    expect(loaded?.dramaAssets?.scenes[0].imageUrl).toBe('asset://localhost/global/new-scene.png');
+    expect(loaded?.dramaAssets?.props[0].imageUrl).toBe('asset://localhost/global/new-scene.png');
     expect(mocks.identifyAsset).not.toHaveBeenCalled();
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
@@ -215,7 +215,7 @@ describe('project loading tolerates asset recovery failures', () => {
       dramaAssets: { version: 2, characters: [], props: [], scenes: [{
         id: 'scene', kind: 'scene', name: '客厅', key: 'scene', summary: '', visualNotes: '', importance: 'main',
         confirmed: true, source: 'manual', createdAt: 1, updatedAt: 2, imageAssetId: 'global-image-no-index',
-        imageRelativePath: 'scene.png', imageUrl: 'asset:///old/scene.png',
+        imageRelativePath: 'scene.png', imageUrl: 'asset://localhost/old/scene.png',
       }] } } as Parameters<typeof saveProjectToDb>[0]);
     const loaded = await loadProjectData(projectId);
     expect(loaded?.dramaAssets?.scenes[0]).toMatchObject({ imageAssetId: 'global-image-no-index', imageUrl: undefined });
@@ -253,7 +253,7 @@ describe('project loading tolerates asset recovery failures', () => {
       data: expect.objectContaining({
         assetId: 'asset-saved',
         filePath: '/project/data/saved.png',
-        imageUrl: 'asset:///project/data/saved.png',
+        imageUrl: 'asset://localhost/project/data/saved.png',
       }),
     })]);
   });
@@ -316,13 +316,13 @@ describe('project loading tolerates asset recovery failures', () => {
 
     expect(character?.referenceImages?.[0]).toEqual(expect.objectContaining({
       filePath: '/project/data/character/shenyan.png',
-      imageUrl: 'asset:///project/data/character/shenyan.png',
+      imageUrl: 'asset://localhost/project/data/character/shenyan.png',
     }));
     expect(character?.voiceClips?.[0]).toEqual(expect.objectContaining({
       filePath: '/project/data/character/shenyan.mp3',
-      audioUrl: 'asset:///project/data/character/shenyan.mp3',
+      audioUrl: 'asset://localhost/project/data/character/shenyan.mp3',
     }));
-    expect(character?.imageUrl).toBe('asset:///project/data/character/shenyan.png');
+    expect(character?.imageUrl).toBe('asset://localhost/project/data/character/shenyan.png');
   });
 
   it('便携快照异机落库后恢复媒体和参考图展示，实际选图可用且再导出不改变快照', async () => {
@@ -332,29 +332,29 @@ describe('project loading tolerates asset recovery failures', () => {
     const source: ProjectSaveData = {
       id: sourceId, name: '跨设备项目', createdAt: 1, updatedAt: 2, edges: [], groups: [],
       nodes: [
-        { id: 'image', type: 'source-image', data: { type: 'source-image', relativePath: paths[0], imageUrl: 'asset:///old/image.png' } },
-        { id: 'video', type: 'ai-video', data: { type: 'ai-video', relativePath: paths[1], videoUrl: 'asset:///old/video.mp4',
-          videoReferences: [{ id: 'reference', kind: 'frame', role: 'reference', relativePath: paths[0], url: 'asset:///old/reference.png' }] } },
-        { id: 'audio', data: { type: 'source-audio', relativePath: paths[2], audioUrl: 'asset:///old/audio.wav' } },
+        { id: 'image', type: 'source-image', data: { type: 'source-image', relativePath: paths[0], imageUrl: 'asset://localhost/old/image.png' } },
+        { id: 'video', type: 'ai-video', data: { type: 'ai-video', relativePath: paths[1], videoUrl: 'asset://localhost/old/video.mp4',
+          videoReferences: [{ id: 'reference', kind: 'frame', role: 'reference', relativePath: paths[0], url: 'asset://localhost/old/reference.png' }] } },
+        { id: 'audio', data: { type: 'source-audio', relativePath: paths[2], audioUrl: 'asset://localhost/old/audio.wav' } },
         { id: 'markdown', type: 'ai-markdown', data: { type: 'ai-markdown', relativePath: paths[3], output: '# 原文\n中文说明' } },
         { id: 'sheet', data: { type: 'ai-shotlist', shotlistRows: [{ id: 'shot', shotNo: '1',
-          frame: { nodeId: 'image', kind: 'image', relativePath: paths[0], url: 'asset:///old/frame.png' },
-          video: { nodeId: 'video', kind: 'video', relativePath: paths[1], url: 'asset:///old/shot.mp4' } }] } },
-        { id: 'grid', data: { type: 'ai-storyboard', storyboardOverrides: [{ relativePath: paths[0], url: 'asset:///old/cell.png' }] } },
-        { id: 'workflow', data: { type: 'ai-image', relativePath: paths[0], imageUrl: 'asset:///old/primary.png',
-          runninghubOutputs: [{ kind: 'image', relativePath: paths[0], url: 'asset:///old/result.png' }],
-          workflowApiOutputs: [{ kind: 'video', relativePath: paths[1], url: 'asset:///old/result.mp4' }] } },
-        { id: 'director', data: { type: 'ai-director', directorCaptureRelativePaths: [paths[0]], directorCaptureUrls: ['asset:///old/capture.png'] } },
+          frame: { nodeId: 'image', kind: 'image', relativePath: paths[0], url: 'asset://localhost/old/frame.png' },
+          video: { nodeId: 'video', kind: 'video', relativePath: paths[1], url: 'asset://localhost/old/shot.mp4' } }] } },
+        { id: 'grid', data: { type: 'ai-storyboard', storyboardOverrides: [{ relativePath: paths[0], url: 'asset://localhost/old/cell.png' }] } },
+        { id: 'workflow', data: { type: 'ai-image', relativePath: paths[0], imageUrl: 'asset://localhost/old/primary.png',
+          runninghubOutputs: [{ kind: 'image', relativePath: paths[0], url: 'asset://localhost/old/result.png' }],
+          workflowApiOutputs: [{ kind: 'video', relativePath: paths[1], url: 'asset://localhost/old/result.mp4' }] } },
+        { id: 'director', data: { type: 'ai-director', directorCaptureRelativePaths: [paths[0]], directorCaptureUrls: ['asset://localhost/old/capture.png'] } },
       ],
-      settings: { visualStyle: { styleReference: { relativePath: paths[0], imageUrl: 'asset:///old/style.png' } } } as ProjectSaveData['settings'],
+      settings: { visualStyle: { styleReference: { relativePath: paths[0], imageUrl: 'asset://localhost/old/style.png' } } } as ProjectSaveData['settings'],
       dramaAssets: normalizeDramaAssetLibrary({ version: 2, characters: [{ id: 'hero', name: '角色', kind: 'character', relativePath: paths[0],
-        referenceImages: [{ id: 'hero-reference', kind: 'primary', relativePath: paths[0], imageUrl: 'asset:///old/hero.png' }],
+        referenceImages: [{ id: 'hero-reference', kind: 'primary', relativePath: paths[0], imageUrl: 'asset://localhost/old/hero.png' }],
         primaryReferenceImageId: 'hero-reference',
-        voiceClips: [{ id: 'hero-voice', kind: 'timbre', relativePath: paths[2], audioUrl: 'asset:///old/voice.wav' }],
+        voiceClips: [{ id: 'hero-voice', kind: 'timbre', relativePath: paths[2], audioUrl: 'asset://localhost/old/voice.wav' }],
         actions: [{ id: 'hero-action', name: '动作', prompt: '转身',
-          media: [{ id: 'hero-action-media', kind: 'video', relativePath: paths[1], url: 'asset:///old/action.mp4' }] }] }],
-        scenes: [{ id: 'scene', name: '场景', kind: 'scene', relativePath: paths[0], referenceImages: [{ id: 'scene-reference', relativePath: paths[0], imageUrl: 'asset:///old/scene.png' }] }],
-        props: [{ id: 'prop', name: '道具', kind: 'prop', relativePath: paths[0], referenceImages: [{ id: 'prop-reference', relativePath: paths[0], imageUrl: 'asset:///old/prop.png' }] }],
+          media: [{ id: 'hero-action-media', kind: 'video', relativePath: paths[1], url: 'asset://localhost/old/action.mp4' }] }] }],
+        scenes: [{ id: 'scene', name: '场景', kind: 'scene', relativePath: paths[0], referenceImages: [{ id: 'scene-reference', relativePath: paths[0], imageUrl: 'asset://localhost/old/scene.png' }] }],
+        props: [{ id: 'prop', name: '道具', kind: 'prop', relativePath: paths[0], referenceImages: [{ id: 'prop-reference', relativePath: paths[0], imageUrl: 'asset://localhost/old/prop.png' }] }],
       }),
     };
     const assets = paths.map((path, index) => ({ path, bytes: index + 1, sha256: String(index + 1).repeat(64) }));
@@ -373,7 +373,7 @@ describe('project loading tolerates asset recovery failures', () => {
     const loaded = (await loadProjectData(recipientId))!;
     const nodes = loaded.nodes as Array<{ id: string; data: Record<string, unknown> }>;
     const data = (id: string) => nodes.find((node) => node.id === id)!.data;
-    const url = (sourcePath: string) => `asset:///recipient/data/${published.get([...captured.files].find(([, path]) => path === sourcePath)![0])}`;
+    const url = (sourcePath: string) => `asset://localhost/recipient/data/${published.get([...captured.files].find(([, path]) => path === sourcePath)![0])}`;
     expect(data('image').imageUrl).toBe(url(paths[0]));
     expect(data('video').videoUrl).toBe(url(paths[1]));
     expect(data('audio').audioUrl).toBe(url(paths[2]));
@@ -445,7 +445,7 @@ describe('project loading tolerates asset recovery failures', () => {
     const loaded = await loadProjectData(projectId);
     const restored = loaded?.nodes as typeof stored.nodes;
     expect(restored[0].data.videoReferences[0]).toMatchObject({
-      url: 'asset:///project/moved/character/hero.png', filePath: '/project/moved/character/hero.png',
+      url: 'asset://localhost/project/moved/character/hero.png', filePath: '/project/moved/character/hero.png',
     });
     expect(restored[0].data.videoReferences.slice(1)).toEqual(references.slice(1));
   });
@@ -488,10 +488,10 @@ describe('project loading tolerates asset recovery failures', () => {
     const loaded = await loadProjectData(projectId);
     const restored = loaded?.nodes as Array<{ data: { videoReferences: Array<Record<string, unknown>> } }>;
     expect(restored[0].data.videoReferences[0]).toMatchObject({
-      url: 'asset:///project/data/character/hero.png', assetId: 'asset-hero-image',
+      url: 'asset://localhost/project/data/character/hero.png', assetId: 'asset-hero-image',
     });
     expect(restored[0].data.videoReferences[1]).toMatchObject({
-      url: 'asset:///project/data/character/hero.wav', assetId: 'asset-hero-voice', role: 'reference_audio',
+      url: 'asset://localhost/project/data/character/hero.wav', assetId: 'asset-hero-voice', role: 'reference_audio',
     });
     expect(restored[0].data.videoReferences[2].url).toBe(unmatchedUrl);
     const stored = await getProjectById(projectId) as { nodes: typeof restored };
@@ -533,7 +533,7 @@ describe('project loading tolerates asset recovery failures', () => {
             id: 'voice-1',
             kind: 'timbre',
             filePath: '/project/data/character/shared.mp3',
-            audioUrl: 'asset:///project/data/character/shared.mp3',
+            audioUrl: 'asset://localhost/project/data/character/shared.mp3',
             transcript: '',
             createdAt: 1,
             updatedAt: 2,
@@ -587,7 +587,7 @@ describe('project loading tolerates asset recovery failures', () => {
       id: projectId, name: '成片快照', createdAt: 1, updatedAt: 2, edges: [],
       nodes: [{ id: 'sheet', data: { type: 'ai-shotlist', shotlistRows: [{
         id: 'shot-1', shotNo: '1', frame: null,
-        video: { nodeId: 'deleted-source', kind: 'video', url: 'asset:///project/data/final.mp4',
+        video: { nodeId: 'deleted-source', kind: 'video', url: 'asset://localhost/project/data/final.mp4',
           filePath: '/project/data/final.mp4', sourceDuration: 4.5 },
       }] } }],
     });
@@ -604,7 +604,7 @@ describe('project loading tolerates asset recovery failures', () => {
     const loaded = await loadProjectData(projectId) as unknown as typeof persisted;
     expect(loaded.nodes[0].data.shotlistRows[0].video).toMatchObject({
       nodeId: 'deleted-source', assetId: 'shot-video', relativePath: 'final.mp4',
-      filePath: '/project/moved/final.mp4', url: 'asset:///project/moved/final.mp4',
+      filePath: '/project/moved/final.mp4', url: 'asset://localhost/project/moved/final.mp4',
     });
     expect(mocks.identifyAsset).not.toHaveBeenCalled();
   });
@@ -679,7 +679,7 @@ describe('project loading tolerates asset recovery failures', () => {
     expect((loaded?.nodes as Array<{ data: { filePath?: string; imageUrl?: string } }>)[0].data)
       .toMatchObject({
         filePath: '/project/data/shot (2).png',
-        imageUrl: 'asset:///project/data/shot (2).png',
+        imageUrl: 'asset://localhost/project/data/shot (2).png',
       });
   });
 
@@ -706,7 +706,7 @@ describe('project loading tolerates asset recovery failures', () => {
 
   it('checks a shared path once per save across nodes, references, settings and the asset library', async () => {
     const reference = { assetId: 'shared', relativePath: 'shared.png', filePath: '/project/data/shared.png',
-      imageUrl: 'asset:///project/data/shared.png' };
+      imageUrl: 'asset://localhost/project/data/shared.png' };
     const project = {
       id: `shared-save-${Date.now()}`, name: 'Shared asset', createdAt: 1, updatedAt: 2,
       nodes: [{ id: 'a', data: reference }, { id: 'b', data: { ...reference,
@@ -727,7 +727,7 @@ describe('project loading tolerates asset recovery failures', () => {
   });
 
   it('shares load path checks without reusing file state across later loads or projects', async () => {
-    const reference = { assetId: 'shared', relativePath: 'shared.png', imageUrl: 'asset:///project/data/shared.png' };
+    const reference = { assetId: 'shared', relativePath: 'shared.png', imageUrl: 'asset://localhost/project/data/shared.png' };
     const record = {
       id: `shared-load-${Date.now()}`, name: 'Shared asset', createdAt: 1, updatedAt: 2,
       nodes: [{ id: 'a', data: reference }, { id: 'b', data: { ...reference,

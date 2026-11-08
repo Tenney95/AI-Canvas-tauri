@@ -7,7 +7,7 @@ import { assertNoPendingNativeSharedSync, EXCHANGE, ROOTS, CANVASES, EPISODES, R
   readCanvasTarget, transact, increment, type NativeProjectOptions } from './indexedDb/nativeProjectRepository';
 import { validateNativeMediaLocalOutputs } from './nativeMediaCollection';
 import { configValuesEqual } from './configPatch';
-import { validateNativeProtocolContext } from './nativeModelProtocolTask';
+import { validateNativeProtocolContext } from './nativeProtocolContext';
 
 export type NativeWorkflowAdapter = 'runninghub-workflow' | 'runninghub-model' | 'workflow-api' | 'comfyui';
 export interface NativeWorkflowDescriptor {

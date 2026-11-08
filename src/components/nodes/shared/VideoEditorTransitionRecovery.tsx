@@ -3,7 +3,6 @@ import { useAppStore } from '../../../store/useAppStore';
 import { derivedNodePlacement, generateId } from '../../../store/store.utils';
 import { cancelCanvasDerivation, completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../../services/canvasDerivationGuard';
 import { completeMediaNodeTask, getMediaTaskSnapshot, subscribeMediaTasks, type MediaTaskSnapshot } from '../../../services/pollManager';
-import { recoverVideoEditorAiTransition } from '../../../services/videoEditorAiTransitionService';
 import type { NativeEditorMediaTask } from '../../../services/indexedDb/nativeEditorMediaTaskRepository';
 import { describeNativeEditorRecovery } from '../../../services/nativeMediaRecoverySummary';
 import { useT } from '../../../i18n';
@@ -74,6 +73,8 @@ function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId:
     busy.current = true;
     setRecovering(true);
     try {
+      const { recoverVideoEditorAiTransition } = await import('../../../services/videoEditorAiTransitionService');
+      assertCurrent();
       const outcome = await recoverVideoEditorAiTransition(task, anchorNodeId, controller.signal, assertCurrent);
       assertCurrent();
       const current = useAppStore.getState();

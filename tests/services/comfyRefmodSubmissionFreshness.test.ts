@@ -81,12 +81,12 @@ describe('RefMod 最后同步提交检查点', () => {
     releaseHash();
     await expect(generation).rejects.toThrow('已变化');
     expect(mocks.fetch.mock.calls.some(([url]) => String(url).endsWith('/prompt'))).toBe(false);
-    expect(mocks.beforeSubmit).toHaveBeenCalledTimes(1);
+    expect(mocks.beforeSubmit).toHaveBeenCalledTimes(2);
   });
 
-  it('输入未变化时只执行一次 caller guard 并提交一次', async () => {
+  it('最终SHA前后复核caller guard，输入未变化时只提交一次', async () => {
     await expect(executeComfyUIVideoGenerate(params, undefined, [], {}, mocks.beforeSubmit)).resolves.toHaveProperty('url');
-    expect(mocks.beforeSubmit).toHaveBeenCalledTimes(1);
+    expect(mocks.beforeSubmit).toHaveBeenCalledTimes(2);
     expect(mocks.fetch.mock.calls.filter(([url]) => String(url).endsWith('/prompt'))).toHaveLength(1);
   });
 });

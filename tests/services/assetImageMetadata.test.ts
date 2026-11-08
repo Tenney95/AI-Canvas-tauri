@@ -37,6 +37,7 @@ vi.mock('../../src/services/indexedDbService', () => ({
   putGlobalCharacterOrder: vi.fn(),
 }));
 vi.mock('../../src/services/fs/core', () => ({ isTauriEnv: () => true, getBaseDir: async () => '/managed',
+  stripVerbatimPrefix: (path: string) => path.replace(/^\\\\\?\\/, ''),
   joinPath: (...parts: string[]) => parts.join('/'), CATEGORY_EXTENSIONS: { image: ['.png', '.jpg'] },
   getAssetUrlFromPath: async (path: string) => `asset:${path}`,
 }));
