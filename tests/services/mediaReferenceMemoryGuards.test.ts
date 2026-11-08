@@ -10,8 +10,9 @@ function source(relativePath: string): string {
 
 describe('媒体引用内存守卫接线', () => {
   it('图片上传透传调用方取消信号', () => {
-    expect(source('generateImage.ts')).toContain(
-      "resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi ? connectionId : provider, signal)",
+    // 这里守住上传调用的取消信号，具体连接分流由请求用例覆盖。
+    expect(source('generateImage.ts')).toMatch(
+      /resolveImageUrlArray\(allImageUrls,[^\n]*,\s*signal\)/,
     );
   });
 
