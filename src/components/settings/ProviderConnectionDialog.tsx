@@ -15,6 +15,8 @@ import type {
   ProviderModelSelection,
 } from '../../types';
 import type { VolcengineAssetLibraryConfig } from '../../types/volcengineAssetLibrary';
+import type { ImageHostingConfig } from '../../types/imageHosting';
+import { persistImageHosting, validateImageHosting } from '../../services/imageHostingService';
 import { resolveChatApiProtocol } from '../../services/ai/chatApiProtocol';
 import {
   applySeedanceTemplateDefaults,
@@ -53,6 +55,7 @@ import type { WorkflowApiDraft } from '../../types/workflowApi';
 import { normalizeWorkflowApiBaseUrl } from '../../services/workflowApi/autodlWorkflowManifest';
 import { editableWorkflowApiManifest, validateDeclarativeWorkflowManifest } from '../../services/workflowApi/workflowApiDefinition';
 import ProviderWebSearchPicker from './providerConnection/ProviderWebSearchPicker';
+import ProviderImageHostingSettings from './providerConnection/ProviderImageHostingSettings';
 import VolcengineAssetLibrarySettings from '../volcengine/VolcengineAssetLibrarySettings';
 import {
   assertProviderModelsVideoCapabilities,
@@ -83,6 +86,7 @@ interface ConnectionDraftState {
   manualModelId: string;
   manualModelName: string;
   manualCategory: GeneralModelCategory;
+  imageHosting?: ImageHostingConfig;
 }
 
 /** 仅比较弹窗内的编辑内容；凭据单独在内存比较，不进入序列化快照。 */
@@ -143,6 +147,8 @@ export default function ProviderConnectionDialog({
   );
   const [genericApiKey, setGenericApiKey] = useState(initialConfig?.apiKey || '');
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
+  const [imageHosting, setImageHosting] = useState(initialConfig?.imageHosting);
+  const [imageHostingApiKey, setImageHostingApiKey] = useState('');
   const [assetLibraryConfig, setAssetLibraryConfig] = useState<VolcengineAssetLibraryConfig | undefined>(initialConfig?.assetLibrary);
   const [legacyWorkflowApiKey, setLegacyWorkflowApiKey] = useState(runninghubWorkflowApiKey);
   const [siteKeys, setSiteKeys] = useState(() => runningHubSiteDrafts({ ...providerConfigs,
@@ -211,7 +217,7 @@ export default function ProviderConnectionDialog({
   const abortRef = useRef<AbortController | null>(null);
   const currentConnectionDraft = (): ConnectionDraftState => ({
     connectionName, chatApiProtocol, baseUrl, models, selectedIds, visibleModelCategories,
-    manualModelId, manualModelName, manualCategory,
+    manualModelId, manualModelName, manualCategory, imageHosting,
   });
   const [draftBaseline, setDraftBaseline] = useState(() => ({
     snapshot: serializeConnectionDraft(currentConnectionDraft()),
@@ -300,6 +306,7 @@ export default function ProviderConnectionDialog({
 
   const hasConnectionChanges = () => definition?.id === 'custom-openai'
     && (apiKey !== draftBaseline.apiKey
+      || !!imageHostingApiKey
       || serializeConnectionDraft(currentConnectionDraft()) !== draftBaseline.snapshot);
 
   const navigateWithDraftGuard = async (navigate: () => void, discardConnection = false): Promise<boolean> => {
@@ -340,6 +347,8 @@ export default function ProviderConnectionDialog({
       setChatApiProtocol(resolveChatApiProtocol(savedConfig?.chatApiProtocol));
       setGenericApiKey(savedConfig?.apiKey || '');
       setBaseUrl(savedConfig?.baseUrl || nextDefinition.defaultBaseUrl || '');
+      setImageHosting(savedConfig?.imageHosting);
+      setImageHostingApiKey('');
       setAssetLibraryConfig(savedConfig?.assetLibrary);
       setLegacyWorkflowApiKey('');
       if (nextDefinition.id === 'runninghub-model') setSiteKeys(runningHubSiteDrafts(providerConfigs));
@@ -368,6 +377,7 @@ export default function ProviderConnectionDialog({
           selectedIds: new Set(),
           visibleModelCategories: new Set(CATEGORY_ORDER),
           manualModelId: '', manualModelName: '', manualCategory: 'text',
+          imageHosting: savedConfig?.imageHosting,
         }),
         apiKey: savedConfig?.apiKey || '',
       });
@@ -754,6 +764,7 @@ export default function ProviderConnectionDialog({
       || !protocolValid
     ) return;
     try {
+      if (definition.id === 'custom-openai' && imageHosting) validateImageHosting(imageHosting, !!imageHostingApiKey.trim(), { apiKey, baseUrl });
       if (isWorkflowApi) {
         if (!baseUrl.trim() || !workflowValid || !workflowDrafts.length) throw new Error(t('请完成工作流配置'));
         normalizeWorkflowApiBaseUrl(baseUrl, true);
@@ -781,6 +792,11 @@ export default function ProviderConnectionDialog({
     savingRef.current = true;
     setSaving(true);
     try {
+      const savedImageHosting = definition.id === 'custom-openai' && imageHosting
+        ? await persistImageHosting(imageHosting, imageHostingApiKey, { apiKey, baseUrl }) : undefined;
+      // 保存连接失败时保留新引用，重试不必再次输入或覆盖旧 Key。
+      setImageHosting(savedImageHosting);
+      setImageHostingApiKey('');
       await onSave(
         nextConnectionId,
         {
@@ -789,7 +805,7 @@ export default function ProviderConnectionDialog({
           apiKey: definition.authType === 'oauth' ? '' : apiKey.trim(),
           baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl, true) : normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
           catalogId: definition.id,
-          ...(definition.id === 'custom-openai' ? { chatApiProtocol } : {}),
+          ...(definition.id === 'custom-openai' ? { chatApiProtocol, imageHosting: savedImageHosting } : {}),
           ...modelConfig,
           ...(definition.id === 'volcengine' && assetLibraryConfig ? { assetLibrary: { ...assetLibraryConfig, projectName: assetLibraryConfig.projectName || 'default' } } : {}),
         },
@@ -797,7 +813,7 @@ export default function ProviderConnectionDialog({
           ? { runninghubWorkflowApiKey: workflowApiKey.trim(), ...(activeRunningHubSite ? { runninghubSiteKeys: siteKeys } : {}) }
           : isWorkflowApi ? { workflowApiDrafts: workflowDrafts } : undefined,
       );
-      setDraftBaseline({ snapshot: serializeConnectionDraft(currentConnectionDraft()), apiKey });
+      setDraftBaseline({ snapshot: serializeConnectionDraft({ ...currentConnectionDraft(), imageHosting: savedImageHosting }), apiKey });
     } catch (error) {
       setCatalogStatus('error');
       setCatalogMessage(error instanceof Error ? error.message : t('保存失败'));
@@ -887,6 +903,10 @@ export default function ProviderConnectionDialog({
               onReturnToPicker={returnToDefinitionPicker}
               onTestConnection={handleTestConnection}
             />
+
+            {definition?.id === 'custom-openai' && <ProviderImageHostingSettings
+              config={imageHosting} onChange={setImageHosting} apiKey={imageHostingApiKey} onApiKeyChange={setImageHostingApiKey}
+            />}
 
             {definition?.id === 'volcengine' && (
               <VolcengineAssetLibrarySettings

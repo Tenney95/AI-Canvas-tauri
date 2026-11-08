@@ -33,6 +33,7 @@ import ProviderBadge from '../shared/ProviderBadge';
 import { defaultModelGroups } from '../nodes/shared/defaultModels';
 import { getCustomConnectionReadiness, shouldListProviderConnection } from './apiKeySettingsUtils';
 import { deleteAppSecret, isSecretStoreAvailable } from '../../services/providerSecretService';
+import { deleteImageHostingCredential } from '../../services/imageHostingService';
 import { queryProviderBalance, supportsProviderBalance, type ProviderBalance } from '../../services/testConnection';
 import { replaceLegacyApimartOmni } from '../../services/ai/apimartVideoModels';
 import { RELAYON_BASE_URL } from '../../services/ai/providers/relayonModelManifest';
@@ -607,6 +608,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     related?: { runninghubWorkflowApiKey?: string; runninghubSiteKeys?: RunningHubSiteKeyDrafts; workflowApiDrafts?: import('../../types/workflowApi').WorkflowApiDraft[] },
   ) => {
     const definition = getProviderDefinition(connectionId, providerConfig);
+    const previousImageHostingRef = useAppStore.getState().config.providers[connectionId]?.imageHosting?.credentialRef;
     if (definition?.id === 'runninghub-model' && related?.runninghubSiteKeys) {
       const providers = buildRunningHubSiteProviders(useAppStore.getState().config.providers, providerConfig, related.runninghubSiteKeys);
       updateConfig({ providers });
@@ -628,6 +630,10 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       await removeProviderConfig('runninghub');
     }
     await saveConfig({ throwOnError: true });
+    if (previousImageHostingRef && previousImageHostingRef !== providerConfig.imageHosting?.credentialRef
+      && !Object.values(useAppStore.getState().config.providers).some((provider) => provider.imageHosting?.credentialRef === previousImageHostingRef)) {
+      await deleteImageHostingCredential(previousImageHostingRef);
+    }
     if (definition?.kind === 'workflow-api') await saveWorkflowApiDrafts(connectionId, related?.workflowApiDrafts ?? []);
     closeConnectionDialog();
   };
@@ -690,6 +696,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         ? getWebSearchProviderDefinitions().map((provider) => provider.id)
         : [connectionId];
       if (connectionId === 'runninghub-model') connectionIds.push('runninghub', ...RUNNINGHUB_CREDENTIAL_IDS);
+      const imageHostingRefs = connectionIds.map((id) => useAppStore.getState().config.providers[id]?.imageHosting?.credentialRef);
       let cleanupFailed = false;
       for (const id of connectionIds) {
         try {
@@ -703,6 +710,11 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       }
       if (definition?.kind === 'web-search') updateConfig({ webSearchProviderId: undefined });
       await saveConfig({ silent: true, throwOnError: true });
+      for (const ref of imageHostingRefs) {
+        if (ref && !Object.values(useAppStore.getState().config.providers).some((provider) => provider.imageHosting?.credentialRef === ref)) {
+          await deleteImageHostingCredential(ref);
+        }
+      }
       if (shouldClearVolcengineAssetLibrary) {
         await Promise.all([
           deleteAppSecret('provider/volcengine/asset-library/access-key'),

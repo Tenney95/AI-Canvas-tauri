@@ -577,6 +577,8 @@ export interface ApiProviderConfig {
   baseUrl?: string;
   /** 文本/对话请求协议；旧配置缺失时按 openai-compatible 处理。 */
   chatApiProtocol?: ChatApiProtocol;
+  /** 需要公网图片链接时，使用此连接自己的图床。 */
+  imageHosting?: import('./imageHosting').ImageHostingConfig;
   /** @deprecated 仅用于读取此前连接级图片协议；编辑连接时复制到已选模型。 */
   imageProtocolDefault?: ModelExecutionProfile;
   /** @deprecated 仅用于读取此前连接级参考图模式。 */

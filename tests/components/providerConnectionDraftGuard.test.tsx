@@ -28,6 +28,8 @@ vi.mock('../../src/services/confirmDialog', () => ({ confirmAction: (...args: un
 import ProviderConnectionDialog from '../../src/components/settings/ProviderConnectionDialog';
 import ProviderConnectionForm from '../../src/components/settings/providerConnection/ProviderConnectionForm';
 import ProviderModelSection from '../../src/components/settings/providerConnection/ProviderModelSection';
+import ProviderImageHostingSettings from '../../src/components/settings/providerConnection/ProviderImageHostingSettings';
+import { IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
 import type { ProviderModelSelection } from '../../src/types';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
@@ -45,6 +47,9 @@ function form() {
 }
 function section() {
   return elements(tree).find((element) => element.type === ProviderModelSection)!.props as unknown as ComponentProps<typeof ProviderModelSection>;
+}
+function hosting() {
+  return elements(tree).find((element) => element.type === ProviderImageHostingSettings)!.props as unknown as ComponentProps<typeof ProviderImageHostingSettings>;
 }
 function button(text: string) {
   return elements(tree).find((element) => element.props.children === text && typeof element.props.onClick === 'function')!;
@@ -78,6 +83,59 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('自定义连接未完成草稿保护', () => {
+  it('套用内置上传格式后保存普通配置，沿用 Key 不额外保存密钥', async () => {
+    const config = structuredClone(IMAGE_HOSTING_TEMPLATES.find((item) => item.id === 'toapis')!.config);
+    hosting().onChange(config);
+    render();
+    click('保存更改');
+    await settle();
+    expect(props.onSave).toHaveBeenCalledOnce();
+    const saved = vi.mocked(props.onSave).mock.calls[0][1].imageHosting;
+    expect(saved).toEqual(config);
+    expect(JSON.stringify(saved)).not.toContain('fixture-private-key');
+    click('取消');
+    await settle();
+    expect(driver.confirm).not.toHaveBeenCalled();
+  });
+
+  it('图床配置和未保存密钥受连接草稿保护，取消不写入', async () => {
+    hosting().onApiKeyChange('unsaved-image-host-secret');
+    render();
+    click('取消');
+    await settle();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onSave).not.toHaveBeenCalled();
+    expect(driver.confirm).toHaveBeenCalledOnce();
+    expect(JSON.stringify(driver.confirm.mock.calls)).not.toContain('unsaved-image-host-secret');
+    hosting().onApiKeyChange('');
+    hosting().onChange({ enabled: true, uploadUrl: 'https://host.example/upload', fileField: 'file', responseUrlPath: 'data.url', auth: 'none' });
+    render();
+    driver.confirm.mockResolvedValueOnce(true);
+    click('取消');
+    await settle();
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(props.onSave).not.toHaveBeenCalled();
+  });
+
+  it('有效图床配置与连接一起保存，无效地址阻止提交', async () => {
+    const config = { enabled: true, uploadUrl: 'file:///private', fileField: 'file', responseUrlPath: 'data.url', auth: 'none' as const };
+    hosting().onChange(config);
+    render();
+    click('保存更改');
+    await settle();
+    expect(props.onSave).not.toHaveBeenCalled();
+    expect(form().catalogStatus).toBe('error');
+    hosting().onChange({ ...config, uploadUrl: 'https://host.example/upload' });
+    render();
+    click('保存更改');
+    await settle();
+    expect(props.onSave).toHaveBeenCalledOnce();
+    expect(vi.mocked(props.onSave).mock.calls[0][1].imageHosting).toEqual({ ...config, uploadUrl: 'https://host.example/upload' });
+    click('取消');
+    await settle();
+    expect(driver.confirm).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['图片参数', () => section().onOpenModelSettings('image-c', 'image')],
     ['视频参数', () => section().onOpenModelSettings('text-a', 'video')],

@@ -52,6 +52,19 @@ beforeEach(() => {
 });
 
 describe('CORS-safe AI HTTP transport', () => {
+  it('敏感图床请求不记录自定义鉴权字段或上游回显的原文', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockNativeStream([Buffer.from('fixture-image-host-secret')], { status: 401 });
+    const response = await corsSafeFetch('https://host.example/upload', {
+      method: 'POST', headers: { 'X-Custom-Auth': 'fixture-image-host-secret' }, body: 'fixture-image-host-secret',
+    }, { sensitive: true });
+    expect(await response.text()).toBe('fixture-image-host-secret');
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('rejects oversized blobs before reading their bytes and releases the request slot', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
     const body = new Blob(['small fixture']);

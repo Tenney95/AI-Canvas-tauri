@@ -7,6 +7,7 @@
  *  - ToAPIs 连接 → 当前站点 /uploads/{images,videos,audios}（仅使用该连接 Key）
  *  - LibAPI 连接 → /v1/files（仅使用该连接 Key）
  *  - MiniMax 官方连接 → /v1/files/upload（返回当前连接的 mm_file 素材引用）
+ *  - 启用自定义图床的连接 → 图片使用该连接声明的上传接口
  *  - 其他 provider → uguu.se 免费图床（无需 API Key，直接返回无轮询）
  *
  * 缓存策略：
@@ -35,6 +36,7 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { redactModelProtocolError, redactModelProtocolErrorText } from './ai/modelProtocolHttp';
 import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
 import type { ApiProviderConfig } from '../types';
+import { uploadCustomImage } from './imageHostingService';
 
 const DEFAULT_UPLOAD_BASE = APIMART_BASE_URL;
 
@@ -63,16 +65,18 @@ interface UploadIdentity {
   source?: { digest: string; bytes: number };
 }
 
-type UploadConnection = Readonly<Pick<ApiProviderConfig, 'catalogId' | 'baseUrl' | 'apiKey'>>;
+type UploadConnection = Readonly<Pick<ApiProviderConfig, 'catalogId' | 'baseUrl' | 'apiKey' | 'imageHosting'>>;
 
 function captureUploadConnection(provider: string): UploadConnection {
   const connection = useAppStore.getState().config.providers[provider];
-  return { catalogId: connection?.catalogId, baseUrl: connection?.baseUrl, apiKey: connection?.apiKey?.trim() ?? '' };
+  return { catalogId: connection?.catalogId, baseUrl: connection?.baseUrl, apiKey: connection?.apiKey?.trim() ?? '',
+    imageHosting: connection?.imageHosting ? structuredClone(connection.imageHosting) : undefined };
 }
 
 function assertUploadConnection(provider: string, expected: UploadConnection): void {
   const current = captureUploadConnection(provider);
-  if (current.catalogId !== expected.catalogId || current.baseUrl !== expected.baseUrl || current.apiKey !== expected.apiKey) {
+  if (current.catalogId !== expected.catalogId || current.baseUrl !== expected.baseUrl || current.apiKey !== expected.apiKey
+    || JSON.stringify(current.imageHosting) !== JSON.stringify(expected.imageHosting)) {
     throw new Error('参考素材上传期间连接配置已变化，请重新发起');
   }
 }
@@ -130,7 +134,7 @@ async function cacheKey(
 ): Promise<UploadIdentity> {
   // 只持久化单向摘要；换站点或换 Key 后不能沿用另一连接的上传结果。
   const connectionDigest = await sha256BytesHex(new TextEncoder().encode(JSON.stringify([
-    'native-lossless-v1', provider, connection.catalogId ?? '', connection.baseUrl ?? '', connection.apiKey,
+    'native-lossless-v1', provider, connection.catalogId ?? '', connection.baseUrl ?? '', connection.apiKey, connection.imageHosting,
   ])));
   signal?.throwIfAborted();
   const scope = `${provider || 'default'}:${kind}:${connectionDigest}`;
@@ -842,7 +846,7 @@ function setCachedUrl(key: string, remoteUrl: string) {
 /**
  * 上传单个本地文件到远端图床
  * @param url    本地文件 URL（data: / asset: / file:）
- * @param provider 连接身份；MiniMax / ToAPIs / LibAPI 走当前连接上传，APIMart 图片走其图床，其余走 uguu.se
+ * @param provider 连接身份；图片优先使用显式配置的图床，否则沿用厂商上传策略
  * @returns 公网 URL；MiniMax 官方返回仅供该连接生成请求使用的 mm_file 引用
  */
 export async function uploadToRemote(
@@ -884,7 +888,15 @@ export async function uploadToRemote(
     if (queuedCached) return queuedCached;
 
     const upload = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload;
-    const publicUrl = upload === 'toapis'
+    const customImageHosting = kind === 'image' && connection.imageHosting?.enabled ? connection.imageHosting : undefined;
+    let customUrl: string | undefined;
+    if (customImageHosting) {
+      const { blob, ext } = await urlToBlob(url, kind, undefined, operationSignal, identity.source);
+      assertUploadConnection(provider, connection);
+      customUrl = await uploadCustomImage(blob, `reference.${ext.replace(/[^a-z0-9]/gi, '') || 'png'}`, customImageHosting, operationSignal,
+        { connection, beforeUpload: () => assertUploadConnection(provider, connection) });
+    }
+    const publicUrl = customUrl ?? (upload === 'toapis'
       ? await uploadToToapis(url, connection, kind, operationSignal, identity.source)
       : upload === 'libapi'
       ? await uploadToLibapi(url, connection, kind, operationSignal, identity.source)
@@ -892,7 +904,7 @@ export async function uploadToRemote(
       ? await uploadToMinimax(url, connection, kind, operationSignal, identity.source)
       : provider === 'apimart' && kind === 'image'
       ? await uploadToApimart(url, connection, operationSignal, identity.source)
-      : await uploadToUguu(url, kind, operationSignal, identity.source);
+      : await uploadToUguu(url, kind, operationSignal, identity.source));
 
     // 写入双层缓存（2.5 小时有效期）
     operationSignal.throwIfAborted();

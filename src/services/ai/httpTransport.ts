@@ -293,8 +293,8 @@ function normalizeTransportError(error: unknown): Error {
   return new Error(typeof error === 'string' && error ? error : '原生 HTTP 请求失败');
 }
 
-export async function corsSafeFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  logAiRequest(url, init);
+export async function corsSafeFetch(url: string, init: RequestInit = {}, options: { sensitive?: boolean } = {}): Promise<Response> {
+  if (!options.sensitive) logAiRequest(url, init);
   const signal = init.signal ?? undefined;
   if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
     return fetch(url, init);
@@ -416,7 +416,7 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}): Promis
           }
           responseResolved = true;
           releaseBody();
-          if (import.meta.env.DEV && event.status >= 400) {
+          if (!options.sensitive && import.meta.env.DEV && event.status >= 400) {
             errorStatus = event.status;
             errorContentType = new Headers(event.headers).get('content-type') || '';
           }

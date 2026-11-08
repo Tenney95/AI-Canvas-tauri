@@ -265,7 +265,7 @@ export async function generateImagesBatch(
   const localMedia = runninghubMedia ?? comfyMedia;
   const { prompt: resolvedPrompt, imageUrls } = localMedia
     ? { prompt: localMedia.prompt, imageUrls: getMediaReferenceUrls(localMedia.references, 'image', 'local') }
-    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || providerDefinition?.id === 'toapis' || isLibapi, cameraSettings });
+    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // 仅归一同一节点的来源别名；裸 URL 或其他节点仍可能明确需要未标注的原图。
@@ -366,7 +366,7 @@ export async function generateImagesBatch(
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
   allImageUrls = provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
     ? await resolveImageDataUrlArray(allImageUrls, signal, usesGoogleImageParts ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
-    : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi ? connectionId : provider, signal);
+    : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi || providerDefinition?.id === 'custom-openai' ? connectionId : provider, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   if (!prompt.trim() && provider !== 'runninghub') throw new Error('提示词不能为空');

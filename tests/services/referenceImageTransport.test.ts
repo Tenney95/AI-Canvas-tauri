@@ -22,6 +22,8 @@ import { uploadRunningHubMedia } from '../../src/services/ai/providers/runninghu
 import { resolveMediaReferenceUrl, uploadToRemote } from '../../src/services/uploadService';
 import { previewModelProtocolRequest } from '../../src/services/ai/modelProtocol';
 import { useAppStore } from '../../src/store/useAppStore';
+import type { ImageHostingConfig } from '../../src/types/imageHosting';
+import { IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
 
 // 请求链模拟原生无损返回，用 PNG 的标记追踪引用；真实像素保真由 Rust 测试验证。
 function png(marker: number, megabytes = 5): Blob {
@@ -69,6 +71,56 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('共享参考图压缩的实际请求边界', () => {
+  it.each(['custom', 'toapis'])('%s 格式的自定义连接上传参考图，生成请求收到该图床 URL', async (format) => {
+    const imageHosting: ImageHostingConfig = format === 'toapis'
+      ? structuredClone(IMAGE_HOSTING_TEMPLATES.find((item) => item.id === 'toapis')!.config)
+      : { enabled: true, uploadUrl: 'https://own-host.example/upload', fileField: 'image', responseUrlPath: 'data.url', auth: 'none' };
+    const uploadUrl = format === 'toapis' ? 'https://model.example/v1/uploads/images' : imageHosting.uploadUrl;
+    useAppStore.getState().saveProviderConfig('own-host-relay', {
+      name: '自己的连接', apiKey: 'model-key-only', catalogId: 'custom-openai', baseUrl: 'https://model.example/v1', imageHosting,
+      selectedModels: [{ id: 'hosted-image', name: 'Hosted Image', category: 'image', provider: 'own-host-relay',
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+          submit: { method: 'POST', path: '/images', body: { model: '{{model}}', prompt: '{{prompt}}', images: '{{imageUrls}}' } },
+          response: { type: 'json', result: { urlPath: 'url' } } } } }],
+    });
+    mocks.transport.mockImplementation(async (url) => url === uploadUrl
+      ? json({ success: true, data: { url: 'https://own-cdn.example/reference.png' } }) : json({ url: 'https://model.example/output.png' }));
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'own-host-relay')!;
+    await generateImagesBatch({ provider: 'general', model: `general/${model.id}`, prompt: '参考图片生成', image_urls: [await asDataUrl(png(21, 0))] }, 1);
+    expect(mocks.transport.mock.calls.map(([url]) => url)).toEqual([uploadUrl, 'https://model.example/v1/images']);
+    const upload = mocks.transport.mock.calls[0][1] as RequestInit;
+    expect(new Headers(upload.headers).get('Authorization')).toBe(format === 'toapis' ? 'Bearer model-key-only' : null);
+    expect((upload.body as FormData).get('purpose')).toBe(format === 'toapis' ? 'generation' : null);
+    await assertPreparedPng((upload.body as FormData).get(imageHosting.fileField) as File, 21);
+    expect(JSON.parse(mocks.transport.mock.calls[1][1].body as string).images).toEqual(['https://own-cdn.example/reference.png']);
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it('修改图床配置后不沿用旧缓存，上传失败不回退公共图床，迟到结果不写缓存', async () => {
+    const imageHosting: ImageHostingConfig = { enabled: true, uploadUrl: 'https://host-one.example/upload', fileField: 'file', responseUrlPath: 'data.url', auth: 'none' };
+    const provider = 'host-cache-relay';
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: {
+      [provider]: { name: '图床缓存', apiKey: 'model-key', catalogId: 'custom-openai', imageHosting },
+    } } }));
+    const source = await asDataUrl(png(22, 0));
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
+    mocks.transport.mockImplementation(async () => json({ data: { url: 'https://cdn.example/cached.png' } }));
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/cached.png');
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/cached.png');
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    useAppStore.getState().setProviderConfig(provider, { imageHosting: { ...imageHosting, uploadUrl: 'https://host-two.example/upload' } });
+    mocks.transport.mockRejectedValueOnce(new Error('network-failure'));
+    await expect(uploadToRemote(source, provider)).rejects.toThrow('自定义图床上传失败');
+    expect(localFetch).not.toHaveBeenCalled();
+    mocks.transport.mockImplementationOnce(async () => {
+      useAppStore.getState().setProviderConfig(provider, { imageHosting: { ...imageHosting, enabled: false } });
+      return json({ data: { url: 'https://cdn.example/stale.png' } });
+    });
+    await expect(uploadToRemote(source, provider)).rejects.toThrow('连接配置已变化');
+    expect(JSON.stringify([...storage.values()])).not.toContain('stale.png');
+  });
+
   it.each(['gpt-image-2', 'vendor-image'])('标准 multipart 模型 %s 按序发送原格式 4K PNG 及匹配的文件名', async (modelName) => {
     localFetch.mockImplementation(async (url) => new Response(png(Number(String(url).match(/(\d)\.png$/)![1]))));
     mocks.transport.mockResolvedValue(json({ data: [{ url: 'https://cdn.example/result.png' }] }));
@@ -94,7 +146,8 @@ describe('共享参考图压缩的实际请求边界', () => {
     };
     useAppStore.setState((state) => ({ config: { ...state.config,
       providers: { grsai: { name: 'GRSAI', apiKey: 'test-key', baseUrl: 'https://grsai.example/v1' },
-        custom: { name: '自定义', apiKey: 'test-key', baseUrl: 'https://custom.example/v1' } },
+        custom: { name: '自定义', apiKey: 'test-key', catalogId: 'custom-openai', baseUrl: 'https://custom.example/v1',
+          imageHosting: { enabled: true, uploadUrl: 'https://unused-host.example/upload', fileField: 'file', responseUrlPath: 'data.url', auth: 'none' } } },
       generalModels: [{ id: 'compressed-image', modelId: 'vendor-image', name: '自定义', category: 'image', providerConfigId: 'custom',
         imageReferenceRequestMode: 'generation-json-image-data-urls', executionProfile: { preset: 'custom', protocol } }],
     } }));
