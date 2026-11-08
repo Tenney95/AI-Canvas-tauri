@@ -12,7 +12,7 @@ import { cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, regis
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
 import { resolveRunningHubInputRouting, splitRunningHubPrompt, type RunningHubInputRouting } from './runninghubWorkflowInputs';
 import { resolveWorkflowSeed } from '../../workflowSeed';
-import { isNativeWorkflowExecution, nativeWorkflowDigest, submitNativeWorkflowTask } from '../../nativeWorkflowTasks';
+import { isNativeWorkflowExecution, nativeWorkflowDigest } from '../../nativeWorkflowExecution';
 
 export class RunningHubTaskFailed extends Error {}
 export type RunningHubReferences = Partial<Record<RunningHubMediaKind, string[]>>;
@@ -172,7 +172,9 @@ export async function executeRunningHubWorkflow(params: {
     if (params.beforeSubmit) await params.beforeSubmit();
     if (!fresh()) throw new Error('画布已变化，请重新生成');
     stage('提交任务');
-    if (nativeMode) return await submitNativeWorkflowTask({ nodeId: trackingId, signal, beforeSubmit: params.beforeSubmit, secretValues: [connection.apiKey],
+    if (nativeMode) {
+      const { submitNativeWorkflowTask } = await import('../../nativeWorkflowTasks');
+      return await submitNativeWorkflowTask({ nodeId: trackingId, signal, beforeSubmit: params.beforeSubmit, secretValues: [connection.apiKey],
       descriptor: { adapter: 'runninghub-workflow', workflowId: workflow.id, connectionId: manifest.connectionId,
         providerBase: connection.baseUrl, category: params.kind, outputNodeIds: manifest.outputNodeIds,
         digest: await nativeWorkflowDigest(['runninghub-workflow-v1', workflow.id, manifest, params.kind]) },
@@ -188,6 +190,7 @@ export async function executeRunningHubWorkflow(params: {
         if (typeof data.taskId !== 'string' || !/^\d{1,30}$/.test(data.taskId)) throw new Error('RunningHub 未返回有效任务 ID，请核对原平台');
         return { taskId: data.taskId };
       } });
+    }
     if (trackingId && projectId) savePendingTask({ nodeId: trackingId, projectId, nodeType: workflow.category, provider: 'runninghubwf', providerConfigId: manifest.connectionId, taskType: 'runninghub-workflow', taskId: '', submitted: false, runninghubSite: runningHubSiteId(connection.baseUrl), runninghubRecoveryState: 'submit_unknown', runninghubOutputNodeIds: manifest.outputNodeIds, runninghubWorkflowId: workflow.id, runninghubMessage: context });
     submitting = true;
     const response = await runningHubRequest(connection, manifest.kind === 'app' ? '/task/openapi/ai-app/run' : '/task/openapi/create', {

@@ -9,6 +9,7 @@ const audit = (file, source, allowed = [], callBudgets = []) => auditProjectMode
 });
 
 describe('项目模型旧消费者与正式门禁只读审计', () => {
+  // 完整仓库的同步 AST 扫描在 Windows 超过默认 5 秒；保留全量扫描和所有边界断言。
   it('真实仓库的现有旧依赖必须登记分类，审计通过仍不宣称P7或正式激活完成', () => {
     const report = auditProjectModelBoundaries();
     expect(report.violations).toEqual([]);
@@ -24,7 +25,7 @@ describe('项目模型旧消费者与正式门禁只读审计', () => {
       expect.objectContaining({ file: 'src/services/projectModelBackup.ts', category: 'backup-audit-retained' }),
       expect.objectContaining({ file: 'src/projectModelFixtureHost.ts', category: 'fixture-source-retained', priority: 'P3' }),
     ]));
-  });
+  }, 15_000);
 
   it('新旧联合目录的旧读取和导入历史冲突检查按具体作用域限制次数', () => {
     const router = 'src/services/projectModelRouter.ts';

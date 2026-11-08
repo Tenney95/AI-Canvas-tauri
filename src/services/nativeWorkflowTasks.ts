@@ -6,8 +6,7 @@ import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepositor
 import { prepareNativeMediaTask, claimNativeMediaRecovery, listNativeMediaTasks, normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { captureNativeVideoSubmissionBaseline, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
-import { projectModelSourceToken } from './projectModelComparisonMaterial';
-import { sha256BytesHex } from './mediaDataUrl';
+import { nativeWorkflowDigest } from './nativeWorkflowExecution';
 import { createNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, sealNativeWorkflowSubmissions,
   readNativeWorkflowReceipt, retainNativeWorkflowTaskOutputs, retainNativeWorkflowSyncOutputs,
   nativeWorkflowSummary,
@@ -24,9 +23,7 @@ import { findComfyOutputFiles, buildComfyFileUrl, type ComfyOutputs } from './co
 import type { MediaDownloadAccess } from '../types/aiTypes';
 
 export { listNativeWorkflowRetainedOutputs } from './nativeWorkflowRepository';
-export const nativeWorkflowDigest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));
-export const isNativeWorkflowExecution = (guard?: () => void | Promise<void>) => isNativeVideoSubmissionGuard(guard)
-  || useAppStore.getState().projectExecutionContext?.modelGeneration === 1;
+export { nativeWorkflowDigest, isNativeWorkflowExecution } from './nativeWorkflowExecution';
 export const isNativeWorkflowTask = (record: NativeMediaTaskRecord) => record.recovery?.kind === 'workflow';
 function pending(operationId: string): Error {
   const error = new Error(`工作流原操作 ${operationId} 已保留，请在原画布继续查询；提交未知不会重新生成。`);

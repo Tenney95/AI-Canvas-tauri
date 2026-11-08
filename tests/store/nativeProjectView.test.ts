@@ -6,6 +6,8 @@ import type { AppState } from '../../src/store/useAppStore';
 import type { AppConfig, BaseNodeData } from '../../src/types';
 import type { Node } from '@xyflow/react';
 import type { CanvasContext } from '../../src/types/project';
+// 应用由全局 Store 入口装配 slice；先按真实入口初始化，再构建下方独立事务夹具。
+import '../../src/store/useAppStore';
 import { createProjectSlice } from '../../src/store/store.projects';
 import { createHistorySlice } from '../../src/store/store.history';
 import { createNativeEpisode, createNativeProject, listNativeProjectIdentities, readNativeProjectCapture, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';

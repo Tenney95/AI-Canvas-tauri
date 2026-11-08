@@ -857,7 +857,7 @@ describe('project loading tolerates asset recovery failures', () => {
       source: 'project', projectId, size: 10, mtimeMs: 20, fingerprint: '10:20', status: 'online', updatedAt: 1 });
     const { persistMediaRelocation } = await import('../../src/services/indexedDb/mediaRelocations');
     await persistMediaRelocation({ projectId, oldPath, newPath: currentPath,
-      assetUrl: `asset://${currentPath}`, relativePath: 'current.png' });
+      assetUrl: `asset://localhost${currentPath}`, relativePath: 'current.png' });
     const realIndex = await vi.importActual<typeof import('../../src/services/fs/assetIndex')>('../../src/services/fs/assetIndex');
     const realLibrary = await vi.importActual<typeof import('../../src/services/fs/assetLibrary')>('../../src/services/fs/assetLibrary');
     mocks.identifyAsset.mockImplementation(realIndex.identifyAsset);
@@ -914,7 +914,7 @@ describe('project loading tolerates asset recovery failures', () => {
       assetId, rootPath: directory, projectId, source: 'project',
     });
     expect((loaded?.nodes as Array<{ data: Record<string, unknown> }>)[0].data).toMatchObject({
-      assetId, relativePath: 'renamed.png', filePath: newPath, imageUrl: `asset://${newPath}`,
+      assetId, relativePath: 'renamed.png', filePath: newPath, imageUrl: `asset://localhost${newPath}`,
     });
     expect(await getAssetIndexById(assetId)).toMatchObject({ path: newPath, source: 'project', projectId });
   });
@@ -980,10 +980,10 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(record.nodes[0].data).toMatchObject({
       assetId: 'asset-generated',
       relativePath: writtenPath.split('/').pop(),
-      imageUrl: `asset://${writtenPath}`,
-      sourceUrl: `asset://${writtenPath}`,
-      thumbnailUrl: `asset://${writtenPath}`,
-      output: `asset://${writtenPath}`,
+      imageUrl: `asset://localhost${writtenPath}`,
+      sourceUrl: `asset://localhost${writtenPath}`,
+      thumbnailUrl: `asset://localhost${writtenPath}`,
+      output: `asset://localhost${writtenPath}`,
     });
     expect(record.nodes[0].data).not.toHaveProperty('filePath');
     expect(JSON.stringify(record.nodes[0])).not.toContain('data:image');
@@ -1068,9 +1068,9 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(mocks.writeFile).toHaveBeenCalledWith(writtenPath, new Uint8Array([1, 2, 3]));
     expect((loaded?.nodes as Array<{ data: Record<string, unknown> }>)[0].data).toMatchObject({
       filePath: writtenPath,
-      videoUrl: `asset://${writtenPath}`,
-      sourceUrl: `asset://${writtenPath}`,
-      output: `asset://${writtenPath}`,
+      videoUrl: `asset://localhost${writtenPath}`,
+      sourceUrl: `asset://localhost${writtenPath}`,
+      output: `asset://localhost${writtenPath}`,
     });
     expect(JSON.stringify(stored.nodes[0])).not.toContain('data:video');
   });
@@ -1146,7 +1146,7 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(record.nodes[0].data.storyboardOverrides[0]).toEqual(expect.objectContaining({
       assetId: expect.any(String),
       relativePath: expect.stringMatching(/^embedded-image-/),
-      url: expect.stringMatching(/^asset:\/\/\/project\/data\/embedded-image-/),
+      url: expect.stringMatching(/^asset:\/\/localhost\/project\/data\/embedded-image-/),
     }));
     expect(record.nodes[0].data.shotlistRows[0].frame).toEqual(expect.objectContaining({
       assetId: expect.any(String),
@@ -1158,9 +1158,9 @@ describe('project loading tolerates asset recovery failures', () => {
     });
     expect(record.nodes[0].data.shotlistRows[0].video).not.toHaveProperty('filePath');
     expect(record.nodes[0].data.videoReferences[0].url)
-      .toMatch(/^asset:\/\/\/project\/data\/embedded-image-/);
+      .toMatch(/^asset:\/\/localhost\/project\/data\/embedded-image-/);
     expect(record.nodes[0].data.directorCaptureUrls[0])
-      .toMatch(/^asset:\/\/\/project\/data\/embedded-image-/);
+      .toMatch(/^asset:\/\/localhost\/project\/data\/embedded-image-/);
     expect(record.settings.visualStyle.styleReference).toEqual(expect.objectContaining({
       assetId: expect.any(String),
       relativePath: expect.stringMatching(/^embedded-image-/),

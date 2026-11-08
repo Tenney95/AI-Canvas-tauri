@@ -14,14 +14,7 @@ import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepositor
 import { nativeMediaInputMaterial } from './nativeMediaInput';
 
 /** 仅由画布生成入口建立；直调和后台能力不能伪造旧画布的实时提交检查。 */
-const nativeGuards = new WeakSet<() => void | Promise<void>>();
-export function registerNativeVideoSubmissionGuard<T extends () => void | Promise<void>>(guard: T): T {
-  nativeGuards.add(guard);
-  return guard;
-}
-export function isNativeVideoSubmissionGuard(guard: (() => void | Promise<void>) | undefined): boolean {
-  return !!guard && nativeGuards.has(guard);
-}
+export { registerNativeVideoSubmissionGuard, isNativeVideoSubmissionGuard } from './nativeVideoSubmissionGuard';
 
 export async function captureNativeVideoSubmissionBaseline(context: CanvasContext, nodeId: string, imageReference?: NativeVideoImageReference,
   scheme: NativeMediaTaskRecord['fingerprintScheme'] = 'video-input-v1', options: { preparedReferences?: boolean } = {}): Promise<{

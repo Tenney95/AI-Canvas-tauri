@@ -25,7 +25,7 @@ import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDeriva
 import { saveCloudWorkflowOutputs } from '../workflowExecutionService';
 import { normalizeWorkflowApiBaseUrl, AUTODL_H3_WORKFLOW, resolveWorkflowApiInputValues, validateWorkflowApiManifest } from './autodlWorkflowManifest';
 import { getGenerationNodeType } from '../../utils/nodeGeneration';
-import { isNativeWorkflowExecution, nativeWorkflowDigest, submitNativeWorkflowTask } from '../nativeWorkflowTasks';
+import { isNativeWorkflowExecution, nativeWorkflowDigest } from '../nativeWorkflowExecution';
 import { captureNativeProtocolContext, nativeProtocolQueryPaths } from '../nativeModelProtocolTask';
 import { createMediaDownloadAccess } from '../ai/mediaDownloadAccess';
 
@@ -379,6 +379,7 @@ export async function executeWorkflowApi(params: {
     if (!fresh()) throw new Error('画布已变化，未提交工作流');
     stage('提交任务');
     if (nativeMode) {
+      const { submitNativeWorkflowTask } = await import('../nativeWorkflowTasks');
       const protocol = manifest.version === 2 ? parseModelExecutionProtocol(manifest.protocol) : undefined;
       if (protocol?.mode === 'async') nativeProtocolQueryPaths(protocol);
       return await submitNativeWorkflowTask({ nodeId: trackingId, beforeSubmit: params.beforeSubmit, signal, secretValues: [connection.apiKey],

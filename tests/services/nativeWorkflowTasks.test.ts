@@ -20,6 +20,7 @@ import { prepareNativeMediaTask, listNativeMediaTasks } from '../../src/services
 import { bindNativeMediaOrigin } from '../../src/services/nativeMediaOrigin';
 import { createNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, retainNativeWorkflowTaskOutputs } from '../../src/services/nativeWorkflowRepository';
 import { nativeWorkflowDigest, nativeComfyOutputs, submitNativeWorkflowTask, resumeNativeWorkflowTask, isNativeWorkflowExecution } from '../../src/services/nativeWorkflowTasks';
+import { registerNativeVideoSubmissionGuard } from '../../src/services/nativeVideoSubmissionGuard';
 
 const base = 'http://127.0.0.1:8188';
 const output = (letter: string) => ({ relativePath: `media/${letter.repeat(64)}.png`, bytes: 12, sha256: letter.repeat(64), category: 'image' as const });
@@ -93,7 +94,7 @@ it('Comfy正式输出收齐多候选，视频不接收预览PNG，输出路径�
 it('引用准备后切到旧项目，原native守卫仍要求新仓储失败关闭，不降级成旧请求', async () => {
   const { context, nodeId, descriptor } = await fixture();
   driver.state = { ...driver.state, projectExecutionContext: { ...context, modelGeneration: 0 } };
-  const guard = () => {}, submit = vi.fn(async () => ({ taskId: 'must-not-submit' }));
+  const guard = registerNativeVideoSubmissionGuard(() => {}), submit = vi.fn(async () => ({ taskId: 'must-not-submit' }));
   expect(isNativeWorkflowExecution(guard)).toBe(true);
   await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial: {}, beforeSubmit: guard, submit })).rejects.toThrow('守卫');
   expect(submit).not.toHaveBeenCalled(); expect(driver.query).not.toHaveBeenCalled();

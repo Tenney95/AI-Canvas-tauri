@@ -39,7 +39,7 @@ import { parseRasterImageDimensions } from './rasterImageDimensions';
 import { inferComfyPromptRoles } from './comfyPromptRoles';
 import { comfyComboOptions } from './comfyInputSpecs';
 import { PollTaskFailedError } from './pollTask';
-import { isNativeWorkflowExecution, nativeWorkflowDigest, submitNativeWorkflowTask } from './nativeWorkflowTasks';
+import { isNativeWorkflowExecution, nativeWorkflowDigest } from './nativeWorkflowExecution';
 
 /** ComfyUI 已注册的节点类型；同一次会话里短暂缓存，装完插件重开也能很快看到变化 */
 let nodeClassCache: { baseUrl: string; classes: Set<string>; fetchedAt: number } | null = null;
@@ -1522,6 +1522,7 @@ async function submitNativeComfyMedia(input: { nodeId?: string; category: 'image
   baseUrl: string; workflowObj: Record<string, Record<string, unknown>>; signal?: AbortSignal; progress?: ComfyProgressSession;
   beforeSubmit?: () => void | Promise<void>; refmods?: ComfyRefmodSelection[] }): Promise<never> {
   let rejected = false;
+  const { submitNativeWorkflowTask } = await import('./nativeWorkflowTasks');
   return submitNativeWorkflowTask({ nodeId: input.nodeId, signal: input.signal, beforeSubmit: input.beforeSubmit,
     descriptor: { adapter: 'comfyui', connectionId: 'comfyui', providerBase: input.baseUrl, category: input.category,
       workflowId: input.workflow.id, serverId: input.workflow.serverId,

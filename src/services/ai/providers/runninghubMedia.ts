@@ -16,7 +16,7 @@ import { uploadRunningHubMedia } from './runninghubClient';
 import { saveRunningHubOutputs, RunningHubTaskFailed, type RunningHubReferences } from './runninghubWorkflow';
 import { getRunningHubModel, isLegacyRunningHubModel, parseRunningHubModelParameter, runningHubFrameRole, type RunningHubModelDefinition, type RunningHubModelValue } from './runninghubModelManifest';
 import { mapImageDimensions } from '../../aiDimensions';
-import { isNativeWorkflowExecution, nativeWorkflowDigest, submitNativeWorkflowTask } from '../../nativeWorkflowTasks';
+import { isNativeWorkflowExecution, nativeWorkflowDigest } from '../../nativeWorkflowExecution';
 import { isSafeNativeProtocolTaskId } from '../../nativeProtocolContext';
 export type { RunningHubConnection } from '../../../types/runninghub';
 
@@ -284,6 +284,7 @@ export async function executeRunningHubModel(params: ModelParams, kind: RunningH
     if (beforeSubmit) await beforeSubmit();
     if (!fresh()) throw new Error('画布已变化，未提交任务');
     if (nativeMode) {
+      const { submitNativeWorkflowTask } = await import('../../nativeWorkflowTasks');
       const selected = definition;
       return await submitNativeWorkflowTask({ nodeId: trackingId, signal, beforeSubmit, count, secretValues: [connection.apiKey],
         descriptor: { adapter: 'runninghub-model', modelId: selected.id, connectionId: 'runninghub-model', providerBase: connection.baseUrl,

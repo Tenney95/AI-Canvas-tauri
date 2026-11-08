@@ -1279,3 +1279,5 @@ APIMart 图片另接多提交／多任务／多候选账本：每次 POST 之前
 5. 回归旧项目生成、原任务续查、预算与导入导出；检查正式迁移仍关闭，旧库未新增同作品镜像。
 
 自动回归源码新增于 `nativeMediaCollectionRepository`、`nativeMediaLocalResult`、`nativeBuiltinImageTask`、`nativeApimartMusicRepository`、`nativeBuiltinAudioRecovery`、`nativeGeneralAsyncTask`、`nativeWorkflowRepository`、`nativeWorkflowTasks`、`nativeMediaRecoverySummary` 和 `nativeProtocolConnection` 测试，并扩展 `nativeModelProtocolTask`、`nativeMediaInput`、`modelProtocol`、Store 与聊天投影夹具。完整前端门禁使用仓库根目录的 `npm run ci`；不以局部通过代替完整推送门禁，也不将前端门禁当作 Rust 或桌面验收。
+
+推送前定向回归已实际通过媒体／剪辑协议与仓储、工作流、旧项目导入往返、素材相对化、Agent 结果授权及交付期间编辑／切集／排队保存场景。期间修复了仓储初始化时捕获未初始化表名和持久化层加载媒体执行器的循环；轻量守卫保留唯一登记身份，执行器改为实际调用时加载。媒体数据库成功提交时同步推进原运行基线并合并视图，后续 Promise 继续执行时不再覆盖 Store。完整前端 CI 仍以推送门禁和对应提交检查为准；Rust、独立 Tauri profile 及真实提供商桌面验收不能由这些定向通过推断。
