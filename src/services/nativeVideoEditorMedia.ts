@@ -1,14 +1,14 @@
 /** 新剪辑工程只持久化作品内相对路径；运行时重新解析素材。 */
 import { exists, stat } from '@tauri-apps/plugin-fs';
-import { copyFileToProjectData, getAssetUrlFromPath, getProjectDataDir, joinPath, saveBinaryToProjectData } from './fileService';
 import { getRelativeAssetPath, resolveIndexedAssetPath } from './fs/assetIndex';
 import { localMediaUrlToPath, isTauriAssetUrl } from '../utils/mediaUrl';
 import { safeExchangePath } from './projectExchangeDomain';
 import type { VideoEditorClip, VideoEditorProjectRecord } from '../types/videoEditor';
 
 const copyCache = new Map<string, { size: number; modified: number; destination: string }>();
+type ClipFiles = Pick<typeof import('./fileService'), 'copyFileToProjectData' | 'saveBinaryToProjectData'>;
 
-async function prepareClip(clip: VideoEditorClip, projectId: string, root: string, assertCurrent: () => Promise<void>): Promise<VideoEditorClip> {
+async function prepareClip(clip: VideoEditorClip, projectId: string, root: string, assertCurrent: () => Promise<void>, files: ClipFiles): Promise<VideoEditorClip> {
   const next = { ...clip };
   let path = next.filePath ?? (next.sourceUrl && isTauriAssetUrl(next.sourceUrl) ? localMediaUrlToPath(next.sourceUrl) ?? undefined : undefined);
   if (!path && next.assetId) path = await resolveIndexedAssetPath(next.assetId) ?? undefined;
@@ -23,7 +23,7 @@ async function prepareClip(clip: VideoEditorClip, projectId: string, root: strin
       if (cached && cached.size === source.size && cached.modified === modified && await exists(cached.destination)) {
         path = cached.destination;
       } else {
-        const copied = await copyFileToProjectData(path, projectId, { assertCurrent });
+        const copied = await files.copyFileToProjectData(path, projectId, { assertCurrent });
         if (!copied) throw new Error('剪辑素材无法复制到项目目录');
         copyCache.set(key, { size: source.size, modified, destination: copied.filePath });
         path = copied.filePath;
@@ -47,7 +47,7 @@ async function prepareClip(clip: VideoEditorClip, projectId: string, root: strin
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!bytes.length || bytes.length > 64 * 1024 * 1024) throw new Error('剪辑素材超过允许的内存上限');
     await assertCurrent();
-    const saved = await saveBinaryToProjectData(bytes, projectId, next.fileName || 'video-editor-media', { assertCurrent, throwOnError: true });
+    const saved = await files.saveBinaryToProjectData(bytes, projectId, next.fileName || 'video-editor-media', { assertCurrent, throwOnError: true });
     await assertCurrent();
     const relative = saved && getRelativeAssetPath(saved.filePath, root);
     if (!relative || safeExchangePath(relative) !== relative) throw new Error('剪辑素材保存失败');
@@ -59,27 +59,32 @@ async function prepareClip(clip: VideoEditorClip, projectId: string, root: strin
 
 export async function prepareNativeVideoEditorRecord(record: VideoEditorProjectRecord,
   assertCurrent: () => Promise<void>): Promise<VideoEditorProjectRecord> {
-  const root = await getProjectDataDir(record.projectId);
+  // 旧仓储的模块装配不能加载带展示 Store 的文件服务；仅在真实素材读写时进入。
+  const files = await import('./fileService');
+  await assertCurrent();
+  const root = await files.getProjectDataDir(record.projectId);
   if (!root) throw new Error('项目素材目录不可用');
   await assertCurrent();
   const tracks = await Promise.all(record.tracks.map(async (track) => ({ ...track,
-    clips: await Promise.all(track.clips.map((clip) => prepareClip(clip, record.projectId, root, assertCurrent))) })));
+    clips: await Promise.all(track.clips.map((clip) => prepareClip(clip, record.projectId, root, assertCurrent, files))) })));
   await assertCurrent();
   return { ...record, tracks };
 }
 
 export async function restoreNativeVideoEditorRecord(record: VideoEditorProjectRecord,
   assertCurrent: () => Promise<void>): Promise<VideoEditorProjectRecord> {
-  const root = await getProjectDataDir(record.projectId);
+  const files = await import('./fileService');
+  await assertCurrent();
+  const root = await files.getProjectDataDir(record.projectId);
   if (!root) throw new Error('项目素材目录不可用');
   await assertCurrent();
   const tracks = await Promise.all(record.tracks.map(async (track) => ({ ...track,
     clips: await Promise.all(track.clips.map(async (clip) => {
       if (!clip.relativePath) return clip;
       if (safeExchangePath(clip.relativePath) !== clip.relativePath) throw new Error('剪辑素材路径无效');
-      const path = joinPath(root, clip.relativePath);
+      const path = files.joinPath(root, clip.relativePath);
       if (!await exists(path)) return clip;
-      return { ...clip, filePath: path, sourceUrl: await getAssetUrlFromPath(path) };
+      return { ...clip, filePath: path, sourceUrl: await files.getAssetUrlFromPath(path) };
     })) })));
   await assertCurrent();
   return { ...record, tracks };

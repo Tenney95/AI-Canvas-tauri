@@ -8,6 +8,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils/mediaUrl';
+import { shouldLoadNativeComfyImage } from './comfyImageSource';
 import { corsSafeFetch } from './ai/httpTransport';
 import { downloadGithubBytes, githubMirrorUrl } from './githubDownloadService';
 import { identifyAsset, getRelativeAssetPath } from './fs/assetIndex';
@@ -78,12 +79,6 @@ interface NativeFileTransferResult {
 }
 
 const downloadDestinationQueues = new Map<string, Promise<void>>();
-
-// ComfyUI 展示来源依赖活动 Store；持久化模块初始化时不能反向创建全局 Store。
-// 只在真实读取媒体时加载，仍由同一来源守卫决定原生取件目标。
-async function shouldLoadNativeComfyImage(source: string | undefined): Promise<boolean> {
-  return (await import('./comfyImageSource')).shouldLoadNativeComfyImage(source);
-}
 
 export type MediaDataUrlKind = 'image' | 'video' | 'audio' | 'other';
 
@@ -562,7 +557,7 @@ export async function fetchImageForCrop(imageUrl: string): Promise<string> {
   }
   // 远程 URL：通过 Rust 端 reqwest 原生 HTTP 下载（WebView CORS 不适用）
   if (isTauriEnv() && isRemoteMediaUrl(imageUrl)) {
-    const requireNativeSource = await shouldLoadNativeComfyImage(imageUrl);
+    const requireNativeSource = shouldLoadNativeComfyImage(imageUrl);
     try {
       const dataUrl: string = await invoke('fetch_image_data_url', { url: imageUrl });
       return dataUrl;
@@ -668,15 +663,10 @@ export async function readFileToDataUrl(
     }
 
     // ComfyUI 取件使用原生代理；asset/blob 与其他既有来源保留原读取方式。
-    let resp: Response;
-    if (githubMirrorUrl(filePath)) {
-      resp = new Response(await downloadGithubBytes(filePath, { signal: options.signal, maxBytes: MEDIA_DATA_URL_BYTE_LIMITS[kind] }),
-        { headers: { 'Content-Type': getMimeType(ext) } });
-    } else {
-      const nativeSource = await shouldLoadNativeComfyImage(filePath);
-      throwIfMediaReadAborted(options.signal);
-      resp = await (nativeSource ? corsSafeFetch : fetch)(filePath, { signal: options.signal });
-    }
+    const resp = githubMirrorUrl(filePath)
+      ? new Response(await downloadGithubBytes(filePath, { signal: options.signal, maxBytes: MEDIA_DATA_URL_BYTE_LIMITS[kind] }),
+        { headers: { 'Content-Type': getMimeType(ext) } })
+      : await (shouldLoadNativeComfyImage(filePath) ? corsSafeFetch : fetch)(filePath, { signal: options.signal });
     throwIfMediaReadAborted(options.signal);
     if (!resp.ok) throw new Error(`读取本地文件失败 (${resp.status})`);
     const contentLength = Number(resp.headers.get('Content-Length'));
@@ -1704,7 +1694,7 @@ export async function saveNodeOutputToFile(opts: {
   onProgress?: (progress: NodeOutputDownloadProgress) => void;
 }): Promise<string | null> {
   const { filePath, mediaUrl, textOutput, nodeType, fileName, signal, onProgress } = opts;
-  const nativeComfySource = await shouldLoadNativeComfyImage(mediaUrl);
+  const nativeComfySource = shouldLoadNativeComfyImage(mediaUrl);
   throwIfMediaReadAborted(signal);
   const defExt = nodeType === 'ai-audio' || nodeType === 'source-audio'
     ? getAudioSaveExtension(filePath, fileName, mediaUrl)
