@@ -475,17 +475,16 @@ describe('uploadService 内存上传治理', () => {
       });
     });
     const task = uploadToRemote('asset://localhost/timeout-source.png');
-    await vi.advanceTimersByTimeAsync(0);
-    for (let index = 0; index < 8; index += 1) await Promise.resolve();
-    expect(mocks.invoke.mock.calls.some(([command]) => command === 'proxy_fetch')).toBe(true);
-
     const timeoutRejection = expect(task).rejects.toThrow('媒体上传等待超过 120 秒');
+    // Blob／multipart 准备还要经过真实异步任务，不能靠固定微任务次数判断请求已启动。
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('proxy_fetch', expect.anything()));
     await vi.advanceTimersByTimeAsync(UPLOAD_TIMEOUT_MS);
     await timeoutRejection;
     expect(mocks.invoke).toHaveBeenCalledWith(
       'cancel_proxy_fetch',
       expect.objectContaining({ requestId: expect.stringMatching(/^media-upload-/) }),
     );
+    await vi.advanceTimersByTimeAsync(0);
     keepProxyPending = false;
     await expect(uploadToRemote('asset://localhost/after-timeout.png'))
       .resolves.toBe('https://cdn.example/after-timeout.png');
@@ -514,8 +513,8 @@ describe('uploadService 内存上传治理', () => {
     });
 
     const stuck = uploadToRemote('asset://localhost/stuck-native.png');
-    await vi.advanceTimersByTimeAsync(0);
     const stuckRejection = expect(stuck).rejects.toThrow('媒体上传等待超过 120 秒');
+    await vi.waitFor(() => expect(proxyCalls).toBe(1));
     await vi.advanceTimersByTimeAsync(UPLOAD_TIMEOUT_MS);
     await stuckRejection;
 
@@ -524,7 +523,7 @@ describe('uploadService 内存上传治理', () => {
     expect(proxyCalls).toBe(1);
 
     rejectStuckProxy(new Error('模拟原生层最终结算'));
-    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     await expect(uploadToRemote('asset://localhost/after-isolation.png'))
       .resolves.toBe('https://cdn.example/after-isolation.png');
     expect(proxyCalls).toBe(2);
