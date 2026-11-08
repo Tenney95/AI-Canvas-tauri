@@ -2,8 +2,12 @@
 import type { NativeVideoImageReference } from '../nativeVideoImageReference';
 import { readNativeMediaOrigin, type NativeMediaOrigin } from '../nativeMediaOrigin';
 import { safeExchangePath } from '../projectExchangeDomain';
-import type { NativeMediaLocalResult, NativeApimartImageBatch } from '../../types/media';
+import type { NativeMediaLocalResult, NativeMediaLocalOutput, NativeMediaRecoveryBinding, NativeMediaCompletion, NativeApimartImageBatch } from '../../types/media';
 import { validateNativeImageBatch, nativeImageBatchResults } from '../nativeImageBatch';
+import { validateNativeMediaLocalOutputs } from '../nativeMediaCollection';
+import { validateNativeProtocolContext } from '../nativeModelProtocolTask';
+import { configValuesEqual } from '../configPatch';
+import { isNativeMediaContentPath } from '../nativeMediaContentPath';
 import type { CanvasContext, CanvasDocument, ProjectRecord } from '../../types/project';
 import { assertNoPendingNativeSharedSync, CANVASES, EXCHANGE, ROOTS, TRANSFER, isNativeCanvasId, isNativeProjectId, openNativeProjectDatabase,
   transact, REVISIONS, type NativeProjectOptions } from './nativeProjectRepository';
@@ -40,11 +44,18 @@ export interface NativeMediaTaskRecord {
   canvasEpoch: number;
   sourceCanvasRevision: number;
   nodeId: string;
+  targetNodeType?: 'ai-animation' | 'ai-panorama';
+  /** 生成文件始终写入作品主根；不能继承原节点的素材子根。 */
+  resultRootRef?: string;
   inputFingerprint: string;
-  fingerprintScheme?: 'video-input-v1' | 'media-input-v2';
+  fingerprintScheme?: 'video-input-v1' | 'media-input-v2' | 'media-input-v3';
   requestFingerprint?: string;
   submissionKind?: 'async' | 'sync';
   localResult?: NativeMediaLocalResult;
+  localResults?: NativeMediaLocalOutput[];
+  completion?: NativeMediaCompletion;
+  recovery?: NativeMediaRecoveryBinding;
+  pollContext?: Record<string, unknown>;
   apimartImageBatch?: NativeApimartImageBatch;
   lateImageTaskIds?: Array<{ submissionId: string; taskIds: string[] }>;
   imageReference?: NativeVideoImageReference;
@@ -66,9 +77,32 @@ export interface NativeMediaTaskRecord {
 }
 
 export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): NativeMediaTaskRecord {
+  if (value?.completion !== undefined) {
+    const summary = value.completion;
+    if (!value.localResults || !summary || Object.keys(summary).some((field) => !['taskCount', 'failedTasks', 'failedSubmissions', 'unknownSubmissions', 'notStartedSubmissions'].includes(field))
+      || !Number.isSafeInteger(summary.taskCount) || summary.taskCount < 1 || summary.taskCount > 128
+      || !Number.isSafeInteger(summary.failedTasks) || summary.failedTasks < 0 || summary.failedTasks > summary.taskCount
+      || [summary.failedSubmissions, summary.unknownSubmissions, summary.notStartedSubmissions].some((count) => count !== undefined && (!Number.isSafeInteger(count) || count < 0 || count > 32))) return fail('原媒体完成统计无效');
+  }
+  if (value?.localResults !== undefined) {
+    validateNativeMediaLocalOutputs(value.localResults);
+    if (value.localResult || value.apimartImageBatch || value.localResults[0].category !== value.category
+      || value.resultRelativePath !== value.localResults[0].relativePath) return fail('原媒体完整产物集合与主结果不一致');
+  }
+  if (value?.recovery !== undefined) {
+    const binding = value.recovery;
+    if (!binding || ![Object.prototype, null].includes(Object.getPrototypeOf(binding))
+      || Reflect.ownKeys(binding).some((field) => typeof field !== 'string' || !['kind', 'workflowId', 'modelId', 'serverId', 'digest', 'expectedCount'].includes(field)
+        || !('value' in Object.getOwnPropertyDescriptor(binding, field)!))
+      || !['general-protocol', 'workflow', 'builtin-audio', 'builtin-image', 'builtin-video'].includes(binding.kind)
+      || [binding.workflowId, binding.modelId, binding.serverId].some((field) => field !== undefined && !id(field))
+      || binding.digest !== undefined && !/^[a-f0-9]{64}$/.test(binding.digest)
+      || binding.expectedCount !== undefined && (!Number.isSafeInteger(binding.expectedCount) || binding.expectedCount < 1 || binding.expectedCount > 128)) return fail('媒体恢复合同身份损坏');
+  }
+  if (value?.pollContext !== undefined) validateNativeProtocolContext(value.pollContext);
   if (value?.apimartImageBatch !== undefined) {
     validateNativeImageBatch(value.apimartImageBatch);
-    if (value.providerConfigId !== 'apimart' || value.category !== 'image' || value.fingerprintScheme !== 'media-input-v2'
+    if (value.providerConfigId !== 'apimart' || value.category !== 'image' || !['media-input-v2', 'media-input-v3'].includes(value.fingerprintScheme ?? '')
       || value.submissionKind !== 'async' || !value.modelRef?.startsWith('apimart/')
       || value.remoteTaskId !== value.apimartImageBatch.tasks[0]?.taskId
       || ['submitted', 'delivered'].includes(value.status) && (value.apimartImageBatch.submissions.some((submission) => submission.state === 'prepared')
@@ -89,15 +123,17 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
     || normalizeNativeMediaProviderBase(value.providerBase) !== value.providerBase
     || value.protocolDigest !== undefined && !/^[a-f0-9]{64}$/.test(value.protocolDigest)
     || value.modelRef !== undefined && (!id(value.modelRef) || !value.protocolDigest)
-    || value.fingerprintScheme !== undefined && !['video-input-v1', 'media-input-v2'].includes(value.fingerprintScheme)
+    || value.fingerprintScheme !== undefined && !['video-input-v1', 'media-input-v2', 'media-input-v3'].includes(value.fingerprintScheme)
     || value.requestFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.requestFingerprint)
-    || value.fingerprintScheme === 'media-input-v2' && (!value.requestFingerprint || !value.modelRef || !value.protocolDigest)
+    || value.resultRootRef !== undefined && !/^r2-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.resultRootRef)
+    || value.targetNodeType !== undefined && (value.category !== 'image' || !['ai-animation', 'ai-panorama'].includes(value.targetNodeType))
+    || ['media-input-v2', 'media-input-v3'].includes(value.fingerprintScheme ?? '') && (!value.requestFingerprint || !value.modelRef || !value.protocolDigest)
     || value.submissionKind !== undefined && !['async', 'sync'].includes(value.submissionKind)
     || value.submissionKind === 'sync' && value.remoteTaskId !== undefined
     || value.localResult !== undefined && (value.submissionKind !== 'sync' || !value.localResult
       || !Number.isSafeInteger(value.localResult.bytes) || value.localResult.bytes <= 0
       || !/^[a-f0-9]{64}$/.test(value.localResult.sha256)
-      || !new RegExp(`^media/${value.localResult.sha256}\\.[a-z0-9]{1,16}$`).test(value.localResult.relativePath)
+      || !isNativeMediaContentPath(value.localResult.relativePath, value.localResult.sha256)
       || Object.keys(value.localResult).some((key) => !['relativePath', 'bytes', 'sha256'].includes(key))
       || value.resultRelativePath !== value.localResult.relativePath)
     || value.providerConfigId === 'grsai' && !value.protocolDigest
@@ -105,11 +141,11 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
     || !['prepared', 'submitted', 'outcome-unknown', 'delivered', 'failed', 'reviewed'].includes(value.status)
     || !UUID.test(value.lease) || !validEpoch(value.revision) || !validEpoch(value.createdAt) || !validEpoch(value.updatedAt)
     || value.remoteTaskId !== undefined && !id(value.remoteTaskId)
-    || value.status === 'submitted' && !(value.submissionKind === 'sync' ? value.localResult : value.remoteTaskId)
+    || value.status === 'submitted' && !(value.localResults?.length || (value.submissionKind === 'sync' ? value.localResult : value.remoteTaskId))
     || value.deliveryDigest !== undefined && !/^[a-f0-9]{64}$/.test(value.deliveryDigest)
     || value.committedCanvasRevision !== undefined && !validEpoch(value.committedCanvasRevision)
     || value.resultRelativePath !== undefined && safeExchangePath(value.resultRelativePath) !== value.resultRelativePath
-    || value.status === 'delivered' && (!(value.submissionKind === 'sync' ? value.localResult : value.remoteTaskId) || !value.deliveryDigest || value.committedCanvasRevision === undefined)) return fail('媒体任务账本身份损坏，不能自动恢复');
+    || value.status === 'delivered' && (!(value.localResults?.length || (value.submissionKind === 'sync' ? value.localResult : value.remoteTaskId)) || !value.deliveryDigest || value.committedCanvasRevision === undefined)) return fail('媒体任务账本身份损坏，不能自动恢复');
   if (value.imageReference !== undefined) {
     const ref = value.imageReference;
     const match = ref && typeof ref.relativePath === 'string' ? /^media\/([a-f0-9]{64})\.(png|jpg|webp|gif)$/.exec(ref.relativePath) : null;
@@ -124,7 +160,7 @@ export function validateNativeMediaTaskRecord(value: NativeMediaTaskRecord): Nat
     || !['chat', 'canvas', 'both'].includes(value.origin.deliveryMode)
     || Object.keys(value.origin).some((key) => !['conversationId', 'messageId', 'agentTaskId', 'modelId', 'deliveryMode'].includes(key)))) return fail('媒体原对话身份损坏');
   const fields = ['projectId', 'kind', 'operationId', 'ownerProjectId', 'canvasId', 'episodeId', 'projectEpoch', 'canvasEpoch',
-    'sourceCanvasRevision', 'nodeId', 'inputFingerprint', 'fingerprintScheme', 'requestFingerprint', 'submissionKind', 'localResult', 'apimartImageBatch', 'lateImageTaskIds', 'imageReference', 'providerConfigId', 'providerBase', 'protocolDigest', 'modelRef', 'origin', 'category', 'status', 'remoteTaskId', 'deliveryDigest', 'committedCanvasRevision', 'resultRelativePath',
+    'sourceCanvasRevision', 'nodeId', 'targetNodeType', 'resultRootRef', 'inputFingerprint', 'fingerprintScheme', 'requestFingerprint', 'submissionKind', 'localResult', 'localResults', 'completion', 'recovery', 'pollContext', 'apimartImageBatch', 'lateImageTaskIds', 'imageReference', 'providerConfigId', 'providerBase', 'protocolDigest', 'modelRef', 'origin', 'category', 'status', 'remoteTaskId', 'deliveryDigest', 'committedCanvasRevision', 'resultRelativePath',
     'lease', 'revision', 'createdAt', 'updatedAt'];
   if (Object.keys(value).some((key) => !fields.includes(key))) return fail('媒体任务账本包含未知字段，不能自动恢复');
   return value;
@@ -146,6 +182,7 @@ export async function prepareNativeMediaTask(input: { context: CanvasContext; op
   providerConfigId: string; providerBase: string; protocolDigest?: string; modelRef?: string; inputFingerprint: string;
   fingerprintScheme?: NativeMediaTaskRecord['fingerprintScheme']; requestFingerprint?: string;
   submissionKind?: NativeMediaTaskRecord['submissionKind'];
+  recovery?: NativeMediaRecoveryBinding;
   apimartImageBatch?: NativeApimartImageBatch;
   sourceCanvasRevision: number; imageReference?: NativeVideoImageReference; category: NativeMediaTaskRecord['category'] }, options: NativeProjectOptions = {}): Promise<NativeMediaTaskRecord> {
   const context = structuredClone(input.context);
@@ -153,27 +190,32 @@ export async function prepareNativeMediaTask(input: { context: CanvasContext; op
   if (context.kind !== 'canvas' || context.modelGeneration !== 1 || !context.runtimeEpoch
     || !isNativeProjectId(context.projectId) || !isNativeCanvasId(context.canvasId)
     || !UUID.test(input.operationId) || !id(input.nodeId) || !id(input.providerConfigId)) return fail('媒体任务缺少有效的新画布身份');
-  if (input.category !== 'video' && input.fingerprintScheme !== 'media-input-v2') return fail('新图片和音频任务需要版本化的完整输入合同');
+  if (input.category !== 'video' && !['media-input-v2', 'media-input-v3'].includes(input.fingerprintScheme ?? '')) return fail('新图片和音频任务需要版本化的完整输入合同');
   const db = await openNativeProjectDatabase(false, options); if (!db) return fail();
   try {
     return await transact(db, 'readwrite', options, async (tx) => {
       if (tx.durability !== 'strict') return fail('媒体回执需要严格耐久存储，未提交生成');
       await assertNoPendingNativeSharedSync(tx, context.projectId);
+      const owner = await req(tx.objectStore(ROOTS).get(context.projectId)) as ProjectRecord | undefined;
+      if (!owner || owner.id !== context.projectId || owner.epoch !== context.projectEpoch) return fail('原作品身份已变化');
       const now = Date.now(), record = validateNativeMediaTaskRecord({ projectId: `${PREFIX}${input.operationId}`, kind: 'native-media-task-v1',
         operationId: input.operationId, ownerProjectId: context.projectId, canvasId: context.canvasId, episodeId: context.episodeId,
-        projectEpoch: context.projectEpoch, canvasEpoch: context.canvasEpoch, sourceCanvasRevision: input.sourceCanvasRevision, nodeId: input.nodeId, inputFingerprint: input.inputFingerprint,
+        projectEpoch: context.projectEpoch, canvasEpoch: context.canvasEpoch, sourceCanvasRevision: input.sourceCanvasRevision, nodeId: input.nodeId, resultRootRef: owner.storageRootRef, inputFingerprint: input.inputFingerprint,
         ...(input.imageReference ? { imageReference: structuredClone(input.imageReference) } : {}),
         ...(input.protocolDigest ? { protocolDigest: input.protocolDigest } : {}), providerConfigId: input.providerConfigId, providerBase: normalizeNativeMediaProviderBase(input.providerBase), category: input.category, status: 'prepared', lease: crypto.randomUUID(),
         ...(input.modelRef ? { modelRef: input.modelRef } : {}),
         ...(input.fingerprintScheme ? { fingerprintScheme: input.fingerprintScheme } : {}),
         ...(input.requestFingerprint ? { requestFingerprint: input.requestFingerprint } : {}),
         ...(input.submissionKind ? { submissionKind: input.submissionKind } : {}),
+        ...(input.recovery ? { recovery: structuredClone(input.recovery) } : {}),
         ...(input.apimartImageBatch ? { apimartImageBatch: structuredClone(input.apimartImageBatch) } : {}),
         ...(origin ? { origin } : {}),
         revision: 0, createdAt: now, updatedAt: now });
       if (!await matchingCanvas(tx, record)) return fail('原作品或画布已变化，未提交生成');
       const savedCanvas = await req(tx.objectStore(CANVASES).get(record.canvasId)) as CanvasDocument | undefined;
       if (!savedCanvas || savedCanvas.revision !== record.sourceCanvasRevision) return fail('已保存画布版本已变化，未提交生成');
+      const savedNode = savedCanvas.nodes.find((node) => node && typeof node === 'object' && (node as { id?: unknown }).id === record.nodeId) as { data?: { type?: unknown } } | undefined;
+      if (record.category === 'image' && (savedNode?.data?.type === 'ai-animation' || savedNode?.data?.type === 'ai-panorama')) record.targetNodeType = savedNode.data.type;
       if (origin && (origin.deliveryMode === 'chat' ? !/^media-message-[0-9a-f-]{36}$/.test(record.nodeId)
         : !savedCanvas.nodes.some((node) => node && typeof node === 'object' && (node as { id?: unknown }).id === record.nodeId))) return fail('原媒体目的地缺少受信身份');
       if (record.imageReference) {
@@ -232,8 +274,9 @@ export async function assertNativeMediaResultRetention(record: NativeMediaTaskRe
 
 /** 收到远端 ID 即耐久保存；即使原画布此时已删除，也保留原回执供只读核对。 */
 export async function recordNativeMediaSubmission(operationId: string, lease: string,
-  outcome: { taskId: string } | { unknown: true } | { notStarted: true }, options: NativeProjectOptions = {}): Promise<NativeMediaTaskRecord> {
+  outcome: { taskId: string; pollContext?: Record<string, unknown> } | { unknown: true } | { notStarted: true }, options: NativeProjectOptions = {}): Promise<NativeMediaTaskRecord> {
   if (!UUID.test(operationId) || !UUID.test(lease) || 'taskId' in outcome && !id(outcome.taskId)) return fail();
+  if ('taskId' in outcome && outcome.pollContext !== undefined) validateNativeProtocolContext(outcome.pollContext);
   const db = await openNativeProjectDatabase(false, options); if (!db) return fail();
   try {
     return await transact(db, 'readwrite', options, async (tx) => {
@@ -247,19 +290,21 @@ export async function recordNativeMediaSubmission(operationId: string, lease: st
       // 用户只撤销本机防重，不抹掉仍可能迟到的原提交回执。
       if (current.status === 'reviewed') {
         if (!('taskId' in outcome)) return current;
-        if (current.remoteTaskId) return current.remoteTaskId === outcome.taskId ? current : fail();
+        if (current.remoteTaskId) return current.remoteTaskId === outcome.taskId && configValuesEqual(current.pollContext, outcome.pollContext) ? current : fail();
         if (current.revision >= Number.MAX_SAFE_INTEGER) return fail();
         const late = validateNativeMediaTaskRecord({ ...current, remoteTaskId: outcome.taskId,
+          ...(outcome.pollContext !== undefined ? { pollContext: structuredClone(outcome.pollContext) } : {}),
           revision: current.revision + 1, updatedAt: Date.now() });
         await req(store.put(late));
         return late;
       }
-      if ('taskId' in outcome && current.status === 'submitted' && current.remoteTaskId === outcome.taskId
+      if ('taskId' in outcome && current.status === 'submitted' && current.remoteTaskId === outcome.taskId && configValuesEqual(current.pollContext, outcome.pollContext)
         || 'unknown' in outcome && current.status === 'outcome-unknown'
         || 'notStarted' in outcome && current.status === 'failed') return current;
-      if (current.status !== 'prepared' || current.revision >= Number.MAX_SAFE_INTEGER) return fail();
+      if (current.status !== 'prepared' && !(current.status === 'outcome-unknown' && 'taskId' in outcome)
+        || current.revision >= Number.MAX_SAFE_INTEGER) return fail();
       const next: NativeMediaTaskRecord = { ...current, status: 'taskId' in outcome ? 'submitted' : 'unknown' in outcome ? 'outcome-unknown' : 'failed',
-        ...('taskId' in outcome ? { remoteTaskId: outcome.taskId } : {}), revision: current.revision + 1, updatedAt: Date.now() };
+        ...('taskId' in outcome ? { remoteTaskId: outcome.taskId, ...(outcome.pollContext !== undefined ? { pollContext: structuredClone(outcome.pollContext) } : {}) } : {}), revision: current.revision + 1, updatedAt: Date.now() };
       await req(store.put(validateNativeMediaTaskRecord(next)));
       return next;
     }, [EXCHANGE], true);
@@ -306,8 +351,8 @@ export async function claimNativeMediaRecovery(operationId: string, context: Can
       if (!value) return fail();
       const current = validateNativeMediaTaskRecord(value);
       await assertNoPendingNativeSharedSync(tx, current.ownerProjectId);
-      if (!['submitted', 'reviewed'].includes(current.status) || !(current.submissionKind === 'sync' ? current.localResult : current.remoteTaskId) || current.revision >= Number.MAX_SAFE_INTEGER
-        || current.category !== 'video' && current.fingerprintScheme !== 'media-input-v2'
+      if (!['submitted', 'reviewed'].includes(current.status) || !(current.localResults?.length || (current.submissionKind === 'sync' ? current.localResult : current.remoteTaskId)) || current.revision >= Number.MAX_SAFE_INTEGER
+        || current.category !== 'video' && !['media-input-v2', 'media-input-v3'].includes(current.fingerprintScheme ?? '')
         || current.ownerProjectId !== context.projectId || current.canvasId !== context.canvasId
         || current.episodeId !== context.episodeId || current.projectEpoch !== context.projectEpoch
         || current.canvasEpoch !== context.canvasEpoch || !await matchingCanvas(tx, current)) {

@@ -149,7 +149,7 @@ function toOutputFiles(value: unknown): ComfyOutputFile[] {
 }
 
 /** 从单个节点输出里取某类媒体：先认已知键名，认不出再按扩展名扫描其余键 */
-function pickFromNode(node: ComfyOutputNode, kind: ComfyOutputKind, storageType: 'output' | 'legacy' | 'any'): ComfyOutputFile | null {
+function filesFromNode(node: ComfyOutputNode, kind: ComfyOutputKind, storageType: 'output' | 'legacy' | 'any'): ComfyOutputFile[] {
   const extensions = OUTPUT_EXTENSIONS[kind];
   const extension = (file: ComfyOutputFile) => file.filename.split('.').pop()?.toLowerCase() ?? '';
   const hasMatchingExtension = (file: ComfyOutputFile) => extensions.includes(extension(file));
@@ -159,15 +159,9 @@ function pickFromNode(node: ComfyOutputNode, kind: ComfyOutputKind, storageType:
     && (kind === 'video' ? hasMatchingExtension(file) : !Object.entries(OUTPUT_EXTENSIONS).some(
       ([otherKind, otherExtensions]) => otherKind !== kind && otherExtensions.includes(extension(file)),
     ));
-  for (const key of OUTPUT_KEYS[kind]) {
-    const file = toOutputFiles(node[key]).find(accepts);
-    if (file) return file;
-  }
-  for (const value of Object.values(node)) {
-    const file = toOutputFiles(value).find((item) => accepts(item) && hasMatchingExtension(item));
-    if (file) return file;
-  }
-  return null;
+  const result = OUTPUT_KEYS[kind].flatMap((key) => toOutputFiles(node[key]).filter(accepts));
+  for (const value of Object.values(node)) result.push(...toOutputFiles(value).filter((item) => accepts(item) && hasMatchingExtension(item)));
+  return result;
 }
 
 /**
@@ -184,12 +178,26 @@ export function findComfyOutputFile(
     for (const storageType of ['output', 'legacy', 'any'] as const) {
       for (const node of Object.values(outputs)) {
         if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
-        const file = pickFromNode(node, kind, storageType);
+        const file = filesFromNode(node, kind, storageType)[0];
         if (file) return file;
       }
     }
   }
   return null;
+}
+
+/** 完整候选沿用同一类型与正式输出优先规则，不截取首个文件作为整批结果。 */
+export function findComfyOutputFiles(outputs: ComfyOutputs, kinds: ComfyOutputKind[]): ComfyOutputFile[] {
+  if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return [];
+  for (const kind of kinds) for (const storageType of ['output', 'legacy', 'any'] as const) {
+    const unique = new Map<string, ComfyOutputFile>();
+    for (const node of Object.values(outputs)) {
+      if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
+      for (const file of filesFromNode(node, kind, storageType)) unique.set(JSON.stringify([file.filename, file.subfolder ?? '', file.type ?? '']), file);
+    }
+    if (unique.size) return [...unique.values()];
+  }
+  return [];
 }
 
 /** 把 /history 输出里的文件拼成可直接下载的 /view 地址。 */

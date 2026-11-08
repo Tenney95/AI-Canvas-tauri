@@ -25,6 +25,9 @@ import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDeriva
 import { saveCloudWorkflowOutputs } from '../workflowExecutionService';
 import { normalizeWorkflowApiBaseUrl, AUTODL_H3_WORKFLOW, resolveWorkflowApiInputValues, validateWorkflowApiManifest } from './autodlWorkflowManifest';
 import { getGenerationNodeType } from '../../utils/nodeGeneration';
+import { isNativeWorkflowExecution, nativeWorkflowDigest, submitNativeWorkflowTask } from '../nativeWorkflowTasks';
+import { captureNativeProtocolContext, nativeProtocolQueryPaths } from '../nativeModelProtocolTask';
+import { createMediaDownloadAccess } from '../ai/mediaDownloadAccess';
 
 const TASK_ID = /^[\w-]{1,128}$/;
 const RETRY_HTTP = new Set([408, 429, 500, 502, 503, 504]);
@@ -330,6 +333,7 @@ export async function executeWorkflowApi(params: {
   beforeSubmit?: () => void | Promise<void>;
 }, externalSignal?: AbortSignal): Promise<CloudWorkflowOutput[]> {
   const store = useAppStore.getState();
+  const nativeMode = isNativeWorkflowExecution(params.beforeSubmit);
   const workflow = store.workflows.find((item) => item.id === params.workflowId);
   if (workflow?.adapterType !== 'workflow-api') throw new Error('未找到工作流 API 定义');
   validateWorkflowApiManifest(workflow.workflowApi);
@@ -337,17 +341,18 @@ export async function executeWorkflowApi(params: {
   const outputKind = workflowApiOutputKind(manifest);
   const nodeType = `ai-${outputKind}` as 'ai-image' | 'ai-video' | 'ai-audio';
   const context = params.taskContext;
+  const nativeChat = nativeMode && context?.deliveryMode === 'chat';
   const projectId = context?.projectId ?? store.currentProjectId;
   const node = store.nodes.find((item) => item.id === params.nodeId);
   if (!projectId || store.currentProjectId !== projectId || (!params.nodeId && !context)
-    || (params.nodeId && (!node || node.data.workflowId !== workflow.id || getGenerationNodeType(node.data.type) !== nodeType))
+    || (params.nodeId && !nativeChat && (!node || node.data.workflowId !== workflow.id || getGenerationNodeType(node.data.type) !== nodeType))
     || workflow.category !== nodeType) throw new Error('工作流与当前项目或节点输出类型不匹配');
   const trackingId = params.nodeId ?? `workflow-api-message-${context!.messageId}`;
   if (getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId)) throw new Error('已有工作流任务，请先继续查询或在平台确认远端任务结束');
   const connection = workflowApiConnection(store.config.providers[manifest.connectionId], manifest);
   const nodeSignal = registerNodePolling(trackingId);
   const signal = externalSignal ? AbortSignal.any([nodeSignal, externalSignal]) : nodeSignal;
-  const guard = params.nodeId ? registerCanvasDerivation(store, params.nodeId) : null;
+  const guard = params.nodeId && !nativeChat ? registerCanvasDerivation(store, params.nodeId) : null;
   let taskId = '';
   let submitting = false;
   const descriptor: WorkflowApiTaskDescriptor = {
@@ -358,12 +363,12 @@ export async function executeWorkflowApi(params: {
   const ownsRecord = (expectedTaskId = taskId) => getPendingTasksForProject(projectId).some((task) => task.nodeId === trackingId
     && task.taskId === expectedTaskId && task.taskType === 'workflow-api' && task.workflowApi?.attemptId === descriptor.attemptId);
   const fresh = () => !signal.aborted && useAppStore.getState().currentProjectId === projectId
-    && (!params.nodeId || (!!guard && isCanvasDerivationFresh(guard, useAppStore.getState())
+    && (!params.nodeId || nativeChat || (!!guard && isCanvasDerivationFresh(guard, useAppStore.getState())
       && useAppStore.getState().nodes.some((item) => item.id === params.nodeId && item.data.workflowId === workflow.id)))
     && (!context || useAppStore.getState().messages.some((message) => message.id === context.messageId && message.conversationId === context.conversationId))
     && (!submitting || ownsRecord());
   const stage = (workflowApiStage: string) => {
-    if (params.nodeId && fresh()) useAppStore.getState().updateNodeDataTransient(params.nodeId, { workflowApiStage });
+    if (params.nodeId && !nativeChat && fresh()) useAppStore.getState().updateNodeDataTransient(params.nodeId, { workflowApiStage });
   };
   try {
     if (!fresh()) throw new Error('画布已变化，未提交工作流');
@@ -373,6 +378,30 @@ export async function executeWorkflowApi(params: {
     if (params.beforeSubmit) await params.beforeSubmit();
     if (!fresh()) throw new Error('画布已变化，未提交工作流');
     stage('提交任务');
+    if (nativeMode) {
+      const protocol = manifest.version === 2 ? parseModelExecutionProtocol(manifest.protocol) : undefined;
+      if (protocol?.mode === 'async') nativeProtocolQueryPaths(protocol);
+      return await submitNativeWorkflowTask({ nodeId: trackingId, beforeSubmit: params.beforeSubmit, signal, secretValues: [connection.apiKey],
+        synchronous: protocol?.mode === 'sync', requestMaterial: variables ?? body,
+        descriptor: { adapter: 'workflow-api', workflowId: workflow.id, connectionId: manifest.connectionId, providerBase: connection.baseUrl,
+          category: outputKind, digest: await nativeWorkflowDigest(['workflow-api-v1', workflow.id, manifest]) },
+        mediaDownloadAccess: createMediaDownloadAccess(manifest.connectionId, connection.baseUrl,
+          protocol?.auth ?? (manifest.version === 1 ? { type: 'header', name: 'Authorization', prefix: '' } : { type: 'bearer' })),
+        isDefinitiveFailure: (error) => error instanceof WorkflowApiRequestError && error.rejected,
+        submit: async (_index, requestSignal) => {
+          if (manifest.version === 1) {
+            const payload = await requestWorkflowApi(connection, AUTODL_H3_WORKFLOW.submitPath, 'POST', body, requestSignal);
+            const id = isRecord(payload.data) ? payload.data.task_id : undefined;
+            if (typeof id !== 'string' || !TASK_ID.test(id)) throw new Error('工作流未返回有效任务 ID，请到原平台核对');
+            return { taskId: id };
+          }
+          const submitted = await submitModelProtocol({ ...connection, protocol: manifest.protocol, variables: variables!, signal: requestSignal,
+            validateResponse: (payload) => validateWorkflowBusinessStatus(manifest, payload),
+            ...(protocol?.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(protocol, payload, variables!, [connection.apiKey]) } : {}) });
+          if (protocol?.mode === 'sync') return { outputs: declaredWorkflowOutputs(submitted.urls, manifest) };
+          return { taskId: submitted.taskId, recoveryContext: submitted.recoveryContext };
+        } });
+    }
     savePendingTask({ nodeId: trackingId, projectId, nodeType, provider: 'workflow-api',
       taskType: 'workflow-api', providerConfigId: manifest.connectionId, taskId, submitted: false, workflowApi: descriptor, workflowApiMessage: context });
     submitting = true;
@@ -401,6 +430,7 @@ export async function executeWorkflowApi(params: {
     if (params.nodeId) useAppStore.getState().updateNodeDataTransient(params.nodeId, { workflowApiOutputs: saved });
     return saved;
   } catch (error) {
+    if (nativeMode) throw error;
     if (manifest.version === 2 && error instanceof Error) error.message = responseMessage(error.message, connection.apiKey || '\u0000');
     // 结束旧任务的等待状态不回填媒体；revision 变化不能把节点永久留在 loading。
     const current = useAppStore.getState();

@@ -63,7 +63,7 @@ export async function generateImage(
   signal?: AbortSignal,
   beforeSubmit?: () => void | Promise<void>,
 ): Promise<ImageGenerationResult> {
-  if (!params.collectCandidates && !params.workflowId
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration !== 1 && !params.collectCandidates && !params.workflowId
     && resolveImageOutputsPerJob(params.model, params.provider, useAppStore.getState().config) > 1) {
     throw new Error('所选模型一次返回多张候选图，请在图片节点或对话中生成');
   }
@@ -160,9 +160,7 @@ export async function generateImagesBatch(
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
   const { model, provider } = params;
   if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1) {
-    const connection = provider === 'general' ? resolveGeneralModelConnection(model) : undefined;
-    const profile = connection && resolveModelExecutionProfile(connection.model.executionProfile);
-    if ((provider === 'apimart' ? !isNativeVideoSubmissionGuard(beforeSubmit) : !profile || requestedCount !== 1 || !isNativeVideoSubmissionGuard(beforeSubmit))) {
+    if (!isNativeVideoSubmissionGuard(beforeSubmit)) {
       throw new Error('此原生图片模型或批量合同没有可耐久续查的完整回执，未提交请求');
     }
   }
@@ -320,7 +318,7 @@ export async function generateImagesBatch(
   if (provider === 'dreamina') {
     if (!prompt.trim()) throw new Error('提示词不能为空');
     if (requestedCount > 1) throw new Error('即梦暂不支持批量生成，请将数量设为 1');
-    return singleResult(await generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls, nodeId: params.nodeId }, signal));
+    return singleResult(await generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls, nodeId: params.nodeId, beforeSubmit }, signal));
   }
 
 
@@ -335,7 +333,7 @@ export async function generateImagesBatch(
         prompt, inputs: parseWorkflowApiFields(params.workflowInputs, workflow.workflowApi), references: {
           image: mergeImageUrls(allImageUrls, getMediaReferenceUrls(refs, 'image', 'local')),
           video: getMediaReferenceUrls(refs, 'video', 'local'), audio: getMediaReferenceUrls(refs, 'audio', 'local'),
-        } }, signal);
+        }, beforeSubmit }, signal);
       return singleResult({ ...result, ...mapImageDimensions(imageSize, aspectRatio) });
     }
     if (isRunningHubWorkflow(workflow)) {
@@ -343,7 +341,7 @@ export async function generateImagesBatch(
       const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, rawWorkflowPrompt, prompt, kind: 'image', references: {
         image: allImageUrls,
         video: getMediaReferenceUrls(refs, 'video', 'local'), audio: getMediaReferenceUrls(refs, 'audio', 'local'),
-      } }, signal);
+      } }, signal, beforeSubmit);
       return singleResult({ url: outputs[0].url, runninghubOutputs: outputs, ...mapImageDimensions(imageSize, aspectRatio) });
     }
     const connected = collectConnectedReferenceMedia(params.nodeId).references;
@@ -354,7 +352,7 @@ export async function generateImagesBatch(
     const comfyPrompt = enrichPromptWithReferenceHints(resolvedPrompt, images.length, false, aspectRatio) + styleHint;
     return singleResult(await executeComfyUIGenerate({ ...params, prompt: comfyPrompt }, signal, images, {
       videoUrls: getMediaReferenceUrls(refs, 'video', 'local'), audioUrls: getMediaReferenceUrls(refs, 'audio', 'local'),
-    }));
+    }, beforeSubmit));
   }
   if (provider === 'runninghubwf') throw new Error('请先在工作流管理中导入并配置该 RunningHub 工作流');
   if (provider === 'workflow-api') throw new Error('请先配置并选择工作流 API');
@@ -385,6 +383,20 @@ export async function generateImagesBatch(
     const apiKey = providerConfig?.apiKey || '';
     const baseUrl = providerConfig?.baseUrl?.trim() || providerDefinition?.defaultBaseUrl || '';
     if (!apiKey) throw new Error(`未配置 ${providerDefinition?.name} 的 API Key\n请在「设置 → API Key」中配置`);
+    if (state.projectExecutionContext?.modelGeneration === 1) {
+      const { runNativeBuiltinImageTask } = await import('../nativeBuiltinImageTask');
+      return await runNativeBuiltinImageTask({ nodeId: params.nodeId, mode: 'protocol', modelId: modelName, connectionId, baseUrl,
+        secrets: [apiKey],
+        expectedCount: requestedCount, modelRef: generalModel ? `general/${generalModel.id}` : `${connectionId}/${modelName}`,
+        requestMaterial: [builtInContract.protocol, modelName, prompt, imageQuality, imageBackground, allImageUrls], signal, beforeSubmit,
+        mediaDownloadAccess: createMediaDownloadAccess(connectionId, baseUrl, builtInContract.protocol.auth),
+        execute: async (beforePost) => {
+          await beforePost();
+          const result = await executeModelProtocol({ apiKey, baseUrl, protocol: builtInContract.protocol,
+            variables: { model: modelName, prompt, imageQuality, imageBackground, imageUrls: allImageUrls }, validateResponse: validateBuiltInImageResponse, signal });
+          return { urls: result.urls };
+        } });
+    }
     const results: ImageGenerationResult[] = [];
     // 此合同一次只生成一张；顺序执行用户请求的数量，失败即停止，禁止重放提交。
     for (let index = 0; index < requestedCount; index += 1) {
@@ -493,6 +505,7 @@ export async function generateImagesBatch(
         imageBackground,
         imageUrls: allImageUrls,
         imageReferenceRequestMode,
+        providerConfigId: connection.providerConfigId, nodeId: params.nodeId, modelRef: `general/${gm.id}`, beforeSubmit,
         ...(providerDefinition?.id === 'cccapi' ? { asyncTaskProvider: 'cccapi' as const,
           providerConfigId: connection.providerConfigId, nodeId: params.nodeId } : {}),
       }, requestedCount, signal);
@@ -515,6 +528,7 @@ export async function generateImagesBatch(
         aspectRatio,
         imageUrls: allImageUrls,
         nodeId: params.nodeId,
+        beforeSubmit,
       }, requestedCount, signal);
     }
 
@@ -541,6 +555,7 @@ export async function generateImagesBatch(
         imageBackground,
         imageUrls: allImageUrls,
         imageReferenceRequestMode,
+        providerConfigId: provider, nodeId: params.nodeId, modelRef: `${provider}/${modelName}`, beforeSubmit,
         ...(providerDefinition?.id === 'cccapi' ? { asyncTaskProvider: 'cccapi' as const,
           providerConfigId: provider, nodeId: params.nodeId } : {}),
       }, requestedCount, signal);

@@ -81,6 +81,27 @@ it('任何候选文件核验失败都不写消息或收据', async () => {
   expect(await all('metadata')).toHaveLength(0);
   expect((await all('messages'))[0].mediaResult).toBeUndefined();
 });
+it('通用混合媒体集合完整投影到原消息与稳定额外消息，类型和相对文件不丢失', async () => {
+  const record = io.records[0];
+  delete record.apimartImageBatch;
+  record.category = 'audio'; record.providerConfigId = 'provider'; record.modelRef = 'workflow/frozen';
+  record.localResults = [
+    { category: 'audio', relativePath: `media/${'a'.repeat(64)}.mp3`, sha256: 'a'.repeat(64), bytes: 12 },
+    { category: 'image', relativePath: `media/${'b'.repeat(64)}.png`, sha256: 'b'.repeat(64), bytes: 13 },
+    { category: 'video', relativePath: `media/${'c'.repeat(64)}.mp4`, sha256: 'c'.repeat(64), bytes: 14 },
+  ];
+  record.resultRelativePath = record.localResults[0].relativePath;
+  const projected = await projectNativeMediaMessageBatch(record, [undefined, undefined, undefined], () => true);
+  expect(projected.messages.map((row) => row.mediaResult?.kind)).toEqual(['audio', 'image', 'video']);
+  expect(projected.messages.map((row) => row.mediaResult?.sourceUrl)).toEqual(record.localResults.map((file) => file.relativePath));
+  expect(projected.messages[0].content).toBe('原消息正文');
+  expect(projected.messages[1].content).toContain('媒体产物');
+  await write('messages', undefined, extraId);
+  const repeated = await projectNativeMediaMessageBatch(record, [undefined, undefined, undefined], () => true);
+  expect(repeated.messages).toHaveLength(2);
+  expect(repeated.messages.some((message) => message.id === extraId)).toBe(false);
+  expect(await all('messages')).toHaveLength(2);
+});
 it('追加中途失败时原消息与收据整笔回滚', async () => {
   io.records[0].updatedAt = Number.MAX_SAFE_INTEGER;
   await expect(projectNativeMediaMessageBatch(io.records[0], [undefined, undefined], () => true)).rejects.toThrow('序号');

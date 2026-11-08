@@ -22,6 +22,10 @@ export async function resumeNativeComfyTask(operationId: string, externalSignal?
   const state = useAppStore.getState(), context = captureLegacyCanvasContext(state);
   if (!context || context.modelGeneration !== 1) throw new Error('请返回原新项目画布');
   const found = (await listNativeMediaTasks(context.projectId)).find((row) => row.operationId === operationId);
+  if (found?.recovery?.kind === 'workflow') {
+    const { resumeNativeWorkflowTask } = await import('./nativeWorkflowTasks');
+    return resumeNativeWorkflowTask(operationId, externalSignal);
+  }
   if (!found || found.canvasId !== context.canvasId || found.providerConfigId !== 'comfyui' || found.category !== 'video') throw new Error('原画布没有该 ComfyUI 视频任务');
   if (found.status === 'delivered') return;
   const record = await claimNativeMediaRecovery(operationId, context);

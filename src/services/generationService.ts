@@ -316,7 +316,8 @@ export async function executeGeneration(
     prompt: rawPrompt, data, settings: projectSettings, customStyles: store.customStyles,
   });
   const sequentialCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
-  if (nodeType === 'ai-image' && sequentialCount > 1 && usesSequentialImageBatch(nodeProvider, nodeModel, store.config, workflowId)) {
+  const nativeSequentialImages = store.projectExecutionContext?.modelGeneration === 1 && !workflowId && !['apimart', 'runninghub'].includes(nodeProvider);
+  if (nodeType === 'ai-image' && sequentialCount > 1 && (nativeSequentialImages || usesSequentialImageBatch(nodeProvider, nodeModel, store.config, workflowId))) {
     if (postProcess) {
       const message = resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config) > 1
         ? '固定多候选模型暂不支持图片后处理，请选择单图模型' : '批量生成暂不支持图片后处理，请将数量设为 1';
@@ -359,8 +360,8 @@ export async function executeGeneration(
     ? videoInputFingerprint({ ...videoNode, data: { ...data, prompt: rawPrompt } }, store) : undefined;
   const nativeVideoMaterial = nodeType === 'ai-video' && store.projectExecutionContext?.modelGeneration === 1 && videoNode
     ? videoInputFingerprintMaterial(videoNode, store) : undefined;
-  const nativeMediaMaterial = ['ai-image', 'ai-audio'].includes(nodeType) && store.projectExecutionContext?.modelGeneration === 1 && videoNode
-    ? nativeMediaInputMaterial(videoNode, store) : undefined;
+  const nativeMediaMaterial = ['ai-image', 'ai-audio', 'ai-animation', 'ai-panorama'].includes(nodeType) && store.projectExecutionContext?.modelGeneration === 1 && videoNode
+    ? nativeMediaInputMaterial(videoNode, store, 'media-input-v3') : undefined;
   const hasShotReference = nodeType === 'ai-video'
     && `${rawPrompt}\n${JSON.stringify(data.workflowInputs ?? {})}`.includes('/shot/');
   const hasProtectedVideoInputs = hasShotReference || (nodeType === 'ai-video'
@@ -386,7 +387,7 @@ export async function executeGeneration(
   const nativeMediaGuard = nativeMediaMaterial === undefined ? undefined : registerNativeVideoSubmissionGuard(async () => {
     if (lease) await assertLease();
     const current = useAppStore.getState(), node = current.nodes.find((item) => item.id === nodeId);
-    if (!isStillCurrentSubmission() || !node || nativeMediaInputMaterial(node, current) !== nativeMediaMaterial) throw new Error('原媒体输入已变化，未提交请求');
+    if (!isStillCurrentSubmission() || !node || nativeMediaInputMaterial(node, current, 'media-input-v3') !== nativeMediaMaterial) throw new Error('原媒体输入已变化，未提交请求');
   });
   store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined, videoTaskState: undefined, mediaTaskState: undefined });
   let batchNodeIds: string[] | undefined;
@@ -413,14 +414,15 @@ export async function executeGeneration(
       if (isAnimation) effectivePrompt = buildAnimationSpritePrompt(effectivePrompt, animationAction, animationFrames, aspectRatio, spriteProcessing);
       const batchCount = cloudWorkflow || isAnimation ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
       const outputsPerJob = workflowId || isAnimation ? 1 : resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config);
-      if (nativeMediaGuard && nodeProvider === 'apimart') {
-        if (postProcess || workflowId || isAnimation) throw new Error('原生图片批次暂不支持额外后处理或动画工作流，未提交请求');
+      if (nativeMediaGuard) {
+        if (postProcess) throw new Error('请先生成原媒体，再执行图片后处理，避免将后处理误记为生成回执');
         await generateImagesBatch({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
-          imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId },
+          imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
+          workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
+          ...(outputsPerJob > 1 ? { collectCandidates: true } : {}) },
         batchCount, lease?.signal, nativeMediaGuard);
-        throw new Error('原生图片批次缺少耐久原回执，未确认交付');
+        throw new Error('原生图片生成缺少耐久原回执，未确认交付');
       }
-      if (nativeMediaGuard && (batchCount > 1 || outputsPerJob > 1 || postProcess)) throw new Error('新项目可恢复图片暂需单张且无额外后处理，未提交请求');
       if (batchCount > 1 || outputsPerJob > 1) {
         if (postProcess) throw new Error(outputsPerJob > 1
           ? '固定多候选模型暂不支持图片后处理，请选择单图模型' : '批量生成暂不支持图片后处理，请将数量设为 1');
@@ -541,7 +543,8 @@ export async function executeGeneration(
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       };
       if (lease) await assertLease();
-      const result = lease ? await generateImage(imageOptions, lease.signal) : await generateImage(imageOptions);
+      const result = nativeMediaGuard ? await generateImage(imageOptions, lease?.signal, nativeMediaGuard)
+        : lease ? await generateImage(imageOptions, lease.signal) : await generateImage(imageOptions);
       taskReceipt = result.taskReceipt;
       comfyTaskId = result.comfyTaskId;
       if (comfyTaskId) beginComfyNodeDelivery(nodeId, comfyTaskId);

@@ -22,6 +22,8 @@ export interface SubmitModelProtocolOptions {
   idempotencyKey?: string;
   /** 适配器可校验平台业务码，不改变传输和同源边界。 */
   validateResponse?: (payload: unknown) => void;
+  /** 原生恢复只投影查询实际依赖的安全字段；完整提交响应只在本次调用内存中存在。 */
+  captureRecoveryContext?: (payload: unknown) => Record<string, unknown>;
   signal?: AbortSignal;
 }
 
@@ -30,6 +32,7 @@ export interface SubmittedModelProtocol {
   text?: string;
   poll?: ResolvedModelProtocolPoll;
   taskId?: string;
+  recoveryContext?: Record<string, unknown>;
 }
 
 export interface ExecuteModelProtocolOptions extends SubmitModelProtocolOptions {

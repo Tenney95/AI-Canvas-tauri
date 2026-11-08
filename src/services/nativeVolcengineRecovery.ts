@@ -3,8 +3,7 @@ import { useAppStore } from '../store/useAppStore';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { claimNativeMediaRecovery, failNativeMediaTask, isNativeMediaLeaseCurrent, listNativeMediaTasks, normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
 import { pollVolcengineVideoTask } from './ai/providers/volcengineVideoQuery';
-import { getProjectDataDir, persistMediaUrlToProjectData } from './fileService';
-import { getRelativeAssetPath } from './fs/assetIndex';
+import { persistMediaUrlToProjectData } from './fileService';
 import { APIMART_BASE_URL, GRSAI_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
 import { pollTask, PollTaskFailedError } from './pollTask';
 import { GRSAI_H3_PROTOCOL } from './ai/grsaiModels';
@@ -15,24 +14,34 @@ import { fetchApimartTask, type ApimartTaskResult } from './ai/apimartGen';
 import { splitCommaSeparatedUrls } from './ai/helpers';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
-import { resolveGeneralModelConnection } from './ai/helpers';
+import { resolveNativeProtocolConnection } from './nativeProtocolConnection';
 import { resolveModelExecutionProfile } from './ai/modelProtocol';
-import { nativeProtocolTaskDigest, nativeProtocolTaskIdContext } from './nativeModelProtocolTask';
+import { nativeProtocolTaskDigest, nativeProtocolQueryDigest, resolveNativeProtocolContext } from './nativeModelProtocolTask';
+import { nativeMediaLocalOutputs } from './nativeMediaCollection';
+import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
+import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
+import { nativeBuiltinVideoProtocolDigest } from './nativeBuiltinVideoProtocol';
+import { resolveProviderCatalogId } from './ai/providerPolicies';
+import { assertMinimaxQueryResponse, usesMinimaxModelProtocol } from './ai/providers/minimaxModelManifest';
+import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol } from './ai/providers/relayonModelManifest';
+import { isSafeNativeProtocolTaskId } from './nativeProtocolContext';
 import { assertModelProtocolResult } from './ai/modelCapabilityValidation';
 
 export async function inspectNativeVolcengineTask(operationId: string) {
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1) throw new Error('请先打开原新项目画布');
   const row = (await listNativeMediaTasks(context.projectId)).find((item) => item.operationId === operationId);
-  if (!row || row.canvasId !== context.canvasId || (!row.apimartImageBatch && !row.modelRef && (!['volcengine', 'apimart', 'grsai', 'comfyui'].includes(row.providerConfigId) || row.category !== 'video'))
-    || row.category !== 'video' && row.fingerprintScheme !== 'media-input-v2') {
-    throw new Error('当前画布没有该视频原操作');
+  if (!row || row.canvasId !== context.canvasId || row.projectEpoch !== context.projectEpoch || row.canvasEpoch !== context.canvasEpoch
+    || row.episodeId !== context.episodeId || (!row.recovery && !row.apimartImageBatch && !row.modelRef && (!['volcengine', 'apimart', 'grsai', 'comfyui'].includes(row.providerConfigId) || row.category !== 'video'))
+    || row.category !== 'video' && !['media-input-v2', 'media-input-v3'].includes(row.fingerprintScheme ?? '')) {
+    throw new Error('当前画布版本没有该媒体原操作');
   }
   return row;
 }
 
 /** 切换画布或取消会立即终止查询；提交未知、结果已交付均不重新生成。 */
-export async function resumeNativeVolcengineTask(operationId: string, externalSignal?: AbortSignal): Promise<void> {
+export async function resumeNativeVolcengineTask(operationId: string, externalSignal?: AbortSignal,
+  options: { allowUnstartedStage?: boolean } = {}): Promise<void> {
   externalSignal?.throwIfAborted();
   const state = useAppStore.getState(), context = captureLegacyCanvasContext(state);
   if (!context || context.modelGeneration !== 1 || !context.runtimeEpoch) throw new Error('请先打开原新项目画布');
@@ -45,26 +54,42 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     const { resumeNativeApimartImageBatch } = await import('./nativeApimartImageRecovery');
     return resumeNativeApimartImageBatch(operationId, externalSignal);
   }
-  if (found.submissionKind === 'sync') {
-    if (!found.localResult) throw new Error('原同步调用没有已保存的本机产物，请先核对平台；不会重新提交生成');
+  if (found.localResults?.length || found.submissionKind === 'sync' && found.localResult) {
     const record = await claimNativeMediaRecovery(operationId, context);
-    const { readNativeMediaLocalResult } = await import('./nativeMediaLocalResult');
-    await readNativeMediaLocalResult(record.canvasId, record.localResult!);
+    const files = nativeMediaLocalOutputs(record);
+    for (const file of files) await readNativeMediaLocalResult(record.canvasId, file);
     externalSignal?.throwIfAborted();
     if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，本机产物保留');
     if (record.origin?.deliveryMode === 'chat') {
       const { commitNativeMediaMessageDelivery } = await import('./nativeMediaDelivery');
-      await commitNativeMediaMessageDelivery(record, record.localResult!.relativePath, { signal: externalSignal });
-    } else await useAppStore.getState().commitNativeMediaResult(record, record.localResult!.relativePath, context, externalSignal);
+      await commitNativeMediaMessageDelivery(record, files[0].relativePath, { signal: externalSignal });
+    } else await useAppStore.getState().commitNativeMediaResult(record, files[0].relativePath, context, externalSignal);
     const { projectNativeMediaMessages } = await import('./nativeMediaMessages');
     await projectNativeMediaMessages(); return;
   }
+  if (found.recovery?.kind === 'workflow') {
+    const { resumeNativeWorkflowTask } = await import('./nativeWorkflowTasks');
+    return resumeNativeWorkflowTask(operationId, externalSignal);
+  }
+  if (found.recovery?.kind === 'builtin-audio') {
+    const { resumeNativeBuiltinAudioTask } = await import('./nativeBuiltinAudioRecovery');
+    return resumeNativeBuiltinAudioTask(operationId, externalSignal, undefined, options);
+  }
+  if (found.recovery?.kind === 'builtin-image' || found.recovery?.kind === 'builtin-video' && found.recovery.serverId === 'dreamina-cli-v1') {
+    const { resumeNativeBuiltinImageTask } = await import('./nativeBuiltinImageTask');
+    return resumeNativeBuiltinImageTask(operationId, externalSignal);
+  }
+  if (found.recovery?.kind === 'general-protocol' && found.recovery.serverId === 'general-async-v1') {
+    const { resumeNativeGeneralAsyncTask } = await import('./nativeGeneralAsyncTask');
+    return resumeNativeGeneralAsyncTask(operationId, externalSignal);
+  }
+  if (found.submissionKind === 'sync') throw new Error('原同步调用没有已保存的本机产物，请先核对平台；不会重新提交生成');
   if (found.providerConfigId === 'comfyui') {
     const { resumeNativeComfyTask } = await import('./nativeComfyRecovery');
     return resumeNativeComfyTask(operationId, externalSignal);
   }
   if (!['submitted', 'reviewed'].includes(found.status) || !found.remoteTaskId) throw new Error('原任务未取得可确认的远端 ID，请先到原平台核对，勿重新提交');
-  const record = await claimNativeMediaRecovery(operationId, context);
+  let record = await claimNativeMediaRecovery(operationId, context);
   if (record.imageReference) {
     const { verifyNativeVideoImageReference } = await import('./nativeVideoImageReference');
     await verifyNativeVideoImageReference(context, record.nodeId, record.imageReference);
@@ -76,12 +101,16 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
   assertCurrent();
   const provider = useAppStore.getState().config.providers[record.providerConfigId];
   if (!provider?.apiKey) throw new Error('缺少原视频连接的 API Key，原任务已保留');
-  const general = record.modelRef ? resolveGeneralModelConnection(record.modelRef) : undefined;
+  const generalExpected = record.recovery?.kind === 'general-protocol' || record.modelRef?.startsWith('general/') === true;
+  const general = generalExpected ? resolveNativeProtocolConnection(record) : undefined;
   const generalProtocol = general && resolveModelExecutionProfile(general.model.executionProfile);
-  if (record.modelRef && (!general || !generalProtocol || general.providerConfigId !== record.providerConfigId || general.model.category !== record.category
-    || await nativeProtocolTaskDigest(general.model.modelId, generalProtocol) !== record.protocolDigest)) throw new Error('原模型或查询协议已变化，请恢复原配置后续查');
-  const isVolcengine = !record.modelRef && record.providerConfigId === 'volcengine';
-  const isGrsai = !record.modelRef && record.providerConfigId === 'grsai';
+  if (generalExpected && (!general || !generalProtocol || general.providerConfigId !== record.providerConfigId || general.model.category !== record.category
+    || await nativeProtocolTaskDigest(general.model.modelId, generalProtocol) !== record.protocolDigest
+      && !(record.recovery?.kind === 'general-protocol' && await nativeProtocolQueryDigest(general.model.modelId, generalProtocol) === record.recovery.digest))) throw new Error('原模型或查询协议已变化，请恢复原配置后续查');
+  const isVolcengine = !generalExpected && record.providerConfigId === 'volcengine';
+  const isGrsai = !generalExpected && record.providerConfigId === 'grsai';
+  if (record.recovery?.kind === 'builtin-video' && (await nativeBuiltinVideoProtocolDigest(record.providerConfigId) !== record.protocolDigest
+    || record.recovery.digest !== record.protocolDigest)) throw new Error('原内置视频查询合同已变化，未重新提交生成');
   const baseUrl = general?.baseUrl || provider.baseUrl?.trim() || (isVolcengine ? VOLCENGINE_BASE_URL : isGrsai ? GRSAI_BASE_URL : APIMART_BASE_URL);
   if (isGrsai && await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(GRSAI_H3_PROTOCOL))) !== record.protocolDigest) {
     throw new Error('原视频查询协议已变化，请核对原任务，不会自动重投');
@@ -98,36 +127,39 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) controller.abort();
   });
   try {
-    const result = generalProtocol ? await (async () => {
-      const poll = resolvePoll(baseUrl, generalProtocol.poll!, generalProtocol.auth, nativeProtocolTaskIdContext(generalProtocol, record.remoteTaskId!));
-      const result = await pollResolvedModelProtocol(poll, provider.apiKey!, controller.signal, baseUrl);
+    const query = async (taskId: string) => generalProtocol ? await (async () => {
+      const catalogId = resolveProviderCatalogId(record.providerConfigId, provider);
+      const poll = { ...resolvePoll(baseUrl, generalProtocol.poll!, generalProtocol.auth, resolveNativeProtocolContext(generalProtocol, taskId, record.pollContext)),
+        ...(catalogId === 'relayonapi' && record.category === 'video' && usesRelayonModelProtocol(general!.model.modelId, general!.model.executionProfile)
+          ? { resultUrlFallbackPaths: [...new Set(RELAYON_VIDEO_RESULT_URL_PATHS)] } : {}) };
+      const result = await pollResolvedModelProtocol(poll, provider.apiKey!, controller.signal, baseUrl,
+        catalogId === 'minimax' && usesMinimaxModelProtocol(general!.model.modelId, general!.model.executionProfile) ? assertMinimaxQueryResponse : undefined);
       assertModelProtocolResult(record.category, result);
-      if (result.urls?.length !== 1) throw new Error('原任务返回的候选数量不符合已冻结的单产物合同；全部原结果仍在平台保留，未截断交付');
-      if (!result.urls?.[0]) throw new Error('原视频任务尚无可交付结果');
-      return { url: result.urls[0] };
+      if (!result.urls?.length || result.urls.length > 128) throw new Error('原媒体产物集合为空或超过安全上限，原任务保留');
+      return { urls: result.urls };
     })() : isVolcengine
-      ? await pollVolcengineVideoTask({ apiKey: provider.apiKey, baseUrl, taskId: record.remoteTaskId!, signal: controller.signal,
+      ? await pollVolcengineVideoTask({ apiKey: provider.apiKey, baseUrl, taskId, signal: controller.signal,
         maxDuration: VIDEO_POLL_MAX_DURATION_MS, onFailed: (status) => { remoteFailed = status; } })
       : isGrsai ? await (async () => {
-        if (!/^[A-Za-z0-9_-]{1,160}$/.test(record.remoteTaskId!)) throw new Error('原任务 ID 不能安全用于查询，请到原平台核对');
-        const poll = resolvePoll(baseUrl, GRSAI_H3_PROTOCOL.poll!, GRSAI_H3_PROTOCOL.auth, { submit: { id: record.remoteTaskId! } });
+        if (!/^[A-Za-z0-9_-]{1,160}$/.test(taskId)) throw new Error('原任务 ID 不能安全用于查询，请到原平台核对');
+        const poll = resolvePoll(baseUrl, GRSAI_H3_PROTOCOL.poll!, GRSAI_H3_PROTOCOL.auth, { submit: { id: taskId } });
         try {
           const result = await pollResolvedModelProtocol(poll, provider.apiKey!, controller.signal, baseUrl);
-          if (!result.urls?.[0]) throw new Error('原视频任务完成但没有可取回的文件');
-          return { url: result.urls[0] };
+          if (!result.urls?.length || result.urls.length > 128) throw new Error('原视频任务产物集合为空或超过安全上限');
+          return { urls: result.urls };
         } catch (error) {
           if (error instanceof PollTaskFailedError) remoteFailed = 'failed';
           throw error;
         }
-      })() : await pollTask<ApimartTaskResult<{ videos?: Array<{ url: string[] }>; images?: Array<{ url: string[] }> }>, { url: string }>({
-        fetchState: (signal) => fetchApimartTask(provider.apiKey!, baseUrl, record.remoteTaskId!, signal, true),
+      })() : await pollTask<ApimartTaskResult<{ videos?: Array<{ url: string[] }>; images?: Array<{ url: string[] }> }>, { urls: string[] }>({
+        fetchState: (signal) => fetchApimartTask(provider.apiKey!, baseUrl, taskId, signal, true),
         isComplete: (task) => {
           if (task.status !== 'completed') return null;
           const videos = task.result?.videos?.flatMap((item) => splitCommaSeparatedUrls(item.url)) ?? [];
           const images = task.result?.images?.flatMap((item) => splitCommaSeparatedUrls(item.url)) ?? [];
-          const url = videos[0] ?? images[0];
-          if (!url) throw new Error('原视频任务完成但没有可取回的文件');
-          return { url };
+          const urls = videos.length ? videos : images;
+          if (!urls.length || urls.length > 128) throw new Error('原视频任务产物集合为空或超过安全上限');
+          return { urls };
         },
         isFailed: (task) => {
           if (!['failed', 'cancelled', 'error'].includes(task.status ?? '')) return null;
@@ -135,8 +167,23 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
           return '原视频任务已确认失败或取消';
         }, interval: 3000, maxDuration: VIDEO_POLL_MAX_DURATION_MS, signal: controller.signal, onFetchError: 'throw',
       });
-    const { url } = result;
-    const completionTokens = 'completionTokens' in result && typeof result.completionTokens === 'number' ? result.completionTokens : undefined;
+    const savedIds = !generalExpected && record.pollContext?.taskIds;
+    const taskIds = Array.isArray(savedIds) ? savedIds : [record.remoteTaskId!];
+    if (!taskIds.length || taskIds.length > 128 || taskIds[0] !== record.remoteTaskId
+      || taskIds.some((id) => !isSafeNativeProtocolTaskId(id, [provider.apiKey!]))) throw new Error('原任务集合无效，未发起查询');
+    const results: Awaited<ReturnType<typeof query>>[] = [];
+    let failedTasks = 0;
+    for (const taskId of taskIds as string[]) {
+      assertCurrent(); remoteFailed = undefined;
+      try { results.push(await query(taskId)); }
+      catch (error) { if (remoteFailed || error instanceof PollTaskFailedError) { failedTasks++; continue; } throw error; }
+    }
+    if (!results.length) { remoteFailed = 'failed'; throw new Error('原媒体任务均已确认失败'); }
+    remoteFailed = undefined;
+    const urls = results.flatMap((result) => 'urls' in result ? result.urls : [result.url]);
+    if (urls.length > 128) throw new Error('原媒体完整候选集合超过安全上限，未截断交付');
+    const first = results[0];
+    const completionTokens = 'completionTokens' in first && typeof first.completionTokens === 'number' ? first.completionTokens : undefined;
     assertCurrent();
     if (!await isNativeMediaLeaseCurrent(record)) throw new Error('原媒体租约已变化，结果已保留');
     const { findBillingRunByTask, updateBillingRun } = await import('./billing/volcengineBillingService');
@@ -153,13 +200,16 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
     }
     assertCurrent();
     const label = useAppStore.getState().nodes.find((node) => node.id === record.nodeId)?.data.label || '媒体';
-    const saved = await persistMediaUrlToProjectData(url, record.canvasId, `ai-${record.category}`, label,
+    const files = [];
+    for (const url of urls) {
+      const saved = await persistMediaUrlToProjectData(url, record.canvasId, `ai-${record.category}`, label,
       { signal: controller.signal, assertCurrent, ...(isVolcengine ? {} : { mediaDownloadAccess: createMediaDownloadAccess(record.providerConfigId, baseUrl, generalProtocol?.auth ?? { type: 'bearer' }) }) });
-    assertCurrent();
-    if (!saved.filePath || !await isNativeMediaLeaseCurrent(record)) throw new Error('原媒体租约已变化或文件未保存，结果已保留');
-    const root = await getProjectDataDir(record.canvasId);
-    const relative = root && getRelativeAssetPath(saved.filePath, root);
-    if (!relative) throw new Error('视频素材不属于原项目，结果已保留');
+      assertCurrent();
+      if (!saved.filePath || !await isNativeMediaLeaseCurrent(record)) throw new Error('原媒体租约已变化或文件未保存，结果已保留');
+      files.push({ ...await captureNativeMediaLocalResult(record.canvasId, saved.filePath), category: record.category });
+    }
+    record = await retainNativeMediaOutputs(record, files, { completion: { taskCount: taskIds.length, failedTasks } });
+    const relative = files[0].relativePath;
     assertCurrent();
     if (record.origin?.deliveryMode === 'chat') {
       const { commitNativeMediaMessageDelivery } = await import('./nativeMediaDelivery');

@@ -1,5 +1,5 @@
 import { nativeGlobalAssetReferenceRows } from './nativeGlobalAssetReferences';
-import { nativeImageBatchResults } from './nativeImageBatch';
+import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 /** 新项目归档入口；旧项目继续使用 projectTransferService 的原路径。 */
 import { save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -68,10 +68,11 @@ async function readHistory(projectId: string, canvasIds: string[]): Promise<Proj
 /** 仅导出产物文件闭包；未交付/已结束跟踪的同步文件也保留，不导出任务执行权。 */
 export function nativeMediaResultsForArchive(records: readonly NativeMediaTaskRecord[], canvasIds: ReadonlySet<string>): NonNullable<ProjectModelTransferCapture['nativeMediaResults']> {
   return records.filter((record) => canvasIds.has(record.canvasId)).flatMap((record) => {
-    const paths = record.apimartImageBatch ? nativeImageBatchResults(record).map((file) => file.relativePath)
-      : (record.status === 'delivered' || record.submissionKind === 'sync' && !!record.localResult) && record.resultRelativePath ? [record.resultRelativePath] : [];
-    return paths.map((relativePath, ordinal) => ({ operationId: record.operationId, ...(record.apimartImageBatch ? { ordinal } : {}),
-      canvasId: record.canvasId, relativePath, category: record.category, providerConfigId: record.providerConfigId, createdAt: record.createdAt,
+    const cached = nativeMediaLocalOutputs(record);
+    const outputs = cached.length ? cached : record.status === 'delivered' && record.resultRelativePath
+      ? [{ relativePath: record.resultRelativePath, category: record.category }] : [];
+    return outputs.map((file, ordinal) => ({ operationId: record.operationId, ...(record.apimartImageBatch || record.localResults ? { ordinal } : {}),
+      canvasId: record.canvasId, relativePath: file.relativePath, category: file.category, providerConfigId: record.providerConfigId, createdAt: record.createdAt,
       ...(record.origin ? { origin: record.origin } : {}) }));
   }).sort((left, right) => left.operationId.localeCompare(right.operationId) || (left.ordinal ?? 0) - (right.ordinal ?? 0));
 }
@@ -91,7 +92,22 @@ export async function captureNativeProjectArchive(projectId: string): Promise<{ 
   const editorRecords = allEditors.filter((record) => activeCanvasIds.has(record.projectId));
   const retiredEditorRecords = allEditors.filter((record) => retiredCanvasIds.has(record.projectId));
   const { listNativeMediaTasks } = await import('./indexedDb/nativeMediaTaskRepository');
-  const nativeMediaResults = nativeMediaResultsForArchive(await listNativeMediaTasks(projectId), new Set([...activeCanvasIds, ...retiredCanvasIds]));
+  const mediaRecords = await listNativeMediaTasks(projectId), mediaCanvases = new Set([...activeCanvasIds, ...retiredCanvasIds]);
+  const nativeMediaResults = nativeMediaResultsForArchive(mediaRecords, mediaCanvases);
+  const { listNativeWorkflowRetainedOutputs } = await import('./nativeWorkflowTasks');
+  const { listNativeBuiltinImageRetainedOutputs } = await import('./nativeBuiltinImageTask');
+  const retainedOutputs = [...await listNativeWorkflowRetainedOutputs(projectId), ...await listNativeBuiltinImageRetainedOutputs(projectId)];
+  for (const output of retainedOutputs) {
+    const original = mediaRecords.find((row) => row.operationId === output.operationId && row.canvasId === output.canvasId);
+    if (!original || !mediaCanvases.has(output.canvasId)) throw new Error('已保留工作流产物缺少原画布或任务身份');
+    // sidecar保留服务商顺序，主结果集合可能按请求类别前置；文件闭包不将同一字节引用重复分配身份。
+    if (nativeMediaResults.some((file) => file.operationId === output.operationId && file.relativePath === output.relativePath && file.category === output.category)) continue;
+    nativeMediaResults.push({ operationId: output.operationId, ordinal: output.ordinal, canvasId: output.canvasId,
+      relativePath: output.relativePath, category: output.category, providerConfigId: original.providerConfigId, createdAt: original.createdAt,
+      ...(original.origin ? { origin: original.origin } : {}) });
+  }
+  nativeMediaResults.sort((left, right) => left.operationId.localeCompare(right.operationId) || (left.ordinal ?? 0) - (right.ordinal ?? 0)
+    || left.relativePath.localeCompare(right.relativePath));
   const { readNativeAssets } = await import('./indexedDb/nativeAssetRepository');
   const { listNativeEditorMediaArtifactsForProject } = await import('./indexedDb/nativeEditorMediaTaskRepository');
   const nativeEditorMediaArtifacts = await listNativeEditorMediaArtifactsForProject(projectId);

@@ -152,6 +152,8 @@ export async function runVideoEditorAiTransition(
   if (references.length < 2) throw new Error('缺少首帧或尾帧，无法生成转场');
   if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1) {
     const { submitNativeEditorTransition } = await import('./nativeEditorTransitionService');
+    assertCurrent?.();
+    if (useAppStore.getState().currentProjectId !== projectId) throw new Error('原剪辑画布已切换，未提交转场');
     return submitNativeEditorTransition(request, anchorNodeId, signal, assertCurrent);
   }
 

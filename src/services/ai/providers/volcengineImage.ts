@@ -7,7 +7,7 @@
  *  - 参考图通过 image 字段传递（非 image_urls）
  */
 import { parseResponseError, buildAuthHeaders } from '../httpUtils';
-import { extractModelName, normalizeSeedreamSize, parseGeneralImageResponse } from '../helpers';
+import { extractModelName, normalizeSeedreamSize, parseGeneralImageResponse, parseGeneralImageResponses } from '../helpers';
 import { mapImageDimensions } from '../../aiDimensions';
 import { getImageCapability } from '../mediaModelCapabilities';
 import { runBatchTasks } from '../batchUtils';
@@ -16,6 +16,7 @@ import { corsSafeFetch } from '../httpTransport';
 import { mapImageParameters } from '../imageParameterMappings';
 import { quoteVolcengineImage } from '../../billing/volcenginePricing';
 import { createBillingRun, updateBillingRun } from '../../billing/volcengineBillingService';
+import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
 
 export interface VolcengineImageParams {
   apiKey: string;
@@ -29,12 +30,14 @@ export interface VolcengineImageParams {
   aspectRatio: string;
   imageUrls?: string[];
   nodeId?: string;
+  beforeSubmit?: () => void | Promise<void>;
+  collectCandidates?: boolean;
 }
 
 export async function generateVolcengineImage(
   params: VolcengineImageParams,
   signal?: AbortSignal,
-): Promise<{ url: string; width: number; height: number }> {
+): Promise<{ url: string; width: number; height: number; additionalResults?: Array<{ url: string; width: number; height: number }> }> {
   const { apiKey, baseUrl, model, provider, prompt, imageSize, aspectRatio, imageUrls = [] } = params;
 
   const modelName = extractModelName(model, provider);
@@ -76,7 +79,9 @@ export async function generateVolcengineImage(
   });
 
   let explicitlyRejected = false;
+  let requestSent = false;
   try {
+    await params.beforeSubmit?.(); signal?.throwIfAborted(); requestSent = true;
     const response = await corsSafeFetch(apiUrl, {
       method: 'POST', headers: buildAuthHeaders(apiKey), body: JSON.stringify(requestBody), signal,
     });
@@ -85,16 +90,22 @@ export async function generateVolcengineImage(
     const json = await response.json();
     const imageUrl = parseGeneralImageResponse(json);
     if (!imageUrl) throw new Error('图片生成返回结果为空');
+    const candidates = params.collectCandidates ? parseGeneralImageResponses(json) : [imageUrl];
+    const completedQuote = params.collectCandidates ? quoteVolcengineImage({ modelId: modelName, inputImageCount: imageUrls.length,
+      outputCount: candidates.length, width: adaptiveRatio ? undefined : dimensions.width, height: adaptiveRatio ? undefined : dimensions.height }) : quote;
     run = await updateBillingRun(run, {
-      status: 'succeeded', finishedAt: Date.now(), calculatedMicros: quote.amountMicros,
-      amountConfidence: quote.amountMicros === null ? 'unknown' : 'calculated',
+      status: 'succeeded', finishedAt: Date.now(), calculatedMicros: completedQuote.amountMicros,
+      amountConfidence: completedQuote.amountMicros === null ? 'unknown' : 'calculated',
+      ...(params.collectCandidates ? { inputJson: JSON.stringify({ imageSize: requestSize, aspectRatio, width: dimensions.width, height: dimensions.height,
+        inputImageCount: imageUrls.length, outputCountRequested: 1, outputCountSucceeded: candidates.length }) } : {}),
     });
-    return { url: imageUrl, width: dimensions.width, height: dimensions.height };
+    return { url: imageUrl, width: dimensions.width, height: dimensions.height,
+      ...(params.collectCandidates ? { additionalResults: candidates.slice(1).map((url) => ({ url, ...dimensions })) } : {}) };
   } catch (error) {
     await updateBillingRun(run, {
-      status: explicitlyRejected ? 'failed' : 'unknown', finishedAt: Date.now(),
-      calculatedMicros: explicitlyRejected ? 0 : null,
-      amountConfidence: explicitlyRejected ? 'calculated' : 'unknown',
+      status: explicitlyRejected || !requestSent ? 'failed' : 'unknown', finishedAt: Date.now(),
+      calculatedMicros: explicitlyRejected || !requestSent ? 0 : null,
+      amountConfidence: explicitlyRejected || !requestSent ? 'calculated' : 'unknown',
       errorMessage: error instanceof Error ? error.message.slice(0, 500) : '图片请求失败',
     });
     throw error;
@@ -107,6 +118,20 @@ export async function generateVolcengineImagesBatch(
   signal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.max(1, Math.floor(count));
+  const { useAppStore } = await import('../../../store/useAppStore');
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(params.beforeSubmit)) {
+    const { runNativeBuiltinImageTask } = await import('../../nativeBuiltinImageTask');
+    const { createMediaDownloadAccess } = await import('../mediaDownloadAccess');
+    return runNativeBuiltinImageTask({ nodeId: params.nodeId, mode: 'volcengine', modelId: extractModelName(params.model, params.provider),
+      connectionId: params.provider, baseUrl: params.baseUrl, expectedCount: requestedCount,
+      secrets: [params.apiKey],
+      requestMaterial: [params.model, params.prompt, params.imageSize, params.aspectRatio, params.imageUrls], beforeSubmit: params.beforeSubmit, signal,
+      mediaDownloadAccess: createMediaDownloadAccess(params.provider, params.baseUrl, { type: 'bearer' }),
+      execute: async (beforePost) => {
+        const result = await generateVolcengineImage({ ...params, beforeSubmit: beforePost, collectCandidates: true }, signal);
+        return { urls: [result.url, ...(result.additionalResults ?? []).map((file) => file.url)] };
+      } });
+  }
   const settled = await runBatchTasks(
     requestedCount,
     3,

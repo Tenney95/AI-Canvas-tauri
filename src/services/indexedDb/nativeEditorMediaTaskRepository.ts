@@ -5,6 +5,10 @@ import { getVideoTrack, relayoutSequential } from '../../types/videoEditor';
 import { configValuesEqual } from '../configPatch';
 import { validateNativeVideoEditorRecord } from '../videoEditorRecordValidation';
 import { safeExchangePath } from '../projectExchangeDomain';
+import type { NativeMediaLocalOutput } from '../../types/media';
+import { validateNativeMediaLocalOutputs } from '../nativeMediaCollection';
+import { readNativeMediaLocalResult } from '../nativeMediaLocalResult';
+import { isSafeNativeProtocolTaskId, validateNativeProtocolContext } from '../nativeProtocolContext';
 import { CANVASES, EPISODES, EXCHANGE, REVISIONS, ROOTS, TRANSFER, assertNoPendingNativeSharedSync,
   isNativeCanvasId, isNativeEpisodeId, isNativeProjectId, openNativeProjectDatabase, readCanvasTarget, transact, type NativeProjectOptions } from './nativeProjectRepository';
 
@@ -18,6 +22,8 @@ export interface NativeEditorMediaTask {
   projectEpoch: number; canvasEpoch: number; operationId: string; requestId: string; anchorNodeId: string;
   editorId: string; beforeClipId: string; expectedEditor: VideoEditorProjectRecord;
   modelRef: string; providerConfigId: string; providerBase: string; protocolDigest: string;
+  queryDigest?: string; submissionKind?: 'async' | 'sync'; pollContext?: Record<string, unknown>; localResults?: NativeMediaLocalOutput[];
+  completion?: { taskCount: number; failedTasks: number };
   status: 'prepared' | 'submitted' | 'outcome-unknown' | 'failed' | 'delivered' | 'reviewed'; remoteTaskId?: string;
   lease: string; submissionLease: string; revision: number; resultPath?: string; resultDuration?: number; createdAt: number; updatedAt: number;
 }
@@ -35,12 +41,25 @@ function validate(row: NativeEditorMediaTask): NativeEditorMediaTask {
     || row.expectedEditor.nodeId !== row.anchorNodeId
     || row.expectedEditor.automationRevision !== undefined && (!Number.isSafeInteger(row.expectedEditor.automationRevision)
       || row.expectedEditor.automationRevision < 0 || row.expectedEditor.automationRevision >= Number.MAX_SAFE_INTEGER)
-    || row.remoteTaskId !== undefined && !/^[A-Za-z0-9_-]{1,160}$/.test(row.remoteTaskId)
-    || row.status === 'submitted' && !row.remoteTaskId || row.status === 'delivered' && (!row.remoteTaskId || !row.resultPath)
+    || row.remoteTaskId !== undefined && !isSafeNativeProtocolTaskId(row.remoteTaskId)
+    || row.queryDigest !== undefined && !/^[a-f0-9]{64}$/.test(row.queryDigest)
+    || row.submissionKind !== undefined && !['async', 'sync'].includes(row.submissionKind)
+    || row.submissionKind === 'sync' && row.remoteTaskId !== undefined
+    || row.status === 'submitted' && !(row.remoteTaskId || row.submissionKind === 'sync' && row.localResults?.length)
+    || row.status === 'delivered' && (!(row.remoteTaskId || row.submissionKind === 'sync' && row.localResults?.length) || !row.resultPath)
     || row.resultPath !== undefined && (safeExchangePath(row.resultPath) !== row.resultPath || !Number.isFinite(row.resultDuration) || row.resultDuration! <= 0)
     || Object.keys(row).some((key) => !['projectId', 'kind', 'ownerProjectId', 'canvasId', 'episodeId', 'projectEpoch', 'canvasEpoch', 'operationId',
       'requestId', 'anchorNodeId', 'editorId', 'beforeClipId', 'expectedEditor', 'modelRef', 'providerConfigId', 'providerBase', 'protocolDigest',
-      'status', 'remoteTaskId', 'lease', 'submissionLease', 'revision', 'resultPath', 'resultDuration', 'createdAt', 'updatedAt'].includes(key))) throw new Error('原转场回执损坏，不能自动续接');
+      'status', 'remoteTaskId', 'lease', 'submissionLease', 'revision', 'resultPath', 'resultDuration', 'createdAt', 'updatedAt',
+      'queryDigest', 'submissionKind', 'pollContext', 'localResults', 'completion'].includes(key))) throw new Error('原转场回执损坏，不能自动续接');
+  if (row.pollContext) validateNativeProtocolContext(row.pollContext);
+  if (row.localResults) {
+    validateNativeMediaLocalOutputs(row.localResults);
+    if (row.localResults.some((file) => file.category !== 'video') || row.resultPath && row.localResults[0].relativePath !== row.resultPath) throw new Error('转场候选与原视频不一致');
+  }
+  if (row.completion && (!row.localResults || !Number.isSafeInteger(row.completion.taskCount) || row.completion.taskCount < 1 || row.completion.taskCount > 128
+    || !Number.isSafeInteger(row.completion.failedTasks) || row.completion.failedTasks < 0 || row.completion.failedTasks >= row.completion.taskCount
+    || Object.keys(row.completion).some((key) => !['taskCount', 'failedTasks'].includes(key)))) throw new Error('原转场完成统计无效');
   const url = new URL(row.providerBase);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('原连接地址无法安全恢复');
   validateNativeVideoEditorRecord(row.expectedEditor, row.canvasId);
@@ -78,7 +97,7 @@ export async function listNativeEditorMediaTasks(context: Readonly<CanvasContext
   }, options);
 }
 export async function prepareNativeEditorMediaTask(input: { context: Readonly<CanvasContext>; requestId: string; anchorNodeId: string;
-  beforeClipId: string; modelRef: string; providerConfigId: string; providerBase: string; protocolDigest: string },
+  beforeClipId: string; modelRef: string; providerConfigId: string; providerBase: string; protocolDigest: string; queryDigest?: string; submissionKind?: 'async' | 'sync' },
 options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
   const fixed = structuredClone(input), operationId = crypto.randomUUID(), now = Date.now();
   return useDb('readwrite', async (tx) => {
@@ -95,18 +114,29 @@ options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
       canvasId: fixed.context.canvasId, episodeId: fixed.context.episodeId, projectEpoch: fixed.context.projectEpoch,
       canvasEpoch: fixed.context.canvasEpoch, operationId, requestId: fixed.requestId, anchorNodeId: fixed.anchorNodeId,
       editorId, beforeClipId: fixed.beforeClipId, expectedEditor, modelRef: fixed.modelRef, providerConfigId: fixed.providerConfigId,
-      providerBase: fixed.providerBase, protocolDigest: fixed.protocolDigest, status: 'prepared', lease: crypto.randomUUID(), submissionLease: crypto.randomUUID(), revision: 0, createdAt: now, updatedAt: now });
+      providerBase: fixed.providerBase, protocolDigest: fixed.protocolDigest, ...(fixed.queryDigest ? { queryDigest: fixed.queryDigest } : {}),
+      ...(fixed.submissionKind ? { submissionKind: fixed.submissionKind } : {}), status: 'prepared', lease: crypto.randomUUID(), submissionLease: crypto.randomUUID(), revision: 0, createdAt: now, updatedAt: now });
     await request(store.add(row)); return row;
   }, options);
 }
 export async function recordNativeEditorMediaSubmission(row: NativeEditorMediaTask,
-  outcome: { taskId: string } | { unknown: true } | { notStarted: true }, options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
+  outcome: { taskId: string; pollContext?: Record<string, unknown> } | { unknown: true } | { notStarted: true }, options: NativeProjectOptions = {}): Promise<NativeEditorMediaTask> {
+  if ('taskId' in outcome && outcome.pollContext) validateNativeProtocolContext(outcome.pollContext);
   return useDb('readwrite', async (tx) => {
     const store = tx.objectStore(EXCHANGE), current = validate(await request(store.get(row.projectId)) as NativeEditorMediaTask);
+    if ('unknown' in outcome && current.status === 'prepared') {
+      const original: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: current.ownerProjectId,
+        canvasId: current.canvasId, episodeId: current.episodeId, projectEpoch: current.projectEpoch,
+        canvasEpoch: current.canvasEpoch, canvasRevision: 0, runtimeEpoch: 'editor-submit' };
+      await target(tx, original);
+      if (current.lease !== row.lease || current.revision !== row.revision
+        || !configValuesEqual(await editor(tx, original, current.editorId), current.expectedEditor)) throw new Error('原剪辑工程已变化，未提交请求');
+    }
     if (current.submissionLease !== row.submissionLease || current.status === 'delivered' || current.status === 'failed'
-      || current.remoteTaskId && (!('taskId' in outcome) || current.remoteTaskId !== outcome.taskId)) throw new Error('原转场任务回执已变化');
+      || current.remoteTaskId && (!('taskId' in outcome) || current.remoteTaskId !== outcome.taskId
+        || !configValuesEqual(current.pollContext, outcome.pollContext)) || current.submissionKind === 'sync' && 'taskId' in outcome) throw new Error('原转场任务回执已变化');
     const next = validate({ ...current, status: current.status === 'reviewed' ? 'reviewed' : 'taskId' in outcome ? 'submitted' : 'unknown' in outcome ? 'outcome-unknown' : 'failed',
-      ...('taskId' in outcome ? { remoteTaskId: outcome.taskId } : {}), revision: current.revision + 1, updatedAt: Date.now() });
+      ...('taskId' in outcome ? { remoteTaskId: outcome.taskId, ...(outcome.pollContext ? { pollContext: structuredClone(outcome.pollContext) } : {}) } : {}), revision: current.revision + 1, updatedAt: Date.now() });
     await request(store.put(next)); return next;
   }, options);
 }
@@ -116,11 +146,33 @@ export async function claimNativeEditorMediaTask(context: Readonly<CanvasContext
     await target(tx, context);
     const store = tx.objectStore(EXCHANGE), row = validate(await request(store.get(`${PREFIX}${operationId}`)) as NativeEditorMediaTask);
     if (row.ownerProjectId !== context.projectId || row.canvasId !== context.canvasId || row.projectEpoch !== context.projectEpoch
-      || row.canvasEpoch !== context.canvasEpoch || row.episodeId !== context.episodeId || row.status !== 'submitted' || !row.remoteTaskId) {
+      || row.canvasEpoch !== context.canvasEpoch || row.episodeId !== context.episodeId || row.status !== 'submitted'
+      || !(row.remoteTaskId || row.submissionKind === 'sync' && row.localResults?.length)) {
       throw new Error('原转场不能自动续查；请先核对平台原任务');
     }
     const next = validate({ ...row, lease: crypto.randomUUID(), revision: row.revision + 1, updatedAt: Date.now() });
     await request(store.put(next)); return next;
+  }, options);
+}
+/** 付费返回的全部候选先耐久保留；跨集只影响后续工程投递，不伪造同步任务ID。 */
+export async function retainNativeEditorMediaOutputs(row: NativeEditorMediaTask, outputs: readonly NativeMediaLocalOutput[],
+  options: NativeProjectOptions & { completion?: NativeEditorMediaTask['completion'] } = {}): Promise<NativeEditorMediaTask> {
+  const files = structuredClone(outputs) as NativeMediaLocalOutput[]; validateNativeMediaLocalOutputs(files);
+  if (files.some((file) => file.category !== 'video')) throw new Error('剪辑转场只能保留视频候选');
+  for (const file of files) await readNativeMediaLocalResult(row.canvasId, file);
+  return useDb('readwrite', async (tx) => {
+    const store = tx.objectStore(EXCHANGE), current = validate(await request(store.get(row.projectId)) as NativeEditorMediaTask);
+    if (current.lease !== row.lease || current.submissionLease !== row.submissionLease) throw new Error('原转场保留租约已变化');
+    if (current.localResults) { if (!configValuesEqual(current.localResults, files) || !configValuesEqual(current.completion, options.completion)) throw new Error('原转场候选已冻结'); return current; }
+    if (current.revision !== row.revision || (current.submissionKind === 'sync' ? !['prepared', 'outcome-unknown'].includes(current.status)
+      : current.status !== 'submitted' || !current.remoteTaskId)) throw new Error('原转场回执已变化');
+    const { project, canvas } = await readCanvasTarget(tx, row.ownerProjectId, row.canvasId);
+    if (project.epoch !== row.projectEpoch || canvas.epoch !== row.canvasEpoch || canvas.episodeId !== row.episodeId) throw new Error('原转场持久身份已变化');
+    const revision = await request(tx.objectStore(REVISIONS).get(row.ownerProjectId)) as { projectId: string; changeRevision: number } | undefined;
+    if (!revision || revision.projectId !== row.ownerProjectId || !Number.isSafeInteger(revision.changeRevision) || revision.changeRevision >= Number.MAX_SAFE_INTEGER) throw new Error('项目版本无效');
+    const next = validate({ ...current, localResults: files, ...(options.completion ? { completion: structuredClone(options.completion) } : {}),
+      status: 'submitted', revision: current.revision + 1, updatedAt: Date.now() });
+    await request(store.put(next)); await request(tx.objectStore(REVISIONS).put({ ...revision, changeRevision: revision.changeRevision + 1 })); return next;
   }, options);
 }
 export async function retainNativeEditorMediaOutput(context: Readonly<CanvasContext>, row: NativeEditorMediaTask,
@@ -145,8 +197,9 @@ export async function listNativeEditorMediaArtifactsForProject(projectId: string
   return useDb('readonly', async (tx) => {
     const rows = await request(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound(PREFIX, `${PREFIX}\uffff`))) as NativeEditorMediaTask[];
     if (rows.length > 100_000) throw new Error('转场账本超过核验上限');
-    return rows.map(validate).filter((row) => row.ownerProjectId === projectId && row.resultPath)
-      .map((row) => ({ operationId: row.operationId, canvasId: row.canvasId, path: row.resultPath! }));
+    return rows.map(validate).filter((row) => row.ownerProjectId === projectId)
+      .flatMap((row) => [...new Set([...(row.localResults?.map((file) => file.relativePath) ?? []), ...(row.resultPath ? [row.resultPath] : [])])]
+        .map((path) => ({ operationId: row.operationId, canvasId: row.canvasId, path })));
   }, options);
 }
 /** 用户已核对平台或决定只保留素材；此状态不代表远端已取消，也不删除原 ID 和产物。 */

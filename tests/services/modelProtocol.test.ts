@@ -155,6 +155,24 @@ describe('structured submission failures', () => {
       .toEqual({ urls: ['https://cdn.example/result.png'] });
   });
 
+  it('保留已经收到的原任务 ID，即使恢复投影被安全校验拒绝也不重新提交', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'accepted-original', token: 'private-query-value' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(submitModelProtocol({ protocol, apiKey: 'fixture', baseUrl: 'https://gateway.example/v1', variables: {},
+      captureRecoveryContext: () => { throw new Error('不可持久化凭据'); } })).rejects.toMatchObject({ nativeTaskId: 'accepted-original' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+  it('恢复投影错误的 ID fallback 不保存服务商回显的 Key 或地址', async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    for (const id of ['private-credential', 'https://untrusted.invalid/id', 'C:/private/path']) {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ id }));
+      const error = await submitModelProtocol({ protocol, apiKey: 'private-credential', baseUrl: 'https://gateway.example/v1', variables: {},
+        captureRecoveryContext: () => { throw new Error('unsafe context'); } }).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error); expect(error).not.toHaveProperty('nativeTaskId');
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('does not infer failure from a numeric provider code or override a usable result with unrelated error metadata', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ code: 500, id: 'accepted-original',
       error: { code: 'rate_limit_exceeded' } }))

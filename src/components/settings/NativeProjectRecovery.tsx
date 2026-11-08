@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
+import { describeNativeEditorRecovery, type NativeMediaRecoverySummary } from '../../services/nativeMediaRecoverySummary';
 
 type RecoveryKind = 'import' | 'update' | 'update-abort' | 'export' | 'shared' | 'shared-abort' | 'media' | 'media-inspect' | 'media-review' | 'media-list';
 type RecoveryStatus = { kind: 'success' | 'warning' | 'error'; text: string };
@@ -14,10 +15,21 @@ export default function NativeProjectRecovery() {
   const [status, setStatus] = useState<RecoveryStatus | null>(null);
   const [reviewableMedia, setReviewableMedia] = useState(false);
   const [reviewableEditor, setReviewableEditor] = useState(false);
-  const [mediaRecords, setMediaRecords] = useState<Array<{ operationId: string; nodeId: string; status: string; editor?: boolean }>>([]);
+  const [resumeGenerationStage, setResumeGenerationStage] = useState(false);
+  const [mediaRecords, setMediaRecords] = useState<Array<{ operationId: string; nodeId: string; status: string; editor?: boolean; canContinueGenerationStage?: boolean }>>([]);
   const running = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const recoveryText = (summary: NativeMediaRecoverySummary) => [
+    t('已保存 {count} 个产物，原计划 {expected} 个；失败任务 {failed} 个，失败提交 {rejected} 次，未知提交 {unknown} 次，未开始 {notStarted} 次，迟到任务 {late} 个。', {
+      count: String(summary.resultCount), expected: String(summary.expectedCount), failed: String(summary.failedTasks), rejected: String(summary.failedSubmissions),
+      unknown: String(summary.unknownSubmissions), notStarted: String(summary.notStartedSubmissions), late: String(summary.lateTaskCount) }),
+    summary.stageStates ? t('歌词阶段：{lyrics}；音乐阶段：{music}。', summary.stageStates) : '',
+    summary.cachedOnly ? t('原产物已保存在本机，可继续交付，不会再次调用服务商。') : '',
+    summary.canContinueGenerationStage ? t('后续阶段尚未发送，继续可能产生费用。') : '',
+    summary.unknownSubmissions > 0 ? t('原任务提交状态未知，请先到对应平台核对；本机不能判断是否已扣费或生成。') : '',
+    summary.inspectionIncomplete ? t('原恢复阶段无法完整核验，请保留回执并先核对原平台。') : '',
+  ].filter(Boolean).join(' ');
 
   const recover = async (kind: RecoveryKind) => {
     const id = operationId.trim();
@@ -73,46 +85,42 @@ export default function NativeProjectRecovery() {
         const context = captureLegacyCanvasContext(useAppStore.getState());
         if (!context || context.modelGeneration !== 1) throw new Error(t('请先打开原任务画布'));
         const { listNativeMediaTasks } = await import('../../services/indexedDb/nativeMediaTaskRepository');
-        const rows = await listNativeMediaTasks(context.projectId);
-        const { nativeImageBatchSummary } = await import('../../services/nativeImageBatch');
+        const { readNativeMediaRecoverySummary } = await import('../../services/nativeMediaRecoverySummary');
         const { listNativeEditorTransitions } = await import('../../services/nativeEditorTransitionService');
-        const editors = await listNativeEditorTransitions();
+        const [rows, editors] = await Promise.all([listNativeMediaTasks(context.projectId), listNativeEditorTransitions()]);
+        const views = await Promise.all(rows.filter((row) => row.canvasId === context.canvasId && row.episodeId === context.episodeId
+          && row.projectEpoch === context.projectEpoch && row.canvasEpoch === context.canvasEpoch).map(async (row) => {
+          const summary = await readNativeMediaRecoverySummary(row);
+          return { operationId: row.operationId, nodeId: row.nodeId, status: `${row.status} · ${recoveryText(summary)}`,
+            canContinueGenerationStage: summary.canContinueGenerationStage };
+        }));
         if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error(t('画布已切换，请重新查看'));
         if (mounted.current) {
-          setMediaRecords([...rows.filter((row) => row.canvasId === context.canvasId && (row.modelRef || ['volcengine', 'apimart', 'grsai', 'comfyui'].includes(row.providerConfigId)))
-            .map((row) => { const batch = nativeImageBatchSummary(row); return { operationId: row.operationId, nodeId: row.nodeId,
-              status: batch ? `${row.status} · ${t('已保存 {count} 张候选', { count: String(batch.candidateCount) })}${batch.lateTaskCount ? ` · ${t('{count} 个迟到原任务待核对', { count: String(batch.lateTaskCount) })}` : ''}`
-                : row.submissionKind === 'sync' && row.localResult && row.status === 'submitted' ? t('本机待交付') : row.status }; }),
-          ...editors.map((row) => ({ operationId: row.operationId, nodeId: row.anchorNodeId, status: row.status, editor: true }))]);
+          setMediaRecords([...views,
+          ...editors.map((row) => { const summary = describeNativeEditorRecovery(row); return { operationId: row.operationId, nodeId: row.anchorNodeId,
+            status: `${summary.partial ? '⚠ ' : ''}${row.status} · ${recoveryText(summary)}`, editor: true }; })]);
           setStatus({ kind: 'success', text: t('已读取当前画布的媒体和剪辑任务回执') });
         }
       } else if (kind === 'media-inspect') {
         const { listNativeEditorTransitions } = await import('../../services/nativeEditorTransitionService');
         const editor = (await listNativeEditorTransitions()).find((row) => row.operationId === id);
         if (editor) {
+          const summary = describeNativeEditorRecovery(editor);
           if (mounted.current) {
-            setReviewableMedia(false); setReviewableEditor(!['delivered', 'failed', 'reviewed'].includes(editor.status));
-            setStatus({ kind: 'warning', text: t('剪辑任务状态：{state}。请先核对原平台和已保存产物；原视频节点已删除时，可结束本机跟踪，远端任务不会因此取消。', { state: editor.status }) });
+            setReviewableMedia(false); setReviewableEditor(!['delivered', 'failed', 'reviewed'].includes(editor.status)); setResumeGenerationStage(false);
+            setStatus({ kind: summary.partial || summary.needsReview ? 'warning' : 'success', text: `${t('剪辑任务状态：{state}。请先核对原平台和已保存产物；原视频节点已删除时，可结束本机跟踪，远端任务不会因此取消。', { state: editor.status })} ${recoveryText(summary)}` });
           }
           return;
         }
         const { inspectNativeVolcengineTask } = await import('../../services/nativeVolcengineRecovery');
         const record = await inspectNativeVolcengineTask(id);
-        const { nativeImageBatchSummary } = await import('../../services/nativeImageBatch');
-        const batch = nativeImageBatchSummary(record);
-        const unknownSubmission = record.status === 'prepared' || record.status === 'outcome-unknown';
-        const needsReview = unknownSubmission || record.status === 'submitted';
+        const { readNativeMediaRecoverySummary } = await import('../../services/nativeMediaRecoverySummary');
+        const summary = await readNativeMediaRecoverySummary(record);
         if (mounted.current) {
           setReviewableEditor(false);
-          setReviewableMedia(needsReview);
-          setStatus({ kind: needsReview || batch?.partial ? 'warning' : 'success', text: batch
-            ? t('原批次已保存 {count} 张候选，{failed} 个任务失败，{rejected} 次提交失败，{unknown} 次提交仍需平台核对，{notStarted} 次未启动，{late} 个迟到原任务待核对。', {
-              count: String(batch.candidateCount), failed: String(batch.failedTasks), rejected: String(batch.failedSubmissions), unknown: String(batch.unknownSubmissions), notStarted: String(batch.notStartedSubmissions), late: String(batch.lateTaskCount) })
-            : unknownSubmission
-            ? t('原任务提交状态未知，请先到对应平台核对；本机不能判断是否已扣费或生成。')
-            : record.submissionKind === 'sync' && record.localResult && ['submitted', 'reviewed'].includes(record.status)
-              ? t('原产物已保存在本机，可继续交付，不会再次调用服务商。')
-            : t('原任务状态：{state}。', { state: record.status }) });
+          setReviewableMedia(summary.reviewable); setResumeGenerationStage(summary.canContinueGenerationStage);
+          setStatus({ kind: summary.needsReview || summary.partial || summary.inspectionIncomplete ? 'warning' : 'success',
+            text: `${t('原任务状态：{state}。', { state: record.status })} ${recoveryText(summary)}` });
         }
       } else if (kind === 'media-review') {
         if (!reviewableMedia && !reviewableEditor) throw new Error(t('请先核对原任务状态'));
@@ -129,6 +137,7 @@ export default function NativeProjectRecovery() {
         await reviewNativeMediaTask(id, context);
         if (mounted.current) {
           setReviewableMedia(false);
+          setResumeGenerationStage(false);
           setStatus({ kind: 'warning', text: t('已结束此原操作的本机跟踪并解除防重；原记录与产物保留，远端不会因此取消。原请求仍可能迟到或已扣费，请勿未经核对重新生成。') });
         }
       } else if (kind === 'media') {
@@ -136,19 +145,26 @@ export default function NativeProjectRecovery() {
         const editor = (await listNativeEditorTransitions()).find((row) => row.operationId === id);
         if (editor) {
           await recoverNativeEditorTransition(id, editor.anchorNodeId);
-          if (mounted.current) setStatus({ kind: 'success', text: t('已取回原剪辑产物，请重新打开原工程。') });
+          const completed = (await listNativeEditorTransitions()).find((row) => row.operationId === id);
+          const summary = describeNativeEditorRecovery(completed ?? editor);
+          if (mounted.current) setStatus({ kind: summary.partial ? 'warning' : 'success',
+            text: `${t('已取回原剪辑产物，请重新打开原工程。')} ${recoveryText(summary)}` });
           return;
         }
         const { resumeNativeVolcengineTask, inspectNativeVolcengineTask } = await import('../../services/nativeVolcengineRecovery');
         const original = await inspectNativeVolcengineTask(id);
-        await resumeNativeVolcengineTask(id);
-        const { nativeImageBatchSummary } = await import('../../services/nativeImageBatch');
+        const { readNativeMediaRecoverySummary } = await import('../../services/nativeMediaRecoverySummary');
+        const before = await readNativeMediaRecoverySummary(original);
+        if (before.canContinueGenerationStage && !resumeGenerationStage) {
+          if (mounted.current) { setResumeGenerationStage(true); setStatus({ kind: 'warning', text: t('后续阶段尚未发送，继续可能产生费用。') }); }
+          return;
+        }
+        await resumeNativeVolcengineTask(id, undefined, { allowUnstartedStage: before.canContinueGenerationStage && resumeGenerationStage });
         const { listNativeMediaTasks } = await import('../../services/indexedDb/nativeMediaTaskRepository');
         const committed = (await listNativeMediaTasks(original.ownerProjectId)).find((record) => record.operationId === id);
-        const batch = committed && nativeImageBatchSummary(committed);
-        if (mounted.current) setStatus(batch ? { kind: batch.partial ? 'warning' : 'success', text: t('已完整交付 {count} 张已确认候选；{failed} 个任务失败，{rejected} 次提交失败，{unknown} 次提交仍需平台核对，{notStarted} 次未启动，{late} 个迟到原任务待核对。请返回原画布或对话查看。', {
-          count: String(batch.candidateCount), failed: String(batch.failedTasks), rejected: String(batch.failedSubmissions), unknown: String(batch.unknownSubmissions), notStarted: String(batch.notStartedSubmissions), late: String(batch.lateTaskCount) }) }
-          : { kind: 'success', text: t('原媒体产物已保存，请返回原画布或对话查看。') });
+        const summary = committed && await readNativeMediaRecoverySummary(committed);
+        if (mounted.current) { setResumeGenerationStage(false); setStatus({ kind: summary?.partial ? 'warning' : 'success',
+          text: `${t('原媒体产物已保存，请返回原画布或对话查看。')}${summary ? ` ${recoveryText(summary)}` : ''}` }); }
       } else {
         const { abortNativeSharedAssetSync } = await import('../../services/indexedDb/nativeSharedAssetSyncRepository');
         await abortNativeSharedAssetSync(id);
@@ -167,7 +183,7 @@ export default function NativeProjectRecovery() {
     <p className="ui-hint mt-2">{t('输入失败提示中的原操作 ID，继续导入、恢复共享素材或核验导出文件。原有项目和暂存材料会保留。')}</p>
     <label className="mt-2 block text-xs text-canvas-text-secondary" htmlFor="native-project-recovery-id">{t('原操作 ID')}</label>
     <input id="native-project-recovery-id" className="ui-input mt-1 w-full" value={operationId} maxLength={128}
-      disabled={busy !== null} onChange={(event) => { setOperationId(event.target.value); setStatus(null); setReviewableMedia(false); setReviewableEditor(false); }} />
+      disabled={busy !== null} onChange={(event) => { setOperationId(event.target.value); setStatus(null); setReviewableMedia(false); setReviewableEditor(false); setResumeGenerationStage(false); }} />
     <div className="mt-2 flex flex-wrap gap-2">
       <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy !== null || !operationId.trim()}
         onClick={() => void recover('import')}>{busy === 'import' ? t('正在继续导入…') : t('继续导入')}</button>
@@ -190,11 +206,11 @@ export default function NativeProjectRecovery() {
       {busy === 'media-inspect' ? t('正在核对原任务…') : t('核对原媒体任务状态')}
     </button><button type="button" className="ui-btn ui-btn--secondary ui-btn--sm"
       disabled={busy !== null || !operationId.trim()} onClick={() => void recover('media')}>
-      {busy === 'media' ? t('正在取回原产物…') : t('继续取回原媒体产物')}
+      {busy === 'media' ? t('正在取回原产物…') : resumeGenerationStage ? t('继续原生成阶段（可能产生费用）') : t('继续取回原媒体产物')}
     </button></div>
     {mediaRecords.length > 0 && <ul className="mt-2 space-y-1">{mediaRecords.map((row) => <li key={row.operationId}>
       <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy !== null}
-        onClick={() => { setOperationId(row.operationId); setStatus(null); setReviewableMedia(false); setReviewableEditor(false); }}>
+        onClick={() => { setOperationId(row.operationId); setStatus(null); setReviewableMedia(false); setReviewableEditor(false); setResumeGenerationStage(!!row.canContinueGenerationStage); }}>
         {row.editor ? `${t('剪辑')} · ` : ''}{row.nodeId} · {row.status} · {row.operationId}
       </button>
     </li>)}</ul>}

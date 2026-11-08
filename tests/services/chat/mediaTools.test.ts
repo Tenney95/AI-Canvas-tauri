@@ -17,6 +17,11 @@ import { DEFAULT_AGENT_TASK_BUDGET, type AgentTask } from '../../../src/types/ag
 import type { MediaGenerationResult } from '../../../src/types/media';
 import { imageBatchArtifactId } from '../../../src/services/imageBatchService';
 import * as chatHistory from '../../../src/services/chat/chatHistoryService';
+import * as nativeMedia from '../../../src/services/indexedDb/nativeMediaTaskRepository';
+import * as nativeRecovery from '../../../src/services/nativeVolcengineRecovery';
+import * as recoverySummary from '../../../src/services/nativeMediaRecoverySummary';
+import { evaluateAgentToolPolicy } from '../../../src/services/chat/policyEngine';
+import type { CanvasContext } from '../../../src/types/project';
 
 const context: Omit<AgentToolContext, 'signal'> = {
   taskId: 'task-media',
@@ -407,6 +412,59 @@ describe('media task recovery tools', () => {
       expect(await definition.execute(toolContext, input))
         .toMatchObject({ status: 'error', errorCode: 'MEDIA_RECOVERY_STALE' });
     }
+  });
+});
+
+describe('原生媒体阶段恢复的effect边界', () => {
+  function nativeMusic() {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const scope: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: `p2-${id}`, canvasId: `c2-${id}`,
+      episodeId: null, projectEpoch: 1, canvasEpoch: 1, canvasRevision: 0, runtimeEpoch: 'original-runtime' };
+    useAppStore.setState({ currentProjectId: scope.canvasId, projectExecutionContext: scope });
+    const toolContext: AgentToolContext = { ...context, projectId: scope.canvasId, executionContext: scope, signal: new AbortController().signal };
+    const row: nativeMedia.NativeMediaTaskRecord = { projectId: `media-task:${id}`, kind: 'native-media-task-v1', operationId: id,
+      ownerProjectId: scope.projectId, canvasId: scope.canvasId, episodeId: null, projectEpoch: 1, canvasEpoch: 1, sourceCanvasRevision: 0,
+      nodeId: `media-message-${id}`, inputFingerprint: 'a'.repeat(64), requestFingerprint: 'b'.repeat(64), fingerprintScheme: 'media-input-v3',
+      providerConfigId: 'apimart', providerBase: 'https://private.example', modelRef: 'apimart/flowmusic', protocolDigest: 'c'.repeat(64),
+      recovery: { kind: 'builtin-audio', modelId: 'flowmusic' }, category: 'audio', status: 'prepared', lease: id, revision: 0, createdAt: 1, updatedAt: 1,
+      origin: { conversationId: toolContext.conversationId, messageId: 'original-result-message', deliveryMode: 'chat' } };
+    const music = { lyrics: { submissionId: id, state: 'submitted' as const, taskId: 'original-lyrics' }, music: { submissionId: id, state: 'prepared' as const } };
+    vi.spyOn(nativeMedia, 'listNativeMediaTasks').mockImplementation(async () => [row]);
+    vi.spyOn(recoverySummary, 'readNativeMediaRecoverySummary').mockImplementation(async (record) => recoverySummary.describeNativeMediaRecovery(record,
+      { music: record.status === 'delivered' ? { ...music, music: { ...music.music, state: 'submitted', taskId: 'original-music' } } : music }));
+    const resume = vi.spyOn(nativeRecovery, 'resumeNativeVolcengineTask').mockImplementation(async () => { row.status = 'delivered'; });
+    return { row, toolContext, resume, input: { nodeId: row.nodeId, operationId: row.operationId } };
+  }
+  it('已提交歌词不误称unknown，纯续查拒绝代为首发后续付费阶段', async () => {
+    const { row, toolContext, resume, input } = nativeMusic();
+    const listed = await getAgentTool('media_pending_tasks')!.execute(toolContext, {});
+    expect(JSON.parse(listed.modelContent)).toEqual([expect.objectContaining({ operationId: row.operationId, canResume: false, canContinueGenerationStage: true,
+      recovery: expect.objectContaining({ currentStage: 'lyrics', unknownSubmissions: 0, needsReview: false }) })]);
+    expect(listed.modelContent).not.toContain('https://'); expect(listed.modelContent).not.toContain('inputFingerprint');
+    const original = getAgentTool('media_resume_task')!;
+    expect(original.effect).toBe('canvas_write');
+    expect(await original.execute(toolContext, input)).toMatchObject({ status: 'error', errorCode: 'MEDIA_STAGE_CONFIRMATION_REQUIRED' });
+    expect(resume).not.toHaveBeenCalled();
+  });
+  it('显式阶段续接沿媒体生成Policy，B需确认，Plan拒绝，不接受新模型或提示词', async () => {
+    const { toolContext, resume, input } = nativeMusic();
+    const stage = getAgentTool('media_resume_generation_stage')!;
+    expect(stage.effect).toBe('media_generation');
+    expect(evaluateAgentToolPolicy(stage, input, { ...toolContext, mode: 'collaborative' })).toMatchObject({ outcome: 'require_approval' });
+    expect(evaluateAgentToolPolicy(stage, input, { ...toolContext, mode: 'plan' })).toMatchObject({ outcome: 'deny' });
+    expect(evaluateAgentToolPolicy(stage, input, { ...toolContext, mode: 'autonomous' })).toMatchObject({ outcome: 'allow' });
+    expect(prepareAgentToolCall({ callId: 'no-new-prompt', toolId: stage.id, input: { ...input, prompt: 'new request' } }, toolContext)).toMatchObject({ ok: false });
+    expect(await stage.execute(toolContext, input)).toMatchObject({ status: 'success' });
+    expect(resume).toHaveBeenCalledWith(input.operationId, toolContext.signal, { allowUnstartedStage: true });
+  });
+  it('已结束跟踪或属于另一对话的阶段不能继续付费提交', async () => {
+    const { row, toolContext, resume, input } = nativeMusic();
+    row.status = 'reviewed';
+    const stage = getAgentTool('media_resume_generation_stage')!;
+    expect(await stage.execute(toolContext, input)).toMatchObject({ status: 'error' });
+    row.status = 'prepared'; row.origin = { ...row.origin!, conversationId: 'different-conversation' };
+    expect(await stage.execute(toolContext, input)).toMatchObject({ status: 'error', errorCode: 'MEDIA_RECOVERY_STALE' });
+    expect(resume).not.toHaveBeenCalled();
   });
 });
 

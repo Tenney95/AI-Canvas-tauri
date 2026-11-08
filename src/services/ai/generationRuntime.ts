@@ -12,6 +12,7 @@
  * 产物落盘失败后可通过 retryMediaArtifactPersist 重新写盘。
  */
 import { useAppStore } from '../../store/useAppStore';
+import { supportsNativeMediaProtocol } from '../nativeMediaCapabilities';
 import {
   isTauriEnv,
   isTransientMediaUrl,
@@ -333,8 +334,7 @@ export async function runMediaGeneration(
   if (projectContext && projectContext.modelGeneration > 0) {
     const context = captureLegacyCanvasContext(useAppStore.getState());
     if (!context || context.modelGeneration !== 1 || projectId !== context.canvasId
-      || (intent.kind === 'video' ? !['volcengine', 'apimart', 'grsai', 'comfyui', 'general'].includes(model.provider)
-        : intent.kind === 'image' ? !['apimart', 'general'].includes(model.provider) : model.provider !== 'general')
+      || !supportsNativeMediaProtocol(intent.kind, model.provider, model.workflowId, useAppStore.getState().workflows)
       || intent.deliveryMode !== 'chat' && !targetNodeId || !runninghubTaskContext) {
       throw new Error('此新项目媒体目的地尚不能安全续查，未提交请求');
     }
@@ -342,11 +342,13 @@ export async function runMediaGeneration(
     const state = useAppStore.getState(), node = state.nodes.find((item) => item.id === targetNodeId);
     if (intent.deliveryMode !== 'chat' && !node || !state.messages.some((message) => message.id === runninghubTaskContext.messageId
       && message.conversationId === runninghubTaskContext.conversationId)) throw new Error('原媒体消息或占位节点已变化');
-    if (intent.deliveryMode === 'chat' && /@\{|@asset\{|@drama\{|@refmod\{/.test(intent.prompt)) throw new Error('对话原生媒体引用尚不能安全冻结，未提交请求');
     const messageMaterial = (current: ReturnType<typeof useAppStore.getState>) => JSON.stringify([intent, parameters,
       current.projects.find((item) => item.id === context.canvasId)?.settings, current.customStyles,
-      current.config.generalModels?.find((item) => item.id === model.configId.replace(/^general\//, ''))]);
-    const inputMaterial = intent.kind === 'video' ? videoInputFingerprintMaterial : nativeMediaInputMaterial;
+      current.config.generalModels?.find((item) => item.id === model.configId.replace(/^general\//, '')),
+      nativeMediaInputMaterial({ id: trackingNodeId, type: `ai-${intent.kind}`, position: { x: 0, y: 0 },
+        data: { type: `ai-${intent.kind}`, label: '', prompt: intent.prompt, model: model.configId, provider: model.provider, workflowId: model.workflowId } }, current, 'media-input-v3')]);
+    const inputMaterial = intent.kind === 'video' ? videoInputFingerprintMaterial
+      : (target: Parameters<typeof nativeMediaInputMaterial>[0], current: Parameters<typeof nativeMediaInputMaterial>[1]) => nativeMediaInputMaterial(target, current, 'media-input-v3');
     const material = node ? inputMaterial(node, state) : messageMaterial(state);
     const guard = registerNativeVideoSubmissionGuard(() => {
       throwIfAborted(signal);

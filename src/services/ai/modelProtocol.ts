@@ -34,6 +34,7 @@ import {
   isRecord,
 } from './modelProtocolShared';
 import { parseModelExecutionProtocol } from './modelProtocolValidation';
+import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
 import type {
   ExecuteModelProtocolOptions,
   ExecuteModelProtocolResult,
@@ -209,10 +210,18 @@ export async function submitModelProtocol(
     throw new Error(`模型提交响应中未找到任务 ID：${responseConfig.taskIdPath}`);
   }
   const pollContext = { ...context, submit: payload };
-  return {
-    taskId: String(taskIdValue),
-    poll: resolvePoll(options.baseUrl, protocol.poll!, protocol.auth, pollContext),
-  };
+  try {
+    return {
+      taskId: String(taskIdValue),
+      ...(options.captureRecoveryContext ? { recoveryContext: options.captureRecoveryContext(payload) } : {}),
+      poll: resolvePoll(options.baseUrl, protocol.poll!, protocol.auth, pollContext),
+    };
+  } catch (error) {
+    // 任务已获服务商ID；恢复字段校验失败也不能把已付费请求误记为无ID。
+    if (options.captureRecoveryContext) throw Object.assign(new Error('原任务已提交，但查询恢复字段不能安全保存', { cause: error }),
+      isSafeNativeProtocolTaskId(String(taskIdValue), [options.apiKey]) ? { nativeTaskId: String(taskIdValue) } : {});
+    throw error;
+  }
 }
 
 export async function executeModelProtocol(

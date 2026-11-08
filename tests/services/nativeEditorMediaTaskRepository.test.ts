@@ -9,6 +9,9 @@ import { readNativeVideoEditorProject, writeNativeVideoEditorProject } from '../
 import { assertNativeEditorMediaPrepared, claimNativeEditorMediaTask, commitNativeEditorMediaResult,
   listNativeEditorMediaTasks, prepareNativeEditorMediaTask, recordNativeEditorMediaSubmission } from '../../src/services/indexedDb/nativeEditorMediaTaskRepository';
 import { retainNativeEditorMediaOutput, reviewNativeEditorMediaTask } from '../../src/services/indexedDb/nativeEditorMediaTaskRepository';
+import { retainNativeEditorMediaOutputs, listNativeEditorMediaArtifactsForProject } from '../../src/services/indexedDb/nativeEditorMediaTaskRepository';
+const content = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: content.read }));
 
 const projectId = 'p2-11111111-1111-4111-8111-111111111111', canvasId = 'c2-22222222-2222-4222-8222-222222222222';
 const context: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId, projectEpoch: 1,
@@ -19,6 +22,7 @@ const original = (): VideoEditorProjectRecord => ({ id: `${canvasId}::node`, pro
 let factory: IDBFactory;
 beforeEach(async () => {
   vi.stubGlobal('crypto', webcrypto); factory = new IDBFactory();
+  content.read.mockReset().mockResolvedValue(undefined);
   await createNativeProject({ projectId, canvasId, name: '作品' }, { factory });
   await writeNativeVideoEditorProject(original(), context, { expected: null }, { factory });
 });
@@ -97,4 +101,63 @@ it('其他集和原代际均不能领取或投递，路径逃逸也被拒绝', a
   await expect(claimNativeEditorMediaTask({ ...context, canvasEpoch: 2 }, initial.operationId, { factory })).rejects.toThrow('代际');
   await expect(commitNativeEditorMediaResult(context, claimed, '../result.mp4', { factory })).rejects.toThrow();
   expect(await readNativeVideoEditorProject(original().id, context, { factory })).toEqual(original());
+});
+
+it('同步转场无远端ID先保存完整候选，冷重启只投递缓存并归档所有文件', async () => {
+  let row = await prepareNativeEditorMediaTask({ context, requestId: 'sync', anchorNodeId: 'node', beforeClipId: 'second',
+    modelRef: 'general/sync', providerConfigId: 'connection', providerBase: 'https://provider.example/v1',
+    protocolDigest: 'b'.repeat(64), submissionKind: 'sync' }, { factory });
+  row = await recordNativeEditorMediaSubmission(row, { unknown: true }, { factory });
+  const outputs = ['c', 'd'].map((character) => ({ relativePath: `media/${character.repeat(64)}.mp4`, bytes: 42,
+    sha256: character.repeat(64), category: 'video' as const }));
+  row = await retainNativeEditorMediaOutputs(row, outputs, { factory });
+  expect(row).toMatchObject({ status: 'submitted', submissionKind: 'sync', localResults: outputs });
+  expect(row.remoteTaskId).toBeUndefined();
+  expect(content.read.mock.calls.map((call) => call[1])).toEqual(outputs);
+  const restarted = { ...context, runtimeEpoch: 'restart' };
+  row = await claimNativeEditorMediaTask(restarted, row.operationId, { factory });
+  row = await retainNativeEditorMediaOutput(restarted, row, outputs[0].relativePath, 2.5, { factory });
+  await commitNativeEditorMediaResult(restarted, row, outputs[0].relativePath, { factory });
+  expect((await readNativeVideoEditorProject(original().id, restarted, { factory }))?.tracks[0].clips[1]).toMatchObject({ sourceOut: 2.5 });
+  expect((await listNativeEditorMediaArtifactsForProject(projectId, { factory })).map((item) => item.path)).toEqual(outputs.map((file) => file.relativePath));
+});
+
+it('原异步ID和安全查询投影同事务冻结，不能替换响应依赖字段', async () => {
+  const prepared = await prepare();
+  const pollContext = { submit: { task: { id: 'original-task', region: 'cn-1' } } };
+  const row = await recordNativeEditorMediaSubmission(prepared, { taskId: 'original-task', pollContext }, { factory });
+  expect((await claimNativeEditorMediaTask(context, row.operationId, { factory })).pollContext).toEqual(pollContext);
+  await expect(recordNativeEditorMediaSubmission(row, { taskId: 'original-task', pollContext: { submit: { task: { id: 'original-task', region: 'other' } } } }, { factory })).rejects.toThrow('已变化');
+  await expect(recordNativeEditorMediaSubmission(row, { taskId: 'original-task', pollContext: { apiKey: 'not-persistable' } }, { factory })).rejects.toThrow();
+  expect((await listNativeEditorMediaTasks(context, 'node', { factory }))[0].pollContext).toEqual(pollContext);
+});
+
+it('停写确认在同一耐久事务复核原工程，编辑后不进入提交未知', async () => {
+  const row = await prepare();
+  await writeNativeVideoEditorProject({ ...original(), name: '修改后', updatedAt: 3 }, context, { expected: original() }, { factory });
+  await expect(recordNativeEditorMediaSubmission(row, { unknown: true }, { factory })).rejects.toThrow('工程已变化');
+  expect((await listNativeEditorMediaTasks(context, 'node', { factory }))[0].status).toBe('prepared');
+});
+
+it('任一候选文件核验失败不发布不完整集合，原ID仍可继续查询', async () => {
+  let row = await prepare(); row = await recordNativeEditorMediaSubmission(row, { taskId: 'original-task' }, { factory });
+  const files = ['e', 'f'].map((character) => ({ relativePath: `media/${character.repeat(64)}.mp4`, bytes: 42,
+    sha256: character.repeat(64), category: 'video' as const }));
+  content.read.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('missing'));
+  await expect(retainNativeEditorMediaOutputs(row, files, { factory })).rejects.toThrow('missing');
+  const current = await claimNativeEditorMediaTask(context, row.operationId, { factory });
+  expect(current.localResults).toBeUndefined(); expect(current.remoteTaskId).toBe('original-task');
+});
+
+it('多原ID和全部成功候选及部分失败统计耐久保留，不能把部分成功改写为全成功', async () => {
+  let row = await prepare();
+  row = await recordNativeEditorMediaSubmission(row, { taskId: 'first', pollContext: { submit: { data: [{ task_id: 'first' }] }, taskIds: ['first', 'second', 'third'] } }, { factory });
+  const files = ['a', 'b'].map((character) => ({ relativePath: `media/${character.repeat(64)}.mp4`, bytes: 42,
+    sha256: character.repeat(64), category: 'video' as const }));
+  row = await retainNativeEditorMediaOutputs(row, files, { factory, completion: { taskCount: 3, failedTasks: 1 } });
+  const restarted = await claimNativeEditorMediaTask({ ...context, runtimeEpoch: 'restart' }, row.operationId, { factory });
+  expect(restarted.pollContext?.taskIds).toEqual(['first', 'second', 'third']);
+  expect(restarted.completion).toEqual({ taskCount: 3, failedTasks: 1 });
+  expect(restarted.localResults).toEqual(files);
+  await expect(retainNativeEditorMediaOutputs(restarted, files, { factory, completion: { taskCount: 3, failedTasks: 0 } })).rejects.toThrow('冻结');
 });

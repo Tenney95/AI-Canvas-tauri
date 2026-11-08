@@ -2,12 +2,13 @@
 import type { NativeApimartImageBatch, NativeMediaLocalResult } from '../types/media';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { safeExchangePath } from './projectExchangeDomain';
+import { isNativeMediaContentPath } from './nativeMediaContentPath';
 export const APIMART_IMAGE_BATCH_PROTOCOL = 'apimart-image-batch-v1';
 export const MAX_NATIVE_IMAGE_BATCH_RESULTS = 128;
 export function validNativeImageBatchFile(file: NativeMediaLocalResult): boolean {
   return !!file && Object.keys(file).every((key) => ['relativePath', 'bytes', 'sha256'].includes(key))
     && Number.isSafeInteger(file.bytes) && file.bytes > 0 && /^[a-f0-9]{64}$/.test(file.sha256)
-    && safeExchangePath(file.relativePath) === file.relativePath && new RegExp(`^media/${file.sha256}\\.[a-z0-9]{1,16}$`).test(file.relativePath);
+    && safeExchangePath(file.relativePath) === file.relativePath && isNativeMediaContentPath(file.relativePath, file.sha256);
 }
 export function validateNativeImageBatch(batch: NativeApimartImageBatch): void {
   const bad = () => { throw new Error('图片批次回执损坏，不能自动继续或重投'); };

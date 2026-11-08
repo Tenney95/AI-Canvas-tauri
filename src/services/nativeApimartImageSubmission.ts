@@ -14,17 +14,18 @@ export async function submitNativeApimartImageBatch(input: { baseUrl: string; mo
   nodeId?: string; imageUrls: readonly string[]; bodies: readonly Record<string, unknown>[]; requestHeaders?: Record<string, string>;
   signal?: AbortSignal; beforeSubmit?: () => void | Promise<void>;
   submit: (body: Record<string, unknown>, signal: AbortSignal | undefined, submissionId: string) => Promise<string[]> }): Promise<never> {
-  if (!input.nodeId || !isNativeVideoSubmissionGuard(input.beforeSubmit) || input.imageUrls.length) throw new Error('新项目图片批次只接受原入口冻结的无引用输入，未提交请求');
+  if (!input.nodeId || !isNativeVideoSubmissionGuard(input.beforeSubmit)) throw new Error('新项目图片批次需要原入口冻结的输入与提交守卫，未提交请求');
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1 || !input.bodies.length || input.bodies.length > 32) throw new Error('图片批次缺少原画布身份');
   const bodies = structuredClone(input.bodies);
   await input.beforeSubmit?.(); input.signal?.throwIfAborted();
-  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v2');
+  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true });
   const protocolDigest = await sha256BytesHex(new TextEncoder().encode(APIMART_IMAGE_BATCH_PROTOCOL));
   const requestFingerprint = await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken([input.model, bodies, input.requestHeaders])));
   let record: NativeMediaTaskRecord = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: input.nodeId,
     providerConfigId: 'apimart', providerBase: input.baseUrl, category: 'image', submissionKind: 'async',
-    modelRef: `apimart/${input.model.replace(/^apimart\//, '')}`, protocolDigest, requestFingerprint, fingerprintScheme: 'media-input-v2',
+    modelRef: `apimart/${input.model.replace(/^apimart\//, '')}`, protocolDigest, requestFingerprint, fingerprintScheme: 'media-input-v3',
+    recovery: { kind: 'builtin-image', modelId: input.model, digest: protocolDigest, expectedCount: input.requestedCount },
     inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
     apimartImageBatch: { version: 1, requestedCount: input.requestedCount,
       submissions: bodies.map(() => ({ id: crypto.randomUUID(), state: 'prepared', taskIds: [] })), tasks: [] } });

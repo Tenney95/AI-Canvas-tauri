@@ -32,6 +32,7 @@ import { configValuesEqual } from '../configPatch';
 import { openDB, STORE_CHAT_MESSAGES, STORE_CHAT_CONVERSATIONS, STORE_METADATA } from '../indexedDb/schema';
 import type { NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
 import { nativeImageBatchResults, nativeImageBatchSettled, nativeImageBatchSummary } from '../nativeImageBatch';
+import { nativeMediaLocalOutputs } from '../nativeMediaCollection';
 
 const isNativeArtifact = (artifact: MediaGenerationResult | undefined) => !!artifact
   && /^native-media-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}(?:-[1-9][0-9]{0,5})?$/.test(artifact.id);
@@ -281,17 +282,32 @@ async function persistMessageRecord(record: ChatMessageRecord, normalizedFrom?: 
 export async function projectNativeMediaMessageBatch(record: NativeMediaTaskRecord,
   canvasNodeIds: readonly (string | undefined)[], isCurrent: () => boolean): Promise<{ created: boolean; messages: ChatMessage[]; batchNote?: string }> {
   const origin = record.origin;
-  if (!origin || record.status !== 'delivered' || record.category !== 'image' || !record.apimartImageBatch
-    || !nativeImageBatchSettled(record.apimartImageBatch) || !/^[a-f0-9]{64}$/.test(record.deliveryDigest ?? '')) throw new Error('原图片批次尚未完成，未投影消息');
+  if (!origin || record.status !== 'delivered' || !record.apimartImageBatch && !record.localResults
+    || record.apimartImageBatch && !nativeImageBatchSettled(record.apimartImageBatch)
+    || !/^[a-f0-9]{64}$/.test(record.deliveryDigest ?? '')) throw new Error('原媒体作业尚未完成，未投影消息');
   const { listNativeMediaTasks } = await import('../indexedDb/nativeMediaTaskRepository');
   const current = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
   if (!current || !configValuesEqual(current, record)) throw new Error('原图片批次回执已变化，未投影消息');
-  const files = nativeImageBatchResults(record);
+  // 既有APIMart收据不追加category字段，保留其不可变binding字节语义。
+  const files = record.apimartImageBatch ? nativeImageBatchResults(record) : nativeMediaLocalOutputs(record);
+  const categories = nativeMediaLocalOutputs(record).map((file) => file.category);
   const summary = nativeImageBatchSummary(record);
-  if (!summary) throw new Error('原图片批次缺少完整统计，未投影消息');
+  if (record.apimartImageBatch && !summary) throw new Error('原图片批次缺少完整统计，未投影消息');
   // 后补的lateTaskCount仅用于回执列表；它不能改变已经冻结的候选消息或投影收据。
-  const partialDelivery = summary.failedTasks > 0 || summary.failedSubmissions > 0 || summary.unknownSubmissions > 0 || summary.notStartedSubmissions > 0 || summary.candidateCount < summary.requestedCount;
-  const partialNote = partialDelivery ? `原批次部分完成：已保存 ${summary.candidateCount} 个候选，失败任务 ${summary.failedTasks} 个，失败提交 ${summary.failedSubmissions} 个，待核对提交 ${summary.unknownSubmissions} 个，未开始提交 ${summary.notStartedSubmissions} 个。` : '';
+  const partialDelivery = summary && (summary.failedTasks > 0 || summary.failedSubmissions > 0 || summary.unknownSubmissions > 0 || summary.notStartedSubmissions > 0 || summary.candidateCount < summary.requestedCount);
+  let partialNote = partialDelivery && summary ? `原批次部分完成：已保存 ${summary.candidateCount} 个候选，失败任务 ${summary.failedTasks} 个，失败提交 ${summary.failedSubmissions} 个，待核对提交 ${summary.unknownSubmissions} 个，未开始提交 ${summary.notStartedSubmissions} 个。` : '';
+  if (!record.apimartImageBatch) {
+    const workflow = record.recovery?.kind === 'workflow' && !record.completion ? await (await import('../nativeWorkflowRepository')).readNativeWorkflowSummary(record) : undefined;
+    const failedTasks = record.completion?.failedTasks ?? workflow?.failedTasks ?? 0;
+    const failedSubmissions = record.completion?.failedSubmissions ?? workflow?.failedSubmissions ?? 0;
+    const unknownSubmissions = record.completion?.unknownSubmissions ?? workflow?.unknownSubmissions ?? 0;
+    const notStartedSubmissions = record.completion?.notStartedSubmissions ?? workflow?.notStartedSubmissions ?? 0;
+    const missing = Math.max(0, (record.recovery?.expectedCount ?? 0) - categories.filter((category) => category === record.category).length);
+    if (failedTasks || failedSubmissions || unknownSubmissions || notStartedSubmissions || missing) {
+      partialNote = `原媒体作业部分完成：已保存 ${files.length} 个产物，失败任务 ${failedTasks} 个，失败提交 ${failedSubmissions} 个，待核对提交 ${unknownSubmissions} 个，未开始提交 ${notStartedSubmissions} 个，缺少预期产物 ${missing} 个。`;
+    }
+  }
+  const outputLabel = record.apimartImageBatch ? '候选图片' : '媒体产物';
   if (!files.length || files.length !== canvasNodeIds.length) throw new Error('图片候选集合不完整，未投影消息');
   const { readNativeMediaLocalResult } = await import('../nativeMediaLocalResult');
   for (const file of files) { await readNativeMediaLocalResult(record.canvasId, file); if (!isCurrent()) throw new Error('原画布已切换，图片回执保留'); }
@@ -354,11 +370,11 @@ export async function projectNativeMediaMessageBatch(record: NativeMediaTaskReco
         const patch = { mediaStatus: 'succeeded' as const, mediaError: undefined,
           canvasStatus: origin.deliveryMode === 'chat' ? 'none' as const : canvasNodeId ? 'created' as const : 'failed' as const,
           canvasNodeId, canvasError: origin.deliveryMode !== 'chat' && !canvasNodeId ? '原候选画布节点不可用，图片文件已保留' : undefined,
-          mediaResult: { id: output.artifactId, kind: 'image' as const, deliveryMode: origin.deliveryMode,
+          mediaResult: { id: output.artifactId, kind: categories[ordinal], deliveryMode: origin.deliveryMode,
             url: output.relativePath, sourceUrl: output.relativePath, persistence: 'saved' as const, prompt: '',
             modelId: origin.modelId ?? record.providerConfigId, provider: record.providerConfigId, createdAt: record.updatedAt } };
         const next: ChatMessageRecord = ordinal ? { id: output.messageId, projectId: conversation.projectId, conversationId: origin.conversationId,
-          sequence: ++sequence, role: 'assistant', content: `候选图片 ${ordinal + 1}/${outputs.length}${partialNote ? `\n\n${partialNote}` : ''}`, status: 'done',
+          sequence: ++sequence, role: 'assistant', content: `${outputLabel} ${ordinal + 1}/${outputs.length}${partialNote ? `\n\n${partialNote}` : ''}`, status: 'done',
           createdAt: record.updatedAt + ordinal, updatedAt: record.updatedAt, agentTaskId: origin.agentTaskId, ...patch }
           : { ...root, ...patch, ...(partialNote ? { content: `${root.content}${root.content ? '\n\n' : ''}${partialNote}` } : {}), updatedAt: Math.max(root.updatedAt, record.updatedAt) };
         if (ordinal) messages.add(next); else messages.put(next);
@@ -369,7 +385,7 @@ export async function projectNativeMediaMessageBatch(record: NativeMediaTaskReco
       const lastAt = record.updatedAt + outputs.length - 1;
       conversations.put({ ...conversation, messageCount: count + outputs.length - 1,
         updatedAt: Math.max(conversation.updatedAt, lastAt), lastMessageAt: Math.max(conversation.lastMessageAt ?? 0, lastAt),
-        ...((conversation.lastMessageAt ?? 0) <= lastAt && outputs.length > 1 ? { lastMessagePreview: `候选图片 ${outputs.length}/${outputs.length}` } : {}) });
+        ...((conversation.lastMessageAt ?? 0) <= lastAt && outputs.length > 1 ? { lastMessagePreview: `${outputLabel} ${outputs.length}/${outputs.length}` } : {}) });
       metadata.add({ id: receiptId, kind: 'native-media-message-projection-v1', binding, ownerId: conversation.projectId, state: 'committed', createdAt: Date.now() });
       return { created: true, messages: projected.map(fromMessageRecord), ...(partialNote ? { batchNote: partialNote } : {}) };
     };

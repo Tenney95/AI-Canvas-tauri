@@ -91,8 +91,11 @@ async function submitFlowMusicTask(
   body: Record<string, unknown>,
   errorLabel: string,
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<string> {
   try {
+    if (beforeSubmit) await beforeSubmit();
+    signal?.throwIfAborted();
     const response = await corsSafeFetch(endpoint(baseUrl, path), {
       method: 'POST',
       headers: buildAuthHeaders(apiKey),
@@ -139,12 +142,15 @@ export async function generateApimartSpeech(
     speed: number;
   },
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<AudioGenerationResult> {
   try {
     if (!params.input.trim()) throw new Error('TTS 文本不能为空');
     if (params.input.length > 4096) throw new Error('TTS 文本不能超过 4096 个字符');
     if (params.speed < 0.25 || params.speed > 4) throw new Error('TTS 语速必须在 0.25 到 4 之间');
 
+    if (beforeSubmit) await beforeSubmit();
+    signal?.throwIfAborted();
     const response = await corsSafeFetch(endpoint(baseUrl, '/audio/speech'), {
       method: 'POST',
       headers: buildAuthHeaders(apiKey),
@@ -223,6 +229,7 @@ export function submitFlowMusicLyrics(
   baseUrl: string,
   prompt: string,
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<string> {
   if (!prompt.trim()) throw new Error('歌词生成提示词不能为空');
   if (prompt.length > 3000) throw new Error('歌词生成提示词不能超过 3000 个字符');
@@ -233,6 +240,7 @@ export function submitFlowMusicLyrics(
     { model: 'flowmusic', prompt },
     'APIMart 歌词任务提交失败',
     signal,
+    beforeSubmit,
   );
 }
 
@@ -241,6 +249,7 @@ export function submitFlowMusicGeneration(
   baseUrl: string,
   request: FlowMusicGenerationRequest,
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<string> {
   const soundPrompt = request.soundPrompt?.trim();
   const lyrics = request.lyrics?.trim();
@@ -271,6 +280,7 @@ export function submitFlowMusicGeneration(
     body,
     'APIMart 音乐任务提交失败',
     signal,
+    beforeSubmit,
   );
 }
 
@@ -280,6 +290,7 @@ export function submitSunoGeneration(
   baseUrl: string,
   request: { version: 'v6' | 'v6-wild' | 'v6-mini'; prompt: string; lyrics?: string; title?: string; duration?: number },
   signal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<string> {
   const lyrics = request.lyrics?.trim();
   const custom = Boolean(lyrics);
@@ -293,7 +304,7 @@ export function submitSunoGeneration(
   return submitFlowMusicTask(apiKey, baseUrl, '/music/generations', {
     model: 'suno', version: request.version, custom, prompt,
     ...(custom ? { style: request.prompt.trim(), title: request.title?.trim(), duration: request.duration } : {}),
-  }, 'APIMart Suno 音乐任务提交失败', signal);
+  }, 'APIMart Suno 音乐任务提交失败', signal, beforeSubmit);
 }
 
 export async function fetchFlowMusicTask(
@@ -342,4 +353,11 @@ export function extractFlowMusicTrack(task: FlowMusicTaskState): AudioGeneration
     title: item?.title,
     lyrics: item?.lyrics,
   };
+}
+
+/** 原任务可能包含多个音轨；原生恢复必须保留全部结果，不能取首项冒充完成。 */
+export function extractFlowMusicTracks(task: FlowMusicTaskState): AudioGenerationResult[] {
+  const tracks = task.result?.music;
+  if (!Array.isArray(tracks) || !tracks.length || tracks.length > 128) throw new Error('原音乐任务音轨集合缺失或超过上限');
+  return tracks.map((track) => extractFlowMusicTrack({ result: { music: [track] } }));
 }

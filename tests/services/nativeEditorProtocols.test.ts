@@ -3,7 +3,9 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const transport = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: transport.fetch }));
 import { buildModelProtocolRequest, submitModelProtocol } from '../../src/services/ai/modelProtocol';
-import { APIMART_EDITOR_PROTOCOL, VOLCENGINE_EDITOR_PROTOCOL } from '../../src/services/nativeEditorProtocols';
+import { apimartEditorTaskIds, APIMART_EDITOR_PROTOCOL, DREAMINA_EDITOR_PROTOCOL, RUNNINGHUB_EDITOR_PROTOCOL, VOLCENGINE_EDITOR_PROTOCOL } from '../../src/services/nativeEditorProtocols';
+import { captureNativeProtocolContext, resolveNativeProtocolContext } from '../../src/services/nativeModelProtocolTask';
+import { getRunningHubModel, runningHubFrameRole } from '../../src/services/ai/providers/runninghubModelManifest';
 beforeEach(() => transport.fetch.mockReset());
 
 it('火山保持原api/v3路径、首尾帧字节与提示词原文，不把提示词当成模板再次执行', () => {
@@ -31,4 +33,21 @@ it('网络中断仅传播提交未知，不自动重试付费POST', async () => 
   await expect(submitModelProtocol({ apiKey: 'ephemeral-key', baseUrl: 'https://ark.example/api/v3', protocol: VOLCENGINE_EDITOR_PROTOCOL,
     variables: { request: { model: 'doubao-seedance-2-5', content: [] } } })).rejects.toThrow();
   expect(transport.fetch).toHaveBeenCalledOnce();
+});
+
+it('明确首尾帧RunningHub型号与原任务查询合同一致，不把双参考型号视为首尾帧', () => {
+  const definition = getRunningHubModel('runninghub/vidu/start-end-to-video-q2-turbo', true)!;
+  expect(definition.parameters.filter((field) => field.required && field.mediaKind === 'image').map(runningHubFrameRole)).toEqual(['first_frame', 'last_frame']);
+  const ordinary = getRunningHubModel('runninghub/vidu/image-to-video-q3-turbo', true)!;
+  expect(ordinary.parameters.some((field) => runningHubFrameRole(field) === 'last_frame')).toBe(false);
+  const saved = captureNativeProtocolContext(RUNNINGHUB_EDITOR_PROTOCOL, { taskId: '123456', results: [], prompt: '不可进账本' });
+  expect(saved).toEqual({ submit: { taskId: '123456' } });
+  expect(resolveNativeProtocolContext(RUNNINGHUB_EDITOR_PROTOCOL, '123456', saved)).toEqual(saved);
+  expect(captureNativeProtocolContext(DREAMINA_EDITOR_PROTOCOL, { submitId: 'original-native-id', outputs: [] })).toEqual({ submit: { submitId: 'original-native-id' } });
+});
+
+it('APIMart保留全部原任务ID，不截首项；拒绝凭据回显和不完整任务集合', () => {
+  expect(apimartEditorTaskIds({ data: [{ task_id: 'first' }, { task_id: 'second' }, { task_id: 'third' }, { task_id: 'second' }] }, 'ephemeral-key')).toEqual(['first', 'second', 'third']);
+  expect(() => apimartEditorTaskIds({ data: [{ task_id: 'first' }, { task_id: 'ephemeral-key' }] }, 'ephemeral-key')).toThrow('安全');
+  expect(() => apimartEditorTaskIds({ data: [{ task_id: 'first' }, {}] }, 'ephemeral-key')).toThrow();
 });

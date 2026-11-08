@@ -24,9 +24,10 @@ export function isNativeVideoSubmissionGuard(guard: (() => void | Promise<void>)
 }
 
 export async function captureNativeVideoSubmissionBaseline(context: CanvasContext, nodeId: string, imageReference?: NativeVideoImageReference,
-  scheme: NativeMediaTaskRecord['fingerprintScheme'] = 'video-input-v1'): Promise<{
+  scheme: NativeMediaTaskRecord['fingerprintScheme'] = 'video-input-v1', options: { preparedReferences?: boolean } = {}): Promise<{
   inputFingerprint: string; canvasRevision: number;
 }> {
+  if (context.modelGeneration !== 1 || !context.runtimeEpoch) throw new Error('原生媒体提交上下文已失效，未保存或提交');
   const assertContext = () => {
     if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) {
       throw new Error('原画布已切换，未提交视频任务');
@@ -51,14 +52,16 @@ export async function captureNativeVideoSubmissionBaseline(context: CanvasContex
   const initial = useAppStore.getState(), node = initial.nodes.find((item) => item.id === nodeId);
   const project = initial.projects.find((item) => item.id === context.canvasId);
   if (!node || !project) throw new Error('原视频节点不存在，未提交请求');
-  const inputMaterial = scheme === 'media-input-v2' ? nativeMediaInputMaterial : videoInputFingerprintMaterial;
+  const inputMaterial = scheme === 'media-input-v2' || scheme === 'media-input-v3'
+    ? (node: Node<BaseNodeData>, state: Parameters<typeof nativeMediaInputMaterial>[1]) => nativeMediaInputMaterial(node, state, scheme)
+    : videoInputFingerprintMaterial;
   const material = inputMaterial(node, initial);
   const settings = project.settings?.visualStyle;
   const styleId = settings?.locked ? settings.styleId : node.data.style || settings?.styleId;
   const links = initial.edges.filter((edge) => edge.target === nodeId);
-  if ((imageReference ? links.length !== 1 || links[0].source !== imageReference.sourceNodeId : links.length !== 0) || material.includes('@{') || material.includes('@drama{')
+  if (!options.preparedReferences && ((imageReference ? links.length !== 1 || links[0].source !== imageReference.sourceNodeId : links.length !== 0) || material.includes('@{') || material.includes('@drama{')
     || node.data.videoReferences?.length || node.data.comfyRefmods?.length || settings?.styleReference && settings.styleReference.enabled !== false
-    || styleId && initial.customStyles.some((style) => style.id === styleId)) {
+    || styleId && initial.customStyles.some((style) => style.id === styleId))) {
     throw new Error('新项目仅支持无引用或单张项目自有原始图片连线；其他素材引用尚不能安全续查，未提交请求');
   }
   if (imageReference) await verifyNativeVideoImageReference(context, nodeId, imageReference);
@@ -98,7 +101,9 @@ export async function assertNativeVideoSubmissionInput(record: NativeMediaTaskRe
   }
   const state = useAppStore.getState(), node = state.nodes.find((item) => item.id === record.nodeId);
   if (!node) throw new Error('原媒体节点不存在');
-  const inputMaterial = record.fingerprintScheme === 'media-input-v2' ? nativeMediaInputMaterial : videoInputFingerprintMaterial;
+  const inputMaterial = record.fingerprintScheme === 'media-input-v2' || record.fingerprintScheme === 'media-input-v3'
+    ? (node: Node<BaseNodeData>, state: Parameters<typeof nativeMediaInputMaterial>[1]) => nativeMediaInputMaterial(node, state, record.fingerprintScheme === 'media-input-v3' ? 'media-input-v3' : 'media-input-v2')
+    : videoInputFingerprintMaterial;
   const material = inputMaterial(node, state);
   const digest = await sha256BytesHex(new TextEncoder().encode(material));
   const latest = useAppStore.getState(), next = latest.nodes.find((item) => item.id === record.nodeId);

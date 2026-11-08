@@ -233,6 +233,23 @@ async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, r
   } finally { release(); }
 }
 
+/** complete事件前已经发生的编辑按字段保留；媒体只补原节点的未被改写结果及稳定候选。 */
+function rebaseCommittedMediaNodes(before: Node<BaseNodeData>[], current: Node<BaseNodeData>[], delivered: Node<BaseNodeData>[], nodeId: string): Node<BaseNodeData>[] {
+  const previous = before.find((node) => node.id === nodeId), next = delivered.find((node) => node.id === nodeId), target = current.find((node) => node.id === nodeId);
+  if (!previous || !next || !target || target.data.type !== previous.data.type) return current;
+  const original = previous.data as unknown as Record<string, unknown>, result = next.data as unknown as Record<string, unknown>, live = target.data as unknown as Record<string, unknown>;
+  if (['imageUrl', 'audioUrl', 'videoUrl', 'relativePath', 'filePath', 'assetId', 'sourceUrl', 'output', 'storageRootRef', 'artifactId', 'animationSheet', 'animationEdits']
+    .some((field) => !configValuesEqual(live[field], original[field]))) return current;
+  const data = { ...live };
+  for (const field of new Set([...Object.keys(original), ...Object.keys(result)])) {
+    if (configValuesEqual(original[field], result[field]) || !configValuesEqual(live[field], original[field])) continue;
+    if (Object.hasOwn(result, field)) data[field] = result[field]; else delete data[field];
+  }
+  const changed = current.map((node) => node.id === nodeId ? { ...node, data: data as unknown as BaseNodeData } : node);
+  const existingIds = new Set([...before, ...current].map((node) => node.id));
+  return [...changed, ...delivered.filter((node) => !existingIds.has(node.id))];
+}
+
 /** 把完整设置转换为相对项目默认值的字段覆盖，避免新分集退化为旧式固定快照。 */
 function nativeEpisodeSettings(settings: ProjectSettings, defaults?: ProjectSettings): EpisodeSettingsPolicy {
   const base = resolveProjectModelSettings(defaults), target = resolveProjectModelSettings(settings);
@@ -1217,16 +1234,17 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   commitNativeMediaResult: async (record, relativePath, expected, signal) => {
     signal?.throwIfAborted();
     const { safeExchangePath } = await import('../services/projectExchangeDomain');
-    if (record.category !== 'video' && record.fingerprintScheme !== 'media-input-v2' || safeExchangePath(relativePath) !== relativePath
+    if (record.category !== 'video' && !['media-input-v2', 'media-input-v3'].includes(record.fingerprintScheme ?? '') || safeExchangePath(relativePath) !== relativePath
       || expected.kind !== 'canvas' || expected.canvasId !== record.canvasId || expected.projectId !== record.ownerProjectId
       || !isProjectExpectedContextCurrent(expected, get(), { checkCanvasRevision: false })) throw new Error('原画布已切换，媒体结果已保留');
     const assertSource = async () => {
       signal?.throwIfAborted();
       const state = get(), node = state.nodes.find((item) => item.id === record.nodeId);
       if (!node) throw new Error('原视频节点或参考素材已变化，结果已保留');
-      const inputMaterial = record.fingerprintScheme === 'media-input-v2' ? nativeMediaInputMaterial : videoInputFingerprintMaterial;
+      const inputMaterial = ['media-input-v2', 'media-input-v3'].includes(record.fingerprintScheme ?? '')
+        ? (target: Node<BaseNodeData>, current: AppState) => nativeMediaInputMaterial(target, current, record.fingerprintScheme === 'media-input-v3' ? 'media-input-v3' : 'media-input-v2') : videoInputFingerprintMaterial;
       const material = inputMaterial(node, state);
-      if (material.includes('@drama{')) throw new Error('原视频引用了尚不可安全验证的全局素材，结果已保留');
+      if (material.includes('@drama{') && !record.recovery) throw new Error('原视频引用了尚不可安全验证的全局素材，结果已保留');
       const digest = await sha256BytesHex(new TextEncoder().encode(material));
       const latest = get(), latestNode = latest.nodes.find((item) => item.id === record.nodeId);
       if (digest !== record.inputFingerprint || !latestNode || material !== inputMaterial(latestNode, latest)
@@ -1256,7 +1274,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const assertCurrent = () => {
         controller.signal.throwIfAborted();
         const current = get(), node = current.nodes.find((item) => item.id === record.nodeId);
-        const inputMaterial = record.fingerprintScheme === 'media-input-v2' ? nativeMediaInputMaterial : videoInputFingerprintMaterial;
+        const inputMaterial = ['media-input-v2', 'media-input-v3'].includes(record.fingerprintScheme ?? '')
+          ? (target: Node<BaseNodeData>, state: AppState) => nativeMediaInputMaterial(target, state, record.fingerprintScheme === 'media-input-v3' ? 'media-input-v3' : 'media-input-v2') : videoInputFingerprintMaterial;
         if (nativeRuntime.get(get) !== runtime || !node || current.nodes !== before.nodes || current.edges !== before.edges
           || current.groups !== before.groups || current.dramaAssets !== before.dramaAssets
           || inputMaterial(node, current) !== material
@@ -1271,23 +1290,27 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
       const snapshot = await readNativeProjectCapture(record.ownerProjectId);
       const canvas = snapshot?.aggregate.canvases.find((item) => item.id === record.canvasId);
-      if (!canvas || canvas.epoch !== record.canvasEpoch || canvas.episodeId !== record.episodeId
+      if (!snapshot || !canvas || canvas.epoch !== record.canvasEpoch || canvas.episodeId !== record.episodeId
         || canvas.revision !== expectedCanvasRevision || snapshot?.aggregate.content.revisions.assets !== expectedAssetsRevision
         || nativeRuntime.get(get) !== runtime) throw new Error('原画布或共享素材已变化，媒体结果已保留');
+      const resultRootRef = snapshot.aggregate.project.storageRootRef;
       let nodes = canvas.nodes.map((value) => {
         if (!value || typeof value !== 'object' || (value as { id?: unknown }).id !== record.nodeId) return value;
         const node = structuredClone(value) as { data?: Record<string, unknown> };
-        if (!node.data || node.data.type !== `ai-${record.category}`) throw new Error('原媒体节点已变化，媒体结果已保留');
+        if (!node.data || node.data.type !== (record.targetNodeType ?? `ai-${record.category}`)) throw new Error('原媒体节点已变化，媒体结果已保留');
         const mediaKey = record.category === 'video' ? 'videoUrl' : record.category === 'image' ? 'imageUrl' : 'audioUrl';
         const data: Record<string, unknown> = { ...node.data, [mediaKey]: relativePath, output: relativePath, sourceUrl: relativePath,
-          ...(record.category !== 'audio' ? { thumbnailUrl: relativePath } : {}), relativePath, status: 'success', error: undefined,
+          ...(record.category !== 'audio' ? { thumbnailUrl: relativePath } : {}), relativePath, storageRootRef: resultRootRef, status: 'success', error: undefined,
           videoTaskState: undefined, mediaTaskState: undefined, mediaTaskStage: undefined };
         delete data.filePath; delete data.assetId;
         return { ...node, data };
       });
       if ('apimartImageBatch' in record && record.apimartImageBatch) {
         const { buildNativeImageBatchCanvas } = await import('../services/nativeImageBatchCanvas');
-        nodes = buildNativeImageBatchCanvas(canvas, record).nodes;
+        nodes = buildNativeImageBatchCanvas(canvas, record, resultRootRef).nodes;
+      } else if (record.localResults) {
+        const { buildNativeMediaCollectionCanvas } = await import('../services/nativeMediaCollectionCanvas');
+        nodes = buildNativeMediaCollectionCanvas(canvas, record, resultRootRef).nodes;
       }
       const selected = before.projects.find((item) => item.id === record.canvasId);
       if (!selected) throw new Error('原画布目录不可用，产物已保留');
@@ -1296,19 +1319,25 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       assertCurrent();
       const { commitNativeMediaDelivery } = await import('../services/nativeMediaDelivery');
       assertCurrent();
-      const committed = await commitNativeMediaDelivery({ record, expectedCanvasRevision: canvas.revision, expectedAssetsRevision,
-        document: { nodes, edges: canvas.edges, groups: canvas.groups } }, { signal: controller.signal });
-      unsubscribe(); unsubscribe = () => {};
-      // 重复回执的 committedCanvasRevision 是首次交付版本；前置保存可能已推进版本，不能倒退或重复记历史。
-      if (committed.alreadyCommitted) return;
-      // oncomplete 后同步投影，不重新激活画布或撤销执行该工具的 Agent 租约。
-      runtime.loaded = { ...runtime.loaded, selection: { ...runtime.loaded.selection,
-        canvas: { ...canvas, nodes, revision: committed.canvasRevision }, changeRevision: committed.changeRevision,
-        context: { ...runtime.loaded.selection.context, canvasRevision: committed.canvasRevision } } };
-      runtime.mediaGeneration = (runtime.mediaGeneration ?? 0) + 1;
-      get().commitToHistory();
-      set({ nodes: restored.nodes as Node<BaseNodeData>[], edges: restored.edges as Edge[], groups: getProjectGroups(restored) });
-      get().incrementRevision();
+      await commitNativeMediaDelivery({ record, expectedCanvasRevision: canvas.revision, expectedAssetsRevision,
+        document: { nodes, edges: canvas.edges, groups: canvas.groups } }, { signal: controller.signal, onCommitted: (committed) => {
+          unsubscribe(); unsubscribe = () => {};
+          // 幂等回执不能把前置保存已推进的版本倒退，也不重复投影或记历史。
+          if (committed.alreadyCommitted) return;
+          // 在complete事件中先推进保存基线；Promise后续continuation不得再写Store。
+          runtime.loaded = { ...runtime.loaded, selection: { ...runtime.loaded.selection,
+            canvas: { ...canvas, nodes, revision: committed.canvasRevision }, changeRevision: committed.changeRevision,
+            context: { ...runtime.loaded.selection.context, canvasRevision: committed.canvasRevision } } };
+          runtime.mediaGeneration = (runtime.mediaGeneration ?? 0) + 1;
+          const current = get();
+          if (nativeRuntime.get(get) !== runtime || current.currentProjectId !== record.canvasId) return;
+          const rebased = rebaseCommittedMediaNodes(before.nodes, current.nodes, restored.nodes as Node<BaseNodeData>[], record.nodeId);
+          if (rebased === current.nodes) return;
+          let historyFailure: unknown;
+          try { get().commitToHistory(); } catch (error) { historyFailure = error; }
+          try { set({ nodes: rebased }); } finally { get().incrementRevision(); }
+          if (historyFailure) throw historyFailure;
+        } });
     } finally { unsubscribe(); signal?.removeEventListener('abort', cancel); release(); }
   },
 

@@ -37,6 +37,16 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('新项目包全局素材', () => {
+  it('通用已保留媒体集合按每项类型和稳定ordinal纳入闭包，不导出查询上下文', () => {
+    const record = { operationId: 'multi', canvasId: 'active', category: 'audio', providerConfigId: 'workflow', createdAt: 1,
+      status: 'reviewed', localResults: [
+        { category: 'audio', relativePath: `media/${'a'.repeat(64)}.mp3`, bytes: 10, sha256: 'a'.repeat(64) },
+        { category: 'image', relativePath: `media/${'b'.repeat(64)}.png`, bytes: 11, sha256: 'b'.repeat(64) },
+      ], pollContext: { submit: { task: 'original' } }, recovery: { kind: 'workflow', workflowId: 'private-id' } } as unknown as NativeMediaTaskRecord;
+    const closure = nativeMediaResultsForArchive([record], new Set(['active']));
+    expect(closure.map((file) => [file.ordinal, file.category])).toEqual([[0, 'audio'], [1, 'image']]);
+    expect(closure.every((file) => !Object.hasOwn(file, 'pollContext') && !Object.hasOwn(file, 'recovery'))).toBe(true);
+  });
   it('归档保留待本机交付和已结束跟踪的同步产物，不导出任务执行身份', () => {
     const sha256 = 'd'.repeat(64), path = `media/${sha256}.png`;
     const base = { canvasId: 'active-canvas', category: 'image', providerConfigId: 'provider', createdAt: 1,

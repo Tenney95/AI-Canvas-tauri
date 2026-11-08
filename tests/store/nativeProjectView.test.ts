@@ -164,6 +164,16 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     });
     return { gate, entered };
   }
+  function pauseAfterDatabaseCommit() {
+    const gate = deferred<void>(), entered = deferred<void>();
+    const actual = nativeDelivery.commitNativeMediaDelivery;
+    vi.spyOn(nativeDelivery, 'commitNativeMediaDelivery').mockImplementation(async (input, options) => {
+      const result = await actual(input, options);
+      entered.resolve(undefined); await gate.promise;
+      return result;
+    });
+    return { gate, entered };
+  }
 
   it('活动 Agent 和 loading 视频可以交付，保留运行上下文和既有历史，只追加一次快照', async () => {
     const { store, receipt, context, originalHistory, agent } = await fixture();
@@ -224,6 +234,62 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     expect(store.getState().projectExecutionContext?.runtimeEpoch).toBe(context.runtimeEpoch);
     expect(store.getState().history).toHaveLength(2);
     expect((await listNativeMediaTasks(projectId))[0]).toMatchObject({ status: 'delivered', remoteTaskId: 'original-paid-task' });
+  });
+
+  it('事务已提交而调用尚未返回时的新编辑不会被迟到投影覆盖，排队保存保留结果和编辑', async () => {
+    const { store, receipt, context } = await fixture();
+    const paused = pauseAfterDatabaseCommit();
+    const delivery = store.getState().commitNativeMediaResult(receipt, mediaPath, context);
+    await Promise.race([paused.entered.promise, delivery.then(() => { throw new Error('fixture expected committed continuation gap'); })]);
+    expect(store.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: mediaPath });
+    expect((await listNativeMediaTasks(projectId))[0].status).toBe('delivered');
+    store.setState((state) => ({ nodes: state.nodes.map((node) => ({ ...node, position: { x: 320, y: 240 },
+      data: { ...node.data, prompt: '提交后的新编辑' } })) }));
+    const queuedSave = store.getState().saveCurrentProjectSilent();
+    paused.gate.resolve(undefined); await delivery; expect(await queuedSave).toBe(canvasA);
+    const current = store.getState().nodes[0];
+    expect(current.position).toEqual({ x: 320, y: 240 });
+    expect(current.data).toMatchObject({ prompt: '提交后的新编辑', status: 'success', videoUrl: mediaPath });
+    const saved = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((item) => item.id === canvasA)!.nodes[0] as Node<BaseNodeData>;
+    expect(saved.position).toEqual(current.position); expect(saved.data).toMatchObject(current.data);
+    expect(store.getState().history).toHaveLength(2);
+  });
+
+  it('complete事件同一轮中已发生的编辑按字段合并，已排队的旧视图保存重取提交结果', async () => {
+    const { store, receipt, context } = await fixture();
+    const actual = nativeDelivery.commitNativeMediaDelivery;
+    let queuedSave: ReturnType<AppState['saveCurrentProjectSilent']> | undefined;
+    vi.spyOn(nativeDelivery, 'commitNativeMediaDelivery').mockImplementation((input, options) => actual(input, {
+      ...options, onCommitted: (result) => {
+        store.setState((state) => ({ nodes: state.nodes.map((node) => ({ ...node, position: { x: 90, y: 70 },
+          data: { ...node.data, prompt: 'complete时的新编辑' } })) }));
+        // 先排队旧loading视图，再由complete回调推进代次并合并结果。
+        queuedSave = store.getState().saveCurrentProjectSilent();
+        options?.onCommitted?.(result);
+      },
+    }));
+    await store.getState().commitNativeMediaResult(receipt, mediaPath, context);
+    expect(await queuedSave).toBe(canvasA);
+    expect(store.getState().nodes[0].position).toEqual({ x: 90, y: 70 });
+    expect(store.getState().nodes[0].data).toMatchObject({ prompt: 'complete时的新编辑', status: 'success', videoUrl: mediaPath });
+    const saved = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((item) => item.id === canvasA)!.nodes[0] as Node<BaseNodeData>;
+    expect(saved.data).toMatchObject({ prompt: 'complete时的新编辑', status: 'success', videoUrl: mediaPath });
+  });
+
+  it('已提交后的等待间隙删除节点或切集不会被投递continuation复活或跨集写入', async () => {
+    const { store, receipt, context } = await fixture();
+    const paused = pauseAfterDatabaseCommit();
+    const delivery = store.getState().commitNativeMediaResult(receipt, mediaPath, context);
+    await Promise.race([paused.entered.promise, delivery.then(() => { throw new Error('fixture expected committed continuation gap'); })]);
+    store.setState({ nodes: [] });
+    const switching = store.getState().switchProject(canvasB);
+    paused.gate.resolve(undefined); await delivery;
+    expect(await switching).toBe(canvasB);
+    expect(store.getState().currentProjectId).toBe(canvasB); expect(store.getState().nodes).toEqual([]);
+    const aggregate = (await readNativeProjectCapture(projectId))!.aggregate;
+    expect(aggregate.canvases.find((canvas) => canvas.id === canvasA)!.nodes).toEqual([]);
+    expect(aggregate.canvases.find((canvas) => canvas.id === canvasB)!.nodes).toEqual([]);
+    expect((await listNativeMediaTasks(projectId))[0]).toMatchObject({ status: 'delivered', resultRelativePath: mediaPath });
   });
 
   it('重复原回执交付不倒退保存基线或重复历史，随后普通保存仍能成功', async () => {

@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 
 const driver = vi.hoisted(() => ({ states: [] as unknown[], refs: [] as Array<{ current: unknown }>, index: 0, refIndex: 0,
   importRecovery: vi.fn(), exportRecovery: vi.fn(), sharedRecovery: vi.fn(), sharedAbort: vi.fn(), refresh: vi.fn(),
-  editorList: vi.fn(), editorReview: vi.fn(), editorResume: vi.fn(), inspectMedia: vi.fn(), resumeMedia: vi.fn(), mediaReview: vi.fn() }));
+  editorList: vi.fn(), editorReview: vi.fn(), editorResume: vi.fn(), inspectMedia: vi.fn(), resumeMedia: vi.fn(), mediaReview: vi.fn(), summary: vi.fn(), listMedia: vi.fn() }));
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
   useState: <T,>(initial: T) => {
@@ -28,9 +28,12 @@ vi.mock('../../src/services/nativeEditorTransitionService', () => ({ listNativeE
 vi.mock('../../src/services/nativeVolcengineRecovery', () => ({ inspectNativeVolcengineTask: driver.inspectMedia,
   resumeNativeVolcengineTask: driver.resumeMedia }));
 vi.mock('../../src/services/projectExecutionContext', () => ({ captureLegacyCanvasContext: () => ({ modelGeneration: 1 }) }));
-vi.mock('../../src/services/indexedDb/nativeMediaTaskRepository', () => ({ reviewNativeMediaTask: driver.mediaReview }));
+vi.mock('../../src/services/indexedDb/nativeMediaTaskRepository', () => ({ reviewNativeMediaTask: driver.mediaReview, listNativeMediaTasks: driver.listMedia }));
+vi.mock('../../src/services/nativeMediaRecoverySummary', async (original) => ({ ...await original<typeof import('../../src/services/nativeMediaRecoverySummary')>(),
+  readNativeMediaRecoverySummary: driver.summary }));
 
 import NativeProjectRecovery from '../../src/components/settings/NativeProjectRecovery';
+import { describeNativeMediaRecovery } from '../../src/services/nativeMediaRecoverySummary';
 
 type Element = ReactElement<{ children?: unknown; [key: string]: unknown }>;
 const elements = (value: unknown): Element[] => Array.isArray(value) ? value.flatMap(elements)
@@ -54,6 +57,7 @@ beforeEach(() => {
   driver.editorList.mockReset().mockResolvedValue([]); driver.editorReview.mockReset().mockResolvedValue(undefined);
   driver.editorResume.mockReset(); driver.inspectMedia.mockReset(); driver.resumeMedia.mockReset();
   driver.mediaReview.mockReset().mockResolvedValue(undefined);
+  driver.summary.mockReset().mockImplementation(describeNativeMediaRecovery); driver.listMedia.mockReset().mockResolvedValue([]);
 });
 
 it('按原 ID 恢复共享同步，或者显式撤销未提交的本机应用', async () => {
@@ -123,4 +127,40 @@ it('已提交媒体原节点不可用时仍能显式结束跟踪，保留回执�
   await vi.waitFor(() => expect(driver.mediaReview).toHaveBeenCalledWith('submitted-operation', { modelGeneration: 1 }));
   expect(driver.resumeMedia).not.toHaveBeenCalled();
   await vi.waitFor(() => expect(text(render())).toContain('远端不会因此取消'));
+});
+
+it('普通恢复发现未发送的音乐阶段先显示费用按钮，用户再次点击后才授予原阶段提交', async () => {
+  const original = { status: 'prepared', ownerProjectId: 'original-owner' };
+  const summary = { ...describeNativeMediaRecovery(original as Parameters<typeof describeNativeMediaRecovery>[0]),
+    canContinueGenerationStage: true, maySubmitUnstartedStage: true, currentStage: 'music', unknownSubmissions: 0, resultCount: 0 };
+  driver.inspectMedia.mockResolvedValue(original); driver.summary.mockResolvedValue(summary);
+  driver.resumeMedia.mockResolvedValue(undefined); driver.listMedia.mockResolvedValue([{ ...original, operationId: 'music-operation', status: 'delivered' }]);
+  input('music-operation'); click('继续取回原媒体产物');
+  await vi.waitFor(() => expect(text(render())).toContain('继续原生成阶段（可能产生费用）'));
+  expect(driver.resumeMedia).not.toHaveBeenCalled();
+  click('继续原生成阶段（可能产生费用）');
+  await vi.waitFor(() => expect(driver.resumeMedia).toHaveBeenCalledWith('music-operation', undefined, { allowUnstartedStage: true }));
+});
+
+it('完整缓存与部分失败数量一并展示，不把多个本机产物误称整批成功', async () => {
+  const original = { status: 'submitted' };
+  driver.inspectMedia.mockResolvedValue(original);
+  driver.summary.mockResolvedValue({ ...describeNativeMediaRecovery(original as Parameters<typeof describeNativeMediaRecovery>[0]),
+    resultCount: 3, expectedCount: 2, taskCount: 2, failedTasks: 1, failedSubmissions: 1, unknownSubmissions: 0, notStartedSubmissions: 0,
+    lateTaskCount: 2, cachedOnly: true, partial: true });
+  input('cached-operation'); click('核对原媒体任务状态');
+  await vi.waitFor(() => expect(text(render())).toContain('已保存 3 个产物'));
+  expect(text(render())).toContain('失败任务 1 个'); expect(text(render())).toContain('失败提交 1 次');
+  expect(text(render())).toContain('迟到任务 2 个'); expect(text(render())).toContain('不会再次调用服务商');
+  expect(driver.resumeMedia).not.toHaveBeenCalled();
+});
+
+it('剪辑delivered仍显示部分失败和原任务总数，不把多个已保存视频误称全成功', async () => {
+  driver.editorList.mockResolvedValue([{ operationId: 'partial-editor', anchorNodeId: 'original-video', status: 'delivered',
+    localResults: [{ relativePath: 'private-a' }, { relativePath: 'private-b' }], completion: { taskCount: 2, failedTasks: 1 } }]);
+  input('partial-editor'); click('核对原媒体任务状态');
+  await vi.waitFor(() => expect(text(render())).toContain('已保存 2 个产物，原计划 2 个'));
+  expect(text(render())).toContain('失败任务 1 个'); expect(text(render())).not.toContain('private-a');
+  expect(elements(render()).some((item) => item.props.role === 'status' && String(item.props.className).includes('ui-alert--warning'))).toBe(true);
+  expect(driver.editorResume).not.toHaveBeenCalled();
 });

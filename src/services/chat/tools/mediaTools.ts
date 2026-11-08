@@ -40,11 +40,12 @@ import { generationInputSnapshot } from '../canvasNodeVersion';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../../projectExecutionContext';
 import { listNativeMediaTasks, type NativeMediaTaskRecord } from '../../indexedDb/nativeMediaTaskRepository';
 import { nativeImageBatchSummary } from '../../nativeImageBatch';
-import { resolveModelExecutionProfile } from '../../ai/modelProtocol';
-import { nativeProtocolTaskIdContext } from '../../nativeModelProtocolTask';
+import { readNativeMediaRecoverySummary } from '../../nativeMediaRecoverySummary';
+import { supportsNativeMediaProtocol } from '../../nativeMediaCapabilities';
 import type { AgentToolDisplaySnapshot } from '../../../types/agent';
 import {
   registerAgentTool,
+  type AgentToolContext,
   type AgentToolExecutionResult,
 } from '../toolRegistry';
 import {
@@ -237,7 +238,8 @@ function getAssistantMessageId(taskId: string): string | undefined {
 }
 
 async function nativeMediaRows(canvasId: string, conversationId: string): Promise<NativeMediaTaskRecord[] | null> {
-  const context = captureLegacyCanvasContext(useAppStore.getState());
+  const state = useAppStore.getState(), context = captureLegacyCanvasContext(state);
+  if (!context && state.projectExecutionContext?.modelGeneration === 1) throw new Error('原生画布上下文尚未就绪，请重新读取原回执');
   if (!context || context.modelGeneration !== 1) return null;
   if (context.canvasId !== canvasId) throw new Error('只能查看原媒体画布');
   const records = await listNativeMediaTasks(context.projectId);
@@ -246,29 +248,62 @@ async function nativeMediaRows(canvasId: string, conversationId: string): Promis
     && row.projectEpoch === context.projectEpoch && row.canvasEpoch === context.canvasEpoch
     && (!row.origin || row.origin.conversationId === conversationId));
 }
-const nativeCanResume = (row: NativeMediaTaskRecord) => (!!row.modelRef || ['volcengine', 'apimart', 'grsai', 'comfyui'].includes(row.providerConfigId))
-  && (row.category === 'video' || row.fingerprintScheme === 'media-input-v2')
-  && ((row.submissionKind === 'sync' ? ['submitted', 'reviewed'].includes(row.status) && !!row.localResult : ['submitted', 'reviewed'].includes(row.status) && !!row.remoteTaskId)
-    || row.status === 'prepared' && !!row.remoteTaskId && !!row.apimartImageBatch
-      && !row.apimartImageBatch.submissions.some((submission) => submission.state === 'unknown')
-    || row.status === 'delivered' && !!row.origin);
-
+type NativeResumeInput = { nodeId: string; taskId?: string; operationId?: string };
+async function nativeToolRecovery(record: NativeMediaTaskRecord, conversationId: string) {
+  const summary = await readNativeMediaRecoverySummary(record);
+  return summary.canContinueGenerationStage && record.origin?.conversationId !== conversationId
+    ? { ...summary, canContinueGenerationStage: false, recoveryAction: 'manual_review_only' as const } : summary;
+}
+async function executeNativeMediaResume(context: AgentToolContext, input: NativeResumeInput,
+  records: NativeMediaTaskRecord[], allowUnstartedStage = false): Promise<AgentToolExecutionResult> {
+  const described = await Promise.all(records.map(async (row) => ({ row, recovery: await nativeToolRecovery(row, context.conversationId) })));
+  const matches = described.filter(({ row }) => row.nodeId === input.nodeId
+    && (!input.operationId || row.operationId === input.operationId)
+    && (row.submissionKind === 'sync' ? input.operationId === row.operationId && input.taskId === undefined
+      : input.taskId === undefined ? input.operationId === row.operationId : row.remoteTaskId === input.taskId));
+  if (matches.length !== 1) return { status: 'error', summary: '原媒体回执不唯一或不可续查',
+    modelContent: '请重新读取原回执列表；未重新提交生成。', errorCode: 'MEDIA_RECOVERY_STALE' };
+  const { row, recovery: before } = matches[0];
+  const stageAllowed = allowUnstartedStage && row.recovery?.kind === 'builtin-audio' && row.origin?.conversationId === context.conversationId
+    && row.status !== 'reviewed' && before.canContinueGenerationStage;
+  if (!stageAllowed && (!before.canResume || allowUnstartedStage)) return { status: 'error',
+    summary: before.canContinueGenerationStage ? '原操作还有未发送的付费阶段，请使用继续原生成阶段工具' : '原媒体回执不能自动续查，请先核对',
+    modelContent: JSON.stringify({ operationId: row.operationId, recovery: before, ...(before.canContinueGenerationStage
+      ? { nextTool: 'media_resume_generation_stage', mayIncurCost: true } : {}) }), errorCode: before.canContinueGenerationStage ? 'MEDIA_STAGE_CONFIRMATION_REQUIRED' : 'MEDIA_RECOVERY_STALE' };
+  try {
+    const { resumeNativeVolcengineTask } = await import('../../nativeVolcengineRecovery');
+    await resumeNativeVolcengineTask(row.operationId, context.signal, { allowUnstartedStage: stageAllowed });
+    const completed = (await listNativeMediaTasks(row.ownerProjectId)).find((entry) => entry.operationId === row.operationId);
+    const recovery = completed && await readNativeMediaRecoverySummary(completed);
+    return { status: completed?.status === 'delivered' ? 'success' : 'error', summary: completed?.status !== 'delivered'
+      ? '原媒体操作尚未完成，原回执已保留' : recovery?.partial ? '已交付原操作的已确认产物，请核对部分失败或未知回执' : '已核验原任务并交付原结果',
+      modelContent: JSON.stringify({ operationId: row.operationId, repeatedSubmittedStage: false, continuedOriginalStage: stageAllowed,
+        batch: completed && nativeImageBatchSummary(completed), recovery }) };
+  } catch (error) {
+    const latest = (await listNativeMediaTasks(row.ownerProjectId).catch(() => [])).find((entry) => entry.operationId === row.operationId);
+    return { status: 'error', summary: error instanceof Error ? error.message : '原任务续查未完成',
+      modelContent: JSON.stringify({ operationId: row.operationId, repeatedSubmittedStage: false,
+        ...(latest ? { recovery: await readNativeMediaRecoverySummary(latest) } : {}) }), errorCode: 'MEDIA_RECOVERY_PENDING' };
+  }
+}
 export function registerMediaAgentTools(): Array<() => void> {
   return [
     registerAgentTool<Record<string, never>>({
       id: 'media_pending_tasks', title: '查看待恢复媒体任务', effect: 'read',
-      description: '列出当前项目已保留的媒体任务身份和阶段，不返回凭据、文件路径、请求正文或媒体地址。canResume=true 时可用 media_resume_task 续取，其余任务沿用原专用恢复入口；不能重新调用 media_generate。',
+      description: '列出当前项目已保留的媒体任务身份、阶段和安全计数。canResume=true 可用 media_resume_task 续取；canContinueGenerationStage=true 用 media_resume_generation_stage 显式继续未发送的付费阶段。其他情况先核对原回执，不能重新调用 media_generate。不返回凭据、文件路径、请求正文或媒体地址。',
       inputSchema: { type: 'object', additionalProperties: false, properties: {} },
       authorize: (context) => ({ allowed: context.projectId === useAppStore.getState().currentProjectId, reason: '只能读取当前项目的待恢复任务' }),
       execute: async (context) => {
         const native = await nativeMediaRows(context.projectId, context.conversationId);
-        if (native) return { status: 'success', summary: '已读取当前原生画布的媒体回执', modelContent: JSON.stringify(native.map((row) => ({
+        if (native) {
+          const summaries = await Promise.all(native.map((row) => nativeToolRecovery(row, context.conversationId)));
+          return { status: 'success', summary: '已读取当前原生画布的媒体回执', modelContent: JSON.stringify(native.map((row, index) => ({
           operationId: row.operationId, nodeId: row.nodeId, ...(row.remoteTaskId ? { taskId: row.remoteTaskId } : {}),
           status: row.status, kind: row.category, submissionKind: row.submissionKind ?? 'async',
-          recoveryAction: row.submissionKind === 'sync' ? row.localResult ? 'deliver_local_result' : 'manual_review_only'
-            : row.apimartImageBatch ? nativeCanResume(row) ? 'recover_original_task_set' : 'manual_review_only' : 'query_original_task',
-          provider: row.providerConfigId, canResume: nativeCanResume(row), batch: nativeImageBatchSummary(row),
-        }))) };
+          recoveryAction: summaries[index].recoveryAction,
+          provider: row.providerConfigId, canResume: summaries[index].canResume, canContinueGenerationStage: summaries[index].canContinueGenerationStage,
+          batch: nativeImageBatchSummary(row), recovery: summaries[index],
+        }))) }; }
         const view = readPendingMediaTaskViews([context.projectId]);
         return view.status === 'ok' ? { status: 'success', summary: '已只读查询待恢复媒体任务', modelContent: JSON.stringify(view.tasks) }
           : { status: 'error', summary: '原待恢复任务源不可读或包含未知记录，已保留原数据，请先核实，勿重投',
@@ -277,7 +312,7 @@ export function registerMediaAgentTools(): Array<() => void> {
     }),
     registerAgentTool<{ nodeId: string; taskId?: string; operationId?: string }>({
       id: 'media_resume_task', title: '续取原媒体任务', effect: 'canvas_write',
-      description: '续取原媒体操作，不重新提交生成。新项目使用 media_pending_tasks 中 canResume=true 的 nodeId 和 operationId；同步任务只投递已核验的本机产物，不存在远端 taskId。旧任务仍使用 nodeId 和 taskId。对话任务须打开原对话。',
+      description: '续取原媒体操作，不提交新的付费阶段。新项目使用 media_pending_tasks 中 canResume=true 的 nodeId 和 operationId；同步任务只投递已核验的本机产物。需要首次提交后续音乐阶段时使用 media_resume_generation_stage。旧任务仍使用 nodeId 和 taskId。对话任务须打开原对话。',
       inputSchema: { type: 'object', required: ['nodeId'], additionalProperties: false,
         properties: { nodeId: { type: 'string', minLength: 1, maxLength: 300 }, taskId: { type: 'string', minLength: 1, maxLength: 256 },
           operationId: { type: 'string', minLength: 1, maxLength: 128 } } },
@@ -288,26 +323,7 @@ export function registerMediaAgentTools(): Array<() => void> {
       execute: async (context, input) => {
         if (context.signal.aborted) return { status: 'error', summary: '已停止本次等待', modelContent: '未重新提交生成，也未取消远端任务。', errorCode: 'MEDIA_RECOVERY_STOPPED' };
         const native = await nativeMediaRows(context.projectId, context.conversationId);
-        if (native) {
-          const matches = native.filter((row) => row.nodeId === input.nodeId
-            && (!input.operationId || row.operationId === input.operationId)
-            && (row.submissionKind === 'sync' ? input.operationId === row.operationId && input.taskId === undefined
-              : input.taskId === undefined ? input.operationId === row.operationId : row.remoteTaskId === input.taskId)
-            && nativeCanResume(row));
-          if (matches.length !== 1) return { status: 'error', summary: '原媒体回执不唯一或不可续查',
-            modelContent: '请重新读取原回执列表；未重新提交生成。', errorCode: 'MEDIA_RECOVERY_STALE' };
-          try {
-            const { resumeNativeVolcengineTask } = await import('../../nativeVolcengineRecovery');
-            await resumeNativeVolcengineTask(matches[0].operationId, context.signal);
-            const completed = (await listNativeMediaTasks(matches[0].ownerProjectId)).find((row) => row.operationId === matches[0].operationId);
-            const batch = completed && nativeImageBatchSummary(completed);
-            return { status: 'success', summary: batch?.partial ? '已交付原批次的已确认候选，请核对部分失败或未知回执' : '已核验原任务并交付原结果',
-              modelContent: JSON.stringify({ operationId: matches[0].operationId, generatedAgain: false, batch }) };
-          } catch (error) {
-            return { status: 'error', summary: error instanceof Error ? error.message : '原任务续查未完成',
-              modelContent: `原操作 ${matches[0].operationId} 已保留，未重新提交生成。`, errorCode: 'MEDIA_RECOVERY_PENDING' };
-          }
-        }
+        if (native) return executeNativeMediaResume(context, input, native);
         const original = getPendingTasksForProject(context.projectId).find((task) => task.nodeId === input.nodeId && task.taskId === input.taskId
           && canResumeMediaTask(task));
         if (useAppStore.getState().currentProjectId !== context.projectId || !original) {
@@ -338,6 +354,21 @@ export function registerMediaAgentTools(): Array<() => void> {
         return { status: pending ? 'error' : 'success', summary: pending ? '原任务仍保留，查询或保存尚未完成' : '原任务已取回并交付',
           modelContent: pending ? '任务仍保留；请核对原项目、对话及连接后继续查询，不要重新提交生成。' : '已查询并保存原任务结果，没有重新提交生成。',
           ...(pending ? { errorCode: 'MEDIA_RECOVERY_PENDING' } : {}) };
+      },
+    }),
+    registerAgentTool<{ nodeId: string; operationId: string }>({
+      id: 'media_resume_generation_stage', title: '继续原媒体生成阶段', effect: 'media_generation',
+      description: '继续原音乐操作中有未发送证明的后续阶段，可能产生费用。只接受 media_pending_tasks 返回 canContinueGenerationStage=true 的原 nodeId/operationId，不接受新模型、提示词或参数；不重投已提交阶段，结束跟踪或状态未知时拒绝。',
+      inputSchema: { type: 'object', required: ['nodeId', 'operationId'], additionalProperties: false,
+        properties: { nodeId: { type: 'string', minLength: 1, maxLength: 300 }, operationId: { type: 'string', minLength: 1, maxLength: 128 } } },
+      authorize: (context) => ({ allowed: context.projectId === useAppStore.getState().currentProjectId
+        && captureLegacyCanvasContext(useAppStore.getState())?.modelGeneration === 1, reason: '只能继续当前原生画布中原对话的已保留生成阶段' }),
+      summarizeInput: (input) => `继续原操作 ${input.operationId} 的未发送生成阶段，可能产生费用`,
+      execute: async (context, input) => {
+        if (context.signal.aborted) return { status: 'error', summary: '已停止本次等待', modelContent: '未提交后续阶段。', errorCode: 'MEDIA_RECOVERY_STOPPED' };
+        const records = await nativeMediaRows(context.projectId, context.conversationId);
+        if (!records) return { status: 'error', summary: '原生成阶段不属于当前原生画布', modelContent: '未提交后续阶段。', errorCode: 'MEDIA_RECOVERY_STALE' };
+        return executeNativeMediaResume(context, input, records, true);
       },
     }),
     registerAgentTool<{ modelRef: string }>({
@@ -480,16 +511,9 @@ export function registerMediaAgentTools(): Array<() => void> {
         const store = useAppStore.getState();
         if ((context.executionContext ?? context.projectScope)?.modelGeneration === 1) {
           const option = input.modelRef ? findMediaModelOption(input.modelRef, store.config.generalModels ?? [], store.config, store.workflows) : undefined;
-          const workflow = option?.workflowId ? store.workflows.find((item) => item.id === option.workflowId) : undefined;
           const generalModel = store.config.generalModels?.find((model) => model.id === input.modelRef?.replace(/^general\//, ''));
-          let generalSupported = false;
-          if (generalModel) {
-            try { const protocol = resolveModelExecutionProfile(generalModel.executionProfile);
-              if (protocol) { if (protocol.mode === 'async') nativeProtocolTaskIdContext(protocol, 'validation'); generalSupported = true; } } catch { /* 未闭合查询协议拒绝。 */ }
-          }
-          const supported = !!option && (generalSupported || ['volcengine', 'apimart', 'grsai'].includes(option.provider)
-            || !!workflow && (!workflow.adapterType || workflow.adapterType === 'comfyui'));
-          if (!supported || input.kind !== 'video' && !generalSupported || generalModel && generalModel.category !== input.kind) return { allowed: false, reason: '此模型尚未接入新项目原回执续查，未提交生成' };
+          const supported = !!option && supportsNativeMediaProtocol(input.kind, option.provider, option.workflowId, store.workflows);
+          if (!supported || generalModel && generalModel.category !== input.kind) return { allowed: false, reason: '此模型尚未接入新项目原回执续查，未提交生成' };
         }
         try { assertSafeMediaToolParameters(input, context.projectId); } catch {
           return { allowed: false, reason: '媒体参数格式无效，请使用所选模型声明的参数值' };
@@ -659,6 +683,7 @@ export function registerMediaAgentTools(): Array<() => void> {
           };
         }
         const assistantMessageId = getAssistantMessageId(context.taskId);
+        const originalNativeContext = store.projectExecutionContext?.modelGeneration === 1 ? captureLegacyCanvasContext(store) : null;
         if (!assistantMessageId) {
           return {
             status: 'error',
@@ -884,20 +909,28 @@ export function registerMediaAgentTools(): Array<() => void> {
         } catch (error) {
           const native = await nativeMediaRows(context.projectId, context.conversationId).catch(() => null);
           if (error instanceof Error && error.name === 'NativeMediaTaskDelivered') {
-            const delivered = native?.find((row) => row.origin?.messageId === assistantMessageId && row.status === 'delivered');
+            const operationId = (error as Error & { nativeOperationId?: unknown }).nativeOperationId;
+            const original = originalNativeContext && typeof operationId === 'string'
+              ? (await listNativeMediaTasks(originalNativeContext.projectId).catch(() => [])).find((row) => row.operationId === operationId
+                && row.canvasId === originalNativeContext.canvasId && row.episodeId === originalNativeContext.episodeId
+                && row.projectEpoch === originalNativeContext.projectEpoch && row.canvasEpoch === originalNativeContext.canvasEpoch
+                && row.origin?.messageId === assistantMessageId && row.origin.conversationId === context.conversationId && row.status === 'delivered') : undefined;
+            const delivered = native?.find((row) => row.origin?.messageId === assistantMessageId && row.status === 'delivered') ?? original;
             if (delivered) {
               if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
               const { projectNativeMediaMessages } = await import('../../nativeMediaMessages');
-              await projectNativeMediaMessages(context.conversationId).catch(() => undefined);
+              if (originalNativeContext && isProjectExpectedContextCurrent(originalNativeContext, useAppStore.getState(), { checkCanvasRevision: false })) {
+                await projectNativeMediaMessages(context.conversationId).catch(() => undefined);
+              }
               if (tracksOperation) await recordMcpOperationProgress(context.taskId, { mediaStage: 'delivered',
                 persistence: 'saved', artifactId: `native-media-${delivered.operationId}` }).catch(() => undefined);
               const batch = nativeImageBatchSummary(delivered);
-              return { status: 'success', summary: batch?.partial ? '原批次已确认候选已保存并交付，请核对部分失败或未知回执' : '原媒体已保存并交付',
-                modelContent: JSON.stringify({ operationId: delivered.operationId, artifactId: `native-media-${delivered.operationId}`, persistence: 'saved', batch }) };
+              const recovery = await readNativeMediaRecoverySummary(delivered);
+              return { status: 'success', summary: recovery.partial ? '原操作已确认产物已保存并交付，请核对部分失败或未知回执' : '原媒体已保存并交付',
+                modelContent: JSON.stringify({ operationId: delivered.operationId, artifactId: `native-media-${delivered.operationId}`, persistence: 'saved', batch, recovery }) };
             }
             // 完成事务后切集只影响当前视图；不能把已耐久完成的原操作改记为失败。
             if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
-            const operationId = (error as Error & { nativeOperationId?: unknown }).nativeOperationId;
             return { status: 'success', summary: '原媒体的完成回执已保存，请返回原画布核对产物',
               modelContent: JSON.stringify({ ...(typeof operationId === 'string' && /^[a-f0-9-]{36}$/.test(operationId) ? { operationId } : {}),
                 persistence: 'saved', originalViewRequired: true }) };
@@ -906,18 +939,19 @@ export function registerMediaAgentTools(): Array<() => void> {
             && ['prepared', 'submitted', 'outcome-unknown'].includes(row.status));
           if (pendingNative) {
             if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
+            const recovery = await readNativeMediaRecoverySummary(pendingNative);
             const current = useAppStore.getState();
             if (current.currentProjectId === context.projectId && current.messages.some((entry) => entry.id === assistantMessageId
               && entry.conversationId === context.conversationId)) current.updateMessage(assistantMessageId, {
-                mediaStatus: pendingNative.status === 'submitted' ? 'paused' : 'submit_unknown',
+                mediaStatus: recovery.needsReview ? 'submit_unknown' : 'paused',
                 mediaError: '原媒体任务已保留，请续查原回执，不要重新生成。', canvasStatus: targetNodeId ? 'pending' : 'none', canvasNodeId: targetNodeId,
               });
             if (tracksOperation) await recordMcpOperationProgress(context.taskId, { phase: 'partial',
               mediaStage: 'started', errorCode: 'AGENT_MEDIA_RECOVERY_PENDING' }).catch(() => undefined);
             return { status: 'success', summary: '媒体原操作已保留，可按原回执续查', errorCode: 'AGENT_MEDIA_RECOVERY_PENDING',
               modelContent: JSON.stringify({ operationId: pendingNative.operationId, nodeId: pendingNative.nodeId,
-                taskId: pendingNative.remoteTaskId, status: pendingNative.status, canResume: nativeCanResume(pendingNative),
-                batch: nativeImageBatchSummary(pendingNative), retryable: false }) };
+                taskId: pendingNative.remoteTaskId, status: pendingNative.status, canResume: recovery.canResume,
+                batch: nativeImageBatchSummary(pendingNative), recovery, retryable: false }) };
           }
           if (generatedArtifact && isMediaDeliveryGroup(generatedArtifact)) {
             const current = useAppStore.getState();

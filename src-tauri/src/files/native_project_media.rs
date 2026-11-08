@@ -42,7 +42,10 @@ fn media_format(mime: &str) -> Option<(&'static str, u64)> {
         "image/webp" => Some(("webp", IMAGE)), "image/gif" => Some(("gif", IMAGE)),
         "video/mp4" => Some(("mp4", VIDEO)), "video/webm" => Some(("webm", VIDEO)),
         "video/quicktime" => Some(("mov", VIDEO)), "audio/mpeg" => Some(("mp3", IMAGE)),
-        "audio/wav" => Some(("wav", IMAGE)), "audio/ogg" => Some(("ogg", IMAGE)), _ => None,
+        "audio/wav" => Some(("wav", IMAGE)), "audio/ogg" => Some(("ogg", IMAGE)),
+        "audio/opus" => Some(("opus", IMAGE)), "audio/aac" => Some(("aac", IMAGE)),
+        "audio/flac" => Some(("flac", IMAGE)), "audio/pcm" => Some(("pcm", IMAGE)),
+        "application/json" => Some(("json", 256 * 1024)), _ => None,
     }
 }
 
@@ -366,6 +369,7 @@ fn read_media_file(path: &Path, reference: &NativeMediaReference) -> Result<Vec<
 pub fn write_native_project_media<R: Runtime>(webview: Webview<R>, project_id: String, mime_type: String, data: Vec<u8>) -> Result<NativeMediaReference, String> {
     let (extension, limit) = media_format(&mime_type).ok_or(ERROR)?;
     if data.is_empty() || data.len() as u64 > limit { return Err(ERROR.into()); }
+    if mime_type == "application/json" { serde_json::from_slice::<serde_json::Value>(&data).map_err(|_| ERROR)?; }
     let sha256 = format!("{:x}", Sha256::digest(&data));
     let reference = NativeMediaReference { relative_path: format!("media/{sha256}.{extension}"), sha256, bytes: data.len() as u64, mime_type };
     let name = validate_media_reference(&reference)?;

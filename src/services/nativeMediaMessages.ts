@@ -5,7 +5,7 @@ import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './p
 import { listNativeMediaTasks } from './indexedDb/nativeMediaTaskRepository';
 import { getProjectDataDir, joinPath } from './fileService';
 import { getAssetUrlFromPath } from './fs/core';
-import { nativeImageBatchResults } from './nativeImageBatch';
+import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 import type { ChatMessage } from '../types/chat';
 
 export async function projectNativeMediaMessages(conversationId?: string): Promise<void> {
@@ -18,8 +18,8 @@ export async function projectNativeMediaMessages(conversationId?: string): Promi
       || record.canvasEpoch !== context.canvasEpoch || record.episodeId !== context.episodeId
       || record.status !== 'delivered' || !record.resultRelativePath
       || conversationId && origin.conversationId !== conversationId) continue;
-    if (record.apimartImageBatch) {
-      const files = nativeImageBatchResults(record);
+    if (record.apimartImageBatch || record.localResults) {
+      const files = nativeMediaLocalOutputs(record);
       const artifactIds = files.map((_, ordinal) => `native-media-${record.operationId}${ordinal ? `-${ordinal}` : ''}`);
       const initial = useAppStore.getState();
       if (!initial.messages.some((message) => message.conversationId === origin.conversationId

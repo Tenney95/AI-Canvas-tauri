@@ -21,7 +21,6 @@ import { resolveMediaReferenceUrl } from '../uploadService';
 import type { AIAudioGenParams, AudioGenerationResult, MediaReference } from '../../types/aiTypes';
 import type { MediaPersistenceStatus } from '../../types/media';
 import { resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
-import { resolveModelExecutionProfile } from './modelProtocol';
 import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
 import { resolveProviderCatalogId } from './providerPolicies';
 import {
@@ -159,11 +158,8 @@ export async function generateAudio(
   const rawWorkflowPrompt = rawPrompt;
   const state = useAppStore.getState();
   if (state.projectExecutionContext?.modelGeneration === 1) {
-    const connection = provider === 'general' ? resolveGeneralModelConnection(model) : undefined;
-    const profile = connection && resolveModelExecutionProfile(connection.model.executionProfile);
-    if (!profile || !isNativeVideoSubmissionGuard(beforeSubmit)) throw new Error('此原生音频模型没有可耐久续查的完整回执，未提交请求');
+    if (!isNativeVideoSubmissionGuard(beforeSubmit)) throw new Error('此原生音频调用缺少原画布提交守卫，未提交请求');
   }
-  if (state.projectExecutionContext?.modelGeneration === 1 && params.autoGenerateLyrics) throw new Error('可恢复音频任务须使用已确定的歌词，未提交自动写词请求');
   const globalAssets = await loadGlobalDramaAssetsForPrompt(`${rawPrompt}\n${JSON.stringify(params.workflowInputs ?? {})}`, state);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   if (useAppStore.getState().currentProjectId !== state.currentProjectId) throw new Error('项目已切换，请重新生成音频');
@@ -204,13 +200,13 @@ export async function generateAudio(
       const result = await executeWorkflowApiMedia({ workflowId: workflow.id, nodeId: params.nodeId, taskContext: params.workflowApiTaskContext,
         prompt, inputs: parseWorkflowApiFields(params.workflowInputs, workflow.workflowApi), references: {
           image: getMediaReferenceUrls(references, 'image', 'local'), video: getMediaReferenceUrls(references, 'video', 'local'), audio: getMediaReferenceUrls(references, 'audio', 'local'),
-        } }, signal);
+        }, beforeSubmit }, signal);
       return { ...normalizeProtocolAudioResult(result.url), ...result };
     }
     if (isRunningHubWorkflow(workflow)) {
       const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, rawWorkflowPrompt, prompt, kind: 'audio', references: {
         image: getMediaReferenceUrls(references, 'image', 'local'), video: getMediaReferenceUrls(references, 'video', 'local'), audio: getMediaReferenceUrls(references, 'audio', 'local'),
-      } }, signal);
+      } }, signal, beforeSubmit);
       return { ...normalizeProtocolAudioResult(outputs[0].url), runninghubOutputs: outputs };
     }
     const comfyReferences = mergeMediaReferences((await resolvePromptWithMediaRefs(rawPrompt)).references, connectedMedia.references);
@@ -219,13 +215,14 @@ export async function generateAudio(
       signal,
       getMediaReferenceUrls(comfyReferences, 'audio', 'local'),
       { imageUrls: getMediaReferenceUrls(comfyReferences, 'image', 'local'), videoUrls: getMediaReferenceUrls(comfyReferences, 'video', 'local') },
+      beforeSubmit,
     );
   }
 
   if (provider === 'workflow-api') throw new Error('请先配置并选择工作流 API');
   const registeredAdapter = mediaProviderRegistry.getAudioAdapter(provider);
   if (registeredAdapter) {
-    return registeredAdapter.generateAudio({ params, prompt, referenceAudioUrls, referenceMedia: references, signal });
+    return registeredAdapter.generateAudio({ params, prompt, referenceAudioUrls, referenceMedia: references, signal, beforeSubmit });
   }
 
   // ── 通用模型音频生成 ──
@@ -302,6 +299,8 @@ export async function generateAudio(
         prompt,
         batchCount: 1,
       }),
+      beforeSubmit,
+      `general/${gm.id}`,
     );
     const access = createMediaDownloadAccess(connection.providerConfigId, connection.baseUrl, { type: 'bearer' });
     const urls = retainCompletedMediaResults([result.url], access, params.nodeId, 'audio', 1, result.taskReceipt, state.currentProjectId);

@@ -4,8 +4,13 @@
 import { isLocalMediaUrl, isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { resolveComfyRefmodMentionInputs } from '../../utils/comfyRefmodMention';
 import { videoInputData, videoInputFingerprint } from '../videoBatchPlanning';
-import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
-import { captureNativeVideoImageReference, verifyNativeVideoImageReference, type NativeVideoImageReference } from '../nativeVideoImageReference';
+import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, registerNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
+import { verifyNativeVideoImageReference, type NativeVideoImageReference } from '../nativeVideoImageReference';
+import { nativeBuiltinVideoProtocolDigest } from '../nativeBuiltinVideoProtocol';
+import { continueNativeMediaTask } from '../nativeMediaTaskContinuation';
+import { sha256BytesHex } from '../mediaDataUrl';
+import { projectModelSourceToken } from '../projectModelComparisonMaterial';
+import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
 import { useAppStore } from '../../store/useAppStore';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
 import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
@@ -547,7 +552,7 @@ export async function generateVideo(
 ): Promise<{ url: string; taskReceipt?: MediaTaskReceipt; mediaDownloadAccess?: MediaDownloadAccess; comfyTaskId?: string; runninghubOutputs?: import('../../types/runninghub').RunningHubOutput[];
   workflowApiOutputs?: import('../../types/workflowApi').CloudWorkflowOutput[]; workflowApiTaskId?: string }> {
   if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1
-    && ['volcengine', 'apimart', 'grsai'].includes(params.provider) && !isNativeVideoSubmissionGuard(beforeSubmit)) {
+    && !isNativeVideoSubmissionGuard(beforeSubmit)) {
     throw new Error('请从原画布视频节点发起任务，无法验证输入时不提交');
   }
   // 内置 Provider 与本地工作流暂时保持旧归一化；通用模型交给 capability-aware
@@ -626,6 +631,7 @@ export async function generateVideo(
         throw new Error('项目、视频节点或角色引用已变化，请重新生成');
       }
     };
+    if (isNativeVideoSubmissionGuard(previousBeforeSubmit)) registerNativeVideoSubmissionGuard(beforeSubmit);
   }
   // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
   const prompt = await resolveNodeReferencesAsync(rawPrompt);
@@ -774,18 +780,7 @@ export async function generateVideo(
       ...(params.referenceMedia ?? []),
       ...resolveVideoNodeReferences(params.nodeId),
     ]);
-    const context = captureLegacyCanvasContext(useAppStore.getState());
-    let nativeImage: Awaited<ReturnType<typeof captureNativeVideoImageReference>> | undefined;
-    if (context?.modelGeneration === 1 && requestReferences.length) {
-      const source = requestReferences[0];
-      if (requestReferences.length !== 1 || params.referenceMedia?.length || !params.nodeId || source.kind !== 'image'
-        || source.origin !== 'connection' || !source.sourceNodeId) throw new Error('新项目仅支持单张项目内图片连线，未提交视频任务');
-      nativeImage = await captureNativeVideoImageReference(context, params.nodeId);
-      const sourceNode = useAppStore.getState().nodes.find((item) => item.id === nativeImage!.reference.sourceNodeId);
-      if (source.sourceNodeId !== nativeImage.reference.sourceNodeId || source.url !== sourceNode?.data.imageUrl) throw new Error('参考图片身份不一致，未提交视频任务');
-    }
     const remoteReferences = await mapSequentially(requestReferences, async (reference) => {
-      if (nativeImage) return { ...reference, url: nativeImage.dataUrl };
       if (reference.provider === 'volcengine') {
         if (!reference.assetId || reference.url !== `asset://${reference.assetId}`) {
           throw new Error('方舟虚拟人像素材引用无效，请从素材库重新选择');
@@ -813,7 +808,7 @@ export async function generateVideo(
       params,
       signal,
       beforeSubmit,
-      nativeImage?.reference,
+      undefined,
     );
   }
 
@@ -959,13 +954,6 @@ export async function generateVideo(
   throw new Error('视频生成需要选择 ComfyUI 工作流\n请在模型选择器中导入并选择工作流');
 }
 
-class NativeVolcengineTaskPending extends Error {
-  constructor(operationId: string) {
-    super(`火山视频任务已提交，操作 ID：${operationId}。请在设置的存储健康中使用原操作 ID 继续查询。`);
-    this.name = 'NativeVolcengineTaskPending';
-  }
-}
-
 /** 火山方舟 Seedance 视频生成 — 异步提交 + 轮询 */
 async function generateVolcengineVideo(
   apiKey: string,
@@ -999,13 +987,10 @@ async function generateVolcengineVideo(
       throw new Error('当前画布尚未就绪，未提交视频任务');
     }
     // 新画布先写入独立耐久账本；旧画布仍沿用原有队列。
-    if (nativeContext?.modelGeneration === 1) {
+    if (nativeContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
+      await beforeSubmit?.();
+      if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
       if (!nodeId) throw new Error('新项目视频任务需要原画布节点，未提交请求');
-      if (params.referenceMedia?.length || references.length > (nativeImageReference ? 1 : 0)) throw new Error('新项目暂不支持此类参考素材，未提交请求');
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId, nativeImageReference);
-      nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId,
-        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
-        ...(nativeImageReference ? { imageReference: nativeImageReference } : {}), providerConfigId: 'volcengine', providerBase: baseUrl, category: 'video' });
       if (!isProjectExpectedContextCurrent(nativeContext, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，未提交视频任务');
     } else if (nodeId) {
       const projectId = useAppStore.getState().currentProjectId;
@@ -1030,6 +1015,18 @@ async function generateVolcengineVideo(
       preserveFrameRoles,
       params,
     );
+    if (nativeContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
+      await beforeSubmit?.();
+      if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
+      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, nativeImageReference, 'media-input-v3', { preparedReferences: true });
+      const protocolDigest = await nativeBuiltinVideoProtocolDigest('volcengine');
+      nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: nodeId!,
+        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
+        fingerprintScheme: 'media-input-v3', modelRef: `volcengine/${modelName}`, protocolDigest,
+        requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(requestBody))),
+        recovery: { kind: 'builtin-video', modelId: modelName, digest: protocolDigest },
+        ...(nativeImageReference ? { imageReference: nativeImageReference } : {}), providerConfigId: 'volcengine', providerBase: baseUrl, category: 'video' });
+    }
     const durationSeconds = Number(requestBody.duration ?? -1);
     const resolution = String(requestBody.resolution ?? '720p');
     const ratio = String(requestBody.ratio ?? '16:9');
@@ -1094,10 +1091,11 @@ async function generateVolcengineVideo(
     }
 
     if (nativeTask) {
+      if (!isSafeNativeProtocolTaskId(taskId, [apiKey])) throw new Error('原视频任务身份包含不安全字段，原提交已保留供核对');
       nativeRemoteId = taskId;
       await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId });
       billingRun = await updateBillingRun(billingRun, { status: 'running', taskId });
-      throw new NativeVolcengineTaskPending(nativeTask.operationId);
+      return await continueNativeMediaTask(nativeTask, signal);
     }
 
     // 回填 taskId
@@ -1129,7 +1127,7 @@ async function generateVolcengineVideo(
     return { url: completed.url, ...(receipt ? { taskReceipt: receipt } : {}) };
 
   } catch (error) {
-    if (error instanceof NativeVolcengineTaskPending) throw error;
+    if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered', 'NativeMediaTaskFailed'].includes(error.name)) throw error;
     if (nativeTask) {
       await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
         nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || remoteFailed ? { notStarted: true } : { unknown: true }).catch(() => undefined);

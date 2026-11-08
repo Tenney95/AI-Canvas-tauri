@@ -21,6 +21,11 @@ import { resolveConfiguredImageBackground } from './modelCapabilityValidation';
 import { redactModelProtocolError, redactModelProtocolErrorText, throwIfDefinitiveModelResponseFailure } from './modelProtocolHttp';
 import { classifyHttpResponseFailure, getHttpResponseError, HttpResponseError } from './httpUtils';
 import { createMediaDownloadAccess } from './mediaDownloadAccess';
+import { continueNativeMediaTask } from '../nativeMediaTaskContinuation';
+import { nativeBuiltinVideoProtocolDigest } from '../nativeBuiltinVideoProtocol';
+import { sha256BytesHex } from '../mediaDataUrl';
+import { projectModelSourceToken } from '../projectModelComparisonMaterial';
+import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
 
 /* ── APIMart 任务轮询共享类型 ── */
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
@@ -102,7 +107,14 @@ export async function executeGeneralAsyncTask(
   nodeId?: string,
   externalSignal?: AbortSignal,
   requestBody?: Record<string, unknown>,
+  beforeSubmit?: () => void | Promise<void>,
+  modelRef?: string,
 ): Promise<{ url: string; taskReceipt?: MediaTaskReceipt; mediaDownloadAccess: MediaDownloadAccess }> {
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
+    const { executeNativeGeneralAsyncTask } = await import('../nativeGeneralAsyncTask');
+    return executeNativeGeneralAsyncTask({ apiKey, baseUrl, modelName, prompt, resultField, providerConfigId, nodeId,
+      signal: externalSignal, requestBody, beforeSubmit, modelRef });
+  }
   const mediaDownloadAccess = createMediaDownloadAccess(providerConfigId, baseUrl, { type: 'bearer' });
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
@@ -277,7 +289,7 @@ export async function generateApimartImagesBatch(
     ? [nativeSubmitBody]
     : Array.from({ length: requestedCount }, () => ({ ...nativeSubmitBody, n: 1 }));
   try {
-    if (captureLegacyCanvasContext(useAppStore.getState())?.modelGeneration === 1) {
+    if (isNativeVideoSubmissionGuard(beforeSubmit) || captureLegacyCanvasContext(useAppStore.getState())?.modelGeneration === 1) {
       const { submitNativeApimartImageBatch } = await import('../nativeApimartImageSubmission');
       return await submitNativeApimartImageBatch({ baseUrl, model, requestedCount, nodeId, imageUrls, bodies: submitBodies,
         requestHeaders: capability?.requestHeaders, signal, beforeSubmit,
@@ -501,15 +513,11 @@ export async function generateApimartVideo(
     : nodeSignal ?? externalSignal;
   try {
     if (useAppStore.getState().projectExecutionContext !== undefined && !nativeContext) throw new Error('当前画布尚未就绪，未提交视频任务');
-    if (nativeContext?.modelGeneration === 1) {
+    if (nativeContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
+      await beforeSubmit?.();
+      if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
       if (!isNativeVideoSubmissionGuard(beforeSubmit)) throw new Error('请从原画布视频节点发起任务，无法验证输入时不提交');
       if (!nodeId) throw new Error('新项目视频任务需要原画布节点，未提交请求');
-      if (params.imageUrls?.length || params.videoUrls?.length || params.audioUrls?.length
-        || params.imageWithRoles?.length || params.firstFrameUrl || params.lastFrameUrl) throw new Error('新项目暂不支持带素材引用的视频任务，未提交请求');
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId);
-      nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId,
-        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
-        providerConfigId: 'apimart', providerBase: baseUrl, category: 'video' });
     } else if (nodeId) {
       const projectId = useAppStore.getState().currentProjectId;
       if (projectId) {
@@ -534,6 +542,16 @@ export async function generateApimartVideo(
       prompt,
       batchCount: 1,
     });
+    if (nativeContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
+      await beforeSubmit?.();
+      if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
+      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, undefined, 'media-input-v3', { preparedReferences: true });
+      const protocolDigest = await nativeBuiltinVideoProtocolDigest('apimart');
+      nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: nodeId!,
+        inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision, fingerprintScheme: 'media-input-v3',
+        modelRef: `apimart/${model}`, protocolDigest, requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(requestBody))),
+        recovery: { kind: 'builtin-video', modelId: model, digest: protocolDigest }, providerConfigId: 'apimart', providerBase: baseUrl, category: 'video' });
+    }
 
     // 步骤 1: 提交视频生成任务
     signal?.throwIfAborted();
@@ -570,11 +588,11 @@ export async function generateApimartVideo(
     }
 
     if (nativeTask) {
+      const taskIds = [...new Set(submitResult.data.map((item) => item.task_id))];
+      if (!taskIds.length || taskIds.length > 128 || taskIds.some((id) => !isSafeNativeProtocolTaskId(id, [apiKey]))) throw new Error('原视频任务集合包含不安全身份，原提交已保留供核对');
       nativeRemoteId = taskId;
-      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId });
-      const pending = new Error(`APIMart 视频任务已提交，操作 ID：${nativeTask.operationId}。请在设置的存储健康中继续查询原任务。`);
-      pending.name = 'NativeMediaTaskPending';
-      throw pending;
+      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId, pollContext: { taskIds } });
+      return await continueNativeMediaTask(nativeTask, signal);
     }
 
     // 回填 taskId，标记为已提交
@@ -606,7 +624,7 @@ export async function generateApimartVideo(
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId) ?? receipt;
     return { ...result, mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) };
   } catch (unsafeError) {
-    if (unsafeError instanceof Error && unsafeError.name === 'NativeMediaTaskPending') throw unsafeError;
+    if (unsafeError instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered', 'NativeMediaTaskFailed'].includes(unsafeError.name)) throw unsafeError;
     const error = redactModelProtocolError(unsafeError, apiKey);
     const rejected = !receipt?.taskId && getHttpResponseError(error)?.definitiveFailure === true;
     if (nativeTask) {

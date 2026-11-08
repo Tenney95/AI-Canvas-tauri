@@ -5,9 +5,16 @@ import { cancelCanvasDerivation, completeCanvasDerivation, isCanvasDerivationFre
 import { completeMediaNodeTask, getMediaTaskSnapshot, subscribeMediaTasks, type MediaTaskSnapshot } from '../../../services/pollManager';
 import { recoverVideoEditorAiTransition } from '../../../services/videoEditorAiTransitionService';
 import type { NativeEditorMediaTask } from '../../../services/indexedDb/nativeEditorMediaTaskRepository';
+import { describeNativeEditorRecovery } from '../../../services/nativeMediaRecoverySummary';
+import { useT } from '../../../i18n';
 
 /** 仅选中的原锚点显示恢复入口；每次取回都由用户重新领取派生写入租约。 */
 function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId: string; anchorNodeId: string }) {
+  const t = useT();
+  const counts = (task: NativeEditorMediaTask) => { const summary = describeNativeEditorRecovery(task);
+    return t('已保存 {count} 个产物，原计划 {expected} 个；失败任务 {failed} 个，失败提交 {rejected} 次，未知提交 {unknown} 次，未开始 {notStarted} 次，迟到任务 {late} 个。', {
+      count: String(summary.resultCount), expected: String(summary.taskCount || 1), failed: String(summary.failedTasks), rejected: '0',
+      unknown: String(summary.unknownSubmissions), notStarted: '0', late: '0' }); };
   const tasks = useSyncExternalStore(subscribeMediaTasks, getMediaTaskSnapshot, getMediaTaskSnapshot)
     .filter((task) => task.projectId === projectId && task.mediaContext?.editorTransition?.anchorNodeId === anchorNodeId);
   const busy = useRef(false);
@@ -19,7 +26,8 @@ function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId:
   useEffect(() => {
     let active = true;
     if (native) void import('../../../services/nativeEditorTransitionService').then(({ listNativeEditorTransitions }) => listNativeEditorTransitions(anchorNodeId))
-      .then((rows) => { if (active) setNativeTasks(rows.filter((row) => !['delivered', 'failed', 'reviewed'].includes(row.status))); })
+      .then((rows) => { if (active) setNativeTasks(rows.filter((row) => !['delivered', 'failed', 'reviewed'].includes(row.status)
+        || row.status === 'delivered' && describeNativeEditorRecovery(row).partial)); })
       .catch(() => { if (active) setNativeTasks([]); });
     return () => { active = false; };
   }, [anchorNodeId, native, context, refresh]);
@@ -27,9 +35,11 @@ function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId:
     if (busy.current) return;
     busy.current = true; setRecovering(true);
     try {
-      const { recoverNativeEditorTransition } = await import('../../../services/nativeEditorTransitionService');
+      const { recoverNativeEditorTransition, listNativeEditorTransitions } = await import('../../../services/nativeEditorTransitionService');
       await recoverNativeEditorTransition(task.operationId, anchorNodeId);
-      useAppStore.getState().showToast('已取回到原剪辑工程，请重新打开剪辑器查看', 'success');
+      const latest = (await listNativeEditorTransitions(anchorNodeId)).find((row) => row.operationId === task.operationId);
+      const partial = !!latest && describeNativeEditorRecovery(latest).partial;
+      useAppStore.getState().showToast(`已取回到原剪辑工程，请重新打开剪辑器查看${latest ? ` · ${counts(latest)}` : ''}`, partial ? 'info' : 'success');
     } catch (error) {
       useAppStore.getState().showToast(error instanceof Error ? error.message : '转场取回失败，原任务保留', 'error');
     } finally { busy.current = false; setRecovering(false); setRefresh((value) => value + 1); }
@@ -92,13 +102,14 @@ function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId:
     {native && nativeTasks.map((task) => <div key={task.operationId} className="flex flex-col gap-1">
       <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering || task.status !== 'submitted'}
         onClick={() => { void recoverNative(task); }}>{recovering ? '正在取回原转场…' : '取回 AI 转场'}</button>
-      <span className="text-xs text-canvas-text-secondary">{task.status === 'submitted'
+      <span className="text-xs text-canvas-text-secondary">{task.status === 'delivered' ? t('已取回原剪辑产物，请重新打开原工程。') : task.status === 'submitted'
         ? task.resultPath ? '视频素材已取回；原工程变化时可仅保留独立素材。' : '结果将保存到原剪辑工程；工程变化时保留结果，不覆盖编辑。'
         : '提交状态待核对，请先到原平台查询原任务。'}</span>
-      <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering}
+      <span className={describeNativeEditorRecovery(task).partial ? 'ui-alert ui-alert--warning text-xs' : 'text-xs text-canvas-text-secondary'}>{counts(task)}</span>
+      {task.status !== 'delivered' && <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering}
         onClick={() => { void reviewNative(task).catch((error) => useAppStore.getState().showToast(error instanceof Error ? error.message : '无法打开确认', 'error')); }}>
         {task.resultPath ? '仅保留独立素材' : '已核对，结束跟踪'}
-      </button>
+      </button>}
     </div>)}
     {tasks.map((task, index) => {
       const unknown = !task.submitted || !task.taskId || task.mediaSubmissionUncertain || task.mediaRecoveryState === 'submit_unknown';

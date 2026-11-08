@@ -130,14 +130,20 @@ export async function openNativeProjectDatabase(create: boolean, options: Native
 }
 
 export function transact<T>(database: IDBDatabase, mode: IDBTransactionMode, options: NativeProjectOptions,
-  work: (tx: IDBTransaction) => Promise<T>, stores: readonly string[] = STORES, strict = false): Promise<T> {
+  work: (tx: IDBTransaction) => Promise<T>, stores: readonly string[] = STORES, strict = false, onCommitted?: (result: T) => void): Promise<T> {
   options.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const tx = strict ? database.transaction([...stores], mode, { durability: 'strict' }) : database.transaction([...stores], mode);
     let result: T | undefined, failure: unknown, complete = false;
     const abort = () => { try { tx.abort(); } catch { /* 已提交事务不能撤销 */ } };
     options.signal?.addEventListener('abort', abort, { once: true });
-    tx.oncomplete = () => { options.signal?.removeEventListener('abort', abort); complete ? resolve(result as T) : reject(new Error('indexeddb-result-missing')); };
+    tx.oncomplete = () => {
+      options.signal?.removeEventListener('abort', abort);
+      if (!complete) { reject(new Error('indexeddb-result-missing')); return; }
+      try { onCommitted?.(result as T); }
+      catch (error) { reject(new Error('数据已提交，但本机视图投影失败；原回执已保留', { cause: error })); return; }
+      resolve(result as T);
+    };
     tx.onabort = () => { options.signal?.removeEventListener('abort', abort); reject(failure ?? tx.error ?? new DOMException('新项目事务已取消', 'AbortError')); };
     try {
       void work(tx).then((value) => { result = value; complete = true; }, (error: unknown) => {

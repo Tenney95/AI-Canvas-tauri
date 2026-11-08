@@ -41,6 +41,7 @@ export interface AudioProviderRequest {
   referenceAudioUrls: string[];
   referenceMedia?: import('../../types/aiTypes').MediaReference[];
   signal?: AbortSignal;
+  beforeSubmit?: () => void | Promise<void>;
 }
 
 export interface MediaProviderAdapter {

@@ -35,7 +35,9 @@ export function isAgentToolProjectContextCompatible(tool: Pick<AgentToolDefiniti
   if (!target) return true;
   // 只开放已接耐久原回执的统一媒体入口；发现阶段无input，实际参数仍由authorize和Provider复核。
   if (target.modelGeneration > 0 && tool.effect === 'media_generation') {
-    if (target.modelGeneration !== 1 || target.kind !== 'canvas' || tool.id !== 'media_generate') return false;
+    if (target.modelGeneration !== 1 || target.kind !== 'canvas' || !['media_generate', 'media_resume_generation_stage'].includes(tool.id)) return false;
+    if (tool.id === 'media_resume_generation_stage') return input === undefined || !!input && typeof input === 'object'
+      && typeof (input as { nodeId?: unknown }).nodeId === 'string' && typeof (input as { operationId?: unknown }).operationId === 'string';
     if (input !== undefined && (!input || typeof input !== 'object' || !['image', 'video', 'audio'].includes(String((input as { kind?: unknown }).kind))
       || !['chat', 'canvas', 'both'].includes(String((input as { deliveryMode?: unknown }).deliveryMode)))) return false;
   }

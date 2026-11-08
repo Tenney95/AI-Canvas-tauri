@@ -37,12 +37,14 @@ import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxMediaAcces
 import { ModelProtocolHttpError } from './modelProtocolHttp';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
 import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
-import { assertNativeMediaPrepared, assertNativeMediaResultRetention, prepareNativeMediaTask, recordNativeMediaSubmission, retainNativeMediaLocalResult, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
-import { nativeProtocolTaskDigest, nativeProtocolTaskIdContext } from '../nativeModelProtocolTask';
+import { assertNativeMediaPrepared, assertNativeMediaResultRetention, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
+import { nativeProtocolTaskDigest, nativeProtocolQueryDigest, nativeProtocolQueryPaths, captureNativeProtocolContext, isSafeNativeProtocolTaskId } from '../nativeModelProtocolTask';
+import { retainNativeMediaOutputs } from '../indexedDb/nativeMediaCollectionRepository';
 import { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { sha256BytesHex } from '../mediaDataUrl';
 import { persistMediaUrlToProjectData } from '../fileService';
 import { captureNativeMediaLocalResult } from '../nativeMediaLocalResult';
+import { continueNativeMediaTask } from '../nativeMediaTaskContinuation';
 
 interface RunConfiguredModelProtocolOptions {
   model: GeneralModelConfig;
@@ -390,11 +392,10 @@ export async function runConfiguredModelProtocol(
   const catalogId = resolveProviderCatalogId(options.model.providerConfigId, provider);
   const usesMinimaxProtocol = catalogId === 'minimax'
     && usesMinimaxModelProtocol(options.model.modelId, options.model.executionProfile);
-  // 仅阻断已知会创建远端异步任务的合同；同步生成继续走原有交付路径。
-  // 此判断位于任何提交之前，避免新画布付费后只能得到不可续查的旧队列记录。
+  // 新项目的同步与异步合同都必须携带原生提交守卫，避免付费后落入旧队列。
   const projectContext = useAppStore.getState().projectExecutionContext;
   const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
-  const nativeOperation = !!projectContext && projectContext.modelGeneration > 0;
+  const nativeOperation = isNativeVideoSubmissionGuard(options.beforeSubmit) || !!projectContext && projectContext.modelGeneration > 0;
   if (nativeOperation && (!nativeContext || nativeContext.modelGeneration !== 1
     || !options.nodeId || !isNativeVideoSubmissionGuard(options.beforeSubmit))) throw new Error('此原生媒体目的地尚不能安全恢复，未提交请求');
   const validateResponse = usesMinimaxProtocol
@@ -403,6 +404,8 @@ export async function runConfiguredModelProtocol(
   assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
 
   const projectId = useAppStore.getState().currentProjectId;
+  const sourceModel = useAppStore.getState().config.generalModels?.find((model) => model.id === options.model.id
+    && model.providerConfigId === options.model.providerConfigId);
   const expectedOutputCount = options.category === 'image' && options.expectedImageOutputs !== undefined
     ? readBatchCount(options.expectedImageOutputs) : readBatchCount(options.variables.n);
   const fixedImageOutputs = options.category === 'image' && options.expectedImageOutputs !== undefined && expectedOutputCount > 1
@@ -418,43 +421,36 @@ export async function runConfiguredModelProtocol(
   try {
     signal?.throwIfAborted();
     const submitOptions = { apiKey: provider.apiKey || '', baseUrl, protocol, variables: options.variables, signal, validateResponse,
+      ...(nativeOperation && protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(protocol, payload, options.variables, [provider.apiKey || '']) } : {}),
       ...(getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
     };
     // 在记录“提交中”之前完成本地构建校验，避免将输入错误误称为提交状态未知。
     buildModelProtocolRequest(submitOptions);
     if (nativeOperation) {
-      const hasReference = REFERENCE_PROTOCOL_VARIABLES.some((name) => {
-        const value = options.variables[name];
-        if (name === 'seedanceContent' && Array.isArray(value)) return value.some((item) => !isRecord(item) || item.type !== 'text');
-        if (name === 'googleImageParts' && Array.isArray(value)) return value.some((item) => !isRecord(item) || Object.keys(item).some((key) => key !== 'text'));
-        return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== '' && value !== false;
-      });
-      if (hasReference) throw new Error('新项目声明式媒体素材引用尚未冻结，未提交请求');
-      if (options.category === 'image' && expectedOutputCount !== 1) throw new Error('新项目异步图片目前需要单候选合同，未提交请求');
-      if (protocol.mode === 'async') nativeProtocolTaskIdContext(protocol, 'validation');
-      const scheme = options.category === 'video' && protocol.mode === 'async' ? 'video-input-v1' as const : 'media-input-v2' as const;
+      if (protocol.mode === 'async') nativeProtocolQueryPaths(protocol);
+      const scheme = 'media-input-v3' as const;
       const originNode = useAppStore.getState().nodes.find((node) => node.id === options.nodeId);
-      if (scheme === 'media-input-v2' && originNode && originNode.data.type !== `ai-${options.category}`) throw new Error('此派生媒体类型尚未接入可恢复原任务');
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext!, options.nodeId!, undefined, scheme);
+      if (originNode && originNode.data.type !== `ai-${options.category}` && !(options.category === 'image' && ['ai-animation', 'ai-panorama'].includes(originNode.data.type))) throw new Error('原节点与媒体类型不一致');
+      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext!, options.nodeId!, undefined, scheme, { preparedReferences: true });
       nativeTask = await prepareNativeMediaTask({ context: nativeContext!, operationId: crypto.randomUUID(), nodeId: options.nodeId!,
-        providerConfigId: options.model.providerConfigId, providerBase: baseUrl, modelRef: `general/${options.model.id}`,
+        providerConfigId: options.model.providerConfigId, providerBase: baseUrl,
+        modelRef: sourceModel ? `general/${options.model.id}` : `${options.model.providerConfigId}/${options.model.modelId}`,
+        recovery: { kind: 'general-protocol', modelId: options.model.modelId, digest: await nativeProtocolQueryDigest(options.model.modelId, protocol), expectedCount: expectedOutputCount },
         protocolDigest: await nativeProtocolTaskDigest(options.model.modelId, protocol), category: options.category,
         fingerprintScheme: scheme,
         submissionKind: protocol.mode === 'sync' ? 'sync' : 'async',
-        ...(scheme === 'media-input-v2' ? { requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(options.variables))) } : {}),
+        requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(options.variables))),
         inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision });
       await assertNativeMediaPrepared(nativeTask);
       await options.beforeSubmit?.();
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
       const latest = useAppStore.getState().config;
       const currentModel = latest.generalModels?.find((model) => model.id === options.model.id);
-      const currentProtocol = currentModel && resolveModelExecutionProfile(currentModel.executionProfile);
-      if (latest.providers[options.model.providerConfigId] !== provider || !currentModel || !currentProtocol
-        || await nativeProtocolTaskDigest(currentModel.modelId, currentProtocol) !== nativeTask.protocolDigest) throw new Error('原模型连接在提交前已变化');
+      if (latest.providers[options.model.providerConfigId] !== provider || sourceModel && currentModel !== sourceModel) throw new Error('原模型连接在提交前已变化');
       await options.beforeSubmit?.();
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
       const finalConfig = useAppStore.getState().config;
-      if (finalConfig.providers[options.model.providerConfigId] !== provider || finalConfig.generalModels?.find((model) => model.id === options.model.id) !== currentModel) throw new Error('原模型配置已变化');
+      if (finalConfig.providers[options.model.providerConfigId] !== provider || sourceModel && finalConfig.generalModels?.find((model) => model.id === options.model.id) !== sourceModel) throw new Error('原模型配置已变化');
       signal?.throwIfAborted(); nativeSent = true;
     } else if ((protocol.mode === 'async' || usesMinimaxProtocol && options.category === 'audio') && options.nodeId && projectId) {
       receipt = savePendingTask({ nodeId: options.nodeId, projectId,
@@ -467,30 +463,27 @@ export async function runConfiguredModelProtocol(
     if (nativeTask) {
       if (nativeTask.submissionKind === 'sync') {
         assertModelProtocolResult(options.category, submitted);
-        if (submitted.urls?.length !== 1) throw new Error('同步协议没有返回已冻结的单产物，原操作保留供核对');
+        if (!submitted.urls?.length || submitted.urls.length > 128) throw new Error('同步协议产物集合为空或超过安全上限，原操作保留供核对');
         // 已付费返回的产物先保存到原持久根；当前窗口切集或取消不能把它丢弃。
         await assertNativeMediaResultRetention(nativeTask);
-        const saved = await persistMediaUrlToProjectData(submitted.urls[0], nativeContext!.canvasId, `ai-${options.category}`, '原同步媒体',
-          { mediaDownloadAccess });
-        if (!saved.filePath) throw new Error('同步媒体尚未保存到原项目目录');
-        const localResult = await captureNativeMediaLocalResult(nativeContext!.canvasId, saved.filePath);
+        const localResults = [];
+        for (const url of submitted.urls) {
+          const saved = await persistMediaUrlToProjectData(url, nativeContext!.canvasId, `ai-${options.category}`, '原同步媒体', { mediaDownloadAccess });
+          if (!saved.filePath) throw new Error('同步媒体尚未保存到原项目目录');
+          localResults.push({ ...await captureNativeMediaLocalResult(nativeContext!.canvasId, saved.filePath), category: options.category });
+        }
         await assertNativeMediaResultRetention(nativeTask);
-        nativeTask = await retainNativeMediaLocalResult(nativeTask, localResult);
+        nativeTask = await retainNativeMediaOutputs(nativeTask, localResults);
         if (signal?.aborted || !isProjectExpectedContextCurrent(nativeContext!, useAppStore.getState(), { checkCanvasRevision: false })) {
           const pending = new Error(`原同步产物已保存（${nativeTask.operationId}），返回原画布后可继续本机交付，不会再次生成。`);
           pending.name = 'NativeMediaTaskPending'; throw pending;
         }
-        const { resumeNativeVolcengineTask } = await import('../nativeVolcengineRecovery');
-        await resumeNativeVolcengineTask(nativeTask.operationId, signal);
-        const delivered = new Error(`原同步媒体已保存并交付（${nativeTask.operationId}）`);
-        delivered.name = 'NativeMediaTaskDelivered';
-        Object.assign(delivered, { nativeOperationId: nativeTask.operationId }); throw delivered;
+        return await continueNativeMediaTask(nativeTask, signal);
       }
       nativeRemoteId = submitted.taskId;
       if (!nativeRemoteId || !submitted.poll) throw new Error('原调用没有返回可确认的远端任务 ID，请到平台核对');
-      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId: nativeRemoteId });
-      const pending = new Error(`原媒体任务已提交（${nativeTask.operationId}），请续查原回执，不要重新生成。`);
-      pending.name = 'NativeMediaTaskPending'; throw pending;
+      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, { taskId: nativeRemoteId, pollContext: submitted.recoveryContext });
+      return await continueNativeMediaTask(nativeTask, signal);
     }
     if (submitted.urls) {
       assertModelProtocolResult(options.category, submitted);
@@ -528,11 +521,14 @@ export async function runConfiguredModelProtocol(
     // 每类媒体都在本地保存和目标回填后确认，数组携带当次身份而非读取最新节点任务。
     return Object.assign(result.urls, { mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) });
   } catch (error) {
-    if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered'].includes(error.name)) throw error;
+    if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered', 'NativeMediaTaskFailed'].includes(error.name)) throw error;
     if (nativeTask) {
+      const receivedId = error instanceof Error ? (error as Error & { nativeTaskId?: unknown }).nativeTaskId : undefined;
+      if (!nativeRemoteId && isSafeNativeProtocolTaskId(receivedId, [provider.apiKey || ''])) nativeRemoteId = receivedId;
       await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, nativeRemoteId ? { taskId: nativeRemoteId }
         : !nativeSent || getHttpResponseError(error)?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => undefined);
-      throw new Error(`原媒体操作已保留（${nativeTask.operationId}），请核对原任务，不要重新提交。`);
+      const pending = new Error(`原媒体操作已保留（${nativeTask.operationId}），请核对原任务，不要重新提交。`, { cause: error });
+      pending.name = 'NativeMediaTaskPending'; throw pending;
     }
     const httpError = getHttpResponseError(error);
     const hint = usesMinimaxProtocol && httpError ? getMinimaxMediaAccessHint(httpError.message) : undefined;

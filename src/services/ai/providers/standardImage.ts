@@ -22,6 +22,8 @@ import type { BatchImageResult, ImageGenerationResult, MediaTaskReceipt, Resolve
 import { buildStandardImageRequestBody } from '../imageParameterMappings';
 import { prepareReferenceImageUpload } from '../referenceImageUpload';
 import { redactModelProtocolError } from '../modelProtocolHttp';
+import { sha256BytesHex } from '../../mediaDataUrl';
+import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
 
 export interface StandardImageParams {
   apiKey: string;
@@ -37,6 +39,8 @@ export interface StandardImageParams {
   asyncTaskProvider?: 'cccapi';
   providerConfigId?: string;
   nodeId?: string;
+  modelRef?: string;
+  beforeSubmit?: () => void | Promise<void>;
 }
 
 interface ReferenceImageFile {
@@ -126,20 +130,21 @@ async function requestStandardImages(
   params: StandardImageParams,
   count: number,
   signal?: AbortSignal,
-  beforeSend?: () => void,
+  beforeSend?: () => void | Promise<void>,
+  preparedMultipart?: FormData,
 ): Promise<Response> {
   const { apiKey, baseUrl, modelName, prompt, dimensions, imageUrls = [] } = params;
 
   const sizeStr = formatImageSizeForModel(modelName, dimensions);
   if (imageUrls.length > 0 && params.imageReferenceRequestMode === 'edits-multipart') {
     const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/edits';
-    const body = await buildImageEditsBody(params, count, sizeStr, signal);
+    const body = preparedMultipart ?? await buildImageEditsBody(params, count, sizeStr, signal);
     const files = body.getAll('image[]') as File[];
     const bytes = files.reduce((total, file) => total + file.size, 0);
     const startedAt = Date.now();
     try {
       signal?.throwIfAborted();
-      beforeSend?.();
+      await beforeSend?.();
       const response = await corsSafeFetch(apiUrl, {
         method: 'POST', headers: buildMultipartAuthHeaders(apiKey), body, signal,
       });
@@ -165,7 +170,7 @@ async function requestStandardImages(
   if (isOpenAIGptImageModel(modelName)) delete requestBody.response_format;
 
   signal?.throwIfAborted();
-  beforeSend?.();
+  await beforeSend?.();
   return corsSafeFetch(apiUrl, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
@@ -319,6 +324,38 @@ export async function generateImageStandardBatch(
   const apiKey = params.apiKey;
   try {
     const requestedCount = Math.max(1, Math.floor(count));
+    if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(params.beforeSubmit)) {
+      const { runNativeBuiltinImageTask } = await import('../../nativeBuiltinImageTask');
+      const { createMediaDownloadAccess } = await import('../mediaDownloadAccess');
+      const connectionId = params.providerConfigId;
+      if (!connectionId) throw new Error('原生图片缺少原连接身份');
+      const preparedMultipart = params.imageUrls?.length && params.imageReferenceRequestMode === 'edits-multipart'
+        ? await buildImageEditsBody(params, requestedCount, formatImageSizeForModel(params.modelName, params.dimensions), signal) : undefined;
+      const multipartMaterial: unknown[] = [];
+      if (preparedMultipart) for (const [name, value] of preparedMultipart.entries()) {
+        signal?.throwIfAborted();
+        multipartMaterial.push(typeof value === 'string' ? [name, value]
+          : [name, { bytes: value.size, mime: value.type, name: value.name, sha256: await sha256BytesHex(new Uint8Array(await value.arrayBuffer())) }]);
+      }
+      return await runNativeBuiltinImageTask({ nodeId: params.nodeId, mode: params.asyncTaskProvider === 'cccapi' ? 'ccc' : 'standard',
+        modelId: params.modelName, modelRef: params.modelRef, connectionId, baseUrl: params.baseUrl, expectedCount: requestedCount,
+        secrets: [params.apiKey],
+        requestMaterial: [params.modelName, params.prompt, params.dimensions, params.imageQuality, params.imageBackground, params.imageUrls, params.imageReferenceRequestMode, requestedCount, multipartMaterial],
+        signal, beforeSubmit: params.beforeSubmit, mediaDownloadAccess: createMediaDownloadAccess(connectionId, params.baseUrl, { type: 'bearer' }),
+        execute: async (beforePost) => {
+          const response = await requestStandardImages(params, requestedCount, signal, beforePost, preparedMultipart);
+          const payload = await readStandardResponse(response);
+          const data = Array.isArray(payload.data) ? payload.data : [];
+          const taskIds = params.asyncTaskProvider === 'cccapi' ? [...new Set(data.flatMap((item) => item && typeof item === 'object'
+            && typeof item.task_id === 'string' && item.task_id.trim() ? [item.task_id] : []))] : [];
+          if (taskIds.length) return { taskIds };
+          const urls = parseGeneralImageResponses(payload);
+          if (!urls.length && params.asyncTaskProvider === 'cccapi' && classifyHttpResponseFailure(response.status, payload)) {
+            throw new HttpResponseError(response.status, cccSubmissionFailureMessage(payload), true);
+          }
+          return { urls };
+        } });
+    }
     if (params.asyncTaskProvider === 'cccapi') return await generateCccImagesBatch(params, requestedCount, signal);
     const initialResponse = await requestStandardImages(params, requestedCount, signal);
 
@@ -358,6 +395,7 @@ export async function generateImageStandardBatch(
       failedCount: supplement.failedCount,
     };
   } catch (error) {
+    if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered'].includes(error.name)) throw error;
     throw redactModelProtocolError(error, apiKey);
   }
 }

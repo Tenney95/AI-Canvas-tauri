@@ -15,6 +15,21 @@ export interface NativeMediaOrigin {
   deliveryMode: MediaDeliveryMode;
 }
 export interface NativeMediaLocalResult { relativePath: string; bytes: number; sha256: string }
+/** 完整的原作业产物集合；序号是投递身份，不能用请求数量截断。 */
+export interface NativeMediaLocalOutput extends NativeMediaLocalResult { category: MediaKind }
+export interface NativeMediaCompletion {
+  taskCount: number; failedTasks: number;
+  failedSubmissions?: number; unknownSubmissions?: number; notStartedSubmissions?: number;
+}
+/** 不可变查询合同身份；分阶段提交意图由对应原生 sidecar 单独保留。 */
+export interface NativeMediaRecoveryBinding {
+  kind: 'general-protocol' | 'workflow' | 'builtin-audio' | 'builtin-image' | 'builtin-video';
+  workflowId?: string;
+  modelId?: string;
+  serverId?: string;
+  digest?: string;
+  expectedCount?: number;
+}
 export interface NativeApimartImageBatch {
   version: 1;
   requestedCount: number;

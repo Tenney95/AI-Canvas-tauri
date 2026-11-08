@@ -13,6 +13,7 @@ import { logAiRequest } from './ai/httpTransport';
 import { getDreaminaImageModel, getDreaminaVideoCapability } from './ai/dreaminaModels';
 import type { MediaReference } from '../types/aiTypes';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 
 const DREAMINA_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'];
 
@@ -109,6 +110,28 @@ async function pollResult(submitId: string, signal?: AbortSignal): Promise<Dream
   });
 }
 
+/** 原生命令本身不支持取消；等待可停止，真实提交的迟到ID仍必须耐久保存。 */
+async function runNativeDreamina(params: Record<string, unknown>, options: { nodeId?: string; model: string; category: 'image' | 'video';
+  beforeSubmit?: () => void | Promise<void> }, signal?: AbortSignal): Promise<never> {
+  const { runNativeBuiltinImageTask, DREAMINA_NATIVE_BASE } = await import('./nativeBuiltinImageTask');
+  return runNativeBuiltinImageTask({ nodeId: options.nodeId, mode: 'dreamina', modelId: options.model,
+    connectionId: 'dreamina', baseUrl: DREAMINA_NATIVE_BASE, category: options.category, expectedCount: 1,
+    requestMaterial: params, signal, beforeSubmit: options.beforeSubmit,
+    execute: async (beforePost, received) => {
+      await beforePost();
+      const original = invoke<{ submitId: string }>('dreamina_generate', { params }).then(async (result) => {
+        await received([result.submitId]); return { taskIds: [result.submitId] };
+      });
+      if (!signal) return original;
+      return new Promise<{ taskIds: string[] }>((resolve, reject) => {
+        const abort = () => { signal.removeEventListener('abort', abort); reject(new DOMException('请求已取消', 'AbortError')); };
+        signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
+        original.then((result) => { signal.removeEventListener('abort', abort); resolve(result); },
+          (error) => { signal.removeEventListener('abort', abort); reject(error); });
+      });
+    } });
+}
+
 /** 即梦图片生成（无参考图 → text2image；有参考图 → image2image） */
 export async function generateDreaminaImage(opts: {
   prompt: string;
@@ -117,7 +140,9 @@ export async function generateDreaminaImage(opts: {
   aspectRatio?: string;
   imageUrls: string[];
   nodeId?: string;
+  beforeSubmit?: () => void | Promise<void>;
 }, externalSignal?: AbortSignal): Promise<{ url: string; width: number; height: number }> {
+  const native = useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(opts.beforeSubmit);
   const dims = mapImageDimensions(opts.imageSize || '2K', opts.aspectRatio || '1:1');
   const modelVersion = modelVersionOf(opts.model);
   const kind = opts.imageUrls.length > 0 ? 'image2image' : 'text2image';
@@ -140,6 +165,7 @@ export async function generateDreaminaImage(opts: {
     // image2image 不支持 1k；model_version 为版本号时透传
     if (modelVersion && /^\d/.test(modelVersion)) params.modelVersion = modelVersion;
     if (kind === 'image2image') params.images = opts.imageUrls;
+    if (native) return runNativeDreamina(params, { nodeId: opts.nodeId, model: opts.model, category: 'image', beforeSubmit: opts.beforeSubmit }, signal);
 
     // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
     if (opts.nodeId) {
@@ -170,8 +196,8 @@ export async function generateDreaminaImage(opts: {
     return { url, width: dims.width, height: dims.height };
   } finally {
     if (opts.nodeId) {
-      cleanupNodePolling(opts.nodeId);
-      removePendingTask(opts.nodeId);
+      cleanupNodePolling(opts.nodeId, nodeSignal);
+      if (!native) removePendingTask(opts.nodeId);
     }
   }
 }
@@ -268,12 +294,14 @@ export async function generateDreaminaVideo(opts: {
   resolution?: string;
   beforeSubmit?: () => void | Promise<void>;
 }, externalSignal?: AbortSignal): Promise<{ url: string }> {
+  const native = useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(opts.beforeSubmit);
   const nodeSignal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
   const signal = nodeSignal && externalSignal
     ? AbortSignal.any([nodeSignal, externalSignal])
     : nodeSignal ?? externalSignal;
   try {
     const params = buildDreaminaVideoParams(opts);
+    if (native) return runNativeDreamina(params, { nodeId: opts.nodeId, model: opts.model, category: 'video', beforeSubmit: opts.beforeSubmit }, signal);
     if (opts.beforeSubmit) await opts.beforeSubmit();
 
     // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
@@ -305,8 +333,8 @@ export async function generateDreaminaVideo(opts: {
     return { url };
   } finally {
     if (opts.nodeId) {
-      cleanupNodePolling(opts.nodeId);
-      if (!getVideoEditorTransitionAnchor(opts.nodeId)) removePendingTask(opts.nodeId);
+      cleanupNodePolling(opts.nodeId, nodeSignal);
+      if (!native && !getVideoEditorTransitionAnchor(opts.nodeId)) removePendingTask(opts.nodeId);
     }
   }
 }
