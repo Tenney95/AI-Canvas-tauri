@@ -316,6 +316,7 @@ const series = {
   "正在连接主窗口…": "Connecting to the main window…",
   "最后编辑的交接内容无效，已保留原稿": "The latest edit handoff is invalid. The original draft was kept.",
   "当前草稿尚未全部保存，请核对后重试": "Some draft edits are still unsaved. Check them and try again.",
+  "本集已被其他操作修改，草稿已保留；请核对后重新编辑": "This episode was changed elsewhere. Your draft is preserved; compare the saved content before editing again.",
   "Agent协作": "Agent collaboration",
   "AI 候选采纳": "Adopted AI candidate",
   "{count} 条原文证据": "{count} source excerpts",

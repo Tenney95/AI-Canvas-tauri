@@ -39,4 +39,14 @@ describe('窗口项目与分集并发前提', () => {
     expect(sameProjectWindowContext(first, captureProjectWindowContext(current, 'episode-a'))).toBe(false);
     expect(sameProjectWindowContext(first, { ...first!, schemaVersion: 3 } as never)).toBe(false);
   });
+
+  it('原生事件重排各层 JSON 键后仍识别同一租约，字段值变化仍拒绝', () => {
+    const first = captureProjectWindowContext(state(), 'episode-b')!;
+    const reordered = { canvas: Object.fromEntries(Object.entries(first.canvas!).reverse()),
+      target: Object.fromEntries(Object.entries(first.target).reverse()), schemaVersion: 2 } as typeof first;
+    expect(JSON.stringify(first)).not.toBe(JSON.stringify(reordered));
+    expect(sameProjectWindowContext(first, reordered)).toBe(true);
+    expect(sameProjectWindowContext(first, { ...reordered, target: { ...first.target, runtimeEpoch: 'other-runtime' } })).toBe(false);
+    expect(sameProjectWindowContext(first, { ...reordered, canvas: { ...first.canvas!, canvasEpoch: 100 } })).toBe(false);
+  });
 });

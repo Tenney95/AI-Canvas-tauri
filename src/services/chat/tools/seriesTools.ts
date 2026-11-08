@@ -14,6 +14,7 @@ import {
 } from '../../seriesCreativeService';
 import type { EpisodeCreativeInfo } from '../../../types';
 import { isWorkbenchAgentTaskInScope } from '../../episodeWorkspaceScope';
+import { prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
 
 /** 单次回给模型的正文上限；原著动辄几十万字，必须分段读。 */
 const MAX_TEXT_CHUNK = 6000;
@@ -53,6 +54,15 @@ function currentSeries() {
     : null;
   const series = state.projects.find((project) => project.id === seriesId) ?? null;
   return { state, series };
+}
+
+async function writeEpisodeContent(episodeId: string, write: () => Promise<boolean>): Promise<boolean> {
+  return withEpisodeEditorWrite(episodeId, async () => {
+    const rebaseEditors = prepareEpisodeEditorRebase(episodeId);
+    const saved = await write();
+    if (saved) rebaseEditors();
+    return saved;
+  });
 }
 
 /** 正文一律按"不可信资料"回传，防止原著或剧本里的句子被当成指令执行。 */
@@ -249,7 +259,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
         const { state, series } = currentSeries();
         const episode = series && listEpisodes(state.projects, series.id).find((item) => item.id === input.episodeId);
         if (!episode) return { status: 'error', summary: '分集不存在', modelContent: '分集不存在', errorCode: 'EPISODE_NOT_FOUND' };
-        const saved = await state.updateEpisodeOutline(episode.id, input.outline);
+        const saved = await writeEpisodeContent(episode.id, () => state.updateEpisodeOutline(episode.id, input.outline));
         return saved ? { status: 'success', summary: `已更新“${episode.name}”`, modelContent: JSON.stringify({ episodeId: episode.id, outlineLength: input.outline.length }) } : { status: 'error', summary: '分集更新失败', modelContent: '分集更新失败', errorCode: 'EPISODE_UPDATE_FAILED' };
       },
     }),
@@ -281,7 +291,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
             errorCode: 'EPISODE_NOT_FOUND',
           };
         }
-        const saved = await state.updateEpisodeCreative(episode.id, { script: input.script });
+        const saved = await writeEpisodeContent(episode.id, () => state.updateEpisodeCreative(episode.id, { script: input.script }));
         return saved
           ? {
               status: 'success',
@@ -333,7 +343,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
         const nextCreative = Object.values(creative).some((value) => value !== undefined)
           ? creative
           : undefined;
-        const saved = await state.updateEpisodeCreative(episode.id, { creative: nextCreative });
+        const saved = await writeEpisodeContent(episode.id, () => state.updateEpisodeCreative(episode.id, { creative: nextCreative }));
         return saved
           ? {
               status: 'success',

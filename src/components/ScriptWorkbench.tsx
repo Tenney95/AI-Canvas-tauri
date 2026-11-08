@@ -81,7 +81,7 @@ type PendingAction = WorkbenchPendingAction;
 type CreativeDraft = WorkbenchCreativeDraft;
 
 // 非持久化恢复副本：宿主因切项目卸载时不把未确认丢弃的稿件当作已经放弃。
-const workbenchDraftCache = new Map<string, Record<string, WorkbenchDraft>>();
+const workbenchDraftCache = new Map<string, { drafts: Record<string, WorkbenchDraft>; baselines: Record<string, string> }>();
 const EMPTY_WORKBENCH_NODES: [] = [];
 
 const WORKBENCH_ACTIONS_BY_TAB: Partial<Record<WorkbenchEditorTab, EpisodeCreativeAction[]>> = {
@@ -194,7 +194,8 @@ function createDraft(episode: {
 }
 
 function draftSignature(value: WorkbenchDraft): string {
-  return JSON.stringify(value);
+  return JSON.stringify([value.outline, value.script,
+    ...Object.keys(EMPTY_CREATIVE_DRAFT).map((field) => value.creative[field as keyof CreativeDraft])]);
 }
 
 function CreativeField({
@@ -363,8 +364,9 @@ export default function ScriptWorkbench({
     graphCandidate.current = null;
     graphEditorLease.current = null;
   }, [seriesId, isOpen]);
-  const [draftsByEpisode, setDraftsByEpisode] = useState<Record<string, WorkbenchDraft>>(() => seriesId ? workbenchDraftCache.get(seriesId) ?? {} : {});
+  const [draftsByEpisode, setDraftsByEpisode] = useState<Record<string, WorkbenchDraft>>(() => seriesId ? workbenchDraftCache.get(seriesId)?.drafts ?? {} : {});
   const draftsRef = useRef<Record<string, WorkbenchDraft>>(draftsByEpisode);
+  const draftBaselines = useRef<Record<string, string>>(seriesId ? workbenchDraftCache.get(seriesId)?.baselines ?? {} : {});
   const draftVersions = useRef(new Map<string, number>());
   const [draftVersionByEpisode, setDraftVersionByEpisode] = useState<Record<string, number>>({});
   const savingEpisodeRef = useRef<string | null>(null);
@@ -449,11 +451,19 @@ export default function ScriptWorkbench({
 
   const replaceEpisodeDraft = useCallback((episodeId: string, value: WorkbenchDraft | undefined) => {
     const next = { ...draftsRef.current };
-    if (value) next[episodeId] = value;
-    else delete next[episodeId];
+    if (value) {
+      if (!next[episodeId]) {
+        const episode = useAppStore.getState().projects.find((item) => item.id === episodeId);
+        draftBaselines.current[episodeId] = draftSignature(createDraft(episode ?? null));
+      }
+      next[episodeId] = value;
+    } else {
+      delete next[episodeId];
+      delete draftBaselines.current[episodeId];
+    }
     draftsRef.current = next;
     if (seriesId) {
-      if (Object.keys(next).length) workbenchDraftCache.set(seriesId, next);
+      if (Object.keys(next).length) workbenchDraftCache.set(seriesId, { drafts: next, baselines: draftBaselines.current });
       else workbenchDraftCache.delete(seriesId);
     }
     const version = (draftVersions.current.get(episodeId) ?? 0) + 1;
@@ -511,6 +521,7 @@ export default function ScriptWorkbench({
     const version = draftVersions.current.get(episodeId) ?? 0;
     const savingDraft = draftsRef.current[episodeId] ?? createDraft(currentEpisode);
     const signature = draftSignature(savingDraft);
+    const baseline = draftsRef.current[episodeId] ? draftBaselines.current[episodeId] : draftSignature(createDraft(currentEpisode));
     savingEpisodeRef.current = episodeId;
     setIsSaving(true);
     try {
@@ -520,11 +531,16 @@ export default function ScriptWorkbench({
         creative: toCreativeInfo(savingDraft.creative),
       }, { allowSameSeries: true, assertCurrent: () => {
         if (selectedEpisodeRef.current !== episodeId || !readEpisodeWorkspaceScope(useAppStore.getState(), episodeId)) throw new Error(t('工作台分集或剧集已变化，请重新保存'));
+        const latest = useAppStore.getState().projects.find((item) => item.id === episodeId);
+        if (baseline === undefined || draftSignature(createDraft(latest ?? null)) !== baseline) {
+          throw new Error(t('本集已被其他操作修改，草稿已保留；请核对后重新编辑'));
+        }
       }, assertCommitCurrent: () => {
         const scope = readEpisodeWorkspaceScope(useAppStore.getState(), episodeId);
         if (!scope || scope.owner.id !== seriesId || selectedEpisodeRef.current !== episodeId) throw new Error(t('工作台分集或剧集已变化，请重新保存'));
       } });
       if (saved) {
+        draftBaselines.current[episodeId] = draftSignature({ ...savingDraft, creative: toCreativeDraft(toCreativeInfo(savingDraft.creative)) });
         const latest = draftsRef.current[episodeId];
         if ((draftVersions.current.get(episodeId) ?? 0) !== version
           || (latest && draftSignature(latest) !== signature)) {
@@ -535,6 +551,9 @@ export default function ScriptWorkbench({
         settleEpisodeEditorSessions(episodeId);
       }
       return saved && selectedEpisodeRef.current === episodeId && !!readEpisodeWorkspaceScope(useAppStore.getState(), episodeId);
+    } catch (error) {
+      showToast(sanitizeDomainText(error instanceof Error ? error.message : t('当前草稿尚未全部保存，请核对后重试')).slice(0, 300), 'error');
+      return false;
     } finally {
       savingEpisodeRef.current = null;
       setIsSaving(false);

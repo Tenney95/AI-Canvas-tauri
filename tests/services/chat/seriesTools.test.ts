@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentTask } from '../../../src/types/agent';
 import { WORKBENCH_AGENT_READ_TOOLS } from '../../../src/services/episodeWorkspaceScope';
+import { isEpisodeEditorWriteLocked, registerEpisodeEditorSession, settleEpisodeEditorSessions } from '../../../src/services/episodeEditorSessionService';
 
 const fileMocks = vi.hoisted(() => ({
   getProjectDataDir: vi.fn(async () => '/data/moon'),
@@ -60,6 +61,54 @@ it('Store拒绝末集删除或删除失败时工具不得报告成功', async ()
     expect(deleteProject).toHaveBeenCalledWith('ep-1');
     expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['series', 'ep-1']);
   } finally { unregisters.forEach((unregister) => unregister()); }
+});
+
+describe('分集写工具与工作台草稿握手', () => {
+  it.each([
+    ['episode_update_script', { episodeId: 'ep-1', script: '外部新稿' }],
+    ['episode_update_outline', { episodeId: 'ep-1', outline: '外部新大纲' }],
+    ['episode_update_creative_field', { episodeId: 'ep-1', field: 'task', value: '外部新要点' }],
+  ] as const)('%s 遇到未保存稿时不得写入', async (toolId, input) => {
+    const updateEpisodeCreative = vi.fn(async () => true);
+    const updateEpisodeOutline = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative, updateEpisodeOutline });
+    const stop = registerEpisodeEditorSession('ep-1', () => ({ dirty: true, saving: false }));
+    const unregisters = registerSeriesAgentTools();
+    try {
+      await expect(getAgentTool(toolId)!.execute(context(), input)).rejects.toThrow('未保存');
+      expect(updateEpisodeCreative).not.toHaveBeenCalled();
+      expect(updateEpisodeOutline).not.toHaveBeenCalled();
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(false);
+    } finally {
+      stop(); settleEpisodeEditorSessions('ep-1');
+      unregisters.forEach((unregister) => unregister());
+    }
+  });
+
+  it.each([true, false])('写入返回 %s 时，只在成功后同步干净编辑副本并释放锁', async (saved) => {
+    let finish!: (result: boolean) => void;
+    const gate = new Promise<boolean>((resolve) => { finish = resolve; });
+    const rebase = vi.fn();
+    const stop = registerEpisodeEditorSession('ep-1', () => ({ dirty: false, saving: false }), () => rebase);
+    const updateEpisodeCreative = vi.fn(() => gate);
+    const updateEpisodeOutline = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative, updateEpisodeOutline });
+    const unregisters = registerSeriesAgentTools();
+    const writing = getAgentTool('episode_update_script')!.execute(context(), { episodeId: 'ep-1', script: '外部新稿' });
+    try {
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(true);
+      expect(rebase).not.toHaveBeenCalled();
+      await expect(getAgentTool('episode_update_outline')!.execute(context(), { episodeId: 'ep-1', outline: '另一份稿' })).rejects.toThrow('正在保存');
+      expect(updateEpisodeOutline).not.toHaveBeenCalled();
+      finish(saved);
+      expect((await writing).status).toBe(saved ? 'success' : 'error');
+      expect(rebase).toHaveBeenCalledTimes(saved ? 1 : 0);
+      expect(isEpisodeEditorWriteLocked('ep-1')).toBe(false);
+    } finally {
+      finish(false); await writing;
+      stop(); unregisters.forEach((unregister) => unregister());
+    }
+  });
 });
 
 describe('工作台精确分集读取授权', () => {

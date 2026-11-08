@@ -1044,3 +1044,54 @@ node scripts/audit-project-model-boundaries.mjs
 - 切到对照集后，原文和全剧剧本内容一致，对照集的本集正文仍为空。再切到其他测试项目并返回，重新打开原文、本集剧本与全剧剧本编辑器，三份全文均与原输入一致；原文和本集界面显示已保存。
 
 保留测试剧集及两集记录，结束时停在第 1 集工作台的原文页；原有两个用户项目的名称、更新时间未变化。本轮没有在保存这些新正文后重启应用，不把切换重开当成冷启动恢复验证；正式迁移、激活和付费模型调用仍未执行。
+
+### 22.4 项目内容扩展回归与待修复问题
+
+用户继续授权桌面测试后，在 `a8b67cde` 对应的当前 Tauri 开发版操作测试项目，未改动产品源码、开启正式新模型或调用付费模型。原有四个 schema 生成文件的未提交改动保留。以下结论适用于正式 DB27、`modelGeneration=0` 的现有运行路径，不代表新模型激活验收。
+
+已验证范围：
+
+- 通过桌面原生保存对话框导出原文／剧本测试剧集，检查 v3 归档包含两集、正文和素材条目，两份文稿 TXT 的 SHA-256 与输入一致；再通过原生打开对话框导入为新项目。导入副本的原文、全剧剧本和本集剧本全文均一致，副本命名为「桌面回归-项目内容-1108」。
+- 分集上移再下移后正文仍跟随原分集 ID；更新单个创作字段不覆盖正文。临时分集追加、删除及回读正常。在独立空白测试剧集中删除至最后一集，再次删除被当前旧格式规则阻止，回读确认最后一集仍保留。
+- 人物、场景、普通道具和武器卡片创建成功；人物武器关联在桌面绑定弹窗中已选中。切集和切换项目后重开，四类资产仍属于同一剧集，独立对照项目不包含它们。删除本轮测试武器后，人物的 `weaponIds` 已清空。
+- 桌面原文章节浏览显示两章；搜索第二章后列表只保留匹配章，点击可切换。最终回读原文、全剧剧本及当前已保存的测试本集稿件，与各自预期全文一致。原有「项目1」「项目2」未打开或写入，前后列表的名称及更新时间一致。
+
+在仓库根目录执行以下相关回归，29 文件、628 项通过；这些隔离测试不能代替下列桌面缺陷的验收：
+
+```sh
+npx vitest run tests/store/projects.test.ts tests/store/dramaAssets.test.ts tests/services/originalWritingService.test.ts tests/services/episode*.test.ts tests/services/storyGraph*.test.ts tests/services/scriptWorkbenchWindowService.test.ts tests/services/projectTransferService.test.ts tests/services/projectImport*.test.ts tests/services/characterWeapons.test.ts tests/services/dramaAsset*.test.ts tests/components/scriptWorkbench.test.tsx tests/components/originalWritingEditor.test.tsx tests/components/storyGraphPanel.test.tsx tests/components/episodeAssetPanelSnapshot.test.tsx tests/components/projectImportDialog.test.tsx
+```
+
+实际复现的待修复问题：
+
+1. **项目复制失败**：启动页复制包含文稿的测试剧集，以及复制新建空项目，各尝试一次，均提示「项目复制失败」且没有新增副本。开发版 Web Inspector 的既有错误为「路径未获授权，请先在设置中添加该目录」，目标包含内部 `.duplicate-` 临时归档名。`projectTransferService.duplicateProjectArchive` 在基础目录创建临时包并执行 temporary 打包；普通导出经保存对话框授权后成功。后续需修复内部临时归档的授权流程，不能放宽通用路径边界。
+2. **未保存稿与 MCP 保存可无提示互相覆盖**：在导入副本第一集的工作台修改本集剧本但不保存，再用新读取的 episode 上下文调用 `episode_update_script` 保存另一份正文；调用成功，工作台仍保留旧基线上的草稿。随后点击工作台「保存本集」也成功，没有冲突提示，回读确认刚才 MCP 保存的新稿被覆盖。`seriesTools` 的更新路径和 `ScriptWorkbench.saveDraft` 未传递加载时正文基线；`updateEpisodeCreative` 的正文 hash 条件检查仅在调用方提供 `options.expected` 时生效。测试只改动副本，没有用户正文损失。
+3. **独立工作台无法保存、关闭或收回**：在测试本集稿件追加未保存内容后切到独立工作台，textarea 全文交接正确；未继续编辑，点击关闭、收回主窗口或保存本集，均被「工作台窗口上下文已变化，请刷新核对；修改仍保留在本窗口，未自动重试」阻断，关闭时也没有正常的草稿处理提示。回读确认新草稿未保存，切走其他测试项目再返回后异常窗口仍在。`scriptWorkbenchWindowService` 的上下文比对拒绝了请求；对真实 `sameProjectWindowContext` 函数做隔离运行，两个语义相同、仅对象键顺序不同的上下文得到 false，属于已验证的比较缺陷，但未采集实际私有 RPC payload，不能断言它是该窗口故障的唯一根因。
+
+异常独立窗口及未保存测试稿保留；草稿另存系统临时目录的 `ai-canvas-detached-regression-recovery-1108.txt`，结束前读取窗口与备份，均与预期逐字一致。主窗口停在导入副本第一集。没有强制关闭窗口、杀进程或把刷新请求记为重载成功。本轮仅测试和记录，以上三个新问题尚未修复或提交。
+
+剩余验收：故事关系图位于工作台内，独立窗口异常使其桌面手工编辑／保存／重开流程受阻，不能由自动化通过推断可用；原文编辑取消／草稿关闭、完整工作台交接、冷启动持久化及故障恢复仍未完成。正式迁移、激活、v4 实际往返与付费生成不在本轮通过范围。
+
+### 22.5 三项桌面缺陷修复实现（待验收）
+
+用户授权修复 22.4 的三个问题后，完成以下源码修改，尚未提交。没有运行测试、lint、类型检查、构建或桌面交互验收；22.4 的 628 项通过发生在本次修复之前，不能作为这些修改的通过证据。
+
+- 项目复制的临时包改放系统默认的应用数据目录，不跟随用户自定义素材根；先确保目录存在，使用非隐藏的 `duplicate-*.aicanvas` 文件名，成功与打包失败仍共用原清理逻辑。继续复用原打包／导入链路，不登记源项目外发，不修改 Rust 路径策略、capability 或私有目录保护。新增自定义素材根下的复制路径断言及临时目录创建失败用例。
+- 本集正文、大纲、创作字段三个 Agent／MCP 写工具均接入已有 `withEpisodeEditorWrite` 和 `prepareEpisodeEditorRebase`。活动／失联脏稿和保存中的稿件阻止外部写入，实际保存成功后才同步干净编辑副本，失败不清草稿；锁在完成或异常时释放。工作台另随恢复缓存保存首次编辑时的正文／大纲／创作字段基线，在串行保存入口复核，基线已变化则保留草稿并提示，不把旧副本覆盖回去。保存期间的新修改继续保留，并以已保存的规范化创作字段更新后续基线。英、日、韩提示同步新增。
+- 窗口上下文改用既有按值比较函数，忽略 JSON 键顺序；只沿用原先允许变化的画布 revision，项目／分集／画布身份、epoch、runtime 和正文条件字段仍参与比较。工作台草稿签名也按固定字段顺序生成，避免原生事件重排正文对象后误判脏稿。补充键顺序变化、真实租约变化，以及带末次草稿的保存／关闭／收回 RPC 往返用例。
+
+**本次未运行测试，待用户验收。** 可在仓库根目录执行定向回归及前端类型检查：
+
+```sh
+npx vitest run tests/services/projectTransferService.test.ts tests/services/projectWindowContext.test.ts tests/services/scriptWorkbenchWindowService.test.ts tests/services/episodeEditorSessionService.test.ts tests/services/chat/seriesTools.test.ts tests/components/scriptWorkbench.test.tsx
+npm run typecheck
+```
+
+Tauri 桌面验收前保留现有未保存测试稿及其临时备份，使用测试项目副本，依次核对：
+
+1. 启动页复制空项目和含原文／本集剧本的两集剧集，各新增且只新增一个独立副本；核对正文、分集与素材，源项目不变。切换到自定义素材目录后重复，复制仍可完成；应用临时目录不可写时应报告失败，不能创建半成品项目。
+2. 工作台修改本集剧本后不保存，调用本集正文、大纲和单个创作字段的 MCP 写工具，应拒绝并保留两侧已有内容。先保存或明确丢弃草稿后再发起新写入，应成功，干净工作台同步新稿，不残留旧编辑副本。
+3. 留有恢复缓存的未保存稿时，若其他合法入口已更新保存内容，再保存旧稿应提示冲突并保留草稿；不得覆盖新内容。正常保存后继续编辑与再次保存应成功；保存期间发生的新输入仍保留，下一次保存不因前次字段规范化被误判冲突。
+4. 修改本集正文后切到独立工作台，全文保持一致；分别验证保存、收回主窗口及关闭。关闭脏稿应出现正常处理提示，选择继续编辑仍保留原稿，保存并继续后回读一致；收回再独立显示不得丢失末次输入。跨项目、跨分集或旧 epoch 的请求仍应拒绝；故事关系图手工保存／重开与原文关闭取消继续补验。
+
+本轮仅做源码、引用、差异空白和 UTF-8 静态核对；没有清理异常独立窗口、恢复备份或原有四个 schema 生成文件改动。独立窗口故障的完整根因与桌面恢复效果仍须以上述重验确认，不以比较函数修改代替实际验收。

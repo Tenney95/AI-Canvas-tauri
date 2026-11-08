@@ -305,6 +305,33 @@ describe('关系图宿主写入边界', () => {
     else { expect(response.error).toContain('窗口上下文已变化'); expect(onRequest).not.toHaveBeenCalled(); }
   });
 
+  it.each(['save', 'close', 'dock'] as const)('原生 JSON 重排键后 %s 请求与末次草稿仍可往返', async (action) => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const nativeRoundTrip = (value: unknown): unknown => JSON.parse(JSON.stringify(value, (_key, entry) => (
+      entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : entry
+    )));
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      deliver(event, nativeRoundTrip(payload));
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', nativeRoundTrip(payload));
+    });
+    const onRequest = vi.fn(async () => true);
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'native-order-session', getSnapshot: () => graphFrame(1),
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    let received!: () => void;
+    const firstSnapshot = new Promise<void>((resolve) => { received = resolve; });
+    const bridge = await connectScriptWorkbenchWindow('native-order-session', () => received(), latestHostFrame().windowSessionId!);
+    cleanups.push(bridge.dispose);
+    await firstSnapshot;
+    const handoff = { episodeId: 'episode-b', sequence: 1, windowContext: context,
+      draft: { outline: '集纲', script: '未保存的最后输入', creative: { task: '', coreConflict: '', openingHook: '',
+        reversal: '', endingHook: '', beats: '', targetDurationSec: '90', sourceRange: '' } } };
+    await expect(bridge.request({ revision: latestHostFrame().revision, episodeId: 'episode-b', action: { type: action }, handoff })).resolves.toBe(true);
+    expect(onRequest).toHaveBeenCalledWith(expect.objectContaining({ action: { type: action }, handoff }));
+  });
+
   it('拒绝从旧图快照发起的写入，不进入主窗口执行器', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
     let current = graphFrame(1);

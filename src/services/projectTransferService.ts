@@ -11,7 +11,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { save } from '@tauri-apps/plugin-dialog';
-import { remove } from '@tauri-apps/plugin-fs';
+import { mkdir, remove } from '@tauri-apps/plugin-fs';
 import * as fileService from './fileService';
 import {
   getAllProjects,
@@ -733,9 +733,11 @@ export async function duplicateProjectArchive(
   if (!fileService.isTauriEnv()) throw new Error('项目复制仅在桌面版可用');
   await assertLegacyProjectWritesAllowed(await openDB());
 
-  const baseDir = await fileService.getBaseDir();
+  // 内部临时包放在应用自有目录；自定义素材根的授权不一定包含根下的新文件。
+  const baseDir = await fileService.getDefaultBaseDir();
   if (!baseDir) throw new Error('无法定位应用数据目录');
-  const tempPath = fileService.joinPath(baseDir, `.duplicate-${createRecordId()}.${PROJECT_ARCHIVE_EXTENSION}`);
+  await mkdir(baseDir, { recursive: true });
+  const tempPath = fileService.joinPath(baseDir, `duplicate-${createRecordId()}.${PROJECT_ARCHIVE_EXTENSION}`);
 
   try {
     await packProjectArchive(projectId, tempPath, 'temporary');

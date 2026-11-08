@@ -1,4 +1,5 @@
 import type { ProjectWindowContext } from '../types/projectWindow';
+import { configValuesEqual } from './configPatch';
 import {
   captureLegacyCanvasContext, captureLegacyEpisodeContext, captureLegacyProjectExpectedContext,
   isProjectExpectedContextCurrent,
@@ -30,8 +31,9 @@ export function isProjectWindowContextCurrent(context: ProjectWindowContext | nu
 /** 快照正文可以更新；已发布的目标与租约不能被请求者替换。 */
 export function sameProjectWindowContext(left: ProjectWindowContext | null | undefined, right: ProjectWindowContext | null | undefined): boolean {
   if (!left || !right || left.schemaVersion !== 2 || right.schemaVersion !== 2 || !left.target || !right.target) return false;
-  const basis = (value: ProjectWindowContext) => JSON.stringify({ ...value,
+  const basis = (value: ProjectWindowContext) => ({ ...value,
     canvas: value.canvas ? { ...value.canvas, canvasRevision: 0 } : null,
     target: value.target.kind === 'canvas' ? { ...value.target, canvasRevision: 0 } : value.target });
-  return basis(left) === basis(right);
+  // 原生事件序列化可能调整键顺序，租约字段的值仍须全部相同。
+  return configValuesEqual(basis(left), basis(right));
 }

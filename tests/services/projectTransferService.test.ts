@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => ({
   deleteProjectDataDir: vi.fn(),
   notifyProjectDiskChanged: vi.fn(),
   getBaseDir: vi.fn(async () => '/data'),
+  getDefaultBaseDir: vi.fn(),
+  mkdir: vi.fn(),
   remove: vi.fn(async () => undefined),
   exists: vi.fn(),
   getProjectDataDir: vi.fn(),
@@ -49,7 +51,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: mocks.getVersion }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open, save: mocks.save }));
-vi.mock('@tauri-apps/plugin-fs', () => ({ remove: mocks.remove, exists: mocks.exists }));
+vi.mock('@tauri-apps/plugin-fs', () => ({ mkdir: mocks.mkdir, remove: mocks.remove, exists: mocks.exists }));
 vi.mock('../../src/services/projectArchiveSerialization', () => ({ serializeProjectArchiveEntries: mocks.serializeEntries }));
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.legacyWriteGuard }));
 vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: async () => ({}) }));
@@ -110,6 +112,7 @@ vi.mock('../../src/services/fileService', () => ({
   deleteProjectDataDir: mocks.deleteProjectDataDir,
   notifyProjectDiskChanged: mocks.notifyProjectDiskChanged,
   getBaseDir: mocks.getBaseDir,
+  getDefaultBaseDir: mocks.getDefaultBaseDir,
   saveProject: mocks.saveProject,
   joinPath: (...parts: string[]) => parts.join('/'),
   buildProjectFolderName: (name: string, id: string) => `${name}-${id.slice(0, 8)}`,
@@ -272,6 +275,8 @@ describe('projectTransferService', () => {
     mocks.putChatMessage.mockResolvedValue(undefined);
     mocks.putProjectMemory.mockResolvedValue(undefined);
     mocks.getBaseDir.mockResolvedValue('/data');
+    mocks.getDefaultBaseDir.mockResolvedValue('/app-owned/data');
+    mocks.mkdir.mockResolvedValue(undefined);
     mocks.remove.mockResolvedValue(undefined);
     mocks.exists.mockResolvedValue(false);
     mocks.getProjectDataDir.mockResolvedValue('/data/导入中-abc');
@@ -997,6 +1002,7 @@ describe('projectTransferService', () => {
   });
 
   it('duplicates a project through a temp archive and clones its episodes', async () => {
+    mocks.getBaseDir.mockResolvedValue('/custom-media-root');
     const EPISODE = {
       ...PROJECT_RECORD,
       id: 'episode-1',
@@ -1016,7 +1022,8 @@ describe('projectTransferService', () => {
     expect(result.projectName).toBe('分镜项目 副本');
     // 副本目录名跟着副本名走，不能和源项目共用同一个素材目录
     expect(result.dataFolder).toContain('分镜项目 副本');
-    expect(mocks.invoke.mock.calls.find(([name]) => name === 'pack_project_archive')![1].outputPath).toContain('.duplicate-');
+    expect(mocks.mkdir).toHaveBeenCalledWith('/app-owned/data', { recursive: true });
+    expect(mocks.invoke.mock.calls.find(([name]) => name === 'pack_project_archive')![1].outputPath).toMatch(/^\/app-owned\/data\/duplicate-[^/]+\.aicanvas$/);
     expect(mocks.invoke.mock.calls.find(([name]) => name === 'pack_project_archive')![1].operationId).toBeUndefined();
     expect(mocks.prepareExport).not.toHaveBeenCalled();
     expect(mocks.saveCheckpoint).not.toHaveBeenCalled();
@@ -1047,6 +1054,14 @@ describe('projectTransferService', () => {
     expect(mocks.remove).toHaveBeenCalledTimes(1);
     expect(mocks.remove).toHaveBeenCalledWith(mocks.invoke.mock.calls.find(([name]) => name === 'pack_project_archive')![1].outputPath);
     expect(mocks.saveProject).not.toHaveBeenCalled();
+  });
+
+  it('fails before packing when the application temporary directory cannot be created', async () => {
+    mocks.mkdir.mockRejectedValue(new Error('应用目录不可写'));
+    await expect(duplicateProjectArchive('source-project', '副本')).rejects.toThrow('应用目录不可写');
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.saveProject).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it('keeps the staging folder name when renaming the data directory fails', async () => {
