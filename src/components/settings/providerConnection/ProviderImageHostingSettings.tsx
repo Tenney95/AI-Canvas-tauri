@@ -29,7 +29,7 @@ export default function ProviderImageHostingSettings({ config, onChange, apiKey,
     {config?.enabled && <div className="space-y-3">
       <label className="ui-field">
         <span className="ui-label">{t('套用内置上传格式')}</span>
-        <Select fixedMenu value="" onChange={(id) => {
+        <Select<string> fixedMenu value="" onChange={(id) => {
           const template = id === 'custom' ? DEFAULT_CONFIG : IMAGE_HOSTING_TEMPLATES.find((item) => item.id === id)?.config;
           if (template) onChange({ ...structuredClone(template), credentialRef: current.credentialRef });
         }}>
