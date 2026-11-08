@@ -5,8 +5,8 @@ import type { AppConfig, BaseNodeData } from '../../src/types';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 
 const fixture = () => ({ projects: [{ id: 'canvas', name: 'fixture', createdAt: 1, updatedAt: 1 }],
-  currentProjectId: 'canvas', customStyles: [], config: { providers: { provider: { apiKey: 'fixture-only-key', baseUrl: 'https://fixture.example' } }, generalModels: [{ id: 'model', name: 'fixture', modelId: 'request-model',
-    category: 'audio', providerConfigId: 'provider' }] } as AppConfig });
+  currentProjectId: 'canvas', customStyles: [], config: { theme: 'dark', providers: { provider: { name: 'fixture', apiKey: 'fixture-only-key', baseUrl: 'https://fixture.example' } }, generalModels: [{ id: 'model', name: 'fixture', modelId: 'request-model',
+    category: 'audio', providerConfigId: 'provider' }] } satisfies AppConfig });
 const node = (): Node<BaseNodeData> => ({ id: 'node', type: 'ai-audio', position: { x: 0, y: 0 },
   data: { type: 'ai-audio', label: 'fixture', model: 'general/model', provider: 'general', prompt: 'fixture',
     audioVoice: 'voice-a', audioSpeed: 1, musicLyrics: 'lyrics', status: 'idle' } });
