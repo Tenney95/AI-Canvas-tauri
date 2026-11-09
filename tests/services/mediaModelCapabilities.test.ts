@@ -9,6 +9,7 @@ import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisMod
 import { RELAYON_MIDJOURNEY_MODEL_IDS, RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
 import { resolveMinimaxExecutionProfile } from '../../src/services/ai/providers/minimaxModelManifest';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
+import { MUSE_IMAGE_MODEL, MUSE_MODEL_MANIFEST } from '../../src/services/ai/museModels';
 import type { ImageModelCapability, ModelExecutionProfile, ProtocolJsonValue } from '../../src/types/aiTypes';
 
 describe('真实连接的音频参数能力', () => {
@@ -71,6 +72,30 @@ describe('真实连接的音频参数能力', () => {
     expect(resolveAudioParameterCapability(`general/${music.id}`, 'general', config)?.kind).toBe('music');
     delete config.generalModels![0].executionProfile;
     expect(resolveAudioParameterCapability(`general/${speech.id}`, 'general', config)).toBeUndefined();
+  });
+});
+
+describe('Muse 图片参数能力', () => {
+  it('真实连接的直连和通用模型隐藏分辨率，保留比例、单张及参考图能力且不修改保存声明', () => {
+    const selected = structuredClone(MUSE_MODEL_MANIFEST.find((model) => model.id === MUSE_IMAGE_MODEL)!);
+    const config: Pick<AppConfig, 'providers' | 'generalModels'> = {
+      providers: { account: { name: 'Muse 登录', catalogId: 'muse', apiKey: '', selectedModels: [selected] } },
+      generalModels: [{ id: 'saved-muse', name: selected.name, modelId: selected.id, category: 'image',
+        providerConfigId: 'account', imageCapability: selected.imageCapability }],
+    };
+    const saved = structuredClone(config);
+    for (const [model, provider] of [[`account/${MUSE_IMAGE_MODEL}`, 'account'], ['general/saved-muse', 'general']]) {
+      const capability = resolveImageParameterCapability(model, provider, config);
+      expect(capability).toMatchObject({
+        resolutions: [], hasResolutionField: false, resolutionStyle: 'none',
+        ratios: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'], defaultRatio: '1:1',
+        supportsBatch: false, maxBatchCount: 1, supportsImageReference: true,
+        maxImageReferences: 4, supportsDataUrlReference: true,
+      });
+      expect(capability?.defaultResolution).toBeUndefined();
+    }
+    expect(selected.imageCapability?.resolutions).toBeUndefined();
+    expect(config).toEqual(saved);
   });
 });
 

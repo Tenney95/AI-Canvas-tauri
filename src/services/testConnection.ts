@@ -9,6 +9,7 @@ import { baseUrlCandidates, normalizeBaseUrl } from './ai/providerBaseUrl';
 import { getChatApiHeaders, resolveChatApiProtocol } from './ai/chatApiProtocol';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from './fs/core';
+import { pollTask, PollTimeoutError } from './pollTask';
 import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
 
 export interface TestResult {
@@ -346,9 +347,21 @@ export async function testProviderConnection(
   if (provider === 'muse') {
     if (!isTauriEnv()) return { success: false, unsupported: true, error: 'Muse 登录仅在桌面应用中可用' };
     try {
-      const status = await invoke<{ loggedIn: boolean }>('muse_auth_status');
-      return status.loggedIn ? { success: true } : { success: false, error: '请先在 Muse 官网窗口完成登录' };
-    } catch {
+      type Status = { loggedIn: boolean; checking?: boolean; sessionState?: string; credentialStored?: boolean };
+      const initial = await invoke<Status>('muse_auth_status', { verify: true });
+      const status = initial.checking ? await pollTask<Status, Status>({
+        fetchState: () => invoke<Status>('muse_auth_status'),
+        isComplete: (current) => current.checking ? null : current,
+        interval: 500, maxDuration: 60_000,
+        timeoutMsg: 'Muse 会话仍在验证，请稍后在连接设置中刷新；已保存 Cookie 不会删除',
+      }) : initial;
+      if (status.loggedIn && status.sessionState === 'verified') return { success: true };
+      return { success: false, error: status.sessionState === 'invalid'
+        ? 'Muse 已明确拒绝此会话，请重新登录或更新 Cookie'
+        : status.credentialStored ? 'Muse 会话已保存，但尚未在线验证，请在连接设置中重试'
+          : '请先在 Muse 官网窗口登录或手动填写 Cookie' };
+    } catch (error) {
+      if (error instanceof PollTimeoutError) return { success: false, error: 'Muse 会话仍在验证，请稍后在连接设置中刷新；已保存 Cookie 不会删除' };
       return { success: false, error: '无法读取 Muse 登录状态，请重试' };
     }
   }

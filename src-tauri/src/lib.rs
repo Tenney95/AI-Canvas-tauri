@@ -1951,6 +1951,7 @@ pub fn run() {
             dreamina::dreamina_query_result,
             muse::muse_login_open,
             muse::muse_auth_status,
+            muse::muse_import_cookies,
             muse::muse_logout,
             muse::muse_prepare,
             muse::muse_submit,

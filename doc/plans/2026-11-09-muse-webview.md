@@ -1,6 +1,6 @@
 # Muse 网页文本与媒体接入
 
-日期：2026-11-09。状态：代码已实现，未运行测试、检查、构建、应用启动、账号登录或真实生成，待用户桌面验收。
+日期：2026-11-09。状态：代码已实现；用户桌面截图已确认 Muse 页面正常显示且设置为「Muse 账号已登录」，登录与会话识别通过用户验收。后续选择三个模型时出现的 `resolutions` 空选项保存错误已修正，连接保存及文本、图片、视频真实调用仍待验收；助手未运行测试或构建。
 
 ## 来源与接入选择
 
@@ -8,9 +8,11 @@
 
 采用应用自带 WebView 直连 `https://muse.ai/thread/new`。声明 `muse-chat`、`muse-image` 和 `muse-video` 能力别名，不冒称具体底模或正式官方 API。比例、时长通过提示词请求，实际产物可能不遵循；不声明未知分辨率、音轨能力，也不附加去水印等创作要求。用户后续指出遗漏文本能力，同日补齐文本节点、普通图文对话与历史续聊。
 
+图片持久化能力中不填写 `resolutions`，符合已有的未声明字段语义；运行期能力另以空数组隐藏分辨率控件。保留通用空选项、重复选项和默认值归属校验，不虚构档位。回归源码覆盖三模型新增、编辑及旧空数组缓存重存，以及运行期参数面板；均未运行。桌面验收：更新前端后关闭并重开 Muse 配置，勾选三类模型再点「添加厂商／保存更改」，预期保存成功且重开仍保留三个勾选；图片节点应保留比例但不显示固定分辨率选项。若继续出现同一错误，需确认旧配置弹窗已关闭后重新打开。
+
 ## 实现边界
 
-- 设置和模型菜单：`providerCatalogService.ts`、`museModels.ts`、`MuseAccountControls.tsx`，使用 `browser-session` 鉴权，无手填 Cookie。只有桌面支持登录和生成；连接测试只读原生状态。
+- 设置和模型菜单：`providerCatalogService.ts`、`museModels.ts`、`MuseAccountControls.tsx`，使用 `browser-session` 鉴权，支持官网自动登录及手动 Cookie。只有桌面支持登录和生成；连接测试显式启动无生成副作用的后台会话验证，不以本地保存成功代替在线认证。
 - 文本：`ai/museTextService.ts` 复用原命令的 `kind='text'`，文本节点由 `generateText.ts` 调用，对话由 `assistantStream.ts` 转换网页完整快照为增量事件。准备与上传完成后才单次发送。历史上下文保留角色与图片编号，旧工具结果只作已脱敏背景，工具定义及参数不注入；支持最多 4 张图片。单次上下文上限 100000 UTF-8 字节，单次回复上限 256 KiB，经绑定快照版本的 32 KiB 块读取。仍有 Stop 按钮时不会把停顿当成完成，消失且同文稳定至少 3 次、3 秒才结束。
 - 工具能力：Muse 没有确认的原生 function calling。普通对话在 Plan/B/C 的既有任务生命周期下执行，函数工具列表固定为空，并明确提示不能操作画布或调用应用工具；直接提交非空工具定义会在请求前拒绝，不解释正文 JSON 为工具调用。其它支持工具的文本模型仍可按显式媒体引用调用 Muse 图片/视频工具。
 - 原生：`src-tauri/src/media/muse.rs` 与 `media/muse/page.js`，固定来源、独立 profile、无远程应用 capability。只读取 Muse 所属 `hatch_sess/hatch_vml/hatch_gw`，仅 `hatch_sess` 必需；HTTP 401 与网络失败分别处理，不因网络失败清空凭据。Cookie 仅落 `secret_store` 原生专用条目，通用凭据读取拒绝该前缀，私有目录禁止普通文件及 asset 读取。
@@ -35,13 +37,40 @@
 
 前置：使用含本批改动的 Tauri 桌面应用，网络可访问 Muse，准备有生成权限和额度的本人账号；准备一张小于 8 MiB 的 PNG/JPEG。真实生成会使用账号额度。
 
-1. 打开「设置 → API Key → 添加连接 → Muse」，点「登录 Muse」，在独立官网窗口完成登录。预期自动显示已登录且能保存连接；没有 API Key/Cookie 输入，关闭设置再进入仍可读出原生状态。关闭未完成登录的窗口、断网和会话失效应显示未登录或固定错误，不能展示凭据。
+1. 打开「设置 → API Key → 添加连接 → Muse」，点「登录 Muse」，在独立官网窗口完成登录。预期自动获取会话并在在线验证后显示已登录且能保存连接；无需 API Key，也可展开手动 Cookie 入口。关闭设置再进入仍可读出原生状态；关闭未完成登录的窗口、断网和会话失效应显示准确状态或固定错误，不能展示凭据。
 2. 新建图片节点，选「Muse → Muse 图片」，填提示词，选目标比例并生成。预期交付真实图片且保存到原项目；实际尺寸来自成品。再引用准备的图片编辑，确认参考图上传成功后才发送，不返回原图预览。超 4 张或超体积应在发送前拒绝。
 3. 新建视频节点，选「Muse → Muse 视频」，分别用纯文本及一张显式首帧请求 16:9/9:16、5/6/8/10 秒。预期没有虚构分辨率或音轨开关，交付可播放视频而非封面；实际比例和时长单独查看成品。尾帧、视频、音频参考应明确拒绝。不要把目标参数未被 Muse 遵循当成协议保证。
 4. 在上传等待时取消、改输入或切换项目，预期不继续发送；已发送后断网、停止等待或重启，再回原节点/消息继续查询，只取原任务，不重复点击生成。新结构项目和旧项目各验一次；保存失败重试只取同一私有结果。取回时换项目、换会话或新开一次生成，旧结果不得覆盖新目标。
 5. 在设置中查看占用原任务；远端确已结束后解除占用，预期可继续新任务，旧任务记录仍可查询。退出后检查专用窗口会话清理；重新登录不同账号不能把旧任务投递为新账号任务。回归即梦 OAuth、普通 API Key 厂商、明暗主题、键盘操作及对话中显式 `@model` 图片/视频生成。
 6. 已有 Muse 连接进入编辑并刷新模型目录，勾选「Muse 对话」后保存；原图片/视频选择应保留。新建文本节点选择「Muse → Muse 对话」，输入纯文本后生成，再附一张图片请求描述，预期不要求 API Key、不走 `/chat/completions`，回复写回原节点。图片超限、音视频引用及上下文超 100000 UTF-8 字节应在发送前拒绝。
 7. 对话助手选择「Muse 对话」，先问一个问题，再让它解释上一轮，预期逐步显示正文并使用同会话历史；Plan/B/C 下均可普通问答，但不执行应用工具，也不能声称已改画布。已有脱敏工具历史可当材料续聊。回复途中取消、切换会话，预期保留已收到的片段且不写入错误会话、不重发；仍显示 Stop 的长思考不可被判断为完成。回归非流式回复、正文改写错误、独立助手窗口和其它厂商的工具调用。
+
+## 登录黑屏反馈与手动 Cookie
+
+2026-11-09 用户反馈原生 Muse 登录窗口持续黑屏，同机已登录的 Edge 可正常显示聊天。用户自行完成 dev 编译后，真实回执最终确认：HRESULT `0x00000000`、WebView2 状态 `14`，开始时宿主已取消、本机策略为「拒绝其他跳转」，被拒主机依次涉及 `auth.muse.ai`、`www.facebook.com` 和 `www.instagram.com`。根因是固定域名白名单不完整，未登录账号的跨站认证跳转被应用自行取消，因此保持 `about:blank`。单独改主页地址或物理就绪时序不能解决该问题。
+
+按用户随后明确要求取消网页域名限制，交互式登录窗口现允许任意标准 HTTPS（443、无 URL 用户名密码）的认证导航；`file`、`asset`、`tauri`、`ipc` 等本地／应用协议继续拒绝。其它域名不获得 Muse 页面适配脚本或应用 capability；任务与隐藏会话窗口仍只允许精确主站。外部 HTTPS 页表示等待用户登录，不作 Muse 会话已验证，也不因登录耗时超过 45 秒误报网页失败；回到主站后才抓取白名单 Cookie 和验证会话。按用户本轮授权只读核对了正常 Edge 页面，确认主站文档完整且有聊天输入框；未读取 Cookie、修改账号或操作 Tauri 桌面验收。用户最新桌面截图已确认网页正常显示且设置为「Muse 账号已登录」；跨重启保持、退出重登及手动 Cookie 异常场景尚待验收。
+
+解除跳转限制后用户回执已为 HTTP 200／导航成功，但主站白屏且验证未结束。源码检查发现原脚本回传每次都通过 `location.href=aicanvas-muse://…` 发起顶层导航，再由宿主取消，可能打断加载。现由 `muse/evaluation.rs` 用原生 `eval_with_callback` 读取异步结果槽，不再改地址或授予网页 IPC。每次调用绑定随机槽与窗口实例，检查真实主站来源并沿既有总超时；JavaScript 与原生双侧限制 100000 字节回包，结束／超时／取消清槽，迟到结果不得重建已清槽。开发构建的登录窗口启用 DevTools 便于 F12 排查；正式构建与任务窗口未因此开启。用户最新截图已同时展示正常聊天页面和应用内已登录状态，白屏及会话识别已通过本轮用户桌面验收；不据此推断文本或媒体真实生成已通过。
+
+源码确认当前 Tauri Runtime 从后台线程创建窗口时会先返回逻辑句柄，物理 WebView 在 UI 线程后续创建；`navigate()` 返回成功也只表示消息已入队。统一启动仍为后台创建空白壳，等待 `with_webview` 就绪信号，再恢复 Cookie、单次导航到官网根或既有任务地址；登录、会话验证、新任务和恢复共用该入口。就绪等待限时 45 秒，迟到/取消结果只清理原窗口。空白页及外部登录提供商的加载事件不能冒充 Muse 页面已加载。保留独立随机 profile、incognito 和最小导航权限。
+
+进一步补齐错误回执：Tauri Runtime 执行 `Navigate` 失败只写日志；Wry 的 `NavigationCompleted` 不读取成功标志与浏览器错误码，而是将当前 Source 作为 `PageLoadEvent::Finished` 回传。Windows 固定平台桥接直接调用 WebView2 `Navigate` 并接收真实 HRESULT，监听顶层导航开始/完成的 `IsSuccess`、`WebErrorStatus` 与 HTTP 状态，区分原生开始时的 `Cancel`、本机白名单决策、被拒的规范 DNS 域名及下载拦截。诊断绑定凭据代际、窗口实例及官网导航 ID，空白初始化和页面回传用的取消不算官网错误。设置页只按白名单显示固定阶段、布尔值、数字码及严格校验的纯域名，不回显原始错误、完整 URL 或请求；这些字段只在内存保留。显式引用锁文件中已经存在的 WebView2 和 Windows Core 版本，不升级 SDK，不修改 vendor 或远程页面权限。
+
+状态读取改成即时缓存快照，避免持全局操作锁等待页面、Cookie 和网络。登录窗口加载、被阻止、失败和 45 秒超时可见，并可显式重建。物理就绪握手的 `muse_webview_init_timeout` / `muse_webview_init_failed` 只映射为两条固定中文提示，其余异常仍显示通用文案，不回显原始错误。窗口事件只更新内存并调度后台工作；在线验证与 SPA 登录后的自动捕获保持单飞、超时和凭据代际校验。导入新 Cookie、退出及重建使旧验证失效，迟到结果不能覆盖当前凭据。仅明确 HTTP 401 标为失效，网络或页面失败保持未验证并保留原凭据。
+
+「手动填写 Cookie」默认收起，展开后输入遮挡，可切换显示。接受完整请求 Cookie 头、裸 `hatch_sess` 值以及常见 Chrome/Muse2API JSON 导出，只使用 `hatch_sess`、`hatch_vml` 和 `hatch_gw`，其中前者必需。解析由原生 `media/muse/cookies.rs` 完成，拒绝重复、控制字符、跨域、错误路径与冲突的 expiry；不虚构到期时间。输入上限 16 KiB，单项 4096 字节，最终凭据 JSON 上限 8192 字节。Cookie 只在组件临时保留，原生导入成功立即清空，不写普通配置、历史或日志，失败也不回显原文。
+
+`credentialStored` 与 `sessionState` 分别表达本机保存和在线验证；未验证时可以先保存连接，明确失效时需更新凭据。保存 Cookie 不等待或自动发起联网验证，用户可点「验证 / 刷新状态」单独验证。生成前仍检查真实 assigned 会话，手工 Cookie 不能代替生成所需的 WebView 页面可达性；页面若仍无法加载，实际调用继续失败关闭。未增加真实调用或验证通过的证据。
+
+本批桌面步骤：
+
+1. 完全关闭旧 Muse 窗口，使用本批原生和前端代码的桌面应用，进入「设置 → API Key → Muse → 登录 Muse」。未登录时预期能沿 Muse／Meta 认证链路显示认证页，设置卡片显示「允许登录跳转」且宿主取消为「否」。在认证页停留超过 45 秒仍应等待用户输入；完成登录回到主站后才显示会话已验证。开发版登录窗 F12 应可打开，验证探测不会创建自定义协议导航或令文档变白。初始化或真实页面加载失败、超时应退出等待并可重试，不能将持续空白页显示为已加载。重复关闭/重建及退出后重进时，不应有迟到窗口改变当前登录状态。
+2. 在同机已登录 Muse 的浏览器按 F12，进入 Application（应用）→ Cookies → `https://muse.ai`，复制 `hatch_sess` 的 Value。只粘贴到应用的「手动填写 Cookie」，点「保存 Cookie」。预期输入立即清空、显示「已保存，尚未验证」，勾选所需模型后可保存连接；不要把 Cookie 发到聊天中。
+3. 点「验证 / 刷新状态」，预期显示验证中，只有在线成功才显示已登录。断网或加载失败保留已保存会话；无效凭据在明确 401 后显示失效。随后分别验收文本、图片和视频；有活动任务时导入、重登、退出应拒绝，不能改掉原任务身份。
+4. 回归重复字段、错域 JSON、换行、过长输入的拒绝与固定错误，旧验证晚于新导入完成时不回写，关闭重开后输入不残留，以及明暗主题和键盘操作。网页登录在 SPA 内完成后也应自动捕获；系统浏览器已有登录不代表独立 WebView 自动共享会话。
+
+回归源码：`tests/components/museAccountControls.test.tsx`、`providerConnectionDraftGuard.test.tsx`、`tests/services/testConnection.test.ts` 和 `muse/cookies.rs` 内原生解析用例，均未运行。用户可在仓库根目录执行 `npx vitest run tests/components/museAccountControls.test.tsx tests/components/providerConnectionDraftGuard.test.tsx tests/services/testConnection.test.ts`；原生解析可执行 `cargo test --manifest-path src-tauri/Cargo.toml muse::cookies::tests`，不能代替 WebView2 实机验收。
 
 纯逻辑与文本提交用例入口：`tests/services/musePrompt.test.ts`、`museTextService.test.ts`；助手增量、取消、图片和工具边界见 `assistantStreamProtocol.test.ts`，Plan/B/C 普通问答见 `chat/agentRoundExecutor.test.ts`。媒体恢复和 UI 的回归补充在既有 `pollManager`、`messageBubble`、`mediaTaskStatus` 与 `generationRuntime` 用例中，均未运行。用户可在仓库根目录执行 `npx vitest run tests/services/musePrompt.test.ts tests/services/museTextService.test.ts tests/services/assistantStreamProtocol.test.ts tests/services/chat/agentRoundExecutor.test.ts tests/services/pollManager.test.ts tests/components/messageBubble.test.tsx tests/components/mediaTaskStatus.test.tsx tests/services/generationRuntime.test.ts`；原生命令及 ACL 仍需桌面和 Rust 检查，不能用这些前端用例代替。
 

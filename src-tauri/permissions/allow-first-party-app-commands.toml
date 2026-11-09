@@ -65,6 +65,7 @@ commands.allow = [
   "dreamina_query_result",
   "muse_login_open",
   "muse_auth_status",
+  "muse_import_cookies",
   "muse_logout",
   "muse_prepare",
   "muse_submit",

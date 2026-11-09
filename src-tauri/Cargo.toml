@@ -90,6 +90,8 @@ objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std
 
 # Windows: DXGI 适配器枚举（GPU 探测用）+ 剪贴板 CF_HDROP 文件写入
 [target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
+windows-core = "=0.61.2"
 windows = { version = "0.58", features = [
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dwm",

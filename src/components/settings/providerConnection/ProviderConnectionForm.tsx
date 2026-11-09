@@ -347,6 +347,7 @@ interface ProviderConnectionFormProps {
   dreaminaLoading: boolean;
   onDreaminaLogin: () => void;
   onMuseLoggedInChange?: (loggedIn: boolean) => void;
+  onMuseCredentialReadyChange?: (ready: boolean) => void;
   duplicateConnectionName: string;
   catalogStatus: CatalogStatus;
   catalogMessage: string;
@@ -373,6 +374,7 @@ export default function ProviderConnectionForm({
   dreaminaLoading,
   onDreaminaLogin,
   onMuseLoggedInChange,
+  onMuseCredentialReadyChange,
   duplicateConnectionName,
   catalogStatus,
   catalogMessage,
@@ -451,7 +453,7 @@ export default function ProviderConnectionForm({
       )}
 
       {definition.authType === 'browser-session' ? (
-        <MuseAccountControls onLoggedInChange={onMuseLoggedInChange} />
+        <MuseAccountControls onLoggedInChange={onMuseLoggedInChange} onCredentialReadyChange={onMuseCredentialReadyChange} />
       ) : definition.authType === 'oauth' ? (
         <div className="provider-oauth-row">
           <span className={`provider-connection-dot${dreaminaLoggedIn ? ' is-online' : ''}`} />

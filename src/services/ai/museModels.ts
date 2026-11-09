@@ -9,7 +9,6 @@ export const MUSE_VIDEO_MODEL = 'muse-video';
 export const MUSE_MAX_IMAGE_REFERENCES = 4;
 
 export const MUSE_IMAGE_CAPABILITY: ImageModelCapability = {
-  resolutions: [],
   ratios: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'],
   defaultRatio: '1:1',
   hasResolutionField: false,

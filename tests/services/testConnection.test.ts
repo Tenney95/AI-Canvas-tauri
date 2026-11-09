@@ -1,18 +1,53 @@
 /**
  * testConnection — 回归测试：provider connection tests。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const transportMocks = vi.hoisted(() => ({
   corsSafeFetch: vi.fn(),
+  invoke: vi.fn(),
 }));
 
 vi.mock('../../src/services/ai/httpTransport', () => transportMocks);
+vi.mock('@tauri-apps/api/core', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@tauri-apps/api/core')>(), invoke: transportMocks.invoke,
+}));
 
 import { queryProviderBalance, supportsProviderBalance, testProviderConnection } from '../../src/services/testConnection';
 
 beforeEach(() => {
   transportMocks.corsSafeFetch.mockReset();
+  transportMocks.invoke.mockReset();
+});
+
+describe('Muse 显式在线验证', () => {
+  beforeEach(() => { vi.stubGlobal('window', { __TAURI_INTERNALS__: {} }); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('先请求后台验证，再读缓存结果，不把已保存 Cookie 当作已登录', async () => {
+    transportMocks.invoke.mockResolvedValueOnce({ loggedIn: false, credentialStored: true, sessionState: 'unverified', checking: true })
+      .mockResolvedValueOnce({ loggedIn: true, credentialStored: true, sessionState: 'verified', checking: false });
+    await expect(testProviderConnection('muse', '')).resolves.toEqual({ success: true });
+    expect(transportMocks.invoke.mock.calls).toEqual([['muse_auth_status', { verify: true }], ['muse_auth_status']]);
+    expect(transportMocks.corsSafeFetch).not.toHaveBeenCalled();
+  });
+
+  it('仅本地保存或明确拒绝时不能报告连接成功', async () => {
+    for (const state of ['unverified', 'invalid']) {
+      transportMocks.invoke.mockResolvedValueOnce({ loggedIn: false, credentialStored: true, sessionState: state, checking: false });
+      const result = await testProviderConnection('muse', '');
+      expect(result.success).toBe(false);
+      expect(result.error).toContain(state === 'invalid' ? '明确拒绝' : '尚未在线验证');
+    }
+  });
+
+  it('不回显原生错误中的凭据或请求内容', async () => {
+    transportMocks.invoke.mockRejectedValueOnce('fake-cookie-value request-detail');
+    const result = await testProviderConnection('muse', '');
+    expect(result.success).toBe(false);
+    expect(result.error).not.toContain('fake-cookie-value');
+    expect(result.error).not.toContain('request-detail');
+  });
 });
 
 describe('MiniMax 官方无生成验证', () => {

@@ -30,6 +30,7 @@ import ProviderConnectionForm from '../../src/components/settings/providerConnec
 import ProviderModelSection from '../../src/components/settings/providerConnection/ProviderModelSection';
 import ProviderImageHostingSettings from '../../src/components/settings/providerConnection/ProviderImageHostingSettings';
 import { IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
+import { MUSE_MODEL_MANIFEST } from '../../src/services/ai/museModels';
 import type { ProviderModelSelection } from '../../src/types';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
@@ -81,6 +82,40 @@ beforeEach(() => {
   render();
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it.each([
+  { mode: '新增', editing: false, legacy: false, saveLabel: '添加厂商' },
+  { mode: '编辑', editing: true, legacy: false, saveLabel: '保存更改' },
+  { mode: '编辑旧缓存', editing: true, legacy: true, saveLabel: '保存更改' },
+])('Muse $mode 连接可保存三个真实模型，不携带 Cookie 或虚构分辨率', async ({ editing, legacy, saveLabel }) => {
+  driver.scope = { values: [], index: 0 };
+  const models = structuredClone([...MUSE_MODEL_MANIFEST]);
+  const configured = models.map((model) => legacy && model.category === 'image'
+    ? { ...model, imageCapability: { ...model.imageCapability, resolutions: [] } } : model);
+  const config = { name: 'Muse', catalogId: 'muse', apiKey: '', baseUrl: 'https://muse.ai', selectedModels: configured, catalogModels: configured };
+  props = { ...props, connectionId: 'muse', initialConfig: editing ? config : undefined, initialModelId: undefined,
+    providerConfigs: editing ? { muse: config } : {}, connectedProviderIds: editing ? ['muse'] : [], fallbackModels: { muse: models } };
+  render();
+  if (!editing) { section().onToggleVisibleModels(); render(); }
+  expect(button(saveLabel).props.disabled).toBe(true);
+  // 已保存凭据可先保存连接，在线会话验证独立进行。
+  form().onMuseCredentialReadyChange?.(true);
+  render();
+  expect(button(saveLabel).props.disabled).toBe(false);
+  click(saveLabel); await settle();
+  expect(props.onSave).toHaveBeenCalledOnce();
+  const [connectionId, saved] = vi.mocked(props.onSave).mock.calls[0];
+  expect(connectionId).toBe('muse');
+  expect(saved.selectedModels).toEqual(models);
+  expect(saved.catalogModels).toEqual(models);
+  const image = saved.selectedModels!.find((model) => model.id === 'muse-image')!;
+  expect(image.imageCapability?.resolutions).toBeUndefined();
+  expect(image.imageCapability?.defaultResolution).toBeUndefined();
+  expect(image.imageCapability?.hasResolutionField).toBe(false);
+  expect(saved.apiKey).toBe('');
+  expect(saved).not.toHaveProperty('cookie');
+  expect(saved).not.toHaveProperty('credentialStored');
+});
 
 describe('自定义连接未完成草稿保护', () => {
   it('套用内置上传格式后保存普通配置，沿用 Key 不额外保存密钥', async () => {

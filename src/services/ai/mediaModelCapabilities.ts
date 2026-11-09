@@ -538,7 +538,8 @@ function normalizeImageModelId(model: string): string {
 
 export function getImageCapability(model?: string): ImageCapability | undefined {
   if (model === `muse/${MUSE_IMAGE_MODEL}`) {
-    return { ...MUSE_IMAGE_CAPABILITY, modelId: MUSE_IMAGE_MODEL, resolutionStyle: 'none' };
+    // 空数组仅供运行期隐藏控件；持久化声明省略分辨率选项。
+    return { ...MUSE_IMAGE_CAPABILITY, resolutions: [], modelId: MUSE_IMAGE_MODEL, resolutionStyle: 'none' };
   }
   if (model?.startsWith('grsai/')) {
     const capability = getGrsaiImageCapability(model);

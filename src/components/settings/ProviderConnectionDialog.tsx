@@ -146,7 +146,7 @@ export default function ProviderConnectionDialog({
     () => resolveChatApiProtocol(initialConfig?.chatApiProtocol),
   );
   const [genericApiKey, setGenericApiKey] = useState(initialConfig?.apiKey || '');
-  const [museLoggedIn, setMuseLoggedIn] = useState(false);
+  const [museCredentialReady, setMuseCredentialReady] = useState(false);
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [imageHosting, setImageHosting] = useState(initialConfig?.imageHosting);
   const [imageHostingApiKey, setImageHostingApiKey] = useState('');
@@ -295,7 +295,7 @@ export default function ProviderConnectionDialog({
     if (!definition) return true;
     if (definition.kind === 'workflow-api') return !baseUrl.trim();
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
-    if (definition.authType === 'browser-session') return !museLoggedIn;
+    if (definition.authType === 'browser-session') return !museCredentialReady;
     if (definition.id === 'runninghub-model') return activeRunningHubSite
       ? !Object.values(siteKeys).some((keys) => keys.modelKey.trim() || keys.workflowKey.trim())
       : !apiKey.trim() && !workflowApiKey.trim();
@@ -303,7 +303,7 @@ export default function ProviderConnectionDialog({
     return definition.credentials.some(
       (field) => field.required && field.key === 'baseUrl' && !baseUrl.trim(),
     );
-  }, [apiKey, baseUrl, definition, dreaminaLoggedIn, museLoggedIn, workflowApiKey, activeRunningHubSite, siteKeys]);
+  }, [apiKey, baseUrl, definition, dreaminaLoggedIn, museCredentialReady, workflowApiKey, activeRunningHubSite, siteKeys]);
   const workflowOnlyConnection = definition?.id === 'runninghub-model' && !apiKey.trim();
 
   const hasConnectionChanges = () => definition?.id === 'custom-openai'
@@ -898,7 +898,7 @@ export default function ProviderConnectionDialog({
               dreaminaLoggedIn={dreaminaLoggedIn}
               dreaminaLoading={dreaminaLoading}
               onDreaminaLogin={onDreaminaLogin}
-              onMuseLoggedInChange={setMuseLoggedIn}
+              onMuseCredentialReadyChange={setMuseCredentialReady}
               duplicateConnectionName={duplicateConnectionName}
               catalogStatus={catalogStatus}
               catalogMessage={catalogMessage}
