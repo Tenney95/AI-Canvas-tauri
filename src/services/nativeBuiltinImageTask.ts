@@ -88,7 +88,11 @@ async function readPair(projectId: string, operationId: string): Promise<{ recor
 export const nativeBuiltinImageDigest = (mode: NativeBuiltinImageMode, modelId: string) =>
   sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(['native-builtin-original-result-v1', mode, modelId])));
 export const DREAMINA_NATIVE_BASE = 'http://dreamina.local';
-const pending = (operationId: string): Error => { const error = new Error(`原媒体操作 ${operationId} 已保留，请继续原回执；提交未知不会重新生成。`); error.name = 'NativeMediaTaskPending'; return error; };
+const pending = (operationId: string, cause?: unknown, detail?: string): Error => {
+  const error = new Error(`原媒体操作 ${operationId} 已保留，请继续原回执；提交未知不会重新生成。${detail ?? ''}`,
+    cause === undefined ? undefined : { cause });
+  error.name = 'NativeMediaTaskPending'; return error;
+};
 function delivered(operationId: string): never { const error = new Error('原媒体完整产物已保存并交付'); error.name = 'NativeMediaTaskDelivered'; Object.assign(error, { nativeOperationId: operationId }); throw error; }
 async function saveOutputs(record: NativeMediaTaskRecord, urls: readonly string[], access?: MediaDownloadAccess): Promise<NativeMediaLocalOutput[]> {
   if (!urls.length || urls.length > 128 || urls.some((url) => typeof url !== 'string' || !url)) throw new Error('原作业未返回完整的有界产物集合');
@@ -154,11 +158,13 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
       ({ record } = await mutate(record, (_main, receipt) => { receipt.inlineOutputs = outputs; receipt.state = 'inline'; }));
       record = await retainNativeMediaOutputs(record, outputs, input.mode === 'ccc' ? { inlineSubmission: true } : {});
     }
-    if (input.signal?.aborted || !isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw pending(record.operationId);
+    if (input.signal?.aborted || !isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) {
+      throw pending(record.operationId, new Error('原画布上下文或取消信号在交付前已变化'));
+    }
     await resumeNativeBuiltinImageTask(record.operationId, input.signal);
     const completed = await readPair(record.ownerProjectId, record.operationId);
     if (completed.record.status === 'delivered') return delivered(record.operationId);
-    throw pending(record.operationId);
+    throw pending(record.operationId, new Error('本机交付结束后回执仍未结算'));
   } catch (error) {
     if (error instanceof Error && ['NativeMediaTaskDelivered', 'NativeMediaTaskPending'].includes(error.name)) throw error;
     const terminal = await readPair(record.ownerProjectId, record.operationId).catch(() => undefined);
@@ -170,7 +176,10 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
       main.status = certain ? 'failed' : 'outcome-unknown'; receipt.state = certain ? 'failed' : 'unknown';
     }).catch(() => ({ record })));
     if (record.status === 'failed') throw error;
-    throw pending(record.operationId);
+    const retained = !!(terminal?.receipt.inlineOutputs?.length || terminal?.record.localResults?.length || record.localResults?.length);
+    throw pending(record.operationId, error, retained
+      ? ' 产物已保存，请在「设置 → 恢复项目操作」输入此 ID 并点击「继续取回原媒体产物」回填节点。'
+      : undefined);
   }
 }
 

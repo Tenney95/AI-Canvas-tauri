@@ -424,6 +424,19 @@ function AINodeDialog() {
       showToast(t('该节点还有未确认结束的 ComfyUI 任务，请先继续查询或终止任务'), 'error');
       return;
     }
+    // 新项目的付费媒体必须经统一生成入口注册原生提交守卫与耐久回执；
+    // 弹窗内保留的旧直调没有守卫，会在提交前被拒绝。
+    if (store.projectExecutionContext?.modelGeneration === 1
+      && ['ai-image', 'ai-animation', 'ai-panorama', 'ai-audio'].includes(latestData.type)) {
+      const originalData = latestNode!.data;
+      const originalProjectId = store.currentProjectId;
+      const { executeGeneration } = await import('../../services/generationService');
+      const live = useAppStore.getState();
+      if (live.currentProjectId !== originalProjectId || live.activeNodeId !== latestNode!.id
+        || live.nodes.find((item) => item.id === latestNode!.id)?.data !== originalData) return;
+      await executeGeneration(latestNode!.id, overridePrompt, postProcess);
+      return;
+    }
     if (latestData.type === 'ai-director' || latestData.type === 'ai-video') {
       // 源视频的生成映射会创建新对象，异步加载后仍核对原始节点身份。
       const originalData = latestNode!.data;
