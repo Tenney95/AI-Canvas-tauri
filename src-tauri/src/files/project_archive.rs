@@ -1724,7 +1724,8 @@ mod tests {
                     let text = path.to_str().unwrap();
                     let text = text.strip_prefix(r"\\?\").unwrap_or(text);
                     assert!(!text.chars().any(|character| "\"&|<>^%!()\r\n".contains(character)), "测试路径含 shell 特殊字符");
-                    text.to_owned()
+                    // Windows Path::join 可保留输入中的正斜杠；cmd 的 mklink 会把它解析为选项。
+                    text.replace('/', "\\")
                 };
                 let output = std::process::Command::new("cmd.exe")
                     .args(["/d", "/v:off", "/c", "mklink", "/J"])

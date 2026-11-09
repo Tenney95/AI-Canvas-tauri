@@ -86,7 +86,7 @@ import { createNativeProject, saveNativeProjectView, saveNativeProjectContent, c
   updateNativeEpisodeComposite, readNativeEpisodeContent, readNativeProjectContent } from '../services/indexedDb/nativeProjectRepository';
 import { listProjectCatalog, resolveProjectModel, type ProjectCatalogEntry } from '../services/projectModelRouter';
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
-import { hydrateNativeProjectView, projectNativeCatalogEntry, type NativeProjectViewItem } from './nativeProjectView';
+import { hydrateNativeProjectView, nativeEpisodeDisplayNumbers, projectNativeCatalogEntry, type NativeProjectViewItem } from './nativeProjectView';
 import { restoreProjectRecord } from '../services/storageService';
 import { resolveProjectModelSettings } from '../services/projectModelSettings';
 import { configValuesEqual } from '../services/configPatch';
@@ -1880,7 +1880,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           if (!updated) throw new Error('转换后的项目无法读取');
           selection = updated.selection;
         }
-        let nextNo = selection.episodes.reduce((max, episode) => Math.max(max, episode.displayNo ?? 0), 0);
+        let nextNo = nativeEpisodeDisplayNumbers(selection.episodes).reduce((max, number) => Math.max(max, number), 0);
         for (const input of entries) {
           const episodeId = `e2-${crypto.randomUUID()}`, canvasId = `c2-${crypto.randomUUID()}`;
           const [episodeIdentity, canvasIdentity] = await Promise.all([resolveProjectModel(episodeId), resolveProjectModel(canvasId)]);

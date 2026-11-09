@@ -153,7 +153,8 @@ describe('新画布媒体回执账本', () => {
     expect(late).toMatchObject({ status: 'reviewed', remoteTaskId: 'late-id' });
     await expect(prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'node',
       providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: 0, category: 'video' }, { factory })).resolves.toMatchObject({ status: 'prepared' });
-    await expect(claimNativeMediaRecovery(task.operationId, context, { factory })).rejects.toThrow('已有后续任务');
+    await expect(claimNativeMediaRecovery(task.operationId, context, { factory })).rejects.toThrow('已有后续尝试，原缓存不能覆盖新意图');
+    expect((await listNativeMediaTasks(context.projectId, { factory })).find((row) => row.operationId === task.operationId)).toEqual(late);
   });
   it('确认远端失败后保留 ID 并解除本机防重', async () => {
     const context = await fixture();
@@ -173,7 +174,9 @@ describe('新画布媒体回执账本', () => {
     expect(await isNativeMediaLeaseCurrent(submitted, { factory })).toBe(false);
     await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'deleted-node',
       providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'b'.repeat(64), sourceCanvasRevision: 0, category: 'video' }, { factory });
-    await expect(claimNativeMediaRecovery(task.operationId, context, { factory })).rejects.toThrow('已有后续任务');
+    await expect(claimNativeMediaRecovery(task.operationId, context, { factory })).rejects.toThrow('已有后续尝试，原缓存不能覆盖新意图');
+    expect((await listNativeMediaTasks(context.projectId, { factory })).find((row) => row.operationId === task.operationId))
+      .toMatchObject({ status: 'reviewed', remoteTaskId: 'original-remote-id' });
   });
   it('持久化图片字节身份，仅接受保存画布中的原图片连线', async () => {
     const context = await fixture(), sha256 = 'b'.repeat(64);

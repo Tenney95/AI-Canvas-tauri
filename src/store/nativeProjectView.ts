@@ -1,6 +1,6 @@
 /** 新结构的轻量导航投影；这里只供 Store 展示，不能作为持久化或授权凭据。 */
 import type { CanvasProject } from '../types';
-import type { EpisodeContent } from '../types/project';
+import type { EpisodeContent, EpisodeRecord } from '../types/project';
 import type { ProjectCatalogEntry } from '../services/projectModelRouter';
 import type { readNativeProjectView } from '../services/nativeProjectNavigation';
 import { resolveProjectModelSettings } from '../services/projectModelSettings';
@@ -17,6 +17,27 @@ export interface NativeProjectViewBinding {
 }
 
 export type NativeProjectViewItem = CanvasProject & { nativeView: NativeProjectViewBinding };
+
+/** 输入按 orderRank 排列；旧新结构记录可能无集号或有重复，只在视图中避让，不改原记录。 */
+export function nativeEpisodeDisplayNumbers(ordered: readonly Pick<EpisodeRecord, 'displayNo'>[]): number[] {
+  const desired = ordered.map((episode, index) => episode.displayNo ?? index + 1);
+  const counts = new Map<number, number>();
+  for (const number of desired) counts.set(number, (counts.get(number) ?? 0) + 1);
+  // 原本不冲突的编号先预留，不能被前面的重复号避让时占用。
+  const reserved = new Set(desired.filter((number) => counts.get(number) === 1));
+  const used = new Set<number>();
+  let nextFree = 1;
+  return desired.map((candidate, index) => {
+    let number = candidate;
+    if (used.has(number)) {
+      number = index + 1;
+      while (used.has(nextFree) || reserved.has(nextFree)) nextFree += 1;
+      if (used.has(number) || reserved.has(number)) number = nextFree;
+    }
+    used.add(number);
+    return number;
+  });
+}
 
 /** 保留现有画布 ID 导航合同，同时显式保存真正的项目和分集身份。 */
 export function projectNativeCatalogEntry(entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }>): NativeProjectViewItem[] {
@@ -38,9 +59,10 @@ export function projectNativeCatalogEntry(entry: Extract<ProjectCatalogEntry, { 
   const owner: NativeProjectViewItem = { id: project.id, name: project.name, createdAt: project.createdAt,
     updatedAt: project.updatedAt, exchangeEpoch: project.epoch, dataFolder: project.dataFolder, settings: project.defaultSettings,
     nativeView: { projectId: project.id, episodeId: null, canvasId: null } };
+  const numbers = nativeEpisodeDisplayNumbers(ordered);
   return [owner, ...ordered.map((episode, index): NativeProjectViewItem => ({
     id: episode.canvasId, parentId: project.id, name: episode.name, createdAt: episode.createdAt,
-    updatedAt: episode.updatedAt, exchangeEpoch: episode.epoch, dataFolder: project.dataFolder, episodeNo: episode.displayNo ?? index + 1,
+    updatedAt: episode.updatedAt, exchangeEpoch: episode.epoch, dataFolder: project.dataFolder, episodeNo: numbers[index],
     settings: resolveProjectModelSettings(project.defaultSettings, episode.settingsPolicy),
     ...(episode.creationProfile ? { creationProfile: episode.creationProfile } : {}),
     ...(episode.teamProfileOverride ? { teamProfileOverride: episode.teamProfileOverride } : {}),

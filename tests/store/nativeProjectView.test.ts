@@ -10,14 +10,15 @@ import type { CanvasContext } from '../../src/types/project';
 import { useAppStore } from '../../src/store/useAppStore';
 import { createProjectSlice } from '../../src/store/store.projects';
 import { createHistorySlice } from '../../src/store/store.history';
-import { createNativeEpisode, createNativeProject, listNativeProjectIdentities, readNativeProjectCapture, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
+import { createNativeEpisode, createNativeProject, convertNativeProjectToSeries, listNativeProjectIdentities, readNativeProjectCapture, saveNativeCanvas,
+  type NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareNativeMediaTask, recordNativeMediaSubmission, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import * as nativeDelivery from '../../src/services/nativeMediaDelivery';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
 import { videoInputFingerprintMaterial } from '../../src/services/videoBatchPlanning';
 import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
 import type { ProjectRecord } from '../../src/types/project';
-import { hydrateNativeProjectView, projectNativeCatalogEntry } from '../../src/store/nativeProjectView';
+import { hydrateNativeProjectView, nativeEpisodeDisplayNumbers, projectNativeCatalogEntry } from '../../src/store/nativeProjectView';
 import { listEpisodes, projectMemoryOwnerId, resolveOpenTargetId, seriesOwnerId } from '../../src/store/store.utils';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 import { retainNativeMediaOutputs } from '../../src/services/indexedDb/nativeMediaCollectionRepository';
@@ -69,6 +70,25 @@ const episode = (id: string, canvasId: string, orderRank: number) => ({ id, proj
   settingsPolicy: { mode: 'inherit' as const, overrides: {} } });
 
 describe('新结构导航投影', () => {
+  it('兼容缺省和重复集号，新增集号基于实际投影分配而不改已有记录', () => {
+    const first = episode('episode-a', 'canvas-a', 0);
+    const second = { ...episode('episode-b', 'canvas-b', 1), displayNo: 1 };
+    const entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }> = { dataModel: 'native', project: root,
+      episodes: [second, first], episodeIds: [first.id, second.id], canvasIds: [first.canvasId, second.canvasId] };
+    const view = projectNativeCatalogEntry(entry);
+    expect(view.slice(1).map((item) => item.episodeNo)).toEqual([1, 2]);
+    expect(nativeEpisodeDisplayNumbers([first, second])).toEqual([1, 2]);
+    expect(nativeEpisodeDisplayNumbers([first, second]).reduce((max, number) => Math.max(max, number), 0) + 1).toBe(3);
+    expect(first).not.toHaveProperty('displayNo');
+    expect(second.displayNo).toBe(1);
+    expect(nativeEpisodeDisplayNumbers([{ displayNo: 8 }, { displayNo: 1 }])).toEqual([8, 1]);
+    expect(nativeEpisodeDisplayNumbers([{ displayNo: 1 }, {}, { displayNo: 2 }])).toEqual([1, 2, 3]);
+    expect(nativeEpisodeDisplayNumbers([{}, { displayNo: 1 }, { displayNo: 2 }, { displayNo: 8 }])).toEqual([1, 3, 2, 8]);
+    const reordered = projectNativeCatalogEntry({ ...entry, episodes: [{ ...first, orderRank: 1 }, { ...second, orderRank: 0 }] });
+    expect(reordered.slice(1).map((item) => [item.id, item.episodeNo])).toEqual([['canvas-b', 1], ['canvas-a', 2]]);
+    expect(nativeEpisodeDisplayNumbers([])).toEqual([]);
+  });
+
   it('区分作品、分集和画布身份，并按分集顺序映射旧导航视图', () => {
     const entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }> = { dataModel: 'native', project: root,
       episodes: [{ ...episode('episode-b', 'canvas-b', 1), displayNo: 1 }, { ...episode('episode-a', 'canvas-a', 0), displayNo: 8 }],
@@ -137,16 +157,11 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
   });
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-  async function fixture(sourceType: 'ai-video' | 'ai-image' | 'ai-animation' | 'ai-panorama' | 'ai-audio' = 'ai-video') {
-    const initial = await createNativeProject({ projectId, name: '隔离剧集', kind: 'series' });
-    const first = await createNativeEpisode({ projectId, expectedProjectEpoch: initial.project.epoch, episodeId: episodeA, canvasId: canvasA, name: '第一集' });
-    const aggregate = await createNativeEpisode({ projectId, expectedProjectEpoch: first.project.epoch, episodeId: episodeB, canvasId: canvasB, name: '第二集' });
-    await saveNativeCanvas({ projectId, expectedProjectEpoch: aggregate.project.epoch, canvasId: canvasA, episodeId: episodeA,
-      expectedCanvasEpoch: 1, expectedCanvasRevision: 0, document: { nodes: [{ ...sourceNode(), type: sourceType, data: { ...sourceNode().data, type: sourceType } }], edges: [], groups: [] } });
+  function fixtureStore(aggregate: NativeProjectAggregate) {
     const entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }> = { dataModel: 'native', project: aggregate.project,
       episodes: aggregate.episodes, episodeIds: aggregate.episodes.map((episode) => episode.id), canvasIds: aggregate.canvases.map((canvas) => canvas.id) };
     // 项目与历史 slice 使用真实 action；未参与本夹具的其他 slice 仅提供下方最小替身。
-    const store = createStore<AppState>()((set, get, api) => ({
+    return createStore<AppState>()((set, get, api) => ({
       ...createProjectSlice(set, get, api), ...createHistorySlice(set, get, api),
       currentProjectId: null, projectLoadStatus: 'ready', projectInitialized: true, projects: projectNativeCatalogEntry(entry),
       nodes: [], edges: [], groups: [], selectedNodeIds: [], globalCanvasRevision: 0, canvasRevision: 0,
@@ -161,6 +176,14 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
       showToast: vi.fn(), loadConversationsForProject: vi.fn(async () => {}), repairInterruptedForProject: vi.fn(async () => {}),
       loadAgentTasksForProject: vi.fn(async () => {}), loadProjectMemoriesForProject: vi.fn(async () => {}),
     } as unknown as AppState));
+  }
+  async function fixture(sourceType: 'ai-video' | 'ai-image' | 'ai-animation' | 'ai-panorama' | 'ai-audio' = 'ai-video') {
+    const initial = await createNativeProject({ projectId, name: '隔离剧集', kind: 'series' });
+    const first = await createNativeEpisode({ projectId, expectedProjectEpoch: initial.project.epoch, episodeId: episodeA, canvasId: canvasA, name: '第一集' });
+    const aggregate = await createNativeEpisode({ projectId, expectedProjectEpoch: first.project.epoch, episodeId: episodeB, canvasId: canvasB, name: '第二集' });
+    await saveNativeCanvas({ projectId, expectedProjectEpoch: aggregate.project.epoch, canvasId: canvasA, episodeId: episodeA,
+      expectedCanvasEpoch: 1, expectedCanvasRevision: 0, document: { nodes: [{ ...sourceNode(), type: sourceType, data: { ...sourceNode().data, type: sourceType } }], edges: [], groups: [] } });
+    const store = fixtureStore(aggregate);
     expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
     const context = store.getState().projectExecutionContext;
     if (context?.kind !== 'canvas') throw new Error('fixture canvas unavailable');
@@ -179,6 +202,32 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     store.setState({ history: [originalHistory], historyIndex: 0, agentTasks: [agent] });
     return { store, receipt, context: context as CanvasContext, originalHistory, agent };
   }
+
+  it.each(['standalone', 'existing-conflict'] as const)('Store 实际新增分集处理 %s 集号并保留原数据', async (scenario) => {
+    const initial = await createNativeProject({ projectId, canvasId: canvasA, name: '隔离作品' });
+    let aggregate = initial;
+    if (scenario === 'existing-conflict') {
+      const converted = await convertNativeProjectToSeries({ projectId, expectedProjectEpoch: initial.project.epoch,
+        expectedCanvasId: canvasA, expectedCanvasEpoch: initial.canvas!.epoch, expectedCanvasRevision: initial.canvas!.revision,
+        expectedStandaloneRevision: 0, episodeId: episodeA, name: '原首集' });
+      aggregate = await createNativeEpisode({ projectId, expectedProjectEpoch: converted.project.epoch,
+        episodeId: episodeB, canvasId: canvasB, displayNo: 1, name: '历史重复号' });
+    }
+    const store = fixtureStore(aggregate);
+    expect(await store.getState().switchProject(canvasA)).toBe(canvasA);
+    const added = await store.getState().addEpisodes([{ name: '新分集' }]);
+    expect(added).toHaveLength(1);
+    const persisted = (await readNativeProjectCapture(projectId))!.aggregate;
+    const first = persisted.episodes.find((episode) => episode.canvasId === canvasA)!;
+    const created = persisted.episodes.find((episode) => episode.canvasId === added[0])!;
+    expect(first.displayNo).toBeUndefined();
+    expect(created.displayNo).toBe(scenario === 'standalone' ? 2 : 3);
+    if (scenario === 'existing-conflict') expect(persisted.episodes.find((episode) => episode.id === episodeB)?.displayNo).toBe(1);
+    const view = store.getState().projects.filter((item) => item.parentId === projectId);
+    expect(view.find((item) => item.id === canvasA)?.episodeNo).toBe(1);
+    expect(view.find((item) => item.id === added[0])?.episodeNo).toBe(scenario === 'standalone' ? 2 : 3);
+  });
+
   function deferred<T>() {
     let resolve!: (value: T) => void;
     const promise = new Promise<T>((done) => { resolve = done; });
