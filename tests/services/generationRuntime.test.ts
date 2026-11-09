@@ -77,6 +77,8 @@ vi.mock('../../src/services/fs/generatedAssetTags', () => ({
   tagGeneratedProjectAssetSafely: mocks.tagGeneratedProjectAssetSafely,
 }));
 vi.mock('../../src/services/pollManager', () => ({
+  hasMuseQueryIdentity: (task: { taskType?: string; taskId: string }) => task.taskType === 'muse'
+    && task.taskId === 'ac655c56-b537-4c04-8913-fd150fc0e92a',
   bindMediaTaskContext: mocks.bindMediaTaskContext,
   registerMediaNodeOperation: mocks.registerMediaNodeOperation,
   registerMediaMessageRecoveryHandler: mocks.registerMediaMessageRecoveryHandler,
@@ -1046,3 +1048,14 @@ describe('async media task identity', () => {
     expect(mocks.generateImage).not.toHaveBeenCalled();
   });
 });
+
+  it('resumes only the saved Muse task when the send acknowledgment was lost', async () => {
+    mocks.getPendingTasksForProject.mockReturnValue([{ nodeId: 'tracking-1', projectId: 'project-1',
+      taskId: 'ac655c56-b537-4c04-8913-fd150fc0e92a', taskType: 'muse', submitted: false,
+      mediaContext: { messageId: 'message-1' } }]);
+    mocks.resumeMediaNodeTask.mockResolvedValue(undefined);
+    await retryMediaMessageTask('message-1');
+    expect(mocks.resumeMediaNodeTask).toHaveBeenCalledWith('tracking-1');
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(mocks.generateVideo).not.toHaveBeenCalled();
+  });

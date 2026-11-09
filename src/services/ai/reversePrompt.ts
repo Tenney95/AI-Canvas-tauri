@@ -11,7 +11,7 @@ import { textNodeHeight } from '../../utils/num';
 import { resolveEffectiveModel } from '../../components/nodes/shared/toolbar/presetAction';
 import {
   getConfiguredModelGroups,
-  isVisionCapableTextModel,
+  hasVisionInputCapability,
 } from '../../components/nodes/shared/defaultModels';
 import { generateText } from './generateText';
 
@@ -46,17 +46,21 @@ export const REVERSE_PROMPT_SOURCE_LABELS: Record<ReversePromptKind, string> = {
  * 顺序：节点偏好模型（能读图就直接用）→ 已配置的内置模型 → 通用模型 → 退回偏好模型。
  */
 export function resolveVisionTextModel(): { model: string; provider: string } | null {
-  const preferred = resolveEffectiveModel('ai-text');
-  if (preferred && isVisionCapableTextModel(preferred.model)) return preferred;
-
   const config = useAppStore.getState().config;
-  const builtin = getConfiguredModelGroups(config, 'ai-text')
-    .flatMap((group) => group.models)
-    .find((model) => isVisionCapableTextModel(model.value));
+  const configured = getConfiguredModelGroups(config, 'ai-text').flatMap((group) => group.models);
+  const preferred = resolveEffectiveModel('ai-text');
+  const preferredOption = configured.find((model) => model.value === preferred?.model);
+  const preferredGeneral = preferred?.provider === 'general'
+    ? config.generalModels?.find((model) => `general/${model.id}` === preferred.model) : undefined;
+  if (preferred && hasVisionInputCapability(preferredGeneral ?? {
+    modelId: preferred.model, inputModalities: preferredOption?.inputModalities,
+  })) return preferred;
+
+  const builtin = configured.find((model) => hasVisionInputCapability({ modelId: model.value, inputModalities: model.inputModalities }));
   if (builtin) return { model: builtin.value, provider: builtin.provider };
 
   const general = (config?.generalModels || []).find((model) => (
-    model.category === 'text' && isVisionCapableTextModel(model.modelId)
+    model.category === 'text' && hasVisionInputCapability(model)
   ));
   if (general) return { model: `general/${general.id}`, provider: 'general' };
 

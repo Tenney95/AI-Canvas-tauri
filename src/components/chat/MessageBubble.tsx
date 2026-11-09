@@ -21,7 +21,7 @@ import ViewportAudio from '../shared/ViewportAudio';
 import ChatImageAttachments from './ChatImageAttachments';
 import { parseChatImageReferences, stripChatImageReferences } from '../../services/chat/chatImageReferenceService';
 import { getRecoverableMessageTaskSnapshot } from '../../services/ai/generationRuntime';
-import { hasPendingMessageMediaTask, initializeMediaTaskSnapshot, subscribeMediaTasks, type MediaTaskSnapshot } from '../../services/pollManager';
+import { hasMuseQueryIdentity, hasPendingMessageMediaTask, initializeMediaTaskSnapshot, subscribeMediaTasks, type MediaTaskSnapshot } from '../../services/pollManager';
 import { useAppStore } from '../../store/useAppStore';
 
 interface MessageBubbleProps extends ChatReferenceHandlers {
@@ -114,8 +114,8 @@ function MessageBubbleContent({
   const hasAudio = showMediaInChat && mediaResult?.kind === 'audio';
   const isGenerating = (message.mediaStatus === 'queued' || message.mediaStatus === 'generating')
     && !recoveryTask?.mediaRecoveryState;
-  const taskUnknown = message.mediaStatus === 'submit_unknown'
-    || !!recoveryTask && (!recoveryTask.taskId || !recoveryTask.submitted || !!recoveryTask.mediaSubmissionUncertain || recoveryTask.mediaRecoveryState === 'submit_unknown')
+  const taskUnknown = !(recoveryTask && hasMuseQueryIdentity(recoveryTask)) && (message.mediaStatus === 'submit_unknown'
+    || !!recoveryTask && (!recoveryTask.taskId || !recoveryTask.submitted || !!recoveryTask.mediaSubmissionUncertain || recoveryTask.mediaRecoveryState === 'submit_unknown'))
     || !!onRetryMediaSave && message.mediaStatus === 'paused' && !recoveryTask && !mediaResult;
   const mediaRecoverable = !isGenerating && (!!recoveryTask || !onRetryMediaSave && message.mediaStatus === 'paused'
     || taskUnknown || !!mediaResult?.taskReceipt && mediaResult.persistence === 'failed');

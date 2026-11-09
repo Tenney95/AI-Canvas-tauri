@@ -21,6 +21,8 @@ vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: typeof mocks.state) => unknown) => selector(mocks.state) }));
 vi.mock('../../src/services/pollManager', () => ({
   getPendingTasksForProject: () => mocks.tasks, resumeMediaNodeTask: mocks.resume, discardMediaTask: mocks.discard,
+  hasMuseQueryIdentity: (task: { taskType?: string; taskId: string }) => task.taskType === 'muse'
+    && task.taskId === 'ac655c56-b537-4c04-8913-fd150fc0e92a',
 }));
 vi.mock('../../src/i18n', () => ({ useT: () => (text: string, params?: Record<string, string | number>) =>
   Object.entries(params ?? {}).reduce((value, [key, replacement]) => value.replaceAll(`{${key}}`, String(replacement)), text) }));
@@ -44,6 +46,17 @@ beforeEach(() => {
 });
 
 describe('跨媒体原任务续取入口', () => {
+  it('Muse 已留存本机任务身份时，发送回包丢失仍可仅读续查', async () => {
+    mocks.tasks[0] = { ...mocks.tasks[0], taskType: 'muse', taskId: 'ac655c56-b537-4c04-8913-fd150fc0e92a',
+      submitted: false, mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown' };
+    mocks.state.nodes[0].data.mediaTaskState = 'paused';
+    expect(queryButton()).toBeDefined();
+    (queryButton()!.props.onClick as () => void)();
+    expect(mocks.resume).toHaveBeenCalledWith('media');
+    expect(mocks.discard).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.busy).toBe(false));
+  });
+
   it('ComfyUI 提交未知到迟到 ID 转换只恢复原任务查询，不显示重新生成', () => {
     mocks.tasks[0] = { ...mocks.tasks[0], taskType: 'comfyui', taskId: '', submitted: false,
       mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown' };

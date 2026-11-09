@@ -8,6 +8,7 @@ const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/services/ai/assistantStream', () => ({
   streamAssistantReply: streamAssistantReplyMock,
+  resolveAssistantModel: () => ({ supportsTools: true }),
 }));
 
 import {

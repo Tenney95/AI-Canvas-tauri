@@ -34,6 +34,7 @@ import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } fro
 import { XAI_BASE_URL, XAI_MODEL_MANIFEST } from './providers/xaiModelManifest';
 import { GRSAI_ADDED_MODELS } from './grsaiModels';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from './dreaminaModels';
+import { MUSE_BASE_URL, MUSE_MODEL_MANIFEST } from './museModels';
 import { matchToapisCatalog, resolveToapisImageModelContract, TOAPIS_MODEL_MANIFEST } from './providers/toapisModelManifest';
 import { LIBAPI_MODEL_MANIFEST, matchLibapiCatalog, resolveLibapiModelId } from './providers/libapiModelManifest';
 import { RELAYON_BASE_URL, RELAYON_MODEL_MANIFEST, matchRelayonCatalog, resolveRelayonImageModelContract } from './providers/relayonModelManifest';
@@ -54,7 +55,7 @@ import {
   SORA2U_REQUEST_QUERY,
 } from './providers/sora2uModelManifest';
 
-export type ProviderAuthType = 'api-key' | 'oauth';
+export type ProviderAuthType = 'api-key' | 'oauth' | 'browser-session';
 export type ProviderCredentialKey = 'apiKey' | 'baseUrl';
 
 export interface ProviderCredentialField {
@@ -457,6 +458,19 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = ([
         provider: 'dreamina', category: 'video' as const,
       })),
     ],
+    credentials: [],
+  },
+  {
+    id: 'muse',
+    name: 'Muse',
+    description: '在桌面应用中登录 Muse，使用文本与看图对话、图片和视频生成',
+    badgeText: 'MU',
+    authType: 'browser-session',
+    catalogAdapter: 'local-manifest',
+    defaultBaseUrl: MUSE_BASE_URL,
+    externalUrl: MUSE_BASE_URL,
+    allowCustomBaseUrl: false,
+    models: MUSE_MODEL_MANIFEST,
     credentials: [],
   },
   {
@@ -996,7 +1010,7 @@ export async function fetchProviderModelCatalog(
   }
   if (definition.catalogAdapter === 'local-manifest') {
     // 即梦与 MiniMax 使用已核实的本地合同；过期的界面 fallback 不能隐藏新型号，也不代表 Key 已验证。
-    if (definition.id === 'dreamina' || definition.id === 'minimax') {
+    if (definition.id === 'dreamina' || definition.id === 'minimax' || definition.id === 'muse') {
       return { models: normalizeModels([...(definition.models ?? [])], providerId), source: 'local-manifest',
         ...(definition.id === 'minimax' ? { warning: '当前仅展示内置候选模型，未验证 API Key 或各模型权限；请使用「验证连接」检查当前密钥。' } : {}) };
     }

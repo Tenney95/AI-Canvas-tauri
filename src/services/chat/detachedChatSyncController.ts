@@ -3,6 +3,7 @@
  */
 import type { Node } from '@xyflow/react';
 import { useAppStore } from '../../store/useAppStore';
+import { isTauriEnv } from '../fs/core';
 import { seriesOwnerId } from '../../store/store.utils';
 import { GENERAL_ASSISTANT_SCOPE_ID } from './assistantScope';
 import { getMcpClientOptions } from '../mcp/mcpClientService';
@@ -200,6 +201,11 @@ export function getMediaModelAvailability(
     }
     if (option.provider === 'dreamina') {
       return [option.value, dreaminaLoggedIn];
+    }
+    if (option.provider === 'muse') {
+      // 登录会话不投影到独立窗口；执行入口会在原生侧复核。
+      return [option.value, isTauriEnv() && !!providers.muse
+        && (!providers.muse.catalogId || providers.muse.catalogId === 'muse')];
     }
     const providerConfigId = option.groupId === 'runninghub'
       ? 'runninghub-model'

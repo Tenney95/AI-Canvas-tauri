@@ -13,6 +13,7 @@ import { isWorkbenchAgentTaskInScope, isWorkbenchTeamTaskInScope } from '../epis
 import { getPreparedProviderCatalogApproval, MAX_PROVIDER_MODEL_SELECTION, validateProviderModelSelection } from './providerModelCatalogService';
 import {
   streamAssistantReply,
+  resolveAssistantModel,
   type AssistantModelMessage,
 } from '../ai/assistantStream';
 import type {
@@ -987,8 +988,11 @@ export async function executeAgentRound({
   }
 
   const contextSpec = resolveAssistantContextSpec(task.projectId, modelId);
-  const tools = buildAssistantFunctionTools(roundContext);
-  const toolGuidance = buildAssistantToolGuidance(tools.map((tool) => tool.function.name), roundContext.mode, contextSpec.inputBudget);
+  const supportsTools = resolveAssistantModel(task.projectId, modelId)?.supportsTools !== false;
+  const tools = supportsTools ? buildAssistantFunctionTools(roundContext) : [];
+  const toolGuidance = supportsTools
+    ? buildAssistantToolGuidance(tools.map((tool) => tool.function.name), roundContext.mode, contextSpec.inputBudget)
+    : '当前文本模型仅提供文本或图片问答，不能调用应用工具。请直接回答，不能宣称已读取文件、操作画布或执行工具；需要操作时说明此能力限制。';
   let guidanceMessage = toolGuidanceMessages.get(messages);
   if (!guidanceMessage) {
     guidanceMessage = { role: 'system', content: toolGuidance };
@@ -1058,6 +1062,7 @@ export async function executeAgentRound({
         } else if (event.type === 'reasoning.delta') {
           callbacks.onReasoningDelta?.(event.delta);
         } else if (event.type === 'tool.call.final') {
+          if (!supportsTools) throw new Error('当前文本模型未开放工具调用，未执行其工具提案');
           proposedCalls.push(event.call);
         } else if (event.type === 'done') {
           completion.reason = event.finishReason;

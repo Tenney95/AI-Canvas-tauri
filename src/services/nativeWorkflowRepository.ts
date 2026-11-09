@@ -9,7 +9,7 @@ import { validateNativeMediaLocalOutputs } from './nativeMediaCollection';
 import { configValuesEqual } from './configPatch';
 import { validateNativeProtocolContext } from './nativeProtocolContext';
 
-export type NativeWorkflowAdapter = 'runninghub-workflow' | 'runninghub-model' | 'workflow-api' | 'comfyui';
+export type NativeWorkflowAdapter = 'runninghub-workflow' | 'runninghub-model' | 'workflow-api' | 'comfyui' | 'muse-webview';
 export interface NativeWorkflowDescriptor {
   adapter: NativeWorkflowAdapter; connectionId: string; providerBase: string; category: MediaKind; digest: string;
   workflowId?: string; modelId?: string; serverId?: string; outputNodeIds?: string[];
@@ -46,7 +46,7 @@ export function validateNativeWorkflowReceipt(value: NativeWorkflowReceipt): Nat
     || !Number.isSafeInteger(value.projectEpoch) || value.projectEpoch < 0 || !Number.isSafeInteger(value.canvasEpoch) || value.canvasEpoch < 0
     || !(value.episodeId === null || bounded(value.episodeId)) || value.uncertainAcknowledged !== undefined && value.uncertainAcknowledged !== true
     || !fields(descriptor, ['adapter', 'connectionId', 'providerBase', 'category', 'digest', 'workflowId', 'modelId', 'serverId', 'outputNodeIds'])
-    || !['runninghub-workflow', 'runninghub-model', 'workflow-api', 'comfyui'].includes(descriptor.adapter)
+    || !['runninghub-workflow', 'runninghub-model', 'workflow-api', 'comfyui', 'muse-webview'].includes(descriptor.adapter)
     || !bounded(descriptor.connectionId) || normalizeNativeMediaProviderBase(descriptor.providerBase) !== descriptor.providerBase
     || !['image', 'video', 'audio'].includes(descriptor.category) || !/^[a-f0-9]{64}$/.test(descriptor.digest)
     || [descriptor.workflowId, descriptor.modelId, descriptor.serverId].some((item) => item !== undefined && !bounded(item))

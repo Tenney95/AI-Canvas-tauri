@@ -9,5 +9,5 @@ export function supportsNativeMediaProtocol(kind: MediaKind, provider: string, w
   }
   if (kind === 'image') return !['localllm', 'runninghubwf', 'workflow-api', 'comfyui'].includes(provider);
   if (kind === 'audio') return ['general', 'apimart', 'runninghub'].includes(provider);
-  return ['general', 'volcengine', 'apimart', 'grsai', 'runninghub', 'dreamina'].includes(provider);
+  return ['general', 'volcengine', 'apimart', 'grsai', 'runninghub', 'dreamina', 'muse'].includes(provider);
 }

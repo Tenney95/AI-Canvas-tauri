@@ -146,6 +146,17 @@ export async function submitNativeWorkflowTask(input: {
 
 async function assertWorkflowContract(descriptor: NativeWorkflowDescriptor): Promise<void> {
   const state = useAppStore.getState(), workflow = descriptor.workflowId ? state.workflows.find((item) => item.id === descriptor.workflowId) : undefined;
+  if (descriptor.adapter === 'muse-webview') {
+    const { MUSE_BASE_URL, MUSE_IMAGE_MODEL, MUSE_VIDEO_MODEL } = await import('./ai/museModels');
+    const connection = state.config.providers.muse;
+    if (!connection || (connection.catalogId ?? 'muse') !== 'muse' || descriptor.connectionId !== 'muse'
+      || !['image', 'video'].includes(descriptor.category) || descriptor.providerBase !== MUSE_BASE_URL
+      || descriptor.modelId !== (descriptor.category === 'image' ? MUSE_IMAGE_MODEL : MUSE_VIDEO_MODEL)
+      || descriptor.digest !== await nativeWorkflowDigest(['muse-webview-v1', descriptor.category, descriptor.modelId])) {
+      throw new Error('原 Muse 连接或生成合同已变化，未提交或重发任务');
+    }
+    return;
+  }
   if (descriptor.adapter === 'runninghub-model') {
     const { getRunningHubModel } = await import('./ai/providers/runninghubModelManifest');
     const definition = getRunningHubModel(descriptor.modelId);
@@ -171,6 +182,12 @@ async function assertWorkflowContract(descriptor: NativeWorkflowDescriptor): Pro
 
 async function queryOriginal(receipt: NativeWorkflowReceipt, task: NativeWorkflowTask, signal: AbortSignal): Promise<CloudWorkflowOutput[]> {
   const descriptor = receipt.descriptor, state = useAppStore.getState();
+  if (descriptor.adapter === 'muse-webview') {
+    await assertWorkflowContract(descriptor);
+    if (descriptor.category !== 'image' && descriptor.category !== 'video') throw new Error('原 Muse 任务类型无效');
+    const { queryMuseTask } = await import('./museService');
+    return [{ kind: descriptor.category, url: await queryMuseTask(task.taskId, descriptor.category, signal) }];
+  }
   const workflow = descriptor.workflowId ? state.workflows.find((item) => item.id === descriptor.workflowId) : undefined;
   if (descriptor.adapter === 'comfyui') {
     const { comfyBaseUrlFor } = await import('./comfyServers');
@@ -222,7 +239,7 @@ export function nativeComfyOutputs(baseUrl: string, outputs: ComfyOutputs, categ
   return files.map((file) => ({ url: buildComfyFileUrl(baseUrl, file), kind: category }));
 }
 async function workflowDownloadAccess(descriptor: NativeWorkflowDescriptor): Promise<MediaDownloadAccess | undefined> {
-  if (descriptor.adapter === 'comfyui') return undefined;
+  if (descriptor.adapter === 'comfyui' || descriptor.adapter === 'muse-webview') return undefined;
   if (descriptor.adapter !== 'workflow-api') return createMediaDownloadAccess(descriptor.connectionId, descriptor.providerBase, { type: 'bearer' });
   const workflow = useAppStore.getState().workflows.find((item) => item.id === descriptor.workflowId);
   if (!workflow?.workflowApi) throw new Error('原工作流 API 下载合同缺失');

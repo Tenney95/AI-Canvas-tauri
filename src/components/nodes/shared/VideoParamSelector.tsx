@@ -24,6 +24,7 @@ import { resolveDramaAssetImageRef, resolveDramaVoiceRef } from '../../../servic
 import { getApimartSeedanceCapability } from '../../../services/ai/apimartVideoModels';
 import { getVolcengineSeedanceCapability } from '../../../services/ai/volcengineVideoModels';
 import { getDreaminaVideoCapability } from '../../../services/ai/dreaminaModels';
+import { MUSE_VIDEO_CAPABILITY, MUSE_VIDEO_MODEL } from '../../../services/ai/museModels';
 import { getGrsaiVideoCapability } from '../../../services/ai/grsaiModels';
 import { AUTODL_H3_WORKFLOW } from '../../../services/workflowApi/autodlWorkflowManifest';
 import { getModelProtocolPresetVideoCapability } from '../../../services/ai/modelProtocol';
@@ -362,7 +363,7 @@ export default function VideoParamSelector({
     }
     if (references.some((item) => item.id === option.id && item.kind === kind)) return;
     const role: VideoReferenceItem['role'] = frameReferences.some((item) => item.role === 'first_frame')
-      ? 'last_frame' : 'first_frame';
+      ? provider === 'muse' ? 'reference' : 'last_frame' : 'first_frame';
     onChangeVideoReferences?.([...references, {
       id: option.id, kind, role, url: option.url, label: option.label,
       sourceNodeId: option.id.startsWith('character:') ? undefined : option.id,
@@ -437,7 +438,8 @@ export default function VideoParamSelector({
   const generalCapability = generalModel
     ? generalModel.videoCapability
       ?? getModelProtocolPresetVideoCapability(generalModel.executionProfile)
-    : undefined;
+    : provider === 'muse' && selectedModel?.replace(/^muse\//, '') === MUSE_VIDEO_MODEL
+      ? MUSE_VIDEO_CAPABILITY : undefined;
   // 原生模型和通用模型共享参数面板，但通用模型不再经过会补齐 Seedance 默认值的能力视图。
   // 这样 capability 未声明的字段会保持未指定，不会被 UI 悄悄写成 720p / 16:9 / 24fps。
   const workflowApiCapability: VideoModelCapability | undefined = provider === 'workflow-api' && workflowApiManifest?.version === 1
@@ -571,7 +573,9 @@ export default function VideoParamSelector({
     && !allowedDurations
     && (generalCapability?.minDuration === undefined || generalCapability?.maxDuration === undefined),
   );
-  const durationTooltip = apimartCapability?.durationMode === 'without-video'
+  const durationTooltip = provider === 'muse'
+    ? t('通过提示词请求 {durations} 秒，实际成片时长以 Muse 输出为准。', { durations: allowedDurations?.join(' / ') ?? '' })
+    : apimartCapability?.durationMode === 'without-video'
     ? t('仅支持 4 / 6 / 8 / 10 秒。使用参考视频时，此时长设置不生效，由模型决定输出时长。')
     : allowedDurations
     ? t('该模型仅支持 {durations} 秒。', { durations: allowedDurations.join(' / ') })
@@ -830,14 +834,14 @@ ${t('该模型：{limits}（连线带入的素材一并计数）。', { limits: 
                       <div key={item.id} className="rh-video-frame-row">
                         <ViewportImage className="rh-video-frame-thumb" src={getReferencePreviewUrl(item)} alt={item.label || t('参考帧')} title={item.label} loading="lazy" />
                         <div className="img-rp-quality-segmented rh-video-frame-seg">
-                          {FRAME_ROLE_OPTIONS.map((option) => (
+                          {FRAME_ROLE_OPTIONS.filter((option) => provider !== 'muse' || option.value !== 'last_frame').map((option) => (
                             <AnimatedButton
                               key={option.value}
                               type="button"
                               className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${item.role === option.value ? 'active' : ''}`}
                               onClick={() => setFrameRole(item.id, option.value)}
                             >
-                              {t(option.label)}
+                              {t(provider === 'muse' && option.value === 'reference' ? '参考图' : option.label)}
                             </AnimatedButton>
                           ))}
                         </div>

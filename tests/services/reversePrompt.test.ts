@@ -9,6 +9,7 @@ import {
 } from '../../src/services/ai/reversePrompt';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { BaseNodeData } from '../../src/types';
+import { saveModelPreference } from '../../src/services/modelPreferenceService';
 
 const jsonResponse = (payload: unknown) => new Response(JSON.stringify(payload), {
   status: 200,
@@ -131,6 +132,19 @@ describe('reversePrompt', () => {
 });
 
 describe('resolveVisionTextModel', () => {
+  it('Muse 显式声明看图时保留用户偏好，不按名称误切到其它厂商', () => {
+    setupTextModelAndNode('ai-image');
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      providers: { ...state.config.providers, muse: { name: 'Muse', apiKey: '', catalogId: 'muse', selectedModels: [
+        { id: 'muse-chat', name: 'Muse 对话', category: 'text', provider: 'muse', inputModalities: ['text', 'image'] },
+      ] } },
+      generalModels: [...(state.config.generalModels ?? []), { id: 'vision-4o', name: '其它看图模型',
+        modelId: 'gpt-4o', category: 'text', providerConfigId: 'vision-provider' }],
+    } }));
+    saveModelPreference('ai-text', 'muse/muse-chat');
+    expect(resolveVisionTextModel()).toEqual({ model: 'muse/muse-chat', provider: 'muse' });
+  });
+
   it('偏好模型读不了图时，改挑已配置的视觉模型', () => {
     setupTextModelAndNode('ai-image');
     useAppStore.setState((state) => ({

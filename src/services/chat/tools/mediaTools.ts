@@ -2,6 +2,7 @@
  * 注册图片、视频和音频生成工具；媒体调用沿用项目默认值、统一运行时和固定 Policy 边界。
  */
 import { useAppStore } from '../../../store/useAppStore';
+import { isTauriEnv } from '../../fs/core';
 import { comfyBaseUrlFor } from '../../comfyServers';
 import { isRunningHubWorkflow, isCloudWorkflow, mediaProviderConfigId, workflowExecution } from '../../workflowExecutionService';
 import { AUTODL_H3_WORKFLOW, validateWorkflowApiManifest, resolveWorkflowApiInputValues } from '../../workflowApi/autodlWorkflowManifest';
@@ -610,6 +611,11 @@ export function registerMediaAgentTools(): Array<() => void> {
           } else if (option.provider === 'dreamina') {
             if (!store.config.dreaminaAuth?.loggedIn) {
               return { allowed: false, reason: '请先登录即梦账号' };
+            }
+          } else if (option.provider === 'muse') {
+            const connection = store.config.providers.muse;
+            if (!isTauriEnv() || !connection || (connection.catalogId && connection.catalogId !== 'muse')) {
+              return { allowed: false, reason: '请在桌面应用的设置中连接 Muse 并完成网页登录' };
             }
           } else if (!store.config.providers[mediaProviderConfigId(option.provider)]?.apiKey) {
             return { allowed: false, reason: `请先配置 ${option.provider} 的 API Key` };

@@ -16,6 +16,7 @@ import { CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../
 import { RUNNINGHUB_MODEL_MANIFEST, isLegacyRunningHubModel, getRunningHubModel, normalizeRunningHubModelId } from '../../../services/ai/providers/runninghubModelManifest';
 import { isRunningHubWorkflow, workflowExecution } from '../../../services/workflowExecutionService';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from '../../../services/ai/dreaminaModels';
+import { MUSE_MODEL_MANIFEST } from '../../../services/ai/museModels';
 import { APIMART_OMNI_MODELS, APIMART_UPDATED_VIDEO_MODELS, isLegacyApimartOmni, replaceLegacyApimartOmni } from '../../../services/ai/apimartVideoModels';
 import { GRSAI_ADDED_MODELS } from '../../../services/ai/grsaiModels';
 import { resolveAudioParameterCapability } from '../../../services/ai/mediaModelCapabilities';
@@ -781,6 +782,17 @@ export const defaultModelGroups: ModelGroup[] = [
     ],
   },
 
+  {
+    id: 'muse', name: 'Muse', description: '网页登录，文本与看图对话、图片和视频生成',
+    iconType: 'badge', badgeText: 'MU',
+    models: MUSE_MODEL_MANIFEST.map((model) => ({
+      value: `muse/${model.id}`, provider: 'muse', label: model.name,
+      inputModalities: model.inputModalities,
+      description: model.description, iconType: 'badge' as const, badgeText: 'MU',
+      nodeTypes: CATEGORY_TO_NODE_TYPES[model.category],
+    })),
+  },
+
   // --- RunningHUB 模型 ---
   {
     id: 'runninghub',
@@ -992,7 +1004,7 @@ export function getConfiguredModelGroups(
     const provider = config.providers[providerConfigId];
     const dreaminaLegacyConnection = group.id === 'dreamina' && !!config.dreaminaAuth?.loggedIn;
     if (!provider && !dreaminaLegacyConnection) return [];
-    if (group.id !== 'dreamina' && !provider?.apiKey) return [];
+    if (group.id !== 'dreamina' && group.id !== 'muse' && !provider?.apiKey) return [];
     if (provider && !isProviderCategoryVisible(config, providerConfigId, category)) return [];
 
     const modelProvider = group.models[0]?.provider || group.id;

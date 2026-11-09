@@ -11,6 +11,7 @@ vi.mock('../../../src/services/chat/tools', () => ({ ensureAgentToolsRegistered:
 
 vi.mock('../../../src/services/ai/assistantStream', () => ({
   streamAssistantReply: streamAssistantReplyMock,
+  resolveAssistantModel: () => ({ supportsTools: true }),
 }));
 
 vi.mock('../../../src/services/chat/contextManager', () => ({

@@ -264,7 +264,7 @@ export interface PendingTask {
   nodeType: NodeType;
   provider: string;
   taskId: string;
-  taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'comfyui' | 'general' | 'custom-protocol' | 'volcengine' | 'runninghub' | 'runninghub-workflow' | 'workflow-api' | 'runninghub-model';
+  taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'muse' | 'comfyui' | 'general' | 'custom-protocol' | 'volcengine' | 'runninghub' | 'runninghub-workflow' | 'workflow-api' | 'runninghub-model';
   runninghubModelId?: string;
   runninghubSubmissionUncertain?: boolean;
   workflowApi?: import('../types/workflowApi').WorkflowApiTaskDescriptor;
@@ -332,6 +332,7 @@ export interface MediaTaskSnapshot extends Readonly<Pick<PendingTask,
   | 'mediaSubmissionUncertain' | 'expectedImageOutputs' | 'terminalFailure'>> {
   readonly mediaContext?: Readonly<Pick<MediaTaskContext, 'conversationId' | 'messageId' | 'editorTransition'>>;
   readonly imageOutputNodeIds?: readonly string[];
+  readonly taskType?: PendingTask['taskType'];
   readonly historyDownloadPending: boolean;
 }
 
@@ -340,7 +341,7 @@ export interface MediaTaskSnapshot extends Readonly<Pick<PendingTask,
 // ═══════════════════════════════════════════
 
 const STORAGE_KEY = 'ai_canvas_pending_tasks';
-const LEGACY_PENDING_TASK_TYPES = new Set(['apimart', 'apimart-flow-music', 'dreamina', 'comfyui', 'general', 'custom-protocol',
+const LEGACY_PENDING_TASK_TYPES = new Set(['apimart', 'apimart-flow-music', 'dreamina', 'muse', 'comfyui', 'general', 'custom-protocol',
   'volcengine', 'runninghub', 'runninghub-workflow', 'workflow-api', 'runninghub-model']);
 const UNSUPPORTED_PENDING_EXECUTION_FIELDS = ['version', 'schemaVersion', 'modelGeneration', 'expectedContext', 'executionContext',
   'projectScope', 'contextVersion', 'runtimeEpoch', 'projectEpoch', 'canvasEpoch'];
@@ -551,7 +552,13 @@ function isRecoverableMediaTask(task: PendingTask): boolean {
   if (task.taskType === 'comfyui') return task.comfyRecoveryState !== 'cancel_pending'
     && ((task.submitted && !!task.taskId) || task.mediaSubmissionUncertain === true || task.mediaRecoveryState === 'submit_unknown');
   return ['ai-image', 'ai-video', 'ai-audio', 'ai-panorama', 'ai-animation'].includes(task.nodeType)
-    && ['custom-protocol', 'general', 'apimart', 'apimart-flow-music', 'volcengine', 'dreamina'].includes(task.taskType);
+    && ['custom-protocol', 'general', 'apimart', 'apimart-flow-music', 'volcengine', 'dreamina', 'muse'].includes(task.taskType);
+}
+
+/** Muse 的本机耐久任务可仅读续查；有 ID 不表示已经点击发送。 */
+export function hasMuseQueryIdentity(task: { taskType?: string; taskId: string }): boolean {
+  return task.taskType === 'muse'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(task.taskId);
 }
 
 export function pauseMediaTask(receipt: MediaTaskReceipt, error?: unknown,
@@ -559,8 +566,9 @@ export function pauseMediaTask(receipt: MediaTaskReceipt, error?: unknown,
   if (runtime.stoppedProjectIds.has(receipt.projectId)) return undefined;
   const task = loadAll().find((item) => matchesReceipt(item, receipt));
   if (!task || task.terminalFailure || !isRecoverableMediaTask(task)) return undefined;
-  const unknown = task.mediaSubmissionUncertain || task.runninghubSubmissionUncertain || !task.submitted || !task.taskId || reason === 'submit_unknown';
-  const resolvedReason = unknown ? 'submit_unknown' : reason;
+  const unknown = !hasMuseQueryIdentity(task) && (task.mediaSubmissionUncertain || task.runninghubSubmissionUncertain
+    || !task.submitted || !task.taskId || reason === 'submit_unknown');
+  const resolvedReason = unknown ? 'submit_unknown' : reason === 'submit_unknown' ? 'query_interrupted' : reason;
   const deliveryPending = !unknown && (reason === 'delivery_pending'
     || reason === 'canvas_changed' && task.mediaRecoveryState === 'delivery_pending');
   const comfyQueryHttpStatus = !unknown && task.taskType === 'comfyui'
@@ -765,8 +773,8 @@ function isRecoverableVideoTask(task: PendingTask): boolean {
 
 export function canResumeMediaTask(task: PendingTask): boolean {
   return (isRecoverableMediaTask(task) || isRecoverableVideoTask(task))
-    && !task.terminalFailure && task.submitted && !!task.taskId && !task.mediaSubmissionUncertain
-    && task.mediaRecoveryState !== 'submit_unknown'
+    && !task.terminalFailure && (hasMuseQueryIdentity(task)
+      || task.submitted && !!task.taskId && !task.mediaSubmissionUncertain && task.mediaRecoveryState !== 'submit_unknown')
     && (videoResumePromises.has(task.nodeId) || !isMediaOperationActive(task.projectId, task.nodeId));
 }
 
@@ -1042,6 +1050,7 @@ function updateMediaTaskSnapshot(tasks: PendingTask[], serialized: string | null
     const view: MediaTaskSnapshot = {
       projectId: task.projectId, nodeId: task.nodeId, taskId: task.taskId, attemptId: task.attemptId,
       submitted: task.submitted, mediaRecoveryState: task.mediaRecoveryState,
+      taskType: task.taskType,
       mediaSubmissionUncertain: task.mediaSubmissionUncertain, expectedImageOutputs: task.expectedImageOutputs,
       ...(task.terminalFailure ? { terminalFailure: true as const } : {}),
       ...(task.mediaContext ? { mediaContext: Object.freeze({ conversationId: task.mediaContext.conversationId,
@@ -1116,7 +1125,7 @@ export function readPendingMediaTaskViews(projectIds: readonly string[]): Pendin
       return { projectId: task.projectId, nodeId: task.nodeId, taskId: task.taskId,
         provider: types.has(task.provider) || task.provider === 'runninghubwf' ? task.provider : 'unknown', category: task.nodeType,
         stage: task.mediaRecoveryState ?? task.videoRecoveryState ?? task.runninghubRecoveryState
-          ?? (!task.submitted || !task.taskId ? 'submit_unknown' : 'querying'),
+          ?? (hasMuseQueryIdentity(task) ? 'query_paused' : !task.submitted || !task.taskId ? 'submit_unknown' : 'querying'),
         ...(validId(task.mediaContext?.messageId) ? { messageId: task.mediaContext.messageId } : {}),
         ...(validId(task.mediaContext?.conversationId) ? { conversationId: task.mediaContext.conversationId } : {}),
         canResume: Boolean(canResumeMediaTask(task)) };
@@ -1174,7 +1183,7 @@ export function savePendingTask(task: PendingTask): MediaTaskReceipt {
     { nativeView?: { canvasId?: string | null } } | undefined;
   const nativeTarget = projectContext?.kind === 'canvas' && projectContext.modelGeneration > 0
     && projectContext.canvasId === task.projectId || target?.nativeView?.canvasId === task.projectId;
-  const knownAsync = ['apimart', 'apimart-flow-music', 'dreamina', 'volcengine',
+  const knownAsync = ['apimart', 'apimart-flow-music', 'dreamina', 'muse', 'volcengine',
     'runninghub-workflow', 'runninghub-model'].includes(task.taskType)
     || task.taskType === 'workflow-api' && task.workflowApi?.manifest?.protocol.mode !== 'sync'
     || task.taskType === 'custom-protocol' && task.provider === 'grsai';
@@ -1854,6 +1863,35 @@ async function resumeDreamina(task: PendingTask, parentSignal?: AbortSignal): Pr
     completeMediaNodeTask(receiptForTask(task));
   } catch (err) {
     await handleResumeError(task, err, signal);
+  } finally {
+    cleanupNodePolling(nodeId, signal);
+    query.complete();
+  }
+}
+
+/* ── Muse ── */
+
+async function resumeMuse(task: PendingTask, parentSignal?: AbortSignal): Promise<void> {
+  const { nodeId, taskId } = task;
+  const node = useAppStore.getState().nodes.find((item) => item.id === nodeId);
+  const label = (node?.data as BaseNodeData | undefined)?.label || '';
+  const signal = registerNodePolling(nodeId, parentSignal);
+  const query = guardVideoTaskQuery(task, signal);
+  try {
+    if (!query.isCurrent()) throw new CanvasResultStaleError();
+    const { queryMuseTask } = await import('./museService');
+    signal.throwIfAborted();
+    const url = await queryMuseTask(taskId, task.nodeType === 'ai-video' ? 'video' : 'image', signal);
+    // 原任务确实返回成品，才能补记送达；prepared/ready/unknown 不会走到这里。
+    updatePendingTask(nodeId, { submitted: true, mediaSubmissionUncertain: false }, taskId, task.attemptId);
+    // 原生私有产物可按原任务重取；不把媒体 Data URL 写入恢复队列。
+    markMediaTaskDeliveryPending(task, signal);
+    if (await deliverMediaMessageResult(task, [url], signal)) return;
+    await applyNodeResult(nodeId, url, label, query.isCurrent, undefined, task.videoGeneration, undefined, signal);
+    signal.throwIfAborted();
+    completeMediaNodeTask(receiptForTask(task));
+  } catch (error) {
+    await handleResumeError(task, error, signal);
   } finally {
     cleanupNodePolling(nodeId, signal);
     query.complete();
@@ -2540,6 +2578,7 @@ const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask, signal?: A
   apimart: resumeApimart,
   'apimart-flow-music': resumeApimartFlowMusic,
   dreamina: resumeDreamina,
+  muse: resumeMuse,
   comfyui: resumeComfyUI,
   general: resumeGeneral,
   'custom-protocol': resumeCustomProtocol,
@@ -2559,14 +2598,14 @@ export async function readVideoEditorTransitionTaskResult(receipt: MediaTaskRece
   if (!task?.mediaContext?.editorTransition || task.nodeType !== 'ai-video'
     || useAppStore.getState().currentProjectId !== receipt.projectId) throw new Error('原转场任务已变化，请返回所属画布后取回');
   if (task.terminalFailure) throw new Error(CONFIRMED_MEDIA_FAILURE_MESSAGE);
-  if (!task.submitted || !task.taskId || task.mediaSubmissionUncertain || task.runninghubSubmissionUncertain
-    || task.mediaRecoveryState === 'submit_unknown') throw new MediaTaskPausedError(receipt, 'submit_unknown');
+  if (!hasMuseQueryIdentity(task) && (!task.submitted || !task.taskId || task.mediaSubmissionUncertain || task.runninghubSubmissionUncertain
+    || task.mediaRecoveryState === 'submit_unknown')) throw new MediaTaskPausedError(receipt, 'submit_unknown');
   if (isMediaOperationActive(task.projectId, task.nodeId) || abortControllers.has(task.nodeId)
     || runtime.editorTransitionResultSinks.has(task.nodeId)) throw new Error('原转场任务仍在处理，请稍后取回');
   const cached = sanitizeMediaResultUrls(task.resultUrls);
   const canRefreshRemote = task.taskType === 'custom-protocol'
     ? !!task.protocolPoll || !!task.protocolPolls?.length
-    : ['volcengine', 'general', 'apimart', 'dreamina', 'runninghub-model'].includes(task.taskType);
+    : ['volcengine', 'general', 'apimart', 'dreamina', 'muse', 'runninghub-model'].includes(task.taskType);
   // 用户明确取回时刷新原远端查询，避免签名 URL 过期后永远重复同一失效下载。
   // 没有远端查询合同的同步结果只能继续原文件或原 URL，不能以重生来冒充恢复。
   if (cached?.[0] && !canRefreshRemote) return { url: cached[0], mediaDownloadAccess: task.mediaDownloadAccess };
@@ -2663,7 +2702,7 @@ export function resumeMediaNodeTask(nodeId: string, externalSignal?: AbortSignal
     return Promise.reject(new Error('没有可恢复的生成任务'));
   }
   if (task.terminalFailure) return Promise.reject(new Error(CONFIRMED_MEDIA_FAILURE_MESSAGE));
-  if (!task.submitted || !task.taskId || task.mediaSubmissionUncertain || task.mediaRecoveryState === 'submit_unknown') {
+  if (!hasMuseQueryIdentity(task) && (!task.submitted || !task.taskId || task.mediaSubmissionUncertain || task.mediaRecoveryState === 'submit_unknown')) {
     return Promise.reject(new MediaTaskPausedError(receiptForTask(task), 'submit_unknown'));
   }
   if (isMediaOperationActive(task.projectId, nodeId)) {

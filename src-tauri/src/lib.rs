@@ -43,6 +43,8 @@ mod comfyui;
 mod director_desk_runtime;
 #[path = "media/dreamina.rs"]
 mod dreamina;
+#[path = "media/muse.rs"]
+mod muse;
 #[path = "files/transfer.rs"]
 mod file_transfer;
 #[path = "files/native_project_media.rs"]
@@ -1947,6 +1949,16 @@ pub fn run() {
             dreamina::dreamina_status,
             dreamina::dreamina_generate,
             dreamina::dreamina_query_result,
+            muse::muse_login_open,
+            muse::muse_auth_status,
+            muse::muse_logout,
+            muse::muse_prepare,
+            muse::muse_submit,
+            muse::muse_send,
+            muse::muse_cancel_prepared,
+            muse::muse_release,
+            muse::muse_query,
+            muse::muse_task_open,
             open_chat_window,
             close_chat_window,
             set_chat_window_locked,

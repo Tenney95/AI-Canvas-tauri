@@ -146,6 +146,7 @@ export default function ProviderConnectionDialog({
     () => resolveChatApiProtocol(initialConfig?.chatApiProtocol),
   );
   const [genericApiKey, setGenericApiKey] = useState(initialConfig?.apiKey || '');
+  const [museLoggedIn, setMuseLoggedIn] = useState(false);
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [imageHosting, setImageHosting] = useState(initialConfig?.imageHosting);
   const [imageHostingApiKey, setImageHostingApiKey] = useState('');
@@ -294,6 +295,7 @@ export default function ProviderConnectionDialog({
     if (!definition) return true;
     if (definition.kind === 'workflow-api') return !baseUrl.trim();
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
+    if (definition.authType === 'browser-session') return !museLoggedIn;
     if (definition.id === 'runninghub-model') return activeRunningHubSite
       ? !Object.values(siteKeys).some((keys) => keys.modelKey.trim() || keys.workflowKey.trim())
       : !apiKey.trim() && !workflowApiKey.trim();
@@ -301,7 +303,7 @@ export default function ProviderConnectionDialog({
     return definition.credentials.some(
       (field) => field.required && field.key === 'baseUrl' && !baseUrl.trim(),
     );
-  }, [apiKey, baseUrl, definition, dreaminaLoggedIn, workflowApiKey, activeRunningHubSite, siteKeys]);
+  }, [apiKey, baseUrl, definition, dreaminaLoggedIn, museLoggedIn, workflowApiKey, activeRunningHubSite, siteKeys]);
   const workflowOnlyConnection = definition?.id === 'runninghub-model' && !apiKey.trim();
 
   const hasConnectionChanges = () => definition?.id === 'custom-openai'
@@ -802,7 +804,7 @@ export default function ProviderConnectionDialog({
         {
           ...(definition.id === 'relayonapi' ? initialConfig : {}),
           name: connectionName.trim() || definition.name,
-          apiKey: definition.authType === 'oauth' ? '' : apiKey.trim(),
+          apiKey: definition.authType === 'api-key' ? apiKey.trim() : '',
           baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl, true) : normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
           catalogId: definition.id,
           ...(definition.id === 'custom-openai' ? { chatApiProtocol, imageHosting: savedImageHosting } : {}),
@@ -896,6 +898,7 @@ export default function ProviderConnectionDialog({
               dreaminaLoggedIn={dreaminaLoggedIn}
               dreaminaLoading={dreaminaLoading}
               onDreaminaLogin={onDreaminaLogin}
+              onMuseLoggedInChange={setMuseLoggedIn}
               duplicateConnectionName={duplicateConnectionName}
               catalogStatus={catalogStatus}
               catalogMessage={catalogMessage}

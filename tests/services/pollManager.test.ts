@@ -636,6 +636,20 @@ describe('polling runtime hot reload identity', () => {
 });
 
 describe('pending generation task recovery', () => {
+  it('retains a prepared Muse UUID for query-only recovery without claiming it was sent', () => {
+    const task: PendingTask = { nodeId: 'muse-node', projectId: 'project-1', nodeType: 'ai-image',
+      provider: 'muse', providerConfigId: 'muse', taskId: 'ac655c56-b537-4c04-8913-fd150fc0e92a', taskType: 'muse',
+      submitted: false, mediaSubmissionUncertain: true, mediaRecoveryState: 'submit_unknown' };
+    const receipt = savePendingTask(task);
+    pauseMediaTask(receipt, undefined, 'submit_unknown');
+    const retained = getPendingTasksForProject('project-1')[0];
+    expect(retained).toMatchObject({ taskId: task.taskId, submitted: false, mediaRecoveryState: 'query_paused' });
+    expect(canResumeMediaTask(retained)).toBe(true);
+    expect(canResumeMediaTask({ ...retained, taskId: '' })).toBe(false);
+    expect(canResumeMediaTask({ ...retained, taskId: 'invalid-task' })).toBe(false);
+    expect(canResumeMediaTask({ ...retained, taskType: 'custom-protocol', provider: 'general' })).toBe(false);
+  });
+
   it('clears confirmed failures by exact receipt without clearing a newer attempt', () => {
     useAppStore.setState({ nodes: [{ id: 'rejected', type: 'ai-image', position: { x: 0, y: 0 },
       data: { type: 'ai-image', label: '图片', status: 'loading', mediaTaskState: 'submit_unknown' } }] });

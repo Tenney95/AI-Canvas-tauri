@@ -10,6 +10,7 @@ import type { AudioModelCapability, ImageModelCapability, ModelExecutionProfile 
 import type { AppConfig } from '../../types';
 import { getRunningHubModel } from './providers/runninghubModelManifest';
 import { getGrsaiImageCapability } from './grsaiModels';
+import { MUSE_IMAGE_CAPABILITY, MUSE_IMAGE_MODEL } from './museModels';
 import { getProviderDefinition } from './providerCatalogService';
 import { isCccBananaModelId } from './cccProviderGroups';
 import { modelProtocolUsesVariable } from './modelProtocol';
@@ -536,6 +537,9 @@ function normalizeImageModelId(model: string): string {
 }
 
 export function getImageCapability(model?: string): ImageCapability | undefined {
+  if (model === `muse/${MUSE_IMAGE_MODEL}`) {
+    return { ...MUSE_IMAGE_CAPABILITY, modelId: MUSE_IMAGE_MODEL, resolutionStyle: 'none' };
+  }
   if (model?.startsWith('grsai/')) {
     const capability = getGrsaiImageCapability(model);
     if (capability) return { ...capability, modelId: model.slice('grsai/'.length), resolutionStyle: 'none' };

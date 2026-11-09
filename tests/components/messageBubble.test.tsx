@@ -36,6 +36,8 @@ vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: { currentProjectId: string | null }) => unknown) =>
   selector({ currentProjectId: mocks.projectId }) }));
 vi.mock('../../src/services/pollManager', () => ({
+  hasMuseQueryIdentity: (task: { taskType?: string; taskId: string }) => task.taskType === 'muse'
+    && task.taskId === 'ac655c56-b537-4c04-8913-fd150fc0e92a',
   initializeMediaTaskSnapshot: mocks.initialize, hasPendingMessageMediaTask: mocks.hasTask, subscribeMediaTasks: mocks.subscribe,
 }));
 vi.mock('../../src/services/ai/generationRuntime', () => ({ getRecoverableMessageTaskSnapshot: mocks.snapshot }));
@@ -79,6 +81,15 @@ beforeEach(() => {
 afterEach(() => { mocks.cleanup?.(); });
 
 describe('message media recovery subscription', () => {
+  it('offers query-only recovery for a durable Muse task even without send acknowledgment', () => {
+    mocks.recovery = { projectId: 'project-1', nodeId: 'tracking-node', taskId: 'ac655c56-b537-4c04-8913-fd150fc0e92a',
+      taskType: 'muse', attemptId: 'original-attempt', submitted: false, mediaSubmissionUncertain: true,
+      mediaRecoveryState: 'submit_unknown', historyDownloadPending: false };
+    const html = render({ ...message, mediaStatus: 'submit_unknown' });
+    expect(html).toContain('继续查询 / 保存');
+    expect(retry).not.toHaveBeenCalled();
+  });
+
   it('offers branching only at completed assistant messages', () => {
     const branch = vi.fn(async () => undefined);
     mocks.stateIndex = 0;

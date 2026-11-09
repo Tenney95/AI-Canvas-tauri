@@ -49,7 +49,7 @@ export function resolveVideoSubmissionControls(
   options: ResolveVideoSubmissionControlOptions,
 ): VideoSubmissionControlParams {
   const directGeneralProtocol = options.provider === 'general' && !options.workflowId;
-  if (directGeneralProtocol || options.provider === 'workflow-api') {
+  if (directGeneralProtocol || options.provider === 'workflow-api' || options.provider === 'muse') {
     return {
       videoResolution: options.videoResolution,
       videoFps: options.videoFps,

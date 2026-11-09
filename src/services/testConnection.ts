@@ -8,6 +8,7 @@ import { getProviderDefinition } from './ai/providerCatalogService';
 import { baseUrlCandidates, normalizeBaseUrl } from './ai/providerBaseUrl';
 import { getChatApiHeaders, resolveChatApiProtocol } from './ai/chatApiProtocol';
 import { invoke } from '@tauri-apps/api/core';
+import { isTauriEnv } from './fs/core';
 import { assertMinimaxResponse, resolveMinimaxBaseUrl } from './ai/providers/minimaxModelManifest';
 
 export interface TestResult {
@@ -342,6 +343,15 @@ export async function testProviderConnection(
   baseUrl?: string,
   chatApiProtocol?: ChatApiProtocol,
 ): Promise<TestResult> {
+  if (provider === 'muse') {
+    if (!isTauriEnv()) return { success: false, unsupported: true, error: 'Muse 登录仅在桌面应用中可用' };
+    try {
+      const status = await invoke<{ loggedIn: boolean }>('muse_auth_status');
+      return status.loggedIn ? { success: true } : { success: false, error: '请先在 Muse 官网窗口完成登录' };
+    } catch {
+      return { success: false, error: '无法读取 Muse 登录状态，请重试' };
+    }
+  }
   if (!apiKey && getProviderDefinition(provider)?.kind !== 'workflow-api') return { success: false, error: '请先填写 API 密钥' };
   const fn = testFns[provider as ProviderTestKey];
   try {

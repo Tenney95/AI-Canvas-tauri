@@ -46,7 +46,7 @@ import type { ChatMessage } from '../../types/chat';
 import type { MediaDownloadAccess, MediaTaskReceipt } from '../../types/aiTypes';
 import { tagGeneratedProjectAssetSafely } from '../fs/generatedAssetTags';
 import {
-  bindMediaTaskContext, completeMediaNodeTask, getMediaTaskReceipt, getMediaTaskSnapshot, getPendingTasksForProject, pauseMediaTask,
+  bindMediaTaskContext, completeMediaNodeTask, getMediaTaskReceipt, getMediaTaskSnapshot, getPendingTasksForProject, hasMuseQueryIdentity, pauseMediaTask,
   registerMediaMessageRecoveryHandler, registerMediaNodeOperation, resumeMediaNodeTask,
   updatePendingTask,
   type MediaTaskSnapshot, type PendingTask,
@@ -175,6 +175,9 @@ export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedM
 
   if (option.provider === 'dreamina') {
     if (!config.dreaminaAuth?.loggedIn) throw new Error('请先登录即梦账号');
+  } else if (option.provider === 'muse') {
+    if (!isTauriEnv()) throw new Error('Muse 图片和视频生成仅在 Tauri 桌面端可用');
+    if (!config.providers.muse) throw new Error('请先在 API Key 设置中添加并登录 Muse');
   } else if (!config.providers[mediaProviderConfigId(option.provider)]?.apiKey) {
     throw new Error(`请先配置 ${option.provider} 的 API Key`);
   }
@@ -685,7 +688,7 @@ export function getRecoverableMessageTask(messageId: string, projectId?: string 
 export async function retryMediaMessageTask(messageId: string): Promise<void> {
   const task = getRecoverableMessageTask(messageId);
   if (!task) throw new Error('未找到该消息的待恢复任务');
-  if (!task.taskId || !task.submitted) throw new Error('提交状态未知，请先到对应平台核对任务，避免重复生成');
+  if (!hasMuseQueryIdentity(task) && (!task.taskId || !task.submitted)) throw new Error('提交状态未知，请先到对应平台核对任务，避免重复生成');
   ensureMediaMessageRecoveryHandler();
   try {
     await resumeMediaNodeTask(task.nodeId);

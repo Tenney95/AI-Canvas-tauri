@@ -4,6 +4,7 @@ import type { NumericInputConstraint, VideoModelCapability, VideoParameterCapabi
 import { getApimartSeedanceCapability, type ApimartSeedanceCapability } from './apimartVideoModels';
 import { getVolcengineSeedanceCapability } from './volcengineVideoModels';
 import { getDreaminaVideoCapability } from './dreaminaModels';
+import { MUSE_VIDEO_CAPABILITY, MUSE_VIDEO_MODEL } from './museModels';
 import { getGrsaiVideoCapability } from './grsaiModels';
 import { getModelProtocolPresetVideoCapability } from './modelProtocolPresets';
 import { SORA2U_MODEL_MANIFEST, withSora2uReferenceLimits } from './providers/sora2uModelManifest';
@@ -133,6 +134,8 @@ export function resolveVideoModelCapability(
         maxAudioReferences: native.maxAudioReferences,
       };
     }
+  } else if (provider === 'muse' && rawId === MUSE_VIDEO_MODEL) {
+    capability = MUSE_VIDEO_CAPABILITY;
   } else if (provider === 'grsai') {
     capability = getGrsaiVideoCapability(rawId, resolution);
   }

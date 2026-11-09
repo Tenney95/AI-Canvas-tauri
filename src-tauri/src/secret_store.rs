@@ -121,7 +121,7 @@ fn validate_key(key: &str) -> Result<(), String> {
 fn validate_renderer_key(key: &str) -> Result<(), SecretError> {
     validate_key(key).map_err(|_| SecretError::new("invalid_data"))?;
     // Object storage signing is native-only, including callers that know the connection ID.
-    if key.starts_with("object-storage/") {
+    if key.starts_with("object-storage/") || key.starts_with("muse/") {
         return Err(SecretError::new("permission_denied"));
     }
     Ok(())
@@ -276,7 +276,7 @@ pub(crate) fn read_internal_secret_sync(app: &AppHandle, key: &str) -> Result<Op
 /// Only native connection catalogs call these while holding their own revision lock.
 pub(crate) fn set_internal_secret_sync(app: &AppHandle, key: &str, value: &str) -> Result<(), SecretError> {
     validate_key(key).map_err(|_| SecretError::new("invalid_data"))?;
-    if !key.starts_with("object-storage/") || value.is_empty() || value.len() > MAX_SECRET_BYTES {
+    if !(key.starts_with("object-storage/") || key == "muse/session") || value.is_empty() || value.len() > MAX_SECRET_BYTES {
         return Err(SecretError::new("invalid_data"));
     }
     let file = secret_file(app).map_err(|_| SecretError::new("unavailable"))?;
@@ -285,7 +285,7 @@ pub(crate) fn set_internal_secret_sync(app: &AppHandle, key: &str, value: &str) 
 
 pub(crate) fn delete_internal_secret_sync(app: &AppHandle, key: &str) -> Result<(), SecretError> {
     validate_key(key).map_err(|_| SecretError::new("invalid_data"))?;
-    if !key.starts_with("object-storage/") { return Err(SecretError::new("invalid_data")); }
+    if !(key.starts_with("object-storage/") || key == "muse/session") { return Err(SecretError::new("invalid_data")); }
     let file = secret_file(app).map_err(|_| SecretError::new("unavailable"))?;
     delete_entry(&file, key, None)
 }

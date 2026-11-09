@@ -1,8 +1,8 @@
 /**
  * assistantStream — 助手模型流式请求服务
  *
- * 封装对 OpenAI-compatible Chat Completions API 的流式调用，
- * 使用 streamParsers 解析 SSE 事件流。
+ * 封装兼容 API 与 Muse 原生网页问答；HTTP 使用 streamParsers 解析事件流，
+ * 网页累计文本快照转换为相同的增量事件。
  *
  * 前端通过 ChatPanel → assistantService → assistantStream 调用，
  * 流事件驱动消息状态更新。
@@ -32,6 +32,7 @@ import { getAssistantTextModelCandidates } from '../projectSettingsService';
 import { isGeneralAssistantScope } from '../chat/assistantScope';
 import { prepareAssistantVisualMessages } from '../chat/assistantVisualContext';
 import { buildChatApiRequest, resolveChatApiProtocol, resolveNativeTextChatProtocol } from './chatApiProtocol';
+import { MUSE_BASE_URL, MUSE_TEXT_MODEL } from './museModels';
 
 // ============================================
 // Config resolution
@@ -46,6 +47,9 @@ interface ResolvedModelConfig {
   chatApiProtocol: ChatApiProtocol;
   usesChatApiProtocol: boolean;
   supportsVision: boolean;
+  /** 网页问答没有原生 function calling；省略时沿用既有模型工具能力。 */
+  supportsTools?: boolean;
+  transport?: 'muse-webview';
 }
 
 /**
@@ -107,6 +111,22 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
     .find((model) => model.value === assistantModelId);
   if (!builtInModel) return null;
   const provider = config.providers[builtInModel.provider];
+  if (builtInModel.provider === 'muse') {
+    if (!provider || (provider.catalogId ?? 'muse') !== 'muse'
+      || extractModelName(builtInModel.value, 'muse') !== MUSE_TEXT_MODEL) return null;
+    return {
+      selectionId: assistantModelId,
+      baseUrl: MUSE_BASE_URL,
+      apiKey: '',
+      modelName: MUSE_TEXT_MODEL,
+      protocol: getModelProtocolPreset('openai-chat'),
+      chatApiProtocol: 'openai-compatible',
+      usesChatApiProtocol: true,
+      supportsVision: builtInModel.inputModalities?.includes('image') ?? true,
+      supportsTools: false,
+      transport: 'muse-webview',
+    };
+  }
   const baseUrl = provider?.baseUrl || DEFAULT_BASE_URLS[builtInModel.provider] || '';
   if (!provider?.apiKey || !baseUrl) return null;
   const modelName = extractModelName(builtInModel.value, builtInModel.provider);
@@ -197,6 +217,7 @@ function buildAssistantTools(userMessage: string): AssistantToolDefinition[] {
   const mentionedModel = findMediaModelOption(mentionedModelId, config.generalModels ?? [], config);
   if (!mentionedModel) return [];
   const providerAvailable = mentionedModel.provider === 'general'
+    || mentionedModel.provider === 'muse' && !!config.providers.muse
     || (mentionedModel.provider === 'dreamina'
       ? !!config.dreaminaAuth?.loggedIn
       : !!config.providers[mentionedModel.provider]?.apiKey);
@@ -296,6 +317,9 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
 
   try {
     controller.signal.throwIfAborted();
+    if (modelConfig.transport === 'muse-webview' && tools.length > 0) {
+      throw new Error('Muse 当前仅支持普通文本/图片问答，不支持工具调用；请选择支持工具的模型执行工具');
+    }
     const state = useAppStore.getState();
     const requestMessages = options.resolveVisualReferences === false ? messages : await prepareAssistantVisualMessages({
       messages,
@@ -303,6 +327,23 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
       supportsVision: modelConfig.supportsVision,
       signal: controller.signal,
     });
+    if (modelConfig.transport === 'muse-webview') {
+      const { streamMuseText } = await import('./museTextService');
+      controller.signal.throwIfAborted();
+      let emitted = '';
+      const emitSnapshot = (snapshot: string) => {
+        controller.signal.throwIfAborted();
+        if (!snapshot.startsWith(emitted)) throw new Error('Muse 回复文本发生改写，已保留当前片段，请在原网页核对完整回答');
+        const delta = snapshot.slice(emitted.length);
+        if (delta) { emitted = snapshot; onEvent({ type: 'text.delta', delta }); }
+      };
+      const result = await streamMuseText({ messages: requestMessages, signal: controller.signal,
+        onText: nonStream ? () => { controller.signal.throwIfAborted(); } : emitSnapshot });
+      controller.signal.throwIfAborted();
+      emitSnapshot(result);
+      onEvent({ type: 'done', finishReason: 'stop' });
+      return result;
+    }
     const builtRequest = modelConfig.usesChatApiProtocol
       ? buildChatApiRequest({
           protocol: modelConfig.chatApiProtocol,

@@ -4,7 +4,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useAppStore } from '../../../store/useAppStore';
-import { discardMediaTask, getPendingTasksForProject, resumeMediaNodeTask } from '../../../services/pollManager';
+import { discardMediaTask, getPendingTasksForProject, hasMuseQueryIdentity, resumeMediaNodeTask } from '../../../services/pollManager';
 import { COMFY_OUTPUT_UNAVAILABLE_MESSAGE, COMFY_TEXT_OUTPUT_UNAVAILABLE_MESSAGE, getComfyQueryAuthorizationMessage } from '../../../services/comfyPolling';
 import { useT } from '../../../i18n';
 import { GenerationWaitTime } from './NodeGenerationProgress';
@@ -23,7 +23,8 @@ function MediaTaskStatus({ nodeId, overlay = false, children }: { nodeId: string
     || item.mediaContext?.canvasNodeId === nodeId) : undefined;
   if (!task || loading || (!taskState && !videoPaused)) return null;
 
-  const canQuery = task.submitted && !!task.taskId && !task.mediaSubmissionUncertain && task.mediaRecoveryState !== 'submit_unknown';
+  const canQuery = hasMuseQueryIdentity(task)
+    || task.submitted && !!task.taskId && !task.mediaSubmissionUncertain && task.mediaRecoveryState !== 'submit_unknown';
   const deliveryPending = taskState === 'delivery_pending' || task.mediaRecoveryState === 'delivery_pending';
   const authorizationMessage = getComfyQueryAuthorizationMessage(task.comfyQueryHttpStatus);
   const message = !canQuery

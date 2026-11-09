@@ -12,6 +12,7 @@ import type {
 import { apimartMediaProviderAdapter } from './providers/apimartMedia';
 import { runninghubMediaProviderAdapter } from './providers/runninghubMedia';
 import { grsaiMediaProviderAdapter } from './providers/grsaiMedia';
+import { museMediaProviderAdapter } from './providers/museMedia';
 
 export type MediaProviderCapability = 'image' | 'video' | 'audio';
 
@@ -48,7 +49,7 @@ export interface MediaProviderAdapter {
   providerId: string;
   capabilities: readonly MediaProviderCapability[];
   generateImage?: (request: ImageProviderRequest) => Promise<BatchImageResult>;
-  generateVideo?: (request: VideoProviderRequest) => Promise<{ url: string; runninghubOutputs?: import('../../types/runninghub').RunningHubOutput[] }>;
+  generateVideo?: (request: VideoProviderRequest) => Promise<{ url: string; taskReceipt?: import('../../types/aiTypes').MediaTaskReceipt; runninghubOutputs?: import('../../types/runninghub').RunningHubOutput[] }>;
   generateAudio?: (request: AudioProviderRequest) => Promise<AudioGenerationResult>;
 }
 
@@ -128,4 +129,5 @@ export const mediaProviderRegistry = new MediaProviderRegistry([
   apimartMediaProviderAdapter,
   runninghubMediaProviderAdapter,
   grsaiMediaProviderAdapter,
+  museMediaProviderAdapter,
 ]);

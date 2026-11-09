@@ -10,12 +10,16 @@ import { executeRegisteredAgentToolCall } from '../../../src/services/chat/agent
 import { MCP_GLOBAL_TOOL_NAMES, MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID, MCP_SETTINGS_TOOL_NAMES } from '../../../src/services/mcp/mcpSettingsScope';
 
 const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
+const resolveAssistantModelMock = vi.hoisted(() => vi.fn<
+  (projectId?: string | null, modelId?: string) => { supportsTools?: boolean } | null
+>(() => ({ supportsTools: true })));
 const executeGenerationMock = vi.hoisted(() => vi.fn(async () => ({ success: true })));
 
 vi.mock('../../../src/services/generationService', () => ({ executeGeneration: executeGenerationMock }));
 
 vi.mock('../../../src/services/ai/assistantStream', () => ({
   streamAssistantReply: streamAssistantReplyMock,
+  resolveAssistantModel: resolveAssistantModelMock,
 }));
 
 vi.mock('../../../src/services/chat/contextManager', () => ({
@@ -156,6 +160,7 @@ beforeEach(() => {
     agentTasks: [createTask()],
   });
   streamAssistantReplyMock.mockReset();
+  resolveAssistantModelMock.mockReset().mockReturnValue({ supportsTools: true });
   executeGenerationMock.mockClear();
 });
 
@@ -314,6 +319,37 @@ function runRound(
     waitForApproval,
   });
 }
+
+it.each(['plan', 'collaborative', 'autonomous'] as const)('Muse %s rounds complete ordinary answers with no offered or executed tools', async (mode) => {
+  const actualStream = await vi.importActual<typeof import('../../../src/services/ai/assistantStream')>(
+    '../../../src/services/ai/assistantStream',
+  );
+  resolveAssistantModelMock.mockImplementation(actualStream.resolveAssistantModel);
+  useAppStore.setState((state) => ({ config: { ...state.config, assistantModelId: 'muse/muse-chat',
+    generalModels: [], providers: { muse: { name: 'Muse', apiKey: '', catalogId: 'muse', selectedModels: [
+      { id: 'muse-chat', name: 'Muse 问答', category: 'text', provider: 'muse', inputModalities: ['text', 'image'] },
+    ] } },
+  }, conversations: state.conversations.map((conversation) => ({ ...conversation, agentMode: mode })),
+  agentTasks: state.agentTasks.map((task) => ({ ...task, mode })) }));
+  expect(actualStream.resolveAssistantModel('project-1')).toMatchObject({ supportsTools: false, transport: 'muse-webview' });
+  const execute = vi.fn(async () => ({ status: 'success' as const, summary: '读取完成', modelContent: '读取完成' }));
+  registerAgentTool({ id: 'muse_read_boundary', title: '读取', description: '读取', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  streamAssistantReplyMock.mockImplementation(async ({ tools, messages, onEvent }) => {
+    expect(tools).toEqual([]);
+    expect(messages).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'system',
+      content: expect.stringContaining('不能调用应用工具') })]));
+    onEvent({ type: 'text.delta', delta: '普通问答回复' });
+    onEvent({ type: 'done', finishReason: 'stop' });
+    return '普通问答回复';
+  });
+  const onComplete = vi.fn();
+  await expect(runRound(undefined, { onComplete })).resolves.toMatchObject({ outcome: 'completed', fullText: '普通问答回复' });
+  expect(onComplete).toHaveBeenCalledWith('普通问答回复');
+  expect(execute).not.toHaveBeenCalled();
+  expect(useAppStore.getState().agentTasks[0].toolCallCount).toBe(0);
+  expect(streamAssistantReplyMock).toHaveBeenCalledOnce();
+});
 
 function arrangeRead(beforeReturn: () => void) {
   registerAgentTool({

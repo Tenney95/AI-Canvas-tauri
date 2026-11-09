@@ -38,6 +38,33 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
   const { prompt: rawPrompt, model, provider } = params;
   const config = useAppStore.getState().config;
 
+  if (provider === 'muse') {
+    const { MUSE_TEXT_MODEL } = await import('./museModels');
+    if (!config.providers.muse || (config.providers.muse.catalogId ?? 'muse') !== 'muse'
+      || model.replace(/^muse\//, '') !== MUSE_TEXT_MODEL) throw new Error('请在 API Key 设置中启用 Muse 对话模型');
+    if (params.workflowId) throw new Error('Muse 文本模型不能作为本地工作流执行');
+    const source = useAppStore.getState(), sourceRevision = source.getCurrentRevision();
+    const sourceNode = source.nodes.find((node) => node.id === params.nodeId);
+    const assertCurrent = () => {
+      params.signal?.throwIfAborted();
+      if (!params.nodeId) return;
+      const current = useAppStore.getState();
+      if (current.currentProjectId !== source.currentProjectId || current.getCurrentRevision() !== sourceRevision
+        || !sourceNode || !current.nodes.some((node) => node.id === params.nodeId && node.data.type === sourceNode.data.type)) {
+        throw new Error('原文本节点或输入已变化，未继续发送 Muse 请求');
+      }
+    };
+    const media = await resolvePromptWithMediaRefs(rawPrompt);
+    assertCurrent();
+    const references = mergeMediaReferences(media.references, collectConnectedReferenceMedia(params.nodeId).references);
+    if (references.some((reference) => reference.kind !== 'image')) throw new Error('Muse 文本问答仅支持文本与图片，不支持视频或音频引用');
+    const images = [...new Set([...getMediaReferenceUrls(references, 'image', 'local'), ...(params.imageUrls ?? [])])];
+    const { streamMuseText } = await import('./museTextService');
+    return { text: await streamMuseText({ messages: [{ role: 'user', content: [
+      { type: 'text', text: media.prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+    ] }], signal: params.signal, assertCurrent }) };
+  }
+
   if (provider === 'comfyui' && (params.workflowId || !config.providers[provider])) {
     const sourceState = useAppStore.getState();
     const sourceRevision = sourceState.getCurrentRevision();

@@ -16,6 +16,7 @@ import { RELAYON_PROVIDER_GROUPS, relayonConnectionName, getRelayonGroupPresetMo
 import { capCatalogModels, createConnectionId, fetchProviderModelCatalog, getProviderDefinition, type ProviderDefinition } from '../../../services/ai/providerCatalogService';
 import { RELAYON_BASE_URL } from '../../../services/ai/providers/relayonModelManifest';
 import AnimatedButton from '../../shared/AnimatedButton';
+import MuseAccountControls from '../MuseAccountControls';
 import { PROVIDER_LINKS, openExternal, type CatalogStatus } from './providerConnectionShared';
 import { materializeLegacyImageProtocolDefault, mergeModels } from './providerConnectionModels';
 
@@ -345,6 +346,7 @@ interface ProviderConnectionFormProps {
   dreaminaLoggedIn: boolean;
   dreaminaLoading: boolean;
   onDreaminaLogin: () => void;
+  onMuseLoggedInChange?: (loggedIn: boolean) => void;
   duplicateConnectionName: string;
   catalogStatus: CatalogStatus;
   catalogMessage: string;
@@ -370,6 +372,7 @@ export default function ProviderConnectionForm({
   dreaminaLoggedIn,
   dreaminaLoading,
   onDreaminaLogin,
+  onMuseLoggedInChange,
   duplicateConnectionName,
   catalogStatus,
   catalogMessage,
@@ -447,7 +450,9 @@ export default function ProviderConnectionForm({
         </label>
       )}
 
-      {definition.authType === 'oauth' ? (
+      {definition.authType === 'browser-session' ? (
+        <MuseAccountControls onLoggedInChange={onMuseLoggedInChange} />
+      ) : definition.authType === 'oauth' ? (
         <div className="provider-oauth-row">
           <span className={`provider-connection-dot${dreaminaLoggedIn ? ' is-online' : ''}`} />
           <div>
@@ -550,7 +555,7 @@ export default function ProviderConnectionForm({
         </button>
       )}
 
-      {definition.authType !== 'oauth' && (
+      {definition.authType === 'api-key' && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <AnimatedButton
             type="button"

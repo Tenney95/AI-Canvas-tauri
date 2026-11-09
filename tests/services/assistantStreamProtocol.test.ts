@@ -6,6 +6,7 @@ import {
   buildAssistantSystemPrompt,
   resolveAssistantModel,
   streamAssistantReply,
+  type AssistantModelMessage,
 } from '../../src/services/ai/assistantStream';
 import { runAssistantPipeline, runStreamingPipeline } from '../../src/services/chat/assistantService';
 import { parseRules } from '../../src/services/chat/rulesEngine';
@@ -14,6 +15,12 @@ import { useAppStore } from '../../src/store/useAppStore';
 import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 import type { ChatApiProtocol, UserSkill } from '../../src/types';
 import { buildAssistantToolGuidance } from '../../src/services/chat/agentPromptGuidance';
+
+const museMocks = vi.hoisted(() => ({
+  streamMuseText: vi.fn<(input: { messages: AssistantModelMessage[]; signal?: AbortSignal;
+    onText: (snapshot: string) => void }) => Promise<string>>(),
+}));
+vi.mock('../../src/services/ai/museTextService', () => museMocks);
 
 const configureAssistant = (
   executionProfile?: ModelExecutionProfile,
@@ -47,7 +54,125 @@ const configureAssistant = (
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  museMocks.streamMuseText.mockReset();
   useAppStore.setState(useAppStore.getInitialState(), true);
+});
+
+describe('Muse assistant text transport', () => {
+  const configureMuse = () => useAppStore.setState((state) => ({ config: { ...state.config,
+    assistantModelId: 'muse/muse-chat', generalModels: [], providers: { muse: { name: 'Muse', apiKey: '', catalogId: 'muse',
+      selectedModels: [{ id: 'muse-chat', name: 'Muse 问答', category: 'text', provider: 'muse', inputModalities: ['text', 'image'] }] } },
+  } }));
+
+  it('resolves the explicit Muse model without an API key and declares no tool capability', () => {
+    configureMuse();
+    expect(resolveAssistantModel(undefined, 'muse/muse-chat')).toMatchObject({
+      modelName: 'muse-chat', apiKey: '', transport: 'muse-webview', supportsTools: false, supportsVision: true,
+    });
+    expect(resolveAssistantModel(undefined, 'muse/unavailable')).toBeNull();
+  });
+
+  it('routes complete snapshots to text deltas without OpenAI requests or fabricated tool events', async () => {
+    configureMuse();
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    museMocks.streamMuseText.mockImplementation(async ({ onText }) => {
+      onText('你'); onText('你好'); onText('你好'); return '你好！';
+    });
+    const onEvent = vi.fn();
+    await expect(streamAssistantReply({ systemPrompt: '系统', userMessage: '你好', tools: [],
+      modelId: 'muse/muse-chat', onEvent })).resolves.toBe('你好！');
+    expect(museMocks.streamMuseText.mock.calls[0][0].messages).toEqual([
+      { role: 'system', content: '系统' }, { role: 'user', content: '你好' },
+    ]);
+    expect(onEvent.mock.calls.map(([event]) => event).filter((event) => event.type === 'text.delta')).toEqual([
+      { type: 'text.delta', delta: '你' }, { type: 'text.delta', delta: '好' }, { type: 'text.delta', delta: '！' },
+    ]);
+    expect(onEvent).toHaveBeenCalledWith({ type: 'done', finishReason: 'stop' });
+    expect(onEvent.mock.calls.some(([event]) => event.type.startsWith('tool.'))).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('resolves explicit project image references before handing messages to the Muse service', async () => {
+    configureMuse();
+    useAppStore.setState({ currentProjectId: 'muse-project',
+      nodes: [{ id: 'muse-image', type: 'ai-image', position: { x: 0, y: 0 },
+        data: { type: 'ai-image', label: '参考图', imageUrl: 'data:image/png;base64,QUJDRA==' } }] });
+    museMocks.streamMuseText.mockResolvedValue('看到了图片');
+    await streamAssistantReply({ systemPrompt: '', userMessage: '分析 @{muse-image:参考图}', projectId: 'muse-project',
+      tools: [], onEvent: vi.fn() });
+    expect(museMocks.streamMuseText.mock.calls[0][0].messages).toEqual([{ role: 'user', content: [
+      { type: 'text', text: '分析 图片1' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJDRA==' } },
+    ] }]);
+  });
+
+  it('rejects nonempty tools before preparing visual references or creating a Muse task', async () => {
+    configureMuse();
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '读取 @asset{unavailable}', onEvent: vi.fn(),
+      tools: [{ type: 'function', function: { name: 'file_read_text', description: '读取', parameters: {} } }],
+    })).rejects.toThrow('不支持工具调用');
+    expect(museMocks.streamMuseText).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { messages: [{ role: 'tool', content: '已脱敏的历史工具摘要', tool_call_id: 'call-1' }] as AssistantModelMessage[] },
+    { messages: [{ role: 'assistant', content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'file_read_text', arguments: '{}' } }] }] as AssistantModelMessage[] },
+  ])('passes sanitized past tool history to the text service as background while defining no current tools', async ({ messages }) => {
+    configureMuse();
+    museMocks.streamMuseText.mockResolvedValue('继续回答');
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '', messages, tools: [], onEvent: vi.fn() }))
+      .resolves.toBe('继续回答');
+    expect(museMocks.streamMuseText.mock.calls[0][0].messages).toEqual(messages);
+  });
+
+  it('keeps streamed partial text on cancellation and never emits successful completion', async () => {
+    configureMuse(); const controller = new AbortController(); const onEvent = vi.fn();
+    museMocks.streamMuseText.mockImplementation(async ({ onText }) => {
+      onText('部分回复'); controller.abort(); onText('迟到的回复'); return '迟到的完整回复';
+    });
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '你好', tools: [], signal: controller.signal, onEvent }))
+      .rejects.toThrow('请求已取消');
+    expect(onEvent).toHaveBeenCalledWith({ type: 'text.delta', delta: '部分回复' });
+    expect(onEvent).toHaveBeenCalledWith({ type: 'done', finishReason: 'canceled' });
+    expect(onEvent).not.toHaveBeenCalledWith({ type: 'done', finishReason: 'stop' });
+    expect(JSON.stringify(onEvent.mock.calls)).not.toContain('迟到');
+    expect(useAppStore.getState().activeRequestAbort).toBeNull();
+  });
+
+  it('does not append a rewritten snapshot to the old partial response', async () => {
+    configureMuse(); const onEvent = vi.fn();
+    museMocks.streamMuseText.mockImplementation(async ({ onText }) => { onText('旧片段'); onText('改写片段'); return '改写片段'; });
+    await expect(streamAssistantReply({ systemPrompt: '', userMessage: '你好', tools: [], onEvent })).rejects.toThrow('发生改写');
+    expect(onEvent).toHaveBeenCalledWith({ type: 'text.delta', delta: '旧片段' });
+    expect(onEvent).not.toHaveBeenCalledWith({ type: 'text.delta', delta: '改写片段' });
+    expect(onEvent).not.toHaveBeenCalledWith({ type: 'done', finishReason: 'stop' });
+  });
+
+  it('keeps nonstream mode as one final text delta', async () => {
+    configureMuse(); const onEvent = vi.fn();
+    museMocks.streamMuseText.mockImplementation(async ({ onText }) => { onText('部分'); return '完整回复'; });
+    await streamAssistantReply({ systemPrompt: '', userMessage: '你好', tools: [], nonStream: true, onEvent });
+    expect(onEvent.mock.calls.map(([event]) => event).filter((event) => event.type === 'text.delta')).toEqual([
+      { type: 'text.delta', delta: '完整回复' },
+    ]);
+  });
+
+  it('lets a tool-capable assistant offer the explicitly mentioned Muse media model without a Muse API key', async () => {
+    configureAssistant();
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      muse: { name: 'Muse', apiKey: '', catalogId: 'muse', selectedModels: [
+        { id: 'muse-image', name: 'Muse 图片', category: 'image', provider: 'muse' },
+      ] },
+    } } }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [
+      { message: { content: '准备调用' }, finish_reason: 'stop' },
+    ] }), { headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await streamAssistantReply({ systemPrompt: '', userMessage: '生成 @model{muse/muse-image}', nonStream: true, onEvent: vi.fn() });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.tools[0].function.name).toBe('media_generate');
+    expect(body.tools[0].function.parameters.properties.modelRef.enum).toEqual(['muse/muse-image']);
+    expect(museMocks.streamMuseText).not.toHaveBeenCalled();
+  });
 });
 
 describe('assistant custom protocol boundary', () => {

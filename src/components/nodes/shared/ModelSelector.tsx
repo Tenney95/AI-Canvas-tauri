@@ -27,6 +27,7 @@ import { resolveAppearanceMode } from '../../../services/appearance/appearanceRu
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL, probeComfyServer } from '../../../services/comfyServers';
 import { getGenerationNodeType } from '../../../utils/nodeGeneration';
 import { getModelPreferenceType, saveModelPreference, saveWorkflowModelPreference } from '../../../services/modelPreferenceService';
+import { isTauriEnv } from '../../../services/fs/core';
 
 interface ModelSelectorProps {
   nodeType: NodeType;
@@ -139,6 +140,9 @@ export default function ModelSelector({
       }
       // 即梦：走 OAuth 登录，无 API Key，按登录态判定
       if (groupId === 'dreamina') return dreaminaLoggedIn;
+      // Muse 会话由原生保管；这里只确认桌面入口和连接，实际登录态在执行前复核。
+      if (groupId === 'muse') return isTauriEnv() && !!configProviders.muse
+        && (!configProviders.muse.catalogId || configProviders.muse.catalogId === 'muse');
       const providerKey = groupId === 'runninghubwf'
         ? 'runninghub'
         : groupId === 'runninghub'
@@ -361,7 +365,9 @@ export default function ModelSelector({
     description: group.description,
     icon: renderProviderBadge(group, undefined, 'small'),
     disabled: !isGroupAvailable(group.id),
-    disabledReason: isGroupAvailable(group.id) ? undefined : t('请先在设置中配置 {name} API Key', { name: group.name }),
+    disabledReason: isGroupAvailable(group.id) ? undefined : group.id === 'muse'
+      ? t('请在桌面应用的设置中连接 Muse 并完成网页登录')
+      : t('请先在设置中配置 {name} API Key', { name: group.name }),
     items: group.models.map((model) => ({ value: model.value, label: model.label, description: model.description })),
   }));
   if (onWorkflowSelect && visibleWorkflows.length > 0) {

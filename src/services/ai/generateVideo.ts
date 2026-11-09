@@ -693,8 +693,8 @@ export async function generateVideo(
       prompt,
       resolveReferenceInput: async () => {
         return resolveVideoReferenceInput(rawPrompt, params.nodeId, params.referenceMedia ?? [], {
-          target: provider === 'runninghub' ? 'local' : 'remote',
-          preserveDeclaredRoles: provider === 'runninghub',
+          target: provider === 'runninghub' || provider === 'muse' ? 'local' : 'remote',
+          preserveDeclaredRoles: provider === 'runninghub' || provider === 'muse',
           provider,
           apimartModel: provider === 'apimart' ? extractModelName(model, provider) : undefined,
         });

@@ -29,7 +29,7 @@ export function shouldListProviderConnection(
   authType: ProviderAuthType,
   runninghubWorkflowApiKey = '',
 ): boolean {
-  return authType === 'oauth'
+  return authType === 'oauth' || authType === 'browser-session'
     || !!config.apiKey.trim()
     || config.catalogId === 'custom-openai'
     || (config.catalogId === 'runninghub-model' && (!!runninghubWorkflowApiKey.trim() || config.runninghubSiteCredentials === true));

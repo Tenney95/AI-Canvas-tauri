@@ -198,6 +198,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       'runninghub-model',
       'grsai',
       'dreamina',
+      'muse',
       'web-search',
       'custom-openai',
     ];
@@ -687,6 +688,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       const providerConfig = useAppStore.getState().config.providers[connectionId];
       const definition = getProviderDefinition(connectionId, providerConfig);
       if (connectionId === 'dreamina') await handleDreaminaLogout();
+      if (definition?.id === 'muse' && isTauri()) await tauriInvoke('muse_logout');
       const shouldClearVolcengineAssetLibrary = definition?.id === 'volcengine';
       const connectionIds = removeAllGroups && (definition?.id === 'cccapi' || definition?.id === 'relayonapi')
         ? Object.entries(useAppStore.getState().config.providers)
@@ -835,7 +837,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               const connectionWorkflows = workflows.filter((workflow) => workflow.workflowApi?.connectionId === item.id);
               const needsWorkflowKey = connectionWorkflows.some((workflow) => workflow.workflowApi?.version !== 2 || workflow.workflowApi.protocol.auth?.type !== 'none');
               const isPendingApiKey = isGrouped ? groupKeyCount === 0
-                : definition.authType !== 'oauth' && !item.config.apiKey.trim() && (!isWorkflowApi || needsWorkflowKey);
+                : definition.authType === 'api-key' && !item.config.apiKey.trim() && (!isWorkflowApi || needsWorkflowKey);
               const hasRunningHubModelKey = isRunningHub && !!item.config.apiKey.trim();
               const hasRunningHubWorkflowKey = isRunningHub
                 && !!config.providers.runninghub?.apiKey.trim();
@@ -850,6 +852,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                 ? getCustomConnectionReadiness(item.config.selectedModels) : undefined;
               const statusLabel = isDreamina
                 ? t('OAuth 已连接')
+                : definition.authType === 'browser-session'
+                  ? t('网页登录')
                 : isRunningHub
                   ? t('{count}/2 密钥已配置', { count: runningHubKeyCount })
                   : isGrouped
@@ -962,7 +966,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                           <Icon icon="lucide:receipt-text" width="16" />
                         </AnimatedButton>
                       )}
-                      {!isDreamina && !isWebSearchProvider && !isGrouped && (
+                      {definition.authType === 'api-key' && !isWebSearchProvider && !isGrouped && (
                         <AnimatedButton
                           type="button"
                           className="provider-icon-btn"

@@ -56,6 +56,10 @@
                 "scope": {
                     "allow": ["$APPDATA/**"],
                     "deny": [
+                        "$APPDATA/secrets",
+                        "$APPDATA/secrets/**",
+                        "$APPLOCALDATA/secrets",
+                        "$APPLOCALDATA/secrets/**",
                         "$APPDATA/project-model-backups",
                         "$APPDATA/project-model-backups/**",
                         "$APPDATA/project-model-maintenance",
