@@ -21,7 +21,7 @@ import type { ImageReferenceRequestMode } from '../../../types';
 import type { BatchImageResult, ImageGenerationResult, MediaTaskReceipt, ResolvedModelProtocolPoll } from '../../../types/aiTypes';
 import { buildStandardImageRequestBody } from '../imageParameterMappings';
 import { prepareReferenceImageUpload } from '../referenceImageUpload';
-import { redactModelProtocolError } from '../modelProtocolHttp';
+import { redactModelProtocolError, throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
 import { sha256BytesHex } from '../../mediaDataUrl';
 import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
 
@@ -200,9 +200,9 @@ async function readStandardResponse(
 
 function cccSubmissionFailureMessage(payload: Record<string, unknown>): string {
   const data = Array.isArray(payload.data) ? payload.data : [payload.data];
-  const failed = data.find((item) => item && typeof item === 'object'
-    && (item as Record<string, unknown>).status === 'failed') as Record<string, unknown> | undefined;
-  for (const source of [failed, payload]) {
+  const items = data.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item));
+  const failed = items.find((item) => item.status === 'failed');
+  for (const source of [failed, ...items, payload]) {
     if (!source) continue;
     const error = source.error;
     const detail = typeof error === 'string' ? error
@@ -350,8 +350,15 @@ export async function generateImageStandardBatch(
             && typeof item.task_id === 'string' && item.task_id.trim() ? [item.task_id] : []))] : [];
           if (taskIds.length) return { taskIds };
           const urls = parseGeneralImageResponses(payload);
-          if (!urls.length && params.asyncTaskProvider === 'cccapi' && classifyHttpResponseFailure(response.status, payload)) {
-            throw new HttpResponseError(response.status, cccSubmissionFailureMessage(payload), true);
+          if (!urls.length) {
+            // 原文只用于展示；拒绝结算复用共享结构化证据，不按文案或语言猜测。
+            const first = Array.isArray(payload.data) ? payload.data[0] : payload.data;
+            const detail = first && typeof first === 'object' ? first as Record<string, unknown> : undefined;
+            const prefix = Array.isArray(payload.data) ? 'data.0' : 'data';
+            const errorPath = detail && typeof detail.error === 'string' ? `${prefix}.error`
+              : detail && detail.error && typeof detail.error === 'object' && typeof (detail.error as Record<string, unknown>).message === 'string' ? `${prefix}.error.message`
+                : detail && typeof detail.message === 'string' ? `${prefix}.message` : undefined;
+            throwIfDefinitiveModelResponseFailure(payload, response.status, errorPath, params.apiKey);
           }
           return { urls };
         } });

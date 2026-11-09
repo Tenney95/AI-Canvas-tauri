@@ -19,7 +19,7 @@ use tar::{Archive, Builder, Header};
 use tauri::{AppHandle, Emitter, Runtime, Webview};
 use sha2::{Digest, Sha256};
 
-use crate::path_policy::{authorize_path, ensure_trusted_caller, reauthorize_existing_plain_directory, PathAccess};
+use crate::path_policy::{authorize_path, canonicalize_simplified, ensure_trusted_caller, reauthorize_existing_plain_directory, simplify_verbatim, PathAccess};
 
 /// 归档内素材统一前缀；解包时只有该前缀下的条目会写入项目数据目录。
 const ASSETS_PREFIX: &str = "assets";
@@ -362,6 +362,12 @@ fn excluded_asset_directory(name: &str, project_root: bool) -> bool {
 
 /// 根已由宿主授权；逐组件拒绝链接，缺失项留给上层依引用位置报告。
 fn selected_asset_file(root: &Path, relative: &Path) -> Result<Option<PathBuf>, String> {
+    let metadata = plain_asset_metadata(root)?.ok_or("项目素材目录已缺失")?;
+    if !metadata.is_dir() { return Err("项目素材根不是普通目录".into()); }
+    // 与宿主授权返回值保持同一表示；Windows canonicalize 的 verbatim 前缀不改变真实归属。
+    let expected_root = simplify_verbatim(root.to_path_buf());
+    let root = canonicalize_simplified(root).map_err(|_| "无法解析项目素材目录")?;
+    if root != expected_root { return Err("项目素材目录真实路径已变化".into()); }
     let target = root.join(relative);
     let mut current = root.to_path_buf();
     for component in relative.components() {
@@ -373,13 +379,13 @@ fn selected_asset_file(root: &Path, relative: &Path) -> Result<Option<PathBuf>, 
         } else {
             if !metadata.is_dir() { return Err("项目素材父路径不是普通目录".into()); }
             let name = component.as_os_str();
-            if excluded_asset_directory(&name.to_string_lossy(), current.parent() == Some(root)) {
+            if excluded_asset_directory(&name.to_string_lossy(), current.parent() == Some(root.as_path())) {
                 return Err("项目素材位于回收站或派生缓存目录".into());
             }
         }
     }
-    let resolved = current.canonicalize().map_err(|_| "无法解析项目素材真实路径")?;
-    if !resolved.starts_with(root) { return Err("项目素材超出项目目录".into()); }
+    let resolved = canonicalize_simplified(&current).map_err(|_| "无法解析项目素材真实路径")?;
+    if !resolved.starts_with(&root) { return Err("项目素材超出项目目录".into()); }
     Ok(Some(resolved))
 }
 
@@ -1408,7 +1414,7 @@ mod tests {
             let root = std::env::temp_dir().join(format!("ai-canvas-archive-regression-{}-{}-{}", std::process::id(),
                 SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(), FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)));
             fs::create_dir(&root).unwrap();
-            Self(root.canonicalize().unwrap())
+            Self(canonicalize_simplified(&root).unwrap())
         }
         fn write(&self, relative: &str, bytes: &[u8]) {
             let path = self.0.join(relative);
@@ -1418,7 +1424,7 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let temporary = std::env::temp_dir().canonicalize().unwrap();
+            let temporary = canonicalize_simplified(&std::env::temp_dir()).unwrap();
             assert!(self.0.starts_with(&temporary) && self.0 != temporary);
             fs::remove_dir_all(&self.0).unwrap();
         }
@@ -1469,14 +1475,58 @@ mod tests {
                 return Err("必须为普通目录".into());
             }
         }
-        match path.canonicalize() {
+        match canonicalize_simplified(path) {
             Ok(resolved) => Ok(resolved),
             Err(error) if !existing_plain && error.kind() == std::io::ErrorKind::NotFound => {
-                let parent = path.parent().ok_or("缺少父目录")?.canonicalize().map_err(|error| error.to_string())?;
+                let parent = canonicalize_simplified(path.parent().ok_or("缺少父目录")?).map_err(|error| error.to_string())?;
                 Ok(parent.join(path.file_name().ok_or("缺少目录名")?))
             },
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn selected_media_source_matches_production_authorization_without_verbatim_prefix() {
+        let fixture = Fixture::new();
+        let name = "原媒体产物_1.png";
+        let contents = b"synthetic image publication bytes";
+        fixture.write(name, contents);
+        // 生产 authorize_path 使用简化根；std::canonicalize 的文件路径仍带 verbatim 前缀。
+        let root = filesystem_authorize(&fixture.0, true).unwrap();
+        let verbatim_root = root.canonicalize().unwrap();
+        let verbatim_file = root.join(name).canonicalize().unwrap();
+        assert!(!root.to_string_lossy().starts_with(r"\\?\"));
+        assert!(verbatim_file.to_string_lossy().starts_with(r"\\?\"));
+        assert!(!verbatim_file.starts_with(&root));
+
+        let selected = selected_asset_file(&root, Path::new(name)).unwrap().unwrap();
+        assert_eq!(selected, root.join(name));
+        assert!(selected.starts_with(&root));
+        // 覆盖 publish_project_import_assets 随后的再次授权相等检查，而非只通过 containment。
+        assert_eq!(filesystem_authorize(&selected, false).unwrap(), selected);
+        assert_eq!(filesystem_authorize(&verbatim_file, false).unwrap(), selected);
+        assert_eq!(selected_asset_file(&verbatim_root, Path::new(name)).unwrap().unwrap(), selected);
+        let (bytes, sha256) = hash_file(&selected, &mut Vec::new()).unwrap();
+        assert_eq!(bytes, contents.len() as u64);
+        assert_eq!(sha256, format!("{:x}", Sha256::digest(contents)));
+
+        let asset = ArchiveAssetDigest { path: name.into(), bytes, sha256, source_root_ref: Some("source".into()),
+            source_relative_path: Some(name.into()) };
+        let sources = multi_root_asset_sources(&[asset], &HashMap::from([("source".into(), root.clone())]), None).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(selected_asset_file(&sources[0].0, &sources[0].1).unwrap().unwrap(), selected);
+        assert_eq!(fs::read(root.join(name)).unwrap(), contents); // 规范化不移动、覆盖或删除原文件。
+    }
+
+    #[test]
+    fn selected_media_source_keeps_plain_root_and_relative_component_checks() {
+        let fixture = Fixture::new(); fixture.write("image.png", b"synthetic");
+        assert!(selected_asset_file(&fixture.0.join("image.png"), Path::new("other.png")).is_err());
+        assert!(selected_asset_file(&fixture.0, Path::new("../image.png")).is_err());
+        assert!(selected_asset_file(&fixture.0, fixture.0.join("image.png").as_path()).is_err());
+        assert!(selected_asset_file(&fixture.0, Path::new("missing.png")).unwrap().is_none());
+        assert_eq!(fs::read(fixture.0.join("image.png")).unwrap(), b"synthetic");
     }
 
     #[test]

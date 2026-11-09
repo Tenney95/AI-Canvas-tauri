@@ -88,10 +88,10 @@ async function readPair(projectId: string, operationId: string): Promise<{ recor
 export const nativeBuiltinImageDigest = (mode: NativeBuiltinImageMode, modelId: string) =>
   sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(['native-builtin-original-result-v1', mode, modelId])));
 export const DREAMINA_NATIVE_BASE = 'http://dreamina.local';
-const pending = (operationId: string, cause?: unknown, detail?: string): Error => {
-  const error = new Error(`原媒体操作 ${operationId} 已保留，请继续原回执；提交未知不会重新生成。${detail ?? ''}`,
+const pending = (operationId: string, cause?: unknown, retained = false): Error => {
+  const error = new Error(retained ? '媒体已保存，等待原画布安全回填；返回原画布后会自动继续。' : '原媒体任务已保留，提交结果尚未确认，不会重新生成。',
     cause === undefined ? undefined : { cause });
-  error.name = 'NativeMediaTaskPending'; return error;
+  error.name = 'NativeMediaTaskPending'; Object.assign(error, { nativeOperationId: operationId, localResultAvailable: retained }); return error;
 };
 function delivered(operationId: string): never { const error = new Error('原媒体完整产物已保存并交付'); error.name = 'NativeMediaTaskDelivered'; Object.assign(error, { nativeOperationId: operationId }); throw error; }
 async function saveOutputs(record: NativeMediaTaskRecord, urls: readonly string[], access?: MediaDownloadAccess): Promise<NativeMediaLocalOutput[]> {
@@ -114,7 +114,10 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
   if (!context || context.modelGeneration !== 1 || !input.nodeId || !isNativeVideoSubmissionGuard(input.beforeSubmit)) throw new Error('原生媒体缺少实际提交守卫');
   const originalSecrets = [...(input.secrets ?? []), useAppStore.getState().config.providers[input.connectionId]?.apiKey ?? ''].filter(Boolean);
   await input.beforeSubmit?.(); input.signal?.throwIfAborted();
-  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true });
+  const preparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+  try {
+  input.signal?.throwIfAborted();
+  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true, preparation });
   const digest = await nativeBuiltinImageDigest(input.mode, input.modelId);
   let record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: input.nodeId,
     providerConfigId: input.connectionId, providerBase: input.baseUrl, category: input.category ?? 'image',
@@ -126,9 +129,9 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
   try { await createReceipt(record, input.mode); }
   catch (error) {
     await recordNativeMediaSubmission(record.operationId, record.lease, { notStarted: true }).catch(() => undefined);
-    throw new Error(`原媒体操作 ${record.operationId} 未开始提交，回执已保留。`, { cause: error });
+    throw Object.assign(new Error('原媒体未开始提交，回执已保留。', { cause: error }), { nativeOperationId: record.operationId });
   }
-  let sent = false;
+  let sent = false, hasCachedOutputs = false;
   const received = async (ids: string[]) => {
     const taskIds = [...new Set(ids)];
     if (!taskIds.length || taskIds.length > 128 || taskIds.some((id) => !taskId(id)
@@ -143,10 +146,10 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
   };
   try {
     const result = await input.execute(async () => {
-      input.signal?.throwIfAborted(); await input.beforeSubmit?.(); await assertNativeMediaPrepared(record);
+      input.signal?.throwIfAborted(); await input.beforeSubmit?.(); await assertNativeMediaPrepared(record, { preparation });
       await assertNativeVideoSubmissionInput(record, context);
       ({ record } = await mutate(record, (main, receipt) => { if (main.status !== 'prepared' || receipt.state !== 'prepared') return fail(); receipt.state = 'unknown'; }));
-      await input.beforeSubmit?.(); await assertNativeVideoSubmissionInput(record, context); input.signal?.throwIfAborted(); sent = true;
+      await input.beforeSubmit?.(); await assertNativeVideoSubmissionInput(record, context); input.signal?.throwIfAborted(); preparation.assertCurrent(); sent = true; preparation.release();
     }, received);
     if (!sent) throw new Error('媒体适配器没有经过真实提交守卫，未接收该结果');
     if (result.taskIds?.length) {
@@ -156,34 +159,80 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
       if (input.mode !== 'ccc') await assertNativeMediaResultRetention(record);
       const outputs = await saveOutputs(record, result.urls, input.mediaDownloadAccess);
       ({ record } = await mutate(record, (_main, receipt) => { receipt.inlineOutputs = outputs; receipt.state = 'inline'; }));
+      hasCachedOutputs = true;
       record = await retainNativeMediaOutputs(record, outputs, input.mode === 'ccc' ? { inlineSubmission: true } : {});
     }
     if (input.signal?.aborted || !isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) {
-      throw pending(record.operationId, new Error('原画布上下文或取消信号在交付前已变化'));
+      throw pending(record.operationId, new Error('原画布上下文或取消信号在交付前已变化'), !!record.localResults);
     }
     await resumeNativeBuiltinImageTask(record.operationId, input.signal);
     const completed = await readPair(record.ownerProjectId, record.operationId);
     if (completed.record.status === 'delivered') return delivered(record.operationId);
     throw pending(record.operationId, new Error('本机交付结束后回执仍未结算'));
   } catch (error) {
-    if (error instanceof Error && ['NativeMediaTaskDelivered', 'NativeMediaTaskPending'].includes(error.name)) throw error;
+    if (error instanceof Error && error.name === 'NativeMediaTaskDelivered') throw error;
     const terminal = await readPair(record.ownerProjectId, record.operationId).catch(() => undefined);
     if (terminal?.record.status === 'delivered') return delivered(record.operationId);
     if (terminal?.record.status === 'failed') throw error;
+    const retained = !!(terminal?.receipt.inlineOutputs?.length || terminal?.record.localResults?.length || record.localResults?.length
+      || terminal?.receipt.tasks.length && terminal.receipt.tasks.every((task) => task.state !== 'submitted') && terminal.receipt.tasks.some((task) => task.outputs?.length));
+    hasCachedOutputs ||= retained;
+    if (retained && !input.signal?.aborted && isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) {
+      const { deliverNativeMediaCachedResult } = await import('./nativeMediaAutoDelivery');
+      if (await deliverNativeMediaCachedResult(record.operationId, context, input.signal).catch(() => false)) return delivered(record.operationId);
+    }
+    if (error instanceof Error && error.name === 'NativeMediaTaskPending') throw pending(record.operationId, error, retained);
     ({ record } = await mutate(record, (main, receipt) => {
-      if (main.status !== 'prepared' || main.remoteTaskId || main.localResults) return;
+      if (main.status !== 'prepared' || main.remoteTaskId || main.localResults || receipt.inlineOutputs?.length) return;
       const certain = !sent || getHttpResponseError(error)?.definitiveFailure === true;
       main.status = certain ? 'failed' : 'outcome-unknown'; receipt.state = certain ? 'failed' : 'unknown';
     }).catch(() => ({ record })));
     if (record.status === 'failed') throw error;
-    const retained = !!(terminal?.receipt.inlineOutputs?.length || terminal?.record.localResults?.length || record.localResults?.length);
-    throw pending(record.operationId, error, retained
-      ? ' 产物已保存，请在「设置 → 恢复项目操作」输入此 ID 并点击「继续取回原媒体产物」回填节点。'
-      : undefined);
+    throw pending(record.operationId, error, retained);
+  } finally {
+    if (hasCachedOutputs) void import('./pollManager').then(({ resumeNativeMediaLocalDelivery }) =>
+      resumeNativeMediaLocalDelivery(context.canvasId, record.nodeId)).catch(() => undefined);
   }
+  } finally { preparation.release(); }
 }
 
-export async function resumeNativeBuiltinImageTask(operationId: string, signal?: AbortSignal): Promise<void> {
+/** 只提升已完整冻结的本机集合；不查询服务商、首发阶段或结束用户已放弃的跟踪。 */
+export async function retainNativeBuiltinImageCachedOutputs(record: NativeMediaTaskRecord, signal?: AbortSignal): Promise<NativeMediaTaskRecord | undefined> {
+  if (record.apimartImageBatch || !['prepared', 'submitted', 'outcome-unknown'].includes(record.status)
+    || record.recovery?.kind !== 'builtin-image' && record.recovery?.serverId !== 'dreamina-cli-v1') return undefined;
+  signal?.throwIfAborted();
+  const pair = await readPair(record.ownerProjectId, record.operationId), current = pair.record, receipt = pair.receipt;
+  if (!['prepared', 'submitted', 'outcome-unknown'].includes(current.status) || current.lease !== record.lease || current.revision !== record.revision) return undefined;
+  if (current.localResults?.length) return current;
+  // 兼容旧 catch 将已返回并冻结的 inline 误降成 unknown；只认完整私有集合，不认任务猜测。
+  const inline = receipt.inlineOutputs;
+  if (current.status === 'outcome-unknown' && (!inline?.length || current.remoteTaskId)) return undefined;
+  const settled = receipt.tasks.length > 0 && receipt.tasks.every((task) => task.state === 'completed' || task.state === 'failed');
+  const outputs = inline || (settled ? receipt.tasks.flatMap((task) => task.outputs ?? []) : []);
+  if (!outputs.length || !inline && current.status !== 'submitted') return undefined;
+  for (const file of outputs) { signal?.throwIfAborted(); await readNativeMediaLocalResult(current.canvasId, file); }
+  return retainNativeMediaOutputs(current, outputs, { signal, ...(inline ? { inlineSubmission: true } : {
+    completion: { taskCount: receipt.tasks.length, failedTasks: receipt.tasks.filter((task) => task.state === 'failed').length },
+  }) });
+}
+
+/** 只续取已确认的原 CCC 任务；自动调用不能重新唤醒已结束的跟踪或首发生成。 */
+export async function retainNativeBuiltinImageOriginalTaskOutputs(record: NativeMediaTaskRecord, signal?: AbortSignal): Promise<NativeMediaTaskRecord | undefined> {
+  if (record.status !== 'submitted' || record.recovery?.kind !== 'builtin-image' || record.apimartImageBatch
+    || !record.remoteTaskId || record.localResults) return undefined;
+  const pair = await readPair(record.ownerProjectId, record.operationId);
+  if (pair.receipt.mode !== 'ccc' || pair.record.status !== 'submitted' || pair.record.lease !== record.lease
+    || pair.record.revision !== record.revision || pair.receipt.tasks[0]?.taskId !== record.remoteTaskId
+    || !pair.receipt.tasks.some((task) => task.state === 'submitted')) return undefined;
+  signal?.throwIfAborted();
+  await resumeNativeBuiltinImageTask(record.operationId, signal, { retainOnly: true,
+    expectedSubmission: { lease: record.lease, revision: record.revision } });
+  const retained = (await readPair(record.ownerProjectId, record.operationId)).record;
+  return retained.status === 'submitted' && retained.localResults?.length ? retained : undefined;
+}
+
+export async function resumeNativeBuiltinImageTask(operationId: string, signal?: AbortSignal,
+  options: { retainOnly?: boolean; expectedSubmission?: Pick<NativeMediaTaskRecord, 'lease' | 'revision'> } = {}): Promise<void> {
   signal?.throwIfAborted();
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1) throw new Error('请打开原媒体画布');
@@ -194,17 +243,23 @@ export async function resumeNativeBuiltinImageTask(operationId: string, signal?:
   try {
   let { record, receipt } = await readPair(context.projectId, operationId);
   if (record.canvasId !== context.canvasId || record.projectEpoch !== context.projectEpoch || record.canvasEpoch !== context.canvasEpoch || record.episodeId !== context.episodeId) return fail();
+  if (options.retainOnly && receipt.mode !== 'ccc' || options.expectedSubmission && (record.status !== 'submitted'
+    || record.lease !== options.expectedSubmission.lease || record.revision !== options.expectedSubmission.revision)) return fail();
   if (record.status === 'delivered') { const { projectNativeMediaMessages } = await import('./nativeMediaMessages'); await projectNativeMediaMessages(); return; }
   if (!record.localResults && receipt.inlineOutputs) record = await retainNativeMediaOutputs(record, receipt.inlineOutputs, { inlineSubmission: true });
   if (!record.localResults) {
     if (!receipt.tasks.length) throw new Error('原同步调用没有已保存产物或原任务 ID，请核对原平台，不会重新生成');
     if (!record.recovery?.modelId || record.recovery.digest !== await nativeBuiltinImageDigest(receipt.mode, record.recovery.modelId)
       || record.protocolDigest !== record.recovery.digest || receipt.mode === 'dreamina' && record.providerBase !== DREAMINA_NATIVE_BASE) throw new Error('原媒体查询合同已变化，未向服务商发送任务 ID');
-    record = await claimNativeMediaRecovery(operationId, context);
+    record = await claimNativeMediaRecovery(operationId, context, { signal, expectedSubmission: options.expectedSubmission });
     const assertCurrent = () => { signal?.throwIfAborted(); if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) throw new Error('原画布已切换，回执和产物保留'); };
     for (const original of receipt.tasks) {
       if (original.state === 'failed') continue;
       if (original.outputs) { for (const file of original.outputs) await readNativeMediaLocalResult(record.canvasId, file); continue; }
+      if (options.retainOnly) {
+        const latest = (await readPair(record.ownerProjectId, record.operationId)).record;
+        if (latest.status !== 'submitted' || latest.lease !== record.lease || latest.revision !== record.revision) return fail();
+      }
       assertCurrent();
       let urls: string[];
       try {
@@ -222,7 +277,8 @@ export async function resumeNativeBuiltinImageTask(operationId: string, signal?:
           if (!provider?.apiKey || normalizeNativeMediaProviderBase(baseUrl) !== record.providerBase) throw new Error('原 CCC 连接已变化，请恢复原连接后查询');
           const result = await pollResolvedModelProtocol({ method: 'GET', url: `${record.providerBase}/tasks/${encodeURIComponent(original.taskId)}`,
             auth: { type: 'bearer' }, statusPath: 'data.status', successValues: ['completed'], failureValues: ['failed'],
-            resultUrlPath: 'data.result.images.*.url', intervalMs: 3000, maxDurationMs: 60 * 60 * 1000 }, provider.apiKey, signal, record.providerBase);
+            resultUrlPath: 'data.result.images.*.url', intervalMs: 3000,
+            ...(options.retainOnly ? { maxAttempts: 1, maxDurationMs: 15_000 } : { maxDurationMs: 60 * 60 * 1000 }) }, provider.apiKey, signal, record.providerBase);
           if (!result.urls?.length) throw new Error('原 CCC 任务没有返回完整结果'); urls = result.urls;
         } else return fail();
       } catch (error) {
@@ -239,6 +295,7 @@ export async function resumeNativeBuiltinImageTask(operationId: string, signal?:
     record = await retainNativeMediaOutputs(record, outputs, { completion: { taskCount: receipt.tasks.length,
       failedTasks: receipt.tasks.filter((task) => task.state === 'failed').length } });
   }
+  if (options.retainOnly) return;
   const { resumeNativeVolcengineTask } = await import('./nativeVolcengineRecovery');
   await resumeNativeVolcengineTask(operationId, signal);
   } finally { unsubscribe(); externalSignal?.removeEventListener('abort', abort); controller.abort(); }

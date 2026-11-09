@@ -671,6 +671,7 @@ describe('project creation', () => {
     expect(nativeMocks.create).toHaveBeenCalledOnce();
     expect(fileMocks.saveProject).not.toHaveBeenCalled();
     const projectId = nativeMocks.create.mock.calls[0]![0].projectId;
+    expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledWith(projectId, '新作品');
     useAppStore.setState({ nodes: [{ id: 'node', type: 'ai-text', position: { x: 0, y: 0 },
       data: { label: '保留内容', type: 'ai-text' } }] });
     expect(await useAppStore.getState().saveCurrentProjectSilent()).toBe(canvasId);
@@ -679,6 +680,7 @@ describe('project creation', () => {
     expect(await useAppStore.getState().switchProject(old.id)).toBe(old.id);
     expect(await useAppStore.getState().switchProject(canvasId!)).toBe(canvasId);
     expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['node']);
+    expect(fileMocks.claimNativeProjectDataDir).toHaveBeenCalledOnce();
   });
 
   it('零集新剧集可以打开项目根，不会创建旧画布或删除作品', async () => {

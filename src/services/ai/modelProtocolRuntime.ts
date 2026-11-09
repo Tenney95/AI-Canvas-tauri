@@ -36,7 +36,7 @@ import { createMediaDownloadAccess, sanitizeMediaResultUrls } from './mediaDownl
 import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxMediaAccessHint, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { ModelProtocolHttpError } from './modelProtocolHttp';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from '../projectExecutionContext';
-import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
+import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
 import { assertNativeMediaPrepared, assertNativeMediaResultRetention, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
 import { nativeProtocolTaskDigest, nativeProtocolQueryDigest, nativeProtocolQueryPaths, captureNativeProtocolContext, isSafeNativeProtocolTaskId } from '../nativeModelProtocolTask';
 import { retainNativeMediaOutputs } from '../indexedDb/nativeMediaCollectionRepository';
@@ -44,7 +44,7 @@ import { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { sha256BytesHex } from '../mediaDataUrl';
 import { persistMediaUrlToProjectData } from '../fileService';
 import { captureNativeMediaLocalResult } from '../nativeMediaLocalResult';
-import { continueNativeMediaTask } from '../nativeMediaTaskContinuation';
+import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
 
 interface RunConfiguredModelProtocolOptions {
   model: GeneralModelConfig;
@@ -413,6 +413,7 @@ export async function runConfiguredModelProtocol(
   const videoGeneration = options.category === 'video' ? captureVideoTaskGeneration(options.nodeId) : undefined;
   let receipt: MediaTaskReceipt | undefined;
   let nativeTask: NativeMediaTaskRecord | undefined, nativeRemoteId: string | undefined, nativeSent = false;
+  let nativePreparation: NativeMediaSubmissionPreparation | undefined;
   const releaseOperation = options.nodeId ? registerMediaNodeOperation(options.nodeId) : undefined;
   const nodeSignal = options.nodeId ? registerNodePolling(options.nodeId) : undefined;
   const signal = nodeSignal && options.signal
@@ -431,7 +432,9 @@ export async function runConfiguredModelProtocol(
       const scheme = 'media-input-v3' as const;
       const originNode = useAppStore.getState().nodes.find((node) => node.id === options.nodeId);
       if (originNode && originNode.data.type !== `ai-${options.category}` && !(options.category === 'image' && ['ai-animation', 'ai-panorama'].includes(originNode.data.type))) throw new Error('原节点与媒体类型不一致');
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext!, options.nodeId!, undefined, scheme, { preparedReferences: true });
+      nativePreparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(nativeContext!);
+      signal?.throwIfAborted();
+      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext!, options.nodeId!, undefined, scheme, { preparedReferences: true, preparation: nativePreparation });
       nativeTask = await prepareNativeMediaTask({ context: nativeContext!, operationId: crypto.randomUUID(), nodeId: options.nodeId!,
         providerConfigId: options.model.providerConfigId, providerBase: baseUrl,
         modelRef: sourceModel ? `general/${options.model.id}` : `${options.model.providerConfigId}/${options.model.modelId}`,
@@ -441,7 +444,7 @@ export async function runConfiguredModelProtocol(
         submissionKind: protocol.mode === 'sync' ? 'sync' : 'async',
         requestFingerprint: await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(options.variables))),
         inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision });
-      await assertNativeMediaPrepared(nativeTask);
+      await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
       await options.beforeSubmit?.();
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
       const latest = useAppStore.getState().config;
@@ -451,7 +454,7 @@ export async function runConfiguredModelProtocol(
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext!);
       const finalConfig = useAppStore.getState().config;
       if (finalConfig.providers[options.model.providerConfigId] !== provider || sourceModel && finalConfig.generalModels?.find((model) => model.id === options.model.id) !== sourceModel) throw new Error('原模型配置已变化');
-      signal?.throwIfAborted(); nativeSent = true;
+      signal?.throwIfAborted(); nativePreparation.assertCurrent(); nativeSent = true; nativePreparation.release();
     } else if ((protocol.mode === 'async' || usesMinimaxProtocol && options.category === 'audio') && options.nodeId && projectId) {
       receipt = savePendingTask({ nodeId: options.nodeId, projectId,
         nodeType: NODE_TYPE_BY_CATEGORY[options.category], provider: 'general', providerConfigId: options.model.providerConfigId,
@@ -475,8 +478,7 @@ export async function runConfiguredModelProtocol(
         await assertNativeMediaResultRetention(nativeTask);
         nativeTask = await retainNativeMediaOutputs(nativeTask, localResults);
         if (signal?.aborted || !isProjectExpectedContextCurrent(nativeContext!, useAppStore.getState(), { checkCanvasRevision: false })) {
-          const pending = new Error(`原同步产物已保存（${nativeTask.operationId}），返回原画布后可继续本机交付，不会再次生成。`);
-          pending.name = 'NativeMediaTaskPending'; throw pending;
+          throw createNativeMediaPendingError(nativeTask);
         }
         return await continueNativeMediaTask(nativeTask, signal);
       }
@@ -527,8 +529,7 @@ export async function runConfiguredModelProtocol(
       if (!nativeRemoteId && isSafeNativeProtocolTaskId(receivedId, [provider.apiKey || ''])) nativeRemoteId = receivedId;
       await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, nativeRemoteId ? { taskId: nativeRemoteId }
         : !nativeSent || getHttpResponseError(error)?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => undefined);
-      const pending = new Error(`原媒体操作已保留（${nativeTask.operationId}），请核对原任务，不要重新提交。`, { cause: error });
-      pending.name = 'NativeMediaTaskPending'; throw pending;
+      throw createNativeMediaPendingError(nativeTask, error);
     }
     const httpError = getHttpResponseError(error);
     const hint = usesMinimaxProtocol && httpError ? getMinimaxMediaAccessHint(httpError.message) : undefined;
@@ -543,6 +544,7 @@ export async function runConfiguredModelProtocol(
     if (receipt && (failure instanceof PollTaskFailedError || rejected)) removeFailedMediaTask(receipt);
     throw failure;
   } finally {
+    nativePreparation?.release();
     if (options.nodeId) cleanupNodePolling(options.nodeId, nodeSignal);
     releaseOperation?.();
   }

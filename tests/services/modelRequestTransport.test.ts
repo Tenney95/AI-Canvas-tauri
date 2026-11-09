@@ -676,6 +676,7 @@ describe('CCC 图片异步任务与旧同步响应', () => {
     { status: 200, payload: { error: { code: 'rate_limit_exceeded', message: 'CCC 已明确拒绝提交' } } },
     { status: 429, payload: { error: { code: 'rate_limit_exceeded', message: 'CCC 已明确拒绝提交' } } },
     { status: 500, payload: { error: { code: 'rate_limit_exceeded', message: 'CCC 已明确拒绝提交' } } },
+    { status: 200, payload: { data: [{ error: { code: 'content_policy_violation', message: 'Non posso generare questa immagine.' } }] } },
   ])('CCC HTTP $status 明确失败且没有任务 ID 时清理空记录，不误报提交未知', async ({ status, payload }) => {
     const params = configureCcc();
     transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify(payload), {
@@ -696,6 +697,25 @@ describe('CCC 图片异步任务与旧同步响应', () => {
     expect((error as Error).message).toContain('[REDACTED]');
     expect((error as Error).message).not.toContain('discount-fixture');
     expect(getPendingTasksForProject('ccc-project')).toEqual([]);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('CCC批项有规范内容拒绝码时保留意大利语原文并结算失败，不自动重投', async () => {
+    const params = configureCcc(), message = 'Non posso generare questa immagine per motivi di sicurezza.';
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ error: { code: 'content_policy_violation', message } }] }));
+    await expect(generateImagesBatch(params, 1)).rejects.toMatchObject({ definitiveFailure: true, message: `CCC 图片生成失败：${message}` });
+    expect(getPendingTasksForProject('ccc-project')).toEqual([]);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { error: { message: 'Non posso generare questa immagine.' } },
+    { error: { code: 'content_policy_violation' }, data: [{ error: { code: 'content_policy_violation' } }, { message: 'unknown outcome' }] },
+  ])('CCC只有文案或混合未知批项时仍保留原提交，不把整批误判失败', async (payload) => {
+    const params = configureCcc();
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse(payload));
+    await expect(generateImagesBatch(params, 1)).rejects.toMatchObject({ name: 'MediaTaskPausedError', reason: 'submit_unknown' });
+    expect(getPendingTasksForProject('ccc-project')).toEqual([expect.objectContaining({ taskId: '', mediaRecoveryState: 'submit_unknown' })]);
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
   });
 

@@ -20,6 +20,17 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('新旧项目素材根路由', () => {
+  it('新建透传项目名，实体可读目录由原生绑定返回，读取时不按显示名重新拼路径', async () => {
+    const core = await import('../../../src/services/fs/core');
+    const directory = '/bound/新项目结构测试-12345678';
+    native.invoke.mockResolvedValue(directory);
+    core.registerNativeProjectFolders([{ id: canvasId, projectId }]);
+    expect(await core.claimNativeProjectDataDir(projectId, '新项目结构测试')).toBe(directory);
+    expect(await core.getProjectDataDir(canvasId)).toBe(directory);
+    expect(native.invoke).toHaveBeenNthCalledWith(1, 'claim_native_project_media_root', { projectId, projectName: '新项目结构测试' });
+    expect(native.invoke).toHaveBeenNthCalledWith(2, 'resolve_native_project_media_root', { projectId });
+  });
+
   it('搜索窗口只使用专用只读命令，主窗口同步显式作品列表', async () => {
     const core = await import('../../../src/services/fs/core');
     await core.syncNativeAssetSearchRoots([projectId]);

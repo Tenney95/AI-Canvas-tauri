@@ -13,7 +13,6 @@ import AssetRepairDialog from '../assets/AssetRepairDialog';
 import type { AssetRepairTarget } from '../../services/fs/assetRepair';
 import ModalOverlay from '../shared/ModalOverlay';
 import Tabs from '../shared/Tabs';
-import NativeProjectRecovery from './NativeProjectRecovery';
 
 type Section = 'overview' | 'trash' | 'orphans' | 'duplicates' | 'offline';
 type CleanupSelection = (
@@ -34,6 +33,7 @@ const PROJECT_COLORS = [
 const SCAN_REASON_LABELS: Record<StorageHealthScanError['reason'], string> = {
   permission: '访问被拒绝', missing: '文件或目录已不存在', symlink: '符号链接未纳入扫描',
   changed: '文件在扫描时发生变化', unavailable: '读取暂不可用',
+  'native-protected': '新项目已统计占用，完整引用核验前暂不提供清理操作。',
 };
 
 function formatPercent(value: number) {
@@ -352,7 +352,6 @@ export default function StorageHealthCenter() {
       </div>
     </div>
 
-    {desktop && <NativeProjectRecovery />}
     {!desktop && <p className="ui-alert ui-alert--info">{t('Web 演示仅展示应用数据配额；项目文件扫描与清理请在桌面端使用。')}</p>}
     {scanError && <p role="alert" className={`ui-alert ${scanError.cancelled ? 'ui-alert--info' : 'ui-alert--danger'}`}>
       {scanError.cancelled ? t('扫描已取消，尚未完成核对。重新扫描后可查看清理建议。')
@@ -362,7 +361,9 @@ export default function StorageHealthCenter() {
     </p>}
     {report && !report.complete && <div role="status" className="ui-alert ui-alert--warning">
       <div className="ui-alert__body">
-        <p>{t('部分文件或目录未能检查，下方仅展示已读取的占用。完整扫描前暂不提供清理操作。')}</p>
+        <p>{t(report.issues.some((issue) => issue.reason === 'native-protected')
+          ? '新项目已统计占用，完整引用核验前暂不提供清理操作。'
+          : '部分文件或目录未能检查，下方仅展示已读取的占用。完整扫描前暂不提供清理操作。')}</p>
         <details className="mt-1">
           <summary className="cursor-pointer">{t('查看未完成项（{count}）', { count: report.issues.length })}</summary>
           <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs">

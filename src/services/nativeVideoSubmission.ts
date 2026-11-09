@@ -12,16 +12,20 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { readNativeMediaMessageInput } from './nativeMediaOrigin';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { nativeMediaInputMaterial } from './nativeMediaInput';
+import type { NativeMediaSubmissionPreparation } from '../types/media';
+export type { NativeMediaSubmissionPreparation } from '../types/media';
 
 /** 仅由画布生成入口建立；直调和后台能力不能伪造旧画布的实时提交检查。 */
 export { registerNativeVideoSubmissionGuard, isNativeVideoSubmissionGuard } from './nativeVideoSubmissionGuard';
 
 export async function captureNativeVideoSubmissionBaseline(context: CanvasContext, nodeId: string, imageReference?: NativeVideoImageReference,
-  scheme: NativeMediaTaskRecord['fingerprintScheme'] = 'video-input-v1', options: { preparedReferences?: boolean } = {}): Promise<{
+  scheme: NativeMediaTaskRecord['fingerprintScheme'] = 'video-input-v1', options: { preparedReferences?: boolean; preparation?: NativeMediaSubmissionPreparation } = {}): Promise<{
   inputFingerprint: string; canvasRevision: number;
 }> {
   if (context.modelGeneration !== 1 || !context.runtimeEpoch) throw new Error('原生媒体提交上下文已失效，未保存或提交');
   const assertContext = () => {
+    options.preparation?.assertCurrent();
+    if (options.preparation && !isProjectExpectedContextCurrent(context, options.preparation.context, { checkCanvasRevision: false })) throw new Error('原媒体准备租约归属已变化');
     if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) {
       throw new Error('原画布已切换，未提交视频任务');
     }
@@ -31,16 +35,17 @@ export async function captureNativeVideoSubmissionBaseline(context: CanvasContex
   if (message) {
     if (imageReference) throw new Error('对话媒体不能借用画布参考素材');
     message.assertCurrent();
-    if (await useAppStore.getState().saveCurrentProjectSilent() !== context.canvasId) throw new Error('原画布保存失败');
+    if (!options.preparation && await useAppStore.getState().saveCurrentProjectSilent() !== context.canvasId) throw new Error('原画布保存失败');
     const saved = await readNativeProjectView(context.projectId, context.canvasId);
     message.assertCurrent(); assertContext();
-    if (!saved?.selection.canvas || saved.selection.project.epoch !== context.projectEpoch
+    if (!saved?.selection.canvas || options.preparation && saved.selection.canvas.revision !== options.preparation.canvasRevision
+      || saved.selection.project.epoch !== context.projectEpoch
       || saved.selection.canvas.epoch !== context.canvasEpoch || saved.selection.canvas.episodeId !== context.episodeId) throw new Error('原对话画布身份已变化');
     const inputFingerprint = await sha256BytesHex(new TextEncoder().encode(message.material));
     message.assertCurrent(); assertContext();
     return { inputFingerprint, canvasRevision: saved.selection.canvas.revision };
   }
-  if (await useAppStore.getState().saveCurrentProjectSilent() !== context.canvasId) throw new Error('原画布未保存，未提交视频任务');
+  if (!options.preparation && await useAppStore.getState().saveCurrentProjectSilent() !== context.canvasId) throw new Error('原画布未保存，未提交视频任务');
   assertContext();
   const initial = useAppStore.getState(), node = initial.nodes.find((item) => item.id === nodeId);
   const project = initial.projects.find((item) => item.id === context.canvasId);
@@ -62,7 +67,8 @@ export async function captureNativeVideoSubmissionBaseline(context: CanvasContex
   const native = await readNativeProjectView(context.projectId, context.canvasId);
   assertContext();
   const canvas = native?.selection.canvas;
-  if (!canvas || native.selection.project.epoch !== context.projectEpoch || canvas.epoch !== context.canvasEpoch
+  if (!canvas || options.preparation && canvas.revision !== options.preparation.canvasRevision
+    || native.selection.project.epoch !== context.projectEpoch || canvas.epoch !== context.canvasEpoch
     || canvas.episodeId !== context.episodeId) throw new Error('保存的画布身份已变化，未提交请求');
   const restored = await restoreProjectRecord({ ...project, nodes: canvas.nodes, edges: canvas.edges, groups: canvas.groups,
     dramaAssets: native.content.dramaAssets });

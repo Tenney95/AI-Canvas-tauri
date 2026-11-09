@@ -7,7 +7,7 @@ import type { AppConfig, BaseNodeData } from '../../src/types';
 import type { Node } from '@xyflow/react';
 import type { CanvasContext } from '../../src/types/project';
 // 应用由全局 Store 入口装配 slice；先按真实入口初始化，再构建下方独立事务夹具。
-import '../../src/store/useAppStore';
+import { useAppStore } from '../../src/store/useAppStore';
 import { createProjectSlice } from '../../src/store/store.projects';
 import { createHistorySlice } from '../../src/store/store.history';
 import { createNativeEpisode, createNativeProject, listNativeProjectIdentities, readNativeProjectCapture, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
@@ -19,6 +19,17 @@ import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter'
 import type { ProjectRecord } from '../../src/types/project';
 import { hydrateNativeProjectView, projectNativeCatalogEntry } from '../../src/store/nativeProjectView';
 import { listEpisodes, projectMemoryOwnerId, resolveOpenTargetId, seriesOwnerId } from '../../src/store/store.utils';
+import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
+import { retainNativeMediaOutputs } from '../../src/services/indexedDb/nativeMediaCollectionRepository';
+
+const nativeDisplayIo = vi.hoisted(() => ({ inspect: vi.fn(), assetUrl: vi.fn() }));
+vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<typeof import('@tauri-apps/api/core')>(),
+  invoke: async (command: string, input: unknown) => {
+    if (command === 'inspect_project_archive_assets') return nativeDisplayIo.inspect(input);
+    throw new Error(`unexpected native fixture command: ${command}`);
+  } }));
+vi.mock('../../src/services/fs/core', async (original) => ({ ...await original<typeof import('../../src/services/fs/core')>(),
+  getProjectDataDir: vi.fn(async () => '/fixture/native'), getAssetUrlFromPath: nativeDisplayIo.assetUrl }));
 
 // 仅替换本机 IO；Store action、串行保存队列与独立新库事务均使用真实实现。
 vi.mock('../../src/services/fileService', async () => ({
@@ -28,7 +39,15 @@ vi.mock('../../src/services/fileService', async () => ({
 }));
 vi.mock('../../src/services/storageService', async () => ({
   ...await vi.importActual<typeof import('../../src/services/storageService')>('../../src/services/storageService'),
-  serializeProjectRecord: vi.fn(async (record: unknown) => record), restoreProjectRecord: vi.fn(async (record: unknown) => record),
+  serializeProjectRecord: vi.fn(async (record: import('../../src/services/storageService').ProjectSaveData) => ({ ...record,
+    nodes: (record.nodes as Node<BaseNodeData>[]).map((node) => {
+      if (!node.data.relativePath) return node;
+      const data = { ...node.data };
+      for (const key of ['imageUrl', 'videoUrl', 'audioUrl', 'output', 'sourceUrl', 'thumbnailUrl'] as const) {
+        if (typeof data[key] === 'string' && data[key]) data[key] = data.relativePath;
+      }
+      delete data.filePath; return { ...node, data };
+    }) })), restoreProjectRecord: vi.fn(async (record: unknown) => record),
 }));
 vi.mock('../../src/services/indexedDbService', async () => ({
   ...await vi.importActual<typeof import('../../src/services/indexedDbService')>('../../src/services/indexedDbService'),
@@ -101,6 +120,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
   const canvasA = 'c2-22222222-2222-4222-8222-222222222222', canvasB = 'c2-33333333-3333-4333-8333-333333333333';
   const episodeA = 'e2-44444444-4444-4444-8444-444444444444', episodeB = 'e2-55555555-5555-4555-8555-555555555555';
   const mediaPath = `media/${'a'.repeat(64)}.mp4`;
+  const mediaUrl = `asset://localhost/fixture/native/${mediaPath}`;
   const sourceNode = (): Node<BaseNodeData> => ({ id: 'video-node', type: 'ai-video', position: { x: 0, y: 0 }, data: {
     type: 'ai-video', label: '原视频', provider: 'volcengine', model: 'volcengine/doubao-seedance-2-5', prompt: '保留原请求', status: 'loading',
   } });
@@ -110,15 +130,19 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     vi.stubGlobal('CustomEvent', class { type: string; constructor(type: string) { this.type = type; } });
     // 画布打开后的展示定时器不参与此夹具；fake-indexeddb 仍用真实异步调度。
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    nativeDisplayIo.inspect.mockReset().mockImplementation(async ({ selectedPaths }: { selectedPaths: string[] }) => selectedPaths.map((path) => ({
+      path, bytes: 10, sha256: /[a-f0-9]{64}/.exec(path)![0],
+    })));
+    nativeDisplayIo.assetUrl.mockReset().mockImplementation(async (path: string) => `asset://localhost${path}`);
   });
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-  async function fixture() {
+  async function fixture(sourceType: 'ai-video' | 'ai-image' | 'ai-animation' | 'ai-panorama' | 'ai-audio' = 'ai-video') {
     const initial = await createNativeProject({ projectId, name: '隔离剧集', kind: 'series' });
     const first = await createNativeEpisode({ projectId, expectedProjectEpoch: initial.project.epoch, episodeId: episodeA, canvasId: canvasA, name: '第一集' });
     const aggregate = await createNativeEpisode({ projectId, expectedProjectEpoch: first.project.epoch, episodeId: episodeB, canvasId: canvasB, name: '第二集' });
     await saveNativeCanvas({ projectId, expectedProjectEpoch: aggregate.project.epoch, canvasId: canvasA, episodeId: episodeA,
-      expectedCanvasEpoch: 1, expectedCanvasRevision: 0, document: { nodes: [sourceNode()], edges: [], groups: [] } });
+      expectedCanvasEpoch: 1, expectedCanvasRevision: 0, document: { nodes: [{ ...sourceNode(), type: sourceType, data: { ...sourceNode().data, type: sourceType } }], edges: [], groups: [] } });
     const entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }> = { dataModel: 'native', project: aggregate.project,
       episodes: aggregate.episodes, episodeIds: aggregate.episodes.map((episode) => episode.id), canvasIds: aggregate.canvases.map((canvas) => canvas.id) };
     // 项目与历史 slice 使用真实 action；未参与本夹具的其他 slice 仅提供下方最小替身。
@@ -143,9 +167,12 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     const saved = await readNativeProjectCapture(projectId);
     const document = saved?.aggregate.canvases.find((canvas) => canvas.id === canvasA);
     if (!document) throw new Error('fixture document unavailable');
-    const fingerprint = await sha256BytesHex(new TextEncoder().encode(videoInputFingerprintMaterial(store.getState().nodes[0], store.getState())));
+    const fingerprint = await sha256BytesHex(new TextEncoder().encode(sourceType === 'ai-video'
+      ? videoInputFingerprintMaterial(store.getState().nodes[0], store.getState()) : nativeMediaInputMaterial(store.getState().nodes[0], store.getState(), 'media-input-v3')));
+    const category = sourceType === 'ai-audio' ? 'audio' : sourceType === 'ai-video' ? 'video' : 'image';
     const prepared = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'video-node', providerConfigId: 'volcengine',
-      providerBase: 'https://provider.example/api/v3', category: 'video', sourceCanvasRevision: document.revision, inputFingerprint: fingerprint });
+      providerBase: 'https://provider.example/api/v3', category, sourceCanvasRevision: document.revision, inputFingerprint: fingerprint,
+      ...(sourceType !== 'ai-video' ? { fingerprintScheme: 'media-input-v3', modelRef: 'volcengine/fixture', protocolDigest: 'b'.repeat(64), requestFingerprint: 'c'.repeat(64) } : {}) });
     const receipt = await recordNativeMediaSubmission(prepared.operationId, prepared.lease, { taskId: 'original-paid-task' });
     const originalHistory = { nodes: [], edges: [], groups: [] };
     const agent = { id: 'agent-active', projectId: canvasA, status: 'running' } as AppState['agentTasks'][number];
@@ -178,6 +205,42 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     return { gate, entered };
   }
 
+  it('媒体短准备占用既有保存队列，同输入自动保存等待POST前释放且每次准备独立推进版本', async () => {
+    const { store, context } = await fixture();
+    const before = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((item) => item.id === canvasA)!;
+    const preparation = await store.getState().beginNativeMediaSubmissionPreparation(context);
+    expect(preparation.canvasRevision).toBe(before.revision + 1); preparation.assertCurrent();
+    let completed = false;
+    const queuedSave = store.getState().saveCurrentProjectSilent().then((id) => { completed = true; return id; });
+    const held = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((item) => item.id === canvasA)!;
+    expect(held.revision).toBe(preparation.canvasRevision); expect(completed).toBe(false);
+    preparation.release(); preparation.release();
+    expect(await queuedSave).toBe(canvasA); expect(() => preparation.assertCurrent()).toThrow('已释放');
+    const after = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((item) => item.id === canvasA)!;
+    expect(after.revision).toBe(preparation.canvasRevision + 1);
+    const second = await store.getState().beginNativeMediaSubmissionPreparation(context);
+    try { expect(second.canvasRevision).toBe(after.revision + 1); second.assertCurrent(); }
+    finally { second.release(); }
+    expect(store.getState().nodes).toEqual(before.nodes);
+  });
+
+  it('准备屏障不放宽原输入或runtime守卫，异常后释放仍允许原保存队列继续', async () => {
+    const { store, receipt, context } = await fixture();
+    const preparation = await store.getState().beginNativeMediaSubmissionPreparation(context);
+    const { assertNativeVideoSubmissionInput } = await import('../../src/services/nativeVideoSubmission');
+    vi.spyOn(useAppStore, 'getState').mockImplementation(() => store.getState());
+    const original = store.getState().nodes;
+    try {
+      store.setState({ nodes: original.map((node) => ({ ...node, data: { ...node.data, prompt: '准备期间的新输入' } })) });
+      await expect(assertNativeVideoSubmissionInput(receipt, context)).rejects.toThrow('输入');
+      store.setState({ projectExecutionContext: { ...context, runtimeEpoch: 'other-runtime' } });
+      expect(() => preparation.assertCurrent()).toThrow('上下文');
+    } finally {
+      store.setState({ nodes: original, projectExecutionContext: context }); preparation.release();
+    }
+    expect(await store.getState().saveCurrentProjectSilent()).toBe(canvasA);
+  });
+
   it('活动 Agent 和 loading 视频可以交付，保留运行上下文和既有历史，只追加一次快照', async () => {
     const { store, receipt, context, originalHistory, agent } = await fixture();
     const revision = store.getState().getCurrentRevision();
@@ -187,8 +250,48 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     expect(state.getCurrentRevision()).toBe(revision + 1);
     expect(state.agentTasks).toEqual([agent]); expect(state.agentTasks[0]).toBe(agent);
     expect(state.history).toHaveLength(2); expect(state.history[0]).toBe(originalHistory); expect(state.historyIndex).toBe(1);
-    expect(state.nodes[0].data).toMatchObject({ status: 'success', relativePath: mediaPath, videoUrl: mediaPath });
+    expect(state.nodes[0].data).toMatchObject({ status: 'success', relativePath: mediaPath, videoUrl: mediaUrl });
     expect((await listNativeMediaTasks(projectId))[0]).toMatchObject({ status: 'delivered', remoteTaskId: 'original-paid-task', resultRelativePath: mediaPath });
+  });
+
+  it.each(['ai-image', 'ai-video', 'ai-audio', 'ai-animation', 'ai-panorama'] as const)('%s的完整混合候选即使通用恢复隐藏展示字段，也按本回执原根SHA回填所有结果', async (sourceType) => {
+    const { store, receipt, context } = await fixture(sourceType);
+    const categories = [receipt.category, ...(['image', 'video', 'audio'] as const).filter((kind) => kind !== receipt.category)];
+    const files = categories.map((category, ordinal) => {
+      const sha256 = String.fromCharCode(100 + ordinal).repeat(64);
+      return { category, relativePath: category === 'image' ? `imports/retained-${sha256}/${sha256}.png` : `media/${sha256}.${category === 'video' ? 'mp4' : 'wav'}`, bytes: 10, sha256 };
+    });
+    const retained = await retainNativeMediaOutputs(receipt, files);
+    const storage = await import('../../src/services/storageService');
+    vi.mocked(storage.restoreProjectRecord).mockImplementationOnce(async (record) => ({ ...record,
+      nodes: (record.nodes as Node<BaseNodeData>[]).map((node) => ({ ...node, data: { ...node.data,
+        imageUrl: undefined, videoUrl: undefined, audioUrl: undefined, output: undefined, sourceUrl: undefined, thumbnailUrl: undefined,
+        __nativeUnavailableMediaFields: ['imageUrl', 'videoUrl', 'audioUrl', 'output'] } })) }));
+    await store.getState().commitNativeMediaResult(retained, files[0].relativePath, context);
+    const displayed = store.getState().nodes;
+    expect(displayed).toHaveLength(files.length);
+    for (const [ordinal, file] of files.entries()) {
+      const node = displayed[ordinal], mediaKey = file.category === 'image' ? 'imageUrl' : file.category === 'video' ? 'videoUrl' : 'audioUrl';
+      expect(node.data).toMatchObject({ status: 'success', relativePath: file.relativePath, [mediaKey]: `asset://localhost/fixture/native/${file.relativePath}`,
+        output: `asset://localhost/fixture/native/${file.relativePath}`, filePath: `/fixture/native/${file.relativePath}` });
+      expect(node.data.__nativeUnavailableMediaFields).toBeUndefined();
+    }
+    const saved = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((canvas) => canvas.id === canvasA)!;
+    for (const [ordinal, file] of files.entries()) expect((saved.nodes[ordinal] as Node<BaseNodeData>).data).toMatchObject({ relativePath: file.relativePath, output: file.relativePath });
+    expect((await listNativeMediaTasks(projectId))[0]).toMatchObject({ status: 'delivered', localResults: files });
+  });
+
+  it.each(['sha', 'url'] as const)('本机候选%s证据失败时不把空白展示提交为delivered', async (failure) => {
+    const { store, receipt, context } = await fixture('ai-image');
+    const file = { category: 'image' as const, relativePath: `media/${'d'.repeat(64)}.png`, sha256: 'd'.repeat(64), bytes: 10 };
+    const retained = await retainNativeMediaOutputs(receipt, [file]);
+    if (failure === 'sha') nativeDisplayIo.inspect.mockResolvedValue([{ path: file.relativePath, bytes: 10, sha256: 'e'.repeat(64) }]);
+    else nativeDisplayIo.assetUrl.mockResolvedValue('https://example.invalid/unrelated.png');
+    await expect(store.getState().commitNativeMediaResult(retained, file.relativePath, context)).rejects.toThrow('展示');
+    expect(store.getState().nodes[0].data.status).toBe('loading');
+    expect((await listNativeMediaTasks(projectId))[0]).toMatchObject({ status: 'submitted', localResults: [file] });
+    const saved = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((canvas) => canvas.id === canvasA)!;
+    expect((saved.nodes[0] as Node<BaseNodeData>).data.imageUrl).toBeUndefined();
   });
 
   it('交付等待期间编辑画布会中止事务，保留新编辑和原付费回执', async () => {
@@ -244,7 +347,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     const paused = pauseAfterDatabaseCommit();
     const delivery = store.getState().commitNativeMediaResult(receipt, mediaPath, context);
     await Promise.race([paused.entered.promise, delivery.then(() => { throw new Error('fixture expected committed continuation gap'); })]);
-    expect(store.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: mediaPath });
+    expect(store.getState().nodes[0].data).toMatchObject({ status: 'success', videoUrl: mediaUrl });
     expect((await listNativeMediaTasks(projectId))[0].status).toBe('delivered');
     store.setState((state) => ({ nodes: state.nodes.map((node) => ({ ...node, position: { x: 320, y: 240 },
       data: { ...node.data, prompt: '提交后的新编辑' } })) }));
@@ -252,9 +355,11 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     paused.gate.resolve(undefined); await delivery; expect(await queuedSave).toBe(canvasA);
     const current = store.getState().nodes[0];
     expect(current.position).toEqual({ x: 320, y: 240 });
-    expect(current.data).toMatchObject({ prompt: '提交后的新编辑', status: 'success', videoUrl: mediaPath });
+    expect(current.data).toMatchObject({ prompt: '提交后的新编辑', status: 'success', videoUrl: mediaUrl });
     const saved = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((item) => item.id === canvasA)!.nodes[0] as Node<BaseNodeData>;
-    expect(saved.position).toEqual(current.position); expect(saved.data).toMatchObject(current.data);
+    expect(saved.position).toEqual(current.position);
+    expect(saved.data).toMatchObject({ prompt: '提交后的新编辑', status: 'success', videoUrl: mediaPath, relativePath: mediaPath });
+    expect(saved.data).not.toHaveProperty('filePath');
     expect(store.getState().history).toHaveLength(2);
   });
 
@@ -274,7 +379,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     await store.getState().commitNativeMediaResult(receipt, mediaPath, context);
     expect(await queuedSave).toBe(canvasA);
     expect(store.getState().nodes[0].position).toEqual({ x: 90, y: 70 });
-    expect(store.getState().nodes[0].data).toMatchObject({ prompt: 'complete时的新编辑', status: 'success', videoUrl: mediaPath });
+    expect(store.getState().nodes[0].data).toMatchObject({ prompt: 'complete时的新编辑', status: 'success', videoUrl: mediaUrl });
     const saved = (await readNativeProjectCapture(projectId))!.aggregate.canvases.find((item) => item.id === canvasA)!.nodes[0] as Node<BaseNodeData>;
     expect(saved.data).toMatchObject({ prompt: 'complete时的新编辑', status: 'success', videoUrl: mediaPath });
   });

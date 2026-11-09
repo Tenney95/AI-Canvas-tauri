@@ -247,8 +247,10 @@ export function cancelNodePolling(nodeId: string, preservePending = false): void
 /** 轮询正常结束/失败后清理注册表（不调用 abort） */
 export function cleanupNodePolling(nodeId: string, expectedSignal?: AbortSignal): boolean {
   if (expectedSignal && abortControllers.get(nodeId)?.signal !== expectedSignal) return false;
+  const projectId = runtime.pollingProjects.get(nodeId);
   abortControllers.delete(nodeId);
   runtime.pollingProjects.delete(nodeId);
+  if (projectId) void resumeNativeMediaLocalDelivery(projectId, nodeId).catch(() => undefined);
   return true;
 }
 
@@ -486,6 +488,7 @@ export function registerMediaNodeOperation(nodeId: string, ownsGeneration = fals
     if (operations.size === 0 && activeMediaOperations.get(key) === operations) {
       activeMediaOperations.delete(key);
       latestMediaOperationOwners.delete(key);
+      if (projectId) void resumeNativeMediaLocalDelivery(projectId, nodeId).catch(() => undefined);
     }
   };
   // 新尝试结束也不让旧尝试重新取得保存资格；运行时身份不进入持久化。
@@ -495,6 +498,36 @@ export function registerMediaNodeOperation(nodeId: string, ownsGeneration = fals
 
 function isMediaOperationActive(projectId: string, nodeId: string): boolean {
   return activeMediaOperations.has(JSON.stringify([projectId, nodeId]));
+}
+
+/** 原生结果的自动入口；忙节点不抢原调用，缺缓存时仅允许续取已确认的原 CCC 图片。 */
+export async function resumeNativeMediaLocalDelivery(canvasId: string, nodeId?: string): Promise<void> {
+  if (runtime.stoppedProjectIds.has(canvasId)) return;
+  const context = captureLegacyCanvasContext(useAppStore.getState());
+  if (!context || context.modelGeneration !== 1 || context.canvasId !== canvasId) return;
+  const { resumeNativeMediaLocalResults } = await import('./nativeMediaAutoDelivery');
+  await resumeNativeMediaLocalResults(canvasId, { nodeId, allowOriginalCccTaskQuery: true, isNodeBusy: (projectId, targetId) =>
+    isMediaOperationActive(projectId, targetId) || runtime.pollingProjects.get(targetId) === projectId && abortControllers.has(targetId) });
+}
+
+const nativeCanvasReadiness = new Map<string, Promise<void>>();
+/** 只订阅本次画布权威身份及忙标记，不按每次 Store 更新重扫账本。 */
+function resumeNativeMediaWhenReady(context: import('../types/project').CanvasContext): Promise<void> {
+  const key = `${context.projectId}/${context.canvasId}/${context.runtimeEpoch}`;
+  const existing = nativeCanvasReadiness.get(key); if (existing) return existing;
+  const work = new Promise<void>((resolve, reject) => {
+    let unsubscribe = () => {};
+    const inspect = () => {
+      const state = useAppStore.getState(), actual = state.projectExecutionContext;
+      if (!actual || state.currentProjectId !== context.canvasId
+        || !isProjectExpectedContextCurrent(context, actual, { checkCanvasRevision: false })) { unsubscribe(); resolve(); return; }
+      if (!isProjectExpectedContextCurrent(context, state, { checkCanvasRevision: false })) return;
+      unsubscribe();
+      void resumeNativeMediaLocalDelivery(context.canvasId).then(resolve, reject);
+    };
+    unsubscribe = useAppStore.subscribe(inspect); inspect();
+  }).finally(() => { if (nativeCanvasReadiness.get(key) === work) nativeCanvasReadiness.delete(key); });
+  nativeCanvasReadiness.set(key, work); return work;
 }
 
 function receiptForTask(task: PendingTask): MediaTaskReceipt {
@@ -2711,6 +2744,12 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
   if (runtime.stoppedProjectIds.has(projectId)) return;
   const store = useAppStore.getState();
   if (store.currentProjectId !== projectId) return;
+  const native = store.projectExecutionContext;
+  if (native?.kind === 'canvas' && native.modelGeneration === 1 && native.canvasId === projectId) {
+    await resumeNativeMediaWhenReady(native); return;
+  }
+  // 新结构的临时停写态不能落到旧队列孤儿扫描，避免误报“没有任务身份”。
+  if ((store.projects.find((project) => project.id === projectId) as { nativeView?: unknown } | undefined)?.nativeView) return;
   const tasks = getPendingTasksForProject(projectId);
 
   // 批量图片的远端任务只挂在源节点上，同组占位节点也属于该任务的恢复范围。

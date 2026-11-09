@@ -16,6 +16,12 @@ const mocks = vi.hoisted(() => ({
   readDir: vi.fn(),
   notifyProjectDiskChanged: vi.fn(),
   resolveUniqueDestPath: vi.fn(async (dir: string, name: string) => `${dir}/${name}`),
+  nativeSelection: vi.fn(), invoke: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<typeof import('@tauri-apps/api/core')>(), invoke: mocks.invoke }));
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', async (original) => ({
+  ...await original<typeof import('../../src/services/indexedDb/nativeProjectRepository')>(), readNativeProjectSelection: mocks.nativeSelection,
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
@@ -107,6 +113,7 @@ describe('project loading tolerates asset recovery failures', () => {
     mocks.mkdir.mockResolvedValue(undefined);
     mocks.stat.mockReset();
     mocks.readDir.mockReset();
+    mocks.nativeSelection.mockReset(); mocks.invoke.mockReset();
   });
 
   it('新结构将本地展示地址保存为相对素材引用并恢复同一画布的地址', async () => {
@@ -132,6 +139,67 @@ describe('project loading tolerates asset recovery failures', () => {
     expect(restored.nodes).toMatchObject([{ data: { assetId: 'asset-1', relativePath: 'image.png', imageUrl: undefined, output: undefined } }]);
     const saved = await serializeProjectRecord(restored);
     expect(saved.nodes).toMatchObject([{ data: { assetId: 'asset-1', relativePath: 'image.png', output: 'image.png' } }]);
+  });
+
+  it('已交付摘要产物在普通fs.exists失败时从明确主根和子根恢复全部媒体展示，一次加载内去重SHA读取', async () => {
+    const owner = 'p2-11111111-1111-4111-8111-111111111111', canvasId = 'c2-22222222-2222-4222-8222-222222222222';
+    const primary = 'r2-11111111-1111-4111-8111-111111111111', child = 'r2-33333333-3333-4333-8333-333333333333';
+    const operationId = '44444444-4444-4444-8444-444444444444';
+    mocks.getNativeProjectOwner.mockReturnValue(owner);
+    mocks.exists.mockReset().mockRejectedValue(new Error('ordinary fs permission unavailable'));
+    mocks.identifyAsset.mockClear(); mocks.resolveIndexedAssetPath.mockClear();
+    mocks.nativeSelection.mockResolvedValue({ project: { id: owner, storageRootRef: primary, storageBindings: [{ rootRef: primary }, { rootRef: child }] },
+      canvas: { id: canvasId, storageRootRef: primary } });
+    mocks.invoke.mockImplementation(async (command: string, input: { rootRef?: string; selectedPaths?: string[]; assetsDir?: string }) => {
+      if (command === 'resolve_native_project_media_subroot') return `/project/data/roots/${input.rootRef}`;
+      if (command === 'inspect_project_archive_assets') return input.selectedPaths!.map((path) => ({ path, bytes: 10, sha256: /[a-f0-9]{64}/.exec(path)![0] }));
+      throw new Error(`unexpected native fixture command: ${command}`);
+    });
+    const types = ['ai-image', 'ai-animation', 'ai-panorama', 'source-image', 'ai-video', 'source-video', 'ai-audio', 'source-audio'] as const;
+    const nodes = types.map((type, ordinal) => {
+      const image = type.includes('image') || type === 'ai-animation' || type === 'ai-panorama';
+      const category = image ? 'image' : type.includes('video') ? 'video' : 'audio';
+      const sha256 = category === 'image' ? 'a'.repeat(64) : category === 'video' ? 'b'.repeat(64) : 'c'.repeat(64);
+      const relativePath = category === 'image' ? `imports/retained-${sha256}/${sha256}.png` : `media/${sha256}.${category === 'video' ? 'mp4' : 'wav'}`;
+      return { id: `result-${ordinal}`, type, data: { label: type, type, status: 'success', relativePath, artifactId: `native-media-${operationId}${ordinal ? `-${ordinal}` : ''}`,
+        storageRootRef: ordinal === 3 ? child : primary, imageUrl: undefined, videoUrl: undefined, audioUrl: undefined, output: relativePath } };
+    });
+    const restored = await restoreProjectRecord({ id: canvasId, name: '原画布', createdAt: 1, updatedAt: 1, nodes, edges: [] });
+    for (const [ordinal, node] of (restored.nodes as typeof nodes).entries()) {
+      const root = ordinal === 3 ? `/project/data/roots/${child}` : '/project/data';
+      const mediaKey = types[ordinal].includes('audio') ? 'audioUrl' : types[ordinal].includes('video') ? 'videoUrl' : 'imageUrl';
+      expect(node.data).toMatchObject({ relativePath: nodes[ordinal].data.relativePath,
+        [mediaKey]: `asset://localhost${root}/${nodes[ordinal].data.relativePath}`, output: `asset://localhost${root}/${nodes[ordinal].data.relativePath}` });
+    }
+    expect(mocks.nativeSelection).toHaveBeenCalledOnce();
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'inspect_project_archive_assets')).toHaveLength(4);
+    expect(mocks.invoke).toHaveBeenCalledWith('resolve_native_project_media_subroot', { projectId: owner, rootRef: child, create: false });
+    expect(mocks.identifyAsset).not.toHaveBeenCalled(); expect(mocks.resolveIndexedAssetPath).not.toHaveBeenCalled();
+    const persisted = await serializeProjectRecord(restored);
+    for (const [ordinal, node] of (persisted.nodes as typeof nodes).entries()) {
+      const mediaKey = types[ordinal].includes('audio') ? 'audioUrl' : types[ordinal].includes('video') ? 'videoUrl' : 'imageUrl';
+      expect(node.data).toMatchObject({ relativePath: nodes[ordinal].data.relativePath, storageRootRef: nodes[ordinal].data.storageRootRef,
+        [mediaKey]: nodes[ordinal].data.relativePath, output: nodes[ordinal].data.relativePath });
+      expect(node.data).not.toHaveProperty('filePath');
+    }
+    expect(mocks.identifyAsset).not.toHaveBeenCalled();
+  });
+
+  it.each(['sha', 'root'] as const)('已交付摘要产物%s失配时保留身份且不借索引或主根同名文件复活展示', async (failure) => {
+    const owner = 'p2-11111111-1111-4111-8111-111111111111', canvasId = 'c2-22222222-2222-4222-8222-222222222222';
+    const primary = 'r2-11111111-1111-4111-8111-111111111111', other = 'r2-33333333-3333-4333-8333-333333333333';
+    const relativePath = `media/${'a'.repeat(64)}.png`;
+    mocks.getNativeProjectOwner.mockReturnValue(owner); mocks.exists.mockReset().mockResolvedValue(true);
+    mocks.resolveIndexedAssetPath.mockReset().mockResolvedValue(`/project/data/${relativePath}`);
+    mocks.nativeSelection.mockResolvedValue({ project: { id: owner, storageRootRef: primary, storageBindings: [{ rootRef: primary }] }, canvas: { id: canvasId, storageRootRef: primary } });
+    mocks.invoke.mockResolvedValue([{ path: relativePath, bytes: 10, sha256: 'b'.repeat(64) }]);
+    const restored = await restoreProjectRecord({ id: canvasId, name: '原画布', createdAt: 1, updatedAt: 1, edges: [],
+      nodes: [{ id: 'result', type: 'ai-image', data: { label: '图片', type: 'ai-image', status: 'success', assetId: 'unrelated-asset',
+        artifactId: 'native-media-44444444-4444-4444-8444-444444444444', relativePath, storageRootRef: failure === 'root' ? other : primary,
+        imageUrl: relativePath, output: relativePath } }] });
+    expect(restored.nodes).toMatchObject([{ data: { relativePath, assetId: 'unrelated-asset', imageUrl: undefined, output: undefined } }]);
+    expect(mocks.resolveIndexedAssetPath).not.toHaveBeenCalled();
+    if (failure === 'root') expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('新结构风格参考图仅用模型允许的字段持久化，并恢复可用文件', async () => {

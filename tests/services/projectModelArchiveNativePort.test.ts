@@ -1,7 +1,7 @@
 /** P5 原生 IPC 适配回归源；不触碰真实文件或原生服务，尚未运行。 */
 import { webcrypto } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createBoundProjectModelArchiveExportPort, createNativeProjectModelArchivePort } from '../../src/services/projectModelArchiveNativePort';
+import { createBoundProjectModelArchiveExportPort, createBoundProjectModelArchiveImportPort, createNativeProjectModelArchivePort } from '../../src/services/projectModelArchiveNativePort';
 import { buildProjectExchangeSnapshotV2 } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
 import type { ProjectArchiveBusinessV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
@@ -11,7 +11,8 @@ import type { ProjectModelFixtureBusinessSession } from '../../src/types/project
 const native = vi.hoisted(() => ({ invoke: vi.fn(), existing: new Set<string>() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ exists: async (path: string) => native.existing.has(path) }));
-vi.mock('../../src/services/fileService', () => ({ projectArchiveFixtureDirectory: async (_db: string, relative: string) => `fixture/${relative}` }));
+vi.mock('../../src/services/fileService', () => ({ projectArchiveFixtureDirectory: async (_db: string, relative: string) => `fixture/${relative}`,
+  getBaseDir: async () => 'authorized', joinPath: (...segments: string[]) => segments.join('/') }));
 vi.mock('../../src/services/fs/projectArchiveFixtureFiles', () => ({ createProjectArchiveFixturePreviewDirectory: vi.fn() }));
 vi.mock('../../src/services/projectModelPreRestoreBackup', () => ({ createProjectModelPreRestoreBackupService: () => ({ create: vi.fn(), verify: vi.fn(), verifyCommit: vi.fn() }) }));
 
@@ -61,7 +62,7 @@ beforeEach(() => {
 });
 describe('P5 native file projection', () => {
   it('新项目导出只使用原生绑定的主根和逻辑子根，不接受其他目录', async () => {
-    const { capture } = await setup();
+    const { capture, files } = await setup();
     const projectId = 'p2-00000000-0000-4000-8000-000000000001';
     const rootA = 'r2-00000000-0000-4000-8000-000000000002', rootB = 'r2-00000000-0000-4000-8000-000000000003';
     capture.aggregate.project.id = projectId;
@@ -73,13 +74,15 @@ describe('P5 native file projection', () => {
     ];
     capture.exchange!.identities.find((item) => item.sourceId === 'A')!.localId = rootA;
     capture.exchange!.identities.find((item) => item.sourceId === 'B')!.localId = rootB;
-    native.existing.add('authorized/main'); native.existing.add('authorized/secondary');
+    const physicalRoot = 'authorized/人间有差-00000000', physicalChild = `${physicalRoot}/roots/${rootB}`;
+    native.existing.add(physicalRoot); native.existing.add(physicalChild);
     native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
-      if (command === 'resolve_native_project_media_root') return 'authorized/main';
-      if (command === 'resolve_native_project_media_subroot') return 'authorized/secondary';
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'resolve_native_project_media_subroot') return physicalChild;
+      if (command === 'pack_project_archive') return { operationId: args.operationId, publicationRef: 'opaque-ref', archiveSha256: hash };
       if (command === 'inspect_project_archive_assets') return [
         ...(args.includeImportPaths as string[]).map((path) => ({ path, bytes: 3, sha256: hash })),
-        ...(args.assetsDir === 'authorized/main' ? [{ path: '.ai-canvas-native-project.json', bytes: 3, sha256: hash },
+        ...(args.assetsDir === physicalRoot ? [{ path: '.ai-canvas-native-project.json', bytes: 3, sha256: hash },
           { path: 'roots/unfinished/retained.png', bytes: 3, sha256: hash }] : []),
       ];
       throw new Error('unexpected command');
@@ -87,9 +90,64 @@ describe('P5 native file projection', () => {
     const port = createBoundProjectModelArchiveExportPort(projectId, 'output');
     const result = await port.inspectAssets(capture);
     expect(result.map((item) => item.rootRef)).toEqual([rootA, rootB]);
+    expect(result.map((item) => item.localAbsolutePath)).toEqual([
+      `${physicalRoot}/imports/import-op-root-0/same.png`, `${physicalChild}/imports/import-op-root-1/same.png`,
+    ]);
+    expect(capture.aggregate.project.dataFolder).toBe(`project-${projectId}`);
+    const exportOperation = { operationId: 'export-op', exchange: capture.exchange } as ProjectModelTransferExportJournal;
+    await port.pack(exportOperation, [{ path: 'manifest.json', content: '{"formatVersion":4}' }], capture, files, result);
+    const packed = native.invoke.mock.calls.find(([command]) => command === 'pack_project_archive')![1];
+    expect(packed.sourceRoots).toEqual([{ rootRef: 'root-0', directory: physicalRoot }, { rootRef: 'root-1', directory: physicalChild }]);
+    expect(JSON.stringify(packed.entries)).not.toContain(physicalRoot);
     expect(native.invoke).toHaveBeenCalledWith('resolve_native_project_media_subroot', { projectId, rootRef: rootB, create: false });
     capture.aggregate.project.storageBindings[1].folderName = `project-${projectId}/roots/../../outside`;
     await expect(port.inspectAssets(capture)).rejects.toThrow('素材根不属于该新项目');
+  });
+
+  it.each(['readable', 'existing-id'] as const)('bound导入%s物理目录沿原journal续接，逻辑目录不重算且重启不重发已发布子操作', async (binding) => {
+    const { operation, source } = await setup();
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001';
+    const rootA = 'r2-00000000-0000-4000-8000-000000000002', rootB = 'r2-00000000-0000-4000-8000-000000000003';
+    const logicalFolder = `project-${projectId}`, physicalRoot = `authorized/${binding === 'readable' ? '导入副本-00000000' : logicalFolder}`;
+    const physicalChild = `${physicalRoot}/roots/${rootB}`, sourceRef = 'native-import-00000000-0000-4000-8000-000000000004';
+    operation.targetProjectId = projectId; operation.sourceRef = sourceRef;
+    operation.next.project = { ...operation.next.project, id: projectId, dataFolder: logicalFolder, storageRootRef: rootA,
+      storageBindings: [{ rootRef: rootA, folderName: logicalFolder, sourceRecordIds: [], source: 'project-managed' },
+        { rootRef: rootB, folderName: `${logicalFolder}/roots/${rootB}`, sourceRecordIds: [], source: 'project-managed' }] };
+    operation.next.content.projectId = projectId;
+    operation.idMap.find((item) => item.kind === 'project')!.localId = projectId;
+    operation.idMap.find((item) => item.sourceId === 'A')!.localId = rootA;
+    operation.idMap.find((item) => item.sourceId === 'B')!.localId = rootB;
+    operation.media.forEach((item, ordinal) => { item.rootRef = ordinal ? rootB : rootA; });
+    let lost = false;
+    native.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'resolve_native_project_media_subroot') return physicalChild;
+      if (command === 'inspect_project_archive_assets') return (args.selectedPaths as string[]).map((path) => ({ path, bytes: 3, sha256: hash }));
+      if (command === 'publish_project_import_assets') {
+        native.existing.add(`${args.projectDir}/imports/${args.operationId}`);
+        if (!lost) { lost = true; throw new Error('lost response'); }
+        return;
+      }
+      throw new Error(`unexpected native command: ${command}`);
+    });
+    const original = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
+    expect(await original.captureImportSource!(source)).toEqual({ sourceRef, sourceFiles: operation.sourceFiles });
+    await expect(original.publishMedia(operation, source)).rejects.toThrow('lost response');
+    const restarted = createBoundProjectModelArchiveImportPort(projectId, operation.sourceRef!);
+    expect(await restarted.publishMedia(operation, source)).toBe(`media_v1_${operation.operationId}`);
+    await restarted.verifyMediaPublication(operation, `media_v1_${operation.operationId}`);
+    const publishes = native.invoke.mock.calls.filter(([command]) => command === 'publish_project_import_assets');
+    expect(publishes).toHaveLength(2);
+    expect(publishes.map(([, args]) => args.projectDir)).toEqual([physicalRoot, physicalChild]);
+    expect(publishes.map(([, args]) => args.operationId)).toEqual(['import-op-root-0', 'import-op-root-1']);
+    expect(publishes.every(([, args]) => args.sourceRoots[0].directory === `authorized/${sourceRef}`)).toBe(true);
+    expect(operation.next.project.dataFolder).toBe(logicalFolder);
+    expect(operation.next.project.storageBindings.map((root) => root.folderName)).toEqual([logicalFolder, `${logicalFolder}/roots/${rootB}`]);
+    const inspectionRoots = native.invoke.mock.calls.filter(([command]) => command === 'inspect_project_archive_assets').map(([, args]) => args.assetsDir);
+    expect(inspectionRoots).toContain(`${physicalRoot}/imports/import-op-root-0`);
+    expect(inspectionRoots).toContain(physicalRoot); expect(inspectionRoots).toContain(physicalChild);
+    expect(native.invoke.mock.calls.some(([command]) => command === 'claim_native_project_media_root')).toBe(false);
   });
 
   it('扫描结果缺少当前正文引用时禁止打包', async () => {

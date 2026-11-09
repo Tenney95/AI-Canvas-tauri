@@ -1,5 +1,14 @@
 /** 对话助手媒体生成领域类型。 */
 import type { AudioOutputFormat, AudioTtsVoice } from './aiTypes';
+import type { CanvasContext } from './project';
+
+/** 只在内存中持有同一保存队列的位置，不得放入媒体回执或其它持久化对象。 */
+export interface NativeMediaSubmissionPreparation {
+  readonly context: CanvasContext;
+  readonly canvasRevision: number;
+  assertCurrent(): void;
+  release(): void;
+}
 
 export type MediaKind = 'image' | 'video' | 'audio';
 

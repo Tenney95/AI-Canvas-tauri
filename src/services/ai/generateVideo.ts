@@ -4,10 +4,10 @@
 import { isLocalMediaUrl, isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { resolveComfyRefmodMentionInputs } from '../../utils/comfyRefmodMention';
 import { videoInputData, videoInputFingerprint } from '../videoBatchPlanning';
-import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, registerNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
+import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, registerNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
 import { verifyNativeVideoImageReference, type NativeVideoImageReference } from '../nativeVideoImageReference';
 import { nativeBuiltinVideoProtocolDigest } from '../nativeBuiltinVideoProtocol';
-import { continueNativeMediaTask } from '../nativeMediaTaskContinuation';
+import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
 import { sha256BytesHex } from '../mediaDataUrl';
 import { projectModelSourceToken } from '../projectModelComparisonMaterial';
 import { isSafeNativeProtocolTaskId } from '../nativeProtocolContext';
@@ -974,6 +974,7 @@ async function generateVolcengineVideo(
   let remoteFailed = false;
   let remoteCancelled = false;
   let nativeTask: NativeMediaTaskRecord | undefined;
+  let nativePreparation: NativeMediaSubmissionPreparation | undefined;
   let nativeRemoteId: string | undefined;
   const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
@@ -1018,7 +1019,9 @@ async function generateVolcengineVideo(
     if (nativeContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
       await beforeSubmit?.();
       if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, nativeImageReference, 'media-input-v3', { preparedReferences: true });
+      nativePreparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(nativeContext);
+      signal?.throwIfAborted();
+      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, nativeImageReference, 'media-input-v3', { preparedReferences: true, preparation: nativePreparation });
       const protocolDigest = await nativeBuiltinVideoProtocolDigest('volcengine');
       nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: nodeId!,
         inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
@@ -1055,12 +1058,12 @@ async function generateVolcengineVideo(
       if (!nativeContext) throw new Error('原媒体画布已变化');
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
       if (nativeTask.imageReference) await verifyNativeVideoImageReference(nativeContext, nativeTask.nodeId, nativeTask.imageReference);
-      await assertNativeMediaPrepared(nativeTask);
+      await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
       await beforeSubmit?.();
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
       signal?.throwIfAborted();
     }
-    requestSent = true;
+    nativePreparation?.assertCurrent(); requestSent = true; nativePreparation?.release();
     const submitResp = await corsSafeFetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -1140,7 +1143,7 @@ async function generateVolcengineVideo(
       errorMessage: error instanceof Error ? error.message.slice(0, 500) : '视频请求失败',
     });
     if (nativeTask && requestSent && !remoteFailed) {
-      throw new Error(`火山视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`, { cause: error });
+      throw createNativeMediaPendingError(nativeTask, error);
     }
     if (receipt) {
       if (remoteFailed || !requestSent) {
@@ -1152,6 +1155,7 @@ async function generateVolcengineVideo(
     }
     throw error;
   } finally {
+    nativePreparation?.release();
     if (nodeId) cleanupNodePolling(nodeId, nodeSignal);
   }
 }

@@ -41,6 +41,8 @@ vi.mock('../../src/services/indexedDbService', async (importOriginal) => ({
   getProjectById: mocks.getProjectById,
 }));
 vi.mock('../../src/services/indexedDb/projectImportRepository', () => ({ listProjectImportRecoveries: async () => [] }));
+vi.mock('../../src/services/projectModelRouter', () => ({ listProjectCatalog: async () => (await mocks.getAllProjects())
+  .map((project: CanvasProject) => ({ dataModel: 'legacy', project })) }));
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/indexedDb/legacyProjectWriteGuard')>(),
   assertLegacyProjectWritesAllowed: async () => undefined,

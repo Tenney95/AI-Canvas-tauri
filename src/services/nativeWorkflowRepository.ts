@@ -1,6 +1,6 @@
 /** 工作流子提交与原任务的耐久收据。只保留身份、摘要和本机产物，不保留生成请求或媒体地址。 */
 import type { CanvasContext } from '../types/project';
-import type { NativeMediaLocalOutput, MediaKind } from '../types/media';
+import type { NativeMediaLocalOutput, NativeMediaSubmissionPreparation, MediaKind } from '../types/media';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
 import { validateNativeMediaTaskRecord, normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
 import { assertNoPendingNativeSharedSync, EXCHANGE, ROOTS, CANVASES, EPISODES, REVISIONS, TRANSFER, openNativeProjectDatabase,
@@ -147,12 +147,19 @@ function parentStatus(receipt: NativeWorkflowReceipt): NativeMediaTaskRecord['st
   if (!receipt.tasks.length || receipt.tasks.every((task) => task.state === 'failed')) return 'failed';
   return 'submitted';
 }
-export function beginNativeWorkflowSubmission(main: NativeMediaTaskRecord, slotId: string, options: NativeProjectOptions = {}) {
+export function beginNativeWorkflowSubmission(main: NativeMediaTaskRecord, slotId: string,
+  options: NativeProjectOptions & { preparation?: NativeMediaSubmissionPreparation } = {}) {
+  options.preparation?.assertCurrent();
   return change(main, async (receipt, current, tx) => {
     if (!['prepared', 'submitted'].includes(current.status)) return fail();
     await assertNoPendingNativeSharedSync(tx, current.ownerProjectId);
     const { project, canvas } = await readCanvasTarget(tx, current.ownerProjectId, current.canvasId);
     if (project.epoch !== current.projectEpoch || canvas.epoch !== current.canvasEpoch || canvas.episodeId !== current.episodeId) return fail();
+    const prepared = options.preparation;
+    prepared?.assertCurrent();
+    if (prepared && (prepared.context.projectId !== current.ownerProjectId || prepared.context.canvasId !== current.canvasId
+      || prepared.context.episodeId !== current.episodeId || prepared.context.projectEpoch !== current.projectEpoch
+      || prepared.context.canvasEpoch !== current.canvasEpoch || canvas.revision !== prepared.canvasRevision)) return fail();
     const slot = receipt.submissions.find((item) => item.id === slotId);
     if (!slot || slot.state !== 'prepared' || receipt.submissions.some((item) => item.state === 'unknown')) return fail();
     slot.state = 'unknown'; current.status = 'outcome-unknown';

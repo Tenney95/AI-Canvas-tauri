@@ -495,10 +495,11 @@ export function getNativeProjectOwner(id: string): string | undefined {
   return _nativeProjectOwners.get(id);
 }
 
-/** 仅在新建作品时认领独占根；已有未知目录不会被接管。 */
-export async function claimNativeProjectDataDir(projectId: string): Promise<string> {
+/** 新作品按创建时名称认领独占根；已有绑定复用原目录，未知目录不会被接管。 */
+export async function claimNativeProjectDataDir(projectId: string, projectName?: string): Promise<string> {
   if (!nativeOwnerId.test(projectId) || !isTauriEnv()) throw new Error('新项目素材目录不可用');
-  const directory = await invoke<string>('claim_native_project_media_root', { projectId });
+  const directory = await invoke<string>('claim_native_project_media_root', { projectId,
+    ...(projectName !== undefined ? { projectName } : {}) });
   if (typeof directory !== 'string' || !directory) throw new Error('新项目素材目录不可用');
   return directory;
 }

@@ -4,18 +4,23 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 import type { CanvasContext } from '../../src/types/project';
 import type { ComfyOutputs } from '../../src/services/comfyOutputs';
+import type { NativeMediaSubmissionPreparation } from '../../src/types/media';
 const driver = vi.hoisted(() => ({ state: {} as Record<string, unknown>, listeners: new Set<() => void>(), persist: vi.fn(),
-  read: vi.fn(), capture: vi.fn(), query: vi.fn(), project: vi.fn() }));
+  read: vi.fn(), capture: vi.fn(), query: vi.fn(), project: vi.fn(), beginPreparation: vi.fn(),
+  preparations: [] as Array<NativeMediaSubmissionPreparation & { release: ReturnType<typeof vi.fn> }> }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state,
   subscribe: (listener: () => void) => { driver.listeners.add(listener); return () => driver.listeners.delete(listener); } } }));
 vi.mock('../../src/services/fileService', async (original) => ({ ...await original<typeof import('../../src/services/fileService')>(), persistMediaUrlToProjectData: driver.persist }));
 vi.mock('../../src/services/nativeVideoSubmission', () => ({ isNativeVideoSubmissionGuard: (guard: unknown) => typeof guard === 'function',
-  captureNativeVideoSubmissionBaseline: async () => ({ inputFingerprint: 'a'.repeat(64), canvasRevision: 0 }), assertNativeVideoSubmissionInput: async () => {} }));
+  captureNativeVideoSubmissionBaseline: async (_context: unknown, _nodeId: unknown, _image: unknown, _scheme: unknown,
+    options?: { preparation?: NativeMediaSubmissionPreparation }) => {
+    options?.preparation?.assertCurrent(); return { inputFingerprint: 'a'.repeat(64), canvasRevision: options?.preparation?.canvasRevision ?? 0 };
+  }, assertNativeVideoSubmissionInput: async () => {} }));
 vi.mock('../../src/services/nativeMediaLocalResult', () => ({ readNativeMediaLocalResult: driver.read, captureNativeMediaLocalResult: driver.capture }));
 vi.mock('../../src/services/nativeMediaMessages', () => ({ projectNativeMediaMessages: driver.project }));
 vi.mock('../../src/services/comfyPolling', () => ({ pollComfyHistory: driver.query, comfyFetch: vi.fn() }));
 
-import { createNativeProject } from '../../src/services/indexedDb/nativeProjectRepository';
+import { createNativeProject, readNativeProjectCapture, saveNativeProjectView } from '../../src/services/indexedDb/nativeProjectRepository';
 import { prepareNativeMediaTask, listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import { bindNativeMediaOrigin } from '../../src/services/nativeMediaOrigin';
 import { createNativeWorkflowReceipt, beginNativeWorkflowSubmission, retainNativeWorkflowSubmission, retainNativeWorkflowTaskOutputs } from '../../src/services/nativeWorkflowRepository';
@@ -25,9 +30,17 @@ import { registerNativeVideoSubmissionGuard } from '../../src/services/nativeVid
 const base = 'http://127.0.0.1:8188';
 const output = (letter: string) => ({ relativePath: `media/${letter.repeat(64)}.png`, bytes: 12, sha256: letter.repeat(64), category: 'image' as const });
 let releases: Array<() => void>;
+function preparation(context: CanvasContext, canvasRevision = 0) {
+  let released = false;
+  const lease = { context, canvasRevision, release: vi.fn(() => { released = true; }), assertCurrent: () => {
+    if (released || driver.state.currentProjectId !== context.canvasId) throw new Error('原准备窗口已释放或画布变化');
+  } };
+  driver.preparations.push(lease); return lease;
+}
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory()); vi.stubGlobal('IDBKeyRange', IDBKeyRange); vi.stubGlobal('crypto', webcrypto); releases = [];
   driver.listeners.clear(); driver.read.mockReset().mockResolvedValue(undefined); driver.project.mockReset().mockResolvedValue(undefined);
+  driver.preparations = []; driver.beginPreparation.mockReset().mockImplementation(async (context: CanvasContext) => preparation(context));
   driver.capture.mockReset().mockImplementation(async (_canvas: string, path: string) => output(path.includes('b') ? 'b' : 'a'));
   driver.persist.mockReset().mockImplementation(async (url: string) => ({ filePath: url.includes('b.png') ? 'b' : 'a' }));
   driver.query.mockReset().mockImplementation(async (_base: string, _taskId: string, _message: string, extract: (outputs: ComfyOutputs) => unknown) =>
@@ -40,7 +53,7 @@ async function fixture() {
     canvasId: aggregate.canvas!.id, episodeId: null, projectEpoch: aggregate.project.epoch, canvasEpoch: aggregate.canvas!.epoch, canvasRevision: 0 };
   const workflow = { id: 'workflow-fixture', name: '合成图片', category: 'ai-image', adapterType: 'comfyui', fileContent: '{}' };
   driver.state = { currentProjectId: context.canvasId, projectExecutionContext: context, projectLoadStatus: 'ready', nodes: [], edges: [],
-    workflows: [workflow], config: { comfyUIUrl: base, providers: {} }, projects: [] };
+    workflows: [workflow], config: { comfyUIUrl: base, providers: {} }, projects: [], beginNativeMediaSubmissionPreparation: driver.beginPreparation };
   const nodeId = `media-message-${crypto.randomUUID()}`;
   releases.push(bindNativeMediaOrigin(context.canvasId, nodeId, { conversationId: 'original-conversation', messageId: 'original-message', deliveryMode: 'chat' },
     { material: 'original-input', assertCurrent: () => {} }));
@@ -98,4 +111,37 @@ it('引用准备后切到旧项目，原native守卫仍要求新仓储失败关�
   expect(isNativeWorkflowExecution(guard)).toBe(true);
   await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial: {}, beforeSubmit: guard, submit })).rejects.toThrow('守卫');
   expect(submit).not.toHaveBeenCalled(); expect(driver.query).not.toHaveBeenCalled();
+});
+
+it('两个POST分别短准备，网络期间同正文自动保存可推进版本且不改原sourceRevision', async () => {
+  const { context, nodeId, descriptor } = await fixture();
+  const save = async () => {
+    const capture = (await readNativeProjectCapture(context.projectId))!, canvas = capture.aggregate.canvases[0];
+    return saveNativeProjectView({ projectId: context.projectId, expectedProjectEpoch: context.projectEpoch, canvasId: context.canvasId,
+      episodeId: null, expectedCanvasEpoch: context.canvasEpoch, expectedCanvasRevision: canvas.revision,
+      document: { nodes: canvas.nodes, edges: canvas.edges, groups: canvas.groups } });
+  };
+  driver.beginPreparation.mockImplementation(async () => preparation(context, (await save()).canvas.revision));
+  const submit = vi.fn(async (index: number) => {
+    expect(driver.preparations[index].release).toHaveBeenCalledOnce();
+    await save(); // 已释放的网络等待窗口可正常自动保存。
+    return { taskId: `original-task-${index}` };
+  });
+  await expect(submitNativeWorkflowTask({ nodeId, descriptor, count: 2, requestMaterial: {}, beforeSubmit: () => {}, submit }))
+    .rejects.toMatchObject({ name: 'NativeMediaTaskDelivered' });
+  expect(submit).toHaveBeenCalledTimes(2); expect(driver.beginPreparation).toHaveBeenCalledTimes(2);
+  expect(driver.preparations.map((lease) => lease.canvasRevision)).toEqual([1, 3]);
+  expect((await listNativeMediaTasks(context.projectId))[0]).toMatchObject({ sourceCanvasRevision: 1, status: 'delivered' });
+});
+
+it('准备后的guard或sidecar失败均释放短窗口，未发送的主回执不遗留prepared', async () => {
+  const { context, nodeId, descriptor } = await fixture();
+  const submit = vi.fn(async () => ({ taskId: 'never-submitted' }));
+  const guard = vi.fn(() => { if (driver.preparations.length) throw new Error('原输入已变化'); });
+  await expect(submitNativeWorkflowTask({ nodeId, descriptor, requestMaterial: {}, beforeSubmit: guard, submit })).rejects.toThrow('原输入已变化');
+  expect(driver.preparations[0].release).toHaveBeenCalledOnce(); expect(submit).not.toHaveBeenCalled();
+  expect((await listNativeMediaTasks(context.projectId))[0].status).toBe('failed');
+  await expect(submitNativeWorkflowTask({ nodeId, descriptor, count: 0, requestMaterial: {}, beforeSubmit: () => {}, submit })).rejects.toThrow();
+  expect(driver.preparations[1].release).toHaveBeenCalledOnce();
+  expect((await listNativeMediaTasks(context.projectId)).every((row) => row.status === 'failed')).toBe(true);
 });

@@ -3,7 +3,8 @@ import { createHash, webcrypto } from 'node:crypto';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CanvasContext } from '../../src/types/project';
-import { createNativeProject, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
+import type { NativeMediaSubmissionPreparation } from '../../src/types/media';
+import { createNativeProject, readNativeProjectCapture, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
 import { listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 
 const driver = vi.hoisted(() => ({ context: undefined as CanvasContext | undefined, state: {} as Record<string, unknown>, revision: 0,
@@ -42,6 +43,21 @@ async function fixture() {
     projectEpoch: root.project.epoch, canvasEpoch: canvas.epoch, canvasRevision: canvas.revision, episodeId: null, runtimeEpoch: 'initial-view' };
   driver.context = context; driver.revision = canvas.revision;
   driver.state = { currentProjectId: canvas.id, projectExecutionContext: context, nodes: canvas.nodes,
+    beginNativeMediaSubmissionPreparation: async (expected: CanvasContext): Promise<NativeMediaSubmissionPreparation> => {
+      const captured = structuredClone(expected); let released = false;
+      const assertCurrent = () => {
+        const current = driver.context;
+        if (released || !current || captured.projectId !== current.projectId || captured.canvasId !== current.canvasId
+          || captured.runtimeEpoch !== current.runtimeEpoch) throw new Error('隔离准备上下文已变化');
+      };
+      assertCurrent();
+      const capture = await readNativeProjectCapture(captured.projectId), savedCanvas = capture!.aggregate.canvases.find((item) => item.id === captured.canvasId)!;
+      const saved = await saveNativeCanvas({ projectId: captured.projectId, canvasId: captured.canvasId, episodeId: captured.episodeId,
+        expectedProjectEpoch: captured.projectEpoch, expectedCanvasEpoch: captured.canvasEpoch, expectedCanvasRevision: savedCanvas.revision,
+        document: { nodes: savedCanvas.nodes, edges: savedCanvas.edges, groups: savedCanvas.groups } });
+      driver.revision = saved.revision; assertCurrent();
+      return { context: captured, canvasRevision: saved.revision, assertCurrent, release: () => { released = true; } };
+    },
     config: { providers: { custom: { apiKey: 'synthetic-key', baseUrl: 'https://general.example/v1' } },
       generalModels: [{ id: 'model', name: '合成音频', modelId: 'remote-audio', category: 'audio', providerConfigId: 'custom' }] } };
   return { context, input: { apiKey: 'synthetic-key', baseUrl: 'https://general.example/v1', modelName: 'remote-audio', prompt: '合成输入',

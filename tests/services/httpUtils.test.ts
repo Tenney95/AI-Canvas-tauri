@@ -23,12 +23,39 @@ describe('HTTP response failure classification', () => {
     { status: 200, payload: { data: [{ status: 'failed' }, { task_id: 'accepted', status: 'pending' }] }, definitive: false },
     { status: 200, payload: { status: 'error', message: 'failed' }, definitive: false },
     { status: 200, payload: { data: [] }, definitive: false },
+    { status: 200, payload: { error: { code: 'content_policy_violation', message: 'Non posso generare questa immagine.' } }, definitive: true },
+    { status: 200, payload: { data: [{ error: { code: 'content_policy_violation' } }, { type: 'invalid_request_error' }] }, definitive: true },
+    { status: 200, payload: { data: [{ error: { code: 'content_policy_violation' } }, { status: 'failed' }] }, definitive: true },
+    { status: 200, payload: { data: [{ status: 'failed', result: { images: [] }, error: { code: 'content_policy_violation' } }] }, definitive: true },
+    { status: 200, payload: { error: { code: 'content_policy_violation' }, data: [{ status: 'failed' }, { task_id: 'accepted-original' }] }, definitive: false },
+    { status: 200, payload: { error: { code: 'content_policy_violation' }, data: [{ status: 'failed' }, { url: 'https://cdn.example/actual.png', error: { code: 'invalid_request_error' } }] }, definitive: false },
+    { status: 200, payload: { error: { code: 'content_policy_violation' }, data: [{ status: 'failed' }, { b64_json: 'AQID', error: { code: 'invalid_request_error' } }] }, definitive: false },
+    { status: 200, payload: { error: { code: 'content_policy_violation' }, data: [{ status: 'failed' }, { result: { images: [{ url: ['https://cdn.example/actual.png'] }] }, error: { code: 'invalid_request_error' } }] }, definitive: false },
+    { status: 200, payload: { error: { code: 'content_policy_violation' }, data: [{ error: { code: 'content_policy_violation' } }, { message: 'Non posso generare questa immagine.' }] }, definitive: false },
+    { status: 200, payload: { data: [{ status: 'success', error: { code: 'invalid_request_error' } }] }, definitive: false },
+    { status: 200, payload: { data: [{ task: { id: 'original-task', error: { code: 'invalid_request_error' } } }] }, definitive: false },
+    { status: 200, payload: { data: [{ error: { code: 'content_policy_violation' } }, null] }, definitive: false },
+    { status: 200, payload: { data: [{ error: { code: 'content_policy_violation' } }, { error: { code: 'unknown_provider_status' } }] }, definitive: false },
+    { status: 200, payload: { error: { message: 'Non posso generare questa immagine.' } }, definitive: false },
+    { status: 400, payload: { data: [{}] }, definitive: true },
+    { status: 401, payload: { data: [{ message: 'Request denied' }] }, definitive: true },
+    { status: 400, payload: { error: { code: 'content_policy_violation' }, data: [{ task_id: 'already-accepted' }, {}] }, definitive: false },
+    { status: 401, payload: { data: [{ url: 'https://cdn.example/actual.png' }] }, definitive: false },
+    { status: 429, payload: { data: [{}] }, definitive: false },
+    { status: 408, payload: { error: { code: 'content_policy_violation' }, data: [{ error: { code: 'content_policy_violation' } }] }, definitive: false },
+    { status: 504, payload: { data: [{ status: 'failed', error: { code: 'content_policy_violation' } }] }, definitive: false },
   ])('classifies HTTP $status with explicit evidence only: $definitive', ({ status, payload, definitive }) => {
     expect(classifyHttpResponseFailure(status, payload)).toBe(definitive);
   });
 });
 
 describe('HTTP response errors', () => {
+  it('保留内容审核拒绝的原文和结构化失败元数据，不把自然语言当作失败依据', async () => {
+    const message = 'Non posso generare questa immagine per motivi di sicurezza.';
+    await expect(parseResponseError(new Response(JSON.stringify({ error: { code: 'content_policy_violation', message } }), { status: 400 }), '拒绝'))
+      .rejects.toMatchObject({ status: 400, definitiveFailure: true, message });
+    expect(classifyHttpResponseFailure(200, { error: { message } })).toBe(false);
+  });
   it('keeps the existing parsed message and finite metadata without retaining the response object', async () => {
     const payload = { error: { code: 'rate_limit_exceeded', message: 'Request rejected' }, debug: 'private response detail' };
     const error = await parseResponseError(new Response(JSON.stringify(payload), { status: 429 }), '图片生成失败 (429)').catch((value: unknown) => value);

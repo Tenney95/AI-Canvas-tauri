@@ -1,5 +1,5 @@
 /** APIMart每个POST和每个原任务候选集合的耐久收据，不重新提交未知请求。 */
-import type { NativeApimartImageBatch, NativeMediaLocalResult } from '../../types/media';
+import type { NativeApimartImageBatch, NativeMediaLocalResult, NativeMediaSubmissionPreparation } from '../../types/media';
 import { validateNativeMediaTaskRecord, type NativeMediaTaskRecord } from './nativeMediaTaskRepository';
 import { nativeImageBatchResults, nativeImageBatchSettled } from '../nativeImageBatch';
 import { configValuesEqual } from '../configPatch';
@@ -14,7 +14,7 @@ function parentStatus(batch: NativeApimartImageBatch): NativeMediaTaskRecord['st
   return 'submitted';
 }
 async function change(record: NativeMediaTaskRecord, mutate: (current: NativeMediaTaskRecord) => void,
-  options: NativeProjectOptions = {}, begin = false, allowDeliveredReceipt = false): Promise<NativeMediaTaskRecord> {
+  options: NativeProjectOptions & { preparation?: NativeMediaSubmissionPreparation } = {}, begin = false, allowDeliveredReceipt = false): Promise<NativeMediaTaskRecord> {
   const original = validateNativeMediaTaskRecord(structuredClone(record));
   if (!original.apimartImageBatch) return fail();
   const db = await openNativeProjectDatabase(false, options); if (!db) return fail();
@@ -31,6 +31,11 @@ async function change(record: NativeMediaTaskRecord, mutate: (current: NativeMed
         req(tx.objectStore(CANVASES).get(current.canvasId)) as Promise<CanvasDocument | undefined>]);
       if (!project || !canvas || project.epoch !== current.projectEpoch || canvas.epoch !== current.canvasEpoch
         || canvas.projectId !== current.ownerProjectId || canvas.episodeId !== current.episodeId) return fail();
+      const prepared = options.preparation;
+      prepared?.assertCurrent();
+      if (prepared && (prepared.context.projectId !== current.ownerProjectId || prepared.context.canvasId !== current.canvasId
+        || prepared.context.episodeId !== current.episodeId || prepared.context.projectEpoch !== current.projectEpoch
+        || prepared.context.canvasEpoch !== current.canvasEpoch || canvas.revision !== prepared.canvasRevision)) return fail();
     }
     const wasReviewed = current.status === 'reviewed';
     const wasDelivered = current.status === 'delivered';
@@ -46,7 +51,9 @@ async function change(record: NativeMediaTaskRecord, mutate: (current: NativeMed
   }, [ROOTS, CANVASES, REVISIONS, TRANSFER, EXCHANGE], true); } finally { db.close(); }
 }
 /** 写前记录不确定状态后才能执行相应POST；重启后此槽位绝不重新发送。 */
-export function beginNativeImageBatchSubmission(record: NativeMediaTaskRecord, submissionId: string, options: NativeProjectOptions = {}) {
+export function beginNativeImageBatchSubmission(record: NativeMediaTaskRecord, submissionId: string,
+  options: NativeProjectOptions & { preparation?: NativeMediaSubmissionPreparation } = {}) {
+  options.preparation?.assertCurrent();
   return change(record, (current) => {
     const submission = current.apimartImageBatch!.submissions.find((item) => item.id === submissionId);
     if (!submission || submission.state !== 'prepared') return fail();

@@ -76,6 +76,7 @@ import { deleteLegacyProjectContent, swapLegacyEpisodeOrder } from '../services/
 import { ProjectImportCommittedError } from '../services/projectImportOutcome';
 import type { ProjectExpectedContext, EpisodeContent, EpisodeSettingsPolicy } from '../types/project';
 import type { NativeMediaTaskRecord } from '../services/indexedDb/nativeMediaTaskRepository';
+import type { NativeMediaSubmissionPreparation } from '../types/media';
 import { isProjectExpectedContextCurrent } from '../services/projectExecutionContext';
 import { videoInputFingerprintMaterial } from '../services/videoBatchPlanning';
 import { nativeMediaInputMaterial } from '../services/nativeMediaInput';
@@ -185,17 +186,20 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
     nodes: data.nodes as Node<BaseNodeData>[], edges: data.edges as Edge[], groups: getProjectGroups(data),
     ...(preserveHistory ? {} : { history: [], historyIndex: -1 }), dramaAssets: library,
   }));
+  if (canvas) void resumePendingTasks(activeId).catch(() => { /* 原缓存保留，下次原画布就绪再交付。 */ });
   return activeId;
 }
 
-async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, record: ProjectSaveData, guard?: () => void): Promise<string> {
+async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, record: ProjectSaveData, guard?: () => void,
+  reservation?: NativeRuntime): Promise<string> {
   const runtime = nativeRuntime.get(get);
   const binding = nativeBinding(state.projects.find((item) => item.id === record.id));
   if (!runtime || !binding || runtime.activeId !== record.id || (binding.canvasId ?? binding.projectId) !== record.id) throw new Error('新项目画布上下文不可用');
-  const prior = runtime.tail;
+  const reserved = reservation === runtime;
+  const prior = reserved ? Promise.resolve() : runtime.tail;
   const mediaGeneration = runtime.mediaGeneration ?? 0;
-  let release!: () => void;
-  runtime.tail = new Promise<void>((resolve) => { release = resolve; });
+  let release = () => {};
+  if (!reserved) runtime.tail = new Promise<void>((resolve) => { release = resolve; });
   try {
     await prior;
     guard?.();
@@ -970,6 +974,7 @@ export interface ProjectSlice {
   restoreProjectImport: (ownerId: string, recoveryId: string) => Promise<void>;
   /** 事务提交原媒体结果，保存并重载当前画布；原租约失效时不覆盖其他作品。 */
   commitNativeMediaResult: (record: NativeMediaTaskRecord, relativePath: string, expected: ProjectExpectedContext, signal?: AbortSignal) => Promise<void>;
+  beginNativeMediaSubmissionPreparation: (expected: import('../types/project').CanvasContext) => Promise<NativeMediaSubmissionPreparation>;
   /** 复制项目（含分集、对话与素材），复制完不切画布。 */
   duplicateProject: (id: string) => Promise<string | undefined>;
   deleteProject: (id: string) => Promise<void>;
@@ -1231,6 +1236,36 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   switchingProjectName: null,
   autoSaveFailure: null,
 
+  beginNativeMediaSubmissionPreparation: async (expected) => {
+    const context = structuredClone(expected), runtime = nativeRuntime.get(get);
+    const assertContext = () => {
+      const state = get();
+      if (context.modelGeneration !== 1 || !context.runtimeEpoch || !runtime || nativeRuntime.get(get) !== runtime
+        || runtime.activeId !== context.canvasId || projectImportsApplying.has(context.projectId)
+        || projectAssetSyncBarriers.has(context.projectId)
+        || !isProjectExpectedContextCurrent(context, state, { checkCanvasRevision: false })) throw new Error('原画布准备上下文已变化，未提交生成');
+    };
+    assertContext();
+    if (!runtime) throw new Error('原画布保存基线不可用');
+    const prior = runtime.tail;
+    let unlock!: () => void, released = false, ready = false;
+    runtime.tail = new Promise<void>((resolve) => { unlock = resolve; });
+    const release = () => { if (!released) { released = true; unlock(); } };
+    try {
+      // 先占原队列位置，再读取fresh状态强制保存；不能在自己的slot内重排saveSilent。
+      await prior; assertContext();
+      const state = get(), record = createCurrentProjectSaveRecord(state);
+      if (!record || record.id !== context.canvasId) throw new Error('原画布准备保存上下文不可用');
+      await saveNativeCurrentProject(get, state, record, assertContext, runtime);
+      assertContext();
+      const canvas = runtime.loaded.selection.canvas;
+      if (!canvas || canvas.id !== context.canvasId) throw new Error('原画布准备基线不可用');
+      ready = true;
+      return Object.freeze({ context: Object.freeze(context), canvasRevision: canvas.revision,
+        assertCurrent: () => { if (released || !ready) throw new Error('媒体提交准备租约已释放'); assertContext(); }, release });
+    } catch (error) { release(); throw error; }
+  },
+
   commitNativeMediaResult: async (record, relativePath, expected, signal) => {
     signal?.throwIfAborted();
     const { safeExchangePath } = await import('../services/projectExchangeDomain');
@@ -1301,7 +1336,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         const mediaKey = record.category === 'video' ? 'videoUrl' : record.category === 'image' ? 'imageUrl' : 'audioUrl';
         const data: Record<string, unknown> = { ...node.data, [mediaKey]: relativePath, output: relativePath, sourceUrl: relativePath,
           ...(record.category !== 'audio' ? { thumbnailUrl: relativePath } : {}), relativePath, storageRootRef: resultRootRef, status: 'success', error: undefined,
-          videoTaskState: undefined, mediaTaskState: undefined, mediaTaskStage: undefined };
+          artifactId: `native-media-${record.operationId}`, videoTaskState: undefined, mediaTaskState: undefined, mediaTaskStage: undefined };
         delete data.filePath; delete data.assetId;
         return { ...node, data };
       });
@@ -1317,6 +1352,37 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const restored = await restoreProjectRecord({ ...selected, nodes, edges: canvas.edges, groups: canvas.groups,
         dramaAssets: runtime.loaded.content.dramaAssets });
       assertCurrent();
+      const { createNativeMediaDisplayResolver, nativeMediaContentDigest } = await import('../services/nativeMediaDisplay');
+      const { nativeMediaLocalOutputs } = await import('../services/nativeMediaCollection');
+      const { nativeMediaOutputNodeId } = await import('../services/nativeMediaCollectionCanvas');
+      const files = nativeMediaLocalOutputs(record);
+      // 老异步回执没有集合字段时也只接受明确摘要路径，不按普通文件名猜配已付费结果。
+      const digest = nativeMediaContentDigest(relativePath);
+      const displayFiles = files.length ? files : digest ? [{ relativePath, sha256: digest, category: record.category }] : [];
+      const displays = createNativeMediaDisplayResolver(snapshot.aggregate.project);
+      const displayPatches = new Map<string, Record<string, unknown>>();
+      for (const [ordinal, file] of displayFiles.entries()) {
+        assertCurrent();
+        const id = ordinal ? nativeMediaOutputNodeId(record, ordinal) : record.nodeId;
+        const projected = (restored.nodes as Node<BaseNodeData>[]).find((node) => node.id === id);
+        if (!projected || projected.data.relativePath !== file.relativePath || projected.data.storageRootRef !== resultRootRef) throw new Error('原媒体候选展示身份已变化，产物已保留');
+        const display = await displays(resultRootRef, file);
+        assertCurrent();
+        const mediaKey = file.category === 'image' ? 'imageUrl' : file.category === 'video' ? 'videoUrl' : 'audioUrl';
+        displayPatches.set(id, { [mediaKey]: display.url, output: display.url, sourceUrl: display.url,
+          ...(file.category !== 'audio' ? { thumbnailUrl: display.url } : {}), filePath: display.filePath });
+      }
+      const projectedNodes = (restored.nodes as Node<BaseNodeData>[]).map((node) => {
+        const patch = displayPatches.get(node.id);
+        if (!patch) return node;
+        const data = { ...node.data, ...patch } as BaseNodeData;
+        delete data.__nativeUnavailableMediaFields;
+        return { ...node, data };
+      });
+      const primary = projectedNodes.find((node) => node.id === record.nodeId);
+      const primaryMedia = primary?.data[record.category === 'image' ? 'imageUrl' : record.category === 'video' ? 'videoUrl' : 'audioUrl'];
+      if (typeof primaryMedia !== 'string' || !primaryMedia || primaryMedia === relativePath) throw new Error('原媒体展示地址尚不可用，产物已保留');
+      assertCurrent();
       const { commitNativeMediaDelivery } = await import('../services/nativeMediaDelivery');
       assertCurrent();
       await commitNativeMediaDelivery({ record, expectedCanvasRevision: canvas.revision, expectedAssetsRevision,
@@ -1331,7 +1397,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           runtime.mediaGeneration = (runtime.mediaGeneration ?? 0) + 1;
           const current = get();
           if (nativeRuntime.get(get) !== runtime || current.currentProjectId !== record.canvasId) return;
-          const rebased = rebaseCommittedMediaNodes(before.nodes, current.nodes, restored.nodes as Node<BaseNodeData>[], record.nodeId);
+          const rebased = rebaseCommittedMediaNodes(before.nodes, current.nodes, projectedNodes, record.nodeId);
           if (rebased === current.nodes) return;
           let historyFailure: unknown;
           try { get().commitToHistory(); } catch (error) { historyFailure = error; }
@@ -1725,7 +1791,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       try {
         const [owner, canvas] = await Promise.all([resolveProjectModel(projectId), resolveProjectModel(canvasId)]);
         if (owner.dataModel !== 'missing' || canvas.dataModel !== 'missing') throw new Error('项目身份已被占用');
-        await fileService.claimNativeProjectDataDir(projectId);
+        await fileService.claimNativeProjectDataDir(projectId, defaultName);
         await createNativeProject({ projectId, canvasId, name: defaultName });
         nativeKnownIds.add(projectId); nativeKnownIds.add(canvasId);
         fileService.registerNativeProjectFolders([{ id: projectId, projectId }, { id: canvasId, projectId }]);
@@ -3063,10 +3129,6 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         if (!entry) throw new Error('新项目已不存在');
         const openedId = await activateNativeProject(set, get, entry, id, () => { if (!isLatestSwitch()) throw new Error('项目切换已取消'); });
         rememberActiveProject(openedId);
-        queueMicrotask(() => {
-          if (switchSequence !== projectSwitchSequence || get().currentProjectId !== openedId || get().switchingProjectName !== null) return;
-          resumePendingTasks(openedId).catch((e) => console.warn('[切换项目] 恢复待续任务失败:', e));
-        });
         get().loadConversationsForProject(openedId).catch((e) => console.warn('[切换项目] 加载会话失败:', e));
         get().repairInterruptedForProject(openedId).catch((e) => console.warn('[切换项目] 修复中断消息失败:', e));
         get().loadAgentTasksForProject(openedId).catch((e) => console.warn('[切换项目] 加载 Agent 任务失败:', e));
@@ -3590,7 +3652,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           const [owner, canvas] = await Promise.all([resolveProjectModel(projectId), resolveProjectModel(canvasId)]);
           assertInitialization();
           if (owner.dataModel !== 'missing' || canvas.dataModel !== 'missing') throw new Error('项目身份已被占用');
-          await fileService.claimNativeProjectDataDir(projectId);
+          await fileService.claimNativeProjectDataDir(projectId, '默认画布');
           assertInitialization();
           await createNativeProject({ projectId, canvasId, name: '默认画布' });
           assertInitialization();
@@ -3606,7 +3668,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         }
         // 恢复当前项目的待续轮询任务
         if (activeProjectId) {
-          resumePendingTasks(activeProjectId).catch((e) => console.warn('[初始化] 恢复待续任务失败:', e));
+          if (get().projectExecutionContext?.modelGeneration !== 1) resumePendingTasks(activeProjectId).catch((e) => console.warn('[初始化] 恢复待续任务失败:', e));
           // 加载聊天会话
           get().loadConversationsForProject(activeProjectId).catch((e) => console.warn('[初始化] 加载会话失败:', e));
           get().repairInterruptedForProject(activeProjectId).catch((e) => console.warn('[初始化] 修复中断消息失败:', e));

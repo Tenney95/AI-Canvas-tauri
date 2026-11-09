@@ -105,7 +105,10 @@ export async function executeNativeGeneralAsyncTask(input: { apiKey: string; bas
     || selected.apiKey !== input.apiKey) throw new Error('原通用模型与实际提交连接不一致');
   const body = structuredClone(input.requestBody ?? { model: input.modelName, prompt: input.prompt, n: 1 });
   await input.beforeSubmit?.(); input.signal?.throwIfAborted();
-  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true });
+  const preparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+  try {
+  input.signal?.throwIfAborted();
+  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true, preparation });
   const protocolDigest = await digest(input.modelName, input.resultField);
   let record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: input.nodeId, category,
     providerConfigId: input.providerConfigId, providerBase: input.baseUrl, modelRef: input.modelRef, protocolDigest,
@@ -115,10 +118,10 @@ export async function executeNativeGeneralAsyncTask(input: { apiKey: string; bas
     sourceCanvasRevision: baseline.canvasRevision, inputFingerprint: baseline.inputFingerprint, submissionKind: 'async' });
   let sent = false, retained = false, acknowledged = false;
   try {
-    await input.beforeSubmit?.(); await assertNativeVideoSubmissionInput(record, context); await assertNativeMediaPrepared(record);
+    await input.beforeSubmit?.(); await assertNativeVideoSubmissionInput(record, context); await assertNativeMediaPrepared(record, { preparation });
     if (originalConnection(record).apiKey !== input.apiKey) throw new Error('原通用媒体连接已变化');
     record = await recordNativeMediaSubmission(record.operationId, record.lease, { unknown: true });
-    input.signal?.throwIfAborted(); sent = true;
+    input.signal?.throwIfAborted(); preparation.assertCurrent(); sent = true; preparation.release();
     const resource = input.resultField === 'audios' ? 'audio' : input.resultField;
     const response = await corsSafeFetch(`${input.baseUrl.replace(/\/+$/, '')}/${resource}/generations`, {
       method: 'POST', headers: { Authorization: `Bearer ${input.apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: input.signal,
@@ -153,6 +156,7 @@ export async function executeNativeGeneralAsyncTask(input: { apiKey: string; bas
     if (latest?.status === 'failed') throw new Error('原通用媒体任务已确认失败，回执保留', { cause: error });
     throw receiptError(record);
   }
+  } finally { preparation.release(); }
 }
 export async function resumeNativeGeneralAsyncTask(operationId: string, signal?: AbortSignal): Promise<void> {
   const context = contextFor();

@@ -50,6 +50,7 @@ import {
 } from './fs/core';
 import { scanDirectoryFiles } from './fs/assetLibrary';
 import { getRelativeAssetPath, identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
+import { createNativeMediaDisplayResolver, isNativeMediaResultArtifact, nativeMediaContentDigest, type NativeMediaDisplayResolver } from './nativeMediaDisplay';
 import type { DramaAssetLibrary, DramaProp, DramaScene, DramaAssetReferenceImage } from '../types/dramaAssets';
 import { normalizeDramaAssetLibrary, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary } from '../types/dramaAssets';
 import { normalizeEpisodeAssetRoster, type EpisodeAssetRoster } from '../types/episodeAssets';
@@ -107,6 +108,19 @@ interface MaterializedInlineMedia {
 
 interface ProjectFileLookup {
   existsByPath: Map<string, Promise<boolean>>;
+  nativeMediaDisplay?: Promise<{ defaultRootRef: string; resolve: NativeMediaDisplayResolver }>;
+}
+
+function nativeMediaDisplayContext(projectId: string, lookup: ProjectFileLookup): NonNullable<ProjectFileLookup['nativeMediaDisplay']> {
+  lookup.nativeMediaDisplay ??= (async () => {
+    const owner = getNativeProjectOwner(projectId);
+    if (!owner) throw new Error('原媒体作品归属不可用');
+    const { readNativeProjectSelection } = await import('./indexedDb/nativeProjectRepository');
+    const selection = await readNativeProjectSelection(owner, projectId);
+    if (!selection?.canvas || selection.canvas.id !== projectId || selection.project.id !== owner) throw new Error('原媒体画布归属不可用');
+    return { defaultRootRef: selection.canvas.storageRootRef, resolve: createNativeMediaDisplayResolver(selection.project) };
+  })();
+  return lookup.nativeMediaDisplay;
 }
 
 interface MediaSerializationContext extends ProjectFileLookup {
@@ -414,9 +428,21 @@ async function serializeProjectNodes(
       context,
       NODE_PRIMARY_MEDIA_KEYS,
     );
-    data = await serializeAssetReference(data, context);
+    let nativeResultDirectory: string | undefined;
+    if (getNativeProjectOwner(context.projectId) && isNativeMediaResultArtifact(data.artifactId) && nativeMediaContentDigest(data.relativePath)) {
+      const display = await nativeMediaDisplayContext(context.projectId, context);
+      if (data.storageRootRef !== undefined && typeof data.storageRootRef !== 'string') throw new Error('原媒体根身份无效');
+      const directory = await display.resolve.directory(data.storageRootRef ?? display.defaultRootRef);
+      const expected = joinPath(directory, data.relativePath!);
+      const actual = data.filePath ?? assetUrlToPath(data.imageUrl || data.videoUrl || data.audioUrl);
+      if (!actual || projectFileLookupKey(actual) === projectFileLookupKey(expected)) {
+        // 精确根内原文件只收敛展示地址，不能按作品主根重算子根relativePath。
+        nativeResultDirectory = directory; data = { ...data }; delete data.filePath;
+      }
+    }
+    if (!nativeResultDirectory) data = await serializeAssetReference(data, context);
     if (getNativeProjectOwner(context.projectId) && data.relativePath) {
-      const expectedPath = joinPath(context.projectDir, data.relativePath);
+      const expectedPath = joinPath(nativeResultDirectory ?? context.projectDir, data.relativePath);
       for (const key of NODE_MEDIA_URL_KEYS) {
         const value = data[key];
         const path = typeof value === 'string' ? assetUrlToPath(value) : undefined;
@@ -788,7 +814,23 @@ async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: Pr
     const projection = ['ai-image', 'source-image', 'ai-animation', 'ai-panorama', 'ai-storyboard'].includes(String(type))
       ? 'imageUrl' : ['ai-video', 'source-video'].includes(String(type)) ? 'videoUrl'
         : ['ai-audio', 'source-audio'].includes(String(type)) ? 'audioUrl' : undefined;
-    let data = await restoreAssetReferenceSafely(node.data, projectId, projectDir, lookup, projection);
+    const owner = getNativeProjectOwner(projectId), digest = nativeMediaContentDigest(node.data.relativePath);
+    let data: BaseNodeData;
+    if (owner && digest && isNativeMediaResultArtifact(node.data.artifactId) && projection) {
+      try {
+        const display = await nativeMediaDisplayContext(projectId, lookup);
+        if (node.data.storageRootRef !== undefined && typeof node.data.storageRootRef !== 'string') throw new Error('原媒体根身份无效');
+        const rootRef = node.data.storageRootRef ?? display.defaultRootRef;
+        const resolved = await display.resolve(rootRef, { relativePath: node.data.relativePath!, sha256: digest });
+        data = { ...node.data, [projection]: resolved.url, output: resolved.url, sourceUrl: resolved.url,
+          ...(projection !== 'audioUrl' ? { thumbnailUrl: resolved.url } : {}), filePath: resolved.filePath };
+        delete data.__nativeUnavailableMediaFields;
+      } catch {
+        // 摘要文件缺失/根归属不符时只保留原身份；不能借索引或另一根的同名文件冒充。
+        data = { ...node.data, [projection]: undefined, output: undefined, sourceUrl: undefined, thumbnailUrl: undefined,
+          filePath: undefined, __nativeUnavailableMediaFields: [projection, 'output', 'sourceUrl', 'thumbnailUrl'] };
+      }
+    } else data = await restoreAssetReferenceSafely(node.data, projectId, projectDir, lookup, projection);
     if (getNativeProjectOwner(projectId) && data.relativePath && !data.filePath) {
       const missing = NODE_MEDIA_URL_KEYS.filter((key) => data[key] === data.relativePath);
       if (missing.length) {

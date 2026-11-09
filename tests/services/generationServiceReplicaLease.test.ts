@@ -106,6 +106,18 @@ beforeEach(() => {
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it('再次运行该节点才清除上一轮错误，新一轮失败继续保留新的错误状态', async () => {
+    mocks.store.nodes[0].data = { ...data(), status: 'error', error: '上一轮明确失败' };
+    const generation = deferred<{ url: string }>();
+    mocks.generate.mockReturnValueOnce(generation.promise);
+    const pending = run();
+    await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledOnce());
+    expect(mocks.store.updateNodeDataTransient).toHaveBeenCalledWith('video', expect.objectContaining({ status: 'loading', error: undefined }));
+    generation.reject(new Error('新一轮失败'));
+    await expect(pending).resolves.toMatchObject({ success: false });
+    expect(mocks.store.updateNodeDataTransient).toHaveBeenCalledWith('video', expect.objectContaining({ status: 'error', error: '新一轮失败' }));
+  });
+
   it('uses the shared node/MCP executor for local Comfy text and acknowledges only after durable history completes', async () => {
     const input: BaseNodeData = { type: 'ai-text', label: '文本增强', prompt: '增强提示词', provider: 'comfyui',
       model: 'comfyui/workflow', workflowId: 'wf-text', workflowInputs: { '1': '明确输入' } };

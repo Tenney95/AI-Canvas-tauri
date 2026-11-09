@@ -3,7 +3,7 @@ import { createHash, webcrypto } from 'node:crypto';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CanvasContext } from '../../src/types/project';
-import { createNativeProject, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
+import { createNativeProject, readNativeProjectCapture, saveNativeCanvas } from '../../src/services/indexedDb/nativeProjectRepository';
 import { listNativeMediaTasks } from '../../src/services/indexedDb/nativeMediaTaskRepository';
 import { bindNativeMediaOrigin } from '../../src/services/nativeMediaOrigin';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
@@ -73,6 +73,22 @@ async function fixture() {
   driver.context = context; driver.canvasRevision = canvas.revision;
   driver.state = { currentProjectId: canvas.id, projectExecutionContext: context, nodes: canvas.nodes, projects: [],
     config: { providers: { apimart: { apiKey: 'synthetic-key', baseUrl: 'https://apimart.example/v1' } } },
+    beginNativeMediaSubmissionPreparation: async (expected: CanvasContext) => {
+      let released = false;
+      const assertCurrent = () => {
+        const active = driver.context;
+        if (released || !active || expected.projectId !== active.projectId || expected.canvasId !== active.canvasId
+          || expected.projectEpoch !== active.projectEpoch || expected.canvasEpoch !== active.canvasEpoch
+          || expected.episodeId !== active.episodeId || expected.runtimeEpoch !== active.runtimeEpoch) throw new Error('原音频准备租约已变化');
+      };
+      assertCurrent();
+      const current = (await readNativeProjectCapture(expected.projectId))!.aggregate.canvases.find((item) => item.id === expected.canvasId)!;
+      const saved = await saveNativeCanvas({ projectId: expected.projectId, canvasId: expected.canvasId, episodeId: expected.episodeId,
+        expectedProjectEpoch: expected.projectEpoch, expectedCanvasEpoch: expected.canvasEpoch, expectedCanvasRevision: current.revision,
+        document: { nodes: driver.state.nodes as unknown[], edges: current.edges, groups: current.groups } });
+      assertCurrent(); driver.canvasRevision = saved.revision;
+      return { context: expected, canvasRevision: saved.revision, assertCurrent, release: () => { released = true; } };
+    },
     saveCurrentProjectSilent: async () => canvas.id };
   return { context, input: { params: { model: 'gpt-4o-mini-tts', provider: 'apimart', nodeId: 'audio', prompt: '合成朗读', audioFormat: 'wav' as const },
     prompt: '合成朗读', apiKey: 'synthetic-key', baseUrl: 'https://apimart.example/v1', beforeSubmit: async () => {} } };

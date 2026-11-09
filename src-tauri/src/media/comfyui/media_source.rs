@@ -98,7 +98,7 @@ fn media_url(value: &str) -> Result<Url, String> {
 
 fn valid_id(value: &str) -> bool { value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) }
 
-fn new_id() -> Result<String, String> {
+pub(crate) fn new_id() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
     #[cfg(windows)]
     {

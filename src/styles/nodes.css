@@ -677,7 +677,6 @@
   user-select: text;
   scrollbar-color: color-mix(in srgb, var(--danger) 28%, transparent) transparent;
   scrollbar-width: thin;
-  transition: opacity 1.1s ease, transform 1.1s ease;
 }
 
 .node-error__icon {
@@ -699,13 +698,6 @@
 .node-error::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: color-mix(in srgb, var(--danger) 28%, transparent);
-}
-
-/* 20 秒后缓慢淡出 */
-.node-error--fading {
-  opacity: 0;
-  transform: translateY(-2px);
-  pointer-events: none;
 }
 
 /* ============================================

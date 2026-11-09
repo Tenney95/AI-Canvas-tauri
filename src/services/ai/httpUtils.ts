@@ -38,22 +38,54 @@ function responseRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function responseFailureCandidates(record: Record<string, unknown>): Array<Record<string, unknown> | undefined> {
+  const data = responseRecord(record.data), task = responseRecord(record.task);
+  return [record, responseRecord(record.error), data, responseRecord(data?.error), task, responseRecord(task?.error)];
+}
+
+function hasStructuredRejection(candidates: Array<Record<string, unknown> | undefined>): boolean {
+  return candidates.some((item) => item && (typeof item.status === 'string' && item.status.trim().toLowerCase() === 'failed'
+    || [item.code, item.type].some((code) => typeof code === 'string' && DEFINITIVE_REJECTION_CODES.has(code.trim().toLowerCase()))));
+}
+
+/** 只检查已知任务／产物字段，冲突或已接受的批项不能被另一项的拒绝码抹掉。 */
+function hasAcceptedBatchEvidence(record: Record<string, unknown>): boolean {
+  const nonemptyIdentity = (value: unknown): boolean => typeof value === 'string' ? value.trim().length > 0
+    : typeof value === 'number' && Number.isFinite(value);
+  const hasResult = (value: unknown, depth = 0): boolean => {
+    if (value === undefined || value === null) return false;
+    if (depth > 4) return true; // 过深的结果描述不能被猜作空结果。
+    if (typeof value === 'string') return value.trim().length > 0;
+    if (Array.isArray(value)) return value.some((item) => hasResult(item, depth + 1));
+    const result = responseRecord(value);
+    return !!result && ['url', 'b64_json', 'image_url', 'video_url', 'audio_url', 'images', 'videos', 'audio', 'audios', 'result', 'results', 'output', 'outputs']
+      .some((key) => hasResult(result[key], depth + 1));
+  };
+  return [record, responseRecord(record.data), responseRecord(record.task)].some((item) => item && (
+    [item.task_id, item.taskId, item.id].some(nonemptyIdentity)
+    || [item.url, item.b64_json, item.result, item.output, item.images, item.videos, item.audio, item.audios].some((value) => hasResult(value))
+    || typeof item.status === 'string' && ['completed', 'succeeded', 'success', 'running', 'pending', 'queued', 'submitted', 'processing'].includes(item.status.trim().toLowerCase())
+  ));
+}
+
 /** 只认 HTTP 拒绝、有限拒绝码或明确 failed 终态，不能从任意 message 推断未生成。 */
 export function classifyHttpResponseFailure(status: number, payload: unknown): boolean {
   // 网关等待超时不能证明上游没接受生成，即使错误正文写了 timeout/failed。
   if (status === 408 || status === 504) return false;
-  if (status >= 400 && status < 500 && status !== 429) return true;
   const record = responseRecord(payload);
+  if (record && Array.isArray(record.data) && record.data.length > 0) {
+    // 顶层错误不能覆盖已接受项；HTTP本身的明确拒绝不依赖批项补齐错误字段。
+    if (record.data.some((item) => { const result = responseRecord(item); return !!result && hasAcceptedBatchEvidence(result); })) return false;
+    if (status >= 400 && status < 500 && status !== 429) return true;
+    // 其余响应需要每一项自己的有限结构化证据，不能用顶层错误盖过未知批项。
+    return record.data.every((item) => {
+      const result = responseRecord(item);
+      return !!result && hasStructuredRejection(responseFailureCandidates(result));
+    });
+  }
+  if (status >= 400 && status < 500 && status !== 429) return true;
   if (!record) return false;
-  const data = responseRecord(record.data);
-  const candidates = [record, responseRecord(record.error), data, responseRecord(data?.error), responseRecord(record.task)];
-  if (candidates.some((item) => item && typeof item.status === 'string' && item.status.trim().toLowerCase() === 'failed')) return true;
-  if (Array.isArray(record.data) && record.data.length > 0 && record.data.every((item) => {
-    const result = responseRecord(item);
-    return typeof result?.status === 'string' && result.status.trim().toLowerCase() === 'failed';
-  })) return true;
-  return candidates.some((item) => item && [item.code, item.type].some((code) => typeof code === 'string'
-    && DEFINITIVE_REJECTION_CODES.has(code.trim().toLowerCase())));
+  return hasStructuredRejection(responseFailureCandidates(record));
 }
 
 /**

@@ -1,9 +1,9 @@
 /** 新项目工作流始终续取原任务；适配器提供真实提交，回执、查询与完整产物交付由此统一。 */
 import { useAppStore } from '../store/useAppStore';
-import type { MediaKind, NativeMediaLocalOutput } from '../types/media';
+import type { MediaKind, NativeMediaLocalOutput, NativeMediaSubmissionPreparation } from '../types/media';
 import type { CloudWorkflowOutput } from '../types/workflowApi';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
-import { prepareNativeMediaTask, claimNativeMediaRecovery, listNativeMediaTasks, normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
+import { prepareNativeMediaTask, claimNativeMediaRecovery, listNativeMediaTasks, normalizeNativeMediaProviderBase, recordNativeMediaSubmission } from './indexedDb/nativeMediaTaskRepository';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { captureNativeVideoSubmissionBaseline, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { nativeWorkflowDigest } from './nativeWorkflowExecution';
@@ -69,21 +69,31 @@ export async function submitNativeWorkflowTask(input: {
   descriptor.providerBase = normalizeNativeMediaProviderBase(descriptor.providerBase);
   await assertWorkflowContract(descriptor);
   await input.beforeSubmit?.(); input.signal?.throwIfAborted();
-  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true });
+  let preparation: NativeMediaSubmissionPreparation | undefined = await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+  try {
+  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true, preparation });
   let record = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: input.nodeId,
     providerConfigId: descriptor.connectionId, providerBase: descriptor.providerBase, category: descriptor.category,
     submissionKind: input.synchronous ? 'sync' : 'async', fingerprintScheme: 'media-input-v3', modelRef: `workflow/${descriptor.workflowId ?? descriptor.modelId ?? descriptor.adapter}`,
     protocolDigest: descriptor.digest, requestFingerprint: await nativeWorkflowDigest(input.requestMaterial), inputFingerprint: baseline.inputFingerprint,
     sourceCanvasRevision: baseline.canvasRevision, recovery: { kind: 'workflow', workflowId: descriptor.workflowId,
       modelId: descriptor.modelId, serverId: descriptor.serverId, digest: descriptor.digest, expectedCount: count } });
-  let receipt = await createNativeWorkflowReceipt(record, descriptor, count);
+  let receipt: NativeWorkflowReceipt;
+  try { receipt = await createNativeWorkflowReceipt(record, descriptor, count); }
+  catch (error) {
+    await recordNativeMediaSubmission(record.operationId, record.lease, { notStarted: true }).catch(() => undefined);
+    throw error;
+  }
   const submissionLease = record.lease;
   let firstError: unknown;
   for (const [index, slot] of receipt.submissions.entries()) {
     let sent = false;
     try {
+      // 每个真实 POST 独占短准备窗口；前一请求的网络等待期间自动保存可以继续。
+      preparation ??= await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+      preparation.assertCurrent();
       input.signal?.throwIfAborted(); await input.beforeSubmit?.(); await assertNativeVideoSubmissionInput(record, context); await assertWorkflowContract(descriptor);
-      ({ record, receipt } = await beginNativeWorkflowSubmission(record, slot.id));
+      ({ record, receipt } = await beginNativeWorkflowSubmission(record, slot.id, { preparation }));
       input.signal?.throwIfAborted(); await input.beforeSubmit?.(); await assertNativeVideoSubmissionInput(record, context); await assertWorkflowContract(descriptor);
       const received = async (taskId: string, recoveryContext?: Record<string, unknown>) => {
         const currentKey = useAppStore.getState().config.providers[descriptor.connectionId]?.apiKey ?? '';
@@ -93,6 +103,7 @@ export async function submitNativeWorkflowTask(input: {
       };
       // 合同、输入与耐久意图的异步核验后，再核对原始守卫，防止切集窗口落在最后一次 await 中。
       await input.beforeSubmit?.(); input.signal?.throwIfAborted();
+      preparation.assertCurrent(); preparation.release(); preparation = undefined;
       sent = true;
       const result = await input.submit(index, input.signal, received);
       if (result.taskId && receipt.submissions[index].state !== 'submitted') await received(result.taskId, result.recoveryContext);
@@ -112,6 +123,8 @@ export async function submitNativeWorkflowTask(input: {
         ({ record, receipt } = await retainNativeWorkflowSubmission(record, slot.id, sent ? { failed: true } : { notStarted: true }).catch(() => ({ record, receipt })));
       }
       break;
+    } finally {
+      preparation?.release(); preparation = undefined;
     }
   }
   if (record.status === 'delivered') return delivered(record.operationId);
@@ -128,6 +141,7 @@ export async function submitNativeWorkflowTask(input: {
     if (record.status === 'failed') throw firstError ?? new Error('原工作流任务均已失败');
   }
   throw pending(record.operationId);
+  } finally { preparation?.release(); }
 }
 
 async function assertWorkflowContract(descriptor: NativeWorkflowDescriptor): Promise<void> {

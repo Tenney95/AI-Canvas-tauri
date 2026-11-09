@@ -3,10 +3,11 @@
  * 扫描各项目占用空间、孤儿文件、重复文件、.trash 残留、可释放空间
  */
 import { exists, readDir, lstat, remove } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv, joinPath, getProjectDataDir } from './core';
 import type { CanvasProject } from '../../types';
 import {
-  getAllProjects, getProjectById, getHistoryEntriesPage,
+  getProjectById, getHistoryEntriesPage,
   getProjectConversations, getConversationMessages, type HistoryPageCursor,
 } from '../indexedDbService';
 import { localMediaUrlToPath } from '../../utils/mediaUrl';
@@ -15,6 +16,56 @@ import { listProjectImportRecoveries } from '../indexedDb/projectImportRepositor
 import { openDB } from '../indexedDb/schema';
 import { assertLegacyProjectWritesAllowed } from '../indexedDb/legacyProjectWriteGuard';
 import { safeExchangePath } from '../projectExchangeDomain';
+import { configValuesEqual } from '../configPatch';
+import type { ProjectCatalogEntry } from '../projectModelRouter';
+import type { readNativeProjectCapture } from '../indexedDb/nativeProjectRepository';
+import type { NativeProjectViewItem } from '../../store/nativeProjectView';
+
+type NativeStorageScope = { entry: Extract<ProjectCatalogEntry, { dataModel: 'native' }>;
+  capture: NonNullable<Awaited<ReturnType<typeof readNativeProjectCapture>>>; roots: Map<string, string> };
+
+/** 只使用目录与新库共同证明的素材根；扫描不认领、创建或迁移目录。 */
+async function readNativeStorageScopes(catalog: readonly ProjectCatalogEntry[], signal?: AbortSignal): Promise<NativeStorageScope[]> {
+  if (!catalog.some((entry) => entry.dataModel === 'native')) return [];
+  const { readNativeProjectCapture } = await import('../indexedDb/nativeProjectRepository');
+  const scopes: NativeStorageScope[] = [];
+  for (const entry of catalog) {
+    if (entry.dataModel !== 'native') continue;
+    checkAbort(signal);
+    const capture = await readNativeProjectCapture(entry.project.id, { signal });
+    checkAbort(signal);
+    if (!capture || !configValuesEqual(capture.aggregate.project, entry.project)
+      || !configValuesEqual(capture.aggregate.episodes, [...entry.episodes].sort((a, b) => a.orderRank - b.orderRank))
+      || !configValuesEqual([...capture.aggregate.canvases.map((canvas) => canvas.id)].sort(), [...entry.canvasIds].sort())) {
+      throw new Error('新项目目录在扫描时变化');
+    }
+    const roots = new Map<string, string>();
+    for (const binding of capture.aggregate.project.storageBindings) {
+      checkAbort(signal);
+      const root = await invoke<string>(binding.rootRef === capture.aggregate.project.storageRootRef
+        ? 'resolve_native_project_media_root' : 'resolve_native_project_media_subroot', {
+        projectId: entry.project.id, ...(binding.rootRef === capture.aggregate.project.storageRootRef ? {} : { rootRef: binding.rootRef, create: false }),
+      });
+      checkAbort(signal);
+      if (typeof root !== 'string' || !root) throw new Error('新项目素材目录不可用');
+      roots.set(binding.rootRef, root);
+    }
+    if (!roots.has(capture.aggregate.project.storageRootRef)) throw new Error('新项目主素材目录不可用');
+    scopes.push({ entry, capture, roots });
+  }
+  return scopes;
+}
+
+/** 原生目录暂不具备清理租约；即使调用方传入旧扫描结论，也不能删除该范围。 */
+async function assertStorageCleanupPath(filePath: string): Promise<void> {
+  await assertLegacyStorageHealthScope();
+  const { listProjectCatalog } = await import('../projectModelRouter');
+  const scopes = await readNativeStorageScopes(await listProjectCatalog());
+  const key = pathKey(filePath).replace(/\/+$/, '');
+  if (scopes.some((scope) => [...scope.roots.values()].some((root) => {
+    const rootKey = pathKey(root).replace(/\/+$/, ''); return key === rootKey || key.startsWith(`${rootKey}/`);
+  }))) throw new Error('新项目素材目录暂不提供清理操作');
+}
 
 /** 旧引用集合无法证明迁移冻结或新模型下的文件可清理。此预检不替代跨进程停写。 */
 async function assertLegacyStorageHealthScope(): Promise<void> {
@@ -22,7 +73,7 @@ async function assertLegacyStorageHealthScope(): Promise<void> {
 }
 
 function pathKey(value: string): string {
-  const path = (localMediaUrlToPath(value) ?? value).replace(/\\/g, '/').replace(/^\/\/\?\//, '');
+  const path = (localMediaUrlToPath(value) ?? value).replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\//, '');
   const prefix = path.startsWith('//') ? '//' : path.startsWith('/') ? '/' : '';
   const absolute = !!prefix || /^[a-z]:\//i.test(path);
   const parts: string[] = [];
@@ -86,6 +137,8 @@ export interface ProjectStorageInfo {
   projectName: string;
   /** 项目数据目录路径 */
   dataDir: string | null;
+  /** 新作品可能绑定多个素材根；统计按真实文件路径去重。 */
+  dataDirs?: string[];
   /** 项目素材总大小（不含 .trash 和根 .thumbnail 派生缓存） */
   fileSize: number;
   /** 项目数据目录内的文件数量 */
@@ -143,7 +196,7 @@ export interface ExternalFolderStatus {
   online: boolean;
 }
 
-export type StorageHealthIssueReason = 'permission' | 'missing' | 'symlink' | 'changed' | 'unavailable';
+export type StorageHealthIssueReason = 'permission' | 'missing' | 'symlink' | 'changed' | 'unavailable' | 'native-protected';
 
 export interface StorageHealthIssue {
   area: 'project' | 'trash' | 'duplicates';
@@ -230,6 +283,7 @@ async function scanDirRecursive(
   excludedRootDirectories: readonly string[] = [],
   skipProjectDirectories = true,
   signal?: AbortSignal,
+  excludedDirectories: ReadonlySet<string> = new Set(),
 ): Promise<{ files: ScanFileEntry[]; entries: Awaited<ReturnType<typeof readDir>> }> {
   checkAbort(signal);
   const result: { files: ScanFileEntry[]; entries: Awaited<ReturnType<typeof readDir>> } = { files: [], entries: [] };
@@ -251,12 +305,13 @@ async function scanDirRecursive(
     if (entry.isDirectory && (excludedRootDirectories.includes(entry.name)
       || skipProjectDirectories && (entry.name === '.trash' || entry.name === 'AppData'))) continue;
     const entryPath = joinPath(dirPath, entry.name);
+    if (entry.isDirectory && excludedDirectories.has(pathKey(entryPath).replace(/\/+$/, ''))) continue;
     try {
       const info = await lstat(entryPath);
       checkAbort(signal);
       if (info.isSymlink) { onIssue(entry.name, 'symlink'); continue; }
       if (info.isDirectory) {
-        const nested = await scanDirRecursive(entryPath, onIssue, [], skipProjectDirectories, signal);
+        const nested = await scanDirRecursive(entryPath, onIssue, [], skipProjectDirectories, signal, excludedDirectories);
         result.files.push(...nested.files);
       } else if (info.isFile) {
         result.files.push({ name: entry.name, path: entryPath, size: info.size });
@@ -375,7 +430,7 @@ export async function scanStorageHealth(
   };
   const addIssue = (area: StorageHealthIssue['area'], projectName: string, name: string, reason: StorageHealthIssueReason) => {
     report.complete = false;
-    report.issues.push({ area, projectName: displayName(projectName), name: displayName(name), reason });
+    report.issues.push({ area, projectName: displayName(projectName), name: name ? displayName(name) : '', reason });
   };
 
   if (!isTauriEnv()) return { ...report, scannedAt: Date.now() };
@@ -384,14 +439,26 @@ export async function scanStorageHealth(
   // 任何读取失败或记录缺失都终止扫描，不能将未知引用视为空集合。
   const references = new Set<string>();
   const roots = new Map<string, string | null>();
+  const additionalRoots = new Map<string, string[]>();
+  let nativeScopes: NativeStorageScope[] = [];
+  const projectRoots = (id: string): string[] => [...new Set([roots.get(id), ...(additionalRoots.get(id) ?? [])].filter((root): root is string => !!root))];
   try {
     await assertLegacyStorageHealthScope();
     checkAbort(signal);
-    const allProjects = new Map(projects.map((project) => [project.id, project]));
-    for (const project of await getAllProjects()) {
-      checkAbort(signal);
-      allProjects.set(project.id, project);
+    const { listProjectCatalog } = await import('../projectModelRouter');
+    const catalog = await listProjectCatalog(); checkAbort(signal);
+    nativeScopes = await readNativeStorageScopes(catalog, signal);
+    const nativeViews = new Map<string, NativeProjectViewItem>();
+    if (nativeScopes.length) {
+      const { projectNativeCatalogEntry } = await import('../../store/nativeProjectView');
+      for (const scope of nativeScopes) for (const view of projectNativeCatalogEntry(scope.entry)) nativeViews.set(view.id, view);
     }
+    for (const project of projects) {
+      const binding = (project as Partial<NativeProjectViewItem>).nativeView, native = nativeViews.get(project.id);
+      if (binding ? !native || !configValuesEqual(binding, native.nativeView) : !!native) throw new Error('项目目录身份已变化');
+    }
+    const allProjects = new Map(projects.filter((project) => !(project as Partial<NativeProjectViewItem>).nativeView).map((project) => [project.id, project]));
+    for (const entry of catalog) if (entry.dataModel === 'legacy') allProjects.set(entry.project.id, entry.project);
     checkAbort(signal);
     projects = [...allProjects.values()];
     for (const project of projects) {
@@ -432,6 +499,15 @@ export async function scanStorageHealth(
         }
       }
     }
+    for (const scope of nativeScopes) {
+      const { project } = scope.capture.aggregate, primary = scope.roots.get(project.storageRootRef)!;
+      projects.push({ id: project.id, name: project.name, createdAt: project.createdAt, updatedAt: project.updatedAt });
+      roots.set(project.id, primary);
+      additionalRoots.set(project.id, [...scope.roots.values()].filter((root) => pathKey(root) !== pathKey(primary)));
+      // 整根保护同时覆盖退休画布、历史、恢复点、待续任务及文件先于回执发布的窗口。
+      for (const root of scope.roots.values()) references.add(`${pathKey(root).replace(/\/+$/, '')}/`);
+      addIssue('project', project.name, '', 'native-protected');
+    }
     checkAbort(signal);
     const livePaths = typeof nodeFilePaths === 'function' ? await nodeFilePaths() : nodeFilePaths;
     checkAbort(signal);
@@ -449,71 +525,76 @@ export async function scanStorageHealth(
   for (const project of projects) {
     checkAbort(signal);
     const dataDir = roots.get(project.id) ?? null;
-    const rootKey = dataDir ? pathKey(dataDir).replace(/\/+$/, '') : null;
-    const sharedWith = rootKey ? projects.filter((other) => other.id !== project.id
-      && pathKey(roots.get(other.id) ?? '').replace(/\/+$/, '') === rootKey).map((other) => other.name) : [];
+    const dataDirs = projectRoots(project.id), rootKeys = new Set(dataDirs.map((root) => pathKey(root).replace(/\/+$/, '')));
+    const sharedWith = projects.filter((other) => other.id !== project.id
+      && projectRoots(other.id).some((root) => rootKeys.has(pathKey(root).replace(/\/+$/, '')))).map((other) => other.name);
     const info: ProjectStorageInfo = { projectId: project.id, projectName: project.name, dataDir,
-      fileSize: 0, fileCount: 0, categories: {}, sharedWith };
+      ...(dataDirs.length > 1 ? { dataDirs } : {}), fileSize: 0, fileCount: 0, categories: {}, sharedWith };
     report.projects.push(info);
-    if (!dataDir || !rootKey || scannedRoots.has(rootKey)) continue;
-    scannedRoots.add(rootKey);
-    let inventory;
-    try {
-      if (!await exists(dataDir)) continue;
-      inventory = await scanDirRecursive(dataDir,
-        (name, reason) => addIssue('project', project.name, name, reason), ['.thumbnail'], true, signal);
-    } catch (error) {
+    for (const directory of dataDirs) {
       checkAbort(signal);
-      addIssue('project', project.name, dataDir, issueReason(error));
-      continue;
-    }
-    rootEntries.set(rootKey, inventory.entries);
-    for (const file of inventory.files) {
-      checkAbort(signal);
-      const key = pathKey(file.path);
-      if (seenFiles.has(key)) continue;
-      seenFiles.add(key);
-      const category = getFileCategoryName(file.name);
-      const count = info.categories[category] ?? { count: 0, size: 0 };
-      count.count++;
-      count.size += file.size;
-      info.categories[category] = count;
-      info.fileSize += file.size;
-      info.fileCount++;
-      files.push({ ...file, projectId: project.id, projectName: project.name });
+      const rootKey = pathKey(directory).replace(/\/+$/, '');
+      if (scannedRoots.has(rootKey)) continue;
+      scannedRoots.add(rootKey);
+      let inventory;
+      try {
+        if (!await exists(directory)) continue;
+        inventory = await scanDirRecursive(directory,
+          (name, reason) => addIssue('project', project.name, name, reason), ['.thumbnail'], true, signal,
+          new Set(dataDirs.map((root) => pathKey(root).replace(/\/+$/, '')).filter((other) => other !== rootKey)));
+      } catch (error) {
+        checkAbort(signal);
+        addIssue('project', project.name, directory, issueReason(error));
+        continue;
+      }
+      rootEntries.set(rootKey, inventory.entries);
+      for (const file of inventory.files) {
+        checkAbort(signal);
+        const key = pathKey(file.path);
+        if (seenFiles.has(key)) continue;
+        seenFiles.add(key);
+        const category = getFileCategoryName(file.name);
+        const count = info.categories[category] ?? { count: 0, size: 0 };
+        count.count++;
+        count.size += file.size;
+        info.categories[category] = count;
+        info.fileSize += file.size;
+        info.fileCount++;
+        files.push({ ...file, projectId: project.id, projectName: project.name });
+      }
     }
   }
   report.projectSize = files.reduce((sum, file) => sum + file.size, 0);
 
   const scannedTrashes = new Set<string>();
   for (const project of projects) {
-    checkAbort(signal);
-    const root = roots.get(project.id);
-    if (!root) continue;
-    const trashDir = joinPath(root, '.trash');
-    const key = pathKey(trashDir);
-    if (scannedTrashes.has(key)) continue;
-    scannedTrashes.add(key);
-    // 根目录已经列出过；没有 .trash 就不访问它，避免把隐藏路径的 scope 拒绝当成扫描失败。
-    const entries = rootEntries.get(pathKey(root).replace(/\/+$/, ''));
-    if (!entries?.some((entry) => entry.name === '.trash')) continue;
-    const inventory = await scanDirRecursive(trashDir,
-      (name, reason) => addIssue('trash', project.name, name, reason), [], false, signal);
-    const trashFiles = inventory.files.filter((file) => {
-      const fileKey = pathKey(file.path);
-      if (seenFiles.has(fileKey)) return false;
-      seenFiles.add(fileKey);
-      return true;
-    });
-    if (!trashFiles.length) continue;
-    const trashSize = trashFiles.reduce((sum, file) => sum + file.size, 0);
-    const checked: TrashInfo['files'] = trashFiles.map((file) => ({ path: file.path, size: file.size, referenced: isReferenced(file.path, references) }));
-    // 现有流式摘要器拒绝空文件；空文件保留，不能仅凭大小证明身份。
-    const reclaimable = checked.filter((file) => !file.referenced && file.size > 0);
-    report.trashes.push({ projectId: project.id, projectName: project.name, trashDir,
-      trashSize, fileCount: trashFiles.length, files: checked,
-      reclaimableSize: reclaimable.reduce((sum, file) => sum + file.size, 0), reclaimableCount: reclaimable.length });
-    report.trashSize += trashSize;
+    for (const root of projectRoots(project.id)) {
+      checkAbort(signal);
+      const trashDir = joinPath(root, '.trash');
+      const key = pathKey(trashDir);
+      if (scannedTrashes.has(key)) continue;
+      scannedTrashes.add(key);
+      // 根目录已经列出过；没有 .trash 就不访问它，避免把隐藏路径的 scope 拒绝当成扫描失败。
+      const entries = rootEntries.get(pathKey(root).replace(/\/+$/, ''));
+      if (!entries?.some((entry) => entry.name === '.trash')) continue;
+      const inventory = await scanDirRecursive(trashDir,
+        (name, reason) => addIssue('trash', project.name, name, reason), [], false, signal);
+      const trashFiles = inventory.files.filter((file) => {
+        const fileKey = pathKey(file.path);
+        if (seenFiles.has(fileKey)) return false;
+        seenFiles.add(fileKey);
+        return true;
+      });
+      if (!trashFiles.length) continue;
+      const trashSize = trashFiles.reduce((sum, file) => sum + file.size, 0);
+      const checked: TrashInfo['files'] = trashFiles.map((file) => ({ path: file.path, size: file.size, referenced: isReferenced(file.path, references) }));
+      // 现有流式摘要器拒绝空文件；空文件保留，不能仅凭大小证明身份。
+      const reclaimable = checked.filter((file) => !file.referenced && file.size > 0);
+      report.trashes.push({ projectId: project.id, projectName: project.name, trashDir,
+        trashSize, fileCount: trashFiles.length, files: checked,
+        reclaimableSize: reclaimable.reduce((sum, file) => sum + file.size, 0), reclaimableCount: reclaimable.length });
+      report.trashSize += trashSize;
+    }
   }
   try { await assertLegacyStorageHealthScope(); }
   catch { throw new StorageHealthScanError('changed'); }
@@ -551,11 +632,25 @@ export async function scanStorageHealth(
 
   for (const project of projects) {
     checkAbort(signal);
+    if (nativeScopes.some((scope) => scope.entry.project.id === project.id)) continue;
     try {
       if (roots.get(project.id) !== await getProjectDataDir(project.id)) addIssue('project', project.name, project.name, 'changed');
     } catch (error) {
       checkAbort(signal);
       addIssue('project', project.name, project.name, issueReason(error));
+    }
+  }
+  for (const scope of nativeScopes) {
+    checkAbort(signal);
+    try {
+      const [latest] = await readNativeStorageScopes([scope.entry], signal);
+      if (!latest || latest.capture.changeRevision !== scope.capture.changeRevision
+        || !configValuesEqual([...latest.roots].map(([id, root]) => [id, pathKey(root)]), [...scope.roots].map(([id, root]) => [id, pathKey(root)]))) {
+        addIssue('project', scope.entry.project.name, '', 'changed');
+      }
+    } catch (error) {
+      checkAbort(signal);
+      addIssue('project', scope.entry.project.name, '', issueReason(error));
     }
   }
   try { await assertLegacyStorageHealthScope(); }
@@ -575,6 +670,7 @@ export async function prepareTrashCleanup(entries: readonly TrashInfo[], signal?
   checkAbort(signal);
   await assertLegacyStorageHealthScope();
   for (const entry of entries) {
+    await assertStorageCleanupPath(entry.trashDir);
     const files: TrashInfo['files'] = [];
     for (const file of entry.files) {
       checkAbort(signal);
@@ -589,6 +685,7 @@ export async function prepareTrashCleanup(entries: readonly TrashInfo[], signal?
     }
     prepared.push({ ...entry, files });
   }
+  for (const entry of entries) await assertStorageCleanupPath(entry.trashDir);
   await assertLegacyStorageHealthScope();
   checkAbort(signal);
   return prepared;
@@ -608,7 +705,7 @@ export async function clearTrashDir(trashDir: string, verify?: (path: string, si
     for (let end = path.lastIndexOf('/'); end > 0; end = path.lastIndexOf('/', end - 1)) confirmedDirectories.add(path.slice(0, end));
   }
   try {
-    await assertLegacyStorageHealthScope();
+    await assertStorageCleanupPath(trashDir);
     if (!await exists(trashDir)) { result.failedCount += confirmed.size; return result; }
     const info = await lstat(trashDir);
     if (!info.isDirectory || info.isSymlink) throw new Error('回收站不是普通目录');
@@ -620,7 +717,7 @@ export async function clearTrashDir(trashDir: string, verify?: (path: string, si
   const empty = await removeDirContents(trashDir, result, verify, confirmed, confirmedDirectories, progress, signal);
   if (!progress.incomplete) for (const path of confirmed.keys()) if (!progress.seen.has(path)) result.failedCount++;
   if (empty && result.failedCount === 0) {
-    try { await assertLegacyStorageHealthScope(); checkAbort(signal); await remove(trashDir); } catch { result.failedCount++; }
+    try { await assertStorageCleanupPath(trashDir); checkAbort(signal); await remove(trashDir); } catch { result.failedCount++; }
   }
   return result;
 }
@@ -642,7 +739,7 @@ async function removeDirContents(dirPath: string, result: CleanupResult, verify:
         const directoryKey = pathKey(entryPath).replace(/\/+$/, '');
         if (confirmed.has(directoryKey)) { result.failedCount++; retained = true; continue; }
         if (!confirmedDirectories.has(directoryKey)) { retained = true; continue; }
-        if (await removeDirContents(entryPath, result, verify, confirmed, confirmedDirectories, progress, signal)) { await assertLegacyStorageHealthScope(); checkAbort(signal); await remove(entryPath); }
+        if (await removeDirContents(entryPath, result, verify, confirmed, confirmedDirectories, progress, signal)) { await assertStorageCleanupPath(entryPath); checkAbort(signal); await remove(entryPath); }
         else retained = true;
       } else {
         const expected = confirmed.get(pathKey(entryPath));
@@ -654,7 +751,7 @@ async function removeDirContents(dirPath: string, result: CleanupResult, verify:
         if (fingerprint.bytes !== expected.size || fingerprint.digest !== expected.digest) { result.failedCount++; retained = true; continue; }
         const current = await lstat(entryPath);
         if (!current.isFile || current.isSymlink || current.size !== expected.size) { result.failedCount++; retained = true; continue; }
-        await assertLegacyStorageHealthScope();
+        await assertStorageCleanupPath(entryPath);
         checkAbort(signal);
         await remove(entryPath);
         result.deletedCount++;
@@ -671,11 +768,11 @@ async function removeDirContents(dirPath: string, result: CleanupResult, verify:
 export async function deleteOrphanFile(filePath: string, verify?: (path: string) => Promise<boolean>): Promise<boolean> {
   if (!isTauriEnv()) return false;
   try {
-    await assertLegacyStorageHealthScope();
+    await assertStorageCleanupPath(filePath);
     if (!verify || !await verify(filePath)) return false;
     const info = await lstat(filePath);
     if (!info.isFile || info.isSymlink) return false;
-    await assertLegacyStorageHealthScope();
+    await assertStorageCleanupPath(filePath);
     await remove(filePath);
     return true;
   } catch {

@@ -112,12 +112,12 @@ pub(crate) fn ensure_local_frontend_caller<R: Runtime>(webview: &Webview<R>) -> 
 /// 命令返回的路径会被前端存进节点数据，而前端所有「这个文件在不在项目目录里」的判断
 /// 都是字符串前缀比较（改名同步、分组搬运、相对路径索引）。带前缀的路径一律比不中，
 /// 且失败都是静默的。fs 插件和前端拼出来的路径本来就是普通形式，这里统一成同一种。
-fn canonicalize_simplified(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn canonicalize_simplified(path: &Path) -> std::io::Result<PathBuf> {
     Ok(simplify_verbatim(path.canonicalize()?))
 }
 
 #[cfg(windows)]
-fn simplify_verbatim(path: PathBuf) -> PathBuf {
+pub(crate) fn simplify_verbatim(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy().into_owned();
     match text.strip_prefix(r"\\?\") {
         // `\\?\UNC\server\share` 还原成 `\\server\share`
@@ -130,7 +130,7 @@ fn simplify_verbatim(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(not(windows))]
-fn simplify_verbatim(path: PathBuf) -> PathBuf {
+pub(crate) fn simplify_verbatim(path: PathBuf) -> PathBuf {
     path
 }
 

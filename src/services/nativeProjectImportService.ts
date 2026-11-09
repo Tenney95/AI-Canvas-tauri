@@ -66,7 +66,7 @@ async function finishImport(operation: NativeProjectImportJournal, signal?: Abor
   const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef);
   if (operation.phase === 'prepared') {
     // claim 在原生登记已存在时校验并复用；未知目录不会被接管。
-    await invoke('claim_native_project_media_root', { projectId: operation.projectId });
+    await invoke('claim_native_project_media_root', { projectId: operation.projectId, projectName: operation.next.project.name });
     for (const root of operation.next.project.storageBindings) if (root.rootRef !== operation.next.project.storageRootRef) {
       try { await invoke('resolve_native_project_media_subroot', { projectId: operation.projectId, rootRef: root.rootRef, create: false }); }
       catch { await invoke('resolve_native_project_media_subroot', { projectId: operation.projectId, rootRef: root.rootRef, create: true }); }

@@ -9,6 +9,7 @@ import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { getHttpResponseError } from './ai/httpUtils';
 import { APIMART_IMAGE_BATCH_PROTOCOL } from './nativeImageBatch';
+import type { NativeMediaSubmissionPreparation } from '../types/media';
 
 export async function submitNativeApimartImageBatch(input: { baseUrl: string; model: string; requestedCount: number;
   nodeId?: string; imageUrls: readonly string[]; bodies: readonly Record<string, unknown>[]; requestHeaders?: Record<string, string>;
@@ -19,7 +20,9 @@ export async function submitNativeApimartImageBatch(input: { baseUrl: string; mo
   if (!context || context.modelGeneration !== 1 || !input.bodies.length || input.bodies.length > 32) throw new Error('图片批次缺少原画布身份');
   const bodies = structuredClone(input.bodies);
   await input.beforeSubmit?.(); input.signal?.throwIfAborted();
-  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true });
+  let preparation: NativeMediaSubmissionPreparation | undefined = await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+  try {
+  const baseline = await captureNativeVideoSubmissionBaseline(context, input.nodeId, undefined, 'media-input-v3', { preparedReferences: true, preparation });
   const protocolDigest = await sha256BytesHex(new TextEncoder().encode(APIMART_IMAGE_BATCH_PROTOCOL));
   const requestFingerprint = await sha256BytesHex(new TextEncoder().encode(projectModelSourceToken([input.model, bodies, input.requestHeaders])));
   let record: NativeMediaTaskRecord = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: input.nodeId,
@@ -34,11 +37,13 @@ export async function submitNativeApimartImageBatch(input: { baseUrl: string; mo
     const submissionId = record.apimartImageBatch!.submissions[index].id;
     let requestSent = false;
     try {
+      preparation ??= await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+      preparation.assertCurrent();
       input.signal?.throwIfAborted(); await input.beforeSubmit?.();
-      await assertNativeVideoSubmissionInput(record, context); await assertNativeMediaPrepared(record);
-      record = await beginNativeImageBatchSubmission(record, submissionId);
+      await assertNativeVideoSubmissionInput(record, context); await assertNativeMediaPrepared(record, { preparation });
+      record = await beginNativeImageBatchSubmission(record, submissionId, { preparation });
       input.signal?.throwIfAborted(); await input.beforeSubmit?.(); await assertNativeVideoSubmissionInput(record, context);
-      input.signal?.throwIfAborted(); requestSent = true;
+      input.signal?.throwIfAborted(); preparation.assertCurrent(); preparation.release(); preparation = undefined; requestSent = true;
       const taskIds = await input.submit(body, input.signal, submissionId);
       record = await retainNativeImageBatchSubmission(record, submissionId, { taskIds });
     } catch (error) {
@@ -47,6 +52,8 @@ export async function submitNativeApimartImageBatch(input: { baseUrl: string; mo
         record = await retainNativeImageBatchSubmission(record, submissionId, requestSent ? { failed: true } : { notStarted: true }).catch(() => record);
       }
       break;
+    } finally {
+      preparation?.release(); preparation = undefined;
     }
   }
   record = await sealNativeImageBatchSubmissions(record).catch(() => record);
@@ -65,7 +72,8 @@ export async function submitNativeApimartImageBatch(input: { baseUrl: string; mo
     if (settled?.status === 'failed') throw recoveryError ?? new Error('原图片任务均已确认失败，原回执保留');
     firstError = recoveryError ?? firstError;
   }
-  const pending = new Error(`图片批次原操作 ${record.operationId} 已保留，请在存储健康继续查询全部原任务；未知提交不会自动重投。`);
-  if (firstError instanceof Error) pending.message += ` ${firstError.message}`;
+  const pending = new Error('图片批次任务已保留；已完整保存的本机产物会在返回原画布后自动显示。提交状态未知时不会重新生成。',
+    firstError === undefined ? undefined : { cause: firstError });
   pending.name = 'NativeMediaTaskPending'; Object.assign(pending, { nativeOperationId: record.operationId }); throw pending;
+  } finally { preparation?.release(); }
 }

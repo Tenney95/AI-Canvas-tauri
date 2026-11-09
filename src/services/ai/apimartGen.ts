@@ -4,7 +4,7 @@
 import { useAppStore } from '../../store/useAppStore';
 import { captureLegacyCanvasContext } from '../projectExecutionContext';
 import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
-import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
+import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
 import { pollTask, PollTaskFailedError, PollTimeoutError } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, removeFailedMediaTask, registerNodePolling, cleanupNodePolling, pauseMediaTask, VIDEO_POLL_MAX_DURATION_MS } from '../pollManager';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './helpers';
@@ -21,7 +21,7 @@ import { resolveConfiguredImageBackground } from './modelCapabilityValidation';
 import { redactModelProtocolError, redactModelProtocolErrorText, throwIfDefinitiveModelResponseFailure } from './modelProtocolHttp';
 import { classifyHttpResponseFailure, getHttpResponseError, HttpResponseError } from './httpUtils';
 import { createMediaDownloadAccess } from './mediaDownloadAccess';
-import { continueNativeMediaTask } from '../nativeMediaTaskContinuation';
+import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
 import { nativeBuiltinVideoProtocolDigest } from '../nativeBuiltinVideoProtocol';
 import { sha256BytesHex } from '../mediaDataUrl';
 import { projectModelSourceToken } from '../projectModelComparisonMaterial';
@@ -505,6 +505,7 @@ export async function generateApimartVideo(
   let receipt: MediaTaskReceipt | undefined;
   let requestSent = false;
   let nativeTask: NativeMediaTaskRecord | undefined;
+  let nativePreparation: NativeMediaSubmissionPreparation | undefined;
   let nativeRemoteId: string | undefined;
   const nativeContext = captureLegacyCanvasContext(useAppStore.getState());
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
@@ -545,7 +546,9 @@ export async function generateApimartVideo(
     if (nativeContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
       await beforeSubmit?.();
       if (nativeContext?.modelGeneration !== 1) throw new Error('原生视频画布已切换，未提交请求');
-      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, undefined, 'media-input-v3', { preparedReferences: true });
+      nativePreparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(nativeContext);
+      signal?.throwIfAborted();
+      const baseline = await captureNativeVideoSubmissionBaseline(nativeContext, nodeId!, undefined, 'media-input-v3', { preparedReferences: true, preparation: nativePreparation });
       const protocolDigest = await nativeBuiltinVideoProtocolDigest('apimart');
       nativeTask = await prepareNativeMediaTask({ context: nativeContext, operationId: crypto.randomUUID(), nodeId: nodeId!,
         inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision, fingerprintScheme: 'media-input-v3',
@@ -560,12 +563,12 @@ export async function generateApimartVideo(
     if (nativeTask) {
       if (!nativeContext) throw new Error('原媒体画布已变化');
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
-      await assertNativeMediaPrepared(nativeTask);
+      await assertNativeMediaPrepared(nativeTask, { preparation: nativePreparation });
       await beforeSubmit?.();
       await assertNativeVideoSubmissionInput(nativeTask, nativeContext);
       signal?.throwIfAborted();
     }
-    requestSent = true;
+    nativePreparation?.assertCurrent(); requestSent = true; nativePreparation?.release();
     const submitResp = await corsSafeFetch(`${baseUrl}${submitPath}`, {
       method: 'POST',
       headers: {
@@ -632,10 +635,7 @@ export async function generateApimartVideo(
         nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || rejected ? { notStarted: true } : { unknown: true }).catch(() => undefined);
       if (requestSent && !rejected) {
         // 原始异常可能回显连接凭据，只把脱敏后的异常保留为 cause。
-        const pending = new Error(`APIMart 视频提交结果待核对，原操作 ID：${nativeTask.operationId}；请先核对原任务，不要重新提交。`, { cause: error });
-        pending.name = 'NativeMediaTaskPending';
-        Object.assign(pending, { nativeOperationId: nativeTask.operationId });
-        throw pending;
+        throw createNativeMediaPendingError(nativeTask, error);
       }
     }
     if (rejected || !requestSent || error instanceof PollTaskFailedError) discardFailedTask(receipt);
@@ -645,6 +645,7 @@ export async function generateApimartVideo(
     }
     throw error;
   } finally {
+    nativePreparation?.release();
     if (nodeId) cleanupNodePolling(nodeId, nodeSignal);
   }
 }

@@ -124,7 +124,10 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
     .filter((key) => input.params[key as keyof AIAudioGenParams] !== undefined).map((key) => [key, input.params[key as keyof AIAudioGenParams]])) as AudioSettings;
   const frozen = validateInput({ version: 1, modelId, prompt: input.prompt, settings });
   await input.beforeSubmit?.(); input.signal?.throwIfAborted();
-  const baseline = await captureNativeVideoSubmissionBaseline(context, input.params.nodeId, undefined, 'media-input-v3', { preparedReferences: true });
+  const preparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+  try {
+  input.signal?.throwIfAborted();
+  const baseline = await captureNativeVideoSubmissionBaseline(context, input.params.nodeId, undefined, 'media-input-v3', { preparedReferences: true, preparation });
   const messageInput = readNativeMediaMessageInput(context.canvasId, input.params.nodeId);
   if (messageInput) {
     const material = JSON.parse(messageInput.material) as unknown;
@@ -142,7 +145,9 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
     requestFingerprint: inputFile.sha256, inputFingerprint: baseline.inputFingerprint, sourceCanvasRevision: baseline.canvasRevision,
     submissionKind: speech ? 'sync' : 'async' });
   if (!speech) {
-    await prepareNativeApimartMusicState(record, inputFile, frozen.settings.autoGenerateLyrics === true && modelId === 'flowmusic');
+    try { await prepareNativeApimartMusicState(record, inputFile, frozen.settings.autoGenerateLyrics === true && modelId === 'flowmusic'); }
+    catch (error) { await recordNativeMediaSubmission(record.operationId, record.lease, { notStarted: true }).catch(() => undefined); throw error; }
+    preparation.release();
     try { await resumeNativeBuiltinAudioTask(record.operationId, input.signal, input.beforeSubmit); }
     catch (error) { if (error instanceof Error && error.name === 'NativeMediaTaskDelivered') throw error;
       const latest = (await listNativeMediaTasks(record.ownerProjectId)).find((row) => row.operationId === record.operationId);
@@ -153,10 +158,10 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
   try {
     const generated = await generateApimartSpeech(input.apiKey, input.baseUrl, { model: modelId, input: frozen.prompt,
       voice: settings.audioVoice ?? 'alloy', format: settings.audioFormat ?? 'wav', speed: settings.audioSpeed ?? 1 }, input.signal, async () => {
-      await input.beforeSubmit?.(); input.signal?.throwIfAborted(); await assertInput(context, record, frozen); await assertNativeMediaPrepared(record);
+      await input.beforeSubmit?.(); input.signal?.throwIfAborted(); await assertInput(context, record, frozen); await assertNativeMediaPrepared(record, { preparation });
       const selected = connection(record); if (selected.apiKey !== input.apiKey) throw new Error('原音频连接已变化');
       record = await recordNativeMediaSubmission(record.operationId, record.lease, { unknown: true });
-      input.signal?.throwIfAborted(); sent = true;
+      input.signal?.throwIfAborted(); preparation.assertCurrent(); sent = true; preparation.release();
     });
     try {
       await assertNativeMediaResultRetention(record);
@@ -177,6 +182,7 @@ export async function generateNativeBuiltinAudio(input: { params: AIAudioGenPara
     }
     throw taskError(record);
   }
+  } finally { preparation.release(); }
 }
 
 /** 只续查原阶段 ID；只有持久证明从未发送的下一阶段才允许首次提交。 */
@@ -211,15 +217,18 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
       throw new Error('下一阶段尚未提交，请显式继续生成阶段；普通续查不会提交付费请求');
     }
     let sent = false;
+    let preparation: import('../types/media').NativeMediaSubmissionPreparation | undefined;
     const guard = async () => {
-      current(); await beforeSubmit?.(); await assertInput(context, record!, frozen);
+      current(); await beforeSubmit?.();
+      preparation = await useAppStore.getState().beginNativeMediaSubmissionPreparation(context);
+      current(); await assertInput(context, record!, frozen);
       if (connection(record!).apiKey !== selected.apiKey) throw new Error('原音频连接已变化');
-      if (await useAppStore.getState().saveCurrentProjectSilent() !== record!.canvasId) throw new Error('原音频画布未保存');
       const saved = await readNativeProjectView(record!.ownerProjectId, record!.canvasId);
       current(); await assertInput(context, record!, frozen);
-      if (!saved?.selection.canvas) throw new Error('原音频画布不可用');
-      state = await beginNativeApimartMusicStage(state, name, saved.selection.canvas.revision);
-      controller.signal.throwIfAborted(); sent = true;
+      if (!saved?.selection.canvas || saved.selection.canvas.revision !== preparation.canvasRevision) throw new Error('原音频准备画布版本已变化');
+      preparation.assertCurrent();
+      state = await beginNativeApimartMusicStage(state, name, preparation.canvasRevision);
+      controller.signal.throwIfAborted(); preparation.assertCurrent(); sent = true; preparation.release();
     };
     try {
       const settings = frozen.settings;
@@ -237,10 +246,12 @@ export async function resumeNativeBuiltinAudioTask(operationId: string, external
       if (state[name].state === 'unknown' && (!sent || getHttpResponseError(error)?.definitiveFailure)) {
         state = await recordNativeApimartMusicStage(state, name, sent ? { failed: true } : { notStarted: true });
       }
-      if (state[name].state === 'failed') await recordNativeMediaSubmission(record!.operationId, state.submissionLease, { notStarted: true }).catch(() => undefined);
+      const neverSubmitted = !sent && !state.lyrics.taskId && !state.music.taskId
+        && ['prepared', 'not-started', 'not-needed'].includes(state.lyrics.state) && ['prepared', 'not-started'].includes(state.music.state);
+      if (state[name].state === 'failed' || neverSubmitted) await recordNativeMediaSubmission(record!.operationId, state.submissionLease, { notStarted: true }).catch(() => undefined);
       else if (state[name].state === 'unknown') await recordNativeMediaSubmission(record!.operationId, state.submissionLease, { unknown: true }).catch(() => undefined);
       throw error;
-    }
+    } finally { preparation?.release(); }
   };
   try {
     current(); await submit('lyrics');

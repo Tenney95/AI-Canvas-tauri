@@ -30,7 +30,7 @@ import { isRecord } from '../../src/services/ai/modelProtocolShared';
 import { serializeModelProtocolBody } from '../../src/services/ai/modelProtocolBody';
 import {
   fetchSameOriginResultUrls, ModelProtocolHttpError, pcmS16LeToWav,
-  readBinaryModelProtocolResult, redactModelProtocolError,
+  readBinaryModelProtocolResult, redactModelProtocolError, throwIfDefinitiveModelResponseFailure,
 } from '../../src/services/ai/modelProtocolHttp';
 import { PollTaskFailedError, PollTimeoutError } from '../../src/services/pollTask';
 import { buildGeneralVideoProtocolVariables } from '../../src/services/ai/generateVideo';
@@ -41,6 +41,16 @@ import {
 } from '../../src/services/ai/modelCapabilityValidation';
 import { RELAYON_MODEL_MANIFEST, RELAYON_VIDEO_RESULT_URL_PATHS } from '../../src/services/ai/providers/relayonModelManifest';
 import { getHttpResponseError, HttpResponseError } from '../../src/services/ai/httpUtils';
+
+it('结构化批项拒绝使用数值下标errorPath保留上游原文与失败元数据', () => {
+  const message = 'Non posso generare questa immagine per motivi di sicurezza.';
+  let error: unknown;
+  try {
+    throwIfDefinitiveModelResponseFailure({ data: [{ error: { code: 'content_policy_violation', message } }] }, 200, 'data.0.error.message');
+  } catch (cause) { error = cause; }
+  expect(error).toBeInstanceOf(ModelProtocolHttpError);
+  expect(error).toMatchObject({ status: 200, definitiveFailure: true, message });
+});
 
 const jsonResponse = (
   payload: unknown,
