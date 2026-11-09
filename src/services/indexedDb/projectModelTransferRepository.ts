@@ -19,7 +19,7 @@ import { PROJECT_EXCHANGE_LIMITS } from '../projectExchangeFormat';
 
 const META = 'metadata';
 const TABLES = ['projectRoots', 'projectContents', 'episodes', 'episodeContents', 'canvasDocuments', 'canvasPreviews', 'legacyProjectBindings'];
-const HISTORY = { conversation: 'chatConversations', message: 'chatMessages', memory: 'projectMemories' } as const;
+const HISTORY = { conversation: 'chatConversations', message: 'chatMessages', memory: 'projectMemories', output: 'history' } as const;
 const IMPORT_PHASES: ProjectModelImportPhase[] = ['prepared', 'media_publishing', 'media_ready', 'db_committed', 'projected', 'finalized'];
 const EXPORT_PHASES: ProjectModelExportPhase[] = ['prepared', 'packing', 'published', 'registered', 'aborted'];
 const error = (code: string) => new Error('项目模型隔离传输未完成：' + code);
@@ -131,6 +131,22 @@ function validateExchange(value: ProjectModelTransferExchange | null): void {
     reference(item.head);
   }
 }
+/** 仅读取新项目本机记录：早期原生导出误把统计字段写入 published，外部归档仍走严格合同。 */
+export function readNativeProjectExchange(value: ProjectModelTransferExchange | null): ProjectModelTransferExchange | null {
+  if (value === null) return null;
+  closed(value, ['lineageId', 'localHead', 'stateVersion', 'bundle', 'identities', 'fileBindings', 'published']);
+  if (!Array.isArray(value.published)) throw error('invalid-exchange-state');
+  const published = value.published.map((receipt) => {
+    if (!receipt || !Object.hasOwn(receipt, 'archiveBytes')) return receipt;
+    closed(receipt, ['operationId', 'packageDigest', 'outputRef', 'head', 'archiveBytes']);
+    const { archiveBytes, ...canonical } = receipt as typeof receipt & { archiveBytes: unknown };
+    if (typeof archiveBytes !== 'number' || !Number.isSafeInteger(archiveBytes) || archiveBytes <= 0) throw error('invalid-publication-receipt');
+    return canonical;
+  });
+  const normalized = { ...value, published };
+  validateExchange(normalized);
+  return normalized;
+}
 export async function verifiedExchange(value: ProjectModelTransferExchange | null, previous: ProjectModelTransferExchange | null = null): Promise<void> {
   validateExchange(value);
   if (!value) { if (previous) throw error('cannot-drop-exchange-history'); return; }
@@ -184,7 +200,7 @@ export function createProjectModelTransferRepository(database: IDBDatabase, sess
   const tombstoneKey = (kind: string, value: string) => `project-model-business-tombstone:${session.operationId}:${kind}:${value}`;
   const stored = <T extends object>(value: T): ProjectModelStored<T> => ({ ...value, generation, operationId: session.operationId });
   const guard = (tx: IDBTransaction) => readProjectModelBusinessMarker(tx, session);
-  const allTables = (history: boolean) => [...TABLES, 'archiveHistoryBindings', ...(history ? Object.values(HISTORY) : [])];
+  const allTables = (history: boolean) => [...TABLES, 'archiveHistoryBindings', ...(history ? [HISTORY.conversation, HISTORY.message, HISTORY.memory] : [])];
   async function assertNoUnfinishedExport(tx: IDBTransaction, projectId: string): Promise<void> {
     await boundedRows<ProjectModelTransferExportJournal>(tx.objectStore(META),
       IDBKeyRange.bound(`project-model-export:${generation}:`, `project-model-export:${generation}:\uffff`),
@@ -225,7 +241,8 @@ export function createProjectModelTransferRepository(database: IDBDatabase, sess
     historyBindings.sort((a, b) => JSON.stringify(bindingKey(a)).localeCompare(JSON.stringify(bindingKey(b))));
     const historyRows: ProjectModelTransferHistoryRow[] = [];
     const legacyOwners = new Set([projectId, ...aggregate.bindings.map((binding) => binding.legacyId)]);
-    if (history) for (const kind of Object.keys(HISTORY) as ProjectModelTransferHistoryKind[]) {
+    // 输出历史属于新项目画布；旧模型fixture只读取原三类历史表。
+    if (history) for (const kind of ['conversation', 'message', 'memory'] as const) {
       const store = tx.objectStore(HISTORY[kind]);
       let values: Array<ProjectModelTransferHistoryRow['value']> = [];
       if (kind !== 'message' && store.indexNames.contains('projectId_updatedAt')) {
@@ -262,7 +279,7 @@ export function createProjectModelTransferRepository(database: IDBDatabase, sess
     for (const item of rows) {
       closed(item, ['kind', 'sourceNamespace', 'archiveOriginId', 'historicalTarget', 'value', 'existingLocalId']);
       const origin = JSON.stringify([item.sourceNamespace, item.kind, item.archiveOriginId]);
-      if (!Object.hasOwn(HISTORY, item.kind) || !id(item.sourceNamespace) || !id(item.archiveOriginId) || !id(item.value?.id)
+      if (!Object.hasOwn(HISTORY, item.kind) || item.kind === 'output' || !id(item.sourceNamespace) || !id(item.archiveOriginId) || !id(item.value?.id)
         || item.value.projectId !== projectId || origins.has(origin) || forbidden.some((field) => Object.hasOwn(item.value, field))
         || item.existingLocalId !== undefined && !id(item.existingLocalId)) throw error('invalid-history-row');
       if (item.kind === 'conversation' && item.value.agentMode !== 'plan') throw error('imported-runtime-mode');

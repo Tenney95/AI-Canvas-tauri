@@ -5,7 +5,8 @@ import type { ProjectMergePlanV2, ProjectMergeSideV2 } from './projectMergeV2Ser
 import { buildProjectMergePlanV2, resolveProjectMergeV2 } from './projectMergeV2Service';
 import { captureNativeProjectArchive } from './nativeProjectArchiveService';
 import { createBoundProjectModelArchiveExportPort } from './projectModelArchiveNativePort';
-import { materializeProjectModelArchiveBusiness, prepareProjectModelArchiveCapture } from './projectModelArchiveService';
+import { importProjectModelArchiveHistory, materializeProjectModelArchiveBusiness, prepareProjectModelArchiveCapture } from './projectModelArchiveService';
+import { commitNativeArchiveHistory } from './nativeArchiveHistoryCommit';
 import { projectArchivePayloadFromSnapshotV2, readProjectArchiveV4, readProjectArchiveV4Files, serializeProjectArchiveV4 } from './projectArchiveV4';
 import { createProjectExchangeRevisionV2, findProjectExchangeBaseV2, parseProjectExchangeBundleV2 } from './projectExchangeV2Format';
 import { deriveLegacyProjectionProofFromRevisions } from './projectExchangeV2Domain';
@@ -121,7 +122,10 @@ async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCur
   let operation = initial;
   if (operation.phase === 'finalized') return operation;
   if (operation.phase === 'aborted') throw new Error('原更新已撤销，备份和已发布素材仍保留');
-  if (operation.phase === 'db_committed') return advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'finalized');
+  if (operation.phase === 'db_committed') {
+    await commitNativeArchiveHistory(operation);
+    return advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'finalized');
+  }
   if (!operation.sourceRef) throw new Error('原更新的隔离来源缺失，请保留操作材料');
   const port = createBoundProjectModelArchiveImportPort(operation.projectId, operation.sourceRef);
   await assertOriginalUpdate(operation); assertCurrent?.();
@@ -144,7 +148,10 @@ async function finishNativeUpdate(initial: NativeProjectUpdateJournal, assertCur
     await assertOriginalUpdate(operation); assertCurrent?.();
     operation = await commitNativeProjectUpdate(operation.operationId, operation.sequence);
   }
-  if (operation.phase === 'db_committed') operation = await advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'finalized');
+  if (operation.phase === 'db_committed') {
+    await commitNativeArchiveHistory(operation);
+    operation = await advanceNativeProjectUpdate(operation.operationId, operation.sequence, 'finalized');
+  }
   if (operation.phase !== 'finalized') throw new Error('原更新阶段无效，未确认提交');
   return operation;
 }
@@ -198,9 +205,14 @@ async function makeUpdateInput(preview: NativeProjectUpdatePreview, choices: Rea
   if (latest.value.sourceToken !== expected.sourceToken) throw new Error('备份后项目或历史发生变化，未更新');
   const packageDigest = await digest([preview.source.manifest, preview.source.payload.exchange]);
   const intentDigest = await digest([packageDigest, expected.sourceToken, mode, choices]);
+  // 内容恢复保留今日历史；更新仅追加来源可证的输出快照，不恢复任务或租约。
+  const history = mode === 'restore-content' ? [] : (await importProjectModelArchiveHistory(preview.source, projectId,
+    snapshot.lineageId, expected, { appendChat: false, appendMemories: false }, { identities: material.identities,
+      episodes: material.aggregate.episodes, defaultCanvasId: material.aggregate.project.kind === 'standalone' ? material.aggregate.canvases[0]?.id : undefined,
+      fileBindings: material.fileBindings })).filter((row) => row.kind === 'output');
   return { operationId, mode, packageDigest, intentDigest, sourceLineageId: snapshot.lineageId, targetProjectId: projectId,
     expected, next: { ...material.aggregate, bindings: [], previews: [] }, exchange, idMap: material.identities,
-    history: [], media: material.media, editorRecords, backup, oldAssets, oldAssetSnapshots: assetSnapshots, recoveryState, assetRecords, ...source };
+    history, media: material.media, editorRecords, backup, oldAssets, oldAssetSnapshots: assetSnapshots, recoveryState, assetRecords, ...source };
 }
 
 /** 预览选择、独立备份、隔离来源及原生发布通过 journal 构成同一可恢复操作。 */

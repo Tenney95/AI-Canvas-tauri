@@ -95,6 +95,38 @@ function harness(initial: ProjectModelTransferCapture | null = null) {
 
 beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto); });
 describe('P5 portable/本机双向编排', () => {
+  it('新项目输出历史经归档映射原画布、旧节点与素材根，导入保持快照且重复更新只绑定既有记录', async () => {
+    const source = await archive(), sample = harness();
+    await sample.service.apply(await sample.service.preview(source), { operationId: 'output-seed', mode: 'import-new' });
+    const capture = sample.capture!, canvas = capture.aggregate.canvases[0];
+    const binding = capture.exchange!.fileBindings.find((item) => item.id === 'F2')!;
+    const root = capture.exchange!.identities.find((item) => item.kind === 'storage-root' && item.sourceId === binding.rootRef)!.localId;
+    capture.history = [{ kind: 'output', sourceNamespace: 'native:test', archiveOriginId: '', value: {
+      id: 'original-history', projectId: canvas.id, nodeId: 'deleted-node', nodeType: 'ai-image', nodeLabel: '原图', timestamp: 1,
+      prompt: '生成当时的提示词', output: 'asset://original', mediaUrl: 'asset://original', filePath: '/isolated/private.png',
+      relativePath: binding.localRelativePath, storageRootRef: root, model: 'general/original', provider: 'fixture', status: 'success',
+      recoveryTask: { taskId: 'never-execute' }, params: { aspectRatio: '1:1', originalInputUnavailable: true } } }];
+    await sample.service.exportProject(capture.aggregate.project.id, 'output-export');
+    const archived = sample.exported!, output = archived.payload.history!.payload.outputs![0];
+    expect(output).toMatchObject({ nodeId: 'deleted-node', prompt: '生成当时的提示词', fileId: 'F2', output: '' });
+    expect(archived.payload.history!.scopes).toContainEqual({ kind: 'output', id: output.id, canvasId: 'C' });
+    expect(JSON.stringify(output)).not.toContain('asset:'); expect(output).not.toHaveProperty('recoveryTask');
+    expect(output).not.toHaveProperty('filePath');
+    const wrongType = structuredClone(archived.payload);
+    wrongType.history!.payload.outputs![0].nodeType = 'ai-audio';
+    await expect(serializeProjectArchiveV4(wrongType, archived.manifest, archived.assets)).rejects.toThrow('媒体类型');
+    const mappings = [{ kind: 'canvas' as const, sourceId: 'C', localId: 'new-canvas' },
+      { kind: 'storage-root' as const, sourceId: 'canvas-root', localId: 'new-root' }];
+    const imported = await importProjectModelArchiveHistory(archived, 'new-project', 'lineage', null,
+      { appendChat: false, appendMemories: false }, { identities: mappings, episodes: [], fileBindings: [{ ...binding, localRelativePath: 'imports/new/result.png' }] });
+    expect(imported).toHaveLength(1);
+    expect(imported[0].value).toMatchObject({ projectId: 'new-canvas', nodeId: 'deleted-node', prompt: output.prompt,
+      relativePath: 'imports/new/result.png', storageRootRef: 'new-root', mediaUrl: 'imports/new/result.png' });
+    const again = await importProjectModelArchiveHistory(archived, 'new-project', 'lineage', { ...capture, history: imported },
+      { appendChat: false, appendMemories: false }, { identities: mappings, episodes: [], fileBindings: [{ ...binding, localRelativePath: 'imports/new/result.png' }] });
+    expect(again[0].existingLocalId).toBe(imported[0].value.id);
+  });
+
   it('新副本保留会话的画布归属和已删除工作台的只读来源', async () => {
     const source = await archive();
     source.payload.history = { payload: { conversations: [{ id: 'conversation', projectId: 'P', title: '旧工作台', titleSource: 'user',

@@ -43,6 +43,7 @@ const FILTER_OPTIONS: { key: FilterType; label: string }[] = [
 
 
 function formatRelativeTime(ts: number): string {
+  if (ts === 0) return t('未记录时间');
   const now = Date.now();
   const diff = now - ts;
   if (diff < 60_000) return t('刚刚');

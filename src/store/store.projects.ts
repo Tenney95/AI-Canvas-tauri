@@ -1402,6 +1402,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           let historyFailure: unknown;
           try { get().commitToHistory(); } catch (error) { historyFailure = error; }
           try { set({ nodes: rebased }); } finally { get().incrementRevision(); }
+          if (get().historyPanelOpen) void get().loadHistoryFromDb();
           if (historyFailure) throw historyFailure;
         } });
     } finally { unsubscribe(); signal?.removeEventListener('abort', cancel); release(); }

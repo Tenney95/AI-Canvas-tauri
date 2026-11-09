@@ -11,6 +11,7 @@ import { safeExchangePath } from './projectExchangeDomain';
 import { nativeImageBatchResults, nativeImageBatchSettled } from './nativeImageBatch';
 import { assertNativeImageBatchCanvas } from './nativeImageBatchCanvas';
 import { assertNativeMediaCollectionCanvas } from './nativeMediaCollectionCanvas';
+import { writeNativeOutputHistory } from './nativeOutputHistory';
 
 const req = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
@@ -93,6 +94,7 @@ export async function commitNativeMediaMessageDelivery(record: NativeMediaTaskRe
       if (!revision || revision.projectId !== project.id || !Number.isSafeInteger(revision.changeRevision)) return fail();
       const delivered = validateNativeMediaTaskRecord({ ...current, status: 'delivered', resultRelativePath: relativePath,
         deliveryDigest, committedCanvasRevision: canvas.revision, revision: increment(current.revision), updatedAt: Date.now() });
+      await writeNativeOutputHistory(tx, delivered, canvas, project.storageRootRef);
       await Promise.all([req(store.put(delivered)), req(tx.objectStore(REVISIONS).put({ projectId: project.id, changeRevision: increment(revision.changeRevision) }))]);
       return delivered;
     }, [ROOTS, EPISODES, CANVASES, EXCHANGE, TRANSFER, REVISIONS], true);
@@ -175,6 +177,7 @@ export async function commitNativeMediaDelivery(input: { record: NativeMediaTask
       const delivered = validateNativeMediaTaskRecord({ ...current, status: 'delivered', deliveryDigest,
         resultRelativePath,
         committedCanvasRevision: updated.revision, revision: increment(current.revision), updatedAt: Date.now() });
+      await writeNativeOutputHistory(tx, delivered, canvas, project.storageRootRef);
       await Promise.all([req(tx.objectStore(CANVASES).put(updated)), req(tx.objectStore(ROOTS).put({ ...project, updatedAt: Date.now() })),
         req(tx.objectStore(REVISIONS).put({ projectId: project.id, changeRevision: increment(revision.changeRevision) })),
         req(store.put(delivered))]);

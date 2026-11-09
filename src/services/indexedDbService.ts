@@ -45,6 +45,7 @@ import {
 } from './indexedDb/projectSummary';
 
 import { withRelocatedMedia } from './indexedDb/mediaRelocations';
+import { projectHistoryRange, pruneProjectHistory } from './indexedDb/outputHistoryRetention';
 import { withLegacyProjectWrite } from './indexedDb/legacyProjectWriteGuard';
 import { localMediaUrlToPath } from '../utils/mediaUrl';
 import { stripVerbatimPrefix } from './fs/core';
@@ -929,6 +930,8 @@ export interface HistoryRecord {
   error?: string;
   mediaUrl?: string;
   filePath?: string;
+  relativePath?: string;
+  storageRootRef?: string;
   params?: Record<string, unknown>;
 }
 
@@ -970,6 +973,15 @@ async function findMediaHistoryByReferences(references: string[], nodeType: 'ai-
   const keys = new Set(references.map(imageHistoryReferenceKey).filter((key): key is string => !!key));
   if (!keys.size) return null;
   if (signal?.aborted) throw new DOMException('Preview closed', 'AbortError');
+  if (projectId?.startsWith('c2-')) {
+    const records = await getHistoryEntriesForExport(projectId);
+    signal?.throwIfAborted();
+    return records.find((record) => record.status === 'success'
+      && (record.nodeType === nodeType || nodeType === 'ai-image' && record.nodeType === 'ai-animation')
+      && [record.filePath, record.mediaUrl, record.output].some((reference) => {
+        const key = imageHistoryReferenceKey(reference); return !!key && keys.has(key);
+      })) ?? null;
+  }
   const db = await openDB();
   if (signal?.aborted) throw new DOMException('Preview closed', 'AbortError');
   return new Promise((resolve, reject) => {
@@ -1013,37 +1025,67 @@ async function findMediaHistoryByReferences(references: string[], nodeType: 'ai-
 }
 
 const HISTORY_MIGRATION_PREFIX = 'output-history-v1:';
-const MAX_PROJECT_HISTORY = 16;
 
-function projectHistoryRange(
-  projectId: string,
-  cursor?: HistoryPageCursor | null,
-): IDBKeyRange {
-  const lower: [string, number, string] = [projectId, 0, ''];
-  const upper: [string, number, string] = cursor
-    ? [projectId, cursor.timestamp, cursor.id]
-    : [projectId, Number.MAX_SAFE_INTEGER, '\uffff'];
-  return IDBKeyRange.bound(lower, upper, false, Boolean(cursor));
+const nativeHistoryProjectionKey = (id: string) => `native-output-history-projected:${id}`;
+
+/** 先读消费标记，避免每次打开面板都重验已投影的媒体文件。 */
+export async function getUnprojectedNativeOutputHistory(records: HistoryRecord[]): Promise<HistoryRecord[]> {
+  if (!records.length) return [];
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_METADATA, 'readonly');
+    const unseen = new Set<string>();
+    for (const record of records) {
+      const request = tx.objectStore(STORE_METADATA).get(nativeHistoryProjectionKey(record.id));
+      request.onsuccess = () => { if (request.result === undefined) unseen.add(record.id); };
+    }
+    tx.oncomplete = () => resolve(records.filter((record) => unseen.has(record.id)));
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('新项目输出历史标记读取失败'));
+  });
 }
 
-function pruneProjectHistory(store: IDBObjectStore, projectId: string): void {
-  const request = store.index('projectId_timestamp_id').openKeyCursor(
-    projectHistoryRange(projectId),
-    'prev',
-  );
-  let skippedRetained = false;
-  request.onsuccess = () => {
-    const cursor = request.result;
-    if (!cursor) return;
-    if (!skippedRetained) {
-      // 首条就是最新记录；跳过保留区，只继续遍历待删除的主键。
-      skippedRetained = true;
-      cursor.advance(MAX_PROJECT_HISTORY);
-      return;
+/** 历史与消费标记原子写入；删除、清空或16条裁剪后不得被outbox再次补回。 */
+export async function putNativeOutputHistoryEntries(records: HistoryRecord[]): Promise<void> {
+  if (!records.length) return;
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_HISTORY, STORE_METADATA], 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY), metadata = tx.objectStore(STORE_METADATA);
+    for (const record of records) {
+      const request = metadata.get(nativeHistoryProjectionKey(record.id));
+      request.onsuccess = () => {
+        if (request.result !== undefined) return;
+        const existing = store.index('projectId_timestamp_id').getAll(projectHistoryRange(record.projectId));
+        existing.onsuccess = () => {
+          // 导入已保存完整历史时，不再把相同文件的无原稿补记添加为第二条。
+          const duplicate = (existing.result as HistoryRecord[]).some((entry) => entry.id === record.id
+            || record.params?.originalInputUnavailable === true && entry.status === 'success'
+              && entry.relativePath === record.relativePath && entry.storageRootRef === record.storageRootRef
+              && entry.nodeType === record.nodeType);
+          withActiveHistory(tx, [record], (active) => {
+            if (!duplicate) for (const entry of active) store.put(entry);
+            metadata.put({ id: nativeHistoryProjectionKey(record.id), projectId: record.projectId });
+            pruneProjectHistory(store, record.projectId);
+          });
+        };
+      };
     }
-    store.delete(cursor.primaryKey);
-    cursor.continue();
-  };
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('新项目输出历史投影失败'));
+  });
+}
+
+async function syncNativeHistory(projectId: string): Promise<void> {
+  // 前缀只减少旧项目开销；实际身份由新库只读查询确认，不创建或迁移任何项目。
+  if (!projectId.startsWith('c2-')) return;
+  const { syncNativeOutputHistory } = await import('./nativeOutputHistorySync');
+  await syncNativeOutputHistory(projectId);
+}
+
+async function nativeHistoryView(projectId: string, records: HistoryRecord[]): Promise<HistoryRecord[]> {
+  if (!projectId.startsWith('c2-')) return records;
+  const { hydrateNativeOutputHistoryRecords } = await import('./nativeOutputHistorySync');
+  return hydrateNativeOutputHistoryRecords(projectId, records);
 }
 
 async function trimProjectHistory(projectId: string): Promise<void> {
@@ -1114,8 +1156,9 @@ export async function getHistoryEntriesPage(
   cursor: HistoryPageCursor | null = null,
   query: HistoryQuery = {},
 ): Promise<HistoryPage> {
+  await syncNativeHistory(projectId);
   const db = await openDB();
-  return new Promise((resolve, reject) => {
+  const page = await new Promise<HistoryPage>((resolve, reject) => {
     const tx = db.transaction([STORE_HISTORY, STORE_METADATA], 'readonly');
     const index = tx.objectStore(STORE_HISTORY).index('projectId_timestamp_id');
     const request = index.openCursor(projectHistoryRange(projectId, cursor), 'prev');
@@ -1148,6 +1191,7 @@ export async function getHistoryEntriesPage(
     };
     request.onerror = () => { /* 事务统一报告。 */ };
   });
+  return { ...page, records: await nativeHistoryView(projectId, page.records) };
 }
 
 /** 仅在用户显式导出时扫描并返回全部匹配记录。 */
@@ -1155,8 +1199,9 @@ export async function getHistoryEntriesForExport(
   projectId: string,
   query: HistoryQuery = {},
 ): Promise<HistoryRecord[]> {
+  await syncNativeHistory(projectId);
   const db = await openDB();
-  return new Promise((resolve, reject) => {
+  const records = await new Promise<HistoryRecord[]>((resolve, reject) => {
     const tx = db.transaction([STORE_HISTORY, STORE_METADATA], 'readonly');
     const request = tx.objectStore(STORE_HISTORY)
       .index('projectId_timestamp_id')
@@ -1176,12 +1221,14 @@ export async function getHistoryEntriesForExport(
     };
     request.onerror = () => { /* 事务统一报告。 */ };
   });
+  return nativeHistoryView(projectId, records);
 }
 
 /** 使用 nodeId 索引读取指定节点的全部历史记录，按生成时间倒序返回。 */
 export async function getNodeHistoryEntries(projectId: string, nodeId: string): Promise<HistoryRecord[]> {
+  await syncNativeHistory(projectId);
   const db = await openDB();
-  return new Promise((resolve, reject) => {
+  const entries = await new Promise<HistoryRecord[]>((resolve, reject) => {
     const tx = db.transaction([STORE_HISTORY, STORE_METADATA], 'readonly');
     let records: HistoryRecord[] = [];
     const request = tx.objectStore(STORE_HISTORY)
@@ -1195,9 +1242,11 @@ export async function getNodeHistoryEntries(projectId: string, nodeId: string): 
     tx.oncomplete = () => resolve(records);
     tx.onerror = tx.onabort = () => reject(tx.error ?? new Error('生成记录读取失败'));
   });
+  return nativeHistoryView(projectId, entries);
 }
 
 export async function getHistoryEntryCount(projectId: string): Promise<number> {
+  await syncNativeHistory(projectId);
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db.transaction(STORE_HISTORY, 'readonly')
@@ -1293,6 +1342,7 @@ export async function claimLegacyHistoryEntries(
 
 /** 清空指定项目的全部历史记录 */
 export async function clearAllHistoryEntries(projectId: string): Promise<void> {
+  await syncNativeHistory(projectId);
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
@@ -1308,6 +1358,7 @@ export async function clearAllHistoryEntries(projectId: string): Promise<void> {
 
 /** 使用 nodeId 索引批量删除指定节点的历史记录。 */
 export async function deleteNodeHistoryEntries(projectId: string, nodeId: string): Promise<void> {
+  await syncNativeHistory(projectId);
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');

@@ -8,6 +8,7 @@ import { nativeImageBatchSettled } from './nativeImageBatch';
 import { readNativeMediaLocalResult } from './nativeMediaLocalResult';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { localMediaUrlToPath } from '../utils/mediaUrl';
+import { readNativeMediaRecoverySummary } from './nativeMediaRecoverySummary';
 
 const deliveries = new Map<string, Promise<boolean>>();
 interface DeliveryQueue { repeat: boolean; nodes: Set<string> | null; allowOriginalCccTaskQuery: boolean; promise: Promise<void> }
@@ -24,6 +25,38 @@ function current(context: CanvasContext, signal?: AbortSignal): void {
 function completeLocalSet(record: NativeMediaTaskRecord): boolean {
   return !!record.localResults?.length || record.submissionKind === 'sync' && !!record.localResult
     || !!record.apimartImageBatch && nativeImageBatchSettled(record.apimartImageBatch) && nativeMediaLocalOutputs(record).length > 0;
+}
+/** 已停止的本机等待只投影状态；不据此改写远端结论、查询或重新提交。 */
+export async function projectNativeMediaStoppedState(operationId: string, context: CanvasContext,
+  options: Pick<NativeMediaAutoDeliveryOptions, 'isNodeBusy'> & { isCurrent?: () => boolean } = {}): Promise<boolean> {
+  current(context);
+  const records = await listNativeMediaTasks(context.projectId), record = records.find((row) => row.operationId === operationId);
+  current(context);
+  if (!record || !sameCanvas(record, context) || record.origin?.deliveryMode === 'chat'
+    || isNativeMediaTaskSuperseded(record, records) || options.isNodeBusy?.(record.canvasId, record.nodeId)
+    || options.isCurrent?.() === false) return false;
+  const target = useAppStore.getState().nodes.find((node) => node.id === record.nodeId);
+  if (!target || target.data.status !== 'loading') return false;
+  const failed = record.status === 'failed';
+  if (!failed && (!['prepared', 'outcome-unknown'].includes(record.status) || record.remoteTaskId || completeLocalSet(record))) return false;
+  if (!failed) {
+    const recovery = await readNativeMediaRecoverySummary(record);
+    current(context);
+    if (recovery.canResume || recovery.cachedOnly || recovery.resultCount || recovery.taskCount) return false;
+  }
+  // 仅清除失效等待，不交付产物；输入或参考已改不能让旧计时继续，交付路径仍须核验输入指纹。
+  // 异步读取期间可能产生后续尝试；最终写回前再次核对原回执和节点运行所有权。
+  const latest = await listNativeMediaTasks(context.projectId), actual = latest.find((row) => row.operationId === operationId);
+  current(context);
+  if (!actual || actual.revision !== record.revision || actual.lease !== record.lease || actual.status !== record.status
+    || isNativeMediaTaskSuperseded(actual, latest) || options.isNodeBusy?.(actual.canvasId, actual.nodeId)
+    || options.isCurrent?.() === false) return false;
+  const state = useAppStore.getState(), node = state.nodes.find((item) => item.id === actual.nodeId);
+  if (!node || node.type !== target.type || node.data !== target.data || node.data.status !== 'loading') return false;
+  state.updateNodeDataTransient(actual.nodeId, { status: 'error',
+    error: failed ? '原媒体任务已失败，可修改后重新生成。' : '提交结果未确认，已停止等待；请先到服务商核对，原任务已保留，应用不会自动重新生成。',
+    mediaTaskState: failed ? undefined : 'submit_unknown', mediaTaskStage: undefined, videoTaskState: undefined });
+  return true;
 }
 const productFields = ['imageUrl', 'videoUrl', 'audioUrl', 'output', 'sourceUrl', 'thumbnailUrl', 'relativePath', 'filePath', 'assetId', 'artifactId', 'storageRootRef', 'mattingMask', 'annotation', 'annotationLayer'] as const;
 /** success 产物属于用户当前选择；只有本回执同一原文件才可视为已展示的同一结果。 */
@@ -79,7 +112,7 @@ export function deliverNativeMediaCachedResult(operationId: string, context: Can
     if (await protectedSuccess(record)) return false;
     current(context, signal);
     if (record.origin?.deliveryMode !== 'chat') {
-      if (!useAppStore.getState().nodes.some((node) => node.id === record.nodeId)) return false;
+      if (!useAppStore.getState().nodes.some((node) => node.id === targetId)) return false;
       const { assertNativeVideoSubmissionInput } = await import('./nativeVideoSubmission');
       current(context, signal);
       await assertNativeVideoSubmissionInput(record, context);
@@ -138,6 +171,8 @@ export function resumeNativeMediaLocalResults(canvasId: string, options: NativeM
     allowOriginalCccTaskQuery: options.allowOriginalCccTaskQuery === true, promise: Promise.resolve() };
   const controller = new AbortController();
   const unsubscribe = useAppStore.subscribe(() => { if (!isProjectExpectedContextCurrent(context, useAppStore.getState(), { checkCanvasRevision: false })) controller.abort(); });
+  const projectStoppedLoading = (operationId: string, nodeId: string) => useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data.status === 'loading'
+    ? projectNativeMediaStoppedState(operationId, context, options).catch(() => false) : Promise.resolve(false);
   queue.promise = (async () => {
     do {
       queue.repeat = false;
@@ -147,11 +182,16 @@ export function resumeNativeMediaLocalResults(canvasId: string, options: NativeM
       const originalQueries: Array<{ operationId: string; nodeId: string }> = [];
       for (const record of records) {
         current(context, controller.signal);
-        if (!sameCanvas(record, context) || !['prepared', 'submitted', 'outcome-unknown'].includes(record.status) || nodes && !nodes.has(record.nodeId)
+        if (!sameCanvas(record, context) || nodes && !nodes.has(record.nodeId)
           || options.isNodeBusy?.(canvasId, record.nodeId)) continue;
+        if (!['prepared', 'submitted', 'outcome-unknown'].includes(record.status)) {
+          if (record.status === 'failed') await projectStoppedLoading(record.operationId, record.nodeId);
+          continue;
+        }
         // 优先全部本机缓存，慢的服务商查询不能挡住同画布已有结果。
         const delivered = await deliverNativeMediaCachedResult(record.operationId, context, controller.signal, options.isNodeBusy).catch(() => false);
         if (!delivered && queue.allowOriginalCccTaskQuery && record.status === 'submitted' && record.remoteTaskId) originalQueries.push({ operationId: record.operationId, nodeId: record.nodeId });
+        else if (!delivered) await projectStoppedLoading(record.operationId, record.nodeId);
       }
       for (const [ordinal, query] of originalQueries.entries()) {
         current(context, controller.signal);
@@ -161,6 +201,7 @@ export function resumeNativeMediaLocalResults(canvasId: string, options: NativeM
           break;
         }
         await deliverNativeMediaCachedResult(query.operationId, context, controller.signal, options.isNodeBusy, true).catch(() => false);
+        await projectStoppedLoading(query.operationId, query.nodeId);
       }
     } while (queue.repeat && !controller.signal.aborted);
   })().finally(() => { unsubscribe(); controller.abort(); if (queues.get(key) === queue) queues.delete(key); });

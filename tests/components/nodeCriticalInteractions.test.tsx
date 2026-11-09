@@ -636,6 +636,18 @@ function visibleShotRatio(store: TestStore, column: string) {
 
 /** 只测工作流编辑与关闭回调，生成服务不在本用例执行范围内。 */
 async function loadWorkflowEditingDialog() {
+  // 编辑回调不执行生成或文件操作；隔离这些边界，避免冷加载整套原生生成依赖图。
+  vi.doMock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: vi.fn() }));
+  vi.doMock('../../src/services/imageBatchService', () => ({
+    applyImageBatchResults: vi.fn(), failImageBatchNodes: vi.fn(), prepareImageBatchNodes: vi.fn(),
+  }));
+  vi.doMock('../../src/services/comfyWorkflowService', () => ({ cancelComfyUINodeTask: vi.fn() }));
+  vi.doMock('../../src/services/workflowApi/workflowApiAdapter', () => ({
+    completeWorkflowApiNodeTask: vi.fn(), stopWorkflowApiNodeTask: vi.fn(),
+  }));
+  vi.doMock('../../src/services/ai/providers/runninghubWorkflow', () => ({
+    cancelRunningHubNodeTask: vi.fn(), completeRunningHubNodeTask: vi.fn(),
+  }));
   vi.doMock('../../src/services/aiService', () => ({
     generateText: vi.fn(), generateTextResult: vi.fn(), generateImage: vi.fn(), generateImagesBatch: vi.fn(),
     generateAudio: vi.fn(), buildPanoramaPrompt: vi.fn(),
@@ -650,6 +662,11 @@ async function loadWorkflowEditingDialog() {
     return (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
   } finally {
     // 当前模块保留导入的替身；后续 resetModules 后的生成用例仍加载自己的真实实现或替身。
+    vi.doUnmock('../../src/services/fileService');
+    vi.doUnmock('../../src/services/imageBatchService');
+    vi.doUnmock('../../src/services/comfyWorkflowService');
+    vi.doUnmock('../../src/services/workflowApi/workflowApiAdapter');
+    vi.doUnmock('../../src/services/ai/providers/runninghubWorkflow');
     vi.doUnmock('../../src/services/aiService');
     vi.doUnmock('../../src/services/generationService');
     vi.doUnmock('../../src/services/shotlistService');
@@ -2120,7 +2137,6 @@ describe('critical canvas node interactions', () => {
       vi.doMock('../../src/services/projectSettingsService', async () => ({
         ...await vi.importActual<typeof import('../../src/services/projectSettingsService')>('../../src/services/projectSettingsService'),
         resolveProjectGenerationPrompt: ({ prompt }: { prompt: string }) => prompt,
-        getImageNodeDimensionsForAspectRatio: () => ({ nodeWidth: 280, nodeHeight: 280 }),
       }));
       vi.doMock('../../src/services/pollManager', () => ({
         ...mockComfyDeliveries(), getPendingTasksForProject: () => pendingTasks, pauseComfyNodeDelivery,
@@ -2305,7 +2321,7 @@ describe('critical canvas node interactions', () => {
       (panel().props.onChangeImageBackground as (background: string) => void)('transparent');
       expect(store.nodes[0].data).toMatchObject({ aspectRatio: '16:9', nodeWidth: 280, nodeHeight: 158 });
       (panel().props.onChangeAspectRatio as (ratio: string) => void)('9:16');
-      expect(store.nodes[0].data).toMatchObject({ aspectRatio: '9:16', nodeWidth: 280, nodeHeight: 280 });
+      expect(store.nodes[0].data).toMatchObject({ aspectRatio: '9:16', nodeWidth: 158, nodeHeight: 280 });
       (panel().props.onChangeImageQuality as (quality: string) => void)('high');
       expect(store.nodes[0].data.imageQuality).toBe('high');
       select('general/model-a');
@@ -2323,6 +2339,17 @@ describe('critical canvas node interactions', () => {
       (panel().props.onClearModel as () => void)();
       expect(store.nodes[0].data.imageQuality).toBeUndefined();
       expect(store.nodes[0].data.imageBackground).toBeUndefined();
+    });
+
+    it('MCP图片节点在生成弹窗改比例立即改框，实际生成参数与回填后的画框保持一致', async () => {
+      const { store, panel, generateImage } = await setupImageQualityDialog();
+      Object.assign(store.nodes[0].data, { role: 'source', aspectRatio: '1:1', nodeWidth: 185, nodeHeight: 327,
+        imageUrl: 'asset://previous.png' });
+      (panel().props.onChangeAspectRatio as (ratio: string) => void)('9:16');
+      expect(store.nodes[0].data).toMatchObject({ aspectRatio: '9:16', nodeWidth: 158, nodeHeight: 280 });
+      await (panel().props.onSubmit as () => Promise<void>)();
+      expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({ aspectRatio: '9:16' }));
+      expect(store.nodes[0].data).toMatchObject({ aspectRatio: '9:16', nodeWidth: 158, nodeHeight: 280 });
     });
 
     it.each([

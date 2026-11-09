@@ -106,6 +106,17 @@ it('作品主根产物不继承导入节点或画布的旧子根，旧回执也�
   expect((oldProjected.nodes[0] as { data: Record<string, unknown> }).data.storageRootRef).toBe(primary);
 });
 
+it.each([[280, 280], [158, 280], [185, 327]])('新结构整组交付保留当前画框 %s×%s，后续候选沿用同一比例', async (nodeWidth, nodeHeight) => {
+  const { canvas, record } = await fixture(true, 'image');
+  const retained = await retainNativeMediaOutputs(record, [output('a', 'image'), output('b', 'image')], { factory });
+  const source = canvas.nodes[0] as { data: Record<string, unknown> };
+  const current = { ...canvas, nodes: [{ ...source, data: { ...source.data, aspectRatio: '9:16', nodeWidth, nodeHeight } }] };
+  const body = buildNativeMediaCollectionCanvas(current, retained);
+  expect(body.nodes).toHaveLength(2);
+  for (const node of body.nodes) expect((node as { data: Record<string, unknown> }).data)
+    .toMatchObject({ aspectRatio: '9:16', nodeWidth, nodeHeight, status: 'success' });
+});
+
 it('集合只接受受控摘要文件和已知字段，拒绝地址、任意路径及访问器', () => {
   expect(() => validateNativeMediaLocalOutputs([{ ...output('a', 'audio'), relativePath: 'https://fixture.example/track.mp3' }])).toThrow();
   expect(() => validateNativeMediaLocalOutputs([{ ...output('a', 'audio'), relativePath: 'imports/unknown/file.mp3' }])).toThrow();

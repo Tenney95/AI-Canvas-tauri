@@ -13,6 +13,7 @@ import { prepareNativeProjectExport, advanceNativeProjectExport, readNativeProje
 import { prepareProjectModelArchiveCapture, materializeProjectModelArchiveBusiness } from '../../src/services/projectModelArchiveService';
 import type { ProjectModelTransferCapture, ProjectModelTransferExchange } from '../../src/types/projectModelTransfer';
 import { listNativeVideoEditorProjectsForProject } from '../../src/services/indexedDb/nativeVideoEditorRepository';
+import { readNativeProjectExchange, verifiedExchange } from '../../src/services/indexedDb/projectModelTransferRepository';
 
 const id = (prefix: 'p2' | 'e2' | 'c2', digit: string) => `${prefix}-${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 let factory: IDBFactory;
@@ -83,6 +84,78 @@ describe('独立新项目仓储', () => {
     await expect(advanceNativeProjectExport(journal.operationId, published.sequence, 'registered', receipt, { factory })).rejects.toThrow('project-version-conflict');
     expect((await readNativeProjectExport(journal.operationId, { factory }))?.phase).toBe('published');
     expect((await readNativeProjectCapture(root.project.id, { factory }))?.exchange).toBeNull();
+  });
+
+  it.each([false, true])('连续导出不保存原生统计字段；既有污染回执只读兼容，原操作可续接（旧回执=%s）', async (legacyReceipt) => {
+    const root = await createNativeProject({ name: '连续导出', projectId: id('p2', '1'), canvasId: id('c2', '2') }, { factory });
+    const capture = async (): Promise<ProjectModelTransferCapture> => {
+      const value = (await readNativeProjectCapture(root.project.id, { factory }))!;
+      return { schemaVersion: 1, generation: 1, sessionId: 'native-project', sessionRevision: value.changeRevision,
+        sourceToken: 'a'.repeat(64), includesHistory: true, aggregate: { ...value.aggregate, previews: [], bindings: [] },
+        exchange: value.exchange, history: [], historyBindings: [] };
+    };
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = factory.open(NATIVE_PROJECT_DATABASE_NAME); opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error);
+    });
+    const storedExchange = () => new Promise<ProjectModelTransferExchange>((resolve, reject) => {
+      const tx = db.transaction('nativeProjectExchange', 'readonly'), request = tx.objectStore('nativeProjectExchange').get(root.project.id);
+      request.onsuccess = () => resolve(request.result.exchange); request.onerror = () => reject(request.error);
+    });
+    try {
+      for (const ordinal of [1, 2]) {
+        const before = await capture(), prepared = await prepareProjectModelArchiveCapture(before, []);
+        const journal = await prepareNativeProjectExport({ operationId: `export-${ordinal}`, projectId: root.project.id,
+          expectedChangeRevision: before.sessionRevision, expectedExchange: before.exchange, exchange: prepared.exchange,
+          includesHistory: true, sourceToken: before.sourceToken }, { factory });
+        const packing = await advanceNativeProjectExport(journal.operationId, journal.sequence, 'packing', undefined, { factory });
+        // 与原生 pack 返回合同一致，统计字段只供结果展示，不能进入交换回执。
+        const receipt = { outputRef: `opaque-receipt-${ordinal}`, packageDigest: String(ordinal).repeat(64), archiveBytes: 1024 };
+        const published = await advanceNativeProjectExport(journal.operationId, packing.sequence, 'published', receipt, { factory });
+        const resumed = (await readNativeProjectExport(journal.operationId, { factory }))!;
+        expect(resumed.phase).toBe('published');
+        await advanceNativeProjectExport(journal.operationId, resumed.sequence, 'registered',
+          ordinal === 1 ? receipt : { outputRef: published.outputRef!, packageDigest: published.packageDigest! }, { factory });
+        const exchange = await storedExchange();
+        expect(exchange.published).toHaveLength(ordinal);
+        expect(exchange.published.every((item) => !Object.hasOwn(item, 'archiveBytes'))).toBe(true);
+        if (ordinal === 1 && legacyReceipt) {
+          Object.assign(exchange.published[0], { archiveBytes: 1024 });
+          await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction('nativeProjectExchange', 'readwrite');
+            tx.objectStore('nativeProjectExchange').put({ projectId: root.project.id, exchange });
+            tx.oncomplete = () => resolve(); tx.onerror = tx.onabort = () => reject(tx.error);
+          });
+          expect((await capture()).exchange!.published[0]).not.toHaveProperty('archiveBytes');
+          expect((await storedExchange()).published[0]).toHaveProperty('archiveBytes', 1024);
+          // 兼容只作用于本机新库读取，不能放宽外部或隔离传输合同。
+          await expect(verifiedExchange(exchange)).rejects.toThrow('unsupported-transfer-fields');
+        }
+      }
+    } finally { db.close(); }
+  });
+
+  it('本机回执兼容只接受已知正整数统计字段，未知字段和版本继续拒绝', async () => {
+    const root = await createNativeProject({ name: '严格回执', projectId: id('p2', '1'), canvasId: id('c2', '2') }, { factory });
+    const capture: ProjectModelTransferCapture = { schemaVersion: 1, generation: 1, sessionId: 'native-project', sessionRevision: 0,
+      sourceToken: 'a'.repeat(64), includesHistory: false, aggregate: { ...root, previews: [], bindings: [] }, exchange: null, history: [], historyBindings: [] };
+    const prepared = await prepareProjectModelArchiveCapture(capture, []);
+    const exchange = { ...prepared.exchange, published: [{ operationId: 'first-export', outputRef: 'opaque-receipt',
+      packageDigest: 'b'.repeat(64), head: prepared.exchange.localHead, archiveBytes: 1024 }] };
+    const clean = readNativeProjectExchange(exchange)!;
+    expect(clean.published[0]).not.toHaveProperty('archiveBytes');
+    expect(exchange.published[0].archiveBytes).toBe(1024);
+    for (const archiveBytes of [undefined, null, '1024', 0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => readNativeProjectExchange({ ...exchange, published: [{ ...exchange.published[0], archiveBytes }] } as unknown as ProjectModelTransferExchange))
+        .toThrow('invalid-publication-receipt');
+    }
+    expect(() => readNativeProjectExchange({ ...exchange, published: [{ ...exchange.published[0], futureField: true }] } as unknown as ProjectModelTransferExchange))
+      .toThrow('unsupported-transfer-fields');
+    expect(() => readNativeProjectExchange({ ...exchange, futureField: true } as unknown as ProjectModelTransferExchange))
+      .toThrow('unsupported-transfer-fields');
+    expect(() => readNativeProjectExchange({ ...exchange, bundle: { ...exchange.bundle, version: 3 } } as unknown as ProjectModelTransferExchange))
+      .toThrow('invalid-exchange-state');
+    expect(() => readNativeProjectExchange({ ...exchange, published: [{ ...exchange.published[0], head: { canonicalVersion: 3, revisionId: 'b'.repeat(64) } }] } as unknown as ProjectModelTransferExchange))
+      .toThrow('invalid-head-reference');
   });
 
   it('新副本的操作先落 journal，再原子提交聚合和交换状态', async () => {

@@ -17,7 +17,7 @@ import * as nativeDelivery from '../../src/services/nativeMediaDelivery';
 import { sha256BytesHex } from '../../src/services/mediaDataUrl';
 import { videoInputFingerprintMaterial } from '../../src/services/videoBatchPlanning';
 import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
-import type { ProjectRecord } from '../../src/types/project';
+import type { EpisodeRecord, ProjectRecord } from '../../src/types/project';
 import { hydrateNativeProjectView, nativeEpisodeDisplayNumbers, projectNativeCatalogEntry } from '../../src/store/nativeProjectView';
 import { listEpisodes, projectMemoryOwnerId, resolveOpenTargetId, seriesOwnerId } from '../../src/store/store.utils';
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
@@ -65,7 +65,7 @@ vi.mock('../../src/services/pollManager', async () => ({
 
 const root: ProjectRecord = { id: 'project', name: '作品', kind: 'series', createdAt: 1, updatedAt: 2, epoch: 1,
   dataFolder: 'folder', storageRootRef: 'root', storageBindings: [] };
-const episode = (id: string, canvasId: string, orderRank: number) => ({ id, projectId: root.id, canvasId,
+const episode = (id: string, canvasId: string, orderRank: number): EpisodeRecord => ({ id, projectId: root.id, canvasId,
   name: id, orderRank, createdAt: 1, updatedAt: 2, epoch: 1, revision: 0,
   settingsPolicy: { mode: 'inherit' as const, overrides: {} } });
 

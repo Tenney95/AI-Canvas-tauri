@@ -154,15 +154,35 @@ export type ProjectArchiveWorkbenchTargetV4 =
   | { state: 'active'; kind: 'episode'; projectId: string; episodeId: string }
   | ProjectArchiveHistoricalTarget;
 
-/** 只携带既有 portableArchiveChat 白名单内容，不携带任务/回执或租约。 */
+/** 输出历史只保存原快照和包内文件身份，不携带本机路径或恢复执行权。 */
+export interface ProjectArchiveOutputHistoryV4 {
+  id: string;
+  archiveOriginId: string;
+  projectId: string;
+  nodeId: string;
+  nodeLabel: string;
+  timestamp: number;
+  prompt: string;
+  output: string;
+  nodeType: string;
+  model: string;
+  provider: string;
+  status: 'success' | 'error' | 'download_pending' | 'abandoned';
+  error?: string;
+  fileId?: string;
+  params?: Record<string, string | number | boolean>;
+}
+
+/** 只携带可阅读白名单内容，不携带任务/回执或租约。 */
 export interface ProjectArchiveHistoryV4 {
   /** 旧 workbenchTarget 不再与新绑定并存，避免 active/retired 双权威。 */
   payload: Omit<ProjectArchiveChatPayload, 'conversations'> & {
     conversations: Array<Omit<ProjectArchiveChatPayload['conversations'][number], 'workbenchTarget'>>;
+    outputs?: ProjectArchiveOutputHistoryV4[];
   };
   workbenchTargets: Array<{ conversationId: string; target: ProjectArchiveWorkbenchTargetV4 }>;
-  /** 会话与记忆原本所属画布；缺省时属于项目根。消息沿用所属会话。 */
-  scopes?: Array<{ kind: 'conversation' | 'memory'; id: string; canvasId: string; retired?: true }>;
+  /** 会话、记忆与输出原本所属画布；输出必须声明，消息沿用所属会话。 */
+  scopes?: Array<{ kind: 'conversation' | 'memory' | 'output'; id: string; canvasId: string; retired?: true }>;
 }
 
 /** 每个素材逻辑身份绑定来源根；物理载荷可按 mediaId 去重。 */

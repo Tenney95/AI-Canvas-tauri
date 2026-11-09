@@ -440,7 +440,7 @@ export async function scanStorageHealth(
   const references = new Set<string>();
   const roots = new Map<string, string | null>();
   const additionalRoots = new Map<string, string[]>();
-  let nativeScopes: NativeStorageScope[] = [];
+  let nativeScopes: NativeStorageScope[];
   const projectRoots = (id: string): string[] => [...new Set([roots.get(id), ...(additionalRoots.get(id) ?? [])].filter((root): root is string => !!root))];
   try {
     await assertLegacyStorageHealthScope();

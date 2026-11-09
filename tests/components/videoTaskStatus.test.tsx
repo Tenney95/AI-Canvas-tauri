@@ -16,6 +16,7 @@ vi.mock('react', async () => ({ ...await vi.importActual<typeof import('react')>
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: (selector: (state: typeof mocks.state) => unknown) => selector(mocks.state) }));
 vi.mock('../../src/services/pollManager', () => ({
   getPendingTasksForProject: () => mocks.tasks, resumeMediaNodeTask: mocks.resume, discardMediaTask: vi.fn(),
+  hasMuseQueryIdentity: () => false,
 }));
 vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
 import VideoTaskStatus from '../../src/components/nodes/shared/VideoTaskStatus';

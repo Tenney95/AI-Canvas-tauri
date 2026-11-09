@@ -21,7 +21,7 @@ describe('项目模型旧消费者与正式门禁只读审计', () => {
       expect.objectContaining({ file: 'src/services/indexedDb/projectImportRepository.ts', category: 'recovery-retained' }),
       expect.objectContaining({ file: 'src/services/dramaAssetTransferService.ts', category: 'legacy-support', priority: 'P2' }),
       expect.objectContaining({ file: 'src/services/projectModelRouter.ts', category: 'legacy-readonly-adapter', priority: 'P1' }),
-      expect.objectContaining({ file: 'src/services/nativeProjectImportService.ts', category: 'legacy-archive', priority: 'P1' }),
+      expect.objectContaining({ file: 'src/services/nativeArchiveHistoryCommit.ts', category: 'legacy-archive', priority: 'P1' }),
       expect.objectContaining({ file: 'src/services/projectModelBackup.ts', category: 'backup-audit-retained' }),
       expect.objectContaining({ file: 'src/projectModelFixtureHost.ts', category: 'fixture-source-retained', priority: 'P3' }),
     ]));
@@ -46,17 +46,20 @@ describe('项目模型旧消费者与正式门禁只读审计', () => {
       ['table', 'facade'], routerBudgets).violations).toContainEqual(expect.objectContaining({
       code: 'legacy-call-budget-exceeded', scope: 'resolveProjectModel', target: 'getProjectById', count: 2, max: 1,
     }));
-    const importer = 'src/services/nativeProjectImportService.ts';
+    const importer = 'src/services/nativeArchiveHistoryCommit.ts';
     const importSource = `import { STORE_PROJECTS } from './indexedDb/schema';
-      async function commitHistory() { const tx = db.transaction([STORE_PROJECTS, 'metadata']);
+      async function commitNativeArchiveHistory() { const tx = db.transaction([STORE_PROJECTS, 'metadata']);
         const work = async () => tx.objectStore(STORE_PROJECTS).getKey('id'); return work(); }`;
     const importBudgets = [
-      { file: importer, scope: 'commitHistory', kind: 'table', operation: 'transaction', target: 'projects', max: 1 },
-      { file: importer, scope: 'commitHistory::work', kind: 'table', operation: 'objectStore', target: 'projects', max: 1 },
+      { file: importer, scope: 'commitNativeArchiveHistory', kind: 'table', operation: 'transaction', target: 'projects', max: 1 },
+      { file: importer, scope: 'commitNativeArchiveHistory::work', kind: 'table', operation: 'objectStore', target: 'projects', max: 1 },
     ];
     expect(audit(importer, importSource, ['table'], importBudgets).violations).toEqual([]);
+    expect(audit(importer, importSource.replace("tx.objectStore(STORE_PROJECTS).getKey('id')",
+      "[tx.objectStore(STORE_PROJECTS).getKey('id'), tx.objectStore(STORE_PROJECTS).getKey('other')]"), ['table'], importBudgets).violations)
+      .toContainEqual(expect.objectContaining({ code: 'legacy-call-budget-exceeded', scope: 'commitNativeArchiveHistory::work', target: 'projects', count: 2, max: 1 }));
     expect(audit(importer, importSource.replace("getKey('id')", "put({ id: 'id' })"), ['table'], []).violations)
-      .toContainEqual(expect.objectContaining({ code: 'legacy-call-budget-exceeded', scope: 'commitHistory::work', target: 'projects' }));
+      .toContainEqual(expect.objectContaining({ code: 'legacy-call-budget-exceeded', scope: 'commitNativeArchiveHistory::work', target: 'projects' }));
   });
 
   it('新组件直接读旧表不可借UI projects栏目名漏过，纯栏目/类型/注释则不误报', () => {

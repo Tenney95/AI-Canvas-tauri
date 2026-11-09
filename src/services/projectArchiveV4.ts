@@ -16,6 +16,7 @@ import { serializeProjectArchiveEntries, type ProjectArchiveTextEntry } from './
 import { sha256BytesHex } from './mediaDataUrl';
 import { validateArchiveVideoEditorProjects } from './videoEditorArchive';
 import { validateArchiveAssetMetadata } from './projectArchiveAssetMetadata';
+import { validateArchiveOutputHistory } from './projectOutputHistoryArchive';
 
 const encoder = new TextEncoder();
 const JSON_ENTRIES = [...PROJECT_ARCHIVE_V4_ENTRIES, 'history.json', 'video-editor.json', 'asset-metadata.json'] as const;
@@ -251,11 +252,22 @@ export function projectArchivePayloadFromSnapshotV2(input: ProjectExchangeSnapsh
 
 function validateHistory(history: ProjectArchiveHistoryV4 | undefined, snapshot: ProjectExchangeSnapshotV2): void {
   if (!history) return;
-  const value = object(history, ['payload', 'workbenchTargets', 'scopes']), payload = object(value.payload, ['conversations', 'messages', 'memories']);
+  const value = object(history, ['payload', 'workbenchTargets', 'scopes']), payload = object(value.payload, ['conversations', 'messages', 'memories', 'outputs']);
   array(payload.conversations, 100_000); array(payload.messages, 100_000); array(payload.memories, 100_000);
   if ((payload.conversations as unknown[]).some((row) => Object.hasOwn(object(row), 'workbenchTarget'))) return fail('历史同时包含旧版和新版目标');
-  const portable = JSON.parse(JSON.stringify(portableArchiveChat(history.payload))) as unknown;
-  if (!equal(portable, payload)) return fail('历史包含非可移植字段或运行权限');
+  const { outputs: _outputs, ...chat } = history.payload;
+  const portable = JSON.parse(JSON.stringify(portableArchiveChat(chat))) as unknown;
+  if (!equal(portable, chat)) return fail('历史包含非可移植字段或运行权限');
+  if (payload.outputs !== undefined) {
+    const files = readProjectArchiveV4Files(snapshot);
+    validateArchiveOutputHistory(payload.outputs, files, snapshot.rootProjectId);
+    for (const row of history.payload.outputs ?? []) if (row.fileId) {
+      const file = files.find((item) => item.id === row.fileId), media = snapshot.media.find((item) => item.id === file?.mediaId);
+      const category = row.nodeType === 'ai-video' ? 'video' : row.nodeType === 'ai-audio' ? 'audio'
+        : ['ai-image', 'ai-animation', 'ai-panorama', 'ai-director'].includes(row.nodeType) ? 'image' : undefined;
+      if (!media || category && media.kind !== category) return fail('输出历史媒体类型与文件不一致');
+    }
+  }
   const conversationIds = new Set(history.payload.conversations.map((row) => row.id));
   const messages = new Map(history.payload.messages.map((row) => [row.id, row])), sequences = new Set<string>();
   for (const row of [...history.payload.conversations, ...history.payload.messages, ...history.payload.memories]) {
@@ -280,9 +292,11 @@ function validateHistory(history: ProjectArchiveHistoryV4 | undefined, snapshot:
       : scope.retired === undefined && snapshot.entities.some((entry) => entry.kind === 'canvas' && entry.id === canvasId);
     if (scoped.has(key) || !canvasPresent
       || (scope.kind === 'conversation' ? !conversationIds.has(id)
-        : scope.kind === 'memory' ? !history.payload.memories.some((row) => row.id === id) : true)) return fail('历史画布归属无效');
+        : scope.kind === 'memory' ? !history.payload.memories.some((row) => row.id === id)
+          : scope.kind === 'output' ? !history.payload.outputs?.some((row) => row.id === id) : true)) return fail('历史画布归属无效');
     scoped.add(key);
   }
+  if (history.payload.outputs?.some((row) => !scoped.has(JSON.stringify(['output', row.id])))) return fail('输出历史缺少画布归属');
   const seen = new Set<string>();
   for (const item of array(value.workbenchTargets, 100_000)) {
     const binding = object(item, ['conversationId', 'target']), conversationId = identity(binding.conversationId);

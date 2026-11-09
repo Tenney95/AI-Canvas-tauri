@@ -295,6 +295,18 @@ describe('media generation project settings', () => {
     expect(mocks.bindMediaTaskContext).toHaveBeenCalledWith('image-node', expect.objectContaining({ parameters: result.parameters }), expect.any(Function));
   });
 
+  it('图片省略比例时不从作品根借默认值，本集占位与实际请求均使用1:1', async () => {
+    configureVisualModels();
+    mocks.storeState.projects = [
+      { id: 'owner-project', settings: { generation: { imageAspectRatio: '9:16', imageSize: '4K' } } },
+      { id: 'project-1', parentId: 'owner-project' },
+    ];
+    const result = await runMediaGeneration({ kind: 'image', prompt: '山谷', modelRef: 'general/image-model',
+      deliveryMode: 'chat' }, 'project-1');
+    expect(mocks.generateImage).toHaveBeenCalledWith(expect.objectContaining({ imageSize: '2K', aspectRatio: '1:1' }), undefined);
+    expect(result.parameters).toMatchObject({ resolution: '2K', aspectRatio: '1:1' });
+  });
+
   it('视频自动时长、帧率和关闭音轨原样传递并保存在原任务快照', async () => {
     configureVisualModels();
     const result = await runMediaGeneration({ kind: 'video', prompt: '移动镜头', modelRef: 'general/video-model',
@@ -1047,7 +1059,6 @@ describe('async media task identity', () => {
     expect(mocks.resumeMediaNodeTask).not.toHaveBeenCalled();
     expect(mocks.generateImage).not.toHaveBeenCalled();
   });
-});
 
   it('resumes only the saved Muse task when the send acknowledgment was lost', async () => {
     mocks.getPendingTasksForProject.mockReturnValue([{ nodeId: 'tracking-1', projectId: 'project-1',
@@ -1059,3 +1070,4 @@ describe('async media task identity', () => {
     expect(mocks.generateImage).not.toHaveBeenCalled();
     expect(mocks.generateVideo).not.toHaveBeenCalled();
   });
+});

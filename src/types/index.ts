@@ -378,6 +378,9 @@ export interface OutputHistoryEntry {
   error?: string;                // 错误信息
   mediaUrl?: string;             // 媒体资源 URL（imageUrl/videoUrl/audioUrl）
   filePath?: string;             // 本地文件路径
+  /** 新项目历史的可移植媒体身份；展示路径由本机项目绑定解析。 */
+  relativePath?: string;
+  storageRootRef?: string;
   params?: Record<string, unknown>; // 生成参数快照
 }
 

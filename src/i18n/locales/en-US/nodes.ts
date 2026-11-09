@@ -1278,6 +1278,7 @@ const nodes = {
   '这个节点还没有生成过图片': 'This node has not generated any images yet',
   '未记录模型': 'Model not recorded',
   '未记录提示词': 'Prompt not recorded',
+  '未记录时间': 'Time not recorded',
   '节点生成对话框': 'Node generation dialog',
   '长按全屏显示': 'Press and hold for fullscreen',
   '暂无可预览内容': 'Nothing to preview yet',

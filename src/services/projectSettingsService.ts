@@ -216,6 +216,17 @@ export function getImageNodeDimensionsForAspectRatio(
     : { nodeWidth: Math.round(maxDimension * (width / height)), nodeHeight: maxDimension };
 }
 
+/** 对话占位与实际请求共用当前画布的图片参数，不从另一集或作品根借用默认值。 */
+export function resolveImageGenerationParameters(
+  settings: ProjectSettings | undefined,
+  parameters: { aspectRatio?: string; resolution?: string } = {},
+): { aspectRatio: string; resolution: string } {
+  return {
+    aspectRatio: parameters.aspectRatio ?? (settings?.generation?.imageAspectRatio || '1:1'),
+    resolution: parameters.resolution ?? (settings?.generation?.imageSize || '2K'),
+  };
+}
+
 export function applyProjectDefaultsToNodeData(
   data: BaseNodeData,
   settings: ProjectSettings | undefined,

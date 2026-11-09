@@ -11,7 +11,7 @@ export interface ProjectModelTransferAggregate {
   previews: CanvasPreview[];
   bindings: LegacyProjectBinding[];
 }
-export type ProjectModelTransferHistoryKind = 'conversation' | 'message' | 'memory';
+export type ProjectModelTransferHistoryKind = 'conversation' | 'message' | 'memory' | 'output';
 export interface ProjectModelArchiveHistoryBinding {
   destinationProjectId: string;
   sourceNamespace: string;

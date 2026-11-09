@@ -5,7 +5,7 @@ import type { CreationProfileSelection } from '../../types/creationProfile';
 import type { AgentTeamProfile } from '../../types/agentTeam';
 import type { ProjectModelTransferAggregate, ProjectModelTransferCapture, ProjectModelTransferExchange, ProjectModelTransferExportJournal, ProjectModelTransferImportJournal } from '../../types/projectModelTransfer';
 import { configValuesEqual } from '../configPatch';
-import { verifiedExchange } from './projectModelTransferRepository';
+import { readNativeProjectExchange, verifiedExchange } from './projectModelTransferRepository';
 import { validateProjectModelTransferAggregate } from './projectModelBusinessRepository';
 import { replaceNativeVideoEditorInTransaction, validateNativeVideoEditorUpdateMedia } from './nativeVideoEditorUpdate';
 import { materializeNativeRawRecovery, referencedNativeRecoveryAssets, type NativeRecoveryIdentityMapping, type NativeRecoveryFileMapping, type NativeRecoveryAssetMapping } from '../nativeProjectRawRecovery';
@@ -14,6 +14,7 @@ import { applyNativeGlobalRecoveryFiles, remapNativeAssetImageReferences, rebind
 import type { NativeGlobalRecoveryFile } from '../nativeProjectArchiveService';
 import { validateNativeMissingAssetProof, type NativeMissingAssetProof } from '../nativeMissingAssetBackup';
 import { hasControlCharacters } from '../../utils/controlCharacters';
+import { validateNativeArchiveOutputRows } from '../projectOutputHistoryArchive';
 
 export const NATIVE_PROJECT_DATABASE_NAME = 'ai-canvas-native-projects-v2' as const;
 export const NATIVE_PROJECT_DATABASE_VERSION = 1 as const;
@@ -309,7 +310,7 @@ Promise<{ aggregate: NativeProjectAggregate; changeRevision: number; exchange: P
         || (exchange as { projectId?: unknown }).projectId !== projectId
         || !(exchange as { exchange?: unknown }).exchange)) return fail('invalid-exchange-record');
       return { aggregate, changeRevision: revision.changeRevision,
-        exchange: exchange === undefined ? null : (exchange as { exchange: ProjectModelTransferExchange }).exchange, includesHistory: false };
+        exchange: readNativeProjectExchange(exchange === undefined ? null : (exchange as { exchange: ProjectModelTransferExchange }).exchange), includesHistory: false };
     });
   } finally { database.close(); }
 }
@@ -1092,7 +1093,7 @@ options: NativeProjectOptions = {}): Promise<NativeProjectExportJournal> {
       if (!project || project.id !== fixed.projectId) return fail('project-not-found');
       assertNativeRoot(project);
       if (!revision || revision.changeRevision !== fixed.expectedChangeRevision
-        || stored && stored.projectId !== fixed.projectId || !configValuesEqual(stored?.exchange ?? null, fixed.expectedExchange)) return fail('project-version-conflict');
+        || stored && stored.projectId !== fixed.projectId || !configValuesEqual(readNativeProjectExchange(stored?.exchange ?? null), fixed.expectedExchange)) return fail('project-version-conflict');
       if (existing) return fail('operation-id-used');
       if (transfers.some((item) => !(item.kind === 'native-content-recovery' && item.phase === 'ready')
         && (item.phase === undefined || !['registered', 'aborted', 'finalized'].includes(item.phase)))) return fail('project-transfer-present');
@@ -1142,8 +1143,9 @@ export async function advanceNativeProjectExport(operationId: string, sequence: 
           request(tx.objectStore(EXCHANGE).get(journal.projectId)) as Promise<{ projectId: string; exchange: ProjectModelTransferExchange } | undefined>,
         ]);
         if (!revision || revision.changeRevision !== journal.expectedChangeRevision || stored && stored.projectId !== journal.projectId
-          || !configValuesEqual(stored?.exchange ?? null, journal.expectedExchange)) return fail('project-version-conflict');
-        const exchange = { ...journal.exchange, published: [...journal.exchange.published, { operationId, ...receipt, head: journal.head }] };
+          || !configValuesEqual(readNativeProjectExchange(stored?.exchange ?? null), journal.expectedExchange)) return fail('project-version-conflict');
+        const exchange = { ...journal.exchange, published: [...journal.exchange.published,
+          { operationId, outputRef: receipt.outputRef, packageDigest: receipt.packageDigest, head: journal.head }] };
         await request(tx.objectStore(EXCHANGE).put({ projectId: journal.projectId, exchange }));
       }
       const next: NativeProjectExportJournal = { ...journal, phase, sequence: increment(journal.sequence), updatedAt: Date.now(),
@@ -1283,7 +1285,7 @@ export async function replaceNativeContentWithRecovery(input: { operationId: str
         || !configValuesEqual(current.episodes, fixed.expected.aggregate.episodes)
         || !configValuesEqual(current.episodeContents, fixed.expected.aggregate.episodeContents)
         || !configValuesEqual(current.canvases, fixed.expected.aggregate.canvases)
-        || !configValuesEqual(exchange?.exchange ?? null, fixed.expected.exchange)) return fail('project-version-conflict');
+        || !configValuesEqual(readNativeProjectExchange(exchange?.exchange ?? null), fixed.expected.exchange)) return fail('project-version-conflict');
       if (operations.some((item) => !(item.kind === 'native-content-recovery' && item.phase === 'ready')
         && !(item.kind === 'project-model-export' && ['registered', 'aborted'].includes(item.phase ?? ''))
         && !(item.kind === 'project-model-import' && item.phase === 'finalized')
@@ -1360,11 +1362,18 @@ function validateNativeUpdateInput(input: NativeUpdateInput): void {
     || !/^[A-Za-z0-9_-]{1,256}$/.test(input.backup?.outputRef ?? '')
     || !Array.isArray(input.expected.editorRecords) || !Array.isArray(input.expected.retiredEditorRecords) || !Array.isArray(input.editorRecords)
     || !Array.isArray(input.oldAssets) || input.oldAssets.length > 200_000
-    || input.history.length || input.sourceRef !== `imports/native-update-${input.operationId}`
+    || !Array.isArray(input.history) || input.history.length > 100_000
+    || input.history.some((row) => row.kind !== 'output') || input.mode === 'restore-content' && input.history.length
+    || input.sourceRef !== `imports/native-update-${input.operationId}`
     || input.mode === 'restore-content' && (!/^recovery-[A-Za-z0-9-]{1,111}$/.test(input.restoreRecoveryId ?? '') || !Array.isArray(input.restoreAssets) || input.restoreAssets.length > 200_000)
     || input.mode !== 'restore-content' && (input.restoreRecoveryId !== undefined || input.restoreAssets !== undefined || input.rawRecovery !== undefined)
     || input.rawRecovery !== undefined && (input.rawRecovery.recoveryId !== input.restoreRecoveryId || !Array.isArray(input.rawRecovery.episodeIds)
       || !Array.isArray(input.rawRecovery.canvasIds) || !Array.isArray(input.rawRecovery.files) || !Array.isArray(input.rawRecovery.rebindings))) return fail('invalid-update-journal');
+  const historyCanvasIds = [...new Set([...input.next.canvases.map((canvas) => canvas.id), ...input.expected.aggregate.canvases.map((canvas) => canvas.id),
+    ...input.expected.aggregate.bindings.filter((binding) => binding.namespace === 'legacy-canvas' && binding.retired && binding.projectId === projectId)
+      .map((binding) => binding.canvasId ?? binding.legacyId)])];
+  validateNativeArchiveOutputRows(input.history, { projectId, canvasIds: historyCanvasIds,
+    rootRefs: input.next.project.storageBindings.map((item) => item.rootRef), identities: input.idMap, bindings: input.exchange.fileBindings });
   const inventory = (items: NativeProjectUpdateJournal['oldAssets']) => {
     const result = new Map<string, NativeProjectUpdateJournal['oldAssets'][number]>();
     for (const item of items) {
@@ -1546,7 +1555,7 @@ export async function prepareNativeProjectUpdate(input: NativeUpdateInput, optio
       if (!current || !revision || revision.projectId !== projectId || revision.changeRevision !== fixed.expected.sessionRevision
         || !configValuesEqual(current.project, fixed.expected.aggregate.project) || !configValuesEqual(current.content, fixed.expected.aggregate.content)
         || !configValuesEqual(current.episodes, fixed.expected.aggregate.episodes) || !configValuesEqual(current.episodeContents, fixed.expected.aggregate.episodeContents)
-        || !configValuesEqual(current.canvases, fixed.expected.aggregate.canvases) || !configValuesEqual(exchange?.exchange ?? null, fixed.expected.exchange)) return fail('project-version-conflict');
+        || !configValuesEqual(current.canvases, fixed.expected.aggregate.canvases) || !configValuesEqual(readNativeProjectExchange(exchange?.exchange ?? null), fixed.expected.exchange)) return fail('project-version-conflict');
       if (operations.some((row) => !(row.kind === 'native-content-recovery' && row.phase === 'ready')
         && !(row.kind === 'project-model-export' && ['registered', 'aborted'].includes(row.phase ?? ''))
         && !(row.kind === 'project-model-import' && ['finalized', 'aborted'].includes(row.phase ?? ''))
@@ -1576,6 +1585,12 @@ export async function readNativeProjectUpdate(operationId: string, options: Nati
 export async function advanceNativeProjectUpdate(operationId: string, sequence: number, phase: 'media_publishing' | 'media_ready' | 'finalized',
   mediaPublicationRef?: string, options: NativeProjectOptions = {}): Promise<NativeProjectUpdateJournal> {
   if (!Number.isSafeInteger(sequence) || sequence < 0 || phase === 'media_ready' && mediaPublicationRef !== `media_v1_${operationId}`) return fail('invalid-update-journal');
+  if (phase === 'finalized') {
+    const original = await readNativeProjectUpdate(operationId, options);
+    if (!original || original.sequence !== sequence || original.phase !== 'db_committed') return fail('update-journal-conflict');
+    const { assertNativeArchiveHistoryCommitted } = await import('../nativeArchiveHistoryCommit');
+    await assertNativeArchiveHistoryCommitted(original);
+  }
   const database = await openNativeProjectDatabase(false, options); if (!database) return fail('project-not-found');
   try { return await transact(database, 'readwrite', options, async (tx) => {
     if (tx.durability !== 'strict') return fail('strict-durability-unavailable');
@@ -1630,7 +1645,7 @@ export async function commitNativeProjectUpdate(operationId: string, sequence: n
     if (!current || !revision || revision.projectId !== row.projectId || revision.changeRevision !== row.expected.sessionRevision
       || !configValuesEqual(current.project, row.expected.aggregate.project) || !configValuesEqual(current.content, row.expected.aggregate.content)
       || !configValuesEqual(current.episodes, row.expected.aggregate.episodes) || !configValuesEqual(current.episodeContents, row.expected.aggregate.episodeContents)
-      || !configValuesEqual(current.canvases, row.expected.aggregate.canvases) || !configValuesEqual(savedExchange?.exchange ?? null, row.expected.exchange)) return fail('project-version-conflict');
+      || !configValuesEqual(current.canvases, row.expected.aggregate.canvases) || !configValuesEqual(readNativeProjectExchange(savedExchange?.exchange ?? null), row.expected.exchange)) return fail('project-version-conflict');
     const updated = structuredClone(row.next), now = Date.now();
     if (updated.project.kind !== current.project.kind || updated.project.storageRootRef !== current.project.storageRootRef
       || updated.project.dataFolder !== current.project.dataFolder
@@ -1732,6 +1747,9 @@ options: NativeProjectOptions = {}): Promise<NativeProjectImportJournal> {
     || !/^[a-f0-9]{64}$/.test(fixed.packageDigest) || !/^[a-f0-9]{64}$/.test(fixed.intentDigest)
     || fixed.sourceRef !== undefined && !/^native-import-[a-f0-9-]{36}$/.test(fixed.sourceRef)) return fail('invalid-import');
   await verifiedExchange(fixed.exchange, null);
+  validateNativeArchiveOutputRows(fixed.history, { projectId,
+    canvasIds: fixed.idMap.filter((item) => item.kind === 'canvas').map((item) => item.localId),
+    rootRefs: fixed.next.project.storageBindings.map((item) => item.rootRef), identities: fixed.idMap, bindings: fixed.exchange.fileBindings });
   validateAggregate(fixed.next.project, fixed.next.content, fixed.next.episodes, fixed.next.episodeContents, fixed.next.canvases);
   await validateImportEditors(fixed);
   const database = await openNativeProjectDatabase(true, options);

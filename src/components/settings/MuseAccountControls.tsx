@@ -103,6 +103,7 @@ export default function MuseAccountControls({ onLoggedInChange, onCredentialRead
   const request = useRef(0);
   const refreshing = useRef<Promise<void> | null>(null);
   const actionInFlight = useRef(false);
+  const invalidateRequests = useCallback(() => { request.current++; }, []);
   const applyStatus = useCallback((next: MuseAuthStatus) => {
     setStatus(next);
     onLoggedInChange?.(next.loggedIn);
@@ -143,9 +144,9 @@ export default function MuseAccountControls({ onLoggedInChange, onCredentialRead
     })();
     return () => {
       mounted.current = false;
-      request.current++;
+      invalidateRequests();
     };
-  }, [refresh]);
+  }, [refresh, invalidateRequests]);
 
   useEffect(() => {
     if (!desktop || (!status.checking && (!status.loginOpen || !pollLogin))) return;

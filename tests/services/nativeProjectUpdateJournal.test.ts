@@ -30,7 +30,7 @@ async function capture(projectId: string): Promise<ProjectModelTransferCapture> 
     exchange: stored.exchange, history: [], historyBindings: [], editorRecords: [], retiredEditorRecords: [] };
 }
 
-async function setup() {
+async function setup(legacyReceipt = false) {
   const projectId = id('p2', '1');
   const root = await createNativeProject({ name: '隔离剧集', kind: 'series', projectId }, { factory });
   await createNativeEpisode({ projectId, expectedProjectEpoch: root.project.epoch,
@@ -42,6 +42,21 @@ async function setup() {
   const receipt = { outputRef: 'fixture-receipt', packageDigest: 'b'.repeat(64) };
   journal = await advanceNativeProjectExport(journal.operationId, journal.sequence, 'published', receipt, { factory });
   await advanceNativeProjectExport(journal.operationId, journal.sequence, 'registered', receipt, { factory });
+  if (legacyReceipt) {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = factory.open(NATIVE_PROJECT_DATABASE_NAME); opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error);
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('nativeProjectExchange', 'readwrite'), store = tx.objectStore('nativeProjectExchange'), request = store.get(projectId);
+        request.onsuccess = () => {
+          Object.assign(request.result.exchange.published[0], { archiveBytes: 1024 });
+          store.put(request.result);
+        };
+        tx.oncomplete = () => resolve(); tx.onerror = tx.onabort = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  }
   return capture(projectId);
 }
 
@@ -62,8 +77,8 @@ async function ready(input: Parameters<typeof prepareNativeProjectUpdate>[0]) {
 }
 
 describe('新项目更新 journal', () => {
-  it('权威媒体或备份核验失败时禁止提交；原 journal 保持可恢复', async () => {
-    const expected = await setup(), operationId = uuid('7'), input = await updateInput(expected, operationId);
+  it.each([false, true])('权威媒体或备份核验失败时禁止提交；原 journal 保持可恢复（旧导出回执=%s）', async (legacyReceipt) => {
+    const expected = await setup(legacyReceipt), operationId = uuid('7'), input = await updateInput(expected, operationId);
     const operation = await ready(input);
     fixtureVerification.verify.mockRejectedValueOnce(new Error('独立备份无法核实'));
     await expect(commitNativeProjectUpdate(operationId, operation.sequence, { factory })).rejects.toThrow('独立备份无法核实');
@@ -72,6 +87,11 @@ describe('新项目更新 journal', () => {
     const committed = await commitNativeProjectUpdate(operationId, operation.sequence, { factory });
     expect(committed.phase).toBe('db_committed');
     expect(fixtureVerification.verify).toHaveBeenCalledTimes(2);
+    const exchange = (await readNativeProjectCapture(expected.aggregate.project.id, { factory }))!.exchange!;
+    expect(exchange.published).toHaveLength(1);
+    expect(exchange.published[0]).not.toHaveProperty('archiveBytes');
+    expect((await listNativeContentRecoveryPoints(expected.aggregate.project.id, { factory }))[0].exchange!.published[0])
+      .not.toHaveProperty('archiveBytes');
   });
   it('准备后冻结原项目；撤销与迟到推进竞争后不得再提交，原数据保留', async () => {
     const expected = await setup(), operationId = uuid('4'), input = await updateInput(expected, operationId);

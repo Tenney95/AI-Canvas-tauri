@@ -35,6 +35,26 @@ async function replaceEntry(texts: Record<string, string>, path: string, value: 
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('v4 archive receiving and serialization', () => {
+  it('旧无outputs包保持兼容，墓碑输出历史必须有来源画布且不恢复执行回执', async () => {
+    const business = emptySeries(), target = { state: 'retired' as const, kind: 'canvas' as const, projectId: 'P', id: 'old-canvas' };
+    const snapshot = buildProjectExchangeSnapshotV2(business, 'lineage', [], [], [target]);
+    const head = await createProjectExchangeRevisionV2(snapshot);
+    const input: ProjectArchivePayloadV4 = { ...business, exchange: { format: 'ai-canvas-project-exchange', version: 2, packageId: 'package',
+      lineageId: 'lineage', head: { canonicalVersion: 2, revisionId: head.revisionId }, revisions: [head], ancestors: [], files: [] },
+      history: { payload: { conversations: [], messages: [], memories: [], outputs: [{ id: 'output', archiveOriginId: 'a'.repeat(64), projectId: 'P',
+        nodeId: 'deleted-node', nodeType: 'ai-image', nodeLabel: '旧图', timestamp: 0, prompt: '', output: '', model: 'general/original', provider: 'fixture',
+        status: 'error', params: { originalInputUnavailable: true, originalTimestampUnavailable: true } }] },
+      workbenchTargets: [], scopes: [{ kind: 'output', id: 'output', canvasId: 'old-canvas', retired: true }] } };
+    const texts = textsOf(await serializeProjectArchiveV4(input, { packageId: 'package', exportedAt: 1 }));
+    expect((await readProjectArchiveV4(texts)).payload.history!.payload.outputs).toEqual(input.history!.payload.outputs);
+    await expect(readProjectArchiveV4(await replaceEntry(texts, 'history.json', { ...input.history, scopes: [] }))).rejects.toThrow('归属');
+    const injected = structuredClone(input.history!);
+    Object.assign(injected.payload.outputs![0], { recoveryTask: { taskId: 'must-not-resume' } });
+    await expect(readProjectArchiveV4(await replaceEntry(texts, 'history.json', injected))).rejects.toThrow('输出历史');
+    const old = { ...input.history, payload: { conversations: [], messages: [], memories: [] }, scopes: [] };
+    expect((await readProjectArchiveV4(await replaceEntry(texts, 'history.json', old))).payload.history!.payload.outputs).toBeUndefined();
+  });
+
   it('round trips a zero-episode series with the exact canonical head and no fabricated canvas', async () => {
     const input = await payload();
     const entries = await serializeProjectArchiveV4(input, { packageId: 'package', exportedAt: 1 });

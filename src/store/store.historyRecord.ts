@@ -218,7 +218,9 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
       historyLoading: true,
     });
     try {
-      await claimLegacyHistoryEntries(projectId, get().nodes.map((node) => node.id));
+      if (get().projectExecutionContext?.modelGeneration !== 1) {
+        await claimLegacyHistoryEntries(projectId, get().nodes.map((node) => node.id));
+      }
       const [page, totalCount] = await Promise.all([
         getHistoryEntriesPage(projectId, HISTORY_PAGE_SIZE, null, query),
         getHistoryEntryCount(projectId),
@@ -283,6 +285,10 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
 
   migrateHistoryAndLoad: async () => {
     const { currentProjectId, nodes } = get();
+    if (get().projectExecutionContext?.modelGeneration === 1) {
+      await get().loadHistoryFromDb();
+      return;
+    }
     if (currentProjectId) {
       try {
         const completed = await hasCompletedHistoryMigration(currentProjectId);

@@ -4,14 +4,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { copyFile, mkdir } from '@tauri-apps/plugin-fs';
 import * as files from './fileService';
-import { configValuesEqual } from './configPatch';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { importProjectModelArchiveHistory, materializeProjectModelArchiveBusiness, readProjectModelArchive } from './projectModelArchiveService';
 import { createBoundProjectModelArchiveImportPort } from './projectModelArchiveNativePort';
 import { readProjectArchiveV4, serializeProjectArchiveV4 } from './projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from './projectExchangeV2Format';
-import { openDB, STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_PROJECT_MEMORIES, STORE_METADATA, STORE_PROJECTS } from './indexedDb/schema';
+import { commitNativeArchiveHistory } from './nativeArchiveHistoryCommit';
 import { advanceNativeProjectImport, commitNativeProjectImport, prepareNativeProjectImport, readNativeProjectImport,
   type NativeProjectImportJournal } from './indexedDb/nativeProjectRepository';
 import type { ProjectModelTransferExchange, ProjectModelTransferHistoryRow } from '../types/projectModelTransfer';
@@ -20,44 +19,7 @@ import type { ProjectImportResult } from './projectTransferService';
 import { withPreparedProjectImportRead, type PreparedProjectImport, type ProjectImportOptions } from './projectImportService';
 import type { ValidatedProjectArchiveV4 } from '../types/projectArchiveV4';
 
-const stores = { conversation: STORE_CHAT_CONVERSATIONS, message: STORE_CHAT_MESSAGES, memory: STORE_PROJECT_MEMORIES } as const;
-const request = <T>(value: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
-  value.onsuccess = () => resolve(value.result); value.onerror = () => reject(value.error ?? new Error('历史恢复失败'));
-});
 const digest = (value: unknown) => sha256BytesHex(new TextEncoder().encode(projectModelSourceToken(value)));
-
-/** 用旧库的独立事务标记历史已经提交；重试只核对原材料，不重复新增。 */
-async function commitHistory(operation: NativeProjectImportJournal): Promise<void> {
-  const database = await openDB(), token = await digest(operation.history), markerId = `native-import-history:${operation.operationId}`;
-  await new Promise<void>((resolve, reject) => {
-    const tx = database.transaction([STORE_METADATA, STORE_PROJECTS, ...Object.values(stores)], 'readwrite');
-    let failure: unknown, done = false;
-    const work = async () => {
-      const metadata = tx.objectStore(STORE_METADATA), existing = await request(metadata.get(markerId)) as { id: string; token: string } | undefined;
-      if (existing) {
-        if (existing.token !== token) throw new Error('原导入历史回执不匹配');
-        for (const row of operation.history) {
-          const actual = await request(tx.objectStore(stores[row.kind]).get(row.value.id));
-          if (!configValuesEqual(actual, row.value)) throw new Error('已导入的历史记录发生变化，请核对原操作');
-        }
-        return;
-      }
-      const ids = [operation.targetProjectId, ...operation.next.episodes.map((item) => item.id),
-        ...operation.idMap.filter((item) => item.kind === 'canvas').map((item) => item.localId)];
-      for (const id of ids) if (await request(tx.objectStore(STORE_PROJECTS).getKey(id)) !== undefined
-        || await request(metadata.getKey(`project-deleted:${id}`)) !== undefined) throw new Error('新旧项目身份冲突，未导入');
-      for (const row of operation.history) {
-        const store = tx.objectStore(stores[row.kind]);
-        if (await request(store.getKey(row.value.id)) !== undefined) throw new Error('导入历史身份冲突，未覆盖已有数据');
-        await request(store.add(row.value));
-      }
-      await request(metadata.add({ id: markerId, token, projectId: operation.targetProjectId }));
-    };
-    void work().then(() => { done = true; }, (error: unknown) => { failure = error; try { tx.abort(); } catch { reject(error); } });
-    tx.oncomplete = () => done ? resolve() : reject(failure ?? new Error('历史恢复未完成'));
-    tx.onabort = () => reject(failure ?? tx.error ?? new Error('历史恢复失败'));
-  });
-}
 
 async function finishImport(operation: NativeProjectImportJournal, signal?: AbortSignal): Promise<NativeProjectImportJournal> {
   signal?.throwIfAborted();
@@ -83,7 +45,7 @@ async function finishImport(operation: NativeProjectImportJournal, signal?: Abor
   if (operation.phase === 'media_ready') {
     await port.verifyMediaPublication(operation, operation.mediaPublicationRef!);
     signal?.throwIfAborted();
-    await commitHistory(operation);
+    await commitNativeArchiveHistory(operation);
     signal?.throwIfAborted();
     operation = await commitNativeProjectImport(operation.operationId, operation.sequence);
   }
@@ -161,7 +123,7 @@ async function importSource(sourceValue: ValidatedProjectArchiveV4, originalDire
     metadata: source.payload.assetMetadata });
   const defaultCanvasId = material.aggregate.project.kind === 'standalone' ? material.aggregate.canvases[0]?.id : undefined;
   const history: ProjectModelTransferHistoryRow[] = await importProjectModelArchiveHistory(source, projectId, source.snapshot.lineageId, null,
-    { appendChat: options.appendChat, appendMemories: options.appendMemories }, { identities: material.identities, episodes: material.aggregate.episodes, defaultCanvasId });
+    { appendChat: options.appendChat, appendMemories: options.appendMemories }, { identities: material.identities, episodes: material.aggregate.episodes, defaultCanvasId, fileBindings: material.fileBindings });
   const port = createBoundProjectModelArchiveImportPort(projectId, sourceRef);
   const staged = await port.captureImportSource!(source);
   const packageDigest = await digest([source.manifest, source.payload.exchange]), intentDigest = await digest([packageDigest, projectId, operationId]);

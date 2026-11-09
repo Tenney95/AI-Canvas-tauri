@@ -342,8 +342,8 @@ export default function ImageGenerationHistoryDialog({
                         <span className="ui-badge min-w-0 truncate" title={[entry.provider, entry.model].filter(Boolean).join(' / ')}>
                           <span className="truncate">{[entry.provider, entry.model].filter(Boolean).join(' / ') || t('未记录模型')}</span>
                         </span>
-                        <time className="ml-auto shrink-0 text-canvas-text-muted" dateTime={new Date(entry.timestamp).toISOString()}>
-                          {dateFormatter.format(entry.timestamp)}
+                        <time className="ml-auto shrink-0 text-canvas-text-muted" dateTime={entry.timestamp ? new Date(entry.timestamp).toISOString() : undefined}>
+                          {entry.timestamp ? dateFormatter.format(entry.timestamp) : t('未记录时间')}
                         </time>
                       </div>
                       <p className="ui-scroll min-h-0 flex-1 whitespace-pre-wrap break-words text-xs leading-5 text-canvas-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-canvas-border"

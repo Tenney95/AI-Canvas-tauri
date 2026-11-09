@@ -22,6 +22,7 @@ import * as nativeRecovery from '../../../src/services/nativeVolcengineRecovery'
 import * as recoverySummary from '../../../src/services/nativeMediaRecoverySummary';
 import { evaluateAgentToolPolicy } from '../../../src/services/chat/policyEngine';
 import type { CanvasContext } from '../../../src/types/project';
+import type { BaseNodeData } from '../../../src/types';
 
 const context: Omit<AgentToolContext, 'signal'> = {
   taskId: 'task-media',
@@ -312,6 +313,50 @@ describe('keyed media operation progress', () => {
     expect(generate).toHaveBeenCalledOnce();
     expect(await pending).toMatchObject({ status: 'success' });
     expect(progress).not.toHaveBeenCalled();
+  });
+
+  it.each(['current', 'changed-input', 'changed-runtime'] as const)('原生未知提交退出占位等待并保留原回执：%s', async (scenario) => {
+    const { definition, toolContext, input } = keyedMedia();
+    const id = '22222222-2222-4222-8222-222222222222';
+    const scope: CanvasContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: `p2-${id}`, canvasId: `c2-${id}`,
+      episodeId: null, projectEpoch: 1, canvasEpoch: 1, canvasRevision: 0, runtimeEpoch: 'original-runtime' };
+    useAppStore.setState({ currentProjectId: scope.canvasId, projectExecutionContext: scope });
+    let row: nativeMedia.NativeMediaTaskRecord | undefined;
+    let currentDraft: BaseNodeData | undefined;
+    vi.spyOn(nativeMedia, 'listNativeMediaTasks').mockImplementation(async () => row ? [row] : []);
+    vi.spyOn(recoverySummary, 'readNativeMediaRecoverySummary').mockImplementation(async (record) => recoverySummary.describeNativeMediaRecovery(record));
+    vi.spyOn(operationProgress, 'recordMcpOperationProgress').mockResolvedValue(undefined);
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    const generate = vi.spyOn(generationRuntime, 'runMediaGeneration').mockImplementation(async (_intent, _projectId, _signal, nodeId) => {
+      row = { projectId: `media-task:${id}`, kind: 'native-media-task-v1', operationId: id,
+        ownerProjectId: scope.projectId, canvasId: scope.canvasId, episodeId: null, projectEpoch: 1, canvasEpoch: 1, sourceCanvasRevision: 0,
+        nodeId: nodeId!, inputFingerprint: 'a'.repeat(64), requestFingerprint: 'b'.repeat(64), fingerprintScheme: 'media-input-v3',
+        providerConfigId: 'ccc', providerBase: 'https://fixture.example', modelRef: input.modelRef, protocolDigest: 'c'.repeat(64),
+        recovery: { kind: 'builtin-image', modelId: 'image-x' }, category: 'image', status: 'outcome-unknown', lease: id, revision: 0, createdAt: 1, updatedAt: 1,
+        origin: { conversationId: toolContext.conversationId, messageId: 'receipt-message', deliveryMode: 'both' } };
+      if (scenario === 'changed-input') {
+        useAppStore.getState().updateNodeDataTransient(nodeId!, { prompt: 'new-user-draft', imageUrl: 'asset://current-selection',
+          aspectRatio: '16:9', nodeWidth: 560, nodeHeight: 315 });
+        currentDraft = structuredClone(useAppStore.getState().nodes.find((node) => node.id === nodeId)!.data);
+      }
+      if (scenario === 'changed-runtime') useAppStore.setState({ projectExecutionContext: { ...scope, runtimeEpoch: 'next-runtime' } });
+      throw Object.assign(new Error('原操作保留'), { name: 'NativeMediaTaskPending' });
+    });
+    const result = await definition.execute({ ...toolContext, projectId: scope.canvasId, executionContext: scope }, input);
+    expect(result).toMatchObject({ status: 'success', errorCode: 'AGENT_MEDIA_RECOVERY_PENDING' });
+    const node = useAppStore.getState().nodes.at(-1)!;
+    if (scenario !== 'changed-runtime') {
+      expect(node.data).toMatchObject({ status: 'error', mediaTaskState: 'submit_unknown', error: expect.stringContaining('已停止等待') });
+      expect(result.summary).toContain('已停止等待');
+    } else {
+      expect(node.data.mediaTaskState).not.toBe('submit_unknown');
+    }
+    if (scenario === 'changed-input') expect(node.data).toEqual({ ...currentDraft, status: 'error',
+      error: expect.stringContaining('已停止等待'), generationStartedAt: undefined,
+      mediaTaskState: 'submit_unknown', mediaTaskStage: undefined, videoTaskState: undefined });
+    expect(row!.status).toBe('outcome-unknown');
+    expect(generate).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 afterEach(() => { vi.restoreAllMocks(); });

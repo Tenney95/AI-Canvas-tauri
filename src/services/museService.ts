@@ -11,11 +11,13 @@ interface MuseTaskStatus {
 
 export async function museInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriEnv()) throw new Error('Muse 网页登录和生成仅在 Tauri 桌面端可用');
+  let nativeFailure: unknown;
   try { return await invoke<T>(command, args); }
-  catch (error) {
-    // 原生只返回有限分类文案；不将未知对象、IPC 参数或底层异常写入日志。
-    throw new Error(typeof error === 'string' && error.length <= 300 ? error : 'Muse 原生操作失败，请在设置中检查登录状态');
-  }
+  catch (error) { nativeFailure = error; }
+  // 在公开异常边界统一脱敏；未知 IPC 对象不进入 message 或 cause。
+  const message = typeof nativeFailure === 'string' && nativeFailure.length <= 300
+    ? nativeFailure : 'Muse 原生操作失败，请在设置中检查登录状态';
+  throw new Error(message, { cause: message });
 }
 
 export function assertMuseTaskId(taskId: string): void {

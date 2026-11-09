@@ -40,7 +40,7 @@ import { resolveVideoModelCapability } from './videoModelCapabilityResolver';
 import { generateAudio, persistAudioGenerationResult } from './generateAudio';
 import { findMediaModelOption } from '../../components/nodes/shared/defaultModels';
 import { videoLongSideFromLabel } from '../aiDimensions';
-import { resolveProjectGenerationPrompt } from '../projectSettingsService';
+import { resolveImageGenerationParameters, resolveProjectGenerationPrompt } from '../projectSettingsService';
 import type { BaseNodeData, NodeType } from '../../types';
 import type { ChatMessage } from '../../types/chat';
 import type { MediaDownloadAccess, MediaTaskReceipt } from '../../types/aiTypes';
@@ -252,7 +252,8 @@ async function tagSavedGeneratedMedia(
 
 function mediaParameters(intent: MediaGenerationIntent, model: ResolvedMediaModel, projectId?: string | null): MediaGenerationParameters | undefined {
   const store = useAppStore.getState();
-  const settings = store.projects.find((project) => project.id === (projectId ?? store.currentProjectId))?.settings?.generation;
+  const projectSettings = store.projects.find((project) => project.id === (projectId ?? store.currentProjectId))?.settings;
+  const settings = projectSettings?.generation;
   const directVideo = ((model.provider === 'general' || model.provider === 'runninghub') && !model.workflowId)
     || model.provider === 'workflow-api';
   const ratio = intent.aspectRatio ?? (directVideo ? undefined : settings?.videoAspectRatio);
@@ -264,8 +265,7 @@ function mediaParameters(intent: MediaGenerationIntent, model: ResolvedMediaMode
   const imageBackground = intent.imageBackground === '' ? ''
     : resolveConfiguredImageBackground(imageCapability, intent.imageBackground);
   const parameters: MediaGenerationParameters = intent.kind === 'image' ? {
-    resolution: settings?.imageSize || '2K',
-    aspectRatio: settings?.imageAspectRatio || '1:1',
+    ...resolveImageGenerationParameters(projectSettings, intent),
     ...(imageQuality !== undefined ? { imageQuality } : {}),
     ...(imageBackground !== undefined ? { imageBackground } : {}),
   } : intent.kind === 'video' ? {

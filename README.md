@@ -16,7 +16,9 @@
 
 AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown、分镜、360° 全景和手绘笔记组织成可连接的画布节点。你可以在同一个项目中编排生成链路、统一管理角色库、人物/场景/道具与本地素材、执行 ComfyUI 工作流、安装 JavaScript 或可信 Python 用户插件，也可以通过对话助手查询或修改画布、生成媒体、派出只读子智能体、读取授权文件并沉淀项目记忆。项目还能拆成剧集与分集，一部 AI短剧的每一集各占一张画布，角色库与素材整部剧共用。
 
-![Version](https://img.shields.io/badge/version-0.10.29-6366f1)
+**0.11.0 · 新项目结构与媒体恢复：** 新建项目采用独立的项目、分集与画布结构，旧项目保持原样，不自动迁移。新结构支持媒体结果恢复、按画布保存输出历史，以及 v4 项目包导入导出；继续兼容旧 v1–v3 项目包。含输出历史的 v4 包需要本版或明确支持该字段的客户端，早期 v4 客户端可能拒绝。安装包与验收范围见 [发布说明](.release-notes.md)。
+
+![Version](https://img.shields.io/badge/version-0.11.0-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)

@@ -32,7 +32,7 @@ import { BATCH_NODE_LIMIT } from './store.chat';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
-import { applyProjectDefaultsToNodeData, getImageNodeDimensionsForAspectRatio } from '../services/projectSettingsService';
+import { applyProjectDefaultsToNodeData, getImageNodeDimensionsForAspectRatio, resolveImageGenerationParameters } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { getNodeBounds, getNodeSize, getParentOffset, videoNodeDimensionsForAspectRatio } from '../utils/nodeBounds';
 import { getCanvasNodeById } from '../utils/canvasRenderProjection';
@@ -597,6 +597,11 @@ function mergeNodeData(previous: BaseNodeData, patch: Partial<BaseNodeData>): Ba
     throw new Error(AI_APP_CREATION_MESSAGE);
   }
   const next = withGenerationTiming({ ...previous, ...patch } as BaseNodeData, previous);
+  // 显式改比例才联动画框；媒体加载、同值水化及用户手动缩放保持原尺寸。
+  if (next.type === 'ai-image' && patch.aspectRatio !== undefined && patch.aspectRatio !== previous.aspectRatio
+    && patch.nodeWidth === undefined && patch.nodeHeight === undefined) {
+    Object.assign(next, getImageNodeDimensionsForAspectRatio(patch.aspectRatio) ?? {});
+  }
   if (getGenerationNodeType(previous.type) === 'ai-video' && previous.shotlistProductionSource?.kind === 'video'
     && 'seedanceDuration' in patch && patch.seedanceDuration !== previous.seedanceDuration) {
     next.shotlistProductionSource = { ...previous.shotlistProductionSource, durationSync: 'manual' };
@@ -1062,6 +1067,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       ? 'general' : intent.modelRef?.split('/')[0];
     retainMediaModelDefaults(nodeData, mediaProvider, intent);
     Object.assign(nodeData, mediaParametersToNodeData(intent.kind, intent));
+    if (intent.kind === 'image') {
+      const parameters = resolveImageGenerationParameters(settings, intent);
+      Object.assign(nodeData, mediaParametersToNodeData('image', parameters),
+        getImageNodeDimensionsForAspectRatio(parameters.aspectRatio) ?? {});
+    }
     state.commitToHistory();
     set((current) => ({
       nodes: [...current.nodes, {
@@ -1086,6 +1096,10 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         const recoveredParameters = mediaParametersToNodeData(artifact.kind, artifact.parameters);
         const missingParameters = Object.fromEntries(Object.entries(recoveredParameters)
           .filter(([key]) => node.data[key as keyof BaseNodeData] === undefined));
+        const legacyPlaceholderSize = node.data.nodeWidth === undefined && node.data.nodeHeight === undefined
+          || node.data.nodeWidth === 280 && node.data.nodeHeight === 158;
+        const recoveredDimensions = artifact.kind === 'image' && typeof missingParameters.aspectRatio === 'string' && legacyPlaceholderSize
+          ? getImageNodeDimensionsForAspectRatio(missingParameters.aspectRatio) : null;
         const mediaField = artifact.kind === 'image'
           ? { imageUrl: artifact.url, imageWidth: artifact.width, imageHeight: artifact.height }
           : artifact.kind === 'video'
@@ -1096,6 +1110,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
           data: {
             ...node.data,
             ...missingParameters,
+            ...recoveredDimensions,
             ...mediaField,
             artifactId: artifact.id,
             prompt: artifact.prompt,

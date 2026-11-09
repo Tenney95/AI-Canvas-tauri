@@ -944,17 +944,25 @@ export function registerMediaAgentTools(): Array<() => void> {
           const pendingNative = native?.find((row) => (!targetNodeId || row.nodeId === targetNodeId) && row.origin?.messageId === assistantMessageId
             && ['prepared', 'submitted', 'outcome-unknown'].includes(row.status));
           if (pendingNative) {
+            if (originalNativeContext) {
+              const { projectNativeMediaStoppedState } = await import('../../nativeMediaAutoDelivery');
+              await projectNativeMediaStoppedState(pendingNative.operationId, originalNativeContext, {
+                isCurrent: () => !placeholderLifecycle || isCanvasDerivationFresh(placeholderLifecycle.guard, useAppStore.getState()),
+              }).catch(() => false);
+            }
             if (placeholderLifecycle) completeCanvasDerivation(placeholderLifecycle.guard);
             const recovery = await readNativeMediaRecoverySummary(pendingNative);
+            const unresolved = recovery.needsReview && !recovery.canResume;
             const current = useAppStore.getState();
             if (current.currentProjectId === context.projectId && current.messages.some((entry) => entry.id === assistantMessageId
               && entry.conversationId === context.conversationId)) current.updateMessage(assistantMessageId, {
                 mediaStatus: recovery.needsReview ? 'submit_unknown' : 'paused',
-                mediaError: '原媒体任务已保留，请续查原回执，不要重新生成。', canvasStatus: targetNodeId ? 'pending' : 'none', canvasNodeId: targetNodeId,
+                mediaError: unresolved ? '提交结果未确认，已停止等待；请先到服务商核对，原任务已保留。' : '原媒体任务已保留，请续查原回执，不要重新生成。',
+                canvasStatus: targetNodeId ? 'pending' : 'none', canvasNodeId: targetNodeId,
               });
             if (tracksOperation) await recordMcpOperationProgress(context.taskId, { phase: 'partial',
               mediaStage: 'started', errorCode: 'AGENT_MEDIA_RECOVERY_PENDING' }).catch(() => undefined);
-            return { status: 'success', summary: '媒体原操作已保留，可按原回执续查', errorCode: 'AGENT_MEDIA_RECOVERY_PENDING',
+            return { status: 'success', summary: unresolved ? '提交结果未确认，已停止等待；原操作已保留' : '媒体原操作已保留，可按原回执续查', errorCode: 'AGENT_MEDIA_RECOVERY_PENDING',
               modelContent: JSON.stringify({ operationId: pendingNative.operationId, nodeId: pendingNative.nodeId,
                 taskId: pendingNative.remoteTaskId, status: pendingNative.status, canResume: recovery.canResume,
                 batch: nativeImageBatchSummary(pendingNative), recovery, retryable: false }) };

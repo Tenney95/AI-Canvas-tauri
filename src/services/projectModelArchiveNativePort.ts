@@ -69,6 +69,7 @@ export function currentStoragePaths(capture: ProjectModelTransferCapture, direct
   for (const canvas of capture.aggregate.canvases) walk(canvas, canvas.storageRootRef);
   for (const editor of capture.editorRecords ?? []) walk(editor, primary);
   for (const editor of capture.retiredEditorRecords ?? []) walk(editor, primary);
+  for (const row of capture.history) if (row.kind === 'output') walk(row.value, primary);
   for (const result of capture.nativeMediaResults ?? []) paths.get(capture.aggregate.project.storageRootRef)?.add(safeExchangePath(result.relativePath));
   for (const result of capture.nativeEditorMediaArtifacts ?? []) paths.get(capture.aggregate.project.storageRootRef)?.add(safeExchangePath(result.path));
   for (const asset of capture.assetMetadata ?? []) {

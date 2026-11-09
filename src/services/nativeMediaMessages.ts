@@ -81,4 +81,8 @@ export async function projectNativeMediaMessages(conversationId?: string): Promi
         persistence: 'saved', prompt: '', modelId: origin.modelId ?? record.providerConfigId,
         provider: record.providerConfigId, createdAt: record.createdAt } });
   }
+  const current = useAppStore.getState();
+  if (current.historyPanelOpen && isProjectExpectedContextCurrent(context, current, { checkCanvasRevision: false })) {
+    await current.loadHistoryFromDb();
+  }
 }

@@ -58,6 +58,7 @@ const LAYOUT_NODE_DATA_KEYS = [
   'nodeHeight',
   'displayLabel',
 ] as const satisfies readonly (keyof BaseNodeData)[];
+const IMAGE_LAYOUT_NODE_DATA_KEYS = [...LAYOUT_NODE_DATA_KEYS, 'aspectRatio'] as const;
 
 /** 缓存只认不可变对象身份；弱键随历史淘汰和项目切换释放，不按节点 ID 跨项目复用。 */
 function cachedHistoryMap<T extends object, R>(project: (item: T) => R) {
@@ -188,7 +189,7 @@ function projectStructuralNode(node: Node<BaseNodeData>, includeLayout: boolean)
     data: getStructuralNodeData(node.data),
     ...(includeLayout || node.type === 'canvas-note' ? {
       position: node.position,
-      layoutData: getNodeDataFields(node.data, LAYOUT_NODE_DATA_KEYS),
+      layoutData: getNodeDataFields(node.data, node.data.type === 'ai-image' ? IMAGE_LAYOUT_NODE_DATA_KEYS : LAYOUT_NODE_DATA_KEYS),
       styleDimensions: getNodeStyleDimensions(node),
     } : {}),
   };
@@ -295,7 +296,9 @@ function restoreStructuralNode(
     }
   }
   if (restoreLayout) {
-    for (const key of LAYOUT_NODE_DATA_KEYS) {
+    for (const key of target.data.type === 'ai-image' ? IMAGE_LAYOUT_NODE_DATA_KEYS : LAYOUT_NODE_DATA_KEYS) {
+      // 旧快照未保存生成比例，不能把当前已确认的参数清空。
+      if (key === 'aspectRatio' && !Object.hasOwn(target.data, key)) continue;
       if (Object.prototype.hasOwnProperty.call(target.data, key)) {
         data[key] = target.data[key] as never;
       } else {

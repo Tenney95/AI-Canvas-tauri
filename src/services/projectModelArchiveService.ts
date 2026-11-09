@@ -26,6 +26,7 @@ import { storyGraphCanonicalSnapshot } from './storyGraphService';
 import { withEpisodeEditorWrite } from './episodeEditorSessionService';
 import { captureArchiveVideoEditorProjects } from './videoEditorArchive';
 import { captureArchiveAssetMetadata } from './projectArchiveAssetMetadata';
+import { captureArchiveOutputHistory, materializeArchiveOutputHistory } from './projectOutputHistoryArchive';
 
 export interface ProjectModelArchiveAsset extends ArchiveAssetDigest {
   rootRef: string;
@@ -74,6 +75,7 @@ export function projectModelArchiveStorageContext(capture: ProjectModelTransferC
   walk(capture.aggregate.content); walk(capture.aggregate.project.defaultSettings); walk(capture.aggregate.episodeContents); walk(capture.aggregate.canvases);
   for (const asset of capture.assetMetadata ?? []) used.add(asset.rootRef);
   walk(capture.editorRecords); walk(capture.retiredEditorRecords);
+  for (const row of capture.history) if (row.kind === 'output') walk(row.value);
   const roots = capture.aggregate.project.storageBindings.filter((binding) => !declared || used.has(binding.rootRef)
     || declared.some((item) => local(item.id) === binding.rootRef));
   return { roots, primary, role: (rootRef: string) => declared?.find((item) => local(item.id) === rootRef)?.role
@@ -342,7 +344,8 @@ async function historyOrigin(capture: ProjectModelTransferCapture, row: ProjectM
   return digest([`legacy-project:${legacyRoot}`, row.kind, row.value.id]);
 }
 async function captureHistory(capture: ProjectModelTransferCapture, business: ProjectArchiveBusinessV4,
-  mappings = capture.exchange?.identities ?? []): Promise<ProjectArchiveHistoryV4 | undefined> {
+  mappings = capture.exchange?.identities ?? [], fileBindings = capture.exchange?.fileBindings ?? [],
+  assets: ProjectModelArchiveAsset[] = []): Promise<ProjectArchiveHistoryV4 | undefined> {
   if (!capture.includesHistory || !capture.history.length) return;
   const rows = (kind: ProjectModelTransferHistoryRow['kind']) => capture.history.filter((item) => item.kind === kind);
   const payload = portableArchiveChat({ conversations: rows('conversation').map((item) => item.value) as never,
@@ -359,10 +362,13 @@ async function captureHistory(capture: ProjectModelTransferCapture, business: Pr
   };
   const workbenchTargets: ProjectArchiveHistoryV4['workbenchTargets'] = [];
   const scopes: NonNullable<ProjectArchiveHistoryV4['scopes']> = [];
-  for (const row of capture.history) if (row.kind === 'conversation' || row.kind === 'memory') {
+  for (const row of capture.history) if (row.kind === 'conversation' || row.kind === 'memory' || row.kind === 'output') {
     const archivedScope = row.value.archiveCanvasScope as { canvasId?: unknown } | undefined;
     const localId = row.kind === 'memory' && typeof archivedScope?.canvasId === 'string' ? archivedScope.canvasId : row.value.projectId;
-    if (localId === capture.aggregate.project.id) continue;
+    if (localId === capture.aggregate.project.id) {
+      if (row.kind === 'output') throw new Error('输出历史缺少来源画布');
+      continue;
+    }
     const canvas = mappings.find((mapping) => mapping.kind === 'canvas' && mapping.localId === localId);
     if (canvas && business.canvases.some((item) => item.id === canvas.sourceId)) scopes.push({ kind: row.kind, id: row.value.id, canvasId: canvas.sourceId });
     else {
@@ -392,15 +398,20 @@ async function captureHistory(capture: ProjectModelTransferCapture, business: Pr
     }
     return { ...row, projectId: business.project.id, archiveOriginId: await origin('conversation', row.id) };
   }));
+  const outputs = await Promise.all(rows('output').map(async (row) => captureArchiveOutputHistory(
+    localFileReferences(row.value, capture.aggregate.project.storageRootRef, assets) as typeof row.value,
+    await origin('output', row.value.id), business.project.id, capture.aggregate.project.storageRootRef, mappings, fileBindings)));
   return { payload: { conversations,
     messages: await Promise.all(payload.messages.map(async (row) => ({ ...row, projectId: business.project.id, archiveOriginId: await origin('message', row.id) }))),
     memories: await Promise.all(payload.memories.map(async (row) => ({ ...row, projectId: business.project.id, archiveOriginId: await origin('memory', row.id) }))),
+    ...(outputs.length ? { outputs } : {}),
   }, workbenchTargets, ...(scopes.length ? { scopes } : {}) };
 }
 
 export async function importProjectModelArchiveHistory(source: ValidatedProjectArchiveV4, targetId: string, namespace: string,
   expected: ProjectModelTransferCapture | null, options: { appendChat: boolean; appendMemories: boolean },
-  native?: { identities: ProjectModelTransferIdMapEntry[]; episodes: ProjectModelTransferAggregate['episodes']; defaultCanvasId?: string }): Promise<ProjectModelTransferHistoryRow[]> {
+  native?: { identities: ProjectModelTransferIdMapEntry[]; episodes: ProjectModelTransferAggregate['episodes']; defaultCanvasId?: string;
+    fileBindings?: ProjectModelTransferExchange['fileBindings'] }): Promise<ProjectModelTransferHistoryRow[]> {
   const history = source.payload.history; if (!history) return [];
   const rows: ProjectModelTransferHistoryRow[] = [], ids = new Map<string, string>();
   const origin = (kind: string, row: { id: string; archiveOriginId?: string }) => row.archiveOriginId ?? digest([source.snapshot.lineageId, kind, row.id]);
@@ -443,6 +454,14 @@ export async function importProjectModelArchiveHistory(source: ValidatedProjectA
         value = { ...value, archiveCanvasScope: { canvasId, ...(scope.retired ? { retired: true } : {}) } };
       }
     }
+    if (kind === 'output') {
+      if (!native?.fileBindings) throw new Error('输出历史缺少素材身份映射');
+      const scope = history.scopes?.find((item) => item.kind === 'output' && item.id === value.id);
+      owner = scope ? native.identities.find((item) => item.kind === 'canvas' && item.sourceId === scope.canvasId)?.localId ?? '' : '';
+      if (!owner) throw new Error('输出历史缺少画布身份映射');
+      value = materializeArchiveOutputHistory(value as unknown as NonNullable<ProjectArchiveHistoryV4['payload']['outputs']>[number],
+        source.files, native.identities, native.fileBindings) as typeof value;
+    }
     rows.push({ kind, sourceNamespace: namespace, archiveOriginId, ...(local ? { existingLocalId: local } : {}),
       ...(historicalTarget ? { historicalTarget } : {}), value: { ...value, id, projectId: owner } });
   };
@@ -451,6 +470,7 @@ export async function importProjectModelArchiveHistory(source: ValidatedProjectA
     for (const row of history.payload.messages) await add('message', { ...row });
   }
   if (options.appendMemories) for (const row of history.payload.memories) await add('memory', { ...row });
+  if (native) for (const row of history.payload.outputs ?? []) await add('output', { ...row });
   for (const row of rows) {
     if (row.kind === 'message') {
       row.value.conversationId = ids.get(`conversation:${row.value.conversationId}`);
@@ -476,6 +496,7 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
   const roots = capture.aggregate.project.storageBindings;
   const identities = [...(capture.exchange?.identities ?? [])];
   const retiredEditorCanvasIds = [...new Set((capture.retiredEditorRecords ?? []).map((record) => record.projectId))];
+  const historyCanvasIds = capture.history.filter((row) => row.kind === 'output').map((row) => row.value.projectId);
   if (retiredEditorCanvasIds.some((id) => capture.aggregate.canvases.some((canvas) => canvas.id === id)
     || !capture.aggregate.bindings.some((binding) => binding.namespace === 'legacy-canvas' && binding.retired
       && binding.projectId === capture.aggregate.project.id && binding.canvasId === id))) {
@@ -483,7 +504,7 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
   }
   // P3 的 legacy-root:UUID 是本机定位，不是 portable ID；首次投影必须在构造业务正文前冻结映射。
   for (const [kind, ids] of [['project', [capture.aggregate.project.id]], ['episode', capture.aggregate.episodes.map((item) => item.id)],
-    ['canvas', [...capture.aggregate.canvases.map((item) => item.id), ...retiredEditorCanvasIds]], ['storage-root', roots.map((item) => item.rootRef)]] as const) {
+    ['canvas', [...new Set([...capture.aggregate.canvases.map((item) => item.id), ...retiredEditorCanvasIds, ...historyCanvasIds])]], ['storage-root', roots.map((item) => item.rootRef)]] as const) {
     for (const localId of ids) if (!identities.some((entry) => entry.kind === kind && entry.localId === localId)) identities.push({ kind,
       sourceId: kind !== 'storage-root' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(localId)
         ? localId : `${kind === 'storage-root' ? 'root' : kind}_${await digest([lineageId, kind, localId])}`, localId });
@@ -512,7 +533,7 @@ export async function prepareProjectModelArchiveCapture(capture: ProjectModelTra
     files.push({ id, rootRef, relativePath, mediaId });
     fileBindings.push({ id, rootRef, relativePath, localRelativePath: previous?.localRelativePath ?? asset.path });
   }
-  const history = await captureHistory(capture, business, identities);
+  const history = await captureHistory(capture, business, identities, fileBindings, assets);
   const previous = capture.exchange?.bundle.revisions.find((revision) => refKey(revision) === refKey(capture.exchange!.localHead));
   const retired = new Map(previous?.canonicalVersion === 2 ? previous.snapshot.historicalTargets.map((target) => [JSON.stringify([target.kind, target.id]), target]) : []);
   for (const binding of history?.workbenchTargets ?? []) if (binding.target.state === 'retired') retired.set(JSON.stringify([binding.target.kind, binding.target.id]), binding.target);

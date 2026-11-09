@@ -87,6 +87,19 @@ beforeEach(() => {
 });
 
 describe('project output history', () => {
+  it('新结构加载输出历史不认领或迁移旧节点历史', async () => {
+    useAppStore.setState({ currentProjectId: 'native-canvas', projectExecutionContext: {
+      kind: 'canvas', schemaVersion: 2, modelGeneration: 1, projectId: 'native-project', projectEpoch: 1,
+      canvasId: 'native-canvas', episodeId: null, canvasEpoch: 1, canvasRevision: 0,
+    } });
+    await useAppStore.getState().migrateHistoryAndLoad();
+    expect(historyMocks.hasCompletedHistoryMigration).not.toHaveBeenCalled();
+    expect(historyMocks.claimLegacyHistoryEntries).not.toHaveBeenCalled();
+    expect(historyMocks.markHistoryMigrationCompleted).not.toHaveBeenCalled();
+    expect(historyMocks.getHistoryEntriesPage).toHaveBeenCalledWith('native-canvas', 16, null, {});
+    expect(useAppStore.getState().historyProjectId).toBe('native-canvas');
+  });
+
   const receipt = { projectId: 'project-a', nodeId: 'node-1', taskId: 'remote-1', attemptId: 'attempt-1' };
   const pendingDownload = (): OutputHistoryEntry => ({ ...historyEntry(1), id: 'original-history', projectId: 'project-a',
     nodeType: 'ai-image', status: 'download_pending', recoveryTask: receipt, prompt: '原提示词', error: '下载失败' });

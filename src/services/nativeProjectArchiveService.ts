@@ -14,7 +14,7 @@ import { createBoundProjectModelArchiveExportPort } from './projectModelArchiveN
 import { readProjectArchiveV4, serializeProjectArchiveV4 } from './projectArchiveV4';
 import { PROJECT_EXCHANGE_LIMITS } from './projectExchangeFormat';
 import { withEpisodeEditorWrite } from './episodeEditorSessionService';
-import { openDB, STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_PROJECT_MEMORIES } from './indexedDb/schema';
+import { openDB, STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_PROJECT_MEMORIES, STORE_HISTORY, STORE_METADATA } from './indexedDb/schema';
 import { getAssetIndexById } from './indexedDbService';
 import { getGlobalFilesDir } from './fs/assetLibrary';
 import { getRelativeAssetPath } from './fs/assetIndex';
@@ -25,24 +25,27 @@ import type { ProjectExportResult, ProjectImportResult } from './projectTransfer
 import type { VideoEditorProjectRecord } from '../types/videoEditor';
 import { getBaseDir, joinPath } from './fileService';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
+import { syncNativeOutputHistory } from './nativeOutputHistorySync';
 
 const req = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error ?? new Error('项目历史读取失败'));
 });
 
-/** 一次旧库只读事务覆盖项目根和所有活动画布的会话、消息、记忆。 */
+/** 一次旧库只读事务覆盖项目根、活动与墓碑画布的阅读历史。 */
 async function readHistory(projectId: string, canvasIds: string[]): Promise<ProjectModelTransferHistoryRow[]> {
   const database = await openDB();
   const owners = [...new Set([projectId, ...canvasIds])];
   return new Promise((resolve, reject) => {
-    const tx = database.transaction([STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_PROJECT_MEMORIES], 'readonly');
+    const tx = database.transaction([STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_PROJECT_MEMORIES, STORE_HISTORY, STORE_METADATA], 'readonly');
     let result: ProjectModelTransferHistoryRow[] | undefined, failure: unknown;
     const read = async () => {
       const range = (id: string) => IDBKeyRange.bound([id, 0], [id, Infinity]);
-      const [conversations, memories] = await Promise.all([
+      const [conversations, memories, outputs] = await Promise.all([
         Promise.all(owners.map((id) => req(tx.objectStore(STORE_CHAT_CONVERSATIONS).index('projectId_updatedAt').getAll(range(id))))),
         Promise.all(owners.map((id) => req(tx.objectStore(STORE_PROJECT_MEMORIES).index('projectId_updatedAt').getAll(range(id))))),
+        Promise.all(canvasIds.map((id) => req(tx.objectStore(STORE_HISTORY).index('projectId_timestamp_id')
+          .getAll(IDBKeyRange.bound([id, -Infinity], [id, Infinity, []]))))),
       ]);
       const active = conversations.flat().filter((row) => !row.deletedAt) as Array<{ id: string; projectId: string; [field: string]: unknown }>;
       const messages = (await Promise.all(active.map((row) => req(tx.objectStore(STORE_CHAT_MESSAGES).index('conversationId_sequence')
@@ -53,8 +56,12 @@ async function readHistory(projectId: string, canvasIds: string[]): Promise<Proj
       }
       const make = (kind: ProjectModelTransferHistoryRow['kind'], value: ProjectModelTransferHistoryRow['value']): ProjectModelTransferHistoryRow =>
         ({ kind, sourceNamespace: `native:${projectId}`, archiveOriginId: '', value });
+      const readableOutputs: ProjectModelTransferHistoryRow['value'][] = [];
+      for (const value of outputs.flat() as ProjectModelTransferHistoryRow['value'][]) {
+        if (await req(tx.objectStore(STORE_METADATA).getKey(`forgotten-missing-history:${encodeURIComponent(value.id)}`)) === undefined) readableOutputs.push(value);
+      }
       const rows = [...active.map((value) => make('conversation', value)), ...messages.map((value) => make('message', value)),
-        ...memories.flat().map((value) => make('memory', value))];
+        ...memories.flat().map((value) => make('memory', value)), ...readableOutputs.map((value) => make('output', value))];
       if (rows.length > PROJECT_EXCHANGE_LIMITS.values || new TextEncoder().encode(projectModelSourceToken(rows)).byteLength > PROJECT_EXCHANGE_LIMITS.bundleBytes) {
         throw new Error('项目历史超过归档上限，未截断导出');
       }
@@ -85,6 +92,8 @@ export async function captureNativeProjectArchive(projectId: string): Promise<{ 
   const { listNativeVideoEditorProjectsForProject } = await import('./indexedDb/nativeVideoEditorRepository');
   const allEditors = await listNativeVideoEditorProjectsForProject(projectId);
   const retired = await listNativeRetiredCanvasIds(projectId);
+  // outbox先按原画布投影，再冻结旧库历史；这里只处理新项目，不迁移旧项目。
+  for (const canvasId of [...before.aggregate.canvases.map((canvas) => canvas.id), ...retired]) await syncNativeOutputHistory(canvasId);
   const activeCanvasIds = new Set(before.aggregate.canvases.map((canvas) => canvas.id));
   const retiredCanvasIds = new Set(retired);
   if (allEditors.some((record) => !activeCanvasIds.has(record.projectId) && !retiredCanvasIds.has(record.projectId))) {
