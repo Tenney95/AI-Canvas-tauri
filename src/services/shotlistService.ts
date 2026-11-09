@@ -115,8 +115,9 @@ export function createEpisodeShotlist(scope: ShotlistScope, episodeId: string) {
   const sourceLabel = `${episode.name} 剧本快照`;
   const safeLabel = sourceLabel.replace(/[{}:\r\n]/g, ' ');
   const roster = normalizeEpisodeAssetRoster(episode.episodeAssetRoster);
-  const episodeAssets = [...roster.characters, ...roster.props].map((entry) => {
-    const assets = entry.kind === 'character' ? state.dramaAssets.characters : state.dramaAssets.props;
+  const episodeAssets = [...roster.characters, ...(roster.scenes ?? []), ...roster.props].map((entry) => {
+    const assets = entry.kind === 'character' ? state.dramaAssets.characters
+      : entry.kind === 'scene' ? state.dramaAssets.scenes : state.dramaAssets.props;
     const bound = assets.find((asset) => asset.id === entry.boundDramaAssetId);
     // 本集说明是资料；只有已核对的正式绑定生成可解析的引用。
     const details = JSON.stringify({ name: entry.name, summary: entry.summary,
@@ -125,7 +126,7 @@ export function createEpisodeShotlist(scope: ShotlistScope, episodeId: string) {
     const reference = bound
       ? formatDramaMention(bound.id, bound.name.replace(/[{}:\r\n]/g, ' '))
       : '未绑定正式资产，仅使用文字描述';
-    return `${entry.kind === 'character' ? '本集角色' : '本集道具'}：${reference}；本集资料：${details}`;
+    return `${entry.kind === 'character' ? '本集角色' : entry.kind === 'scene' ? '本集场景' : '本集道具'}：${reference}；本集资料：${details}`;
   });
   const prompt = [
     `请把 @{${sourceNodeId}:${safeLabel}} 中的本集剧本拆成逐镜分镜表。`,

@@ -55,6 +55,28 @@ describe('本集资产清单格式', () => {
     expect(normalizeEpisodeAssetRoster(undefined)).toEqual(emptyEpisodeAssetRoster());
     expect(normalizeEpisodeAssetRoster({ version: 2, characters: [entry()] })).toEqual(emptyEpisodeAssetRoster());
     expect(emptyEpisodeAssetRoster().characters).not.toBe(emptyEpisodeAssetRoster().characters);
+    expect(normalizeEpisodeAssetRoster(roster())).toEqual(roster());
+    expect(normalizeEpisodeAssetRoster(roster())).not.toHaveProperty('scenes');
+  });
+
+  it('场景清单独立归一化，保留绑定与来源版本并拒绝跨类别重复 ID', () => {
+    const normalized = normalizeEpisodeAssetRoster({
+      ...roster(),
+      scenes: [
+        entry({ id: 'scene-entry', kind: 'scene', name: ' 末班车站台 ', boundDramaAssetId: 'scene-1',
+          appearances: [' 第一场 ', '第一场'], identity: '人物专属字段', ownerName: '道具专属字段' }),
+        entry({ kind: 'scene', name: '与角色重复的 ID' }),
+        entry({ id: 'wrong-scene-kind', kind: 'prop' }),
+      ],
+      sourceFingerprints: { scene: episodeScriptFingerprint('第一场 站台 夜') },
+    });
+    expect(normalized.scenes).toEqual([expect.objectContaining({
+      id: 'scene-entry', kind: 'scene', name: '末班车站台', boundDramaAssetId: 'scene-1', appearances: ['第一场'],
+    })]);
+    expect(normalized.scenes?.[0]).not.toHaveProperty('identity');
+    expect(normalized.scenes?.[0]).not.toHaveProperty('ownerName');
+    expect(normalized.sourceFingerprints?.scene).toBe(episodeScriptFingerprint('第一场 站台 夜'));
+    expect(normalizeEpisodeAssetRoster(normalized)).toEqual(normalized);
   });
 
   it('只保留白名单文本和本剧业务 ID，去重 ID 并拒绝种类混用', () => {
@@ -115,9 +137,11 @@ describe('本集资产清单格式', () => {
   it('分集摘要保留已归一化清单和绑定，顶层项目不持有本集清单', () => {
     const record = { id: 'episode', parentId: 'owner', name: '第一集', episodeAssetRoster: {
       ...roster(), characters: [entry({ boundDramaAssetId: 'character-1' })],
+      scenes: [entry({ id: 'scene-entry', kind: 'scene', name: '站台', boundDramaAssetId: 'scene-1' })],
     } };
     const summary = toProjectSummaryRecord(record);
     expect(summary?.episodeAssetRoster?.characters[0].boundDramaAssetId).toBe('character-1');
+    expect(summary?.episodeAssetRoster?.scenes?.[0].boundDramaAssetId).toBe('scene-1');
     expect(toProjectSummaryRecord({ ...record, parentId: undefined })).not.toHaveProperty('episodeAssetRoster');
   });
 });

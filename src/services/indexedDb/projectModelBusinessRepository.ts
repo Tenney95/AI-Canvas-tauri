@@ -134,7 +134,7 @@ function creativeFields(value: Record<string, unknown>): void {
     if (item.targetDurationSec !== undefined && (typeof item.targetDurationSec !== 'number' || !Number.isFinite(item.targetDurationSec) || item.targetDurationSec < 0)) fail('invalid-creative-info');
   }
   if (value.assetRoster !== undefined) {
-    shape(value.assetRoster, ['version', 'revision', 'characters', 'props', 'sourceFingerprints'], 'invalid-asset-roster');
+    shape(value.assetRoster, ['version', 'revision', 'characters', 'scenes', 'props', 'sourceFingerprints'], 'invalid-asset-roster');
     sameNormalized(value.assetRoster, normalizeEpisodeAssetRoster(value.assetRoster), 'invalid-asset-roster');
   }
   if (value.creationProfile !== undefined) {

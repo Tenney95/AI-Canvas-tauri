@@ -6,14 +6,14 @@ import type { CreationProfileOption, CreationProfileSelection } from './creation
 import type { ExternalAgentDescriptor } from './externalAgent';
 import type { DramaAsset, DramaAssetKind } from './dramaAssets';
 import type { CreativeAnalysis, CreativeFieldId, EpisodeCreativeAction } from '../services/seriesCreativeService';
-import type { EpisodeAssetPanelAction, EpisodeAssetPanelSnapshot } from './episodeAssets';
+import type { EpisodeAssetKind, EpisodeAssetPanelAction, EpisodeAssetPanelSnapshot } from './episodeAssets';
 import type { SeriesSourcePart, SeriesSourceReference } from './seriesSource';
 import type { OriginalWritingAction, OriginalWritingHandoff, OriginalWritingSummary } from './originalWriting';
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
   StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
 import type { ProjectWindowContext } from './projectWindow';
 
-export type WorkbenchEditorTab = 'outline' | 'original' | 'script' | 'creative' | 'characters' | 'props' | 'story-graph';
+export type WorkbenchEditorTab = 'outline' | 'original' | 'script' | 'creative' | 'characters' | 'scenes' | 'props' | 'story-graph';
 export type WorkbenchPendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
 export interface WorkbenchCreativeDraft {
   task: string; coreConflict: string; openingHook: string; reversal: string; endingHook: string;
@@ -79,7 +79,7 @@ export type ScriptWorkbenchAction =
   | { type: 'shotlist' } | { type: 'split_draft' }
   | { type: 'extract_series'; kind: DramaAssetKind; label: string }
   | { type: 'close_asset_preview' } | { type: 'commit_asset_preview'; selectedIds: string[] }
-  | { type: 'asset'; episodeId: string; kind: 'character' | 'prop'; action: EpisodeAssetPanelAction }
+  | { type: 'asset'; episodeId: string; kind: EpisodeAssetKind; action: EpisodeAssetPanelAction }
   | { type: 'settle_editor' }
   | { type: 'set_execution'; value: AssistantExecutionSelection }
   | { type: 'set_team_mode'; value: AgentMode } | { type: 'save_team_profile'; profile: AgentTeamProfile }

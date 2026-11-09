@@ -1,12 +1,13 @@
 /** 本集提取清单与正式创作资产分开保存；绑定只指向所属剧集的业务卡片 ID。 */
 import type { CanvasProject } from './index';
-import type { DramaAssetLibrary, DramaCharacter, DramaProp } from './dramaAssets';
+import type { DramaAssetLibrary, DramaCharacter, DramaScene, DramaProp } from './dramaAssets';
 
-export type EpisodeAssetKind = 'character' | 'prop';
+export type EpisodeAssetKind = 'character' | 'scene' | 'prop';
 
 export interface EpisodeAssetPickerSnapshot {
   library: DramaAssetLibrary;
   globalCharacters: DramaCharacter[];
+  globalScenes?: DramaScene[];
   globalProps: DramaProp[];
   nodes: Array<{ id: string; data?: Record<string, unknown> }>;
 }
@@ -52,6 +53,8 @@ export interface EpisodeAssetRoster {
   version: 1;
   revision: number;
   characters: EpisodeAssetEntry[];
+  /** 可选增量字段；旧记录缺省为空，不改变旧清单的持久化形状。 */
+  scenes?: EpisodeAssetEntry[];
   props: EpisodeAssetEntry[];
   sourceFingerprints?: Partial<Record<EpisodeAssetKind, string>>;
 }
@@ -105,7 +108,7 @@ export function normalizeEpisodeAssetRoster(value: unknown): EpisodeAssetRoster 
   const source = plainRecord(value);
   if (!source || own(source, 'version') !== 1) return emptyEpisodeAssetRoster();
   const seen = new Set<string>();
-  const entries = (key: 'characters' | 'props', kind: EpisodeAssetKind): EpisodeAssetEntry[] => {
+  const entries = (key: 'characters' | 'scenes' | 'props', kind: EpisodeAssetKind): EpisodeAssetEntry[] => {
     const list = own(source, key);
     if (!Array.isArray(list)) return [];
     const result: EpisodeAssetEntry[] = [];
@@ -147,9 +150,10 @@ export function normalizeEpisodeAssetRoster(value: unknown): EpisodeAssetRoster 
     characters: entries('characters', 'character'),
     props: entries('props', 'prop'),
   };
+  if (own(source, 'scenes') !== undefined) result.scenes = entries('scenes', 'scene');
   const fingerprints = plainRecord(own(source, 'sourceFingerprints'));
   if (fingerprints) {
-    for (const kind of ['character', 'prop'] as const) {
+    for (const kind of ['character', 'scene', 'prop'] as const) {
       const fingerprint = own(fingerprints, kind);
       if (typeof fingerprint === 'string' && /^v1-[0-9a-f]+-[0-9a-f]{16}$/.test(fingerprint) && fingerprint.length <= 64) {
         (result.sourceFingerprints ??= {})[kind] = fingerprint;

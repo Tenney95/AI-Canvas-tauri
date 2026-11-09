@@ -1,5 +1,5 @@
 /**
- * EpisodeAssetPanel — 提供本集角色与道具清单界面与交互。
+ * EpisodeAssetPanel — 提供本集角色、场景与道具清单界面与交互。
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Icon } from '@iconify/react';
@@ -85,7 +85,8 @@ function EntryEditor({ entry, busy, onSave, onClose }: {
             <input className="ui-input ui-input--sm" disabled={busy} value={draft.identity ?? ''} maxLength={EPISODE_ASSET_LIMITS.identity}
               onChange={(event) => patch('identity', event.target.value)} />
           </label>
-        </> : <label className="ui-field"><span className="ui-label">{t('所属人物')}</span>
+        </> : null}
+        {entry.kind === 'prop' && <label className="ui-field"><span className="ui-label">{t('所属人物')}</span>
           <input className="ui-input ui-input--sm" disabled={busy} value={draft.ownerName ?? ''} maxLength={EPISODE_ASSET_LIMITS.name}
             onChange={(event) => patch('ownerName', event.target.value)} />
         </label>}
@@ -124,7 +125,7 @@ function LocalEpisodeAssetPanel(props: EpisodeAssetPanelProps) {
     projects: state.projects, currentProjectId: state.currentProjectId, projectLoadStatus: state.projectLoadStatus,
     isCreatingProject: state.isCreatingProject, isReturningToStartPage: state.isReturningToStartPage,
     switchingProjectName: state.switchingProjectName, dramaAssets: state.dramaAssets, nodes: state.nodes,
-    globalCharacters: state.globalCharacters, globalProps: state.globalProps,
+    globalCharacters: state.globalCharacters, globalScenes: state.globalScenes, globalProps: state.globalProps,
   })));
   const snapshot = useMemo(() => buildEpisodeAssetPanelSnapshot(source, props.episodeId), [props.episodeId, source]);
   const dispatchAction = useCallback((action: EpisodeAssetPanelAction) => executeEpisodeAssetPanelAction(props.episodeId, props.kind, action),
@@ -142,8 +143,8 @@ function EpisodeAssetPanelView({ episodeId, kind, onBeforeExtract, host }: Episo
   const snapshotRef = useRef(host.snapshot);
   useLayoutEffect(() => { snapshotRef.current = host.snapshot; }, [host.snapshot]);
   const roster = episode?.episodeAssetRoster ?? emptyEpisodeAssetRoster();
-  const entries = kind === 'character' ? roster.characters : roster.props;
-  const assets = kind === 'character' ? library.characters : library.props;
+  const entries = kind === 'character' ? roster.characters : kind === 'scene' ? roster.scenes ?? [] : roster.props;
+  const assets = kind === 'character' ? library.characters : kind === 'scene' ? library.scenes : library.props;
   const assetsById = useMemo(() => new Map<string, DramaAsset>(assets.map((asset) => [asset.id, asset] as const)), [assets]);
   const [query, setQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -252,7 +253,7 @@ function EpisodeAssetPanelView({ episodeId, kind, onBeforeExtract, host }: Episo
               </span>
               <span className="flex h-16 w-12 shrink-0 items-center justify-center overflow-hidden rounded-md border border-canvas-border bg-canvas-surface">
                 {thumb ? <ViewportImage src={thumb} alt="" className="h-full w-full object-cover" />
-                  : <Icon icon={kind === 'character' ? 'lucide:user-round' : 'lucide:box'} className="h-5 w-5 text-canvas-text-muted" />}
+                  : <Icon icon={kind === 'character' ? 'lucide:user-round' : kind === 'scene' ? 'lucide:map-pin' : 'lucide:box'} className="h-5 w-5 text-canvas-text-muted" />}
               </span>
               <div className="min-w-0 flex-1 space-y-1">
                 <h3 className="break-words text-sm font-semibold">{entry.name}</h3>
@@ -289,8 +290,8 @@ function EpisodeAssetPanelView({ episodeId, kind, onBeforeExtract, host }: Episo
           </article>;
         })}
         {!filtered.length && <div role="status" className="ui-card items-center gap-2 p-3 text-center text-xs text-canvas-text-muted">
-          <Icon icon={kind === 'character' ? 'lucide:users-round' : 'lucide:package-open'} className="h-6 w-6" />
-          <p>{entries.length ? t('没有匹配的本集条目') : t(kind === 'character' ? '本集还没有角色清单' : '本集还没有道具清单')}</p>
+          <Icon icon={kind === 'character' ? 'lucide:users-round' : kind === 'scene' ? 'lucide:map-pin' : 'lucide:package-open'} className="h-6 w-6" />
+          <p>{entries.length ? t('没有匹配的本集条目') : t(kind === 'character' ? '本集还没有角色清单' : kind === 'scene' ? '本集还没有场景清单' : '本集还没有道具清单')}</p>
           {!entries.length && <p>{t('可以从剧本 AI 提取、手动新增，或选择资产库中的已有条目。')}</p>}
         </div>}
       </div>
@@ -303,7 +304,7 @@ function EpisodeAssetPanelView({ episodeId, kind, onBeforeExtract, host }: Episo
           ? { type: 'bind', entryId: picker.entryId, targetId: assetId, scope, expectedRevision: picker.revision }
           : { type: 'add-library', targetId: assetId, scope, expectedRevision: picker.revision });
       }, true)} />}
-      {preview && <AssetExtractionPreviewDialog title={t(kind === 'character' ? '核对本集角色提取结果' : '核对本集道具提取结果')}
+      {preview && <AssetExtractionPreviewDialog title={t(kind === 'character' ? '核对本集角色提取结果' : kind === 'scene' ? '核对本集场景提取结果' : '核对本集道具提取结果')}
         items={preview.items} existingItems={entries} confirmLabel={t('加入本集清单')} onClose={() => setPreview(undefined)}
         onConfirm={(ids) => perform(async () => {
           const latestEpisode = snapshotRef.current.episode;

@@ -8,7 +8,7 @@ vi.mock('../../src/services/ai/generateText', () => ({ generateText }));
 vi.mock('../../src/services/dramaAssetTransferService', () => ({ copyGlobalDramaAssetsToProject }));
 
 import { useAppStore, type AppState } from '../../src/store/useAppStore';
-import { emptyDramaAssetLibrary, type DramaProp } from '../../src/types/dramaAssets';
+import { emptyDramaAssetLibrary, type DramaProp, type DramaScene } from '../../src/types/dramaAssets';
 import { emptyEpisodeAssetRoster, type EpisodeAssetEntry } from '../../src/types/episodeAssets';
 import type { CopyGlobalDramaAssetsToProjectInput } from '../../src/services/dramaAssetTransferService';
 import {
@@ -25,6 +25,9 @@ const entry = (id = 'entry-1', name = '旧茶杯'): EpisodeAssetEntry => ({
 const prop = (id = 'formal-1', name = '旧茶杯'): DramaProp => ({
   id, kind: 'prop', key: name, name, summary: '资产库中长期设定', visualNotes: '旧瓷杯',
   importance: 'supporting', confirmed: true, source: 'manual', createdAt: 1, updatedAt: 1,
+});
+const scene = (id = 'scene-1', name = '面馆'): DramaScene => ({
+  ...prop(id, name), kind: 'scene', summary: '临街小面馆', visualNotes: '暖色灯光',
 });
 const roster = () => useAppStore.getState().projects.find((project) => project.id === 'episode-1')!.episodeAssetRoster!;
 const setEntries = (entries: EpisodeAssetEntry[]) => useAppStore.setState((state) => ({
@@ -66,6 +69,23 @@ beforeEach(() => {
 });
 
 describe('本集候选提取与显式保存', () => {
+  it('场景提取先预览，合并及正式入库各自显式提交', async () => {
+    generateText.mockResolvedValue(JSON.stringify({ kind: 'scene', items: [{ name: '面馆', summary: '夜里的面馆' }] }));
+    const candidates = await extractEpisodeAssetCandidates({ episodeId: 'episode-1', kind: 'scene' });
+    expect(candidates).toEqual([expect.objectContaining({ name: '面馆', kind: 'scene' })]);
+    expect(saveRoster).not.toHaveBeenCalled();
+    expect(importAssets).not.toHaveBeenCalled();
+    await mergeEpisodeAssetCandidates('episode-1', 'scene', candidates, 0);
+    expect(roster().scenes).toHaveLength(1);
+    expect(roster().sourceFingerprints?.scene).toMatch(/^v1-/u);
+    expect(useAppStore.getState().dramaAssets.scenes).toEqual([]);
+    await expect(promoteEpisodeAssetEntries('episode-1', 'scene', [candidates[0].id])).resolves.toBe(1);
+    expect(useAppStore.getState().dramaAssets.scenes).toEqual([expect.objectContaining({ kind: 'scene', name: '面馆' })]);
+    expect(roster().scenes?.[0].boundDramaAssetId).toBe(useAppStore.getState().dramaAssets.scenes[0].id);
+    expect(roster().characters).toEqual([]);
+    expect(roster().props).toEqual([]);
+  });
+
   it('可编辑同剧集非画布当前集，始终按目标分集保存', async () => {
     useAppStore.setState((state) => ({ projects: [...state.projects,
       { id: 'episode-2', parentId: 'series-1', name: '第二集', createdAt: 1, updatedAt: 1 }], currentProjectId: 'episode-2' }));
@@ -169,6 +189,41 @@ describe('本集候选提取与显式保存', () => {
 });
 
 describe('本集条目和资产库绑定分离', () => {
+  it('旧清单可新增场景并绑定无图资产，编辑、解绑和移除不改正式场景', async () => {
+    const formal = scene();
+    useAppStore.setState({ dramaAssets: { ...emptyDramaAssetLibrary(), scenes: [formal] } });
+    const draft: EpisodeAssetEntry = { ...entry('scene-entry', '面馆'), kind: 'scene' };
+    await saveEpisodeAssetEntry('episode-1', draft, 0);
+    await bindEpisodeAsset('episode-1', draft.id, 'scene', formal.id, 'project', 1);
+    await saveEpisodeAssetEntry('episode-1', { ...draft, notes: '本集停电', boundDramaAssetId: 'forged' }, 2);
+    expect(roster().scenes?.[0]).toMatchObject({ notes: '本集停电', boundDramaAssetId: formal.id });
+    await addLibraryAssetToEpisode('episode-1', 'scene', formal.id, 'project', 3);
+    expect(roster().scenes).toHaveLength(1);
+    await bindEpisodeAsset('episode-1', draft.id, 'scene', null, 'project', 3);
+    await removeEpisodeAssetEntry('episode-1', draft.id, 'scene', 4);
+    expect(roster().scenes).toEqual([]);
+    expect(useAppStore.getState().dramaAssets.scenes).toEqual([formal]);
+    expect(importAssets).not.toHaveBeenCalled();
+  });
+
+  it('全局场景复制到本剧后加入清单，重复选择复用已保存的本剧身份', async () => {
+    const global = { ...scene('global-scene'), imageUrl: 'asset://global-image' };
+    useAppStore.setState({ globalScenes: [global] });
+    copyGlobalDramaAssetsToProject.mockImplementation(async (input: CopyGlobalDramaAssetsToProjectInput) => {
+      await input.commit([{ ...global, id: 'copied-scene', imageUrl: 'asset://local-image',
+        assetId: 'local-file-id', relativePath: 'imports/scene.png' }]);
+      return { assetCount: 1, mediaCount: 1, assets: [{ kind: 'scene', id: 'copied-scene' }] };
+    });
+    await addLibraryAssetToEpisode('episode-1', 'scene', global.id, 'global', 0);
+    await addLibraryAssetToEpisode('episode-1', 'scene', global.id, 'global', 1);
+    expect(copyGlobalDramaAssetsToProject).toHaveBeenCalledTimes(1);
+    expect(roster().scenes).toHaveLength(1);
+    expect(roster().scenes?.[0].boundDramaAssetId).toBe(useAppStore.getState().dramaAssets.scenes[0].id);
+    expect(roster().scenes?.[0].boundDramaAssetId).not.toBe(global.id);
+    expect(useAppStore.getState().dramaAssets.scenes[0]).toMatchObject({ assetId: 'local-file-id', imageUrl: 'asset://local-image' });
+    expect(useAppStore.getState().globalScenes[0]).toBe(global);
+  });
+
   it('编辑、解绑和移除本集条目都不修改正式资产', async () => {
     const formal = prop();
     useAppStore.setState({ dramaAssets: { ...emptyDramaAssetLibrary(), props: [formal] } });

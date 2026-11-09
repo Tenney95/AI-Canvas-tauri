@@ -19,6 +19,7 @@ import { useT } from '../i18n';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
+import Tabs from './shared/Tabs';
 import NumberStepper from './shared/NumberStepper';
 import { LazyLoadBoundary, LazyLoadFallback } from './shared/LazyLoadBoundary';
 import { createEpisodeShotlist } from '../services/shotlistService';
@@ -29,7 +30,7 @@ import WorkbenchContextSummary from './series/WorkbenchContextSummary';
 import WorkbenchCollaborationDialog from './series/WorkbenchCollaborationDialog';
 import type { DramaAssetKind } from '../types/dramaAssets';
 import { commitSeriesAssetCandidates, extractSeriesAssetsFromFullScript, type SeriesAssetExtractionResult } from '../services/seriesAssetExtractionService';
-import { normalizeEpisodeAssetRoster, type EpisodeAssetPanelActionResult } from '../types/episodeAssets';
+import { normalizeEpisodeAssetRoster, type EpisodeAssetKind, type EpisodeAssetPanelActionResult } from '../types/episodeAssets';
 import EpisodeAssetPanel from './series/EpisodeAssetPanel';
 import { buildEpisodeAssetPanelSnapshot, executeEpisodeAssetPanelAction } from '../services/episodeAssetService';
 import AssetExtractionPreviewDialog from './series/AssetExtractionPreviewDialog';
@@ -83,6 +84,9 @@ type CreativeDraft = WorkbenchCreativeDraft;
 // 非持久化恢复副本：宿主因切项目卸载时不把未确认丢弃的稿件当作已经放弃。
 const workbenchDraftCache = new Map<string, { drafts: Record<string, WorkbenchDraft>; baselines: Record<string, string> }>();
 const EMPTY_WORKBENCH_NODES: [] = [];
+const WORKBENCH_ASSET_KINDS: Partial<Record<WorkbenchEditorTab, EpisodeAssetKind>> = {
+  characters: 'character', scenes: 'scene', props: 'prop',
+};
 
 const WORKBENCH_ACTIONS_BY_TAB: Partial<Record<WorkbenchEditorTab, EpisodeCreativeAction[]>> = {
   outline: ['optimize-outline', 'adjust-beats', 'diagnose', 'strengthen-opening', 'strengthen-conflict', 'design-reversal', 'strengthen-ending'],
@@ -345,6 +349,7 @@ export default function ScriptWorkbench({
     && projectLoadStatus === 'ready' && !workspaceState.isCreatingProject && !workspaceState.isReturningToStartPage
     && workspaceState.switchingProjectName === null;
   const [activeTab, setActiveTab] = useState<EditorTab>('outline');
+  const activeAssetKind = WORKBENCH_ASSET_KINDS[activeTab];
   const [emptyStoryGraph] = useState(() => createEmptyStoryGraph());
   const [graphFilter, setGraphFilter] = useState<StoryGraphFilter>();
   const [graphExtraction, setGraphExtraction] = useState<StoryGraphExtractionState>({ status: 'idle', completed: 0, total: 0 });
@@ -398,8 +403,8 @@ export default function ScriptWorkbench({
   const assetSource = useAppStore(useShallow((state) => ({ projects: state.projects, currentProjectId: state.currentProjectId,
     projectLoadStatus: state.projectLoadStatus, isCreatingProject: state.isCreatingProject, isReturningToStartPage: state.isReturningToStartPage,
     switchingProjectName: state.switchingProjectName, dramaAssets: state.dramaAssets,
-    globalCharacters: state.globalCharacters, globalProps: state.globalProps,
-    nodes: (activeTab === 'characters' || activeTab === 'props') && selectedEpisodeId === state.currentProjectId
+    globalCharacters: state.globalCharacters, globalScenes: state.globalScenes, globalProps: state.globalProps,
+    nodes: activeAssetKind && selectedEpisodeId === state.currentProjectId
       ? projectChatNodes(state.nodes) : EMPTY_WORKBENCH_NODES })));
 
   const persistedDraft = createDraft(currentEpisode);
@@ -968,7 +973,7 @@ export default function ScriptWorkbench({
     seriesAssetPreview: seriesAssetPreview && contextReady ? { kind: seriesAssetPreview.kind, assets: seriesAssetPreview.assets } : null,
     existingAssets: (seriesAssetPreview?.kind === 'character' ? dramaAssets.characters : seriesAssetPreview?.kind === 'scene' ? dramaAssets.scenes : dramaAssets.props)
       .map((asset) => ({ name: asset.name, summary: asset.summary })),
-    assetPanel: currentEpisode && (activeTab === 'characters' || activeTab === 'props') ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
+    assetPanel: currentEpisode && activeAssetKind ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
     executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks, episodeAgentTasks,
     creationProfiles: creationProfileOptions(), externalAgents: externalCatalog,
     storyGraphView: graphView, storyGraphFilter: effectiveGraphFilter,
@@ -1034,7 +1039,7 @@ export default function ScriptWorkbench({
       case 'select_episode': requestEpisodeSwitch(action.episodeId); return true;
       case 'set_tab': {
         if (action.tab !== 'story-graph' && (graphEditorLease.current || graphWritesInFlight.current > 0)) throw new Error(t('请先保存或关闭关系图详情，再切换页签'));
-        if (['outline', 'original', 'script', 'creative', 'characters', 'props', 'story-graph'].includes(action.tab)) setActiveTab(action.tab);
+        if (['outline', 'original', 'script', 'creative', 'characters', 'scenes', 'props', 'story-graph'].includes(action.tab)) setActiveTab(action.tab);
         return true;
       }
       case 'save': {
@@ -1403,6 +1408,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   const isOpen = true;
   const projectLoadStatus = contextReady ? 'ready' : 'loading';
   const episodeAssetRoster = normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster);
+  const activeAssetKind = WORKBENCH_ASSET_KINDS[activeTab];
   const scriptFileSyncNeeded = !!currentEpisode && needsEpisodeScriptFileSync(currentEpisode);
   const creationToolsVisible = activeTab === 'outline' || activeTab === 'script' || activeTab === 'creative';
   const creativeActions = WORKBENCH_ACTIONS_BY_TAB[activeTab] ?? [];
@@ -1410,7 +1416,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
     actions: group.actions.filter((action) => creativeActions.includes(action.id)),
   })).filter((group) => group.actions.length > 0);
   const extractionActions = SERIES_ASSET_EXTRACTION_ACTIONS.filter((action) => activeTab === 'script'
-    || (activeTab === 'characters' && action.kind === 'character') || (activeTab === 'props' && action.kind === 'prop'));
+    || action.kind === activeAssetKind);
   const splitSourceAvailable = splitSource === 'script' ? !!series?.hasScript : !!series?.hasOriginal;
   const fire = (action: ScriptWorkbenchAction) => { void dispatch(action).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t('工作台操作未完成'))); };
   const report = async (action: ScriptWorkbenchAction) => {
@@ -1619,12 +1625,12 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
         <main className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto]
                          lg:grid-cols-[190px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)_auto]
                          xl:grid-cols-[210px_minmax(0,1fr)_300px] xl:grid-rows-1">
-          <aside className="min-h-0 border-b border-border-subtle p-3 lg:border-b-0 lg:border-r">
-            <div className="mb-2 flex items-center justify-between gap-2">
+          <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-border-subtle p-3 lg:border-b-0 lg:border-r">
+            <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-canvas-text-secondary">{t('分集')}</span>
               <span className="text-[10px] text-canvas-text-muted">{episodes.length}</span>
             </div>
-            <div className="flex max-h-28 gap-1.5 overflow-auto lg:max-h-none lg:flex-col">
+            <div className="ui-scroll ui-scroll--both flex min-h-0 max-h-28 gap-1.5 lg:max-h-none lg:flex-1 lg:flex-col">
               {episodes.map((episode) => {
                 const active = episode.id === currentEpisode?.id;
                 return (
@@ -1676,34 +1682,22 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
           <section className="flex min-h-0 min-w-0 flex-col border-border-subtle xl:border-r">
             {currentEpisode ? (
               <>
-                <div className="flex min-h-11 min-w-0 shrink-0 flex-nowrap items-center gap-1 overflow-x-auto border-b border-border-subtle px-3 py-1">
-                  {([
+                <Tabs value={activeTab} onChange={setActiveTab} size="sm" aria-label={t('剧本创作工作台')}
+                  className="min-h-11 shrink-0" items={([
                     ['outline', '本集大纲', 'lucide:list-tree'],
                     ['original', '原文', 'lucide:book-open'],
                     ['script', '本集剧本', 'lucide:scroll-text'],
                     ['creative', '创作要点', 'lucide:lightbulb'],
                     ['characters', '本集角色', 'lucide:users-round'],
+                    ['scenes', '本集场景', 'lucide:map-pin'],
                     ['props', '本集道具', 'lucide:package'],
                     ['story-graph', '故事关系图', 'lucide:network'],
-                  ] as const).map(([id, label, icon]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => setActiveTab(id)}
-                      className={`flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-xs transition-colors ${
-                        activeTab === id
-                          ? 'bg-indigo-500/15 text-indigo-300'
-                          : 'text-canvas-text-muted hover:bg-canvas-hover hover:text-canvas-text-secondary'
-                      }`}
-                    >
-                      <Icon icon={icon} className="h-3.5 w-3.5" />
-                      {t(label)}
-                      {id === 'characters' || id === 'props' ? (
-                        <span className="ui-badge">{id === 'characters' ? episodeAssetRoster.characters.length : episodeAssetRoster.props.length}</span>
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
+                  ] as const).map(([id, label, icon]) => ({ value: id,
+                    label: <><Icon icon={icon} className="h-3.5 w-3.5" aria-hidden="true" />{t(label)}</>,
+                    count: id === 'characters' ? episodeAssetRoster.characters.length
+                      : id === 'scenes' ? (episodeAssetRoster.scenes ?? []).length
+                        : id === 'props' ? episodeAssetRoster.props.length : undefined,
+                  }))} />
 
                 <div className="min-h-0 flex-1 overflow-auto">
                   {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
@@ -1734,11 +1728,11 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                       </Suspense>
                     </LazyLoadBoundary>
                   ) : null}
-                  {(activeTab === 'characters' || activeTab === 'props') && snapshot.assetPanel ? (
+                  {activeAssetKind && snapshot.assetPanel ? (
                       <EpisodeAssetPanel key={`${currentEpisode.id}-${activeTab}`} episodeId={currentEpisode.id}
-                        kind={activeTab === 'characters' ? 'character' : 'prop'}
+                        kind={activeAssetKind}
                         remoteHost={{ snapshot: snapshot.assetPanel, dispatchAction: async (action) => await dispatch({ type: 'asset', episodeId: currentEpisode.id,
-                          kind: activeTab === 'characters' ? 'character' : 'prop', action }) as EpisodeAssetPanelActionResult }}
+                          kind: activeAssetKind, action }) as EpisodeAssetPanelActionResult }}
                         onBeforeExtract={async () => !isDirty || await saveDraft()} />
                   ) : null}
                   {activeTab === 'outline' ? (

@@ -10,6 +10,7 @@ const CONTEXT_LABELS: Record<WorkbenchEditorTab, { title: string; icon: string }
   script: { title: '剧本诊断', icon: 'lucide:scan-search' },
   creative: { title: '创作要点', icon: 'lucide:lightbulb' },
   characters: { title: '角色清单', icon: 'lucide:users-round' },
+  scenes: { title: '场景清单', icon: 'lucide:map-pin' },
   props: { title: '道具清单', icon: 'lucide:package' },
   'story-graph': { title: '关系图概览', icon: 'lucide:network' },
 };
@@ -25,7 +26,7 @@ export default function WorkbenchContextSummary({ snapshot, dispatch }: {
   const filled = fields.filter((value) => value.trim()).length;
   const beats = draft.creative.beats.split('\n').filter((value) => value.trim()).length;
   const roster = normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster);
-  const entries = activeTab === 'characters' ? roster.characters : roster.props;
+  const entries = activeTab === 'characters' ? roster.characters : activeTab === 'scenes' ? roster.scenes ?? [] : roster.props;
   const bound = entries.filter((entry) => entry.boundDramaAssetId).length;
   let metrics: Array<[string, string]> = [];
   let hint = '';
@@ -51,6 +52,7 @@ export default function WorkbenchContextSummary({ snapshot, dispatch }: {
       hint = '在中间编辑创作目标、冲突、钩子与反转；每项右侧的 AI 按钮可单独完善该要点。';
       break;
     case 'characters':
+    case 'scenes':
     case 'props':
       metrics = [['本集条目', String(entries.length)], ['已关联资产', String(bound)], ['未关联', String(entries.length - bound)], ['剧本字数', String(draft.script.replace(/\s/g, '').length)]];
       hint = '在清单中提取、手动新增或从资产库添加条目，核对后再关联正式资产。全剧提取会先展示候选预览。';

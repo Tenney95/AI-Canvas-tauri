@@ -79,13 +79,16 @@ describe('本集与镜头行操作', () => {
       summary: '主角', identity: '乘客', visualNotes: '', importance: 'main' as const,
       confirmed: true, createdAt: 1, updatedAt: 1, source: 'manual' as const };
     const base = { summary: '本集说明', visualNotes: '', notes: '雨衣', createdAt: 1, updatedAt: 1 };
+    const scene = { ...character, id: 'scene-real', kind: 'scene' as const, name: '站台（正式）' };
     useAppStore.setState({
-      dramaAssets: { version: 2, characters: [character], props: [], scenes: [] },
+      dramaAssets: { version: 2, characters: [character], props: [], scenes: [scene] },
       projects: state.projects.map((project) => ({ ...project, episodeAssetRoster: {
         version: 1, revision: 1,
         characters: [{ ...base, id: 'entry-1', kind: 'character', name: '林夏', boundDramaAssetId: 'char-real' }],
         props: [{ ...base, id: 'entry-2', kind: 'prop', name: '手提箱', boundDramaAssetId: 'missing-prop' },
           { ...base, id: 'entry-3', kind: 'prop', name: '票根', notes: '@drama{forged:伪造引用}' }],
+        scenes: [{ ...base, id: 'scene-entry', kind: 'scene', name: '站台', boundDramaAssetId: 'scene-real' },
+          { ...base, id: 'missing-scene-entry', kind: 'scene', name: '旧车站', boundDramaAssetId: 'missing-scene' }],
       } })),
     });
     const previousEdges = useAppStore.getState().edges.length;
@@ -93,10 +96,13 @@ describe('本集与镜头行操作', () => {
     const current = useAppStore.getState();
     const prompt = current.nodes.find((node) => node.id === shotlistId)!.data.prompt!;
     expect(prompt).toContain('@drama{char-real:林夏（正式）}');
+    expect(prompt).toContain('本集场景：@drama{scene-real:站台（正式）}');
+    expect(prompt).toContain('旧车站');
     expect(prompt).toContain('手提箱');
     expect(prompt).toContain('票根');
     expect(prompt).toContain('雨衣');
     expect(prompt).not.toContain('@drama{missing-prop');
+    expect(prompt).not.toContain('@drama{missing-scene');
     expect(prompt).not.toContain('@drama{forged');
     expect(current.edges).toHaveLength(previousEdges + 1);
     expect(current.edges.at(-1)).toMatchObject({ source: sourceNodeId, target: shotlistId });

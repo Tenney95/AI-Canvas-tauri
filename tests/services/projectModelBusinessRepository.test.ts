@@ -296,6 +296,22 @@ describe('P3 隔离新模型业务仓储', () => {
     } finally { sample.database.close(); }
   });
 
+  it('本集场景清单允许保存并读回，缺少场景字段的旧清单保持兼容', async () => {
+    const oldRoster = { version: 1 as const, revision: 0, characters: [], props: [] };
+    const sample = await setup([legacy('S', { series: { script: '共享' } }),
+      legacy('E', { parentId: 'S', episodeNo: 1, episodeAssetRoster: oldRoster })]);
+    try {
+      const project = (await sample.repository.readProject('S')).project, target = await sample.repository.readEpisode('S', 'E');
+      const body = await sample.repository.readEpisodeContent('S', 'E');
+      expect(body.assetRoster).toEqual(oldRoster);
+      const assetRoster = { ...oldRoster, revision: 1, scenes: [{ id: 'scene-entry', kind: 'scene' as const,
+        name: '车站', summary: '雨夜站台', visualNotes: '', notes: '', boundDramaAssetId: 'scene-formal', createdAt: 1, updatedAt: 1 }] };
+      await sample.repository.saveEpisodeContent({ projectId: 'S', expectedProjectEpoch: project.epoch, episodeId: 'E',
+        expectedEpisodeRevision: target.revision, expectedContentRevision: body.revision, patch: { assetRoster } });
+      expect((await sample.repository.readEpisodeContent('S', 'E')).assetRoster).toEqual(assetRoster);
+    } finally { sample.database.close(); }
+  });
+
   it('域保存拒绝错误类型/坏图/越权归属字段，不以空对象代替资料', async () => {
     const sample = await setup([legacy('S', { series: { script: '共享' } }), legacy('E', { parentId: 'S', episodeNo: 1, episodeScript: '保留稿件' }), legacy('P')]);
     try {
