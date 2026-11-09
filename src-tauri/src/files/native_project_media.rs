@@ -103,7 +103,9 @@ fn directory(path: &Path) -> Result<(), String> {
 }
 
 fn private_directory(path: &Path) -> Result<(), String> {
-    let mut builder = fs::DirBuilder::new();
+    let builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    let mut builder = builder;
     #[cfg(unix)]
     { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
     match builder.create(path) {
