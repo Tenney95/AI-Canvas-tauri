@@ -1027,7 +1027,7 @@ options: NativeProjectOptions = {}): Promise<NativeProjectAggregate> {
   });
 }
 
-/** 删除整个独立库聚合，保留所有身份墓碑及归档审计；不删除文件系统内容。 */
+/** 删除整个独立库聚合；待续媒体回执、身份墓碑及归档审计保留，不删除文件系统内容。 */
 export async function deleteNativeProject(input: { projectId: string; expectedProjectEpoch: number; expectedChangeRevision: number; now?: number },
   options: NativeProjectOptions = {}): Promise<void> {
   const fixed = structuredClone(input), now = timestamp(fixed.now);
@@ -1037,7 +1037,7 @@ export async function deleteNativeProject(input: { projectId: string; expectedPr
   if (!database) return fail('project-not-found');
   try {
     await transact(database, 'readwrite', options, async (tx) => {
-      await assertNoPendingNativeMediaTasks(tx, fixed.projectId);
+      // 整项目删除不等待远端任务结算；删除权威项目/画布并留墓碑，迟到结果仍只能保留原回执。
       const current = await readInTransaction(tx, fixed.projectId);
       if (!current) return fail('project-not-found');
       const [revision, transfers] = await Promise.all([

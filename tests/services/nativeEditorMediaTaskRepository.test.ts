@@ -4,7 +4,8 @@ import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { CanvasContext } from '../../src/types/project';
 import type { VideoEditorProjectRecord } from '../../src/types/videoEditor';
-import { createNativeProject, readNativeProjectCapture } from '../../src/services/indexedDb/nativeProjectRepository';
+import { createNativeProject, deleteNativeProject, EXCHANGE, openNativeProjectDatabase, readNativeProjectCapture,
+  transact } from '../../src/services/indexedDb/nativeProjectRepository';
 import { readNativeVideoEditorProject, writeNativeVideoEditorProject } from '../../src/services/indexedDb/nativeVideoEditorRepository';
 import { assertNativeEditorMediaPrepared, claimNativeEditorMediaTask, commitNativeEditorMediaResult,
   listNativeEditorMediaTasks, prepareNativeEditorMediaTask, recordNativeEditorMediaSubmission } from '../../src/services/indexedDb/nativeEditorMediaTaskRepository';
@@ -29,6 +30,36 @@ beforeEach(async () => {
 afterEach(() => vi.unstubAllGlobals());
 const prepare = (requestId = 'request') => prepareNativeEditorMediaTask({ context, requestId, anchorNodeId: 'node', beforeClipId: 'second',
   modelRef: 'general/model', providerConfigId: 'connection', providerBase: 'https://provider.example/v1', protocolDigest: 'a'.repeat(64) }, { factory });
+
+it.each(['prepared', 'submitted', 'outcome-unknown'] as const)('待续剪辑任务 %s 不阻止删除作品，回执保留但不能恢复或投递', async (status) => {
+  let row = await prepare();
+  if (status === 'submitted') {
+    row = await recordNativeEditorMediaSubmission(row, { taskId: 'original-task' }, { factory });
+    row = await retainNativeEditorMediaOutput(context, row, 'media/result.mp4', 2, { factory });
+  } else if (status === 'outcome-unknown') row = await recordNativeEditorMediaSubmission(row, { unknown: true }, { factory });
+  const readRetained = async () => {
+    const database = await openNativeProjectDatabase(false, { factory });
+    if (!database) throw new Error('隔离测试数据库不存在');
+    try {
+      return await transact(database, 'readonly', { factory }, (tx) => new Promise<typeof row>((resolve, reject) => {
+        const request = tx.objectStore(EXCHANGE).get(row.projectId);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      }), [EXCHANGE]);
+    } finally { database.close(); }
+  };
+  const before = (await readNativeProjectCapture(projectId, { factory }))!;
+  await deleteNativeProject({ projectId, expectedProjectEpoch: before.aggregate.project.epoch,
+    expectedChangeRevision: before.changeRevision }, { factory });
+  expect(await readNativeProjectCapture(projectId, { factory })).toBeNull();
+  expect(await readRetained()).toEqual(row);
+  const late = await recordNativeEditorMediaSubmission(row, { taskId: 'original-task' }, { factory });
+  expect(late).toMatchObject({ remoteTaskId: 'original-task', status: 'submitted' });
+  expect(await readRetained()).toEqual(late);
+  await expect(claimNativeEditorMediaTask(context, row.operationId, { factory })).rejects.toThrow('canvas-not-in-project');
+  await expect(commitNativeEditorMediaResult(context, late, 'media/result.mp4', { factory })).rejects.toThrow('canvas-not-in-project');
+  expect(await readRetained()).toEqual(late);
+});
 
 it('冷重启只领取原任务，工程与完成回执同事务提交；重复交付不再插入片段', async () => {
   const prepared = await prepare();

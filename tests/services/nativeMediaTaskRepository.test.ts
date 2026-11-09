@@ -209,15 +209,55 @@ describe('新画布媒体回执账本', () => {
       .toMatchObject({ alreadyCommitted: true });
     expect((await readNativeProjectCapture(context.projectId, { factory }))!.aggregate.canvases[0].nodes).toEqual(document.nodes);
   });
-  it('未知提交保留原身份且不能自动续查，活动任务会阻止删除作品', async () => {
+  it('未知提交和待续任务不阻止整作品删除，原回执与迟到 ID 保留且不能写回已删除画布', async () => {
     const context = await fixture();
-    const first = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'node-1', providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: 0, category: 'video' }, { factory });
-    await recordNativeMediaSubmission(first.operationId, first.lease, { unknown: true }, { factory });
+    const saved = await saveNativeCanvas({ projectId: context.projectId, expectedProjectEpoch: context.projectEpoch,
+      canvasId: context.canvasId, episodeId: null, expectedCanvasEpoch: context.canvasEpoch, expectedCanvasRevision: 0,
+      document: { nodes: ['node-1', 'node-2'].map((id) => ({ id, data: { type: 'ai-video' } })), edges: [], groups: [] } }, { factory });
+    const first = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'node-1', providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: saved.revision, category: 'video' }, { factory });
+    const unknown = await recordNativeMediaSubmission(first.operationId, first.lease, { unknown: true }, { factory });
     await expect(claimNativeMediaRecovery(first.operationId, context, { factory })).rejects.toThrow();
-    const second = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'node-2', providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: 0, category: 'video' }, { factory });
-    await expect(deleteNativeProject({ projectId: context.projectId, expectedProjectEpoch: context.projectEpoch, expectedChangeRevision: 0 }, { factory })).rejects.toThrow();
+    const second = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'node-2', providerConfigId: 'provider', providerBase: 'https://example.test', inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: saved.revision, category: 'video' }, { factory });
+    const before = (await readNativeProjectCapture(context.projectId, { factory }))!;
+    const deletion = { projectId: context.projectId, expectedProjectEpoch: context.projectEpoch, expectedChangeRevision: before.changeRevision };
+    await expect(deleteNativeProject({ ...deletion, expectedChangeRevision: before.changeRevision + 1 }, { factory })).rejects.toThrow('project-version-conflict');
+    expect(await readNativeProjectCapture(context.projectId, { factory })).toEqual(before);
+    await deleteNativeProject(deletion, { factory });
+    expect(await readNativeProjectCapture(context.projectId, { factory })).toBeNull();
+    const retained = await listNativeMediaTasks(context.projectId, { factory });
+    expect(retained).toHaveLength(2);
+    expect(retained).toEqual(expect.arrayContaining([unknown, second]));
+    await expect(assertNativeMediaPrepared(second, { factory })).rejects.toThrow('原媒体任务或画布已变化');
     const received = await recordNativeMediaSubmission(second.operationId, second.lease, { taskId: 'late-remote-id' }, { factory });
     expect(received.remoteTaskId).toBe('late-remote-id');
-    await expect(claimNativeMediaRecovery(second.operationId, { ...context, projectEpoch: context.projectEpoch + 1 }, { factory })).rejects.toThrow();
+    expect(await isNativeMediaLeaseCurrent(received, { factory })).toBe(false);
+    await expect(claimNativeMediaRecovery(second.operationId, context, { factory })).rejects.toThrow('原画布身份');
+    const document = { nodes: [{ id: 'node-1', data: { type: 'ai-video' } },
+      { id: 'node-2', data: { type: 'ai-video', videoUrl: 'media/result.mp4', relativePath: 'media/result.mp4' } }], edges: [], groups: [] };
+    await expect(commitNativeMediaDelivery({ record: received, expectedCanvasRevision: saved.revision, expectedAssetsRevision: 0, document }, { factory })).rejects.toThrow('canvas-not-in-project');
+    await expect(createNativeProject({ name: '不能复用已删除身份', projectId: context.projectId, canvasId: context.canvasId }, { factory })).rejects.toThrow('retired-identity');
+    expect((await listNativeMediaTasks(context.projectId, { factory })).find((row) => row.operationId === second.operationId)).toEqual(received);
+  });
+  it('完整本机图片尚未回填时也可删除作品，保留产物摘要且重启不能恢复到已删除画布', async () => {
+    const context = await fixture();
+    const saved = await saveNativeCanvas({ projectId: context.projectId, expectedProjectEpoch: context.projectEpoch,
+      canvasId: context.canvasId, episodeId: null, expectedCanvasEpoch: context.canvasEpoch, expectedCanvasRevision: 0,
+      document: { nodes: [{ id: 'image', data: { type: 'ai-image' } }], edges: [], groups: [] } }, { factory });
+    const prepared = await prepareNativeMediaTask({ context, operationId: crypto.randomUUID(), nodeId: 'image', category: 'image',
+      providerConfigId: 'provider', providerBase: 'https://example.test', modelRef: 'general/model', protocolDigest: 'c'.repeat(64),
+      submissionKind: 'sync', fingerprintScheme: 'media-input-v2', requestFingerprint: 'b'.repeat(64),
+      inputFingerprint: 'a'.repeat(64), sourceCanvasRevision: saved.revision }, { factory });
+    const localResult = { relativePath: `media/${'d'.repeat(64)}.png`, bytes: 10, sha256: 'd'.repeat(64) };
+    const ready = await retainNativeMediaLocalResult(prepared, localResult, { factory });
+    const before = (await readNativeProjectCapture(context.projectId, { factory }))!;
+    expect(await isNativeMediaLeaseCurrent(ready, { factory })).toBe(true);
+    await deleteNativeProject({ projectId: context.projectId, expectedProjectEpoch: context.projectEpoch, expectedChangeRevision: before.changeRevision }, { factory });
+    expect(await readNativeProjectCapture(context.projectId, { factory })).toBeNull();
+    expect(await listNativeMediaTasks(context.projectId, { factory })).toEqual([ready]);
+    expect(await isNativeMediaLeaseCurrent(ready, { factory })).toBe(false);
+    await expect(claimNativeMediaRecovery(ready.operationId, { ...context, runtimeEpoch: 'restart' }, { factory })).rejects.toThrow('原画布身份');
+    const document = { nodes: [{ id: 'image', data: { type: 'ai-image', imageUrl: localResult.relativePath, relativePath: localResult.relativePath } }], edges: [], groups: [] };
+    await expect(commitNativeMediaDelivery({ record: ready, expectedCanvasRevision: saved.revision, expectedAssetsRevision: 0, document }, { factory })).rejects.toThrow('canvas-not-in-project');
+    expect(await listNativeMediaTasks(context.projectId, { factory })).toEqual([ready]);
   });
 });
