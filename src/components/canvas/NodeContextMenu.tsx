@@ -19,17 +19,18 @@ const MENU_ITEMS = [
   { label: '打开文件夹', shortcut: '', action: 'openGroupFolder' as const, conditional: true },
   { label: '添加到角色库…', shortcut: '', action: 'addToCharacter' as const, conditional: true },
   { label: '复制媒体', shortcut: '', action: 'copyMedia' as const, conditional: true, dynamicLabel: true },
+  { label: '复制文件路径', shortcut: '', action: 'copyFilePath' as const, conditional: true },
+  { label: '打开文件所在位置', shortcut: '', action: 'showInFolder' as const, conditional: true },
   { label: '在 PS 中打开', shortcut: '', action: 'openInPS' as const, conditional: true },
   { label: '编辑视频', shortcut: '', action: 'editVideo' as const, conditional: true, dynamicLabel: true },
   { label: '在剪映中打开', shortcut: '', action: 'openInJianying' as const, conditional: true },
   { label: '在 PR 中打开', shortcut: '', action: 'openInPremiere' as const, conditional: true },
-  { label: '打开文件所在位置', shortcut: '', action: 'showInFolder' as const, conditional: true },
   { label: '另存为...', shortcut: '', action: 'saveAs' as const, conditional: true },
   { label: '删除', shortcut: 'Del', action: 'delete' as const, danger: true },
 ];
 
 const MENU_W = 176;
-const MENU_H = 532; // 视频节点最多 14 items + 1 sep
+const MENU_H = 570; // 视频节点最多 15 items + 1 sep
 const TEXT_SELECTION_MENU_EXTRA_H = 78; // 2 text-selection items + separator
 
 function PluginToolsSubmenu({ tools, onSelect }: {
@@ -164,6 +165,7 @@ interface NodeContextMenuProps {
   onOpenGroupFolder?: () => void;
   onDelete: () => void;
   onShowInFolder?: () => void;
+  onCopyFilePath?: () => void;
   onSaveAs?: () => void;
   onOpenInPS?: () => void;
   onEditVideo?: () => void;
@@ -195,6 +197,7 @@ export function NodeContextMenu({
   onOpenGroupFolder,
   onDelete,
   onShowInFolder,
+  onCopyFilePath,
   onSaveAs,
   onOpenInPS,
   onEditVideo,
@@ -228,6 +231,7 @@ export function NodeContextMenu({
     addToCharacter: onAddToCharacter || (() => {}),
     delete: onDelete,
     showInFolder: onShowInFolder || (() => {}),
+    copyFilePath: onCopyFilePath || (() => {}),
     openGroupFolder: onOpenGroupFolder || (() => {}),
     saveAs: onSaveAs || (() => {}),
     openInPS: onOpenInPS || (() => {}),
@@ -241,6 +245,7 @@ export function NodeContextMenu({
     if (item.action === 'rename' && !onRename) return false;
     if (item.groupOnly && !onUngroup) return false;
     if (item.conditional && item.action === 'showInFolder' && !onShowInFolder) return false;
+    if (item.conditional && item.action === 'copyFilePath' && !onCopyFilePath) return false;
     if (item.conditional && item.action === 'openGroupFolder' && !onOpenGroupFolder) return false;
     if (item.conditional && item.action === 'saveAs' && !onSaveAs) return false;
     if (item.conditional && item.action === 'openInPS' && !onOpenInPS) return false;

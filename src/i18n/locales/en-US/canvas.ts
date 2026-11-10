@@ -33,6 +33,7 @@ const canvas = {
   '在剪映中打开': 'Open in JianYing',
   '在 PR 中打开': 'Open in Premiere',
   '打开文件所在位置': 'Show in folder',
+  '复制文件路径': 'Copy file path',
   '另存为...': 'Save as…',
 
   // ── CanvasDrawingToolbar ──
@@ -211,6 +212,7 @@ const canvas = {
   '节点已锁定': 'Node locked',
   '节点已解锁': 'Node unlocked',
   '无法找到文件路径': 'File path not found',
+  '文件路径已复制': 'File path copied',
   '已打开文件位置': 'Opened file location',
   '无法打开文件位置': 'Cannot open file location',
   '已在 Photoshop 中打开': 'Opened in Photoshop',

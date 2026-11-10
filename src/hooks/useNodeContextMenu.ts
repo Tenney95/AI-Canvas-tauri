@@ -14,7 +14,7 @@ import {
   openInPremiere,
   saveNodeOutputToFile,
 } from '../services/fileService';
-import { copyImage as copyImageToClipboard, copyFile as copyFileToClipboard } from '../services/clipboardService';
+import { copyImage as copyImageToClipboard, copyFile as copyFileToClipboard, copyText } from '../services/clipboardService';
 import { hasVideoSource, isEditableMediaNode, openVideoEditorForNodes } from '../services/videoEditorService';
 import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
@@ -318,6 +318,19 @@ export function useNodeContextMenu() {
     }
   }, [menu.nodeId, nodes, closeMenu, t]);
 
+  // ── 复制文件路径 ──
+  const handleCopyFilePath = useCallback(async () => {
+    const store = useAppStore.getState();
+    const filePath = store.nodes.find((node) => node.id === menu.nodeId)?.data.filePath;
+    closeMenu();
+    if (!filePath) {
+      store.showToast(t('无法找到文件路径'), 'error');
+      return;
+    }
+    const copied = await copyText(filePath);
+    store.showToast(copied ? t('文件路径已复制') : t('复制失败'), copied ? undefined : 'error');
+  }, [menu.nodeId, closeMenu, t]);
+
   // ── 在 Photoshop 中打开 ──
   const openInPSTypes: NodeType[] = [
     'ai-image', 'source-image', 'ai-storyboard', 'ai-animation',
@@ -574,6 +587,7 @@ export function useNodeContextMenu() {
     handleDelete,
     handleShowInFolder,
     showInFolder,
+    handleCopyFilePath,
     handleSaveAs,
     showSaveAs,
     cancelSaveAsDownload,

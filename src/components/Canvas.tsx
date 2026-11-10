@@ -976,6 +976,7 @@ function CanvasInner({ onReady }: CanvasProps) {
     handleDelete,
     handleShowInFolder,
     showInFolder,
+    handleCopyFilePath,
     handleSaveAs,
     showSaveAs,
     cancelSaveAsDownload,
@@ -1839,6 +1840,7 @@ function CanvasInner({ onReady }: CanvasProps) {
         onOpenGroupFolder={isGroupNode ? handleOpenGroupFolder : undefined}
         onDelete={handleDelete}
         onShowInFolder={showInFolder ? handleShowInFolder : undefined}
+        onCopyFilePath={showInFolder ? handleCopyFilePath : undefined}
         onSaveAs={showSaveAs ? handleSaveAs : undefined}
         onOpenInPS={showOpenInPS ? handleOpenInPS : undefined}
         onEditVideo={showEditVideo ? handleEditVideo : undefined}
