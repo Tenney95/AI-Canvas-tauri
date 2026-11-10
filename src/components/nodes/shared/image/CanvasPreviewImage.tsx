@@ -16,13 +16,19 @@ interface CanvasPreviewImageProps extends ImgHTMLAttributes<HTMLImageElement> {
 }
 
 /** 稳定的 img 承载全部清晰度档；资源就绪且显示队列允许时才更换 src。 */
-function CanvasPreviewImage({ src, nodeWidth, nodeHeight, nodeId, projectId, onError, ...imageProps }: CanvasPreviewImageProps) {
+function CanvasPreviewImage({ src, nodeWidth, nodeHeight, nodeId, projectId, className, onLoad, onError, ...imageProps }: CanvasPreviewImageProps) {
   const runtime = useContext(CanvasNodeLodContext);
   const flow = useStoreApi();
   const controller = useRef<ReturnType<typeof createCanvasImageDisplay> | null>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const geometry = useRef({ width: nodeWidth, height: nodeHeight });
   const [preview, setPreview] = useState<{ source: string; projectId?: string | null; lease: DisplayImageLease }>();
+  const resolved = preview && preview.source === src && preview.projectId === projectId ? preview.lease.src : undefined;
+  const [loading, setLoading] = useState({ source: src, projectId, resolved, ready: false });
+  // 相同 URL 的新租约不一定再次触发 load；真实换源时仍需新请求身份，包含 A → B → A。
+  const matching = loading.source === src && loading.projectId === projectId && loading.resolved === resolved;
+  if (!matching) setLoading({ source: src, projectId, resolved, ready: false });
+  const currentPreview = useRef<typeof loading | undefined>(undefined);
 
   useLayoutEffect(() => {
     geometry.current = { width: nodeWidth, height: nodeHeight };
@@ -75,11 +81,41 @@ function CanvasPreviewImage({ src, nodeWidth, nodeHeight, nodeId, projectId, onE
   }, [src, projectId, nodeId, flow, runtime]);
 
   useLayoutEffect(() => {
-    if (preview) controller.current?.committed(preview.lease);
-  }, [preview]);
+    const current = preview?.source === src && preview?.projectId === projectId ? preview : undefined;
+    currentPreview.current = current && matching ? loading : undefined;
+    if (current) controller.current?.committed(current.lease);
+    return () => { currentPreview.current = undefined; };
+  }, [preview, src, projectId, loading, matching]);
 
-  const resolved = preview && preview.source === src && preview.projectId === projectId ? preview.lease.src : undefined;
-  return <img {...imageProps} ref={imageRef} src={resolved} decoding="async" onError={onError} />;
+  const visible = !!resolved && matching && loading.ready;
+  return <img
+    {...imageProps}
+    ref={imageRef}
+    src={resolved}
+    className={`${className ?? ''}${visible ? '' : ' invisible'}`.trim()}
+    decoding="async"
+    onLoad={(event) => {
+      const image = event.currentTarget;
+      const request = currentPreview.current;
+      if (!request?.resolved || image.getAttribute('src') !== request.resolved) return;
+      // 保持上游同步 load 回调；只有当前元素解码完成才揭开空白，不重播入场动画。
+      onLoad?.(event);
+      const isCurrent = () => currentPreview.current === request && imageRef.current === image
+        && image.getAttribute('src') === request.resolved;
+      const reveal = () => {
+        if (isCurrent()) setLoading((current) => current === request ? { ...current, ready: true } : current);
+      };
+      if (typeof image.decode === 'function') {
+        void image.decode().then(reveal, () => {
+          if (isCurrent()) image.dispatchEvent(new Event('error'));
+        });
+      } else reveal();
+    }}
+    onError={(event) => {
+      setLoading((current) => ({ ...current, ready: false }));
+      onError?.(event);
+    }}
+  />;
 }
 
 export default memo(CanvasPreviewImage);
