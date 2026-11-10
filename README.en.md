@@ -14,9 +14,9 @@
 
 AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, Markdown, shot lists, 360° panoramas and hand-drawn notes into connectable canvas nodes. In a single project you can orchestrate generation pipelines, manage characters, scenes, props and local media assets, run ComfyUI workflows, and use the conversational assistant to query or modify the canvas, generate media, dispatch read-only sub-agents, read authorized files, and accumulate project memory. Projects can also be split into series and episodes — each episode of an AI short drama gets its own canvas, while the character library and assets are shared across the whole series.
 
-**0.11.0 · New project structure and media recovery:** New projects use separate project, episode and canvas records; existing projects stay unchanged and are not migrated automatically. The new structure supports media result recovery, canvas-scoped output history and v4 project archives, while retaining compatibility with v1–v3 archives. V4 archives containing output history require this release or a client that supports that field; earlier v4 clients may reject them. See the [release notes](.release-notes.md) for package availability and validation scope.
+**0.11.1 · Model parameters and RelayOn video support:** Matching models share parameter defaults while retaining channel limits, with consistent capabilities across nodes, generation and Agent/MCP queries. RelayOn H3 offers only 15, 20, 25 or 30 seconds, defaulting to 15. This release also corrects SD video submission and original-task retrieval, improves Muse reference uploads and send confirmation, and adds “Copy file path” to media nodes. Existing projects remain unchanged and automatic migration stays disabled. V4 project archives retain v1–v3 compatibility; v4 output history requires 0.11.0 or a compatible reader. See the [release notes](.release-notes.md) for package availability and validation scope.
 
-![Version](https://img.shields.io/badge/version-0.11.0-6366f1)
+![Version](https://img.shields.io/badge/version-0.11.1-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)

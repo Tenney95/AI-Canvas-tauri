@@ -169,7 +169,7 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       .toEqual(['16:9']);
   });
 
-  it('H3 30 秒使用当前视频组 Key，按原任务鉴权下载，界面 2K 映射为请求 2k', async () => {
+  it.each([15, 20, 25, 30])('H3 %s 秒使用当前视频组 Key，按原任务鉴权下载，界面 2K 映射为请求 2k', async (duration) => {
     const params = configure('minimax-h3');
     useAppStore.setState((state) => ({ currentProjectId: 'relayon-h3-project', nodes: [{
       id: 'relayon-h3-node', type: 'ai-video', position: { x: 0, y: 0 },
@@ -184,10 +184,10 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'video/mp4' } }));
     vi.stubGlobal('fetch', fetchMock);
     try {
-      const result = await generateVideo({ ...params, nodeId: 'relayon-h3-node', seedanceDuration: 30,
+      const result = await generateVideo({ ...params, nodeId: 'relayon-h3-node', seedanceDuration: duration,
         seedanceResolution: '2K', seedanceRatio: '4:3' });
       expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ model: 'minimax-h3',
-        prompt: params.prompt, duration: 30, resolution: '2k', aspect_ratio: '4:3', references: [] });
+        prompt: params.prompt, duration, resolution: '2k', aspect_ratio: '4:3', references: [] });
       expect(result).toMatchObject({ url: 'data:video/mp4;base64,AQID', taskReceipt: { taskId: 'h3-original-task' } });
       expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://relayonapi.com/v1/videos',
         'https://relayonapi.com/v1/videos/h3-original-task', 'https://relayonapi.com/v1/videos/h3-original-task/content']);
@@ -196,6 +196,20 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
       expect(new Headers(fetchMock.mock.calls[2][1].headers).get('Idempotency-Key')).toBeNull();
       expect(getPendingTasksForProject('relayon-h3-project')[0]).toMatchObject({ taskId: 'h3-original-task', providerConfigId: 'relayon-video-alias', mediaRecoveryState: 'delivery_pending' });
     } finally { removePendingTask('relayon-h3-node'); }
+  });
+
+  it.each([4, 16, 21, 29, 31])('H3 非档位 %s 秒在上传和生成之前拒绝', async (duration) => {
+    const params = configure('minimax-h3');
+    const image = vi.spyOn(imageUtils, 'resolveImageUrlArray');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(generateVideo({ ...params, seedanceDuration: duration, seedanceResolution: '720p', seedanceRatio: '16:9',
+        referenceMedia: [{ kind: 'image', role: 'reference', origin: 'connection', url: 'data:image/png;base64,YQ==' }],
+      })).rejects.toThrow(/时长|秒/);
+      expect(image).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { image.mockRestore(); }
   });
 
   it('C3 参考图片保留顺序，编号转换为文档的 @图，完成后鉴权取件', async () => {
@@ -387,8 +401,10 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
 
   it('用户修改过的 C1 协议不继承内置编号转换', async () => {
     const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((item) => item.id === 'sd-2.0-c1')!);
-    selected.executionProfile!.protocol!.submit.path = '/custom/videos';
-    selected.executionProfile!.protocol!.poll!.response.result = { urlPath: 'url', mimeType: 'video/mp4' };
+    const protocol = selected.executionProfile!.protocol!;
+    if (protocol.version !== 2) throw new Error('测试需要当前版本的异步视频协议');
+    protocol.submit.path = '/custom/videos';
+    protocol.poll!.response.result = { urlPath: 'url', mimeType: 'video/mp4' };
     useAppStore.getState().saveProviderConfig('relayon-user-protocol', {
       name: '自定义万象合同', catalogId: 'relayonapi', baseUrl: 'https://relayonapi.com/v1',
       apiKey: 'custom-fixture', selectedModels: [selected],

@@ -55,7 +55,10 @@ function relayonBeforeDocumentCorrection() {
     const model = structuredClone(entry);
     const capability = model.videoCapability!;
     if (model.id === 'minimax-h3') {
+      delete capability.durations;
+      capability.minDuration = 4;
       capability.maxDuration = 15;
+      capability.defaultDuration = 4;
       return model;
     }
     const profiles = getRelayonVideoRecoveryProfiles(model.id, model.executionProfile);

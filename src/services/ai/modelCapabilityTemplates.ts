@@ -61,8 +61,11 @@ const IMAGE_TEMPLATES: Record<ImageCapabilityTemplateId, ImageModelCapability> =
 
 /** 只在内置目录/显式模板构造时使用，不用默认值迁移已保存配置。 */
 function channelCapability<T extends ImageModelCapability | VideoModelCapability>(base: T, overrides: T | undefined): T {
-  return structuredClone(Object.fromEntries(Object.entries({ ...base, ...overrides })
-    .filter(([, value]) => value !== undefined))) as T;
+  const capability: T = { ...base, ...overrides };
+  for (const key in capability) {
+    if (capability[key] === undefined) delete capability[key];
+  }
+  return structuredClone(capability);
 }
 
 export function getImageCapabilityTemplate(

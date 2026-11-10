@@ -51,7 +51,16 @@ describe('万象异步提交的原任务身份兼容', () => {
     expect(corsSafeFetch).toHaveBeenCalledOnce();
   });
 
-  it.each([null, [], {}, { id: '' }, { task_id: '  ' }, { id: false, task_id: {} }].map((payload) => ({ payload })))(
+  it('空 JSON 响应在身份规范化之前拒绝，不放宽对象或数组边界', async () => {
+    const normalize = vi.fn(normalizeRelayonVideoSubmitResponse);
+    respond(null);
+    await expect(submitModelProtocol({ ...options, normalizeSubmitResponse: normalize }))
+      .rejects.toThrow('响应必须是 JSON 对象或数组');
+    expect(normalize).not.toHaveBeenCalled();
+    expect(corsSafeFetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([[], {}, { id: '' }, { task_id: '  ' }, { id: false, task_id: {} }].map((payload) => ({ payload })))(
     '无有效身份时沿用未确认提交错误 %#', async ({ payload }) => {
       respond(payload);
       await expect(submitModelProtocol({ ...options, normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse }))

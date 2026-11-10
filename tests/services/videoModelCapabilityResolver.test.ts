@@ -80,16 +80,19 @@ describe('videoModelCapabilityResolver', () => {
     expect(input).toEqual(before);
   });
 
-  it('万象已保存的完整 H3 15 秒快照在节点与 Agent/MCP 参数入口开放 30 秒，不写回配置', () => {
+  it.each([15, 30])('万象完整旧 H3 连续上限 %s 秒快照在节点与 Agent/MCP 统一投影四档，不写回配置', (maximum) => {
     const input = config();
     const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'minimax-h3')!);
-    selected.videoCapability!.maxDuration = 15;
+    delete selected.videoCapability!.durations;
+    Object.assign(selected.videoCapability!, { minDuration: 4, maxDuration: maximum, defaultDuration: 4 });
     input.providers['relay-h3'] = { name: '万象 H3', catalogId: 'relayonapi', apiKey: 'fixture', selectedModels: [selected] };
     input.generalModels = [{ id: 'legacy-h3', name: selected.name, modelId: selected.id, category: 'video',
       providerConfigId: 'relay-h3', executionProfile: selected.executionProfile, videoCapability: selected.videoCapability }];
     const before = structuredClone(input);
     for (const reference of ['general/legacy-h3', 'relay-h3/minimax-h3']) {
-      expect(resolveVideoModelCapability(reference, input)).toMatchObject({ minDuration: 4, maxDuration: 30 });
+      expect(resolveVideoModelCapability(reference, input)).toMatchObject({
+        durations: [15, 20, 25, 30], minDuration: 15, maxDuration: 30, defaultDuration: 15,
+      });
     }
     expect(input).toEqual(before);
     input.generalModels[0].videoCapability = { ...selected.videoCapability, maxDuration: 10 };

@@ -1,6 +1,6 @@
 /**
  * RelayOnAPI 已核对目录（基础 2026-10-27；MJ 与 2.6 补充 2026-11-06）。来源：https://relayonapi.com/docs。
- * SD 当前路由参数以用户提供的 2026-11-10 联序调用参考为准；H3 的 30 秒由用户补充确认。
+ * SD 当前路由参数以用户提供的 2026-11-10 联序调用参考为准；H3 由用户确认仅支持 15/20/25/30 秒。
  * 媒体结果映射采用用户确认的 OpenAI 兼容合同，尚未进行厂商真实生成验收。
  * 普通 Flare／Sunburst 的质量和背景候选采用用户确认的兼容选项，未据此宣称平台实测通过。
  * Image 2.6 01 按用户确认兼容 2.5 01 的请求与尺寸，仍待真实渠道验收。
@@ -221,8 +221,11 @@ function currentVideoModel(previous: ProviderModelSelection): ProviderModelSelec
   const protocol = model.executionProfile?.protocol;
   if (protocol?.version !== 2 || !protocol.poll) throw new Error('RelayOnAPI 内置视频合同缺少规范异步协议');
   if (model.id === 'minimax-h3') {
-    // 仅本渠道支持 30 秒；不修改 H3 公共模板和已发布的查询/取件协议。
+    // 仅本渠道采用四档时长；不修改 H3 公共模板和已发布的查询/取件协议。
+    capability.durations = [15, 20, 25, 30];
+    capability.minDuration = 15;
     capability.maxDuration = 30;
+    capability.defaultDuration = 15;
     return model;
   }
   if (!model.id.startsWith('sd-')) return model;
@@ -360,7 +363,11 @@ export function resolveRelayonVideoCapability(
   if (!capability) return structuredClone(known.videoCapability);
   const previous = LEGACY_VIDEO_BY_ID.get(modelId)?.videoCapability;
   if (previous && sameVideoCapability(capability, previous)) return structuredClone(known.videoCapability);
-  if (modelId === 'minimax-h3') return capability;
+  if (modelId === 'minimax-h3') {
+    // 上版曾发布连续 4–30 秒；只识别其完整快照，不覆盖用户修改或部分声明。
+    return previous && sameVideoCapability(capability, { ...previous, maxDuration: 30 })
+      ? structuredClone(known.videoCapability) : capability;
+  }
   if (capability.defaultRatio !== undefined && capability.defaultRatio !== '16:9') return capability;
   if (capability.ratios !== undefined) {
     if (!LEGACY_SINGLE_RATIO_MODELS.has(modelId) || capability.ratios.length !== 1 || capability.ratios[0] !== '16:9') return capability;

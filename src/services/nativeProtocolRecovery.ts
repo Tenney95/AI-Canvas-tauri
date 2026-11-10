@@ -11,7 +11,8 @@ interface NativeRecoveryProtocolOptions {
   profile: ModelExecutionProfile | undefined;
   /** 仅真实万象视频连接允许读取已确认的新旧内置合同。 */
   catalogId?: string;
-  protocolDigest: string;
+  /** 部分旧回执只保留查询摘要；缺失时仍不能通过完整摘要匹配。 */
+  protocolDigest?: string;
   queryDigest?: string;
   /** 剪辑原账本使用纯协议摘要，普通媒体账本包含型号身份。 */
   digestKind?: 'model' | 'protocol';

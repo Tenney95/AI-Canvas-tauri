@@ -34,7 +34,9 @@ function page(options: { uploadAvailable?: boolean; readOnlyFiles?: boolean; ign
   class ReferenceFile {
     readonly bytes: Uint8Array;
     readonly type: string;
-    constructor(parts: Uint8Array[], public name: string, options: { type: string }) {
+    name: string;
+    constructor(parts: Uint8Array[], name: string, options: { type: string }) {
+      this.name = name;
       this.bytes = Uint8Array.from(parts.flatMap((part) => Array.from(part)));
       this.type = options.type;
     }
@@ -96,7 +98,7 @@ function page(options: { uploadAvailable?: boolean; readOnlyFiles?: boolean; ign
     },
   };
   runInNewContext(source, { window, document, location, HTMLTextAreaElement: Textarea,
-    Event: class { constructor(public type: string) {} }, Date, setTimeout, TextEncoder, URL,
+    Event: class { type: string; constructor(type: string) { this.type = type; } }, Date, setTimeout, TextEncoder, URL,
     DataTransfer: Transfer, File: ReferenceFile, atob: decodeBase64, fetch,
     getComputedStyle: () => ({ overflowY: 'visible' }) });
   const accept = (text = '', reply = '') => {

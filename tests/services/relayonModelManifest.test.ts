@@ -120,7 +120,12 @@ const SD_VIDEO_IDS = ['sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-
 /** 2026-11-10 修订前实际发布的合同，保留旧时长、音频与 output 层级。 */
 function previousVideoCapability(id: string): VideoModelCapability {
   const saved = structuredClone(model(id).videoCapability!);
-  if (id === 'minimax-h3') saved.maxDuration = 15;
+  if (id === 'minimax-h3') {
+    delete saved.durations;
+    saved.minDuration = 4;
+    saved.maxDuration = 15;
+    saved.defaultDuration = 4;
+  }
   if (['sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3', 'sd-2.5-c1'].includes(id)) saved.ratios = [...SEEDANCE_RATIOS];
   if (id === 'sd-2.0-c2' || id === 'sd-2.0-c3') {
     delete saved.durations;
@@ -173,7 +178,7 @@ describe('RelayOnAPI Seedance 宽高比', () => {
       const keys = ['defaultRatio', 'defaultDuration', 'operations', 'minDuration', 'maxDuration',
         'resolutions', 'defaultResolution', 'ratios'];
       if (id.startsWith('doubao-')) keys.push('supportsAudio');
-      if (id === 'sd-2.0-c2' || id === 'sd-2.0-c3') keys.push('durations');
+      if (id === 'sd-2.0-c2' || id === 'sd-2.0-c3' || id === 'minimax-h3') keys.push('durations');
       if (!id.startsWith('doubao-')) keys.push('supportsStandaloneAudio');
       if (!id.endsWith('-A')) keys.push('maxImageReferences', 'maxVideoReferences', 'maxAudioReferences');
       expect(Object.keys(capability).sort(), id).toEqual(keys.sort());
@@ -302,6 +307,23 @@ describe('RelayOnAPI Seedance 宽高比', () => {
     expect(capability.ratios).toEqual(['16:9']);
     const edited = { ...capability, maxDuration: capability.maxDuration! - 1 };
     expect(resolveRelayonVideoCapability(id, previousVideoProfile(id), edited)).toBe(edited);
+  });
+
+  it('H3 完整旧连续 4–30 秒快照投影四档，保留用户限制与原配置', () => {
+    const id = 'minimax-h3', profile = previousVideoProfile(id);
+    const saved = { ...previousVideoCapability(id), maxDuration: 30 };
+    const before = structuredClone(saved);
+    const effective = resolveRelayonVideoCapability(id, profile, saved)!;
+    expect(effective).toEqual(model(id).videoCapability);
+    expect(effective).toMatchObject({ durations: [15, 20, 25, 30], minDuration: 15, maxDuration: 30, defaultDuration: 15 });
+    effective.durations!.push(35);
+    expect(saved).toEqual(before);
+    for (const explicit of [{ ...saved, maxDuration: 25 }, { ...saved, durations: [15, 30] }, { maxDuration: 30 }]) {
+      expect(resolveRelayonVideoCapability(id, profile, explicit)).toBe(explicit);
+    }
+    const custom = structuredClone(profile);
+    custom.protocol!.submit.path = '/user/videos';
+    expect(resolveRelayonVideoCapability(id, custom, saved)).toBe(saved);
   });
 
   it('恢复候选同时保留完整原协议和新版协议，供原回执摘要精确选择', () => {
@@ -570,7 +592,8 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
   it('H3 使用 C1 请求格式与小写档位，保留顺序且不将 720p、1K 改写为像素预设', () => {
     const id = 'minimax-h3';
     expect(model(id).videoCapability).toMatchObject({ resolutions: ['480p', '720p', '1K', '2K'],
-      minDuration: 4, maxDuration: 30, ratios: ['16:9', '9:16', '4:3', '3:4', '1:1'],
+      durations: [15, 20, 25, 30], minDuration: 15, maxDuration: 30, defaultDuration: 15,
+      ratios: ['16:9', '9:16', '4:3', '3:4', '1:1'],
       maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3 });
     const variables = relayonVideoVariables(id, { model: id, duration: 30, resolution: '1K', aspectRatio: '9:16',
       prompt: '图片2和@图1参考视频1与音频1', referenceImageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
@@ -584,6 +607,19 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(relayonVideoVariables(id, { resolution: '720p' }).resolution).toBe('720p');
     expect(() => relayonVideoVariables(id, { duration: 31 })).toThrow('不支持 31 秒');
     expect(findUnusedReferenceVariables(JSON.stringify(model(id).executionProfile!.protocol), variables)).toEqual([]);
+  });
+
+  it('H3 仅放行四档时长，不把 15–30 当作连续区间', () => {
+    for (const duration of [15, 20, 25, 30]) {
+      const variables = relayonVideoVariables('minimax-h3', { model: 'minimax-h3', prompt: '四档时长',
+        duration, resolution: '720p', aspectRatio: '16:9' });
+      const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
+        protocol: model('minimax-h3').executionProfile!.protocol!, variables });
+      expect(built.renderedBody).toMatchObject({ duration });
+    }
+    for (const duration of [4, 10, 14, 16, 19, 21, 24, 26, 29, 31, 15.5]) {
+      expect(() => relayonVideoVariables('minimax-h3', { duration })).toThrow('可选时长为 15、20、25、30');
+    }
   });
 
   it('H3 合计 12 份通过，13 份拒绝；每张提供的图片都必须能在提示词找到编号', () => {
