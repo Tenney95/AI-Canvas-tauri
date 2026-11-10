@@ -8,7 +8,7 @@
 import { getNodeTypeConfig } from '../types';
 import type { BaseNodeData, NodeGroup } from '../types';
 import { t } from '../i18n';
-import { getGroupLayoutPosition } from './groupCollapseLayout';
+import { getGroupLayoutComparisonPosition } from './groupCollapseLayout';
 
 export interface HistorySnapshotLike {
   nodes: {
@@ -162,8 +162,8 @@ export function describeCanvasChange(
   const moved = after.nodes.filter((node) => {
     const previous = beforeNodes.get(node.id);
     if (!previous) return false;
-    const beforePosition = getGroupLayoutPosition(previous);
-    const afterPosition = getGroupLayoutPosition(node);
+    const beforePosition = getGroupLayoutComparisonPosition(previous);
+    const afterPosition = getGroupLayoutComparisonPosition(node);
     return beforePosition.x !== afterPosition.x || beforePosition.y !== afterPosition.y;
   });
   if (moved.length > 0) {

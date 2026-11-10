@@ -16,6 +16,19 @@ export function getGroupLayoutPosition(node: Pick<CanvasNode, 'data' | 'position
   return { x: node.position.x - getGroupLayoutOffsetX(node), y: node.position.y };
 }
 
+function comparisonCoordinate(value: number): number {
+  const scaled = value * 1_000_000;
+  if (!Number.isFinite(scaled)) return value;
+  const rounded = Math.round(scaled) / 1_000_000;
+  return rounded === 0 ? 0 : rounded;
+}
+
+/** 仅历史与操作描述按百万分之一画布单位比较，消除加减位移的浮点误差；实际位置与恢复不量化。 */
+export function getGroupLayoutComparisonPosition(node: Pick<CanvasNode, 'data' | 'position'>) {
+  const position = getGroupLayoutPosition(node);
+  return { x: comparisonCoordinate(position.x), y: comparisonCoordinate(position.y) };
+}
+
 export function clearGroupLayoutData(data: BaseNodeData): BaseNodeData {
   const next = { ...data };
   delete next.groupLayoutOffsetX;

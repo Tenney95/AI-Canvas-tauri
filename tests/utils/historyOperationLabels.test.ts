@@ -129,6 +129,19 @@ describe('从快照差异推断操作名', () => {
     expect(describeCanvasChange(after, before).title).toBe('移动节点位置');
   });
 
+  it.each([0.1, -0.100000123456])('小数与负坐标的让位浮点误差不误报移动，真实手动位移仍可识别：%s', (x) => {
+    const beforeNode = node('n1', 'ai-image', { x, y: -100.2 });
+    const shifted = { ...beforeNode, position: { x: x - 780, y: -100.2 },
+      data: { ...beforeNode.data, groupLayoutOffsetX: -780 } };
+    const before = snapshot({ nodes: [beforeNode] });
+    const after = snapshot({ nodes: [shifted] });
+
+    expect(describeCanvasChange(before, after).title).toBe('画布修改');
+    expect(describeCanvasChange(after, before).title).toBe('画布修改');
+    const moved = { ...shifted, position: { ...shifted.position, x: shifted.position.x + 0.00123 } };
+    expect(describeCanvasChange(before, snapshot({ nodes: [moved] })).title).toBe('移动节点位置');
+  });
+
   it('自动位移记录调整不算节点正文编辑', () => {
     const beforeNode = node('g1', 'group', { x: 0, y: 0 }, { type: 'comment', groupId: 'g1',
       groupCollapseLayout: { deltaX: -780, nodeIds: ['n1'] } });

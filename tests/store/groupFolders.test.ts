@@ -1304,6 +1304,42 @@ describe('分组开合自动让位', () => {
     expect(current(a.id).data.groupCollapsed).toBeUndefined();
   });
 
+  it.each([
+    { groupX: -1000, followerX: 0.1 },
+    { groupX: -1000.7, followerX: -0.100000123456 },
+  ])('小数负坐标开合不新增历史或截断重做，真实位移仍可撤销：$followerX', async ({ groupX, followerX }) => {
+    const a = group('fraction-source', groupX, 1000, -100.2);
+    const follower = { ...node('fraction-follower'), position: { x: followerX, y: -100.2 } };
+    useAppStore.setState({ nodes: [a, follower], edges: [], groups: [
+      { id: a.id, name: a.id, nodeIds: [], color: '#888888', createdAt: 0 },
+    ] });
+    const state = useAppStore.getState();
+    state.commitToHistory();
+    const baseline = useAppStore.getState().history;
+    for (let count = 0; count < 3; count++) {
+      toggle(a.id); state.commitToHistory();
+      expect(useAppStore.getState().history).toBe(baseline);
+      toggle(a.id); state.commitToHistory();
+      expect(useAppStore.getState().history).toBe(baseline);
+      expect(current(follower.id).position.x).toBeCloseTo(followerX, 11);
+    }
+    toggle(a.id); state.commitToHistory();
+    const manualDelta = 0.00123;
+    state.onNodesChange([{ id: follower.id, type: 'position', position: {
+      x: current(follower.id).position.x + manualDelta, y: follower.position.y,
+    } }]);
+    expect(await state.undo()).toBe(true);
+    expect(current(follower.id).position.x).toBeCloseTo(followerX - 780, 11);
+    const { history, historyIndex } = useAppStore.getState();
+    toggle(a.id); toggle(a.id);
+    expect(useAppStore.getState().history).toBe(history);
+    expect(useAppStore.getState().historyIndex).toBe(historyIndex);
+    expect(await state.redo()).toBe(true);
+    expect(current(follower.id).position.x).toBeCloseTo(followerX - 780 + manualDelta, 11);
+    toggle(a.id);
+    expect(current(follower.id).position.x).toBeCloseTo(followerX + manualDelta, 11);
+  });
+
   it('折叠态撤销重做分组缩放，展开使用还原后的宽度与相应让位', async () => {
     const { a, tail } = scene();
     const state = useAppStore.getState();

@@ -10,7 +10,7 @@ import type { BaseNodeData, NodeGroup } from '../types';
 import * as fileService from '../services/fileService';
 import { waitForPendingNodeExits } from '../utils/nodeAnimations';
 import { getHistoryGroupSize } from '../utils/historyOperationLabels';
-import { getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
+import { getGroupLayoutComparisonPosition, getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
 import { COLLAPSED_GROUP_SIZE } from './store.groups';
 
 export interface HistoryEntry {
@@ -189,7 +189,7 @@ function projectStructuralNode(node: Node<BaseNodeData>, includeLayout: boolean)
     id: node.id, type: node.type, parentId: node.parentId, extent: node.extent, expandParent: node.expandParent,
     data: getStructuralNodeData(node.data),
     ...(includeLayout || node.type === 'canvas-note' ? {
-      position: getGroupLayoutPosition(node),
+      position: getGroupLayoutComparisonPosition(node),
       layoutData: getNodeDataFields(node.data, node.data.type === 'ai-image' ? IMAGE_LAYOUT_NODE_DATA_KEYS : LAYOUT_NODE_DATA_KEYS),
       styleDimensions: getNodeStyleDimensions(node),
     } : {}),
@@ -362,8 +362,8 @@ function restoreStructuralSnapshot(
     if (!restoreLayout && !membersChanged) continue;
     layoutGroups.add(node.id);
     const previous = currentNodes.get(node.id);
-    const targetPosition = getGroupLayoutPosition(node);
-    const previousPosition = previous && getGroupLayoutPosition(previous);
+    const targetPosition = getGroupLayoutComparisonPosition(node);
+    const previousPosition = previous && getGroupLayoutComparisonPosition(previous);
     if (previousPosition
       && (targetPosition.x !== previousPosition.x || targetPosition.y !== previousPosition.y)) {
       relocatedGroups.add(node.id);
