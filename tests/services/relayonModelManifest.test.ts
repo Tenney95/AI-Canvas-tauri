@@ -5,6 +5,7 @@ import { assert, describe, expect, it } from 'vitest';
 import type { ProviderModelSelection } from '../../src/types';
 import {
   RELAYON_BASE_URL,
+  RELAYON_VIDEO_BASE_URL,
   RELAYON_IMAGE_MODEL_IDS,
   RELAYON_IMAGE_REFERENCE_LIMIT,
   RELAYON_MIDJOURNEY_MODEL_IDS,
@@ -18,6 +19,8 @@ import {
   resolveRelayonImageExecutionProfile,
   resolveRelayonImageModelContract,
   resolveRelayonVideoCapability,
+  resolveRelayonVideoExecutionProfile,
+  getRelayonVideoRecoveryProfiles,
   usesRelayonModelProtocol,
   getRelayonImageOutputsPerJob,
 } from '../../src/services/ai/providers/relayonModelManifest';
@@ -34,6 +37,7 @@ function remote(id: string): ProviderModelSelection {
 describe('RelayOnAPI 已核对文本目录', () => {
   it('只预置四个已确认型号，使用通用对话协议，不推断视觉和上下文能力', () => {
     expect(RELAYON_BASE_URL).toBe('https://relayonapi.com/v1');
+    expect(RELAYON_VIDEO_BASE_URL).toBe('https://api.relayonapi.com/v1');
     expect(RELAYON_TEXT_MODEL_IDS).toEqual([
       'gemini-3.8-flash', 'gemini-4-argon', 'gpt-6.1-sol', 'claude-opus-5-5',
     ]);
@@ -110,9 +114,42 @@ const LEGACY_SINGLE_RATIO_VIDEO_IDS = [
   'sd-2.0-A', 'sd-2.5-A', 'sd-2.5-c1',
 ];
 const SEEDANCE_RATIOS = ['16:9', '9:16', '4:3', '3:4', '1:1'];
+const SD_COMMON_RATIOS = ['16:9', '9:16', '1:1'];
+const SD_VIDEO_IDS = ['sd-2.0-A', 'sd-2.5-A', 'sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3', 'sd-2.5-c1'];
+
+/** 2026-11-10 修订前实际发布的合同，保留旧时长、音频与 output 层级。 */
+function previousVideoCapability(id: string): VideoModelCapability {
+  const saved = structuredClone(model(id).videoCapability!);
+  if (id === 'minimax-h3') saved.maxDuration = 15;
+  if (['sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3', 'sd-2.5-c1'].includes(id)) saved.ratios = [...SEEDANCE_RATIOS];
+  if (id === 'sd-2.0-c2' || id === 'sd-2.0-c3') {
+    delete saved.durations;
+    saved.minDuration = 4;
+    saved.defaultDuration = 4;
+  }
+  if (id === 'sd-2.0-c3') saved.maxAudioReferences = 3;
+  if (id.endsWith('-A') || id === 'sd-2.5-c1') saved.supportsAudio = true;
+  return saved;
+}
+
+function previousVideoProfile(id: string): ModelExecutionProfile {
+  const saved = structuredClone(model(id).executionProfile!);
+  if (!SD_VIDEO_IDS.includes(id)) return saved;
+  const protocol = saved.protocol;
+  assert(protocol?.version === 2);
+  const body = protocol.submit.body as Record<string, ProtocolJsonValue>;
+  if (id.endsWith('-A') || id === 'sd-2.5-c1') {
+    delete body.resolution;
+    delete body.aspect_ratio;
+    body.output = { resolution: '{{resolution}}', aspect_ratio: '{{aspectRatio}}' };
+    body.generate_audio = '{{generateAudio}}';
+  }
+  protocol.poll!.response.result = { urlPath: 'url', mimeType: 'video/mp4' };
+  return saved;
+}
 
 describe('RelayOnAPI Seedance 宽高比', () => {
-  it('完整旧 2.5 C1 快照仍只补比例，不要求新增的官方模式或自动时长字段', () => {
+  it('完整旧 2.5 C1 快照更新当前渠道比例，不要求新增官方模式或自动时长', () => {
     const saved: VideoModelCapability = {
       defaultRatio: '16:9', defaultDuration: 4,
       operations: ['text-to-video', 'image-to-video', 'video-to-video'],
@@ -122,9 +159,11 @@ describe('RelayOnAPI Seedance 宽高比', () => {
       ratios: ['16:9'],
     };
     const selected = model('sd-2.5-c1');
-    expect(selected.videoCapability).toEqual({ ...saved, ratios: SEEDANCE_RATIOS });
+    const current: VideoModelCapability = { ...saved, ratios: [...SEEDANCE_RATIOS, '21:9'] };
+    delete current.supportsAudio;
+    expect(selected.videoCapability).toEqual(current);
     expect(resolveRelayonVideoCapability(selected.id, selected.executionProfile, saved))
-      .toEqual({ ...saved, ratios: SEEDANCE_RATIOS });
+      .toEqual(current);
     expect(saved.ratios).toEqual(['16:9']);
   });
 
@@ -133,27 +172,29 @@ describe('RelayOnAPI Seedance 宽高比', () => {
       const capability = model(id).videoCapability!;
       const keys = ['defaultRatio', 'defaultDuration', 'operations', 'minDuration', 'maxDuration',
         'resolutions', 'defaultResolution', 'ratios'];
-      if (id.startsWith('doubao-') || id.endsWith('-A') || id === 'sd-2.5-c1') keys.push('supportsAudio');
+      if (id.startsWith('doubao-')) keys.push('supportsAudio');
+      if (id === 'sd-2.0-c2' || id === 'sd-2.0-c3') keys.push('durations');
       if (!id.startsWith('doubao-')) keys.push('supportsStandaloneAudio');
       if (!id.endsWith('-A')) keys.push('maxImageReferences', 'maxVideoReferences', 'maxAudioReferences');
       expect(Object.keys(capability).sort(), id).toEqual(keys.sort());
     }
   });
 
-  it.each(SEEDANCE_VIDEO_IDS)('%s 声明相同五种比例并按本渠道字段发送', (id) => {
+  it.each(SEEDANCE_VIDEO_IDS)('%s 读取公共型号基线并应用当前渠道比例和请求层级', (id) => {
     const selected = model(id);
-    expect(selected.videoCapability?.ratios).toEqual(SEEDANCE_RATIOS);
+    const expectedRatios = ['sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3'].includes(id) ? SD_COMMON_RATIOS
+      : id === 'sd-2.5-c1' ? [...SEEDANCE_RATIOS, '21:9'] : SEEDANCE_RATIOS;
+    expect(selected.videoCapability?.ratios).toEqual(expectedRatios);
     expect(selected.videoCapability?.defaultRatio).toBe('16:9');
-    for (const aspectRatio of SEEDANCE_RATIOS) {
+    for (const aspectRatio of expectedRatios) {
       const variables = relayonVideoVariables(id, { model: id, prompt: '比例回归', duration: 10,
         durationText: '10', resolution: '720p', aspectRatio });
       const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
         protocol: selected.executionProfile!.protocol!, variables });
       expect(built.renderedBody).toMatchObject(id.startsWith('doubao-')
         ? { metadata: { ratio: aspectRatio } }
-        : id.endsWith('-A') || id === 'sd-2.5-c1'
-          ? { output: { aspect_ratio: aspectRatio } }
-          : { aspect_ratio: aspectRatio });
+        : { aspect_ratio: aspectRatio });
+      if (!id.startsWith('doubao-')) expect(built.renderedBody).not.toHaveProperty('output');
     }
   });
 
@@ -163,7 +204,7 @@ describe('RelayOnAPI Seedance 宽高比', () => {
       const saved: VideoModelCapability = { ...structuredClone(selected.videoCapability), ratios: ['16:9'], defaultRatio };
       const before = structuredClone(saved);
       expect(resolveRelayonVideoCapability(id, selected.executionProfile, saved))
-        .toEqual({ ...before, ratios: SEEDANCE_RATIOS });
+        .toEqual({ ...before, ratios: selected.videoCapability!.ratios });
       expect(saved).toEqual(before);
     }
   });
@@ -174,7 +215,7 @@ describe('RelayOnAPI Seedance 宽高比', () => {
     delete saved.ratios;
     const before = structuredClone(saved);
     expect(resolveRelayonVideoCapability(id, selected.executionProfile, saved))
-      .toEqual({ ...before, ratios: SEEDANCE_RATIOS });
+        .toEqual({ ...before, ratios: selected.videoCapability!.ratios });
     expect(saved).toEqual(before);
   });
 
@@ -191,12 +232,12 @@ describe('RelayOnAPI Seedance 宽高比', () => {
     const restored = resolveRelayonVideoCapability(id, selected.executionProfile)!;
     expect(restored).toEqual(selected.videoCapability);
     restored.ratios!.push('2:1');
-    expect(resolveRelayonVideoCapability(id, selected.executionProfile)?.ratios).toEqual(SEEDANCE_RATIOS);
+    expect(resolveRelayonVideoCapability(id, selected.executionProfile)?.ratios).toEqual([...SEEDANCE_RATIOS, '21:9']);
 
     const saved: VideoModelCapability = { ...structuredClone(selected.videoCapability), ratios: ['16:9'] };
     const before = structuredClone(saved);
     const effective = resolveRelayonVideoCapability(id, selected.executionProfile, saved)!;
-    expect(effective).toEqual({ ...before, ratios: SEEDANCE_RATIOS });
+    expect(effective).toEqual({ ...before, ratios: [...SEEDANCE_RATIOS, '21:9'] });
     effective.ratios!.push('2:1');
     expect(saved).toEqual(before);
     expect(RELAYON_MODEL_MANIFEST).toEqual(manifestBefore);
@@ -235,7 +276,51 @@ describe('RelayOnAPI Seedance 宽高比', () => {
     for (const id of ['minimax-h3', 'image-2-01', 'SD-2.0-A', 'unknown']) {
       expect(resolveRelayonVideoCapability(id, model('minimax-h3').executionProfile, saved)).toBe(saved);
     }
-    expect(resolveRelayonVideoCapability('minimax-h3', model('minimax-h3').executionProfile)).toBeUndefined();
+    expect(resolveRelayonVideoCapability('minimax-h3', model('minimax-h3').executionProfile)).toEqual(model('minimax-h3').videoCapability);
+  });
+
+  it.each(RELAYON_VIDEO_MODEL_IDS)('%s 仅投影完整旧协议和能力，不修改保存记录', (id) => {
+    const profile = previousVideoProfile(id);
+    const capability = previousVideoCapability(id);
+    const before = structuredClone({ profile, capability });
+    expect(usesRelayonModelProtocol(id, profile)).toBe(true);
+    expect(resolveRelayonVideoExecutionProfile(id, profile)).toEqual(model(id).executionProfile);
+    expect(resolveRelayonVideoCapability(id, profile, capability)).toEqual(model(id).videoCapability);
+    expect({ profile, capability }).toEqual(before);
+    const partial = { maxDuration: capability.maxDuration };
+    expect(resolveRelayonVideoCapability(id, profile, partial)).toBe(partial);
+    const custom = structuredClone(profile);
+    custom.protocol!.submit.path = '/my/videos';
+    expect(usesRelayonModelProtocol(id, custom)).toBe(false);
+    expect(resolveRelayonVideoExecutionProfile(id, custom)).toBe(custom);
+    expect(resolveRelayonVideoCapability(id, custom, capability)).toBe(capability);
+  });
+
+  it.each(LEGACY_SINGLE_RATIO_VIDEO_IDS)('%s 仍识别真实旧单画幅快照而非只比较当前新版字段', (id) => {
+    const capability = { ...previousVideoCapability(id), ratios: ['16:9'] };
+    expect(resolveRelayonVideoCapability(id, previousVideoProfile(id), capability)).toEqual(model(id).videoCapability);
+    expect(capability.ratios).toEqual(['16:9']);
+    const edited = { ...capability, maxDuration: capability.maxDuration! - 1 };
+    expect(resolveRelayonVideoCapability(id, previousVideoProfile(id), edited)).toBe(edited);
+  });
+
+  it('恢复候选同时保留完整原协议和新版协议，供原回执摘要精确选择', () => {
+    const id = 'sd-2.5-A';
+    for (const profile of [previousVideoProfile(id), model(id).executionProfile!]) {
+      const candidates = getRelayonVideoRecoveryProfiles(id, profile);
+      expect(candidates).toHaveLength(2);
+      expect(candidates).toContainEqual(previousVideoProfile(id));
+      expect(candidates).toContainEqual(model(id).executionProfile);
+      candidates[0].protocol!.submit.path = '/mutated';
+      expect(profile.protocol!.submit.path).toBe('/videos');
+    }
+    expect(getRelayonVideoRecoveryProfiles('minimax-h3', model('minimax-h3').executionProfile)).toHaveLength(1);
+    const custom = previousVideoProfile(id);
+    assert(custom.protocol?.version === 2);
+    custom.protocol.poll!.response.result.urlPath = 'userResult.url';
+    expect(getRelayonVideoRecoveryProfiles(id, custom)).toEqual([custom]);
+    expect(resolveRelayonVideoExecutionProfile(id, custom)).toBe(custom);
+    expect(getRelayonVideoRecoveryProfiles(id, undefined)).toEqual([]);
   });
 });
 
@@ -330,7 +415,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(current.imageCapability).not.toHaveProperty('backgrounds');
   });
 
-  it('全部能力与协议满足当前校验，视频保持同源查询，仅 H3 使用已公布的 content 下载', () => {
+  it('全部能力与协议满足当前校验，H3 和 SD 六款均沿本渠道鉴权 content 取件', () => {
     for (const item of RELAYON_MODEL_MANIFEST) {
       expect(() => assertModelCapabilityProtocol(item), item.id).not.toThrow();
       if (item.videoCapability) expect(() => assertVideoModelCapability(item.videoCapability!), item.id).not.toThrow();
@@ -341,7 +426,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
           poll: { path: '/videos/{{submit.id}}', intervalMs: 10_000, maxDurationMs: 7_200_000,
             response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed'] } } });
         assert(protocol?.version === 2, item.id);
-        if (item.id === 'minimax-h3') {
+        if (item.id === 'minimax-h3' || SD_VIDEO_IDS.includes(item.id)) {
           expect(protocol.poll!.response.result).toEqual({ mimeType: 'video/mp4', download: { method: 'GET', path: '/videos/{{submit.id}}/content' } });
         } else expect(protocol.poll!.response.result).toEqual({ urlPath: 'url', mimeType: 'video/mp4' });
       }
@@ -436,12 +521,15 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
         referenceVideoUrls: ['https://cdn.example/v.mp4'], referenceAudioUrls: ['https://cdn.example/a.mp3'] });
       const protocol = model(id).executionProfile!.protocol!;
       const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol, variables });
-      expect(built.renderedBody).toMatchObject({ seconds: '6', output: { resolution: '720p', aspect_ratio: '16:9' }, generate_audio: true,
+      expect(built.renderedBody).toMatchObject({ prompt: '@图1配合@视频1和@音频1', seconds: '6', resolution: '720p', aspect_ratio: '16:9',
         references: [
           { type: 'image', url: 'https://cdn.example/i1.png', role: 'reference' },
           { type: 'image', url: 'https://cdn.example/i2.png', role: 'reference' },
           { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' },
         ] });
+      expect(built.renderedBody).not.toHaveProperty('output');
+      expect(built.renderedBody).not.toHaveProperty('generate_audio');
+      expect(model(id).videoCapability).not.toHaveProperty('supportsAudio');
       expect(findUnusedReferenceVariables(JSON.stringify(protocol), variables)).toEqual([]);
     }
   });
@@ -459,12 +547,12 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(built.renderedBody).not.toHaveProperty('metadata');
     expect(findUnusedReferenceVariables(JSON.stringify(protocol), variables)).toEqual([]);
     expect(model(id).videoCapability).toMatchObject({ minDuration: 10, maxDuration: 15, maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3 });
-    expect(model('sd-2.0-c2').videoCapability).toMatchObject({ minDuration: 4, maxDuration: 15, maxVideoReferences: 0 });
+    expect(model('sd-2.0-c2').videoCapability).toMatchObject({ durations: [5, 10, 15], minDuration: 5, maxDuration: 15, maxVideoReferences: 0 });
     expect(() => relayonVideoVariables('sd-2.0-c2', { referenceVideoUrls: ['https://cdn.example/v.mp4'] })).toThrow('最多接受 0 个参考视频');
     expect(() => relayonVideoVariables(id, { referenceAudioUrls: Array(4).fill('https://cdn.example/a.mp3') })).toThrow('最多接受 3 个参考音频');
   });
 
-  it('C2 按官方说明保留图片和音频编号，不改写用户原文或素材顺序', () => {
+  it('C2 按通用参考格式转换真实图片和音频编号，不改写未知编号或素材顺序', () => {
     const id = 'sd-2.0-c2';
     const prompt = '图片1和图片2配合音频1，图片3是普通文字，@图1也保持原文';
     const variables = relayonVideoVariables(id, { model: id, prompt, duration: 5, resolution: '720p', aspectRatio: '9:16',
@@ -472,28 +560,29 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       referenceAudioUrls: ['https://cdn.example/a.mp3'] });
     const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
       protocol: model(id).executionProfile!.protocol!, variables });
-    expect(built.renderedBody).toMatchObject({ prompt, references: [
+    expect(built.renderedBody).toMatchObject({ prompt: '@图1和@图2配合@音频1，图片3是普通文字，@图1也保持原文', references: [
       { type: 'image', url: 'https://cdn.example/i1.png' }, { type: 'image', url: 'https://cdn.example/i2.png' },
       { type: 'audio', url: 'https://cdn.example/a.mp3' },
     ] });
-    expect(variables.prompt).toBe(prompt);
+    expect(variables.prompt).toBe('@图1和@图2配合@音频1，图片3是普通文字，@图1也保持原文');
   });
 
   it('H3 使用 C1 请求格式与小写档位，保留顺序且不将 720p、1K 改写为像素预设', () => {
     const id = 'minimax-h3';
     expect(model(id).videoCapability).toMatchObject({ resolutions: ['480p', '720p', '1K', '2K'],
-      minDuration: 4, maxDuration: 15, ratios: ['16:9', '9:16', '4:3', '3:4', '1:1'],
+      minDuration: 4, maxDuration: 30, ratios: ['16:9', '9:16', '4:3', '3:4', '1:1'],
       maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3 });
-    const variables = relayonVideoVariables(id, { model: id, duration: 15, resolution: '1K', aspectRatio: '9:16',
+    const variables = relayonVideoVariables(id, { model: id, duration: 30, resolution: '1K', aspectRatio: '9:16',
       prompt: '图片2和@图1参考视频1与音频1', referenceImageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
       referenceVideoUrls: ['https://cdn.example/v.mp4'], referenceAudioUrls: ['https://cdn.example/a.mp3'] });
     const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture', protocol: model(id).executionProfile!.protocol!, variables });
-    expect(built.renderedBody).toEqual({ model: id, duration: 15, resolution: '1k', aspect_ratio: '9:16',
+    expect(built.renderedBody).toEqual({ model: id, duration: 30, resolution: '1k', aspect_ratio: '9:16',
       prompt: '@图2和@图1参考@视频1与@音频1', references: [
         { type: 'image', url: 'https://cdn.example/a.png' }, { type: 'image', url: 'https://cdn.example/b.png' },
         { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' },
       ] });
     expect(relayonVideoVariables(id, { resolution: '720p' }).resolution).toBe('720p');
+    expect(() => relayonVideoVariables(id, { duration: 31 })).toThrow('不支持 31 秒');
     expect(findUnusedReferenceVariables(JSON.stringify(model(id).executionProfile!.protocol), variables)).toEqual([]);
   });
 
@@ -508,27 +597,40 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
     expect(() => relayonVideoVariables('minimax-h3', { ...input, prompt: '图片1自然微笑' })).toThrow('参考图 2');
   });
 
-  it('C3 无音频允许普通时长和五种比例，带音频仅允许指定时长与三种比例', () => {
-    expect(model('sd-2.0-c3').videoCapability).toMatchObject({ minDuration: 4, maxDuration: 15,
-      resolutions: ['720p'], maxImageReferences: 9, maxVideoReferences: 0, maxAudioReferences: 3 });
-    const input = { model: 'sd-2.0-c3', duration: 7, resolution: '720p', aspectRatio: '4:3',
-      prompt: '图片1按音频1说话', referenceImageUrls: ['https://cdn.example/one.png'] };
+  it('C3 只开放当前三档时长、通用三比例，任何参考音频均在提交前明确拒绝', () => {
+    expect(model('sd-2.0-c3').videoCapability).toMatchObject({ durations: [5, 10, 15], minDuration: 5, maxDuration: 15,
+      resolutions: ['720p'], maxImageReferences: 9, maxVideoReferences: 0, maxAudioReferences: 0 });
+    const input = { model: 'sd-2.0-c3', duration: 10, resolution: '720p', aspectRatio: '16:9',
+      prompt: '图片1自然移动', referenceImageUrls: ['https://cdn.example/one.png'] };
     expect(() => relayonVideoVariables('sd-2.0-c3', input)).not.toThrow();
     const withAudio = { ...input, referenceAudioUrls: ['https://cdn.example/one.mp3'] };
-    expect(() => relayonVideoVariables('sd-2.0-c3', withAudio)).toThrow('5、10 或 15 秒');
-    expect(() => relayonVideoVariables('sd-2.0-c3', { ...withAudio, duration: 10 })).toThrow('16:9、9:16 或 1:1');
+    expect(() => relayonVideoVariables('sd-2.0-c3', withAudio)).toThrow('没有可调度的参考音频线路');
     for (const duration of [5, 10, 15]) {
       for (const aspectRatio of ['16:9', '9:16', '1:1']) {
-        const variables = relayonVideoVariables('sd-2.0-c3', { ...withAudio, duration, aspectRatio });
+        const variables = relayonVideoVariables('sd-2.0-c3', { ...input, duration, aspectRatio });
         const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
           protocol: model('sd-2.0-c3').executionProfile!.protocol!, variables });
-        expect(built.renderedBody).toMatchObject({ duration, aspect_ratio: aspectRatio, prompt: '@图1按@音频1说话' });
+        expect(built.renderedBody).toMatchObject({ duration, aspect_ratio: aspectRatio, prompt: '@图1自然移动' });
       }
     }
     expect(() => relayonVideoVariables('sd-2.0-c3', { ...input, referenceVideoUrls: ['https://cdn.example/v.mp4'] })).toThrow('最多接受 0 个参考视频');
   });
 
-  it('2.5 C1 按用户确认复用 2.5 兼容映射，规格与参考上限仍按本型号声明', () => {
+  it.each(['sd-2.0-c2', 'sd-2.0-c3'])('%s 不再放行不可路由的中间时长与暂停比例', (id) => {
+    for (const duration of [4, 6, 7, 11, 30, 5.5]) {
+      expect(() => relayonVideoVariables(id, { duration })).toThrow('不支持');
+    }
+    for (const aspectRatio of ['4:3', '3:4', '21:9']) {
+      expect(() => relayonVideoVariables(id, { duration: 10, aspectRatio })).toThrow('当前不支持比例');
+    }
+  });
+
+  it('时长预检校验实际发送字段，旧变量的另一种时长不能绕过上限', () => {
+    expect(() => relayonVideoVariables('sd-2.0-A', { duration: 10, durationText: '30' })).toThrow('不支持 30 秒');
+    expect(() => relayonVideoVariables('sd-2.0-c1', { duration: 30, durationText: '10' })).toThrow('不支持 30 秒');
+  });
+
+  it('2.5 C1 按本地文档发送顶层参数，规格与参考上限仍按本型号声明', () => {
     const id = 'sd-2.5-c1';
     expect(model(id).videoCapability).toMatchObject({ minDuration: 4, maxDuration: 30, resolutions: ['720p'],
       maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
@@ -538,7 +640,7 @@ describe('RelayOnAPI 已确认的媒体合同', () => {
       referenceVideoUrls: ['https://cdn.example/v.mp4'], referenceAudioUrls: ['https://cdn.example/a.mp3'] });
     expect(buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
       protocol: model(id).executionProfile!.protocol!, variables }).renderedBody).toEqual({ model: id,
-      prompt: '图片1和视频1、音频1', seconds: '30', output: { resolution: '720p', aspect_ratio: '16:9' }, generate_audio: true,
+      prompt: '@图1和@视频1、@音频1', seconds: '30', resolution: '720p', aspect_ratio: '16:9',
       references: [{ type: 'image', url: 'https://cdn.example/i.png', role: 'reference' },
         { type: 'video', url: 'https://cdn.example/v.mp4' }, { type: 'audio', url: 'https://cdn.example/a.mp3' }] });
     expect(() => relayonVideoVariables(id, { referenceImageUrls: Array(31).fill('https://cdn.example/i.png') })).toThrow('最多接受 30 个参考图');

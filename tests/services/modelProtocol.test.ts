@@ -39,7 +39,7 @@ import {
   assertImageModelCapability, assertModelCapabilityProtocol, resolveConfiguredImageParameters, resolveConfiguredImageQuality,
   resolveConfiguredImageBackground,
 } from '../../src/services/ai/modelCapabilityValidation';
-import { RELAYON_MODEL_MANIFEST, RELAYON_VIDEO_RESULT_URL_PATHS } from '../../src/services/ai/providers/relayonModelManifest';
+import { RELAYON_MODEL_MANIFEST, RELAYON_VIDEO_RESULT_URL_PATHS, getRelayonVideoRecoveryProfiles } from '../../src/services/ai/providers/relayonModelManifest';
 import { getHttpResponseError, HttpResponseError } from '../../src/services/ai/httpUtils';
 
 it('结构化批项拒绝使用数值下标errorPath保留上游原文与失败元数据', () => {
@@ -391,9 +391,43 @@ describe('厂商提交幂等身份与明确结果路径', () => {
     }
   });
 
+  it('万象完整旧 A 模板的新提交采用顶层参数，task_id 同时用于轮询和鉴权取件', async () => {
+    const previous = useAppStore.getState();
+    const selected = RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.0-A')!;
+    const profile = getRelayonVideoRecoveryProfiles(selected.id, selected.executionProfile).find((candidate) => (
+      candidate.protocol?.version === 2 && (candidate.protocol.submit.body as Record<string, ProtocolJsonValue>).output !== undefined
+    ))!;
+    const model = { ...selected, executionProfile: profile, modelId: selected.id, providerConfigId: 'relay-alias' };
+    const before = structuredClone(model);
+    const video = await mp4Result();
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ task_id: 'task-id-only' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed' }))
+      .mockResolvedValueOnce(new Response(video, { headers: { 'Content-Type': 'video/mp4' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    useAppStore.setState({ currentProjectId: null, projectExecutionContext: undefined,
+      config: { ...previous.config, providers: { ...previous.config.providers,
+        'relay-alias': { name: '原万象视频', catalogId: 'relayonapi', baseUrl: 'https://relayonapi.com/v1', apiKey: 'own-key' },
+      } } });
+    try {
+      const urls = await runConfiguredModelProtocol({ category: 'video', model,
+        variables: { model: selected.id, prompt: 'draft', durationText: '10', resolution: '720p', aspectRatio: '9:16' } });
+      expect([...urls]).toEqual([encodedResult(video, 'video/mp4')]);
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ model: selected.id, prompt: 'draft',
+        seconds: '10', resolution: '720p', aspect_ratio: '9:16', references: [] });
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['https://relayonapi.com/v1/videos',
+        'https://relayonapi.com/v1/videos/task-id-only', 'https://relayonapi.com/v1/videos/task-id-only/content']);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+      expect(urls.mediaDownloadAccess?.origin).toBe('https://relayonapi.com');
+      for (const [, init] of fetchMock.mock.calls) expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer own-key');
+      expect(model).toEqual(before);
+    } finally {
+      useAppStore.setState({ config: previous.config, currentProjectId: previous.currentProjectId, projectExecutionContext: previous.projectExecutionContext });
+    }
+  });
+
   it.each(['url', 'video_url', 'content.video_url'])('RelayOn 内置视频只读取本批确认的兼容结果路径 %s', async (path) => {
     const previous = useAppStore.getState();
-    const selected = RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.0-c1')!;
+    const selected = RELAYON_MODEL_MANIFEST.find((model) => model.id === 'doubao-seedance-2-0-260128')!;
     const resultUrl = 'https://cdn.example/video.mp4?signature=keep%2Fthis';
     const result = path === 'content.video_url' ? { content: { video_url: resultUrl } } : { [path]: resultUrl };
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 'video-original' }))
@@ -418,7 +452,7 @@ describe('厂商提交幂等身份与明确结果路径', () => {
   it.each(['取消查询', '非法结果地址'])('%s 保留原任务及明确结果路径，继续查询不重新生成', async (failure) => {
     const previous = useAppStore.getState();
     localStorage.clear();
-    const selected = RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.0-c1')!;
+    const selected = RELAYON_MODEL_MANIFEST.find((model) => model.id === 'doubao-seedance-2-0-260128')!;
     const controller = new AbortController();
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 'recover-original' }))
       .mockImplementationOnce(async () => {
@@ -458,7 +492,7 @@ describe('厂商提交幂等身份与明确结果路径', () => {
 
   it.each(['自定义同名连接', '修改过的协议'])('%s 不继承 RelayOn 结果兜底', async (scenario) => {
     const previous = useAppStore.getState();
-    const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.0-c1')!);
+    const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'doubao-seedance-2-0-260128')!);
     if (scenario === '修改过的协议') {
       const protocol = parseModelExecutionProtocol(selected.executionProfile!.protocol!);
       protocol.poll!.response.result.urlPath = 'user_result';

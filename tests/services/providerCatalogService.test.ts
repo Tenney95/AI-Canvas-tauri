@@ -344,7 +344,7 @@ describe('万象 API 内置目录与连接身份', () => {
     } });
     expect(result.models.map(({ id }) => id)).toEqual(['Image-2.5-Flare']);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ headers: { Authorization: 'Bearer group-key' } });
-    expect(fetchMock.mock.calls[1][0]).toBe('https://relayonapi.com/api/pricing');
+    expect(fetchMock.mock.calls[1][0]).toBe('https://api.relayonapi.com/api/pricing');
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ credentials: 'omit' });
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('headers');
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('body');

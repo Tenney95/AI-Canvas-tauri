@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
-import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
+import { RELAYON_MODEL_MANIFEST, getRelayonVideoRecoveryProfiles } from '../../src/services/ai/providers/relayonModelManifest';
+import { SEEDANCE_COMMON_RATIOS } from '../../src/services/ai/seedanceModelCapabilities';
 import { AIGCSI_MODEL_MANIFEST } from '../../src/services/ai/providers/aigcsiModelManifest';
 import { SORA2U_MODEL_MANIFEST } from '../../src/services/ai/providers/sora2uModelManifest';
 import { RUNNINGHUB_MODEL_MANIFEST } from '../../src/services/ai/providers/runninghubModelManifest';
@@ -46,10 +47,38 @@ function withoutDimensionPresets(value: ReturnType<typeof getGrsaiImageCapabilit
   return result;
 }
 
+// 用户补充的 SD 文档及 H3 30 秒要求有意更新了七款视频合同；只还原这些明确差异，
+// 继续用原摘要锁住全部其它字段、图片/文本目录和保留的旧协议。新合同另由逐字段用例验证。
+function relayonBeforeDocumentCorrection() {
+  return RELAYON_MODEL_MANIFEST.map((entry) => {
+    if (entry.category !== 'video' || (!entry.id.startsWith('sd-') && entry.id !== 'minimax-h3')) return entry;
+    const model = structuredClone(entry);
+    const capability = model.videoCapability!;
+    if (model.id === 'minimax-h3') {
+      capability.maxDuration = 15;
+      return model;
+    }
+    const profiles = getRelayonVideoRecoveryProfiles(model.id, model.executionProfile);
+    const previous = profiles.find((profile) => profile.protocol?.version === 2
+      && profile.protocol.poll?.response.result.urlPath === 'url');
+    if (!previous) throw new Error(`缺少保留的旧万象视频协议：${model.id}`);
+    model.executionProfile = previous;
+    capability.ratios = [...SEEDANCE_COMMON_RATIOS];
+    if (model.id === 'sd-2.0-c2' || model.id === 'sd-2.0-c3') {
+      delete capability.durations;
+      capability.minDuration = 4;
+      capability.defaultDuration = 4;
+    }
+    if (model.id === 'sd-2.0-c3') capability.maxAudioReferences = 3;
+    if (model.id.endsWith('-A') || model.id === 'sd-2.5-c1') capability.supportsAudio = true;
+    return model;
+  });
+}
+
 const PUBLIC_CONTRACTS = {
   toapis: TOAPIS_MODEL_MANIFEST,
   libapi: LIBAPI_MODEL_MANIFEST,
-  relayon: RELAYON_MODEL_MANIFEST,
+  relayon: relayonBeforeDocumentCorrection(),
   aigcsi: AIGCSI_MODEL_MANIFEST,
   sora2u: SORA2U_MODEL_MANIFEST,
   runninghub: RUNNINGHUB_MODEL_MANIFEST,

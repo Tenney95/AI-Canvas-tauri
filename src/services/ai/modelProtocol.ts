@@ -194,9 +194,10 @@ export async function submitModelProtocol(
     };
   }
 
-  const payload = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey);
+  let payload: unknown = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath, options.apiKey);
   try {
     options.validateResponse?.(payload);
+    if (options.normalizeSubmitResponse) payload = options.normalizeSubmitResponse(payload);
   } catch (error) {
     throw redactModelProtocolError(error, options.apiKey);
   }
@@ -215,7 +216,8 @@ export async function submitModelProtocol(
     };
   } catch (error) {
     // 任务已获服务商ID；恢复字段校验失败也不能把已付费请求误记为无ID。
-    if (options.captureRecoveryContext) throw Object.assign(new Error('原任务已提交，但查询恢复字段不能安全保存', { cause: error }),
+    if (options.captureRecoveryContext) throw Object.assign(new Error('原任务已提交，但查询恢复字段不能安全保存',
+      { cause: redactModelProtocolError(error, options.apiKey) }),
       isSafeNativeProtocolTaskId(String(taskIdValue), [options.apiKey]) ? { nativeTaskId: String(taskIdValue) } : {});
     throw error;
   }

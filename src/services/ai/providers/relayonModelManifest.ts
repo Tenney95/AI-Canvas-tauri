@@ -1,6 +1,6 @@
 /**
  * RelayOnAPI 已核对目录（基础 2026-10-27；MJ 与 2.6 补充 2026-11-06）。来源：https://relayonapi.com/docs。
- * 2.5 C1 能力文档暂不可用，按用户确认沿用现有 2.5 A 参数映射，真实渠道尚待验收。
+ * SD 当前路由参数以用户提供的 2026-11-10 联序调用参考为准；H3 的 30 秒由用户补充确认。
  * 媒体结果映射采用用户确认的 OpenAI 兼容合同，尚未进行厂商真实生成验收。
  * 普通 Flare／Sunburst 的质量和背景候选采用用户确认的兼容选项，未据此宣称平台实测通过。
  * Image 2.6 01 按用户确认兼容 2.5 01 的请求与尺寸，仍待真实渠道验收。
@@ -15,6 +15,7 @@ import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../model
 import { SEEDANCE_COMMON_RATIOS } from '../seedanceModelCapabilities';
 
 export const RELAYON_BASE_URL = 'https://relayonapi.com/v1';
+export const RELAYON_VIDEO_BASE_URL = 'https://api.relayonapi.com/v1';
 
 export const RELAYON_TEXT_MODEL_IDS = [
   'gemini-3.8-flash', 'gemini-4-argon', 'gpt-6.1-sol', 'claude-opus-5-5',
@@ -198,6 +199,57 @@ function cVideo(
   return model;
 }
 
+/** 已发布的完整视频合同仅用于严格识别旧配置；原任务回执仍沿其保存的协议恢复。 */
+const LEGACY_VIDEO_MODELS: readonly ProviderModelSelection[] = [
+  officialVideo('doubao-seedance-2-0-260128', 'Doubao Seedance 2.0'),
+  officialVideo('doubao-seedance-2-0-fast-260128', 'Doubao Seedance 2.0 Fast'),
+  officialVideo('doubao-seedance-2-0-mini-260615', 'Doubao Seedance 2.0 Mini'),
+  officialVideo('doubao-seedance-2-5-260628', 'Doubao Seedance 2.5'),
+  referenceVideo('sd-2.0-A'), referenceVideo('sd-2.5-A'),
+  cVideo('sd-2.0-c1', 'Seedance 2.0 C1', 10, 3), cVideo('sd-2.0-c2', 'Seedance 2.0 C2', 4, 0),
+  cVideo('minimax-h3', 'MiniMax H3', 4, 3, { resolutions: ['480p', '720p', '1K', '2K'] }),
+  cVideo('sd-2.0-c3', 'Seedance 2.0 C3', 4, 0),
+  referenceVideo('sd-2.5-c1', { resolutions: ['720p'], defaultResolution: '720p',
+    maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 }, 'Seedance 2.5 C1'),
+];
+const LEGACY_VIDEO_BY_ID = new Map(LEGACY_VIDEO_MODELS.map((model) => [model.id, model]));
+const SD_CURRENT_COMMON_RATIOS = ['16:9', '9:16', '1:1'];
+
+function currentVideoModel(previous: ProviderModelSelection): ProviderModelSelection {
+  const model = structuredClone(previous);
+  const capability = model.videoCapability!;
+  const protocol = model.executionProfile?.protocol;
+  if (protocol?.version !== 2 || !protocol.poll) throw new Error('RelayOnAPI 内置视频合同缺少规范异步协议');
+  if (model.id === 'minimax-h3') {
+    // 仅本渠道支持 30 秒；不修改 H3 公共模板和已发布的查询/取件协议。
+    capability.maxDuration = 30;
+    return model;
+  }
+  if (!model.id.startsWith('sd-')) return model;
+  if (['sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3'].includes(model.id)) {
+    capability.ratios = [...SD_CURRENT_COMMON_RATIOS];
+  }
+  if (model.id === 'sd-2.0-c2' || model.id === 'sd-2.0-c3') {
+    capability.durations = [5, 10, 15];
+    capability.minDuration = 5;
+    capability.defaultDuration = 5;
+  }
+  if (model.id === 'sd-2.0-c3') capability.maxAudioReferences = 0;
+  if (model.id === 'sd-2.5-c1') capability.ratios = [...SEEDANCE_COMMON_RATIOS, '21:9'];
+  if (model.id.endsWith('-A') || model.id === 'sd-2.5-c1') {
+    const body = protocol.submit.body as Record<string, ProtocolJsonValue>;
+    delete body.output;
+    delete body.generate_audio;
+    body.resolution = '{{resolution}}';
+    body.aspect_ratio = '{{aspectRatio}}';
+    delete capability.supportsAudio;
+  }
+  protocol.poll!.response.result = {
+    download: { method: 'GET', path: '/videos/{{submit.id}}/content' }, mimeType: 'video/mp4',
+  };
+  return model;
+}
+
 export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   ...RELAYON_TEXT_MODEL_IDS.map((id): ProviderModelSelection => ({ id, name: TEXT_MODEL_NAMES[id],
     provider: 'relayonapi', category: 'text', inputModalities: ['text'], executionProfile: { preset: 'openai-chat' } })),
@@ -213,16 +265,7 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   imageModel('image-2.6-01', 'Image 2.6 01', IMAGE_25_PIXELS, 8),
   ...RELAYON_MIDJOURNEY_MODEL_IDS.map((id) => imageModel(id, id,
     id === 'Midjourney v8.1' || id === 'Midjourney v8.2' ? MIDJOURNEY_8_PIXELS : MIDJOURNEY_PIXELS, 1)),
-  officialVideo('doubao-seedance-2-0-260128', 'Doubao Seedance 2.0'),
-  officialVideo('doubao-seedance-2-0-fast-260128', 'Doubao Seedance 2.0 Fast'),
-  officialVideo('doubao-seedance-2-0-mini-260615', 'Doubao Seedance 2.0 Mini'),
-  officialVideo('doubao-seedance-2-5-260628', 'Doubao Seedance 2.5'),
-  referenceVideo('sd-2.0-A'), referenceVideo('sd-2.5-A'),
-  cVideo('sd-2.0-c1', 'Seedance 2.0 C1', 10, 3), cVideo('sd-2.0-c2', 'Seedance 2.0 C2', 4, 0),
-  cVideo('minimax-h3', 'MiniMax H3', 4, 3, { resolutions: ['480p', '720p', '1K', '2K'] }),
-  cVideo('sd-2.0-c3', 'Seedance 2.0 C3', 4, 0),
-  referenceVideo('sd-2.5-c1', { resolutions: ['720p'], defaultResolution: '720p',
-    maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 }, 'Seedance 2.5 C1'),
+  ...LEGACY_VIDEO_MODELS.map(currentVideoModel),
 ];
 
 const MODEL_BY_ID = new Map(RELAYON_MODEL_MANIFEST.map((model) => [model.id, model]));
@@ -249,6 +292,9 @@ export function usesRelayonModelProtocol(modelId: string, profile: ModelExecutio
   const actual = comparableProtocol(profile);
   if (actual === undefined) return false;
   if (actual === comparableProtocol(known.executionProfile)) return true;
+  if (known.category === 'video') {
+    return actual === comparableProtocol(LEGACY_VIDEO_BY_ID.get(modelId)?.executionProfile);
+  }
   // 本轮新增型号没有历史模板，不能把用户删除结果字段视作旧版本而覆盖。
   if (known.category !== 'image' || isMidjourneyModel(modelId) || modelId === 'image-2.6-01') return false;
   // 完整旧内置模板只读取 URL；保留其他请求和响应字段的严格比较。
@@ -272,22 +318,56 @@ export function usesRelayonModelProtocol(modelId: string, profile: ModelExecutio
   return actual === comparableProtocol(previous);
 }
 
-/** 只补正内置 Seedance 合同的旧单画幅快照；不迁移配置或改写节点已选值。 */
+/** 仅为新提交投影完整新旧内置协议，不修改配置或已提交任务的恢复合同。 */
+export function resolveRelayonVideoExecutionProfile(
+  modelId: string, profile: ModelExecutionProfile | undefined,
+): ModelExecutionProfile | undefined {
+  const known = MODEL_BY_ID.get(modelId);
+  return known?.category === 'video' && usesRelayonModelProtocol(modelId, profile)
+    ? structuredClone(known.executionProfile) : profile;
+}
+
+/** 恢复端按原回执摘要选择，不按“新版优先”替换已提交合同。 */
+export function getRelayonVideoRecoveryProfiles(
+  modelId: string, profile: ModelExecutionProfile | undefined,
+): ModelExecutionProfile[] {
+  if (!profile) return [];
+  if (MODEL_BY_ID.get(modelId)?.category !== 'video' || !usesRelayonModelProtocol(modelId, profile)) {
+    return [structuredClone(profile)];
+  }
+  const candidates = [profile, MODEL_BY_ID.get(modelId)!.executionProfile!, LEGACY_VIDEO_BY_ID.get(modelId)!.executionProfile!];
+  const seen = new Set<string>();
+  return candidates.flatMap((candidate) => {
+    const identity = comparableProtocol(candidate)!;
+    if (seen.has(identity)) return [];
+    seen.add(identity);
+    return [structuredClone(candidate)];
+  });
+}
+
+function sameVideoCapability(left: VideoModelCapability, right: VideoModelCapability, ignoreRatio = false): boolean {
+  const fields = Object.keys({ ...left, ...right }) as (keyof VideoModelCapability)[];
+  return fields.every((key) => ignoreRatio && (key === 'ratios' || key === 'defaultRatio')
+    || JSON.stringify(left[key]) === JSON.stringify(right[key]));
+}
+
+/** 只投影完整已发布的能力快照；用户编辑、部分声明与原任务回执保持原值。 */
 export function resolveRelayonVideoCapability(
   modelId: string, profile?: ModelExecutionProfile, capability?: VideoModelCapability,
 ): VideoModelCapability | undefined {
   const known = MODEL_BY_ID.get(modelId);
-  if (known?.category !== 'video' || modelId === 'minimax-h3' || !usesRelayonModelProtocol(modelId, profile)) return capability;
+  if (known?.category !== 'video' || !usesRelayonModelProtocol(modelId, profile)) return capability;
   if (!capability) return structuredClone(known.videoCapability);
+  const previous = LEGACY_VIDEO_BY_ID.get(modelId)?.videoCapability;
+  if (previous && sameVideoCapability(capability, previous)) return structuredClone(known.videoCapability);
+  if (modelId === 'minimax-h3') return capability;
   if (capability.defaultRatio !== undefined && capability.defaultRatio !== '16:9') return capability;
   if (capability.ratios !== undefined) {
     if (!LEGACY_SINGLE_RATIO_MODELS.has(modelId) || capability.ratios.length !== 1 || capability.ratios[0] !== '16:9') return capability;
   }
-  // 只修复确实发过的完整旧快照；部分声明及已修改的时长、素材或模式不自动扩宽。
-  const fields = Object.keys({ ...known.videoCapability, ...capability }) as (keyof VideoModelCapability)[];
-  if (fields.some((key) => key !== 'ratios' && key !== 'defaultRatio'
-    && JSON.stringify(capability[key]) !== JSON.stringify(known.videoCapability?.[key]))) return capability;
-  return { ...capability, ratios: [...SEEDANCE_COMMON_RATIOS] };
+  // 缺省/历史单画幅只有其余字段完整匹配已发布快照时才补正。
+  if (![previous, known.videoCapability].some((snapshot) => snapshot && sameVideoCapability(capability, snapshot, true))) return capability;
+  return { ...structuredClone(known.videoCapability), ...(capability.defaultRatio === undefined ? { defaultRatio: undefined } : {}) };
 }
 
 /** 固定四候选只属于真实内置合同，不按相同名称改写用户自定义协议的交付语义。 */
@@ -371,7 +451,7 @@ export function relayonImageVariables(modelId: string, variables: ModelProtocolV
     imageUrls: urls.length ? urls : undefined };
 }
 
-/** 普通参考按类别原序传递；C1、H3、C3 使用 @ 编号，C2 保留图片／音频编号。 */
+/** 普通参考按类别原序传递；SD 与 H3 仅把有真实对应素材的编号统一为 @ 引用。 */
 export function relayonVideoVariables(modelId: string, variables: ModelProtocolVariables): ModelProtocolVariables {
   const capability = MODEL_BY_ID.get(modelId)?.videoCapability;
   if (!capability) throw new Error(`RelayOnAPI 视频模型“${modelId}”尚未适配`);
@@ -382,6 +462,9 @@ export function relayonVideoVariables(modelId: string, variables: ModelProtocolV
   const imageUrls = stringArray(variables, variables.referenceImageUrls === undefined ? 'imageUrls' : 'referenceImageUrls');
   const videoUrls = stringArray(variables, variables.referenceVideoUrls === undefined ? 'videoUrls' : 'referenceVideoUrls');
   const audioUrls = stringArray(variables, variables.referenceAudioUrls === undefined ? 'audioUrls' : 'referenceAudioUrls');
+  if (modelId === 'sd-2.0-c3' && audioUrls.length) {
+    throw new Error('RelayOnAPI C3 当前没有可调度的参考音频线路，请移除参考音频或切换型号');
+  }
   for (const [label, urls, maximum] of [
     ['参考图', imageUrls, capability.maxImageReferences], ['参考视频', videoUrls, capability.maxVideoReferences],
     ['参考音频', audioUrls, capability.maxAudioReferences],
@@ -391,27 +474,22 @@ export function relayonVideoVariables(modelId: string, variables: ModelProtocolV
   if (modelId === 'minimax-h3' && imageUrls.length + videoUrls.length + audioUrls.length > 12) {
     throw new Error('RelayOnAPI MiniMax H3 的图片、视频与音频参考合计最多 12 份，请减少参考素材');
   }
-  if (modelId === 'sd-2.0-c3' && audioUrls.length) {
-    const duration = Number(variables.duration ?? variables.durationText ?? capability.defaultDuration);
-    const ratio = String(variables.aspectRatio ?? capability.defaultRatio);
-    if (![5, 10, 15].includes(duration)) {
-      throw new Error(`RelayOnAPI C3 带参考音频时不支持 ${duration} 秒；请在视频参数中将时长改为 5、10 或 15 秒`);
-    }
-    if (!['16:9', '9:16', '1:1'].includes(ratio)) {
-      throw new Error(`RelayOnAPI C3 带参考音频时不支持比例 ${ratio}；请在视频参数中改为 16:9、9:16 或 1:1`);
-    }
+  const usesSeconds = modelId.endsWith('-A') || modelId === 'sd-2.5-c1' || modelId.startsWith('doubao-');
+  const duration = Number((usesSeconds ? variables.durationText ?? variables.duration : variables.duration ?? variables.durationText)
+    ?? capability.defaultDuration);
+  if (!Number.isInteger(duration) || duration < capability.minDuration! || duration > capability.maxDuration!
+    || capability.durations && !capability.durations.includes(duration)) {
+    throw new Error(`RelayOnAPI 模型“${modelId}”不支持 ${duration} 秒；${capability.durations ? '可选时长为 ' + capability.durations.join('、') : '时长范围为 ' + capability.minDuration + '–' + capability.maxDuration} 秒`);
+  }
+  const ratio = String(variables.aspectRatio ?? capability.defaultRatio);
+  if (!capability.ratios?.includes(ratio)) {
+    throw new Error(`RelayOnAPI 模型“${modelId}”当前不支持比例 ${ratio}；请改为 ${capability.ratios!.join('、')}`);
   }
   if (audioUrls.length && !imageUrls.length && !videoUrls.length && capability.supportsStandaloneAudio === false) {
     throw new Error('RelayOnAPI 当前应用接入尚未开放仅使用参考音频生成视频，请同时提供图片或视频参考');
   }
   let prompt = variables.prompt;
-  if (modelId === 'sd-2.0-c1') {
-    const counts: Record<string, number> = { 图片: imageUrls.length, 视频: videoUrls.length, 音频: audioUrls.length };
-    if (typeof prompt === 'string') prompt = prompt.replace(/@?(图片|视频|音频)(\d+)/gu, (label, kind: string, index: string) => (
-      Number(index) >= 1 && Number(index) <= counts[kind] ? `@${kind === '图片' ? '图' : kind}${index}` : label
-    ));
-  }
-  if (modelId === 'minimax-h3' || modelId === 'sd-2.0-c3') {
+  if (modelId === 'minimax-h3' || modelId.startsWith('sd-')) {
     const counts: Record<string, number> = { 图片: imageUrls.length, 图: imageUrls.length, 视频: videoUrls.length, 音频: audioUrls.length };
     if (typeof prompt === 'string') prompt = prompt.replace(/@?(图片|图|视频|音频)(\d+)/gu, (label, kind: string, index: string) => (
       Number(index) >= 1 && Number(index) <= counts[kind] ? `@${kind === '图片' || kind === '图' ? '图' : kind}${Number(index)}` : label

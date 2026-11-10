@@ -2,7 +2,23 @@
  * relayonProviderGroups — 维护 Relayon 分组目录与模型、价格筛选。
  */
 import type { ApiProviderConfig, ProviderModelSelection } from '../../types';
-import { RELAYON_IMAGE_MODEL_IDS } from './providers/relayonModelManifest';
+import { RELAYON_BASE_URL, RELAYON_VIDEO_BASE_URL, RELAYON_IMAGE_MODEL_IDS } from './providers/relayonModelManifest';
+
+/** 只给新视频分组使用文档确认的 API 域名，不改已有连接或其他分组的来源。 */
+export function relayonGroupBaseUrl(group?: string): string {
+  return group?.trim() === 'video' ? RELAYON_VIDEO_BASE_URL : RELAYON_BASE_URL;
+}
+
+/** 导入保留原官方来源；拒绝凭据、非标准端口和路径伪装。 */
+export function isRelayonOfficialBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return [new URL(RELAYON_BASE_URL).origin, new URL(RELAYON_VIDEO_BASE_URL).origin].includes(url.origin)
+      && !url.username && !url.password && url.pathname.replace(/\/+$/, '') === '/v1' && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}
 
 /** 官网分组快照，候选不代表 Key 已验证或具有全部权限。 */
 export const RELAYON_PROVIDER_GROUPS = [

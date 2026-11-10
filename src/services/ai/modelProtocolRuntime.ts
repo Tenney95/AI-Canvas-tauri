@@ -31,7 +31,8 @@ import { readModelProtocolPathValues } from './modelProtocolResponse';
 import { readGoogleImagePartsReferenceUrls } from './imageModelTemplates';
 import { assertModelProtocolResult } from './modelCapabilityValidation';
 import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
-import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol } from './providers/relayonModelManifest';
+import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol, resolveRelayonVideoExecutionProfile } from './providers/relayonModelManifest';
+import { normalizeRelayonVideoSubmitResponse } from './providers/relayonTaskIdentity';
 import { createMediaDownloadAccess, sanitizeMediaResultUrls } from './mediaDownloadAccess';
 import { assertMinimaxQueryResponse, assertMinimaxResponse, getMinimaxMediaAccessHint, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { ModelProtocolHttpError } from './modelProtocolHttp';
@@ -378,18 +379,22 @@ export function retainCompletedMediaResults(
 export async function runConfiguredModelProtocol(
   options: RunConfiguredModelProtocolOptions,
 ): Promise<MediaProtocolUrls> {
-  const protocol = resolveModelExecutionProfile(options.model.executionProfile);
+  const provider = useAppStore.getState().config.providers[options.model.providerConfigId];
+  if (!provider) throw new Error(`模型“${options.model.name}”的连接配置不存在`);
+  const catalogId = resolveProviderCatalogId(options.model.providerConfigId, provider);
+  const usesRelayonProtocol = catalogId === 'relayonapi' && options.category === 'video'
+    && usesRelayonModelProtocol(options.model.modelId, options.model.executionProfile);
+  const profile = usesRelayonProtocol
+    ? resolveRelayonVideoExecutionProfile(options.model.modelId, options.model.executionProfile) : options.model.executionProfile;
+  const protocol = resolveModelExecutionProfile(profile);
   if (!protocol) throw new Error(`模型“${options.model.name}”未配置调用协议`);
   const expansionConflicts = findModelProtocolForEachCapabilityConflicts(
     protocol,
     options.model.videoCapability,
   );
   if (expansionConflicts.length > 0) throw new Error(expansionConflicts[0]);
-  const provider = useAppStore.getState().config.providers[options.model.providerConfigId];
-  if (!provider) throw new Error(`模型“${options.model.name}”的连接配置不存在`);
   const baseUrl = provider.baseUrl?.trim() || '';
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
-  const catalogId = resolveProviderCatalogId(options.model.providerConfigId, provider);
   const usesMinimaxProtocol = catalogId === 'minimax'
     && usesMinimaxModelProtocol(options.model.modelId, options.model.executionProfile);
   // 新项目的同步与异步合同都必须携带原生提交守卫，避免付费后落入旧队列。
@@ -422,6 +427,7 @@ export async function runConfiguredModelProtocol(
   try {
     signal?.throwIfAborted();
     const submitOptions = { apiKey: provider.apiKey || '', baseUrl, protocol, variables: options.variables, signal, validateResponse,
+      ...(usesRelayonProtocol ? { normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse } : {}),
       ...(nativeOperation && protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(protocol, payload, options.variables, [provider.apiKey || '']) } : {}),
       ...(getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
     };

@@ -69,7 +69,7 @@ describe('videoModelCapabilityResolver', () => {
     input.generalModels = [{ id: 'saved-relay', name: selected.name, modelId: selected.id, category: 'video',
       providerConfigId: 'relay-video', executionProfile: selected.executionProfile, videoCapability: selected.videoCapability }];
     const before = structuredClone(input);
-    const ratios = ['16:9', '9:16', '4:3', '3:4', '1:1'];
+    const ratios = ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9'];
     for (const reference of ['general/saved-relay', 'relay-video/sd-2.5-c1']) {
       const effective = resolveVideoModelCapability(reference, input)!;
       expect(effective).toMatchObject({ ratios, defaultRatio: '16:9', minDuration: 4, maxDuration: 30,
@@ -78,6 +78,22 @@ describe('videoModelCapabilityResolver', () => {
       expect(resolveVideoModelCapability(reference, input)?.ratios).toEqual(ratios);
     }
     expect(input).toEqual(before);
+  });
+
+  it('万象已保存的完整 H3 15 秒快照在节点与 Agent/MCP 参数入口开放 30 秒，不写回配置', () => {
+    const input = config();
+    const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'minimax-h3')!);
+    selected.videoCapability!.maxDuration = 15;
+    input.providers['relay-h3'] = { name: '万象 H3', catalogId: 'relayonapi', apiKey: 'fixture', selectedModels: [selected] };
+    input.generalModels = [{ id: 'legacy-h3', name: selected.name, modelId: selected.id, category: 'video',
+      providerConfigId: 'relay-h3', executionProfile: selected.executionProfile, videoCapability: selected.videoCapability }];
+    const before = structuredClone(input);
+    for (const reference of ['general/legacy-h3', 'relay-h3/minimax-h3']) {
+      expect(resolveVideoModelCapability(reference, input)).toMatchObject({ minDuration: 4, maxDuration: 30 });
+    }
+    expect(input).toEqual(before);
+    input.generalModels[0].videoCapability = { ...selected.videoCapability, maxDuration: 10 };
+    expect(resolveVideoModelCapability('general/legacy-h3', input)?.maxDuration).toBe(10);
   });
 
   it('仅为万象完整内置协议恢复缺失能力，不覆盖同名自定义连接或显式比例', () => {

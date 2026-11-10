@@ -12,9 +12,8 @@ import { CCCAPI_BASE_URL, RUNNINGHUB_API_SITES, TOAPIS_API_SITES } from '../../.
 import { normalizeBaseUrl } from '../../../services/ai/providerBaseUrl';
 import { runningHubSiteId } from '../../../services/runninghubSiteCredentials';
 import { CCC_PROVIDER_GROUPS, cccConnectionName, getCccGroupPresetModels, isCccBananaGroup, isCccBananaModelId } from '../../../services/ai/cccProviderGroups';
-import { RELAYON_PROVIDER_GROUPS, relayonConnectionName, getRelayonGroupPresetModels } from '../../../services/ai/relayonProviderGroups';
+import { RELAYON_PROVIDER_GROUPS, relayonConnectionName, getRelayonGroupPresetModels, relayonGroupBaseUrl } from '../../../services/ai/relayonProviderGroups';
 import { capCatalogModels, createConnectionId, fetchProviderModelCatalog, getProviderDefinition, type ProviderDefinition } from '../../../services/ai/providerCatalogService';
-import { RELAYON_BASE_URL } from '../../../services/ai/providers/relayonModelManifest';
 import AnimatedButton from '../../shared/AnimatedButton';
 import MuseAccountControls from '../MuseAccountControls';
 import { PROVIDER_LINKS, openExternal, type CatalogStatus } from './providerConnectionShared';
@@ -52,7 +51,7 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
   const groupOf = (config: ApiProviderConfig) => isRelay ? config.relayonGroup : config.cccGroup;
   const groupPresetModels = (group?: string) => isRelay ? getRelayonGroupPresetModels(presetModels, group) : getCccGroupPresetModels(presetModels, group);
   const newConfig = (group?: string): ApiProviderConfig => isRelay
-    ? { name: relayonConnectionName({ relayonGroup: group }), apiKey: '', catalogId: provider, relayonGroup: group }
+    ? { name: relayonConnectionName({ relayonGroup: group }), apiKey: '', catalogId: provider, relayonGroup: group, baseUrl: relayonGroupBaseUrl(group) }
     : { name: cccConnectionName({ cccGroup: group }), apiKey: '', catalogId: provider, cccGroup: group };
   const [rows, setRows] = useState<CccGroupDraft[]>(() => {
     const connections = Object.entries(providerConfigs).filter(([id, config]) => getProviderDefinition(id, config)?.id === provider);
@@ -103,7 +102,8 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
   const updateRelayGroup = (id: string, group: string) => {
     requests.current.get(id)?.abort();
     setRows((current) => current.map((row) => row.id === id ? { ...row,
-      config: { ...row.config, relayonGroup: group || undefined }, status: 'idle',
+      config: { ...row.config, relayonGroup: group || undefined,
+        ...(!row.existing ? { baseUrl: relayonGroupBaseUrl(group) } : {}) }, status: 'idle',
       message: t('分组已更改，请保存后按需重新拉取模型。') } : row));
   };
   const relaySelectionChanged = (row: CccGroupDraft) => {
@@ -173,7 +173,7 @@ export function CccGroupConnectionsForm({ providerConfigs, presetModels, onSave,
         connections[row.id] = {
           ...row.config,
           apiKey: row.config.apiKey === original?.apiKey ? row.config.apiKey : row.config.apiKey.trim(),
-          ...(!row.existing ? { catalogId: provider, baseUrl: row.config.baseUrl?.trim() || RELAYON_BASE_URL } : {}),
+          ...(!row.existing ? { catalogId: provider, baseUrl: row.config.baseUrl?.trim() || relayonGroupBaseUrl(row.config.relayonGroup) } : {}),
           ...(row.existing && !row.config.catalogId && row.config.relayonGroup !== original?.relayonGroup ? { catalogId: provider } : {}),
           ...(selectedChanged ? { selectedModels: row.models.filter((model) => row.selectedIds.has(model.id)).map((model) => ({ ...model, provider: row.id })) } : {}),
           ...(!row.existing || row.catalogEdited ? { catalogModels: capCatalogModels(row.models, row.selectedIds).map((model) => ({ ...model, provider: row.id })) } : {}),

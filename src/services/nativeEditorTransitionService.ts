@@ -49,7 +49,9 @@ import { buildRunningHubModelRequest, submitPreparedRunningHubModel, queryRunnin
 import { RunningHubTaskFailed } from './ai/providers/runninghubWorkflow';
 import { libapiVideoVariables, usesLibapiModelProtocol } from './ai/providers/libapiModelManifest';
 import { toapisVideoVariables } from './ai/providers/toapisModelManifest';
-import { relayonVideoVariables, usesRelayonModelProtocol, RELAYON_VIDEO_RESULT_URL_PATHS } from './ai/providers/relayonModelManifest';
+import { relayonVideoVariables, usesRelayonModelProtocol, resolveRelayonVideoExecutionProfile, RELAYON_VIDEO_RESULT_URL_PATHS } from './ai/providers/relayonModelManifest';
+import { normalizeRelayonVideoSubmitResponse } from './ai/providers/relayonTaskIdentity';
+import { resolveNativeRecoveryProtocol } from './nativeProtocolRecovery';
 import { aigcsiVideoVariables, usesAigcsiModelProtocol } from './ai/providers/aigcsiModelManifest';
 import { minimaxVideoVariables, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol, assertMinimaxQueryResponse } from './ai/providers/minimaxModelManifest';
 import { buildDreaminaVideoParams } from './dreaminaService';
@@ -99,7 +101,7 @@ function assertCurrent(context: CanvasContext, anchorNodeId: string): void {
     throw new Error('原画布或视频节点已变化，转场回执保留');
   }
 }
-function connection(modelRef: string, providerHint = 'general') {
+function connection(modelRef: string, providerHint = 'general', forRecovery = false) {
   if (providerHint === 'dreamina') {
     const modelId = extractModelName(modelRef, 'dreamina'), definition = getDreaminaVideoCapability(modelId);
     const videoCapability = resolveVideoModelCapability(`dreamina/${modelId}`, useAppStore.getState().config);
@@ -138,12 +140,17 @@ function connection(modelRef: string, providerHint = 'general') {
   const base = new URL(found.baseUrl);
   if (!['https:', 'http:'].includes(base.protocol) || base.search || base.hash || base.username || base.password) throw new Error('连接地址无法安全恢复');
   const catalogId = found.definition?.id ?? resolveProviderCatalogId(found.providerConfigId, found.provider);
-  const profile = catalogId === 'minimax' ? resolveMinimaxExecutionProfile(found.model.modelId, found.model.executionProfile) : found.model.executionProfile;
+  const profile = catalogId === 'minimax' ? resolveMinimaxExecutionProfile(found.model.modelId, found.model.executionProfile)
+    : catalogId === 'relayonapi' && !forRecovery ? resolveRelayonVideoExecutionProfile(found.model.modelId, found.model.executionProfile)
+      : found.model.executionProfile;
   const protocol = resolveModelExecutionProfile(profile);
   if (!protocol || protocol.mode === 'async' && !protocol.poll) throw new Error('当前模型没有可恢复的媒体协议');
   if (protocol.mode === 'async') nativeProtocolQueryPaths(protocol);
+  const videoCapability = catalogId === 'relayonapi'
+    ? resolveVideoModelCapability(modelRef, useAppStore.getState().config) ?? found.model.videoCapability
+    : found.model.videoCapability ?? resolveVideoModelCapability(modelRef, useAppStore.getState().config);
   return { ...found, kind: 'general' as const, sourceModel: found.model, catalogId, profile,
-    model: { ...found.model, videoCapability: found.model.videoCapability ?? resolveVideoModelCapability(modelRef, useAppStore.getState().config) },
+    model: { ...found.model, videoCapability },
     baseUrl: base.href.replace(/\/$/, ''), protocol };
 }
 type EditorConnection = ReturnType<typeof connection>;
@@ -232,6 +239,8 @@ export async function submitNativeEditorTransition(request: VideoEditorAiTransit
     variables = { parameters: jsonRequest(requestBody) };
   }
   const options = { apiKey: selected.apiKey, baseUrl: selected.baseUrl, protocol: selected.protocol, variables, signal,
+    ...(selected.kind === 'general' && selected.catalogId === 'relayonapi' && usesRelayonModelProtocol(selected.model.modelId, selected.profile)
+      ? { normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse, idempotencyKey: crypto.randomUUID() } : {}),
     ...(selected.protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => ({
       ...captureNativeProtocolContext(selected.protocol, payload, variables, [selected.apiKey]),
       ...(selected.kind === 'apimart' ? { taskIds: apimartEditorTaskIds(payload, selected.apiKey) } : {}),
@@ -346,7 +355,13 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
       guard(); row = await retainNativeEditorMediaOutput(context, row, path, duration);
       guard(); await commitNativeEditorMediaResult(context, row, path); return;
     }
-    const selected = connection(row.modelRef, row.modelRef.startsWith('general/') ? 'general' : row.providerConfigId);
+    const configured = connection(row.modelRef, row.modelRef.startsWith('general/') ? 'general' : row.providerConfigId, true);
+    const recoveryProtocol = configured.kind === 'general' ? await resolveNativeRecoveryProtocol({
+      modelId: configured.model.modelId, profile: configured.profile, catalogId: configured.catalogId,
+      protocolDigest: row.protocolDigest, queryDigest: row.queryDigest, digestKind: 'protocol', requireFullDigest: true,
+    }) : undefined;
+    if (configured.kind === 'general' && !recoveryProtocol) throw new Error('原模型查询合同已变化，请恢复原配置后取回原任务');
+    const selected = configured.kind === 'general' ? { ...configured, protocol: recoveryProtocol! } : configured;
     if (selected.providerConfigId !== row.providerConfigId || selected.baseUrl !== row.providerBase || await connectionDigest(selected) !== row.protocolDigest
       || row.queryDigest && await nativeProtocolQueryDigest(selected.model.modelId, selected.protocol) !== row.queryDigest) {
       throw new Error('原模型连接或协议已变化，请恢复原配置后取回原任务');

@@ -1,15 +1,15 @@
 # RelayOnAPI 图片与视频接入
 
-状态：基础接入已提交（`63ec27a6`）；普通 2.5 质量／透明背景、配置初始化保护、分组管理与后续三个视频型号已有实现。2026-11-06 补齐 MJ 五款的四候选交付与 `image-2.6-01` 兼容配置，待用户验收；本批未运行测试、lint、类型检查、构建、桌面验收或付费调用，不沿用旧批次的检查结果宣称本批通过。
+状态：基础接入及型号公共模板已提交；2026-11-10 按用户补充的本地 SD 文档修正视频合同，并按用户确认将万象 H3 开放至 30 秒。源码和回归夹具已更新，本次未运行测试，待用户验收；未运行 lint、类型检查、构建、桌面验收或付费调用，不沿用旧批次结果宣称本批通过。
 
 ## 范围与依据
 
 - 4 文本：Gemini 3.8 Flash、Gemini 4 Argon、GPT 6.1 Sol、Claude Opus 5.5。
 - 15 图片：`image-2-01`、`Image-2.5-Flare`、`image-2.5-flare-01`、`Image-2.5-Sunburst`、`image-2.5-sunburst-01`、`image-2.6-01`、`Midjourney v6`、`Midjourney v6.1`、`Midjourney v7`、`Midjourney v8.1`、`Midjourney v8.2`、`nano-banana-2`、`nano-banana-2.1`、`nano-banana-pro`、`Seedream 5.0 Pro`。
-- 11 视频：`doubao-seedance-2-0-260128`、`doubao-seedance-2-0-fast-260128`、`doubao-seedance-2-0-mini-260615`、`doubao-seedance-2-5-260628`、`sd-2.0-A`、`sd-2.5-A`、`sd-2.0-c1`、`sd-2.0-c2`、`minimax-h3`、`sd-2.0-c3`、`sd-2.5-c1`。三款后补视频已有正确 `video` 分组；2.5 C1 仍按用户确认的 2.5 A 兼容合同，独立站点合同待实测。
+- 11 视频：`doubao-seedance-2-0-260128`、`doubao-seedance-2-0-fast-260128`、`doubao-seedance-2-0-mini-260615`、`doubao-seedance-2-5-260628`、`sd-2.0-A`、`sd-2.5-A`、`sd-2.0-c1`、`sd-2.0-c2`、`minimax-h3`、`sd-2.0-c3`、`sd-2.5-c1`。视频均只属于 `video` 分组；SD 六款使用本地调用参考修正的客户接口，真实生成仍待实测。
 - 未接未公开的音频生成、视频编辑或样片流程。未添加依赖、原生能力、安全权限或数据库迁移。
 
-来源为 [官网目录](https://relayonapi.com/api/pricing)与[型号文档](https://relayonapi.com/docs)，关键示例见 [Image 01](https://relayonapi.com/docs?model=image-2-01)、[Flare](https://relayonapi.com/docs?model=Image-2.5-Flare)、[Nano Banana](https://relayonapi.com/docs?model=nano-banana-2)、[Seedream](https://relayonapi.com/docs?model=Seedream%205.0%20Pro)、[官转 2.5](https://relayonapi.com/docs?model=doubao-seedance-2-5-260628)、[A](https://relayonapi.com/docs?model=sd-2.0-A)、[C1](https://relayonapi.com/docs?model=sd-2.0-c1)、[C2](https://relayonapi.com/docs?model=sd-2.0-c2)。
+图片及官转原来源为官网目录与[型号文档](https://relayonapi.com/docs)，关键示例见 [Image 01](https://relayonapi.com/docs?model=image-2-01)、[Flare](https://relayonapi.com/docs?model=Image-2.5-Flare)、[Nano Banana](https://relayonapi.com/docs?model=nano-banana-2)、[Seedream](https://relayonapi.com/docs?model=Seedream%205.0%20Pro)、[官转 2.5](https://relayonapi.com/docs?model=doubao-seedance-2-5-260628)。当前 SD 适配以用户提供的 2026-11-10《SD系列视频调用参考.md》为准，官网相矛盾说明不覆盖该文件。H3 另参考《King-H3-30秒核查与上游调用.md》，但其中“联序仍限 15 秒”的第 3 节已由用户明确确认过时，按万象已开放 30 秒处理；King 的采购协议、13 份素材及六画幅不套入万象客户接口。
 
 官网只标明兼容协议，缺少该站完整实际响应样例。用户确认先采用 [OpenAI Images 标准返回](https://developers.openai.com/api/reference/resources/images/methods/generate)及 [Videos 标准状态](https://developers.openai.com/api/reference/resources/videos/methods/retrieve)，辅以官网明确列出的三个视频 URL 字段。此为兼容实现依据，尚不是本站端到端验证结论；不借用其他部署的响应、尺寸或权限合同。
 
@@ -23,11 +23,44 @@
 
 针对旧保存的普通两型号，识别完整旧模板或完整新模板后，以临时有效副本补齐参数映射与能力；参数 UI、生成及保存／导入校验使用同一副本。原始保存、导出配置不自动改写。修改过的协议不因名称匹配而被覆盖，原安全校验依旧先执行。编辑初始化只为 RelayOnAPI 启用“缓存／已选配置优先”的合并选项，不更改其他厂商或常规目录刷新优先级。
 
-视频四种官转合同使用字符串 `seconds` 与 `metadata`；A 使用字符串 `seconds`、`output` 和普通 `references`；C1／C2 使用顶层 `duration`、`resolution`、`aspect_ratio` 与普通 `references`。不把其他渠道的同名参数套过来。C2 不接视频参考；未公布的首尾帧、比例或纯音频素材组合不开放，角色与组合错误在上传前拦截。本地视频参考沿用已有公共上传，最终 JSON 仅接受 HTTPS 素材；不制造专用 Files API，也不向公共图床传递 RelayOnAPI Key。
+视频四种官转合同保留字符串 `seconds` 与 `metadata`；A／2.5 C1 使用字符串 `seconds` 及顶层 `resolution`、`aspect_ratio`、`references`，不再发送 `output` 或未确认的 `generate_audio`；2.0 C 系列与 H3 使用顶层 `duration`、`resolution`、`aspect_ratio` 和普通 `references`。C2／C3 不接视频参考，C3 当前不接参考音频；未公布的首尾帧或纯音频素材组合不开放，角色与组合错误在上传前拦截。本地视频参考沿用已有公共上传，最终 JSON 仅接受 HTTPS 素材；不制造专用 Files API，也不向公共图床传递 RelayOnAPI Key。
 
-C1 按最终媒体顺序编译 `@图N`、`@视频N`、`@音频N`；C2 保留其合同使用的“图片N／音频N”。官网 A 渠道的 multipart `first_frame`／`last_frame` 未接入当前 JSON 普通参考，不能据此推测首尾帧的 JSON 字段或混用规则。其他部署的响应、尺寸或权限不能作为本站实测依据。
+SD 六款及 H3 按最终媒体顺序编译 `@图N`、`@视频N`、`@音频N`，仅转换有真实对应素材的编号，不重排或删减素材。首尾帧私有工作流不作为普通 JSON 参考的替代；其他部署的响应、尺寸或权限不能作为本站实测依据。
 
 共享执行器的幂等身份只进入新媒体提交的固定 `Idempotency-Key`，不进入持久化协议、轮询、结果下载或凭据。请求构建两次仍复用同一键；新调用用新键，不自动重试 POST。视频复用 `PendingTask`、取消、暂停、原任务恢复、保存和回填确认；只在真实厂商且完整匹配内置视频合同的查询描述中补入明确的 URL 备用路径，其他厂商和用户协议保持原行为。
+
+### SD 当前路由与 H3 30 秒修正（2026-11-10）
+
+| 型号 | 输出时长 | 当前输出比例 | 图片／视频／音频参考上限 |
+|---|---|---|---|
+| sd-2.0-c1 | 10–15 秒整数 | 16:9、9:16、1:1 | 9／3／3 |
+| sd-2.0-c2 | 5／10／15 秒 | 16:9、9:16、1:1 | 9／0／3；音频仅部分线路可调度 |
+| sd-2.0-c3 | 5／10／15 秒 | 16:9、9:16、1:1 | 9／0／0；当前音频无可调度线路 |
+| sd-2.5-c1 | 4–30 秒整数 | 原五项及 21:9 | 30／10／10；实际可用组合受线路限制 |
+| sd-2.0-A／sd-2.5-A | 4–15／4–30 秒整数 | 保留原已接通五比例 | 未公布的数量不从官方基线补齐 |
+| minimax-h3 | 4–30 秒整数 | 保留万象五比例 | 9／3／3，总计最多 12 份 |
+
+这些限制均为万象渠道覆写。公共 Seedance／H3 模板及其他渠道不跟随收窄或扩展；不把 King 的采购 ID、`durationSeconds`、`ratio`、`data.taskId` 或 `data.downloadUrl` 发到万象。H3 保留既有四档输出及 `@图N` 约束，本轮只按用户确认开放时长上限，未进行真实 30 秒出片验收。
+
+SD 六款和 H3 完成后从原任务 `/videos/{id}/content` 同源鉴权取件，不依赖查询响应存在公网 URL。只有官转四款继续原 URL 合同。提交响应接受有效 `id` 或 `task_id`，统一供轮询和安全恢复字段使用；双字段冲突保留提交未知，不选另一任务、不重投，也不保存完整响应或凭据。
+
+`resolveRelayonVideoCapability` 只对完整旧内置快照作运行期更新；`resolveRelayonVideoExecutionProfile` 只为新提交投影修正后的合同。用户自定义协议、部分或修改过的能力不被目录覆盖。新项目与剪辑恢复通过 `nativeProtocolRecovery.ts`，先按原完整摘要在已确认的新旧协议中选择，再沿既有规则核对查询摘要与来源；旧 URL 回执不能被新版 `/content` 替换，新提交也不能因配置仍为旧模板而失去重启恢复。旧项目仍沿已保存的 `protocolPoll`，未知状态不自动重投。
+
+新建 `video` 分组采用文件明确的 `https://api.relayonapi.com/v1`；已有连接继续原绑定地址，其他分组不改。公开分组目录读取 API 子域且不带 Key。连接导入严格接受两个已确认的官方 `/v1` 来源，保留导入的原地址；拒绝凭据、非标准端口、额外路径、查询参数和伪装主机。不自动搬动任何旧回执的 origin。
+
+本次未运行测试，待用户验收。Tauri 桌面前置：使用测试项目，准备已有完整旧万象视频连接及新视频分组；先看参数和受控请求预览，真实生成由用户自行决定。
+
+1. 旧 H3 连接无需重建，节点／对话／Agent／MCP 参数可到 30 秒，超过 30 秒和非整数在上传前拒绝；其他渠道 H3 保持原范围。已显式缩窄到 10 秒的用户配置不自动扩宽。
+2. C2／C3 只显示 5／10／15 秒与三个通用比例；C3 即使选择合法时长，也应在参考音频上传前拒绝。2.5 C1 可选 21:9；服务端线路暂不支持的组合显示真实错误，不删素材或自动换档重投。
+3. A／2.5 C1 的新提交字段位于顶层，SD 编号与真实素材顺序一致。分别模拟仅 `id`、仅 `task_id` 和两 ID 冲突；只有确认的原 ID 可以查询及取件，冲突不生成第二次 POST。
+4. SD 查询仅返回完成状态时，应继续同源鉴权下载 `/content` 并保存回填；下载失败、断网、切集和重启仅续取原任务。分别保留旧 URL 回执和新 `/content` 回执，配置刷新前后都沿各自原合同及地址恢复。
+5. 新建视频分组、导入新／旧官方地址及编辑旧 Key，核对原 ID、配置、其他分组与 origin 不变；带 Key 的下载不得跨源转发，导出仍不含凭据。
+
+回归源码已同步新合同，旧目录摘要仅还原七款有意变更字段后继续对照原基线，其余渠道摘要不变。以下命令留供用户在仓库根目录执行，本次没有执行：
+
+```powershell
+npx vitest run tests/services/relayonModelManifest.test.ts tests/services/modelProtocolTaskIdentity.test.ts tests/services/nativeProtocolRecovery.test.ts tests/services/relayonProviderGroups.test.ts tests/services/generateVideo.test.ts tests/services/modelProtocol.test.ts tests/services/videoModelCapabilityResolver.test.ts tests/services/providerCatalogService.test.ts tests/components/relayonGroupConnection.test.tsx tests/services/modelCapabilityTemplateCompatibility.test.ts
+```
 
 ### MJ 四候选与 2.6 补充（2026-11-06）
 

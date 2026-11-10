@@ -36,7 +36,7 @@ import { deleteAppSecret, isSecretStoreAvailable } from '../../services/provider
 import { deleteImageHostingCredential } from '../../services/imageHostingService';
 import { queryProviderBalance, supportsProviderBalance, type ProviderBalance } from '../../services/testConnection';
 import { replaceLegacyApimartOmni } from '../../services/ai/apimartVideoModels';
-import { RELAYON_BASE_URL } from '../../services/ai/providers/relayonModelManifest';
+import { isRelayonOfficialBaseUrl, relayonGroupBaseUrl } from '../../services/ai/relayonProviderGroups';
 import DreaminaLoginModal from './DreaminaLoginModal';
 import ModalOverlay from '../shared/ModalOverlay';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
@@ -521,15 +521,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       useAppStore.getState().showToast(t('该连接类型不支持导入'), 'error');
       return;
     }
-    if (definition.id === 'relayonapi' && parsed.config.baseUrl) {
-      try {
-        const url = new URL(parsed.config.baseUrl);
-        if (url.origin !== 'https://relayonapi.com' || url.username || url.password
-          || url.pathname.replace(/\/+$/, '') !== '/v1' || url.search || url.hash) throw new Error();
-      } catch {
-        useAppStore.getState().showToast(t('万象分组配置的接口地址必须是官方地址'), 'error');
-        return;
-      }
+    if (definition.id === 'relayonapi' && parsed.config.baseUrl && !isRelayonOfficialBaseUrl(parsed.config.baseUrl)) {
+      useAppStore.getState().showToast(t('万象分组配置的接口地址必须是官方地址'), 'error');
+      return;
     }
     const newConnectionId = createConnectionId(definition.id);
     if (config.providers[newConnectionId]) {
@@ -545,7 +539,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     }));
     saveProviderConfig(newConnectionId, {
       ...parsed.config,
-      ...(definition.id === 'relayonapi' ? { baseUrl: RELAYON_BASE_URL } : {}),
+      ...(definition.id === 'relayonapi' ? { baseUrl: parsed.config.baseUrl?.trim() || relayonGroupBaseUrl(parsed.config.relayonGroup) } : {}),
       selectedModels: models,
       catalogModels: parsed.config.catalogModels?.map((model) => ({
         ...model,

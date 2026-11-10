@@ -992,7 +992,7 @@ async function matchActiveLibapiCatalog(
 async function matchRelayonGroupCatalog(
   models: ProviderModelSelection[], group: string, signal?: AbortSignal,
 ): Promise<ProviderModelSelection[]> {
-  const response = await corsSafeFetch('https://relayonapi.com/api/pricing', { method: 'GET', credentials: 'omit', signal });
+  const response = await corsSafeFetch('https://api.relayonapi.com/api/pricing', { method: 'GET', credentials: 'omit', signal });
   if (!response.ok) throw new Error(`模型列表拉取失败 (HTTP ${response.status})`);
   const payload: unknown = await response.json().catch(() => null);
   return filterRelayonGroupPricing(models, group, payload);

@@ -77,6 +77,8 @@ describe('万象分组连接', () => {
     const video = Object.entries(connections).find(([, config]) => config.relayonGroup === 'video')!;
     expect(image[0]).not.toBe(video[0]);
     expect(image[1].apiKey).toBe('image-fixture'); expect(video[1].apiKey).toBe('video-fixture');
+    expect(image[1].baseUrl).toBe('https://relayonapi.com/v1');
+    expect(video[1].baseUrl).toBe('https://api.relayonapi.com/v1');
     expect(image[1].selectedModels).toEqual([expect.objectContaining({ id: 'Image-2.5-Flare', provider: image[0] })]);
     expect(video[1].selectedModels).toEqual([expect.objectContaining({ id: 'sd-2.5-A', provider: video[0] })]);
   });
@@ -155,5 +157,13 @@ describe('万象分组连接', () => {
     expect(vi.mocked(props.onSave).mock.calls[0][0]).toEqual({});
     key('旧连接（未指定分组）', 'new-fixture'); await save();
     expect(vi.mocked(props.onSave).mock.calls[1][0].relayonapi).toEqual({ ...old, apiKey: 'new-fixture' });
+  });
+
+  it('editing an existing video key keeps its original official origin and saved models', async () => {
+    const original = { name: '原视频组', apiKey: 'old-fixture', catalogId: 'relayonapi', relayonGroup: 'video',
+      baseUrl: 'https://relayonapi.com/v1', selectedModels: [{ id: 'minimax-h3', name: 'H3', provider: 'relay-old-video', category: 'video' as const }] };
+    props.providerConfigs = { 'relay-old-video': original };
+    render(); key('video', 'updated-fixture'); await save();
+    expect(vi.mocked(props.onSave).mock.calls[0][0]['relay-old-video']).toEqual({ ...original, apiKey: 'updated-fixture' });
   });
 });

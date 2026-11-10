@@ -15,8 +15,8 @@ import { splitCommaSeparatedUrls } from './ai/helpers';
 import { createMediaDownloadAccess } from './ai/mediaDownloadAccess';
 import { VIDEO_POLL_MAX_DURATION_MS } from './pollManager';
 import { resolveNativeProtocolConnection } from './nativeProtocolConnection';
-import { resolveModelExecutionProfile } from './ai/modelProtocol';
-import { nativeProtocolTaskDigest, nativeProtocolQueryDigest, resolveNativeProtocolContext } from './nativeModelProtocolTask';
+import { resolveNativeRecoveryProtocol } from './nativeProtocolRecovery';
+import { resolveNativeProtocolContext } from './nativeModelProtocolTask';
 import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
@@ -103,10 +103,13 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
   if (!provider?.apiKey) throw new Error('缺少原视频连接的 API Key，原任务已保留');
   const generalExpected = record.recovery?.kind === 'general-protocol' || record.modelRef?.startsWith('general/') === true;
   const general = generalExpected ? resolveNativeProtocolConnection(record) : undefined;
-  const generalProtocol = general && resolveModelExecutionProfile(general.model.executionProfile);
-  if (generalExpected && (!general || !generalProtocol || general.providerConfigId !== record.providerConfigId || general.model.category !== record.category
-    || await nativeProtocolTaskDigest(general.model.modelId, generalProtocol) !== record.protocolDigest
-      && !(record.recovery?.kind === 'general-protocol' && await nativeProtocolQueryDigest(general.model.modelId, generalProtocol) === record.recovery.digest))) throw new Error('原模型或查询协议已变化，请恢复原配置后续查');
+  const generalProtocol = general && await resolveNativeRecoveryProtocol({
+    modelId: general.model.modelId, profile: general.model.executionProfile,
+    ...(record.category === 'video' ? { catalogId: resolveProviderCatalogId(record.providerConfigId, provider) } : {}),
+    protocolDigest: record.protocolDigest,
+    ...(record.recovery?.kind === 'general-protocol' ? { queryDigest: record.recovery.digest } : {}),
+  });
+  if (generalExpected && (!general || !generalProtocol || general.providerConfigId !== record.providerConfigId || general.model.category !== record.category)) throw new Error('原模型或查询协议已变化，请恢复原配置后续查');
   const isVolcengine = !generalExpected && record.providerConfigId === 'volcengine';
   const isGrsai = !generalExpected && record.providerConfigId === 'grsai';
   if (record.recovery?.kind === 'builtin-video' && (await nativeBuiltinVideoProtocolDigest(record.providerConfigId) !== record.protocolDigest
