@@ -7,7 +7,17 @@ export type MuseMediaKind = 'image' | 'video';
 interface MuseTaskStatus {
   status: 'prepared' | 'ready' | 'running' | 'completed' | 'failed' | 'unknown';
   url?: string;
+  error?: unknown;
 }
+
+const MUSE_NOT_SENT = 'Muse 原任务在网页发送前已结束，尚未发送生成请求';
+const MUSE_LEGACY_FAILED = 'Muse 旧任务已被本机标记为失败，请核对原网页；该记录未保存官网失败原因';
+const MUSE_DELIVERY_UNCONFIRMED = 'Muse 尚未确认新对话已送达，原任务已保留；不会自动重发';
+const MUSE_UNKNOWN_REASONS = new Set([
+  MUSE_DELIVERY_UNCONFIRMED,
+  'Muse 网页返回了拒绝生成说明，尚未取得媒体；请查看原任务，可继续查询',
+  'Muse 会话出现额外轮次或文本超过 256 KiB，请在官网查看原回复；不会重新发送',
+]);
 
 export async function museInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriEnv()) throw new Error('Muse 网页登录和生成仅在 Tauri 桌面端可用');
@@ -32,9 +42,17 @@ export async function queryMuseTask(taskId: string, kind: MuseMediaKind, signal?
   return pollTask<MuseTaskStatus, string>({
     fetchState: async (querySignal) => { querySignal.throwIfAborted(); return museInvoke<MuseTaskStatus>('muse_query', { taskId }); },
     isComplete: (result) => {
-      if (result.status === 'failed') throw new PollTaskFailedError('Muse 原任务已明确失败，请查看 Muse 官网后重新发起');
+      if (result.status === 'failed') {
+        // 只有原生明确证明尚未发送的终态可清理跟踪；旧 failed 记录不能冒充官网失败。
+        if (result.error === MUSE_NOT_SENT) throw new PollTaskFailedError(MUSE_NOT_SENT);
+        throw new Error(MUSE_LEGACY_FAILED);
+      }
       if (result.status === 'running') return null;
-      if (result.status !== 'completed') throw new Error('Muse 原任务尚未确认提交或连接已中断，请检查原网页；不会重新发送');
+      if (result.status !== 'completed') {
+        const reason = result.status === 'unknown' && typeof result.error === 'string' && MUSE_UNKNOWN_REASONS.has(result.error)
+          ? result.error : MUSE_DELIVERY_UNCONFIRMED;
+        throw new Error(reason);
+      }
       const prefix = kind === 'image' ? /^data:image\/(?:png|jpeg|webp|gif);base64,/ : /^data:video\/(?:mp4|webm);base64,/;
       if (!result.url || !prefix.test(result.url) || result.url.length > (kind === 'image' ? 45 : 180) * 1024 * 1024) {
         throw new Error('Muse 原任务没有可交付的受支持媒体，原任务保留');

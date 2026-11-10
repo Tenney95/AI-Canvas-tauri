@@ -30,6 +30,8 @@ static WINDOW_LOADS: LazyLock<Mutex<BTreeMap<String, WindowLoad>>> = LazyLock::n
 // Text is intentionally process-local; task metadata never stores prompt or answer.
 static TEXT_RESULTS: LazyLock<Mutex<BTreeMap<String, String>>> = LazyLock::new(|| Mutex::new(BTreeMap::new()));
 const MAX_TEXT_BYTES: usize = 256 * 1024;
+const DELIVERY_UNCONFIRMED: &str = "Muse 尚未确认新对话已送达，原任务已保留；不会自动重发";
+const TASK_CONFLICT: &str = "Muse 会话出现额外轮次或文本超过 256 KiB，请在官网查看原回复；不会重新发送";
 
 #[derive(Clone, Copy)]
 enum SessionState { Verified, Invalid, Unverified, Missing }
@@ -131,6 +133,10 @@ fn blocked_https_host(url: &Url) -> Option<String> {
 fn valid_thread(thread: &str) -> bool {
     thread.starts_with("/thread/") && thread != "/thread/new" && thread.len() > 8 && thread.len() <= 256
         && thread[8..].bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+fn confirmed_send_thread(result: &Value) -> Option<&str> {
+    if result.get("sent") != Some(&Value::Bool(true)) { return None; }
+    result.get("thread").and_then(Value::as_str).filter(|thread| valid_thread(thread))
 }
 fn private_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let path = crate::secret_store::secret_dir(app)?.join("muse");
@@ -762,7 +768,10 @@ pub async fn muse_send(app: AppHandle, webview: Webview, task_id: String) -> Res
     task.status = "running".into(); task.ready = false;
     save(&app, &task)?;
     // Durable running identity precedes the only click. Timeout is uncertain, never a retry.
-    evaluate(&window, "window.__aiCanvasMuseAdapter.send()").await?;
+    let result = evaluate(&window, "window.__aiCanvasMuseAdapter.send()").await?;
+    let thread = confirmed_send_thread(&result).ok_or(DELIVERY_UNCONFIRMED)?;
+    task.thread = Some(thread.into());
+    save(&app, &task)?;
     Ok(TaskIdentity { task_id })
 }
 
@@ -820,6 +829,15 @@ mod tests {
         assert!(valid_thread("/thread/abc_123-456"));
         for thread in ["/thread/new", "/thread/", "/thread/../secrets", "/thread/a?token=secret", "https://muse.ai/thread/a"] {
             assert!(!valid_thread(thread));
+        }
+    }
+
+    #[test]
+    fn send_receipt_requires_delivery_and_a_real_thread() {
+        assert_eq!(confirmed_send_thread(&json!({ "sent": true, "thread": "/thread/confirmed_123" })), Some("/thread/confirmed_123"));
+        for result in [json!({ "sent": true }), json!({ "sent": false, "thread": "/thread/confirmed_123" }),
+            json!({ "sent": true, "thread": "/thread/new" }), json!({ "sent": true, "thread": "https://muse.ai/thread/confirmed_123" })] {
+            assert!(confirmed_send_thread(&result).is_none());
         }
     }
 
@@ -932,7 +950,12 @@ pub async fn muse_query(app: AppHandle, webview: Webview, task_id: String) -> Re
         let mime = sniff(&bytes).filter(|mime| mime.starts_with(&format!("{}/", task.kind))).ok_or("Muse 结果文件无效")?;
         return Ok(TaskStatus { status: task.status, url: Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes))), text: None, error: None });
     }
-    if matches!(task.status.as_str(), "prepared" | "failed") { return Ok(TaskStatus { status: task.status, url: None, text: None, error: None }); }
+    if task.status == "failed" {
+        let error = if task.thread.is_none() { "Muse 原任务在网页发送前已结束，尚未发送生成请求" }
+            else { "Muse 旧任务已被本机标记为失败，请核对原网页；该记录未保存官网失败原因" };
+        return Ok(TaskStatus { status: task.status, url: None, text: None, error: Some(error.into()) });
+    }
+    if task.status == "prepared" { return Ok(TaskStatus { status: task.status, url: None, text: None, error: None }); }
     if task.session_hash != session_hash(&app)? { return Err("Muse 原登录会话已变化，请到官网核对并手动取回原结果；不会更换会话查询".into()); }
     let label = task_label(&task_id);
     let window = match physically_ready_window(&app, &label)? {
@@ -940,32 +963,45 @@ pub async fn muse_query(app: AppHandle, webview: Webview, task_id: String) -> Re
         None => {
             let Some(thread) = task.thread.as_ref().filter(|thread| valid_thread(thread)) else {
                 task.status = "unknown".into(); save(&app, &task)?;
-                return Ok(TaskStatus { status: task.status, url: None, text: None, error: Some("未取得 Muse 会话地址，请在官网核对原任务后决定是否释放".into()) });
+                return Ok(TaskStatus { status: task.status, url: None, text: None, error: Some(DELIVERY_UNCONFIRMED.into()) });
             };
             create_muse_window(&app, &label, false, &format!("{ORIGIN}{thread}")).await?;
             return Ok(TaskStatus { status: "running".into(), url: None, text: None, error: None });
         }
     };
     if !window.url().is_ok_and(|url| muse_url(&url)) {
+        if task.thread.is_none() { return Ok(TaskStatus { status: "unknown".into(), url: None, text: None, error: Some(DELIVERY_UNCONFIRMED.into()) }); }
         return Ok(TaskStatus { status: "running".into(), url: None, text: None, error: None });
     }
-    let expression = if task.kind == "text" { "window.__aiCanvasMuseAdapter ? window.__aiCanvasMuseAdapter.textSnapshot() : ({loading:true})" }
-        else { "window.__aiCanvasMuseAdapter ? window.__aiCanvasMuseAdapter.snapshot() : ({loading:true})" };
-    let snapshot = match evaluate(&window, expression).await {
+    let expression = if task.kind == "text" { format!("window.__aiCanvasMuseAdapter ? window.__aiCanvasMuseAdapter.textSnapshot({}) : ({{loading:true}})", json!(&task.thread)) }
+        else { "window.__aiCanvasMuseAdapter ? window.__aiCanvasMuseAdapter.snapshot() : ({loading:true})".into() };
+    let snapshot = match evaluate(&window, &expression).await {
         Ok(snapshot) => snapshot,
         Err(_) => return Ok(TaskStatus { status: "unknown".into(), url: None, text: None, error: Some("Muse 原会话暂不可读，原任务已保留".into()) }),
     };
     if snapshot.get("loading") == Some(&Value::Bool(true)) { return Ok(TaskStatus { status: "running".into(), url: None, text: None, error: None }); }
-    if let Some(thread) = snapshot.get("thread").and_then(Value::as_str).filter(|thread| valid_thread(thread)) {
+    if snapshot.get("textConflict") == Some(&Value::Bool(true)) {
+        return Ok(TaskStatus { status: "unknown".into(), url: None, text: None, error: Some(TASK_CONFLICT.into()) });
+    }
+    if task.kind == "text" && snapshot.get("textUnavailable") == Some(&Value::Bool(true)) {
+        return Ok(TaskStatus { status: "unknown".into(), url: None, text: None,
+            error: Some("Muse 原回复暂未显示在页面中，已保留当前文本；请查看原任务后继续查询".into()) });
+    }
+    let thread = snapshot.get("thread").and_then(Value::as_str).filter(|thread| valid_thread(thread));
+    if snapshot.get("deliveryPending") == Some(&Value::Bool(true)) || thread.is_none()
+        || task.thread.is_none() && snapshot.get("deliveryConfirmed") != Some(&Value::Bool(true)) {
+        return Ok(TaskStatus { status: "unknown".into(), url: None, text: None, error: Some(DELIVERY_UNCONFIRMED.into()) });
+    }
+    if let Some(thread) = thread {
         if task.thread.as_ref().is_some_and(|expected| expected != thread) {
             return Ok(TaskStatus { status: "unknown".into(), url: None, text: None, error: Some("Muse 页面已切到其他会话，未接收其结果".into()) });
         }
         if task.thread.is_none() { task.thread = Some(thread.into()); save(&app, &task)?; }
     }
     if task.kind == "text" {
-        if snapshot.get("textConflict") == Some(&Value::Bool(true)) || snapshot.get("textOverflow") == Some(&Value::Bool(true)) {
+        if snapshot.get("textOverflow") == Some(&Value::Bool(true)) {
             return Ok(TaskStatus { status: "unknown".into(), url: None, text: None,
-                error: Some("Muse 会话出现额外轮次或文本超过 256 KiB，请在官网查看原回复；不会重新发送".into()) });
+                error: Some(TASK_CONFLICT.into()) });
         }
         let text = collect_text(&window, &snapshot).await?;
         let completed = task.thread.is_some() && snapshot.get("textComplete") == Some(&Value::Bool(true))
@@ -994,8 +1030,7 @@ pub async fn muse_query(app: AppHandle, webview: Webview, task_id: String) -> Re
         save(&app, &task)?;
     } else if task.refusal_observations > 0 { task.refusal_observations = 0; save(&app, &task)?; }
     if task.refusal_observations >= 3 {
-        task.status = "failed".into(); save(&app, &task)?;
-        return Ok(TaskStatus { status: "failed".into(), url: None, text: None, error: Some("Muse 未生成媒体或账号额度不足，请在官网查看原会话".into()) });
+        return Ok(TaskStatus { status: "unknown".into(), url: None, text: None, error: Some("Muse 网页返回了拒绝生成说明，尚未取得媒体；请查看原任务，可继续查询".into()) });
     }
     Ok(TaskStatus { status: "running".into(), url: None, text: None, error: None })
 }

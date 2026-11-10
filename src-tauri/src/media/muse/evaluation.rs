@@ -1,5 +1,5 @@
 //! Native-only script results; never navigate the page or expose application IPC.
-use super::{muse_url, random_id, WINDOW_LOADS};
+use super::{muse_url, random_id, DELIVERY_UNCONFIRMED, WINDOW_LOADS};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{sync::Mutex, time::Duration};
@@ -13,6 +13,25 @@ const MAX_REPLY_BYTES: usize = 100_000;
 struct Reply {
     ok: bool,
     #[serde(default)] value: Value,
+    #[serde(default)] code: Option<String>,
+}
+
+fn page_failure(code: Option<&str>) -> &'static str {
+    match code {
+        Some("not-ready") => "Muse 网页尚未准备完成，尚未发送生成请求",
+        Some("not-new-thread") => "Muse 页面不是空白新对话，尚未发送生成请求",
+        Some("upload-unavailable") => "Muse 网页未提供可用的参考图上传入口，尚未发送生成请求",
+        Some("upload-data") => "Muse 参考图数据无法转换为网页附件，尚未发送生成请求",
+        Some("upload-selection") => "Muse 网页未接受参考图文件，尚未发送生成请求",
+        Some("upload-dispatch") => "Muse 网页未确认参考图上传事件，尚未发送生成请求",
+        Some("upload-unconfirmed") => "Muse 参考图上传未确认完成，尚未发送生成请求",
+        Some("composer-unavailable") => "Muse 网页输入框不可用，尚未发送生成请求",
+        Some("send-unavailable") => "Muse 网页发送按钮尚未就绪，尚未发送生成请求",
+        Some("send-unconfirmed") => DELIVERY_UNCONFIRMED,
+        Some("session-unconfirmed") => "Muse 官网暂未确认登录会话，尚未发送生成请求",
+        Some("session-size") => "Muse 登录会话响应超出大小限制，尚未发送生成请求",
+        _ => "Muse 页面操作未确认，未自动重新发送",
+    }
 }
 
 fn current(window: &WebviewWindow, instance: u64) -> bool {
@@ -60,7 +79,10 @@ pub(super) async fn evaluate(window: &WebviewWindow, expression: &str, timeout: 
         catch(_){{slot.result='{{"ok":false}}';}}
         slot.done=true;
       }};
-      (async()=>{{try{{finish({{ok:true,value:await({expression})}});}}catch(_){{finish({{ok:false}});}}}})();
+      (async()=>{{try{{finish({{ok:true,value:await({expression})}});}}catch(error){{
+        let code;try{{const message=error?.message;if(['not-ready','not-new-thread','upload-unavailable','upload-data','upload-selection','upload-dispatch','upload-unconfirmed','composer-unavailable','send-unavailable','send-unconfirmed','session-unconfirmed','session-size'].includes(message))code=message;}}catch(_){{}}
+        finish({{ok:false,code}});
+      }}}})();
       return true;
     }})()"#);
     if native_result(window, start, deadline).await? != Value::Bool(true) { return Err("Muse 网页尚未就绪".into()); }
@@ -76,9 +98,27 @@ pub(super) async fn evaluate(window: &WebviewWindow, expression: &str, timeout: 
         if !current(window, instance) || !window.url().is_ok_and(|url| muse_url(&url)) { return Err("Muse 网页来源已变化，原任务已保留".into()); }
         if !result.is_null() {
             let reply: Reply = serde_json::from_value(result).map_err(|_| "Muse 页面响应格式无效")?;
-            if !reply.ok { return Err("Muse 页面操作未确认，未自动重新发送".into()); }
+            if !reply.ok { return Err(page_failure(reply.code.as_deref()).into()); }
             return Ok(reply.value);
         }
         tokio::time::sleep_until((Instant::now() + Duration::from_millis(150)).min(deadline)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_fixed_page_failure_codes_are_exposed() {
+        assert_eq!(page_failure(Some("upload-unconfirmed")), "Muse 参考图上传未确认完成，尚未发送生成请求");
+        assert_eq!(page_failure(Some("upload-data")), "Muse 参考图数据无法转换为网页附件，尚未发送生成请求");
+        assert_eq!(page_failure(Some("upload-selection")), "Muse 网页未接受参考图文件，尚未发送生成请求");
+        assert_eq!(page_failure(Some("upload-dispatch")), "Muse 网页未确认参考图上传事件，尚未发送生成请求");
+        assert_eq!(page_failure(Some("send-unconfirmed")), DELIVERY_UNCONFIRMED);
+        assert_eq!(page_failure(Some("session-unconfirmed")), "Muse 官网暂未确认登录会话，尚未发送生成请求");
+        assert_eq!(page_failure(Some("session-size")), "Muse 登录会话响应超出大小限制，尚未发送生成请求");
+        assert_eq!(page_failure(Some("fake-private-page-error")), page_failure(None));
+        assert!(serde_json::from_value::<Reply>(json!({ "ok": false, "message": "fake-private-page-error" })).is_err());
     }
 }

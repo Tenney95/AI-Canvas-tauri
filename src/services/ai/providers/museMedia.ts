@@ -14,6 +14,14 @@ import { PollTaskFailedError } from '../../pollTask';
 
 export const museProtocolMaterial = (kind: MuseMediaKind) => ['muse-webview-v1', kind, kind === 'image' ? MUSE_IMAGE_MODEL : MUSE_VIDEO_MODEL];
 
+/** 本机准备失败发生在登记提交身份之前，不代表官网已接收请求。 */
+class MusePreparationError extends Error {
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : 'Muse 请求准备失败，尚未发送生成请求');
+    this.name = 'MusePreparationError';
+  }
+}
+
 async function executeMuse(params: AIImageGenParams | AIVideoGenParams, kind: MuseMediaKind, prompt: string,
   imageUrls: string[], externalSignal?: AbortSignal, beforeSubmit?: () => void | Promise<void>): Promise<{ url: string; taskReceipt?: MediaTaskReceipt }> {
   const modelId = params.model.replace(/^muse\//, '');
@@ -42,18 +50,30 @@ async function executeMuse(params: AIImageGenParams | AIVideoGenParams, kind: Mu
   const cancelOnAbort = () => { void cancelPrepared(); };
   signal.addEventListener('abort', cancelOnAbort);
   const submit = async (received?: (id: string) => Promise<void>) => {
-    fresh(); await beforeSubmit?.(); fresh();
-    const prepared = await museInvoke<{ taskId: string }>('muse_prepare', { kind });
-    taskId = prepared.taskId; assertMuseTaskId(taskId);
-    if (received) await received(taskId);
-    else if (nodeId && projectId) receipt = savePendingTask({ nodeId, projectId, nodeType: kind === 'image' ? 'ai-image' : 'ai-video',
-      provider: 'muse', providerConfigId: 'muse', taskType: 'muse', taskId, submitted: false });
-    fresh();
-    await museInvoke('muse_submit', { taskId, prompt, images });
-    await beforeSubmit?.(); fresh();
-    await museInvoke('muse_send', { taskId });
-    if (receipt) receipt = updatePendingTask(nodeId!, { submitted: true }, taskId, receipt.attemptId) ?? receipt;
-    return { taskId };
+    let registrationStarted = false;
+    let sending = false;
+    try {
+      fresh(); await beforeSubmit?.(); fresh();
+      const prepared = await museInvoke<{ taskId: string }>('muse_prepare', { kind });
+      taskId = prepared.taskId; assertMuseTaskId(taskId);
+      fresh();
+      await museInvoke('muse_submit', { taskId, prompt, images });
+      await beforeSubmit?.(); fresh();
+      // 网页完成上传和填字后再登记提交；本机 UUID 并不代表官网已收到消息。
+      // 仍在唯一发送之前留存身份，点击回包丢失时只能续取这个原任务。
+      registrationStarted = true;
+      if (received) await received(taskId);
+      else if (nodeId && projectId) receipt = savePendingTask({ nodeId, projectId, nodeType: kind === 'image' ? 'ai-image' : 'ai-video',
+        provider: 'muse', providerConfigId: 'muse', taskType: 'muse', taskId, submitted: false });
+      await beforeSubmit?.(); fresh();
+      sending = true;
+      await museInvoke('muse_send', { taskId });
+      if (receipt) receipt = updatePendingTask(nodeId!, { submitted: true }, taskId, receipt.attemptId) ?? receipt;
+      return { taskId };
+    } catch (error) {
+      if (!registrationStarted && !sending) throw new MusePreparationError(error);
+      throw error;
+    }
   };
   try {
     fresh();
@@ -64,7 +84,8 @@ async function executeMuse(params: AIImageGenParams | AIVideoGenParams, kind: Mu
       return await submitNativeWorkflowTask({ nodeId, signal, beforeSubmit, count: 1,
         descriptor: { adapter: 'muse-webview', connectionId: 'muse', providerBase: MUSE_BASE_URL, category: kind,
           modelId, digest: await nativeWorkflowDigest(museProtocolMaterial(kind)) },
-        requestMaterial: { modelId, kind, prompt, images }, submit: async (_index, _signal, received) => submit(received) });
+        requestMaterial: { modelId, kind, prompt, images }, submit: async (_index, _signal, received) => submit(received),
+        isDefinitiveFailure: (error) => error instanceof MusePreparationError });
     }
     await submit();
     const url = await queryMuseTask(taskId!, kind, signal);
