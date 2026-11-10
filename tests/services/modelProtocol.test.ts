@@ -879,6 +879,13 @@ describe('declarative model execution protocol', () => {
     expect(() => assertModelCapabilityProtocol({ ...model, videoCapability: singleMode })).not.toThrow();
   });
 
+  it('checks fixed pixel combinations without inventing pixels for adaptive image ratios', () => {
+    const capability = { resolutions: ['2K'], ratios: ['1:1', 'auto', 'adaptive'],
+      dimensionPresets: { '2K': { '1:1': [2048, 2048] as const } } };
+    expect(() => assertImageModelCapability(capability)).not.toThrow();
+    expect(() => assertImageModelCapability({ ...capability, ratios: ['16:9'] })).toThrow('缺少像素尺寸映射');
+  });
+
   it('keeps interface-default background distinct from an explicit auto parameter', () => {
     const capability = { backgrounds: ['auto', 'opaque', 'transparent'] };
     expect(resolveConfiguredImageBackground(undefined, 'transparent')).toBeUndefined();

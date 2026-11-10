@@ -8,16 +8,24 @@ import {
   getOfficialSeedanceCapability,
   inferSeedanceModelVariant,
   resolveSeedanceAutoTemplate,
+  SEEDANCE_COMMON_RATIOS,
   SEEDANCE_QUICK_ADAPT_OPTIONS,
 } from '../../src/services/ai/seedanceModelCapabilities';
 import type { VideoModelCapability } from '../../src/types/aiTypes';
 import type { ProviderModelSelection } from '../../src/types';
 
 describe('Seedance capability templates', () => {
+  it('集中声明五种常用比例，官方扩展与渠道输入限制仍独立保留', () => {
+    expect(SEEDANCE_COMMON_RATIOS).toEqual(['16:9', '9:16', '4:3', '3:4', '1:1']);
+    for (const variant of ['2.0-standard', '2.0-fast', '2.0-mini', '2.5'] as const) {
+      expect(getOfficialSeedanceCapability(variant).ratios).toEqual(['21:9', ...SEEDANCE_COMMON_RATIOS, 'adaptive']);
+    }
+  });
+
   it('declares the official 2.0 resolution tiers and adaptive ratio support', () => {
     expect(getOfficialSeedanceCapability('2.0-standard')).toMatchObject({
       resolutions: ['480p', '720p', '1080p', '4k'],
-      ratios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive'],
+      ratios: ['21:9', ...SEEDANCE_COMMON_RATIOS, 'adaptive'],
       minDuration: 4,
       maxDuration: 15,
     });

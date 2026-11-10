@@ -5,7 +5,8 @@
  * （含鉴权、请求体映射、轮询与结果抽取）。
  */
 import type { ProviderModelSelection } from '../../../types';
-import type { NormalizedModelExecutionProtocol } from '../../../types/aiTypes';
+import type { ImageModelCapability, NormalizedModelExecutionProtocol } from '../../../types/aiTypes';
+import { getImageSizePresets } from '../modelSizeProfiles';
 
 export const GOOGLE_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 
@@ -128,6 +129,7 @@ const GOOGLE_VEO_PROTOCOL: NormalizedModelExecutionProtocol = {
 export const GOOGLE_IMAGE_PROTOCOL = googleInteractionProtocol('image');
 const GOOGLE_IMAGE_LITE_PROTOCOL = googleInteractionProtocol('image', '1K');
 const GOOGLE_OMNI_VIDEO_PROTOCOL = googleInteractionProtocol('video');
+const GOOGLE_PRO_IMAGE_DIMENSIONS = getImageSizePresets('google-gemini-3-pro');
 
 export const GOOGLE_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   {
@@ -147,19 +149,31 @@ export const GOOGLE_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     executionProfile: { preset: 'openai-chat' },
   },
   ...([
-    { id: 'gemini-3.1-flash-lite-image', name: 'Gemini 3.1 Flash Lite Image', protocol: GOOGLE_IMAGE_LITE_PROTOCOL },
-    { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image', protocol: GOOGLE_IMAGE_PROTOCOL },
-    { id: 'gemini-3-pro-image', name: 'Gemini 3 Pro Image', protocol: GOOGLE_IMAGE_PROTOCOL },
+    { id: 'gemini-3.1-flash-lite-image', name: 'Gemini 3.1 Flash Lite Image', protocol: GOOGLE_IMAGE_LITE_PROTOCOL,
+      imageCapability: undefined },
+    { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image', protocol: GOOGLE_IMAGE_PROTOCOL,
+      imageCapability: undefined },
+    { id: 'gemini-3-pro-image', name: 'Gemini 3 Pro Image', protocol: GOOGLE_IMAGE_PROTOCOL,
+      imageCapability: {
+        resolutions: ['1K', '2K', '4K'], defaultResolution: '1K',
+        ratios: Object.keys(GOOGLE_PRO_IMAGE_DIMENSIONS['1K']), defaultRatio: '1:1',
+        dimensionPresets: GOOGLE_PRO_IMAGE_DIMENSIONS,
+        supportsBatch: false, maxBatchCount: 1,
+        // 当前 Interactions 合同只有文本 input；图片参考仍由显式原生快速模板配置。
+        supportsImageReference: false,
+      } },
   ] satisfies Array<{
     id: string;
     name: string;
     protocol: NormalizedModelExecutionProtocol;
-  }>).map(({ id, name, protocol }) => ({
+    imageCapability?: ImageModelCapability;
+  }>).map(({ id, name, protocol, imageCapability }) => ({
     id,
     name,
     category: 'image' as const,
     provider: 'google',
     description: 'Google 官方 Nano Banana 图片生成模型（当前接入文生图）',
+    imageCapability,
     executionProfile: {
       preset: 'custom' as const,
       protocol,

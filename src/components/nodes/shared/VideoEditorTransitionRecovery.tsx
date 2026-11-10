@@ -96,10 +96,8 @@ function VideoEditorTransitionRecovery({ projectId, anchorNodeId }: { projectId:
       setRecovering(false);
     }
   };
-  if (!tasks.length && !native) return null;
+  if (!tasks.length && !(native && nativeTasks.length)) return null;
   return <div className="ui-card nodrag nopan mt-2 flex flex-col gap-2 p-2">
-    {native && <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering}
-      onClick={() => setRefresh((value) => value + 1)}>检查转场任务</button>}
     {native && nativeTasks.map((task) => <div key={task.operationId} className="flex flex-col gap-1">
       <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={recovering || task.status !== 'submitted'}
         onClick={() => { void recoverNative(task); }}>{recovering ? '正在取回原转场…' : '取回 AI 转场'}</button>

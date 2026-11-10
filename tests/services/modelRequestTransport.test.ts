@@ -1819,6 +1819,28 @@ describe('LibAPI 音频合同与原任务交付', () => {
 });
 
 describe('image quick template request transport', () => {
+  it('keeps a saved provider-specific custom image protocol independent of catalog size defaults', async () => {
+    useAppStore.getState().saveProviderConfig('custom-apimart-image', {
+      name: 'Custom APIMart image', catalogId: 'apimart', apiKey: 'template-fixture', baseUrl: 'https://images.example/v1',
+      selectedModels: [{ id: 'gpt-image-2.5-flare', name: 'Custom image', category: 'image', provider: 'custom-apimart-image',
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync',
+          submit: { method: 'POST', path: '/custom/image', body: { prompt: '{{prompt}}', tier: '{{imageSize}}' } },
+          response: { type: 'json', result: { urlPath: 'data.*.url' } },
+        } } }],
+    });
+    const selected = useAppStore.getState().config.providers['custom-apimart-image'].selectedModels![0];
+    useAppStore.getState().addGeneralModel({ name: selected.name, modelId: selected.id, category: 'image',
+      providerConfigId: 'custom-apimart-image', executionProfile: selected.executionProfile });
+    const model = useAppStore.getState().config.generalModels!.find((item) => item.providerConfigId === 'custom-apimart-image')!;
+    const before = structuredClone(useAppStore.getState().config);
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ data: [{ url: 'https://cdn.example/custom.png' }] }));
+    await generateImagesBatch({ provider: 'general', model: `general/${model.id}`, prompt: 'Draw a cup', imageSize: 'HD' }, 1);
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledOnce();
+    expect(transportMocks.corsSafeFetch.mock.calls[0][0]).toBe('https://images.example/v1/custom/image');
+    expect(JSON.parse(String(transportMocks.corsSafeFetch.mock.calls[0][1].body))).toEqual({ prompt: 'Draw a cup', tier: 'HD' });
+    expect(useAppStore.getState().config).toEqual(before);
+  });
+
   function configureTemplate(templateId: string) {
     useAppStore.getState().saveProviderConfig('custom-template', {
       name: 'Custom images', catalogId: 'custom-openai', apiKey: 'template-fixture', baseUrl: 'https://images.example/v1',
@@ -1842,6 +1864,7 @@ describe('image quick template request transport', () => {
     ] } }] }));
     const result = await generateImagesBatch({ ...params, image_urls: references, imageSize: '2K', aspectRatio: '16:9' }, 1);
     expect(result.results[0].url).toBe('data:image/png;base64,aW1hZ2U=');
+    expect(result.results[0]).toMatchObject({ width: 2752, height: 1536 });
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
     const [url, init] = transportMocks.corsSafeFetch.mock.calls[0];
     expect(init.method).toBe('POST');

@@ -35,7 +35,9 @@ export interface SeedanceAutoTemplateMatch {
   executionProfile?: ModelExecutionProfile;
 }
 
-const FIXED_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
+/** 2.0（含 Fast/Mini）与 2.5 共用的常用画幅；渠道扩展和输入模式限制单独声明。 */
+export const SEEDANCE_COMMON_RATIOS = ['16:9', '9:16', '4:3', '3:4', '1:1'] as const;
+const FIXED_RATIOS = ['21:9', ...SEEDANCE_COMMON_RATIOS];
 const ALL_RATIOS = [...FIXED_RATIOS, 'adaptive'];
 const SD20_OPERATIONS = ['text-to-video', 'image-to-video', 'video-to-video'] as const;
 

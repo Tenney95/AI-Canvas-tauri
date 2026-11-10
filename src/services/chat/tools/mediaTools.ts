@@ -392,6 +392,7 @@ export function registerMediaAgentTools(): Array<() => void> {
         const capability = image ? {
           resolutions: image.resolutions, defaultResolution: image.defaultResolution,
           ratios: image.ratios, defaultRatio: image.defaultRatio,
+          dimensionPresets: image.dimensionPresets,
           qualities: image.qualities, defaultQuality: image.defaultQuality,
           backgrounds: image.backgrounds, defaultBackground: image.defaultBackground,
           backgroundIsFixed: image.backgroundIsFixed,

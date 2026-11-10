@@ -13,12 +13,13 @@ import { getGrsaiImageCapability } from './grsaiModels';
 import { MUSE_IMAGE_CAPABILITY, MUSE_IMAGE_MODEL } from './museModels';
 import { getProviderDefinition } from './providerCatalogService';
 import { isCccBananaModelId } from './cccProviderGroups';
-import { modelProtocolUsesVariable } from './modelProtocol';
+import { comparableProtocol, modelProtocolUsesVariable } from './modelProtocol';
 import { resolveToapisImageModelContract } from './providers/toapisModelManifest';
 import { getRelayonImageOutputsPerJob, resolveRelayonImageModelContract } from './providers/relayonModelManifest';
 import { getLibapiAudioCapability, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { getMinimaxAudioCapability, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
+import { getImageSizePresets, resolveImageDimensions } from './modelSizeProfiles';
 
 /* ── 生图能力表 ── */
 
@@ -80,26 +81,7 @@ const GPT_IMAGE_25_CAPABILITY: Omit<ImageCapability, 'modelId'> = {
   supportsImageReference: true,
   maxImageReferences: 16,
   supportsDataUrlReference: false,
-  dimensionPresets: {
-    '1k': {
-      '1:1': [1024, 1024], '3:2': [1536, 1024], '2:3': [1024, 1536],
-      '4:3': [1024, 768], '3:4': [768, 1024], '5:4': [1280, 1024], '4:5': [1024, 1280],
-      '16:9': [1536, 864], '9:16': [864, 1536], '2:1': [2048, 1024], '1:2': [1024, 2048],
-      '21:9': [2016, 864], '9:21': [864, 2016], '3:1': [1536, 512], '1:3': [512, 1536],
-    },
-    '2k': {
-      '1:1': [2048, 2048], '3:2': [2048, 1360], '2:3': [1360, 2048],
-      '4:3': [2048, 1536], '3:4': [1536, 2048], '5:4': [2560, 2048], '4:5': [2048, 2560],
-      '16:9': [2048, 1152], '9:16': [1152, 2048], '2:1': [2688, 1344], '1:2': [1344, 2688],
-      '21:9': [2688, 1152], '9:21': [1152, 2688], '3:1': [3072, 1024], '1:3': [1024, 3072],
-    },
-    '4k': {
-      '1:1': [2880, 2880], '3:2': [3520, 2336], '2:3': [2336, 3520],
-      '4:3': [3312, 2480], '3:4': [2480, 3312], '5:4': [3216, 2576], '4:5': [2576, 3216],
-      '16:9': [3840, 2160], '9:16': [2160, 3840], '2:1': [3840, 1920], '1:2': [1920, 3840],
-      '21:9': [3840, 1648], '9:21': [1648, 3840], '3:1': [3840, 1280], '1:3': [1280, 3840],
-    },
-  },
+  dimensionPresets: getImageSizePresets('apimart-gpt-2.5'),
 };
 
 /**
@@ -630,7 +612,9 @@ export function resolveImageParameterCapability(
   }
   if (generalModel) {
     // 自定义网关的同名模型不能继承其他厂商能力。
-    if (definition?.id === 'custom-openai') {
+    if (definition?.id === 'custom-openai' || definition?.id !== 'cccapi' && profile?.preset === 'custom'
+      && comparableProtocol(profile) !== comparableProtocol(catalogModel?.executionProfile)) {
+      if (definition?.id !== 'custom-openai' && !declared && !catalogModel) return undefined;
       const effective = imageCapabilityForProtocol({ modelId, resolutionStyle: 'none', ...declared }, profile);
       return { ...effective, resolutions: effective.resolutions ?? [], ratios: effective.ratios ?? [] };
     }
@@ -641,6 +625,10 @@ export function resolveImageParameterCapability(
   const standard = !profile || profile.preset === 'openai-image' || profile.preset === 'openai-gpt-image';
   let capability = imageCapabilityForProtocol({ modelId, resolutionStyle: fallback?.resolutionStyle ?? 'none',
     ...fallback, ...catalog, ...declared,
+    // 通用同名回退可能来自 APIMart；CCC 未声明精确像素时不得借用另一渠道的表。
+    ...(definition?.id === 'cccapi' ? {
+      dimensionPresets: catalogStandard ? catalog?.dimensionPresets : declared?.dimensionPresets ?? catalog?.dimensionPresets,
+    } : {}),
     ...(standard && definition?.id !== 'custom-openai' ? {
       qualities: parameterDeclaration?.qualities ?? catalog?.qualities ?? fallback?.qualities,
       defaultQuality: parameterDeclaration?.qualities ? parameterDeclaration.defaultQuality
@@ -653,7 +641,8 @@ export function resolveImageParameterCapability(
       backgrounds: declared?.backgrounds, defaultBackground: declared?.defaultBackground,
     }),
   }, profile);
-  if (definition?.id === 'cccapi' && isCccBananaModelId(modelId) && profile?.preset === 'custom') {
+  if (definition?.id === 'cccapi' && (isCccBananaModelId(modelId) || catalogModel?.executionProfile?.preset === 'custom')
+    && profile?.preset === 'custom') {
     const source = JSON.stringify(profile.protocol?.submit) ?? '';
     const mapsDimensions = modelProtocolUsesVariable(source, 'width') && modelProtocolUsesVariable(source, 'height');
     // 用户声明仍是权威；只有从目录继承的选项需要复核是否能进入改写后的请求。
@@ -671,6 +660,22 @@ export function resolveImageParameterCapability(
   if (!fallback && !catalog && !declared) return undefined;
   return { ...capability,
     ...(generalModel ? { resolutions: capability.resolutions ?? [], ratios: capability.ratios ?? [] } : {}) };
+}
+
+/** 生成沿用参数面板的有效合同，移除仅供隐藏控件的空数组，不把它们当成持久化声明。 */
+export function resolveImageExecutionCapability(
+  model: string | undefined,
+  provider: string | undefined,
+  config: Pick<AppConfig, 'providers' | 'generalModels'>,
+): ImageModelCapability | undefined {
+  const capability = resolveImageParameterCapability(model, provider, config);
+  if (!capability) return undefined;
+  return { ...capability,
+    resolutions: capability.resolutions?.length ? capability.resolutions : undefined,
+    ratios: capability.ratios?.length ? capability.ratios : undefined,
+    qualities: capability.qualities?.length ? capability.qualities : undefined,
+    backgrounds: capability.backgrounds?.length ? capability.backgrounds : undefined,
+  };
 }
 
 /** 旧自定义协议的固定参数保持固定；未映射时不能展示一个不会进入请求的可调控件。 */
@@ -694,26 +699,6 @@ function imageCapabilityForProtocol(
     };
   }
   return effective;
-}
-
-/** 将分辨率档位换算为像素短边，用于结果回填的尺寸。 */
-function shortSideFromResolution(resolution: string | undefined): number {
-  if (!resolution) return 1024;
-  const normalized = resolution.toLowerCase().trim();
-  const map: Record<string, number> = {
-    '0.5k': 512,
-    '1k': 1024, '1mp': 1024, '720p': 720, '720': 720,
-    '2k': 2048, '2mp': 1536, '3k': 3072, '3mp': 2048,
-    '4k': 4096, '4mp': 2560, '1.5k': 1536,
-  };
-  return map[normalized] ?? 1024;
-}
-
-function shortSideToDimensions(shortSide: number, ratio: string): { width: number; height: number } {
-  const [w, h] = ratio.split(':').map(Number);
-  if (!w || !h) return { width: shortSide, height: shortSide };
-  if (w >= h) return { width: Math.round(shortSide * (w / h)), height: shortSide };
-  return { width: shortSide, height: Math.round(shortSide * (h / w)) };
 }
 
 /**
@@ -775,13 +760,7 @@ export function buildImageCapabilityRequest(
     body.image_urls = imageUrls;
   }
 
-  // 优先使用厂商公布的像素；auto 仅用方图估算布局，实际尺寸由产物加载确认。
-  const presets = capability.dimensionPresets?.[resolution ?? ''];
-  const preset = presets?.[ratio] ?? (ratio === 'auto' ? presets?.['1:1'] : undefined);
-  const shortSide = shortSideFromResolution(resolution);
-  const dimensions = preset
-    ? { width: preset[0], height: preset[1] }
-    : shortSideToDimensions(shortSide, ratio);
+  const dimensions = resolveImageDimensions(capability, resolution, ratio);
 
   return { body, dimensions, requestedCount };
 }

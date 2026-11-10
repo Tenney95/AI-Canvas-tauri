@@ -146,6 +146,8 @@ export function assertImageModelCapability(capability: ImageModelCapability): vo
     for (const resolution of capability.resolutions ?? []) {
       const key = Object.keys(capability.dimensionPresets).find((value) => value.toLowerCase() === resolution.toLowerCase());
       for (const ratio of capability.ratios ?? []) {
+        // 动态画幅由输入/模型决定，不存在可要求补齐的固定像素。
+        if (['auto', 'adaptive', '自适应'].includes(ratio)) continue;
         if (!key || !capability.dimensionPresets[key][ratio]) {
           throw new Error(`图片参数 ${resolution} / ${ratio} 缺少像素尺寸映射，请重新应用相应模板`);
         }

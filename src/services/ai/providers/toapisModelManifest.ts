@@ -7,6 +7,7 @@ import type { ImageModelCapability, ModelExecutionProfile, NormalizedModelExecut
 import type { ModelProtocolVariables } from '../modelProtocol';
 import type { CanonicalVideoRequest } from '../videoRequestResolver';
 import { parseModelExecutionProtocol } from '../modelProtocolValidation';
+import { getImageSizePresets } from '../modelSizeProfiles';
 
 export const TOAPIS_TEXT_MODEL_IDS = [
   'gemini-3.8-flash', 'gemini-4-argon', 'qwen3.8-flash', 'deepseek-v4.1-flash',
@@ -61,17 +62,7 @@ function images(ids: string[], capability: ImageModelCapability, overrides: Mode
 }
 
 // VIP / official 的 size 是合法像素，而普通版 size 是比例。尺寸表只用于前者。
-const GPT_PIXEL_SIZES: NonNullable<ImageModelCapability['dimensionPresets']> = {
-  '1K': { '1:1': [1024, 1024], '3:2': [1536, 1024], '2:3': [1024, 1536],
-    '4:3': [1024, 768], '3:4': [768, 1024], '5:4': [1280, 1024], '4:5': [1024, 1280],
-    '16:9': [1536, 864], '9:16': [864, 1536], '21:9': [2016, 864] },
-  '2K': { '1:1': [2048, 2048], '3:2': [2048, 1360], '2:3': [1360, 2048],
-    '4:3': [2048, 1536], '3:4': [1536, 2048], '5:4': [2560, 2048], '4:5': [2048, 2560],
-    '16:9': [2048, 1152], '9:16': [1152, 2048], '21:9': [2688, 1152] },
-  '4K': { '1:1': [2880, 2880], '3:2': [3520, 2336], '2:3': [2336, 3520],
-    '4:3': [3312, 2480], '3:4': [2480, 3312], '5:4': [3216, 2576], '4:5': [2576, 3216],
-    '16:9': [3840, 2160], '9:16': [2160, 3840], '21:9': [3840, 1648] },
-};
+const GPT_PIXEL_SIZES = getImageSizePresets('toapis-gpt-2.5');
 const K_RESOLUTIONS = { resolutions: ['1K', '2K', '4K'], defaultResolution: '1K' };
 const METADATA_RESOLUTION: Body = { metadata: { resolution: '{{imageSize}}' } };
 const GPT_QUALITIES = ['low', 'medium', 'high'];

@@ -45,7 +45,7 @@ import { assertToapisImageInput, resolveToapisImageModelContract, toapisImageRef
 import { assertLibapiImageInput, libapiImageExecutionProfile, libapiImageVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { relayonImageVariables, resolveRelayonImageExecutionProfile, resolveRelayonImageModelContract, usesRelayonModelProtocol } from './providers/relayonModelManifest';
 import { aigcsiImageExecutionProfile, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
-import { resolveImageOutputsPerJob, resolveImageParameterCapability } from './mediaModelCapabilities';
+import { resolveImageOutputsPerJob, resolveImageExecutionCapability } from './mediaModelCapabilities';
 import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
 import { compileVideoReferencePrompt } from './referencePrompt';
 import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
@@ -210,7 +210,7 @@ export async function generateImagesBatch(
     id: modelName, modelId: modelName, name: selectedModel?.name ?? catalogModel?.name ?? modelName,
     category: 'image', providerConfigId: connectionId,
   } : undefined);
-  const parameterCapability = params.workflowId ? undefined : resolveImageParameterCapability(model, provider, config);
+  const parameterCapability = params.workflowId ? undefined : resolveImageExecutionCapability(model, provider, config);
   const imageQuality = resolveConfiguredImageQuality(parameterCapability, params.imageQuality);
   const imageBackground = resolveConfiguredImageBackground(parameterCapability, params.imageBackground);
   if (!params.workflowId && provider === 'dreamina' && params.aspectRatio !== undefined
@@ -220,13 +220,15 @@ export async function generateImagesBatch(
   // 已确认的内置合同优先，未知模型、自定义连接与工作流保持自己的协议。
   const builtInContract = params.workflowId ? undefined
     : resolveBuiltInImageRequestContract(providerDefinition, modelName, imageSize, aspectRatio, imageQuality, imageBackground);
-  const configuredCapability = !params.workflowId && !builtInContract
+  const declaredCapability = !params.workflowId && !builtInContract
     ? toapisContract?.imageCapability ?? relayonContract?.imageCapability ?? generalModel?.imageCapability
       ?? (isCccImage ? selectedModel?.imageCapability : undefined) : undefined;
+  const configuredCapability = !params.workflowId && !builtInContract ? parameterCapability ?? declaredCapability : undefined;
   if (!builtInContract && generalModel) {
+    // 显式声明仍接受完整协议校验；目录派生的布局/选项不冒充用户对全部协议字段的承诺。
     assertModelCapabilityProtocol({ id: generalModel.modelId, name: generalModel.name, category: 'image',
       provider: connectionId, executionProfile: effectiveProfile,
-      imageReferenceRequestMode: generalModel.imageReferenceRequestMode, imageCapability: configuredCapability });
+      imageReferenceRequestMode: generalModel.imageReferenceRequestMode, imageCapability: declaredCapability });
   }
   if (configuredCapability && generalModel) {
     ({ imageSize, aspectRatio } = resolveConfiguredImageParameters(configuredCapability,
@@ -436,7 +438,7 @@ export async function generateImagesBatch(
   // 通用模型与已适配直连节点共用声明式执行，不能因 provider 形态丢失协议或额外候选。
   if (declarativeModel && executionProfile) {
     const gm = declarativeModel;
-    const dimensions = resolveImageTemplateDimensions(configuredCapability, imageSize, aspectRatio);
+    const dimensions = resolveImageTemplateDimensions(parameterCapability ?? configuredCapability, imageSize, aspectRatio);
     const hasExplicitStandardRequestMode = allImageUrls.length > 0
       && imageReferenceRequestMode !== undefined
       && usesStandardImageRequest;
@@ -494,7 +496,7 @@ export async function generateImagesBatch(
       const connection = resolveGeneralModelConnection(model);
       if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
       if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-      const dimensions = resolveImageTemplateDimensions(configuredCapability, imageSize, aspectRatio);
+      const dimensions = resolveImageTemplateDimensions(parameterCapability ?? configuredCapability, imageSize, aspectRatio);
       const batch = await generateImageStandardBatch({
         apiKey: connection.apiKey,
         baseUrl: connection.baseUrl,

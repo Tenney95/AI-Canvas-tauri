@@ -7,6 +7,7 @@ import {
   isVolcengineSeedance25Model,
   isVolcengineSeedanceModel,
 } from '../../src/services/ai/volcengineVideoModels';
+import { SEEDANCE_COMMON_RATIOS } from '../../src/services/ai/seedanceModelCapabilities';
 
 describe('volcengine Seedance capability', () => {
   it.each([
@@ -31,7 +32,7 @@ describe('volcengine Seedance capability', () => {
     expect(capability?.modelId).toBe(modelId);
     expect(capability?.resolutions).toEqual(resolutions);
     expect(capability?.defaultResolution).toBe('720p');
-    expect(capability?.ratios).toEqual(['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive']);
+    expect(capability?.ratios).toEqual(['21:9', ...SEEDANCE_COMMON_RATIOS, 'adaptive']);
     expect(capability?.defaultRatio).toBe('16:9');
     expect(capability?.minDuration).toBe(4);
     expect(capability?.maxDuration).toBe(15);
@@ -46,7 +47,7 @@ describe('volcengine Seedance capability', () => {
     expect(capability?.modelId).toBe('doubao-seedance-2-5-260628');
     expect(capability?.resolutions).toEqual(['480p', '720p', '1080p']);
     expect(capability?.defaultResolution).toBe('720p');
-    expect(capability?.ratios).toContain('adaptive');
+    expect(capability?.ratios).toEqual(['21:9', ...SEEDANCE_COMMON_RATIOS, 'adaptive']);
     expect(capability?.defaultRatio).toBe('adaptive');
     expect(capability?.minDuration).toBe(4);
     expect(capability?.maxDuration).toBe(30);

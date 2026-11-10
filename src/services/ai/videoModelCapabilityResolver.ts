@@ -1,6 +1,6 @@
 /** 插件与批量规划共用的模型能力入口；未知模型不按名称猜测能力。 */
 import type { AppConfig } from '../../types';
-import type { NumericInputConstraint, VideoModelCapability, VideoParameterCapabilityOverride } from '../../types/aiTypes';
+import type { ModelExecutionProfile, NumericInputConstraint, VideoModelCapability, VideoParameterCapabilityOverride } from '../../types/aiTypes';
 import { getApimartSeedanceCapability, type ApimartSeedanceCapability } from './apimartVideoModels';
 import { getVolcengineSeedanceCapability } from './volcengineVideoModels';
 import { getDreaminaVideoCapability } from './dreaminaModels';
@@ -9,6 +9,19 @@ import { getGrsaiVideoCapability } from './grsaiModels';
 import { getModelProtocolPresetVideoCapability } from './modelProtocolPresets';
 import { SORA2U_MODEL_MANIFEST, withSora2uReferenceLimits } from './providers/sora2uModelManifest';
 import { resolveProviderCatalogId } from './providerPolicies';
+import { resolveRelayonVideoCapability } from './providers/relayonModelManifest';
+
+/** 参数面板、预检和生成共用有效合同；只做运行期投影，不改写已保存的连接。 */
+export function resolveConfiguredVideoCapability(
+  catalogId: string | undefined,
+  modelId: string,
+  profile?: ModelExecutionProfile,
+  capability?: VideoModelCapability,
+): VideoModelCapability | undefined {
+  const configured = capability ?? getModelProtocolPresetVideoCapability(profile);
+  if (catalogId === 'relayonapi') return resolveRelayonVideoCapability(modelId, profile, configured);
+  return catalogId === 'sora2u' ? withSora2uReferenceLimits(modelId, configured) : configured;
+}
 
 function safeRange(range: NumericInputConstraint | undefined): NumericInputConstraint | undefined {
   return range === undefined ? undefined : {
@@ -104,9 +117,8 @@ export function resolveVideoModelCapability(
   if (modelId.startsWith('general/')) {
     const general = config.generalModels?.find((model) => model.id === modelId.slice('general/'.length));
     if (!general || general.category !== 'video') return undefined;
-    const configured = general.videoCapability ?? getModelProtocolPresetVideoCapability(general.executionProfile);
     const catalogId = resolveProviderCatalogId(general.providerConfigId, config.providers[general.providerConfigId]);
-    const capability = catalogId === 'sora2u' ? withSora2uReferenceLimits(general.modelId, configured) : configured;
+    const capability = resolveConfiguredVideoCapability(catalogId, general.modelId, general.executionProfile, general.videoCapability);
     return capability ? safeCapability(capability) : undefined;
   }
 
@@ -143,10 +155,10 @@ export function resolveVideoModelCapability(
     const selected = config.providers[provider]?.selectedModels?.find((model) => (
       model.category === 'video' && (model.id === rawId || model.id === modelId)
     ));
-    capability = selected?.videoCapability ?? getModelProtocolPresetVideoCapability(selected?.executionProfile);
-    if (!capability && catalogId === 'sora2u') {
-      capability = SORA2U_MODEL_MANIFEST.find((model) => model.category === 'video' && model.id === rawId)?.videoCapability;
-    }
+    const configured = selected?.videoCapability ?? getModelProtocolPresetVideoCapability(selected?.executionProfile)
+      ?? (catalogId === 'sora2u'
+        ? SORA2U_MODEL_MANIFEST.find((model) => model.category === 'video' && model.id === rawId)?.videoCapability : undefined);
+    capability = resolveConfiguredVideoCapability(catalogId, rawId, selected?.executionProfile, configured);
   }
   if (catalogId === 'sora2u') capability = withSora2uReferenceLimits(rawId, capability);
   return capability ? safeCapability(capability) : undefined;

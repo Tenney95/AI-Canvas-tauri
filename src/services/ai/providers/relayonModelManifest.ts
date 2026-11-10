@@ -10,6 +10,8 @@ import type { ProviderModelSelection } from '../../../types';
 import type { ImageModelCapability, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue, VideoModelCapability } from '../../../types/aiTypes';
 import type { ModelProtocolVariables } from '../modelProtocolTypes';
 import { comparableProtocol } from '../modelProtocol';
+import { getImageSizePresets } from '../modelSizeProfiles';
+import { SEEDANCE_COMMON_RATIOS } from '../seedanceModelCapabilities';
 
 export const RELAYON_BASE_URL = 'https://relayonapi.com/v1';
 
@@ -47,33 +49,9 @@ export const RELAYON_IMAGE_REFERENCE_LIMIT = 6;
 
 type ImageDimensions = NonNullable<ImageModelCapability['dimensionPresets']>;
 type PixelPair = readonly [number, number];
-type PixelTiers = readonly [PixelPair, PixelPair, PixelPair];
 
-// 官网逐档尺寸表；不是按比例或像素长边推算的通用尺寸。
-const IMAGE_COMMON_PIXELS: Record<string, PixelTiers> = {
-  '1:1': [[1024, 1024], [2048, 2048], [2880, 2880]],
-  '4:3': [[1152, 864], [2048, 1536], [3264, 2448]],
-  '3:2': [[1248, 832], [2016, 1344], [3456, 2304]],
-  '16:9': [[1280, 720], [2048, 1152], [3840, 2160]],
-  '21:9': [[1344, 576], [2016, 864], [3808, 1632]],
-  '3:4': [[864, 1152], [1536, 2048], [2448, 3264]],
-  '2:3': [[832, 1248], [1344, 2016], [2304, 3456]],
-  '9:16': [[720, 1280], [1152, 2048], [2160, 3840]],
-};
-
-function imagePixelTiers(rows: Record<string, PixelTiers>): ImageDimensions {
-  return Object.fromEntries(['1K', '2K', '4K'].map((resolution, index) => [resolution,
-    Object.fromEntries(Object.entries(rows).map(([ratio, sizes]) => [ratio, [...sizes[index]] as [number, number]])),
-  ]));
-}
-
-const IMAGE_2_PIXELS = imagePixelTiers({ ...IMAGE_COMMON_PIXELS,
-  '9:21': [[576, 1344], [864, 2016], [1632, 3808]],
-});
-const IMAGE_25_PIXELS = imagePixelTiers({ ...IMAGE_COMMON_PIXELS,
-  '4:5': [[1024, 1280], [1600, 2048], [2304, 2880]],
-  '5:4': [[1280, 1024], [2048, 1600], [2880, 2304]],
-});
+const IMAGE_2_PIXELS = getImageSizePresets('relayon-image-2');
+const IMAGE_25_PIXELS = getImageSizePresets('relayon-image-2.5');
 const BANANA_1K_PIXELS: Record<string, PixelPair> = {
   '1:1': [1024, 1024], '2:3': [832, 1248], '3:2': [1248, 832], '3:4': [864, 1152],
   '4:3': [1152, 864], '4:5': [1024, 1280], '5:4': [1280, 1024], '9:16': [720, 1280],
@@ -155,12 +133,15 @@ function videoModel(id: string, name: string, capability: VideoModelCapability, 
   return { id, name, provider: 'relayonapi', category: 'video',
     inputModalities: capability.maxImageReferences === 0 ? ['text'] : ['text', 'image'],
     videoCapability: { defaultRatio: '16:9', defaultDuration: capability.minDuration,
-      ...capability }, executionProfile: { preset: 'custom', protocol: videoProtocol(body) } };
+      ...capability,
+      // 万象已确认的 Seedance 别名统一复用型号画幅；H3 保持自己的渠道能力。
+      ...(id !== 'minimax-h3' ? { ratios: [...SEEDANCE_COMMON_RATIOS] } : {}),
+    }, executionProfile: { preset: 'custom', protocol: videoProtocol(body) } };
 }
 
 function officialVideo(id: string, name: string, maxDuration: number, resolutions: string[]): ProviderModelSelection {
   return videoModel(id, name, { operations: ['text-to-video'], minDuration: 4, maxDuration,
-    resolutions, defaultResolution: resolutions[0], ratios: ['16:9'], supportsAudio: true,
+    resolutions, defaultResolution: resolutions[0], supportsAudio: true,
     maxImageReferences: 0, maxVideoReferences: 0, maxAudioReferences: 0 }, {
     model: '{{model}}', prompt: '{{prompt}}', seconds: '{{durationText}}',
     metadata: { resolution: '{{resolution}}', ratio: '{{aspectRatio}}', generate_audio: '{{generateAudio}}' },
@@ -173,7 +154,7 @@ function referenceVideo(
 ): ProviderModelSelection {
   return videoModel(id, name, {
     operations: ['text-to-video', 'image-to-video', 'video-to-video'], minDuration: 4, maxDuration,
-    resolutions: ['480p', '720p', '1080p'], defaultResolution: '480p', ratios: ['16:9'], supportsAudio: true,
+    resolutions: ['480p', '720p', '1080p'], defaultResolution: '480p', supportsAudio: true,
     // 应用首批只开放已核对的组合，不将未公开的纯音频输入当成厂商能力。
     supportsStandaloneAudio: false,
     ...overrides,
@@ -229,6 +210,10 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
 ];
 
 const MODEL_BY_ID = new Map(RELAYON_MODEL_MANIFEST.map((model) => [model.id, model]));
+const LEGACY_SINGLE_RATIO_MODELS = new Set([
+  'doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-mini-260615',
+  'doubao-seedance-2-5-260628', 'sd-2.0-A', 'sd-2.5-A', 'sd-2.5-c1',
+]);
 
 /** 认证目录仅决定可用性；保留真实连接身份，合同取已核对快照，不接受猜测别名。 */
 export function matchRelayonCatalog(models: readonly ProviderModelSelection[]): ProviderModelSelection[] {
@@ -269,6 +254,24 @@ export function usesRelayonModelProtocol(modelId: string, profile: ModelExecutio
   delete previous.protocol.response.result!.base64Path;
   delete previous.protocol.response.result!.mimeType;
   return actual === comparableProtocol(previous);
+}
+
+/** 只补正内置 Seedance 合同的旧单画幅快照；不迁移配置或改写节点已选值。 */
+export function resolveRelayonVideoCapability(
+  modelId: string, profile?: ModelExecutionProfile, capability?: VideoModelCapability,
+): VideoModelCapability | undefined {
+  const known = MODEL_BY_ID.get(modelId);
+  if (known?.category !== 'video' || modelId === 'minimax-h3' || !usesRelayonModelProtocol(modelId, profile)) return capability;
+  if (!capability) return structuredClone(known.videoCapability);
+  if (capability.defaultRatio !== undefined && capability.defaultRatio !== '16:9') return capability;
+  if (capability.ratios !== undefined) {
+    if (!LEGACY_SINGLE_RATIO_MODELS.has(modelId) || capability.ratios.length !== 1 || capability.ratios[0] !== '16:9') return capability;
+  }
+  // 只修复确实发过的完整旧快照；部分声明及已修改的时长、素材或模式不自动扩宽。
+  const fields = Object.keys({ ...known.videoCapability, ...capability }) as (keyof VideoModelCapability)[];
+  if (fields.some((key) => key !== 'ratios' && key !== 'defaultRatio'
+    && JSON.stringify(capability[key]) !== JSON.stringify(known.videoCapability?.[key]))) return capability;
+  return { ...capability, ratios: [...SEEDANCE_COMMON_RATIOS] };
 }
 
 /** 固定四候选只属于真实内置合同，不按相同名称改写用户自定义协议的交付语义。 */

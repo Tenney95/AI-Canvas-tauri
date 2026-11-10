@@ -14,6 +14,8 @@ import {
   GOOGLE_MODEL_MANIFEST,
 } from '../../src/services/ai/providers/googleModelManifest';
 import type { ModelExecutionProtocol } from '../../src/types/aiTypes';
+import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabilityValidation';
+import { resolveImageTemplateDimensions } from '../../src/services/ai/imageModelTemplates';
 
 function protocolFor(modelId: string): ModelExecutionProtocol {
   const protocol = GOOGLE_MODEL_MANIFEST.find((model) => model.id === modelId)
@@ -57,6 +59,17 @@ describe('Google Gemini 官方模型清单', () => {
     for (const model of GOOGLE_MODEL_MANIFEST.filter((item) => item.category !== 'text')) {
       expect(validateModelExecutionProtocol(model.executionProfile?.protocol), model.id).toEqual([]);
     }
+  });
+
+  it('仅给精确 3 Pro 型号挂接完整官方尺寸，不把 Flash Lite 或未核对的 512 表当作同一型号', () => {
+    const pro = GOOGLE_MODEL_MANIFEST.find((model) => model.id === 'gemini-3-pro-image')!;
+    expect(pro.imageCapability).toMatchObject({
+      resolutions: ['1K', '2K', '4K'], supportsBatch: false, supportsImageReference: false,
+    });
+    expect(() => assertModelCapabilityProtocol(pro)).not.toThrow();
+    expect(resolveImageTemplateDimensions(pro.imageCapability, '4K', '16:9')).toEqual({ width: 5504, height: 3072 });
+    expect(GOOGLE_MODEL_MANIFEST.find((model) => model.id === 'gemini-3.1-flash-lite-image')?.imageCapability).toBeUndefined();
+    expect(GOOGLE_MODEL_MANIFEST.find((model) => model.id === 'gemini-3.1-flash-image')?.imageCapability).toBeUndefined();
   });
 
   it('从 OpenAI 兼容基址向同源 Interactions API 生成图片请求', () => {

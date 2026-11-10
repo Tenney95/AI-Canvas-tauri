@@ -143,6 +143,30 @@ describe('RelayOnAPI 视频渠道与原任务交付', () => {
     return { model: `general/${model.id}`, provider: 'general', prompt: '缓慢推进的镜头' };
   }
 
+  it.each([
+    { modelId: 'doubao-seedance-2-0-260128', ratio: '4:3', body: { metadata: { ratio: '4:3' } } },
+    { modelId: 'sd-2.0-A', ratio: '9:16', body: { output: { aspect_ratio: '9:16' } } },
+    { modelId: 'sd-2.5-c1', ratio: '4:3', body: { output: { aspect_ratio: '4:3' } } },
+  ])('旧 $modelId 单比例快照允许选择 $ratio 并按原渠道提交', async ({ modelId, ratio, body }) => {
+    const params = configure(modelId);
+    const id = params.model.slice('general/'.length);
+    const saved = useAppStore.getState().config.generalModels!.find((item) => item.id === id)!;
+    useAppStore.getState().updateGeneralModel(id, { videoCapability: {
+      ...saved.videoCapability, ratios: ['16:9'], defaultRatio: '16:9',
+    } });
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ id: 'legacy-ratio-task' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'completed', url: 'https://cdn.example/legacy-ratio.mp4' })));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(generateVideo({ ...params, seedanceDuration: 10, seedanceResolution: '720p', seedanceRatio: ratio }))
+      .resolves.toMatchObject({ url: 'https://cdn.example/legacy-ratio.mp4' });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://relayonapi.com/v1/videos', 'https://relayonapi.com/v1/videos/legacy-ratio-task',
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({ model: modelId, ...body });
+    expect(useAppStore.getState().config.generalModels!.find((item) => item.id === id)?.videoCapability?.ratios)
+      .toEqual(['16:9']);
+  });
+
   it('H3 使用当前视频组 Key，按原任务鉴权下载，界面 2K 映射为请求 2k', async () => {
     const params = configure('minimax-h3');
     useAppStore.setState((state) => ({ currentProjectId: 'relayon-h3-project', nodes: [{

@@ -52,7 +52,6 @@ import { getApimartSeedanceCapability, type ApimartSeedanceCapability } from './
 import { pollVolcengineVideoTask } from './providers/volcengineVideoQuery';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import {
-  getModelProtocolPresetVideoCapability,
   normalizeFrames8n1,
   resolveModelExecutionProfile,
   type ModelProtocolVariables,
@@ -92,7 +91,7 @@ import { createBillingRun, updateBillingRun } from '../billing/volcengineBilling
 import { assertToapisVideoInput, toapisVideoVariables } from './providers/toapisModelManifest';
 import { assertLibapiVideoInput, libapiVideoVariables, usesLibapiModelProtocol } from './providers/libapiModelManifest';
 import { aigcsiVideoVariables, usesAigcsiModelProtocol } from './providers/aigcsiModelManifest';
-import { withSora2uReferenceLimits } from './providers/sora2uModelManifest';
+import { resolveConfiguredVideoCapability } from './videoModelCapabilityResolver';
 import { minimaxVideoVariables, resolveMinimaxBaseUrl, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 
 export { compileVideoReferencePrompt } from './referencePrompt';
@@ -831,10 +830,7 @@ export async function generateVideo(
     const publicUrlProvider = policy.upload || (usesRelayonProtocol && policy.referenceTransport === 'public-url')
       ? connection.providerConfigId : undefined;
     const usesLibapiProtocol = isLibapi && usesLibapiModelProtocol(gm.modelId, gm.executionProfile);
-    const configuredVideoCapability = gm.videoCapability
-      ?? getModelProtocolPresetVideoCapability(gm.executionProfile);
-    const videoCapability = catalogId === 'sora2u'
-      ? withSora2uReferenceLimits(gm.modelId, configuredVideoCapability) : configuredVideoCapability;
+    const videoCapability = resolveConfiguredVideoCapability(catalogId, gm.modelId, gm.executionProfile, gm.videoCapability);
     const referenceInput = await resolveVideoReferenceInput(
       rawPrompt,
       params.nodeId,

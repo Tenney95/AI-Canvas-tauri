@@ -43,7 +43,7 @@ import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from './providers/minimaxMod
 import { assertImageModelCapability, isModelProtocolPresetId } from './modelCapabilityValidation';
 import { validateModelExecutionProtocol } from './modelProtocolValidation';
 import { comparableProtocol } from './modelProtocol';
-import { CCC_BANANA_MODEL_IDS, filterCccGroupModels, isCccBananaModelId } from './cccProviderGroups';
+import { CCC_BANANA_MODEL_IDS, filterCccGroupModels } from './cccProviderGroups';
 import { filterRelayonGroupPricing } from './relayonProviderGroups';
 import {
   GOOGLE_GEMINI_BASE_URL,
@@ -218,7 +218,8 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     id, name: id, category: 'image', provider: 'cccapi',
     description: 'CCC Gemini 原生文生图与参考编辑，参考图片通过 inlineData 完整发送',
     inputModalities: ['text', 'image'],
-    ...(isCccBananaModelId(id) ? { imageCapability: {
+    // 同一原生合同的旧 Pro／3.x 别名沿用现行香蕉档位，不退回通用旧表的单项 1K。
+    ...(id !== 'gemini-2.5-flash-image' ? { imageCapability: {
       resolutions: ['1K', '2K', '4K'], defaultResolution: '1K',
       ratios: ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '4:5', '5:4', '21:9'], defaultRatio: '1:1',
     } } : {}),

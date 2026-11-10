@@ -27,7 +27,7 @@ import { getDreaminaVideoCapability } from '../../../services/ai/dreaminaModels'
 import { MUSE_VIDEO_CAPABILITY, MUSE_VIDEO_MODEL } from '../../../services/ai/museModels';
 import { getGrsaiVideoCapability } from '../../../services/ai/grsaiModels';
 import { AUTODL_H3_WORKFLOW } from '../../../services/workflowApi/autodlWorkflowManifest';
-import { getModelProtocolPresetVideoCapability } from '../../../services/ai/modelProtocol';
+import { resolveConfiguredVideoCapability } from '../../../services/ai/videoModelCapabilityResolver';
 import { getProviderDefinition } from '../../../services/ai/providerCatalogService';
 import {
   resolveVideoDurationSeconds,
@@ -411,7 +411,7 @@ export default function VideoParamSelector({
   const generalModel = useMemo(() => {
     return resolveGeneralVideoModel(generalModels, selectedModel, provider);
   }, [generalModels, provider, selectedModel]);
-  const settingsConnectionId = provider === 'general' ? generalModel?.providerConfigId : provider;
+  const settingsConnectionId = generalModel?.providerConfigId ?? provider;
   const settingsConnection = useAppStore((state) => (
     settingsConnectionId ? state.config.providers[settingsConnectionId] : undefined
   ));
@@ -419,8 +419,9 @@ export default function VideoParamSelector({
     ? generalModel?.modelId
     : settingsConnectionId && selectedModel?.startsWith(`${settingsConnectionId}/`)
       ? selectedModel.slice(settingsConnectionId.length + 1) : selectedModel;
+  const settingsDefinition = settingsConnectionId ? getProviderDefinition(settingsConnectionId, settingsConnection) : undefined;
   const settingsModel = settingsConnectionId && settingsConnection
-    && getProviderDefinition(settingsConnectionId, settingsConnection)?.id === 'custom-openai'
+    && settingsDefinition?.id === 'custom-openai'
     ? settingsConnection.selectedModels?.find((model) => model.id === settingsModelId && model.category === 'video')
     : undefined;
 
@@ -436,8 +437,8 @@ export default function VideoParamSelector({
   const grsaiCapability = provider === 'grsai'
     ? getGrsaiVideoCapability(selectedModel, seedanceResolution) : undefined;
   const generalCapability = generalModel
-    ? generalModel.videoCapability
-      ?? getModelProtocolPresetVideoCapability(generalModel.executionProfile)
+    ? resolveConfiguredVideoCapability(settingsDefinition?.id, generalModel.modelId,
+      generalModel.executionProfile, generalModel.videoCapability)
     : provider === 'muse' && selectedModel?.replace(/^muse\//, '') === MUSE_VIDEO_MODEL
       ? MUSE_VIDEO_CAPABILITY : undefined;
   // 原生模型和通用模型共享参数面板，但通用模型不再经过会补齐 Seedance 默认值的能力视图。

@@ -12,6 +12,59 @@ import { findUnusedReferenceVariables } from '../../src/services/ai/modelProtoco
 import { readModelProtocolUrls } from '../../src/services/ai/modelProtocolResponse';
 import { resolvePoll } from '../../src/services/ai/modelProtocolPoll';
 import type { ProviderModelSelection } from '../../src/types';
+import { getImageSizePresets, resolveImageDimensions } from '../../src/services/ai/modelSizeProfiles';
+
+describe('shared image size profiles', () => {
+  it('preserves each channel table and returns isolated editable copies', () => {
+    expect(getImageSizePresets('openai-gpt')['1K']['2:1']).toEqual([1536, 768]);
+    expect(getImageSizePresets('apimart-gpt-2.5')['1k']['2:1']).toEqual([2048, 1024]);
+    expect(getImageSizePresets('toapis-gpt-2.5')['1K']['2:1']).toBeUndefined();
+    expect(getImageSizePresets('openai-gpt')['4K']['3:2']).toEqual([3520, 2336]);
+    expect(getImageSizePresets('relayon-image-2.5')['4K']['3:2']).toEqual([3456, 2304]);
+    expect(getImageSizePresets('relayon-image-2')['1K']['9:21']).toEqual([576, 1344]);
+    expect(getImageSizePresets('relayon-image-2.5')['1K']['9:21']).toBeUndefined();
+    const edited = getImageSizePresets('openai-gpt');
+    edited['2K']['1:1'] = [1, 1];
+    expect(getImageSizePresets('openai-gpt')['2K']['1:1']).toEqual([2048, 2048]);
+    expect(getImageSizePresets('apimart-gpt-2.5')['2k']['1:1']).toEqual([2048, 2048]);
+  });
+
+  it.each([
+    ['512', 512], ['0.5K', 512], ['1.5K', 1536], ['3K', 3072], ['2MP', 1536], ['4MP', 2560],
+  ])('uses the same known %s dimensions through the template entry', (resolution, size) => {
+    expect(resolveImageDimensions(undefined, String(resolution), '1:1')).toEqual({ width: size, height: size });
+    expect(resolveImageTemplateDimensions(undefined, String(resolution), '1:1')).toEqual({ width: size, height: size });
+  });
+
+  it('requires declared mappings and keeps adaptive dimensions as a square layout estimate', () => {
+    const capability = { dimensionPresets: getImageSizePresets('apimart-gpt-2.5') };
+    expect(resolveImageDimensions(capability, '4K', '16:9')).toEqual({ width: 3840, height: 2160 });
+    expect(resolveImageDimensions(capability, '4K', 'auto')).toEqual({ width: 2880, height: 2880 });
+    expect(resolveImageDimensions(capability, '4K', 'adaptive')).toEqual({ width: 2880, height: 2880 });
+    expect(resolveImageDimensions({ dimensionPresets: { '2K': { '16:9': [2048, 1152] } } }, '2K', 'auto'))
+      .toEqual({ width: 2048, height: 2048 });
+    expect(resolveImageDimensions(undefined, '1536x1024', '3:2')).toEqual({ width: 1536, height: 1024 });
+    expect(() => resolveImageDimensions(capability, '4K', '8:1')).toThrow('缺少像素尺寸映射');
+    expect(resolveImageDimensions(undefined, 'HD', '1:1')).toEqual({ width: 1024, height: 1024 });
+  });
+
+  it('keeps verified Google model sizes distinct from other channels and older models', () => {
+    const original = getImageSizePresets('google-gemini-2.5-flash');
+    const pro = getImageSizePresets('google-gemini-3-pro');
+    const nano21 = getImageSizePresets('google-nano-banana-2.1');
+    expect(Object.keys(original)).toEqual(['1K']);
+    expect(original['1K']['16:9']).toEqual([1344, 768]);
+    expect(original['1K']['3:4']).toEqual([864, 1184]);
+    expect(pro['1K']['16:9']).toEqual([1376, 768]);
+    expect(pro['2K']['16:9']).toEqual([2752, 1536]);
+    expect(pro['4K']['16:9']).toEqual([5504, 3072]);
+    expect(pro['1K']['1:8']).toBeUndefined();
+    expect(nano21['1K']['1:8']).toEqual([384, 3072]);
+    expect(nano21['4K']['1:8']).toEqual([1536, 12288]);
+    expect(nano21['4K']['21:9']).toEqual([6336, 2688]);
+    expect(nano21['512']).toBeUndefined();
+  });
+});
 
 describe('explicit image quick templates', () => {
   it.each(IMAGE_QUICK_ADAPT_OPTIONS)('keeps $id capability and protocol consistent', ({ id }) => {
@@ -66,6 +119,26 @@ describe('explicit image quick templates', () => {
     expect(createImageQuickAdaptTemplate('banana-pro:apimart').imageCapability!.maxImageReferences).toBe(14);
     expect(createImageQuickAdaptTemplate('gpt-2:images-json').imageCapability!.maxImageReferences).toBe(8);
     expect(createImageQuickAdaptTemplate('gpt-2:apimart').imageCapability!.maxBatchCount).toBe(1);
+  });
+
+  it.each(['google', 'gemini-relay'])('uses complete official tables only in explicit %s templates', (transport) => {
+    const original = createImageQuickAdaptTemplate(`banana:${transport}`).imageCapability!;
+    const pro = createImageQuickAdaptTemplate(`banana-pro:${transport}`).imageCapability!;
+    const nano21 = createImageQuickAdaptTemplate(`banana-2.1:${transport}`).imageCapability!;
+    expect(resolveImageTemplateDimensions(original, '1K', '16:9')).toEqual({ width: 1344, height: 768 });
+    expect(resolveImageTemplateDimensions(pro, '4K', '16:9')).toEqual({ width: 5504, height: 3072 });
+    expect(resolveImageTemplateDimensions(nano21, '2K', '1:8')).toEqual({ width: 768, height: 6144 });
+    expect(createImageQuickAdaptTemplate(`banana-2:${transport}`).imageCapability?.dimensionPresets).toBeUndefined();
+    expect(resolveImageTemplateDimensions(undefined, '512', '21:9')).toEqual({ width: 1195, height: 512 });
+    for (const variant of ['banana', 'banana-pro', 'banana-2', 'banana-2.1']) {
+      expect(createImageQuickAdaptTemplate(`${variant}:apimart`).imageCapability?.dimensionPresets).toBeUndefined();
+    }
+  });
+
+  it('uses the APIMart 2.5 size contract without assuming the unconfirmed GPT Image 2 table', () => {
+    const capability = createImageQuickAdaptTemplate('gpt-2.5:apimart').imageCapability!;
+    expect(resolveImageTemplateDimensions(capability, '1k', '2:1')).toEqual({ width: 2048, height: 1024 });
+    expect(createImageQuickAdaptTemplate('gpt-2:apimart').imageCapability?.dimensionPresets).toBeUndefined();
   });
 
   it.each([

@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { normalizeSeedreamSize } from '../../src/services/ai/helpers';
-import { buildImageCapabilityRequest, getImageCapability, resolveAudioParameterCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
+import { buildImageCapabilityRequest, getImageCapability, resolveAudioParameterCapability, resolveImageExecutionCapability, resolveImageOutputsPerJob, resolveImageParameterCapability } from '../../src/services/ai/mediaModelCapabilities';
 import { assertConfiguredImageReferences, assertImageModelCapability, assertModelCapabilityProtocol, resolveConfiguredImageParameters } from '../../src/services/ai/modelCapabilityValidation';
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
 import { RELAYON_MIDJOURNEY_MODEL_IDS, RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
@@ -11,6 +11,30 @@ import { resolveMinimaxExecutionProfile } from '../../src/services/ai/providers/
 import { LIBAPI_MODEL_MANIFEST } from '../../src/services/ai/providers/libapiModelManifest';
 import { MUSE_IMAGE_MODEL, MUSE_MODEL_MANIFEST } from '../../src/services/ai/museModels';
 import type { ImageModelCapability, ModelExecutionProfile, ProtocolJsonValue } from '../../src/types/aiTypes';
+import { resolveImageTemplateDimensions } from '../../src/services/ai/imageModelTemplates';
+
+describe('shared image request dimensions', () => {
+  it('uses the effective parameter contract in execution without persisting UI-only empty options', () => {
+    const config = { providers: { custom: { name: 'Custom', catalogId: 'custom-openai', apiKey: '' } },
+      generalModels: [{ id: 'unconfigured', name: 'Unconfigured', modelId: 'private', category: 'image' as const, providerConfigId: 'custom' }] };
+    expect(resolveImageParameterCapability('general/unconfigured', 'general', config)).toMatchObject({ resolutions: [], ratios: [] });
+    const capability = resolveImageExecutionCapability('general/unconfigured', 'general', config)!;
+    expect(capability.resolutions).toBeUndefined();
+    expect(capability.ratios).toBeUndefined();
+    expect(() => assertImageModelCapability(capability)).not.toThrow();
+    expect(config.generalModels[0]).not.toHaveProperty('imageCapability');
+  });
+
+  it.each([
+    ['flux-2-pro', '2MP', '16:9'],
+    ['doubao-seedream-5.0-lite', '3K', '3:2'],
+    ['apimart/gpt-image-2.5-flare', '4K', '16:9'],
+  ])('matches template and built-in dimensions for %s', (model, resolution, ratio) => {
+    const capability = getImageCapability(model)!;
+    const request = buildImageCapabilityRequest(model, 'draw', { resolution, ratio });
+    expect(request!.dimensions).toEqual(resolveImageTemplateDimensions(capability, resolution, ratio));
+  });
+});
 
 describe('真实连接的音频参数能力', () => {
   it.each(['speech-2.8-hd', 'speech-2.8-turbo'])('%s 的声音、格式与语速来自官方精确合同且不修改保存配置', (modelId) => {
@@ -266,6 +290,22 @@ import { getProviderDefinition } from '../../src/services/ai/providerCatalogServ
 import type { AppConfig } from '../../src/types';
 
 describe('CCC 当前香蕉分辨率', () => {
+  it.each(['gemini-3-pro-image-preview', 'nano-banana-pro'])('旧 CCC %s 复用现行三档，保留其他渠道的独立能力', (modelId) => {
+    const config = { providers: { saved: { name: 'CCC', catalogId: 'cccapi', apiKey: '' } },
+      generalModels: [{ id: 'legacy', modelId, name: modelId, category: 'image' as const, providerConfigId: 'saved' }] };
+    expect(resolveImageParameterCapability('general/legacy', 'general', config)?.resolutions).toEqual(['1K', '2K', '4K']);
+    expect(resolveImageExecutionCapability('general/legacy', 'general', config)?.resolutions).toEqual(['1K', '2K', '4K']);
+    expect(getImageCapability(`google/${modelId}`)?.resolutions).toEqual(['1K']);
+  });
+
+  it('CCC 标准 Images 不继承 APIMart 的同名像素表', () => {
+    const config = { providers: { saved: { name: 'CCC', catalogId: 'cccapi', apiKey: '' } },
+      generalModels: [{ id: 'legacy', modelId: 'gpt-image-2.5-sunburst', name: 'Sunburst', category: 'image' as const, providerConfigId: 'saved' }] };
+    expect(resolveImageParameterCapability('general/legacy', 'general', config)?.dimensionPresets).toBeUndefined();
+    expect(resolveImageExecutionCapability('general/legacy', 'general', config)?.dimensionPresets).toBeUndefined();
+    expect(getImageCapability('apimart/gpt-image-2.5-sunburst')?.dimensionPresets).toBeDefined();
+  });
+
   function customCccConfig(modelId: string, body: ProtocolJsonValue, imageCapability?: ImageModelCapability): Pick<AppConfig, 'providers' | 'generalModels'> {
     const executionProfile: ModelExecutionProfile = { preset: 'custom', protocol: { version: 2, mode: 'sync',
       submit: { method: 'POST', path: '/my-image', body },
@@ -280,7 +320,7 @@ describe('CCC 当前香蕉分辨率', () => {
     };
   }
 
-  it.each(['Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1'])(
+  it.each(['Nano-Banana-pro', 'Nano-Banana-2', 'Nano-Banana-2.1', 'nano-banana-pro', 'gemini-3-pro-image-preview'])(
     '%s 的 prompt-only 自定义协议不继承目录档位或比例，通用及直连一致', (modelId) => {
       const config = customCccConfig(modelId, { prompt: '{{prompt}}' });
       const saved = structuredClone(config);

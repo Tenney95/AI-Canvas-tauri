@@ -17,6 +17,7 @@ import {
   relayonVideoVariables,
   resolveRelayonImageExecutionProfile,
   resolveRelayonImageModelContract,
+  resolveRelayonVideoCapability,
   usesRelayonModelProtocol,
   getRelayonImageOutputsPerJob,
 } from '../../src/services/ai/providers/relayonModelManifest';
@@ -24,7 +25,7 @@ import { assertModelCapabilityProtocol } from '../../src/services/ai/modelCapabi
 import { buildModelProtocolRequest, validateModelExecutionProtocol } from '../../src/services/ai/modelProtocol';
 import { assertVideoModelCapability } from '../../src/services/ai/videoRequestResolver';
 import { findUnusedReferenceVariables } from '../../src/services/ai/modelProtocolRuntime';
-import type { ImageModelCapability, ModelExecutionProfile, ProtocolJsonValue } from '../../src/types/aiTypes';
+import type { ImageModelCapability, ModelExecutionProfile, ProtocolJsonValue, VideoModelCapability } from '../../src/types/aiTypes';
 
 function remote(id: string): ProviderModelSelection {
   return { id, name: id, provider: 'relayon-personal', category: 'text' };
@@ -101,6 +102,114 @@ function model(id: string): ProviderModelSelection {
   if (!known) throw new Error(`missing fixture: ${id}`);
   return known;
 }
+
+const SEEDANCE_VIDEO_IDS = RELAYON_VIDEO_MODEL_IDS.filter((id) => id !== 'minimax-h3');
+const LEGACY_SINGLE_RATIO_VIDEO_IDS = [
+  'doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128',
+  'doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-5-260628',
+  'sd-2.0-A', 'sd-2.5-A', 'sd-2.5-c1',
+];
+const SEEDANCE_RATIOS = ['16:9', '9:16', '4:3', '3:4', '1:1'];
+
+describe('RelayOnAPI Seedance 宽高比', () => {
+  it.each(SEEDANCE_VIDEO_IDS)('%s 声明相同五种比例并按本渠道字段发送', (id) => {
+    const selected = model(id);
+    expect(selected.videoCapability?.ratios).toEqual(SEEDANCE_RATIOS);
+    expect(selected.videoCapability?.defaultRatio).toBe('16:9');
+    for (const aspectRatio of SEEDANCE_RATIOS) {
+      const variables = relayonVideoVariables(id, { model: id, prompt: '比例回归', duration: 10,
+        durationText: '10', resolution: '720p', aspectRatio });
+      const built = buildModelProtocolRequest({ baseUrl: RELAYON_BASE_URL, apiKey: 'fixture',
+        protocol: selected.executionProfile!.protocol!, variables });
+      expect(built.renderedBody).toMatchObject(id.startsWith('doubao-')
+        ? { metadata: { ratio: aspectRatio } }
+        : id.endsWith('-A') || id === 'sd-2.5-c1'
+          ? { output: { aspect_ratio: aspectRatio } }
+          : { aspect_ratio: aspectRatio });
+    }
+  });
+
+  it.each(LEGACY_SINGLE_RATIO_VIDEO_IDS)('%s 的完整旧单比例快照仅临时补齐宽高比', (id) => {
+    const selected = model(id);
+    for (const defaultRatio of [undefined, '16:9']) {
+      const saved: VideoModelCapability = { ...structuredClone(selected.videoCapability), ratios: ['16:9'], defaultRatio };
+      const before = structuredClone(saved);
+      expect(resolveRelayonVideoCapability(id, selected.executionProfile, saved))
+        .toEqual({ ...before, ratios: SEEDANCE_RATIOS });
+      expect(saved).toEqual(before);
+    }
+  });
+
+  it.each(SEEDANCE_VIDEO_IDS)('%s 未声明比例限制时补齐当前画幅', (id) => {
+    const selected = model(id);
+    const saved = structuredClone(selected.videoCapability!);
+    delete saved.ratios;
+    const before = structuredClone(saved);
+    expect(resolveRelayonVideoCapability(id, selected.executionProfile, saved))
+      .toEqual({ ...before, ratios: SEEDANCE_RATIOS });
+    expect(saved).toEqual(before);
+  });
+
+  it.each(['sd-2.0-c1', 'sd-2.0-c2', 'sd-2.0-c3'])('%s 已保存的单项比例属于显式限制', (id) => {
+    const selected = model(id);
+    const explicit = { ...selected.videoCapability, ratios: ['16:9'] };
+    expect(resolveRelayonVideoCapability(id, selected.executionProfile, explicit)).toBe(explicit);
+  });
+
+  it('缺失能力时返回独立的当前合同，不修改原始快照', () => {
+    const id = 'sd-2.5-c1';
+    const selected = model(id);
+    const manifestBefore = structuredClone(RELAYON_MODEL_MANIFEST);
+    const restored = resolveRelayonVideoCapability(id, selected.executionProfile)!;
+    expect(restored).toEqual(selected.videoCapability);
+    restored.ratios!.push('2:1');
+    expect(resolveRelayonVideoCapability(id, selected.executionProfile)?.ratios).toEqual(SEEDANCE_RATIOS);
+
+    const saved: VideoModelCapability = { ...structuredClone(selected.videoCapability), ratios: ['16:9'] };
+    const before = structuredClone(saved);
+    const effective = resolveRelayonVideoCapability(id, selected.executionProfile, saved)!;
+    expect(effective).toEqual({ ...before, ratios: SEEDANCE_RATIOS });
+    effective.ratios!.push('2:1');
+    expect(saved).toEqual(before);
+    expect(RELAYON_MODEL_MANIFEST).toEqual(manifestBefore);
+  });
+
+  it('完整内置协议也不能把已改时长、输入模式或不完整能力当成旧默认快照', () => {
+    const selected = model('sd-2.5-c1');
+    const legacy = { ...selected.videoCapability, ratios: ['16:9'] };
+    const explicitCapabilities: VideoModelCapability[] = [
+      { ...legacy, maxDuration: 29 },
+      { ...legacy, inputModeCapabilities: { keyframe: { ratios: ['16:9'], defaultRatio: '16:9' } } },
+      { ...legacy, operationCapabilities: { 'video-to-video': { ratios: ['16:9'], defaultRatio: '16:9' } } },
+      { ratios: ['16:9'], defaultRatio: '16:9' },
+    ];
+    for (const explicit of explicitCapabilities) {
+      const before = structuredClone(explicit);
+      expect(resolveRelayonVideoCapability(selected.id, selected.executionProfile, explicit)).toBe(explicit);
+      expect(explicit).toEqual(before);
+    }
+  });
+
+  it('保留显式比例子集、非内置协议与非 Seedance 型号', () => {
+    const selected = model('sd-2.0-A');
+    for (const ratios of [['1:1'], ['16:9', '9:16']]) {
+      const explicit = { ...selected.videoCapability, ratios, defaultRatio: ratios[0] };
+      expect(resolveRelayonVideoCapability(selected.id, selected.executionProfile, explicit)).toBe(explicit);
+    }
+    const changedDefault = { ...selected.videoCapability, ratios: ['16:9'], defaultRatio: 'adaptive' };
+    expect(resolveRelayonVideoCapability(selected.id, selected.executionProfile, changedDefault)).toBe(changedDefault);
+
+    const saved = { ...selected.videoCapability, ratios: ['16:9'] };
+    const customProfile = structuredClone(selected.executionProfile!);
+    customProfile.protocol!.submit.path = '/custom/videos';
+    expect(resolveRelayonVideoCapability(selected.id, customProfile, saved)).toBe(saved);
+    expect(resolveRelayonVideoCapability(selected.id, undefined, saved)).toBe(saved);
+    for (const id of ['minimax-h3', 'image-2-01', 'SD-2.0-A', 'unknown']) {
+      expect(resolveRelayonVideoCapability(id, model('minimax-h3').executionProfile, saved)).toBe(saved);
+    }
+    expect(resolveRelayonVideoCapability('minimax-h3', model('minimax-h3').executionProfile)).toBeUndefined();
+  });
+});
 
 describe('RelayOnAPI 已确认的媒体合同', () => {
   it('声明十五个图片、十一个视频，仅普通 Flare／Sunburst 开放本批确认的质量／背景候选', () => {

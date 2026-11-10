@@ -6,6 +6,7 @@ import { resolveVideoModelCapability } from '../../src/services/ai/videoModelCap
 import { useAppStore } from '../../src/store/useAppStore';
 import type { AppConfig } from '../../src/types';
 import { createSeedanceQuickAdaptTemplate } from '../../src/services/ai/seedanceModelCapabilities';
+import { RELAYON_MODEL_MANIFEST } from '../../src/services/ai/providers/relayonModelManifest';
 
 function config(): AppConfig {
   return { ...useAppStore.getState().config, providers: {}, generalModels: [] };
@@ -27,6 +28,9 @@ describe('videoModelCapabilityResolver', () => {
   });
 
   it('preserves provider-specific input restrictions', () => {
+    expect(resolveVideoModelCapability('sora2u/seedance-2.0', config())).toMatchObject({
+      minDuration: 5, maxDuration: 15, maxVideoAudioReferences: 3,
+    });
     expect(resolveVideoModelCapability('sora2u/seedance-2.5', config())).toMatchObject({
       maxDuration: 30,
       inputConstraints: { referenceVideo: { durationSeconds: { max: 15, maxExclusive: true } } },
@@ -54,6 +58,62 @@ describe('videoModelCapabilityResolver', () => {
     expect(resolveVideoModelCapability('general/mono', input)?.maxVideoAudioReferences).toBeUndefined();
     expect(resolveVideoModelCapability('sora2u/seedance-2.0', input)).toBeUndefined();
     expect(input.generalModels[0].videoCapability).not.toHaveProperty('maxVideoAudioReferences');
+  });
+
+  it('真实万象连接的通用引用和厂商引用共用旧 Seedance 比例补正且不修改配置', () => {
+    const input = config();
+    const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.5-c1')!);
+    selected.provider = 'relay-video';
+    selected.videoCapability!.ratios = ['16:9'];
+    input.providers['relay-video'] = { name: '万象视频', catalogId: 'relayonapi', apiKey: 'fixture', selectedModels: [selected] };
+    input.generalModels = [{ id: 'saved-relay', name: selected.name, modelId: selected.id, category: 'video',
+      providerConfigId: 'relay-video', executionProfile: selected.executionProfile, videoCapability: selected.videoCapability }];
+    const before = structuredClone(input);
+    const ratios = ['16:9', '9:16', '4:3', '3:4', '1:1'];
+    for (const reference of ['general/saved-relay', 'relay-video/sd-2.5-c1']) {
+      const effective = resolveVideoModelCapability(reference, input)!;
+      expect(effective).toMatchObject({ ratios, defaultRatio: '16:9', minDuration: 4, maxDuration: 30,
+        resolutions: ['720p'], maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
+      effective.ratios!.push('2:1');
+      expect(resolveVideoModelCapability(reference, input)?.ratios).toEqual(ratios);
+    }
+    expect(input).toEqual(before);
+  });
+
+  it('仅为万象完整内置协议恢复缺失能力，不覆盖同名自定义连接或显式比例', () => {
+    const input = config();
+    const selected = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.0-A')!);
+    const legacy = { ...selected.videoCapability, ratios: ['16:9'] };
+    const c1 = structuredClone(RELAYON_MODEL_MANIFEST.find((model) => model.id === 'sd-2.0-c1')!);
+    const customProfile = structuredClone(selected.executionProfile!);
+    customProfile.protocol!.submit.path = '/custom/videos';
+    input.providers.real = { name: '万象视频', catalogId: 'relayonapi', apiKey: 'fixture' };
+    input.providers.relayonapi = { name: '同名自定义', catalogId: 'custom-openai', apiKey: 'fixture', selectedModels: [
+      { ...selected, provider: 'relayonapi', videoCapability: legacy },
+    ] };
+    input.generalModels = [
+      { id: 'missing', name: selected.name, modelId: selected.id, category: 'video', providerConfigId: 'real',
+        executionProfile: selected.executionProfile },
+      { id: 'custom-connection', name: selected.name, modelId: selected.id, category: 'video', providerConfigId: 'relayonapi',
+        executionProfile: selected.executionProfile, videoCapability: legacy },
+      { id: 'custom-protocol', name: selected.name, modelId: selected.id, category: 'video', providerConfigId: 'real',
+        executionProfile: customProfile, videoCapability: legacy },
+      { id: 'explicit', name: selected.name, modelId: selected.id, category: 'video', providerConfigId: 'real',
+        executionProfile: selected.executionProfile, videoCapability: { ...legacy, ratios: ['1:1'], defaultRatio: '1:1' } },
+      { id: 'custom-capability', name: selected.name, modelId: selected.id, category: 'video', providerConfigId: 'real',
+        executionProfile: selected.executionProfile, videoCapability: { ...legacy, maxDuration: 14 } },
+      { id: 'narrow-c1', name: c1.name, modelId: c1.id, category: 'video', providerConfigId: 'real',
+        executionProfile: c1.executionProfile, videoCapability: { ...c1.videoCapability, ratios: ['16:9'] } },
+    ];
+    expect(resolveVideoModelCapability('general/missing', input)).toMatchObject({
+      ratios: ['16:9', '9:16', '4:3', '3:4', '1:1'], minDuration: 4, maxDuration: 15,
+    });
+    for (const reference of ['general/custom-connection', 'relayonapi/sd-2.0-A', 'general/custom-protocol']) {
+      expect(resolveVideoModelCapability(reference, input)?.ratios).toEqual(['16:9']);
+    }
+    expect(resolveVideoModelCapability('general/explicit', input)?.ratios).toEqual(['1:1']);
+    expect(resolveVideoModelCapability('general/custom-capability', input)).toMatchObject({ ratios: ['16:9'], maxDuration: 14 });
+    expect(resolveVideoModelCapability('general/narrow-c1', input)?.ratios).toEqual(['16:9']);
   });
 
   it('uses internal general-model identity, explicit capability and preset defaults', () => {

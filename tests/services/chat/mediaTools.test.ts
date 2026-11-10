@@ -551,7 +551,8 @@ describe('media_generate display parameters', () => {
         apiKey: 'fixture-private-key', baseUrl: 'https://private.example/v1' } },
       generalModels: [
         { id: 'image-custom', name: '图片', modelId: 'image-x', category: 'image', providerConfigId: 'custom',
-          imageCapability: { resolutions: ['2K'], ratios: ['1:1'], qualities: ['low', 'high'], backgrounds: ['opaque', 'transparent'] } },
+          imageCapability: { resolutions: ['2K'], ratios: ['1:1'], dimensionPresets: { '2K': { '1:1': [2048, 2048] } },
+            qualities: ['low', 'high'], backgrounds: ['opaque', 'transparent'] } },
         { id: 'video-custom', name: '视频', modelId: 'video-x', category: 'video', providerConfigId: 'custom',
           videoCapability: { operations: ['text-to-video'], frameRates: [24, 30], supportsAudio: true,
             minDuration: 4, maxDuration: 15, automaticDurationValue: -1 } },
@@ -566,6 +567,7 @@ describe('media_generate display parameters', () => {
     const image = await tool.execute(toolContext, { modelRef: 'general/image-custom' });
     expect(JSON.parse(image.modelContent)).toMatchObject({ kind: 'image', capability: {
       qualities: ['low', 'high'], backgrounds: ['opaque', 'transparent'],
+      dimensionPresets: { '2K': { '1:1': [2048, 2048] } },
     } });
     const video = await tool.execute(toolContext, { modelRef: 'general/video-custom' });
     expect(JSON.parse(video.modelContent)).toMatchObject({ kind: 'video', capability: {
