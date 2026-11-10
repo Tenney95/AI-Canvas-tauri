@@ -11,6 +11,7 @@ import type { ImageModelCapability, ModelExecutionProfile, NormalizedModelExecut
 import type { ModelProtocolVariables } from '../modelProtocolTypes';
 import { comparableProtocol } from '../modelProtocol';
 import { getImageSizePresets } from '../modelSizeProfiles';
+import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
 import { SEEDANCE_COMMON_RATIOS } from '../seedanceModelCapabilities';
 
 export const RELAYON_BASE_URL = 'https://relayonapi.com/v1';
@@ -47,41 +48,42 @@ export const RELAYON_VIDEO_RESULT_URL_PATHS = ['url', 'video_url', 'content.vide
 /** 当前 imageUtils 内联准备入口最多 6 张；局部快照避免目录反向加载上传与 Store。 */
 export const RELAYON_IMAGE_REFERENCE_LIMIT = 6;
 
+// 只绑定已核对的调用 ID；渠道像素、素材与输出限制在工厂调用处覆写。
+const IMAGE_CAPABILITY_TEMPLATES = {
+  'image-2-01': 'gpt-image-2',
+  'Image-2.5-Flare': 'gpt-image-2.5',
+  'image-2.5-flare-01': 'gpt-image-2.5',
+  'Image-2.5-Sunburst': 'gpt-image-2.5',
+  'image-2.5-sunburst-01': 'gpt-image-2.5',
+  'image-2.6-01': 'gpt-image-2.6',
+  'nano-banana-2': 'nano-banana-2',
+  'nano-banana-2.1': 'nano-banana-2.1',
+  'nano-banana-pro': 'nano-banana-pro',
+  'Seedream 5.0 Pro': 'seedream-5-pro',
+} as const;
+
+const VIDEO_CAPABILITY_TEMPLATES = {
+  'doubao-seedance-2-0-260128': 'seedance-2.0',
+  'doubao-seedance-2-0-fast-260128': 'seedance-2.0-fast',
+  'doubao-seedance-2-0-mini-260615': 'seedance-2.0-mini',
+  'doubao-seedance-2-5-260628': 'seedance-2.5',
+  'sd-2.0-A': 'seedance-2.0',
+  'sd-2.5-A': 'seedance-2.5',
+  'sd-2.0-c1': 'seedance-2.0',
+  'sd-2.0-c2': 'seedance-2.0',
+  'sd-2.0-c3': 'seedance-2.0',
+  'sd-2.5-c1': 'seedance-2.5',
+  'minimax-h3': 'minimax-h3',
+} as const;
+
 type ImageDimensions = NonNullable<ImageModelCapability['dimensionPresets']>;
-type PixelPair = readonly [number, number];
 
 const IMAGE_2_PIXELS = getImageSizePresets('relayon-image-2');
 const IMAGE_25_PIXELS = getImageSizePresets('relayon-image-2.5');
-const BANANA_1K_PIXELS: Record<string, PixelPair> = {
-  '1:1': [1024, 1024], '2:3': [832, 1248], '3:2': [1248, 832], '3:4': [864, 1152],
-  '4:3': [1152, 864], '4:5': [1024, 1280], '5:4': [1280, 1024], '9:16': [720, 1280],
-  '16:9': [1280, 720], '21:9': [1344, 576],
-};
-// 官网三个 Nano 型号的 2K／4K 表分别恰为每维两倍／四倍，已逐表核对。
-const BANANA_PIXELS: ImageDimensions = Object.fromEntries([1, 2, 4].map((scale) => [`${scale}K`,
-  Object.fromEntries(Object.entries(BANANA_1K_PIXELS).map(([ratio, [width, height]]) => [ratio,
-    [width * scale, height * scale] as [number, number],
-  ])),
-]));
-const SEEDREAM_PIXELS: ImageDimensions = {
-  '1K': { '1:1': [1024, 1024], '4:3': [1280, 960], '3:4': [960, 1280],
-    '16:9': [1536, 864], '9:16': [864, 1536], '3:2': [1536, 1024] },
-  '2K': { '1:1': [2048, 2048], '4:3': [2048, 1536], '3:4': [1536, 2048],
-    '16:9': [2048, 1152], '9:16': [1152, 2048], '3:2': [2016, 1344] },
-};
-
-const MIDJOURNEY_1K_PIXELS: Record<string, PixelPair> = {
-  '1:1': [1024, 1024], '16:9': [1536, 864], '9:16': [864, 1536], '4:3': [1152, 864],
-  '3:4': [864, 1152], '3:2': [1248, 832], '2:3': [832, 1248], '4:5': [1024, 1280],
-  '5:4': [1280, 1024], '21:9': [1344, 576],
-};
-const MIDJOURNEY_PIXELS: ImageDimensions = { '1K': MIDJOURNEY_1K_PIXELS };
-const MIDJOURNEY_8_PIXELS: ImageDimensions = {
-  ...MIDJOURNEY_PIXELS,
-  '2K': { '1:1': [2048, 2048], '16:9': [2048, 1152], '9:16': [1152, 2048], '4:3': [2048, 1536],
-    '3:4': [1536, 2048], '3:2': [2048, 1360], '2:3': [1360, 2048], '4:5': [1632, 2040],
-    '5:4': [2040, 1632], '21:9': [2016, 864] },
-};
+const BANANA_PIXELS = getImageSizePresets('relayon-nano-banana');
+const SEEDREAM_PIXELS = getImageSizePresets('relayon-seedream-5-pro');
+const MIDJOURNEY_PIXELS = getImageSizePresets('relayon-midjourney');
+const MIDJOURNEY_8_PIXELS = getImageSizePresets('relayon-midjourney-8');
 
 function isMidjourneyModel(modelId: string): boolean {
   return RELAYON_MIDJOURNEY_MODEL_IDS.some((id) => id === modelId);
@@ -90,6 +92,20 @@ function isMidjourneyModel(modelId: string): boolean {
 function imageModel(id: string, name: string, pixels: ImageDimensions, maxReferences: number): ProviderModelSelection {
   const hasImageOptions = id === 'Image-2.5-Flare' || id === 'Image-2.5-Sunburst';
   const hasBase64Result = isMidjourneyModel(id) || ['image-2-01', 'Image-2.5-Flare', 'image-2.5-flare-01', 'Image-2.5-Sunburst', 'image-2.5-sunburst-01', 'image-2.6-01'].includes(id);
+  const templateId = IMAGE_CAPABILITY_TEMPLATES[id as keyof typeof IMAGE_CAPABILITY_TEMPLATES];
+  const channelCapability: ImageModelCapability = {
+    resolutions: Object.keys(pixels), ratios: Object.keys(pixels['1K']), dimensionPresets: structuredClone(pixels),
+    maxImageReferences: Math.min(RELAYON_IMAGE_REFERENCE_LIMIT, maxReferences),
+  };
+  const imageCapability = templateId ? getImageCapabilityTemplate(templateId, {
+    defaultQuality: undefined,
+    ...(!hasImageOptions ? { qualities: undefined, backgrounds: undefined } : {}),
+    ...(templateId.startsWith('gpt-image-') ? { supportsBatch: false, maxBatchCount: 1 } : {}),
+    ...(templateId === 'gpt-image-2.6' ? { supportsDataUrlReference: true } : {}),
+    ...(templateId === 'seedream-5-pro' ? { defaultResolution: '1K', defaultRatio: '1:1', maxBatchCount: 1 } : {}),
+    ...channelCapability,
+  }) : { defaultResolution: '1K', defaultRatio: '1:1', supportsBatch: false, maxBatchCount: 1,
+    supportsImageReference: true, supportsDataUrlReference: true, ...channelCapability };
   const protocol: NormalizedModelExecutionProtocol = {
     version: 2, mode: 'sync', auth: { type: 'bearer' },
     submit: { method: 'POST', path: '/images/generations', bodyEncoding: 'json',
@@ -101,11 +117,7 @@ function imageModel(id: string, name: string, pixels: ImageDimensions, maxRefere
   };
   return { id, name, provider: 'relayonapi', category: 'image', inputModalities: ['text', 'image'],
     imageReferenceRequestMode: 'generation-json-image-data-urls',
-    imageCapability: { resolutions: Object.keys(pixels), defaultResolution: '1K',
-      ratios: Object.keys(pixels['1K']), defaultRatio: '1:1', dimensionPresets: structuredClone(pixels),
-      ...(hasImageOptions ? { qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], backgrounds: ['auto', 'opaque', 'transparent'] } : {}),
-      supportsBatch: false, maxBatchCount: 1, supportsImageReference: true,
-      maxImageReferences: Math.min(RELAYON_IMAGE_REFERENCE_LIMIT, maxReferences), supportsDataUrlReference: true },
+    imageCapability,
     executionProfile: { preset: 'custom', protocol } };
 }
 
@@ -129,19 +141,22 @@ function referenceItems(imageRole: boolean): ProtocolJsonValue[] {
   });
 }
 
-function videoModel(id: string, name: string, capability: VideoModelCapability, body: Record<string, ProtocolJsonValue>): ProviderModelSelection {
+function videoModel(id: keyof typeof VIDEO_CAPABILITY_TEMPLATES, name: string, overrides: VideoModelCapability, body: Record<string, ProtocolJsonValue>): ProviderModelSelection {
+  const capability = getVideoCapabilityTemplate(VIDEO_CAPABILITY_TEMPLATES[id], {
+    ratios: [...SEEDANCE_COMMON_RATIOS], defaultRatio: '16:9', defaultDuration: 4,
+    // 渠道未声明的官方模式、输入约束和自动时长不能随基础模板进入默认合同。
+    supportsStandaloneAudio: undefined, automaticDurationValue: undefined,
+    inputModeCapabilities: undefined, operationCapabilities: undefined,
+    inputConstraints: undefined, allowFrameAndReferenceMix: undefined,
+    ...overrides,
+  });
   return { id, name, provider: 'relayonapi', category: 'video',
     inputModalities: capability.maxImageReferences === 0 ? ['text'] : ['text', 'image'],
-    videoCapability: { defaultRatio: '16:9', defaultDuration: capability.minDuration,
-      ...capability,
-      // 万象已确认的 Seedance 别名统一复用型号画幅；H3 保持自己的渠道能力。
-      ...(id !== 'minimax-h3' ? { ratios: [...SEEDANCE_COMMON_RATIOS] } : {}),
-    }, executionProfile: { preset: 'custom', protocol: videoProtocol(body) } };
+    videoCapability: capability, executionProfile: { preset: 'custom', protocol: videoProtocol(body) } };
 }
 
-function officialVideo(id: string, name: string, maxDuration: number, resolutions: string[]): ProviderModelSelection {
-  return videoModel(id, name, { operations: ['text-to-video'], minDuration: 4, maxDuration,
-    resolutions, defaultResolution: resolutions[0], supportsAudio: true,
+function officialVideo(id: keyof typeof VIDEO_CAPABILITY_TEMPLATES, name: string): ProviderModelSelection {
+  return videoModel(id, name, { operations: ['text-to-video'], defaultResolution: '480p',
     maxImageReferences: 0, maxVideoReferences: 0, maxAudioReferences: 0 }, {
     model: '{{model}}', prompt: '{{prompt}}', seconds: '{{durationText}}',
     metadata: { resolution: '{{resolution}}', ratio: '{{aspectRatio}}', generate_audio: '{{generateAudio}}' },
@@ -149,12 +164,13 @@ function officialVideo(id: string, name: string, maxDuration: number, resolution
 }
 
 function referenceVideo(
-  id: string, maxDuration: number, overrides: Partial<VideoModelCapability> = {},
+  id: keyof typeof VIDEO_CAPABILITY_TEMPLATES, overrides: Partial<VideoModelCapability> = {},
   name = `Seedance ${id === 'sd-2.0-A' ? '2.0' : '2.5'} A`,
 ): ProviderModelSelection {
   return videoModel(id, name, {
-    operations: ['text-to-video', 'image-to-video', 'video-to-video'], minDuration: 4, maxDuration,
-    resolutions: ['480p', '720p', '1080p'], defaultResolution: '480p', supportsAudio: true,
+    resolutions: ['480p', '720p', '1080p'], defaultResolution: '480p',
+    // A 渠道没有公开数量上限，不继承官方最大值。
+    maxImageReferences: undefined, maxVideoReferences: undefined, maxAudioReferences: undefined,
     // 应用首批只开放已核对的组合，不将未公开的纯音频输入当成厂商能力。
     supportsStandaloneAudio: false,
     ...overrides,
@@ -164,13 +180,13 @@ function referenceVideo(
 }
 
 function cVideo(
-  id: string, name: string, minDuration: number, maxVideoReferences: number, overrides: Partial<VideoModelCapability> = {},
+  id: keyof typeof VIDEO_CAPABILITY_TEMPLATES, name: string, minDuration: number, maxVideoReferences: number, overrides: Partial<VideoModelCapability> = {},
 ): ProviderModelSelection {
   const model = videoModel(id, name, {
     operations: maxVideoReferences ? ['text-to-video', 'image-to-video', 'video-to-video'] : ['text-to-video', 'image-to-video'],
-    minDuration, maxDuration: 15, resolutions: ['720p'], defaultResolution: '720p',
-    ratios: ['16:9', '9:16', '4:3', '3:4', '1:1'], maxImageReferences: 9, maxVideoReferences, maxAudioReferences: 3,
-    supportsStandaloneAudio: false,
+    minDuration, defaultDuration: minDuration, resolutions: ['720p'], defaultResolution: '720p',
+    maxImageReferences: 9, maxVideoReferences, maxAudioReferences: 3,
+    supportsAudio: undefined, supportsStandaloneAudio: false,
     ...overrides,
   }, { model: '{{model}}', prompt: '{{prompt}}', duration: '{{duration}}', resolution: '{{resolution}}',
     aspect_ratio: '{{aspectRatio}}', references: referenceItems(false) });
@@ -197,15 +213,15 @@ export const RELAYON_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   imageModel('image-2.6-01', 'Image 2.6 01', IMAGE_25_PIXELS, 8),
   ...RELAYON_MIDJOURNEY_MODEL_IDS.map((id) => imageModel(id, id,
     id === 'Midjourney v8.1' || id === 'Midjourney v8.2' ? MIDJOURNEY_8_PIXELS : MIDJOURNEY_PIXELS, 1)),
-  officialVideo('doubao-seedance-2-0-260128', 'Doubao Seedance 2.0', 15, ['480p', '720p', '1080p', '4k']),
-  officialVideo('doubao-seedance-2-0-fast-260128', 'Doubao Seedance 2.0 Fast', 15, ['480p', '720p']),
-  officialVideo('doubao-seedance-2-0-mini-260615', 'Doubao Seedance 2.0 Mini', 15, ['480p', '720p']),
-  officialVideo('doubao-seedance-2-5-260628', 'Doubao Seedance 2.5', 30, ['480p', '720p', '1080p']),
-  referenceVideo('sd-2.0-A', 15), referenceVideo('sd-2.5-A', 30),
+  officialVideo('doubao-seedance-2-0-260128', 'Doubao Seedance 2.0'),
+  officialVideo('doubao-seedance-2-0-fast-260128', 'Doubao Seedance 2.0 Fast'),
+  officialVideo('doubao-seedance-2-0-mini-260615', 'Doubao Seedance 2.0 Mini'),
+  officialVideo('doubao-seedance-2-5-260628', 'Doubao Seedance 2.5'),
+  referenceVideo('sd-2.0-A'), referenceVideo('sd-2.5-A'),
   cVideo('sd-2.0-c1', 'Seedance 2.0 C1', 10, 3), cVideo('sd-2.0-c2', 'Seedance 2.0 C2', 4, 0),
   cVideo('minimax-h3', 'MiniMax H3', 4, 3, { resolutions: ['480p', '720p', '1K', '2K'] }),
   cVideo('sd-2.0-c3', 'Seedance 2.0 C3', 4, 0),
-  referenceVideo('sd-2.5-c1', 30, { resolutions: ['720p'], defaultResolution: '720p',
+  referenceVideo('sd-2.5-c1', { resolutions: ['720p'], defaultResolution: '720p',
     maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 }, 'Seedance 2.5 C1'),
 ];
 

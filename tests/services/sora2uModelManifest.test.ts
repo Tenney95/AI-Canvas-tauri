@@ -12,6 +12,7 @@ import { getProviderDefinition } from '../../src/services/ai/providerCatalogServ
 import {
   SORA2U_BASE_URL,
   SORA2U_MODEL_MANIFEST,
+  withSora2uReferenceLimits,
 } from '../../src/services/ai/providers/sora2uModelManifest';
 import type { ModelExecutionProtocol } from '../../src/types/aiTypes';
 
@@ -40,6 +41,40 @@ beforeEach(() => {
 });
 
 describe('Sora2U 内置模型清单', () => {
+  it('复用型号基线仍保留各 SKU 的完整旧能力，未确认的输出与模式不继承', () => {
+    for (const id of EXPECTED_MODELS.filter((value) => value.startsWith('seedance-2.'))) {
+      const is25 = id.startsWith('seedance-2.5');
+      const mono = id.endsWith('-mono');
+      const expected = {
+        durations: Array.from({ length: (is25 ? 30 : 15) - 4 }, (_, index) => index + 5),
+        minDuration: 5, maxDuration: is25 ? 30 : 15, defaultDuration: is25 ? 15 : 5,
+        supportsAudio: true, supportsStandaloneAudio: true,
+        maxImageReferences: is25 ? 30 : 9, maxVideoReferences: is25 && !mono ? 10 : 3,
+        maxAudioReferences: is25 && !mono ? 10 : 3,
+        inputConstraints: {
+          promptMinCharacters: 10, maxBase64DecodedBytes: 20 * 1024 * 1024,
+          referenceVideo: { width: { min: 300 }, durationSeconds: { max: 15, maxExclusive: true } },
+          referenceAudio: { durationSeconds: { min: 3, max: 15, maxExclusive: true } },
+        },
+        ...(is25 ? { requiresReference: true } : mono ? {} : { maxVideoAudioReferences: 3 }),
+      };
+      expect(SORA2U_MODEL_MANIFEST.find((model) => model.id === id)?.videoCapability, id).toEqual(expected);
+    }
+    for (const id of ['gemini-image', 'kontext-image']) {
+      expect(SORA2U_MODEL_MANIFEST.find((model) => model.id === id)).not.toHaveProperty('imageCapability');
+    }
+  });
+
+  it('联合名额只补已核对的两个 SKU，显式远端值与 mono 语义保持', () => {
+    expect(withSora2uReferenceLimits('seedance-2.0', undefined)).toEqual({ maxVideoAudioReferences: 3 });
+    expect(withSora2uReferenceLimits('seedance-2.0-character', {})).toEqual({ maxVideoAudioReferences: 3 });
+    expect(withSora2uReferenceLimits('seedance-2.0-character-mono', {})).toEqual({});
+    expect(withSora2uReferenceLimits('seedance-2.5', {})).toEqual({});
+    expect(withSora2uReferenceLimits('seedance-2.0', { maxVideoAudioReferences: 1 }))
+      .toEqual({ maxVideoAudioReferences: 1 });
+    expect(withSora2uReferenceLimits('unknown', undefined)).toBeUndefined();
+  });
+
   it('保留九个模型协议，但厂商目录暂时隐藏三个 Seedance 2.5 变体', () => {
     expect(getProviderDefinition('sora2u')).toMatchObject({
       id: 'sora2u',

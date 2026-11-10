@@ -29,29 +29,6 @@ const GRSAI_GPT_MODELS = new Set([
   'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst',
 ]);
 
-// GRSAI 的 GPT 档位是厂商给定的像素表，不能使用全局“短边 2K/4K”换算。
-// https://qmy27nhsd9.apifox.cn/452409160e0
-const GRSAI_GPT_SIZES: Readonly<Record<string, readonly [string, string, string]>> = {
-  '1:1': ['1024x1024', '2048x2048', '2880x2880'],
-  '16:9': ['1280x720', '2048x1152', '3840x2160'],
-  '9:16': ['720x1280', '1152x2048', '2160x3840'],
-  '4:3': ['1152x864', '2304x1728', '3264x2448'],
-  '3:4': ['864x1152', '1728x2304', '2448x3264'],
-  '3:2': ['1536x1024', '2048x1360', '3504x2336'],
-  '2:3': ['1024x1536', '1360x2048', '2336x3504'],
-  '5:4': ['1120x896', '2240x1792', '3200x2560'],
-  '4:5': ['896x1120', '1792x2240', '2560x3200'],
-  '21:9': ['1456x624', '2912x1248', '3840x1648'],
-  '9:21': ['624x1456', '1248x2912', '1648x3840'],
-  '2:1': ['1536x768', '3072x1536', '3840x1920'],
-  '1:2': ['768x1536', '1536x3072', '1920x3840'],
-};
-const GRSAI_GPT_BASE_SIZES: Readonly<Record<string, string>> = {
-  '1:1': '1024x1024', '16:9': '1672x941', '9:16': '941x1672',
-  '4:3': '1443x1090', '3:4': '1090x1443', '3:2': '1536x1024',
-  '2:3': '1024x1536', '5:4': '1408x1120', '4:5': '1120x1408',
-  '21:9': '1920x832', '9:21': '832x1920', '1:2': '896x1792', '2:1': '1792x896',
-};
 const GRSAI_NANO_RATIOS = new Set(['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9']);
 const GRSAI_NANO_2_EXTRA_RATIOS = new Set(['1:4', '4:1', '1:8', '8:1']);
 
@@ -87,7 +64,6 @@ export function resolveBuiltInImageRequestContract(
   const background = resolveConfiguredImageBackground(capability, imageBackground);
   const normalizedSize = capability && !capability.resolutions?.includes(requestedSize)
     ? capability.defaultResolution! : requestedSize;
-  const sizeIndex = ['1K', '2K', '4K'].indexOf(normalizedSize);
   let dimensions = mapImageDimensions(normalizedSize, aspectRatio);
   let sizeFields: Record<string, string>;
   if (isNano) {
@@ -97,9 +73,8 @@ export function resolveBuiltInImageRequestContract(
     sizeFields = { aspectRatio, imageSize: normalizedSize };
   } else {
     const isBase = modelId === 'gpt-image-2' || modelId === 'gpt-image-2.5';
-    const size = isBase
-      ? GRSAI_GPT_BASE_SIZES[aspectRatio]
-      : GRSAI_GPT_SIZES[aspectRatio]?.[sizeIndex];
+    const pixels = capability?.dimensionPresets?.[normalizedSize]?.[aspectRatio];
+    const size = pixels ? `${pixels[0]}x${pixels[1]}` : undefined;
     if (aspectRatio !== 'auto' && !size) throw new Error(`GRSAI ${modelId} 不支持比例 ${aspectRatio}`);
     if (size) dimensions = dimensionsFromSize(size);
     // 基础款只支持 1K，直接提交比例；VIP/2.5 增强款要求精确像素。

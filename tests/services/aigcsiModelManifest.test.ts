@@ -15,6 +15,27 @@ function model(id: string) {
 }
 
 describe('Amam 已核对模型合同', () => {
+  it('型号基线不扩大已核对渠道能力，也不补入未声明的图片默认值或精确像素', () => {
+    expect(model('seedance2.5-15').videoCapability).toEqual({
+      operations: ['text-to-video', 'image-to-video'],
+      ratios: ['16:9', '9:16'], defaultRatio: '16:9', resolutions: ['720p'], defaultResolution: '720p',
+      minDuration: 5, maxDuration: 30, defaultDuration: 5,
+      maxImageReferences: 30, maxVideoReferences: 0, maxAudioReferences: 10, allowFrameAndReferenceMix: false,
+    });
+    expect(model('seedance2.0-930-1').videoCapability).toEqual({
+      operations: ['text-to-video', 'image-to-video', 'video-to-video'],
+      ratios: ['16:9', '9:16'], defaultRatio: '16:9', resolutions: ['720p'], defaultResolution: '720p',
+      minDuration: 5, maxDuration: 15, defaultDuration: 5,
+      maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 0, allowFrameAndReferenceMix: false,
+    });
+    for (const item of AIGCSI_MODEL_MANIFEST.filter((entry) => entry.category === 'image')) {
+      expect(Object.keys(item.imageCapability!).sort(), item.id).toEqual([
+        'resolutions', 'ratios', 'supportsBatch', 'maxBatchCount', 'supportsImageReference',
+        'maxImageReferences', 'supportsDataUrlReference',
+      ].sort());
+    }
+  });
+
   it('仅提供十一个常规图片、十个视频，全部声明可解析的异步协议与参数映射', () => {
     expect(AIGCSI_MODEL_MANIFEST.filter((item) => item.category === 'image')).toHaveLength(11);
     expect(AIGCSI_MODEL_MANIFEST.filter((item) => item.category === 'video')).toHaveLength(10);

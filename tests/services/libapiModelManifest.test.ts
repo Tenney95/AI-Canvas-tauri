@@ -78,6 +78,61 @@ describe('LIBAPI 已审计的内置合同', () => {
     }
   });
 
+  it('Seedance/H3 共用型号基线时仍由渠道快照限定离散时长、输入模式和参考名额', () => {
+    const standard = model('seedance-2-5').videoCapability!;
+    expect(standard).toMatchObject({ resolutions: ['480p', '720p', '1080p'], defaultResolution: '480p',
+      ratios: ['16:9', '9:16', '21:9', '3:4', '1:1', '4:3'],
+      durations: [4, 5, 6, 8, 10, 12, 15, 20, 25, 29, 30], defaultDuration: 5,
+      inputModeCapabilities: { keyframe: { requiresRatio: false } },
+      supportsStandaloneAudio: true, maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
+    const perTask = model('seedance-2-5-special').videoCapability!;
+    expect(perTask).toMatchObject({ durations: [30], defaultDuration: 30, defaultRatio: '9:16',
+      defaultResolution: '720p', maxVideoReferences: 0, maxAudioReferences: 0, supportsStandaloneAudio: false });
+    expect(perTask.inputModeCapabilities).toBeUndefined();
+    expect(model('seedance-2-0-ecom-special').videoCapability).toMatchObject({
+      ratios: ['9:16', '16:9', '1:1'], durations: [5, 10, 15], maxVideoReferences: 0, maxAudioReferences: 0,
+    });
+    expect(model('seedance-2-0-ecom-special').videoCapability?.resolutions).toBeUndefined();
+    for (const id of ['seedance-2-5', 'seedance-2-5-special', 'seedance-2-5-promo', 'seedance-2-0-official',
+      'seedance-2-0-promo', 'seedance-2-0-special', 'seedance-2-0-manju-special', 'seedance-2-0-ecom-special',
+      'seedance-2-0-9tu-special', 'minimax-h3']) {
+      const capability = model(id).videoCapability!;
+      expect(capability.minDuration, id).toBeUndefined();
+      expect(capability.maxDuration, id).toBeUndefined();
+      expect(capability.automaticDurationValue, id).toBeUndefined();
+      expect(capability.operationCapabilities, id).toBeUndefined();
+      expect(capability.supportsAudio, id).toBeUndefined();
+    }
+    expect(model('minimax-h3').videoCapability?.inputConstraints?.referenceVideo).toEqual({
+      durationSeconds: { min: 2, max: undefined }, totalDurationSeconds: { max: 15 },
+    });
+  });
+
+  it('GPT/Nano/Seedream 不继承官方像素或未知控件，保留快照枚举顺序和大小写', () => {
+    expect(model('gm-3.1-flash-image').imageCapability).toMatchObject({
+      resolutions: ['0.5K', '1K', '2K', '4K'], defaultResolution: '1K',
+      ratios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', 'auto', '1:4', '4:1', '1:8', '8:1'],
+    });
+    expect(model('gm-nano-banana-2.1-image').imageCapability?.ratios).not.toContain('1:8');
+    expect(model('doubao-seedream-4-5').imageCapability).toMatchObject({
+      resolutions: ['2k', '4k', '1k'], defaultResolution: '2k', maxImageReferences: 4,
+    });
+    for (const id of ['gt-image-2', 'gt-image-2.5-flare', 'gt-image-2-official', 'gm-3.1-flash-image',
+      'gm-3-pro-image', 'gm-nano-banana-2.1-image', 'doubao-seedream-4-5', 'doubao-seedream-5-0', 'doubao-seedream-5-0-pro']) {
+      const capability = model(id).imageCapability!;
+      expect(capability.dimensionPresets, id).toBeUndefined();
+      expect(capability.defaultBackground, id).toBeUndefined();
+      expect(capability.supportsBatch, id).toBe(false);
+      expect(capability.maxBatchCount, id).toBe(1);
+      expect(capability.supportsDataUrlReference, id).toBe(false);
+    }
+    expect(model('doubao-seedream-5-0-pro').imageCapability?.qualities).toBeUndefined();
+    expect(model('doubao-seedream-5-0-pro').imageCapability?.backgrounds).toBeUndefined();
+    expect(model('gt-image-1.5-all').imageCapability?.dimensionPresets).toEqual({ '1K': {
+      '1:1': [1024, 1024], '3:2': [1536, 1024], '2:3': [1024, 1536],
+    } });
+  });
+
   it('GT 图片的质量、透明背景与比例分别映射，计数固定一张', () => {
     const id = 'gpt-image-2.5-flare';
     const variables = libapiImageVariables(id, { model: id, prompt: '透明贴纸', imageSize: '2k', aspectRatio: '9:16',

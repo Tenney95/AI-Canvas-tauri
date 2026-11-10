@@ -1,6 +1,8 @@
 /** GRSAI 已核验的目录与厂商合同，不沿用同名模型的其它网关协议。 */
 import type { ProviderModelSelection } from '../../types';
 import type { ImageModelCapability, NormalizedModelExecutionProtocol, VideoModelCapability } from '../../types/aiTypes';
+import { getImageCapabilityTemplate, getVideoCapabilityTemplate, type ImageCapabilityTemplateId } from './modelCapabilityTemplates';
+import { getImageSizePresets } from './modelSizeProfiles';
 
 export const GRSAI_NANO_RATIOS = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9'];
 export const GRSAI_GPT_RATIOS = [...GRSAI_NANO_RATIOS, '9:21', '2:1', '1:2'];
@@ -24,11 +26,22 @@ const GPT_QUALITIES: Record<string, string[]> = {
   'gpt-image-2.5-sunburst': ['low', 'medium', 'high', 'xhigh', 'max'],
 };
 
+const IMAGE_TEMPLATE_IDS: Record<string, ImageCapabilityTemplateId> = {
+  'nano-banana-2.1': 'nano-banana-2.1', 'nano-banana-2': 'nano-banana-2',
+  'nano-banana-2-lite': 'nano-banana-2', 'nano-banana-2-cl': 'nano-banana-2',
+  'nano-banana-2-2k-cl': 'nano-banana-2', 'nano-banana-2-4k-cl': 'nano-banana-2',
+  'nano-banana-pro': 'nano-banana-pro', 'nano-banana-pro-cl': 'nano-banana-pro',
+  'nano-banana-pro-4k-vip': 'nano-banana-pro', 'nano-banana-pro-vip': 'nano-banana-pro',
+  'gpt-image-2': 'gpt-image-2', 'gpt-image-2-vip': 'gpt-image-2',
+  'gpt-image-2.5': 'gpt-image-2.5', 'gpt-image-2.6': 'gpt-image-2.6',
+  'gpt-image-2.5-flare': 'gpt-image-2.5', 'gpt-image-2.5-sunburst': 'gpt-image-2.5',
+};
+
 export function getGrsaiImageCapability(model: string): ImageModelCapability | undefined {
   const id = model.replace(/^grsai\//, '');
   const resolutions = NANO_RESOLUTIONS[id] ?? GPT_RESOLUTIONS[id];
   if (!resolutions) return undefined;
-  return {
+  const channel: ImageModelCapability = {
     resolutions, defaultResolution: resolutions[0],
     ...(GPT_QUALITIES[id] ? { qualities: [...GPT_QUALITIES[id]],
       defaultQuality: id === 'gpt-image-2' || id === 'gpt-image-2.5' || id === 'gpt-image-2.6' ? 'auto' : 'medium' } : {}),
@@ -43,18 +56,32 @@ export function getGrsaiImageCapability(model: string): ImageModelCapability | u
     // 本地 Base64 图片入口的预算；不是服务商公布的上限。
     maxImageReferences: 6,
   };
+  if (GPT_RESOLUTIONS[id]) {
+    const source = getImageSizePresets(id === 'gpt-image-2' || id === 'gpt-image-2.5' ? 'grsai-gpt-base' : 'grsai-gpt');
+    channel.dimensionPresets = Object.fromEntries(resolutions.map((resolution) => [resolution,
+      Object.fromEntries((channel.ratios ?? []).filter((ratio) => source[resolution]?.[ratio])
+        .map((ratio) => [ratio, source[resolution][ratio]])),
+    ]));
+  }
+  const template = IMAGE_TEMPLATE_IDS[id];
+  return template ? getImageCapabilityTemplate(template, {
+    maxBatchCount: undefined, qualities: undefined, defaultQuality: undefined,
+    backgrounds: undefined, defaultBackground: undefined, ...channel,
+  }) : structuredClone(channel);
 }
 
 export function getGrsaiVideoCapability(model?: string, resolution?: string): VideoModelCapability | undefined {
   if (model?.replace(/^grsai\//, '') !== 'minimax-h3') return undefined;
-  return {
+  return getVideoCapabilityTemplate('minimax-h3', {
     operations: ['text-to-video', 'image-to-video'],
     resolutions: ['480p', '768p', '1080p'], defaultResolution: '768p',
     ratios: ['16:9', '9:16'], defaultRatio: '16:9',
     minDuration: 1, maxDuration: resolution?.toLowerCase() === '1080p' ? 10 : 15, defaultDuration: 5,
     supportsAudio: false, supportsStandaloneAudio: true,
     maxImageReferences: 9, maxVideoReferences: 0, maxAudioReferences: 3,
-  };
+    allowFrameAndReferenceMix: undefined, inputConstraints: undefined,
+    inputModeCapabilities: undefined, operationCapabilities: undefined,
+  });
 }
 
 // https://qmy27nhsd9.apifox.cn/514679297e0

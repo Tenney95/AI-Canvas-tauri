@@ -112,6 +112,34 @@ const LEGACY_SINGLE_RATIO_VIDEO_IDS = [
 const SEEDANCE_RATIOS = ['16:9', '9:16', '4:3', '3:4', '1:1'];
 
 describe('RelayOnAPI Seedance 宽高比', () => {
+  it('完整旧 2.5 C1 快照仍只补比例，不要求新增的官方模式或自动时长字段', () => {
+    const saved: VideoModelCapability = {
+      defaultRatio: '16:9', defaultDuration: 4,
+      operations: ['text-to-video', 'image-to-video', 'video-to-video'],
+      minDuration: 4, maxDuration: 30, resolutions: ['720p'], defaultResolution: '720p',
+      supportsAudio: true, supportsStandaloneAudio: false,
+      maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10,
+      ratios: ['16:9'],
+    };
+    const selected = model('sd-2.5-c1');
+    expect(selected.videoCapability).toEqual({ ...saved, ratios: SEEDANCE_RATIOS });
+    expect(resolveRelayonVideoCapability(selected.id, selected.executionProfile, saved))
+      .toEqual({ ...saved, ratios: SEEDANCE_RATIOS });
+    expect(saved.ratios).toEqual(['16:9']);
+  });
+
+  it('共用型号基线仍保留渠道缺省字段，不引入未核对的帧率、模式或自动时长', () => {
+    for (const id of RELAYON_VIDEO_MODEL_IDS) {
+      const capability = model(id).videoCapability!;
+      const keys = ['defaultRatio', 'defaultDuration', 'operations', 'minDuration', 'maxDuration',
+        'resolutions', 'defaultResolution', 'ratios'];
+      if (id.startsWith('doubao-') || id.endsWith('-A') || id === 'sd-2.5-c1') keys.push('supportsAudio');
+      if (!id.startsWith('doubao-')) keys.push('supportsStandaloneAudio');
+      if (!id.endsWith('-A')) keys.push('maxImageReferences', 'maxVideoReferences', 'maxAudioReferences');
+      expect(Object.keys(capability).sort(), id).toEqual(keys.sort());
+    }
+  });
+
   it.each(SEEDANCE_VIDEO_IDS)('%s 声明相同五种比例并按本渠道字段发送', (id) => {
     const selected = model(id);
     expect(selected.videoCapability?.ratios).toEqual(SEEDANCE_RATIOS);
@@ -212,6 +240,18 @@ describe('RelayOnAPI Seedance 宽高比', () => {
 });
 
 describe('RelayOnAPI 已确认的媒体合同', () => {
+  it('图片复用基础模板后仍只保留本渠道声明的字段与像素，MJ 渠道合同保持独立', () => {
+    for (const id of RELAYON_IMAGE_MODEL_IDS) {
+      const keys = ['resolutions', 'defaultResolution', 'ratios', 'defaultRatio', 'dimensionPresets',
+        'supportsBatch', 'maxBatchCount', 'supportsImageReference', 'maxImageReferences', 'supportsDataUrlReference'];
+      if (id === 'Image-2.5-Flare' || id === 'Image-2.5-Sunburst') keys.push('qualities', 'backgrounds');
+      expect(Object.keys(model(id).imageCapability!).sort(), id).toEqual(keys.sort());
+    }
+    expect(model('nano-banana-pro').imageCapability?.dimensionPresets?.['2K']['16:9']).toEqual([2560, 1440]);
+    expect(model('nano-banana-pro').imageCapability?.maxImageReferences).toBe(6);
+    expect(model('Midjourney v7').imageCapability?.maxImageReferences).toBe(1);
+  });
+
   it('声明十五个图片、十一个视频，仅普通 Flare／Sunburst 开放本批确认的质量／背景候选', () => {
     expect(RELAYON_IMAGE_MODEL_IDS).toHaveLength(15);
     expect(RELAYON_VIDEO_MODEL_IDS).toHaveLength(11);

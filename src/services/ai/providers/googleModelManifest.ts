@@ -7,6 +7,7 @@
 import type { ProviderModelSelection } from '../../../types';
 import type { ImageModelCapability, NormalizedModelExecutionProtocol } from '../../../types/aiTypes';
 import { getImageSizePresets } from '../modelSizeProfiles';
+import { getImageCapabilityTemplate } from '../modelCapabilityTemplates';
 
 export const GOOGLE_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 
@@ -154,14 +155,12 @@ export const GOOGLE_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image', protocol: GOOGLE_IMAGE_PROTOCOL,
       imageCapability: undefined },
     { id: 'gemini-3-pro-image', name: 'Gemini 3 Pro Image', protocol: GOOGLE_IMAGE_PROTOCOL,
-      imageCapability: {
-        resolutions: ['1K', '2K', '4K'], defaultResolution: '1K',
-        ratios: Object.keys(GOOGLE_PRO_IMAGE_DIMENSIONS['1K']), defaultRatio: '1:1',
+      imageCapability: getImageCapabilityTemplate('nano-banana-pro', {
+        ratios: Object.keys(GOOGLE_PRO_IMAGE_DIMENSIONS['1K']),
         dimensionPresets: GOOGLE_PRO_IMAGE_DIMENSIONS,
-        supportsBatch: false, maxBatchCount: 1,
         // 当前 Interactions 合同只有文本 input；图片参考仍由显式原生快速模板配置。
-        supportsImageReference: false,
-      } },
+        supportsImageReference: false, maxImageReferences: undefined, supportsDataUrlReference: undefined,
+      }) },
   ] satisfies Array<{
     id: string;
     name: string;

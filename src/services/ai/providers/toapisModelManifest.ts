@@ -8,6 +8,7 @@ import type { ModelProtocolVariables } from '../modelProtocol';
 import type { CanonicalVideoRequest } from '../videoRequestResolver';
 import { parseModelExecutionProtocol } from '../modelProtocolValidation';
 import { getImageSizePresets } from '../modelSizeProfiles';
+import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
 
 export const TOAPIS_TEXT_MODEL_IDS = [
   'gemini-3.8-flash', 'gemini-4-argon', 'qwen3.8-flash', 'deepseek-v4.1-flash',
@@ -68,79 +69,91 @@ const METADATA_RESOLUTION: Body = { metadata: { resolution: '{{imageSize}}' } };
 const GPT_QUALITIES = ['low', 'medium', 'high'];
 const GPT_25_QUALITIES = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'];
 
+/** 渠道未公布的像素、质量、背景和引用上限不能从同型号基础能力补齐。 */
+function channelImageCapability(
+  template: Parameters<typeof getImageCapabilityTemplate>[0],
+  overrides: ImageModelCapability,
+): ImageModelCapability {
+  return getImageCapabilityTemplate(template, {
+    dimensionPresets: undefined, qualities: undefined, defaultQuality: undefined,
+    backgrounds: undefined, defaultBackground: undefined, maxImageReferences: undefined,
+    supportsDataUrlReference: false, supportsBatch: false, maxBatchCount: 1, defaultRatio: '1:1',
+    ...overrides,
+  });
+}
+
 const IMAGE_MODELS: ProviderModelSelection[] = [
-  ...images(['gpt-image-2'], {
+  ...images(['gpt-image-2'], channelImageCapability('gpt-image-2', {
     resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', ratios: GPT_RATIOS,
     maxImageReferences: 14, supportsBatch: true, maxBatchCount: 8,
-  }, { resolution: '{{imageSize}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
+  }), { resolution: '{{imageSize}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2-vip/generation
-  ...images(['gpt-image-2-vip'], {
+  ...images(['gpt-image-2-vip'], channelImageCapability('gpt-image-2', {
     resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', ratios: GPT_RATIOS,
     maxImageReferences: 14, supportsBatch: true, maxBatchCount: 8,
     qualities: GPT_QUALITIES, defaultQuality: 'medium',
-  }, { resolution: '{{imageSize}}', quality: '{{imageQuality}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
+  }), { resolution: '{{imageSize}}', quality: '{{imageQuality}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2/official
-  ...images(['gpt-image-2-official'], { ...K_RESOLUTIONS, ratios: GPT_RATIOS,
+  ...images(['gpt-image-2-official'], channelImageCapability('gpt-image-2', { ratios: GPT_RATIOS,
     maxImageReferences: 16, supportsBatch: true, maxBatchCount: 4,
     qualities: GPT_QUALITIES, defaultQuality: 'high',
-  }, { resolution: '{{imageSize}}', quality: '{{imageQuality}}' }),
+  }), { resolution: '{{imageSize}}', quality: '{{imageQuality}}' }),
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2.5/generation
-  ...images(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'], {
-    ...K_RESOLUTIONS, ratios: BANANA_RATIOS, qualities: ['high'], defaultQuality: 'high', backgrounds: ['transparent'],
-  }, { resolution: '{{imageSize}}', quality: 'high', background: '{{imageBackground}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
+  ...images(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'], channelImageCapability('gpt-image-2.5', {
+    ratios: BANANA_RATIOS, qualities: ['high'], defaultQuality: 'high', backgrounds: ['transparent'],
+  }), { resolution: '{{imageSize}}', quality: 'high', background: '{{imageBackground}}', reference_images: '{{imageUrls}}', image_urls: undefined }),
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2.5-vip/generation
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2.5-official/generation
   ...images(['gpt-image-2.5-flare-vip', 'gpt-image-2.5-sunburst-vip',
-    'gpt-image-2.5-flare-official', 'gpt-image-2.5-sunburst-official'], {
-    ...K_RESOLUTIONS, ratios: BANANA_RATIOS, dimensionPresets: GPT_PIXEL_SIZES,
+    'gpt-image-2.5-flare-official', 'gpt-image-2.5-sunburst-official'], channelImageCapability('gpt-image-2.5', {
+    ratios: BANANA_RATIOS, dimensionPresets: GPT_PIXEL_SIZES,
     qualities: GPT_25_QUALITIES, defaultQuality: 'high', backgrounds: ['transparent'],
-  }, { size: '{{size}}', quality: '{{imageQuality}}', background: '{{imageBackground}}' }),
+  }), { size: '{{size}}', quality: '{{imageQuality}}', background: '{{imageBackground}}' }),
   // https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2.6-official/generation
   // 2.6 单独使用文档列出的比例名和分辨率，不沿用 2.5 的像素表或额外输出模式。
-  ...images(['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official'], {
+  ...images(['gpt-image-2.6-flare-official', 'gpt-image-2.6-sunburst-official'], channelImageCapability('gpt-image-2.6', {
     resolutions: ['1k', '2k', '4k'], defaultResolution: '1k',
     ratios: ['auto', '1:1', '3:2', '2:3', '16:9', '9:16'],
     qualities: GPT_25_QUALITIES, defaultQuality: 'medium', backgrounds: ['auto', 'opaque', 'transparent'],
     maxImageReferences: 16, supportsBatch: true, maxBatchCount: 4,
-  }, { resolution: '{{imageSize}}', quality: '{{imageQuality}}', background: '{{imageBackground}}', output_format: 'png' }),
-  ...images(['gemini-nano-banana-2.1', 'gemini-nano-banana-2.1-vip', 'gemini-nano-banana-2.1-official'], {
-    ...K_RESOLUTIONS, ratios: BANANA_WIDE_RATIOS, maxImageReferences: 14,
-  }, METADATA_RESOLUTION),
-  ...images(['gemini-3.1-flash-image-preview'], {
+  }), { resolution: '{{imageSize}}', quality: '{{imageQuality}}', background: '{{imageBackground}}', output_format: 'png' }),
+  ...images(['gemini-nano-banana-2.1', 'gemini-nano-banana-2.1-vip', 'gemini-nano-banana-2.1-official'], channelImageCapability('nano-banana-2.1', {
+    ratios: BANANA_WIDE_RATIOS, maxImageReferences: 14,
+  }), METADATA_RESOLUTION),
+  ...images(['gemini-3.1-flash-image-preview'], channelImageCapability('nano-banana-2', {
     resolutions: ['0.5K', '1K', '2K', '4K'], defaultResolution: '1K', ratios: BANANA_WIDE_RATIOS, maxImageReferences: 6,
-  }, METADATA_RESOLUTION),
-  ...images(['gemini-3.1-flash-image-preview-vip', 'gemini-3.1-flash-image-official'], {
+  }), METADATA_RESOLUTION),
+  ...images(['gemini-3.1-flash-image-preview-vip', 'gemini-3.1-flash-image-official'], channelImageCapability('nano-banana-2', {
     ...K_RESOLUTIONS,
     ratios: BANANA_WIDE_RATIOS, maxImageReferences: 14,
-  }, METADATA_RESOLUTION),
-  ...images(['gemini-3-pro-image-preview'], {
-    ...K_RESOLUTIONS, ratios: BANANA_RATIOS, maxImageReferences: 6,
-  }, METADATA_RESOLUTION),
-  ...images(['gemini-3-pro-image-preview-vip', 'gemini-3-pro-image-official'], {
-    ...K_RESOLUTIONS, ratios: BANANA_RATIOS, maxImageReferences: 14,
-  }, METADATA_RESOLUTION),
-  ...images(['gemini-2.5-flash-image-preview', 'gemini-2.5-flash-image-official'], {
+  }), METADATA_RESOLUTION),
+  ...images(['gemini-3-pro-image-preview'], channelImageCapability('nano-banana-pro', {
+    ratios: BANANA_RATIOS, maxImageReferences: 6,
+  }), METADATA_RESOLUTION),
+  ...images(['gemini-3-pro-image-preview-vip', 'gemini-3-pro-image-official'], channelImageCapability('nano-banana-pro', {
+    ratios: BANANA_RATIOS, maxImageReferences: 14,
+  }), METADATA_RESOLUTION),
+  ...images(['gemini-2.5-flash-image-preview', 'gemini-2.5-flash-image-official'], channelImageCapability('nano-banana', {
+    resolutions: undefined, defaultResolution: undefined,
     ratios: RATIOS, maxImageReferences: 14, hasResolutionField: false,
-  }),
+  })),
   ...images(['qwen-image-3.0', 'qwen-image-3.0-pro'], {
     resolutions: ['1K', '2K'], defaultResolution: '1K', ratios: RATIOS, maxImageReferences: 3,
   }, { resolution: '{{imageSize}}' }),
-  ...images(['doubao-seedream-4-0'], {
-    ...K_RESOLUTIONS, defaultResolution: '2K',
-    ratios: WIDE_RATIOS, maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
-  }, METADATA_RESOLUTION),
-  ...images(['doubao-seedream-4-5'], {
-    resolutions: ['2K', '4K'], defaultResolution: '2K',
-    ratios: WIDE_RATIOS, maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
-  }, METADATA_RESOLUTION),
-  ...images(['doubao-seedream-5-0'], {
-    resolutions: ['2K', '3K'], defaultResolution: '2K', ratios: WIDE_RATIOS,
+  ...images(['doubao-seedream-4-0'], channelImageCapability('seedream-4', {
     maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
-  }, METADATA_RESOLUTION),
-  ...images(['doubao-seedream-5-0-pro'], {
+  }), METADATA_RESOLUTION),
+  ...images(['doubao-seedream-4-5'], channelImageCapability('seedream-4.5', {
+    maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
+  }), METADATA_RESOLUTION),
+  ...images(['doubao-seedream-5-0'], channelImageCapability('seedream-5-lite', {
+    resolutions: ['2K', '3K'], ratios: WIDE_RATIOS,
+    maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
+  }), METADATA_RESOLUTION),
+  ...images(['doubao-seedream-5-0-pro'], channelImageCapability('seedream-5-pro', {
     resolutions: ['1K', '2K'], defaultResolution: '1K', ratios: WIDE_RATIOS,
     maxImageReferences: 10, supportsBatch: true, maxBatchCount: 8,
-  }, METADATA_RESOLUTION),
+  }), METADATA_RESOLUTION),
   ...images(['flux-kontext-pro', 'flux-kontext-max'], {
     ratios: WIDE_RATIOS, maxImageReferences: 1, hasResolutionField: false,
   }, { n: 1 }),
@@ -173,6 +186,15 @@ const FRAME_RATIOS: Pick<VideoModelCapability, 'inputModeCapabilities'> = {
   },
 };
 
+function channelVideoCapability(
+  template: Parameters<typeof getVideoCapabilityTemplate>[0],
+  overrides: VideoModelCapability,
+): VideoModelCapability {
+  return getVideoCapabilityTemplate(template, {
+    operationCapabilities: undefined, inputConstraints: undefined, defaultRatio: '16:9', ...overrides,
+  });
+}
+
 function videos(ids: string[], capability: VideoModelCapability, overrides: ModelProtocolVariables = {}, path = '/videos/generations'): ProviderModelSelection[] {
   return ids.map((id) => ({ id, name: id, provider: 'toapis', category: 'video',
     description: id.startsWith('kling-') && id !== 'kling-3.0-turbo'
@@ -186,39 +208,49 @@ function videos(ids: string[], capability: VideoModelCapability, overrides: Mode
 }
 
 const VIDEO_MODELS: ProviderModelSelection[] = [
-  ...videos(['seedance-2', 'seedance-2-fast', 'seedance-2-mini'], {
-    operations: ['text-to-video', 'image-to-video', 'video-to-video'], resolutions: ['480p', '720p'], defaultResolution: '720p',
-    ratios: SEEDANCE_RATIOS, defaultRatio: '16:9', ...FRAME_RATIOS,
-    minDuration: 4, maxDuration: 15, defaultDuration: 5, supportsAudio: true,
+  ...videos(['seedance-2'], channelVideoCapability('seedance-2.0', {
+    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS, automaticDurationValue: -1,
     supportsStandaloneAudio: false, allowFrameAndReferenceMix: false,
-    maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3,
-  }, { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
-  ...videos(['seedance-2-5'], {
-    operations: ['text-to-video', 'image-to-video', 'video-to-video'], resolutions: ['480p', '720p', '1080p'], defaultResolution: '720p',
-    ratios: SEEDANCE_RATIOS, defaultRatio: '16:9', ...FRAME_RATIOS,
-    minDuration: 4, maxDuration: 30, automaticDurationValue: -1, defaultDuration: 5,
-    supportsAudio: true, supportsStandaloneAudio: true, allowFrameAndReferenceMix: false,
-    maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10,
-  }, { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
-  ...videos(['seedance-2.5-ext'], {
-    operations: ['text-to-video', 'image-to-video', 'video-to-video'], resolutions: ['720p'], defaultResolution: '720p',
-    ratios: VIDEO_RATIOS, defaultRatio: '16:9', minDuration: 10, maxDuration: 30, defaultDuration: 10,
-    maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10, supportsStandaloneAudio: false,
-  }, { reference_images: '{{referenceImageUrls}}', video_with_roles: videoRoles, audio_with_roles: audioRoles }),
-  ...videos(['seedance-2-fast-ext'], {
-    resolutions: ['480p', '720p', '1080p'], defaultResolution: '720p', ratios: VIDEO_RATIOS, defaultRatio: '16:9',
-    durations: [5, 10, 15], defaultDuration: 5, maxImageReferences: 9,
-  }, { reference_images: '{{referenceImageUrls}}' }),
-  ...videos(['MiniMax-H3', 'MiniMax-H3-Max'], {
-    operations: ['text-to-video', 'image-to-video', 'video-to-video'],
-    resolutions: ['768p', '2K'], defaultResolution: '2K', ratios: SEEDANCE_RATIOS, defaultRatio: '16:9', ...FRAME_RATIOS,
-    minDuration: 4, maxDuration: 15, defaultDuration: 5, maxImageReferences: 9, maxVideoReferences: 3, maxAudioReferences: 3,
+    maxVideoReferences: undefined, maxAudioReferences: undefined,
+  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
+  ...videos(['seedance-2-fast'], channelVideoCapability('seedance-2.0-fast', {
+    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS, automaticDurationValue: -1,
     supportsStandaloneAudio: false, allowFrameAndReferenceMix: false,
-  }, { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles }),
-  ...videos(['MiniMax-H3-Max-Turbo'], {
-    resolutions: ['480P', '768P'], defaultResolution: '768P', ratios: SEEDANCE_RATIOS, defaultRatio: '16:9', ...FRAME_RATIOS,
-    minDuration: 5, maxDuration: 15, defaultDuration: 5, maxImageReferences: 2, allowFrameAndReferenceMix: false,
-  }, { image_with_roles: '{{imageWithRoles}}' }),
+    maxVideoReferences: undefined, maxAudioReferences: undefined,
+  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
+  ...videos(['seedance-2-mini'], channelVideoCapability('seedance-2.0-mini', {
+    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
+    supportsStandaloneAudio: false, allowFrameAndReferenceMix: false,
+  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
+  ...videos(['seedance-2-5'], channelVideoCapability('seedance-2.5', {
+    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
+    defaultDuration: 5, allowFrameAndReferenceMix: false,
+  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles, generate_audio: '{{generateAudio}}' }),
+  ...videos(['seedance-2.5-ext'], channelVideoCapability('seedance-2.5', {
+    resolutions: ['720p'], ratios: VIDEO_RATIOS, minDuration: 10, defaultDuration: 10,
+    automaticDurationValue: undefined, inputModeCapabilities: undefined,
+    supportsAudio: undefined, supportsStandaloneAudio: false,
+  }), { reference_images: '{{referenceImageUrls}}', video_with_roles: videoRoles, audio_with_roles: audioRoles }),
+  ...videos(['seedance-2-fast-ext'], channelVideoCapability('seedance-2.0-fast', {
+    operations: ['text-to-video', 'image-to-video'],
+    resolutions: ['480p', '720p', '1080p'], ratios: VIDEO_RATIOS,
+    minDuration: undefined, maxDuration: undefined, supportsAudio: undefined,
+    durations: [5, 10, 15], maxVideoReferences: 0, maxAudioReferences: 0,
+  }), { reference_images: '{{referenceImageUrls}}' }),
+  ...videos(['MiniMax-H3'], channelVideoCapability('minimax-h3', {
+    resolutions: ['768p', '2K'], ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
+    supportsAudio: undefined, supportsStandaloneAudio: false,
+  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles }),
+  ...videos(['MiniMax-H3-Max'], channelVideoCapability('minimax-h3-max', {
+    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
+    supportsAudio: undefined, supportsStandaloneAudio: false,
+  }), { image_with_roles: '{{imageWithRoles}}', video_with_roles: videoRoles, audio_with_roles: audioRoles }),
+  ...videos(['MiniMax-H3-Max-Turbo'], channelVideoCapability('minimax-h3-max', {
+    operations: ['text-to-video', 'image-to-video'],
+    ratios: SEEDANCE_RATIOS, ...FRAME_RATIOS,
+    maxImageReferences: 2, maxVideoReferences: 0, maxAudioReferences: 0,
+    supportsAudio: undefined, supportsStandaloneAudio: undefined,
+  }), { image_with_roles: '{{imageWithRoles}}' }),
   ...videos(['wan3.0-video'], {
     operations: ['text-to-video', 'image-to-video', 'video-to-video'], resolutions: ['480p', '720p', '1080p'], defaultResolution: '1080p',
     ratios: [...VIDEO_RATIOS, 'adaptive'], defaultRatio: '16:9', minDuration: 2, maxDuration: 30, defaultDuration: 5, automaticDurationValue: -1,
@@ -308,13 +340,11 @@ const VIDEO_MODELS: ProviderModelSelection[] = [
 // 同系列仍按文档区分不同 SKU，而不是套一份完整官方能力。
 for (const model of VIDEO_MODELS) {
   const capability = model.videoCapability!;
-  if (model.id === 'seedance-2') capability.resolutions = ['480p', '720p', '1080p', '4k'];
-  if (model.id === 'seedance-2' || model.id === 'seedance-2-fast') capability.automaticDurationValue = -1;
+  // 这两个 SKU 没有独立公布上限；移除 videos() 为其他型号保留的零名额默认值。
   if (model.id === 'seedance-2' || model.id === 'seedance-2-fast') {
     capability.maxVideoReferences = undefined;
     capability.maxAudioReferences = undefined;
   }
-  if (model.id === 'MiniMax-H3-Max') Object.assign(capability, { resolutions: ['480P', '768P'], defaultResolution: '768P', minDuration: 5 });
   if (model.id === 'kling-v2-6') Object.assign(capability, { durations: [5, 10], minDuration: undefined, maxDuration: undefined });
   if (model.id === 'kling-video-o1') capability.maxDuration = 10;
   if (model.id === 'kling-v3-omni' && model.executionProfile?.protocol) {

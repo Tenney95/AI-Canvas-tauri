@@ -45,6 +45,7 @@ import { validateModelExecutionProtocol } from './modelProtocolValidation';
 import { comparableProtocol } from './modelProtocol';
 import { CCC_BANANA_MODEL_IDS, filterCccGroupModels } from './cccProviderGroups';
 import { filterRelayonGroupPricing } from './relayonProviderGroups';
+import { getImageCapabilityTemplate, type ImageCapabilityTemplateId } from './modelCapabilityTemplates';
 import {
   GOOGLE_GEMINI_BASE_URL,
   GOOGLE_MODEL_MANIFEST,
@@ -146,6 +147,21 @@ function cccGeminiImageProtocol(supportsImageSize: boolean, acceptsReferences = 
  * inputModalities 只在与按 ID 猜模态的兜底规则不一致时才显式声明，
  * 避免把 gpt-4 / o3-mini 这类纯文本模型误判成能吃图。
  */
+const CCC_BANANA_TEMPLATES: Record<string, ImageCapabilityTemplateId> = {
+  'gemini-3-pro-image-preview': 'nano-banana-pro', 'gemini-3-pro-image': 'nano-banana-pro',
+  'nano-banana-pro': 'nano-banana-pro', 'Nano-Banana-pro': 'nano-banana-pro',
+  'gemini-3.1-flash-image': 'nano-banana-2', 'nano-banana2': 'nano-banana-2',
+  'Nano-Banana-2': 'nano-banana-2', 'Nano-Banana-2.1': 'nano-banana-2.1',
+};
+
+function cccGptImageOptions() {
+  return getImageCapabilityTemplate('gpt-image-2.5', {
+    resolutions: undefined, defaultResolution: undefined, ratios: undefined, defaultRatio: undefined,
+    supportsBatch: undefined, maxBatchCount: undefined, supportsImageReference: undefined,
+    maxImageReferences: undefined, supportsDataUrlReference: undefined,
+  });
+}
+
 const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   ...[
     'DeepSeek-V4.1-Flash', 'GLM-5.3-Flash', 'Qwen3.8-Flash', 'mI MiMo-V2.5', 'Hy3',
@@ -219,10 +235,12 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     description: 'CCC Gemini 原生文生图与参考编辑，参考图片通过 inlineData 完整发送',
     inputModalities: ['text', 'image'],
     // 同一原生合同的旧 Pro／3.x 别名沿用现行香蕉档位，不退回通用旧表的单项 1K。
-    ...(id !== 'gemini-2.5-flash-image' ? { imageCapability: {
-      resolutions: ['1K', '2K', '4K'], defaultResolution: '1K',
-      ratios: ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '4:5', '5:4', '21:9'], defaultRatio: '1:1',
-    } } : {}),
+    ...(CCC_BANANA_TEMPLATES[id] ? { imageCapability: getImageCapabilityTemplate(CCC_BANANA_TEMPLATES[id], {
+      resolutions: ['1K', '2K', '4K'],
+      ratios: ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '4:5', '5:4', '21:9'],
+      supportsBatch: undefined, maxBatchCount: undefined, supportsImageReference: undefined,
+      maxImageReferences: undefined, supportsDataUrlReference: undefined,
+    }) } : {}),
     executionProfile: { preset: 'custom', protocol: cccGeminiImageProtocol(id !== 'gemini-2.5-flash-image') },
   })),
   {
@@ -232,8 +250,7 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     provider: 'cccapi',
     description: '速度优先的轻量图片模型，支持文生图与图片编辑',
     imageReferenceRequestMode: 'edits-multipart',
-    imageCapability: { qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], defaultQuality: 'auto',
-      backgrounds: ['auto', 'opaque', 'transparent'] },
+    imageCapability: cccGptImageOptions(),
   },
   {
     id: 'gpt-image-2.5-sunburst',
@@ -242,8 +259,7 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     provider: 'cccapi',
     description: '质量优先的高画质图片模型，支持文生图与图片编辑',
     imageReferenceRequestMode: 'edits-multipart',
-    imageCapability: { qualities: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], defaultQuality: 'auto',
-      backgrounds: ['auto', 'opaque', 'transparent'] },
+    imageCapability: cccGptImageOptions(),
   },
   {
     id: 'gpt-image-2',

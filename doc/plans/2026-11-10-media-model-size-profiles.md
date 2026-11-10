@@ -1,6 +1,6 @@
 # 图片与视频型号参数、尺寸同源管理
 
-状态：2026-11-10 已通过相关 24 个文件、1356 项 Vitest 用例；完成静态复核。未运行类型检查、lint、构建、桌面或真实模型调用，桌面行为待用户验收。
+状态：2026-11-10 已补齐已确认型号的公共模板与渠道覆写，相关 32 个文件、1813 项 Vitest 全部通过；完成静态复核。此次未运行类型检查、lint、构建、Rust、桌面或真实模型调用，桌面行为待用户验收。
 
 ## 决策与来源
 
@@ -19,7 +19,9 @@
 
 ## 实现边界
 
-- `services/ai/modelSizeProfiles.ts` 集中命名尺寸表并返回隔离副本：官方 GPT、APIMart、ToAPIs、万象 Image 2／2.5 和已核对的 Google 型号。不同渠道的同名尺寸不混用；相同像素行可复用。
+- `services/ai/modelCapabilityTemplates.ts` 集中 13 个图片基线（GPT Image 1／1.5／2／2.5／2.6、Nano Banana 原版／Pro／2／2.1、Seedream 4／4.5／5 Lite／5 Pro）及 6 个视频基线（Seedance 2.0／Fast／Mini／2.5、MiniMax H3／Max）。视频继续读取既有官方能力源，渠道按已核对的精确 ID 绑定，不按显示名称或前缀猜型号。
+- 渠道只覆写自身的分辨率、比例、默认值、时长、素材上限和模式差异。数组、输入模式与操作模式整体替换，不合并扩权；显式 `undefined` 删除未声明字段，返回对象及嵌套数据均为独立副本。未知模板拒绝，不兜底到其他版号。GPT 2.6 未确认的高级能力不继承 2.5，兼容能力由具体渠道显式声明。
+- `services/ai/modelSizeProfiles.ts` 集中命名尺寸表并返回隔离副本：官方 GPT、APIMart、ToAPIs、万象 Image／Nano／Seedream／MJ、GRSAI GPT、已核对的 Google 与火山型号。不同渠道的同名尺寸不混用；相同像素行可复用。GRSAI 查询及实际请求共用同一张表；这是本轮新增的精确尺寸声明，原请求像素不变。
 - 图片模板、内置图片构造和声明式生成共用尺寸解析。显式表缺少固定组合时拒绝，不能静默降档。auto／adaptive 只估计布局，真实宽高仍由文件确认。既有 HD 等自定义枚举没有精确表时保留旧布局估计，不阻止只接收枚举的自定义协议。
 - `resolveImageParameterCapability` 和 `resolveImageExecutionCapability` 共用有效能力；后者移除仅用于隐藏控件的空数组。显式用户声明仍接受原协议校验。未匹配内置合同的自定义协议不继承目录的整套尺寸、批量及参考能力；CCC 已有按实际变量选择候选的兼容规则继续保留。
 - 视频参数面板、生成预检及 Agent／MCP 的能力入口共用 `resolveConfiguredVideoCapability`。保留 Sora2U 完整目录兜底，再应用联合名额。旧节点按实际绑定连接解析，不因旧 provider 名称串用另一条连接。
@@ -32,28 +34,31 @@
 
 ## 默认模板实际共用范围
 
-当前不是所有中转站都调用同一套默认参数模板。统一解析入口、共享某张尺寸表、共用完整型号能力是不同范围；本轮源码审计如下。
+已确认属于下列型号家族的中转 SKU 通过公共模板与渠道覆写构造。相同型号共用基线，不要求渠道最终候选完全一致：渠道限制、枚举大小写及顺序、缺省值和传输字段继续遵守原合同。
 
 | 渠道 | 视频默认能力 | 图片默认能力／尺寸 |
 |---|---|---|
-| APIMart | Seedance 2.x 与 doubao 别名复用公共模板 | GPT 2.5／2.6 共用渠道尺寸表；其他图片能力仍独立 |
-| 万象 | Seedance 共用五比例；时长、档位与输入能力仍独立 | Image 2／2.5／2.6-01 用集中尺寸源；Nano、Seedream、MJ 仍有本地渠道表 |
-| ToAPIs | 精确 SKU 独立声明与修正 | GPT 2.5 VIP／official 用集中尺寸源，其他能力独立 |
-| LibAPI | 渠道快照派生 | 渠道快照与本地精确像素表派生 |
-| CCC | 未内置 Seedance 2.x | 现行及旧香蕉别名共用本渠道候选；GPT 参数仍独立，无已确认像素时不借其他渠道表 |
-| Amam／AIGC SI | 独立能力清单 | GPT／Nano 独立能力清单 |
+| APIMart | Seedance 2.x 与 doubao 别名沿用公共模板 | GPT／Nano／Seedream 读取公共基线，保留本渠道枚举、引用和尺寸差异 |
+| 万象 | 10 个 Seedance SKU 与 H3 接入公共基线，保留官转／A／C 各自限制 | 10 个已确认 Image／Nano／Seedream SKU 接入基线；MJ 仍为独立家族，像素表集中管理 |
+| ToAPIs | Seedance 2.x 与 H3／Max 读取基线，离散时长、素材及模式按渠道覆写 | GPT／Nano／Seedream 读取基线，VIP／official 尺寸与普通版差异保留 |
+| LibAPI | 10 个已审计内部 ID 绑定基线，原快照提供渠道声明 | 12 个已审计内部 ID 绑定基线，公开别名、快照及本地像素合同保留 |
+| CCC | 未内置 Seedance 2.x | 已确认现行／旧香蕉别名和 Flare／Sunburst 质量背景读取公共基线；不增加未声明的像素、批量或引用字段 |
+| Amam／AIGC SI | 9 个已确认视频 SKU 接入 Seedance／H3 基线 | 9 个已确认 GPT／Nano SKU 接入基线；未确认底层型号的“香蕉”别名保留原合同 |
 | Lec | Seedance 复用模板机制；四个已知 SKU 仍有渠道覆写 | 无独立图片清单，需用户显式应用图片模板 |
-| Sora2U | 独立能力与联合参考名额 | 未声明精确 GPT／Nano SKU |
-| GRSAI | 无 Seedance 2.x，现有 H3 独立 | 独立能力及两张 GPT 请求像素表 |
-| RunningHub | 每个端点的参数 schema | 每个端点的参数 schema，不走普通模型快速模板 |
+| Sora2U | 6 个 Seedance 2.x SKU 接入基线，必须参考、联合名额、Mono 限额及未声明输出参数保留 | 未声明精确 GPT／Nano SKU，不猜测归并 |
+| GRSAI | H3 读取基线，保留渠道档位及未声明模式 | 已确认 GPT／Nano SKU 读取基线，原两套 GPT 请求像素表集中并同步至能力查询；未知版号的 fast 别名不归并 |
+| RunningHub | 已确认的 Seedance／H3 端点枚举从公共基线投影，渠道专有档位和时长单独配置 | 已确认 GPT／Nano／Seedream 端点枚举从基线投影；合计 46 个精确端点、56 处枚举，继续使用专有参数 schema |
+| Google／显式快速模板 | 不改传输层 | 已确认 Google Pro 及 GPT／Nano 快速适配模板共用基线，保留 Interactions／generateContent／JSON／APIMart 的合同差异 |
 
-因此，“所有同版号模型的共同基线集中管理，再显式覆写渠道差异”尚未全部完成。剩余主要为万象的完整 Seedance 能力、ToAPIs／LibAPI／Amam／Sora2U 视频，以及各渠道 Nano 和 GRSAI 图片尺寸声明。不能将这些独立合同全部覆盖为官方参数，也不能把本轮测试通过写成全部默认数据已统一。
+RunningHub 的专有扩展（如 native1080p、放大档、超高清档、令牌时长）继续单独声明，不改变表单或补入普通模型控件。Flux、Kling、Wan 等不同家族、未确认底层型号的渠道别名及其他专有端点仍保留各自合同；不能以名称相似并入上述模板，也不承诺全部模型的像素均已确认。
+
+旧配置直接沿用原记录：此次不新增保存时改写、目录刷新迁移或协议替换。LibAPI 的原审计快照保留为渠道事实来源；已有万象旧快照仅继续使用上文受限的运行期补正规则。原任务查询协议和回执摘要来源不变，不因能力构造方式改变而重投任务。
 
 ## 本轮自动化验证
 
-首次执行原列出的 11 个核心文件，共 937 项：924 通过、13 失败。定位并修正 CCC 旧别名的单项 1K 误限制、CCC 继承 APIMart 像素表，以及未知型号空能力返回的回归；未通过改写原请求尺寸断言掩盖渠道差异。
+在旧提交 `4b00f146` 的隔离工作树生成原合同摘要，与本轮实现按 JSON 语义对照（忽略对象键顺序与 undefined，保留数组顺序）。`modelCapabilityTemplateCompatibility.test.ts` 的 11 组回归覆盖 647 个公开目录记录及完整协议／参数 schema、18 个快速模板、34 个普通／APIMart 图片能力样本、17 个 GRSAI 图片 SKU 和 4 个 H3 档位分支。仅 GRSAI 图片忽略本轮有意新增的 `dimensionPresets` 字段，其请求像素由独立逐值断言验证；原断言不放宽。
 
-修正后运行核心 11 文件，并追加 `providerCatalogService`、`providerCatalogCache`、`providerConnectionModels`、`relayonGroupConnection`、`videoParamSelectorProtocol`、`aigcsiModelManifest`、`libapiModelManifest`、`toapisModelManifest`、`grsaiMedia`、`imageRequestContracts`、`toSeedanceCapabilityView`、`mediaParameterMappings`、`chat/providerConfigDraftService`：24 文件、1356 用例全部通过。请求测试使用受控响应，没有真实计费或迁移用户数据。未运行完整前端 CI、Rust、类型检查或桌面验收。
+相关 32 文件、1813 项测试全部通过，覆盖公共模板、渠道清单、目录缓存、旧能力解析、自定义配置草稿、Agent／MCP 参数查询及图片／视频请求。隔离对照临时工作树已移除；未读取真实项目或凭据。请求测试使用受控响应，没有真实计费或迁移用户数据。此次未运行完整前端 CI、Rust、类型检查、lint、构建或桌面验收。
 
 ## 仍需区分的未知尺寸
 
@@ -69,13 +74,33 @@ Google 3.1 Flash 的 512／21:9 官方正文给出 792×168，与比例不一致
 4. 显式套用 Google 原版／Pro／2.1 模板，核对各档位像素；Pro 2K／16:9 应取 2752×1536。APIMart GPT 2.5 的 1K／2:1 应取 2048×1024，官方 GPT 客户端预设为 1536×768，不因同名模板而串表。缺少固定尺寸组合应报错；auto 不承诺固定像素。
 5. 自定义 HD 枚举协议仅发送其声明字段，仍能提交；无能力声明不因目录同名而增加请求参数。Sora2U 缺能力的旧引用仍获得完整目录能力。素材上限、图片质量／背景、批量、首尾帧及视频编辑限制须回归。
 6. 读取 media_model_parameters：图片尺寸表与当前选择一致，不出现 Key、连接地址或执行协议。已有任务继续查询原回执；本轮改动不触发真实数据迁移。
+7. 在 ToAPIs／LibAPI／Amam／Sora2U／GRSAI 分别核对已绑定型号：渠道原默认值、候选顺序及素材限制不变；未声明的首尾帧、音轨、质量或批量不增加。GRSAI GPT 的 1K／16:9 基础版为 1672×941，Flare 的 2K／4:3 为 2304×1728，能力查询与原请求一致。
+8. RunningHub 核对普通生图及 Seedance／H3 参数表，确认渠道额外档位、自动时长、令牌时长和大小写仍可选；相似名称但未审计的专有端点不受影响。改动某个测试连接后，其他同型号连接及已保存用户声明保持独立。
 
-回归源码覆盖尺寸副本隔离、渠道差异、动态画幅、图片执行能力投影、旧万象快照、自定义连接隔离、三类视频请求层级和 Sora2U 兜底。核心 11 文件可在仓库根目录复跑（本轮另追加上述 13 文件）：
+在仓库根目录复跑本轮 32 个测试文件：
 
 ```powershell
-npx vitest run tests/services/imageModelTemplates.test.ts tests/services/googleModelManifest.test.ts tests/services/mediaModelCapabilities.test.ts tests/services/modelProtocol.test.ts tests/services/modelRequestTransport.test.ts tests/services/relayonModelManifest.test.ts tests/services/videoModelCapabilityResolver.test.ts tests/services/seedanceModelCapabilities.test.ts tests/services/volcengineVideoModels.test.ts tests/services/generateVideo.test.ts tests/services/chat/mediaTools.test.ts
+$files = @(
+  'tests/services/modelCapabilityTemplates.test.ts', 'tests/services/modelCapabilityTemplateCompatibility.test.ts',
+  'tests/services/imageModelTemplates.test.ts', 'tests/services/googleModelManifest.test.ts',
+  'tests/services/mediaModelCapabilities.test.ts', 'tests/services/modelProtocol.test.ts',
+  'tests/services/modelRequestTransport.test.ts', 'tests/services/relayonModelManifest.test.ts',
+  'tests/services/videoModelCapabilityResolver.test.ts', 'tests/services/seedanceModelCapabilities.test.ts',
+  'tests/services/h3ModelCapabilities.test.ts', 'tests/services/volcengineVideoModels.test.ts',
+  'tests/services/generateVideo.test.ts', 'tests/services/chat/mediaTools.test.ts',
+  'tests/services/providerCatalogService.test.ts', 'tests/services/providerCatalogCache.test.ts',
+  'tests/components/providerConnectionModels.test.ts', 'tests/components/relayonGroupConnection.test.tsx',
+  'tests/components/videoParamSelectorProtocol.test.ts', 'tests/services/aigcsiModelManifest.test.ts',
+  'tests/services/libapiModelManifest.test.ts', 'tests/services/toapisModelManifest.test.ts',
+  'tests/services/sora2uModelManifest.test.ts', 'tests/services/sora2uVideoRuntime.test.ts',
+  'tests/services/grsaiMedia.test.ts', 'tests/services/imageRequestContracts.test.ts',
+  'tests/services/toSeedanceCapabilityView.test.ts', 'tests/services/mediaParameterMappings.test.ts',
+  'tests/services/chat/providerConfigDraftService.test.ts', 'tests/services/runninghubModelManifest.test.ts',
+  'tests/services/runninghubMediaRouting.test.ts', 'tests/services/imageSingleRequestBatch.test.ts'
+)
+npx vitest run @files
 ```
 
 ## 回滚
 
-撤销本轮能力解析、尺寸源与调用点变更即可，无数据库或真实项目迁移需要反向执行。不删除用户连接、素材、已生成文件或任务记录；其他任务已有的转场入口改动独立保留。
+撤销本轮公共模板、渠道构造与尺寸源调用点变更即可，无数据库或真实项目迁移需要反向执行。不删除用户连接、素材、已生成文件或任务记录；已保存的显式能力仍按原记录解释，既有任务继续沿原协议与回执恢复。

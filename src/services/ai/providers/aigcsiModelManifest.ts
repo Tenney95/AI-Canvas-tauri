@@ -1,13 +1,38 @@
 /** Amam 主站已核对合同（基础 2026-11-04；Image 2.6 补充 2026-11-05）：https://aigc-si.com/docs。真实生成尚待桌面验收。 */
 import type { ProviderModelSelection } from '../../../types';
-import type { ModelExecutionProfile, NormalizedModelExecutionProtocol, VideoModelCapability } from '../../../types/aiTypes';
+import type { ImageModelCapability, ModelExecutionProfile, NormalizedModelExecutionProtocol, VideoModelCapability } from '../../../types/aiTypes';
 import { comparableProtocol } from '../modelProtocol';
+import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
 import type { ModelProtocolVariables } from '../modelProtocolTypes';
 
 export const AIGCSI_BASE_URL = 'https://aigc-si.com/v1';
 const RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 const WIDE_RATIOS = [...RATIOS, '1:4', '1:8', '4:1', '8:1'];
 const MEDIA_POLL_LIMIT_MS = 2 * 60 * 60 * 1000;
+
+const IMAGE_CAPABILITY_TEMPLATES = {
+  'image-2.6-flare': 'gpt-image-2.6',
+  'image-2.6-sunburst': 'gpt-image-2.6',
+  'image-2.5-flare': 'gpt-image-2.5',
+  'image-2.5-sunburst': 'gpt-image-2.5',
+  'image-2': 'gpt-image-2',
+  'image-2-原生': 'gpt-image-2',
+  '香蕉-pro': 'nano-banana-pro',
+  '香蕉-2': 'nano-banana-2',
+  '香蕉2.1': 'nano-banana-2.1',
+} as const;
+
+const VIDEO_CAPABILITY_TEMPLATES = {
+  'seedance2.5-15': 'seedance-2.5',
+  'seedance2.5-12': 'seedance-2.5',
+  'seedance2.5-max-1': 'seedance-2.5',
+  'seedance2.5-14': 'seedance-2.5',
+  'seedance2.5-13': 'seedance-2.5',
+  'seedance2.0-930-1': 'seedance-2.0',
+  'seedance2.0-15': 'seedance-2.0',
+  'seedance2.0-7': 'seedance-2.0',
+  'minimax-h3-5': 'minimax-h3',
+} as const;
 
 function imageProtocol(edit: boolean): NormalizedModelExecutionProtocol {
   return {
@@ -24,10 +49,19 @@ function imageProtocol(edit: boolean): NormalizedModelExecutionProtocol {
 }
 
 function imageModel(id: string, name: string, ratios = RATIOS, resolutions = ['1K', '2K', '4K']): ProviderModelSelection {
+  const templateId = IMAGE_CAPABILITY_TEMPLATES[id as keyof typeof IMAGE_CAPABILITY_TEMPLATES];
+  const channelCapability: ImageModelCapability = {
+    resolutions: [...resolutions], ratios: [...ratios], supportsBatch: true, maxBatchCount: 4,
+    maxImageReferences: 6,
+  };
+  const imageCapability = templateId ? getImageCapabilityTemplate(templateId, {
+    defaultResolution: undefined, defaultRatio: undefined, qualities: undefined, defaultQuality: undefined,
+    backgrounds: undefined,
+    ...(templateId === 'gpt-image-2.6' ? { supportsDataUrlReference: true } : {}),
+    ...channelCapability,
+  }) : { supportsImageReference: true, supportsDataUrlReference: true, ...channelCapability };
   return { id, name, provider: 'aigc-si', category: 'image', inputModalities: ['text', 'image'],
-    imageCapability: { resolutions: [...resolutions], ratios: [...ratios],
-      supportsBatch: true, maxBatchCount: 4, supportsImageReference: true,
-      maxImageReferences: 6, supportsDataUrlReference: true },
+    imageCapability,
     // 配置声明完整的参考图映射；无参考图时生成入口选择文生图临时协议。
     executionProfile: { preset: 'custom', protocol: imageProtocol(true) } };
 }
@@ -37,6 +71,19 @@ function videoModel(
   output: Pick<VideoModelCapability, 'resolutions' | 'defaultResolution' | 'ratios' | 'durations' | 'minDuration' | 'maxDuration' | 'defaultDuration'>,
 ): ProviderModelSelection {
   const isMuse = id === 'muse-video-1';
+  const templateId = VIDEO_CAPABILITY_TEMPLATES[id as keyof typeof VIDEO_CAPABILITY_TEMPLATES];
+  const channelCapability: VideoModelCapability = {
+    operations: ['text-to-video', 'image-to-video', ...(maxVideoReferences ? ['video-to-video' as const] : [])],
+    ratios: ['16:9', '9:16'], defaultRatio: '16:9', resolutions: ['720p'], defaultResolution: '720p',
+    minDuration: 5, defaultDuration: 5, ...output,
+    maxImageReferences, maxVideoReferences, maxAudioReferences, allowFrameAndReferenceMix: false,
+  };
+  const videoCapability = templateId ? getVideoCapabilityTemplate(templateId, {
+    // 平台只确认普通参考模式，不继承官方音轨开关、首尾帧或输入素材约束。
+    supportsAudio: undefined, supportsStandaloneAudio: undefined, automaticDurationValue: undefined,
+    inputModeCapabilities: undefined, operationCapabilities: undefined, inputConstraints: undefined,
+    ...channelCapability,
+  }) : channelCapability;
   const protocol: NormalizedModelExecutionProtocol = {
     version: 2, mode: 'async', auth: { type: 'bearer' },
     submit: { method: 'POST', path: '/videos', bodyEncoding: 'json', body: {
@@ -54,10 +101,7 @@ function videoModel(
   };
   return { id, name, provider: 'aigc-si', category: 'video',
     inputModalities: ['text', 'image'],
-    videoCapability: { operations: ['text-to-video', 'image-to-video', ...(maxVideoReferences ? ['video-to-video' as const] : [])],
-      ratios: ['16:9', '9:16'], defaultRatio: '16:9', resolutions: ['720p'], defaultResolution: '720p',
-      minDuration: 5, maxDuration: 30, defaultDuration: 5, ...output,
-      maxImageReferences, maxVideoReferences, maxAudioReferences, allowFrameAndReferenceMix: false },
+    videoCapability,
     executionProfile: { preset: 'custom', protocol } };
 }
 
@@ -70,8 +114,8 @@ export const AIGCSI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   videoModel('seedance2.5-max-1', 'Seedance 2.5 Max', 30, 10, 10, {}),
   videoModel('seedance2.5-14', 'Seedance 2.5 · 按条计费渠道', 30, 10, 10, {}),
   videoModel('seedance2.5-13', 'Seedance 2.5 · 豆包原生渠道', 30, 10, 10, {}),
-  videoModel('seedance2.0-930-1', 'Seedance 2.0 · 9图3视频', 9, 3, 0, { maxDuration: 15 }),
-  videoModel('seedance2.0-15', 'Seedance 2.0 · 9图3音频', 9, 0, 3, { maxDuration: 15 }),
+  videoModel('seedance2.0-930-1', 'Seedance 2.0 · 9图3视频', 9, 3, 0, {}),
+  videoModel('seedance2.0-15', 'Seedance 2.0 · 9图3音频', 9, 0, 3, {}),
   videoModel('seedance2.0-7', 'Seedance 2.0 · 渠道八', 9, 3, 3,
     { resolutions: ['480p', '720p', '1080p', '4K'], defaultResolution: '480p', durations: [15], minDuration: 15, maxDuration: 15, defaultDuration: 15 }),
   videoModel('minimax-h3-5', 'MiniMax H3 · 默认渠道', 9, 3, 3,

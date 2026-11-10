@@ -20,6 +20,7 @@ import { getLibapiAudioCapability, usesLibapiModelProtocol } from './providers/l
 import { getMinimaxAudioCapability, resolveMinimaxExecutionProfile, usesMinimaxModelProtocol } from './providers/minimaxModelManifest';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './modelCapabilityValidation';
 import { getImageSizePresets, resolveImageDimensions } from './modelSizeProfiles';
+import { getImageCapabilityTemplate } from './modelCapabilityTemplates';
 
 /* ── 生图能力表 ── */
 
@@ -71,17 +72,14 @@ export interface ImageCapability extends ImageModelCapability {
 // https://docs.apimart.ai/cn/api-reference/images/gpt-image-2.5/generation
 // 已核实的 APIMart 2.5／2.6 共用尺寸与批量合同；质量只在其精确型号覆盖中声明。
 const GPT_IMAGE_25_CAPABILITY: Omit<ImageCapability, 'modelId'> = {
-  resolutions: ['1k', '2k', '4k'],
-  defaultResolution: '1k',
-  ratios: ['auto', '1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21', '3:1', '1:3'],
-  defaultRatio: '1:1',
   resolutionStyle: 'K',
-  supportsBatch: true,
-  maxBatchCount: 4,
-  supportsImageReference: true,
-  maxImageReferences: 16,
-  supportsDataUrlReference: false,
-  dimensionPresets: getImageSizePresets('apimart-gpt-2.5'),
+  ...getImageCapabilityTemplate('gpt-image-2.5', {
+    resolutions: ['1k', '2k', '4k'], defaultResolution: '1k',
+    ratios: ['auto', '1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21', '3:1', '1:3'],
+    maxBatchCount: 4, supportsDataUrlReference: false,
+    qualities: undefined, defaultQuality: undefined, backgrounds: undefined,
+    dimensionPresets: getImageSizePresets('apimart-gpt-2.5'),
+  }),
 };
 
 /**
@@ -92,39 +90,22 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   // ── Nano Banana / Gemini 系列 ──
   'gemini-3.1-flash-image-preview': {
     modelId: 'gemini-3.1-flash-image-preview',
-    resolutions: ['1K'],
-    defaultResolution: '1K',
-    ratios: [...COMMON_RATIOS, '4:5', '5:4', '21:9'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 14,
-    supportsDataUrlReference: true,
+    ...getImageCapabilityTemplate('nano-banana-2', {
+      resolutions: ['1K'], ratios: [...COMMON_RATIOS, '4:5', '5:4', '21:9'], maxBatchCount: undefined,
+    }),
   },
   'gemini-3-pro-image-preview': {
     modelId: 'gemini-3-pro-image-preview',
-    resolutions: ['1K'],
-    defaultResolution: '1K',
-    ratios: [...COMMON_RATIOS, '4:5', '5:4', '21:9'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 14,
-    supportsDataUrlReference: true,
+    ...getImageCapabilityTemplate('nano-banana-pro', {
+      resolutions: ['1K'], ratios: [...COMMON_RATIOS, '4:5', '5:4', '21:9'], maxBatchCount: undefined,
+    }),
   },
   'gemini-2.5-flash-image-preview': {
     modelId: 'gemini-2.5-flash-image-preview',
-    resolutions: ['1K'],
-    defaultResolution: '1K',
-    ratios: ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 14,
-    supportsDataUrlReference: true,
+    ...getImageCapabilityTemplate('nano-banana', { maxImageReferences: 14, maxBatchCount: undefined }),
   },
 
   // ── GPT-Image 系列 ──
@@ -138,42 +119,29 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   },
   'gpt-image-1': {
     modelId: 'gpt-image-1',
-    resolutions: ['1k', '2k', '4k'],
-    defaultResolution: '1k',
-    ratios: ['1:1', '3:2', '2:3'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 4,
-    supportsImageReference: true,
-    maxImageReferences: 15,
-    supportsDataUrlReference: false,
+    ...getImageCapabilityTemplate('gpt-image-1', {
+      resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', maxBatchCount: 4,
+      supportsDataUrlReference: false, qualities: undefined, defaultQuality: undefined,
+    }),
   },
   'gpt-image-1.5': {
     modelId: 'gpt-image-1.5',
-    resolutions: ['1k', '2k', '4k'],
-    defaultResolution: '1k',
-    ratios: ['1:1', '3:2', '2:3'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 4,
-    supportsImageReference: true,
-    maxImageReferences: 15,
-    supportsDataUrlReference: false,
+    ...getImageCapabilityTemplate('gpt-image-1.5', {
+      resolutions: ['1k', '2k', '4k'], defaultResolution: '1k', maxBatchCount: 4,
+      supportsDataUrlReference: false, qualities: undefined, defaultQuality: undefined,
+    }),
   },
   'gpt-image-2': {
     modelId: 'gpt-image-2',
-    resolutions: ['1k', '2k', '4k'],
-    defaultResolution: '1k',
-    ratios: ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '1:2', '2:1', '1:3', '3:1', '21:9', '9:21'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
     // APIMart 的 gpt-image-2 不接受 n>1；多图由调用层拆成多次 n=1 请求。
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 16,
-    supportsDataUrlReference: true,
+    ...getImageCapabilityTemplate('gpt-image-2', {
+      resolutions: ['1k', '2k', '4k'], defaultResolution: '1k',
+      ratios: ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '1:2', '2:1', '1:3', '3:1', '21:9', '9:21'],
+      supportsBatch: false, maxBatchCount: undefined, qualities: undefined, defaultQuality: undefined,
+    }),
   },
 
   // ── Imagen 4.0（仅文生图）──
@@ -360,71 +328,23 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   // ── Seedream 系列（doubao-seedream-*）──
   'doubao-seedream-4.0': {
     modelId: 'doubao-seedream-4.0',
-    resolutions: ['1K', '2K', '4K'],
-    defaultResolution: '2K',
-    ratios: [...COMMON_RATIOS, '21:9', '9:21'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 15,
-    supportsImageReference: true,
-    maxImageReferences: 15,
-    supportsDataUrlReference: true,
+    ...getImageCapabilityTemplate('seedream-4'),
   },
   'doubao-seedream-4.5': {
     modelId: 'doubao-seedream-4.5',
-    resolutions: ['2K', '4K'],
-    defaultResolution: '2K',
-    ratios: [...COMMON_RATIOS, '21:9', '9:21'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 15,
-    supportsImageReference: true,
-    maxImageReferences: 15,
-    supportsDataUrlReference: true,
+    ...getImageCapabilityTemplate('seedream-4.5'),
   },
   'doubao-seedream-5.0-lite': {
     modelId: 'doubao-seedream-5-0-lite',
-    resolutions: ['2K', '3K', '4K'],
-    defaultResolution: '2K',
-    ratios: [...COMMON_RATIOS, '21:9'],
-    defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 15,
-    supportsImageReference: true,
-    maxImageReferences: 15,
-    supportsDataUrlReference: true,
+    ...getImageCapabilityTemplate('seedream-5-lite'),
   },
   'doubao-seedream-5.0-pro': {
     modelId: 'doubao-seedream-5-0-pro',
-    resolutions: ['1K', '1.5K', '2K'],
-    defaultResolution: '2K',
-    ratios: ['auto', ...COMMON_RATIOS, '21:9'],
-    defaultRatio: 'auto',
     resolutionStyle: 'K',
-    supportsBatch: false,
-    supportsImageReference: true,
-    maxImageReferences: 10,
-    supportsDataUrlReference: true,
-    dimensionPresets: {
-      '1K': {
-        '1:1': [1024, 1024], '4:3': [1152, 864], '3:4': [864, 1152],
-        '16:9': [1424, 800], '9:16': [800, 1424], '3:2': [1248, 832],
-        '2:3': [832, 1248], '21:9': [1568, 672],
-      },
-      '1.5K': {
-        '1:1': [1536, 1536], '4:3': [1792, 1344], '3:4': [1344, 1792],
-        '16:9': [2048, 1152], '9:16': [1152, 2048], '3:2': [1872, 1248],
-        '2:3': [1248, 1872], '21:9': [2352, 1008],
-      },
-      '2K': {
-        '1:1': [2048, 2048], '4:3': [2368, 1776], '3:4': [1776, 2368],
-        '16:9': [2816, 1584], '9:16': [1584, 2816], '3:2': [2496, 1664],
-        '2:3': [1664, 2496], '21:9': [3136, 1344],
-      },
-    },
+    ...getImageCapabilityTemplate('seedream-5-pro', { dimensionPresets: getImageSizePresets('volcengine-seedream-5-pro') }),
   },
 };
 
@@ -472,11 +392,7 @@ const APIMART_IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
   ...Object.fromEntries(['seedream-5-0-pro', 'seedream-5-0-flash'].map((modelId) => [modelId, {
     ...IMAGE_CAPABILITIES['doubao-seedream-5.0-pro'], modelId, defaultResolution: '1K',
     ratios: ['auto', ...COMMON_RATIOS, '2:1', '1:2', '21:9'],
-    dimensionPresets: {
-      '1K': { '1:1': [1024, 1024], '4:3': [1152, 864], '3:4': [864, 1152], '16:9': [1312, 736], '9:16': [736, 1312], '3:2': [1248, 832], '2:3': [832, 1248], '2:1': [1440, 720], '1:2': [720, 1440], '21:9': [1568, 672] },
-      '1.5K': { '1:1': [1536, 1536], '4:3': [1792, 1344], '3:4': [1344, 1792], '16:9': [2048, 1152], '9:16': [1152, 2048], '3:2': [1872, 1248], '2:3': [1248, 1872], '2:1': [2176, 1088], '1:2': [1088, 2176], '21:9': [2352, 1008] },
-      '2K': { '1:1': [2048, 2048], '4:3': [2304, 1728], '3:4': [1728, 2304], '16:9': [2560, 1440], '9:16': [1440, 2560], '3:2': [2496, 1664], '2:3': [1664, 2496], '2:1': [2880, 1440], '1:2': [1440, 2880], '21:9': [3024, 1296] },
-    },
+    dimensionPresets: getImageSizePresets('apimart-seedream-5'),
   }])),
   'grok-imagine-1.5-apimart': {
     ...IMAGE_CAPABILITIES['grok-imagine-1.5-apimart'], maxImageReferences: 5, supportsDataUrlReference: false,

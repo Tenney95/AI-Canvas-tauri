@@ -2,13 +2,54 @@
  * runninghubModelManifest — 回归测试：RunningHub 标准模型目录。
  */
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { RUNNINGHUB_MODEL_MANIFEST, RUNNINGHUB_LEGACY_MODELS, getRunningHubModel, parseRunningHubModelParameter } from '../../src/services/ai/providers/runninghubModelManifest';
+import { getImageCapabilityTemplate } from '../../src/services/ai/modelCapabilityTemplates';
 import { defaultModelGroups, getConfiguredModelGroups } from '../../src/components/nodes/shared/defaultModels';
 import { fetchProviderModelCatalog } from '../../src/services/ai/providerCatalogService';
 import { getImageCapability } from '../../src/services/ai/mediaModelCapabilities';
 import type { AppConfig } from '../../src/types';
 
 describe('RunningHub 标准模型目录', () => {
+  it('公共模板去重保留全部 347 个端点原参数合同', () => {
+    // 来自本次去重前的本地 OpenAPI 目录；覆盖字段、枚举顺序、类型、默认值及引用约束。
+    const digest = createHash('sha256').update(JSON.stringify(RUNNINGHUB_MODEL_MANIFEST)).digest('hex');
+    expect(digest).toBe('4e1743a7cf7a677ef355ca1bf4807458f73b77ab238af59f064829d74428f681');
+  });
+
+  it('同型号基础枚举复用后仍保留渠道独有档位、缺档和默认值', () => {
+    const field = (model: string, name: string) => getRunningHubModel(model)!.parameters.find((item) => item.name === name)!;
+    expect(field('bytedance/seedance-2.0-global/text-to-video', 'resolution').schema.enum)
+      .toEqual(['480p', '720p', 'native1080p', 'native4k', '1080p', '2k', '4k']);
+    expect(field('bytedance/seedance-2.0-global-fast/text-to-video', 'resolution').schema.enum)
+      .toEqual(['480p', '720p', '1080p', '2k', '4k']);
+    expect(field('bytedance/seedance-2.5-token/image-to-video', 'ratio').schema.enum).toEqual(['adaptive']);
+    expect(field('bytedance/seedance-2.5-token/multimodal-video', 'duration').defaultValue).toBe('25');
+    expect(field('bytedance/seedance-2.5-token/multimodal-video', 'duration').schema.enum)
+      .toEqual(['-1', ...Array.from({ length: 27 }, (_, index) => String(index + 4))]);
+    expect(field('seedream-v5-lite/text-to-image', 'resolution').schema.enum).toEqual(['2k', '3k']);
+    expect(field('seedream-v5-pro/text-to-image', 'resolution').schema.enum).toEqual(['1k', '2k']);
+    expect(field('rhart-image-n-g31-flash-official/text-to-image', 'resolution').schema.enum).toEqual(['1k', '2k', '4k']);
+    expect(field('rhart-image-n-pro-official/text-to-image-ultra', 'resolution').schema.enum).toEqual(['4k', '8k']);
+    expect(field('minimax/h3-max-turbo/text-to-video', 'resolution').schema.enum).toEqual(['480p', '768p']);
+    expect(field('minimax/hailuo-h3/text-to-video', 'resolution').schema.enum).toEqual(['2K', '768P']);
+    expect(field('minimax/hailuo-h3/text-to-video', 'duration').schema.enum)
+      .toEqual(Array.from({ length: 11 }, (_, index) => String(index + 5)));
+  });
+
+  it('不增加专属参数，不给未知同名端点补模板，各端点保留独立枚举副本', () => {
+    const original = getRunningHubModel('rhart-image-v1-official/edit')!;
+    expect(original.parameters.some((field) => field.name === 'resolution')).toBe(false);
+    expect(getRunningHubModel('runninghub/user/nanobanana-pro')).toBeUndefined();
+    expect(getRunningHubModel('runninghub/bytedance/seedance-2.0-global/unknown')).toBeUndefined();
+    expect(getImageCapability('runninghub/user/gpt-image-2')).toBeUndefined();
+    const generation = getRunningHubModel('rhart-image-n-pro-official/text-to-image')!.parameters.find((field) => field.name === 'resolution')!;
+    const edit = getRunningHubModel('rhart-image-n-pro-official/edit')!.parameters.find((field) => field.name === 'resolution')!;
+    expect(generation.schema.enum).toEqual(edit.schema.enum);
+    expect(generation.schema.enum).not.toBe(edit.schema.enum);
+    expect(generation.schema.enum).not.toBe(getImageCapabilityTemplate('nano-banana-pro').resolutions);
+  });
+
   it('347 个媒体操作有唯一合同、官方来源及正确输出菜单', () => {
     expect(RUNNINGHUB_MODEL_MANIFEST).toHaveLength(347);
     expect(new Set(RUNNINGHUB_MODEL_MANIFEST.map((model) => model.id)).size).toBe(347);

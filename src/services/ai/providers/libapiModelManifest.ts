@@ -8,6 +8,8 @@ import type { AudioModelCapability, AudioOutputFormat, ImageModelCapability, Mod
 import type { ModelProtocolVariables } from '../modelProtocolTypes';
 import type { CanonicalVideoRequest } from '../videoRequestResolver';
 import { comparableProtocol } from '../modelProtocol';
+import { getImageCapabilityTemplate, getVideoCapabilityTemplate } from '../modelCapabilityTemplates';
+import type { ImageCapabilityTemplateId, VideoCapabilityTemplateId } from '../modelCapabilityTemplates';
 
 interface ParameterSnapshot {
   enum?: string[];
@@ -105,6 +107,25 @@ const SNAPSHOT_BY_ID = new Map(SNAPSHOT.flatMap((model) => [
   [model.id, model], [model.public_id, model],
 ] as const));
 
+/** 仅列已审计的精确 internal ID；公开别名继续由原始快照解析。 */
+const IMAGE_TEMPLATES: Partial<Record<string, ImageCapabilityTemplateId>> = {
+  'gpt-image-2.5-sunburst': 'gpt-image-2.5', 'gpt-image-2.5-flare': 'gpt-image-2.5',
+  'gpt-image-2': 'gpt-image-2', 'gpt-image-2-official': 'gpt-image-2',
+  'gpt-image-1.5-all': 'gpt-image-1.5', 'gpt-image-2-c': 'gpt-image-2',
+  'gemini-3.1-flash-image': 'nano-banana-2', 'gemini-3-pro-image': 'nano-banana-pro',
+  'gemini-nano-banana-2.1-image': 'nano-banana-2.1',
+  'doubao-seedream-4-5': 'seedream-4.5', 'doubao-seedream-5-0': 'seedream-5-lite',
+  'doubao-seedream-5-0-pro': 'seedream-5-pro',
+};
+const VIDEO_TEMPLATES: Partial<Record<string, VideoCapabilityTemplateId>> = {
+  'seedance-2-5': 'seedance-2.5', 'seedance-2-5-special': 'seedance-2.5',
+  'seedance-2-5-promo': 'seedance-2.5',
+  'seedance-2-0-official': 'seedance-2.0', 'seedance-2-0-promo': 'seedance-2.0',
+  'seedance-2-0-special': 'seedance-2.0', 'seedance-2-0-manju-special': 'seedance-2.0',
+  'seedance-2-0-ecom-special': 'seedance-2.0', 'seedance-2-0-9tu-special': 'seedance-2.0',
+  'minimax-h3': 'minimax-h3',
+};
+
 /** 统一内部目录名；仅接受本批实际审计过的 internal/public 两种 ID。 */
 export function resolveLibapiModelId(id: string): string | undefined {
   return SNAPSHOT_BY_ID.get(id)?.id;
@@ -174,8 +195,14 @@ function imageModel(model: LibapiModelSnapshot): ProviderModelSelection {
   if (pixels) params.size = '{{size}}';
   if (model.params.quality) params.quality = '{{imageQuality}}';
   if (model.params.background) Object.assign(params, { background: '{{imageBackground}}', output_format: 'png' });
+  const template = IMAGE_TEMPLATES[model.id];
   return { id: model.public_id, name: model.name, provider: 'libapi', category: 'image',
-    inputModalities: ['text', 'image'], imageCapability: capability,
+    inputModalities: ['text', 'image'], imageCapability: template ? getImageCapabilityTemplate(template, {
+      // 原合同没有的控件与像素表不得从官方默认值补齐。
+      resolutions: undefined, defaultResolution: undefined, ratios: undefined, defaultRatio: undefined,
+      qualities: undefined, defaultQuality: undefined, backgrounds: undefined, defaultBackground: undefined,
+      dimensionPresets: undefined, ...capability,
+    }) : capability,
     executionProfile: { preset: 'custom', protocol: asyncProtocol('image', params) } };
 }
 
@@ -227,8 +254,13 @@ function videoModel(model: LibapiModelSnapshot): ProviderModelSelection {
     const value = model.params[field]?.default;
     if (value !== undefined) params[field] = value;
   }
+  const template = VIDEO_TEMPLATES[model.id];
   return { id: model.public_id, name: model.name, provider: 'libapi', category: 'video',
-    inputModalities: ['text', 'image'], videoCapability: capability,
+    inputModalities: ['text', 'image'], videoCapability: template ? getVideoCapabilityTemplate(template, {
+      // 离散时长、生成音频和输入模式以本渠道快照为准，不继承官方额外能力。
+      minDuration: undefined, maxDuration: undefined, automaticDurationValue: undefined,
+      inputModeCapabilities: undefined, operationCapabilities: undefined, ...capability,
+    }) : capability,
     executionProfile: { preset: 'custom', protocol: asyncProtocol('video', params) } };
 }
 

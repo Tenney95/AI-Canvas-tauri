@@ -52,6 +52,64 @@ describe('ToAPIs 已核对的渠道合同', () => {
     expect(model('gemini-3.1-flash-image-official').imageCapability?.resolutions).not.toContain('0.5K');
   });
 
+  it('共用型号基线后仍保留每个 Seedance/H3 SKU 的渠道范围，不增加官方默认能力', () => {
+    const ratios = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'];
+    for (const id of ['seedance-2', 'seedance-2-fast', 'seedance-2-mini', 'seedance-2-5', 'MiniMax-H3', 'MiniMax-H3-Max']) {
+      const capability = model(id).videoCapability!;
+      expect(capability.ratios, id).toEqual(ratios);
+      expect(capability.inputModeCapabilities, id).toEqual({
+        text: { ratios: ratios.filter((ratio) => ratio !== 'adaptive'), defaultRatio: '16:9' },
+        keyframe: { ratios: ['adaptive'], defaultRatio: 'adaptive' },
+      });
+      expect(capability.operationCapabilities, id).toBeUndefined();
+      expect(capability.inputConstraints, id).toBeUndefined();
+      expect(capability.defaultRatio, id).toBe('16:9');
+    }
+    expect(model('seedance-2').videoCapability?.resolutions).toEqual(['480p', '720p', '1080p', '4k']);
+    expect(model('seedance-2-fast').videoCapability?.resolutions).toEqual(['480p', '720p']);
+    for (const id of ['seedance-2', 'seedance-2-fast']) {
+      expect(model(id).videoCapability?.maxVideoReferences, id).toBeUndefined();
+      expect(model(id).videoCapability?.maxAudioReferences, id).toBeUndefined();
+      expect(model(id).videoCapability?.automaticDurationValue, id).toBe(-1);
+    }
+    expect(model('seedance-2-mini').videoCapability?.automaticDurationValue).toBeUndefined();
+    expect(model('seedance-2-mini').videoCapability?.maxVideoReferences).toBe(3);
+    const extension = model('seedance-2-fast-ext').videoCapability!;
+    expect(extension).toMatchObject({ operations: ['text-to-video', 'image-to-video'], durations: [5, 10, 15],
+      maxVideoReferences: 0, maxAudioReferences: 0 });
+    for (const field of ['minDuration', 'maxDuration', 'automaticDurationValue', 'supportsAudio', 'inputModeCapabilities'] as const) {
+      expect(extension[field], field).toBeUndefined();
+    }
+    const longer = model('seedance-2.5-ext').videoCapability!;
+    expect(longer).toMatchObject({ resolutions: ['720p'], minDuration: 10, maxDuration: 30, defaultDuration: 10,
+      supportsStandaloneAudio: false, maxImageReferences: 30, maxVideoReferences: 10, maxAudioReferences: 10 });
+    expect(longer.automaticDurationValue).toBeUndefined();
+    expect(longer.supportsAudio).toBeUndefined();
+    expect(longer.inputModeCapabilities).toBeUndefined();
+    expect(model('MiniMax-H3').videoCapability?.resolutions).toEqual(['768p', '2K']);
+    expect(model('MiniMax-H3-Max-Turbo').videoCapability?.supportsStandaloneAudio).toBeUndefined();
+  });
+
+  it('GPT/Nano/Seedream 只复用型号基线，不新增像素表、枚举或渠道未公布的选项', () => {
+    for (const id of ['gpt-image-2', 'gpt-image-2-official', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-sunburst-official',
+      'gemini-nano-banana-2.1', 'gemini-3-pro-image-preview', 'gemini-2.5-flash-image-official',
+      'doubao-seedream-4-0', 'doubao-seedream-4-5', 'doubao-seedream-5-0', 'doubao-seedream-5-0-pro']) {
+      expect(model(id).imageCapability?.dimensionPresets, id).toBeUndefined();
+      expect(model(id).imageCapability?.supportsDataUrlReference, id).toBe(false);
+      expect(model(id).imageCapability?.defaultRatio, id).toBe('1:1');
+    }
+    expect(model('gemini-2.5-flash-image-official').imageCapability?.resolutions).toBeUndefined();
+    expect(model('gemini-3-pro-image-preview').imageCapability?.maxImageReferences).toBe(6);
+    expect(model('gemini-3-pro-image-official').imageCapability?.maxImageReferences).toBe(14);
+    expect(model('doubao-seedream-5-0').imageCapability?.resolutions).toEqual(['2K', '3K']);
+    expect(model('doubao-seedream-5-0-pro').imageCapability).toMatchObject({
+      resolutions: ['1K', '2K'], defaultResolution: '1K', supportsBatch: true, maxBatchCount: 8,
+    });
+    expect(model('gpt-image-2.5-sunburst').imageCapability?.maxImageReferences).toBeUndefined();
+    expect(model('gpt-image-2').imageCapability?.qualities).toBeUndefined();
+    expect(model('gpt-image-2').imageCapability?.backgrounds).toBeUndefined();
+  });
+
   it('Seedance 2.5 完整发送图片/视频/音频，保留每个参考素材编号和角色', () => {
     const request = video('seedance-2-5', [ref('image', 1), ref('image', 2),
       ref('video', 1), ref('video', 2), ref('audio', 1, 'reference_audio'), ref('audio', 2, 'reference_audio')]);

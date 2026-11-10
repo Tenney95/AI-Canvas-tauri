@@ -2,6 +2,7 @@
 import type { ImageReferenceRequestMode, ProviderModelSelection } from '../../types';
 import type { ImageModelCapability, ModelExecutionProfile, NormalizedModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
 import { getImageSizePresets, resolveImageDimensions } from './modelSizeProfiles';
+import { getImageCapabilityTemplate } from './modelCapabilityTemplates';
 
 type GptVariant = 'gpt-2' | 'gpt-2.5';
 type BananaVariant = 'banana' | 'banana-pro' | 'banana-2' | 'banana-2.1';
@@ -41,8 +42,6 @@ export const IMAGE_QUICK_ADAPT_OPTIONS: readonly ImageTemplateOption[] = [
     .map((transport) => templateOption('banana', variant, name, transport))),
 ];
 
-const BANANA_RATIOS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
-const BANANA_EXTRA_RATIOS = ['1:4', '4:1', '1:8', '8:1'];
 const GPT_DIMENSIONS = getImageSizePresets('openai-gpt');
 function gptCapability(variant: ImageVariant, transport: ImageTransport): ImageModelCapability {
   const apimart = transport === 'apimart';
@@ -50,21 +49,18 @@ function gptCapability(variant: ImageVariant, transport: ImageTransport): ImageM
   // APIMart 普通 GPT Image 2 没有公布 quality 字段。
   const qualities = transport === 'openai' || (apimart && variant === 'gpt-2.5')
     ? ['auto', 'low', 'medium', 'high', ...(variant === 'gpt-2.5' ? ['xhigh', 'max'] : [])] : undefined;
-  return {
-    resolutions: apimart ? ['1k', '2k', '4k'] : ['1K', '2K', '4K'],
-    defaultResolution: apimart ? '1k' : '1K',
-    ratios: Object.keys(GPT_DIMENSIONS['1K']),
-    defaultRatio: '1:1', supportsBatch: !(apimart && variant === 'gpt-2'),
+  return getImageCapabilityTemplate(variant === 'gpt-2.5' ? 'gpt-image-2.5' : 'gpt-image-2', {
+    ...(apimart ? { resolutions: ['1k', '2k', '4k'], defaultResolution: '1k' } : {}),
+    supportsBatch: !(apimart && variant === 'gpt-2'),
     maxBatchCount: apimart ? variant === 'gpt-2' ? 1 : 4 : 8,
-    supportsImageReference: true,
     maxImageReferences: transport === 'images-json' ? 8 : 16,
     supportsDataUrlReference: !(apimart && variant === 'gpt-2.5'),
-    ...(qualities ? { qualities, defaultQuality: 'auto' } : {}),
-    ...(variant === 'gpt-2.5' && (transport === 'openai' || apimart)
-      ? { backgrounds: ['auto', 'opaque', 'transparent'] } : {}),
+    qualities, defaultQuality: qualities ? 'auto' : undefined,
+    backgrounds: variant === 'gpt-2.5' && (transport === 'openai' || apimart)
+      ? ['auto', 'opaque', 'transparent'] : undefined,
     ...(!apimart ? { dimensionPresets: structuredClone(GPT_DIMENSIONS) }
       : variant === 'gpt-2.5' ? { dimensionPresets: getImageSizePresets('apimart-gpt-2.5') } : {}),
-  };
+  });
 }
 
 function bananaCapability(variant: ImageVariant, transport: ImageTransport): ImageModelCapability {
@@ -73,16 +69,11 @@ function bananaCapability(variant: ImageVariant, transport: ImageTransport): Ima
   const dimensionPresets = transport === 'apimart' || flash ? undefined
     : getImageSizePresets(original ? 'google-gemini-2.5-flash'
       : variant === 'banana-pro' ? 'google-gemini-3-pro' : 'google-nano-banana-2.1');
-  return {
-    resolutions: original ? ['1K'] : flash ? [transport === 'apimart' ? '0.5K' : '512', '1K', '2K', '4K'] : ['1K', '2K', '4K'],
-    defaultResolution: '1K',
-    ratios: [...BANANA_RATIOS, ...(flash || variant === 'banana-2.1' ? BANANA_EXTRA_RATIOS : [])],
-    defaultRatio: '1:1', supportsBatch: false, maxBatchCount: 1,
-    supportsImageReference: true,
-    maxImageReferences: original ? 3 : 14,
-    supportsDataUrlReference: true,
+  return getImageCapabilityTemplate(original ? 'nano-banana' : variant === 'banana-pro' ? 'nano-banana-pro'
+    : flash ? 'nano-banana-2' : 'nano-banana-2.1', {
+    ...(flash && transport === 'apimart' ? { resolutions: ['0.5K', '1K', '2K', '4K'] } : {}),
     ...(dimensionPresets ? { dimensionPresets } : {}),
-  };
+  });
 }
 
 // https://docs.apimart.ai/cn/api-reference/images/gpt-image-2.5/generation
