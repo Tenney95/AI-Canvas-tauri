@@ -10,6 +10,7 @@ import { GROUP_COLOR_PALETTE } from '../types';
 import { generateId } from './store.utils';
 import { layoutEpisodeShots } from '../utils/episodeLayout';
 import { getNodeSize } from '../utils/nodeBounds';
+import { createGroupCollapseLayout, detachGroupLayoutNodes, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
 import { isNodeMediaCopySource } from '../services/nodeMediaCopy';
 import { persistMissingNodeTextFiles } from '../services/nodeTextFilePersistence';
 import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation, type CanvasDerivationGuard } from '../services/canvasDerivationGuard';
@@ -303,7 +304,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
 
     set((state) => ({
       groups: [...state.groups, newGroup],
-      nodes: [
+      nodes: detachGroupLayoutNodes([
         // Place group node BEFORE children (xyflow requirement)
         groupNode,
         ...state.nodes.map((n) =>
@@ -311,7 +312,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
             ? { ...n, parentId: groupId, position: relMap.get(n.id)! }
             : n
         ),
-      ],
+      ], new Set(candidateIds)),
     }));
 
     void ensureGroupFolder(get().currentProjectId, newGroup.name);
@@ -363,7 +364,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
     // Remove parentId and convert to absolute positions
     set((state) => ({
       groups: newNodeGroups,
-      nodes: state.nodes
+      nodes: detachGroupLayoutNodes(state.nodes
         .filter((n) => {
           // Remove dissolved group nodes
           if (affectedGroupIds.has(n.id) && n.type === 'group') return false;
@@ -382,7 +383,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
             };
           }
           return n;
-        }),
+        }), new Set([...affectedGroupIds, ...dissolvedChildIds])),
     }));
 
     retireFolders(get().currentProjectId, dissolvedNames);
@@ -430,10 +431,12 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
       height: Number(groupNode.height ?? groupNode.style?.height ?? groupNode.measured?.height) || 200,
     };
     const nextSize = collapsed ? expanded ?? currentSize : COLLAPSED_GROUP_SIZE;
+    const layout = collapsed ? undefined
+      : createGroupCollapseLayout(get().nodes, groupNode, currentSize.width, nextSize.width - currentSize.width);
 
     // 开合只改变浏览状态，不创建历史记录或截断重做分支。
     set((state) => ({
-      nodes: state.nodes.map((n) => {
+      nodes: reconcileGroupLayoutOffsets(state.nodes.map((n) => {
         if (n.id !== groupId) {
           // 折叠后组内节点看不见了，不能继续留在选区里
           return collapsed || !childIds.has(n.id) || !n.selected ? n : { ...n, selected: false };
@@ -447,9 +450,10 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
             ...n.data,
             groupCollapsed: collapsed ? undefined : true,
             groupExpandedSize: collapsed ? expanded : currentSize,
+            groupCollapseLayout: layout,
           },
         };
-      }),
+      })),
       selectedNodeIds: collapsed
         ? state.selectedNodeIds
         : state.selectedNodeIds.filter((id) => !childIds.has(id)),

@@ -14,6 +14,7 @@ import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../se
 import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
 import { AI_APP_COPY_MESSAGE, isAiAppNode } from '../services/aiApps/aiAppCreation';
 import { collectCanvasDescendantIds } from '../utils/canvasHierarchy';
+import { clearGroupLayoutData } from '../utils/groupCollapseLayout';
 
 export interface ClipboardSlice {
   clipboard: {
@@ -140,6 +141,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
       const newNode: Node<BaseNodeData> = {
         ...node,
         id: newId,
+        data: clearGroupLayoutData(node.data),
         position: { x: node.position.x + offset.x * (idx + 1), y: node.position.y + offset.y * (idx + 1) },
         selected: false,
       };

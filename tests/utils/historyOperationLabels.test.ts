@@ -104,6 +104,41 @@ describe('从快照差异推断操作名', () => {
     expect(describeCanvasChange(before, after).title).toBe('移动节点位置');
   });
 
+  it('文件夹开合及右侧自动位移不误报编辑或移动', () => {
+    const source = { ...node('g1', 'group', { x: 0, y: 0 }, { type: 'comment', groupId: 'g1' }),
+      width: 1000, height: 700, style: { width: 1000, height: 700 } };
+    const follower = node('n1', 'ai-image', { x: 1200, y: 0 });
+    const before = snapshot({ nodes: [source, follower], groups: [group('g1', [])] });
+    const after = snapshot({ nodes: [
+      { ...source, width: 220, height: 152, style: { width: 220, height: 152 }, data: { ...source.data,
+        groupCollapsed: true, groupExpandedSize: { width: 1000, height: 700 },
+        groupCollapseLayout: { deltaX: -780, nodeIds: [follower.id] },
+      } },
+      { ...follower, position: { x: 420, y: 0 }, data: { ...follower.data, groupLayoutOffsetX: -780 } },
+    ], groups: before.groups });
+
+    expect(describeCanvasChange(before, after).title).toBe('画布修改');
+    expect(describeCanvasChange(after, before).title).toBe('画布修改');
+  });
+
+  it.each(['ai-image', 'canvas-note', 'group'])('仍能识别自动偏移后的手动移动：%s', (type) => {
+    const before = snapshot({ nodes: [node('n1', type, { x: 1200, y: 0 })] });
+    const after = snapshot({ nodes: [node('n1', type, { x: 470, y: 0 }, { groupLayoutOffsetX: -780 })] });
+
+    expect(describeCanvasChange(before, after).title).toBe('移动节点位置');
+    expect(describeCanvasChange(after, before).title).toBe('移动节点位置');
+  });
+
+  it('自动位移记录调整不算节点正文编辑', () => {
+    const beforeNode = node('g1', 'group', { x: 0, y: 0 }, { type: 'comment', groupId: 'g1',
+      groupCollapseLayout: { deltaX: -780, nodeIds: ['n1'] } });
+    const afterNode = { ...beforeNode, data: { ...beforeNode.data,
+      groupCollapseLayout: { deltaX: -180, nodeIds: ['n1', 'n2'] } } };
+
+    expect(describeCanvasChange(snapshot({ nodes: [beforeNode] }), snapshot({ nodes: [afterNode] })).title)
+      .toBe('画布修改');
+  });
+
   it('只有尺寸变化时报告调整尺寸，且不算作内容编辑', () => {
     const before = snapshot({ nodes: [node('n1', 'ai-image', { x: 0, y: 0 }, { nodeWidth: 280 })] });
     const after = snapshot({ nodes: [node('n1', 'ai-image', { x: 0, y: 0 }, { nodeWidth: 360 })] });

@@ -243,7 +243,17 @@ function GroupNode({ id, data, selected }: NodeProps) {
         }}
       />
       <div className="canvas-group-node-wrapper" style={{ color }}>
-        <div className="canvas-group-title">
+        <div
+          className="canvas-group-title"
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+            if (!(event.target instanceof Element)
+              || event.target.closest('button, .canvas-group-folder-colors')) return;
+            event.preventDefault();
+            event.target.closest<HTMLElement>('[contenteditable]')?.blur();
+            toggleGroupCollapsed(id);
+          }}
+        >
           <span
             contentEditable
             suppressContentEditableWarning

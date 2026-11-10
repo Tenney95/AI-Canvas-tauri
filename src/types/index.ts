@@ -275,6 +275,10 @@ export interface BaseNodeData {
   groupCollapsed?: boolean;
   /** 分组节点：折叠前的尺寸，展开时还原 */
   groupExpandedSize?: { width: number; height: number };
+  /** 开合分组造成的水平展示偏移；历史位置比较时扣除，不是用户拖动。 */
+  groupLayoutOffsetX?: number;
+  /** 本次收起实际移动的同层后继；展开时撤销该贡献，旧折叠数据没有此项。 */
+  groupCollapseLayout?: { deltaX: number; nodeIds: string[]; parentId?: string };
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   annotation?: string;        // 旧版标注数据（data URL，透明 PNG；仅用于兼容读取）
   annotationLayer?: ImageAnnotationLayer; // 可编辑矢量标注层，独立于原图存储

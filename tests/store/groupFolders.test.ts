@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../src/types';
+import { createCanvasNoteData } from '../../src/types';
 
 const PROJECT_DIR = 'D:/data/proj-1';
 
@@ -1156,5 +1157,264 @@ describe('action-scoped group settlement geometry', () => {
     expect(state.nodes.find((item) => item.id === a.id)).toBe(a);
     expect(state.nodes.find((item) => item.id === b.id)).toBe(b);
     expect(state.groups.map((item) => item.id)).toEqual([a.id, b.id]);
+  });
+});
+
+describe('分组开合自动让位', () => {
+  function group(id: string, x: number, width: number, y = 100, parentId?: string): Node<BaseNodeData> {
+    return {
+      id, type: 'group', parentId, position: { x, y }, width, height: 600,
+      style: { width, height: 600 }, measured: { width, height: 600 },
+      data: { type: 'comment', label: id, groupId: id },
+    };
+  }
+  function scene(extra: Node<BaseNodeData>[] = []) {
+    const a = group('shift-a', 0, 1000);
+    const b = group('shift-b', 1100, 600);
+    const child = { ...node('shift-child'), parentId: b.id, position: { x: 20, y: 40 } };
+    const tail = { ...node('shift-tail'), position: { x: 1800, y: 100 } };
+    const nodes = [a, b, child, tail, ...extra];
+    useAppStore.setState({ nodes, edges: [{ id: 'shift-edge', source: child.id, target: tail.id }],
+      groups: nodes.filter((item) => item.type === 'group').map((item) => ({
+        id: item.id, name: item.id, nodeIds: nodes.filter((child) => child.parentId === item.id).map((child) => child.id),
+        color: '#888888', createdAt: 0,
+      })) });
+    return { a, b, child, tail };
+  }
+  const current = (id: string) => useAppStore.getState().nodes.find((item) => item.id === id)!;
+  const toggle = (id: string) => useAppStore.getState().toggleGroupCollapsed(id);
+
+  it('同排右侧整体平移宽差，保留间距、组内相对坐标与连线，往返还原', () => {
+    const { a, b, child, tail } = scene();
+    const edges = useAppStore.getState().edges;
+    toggle(a.id);
+    expect(current(b.id).position).toEqual({ x: 320, y: 100 });
+    expect(current(tail.id).position).toEqual({ x: 1020, y: 100 });
+    expect(current(b.id).position.x - (current(a.id).position.x + current(a.id).width!)).toBe(100);
+    expect(current(tail.id).position.x - (current(b.id).position.x + current(b.id).width!)).toBe(100);
+    expect(current(child.id).position).toEqual(child.position);
+    expect(current(child.id).data.groupLayoutOffsetX).toBeUndefined();
+    expect(useAppStore.getState().edges).toBe(edges);
+    toggle(a.id);
+    expect(current(b.id).position).toEqual(b.position);
+    expect(current(tail.id).position).toEqual(tail.position);
+    expect(current(b.id).data.groupLayoutOffsetX ?? 0).toBe(0);
+  });
+
+  it('不移动左侧、其他行、不同父级和隐藏内容，展开不补推原本重叠的节点', () => {
+    const left = { ...node('shift-left'), position: { x: -400, y: 100 } };
+    const otherRow = { ...node('shift-other-row'), position: { x: 1500, y: 350 } };
+    const nested = { ...node('shift-other-parent'), parentId: 'different-parent', position: { x: 1400, y: 100 } };
+    const hidden = { ...node('shift-hidden'), hidden: true, position: { x: 1500, y: 100 } };
+    const collected = { ...node('shift-collected'), position: { x: 1600, y: 100 },
+      data: { ...node('shift-collected').data, hiddenByCharacterLibrary: true } };
+    const overlap = { ...node('shift-overlap'), position: { x: 500, y: 100 } };
+    const others = [left, otherRow, nested, hidden, collected, overlap];
+    const { a } = scene(others);
+    toggle(a.id);
+    for (const item of others) expect(current(item.id).position).toEqual(item.position);
+    toggle(a.id);
+    for (const item of others) expect(current(item.id).position).toEqual(item.position);
+  });
+
+  it('同一父分组内只移动同层根节点，不重写子树坐标', () => {
+    const parent = group('shift-parent', 300, 3000, 400);
+    const a = group('shift-nested-a', 30, 1000, 60, parent.id);
+    const b = group('shift-nested-b', 1130, 600, 60, parent.id);
+    const child = { ...node('shift-nested-child'), parentId: b.id, position: { x: 24, y: 38 } };
+    const outside = { ...node('shift-outside'), position: { x: 1430, y: 460 } };
+    useAppStore.setState({ nodes: [parent, a, b, child, outside], groups: [] });
+    toggle(a.id);
+    expect(current(b.id).position).toEqual({ x: 350, y: 60 });
+    expect(current(child.id).position).toEqual(child.position);
+    expect(current(parent.id).position).toEqual(parent.position);
+    expect(current(outside.id).position).toEqual(outside.position);
+    toggle(a.id);
+    expect(current(b.id).position).toEqual(b.position);
+  });
+
+  it.each([
+    ['shift-a', 'shift-b', 'shift-a', 'shift-b'],
+    ['shift-a', 'shift-b', 'shift-b', 'shift-a'],
+    ['shift-b', 'shift-a', 'shift-a', 'shift-b'],
+    ['shift-b', 'shift-a', 'shift-b', 'shift-a'],
+  ])('多个分组按 %s → %s → %s → %s 开合后不累积漂移', (...sequence) => {
+    const { b, tail } = scene();
+    for (let count = 0; count < 3; count++) {
+      sequence.forEach(toggle);
+      expect(current(b.id).position).toEqual(b.position);
+      expect(current(tail.id).position).toEqual(tail.position);
+      expect(current(tail.id).data.groupLayoutOffsetX ?? 0).toBe(0);
+    }
+  });
+
+  it('锁定同排节点作为锚点，后面一段不被拉向左侧', () => {
+    const { a, b, tail } = scene();
+    useAppStore.setState({ nodes: useAppStore.getState().nodes.map((item) => item.id === b.id
+      ? { ...item, draggable: false } : item) });
+    toggle(a.id);
+    expect(current(b.id).position).toEqual(b.position);
+    expect(current(tail.id).position).toEqual(tail.position);
+    toggle(a.id);
+    expect(current(tail.id).position).toEqual(tail.position);
+  });
+
+  it('旧折叠分组没有让位账时只展开尺寸，不推移周边内容', () => {
+    const { a, b, tail } = scene();
+    useAppStore.setState({ nodes: useAppStore.getState().nodes.map((item) => item.id === a.id ? {
+      ...item, width: 220, height: 152, style: { width: 220, height: 152 },
+      data: { ...item.data, groupCollapsed: true, groupExpandedSize: { width: 1000, height: 600 } },
+    } : item) });
+    toggle(a.id);
+    expect(current(a.id).width).toBe(1000);
+    expect(current(b.id).position).toEqual(b.position);
+    expect(current(tail.id).position).toEqual(tail.position);
+  });
+
+  it('折叠后的手动位移保留，序列化回载后展开仅归还自动让位', () => {
+    const { a, tail } = scene();
+    toggle(a.id);
+    useAppStore.getState().onNodesChange([{ id: tail.id, type: 'position', position: { x: 1070, y: 100 } }]);
+    const saved = JSON.parse(JSON.stringify({ nodes: useAppStore.getState().nodes, groups: useAppStore.getState().groups })) as
+      Pick<ReturnType<typeof useAppStore.getState>, 'nodes' | 'groups'>;
+    useAppStore.setState({ nodes: [], groups: [] });
+    useAppStore.setState(saved);
+    toggle(a.id);
+    expect(current(tail.id).position).toEqual({ x: tail.position.x + 50, y: tail.position.y });
+  });
+
+  it('纯开合让位不新增历史或截断重做，移动撤销仍保留当前折叠展示', async () => {
+    const { a, tail } = scene();
+    const state = useAppStore.getState();
+    state.commitToHistory();
+    const baseline = useAppStore.getState().history;
+    toggle(a.id); state.commitToHistory();
+    expect(useAppStore.getState().history).toBe(baseline);
+    state.onNodesChange([{ id: tail.id, type: 'position', position: { x: 1070, y: 100 } }]);
+    expect(await state.undo()).toBe(true);
+    expect(current(a.id).data.groupCollapsed).toBe(true);
+    expect(current(tail.id).position).toEqual({ x: 1020, y: 100 });
+    const { history, historyIndex } = useAppStore.getState();
+    toggle(a.id);
+    expect(current(tail.id).position).toEqual(tail.position);
+    expect(useAppStore.getState().history).toBe(history);
+    expect(useAppStore.getState().historyIndex).toBe(historyIndex);
+    expect(await state.redo()).toBe(true);
+    expect(current(tail.id).position).toEqual({ x: 1850, y: 100 });
+    expect(current(a.id).data.groupCollapsed).toBeUndefined();
+  });
+
+  it('折叠态撤销重做分组缩放，展开使用还原后的宽度与相应让位', async () => {
+    const { a, tail } = scene();
+    const state = useAppStore.getState();
+    state.commitToHistory();
+    state.onNodesChange([{ id: a.id, type: 'dimensions', dimensions: { width: 900, height: 600 }, setAttributes: true }]);
+    state.commitToHistory();
+    toggle(a.id);
+    expect(current(tail.id).position.x).toBe(1120);
+    expect(await state.undo()).toBe(true);
+    expect(current(a.id).data.groupExpandedSize?.width).toBe(1000);
+    expect(current(tail.id).position.x).toBe(1020);
+    expect(await state.redo()).toBe(true);
+    expect(current(a.id).data.groupExpandedSize?.width).toBe(900);
+    expect(current(tail.id).position.x).toBe(1120);
+    toggle(a.id);
+    expect(current(tail.id).position.x).toBe(tail.position.x);
+  });
+
+  it('复制节点和粘贴文件夹使用新布局身份，不继承旧偏移或操作原节点的名单', async () => {
+    const { a, b, tail } = scene();
+    toggle(a.id);
+    const duplicateId = await useAppStore.getState().duplicateNode(tail.id);
+    expect(duplicateId).toBeDefined();
+    expect(current(duplicateId!).position).toEqual(current(tail.id).position);
+    expect(current(duplicateId!).data.groupLayoutOffsetX).toBeUndefined();
+    useAppStore.setState({ selectedNodeIds: [a.id, b.id] });
+    expect(useAppStore.getState().copySelectedNodes()).toBe(true);
+    const known = new Set(useAppStore.getState().nodes.map((item) => item.id));
+    await useAppStore.getState().pasteNodes({ x: 300, y: 300 });
+    const pasted = useAppStore.getState().nodes.filter((item) => !known.has(item.id));
+    expect(pasted.length).toBeGreaterThan(0);
+    for (const item of pasted) {
+      expect(item.data.groupLayoutOffsetX).toBeUndefined();
+      expect(item.data.groupCollapseLayout).toBeUndefined();
+    }
+    const originalPositions = new Map([a.id, b.id, tail.id].map((id) => [id, { ...current(id).position }]));
+    const pastedFolder = pasted.find((item) => item.type === 'group' && item.data.groupCollapsed)!;
+    toggle(pastedFolder.id);
+    for (const [id, position] of originalPositions) expect(current(id).position).toEqual(position);
+  });
+
+  it('让位节点拖入再拖出分组后保持可见坐标，不重新继承旧名单', () => {
+    const target = group('shift-target', 2000, 500, 1000);
+    const { a, tail } = scene([target]);
+    toggle(a.id);
+    const entered = { ...current(tail.id), position: { x: 2050, y: 1050 } };
+    useAppStore.getState().settleNodeGroupingOnDragStop(entered);
+    expect(current(tail.id)).toMatchObject({ parentId: target.id, position: { x: 50, y: 50 } });
+    expect(current(tail.id).data.groupLayoutOffsetX).toBeUndefined();
+    expect(current(a.id).data.groupCollapseLayout?.nodeIds).not.toContain(tail.id);
+    const departed = { ...current(tail.id), position: { x: -930, y: -900 } };
+    useAppStore.getState().settleNodeGroupingOnDragStop(departed);
+    expect(current(tail.id)).toMatchObject({ parentId: undefined, position: { x: 1070, y: 100 } });
+    toggle(a.id);
+    expect(current(tail.id).position).toEqual({ x: 1070, y: 100 });
+  });
+
+  it('笔记复制同样清除自动偏移，原笔记的让位身份保留', async () => {
+    const source: Node<BaseNodeData> = { id: 'shift-note', type: 'canvas-note', position: { x: 1800, y: 100 },
+      data: { type: 'canvas-note', label: '笔记', note: createCanvasNoteData('text', { text: '文字' }) } };
+    const { a } = scene([source]);
+    toggle(a.id);
+    expect(current(source.id).data.groupLayoutOffsetX).toBe(-780);
+    const id = await useAppStore.getState().duplicateCanvasNote(source.id);
+    expect(id).toBeTruthy();
+    expect(current(id!).data.groupLayoutOffsetX).toBeUndefined();
+    expect(current(id!).data.groupCollapseLayout).toBeUndefined();
+    expect(current(source.id).data.groupLayoutOffsetX).toBe(-780);
+    expect(current(id!).data.note?.text).toBe('文字');
+  });
+
+  it('通过缩放吸纳让位节点时清除旧父层贡献，展开不移动新成员', () => {
+    const target = { ...group('shift-capture', 900, 200, 0), height: 50,
+      measured: { width: 200, height: 50 }, style: { width: 200, height: 50 } };
+    const { a, tail } = scene([target]);
+    const state = useAppStore.getState();
+    toggle(a.id);
+    state.commitToHistory();
+    state.onNodesChange([{ id: target.id, type: 'dimensions', dimensions: { width: 600, height: 400 }, setAttributes: true }]);
+    state.settleGroupMembersOnResizeEnd(target.id);
+    expect(current(tail.id)).toMatchObject({ parentId: target.id, position: { x: 120, y: 100 } });
+    expect(current(tail.id).data.groupLayoutOffsetX).toBeUndefined();
+    expect(current(a.id).data.groupCollapseLayout?.nodeIds).not.toContain(tail.id);
+    toggle(a.id);
+    expect(current(tail.id).position).toEqual({ x: 120, y: 100 });
+  });
+
+  it('让位后换组再撤销，恢复原父层的自动偏移关系', async () => {
+    const target = group('shift-undo-target', 2000, 500, 1000);
+    const { a, tail } = scene([target]);
+    toggle(a.id);
+    useAppStore.getState().settleNodeGroupingOnDragStop({ ...current(tail.id), position: { x: 2050, y: 1050 } });
+    expect(current(tail.id).parentId).toBe(target.id);
+    expect(await useAppStore.getState().undo()).toBe(true);
+    expect(current(a.id).data.groupCollapsed).toBe(true);
+    expect(current(a.id).data.groupCollapseLayout?.nodeIds).toContain(tail.id);
+    expect(current(tail.id)).toMatchObject({ parentId: undefined, position: { x: 1020, y: 100 },
+      data: { groupLayoutOffsetX: -780 } });
+  });
+
+  it('解散折叠源后归还让位，撤销复活源时恢复收起展示', async () => {
+    const { a, b, tail } = scene();
+    toggle(a.id);
+    useAppStore.setState({ selectedNodeIds: [a.id] });
+    useAppStore.getState().ungroupSelectedNodes();
+    expect(useAppStore.getState().nodes.some((item) => item.id === a.id)).toBe(false);
+    expect(current(b.id).position).toEqual(b.position);
+    expect(current(tail.id).position).toEqual(tail.position);
+    expect(await useAppStore.getState().undo()).toBe(true);
+    expect(current(a.id).data.groupCollapsed).toBe(true);
+    expect(current(b.id).position).toEqual({ x: 320, y: 100 });
+    expect(current(tail.id).position).toEqual({ x: 1020, y: 100 });
   });
 });

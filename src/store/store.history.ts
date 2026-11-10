@@ -10,6 +10,7 @@ import type { BaseNodeData, NodeGroup } from '../types';
 import * as fileService from '../services/fileService';
 import { waitForPendingNodeExits } from '../utils/nodeAnimations';
 import { getHistoryGroupSize } from '../utils/historyOperationLabels';
+import { getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
 import { COLLAPSED_GROUP_SIZE } from './store.groups';
 
 export interface HistoryEntry {
@@ -188,7 +189,7 @@ function projectStructuralNode(node: Node<BaseNodeData>, includeLayout: boolean)
     id: node.id, type: node.type, parentId: node.parentId, extent: node.extent, expandParent: node.expandParent,
     data: getStructuralNodeData(node.data),
     ...(includeLayout || node.type === 'canvas-note' ? {
-      position: node.position,
+      position: getGroupLayoutPosition(node),
       layoutData: getNodeDataFields(node.data, node.data.type === 'ai-image' ? IMAGE_LAYOUT_NODE_DATA_KEYS : LAYOUT_NODE_DATA_KEYS),
       styleDimensions: getNodeStyleDimensions(node),
     } : {}),
@@ -246,16 +247,25 @@ function restoreStructuralNode(
   current: Node<BaseNodeData> | undefined,
   restoreLayout: boolean,
 ): Node<BaseNodeData> {
-  if (!current) return cloneNode(target);
+  if (!current) {
+    const restored = cloneNode(target);
+    restored.position = getGroupLayoutPosition(target);
+    delete restored.data.groupLayoutOffsetX;
+    return restored;
+  }
 
   if (target.type === 'canvas-note') {
+    const data = { ...current.data, ...target.data };
+    delete data.groupLayoutOffsetX;
+    if (current.data.groupCollapseLayout) data.groupCollapseLayout = current.data.groupCollapseLayout;
+    else delete data.groupCollapseLayout;
     return {
       ...target,
       selected: current.selected,
       dragging: false,
       measured: current.measured,
-      data: { ...current.data, ...target.data },
-      position: { ...target.position },
+      data,
+      position: getGroupLayoutPosition(target),
       style: target.style ? { ...target.style } : target.style,
     };
   }
@@ -307,6 +317,9 @@ function restoreStructuralNode(
     }
   }
   const parentChanged = current.parentId !== target.parentId;
+  const restorePosition = restoreLayout || parentChanged;
+  // 历史位置先还原为用户布局；本轮当前的开合位移在整张图恢复后统一重投影。
+  if (restorePosition) delete data.groupLayoutOffsetX;
   const expandedSize = restoreLayout && target.type === 'group' ? getHistoryGroupSize(target) : undefined;
   const visibleSize = expandedSize && (current.data.groupCollapsed ? COLLAPSED_GROUP_SIZE : expandedSize);
   // 保留当前开合状态；真实缩放撤销后，收起的分组下次展开也要使用还原后的尺寸。
@@ -317,7 +330,7 @@ function restoreStructuralNode(
     parentId: target.parentId,
     extent: target.extent,
     expandParent: target.expandParent,
-    position: restoreLayout || parentChanged ? { ...target.position } : { ...current.position },
+    position: restorePosition ? getGroupLayoutPosition(target) : { ...current.position },
     style: visibleSize ? { ...current.style, ...visibleSize }
       : restoreLayout ? restoreNodeStyleDimensions(target, current) : current.style,
     ...(visibleSize ? {
@@ -349,19 +362,49 @@ function restoreStructuralSnapshot(
     if (!restoreLayout && !membersChanged) continue;
     layoutGroups.add(node.id);
     const previous = currentNodes.get(node.id);
-    if (previous
-      && (node.position.x !== previous.position.x || node.position.y !== previous.position.y)) {
+    const targetPosition = getGroupLayoutPosition(node);
+    const previousPosition = previous && getGroupLayoutPosition(previous);
+    if (previousPosition
+      && (targetPosition.x !== previousPosition.x || targetPosition.y !== previousPosition.y)) {
       relocatedGroups.add(node.id);
     }
   }
+  const restoredNodes = target.nodes.map((node) => restoreStructuralNode(
+    node,
+    currentNodes.get(node.id),
+    // 左／上边缩放会反向调整已有子节点坐标，须随父框一起还原。
+    restoreLayout || layoutGroups.has(node.id)
+      || (node.parentId !== undefined && relocatedGroups.has(node.parentId)),
+  ));
+  const returningNodes = new Set(restoredNodes.filter((node) => (
+    !currentNodes.has(node.id) || currentNodes.get(node.id)?.parentId !== node.parentId
+  )).map((node) => node.id));
+  const targetNodes = new Map(target.nodes.map((node) => [node.id, node]));
+  const restoredById = new Map(restoredNodes.map((node) => [node.id, node]));
+  const nodesWithLayouts = restoredNodes.map((node) => {
+    if (node.type !== 'group' || !node.data.groupCollapsed || !returningNodes.size) return node;
+    const targetNode = targetNodes.get(node.id);
+    const targetLayout = targetNode?.data.groupCollapseLayout;
+    if (!targetNode?.data.groupCollapsed || !targetLayout || !Array.isArray(targetLayout.nodeIds)
+      || !Number.isFinite(targetLayout.deltaX) || targetLayout.parentId !== node.parentId) return node;
+    const sourceReturning = returningNodes.has(node.id);
+    const currentLayout = node.data.groupCollapseLayout;
+    const layout = sourceReturning ? targetLayout
+      : currentLayout && Array.isArray(currentLayout.nodeIds) && Number.isFinite(currentLayout.deltaX)
+        && currentLayout.parentId === node.parentId
+        ? currentLayout : { ...targetLayout, nodeIds: [] };
+    const members = new Set(layout.nodeIds);
+    for (const id of targetLayout.nodeIds) {
+      if (returningNodes.has(id) && restoredById.get(id)?.parentId === node.parentId) members.add(id);
+    }
+    if (!sourceReturning && members.size === layout.nodeIds.length) return node;
+    // 换/脱组会解除展示关系；撤销只接回本次回到原层的节点，其他浏览状态沿用当前记录。
+    return { ...node, data: { ...node.data,
+      groupCollapseLayout: { ...layout, nodeIds: [...members] },
+    } };
+  });
   return {
-    nodes: target.nodes.map((node) => restoreStructuralNode(
-      node,
-      currentNodes.get(node.id),
-      // 左／上边缩放会反向调整已有子节点坐标，须随父框一起还原。
-      restoreLayout || layoutGroups.has(node.id)
-        || (node.parentId !== undefined && relocatedGroups.has(node.parentId)),
-    )),
+    nodes: reconcileGroupLayoutOffsets(nodesWithLayouts),
     edges: target.edges.map((edge) => {
       const currentEdge = currentEdges.get(edge.id);
       return currentEdge

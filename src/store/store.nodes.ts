@@ -35,6 +35,7 @@ import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData, getImageNodeDimensionsForAspectRatio, resolveImageGenerationParameters } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { getNodeBounds, getNodeSize, getParentOffset, videoNodeDimensionsForAspectRatio } from '../utils/nodeBounds';
+import { clearGroupLayoutData, detachGroupLayoutNodes } from '../utils/groupCollapseLayout';
 import { getCanvasNodeById } from '../utils/canvasRenderProjection';
 import { resolveDirectorRuntime } from '../services/directorRuntimeRegistry';
 import { copyNodeMedia, needsNodeMediaCopy, discardCopiedNodeMedia } from '../services/nodeMediaCopy';
@@ -389,7 +390,7 @@ function insertNodeInGroup(state: Pick<AppState, 'nodes' | 'groups'>, node: Node
   const position = absoluteNodePosition(parent, state.nodes);
   return {
     nodes: [...state.nodes, {
-      ...node, parentId: parent.id,
+      ...node, parentId: parent.id, data: clearGroupLayoutData(node.data),
       position: { x: node.position.x - position.x, y: node.position.y - position.y },
     }],
     groups: state.groups.map((group) => group.id === parent.data.groupId
@@ -528,7 +529,7 @@ function prepareDuplicateNodeData(
   cloneId: string,
   includeContent: boolean,
 ): BaseNodeData {
-  const duplicate = structuredClone(data);
+  const duplicate = clearGroupLayoutData(structuredClone(data));
 
   if (!includeContent) {
     // 拖拽复用生成配置，不带走上一份结果、文件身份或运行记录。
@@ -1405,7 +1406,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
           get().commitToHistory();
           get().addNodeTransient({ ...source, id: cloneId,
             position: { x: source.position.x + 24, y: source.position.y + 24 },
-            data, selected: false, dragging: false });
+            data: clearGroupLayoutData(data), selected: false, dragging: false });
           return cloneId;
         } catch {
           if (get().currentProjectId === guard.projectId) get().showToast('素材复制失败，请重试', 'error');
@@ -1422,7 +1423,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       selected: true,
       dragging: false,
       data: {
-        ...structuredClone(source.data),
+        ...clearGroupLayoutData(structuredClone(source.data)),
         displayId: getNextDisplayId(state.nodes),
       },
     } as Node<BaseNodeData>;
@@ -1822,7 +1823,10 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       ) as Node<BaseNodeData>[];
 
       set((s) => ({
-        nodes: finalNodes,
+        nodes: detachGroupLayoutNodes(finalNodes, new Set([
+          ...removedIds,
+          ...state.nodes.filter((node) => node.parentId && groupNodeIdSet.has(node.parentId)).map((node) => node.id),
+        ])),
         edges: s.edges.filter(
           (e) => !removedIds.includes(e.source) && !removedIds.includes(e.target),
         ),
@@ -1901,7 +1905,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     )).map((node) => [node.id, geometry.position(node)] as const));
 
     if (capturedIds.size > 0 || releasedPositions.size > 0) {
-      const nodes = state.nodes.map((node) => {
+      const nodes = detachGroupLayoutNodes(state.nodes.map((node) => {
         const releasedPosition = releasedPositions.get(node.id);
         if (releasedPosition) return {
           ...node,
@@ -1915,7 +1919,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
           parentId: group.id,
           position: { x: node.position.x - position.x, y: node.position.y - position.y },
         } : node;
-      });
+      }), new Set([...capturedIds, ...releasedPositions.keys()]));
       set({
         // 与拖入分组一致，保证父分组排在新加入的子节点前面。
         nodes: [...nodes.filter((node) => node.type === 'group'), ...nodes.filter((node) => node.type !== 'group')],
@@ -1968,7 +1972,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     }
     if (updates.size === 0) return;
 
-    let newNodes = allNodes.map((node) => updates.get(node.id) ?? node);
+    let newNodes = detachGroupLayoutNodes(allNodes.map((node) => updates.get(node.id) ?? node), new Set(updates.keys()));
     let newGroups = state.groups.map((group) => {
       const added = addedByGroup.get(group.id);
       const nodeIds = group.nodeIds.filter((id) => !updates.has(id));
