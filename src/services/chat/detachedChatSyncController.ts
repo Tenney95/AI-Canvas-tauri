@@ -8,7 +8,7 @@ import { isTauriEnv } from '../fs/core';
 import { seriesOwnerId } from '../../store/store.utils';
 import { GENERAL_ASSISTANT_SCOPE_ID } from './assistantScope';
 import { getMcpClientOptions } from '../mcp/mcpClientService';
-import { MCP_SETTINGS_CONVERSATION_ID } from '../mcp/mcpSettingsScope';
+import { MCP_SETTINGS_CONVERSATION_ID, MCP_SETTINGS_SCOPE_ID } from '../mcp/mcpSettingsScope';
 import type {
   ApiProviderConfig,
   BaseNodeData,
@@ -50,6 +50,8 @@ import {
   emitTeamArtifactResponse,
   emitManagedChatResponse,
   emitChatSendResponse,
+  emitChatCloseFailure,
+  finishChatWindowClose,
   endChatWindowSession,
   getMainChatWindowSessionId,
   nextChatWindowRevision,
@@ -80,7 +82,7 @@ import { resolveAgentDispatchOutcome } from './agentDurabilityService';
 import { saveConversation } from './chatHistoryService';
 import { sanitizeDomainText } from './subAgentMaterials';
 import { configValuesEqual } from '../configPatch';
-import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../projectWindowContext';
+import { captureProjectWindowContext, isProjectWindowContextCurrent, sameProjectWindowContext } from '../projectWindowContext';
 import type { ProjectWindowFrame } from '../../types/projectWindow';
 
 const DEFAULT_SYNC_INTERVAL_MS = 150;
@@ -520,6 +522,7 @@ export function handleDetachedChatAction(
   action: ChatAction,
   requestSync: (immediate?: boolean, forceSnapshot?: boolean) => void,
   assertCurrent?: () => void,
+  onComposerDraftConsumed?: (conversationId: string) => void,
 ): void {
   const store = useAppStore.getState();
 
@@ -657,6 +660,7 @@ export function handleDetachedChatAction(
         requestId: action.requestId,
       });
       if (submitted?.status !== 'ignored') {
+        onComposerDraftConsumed?.(conversationId);
         store.setChatComposerLiveDraft('', conversationId);
         requestSync(true);
       }
@@ -851,13 +855,24 @@ export function handleDetachedChatAction(
       break;
 
     case 'close_window':
-    case 'dock_window':
-      if (action.composerDraft) store.setChatComposerLiveDraft(action.composerDraft.draft, action.composerDraft.conversationId);
-      store.setHoveredMentionNodeId(null);
-      void emitChatSendResponse(action.requestId, true, action.windowFrame?.sessionId)
-        .then(() => endChatWindowSession(action.windowFrame?.sessionId)).catch(() => {});
-      if (action.type === 'dock_window') { store.setChatPanelDetached(false); store.openChat(); }
+    case 'dock_window': {
+      const session = action.windowFrame?.sessionId ?? action.sessionId;
+      if (!session) break;
+      void (async () => {
+        try {
+          await emitChatSendResponse(action.requestId, true, session);
+          await finishChatWindowClose(session);
+          const latest = useAppStore.getState();
+          if (getMainChatWindowSessionId()) return;
+          latest.setHoveredMentionNodeId(null);
+          if (action.type === 'dock_window') { latest.setChatPanelDetached(false); latest.openChat(); }
+        } catch {
+          void emitChatCloseFailure(session).catch(() => {});
+          useAppStore.getState().showToast(t('独立窗口关闭未完成，草稿与窗口已保留'), 'error');
+        }
+      })();
       break;
+    }
 
     case 'request_sync':
       requestSync(true, true);
@@ -892,6 +907,68 @@ export function createDetachedChatSyncController(
   let sessionId = getMainChatWindowSessionId();
   let acceptedSequence = 0;
   const frames = new Map<number, ProjectWindowFrame>();
+  // 高频正文补丁只扩展版本区间，不逐帧淘汰尚未交接的历史会话上下文。
+  const lifecycleContexts: Array<{ frame: ProjectWindowFrame; draft: string; revisions: Array<[number, number]> }> = [];
+  const acceptedDrafts: Array<{ frame: ProjectWindowFrame; draft: string; sequence: number }> = [];
+  const consumedDrafts: Array<{ frame: ProjectWindowFrame; conversationId: string; revision: number; sequence: number }> = [];
+  const acceptedClientEdit = (frame: ProjectWindowFrame, beforeSequence: number) => acceptedDrafts.find((entry) => entry.sequence <= beforeSequence
+    && entry.frame.sessionId === frame.sessionId
+    && entry.frame.conversationId === frame.conversationId && sameProjectWindowContext(entry.frame.context, frame.context));
+  const consumedDraftConflict = (frame: ProjectWindowFrame, draft: string, currentDraft: string, beforeSequence: number) => {
+    if (!draft) return false;
+    const edit = acceptedClientEdit(frame, beforeSequence);
+    return consumedDrafts.some((entry) => entry.frame.sessionId === frame.sessionId
+      && (entry.frame.conversationId === frame.conversationId || entry.conversationId === frame.conversationId)
+      && sameProjectWindowContext(entry.frame.context, frame.context) && frame.revision <= entry.revision
+      && !(edit && edit.sequence > entry.sequence && edit.draft && edit.draft === currentDraft));
+  };
+  const rememberLifecycleFrame = (frame: ProjectWindowFrame, snapshot: ChatStateSnapshot) => {
+    const draft = frame.conversationId ? snapshot.composerDrafts[frame.conversationId] ?? '' : snapshot.composerDraft;
+    let index = lifecycleContexts.findIndex((entry) => entry.frame.sessionId === frame.sessionId
+      && entry.frame.conversationId === frame.conversationId && entry.draft === draft && sameProjectWindowContext(entry.frame.context, frame.context));
+    if (index < 0) { lifecycleContexts.push({ frame, draft, revisions: [] }); index = lifecycleContexts.length - 1; }
+    const [entry] = lifecycleContexts.splice(index, 1);
+    const last = entry.revisions.at(-1);
+    if (last && last[1] + 1 === frame.revision) last[1] = frame.revision;
+    else entry.revisions.push([frame.revision, frame.revision]);
+    if (entry.revisions.length > 256) entry.revisions.shift();
+    lifecycleContexts.push(entry);
+    if (lifecycleContexts.length > 128) lifecycleContexts.shift();
+  };
+  const publishedLifecycleContext = (frame: ProjectWindowFrame | undefined) => frame
+    && frame.schemaVersion === 2 && frame.sessionId === sessionId && Number.isSafeInteger(frame.revision)
+    ? lifecycleContexts.find((entry) => entry.frame.conversationId === frame.conversationId
+      && sameProjectWindowContext(entry.frame.context, frame.context)
+      && entry.revisions.some(([start, end]) => frame.revision >= start && frame.revision <= end)) : undefined;
+  const publishedLifecycleFrame = (frame: ProjectWindowFrame | undefined): boolean => !!publishedLifecycleContext(frame);
+
+  const acceptComposerHandoff = async (draft: ChatComposerHandoff | undefined, beforeSequence = Infinity): Promise<boolean> => {
+    if (!draft) return true;
+    const frame = draft.windowFrame;
+    const published = publishedLifecycleContext(frame);
+    if (typeof draft.draft !== 'string' || draft.draft.length > 120000 || !publishedLifecycleFrame(frame)
+      || !frame || !published || draft.conversationId !== frame.conversationId) return false;
+    const owner = draft.conversationId === MCP_SETTINGS_CONVERSATION_ID ? MCP_SETTINGS_SCOPE_ID
+      : frame.context.target.kind === 'global' ? GENERAL_ASSISTANT_SCOPE_ID : frame.context.target.projectId;
+    if (draft.conversationId) {
+      const current = useAppStore.getState().conversations.find((item) => item.id === draft.conversationId);
+      if (current ? current.deletedAt || current.projectId !== owner : !(
+        await (await import('../indexedDbService')).getProjectConversations(owner)
+      ).some((item) => item.id === draft.conversationId && !item.deletedAt && item.projectId === owner)) return false;
+      if (disposed || frame.sessionId !== sessionId) return false;
+      const latest = useAppStore.getState(), currentDraft = latest.chatComposerDrafts[draft.conversationId] ?? '';
+      if (consumedDraftConflict(frame, draft.draft, currentDraft, beforeSequence)) return false;
+      if (currentDraft !== published.draft && currentDraft !== draft.draft && currentDraft !== acceptedClientEdit(frame, beforeSequence)?.draft) return false;
+      return latest.setChatComposerLiveDraft(draft.draft, draft.conversationId, owner);
+    }
+    const current = useAppStore.getState();
+    if (!draft.draft) return true;
+    if (current.activeConversationId || !isProjectWindowContextCurrent(frame.context, current)) return false;
+    if (consumedDraftConflict(frame, draft.draft, current.chatComposerLiveDraft, beforeSequence)) return false;
+    if (current.chatComposerLiveDraft !== published.draft && current.chatComposerLiveDraft !== draft.draft
+      && current.chatComposerLiveDraft !== acceptedClientEdit(frame, beforeSequence)?.draft) return false;
+    return current.setChatComposerLiveDraft(draft.draft, null);
+  };
   let cleanupListener: (() => void) | undefined;
   let unsubscribeStore: (() => void) | undefined;
   let unsubscribeFileGrants: (() => void) | undefined;
@@ -900,6 +977,7 @@ export function createDetachedChatSyncController(
 
   const resetSyncState = () => {
     generation += 1;
+    if (sessionId !== getMainChatWindowSessionId()) { lifecycleContexts.length = 0; acceptedDrafts.length = 0; consumedDrafts.length = 0; }
     sessionId = getMainChatWindowSessionId();
     acceptedSequence = 0;
     frames.clear();
@@ -954,6 +1032,7 @@ export function createDetachedChatSyncController(
         if (frames.size > 64) frames.delete(frames.keys().next().value!);
         await emitSync({ type: 'patch', sessionId, acceptedSequence, baseRevision, revision: nextRevision, patch });
         if (disposed || generation !== startedGeneration) return;
+        if (nextFrame) rememberLifecycleFrame(nextFrame, nextSnapshot);
         lastSnapshot = nextSnapshot;
         revision = nextRevision;
         consecutiveFailures = 0;
@@ -965,6 +1044,7 @@ export function createDetachedChatSyncController(
       if (frames.size > 64) frames.delete(frames.keys().next().value!);
       await emitSync({ type: 'snapshot', sessionId, acceptedSequence, revision: nextRevision, snapshot: nextSnapshot });
       if (disposed || generation !== startedGeneration) return;
+      if (nextFrame) rememberLifecycleFrame(nextFrame, nextSnapshot);
       lastSnapshot = nextSnapshot;
       revision = nextRevision;
       consecutiveFailures = 0;
@@ -1049,6 +1129,28 @@ export function createDetachedChatSyncController(
           if (sessionId && action.sessionId === sessionId) sync(true, true);
           return;
         }
+        if (action?.type === 'close_window' || action?.type === 'dock_window') {
+          const requestSession = action.windowFrame?.sessionId ?? action.sessionId;
+          const validSession = !disposed && useAppStore.getState().chatPanelDetached && sessionId
+            && requestSession === sessionId && (!action.sessionId || action.sessionId === sessionId)
+            && Number.isSafeInteger(action.sequence) && action.sequence! > acceptedSequence
+            && (action.windowFrame ? publishedLifecycleFrame(action.windowFrame) : !action.composerDraft);
+          if (!validSession) {
+            void emitChatSendResponse(action.requestId, false, requestSession).catch(() => {});
+            sync(true, true);
+            return;
+          }
+          acceptedSequence = action.sequence!;
+          void acceptComposerHandoff(action.composerDraft, action.sequence!).then((accepted) => {
+            if (!accepted || disposed || requestSession !== sessionId || !useAppStore.getState().chatPanelDetached) {
+              void emitChatSendResponse(action.requestId, false, requestSession).catch(() => {});
+              sync(true, true);
+              return;
+            }
+            handleDetachedChatAction(action, sync);
+          }).catch(() => { void emitChatSendResponse(action.requestId, false, requestSession).catch(() => {}); });
+          return;
+        }
         const frame = action?.windowFrame;
         const published = frame && frames.get(frame.revision);
         const state = useAppStore.getState();
@@ -1081,30 +1183,37 @@ export function createDetachedChatSyncController(
           const conversation = state.conversations.find((item) => item.id === task?.conversationId && !item.deletedAt);
           if (!task || !conversation || conversation.projectId !== ownerId) { sync(true, true); return; }
         }
-        if ((action.type === 'dock_window' || action.type === 'close_window') && action.composerDraft
-          && (action.composerDraft.conversationId !== frame.conversationId
-            || JSON.stringify(action.composerDraft.windowFrame) !== JSON.stringify(frame))) {
-          void emitChatSendResponse(action.requestId, false, frame.sessionId).catch(() => {}); sync(true, true); return;
-        }
         const assertCurrent = () => {
           if (disposed || frame.sessionId !== sessionId || !useAppStore.getState().chatPanelDetached
             || !isProjectWindowContextCurrent(frame.context, useAppStore.getState())) throw new Error('窗口上下文已变化，已停止原操作');
         };
-        handleDetachedChatAction(action, sync, assertCurrent);
+        handleDetachedChatAction(action, sync, assertCurrent, (conversationId) => {
+          // 清空触发的 Store 同步与发送 ACK 之前，先封住已发送正文所用的旧基线。
+          const previous = consumedDrafts.findIndex((entry) => entry.conversationId === conversationId
+            && entry.frame.conversationId === frame.conversationId && sameProjectWindowContext(entry.frame.context, frame.context));
+          if (previous >= 0) consumedDrafts.splice(previous, 1);
+          consumedDrafts.push({ frame, conversationId, revision: Math.max(frame.revision, revision, ...frames.keys()), sequence: action.sequence! });
+          if (consumedDrafts.length > 128) consumedDrafts.shift();
+        });
+        if (action.type === 'set_composer_draft' && (action.conversationId === undefined || action.conversationId === frame.conversationId)) {
+          const latest = useAppStore.getState();
+          const written = frame.conversationId ? latest.chatComposerDrafts[frame.conversationId] ?? '' : latest.chatComposerLiveDraft;
+          if (written === action.draft) {
+            const previous = acceptedDrafts.findIndex((entry) => entry.frame.conversationId === frame.conversationId
+              && sameProjectWindowContext(entry.frame.context, frame.context));
+            if (previous >= 0) acceptedDrafts.splice(previous, 1);
+            acceptedDrafts.push({ frame, draft: action.draft, sequence: action.sequence! });
+            if (acceptedDrafts.length > 128) acceptedDrafts.shift();
+          }
+        }
       },
       (draft, closedSessionId) => {
         if (!sessionId || closedSessionId !== sessionId) return;
         cancelMainReferencePreview();
-        const store = useAppStore.getState();
-        if (draft?.windowFrame?.sessionId === sessionId
-          && JSON.stringify(frames.get(draft.windowFrame.revision)) === JSON.stringify(draft.windowFrame)
-          && draft.conversationId === draft.windowFrame.conversationId
-          && isProjectWindowContextCurrent(draft.windowFrame.context, store)) {
-          const conversation = draft.conversationId && store.conversations.find((item) => item.id === draft.conversationId && !item.deletedAt);
-          if (!draft.conversationId || conversation) store.setChatComposerLiveDraft(draft.draft, draft.conversationId);
-        }
-        store.setHoveredMentionNodeId(null);
-        endChatWindowSession(closedSessionId);
+        void acceptComposerHandoff(draft).then(async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          if (!await WebviewWindow.getByLabel('chat-assistant')) endChatWindowSession(closedSessionId);
+        }).catch(() => {});
       },
     );
     if (disposed) {

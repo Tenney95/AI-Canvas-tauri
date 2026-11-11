@@ -1562,19 +1562,38 @@ async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_chat_window_session(session_id: &str) -> bool {
+    (8..=160).contains(&session_id.len())
+        && session_id.bytes().all(|value| value.is_ascii_alphanumeric() || value == b'_' || value == b'-')
+}
+
+/// 同名窗口重建后旧请求不得关闭新实例；URL 由原生创建时绑定。
+fn chat_window_session_matches(url: &Url, session_id: &str) -> bool {
+    if !valid_chat_window_session(session_id) { return false; }
+    let sessions: Vec<_> = url.query_pairs().filter(|(key, _)| key == "session").collect();
+    let views: Vec<_> = url.query_pairs().filter(|(key, _)| key == "view").collect();
+    sessions.len() == 1 && sessions[0].1 == session_id && views.len() == 1 && views[0].1 == "chat"
+}
+
+fn ensure_chat_window_host(webview: &tauri::Webview) -> Result<(), String> {
+    path_policy::ensure_trusted_caller(webview)?;
+    if webview.label() != "main" { return Err("对话窗口由主窗口管理".into()); }
+    Ok(())
+}
+
 /// 打开独立的 AI 对话助手窗口
 #[tauri::command]
-async fn open_chat_window(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+async fn open_chat_window(app: tauri::AppHandle, webview: tauri::Webview, session_id: String, reuse_existing: Option<bool>) -> Result<(), String> {
+    ensure_chat_window_host(&webview)?;
     let _guard = CHAT_WINDOW_LIFECYCLE_LOCK.lock().await;
-    if !(8..=160).contains(&session_id.len())
-        || !session_id
-            .bytes()
-            .all(|value| value.is_ascii_alphanumeric() || value == b'_' || value == b'-')
-    {
+    if !valid_chat_window_session(&session_id) {
         return Err("对话窗口会话无效".to_string());
     }
     // 复用当前窗口，保留输入、同步握手及位置锁；close 是异步事件，不能同名立即重建。
     if let Some(window) = app.get_webview_window("chat-assistant") {
+        if !chat_window_session_matches(&window.url().map_err(|_| "无法核对对话窗口会话")?, &session_id) {
+            return Err("原独立窗口会话尚未结束，未覆盖已有窗口".into());
+        }
         window
             .unminimize()
             .map_err(|e| format!("恢复对话窗口失败: {e}"))?;
@@ -1586,6 +1605,8 @@ async fn open_chat_window(app: tauri::AppHandle, session_id: String) -> Result<(
             .map_err(|e| format!("聚焦对话窗口失败: {e}"))?;
         return Ok(());
     }
+    // Renderer 查询与原生命令之间旧窗口可能已释放；旧 nonce 只能复用，不能创建新实例。
+    if reuse_existing.unwrap_or(false) { return Err("原对话窗口已关闭，请重新打开".into()); }
     CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
 
     #[cfg(debug_assertions)]
@@ -1654,25 +1675,28 @@ async fn open_chat_window(app: tauri::AppHandle, session_id: String) -> Result<(
     if !positioned {
         let _ = chat_window.center();
     }
-    chat_window
-        .show()
-        .map_err(|e| format!("显示对话窗口失败: {e}"))?;
-    chat_window
-        .set_focus()
-        .map_err(|e| format!("聚焦对话窗口失败: {e}"))?;
+    if let Err(error) = chat_window.show().and_then(|_| chat_window.set_focus()) {
+        // 持有生命周期锁和本次 build 返回的实例，页面未加载完成也可回收；复用窗口不走此分支。
+        let _ = chat_window.destroy();
+        return Err(format!("显示或聚焦对话窗口失败: {error}"));
+    }
 
     Ok(())
 }
 
-/// 关闭独立的 AI 对话助手窗口
+/// 仅由主窗口在草稿交接成功后销毁绑定实例，不依赖子 Renderer 再次处理 close 事件。
 #[tauri::command]
-async fn close_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn close_chat_window(app: tauri::AppHandle, webview: tauri::Webview, session_id: String) -> Result<(), String> {
+    ensure_chat_window_host(&webview)?;
+    if !valid_chat_window_session(&session_id) { return Err("对话窗口会话无效".into()); }
     let _guard = CHAT_WINDOW_LIFECYCLE_LOCK.lock().await;
-    CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("chat-assistant") {
+        if !chat_window_session_matches(&window.url().map_err(|_| "无法核对对话窗口会话")?, &session_id) {
+            return Err("对话窗口已重新打开，未关闭新会话".into());
+        }
         persist_current_chat_window_size(&window);
         window
-            .close()
+            .destroy()
             .map_err(|e| format!("关闭对话窗口失败: {e}"))?;
         // 等注册表释放标签后再允许下一次打开，防止快速收回/重开命中旧窗口。
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -1683,7 +1707,30 @@ async fn close_chat_window(app: tauri::AppHandle) -> Result<(), String> {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
+    CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
     Ok(())
+}
+
+#[cfg(test)]
+mod chat_window_session_tests {
+    use super::chat_window_session_matches;
+    use url::Url;
+
+    #[test]
+    fn only_bound_chat_instance_matches() {
+        for source in ["http://localhost:1420/?view=chat&session=session-1234", "http://tauri.localhost/index.html?view=chat&session=session-1234"] {
+            let url = Url::parse(source).unwrap();
+            assert!(chat_window_session_matches(&url, "session-1234"));
+            assert!(!chat_window_session_matches(&url, "session-5678"));
+        }
+        for source in ["http://localhost:1420/?view=chat&session=session-1234&session=session-5678",
+            "http://localhost:1420/?view=chat&view=main&session=session-1234",
+            "http://localhost:1420/?view=main&session=session-1234",
+            "http://localhost:1420/?view=chat"] {
+            assert!(!chat_window_session_matches(&Url::parse(source).unwrap(), "session-1234"));
+        }
+        assert!(!chat_window_session_matches(&Url::parse("http://localhost:1420/?view=chat&session=short").unwrap(), "short"));
+    }
 }
 
 /// 锁定或解锁对话窗口与主窗口的相对位置。

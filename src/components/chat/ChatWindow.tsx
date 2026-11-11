@@ -24,6 +24,7 @@ import {
   setChatReferenceWindowFrame,
   requestChatMessage,
   emitChatCloseAcknowledgement,
+  getChatClientSessionId,
   type ChatStateSnapshot,
   type ChatWindowState,
   type ChatComposerHandoff,
@@ -60,7 +61,9 @@ export default function ChatWindow() {
   const composerHandoffRef = useRef<ChatComposerHandoff | undefined>(undefined);
   const handleComposerDraftChange = useCallback((draft: ChatComposerHandoff) => { composerHandoffRef.current = draft; }, []);
   const resyncRequestedRef = useRef(false);
-  const closeAuthorizedRef = useRef(false);
+  const closePendingRef = useRef<Promise<boolean> | null>(null);
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState(false);
 
   useEffect(() => {
     const handoff = composerHandoffRef.current;
@@ -113,43 +116,37 @@ export default function ChatWindow() {
     });
   }, [snapshot.nodes, snapshot.dramaAssets, snapshot.projectId]);
 
-  const closeWindow = useCallback((closeRequestId?: string) => {
-    void (async () => {
-      try {
-        const draft = composerHandoffRef.current;
-        const frame = draft?.windowFrame ?? syncStateRef.current?.snapshot.windowFrame;
-        if (syncStateRef.current || draft) {
-          const accepted = await requestChatMessage({ type: 'close_window', composerDraft: draft }, frame);
-          if (!accepted) { if (closeRequestId) await emitChatCloseAcknowledgement(closeRequestId, false); return; }
-        }
-        if (closeRequestId) await emitChatCloseAcknowledgement(closeRequestId, true);
-        closeAuthorizedRef.current = true;
-        await invoke('close_chat_window');
-      } catch (error) {
-        console.error('[ChatWindow] failed to close window:', error);
-      }
-    })();
+  const showCloseFailure = useCallback(() => {
+    closePendingRef.current = null;
+    setClosing(false);
+    setCloseError(true);
   }, []);
 
-  const dockWindow = useCallback(() => {
-    void (async () => {
-      try {
-        const draft = composerHandoffRef.current;
-        if (!await requestChatMessage({ type: 'dock_window', composerDraft: draft }, draft?.windowFrame ?? syncStateRef.current?.snapshot.windowFrame)) return;
-        closeAuthorizedRef.current = true;
-        await invoke('close_chat_window');
-      } catch (error) {
-        console.error('[ChatWindow] failed to dock window:', error);
-      }
-    })();
-  }, []);
+  const requestClose = useCallback((type: 'close_window' | 'dock_window'): Promise<boolean> => {
+    if (closePendingRef.current) return closePendingRef.current;
+    setClosing(true);
+    setCloseError(false);
+    const draft = composerHandoffRef.current;
+    const frame = draft?.windowFrame ?? syncStateRef.current?.snapshot.windowFrame;
+    const pending = requestChatMessage({ type, composerDraft: draft, sessionId: getChatClientSessionId() }, frame)
+      .then((accepted) => { if (!accepted) showCloseFailure(); return accepted; }, () => { showCloseFailure(); return false; });
+    closePendingRef.current = pending;
+    return pending;
+  }, [showCloseFailure]);
+
+  const closeWindow = useCallback((closeRequestId?: string) => {
+    void requestClose('close_window').then(async (accepted) => {
+      if (closeRequestId) await emitChatCloseAcknowledgement(closeRequestId, accepted);
+    }).catch(showCloseFailure);
+  }, [requestClose, showCloseFailure]);
+
+  const dockWindow = useCallback(() => { void requestClose('dock_window'); }, [requestClose]);
 
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
     void import('@tauri-apps/api/window').then(async ({ getCurrentWindow }) => {
       const dispose = await getCurrentWindow().onCloseRequested((event) => {
-        if (closeAuthorizedRef.current) return;
         event.preventDefault(); closeWindow();
       });
       if (disposed) dispose(); else stop = dispose;
@@ -199,6 +196,7 @@ export default function ChatWindow() {
         setInitialized(true);
       },
       closeWindow,
+      showCloseFailure,
     ).then((dispose) => {
       if (disposed) {
         dispose();
@@ -226,7 +224,7 @@ export default function ChatWindow() {
       cleanup?.();
       setChatReferenceWindowFrame(null);
     };
-  }, [closeWindow]);
+  }, [closeWindow, showCloseFailure]);
 
   useEffect(() => {
     const handleBeforeUnload = () => { void emitCloseRequest(composerHandoffRef.current); };
@@ -242,6 +240,7 @@ export default function ChatWindow() {
                    text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover transition-colors"
         data-tooltip={t('收回内嵌')}
         onClick={dockWindow}
+        disabled={closing}
       >
         <Icon icon="mdi:dock-left" width="16" height="16" />
       </button>
@@ -264,6 +263,7 @@ export default function ChatWindow() {
                    text-canvas-text-muted hover:text-canvas-text hover:bg-red-500/20 transition-colors"
         aria-label={t('关闭独立窗口')}
         onClick={() => closeWindow()}
+        disabled={closing}
       >
         <Icon icon="mdi:close" width="16" height="16" />
       </button>
@@ -271,12 +271,20 @@ export default function ChatWindow() {
   );
 
   return (
-    <ChatPanel
+    <><ChatPanel
       detached
       detachedSnapshot={snapshot}
       detachedInitialized={initialized}
+      composerDisabled={closing || !initialized}
       detachedHeaderActions={headerActions}
       onComposerDraftChange={handleComposerDraftChange}
     />
+      {closing && <div role="status" className="ui-alert ui-alert--info fixed left-3 right-3 top-12 z-[10010]">
+        {t('正在交接草稿并关闭窗口…')}
+      </div>}
+      {closeError && <div role="alert" className="ui-alert ui-alert--warning fixed left-3 right-3 top-12 z-[10010]">
+        {t('独立窗口关闭未完成，草稿与窗口已保留。请等待同步后重试；旧会话草稿无法确认时，请先返回原项目或会话。')}
+      </div>}
+    </>
   );
 }

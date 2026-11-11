@@ -748,6 +748,12 @@ const chat = {
   "高度": "Height",
   "最近 Skill 使用记录保存失败": "Failed to save recently used Skills",
   "最近 Skill 使用记录读取失败": "Failed to load recently used Skills",
+  "项目或会话已变化，未填入助手草稿": "The project or conversation changed. The assistant draft was not inserted.",
+  "独立窗口尚未完成草稿交接，未打开内嵌助手": "The detached window has not finished handing off its draft. The docked assistant was not opened.",
+  "打开独立助手窗口失败，创作任务已保留": "Failed to open the detached assistant. The creative task has been retained.",
+  "独立窗口关闭未完成，草稿与窗口已保留": "The detached window could not be closed. Its draft and window have been retained.",
+  "正在交接草稿并关闭窗口…": "Handing off the draft and closing the window…",
+  "独立窗口关闭未完成，草稿与窗口已保留。请等待同步后重试；旧会话草稿无法确认时，请先返回原项目或会话。": "The detached window could not be closed. Its draft and window have been retained. Wait for synchronization and retry. If the previous draft cannot be verified, return to its original project or conversation first.",
 };
 
 export default chat;

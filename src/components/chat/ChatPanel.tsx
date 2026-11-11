@@ -53,6 +53,7 @@ import {
   emitAction as emitWindowAction,
   requestChatMessage,
   emitCloseChatWindow,
+  getMainChatWindowSessionId,
   requestTeamArtifactText,
   requestManagedChatOperation,
   type ChatManagedOperation,
@@ -129,6 +130,8 @@ interface ChatPanelProps {
   detachedSnapshot?: ChatStateSnapshot;
   detachedInitialized?: boolean;
   detachedHeaderActions?: ReactNode;
+  /** 窗口交接或初始化期间保持草稿只读。 */
+  composerDisabled?: boolean;
   onComposerDraftChange?: (draft: ChatComposerHandoff) => void;
 }
 
@@ -139,6 +142,7 @@ export default function ChatPanel({
   detachedSnapshot,
   detachedInitialized = true,
   detachedHeaderActions,
+  composerDisabled = false,
   onComposerDraftChange,
 }: ChatPanelProps = {}) {
   const windowFrame = detachedSnapshot?.windowFrame;
@@ -566,6 +570,7 @@ export default function ChatPanel({
   }, [flushDraftSync]);
 
   const updateInputDraft = useCallback((value: string) => {
+    if (composerDisabled) return;
     setInputValue(value);
     if (detached) {
       pendingDraftsRef.current.set(effectiveActiveConversationId, value);
@@ -573,7 +578,7 @@ export default function ChatPanel({
     }
     queueDraftSync(value);
     onComposerDraftChange?.({ draft: value, conversationId: effectiveActiveConversationId, windowFrame: windowFrame ?? undefined });
-  }, [detached, effectiveActiveConversationId, onComposerDraftChange, queueDraftSync, windowFrame]);
+  }, [composerDisabled, detached, effectiveActiveConversationId, onComposerDraftChange, queueDraftSync, windowFrame]);
 
   const canonicalDraft = effectiveActiveConversationId
     ? (detached ? detachedSnapshot?.composerDrafts : chatComposerDrafts)?.[effectiveActiveConversationId] ?? ''
@@ -939,6 +944,7 @@ export default function ChatPanel({
 
   // ── 发送消息 ──
   const sendMessageText = useCallback((content: string, dispatchMode: 'queue' | 'interject' = 'queue', includePendingImages = true) => {
+    if (composerDisabled) return;
     const text = content.trim();
     const imageFileNames = includePendingImages ? effectiveImageDrafts.map((image) => image.fileName) : [];
     if ((!text && !imageFileNames.length) || settingsConversation) return;
@@ -995,6 +1001,7 @@ export default function ChatPanel({
     updateInputDraft('');
     requestLatestMessages(conversationId);
   }, [
+    composerDisabled,
     detached,
     effectiveActiveConversationId,
     effectiveAgentMode,
@@ -1077,7 +1084,9 @@ export default function ChatPanel({
 
     if (chatPanelDetached) {
       try {
-        await emitCloseChatWindow();
+        const sessionId = getMainChatWindowSessionId();
+        await emitCloseChatWindow(sessionId);
+        if (getMainChatWindowSessionId()) return;
         setChatPanelDetached(false);
       } catch (error) { showToast(error instanceof Error ? error.message : t('独立窗口尚未确认草稿交接'), 'error'); }
     } else {
@@ -1312,6 +1321,7 @@ export default function ChatPanel({
                       mediaModelOptions={mediaModelOptions}
                       mediaModelAvailability={effectiveMediaModelAvailability}
                       inputValue={inputValue}
+                      disabled={composerDisabled}
                       onInputChange={updateInputDraft}
                       onSend={handleSend}
                       submitShortcut={effectiveSubmitShortcut}

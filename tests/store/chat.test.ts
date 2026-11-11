@@ -13,8 +13,17 @@ const historyMocks = vi.hoisted(() => ({
   clearConversationMessages: vi.fn(async () => undefined),
   repairInterruptedMessages: vi.fn(async () => [] as string[]),
 }));
+const chatWindowMocks = vi.hoisted(() => ({
+  close: vi.fn<(sessionId?: string) => Promise<void>>(),
+  sessionId: vi.fn<() => string | undefined>(),
+}));
 
 vi.mock('../../src/services/chat/chatHistoryService', () => historyMocks);
+vi.mock('../../src/services/chat/chatWindowService', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/chat/chatWindowService')>(),
+  emitCloseChatWindow: chatWindowMocks.close,
+  getMainChatWindowSessionId: chatWindowMocks.sessionId,
+}));
 
 import { useAppStore } from '../../src/store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../src/services/chat/assistantScope';
@@ -69,6 +78,8 @@ beforeEach(() => {
   useAppStore.setState({ currentProjectId: 'project-1' });
   historyMocks.loadProjectConversations.mockReset();
   historyMocks.loadMessages.mockReset();
+  chatWindowMocks.close.mockReset().mockResolvedValue(undefined);
+  chatWindowMocks.sessionId.mockReset().mockReturnValue('old-window-session');
 });
 
 describe('新项目画布版本与派生结果', () => {
@@ -166,6 +177,114 @@ describe('工作台会话持久范围', () => {
     expect(latest.chatComposerDrafts['conv-workbench']).toBe('工作台尚未发送的要求');
     expect(latest.chatComposerDraft).toBe('读取全剧并拆分章节');
     expect(latest.chatOpen).toBe(true);
+  });
+});
+
+describe('外部草稿的独立窗口交接', () => {
+  beforeEach(() => {
+    useAppStore.setState({ chatOpen: true, chatPanelDetached: true, chatComposerDraft: null,
+      projectLoadStatus: 'ready', switchingProjectName: null, isCreatingProject: false, isReturningToStartPage: false,
+      projects: [{ id: 'project-1', name: '项目一', createdAt: 1, updatedAt: 1 }],
+      conversations: [conversation('conv-first', 1), conversation('conv-second', 2)], activeConversationId: 'conv-first',
+      chatComposerLiveDraft: '原有草稿', chatComposerDrafts: { 'conv-first': '原有草稿', 'conv-second': '另一会话草稿' },
+      showToast: vi.fn() });
+  });
+
+  it('真实关窗完成前保留独立显示，连续请求只交接一次并采用最后草稿', async () => {
+    let finish!: () => void;
+    chatWindowMocks.close.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const state = useAppStore.getState();
+    state.openChatWithDraft('第一份外部草稿');
+    state.openChatWithDraft('最后一份外部草稿');
+    await vi.waitFor(() => expect(chatWindowMocks.close).toHaveBeenCalledOnce());
+    expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: true, chatComposerDraft: null, activeConversationId: 'conv-first' });
+    state.setChatComposerLiveDraft('独立窗口末次输入', 'conv-first');
+    finish();
+
+    await vi.waitFor(() => expect(useAppStore.getState().chatPanelDetached).toBe(false));
+    expect(useAppStore.getState()).toMatchObject({ chatOpen: true, chatComposerDraft: '最后一份外部草稿',
+      chatComposerDrafts: { 'conv-first': '独立窗口末次输入', 'conv-second': '另一会话草稿' } });
+    expect(chatWindowMocks.close).toHaveBeenCalledOnce();
+    expect(chatWindowMocks.close).toHaveBeenCalledWith('old-window-session');
+  });
+
+  it('交接失败不显示内嵌面板、不覆盖草稿，错误不暴露原始细节', async () => {
+    chatWindowMocks.close.mockRejectedValueOnce(new Error('untrusted native failure details'));
+    useAppStore.getState().openChatWithDraft('不能填入的新草稿');
+    await vi.waitFor(() => expect(useAppStore.getState().showToast)
+      .toHaveBeenCalledWith('独立窗口尚未完成草稿交接，未打开内嵌助手', 'error'));
+    expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: true, chatComposerDraft: null,
+      chatComposerLiveDraft: '原有草稿', chatComposerDrafts: { 'conv-first': '原有草稿' } });
+  });
+
+  it('正式交接尚未开始就出现新窗口时，不向新实例发送关闭请求', async () => {
+    useAppStore.getState().openChatWithDraft('旧窗口请求的草稿');
+    chatWindowMocks.sessionId.mockReturnValue('new-window-session');
+    await vi.waitFor(() => expect(useAppStore.getState().showToast).toHaveBeenCalledWith('项目或会话已变化，未填入助手草稿', 'info'));
+    expect(chatWindowMocks.close).not.toHaveBeenCalled();
+    expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: true, chatComposerDraft: null, chatComposerLiveDraft: '原有草稿' });
+  });
+
+  it.each(['project', 'conversation', 'revision', 'navigation', 'context', 'new-window'])('交接期间 %s 变化后取消注入，保留原会话交接草稿', async (change) => {
+    let finish!: () => void;
+    chatWindowMocks.close.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const state = useAppStore.getState();
+    state.openChatWithDraft('过期的外部草稿');
+    await vi.waitFor(() => expect(chatWindowMocks.close).toHaveBeenCalledOnce());
+    if (change === 'project') useAppStore.setState({ currentProjectId: 'project-2', activeConversationId: 'conv-other',
+      conversations: [{ ...conversation('conv-other', 3), projectId: 'project-2' }], chatComposerLiveDraft: '新项目草稿' });
+    if (change === 'conversation') state.setActiveConversation('conv-second');
+    if (change === 'revision') state.incrementRevision();
+    if (change === 'navigation') {
+      state.setActiveConversation('conv-second');
+      state.setActiveConversation('conv-first');
+    }
+    if (change === 'context') useAppStore.setState({ projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1,
+      projectId: 'owner', projectEpoch: 1, canvasId: 'project-1', canvasEpoch: 1, canvasRevision: 0, episodeId: null, runtimeEpoch: 'new-runtime' } });
+    if (change === 'new-window') chatWindowMocks.sessionId.mockReturnValue('new-window-session');
+    state.setChatComposerLiveDraft('独立窗口末次输入', 'conv-first', 'project-1');
+    finish();
+
+    await vi.waitFor(() => expect(useAppStore.getState().showToast).toHaveBeenCalledWith('项目或会话已变化，未填入助手草稿', 'info'));
+    expect(useAppStore.getState().chatPanelDetached).toBe(true);
+    expect(useAppStore.getState().chatComposerDraft).toBeNull();
+    expect(useAppStore.getState().chatComposerDrafts['conv-first']).toBe('独立窗口末次输入');
+    if (change === 'project') expect(useAppStore.getState().chatComposerLiveDraft).toBe('新项目草稿');
+    if (change === 'conversation') expect(useAppStore.getState().chatComposerLiveDraft).toBe('另一会话草稿');
+  });
+
+  it('仅核验过归属的已离开会话可保存草稿，不切换当前输入或活动会话', () => {
+    const state = useAppStore.getState();
+    expect(state.setChatComposerLiveDraft('未经核验的旧输入', 'conv-prior-project')).toBe(false);
+    expect(useAppStore.getState().chatComposerDrafts).not.toHaveProperty('conv-prior-project');
+    expect(state.setChatComposerLiveDraft('已核验旧会话末次输入', 'conv-prior-project', 'prior-project')).toBe(true);
+    expect(useAppStore.getState().chatComposerDrafts['conv-prior-project']).toBe('已核验旧会话末次输入');
+    expect(useAppStore.getState()).toMatchObject({ activeConversationId: 'conv-first', chatComposerLiveDraft: '原有草稿' });
+  });
+
+  it('软删除尚未提交时也拒绝迟到的旧 owner 核验草稿，不复活删除记录', () => {
+    const removed = conversation('conv-removed-pending-delete', 3);
+    let finish!: (result: ChatConversation) => void;
+    historyMocks.softDeleteConversation.mockImplementationOnce(() => new Promise<ChatConversation>((resolve) => { finish = resolve; }));
+    useAppStore.setState((state) => ({ conversations: [...state.conversations, removed], activeConversationId: removed.id,
+      chatComposerLiveDraft: '删除前草稿', chatComposerDrafts: { ...state.chatComposerDrafts, [removed.id]: '删除前草稿' } }));
+    const state = useAppStore.getState();
+    state.removeConversation(removed.id);
+    state.setActiveConversation('conv-second');
+
+    expect(state.setChatComposerLiveDraft('持久化查询仍看到的旧输入', removed.id, removed.projectId)).toBe(false);
+    expect(state.setChatComposerLiveDraft('', removed.id, removed.projectId)).toBe(false);
+    expect(useAppStore.getState().chatComposerDrafts).not.toHaveProperty(removed.id);
+    expect(useAppStore.getState()).toMatchObject({ activeConversationId: 'conv-second', chatComposerLiveDraft: '另一会话草稿' });
+    finish({ ...removed, deletedAt: 4 });
+  });
+
+  it.each(['deleted', 'wrong-owner'])('已核验交接也不能覆盖当前列表中 %s 的会话', (change) => {
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((item) => item.id === 'conv-first'
+      ? { ...item, ...(change === 'deleted' ? { deletedAt: 1 } : {}) } : item) }));
+    expect(useAppStore.getState().setChatComposerLiveDraft('不允许覆盖', 'conv-first', change === 'wrong-owner' ? 'other-project' : 'project-1')).toBe(false);
+    expect(useAppStore.getState().chatComposerDrafts['conv-first']).toBe('原有草稿');
+    expect(useAppStore.getState().chatComposerLiveDraft).toBe('原有草稿');
   });
 });
 
@@ -358,7 +477,7 @@ describe('chat conversation restoration', () => {
     useAppStore.setState({ conversations: [conversation('a', 1), conversation('b', 2)] });
     const store = useAppStore.getState();
     store.setActiveConversation('a');
-    store.setChatComposerLiveDraft('甲的草稿');
+    expect(store.setChatComposerLiveDraft('甲的草稿')).toBe(true);
     store.setActiveConversation('b');
     expect(useAppStore.getState().chatComposerLiveDraft).toBe('');
     store.setChatComposerLiveDraft('乙的草稿');
@@ -366,9 +485,9 @@ describe('chat conversation restoration', () => {
     expect(useAppStore.getState().chatComposerLiveDraft).toBe('乙的草稿');
     store.setActiveConversation('a');
     expect(useAppStore.getState().chatComposerLiveDraft).toBe('甲的最后一次输入');
-    store.setChatComposerLiveDraft('');
+    expect(store.setChatComposerLiveDraft('')).toBe(true);
     expect(useAppStore.getState().chatComposerDrafts).toEqual({ b: '乙的草稿' });
-    store.setChatComposerLiveDraft('不存在的会话', 'missing');
+    expect(store.setChatComposerLiveDraft('不存在的会话', 'missing')).toBe(false);
     expect(useAppStore.getState().chatComposerDrafts).not.toHaveProperty('missing');
   });
 

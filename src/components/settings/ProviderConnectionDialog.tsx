@@ -39,7 +39,6 @@ import {
   type ProviderDefinition,
 } from '../../services/ai/providerCatalogService';
 import { normalizeBaseUrl } from '../../services/ai/providerBaseUrl';
-import { emitCloseChatWindow } from '../../services/chat/chatWindowService';
 import { testProviderConnection } from '../../services/testConnection';
 import { confirmAction } from '../../services/confirmDialog';
 import { useAppStore } from '../../store/useAppStore';
@@ -480,12 +479,8 @@ export default function ProviderConnectionDialog({
     }
   };
 
-  const handleAssistantAdd = async () => {
+  const handleAssistantAdd = () => {
     const store = useAppStore.getState();
-    if (store.chatPanelDetached) {
-      try { await emitCloseChatWindow(); }
-      catch (error) { store.showToast(error instanceof Error ? error.message : t('独立窗口尚未确认草稿交接'), 'error'); return; }
-    }
     store.openChatWithDraft(
       buildRelayAssistantPrompt(
         connectionName.trim(),

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const runtimeMocks = vi.hoisted(() => ({ model: vi.fn(), schedule: vi.fn(), capture: vi.fn() }));
+const runtimeMocks = vi.hoisted(() => ({ model: vi.fn(), schedule: vi.fn(), capture: vi.fn(), openWindow: vi.fn<() => Promise<void>>() }));
 
 vi.mock('../../../src/services/ai/assistantStream', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../../src/services/ai/assistantStream')>(),
@@ -12,6 +12,7 @@ vi.mock('../../../src/services/chat/agentScheduler', () => ({
   isAgentExecutionScheduled: () => false,
 }));
 vi.mock('../../../src/services/chat/tools', () => ({ ensureAgentToolsRegistered: vi.fn() }));
+vi.mock('../../../src/services/chat/chatWindowLifecycle', () => ({ openDetachedChatWindow: runtimeMocks.openWindow }));
 vi.mock('../../../src/services/creationProfiles/creationProfileService', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../../src/services/creationProfiles/creationProfileService')>(),
   captureCreationProfile: runtimeMocks.capture,
@@ -49,11 +50,31 @@ beforeEach(() => {
   // 只记录调度，不调用 execution.run；本组不触发模型 Runtime。
   runtimeMocks.schedule.mockReset().mockReturnValue({ state: 'started', position: 0 });
   runtimeMocks.capture.mockReset().mockResolvedValue({ skillBindings: [] });
+  runtimeMocks.openWindow.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('工作台智能调度入口', () => {
+  it('保留独立显示偏好，工作台任务启动后重开或聚焦原独立助手', async () => {
+    useAppStore.setState({ chatPanelDetached: true });
+    const result = startWorkbenchAgentInvocation({ episodeId: 'episode-b', content: '检查本集节奏', mode: 'plan' });
+    await vi.waitFor(() => expect(runtimeMocks.openWindow).toHaveBeenCalledOnce());
+    expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: true, activeConversationId: result.conversationId });
+    expect(useAppStore.getState().agentTasks.some((task) => task.id === result.taskId)).toBe(true);
+    expect(runtimeMocks.schedule).toHaveBeenCalledOnce();
+  });
+
+  it('独立助手打开失败不重投或丢失已经启动的工作台任务', async () => {
+    const showToast = vi.fn();
+    useAppStore.setState({ chatPanelDetached: true, showToast });
+    runtimeMocks.openWindow.mockRejectedValueOnce(new Error('native window unavailable'));
+    const result = startWorkbenchAgentInvocation({ episodeId: 'episode-b', content: '检查本集节奏', mode: 'plan' });
+    await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith('打开独立助手窗口失败，创作任务已保留', 'error'));
+    expect(useAppStore.getState().agentTasks.some((task) => task.id === result.taskId)).toBe(true);
+    expect(runtimeMocks.schedule).toHaveBeenCalledOnce();
+  });
+
   it('在同剧集另一分集建立独立只读任务，不切画布或继承原对话配置', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

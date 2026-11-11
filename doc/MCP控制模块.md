@@ -18,6 +18,8 @@
 
 入口：`components/settings/McpClientSettings.tsx` / `McpConnectionEditor.tsx`、`services/mcp/mcpClientService.ts`、`chat/tools/externalMcpTools.ts` 与原生 `mcp/client.rs`。复用已安装的 TS MCP SDK 和原生 reqwest，无新增依赖或运行环境；安装包增量尚未实测。
 
+SDK 入口先加载 `mcpSdkCsp.ts`，复用 SDK 必需且已锁定的 Zod，配置 `jitless` 后再创建协议 schema，避免严格 CSP 下的空 `Function` 探测与 JIT。协议解释式校验及既有远端 schema 不编译策略保持；未修改依赖版本、CSP 或权限。已补 `tests/services/mcpSdkCsp.test.ts` 回归源，本次未运行，需桌面及用户自动化验收。该探测异常原已捕获，不能据此把助手关闭卡死归因于 CSP。
+
 - 首期 Streamable HTTP，只允许 HTTPS 或本机回环 HTTP，URL 不含凭据、查询参数或片段；支持 Bearer Token 与 X-API-Key。凭据经 `providerSecretService` 写入 Rust `secret_store`，请求中原生注入，不进入普通配置或独立窗口快照。
 - 逐工具授权绑定名称、说明、输入/输出 schema、标注与执行元数据的 SHA-256。远端只读标注只是提示；用户确认只读才走 `read`，其余已授权操作走 `external_write`：Plan 拒绝、B 确认、C 自动，不自动重试。inbound MCP 会话不暴露这组内部助手专用工具。
 - `mcp_tools_search` 按需发现、`mcp_tools_describe` 读取单个参数定义，`mcp_read_tool` / `mcp_call_tool` 执行。目录最多 256 个同步工具与 32 页，单定义 32 KiB；单次模型参数说明另受 16,000 字符预算限制，超限明确拒绝，不截断 JSON。

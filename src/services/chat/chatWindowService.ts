@@ -41,6 +41,7 @@ export const CHAT_ACTION_EVENT = 'chat:action';
 export const CHAT_CLOSE_REQUEST = 'chat:close-request';
 export const CHAT_CLOSE_EVENT = 'chat:close';
 const CHAT_CLOSE_ACK_EVENT = 'chat:close-ack';
+const CHAT_CLOSE_FAILED_EVENT = 'chat:close-failed';
 /** 原生窗口 label 由 lib.rs 的 open_chat_window 固定创建。 */
 export const CHAT_MAIN_WINDOW_LABEL = 'main';
 export const CHAT_DETACHED_WINDOW_LABEL = 'chat-assistant';
@@ -50,6 +51,9 @@ export const CHAT_MANAGED_RESPONSE_EVENT = 'chat:managed-result';
 let mainWindowSessionId: string | undefined;
 let mainWindowRevision = 0;
 const sessionListeners = new Set<() => void>();
+const pendingCloses = new Map<string, Promise<void>>();
+const closedSessions = new Set<string>();
+const closeListeners = new Set<(sessionId: string, closing: Promise<void>) => void>();
 /** 只由主窗口真实创建入口分配；子窗口握手不能产生新的写授权。 */
 export function beginChatWindowSession(): string {
   mainWindowSessionId = crypto.randomUUID();
@@ -65,6 +69,31 @@ export function endChatWindowSession(sessionId: string | undefined): void {
 export function subscribeChatWindowSession(listener: () => void): () => void {
   sessionListeners.add(listener);
   return () => { sessionListeners.delete(listener); };
+}
+
+/** 草稿交接成功后，由主窗口按真实 session 完成销毁；成功才撤销会话。 */
+export function finishChatWindowClose(sessionId: string): Promise<void> {
+  const pending = pendingCloses.get(sessionId);
+  if (pending) return pending;
+  if (closedSessions.has(sessionId)) return Promise.resolve();
+  if (!sessionId || sessionId !== mainWindowSessionId) return Promise.reject(new Error('独立窗口会话已变化，已保留窗口'));
+  const closing = Promise.resolve().then(async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('close_chat_window', { sessionId });
+    closedSessions.add(sessionId);
+    if (closedSessions.size > 32) closedSessions.delete(closedSessions.values().next().value!);
+    endChatWindowSession(sessionId);
+  }).finally(() => { pendingCloses.delete(sessionId); });
+  pendingCloses.set(sessionId, closing);
+  for (const listener of closeListeners) listener(sessionId, closing);
+  return closing;
+}
+
+export async function waitForChatWindowClose(): Promise<void> { await Promise.all(pendingCloses.values()); }
+
+export async function emitChatCloseFailure(sessionId: string): Promise<void> {
+  const { emitTo } = await import('@tauri-apps/api/event');
+  await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_CLOSE_FAILED_EVENT, { sessionId });
 }
 export function nextChatWindowRevision(): number { return ++mainWindowRevision; }
 export function getChatClientSessionId(): string | undefined {
@@ -428,7 +457,7 @@ export type ChatAction = (
   | { type: 'set_prompt_submit_shortcut'; shortcut: PromptSubmitShortcut }
   | { type: 'preview_reference'; requestId: string; projectId: string | null; source: ReferencePreviewSource }
   | { type: 'cancel_reference_preview'; requestId: string; projectId: string | null }
-  | { type: 'dock_window' | 'close_window'; requestId?: string; composerDraft?: ChatComposerHandoff }
+  | { type: 'dock_window' | 'close_window'; requestId?: string; sessionId?: string; composerDraft?: ChatComposerHandoff }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }
   | { type: 'request_sync'; sessionId?: string }) & { windowFrame?: ProjectWindowFrame; sequence?: number };
@@ -495,30 +524,57 @@ export async function emitSyncState(sync: ChatStateSync): Promise<void> {
 }
 
 /** 主窗口要求独立窗口关闭 */
-export async function emitCloseChatWindow(): Promise<void> {
+export async function emitCloseChatWindow(expectedSessionId?: string): Promise<void> {
+  const sessionId = expectedSessionId ?? mainWindowSessionId;
+  const { waitForChatWindowOpen } = await import('./chatWindowLifecycle');
+  const opening = waitForChatWindowOpen();
+  // 创建期间标签可能尚未注册；打开报错后仍需查询真实窗口，不能据此撤销会话。
+  if (opening) await opening.catch(() => undefined);
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
   // 关闭子窗保留 detached 展示偏好；窗口已经不存在时没有待交接输入。
-  if (!await WebviewWindow.getByLabel(CHAT_DETACHED_WINDOW_LABEL)) return;
+  if (!await WebviewWindow.getByLabel(CHAT_DETACHED_WINDOW_LABEL)) {
+    if (mainWindowSessionId && mainWindowSessionId !== sessionId) throw new Error('独立窗口已重新打开，请核对新窗口中的草稿');
+    endChatWindowSession(sessionId);
+    return;
+  }
   const { emitTo, listen } = await import('@tauri-apps/api/event');
   const requestId = crypto.randomUUID();
-  const sessionId = mainWindowSessionId;
-  if (!sessionId) throw new Error('独立窗口会话已失效，请核对窗口中的草稿');
+  if (!sessionId || (mainWindowSessionId !== sessionId && !closedSessions.has(sessionId))
+    || mainWindowSessionId && mainWindowSessionId !== sessionId) {
+    throw new Error('独立窗口会话已失效，请核对窗口中的草稿');
+  }
+  const pending = pendingCloses.get(sessionId);
+  if (pending) { await pending; return; }
   await new Promise<void>((resolve, reject) => {
     let stop: (() => void) | undefined;
     let settled = false;
-    const timer = setTimeout(() => { settled = true; stop?.(); reject(new Error('独立窗口尚未确认草稿交接，已保留窗口')); }, 30000);
+    const onClosing = (closingSession: string, closing: Promise<void>) => {
+      if (settled || closingSession !== sessionId) return;
+      settled = true; clearTimeout(timer); stop?.(); closeListeners.delete(onClosing);
+      void closing.then(resolve, reject);
+    };
+    closeListeners.add(onClosing);
+    const timer = setTimeout(() => { settled = true; stop?.(); closeListeners.delete(onClosing); reject(new Error('独立窗口尚未确认草稿交接，已保留窗口')); }, 30000);
     void listen<{ requestId: string; sessionId?: string; accepted: boolean }>(CHAT_CLOSE_ACK_EVENT, ({ payload }) => {
       if (settled || payload.requestId !== requestId || payload.sessionId !== sessionId) return;
-      settled = true; clearTimeout(timer); stop?.();
+      settled = true; clearTimeout(timer); stop?.(); closeListeners.delete(onClosing);
       if (mainWindowSessionId && mainWindowSessionId !== sessionId) { reject(new Error('独立窗口已重新打开，请核对新窗口中的草稿')); return; }
       if (payload.accepted) resolve(); else reject(new Error('窗口上下文已变化，草稿仍保留在独立窗口'));
     }).then(async (dispose) => {
       stop = dispose;
       if (settled) { dispose(); return; }
+      if (mainWindowSessionId !== sessionId) {
+        if (!mainWindowSessionId && closedSessions.has(sessionId)) {
+          settled = true; clearTimeout(timer); dispose(); closeListeners.delete(onClosing); resolve(); return;
+        }
+        throw new Error('独立窗口已重新打开，请核对新窗口中的草稿');
+      }
       await emitTo(CHAT_DETACHED_WINDOW_LABEL, CHAT_CLOSE_EVENT, { requestId, sessionId });
     })
-      .catch((error: unknown) => { clearTimeout(timer); stop?.(); reject(error); });
+      .catch((error: unknown) => { settled = true; clearTimeout(timer); stop?.(); closeListeners.delete(onClosing); reject(error); });
   });
+  if (mainWindowSessionId && mainWindowSessionId !== sessionId) throw new Error('独立窗口已重新打开，请核对新窗口中的草稿');
+  await finishChatWindowClose(sessionId);
 }
 
 // ============================================
@@ -529,6 +585,7 @@ export async function emitCloseChatWindow(): Promise<void> {
 export async function initChatWindowListener(
   onSync: (sync: ChatStateSync) => void,
   onCloseRequest: (requestId?: string) => void,
+  onCloseFailure?: () => void,
 ): Promise<() => void> {
   const { listen } = await import('@tauri-apps/api/event');
   const sessionId = getChatClientSessionId();
@@ -552,10 +609,14 @@ export async function initChatWindowListener(
     }
     onCloseRequest(payload?.requestId);
   });
+  const unlistenFailure = await listen<{ sessionId?: string }>(CHAT_CLOSE_FAILED_EVENT, ({ payload }) => {
+    if (sessionId && payload?.sessionId === sessionId) onCloseFailure?.();
+  });
 
   return () => {
     unlistenSync();
     unlistenClose();
+    unlistenFailure();
   };
 }
 
@@ -586,7 +647,8 @@ export async function requestChatMessage(action: Extract<ChatAction, { type: 'se
     const finish = (accepted: boolean) => { if (settled) return; settled = true; clearTimeout(timer); stop?.(); resolve(accepted); };
     const timer = setTimeout(() => finish(false), 30000);
     void listen<ChatSendResponse>(CHAT_SEND_RESPONSE_EVENT, ({ payload }) => {
-      if (payload.requestId === requestId && payload.sessionId === (windowFrame ?? action.windowFrame)?.sessionId) finish(payload.accepted === true);
+      const sessionId = (windowFrame ?? action.windowFrame)?.sessionId ?? ('sessionId' in action ? action.sessionId : undefined);
+      if (payload.requestId === requestId && payload.sessionId === sessionId) finish(payload.accepted === true);
     }).then(async (dispose) => {
       stop = dispose;
       if (settled) { dispose(); return; }

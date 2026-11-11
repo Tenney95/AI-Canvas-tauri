@@ -1,4 +1,5 @@
 /** 外部 MCP SDK 只在主窗口运行；原生代理限定端点、凭据、体积与生命周期。 */
+import './mcpSdkCsp';
 import { invoke } from '@tauri-apps/api/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';

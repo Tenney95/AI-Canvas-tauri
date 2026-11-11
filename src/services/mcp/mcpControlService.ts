@@ -3,6 +3,7 @@
  */
 import { clearSkillReadTask } from '../chat/skillReadService';
 import { clearSkillCatalogTask } from '../chat/skillCatalog';
+import { t } from '../../i18n';
 /**
  * MCP 前端控制层，将本地 bridge 请求映射到受 Policy 约束的 Agent 工具和专用审计任务。
  */
@@ -262,22 +263,15 @@ function revealMcpUserChoice(projectId: string, conversationId: string, step: Ag
         && task.status === 'waiting_approval'
         && task.steps.some((item) => item.id === step.id && item.approval?.status === 'pending'));
   };
-  // 沿用独立窗口与主窗口的状态同步，不重建窗口或丢弃正在编辑的草稿。
+  // 共享生命周期核对真实窗口与回退方式，焦点失败不能同时显示内嵌助手。
   void (async () => {
-    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    const detached = await WebviewWindow.getByLabel('chat-assistant');
     if (!isCurrentChoice()) return;
-    if (!detached) throw new Error('助手窗口不可用');
-    await detached.unminimize();
-    if (!isCurrentChoice()) return;
-    await detached.show();
-    if (!isCurrentChoice()) return;
-    await detached.setFocus();
+    const { openDetachedChatWindow } = await import('../chat/chatWindowLifecycle');
+    if (!isCurrentChoice() || !useAppStore.getState().chatPanelDetached) return;
+    await openDetachedChatWindow();
   })().catch(() => {
     if (!isCurrentChoice()) return;
-    const current = useAppStore.getState();
-    current.setChatPanelDetached(false);
-    current.openChat();
+    useAppStore.getState().showToast(t('打开独立窗口失败'), 'error');
   });
 }
 

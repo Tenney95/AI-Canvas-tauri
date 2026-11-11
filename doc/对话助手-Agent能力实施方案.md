@@ -61,6 +61,8 @@
 | Skill 与 Agent Package | [agentPackages](../src/services/agentPackages/)、[store.agentPackages.ts](../src/store/store.agentPackages.ts)：包目录、导入健康、运行期 Skill 接入 |
 | 领域类型 | [agent.ts](../src/types/agent.ts)、[chat.ts](../src/types/chat.ts)：任务、会话、模式和预算合同 |
 
+独立助手的关闭与“优化分镜”等外部草稿入口按真实窗口交接：主窗口确认销毁后才结束 session 或切回内嵌，旧会话草稿只回原归属，失败保留窗口并显示提示。已实现并补回归源码，本次未运行测试；涉及 Rust，需重新编译桌面端后验收。范围、并发边界及桌面步骤见[双窗口专项 2026-11-11 补充](./plans/2026-10-03-chat-window-state-sync.md#2026-11-11-重复展示与关闭交接修复)。
+
 执行主线为：会话提交 → Runtime 调度 → 模型轮次 → Registry 校验与 Policy 决策 → 工具执行 → Observation → 后续轮次或收尾。具体业务能力继续调用所属模块的服务。
 
 ## 项目模型与视觉上下文

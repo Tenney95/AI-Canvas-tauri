@@ -481,6 +481,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
     event.preventDefault();
+    if (disabled) return;
     const selection = window.getSelection();
     if (!selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
@@ -492,7 +493,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
     selection.removeAllRanges();
     selection.addRange(range);
     handleInput();
-  }, [handleInput]);
+  }, [disabled, handleInput]);
 
   return (
     <div className="ui-ai-input__editor-wrap">

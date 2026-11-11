@@ -4,6 +4,7 @@ import type { AgentMode } from '../../types/agent';
 import { resolveAssistantModel } from '../ai/assistantStream';
 import { isWorkbenchAgentTaskInScope, readEpisodeWorkspaceScope } from '../episodeWorkspaceScope';
 import { submitConversationMessage } from './conversationExecutionController';
+import { t } from '../../i18n';
 
 export function startWorkbenchAgentInvocation(input: {
   episodeId: string;
@@ -46,6 +47,13 @@ export function startWorkbenchAgentInvocation(input: {
   }
   state.focusAgentTask(invocation.taskId);
   state.setChatPanelView('chat');
-  state.openChat();
+  if (useAppStore.getState().chatPanelDetached) {
+    const conversationId = invocation.conversationId;
+    void import('./chatWindowLifecycle').then(({ openDetachedChatWindow }) => {
+      const latest = useAppStore.getState();
+      if (latest.currentProjectId !== state.currentProjectId || latest.activeConversationId !== conversationId || !latest.chatPanelDetached) return;
+      return openDetachedChatWindow();
+    }).catch(() => useAppStore.getState().showToast(t('打开独立助手窗口失败，创作任务已保留'), 'error'));
+  } else state.openChat();
   return invocation;
 }

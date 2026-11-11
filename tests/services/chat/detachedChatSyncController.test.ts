@@ -9,6 +9,17 @@ const conversationControllerMocks = vi.hoisted(() => ({
   resolveApproval: vi.fn(() => true),
   resume: vi.fn(() => ({ ok: true as const })),
 }));
+const closingMocks = vi.hoisted(() => ({
+  finish: vi.fn<(sessionId: string) => Promise<void>>(),
+  response: vi.fn<() => Promise<void>>(),
+  failed: vi.fn<() => Promise<void>>(),
+}));
+vi.mock('../../../src/services/chat/chatWindowService', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/services/chat/chatWindowService')>(),
+  finishChatWindowClose: closingMocks.finish,
+  emitChatSendResponse: closingMocks.response,
+  emitChatCloseFailure: closingMocks.failed,
+}));
 
 vi.mock('../../../src/services/chat/conversationExecutionController', () => ({
   getAgentModeToast: vi.fn(() => 'mode changed'),
@@ -25,7 +36,7 @@ import {
   projectChatNodes,
   executeManagedChatOperation,
 } from '../../../src/services/chat/detachedChatSyncController';
-import { applyChatStatePatch, beginChatWindowSession, createChatStatePatch, getMainChatWindowSessionId, receiveChatStateSync, type ChatStateSync, type ChatWindowState } from '../../../src/services/chat/chatWindowService';
+import { applyChatStatePatch, beginChatWindowSession, createChatStatePatch, endChatWindowSession, getMainChatWindowSessionId, receiveChatStateSync, type ChatStateSync, type ChatWindowState } from '../../../src/services/chat/chatWindowService';
 import { runAgentTask } from '../../../src/services/chat/agentTaskControl';
 import { useAppStore } from '../../../src/store/useAppStore';
 import { GENERAL_ASSISTANT_SCOPE_ID } from '../../../src/services/chat/assistantScope';
@@ -74,6 +85,9 @@ function arrangeDetachedState(): void {
 }
 
 beforeEach(() => {
+  closingMocks.finish.mockReset().mockImplementation(async (sessionId) => { endChatWindowSession(sessionId); });
+  closingMocks.response.mockReset().mockResolvedValue(undefined);
+  closingMocks.failed.mockReset().mockResolvedValue(undefined);
   beginChatWindowSession();
   arrangeDetachedState();
   conversationControllerMocks.submit.mockReset();
@@ -81,6 +95,226 @@ beforeEach(() => {
   conversationControllerMocks.resolveApproval.mockReturnValue(true);
   conversationControllerMocks.resume.mockReset();
   conversationControllerMocks.resume.mockReturnValue({ ok: true });
+});
+
+describe('独立助手关闭与草稿交接', () => {
+  async function harness() {
+    const emissions: ChatStateSync[] = [];
+    let dispatch!: (action: ChatAction) => void;
+    const controller = createDetachedChatSyncController({ enabled: true, syncIntervalMs: 0,
+      emitSync: async (sync) => { emissions.push(sync); },
+      initListener: async (handler) => { dispatch = handler; return () => {}; } });
+    await controller.start();
+    return { controller, emissions, dispatch, frame: syncFrame(emissions[0])! };
+  }
+
+  it('收到草稿先保留独立模式与 nonce，原生销毁确认后才收回', async () => {
+    const setup = await harness(), sessionId = getMainChatWindowSessionId()!;
+    let finish!: () => void;
+    closingMocks.finish.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finish = () => { endChatWindowSession(sessionId); resolve(); };
+    }));
+    try {
+      setup.dispatch({ type: 'dock_window', requestId: 'dock-pending', sequence: 1, windowFrame: setup.frame,
+        composerDraft: { conversationId: 'conversation-1', draft: '最后一笔', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledWith(sessionId));
+      expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: true, chatComposerLiveDraft: '最后一笔' });
+      expect(getMainChatWindowSessionId()).toBe(sessionId);
+      finish();
+      await vi.waitFor(() => expect(useAppStore.getState().chatPanelDetached).toBe(false));
+    } finally { setup.controller.dispose(); }
+  });
+
+  it('超过六十四个流式快照后仍可交接旧会话草稿，普通旧帧写动作继续拒绝', async () => {
+    const setup = await harness();
+    try {
+      for (let index = 0; index < 70; index += 1) {
+        setup.controller.sync(true, true);
+        await Promise.resolve(); await Promise.resolve();
+      }
+      useAppStore.setState((state) => ({ conversations: [...state.conversations, { ...state.conversations[0], id: 'conversation-2' }],
+        activeConversationId: 'conversation-2', chatComposerLiveDraft: '新会话草稿', chatComposerDrafts: { 'conversation-2': '新会话草稿' } }));
+      expect(setup.emissions.length).toBeGreaterThan(64);
+      setup.dispatch({ type: 'set_panel_view', view: 'tasks', windowFrame: setup.frame, sequence: 1 });
+      expect(useAppStore.getState().chatPanelView).toBe('chat');
+      setup.dispatch({ type: 'dock_window', windowFrame: setup.frame, sequence: 2,
+        composerDraft: { conversationId: 'conversation-1', draft: '旧会话尾部', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(useAppStore.getState().chatPanelDetached).toBe(false));
+      expect(useAppStore.getState()).toMatchObject({ activeConversationId: 'conversation-2', chatComposerLiveDraft: '新会话草稿',
+        chatComposerDrafts: { 'conversation-1': '旧会话尾部', 'conversation-2': '新会话草稿' } });
+    } finally { setup.controller.dispose(); }
+  });
+
+  it('旧项目会话不在当前列表时，经数据库归属核验只保存到原会话', async () => {
+    const { putChatConversation } = await import('../../../src/services/indexedDbService');
+    await putChatConversation(useAppStore.getState().conversations[0]);
+    const setup = await harness();
+    try {
+      useAppStore.setState((state) => ({ projects: [...state.projects, { ...state.projects[0], id: 'project-2' }], currentProjectId: 'project-2',
+        conversations: [{ ...state.conversations[0], id: 'conversation-2', projectId: 'project-2' }], activeConversationId: 'conversation-2',
+        chatComposerLiveDraft: '乙项目输入', chatComposerDrafts: { 'conversation-2': '乙项目输入' } }));
+      setup.dispatch({ type: 'close_window', windowFrame: setup.frame, sequence: 1,
+        composerDraft: { conversationId: 'conversation-1', draft: '甲项目输入', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledOnce());
+      expect(useAppStore.getState()).toMatchObject({ currentProjectId: 'project-2', activeConversationId: 'conversation-2',
+        chatComposerLiveDraft: '乙项目输入', chatComposerDrafts: { 'conversation-1': '甲项目输入', 'conversation-2': '乙项目输入' } });
+    } finally { setup.controller.dispose(); }
+  });
+
+  it('数据库查询期间原会话被删除时，不把迟到读取判为草稿已保存或继续关窗', async () => {
+    const original = { ...useAppStore.getState().conversations[0], id: 'close-during-db-delete' };
+    useAppStore.setState({ conversations: [original], activeConversationId: original.id });
+    const setup = await harness();
+    const repository = await import('../../../src/services/indexedDbService');
+    let finishRead!: (rows: Awaited<ReturnType<typeof repository.getProjectConversations>>) => void;
+    const read = vi.spyOn(repository, 'getProjectConversations').mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    try {
+      useAppStore.setState({ conversations: [], activeConversationId: null });
+      setup.dispatch({ type: 'close_window', requestId: 'deleted-during-read', sequence: 1, windowFrame: setup.frame,
+        composerDraft: { conversationId: original.id, draft: '不能复活的草稿', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(read).toHaveBeenCalledWith('project-1'));
+      useAppStore.getState().removeConversation(original.id);
+      finishRead([original]);
+      await vi.waitFor(() => expect(closingMocks.response).toHaveBeenCalledWith('deleted-during-read', false, setup.frame.sessionId));
+      expect(useAppStore.getState().chatComposerDrafts[original.id]).toBeUndefined();
+      expect(closingMocks.finish).not.toHaveBeenCalled();
+      expect(useAppStore.getState().chatPanelDetached).toBe(true);
+    } finally { read.mockRestore(); setup.controller.dispose(); }
+  });
+
+  it.each([false, true])('快速编辑沿用本客户端已接收的草稿，外部较新修改则拒绝（竞争：%s）', async (competing) => {
+    const setup = await harness();
+    try {
+      setup.dispatch({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: 'a', windowFrame: setup.frame, sequence: 1 });
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('a');
+      if (competing) useAppStore.getState().setChatComposerLiveDraft('主窗口较新输入', 'conversation-1');
+      setup.dispatch({ type: 'close_window', requestId: 'quick-close', windowFrame: setup.frame, sequence: 2,
+        composerDraft: { conversationId: 'conversation-1', draft: 'ab', windowFrame: setup.frame } });
+      if (competing) {
+        await vi.waitFor(() => expect(closingMocks.response).toHaveBeenCalledWith('quick-close', false, setup.frame.sessionId));
+        expect(closingMocks.finish).not.toHaveBeenCalled();
+        expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('主窗口较新输入');
+      } else {
+        await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledOnce());
+        expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('ab');
+      }
+    } finally { setup.controller.dispose(); }
+  });
+
+  it.each([false, true])('发送 ACK 未返回时不恢复已发送的旧正文，原旧帧空草稿仍可关闭（首次发送：%s）', async (firstSend) => {
+    if (firstSend) useAppStore.setState({ conversations: [], activeConversationId: null });
+    const setup = await harness();
+    let finishAck!: () => void;
+    closingMocks.response.mockImplementationOnce(() => new Promise<void>((resolve) => { finishAck = resolve; }));
+    conversationControllerMocks.submit.mockReturnValueOnce({ status: 'started', userMessageId: 'sent-user', assistantMessageId: 'sent-assistant' });
+    try {
+      setup.dispatch({ type: 'send_message', conversationId: setup.frame.conversationId ?? undefined, content: 'a',
+        requestId: 'send-before-close', windowFrame: setup.frame, sequence: 1 });
+      expect(useAppStore.getState().chatComposerLiveDraft).toBe('');
+      setup.dispatch({ type: 'close_window', requestId: 'stale-sent-draft', windowFrame: setup.frame, sequence: 2,
+        composerDraft: { conversationId: setup.frame.conversationId, draft: 'a', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(closingMocks.response).toHaveBeenCalledWith('stale-sent-draft', false, setup.frame.sessionId));
+      expect(closingMocks.finish).not.toHaveBeenCalled();
+      expect(useAppStore.getState().chatComposerLiveDraft).toBe('');
+      expect(Object.values(useAppStore.getState().chatComposerDrafts)).not.toContain('a');
+      expect(useAppStore.getState().chatPanelDetached).toBe(true);
+      finishAck();
+      setup.dispatch({ type: 'close_window', requestId: 'cleared-sent-draft', windowFrame: setup.frame, sequence: 3,
+        composerDraft: { conversationId: setup.frame.conversationId, draft: '', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledOnce());
+    } finally { finishAck?.(); setup.controller.dispose(); }
+  });
+
+  it('发送前已同步的正文不能成为发送后旧草稿的编辑证明', async () => {
+    const setup = await harness();
+    conversationControllerMocks.submit.mockReturnValueOnce({ status: 'started', userMessageId: 'sent-user', assistantMessageId: 'sent-assistant' });
+    try {
+      setup.dispatch({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: 'a', windowFrame: setup.frame, sequence: 1 });
+      setup.dispatch({ type: 'send_message', conversationId: 'conversation-1', content: 'a', windowFrame: setup.frame, sequence: 2 });
+      setup.dispatch({ type: 'close_window', requestId: 'pre-send-edit', windowFrame: setup.frame, sequence: 3,
+        composerDraft: { conversationId: 'conversation-1', draft: 'a', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(closingMocks.response).toHaveBeenCalledWith('pre-send-edit', false, setup.frame.sessionId));
+      expect(closingMocks.finish).not.toHaveBeenCalled();
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBeUndefined();
+      expect(useAppStore.getState().chatComposerLiveDraft).toBe('');
+    } finally { setup.controller.dispose(); }
+  });
+
+  it.each([false, true])('发送后的新编辑可正常交接（使用新帧：%s）', async (newFrame) => {
+    const setup = await harness();
+    conversationControllerMocks.submit.mockReturnValueOnce({ status: 'started', userMessageId: 'sent-user', assistantMessageId: 'sent-assistant' });
+    try {
+      setup.dispatch({ type: 'send_message', conversationId: 'conversation-1', content: 'a', windowFrame: setup.frame, sequence: 1 });
+      let frame = setup.frame;
+      if (newFrame) {
+        await vi.waitFor(() => expect(syncFrame(setup.emissions.at(-1))?.revision).toBeGreaterThan(setup.frame.revision));
+        await Promise.resolve();
+        frame = syncFrame(setup.emissions.at(-1))!;
+      } else {
+        // 尚未收到新快照，但 send 之后的合法 set_draft 足以证明这是新一轮编辑。
+        setup.dispatch({ type: 'set_composer_draft', conversationId: 'conversation-1', draft: 'b', windowFrame: frame, sequence: 2 });
+      }
+      setup.dispatch({ type: 'close_window', requestId: 'post-send-edit', windowFrame: frame, sequence: 3,
+        composerDraft: { conversationId: 'conversation-1', draft: 'bc', windowFrame: frame } });
+      await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledOnce());
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('bc');
+    } finally { setup.controller.dispose(); }
+  });
+
+  it('被忽略的发送不消费草稿，旧帧仍可保存未发送内容并关闭', async () => {
+    const setup = await harness();
+    conversationControllerMocks.submit.mockReturnValueOnce({ status: 'ignored' });
+    try {
+      setup.dispatch({ type: 'send_message', conversationId: 'conversation-1', content: 'a', windowFrame: setup.frame, sequence: 1 });
+      setup.dispatch({ type: 'close_window', windowFrame: setup.frame, sequence: 2,
+        composerDraft: { conversationId: 'conversation-1', draft: 'a', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledOnce());
+      expect(useAppStore.getState().chatComposerDrafts['conversation-1']).toBe('a');
+    } finally { setup.controller.dispose(); }
+  });
+
+  it('原生失败保留会话与独立模式，重试可关闭；迟到成功不收回新窗口', async () => {
+    const setup = await harness();
+    try {
+      closingMocks.finish.mockRejectedValueOnce(new Error('native close failed'));
+      setup.dispatch({ type: 'dock_window', sequence: 1, windowFrame: setup.frame });
+      await vi.waitFor(() => expect(closingMocks.failed).toHaveBeenCalledWith(setup.frame.sessionId));
+      expect(getMainChatWindowSessionId()).toBe(setup.frame.sessionId);
+      expect(useAppStore.getState().chatPanelDetached).toBe(true);
+      let finish!: () => void;
+      closingMocks.finish.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+      setup.dispatch({ type: 'dock_window', sequence: 2, windowFrame: setup.frame });
+      await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledTimes(2));
+      const reopened = beginChatWindowSession();
+      finish();
+      await Promise.resolve(); await Promise.resolve();
+      expect(getMainChatWindowSessionId()).toBe(reopened);
+      expect(useAppStore.getState().chatPanelDetached).toBe(true);
+    } finally { setup.controller.dispose(); }
+  });
+
+  it('无首帧且无草稿只凭固定窗口 session 可关闭，不借新帧授权旧草稿', async () => {
+    const setup = await harness();
+    try {
+      setup.dispatch({ type: 'close_window', sessionId: setup.frame.sessionId, sequence: 1 });
+      await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledWith(setup.frame.sessionId));
+    } finally { setup.controller.dispose(); }
+  });
+
+  it('未建会话的旧项目草稿不能写入新项目的空输入区', async () => {
+    useAppStore.setState({ activeConversationId: null, chatComposerLiveDraft: '' });
+    const setup = await harness();
+    try {
+      useAppStore.setState((state) => ({ projects: [...state.projects, { ...state.projects[0], id: 'project-2' }],
+        currentProjectId: 'project-2', activeConversationId: null, chatComposerLiveDraft: '新项目空输入' }));
+      setup.dispatch({ type: 'close_window', requestId: 'old-scratch', sequence: 1, windowFrame: setup.frame,
+        composerDraft: { conversationId: null, draft: '旧项目空输入', windowFrame: setup.frame } });
+      await vi.waitFor(() => expect(closingMocks.response).toHaveBeenCalledWith('old-scratch', false, setup.frame.sessionId));
+      expect(useAppStore.getState().chatComposerLiveDraft).toBe('新项目空输入');
+      expect(closingMocks.finish).not.toHaveBeenCalled();
+      expect(useAppStore.getState().chatPanelDetached).toBe(true);
+    } finally { setup.controller.dispose(); }
+  });
 });
 
 describe('detached chat sync controller', () => {
@@ -466,7 +700,7 @@ describe('detached chat sync controller', () => {
       }] });
       await vi.waitFor(() => expect(readMirror()?.snapshot.messages[0].content).toBe('开始回答'));
       onAction({ type: 'dock_window', composerDraft: { conversationId: 'conversation-1', draft: '追加问题' } });
-      expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: false, chatComposerLiveDraft: '追加问题' });
+      await vi.waitFor(() => expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: false, chatComposerLiveDraft: '追加问题' }));
       expect(useAppStore.getState().agentTasks[0].status).toBe('running');
       expect(executor.mock.calls[0][0].aborted).toBe(false);
       useAppStore.setState((state) => ({ messages: state.messages.map((message) => ({ ...message, content: '回答继续更新' })) }));
@@ -508,7 +742,7 @@ describe('detached chat sync controller', () => {
     });
     onAction({ type: 'set_panel_view', view: 'tasks' });
     onAction({ type: 'dock_window', composerDraft: { conversationId: 'conversation-2', draft: '' } });
-    expect(useAppStore.getState()).toMatchObject({ chatComposerLiveDraft: '', chatPanelView: 'tasks', chatPanelDetached: false });
+    await vi.waitFor(() => expect(useAppStore.getState()).toMatchObject({ chatComposerLiveDraft: '', chatPanelView: 'tasks', chatPanelDetached: false }));
     controller.dispose();
   });
 
@@ -734,11 +968,11 @@ describe('detached chat sync controller', () => {
     beginChatWindowSession();
     await vi.waitFor(() => expect(syncFrame(emitSync.mock.lastCall?.[0])?.sessionId).toBe(getMainChatWindowSessionId()));
     onAction?.({ type: 'dock_window' });
-    expect(useAppStore.getState()).toMatchObject({
+    await vi.waitFor(() => expect(useAppStore.getState()).toMatchObject({
       chatOpen: true,
       chatPanelDetached: false,
       hoveredMentionNodeId: null,
-    });
+    }));
 
     controller.dispose();
     expect(cleanup).toHaveBeenCalledTimes(1);

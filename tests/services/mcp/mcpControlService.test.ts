@@ -38,8 +38,8 @@ import { MCP_CATALOG_MAX_BYTES } from '../../../src/services/mcp/mcpToolCatalog'
 import { captureLegacyEpisodeContext, captureLegacyProjectExpectedContext } from '../../../src/services/projectExecutionContext';
 import { registerEpisodeEditorSession } from '../../../src/services/episodeEditorSessionService';
 
-const { getChatWindow } = vi.hoisted(() => ({ getChatWindow: vi.fn() }));
-vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: getChatWindow } }));
+const { openDetachedChatWindow } = vi.hoisted(() => ({ openDetachedChatWindow: vi.fn<() => Promise<void>>() }));
+vi.mock('../../../src/services/chat/chatWindowLifecycle', () => ({ openDetachedChatWindow }));
 
 function packageSkill(partial: Partial<AgentPackageSkill> = {}): AgentPackageSkill {
   return {
@@ -109,7 +109,7 @@ function packageInstallation(
 }
 
 beforeEach(() => {
-  getChatWindow.mockReset();
+  openDetachedChatWindow.mockReset().mockResolvedValue(undefined);
   resetAgentToolsRegistrationForTests();
   clearAgentToolRegistryForTests();
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -668,7 +668,7 @@ describe('MCP on-demand discovery', () => {
         chatOpen: true, chatPanelView: 'chat', activeConversationId: 'mcp-control-project-mcp',
       });
       expect(execute).not.toHaveBeenCalled();
-      expect(getChatWindow).not.toHaveBeenCalled();
+      expect(openDetachedChatWindow).not.toHaveBeenCalled();
     } finally {
       await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-choice', method: 'requests/cancel', params: { requestId: 'session:choice' } });
       await pending;
@@ -678,17 +678,12 @@ describe('MCP on-demand discovery', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('reveals an existing detached assistant for user_choice without recreating it', async () => {
-    const detached = { unminimize: vi.fn().mockResolvedValue(undefined), show: vi.fn().mockResolvedValue(undefined), setFocus: vi.fn().mockResolvedValue(undefined) };
-    getChatWindow.mockResolvedValue(detached);
+  it('reveals the detached assistant for user_choice through the shared lifecycle', async () => {
     useAppStore.setState({ chatOpen: false, chatPanelDetached: true, chatPanelView: 'list' });
     const execute = registerDispatchProbe({ effect: 'user_choice' });
     const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:detached-choice');
     try {
-      await vi.waitFor(() => expect(detached.setFocus).toHaveBeenCalledOnce());
-      expect(getChatWindow).toHaveBeenCalledWith('chat-assistant');
-      expect(detached.unminimize).toHaveBeenCalledOnce();
-      expect(detached.show).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(openDetachedChatWindow).toHaveBeenCalledOnce());
       expect(useAppStore.getState()).toMatchObject({
         chatPanelDetached: true, chatPanelView: 'chat', activeConversationId: 'mcp-control-project-mcp',
       });
@@ -699,35 +694,42 @@ describe('MCP on-demand discovery', () => {
     }
   });
 
-  it('falls back to the main panel if the detached assistant is unavailable', async () => {
-    getChatWindow.mockResolvedValue(null);
-    useAppStore.setState({ chatOpen: false, chatPanelDetached: true });
-    registerDispatchProbe({ effect: 'user_choice' });
+  it('preserves the live detached assistant when the shared focus attempt fails', async () => {
+    openDetachedChatWindow.mockRejectedValueOnce(new Error('focus failed while the original window remains alive'));
+    const showToast = vi.fn();
+    useAppStore.setState({ chatOpen: false, chatPanelDetached: true, showToast });
+    const execute = registerDispatchProbe({ effect: 'user_choice' });
     const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:missing-choice');
     try {
-      await vi.waitFor(() => expect(useAppStore.getState().chatPanelDetached).toBe(false));
-      expect(useAppStore.getState()).toMatchObject({ chatOpen: true, chatPanelView: 'chat' });
+      await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith('打开独立窗口失败', 'error'));
+      expect(openDetachedChatWindow).toHaveBeenCalledOnce();
+      expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: true, chatOpen: true, chatPanelView: 'chat' });
+      expect(useAppStore.getState().agentTasks[0]?.status).toBe('waiting_approval');
+      expect(execute).not.toHaveBeenCalled();
     } finally {
       await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-missing-choice', method: 'requests/cancel', params: { requestId: 'session:missing-choice' } });
       await pending;
     }
   });
 
-  it('does not focus a detached assistant after the user switches projects', async () => {
-    let resolveWindow!: (value: { unminimize: ReturnType<typeof vi.fn> }) => void;
-    getChatWindow.mockReturnValue(new Promise((resolve) => { resolveWindow = resolve; }));
+  it('does not start the shared detached lifecycle after the user switches projects', async () => {
     useAppStore.setState({ chatPanelDetached: true });
     registerDispatchProbe({ effect: 'user_choice' });
-    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:stale-choice');
-    const detached = { unminimize: vi.fn() };
-    try {
-      await vi.waitFor(() => expect(getChatWindow).toHaveBeenCalledOnce());
+    let switched = false;
+    const stopWatching = useAppStore.subscribe((state) => {
+      if (switched || !state.chatOpen || state.activeConversationId !== 'mcp-control-project-mcp'
+        || !state.agentTasks.some((task) => task.status === 'waiting_approval')) return;
+      switched = true;
       useAppStore.setState({ currentProjectId: 'other-project', activeConversationId: 'other-chat', chatOpen: false });
-      resolveWindow(detached);
+    });
+    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:stale-choice');
+    try {
+      await vi.waitFor(() => expect(switched).toBe(true));
       await Promise.resolve();
-      expect(detached.unminimize).not.toHaveBeenCalled();
+      expect(openDetachedChatWindow).not.toHaveBeenCalled();
       expect(useAppStore.getState()).toMatchObject({ chatOpen: false, activeConversationId: 'other-chat' });
     } finally {
+      stopWatching();
       await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-stale-choice', method: 'requests/cancel', params: { requestId: 'session:stale-choice' } });
       await pending;
     }
@@ -738,7 +740,7 @@ describe('MCP on-demand discovery', () => {
     registerDispatchProbe({ effect: 'read' });
     expect(await mcpCall('mcp_dispatch_probe', { value: 'ok' })).toMatchObject({ isError: false });
     expect(useAppStore.getState()).toMatchObject({ chatOpen: false, chatPanelView: 'tasks', activeConversationId: 'other-chat' });
-    expect(getChatWindow).not.toHaveBeenCalled();
+    expect(openDetachedChatWindow).not.toHaveBeenCalled();
   });
 
   it('forwards cancellation to an executing target', async () => {

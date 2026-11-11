@@ -6,6 +6,8 @@ import type { ProjectWindowFrame } from '../../../src/types/projectWindow';
 
 const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
 const nativeWindow = vi.hoisted(() => ({ getByLabel: vi.fn(async () => ({} as object | null)) }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => undefined) }));
+vi.mock('../../../src/services/chat/chatWindowLifecycle', () => ({ waitForChatWindowOpen: () => null }));
 vi.mock('@tauri-apps/api/webviewWindow', () => ({ WebviewWindow: { getByLabel: nativeWindow.getByLabel } }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -20,6 +22,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { emit, emitTo } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 
 import {
   CHAT_ACTION_EVENT,
@@ -34,6 +37,7 @@ import {
   CHAT_SYNC_EVENT,
   beginChatWindowSession,
   emitAction,
+  finishChatWindowClose,
   getMainChatWindowSessionId,
   initChatWindowListener,
   requestChatMessage,
@@ -43,10 +47,57 @@ beforeEach(() => {
   listeners.clear();
   vi.mocked(emitTo).mockClear();
   nativeWindow.getByLabel.mockReset().mockResolvedValue({});
+  vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
   beginChatWindowSession();
 });
 
 describe('initMainWindowListener', () => {
+  it('草稿 ack 后继续等待原生销毁，成功前保留会话，同 session 只关闭一次', async () => {
+    let finish!: () => void;
+    vi.mocked(invoke).mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const sessionId = getMainChatWindowSessionId()!;
+    let settled = false;
+    const closing = emitCloseChatWindow().then(() => { settled = true; });
+    await vi.waitFor(() => expect(vi.mocked(emitTo).mock.calls.some((call) => call[1] === CHAT_CLOSE_EVENT)).toBe(true));
+    const sent = vi.mocked(emitTo).mock.calls.find((call) => call[1] === CHAT_CLOSE_EVENT)![2] as { requestId: string };
+    for (const handler of listeners.get('chat:close-ack') ?? []) handler({ payload: { requestId: sent.requestId, sessionId, accepted: true } });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledExactlyOnceWith('close_chat_window', { sessionId }));
+    const concurrent = finishChatWindowClose(sessionId);
+    expect(getMainChatWindowSessionId()).toBe(sessionId);
+    expect(settled).toBe(false);
+    finish();
+    await Promise.all([closing, concurrent]);
+    expect(getMainChatWindowSessionId()).toBeUndefined();
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it('原生销毁失败仍保留旧 session，可重试，不撤销新窗口的会话', async () => {
+    const sessionId = getMainChatWindowSessionId()!;
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('close failed'));
+    await expect(finishChatWindowClose(sessionId)).rejects.toThrow('close failed');
+    expect(getMainChatWindowSessionId()).toBe(sessionId);
+    let finish!: () => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const retry = finishChatWindowClose(sessionId);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    const reopened = beginChatWindowSession();
+    finish();
+    await retry;
+    expect(getMainChatWindowSessionId()).toBe(reopened);
+  });
+
+  it('原生关闭已经开始时合并外层请求，不再等已销毁子窗的 ack', async () => {
+    let finish!: () => void;
+    vi.mocked(invoke).mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const sessionId = getMainChatWindowSessionId()!;
+    const nativeClose = finishChatWindowClose(sessionId);
+    const outer = emitCloseChatWindow();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    finish();
+    await Promise.all([nativeClose, outer]);
+    expect(vi.mocked(emitTo).mock.calls.some((call) => call[1] === CHAT_CLOSE_EVENT)).toBe(false);
+  });
+
   it('收回窗口等待草稿交接 ack，拒绝时保留窗口；已关闭窗口不等待不存在的回执', async () => {
     const closing = emitCloseChatWindow();
     const rejected = expect(closing).rejects.toThrow('草稿仍保留');
@@ -81,6 +132,36 @@ describe('initMainWindowListener', () => {
       expect((vi.mocked(emitTo).mock.lastCall?.[2] as { sequence: number }).sequence).toBeGreaterThan(10000);
       expect(getMainChatWindowSessionId()).toBe(sessionId);
     } finally { dispose(); vi.unstubAllGlobals(); }
+  });
+  it('关闭失败仅通知同 URL 会话，注销时清理新增监听', async () => {
+    const sessionId = getMainChatWindowSessionId()!;
+    vi.stubGlobal('window', { location: { search: `?view=chat&session=${sessionId}` } });
+    const failed = vi.fn();
+    const dispose = await initChatWindowListener(vi.fn(), vi.fn(), failed);
+    try {
+      for (const handler of listeners.get('chat:close-failed') ?? []) {
+        handler({ payload: { sessionId: 'old-session' } });
+        handler({ payload: { sessionId } });
+      }
+      expect(failed).toHaveBeenCalledOnce();
+      dispose();
+      expect(listeners.get('chat:close-failed')?.size).toBe(0);
+    } finally { dispose(); vi.unstubAllGlobals(); }
+  });
+
+  it('窗口查询等待期间出现新会话时，不将旧关闭请求绑定新 nonce', async () => {
+    const original = getMainChatWindowSessionId()!;
+    let finish!: (window: object | null) => void;
+    nativeWindow.getByLabel.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const closing = emitCloseChatWindow(original);
+    const rejected = expect(closing).rejects.toThrow('会话已失效');
+    await vi.waitFor(() => expect(nativeWindow.getByLabel).toHaveBeenCalled());
+    const next = beginChatWindowSession();
+    finish({});
+    await rejected;
+    expect(getMainChatWindowSessionId()).toBe(next);
+    expect(invoke).not.toHaveBeenCalled();
+    expect(vi.mocked(emitTo).mock.calls.some((call) => call[1] === CHAT_CLOSE_EVENT)).toBe(false);
   });
   it('新窗同一请求 ID 不接受旧窗迟到发送回执', async () => {
     const frame = { sessionId: 'new-window-session' } as ProjectWindowFrame;

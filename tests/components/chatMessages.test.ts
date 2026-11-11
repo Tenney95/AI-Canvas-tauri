@@ -66,6 +66,7 @@ vi.mock('react', async () => {
       if (!hooks.refs[index]) hooks.refs[index] = { current: initialValue };
       return hooks.refs[index] as { current: T };
     },
+    useImperativeHandle: () => undefined,
     useState: <T,>(initialValue: T | (() => T)) => {
       const index = hooks.stateCursor;
       hooks.stateCursor += 1;
@@ -127,6 +128,7 @@ vi.mock('../../src/components/chat/AgentTaskCenter', () => ({ default: 'agent-ta
 
 import ChatMessages from '../../src/components/chat/ChatMessages';
 import ChatPanel from '../../src/components/chat/ChatPanel';
+import ChatComposerEditor from '../../src/components/chat/ChatComposerEditor';
 import * as chatImages from '../../src/services/chat/chatImageReferenceService';
 import MessageBubble from '../../src/components/chat/MessageBubble';
 import CreationProfilePicker from '../../src/components/shared/creationProfiles/CreationProfilePicker';
@@ -271,6 +273,56 @@ describe('ChatMessages', () => {
   });
 
   afterEach(() => hooks.effects.forEach((effect) => effect?.cleanup?.()));
+
+  it('交接期间输入只读且不发送，解除只读后沿用原草稿继续编辑', () => {
+    preparePanel([createMessage('message-1', 'user', '历史正文')]);
+    hooks.panelState.setChatComposerLiveDraft = vi.fn((draft: string) => {
+      hooks.panelState.chatComposerLiveDraft = draft;
+      hooks.panelState.chatComposerDrafts = { 'conversation-1': draft };
+      return true;
+    });
+    type Input = { disabled: boolean; inputValue: string; onInputChange: (value: string) => void; onSend: () => void };
+    let input = panelChild<Input>(renderPanel(), 'chat-input');
+    input.onInputChange('待交接草稿');
+    input = panelChild<Input>(renderPanel({ composerDisabled: true }), 'chat-input');
+    expect(input.disabled).toBe(true);
+    expect(input.inputValue).toBe('待交接草稿');
+    input.onInputChange('关闭期间的迟到修改');
+    input.onSend();
+    expect(hooks.panelState.chatComposerLiveDraft).toBe('待交接草稿');
+    expect(hooks.submit).not.toHaveBeenCalled();
+    input = panelChild<Input>(renderPanel({ composerDisabled: false }), 'chat-input');
+    expect(input.disabled).toBe(false);
+    expect(input.inputValue).toBe('待交接草稿');
+    input.onInputChange('失败后继续编辑');
+    expect(hooks.panelState.chatComposerLiveDraft).toBe('失败后继续编辑');
+  });
+
+  it('只读编辑器的自定义粘贴不接触选区，解除只读后恢复粘贴入口', () => {
+    const getSelection = vi.fn(() => ({ rangeCount: 0 }));
+    vi.stubGlobal('window', { getSelection });
+    const onChange = vi.fn();
+    const renderEditor = (ChatComposerEditor as unknown as {
+      render: (props: ComponentProps<typeof ChatComposerEditor>, ref: null) => ReactElement;
+    }).render;
+    const render = (disabled: boolean) => {
+      hooks.stateCursor = hooks.refCursor = hooks.memoCursor = hooks.effectCursor = 0;
+      return collectElements(renderEditor({ value: '保留草稿', onChange, onSubmit: vi.fn(), disabled,
+        nodeDisplayIds: new Map(), onMentionQueryChange: vi.fn(), onSlashQueryChange: vi.fn(), placeholder: '' }, null))
+        .find((element) => (element.props as { role?: string }).role === 'textbox')!;
+    };
+    const event = { preventDefault: vi.fn() };
+    const readOnly = render(true).props as { contentEditable: boolean; onPaste: (event: unknown) => void };
+    expect(readOnly.contentEditable).toBe(false);
+    readOnly.onPaste(event);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(getSelection).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    const editable = render(false).props as { contentEditable: boolean; onPaste: (event: unknown) => void };
+    expect(editable.contentEditable).toBe(true);
+    editable.onPaste(event);
+    expect(getSelection).toHaveBeenCalledOnce();
+  });
 
   it('associates assistant messages with the latest user prompt in one message scan', () => {
     const messages = [
