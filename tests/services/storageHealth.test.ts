@@ -29,12 +29,22 @@ const mocks = vi.hoisted(() => ({
   assertLegacyProjectWritesAllowed: vi.fn(),
   listProjectCatalog: vi.fn(),
   readNativeProjectCapture: vi.fn(),
+  readNativeStorageSnapshot: vi.fn(),
+  isNodeMediaCopySource: vi.fn(),
   invoke: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('../../src/services/projectModelRouter', () => ({ listProjectCatalog: mocks.listProjectCatalog }));
-vi.mock('../../src/services/indexedDb/nativeProjectRepository', () => ({ readNativeProjectCapture: mocks.readNativeProjectCapture }));
+vi.mock('../../src/services/indexedDb/nativeProjectRepository', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/indexedDb/nativeProjectRepository')>('../../src/services/indexedDb/nativeProjectRepository'),
+  readNativeProjectCapture: mocks.readNativeProjectCapture,
+}));
+vi.mock('../../src/services/fs/nativeStorageReferences', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/fs/nativeStorageReferences')>('../../src/services/fs/nativeStorageReferences'),
+  readNativeStorageSnapshot: mocks.readNativeStorageSnapshot,
+}));
+vi.mock('../../src/services/nodeMediaCopy', () => ({ isNodeMediaCopySource: mocks.isNodeMediaCopySource }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readDir: mocks.readDir,
@@ -62,7 +72,7 @@ vi.mock('../../src/services/indexedDb/projectImportRepository', () => ({ listPro
 vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB }));
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.assertLegacyProjectWritesAllowed }));
 
-import { clearTrashDir, collectNodeFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth } from '../../src/services/fs/storageHealth';
+import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth } from '../../src/services/fs/storageHealth';
 
 function project(id: string): CanvasProject {
   return { id, name: id, createdAt: 1, updatedAt: 1 };
@@ -84,6 +94,8 @@ describe('storage health accounting and cleanup', () => {
     mocks.getAllProjects.mockResolvedValue([]);
     mocks.listProjectCatalog.mockImplementation(async () => (await mocks.getAllProjects()).map((project: CanvasProject) => ({ dataModel: 'legacy', project })));
     mocks.readNativeProjectCapture.mockReset();
+    mocks.readNativeStorageSnapshot.mockReset().mockResolvedValue({ exchange: [], transfers: [], retired: [] });
+    mocks.isNodeMediaCopySource.mockReset().mockReturnValue(false);
     mocks.invoke.mockReset();
     mocks.getProjectById.mockImplementation(async (id: string) => ({ ...project(id), nodes: [] }));
     mocks.getHistoryEntriesPage.mockResolvedValue({ records: [], hasMore: false });
@@ -143,11 +155,14 @@ describe('storage health accounting and cleanup', () => {
     mocks.readNativeProjectCapture.mockResolvedValue({ aggregate, changeRevision: 0, exchange: null, includesHistory: false });
     mocks.invoke.mockImplementation(async (command: string) => command === 'resolve_native_project_media_root' ? '/native' : secondaryPath);
     const view: NativeProjectViewItem = { ...project(canvasId), nativeView: { projectId, canvasId, episodeId: null } };
-    return { projectId, canvasId, aggregate, view, secondary, secondaryPath };
+    return { projectId, canvasId, aggregate, view, primary, secondary, secondaryPath };
   }
 
-  it('新结构按权威目录读取，统计全部素材根；未绑定回执的文件和回收站均保护且不开放清理', async () => {
+  it('新结构按权威目录读取全部素材根；活动任务保护原作品且不将扫描标为不完整', async () => {
     const native = nativeProject();
+    mocks.readNativeStorageSnapshot.mockResolvedValue({ exchange: [{
+      kind: 'native-media-task-v1', ownerProjectId: native.projectId, status: 'outcome-unknown',
+    }], transfers: [], retired: [] });
     addFiles('/native', { 'paid-result.png': 10, 'frozen-input.json': 3 });
     mocks.directories.get('/native')!.push('.trash', 'roots');
     mocks.directories.set('/native/roots', [native.secondary]);
@@ -157,7 +172,7 @@ describe('storage health accounting and cleanup', () => {
     addFiles(`${native.secondaryPath}/.thumbnail`, { 'cache.webp': 100 });
     const report = await scanStorageHealth([native.view], new Set());
     expect(mocks.getProjectById).not.toHaveBeenCalled();
-    expect(report).toMatchObject({ complete: false, projectSize: 33, trashSize: 5, totalSize: 38, reclaimableSize: 0, orphans: [] });
+    expect(report).toMatchObject({ complete: true, projectSize: 33, trashSize: 5, totalSize: 38, reclaimableSize: 0, orphans: [] });
     expect(report.projects).toEqual([expect.objectContaining({ projectId: native.projectId, dataDirs: ['/native', native.secondaryPath], fileCount: 3, fileSize: 33 })]);
     expect(report.trashes[0].files).toEqual([expect.objectContaining({ referenced: true })]);
     expect(report.issues).toContainEqual(expect.objectContaining({ reason: 'native-protected' }));
@@ -166,7 +181,7 @@ describe('storage health accounting and cleanup', () => {
     expect(await deleteOrphanFile('/native/paid-result.png', async () => true)).toBe(false);
     expect(await clearTrashDir('/native/.trash', async () => true, [{ path: '/native/.trash/old.png', size: 5, digest: 'f'.repeat(64) }]))
       .toMatchObject({ deletedCount: 0, failedCount: 1 });
-    await expect(prepareTrashCleanup(report.trashes)).rejects.toThrow('暂不提供清理');
+    await expect(prepareTrashCleanup(report.trashes)).rejects.toThrow();
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
@@ -178,9 +193,164 @@ describe('storage health accounting and cleanup', () => {
     mocks.invoke.mockResolvedValue('/native');
     addFiles('/native', { 'image.png': 10 }); addFiles('/legacy', { 'unused.png': 7 });
     const report = await scanStorageHealth([native.view, project('legacy')], new Set());
-    expect(report).toMatchObject({ complete: false, projectSize: 17 });
-    expect(report.orphans.map((file) => file.path)).toEqual(['/legacy/unused.png']);
+    expect(report).toMatchObject({ complete: true, projectSize: 17, reclaimableSize: 17 });
+    expect(report.orphans.map((file) => file.path)).toEqual(['/legacy/unused.png', '/native/image.png']);
     expect(mocks.getProjectById.mock.calls.map(([id]) => id)).toEqual(['legacy']);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('静止新项目识别普通废图，保留回执引用、不可变产物、回收站与隐藏系统文件', async () => {
+    const native = nativeProject();
+    addFiles('/native', { 'unused.png': 10, 'used.png': 20, '.ai-canvas-native-project.json': 1 });
+    mocks.directories.get('/native')!.push('media', 'imports', '.trash', '.private');
+    addFiles('/native/media', { 'paid.png': 30 });
+    addFiles('/native/imports', { 'retained.png': 40 });
+    addFiles('/native/.trash', { 'old.png': 50 });
+    addFiles('/native/.private', { 'state.json': 60 });
+    addFiles(native.secondaryPath, {});
+    mocks.readNativeStorageSnapshot.mockResolvedValue({ exchange: [{
+      kind: 'native-media-task-v1', ownerProjectId: native.projectId, status: 'delivered',
+      resultRootRef: native.primary, resultRelativePath: 'used.png',
+    }], transfers: [], retired: [] });
+
+    const report = await scanStorageHealth([native.view], new Set());
+
+    expect(report.complete).toBe(true);
+    expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
+    expect(report.reclaimableSize).toBe(10);
+    expect(report.trashes[0]).toMatchObject({ reclaimableCount: 0, reclaimableSize: 0 });
+    expect(mocks.readDir).not.toHaveBeenCalledWith('/native/.private');
+    for (const path of ['/native/used.png', '/native/media/paid.png', '/native/imports/retained.png',
+      '/native/.trash/old.png', '/native/.ai-canvas-native-project.json']) {
+      expect(await deleteOrphanFile(path, async () => true)).toBe(false);
+    }
+    expect(await deleteOrphanFile('/native/unused.png', async () => true)).toBe(true);
+    expect(mocks.remove.mock.calls.map(([path]) => path)).toEqual(['/native/unused.png']);
+  });
+
+  it.each(['task', 'transfer'])('新作品有未完成 %s 时只保护自身，旧项目仍可清理', async (pending) => {
+    const native = nativeProject();
+    mocks.listProjectCatalog.mockResolvedValue([{ dataModel: 'legacy', project: project('legacy') }, {
+      dataModel: 'native', project: native.aggregate.project, episodes: [], episodeIds: [], canvasIds: [native.canvasId],
+    }]);
+    mocks.readNativeStorageSnapshot.mockResolvedValue({
+      exchange: pending === 'task' ? [{ kind: 'native-media-task-v1', ownerProjectId: native.projectId, status: 'submitted' }] : [],
+      transfers: pending === 'transfer' ? [{ kind: 'project-model-import', projectId: native.projectId, phase: 'media_publishing' }] : [],
+      retired: [],
+    });
+    addFiles('/native', { 'pending.png': 10 });
+    addFiles(native.secondaryPath, {});
+    addFiles('/legacy', { 'unused.png': 7 });
+
+    const report = await scanStorageHealth([native.view, project('legacy')], new Set());
+
+    expect(report).toMatchObject({ complete: true, reclaimableSize: 7 });
+    expect(report.orphans.map((file) => file.path)).toEqual(['/legacy/unused.png']);
+    expect(await deleteOrphanFile('/native/pending.png', async () => true)).toBe(false);
+    expect(await deleteOrphanFile('/legacy/unused.png', async () => true)).toBe(true);
+    expect(mocks.remove.mock.calls.map(([path]) => path)).toEqual(['/legacy/unused.png']);
+  });
+
+  it('新项目相对引用继承所属素材根，不把子根文件误保护为同名主根文件', async () => {
+    const native = nativeProject();
+    native.aggregate.canvases[0].nodes.push({ id: 'secondary-image', type: 'source-image', position: { x: 0, y: 0 },
+      data: { storageRootRef: native.secondary, relativePath: 'same.png' } });
+    addFiles('/native', { 'same.png': 10 });
+    addFiles(native.secondaryPath, { 'same.png': 20 });
+
+    const report = await scanStorageHealth([native.view], new Set());
+
+    expect(report.complete).toBe(true);
+    expect(report.orphans.map((file) => file.path)).toEqual(['/native/same.png']);
+    expect(await deleteOrphanFile(`${native.secondaryPath}/same.png`, async () => true)).toBe(false);
+    expect(await deleteOrphanFile('/native/same.png', async () => true)).toBe(true);
+    expect(mocks.remove.mock.calls.map(([path]) => path)).toEqual(['/native/same.png']);
+  });
+
+  it('实时引用使用当前画布的子根，拒绝未绑定素材根的相对引用', async () => {
+    const native = nativeProject();
+    native.aggregate.canvases[0].storageRootRef = native.secondary;
+
+    const paths = await collectStorageLiveFilePaths(native.canvasId, {
+      nodes: [{ data: { relativePath: 'same.png' } }],
+    });
+
+    expect(paths).toEqual(new Set([`${native.secondaryPath}/same.png`]));
+    await expect(collectStorageLiveFilePaths(native.canvasId, {
+      nodes: [{ data: { storageRootRef: 'r2-66666666-6666-4666-8666-666666666666', relativePath: 'same.png' } }],
+    })).rejects.toThrow('新项目存储引用读取不完整');
+  });
+
+  it('确认清理后作品已删除并留下墓碑时，旧报告不能删除其保留素材', async () => {
+    const native = nativeProject();
+    addFiles('/native', { 'unused.png': 10 });
+    addFiles(native.secondaryPath, {});
+    const report = await scanStorageHealth([native.view], new Set());
+    expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
+    const verify = vi.fn(async () => {
+      mocks.listProjectCatalog.mockResolvedValue([]);
+      mocks.readNativeStorageSnapshot.mockResolvedValue({ exchange: [], transfers: [],
+        retired: [{ id: native.projectId, projectId: native.projectId, kind: 'project' }] });
+      return true;
+    });
+
+    expect(await deleteOrphanFile('/native/unused.png', verify)).toBe(false);
+    expect(verify).toHaveBeenCalledOnce();
+    expect(mocks.sizes.has('/native/unused.png')).toBe(true);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('退役画布的历史仍保护原作品素材，未引用原件可以单独清理', async () => {
+    const native = nativeProject(), retiredCanvasId = 'c2-55555555-5555-4555-8555-555555555555';
+    addFiles('/native', { 'historical.png': 10, 'unused.png': 20 });
+    addFiles(native.secondaryPath, {});
+    mocks.readNativeStorageSnapshot.mockResolvedValue({ exchange: [], transfers: [],
+      retired: [{ id: retiredCanvasId, projectId: native.projectId, kind: 'canvas' }] });
+    mocks.getHistoryEntriesPage.mockImplementation(async (id: string) => ({
+      records: id === retiredCanvasId ? [{ relativePath: 'historical.png' }] : [], hasMore: false,
+    }));
+
+    const report = await scanStorageHealth([native.view], new Set());
+
+    expect(report.complete).toBe(true);
+    expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
+    expect(await deleteOrphanFile('/native/historical.png', async () => true)).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it.each(['canvas', 'history', 'receipt', 'task', 'copy'])('清理核对期间新增 %s 引用或任务时，删除前重新读取并保留新项目文件', async (source) => {
+    const native = nativeProject();
+    addFiles('/native', { 'unused.png': 10 });
+    addFiles(native.secondaryPath, {});
+    const report = await scanStorageHealth([native.view], new Set());
+    expect(report.orphans.map((file) => file.path)).toEqual(['/native/unused.png']);
+    const verify = vi.fn(async () => {
+      if (source === 'canvas') native.aggregate.canvases[0].nodes.push({ id: 'new-reference', type: 'source-image',
+        position: { x: 0, y: 0 }, data: { relativePath: 'unused.png' } });
+      if (source === 'history') mocks.getHistoryEntriesPage.mockResolvedValue({
+        records: [{ filePath: '/native/unused.png' }], hasMore: false,
+      });
+      if (source === 'copy') mocks.isNodeMediaCopySource.mockReturnValue(true);
+      if (source === 'receipt' || source === 'task') mocks.readNativeStorageSnapshot.mockResolvedValue({ exchange: [{
+        kind: 'native-media-task-v1', ownerProjectId: native.projectId,
+        status: source === 'task' ? 'outcome-unknown' : 'delivered',
+        ...(source === 'receipt' ? { resultRootRef: native.primary, resultRelativePath: 'unused.png' } : {}),
+      }], transfers: [], retired: [] });
+      return true;
+    });
+
+    expect(await deleteOrphanFile('/native/unused.png', verify)).toBe(false);
+    expect(verify).toHaveBeenCalledOnce();
+    expect(mocks.sizes.has('/native/unused.png')).toBe(true);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('新项目引用快照无法读取时失败关闭，不把未知引用当作废图', async () => {
+    const native = nativeProject();
+    addFiles('/native', { 'unknown.png': 10 });
+    mocks.readNativeStorageSnapshot.mockRejectedValue(new Error('snapshot unavailable'));
+    await expect(scanStorageHealth([native.view], new Set())).rejects.toThrow('存储引用读取不完整');
+    expect(await deleteOrphanFile('/native/unknown.png', async () => true)).toBe(false);
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 

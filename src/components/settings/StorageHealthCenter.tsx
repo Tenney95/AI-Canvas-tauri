@@ -2,9 +2,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
-import { getProjectDataDir, isTauriEnv, revealFileInFolder } from '../../services/fileService';
+import { isTauriEnv, revealFileInFolder } from '../../services/fileService';
 import {
-  scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, collectNodeFilePaths, StorageHealthScanError,
+  scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, collectNodeFilePaths, collectStorageLiveFilePaths, StorageHealthScanError,
   type StorageHealthReport, type TrashInfo, type OrphanFileInfo, type DuplicateFileGroup, type CleanupResult,
 } from '../../services/fs/storageHealth';
 import { estimateBrowserStorage, formatBytes, STORAGE_PRESSURE_RATIO, type StorageEstimate } from '../../services/storageQuota';
@@ -33,7 +33,7 @@ const PROJECT_COLORS = [
 const SCAN_REASON_LABELS: Record<StorageHealthScanError['reason'], string> = {
   permission: '访问被拒绝', missing: '文件或目录已不存在', symlink: '符号链接未纳入扫描',
   changed: '文件在扫描时发生变化', unavailable: '读取暂不可用',
-  'native-protected': '新项目已统计占用，完整引用核验前暂不提供清理操作。',
+  'native-protected': '此项目有待续操作或引用尚未核验，已保留其素材，其他项目仍可清理。',
 };
 
 function formatPercent(value: number) {
@@ -106,13 +106,18 @@ function StackedBar({ projects }: { projects: StorageHealthReport['projects'] })
 }
 
 async function collectLiveReferences(projectId = useAppStore.getState().currentProjectId): Promise<Set<string>> {
-  const root = projectId ? await getProjectDataDir(projectId) : undefined;
   const state = useAppStore.getState();
-  if (state.currentProjectId !== projectId || (projectId && !root)) {
+  if (state.currentProjectId !== projectId) {
     throw new Error('当前项目的实时文件引用无法确认，请重新扫描');
   }
-  return collectNodeFilePaths([{ data: { nodes: state.nodes, history: state.history, messages: state.messages, dramaAssets: state.dramaAssets,
-    globalCharacters: state.globalCharacters, globalScenes: state.globalScenes, globalProps: state.globalProps } }], root ?? undefined);
+  const paths = await collectStorageLiveFilePaths(projectId, { nodes: state.nodes, history: state.history, messages: state.messages, dramaAssets: state.dramaAssets,
+    globalCharacters: state.globalCharacters, globalScenes: state.globalScenes, globalProps: state.globalProps });
+  const current = useAppStore.getState();
+  if (current.currentProjectId !== projectId || current.nodes !== state.nodes || current.history !== state.history
+    || current.messages !== state.messages || current.dramaAssets !== state.dramaAssets
+    || current.globalCharacters !== state.globalCharacters || current.globalScenes !== state.globalScenes
+    || current.globalProps !== state.globalProps) throw new Error('当前项目的实时文件引用已变化，请重新扫描');
+  return paths;
 }
 
 export default function StorageHealthCenter() {
@@ -359,13 +364,13 @@ export default function StorageHealthCenter() {
           ? t('项目引用读取未完成（{reason}），暂不提供清理操作。请重新扫描。', { reason: t(SCAN_REASON_LABELS[scanError.reason]) })
           : t('扫描未完成（{reason}），暂不提供清理操作。请重新扫描。', { reason: t(SCAN_REASON_LABELS[scanError.reason]) })}
     </p>}
-    {report && !report.complete && <div role="status" className="ui-alert ui-alert--warning">
+    {report && report.issues.length > 0 && <div role="status" className={`ui-alert ${report.complete ? 'ui-alert--info' : 'ui-alert--warning'}`}>
       <div className="ui-alert__body">
-        <p>{t(report.issues.some((issue) => issue.reason === 'native-protected')
-          ? '新项目已统计占用，完整引用核验前暂不提供清理操作。'
+        <p>{t(report.complete
+          ? '部分项目的素材暂受保护，其他已核验的未引用文件仍可清理。'
           : '部分文件或目录未能检查，下方仅展示已读取的占用。完整扫描前暂不提供清理操作。')}</p>
         <details className="mt-1">
-          <summary className="cursor-pointer">{t('查看未完成项（{count}）', { count: report.issues.length })}</summary>
+          <summary className="cursor-pointer">{t('查看扫描提示（{count}）', { count: report.issues.length })}</summary>
           <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs">
             {report.issues.map((issue, index) => <li key={index} className="break-words">
               {issue.projectName} · {t(issue.area === 'trash' ? '回收站' : issue.area === 'duplicates' ? '重复文件核对' : '项目文件')}
@@ -410,6 +415,9 @@ export default function StorageHealthCenter() {
         projects: report.projects.length,
         files: report.projects.reduce((sum, project) => sum + project.fileCount, 0) + report.trashes.reduce((sum, trash) => sum + trash.fileCount, 0),
       })}</p>
+      {report.projects.some((project) => project.dataModel === 'native') && <p className="ui-hint">
+        {t('新项目可清理已核验的未引用原件；不可变媒体、导入副本、回收站和目录元数据继续保留。')}
+      </p>}
 
       <div className="space-y-3">
         <Tabs<Section> size="sm" value={activeSection} onChange={setActiveSection} aria-label={t('存储检查分类')} items={[
