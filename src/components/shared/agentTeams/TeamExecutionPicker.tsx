@@ -3,7 +3,7 @@ import { Icon } from '@iconify/react';
 import type { GeneralModelConfig, ModelGroup } from '../../../types';
 import type { AgentTeamProfile, AssistantExecutionSelection, TeamExecutionTarget, TeamGraphDefinition, TeamGraphNode, TeamRoleId, TeamTemplateId } from '../../../types/agentTeam';
 import type { ExternalAgentDescriptor } from '../../../types/externalAgent';
-import { TEAM_ROLE_LABELS, TEAM_TEMPLATE_LABELS } from '../../../services/chat/teams/teamProfileService';
+import { TEAM_ROLE_DESCRIPTIONS, TEAM_ROLE_LABELS, TEAM_ROLES, TEAM_TEMPLATE_LABELS } from '../../../services/chat/teams/teamProfileService';
 import { createTemplateTeamGraph, ROLE_KINDS, teamGraphAncestors, validateTeamGraph } from '../../../services/chat/teams/teamGraphService';
 import { useT } from '../../../i18n';
 import ModelSelector from '../../nodes/shared/ModelSelector';
@@ -29,7 +29,6 @@ export interface TeamExecutionPickerProps {
   defaultTemplateId?: TeamTemplateId;
 }
 
-const ROLES: readonly TeamRoleId[] = ['architect', 'writer', 'continuity', 'dialogue', 'editor'];
 const TEMPLATES: readonly TeamTemplateId[] = ['general', 'outline', 'script', 'review'];
 const GRAPH_KIND_LABELS: Record<TeamGraphNode['kind'], string> = {
   outline: '结构大纲', draft: '正文起草', review: '独立审阅', decision: '主编裁决', revision: '统一修订',
@@ -88,7 +87,7 @@ export function TeamGraphEditor({ value, onChange, disabled = false }: {
             <div className="ui-field">
               <label className="ui-label" htmlFor={`${id}-${node.id}-role`}>{t('负责人')}</label>
               <Select<TeamRoleId> id={`${id}-${node.id}-role`} size="sm" className="w-full" value={node.roleId} disabled={disabled}
-                options={ROLES.map((role) => ({ value: role, label: t(TEAM_ROLE_LABELS[role]) }))}
+                options={TEAM_ROLES.map((role) => ({ value: role, label: t(TEAM_ROLE_LABELS[role]) }))}
                 onChange={(roleId) => update(node.id, { roleId, modelId: undefined, kind: ROLE_KINDS[roleId].includes(node.kind) ? node.kind : ROLE_KINDS[roleId][0] })} />
             </div>
             <div className="ui-field">
@@ -148,7 +147,7 @@ function TeamExecutionPicker({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const saveInFlight = useRef(false);
-  const configuredCount = useMemo(() => ROLES.filter((role) => (profile.roleExecutors?.[role]?.modelId ?? profile.roles[role])?.trim()).length, [profile.roles, profile.roleExecutors]);
+  const configuredCount = useMemo(() => TEAM_ROLES.filter((role) => (profile.roleExecutors?.[role]?.modelId ?? profile.roles[role])?.trim()).length, [profile.roles, profile.roleExecutors]);
 
   const openConfiguration = () => {
     setDraft(structuredClone(profile));
@@ -233,7 +232,13 @@ function TeamExecutionPicker({
         </header>
         <div className="min-h-0 space-y-3 overflow-y-auto p-3 text-xs text-canvas-text">
           <div className="ui-field">
-            <label className="ui-label" htmlFor={templateInputId}>{t('团队模板')}</label>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="ui-label" htmlFor={templateInputId}>{t('团队模板')}</label>
+              <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={saving}
+                onClick={() => { setDraft((current) => ({ ...current, graph: createTemplateTeamGraph(templateId) })); setError(''); }}>
+                {t('恢复模板任务图')}
+              </button>
+            </div>
             <Select<TeamTemplateId> id={templateInputId} size="sm" className="w-full" value={templateId} disabled={saving}
               onChange={(next) => { setTemplateId(next); setDraft((current) => ({ ...current, graph: createTemplateTeamGraph(next) })); }} options={TEMPLATES.map((id) => ({ value: id, label: t(TEAM_TEMPLATE_LABELS[id]) }))} />
           </div>
@@ -241,9 +246,9 @@ function TeamExecutionPicker({
           {onRefreshExternalAgents && <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" disabled={saving || refreshing}
             onClick={() => void refreshExternalAgents()}><Icon icon="mdi:refresh" width="15" />{refreshing ? t('正在刷新执行器…') : t('刷新外部执行器')}</button>}
           <div className="space-y-2">
-            {ROLES.map((role) => {
+            {TEAM_ROLES.map((role) => {
               const executor = draft.roleExecutors?.[role];
-              const selected = executor?.kind === 'text-model' ? executor.modelId : draft.roles[role];
+              const selected = (executor?.kind === 'text-model' ? executor.modelId : draft.roles[role]) ?? '';
               const external = executor?.kind === 'external-agent' ? externalAgents.find((provider) => provider.id === executor.providerId) : undefined;
               const isGeneral = generalModels?.some((model) => model.id === selected && model.category === 'text');
               return (
@@ -254,7 +259,7 @@ function TeamExecutionPicker({
                       options={[{ value: 'text-model', label: t('文本模型') }, ...externalAgents.map((provider) => ({ value: provider.id, label: provider.name, disabled: !provider.available })),
                         ...(executor?.kind === 'external-agent' && !external ? [{ value: executor.providerId, label: t('Codex 执行器不可用'), disabled: true }] : [])]}
                       onChange={(selectedExecutor) => setDraft((current) => {
-                        const target: TeamExecutionTarget = selectedExecutor === 'text-model' ? { kind: 'text-model', modelId: current.roles[role] }
+                        const target: TeamExecutionTarget = selectedExecutor === 'text-model' ? { kind: 'text-model', modelId: current.roles[role] ?? '' }
                           : { kind: 'external-agent', providerId: 'codex-app-server', modelId: '' };
                         return { ...current, roleExecutors: { ...current.roleExecutors, [role]: target } };
                       })} />
@@ -270,6 +275,7 @@ function TeamExecutionPicker({
                         onSelect={(model) => setDraft((current) => ({ ...current, roles: { ...current.roles, [role]: model.value }, roleExecutors: { ...current.roleExecutors, [role]: { kind: 'text-model', modelId: model.value } } }))} />}
                     </div>
                   </div>
+                  <p className="ui-hint mt-1">{t(TEAM_ROLE_DESCRIPTIONS[role])}</p>
                 </div>
               );
             })}

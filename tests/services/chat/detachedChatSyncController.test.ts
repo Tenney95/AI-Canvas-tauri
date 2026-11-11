@@ -99,7 +99,7 @@ describe('detached chat sync controller', () => {
       const frame = syncFrame(emissions.at(-1))!;
       dispatch({ type: 'managed_request', requestId: 'delayed_old_window_request', scopeId: 'project-1', conversationId: 'conversation-1',
         windowFrame: frame, sequence: 1, operation: { kind: 'save_team_profile', profile: { version: 1, name: '旧窗配置',
-          roles: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' }, maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 } } });
+          roles: { architect: '', writer: '', continuity: '', dialogue: '', director: '', storyboard: '', editor: '' }, maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 } } });
       expect(digest).toHaveBeenCalledOnce();
       beginChatWindowSession();
       releaseDigest(new ArrayBuffer(32));

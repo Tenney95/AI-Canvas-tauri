@@ -12,6 +12,54 @@ describe('declarative team graph', () => {
     expect(getReadyTeamGraphNodes(run).map((node) => node.id)).toEqual(['continuity', 'dialogue']);
   });
 
+  it('keeps script and general within the call budget while all four specialists review the same draft', () => {
+    for (const [template, taskCount] of [['script', 7], ['general', 8]] as const) {
+      const graph = createTemplateTeamGraph(template);
+      expect(graph.nodes).toHaveLength(taskCount);
+      const reviews = graph.nodes.filter((node) => node.kind === 'review');
+      expect(reviews.map((node) => node.roleId).sort()).toEqual(['continuity', 'dialogue', 'director', 'storyboard']);
+      expect(reviews.every((node) => node.sourceTaskId === 'draft' && node.dependsOn.length === 1 && node.dependsOn[0] === 'draft')).toBe(true);
+      const decision = graph.nodes.find((node) => node.kind === 'decision')!;
+      expect([...decision.dependsOn].sort()).toEqual(reviews.map((node) => node.id).sort());
+      expect(decision.sourceTaskId).toBe('draft');
+      expect(graph.nodes.find((node) => node.id === graph.finalTaskId)).toMatchObject({
+        roleId: 'writer', kind: 'revision', sourceTaskId: 'draft', dependsOn: [decision.id],
+      });
+      const run = { version: 2, graph, stages: graph.nodes.map((node) => ({ id: node.id,
+        status: node.kind === 'outline' || node.kind === 'draft' ? 'completed' : 'pending',
+        artifactId: node.kind === 'outline' || node.kind === 'draft' ? `${node.id}-artifact` : undefined,
+      })) } as AgentTeamRun;
+      expect(getReadyTeamGraphNodes(run).map((node) => node.id).sort()).toEqual(reviews.map((node) => node.id).sort());
+    }
+  });
+
+  it('uses four independent specialists for joint review while keeping outline review lightweight', () => {
+    const graph = createTemplateTeamGraph('review');
+    expect(graph.nodes).toHaveLength(5);
+    const reviews = graph.nodes.filter((node) => node.kind === 'review');
+    expect(reviews.map((node) => node.roleId).sort()).toEqual(['continuity', 'dialogue', 'director', 'storyboard']);
+    expect(reviews.every((node) => !node.sourceTaskId && node.dependsOn.length === 0)).toBe(true);
+    expect(graph.nodes.find((node) => node.id === graph.finalTaskId)).toMatchObject({
+      roleId: 'editor', kind: 'decision', dependsOn: reviews.map((node) => node.id),
+    });
+    expect(createTemplateTeamGraph('outline').nodes.filter((node) => node.kind === 'review').map((node) => node.roleId))
+      .toEqual(['continuity', 'dialogue']);
+  });
+
+  it('does not let director or storyboard bypass the manuscript and final-delivery contracts', () => {
+    for (const roleId of ['director', 'storyboard'] as const) {
+      expect(() => validateTeamGraph({ version: 1, finalTaskId: 'specialist', nodes: [
+        { id: 'specialist', roleId, title: '专科意见', kind: 'review', dependsOn: [] },
+      ] })).toThrow('审阅不能直接作为最终稿');
+      const wrongSource = createTemplateTeamGraph('general');
+      wrongSource.nodes.find((node) => node.roleId === roleId)!.sourceTaskId = 'structure';
+      expect(() => validateTeamGraph(wrongSource)).toThrow('同一正文');
+      const wrongKind = createTemplateTeamGraph('script');
+      wrongKind.nodes.find((node) => node.roleId === roleId)!.kind = 'draft';
+      expect(() => validateTeamGraph(wrongKind)).toThrow('角色');
+    }
+  });
+
   it('rejects cycles, mismatched review sources and disconnected paid work', () => {
     const cycle = createTemplateTeamGraph('outline');
     cycle.nodes[0].dependsOn = ['revision'];

@@ -3,13 +3,14 @@ import { webcrypto } from 'node:crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  beginProjectModelFixtureBusinessSession, createProjectModelBusinessRepository,
+  beginProjectModelFixtureBusinessSession, createProjectModelBusinessRepository, validateProjectModelTransferAggregate,
 } from '../../src/services/indexedDb/projectModelBusinessRepository';
 import { createProjectModelStagingRepository, openProjectModelFixtureDatabase } from '../../src/services/indexedDb/projectModelStagingRepository';
 import { readLegacyMigrationSnapshot } from '../../src/services/indexedDb/projectModelMigrationRepository';
 import { createProjectModelBackup } from '../../src/services/projectModelBackup';
 import { fingerprintProjectModelSource } from '../../src/services/projectModelSourceFingerprint';
 import { PROJECT_MODEL_BUSINESS_FIXTURE_KEY } from '../../src/types/projectModelBusiness';
+import type { ProjectModelTransferAggregate } from '../../src/types/projectModelTransfer';
 
 const legacy = (id: string, fields: Record<string, unknown> = {}) => ({ id, name: id, createdAt: 1, updatedAt: 2,
   nodes: [], edges: [], dataFolder: 'folder-' + id, ...fields });
@@ -58,6 +59,38 @@ beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('P3 隔离新模型业务仓储', () => {
+  it('接纳旧五角色团队DTO且保留原值，不接受其他有损规范化', () => {
+    const oldTeam = { version: 1 as const, name: '旧团队', roles: { architect: 'a', writer: 'b', continuity: 'c', dialogue: 'd', editor: 'e' },
+      maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 };
+    const input: ProjectModelTransferAggregate = {
+      project: { id: 'P', name: '独立项目', kind: 'standalone', createdAt: 1, updatedAt: 1, epoch: 0,
+        dataFolder: 'folder-P', storageRootRef: 'root-P', storageBindings: [
+          { rootRef: 'root-P', folderName: 'folder-P', sourceRecordIds: [], source: 'project-managed' },
+        ] },
+      content: { projectId: 'P', revisions: { source: 0, script: 0, storyGraph: 0, assets: 0 },
+        standaloneCreative: { revision: 0, storageRootRef: 'root-P', teamProfileOverride: oldTeam as never } },
+      episodes: [], episodeContents: [], previews: [], bindings: [],
+      canvases: [{ id: 'canvas-P', projectId: 'P', episodeId: null, storageRootRef: 'root-P',
+        nodes: [], edges: [], groups: [], epoch: 0, revision: 0, revisionScope: 'project' }],
+    };
+    expect(validateProjectModelTransferAggregate(input).content.standaloneCreative?.teamProfileOverride).toEqual(oldTeam);
+    expect(input.content.standaloneCreative?.teamProfileOverride?.roles).not.toHaveProperty('director');
+    const missingWriter: Record<string, unknown> = { ...oldTeam.roles };
+    delete missingWriter.writer;
+    for (const invalid of [
+      { ...oldTeam, maxCalls: 100 },
+      { ...oldTeam, roles: { ...oldTeam.roles, writer: ' b ' } },
+      { ...oldTeam, roles: { ...oldTeam.roles, director: null } },
+      { ...oldTeam, roles: { ...oldTeam.roles, storyboard: 42 } },
+      { ...oldTeam, roles: { ...oldTeam.roles, unknown: '' } },
+      { ...oldTeam, roles: missingWriter },
+    ]) {
+      const damaged = structuredClone(input);
+      damaged.content.standaloneCreative!.teamProfileOverride = invalid as never;
+      expect(() => validateProjectModelTransferAggregate(damaged)).toThrow('invalid-team-profile');
+    }
+  });
+
   it('分集正文属于其他暂存操作时拒绝读取、保存和删除，保留原项目和证据', async () => {
     const sample = await setup([legacy('S', { series: { script: '共享' } }), legacy('E', { parentId: 'S', episodeNo: 1, episodeScript: '原稿' })]);
     try {

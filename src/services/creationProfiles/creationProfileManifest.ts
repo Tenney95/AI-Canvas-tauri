@@ -52,6 +52,8 @@ export function parseCreationProfile(raw: unknown): CreationProfile {
     text(raw.teamProfile.name, 60);
     keys(raw.teamProfile.roles, TEAM_ROLES);
     for (const role of TEAM_ROLES) {
+      // 旧五角色组合包只缺这两个新增成员；显式非法值和原有角色缺失仍拒绝。
+      if ((role === 'director' || role === 'storyboard') && !Object.hasOwn(raw.teamProfile.roles, role)) continue;
       const model = raw.teamProfile.roles[role];
       if (model !== '') text(model, 200, true);
     }

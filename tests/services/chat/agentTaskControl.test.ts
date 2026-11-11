@@ -103,7 +103,7 @@ describe('工作台绑定分集的任务控制范围', () => {
       profile: createDefaultTeamProfile('general/test'),
       inputArtifact: { id: 'input', kind: 'input', label: '材料', relativePath: 'input.json',
         sha256: 'a'.repeat(64), bytes: 1, createdAt: 1, parentArtifactIds: [] },
-      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' },
+      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', director: '', storyboard: '', editor: '' },
       artifacts: [], stages: [], callsUsed: 0, budgetTokensUsed: 0, usageKnown: false,
       usageReportedCalls: 0, unknownUsageCalls: 0, createdAt: 1,
     };

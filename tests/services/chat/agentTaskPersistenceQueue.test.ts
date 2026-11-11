@@ -112,7 +112,7 @@ describe('Agent 任务保存的顺序与删除边界', () => {
     value.status = 'running'; value.executionKind = 'team'; value.modelRounds = 2;
     value.teamRun = { id: value.id, version: 1, revision: 1, templateId: 'general', source: 'assistant',
       profile: createDefaultTeamProfile('model'), inputArtifact: reference,
-      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' },
+      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', director: '', storyboard: '', editor: '' },
       stages: [
         { id: 'structure', title: '结构', roleId: 'architect', modelId: 'model', status: 'completed', attempts: 1,
           artifactId: 'completed-outline', usageKnown: true },

@@ -1,6 +1,6 @@
 /** 多模型团队的可持久化合同。正文只存在于不可变项目产物文件中。 */
 export type TeamTemplateId = 'outline' | 'script' | 'review' | 'general';
-export type TeamRoleId = 'architect' | 'writer' | 'continuity' | 'dialogue' | 'editor';
+export type TeamRoleId = 'architect' | 'writer' | 'continuity' | 'dialogue' | 'director' | 'storyboard' | 'editor';
 
 export type TeamExecutionTarget =
   | { kind: 'text-model'; modelId: string }

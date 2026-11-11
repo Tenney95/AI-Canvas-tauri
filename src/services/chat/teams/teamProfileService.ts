@@ -2,7 +2,17 @@ import type { AgentTeamProfile, AssistantExecutionSelection, TeamExecutionTarget
 import { validateTeamGraph } from './teamGraphService';
 
 export const TEAM_ROLE_LABELS: Record<TeamRoleId, string> = {
-  architect: '结构师', writer: '主笔', continuity: '连续性审阅', dialogue: '对白与制作审阅', editor: '主编',
+  architect: '结构师', writer: '主笔', continuity: '连续性审阅', dialogue: '对白与制作审阅',
+  director: '导演', storyboard: '分镜师', editor: '主编',
+};
+export const TEAM_ROLE_DESCRIPTIONS: Record<TeamRoleId, string> = {
+  architect: '提炼原文事实、人物目标与因果，规划本集结构和节奏。',
+  writer: '依据原文与大纲写完整剧本，统一人物语言和场景表达。',
+  continuity: '核对原文依据、人物关系、时间线与设定连续性。',
+  dialogue: '检查潜台词、角色语言、自然语速与台词可演性。',
+  director: '审视视觉叙事、表演调度、情绪节奏与制作可行性。',
+  storyboard: '提出镜头拆解、景别运镜与跨镜衔接建议，保留剧情和台词。',
+  editor: '逐条裁决审阅意见，守住已确认设定并交由主笔统一修订。',
 };
 export const TEAM_TEMPLATE_LABELS: Record<TeamTemplateId, string> = {
   outline: '优化本集大纲', script: '根据集纲写正文', review: '联合审稿', general: '通用协作',
@@ -12,7 +22,8 @@ export const TEAM_TEMPLATES = Object.keys(TEAM_TEMPLATE_LABELS) as TeamTemplateI
 
 export function createDefaultTeamProfile(modelId = ''): AgentTeamProfile {
   return { version: 1, name: '多模型创作团队', roles: {
-    architect: modelId, writer: modelId, continuity: modelId, dialogue: modelId, editor: modelId,
+    architect: modelId, writer: modelId, continuity: modelId, dialogue: modelId,
+    director: modelId, storyboard: modelId, editor: modelId,
   }, maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 };
 }
 

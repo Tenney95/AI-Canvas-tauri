@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getTeamAmendmentStageIds, getTeamSourceArtifact, validateTeamDecision, validateTeamReview } from '../../../src/services/chat/teams/teamValidation';
-import { normalizeExecutionSelection, normalizeTeamProfile } from '../../../src/services/chat/teams/teamProfileService';
+import { createDefaultTeamProfile, normalizeExecutionSelection, normalizeTeamProfile } from '../../../src/services/chat/teams/teamProfileService';
+import { createTemplateTeamGraph } from '../../../src/services/chat/teams/teamGraphService';
 import type { TeamArtifactReference, TeamDecisionReport, TeamReviewReport, TeamRoleId, TeamStageRun } from '../../../src/types/agentTeam';
 
 const expected = { artifactId: 'draft-1', artifactHash: 'a'.repeat(64), source: '场景一：林舟推开门。\n他把钥匙递给妹妹。',
@@ -67,6 +68,22 @@ describe('团队配置的受限合同', () => {
     expect(profile).not.toHaveProperty('apiKey');
     expect(profile).not.toHaveProperty('baseUrl');
     expect(profile.roles).not.toHaveProperty('unknown');
+  });
+
+  it('新增角色使用明确默认模型，旧配置只补空值并保留已有模型和自定义任务图', () => {
+    const defaults = createDefaultTeamProfile('general/default');
+    expect(defaults.roles).toMatchObject({ director: 'general/default', storyboard: 'general/default' });
+    const graph = createTemplateTeamGraph('outline');
+    graph.nodes[0].title = '保留用户自定义结构任务';
+    const roles = { architect: 'general/architect', writer: 'general/writer', continuity: 'general/continuity',
+      dialogue: 'general/dialogue', editor: 'general/editor' };
+    const profile = normalizeTeamProfile({ version: 1, name: '已有团队', roles, graph,
+      roleExecutors: { writer: { kind: 'text-model', modelId: 'general/writer-override' } },
+      maxCalls: 6, maxTotalTokens: 180000, maxOutputChars: 12000 });
+    expect(profile.roles).toEqual({ ...roles, director: '', storyboard: '' });
+    expect(profile.graph).toEqual(graph);
+    expect(profile.roleExecutors).toEqual({ writer: { kind: 'text-model', modelId: 'general/writer-override' } });
+    expect(profile).toMatchObject({ name: '已有团队', maxCalls: 6, maxTotalTokens: 180000, maxOutputChars: 12000 });
   });
 });
 

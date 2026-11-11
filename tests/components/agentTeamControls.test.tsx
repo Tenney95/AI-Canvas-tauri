@@ -28,7 +28,7 @@ function task(application?: TeamApplicationReceipt): AgentTask {
       version: 1, revision: 1, id: 'team-run', templateId: 'script', source: 'script-workbench',
       profile: createDefaultTeamProfile('general/model-a'),
       inputArtifact: { ...artifact, id: 'input', kind: 'input', label: '任务材料' },
-      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' },
+      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', director: '', storyboard: '', editor: '' },
       artifacts: [artifact], stages: [], callsUsed: 6, budgetTokensUsed: 100,
       usageKnown: false, usageReportedCalls: 0, unknownUsageCalls: 6, resultArtifactId: artifact.id, application, createdAt: 1,
       target: { kind: 'episode', seriesId: 'series-a', episodeId: 'episode-a', field: 'script', expectedHash: 'before', label: '第1集 · 剧本' },

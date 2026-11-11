@@ -15,6 +15,33 @@ describe('creation profile import contract', () => {
     expect((await creationProfileSelection({ ...profile, name: '新版团队' })).sha256).not.toBe(selected.sha256);
   });
 
+  it('imports an existing five-role team without selecting models for new specialists', () => {
+    const teamProfile = { ...createDefaultTeamProfile('general/text'), roles: {
+      architect: 'general/architect', writer: 'general/writer', continuity: 'general/continuity',
+      dialogue: 'general/dialogue', editor: 'general/editor',
+    } };
+    const profile = parseCreationProfile({ ...fixture(), teamTemplateId: 'script', teamProfile });
+    expect(profile.teamProfile?.roles).toEqual({ ...teamProfile.roles, director: '', storyboard: '' });
+    expect(teamProfile.roles).not.toHaveProperty('director');
+    expect(teamProfile.roles).not.toHaveProperty('storyboard');
+  });
+
+  it('allows only missing new roles, rejecting invalid explicit values and missing original roles', () => {
+    const teamProfile = createDefaultTeamProfile('general/text');
+    for (const role of ['director', 'storyboard'] as const) {
+      for (const invalid of [undefined, null, 42, ' ', 'https://example.invalid/model']) {
+        expect(() => parseCreationProfile({ ...fixture(), teamTemplateId: 'script',
+          teamProfile: { ...teamProfile, roles: { ...teamProfile.roles, [role]: invalid } } })).toThrow();
+      }
+    }
+    for (const role of ['architect', 'writer', 'continuity', 'dialogue', 'editor'] as const) {
+      const roles: Record<string, unknown> = { ...teamProfile.roles };
+      delete roles[role];
+      expect(() => parseCreationProfile({ ...fixture(), teamTemplateId: 'script',
+        teamProfile: { ...teamProfile, roles } })).toThrow();
+    }
+  });
+
   it('rejects keys, connection addresses, executable hooks and absolute paths at import', () => {
     for (const extra of [{ apiKey: 'fixture' }, { source: 'run()' }, { hooks: [] }, { policy: 'autonomous' }, { cwd: 'root' }]) {
       expect(() => parseCreationProfile({ ...fixture(), ...extra })).toThrow();

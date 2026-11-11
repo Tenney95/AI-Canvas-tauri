@@ -17,7 +17,7 @@ function task(): AgentTask {
     teamRun: { version: 2, revision: 1, boardRevision: 0, graph, id: 'graph-cas', templateId: 'outline', source: 'assistant',
       profile: createDefaultTeamProfile('model'), inputArtifact: { id: 'input', kind: 'input', label: '输入',
         relativePath: 'agent-teams/input.json', sha256: 'a'.repeat(64), bytes: 1, createdAt: 1, parentArtifactIds: [] },
-      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' },
+      modelFingerprints: { architect: '', writer: '', continuity: '', dialogue: '', director: '', storyboard: '', editor: '' },
       stages: graph.nodes.map((node) => ({ id: node.id, title: node.title, roleId: node.roleId, modelId: 'model',
         taskRevision: 0, attempts: 0, usageKnown: false, status: 'pending' })), artifacts: [],
       callsUsed: 0, budgetTokensUsed: 0, usageKnown: false, usageReportedCalls: 0, unknownUsageCalls: 0, createdAt: 1 },

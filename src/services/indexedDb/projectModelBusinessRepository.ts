@@ -23,7 +23,7 @@ import { normalizeStoryGraph } from '../storyGraphService';
 import { normalizeEpisodeAssetRoster } from '../../types/episodeAssets';
 import { normalizeDramaAssetLibrary } from '../../types/dramaAssets';
 import { normalizeCreationProfileSelection } from '../creationProfiles/creationProfileManifest';
-import { normalizeTeamProfile } from '../chat/teams/teamProfileService';
+import { normalizeTeamProfile, TEAM_ROLES } from '../chat/teams/teamProfileService';
 import { validateTeamGraph } from '../chat/teams/teamGraphService';
 
 const META = 'metadata', JOURNALS = 'projectModelMigrations';
@@ -144,7 +144,9 @@ function creativeFields(value: Record<string, unknown>): void {
   if (value.teamProfileOverride !== undefined) {
     const profile = shape(value.teamProfileOverride, ['version', 'name', 'roles', 'roleExecutors', 'graph', 'maxCalls', 'maxTotalTokens', 'maxOutputChars'], 'invalid-team-profile');
     if (profile.graph !== undefined) validateTeamGraph(profile.graph);
-    sameNormalized(profile, normalizeTeamProfile(profile), 'invalid-team-profile');
+    const roles = shape(profile.roles, TEAM_ROLES, 'invalid-team-profile');
+    // 仅允许旧资料缺少新增角色；不改写原资料，也不放过其他有损清洗。
+    sameNormalized({ ...profile, roles: { director: '', storyboard: '', ...roles } }, normalizeTeamProfile(profile), 'invalid-team-profile');
   }
 }
 function canvasShape(document: Pick<CanvasDocument, 'nodes' | 'edges' | 'groups'>): void {

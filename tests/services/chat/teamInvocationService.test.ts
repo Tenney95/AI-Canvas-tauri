@@ -52,7 +52,7 @@ function prepared(taskId: string): AgentTeamRun {
     version: 1, revision: 1, id: taskId, templateId: 'general', source: 'assistant', profile,
     inputArtifact: { id: 'input-test', kind: 'input', label: '材料', relativePath: 'agent-teams/input.json',
       sha256: 'a'.repeat(64), bytes: 20, createdAt: 1, parentArtifactIds: [] },
-    modelFingerprints: { architect: 'a', writer: 'a', continuity: 'a', dialogue: 'a', editor: 'a' },
+    modelFingerprints: { architect: 'a', writer: 'a', continuity: 'a', dialogue: 'a', director: 'a', storyboard: 'a', editor: 'a' },
     stages: [], artifacts: [], callsUsed: 0, budgetTokensUsed: 0, usageKnown: false,
     usageReportedCalls: 0, unknownUsageCalls: 0, createdAt: 1,
   };
@@ -61,7 +61,7 @@ function prepared(taskId: string): AgentTeamRun {
 beforeEach(() => {
   vi.clearAllMocks();
   runtime.scheduled.length = 0;
-  runtime.capture.mockReset().mockResolvedValue({ architect: 'a', writer: 'a', continuity: 'a', dialogue: 'a', editor: 'a' });
+  runtime.capture.mockReset().mockResolvedValue({ architect: 'a', writer: 'a', continuity: 'a', dialogue: 'a', director: 'a', storyboard: 'a', editor: 'a' });
   runtime.prepare.mockReset().mockImplementation(async (input: { taskId: string; context?: TeamInvocationContext }) => ({
     ...prepared(input.taskId), source: input.context?.source ?? 'assistant', target: input.context?.target }));
   runtime.execute.mockResolvedValue('completed');

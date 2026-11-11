@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentTeamRun, TeamArtifactReference, TeamGraphDefinition } from '../../../src/types/agentTeam';
+import type { AgentTeamProfile, AgentTeamRun, TeamArtifactReference, TeamGraphDefinition } from '../../../src/types/agentTeam';
 import type { TeamModelResult } from '../../../src/services/chat/teams/teamModelExecutor';
 
-const model = vi.hoisted(() => ({ execute: vi.fn(), saveArtifact: vi.fn(), readArtifact: vi.fn() }));
+const model = vi.hoisted(() => ({ execute: vi.fn(), fingerprint: vi.fn(), saveArtifact: vi.fn(), readArtifact: vi.fn() }));
 vi.mock('../../../src/services/chat/teams/teamModelExecutor', async (original) => ({
   ...await original<typeof import('../../../src/services/chat/teams/teamModelExecutor')>(), executeTeamModel: model.execute,
-  fingerprintTeamModel: vi.fn(async () => 'a'.repeat(64)) }));
+  fingerprintTeamModel: model.fingerprint }));
 vi.mock('../../../src/services/chat/agentTaskService', async (original) => ({
   ...await original<typeof import('../../../src/services/chat/agentTaskService')>(), saveAgentTask: vi.fn(async () => {}) }));
 vi.mock('../../../src/services/indexedDbService', async (original) => ({
@@ -19,7 +19,7 @@ vi.mock('../../../src/services/chat/contextManager', async (original) => ({
 import { useAppStore } from '../../../src/store/useAppStore';
 import { captureAgentProjectScope } from '../../../src/services/chat/agentProjectContext';
 import { createDefaultTeamProfile } from '../../../src/services/chat/teams/teamProfileService';
-import { executeTeamRun } from '../../../src/services/chat/teams/teamRuntime';
+import { captureTeamModelFingerprints, executeTeamRun } from '../../../src/services/chat/teams/teamRuntime';
 import { unmaterializedTeamDispatches } from '../../../src/services/chat/agentDurabilityService';
 import { TeamModelReturnedError } from '../../../src/services/chat/teams/teamModelExecutor';
 
@@ -42,7 +42,7 @@ function arrangeTeam(): string {
   const teamRun: AgentTeamRun = { version: 2, revision: 1, boardRevision: 0, id: task.id, graph, templateId: 'outline',
     source: 'script-workbench', target: { kind: 'episode', seriesId: 'series', episodeId: 'episode-b', field: 'outline',
       expectedHash: 'a'.repeat(64), label: '本集' }, profile, inputArtifact: artifact('input'),
-    modelFingerprints: { architect: 'a'.repeat(64), writer: '', continuity: '', dialogue: '', editor: '' },
+    modelFingerprints: { architect: 'a'.repeat(64), writer: '', continuity: '', dialogue: '', director: '', storyboard: '', editor: '' },
     stages: [{ id: 'structure', roleId: 'architect', title: '结构', modelId: 'model', modelFingerprint: 'a'.repeat(64),
       executionTarget: { kind: 'text-model', modelId: 'model' }, taskRevision: 0, status: 'pending', attempts: 0, usageKnown: false }],
     artifacts: [], callsUsed: 0, budgetTokensUsed: 0, usageKnown: false, usageReportedCalls: 0, unknownUsageCalls: 0, createdAt: 1 };
@@ -53,6 +53,7 @@ function arrangeTeam(): string {
 
 beforeEach(() => {
   model.execute.mockReset();
+  model.fingerprint.mockReset().mockResolvedValue('a'.repeat(64));
   model.readArtifact.mockReset().mockResolvedValue(JSON.stringify({ version: 1, prompt: '整理本集', materials: '' }));
   model.saveArtifact.mockReset().mockImplementation(async (input: { kind: string; stageId: string; assertCurrent?: () => void }) => {
     input.assertCurrent?.(); return artifact(`${input.kind}-result`, input.stageId);
@@ -60,6 +61,19 @@ beforeEach(() => {
 });
 
 describe('团队项目租约与真实调用回执', () => {
+  it('旧任务仅复核冻结成员，不按新模板要求导演与分镜模型', async () => {
+    const roles = { architect: 'model', writer: 'model', continuity: 'model', dialogue: 'model', editor: 'model' };
+    const profile = { ...createDefaultTeamProfile(), roles } as unknown as AgentTeamProfile;
+    const frozen = (['writer', 'continuity', 'dialogue', 'editor', 'writer'] as const).map((roleId) => ({ roleId }));
+    const fingerprints = await captureTeamModelFingerprints('project', profile, 'script', frozen);
+    expect(model.fingerprint).toHaveBeenCalledTimes(4);
+    expect(fingerprints).toEqual({ architect: '', writer: 'a'.repeat(64), continuity: 'a'.repeat(64),
+      dialogue: 'a'.repeat(64), director: '', storyboard: '', editor: 'a'.repeat(64) });
+    expect(profile.roles).not.toHaveProperty('director');
+    expect(profile.roles).not.toHaveProperty('storyboard');
+    await expect(captureTeamModelFingerprints('project', profile, 'script')).rejects.toThrow('选择文本模型');
+  });
+
   it('旧任务没有 scope 时整段执行只捕获一次，等待读取后不从新 epoch 取得付费权限', async () => {
     const taskId = arrangeTeam();
     useAppStore.getState().updateAgentTask(taskId, { projectScope: undefined });

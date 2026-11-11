@@ -5,7 +5,7 @@ import type {
 
 export const ROLE_KINDS: Record<TeamRoleId, readonly TeamGraphNode['kind'][]> = {
   architect: ['outline', 'revision'], writer: ['draft', 'revision'],
-  continuity: ['review'], dialogue: ['review'], editor: ['decision'],
+  continuity: ['review'], dialogue: ['review'], director: ['review'], storyboard: ['review'], editor: ['decision'],
 };
 const ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -90,9 +90,14 @@ export function createTemplateTeamGraph(template: TeamTemplateId): TeamGraphDefi
     dependsOn: template === 'general' ? ['structure'] : [], ...(template === 'general' ? { sourceTaskId: 'structure' } : {}) });
   const sourceTaskId = template === 'outline' ? 'structure' : template === 'review' ? undefined : 'draft';
   const source = sourceTaskId ? { sourceTaskId } : {};
-  for (const roleId of ['continuity', 'dialogue'] as const) nodes.push({ id: roleId, roleId, title: roleId === 'continuity' ? '独立检查因果与连续性' : '独立检查表达与可拍性',
+  const reviewTitles = {
+    continuity: '独立检查因果与连续性', dialogue: '独立检查表达与可拍性',
+    director: '独立检查视听叙事与表演调度', storyboard: '独立检查镜头拆解与衔接',
+  };
+  const reviewRoles: Array<keyof typeof reviewTitles> = template === 'outline' ? ['continuity', 'dialogue'] : ['continuity', 'dialogue', 'director', 'storyboard'];
+  for (const roleId of reviewRoles) nodes.push({ id: roleId, roleId, title: reviewTitles[roleId],
     kind: 'review', dependsOn: sourceTaskId ? [sourceTaskId] : [], ...source });
-  nodes.push({ id: 'decision', roleId: 'editor', title: '主编逐条裁决', kind: 'decision', dependsOn: ['continuity', 'dialogue'], ...source });
+  nodes.push({ id: 'decision', roleId: 'editor', title: '主编逐条裁决', kind: 'decision', dependsOn: reviewRoles, ...source });
   if (template !== 'review') nodes.push({ id: 'revision', roleId: template === 'outline' ? 'architect' : 'writer', title: '主笔统一修订', kind: 'revision', dependsOn: ['decision'], ...source });
   return validateTeamGraph({ version: 1, nodes, finalTaskId: template === 'review' ? 'decision' : 'revision' });
 }

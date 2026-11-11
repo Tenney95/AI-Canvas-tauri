@@ -97,7 +97,7 @@ describe('initMainWindowListener', () => {
     let completed = false;
     const sessionId = 'new-managed-window';
     const pending = requestManagedChatOperation('project-1', 'conversation-1', { kind: 'save_team_profile',
-      profile: { version: 1, name: 'team', roles: { architect: '', writer: '', continuity: '', dialogue: '', editor: '' }, maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 } }, undefined, { sessionId } as ProjectWindowFrame)
+      profile: { version: 1, name: 'team', roles: { architect: '', writer: '', continuity: '', dialogue: '', director: '', storyboard: '', editor: '' }, maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 } }, undefined, { sessionId } as ProjectWindowFrame)
       .then(() => { completed = true; });
     await vi.waitFor(() => expect(emitTo).toHaveBeenCalled());
     const args = vi.mocked(emitTo).mock.lastCall!;

@@ -708,7 +708,7 @@ describe('project switching', () => {
     stubInitializationActions();
     const selection = { id: 'creation-preserved', version: '1.0.0', sha256: 'a'.repeat(64) };
     const team = { version: 1 as const, name: '已保存团队',
-      roles: { architect: 'a', writer: 'b', continuity: 'c', dialogue: 'd', editor: 'e' },
+      roles: { architect: 'a', writer: 'b', continuity: 'c', dialogue: 'd', director: 'f', storyboard: 'g', editor: 'e' },
       maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 };
     const target = { id: 'metadata-preserved', name: '目标', createdAt: 2, updatedAt: 2 };
     fileMocks.loadProjectData.mockResolvedValue({ ...target, nodes: [], edges: [], groups: [],
@@ -2117,7 +2117,7 @@ describe('episode creative conditional writes', () => {
 
   it('clears the old team override when a new creation profile is selected', async () => {
     openEpisode();
-    const override = { version: 1 as const, name: '旧覆盖', roles: { architect: 'a', writer: 'b', continuity: 'c', dialogue: 'd', editor: 'e' },
+    const override = { version: 1 as const, name: '旧覆盖', roles: { architect: 'a', writer: 'b', continuity: 'c', dialogue: 'd', director: 'f', storyboard: 'g', editor: 'e' },
       maxCalls: 8, maxTotalTokens: 240000, maxOutputChars: 16000 };
     useAppStore.setState({ projects: useAppStore.getState().projects.map((project) => project.id === 'team-episode'
       ? { ...project, teamProfileOverride: override } : project) });
