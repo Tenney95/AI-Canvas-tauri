@@ -186,16 +186,34 @@ describe('React Flow 集中连线构建适配', () => {
     expect(() => transformCanvasEdgeLayer(CANVAS_EDGE_LAYER_ADAPTER_MARKER + entry.source, entry.id, version)).toThrow('共享几何能力');
   });
 
-  it('插件在 dev/build 共用同一 transform，仅处理实际安装包的两个入口', () => {
+  it('插件在 dev/build 原生过滤实际安装包的两个入口，保留 handler 内的入口和结构守卫', () => {
     const plugin = canvasEdgeLayerPlugin();
     expect(plugin.enforce).toBe('pre');
     expect(plugin.apply).toBeUndefined();
     const transform = plugin.transform;
-    if (typeof transform !== 'function') throw new Error('缺少 Vite 连线转换钩子');
-    const invoke = transform as (source: string, id: string) => { code: string } | null;
+    if (!transform || typeof transform === 'function') throw new Error('缺少 Vite 连线过滤钩子');
+    const filter = transform.filter?.id;
+    if (!(filter instanceof RegExp)) throw new Error('缺少原生入口过滤器');
+    const invoke = transform.handler as (source: string, id: string) => { code: string } | null;
     for (const entry of entries) {
-      expect(invoke(entry.source, entry.id)?.code).toContain(CANVAS_EDGE_LAYER_ADAPTER_MARKER);
+      const normalized = entry.id.replaceAll('\\', '/');
+      for (const id of [entry.id, normalized + '?v=canvas', normalized + '#entry',
+        normalized.replaceAll('/', '\\'), '/@fs/' + normalized, '/@fs/' + normalized + '?v=canvas#entry']) {
+        expect(filter.test(id)).toBe(true);
+        expect(invoke(entry.source, id)?.code).toContain(CANVAS_EDGE_LAYER_ADAPTER_MARKER);
+      }
     }
-    expect(invoke(entries[0].source, entries[0].id.replace('node_modules', 'other/node_modules'))).toBeNull();
+    const unrelated = [
+      'src/components/Canvas.tsx', entries[0].id + '.map',
+      entries[0].id.replace('node_modules', 'other/node_modules'),
+      entries[0].id.replace('@xyflow', '@xyflow-copy'),
+      entries[0].id.replace('dist/esm', 'dist/umd'),
+      entries[0].id.replace('index.js', 'components/index.js'),
+    ];
+    for (const id of unrelated) {
+      expect(filter.test(id)).toBe(false);
+      expect(invoke(entries[0].source, id)).toBeNull();
+    }
+    expect(() => invoke('unexpected dependency source', entries[0].id)).toThrow('原生几何函数导入结构');
   });
 });

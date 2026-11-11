@@ -8,7 +8,7 @@ import { useT } from '../../../i18n';
 import TeamResultReview from './TeamResultReview';
 import ModalOverlay from '../ModalOverlay';
 
-const TeamGraphEditor = lazy(() => import('./TeamExecutionPicker').then((module) => ({ default: module.TeamGraphEditor })));
+const TeamGraphEditor = lazy(() => import('./TeamGraphEditor'));
 
 export interface TeamRunCardProps {
   task: AgentTask;

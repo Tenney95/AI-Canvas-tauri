@@ -47,3 +47,40 @@ Windows 标准包的 Rust release 编译约23分23秒，重复前端构建约56�
 5. 记录第一次冷缓存与下一次热缓存发布的各阶段时间、缓存命中与产物来源；确认标准版／Legacy 缓存隔离，旧 CPU 包、自动更新签名和三平台安装升级仍按原桌面步骤验收。
 
 回退时整体回退编排、脚本及文档，恢复旧版完整门禁和串行 Legacy，不改写已有标签、不删除已发布附件或清理用户项目。
+
+## CI 日志与按需边界（2026-11-11）
+
+状态：源码与回归用例已编写，仅完成调用链、差异和 UTF-8 静态核对。本次未运行测试，待用户验收；未运行 lint、类型检查、构建、性能基准或桌面交互。本节不沿用上文旧版流水耗时作为本次性能证据，也不修改发布门禁或 Vitest 文件串行设置。
+
+- **预期失败日志**：Skill 压缩包的非法路径、冲突、多入口、原生拒绝与保存中断，以及本集资产清单的三条保存失败用例，仅捕获并精确断言本条预期日志。其他日志仍输出，测试结束恢复 spy；生产日志、脱敏、回滚和拒绝断言保留，不使用全局静默。
+- **连线适配插件**：`scripts/viteCanvasEdgeLayer.ts` 的 `transform` 改为 Vite/Rolldown 对象钩子，`filter.id` 由已安装 React Flow 两个 ESM 入口生成，提前排除其他模块，减少无效 Rust/JavaScript 调用。handler 内仍核对真实入口，固定版本及源码结构守卫保留。回归源码覆盖正反斜杠、开发 URL 前缀、查询/片段和近似路径拒绝，不承诺 `PLUGIN_TIMINGS` 必然消失。
+- **视频剪辑 AI 转场**：`VideoNode.tsx` 仅在收到模型目录或转场请求后加载 `videoEditorAiTransitionService.ts`，加载后复核捕获的窗口绑定，再读目录或开始调用。同步暂停、原结果回执和已完成结果保留路径保持原语义；加载期间窗口关闭／绑定撤销不能把请求交给新窗口。
+- **AI 应用执行**：Agent 工具仅在实际 `canvas_app_run` 时加载 `aiAppRuntime.ts`，加载后重新检查项目、revision 与取消信号；SDK 查询和工具发现不因此加载隔离运行时。创建、更新、界面及动作仍共用原执行实现，不新增工具权限。
+- **团队任务图**：将图编辑器从 `TeamExecutionPicker.tsx` 提取到 `TeamGraphEditor.tsx`，配置弹窗和任务卡都只在实际编辑时加载，复用既有加载提示与控件；执行方式入口保留同步展示。没有通过 Picker 静态重导出图编辑器，防止重新拉回静态依赖。
+
+以上三处原先静态与动态混用的专用功能边界已按源码收敛。Store、文件基础设施及原生仓储等其他混用警告保留待分域审查；其中部分动态边承担循环依赖或运行时访问时机，不能批量改为静态。未提高 `chunkSizeWarningLimit`、关闭 Rolldown 警告或仅为分小文件配置强制分包。仍可能存在超过 500 kB 的产物，实际分包、启动及构建收益待同条件构建确认。
+
+本轮完整文件范围：
+
+- 构建：`scripts/viteCanvasEdgeLayer.ts`、`tests/scripts/viteCanvasEdgeLayer.test.ts`。
+- 运行时加载：`src/components/nodes/VideoNode.tsx`、`src/services/chat/tools/aiAppTools.ts`、`tests/components/videoNodePreviewLifecycle.test.tsx`、`tests/services/chat/aiAppTools.test.ts`。
+- 团队图：`src/components/shared/agentTeams/TeamGraphEditor.tsx`（新增）、`TeamExecutionPicker.tsx`、`TeamRunCard.tsx`，以及 `tests/components/agentTeamControls.test.tsx`。
+- 日志：`tests/services/fileServiceSkillUpload.test.ts`、`tests/services/episodeAssetRoster.test.ts`。
+- 文档：本专项和 `doc/开发指南.md`。
+
+验收前置：使用同一依赖锁文件和机器，区分冷／热缓存；保留原 CI 的最终汇总与构建输出用于对照。用户可在仓库根目录执行定向回归和完整前端门禁：
+
+```powershell
+npx vitest run tests/services/fileServiceSkillUpload.test.ts tests/services/episodeAssetRoster.test.ts tests/scripts/viteCanvasEdgeLayer.test.ts tests/components/agentTeamControls.test.tsx tests/services/chat/aiAppTools.test.ts tests/components/videoNodePreviewLifecycle.test.tsx tests/services/videoEditorAiTransitionService.test.ts tests/services/videoEditorWindowService.test.ts
+npm run ci
+```
+
+预期：原模拟失败用例通过且对应错误不再刷屏，非预期输出仍可见；插件守卫和两入口行为保持，三处功能可生成独立按需产物，最终以构建模块图核对；完整前端检查全部通过。记录实际构建总时长及插件耗时提示，不以减少告警数量推断性能收益。不要并行运行两套完整门禁比较耗时。
+
+Tauri 桌面回归：
+
+1. 打开主／独立助手及工作台，执行方式入口正常；首次打开团队配置或暂停任务的图编辑器才出现加载提示，随后可编辑依赖／正文来源并保存，关闭重开与深浅主题正常。
+2. 打开视频剪辑窗口，模型目录正常；由用户使用可控模型验证转场成功和错误回执。请求加载期间关闭窗口、切换项目或撤销绑定，旧请求不得调用模型或写回新窗口；已有转场结果仍可按原入口取回。
+3. 查询 AI 应用 SDK，再执行已有只读动作，输出与状态保存规则保持；加载期间取消或切项目，应拒绝执行，不新增状态写回或自动重试。
+
+回退：恢复局部日志处理、函数式插件钩子和三处原导入边界，同时恢复测试导入。保留用户项目和产物；本轮无依赖、数据库或原生权限变化。

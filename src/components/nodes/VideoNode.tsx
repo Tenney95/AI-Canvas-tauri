@@ -52,10 +52,6 @@ import {
   type VideoEditorExportResult,
   type VideoEditorFrameExportResult,
 } from '../../services/videoEditorWindowService';
-import {
-  listVideoEditorVideoModels,
-  runVideoEditorAiTransition,
-} from '../../services/videoEditorAiTransitionService';
 import { useT } from '../../i18n';
 import NodeGenerationProgress from './shared/NodeGenerationProgress';
 import VideoTaskStatus from './shared/VideoTaskStatus';
@@ -594,8 +590,11 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       };
       // 编辑器没有 Store 也没有 API Key：模型目录与转场生成都由主窗口代跑
       if (message.type === 'storyai:video-editor-models-request') {
-        void postVideoEditorModels(instanceId, listVideoEditorVideoModels())
-          .catch((error) => console.error('[videoEditor] 下发视频模型列表失败:', error));
+        void (async () => {
+          const { listVideoEditorVideoModels } = await import('../../services/videoEditorAiTransitionService');
+          assertCurrent();
+          await postVideoEditorModels(instanceId, listVideoEditorVideoModels());
+        })().catch((error) => console.error('[videoEditor] 下发视频模型列表失败:', error));
         return;
       }
 
@@ -606,6 +605,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         void (async () => {
           let receipt: MediaTaskReceipt | undefined;
           try {
+            const { runVideoEditorAiTransition } = await import('../../services/videoEditorAiTransitionService');
+            assertCurrent();
             const outcome = await runVideoEditorAiTransition(
               request as VideoEditorAiTransitionRequest,
               projectId,

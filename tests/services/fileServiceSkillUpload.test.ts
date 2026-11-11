@@ -34,6 +34,13 @@ const DEST = 'C:/app-data/skill/示例';
 const ENTRY = '# 示例 Skill\n请读取 references/详细/checklist.md';
 const RESOURCE = '中文检查清单';
 
+function captureExpectedImportError() {
+  const originalError = console.error.bind(console);
+  return vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    if (args.length !== 1 || args[0] !== '[Skill 上传] 导入失败') originalError(...args);
+  });
+}
+
 beforeEach(() => {
   vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
   vi.clearAllMocks();
@@ -90,12 +97,14 @@ describe('Skill 压缩包上传', () => {
   });
 
   it('分别打包的多个 Skill 不会静默丢失', async () => {
+    const errorSpy = captureExpectedImportError();
     mocks.open.mockResolvedValue(`${SOURCE}/示例.zip`);
     mocks.invoke.mockResolvedValue([
       { relativePath: 'one/SKILL.md', content: ENTRY },
       { relativePath: 'two/SKILL.md', content: RESOURCE },
     ]);
     await expect(uploadSkillFile('file')).rejects.toThrow('压缩包包含多个独立 Skill，请分别打包上传');
+    expect(errorSpy.mock.calls).toEqual([['[Skill 上传] 导入失败']]);
     expect(mocks.mkdir).not.toHaveBeenCalled();
   });
 
@@ -104,25 +113,31 @@ describe('Skill 压缩包上传', () => {
     { paths: ['SKILL.md', 'skill.md'] },
     { paths: ['SKILL.md', 'references.txt', 'references.txt/checklist.md'] },
   ])('在落盘前拒绝无效或冲突路径 $paths', async ({ paths }) => {
+    const errorSpy = captureExpectedImportError();
     mocks.open.mockResolvedValue(`${SOURCE}/示例.zip`);
     mocks.invoke.mockResolvedValue(paths.map((relativePath) => ({ relativePath, content: ENTRY })));
     await expect(uploadSkillFile('file')).rejects.toThrow();
+    expect(errorSpy.mock.calls).toEqual([['[Skill 上传] 导入失败']]);
     expect(mocks.mkdir).not.toHaveBeenCalled();
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
   it('保留原生脱敏错误，拒绝损坏或超限压缩包时不写入', async () => {
+    const errorSpy = captureExpectedImportError();
     mocks.open.mockResolvedValue(`${SOURCE}/示例.zip`);
     mocks.invoke.mockRejectedValue('Skill ZIP 压缩包格式无效');
     await expect(uploadSkillFile('file')).rejects.toThrow('Skill ZIP 压缩包格式无效');
+    expect(errorSpy.mock.calls).toEqual([['[Skill 上传] 导入失败']]);
     expect(mocks.mkdir).not.toHaveBeenCalled();
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
   it('保存中断时清理本次新建目录，错误提示不包含本地路径', async () => {
+    const errorSpy = captureExpectedImportError();
     mocks.open.mockResolvedValue(`${SOURCE}/示例.zip`);
     mocks.writeFile.mockRejectedValue(`permission denied: ${DEST}`);
     await expect(uploadSkillFile('file')).rejects.toThrow('Skill 压缩包保存失败，请检查存储空间和写入权限后重试');
+    expect(errorSpy.mock.calls).toEqual([['[Skill 上传] 导入失败']]);
     expect(mocks.remove).toHaveBeenCalledWith(DEST, { recursive: true });
   });
 
@@ -136,6 +151,7 @@ describe('Skill 压缩包上传', () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('Skill 文件夹上传', () => {
@@ -184,13 +200,13 @@ describe('Skill 文件夹上传', () => {
   });
 
   it('将原生字符串错误转换为可见提示，日志和提示不包含本地路径', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const errorSpy = captureExpectedImportError();
     try {
       mocks.readDir.mockRejectedValue(`forbidden path: ${SOURCE}`);
       await expect(uploadSkillFile('folder')).rejects.toThrow(
         'Skill 文件夹导入失败，请重新选择文件夹并检查读取权限',
       );
-      expect(errorSpy).toHaveBeenCalledWith('[Skill 上传] 导入失败');
+      expect(errorSpy.mock.calls).toEqual([['[Skill 上传] 导入失败']]);
       expect(mocks.writeFile).not.toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();

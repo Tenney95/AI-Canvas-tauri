@@ -161,13 +161,20 @@ export function canvasEdgeLayerPlugin(): Plugin {
   const version = manifest.version;
   const entries = new Set(['index.js', 'index.mjs'].map((entry) =>
     normalizeModuleId(join(dirname(manifestPath), 'dist/esm', entry))));
+  const entryPattern = [...entries].map((entry) => entry
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('/', '[/\\\\]')).join('|');
+  const entryFilter = new RegExp(`^(?:[/\\\\]@fs[/\\\\])?(?:${entryPattern})(?:[?#].*)?$`);
 
   return {
     name: 'ai-canvas-react-flow-edge-layer',
     enforce: 'pre',
-    transform(source, id) {
-      if (!entries.has(normalizeModuleId(id))) return null;
-      return transformCanvasEdgeLayer(source, id, version);
+    transform: {
+      // Let Vite/Rolldown skip unrelated modules before crossing into this JS hook.
+      filter: { id: entryFilter },
+      handler(source, id) {
+        if (!entries.has(normalizeModuleId(id))) return null;
+        return transformCanvasEdgeLayer(source, id, version);
+      },
     },
   };
 }

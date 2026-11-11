@@ -7,7 +7,8 @@ import { createDefaultTeamProfile } from '../../src/services/chat/teams/teamProf
 import TeamRunCard from '../../src/components/shared/agentTeams/TeamRunCard';
 import TeamResultReview from '../../src/components/shared/agentTeams/TeamResultReview';
 import AgentTaskCenter from '../../src/components/chat/AgentTaskCenter';
-import TeamExecutionPicker, { TeamGraphEditor } from '../../src/components/shared/agentTeams/TeamExecutionPicker';
+import TeamExecutionPicker from '../../src/components/shared/agentTeams/TeamExecutionPicker';
+import TeamGraphEditor from '../../src/components/shared/agentTeams/TeamGraphEditor';
 import { createTemplateTeamGraph } from '../../src/services/chat/teams/teamGraphService';
 import { setLocale } from '../../src/i18n';
 

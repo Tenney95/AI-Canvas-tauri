@@ -7,7 +7,6 @@ import { registerAgentTool, type AgentToolContext, type AgentToolExecutionResult
 import type { AgentToolSchema } from '../agentToolSchemas';
 import { assertAiAppContext, createAiAppNode, describeAiApp, getAiAppNode, loadAiAppDefinition, saveAiAppState, updateAiAppNode } from '../../aiApps/aiAppService';
 import { normalizeAiAppJson } from '../../aiApps/aiAppSchema';
-import { runAiAppAction } from '../../aiApps/aiAppRuntime';
 
 const idSchema: AgentToolSchema = { type: 'string', minLength: 1, maxLength: 200 };
 const definitionSchema: AgentToolSchema = {
@@ -132,8 +131,12 @@ export function registerAiAppAgentTools(): Array<() => void> {
       description: '在隐藏隔离环境执行应用已声明的只读动作，与节点界面使用同一实现。参数遵循 canvas_app_get 返回的动作 inputSchema。只能读取绑定素材和计算有界 JSON；不写画布、不保存状态/结果、不调用模型、不执行文件或网络操作。保存结果另用 canvas_app_save_state。动作最多10秒，不自动重试。',
       inputSchema: objectSchema({ nodeId: idSchema, actionId: { type: 'string', minLength: 1, maxLength: 64 }, input: { type: 'object', additionalProperties: true } }, ['nodeId', 'actionId']),
       summarizeInput: () => '执行 AI 应用的只读动作',
-      execute: (context, input) => execute('执行 AI 应用只读动作', context,
-        () => runAiAppAction(input.nodeId, input.actionId, normalizeAiAppJson(input.input ?? {}), context)),
+      execute: (context, input) => execute('执行 AI 应用只读动作', context, async () => {
+        const actionInput = normalizeAiAppJson(input.input ?? {});
+        const { runAiAppAction } = await import('../../aiApps/aiAppRuntime');
+        assertAiAppContext(context);
+        return runAiAppAction(input.nodeId, input.actionId, actionInput, context);
+      }),
     }),
     registerAgentTool<{ nodeId: string; expectedRevision: number; stateJson: string; resultJson?: string }>({
       id: 'canvas_app_save_state', title: '保存 AI 应用状态与结果', effect: 'canvas_write', authorize,

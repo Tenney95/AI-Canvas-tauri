@@ -2,7 +2,7 @@
  * episodeAssetRoster — 回归测试：本集资产清单格式。
  */
 import { createStore } from 'zustand/vanilla';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppState } from '../../src/store/useAppStore';
 import type { ProjectSaveData } from '../../src/services/storageService';
 import {
@@ -31,6 +31,13 @@ const entry = (patch: Partial<EpisodeAssetEntry> = {}): EpisodeAssetEntry => ({
 });
 const roster = () => ({ ...emptyEpisodeAssetRoster(), characters: [entry()] });
 
+function captureExpectedSaveWarning(error: Error) {
+  const originalWarn = console.warn.bind(console);
+  return vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+    if (args.length !== 2 || args[0] !== '[项目元数据] 保存失败:' || args[1] !== error) originalWarn(...args);
+  });
+}
+
 function arrange() {
   return createStore<AppState>()((...args) => ({ ...createProjectSlice(...args),
     projects: [
@@ -49,6 +56,8 @@ beforeEach(() => {
   mocks.saveProject.mockReset();
   mocks.saveProject.mockImplementation(async (record: ProjectSaveData) => record.id);
 });
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe('本集资产清单格式', () => {
   it('旧项目和未知格式缺省为空，不共享可变数组', () => {
@@ -173,6 +182,8 @@ describe('本集资产清单持久化门禁', () => {
   });
 
   it('保存失败只撤回本次清单，保留期间修改的正文', async () => {
+    const saveError = new Error('模拟保存失败');
+    const warningSpy = captureExpectedSaveWarning(saveError);
     const store = arrange();
     let rejectSave!: (reason: Error) => void;
     let entered!: () => void;
@@ -182,13 +193,16 @@ describe('本集资产清单持久化门禁', () => {
     await started;
     store.setState((state) => ({ projects: state.projects.map((project) => project.id === 'episode-1'
       ? { ...project, episodeScript: '后来修改的剧本' } : project) }));
-    rejectSave(new Error('模拟保存失败'));
+    rejectSave(saveError);
     await expect(saving).resolves.toBe(false);
     expect(store.getState().projects.find((project) => project.id === 'episode-1'))
       .toMatchObject({ episodeScript: '后来修改的剧本', episodeAssetRoster: undefined });
+    expect(warningSpy.mock.calls).toEqual([['[项目元数据] 保存失败:', saveError]]);
   });
 
   it('清单按分集串行保存，旧保存失败后再接受下一份明确版本', async () => {
+    const saveError = new Error('旧保存失败');
+    const warningSpy = captureExpectedSaveWarning(saveError);
     const store = arrange();
     let rejectSave!: (reason: Error) => void;
     let entered!: () => void;
@@ -202,14 +216,17 @@ describe('本集资产清单持久化门禁', () => {
     const newer = { ...roster(), characters: [entry({ notes: '后来确认的新备注' })] };
     const nextSave = store.getState().updateEpisodeAssetRoster('episode-1', newer, 0);
     expect(save).toHaveBeenCalledTimes(1);
-    rejectSave(new Error('旧保存失败'));
+    rejectSave(saveError);
     await expect(oldSave).resolves.toBe(false);
     await expect(nextSave).resolves.toBe(true);
     expect(store.getState().projects.find((project) => project.id === 'episode-1')?.episodeAssetRoster)
       .toMatchObject({ revision: 1, characters: [expect.objectContaining({ notes: '后来确认的新备注' })] });
+    expect(warningSpy.mock.calls).toEqual([['[项目元数据] 保存失败:', saveError]]);
   });
 
   it('先前正文保存失败不能连带撤销后来已经接受的清单', async () => {
+    const saveError = new Error('正文保存失败');
+    const warningSpy = captureExpectedSaveWarning(saveError);
     const store = arrange();
     let rejectSave!: (reason: Error) => void;
     let entered!: () => void;
@@ -221,9 +238,10 @@ describe('本集资产清单持久化门禁', () => {
     const savingText = store.getState().updateEpisodeCreative('episode-1', { script: '尚未保存的正文' });
     await started;
     const savingRoster = store.getState().updateEpisodeAssetRoster('episode-1', roster(), 0);
-    rejectSave(new Error('正文保存失败'));
+    rejectSave(saveError);
     await expect(savingText).resolves.toBe(false);
     await expect(savingRoster).resolves.toBe(true);
     expect(store.getState().projects.find((project) => project.id === 'episode-1')?.episodeAssetRoster?.revision).toBe(1);
+    expect(warningSpy.mock.calls).toEqual([['[项目元数据] 保存失败:', saveError]]);
   });
 });
