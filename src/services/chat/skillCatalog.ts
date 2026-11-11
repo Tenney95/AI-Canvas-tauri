@@ -72,8 +72,11 @@ export type SkillCatalogSurface = 'assistant-model' | 'assistant-user' | 'mcp';
  * 各调用面以当前安装记录为准，不能只信任异步构建的运行时 Skill 快照。
  * 关闭授权、停用、删除或重新导入内容后，即使目录刷新尚未完成也必须立即拒绝。
  */
-function currentAgentPackageInstallation(skill: AgentPackageSkill): AgentPackageInstallation | undefined {
-  const installation = useAppStore.getState().agentPackages.find(
+function currentAgentPackageInstallation(
+  skill: AgentPackageSkill,
+  installations: readonly AgentPackageInstallation[],
+): AgentPackageInstallation | undefined {
+  const installation = installations.find(
     (item) => item.id === skill.installationId,
   );
   return installation
@@ -90,12 +93,13 @@ function currentAgentPackageInstallation(skill: AgentPackageSkill): AgentPackage
 export function isSkillAvailableOnSurface(
   skill: RuntimeSkill,
   surface: SkillCatalogSurface,
+  installations?: readonly AgentPackageInstallation[],
 ): boolean {
   if (!isAgentPackageSkill(skill)) {
     if (surface === 'assistant-user') return skill.manifest?.userInvocable !== false;
     return skill.manifest?.disableModelInvocation !== true;
   }
-  const installation = currentAgentPackageInstallation(skill);
+  const installation = currentAgentPackageInstallation(skill, installations ?? useAppStore.getState().agentPackages);
   if (!installation) return false;
   if (surface === 'assistant-user') {
     return skill.packageUserInvocable && installation.manifest.routing.userInvocable

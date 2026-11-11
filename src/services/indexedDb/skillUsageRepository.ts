@@ -1,4 +1,4 @@
-/** 已上传 Skill 的本机最近使用偏好；不修改 Skill 正文或读取租约。 */
+/** 可调用 Skill 的本机最近使用偏好；不修改 Skill 正文或读取租约。 */
 import { hasControlCharacters } from '../../utils/controlCharacters';
 import { openDB, STORE_METADATA } from './schema';
 

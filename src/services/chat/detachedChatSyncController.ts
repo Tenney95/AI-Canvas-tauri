@@ -838,8 +838,7 @@ export function handleDetachedChatAction(
       break;
 
     case 'mark_skill_used':
-      if (typeof action.skillId !== 'string' || action.skillId.length > 160
-        || !store.userSkills.some((skill) => skill.id === action.skillId && skill.manifest?.userInvocable !== false)) break;
+      if (typeof action.skillId !== 'string' || action.skillId.length > 160) break;
       void store.markSkillUsed(action.skillId).catch(() => store.showToast(t('最近 Skill 使用记录保存失败'), 'error'));
       break;
 

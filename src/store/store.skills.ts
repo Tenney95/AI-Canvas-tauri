@@ -13,6 +13,7 @@ import * as fileService from '../services/fileService';
 import type { SkillUploadSource } from '../services/fileService';
 import { parseSkillDocument } from '../services/chat/skillManifest';
 import { getSkillDescription } from '../services/chat/skillDescription';
+import { isSkillAvailableOnSurface } from '../services/chat/skillCatalog';
 import { loadRecentSkillIds, saveRecentSkillIds } from '../services/indexedDb/skillUsageRepository';
 
 let usageQueue: Promise<void> = Promise.resolve();
@@ -21,11 +22,6 @@ function updateSkillUsage(write: () => Promise<void>): Promise<void> {
   const pending = usageQueue.then(write);
   usageQueue = pending.catch(() => undefined);
   return pending;
-}
-
-function availableRecentSkills(ids: readonly string[], skills: readonly UserSkill[]): string[] {
-  const available = new Set(skills.filter((skill) => skill.manifest?.userInvocable !== false).map((skill) => skill.id));
-  return [...new Set(ids)].filter((id) => available.has(id)).slice(0, 5);
 }
 
 function getSkillName(fileName: string): string {
@@ -49,9 +45,10 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
   recentSkillIds: [],
 
   markSkillUsed: (id) => updateSkillUsage(async () => {
-    const { userSkills, recentSkillIds } = get();
-    if (!userSkills.some((skill) => skill.id === id && skill.manifest?.userInvocable !== false)) return;
-    const next = availableRecentSkills([id, ...recentSkillIds], userSkills);
+    const { userSkills, agentPackageSkills, agentPackages, recentSkillIds } = get();
+    const skill = [...userSkills, ...agentPackageSkills].find((item) => item.id === id);
+    if (!skill || !isSkillAvailableOnSurface(skill, 'assistant-user', agentPackages)) return;
+    const next = [id, ...recentSkillIds.filter((skillId) => skillId !== id)].slice(0, 5);
     await saveRecentSkillIds(next);
     set({ recentSkillIds: next });
   }),
@@ -158,9 +155,9 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
     try {
       await updateSkillUsage(async () => {
         const stored = await loadRecentSkillIds();
-        const next = availableRecentSkills(stored, get().userSkills);
-        if (next.length !== stored.length || next.some((id, index) => id !== stored[index])) await saveRecentSkillIds(next);
-        set({ recentSkillIds: next });
+        // 包目录独立异步加载，不能用尚未完整的目录清除已保存的近期记录。
+        // 菜单按当前可调用目录投影，无效或停用项只隐藏，不在加载时重写偏好。
+        set({ recentSkillIds: stored });
       });
     } catch {
       get().showToast(t('最近 Skill 使用记录读取失败'), 'error');

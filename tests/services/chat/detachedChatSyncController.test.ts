@@ -591,7 +591,7 @@ describe('detached chat sync controller', () => {
     expect(requestSync).not.toHaveBeenCalled();
   });
 
-  it('独立窗口的 Skill 使用只交给主窗口记录，忽略失效和不可调用的上传项', async () => {
+  it('独立窗口将 Skill 使用统一交给主窗口 Action 校验来源与可用性，仅提前拒绝非法 ID', async () => {
     const markSkillUsed = vi.fn(async () => undefined);
     const showToast = vi.fn();
     const requestSync = vi.fn();
@@ -602,10 +602,16 @@ describe('detached chat sync controller', () => {
 
     handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'uploaded-skill' }, requestSync);
     handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'disabled-skill' }, requestSync);
-    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'package-or-missing-skill' }, requestSync);
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'package-a-skill' }, requestSync);
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'package-b-skill' }, requestSync);
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'missing-skill' }, requestSync);
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'x'.repeat(161) }, requestSync);
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 42 } as unknown as ChatAction, requestSync);
     await Promise.resolve();
 
-    expect(markSkillUsed).toHaveBeenCalledExactlyOnceWith('uploaded-skill');
+    expect(markSkillUsed.mock.calls).toEqual([
+      ['uploaded-skill'], ['disabled-skill'], ['package-a-skill'], ['package-b-skill'], ['missing-skill'],
+    ]);
     expect(useAppStore.getState().userSkills[0]).toBe(uploaded);
     expect(requestSync).not.toHaveBeenCalled();
     expect(showToast).not.toHaveBeenCalled();

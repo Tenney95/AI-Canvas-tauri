@@ -195,20 +195,33 @@ describe('快捷指令文件夹菜单', () => {
     expect(elements(render(props)).some((element) => element.props['data-item-id'] === '__user_presets__')).toBe(false);
   });
 
-  it('一级菜单在 Skill 入口上方按近期顺序显示最多五个有效上传 Skill', () => {
+  it('一级菜单在 Skill 入口上方按近期顺序显示最多五个有效 Skill，包含不同包的 Skill', () => {
     props.skillOptions = Array.from({ length: 6 }, (_, index) => ({
       id: `skill-${index}`, name: `上传 Skill ${index}`, description: '用途说明', fileName: 'SKILL.md',
       sourceKind: 'user', sourceGroupId: 'user-skills', sourceLabel: '我的 Skill',
     }));
-    props.skillOptions.push({ ...props.skillOptions[0], id: 'package-skill', sourceKind: 'agent-package' });
-    props.recentSkillIds = ['missing', 'package-skill', 'skill-4', 'skill-2', 'skill-4', 'skill-5', 'skill-0', 'skill-1', 'skill-3'];
+    const packageSkills: Props['skillOptions'] = [
+      { ...props.skillOptions[0], id: 'package-a-skill', name: '包内 Skill', sourceKind: 'agent-package', sourceGroupId: 'package-a', sourceLabel: '智能体 A' },
+      { ...props.skillOptions[0], id: 'package-b-skill', name: '包内 Skill', sourceKind: 'agent-package', sourceGroupId: 'package-b', sourceLabel: '智能体 B' },
+    ];
+    props.skillOptions.push(...packageSkills);
+    props.recentSkillIds = ['missing', 'package-b-skill', 'skill-4', 'package-a-skill', 'skill-2', 'package-b-skill', 'skill-5', 'skill-0', 'skill-1', 'skill-3'];
     const tree = elements(render(props));
     const recent = tree.filter((element) => element.props['data-recent-skill-id']);
     expect(recent.map((element) => element.props['data-recent-skill-id']))
-      .toEqual(['skill-4', 'skill-2', 'skill-5', 'skill-0', 'skill-1']);
+      .toEqual(['package-b-skill', 'skill-4', 'package-a-skill', 'skill-2', 'skill-5']);
     const skillParent = tree.findIndex((element) => element.props['data-item-id'] === '__skills__');
     expect(recent.every((element) => tree.indexOf(element) < skillParent)).toBe(true);
     expect(text(render(props))).toContain('最近使用');
+    for (const skill of packageSkills) {
+      const entry = recent.find((element) => element.props['data-recent-skill-id'] === skill.id)!;
+      (entry.props.onClick as () => void)();
+      expect(props.onSelectSkill).toHaveBeenCalledWith(skill);
+    }
+    expect(props.onSelectSkill).toHaveBeenCalledTimes(2);
+    expect(props.onClose).toHaveBeenCalledTimes(2);
+    expect(props.onSelect).not.toHaveBeenCalled();
+    expect(props.onRunAdvancedPreset).not.toHaveBeenCalled();
   });
 
   it('一级常用 Skill 沿用原引用回调，不触发预设或自动生成', () => {

@@ -65,9 +65,9 @@ export default function SlashCommandMenu({
   const t = useT();
   const invocableSkills = skillOptions;
   const recentSkills = useMemo(() => {
-    const uploaded = new Map(skillOptions.filter((skill) => skill.sourceKind === 'user').map((skill) => [skill.id, skill]));
+    const available = new Map(skillOptions.map((skill) => [skill.id, skill]));
     return [...new Set(recentSkillIds)].flatMap((id) => {
-      const skill = uploaded.get(id);
+      const skill = available.get(id);
       return skill ? [skill] : [];
     }).slice(0, 5);
   }, [skillOptions, recentSkillIds]);
