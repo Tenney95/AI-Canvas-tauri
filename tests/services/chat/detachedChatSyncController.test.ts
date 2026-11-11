@@ -357,6 +357,49 @@ describe('detached chat sync controller', () => {
     expect(requestSync).not.toHaveBeenCalled();
   });
 
+  it('独立窗口的 Skill 使用只交给主窗口记录，忽略失效和不可调用的上传项', async () => {
+    const markSkillUsed = vi.fn(async () => undefined);
+    const showToast = vi.fn();
+    const requestSync = vi.fn();
+    const uploaded = { id: 'uploaded-skill', name: '上传 Skill', description: '用途', fileName: 'SKILL.md',
+      content: '只读正文', sourceType: 'file' as const, createdAt: 1 };
+    useAppStore.setState({ markSkillUsed, showToast,
+      userSkills: [uploaded, { ...uploaded, id: 'disabled-skill', manifest: { userInvocable: false } }] });
+
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'uploaded-skill' }, requestSync);
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'disabled-skill' }, requestSync);
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'package-or-missing-skill' }, requestSync);
+    await Promise.resolve();
+
+    expect(markSkillUsed).toHaveBeenCalledExactlyOnceWith('uploaded-skill');
+    expect(useAppStore.getState().userSkills[0]).toBe(uploaded);
+    expect(requestSync).not.toHaveBeenCalled();
+    expect(showToast).not.toHaveBeenCalled();
+
+    markSkillUsed.mockRejectedValueOnce(new Error('private storage detail'));
+    handleDetachedChatAction({ type: 'mark_skill_used', skillId: 'uploaded-skill' }, requestSync);
+    await Promise.resolve();
+    expect(showToast).toHaveBeenCalledExactlyOnceWith('最近 Skill 使用记录保存失败', 'error');
+  });
+
+  it('窗口会话更换后忽略旧帧发来的 Skill 使用记录', async () => {
+    const markSkillUsed = vi.fn(async () => undefined);
+    useAppStore.setState({ markSkillUsed, userSkills: [{ id: 'uploaded-skill', name: '上传 Skill', description: '用途',
+      fileName: 'SKILL.md', content: '只读正文', sourceType: 'file', createdAt: 1 }] });
+    const emissions: ChatStateSync[] = [];
+    let dispatch!: (action: ChatAction) => void;
+    const controller = createDetachedChatSyncController({ enabled: true, syncIntervalMs: 0,
+      emitSync: async (sync) => { emissions.push(sync); },
+      initListener: async (handler) => { dispatch = handler; return () => undefined; } });
+    await controller.start();
+    try {
+      const frame = syncFrame(emissions.at(-1))!;
+      beginChatWindowSession();
+      dispatch({ type: 'mark_skill_used', skillId: 'uploaded-skill', windowFrame: frame, sequence: 1 });
+      expect(markSkillUsed).not.toHaveBeenCalled();
+    } finally { controller.dispose(); }
+  });
+
   it('uses the same branded and visible model options as the embedded chat, including workflows', () => {
     useAppStore.setState((state) => ({
       config: { ...state.config, providers: {

@@ -3,6 +3,7 @@
  */
 import type { Node } from '@xyflow/react';
 import { useAppStore } from '../../store/useAppStore';
+import { t } from '../../i18n';
 import { isTauriEnv } from '../fs/core';
 import { seriesOwnerId } from '../../store/store.utils';
 import { GENERAL_ASSISTANT_SCOPE_ID } from './assistantScope';
@@ -830,6 +831,12 @@ export function handleDetachedChatAction(
 
     case 'set_composer_draft':
       store.setChatComposerLiveDraft(action.draft, action.conversationId);
+      break;
+
+    case 'mark_skill_used':
+      if (typeof action.skillId !== 'string' || action.skillId.length > 160
+        || !store.userSkills.some((skill) => skill.id === action.skillId && skill.manifest?.userInvocable !== false)) break;
+      void store.markSkillUsed(action.skillId).catch(() => store.showToast(t('最近 Skill 使用记录保存失败'), 'error'));
       break;
 
     case 'set_panel_view':

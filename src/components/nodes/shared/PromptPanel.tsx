@@ -680,6 +680,8 @@ export default function PromptPanel({
   const userPresets = useAppStore((s) => s.userPresets);
   const presetFolders = useAppStore((s) => s.presetFolders);
   const userSkills = useAppStore((s) => s.userSkills);
+  const recentSkillIds = useAppStore((s) => s.recentSkillIds);
+  const markSkillUsed = useAppStore((s) => s.markSkillUsed);
   const agentPackageSkills = useAppStore((s) => s.agentPackageSkills);
   const skillOptions = useMemo(
     () => projectSkillPickerOptions(userSkills, agentPackageSkills),
@@ -855,7 +857,8 @@ export default function PromptPanel({
     const spacer = prompt && !/\s$/.test(prompt) ? ' ' : '';
     onChange(`${prompt}${spacer}${token}`);
     onContinuousEditEnd?.();
-  }, [onChange, onContinuousEditEnd, prompt]);
+    void markSkillUsed(skill.id).catch(() => showToast(t('最近 Skill 使用记录保存失败'), 'error'));
+  }, [onChange, onContinuousEditEnd, prompt, markSkillUsed, showToast, t]);
 
   const handleUploadSkill = useCallback(async (source: 'file' | 'folder') => {
     setSlashOpen(false);
@@ -1352,6 +1355,7 @@ export default function PromptPanel({
         userPresets={userPresets}
         presetFolders={presetFolders}
         skillOptions={skillOptions}
+        recentSkillIds={recentSkillIds}
         onSelect={handleSlashSelect}
         onRunAdvancedPreset={handleRunAdvancedPreset}
         onSelectSkill={handleSkillSelect}

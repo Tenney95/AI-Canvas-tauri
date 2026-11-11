@@ -38,7 +38,8 @@ export const isProjectModelBackupStore = (name: string): boolean => backupStores
 export const isKnownExcludedProjectModelBackupStore = (name: string): boolean => excludedStores.has(name);
 export const isProjectModelBackupMetadataKey = (key: unknown): key is string => typeof key === 'string'
   && (metadataKeys.has(key) || metadataPrefixes.some((prefix) => key.startsWith(prefix) && key.length > prefix.length));
-export const isKnownExcludedProjectModelBackupMetadataKey = (key: unknown): boolean => key === 'preset-folders';
+/** 本机界面分类和使用偏好不属于项目迁移材料。 */
+export const isKnownExcludedProjectModelBackupMetadataKey = (key: unknown): boolean => key === 'preset-folders' || key === 'recent-skill-ids';
 
 export interface ExistingProjectDatabaseOptions {
   name?: string;

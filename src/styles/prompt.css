@@ -322,7 +322,7 @@
   z-index: 10002;
   width: 260px;
   max-width: calc(100vw - 16px);
-  max-height: 440px;
+  max-height: min(600px, calc(100dvh - 16px));
   overflow-y: auto;
   background:
     linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,

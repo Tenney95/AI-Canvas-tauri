@@ -142,7 +142,11 @@ A–D 历史联合复核未覆盖真实桌面 WebView、双窗口审批、真实
 - 节点 `/` 菜单、主窗口和独立窗口助手、提示词润色、子智能体绑定共用手动上传和智能体包的 Skill 目录，以同一 Skill ID 调用。显式调用遵守 `user-invocable` 和包路由声明，自动发现沿用既有开关。
 - 节点提交和子智能体执行从当前共享目录读取正文；来源停用、删除或目录刷新后不从组件旧快照读取。子智能体绑定不可用时，有内联角色提示词则回退，否则明确报错。
 - 主窗口助手提供单文件与文件夹上传，复用已有 Store Action；桌面端文件上传同时兼容 `.zip`、`.tar.gz`、`.tgz`，经原生有界校验后按文件夹型 Skill 保存入口及文本资料。文件夹导入授权所选目录的多级附属资料。Skill 管理展示手动上传与智能体包两种来源，包内 Skill 保持只读并由智能体中心管理。
+- 节点 `/` 一级菜单在 Skill 入口上方展示最近点击使用的最多 5 个上传 Skill；完整目录继续保留。节点、主窗口助手及独立助手插入引用时共享近期顺序，不触发发送或生成；未使用、已删除、不可用户调用及包内 Skill 不进入该常用区。主窗口 Store 单点写入既有 metadata 的 `recent-skill-ids`，不修改 Skill 对象、内容读取租约或分享内容；该本机界面偏好按精确 key 排除出项目迁移材料，无 schema 升级。偏好读取失败不阻断项目及 Skill 加载，保存失败不阻断引用插入或原有删除操作，不把损坏记录静默覆盖为空历史。
+- 菜单简介由 `chat/skillDescription.ts` 统一读取：有效已有简介优先；旧记录的 `{`、`\---` 或代码围栏占位改取 JSON 顶层说明、Markdown 用途或文件名，并限制为单行短文本。兼容提取只用于简介，Skill 正文、Manifest 解析及执行权限保持原合同。
 - 状态：已实现，待用户验收。本次未运行测试；回归用例已补充。范围、Tauri 桌面验收顺序和回滚见 [Skill 全软件统一调用计划](./plans/2026-10-11-unified-skill-access.md)。
+
+2026-11-11 常用入口与简介的桌面验收：准备至少 6 个可用户调用的上传 Skill 和一个不可调用项。在节点完整 Skill 菜单中依次选择这些条目，重新打开 `/`，应在一级 Skill 入口上方按最近顺序显示最后 5 个，重复选择前移且不重复，点击只插入同一 Skill 引用。主助手及独立助手选中上传 Skill 后，节点常用区应同步更新；重启保留顺序，删除后条目消失，包内及不可调用项不出现。检查旧 JSON／转义 Markdown 的简介不再只显示结构符号，正文与权限不变；并回归长名称、深浅主题、较小窗口滚动、Esc／外部点击关闭及原快捷指令菜单。本次未运行测试、类型检查、lint、构建或桌面验收；可由用户在仓库根目录运行 `npx vitest run tests/components/slashCommandFolders.test.tsx tests/store/skills.test.ts tests/services/skillUsageStorage.test.ts tests/services/chat/skillDescription.test.ts tests/services/chat/skillCatalog.test.ts tests/services/chat/detachedChatSyncController.test.ts tests/services/projectModelMigrationRepository.test.ts`。回滚移除近期入口与记录接线即可，独立偏好记录可保留；不回写或重置 Skill 正文与权限。
 
 ## 验证入口
 

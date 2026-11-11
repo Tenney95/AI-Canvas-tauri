@@ -220,6 +220,22 @@ describe('模型可见性', () => {
     expect(serialized).not.toContain('source:opaque-secret');
     expect(serialized).not.toContain('00-工作流/short-drama-showrunner/SKILL.md');
   });
+
+  it('节点和助手共用的选择器修复已上传简介，不改写正文或转义权限声明', () => {
+    const uploaded = skill({ description: '{', fileName: 'story.json',
+      content: '{"description":"梳理故事主线。"}' });
+    const packaged = packageSkill({ description: '\\---', content: [
+      '\\---', 'description: 检查分镜节奏。', 'user-invocable: false', '\\---', '# Instructions',
+    ].join('\n') });
+    useAppStore.setState({ agentPackages: [packageInstallation(packaged)] });
+    const originals = structuredClone([uploaded, packaged]);
+
+    const options = projectSkillPickerOptions([uploaded], [packaged]);
+
+    expect(options.map((option) => option.description)).toEqual(['梳理故事主线。', '检查分镜节奏。']);
+    expect([uploaded, packaged]).toEqual(originals);
+    expect(options.every((option) => !('content' in option) && !('manifest' in option))).toBe(true);
+  });
 });
 
 describe('buildSkillCatalogPrompt', () => {

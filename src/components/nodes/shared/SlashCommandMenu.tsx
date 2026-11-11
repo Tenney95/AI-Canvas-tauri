@@ -35,6 +35,7 @@ interface SlashCommandMenuProps {
   userPresets: UserPreset[];
   presetFolders?: PresetFolder[];
   skillOptions: SkillPickerOption[];
+  recentSkillIds?: readonly string[];
   onSelect: (prompt: string, shouldTrigger: boolean, preset?: PresetOverride) => void;
   onRunAdvancedPreset: (preset: UserPreset) => void;
   onSelectSkill: (skill: SkillPickerOption) => void;
@@ -52,6 +53,7 @@ export default function SlashCommandMenu({
   userPresets,
   presetFolders = [],
   skillOptions,
+  recentSkillIds = [],
   onSelect,
   onRunAdvancedPreset,
   onSelectSkill,
@@ -62,6 +64,13 @@ export default function SlashCommandMenu({
 }: SlashCommandMenuProps) {
   const t = useT();
   const invocableSkills = skillOptions;
+  const recentSkills = useMemo(() => {
+    const uploaded = new Map(skillOptions.filter((skill) => skill.sourceKind === 'user').map((skill) => [skill.id, skill]));
+    return [...new Set(recentSkillIds)].flatMap((id) => {
+      const skill = uploaded.get(id);
+      return skill ? [skill] : [];
+    }).slice(0, 5);
+  }, [skillOptions, recentSkillIds]);
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null);
   const [submenuPos, setSubmenuPos] = useState<{ left: number; top: number; direction: 'left' | 'right' }>({ left: 0, top: 0, direction: 'right' });
@@ -116,6 +125,7 @@ export default function SlashCommandMenu({
   );
 
   const itemCount = commands.length
+    + recentSkills.length + (recentSkills.length > 0 ? 1 : 0)
     + (presetGroups.length > 0 ? 1 : 0)
     + 1 /* skill submenu */
     + 1 /* manage */
@@ -129,7 +139,7 @@ export default function SlashCommandMenu({
 
     // 估算主菜单尺寸
     const commandHeight = commands.reduce((height, item) => height + (item.children ? 48 : 80), 0);
-    const estH = Math.min(16 + (itemCount - commands.length) * 48 + commandHeight + 8 /* divider */, 440);
+    const estH = Math.min(16 + (itemCount - commands.length) * 48 + commandHeight + 8 /* divider */, 600, window.innerHeight - 16);
     const estW = 268;
 
     // 期望位置：锚点上方，水平居中于锚点
@@ -299,6 +309,27 @@ export default function SlashCommandMenu({
         )}
 
         {(commands.length > 0 || presetGroups.length > 0) && <div className="slash-command-divider" />}
+        {recentSkills.length > 0 && <div role="group" aria-label={t('最近使用')}>
+          <div className="slash-command-header">{t('最近使用')}</div>
+          {recentSkills.map((skill) => <button
+            key={skill.id}
+            type="button"
+            className="ui-menu__item slash-command-item w-full text-left"
+            data-recent-skill-id={skill.id}
+            title={skill.description || skill.fileName}
+            onMouseEnter={() => setActiveParentId(null)}
+            onFocus={() => setActiveParentId(null)}
+            onClick={() => handleSkillSelect(skill)}
+          >
+            {renderIcon('lucide:puzzle')}
+            <span className="slash-command-text">
+              <span className="slash-command-title">{skill.name}</span>
+              <span className="slash-command-desc">{skill.description || skill.fileName}</span>
+            </span>
+            <span className="ui-badge ui-badge--success shrink-0">{t('调用')}</span>
+          </button>)}
+          <div className="slash-command-divider" />
+        </div>}
         <div
           className={`slash-command-item has-submenu${skillMenuActive ? ' active' : ''}`}
           data-item-id={SKILL_PARENT_ID}

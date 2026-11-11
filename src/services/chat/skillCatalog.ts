@@ -16,6 +16,7 @@ import type {
 } from '../../types/agentPackage';
 import { isAgentPackageSkill } from '../../types/agentPackage';
 import { estimateTokens } from './tokenEstimate';
+import { getSkillDescription } from './skillDescription';
 
 export const SKILL_CATALOG_LIMITS = {
   /** 索引最大条目数。 */
@@ -158,7 +159,7 @@ export function projectSkillPickerOptions(
     .map((skill) => isAgentPackageSkill(skill) ? {
       id: skill.id,
       name: skill.name,
-      description: skill.description,
+      description: getSkillDescription(skill),
       fileName: skill.fileName,
       sourceKind: 'agent-package' as const,
       sourceGroupId: skill.installationId,
@@ -166,7 +167,7 @@ export function projectSkillPickerOptions(
     } : {
       id: skill.id,
       name: skill.name,
-      description: skill.description,
+      description: getSkillDescription(skill),
       fileName: skill.fileName,
       sourceKind: 'user' as const,
       sourceGroupId: 'user-skills',

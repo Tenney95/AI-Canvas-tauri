@@ -200,6 +200,8 @@ interface ChatInputProps {
   allowSkillUpload?: boolean;
   /** 独立窗口只接收可选择的 Skill 元数据，不同步正文或来源路径。 */
   skillOptions?: SkillPickerOption[];
+  /** 引用插入成功后记录用户使用；独立窗口由主窗口保存。 */
+  onSkillUsed?: (skillId: string) => void;
 }
 
 export default function ChatInput({
@@ -233,6 +235,7 @@ export default function ChatInput({
   disabled = false,
   allowSkillUpload = true,
   skillOptions,
+  onSkillUsed,
 }: ChatInputProps) {
   const t = useT();
   const inputRef = useRef<ChatComposerEditorHandle>(null);
@@ -443,15 +446,18 @@ export default function ChatInput({
   }, []);
 
   const insertSkillReference = useCallback((skillId: string, skillName: string) => {
-    inputRef.current?.insertReference({
+    const editor = inputRef.current;
+    if (!editor) return;
+    editor.insertReference({
       kind: 'skill',
       id: skillId,
       label: skillName,
     });
+    onSkillUsed?.(skillId);
     setSkillMenuOpen(false);
     setSkillQuery('');
     setActiveSuggestionIndex(0);
-  }, []);
+  }, [onSkillUsed]);
 
   const referenceSuggestions = useMemo<ReferenceSuggestion[]>(() => [
     ...visibleCanvasNodes.map((node) => ({

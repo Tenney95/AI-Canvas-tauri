@@ -746,6 +746,8 @@ const chat = {
   "音频用途": "Audio purpose",
   "验证状态": "Validation status",
   "高度": "Height",
+  "最近 Skill 使用记录保存失败": "Failed to save recently used Skills",
+  "最近 Skill 使用记录读取失败": "Failed to load recently used Skills",
 };
 
 export default chat;

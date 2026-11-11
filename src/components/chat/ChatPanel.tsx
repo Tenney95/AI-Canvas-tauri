@@ -1048,6 +1048,13 @@ export default function ChatPanel({
     useAppStore.getState().setHoveredMentionNodeId(nodeId);
   }, [detached, emitAction]);
 
+  const handleSkillUsed = useCallback((skillId: string) => {
+    const operation = detached
+      ? emitAction({ type: 'mark_skill_used', skillId })
+      : useAppStore.getState().markSkillUsed(skillId);
+    void operation.catch(() => showToast(t('最近 Skill 使用记录保存失败'), 'error'));
+  }, [detached, emitAction, showToast, t]);
+
   const handleModelActivate = useCallback((modelId: string) => {
     window.dispatchEvent(new CustomEvent('chat-open-reference-menu', {
       detail: { kind: 'model', modelId },
@@ -1321,6 +1328,7 @@ export default function ChatPanel({
                       contextUsage={contextUsage}
                       allowSkillUpload={!detached}
                       skillOptions={detached ? (detachedSnapshot?.skillOptions ?? []) : undefined}
+                      onSkillUsed={handleSkillUsed}
                     />
                   )}
                 </motion.div>

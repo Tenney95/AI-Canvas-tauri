@@ -194,4 +194,43 @@ describe('快捷指令文件夹菜单', () => {
     props.userPresets = [{ ...preset, nodeType: 'ai-video' }];
     expect(elements(render(props)).some((element) => element.props['data-item-id'] === '__user_presets__')).toBe(false);
   });
+
+  it('一级菜单在 Skill 入口上方按近期顺序显示最多五个有效上传 Skill', () => {
+    props.skillOptions = Array.from({ length: 6 }, (_, index) => ({
+      id: `skill-${index}`, name: `上传 Skill ${index}`, description: '用途说明', fileName: 'SKILL.md',
+      sourceKind: 'user', sourceGroupId: 'user-skills', sourceLabel: '我的 Skill',
+    }));
+    props.skillOptions.push({ ...props.skillOptions[0], id: 'package-skill', sourceKind: 'agent-package' });
+    props.recentSkillIds = ['missing', 'package-skill', 'skill-4', 'skill-2', 'skill-4', 'skill-5', 'skill-0', 'skill-1', 'skill-3'];
+    const tree = elements(render(props));
+    const recent = tree.filter((element) => element.props['data-recent-skill-id']);
+    expect(recent.map((element) => element.props['data-recent-skill-id']))
+      .toEqual(['skill-4', 'skill-2', 'skill-5', 'skill-0', 'skill-1']);
+    const skillParent = tree.findIndex((element) => element.props['data-item-id'] === '__skills__');
+    expect(recent.every((element) => tree.indexOf(element) < skillParent)).toBe(true);
+    expect(text(render(props))).toContain('最近使用');
+  });
+
+  it('一级常用 Skill 沿用原引用回调，不触发预设或自动生成', () => {
+    const skill: Props['skillOptions'][number] = {
+      id: 'recent-skill', name: '常用角色', description: '生成角色参考提示词', fileName: '角色.md',
+      sourceKind: 'user', sourceGroupId: 'user-skills', sourceLabel: '我的 Skill',
+    };
+    props.skillOptions = [skill];
+    props.recentSkillIds = [skill.id];
+    const recent = elements(render(props)).find((element) => element.props['data-recent-skill-id'] === skill.id);
+    (recent!.props.onClick as () => void)();
+    expect(props.onSelectSkill).toHaveBeenCalledExactlyOnceWith(skill);
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(props.onSelect).not.toHaveBeenCalled();
+    expect(props.onRunAdvancedPreset).not.toHaveBeenCalled();
+  });
+
+  it('没有有效近期 Skill 时不显示空分区，完整 Skill 入口仍保留', () => {
+    props.recentSkillIds = ['removed'];
+    const tree = elements(render(props));
+    expect(tree.some((element) => element.props['data-recent-skill-id'])).toBe(false);
+    expect(tree.some((element) => element.props['data-item-id'] === '__skills__')).toBe(true);
+    expect(text(render(props))).not.toContain('最近使用');
+  });
 });

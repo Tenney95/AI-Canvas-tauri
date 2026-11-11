@@ -423,6 +423,7 @@ export type ChatAction = (
   | { type: 'focus_node'; nodeId: string }
   | { type: 'set_hovered_node'; nodeId: string | null }
   | { type: 'set_composer_draft'; draft: string; conversationId?: string | null }
+  | { type: 'mark_skill_used'; skillId: string }
   | { type: 'set_panel_view'; view: ChatPanelView }
   | { type: 'set_prompt_submit_shortcut'; shortcut: PromptSubmitShortcut }
   | { type: 'preview_reference'; requestId: string; projectId: string | null; source: ReferencePreviewSource }

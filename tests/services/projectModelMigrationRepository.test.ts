@@ -82,6 +82,25 @@ describe('旧项目迁移只读源', () => {
     } finally { database.close(); }
   });
 
+  it('最近 Skill 界面偏好不进入项目迁移，类似前缀的未知记录仍阻断覆盖', async () => {
+    const database = await seed(new IDBFactory(), 'skill-usage');
+    try {
+      for (const [key, complete] of [['recent-skill-ids', true], ['recent-skill-ids:future', false]] as const) {
+        await new Promise<void>((resolve, reject) => {
+          const tx = database.transaction('metadata', 'readwrite');
+          tx.objectStore('metadata').put({ id: key, skillIds: ['uploaded-skill'] });
+          tx.oncomplete = () => resolve();
+          tx.onabort = () => reject(tx.error);
+        });
+        const snapshot = await readLegacyMigrationSnapshot(database, { localStorage: { getItem: () => null } });
+        expect(snapshot.complete).toBe(complete);
+        expect(snapshot.diagnostics.map((item) => item.code)).toEqual(complete ? [] : ['unknown-metadata-key']);
+        expect(snapshot.source.stores.find((store) => store.name === 'metadata')?.records)
+          .toEqual([expect.objectContaining({ key: 'last-active-project' })]);
+      }
+    } finally { database.close(); }
+  });
+
   it('队列在 IDB 读取期间变化或无法读取时阻断完整性', async () => {
     const database = await seed(new IDBFactory(), 'queue');
     try {
