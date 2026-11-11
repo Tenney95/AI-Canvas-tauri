@@ -747,6 +747,8 @@ describe('detached chat sync controller', () => {
       'conversation-2': '乙的草稿',
     });
     onAction({ type: 'set_panel_view', view: 'tasks' });
+    // 等待本次 emit 完成登记，再把该帧用作客户端已收到的关闭依据。
+    await Promise.resolve();
     onAction({ type: 'dock_window', composerDraft: { conversationId: 'conversation-2', draft: '' } });
     await vi.waitFor(() => expect(useAppStore.getState()).toMatchObject({ chatComposerLiveDraft: '', chatPanelView: 'tasks', chatPanelDetached: false }));
     controller.dispose();
