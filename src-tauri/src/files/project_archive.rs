@@ -281,8 +281,8 @@ fn verify_export_aliases(checks: &[ProjectArchiveAliasCheck], roots: &HashMap<St
         let source = selected_asset_file(root, &path)?.ok_or("源素材已缺失")?;
         for value in &check.aliases {
             let alias = normalize_archive_path(Path::new(value))?;
-            if to_archive_text(&path).to_lowercase() != to_archive_text(&alias).to_lowercase()
-                || selected_asset_file(root, &alias)?.ok_or("素材别名已缺失")? != source {
+            if (!cfg!(target_os = "macos") && to_archive_text(&path).to_lowercase() != to_archive_text(&alias).to_lowercase())
+                || !same_verified_asset_file(&selected_asset_file(root, &alias)?.ok_or("素材别名已缺失")?, &source)? {
                 return Err("素材别名已变化，请重新捕获导出内容".into());
             }
         }
@@ -360,8 +360,21 @@ fn excluded_asset_directory(name: &str, project_root: bool) -> bool {
     EXCLUDED_DIR_NAMES.iter().any(|expected| matches(expected)) || project_root && matches(".thumbnail")
 }
 
+/// 固定原生发布器留下的恢复材料不是附件；仅保留 media 直接子项的 32-byte 随机 ID 暂存名。
+fn native_media_staging_path(relative: &Path) -> bool {
+    let mut parts = relative.components();
+    let (Some(Component::Normal(parent)), Some(Component::Normal(file)), None) = (parts.next(), parts.next(), parts.next()) else { return false; };
+    let (Some(parent), Some(file)) = (parent.to_str(), file.to_str()) else { return false; };
+    let case_aliases = cfg!(windows) || cfg!(target_os = "macos");
+    if parent != "media" && !(case_aliases && parent.eq_ignore_ascii_case("media")) { return false; }
+    let name = if case_aliases { file.to_ascii_lowercase() } else { file.to_string() };
+    let Some(id) = name.strip_prefix(".native-media-").and_then(|name| name.strip_suffix(".pending")) else { return false; };
+    id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 /// 根已由宿主授权；逐组件拒绝链接，缺失项留给上层依引用位置报告。
 fn selected_asset_file(root: &Path, relative: &Path) -> Result<Option<PathBuf>, String> {
+    if native_media_staging_path(relative) { return Err("项目素材属于未发布的媒体暂存文件，不能归档".into()); }
     let metadata = plain_asset_metadata(root)?.ok_or("项目素材目录已缺失")?;
     if !metadata.is_dir() { return Err("项目素材根不是普通目录".into()); }
     // 与宿主授权返回值保持同一表示；Windows canonicalize 的 verbatim 前缀不改变真实归属。
@@ -440,6 +453,7 @@ impl AssetScan {
                 if excluded_asset_directory(&name.to_string_lossy(), relative.as_os_str().is_empty()) { continue; }
                 self.walk(&child, exclude_imports)?;
             } else if metadata.is_file() {
+                if native_media_staging_path(&child) { continue; }
                 let portable = child.to_str().ok_or("项目素材文件名不是有效 UTF-8")?.replace(std::path::MAIN_SEPARATOR, "/");
                 self.add_file(&normalize_archive_path(Path::new(&portable))?)?;
             } else { return Err("不支持的素材类型".into()); }
@@ -466,22 +480,91 @@ fn inspect_assets_scoped(root: &Path, include_import_paths: Option<&[String]>, s
 }
 
 // 只有逐个经过原生路径校验且解析到同一真实路径的写法才能合并；相同摘要不能证明身份。
-fn resolve_import_path_aliases(paths: &[String], mut resolve: impl FnMut(&Path) -> Result<PathBuf, String>)
+#[cfg(target_os = "macos")]
+fn asset_file_identity(path: &Path) -> Result<(u64, u64), String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = plain_asset_metadata(path)?.ok_or("项目素材引用缺失")?;
+    if !metadata.is_file() { return Err("项目素材不是普通文件".into()); }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn same_verified_asset_file(left: &Path, right: &Path) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    { Ok(asset_file_identity(left)? == asset_file_identity(right)?) }
+    #[cfg(not(target_os = "macos"))]
+    { Ok(left == right) }
+}
+
+fn resolve_import_path_aliases(paths: &[String], mut resolve: impl FnMut(&Path) -> Result<Option<PathBuf>, String>)
     -> Result<(Vec<String>, HashMap<String, Vec<String>>), String> {
     if paths.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材清单超过上限".into()); }
     let mut unique = Vec::new(); let mut groups: HashMap<String, String> = HashMap::new();
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+    #[cfg(target_os = "macos")]
+    let mut files: HashMap<(u64, u64), String> = HashMap::new();
     for value in paths {
         let path = selected_asset_paths(std::slice::from_ref(value), true)?.pop().ok_or("项目素材路径无效")?;
         let name = to_archive_text(&path); let folded = name.to_lowercase();
         if let Some(first) = groups.get(&folded) {
-            if resolve(&path)? != resolve(Path::new(first))? { return Err("项目素材清单存在重复路径".into()); }
+            let source = resolve(&path)?.ok_or("项目素材引用缺失")?;
+            let original = resolve(Path::new(first))?.ok_or("项目素材引用缺失")?;
+            if !same_verified_asset_file(&source, &original)? { return Err("项目素材清单存在重复路径".into()); }
             aliases.entry(first.clone()).or_default().push(name);
         } else {
+            #[cfg(target_os = "macos")]
+            if let Some(source) = resolve(&path)? {
+                let identity = asset_file_identity(&source)?;
+                if let Some(first) = files.get(&identity) {
+                    groups.insert(folded, first.clone());
+                    aliases.entry(first.clone()).or_default().push(name);
+                    continue;
+                }
+                files.insert(identity, name.clone());
+            }
             groups.insert(folded, name.clone()); unique.push(name);
         }
     }
     Ok((unique, aliases))
+}
+
+/** Unicode 或大小写写法只在受权真实文件身份一致时登记，缺失引用仍留给上层闭包阻断。 */
+fn resolve_reference_path_aliases(root: &Path, rows: &[ArchiveAssetDigest], references: &[String],
+    aliases: &mut HashMap<String, Vec<String>>) -> Result<(), String> {
+    if references.len() > MAX_ARCHIVE_ENTRIES { return Err("项目素材扫描范围无效".into()); }
+    let by_name: HashMap<String, &str> = rows.iter().map(|row| (row.path.to_lowercase(), row.path.as_str())).collect();
+    #[cfg(target_os = "macos")]
+    let mut by_file: Option<HashMap<(u64, u64), &str>> = None;
+    for value in references {
+        let path = normalize_archive_path(Path::new(value))?; let name = to_archive_text(&path);
+        if name.is_empty() { return Err("项目素材路径无效".into()); }
+        let first = if let Some(first) = by_name.get(&name.to_lowercase()) { Some(*first) } else {
+            #[cfg(target_os = "macos")]
+            {
+                let Some(file) = selected_asset_file(root, &path)? else { continue; };
+                let identity = asset_file_identity(&file)?;
+                if by_file.is_none() {
+                    let mut index = HashMap::new();
+                    for row in rows {
+                        let source = selected_asset_file(root, Path::new(&row.path))?.ok_or("项目素材在扫描时发生变化")?;
+                        index.entry(asset_file_identity(&source)?).or_insert(row.path.as_str());
+                    }
+                    by_file = Some(index);
+                }
+                by_file.as_ref().and_then(|index| index.get(&identity).copied())
+            }
+            #[cfg(not(target_os = "macos"))]
+            { None }
+        };
+        if let Some(first) = first {
+            if first == name { continue; }
+            let first_file = selected_asset_file(root, Path::new(first))?.ok_or("项目素材引用缺失")?;
+            let alias_file = selected_asset_file(root, &path)?.ok_or("项目素材引用缺失")?;
+            if !same_verified_asset_file(&first_file, &alias_file)? { return Err("项目素材清单存在重复路径".into()); }
+            let list = aliases.entry(first.to_string()).or_default();
+            if !list.contains(&name) { list.push(name); }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -512,8 +595,7 @@ pub async fn inspect_project_archive_assets<R: Runtime>(webview: Webview<R>, app
             if selected_paths.is_some() { return Err("项目素材扫描范围无效".into()); }
             let paths = include_import_paths.as_ref().ok_or("项目素材扫描范围无效")?;
             let canonical_root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
-            let (unique, mapped) = resolve_import_path_aliases(paths, |path| selected_asset_file(&canonical_root, path)?
-                .ok_or_else(|| "项目素材引用缺失".to_string()))?;
+            let (unique, mapped) = resolve_import_path_aliases(paths, |path| selected_asset_file(&canonical_root, path))?;
             aliases = mapped; Some(unique)
         } else { include_import_paths };
         let rows = inspect_assets_scoped(&root, imports.as_deref(), selected_paths.as_deref(), MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES)?;
@@ -522,19 +604,7 @@ pub async fn inspect_project_archive_assets<R: Runtime>(webview: Webview<R>, app
                 return Err("项目素材扫描范围无效".into());
             }
             let canonical_root = root.canonicalize().map_err(|_| "无法解析项目素材目录")?;
-            let by_name: HashMap<String, &str> = rows.iter().map(|row| (row.path.to_lowercase(), row.path.as_str())).collect();
-            for value in references {
-                let path = normalize_archive_path(Path::new(&value))?; let name = to_archive_text(&path);
-                if name.is_empty() { return Err("项目素材路径无效".into()); }
-                if let Some(first) = by_name.get(&name.to_lowercase()) {
-                    if *first == name { continue; }
-                    let first_file = selected_asset_file(&canonical_root, Path::new(first))?.ok_or("项目素材引用缺失")?;
-                    let alias_file = selected_asset_file(&canonical_root, &path)?.ok_or("项目素材引用缺失")?;
-                    if first_file != alias_file { return Err("项目素材清单存在重复路径".into()); }
-                    let list = aliases.entry((*first).to_string()).or_default();
-                    if !list.contains(&name) { list.push(name); }
-                }
-            }
+            resolve_reference_path_aliases(&canonical_root, &rows, &references, &mut aliases)?;
         }
         Ok(rows.into_iter().map(|asset| ArchiveAssetInspection { aliases: aliases.remove(&asset.path).unwrap_or_default(), asset }).collect())
     }).await.map_err(|_| "项目素材扫描任务失败".to_string())?
@@ -1220,11 +1290,12 @@ mod tests {
 
     #[test]
     fn import_aliases_require_same_verified_path_and_preserve_first_spelling() {
+        let fixture = Fixture::new(); fixture.write("verified.png", b"fixture");
         let paths = vec!["imports/op/asset.png".to_owned(), "Imports/op/asset.png".to_owned()];
-        let (unique, aliases) = resolve_import_path_aliases(&paths, |_| Ok(PathBuf::from("same-canonical-file"))).unwrap();
+        let (unique, aliases) = resolve_import_path_aliases(&paths, |_| Ok(Some(fixture.0.join("verified.png")))).unwrap();
         assert_eq!(unique, vec![paths[0].clone()]);
         assert_eq!(aliases.get(&paths[0]).unwrap(), &vec![paths[1].clone()]);
-        assert!(resolve_import_path_aliases(&paths, |path| Ok(path.to_path_buf())).is_err());
+        assert!(resolve_import_path_aliases(&paths, |path| Ok(Some(path.to_path_buf()))).is_err());
         assert!(resolve_import_path_aliases(&paths, |_| Err("missing".into())).is_err());
         assert!(selected_asset_paths(&paths, true).is_err()); // 旧调用仍严格拒绝大小写冲突。
     }
@@ -1234,8 +1305,7 @@ mod tests {
     fn import_aliases_are_verified_on_actual_windows_filesystem() {
         let fixture = Fixture::new(); fixture.write("imports/op/asset.png", b"fixture");
         let paths = vec!["imports/op/asset.png".to_owned(), "Imports/op/asset.png".to_owned()];
-        let (unique, aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)?
-            .ok_or_else(|| "missing".to_string())).unwrap();
+        let (unique, aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)).unwrap();
         assert_eq!(unique, vec![paths[0].clone()]); assert_eq!(aliases.get(&paths[0]).unwrap(), &vec![paths[1].clone()]);
         let rows = inspect_assets_scoped(&fixture.0, Some(&unique), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
         assert_eq!(rows.len(), 1); assert_eq!(rows[0].path, paths[0]);
@@ -1244,6 +1314,65 @@ mod tests {
         let roots = HashMap::from([("root".to_string(), fixture.0.clone())]);
         verify_export_aliases(&checks, &roots).unwrap();
         fs::write(fixture.0.join(&paths[0]), b"changed").unwrap();
+        assert!(verify_export_aliases(&checks, &roots).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_unicode_aliases_use_verified_file_identity_for_scan_and_publication() {
+        let fixture = Fixture::new();
+        let composed = "imports/op/caf\u{e9}.png".to_string();
+        let decomposed = "imports/op/cafe\u{301}.png".to_string();
+        fixture.write(&composed, b"unicode-fixture");
+        // 非归一化卷也以同一 inode 的普通文件验证身份分支，不按字符串或摘要推测别名。
+        if !fixture.0.join(&decomposed).exists() {
+            fs::hard_link(fixture.0.join(&composed), fixture.0.join(&decomposed)).unwrap();
+        }
+        let paths = vec![composed.clone(), decomposed.clone()];
+        let (unique, mut aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)).unwrap();
+        assert_eq!(unique, vec![composed.clone()]);
+        assert_eq!(aliases.get(&composed), Some(&vec![decomposed.clone()]));
+        let rows = inspect_assets_scoped(&fixture.0, Some(&unique), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
+        assert_eq!(rows.len(), 1);
+        aliases.clear();
+        resolve_reference_path_aliases(&fixture.0, &rows, &[decomposed.clone()], &mut aliases).unwrap();
+        assert_eq!(aliases.get(&composed), Some(&vec![decomposed.clone()]));
+        let checks = vec![ProjectArchiveAliasCheck { root_ref: "root".into(), path: composed,
+            aliases: vec![decomposed], bytes: rows[0].bytes, sha256: rows[0].sha256.clone() }];
+        let roots = HashMap::from([("root".to_string(), fixture.0.clone())]);
+        verify_export_aliases(&checks, &roots).unwrap();
+        fs::write(fixture.0.join(&checks[0].path), b"changed").unwrap();
+        assert!(verify_export_aliases(&checks, &roots).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_equal_bytes_in_distinct_files_are_not_aliases() {
+        let fixture = Fixture::new();
+        fixture.write("imports/op/original.png", b"same"); fixture.write("imports/op/different.png", b"same");
+        let paths = vec!["imports/op/original.png".to_owned(), "imports/op/different.png".to_owned()];
+        let (unique, aliases) = resolve_import_path_aliases(&paths, |path| selected_asset_file(&fixture.0, path)).unwrap();
+        assert_eq!(unique, paths); assert!(aliases.is_empty());
+        let rows = inspect_assets_scoped(&fixture.0, Some(&[paths[0].clone()]), None, MAX_ARCHIVE_ENTRIES, MAX_EXPANDED_BYTES).unwrap();
+        let mut mapped = HashMap::new();
+        resolve_reference_path_aliases(&fixture.0, &rows, &[paths[1].clone()], &mut mapped).unwrap();
+        assert!(mapped.is_empty());
+        let checks = vec![ProjectArchiveAliasCheck { root_ref: "root".into(), path: paths[0].clone(),
+            aliases: vec![paths[1].clone()], bytes: rows[0].bytes, sha256: rows[0].sha256.clone() }];
+        assert!(verify_export_aliases(&checks, &HashMap::from([("root".to_string(), fixture.0.clone())])).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_alias_replacement_is_rejected_even_when_bytes_are_equal() {
+        let fixture = Fixture::new(); fixture.write("media/original.png", b"same");
+        fs::hard_link(fixture.0.join("media/original.png"), fixture.0.join("media/alias.png")).unwrap();
+        let (bytes, sha256) = hash_file(&fixture.0.join("media/original.png"), &mut Vec::new()).unwrap();
+        let checks = vec![ProjectArchiveAliasCheck { root_ref: "root".into(), path: "media/original.png".into(),
+            aliases: vec!["media/alias.png".into()], bytes, sha256 }];
+        let roots = HashMap::from([("root".to_string(), fixture.0.clone())]);
+        verify_export_aliases(&checks, &roots).unwrap();
+        fs::remove_file(fixture.0.join("media/alias.png")).unwrap(); fixture.write("media/alias.png", b"same");
         assert!(verify_export_aliases(&checks, &roots).is_err());
     }
 
@@ -1565,6 +1694,38 @@ mod tests {
             assert!(unpack_archive(&output, &target.0).unwrap().assets == selected);
             fs::remove_file(output).unwrap();
         }
+    }
+
+    #[test]
+    fn scans_keep_normal_hidden_files_but_skip_native_media_pending_recovery_material() {
+        let fixture = Fixture::new();
+        let pending = format!("media/.native-media-{}.pending", "a".repeat(64));
+        fixture.write(&pending, b"unpublished recovery bytes exceeding the ordinary attachment budget");
+        let ordinary = ["media/finished.png".to_owned(), "media/.ordinary.pending".to_owned(),
+            "media/.native-media-short.pending".to_owned(), format!(".native-media-{}.pending", "a".repeat(64)),
+            format!("media/sub/.native-media-{}.pending", "a".repeat(64))];
+        for path in &ordinary { fixture.write(path, b"img"); }
+        let rows = inspect_assets_scoped(&fixture.0, None, None, ordinary.len(), ordinary.len() as u64 * 3).unwrap();
+        let actual: HashSet<_> = rows.iter().map(|row| row.path.as_str()).collect();
+        let expected: HashSet<_> = ordinary.iter().map(String::as_str).collect();
+        assert_eq!(actual, expected);
+        assert_eq!(fs::read(fixture.0.join(&pending)).unwrap(), b"unpublished recovery bytes exceeding the ordinary attachment budget");
+    }
+
+    #[test]
+    fn explicit_selection_and_pack_cannot_include_native_media_pending_files() {
+        let fixture = Fixture::new();
+        let pending = format!("media/.native-media-{}.pending", "b".repeat(64));
+        fixture.write(&pending, b"pending");
+        let selected = vec![pending.clone()];
+        assert!(selected_asset_file(&fixture.0, Path::new(&pending)).unwrap_err().contains("暂存文件"));
+        assert!(inspect_assets_scoped(&fixture.0, None, Some(&selected), 1, 7).err().unwrap().contains("暂存文件"));
+        let (bytes, sha256) = hash_file(&fixture.0.join(&pending), &mut Vec::new()).unwrap();
+        let output = fixture.0.with_extension("aicanvas");
+        assert!(pack_archive(vec![], Some(fixture.0.clone()), output.clone(),
+            Some(vec![ArchiveAssetDigest { path: pending.clone(), bytes, sha256, source_root_ref: None, source_relative_path: None }]), MAX_ARCHIVE_ENTRIES)
+            .err().unwrap().contains("暂存文件"));
+        assert!(!output.exists()); assert_eq!(fs::read(fixture.0.join(&pending)).unwrap(), b"pending");
     }
 
     #[test]

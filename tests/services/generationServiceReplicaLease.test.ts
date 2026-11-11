@@ -3,12 +3,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
+import type { AppState } from '../../src/store/useAppStore';
 
 const mocks = vi.hoisted(() => ({
   store: { currentProjectId: 'p', nodes: [] as Array<{ id: string; data: BaseNodeData }>,
     config: { theme: 'dark' as const, providers: {} }, commitToHistory: vi.fn(), getCurrentRevision: vi.fn(() => 0),
     workflows: [], projects: [], customStyles: [], updateNodeDataTransient: vi.fn(), updateNodeData: vi.fn(),
-    recordOutputHistory: vi.fn(), showToast: vi.fn(), mergeDramaExtract: vi.fn() },
+    recordOutputHistory: vi.fn(), showToast: vi.fn(), mergeDramaExtract: vi.fn(),
+    normalizeNativeMediaGenerationInputs: vi.fn(), projectExecutionContext: undefined as AppState['projectExecutionContext'] },
   generate: vi.fn(), persist: vi.fn(), guardFresh: true, completeGuard: vi.fn(),
   image: vi.fn(), imageBatch: vi.fn(), audio: vi.fn(), text: vi.fn(), textResult: vi.fn(), processText: vi.fn(), shotlist: vi.fn(), director: vi.fn(),
   prepareBatch: vi.fn(), applyBatch: vi.fn(), persistAudio: vi.fn(), completeComfy: vi.fn(), pauseComfy: vi.fn(),
@@ -43,7 +45,8 @@ vi.mock('../../src/services/workflowApi/workflowApiAdapter', () => ({ completeWo
 vi.mock('../../src/services/ai/providers/runninghubWorkflow', () => ({ completeRunningHubNodeTask: vi.fn() }));
 vi.mock('../../src/services/canvasDerivationGuard', () => ({ registerCanvasDerivation: () => ({ key: 'guard' }),
   isCanvasDerivationFresh: () => mocks.guardFresh, completeCanvasDerivation: mocks.completeGuard }));
-vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint: () => 'video-fingerprint' }));
+vi.mock('../../src/services/videoBatchPlanning', () => ({ videoInputFingerprint: () => 'video-fingerprint',
+  videoInputFingerprintMaterial: (node: { data: BaseNodeData }) => JSON.stringify([node.data.prompt, node.data.videoReferences]) }));
 vi.mock('../../src/services/pollManager', () => ({
   prepareMediaNodeGeneration: mocks.prepareMedia, completeMediaNodeTask: mocks.completeMedia, pauseMediaTask: mocks.pauseMedia,
   registerMediaNodeOperation: mocks.registerOperation,
@@ -90,6 +93,8 @@ function expectNoCommit() {
 beforeEach(() => {
   vi.clearAllMocks(); mocks.guardFresh = true; mocks.store.currentProjectId = 'p';
   mocks.tasks = [];
+  mocks.store.projectExecutionContext = undefined;
+  mocks.store.normalizeNativeMediaGenerationInputs.mockReset().mockResolvedValue({ targetPatch: {}, nodePatches: new Map() });
   mocks.polling.clear();
   mocks.store.nodes = [{ id: 'video', data: data() }];
   mocks.generate.mockReset().mockResolvedValue({ url: 'generated.mp4' });
@@ -106,6 +111,90 @@ beforeEach(() => {
 });
 
 describe('节点视频生成的宿主任务租约', () => {
+  it('新项目先规范化参考素材，再冻结原生提交守卫；同一次生成不会因身份补齐自行失效', async () => {
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.store.nodes = [{ id: 'video', data: { type: 'ai-image', label: '图生图', prompt: '@{source:参考图}',
+      model: 'volcengine/image', provider: 'volcengine' } }, { id: 'source', data: { type: 'ai-image', label: '参考图',
+      imageUrl: 'asset://localhost/project/ref.png', filePath: '/project/ref.png' } }];
+    const prepared = deferred<void>();
+    mocks.store.normalizeNativeMediaGenerationInputs.mockImplementationOnce(async () => {
+      await prepared.promise;
+      mocks.store.nodes = mocks.store.nodes.map((node) => node.id === 'source' ? { ...node, data: { ...node.data,
+        assetId: 'asset-source', relativePath: 'ref.png' } } : node);
+      return { targetPatch: {}, nodePatches: new Map() };
+    });
+    mocks.imageBatch.mockImplementationOnce(async (_params: unknown, _count: number, _signal: unknown, guard: () => Promise<void>) => {
+      await guard();
+      throw Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' });
+    });
+    const pending = run();
+    expect(mocks.store.normalizeNativeMediaGenerationInputs).toHaveBeenCalledOnce();
+    expect(mocks.imageBatch).not.toHaveBeenCalled(); expect(mocks.prepareMedia).not.toHaveBeenCalled();
+    prepared.resolve();
+    expect(await pending).toEqual({ success: true });
+    expect(mocks.imageBatch).toHaveBeenCalledOnce();
+    expect(mocks.store.nodes[1].data.assetId).toBe('asset-source');
+  });
+
+  it('身份准备失败时不创建图片批次、不提交模型请求', async () => {
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.store.nodes = [{ id: 'video', data: { type: 'ai-image', label: '批量图生图', prompt: '保留人物', batchCount: 3,
+      model: 'volcengine/image', provider: 'volcengine' } }];
+    mocks.store.normalizeNativeMediaGenerationInputs.mockRejectedValueOnce(new Error('节点媒体已变化，未覆盖新内容'));
+    expect(await run()).toEqual({ success: false, message: '节点媒体已变化，未覆盖新内容' });
+    expect(mocks.prepareBatch).not.toHaveBeenCalled(); expect(mocks.imageBatch).not.toHaveBeenCalled();
+    expect(mocks.image).not.toHaveBeenCalled(); expect(mocks.prepareMedia).not.toHaveBeenCalled();
+  });
+
+  it('目标媒体身份回补不覆盖调用方临时提示词', async () => {
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    const original: BaseNodeData = { type: 'ai-image', label: '图生图', prompt: '保存的提示词',
+      model: 'volcengine/image', provider: 'volcengine', imageUrl: 'data:image/png;base64,AA==' };
+    mocks.store.nodes = [{ id: 'video', data: original }];
+    const patch = { imageUrl: 'asset://localhost/project/source.png', assetId: 'asset-target', relativePath: 'source.png' };
+    mocks.store.normalizeNativeMediaGenerationInputs.mockImplementationOnce(async () => {
+      mocks.store.nodes = [{ id: 'video', data: { ...original, ...patch } }]; return { targetPatch: patch, nodePatches: new Map([['video', patch]]) };
+    });
+    mocks.imageBatch.mockRejectedValueOnce(Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' }));
+    expect(await run(undefined, { ...original, prompt: '临时重绘提示词' })).toEqual({ success: true });
+    expect(mocks.imageBatch).toHaveBeenCalledWith(expect.objectContaining({ prompt: '临时重绘提示词' }), 1, undefined, expect.any(Function));
+    expect(mocks.store.nodes[0].data.prompt).toBe('保存的提示词');
+  });
+
+  it('passData同源引用集合跟随规范化，不被误判为原生视频临时输入覆盖', async () => {
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    const original: BaseNodeData = { ...data(), videoReferences: [{ id: 'ref', kind: 'frame', role: 'reference', url: 'asset://localhost/project/ref.png' }] };
+    mocks.store.nodes = [{ id: 'video', data: original }];
+    const patch = { videoReferences: original.videoReferences!.map((reference) => ({ ...reference, assetId: 'asset-ref' })) };
+    mocks.store.normalizeNativeMediaGenerationInputs.mockImplementationOnce(async () => {
+      mocks.store.nodes = [{ id: 'video', data: { ...original, ...patch } }]; return { targetPatch: patch, nodePatches: new Map([['video', patch]]) };
+    });
+    mocks.generate.mockImplementationOnce(async (_options: unknown, _signal: unknown, guard: () => Promise<void>) => {
+      await guard(); throw Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' });
+    });
+    expect(await run(undefined, original)).toEqual({ success: true });
+    expect(mocks.generate).toHaveBeenCalledOnce();
+  });
+
+  it('准备媒体期间撤销宿主租约仍阻止提交，不把规范化当作放宽权限的理由', async () => {
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.store.nodes = [{ id: 'video', data: { type: 'ai-image', label: '图生图', prompt: '保留人物', model: 'volcengine/image', provider: 'volcengine' } }];
+    const gate = deferred<Awaited<ReturnType<AppState['normalizeNativeMediaGenerationInputs']>>>();
+    mocks.store.normalizeNativeMediaGenerationInputs.mockReturnValueOnce(gate.promise);
+    let current = true;
+    const lease = { signal: new AbortController().signal, assertFresh: vi.fn(() => { if (!current) throw new Error('输入已改变'); }) };
+    const pending = run(lease);
+    await vi.waitFor(() => expect(mocks.store.normalizeNativeMediaGenerationInputs).toHaveBeenCalledOnce());
+    current = false; gate.resolve({ targetPatch: {}, nodePatches: new Map() });
+    expect(await pending).toEqual({ success: false, message: '任务已取消' });
+    expect(mocks.imageBatch).not.toHaveBeenCalled(); expect(mocks.prepareMedia).not.toHaveBeenCalled();
+  });
+
   it('再次运行该节点才清除上一轮错误，新一轮失败继续保留新的错误状态', async () => {
     mocks.store.nodes[0].data = { ...data(), status: 'error', error: '上一轮明确失败' };
     const generation = deferred<{ url: string }>();

@@ -160,6 +160,85 @@ describe('P5 native file projection', () => {
     await expect(createNativeProjectModelArchivePort(database, session).inspectAssets(capture)).rejects.toThrow('项目引用的素材缺失');
   });
 
+  it.each([
+    { field: 'data.relativePath', data: { relativePath: 'missing.png' } },
+    { field: 'data.referenceImages[0].relativePath', data: { referenceImages: [{ id: 'ref-one', label: '正面参考', relativePath: 'missing.png' }] } },
+    { field: 'data.shotlistRows[0].relativePath', data: { shotlistRows: [{ id: 'shot-one', shotNo: 'S003', relativePath: 'missing.png' }] } },
+  ])('新项目缺失引用定位到分集、节点和$field，不静默跳过', async ({ field, data }) => {
+    const { capture } = await setup();
+    capture.exchange = null; capture.aggregate.project.name = '剧集';
+    capture.aggregate.project.storageBindings = capture.aggregate.project.storageBindings.slice(0, 1);
+    capture.aggregate.episodes = [{ id: 'episode-one', projectId: capture.aggregate.project.id, canvasId: 'canvas-one', name: 'EP000',
+      orderRank: 0, createdAt: 1, updatedAt: 1, epoch: 0, revision: 0, settingsPolicy: { mode: 'inherit', overrides: {} } }];
+    capture.aggregate.canvases = [{ id: 'canvas-one', projectId: capture.aggregate.project.id, episodeId: 'episode-one',
+      storageRootRef: capture.aggregate.project.storageRootRef, epoch: 0, revision: 0, revisionScope: 'project', edges: [], groups: [],
+      nodes: [{ id: 'missing-image-node', type: 'source-image', data: { label: '角色定妆图', displayId: 42, ...data,
+        prompt: '不得进入错误的完整正文' } }] }];
+    native.existing.add('fixture/primary'); native.invoke.mockResolvedValue([]);
+    const original = structuredClone(capture);
+    const failure = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain('项目引用的素材缺失，无法安全导出：missing.png');
+    expect(message).toContain('项目「剧集」 → 分集「EP000」');
+    expect(message).toContain('节点 #42「角色定妆图」（ID：missing-image-node）');
+    expect(message).toContain(`引用字段：${field}`);
+    if (field.includes('shotlistRows')) expect(message).toContain('镜头「S003」（ID：shot-one）');
+    expect(message).not.toMatch(/fixture\/primary|不得进入错误的完整正文/);
+    expect(capture).toEqual(original);
+  });
+
+  it.each(['history', 'assetMetadata'] as const)('缺失引用来自%s时明确出处和字段', async (source) => {
+    const { capture } = await setup(); capture.exchange = null;
+    capture.aggregate.project.storageBindings = capture.aggregate.project.storageBindings.slice(0, 1);
+    if (source === 'history') capture.history = [{ kind: 'output', sourceNamespace: 'native:project', archiveOriginId: 'out-one',
+      value: { id: 'out-one', projectId: capture.aggregate.project.id, name: '原输出', relativePath: 'missing.png' } }];
+    else capture.assetMetadata = [{ assetId: 'asset-one', rootRef: capture.aggregate.project.storageRootRef,
+      ownerId: capture.aggregate.project.id, path: 'missing.png', bytes: 3, sha256: hash }];
+    native.existing.add('fixture/primary'); native.invoke.mockResolvedValue([]);
+    const failure = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain('项目引用的素材缺失，无法安全导出：missing.png');
+    expect(message).toContain(source === 'history' ? '输出历史「原输出」（ID：out-one）' : '素材「missing.png」（ID：asset-one）');
+    expect(message).toContain(source === 'history' ? '引用字段：relativePath' : '引用字段：assetMetadata.path');
+    expect(message).not.toContain('fixture/primary');
+  });
+
+  it('旧版本附件缺失指出冻结文件身份，不丢弃历史附件', async () => {
+    const { capture } = await setup();
+    native.existing.add('fixture/primary'); native.existing.add('fixture/secondary'); native.invoke.mockResolvedValue([]);
+    const failure = await createNativeProjectModelArchivePort(database, session).inspectAssets(capture).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('旧版本附件（文件 ID：F1）');
+    expect((failure as Error).message).toContain('引用字段：exchange.fileBindings.localRelativePath');
+    expect((failure as Error).message).toContain('imports/import-op-root-0/same.png');
+  });
+
+  it('macOS绝对filePath只在本轮扫描映射，错误显示相对文件名而不泄露目录或正文', async () => {
+    const { capture } = await setup();
+    const projectId = 'p2-00000000-0000-4000-8000-000000000001', rootRef = 'r2-00000000-0000-4000-8000-000000000002';
+    const folderName = `project-${projectId}`, physicalRoot = '/Users/private/项目素材/作品-00000000';
+    capture.exchange = null;
+    capture.aggregate.project = { ...capture.aggregate.project, id: projectId, name: '作品', dataFolder: folderName,
+      storageRootRef: rootRef, storageBindings: [{ rootRef, folderName, sourceRecordIds: [], source: 'project-managed' }] };
+    capture.aggregate.canvases = [{ id: 'canvas-one', projectId, episodeId: null, storageRootRef: rootRef,
+      epoch: 0, revision: 0, revisionScope: 'project', edges: [], groups: [], nodes: [{ id: 'source-node', type: 'source-image',
+        data: { label: '导入图片', displayId: 7, filePath: `${physicalRoot}/missing.png`, prompt: '不得进入错误的完整正文' } }] }];
+    native.existing.add(physicalRoot);
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === 'resolve_native_project_media_root') return physicalRoot;
+      if (command === 'inspect_project_archive_assets') return [];
+      throw new Error(`unexpected native command: ${command}`);
+    });
+    const failure = await createBoundProjectModelArchiveExportPort(projectId, 'chosen-output').inspectAssets(capture).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('missing.png');
+    expect((failure as Error).message).toContain('节点 #7「导入图片」（ID：source-node）');
+    expect((failure as Error).message).toContain('引用字段：data.filePath');
+    expect((failure as Error).message).not.toMatch(/\/Users\/private|不得进入错误的完整正文|chosen-output/);
+  });
+
   it('capture冻结原物理包映射；重启忽略新incomingFolder，逐root核原child后只补未发布root', async () => {
     const { operation, source } = await setup();
     const original = createNativeProjectModelArchivePort(database, session, { incomingFolder: 'unpacked/original/assets' });

@@ -91,17 +91,24 @@ function localFileReferences(value: unknown, rootRef: string, assets: ProjectMod
   const relative = (path: unknown): string => {
     if (typeof path !== 'string' || !path) throw new Error('素材本机路径缺少可证明的相对映射');
     const normalized = path.replace(/\\/g, '/');
-    const match = assets.find((asset) => {
+    const matches = assets.filter((asset) => {
       if (asset.rootRef !== bound) return false;
       const actual = asset.localAbsolutePath?.replace(/\\/g, '/');
       const original = asset.backupSourceRelativePath && actual?.endsWith('/' + asset.backupSourceRelativePath)
         ? actual.slice(0, -asset.backupSourceRelativePath.length) + asset.path : undefined;
       const equal = (candidate: string | undefined) => candidate !== undefined
         && (/^[a-z]:\//i.test(normalized) ? candidate.toLowerCase() === normalized.toLowerCase() : candidate === normalized);
-      return equal(actual) || equal(original) || asset.path === normalized;
+      // 只使用受信文件端口本轮原生核验的同根别名，不能把 Unicode 近似或相同摘要当成路径身份。
+      const physicalRelative = safeExchangePath(asset.backupSourceRelativePath ?? asset.path);
+      const directory = actual?.endsWith('/' + physicalRelative) ? actual.slice(0, -physicalRelative.length) : undefined;
+      return equal(actual) || equal(original) || asset.path === normalized || asset.aliases?.some((alias) => {
+        const safe = safeExchangePath(alias);
+        return safe === normalized || directory !== undefined && equal(directory + safe);
+      });
     });
-    if (!match) throw new Error('素材只有未证明来源的本机路径，请重新保存引用后归档');
-    return safeExchangePath(match.path);
+    if (!matches.length) throw new Error('素材只有未证明来源的本机路径，请重新保存引用后归档');
+    if (matches.length !== 1) throw new Error('素材本机路径对应多个已验证文件，请重新保存引用后归档');
+    return safeExchangePath(matches[0].path);
   };
   if (source.filePath && !source.relativePath) result.relativePath = relative(source.filePath);
   if (source.imageFilePath && !source.relativePath && !source.imageRelativePath) result.imageRelativePath = relative(source.imageFilePath);

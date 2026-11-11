@@ -2553,6 +2553,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
         }
         const initial = useAppStore.getState();
         const settings = initial.projects.find((project) => project.id === context.projectId)?.settings;
+        const inputData = new Map(initial.nodes.filter((node) => targetIds.includes(node.id)).map((node) => [node.id, node.data]));
         const inputs = new Map(initial.nodes.filter((node) => targetIds.includes(node.id))
           .map((node) => [node.id, generationInputSnapshot(node.data, settings)]));
         const results: Array<{ nodeId: string; status: string; message?: string }> = [];
@@ -2570,6 +2571,36 @@ export function registerCanvasAgentTools(): Array<() => void> {
             && !['paused', 'stopped', 'failed', 'completed'].includes(task.status))) throw new Error('MCP 操作任务已停止或移除');
         };
         try {
+          if (initial.projectExecutionContext?.modelGeneration === 1) {
+            const baseRevision = initial.getCurrentRevision();
+            const assertPreparing = () => {
+              const live = useAppStore.getState();
+              if (context.signal.aborted || live.currentProjectId !== context.projectId || live.getCurrentRevision() !== baseRevision) {
+                throw new Error('项目或运行输入已变化，未提交生成');
+              }
+              assertCanvasRevision(context);
+              if (tracksOperation) assertOperationOwner();
+              const currentSettings = live.projects.find((project) => project.id === context.projectId)?.settings;
+              for (const [nodeId, expected] of inputs) {
+                const node = live.nodes.find((entry) => entry.id === nodeId);
+                if (!node || generationInputSnapshot(node.data, currentSettings) !== expected) throw new Error('节点生成输入已变化，未提交生成');
+              }
+            };
+            for (const nodeId of targetIds) {
+              assertPreparing();
+              const live = useAppStore.getState(), node = live.nodes.find((entry) => entry.id === nodeId);
+              if (!node || node.data.status === 'loading' || !['ai-image', 'ai-animation', 'ai-panorama', 'ai-video', 'ai-audio', 'source-image', 'source-video', 'source-audio'].includes(node.data.type)) continue;
+              const normalized = await live.normalizeNativeMediaGenerationInputs(nodeId);
+              // 只用受控回补证明更新授权快照；异步期间其他真实输入编辑仍与原快照比较。
+              for (const [id, patch] of normalized.nodePatches) {
+                const previous = inputData.get(id);
+                if (!previous) continue;
+                const next = { ...previous, ...patch };
+                inputData.set(id, next); inputs.set(id, generationInputSnapshot(next, settings));
+              }
+              assertPreparing();
+            }
+          }
           if (tracksOperation) {
             await recordMcpOperationProgress(context.taskId, { items: operationItems });
             assertOperationOwner();

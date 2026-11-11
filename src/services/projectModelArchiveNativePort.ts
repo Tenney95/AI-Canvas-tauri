@@ -7,7 +7,7 @@ import type { ProjectModelFixtureBusinessSession } from '../types/projectModelBu
 import type { ProjectModelTransferCapture, ProjectModelTransferImportJournal } from '../types/projectModelTransfer';
 import { createProjectModelPreRestoreBackupService } from './projectModelPreRestoreBackup';
 import type { ArchiveAssetDigest } from './projectExchangeDomain';
-import { safeExchangePath } from './projectExchangeDomain';
+import { captureSourceLocation, missingProjectAssetMessage, projectArchiveDisplayLabel, safeExchangePath } from './projectExchangeDomain';
 import { readProjectArchiveV4Files } from './projectArchiveV4';
 import type { ProjectModelTransferExchange } from '../types/projectModelTransfer';
 import { createProjectArchiveFixturePreviewDirectory } from './fs/projectArchiveFixtureFiles';
@@ -38,10 +38,29 @@ function headFiles(exchange: ProjectModelTransferExchange | null) {
   return { exchange, snapshot: head.snapshot, files: readProjectArchiveV4Files(head.snapshot) };
 }
 const pathFields = new Set(['relativePath', 'imageRelativePath', 'directorCaptureRelativePaths']);
+interface StoragePathOrigin { location: string; fieldPath: string }
+const storagePathKey = (rootRef: string, path: string) => JSON.stringify([rootRef, path]);
 /** 只读领域文件字段；新生成且尚未登记进 head 的 imports 文件也属于当前作品。 */
-export function currentStoragePaths(capture: ProjectModelTransferCapture, directories: Map<string, string>): Map<string, Set<string>> {
+export function currentStoragePaths(capture: ProjectModelTransferCapture, directories: Map<string, string>,
+  origins?: Map<string, StoragePathOrigin>): Map<string, Set<string>> {
   const paths = new Map([...directories.keys()].map((root) => [root, new Set<string>()]));
-  const walk = (value: unknown, rootRef: string, field = ''): void => {
+  const projectLocation = `项目「${projectArchiveDisplayLabel(capture.aggregate.project.name)}」`;
+  const canvases = new Map(capture.aggregate.canvases.map((canvas) => [canvas.id, canvas]));
+  const episodes = new Map(capture.aggregate.episodes.flatMap((episode) => [[episode.id, episode], [episode.canvasId, episode]] as const));
+  const ownerLocation = (id: string) => {
+    const canvas = canvases.get(id);
+    const episode = episodes.get(id) ?? (canvas?.episodeId ? episodes.get(canvas.episodeId) : undefined);
+    return `${projectLocation}${episode ? ` → 分集「${projectArchiveDisplayLabel(episode.name)}」` : ''}`
+      + (canvas ? ` → 画布（ID：${projectArchiveDisplayLabel(canvas.id, '格式无效')}）` : '');
+  };
+  const add = (rootRef: string, path: string, location: string, fieldPath: string) => {
+    paths.get(rootRef)?.add(path);
+    const key = storagePathKey(rootRef, path);
+    if (!origins?.has(key)) origins?.set(key, { location, fieldPath });
+  };
+  const sourceKinds: Record<string, string> = { nodes: '节点', shotlistRows: '镜头', characters: '角色', scenes: '场景', props: '道具',
+    referenceImages: '参考图', voiceClips: '音色', actions: '动作', media: '动作素材' };
+  const walk = (value: unknown, rootRef: string, field = '', location = projectLocation, fieldPath = ''): void => {
     if (typeof value === 'string' && value) {
       let relative: string | undefined;
       if (pathFields.has(field)) relative = safeExchangePath(value);
@@ -51,31 +70,42 @@ export function currentStoragePaths(capture: ProjectModelTransferCapture, direct
           relative = safeExchangePath(absolute.slice(directory.length + 1));
         }
       }
-      if (relative) paths.get(rootRef)?.add(relative);
+      if (relative) add(rootRef, relative, location, fieldPath);
       return;
     }
-    if (Array.isArray(value)) { for (const item of value) walk(item, rootRef, field); return; }
+    if (Array.isArray(value)) { value.forEach((item, index) => walk(item, rootRef, field, location, `${fieldPath}[${index}]`)); return; }
     if (!value || typeof value !== 'object') return;
-    const bound = typeof (value as { storageRootRef?: unknown }).storageRootRef === 'string'
-      ? (value as { storageRootRef: string }).storageRootRef : rootRef;
+    const row = value as Record<string, unknown>;
+    if (origins && sourceKinds[field] && typeof row.id === 'string') {
+      location = captureSourceLocation(location, sourceKinds[field], row);
+      if (field === 'nodes') fieldPath = '';
+    }
+    const bound = typeof row.storageRootRef === 'string' ? row.storageRootRef : rootRef;
     if (!directories.has(bound)) throw new Error('当前素材引用的根不属于项目');
-    for (const [key, item] of Object.entries(value)) walk(item, bound, key);
+    for (const [key, item] of Object.entries(row)) walk(item, bound, key, location, fieldPath ? `${fieldPath}.${key}` : key);
   };
   const primary = projectModelArchiveStorageContext(capture).primary;
-  walk(capture.aggregate.content, primary); walk(capture.aggregate.project.defaultSettings, primary);
-  for (const content of capture.aggregate.episodeContents) walk(content, content.storageRootRef);
+  walk(capture.aggregate.content, primary); walk(capture.aggregate.project.defaultSettings, primary, '', projectLocation, 'defaultSettings');
+  for (const content of capture.aggregate.episodeContents) walk(content, content.storageRootRef, '', ownerLocation(content.episodeId));
   for (const episode of capture.aggregate.episodes) walk(episode.settingsPolicy,
-    capture.aggregate.episodeContents.find((item) => item.episodeId === episode.id)?.storageRootRef ?? primary);
-  for (const canvas of capture.aggregate.canvases) walk(canvas, canvas.storageRootRef);
-  for (const editor of capture.editorRecords ?? []) walk(editor, primary);
-  for (const editor of capture.retiredEditorRecords ?? []) walk(editor, primary);
-  for (const row of capture.history) if (row.kind === 'output') walk(row.value, primary);
-  for (const result of capture.nativeMediaResults ?? []) paths.get(capture.aggregate.project.storageRootRef)?.add(safeExchangePath(result.relativePath));
-  for (const result of capture.nativeEditorMediaArtifacts ?? []) paths.get(capture.aggregate.project.storageRootRef)?.add(safeExchangePath(result.path));
+    capture.aggregate.episodeContents.find((item) => item.episodeId === episode.id)?.storageRootRef ?? primary,
+    '', ownerLocation(episode.id), 'settingsPolicy');
+  for (const canvas of capture.aggregate.canvases) walk(canvas, canvas.storageRootRef, '', ownerLocation(canvas.id));
+  for (const editor of capture.editorRecords ?? []) walk(editor, primary, '', captureSourceLocation(ownerLocation(editor.projectId), '剪辑工程', editor as unknown as Record<string, unknown>));
+  for (const editor of capture.retiredEditorRecords ?? []) walk(editor, primary, '', captureSourceLocation(ownerLocation(editor.projectId), '已退役剪辑工程', editor as unknown as Record<string, unknown>));
+  for (const row of capture.history) if (row.kind === 'output') walk(row.value, primary, '', captureSourceLocation(ownerLocation(row.value.projectId), '输出历史', row.value));
+  for (const [index, result] of (capture.nativeMediaResults ?? []).entries()) add(capture.aggregate.project.storageRootRef,
+    safeExchangePath(result.relativePath), `${ownerLocation(result.canvasId)} → 已保留媒体产物（操作：${projectArchiveDisplayLabel(result.operationId, '格式无效')}）`, `nativeMediaResults[${index}].relativePath`);
+  for (const [index, result] of (capture.nativeEditorMediaArtifacts ?? []).entries()) add(capture.aggregate.project.storageRootRef,
+    safeExchangePath(result.path), `${ownerLocation(result.canvasId)} → 已保留剪辑产物（操作：${projectArchiveDisplayLabel(result.operationId, '格式无效')}）`, `nativeEditorMediaArtifacts[${index}].path`);
   for (const asset of capture.assetMetadata ?? []) {
-    const target = paths.get(asset.rootRef); if (!target) throw new Error('素材元数据根不属于项目');
-    target.add(safeExchangePath(asset.path));
-    for (const image of asset.images ?? []) for (const reference of image.references) target.add(safeExchangePath(reference.relativePath));
+    if (!paths.has(asset.rootRef)) throw new Error('素材元数据根不属于项目');
+    const location = captureSourceLocation(ownerLocation(asset.ownerId), '素材', { id: asset.assetId, name: safeExchangePath(asset.path).split('/').at(-1) });
+    add(asset.rootRef, safeExchangePath(asset.path), location, 'assetMetadata.path');
+    for (const [imageIndex, image] of (asset.images ?? []).entries()) for (const [referenceIndex, reference] of image.references.entries()) {
+      add(asset.rootRef, safeExchangePath(reference.relativePath), `${location} → 图片信息[${imageIndex}]`,
+        `assetMetadata.images[${imageIndex}].references[${referenceIndex}].relativePath`);
+    }
   }
   return paths;
 }
@@ -230,7 +260,8 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         for (const root of activeRoots) directories.set(root.rootRef, root.rootRef === capture.aggregate.project.storageRootRef ? primary
           : `${primary.replace(/[\\/]+$/, '')}/roots/${root.rootRef}`);
       } else for (const root of activeRoots) directories.set(root.rootRef, await directory(root.folderName));
-      const current = currentStoragePaths(capture, directories);
+      const origins = new Map<string, StoragePathOrigin>();
+      const current = currentStoragePaths(capture, directories, origins);
       for (const result of capture.nativeMediaResults ?? []) {
         const root = capture.aggregate.project.storageRootRef;
         const paths = current.get(root) ?? new Set<string>();
@@ -271,7 +302,10 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
         const required = (head?.files ?? []).filter((item) => item.rootRef === logicalRoot).map((file) => {
           const binding = capture.exchange?.fileBindings.find((item) => item.id === file.id && item.rootRef === file.rootRef && item.relativePath === file.relativePath);
           if (!binding) throw new Error('旧版本附件缺少路径绑定，无法安全导出');
-          return safeExchangePath(binding.localRelativePath);
+          const path = safeExchangePath(binding.localRelativePath), key = storagePathKey(root.rootRef, path);
+          if (!origins.has(key)) origins.set(key, { location: `项目「${projectArchiveDisplayLabel(capture.aggregate.project.name)}」 → 旧版本附件（文件 ID：${projectArchiveDisplayLabel(file.id, '格式无效')}）`,
+            fieldPath: 'exchange.fileBindings.localRelativePath' });
+          return path;
         }).filter((path) => !options.currentFilesOnly || current.get(root.rootRef)?.has(path));
         if (!(await exists(assetsDir))) {
           if (required.length || current.get(root.rootRef)?.size) throw new Error('项目引用的素材根缺失，无法安全导出');
@@ -300,7 +334,9 @@ function createArchiveFilePort(directory: (relative: string, create?: boolean) =
           retained.push({ path: proof.path, bytes: proof.bytes, sha256: proof.sha256, backupSourceRelativePath: proof.copyPath });
         }
         for (const path of referencePaths) if (!retained.some((asset) => asset.path === path || asset.aliases?.includes(path))) {
-          throw new Error('项目引用的素材缺失，无法安全导出');
+          const origin = origins.get(storagePathKey(root.rootRef, path));
+          const location = `${origin?.location ?? `项目「${projectArchiveDisplayLabel(capture.aggregate.project.name)}」`}（素材根：${projectArchiveDisplayLabel(root.rootRef, '已绑定根')}）`;
+          throw new Error(missingProjectAssetMessage(path, location, origin?.fieldPath, '项目引用的素材缺失，无法安全导出'));
         }
         result.push(...retained
           .map((asset) => ({ path: asset.path, bytes: asset.bytes, sha256: asset.sha256, rootRef: root.rootRef, aliases: asset.aliases,

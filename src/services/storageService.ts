@@ -3,6 +3,7 @@
  * workflows, app config, user presets, and uploaded skills.
  */
 import { isTauriAssetUrl, localMediaUrlToPath } from '../utils/mediaUrl';
+import type { Node } from '@xyflow/react';
 import {
   saveProjectToDb,
   getAllProjects,
@@ -803,7 +804,7 @@ function hasUnresolvedAsset(node: PersistedNodeLike): boolean {
   ));
 }
 
-async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: ProjectFileLookup): Promise<unknown> {
+async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: ProjectFileLookup, refreshIndex = true): Promise<unknown> {
   if (!Array.isArray(nodes)) return nodes;
   const projectDir = await getProjectDataDir(projectId);
   if (!projectDir) return nodes;
@@ -904,11 +905,22 @@ async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: Pr
   const restored = await mapWithConcurrency(nodes as PersistedNodeLike[], 4, restoreNode);
   // ponytail: 节点全都就位就不扫目录了 —— 只有解析失败（外部重命名/移动）才刷新索引再试一轮，
   // 省掉每次切画布对整个项目目录的两轮 stat + 索引写。
-  if (!restored.some(hasUnresolvedAsset)) return restored;
+  if (!refreshIndex || !restored.some(hasUnresolvedAsset)) return restored;
   await refreshProjectAssetIndex(projectId, projectDir);
   // 恢复阶段可能重新找到文件，重试不能复用第一轮的缺失或权限失败结果。
   lookup.existsByPath.clear();
   return mapWithConcurrency(nodes as PersistedNodeLike[], 4, restoreNode);
+}
+
+/** 生成前只收敛本轮节点的媒体身份；不保存画布、不扫描整库，也不替换调用方的运行状态。 */
+export async function normalizeProjectMediaNodes(projectId: string, nodes: Node<BaseNodeData>[]): Promise<Node<BaseNodeData>[]> {
+  const projectDir = await getProjectDataDir(projectId);
+  if (!projectDir || !getNativeProjectOwner(projectId)) throw new Error('当前项目的媒体目录不可用');
+  const context: MediaSerializationContext = {
+    projectId, projectDir, cache: new Map(), existsByPath: new Map(),
+  };
+  const serialized = await serializeProjectNodes(nodes, context);
+  return await restoreProjectNodes(serialized, projectId, context, false) as Node<BaseNodeData>[];
 }
 
 async function restoreProjectSettings(

@@ -6,6 +6,7 @@ import { resolveGenerationNodeData } from './nodeGeneration';
 import { resolveGenerationSelection } from '../services/generationInput';
 import { runBatchTasks } from '../services/ai/batchUtils';
 import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
+import { configValuesEqual } from '../services/configPatch';
 
 export type BatchContext = Pick<AppState, 'commitToHistory' | 'currentProjectId'>;
 
@@ -137,10 +138,47 @@ export async function batchExecuteNodes(
   edges: Edge[],
   ctx: BatchContext,
 ): Promise<{ ok: number; fail: number; skipped: number }> {
-  const initial = useAppStore.getState();
+  let initial = useAppStore.getState();
   if (initial.currentProjectId !== ctx.currentProjectId) return { ok: 0, fail: 0, skipped: nodeIds.length };
   const selectedIds = new Set(nodeIds);
-  const executable = nodes.filter((node) => isExecutableNode(node, selectedIds, initial));
+  let executable = nodes.filter((node) => isExecutableNode(node, selectedIds, initial));
+  let preparationSkipped = 0;
+  if (initial.projectExecutionContext?.modelGeneration === 1) {
+    const revision = initial.getCurrentRevision(), originalContext = queueContext(initial);
+    const expected = new Map(executable.map((node) => [node.id, node]));
+    const invalid = new Set<string>();
+    for (const queued of executable) {
+      const current = useAppStore.getState();
+      if (current.currentProjectId !== ctx.currentProjectId || current.getCurrentRevision() !== revision
+        || queueContext(current) !== originalContext) return { ok: 0, fail: 0, skipped: executable.length };
+      for (const [id, snapshot] of expected) {
+        if (current.nodes.find((node) => node.id === id)?.data !== snapshot.data) invalid.add(id);
+      }
+      if (invalid.has(queued.id) || !['ai-image', 'ai-animation', 'ai-panorama', 'ai-video', 'ai-audio', 'source-image', 'source-video', 'source-audio'].includes(queued.data.type)) continue;
+      try {
+        const normalized = await current.normalizeNativeMediaGenerationInputs(queued.id);
+        const latest = useAppStore.getState();
+        for (const [id, patch] of normalized.nodePatches) {
+          const previous = expected.get(id), live = latest.nodes.find((node) => node.id === id);
+          if (!previous || invalid.has(id)) continue;
+          const data = { ...previous.data, ...patch };
+          for (const field of Object.keys(patch) as (keyof BaseNodeData)[]) {
+            if (patch[field] === undefined && live && !Object.hasOwn(live.data, field)) delete data[field];
+          }
+          if (!live || live.type !== previous.type || !configValuesEqual(live.data, data)) invalid.add(id);
+          else expected.set(id, { ...previous, data: live.data });
+        }
+      } catch { invalid.add(queued.id); }
+    }
+    initial = useAppStore.getState();
+    if (initial.currentProjectId !== ctx.currentProjectId || initial.getCurrentRevision() !== revision
+      || queueContext(initial) !== originalContext) return { ok: 0, fail: 0, skipped: executable.length };
+    for (const [id, snapshot] of expected) {
+      if (initial.nodes.find((node) => node.id === id)?.data !== snapshot.data) invalid.add(id);
+    }
+    preparationSkipped = invalid.size;
+    executable = executable.filter((node) => !invalid.has(node.id)).map((node) => expected.get(node.id)!);
+  }
   const selections = new Map(executable.map((node) => [node.id,
     JSON.stringify(resolveGenerationSelection(resolveGenerationNodeData(node.data)!, initial))]));
   const isWorkflow = (node: Node<BaseNodeData>) => Boolean(resolveGenerationSelection(resolveGenerationNodeData(node.data)!, initial).workflowId);
@@ -151,7 +189,7 @@ export async function batchExecuteNodes(
   let workflowIndex = 0;
   // 只重排工作流所占的位置，保留普通节点原顺序；环内也按此顺序执行。
   const toRun = executable.map((node) => isWorkflow(node) ? workflows[workflowIndex++] : node);
-  if (toRun.length === 0) return { ok: 0, fail: 0, skipped: 0 };
+  if (toRun.length === 0) return { ok: 0, fail: 0, skipped: preparationSkipped };
   ctx.commitToHistory();
   const guard = registerCanvasImport(initial);
   const context = queueContext(initial);
@@ -186,7 +224,7 @@ export async function batchExecuteNodes(
     .map((id) => connectedNodes.find((n) => n.id === id))
     .filter(Boolean) as Node<BaseNodeData>[];
 
-  let ok = 0, fail = 0, skipped = 0;
+  let ok = 0, fail = 0, skipped = preparationSkipped;
   try {
     const { executeGeneration } = await import('../services/generationService');
     const runNode = async (queued: Node<BaseNodeData>) => {
@@ -213,6 +251,6 @@ export async function batchExecuteNodes(
     await runBatchTasks(jobs.length, 3, (index) => jobs[index]());
     return { ok, fail, skipped };
   } catch {
-    return { ok, fail: toRun.length - ok - skipped, skipped };
+    return { ok, fail: toRun.length - ok - (skipped - preparationSkipped), skipped };
   } finally { if (guard) completeCanvasDerivation(guard); }
 }

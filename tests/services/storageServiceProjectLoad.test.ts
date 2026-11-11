@@ -60,7 +60,10 @@ import {
   saveProjectToDb,
   setLastActiveProjectId,
 } from '../../src/services/indexedDbService';
-import { loadProjectData, restoreProjectRecord, saveProject, serializeProjectRecord, type ProjectSaveData } from '../../src/services/storageService';
+import { loadProjectData, normalizeProjectMediaNodes, restoreProjectRecord, saveProject, serializeProjectRecord, type ProjectSaveData } from '../../src/services/storageService';
+import type { Node } from '@xyflow/react';
+import type { BaseNodeData } from '../../src/types';
+import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 import { normalizeDramaAssetLibrary, normalizeDramaVisualAsset, syncDramaVisualAssetPrimary, type DramaScene } from '../../src/types/dramaAssets';
 import { captureExchangeSnapshot, materializeExchangeSnapshot } from '../../src/services/projectExchangeDomain';
 import { resolveDramaAssetImageRef } from '../../src/services/dramaAssetPrompt';
@@ -127,6 +130,47 @@ describe('project loading tolerates asset recovery failures', () => {
     const restored = await restoreProjectRecord(persisted);
     expect(restored.nodes).toMatchObject([{ data: { filePath: '/project/data/image.png',
       imageUrl: 'asset://localhost/project/data/image.png', output: 'asset://localhost/project/data/image.png' } }]);
+  });
+
+  it('生成前补齐已显示导入图片的身份，保存恢复后v3参考素材摘要保持一致且不扫描整库', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    mocks.identifyAsset.mockResolvedValue({ assetId: 'asset-import', relativePath: 'image.png' });
+    mocks.scanDirectoryFiles.mockClear();
+    const source: Node<BaseNodeData> = { id: 'source', type: 'ai-image', position: { x: 0, y: 0 }, data: {
+      type: 'ai-image', label: '外部图片', role: 'source', status: 'success',
+      filePath: '/project/data/image.png', imageUrl: 'asset://localhost/project/data/image.png',
+      output: 'asset://localhost/project/data/image.png',
+      mattingMask: 'asset://localhost/project/data/mask.png',
+    } };
+    const target: Node<BaseNodeData> = { id: 'target', type: 'ai-image', position: { x: 500, y: 0 }, data: {
+      type: 'ai-image', label: '图生图', prompt: '@{source:外部图片} 保留人物',
+    } };
+    const nodes = await normalizeProjectMediaNodes('native-canvas', [source, target]);
+    expect(nodes[0].data).toMatchObject({ assetId: 'asset-import', relativePath: 'image.png',
+      filePath: source.data.filePath, imageUrl: source.data.imageUrl, output: source.data.output, status: 'success' });
+    expect(nodes[0].data.mattingMask).toBe(source.data.mattingMask);
+    expect(nodes[0].data.mattingMask).not.toBe(nodes[0].data.imageUrl);
+    expect(source.data.assetId).toBeUndefined();
+    const edges = [{ id: 'edge', source: source.id, target: target.id }];
+    const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, nodes, edges };
+    const restored = await restoreProjectRecord(await serializeProjectRecord(record));
+    const state = { currentProjectId: record.id, projects: [{ id: record.id, name: record.name, createdAt: 1, updatedAt: 2 }],
+      config: { theme: 'dark' as const, providers: {} }, customStyles: [], nodes, edges };
+    expect(nativeMediaInputMaterial(nodes[1], { ...state, nodes: restored.nodes as Node<BaseNodeData>[] }, 'media-input-v3'))
+      .toBe(nativeMediaInputMaterial(nodes[1], state, 'media-input-v3'));
+    expect(mocks.scanDirectoryFiles).not.toHaveBeenCalled();
+  });
+
+  it('本轮媒体规范化遇到缺失素材也不触发项目目录扫描', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    mocks.exists.mockResolvedValue(false); mocks.scanDirectoryFiles.mockClear();
+    const source: Node<BaseNodeData> = { id: 'source', type: 'ai-image', position: { x: 0, y: 0 }, data: {
+      type: 'ai-image', label: '丢失图片', assetId: 'asset-missing', relativePath: 'missing.png', imageUrl: 'missing.png',
+    } };
+    const normalized = await normalizeProjectMediaNodes('native-canvas', [source]);
+    expect(normalized[0].data.assetId).toBe('asset-missing');
+    expect(normalized[0].data.imageUrl).toBeUndefined();
+    expect(mocks.scanDirectoryFiles).not.toHaveBeenCalled();
   });
 
   it('新结构素材缺失时不把相对路径当网络地址，仍保留身份供文件恢复', async () => {

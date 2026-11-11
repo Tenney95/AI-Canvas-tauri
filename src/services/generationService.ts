@@ -40,6 +40,7 @@ import { applyGenerationCameraPrompt } from './shotlistPromptService';
 import { resolveImageOutputsPerJob, resolveImageParameterCapability } from './ai/mediaModelCapabilities';
 import { resolveConfiguredImageBackground, resolveConfiguredImageQuality } from './ai/modelCapabilityValidation';
 import { historyMediaTaskReceipt, isHistoryMediaDownloadFailure, isHistoryMediaDownloadPending, sameHistoryMediaTask } from './historyMediaRecovery';
+import { configValuesEqual } from './configPatch';
 
 export interface GenerationResult {
   success: boolean;
@@ -243,6 +244,30 @@ export async function executeGeneration(
     const latest = useAppStore.getState();
     if (latest.currentProjectId !== beforeLoad.currentProjectId || latest.nodes.find((node) => node.id === nodeId)?.data !== sourceNode?.data) {
       return { success: false, message: '项目或生成输入已变化，未提交生成' };
+    }
+  }
+  const preparing = useAppStore.getState();
+  const preparationTarget = preparing.nodes.find((node) => node.id === nodeId);
+  const preparationData = resolveGenerationNodeData(passData ?? preparationTarget?.data);
+  if (preparing.projectExecutionContext?.modelGeneration === 1 && preparationData
+    && ['ai-image', 'ai-animation', 'ai-panorama', 'ai-video', 'ai-audio'].includes(preparationData.type)) {
+    try {
+      const { targetPatch: mediaPatch } = await preparing.normalizeNativeMediaGenerationInputs(nodeId, {
+        ...preparationData, ...(overridePrompt === undefined ? {} : { prompt: overridePrompt }),
+      });
+      if (passData && preparationTarget) {
+        const next = { ...passData };
+        // 调用方的临时正文/参数保留；只有仍指向原 Store 素材的字段才能跟随身份规范化。
+        for (const field of Object.keys(mediaPatch) as (keyof BaseNodeData)[]) {
+          if (configValuesEqual(passData[field], preparationTarget.data[field])) next[field] = mediaPatch[field] as never;
+        }
+        passData = next;
+      }
+      await assertLease();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '参考素材身份准备失败，未提交生成';
+      if (!batchOptions?.silent && useAppStore.getState().currentProjectId === preparing.currentProjectId) preparing.showToast(message, 'error');
+      return { success: false, message };
     }
   }
   const store = useAppStore.getState();

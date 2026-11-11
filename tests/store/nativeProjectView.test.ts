@@ -23,7 +23,7 @@ import { listEpisodes, projectMemoryOwnerId, resolveOpenTargetId, seriesOwnerId 
 import { nativeMediaInputMaterial } from '../../src/services/nativeMediaInput';
 import { retainNativeMediaOutputs } from '../../src/services/indexedDb/nativeMediaCollectionRepository';
 
-const nativeDisplayIo = vi.hoisted(() => ({ inspect: vi.fn(), assetUrl: vi.fn() }));
+const nativeDisplayIo = vi.hoisted(() => ({ inspect: vi.fn(), assetUrl: vi.fn(), normalizeMedia: vi.fn() }));
 vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<typeof import('@tauri-apps/api/core')>(),
   invoke: async (command: string, input: unknown) => {
     if (command === 'inspect_project_archive_assets') return nativeDisplayIo.inspect(input);
@@ -40,6 +40,7 @@ vi.mock('../../src/services/fileService', async () => ({
 }));
 vi.mock('../../src/services/storageService', async () => ({
   ...await vi.importActual<typeof import('../../src/services/storageService')>('../../src/services/storageService'),
+  normalizeProjectMediaNodes: nativeDisplayIo.normalizeMedia,
   serializeProjectRecord: vi.fn(async (record: import('../../src/services/storageService').ProjectSaveData) => ({ ...record,
     nodes: (record.nodes as Node<BaseNodeData>[]).map((node) => {
       if (!node.data.relativePath) return node;
@@ -154,6 +155,7 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
       path, bytes: 10, sha256: /[a-f0-9]{64}/.exec(path)![0],
     })));
     nativeDisplayIo.assetUrl.mockReset().mockImplementation(async (path: string) => `asset://localhost${path}`);
+    nativeDisplayIo.normalizeMedia.mockReset().mockImplementation(async (_projectId: string, nodes: Node<BaseNodeData>[]) => nodes);
   });
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -253,6 +255,60 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     });
     return { gate, entered };
   }
+
+  it('生成前只规范化目标与本轮引用，回补媒体身份但保留运行态、标签、位置与历史', async () => {
+    const { store, context } = await fixture('ai-image');
+    const target = { ...store.getState().nodes[0], data: { ...store.getState().nodes[0].data,
+      prompt: '@{source:参考图}', imageUrl: 'asset://localhost/fixture/native/old.png', filePath: '/fixture/native/old.png' } };
+    const source: Node<BaseNodeData> = { id: 'source', type: 'ai-image', position: { x: 20, y: 30 }, data: {
+      type: 'ai-image', label: '参考图', status: 'success', imageUrl: 'asset://localhost/fixture/native/ref.png', filePath: '/fixture/native/ref.png',
+    } };
+    const unrelated: Node<BaseNodeData> = { ...source, id: 'unrelated' };
+    store.setState({ nodes: [target, source, unrelated], edges: [{ id: 'reference', source: source.id, target: target.id }] });
+    const { history, historyIndex } = store.getState();
+    const gate = deferred<Node<BaseNodeData>[]>(); nativeDisplayIo.normalizeMedia.mockReturnValueOnce(gate.promise);
+    const preparing = store.getState().normalizeNativeMediaGenerationInputs(target.id);
+    expect(nativeDisplayIo.normalizeMedia).toHaveBeenCalledWith(context.canvasId, [target, source]);
+    store.setState({ nodes: store.getState().nodes.map((node) => node.id === target.id ? {
+      ...node, selected: true, position: { x: 35, y: 45 }, data: { ...node.data, label: '准备期间的新标签', status: 'idle' },
+    } : node) });
+    gate.resolve([target, source].map((node) => ({ ...node, data: { ...node.data,
+      assetId: `asset-${node.id}`, relativePath: node.id === source.id ? 'ref.png' : 'old.png',
+    } })));
+    await preparing;
+    expect(store.getState().nodes[0]).toMatchObject({ selected: true, position: { x: 35, y: 45 }, data: {
+      label: '准备期间的新标签', status: 'idle', prompt: target.data.prompt, assetId: `asset-${target.id}`, relativePath: 'old.png',
+    } });
+    expect(store.getState().nodes[1].data).toMatchObject({ assetId: 'asset-source', relativePath: 'ref.png', imageUrl: source.data.imageUrl });
+    expect(store.getState().nodes[2]).toBe(unrelated);
+    expect(store.getState().history).toBe(history); expect(store.getState().historyIndex).toBe(historyIndex);
+    expect((await listNativeMediaTasks(projectId))[0].status).toBe('submitted');
+  });
+
+  it.each(['prompt', 'media', 'source-media', 'source-input', 'switch', 'revision'] as const)('身份规范化期间%s变化时不覆盖真实编辑或回写另一画布', async (change) => {
+    const { store } = await fixture('ai-image');
+    const target = { ...store.getState().nodes[0], data: { ...store.getState().nodes[0].data,
+      prompt: '@{source:参考图}', imageUrl: 'asset://localhost/fixture/native/original.png', filePath: '/fixture/native/original.png' } };
+    const source: Node<BaseNodeData> = { id: 'source', type: 'ai-image', position: { x: 20, y: 30 }, data: {
+      type: 'ai-image', label: '参考图', imageUrl: 'asset://localhost/fixture/native/source.png', filePath: '/fixture/native/source.png',
+    } };
+    store.setState({ nodes: [target, source], edges: [{ id: 'reference', source: source.id, target: target.id }] });
+    const gate = deferred<Node<BaseNodeData>[]>(); nativeDisplayIo.normalizeMedia.mockReturnValueOnce(gate.promise);
+    const pending = store.getState().normalizeNativeMediaGenerationInputs(target.id);
+    if (change === 'prompt' || change === 'media') store.setState({ nodes: [{ ...target, data: { ...target.data,
+      ...(change === 'prompt' ? { prompt: '用户的新提示词' } : { imageUrl: 'asset://localhost/fixture/native/replaced.png' }),
+    } }, source] });
+    else if (change === 'source-media' || change === 'source-input') store.setState({ nodes: [target, { ...source, data: { ...source.data,
+      ...(change === 'source-media' ? { imageUrl: 'asset://localhost/fixture/native/replaced-ref.png' } : { workflowInputs: { changed: '用户修改' } }),
+    } }] });
+    else if (change === 'switch') store.setState({ currentProjectId: canvasB });
+    else store.getState().incrementRevision();
+    const latestNodes = store.getState().nodes;
+    gate.resolve([{ ...target, data: { ...target.data, assetId: 'asset-prepared', relativePath: 'original.png' } }]);
+    await expect(pending).rejects.toThrow(/变化/);
+    expect(store.getState().nodes).toBe(latestNodes);
+    expect(store.getState().nodes[0].data.assetId).toBeUndefined();
+  });
 
   it('媒体短准备占用既有保存队列，同输入自动保存等待POST前释放且每次准备独立推进版本', async () => {
     const { store, context } = await fixture();

@@ -259,12 +259,25 @@ export function validateExchangeDomain(snapshot: ProjectExchangeSnapshot): Proje
 }
 
 export interface ExchangeCapture { snapshot: ProjectExchangeSnapshot; identities: ProjectExchangeIdentity[]; files: Map<string, string> }
-function captureSourceLocation(parent: string, kind: string, source: Record<string, unknown>): string {
+/** 诊断只引用短名称与稳定 ID，不把本机路径、控制字符或整段正文带进错误。 */
+export function projectArchiveDisplayLabel(value: unknown, fallback = '未命名'): string {
+  if (typeof value !== 'string' || !value.trim() || /^(?:[a-z]:[\\/]|[\\/]|file:|asset:|data:|blob:)/i.test(value.trim())) return fallback;
+  return Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127 ? ' ' : character;
+  }).join('').trim().slice(0, 80) || fallback;
+}
+export function captureSourceLocation(parent: string, kind: string, source: Record<string, unknown>): string {
   const data = exchangeObject(source.data) ? source.data : source;
-  const label = [data.label, source.name, source.shotNo].find((value): value is string => typeof value === 'string' && !!value.trim());
+  const label = [data.label, source.name, source.shotNo].map((value) => projectArchiveDisplayLabel(value, '')).find(Boolean);
   const displayId = kind === '节点' && typeof data.displayId === 'number' && Number.isInteger(data.displayId)
     ? ` #${data.displayId}` : '';
-  return `${parent} → ${kind}${displayId}「${label?.trim() || '未命名'}」（ID：${source.id}）`;
+  const id = typeof source.id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/.test(source.id) ? source.id : '格式无效';
+  return `${parent} → ${kind}${displayId}「${label || '未命名'}」（ID：${id}）`;
+}
+
+export function missingProjectAssetMessage(path: string, location = '', fieldPath = '', reason = '项目引用的素材缺失'): string {
+  return `${reason}：${safeExchangePath(path)}；引用位置：${location || '项目文件'}${fieldPath ? `；引用字段：${fieldPath}` : ''}。请恢复文件或重新选择素材后重试。`;
 }
 
 function exchangeSourceLocation(entity: ProjectExchangeEntity, all: readonly ProjectExchangeEntity[], root: string): string {
@@ -339,7 +352,7 @@ export function captureExchangeSnapshot(records: readonly ProjectSaveData[], ass
   const entities: ProjectExchangeEntity[] = [], usedMedia = new Map<string, ProjectExchangeMedia>(), files = new Map<string, string>();
   const fileToken = (path: string, location = '', fieldPath = ''): string => {
     const safe = safeExchangePath(path), asset = byPath.get(safe);
-    if (!asset) throw new Error(`项目引用的素材缺失：${safe}；引用位置：${location || '项目文件'}${fieldPath ? `；引用字段：${fieldPath}` : ''}。请恢复文件或重新选择素材后重试。`);
+    if (!asset) throw new Error(missingProjectAssetMessage(safe, location, fieldPath));
     const id = logical('file', root, safe);
     if (!files.has(id)) {
       const name = safe.split('/').pop()!;

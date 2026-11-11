@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   actions: {} as Pick<AppState, 'updateNodeDataTransient' | 'recordOutputHistory' | 'commitToHistory'>,
   projects: [] as AppState['projects'], workflows: [] as AppState['workflows'], edges: [] as Edge[],
   showToast: vi.fn(),
+  nativeContext: undefined as AppState['projectExecutionContext'], normalizeMedia: vi.fn(),
   liveState: { currentProjectId: null as string | null, nodes: [] as Node<BaseNodeData>[], revision: 0 },
 }));
 
@@ -76,6 +77,7 @@ vi.mock('../../src/store/useAppStore', () => ({
       getCurrentRevision: () => mocks.liveState.revision,
       syncDramaAssetImageFromNode: mocks.syncDramaAssetImageFromNode,
       mergeDramaExtract: mocks.mergeDramaExtract,
+      projectExecutionContext: mocks.nativeContext, normalizeNativeMediaGenerationInputs: mocks.normalizeMedia,
     }),
   },
 }));
@@ -149,6 +151,7 @@ beforeEach(() => {
   mocks.completeMedia.mockClear(); mocks.pauseMedia.mockClear(); mocks.endOperation.mockClear();
   mocks.liveState = { currentProjectId: null, nodes: [], revision: 0 };
   mocks.projects = []; mocks.workflows = []; mocks.edges = []; mocks.showToast.mockClear();
+  mocks.nativeContext = undefined; mocks.normalizeMedia.mockReset().mockResolvedValue({ targetPatch: {}, nodePatches: new Map() });
   mocks.generateImagesBatch.mockReset();
   mocks.generateText.mockReset();
   mocks.generateImage.mockReset();
@@ -167,6 +170,56 @@ beforeEach(() => {
 });
 
 describe('batchExecuteNodes', () => {
+  it.each(['self', 'mutual'] as const)('native %s references normalize before queue identities freeze without skipping later selected sources', async (graph) => {
+    const references = [{ id: 'ref', kind: 'frame' as const, role: 'reference' as const, url: 'asset://localhost/project/ref.png' }];
+    const nodes = [createNode('a', 'ai-image', { videoReferences: references }), createNode('b', 'ai-image', { videoReferences: references })];
+    const edges = graph === 'self' ? [{ id: 'aa', source: 'a', target: 'a' }, { id: 'bb', source: 'b', target: 'b' }]
+      : [{ id: 'ab', source: 'a', target: 'b' }, { id: 'ba', source: 'b', target: 'a' }];
+    mocks.nativeContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-batch',
+      projectId: 'owner', projectEpoch: 1, canvasId: 'default', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.normalizeMedia.mockImplementation(async (nodeId: string) => {
+      const ids = new Set([nodeId, ...mocks.edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source)]);
+      const patches = new Map<string, Partial<BaseNodeData>>();
+      mocks.liveState.nodes = mocks.liveState.nodes.map((item) => {
+        if (!ids.has(item.id) || item.data.videoReferences?.[0].assetId) return item;
+        const patch = { videoReferences: references.map((reference) => ({ ...reference, assetId: 'asset-ref' })) };
+        patches.set(item.id, patch); return { ...item, data: { ...item.data, ...patch } };
+      });
+      return { targetPatch: patches.get(nodeId) ?? {}, nodePatches: patches };
+    });
+    mocks.generateImagesBatch.mockImplementation(async (_params: unknown, _count: number, _signal: unknown, guard: () => Promise<void>) => {
+      await guard(); throw Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' });
+    });
+    expect(await batchExecuteNodes(['a', 'b'], nodes, edges, createContext())).toEqual({ ok: 2, fail: 0, skipped: 0 });
+    expect(mocks.generateImagesBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('a real edit to another selected node during the final normalization await remains skipped', async () => {
+    const references = [{ id: 'ref', kind: 'frame' as const, role: 'reference' as const, url: 'asset://localhost/project/ref.png' }];
+    const nodes = [createNode('a'), createNode('b', 'ai-image', { videoReferences: references })];
+    const ctx = createContext(), gate = deferred<void>();
+    mocks.nativeContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-batch',
+      projectId: 'owner', projectEpoch: 1, canvasId: 'default', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.normalizeMedia.mockImplementation(async (nodeId: string) => {
+      const target = mocks.liveState.nodes.find((item) => item.id === nodeId)!;
+      if (nodeId !== 'b' || target.data.videoReferences?.[0].assetId) return { targetPatch: {}, nodePatches: new Map() };
+      await gate.promise;
+      const patch = { videoReferences: references.map((reference) => ({ ...reference, assetId: 'asset-ref' })) };
+      mocks.liveState.nodes = mocks.liveState.nodes.map((item) => item.id === nodeId ? { ...item, data: { ...item.data, ...patch } } : item);
+      return { targetPatch: patch, nodePatches: new Map([[nodeId, patch]]) };
+    });
+    mocks.generateImagesBatch.mockImplementation(async (_params: unknown, _count: number, _signal: unknown, guard: () => Promise<void>) => {
+      await guard(); throw Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' });
+    });
+    const pending = batchExecuteNodes(['a', 'b'], nodes, [], ctx);
+    await vi.waitFor(() => expect(mocks.normalizeMedia).toHaveBeenCalledTimes(2));
+    ctx.updateNodeDataTransient('a', { prompt: '用户的新输入' }); gate.resolve();
+    expect(await pending).toEqual({ ok: 1, fail: 0, skipped: 1 });
+    expect(mocks.generateImagesBatch).toHaveBeenCalledOnce();
+    expect(mocks.generateImagesBatch).toHaveBeenCalledWith(expect.objectContaining({ nodeId: 'b' }), 1, undefined, expect.any(Function));
+    expect(mocks.liveState.nodes.find((item) => item.id === 'a')?.data.prompt).toBe('用户的新输入');
+  });
+
   it.each(['character', 'scene', 'prop'].flatMap((kind) => (
     ['invalid-json', 'empty-items'].map((failure) => ({ kind: kind as keyof typeof DRAMA_EXTRACT_MARKER, failure }))
   )))('保留旧版源文本的原文并报告 $kind 提取失败：$failure', async ({ kind, failure }) => {

@@ -95,6 +95,36 @@ function harness(initial: ProjectModelTransferCapture | null = null) {
 
 beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto); });
 describe('P5 portable/本机双向编排', () => {
+  it('filePath-only 的 macOS Unicode 路径只按本轮原生同根别名映射，不改写源记录', async () => {
+    const source = await archive(), sample = harness();
+    await sample.service.apply(await sample.service.preview(source), { operationId: 'unicode-seed', mode: 'import-new' });
+    const capture = sample.capture!, canvas = capture.aggregate.canvases[0], assets = await sample.port.inspectAssets(capture);
+    const actual = 'media/cafe\u0301.png', alias = 'media/caf\u00e9.png', root = '/Users/private/项目素材/作品';
+    capture.exchange = null;
+    const node = canvas.nodes[0] as { data: Record<string, unknown> };
+    delete node.data.relativePath; node.data.filePath = `${root}/${alias}`;
+    const original = structuredClone(capture);
+    const prepared = await prepareProjectModelArchiveCapture(capture, assets.map((asset) => asset.rootRef === canvas.storageRootRef
+      ? { ...asset, path: actual, aliases: [alias], localAbsolutePath: `${root}/${actual}` } : asset));
+    expect(prepared.payload.canvases[0].nodes[0]).toMatchObject({ data: { relativePath: actual } });
+    expect(JSON.stringify(prepared.payload)).not.toContain('/Users/private');
+    expect(capture).toEqual(original);
+  });
+
+  it('其他素材根提供同名或相同字节别名不能证明当前画布的本机路径', async () => {
+    const source = await archive(), sample = harness();
+    await sample.service.apply(await sample.service.preview(source), { operationId: 'wrong-root-seed', mode: 'import-new' });
+    const capture = sample.capture!, canvas = capture.aggregate.canvases[0], assets = await sample.port.inspectAssets(capture);
+    const actual = 'media/cafe\u0301.png', alias = 'media/caf\u00e9.png', root = '/Users/private/项目素材/作品';
+    capture.exchange = null;
+    const node = canvas.nodes[0] as { data: Record<string, unknown> };
+    delete node.data.relativePath; node.data.filePath = `${root}/${alias}`;
+    const other = assets.find((asset) => asset.rootRef !== canvas.storageRootRef)!;
+    await expect(prepareProjectModelArchiveCapture(capture, [...assets,
+      { ...other, path: actual, aliases: [alias], localAbsolutePath: `${root}/${actual}` }]))
+      .rejects.toThrow('未证明来源');
+  });
+
   it('新项目输出历史经归档映射原画布、旧节点与素材根，导入保持快照且重复更新只绑定既有记录', async () => {
     const source = await archive(), sample = harness();
     await sample.service.apply(await sample.service.preview(source), { operationId: 'output-seed', mode: 'import-new' });

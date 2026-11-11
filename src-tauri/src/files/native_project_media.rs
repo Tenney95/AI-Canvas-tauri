@@ -461,6 +461,208 @@ fn read_media_file(path: &Path, reference: &NativeMediaReference) -> Result<Vec<
     Ok(bytes)
 }
 
+// macOS and the two supported Linux desktop ABIs have distinct fcntl constants.
+// Keep this boundary dependency-free, as with project_archive's exclusive Unix publication.
+#[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+mod unix_io {
+    use super::*;
+    use std::{ffi::{CString, OsStr}, fs::File, io::{Seek, SeekFrom}, os::{fd::{AsRawFd, FromRawFd},
+        raw::{c_char, c_int, c_uint}, unix::{ffi::OsStrExt, fs::{MetadataExt, OpenOptionsExt}}}, path::Component};
+
+    // Constants follow Apple xnu bsd/sys/fcntl.h and Linux arch/{x86,arm64}/...
+    // fcntl.h; arm64 deliberately differs from x86_64 for directory/no-follow.
+    #[cfg(target_os = "macos")]
+    const FLAGS: (c_int, c_int, c_int, c_int, c_int, c_int) = (0x100, 0x100000, 0x1000000, 0x200, 0x800, 0x4);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    const FLAGS: (c_int, c_int, c_int, c_int, c_int, c_int) = (0x20000, 0x10000, 0x80000, 0x40, 0x80, 0x800);
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    const FLAGS: (c_int, c_int, c_int, c_int, c_int, c_int) = (0x8000, 0x4000, 0x80000, 0x40, 0x80, 0x800);
+    const NOFOLLOW: c_int = FLAGS.0;
+    const DIRECTORY: c_int = FLAGS.1;
+    const CLOEXEC: c_int = FLAGS.2;
+    const CREATE: c_int = FLAGS.3;
+    const EXCLUSIVE: c_int = FLAGS.4;
+    const NONBLOCK: c_int = FLAGS.5;
+    #[cfg(target_os = "macos")]
+    type Mode = u16;
+    #[cfg(target_os = "linux")]
+    type Mode = u32;
+
+    extern "C" {
+        fn openat(directory: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
+        fn mkdirat(directory: c_int, path: *const c_char, mode: Mode) -> c_int;
+        #[cfg(target_os = "macos")]
+        fn renameatx_np(from_dir: c_int, from: *const c_char, to_dir: c_int, to: *const c_char, flags: c_uint) -> c_int;
+        #[cfg(target_os = "linux")]
+        fn renameat2(from_dir: c_int, from: *const c_char, to_dir: c_int, to: *const c_char, flags: c_uint) -> c_int;
+    }
+
+    fn component(name: &OsStr) -> Result<CString, String> {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') { return Err(ERROR.into()); }
+        CString::new(bytes).map_err(|_| ERROR.into())
+    }
+
+    fn open_at(directory: &File, name: &OsStr, extra: c_int, create: bool) -> std::io::Result<File> {
+        let name = component(name).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let flags = NOFOLLOW | CLOEXEC | NONBLOCK | extra;
+        // SAFETY: the descriptor is borrowed for this call; the component is NUL-terminated.
+        // A successful descriptor is immediately transferred to exactly one owning File.
+        let descriptor = unsafe {
+            if create { openat(directory.as_raw_fd(), name.as_ptr(), flags, 0o600 as c_uint) }
+            else { openat(directory.as_raw_fd(), name.as_ptr(), flags) }
+        };
+        if descriptor < 0 { return Err(std::io::Error::last_os_error()); }
+        Ok(unsafe { File::from_raw_fd(descriptor) })
+    }
+
+    fn same_file(left: &File, right: &File) -> Result<bool, String> {
+        let left = left.metadata().map_err(|_| ERROR)?;
+        let right = right.metadata().map_err(|_| ERROR)?;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+
+    fn open_chain(path: &Path) -> Result<Vec<File>, String> {
+        let mut parts = path.components();
+        if parts.next() != Some(Component::RootDir) { return Err(ERROR.into()); }
+        let root = OpenOptions::new().read(true).custom_flags(NOFOLLOW | CLOEXEC | DIRECTORY).open("/").map_err(|_| ERROR)?;
+        let mut chain = vec![root];
+        for part in parts {
+            let Component::Normal(name) = part else { return Err(ERROR.into()); };
+            let file = open_at(chain.last().ok_or(ERROR)?, name, DIRECTORY, false).map_err(|_| ERROR)?;
+            if !file.metadata().map_err(|_| ERROR)?.is_dir() { return Err(ERROR.into()); }
+            chain.push(file);
+        }
+        Ok(chain)
+    }
+
+    fn regular_metadata(file: &File, limit: u64) -> Result<fs::Metadata, String> {
+        let metadata = file.metadata().map_err(|_| ERROR)?;
+        if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > limit { return Err(ERROR.into()); }
+        Ok(metadata)
+    }
+
+    fn read_binding_file(file: &mut File) -> Result<Binding, String> {
+        let before = regular_metadata(file, 4096)?;
+        file.seek(SeekFrom::Start(0)).map_err(|_| ERROR)?;
+        let mut bytes = Vec::new();
+        (&mut *file).take(4097).read_to_end(&mut bytes).map_err(|_| ERROR)?;
+        if bytes.len() as u64 != before.len() || regular_metadata(file, 4096)?.len() != before.len() { return Err(ERROR.into()); }
+        serde_json::from_slice(&bytes).map_err(|_| ERROR.into())
+    }
+
+    pub(super) struct Directory {
+        path: PathBuf,
+        chain: Vec<File>,
+        media: File,
+        marker: File,
+        binding: Binding,
+    }
+
+    impl Directory {
+        pub(super) fn open(path: &Path, create: bool) -> Result<Self, String> {
+            let chain = open_chain(path)?;
+            let root = chain.last().ok_or(ERROR)?;
+            let mut marker = open_at(root, OsStr::new(".ai-canvas-native-project.json"), 0, false).map_err(|_| ERROR)?;
+            let binding = read_binding_file(&mut marker)?;
+            if create {
+                let name = component(OsStr::new("media"))?;
+                // SAFETY: root remains owned by chain and name is one validated component.
+                if unsafe { mkdirat(root.as_raw_fd(), name.as_ptr(), 0o700) } != 0
+                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists { return Err(ERROR.into()); }
+            }
+            let media = open_at(root, OsStr::new("media"), DIRECTORY, false).map_err(|_| ERROR)?;
+            let directory = Self { path: path.to_owned(), chain, media, marker, binding };
+            directory.verify()?;
+            if create { directory.chain.last().ok_or(ERROR)?.sync_all().map_err(|_| ERROR)?; }
+            Ok(directory)
+        }
+
+        pub(super) fn verify(&self) -> Result<(), String> {
+            // Unix directory descriptors do not lock names in place. Reopen every component
+            // and fail closed if the authorized pathname no longer denotes the anchored objects.
+            let current = open_chain(&self.path)?;
+            if current.len() != self.chain.len() { return Err(ERROR.into()); }
+            for (expected, actual) in self.chain.iter().zip(&current) {
+                if !same_file(expected, actual)? { return Err(ERROR.into()); }
+            }
+            let root = self.chain.last().ok_or(ERROR)?;
+            let current_media = open_at(root, OsStr::new("media"), DIRECTORY, false).map_err(|_| ERROR)?;
+            if !same_file(&self.media, &current_media)? { return Err(ERROR.into()); }
+            let mut marker = open_at(root, OsStr::new(".ai-canvas-native-project.json"), 0, false).map_err(|_| ERROR)?;
+            if !same_file(&self.marker, &marker)? || read_binding_file(&mut marker)? != self.binding { return Err(ERROR.into()); }
+            Ok(())
+        }
+
+        fn read_opened(&self, name: &OsStr, file: &mut File, reference: &NativeMediaReference) -> Result<Vec<u8>, String> {
+            let before = regular_metadata(file, reference.bytes)?;
+            if before.len() != reference.bytes { return Err(ERROR.into()); }
+            file.seek(SeekFrom::Start(0)).map_err(|_| ERROR)?;
+            let mut bytes = Vec::new();
+            (&mut *file).take(reference.bytes + 1).read_to_end(&mut bytes).map_err(|_| ERROR)?;
+            if bytes.len() as u64 != reference.bytes || regular_metadata(file, reference.bytes)?.len() != reference.bytes
+                || format!("{:x}", Sha256::digest(&bytes)) != reference.sha256 { return Err(ERROR.into()); }
+            let current = open_at(&self.media, name, 0, false).map_err(|_| ERROR)?;
+            if !same_file(file, &current)? { return Err(ERROR.into()); }
+            self.verify()?;
+            Ok(bytes)
+        }
+
+        pub(super) fn read(&self, name: &str, reference: &NativeMediaReference) -> Result<Vec<u8>, String> {
+            self.verify()?;
+            let name = OsStr::new(name);
+            let mut file = open_at(&self.media, name, 0, false).map_err(|_| ERROR)?;
+            self.read_opened(name, &mut file, reference)
+        }
+
+        pub(super) fn write(&self, name: &str, reference: &NativeMediaReference, data: &[u8]) -> Result<(), String> {
+            self.verify()?;
+            match open_at(&self.media, OsStr::new(name), 0, false) {
+                Ok(mut file) => return if self.read_opened(OsStr::new(name), &mut file, reference)? == data { Ok(()) } else { Err(ERROR.into()) },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(_) => return Err(ERROR.into()),
+            }
+            // Hidden, unique and never removed on a failed operation: interruption preserves
+            // recovery material without publishing a half-written content-addressed filename.
+            let temporary = format!(".native-media-{}.pending", crate::comfyui::media_source::new_id().map_err(|_| ERROR)?);
+            let temporary_name = OsStr::new(&temporary);
+            let mut file = open_at(&self.media, temporary_name, 2 | CREATE | EXCLUSIVE, true).map_err(|_| ERROR)?;
+            regular_metadata(&file, reference.bytes)?;
+            file.write_all(data).and_then(|_| file.sync_all()).map_err(|_| ERROR)?;
+            if self.read_opened(temporary_name, &mut file, reference)? != data { return Err(ERROR.into()); }
+            let from = component(temporary_name)?;
+            let to = component(OsStr::new(name))?;
+            // SAFETY: both names are validated single components relative to the same live
+            // directory descriptor. These flags never replace an existing destination.
+            #[cfg(target_os = "macos")]
+            let published = unsafe { renameatx_np(self.media.as_raw_fd(), from.as_ptr(), self.media.as_raw_fd(), to.as_ptr(), 0x4) };
+            #[cfg(target_os = "linux")]
+            let published = unsafe { renameat2(self.media.as_raw_fd(), from.as_ptr(), self.media.as_raw_fd(), to.as_ptr(), 1) };
+            if published != 0 {
+                if std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists { return Err(ERROR.into()); }
+                return if self.read(name, reference)? == data { Ok(()) } else { Err(ERROR.into()) };
+            }
+            self.media.sync_all().map_err(|_| ERROR)?;
+            let current = open_at(&self.media, OsStr::new(name), 0, false).map_err(|_| ERROR)?;
+            if !same_file(&file, &current)? || self.read(name, reference)? != data { return Err(ERROR.into()); }
+            self.verify()
+        }
+    }
+
+    pub(super) fn with_directory<R: Runtime, T>(webview: &Webview<R>, project_id: &str, create: bool,
+        work: impl FnOnce(&Directory) -> Result<T, String>) -> Result<T, String> {
+        let root = PathBuf::from(media_root(webview, project_id, false, false, None)?);
+        let directory = Directory::open(&root, create)?;
+        if media_root(webview, project_id, false, false, None)? != root.to_str().ok_or(ERROR)? { return Err(ERROR.into()); }
+        directory.verify()?;
+        let result = work(&directory)?;
+        directory.verify()?;
+        if media_root(webview, project_id, false, false, None)? != root.to_str().ok_or(ERROR)? { return Err(ERROR.into()); }
+        directory.verify()?;
+        Ok(result)
+    }
+}
+
 #[tauri::command]
 pub fn write_native_project_media<R: Runtime>(webview: Webview<R>, project_id: String, mime_type: String, data: Vec<u8>) -> Result<NativeMediaReference, String> {
     let (extension, limit) = media_format(&mime_type).ok_or(ERROR)?;
@@ -488,7 +690,9 @@ pub fn write_native_project_media<R: Runtime>(webview: Webview<R>, project_id: S
         media_root(&webview, &project_id, false, false, None)?;
         Ok(reference)
     }
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+    { unix_io::with_directory(&webview, &project_id, true, |directory| { directory.write(&name, &reference, &data)?; Ok(reference) }) }
+    #[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))))]
     { let _ = (webview, project_id, name, reference); Err(ERROR.into()) }
 }
 
@@ -502,7 +706,9 @@ pub fn read_native_project_media<R: Runtime>(webview: Webview<R>, project_id: St
         media_root(&webview, &project_id, false, false, None)?;
         Ok(bytes)
     }
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+    { unix_io::with_directory(&webview, &project_id, false, |directory| directory.read(&name, &reference)) }
+    #[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))))]
     { let _ = (webview, project_id, name, reference); Err(ERROR.into()) }
 }
 
@@ -776,5 +982,149 @@ mod tests {
         reference.mime_type = "image/png".into();
         reference.bytes = 32 * 1024 * 1024 + 1;
         assert!(validate_media_reference(&reference).is_err());
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
+    mod unix_media {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        fn setup() -> (PathBuf, PathBuf) {
+            let root = fixture();
+            let base = root.join("base"); let registry = root.join("registry");
+            fs::create_dir(&base).unwrap(); fs::create_dir(&registry).unwrap();
+            let project = bind_root(&base, &registry, PROJECT, true, Some("蒙板素材")).unwrap();
+            (root, project)
+        }
+
+        fn mask() -> (Vec<u8>, NativeMediaReference, String) {
+            let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
+            let mut output = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut output, image::ImageFormat::Png).unwrap();
+            let bytes = output.into_inner();
+            let sha256 = format!("{:x}", Sha256::digest(&bytes));
+            let reference = NativeMediaReference { relative_path: format!("media/{sha256}.png"), sha256,
+                bytes: bytes.len() as u64, mime_type: "image/png".into() };
+            let name = validate_media_reference(&reference).unwrap();
+            (bytes, reference, name)
+        }
+
+        #[test]
+        fn mask_publication_is_exclusive_round_trips_and_reuses_valid_content_after_reopen() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            directory.write(&name, &reference, &bytes).unwrap();
+            assert_eq!(directory.read(&name, &reference).unwrap(), bytes);
+            directory.write(&name, &reference, &bytes).unwrap();
+            assert_eq!(fs::read_dir(project.join("media")).unwrap().count(), 1);
+            drop(directory);
+            assert_eq!(bind_root(&root.join("base"), &root.join("registry"), PROJECT, false, None).unwrap(), project);
+            let reopened = unix_io::Directory::open(&project, false).unwrap();
+            assert_eq!(reopened.read(&name, &reference).unwrap(), bytes);
+            drop(reopened); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn malformed_existing_content_is_preserved_and_never_overwritten() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            let target = project.join("media").join(&name);
+            for invalid in [b"short".to_vec(), vec![0; bytes.len()]] {
+                fs::write(&target, &invalid).unwrap();
+                assert!(directory.read(&name, &reference).is_err());
+                assert!(directory.write(&name, &reference, &bytes).is_err());
+                assert_eq!(fs::read(&target).unwrap(), invalid);
+            }
+            drop(directory); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn incomplete_staging_is_retained_without_poisoning_the_final_content_filename() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            assert!(directory.write(&name, &reference, &bytes[..8]).is_err());
+            assert!(!project.join("media").join(&name).exists());
+            let staging = fs::read_dir(project.join("media")).unwrap().next().unwrap().unwrap().path();
+            assert!(staging.file_name().unwrap().to_str().unwrap().starts_with(".native-media-"));
+            assert_eq!(fs::read(&staging).unwrap(), bytes[..8]);
+            directory.write(&name, &reference, &bytes).unwrap();
+            assert_eq!(directory.read(&name, &reference).unwrap(), bytes);
+            assert_eq!(fs::read(staging).unwrap(), bytes[..8]);
+            drop(directory); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn symbolic_media_directories_and_symbolic_ancestors_are_rejected() {
+            let (root, project) = setup();
+            let outside = root.join("outside"); fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("keep.txt"), b"original").unwrap();
+            symlink(&outside, project.join("media")).unwrap();
+            assert!(unix_io::Directory::open(&project, true).is_err());
+            assert_eq!(fs::read(outside.join("keep.txt")).unwrap(), b"original");
+            fs::remove_file(project.join("media")).unwrap();
+            let alias = root.join("alias"); symlink(project.parent().unwrap(), &alias).unwrap();
+            assert!(unix_io::Directory::open(&alias.join(project.file_name().unwrap()), true).is_err());
+            assert!(!project.join("media").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn symbolic_and_hard_link_media_files_cannot_escape_the_project_boundary() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            let outside = root.join("original.png"); fs::write(&outside, &bytes).unwrap();
+            let target = project.join("media").join(&name);
+            symlink(&outside, &target).unwrap();
+            assert!(directory.read(&name, &reference).is_err());
+            assert!(directory.write(&name, &reference, &bytes).is_err());
+            fs::remove_file(&target).unwrap(); fs::hard_link(&outside, &target).unwrap();
+            assert!(directory.read(&name, &reference).is_err());
+            assert!(directory.write(&name, &reference, &bytes).is_err());
+            assert_eq!(fs::read(outside).unwrap(), bytes);
+            drop(directory); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn replaced_root_or_media_directories_never_redirect_an_opened_operation() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            let moved = project.with_file_name("original-root"); fs::rename(&project, &moved).unwrap();
+            fs::create_dir(&project).unwrap(); fs::create_dir(project.join("media")).unwrap();
+            fs::copy(moved.join(".ai-canvas-native-project.json"), project.join(".ai-canvas-native-project.json")).unwrap();
+            assert!(directory.write(&name, &reference, &bytes).is_err());
+            assert!(!moved.join("media").join(&name).exists());
+            assert!(!project.join("media").join(&name).exists());
+            drop(directory);
+
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            let original_media = project.join("original-media"); fs::rename(project.join("media"), &original_media).unwrap();
+            fs::create_dir(project.join("media")).unwrap();
+            assert!(directory.write(&name, &reference, &bytes).is_err());
+            assert!(!original_media.join(&name).exists());
+            assert!(!project.join("media").join(&name).exists());
+            drop(directory); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn replaced_or_mutated_ownership_markers_fail_closed_even_with_the_same_path() {
+            let (root, project) = setup();
+            let (bytes, reference, name) = mask();
+            let directory = unix_io::Directory::open(&project, true).unwrap();
+            let marker = project.join(".ai-canvas-native-project.json");
+            let original = fs::read(&marker).unwrap();
+            fs::write(&marker, b"{}").unwrap();
+            assert!(directory.write(&name, &reference, &bytes).is_err());
+            fs::write(&marker, &original).unwrap();
+            let previous = project.join("original-marker"); fs::rename(&marker, &previous).unwrap();
+            fs::write(&marker, &original).unwrap();
+            assert!(directory.write(&name, &reference, &bytes).is_err());
+            assert!(!project.join("media").join(&name).exists());
+            drop(directory); fs::remove_dir_all(root).unwrap();
+        }
     }
 }

@@ -45,7 +45,7 @@ import {
   updateProjectSnapshot,
   updateProjectStoryGraphCAS,
 } from '../services/indexedDbService';
-import { serializeProjectRecord, type ProjectSummaryData } from '../services/storageService';
+import { normalizeProjectMediaNodes, serializeProjectRecord, type ProjectSummaryData } from '../services/storageService';
 import { toProjectSummaryRecord } from '../services/indexedDb/projectSummary';
 import {
   applySharedAssetSyncCommit,
@@ -253,6 +253,13 @@ function rebaseCommittedMediaNodes(before: Node<BaseNodeData>[], current: Node<B
   const existingIds = new Set([...before, ...current].map((node) => node.id));
   return [...changed, ...delivered.filter((node) => !existingIds.has(node.id))];
 }
+
+const NORMALIZED_MEDIA_FIELDS = [
+  'assetId', 'relativePath', 'filePath', 'storageRootRef',
+  'imageUrl', 'videoUrl', 'audioUrl', 'thumbnailUrl', 'sourceUrl', 'output', 'mattingMask', 'annotation',
+  'storyboardOverrides', 'shotlistRows', 'videoReferences', 'runninghubOutputs', 'workflowApiOutputs',
+  'directorCaptureUrls', 'directorCaptureFilePaths', 'directorCaptureRelativePaths', '__nativeUnavailableMediaFields',
+] as const satisfies readonly (keyof BaseNodeData)[];
 
 /** 把完整设置转换为相对项目默认值的字段覆盖，避免新分集退化为旧式固定快照。 */
 function nativeEpisodeSettings(settings: ProjectSettings, defaults?: ProjectSettings): EpisodeSettingsPolicy {
@@ -974,6 +981,10 @@ export interface ProjectSlice {
   restoreProjectImport: (ownerId: string, recoveryId: string) => Promise<void>;
   /** 事务提交原媒体结果，保存并重载当前画布；原租约失效时不覆盖其他作品。 */
   commitNativeMediaResult: (record: NativeMediaTaskRecord, relativePath: string, expected: ProjectExpectedContext, signal?: AbortSignal) => Promise<void>;
+  /** 在冻结本轮生成输入前补齐当前节点和引用素材的落盘身份，不创建历史或提交付费请求。 */
+  normalizeNativeMediaGenerationInputs: (nodeId: string, input?: BaseNodeData) => Promise<{
+    targetPatch: Partial<BaseNodeData>; nodePatches: Map<string, Partial<BaseNodeData>>;
+  }>;
   beginNativeMediaSubmissionPreparation: (expected: import('../types/project').CanvasContext) => Promise<NativeMediaSubmissionPreparation>;
   /** 复制项目（含分集、对话与素材），复制完不切画布。 */
   duplicateProject: (id: string) => Promise<string | undefined>;
@@ -1235,6 +1246,77 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   isReturningToStartPage: false,
   switchingProjectName: null,
   autoSaveFailure: null,
+
+  normalizeNativeMediaGenerationInputs: async (nodeId, input) => {
+    const before = get(), context = before.projectExecutionContext;
+    if (context?.modelGeneration !== 1) return { targetPatch: {}, nodePatches: new Map() };
+    const runtime = nativeRuntime.get(get), target = before.nodes.find((node) => node.id === nodeId);
+    if (context.kind !== 'canvas' || !runtime || runtime.activeId !== context.canvasId || !target) {
+      throw new Error('原画布或生成节点已变化，未准备参考素材');
+    }
+    const revision = before.getCurrentRevision();
+    const material = nativeMediaInputMaterial(target, before, 'media-input-v3');
+    const references = new Set([nodeId, ...before.edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source)]);
+    const parameters = input ?? target.data;
+    const mentionText = JSON.stringify([parameters.prompt, parameters.workflowInputs, parameters.videoReferences,
+      parameters.comfyRefmods, parameters.cameraSettings]);
+    const byId = new Map(before.nodes.map((node) => [node.id, node]));
+    for (const match of mentionText.matchAll(/@\{([^}:]+)(?::[^}]*)?\}/g)) {
+      references.add(byId.has(match[1]) ? match[1] : match[1].split(/\/(?:cell|shot)\//)[0]);
+    }
+    const originals = before.nodes.filter((node) => references.has(node.id));
+    const assertCurrent = () => {
+      const current = get(), live = current.nodes.find((node) => node.id === nodeId);
+      if (nativeRuntime.get(get) !== runtime || projectImportsApplying.has(context.projectId)
+        || projectAssetSyncBarriers.has(context.projectId) || current.getCurrentRevision() !== revision
+        || !isProjectExpectedContextCurrent(context, current, { checkCanvasRevision: false }) || !live
+        || nativeMediaInputMaterial(live, current, 'media-input-v3') !== material) {
+        throw new Error('生成输入或参考素材已变化，未提交请求');
+      }
+      const liveById = new Map(current.nodes.map((node) => [node.id, node]));
+      for (const original of originals) {
+        const node = liveById.get(original.id);
+        if (!node || node.type !== original.type || NORMALIZED_MEDIA_FIELDS.some((field) => (
+          !configValuesEqual(node.data[field], original.data[field])
+        ))) throw new Error('节点媒体已变化，未覆盖新内容');
+      }
+    };
+    assertCurrent();
+    let normalized: Node<BaseNodeData>[];
+    try { normalized = await normalizeProjectMediaNodes(context.canvasId, originals); }
+    catch {
+      assertCurrent();
+      throw new Error('参考素材身份准备失败，请检查文件后重试');
+    }
+    assertCurrent();
+    const normalizedById = new Map(normalized.map((node) => [node.id, node]));
+    const originalById = new Map(originals.map((node) => [node.id, node]));
+    const targetPatch: Partial<BaseNodeData> = {};
+    const nodePatches = new Map<string, Partial<BaseNodeData>>();
+    set((state) => {
+      let changed = false;
+      const nodes = state.nodes.map((node) => {
+        const original = originalById.get(node.id), resolved = normalizedById.get(node.id);
+        if (!original || !resolved) return node;
+        let data: BaseNodeData | undefined;
+        const patch: Partial<BaseNodeData> = {};
+        for (const field of NORMALIZED_MEDIA_FIELDS) {
+          if (configValuesEqual(original.data[field], resolved.data[field])) continue;
+          data ??= { ...node.data };
+          if (Object.hasOwn(resolved.data, field)) data[field] = resolved.data[field] as never;
+          else delete data[field];
+          patch[field] = resolved.data[field] as never;
+          if (node.id === nodeId) targetPatch[field] = resolved.data[field] as never;
+        }
+        if (!data) return node;
+        nodePatches.set(node.id, patch);
+        changed = true;
+        return { ...node, data };
+      });
+      return changed ? { nodes } : state;
+    });
+    return { targetPatch, nodePatches };
+  },
 
   beginNativeMediaSubmissionPreparation: async (expected) => {
     const context = structuredClone(expected), runtime = nativeRuntime.get(get);

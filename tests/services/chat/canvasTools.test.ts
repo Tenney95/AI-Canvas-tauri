@@ -18,7 +18,7 @@ import { emptyDramaAssetLibrary, type DramaAsset } from '../../../src/types/dram
 import type { AssetTextSnapshot } from '../../../src/services/fileService';
 import type { ArchiveAssetDigest } from '../../../src/services/projectExchangeDomain';
 
-const executeGeneration = vi.hoisted(() => vi.fn(async () => ({ success: true })));
+const executeGeneration = vi.hoisted(() => vi.fn<typeof import('../../../src/services/generationService').executeGeneration>().mockResolvedValue({ success: true }));
 const loadGlobalAssets = vi.hoisted(() => vi.fn<() => Promise<DramaAsset[]>>());
 const textFiles = vi.hoisted(() => ({ desktop: false, read: vi.fn(), save: vi.fn() }));
 const cloudOutputRepair = vi.hoisted(() => ({ invoke: vi.fn(), directory: vi.fn() }));
@@ -1881,6 +1881,52 @@ describe('canvas agent tools', () => {
       { nodeId: 'n1', status: 'skipped', message: '节点正在生成中' },
       { nodeId: 'n2', status: 'success', message: undefined },
     ]);
+  });
+
+  it('native run freezes host leases after controlled reference metadata patches, including overlapping selected references', async () => {
+    const references = [{ id: 'ref', kind: 'frame' as const, role: 'reference' as const, url: 'asset://localhost/project/ref.png' }];
+    useAppStore.setState({ nodes: [node('n1', { videoReferences: references }), node('n2', { videoReferences: references })],
+      edges: [{ id: 'reference', source: 'n2', target: 'n1' }],
+      projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-run',
+        projectId: 'owner', projectEpoch: 1, canvasId: 'p1', episodeId: null, canvasEpoch: 1, canvasRevision: 0 } });
+    const normalize = vi.fn(async (nodeId: string) => {
+      const state = useAppStore.getState(), target = state.nodes.find((item) => item.id === nodeId)!;
+      if (target.data.videoReferences?.[0].assetId) return { targetPatch: {}, nodePatches: new Map<string, Partial<BaseNodeData>>() };
+      const patch = { videoReferences: references.map((reference) => ({ ...reference, assetId: 'asset-ref' })) };
+      useAppStore.setState({ nodes: state.nodes.map((item) => ({ ...item, data: { ...item.data, ...patch } })) });
+      return { targetPatch: patch, nodePatches: new Map([['n1', patch], ['n2', patch]]) };
+    });
+    useAppStore.setState({ normalizeNativeMediaGenerationInputs: normalize });
+    for (let count = 0; count < 2; count++) executeGeneration.mockImplementationOnce(async (nodeId, _prompt, _post, _data, lease) => {
+      await normalize(nodeId); await lease?.assertFresh(); return { success: true };
+    });
+    const result = await getAgentTool('canvas_run_nodes')!.execute(context(), { nodeIds: ['n1', 'n2'] });
+    expect(result.status).toBe('success'); expect(executeGeneration).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(result.modelContent).results.every((item: { status: string }) => item.status === 'success')).toBe(true);
+    expect(normalize).toHaveBeenCalledTimes(4);
+  });
+
+  it('native host preparation never accepts another selected node real edit as a fresh authorization baseline', async () => {
+    const references = [{ id: 'ref', kind: 'frame' as const, role: 'reference' as const, url: 'asset://localhost/project/ref.png' }];
+    useAppStore.setState({ nodes: [node('n1', { videoReferences: references }), node('n2', { prompt: '原授权提示词' })], edges: [],
+      projectExecutionContext: { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-run',
+        projectId: 'owner', projectEpoch: 1, canvasId: 'p1', episodeId: null, canvasEpoch: 1, canvasRevision: 0 } });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const normalize = vi.fn(async () => {
+      await gate;
+      const patch = { videoReferences: references.map((reference) => ({ ...reference, assetId: 'asset-ref' })) };
+      useAppStore.setState({ nodes: useAppStore.getState().nodes.map((item) => item.id === 'n1' ? { ...item, data: { ...item.data, ...patch } } : item) });
+      return { targetPatch: patch, nodePatches: new Map([['n1', patch]]) };
+    });
+    useAppStore.setState({ normalizeNativeMediaGenerationInputs: normalize });
+    const pending = getAgentTool('canvas_run_nodes')!.execute(context(), { nodeIds: ['n1', 'n2'] });
+    expect(normalize).toHaveBeenCalledOnce();
+    useAppStore.getState().updateNodeDataTransient('n2', { prompt: '准备期间真实新输入' });
+    finish();
+    await expect(pending).rejects.toThrow(/输入已变化/);
+    expect(executeGeneration).not.toHaveBeenCalled();
+    expect(useAppStore.getState().nodes[1].data.prompt).toBe('准备期间真实新输入');
   });
 
   it('caps how many nodes one run call may generate', async () => {
