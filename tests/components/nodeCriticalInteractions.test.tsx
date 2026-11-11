@@ -636,6 +636,8 @@ function visibleShotRatio(store: TestStore, column: string) {
 
 /** 只测工作流编辑与关闭回调，生成服务不在本用例执行范围内。 */
 async function loadWorkflowEditingDialog() {
+  vi.doMock('../../src/components/nodes/shared/ConnectedNodesPreview', () => ({ default: () => null }));
+  vi.doMock('../../src/components/shared/ResourceVideoPreview', () => ({ default: () => null }));
   // 编辑回调不执行生成或文件操作；隔离这些边界，避免冷加载整套原生生成依赖图。
   vi.doMock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: vi.fn() }));
   vi.doMock('../../src/services/imageBatchService', () => ({
@@ -662,6 +664,8 @@ async function loadWorkflowEditingDialog() {
     return (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
   } finally {
     // 当前模块保留导入的替身；后续 resetModules 后的生成用例仍加载自己的真实实现或替身。
+    vi.doUnmock('../../src/components/nodes/shared/ConnectedNodesPreview');
+    vi.doUnmock('../../src/components/shared/ResourceVideoPreview');
     vi.doUnmock('../../src/services/fileService');
     vi.doUnmock('../../src/services/imageBatchService');
     vi.doUnmock('../../src/services/comfyWorkflowService');

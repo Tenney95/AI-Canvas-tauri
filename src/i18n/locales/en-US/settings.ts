@@ -1602,7 +1602,10 @@ const settings = {
   "原操作 ID": "Original operation ID",
   "已保存 {count} 个产物，原计划 {expected} 个；失败任务 {failed} 个，失败提交 {rejected} 次，未知提交 {unknown} 次，未开始 {notStarted} 次，迟到任务 {late} 个。": "Saved {count} outputs; originally expected {expected}. Failed tasks: {failed}; rejected submissions: {rejected}; unknown submissions: {unknown}; not started: {notStarted}; late tasks: {late}.",
   "已取回原剪辑产物，请重新打开原工程。": "The original editing output was recovered. Reopen the original editor project.",
-  "新项目已统计占用，完整引用核验前暂不提供清理操作。": "Storage usage for new projects is shown. Cleanup remains disabled until all references can be verified.",
+  "此项目有待续操作或引用尚未核验，已保留其素材，其他项目仍可清理。": "This project's media is protected because operations are pending or references remain unverified. Other projects can still be cleaned up.",
+  "部分项目的素材暂受保护，其他已核验的未引用文件仍可清理。": "Some project media is protected. Other verified, unreferenced files can still be cleaned up.",
+  "查看扫描提示（{count}）": "View scan notices ({count})",
+  "新项目可清理已核验的未引用原件；不可变媒体、导入副本、回收站和目录元数据继续保留。": "New projects can clean up verified, unreferenced original files. Immutable media, imported copies, trash, and directory metadata are retained.",
 };
 
 export default settings;

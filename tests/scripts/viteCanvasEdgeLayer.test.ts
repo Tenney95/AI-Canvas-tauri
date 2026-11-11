@@ -203,12 +203,13 @@ describe('React Flow 集中连线构建适配', () => {
         expect(invoke(entry.source, id)?.code).toContain(CANVAS_EDGE_LAYER_ADAPTER_MARKER);
       }
     }
+    const normalizedEntryId = entries[0].id.replaceAll('\\', '/');
     const unrelated = [
-      'src/components/Canvas.tsx', entries[0].id + '.map',
-      entries[0].id.replace('node_modules', 'other/node_modules'),
-      entries[0].id.replace('@xyflow', '@xyflow-copy'),
-      entries[0].id.replace('dist/esm', 'dist/umd'),
-      entries[0].id.replace('index.js', 'components/index.js'),
+      'src/components/Canvas.tsx', normalizedEntryId + '.map',
+      normalizedEntryId.replace('node_modules', 'other/node_modules'),
+      normalizedEntryId.replace('@xyflow', '@xyflow-copy'),
+      normalizedEntryId.replace('dist/esm', 'dist/umd'),
+      normalizedEntryId.replace('index.js', 'components/index.js'),
     ];
     for (const id of unrelated) {
       expect(filter.test(id)).toBe(false);
