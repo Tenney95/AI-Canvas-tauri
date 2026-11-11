@@ -516,6 +516,20 @@ describe('image model capability resolution', () => {
   it('keeps Seedream 5.0 Pro 1.5K instead of degrading it', () => {
     expect(normalizeSeedreamSize('doubao-seedream-5-0-pro-260628', '1.5K')).toBe('1.5K');
   });
+
+  it('keeps Volcengine Seedream 5.0 Flash single-image limits and the documented portrait pixels', () => {
+    const model = 'volcengine/doubao-seedream-5-0-flash-260915';
+    expect(getImageCapability(model)).toMatchObject({
+      modelId: 'doubao-seedream-5-0-flash',
+      resolutions: ['1K', '1.5K', '2K'],
+      defaultRatio: 'auto',
+      supportsBatch: false,
+      maxImageReferences: 10,
+    });
+    expect(getImageCapability(model)?.dimensionPresets?.['1.5K']?.['9:16']).toEqual([1152, 2048]);
+    expect(normalizeSeedreamSize('doubao-seedream-5-0-flash-260915', '1.5K')).toBe('1.5K');
+    expect(normalizeSeedreamSize('doubao-seedream-5-0-flash-260915', '4K')).toBe('2K');
+  });
 });
 
 describe('APIMart 新图片模型合同', () => {

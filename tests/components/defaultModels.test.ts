@@ -90,6 +90,23 @@ function createConfig(selectedModels: ProviderModelSelection[]): AppConfig {
 }
 
 describe('内置厂商动态模型目录', () => {
+  it('火山 Seedream 5.0 Flash 归类为图片，只有勾选后才进入节点与对话菜单', () => {
+    const id = 'doubao-seedream-5-0-flash-260915';
+    const option = defaultModelGroups.find((group) => group.id === 'volcengine')!.models
+      .find((model) => model.value === `volcengine/${id}`);
+    expect(option).toMatchObject({ provider: 'volcengine', label: 'Seedream 5.0 Flash', nodeTypes: ['ai-image'] });
+    const config: AppConfig = { theme: 'dark', providers: {
+      volcengine: { name: '火山方舟', apiKey: 'configured', selectedModels: [] },
+    } };
+    expect(getConfiguredModelGroups(config, 'ai-image')).toEqual([]);
+    config.providers.volcengine.selectedModels = [{ id, name: 'Seedream 5.0 Flash', category: 'image', provider: 'volcengine' }];
+    expect(getConfiguredModelGroups(config, 'ai-image').flatMap((group) => group.models).map((model) => model.value))
+      .toEqual([`volcengine/${id}`]);
+    expect(getMediaModelOptions([], config).find((model) => model.value === `volcengine/${id}`))
+      .toMatchObject({ provider: 'volcengine', mediaKind: 'image' });
+    expect(getConfiguredModelGroups(config, 'ai-video')).toEqual([]);
+  });
+
   it.each(['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])('APIMart %s 属于图片候选，仅勾选后进入节点与对话模型菜单', (id) => {
     const option = defaultModelGroups.find((group) => group.id === 'apimart')!.models
       .find((model) => model.value === `apimart/${id}`);

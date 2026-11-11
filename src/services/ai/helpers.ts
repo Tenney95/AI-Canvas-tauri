@@ -41,6 +41,7 @@ export function formatImageSizeForModel(
  */
 const SEEDREAM_SIZE_SUPPORT: Record<string, string[]> = {
   'doubao-seedream-5-0-pro': ['1K', '1.5K', '2K'],
+  'doubao-seedream-5-0-flash': ['1K', '1.5K', '2K'],
   'doubao-seedream-5-0-lite': ['2K', '3K', '4K'],
   'doubao-seedream-4-5': ['2K', '4K'],
   'doubao-seedream-4-0': ['1K', '2K', '4K'],
