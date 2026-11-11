@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.11.1 操作说明书：同型号参数与渠道限制、万象 H3 四档时长、Muse 参考图与发送确认、素材路径和项目恢复。">
-<title>AI Canvas 0.11.1 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.11.2 操作说明书：独立助手关闭与草稿交接、最近使用 Skill、分组开合让位、新项目存储清理、团队与媒体生成。">
+<title>AI Canvas 0.11.2 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -34,7 +34,7 @@ dialog .character-actions-shot{width:1912px}
 <body>
 <a class="skip" href="#main">跳到正文</a>
 <nav class="toc" aria-label="说明书目录">
-<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.11.1 · 操作说明书<br>从素材整理到逐镜制作</small>
+<div class="toc-head"><strong>AI Canvas</strong><button class="action toc-toggle" id="toc-toggle" type="button" aria-expanded="true" aria-controls="toc-links">收起目录</button></div><small>0.11.2 · 操作说明书<br>从素材整理到逐镜制作</small>
 <a class="back" href="index.html">← 返回软件首页</a>
 <label for="search">查找章节或操作</label><input id="search" type="search" placeholder="如：文件夹、回收站、视频批次" autocomplete="off" aria-describedby="search-status" aria-controls="search-results toc-links">
 <p id="search-status" class="search-status" role="status">支持空格分隔关键词；Ctrl + F 查找全文。</p>
@@ -47,6 +47,8 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
+<div class="group">0.11.2 更新入口</div>
+<a href="#assistant-close-0-11-2">↳ 独立助手关闭与草稿交接</a><a href="#recent-skills-0-11-2">↳ 最近五个 Skill</a><a href="#canvas-storage-0-11-2">↳ 分组让位与新项目清理</a><a href="#models-team-0-11-2">↳ 七角色团队与媒体修复</a>
 <div class="group">0.11.1 更新入口</div>
 <a href="#model-parameters-0-11-1">↳ 同型号参数与万象视频</a><a href="#muse-references-0-11-1">↳ Muse 上传与发送确认</a><a href="#media-path-0-11-1">↳ 复制媒体文件路径</a>
 <div class="group">0.11.0 更新入口</div>
@@ -88,9 +90,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.11.1 说明书</span><span class="badge">2026-11-10 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.11.2 说明书</span><span class="badge">2026-11-11 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
+<aside class="tip"><b>0.11.2 · 助手窗口与常用 Skill：</b>查看<a href="#assistant-close-0-11-2">独立助手关闭与草稿交接</a>、<a href="#recent-skills-0-11-2">最近五个上传及包内 Skill</a>、<a href="#canvas-storage-0-11-2">分组开合让位与新项目清理</a>，以及<a href="#models-team-0-11-2">七角色团队与媒体修复</a>。旧项目与兼容限制保留，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.1 · 型号参数与万象视频适配：</b>查看<a href="#model-parameters-0-11-1">同型号参数与万象 H3 四档时长</a>、<a href="#muse-references-0-11-1">Muse 参考图和发送确认</a>，以及<a href="#media-path-0-11-1">复制媒体文件路径</a>。旧项目与任务身份保持，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.0 · 新项目结构与媒体恢复：</b>从<a href="#native-projects-0-11-0">新建项目</a>开始，按分集保存画布和共享素材；已有旧项目保持原结构。查看<a href="#media-history-0-11-0">媒体结果与输出历史</a>，再了解<a href="#project-archive-0-11-0">项目包、更新和恢复点</a>。本版不自动迁移真实旧项目；安装包与验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.10.29 · 剧本协作与原文写作：</b>从<a href="#workbench-collaboration-0-10-29">工作台与 Agent 协作</a>开始，按页签使用创作工具，借助<a href="#story-graph-0-10-29">故事关系图</a>追踪剧情与证据；在<a href="#manuscripts-0-10-29">原文写作</a>中直接起稿、续写、润色，并将原文和分集剧本保存为项目内 TXT。功能与待验收边界见本版更新入口。</aside>
@@ -820,6 +823,7 @@ dialog .character-actions-shot{width:1912px}
 <h3>14.8 · 用 / 调用快捷指令和 Skill</h3>
 <p>图片、视频、文本和音频提示词框提供同一 <b>/</b> 入口。长按节点工具栏进入自定义后，右侧始终显示快捷指令栏；点击<b>管理快捷指令</b>可打开当前类型的分类，新建或修改后保存，返回即可添加到工具栏。管理弹窗操作保留布局草稿；添加后可排序或移除，再点<b>完成</b>保存布局。无可用指令或全部已添加时显示对应提示，各类型指令独立管理。</p>
 <p>在节点提示词中输入 <code>/</code>，或点击对应按钮，选择内置指令、自定义指令或 Skill。进入<b>管理快捷指令</b>可设置模板、模型和尺寸；高级模式可定义参数、多步骤和执行方式。</p>
+<p><b>最近使用：</b>节点的 <code>/</code> 一级菜单最多显示最近使用的 5 个可用 Skill，包括自己上传的文件和已启用智能体包中的 Skill。主窗口或独立助手里选择 Skill 也更新这份近期记录，助手菜单仍沿用完整 Skill 选择。选择后加入原有输入，仍需按正常入口发送或生成；它与自定义快捷指令分别管理。名称下的简介会从可用说明提取，缺少说明时使用文件名。</p>
 <h4 id="preset-sharing">原图参考、依赖并发与 JSON 分享</h4>
 <ol class="steps"><li>编辑高级快捷指令时，逐步设置<b>参考来源</b>：选择<b>原始输入（触发节点）</b>让多个步骤共用同一份原图，或选择<b>上一步结果</b>形成连续处理链；第一步始终使用触发节点。</li><li>选择<b>顺序执行</b>，或<b>按依赖并发</b>。并发最多同时执行 3 步；依赖上一步结果的步骤会等待前一步成功。失败后停止启动新步骤，已开始的步骤完成收尾，已有结果保留，不自动重投模型调用。</li><li>在管理器中编辑好当前指令后，点击<b>复制 JSON</b>或<b>导出 JSON</b>分享当前草稿。复制或导出不等于保存原指令，仍需按需保存自己的编辑。</li><li>接收方点击<b>导入 JSON</b>，粘贴内容或选择文件，核对后保存为独立新指令。重复导入生成新副本，不覆盖已有指令，也不会自动运行；错误或保存失败时保留输入供修正。</li><li>运行前检查模型、工作流、参考素材与预期调用次数。JSON 不携带 API Key、素材文件或工作流文件，名称 / ID 引用需要接收方自行配置；预览配置不代表已经生成。</li></ol>
 <aside class="tip"><b>把常用工具留在手边：</b>长按节点浮动工具栏，可增删按钮并拖动排序；布局会保留供同类节点使用。</aside>
@@ -890,6 +894,7 @@ dialog .character-actions-shot{width:1912px}
 涉及状态未确认的生成任务，先查询原任务和输出，确认后再决定是否重新生成。</code></pre>
 <h3 id="assistant-windows">15.2 · 内嵌助手、独立窗口和会话草稿</h3>
 <ol class="steps"><li>在助手顶部点击<b>独立窗口</b>，把对话移到单独的桌面窗口；需要放回画布旁时点击<b>收回内嵌</b>。</li><li>切换展示方式后，继续查看原会话、模式、模型和任务。切换窗口不会重新启动任务；保持主应用运行。</li><li>切换会话后，各会话未发送的草稿会在当前运行期间分别保留。关窗或收回时会交接最后一次编辑，回到对应会话检查后再发送。</li><li>如显示初始化或同步等待，等真实会话状态就绪；不要把尚未同步的空白视图认定为历史丢失。</li></ol>
+<p>点击关闭或收回后，窗口显示<b>正在交接草稿并关闭窗口…</b>，输入与发送暂时禁用。收回会等草稿已接收且独立窗口真正关闭，再显示内嵌助手。若出现关闭未完成的提示，窗口与草稿继续保留，输入恢复可编辑；等待同步后重试。旧项目或会话的草稿无法确认时，先返回原项目或会话，不能把旧草稿塞进当前其他会话。</p>
 <p>会话列表、对话和任务中心视图可随展示方式切换。未发送草稿只保证当前运行期间的交接，<b>不保证退出或重启后恢复</b>；重要长文先保存到自己的文档。智能体安装和项目记忆等管理入口在主窗口使用。</p>
 <h4 id="assistant-images">给助手上传参考图</h4>
 <ol class="steps"><li>先打开项目并选择普通会话，点击输入框旁的<b>添加图片或文本附件</b>按钮，选择 PNG、JPEG 或 WebP 图片；文本文件仍按会话授权读取。</li><li>核对输入框中的附件缩略图，移除不需要的图片，再填写分析要求或直接发送图片。每条消息最多 6 张，单张最多 8 MB、总计最多 24 MB，每张图片最多 1600 万像素。</li><li>支持看图的对话模型会接收图片；纯文本模型需要已配置的视觉描述模型。遇到参考图读取或视觉配置错误，应先修复附件或项目配置，不能把错误当作图片已发送。</li><li>切换到独立窗口后检查同一会话的附件草稿；草稿仅在本次运行期间保留。图片已复制到项目文件，但不会自动创建画布图片节点。</li></ol>
@@ -1009,6 +1014,7 @@ dialog .character-actions-shot{width:1912px}
 <h3 id="storage-health">文件目录、外部软件与存储健康</h3><p>在<b>设置 → 文件与应用</b>配置文件根目录，以及 Photoshop、剪映专业版、Premiere Pro 等外部应用；配置后，本地媒体节点右键会提供适用入口。移动电脑或更换安装位置后，需要重新核对这些路径。</p>
 <p>进入<b>设置 → 存储健康</b>，先查看扫描时间及结果。<b>项目文件占用</b>包含素材与回收站；<b>应用数据配额</b>是浏览器内核管理的数据额度，不是磁盘总容量，清理素材文件不会直接释放这部分配额。</p>
 <ol class="steps"><li>点击<b>重新扫描</b>，按概览、回收站、未引用文件、重复文件与不可用目录核对；扫描未完成时，只显示已读取范围，暂不提供清理。</li><li>在<b>未引用文件</b>中先点<b>打开所在位置</b>检查文件。没有应用内引用不代表没有其他用途，不要只凭分类就删除。</li><li>清理前审阅确认窗口中的项目、文件和预计空间；执行前会重新核对引用，仍被引用或无法确认的文件保留，完成后查看实际清理结果与未清理项。</li></ol>
+<p>新结构项目也会扫描未引用的普通原件，并复核当前画布、历史、恢复点和任务等引用。新项目的不可变媒体、导入区、隐藏系统目录，以及未完成导入、生成或更新涉及的范围继续保护；这些文件即使计入占用，也不全部纳入可清理空间。读取失败或扫描期间发生变化时保留相关文件，不能把保护范围当成已确认的废弃文件。</p>
 <aside class="hold"><b>永久清理不可撤销。</b>清空回收站后无法通过应用恢复；未引用文件与可删重复副本会从磁盘直接删除，不进入回收站。它与资源库中“清理失效记录但保留文件”是不同操作。删除单集不会清理整部剧共用素材目录，处理共享素材前仍应检查其他分集。</aside>
 <h3 id="interface-language">切换界面语言，保留用户内容</h3>
 <ol class="steps"><li>进入<b>设置 → 常规</b>，选择<b>简体中文、English、日本語或한국어</b>，检查设置、项目栏、素材库与助手中的菜单和筛选标签更新；等待设置保存完成。</li><li>有编辑草稿时切换语言，界面标签随之更新，项目、文件、角色名称，提示词、对白、消息正文和已有草稿保持原内容。重新打开应用后核对保存的语言选择。</li><li>外部插件自行绘制的界面、模型或原生运行时的详细诊断及终端输出可能保留来源语言；切换语言不会重命名已有资料，也不代表这些原始文本已被翻译。</li></ol>
@@ -1131,6 +1137,18 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
+<section id="updates-0-11-2"><h2>0.11.2 · 助手窗口与常用 Skill</h2>
+<h3 id="assistant-close-0-11-2">独立助手关闭与草稿交接</h3>
+<p>关闭或<b>收回内嵌</b>会等待草稿交接与实际关窗，等待时输入只读，失败保留草稿并恢复编辑。从工作台准备“优化分镜”等助手草稿也先交接原窗口，不重复打开助手或重新启动任务。具体操作与运行期草稿限制见<a href="#assistant-windows">15.2</a>。</p>
+<h3 id="recent-skills-0-11-2">最近五个上传及包内 Skill</h3>
+<p>节点 <code>/</code> 一级菜单按近期顺序显示最多 5 个可用 Skill，包含上传项与已启用智能体包；主／独立助手选择更新同一记录，助手菜单仍沿用完整列表。选择只加入引用，不自动生成或改变权限。简介提取也修复已有上传项中只显示括号或分隔符的问题。管理方法见<a href="#skill-archives">上传 Skill</a>和<a href="#assistant-packages">智能体中心</a>。</p>
+<h3 id="canvas-storage-0-11-2">分组开合让位与新项目清理</h3>
+<p>双击分组头部收起、双击文件夹展开，同排右侧内容自动让位，保留间距与手动移动；开合不占用撤销步骤，也不是全局避碰。新项目可在<b>设置 → 存储健康</b>扫描未引用的普通原件；不可变媒体、导入区、隐藏目录与未完成操作涉及的范围继续保护，清理边界见<a href="#storage-health">存储健康</a>。</p>
+<h3 id="models-team-0-11-2">七角色团队与媒体处理</h3>
+<p>工作台<b>Agent协作</b>增加导演与分镜师，沿用结构师、主笔、连续性审阅、对白与制作审阅、主编，已有团队图不自动扩员。火山方舟补充 <b>Seedream 5.0 Flash</b> 适配与单图失败提示；同步改善素材身份、图片／视频预览、macOS／Linux 内嵌蒙板保存及 macOS 导出定位。真实模型与各平台文件行为仍待分别验收。</p>
+<aside class="tip"><b>升级范围：</b>旧项目保持原样，正式迁移继续关闭；新结构 v4 项目包与旧 v1–v3 兼容边界不变。安装包、门禁和桌面验收状态见<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-11-release-0.11.2.md">0.11.2 发布计划</a>，本页不以源码说明代替实际验证。</aside>
+</section>
+
 <section id="updates-0-11-1"><h2>0.11.1 · 型号参数与万象视频适配</h2>
 <h3 id="model-parameters-0-11-1">同型号参数与万象视频</h3>
 <p>同一型号的默认参数使用共同基线，渠道的分辨率、比例、时长、素材上限和精确尺寸分别保留。节点、生成与 Agent/MCP 查询采用相同有效能力；同名不表示不同渠道的尺寸与限制完全相同，未知型号不会自动套用其他型号的参数。用户改过的配置不会因目录更新而自动覆盖。</p>
@@ -1233,8 +1251,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.11.1「型号参数与万象视频适配」</b>，<b>2026-11-10</b> 按源码增量核对参数模板、万象 SD/H3、Muse 上传与发送确认和媒体路径操作，并保留此前项目结构、工作台、模型、工作流、素材与原文写作说明。旧锚点和十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.1">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-10-release-0.11.1.md">0.11.1 发布计划</a>，旧版本门禁不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；本次说明书更新不代表这些检查已通过。</p>
+<p>本说明书面向 <b>0.11.2「助手窗口与常用 Skill」</b>，<b>2026-11-11</b> 按源码增量核对独立助手关闭、最近 Skill、分组让位、新项目清理、团队与媒体处理，并保留此前参数模板、项目结构、工作台、模型、工作流、素材与原文写作说明。旧锚点和十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.2">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
+<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-11-release-0.11.2.md">0.11.2 发布计划</a>，旧版本门禁不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；本次说明书更新不代表这些检查已通过。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>
@@ -1250,7 +1268,7 @@ dialog .character-actions-shot{width:1912px}
 <p>内容依据当前版本的启动页、资源库、设置界面、应用帮助与相关操作实现核对。接口示例用于本地配置校验，<b>未调用真实厂商接口</b>；所有 example.com 地址与示例模型 ID 均为占位内容。按钮准备草稿、创建节点、实际模型生成和媒体保存是不同步骤，请按各章检查实际结果。</p>
 <p class="small">页面所需样式、脚本和十一张截图均在当前 HTML 内，无外部字体或 CDN 依赖。可直接双击离线打开；点击“返回软件首页”需同时保留 site 目录中的首页。打印按钮使用浏览器打印功能，可选择保存为 PDF。</p>
 </section>
-<footer>AI Canvas · 0.11.1 操作说明书 · 2026-11-10 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
+<footer>AI Canvas · 0.11.2 操作说明书 · 2026-11-11 增量核对<br>从一个节点开始，逐步完成你的创作。</footer>
 </main>
 <dialog id="zoom" aria-label="放大界面截图"><button class="action" id="zoom-close" type="button">关闭放大图（Esc）</button><div class="zoom-box"></div></dialog>
 <script>

@@ -75,7 +75,7 @@
   <div class="orbits" aria-hidden="true"><i></i><i></i><i></i></div>
   <div class="wrap">
     <a class="pill reveal" href="https://github.com/Tenney95/AI-Canvas-tauri/releases/latest" target="_blank" rel="noopener">
-      <span class="pill-tag" data-version>v0.11.1</span>
+      <span class="pill-tag" data-version>v0.11.2</span>
       <span>多厂商创作<span class="pill-more">与原结果交付</span></span>
       <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="m6 3.5 4.5 4.5L6 12.5"/></svg>
     </a>
@@ -156,7 +156,7 @@
     <p class="eyebrow reveal">画布</p>
     <h2 class="reveal">节点之间有连线，<br class="br-m" />创作才有上下文</h2>
     <p class="lede reveal">
-      基于 React Flow 12 的无限画布：多选、吸附、对齐、分布、分组、复制粘贴与完整撤销重做。
+      基于 React Flow 12 的无限画布：多选、吸附、对齐、分布、分组、复制粘贴与完整撤销重做。双击分组头部收起，同排右侧内容自动让位，展开恢复间距。
       有依赖的节点按拓扑顺序执行，无依赖的并发跑完。
     </p>
   </div>
@@ -401,7 +401,7 @@
       <article class="ncard" data-c="1"><header class="nbar"><span class="nbar-dot"></span>AI 应用<code>ai-app</code></header><p>由 Agent / MCP 创建，在隔离界面中只读绑定素材、运行动作，并显式保存自身状态与结果。</p></article>
       <article class="ncard" data-c="2"><header class="nbar"><span class="nbar-dot"></span>源文件<code>source-*</code></header><p>把本地素材登记进画布，作为生成链路的输入。</p></article>
       <article class="ncard" data-c="3"><header class="nbar"><span class="nbar-dot"></span>画布笔记<code>canvas-note</code></header><p>形状、箭头、自由绘制、文本与图片笔记。</p></article>
-      <article class="ncard" data-c="4"><header class="nbar"><span class="nbar-dot"></span>分组<code>group</code></header><p>把一组节点收进分组一起移动、折叠与管理。</p></article>
+      <article class="ncard" data-c="4"><header class="nbar"><span class="nbar-dot"></span>分组<code>group</code></header><p>把节点收进分组一起移动；双击头部收起、双击文件夹展开，同排右侧内容随之让位。</p></article>
     </div>
   </div>
 </section>
@@ -509,7 +509,7 @@
     <div class="dl-glow" aria-hidden="true"></div>
     <img class="dl-icon" src="assets/icon.svg" alt="" width="72" height="72" />
     <h2>开始使用 AI Canvas</h2>
-    <p class="lede">版本 <span data-version>v0.11.1</span> · 型号参数与万象视频适配。相同型号共用参数基线，保留渠道差异；万象 H3 提供 15／20／25／30 秒四档，修正 SD 原任务取件，并改善 Muse 参考图上传和发送确认。媒体节点可复制本地文件路径。旧项目保持原样，不自动迁移；项目包兼容边界不变。安装包及公开状态以 GitHub Releases 为准，下载后请核对应用版本。</p>
+    <p class="lede">版本 <span data-version>v0.11.2</span> · 助手窗口与常用 Skill。独立助手在草稿交接与窗口真正关闭后再收回，失败保留草稿并恢复编辑；节点 / 一级菜单提供最近 5 个可用的上传或包内 Skill，助手选择也更新共享近期记录。另含分组开合自动让位、新项目废弃原件扫描、七角色团队与 Seedream 5.0 Flash 适配。旧项目保持原样，不自动迁移；项目包兼容边界不变。安装包及公开状态以 GitHub Releases 为准，下载后请核对应用版本。</p>
 
     <div class="dl-grid">
       <a class="dl-card" data-os="mac" href="https://github.com/Tenney95/AI-Canvas-tauri/releases/latest" target="_blank" rel="noopener">
