@@ -2,6 +2,7 @@
  * mcpControlService — 回归测试：MCP on-demand discovery。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getLocale, setLocale, t } from '../../../src/i18n';
 import {
   handleMcpBridgeRequest,
   initMcpControlService,
@@ -694,20 +695,24 @@ describe('MCP on-demand discovery', () => {
     }
   });
 
-  it('preserves the live detached assistant when the shared focus attempt fails', async () => {
+  it.each(['zh-CN', 'en-US'] as const)('preserves the live detached assistant when the shared focus attempt fails (%s)', async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
     openDetachedChatWindow.mockRejectedValueOnce(new Error('focus failed while the original window remains alive'));
     const showToast = vi.fn();
     useAppStore.setState({ chatOpen: false, chatPanelDetached: true, showToast });
     const execute = registerDispatchProbe({ effect: 'user_choice' });
-    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, 'session:missing-choice');
+    const requestId = `session:missing-choice:${locale}`;
+    const pending = mcpCall('mcp_dispatch_probe', { value: 'ok' }, requestId);
     try {
-      await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith('打开独立窗口失败', 'error'));
+      await vi.waitFor(() => expect(showToast).toHaveBeenCalledWith(t('打开独立窗口失败'), 'error'));
       expect(openDetachedChatWindow).toHaveBeenCalledOnce();
       expect(useAppStore.getState()).toMatchObject({ chatPanelDetached: true, chatOpen: true, chatPanelView: 'chat' });
       expect(useAppStore.getState().agentTasks[0]?.status).toBe('waiting_approval');
       expect(execute).not.toHaveBeenCalled();
     } finally {
-      await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: 'cancel-missing-choice', method: 'requests/cancel', params: { requestId: 'session:missing-choice' } });
+      setLocale(previousLocale);
+      await handleMcpBridgeRequest({ sessionId: 'catalog-session', requestId: `cancel-missing-choice:${locale}`, method: 'requests/cancel', params: { requestId } });
       await pending;
     }
   });
