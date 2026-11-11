@@ -212,7 +212,7 @@ describe('独立助手关闭与草稿交接', () => {
         requestId: 'send-before-close', windowFrame: setup.frame, sequence: 1 });
       expect(useAppStore.getState().chatComposerLiveDraft).toBe('');
       setup.dispatch({ type: 'close_window', requestId: 'stale-sent-draft', windowFrame: setup.frame, sequence: 2,
-        composerDraft: { conversationId: setup.frame.conversationId, draft: 'a', windowFrame: setup.frame } });
+        composerDraft: { conversationId: setup.frame.conversationId ?? null, draft: 'a', windowFrame: setup.frame } });
       await vi.waitFor(() => expect(closingMocks.response).toHaveBeenCalledWith('stale-sent-draft', false, setup.frame.sessionId));
       expect(closingMocks.finish).not.toHaveBeenCalled();
       expect(useAppStore.getState().chatComposerLiveDraft).toBe('');
@@ -220,7 +220,7 @@ describe('独立助手关闭与草稿交接', () => {
       expect(useAppStore.getState().chatPanelDetached).toBe(true);
       finishAck();
       setup.dispatch({ type: 'close_window', requestId: 'cleared-sent-draft', windowFrame: setup.frame, sequence: 3,
-        composerDraft: { conversationId: setup.frame.conversationId, draft: '', windowFrame: setup.frame } });
+        composerDraft: { conversationId: setup.frame.conversationId ?? null, draft: '', windowFrame: setup.frame } });
       await vi.waitFor(() => expect(closingMocks.finish).toHaveBeenCalledOnce());
     } finally { finishAck?.(); setup.controller.dispose(); }
   });

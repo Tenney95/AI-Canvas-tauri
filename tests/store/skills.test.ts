@@ -51,7 +51,7 @@ function installation(item: AgentPackageSkill): AgentPackageInstallation {
 }
 
 function store(skills: UserSkill[] = []) {
-  const state = createStore<AppState>()((set, get, api) => ({ ...createSkillSlice(set, get, api), showToast: vi.fn() }) as AppState);
+  const state = createStore<AppState>()((set, get, api) => ({ ...createSkillSlice(set, get, api), showToast: vi.fn() }) as unknown as AppState);
   state.setState({ userSkills: skills, agentPackages: [], agentPackageSkills: [] });
   return state;
 }
