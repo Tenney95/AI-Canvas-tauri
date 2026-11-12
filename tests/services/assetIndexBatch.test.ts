@@ -34,6 +34,20 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+describe('项目素材的跨平台相对路径', () => {
+  it.each([
+    { root: '/project/data', path: '/project/data/Image.PNG', relative: 'Image.PNG' },
+    { root: '/project/data', path: '/project/DATA/image.png', relative: undefined },
+    { root: '/project/data', path: '/project/database/image.png', relative: undefined },
+    { root: 'C:/Project/Data', path: 'c:/project/data/Image.PNG', relative: 'Image.PNG' },
+    { root: '//Server/Share/Data', path: '//server/share/data/Image.PNG', relative: 'Image.PNG' },
+    { root: '//Server/Share/Data', path: '//server/other/data/Image.PNG', relative: undefined },
+  ])('$root ← $path', async ({ root, path, relative }) => {
+    const { getRelativeAssetPath } = await import('../../src/services/fs/assetIndex');
+    expect(getRelativeAssetPath(path, root)).toBe(relative);
+  });
+});
+
 describe('asset index batch persistence', () => {
   it('reads the relocation journal once after every tombstone check and does not cache across batches', async () => {
     const db = await import('../../src/services/indexedDbService');

@@ -31,8 +31,8 @@ function normalizePath(path: string): string {
 export function getRelativeAssetPath(path: string, rootPath: string): string | undefined {
   const normalizedPath = normalizePath(path);
   const normalizedRoot = normalizePath(rootPath);
-  const pathForCompare = /^[A-Za-z]:\//.test(normalizedPath) ? normalizedPath.toLowerCase() : normalizedPath;
-  const rootForCompare = /^[A-Za-z]:\//.test(normalizedRoot) ? normalizedRoot.toLowerCase() : normalizedRoot;
+  const pathForCompare = /^(?:[a-z]:\/|\/\/)/i.test(normalizedPath) ? normalizedPath.toLowerCase() : normalizedPath;
+  const rootForCompare = /^(?:[a-z]:\/|\/\/)/i.test(normalizedRoot) ? normalizedRoot.toLowerCase() : normalizedRoot;
   if (!pathForCompare.startsWith(`${rootForCompare}/`)) return undefined;
   return normalizedPath.slice(normalizedRoot.length + 1);
 }

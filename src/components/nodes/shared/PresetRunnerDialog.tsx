@@ -181,7 +181,7 @@ function PresetRunnerContent({
           <header className="preset-runner-header">
             <div className="preset-runner-heading">
               <span className="preset-runner-heading-icon">
-                <Icon icon="mdi:play-sequence-outline" width={20} height={20} />
+                <Icon icon="mdi:playlist-play" width={20} height={20} />
               </span>
               <div>
                 <h2 id="preset-runner-title">{preset.name}</h2>

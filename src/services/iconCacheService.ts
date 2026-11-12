@@ -1,7 +1,8 @@
 /**
- * iconCacheService — 初始化并恢复 Iconify 图标缓存。
+ * iconCacheService — 注册随包图标，并恢复额外图标的持久缓存。
  */
-import { _api, addCollection, getIcon, type IconifyJSON } from '@iconify/react';
+import { _api, addCollection, addIcon, getIcon, type IconifyJSON } from '@iconify/react';
+import bundledIcons from '../assets/ui-icons.json';
 
 // 独立于项目数据，按图标保存，避免多个窗口覆盖彼此的缓存；无时间过期。
 const CACHE_PREFIX = 'ai-canvas:iconify:v1:';
@@ -14,6 +15,8 @@ function restoreIcons(storage: Storage) {
     if (!key?.startsWith(CACHE_PREFIX)) continue;
     const name = key.slice(CACHE_PREFIX.length);
     if (!ICON_NAME.test(name)) continue;
+    // 应用图标以随包版本为准，旧缓存不能把已修正的图标覆盖回去。
+    if (Object.hasOwn(bundledIcons, name)) continue;
     try {
       const icon: unknown = JSON.parse(storage.getItem(key) ?? 'null');
       if (!icon || typeof icon !== 'object' || !('body' in icon) || typeof icon.body !== 'string') continue;
@@ -64,10 +67,11 @@ function saveIcons(storage: Storage, prefix: string, data: unknown) {
   }
 }
 
-/** 在任何窗口的 React 挂载前调用，恢复图标并接管后续成功响应的持久缓存。 */
+/** 挂载前先注册固定图标；存储不可用也不影响它们，额外图标继续沿用持久缓存。 */
 export function initializeIconCache() {
   if (installed) return;
   installed = true;
+  for (const [name, icon] of Object.entries(bundledIcons)) addIcon(name, icon);
   let storage: Storage;
   try {
     storage = window.localStorage;

@@ -134,7 +134,7 @@ interface MediaSerializationContext extends ProjectFileLookup {
 /** 只在当前项目的一次保存/加载内复用；不缓存授权，也不跨操作保留文件状态。 */
 function projectFileLookupKey(path: string): string {
   const normalized = stripVerbatimPrefix(path).replace(/\\/g, '/').replace(/\/+$/, '');
-  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+  return /^(?:[a-z]:\/|\/\/)/i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
 /** 新模型只保存平台无关的项目根内相对路径。 */
@@ -307,13 +307,14 @@ async function serializeAssetReference<T extends AssetReferenceLike>(
   // 参考角色/参考帧的旧记录只有 URL；同样收敛为本地身份，避免目录变化后仍读取旧地址。
   let filePath = data.filePath ?? assetUrlToPath(data.imageUrl || data.videoUrl || data.audioUrl || data.url);
   if (!filePath) return data;
-  let normalizedPath = filePath.replace(/\\/g, '/');
-  const normalizedDir = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (getNativeProjectOwner(projectId) && normalizedPath.toLowerCase().startsWith(`${normalizedDir.toLowerCase()}/`)) {
-    const relative = getRelativeAssetPath(normalizedPath, normalizedDir);
-    if (!relative || !nativePortablePath(relative)) throw new Error('项目素材路径无效');
+  let normalizedPath = stripVerbatimPrefix(filePath).replace(/\\/g, '/');
+  const normalizedDir = stripVerbatimPrefix(projectDir).replace(/\\/g, '/').replace(/\/+$/, '');
+  let projectRelativePath = getRelativeAssetPath(normalizedPath, normalizedDir);
+  // POSIX 路径保留大小写；和资产索引共用归属判断，避免把另一个目录当成本项目。
+  if (getNativeProjectOwner(projectId) && projectRelativePath && !nativePortablePath(projectRelativePath)) {
+    throw new Error('项目素材路径无效');
   }
-  if (!normalizedPath.toLowerCase().startsWith(`${normalizedDir.toLowerCase()}/`)) {
+  if (!projectRelativePath) {
     if (!getNativeProjectOwner(projectId)) return data;
     // 外部选中的文件先复制入作品根，不能把原路径写进新模型或改变原资产索引。
     const copied = await (await import('./fileService')).copyFileToProjectData(filePath, projectId, { throwOnError: true, redactErrors: true });
@@ -331,8 +332,9 @@ async function serializeAssetReference<T extends AssetReferenceLike>(
     }
     data = updated;
     filePath = copied.filePath;
-    normalizedPath = filePath.replace(/\\/g, '/');
-    if (!normalizedPath.toLowerCase().startsWith(`${normalizedDir.toLowerCase()}/`)) throw new Error('复制的素材不属于新项目');
+    normalizedPath = stripVerbatimPrefix(filePath).replace(/\\/g, '/');
+    projectRelativePath = getRelativeAssetPath(normalizedPath, normalizedDir);
+    if (!projectRelativePath || !nativePortablePath(projectRelativePath)) throw new Error('复制的素材不属于新项目');
   }
   if (!await projectFileExists(normalizedPath, context).catch(() => false)) return data;
   const stripNativeUrls = (value: T): T => {
@@ -351,7 +353,7 @@ async function serializeAssetReference<T extends AssetReferenceLike>(
   // ponytail: 文件仍停在记录的相对路径上时直接沿用旧身份，省掉每次自动保存对每个节点的
   // stat + 索引读写；代价是索引里的 size/mtime 不会被保存刷新（加载扫描和资产库列举会刷）。
   if (data.assetId && data.relativePath
-    && normalizedPath.slice(normalizedDir.length + 1) === data.relativePath.replace(/\\/g, '/')) {
+    && projectRelativePath === data.relativePath.replace(/\\/g, '/')) {
     const reused: T = { ...data };
     delete (reused as AssetReferenceLike).filePath;
     return stripNativeUrls(reused);

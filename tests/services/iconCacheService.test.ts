@@ -1,8 +1,8 @@
 /**
- * iconCacheService — 回归测试：Iconify 持久缓存。
+ * iconCacheService — 回归测试：随包图标和额外图标的持久缓存。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { _api, getIcon, loadIcon } from '@iconify/react';
+import { _api, addIcon, getIcon, loadIcon } from '@iconify/react';
 
 const cacheKey = (name: string) => `ai-canvas:iconify:v1:${name}`;
 const body = '<path d="M1 1h10v10H1z"/>';
@@ -20,6 +20,28 @@ beforeEach(() => {
 });
 
 describe('Iconify 持久缓存', () => {
+  it('空缓存且完全离线时，设置页和其他图标集的固定图标无需请求即可加载', async () => {
+    const names = ['mdi:plus', 'mdi:file-import-outline', 'mdi:pencil-outline', 'mdi:trash-can-outline',
+      'mdi:content-copy', 'lucide:receipt-text', 'icon-park-outline:grid-four', 'svg-spinners:90-ring'];
+    for (const name of names) addIcon(name, { body: '' });
+    const { fetcher } = await initialize(vi.fn<typeof fetch>().mockRejectedValue(new Error('offline')));
+    for (const name of names) {
+      await expect(loadIcon(name)).resolves.toMatchObject({ body: expect.stringContaining('<') });
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(localStorage.length).toBe(0);
+  });
+
+  it('旧缓存不能覆盖随包图标，额外图标仍正常恢复', async () => {
+    addIcon('mdi:pencil-outline', { body });
+    localStorage.setItem(cacheKey('mdi:pencil-outline'), JSON.stringify({ body }));
+    localStorage.setItem(cacheKey('cachetest:extra'), JSON.stringify({ body }));
+    await initialize();
+    expect(getIcon('mdi:pencil-outline')?.body).toBeTruthy();
+    expect(getIcon('mdi:pencil-outline')?.body).not.toBe(body);
+    expect(getIcon('cachetest:extra')?.body).toBe(body);
+  });
+
   it('启动时恢复本地数据，离线加载已缓存图标无需请求', async () => {
     localStorage.setItem(cacheKey('cachetest:restored'), JSON.stringify({ body, width: 24, height: 24 }));
     const { fetcher } = await initialize(vi.fn<typeof fetch>().mockRejectedValue(new Error('offline')));
@@ -79,9 +101,11 @@ describe('Iconify 持久缓存', () => {
     expect(localStorage.getItem(cacheKey('cachetest:kept'))).not.toBeNull();
   });
 
-  it('存储不可访问时保留原有请求适配器', async () => {
+  it('存储不可访问时内置图标仍可显示，并保留原有请求适配器', async () => {
+    addIcon('mdi:plus', { body: '' });
     vi.stubGlobal('window', { get localStorage() { throw new Error('denied'); } });
     const { fetcher, cachedFetch } = await initialize();
+    expect(getIcon('mdi:plus')?.body).toEqual(expect.stringContaining('<'));
     expect(cachedFetch).toBe(fetcher);
   });
 

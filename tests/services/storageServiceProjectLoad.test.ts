@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   notifyProjectDiskChanged: vi.fn(),
   resolveUniqueDestPath: vi.fn(async (dir: string, name: string) => `${dir}/${name}`),
   nativeSelection: vi.fn(), invoke: vi.fn(),
+  copyFileToProjectData: vi.fn(async (_path: string, _projectId: string, _options?: object): Promise<{ filePath: string; assetUrl: string } | null> => null),
 }));
 
 vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<typeof import('@tauri-apps/api/core')>(), invoke: mocks.invoke }));
@@ -45,10 +46,13 @@ vi.mock('../../src/services/fs/core', () => ({
 vi.mock('../../src/services/fs/assetLibrary', () => ({
   scanDirectoryFiles: mocks.scanDirectoryFiles,
 }));
-vi.mock('../../src/services/fs/assetIndex', () => ({
+vi.mock('../../src/services/fileService', () => ({
+  copyFileToProjectData: mocks.copyFileToProjectData,
+}));
+vi.mock('../../src/services/fs/assetIndex', async (original) => ({
   identifyAsset: mocks.identifyAsset,
   resolveIndexedAssetPath: mocks.resolveIndexedAssetPath,
-  getRelativeAssetPath: (path: string, root: string) => path.startsWith(`${root}/`) ? path.slice(root.length + 1) : undefined,
+  getRelativeAssetPath: (await original<typeof import('../../src/services/fs/assetIndex')>()).getRelativeAssetPath,
 }));
 
 import {
@@ -117,6 +121,7 @@ describe('project loading tolerates asset recovery failures', () => {
     mocks.stat.mockReset();
     mocks.readDir.mockReset();
     mocks.nativeSelection.mockReset(); mocks.invoke.mockReset();
+    mocks.copyFileToProjectData.mockReset().mockResolvedValue(null);
   });
 
   it('新结构将本地展示地址保存为相对素材引用并恢复同一画布的地址', async () => {
@@ -130,6 +135,43 @@ describe('project loading tolerates asset recovery failures', () => {
     const restored = await restoreProjectRecord(persisted);
     expect(restored.nodes).toMatchObject([{ data: { filePath: '/project/data/image.png',
       imageUrl: 'asset://localhost/project/data/image.png', output: 'asset://localhost/project/data/image.png' } }]);
+  });
+
+  it.each(['/home/user/project', '/Volumes/CaseSensitive/project'])('POSIX 根 %s 不将大小写不同的外部目录误判为项目内', async (root) => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    mocks.getProjectDataDir.mockResolvedValue(root);
+    const source = `${root.replace(/project$/, 'Project')}/image.png`;
+    const copied = `${root}/imports/copied.png`;
+    mocks.copyFileToProjectData.mockResolvedValue({ filePath: copied, assetUrl: `asset://localhost${copied}` });
+    mocks.identifyAsset.mockResolvedValue({ assetId: 'asset-copied', relativePath: 'imports/copied.png' });
+    const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', data: { type: 'ai-image', filePath: source, imageUrl: `asset://localhost${source}` } }] };
+
+    const persisted = await serializeProjectRecord(record);
+
+    expect(mocks.copyFileToProjectData).toHaveBeenCalledWith(source, record.id, { throwOnError: true, redactErrors: true });
+    expect(persisted.nodes).toMatchObject([{ data: { assetId: 'asset-copied', relativePath: 'imports/copied.png', imageUrl: 'imports/copied.png' } }]);
+    expect((persisted.nodes as Array<{ data: object }>)[0].data).not.toHaveProperty('filePath');
+    expect(record.nodes).toMatchObject([{ data: { filePath: source } }]);
+  });
+
+  it('复制回执指向大小写不同的项目外目录时仍拒绝保存', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    mocks.copyFileToProjectData.mockResolvedValue({ filePath: '/project/DATA/copied.png', assetUrl: 'asset://localhost/project/DATA/copied.png' });
+    const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', data: { type: 'ai-image', filePath: '/external/image.png' } }] };
+    await expect(serializeProjectRecord(record)).rejects.toThrow('复制的素材不属于新项目');
+  });
+
+  it('Windows 盘符路径仍忽略大小写并沿用已有素材，不重复复制', async () => {
+    mocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    mocks.getProjectDataDir.mockResolvedValue('C:/Project/Data');
+    const record: ProjectSaveData = { id: 'native-canvas', name: '画布', createdAt: 1, updatedAt: 2, edges: [],
+      nodes: [{ id: 'image', data: { type: 'ai-image', filePath: 'c:/project/data/image.png', assetId: 'asset-existing',
+        relativePath: 'image.png', imageUrl: 'asset://localhost/c:/project/data/image.png' } }] };
+    const persisted = await serializeProjectRecord(record);
+    expect(persisted.nodes).toMatchObject([{ data: { assetId: 'asset-existing', relativePath: 'image.png', imageUrl: 'image.png' } }]);
+    expect(mocks.copyFileToProjectData).not.toHaveBeenCalled();
   });
 
   it('生成前补齐已显示导入图片的身份，保存恢复后v3参考素材摘要保持一致且不扫描整库', async () => {
