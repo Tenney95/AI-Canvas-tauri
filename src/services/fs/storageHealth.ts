@@ -16,7 +16,9 @@ import { listProjectImportRecoveries } from '../indexedDb/projectImportRepositor
 import { openDB } from '../indexedDb/schema';
 import { assertLegacyProjectWritesAllowed } from '../indexedDb/legacyProjectWriteGuard';
 import { safeExchangePath } from '../projectExchangeDomain';
+import { getRelativeAssetPath } from './assetIndex';
 import { configValuesEqual } from '../configPatch';
+import { collectLegacyCharacterVisualPaths, isLegacyCharacterVisualCandidatePath } from '../characterVisualHistory';
 import type { ProjectCatalogEntry } from '../projectModelRouter';
 import type { readNativeProjectCapture } from '../indexedDb/nativeProjectRepository';
 import type { NativeProjectViewItem } from '../../store/nativeProjectView';
@@ -75,6 +77,15 @@ async function assertStorageCleanupPath(filePath: string): Promise<void> {
   const catalog = await listProjectCatalog();
   const scopes = await readNativeStorageScopes(catalog);
   const key = pathKey(filePath).replace(/\/+$/, '');
+  for (const entry of catalog) {
+    if (entry.dataModel !== 'legacy' || entry.project.parentId) continue;
+    const root = await getProjectDataDir(entry.project.id);
+    const relative = root && getRelativeAssetPath(filePath, root);
+    if (root && relative && (isLegacyCharacterVisualCandidatePath(relative)
+      || isReferenced(filePath, new Set((await collectLegacyCharacterVisualPaths(entry.project.id, root)).map(pathKey))))) {
+      throw new Error('文件仍被角色生成历史引用');
+    }
+  }
   const owners = scopes.filter((scope) => [...scope.roots.values()].some((root) => {
     const rootKey = pathKey(root).replace(/\/+$/, ''); return key === rootKey || key.startsWith(`${rootKey}/`);
   }));
@@ -585,6 +596,9 @@ export async function scanStorageHealth(
       checkAbort(signal);
       roots.set(project.id, root);
       collectReferences(record, references, root ?? undefined);
+      if (root && !record.parentId) for (const path of await collectLegacyCharacterVisualPaths(project.id, root)) {
+        references.add(pathKey(path));
+      }
       if (!record.parentId) for (const recovery of await listProjectImportRecoveries(project.id)) {
         checkAbort(signal);
         collectReferences(recovery.records, references, root ?? undefined);

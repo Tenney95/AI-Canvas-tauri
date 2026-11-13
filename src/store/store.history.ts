@@ -13,11 +13,14 @@ import { getHistoryGroupSize } from '../utils/historyOperationLabels';
 import { getGroupLayoutComparisonPosition, getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
 import { COLLAPSED_GROUP_SIZE } from './store.groups';
 import { createNodeFileDeletionContext } from './store.nodes';
+import type { CharacterVisualReferenceChange } from '../services/characterVisualReferencePlan';
 
 export interface HistoryEntry {
   nodes: Node<BaseNodeData>[];
   edges: Edge[];
   groups: NodeGroup[];
+  /** 本检查点之后的一次角色引用修改；普通布局历史仍保留最新提示词。 */
+  characterVisualChanges?: readonly CharacterVisualReferenceChange[];
 }
 
 const MAX_HISTORY = 50;
@@ -111,6 +114,29 @@ const snapshotGroups = cachedHistoryMap((group: NodeGroup) => ({ ...group, nodeI
 
 function createSnapshot(nodes: Node<BaseNodeData>[], edges: Edge[], groups: NodeGroup[]): HistoryEntry {
   return { nodes: snapshotNodes.map(nodes), edges: snapshotEdges.map(edges), groups: snapshotGroups.map(groups) };
+}
+
+function applyCharacterVisualHistory(
+  nodes: Node<BaseNodeData>[], changes: readonly CharacterVisualReferenceChange[], direction: 'undo' | 'redo',
+): Node<BaseNodeData>[] {
+  const byId = new Map(changes.map((change) => [change.nodeId, change]));
+  let changed = false;
+  const next = nodes.map((node) => {
+    const change = byId.get(node.id);
+    if (!change || node.data.status === 'loading' || node.data.mediaTaskState || node.data.videoTaskState) return node;
+    const undo = direction === 'undo';
+    const expectedPrompt = undo ? change.nextPrompt : change.originalPrompt;
+    const expectedVideo = undo ? change.nextVideoReferences : change.originalVideoReferences;
+    const patch: Partial<BaseNodeData> = {};
+    if (change.promptMatches && node.data.prompt === expectedPrompt) patch.prompt = undo ? change.originalPrompt : change.nextPrompt;
+    if (change.videoMatches && isDeepEqual(node.data.videoReferences, expectedVideo)) {
+      patch.videoReferences = undo ? change.originalVideoReferences : change.nextVideoReferences;
+    }
+    if (!Object.keys(patch).length) return node;
+    changed = true;
+    return { ...node, data: { ...node.data, ...patch } };
+  });
+  return changed ? next : nodes;
 }
 
 function isDeepEqual(
@@ -431,12 +457,29 @@ function enqueueHistoryTransition(operation: () => Promise<boolean>): Promise<bo
   return result;
 }
 
+function appendHistoryCheckpoint(
+  state: Pick<AppState, 'nodes' | 'edges' | 'groups' | 'history' | 'historyIndex'>,
+  characterVisualChanges?: readonly CharacterVisualReferenceChange[],
+) {
+  const { nodes, edges, groups, history, historyIndex } = state;
+  const previous = historyIndex >= 0 ? history[Math.min(historyIndex, history.length - 1)] : undefined;
+  if (!characterVisualChanges?.length && previous && !previous.characterVisualChanges
+    && !history[historyIndex + 1]?.characterVisualChanges && isSameStructure(previous, { nodes, edges, groups })) return;
+  const snapshot = createSnapshot(nodes, edges, groups);
+  if (characterVisualChanges?.length) snapshot.characterVisualChanges = structuredClone(characterVisualChanges);
+  const newHistory = history.slice(0, historyIndex + 1);
+  newHistory.push(snapshot);
+  if (newHistory.length > MAX_HISTORY) newHistory.shift();
+  return { history: newHistory, historyIndex: newHistory.length - 1 };
+}
+
 export interface HistorySlice {
   history: HistoryEntry[];
   historyIndex: number;
   undo: (options?: { isCurrent?: () => boolean }) => Promise<boolean>;
   redo: () => Promise<boolean>;
   commitToHistory: () => void;
+  commitCharacterVisualHistory: (changes: readonly CharacterVisualReferenceChange[]) => void;
 }
 
 export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = (set, get) => ({
@@ -458,7 +501,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const current = createSnapshot(nodes, edges, groups);
     let checkpointIndex = Math.min(historyIndex, history.length - 1);
     // 兼容少数在操作结束后额外提交的快照，撤销时跳过与当前画布完全相同的记录。
-    while (checkpointIndex >= 0 && isSameStructure(history[checkpointIndex], current)) {
+    while (checkpointIndex >= 0 && !history[checkpointIndex].characterVisualChanges && isSameStructure(history[checkpointIndex], current)) {
       checkpointIndex -= 1;
     }
     if (checkpointIndex < 0) {
@@ -472,6 +515,12 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     }
 
     const entry = history[checkpointIndex];
+    if (entry.characterVisualChanges) {
+      const updated = applyCharacterVisualHistory(nodes, entry.characterVisualChanges, 'undo');
+      set({ nodes: updated, historyIndex: checkpointIndex - 1 });
+      if (updated !== nodes) get().incrementRevision();
+      return updated !== nodes;
+    }
     const nextHistory = [...history];
     const redoEntryIndex = checkpointIndex + 1;
     if (!nextHistory[redoEntryIndex] || !isSameStructure(nextHistory[redoEntryIndex], current)) {
@@ -524,6 +573,13 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     await waitForPendingNodeExits();
 
     const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
+    const referenceChanges = history[historyIndex + 1]?.characterVisualChanges;
+    if (referenceChanges) {
+      const updated = applyCharacterVisualHistory(nodes, referenceChanges, 'redo');
+      set({ nodes: updated, historyIndex: historyIndex + 1 });
+      if (updated !== nodes) get().incrementRevision();
+      return updated !== nodes;
+    }
     const current = createSnapshot(nodes, edges, groups);
     let targetIndex = historyIndex + 2;
     while (targetIndex < history.length && isSameStructure(history[targetIndex], current)) {
@@ -567,14 +623,6 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     return true;
   }),
 
-  commitToHistory: () => {
-    const { nodes, edges, groups, history, historyIndex } = get();
-    const previous = historyIndex >= 0 ? history[Math.min(historyIndex, history.length - 1)] : undefined;
-    if (previous && isSameStructure(previous, { nodes, edges, groups })) return;
-    const snapshot = createSnapshot(nodes, edges, groups);
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push(snapshot);
-    if (newHistory.length > MAX_HISTORY) newHistory.shift();
-    set({ history: newHistory, historyIndex: newHistory.length - 1 });
-  },
+  commitToHistory: () => set((state) => appendHistoryCheckpoint(state) ?? state),
+  commitCharacterVisualHistory: (changes) => set((state) => appendHistoryCheckpoint(state, changes) ?? state),
 });

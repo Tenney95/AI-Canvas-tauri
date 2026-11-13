@@ -5,13 +5,14 @@
  */
 import { t, useT } from '../i18n';
 import Select from './shared/Select';
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, generateId } from '../store/useAppStore';
 import { isEligibleCharacterReferenceNode, isEligibleCharacterVoiceNode } from '../store/store.dramaAssets';
 import { normalizeAssetKey } from '../services/dramaAssetExtract';
 import { clamp } from '../utils/num';
+import { canonicalXiaohongshuReferenceUrl } from '../utils/xiaohongshuReferenceUrl';
 import {
   assertMediaDataUrlSize,
   assertMediaDataUrlWithinLimit,
@@ -29,6 +30,7 @@ import type {
 } from '../types/dramaAssets';
 import VolcengineAssetPickerDialog, { type VolcengineAssetSelection } from './volcengine/VolcengineAssetPickerDialog';
 import ModalOverlay from './shared/ModalOverlay';
+import LazyLoadBoundary, { LazyLoadFallback } from './shared/LazyLoadBoundary';
 import PopupCloseButton from './shared/PopupCloseButton';
 import MentionEditor from './nodes/shared/MentionEditor';
 import {
@@ -49,6 +51,9 @@ import { acquireComfyMediaSource } from '../services/comfyMediaSource';
 import ViewportImage from './shared/ViewportImage';
 import ViewportVideo from './shared/ViewportVideo';
 import ViewportAudio from './shared/ViewportAudio';
+import type { CharacterVisualCandidate, CharacterVisualReference, CharacterVisualTarget } from '../services/characterVisualWorkbenchService';
+
+const CharacterVisualWorkbench = lazy(() => import('./character/CharacterVisualWorkbench'));
 
 type CharacterLibraryScope = 'project' | 'global';
 
@@ -908,6 +913,11 @@ function CharacterAssetEditorDialog({
     [character],
   );
   const [draft, setDraft] = useState<DramaCharacter>(initialDraft);
+  const [editorProjectId] = useState(currentProjectId);
+  const [visualWorkbenchOpen, setVisualWorkbenchOpen] = useState(false);
+  const [visualWorkbenchUsed, setVisualWorkbenchUsed] = useState(false);
+  const editorActive = useRef(true);
+  const [originalUpdatedAt] = useState(character?.updatedAt);
   const [selectedReferenceId, setSelectedReferenceId] = useState<string | null>(
     initialReferenceId
     ?? initialDraft.primaryReferenceImageId
@@ -943,8 +953,24 @@ function CharacterAssetEditorDialog({
   useEffect(() => stopVoicePlayback, [isOpen, selectedVoiceClipId, stopVoicePlayback]);
 
   const saveController = useRef<AbortController | null>(null);
-  useEffect(() => () => saveController.current?.abort(), []);
+  useEffect(() => {
+    editorActive.current = true;
+    const unsubscribe = useAppStore.subscribe((state) => {
+      if (editorActive.current && scope === 'project'
+        && (state.currentProjectId !== editorProjectId || state.projectLoadStatus !== 'ready' || state.switchingProjectName != null)) {
+        editorActive.current = false;
+        setVisualWorkbenchOpen(false);
+      }
+    });
+    return () => {
+      editorActive.current = false;
+      unsubscribe();
+      saveController.current?.abort();
+    };
+  }, [editorProjectId, scope]);
   const onClose = () => {
+    editorActive.current = false;
+    setVisualWorkbenchOpen(false);
     stopVoicePlayback();
     saveController.current?.abort(); saveController.current = null; setSaving(false);
     closeEditor();
@@ -961,6 +987,82 @@ function CharacterAssetEditorDialog({
 
   const patchDraft = (patch: Partial<DramaCharacter>) => {
     setDraft((current) => ({ ...current, ...patch, updatedAt: Date.now() }));
+  };
+
+  const assertEditorCurrent = () => {
+    const state = useAppStore.getState();
+    const characters = scope === 'project' ? state.dramaAssets.characters : state.globalCharacters;
+    const live = characters.find((item) => item.id === draft.id);
+    const switchedProject = scope === 'project' && (state.currentProjectId !== editorProjectId
+      || state.projectLoadStatus !== 'ready' || state.switchingProjectName != null);
+    if (!editorActive.current || !isOpen || switchedProject || character && character.id !== draft.id
+      || (character ? !live || live.updatedAt !== originalUpdatedAt : Boolean(live))) {
+      throw new Error(t('角色已变化，请重新打开编辑器'));
+    }
+  };
+
+  const appendVisualReference = (reference: CharacterReferenceImage, makePrimary: boolean) => {
+    assertEditorCurrent();
+    const { id } = reference;
+    const references = draft.referenceImages ?? [];
+    if (!references.some((reference) => reference.id === id) && references.length >= MAX_CHARACTER_REFERENCE_IMAGES) {
+      throw new Error(t('每个角色最多保存 {count} 张参考图', { count: MAX_CHARACTER_REFERENCE_IMAGES }));
+    }
+    setDraft((current) => {
+      if (current.id !== draft.id) return current;
+      const previous = current.referenceImages ?? [];
+      const alreadyAdded = previous.some((item) => item.id === id);
+      if (!alreadyAdded && previous.length >= MAX_CHARACTER_REFERENCE_IMAGES) return current;
+      return {
+        ...current,
+        referenceImages: alreadyAdded ? previous : [...previous, reference],
+        primaryReferenceImageId: makePrimary || !previous.length ? id : current.primaryReferenceImageId,
+        updatedAt: reference.updatedAt,
+      };
+    });
+    setSelectedReferenceId(id);
+  };
+
+  const adoptVisualCandidate = async (selection: CharacterVisualCandidate, makePrimary: boolean, signal: AbortSignal) => {
+    assertEditorCurrent();
+    const { captureCharacterVisualTarget, readCharacterVisualCandidate } = await import('../services/characterVisualWorkbenchService');
+    signal.throwIfAborted();
+    assertEditorCurrent();
+    const candidate = await readCharacterVisualCandidate(captureCharacterVisualTarget(scope, draft.id), selection.id);
+    signal.throwIfAborted();
+    const now = Date.now();
+    appendVisualReference({
+      id: `reference-generated-${candidate.id}`,
+      kind: candidate.operation === 'turnaround' ? 'turnaround' : makePrimary || !draft.referenceImages?.length ? 'primary' : 'other',
+      imageUrl: candidate.url,
+      assetId: candidate.assetId,
+      relativePath: candidate.relativePath,
+      filePath: candidate.filePath,
+      prompt: candidate.prompt,
+      createdAt: now,
+      updatedAt: now,
+    }, makePrimary);
+    setVisualWorkbenchOpen(false);
+  };
+
+  const keepVisualReference = (reference: CharacterVisualReference) => {
+    const sourceUrl = canonicalXiaohongshuReferenceUrl(reference.sourceUrl);
+    if (!sourceUrl || !/^xhs-[a-f0-9]{64}$/.test(reference.id)) throw new Error(t('参考图片地址不可用'));
+    assertMediaDataUrlWithinLimit(reference.url, 'image', t('参考图'));
+    const now = Date.now();
+    appendVisualReference({ id: reference.id, kind: draft.referenceImages?.length ? 'other' : 'primary',
+      imageUrl: reference.url, sourceUrl, prompt: '', createdAt: now, updatedAt: now }, false);
+  };
+
+  const resumeVisualDraft = (target: CharacterVisualTarget, name: string) => {
+    assertEditorCurrent();
+    const state = useAppStore.getState();
+    const characters = scope === 'project' ? state.dramaAssets.characters : state.globalCharacters;
+    if (character || target.scope !== scope || scope === 'project' && target.projectId !== editorProjectId
+      || characters.some((item) => item.id === target.characterId)) {
+      throw new Error(t('角色已变化，请重新打开编辑器'));
+    }
+    patchDraft({ id: target.characterId, name: draft.name.trim() ? draft.name : name });
   };
 
   const applyRefmods = (items: ComfyRefmodSelection[]) => {
@@ -1036,6 +1138,7 @@ function CharacterAssetEditorDialog({
       showToast(t('仅添加前 {count} 张：每个角色最多 {max} 张参考图', { count: files.length, max: MAX_CHARACTER_REFERENCE_IMAGES }));
     }
     try {
+      assertEditorCurrent();
       const now = Date.now();
       const references: CharacterReferenceImage[] = [];
       for (const [index, file] of files.entries()) {
@@ -1050,12 +1153,15 @@ function CharacterAssetEditorDialog({
           updatedAt: now + index,
         });
       }
+      assertEditorCurrent();
       setDraft((current) => {
-        const nextReferences = [...(current.referenceImages ?? []), ...references];
+        if (current.id !== draft.id) return current;
+        const previous = current.referenceImages ?? [];
+        const nextReferences = [...previous, ...references.slice(0, MAX_CHARACTER_REFERENCE_IMAGES - previous.length)];
         return {
           ...current,
           referenceImages: nextReferences,
-          primaryReferenceImageId: current.primaryReferenceImageId ?? references[0]?.id,
+          primaryReferenceImageId: current.primaryReferenceImageId ?? nextReferences[0]?.id,
           updatedAt: Date.now(),
         };
       });
@@ -1191,6 +1297,11 @@ function CharacterAssetEditorDialog({
       showToast(t('请填写角色名称'), 'error');
       return;
     }
+    try { assertEditorCurrent(); }
+    catch (error) {
+      showToast(error instanceof Error ? error.message : t('角色保存失败，请重试'), 'error');
+      return;
+    }
     setSaving(true);
     const controller = new AbortController(); saveController.current = controller;
     const references = draft.referenceImages ?? [];
@@ -1207,7 +1318,22 @@ function CharacterAssetEditorDialog({
       imageUrl: primaryReference?.imageUrl,
       updatedAt: Date.now(),
     };
-    const saved = await saveCharacterCard(scope, payload, { signal: controller.signal });
+    const workbench = !character && visualWorkbenchUsed
+      ? await import('../services/characterVisualWorkbenchService').catch(() => null) : null;
+    const visualTarget = workbench?.captureCharacterVisualTarget(scope, payload.id);
+    let saved: boolean;
+    try {
+      assertEditorCurrent();
+      saved = await saveCharacterCard(scope, payload, {
+        signal: controller.signal,
+        assertCurrent: assertEditorCurrent,
+        awaitProjectSave: scope === 'project',
+      });
+    } catch {
+      saved = false;
+      if (!controller.signal.aborted) showToast(t('角色保存失败，请重试'), 'error');
+    }
+    if (saved && workbench && visualTarget) void workbench.markCharacterVisualDraftSaved(visualTarget).catch(() => undefined);
     if (controller.signal.aborted) return;
     saveController.current = null; setSaving(false);
     if (!saved) return;
@@ -1306,10 +1432,23 @@ function CharacterAssetEditorDialog({
               <h3>{t('参考图')}</h3>
               <span>{t('{count} 张', { count: draft.referenceImages?.length ?? 0 })}</span>
             </div>
-            <button type="button" onClick={() => fileInputRef.current?.click()}>
-              <Icon icon="lucide:images" width="15" height="15" aria-hidden="true" />
-              {t('添加图片')}
-            </button>
+            <div className="flex-wrap justify-end">
+              <button type="button" className="character-button-secondary" onClick={() => fileInputRef.current?.click()}>
+                <Icon icon="lucide:images" width="15" height="15" aria-hidden="true" />
+                {t('添加图片')}
+              </button>
+              <button type="button" className="ui-btn ui-btn--secondary" disabled={saving} onClick={() => {
+                try {
+                  assertEditorCurrent();
+                  setVisualWorkbenchUsed(true);
+                  setVisualWorkbenchOpen(true);
+                }
+                catch (error) { showToast(error instanceof Error ? error.message : t('角色已变化，请重新打开编辑器'), 'error'); }
+              }}>
+                <Icon icon="lucide:sparkles" width="15" height="15" aria-hidden="true" />
+                {t('生成角色形象')}
+              </button>
+            </div>
             <input
               ref={fileInputRef}
               className="sr-only"
@@ -1444,7 +1583,7 @@ function CharacterAssetEditorDialog({
             {(draft.voiceClips?.length ?? 0) === 0 ? (
               <button
                 type="button"
-                className="character-reference-add-empty"
+                className="character-reference-add-empty w-full"
                 onClick={() => voiceInputRef.current?.click()}
               >
                 <Icon icon="lucide:mic" width="20" height="20" aria-hidden="true" />
@@ -1559,7 +1698,7 @@ function CharacterAssetEditorDialog({
           </div>
         </section>
 
-        <section className="ui-card p-3" aria-label={t('ComfyUI 角色参考包')}>
+        <section className="ui-card mx-[10px] p-3" aria-label={t('ComfyUI 角色参考包')}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-sm font-medium text-canvas-text">{t('ComfyUI 角色参考包（RefMod）')}</h3>
@@ -1638,6 +1777,25 @@ function CharacterAssetEditorDialog({
         onClose={() => setRefmodPickerOpen(false)}
         onConfirm={applyRefmods}
       />
+      {visualWorkbenchOpen && isOpen && (
+        <LazyLoadBoundary label="角色形象工作台" resetKey={draft.id}>
+          <Suspense fallback={<LazyLoadFallback label="角色形象工作台" />}>
+            <CharacterVisualWorkbench
+              key={draft.id}
+              scope={scope}
+              character={draft}
+              isNew={!character}
+              selectedReferenceId={selectedReferenceId}
+              assertCurrent={assertEditorCurrent}
+              onClose={() => setVisualWorkbenchOpen(false)}
+              onAdopt={adoptVisualCandidate}
+              onKeepReference={keepVisualReference}
+              onResumeDraft={resumeVisualDraft}
+              onApplyFields={(patch) => { assertEditorCurrent(); patchDraft(patch); }}
+            />
+          </Suspense>
+        </LazyLoadBoundary>
+      )}
     </ModalOverlay>
   );
 }

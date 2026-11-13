@@ -25,7 +25,7 @@ import { executeWorkflowApiMedia } from '../workflowApi/workflowApiAdapter';
 import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
 import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
 import type { AIImageGenParams, BatchImageResult, ImageGenerationResult, MediaReference } from '../../types/aiTypes';
-import type { GeneralModelConfig } from '../../types';
+import type { AppConfig, GeneralModelConfig, ImageReferenceRequestMode } from '../../types';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { collectPromptNodeMediaUrls, resolvePromptWithImageRefs, resolvePromptWithMediaRefs } from './promptResolver';
@@ -49,6 +49,8 @@ import { resolveImageOutputsPerJob, resolveImageExecutionCapability } from './me
 import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
 import { compileVideoReferencePrompt } from './referencePrompt';
 import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
+import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } from '../nativeCharacterImageTask';
+import { isOpenAIPaintMaskContract } from './characterImageMask';
 
 function hasReferenceImageFile(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
@@ -151,6 +153,75 @@ function getProjectStyleMasterUrl(): string | null {
   return getEnabledProjectStyleReferenceUrl(project?.settings);
 }
 
+function characterImageConnection(model: string, provider: string, config: AppConfig) {
+  const general = provider === 'general'
+    ? config.generalModels?.find((item) => item.id === model.replace(/^general\//, '') && item.category === 'image') : undefined;
+  if (provider === 'general' && !general) return;
+  const connectionId = general?.providerConfigId ?? provider;
+  const connection = config.providers[connectionId];
+  const definition = getProviderDefinition(connectionId, connection);
+  const modelName = general?.modelId ?? extractModelName(model, provider);
+  const baseUrl = connection?.baseUrl?.trim() || definition?.defaultBaseUrl || DEFAULT_BASE_URLS[provider];
+  if (!connection?.apiKey?.trim() || !baseUrl) return;
+  const selected = connection.selectedModels?.find((item) => item.id === modelName && item.category === 'image');
+  const catalog = definition?.models?.find((item) => item.id === modelName && item.category === 'image');
+  const legacyCustomConnection = general && definition?.id === 'custom-openai' ? connection : undefined;
+  const profile = general?.executionProfile
+    ?? (legacyCustomConnection ? selected?.executionProfile ?? legacyCustomConnection.imageProtocolDefault : undefined);
+  const referenceMode = general?.imageReferenceRequestMode ?? selected?.imageReferenceRequestMode
+    ?? legacyCustomConnection?.imageReferenceRequestModeDefault ?? catalog?.imageReferenceRequestMode;
+  return { general, definition, modelName, baseUrl, profile, referenceMode };
+}
+
+function characterImageReferenceMode(route: NonNullable<ReturnType<typeof characterImageConnection>>): ImageReferenceRequestMode | undefined {
+  if (route.referenceMode) return route.referenceMode;
+  if (!route.general || route.definition?.id !== 'custom-openai') return undefined;
+  // 旧的同名 GPT Image 2 自定义连接可在工作台尝试标准图片编辑合同。
+  if (route.modelName === 'gpt-image-2' || route.modelName === 'gpt-image-2-2026-04-21'
+    || isOpenAIPaintMaskContract(route.baseUrl, route.modelName)) return 'edits-multipart';
+  return undefined;
+}
+
+export function characterImageChannel(model: string, provider: string, config: AppConfig): 'standard' | 'midjourney' {
+  const route = characterImageConnection(model, provider, config);
+  if (route?.definition?.id === 'relayonapi' && resolveImageOutputsPerJob(model, provider, config) === 4) return 'midjourney';
+  return 'standard';
+}
+
+export function supportsCharacterPaintMask(model: string, provider: string, config: AppConfig): boolean {
+  const route = characterImageConnection(model, provider, config);
+  if (!route?.general || route.definition?.id !== 'custom-openai' || !isOpenAIPaintMaskContract(route.baseUrl, route.modelName)) return false;
+  return (!route.profile || route.profile.preset === 'openai-image' || route.profile.preset === 'openai-gpt-image')
+    && characterImageReferenceMode(route) === 'edits-multipart';
+}
+
+/** 角色工作台只开放已经接入角色回执的同步接口。 */
+export function supportsCharacterImageModel(
+  model: string, provider: string, config: AppConfig = useAppStore.getState().config, referenceCount = 0,
+): boolean {
+  const route = characterImageConnection(model, provider, config);
+  if (!route) return false;
+  const capability = referenceCount > 0 ? resolveImageExecutionCapability(model, provider, config) : undefined;
+  if (capability?.supportsImageReference === false
+    || (capability?.maxImageReferences !== undefined && referenceCount > capability.maxImageReferences)) return false;
+  const { definition, modelName, profile } = route;
+  if (characterImageChannel(model, provider, config) === 'midjourney') return referenceCount <= 1;
+  if (definition?.id === 'grsai') {
+    const parameters = capability ?? resolveImageExecutionCapability(model, provider, config);
+    try {
+      return resolveBuiltInImageRequestContract(definition, modelName,
+        parameters?.defaultResolution ?? '1K', parameters?.defaultRatio ?? '1:1')?.kind === 'protocol';
+    } catch { return false; }
+  }
+  if (['cccapi', 'toapis', 'libapi', 'relayonapi', 'aigc-si'].includes(definition?.id ?? '')
+    || ['dreamina', 'volcengine', 'localllm', 'comfyui', 'runninghubwf', 'workflow-api'].includes(provider)
+    || mediaProviderRegistry.getImageAdapter(provider)) return false;
+  if (profile && profile.preset !== 'openai-image' && profile.preset !== 'openai-gpt-image') return false;
+  const mode = characterImageReferenceMode(route);
+  return !referenceCount || mode === 'edits-multipart'
+    || (mode === 'generation-json-image-data-urls' && capability?.supportsDataUrlReference !== false);
+}
+
 export async function generateImagesBatch(
   params: AIImageGenParams,
   count: number,
@@ -159,8 +230,15 @@ export async function generateImagesBatch(
 ): Promise<BatchImageResult> {
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
   const { model, provider } = params;
-  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1) {
-    if (!isNativeVideoSubmissionGuard(beforeSubmit)) {
+  const characterWorkbench = params.characterWorkbench;
+  const characterGuard = isNativeCharacterImageSubmissionGuard(beforeSubmit) ? beforeSubmit : undefined;
+  if (characterWorkbench && (!beforeSubmit || params.workflowId
+    || !supportsCharacterImageModel(model, provider, useAppStore.getState().config, params.image_urls?.length)
+    || characterWorkbench === 'global' && characterGuard)) {
+    throw new Error('此模型尚未接入角色工作台的图片交付');
+  }
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 && characterWorkbench !== 'global') {
+    if (!isNativeVideoSubmissionGuard(beforeSubmit) && !(characterWorkbench === 'project' && characterGuard)) {
       throw new Error('此原生图片模型或批量合同没有可耐久续查的完整回执，未提交请求');
     }
   }
@@ -175,6 +253,13 @@ export async function generateImagesBatch(
   }
   const state = useAppStore.getState();
   const config = state.config;
+  const characterRoute = characterWorkbench ? characterImageConnection(model, provider, config) : undefined;
+  const characterMidjourney = !!characterWorkbench && characterImageChannel(model, provider, config) === 'midjourney';
+  if (params.characterPaintMask && (!characterRoute || !supportsCharacterPaintMask(model, provider, config)
+    || params.image_urls?.length !== 1 || params.workflowId)) {
+    throw new Error('所选连接不支持画笔蒙版，或未选择一张有效底图');
+  }
+  if (characterMidjourney && requestedCount !== 1) throw new Error('角色工作台每次提交一个 Midjourney 作业');
   const submissionProjectId = state.currentProjectId;
   const connectionId = generalModel?.providerConfigId ?? provider;
   const providerConfig = config.providers[connectionId];
@@ -199,7 +284,7 @@ export async function generateImagesBatch(
     modelName, generalModel?.executionProfile ?? selectedModel?.executionProfile,
   ) : undefined;
   const effectiveProfile = cccExecutionProfile ?? toapisContract?.executionProfile
-    ?? relayonContract?.executionProfile ?? generalModel?.executionProfile;
+    ?? relayonContract?.executionProfile ?? characterRoute?.profile ?? generalModel?.executionProfile;
   if (isCccImage && /^(?:gemini-.*image|nano-banana)/i.test(modelName)
     && (!effectiveProfile || effectiveProfile.preset === 'openai-image' || effectiveProfile.preset === 'openai-gpt-image')) {
     throw new Error('此 CCC Gemini／香蕉图片型号尚未适配原生调用协议，请配置该模型的调用协议后再试');
@@ -247,6 +332,7 @@ export async function generateImagesBatch(
     || executionProfile.preset === 'openai-gpt-image';
   const imageReferenceRequestMode = builtInContract?.kind === 'standard' ? builtInContract.imageReferenceRequestMode
     : builtInContract ? undefined
+    : characterRoute && usesStandardImageRequest ? characterImageReferenceMode(characterRoute)
     : generalModel?.imageReferenceRequestMode
       ?? (executionProfile?.preset === 'custom' && !usesRelayonProtocol ? undefined
         : selectedModel?.imageReferenceRequestMode
@@ -256,13 +342,16 @@ export async function generateImagesBatch(
     : undefined;
   const usesGoogleImageParts = !!customProtocol && modelProtocolUsesVariable(JSON.stringify(customProtocol.submit), 'googleImageParts');
   const usesImageDataUrls = !params.workflowId
-    && (provider === 'muse' || usesGoogleImageParts || usesAigcsiProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
+    && (provider === 'muse' || characterMidjourney || usesGoogleImageParts || usesAigcsiProtocol || builtInContract?.kind === 'protocol' && builtInContract.referenceInput === 'data-url'
       || imageReferenceRequestMode === 'generation-json-image-data-urls');
   const usesImageMultipart = !params.workflowId
     && usesStandardImageRequest
     && imageReferenceRequestMode === 'edits-multipart';
   const usesCustomImageFiles = customProtocol?.submit.bodyEncoding === 'multipart'
     && hasReferenceImageFile(customProtocol.submit.body);
+  if (characterWorkbench && params.image_urls?.length && !usesImageMultipart && !usesImageDataUrls) {
+    throw new Error('此模型无法直接接收角色参考图');
+  }
 
 
   const selectedWorkflow = params.workflowId ? useAppStore.getState().workflows.find((item) => item.id === params.workflowId) : undefined;
@@ -273,7 +362,9 @@ export async function generateImagesBatch(
   const comfyMedia = isComfyWorkflow ? await resolvePromptWithMediaRefs(rawPrompt, { cameraSettings }) : undefined;
   const runninghubMedia = isRunningHub ? await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true, cameraSettings }) : undefined;
   const localMedia = runninghubMedia ?? comfyMedia;
-  const { prompt: resolvedPrompt, imageUrls } = localMedia
+  const { prompt: resolvedPrompt, imageUrls } = characterWorkbench
+    ? { prompt: rawPrompt, imageUrls: [] }
+    : localMedia
     ? { prompt: localMedia.prompt, imageUrls: getMediaReferenceUrls(localMedia.references, 'image', 'local') }
     : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
@@ -293,7 +384,7 @@ export async function generateImagesBatch(
     : mergeImageUrls(params.image_urls ?? [], imageUrls);
 
   // 项目风格母图：自动插到最前，无需用户每次 @
-  const styleMasterUrl = getProjectStyleMasterUrl();
+  const styleMasterUrl = characterWorkbench ? null : getProjectStyleMasterUrl();
   let allImageUrls = contentImageUrls;
   let styleAsFirst = false;
   if (styleMasterUrl && !isComfyWorkflow) {
@@ -307,7 +398,7 @@ export async function generateImagesBatch(
     mergeMediaReferences(runninghubMedia.references, collectConnectedReferenceMedia(params.nodeId).references.map(canonicalImageReference)),
   ) : undefined;
   if (referenceMedia) allImageUrls = getMediaReferenceUrls(referenceMedia, 'image', 'local');
-  const prompt = enrichPromptWithReferenceHints(
+  const prompt = characterWorkbench ? resolvedPrompt : enrichPromptWithReferenceHints(
     runninghubMedia && referenceMedia ? compileVideoReferencePrompt(runninghubMedia, referenceMedia, { target: 'local' }) : resolvedPrompt,
     allImageUrls.length,
     styleAsFirst,
@@ -375,17 +466,54 @@ export async function generateImagesBatch(
   const aigcsiExecutionProfile = usesAigcsiProtocol ? aigcsiImageExecutionProfile(allImageUrls.length) : undefined;
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
   allImageUrls = provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
-    ? await resolveImageDataUrlArray(allImageUrls, signal, usesGoogleImageParts ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
+    ? await resolveImageDataUrlArray(allImageUrls, signal, usesGoogleImageParts || characterWorkbench ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
     : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi || providerDefinition?.id === 'custom-openai' ? connectionId : provider, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   if (!prompt.trim() && provider !== 'runninghub') throw new Error('提示词不能为空');
 
+  if (characterMidjourney) {
+    const protocol = resolveModelExecutionProfile(relayonExecutionProfile);
+    const baseUrl = providerConfig?.baseUrl?.trim() || providerDefinition?.defaultBaseUrl || '';
+    const apiKey = providerConfig?.apiKey;
+    if (!protocol || protocol.mode !== 'sync' || outputsPerJob !== 4 || !baseUrl || !apiKey) {
+      throw new Error('原 Midjourney 通道未配置完整的同步图片协议');
+    }
+    const dimensions = resolveImageTemplateDimensions(parameterCapability ?? configuredCapability, imageSize, aspectRatio);
+    const variables = relayonImageVariables(modelName, { model: modelName, prompt, imageSize, aspectRatio,
+      n: 1, batchCount: 1, imageUrls: allImageUrls, size: `${dimensions.width}x${dimensions.height}` });
+    const mediaDownloadAccess = createMediaDownloadAccess(connectionId, baseUrl, protocol.auth);
+    const execute = async (markSubmitted?: () => void | Promise<void>) => (await executeModelProtocol({
+      apiKey, baseUrl, protocol, variables, signal, beforeSubmit: markSubmitted, sensitive: true,
+    })).urls ?? [];
+    if (characterGuard) {
+      const batch = await runNativeCharacterImageTask({ guard: characterGuard, modelRef: model, connectionId,
+        requestMaterial: [protocol, variables], dimensions, expectedCount: outputsPerJob, signal, mediaDownloadAccess, execute });
+      return { ...batch, requestedCount, expectedOutputCount: outputsPerJob };
+    }
+    const urls = await execute(beforeSubmit);
+    if (!urls.length) throw new Error('Midjourney 未返回可保存的候选图片');
+    return { requestedCount, expectedOutputCount: outputsPerJob, mediaDownloadAccess, allTasksSettled: true,
+      results: urls.map((url) => ({ url, ...dimensions })), failedCount: Math.max(0, outputsPerJob - urls.length) };
+  }
+
   if (builtInContract?.kind === 'protocol') {
     const apiKey = providerConfig?.apiKey || '';
     const baseUrl = providerConfig?.baseUrl?.trim() || providerDefinition?.defaultBaseUrl || '';
     if (!apiKey) throw new Error(`未配置 ${providerDefinition?.name} 的 API Key\n请在「设置 → API Key」中配置`);
-    if (state.projectExecutionContext?.modelGeneration === 1) {
+    if (characterGuard) {
+      return await runNativeCharacterImageTask({ guard: characterGuard, modelRef: model, connectionId,
+        requestMaterial: [builtInContract.protocol, modelName, prompt, imageQuality, imageBackground, allImageUrls],
+        dimensions: builtInContract.dimensions, expectedCount: requestedCount, signal,
+        mediaDownloadAccess: createMediaDownloadAccess(connectionId, baseUrl, builtInContract.protocol.auth),
+        execute: async (beforePost) => {
+          const result = await executeModelProtocol({ apiKey, baseUrl, protocol: builtInContract.protocol,
+            variables: { model: modelName, prompt, imageQuality, imageBackground, imageUrls: allImageUrls },
+            validateResponse: validateBuiltInImageResponse, signal, beforeSubmit: beforePost, sensitive: true });
+          return result.urls ?? [];
+        } });
+    }
+    if (state.projectExecutionContext?.modelGeneration === 1 && !characterWorkbench) {
       const { runNativeBuiltinImageTask } = await import('../nativeBuiltinImageTask');
       return await runNativeBuiltinImageTask({ nodeId: params.nodeId, mode: 'protocol', modelId: modelName, connectionId, baseUrl,
         secrets: [apiKey],
@@ -409,6 +537,7 @@ export async function generateImagesBatch(
           variables: { model: modelName, prompt, imageQuality, imageBackground, imageUrls: allImageUrls },
           validateResponse: validateBuiltInImageResponse,
           signal,
+          ...(characterWorkbench ? { beforeSubmit, sensitive: true } : {}),
         });
         signal?.throwIfAborted();
         const url = result.urls?.[0];
@@ -419,7 +548,8 @@ export async function generateImagesBatch(
         break;
       }
     }
-    return { requestedCount, results, failedCount: requestedCount - results.length };
+    return { requestedCount, results, failedCount: requestedCount - results.length,
+      ...(characterWorkbench ? { mediaDownloadAccess: createMediaDownloadAccess(connectionId, baseUrl, builtInContract.protocol.auth) } : {}) };
   }
 
   const registeredAdapter = mediaProviderRegistry.getImageAdapter(provider);
@@ -442,7 +572,7 @@ export async function generateImagesBatch(
     const hasExplicitStandardRequestMode = allImageUrls.length > 0
       && imageReferenceRequestMode !== undefined
       && usesStandardImageRequest;
-    if (!hasExplicitStandardRequestMode) {
+    if (!hasExplicitStandardRequestMode && !characterWorkbench) {
       const variables = {
         model: gm.modelId,
         prompt,
@@ -507,11 +637,13 @@ export async function generateImagesBatch(
         imageBackground,
         imageUrls: allImageUrls,
         imageReferenceRequestMode,
+        ...(params.characterPaintMask ? { characterPaintMask: params.characterPaintMask } : {}),
         providerConfigId: connection.providerConfigId, nodeId: params.nodeId, modelRef: `general/${gm.id}`, beforeSubmit,
+        ...(characterWorkbench && !characterGuard ? { characterStandalone: true } : {}),
         ...(providerDefinition?.id === 'cccapi' ? { asyncTaskProvider: 'cccapi' as const,
           providerConfigId: connection.providerConfigId, nodeId: params.nodeId } : {}),
       }, requestedCount, signal);
-      return retainStandardImageDelivery(batch, connection.providerConfigId, connection.baseUrl, params.nodeId, submissionProjectId);
+      return characterWorkbench ? batch : retainStandardImageDelivery(batch, connection.providerConfigId, connection.baseUrl, params.nodeId, submissionProjectId);
     }
 
     case 'volcengine': {
@@ -558,10 +690,11 @@ export async function generateImagesBatch(
         imageUrls: allImageUrls,
         imageReferenceRequestMode,
         providerConfigId: provider, nodeId: params.nodeId, modelRef: `${provider}/${modelName}`, beforeSubmit,
+        ...(characterWorkbench && !characterGuard ? { characterStandalone: true } : {}),
         ...(providerDefinition?.id === 'cccapi' ? { asyncTaskProvider: 'cccapi' as const,
           providerConfigId: provider, nodeId: params.nodeId } : {}),
       }, requestedCount, signal);
-      return retainStandardImageDelivery(batch, provider, baseUrl, params.nodeId, submissionProjectId);
+      return characterWorkbench ? batch : retainStandardImageDelivery(batch, provider, baseUrl, params.nodeId, submissionProjectId);
     }
   }
 }

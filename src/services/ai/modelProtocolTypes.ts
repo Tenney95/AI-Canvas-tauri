@@ -26,6 +26,10 @@ export interface SubmitModelProtocolOptions {
   normalizeSubmitResponse?: (payload: unknown) => unknown;
   /** 原生恢复只投影查询实际依赖的安全字段；完整提交响应只在本次调用内存中存在。 */
   captureRecoveryContext?: (payload: unknown) => Record<string, unknown>;
+  /** 受管输入的提交边界，在请求构造完成后、发送前调用。 */
+  beforeSubmit?: () => void | Promise<void>;
+  /** 避免记录包含私人素材与提示词的请求。 */
+  sensitive?: boolean;
   signal?: AbortSignal;
 }
 

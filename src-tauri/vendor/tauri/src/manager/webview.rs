@@ -126,6 +126,25 @@ impl<R: Runtime> WebviewManager<R> {
     window_label: &str,
     manager: &M,
   ) -> crate::Result<PendingWebview<EventLoopMessage, R>> {
+    // Browser guests have no app/IPC/asset protocols or injected bridge scripts.
+    // The local toolbar can load its own immutable resources only.
+    if is_xiaohongshu_reference_surface(label) {
+      if is_xiaohongshu_reference_toolbar(label) {
+        let scheme = "xhs-reference-toolbar";
+        if let Some(protocol) = self.uri_scheme_protocols.lock().unwrap().get(scheme).cloned() {
+          let app_handle = manager.app_handle().clone();
+          pending.register_uri_scheme_protocol(scheme, move |webview_id, request, responder| {
+            let context = UriSchemeContext {
+              app_handle: &app_handle,
+              webview_label: webview_id,
+            };
+            (protocol.handler)(context, request, UriSchemeResponder(responder))
+          });
+        }
+      }
+      return Ok(pending);
+    }
+
     let app_manager = manager.manager();
 
     let plugin_init_scripts = app_manager
@@ -228,6 +247,9 @@ impl<R: Runtime> WebviewManager<R> {
     let mut registered_scheme_protocols = Vec::new();
 
     for (uri_scheme, protocol) in &*self.uri_scheme_protocols.lock().unwrap() {
+      if uri_scheme == "xhs-reference-toolbar" {
+        continue;
+      }
       registered_scheme_protocols.push(uri_scheme.clone());
       let protocol = protocol.clone();
       let app_handle = manager.app_handle().clone();
@@ -527,9 +549,11 @@ impl<R: Runtime> WebviewManager<R> {
     let label = pending.label.clone();
     pending = self.prepare_pending_webview(pending, &label, window_label, manager)?;
 
-    pending.ipc_handler = Some(crate::ipc::protocol::message_handler(
-      manager.manager_owned(),
-    ));
+    if !is_xiaohongshu_reference_surface(&label) {
+      pending.ipc_handler = Some(crate::ipc::protocol::message_handler(
+        manager.manager_owned(),
+      ));
+    }
 
     // in `windows`, we need to force a data_directory
     // but we do respect user-specification
@@ -575,6 +599,7 @@ impl<R: Runtime> WebviewManager<R> {
     #[cfg(feature = "isolation")]
     let pattern = app_manager.pattern.clone();
     let navigation_handler = pending.navigation_handler.take();
+    let browser_surface = is_xiaohongshu_reference_surface(&label);
     let app_manager = manager.manager_owned();
     let label = pending.label.clone();
     pending.navigation_handler = Some(Box::new(move |url| {
@@ -591,6 +616,9 @@ impl<R: Runtime> WebviewManager<R> {
         if !handler(url) {
           return false;
         }
+      }
+      if browser_surface {
+        return true;
       }
       let webview = app_manager.webview.webviews_lock().get(&label).cloned();
       if let Some(w) = webview {
@@ -631,17 +659,18 @@ impl<R: Runtime> WebviewManager<R> {
         .insert(webview.label().to_string(), webview.clone());
     }
 
-    // let plugins know that a new webview has been added to the manager
-    let manager = webview.manager_owned();
-    let webview_ = webview.clone();
-    // run on main thread so the plugin store doesn't dead lock with the event loop handler in App
-    let _ = webview.run_on_main_thread(move || {
-      manager
-        .plugins
-        .lock()
-        .expect("poisoned plugin store")
-        .webview_created(webview_);
-    });
+    if !is_xiaohongshu_reference_surface(webview.label()) {
+      // Run on main thread so the plugin store does not deadlock with the event loop handler.
+      let manager = webview.manager_owned();
+      let webview_ = webview.clone();
+      let _ = webview.run_on_main_thread(move || {
+        manager
+          .plugins
+          .lock()
+          .expect("poisoned plugin store")
+          .webview_created(webview_);
+      });
+    }
 
     #[cfg(all(target_os = "ios", feature = "wry"))]
     {
@@ -679,6 +708,19 @@ impl<R: Runtime> WebviewManager<R> {
   pub(crate) fn invoke_key(&self) -> &str {
     &self.invoke_key
   }
+}
+
+fn is_xiaohongshu_reference_surface(label: &str) -> bool {
+  label
+    .strip_prefix("xiaohongshu-reference-")
+    .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    || is_xiaohongshu_reference_toolbar(label)
+}
+
+fn is_xiaohongshu_reference_toolbar(label: &str) -> bool {
+  label
+    .strip_prefix("xiaohongshu-reference-toolbar-")
+    .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 impl<R: Runtime> Webview<R> {

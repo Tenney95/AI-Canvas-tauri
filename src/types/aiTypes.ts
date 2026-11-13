@@ -25,6 +25,10 @@ export interface TextGenerationResult {
 export interface AIImageGenParams extends AIGenerateParams {
   /** 仅供完整交付多候选的图片节点／对话入口使用，不写入厂商请求。 */
   collectCandidates?: boolean;
+  /** 角色工作台只使用显式选择的素材，交付到角色任务。 */
+  characterWorkbench?: 'project' | 'global';
+  /** 角色局部编辑使用透明 PNG 蒙版，仅向明确支持的 multipart 合同传递。 */
+  characterPaintMask?: string;
   workflowApiTaskContext?: import('./workflowApi').CloudWorkflowTaskContext;
   runninghubModelParameters?: Record<string, string>;
   runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;

@@ -45,6 +45,8 @@ mod director_desk_runtime;
 mod dreamina;
 #[path = "media/muse.rs"]
 mod muse;
+#[path = "media/xiaohongshu_reference.rs"]
+mod xiaohongshu_reference;
 #[path = "files/transfer.rs"]
 mod file_transfer;
 #[path = "files/native_project_media.rs"]
@@ -1888,6 +1890,7 @@ pub fn run() {
         .register_uri_scheme_protocol("plugin-ui", plugin_ui::handle_protocol)
         .register_uri_scheme_protocol("plugin-window", plugin_window::handle_protocol)
         .register_uri_scheme_protocol("theme-image", theme_assets::handle_protocol)
+        .register_uri_scheme_protocol("xhs-reference-toolbar", xiaohongshu_reference::toolbar_protocol)
         .register_asynchronous_uri_scheme_protocol("comfy-media", comfyui::media_source::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(skill_storage::privacy_plugin())
@@ -2014,6 +2017,11 @@ pub fn run() {
             muse::muse_release,
             muse::muse_query,
             muse::muse_task_open,
+            xiaohongshu_reference::xiaohongshu_reference_open,
+            xiaohongshu_reference::xiaohongshu_reference_focus,
+            xiaohongshu_reference::xiaohongshu_reference_import,
+            xiaohongshu_reference::xiaohongshu_reference_set_status,
+            xiaohongshu_reference::xiaohongshu_reference_close,
             open_chat_window,
             close_chat_window,
             set_chat_window_locked,
@@ -2114,6 +2122,7 @@ pub fn run() {
             plugin_window::on_window_event(window, event);
             comfyui::progress::on_window_event(window, event);
             comfyui::media_source::on_window_event(window, event);
+            xiaohongshu_reference::on_window_event(window, event);
             // 用户把文件拖进自有窗口 = 一次显式授权，登记后复制/读取命令才放行。
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 if window.label() == "main" || window.label() == "chat-assistant" {

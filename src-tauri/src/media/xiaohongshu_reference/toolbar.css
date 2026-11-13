@@ -1,0 +1,25 @@
+html,
+body {
+  border-radius: 0;
+}
+
+.desktop { background: var(--theme-surface); }
+
+.toolbar {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: var(--ui-pad-sm);
+  padding: 0 var(--ui-pad);
+  height: 100%;
+}
+
+.status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#import-button {
+  flex: none;
+  max-width: 100%;
+}

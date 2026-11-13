@@ -463,6 +463,18 @@ export async function downloadAssetArchiveMedia(url: string, destinationPath: st
   return result.path;
 }
 
+/** 把生成图片下载到本次任务的暂存位置，保留厂商原鉴权边界并校验图片容器。 */
+export async function downloadGeneratedImageToPath(url: string, destinationPath: string, options?: FileTransferOptions): Promise<string> {
+  if (!isTauriEnv() || !isRemoteMediaUrl(url)) throw new Error('生成图片下载地址不可用');
+  const request = options?.mediaDownloadAccess
+    ? await (await import('./ai/mediaDownloadAccess')).resolveMediaDownloadRequest(url, options.mediaDownloadAccess)
+    : { url };
+  const result = await runNativeFileTransfer('download_file_streamed', {
+    ...request, destinationPath, expectedMediaKind: 'image',
+  }, options);
+  return result.path;
+}
+
 /** 引用迁移成功后再次验证两份内容，才允许将源文件放入回收站。 */
 export async function finishAssetFileMove(sourcePath: string, copy: AssetFileCopyResult): Promise<void> {
   await invoke('finish_asset_file_move', { sourcePath, destinationPath: copy.path, expectedDigest: copy.digest, expectedBytes: copy.totalBytes });

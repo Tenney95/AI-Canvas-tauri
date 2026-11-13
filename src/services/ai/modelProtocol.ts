@@ -143,7 +143,13 @@ export async function submitModelProtocol(
   const built = buildModelProtocolRequest(options);
   const protocol = built.protocol;
   const context: Record<string, unknown> = { ...options.variables };
-  const response = await corsSafeFetch(built.url, built.init);
+  if (options.beforeSubmit) {
+    await options.beforeSubmit();
+    options.signal?.throwIfAborted();
+  }
+  const response = await (options.sensitive
+    ? corsSafeFetch(built.url, built.init, { sensitive: true })
+    : corsSafeFetch(built.url, built.init));
   const responseConfig = protocol.response;
 
   if (protocol.mode === 'sync') {

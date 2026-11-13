@@ -46,6 +46,7 @@ export function nativeStorageRowPending(value: unknown): boolean {
   if (row.kind === 'native-media-task-v1' || row.kind === 'native-editor-media-v1') {
     return !['delivered', 'failed', 'reviewed'].includes(String(row.status));
   }
+  if (row.kind === 'native-character-image-v1') return !['completed', 'failed', 'reviewed'].includes(String(row.status));
   if (row.kind === 'project-model-export') return !['registered', 'aborted'].includes(String(row.phase));
   if (row.kind === 'project-model-import' || row.kind === 'native-shared-sync') return !['finalized', 'aborted'].includes(String(row.phase));
   if (row.kind === 'native-content-recovery') return row.phase !== 'ready';

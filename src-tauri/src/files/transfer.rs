@@ -21,6 +21,8 @@ const MIN_FREE_SPACE_RESERVE: u64 = 64 * 1024 * 1024;
 const PROGRESS_EVENT: &str = "file-transfer-progress";
 const MEDIA_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+const GENERATED_IMAGE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const GENERATED_IMAGE_MAX_PIXELS: u64 = 64 * 1024 * 1024;
 
 static CANCELLED_TRANSFERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -820,6 +822,20 @@ fn validate_downloaded_video(path: &Path, _metadata: &DownloadMetadata) -> Resul
     if iso_video || matroska || avi { Ok(()) } else { Err("下载结果不是有效视频".into()) }
 }
 
+fn validate_downloaded_image(path: &Path) -> Result<(), String> {
+    let invalid = || "下载结果不是受支持的图片或超出尺寸限制".to_string();
+    let reader = image::ImageReader::open(path).map_err(|_| invalid())?
+        .with_guessed_format().map_err(|_| invalid())?;
+    if !matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)) {
+        return Err(invalid());
+    }
+    let (width, height) = reader.into_dimensions().map_err(|_| invalid())?;
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > GENERATED_IMAGE_MAX_PIXELS {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn download_file_streamed(
     app: AppHandle,
@@ -832,7 +848,7 @@ pub async fn download_file_streamed(
 ) -> Result<FileTransferResult, String> {
     ensure_trusted_caller(&webview)?;
     let destination = authorize_path(&app, &destination_path, PathAccess::Write)?;
-    if expected_media_kind.as_deref().is_some_and(|kind| kind != "video") {
+    if expected_media_kind.as_deref().is_some_and(|kind| !matches!(kind, "video" | "image")) {
         return Err("不支持的下载媒体校验类型".into());
     }
 
@@ -843,10 +859,14 @@ pub async fn download_file_streamed(
             &task_id_for_worker,
             &url,
             &destination,
-            None,
+            (expected_media_kind.as_deref() == Some("image")).then_some(GENERATED_IMAGE_MAX_BYTES),
             download_access.as_ref(),
             |path, metadata| {
-                if expected_media_kind.is_some() { validate_downloaded_video(path, metadata) } else { Ok(()) }
+                match expected_media_kind.as_deref() {
+                    Some("video") => validate_downloaded_video(path, metadata),
+                    Some("image") => validate_downloaded_image(path),
+                    _ => Ok(()),
+                }
             },
         )
     })

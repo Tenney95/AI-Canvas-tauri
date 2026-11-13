@@ -17,6 +17,7 @@
 | `src/ipc/channel.rs` | 流式 Channel 和普通 invoke 回退均使用上述队列；取数命令接受实际 WebView；不改变旧 wire 名、阈值、JSON/二进制类型或流式序号 |
 | `src/webview/mod.rs` | 创建/克隆携带实例队列，移除内置 fetch 的 ACL 豁免，仅在 ACL 查询时把旧命令映射到 `plugin:channel\|fetch` |
 | `src/manager/mod.rs` | 窗口和 WebView 关闭时撤销实例队列，包括仍被异步发送者持有的克隆 |
+| `src/manager/webview.rs` | 带 `xiaohongshu-reference-` 或 `xiaohongshu-reference-toolbar-` 和 32 位十六进制会话 ID 的小红书子 WebView 跳过应用、素材与 IPC 协议、主应用初始化及插件注入。仅标题栏子 WebView 注册固定 `xhs-reference-toolbar` 资源协议。宿主继续负责导航和单图导入 |
 | `src/app.rs` | 移除应用共享队列的注册 |
 | `build.rs` | 启用 `core:channel` 权限生成，`core:default` 包含其默认取数权限 |
 | `src/test/mod.rs`、`src/test/channel_security.rs`、`tests/channel-security.rs` | 仅 Tauri 既有 test feature 编译的 MockRuntime 回归与宿主测试 target |

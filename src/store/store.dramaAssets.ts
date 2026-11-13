@@ -197,7 +197,7 @@ export interface DramaAssetsSlice {
   saveCharacterCard: (
     scope: CharacterLibraryScope,
     character: DramaCharacter,
-    options?: DramaAssetWriteOptions,
+    options?: DramaAssetWriteOptions & { awaitProjectSave?: boolean },
   ) => Promise<boolean>;
   addCharacterReferenceImage: (
     scope: CharacterLibraryScope,
@@ -1372,7 +1372,8 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
 
   saveCharacterCard: async (scope, character, options) => {
     if (scope !== 'project' && scope !== 'global') return false;
-    const characters = scope === 'project' ? get().dramaAssets.characters : get().globalCharacters;
+    const initial = get();
+    const characters = scope === 'project' ? initial.dramaAssets.characters : initial.globalCharacters;
     const existing = characters.find((item) => item.id === character.id);
     try { character = { ...character, weaponIds: checkedCharacterWeapons(character,
       scope === 'project' ? get().dramaAssets.props : get().globalProps, existing) }; }
@@ -1381,6 +1382,8 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
       ? { ...character, libraryOrder: existing.libraryOrder } : character));
     if (scope === 'project') {
       try { assertDramaAssetWriteCurrent(options); } catch { return false; }
+      const projectId = initial.currentProjectId;
+      if (options?.awaitProjectSave && (!projectId || initial.projectLoadStatus !== 'ready')) return false;
       const current = get().dramaAssets;
       const exists = current.characters.some((item) => item.id === normalized.id);
       set({
@@ -1391,8 +1394,28 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
             : [...current.characters, normalized],
         },
       });
-      silentSave(get);
-      return true;
+      if (!options?.awaitProjectSave) {
+        silentSave(get);
+        return true;
+      }
+      try {
+        if (await get().saveCurrentProjectSilent(() => {
+          const live = get();
+          if (live.currentProjectId !== projectId || live.projectLoadStatus !== 'ready'
+            || !sameCharacterContent(normalized, findScopedCharacter(live, scope, normalized.id))) {
+            throw new Error(t('角色已修改或删除，请重新保存'));
+          }
+        }) === projectId) return true;
+      } catch { /* The editor retains its draft for another save attempt. */ }
+      const latest = get();
+      if (latest.currentProjectId === projectId && latest.projectLoadStatus === 'ready'
+        && sameCharacterContent(normalized, findScopedCharacter(latest, scope, normalized.id))) {
+        set({ dramaAssets: { ...latest.dramaAssets, characters: latest.dramaAssets.characters.flatMap((item) => (
+          item.id !== normalized.id ? [item] : existing ? [{ ...existing, libraryOrder: item.libraryOrder }] : []
+        )) } });
+      }
+      get().showToast?.(t('角色保存失败，请重试'), 'error');
+      return false;
     }
     const controller = new AbortController();
     const abort = () => controller.abort();

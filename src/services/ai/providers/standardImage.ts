@@ -24,6 +24,8 @@ import { prepareReferenceImageUpload } from '../referenceImageUpload';
 import { redactModelProtocolError, throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
 import { sha256BytesHex } from '../../mediaDataUrl';
 import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
+import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } from '../../nativeCharacterImageTask';
+import { isOpenAIPaintMaskContract, prepareCharacterImageMask } from '../characterImageMask';
 
 export interface StandardImageParams {
   apiKey: string;
@@ -41,6 +43,9 @@ export interface StandardImageParams {
   nodeId?: string;
   modelRef?: string;
   beforeSubmit?: () => void | Promise<void>;
+  /** 工作台的旧项目或全局同步请求只提交一次。 */
+  characterStandalone?: boolean;
+  characterPaintMask?: string;
 }
 
 interface ReferenceImageFile {
@@ -86,7 +91,7 @@ async function loadReferenceImage(
 }
 
 async function buildImageEditsBody(
-  params: Pick<StandardImageParams, 'modelName' | 'prompt' | 'imageUrls' | 'imageQuality' | 'imageBackground'>,
+  params: Pick<StandardImageParams, 'modelName' | 'prompt' | 'imageUrls' | 'imageQuality' | 'imageBackground' | 'characterPaintMask'>,
   count: number,
   size: string,
   signal?: AbortSignal,
@@ -100,6 +105,14 @@ async function buildImageEditsBody(
   if (params.imageQuality) formData.append('quality', params.imageQuality);
   if (params.imageBackground) formData.append('background', params.imageBackground);
   if (params.imageBackground === 'transparent') formData.append('output_format', 'png');
+  if (params.characterPaintMask) {
+    if (imageUrls.length !== 1) throw new Error('画笔蒙版需要一张底图');
+    const base = await loadReferenceImage(imageUrls[0], 0, signal);
+    const { image, mask } = await prepareCharacterImageMask(base.blob, params.characterPaintMask, signal);
+    formData.append('image[]', image, 'reference-1.png');
+    formData.append('mask', mask, 'mask.png');
+    return formData;
+  }
   // 大参考图逐张做无损准备，保留原始尺寸与格式。
   for (const [index, url] of imageUrls.entries()) {
     signal?.throwIfAborted();
@@ -132,8 +145,12 @@ async function requestStandardImages(
   signal?: AbortSignal,
   beforeSend?: () => void | Promise<void>,
   preparedMultipart?: FormData,
+  sensitive = false,
 ): Promise<Response> {
   const { apiKey, baseUrl, modelName, prompt, dimensions, imageUrls = [] } = params;
+  const send = (url: string, init: RequestInit) => sensitive
+    ? corsSafeFetch(url, init, { sensitive: true })
+    : corsSafeFetch(url, init);
 
   const sizeStr = formatImageSizeForModel(modelName, dimensions);
   if (imageUrls.length > 0 && params.imageReferenceRequestMode === 'edits-multipart') {
@@ -145,7 +162,7 @@ async function requestStandardImages(
     try {
       signal?.throwIfAborted();
       await beforeSend?.();
-      const response = await corsSafeFetch(apiUrl, {
+      const response = await send(apiUrl, {
         method: 'POST', headers: buildMultipartAuthHeaders(apiKey), body, signal,
       });
       return response;
@@ -171,7 +188,7 @@ async function requestStandardImages(
 
   signal?.throwIfAborted();
   await beforeSend?.();
-  return corsSafeFetch(apiUrl, {
+  return send(apiUrl, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(requestBody),
@@ -324,6 +341,46 @@ export async function generateImageStandardBatch(
   const apiKey = params.apiKey;
   try {
     const requestedCount = Math.max(1, Math.floor(count));
+    const characterGuard = isNativeCharacterImageSubmissionGuard(params.beforeSubmit) ? params.beforeSubmit : undefined;
+    if (params.characterPaintMask && (!isOpenAIPaintMaskContract(params.baseUrl, params.modelName)
+      || params.imageReferenceRequestMode !== 'edits-multipart' || !characterGuard && !params.characterStandalone)) {
+      throw new Error('所选连接不支持画笔蒙版');
+    }
+    if (characterGuard || params.characterStandalone) {
+      if (params.asyncTaskProvider) throw new Error('角色工作台当前仅支持可直接返回图片的标准接口');
+      const connectionId = params.providerConfigId;
+      if (!connectionId) throw new Error('角色生图缺少模型连接身份');
+      const { createMediaDownloadAccess } = await import('../mediaDownloadAccess');
+      const mediaDownloadAccess = createMediaDownloadAccess(connectionId, params.baseUrl, { type: 'bearer' });
+      const preparedMultipart = params.imageUrls?.length && params.imageReferenceRequestMode === 'edits-multipart'
+        ? await buildImageEditsBody(params, requestedCount, formatImageSizeForModel(params.modelName, params.dimensions), signal) : undefined;
+      const execute = async (beforePost?: () => Promise<void>) => {
+        const response = await requestStandardImages(params, requestedCount, signal, beforePost, preparedMultipart, true);
+        return parseStandardResponse(response, params.dimensions);
+      };
+      if (!characterGuard) {
+        const results = await execute(async () => { signal?.throwIfAborted(); await params.beforeSubmit?.(); });
+        if (!results.length) throw new Error('角色生图返回结果为空');
+        return { requestedCount, results, failedCount: Math.max(0, requestedCount - results.length), allTasksSettled: true,
+          ...(mediaDownloadAccess ? { mediaDownloadAccess } : {}) };
+      }
+      const referenceIdentity: unknown[] = [...(params.imageUrls ?? [])];
+      if (preparedMultipart) {
+        referenceIdentity.length = 0;
+        for (const value of [...preparedMultipart.getAll('image[]'), ...preparedMultipart.getAll('mask')]) {
+          signal?.throwIfAborted();
+          if (typeof value === 'string') throw new Error('角色生图参考文件无效');
+          referenceIdentity.push({ bytes: value.size, mime: value.type, sha256: await sha256BytesHex(new Uint8Array(await value.arrayBuffer())) });
+        }
+      }
+      return await runNativeCharacterImageTask({ guard: characterGuard, modelRef: params.modelRef ?? `${connectionId}/${params.modelName}`,
+        connectionId, dimensions: params.dimensions, expectedCount: requestedCount, signal,
+        requestMaterial: [params.baseUrl, params.modelName, params.prompt, params.dimensions, params.imageQuality,
+          params.imageBackground, params.imageReferenceRequestMode, requestedCount, referenceIdentity],
+        mediaDownloadAccess,
+        execute: async (beforePost) => (await execute(beforePost)).map((result) => result.url),
+      });
+    }
     if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(params.beforeSubmit)) {
       const { runNativeBuiltinImageTask } = await import('../../nativeBuiltinImageTask');
       const { createMediaDownloadAccess } = await import('../mediaDownloadAccess');

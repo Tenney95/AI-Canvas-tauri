@@ -8,6 +8,8 @@ import ImageEditorZoomControls from './ImageEditorZoomControls';
 import MattingToolbar from './MattingToolbar';
 import { MAX_MATTING_CANVAS_EDGE, MAX_MATTING_HISTORY_BYTES } from './imageResourceBudget';
 import { floodFillImageData, trimImageDataHistory } from './mattingUtils';
+import { useDialogFocus } from '../../../../hooks/useDialogFocus';
+import { useT } from '../../../../i18n';
 
 /* ── Types ── */
 type MattingTool = 'brush' | 'eraser' | 'bucket';
@@ -36,7 +38,9 @@ export default function MattingEditor({
   onClose,
   onSave,
 }: MattingEditorProps) {
+  const t = useT();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const strokeBaseline = useRef<ImageData | null>(null);
   const strokePoints = useRef<{ x: number; y: number }[]>([]);
@@ -49,6 +53,7 @@ export default function MattingEditor({
   const [brushSize, setBrushSize] = useState(40);
   // 撤销栈游标 + 长度：长度必须进 state，渲染期读 historyRef.current 会读到过期值
   const [history, setHistory] = useState({ idx: -1, len: 0 });
+  useDialogFocus(isOpen, dialogRef, onClose, { zIndex: 10000 });
 
   // ── 缩放 / 平移 ──
   const stageRef = useRef<HTMLDivElement>(null);
@@ -368,9 +373,6 @@ export default function MattingEditor({
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
 
       switch (e.key.toLowerCase()) {
-        case 'escape':
-          onClose();
-          break;
         case 'b':
           setTool('brush');
           setBrushMode((prev) => (prev === 'normal' ? 'alpha' : 'normal'));
@@ -401,7 +403,7 @@ export default function MattingEditor({
 
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [isOpen, onClose, handleClear, handleUndo, handleRedo]);
+  }, [isOpen, handleClear, handleUndo, handleRedo]);
 
   // ── 滚轮缩放（非 passive，允许 preventDefault）──
   useEffect(() => {
@@ -460,7 +462,7 @@ export default function MattingEditor({
   const cursorD = Math.max(6, Math.round(brushSize * dispScale));
 
   return createPortal(
-    <div data-tauri-drag-region className="matting-overlay">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={t('画笔蒙版')} tabIndex={-1} data-tauri-drag-region className="matting-overlay">
       <div className="matting-toolbar-dock">
         <MattingToolbar
           onCancel={onClose}

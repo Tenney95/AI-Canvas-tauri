@@ -307,13 +307,17 @@ export * from './indexedDb/catalogRepository';
 export * from './indexedDb/videoEditorRepository';
 
 /** 保存整个项目（含 nodes/edges）到 IndexedDB */
-export async function saveProjectToDb(record: ProjectRecord): Promise<void> {
+export async function saveProjectToDb(record: ProjectRecord, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   const summary = toProjectSummaryRecord(record);
   if (!summary) throw new Error('项目摘要无效，无法写入 IndexedDB');
   const db = await openDB();
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_PROJECTS, STORE_PROJECT_SUMMARIES, STORE_METADATA], 'readwrite');
     let failure: Error | undefined;
+    const abort = () => { try { tx.abort(); } catch { /* 已提交事务保留原结果 */ } };
+    signal?.addEventListener('abort', abort, { once: true });
     const current = tx.objectStore(STORE_PROJECTS).get(record.id);
     current.onsuccess = () => {
       const before = current.result as ProjectRecord | undefined;
@@ -344,11 +348,13 @@ export async function saveProjectToDb(record: ProjectRecord): Promise<void> {
     const fail = (error: DOMException | null) => {
       if (settled) return;
       settled = true;
-      reject(failure ?? error ?? new Error(`项目 ${record.id} 的 IndexedDB 写入失败`));
+      signal?.removeEventListener('abort', abort);
+      reject(failure ?? signal?.reason ?? error ?? new Error(`项目 ${record.id} 的 IndexedDB 写入失败`));
     };
     tx.oncomplete = () => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener('abort', abort);
       resolve();
     };
     tx.onerror = () => fail(tx.error);

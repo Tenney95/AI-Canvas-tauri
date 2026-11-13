@@ -1121,14 +1121,16 @@ export interface ProjectSaveData {
 export type ProjectSummaryData = Omit<ProjectSaveData, 'nodes' | 'edges' | 'groups' | 'dramaAssets'>;
 
 /** 保存项目到 IndexedDB */
-export async function saveProject(data: ProjectSaveData): Promise<string> {
+export async function saveProject(data: ProjectSaveData, signal?: AbortSignal): Promise<string> {
   try {
+    signal?.throwIfAborted();
     const payload = await serializeProjectRecord(data);
-    await saveProjectToDb(payload);
+    const saveOptions: [signal?: AbortSignal] = signal ? [signal] : [];
+    await saveProjectToDb(payload, ...saveOptions);
     console.log('Project saved to IndexedDB:', data.id);
     return data.id;
   } catch (error) {
-    console.error('Save project to IndexedDB failed:', error);
+    if (!signal?.aborted) console.error('Save project to IndexedDB failed:', error);
     throw error;
   }
 }

@@ -59,6 +59,13 @@ export async function assertNoPendingNativeSharedSync(tx: IDBTransaction, projec
 
 /** 活动远端任务保留原项目代际；不能并发执行会使其无法续查的结构变更。 */
 export async function assertNoPendingNativeMediaTasks(tx: IDBTransaction, projectId: string): Promise<void> {
+  const rolePrefix = `character-image-task:${projectId}:`;
+  const roleRows = await request(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound(rolePrefix, `${rolePrefix}\uffff`))) as
+    Array<{ kind?: string; ownerProjectId?: string; status?: string }>;
+  if (roleRows.length > 100_000 || roleRows.some((row) => !row || row.kind !== 'native-character-image-v1'
+    || row.ownerProjectId !== projectId || !['completed', 'failed', 'reviewed'].includes(row.status ?? ''))) {
+    return fail('project-media-task-pending');
+  }
   const editorRows = await request(tx.objectStore(EXCHANGE).getAll(IDBKeyRange.bound('editor-task:', 'editor-task:\uffff'))) as
     Array<{ kind?: string; ownerProjectId?: string; status?: string }>;
   if (editorRows.some((row) => row.kind !== 'native-editor-media-v1' || row.ownerProjectId === projectId

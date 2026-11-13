@@ -105,6 +105,13 @@ export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | rea
         if (link.characterId === target.assetId && target.assetKind === 'character' && link.scope === target.scope
           && (target.scope === 'global' || context.ownerId === target.ownerId)) return true;
       }
+      if (target.assetKind === 'character' && data.kind === 'character' && typeof data.id === 'string') {
+        const prefix = `character:${target.scope === 'global' ? 'global/' : ''}${target.assetId}`;
+        const idSuffix = data.id.startsWith(prefix) ? data.id.slice(prefix.length) : undefined;
+        const inScope = target.scope === 'global' ? context.globalKinds?.get(target.assetId) === 'character'
+          : context.ownerId === target.ownerId && context.projectKinds?.get(target.assetId) === 'character';
+        if (inScope && (idSuffix === '' || idSuffix === ':voice' || idSuffix?.startsWith(':volcengine:'))) return true;
+      }
     }
     return Object.values(data).some(visit);
   };

@@ -34,7 +34,7 @@ import { normalizeCreationProfileSelection } from '../services/creationProfiles/
 import { normalizeTeamProfile } from '../services/chat/teams/teamProfileService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
 import { stopProjectAgentTasks } from '../services/chat/agentTaskControl';
-import { cancelProjectCanvasDerivations, completeCanvasDerivation, registerCanvasImport } from '../services/canvasDerivationGuard';
+import { cancelProjectCanvasDerivations, completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasImport } from '../services/canvasDerivationGuard';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 import { reassignProjectMemories } from '../services/chat/projectMemoryService';
 import { duplicateProjectArchive, exportProjectArchive, importProjectArchive } from '../services/projectTransferService';
@@ -93,6 +93,7 @@ import { configValuesEqual } from '../services/configPatch';
 import { remapStoryGraphBindings } from '../services/projectExchangeDomain';
 import { duplicateNativeProjectArchive, exportNativeProjectArchive } from '../services/nativeProjectArchiveService';
 import { importNativeProjectArchive, importNativeProjectArchiveFromSession } from '../services/nativeProjectImportService';
+import type { CharacterVisualReferencePlan } from '../services/characterVisualReferencePlan';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
 type NativeCatalog = Extract<ProjectCatalogEntry, { dataModel: 'native' }>;
@@ -102,7 +103,7 @@ interface NativeRuntime {
   activeId: string;
   library: AppState['dramaAssets'];
   tail: Promise<void>;
-  /** 排队的保存需重取完成媒体后的视图，不能用旧快照覆盖已交付产物。 */
+  /** 排队的保存需重取事务投影后的视图，不能用旧快照覆盖已交付产物或引用。 */
   mediaGeneration?: number;
 }
 const nativeKnownIds: Set<string> = import.meta.hot?.data.nativeKnownIds ?? new Set();
@@ -191,7 +192,7 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
 }
 
 async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, record: ProjectSaveData, guard?: () => void,
-  reservation?: NativeRuntime): Promise<string> {
+  reservation?: NativeRuntime, projection?: { signal: AbortSignal; commit: () => void }): Promise<string> {
   const runtime = nativeRuntime.get(get);
   const binding = nativeBinding(state.projects.find((item) => item.id === record.id));
   if (!runtime || !binding || runtime.activeId !== record.id || (binding.canvasId ?? binding.projectId) !== record.id) throw new Error('新项目画布上下文不可用');
@@ -226,13 +227,19 @@ async function saveNativeCurrentProject(get: ProjectSliceGet, state: AppState, r
       }
       return record.id;
     }
+    const saveOptions: [options?: { signal: AbortSignal }] = projection ? [{ signal: projection.signal }] : [];
     const saved = await saveNativeProjectView({ projectId: binding.projectId, expectedProjectEpoch: selection.project.epoch,
       canvasId: canvas.id, episodeId: binding.episodeId, expectedCanvasEpoch: canvas.epoch, expectedCanvasRevision: canvas.revision,
       document: { nodes: serialized.nodes, edges: serialized.edges, groups: serialized.groups },
-      ...(updateLibrary ? { shared: { expectedRevisions: { assets: content.revisions.assets }, patch: { dramaAssets: serialized.dramaAssets } } } : {}) });
+      ...(updateLibrary ? { shared: { expectedRevisions: { assets: content.revisions.assets }, patch: { dramaAssets: serialized.dramaAssets } } } : {}) },
+    ...saveOptions);
     runtime.loaded = { ...runtime.loaded, selection: { ...selection, canvas: saved.canvas, changeRevision: saved.changeRevision,
       context: { ...selection.context, canvasRevision: saved.canvas.revision } }, content: saved.content ?? content };
     if (updateLibrary) runtime.library = state.dramaAssets;
+    if (projection) {
+      runtime.mediaGeneration = (runtime.mediaGeneration ?? 0) + 1;
+      projection.commit();
+    }
     return record.id;
   } finally { release(); }
 }
@@ -566,6 +573,7 @@ interface PendingProjectSave {
   record: ProjectSaveData;
   waiters: ProjectSaveWaiter[];
   guard?: () => void;
+  projection?: { signal: AbortSignal; commit: (queue: ProjectSaveQueue) => void };
 }
 
 interface ProjectSaveQueue {
@@ -690,12 +698,14 @@ async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue)
       if (confirmedSeriesLibrary?.record.id === projectId) confirmedSeriesLibrary = undefined;
       try {
         batch.guard?.();
-        const savedProjectId = await fileService.saveProject(batch.record);
+        const saveOptions: [signal?: AbortSignal] = batch.projection ? [batch.projection.signal] : [];
+        const savedProjectId = await fileService.saveProject(batch.record, ...saveOptions);
         const owner = seriesLibraryOwners.get(batch.record);
         // 记录队列实际写入的版本，不能把被后续 pending 覆盖的请求误认为已落库。
         if (owner && epoch === seriesLibrarySaveEpoch && savedProjectId === projectId) {
           confirmedSeriesLibrary = { record: batch.record, owner };
         }
+        if (savedProjectId === projectId) batch.projection?.commit(queue);
         batch.waiters.forEach((waiter) => waiter.resolve(savedProjectId));
       } catch (error) {
         batch.waiters.forEach((waiter) => waiter.reject(error));
@@ -743,7 +753,7 @@ function enqueueProjectSnapshot(projectId: string, snapshot: string | undefined)
   });
 }
 
-function enqueueProjectSave(record: ProjectSaveData, guard?: () => void): Promise<string> {
+function enqueueProjectSave(record: ProjectSaveData, guard?: () => void, projection?: PendingProjectSave['projection']): Promise<string> {
   if (nativeKnownIds.has(record.id)) return Promise.reject(new Error('新项目不能写入旧项目仓储'));
   guard?.();
   if (projectImportsApplying.has(record.id)) return Promise.reject(new Error('正在应用项目更新，请稍后保存'));
@@ -752,7 +762,7 @@ function enqueueProjectSave(record: ProjectSaveData, guard?: () => void): Promis
     // 屏障前已捕获的节点和项目元数据仍可保存；所属库必须改用屏障释放时的版本。
     return barrier.done.then(() => enqueueProjectSave({ ...record,
       ...(record.dramaAssets ? { dramaAssets: barrier.library } : {}),
-    }, guard));
+    }, guard, projection));
   }
   const queue = getProjectSaveQueue(record.id);
 
@@ -763,12 +773,12 @@ function enqueueProjectSave(record: ProjectSaveData, guard?: () => void): Promis
       tail.record = record;
       tail.waiters.push(waiter);
     } else if (tail) {
-      (queue.pendingBatches ??= []).push({ record, waiters: [waiter], guard });
+      (queue.pendingBatches ??= []).push({ record, waiters: [waiter], guard, projection });
     } else if (queue.active && !guard && !queue.active.guard && hasSameProjectSaveContent(queue.active.record, record)) {
       // 同一不可变画布的自动保存与返回保存共用在途写入；新版本仍排队。
       queue.active.waiters.push(waiter);
     } else {
-      queue.pending = { record, waiters: [waiter], guard };
+      queue.pending = { record, waiters: [waiter], guard, projection };
     }
     void drainProjectSaveQueue(record.id, queue);
   });
@@ -995,6 +1005,7 @@ export interface ProjectSlice {
   returnToStartPage: () => Promise<boolean>;
   saveCurrentProject: () => Promise<string | undefined>;
   saveCurrentProjectSilent: (assertCurrent?: () => void) => Promise<string | undefined>;
+  applyCharacterVisualReferencePlan: (plan: CharacterVisualReferencePlan, nodeIds: readonly string[], assertCurrent?: () => void) => Promise<number>;
   commitSharedAssetSyncDownload: (input: SharedProjectAssetSyncApplyInput) => Promise<SharedAssetSyncCommitResult>;
   /** 仅刷新项目目录，保留当前画布与已加载正文。 */
   refreshProjectCatalog: () => Promise<void>;
@@ -3414,6 +3425,90 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       return undefined;
     }
   }),
+
+  applyCharacterVisualReferencePlan: async (plan, nodeIds, assertEditorCurrent) => {
+    const before = get();
+    const { context, characterId, referenceId } = plan;
+    const stale = () => new Error(t('角色引用或画布已变化，请重新预览'));
+    assertEditorCurrent?.();
+    if (!isProjectExpectedContextCurrent(context, before)) throw stale();
+    const { planCharacterVisualReferences } = await import('../services/characterVisualReferencePlan');
+    const current = get();
+    const character = current.dramaAssets.characters.find((item) => item.id === characterId);
+    if (!character || !isProjectExpectedContextCurrent(context, current)) throw stale();
+    const fresh = planCharacterVisualReferences(context, current.nodes, character, referenceId,
+      new Set(getPendingTasksForProject(context.canvasId).map((task) => task.nodeId)));
+    const selected = new Set(nodeIds);
+    const requested = plan.changes.filter((entry) => selected.has(entry.nodeId));
+    const changes = new Map(fresh.changes.filter((entry) => selected.has(entry.nodeId)).map((entry) => [entry.nodeId, entry]));
+    if (!selected.size || requested.length !== selected.size || changes.size !== selected.size
+      || plan.referenceUrl !== fresh.referenceUrl
+      || requested.some((entry) => !configValuesEqual(entry, changes.get(entry.nodeId)))) throw stale();
+
+    const patchNodes = (nodes: AppState['nodes']) => nodes.map((node) => {
+      const change = changes.get(node.id);
+      if (!change) return node;
+      const promptChanged = !!change.promptMatches && node.data.prompt === change.originalPrompt;
+      const videoChanged = !!change.videoMatches && configValuesEqual(node.data.videoReferences, change.originalVideoReferences);
+      if (!promptChanged && !videoChanged) return node;
+      return { ...node, data: { ...node.data, ...(promptChanged ? { prompt: change.nextPrompt } : {}),
+        ...(videoChanged ? { videoReferences: change.nextVideoReferences } : {}) } };
+    });
+    const nodes = patchNodes(current.nodes);
+    const record = createCurrentProjectSaveRecord({ ...current, nodes });
+    const runtime = nativeRuntime.get(get);
+    const mediaGeneration = runtime?.mediaGeneration;
+    if (!record) throw stale();
+    const controller = new AbortController();
+    const guard = registerCanvasImport(current, () => controller.abort(stale()));
+    if (!guard) throw stale();
+    const assertSaveCurrent = () => {
+      controller.signal.throwIfAborted();
+      assertEditorCurrent?.();
+      const live = get();
+      if (!isCanvasDerivationFresh(guard, live) || !isProjectExpectedContextCurrent(context, live)
+        || live.nodes !== current.nodes || live.edges !== current.edges || live.groups !== current.groups
+        || live.dramaAssets !== current.dramaAssets || projectAssetSyncBarriers.has(context.projectId)
+        || getPendingTasksForProject(context.canvasId).some((task) => selected.has(task.nodeId))
+        || projectImportsApplying.has(context.projectId) || (context.modelGeneration === 1
+          && (nativeRuntime.get(get) !== runtime || runtime?.mediaGeneration !== mediaGeneration))) throw stale();
+    };
+
+    const unsubscribe = api.subscribe(() => { try { assertSaveCurrent(); } catch { controller.abort(stale()); } });
+    const projectCommitted = (queue?: ProjectSaveQueue) => {
+      unsubscribe();
+      const live = get();
+      if (!isProjectExpectedContextCurrent(context, live, { checkCanvasRevision: false })) return;
+      if (queue) {
+        const queued = [queue.pending, ...(queue.pendingBatches ?? [])];
+        for (const item of queued) {
+          if (item && !item.guard && Array.isArray(item.record.nodes)) {
+            item.record = { ...item.record, nodes: patchNodes(item.record.nodes as AppState['nodes']) };
+          }
+        }
+      }
+      const projected = patchNodes(live.nodes);
+      if (projected.some((node, index) => node !== live.nodes[index])) {
+        live.commitCharacterVisualHistory([...changes.values()]);
+        set({ nodes: projected });
+        get().incrementRevision();
+      }
+    };
+
+    try {
+      const saved = await trackProjectSave(context.canvasId, async () => {
+        assertSaveCurrent();
+        const projection = { signal: controller.signal, commit: projectCommitted };
+        return context.modelGeneration === 1 ? saveNativeCurrentProject(get, current, record, assertSaveCurrent, undefined, projection)
+          : enqueueProjectSave(record, assertSaveCurrent, projection);
+      });
+      if (saved !== context.canvasId) throw new Error(t('角色引用保存失败，请重新预览'));
+      return selected.size;
+    } finally {
+      unsubscribe();
+      completeCanvasDerivation(guard);
+    }
+  },
 
   commitSharedAssetSyncDownload: async (input) => {
     const originProject = get().projects.find((project) => project.id === input.originProjectId);

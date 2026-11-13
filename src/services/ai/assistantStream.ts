@@ -177,6 +177,8 @@ export interface StreamingCallOptions {
   modelId?: string;
   /** 冻结材料的无工具执行器设 false，避免参考文本中的 @ 再读取文件或发起视觉描述。 */
   resolveVisualReferences?: boolean;
+  /** 私人创作草稿请求不写入传输调试日志。 */
+  sensitive?: boolean;
 }
 
 export interface AssistantModelToolCall {
@@ -369,7 +371,9 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
             toolChoice: tools.length > 0 ? 'auto' : undefined,
           },
         });
-    const response = await corsSafeFetch(builtRequest.url, builtRequest.init);
+    const response = await (options.sensitive
+      ? corsSafeFetch(builtRequest.url, builtRequest.init, { sensitive: true })
+      : corsSafeFetch(builtRequest.url, builtRequest.init));
     const responseProtocol = modelConfig.usesChatApiProtocol
       ? modelConfig.chatApiProtocol
       : 'openai-compatible';

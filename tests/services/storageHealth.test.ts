@@ -2,11 +2,13 @@
  * storageHealth — 回归测试：storage health accounting and cleanup。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
 import type { CanvasProject } from '../../src/types';
 import type { CanvasDocument, ProjectRecord } from '../../src/types/project';
 import type { NativeProjectAggregate } from '../../src/services/indexedDb/nativeProjectRepository';
 import type { ProjectCatalogEntry } from '../../src/services/projectModelRouter';
 import type { NativeProjectViewItem } from '../../src/store/nativeProjectView';
+import type { StoredCharacterVisualRun } from '../../src/services/characterVisualHistory';
 
 const mocks = vi.hoisted(() => ({
   directories: new Map<string, string[]>(),
@@ -24,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   getHistoryEntriesPage: vi.fn(),
   getProjectConversations: vi.fn(),
   getConversationMessages: vi.fn(),
+  getAssetIndexById: vi.fn(),
   listProjectImportRecoveries: vi.fn(),
   openDB: vi.fn(),
   assertLegacyProjectWritesAllowed: vi.fn(),
@@ -56,6 +59,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 vi.mock('../../src/services/fs/core', () => ({
   isTauriEnv: () => true,
   joinPath: (...parts: string[]) => parts.join('/').replace(/\/+/g, '/'),
+  stripVerbatimPrefix: (path: string) => path,
   getProjectDataDir: async (id: string) => mocks.roots.get(id) ?? `/${id}`,
 }));
 vi.mock('../../src/services/fs/assetImageMetadata', () => ({
@@ -67,9 +71,10 @@ vi.mock('../../src/services/indexedDbService', () => ({
   getHistoryEntriesPage: mocks.getHistoryEntriesPage,
   getProjectConversations: mocks.getProjectConversations,
   getConversationMessages: mocks.getConversationMessages,
+  getAssetIndexById: mocks.getAssetIndexById,
 }));
 vi.mock('../../src/services/indexedDb/projectImportRepository', () => ({ listProjectImportRecoveries: mocks.listProjectImportRecoveries }));
-vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB }));
+vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB, STORE_METADATA: 'metadata' }));
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.assertLegacyProjectWritesAllowed }));
 
 import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth } from '../../src/services/fs/storageHealth';
@@ -84,7 +89,7 @@ function addFiles(root: string, entries: Record<string, number>): void {
 }
 
 describe('storage health accounting and cleanup', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     mocks.directories.clear();
     mocks.sizes.clear();
@@ -101,8 +106,15 @@ describe('storage health accounting and cleanup', () => {
     mocks.getHistoryEntriesPage.mockResolvedValue({ records: [], hasMore: false });
     mocks.getProjectConversations.mockResolvedValue([]);
     mocks.getConversationMessages.mockResolvedValue({ messages: [], total: 0 });
+    mocks.getAssetIndexById.mockReset().mockResolvedValue(null);
     mocks.listProjectImportRecoveries.mockResolvedValue([]);
-    mocks.openDB.mockResolvedValue({});
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = new IDBFactory().open('storage-health');
+      request.onupgradeneeded = () => request.result.createObjectStore('metadata', { keyPath: 'id' });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    mocks.openDB.mockResolvedValue(db);
     mocks.assertLegacyProjectWritesAllowed.mockReset().mockResolvedValue(undefined);
     mocks.readDir.mockImplementation(async (path: string) => {
       const entries = mocks.directories.get(path);
@@ -395,6 +407,33 @@ describe('storage health accounting and cleanup', () => {
     expect(report.duplicates.flatMap((group) => group.files).filter((file) => file.canDelete)).toEqual([]);
     mocks.listProjectImportRecoveries.mockRejectedValue(new Error('unavailable'));
     await expect(scanStorageHealth([project('a')], new Set())).rejects.toThrow('存储引用读取不完整');
+  });
+
+  it('保护旧项目角色生成历史引用的重命名候选图', async () => {
+    const operationId = '11111111-1111-4111-8111-111111111111';
+    const run: StoredCharacterVisualRun = {
+      id: `character-visual-run-v1:project:a:character:1-${operationId}`,
+      operationId, name: '角色', sent: true, native: false, draft: false, fingerprint: 'request',
+      target: { scope: 'project', ownerId: 'a', characterId: 'character' }, operation: 'appearance',
+      prompt: '人物形象', model: 'image', provider: 'general', createdAt: 1, status: 'completed', references: [],
+      candidates: [{ id: `${operationId}-1`, relativePath: `Library/character-visual-${operationId}-1.png`,
+        assetId: 'candidate', bytes: 10, digest: 'f'.repeat(64) }],
+    };
+    const db = await mocks.openDB() as IDBDatabase;
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction('metadata', 'readwrite');
+      transaction.objectStore('metadata').add(run);
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+    });
+    mocks.listProjectCatalog.mockResolvedValue([{ dataModel: 'legacy', project: project('a') }]);
+    mocks.getAssetIndexById.mockResolvedValue({ path: '/a/renamed.png' });
+    addFiles('/a', { 'renamed.png': 10, 'unused.png': 5 });
+
+    const report = await scanStorageHealth([project('a')], new Set());
+    expect(report.orphans.map((file) => file.path)).toEqual(['/a/unused.png']);
+    expect(await deleteOrphanFile('/a/renamed.png', async () => true)).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it('回收站容量区分引用和可清理文件，涵盖项目、历史、恢复点及实时状态', async () => {

@@ -83,6 +83,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "gtk",
  "image",
  "objc2",
  "objc2-app-kit",

@@ -5,6 +5,7 @@
 
 import type { ComfyRefmodSelection } from './comfyRefmod';
 import { normalizeCharacterRefmods } from '../utils/comfyRefmod';
+import { canonicalXiaohongshuReferenceUrl } from '../utils/xiaohongshuReferenceUrl';
 
 export type DramaAssetKind = 'character' | 'scene' | 'prop';
 /** 展示分类独立于持久化类型；武器复用道具的媒体与存储协议。 */
@@ -87,6 +88,8 @@ export interface CharacterReferenceImage {
   imageUrl?: string;
   /** 仅项目角色可关联来源节点；全局角色不得依赖该字段。 */
   sourceNodeId?: string;
+  /** 外部参考图的公开笔记地址。 */
+  sourceUrl?: string;
   prompt: string;
   createdAt: number;
   updatedAt: number;
@@ -379,6 +382,7 @@ function normalizeReferenceImage(
   const relativePath = typeof reference.relativePath === 'string' ? reference.relativePath : undefined;
   const filePath = typeof reference.filePath === 'string' ? reference.filePath : undefined;
   const sourceNodeId = typeof reference.sourceNodeId === 'string' ? reference.sourceNodeId : undefined;
+  const sourceUrl = canonicalXiaohongshuReferenceUrl(reference.sourceUrl);
   if (!imageUrl && !assetId && !relativePath && !filePath && !sourceNodeId) return null;
   const rawKind = typeof reference.kind === 'string' ? reference.kind : '';
   const kind = CHARACTER_REFERENCE_KINDS.has(rawKind as CharacterReferenceKind)
@@ -394,6 +398,7 @@ function normalizeReferenceImage(
     filePath,
     imageUrl,
     sourceNodeId,
+    ...(sourceUrl ? { sourceUrl } : {}),
     prompt: typeof reference.prompt === 'string' ? reference.prompt : '',
     createdAt: finiteNumber(reference.createdAt, fallbackTime),
     updatedAt: finiteNumber(reference.updatedAt, fallbackTime),
