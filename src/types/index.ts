@@ -848,6 +848,8 @@ export type AssetSortOrder = 'asc' | 'desc';
 
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;
+  /** 无连接专用上传接口时使用的公共图床；未设置时为 Uguu。仅保存凭据引用。 */
+  imageHosting?: import('./imageHosting').GlobalImageHostingConfig;
   /** 当前用于 Agent 联网搜索的厂商；旧配置未设置时优先沿用 Tavily。 */
   webSearchProviderId?: WebSearchProviderId;
   theme: AppearanceMode;

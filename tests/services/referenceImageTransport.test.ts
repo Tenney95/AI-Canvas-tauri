@@ -3,8 +3,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ transport: vi.fn(), invoke: vi.fn(), native: false, optimizerNative: true }));
+const mocks = vi.hoisted(() => ({ transport: vi.fn(), invoke: vi.fn(), readSecret: vi.fn(), native: false, optimizerNative: true }));
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.transport }));
+vi.mock('../../src/services/providerSecretService', async (original) => ({
+  ...await original<object>(), readAppSecret: mocks.readSecret,
+}));
 vi.mock('@tauri-apps/api/core', async (original) => ({
   ...await original<object>(), invoke: mocks.invoke, isTauri: () => mocks.optimizerNative,
 }));
@@ -22,8 +25,9 @@ import { uploadRunningHubMedia } from '../../src/services/ai/providers/runninghu
 import { resolveMediaReferenceUrl, uploadToRemote } from '../../src/services/uploadService';
 import { previewModelProtocolRequest } from '../../src/services/ai/modelProtocol';
 import { useAppStore } from '../../src/store/useAppStore';
-import type { ImageHostingConfig } from '../../src/types/imageHosting';
-import { IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
+import type { ImageHostingConfig, PublicImageHostingProvider } from '../../src/types/imageHosting';
+import { IMAGE_HOSTING_TEMPLATES, PUBLIC_IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
+import { LIBAPI_BASE_URL, TOAPIS_BASE_URL } from '../../src/constants/api';
 
 // 请求链模拟原生无损返回，用 PNG 的标记追踪引用；真实像素保真由 Rust 测试验证。
 function png(marker: number, megabytes = 5): Blob {
@@ -72,6 +76,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('共享参考图压缩的实际请求边界', () => {
   it.each(['custom', 'toapis'])('%s 格式的自定义连接上传参考图，生成请求收到该图床 URL', async (format) => {
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'catbox', configs: {} } } }));
     const imageHosting: ImageHostingConfig = format === 'toapis'
       ? structuredClone(IMAGE_HOSTING_TEMPLATES.find((item) => item.id === 'toapis')!.config)
       : { enabled: true, uploadUrl: 'https://own-host.example/upload', fileField: 'image', responseUrlPath: 'data.url', auth: 'none' };
@@ -121,7 +126,124 @@ describe('共享参考图压缩的实际请求边界', () => {
     expect(JSON.stringify([...storage.values()])).not.toContain('stale.png');
   });
 
+  it.each(['picui', 'catbox'] as const)('普通中转图片使用所选全局 %s，停用的连接图床不覆盖全局设置', async (hostingProvider) => {
+    const template = PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === hostingProvider)!.config;
+    const provider = `global-reference-${hostingProvider}`;
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: hostingProvider, configs: {} },
+      providers: { [provider]: { name: '普通中转', catalogId: 'custom-openai', apiKey: 'relay-model-key',
+        imageHosting: { ...template, enabled: false } } },
+    } }));
+    const remote = `https://cdn.example/global-${hostingProvider}.png`;
+    mocks.transport.mockImplementation(async () => hostingProvider === 'catbox' ? new Response(remote)
+      : json({ status: true, data: { links: { url: remote } } }));
+    expect(await uploadToRemote(await asDataUrl(png(31, 0)), provider)).toBe(remote);
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    const [endpoint, init] = mocks.transport.mock.calls[0] as [string, RequestInit];
+    expect(endpoint).toBe(template.uploadUrl);
+    expect(new Headers(init.headers).get('Authorization')).toBeNull();
+    await assertPreparedPng((init.body as FormData).get(template.fileField) as File, 31);
+    expect(localFetch).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+  it.each(['toapis', 'libapi'] as const)('%s 内置上传优先，不读取尚未填写密钥的全局图床', async (catalogId) => {
+    const provider = `${catalogId}-global-priority`;
+    const baseUrl = catalogId === 'toapis' ? TOAPIS_BASE_URL : LIBAPI_BASE_URL;
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: 'imagekit', configs: {} },
+      providers: { [provider]: { name: catalogId, catalogId, apiKey: 'connection-only-key', baseUrl } },
+    } }));
+    const remote = `https://cdn.example/${catalogId}-dedicated.png`;
+    mocks.transport.mockImplementation(async () => json(catalogId === 'toapis'
+      ? { success: true, data: { url: remote } } : { url: remote }));
+    expect(await uploadToRemote(await asDataUrl(png(32, 0)), provider)).toBe(remote);
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    const [endpoint, init] = mocks.transport.mock.calls[0] as [string, RequestInit];
+    expect(endpoint).toBe(`${baseUrl}/${catalogId === 'toapis' ? 'uploads/images' : 'files'}`);
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer connection-only-key');
+    expect((init.body as FormData).get('purpose')).toBe(catalogId === 'toapis' ? 'generation' : null);
+    expect(localFetch).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+  it('全局图床上传失败时直接报错，不重试或切换到 Uguu', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'picui', configs: {} } } }));
+    mocks.transport.mockResolvedValueOnce(new Response('denied', { status: 403 }));
+    await expect(uploadToRemote(await asDataUrl(png(33, 0)), 'global-failure-relay')).rejects.toThrow('HTTP 403');
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(mocks.transport.mock.calls[0][0]).toBe('https://picui.cn/api/v1/upload');
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it('全局服务、密钥引用及表单参数隔离缓存，未选服务的配置不影响缓存', async () => {
+    const provider = 'global-cache-isolation-relay';
+    const source = await asDataUrl(png(34, 0));
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
+    const select = (hostingProvider: PublicImageHostingProvider, config?: ImageHostingConfig) => {
+      useAppStore.setState((state) => ({ config: { ...state.config,
+        imageHosting: { provider: hostingProvider, configs: config ? { [hostingProvider]: config } : {} },
+      } }));
+    };
+    let uploads = 0;
+    mocks.transport.mockImplementation(async (endpoint) => {
+      const remote = `https://cdn.example/global-cache-${++uploads}.png`;
+      return endpoint === 'https://catbox.moe/user/api.php' ? new Response(remote)
+        : json({ status: true, success: true, data: { url: remote, links: { url: remote } } });
+    });
+    select('picui');
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-1.png');
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-1.png');
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'picui', configs: {
+      catbox: { ...PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === 'catbox')!.config, formFields: [{ name: 'reqtype', value: 'fileupload' }] },
+    } } } }));
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-1.png');
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    select('catbox');
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-2.png');
+    const refOne = 'secret:image-host/01234567-0123-4123-8123-0123456789ab';
+    const refTwo = 'secret:image-host/11234567-0123-4123-8123-0123456789ab';
+    mocks.readSecret.mockImplementation(async (key) => key === refOne.slice('secret:'.length) ? 'hosting-key-one' : 'hosting-key-two');
+    const imgbb = { ...PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === 'imgbb')!.config, credentialRef: refOne };
+    select('imgbb', imgbb);
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-3.png');
+    select('imgbb', { ...imgbb, credentialRef: refTwo });
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-4.png');
+    select('imgbb', { ...imgbb, credentialRef: refTwo, formFields: [{ name: 'name', value: 'changed-name' }] });
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-5.png');
+    expect(await uploadToRemote(source, provider)).toBe('https://cdn.example/global-cache-5.png');
+    expect(mocks.transport).toHaveBeenCalledTimes(5);
+    expect((mocks.transport.mock.calls[2][1].body as FormData).get('key')).toBe('hosting-key-one');
+    expect((mocks.transport.mock.calls[3][1].body as FormData).get('key')).toBe('hosting-key-two');
+    expect((mocks.transport.mock.calls[4][1].body as FormData).get('name')).toBe('changed-name');
+    expect(JSON.stringify([...storage.values()])).not.toContain('hosting-key-');
+    expect(JSON.stringify([...storage.values()])).not.toContain('secret:image-host/');
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it('上传期间切换全局图床时拒绝迟到结果，不缓存或自动重传到新服务', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) });
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'picui', configs: {} } } }));
+    const source = await asDataUrl(png(35, 0));
+    mocks.transport.mockImplementationOnce(async () => {
+      useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'catbox', configs: {} } } }));
+      return json({ status: true, data: { links: { url: 'https://cdn.example/global-stale.png' } } });
+    });
+    await expect(uploadToRemote(source, 'global-stale-relay')).rejects.toThrow('连接配置已变化');
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(JSON.stringify([...storage.values()])).not.toContain('global-stale.png');
+    mocks.transport.mockImplementationOnce(async () => new Response('https://cdn.example/global-fresh.png'));
+    expect(await uploadToRemote(source, 'global-stale-relay')).toBe('https://cdn.example/global-fresh.png');
+    expect(mocks.transport.mock.calls.map(([endpoint]) => endpoint)).toEqual([
+      'https://picui.cn/api/v1/upload', 'https://catbox.moe/user/api.php',
+    ]);
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
   it.each(['gpt-image-2', 'vendor-image'])('标准 multipart 模型 %s 按序发送原格式 4K PNG 及匹配的文件名', async (modelName) => {
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'imagekit', configs: {} } } }));
     localFetch.mockImplementation(async (url) => new Response(png(Number(String(url).match(/(\d)\.png$/)![1]))));
     mocks.transport.mockResolvedValue(json({ data: [{ url: 'https://cdn.example/result.png' }] }));
     await generateImageStandard({ apiKey: 'test-key', baseUrl: 'https://relay.example/v1', modelName,
@@ -145,6 +267,7 @@ describe('共享参考图压缩的实际请求边界', () => {
       }, response: { type: 'json' as const, result: { urlPath: 'url' } },
     };
     useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: { provider: 'imagekit', configs: {} },
       providers: { grsai: { name: 'GRSAI', apiKey: 'test-key', baseUrl: 'https://grsai.example/v1' },
         custom: { name: '自定义', apiKey: 'test-key', catalogId: 'custom-openai', baseUrl: 'https://custom.example/v1',
           imageHosting: { enabled: true, uploadUrl: 'https://unused-host.example/upload', fileField: 'file', responseUrlPath: 'data.url', auth: 'none' } } },
@@ -180,6 +303,7 @@ describe('共享参考图压缩的实际请求边界', () => {
 
   it.each(['apimart', 'custom-relay', 'cccapi', 'google', 'xai'])('%s 公网 URL 上传复用压缩并沿用缓存', async (provider) => {
     useAppStore.setState((state) => ({ config: { ...state.config,
+      imageHosting: undefined,
       providers: { apimart: { name: 'APIMart', apiKey: 'test-key', baseUrl: 'https://upload.example/v1' } },
     } }));
     localFetch.mockResolvedValue(json({ success: true, files: [{ url: 'https://cdn.example/ready.png' }] }));
@@ -301,6 +425,7 @@ describe('共享参考图压缩的实际请求边界', () => {
   });
 
   it('工作流内联媒体引用经过压缩，公网 URL 直传不额外下载转存', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'imagekit', configs: {} } } }));
     const result = await resolveMediaReferenceUrl(await asDataUrl(png(4)), { mode: 'dataUrl', kind: 'image' });
     expect(result === await asDataUrl(png(4, 0))).toBe(true);
     expect(await resolveImageUrlArray(['https://cdn.example/original.png'], 'other-relay')).toEqual(['https://cdn.example/original.png']);

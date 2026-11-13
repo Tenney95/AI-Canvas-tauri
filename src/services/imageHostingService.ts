@@ -14,6 +14,7 @@ function uploadEndpoint(config: ImageHostingConfig, baseUrl?: string): URL {
   const raw = config.uploadUrl.trim();
   const url = raw.startsWith('{{baseUrl}}/')
     ? `${(baseUrl ?? '').trim().replace(/\/+$/, '')}${raw.slice('{{baseUrl}}'.length)}` : raw;
+  if (url.includes('{{') || url.includes('}}')) throw new Error('请先填写图床上传地址中的配置项');
   let endpoint: URL;
   try { endpoint = new URL(url); } catch { throw new Error('请填写有效的图床上传地址；使用 {{baseUrl}} 时需先填写连接接口地址'); }
   if (url.length > 2048 || !['http:', 'https:'].includes(endpoint.protocol) || !isRemoteMediaUrl(endpoint.href)
@@ -36,9 +37,12 @@ export function validateImageHosting(config: ImageHostingConfig, hasNewKey = fal
   if (!config.enabled) return;
   const endpoint = uploadEndpoint(config, connection?.baseUrl);
   if (!FIELD_NAME.test(config.fileField.trim())) throw new Error('请填写有效的图床文件字段名');
-  validateResponsePath(config.responseUrlPath);
-  if (config.successPath?.trim()) validateResponsePath(config.successPath);
-  if (!['none', 'bearer', 'header', 'form'].includes(config.auth)) throw new Error('图床鉴权方式无效');
+  if (config.responseFormat !== undefined && !['json', 'text'].includes(config.responseFormat)) throw new Error('图床响应格式无效');
+  if (config.responseFormat !== 'text') {
+    validateResponsePath(config.responseUrlPath);
+    if (config.successPath?.trim()) validateResponsePath(config.successPath);
+  } else if (config.successPath?.trim()) throw new Error('纯文本图床不能配置 JSON 成功标记');
+  if (!['none', 'bearer', 'header', 'form', 'basic'].includes(config.auth)) throw new Error('图床鉴权方式无效');
   if (config.credentialSource !== undefined && !['separate', 'connection'].includes(config.credentialSource)) throw new Error('图床密钥来源无效');
   if (config.auth === 'header') {
     const name = config.authField?.trim() ?? '';
@@ -58,6 +62,13 @@ export function validateImageHosting(config: ImageHostingConfig, hasNewKey = fal
     } else if (!hasNewKey && !CREDENTIAL_REF.test(config.credentialRef ?? '')) throw new Error('请填写图床密钥');
   }
   const names = new Set([config.fileField.trim(), ...(config.auth === 'form' ? [config.authField!.trim()] : [])]);
+  if (config.fileNameField !== undefined) {
+    const name = config.fileNameField.trim();
+    if (!FIELD_NAME.test(name) || names.has(name) || /(?:authorization|api[-_]?key|token|secret|password|credential|^key$)/i.test(name)) {
+      throw new Error('图床文件名字段无效或与其他字段冲突');
+    }
+    names.add(name);
+  }
   if ((config.formFields?.length ?? 0) > 20) throw new Error('图床附加表单参数不能超过 20 项');
   for (const field of config.formFields ?? []) {
     const name = field.name.trim();
@@ -103,9 +114,11 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
   const extension = filename.split('.').pop()?.toLowerCase();
   const filenameExt = extension === 'jpeg' ? 'jpg' : extension;
   if (config.allowedExtensions && (!filenameExt || !config.allowedExtensions.includes(filenameExt))) throw new Error('参考图格式不符合当前图床限制');
-  const headers = new Headers({ Accept: 'application/json' });
+  const headers = new Headers({ Accept: config.responseFormat === 'text' ? 'text/plain' : 'application/json' });
   const form = new FormData();
-  form.append(config.fileField.trim(), blob, extension === 'jpeg' ? filename.replace(/\.jpeg$/i, '.jpg') : filename);
+  const uploadFilename = extension === 'jpeg' ? filename.replace(/\.jpeg$/i, '.jpg') : filename;
+  form.append(config.fileField.trim(), blob, uploadFilename);
+  if (config.fileNameField) form.append(config.fileNameField.trim(), uploadFilename);
   for (const field of config.formFields ?? []) form.append(field.name.trim(), field.value);
   if (config.auth !== 'none') {
     let key: string | null;
@@ -115,7 +128,11 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
     if (!key) throw new Error('图床密钥不存在，请在连接设置中重新填写');
     if (config.auth === 'form') form.append(config.authField!.trim(), key);
     else {
-      try { headers.set(config.auth === 'bearer' ? 'Authorization' : config.authField!.trim(), config.auth === 'bearer' ? `Bearer ${key}` : key); }
+      try {
+        if (config.auth === 'basic' && /[:\r\n]/.test(key)) throw new Error('无效 Basic 用户名');
+        const value = config.auth === 'bearer' ? `Bearer ${key}` : config.auth === 'basic' ? `Basic ${btoa(`${key}:`)}` : key;
+        headers.set(config.auth === 'header' ? config.authField!.trim() : 'Authorization', value);
+      }
       catch { throw new Error('图床密钥不能用作请求头，请检查格式'); }
     }
   }
@@ -133,7 +150,7 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
     await response.body?.cancel().catch(() => undefined);
     throw new Error(`自定义图床上传失败（HTTP ${response.status}），请检查密钥权限与文件限制`);
   }
-  // 图床只应返回一个小 JSON，不能把失控的响应整份读进内存。
+  // 图床只应返回一个小响应，不能把失控的响应整份读进内存。
   const reader = response.body?.getReader();
   if (!reader) throw new Error('自定义图床返回了空响应');
   const cancel = () => { void reader.cancel().catch(() => undefined); };
@@ -152,13 +169,20 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
       text += decoder.decode(value, { stream: true });
     }
     text += decoder.decode();
-    const payload: unknown = JSON.parse(text);
-    if (payload && typeof payload === 'object' && 'success' in payload && payload.success === false) throw new Error('图床拒绝上传');
-    if (config.successPath?.trim()) {
-      const success = readModelProtocolFirstScalar(payload, config.successPath.trim());
-      if (success === undefined || String(success) !== (config.successValue ?? 'true')) throw new Error('图床成功标记不匹配');
+    let url: unknown;
+    if (config.responseFormat === 'text') {
+      url = text.trim();
+      if (typeof url !== 'string' || !/^\S+$/.test(url)) throw new Error('纯文本响应不是单个链接');
     }
-    const url = readModelProtocolFirstScalar(payload, config.responseUrlPath.trim());
+    else {
+      const payload: unknown = JSON.parse(text);
+      if (payload && typeof payload === 'object' && 'success' in payload && payload.success === false) throw new Error('图床拒绝上传');
+      if (config.successPath?.trim()) {
+        const success = readModelProtocolFirstScalar(payload, config.successPath.trim());
+        if (success === undefined || String(success) !== (config.successValue ?? 'true')) throw new Error('图床成功标记不匹配');
+      }
+      url = readModelProtocolFirstScalar(payload, config.responseUrlPath.trim());
+    }
     if (typeof url !== 'string' || !isRemoteMediaUrl(url)) throw new Error('缺少链接');
     const parsed = new URL(url);
     if (parsed.username || parsed.password) throw new Error('链接含账号');

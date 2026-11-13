@@ -41,6 +41,7 @@ import DreaminaLoginModal from './DreaminaLoginModal';
 import ModalOverlay from '../shared/ModalOverlay';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
 import VolcengineBillingSettings from './VolcengineBillingSettings';
+import GlobalImageHostingSettings from './GlobalImageHostingSettings';
 import { queryBillingRuns } from '../../services/billing/volcengineBillingService';
 import { saveAutodlWorkflowTemplate, saveWorkflowApiDrafts } from '../../services/workflowApi/workflowApiConfig';
 import { invoke } from '@tauri-apps/api/core';
@@ -770,6 +771,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="settings-pane-body provider-settings-body">
+        <GlobalImageHostingSettings />
         {importDiagnostics.length > 0 && (
           <div role="alert" className="ui-alert ui-alert--danger flex-col items-stretch gap-2">
             <div className="flex items-center justify-between gap-2">
