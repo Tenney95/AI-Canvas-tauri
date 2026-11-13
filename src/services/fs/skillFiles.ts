@@ -59,6 +59,7 @@ async function invokeSkillCommand<T>(command: string, args: Record<string, unkno
   try {
     return await invoke<T>(command, args);
   } catch (error) {
+    // eslint-disable-next-line preserve-caught-error -- 未知 IPC 异常可能包含本地路径，不将原始 cause 带过资料读取边界。
     throw new Error(typeof error === 'string' ? error : fallback);
   }
 }

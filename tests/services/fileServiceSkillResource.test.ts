@@ -118,6 +118,17 @@ describe('readSkillResourceFile', () => {
     expect(readFileMock).not.toHaveBeenCalled();
   });
 
+  it('未知 IPC 异常只返回固定提示，不传播绝对路径和嵌套 cause', async () => {
+    invokeMock.mockRejectedValue(new Error('permission denied: D:/private/secret.md', {
+      cause: new Error('native path: D:/private/secret.md'),
+    }));
+    const error = await readSkillResourceFile('D:/user-skills/audit', 'notes.md', 'saved-source')
+      .catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ message: 'Skill 资料读取失败' });
+    expect(error).not.toHaveProperty('cause');
+    expect(readFileMock).not.toHaveBeenCalled();
+  });
+
   it.each(['Skill 来源不存在或已失效', 'Skill 文件必须是 UTF-8 文本'])(
     '原生拒绝附属资料读取时保留脱敏原因且不降级读取：%s', async (message) => {
       invokeMock.mockRejectedValue(message);
