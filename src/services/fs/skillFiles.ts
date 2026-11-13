@@ -1,18 +1,15 @@
 /**
  * fs/skillFiles — Skill 资料文件的上传、读取与落盘。
- * 从文件、压缩包或文件夹导入 Skill 文本资料（md/txt/json）到应用数据目录，
- * 校验相对路径、生成唯一目标路径并支持上传确认。
+ * 文件及压缩包保存到安装目录 skills；文件夹直接登记原位置。
+ * 新来源的持久授权、唯一目标保存及资料读取由原生限定，旧记录继续兼容。
  */
-import { exists, mkdir, readDir, readFile, remove, writeFile } from '@tauri-apps/plugin-fs';
+import { exists, readDir, readFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { appDataDir } from '@tauri-apps/api/path';
 import {
   browserOpenFile,
   isTauriEnv,
   joinPath,
-  resolveUniqueDestPath,
-  sanitizeFileName,
   sanitizeFolderName,
 } from './core';
 
@@ -21,7 +18,13 @@ export interface UploadedSkillFile {
   content: string;
   sourceType: 'file' | 'folder';
   storagePath?: string;
+  nativeSourceId?: string;
   entryFileName?: string;
+}
+
+interface NativeSkillSource {
+  sourceId: string;
+  storagePath: string;
 }
 
 export type SkillUploadSource = 'file' | 'folder';
@@ -51,10 +54,13 @@ function isSkillTextFile(fileName: string): boolean {
 }
 
 
-async function ensureSkillRootDir(): Promise<string> {
-  const dir = joinPath(await appDataDir(), 'skill');
-  if (!(await exists(dir))) await mkdir(dir, { recursive: true });
-  return dir;
+/** 专用原生命令只返回脱敏错误；不透传插件原始路径异常。 */
+async function invokeSkillCommand<T>(command: string, args: Record<string, unknown>, fallback: string): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw new Error(typeof error === 'string' ? error : fallback);
+  }
 }
 
 async function collectSkillFiles(dirPath: string, baseDir = dirPath): Promise<SkillFileEntry[]> {
@@ -101,7 +107,11 @@ async function uploadSkillFolder(): Promise<UploadedSkillFile | null> {
   if (!selected || Array.isArray(selected)) return null;
 
   const folderName = selected.split(/[\\/]/).filter(Boolean).pop() || 'skill';
-  const files = await collectSkillFiles(selected);
+  const source = await invokeSkillCommand<NativeSkillSource>('register_skill_folder', { path: selected }, 'Skill 文件夹登记失败');
+  const paths = await invokeSkillCommand<string[]>('list_skill_source_files', { sourceId: source.sourceId, limit: 4096 }, 'Skill 文件夹读取失败');
+  const files = paths.map((path) => ({ path: '', relativePath: assertSafeSkillRelativePath(path), name: path.split('/').pop() || '' }))
+    .sort((a, b) => a.relativePath.split('/').length - b.relativePath.split('/').length
+      || a.relativePath.localeCompare(b.relativePath, undefined, { numeric: true }));
   if (files.length === 0) {
     throw new Error('Skill 文件夹中没有可用的 .md / .txt / .json 文件');
   }
@@ -109,28 +119,14 @@ async function uploadSkillFolder(): Promise<UploadedSkillFile | null> {
   const entry = pickSkillEntry(files);
   if (!entry) throw new Error('Skill 文件夹中没有可调用入口文件');
 
-  const rootDir = await ensureSkillRootDir();
-  const destDir = await resolveUniqueDestPath(rootDir, sanitizeFolderName(folderName));
-  await mkdir(destDir, { recursive: true });
-
-  let entryContent = '';
-  for (const file of files) {
-    const bytes = await readFile(file.path);
-    const text = decodeUtf8Text(bytes);
-    if (file.relativePath === entry.relativePath) entryContent = text;
-
-    const relativeParts = file.relativePath.split(/[\\/]/).map((part) => sanitizeFileName(part));
-    const destPath = joinPath(destDir, ...relativeParts);
-    const parentDir = destPath.slice(0, destPath.lastIndexOf('/'));
-    if (parentDir && !(await exists(parentDir))) await mkdir(parentDir, { recursive: true });
-    await writeFile(destPath, bytes);
-  }
+  const entryContent = await readSkillResourceFile(source.storagePath, entry.relativePath, source.sourceId);
 
   return {
     fileName: folderName,
     content: entryContent,
     sourceType: 'folder',
-    storagePath: destDir,
+    storagePath: source.storagePath,
+    nativeSourceId: source.sourceId,
     entryFileName: entry.relativePath,
   };
 }
@@ -151,26 +147,26 @@ async function uploadSingleSkillFile(): Promise<UploadedSkillFile | null> {
 
   const bytes = await readFile(filePath);
   const content = decodeUtf8Text(bytes);
-  const rootDir = await ensureSkillRootDir();
-  const destPath = await resolveUniqueDestPath(rootDir, fileName);
-  await writeFile(destPath, bytes);
+  // 单文件沿用原 UTF-8 字节的 BOM，不因更换落盘位置改写文件内容。
+  const storedContent = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  const source = await invokeSkillCommand<NativeSkillSource>('save_skill_files', {
+    name: fileName, files: [{ relativePath: fileName, content: storedContent }], directory: false,
+  }, 'Skill 文件保存失败，请检查安装目录的 skills 文件夹写入权限');
 
   return {
     fileName,
     content,
     sourceType: 'file',
-    storagePath: destPath,
+    storagePath: source.storagePath,
+    nativeSourceId: source.sourceId,
     entryFileName: fileName,
   };
 }
 
 async function uploadSkillArchive(filePath: string, fileName: string): Promise<UploadedSkillFile> {
-  const texts = await invoke<Array<{ relativePath: string; content: string }>>('read_skill_archive', {
+  const texts = await invokeSkillCommand<Array<{ relativePath: string; content: string }>>('read_skill_archive', {
     archivePath: filePath,
-  }).catch((error: unknown) => {
-    // 此专用原生命令只返回脱敏错误，不透传 fs 插件的原始路径错误。
-    throw new Error(typeof error === 'string' ? error : 'Skill 压缩包读取失败');
-  });
+  }, 'Skill 压缩包读取失败');
   const files = texts.map((file) => ({
     ...file,
     relativePath: assertSafeSkillRelativePath(file.relativePath),
@@ -199,25 +195,15 @@ async function uploadSkillArchive(filePath: string, fileName: string): Promise<U
   }
 
   const folderName = fileName.replace(SKILL_ARCHIVE_PATTERN, '') || 'skill';
-  const rootDir = await ensureSkillRootDir();
-  const destDir = await resolveUniqueDestPath(rootDir, sanitizeFolderName(folderName));
-  await mkdir(destDir);
-  try {
-    for (const file of resources) {
-      const destPath = joinPath(destDir, file.relativePath);
-      const parentDir = destPath.slice(0, destPath.lastIndexOf('/'));
-      if (!(await exists(parentDir))) await mkdir(parentDir, { recursive: true });
-      await writeFile(destPath, new TextEncoder().encode(file.content));
-    }
-  } catch {
-    await remove(destDir, { recursive: true }).catch(() => undefined);
-    throw new Error('Skill 压缩包保存失败，请检查存储空间和写入权限后重试');
-  }
+  const source = await invokeSkillCommand<NativeSkillSource>('save_skill_files', {
+    name: sanitizeFolderName(folderName), files: resources, directory: true,
+  }, 'Skill 压缩包保存失败，请检查安装目录的 skills 文件夹写入权限');
   return {
     fileName: folderName,
     content: entry.content,
     sourceType: 'folder',
-    storagePath: destDir,
+    storagePath: source.storagePath,
+    nativeSourceId: source.sourceId,
     entryFileName: entry.relativePath.slice(prefix.length),
   };
 }
@@ -274,14 +260,18 @@ export function assertSafeSkillRelativePath(relativePath: string): string {
 export async function listSkillResourceFiles(
   storagePath: string | undefined,
   limit: number,
+  nativeSourceId?: string,
 ): Promise<string[]> {
   if (!isTauriEnv() || !storagePath || limit <= 0) return [];
   try {
+    if (nativeSourceId) {
+      return await invokeSkillCommand<string[]>('list_skill_source_files', { sourceId: nativeSourceId, limit }, 'Skill 资料目录读取失败');
+    }
     if (!(await exists(storagePath))) return [];
     const files = await collectSkillFiles(storagePath);
     return files.slice(0, limit).map((file) => file.relativePath);
-  } catch (error) {
-    console.warn('[Skill 资料] 列出附属文件失败:', error);
+  } catch {
+    console.warn('[Skill 资料] 列出附属文件失败');
     return [];
   }
 }
@@ -290,9 +280,13 @@ export async function listSkillResourceFiles(
 export async function readSkillResourceFile(
   storagePath: string,
   relativePath: string,
+  nativeSourceId?: string,
 ): Promise<string> {
   const safePath = assertSafeSkillRelativePath(relativePath);
   if (!isTauriEnv()) throw new Error('当前环境不支持读取 Skill 附属资料');
+  if (nativeSourceId) {
+    return invokeSkillCommand<string>('read_skill_source_file', { sourceId: nativeSourceId, relativePath: safePath }, 'Skill 资料读取失败');
+  }
 
   const root = storagePath.replace(/\\/g, '/').replace(/\/+$/, '');
   if (!root) throw new Error(SKILL_RESOURCE_PATH_ERROR);

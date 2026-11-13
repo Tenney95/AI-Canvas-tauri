@@ -77,6 +77,60 @@ pub(crate) fn is_theme_asset_name(name: &str) -> bool {
         && matches!(extension, "png" | "jpg" | "webp" | "svg")
 }
 
+/// Skill 托管目录固定在可执行文件旁，不接受前端提供根目录，也不扩大公共 scope。
+pub(crate) fn authorize_skill_storage_root<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    create: bool,
+) -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|_| "无法定位应用安装目录")?;
+    let install = canonicalize_simplified(executable.parent().ok_or("无法定位应用安装目录")?)
+        .map_err(|_| "无法解析应用安装目录")?;
+    ensure_plain_skill_directory_chain(&install)?;
+    let directory = install.join("skills");
+    if overlaps_private_app_path(app, &directory) {
+        return Err("Skill 托管目录与应用私有区域重叠".into());
+    }
+    if create {
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(_) => return Err("安装目录的 skills 文件夹不可写，请检查安装目录权限".into()),
+        }
+    }
+    ensure_plain_skill_directory_chain(&directory)?;
+    let resolved = canonicalize_simplified(&directory).map_err(|_| "Skill 托管目录不可访问")?;
+    if resolved != directory || overlaps_private_app_path(app, &resolved) {
+        return Err("Skill 托管目录超出安装目录或与私有区域重叠".into());
+    }
+    Ok(resolved)
+}
+
+/// 持久 Skill 来源逐级拒绝软链及 Windows junction，仅兼容 macOS 固定的系统目录别名。
+pub(crate) fn ensure_plain_skill_directory_chain(path: &Path) -> Result<(), String> {
+    for ancestor in path.ancestors() {
+        let metadata = std::fs::symlink_metadata(ancestor).map_err(|_| "Skill 目录不存在或不可访问")?;
+        if (!metadata.is_dir() || is_link_or_reparse(&metadata)) && !is_macos_system_skill_alias(ancestor) {
+            return Err("Skill 目录不能包含符号链接或目录联接".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_system_skill_alias(path: &Path) -> bool {
+    let expected = match path.to_str() {
+        Some("/var") => Path::new("/private/var"),
+        Some("/tmp") => Path::new("/private/tmp"),
+        Some("/etc") => Path::new("/private/etc"),
+        _ => return false,
+    };
+    canonicalize_simplified(path).is_ok_and(|resolved| resolved == expected)
+        && std::fs::metadata(expected).is_ok_and(|metadata| metadata.is_dir())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_macos_system_skill_alias(_path: &Path) -> bool { false }
+
 /// 校验命令来自自有本地窗口，而不是远程页面或第三方运行时窗口。
 pub fn ensure_trusted_caller<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
     let label = webview.label();
@@ -270,7 +324,7 @@ fn is_authorized<R: Runtime>(
 }
 
 #[cfg(windows)]
-fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
@@ -279,7 +333,7 @@ fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
@@ -819,5 +873,18 @@ mod tests {
 
         let nested_missing = dir.join("ai-canvas-missing-dir").join("file.bin");
         assert!(resolve_path(&nested_missing.to_string_lossy(), PathAccess::Write).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn skill_directory_checks_accept_only_verified_fixed_macos_system_aliases() {
+        for (alias, expected) in [("/var", "/private/var"), ("/tmp", "/private/tmp"), ("/etc", "/private/etc")] {
+            assert_eq!(canonicalize_simplified(Path::new(alias)).unwrap(), Path::new(expected));
+            assert!(is_macos_system_skill_alias(Path::new(alias)));
+            assert!(ensure_plain_skill_directory_chain(Path::new(alias)).is_ok());
+        }
+        for path in ["/var/tmp", "/tmp/user-skill", "/etc/skill", "/Users/alias"] {
+            assert!(!is_macos_system_skill_alias(Path::new(path)));
+        }
     }
 }

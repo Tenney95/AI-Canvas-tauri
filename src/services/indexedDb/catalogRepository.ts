@@ -80,6 +80,7 @@ export interface SkillRecord {
   content: string;
   sourceType: string;
   storagePath?: string;
+  nativeSourceId?: string;
   entryFileName?: string;
   manifest?: SkillManifest;
   createdAt: number;

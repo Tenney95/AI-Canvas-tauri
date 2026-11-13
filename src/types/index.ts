@@ -1209,6 +1209,8 @@ export interface UserSkill {
   content: string;
   sourceType: 'file' | 'folder';
   storagePath?: string;
+  /** 原生持久登记的只读来源；前端路径不作为该来源的授权依据。 */
+  nativeSourceId?: string;
   entryFileName?: string;
   /** 从入口文件 frontmatter 解析的非执行型声明。 */
   manifest?: SkillManifest;

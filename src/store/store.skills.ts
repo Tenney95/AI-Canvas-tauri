@@ -66,13 +66,18 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
       content: uploaded.content,
       sourceType: uploaded.sourceType,
       storagePath: uploaded.storagePath,
+      nativeSourceId: uploaded.nativeSourceId,
       entryFileName: uploaded.entryFileName,
       manifest: parsed.manifest,
       createdAt: Date.now(),
     };
 
+    try {
+      await fileService.saveSkill({ ...skill });
+    } catch {
+      throw new Error('Skill 文件已保留，但目录记录保存失败，请重试导入');
+    }
     set((state) => ({ userSkills: [...state.userSkills, skill] }));
-    await fileService.saveSkill({ ...skill }).catch((e) => console.warn('[保存 Skill] 持久化失败:', e));
     get().showToast(t('已上传 Skill「{name}」', { name: skill.name }));
     return skill;
   },
@@ -146,6 +151,7 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
           content: r.content,
           sourceType: r.sourceType === 'folder' ? 'folder' : 'file',
           storagePath: r.storagePath,
+          nativeSourceId: r.nativeSourceId,
           entryFileName: r.entryFileName,
           manifest,
           createdAt: r.createdAt,

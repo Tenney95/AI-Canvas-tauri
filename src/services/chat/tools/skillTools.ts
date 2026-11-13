@@ -118,7 +118,9 @@ async function listReadableResources(skill: RuntimeSkill): Promise<string[]> {
       .slice(0, SKILL_CATALOG_LIMITS.maxResourceFiles);
   }
   if (skill.sourceType !== 'folder' || !skill.storagePath) return [];
-  return listSkillResourceFiles(skill.storagePath, SKILL_CATALOG_LIMITS.maxResourceFiles);
+  return skill.nativeSourceId
+    ? listSkillResourceFiles(skill.storagePath, SKILL_CATALOG_LIMITS.maxResourceFiles, skill.nativeSourceId)
+    : listSkillResourceFiles(skill.storagePath, SKILL_CATALOG_LIMITS.maxResourceFiles);
 }
 
 const pageProperties = {
@@ -299,7 +301,9 @@ export function registerSkillAgentTools(): Array<() => void> {
             if (skill.sourceType !== 'folder' || !skill.storagePath) {
               return toolError('该 Skill 没有附属资料目录', 'SKILL_RESOURCE_UNAVAILABLE');
             }
-            raw = await readSkillResourceFile(skill.storagePath, input.path);
+            raw = await (skill.nativeSourceId
+              ? readSkillResourceFile(skill.storagePath, input.path, skill.nativeSourceId)
+              : readSkillResourceFile(skill.storagePath, input.path));
           }
         } catch (error) {
           const message = isAgentPackageSkill(skill)

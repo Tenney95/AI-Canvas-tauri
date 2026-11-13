@@ -537,6 +537,18 @@ describe('skill_read_file', () => {
     );
   });
 
+  it('新文件夹资料按原生来源读取，来源身份和原目录不进入模型结果', async () => {
+    const original = folderSkill({ storagePath: '/external/my-skill', nativeSourceId: 'native-folder-source' });
+    setSkills([original]);
+    const result = await run('skill_read_file', { skillId: original.id, path: 'references/checklist.md' });
+    expect(result.status).toBe('success');
+    expect(readSkillResourceFileMock).toHaveBeenCalledWith(
+      original.storagePath, 'references/checklist.md', original.nativeSourceId,
+    );
+    expect(result.modelContent).not.toContain(original.storagePath);
+    expect(result.modelContent).not.toContain(original.nativeSourceId);
+  });
+
   it('越权路径被拒绝，错误信息不含绝对路径', async () => {
     setSkills([folderSkill()]);
     readSkillResourceFileMock.mockRejectedValue(

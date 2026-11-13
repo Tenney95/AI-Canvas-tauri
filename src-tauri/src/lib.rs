@@ -186,6 +186,8 @@ mod project_model_safety;
 mod project_execution_context;
 #[path = "files/skill_archive.rs"]
 mod skill_archive;
+#[path = "files/skill_storage.rs"]
+mod skill_storage;
 #[path = "agent/provider_docs.rs"]
 mod provider_docs;
 mod secret_store;
@@ -1888,6 +1890,7 @@ pub fn run() {
         .register_uri_scheme_protocol("theme-image", theme_assets::handle_protocol)
         .register_asynchronous_uri_scheme_protocol("comfy-media", comfyui::media_source::handle_protocol)
         .plugin(tauri_plugin_fs::init())
+        .plugin(skill_storage::privacy_plugin())
         .plugin(comfyui::installation::privacy_plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1955,6 +1958,10 @@ pub fn run() {
             project_archive::inspect_project_archive_assets,
             project_archive::publish_project_import_assets,
             skill_archive::read_skill_archive,
+            skill_storage::save_skill_files,
+            skill_storage::register_skill_folder,
+            skill_storage::list_skill_source_files,
+            skill_storage::read_skill_source_file,
             thumbnail_cache::prepare_project_thumbnail,
             thumbnail_cache::write_project_thumbnail,
             file_transfer::copy_file_streamed,

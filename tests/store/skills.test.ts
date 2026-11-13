@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   loadSkills: vi.fn<() => Promise<UserSkill[]>>(),
   saveSkill: vi.fn<() => Promise<void>>(),
   deleteSkill: vi.fn<() => Promise<void>>(),
+  uploadSkillFile: vi.fn(),
 }));
 
 vi.mock('../../src/i18n', () => ({ t: (key: string) => key }));
@@ -19,6 +20,7 @@ vi.mock('../../src/store/useAppStore', () => ({
 vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'new-skill' }));
 vi.mock('../../src/services/fileService', () => ({
   loadSkills: mocks.loadSkills, saveSkill: mocks.saveSkill, deleteSkill: mocks.deleteSkill,
+  uploadSkillFile: mocks.uploadSkillFile,
 }));
 vi.mock('../../src/services/indexedDb/skillUsageRepository', () => ({
   loadRecentSkillIds: mocks.loadRecentSkillIds, saveRecentSkillIds: mocks.saveRecentSkillIds,
@@ -62,9 +64,56 @@ beforeEach(() => {
   mocks.loadSkills.mockReset().mockResolvedValue([]);
   mocks.saveSkill.mockReset().mockResolvedValue(undefined);
   mocks.deleteSkill.mockReset().mockResolvedValue(undefined);
+  mocks.uploadSkillFile.mockReset().mockResolvedValue(null);
 });
 
 describe('Skill 的独立最近使用记录', () => {
+  it('上传原位置目录时持久化原生来源身份与入口，不改写为应用数据目录', async () => {
+    const uploaded = {
+      fileName: '示例', content: '# Skill\n正文保持原样。', sourceType: 'folder',
+      storagePath: 'D:/user-skills/示例', entryFileName: 'SKILL.md', nativeSourceId: 'folder-source',
+    };
+    mocks.uploadSkillFile.mockResolvedValue(uploaded);
+    const state = store();
+    await expect(state.getState().uploadSkill('folder')).resolves.toMatchObject({
+      id: 'new-skill', storagePath: uploaded.storagePath, entryFileName: 'SKILL.md', nativeSourceId: 'folder-source',
+    });
+    expect(mocks.uploadSkillFile).toHaveBeenCalledWith('folder');
+    expect(mocks.saveSkill).toHaveBeenCalledWith(expect.objectContaining({
+      storagePath: uploaded.storagePath, nativeSourceId: 'folder-source', entryFileName: 'SKILL.md',
+    }));
+    expect(state.getState().userSkills).toEqual([expect.objectContaining({ nativeSourceId: 'folder-source' })]);
+  });
+
+  it('上传记录保存失败时保留现有目录，不追加内存或显示成功提示', async () => {
+    const existing = skill('existing'), state = store([existing]);
+    mocks.uploadSkillFile.mockResolvedValue({
+      fileName: '示例', content: '# 示例 Skill', sourceType: 'folder',
+      storagePath: 'D:/user-skills/示例', entryFileName: 'SKILL.md', nativeSourceId: 'folder-source',
+    });
+    mocks.saveSkill.mockRejectedValueOnce(new Error('IndexedDB unavailable'));
+    await expect(state.getState().uploadSkill('folder')).rejects.toThrow(
+      'Skill 文件已保留，但目录记录保存失败，请重试导入',
+    );
+    expect(state.getState().userSkills).toEqual([existing]);
+    expect(state.getState().showToast).not.toHaveBeenCalled();
+    expect(mocks.deleteSkill).not.toHaveBeenCalled();
+  });
+
+  it('重启加载保留新目录身份与旧 appData 兼容路径，不迁移实体来源', async () => {
+    const records: UserSkill[] = [
+      { ...skill('legacy'), sourceType: 'folder', storagePath: 'C:/app-data/skill/legacy', entryFileName: 'SKILL.md' },
+      { ...skill('archive'), sourceType: 'folder', storagePath: 'C:/AI-Canvas/skills/archive', entryFileName: 'SKILL.md', nativeSourceId: 'archive-source' },
+      { ...skill('linked'), sourceType: 'folder', storagePath: 'D:/user-skills/linked', entryFileName: 'SKILL.md', nativeSourceId: 'linked-source' },
+    ];
+    mocks.loadSkills.mockResolvedValue(records);
+    const state = store();
+    await state.getState().loadSkills();
+    expect(state.getState().userSkills).toEqual(records);
+    expect(mocks.saveSkill).not.toHaveBeenCalled();
+    expect(mocks.uploadSkillFile).not.toHaveBeenCalled();
+  });
+
   it('只记录可显式调用的已有 Skill，去重前置并最多保留五项，不改正文或声明', async () => {
     const skills = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => skill(id));
     skills.push(skill('hidden', { userInvocable: false }));

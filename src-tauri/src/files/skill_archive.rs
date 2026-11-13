@@ -7,9 +7,9 @@ use std::{collections::HashSet, fs::File, io::{Cursor, Read}, sync::Mutex};
 use tauri::{AppHandle, Runtime, Webview};
 
 const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_EXPANDED_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_ENTRIES: usize = 4096;
+pub(super) const MAX_EXPANDED_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+pub(super) const MAX_ENTRIES: usize = 4096;
 static ARCHIVE_READ_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Serialize)]
@@ -29,7 +29,7 @@ fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn safe_archive_path(raw: &str, directory: bool) -> Result<String, String> {
+pub(super) fn safe_archive_path(raw: &str, directory: bool) -> Result<String, String> {
     const INVALID: &str = "Skill 压缩包包含不安全路径";
     if raw.len() > 4096 || raw.contains('\\') || raw.chars().any(char::is_control) {
         return Err(INVALID.into());
