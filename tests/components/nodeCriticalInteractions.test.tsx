@@ -638,6 +638,10 @@ function visibleShotRatio(store: TestStore, column: string) {
 async function loadWorkflowEditingDialog() {
   vi.doMock('../../src/components/nodes/shared/ConnectedNodesPreview', () => ({ default: () => null }));
   vi.doMock('../../src/components/shared/ResourceVideoPreview', () => ({ default: () => null }));
+  // 本组只执行弹窗编辑回调，不渲染预览和费用子组件，避免把其冷加载算入交互耗时。
+  vi.doMock('../../src/components/shared/ViewportImage', () => ({ default: () => null }));
+  vi.doMock('../../src/components/shared/ViewportAudio', () => ({ default: () => null }));
+  vi.doMock('../../src/components/nodes/shared/VolcengineCostEstimate', () => ({ default: () => null }));
   // 编辑回调不执行生成或文件操作；隔离这些边界，避免冷加载整套原生生成依赖图。
   vi.doMock('../../src/services/fileService', () => ({ persistMediaUrlToProjectData: vi.fn() }));
   vi.doMock('../../src/services/imageBatchService', () => ({
@@ -666,6 +670,9 @@ async function loadWorkflowEditingDialog() {
     // 当前模块保留导入的替身；后续 resetModules 后的生成用例仍加载自己的真实实现或替身。
     vi.doUnmock('../../src/components/nodes/shared/ConnectedNodesPreview');
     vi.doUnmock('../../src/components/shared/ResourceVideoPreview');
+    vi.doUnmock('../../src/components/shared/ViewportImage');
+    vi.doUnmock('../../src/components/shared/ViewportAudio');
+    vi.doUnmock('../../src/components/nodes/shared/VolcengineCostEstimate');
     vi.doUnmock('../../src/services/fileService');
     vi.doUnmock('../../src/services/imageBatchService');
     vi.doUnmock('../../src/services/comfyWorkflowService');

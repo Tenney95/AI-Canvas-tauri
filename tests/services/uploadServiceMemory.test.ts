@@ -394,10 +394,24 @@ describe('uploadService 内存上传治理', () => {
 
     const source = 'asset://localhost/provider-scope.png';
     await uploadToRemote(source, '', 'image');
-    await uploadToRemote(source, 'volcengine', 'image');
+    await uploadToRemote(source, 'cache-provider', 'image');
     await uploadToRemote('data:image/png;base64,s3HmNtbb234r', '', 'image');
     await uploadToRemote('data:image/png;base64,XAOgGXpSiMuF', '', 'image');
     expect(proxyCalls).toBe(4);
+  });
+
+  it('方舟缺少 TOS 配置时不沿用公共图床缓存，也不回退上传', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => responseFor(new Blob([new Uint8Array([10, 11, 12])], {
+      type: 'image/png',
+    }))));
+    mocks.invoke.mockResolvedValue({ status: 200, body: btoa(JSON.stringify({
+      success: true, files: [{ url: 'https://cdn.example/public-cache' }],
+    })) });
+    const source = 'asset://localhost/tos-cache-scope.png';
+    await expect(uploadToRemote(source, '', 'image')).resolves.toBe('https://cdn.example/public-cache');
+    mocks.invoke.mockClear();
+    await expect(uploadToRemote(source, 'volcengine', 'image')).rejects.toThrow('配置北京私有 TOS');
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('外部取消会调用 cancel_proxy_fetch 真正停止原生上传', async () => {

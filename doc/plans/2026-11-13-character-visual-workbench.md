@@ -1,6 +1,6 @@
 # 角色形象工作台
 
-状态：角色生图、三视图、文字及画笔改图、MJ 专用通道、小红书单图导入、多图定妆拼接、识图与引用更新均已接入。待桌面验收。本次未运行测试。
+状态：角色生图、三视图、文字及画笔改图、MJ 专用通道、小红书单图导入、多图定妆拼接、识图与引用更新均已接入，待桌面验收。实现阶段未运行测试；后续发布自动回归与完整门禁见[v0.11.4 发布准备](./2026-11-13-release-0.11.4.md)，不能替代真实模型和桌面验收。
 
 ## 入口与使用流程
 
@@ -46,7 +46,7 @@ WSAGENT 的「一键出形象」是 Krea2 LoRA 多步骤定妆流程，和单次
 
 ## 图片节点全模型接入（2026-11-13，已实现，待用户验证）
 
-用户已确认完整实施范围。已移除工作台的厂商白名单并加入受信角色任务目的地，提交意图、远端身份和候选保存归原角色任务。同步、异步、原生和工作流分支已接入，历史增加继续查询／补存。依据为本轮源码差异及调用链静态核对；尚未执行类型检查、自动化测试、付费生成或桌面验收，不代表任何厂商的真实调用已经通过。
+用户已确认完整实施范围。已移除工作台的厂商白名单并加入受信角色任务目的地，提交意图、远端身份和候选保存归原角色任务。同步、异步、原生和工作流分支已接入，历史增加继续查询／补存。依据为本轮源码差异及调用链静态核对，新增自动化用例已在发布前全量测试中通过；本版最终完整门禁与同 SHA CI 见发布准备及 Actions Summary。未执行付费生成或桌面验收，不代表任何厂商的真实调用已经通过。
 
 ### 目标与决定
 
@@ -84,7 +84,7 @@ WSAGENT 的「一键出形象」是 Krea2 LoRA 多步骤定妆流程，和单次
    - 修改 `doc/模型与生成模块.md`，只记录共享执行目的地边界并链接本专项。
    - 修改 `src/i18n/locales/en-US/character.ts`、`src/i18n/locales/ja-JP/character.ts`、`src/i18n/locales/ko-KR/character.ts`，同步实际新增和移除的状态文案。
 
-已新增 `tests/services/characterImageTaskContext.test.ts`、`tests/services/characterImageTaskRecovery.test.ts`、`tests/services/characterVisualModels.test.ts`、`tests/services/characterVisualFiles.test.ts`、`tests/components/characterVisualGenerationSettings.test.tsx`，覆盖受信目的地、单作业防重、无生成重提的原任务查询、合同变化拒绝、部分结果、完整模型目录及候选幂等写入。既有普通节点回归入口为 `nativeBuiltinImageTask.test.ts`、`nativeGeneralAsyncTask.test.ts`、`nativeApimartImageSubmission.test.ts`、`nativeWorkflowTasks.test.ts`、`apimartGen.test.ts`、`museMediaSubmission.test.ts`。所有用例均未在本轮执行。
+已新增 `tests/services/characterImageTaskContext.test.ts`、`tests/services/characterImageTaskRecovery.test.ts`、`tests/services/characterVisualModels.test.ts`、`tests/services/characterVisualFiles.test.ts`、`tests/components/characterVisualGenerationSettings.test.tsx`，覆盖受信目的地、单作业防重、无生成重提的原任务查询、合同变化拒绝、部分结果、完整模型目录及候选幂等写入。既有普通节点回归入口为 `nativeBuiltinImageTask.test.ts`、`nativeGeneralAsyncTask.test.ts`、`nativeApimartImageSubmission.test.ts`、`nativeWorkflowTasks.test.ts`、`apimartGen.test.ts`、`museMediaSubmission.test.ts`。新增用例已在发布前全量测试中通过；最终完整门禁仍按发布流程核对，桌面矩阵继续待用户验收。
 
 用户可在仓库根目录执行 `npm run typecheck`，以及 `npx vitest run tests/services/characterImageTaskContext.test.ts tests/services/characterImageTaskRecovery.test.ts tests/services/characterVisualModels.test.ts tests/services/characterVisualFiles.test.ts tests/components/characterVisualGenerationSettings.test.tsx tests/services/nativeBuiltinImageTask.test.ts tests/services/nativeGeneralAsyncTask.test.ts tests/services/nativeApimartImageSubmission.test.ts tests/services/nativeWorkflowTasks.test.ts tests/services/apimartGen.test.ts tests/services/museMediaSubmission.test.ts`。这些检查不能替代下面的 Tauri 桌面验收。
 
