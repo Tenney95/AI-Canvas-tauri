@@ -4,6 +4,12 @@
 import { describe, expect, it } from 'vitest';
 import { getProviderPolicy, resolveProviderCatalogId } from '../../src/services/ai/providerPolicies';
 
+it('方舟官方使用独立 TOS，同名自定义连接不借用该上传方式', () => {
+  expect(getProviderPolicy(resolveProviderCatalogId('volcengine')).upload).toBe('volcengine-tos');
+  expect(getProviderPolicy(resolveProviderCatalogId('方舟连接', { catalogId: 'volcengine' })).upload).toBe('volcengine-tos');
+  expect(getProviderPolicy(resolveProviderCatalogId('volcengine', { catalogId: 'custom-openai' })).upload).toBeUndefined();
+});
+
 describe('厂商接线策略', () => {
   it.each(['custom-openai', 'cccapi', 'xai', 'google', 'sora2u', 'toapis', 'libapi', 'relayonapi', 'aigc-si', 'minimax'])('%s 沿用通用模型同步', (id) => {
     expect(getProviderPolicy(id).syncGeneralModels).toBe(true);

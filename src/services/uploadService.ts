@@ -7,6 +7,7 @@
  *  - ToAPIs 连接 → 当前站点 /uploads/{images,videos,audios}（仅使用该连接 Key）
  *  - LibAPI 连接 → /v1/files（仅使用该连接 Key）
  *  - MiniMax 官方连接 → /v1/files/upload（返回当前连接的 mm_file 素材引用）
+ *  - 火山方舟官方连接 → 私有北京 TOS 公网上传、内网预签名链接（只在内存缓存）
  *  - 启用自定义图床的连接 → 图片使用该连接声明的上传接口
  *  - 其他 provider 的图片 → 全局公共图床（默认 Uguu）；音视频沿用 Uguu
  *
@@ -39,6 +40,7 @@ import type { ApiProviderConfig } from '../types';
 import { uploadCustomImage } from './imageHostingService';
 import { resolveGlobalImageHosting } from './imageHostingTemplates';
 import type { ImageHostingConfig, PublicImageHostingProvider } from '../types/imageHosting';
+import { assertVolcengineTosEndpoint, assertVolcengineTosMediaSize, uploadVolcengineTosReference } from './ai/providers/volcengineTosUpload';
 
 const DEFAULT_UPLOAD_BASE = APIMART_BASE_URL;
 
@@ -67,7 +69,7 @@ interface UploadIdentity {
   source?: { digest: string; bytes: number };
 }
 
-type UploadConnection = Readonly<Pick<ApiProviderConfig, 'catalogId' | 'baseUrl' | 'apiKey' | 'imageHosting'> & {
+type UploadConnection = Readonly<Pick<ApiProviderConfig, 'catalogId' | 'baseUrl' | 'apiKey' | 'imageHosting' | 'tosUpload'> & {
   kind: MediaDataUrlKind;
   globalImageHosting?: { provider: PublicImageHostingProvider; config: ImageHostingConfig };
 }>;
@@ -78,9 +80,10 @@ function captureUploadConnection(provider: string, kind: MediaDataUrlKind = 'ima
   const upload = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload;
   // 专用上传接口的错误不能触发公共图床；只有原本需要公共图片链接的分支读取全局设置。
   const useGlobalHosting = kind === 'image' && !connection?.imageHosting?.enabled
-    && upload !== 'toapis' && upload !== 'libapi' && upload !== 'minimax' && provider !== 'apimart';
+    && upload !== 'toapis' && upload !== 'libapi' && upload !== 'minimax' && upload !== 'volcengine-tos' && provider !== 'apimart';
   return { catalogId: connection?.catalogId, baseUrl: connection?.baseUrl, apiKey: connection?.apiKey?.trim() ?? '',
     imageHosting: connection?.imageHosting ? structuredClone(connection.imageHosting) : undefined, kind,
+    tosUpload: upload === 'volcengine-tos' && connection?.tosUpload ? structuredClone(connection.tosUpload) : undefined,
     globalImageHosting: useGlobalHosting ? {
       provider: config.imageHosting?.provider ?? 'uguu', config: resolveGlobalImageHosting(config.imageHosting),
     } : undefined };
@@ -90,6 +93,7 @@ function assertUploadConnection(provider: string, expected: UploadConnection): v
   const current = captureUploadConnection(provider, expected.kind);
   if (current.catalogId !== expected.catalogId || current.baseUrl !== expected.baseUrl || current.apiKey !== expected.apiKey
     || JSON.stringify(current.imageHosting) !== JSON.stringify(expected.imageHosting)
+    || JSON.stringify(current.tosUpload) !== JSON.stringify(expected.tosUpload)
     || JSON.stringify(current.globalImageHosting) !== JSON.stringify(expected.globalImageHosting)) {
     throw new Error('参考素材上传期间连接配置已变化（含图床设置），请重新发起');
   }
@@ -150,6 +154,7 @@ async function cacheKey(
   const connectionDigest = await sha256BytesHex(new TextEncoder().encode(JSON.stringify([
     'native-lossless-v1', provider, connection.catalogId ?? '', connection.baseUrl ?? '', connection.apiKey, connection.imageHosting,
     connection.globalImageHosting,
+    connection.tosUpload,
   ])));
   signal?.throwIfAborted();
   const scope = `${provider || 'default'}:${kind}:${connectionDigest}`;
@@ -158,7 +163,8 @@ async function cacheKey(
     if (path && isTauriEnv()) {
       try {
         const info = await lstat(path);
-        assertMediaDataUrlSize(info.size, kind, mediaKindLabel(kind));
+        if (getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload === 'volcengine-tos') assertVolcengineTosMediaSize(info.size, kind);
+        else assertMediaDataUrlSize(info.size, kind, mediaKindLabel(kind));
         const { fingerprintAssetImage } = await import('./fs/assetImageMetadata');
         const source = await fingerprintAssetImage(path, signal);
         signal?.throwIfAborted();
@@ -823,12 +829,13 @@ async function uploadToUguu(
 // ── 缓存查/写 ──
 
 /** 查缓存：先内存后 localStorage，命中且未过期则返回，过期则清除 */
-function getCachedUrl(key: string): string | null {
+function getCachedUrl(key: string, persist = true): string | null {
 
   // 内存缓存（最快）
   const mem = memCache.get(key);
   if (mem && Date.now() - mem.uploadedAt < UPLOAD_TTL_MS) return mem.remoteUrl;
   if (mem) memCache.delete(key);
+  if (!persist) return null;
 
   // localStorage 持久化缓存
   const persistent = loadPersistentCache();
@@ -848,10 +855,11 @@ function getCachedUrl(key: string): string | null {
 }
 
 /** 写缓存：同时写内存和 localStorage */
-function setCachedUrl(key: string, remoteUrl: string) {
+function setCachedUrl(key: string, remoteUrl: string, persist = true) {
   const entry = { remoteUrl, uploadedAt: Date.now() };
   pruneExpiredMemoryCache(entry.uploadedAt);
   memCache.set(key, entry);
+  if (!persist) return;
 
   const persistent = loadPersistentCache();
   persistent[key] = entry;
@@ -874,6 +882,8 @@ export async function uploadToRemote(
   if (signal?.aborted) throw abortReason(signal);
   if (uploadQueueQuarantine) throw new UploadQueueQuarantinedError();
   const connection = captureUploadConnection(provider, kind);
+  const usesTos = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload === 'volcengine-tos';
+  if (usesTos) assertVolcengineTosEndpoint(connection.baseUrl);
   if (isMediaDataUrl(url)) {
     await assertMediaDataUrlWithinLimitAsync(url, kind, mediaKindLabel(kind), signal);
   }
@@ -882,7 +892,7 @@ export async function uploadToRemote(
   const { key } = identity;
 
   // 查缓存（内存 → localStorage），命中且未过期则直接返回
-  const cached = identity.cacheable ? getCachedUrl(key) : null;
+  const cached = identity.cacheable ? getCachedUrl(key, !usesTos) : null;
   if (cached) return cached;
 
   const existing = pendingUploads.get(key);
@@ -899,11 +909,11 @@ export async function uploadToRemote(
   const pending = runUploadSerially(async (operationSignal) => {
     assertUploadConnection(provider, connection);
     // 排队期间另一个调用可能已完成上传，再查一次缓存避免重复传输。
-    const queuedCached = identity.cacheable ? getCachedUrl(key) : null;
+    const queuedCached = identity.cacheable ? getCachedUrl(key, !usesTos) : null;
     if (queuedCached) return queuedCached;
 
     const upload = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload;
-    const customImageHosting = kind === 'image' && connection.imageHosting?.enabled ? connection.imageHosting
+    const customImageHosting = usesTos ? undefined : kind === 'image' && connection.imageHosting?.enabled ? connection.imageHosting
       : connection.globalImageHosting?.provider !== 'uguu' ? connection.globalImageHosting?.config : undefined;
     let customUrl: string | undefined;
     if (customImageHosting) {
@@ -912,7 +922,10 @@ export async function uploadToRemote(
       customUrl = await uploadCustomImage(blob, `reference.${ext.replace(/[^a-z0-9]/gi, '') || 'png'}`, customImageHosting, operationSignal,
         { connection, beforeUpload: () => assertUploadConnection(provider, connection) });
     }
-    const publicUrl = customUrl ?? (upload === 'toapis'
+    const publicUrl = customUrl ?? (usesTos
+      ? await uploadVolcengineTosReference(url, kind, connection.tosUpload, operationSignal, identity.source,
+        () => assertUploadConnection(provider, connection))
+      : upload === 'toapis'
       ? await uploadToToapis(url, connection, kind, operationSignal, identity.source)
       : upload === 'libapi'
       ? await uploadToLibapi(url, connection, kind, operationSignal, identity.source)
@@ -925,7 +938,7 @@ export async function uploadToRemote(
     // 写入双层缓存（2.5 小时有效期）
     operationSignal.throwIfAborted();
     assertUploadConnection(provider, connection);
-    if (identity.cacheable) setCachedUrl(key, publicUrl);
+    if (identity.cacheable) setCachedUrl(key, publicUrl, !usesTos);
     return publicUrl;
   }, controller.signal).catch((err) => {
     const sourceType = isMediaDataUrl(url) ? 'data' : url.split(':', 1)[0] || 'unknown';
@@ -972,6 +985,11 @@ export async function resolveMediaReferenceUrl(
   if (signal?.aborted) throw abortReason(signal);
   // Windows 的 Tauri asset URL 也使用 HTTP，仍需读取并上传本地素材。
   if (isRemoteMediaUrl(url)) return url;
+  // 方舟本地参考统一上传为 TOS URL，不向上游发送 Base64；内联只作受限原生传输。
+  const providerConfig = useAppStore.getState().config.providers[provider];
+  if (getProviderPolicy(resolveProviderCatalogId(provider, providerConfig)).upload === 'volcengine-tos') {
+    return uploadToRemote(url, provider, kind, signal);
+  }
   if (isMediaDataUrl(url) && mode === 'dataUrl') {
     const bytes = await assertMediaDataUrlWithinLimitAsync(
       url,

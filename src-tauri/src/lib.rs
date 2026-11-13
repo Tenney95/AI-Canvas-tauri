@@ -64,6 +64,8 @@ mod theme_assets;
 mod local_fonts;
 #[path = "media/reference_image_upload.rs"]
 mod reference_image_upload;
+#[path = "media/volcengine_tos.rs"]
+mod volcengine_tos;
 #[path = "mcp/bridge.rs"]
 mod mcp_bridge;
 #[path = "mcp/client.rs"]
@@ -1924,6 +1926,8 @@ pub fn run() {
             theme_assets::store_theme_image,
             reference_image_upload::optimize_reference_png,
             reference_image_upload::optimize_reference_jpeg,
+            volcengine_tos::upload_volcengine_tos_reference,
+            volcengine_tos::cancel_volcengine_tos_upload,
             billing::billing_upsert,
             billing::billing_query,
             billing::billing_get_by_task,

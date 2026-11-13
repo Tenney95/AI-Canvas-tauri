@@ -16,7 +16,9 @@ import type {
 } from '../../types';
 import type { VolcengineAssetLibraryConfig } from '../../types/volcengineAssetLibrary';
 import type { ImageHostingConfig } from '../../types/imageHosting';
+import type { VolcengineTosConfig, VolcengineTosCredentials } from '../../types/volcengineTos';
 import { persistImageHosting, validateImageHosting } from '../../services/imageHostingService';
+import { deleteVolcengineTosCredential, persistVolcengineTosConfig, validateVolcengineTosConfig } from '../../services/volcengineTosConfigService';
 import { resolveChatApiProtocol } from '../../services/ai/chatApiProtocol';
 import {
   applySeedanceTemplateDefaults,
@@ -56,6 +58,7 @@ import { editableWorkflowApiManifest, validateDeclarativeWorkflowManifest } from
 import ProviderWebSearchPicker from './providerConnection/ProviderWebSearchPicker';
 import ProviderImageHostingSettings from './providerConnection/ProviderImageHostingSettings';
 import VolcengineAssetLibrarySettings from '../volcengine/VolcengineAssetLibrarySettings';
+import VolcengineTosSettings from './VolcengineTosSettings';
 import {
   assertProviderModelsVideoCapabilities,
   materializeLegacyImageProtocolDefault,
@@ -86,6 +89,7 @@ interface ConnectionDraftState {
   manualModelName: string;
   manualCategory: GeneralModelCategory;
   imageHosting?: ImageHostingConfig;
+  tosUpload?: VolcengineTosConfig;
 }
 
 /** 仅比较弹窗内的编辑内容；凭据单独在内存比较，不进入序列化快照。 */
@@ -149,6 +153,9 @@ export default function ProviderConnectionDialog({
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [imageHosting, setImageHosting] = useState(initialConfig?.imageHosting);
   const [imageHostingApiKey, setImageHostingApiKey] = useState('');
+  const [tosUpload, setTosUpload] = useState<VolcengineTosConfig | undefined>(initialConfig?.tosUpload);
+  const [tosCredentials, setTosCredentials] = useState<VolcengineTosCredentials>({ accessKeyId: '', secretAccessKey: '' });
+  const tosCleanupRefs = useRef(new Set(initialConfig?.tosUpload?.credentialRef ? [initialConfig.tosUpload.credentialRef] : []));
   const [assetLibraryConfig, setAssetLibraryConfig] = useState<VolcengineAssetLibraryConfig | undefined>(initialConfig?.assetLibrary);
   const [legacyWorkflowApiKey, setLegacyWorkflowApiKey] = useState(runninghubWorkflowApiKey);
   const [siteKeys, setSiteKeys] = useState(() => runningHubSiteDrafts({ ...providerConfigs,
@@ -217,7 +224,7 @@ export default function ProviderConnectionDialog({
   const abortRef = useRef<AbortController | null>(null);
   const currentConnectionDraft = (): ConnectionDraftState => ({
     connectionName, chatApiProtocol, baseUrl, models, selectedIds, visibleModelCategories,
-    manualModelId, manualModelName, manualCategory, imageHosting,
+    manualModelId, manualModelName, manualCategory, imageHosting, tosUpload,
   });
   const [draftBaseline, setDraftBaseline] = useState(() => ({
     snapshot: serializeConnectionDraft(currentConnectionDraft()),
@@ -305,9 +312,10 @@ export default function ProviderConnectionDialog({
   }, [apiKey, baseUrl, definition, dreaminaLoggedIn, museCredentialReady, workflowApiKey, activeRunningHubSite, siteKeys]);
   const workflowOnlyConnection = definition?.id === 'runninghub-model' && !apiKey.trim();
 
-  const hasConnectionChanges = () => definition?.id === 'custom-openai'
+  const hasConnectionChanges = () => (definition?.id === 'custom-openai' || definition?.id === 'volcengine')
     && (apiKey !== draftBaseline.apiKey
       || !!imageHostingApiKey
+      || !!tosCredentials.accessKeyId || !!tosCredentials.secretAccessKey
       || serializeConnectionDraft(currentConnectionDraft()) !== draftBaseline.snapshot);
 
   const navigateWithDraftGuard = async (navigate: () => void, discardConnection = false): Promise<boolean> => {
@@ -350,6 +358,9 @@ export default function ProviderConnectionDialog({
       setBaseUrl(savedConfig?.baseUrl || nextDefinition.defaultBaseUrl || '');
       setImageHosting(savedConfig?.imageHosting);
       setImageHostingApiKey('');
+      setTosUpload(savedConfig?.tosUpload);
+      setTosCredentials({ accessKeyId: '', secretAccessKey: '' });
+      tosCleanupRefs.current = new Set(savedConfig?.tosUpload?.credentialRef ? [savedConfig.tosUpload.credentialRef] : []);
       setAssetLibraryConfig(savedConfig?.assetLibrary);
       setLegacyWorkflowApiKey('');
       if (nextDefinition.id === 'runninghub-model') setSiteKeys(runningHubSiteDrafts(providerConfigs));
@@ -379,6 +390,7 @@ export default function ProviderConnectionDialog({
           visibleModelCategories: new Set(CATEGORY_ORDER),
           manualModelId: '', manualModelName: '', manualCategory: 'text',
           imageHosting: savedConfig?.imageHosting,
+          tosUpload: savedConfig?.tosUpload,
         }),
         apiKey: savedConfig?.apiKey || '',
       });
@@ -762,6 +774,7 @@ export default function ProviderConnectionDialog({
     ) return;
     try {
       if (definition.id === 'custom-openai' && imageHosting) validateImageHosting(imageHosting, !!imageHostingApiKey.trim(), { apiKey, baseUrl });
+      if (definition.id === 'volcengine') validateVolcengineTosConfig(tosUpload, tosCredentials);
       if (isWorkflowApi) {
         if (!baseUrl.trim() || !workflowValid || !workflowDrafts.length) throw new Error(t('请完成工作流配置'));
         normalizeWorkflowApiBaseUrl(baseUrl, true);
@@ -794,6 +807,12 @@ export default function ProviderConnectionDialog({
       // 保存连接失败时保留新引用，重试不必再次输入或覆盖旧 Key。
       setImageHosting(savedImageHosting);
       setImageHostingApiKey('');
+      if (definition.id === 'volcengine' && tosUpload?.credentialRef) tosCleanupRefs.current.add(tosUpload.credentialRef);
+      const savedTosUpload = definition.id === 'volcengine'
+        ? await persistVolcengineTosConfig(tosUpload, tosCredentials) : undefined;
+      // 连接保存失败时保持新引用和空凭据草稿；重试不会覆写或丢弃原凭据。
+      setTosUpload(savedTosUpload);
+      setTosCredentials({ accessKeyId: '', secretAccessKey: '' });
       await onSave(
         nextConnectionId,
         {
@@ -803,6 +822,7 @@ export default function ProviderConnectionDialog({
           baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl, true) : normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
           catalogId: definition.id,
           ...(definition.id === 'custom-openai' ? { chatApiProtocol, imageHosting: savedImageHosting } : {}),
+          ...(definition.id === 'volcengine' ? { tosUpload: savedTosUpload } : {}),
           ...modelConfig,
           ...(definition.id === 'volcengine' && assetLibraryConfig ? { assetLibrary: { ...assetLibraryConfig, projectName: assetLibraryConfig.projectName || 'default' } } : {}),
         },
@@ -810,7 +830,17 @@ export default function ProviderConnectionDialog({
           ? { runninghubWorkflowApiKey: workflowApiKey.trim(), ...(activeRunningHubSite ? { runninghubSiteKeys: siteKeys } : {}) }
           : isWorkflowApi ? { workflowApiDrafts: workflowDrafts } : undefined,
       );
-      setDraftBaseline({ snapshot: serializeConnectionDraft({ ...currentConnectionDraft(), imageHosting: savedImageHosting }), apiKey });
+      setDraftBaseline({ snapshot: serializeConnectionDraft({ ...currentConnectionDraft(), imageHosting: savedImageHosting, tosUpload: savedTosUpload }), apiKey });
+      if (definition.id === 'volcengine') {
+        for (const ref of tosCleanupRefs.current) {
+          if (ref === savedTosUpload?.credentialRef
+            || Object.values(useAppStore.getState().config.providers).some((provider) => provider.tosUpload?.credentialRef === ref)) continue;
+          try {
+            await deleteVolcengineTosCredential(ref);
+            tosCleanupRefs.current.delete(ref);
+          } catch { useAppStore.getState().showToast(t('连接已保存，旧 TOS 凭据清理未完成'), 'error'); }
+        }
+      }
     } catch (error) {
       setCatalogStatus('error');
       setCatalogMessage(error instanceof Error ? error.message : t('保存失败'));
@@ -905,6 +935,9 @@ export default function ProviderConnectionDialog({
             {definition?.id === 'custom-openai' && <ProviderImageHostingSettings
               config={imageHosting} onChange={setImageHosting} apiKey={imageHostingApiKey} onApiKeyChange={setImageHostingApiKey}
             />}
+
+            {definition?.id === 'volcengine' && <VolcengineTosSettings config={tosUpload} onChange={setTosUpload}
+              credentials={tosCredentials} onCredentialsChange={setTosCredentials} disabled={saving} />}
 
             {definition?.id === 'volcengine' && (
               <VolcengineAssetLibrarySettings

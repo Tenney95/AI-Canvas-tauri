@@ -941,6 +941,23 @@ export async function resolvePromptWithImageRefs(
 }
 
 /** 视频生成入口：提取图片、视频和音频引用。 */
-export async function resolvePromptWithMediaRefs(rawPrompt: string, options: { preserveBindings?: boolean; cameraSettings?: CameraGenerationSettings } = {}): Promise<PromptMediaReferences> {
-  return resolvePromptReferences(rawPrompt, true, options.preserveBindings, false, options.cameraSettings);
+export async function resolvePromptWithMediaRefs(rawPrompt: string, options: {
+  preserveBindings?: boolean;
+  preferLocalMedia?: boolean;
+  cameraSettings?: CameraGenerationSettings;
+} = {}): Promise<PromptMediaReferences> {
+  // 图片仍经过既有蒙版/标注合成；不能用原 filePath 覆盖已生成的本地合成图。
+  const resolved = await resolvePromptReferences(rawPrompt, true, options.preserveBindings, options.preferLocalMedia, options.cameraSettings);
+  if (!options.preferLocalMedia) return resolved;
+  const references = await Promise.all(resolved.references.map(async (reference) =>
+    reference.filePath && isRemoteMediaUrl(reference.url)
+      ? { ...reference, url: await getAssetUrlFromPath(reference.filePath) } : reference));
+  const byOriginalUrl = new Map(resolved.references.map((reference, index) => [`${reference.kind}:${reference.url}`, references[index]]));
+  return {
+    ...resolved,
+    ...toLegacyReferenceMedia(references),
+    ...(resolved.segments ? { segments: resolved.segments.map((segment) => typeof segment === 'string' ? segment : {
+      ...segment, reference: byOriginalUrl.get(`${segment.reference.kind}:${segment.reference.url}`) ?? segment.reference,
+    }) } : {}),
+  };
 }

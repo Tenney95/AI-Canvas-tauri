@@ -26,8 +26,9 @@ import { resolveMediaReferenceUrl, uploadToRemote } from '../../src/services/upl
 import { previewModelProtocolRequest } from '../../src/services/ai/modelProtocol';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { ImageHostingConfig, PublicImageHostingProvider } from '../../src/types/imageHosting';
+import type { VolcengineTosConfig } from '../../src/types/volcengineTos';
 import { IMAGE_HOSTING_TEMPLATES, PUBLIC_IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
-import { LIBAPI_BASE_URL, TOAPIS_BASE_URL } from '../../src/constants/api';
+import { LIBAPI_BASE_URL, TOAPIS_BASE_URL, VOLCENGINE_BASE_URL } from '../../src/constants/api';
 
 // 请求链模拟原生无损返回，用 PNG 的标记追踪引用；真实像素保真由 Rust 测试验证。
 function png(marker: number, megabytes = 5): Blob {
@@ -73,6 +74,112 @@ beforeEach(() => {
   vi.stubGlobal('OffscreenCanvas', encode);
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+describe('方舟本地参考素材的私有 TOS 路由', () => {
+  const initialTos: VolcengineTosConfig = { bucket: 'reference-bucket', region: 'cn-beijing',
+    credentialRef: 'secret:provider/volcengine/tos/01234567-0123-4123-8123-0123456789ab' };
+  const configure = (provider: string, tosUpload: VolcengineTosConfig | undefined = initialTos) => {
+    mocks.native = true;
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'imgbb', configs: {} }, providers: {
+      [provider]: { name: '火山方舟', catalogId: 'volcengine', apiKey: 'ark-model-key', baseUrl: VOLCENGINE_BASE_URL, tosUpload,
+        imageHosting: { enabled: true, uploadUrl: 'https://legacy-image-host.example/upload', fileField: 'file', responseUrlPath: 'url', auth: 'none' } },
+    } } }));
+  };
+  const result = (bucket: string, ordinal: number) => ({
+    url: `https://${bucket}.tos-cn-beijing.ivolces.com/ai-canvas/ark-reference/upload-${ordinal}.png?X-Tos-Signature=fixture-signature`,
+    expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+  });
+
+  it('全局和连接图床均不覆盖 TOS，内联模式仍上传，缓存只在内存并按 Bucket/凭据隔离', async () => {
+    const provider = 'volcengine-tos-cache-isolation';
+    configure(provider);
+    const getItem = vi.fn(() => null); const setItem = vi.fn();
+    vi.stubGlobal('localStorage', { getItem, setItem });
+    let now = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const source = await asDataUrl(png(91, 0));
+    let uploads = 0;
+    mocks.invoke.mockImplementation(async (command, payload) => {
+      if (command !== 'upload_volcengine_tos_reference') throw new Error('不应使用图床、代理或压缩 IPC');
+      return result(payload.req.bucket, ++uploads);
+    });
+    const resolve = () => resolveMediaReferenceUrl(source, { provider, kind: 'image', mode: 'dataUrl' });
+    const first = result(initialTos.bucket, 1).url;
+    expect(await resolve()).toBe(first);
+    expect(await resolve()).toBe(first);
+    expect(uploads).toBe(1);
+    const firstRequest = mocks.invoke.mock.calls[0][1].req;
+    expect(firstRequest).toEqual(expect.objectContaining({ bucket: initialTos.bucket, credentialRef: initialTos.credentialRef,
+      kind: 'image', source: { dataUrl: source } }));
+    expect(JSON.stringify(firstRequest)).not.toContain('ark-model-key');
+    now += 150 * 60_000 - 1;
+    expect(await resolve()).toBe(first);
+    expect(uploads).toBe(1);
+    now += 1;
+    expect(await resolve()).toBe(result(initialTos.bucket, 2).url);
+    useAppStore.getState().setProviderConfig(provider, { tosUpload: { ...initialTos, bucket: 'changed-bucket' } });
+    expect(await resolve()).toBe(result('changed-bucket', 3).url);
+    useAppStore.getState().setProviderConfig(provider, { tosUpload: { ...initialTos, bucket: 'changed-bucket',
+      credentialRef: 'secret:provider/volcengine/tos/11234567-0123-4123-8123-0123456789ab' } });
+    expect(await resolve()).toBe(result('changed-bucket', 4).url);
+    expect(uploads).toBe(4);
+    expect(getItem).not.toHaveBeenCalled(); expect(setItem).not.toHaveBeenCalled();
+    expect(mocks.transport).not.toHaveBeenCalled(); expect(localFetch).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+  it('缺少 TOS 或方舟地址变为中转站时拒绝本地素材，已有公网链接仍直传', async () => {
+    const provider = 'volcengine-tos-missing-config';
+    configure(provider);
+    // 显式去除默认配置，模拟已有的仅 API Key 连接。
+    useAppStore.getState().setProviderConfig(provider, { tosUpload: undefined });
+    const source = await asDataUrl(png(92, 0));
+    await expect(resolveMediaReferenceUrl(source, { provider, kind: 'image', mode: 'dataUrl' })).rejects.toThrow('配置北京私有 TOS');
+    useAppStore.getState().setProviderConfig(provider, { tosUpload: initialTos, baseUrl: 'https://relay.example/api/v3' });
+    await expect(uploadToRemote(source, provider)).rejects.toThrow('北京区域的方舟官方接口');
+    const remote = 'https://cdn.example/existing-reference.png';
+    expect(await resolveMediaReferenceUrl(remote, { provider, kind: 'image', mode: 'dataUrl' })).toBe(remote);
+    expect(mocks.invoke).not.toHaveBeenCalled(); expect(mocks.transport).not.toHaveBeenCalled();
+    expect(localFetch).not.toHaveBeenCalled(); expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+  it('火山图片连接保留历史 data-url 标志时仍上传 TOS 并只向模型发送签名 URL', async () => {
+    configure('volcengine');
+    const model = 'doubao-seedream-5-0-pro-260628';
+    useAppStore.getState().setProviderConfig('volcengine', { selectedModels: [{ id: model, name: model, category: 'image',
+      provider: 'volcengine', imageReferenceRequestMode: 'generation-json-image-data-urls' }] });
+    const signed = result(initialTos.bucket, 9).url;
+    mocks.invoke.mockImplementation(async (command) => command === 'upload_volcengine_tos_reference'
+      ? result(initialTos.bucket, 9) : null);
+    mocks.transport.mockResolvedValueOnce(json({ data: [{ url: 'https://cdn.example/seedream-result.png' }] }));
+    await generateImagesBatch({ provider: 'volcengine', model: `volcengine/${model}`, prompt: '保持人物外观',
+      image_urls: [await asDataUrl(png(94, 0))] }, 1);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'upload_volcengine_tos_reference')).toHaveLength(1);
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(JSON.parse(mocks.transport.mock.calls[0][1].body as string).image).toEqual([signed]);
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it('原生上传期间换 Bucket 拒绝旧结果，下一次显式调用使用新配置', async () => {
+    const provider = 'volcengine-tos-stale-result';
+    configure(provider);
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value) });
+    const source = await asDataUrl(png(93, 0));
+    let uploads = 0;
+    mocks.invoke.mockImplementation(async (command, payload) => {
+      if (command !== 'upload_volcengine_tos_reference') throw new Error('不应使用公共图床');
+      if (++uploads === 1) useAppStore.getState().setProviderConfig(provider, { tosUpload: { ...initialTos, bucket: 'new-reference-bucket' } });
+      return result(payload.req.bucket, uploads);
+    });
+    await expect(uploadToRemote(source, provider)).rejects.toThrow('连接配置已变化');
+    expect(uploads).toBe(1);
+    expect(await uploadToRemote(source, provider)).toBe(result('new-reference-bucket', 2).url);
+    expect(mocks.invoke.mock.calls.map(([, payload]) => payload.req.bucket)).toEqual([initialTos.bucket, 'new-reference-bucket']);
+    expect(storage.size).toBe(0);
+    expect(mocks.transport).not.toHaveBeenCalled(); expect(localFetch).not.toHaveBeenCalled();
+  });
+});
 
 describe('共享参考图压缩的实际请求边界', () => {
   it.each(['custom', 'toapis'])('%s 格式的自定义连接上传参考图，生成请求收到该图床 URL', async (format) => {

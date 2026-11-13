@@ -1,0 +1,6 @@
+{
+  "identifier": "volcengine-tos",
+  "description": "Only the main application window can upload reference media to Volcengine TOS.",
+  "windows": ["main"],
+  "permissions": ["allow-volcengine-tos-upload"]
+}

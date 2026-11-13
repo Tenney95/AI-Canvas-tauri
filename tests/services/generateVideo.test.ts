@@ -26,8 +26,10 @@ import { buildDramaVoiceMentionId, emptyDramaAssetLibrary, type DramaCharacter }
 import * as apimartApi from '../../src/services/ai/apimartGen';
 import * as imageUtils from '../../src/services/ai/imageUtils';
 import * as uploadService from '../../src/services/uploadService';
+import * as fileService from '../../src/services/fileService';
 import * as videoInputValidation from '../../src/services/ai/videoInputValidation';
 import * as volcengineBilling from '../../src/services/billing/volcengineBillingService';
+import * as httpTransport from '../../src/services/ai/httpTransport';
 import { createSeedanceQuickAdaptTemplate } from '../../src/services/ai/seedanceModelCapabilities';
 import { resolveVideoSubmissionControls } from '../../src/services/ai/videoRequestResolver';
 import { TOAPIS_MODEL_MANIFEST } from '../../src/services/ai/providers/toapisModelManifest';
@@ -37,6 +39,7 @@ import { MINIMAX_BASE_URL, MINIMAX_MODEL_MANIFEST } from '../../src/services/ai/
 import { getPendingTasksForProject, removePendingTask } from '../../src/services/pollManager';
 import { buildCharacterVideoReferences, resolveVideoParameterInputMode } from '../../src/components/nodes/shared/VideoParamSelector';
 import type {
+  AIVideoGenParams,
   ModelExecutionProfile,
   VideoModelCapability,
   VideoGenerationReferenceInput,
@@ -59,6 +62,75 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('方舟参考素材优先使用本地副本', () => {
+  const localUrl = (path: string) => `asset://localhost/${encodeURIComponent(path)}`;
+  const mediaNode = (id: string, kind: 'image' | 'video' | 'audio'): Node<BaseNodeData> => ({
+    id, type: `source-${kind}`, position: { x: 0, y: 0 }, data: {
+      label: id, type: `source-${kind}`, filePath: `C:/fixture/${id}.${kind === 'image' ? 'png' : kind === 'video' ? 'mp4' : 'wav'}`,
+      sourceUrl: `https://old-cdn.example/${id}`, [`${kind}Url`]: `https://old-cdn.example/${id}`,
+    },
+  });
+  async function capture(params: Partial<AIVideoGenParams>) {
+    let captured: VideoGenerationReferenceInput | undefined;
+    const unregister = mediaProviderRegistry.register({ providerId: 'volcengine', capabilities: ['video'],
+      async generateVideo({ resolveReferenceInput }) {
+        captured = await resolveReferenceInput(); return { url: 'https://cdn.example/result.mp4' };
+      },
+    });
+    try {
+      await generateVideo({ provider: 'volcengine', model: 'volcengine/doubao-seedance-2-5-260628', prompt: '保留参考动作', ...params });
+    } finally { unregister(); }
+    expect(captured).toBeDefined();
+    return captured!;
+  }
+
+  it('纯连线和显式参考有 filePath 时不沿用旧公共图床 URL', async () => {
+    const sources = [mediaNode('image-local', 'image'), mediaNode('video-local', 'video'), mediaNode('audio-local', 'audio')];
+    useAppStore.setState({ nodes: sources, edges: sources.map((node) => ({ id: `edge-${node.id}`, source: node.id, target: 'target' })) });
+    const assets = vi.spyOn(fileService, 'getAssetUrlFromPath').mockImplementation(async (path) => localUrl(path));
+    try {
+      const input = await capture({ nodeId: 'target', referenceMedia: [{ kind: 'video', role: 'reference', origin: 'connection',
+        url: 'https://old-cdn.example/video-local', sourceNodeId: 'video-local' }] });
+      expect(input.imageUrls).toEqual([localUrl(sources[0].data.filePath!)]);
+      expect(input.videoUrls).toEqual([localUrl(sources[1].data.filePath!)]);
+      expect(input.audioUrls).toEqual([localUrl(sources[2].data.filePath!)]);
+      expect(input.references).toHaveLength(3);
+    } finally { assets.mockRestore(); }
+  });
+
+  it('@ 音视频本地化后同步绑定提示词片段，编号和去重保持一致', async () => {
+    const video = mediaNode('video-mentioned', 'video'); const audio = mediaNode('audio-mentioned', 'audio');
+    useAppStore.setState({ nodes: [video, audio], edges: [{ id: 'video-edge', source: video.id, target: 'target' }] });
+    const assets = vi.spyOn(fileService, 'getAssetUrlFromPath').mockImplementation(async (path) => localUrl(path));
+    try {
+      const input = await capture({ nodeId: 'target', prompt: '参考 @{video-mentioned:视频} 并使用 @{audio-mentioned:声音}' });
+      expect(input.videoUrls).toEqual([localUrl(video.data.filePath!)]);
+      expect(input.audioUrls).toEqual([localUrl(audio.data.filePath!)]);
+      expect(input.prompt).toContain('视频1'); expect(input.prompt).toContain('音频1');
+      expect(input.references).toHaveLength(2);
+    } finally { assets.mockRestore(); }
+  });
+
+  it('@ 图片沿用合成结果，显式裁剪的 data URL 不退回原 filePath', async () => {
+    const image = mediaNode('image-overlay', 'image'); image.data.mattingMask = 'data:image/png;base64,bWFzaw==';
+    useAppStore.setState({ nodes: [image], edges: [{ id: 'overlay-edge', source: image.id, target: 'target' }] });
+    const assets = vi.spyOn(fileService, 'getAssetUrlFromPath').mockImplementation(async (path) => localUrl(path));
+    const composited = 'data:image/png;base64,Y29tcG9zaXRlZA==';
+    const overlay = vi.spyOn(imageUtils, 'mergeImageWithOverlays').mockResolvedValue(composited);
+    try {
+      const input = await capture({ nodeId: 'target', prompt: '参考 @{image-overlay:标注图}' });
+      expect(input.imageUrls).toEqual([composited]);
+      expect(overlay).toHaveBeenCalledWith(localUrl(image.data.filePath!), image.data.mattingMask, undefined);
+      useAppStore.setState({ nodes: [], edges: [] }); assets.mockClear();
+      const cropped = 'data:image/png;base64,Y3JvcHBlZA==';
+      const explicit = await capture({ referenceMedia: [{ kind: 'image', role: 'reference', origin: 'connection', url: cropped,
+        filePath: 'C:/fixture/original.png' }] });
+      expect(explicit.imageUrls).toEqual([cropped]);
+      expect(assets).not.toHaveBeenCalled();
+    } finally { assets.mockRestore(); overlay.mockRestore(); }
+  });
 });
 
 describe('MiniMax 官方视频素材与任务交付', () => {
@@ -858,6 +930,27 @@ describe('Volcengine Seedance content', () => {
     url: string,
     role: 'reference' | 'first_frame' | 'last_frame' | 'reference_audio' = 'reference',
   ) => ({ kind, url, role, origin: 'connection' as const });
+
+  it('redacts echoed TOS URLs and Ark Key before a rejected video submission leaves the provider', async () => {
+    const url = 'https://private-bucket.tos-cn-beijing.ivolces.com/ref.mp4?X-Tos-Credential=fixtureAK&X-Tos-Signature=fixtureSignature';
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      volcengine: { name: '方舟测试', apiKey: 'ark-key', baseUrl: 'https://ark.example/api/v3' },
+    } } }));
+    const request = vi.spyOn(httpTransport, 'corsSafeFetch').mockResolvedValue(new Response(JSON.stringify({
+      error: { message: `Download failed ${url} ${encodeURIComponent(url)} ark-key Request id: video-submit-1` },
+    }), { status: 400 }));
+    const billing = vi.spyOn(volcengineBilling, 'createBillingRun').mockResolvedValue(null);
+    const update = vi.spyOn(volcengineBilling, 'updateBillingRun').mockResolvedValue(null);
+    try {
+      await expect(generateVideo({ provider: 'volcengine', model: 'volcengine/doubao-seedance-2-5-260628', prompt: '保留动作' }))
+        .rejects.toThrow('Download failed [REDACTED] [REDACTED] [REDACTED] Request id: video-submit-1');
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls[0]?.[2]).toEqual({ sensitive: true });
+      expect(update).toHaveBeenLastCalledWith(null, expect.objectContaining({ status: 'failed',
+        errorMessage: 'Download failed [REDACTED] [REDACTED] [REDACTED] Request id: video-submit-1',
+      }));
+    } finally { request.mockRestore(); billing.mockRestore(); update.mockRestore(); }
+  });
 
   it('adds provider roles to every multimodal reference', () => {
     expect(buildVolcengineVideoContent(

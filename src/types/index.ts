@@ -586,6 +586,8 @@ export interface ApiProviderConfig {
   chatApiProtocol?: ChatApiProtocol;
   /** 需要公网图片链接时，使用此连接自己的图床。 */
   imageHosting?: import('./imageHosting').ImageHostingConfig;
+  /** 火山官方连接的私有北京 TOS 参考素材上传，仅保存 AK/SK bundle 引用。 */
+  tosUpload?: import('./volcengineTos').VolcengineTosConfig;
   /** @deprecated 仅用于读取此前连接级图片协议；编辑连接时复制到已选模型。 */
   imageProtocolDefault?: ModelExecutionProfile;
   /** @deprecated 仅用于读取此前连接级参考图模式。 */

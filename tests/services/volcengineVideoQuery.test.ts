@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const http = vi.hoisted(() => vi.fn());
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: http }));
 import { pollVolcengineVideoTask } from '../../src/services/ai/providers/volcengineVideoQuery';
-import { PollTimeoutError } from '../../src/services/pollTask';
+import { PollTaskFailedError, PollTimeoutError } from '../../src/services/pollTask';
 const options = { apiKey: 'test', baseUrl: 'https://example.com/api/v3', taskId: 'task-1', maxDuration: 10000 };
 beforeEach(() => { http.mockReset(); });
 
@@ -14,6 +14,7 @@ it('成功解析视频和用量，只查询原任务', async () => {
   expect(http).toHaveBeenCalledOnce();
   expect(http.mock.calls[0][0]).toBe('https://example.com/api/v3/contents/generations/tasks/task-1');
   expect(http.mock.calls[0][1].method).toBeUndefined();
+  expect(http.mock.calls[0][2]).toEqual({ sensitive: true });
   expect(onFailed).not.toHaveBeenCalled();
 });
 
@@ -22,6 +23,31 @@ it.each(['failed', 'cancelled'])('远端 %s 回传终态给原有账本处理', 
   const onFailed = vi.fn();
   await expect(pollVolcengineVideoTask({ ...options, onFailed })).rejects.toThrow('任务失败: remote failure');
   expect(onFailed).toHaveBeenCalledWith(status);
+});
+
+it('恢复轮询的失败消息在离开查询模块前移除签名链接与 Ark Key', async () => {
+  const url = 'https://private-bucket.tos-cn-beijing.ivolces.com/ref.mp4?X-Tos-Credential=fixtureAK&X-Tos-Signature=fixtureSignature';
+  http.mockResolvedValue(new Response(JSON.stringify({ status: 'failed',
+    error: { message: `Download failed ${url} ${encodeURIComponent(url)} ${options.apiKey} Request id: video-1` },
+  })));
+  const onFailed = vi.fn();
+  const error = await pollVolcengineVideoTask({ ...options, onFailed }).catch((reason: unknown) => reason);
+  expect(error).toBeInstanceOf(PollTaskFailedError);
+  expect(error).toMatchObject({ message: '任务失败: Download failed [REDACTED] [REDACTED] [REDACTED] Request id: video-1' });
+  expect(onFailed).toHaveBeenCalledWith('failed');
+  expect(http).toHaveBeenCalledOnce();
+});
+
+it.each(['transport', 'json'] as const)('恢复轮询的 %s 异常也不向上带出签名链接', async (stage) => {
+  const url = 'https://private-bucket.tos-cn-beijing.ivolces.com/ref.mp4?X-Tos-Signature=fixtureSignature';
+  const failure = stage === 'transport' ? new TypeError(`Fetch failed ${url}`) : new SyntaxError(`Invalid JSON ${encodeURIComponent(url)}`);
+  if (stage === 'transport') http.mockRejectedValue(failure);
+  else http.mockResolvedValue({ ok: true, status: 200, json: async () => { throw failure; } });
+  const onFailed = vi.fn();
+  const error = await pollVolcengineVideoTask({ ...options, onFailed }).catch((reason: unknown) => reason);
+  expect(error).toMatchObject({ name: failure.name, message: stage === 'transport' ? 'Fetch failed [REDACTED]' : 'Invalid JSON [REDACTED]' });
+  expect(onFailed).not.toHaveBeenCalled();
+  expect(http).toHaveBeenCalledOnce();
 });
 
 it.each([408, 504])('HTTP %s 属于查询超时，不冒充远端失败或重投', async (status) => {
@@ -40,6 +66,13 @@ it('缺少视频地址的成功响应仍拒绝交付', async () => {
 it('已取消的查询不发出网络请求', async () => {
   await expect(pollVolcengineVideoTask({ ...options, onFailed: vi.fn(), signal: AbortSignal.abort() })).rejects.toThrow();
   expect(http).not.toHaveBeenCalled();
+});
+
+it('查询中的取消异常仍保留 AbortError 身份', async () => {
+  const aborted = new DOMException('Request aborted', 'AbortError');
+  http.mockRejectedValue(aborted);
+  await expect(pollVolcengineVideoTask({ ...options, onFailed: vi.fn() })).rejects.toBe(aborted);
+  expect(http).toHaveBeenCalledOnce();
 });
 
 it('鉴权失败立即结束查询，没有远端失败回调或自动重试', async () => {

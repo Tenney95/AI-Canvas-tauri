@@ -1,6 +1,7 @@
 /** 火山视频首次等待与任务恢复共用的只读查询协议，不提交或重投生成任务。 */
 import { pollTask, PollTimeoutError } from '../../pollTask';
 import { corsSafeFetch } from '../httpTransport';
+import { redactVolcengineError, redactVolcengineErrorText } from './volcengineError';
 
 export function pollVolcengineVideoTask(options: {
   apiKey: string;
@@ -13,12 +14,14 @@ export function pollVolcengineVideoTask(options: {
   const { apiKey, baseUrl, taskId, signal, maxDuration, onFailed } = options;
   return pollTask<Record<string, unknown>, { url: string; completionTokens?: number }>({
     fetchState: async (querySignal) => {
-      const response = await corsSafeFetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
-        headers: { Authorization: `Bearer ${apiKey}` }, signal: querySignal,
-      });
-      if ([408, 504].includes(response.status)) throw new PollTimeoutError();
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json() as Record<string, unknown>;
+      try {
+        const response = await corsSafeFetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${apiKey}` }, signal: querySignal,
+        }, { sensitive: true });
+        if ([408, 504].includes(response.status)) throw new PollTimeoutError();
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json() as Record<string, unknown>;
+      } catch (error) { throw redactVolcengineError(error, apiKey); }
     },
     isComplete: (raw) => {
       if (raw.status !== 'succeeded') return null;
@@ -32,7 +35,7 @@ export function pollVolcengineVideoTask(options: {
       if (raw.status !== 'failed' && raw.status !== 'cancelled') return null;
       onFailed(raw.status);
       const error = raw.error as { message?: string } | undefined;
-      return `任务失败: ${error?.message || raw.status}`;
+      return redactVolcengineErrorText(`任务失败: ${error?.message || raw.status}`, apiKey);
     },
     interval: 3000, maxDuration, onFetchError: 'throw', signal,
   });

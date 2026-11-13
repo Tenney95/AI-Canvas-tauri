@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-volcengine-tos-upload"
+description = "Allows the main window to upload authorized reference media to fixed Beijing TOS endpoints."
+commands.allow = ["upload_volcengine_tos_reference", "cancel_volcengine_tos_upload"]
+
+[[permission]]
+identifier = "deny-volcengine-tos-upload"
+description = "Denies native Volcengine TOS reference uploads."
+commands.deny = ["upload_volcengine_tos_reference", "cancel_volcengine_tos_upload"]

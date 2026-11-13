@@ -50,6 +50,7 @@ import {
 } from './connectedReferenceMedia';
 import { getApimartSeedanceCapability, type ApimartSeedanceCapability } from './apimartVideoModels';
 import { pollVolcengineVideoTask } from './providers/volcengineVideoQuery';
+import { redactVolcengineError } from './providers/volcengineError';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import {
   normalizeFrames8n1,
@@ -70,6 +71,7 @@ import { resolveMediaReferenceUrl } from '../uploadService';
 import { relayonVideoVariables, usesRelayonModelProtocol } from './providers/relayonModelManifest';
 import {
   createMediaDataUrlBudget,
+  getAssetUrlFromPath,
   type MediaDataUrlBudget,
 } from '../fileService';
 import { mapVideoParameters } from './videoParameterMappings';
@@ -238,7 +240,8 @@ async function resolveVideoReferenceInput(
   options: { promptFirst?: boolean; preserveDeclaredRoles?: boolean; sortKeyframes?: boolean; target?: 'remote' | 'local'; apimartModel?: string; legacyPrompt?: string; provider?: string; suppressWarning?: boolean } = {},
 ): Promise<VideoGenerationReferenceInput> {
   const cameraSettings = useAppStore.getState().nodes.find((node) => node.id === nodeId)?.data.cameraSettings;
-  const promptInput = await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true, cameraSettings });
+  const promptInput = await resolvePromptWithMediaRefs(rawPrompt, { preserveBindings: true,
+    preferLocalMedia: options.provider === 'volcengine', cameraSettings });
   const connected = collectConnectedReferenceMedia(nodeId);
   const nodeItems = resolveVideoNodeReferences(nodeId);
   // RH 先按来源节点归一本地副本，再去重，避免共享原图的其他节点提前被删掉。
@@ -250,10 +253,26 @@ async function resolveVideoReferenceInput(
         || useAppStore.getState().nodes.find((node) => node.id === candidate.sourceNodeId)?.data.imageUrl === reference.url));
     return local ? { ...reference, url: local.url } : reference;
   };
+  const localizeVolcengineReference = async (reference: MediaReference): Promise<MediaReference> => {
+    // 显式 data/asset/blob（包括裁剪或标注结果）拥有优先权，不能退回原文件。
+    if (reference.provider === 'volcengine' || !isRemoteMediaUrl(reference.url)) return reference;
+    const source = reference.sourceNodeId ? useAppStore.getState().nodes.find((node) => node.id === reference.sourceNodeId)?.data : undefined;
+    const sourceUrl = reference.kind === 'image' ? source?.imageUrl : reference.kind === 'video' ? source?.videoUrl : source?.audioUrl;
+    const matchesNode = !!sourceUrl && (reference.url === sourceUrl || reference.url === source?.sourceUrl);
+    const resolved = reference.sourceNodeId && matchesNode ? promptInput.references.find((candidate) =>
+      candidate.kind === reference.kind && candidate.sourceNodeId === reference.sourceNodeId && isLocalMediaUrl(candidate.url)) : undefined;
+    if (resolved) return { ...reference, url: resolved.url };
+    const filePath = reference.filePath || (matchesNode ? source?.filePath : undefined);
+    return typeof filePath === 'string' && filePath ? { ...reference, url: await getAssetUrlFromPath(filePath) } : reference;
+  };
+  const groups = [explicitReferences.map(canonicalReference), toMediaReferences(nodeItems, options.provider).map(canonicalReference),
+    promptInput.references, connected.references.map(canonicalReference)];
+  const [explicit, fromNode, fromPrompt, fromConnections] = options.provider === 'volcengine'
+    ? await Promise.all(groups.map((group) => Promise.all(group.map(localizeVolcengineReference)))) : groups;
   const regularReferences = mergeMediaReferences(
     // 节点上手动挑的参考帧/参考角色排在连线与提示词引用之前，重复的图按它们的角色去重
-    mergeMediaReferences(explicitReferences.map(canonicalReference), toMediaReferences(nodeItems, options.provider).map(canonicalReference)),
-    mergeMediaReferences(promptInput.references, connected.references.map(canonicalReference)),
+    mergeMediaReferences(explicit, fromNode),
+    mergeMediaReferences(fromPrompt, fromConnections),
   );
   const collectedReferences = options.promptFirst
     ? mergeMediaReferences(promptInput.references, regularReferences) : regularReferences;
@@ -735,7 +754,7 @@ export async function generateVideo(
       throw new Error('未配置 火山方舟 的服务地址\n请在「设置 → API Key」中添加');
     }
     const modelName = extractModelName(model, provider);
-    const referenceInput = await resolveVideoReferenceInput(rawPrompt, params.nodeId, params.referenceMedia ?? [], { provider });
+    const referenceInput = await resolveVideoReferenceInput(rawPrompt, params.nodeId, params.referenceMedia ?? [], { provider, target: 'local' });
     const assetReferences = (referenceInput.references ?? []).filter((reference) => reference.provider === 'volcengine');
     const isSeedance25 = isVolcengineSeedance25Model(modelName);
     const capability = getVolcengineSeedanceCapability(modelName);
@@ -1068,7 +1087,7 @@ async function generateVolcengineVideo(
       },
       body: JSON.stringify(requestBody),
       signal,
-    });
+    }, { sensitive: true });
 
     if (!submitResp.ok) {
       remoteFailed = submitResp.status < 500 && ![408, 429].includes(submitResp.status);
@@ -1127,6 +1146,7 @@ async function generateVolcengineVideo(
 
   } catch (error) {
     if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered', 'NativeMediaTaskFailed'].includes(error.name)) throw error;
+    const safeError = redactVolcengineError(error, apiKey);
     if (nativeTask) {
       await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
         nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || remoteFailed ? { notStarted: true } : { unknown: true }).catch(() => undefined);
@@ -1136,20 +1156,20 @@ async function generateVolcengineVideo(
       ...(nativeRemoteId ? { taskId: nativeRemoteId } : {}),
       calculatedMicros: remoteFailed || !requestSent ? 0 : null,
       amountConfidence: remoteFailed || !requestSent ? 'calculated' : 'unknown',
-      errorMessage: error instanceof Error ? error.message.slice(0, 500) : '视频请求失败',
+      errorMessage: safeError instanceof Error ? safeError.message.slice(0, 500) : '视频请求失败',
     });
     if (nativeTask && requestSent && !remoteFailed) {
-      throw createNativeMediaPendingError(nativeTask, error);
+      throw createNativeMediaPendingError(nativeTask, safeError);
     }
     if (receipt) {
       if (remoteFailed || !requestSent) {
         removePendingTask(receipt.nodeId, receipt.taskId, receipt.attemptId);
       } else {
-        const paused = pauseMediaTask(receipt, error, receipt.taskId ? undefined : 'submit_unknown');
+        const paused = pauseMediaTask(receipt, safeError, receipt.taskId ? undefined : 'submit_unknown');
         if (paused) throw paused;
       }
     }
-    throw error;
+    throw safeError;
   } finally {
     nativePreparation?.release();
     if (nodeId) cleanupNodePolling(nodeId, nodeSignal);

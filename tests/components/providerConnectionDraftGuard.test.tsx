@@ -3,9 +3,11 @@
  */
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ApiProviderConfig } from '../../src/types';
 
 interface HookScope { values: unknown[]; index: number }
-const driver = vi.hoisted(() => ({ scope: null as HookScope | null, confirm: vi.fn() }));
+const driver = vi.hoisted(() => ({ scope: null as HookScope | null, confirm: vi.fn(), persistTos: vi.fn(), removeTos: vi.fn(),
+  providers: {} as Record<string, ApiProviderConfig>, toast: vi.fn() }));
 vi.mock('react', async () => ({
   ...await vi.importActual<typeof import('react')>('react'),
   useState: <T,>(initial: T | (() => T)) => {
@@ -22,13 +24,19 @@ vi.mock('react', async () => ({
 }));
 vi.mock('react-dom', () => ({ createPortal: (children: unknown) => children }));
 vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
-vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => ({ workflows: [] }) } }));
+vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => ({ workflows: [], config: { providers: driver.providers }, showToast: driver.toast }) } }));
 vi.mock('../../src/services/confirmDialog', () => ({ confirmAction: (...args: unknown[]) => driver.confirm(...args) }));
+vi.mock('../../src/services/volcengineTosConfigService', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/volcengineTosConfigService')>('../../src/services/volcengineTosConfigService'),
+  persistVolcengineTosConfig: driver.persistTos, deleteVolcengineTosCredential: driver.removeTos,
+}));
 
 import ProviderConnectionDialog from '../../src/components/settings/ProviderConnectionDialog';
 import ProviderConnectionForm from '../../src/components/settings/providerConnection/ProviderConnectionForm';
 import ProviderModelSection from '../../src/components/settings/providerConnection/ProviderModelSection';
 import ProviderImageHostingSettings from '../../src/components/settings/providerConnection/ProviderImageHostingSettings';
+import VolcengineTosSettings from '../../src/components/settings/VolcengineTosSettings';
+import type { VolcengineTosConfig, VolcengineTosCredentials } from '../../src/types/volcengineTos';
 import { IMAGE_HOSTING_TEMPLATES } from '../../src/services/imageHostingTemplates';
 import { MUSE_MODEL_MANIFEST } from '../../src/services/ai/museModels';
 import type { ProviderModelSelection } from '../../src/types';
@@ -52,6 +60,9 @@ function section() {
 function hosting() {
   return elements(tree).find((element) => element.type === ProviderImageHostingSettings)!.props as unknown as ComponentProps<typeof ProviderImageHostingSettings>;
 }
+function tos() {
+  return elements(tree).find((element) => element.type === VolcengineTosSettings)!.props as unknown as ComponentProps<typeof VolcengineTosSettings>;
+}
 function button(text: string) {
   return elements(tree).find((element) => element.props.children === text && typeof element.props.onClick === 'function')!;
 }
@@ -66,6 +77,11 @@ function invalidateProtocol() {
 beforeEach(() => {
   driver.scope = { values: [], index: 0 };
   driver.confirm.mockReset().mockResolvedValue(false);
+  driver.providers = {};
+  driver.persistTos.mockReset().mockImplementation(async (config: VolcengineTosConfig | undefined, keys: VolcengineTosCredentials) =>
+    config?.bucket ? { ...config, credentialRef: keys.accessKeyId ? 'secret:provider/volcengine/tos/22222222-2222-2222-2222-222222222222' : config.credentialRef } : undefined);
+  driver.removeTos.mockReset().mockResolvedValue(undefined);
+  driver.toast.mockClear();
   vi.stubGlobal('document', { body: {} });
   const models: ProviderModelSelection[] = [
     { id: 'text-a', name: 'Text A', category: 'text', provider: 'custom-user', executionProfile: { preset: 'openai-chat' } },
@@ -82,6 +98,110 @@ beforeEach(() => {
   render();
 });
 afterEach(() => vi.unstubAllGlobals());
+
+function prepareVolcengine(config?: VolcengineTosConfig) {
+  driver.scope = { values: [], index: 0 };
+  const initial: ApiProviderConfig = { name: '火山方舟', catalogId: 'volcengine', apiKey: 'fixture-ark-api-key',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', tosUpload: config,
+    selectedModels: [{ id: 'fixture-text-model', name: 'Fixture Text', category: 'text', provider: 'volcengine' }] };
+  driver.providers = { volcengine: initial };
+  props = { ...props, connectionId: 'volcengine', initialConfig: initial, initialModelId: undefined,
+    providerConfigs: driver.providers, connectedProviderIds: ['volcengine'],
+    onSave: vi.fn().mockImplementation(async (id: string, saved: ApiProviderConfig) => { driver.providers[id] = saved; }) };
+  render();
+}
+
+describe('火山 TOS 配置草稿', () => {
+  const existing: VolcengineTosConfig = { bucket: 'reference-bucket', region: 'cn-beijing',
+    credentialRef: 'secret:provider/volcengine/tos/11111111-1111-1111-1111-111111111111' };
+  const keys: VolcengineTosCredentials = { accessKeyId: 'draft-tos-access-key', secretAccessKey: 'draft-tos-secret-key' };
+
+  it('TOS 字段使用密码输入，区域固定北京，清除只更新本地草稿', () => {
+    prepareVolcengine(existing);
+    const current = tos();
+    const rendered = VolcengineTosSettings(current);
+    const inputs = elements(rendered).filter((element) => element.type === 'input');
+    expect(inputs.filter((element) => element.props.type === 'password')).toHaveLength(2);
+    expect(inputs.some((element) => element.props.readOnly === true && element.props.value === '北京（cn-beijing）')).toBe(true);
+    const clear = elements(rendered).find((element) => element.props.children === '清除 TOS 配置')!;
+    (clear.props.onClick as () => void)(); render();
+    expect(tos().config).toBeUndefined();
+    expect(driver.persistTos).not.toHaveBeenCalled();
+    expect(driver.removeTos).not.toHaveBeenCalled();
+  });
+
+  it('取消含 TOS 凭据的草稿会确认，确认文案不含 AK/SK，取消不保存凭据', async () => {
+    prepareVolcengine();
+    tos().onChange({ bucket: 'reference-bucket', region: 'cn-beijing', credentialRef: '' }); render();
+    tos().onCredentialsChange(keys); render();
+    click('取消'); await settle();
+    expect(driver.confirm).toHaveBeenCalledOnce();
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(driver.persistTos).not.toHaveBeenCalled();
+    expect(JSON.stringify(driver.confirm.mock.calls)).not.toContain(keys.accessKeyId);
+    expect(JSON.stringify(driver.confirm.mock.calls)).not.toContain(keys.secretAccessKey);
+    driver.confirm.mockResolvedValueOnce(true);
+    click('取消'); await settle();
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(driver.persistTos).not.toHaveBeenCalled();
+  });
+
+  it('未配置 TOS 可以保存仅使用公网素材的连接；填写一项密钥则阻止保存', async () => {
+    prepareVolcengine();
+    click('保存更改'); await settle();
+    expect(props.onSave).toHaveBeenCalledOnce();
+    expect(vi.mocked(props.onSave).mock.calls[0][1].tosUpload).toBeUndefined();
+    vi.mocked(props.onSave).mockClear(); driver.persistTos.mockClear();
+    tos().onChange({ bucket: 'reference-bucket', region: 'cn-beijing', credentialRef: '' }); render();
+    tos().onCredentialsChange({ accessKeyId: keys.accessKeyId, secretAccessKey: '' }); render();
+    click('保存更改'); await settle();
+    expect(props.onSave).not.toHaveBeenCalled();
+    expect(driver.persistTos).not.toHaveBeenCalled();
+    expect(form().catalogMessage).toContain('同时填写');
+  });
+
+  it('连接保存失败后保留新引用供重试，成功后清理未被其他连接使用的旧引用', async () => {
+    prepareVolcengine(existing);
+    vi.mocked(props.onSave).mockRejectedValueOnce(new Error('连接保存失败'));
+    tos().onCredentialsChange(keys); render();
+    click('保存更改'); await settle();
+    const nextRef = 'secret:provider/volcengine/tos/22222222-2222-2222-2222-222222222222';
+    expect(tos().config?.credentialRef).toBe(nextRef);
+    expect(tos().credentials).toEqual({ accessKeyId: '', secretAccessKey: '' });
+    expect(driver.removeTos).not.toHaveBeenCalled();
+    const saved = vi.mocked(props.onSave).mock.calls[0][1];
+    expect(saved.tosUpload?.credentialRef).toBe(nextRef);
+    expect(JSON.stringify(saved)).not.toContain(keys.accessKeyId);
+    expect(JSON.stringify(saved)).not.toContain(keys.secretAccessKey);
+    click('保存更改'); await settle();
+    expect(driver.persistTos).toHaveBeenLastCalledWith(expect.objectContaining({ credentialRef: nextRef }), { accessKeyId: '', secretAccessKey: '' });
+    expect(driver.removeTos).toHaveBeenCalledExactlyOnceWith(existing.credentialRef);
+    driver.confirm.mockClear(); click('取消'); await settle();
+    expect(driver.confirm).not.toHaveBeenCalled();
+  });
+
+  it('旧 TOS 引用仍被其他连接使用时不清理', async () => {
+    prepareVolcengine(existing);
+    driver.providers.shared = { name: '共享引用连接', apiKey: '', tosUpload: existing };
+    tos().onCredentialsChange(keys); render();
+    click('保存更改'); await settle();
+    expect(props.onSave).toHaveBeenCalledOnce();
+    expect(driver.removeTos).not.toHaveBeenCalled();
+  });
+
+  it('返回厂商选择后重置 TOS 和明文凭据草稿', async () => {
+    prepareVolcengine();
+    tos().onChange({ bucket: 'reference-bucket', region: 'cn-beijing', credentialRef: '' }); render();
+    tos().onCredentialsChange(keys); render();
+    driver.confirm.mockResolvedValueOnce(true);
+    form().onReturnToPicker(); await settle();
+    const option = elements(tree).find((element) => element.key === 'volcengine')!;
+    (option.props.onClick as () => void)(); await settle();
+    expect(tos().config).toBeUndefined();
+    expect(tos().credentials).toEqual({ accessKeyId: '', secretAccessKey: '' });
+    expect(driver.persistTos).not.toHaveBeenCalled();
+  });
+});
 
 it.each([
   { mode: '新增', editing: false, legacy: false, saveLabel: '添加厂商' },

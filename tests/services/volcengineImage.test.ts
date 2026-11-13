@@ -55,6 +55,7 @@ describe('Volcengine Seedream image requests', () => {
     });
 
     const request = transportMocks.corsSafeFetch.mock.calls[0]?.[1] as RequestInit;
+    expect(transportMocks.corsSafeFetch.mock.calls[0]?.[2]).toEqual({ sensitive: true });
     const body = JSON.parse(String(request.body));
     expect(body).toMatchObject({
       model: 'doubao-seedream-5-0-pro-260628',
@@ -139,6 +140,21 @@ describe('Volcengine Seedream image requests', () => {
     await expect(generateVolcengineImagesBatch(baseParams, 1)).rejects.toMatchObject({ status, definitiveFailure: false });
     expect(billingMocks.updateBillingRun).toHaveBeenLastCalledWith(null, expect.objectContaining({
       status: 'unknown', calculatedMicros: null, amountConfidence: 'unknown',
+    }));
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes echoed TOS signed URLs before propagating or recording a rejected image request', async () => {
+    const url = 'https://private-bucket.tos-cn-beijing.ivolces.com/ref.png?X-Tos-Credential=fixtureAK&X-Tos-Signature=fixtureSignature';
+    transportMocks.corsSafeFetch.mockResolvedValue(new Response(JSON.stringify({
+      error: { message: `Image download failed ${url} ${encodeURIComponent(url)} Request id: image-1` },
+    }), { status: 400 }));
+    await expect(generateVolcengineImagesBatch(baseParams, 1)).rejects.toMatchObject({
+      status: 400, definitiveFailure: true,
+      message: 'Image download failed [REDACTED] [REDACTED] Request id: image-1',
+    });
+    expect(billingMocks.updateBillingRun).toHaveBeenLastCalledWith(null, expect.objectContaining({
+      status: 'failed', errorMessage: 'Image download failed [REDACTED] [REDACTED] Request id: image-1',
     }));
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
   });

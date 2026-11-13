@@ -17,7 +17,8 @@ import { mapImageParameters } from '../imageParameterMappings';
 import { quoteVolcengineImage } from '../../billing/volcenginePricing';
 import { createBillingRun, updateBillingRun } from '../../billing/volcengineBillingService';
 import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
-import { redactModelProtocolError, throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
+import { throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
+import { redactVolcengineError } from './volcengineError';
 
 export interface VolcengineImageParams {
   apiKey: string;
@@ -87,7 +88,7 @@ export async function generateVolcengineImage(
     await params.beforeSubmit?.(); signal?.throwIfAborted(); requestSent = true;
     const response = await corsSafeFetch(apiUrl, {
       method: 'POST', headers: buildAuthHeaders(apiKey), body: JSON.stringify(requestBody), signal,
-    });
+    }, { sensitive: true });
     if (!response.ok) await parseResponseError(response, `图片生成失败 (${response.status})`);
     const json = await response.json();
     const imageUrl = parseGeneralImageResponse(json);
@@ -107,7 +108,7 @@ export async function generateVolcengineImage(
     return { url: imageUrl, width: dimensions.width, height: dimensions.height,
       ...(params.collectCandidates ? { additionalResults: candidates.slice(1).map((url) => ({ url, ...dimensions })) } : {}) };
   } catch (error) {
-    const safeError = redactModelProtocolError(error, apiKey);
+    const safeError = redactVolcengineError(error, apiKey);
     const explicitlyRejected = !requestSent || getHttpResponseError(safeError)?.definitiveFailure === true;
     await updateBillingRun(run, {
       status: explicitlyRejected ? 'failed' : 'unknown', finishedAt: Date.now(),
