@@ -1,7 +1,7 @@
 /**
  * fsTrash — 回归测试：显式资产删除的回收站结果。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fsMocks = vi.hoisted(() => ({
   exists: vi.fn(),
@@ -18,7 +18,14 @@ const coreMocks = vi.hoisted(() => ({
   notifyProjectDiskChanged: vi.fn(),
   isTauriEnv: vi.fn(() => true),
   isSharedProjectDataDir: vi.fn(() => false),
+  getNativeProjectOwner: vi.fn<() => string | undefined>(() => undefined),
 }));
+
+const nativeTrash = vi.hoisted(() => ({
+  guard: vi.fn(), isCurrent: vi.fn(async () => true), isCopySource: vi.fn(() => false),
+}));
+vi.mock('../../src/services/fs/nativeNodeTrash', () => ({ createNativeNodeTrashGuard: nativeTrash.guard }));
+vi.mock('../../src/services/nodeMediaCopy', () => ({ isNodeMediaCopySource: nativeTrash.isCopySource }));
 
 vi.mock('@tauri-apps/plugin-fs', () => fsMocks);
 vi.mock('@tauri-apps/api/core', () => ({ invoke: coreMocks.invoke }));
@@ -29,6 +36,7 @@ vi.mock('../../src/services/fs/core', () => ({
   sanitizeFolderName: (name: string) => name.replace(/[<>:"|?*/\\]/g, "_"),
   isTauriEnv: coreMocks.isTauriEnv,
   isSharedProjectDataDir: coreMocks.isSharedProjectDataDir,
+  getNativeProjectOwner: coreMocks.getNativeProjectOwner,
   joinPath: (...parts: string[]) => parts.join('/'),
   notifyProjectDiskChanged: coreMocks.notifyProjectDiskChanged,
 }));
@@ -225,6 +233,8 @@ describe('删除节点文件的项目归属校验', () => {
     expect(isPathInsideDir('D:/data/project-a/a.png', 'D:/data/project-b')).toBe(false);
     // 目录本身不算「目录内的文件」
     expect(isPathInsideDir('D:/data/project-b', 'D:/data/project-b')).toBe(false);
+    expect(isPathInsideDir('/data/Project/a.png', '/data/project')).toBe(false);
+    expect(isPathInsideDir('/data/project/a.png', '/data/project')).toBe(true);
   });
 
   it('分镜仍持有参考画面或成片快照时，删除来源节点保留共用文件', async () => {
@@ -389,5 +399,72 @@ describe('删除节点文件的项目归属校验', () => {
     await deleteNodeFile({ filePath: 'D:/data/project-a/original.png' });
 
     expect(fsMocks.rename).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('新结构节点逐文件回收', () => {
+  const projectId = 'native-canvas';
+  const root = 'D:/data/new-project';
+  const filePath = `${root}/分组/视频.mp4`;
+  const context = () => ({ deletedNodeIds: ['video-node'], getLiveKeepPaths: vi.fn<() => ReadonlySet<string> | null>(() => new Set<string>()) });
+  afterEach(() => {
+    coreMocks.getNativeProjectOwner.mockReturnValue(undefined);
+    coreMocks.isSharedProjectDataDir.mockReturnValue(false);
+    vi.restoreAllMocks();
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    coreMocks.isTauriEnv.mockReturnValue(true);
+    coreMocks.getNativeProjectOwner.mockReturnValue('native-owner');
+    coreMocks.isSharedProjectDataDir.mockReturnValue(true);
+    projectDirMock.get.mockResolvedValue(root);
+    fsMocks.exists.mockImplementation(async (path: string) => !path.includes('/.trash/'));
+    fsMocks.lstat.mockResolvedValue({ isSymlink: false });
+    fsMocks.rename.mockResolvedValue(undefined);
+    nativeTrash.isCurrent.mockResolvedValue(true);
+    nativeTrash.isCopySource.mockReturnValue(false);
+    nativeTrash.guard.mockResolvedValue({ references: new Set(), isCurrent: nativeTrash.isCurrent });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  it('共用作品根中的独占文件进入主根 .trash，撤销恢复且不整体搬走同名分组', async () => {
+    await deleteNodeFiles([{ filePath }], new Set(), projectId, ['分组'], context());
+    expect(nativeTrash.guard).toHaveBeenCalledWith(projectId, ['video-node']);
+    expect(fsMocks.rename).toHaveBeenCalledTimes(1);
+    const trashPath = fsMocks.rename.mock.calls[0][1] as string;
+    expect(trashPath).toMatch(/^D:\/data\/new-project\/\.trash\/[^/]+-视频\.mp4$/);
+    expect(fsMocks.rename).toHaveBeenCalledWith(filePath, trashPath);
+    expect(fsMocks.readFile).not.toHaveBeenCalled();
+    expect(coreMocks.invoke).not.toHaveBeenCalled();
+    expect(await resolveNodeUndoTrashPaths({ filePath }, projectId)).toEqual([filePath]);
+    fsMocks.exists.mockImplementation(async (path: string) => path !== filePath);
+    await expect(restoreFromUndoTrash(filePath)).resolves.toBe(true);
+    expect(fsMocks.rename).toHaveBeenLastCalledWith(trashPath, filePath);
+  });
+
+  it('其他画布仍引用的相同文件按 Windows 路径身份保留', async () => {
+    nativeTrash.guard.mockResolvedValue({ references: new Set([filePath.toUpperCase()]), isCurrent: nativeTrash.isCurrent });
+    await deleteNodeFiles([{ filePath }], new Set(), projectId, [], context());
+    expect(fsMocks.rename).not.toHaveBeenCalled();
+  });
+
+  it.each(['changed', 'switched', 'new-reference', 'copying'] as const)('回收前状态改变时保留文件：%s', async (condition) => {
+    const current = context();
+    if (condition === 'changed') nativeTrash.isCurrent.mockResolvedValue(false);
+    if (condition === 'switched') current.getLiveKeepPaths.mockReturnValue(null);
+    if (condition === 'new-reference') current.getLiveKeepPaths.mockReturnValue(new Set([filePath]));
+    if (condition === 'copying') nativeTrash.isCopySource.mockReturnValue(true);
+    await deleteNodeFiles([{ filePath }], new Set(), projectId, [], current);
+    expect(fsMocks.rename).not.toHaveBeenCalled();
+  });
+
+  it('没有明确删除范围、引用读取失败或隐藏元数据时不移动文件，也不阻止节点删除完成', async () => {
+    await deleteNodeFiles([{ filePath }], new Set(), projectId);
+    expect(nativeTrash.guard).not.toHaveBeenCalled();
+    nativeTrash.guard.mockRejectedValueOnce(new Error('unavailable'));
+    await expect(deleteNodeFiles([{ filePath }], new Set(), projectId, [], context())).resolves.toBeUndefined();
+    await deleteNodeFiles([{ filePath: `${root}/.ai-canvas-native-project.json` }], new Set(), projectId, [], context());
+    expect(fsMocks.rename).not.toHaveBeenCalled();
   });
 });

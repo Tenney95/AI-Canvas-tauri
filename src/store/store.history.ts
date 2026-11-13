@@ -12,6 +12,7 @@ import { waitForPendingNodeExits } from '../utils/nodeAnimations';
 import { getHistoryGroupSize } from '../utils/historyOperationLabels';
 import { getGroupLayoutComparisonPosition, getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
 import { COLLAPSED_GROUP_SIZE } from './store.groups';
+import { createNodeFileDeletionContext } from './store.nodes';
 
 export interface HistoryEntry {
   nodes: Node<BaseNodeData>[];
@@ -548,6 +549,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     await fileService.deleteNodeFiles(
       removedNodes.filter((node) => !node.data.artifactId).map((node) => node.data), keepReferences, projectId,
       fileService.deletedGroupFolderNames(groups, new Set(removedNodes.map((node) => node.id))),
+      createNodeFileDeletionContext(get, nodes, new Set(removedNodes.map((node) => node.id)), projectId),
     );
 
     const latest = get();

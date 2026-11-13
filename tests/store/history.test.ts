@@ -69,7 +69,7 @@ vi.mock('../../src/utils/nodeAnimations', () => ({
 }));
 
 import { useAppStore } from '../../src/store/useAppStore';
-import { isCanvasConnectionValid } from '../../src/store/store.nodes';
+import { createNodeFileDeletionContext, isCanvasConnectionValid } from '../../src/store/store.nodes';
 import {
   getConnectionMenuOptions,
   resolveNodeBodyHandle,
@@ -132,6 +132,28 @@ beforeEach(() => {
   nodeExitMocks.pending.clear();
   nodeExitMocks.playNodeExit.mockResolvedValue(undefined);
   useAppStore.setState(useAppStore.getInitialState(), true);
+});
+
+describe('节点回收的实时引用保护', () => {
+  it('移动前重新读取新增节点及聊天引用，项目切换或待删节点变化时拒绝继续', () => {
+    const removed = node('removed', { filePath: 'project/removed.png' });
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [removed], messages: [] });
+    const context = createNodeFileDeletionContext(useAppStore.getState, [removed], new Set([removed.id]), 'project-1');
+    expect(context.deletedNodeIds).toEqual([removed.id]);
+    expect(context.getLiveKeepPaths()).toEqual(new Set());
+
+    useAppStore.setState({ nodes: [removed, node('new-reference', { filePath: 'project/removed.png' })],
+      messages: [{ id: 'message', conversationId: 'conversation', role: 'assistant', content: '', timestamp: 1, status: 'done',
+        mediaResult: { id: 'media', kind: 'image', deliveryMode: 'chat', url: 'asset://project/chat.png',
+          sourceUrl: '', filePath: 'project/chat.png', persistence: 'saved', prompt: '', modelId: '', provider: '', createdAt: 1 } }],
+    });
+    expect(context.getLiveKeepPaths()).toEqual(new Set(['project/removed.png', 'project/chat.png']));
+
+    useAppStore.setState({ currentProjectId: 'project-2' });
+    expect(context.getLiveKeepPaths()).toBeNull();
+    useAppStore.setState({ currentProjectId: 'project-1', nodes: [{ ...removed, data: { ...removed.data, filePath: 'project/replaced.png' } }] });
+    expect(context.getLiveKeepPaths()).toBeNull();
+  });
 });
 
 describe('工作流模型与尺寸的新建偏好', () => {
@@ -905,6 +927,7 @@ describe('batch canvas history', () => {
     expect(useAppStore.getState()).toMatchObject({ historyIndex: 0 });
     expect(fileMocks.deleteNodeFiles).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ filePath: 'project/node-a.png' })]), expect.any(Set), expect.anything(), expect.any(Array),
+      expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }),
     );
     await expect(useAppStore.getState().redo()).resolves.toBe(false);
   });
@@ -935,6 +958,7 @@ describe('batch canvas history', () => {
     await expect(useAppStore.getState().redo()).resolves.toBe(true);
     expect(fileMocks.deleteNodeFiles).toHaveBeenCalledWith(
       [director.data], expect.any(Set), 'project-1', [],
+      expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }),
     );
   });
 
@@ -962,7 +986,8 @@ describe('batch canvas history', () => {
       expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['node-b']);
     });
     expect(useAppStore.getState().groups).toEqual([]);
-    expect(fileMocks.deleteNodeFiles).toHaveBeenCalledWith([child.data], expect.any(Set), expect.anything(), ['Group']);
+    expect(fileMocks.deleteNodeFiles).toHaveBeenCalledWith([child.data], expect.any(Set), expect.anything(), ['Group'],
+      expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }));
     expect(useAppStore.getState().edges).toEqual([]);
 
     await expect(useAppStore.getState().undo()).resolves.toBe(true);
@@ -990,13 +1015,15 @@ describe('batch canvas history', () => {
     if (mode === 'single') useAppStore.getState().deleteNode(folder.id);
     else useAppStore.getState().deleteNodesBatch([folder.id, child.id]);
     await vi.waitFor(() => expect(useAppStore.getState().nodes).toEqual([]));
-    expect(fileMocks.deleteNodeFiles).toHaveBeenLastCalledWith([folder.data, child.data], expect.any(Set), 'project-1', ['Folder']);
+    expect(fileMocks.deleteNodeFiles).toHaveBeenLastCalledWith([folder.data, child.data], expect.any(Set), 'project-1', ['Folder'],
+      expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }));
     fileMocks.restoreFromUndoTrash.mockClear();
     await useAppStore.getState().undo();
     expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(1, 'project/Folder');
     expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(2, 'project/Folder/image.png');
     await useAppStore.getState().redo();
-    expect(fileMocks.deleteNodeFiles).toHaveBeenLastCalledWith([folder.data, child.data], expect.any(Set), 'project-1', ['Folder']);
+    expect(fileMocks.deleteNodeFiles).toHaveBeenLastCalledWith([folder.data, child.data], expect.any(Set), 'project-1', ['Folder'],
+      expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }));
   });
 
   it('removes an empty group when React Flow removes its last child', () => {

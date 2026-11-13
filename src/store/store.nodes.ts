@@ -592,6 +592,23 @@ export function collectKeepPaths(
   return keepPaths;
 }
 
+/** 文件暂存晚于画布事件；回收前复核原项目、删除对象和新出现的共享引用。 */
+export function createNodeFileDeletionContext(
+  get: () => Pick<AppState, 'currentProjectId' | 'nodes' | 'messages'>,
+  nodes: Node<BaseNodeData>[], idsToDelete: ReadonlySet<string>, projectId: string | null,
+): fileService.NodeFileDeletionContext {
+  const deleted = new Map(nodes.filter((node) => idsToDelete.has(node.id)).map((node) => [node.id, node.data]));
+  return {
+    deletedNodeIds: [...idsToDelete],
+    getLiveKeepPaths: () => {
+      const latest = get();
+      if (latest.currentProjectId !== projectId
+        || latest.nodes.some((node) => deleted.has(node.id) && deleted.get(node.id) !== node.data)) return null;
+      return collectKeepPaths(latest.nodes, idsToDelete, latest.messages);
+    },
+  };
+}
+
 function mergeNodeData(previous: BaseNodeData, patch: Partial<BaseNodeData>): BaseNodeData {
   if ('type' in patch && patch.type !== previous.type
     && (patch.type === 'ai-app' || previous.type === 'ai-app')) {
@@ -1545,7 +1562,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
 
     // Collect all node IDs to delete: self + descendants (for group nodes)
-    const { nodes } = get();
+    const { nodes, currentProjectId: projectId } = get();
     const idsToDelete = collectCanvasDescendantIds(nodes, [nodeId]);
     // Cancel any active polling for all deleted nodes
     for (const id of idsToDelete) {
@@ -1556,8 +1573,9 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const keepPaths = collectKeepPaths(nodes, idsToDelete, get().messages);
     void fileService.deleteNodeFiles(
       nodes.filter((node) => idsToDelete.has(node.id) && !node.data.artifactId).map((node) => node.data),
-      keepPaths, get().currentProjectId,
+      keepPaths, projectId,
       fileService.deletedGroupFolderNames(get().groups, idsToDelete),
+      createNodeFileDeletionContext(get, nodes, idsToDelete, projectId),
     ).catch((e) => console.warn('[删除节点] 文件清理失败:', e));
 
     // 先播放退场动画，结束后再真正从状态中移除（动画期间历史已提交，撤销仍指向删除前状态）
@@ -1579,7 +1597,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
 
     // 收集所有要删除的 ID（包含子节点递归）
-    const { nodes } = get();
+    const { nodes, currentProjectId: projectId } = get();
     const idsToDelete = collectCanvasDescendantIds(nodes, limitedIds);
     // 取消所有轮询
     for (const id of idsToDelete) {
@@ -1590,8 +1608,9 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const keepPaths = collectKeepPaths(nodes, idsToDelete, get().messages);
     void fileService.deleteNodeFiles(
       nodes.filter((node) => idsToDelete.has(node.id) && !node.data.artifactId).map((node) => node.data),
-      keepPaths, get().currentProjectId,
+      keepPaths, projectId,
       fileService.deletedGroupFolderNames(get().groups, idsToDelete),
+      createNodeFileDeletionContext(get, nodes, idsToDelete, projectId),
     ).catch((e) => console.warn('[批量删除] 文件清理失败:', e));
 
     // 统一播放退场动画后移除

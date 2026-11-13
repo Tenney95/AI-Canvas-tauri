@@ -9,28 +9,73 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { useCanvasContextMenu } from '../../src/hooks/useCanvasContextMenu';
 import StoryboardNode from '../../src/components/nodes/StoryboardNode';
 
+const fileMocks = vi.hoisted(() => ({
+  deleteNodeFiles: vi.fn<typeof import('../../src/services/fileService')['deleteNodeFiles']>(async () => undefined),
+}));
+vi.mock('../../src/services/fileService', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/fileService')>(),
+  deleteNodeFiles: fileMocks.deleteNodeFiles,
+}));
+vi.mock('../../src/utils/nodeAnimations', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/utils/nodeAnimations')>(),
+  playNodeExit: vi.fn(async () => undefined),
+}));
+
 vi.mock('@xyflow/react', async (importOriginal) => ({
   ...await importOriginal<typeof import('@xyflow/react')>(),
   Handle: () => null,
   useReactFlow: () => ({ screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({ x, y }) }),
 }));
 
-function createFromContextMenu(rows: number, cols: number) {
+function contextMenu() {
   let menu: ReturnType<typeof useCanvasContextMenu> | undefined;
   function Harness() {
     menu = useCanvasContextMenu();
     return null;
   }
   renderToStaticMarkup(<Harness />);
-  menu!.addNodeAtCtxPos('ai-storyboard', '宫格分镜', 'source', { rows, cols });
+  return menu!;
+}
+
+function createFromContextMenu(rows: number, cols: number) {
+  contextMenu().addNodeAtCtxPos('ai-storyboard', '宫格分镜', 'source', { rows, cols });
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'project-grid', nodes: [], edges: [] });
 });
 
 describe('canvas grid creation', () => {
+  it('右键删除走统一回收流程，保留其他节点的共享文件及不可变产物', async () => {
+    const mediaNode = (id: string, filePath: string, artifactId?: string): Node<BaseNodeData> => ({
+      id, type: 'ai-image', position: { x: 0, y: 0 },
+      data: { type: 'ai-image', label: id, status: 'success', filePath, artifactId },
+    });
+    const removed = mediaNode('removed', 'project/shared.png');
+    const artifact = mediaNode('artifact', 'project/artifact.png', 'immutable-result');
+    const living = mediaNode('living', 'project/shared.png');
+    useAppStore.setState({ nodes: [removed, artifact, living], selectedNodeIds: [removed.id, artifact.id] });
+
+    contextMenu().handleDelete();
+
+    expect(fileMocks.deleteNodeFiles).toHaveBeenCalledOnce();
+    const [candidates, keepPaths, projectId, groups, context] = fileMocks.deleteNodeFiles.mock.calls[0];
+    expect(candidates).toEqual([removed.data]);
+    expect(keepPaths).toEqual(new Set(['project/shared.png', 'project/artifact.png']));
+    expect(projectId).toBe('project-grid');
+    expect(groups).toEqual([]);
+    expect(context).toEqual(expect.objectContaining({
+      deletedNodeIds: [removed.id, artifact.id], getLiveKeepPaths: expect.any(Function),
+    }));
+
+    await Promise.resolve();
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual([living.id]);
+    useAppStore.setState({ nodes: [living, mediaNode('new-reference', 'project/late-reference.png')] });
+    expect(context!.getLiveKeepPaths()).toEqual(new Set(['project/shared.png', 'project/late-reference.png']));
+  });
+
   it('creates a 4×9 blank storyboard whose cells accept image drops', () => {
     createFromContextMenu(4, 9);
     const storyboard = useAppStore.getState().nodes[0];

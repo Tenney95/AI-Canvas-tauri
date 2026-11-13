@@ -9,7 +9,7 @@ import {
   normalizeDirectorResultManifestReference,
   normalizeDirectorSceneReference,
 } from '../directorSceneSchema';
-import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir, isSharedProjectDataDir, sanitizeFolderName } from './core';
+import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir, getNativeProjectOwner, isSharedProjectDataDir, sanitizeFolderName } from './core';
 
 /** Explicit history deletion: fail visibly, accept only regular files owned by this project. */
 export async function recycleHistoryFile(projectId: string, filePath: string, assertCurrent: (fileExists: boolean) => void): Promise<void> {
@@ -117,7 +117,8 @@ export async function resolveNodeUndoTrashPaths(
     const filePath = stringPath(nodeData.filePath);
     return filePath && !keepReferences?.has(filePath) ? [filePath] : [];
   }
-  if (!projectId || isSharedProjectDataDir(projectId)) return [];
+  // 新结构共用作品根，但文件可按全作品引用判断独占；旧剧集保持原保护行为。
+  if (!projectId || !getNativeProjectOwner(projectId) && isSharedProjectDataDir(projectId)) return [];
 
   const projectRoot = await getProjectDataDir(projectId).catch(() => null);
   if (!projectRoot) return [];
@@ -194,7 +195,9 @@ async function assertTrashParentsSafe(path: string, root: string): Promise<void>
 }
 
 /** Move a file to the project-level .trash staging directory (for undo support) */
-export async function moveToUndoTrash(filePath: string, projectId?: string | null): Promise<void> {
+export async function moveToUndoTrash(
+  filePath: string, projectId?: string | null, canMove?: () => Promise<boolean>,
+): Promise<void> {
   if (!isTauriEnv()) return;
   try {
     const root = projectId ? await getProjectDataDir(projectId) : null;
@@ -210,6 +213,7 @@ export async function moveToUndoTrash(filePath: string, projectId?: string | nul
     const fileName = filePath.split(/[/\\]/).pop() || 'file';
     const trashPath = joinPath(trashDir, `${Date.now()}-${crypto.randomUUID()}-${fileName}`);
     if (await exists(trashPath)) throw new Error('回收目标已存在');
+    if (canMove && !await canMove()) return;
     // Rename the entire directory on the same filesystem, without loading media bytes.
     await rename(filePath, trashPath);
     undoTrashMap.set(filePath, trashPath);
@@ -311,13 +315,24 @@ export async function deleteProjectDataDir(projectId: string, options: { throwOn
   }
 }
 
-/** 判断路径是否位于某个项目的数据目录内（大小写不敏感，兼容 Windows 反斜杠）。 */
+function trashPathKey(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//')
+    .replace(/^\/\/\?\//, '').replace(/\/+$/, '');
+  return /^(?:[a-z]:\/|\/\/)/i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+/** Windows 盘符/UNC 忽略大小写；POSIX 保留大小写，禁止穿越组件。 */
 export function isPathInsideDir(filePath: string, dirPath: string): boolean {
-  const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase();
-  const normalizedDir = dirPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const normalizedPath = trashPathKey(filePath);
+  const normalizedDir = trashPathKey(dirPath);
   if (!normalizedDir) return false;
   if (normalizedPath.split('/').some((part) => part === '.' || part === '..')) return false;
   return normalizedPath.startsWith(`${normalizedDir}/`);
+}
+
+function usesTrashPath(filePath: string, references: ReadonlySet<string>): boolean {
+  return [...references].some((reference) => trashPathKey(reference) === trashPathKey(filePath)
+    || isPathInsideDir(reference, filePath) || isPathInsideDir(filePath, reference));
 }
 
 /**
@@ -371,17 +386,46 @@ export async function resolveGroupUndoTrashPaths(
       || isPathInsideDir(reference, path)));
 }
 
-/** Stage groups first as complete folders; never also stage their child files. */
+export interface NodeFileDeletionContext {
+  deletedNodeIds: readonly string[];
+  /** 项目切换或节点变化时返回 null；异步回收前重新检查当前画布与消息。 */
+  getLiveKeepPaths: () => ReadonlySet<string> | null;
+}
+
+/** 旧结构整组暂存；新结构逐文件核对共享引用，再复用同一撤销暂存流程。 */
 export function deleteNodeFiles(
   nodeData: readonly NodeFileReferences[], keepPaths?: ReadonlySet<string>,
   projectId?: string | null, groupNames: readonly string[] = [],
+  context?: NodeFileDeletionContext,
 ): Promise<void> {
   const operation = (async () => {
-    const folders = await resolveGroupUndoTrashPaths(groupNames, projectId, keepPaths);
+    const native = projectId && getNativeProjectOwner(projectId);
+    // 新结构的调用方必须给出明确删除范围，不能凭共享目录推断文件归属。
+    if (native && !context) return;
+    const guard = native && projectId && context
+      ? await (await import('./nativeNodeTrash')).createNativeNodeTrashGuard(projectId, context.deletedNodeIds).catch(() => null) : undefined;
+    if (native && !guard) {
+      console.warn('[fileService] 无法确认作品引用，节点文件保留');
+      return;
+    }
+    const folders = native ? [] : await resolveGroupUndoTrashPaths(groupNames, projectId, keepPaths);
     const files = (await Promise.all(nodeData.map((data) => resolveNodeUndoTrashPaths(data, projectId, keepPaths)))).flat();
     const paths = [...new Set([...folders, ...files])].filter((path) =>
       !folders.some((folder) => isPathInsideDir(path, folder)));
-    for (const path of paths) await moveToUndoTrash(path, projectId);
+    for (const path of paths) {
+      if (guard) {
+        // 元数据与整组目录不随节点搬迁；场景 bundle 仍按原来的整体语义处理。
+        const root = await getProjectDataDir(projectId!);
+        if (!root || trashPathKey(path).slice(trashPathKey(root).length + 1)
+          .split('/').some((part) => part.startsWith('.')) || usesTrashPath(path, guard.references)) continue;
+        const { isNodeMediaCopySource } = await import('../nodeMediaCopy');
+        await moveToUndoTrash(path, projectId, async () => {
+          if (!await guard.isCurrent()) return false;
+          const live = context!.getLiveKeepPaths();
+          return live !== null && !usesTrashPath(path, live) && !isNodeMediaCopySource(path);
+        });
+      } else await moveToUndoTrash(path, projectId);
+    }
   })();
   // 删除是即发即忘的（节点退场动画不等文件系统），撤销必须能等它落定，
   // 否则还原会跑在暂存前面：节点回来了，文件随后才被搬进 .trash，成了死节点

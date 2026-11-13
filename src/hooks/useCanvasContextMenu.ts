@@ -7,6 +7,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import type { Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
+import { collectKeepPaths, createNodeFileDeletionContext } from '../store/store.nodes';
 import type { BaseNodeData, NodeType } from '../types';
 import { SHOTLIST_DEFAULT_COLUMNS, createShotRow } from '../types';
 import * as fileService from '../services/fileService';
@@ -215,14 +216,13 @@ export function useCanvasContextMenu() {
     }
 
     // Delete associated local files
-    const keepPaths = new Set(
-      state.nodes.filter((n) => !expandedIds.has(n.id))
-        .map((n) => (n.data as BaseNodeData).filePath)
-        .filter((p): p is string => !!p),
-    );
-    for (const node of state.nodes.filter((n) => expandedIds.has(n.id))) {
-      fileService.deleteNodeFile(node.data as BaseNodeData, keepPaths, state.currentProjectId).catch(() => {});
-    }
+    const keepPaths = collectKeepPaths(state.nodes, expandedIds, state.messages);
+    void fileService.deleteNodeFiles(
+      state.nodes.filter((node) => expandedIds.has(node.id) && !node.data.artifactId).map((node) => node.data),
+      keepPaths, state.currentProjectId,
+      fileService.deletedGroupFolderNames(state.groups, expandedIds),
+      createNodeFileDeletionContext(useAppStore.getState, state.nodes, expandedIds, state.currentProjectId),
+    ).catch(() => {});
 
     useAppStore.getState().commitToHistory();
     playNodeExit(allIds).then(() => {

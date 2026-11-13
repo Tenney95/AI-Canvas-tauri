@@ -4,6 +4,7 @@
  */
 import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { collectKeepPaths, createNodeFileDeletionContext } from '../store/store.nodes';
 import * as fileService from '../services/fileService';
 import { openAssetSearchWindow } from '../utils/assetSearchWindow';
 import { playNodeExit } from '../utils/nodeAnimations';
@@ -304,14 +305,13 @@ export function useKeyboardShortcuts() {
         }
 
         // Delete associated local files —— 跳过仍被存活节点引用的共享文件（复制节点场景）
-        const keepPaths = new Set(
-          state.nodes.filter((n) => !expandedIds.has(n.id))
-            .map((n) => (n.data as BaseNodeData).filePath)
-            .filter((p): p is string => !!p),
-        );
-        for (const node of state.nodes.filter((n) => expandedIds.has(n.id))) {
-          fileService.deleteNodeFile(node.data as BaseNodeData, keepPaths, state.currentProjectId).catch(() => {});
-        }
+        const keepPaths = collectKeepPaths(state.nodes, expandedIds, state.messages);
+        void fileService.deleteNodeFiles(
+          state.nodes.filter((node) => expandedIds.has(node.id) && !node.data.artifactId).map((node) => node.data),
+          keepPaths, state.currentProjectId,
+          fileService.deletedGroupFolderNames(state.groups, expandedIds),
+          createNodeFileDeletionContext(useAppStore.getState, state.nodes, expandedIds, state.currentProjectId),
+        ).catch(() => {});
 
         // Single commit — undo always goes back to the real pre-delete state
         useAppStore.getState().commitToHistory();
