@@ -1139,7 +1139,7 @@ export default function AssetsPanel() {
         if (!inName && !inTags) return false;
       }
       return true;
-    }), sortBy, sortOrder, assetUsage);
+    }), sortBy, sortOrder, assetUsage, activeCategory === null);
   }, [files, activeCategory, activeTag, deferredSearch, sortBy, sortOrder, assetUsage]);
 
   const visibleFiles = useMemo(() => filteredFiles.slice(0, visibleCount), [filteredFiles, visibleCount]);

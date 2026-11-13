@@ -15,13 +15,17 @@ function knownTime(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-/** 返回排序副本；同值按名称、路径升序，未知时间在两个方向中都排最后。 */
+/** 返回排序副本；可将文本固定置后，组内同值按名称、路径升序，未知时间排最后。 */
 export function sortAssetFiles<T extends AssetFileEntry>(
   files: readonly T[], sortBy: AssetSortBy = 'name', order: AssetSortOrder = 'asc',
-  usage?: ReadonlyMap<string, number>,
+  usage?: ReadonlyMap<string, number>, textLast = false,
 ): T[] {
   const direction = order === 'desc' ? -1 : 1;
   return [...files].sort((a, b) => {
+    if (textLast) {
+      const categoryOrder = Number(a.category === 'text') - Number(b.category === 'text');
+      if (categoryOrder) return categoryOrder;
+    }
     let comparison = 0;
     if (sortBy === 'name') comparison = naturalOrder.compare(a.name, b.name);
     else if (sortBy === 'size') comparison = a.size - b.size;
