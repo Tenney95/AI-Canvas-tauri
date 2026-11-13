@@ -2,7 +2,8 @@
  * videoBatchRunner — 回归测试：waits for each execution and its durable status update, continuing after failure。
  */
 import { it, expect, vi } from 'vitest';
-import { runVideoBatch, recoverVideoBatches, type VideoBatchRunnerPorts } from '../../src/services/videoBatchRunner';
+import { latestVideoBatchItems, retainVideoBatches, runVideoBatch, recoverVideoBatches, type VideoBatchRunnerPorts } from '../../src/services/videoBatchRunner';
+import type { GenerationResult } from '../../src/services/generationService';
 import type { VideoBatch } from '../../src/types/videoBatch';
 
 function setup() {
@@ -57,4 +58,35 @@ it('classifies uncertain exceptions as needing review instead of retryable failu
   ports.execute = vi.fn(async () => { throw new Error('unknown submit response'); });
   await runVideoBatch(ports);
   expect(batch.items.every((i) => i.status === 'unknown')).toBe(true);
+});
+
+it('preserves explicit recovery states and the original receipt across restart', async () => {
+  const { batch, ports } = setup();
+  ports.execute = vi.fn(async (nodeId): Promise<GenerationResult> => ({
+    success: false, message: 'same localized error',
+    recovery: { state: nodeId === 'a' ? 'paused' : nodeId === 'b' ? 'delivery_pending' : 'unknown',
+      receipt: { projectId: 'p', nodeId, taskId: 'original', attemptId: 'attempt-1' } },
+  }));
+  await runVideoBatch(ports);
+  const [recovered] = recoverVideoBatches([batch]);
+  expect(recovered.items.map((item) => item.status)).toEqual(['paused', 'delivery_pending', 'unknown']);
+  expect(recovered.items[1].recovery?.receipt).toEqual({ projectId: 'p', nodeId: 'b', taskId: 'original', attemptId: 'attempt-1' });
+});
+
+it('uses the newest attempted record without treating an unsubmitted cancellation as a replacement', () => {
+  const { batch } = setup();
+  const original = { ...batch.items[0], status: 'unknown' as const };
+  const finished = { ...original, status: 'success' as const };
+  expect(latestVideoBatchItems([{ ...batch, items: [original] }, { ...batch, items: [finished] },
+    { ...batch, items: [{ ...finished, status: 'cancelled' }] }]).get(original.nodeId)).toBe(finished);
+});
+
+it('retains an unresolved original after thirty newer unrelated batches', () => {
+  const { batch } = setup();
+  const original: VideoBatch = { ...batch, items: [{ ...batch.items[0], status: 'delivery_pending' }] };
+  const later: VideoBatch[] = Array.from({ length: 30 }, (_, index) => ({
+    ...batch, id: `later-${index}`, items: [{ ...batch.items[1], status: 'success' }],
+  }));
+  expect(retainVideoBatches([original, ...later])).toContain(original);
+  expect(retainVideoBatches([original, ...later, { ...batch, items: [{ ...original.items[0], status: 'success' }] }])).not.toContain(original);
 });

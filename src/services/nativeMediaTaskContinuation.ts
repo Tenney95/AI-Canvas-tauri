@@ -8,7 +8,8 @@ export function createNativeMediaPendingError(record: NativeMediaTaskRecord, cau
     ? record.origin?.deliveryMode === 'chat' ? '媒体已保存，返回原对话后会自动继续显示。' : '媒体已保存，返回原画布后会自动继续显示。'
     : '媒体任务已保留，暂未取得可安全显示的结果。', cause === undefined ? undefined : { cause });
   error.name = 'NativeMediaTaskPending';
-  Object.assign(error, { nativeOperationId: record.operationId, localResultAvailable });
+  Object.assign(error, { nativeOperationId: record.operationId, localResultAvailable,
+    remoteTaskKnown: record.status === 'submitted' && !!record.remoteTaskId });
   return error;
 }
 

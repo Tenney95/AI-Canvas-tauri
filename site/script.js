@@ -147,7 +147,7 @@
     win: '下载 Windows 版',
     mac: '下载 macOS 版',
     'mac-intel': '下载 macOS 版',
-    linux: '下载 Linux 版'
+    linux: '查看 Linux 历史版本'
   };
 
   var label = document.getElementById('heroDownloadLabel');

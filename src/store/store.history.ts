@@ -535,7 +535,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
       currentProjectId,
     );
     // Restore parent folders first, including empty groups and legacy nested trash content.
-    for (const folder of revivedFolders) await fileService.restoreFromUndoTrash(folder);
+    for (const folder of revivedFolders) await fileService.restoreFromUndoTrash(folder, currentProjectId);
     const revivedPathGroups = await Promise.all(entry.nodes.map((node) => (
       currentNodeIds.has(node.id)
         ? Promise.resolve([])
@@ -543,7 +543,7 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     )));
     const revivedPaths = [...new Set(revivedPathGroups.flat())];
     if (revivedPaths.length > 0) {
-      await Promise.allSettled(revivedPaths.map((filePath) => fileService.restoreFromUndoTrash(filePath)));
+      await Promise.allSettled(revivedPaths.map((filePath) => fileService.restoreFromUndoTrash(filePath, currentProjectId)));
       // 节点复活但文件没回来时，界面上只会表现为"打不开"，必须明说，别让用户以为撤销成功了
       void Promise.all(revivedPaths.map((filePath) => fileService.isFileMissing(filePath)))
         .then((missing) => {

@@ -417,6 +417,12 @@ export interface MediaTaskReceipt {
   attemptId?: string;
 }
 
+export interface GenerationRecovery {
+  state: 'unknown' | 'paused' | 'delivery_pending';
+  receipt?: MediaTaskReceipt;
+  nativeOperationId?: string;
+}
+
 /** 结果下载仅持久化连接身份与鉴权方式，密钥在实际下载时读取。 */
 export interface MediaDownloadAccess {
   providerConfigId: string;

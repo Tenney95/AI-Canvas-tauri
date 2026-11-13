@@ -5,7 +5,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { VideoBatch, VideoBatchItem, VideoPreflightItem } from '../types/videoBatch';
 import { readVideoBatches, writeVideoBatches } from '../services/videoBatchRepository';
-import { recoverVideoBatches, runVideoBatch } from '../services/videoBatchRunner';
+import { isUnresolvedVideoBatchStatus, latestVideoBatchItems, recoverVideoBatches, retainVideoBatches, runVideoBatch } from '../services/videoBatchRunner';
 import { checkVideoServices, inspectVideoNode, isComfyH3VideoNode } from '../services/videoBatchPlanning';
 import { generateId } from './store.utils';
 import type { GenerationLease } from '../services/generationService';
@@ -14,8 +14,10 @@ export interface VideoBatchSlice {
   videoBatches: Record<string, VideoBatch[]>;
   videoBatchBusy: boolean;
   loadVideoBatches: (projectId: string) => Promise<void>;
-  startVideoBatch: (projectId: string, items: VideoPreflightItem[], lease?: GenerationLease) => Promise<VideoBatch>;
+  startVideoBatch: (projectId: string, items: VideoPreflightItem[], lease?: GenerationLease,
+    acknowledged?: ReadonlyMap<string, VideoBatchItem>) => Promise<VideoBatch>;
   cancelWaitingVideos: (projectId: string, batchId: string) => Promise<void>;
+  recoverVideoBatchItem: (projectId: string, batchId: string, nodeId: string) => Promise<void>;
 }
 
 export const createVideoBatchSlice: StateCreator<AppState, [], [], VideoBatchSlice> = (set, get, api) => {
@@ -44,7 +46,54 @@ export const createVideoBatchSlice: StateCreator<AppState, [], [], VideoBatchSli
         : { ...b, items: b.items.map((i) => i.status === 'waiting' ? { ...i, status: 'cancelled' as const, message: '已取消，未提交' } : i) }) } }));
       await persist(projectId);
     },
-    startVideoBatch: async (projectId, items, lease) => {
+    recoverVideoBatchItem: async (projectId, batchId, nodeId) => {
+      if (get().videoBatchBusy || get().currentProjectId !== projectId
+        || !get().nodes.some((node) => node.id === nodeId && node.data.type === 'ai-video' && node.data.status !== 'loading')) {
+        throw new Error('原视频节点或画布已变化');
+      }
+      const batches = get().videoBatches[projectId] ?? [];
+      const item = batches.find((batch) => batch.id === batchId)?.items.find((row) => row.nodeId === nodeId);
+      const recovery = item?.recovery;
+      if (!recovery || latestVideoBatchItems(batches).get(nodeId) !== item) throw new Error('原视频任务已变化');
+      set({ videoBatchBusy: true });
+      const controller = new AbortController();
+      const unsubscribe = api.subscribe((state) => {
+        if (state.currentProjectId !== projectId) controller.abort();
+      });
+      try {
+        const { signal } = controller;
+        if (recovery.nativeOperationId) {
+          const { inspectNativeVolcengineTask, resumeNativeVolcengineTask } = await import('../services/nativeVolcengineRecovery');
+          const { readNativeMediaRecoverySummary } = await import('../services/nativeMediaRecoverySummary');
+          const record = await inspectNativeVolcengineTask(recovery.nativeOperationId);
+          signal.throwIfAborted();
+          if (record.canvasId !== projectId || record.nodeId !== nodeId || record.category !== 'video'
+            || record.origin?.deliveryMode === 'chat') throw new Error('原视频任务已变化');
+          if (record.status !== 'delivered') {
+            if (!(await readNativeMediaRecoverySummary(record)).canResume) throw new Error('原任务尚不能续查，请先在服务商核对');
+            signal.throwIfAborted();
+            await resumeNativeVolcengineTask(record.operationId, signal);
+            if ((await inspectNativeVolcengineTask(record.operationId)).status !== 'delivered') {
+              throw new Error('原任务尚未交付，原回执已保留');
+            }
+          }
+        } else {
+          const receipt = recovery.receipt;
+          if (!receipt || receipt.projectId !== projectId || receipt.nodeId !== nodeId || !receipt.taskId) {
+            throw new Error('原任务尚不能续查，请先在服务商核对');
+          }
+          const { resumeMediaNodeTask, retryHistoryMediaDownload } = await import('../services/pollManager');
+          signal.throwIfAborted();
+          if (recovery.state === 'delivery_pending') await retryHistoryMediaDownload(receipt, signal);
+          else await resumeMediaNodeTask(nodeId, signal, receipt);
+        }
+        await patch(projectId, batchId, nodeId, { status: 'success', recovery: undefined, message: undefined });
+      } finally {
+        unsubscribe();
+        set({ videoBatchBusy: false });
+      }
+    },
+    startVideoBatch: async (projectId, items, lease, acknowledged) => {
       if (lease?.signal?.aborted) throw new Error('视频批次已取消，未提交');
       if (get().videoBatchBusy) throw new Error('已有视频批次正在执行');
       if (get().currentProjectId !== projectId || !items.length) throw new Error('项目或提交范围已变化');
@@ -67,6 +116,11 @@ export const createVideoBatchSlice: StateCreator<AppState, [], [], VideoBatchSli
         await get().loadVideoBatches(projectId);
         if (lease?.signal?.aborted) throw new Error('视频批次已取消，未提交');
         if (projectChanged || get().currentProjectId !== projectId) throw new Error('项目已切换');
+        const previous = latestVideoBatchItems(get().videoBatches[projectId] ?? []);
+        if (items.some(({ nodeId }) => {
+          const item = previous.get(nodeId);
+          return item && isUnresolvedVideoBatchStatus(item.status) && acknowledged?.get(nodeId) !== item;
+        })) throw new Error('请先核对所选镜头的原任务与输出，再确认重新提交');
         const h3Items = items.filter((item) => {
           const node = get().nodes.find((entry) => entry.id === item.nodeId);
           return node && isComfyH3VideoNode(node, get());
@@ -90,7 +144,7 @@ export const createVideoBatchSlice: StateCreator<AppState, [], [], VideoBatchSli
           nodeId: i.nodeId, label: i.label, fingerprint: i.fingerprint, duration: i.duration, status: 'waiting',
           ...(h3Fingerprints.has(i.nodeId) ? { comfyH3SettingsFingerprint: h3Fingerprints.get(i.nodeId) } : {}),
         })) };
-        set((s) => ({ videoBatches: { ...s.videoBatches, [projectId]: [...(s.videoBatches[projectId] || []), batch].slice(-30) } }));
+        set((s) => ({ videoBatches: { ...s.videoBatches, [projectId]: retainVideoBatches([...(s.videoBatches[projectId] || []), batch]) } }));
         await persist(projectId);
         await runVideoBatch({
           projectId: () => projectChanged || lease?.signal?.aborted ? null : get().currentProjectId,

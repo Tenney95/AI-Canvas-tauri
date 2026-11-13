@@ -84,6 +84,7 @@ const data = (): BaseNodeData => ({ type: 'ai-video', label: '复刻分段', pro
   provider: 'general', model: 'general/video-model', seedanceDuration: 15 });
 const run = (lease?: GenerationLease, passData?: BaseNodeData) => executeGeneration('video', undefined, undefined, passData, lease);
 const cancelled = { success: false, message: '任务已取消' };
+const cancelledAfterExecution = { ...cancelled, recovery: { state: 'unknown' } };
 function expectNoCommit() {
   expect(mocks.store.updateNodeData).not.toHaveBeenCalled();
   expect(mocks.store.recordOutputHistory).not.toHaveBeenCalled();
@@ -361,7 +362,7 @@ describe('节点视频生成的宿主任务租约', () => {
     const paused = Object.assign(new Error('提交状态未知'), { name: 'MediaTaskPausedError', reason: 'submit_unknown', taskReceipt });
     const generate = type === 'ai-image' ? mocks.image : type === 'ai-audio' ? mocks.audio : mocks.generate;
     generate.mockRejectedValueOnce(paused);
-    expect(await run(undefined, input)).toEqual({ success: false, message: '提交状态未知' });
+    expect(await run(undefined, input)).toEqual({ success: false, message: '提交状态未知', recovery: { state: 'unknown', receipt: taskReceipt } });
     expect(generate).toHaveBeenCalledOnce();
     expect(mocks.store.recordOutputHistory).not.toHaveBeenCalled();
     expect(mocks.persist).not.toHaveBeenCalled();
@@ -372,7 +373,9 @@ describe('节点视频生成的宿主任务租约', () => {
     mocks.tasks = [{ projectId: 'p', nodeId: 'video', taskId: 'remote-1', attemptId: 'attempt-1', provider: 'runninghubwf',
       nodeType: 'ai-video', taskType: 'runninghub-workflow', submitted: true, runninghubRecoveryState: 'save_pending' }];
     mocks.generate.mockRejectedValueOnce(Object.assign(new Error('生成媒体未能写入项目目录：下载媒体失败'), { name: 'MediaPersistenceError' }));
-    expect(await run()).toEqual({ success: false, message: '生成已完成，待下载' });
+    expect(await run()).toEqual({ success: false, message: '生成已完成，待下载', recovery: {
+      state: 'delivery_pending', receipt: { projectId: 'p', nodeId: 'video', taskId: 'remote-1', attemptId: 'attempt-1' },
+    } });
     expect(mocks.generate).toHaveBeenCalledOnce();
     expect(mocks.store.recordOutputHistory).toHaveBeenCalledWith('video', expect.objectContaining({
       status: 'download_pending', output: '', recoveryTask: { projectId: 'p', nodeId: 'video', taskId: 'remote-1', attemptId: 'attempt-1' },
@@ -382,7 +385,7 @@ describe('节点视频生成的宿主任务租约', () => {
 
   it('leaves a paused query out of failed output history and error toasts', async () => {
     mocks.generate.mockRejectedValueOnce(new VideoPollingPausedError());
-    expect(await run()).toEqual({ success: false, message: '视频查询已暂停' });
+    expect(await run()).toEqual({ success: false, message: '视频查询已暂停', recovery: { state: 'paused' } });
     expectNoCommit();
     expect(mocks.store.showToast).not.toHaveBeenCalled();
     expect(mocks.persist).not.toHaveBeenCalled();
@@ -413,7 +416,7 @@ describe('节点视频生成的宿主任务租约', () => {
     const pending = run({ assertFresh });
     await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledOnce());
     current = false; response.resolve({ url: 'old-revision.mp4' });
-    expect(await pending).toEqual(cancelled); expect(mocks.persist).not.toHaveBeenCalled(); expectNoCommit();
+    expect(await pending).toEqual(cancelledAfterExecution); expect(mocks.persist).not.toHaveBeenCalled(); expectNoCommit();
     expect(mocks.completeGuard).toHaveBeenCalledOnce();
   });
   it('does not attach a saved result or error history if the lease expires during persistence', async () => {
@@ -423,7 +426,7 @@ describe('节点视频生成的宿主任务租约', () => {
     const pending = run({ assertFresh });
     await vi.waitFor(() => expect(mocks.persist).toHaveBeenCalledOnce());
     current = false; saved.resolve({ mediaUrl: 'retained-file.mp4', sourceUrl: 'generated.mp4' });
-    expect(await pending).toEqual(cancelled); expectNoCommit();
+    expect(await pending).toEqual(cancelledAfterExecution); expectNoCommit();
     expect(mocks.generate).toHaveBeenCalledOnce(); expect(mocks.persist).toHaveBeenCalledOnce();
   });
   it('checks once more at the final canvas write boundary after persistence', async () => {
@@ -436,7 +439,7 @@ describe('节点视频生成的宿主任务租约', () => {
     await vi.waitFor(() => expect(calls).toBe(5));
     expect(mocks.persist).toHaveBeenCalledOnce(); expectNoCommit();
     current = false; writeGate.resolve();
-    expect(await pending).toEqual(cancelled); expectNoCommit();
+    expect(await pending).toEqual(cancelledAfterExecution); expectNoCommit();
   });
   it('passes the external AbortSignal to generateVideo and suppresses cancellation error history', async () => {
     const response = deferred<{ url: string }>(); const controller = new AbortController();
@@ -445,7 +448,7 @@ describe('节点视频生成的宿主任务租约', () => {
     await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledOnce());
     expect(mocks.generate.mock.calls[0][1]).toBe(controller.signal);
     controller.abort(); response.reject(new DOMException('Provider cancelled', 'AbortError'));
-    expect(await pending).toEqual(cancelled); expect(mocks.persist).not.toHaveBeenCalled(); expectNoCommit();
+    expect(await pending).toEqual(cancelledAfterExecution); expect(mocks.persist).not.toHaveBeenCalled(); expectNoCommit();
   });
   it('rechecks lease freshness when a held provider rejects and never writes an error under a revoked revision', async () => {
     const response = deferred<{ url: string }>(); let current = true;
@@ -453,7 +456,7 @@ describe('节点视频生成的宿主任务租约', () => {
     const pending = run({ assertFresh: async () => { if (!current) throw new Error('revision changed'); } });
     await vi.waitFor(() => expect(mocks.generate).toHaveBeenCalledOnce());
     current = false; response.reject(new Error('upstream error'));
-    expect(await pending).toEqual(cancelled); expectNoCommit();
+    expect(await pending).toEqual(cancelledAfterExecution); expectNoCommit();
   });
   it('keeps ordinary generation behavior and the original single-argument model call without a lease', async () => {
     expect(await run()).toEqual({ success: true });

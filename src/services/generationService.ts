@@ -8,7 +8,7 @@ import { buildAnimationSpritePrompt, resolveAnimationSheetAspectRatio } from './
 import { animationProcessing, animationResultPatch } from './animationService';
 import { resolveGenerationSelection } from './generationInput';
 import type { AppConfig, BaseNodeData, ImagePostProcess } from '../types';
-import { MAX_IMAGE_BATCH_COUNT, type MediaTaskReceipt, type TextGenerationResult } from '../types/aiTypes';
+import { MAX_IMAGE_BATCH_COUNT, type GenerationRecovery, type MediaTaskReceipt, type TextGenerationResult } from '../types/aiTypes';
 import { generateText, generateTextResult, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
 import { persistAudioGenerationResult } from './ai/generateAudio';
 import { persistMediaUrlToProjectData } from './fileService';
@@ -45,6 +45,25 @@ import { configValuesEqual } from './configPatch';
 export interface GenerationResult {
   success: boolean;
   message?: string;
+  recovery?: GenerationRecovery;
+}
+
+function mediaRecovery(error: Error, receipt?: MediaTaskReceipt): GenerationRecovery {
+  const reason = 'reason' in error ? error.reason : undefined;
+  return {
+    state: reason === 'submit_unknown' ? 'unknown' : reason === 'delivery_pending' ? 'delivery_pending' : 'paused',
+    ...(receipt ? { receipt } : {}),
+  };
+}
+
+function pendingVideoRecovery(projectId: string, nodeId: string): GenerationRecovery | undefined {
+  const task = getPendingTasksForProject(projectId).find((row) => row.nodeId === nodeId && !row.terminalFailure
+    && (row.runninghubRecoveryState || row.workflowApi?.state));
+  if (!task) return undefined;
+  const unknown = !task.submitted || !task.taskId || task.runninghubSubmissionUncertain
+    || task.runninghubRecoveryState === 'submit_unknown' || task.workflowApi?.state === 'submit_unknown';
+  return { state: unknown ? 'unknown' : isHistoryMediaDownloadPending(task) ? 'delivery_pending' : 'paused',
+    receipt: historyMediaTaskReceipt(task) };
 }
 
 /** 全片复刻等宿主任务的执行租约；不持久化到节点或项目。 */
@@ -370,7 +389,7 @@ export async function executeGeneration(
     catch (error) {
       const message = error instanceof Error ? error.message : '暂时无法保留旧任务，请稍后再生成';
       notify(message, 'error');
-      return { success: false, message };
+      return { success: false, message, ...(isMediaTaskPausedError(error) ? { recovery: mediaRecovery(error, error.taskReceipt) } : {}) };
     }
   }
   const runningHubTask = cloudWorkflow || nodeProvider === 'runninghub';
@@ -418,6 +437,8 @@ export async function executeGeneration(
   let batchNodeIds: string[] | undefined;
   let taskReceipt: MediaTaskReceipt | undefined;
   let mediaDelivered = false;
+  let videoExecutionStarted = false;
+  let videoResultReceived = false;
   const confirmMediaDelivery = () => {
     if (taskReceipt) completeMediaNodeTask(taskReceipt);
     else if (runningHubTask) completeRunningHubNodeTask(nodeId);
@@ -649,14 +670,16 @@ export async function executeGeneration(
         }
       };
       if (nativeVideoMaterial !== undefined) registerNativeVideoSubmissionGuard(assertVideoSubmission);
+      videoExecutionStarted = true;
       const result = lease || hasProtectedVideoInputs || nativeVideoMaterial !== undefined
         ? await generateVideo(videoOptions, lease?.signal, assertVideoSubmission)
         : await generateVideo(videoOptions);
+      videoResultReceived = true;
       taskReceipt = result.taskReceipt;
       if (lease) await assertLease();
       if (!isStillCurrentSubmission()) {
         if (taskReceipt) pauseMediaTask(taskReceipt, undefined, 'canvas_changed');
-        return { success: false, message: '任务已取消' };
+        return { success: false, message: '任务已取消', recovery: { state: taskReceipt ? 'delivery_pending' : 'unknown', receipt: taskReceipt } };
       }
       if (taskReceipt) store.updateNodeDataTransient(nodeId, { mediaTaskStage: 'saving' });
       const signal = beginMediaSaving();
@@ -666,10 +689,12 @@ export async function executeGeneration(
       if (lease) await assertLease();
       if (!isStillCurrentSubmission()) {
         if (taskReceipt) pauseMediaTask(taskReceipt, undefined, 'canvas_changed');
-        return { success: false, message: lease ? '任务已取消' : '画布已变化，任务已保留' };
+        return { success: false, message: lease ? '任务已取消' : '画布已变化，任务已保留',
+          recovery: { state: taskReceipt ? 'delivery_pending' : 'unknown', receipt: taskReceipt } };
       }
       if (lease) await assertLease();
-      if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
+      if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消',
+        recovery: { state: taskReceipt ? 'delivery_pending' : 'unknown', receipt: taskReceipt } };
       updateResult(nodeId, {
         videoUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: persisted.mediaUrl, output: persisted.sourceUrl, status: 'success', videoBatchFingerprint: videoFingerprint, videoTaskState: undefined,
@@ -805,40 +830,60 @@ export async function executeGeneration(
     }
     const pausedError = isMediaTaskPausedError(err);
     if (err instanceof Error && (err.name === 'NativeVolcengineTaskPending' || err.name === 'NativeMediaTaskPending')) {
+      const nativeOperationId = 'nativeOperationId' in err && typeof err.nativeOperationId === 'string' ? err.nativeOperationId : undefined;
+      const state = 'localResultAvailable' in err && err.localResultAvailable === true ? 'delivery_pending'
+        : 'remoteTaskKnown' in err && err.remoteTaskKnown === true ? 'paused' : 'unknown';
       if (isStillCurrentSubmission()) {
         store.updateNodeDataTransient(nodeId, { status: 'idle', error: err.message, mediaTaskState: 'paused', mediaTaskStage: undefined });
         notify(err.message);
       }
-      return { success: false, message: err.message };
+      return { success: false, message: err.message, recovery: { state, ...(nativeOperationId ? { nativeOperationId } : {}) } };
     }
     const paused = !mediaDelivered && taskReceipt && !pausedError ? pauseMediaTask(taskReceipt, err, 'delivery_pending') : undefined;
     const expectedReceipt = taskReceipt ?? (pausedError ? err.taskReceipt : undefined);
     const retained = !mediaDelivered && submittingProjectId && (expectedReceipt || isHistoryMediaDownloadFailure(err))
       ? getPendingTasksForProject(submittingProjectId).find((task) => task.nodeId === nodeId && isHistoryMediaDownloadPending(task)
         && (!expectedReceipt || sameHistoryMediaTask(historyMediaTaskReceipt(task), expectedReceipt))) : undefined;
-    if (retained && isStillCurrentSubmission()) {
+    if (retained) {
       const message = '生成已完成，待下载';
-      store.updateNodeDataTransient(nodeId, { status: 'idle', error: undefined, mediaTaskState: 'delivery_pending',
-        ...(retained.taskType.startsWith('runninghub') ? { runninghubStage: message } : {}) });
-      await store.recordOutputHistory(nodeId, {
-        nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: '', nodeType, model: nodeModel, provider: nodeProvider, status: 'download_pending',
-        recoveryTask: historyMediaTaskReceipt(retained),
-        error: isHistoryMediaDownloadFailure(err) && err instanceof Error ? err.message : '下载或保存尚未完成，可重新取回原结果',
-      });
-      notify(message);
-      return { success: false, message };
+      const receipt = historyMediaTaskReceipt(retained);
+      if (isStillCurrentSubmission()) {
+        store.updateNodeDataTransient(nodeId, { status: 'idle', error: undefined, mediaTaskState: 'delivery_pending',
+          ...(retained.taskType.startsWith('runninghub') ? { runninghubStage: message } : {}) });
+        await store.recordOutputHistory(nodeId, {
+          nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
+          output: '', nodeType, model: nodeModel, provider: nodeProvider, status: 'download_pending',
+          recoveryTask: receipt,
+          error: isHistoryMediaDownloadFailure(err) && err instanceof Error ? err.message : '下载或保存尚未完成，可重新取回原结果',
+        });
+        notify(message);
+      }
+      return { success: false, message, recovery: { state: 'delivery_pending', receipt } };
     }
-    if (pausedError) return { success: false, message: err instanceof Error ? err.message : '任务已保留' };
+    if (pausedError) return { success: false, message: err.message, recovery: mediaRecovery(err, err.taskReceipt) };
     if (paused) {
-      return { success: false, message: '结果保存暂未完成，任务已保留，可继续保存原结果' };
+      return { success: false, message: '结果保存暂未完成，任务已保留，可继续保存原结果',
+        recovery: mediaRecovery(paused, taskReceipt) };
+    }
+    const workflowRecovery = nodeType === 'ai-video' && submittingProjectId && !mediaDelivered
+      ? pendingVideoRecovery(submittingProjectId, nodeId) : undefined;
+    if (workflowRecovery) {
+      if (isStillCurrentSubmission()) store.updateNodeDataTransient(nodeId, { status: 'idle', mediaTaskStage: undefined });
+      return { success: false, message: '任务已保留', recovery: workflowRecovery };
+    }
+    if (videoResultReceived && !mediaDelivered && !isStillCurrentSubmission()) {
+      return { success: false, message: '任务已取消', recovery: { state: taskReceipt ? 'delivery_pending' : 'unknown', receipt: taskReceipt } };
     }
     if (lease) {
-      try { await assertLease(); } catch { return { success: false, message: '任务已取消' }; }
+      try { await assertLease(); } catch {
+        return { success: false, message: '任务已取消', ...(videoExecutionStarted && !mediaDelivered ? { recovery: { state: 'unknown' as const } } : {}) };
+      }
     }
     const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
-    if (msg === '任务已被取消') return { success: false, message: '任务已取消' };
-    if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
+    if (msg === '任务已被取消') return { success: false, message: '任务已取消',
+      ...(nodeType === 'ai-video' ? { recovery: { state: 'unknown' as const } } : {}) };
+    if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消',
+      ...(nodeType === 'ai-video' && !lease ? { recovery: { state: 'unknown' as const } } : {}) };
     if (batchNodeIds) failImageBatchNodes(batchNodeIds, msg, submittingProjectId);
     store.updateNodeDataTransient(nodeId, { status: 'error', error: msg });
     store.recordOutputHistory(nodeId, {

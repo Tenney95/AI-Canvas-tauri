@@ -827,7 +827,7 @@ describe('project switching', () => {
 
     expect(snapshotMocks.captureCurrentCanvasSnapshot).toHaveBeenCalledTimes(1);
     expect(saveCurrentProject).toHaveBeenCalledTimes(1);
-    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('project-new');
+    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('project-new', { recoverUndoTrash: true, assertCurrent: expect.any(Function) });
     expect(saveCurrentProject.mock.invocationCallOrder[0]).toBeLessThan(
       fileMocks.loadProjectData.mock.invocationCallOrder[0],
     );
@@ -1580,7 +1580,7 @@ describe('project switching', () => {
 
     await useAppStore.getState().initFromDb();
 
-    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('project-remembered');
+    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('project-remembered', { recoverUndoTrash: true, assertCurrent: expect.any(Function) });
     expect(useAppStore.getState()).toMatchObject({
       currentProjectId: 'project-remembered',
       projectLoadStatus: 'ready',
@@ -1637,7 +1637,7 @@ describe('project switching', () => {
     fileMocks.loadProjectData.mockResolvedValue({ id: 'project-list', nodes: [], edges: [], name: '列表项目' });
     await useAppStore.getState().switchProject('project-list');
     expect(useAppStore.getState().currentProjectId).toBe('project-list');
-    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('project-list');
+    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('project-list', { recoverUndoTrash: true, assertCurrent: expect.any(Function) });
     expect(fileMocks.saveProject).not.toHaveBeenCalled();
   });
 

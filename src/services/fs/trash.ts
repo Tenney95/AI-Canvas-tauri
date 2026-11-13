@@ -10,6 +10,12 @@ import {
   normalizeDirectorSceneReference,
 } from '../directorSceneSchema';
 import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir, getNativeProjectOwner, isSharedProjectDataDir, sanitizeFolderName } from './core';
+import {
+  forgetUndoTrashEntry, isPathInsideDir, isUndoTrashMoveActive, readUndoTrashEntries,
+  relativeUndoTrashPath, stageUndoTrashMove, trashPathKey, usesTrashPath, type UndoTrashEntry,
+} from './undoTrashJournal';
+
+export { isPathInsideDir } from './undoTrashJournal';
 
 /** Explicit history deletion: fail visibly, accept only regular files owned by this project. */
 export async function recycleHistoryFile(projectId: string, filePath: string, assertCurrent: (fileExists: boolean) => void): Promise<void> {
@@ -166,27 +172,24 @@ export async function moveToTrash(filePath: string, options?: { throwOnError?: b
 }
 
 // ============================================
-// Undo-trash staging (project-level .trash/ dir — restored on undo, flushed to system trash on project delete)
+// Undo-trash staging
 // ============================================
-
-/** Map: originalFilePath → trashFilePath */
-const undoTrashMap = new Map<string, string>();
-const undoTrashRoots = new Map<string, string>();
 
 /** 进行中的节点文件删除，撤销前要等它们结束 */
 const pendingNodeFileDeletions = new Set<Promise<void>>();
 
 /** Legacy callers without project context use the source parent as their staging root. */
-function getUndoTrashDir(filePath: string): string {
+function getFileParent(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
-  const lastSep = normalized.lastIndexOf('/');
-  return lastSep >= 0 ? joinPath(normalized.substring(0, lastSep), '.trash') : '.trash';
+  return normalized.slice(0, Math.max(0, normalized.lastIndexOf('/')));
 }
 
 async function assertTrashParentsSafe(path: string, root: string): Promise<void> {
   const normalizedRoot = root.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (!isPathInsideDir(path, normalizedRoot)) throw new Error('回收路径不属于项目目录');
-  const parts = path.replace(/\\/g, '/').slice(normalizedRoot.length + 1).split('/').slice(0, -1);
+  const relative = relativeUndoTrashPath(path, normalizedRoot);
+  if (!relative) throw new Error('回收路径不属于项目目录');
+  if (await exists(root) && (await lstat(root)).isSymlink) throw new Error('回收根目录包含符号链接');
+  const parts = relative.split('/').slice(0, -1);
   let parent = normalizedRoot;
   for (const part of parts) {
     parent = joinPath(parent, part);
@@ -200,30 +203,40 @@ export async function moveToUndoTrash(
 ): Promise<void> {
   if (!isTauriEnv()) return;
   try {
-    const root = projectId ? await getProjectDataDir(projectId) : null;
-    if (projectId !== undefined && (!root || !isPathInsideDir(filePath, root))) return;
-    if (root) await assertTrashParentsSafe(filePath, root);
+    const root = await projectUndoTrashRoot(projectId, filePath);
+    if (!root || !isPathInsideDir(filePath, root)) return;
+    await assertTrashParentsSafe(filePath, root);
     const existsFile = await exists(filePath);
     if (!existsFile) return;
-    const trashDir = root ? joinPath(root, '.trash') : getUndoTrashDir(filePath);
+    const trashDir = joinPath(root, '.trash');
     if (isPathInsideDir(filePath, trashDir)) return;
     if ((await lstat(filePath)).isSymlink) throw new Error('不能回收符号链接');
     if (await exists(trashDir) && (await lstat(trashDir)).isSymlink) throw new Error('回收目录无效');
     await mkdir(trashDir, { recursive: true });
     const fileName = filePath.split(/[/\\]/).pop() || 'file';
-    const trashPath = joinPath(trashDir, `${Date.now()}-${crypto.randomUUID()}-${fileName}`);
+    const stagedName = `${Date.now()}-${crypto.randomUUID()}-${fileName}`;
+    const trashPath = joinPath(trashDir, stagedName);
     if (await exists(trashPath)) throw new Error('回收目标已存在');
-    if (canMove && !await canMove()) return;
-    // Rename the entire directory on the same filesystem, without loading media bytes.
-    await rename(filePath, trashPath);
-    undoTrashMap.set(filePath, trashPath);
-    if (root) undoTrashRoots.set(filePath, root);
-    notifyProjectDiskChanged();
-  } catch (err) {
+    const relativePath = relativeUndoTrashPath(filePath, root);
+    if (!relativePath) return;
+    const moved = await stageUndoTrashMove(trashDir, relativePath, stagedName, async () => {
+      await assertTrashParentsSafe(filePath, root);
+      await assertTrashParentsSafe(trashPath, root);
+      if (canMove && !await canMove()) return false;
+      await rename(filePath, trashPath);
+      return true;
+    });
+    if (moved) notifyProjectDiskChanged();
+  } catch {
     // 绝不退回系统回收站：那条路径撤销不回来，节点复活后就成了指向空文件的死节点。
     // 暂存失败时宁可把文件留在原地当孤儿文件，交给存储体检去回收。
-    console.warn('[fileService] 回收暂存失败，原文件保留:', err);
+    console.warn('[fileService] 回收暂存未确认，保留恢复记录');
   }
+}
+
+async function projectUndoTrashRoot(projectId: string | null | undefined, filePath: string): Promise<string | null> {
+  if (projectId) return getProjectDataDir(projectId);
+  return projectId === undefined ? getFileParent(filePath) : null;
 }
 
 /** 文件是否已不在原路径上（仅 Tauri 端有意义），用于撤销后确认媒体是否真的回来了 */
@@ -236,54 +249,73 @@ export async function isFileMissing(filePath: string): Promise<boolean> {
   }
 }
 
-/** Restore a file from undo-trash staging. Returns true on success. */
-export async function restoreFromUndoTrash(filePath: string): Promise<boolean> {
-  if (!isTauriEnv()) return false;
-  const trashPath = undoTrashMap.get(filePath);
-  if (!trashPath) return false;
+async function restoreUndoTrashEntry(entry: UndoTrashEntry, assertCurrent?: () => void): Promise<boolean> {
+  const { originalPath: filePath, stagedPath: trashPath, root } = entry;
   try {
+    if (isUndoTrashMoveActive(entry)) return false;
+    await assertTrashParentsSafe(filePath, root);
+    await assertTrashParentsSafe(trashPath, root);
     const trashExists = await exists(trashPath);
-    if (!trashExists) { undoTrashMap.delete(filePath); undoTrashRoots.delete(filePath); return false; }
-    if (await exists(filePath)) return false; // Never overwrite a newly created file/group.
-    const root = undoTrashRoots.get(filePath);
-    if (root) {
-      await assertTrashParentsSafe(filePath, root);
-      await assertTrashParentsSafe(trashPath, root);
+    if (!trashExists) {
+      await forgetUndoTrashEntry(entry);
+      return false;
     }
-    const parent = filePath.replace(/\\/g, '/').slice(0, filePath.replace(/\\/g, '/').lastIndexOf('/'));
+    if (await exists(filePath)) return false; // Never overwrite a newly created file/group.
+    if ((await lstat(trashPath)).isSymlink) return false;
+    const parent = getFileParent(filePath);
     if (parent) await mkdir(parent, { recursive: true });
+    if (await exists(filePath)) return false;
+    assertCurrent?.();
     await rename(trashPath, filePath);
-    undoTrashMap.delete(filePath);
-    undoTrashRoots.delete(filePath);
+    await forgetUndoTrashEntry(entry).catch(() => undefined);
     notifyProjectDiskChanged();
-    console.log('[fileService] Restored from undo-trash:', filePath);
     return true;
-  } catch (err) {
-    console.warn('[fileService] Failed to restore from undo-trash:', filePath, err);
+  } catch {
+    console.warn('[fileService] 节点暂存还原未完成，已保留原记录');
     return false;
   }
 }
 
-/** Flush all undo-trash files to system recycle bin (called on project delete) */
-export async function flushUndoTrashDirs(): Promise<void> {
-  if (!isTauriEnv()) return;
-  // Collect unique .trash directories
-  const trashDirs = new Set<string>();
-  for (const trashPath of undoTrashMap.values()) {
-    trashDirs.add(trashPath.replace(/\\/g, '/').slice(0, trashPath.replace(/\\/g, '/').lastIndexOf('/')));
-  }
-  for (const dir of trashDirs) {
-    try {
-      if (await exists(dir)) {
-        await invoke('move_to_trash', { path: dir });
-        console.log('[fileService] Flushed undo-trash dir to system trash:', dir);
-      }
-    } catch (err) {
-      console.warn('[fileService] Failed to flush undo-trash dir:', dir, err);
+/** Restore a staged file without relying on the current window's lifetime. */
+export async function restoreFromUndoTrash(filePath: string, projectId?: string | null): Promise<boolean> {
+  if (!isTauriEnv()) return false;
+  const key = trashPathKey(filePath);
+  try {
+    const root = await projectUndoTrashRoot(projectId, filePath);
+    if (!root || !isPathInsideDir(filePath, root)) return false;
+    const entries = await readUndoTrashEntries(joinPath(root, '.trash'));
+    for (const entry of entries.filter((item) => trashPathKey(item.originalPath) === key).sort(newestStagedFirst)) {
+      if (await restoreUndoTrashEntry(entry)) return true;
     }
+    return false;
+  } catch { return false; }
+}
+
+function newestStagedFirst(left: UndoTrashEntry, right: UndoTrashEntry): number {
+  return right.stagedAt - left.stagedAt || right.id.localeCompare(left.id);
+}
+
+/** 加载持久化画布时先恢复仍被其引用的原件，再解析素材索引和预览。 */
+export async function recoverUndoTrashReferences(root: string, references: ReadonlySet<string>, groupNames: readonly string[],
+  assertCurrent?: () => void): Promise<void> {
+  if (!isTauriEnv()) return;
+  await waitForPendingNodeFileDeletions();
+  const trashDir = joinPath(root, '.trash');
+  const entries = await readUndoTrashEntries(trashDir);
+  if (!entries.length) return;
+  const paths = new Set(references);
+  const folders = new Set<string>();
+  for (const name of groupNames) {
+    const folder = sanitizeFolderName(name);
+    if (folder && !folder.startsWith('.')) folders.add(trashPathKey(joinPath(root, folder)));
   }
-  undoTrashMap.clear();
-  undoTrashRoots.clear();
+  const referenced = entries.filter((entry) => folders.has(trashPathKey(entry.originalPath)) || usesTrashPath(entry.originalPath, paths));
+  // 先还原父目录，避免单文件还原时创建目录，导致整组原件无法复位。
+  referenced.sort((a, b) => a.originalPath.length - b.originalPath.length || newestStagedFirst(a, b));
+  for (const entry of referenced) {
+    assertCurrent?.();
+    await restoreUndoTrashEntry(entry, assertCurrent);
+  }
 }
 
 /** 将目录移至回收站（Tauri 端），trash crate 本身支持直接移动整个目录 */
@@ -313,26 +345,6 @@ export async function deleteProjectDataDir(projectId: string, options: { throwOn
     if (options.throwOnError) throw err;
     console.warn('[fileService] Failed to delete project data dir:', dirPath, err);
   }
-}
-
-function trashPathKey(path: string): string {
-  const normalized = path.replace(/\\/g, '/').replace(/^\/\/\?\/UNC\//i, '//')
-    .replace(/^\/\/\?\//, '').replace(/\/+$/, '');
-  return /^(?:[a-z]:\/|\/\/)/i.test(normalized) ? normalized.toLowerCase() : normalized;
-}
-
-/** Windows 盘符/UNC 忽略大小写；POSIX 保留大小写，禁止穿越组件。 */
-export function isPathInsideDir(filePath: string, dirPath: string): boolean {
-  const normalizedPath = trashPathKey(filePath);
-  const normalizedDir = trashPathKey(dirPath);
-  if (!normalizedDir) return false;
-  if (normalizedPath.split('/').some((part) => part === '.' || part === '..')) return false;
-  return normalizedPath.startsWith(`${normalizedDir}/`);
-}
-
-function usesTrashPath(filePath: string, references: ReadonlySet<string>): boolean {
-  return [...references].some((reference) => trashPathKey(reference) === trashPathKey(filePath)
-    || isPathInsideDir(reference, filePath) || isPathInsideDir(filePath, reference));
 }
 
 /**

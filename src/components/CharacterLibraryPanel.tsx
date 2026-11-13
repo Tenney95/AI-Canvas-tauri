@@ -3,7 +3,7 @@
  * 列出项目级与全局角色，支持新建、编辑（打开 CharacterAssetDialog）、删除与筛选，
  * 头像取自角色主视觉参考图，全局角色可被跨项目复用。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
@@ -15,6 +15,7 @@ import {
   assertMediaDataUrlSize,
   assertMediaDataUrlWithinLimit,
   inferMediaDataUrlKind,
+  isTauriEnv,
   saveBinaryToProjectData,
 } from '../services/fileService';
 import type {
@@ -36,6 +37,7 @@ import CharacterAssetDialog from './CharacterAssetDialog';
 import CharacterReferenceGallery from './character/CharacterReferenceGallery';
 import CharacterDock from './character/CharacterDock';
 import CharacterWeaponDialog from './character/CharacterWeaponDialog';
+import LazyLoadBoundary, { LazyLoadFallback } from './shared/LazyLoadBoundary';
 import { sortCharactersForLibrary } from '../services/characterOrder';
 import type { ReferenceStageBox } from './character/CharacterReferenceGallery';
 import {
@@ -51,6 +53,7 @@ import { copyDramaAssetSelection } from '../services/dramaAssetBatchCopy';
 import { configValuesEqual } from '../services/configPatch';
 
 type CharacterLibraryScope = 'project' | 'global';
+const CharacterVisualPendingTasks = lazy(() => import('./character/CharacterVisualPendingTasks'));
 const EMPTY_CANVAS_NODES: AppState['nodes'] = [];
 
 const CHARACTER_ACTION_CATEGORIES: Array<{
@@ -209,6 +212,7 @@ export default function CharacterLibraryPanel() {
   }, []);
   const [selectedReferenceId, setSelectedReferenceId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [pendingTasksScope, setPendingTasksScope] = useState<{ scope: CharacterLibraryScope; projectId: string | null }>();
   const [dialogCharacter, setDialogCharacter] = useState<DramaCharacter | null>(null);
   const [dialogReferenceId, setDialogReferenceId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -711,7 +715,7 @@ export default function CharacterLibraryPanel() {
     <>
       <ModalOverlay
         isOpen={open}
-        onClose={() => setOpen(false)}
+        onClose={() => { setPendingTasksScope(undefined); setOpen(false); }}
         ariaLabel={t('角色库')}
         className="character-library-panel ui-dialog-surface"
       >
@@ -751,11 +755,16 @@ export default function CharacterLibraryPanel() {
               </button>
             ) : null}
           </label>
+          {isTauriEnv() && (scope === 'global' || currentProjectId) && <button type="button"
+            className="ui-icon-btn ui-icon-btn--sm" title={t('待处理生图任务')} aria-label={t('待处理生图任务')}
+            onClick={() => setPendingTasksScope({ scope, projectId: currentProjectId })}>
+            <Icon icon="lucide:list-todo" width="15" height="15" aria-hidden="true" />
+          </button>}
           <button type="button" className="character-library-new" onClick={() => openEditor(null)}>
             <Icon icon="lucide:plus" width="13" height="13" aria-hidden="true" />
             {t('新建角色')}
           </button>
-          <PopupCloseButton onClick={() => setOpen(false)} />
+          <PopupCloseButton onClick={() => { setPendingTasksScope(undefined); setOpen(false); }} />
         </div>
 
         <main className="character-library-content">
@@ -1094,6 +1103,13 @@ export default function CharacterLibraryPanel() {
           />
         </footer>
       </ModalOverlay>
+
+      {open && pendingTasksScope?.scope === scope && (scope === 'global' || pendingTasksScope.projectId === currentProjectId)
+        && <LazyLoadBoundary label="待处理生图任务" resetKey={scope}>
+          <Suspense fallback={<LazyLoadFallback label="待处理生图任务" />}>
+            <CharacterVisualPendingTasks scope={scope} onClose={() => setPendingTasksScope(undefined)} />
+          </Suspense>
+        </LazyLoadBoundary>}
 
       {open && weaponTarget && weaponTarget.scope === scope && weaponTarget.id === selectedCharacter?.id
         && weaponTarget.projectId === currentProjectId && <CharacterWeaponDialog

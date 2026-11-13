@@ -50,6 +50,8 @@ import {
   stripVerbatimPrefix,
 } from './fs/core';
 import { scanDirectoryFiles } from './fs/assetLibrary';
+import { collectNodeFileReferences, recoverUndoTrashReferences, waitForPendingNodeFileDeletions } from './fs/trash';
+import { isPathInsideDir } from './fs/undoTrashJournal';
 import { getRelativeAssetPath, identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import { createNativeMediaDisplayResolver, isNativeMediaResultArtifact, nativeMediaContentDigest, type NativeMediaDisplayResolver } from './nativeMediaDisplay';
 import type { DramaAssetLibrary, DramaProp, DramaScene, DramaAssetReferenceImage } from '../types/dramaAssets';
@@ -1145,11 +1147,54 @@ export async function loadProjectsList(): Promise<ProjectSummaryData[]> {
   }
 }
 
-/** 将已读取的项目记录还原为运行时媒体引用；不读取或修改任何项目数据库。 */
-export async function restoreProjectRecord(persistedRecord: ProjectSaveData): Promise<ProjectSaveData> {
+async function recoverStagedProjectMedia(record: ProjectSaveData, root: string, assertCurrent?: () => void): Promise<void> {
+  const references = new Set<string>();
+  const add = (value: string) => {
+    const path = localMediaUrlToPath(value) ?? value;
+    if (isPathInsideDir(path, root)) references.add(path);
+  };
+  const relativeFields = new Set(['filePath', 'imageFilePath', 'relativePath', 'imageRelativePath', 'directorCaptureFilePaths', 'directorCaptureRelativePaths']);
+  const collect = (value: unknown, field = ''): void => {
+    if (typeof value === 'string') {
+      if (relativeFields.has(field) && value && !/^(?:[a-z][a-z0-9+.-]*:|[/\\])/i.test(value)) add(joinPath(root, value));
+      else add(value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) collect(item, field);
+    } else if (value && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) collect(item, key);
+    }
+  };
+  collect([record.nodes, record.dramaAssets, record.settings]);
+  for (const node of Array.isArray(record.nodes) ? record.nodes as PersistedNodeLike[] : []) {
+    if (!node?.data) continue;
+    for (const reference of collectNodeFileReferences(node.data)) {
+      if (reference.startsWith('director-scene:')) add(joinPath(root, 'director', 'scenes', reference.slice('director-scene:'.length)));
+      else add(reference);
+    }
+  }
+  const groupNames = Array.isArray(record.groups) ? record.groups.flatMap((group) => typeof group?.name === 'string' ? [group.name] : []) : [];
+  await recoverUndoTrashReferences(root, references, groupNames, assertCurrent);
+}
+
+interface ProjectRestoreOptions {
+  recoverUndoTrash?: boolean;
+  assertCurrent?: () => void;
+}
+
+/** 将已读取的项目记录还原为运行时媒体引用。只有实际打开的持久化项目恢复暂存。 */
+export async function restoreProjectRecord(persistedRecord: ProjectSaveData, options?: ProjectRestoreOptions): Promise<ProjectSaveData> {
     const id = persistedRecord.id;
     const lookup: ProjectFileLookup = { existsByPath: new Map() };
     let nodes = persistedRecord.nodes;
+    if (options?.recoverUndoTrash && isTauriEnv()) {
+      try {
+        options.assertCurrent?.();
+        const root = await getProjectDataDir(id);
+        if (root) await recoverStagedProjectMedia(persistedRecord, root, options.assertCurrent);
+      } catch {
+        console.warn('[项目加载] 节点暂存记录暂不可用，已保留暂存文件');
+      }
+    }
     try {
       nodes = await recoverVideoReferenceIdentities(nodes, persistedRecord.dramaAssets, persistedRecord.parentId);
       nodes = await restoreProjectNodes(nodes, id, lookup);
@@ -1180,10 +1225,12 @@ export async function restoreProjectRecord(persistedRecord: ProjectSaveData): Pr
 }
 
 /** 从 IndexedDB 加载单个旧项目完整数据 */
-export async function loadProjectData(id: string): Promise<ProjectSaveData | null> {
+export async function loadProjectData(id: string, options?: ProjectRestoreOptions): Promise<ProjectSaveData | null> {
   try {
+    if (options?.recoverUndoTrash) await waitForPendingNodeFileDeletions();
     const record = await getProjectById(id);
     if (!record) return null;
+    options?.assertCurrent?.();
     let persistedRecord = record as ProjectSaveData;
     if (projectRecordContainsInlineMedia(persistedRecord)) {
       try {
@@ -1194,7 +1241,7 @@ export async function loadProjectData(id: string): Promise<ProjectSaveData | nul
         console.warn('[项目加载] 内嵌媒体迁移失败，未覆盖原项目数据', { projectId: id, error });
       }
     }
-    return await restoreProjectRecord(persistedRecord);
+    return await restoreProjectRecord(persistedRecord, options);
   } catch (error) {
     console.error('Load project data failed:', error);
     return null;

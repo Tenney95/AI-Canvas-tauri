@@ -86,4 +86,18 @@ describe('default storage directory', () => {
     expect(await core.getBaseDir()).toBe('/chosen');
     expect(await core.getProjectDataDir('project')).toBe('/chosen/project');
   });
+
+  it.each(['\\\\server\\share\\', '//server/share/'])(
+    'preserves the UNC prefix of a custom storage root %s', async (root) => {
+      const core = await import('../../../src/services/fs/core');
+      core.setBaseDataDir(root);
+      core.registerProjectFolder('episode', '剧集');
+      const directory = await core.getProjectDataDir('episode');
+      expect(directory).toBe('//server/share/剧集');
+      expect(core.joinPath(directory ?? '', 'Library', '候选.png')).toBe('//server/share/剧集/Library/候选.png');
+      expect(core.joinPath('C:\\projects\\', 'Library')).toBe('C:/projects/Library');
+      expect(core.joinPath('/projects//', 'Library')).toBe('/projects/Library');
+      expect(core.joinPath('\\\\?\\UNC\\server\\share', 'Library')).toBe('//?/UNC/server/share/Library');
+    },
+  );
 });

@@ -2,13 +2,39 @@
  * videoBatchRunner — 执行视频批次并恢复中断后的任务状态。
  */
 import type { VideoBatch, VideoBatchItem, VideoPreflightItem } from '../types/videoBatch';
+import type { GenerationResult } from './generationService';
 
 export interface VideoBatchRunnerPorts {
   projectId: () => string | null;
   read: () => VideoBatch;
   update: (nodeId: string, patch: Partial<VideoBatchItem>) => Promise<void>;
   inspect: (nodeId: string) => VideoPreflightItem | null;
-  execute: (nodeId: string) => Promise<{ success: boolean; message?: string }>;
+  execute: (nodeId: string) => Promise<GenerationResult>;
+}
+
+const recoveryMessages = {
+  unknown: '生成状态未确认，请核对原任务后再决定是否重新提交',
+  paused: '原任务已保留，可继续查询',
+  delivery_pending: '生成已完成，可继续保存原结果',
+};
+
+export function isUnresolvedVideoBatchStatus(status: VideoBatchItem['status']): boolean {
+  return status === 'unknown' || status === 'paused' || status === 'delivery_pending';
+}
+
+/** 旧批次保留为历史，当前提交只根据每个节点最近一次有执行结果的记录判断。 */
+export function latestVideoBatchItems(batches: readonly VideoBatch[]): Map<string, VideoBatchItem> {
+  const latest = new Map<string, VideoBatchItem>();
+  for (const batch of batches) for (const item of batch.items) {
+    if (item.status !== 'cancelled' && item.status !== 'waiting') latest.set(item.nodeId, item);
+  }
+  return latest;
+}
+
+export function retainVideoBatches(batches: VideoBatch[]): VideoBatch[] {
+  const latest = latestVideoBatchItems(batches);
+  return batches.filter((batch, index) => index >= batches.length - 30 || batch.items.some((item) =>
+    latest.get(item.nodeId) === item && isUnresolvedVideoBatchStatus(item.status)));
 }
 
 /** One-at-a-time execution; durable running state precedes submission. No implicit retry. */
@@ -32,16 +58,22 @@ export async function runVideoBatch(ports: VideoBatchRunnerPorts): Promise<void>
       await ports.update(item.nodeId, { status: 'cancelled', message: '项目已切换，未提交' });
       continue;
     }
-    try {
-      const result = await ports.execute(item.nodeId);
-      const uncertain = /取消|画布已变化/.test(result.message || '');
-      await ports.update(item.nodeId, ports.projectId() !== batch.projectId
-        ? { status: 'unknown', message: '项目已切换，请核对原任务和输出，勿直接重投' }
-        : { status: result.success ? 'success' : uncertain ? 'unknown' : 'error',
-          message: result.success ? undefined : uncertain ? '生成状态未确认，请检查服务与节点结果' : '生成失败，请定位视频节点查看原因' });
-    } catch {
-      // A transport/persistence exception may occur after submission; fail closed on retries.
+    let result: GenerationResult;
+    try { result = await ports.execute(item.nodeId); }
+    catch {
       await ports.update(item.nodeId, { status: 'unknown', message: '执行状态未确认，请核对输出后再决定是否重生成' });
+      continue;
+    }
+    if (result.recovery) {
+      const { state, receipt, nativeOperationId } = result.recovery;
+      const sameReceipt = receipt?.projectId === batch.projectId && receipt.nodeId === item.nodeId;
+      await ports.update(item.nodeId, { status: state, message: recoveryMessages[state],
+        recovery: { state, ...(sameReceipt ? { receipt } : {}), ...(nativeOperationId ? { nativeOperationId } : {}) } });
+    } else if (ports.projectId() !== batch.projectId) {
+      await ports.update(item.nodeId, { status: 'unknown', message: '项目已切换，请核对原任务和输出，勿直接重投' });
+    } else {
+      await ports.update(item.nodeId, { status: result.success ? 'success' : 'error',
+        message: result.success ? undefined : '生成失败，请定位视频节点查看原因' });
     }
   }
 }

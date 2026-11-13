@@ -25,9 +25,11 @@ import {
   listCharacterVisualRuns,
   MAX_CHARACTER_VISUAL_REFERENCE_BYTES,
   readCharacterVisualInput,
+  readCharacterVisualRunCandidates,
   reviewCharacterVisualRun,
   resumeCharacterVisualRun,
   resolveCharacterVisualParameters,
+  subscribeCharacterVisualRuns,
   type CharacterVisualCandidate,
   type CharacterVisualOperation,
   type CharacterVisualReference,
@@ -185,6 +187,7 @@ export default function CharacterVisualWorkbench({
   const [chosenDraftId, setChosenDraftId] = useState('');
   const [selectedRunId, setSelectedRunId] = useState('');
   const [selectedCandidateId, setSelectedCandidateId] = useState('');
+  const [candidatePreview, setCandidatePreview] = useState<{ key: string; candidates: CharacterVisualCandidate[] }>();
   const [comparison, setComparison] = useState<{ runId: string; url: string }>();
   const [historyRevision, setHistoryRevision] = useState(0);
   const [error, setError] = useState('');
@@ -199,7 +202,6 @@ export default function CharacterVisualWorkbench({
   const xiaohongshu = useRef<XiaohongshuWindow | null>(null);
   const onXiaohongshuImport = useRef<((reference: CharacterXiaohongshuReference) => void) | null>(null);
   const isTargetCurrent = scope === 'global' || sourceProjectId === projectId && projectReady && Boolean(target.ownerId);
-  const isTracking = pending === 'generate' || runs.some((run) => run.status === 'submitting');
 
   useEffect(() => () => actionRef.current?.abort(), []);
   useEffect(() => () => {
@@ -212,23 +214,20 @@ export default function CharacterVisualWorkbench({
   useEffect(() => {
     if (!isTargetCurrent) return;
     let active = true;
-    let reading = false;
+    let revision = 0;
     const refresh = async () => {
-      if (reading) return;
-      reading = true;
+      const readRevision = ++revision;
       try {
         const currentRuns = await listCharacterVisualRuns(target);
-        if (active) { setRuns(currentRuns); setHistoryError(false); }
+        if (active && readRevision === revision) { setRuns(currentRuns); setHistoryError(false); }
       } catch {
-        if (active) setHistoryError(true);
-      } finally {
-        reading = false;
+        if (active && readRevision === revision) setHistoryError(true);
       }
     };
+    const unsubscribe = subscribeCharacterVisualRuns(() => { void refresh(); });
     void refresh();
-    const timer = isTracking ? setInterval(() => { void refresh(); }, 2500) : undefined;
-    return () => { active = false; if (timer !== undefined) clearInterval(timer); };
-  }, [target, historyRevision, isTargetCurrent, isTracking]);
+    return () => { active = false; unsubscribe(); };
+  }, [target, historyRevision, isTargetCurrent]);
   const canResume = isNew && Boolean(onResumeDraft) && isTargetCurrent;
   useEffect(() => {
     if (!canResume) return;
@@ -275,7 +274,22 @@ export default function CharacterVisualWorkbench({
   ].flatMap((group) => group.models) : [], [config, optimizeOpen]);
   const textModel = textModels.find((item) => item.value === textModelId) ?? textModels[0];
   const activeRun = runs.find((run) => run.id === selectedRunId) ?? runs[0];
-  const candidate = activeRun?.candidates.find((item) => item.id === selectedCandidateId) ?? activeRun?.candidates[0];
+  const activeRunId = activeRun?.id;
+  const candidateKey = activeRun?.candidateIds.length ? activeRun.candidateIds.join(',') : '';
+  const previewCandidates = !isTargetCurrent ? []
+    : candidatePreview?.key === candidateKey ? candidatePreview.candidates : activeRun?.candidates ?? [];
+  const multiViewOpen = auxiliary === 'multi';
+  const candidate = previewCandidates.find((item) => item.id === selectedCandidateId) ?? previewCandidates[0];
+  useEffect(() => {
+    if (!isTargetCurrent || !activeRunId || !candidateKey || multiViewOpen) return;
+    let active = true;
+    void readCharacterVisualRunCandidates(target, activeRunId).then((candidates) => {
+      if (active) setCandidatePreview({ key: candidateKey, candidates });
+    }, () => {
+      if (active) setCandidatePreview({ key: candidateKey, candidates: [] });
+    });
+    return () => { active = false; };
+  }, [target, isTargetCurrent, activeRunId, candidateKey, historyRevision, multiViewOpen]);
   const projectReference = referenceOptions.find((entry) => entry.id === (selectedReferenceId ?? character.primaryReferenceImageId));
   const compareBase = comparison?.runId === activeRun?.id ? comparison?.url : undefined;
   const recoverableDrafts = drafts.filter((item) => item.target.characterId !== character.id
@@ -551,12 +565,13 @@ export default function CharacterVisualWorkbench({
       t('加入参考图失败，请检查角色是否已切换或参考图数量是否达到上限'));
   };
   const markReviewed = () => {
-    if (!activeRun?.reviewable) return;
+    const status = activeRun?.reviewStatus;
+    if (!activeRun || !status) return;
     void runAction('review', async (signal) => {
-      const confirmed = await confirmAction('确认已在服务商核对原任务？继续生成可能产生新的费用。', { title: '核对原任务' });
+      const confirmed = await confirmAction(status === 'prepared' ? '确认结束这条未提交的任务？'
+        : '确认已在服务商核对原任务？继续生成可能产生新的费用。', { title: '核对原任务' });
       if (!confirmed || signal.aborted) return;
-      assertCurrent?.();
-      await reviewCharacterVisualRun(target, activeRun.id);
+      await reviewCharacterVisualRun(target, activeRun.id, () => { signal.throwIfAborted(); assertCurrent?.(); }, status);
       if (!signal.aborted) setHistoryRevision((value) => value + 1);
     }, t('任务核对状态保存失败'));
   };
@@ -622,13 +637,14 @@ export default function CharacterVisualWorkbench({
                 </figure>
               ) : (
                 <p className="grid min-h-40 place-items-center rounded-md border border-dashed border-canvas-border p-3 text-center text-sm text-canvas-text-muted">
-                  {t(pending === 'generate' ? '生成中…' : '生成后的候选图片会显示在这里')}
+                  {t(pending === 'generate' ? '生成中…' : candidateKey && candidatePreview?.key === candidateKey
+                    ? '原候选图片文件不可用' : candidateKey ? '正在读取候选图片…' : '生成后的候选图片会显示在这里')}
                 </p>
               )}
             </div>
-            {(activeRun?.candidates.length ?? 0) > 1 && (
+            {previewCandidates.length > 1 && (
               <div className="flex gap-2 overflow-x-auto">
-                {activeRun?.candidates.map((item, index) => (
+                {previewCandidates.map((item, index) => (
                   <button type="button" key={item.id} aria-label={t('候选图片 {number}', { number: index + 1 })}
                     aria-pressed={candidate?.id === item.id} onClick={() => setSelectedCandidateId(item.id)}
                     className={`ui-card ui-card--interactive shrink-0 ${candidate?.id === item.id ? 'is-selected' : ''}`}>
@@ -697,9 +713,11 @@ export default function CharacterVisualWorkbench({
                   disabled={Boolean(pending) || !isTargetCurrent} onClick={resume}>
                   {t(pending === 'resume' ? '正在查询原任务…' : '继续查询并保存')}
                 </button>}
-                {activeRun.reviewable && (
+                {activeRun.reviewStatus && (
                   <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm self-start"
-                    disabled={Boolean(pending) || !isTargetCurrent} onClick={markReviewed}>{t('已核对原任务')}</button>
+                    disabled={Boolean(pending) || !isTargetCurrent} onClick={markReviewed}>
+                    {t(activeRun.reviewStatus === 'prepared' ? '结束跟踪' : '已核对原任务')}
+                  </button>
                 )}
                 <details>
                   <summary className="cursor-pointer">{t('历史提示词')}</summary>

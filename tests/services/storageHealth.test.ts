@@ -78,6 +78,7 @@ vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB, ST
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.assertLegacyProjectWritesAllowed }));
 
 import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth } from '../../src/services/fs/storageHealth';
+import { stageUndoTrashMove } from '../../src/services/fs/undoTrashJournal';
 
 function project(id: string): CanvasProject {
   return { id, name: id, createdAt: 1, updatedAt: 1 };
@@ -446,6 +447,22 @@ describe('storage health accounting and cleanup', () => {
     expect(report).toMatchObject({ trashSize: 150, totalSize: 150, reclaimableSize: 50 });
     expect(report.trashes[0]).toMatchObject({ fileCount: 5, trashSize: 150, reclaimableCount: 1, reclaimableSize: 50 });
     expect(report.trashes[0].files.filter((file) => !file.referenced).map((file) => file.path)).toEqual(['/a/.trash/free.png']);
+  });
+
+  it('暂存条目按原路径核对引用，缺少原路径记录的旧暂存件保留', async () => {
+    const staged = '123-11111111-1111-4111-8111-111111111111-keep.png';
+    const legacy = '123-22222222-2222-4222-8222-222222222222-old.png';
+    mocks.directories.set('/a', ['.trash']);
+    addFiles('/a/.trash', { [staged]: 10, [legacy]: 20, 'free.png': 30 });
+    mocks.listProjectCatalog.mockResolvedValue([{ dataModel: 'legacy', project: project('a') }]);
+    mocks.getProjectById.mockResolvedValue({ ...project('a'), nodes: [{ data: { relativePath: 'nested/keep.png' } }] });
+    await stageUndoTrashMove('/a/.trash', 'nested/keep.png', staged, async () => true);
+
+    const report = await scanStorageHealth([project('a')], new Set());
+    expect(report.trashes[0].files.filter((file) => !file.referenced).map((file) => file.path)).toEqual(['/a/.trash/free.png']);
+    expect(await clearTrashDir('/a/.trash', async () => true, [{ path: `/a/.trash/${staged}`, size: 10, digest: 'f'.repeat(64) }]))
+      .toMatchObject({ deletedCount: 0, failedCount: 1 });
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it('相对图片与导演截图路径在持久项目和实时状态中均保护对应回收站文件', async () => {

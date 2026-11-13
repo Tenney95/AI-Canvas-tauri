@@ -452,13 +452,99 @@ fn read_media_file(path: &Path, reference: &NativeMediaReference) -> Result<Vec<
     use std::os::windows::fs::OpenOptionsExt;
     let file = OpenOptions::new().read(true).custom_flags(0x00200000).share_mode(0x00000001)
         .open(path).map_err(|_| ERROR)?;
+    verify_windows_media_file(&file, reference)
+}
+
+#[cfg(windows)]
+fn verify_windows_media_file(file: &File, reference: &NativeMediaReference) -> Result<Vec<u8>, String> {
     let metadata = file.metadata().map_err(|_| ERROR)?;
     if is_link(&metadata) || !metadata.is_file() || metadata.len() != reference.bytes { return Err(ERROR.into()); }
     let mut bytes = Vec::new();
-    (&file).take(reference.bytes + 1).read_to_end(&mut bytes).map_err(|_| ERROR)?;
+    file.take(reference.bytes + 1).read_to_end(&mut bytes).map_err(|_| ERROR)?;
     if bytes.len() as u64 != reference.bytes || file.metadata().map_err(|_| ERROR)?.len() != reference.bytes
         || format!("{:x}", Sha256::digest(&bytes)) != reference.sha256 { return Err(ERROR.into()); }
     Ok(bytes)
+}
+
+#[cfg(windows)]
+fn rename_windows_media_file(file: &File, destination: &Path) -> Result<(), String> {
+    use std::{mem::{offset_of, size_of}, os::windows::{ffi::OsStrExt, io::AsRawHandle}, ptr};
+    use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{
+        FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,
+    }};
+    let name: Vec<u16> = destination.as_os_str().encode_wide().collect();
+    if !destination.is_absolute() || name.contains(&0) { return Err(ERROR.into()); }
+    let name_bytes = name.len().checked_mul(size_of::<u16>()).ok_or(ERROR)?;
+    let total = offset_of!(FILE_RENAME_INFO, FileName).checked_add(name_bytes)
+        .and_then(|size| size.checked_add(size_of::<u16>())).ok_or(ERROR)?;
+    let total_bytes = u32::try_from(total).map_err(|_| ERROR)?;
+    let name_bytes = u32::try_from(name_bytes).map_err(|_| ERROR)?;
+    let mut storage = vec![0_usize; total.max(size_of::<FILE_RENAME_INFO>()).div_ceil(size_of::<usize>())];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: an aligned, zeroed rename record leaves ReplaceIfExists false. The tail
+    // holds the wide path and a zero terminator. The open DELETE handle identifies the
+    // exact source, and the caller keeps the common parent path leased.
+    unsafe {
+        (*info).RootDirectory = HANDLE::default();
+        (*info).FileNameLength = name_bytes;
+        ptr::copy_nonoverlapping(name.as_ptr(), ptr::addr_of_mut!((*info).FileName).cast(), name.len());
+        SetFileInformationByHandle(HANDLE(file.as_raw_handle()), FileRenameInfo, info.cast(), total_bytes)
+    }.map_err(|_| ERROR.into())
+}
+
+/// Old builds could leave a short write under the final digest. Preserve only a verified
+/// strict byte prefix as a recoverable side file. Every ambiguous destination stays put.
+#[cfg(windows)]
+fn isolate_windows_media_partial(target: &Path, data: &[u8]) -> Result<bool, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_READ};
+    let file = match OpenOptions::new().read(true).access_mode(FILE_GENERIC_READ.0 | DELETE.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0).share_mode(FILE_SHARE_READ.0).open(target) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(ERROR.into()),
+    };
+    let metadata = file.metadata().map_err(|_| ERROR)?;
+    if is_link(&metadata) || !metadata.is_file() || metadata.len() > data.len() as u64 { return Err(ERROR.into()); }
+    let mut bytes = Vec::new();
+    (&file).take(data.len() as u64 + 1).read_to_end(&mut bytes).map_err(|_| ERROR)?;
+    if bytes.len() as u64 != metadata.len() || !data.starts_with(&bytes) { return Err(ERROR.into()); }
+    if bytes.len() == data.len() { return Ok(true); }
+    let recovered = format!(".native-media-{}.pending", crate::comfyui::media_source::new_id().map_err(|_| ERROR)?);
+    rename_windows_media_file(&file, &target.with_file_name(recovered))?;
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn write_windows_media_file(media: &Path, name: &str, reference: &NativeMediaReference, data: &[u8],
+    verify_binding: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    use std::{io::Seek, os::windows::fs::OpenOptionsExt};
+    use windows::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
+    let target = media.join(name);
+    if read_media_file(&target, reference).is_ok_and(|bytes| bytes == data) { return Ok(()); }
+    let temporary = media.join(format!(".native-media-{}.pending", crate::comfyui::media_source::new_id().map_err(|_| ERROR)?));
+    let mut file = OpenOptions::new().read(true).write(true).create_new(true)
+        .access_mode(FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0 | DELETE.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0 | FILE_FLAG_WRITE_THROUGH.0)
+        .share_mode(0).open(&temporary).map_err(|_| ERROR)?;
+    file.write_all(data).and_then(|_| file.sync_all()).and_then(|_| file.rewind()).map_err(|_| ERROR)?;
+    if verify_windows_media_file(&file, reference)? != data { return Err(ERROR.into()); }
+    verify_binding()?;
+
+    // A different writer can publish valid identical bytes while this stage is open.
+    let existing = match isolate_windows_media_partial(&target, data) {
+        Ok(existing) => existing,
+        Err(_) if read_media_file(&target, reference).is_ok_and(|bytes| bytes == data) => true,
+        Err(error) => return Err(error),
+    };
+    let published = !existing && rename_windows_media_file(&file, &target).is_ok();
+    if published {
+        file.sync_all().map_err(|_| ERROR)?;
+    }
+    drop(file);
+    if read_media_file(&target, reference)? == data { Ok(()) } else { Err(ERROR.into()) }
 }
 
 // macOS and the two supported Linux desktop ABIs have distinct fcntl constants.
@@ -673,21 +759,14 @@ pub fn write_native_project_media<R: Runtime>(webview: Webview<R>, project_id: S
     let name = validate_media_reference(&reference)?;
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt;
         let (media, _leases) = lease_media_directory(&webview, &project_id, true)?;
-        let target = media.join(name);
-        match OpenOptions::new().read(true).write(true).create_new(true).custom_flags(0x00200000).share_mode(0x00000001).open(&target) {
-            Ok(mut file) => {
-                let info = file.metadata().map_err(|_| ERROR)?;
-                if is_link(&info) || !info.is_file() { return Err(ERROR.into()); }
-                file.write_all(&data).and_then(|_| file.sync_all()).map_err(|_| ERROR)?;
-                drop(file);
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
-            Err(_) => return Err(ERROR.into()),
-        }
-        if read_media_file(&target, &reference)? != data { return Err(ERROR.into()); }
-        media_root(&webview, &project_id, false, false, None)?;
+        let verify_binding = || {
+            let root = media_root(&webview, &project_id, false, false, None)?;
+            if media.parent() != Some(Path::new(&root)) { return Err(ERROR.into()); }
+            Ok(())
+        };
+        write_windows_media_file(&media, &name, &reference, &data, &verify_binding)?;
+        verify_binding()?;
         Ok(reference)
     }
     #[cfg(any(target_os = "macos", all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64"))))]
@@ -744,6 +823,74 @@ mod tests {
     fn fixture() -> PathBuf {
         let root = std::env::temp_dir().join(format!("native-media-{}-{:?}", std::process::id(), std::thread::current().id()));
         fs::create_dir(&root).unwrap(); root.canonicalize().unwrap()
+    }
+
+    #[cfg(windows)]
+    fn windows_media_reference(bytes: &[u8]) -> (String, NativeMediaReference) {
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let name = format!("{sha256}.png");
+        let reference = NativeMediaReference {
+            relative_path: format!("media/{name}"), sha256, bytes: bytes.len() as u64, mime_type: "image/png".into(),
+        };
+        (name, reference)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_media_recovers_a_verified_short_write_and_reuses_the_published_copy() {
+        let media = fixture();
+        let bytes = b"full native image bytes";
+        let (name, reference) = windows_media_reference(bytes);
+        let old = &bytes[..5];
+        fs::write(media.join(&name), old).unwrap();
+        let pending = media.join(".native-media-interrupted.pending");
+        fs::write(&pending, b"interrupted stage").unwrap();
+
+        write_windows_media_file(&media, &name, &reference, bytes, || Ok(())).unwrap();
+        assert_eq!(read_media_file(&media.join(&name), &reference).unwrap().as_slice(), bytes);
+        assert_eq!(fs::read(&pending).unwrap().as_slice(), b"interrupted stage");
+        let files: Vec<_> = fs::read_dir(&media).unwrap().map(|entry| entry.unwrap().path()).collect();
+        let recovered = files.iter().find(|path| *path != &pending && path.extension().is_some_and(|ext| ext == "pending")).unwrap();
+        assert_eq!(fs::read(recovered).unwrap().as_slice(), old);
+        assert_eq!(files.len(), 3);
+
+        write_windows_media_file(&media, &name, &reference, bytes, || Ok(())).unwrap();
+        assert_eq!(fs::read_dir(&media).unwrap().count(), files.len());
+        fs::remove_dir_all(media).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_media_preserves_a_destination_with_unrelated_bytes() {
+        let media = fixture();
+        let bytes = b"expected content";
+        let (name, reference) = windows_media_reference(bytes);
+        let original = b"unrelated";
+        let target = media.join(&name);
+        fs::write(&target, original).unwrap();
+
+        assert!(write_windows_media_file(&media, &name, &reference, bytes, || Ok(())).is_err());
+        assert_eq!(fs::read(&target).unwrap().as_slice(), original);
+        let paths: Vec<_> = fs::read_dir(&media).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(paths.len(), 2);
+        let staged = paths.iter().find(|path| *path != &target).unwrap();
+        assert_eq!(fs::read(staged).unwrap().as_slice(), bytes);
+        fs::remove_dir_all(media).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_media_binding_change_cannot_publish_or_move_existing_bytes() {
+        let media = fixture();
+        let bytes = b"expected content";
+        let (name, reference) = windows_media_reference(bytes);
+        let target = media.join(&name);
+        fs::write(&target, &bytes[..4]).unwrap();
+
+        let result = write_windows_media_file(&media, &name, &reference, bytes, || Err(ERROR.into()));
+        assert!(result.is_err());
+        assert_eq!(fs::read(&target).unwrap().as_slice(), &bytes[..4]);
+        fs::remove_dir_all(media).unwrap();
     }
 
     #[test]

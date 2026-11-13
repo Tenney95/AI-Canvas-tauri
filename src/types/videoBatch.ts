@@ -1,8 +1,10 @@
 /**
  * videoBatch — 定义视频批次、预检与执行状态的领域类型。
  */
+import type { GenerationRecovery } from './aiTypes';
+
 export type VideoBatchScope = 'episode' | 'selected' | 'pending';
-export type VideoBatchItemStatus = 'waiting' | 'running' | 'success' | 'error' | 'cancelled' | 'unknown';
+export type VideoBatchItemStatus = 'waiting' | 'running' | 'success' | 'error' | 'cancelled' | 'unknown' | 'paused' | 'delivery_pending';
 
 export interface VideoBatchItem {
   nodeId: string;
@@ -12,6 +14,7 @@ export interface VideoBatchItem {
   comfyH3SettingsFingerprint?: string;
   duration?: number;
   status: VideoBatchItemStatus;
+  recovery?: GenerationRecovery;
   message?: string;
 }
 

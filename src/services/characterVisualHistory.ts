@@ -13,7 +13,7 @@ export interface StoredCharacterVisualCandidate {
   digest: string;
 }
 
-export interface StoredCharacterVisualRun extends Omit<CharacterVisualRun, 'id' | 'candidates'> {
+export interface StoredCharacterVisualRun extends Omit<CharacterVisualRun, 'id' | 'candidateIds' | 'candidates' | 'reviewStatus'> {
   id: string;
   operationId: string;
   name: string;

@@ -279,6 +279,13 @@ const canvas = {
   '切换项目会停止后续提交。重开后不会自动重投，待核对任务需先检查服务与输出。取消等待不会中断已经提交的任务。': 'Switching projects stops further submissions. After reopening, nothing is resubmitted automatically; tasks pending review require checking the service and outputs first. Cancelling the wait does not interrupt tasks already submitted.',
   '取消等待': 'Cancel waiting',
   '重试失败项': 'Retry failed items',
+  "待保存原结果": "Original result awaiting save",
+  "生成状态未确认，请核对原任务后再决定是否重新提交": "Generation status is unconfirmed. Check the original task before submitting again.",
+  "原任务已保留，可继续查询": "The original task is retained. You can resume checking it.",
+  "生成已完成，可继续保存原结果": "Generation finished. You can resume saving the original result.",
+  "请先核对所选镜头的原任务与输出，再确认重新提交": "Check the original tasks and outputs for the selected shots before confirming resubmission.",
+  "原任务尚未交付，原回执已保留": "The original task has not delivered a result yet. Its receipt was retained.",
+  "原任务尚不能续查，请先在服务商核对": "The original task cannot be resumed yet. Check its status with the provider.",
   '本集暂无视频批次': 'No video batch for this episode yet',
 
   // ── 节点统计 ──
