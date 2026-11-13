@@ -27,15 +27,17 @@ export function registerCharacterImageTaskContext(context: CharacterImageTaskCon
   contexts.set(beforeSubmit, context);
   return { beforeSubmit, release: () => { contexts.delete(beforeSubmit); } };
 }
-export const isCharacterImageTaskContext = (guard: unknown): guard is () => void | Promise<void> =>
+export const isCharacterImageTaskContext = (guard: unknown): boolean =>
   typeof guard === 'function' && contexts.has(guard as () => void);
 
 export async function executeCharacterImageTask(guard: unknown, plan: CharacterImageExecutionPlan): Promise<never> {
   if (!isCharacterImageTaskContext(guard)) throw new Error('角色图片任务缺少受信执行目的地');
-  if (executed.has(guard)) throw new Error('本次角色图片作业已经开始，不能重复提交');
-  const context = contexts.get(guard)!;
+  // 登记身份由 WeakMap 核验；布尔查询不把普通回调的反向分支收窄成 never。
+  const beforeSubmit = guard as () => void | Promise<void>;
+  if (executed.has(beforeSubmit)) throw new Error('本次角色图片作业已经开始，不能重复提交');
+  const context = contexts.get(beforeSubmit)!;
   context.assertCurrent();
-  executed.add(guard);
+  executed.add(beforeSubmit);
   return context.execute(plan);
 }
 
