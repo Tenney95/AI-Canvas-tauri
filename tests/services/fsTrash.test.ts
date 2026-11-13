@@ -51,10 +51,12 @@ import {
   isProjectOwnedFile,
   moveToUndoTrash,
   moveToTrash,
+  recoverUndoTrashReferences,
   resolveNodeUndoTrashPaths,
   restoreFromUndoTrash,
   waitForPendingNodeFileDeletions,
 } from '../../src/services/fs/trash';
+import { readUndoTrashEntries } from '../../src/services/fs/undoTrashJournal';
 
 describe('显式资产删除的回收站结果', () => {
   beforeEach(() => {
@@ -162,7 +164,7 @@ describe('undo trash media moves', () => {
     expect(fsMocks.remove).not.toHaveBeenCalled();
     expect(coreMocks.notifyProjectDiskChanged).toHaveBeenCalledOnce();
 
-    fsMocks.exists.mockImplementation(async (path: string) => path !== originalPath);
+    fsMocks.exists.mockImplementation(async (path: string) => path === trashPath || !path.includes('/.trash/') && path !== originalPath);
     await expect(restoreFromUndoTrash(originalPath)).resolves.toBe(true);
 
     expect(fsMocks.rename).toHaveBeenNthCalledWith(2, trashPath, originalPath);
@@ -198,7 +200,8 @@ describe('undo trash media moves', () => {
     await waitForPendingNodeFileDeletions();
 
     // 暂存已经落定，此时的还原才能真正把文件搬回来
-    fsMocks.exists.mockImplementation(async (path: string) => path !== originalPath);
+    const staged = fsMocks.rename.mock.calls[0][1];
+    fsMocks.exists.mockImplementation(async (path: string) => path === staged || !path.includes('/.trash/') && path !== originalPath);
     await expect(restoreFromUndoTrash(originalPath)).resolves.toBe(true);
   });
 });
@@ -265,6 +268,29 @@ describe('删除节点文件的项目归属校验', () => {
     expect(fsMocks.rename).toHaveBeenCalledTimes(1);
   });
 
+  it('原项目保存前中断时，按已提交的暂存记录恢复仍引用的原件', async () => {
+    const root = 'D:/data/recovery-fixture';
+    projectDirMock.get.mockResolvedValue(root);
+    const original = `${root}/分组/keep.png`, unused = `${root}/分组/removed.png`;
+    const files = new Set([original, unused]);
+    fsMocks.exists.mockImplementation(async (path: string) => files.has(path));
+    fsMocks.rename.mockImplementation(async (from: string, to: string) => {
+      if (from === original || from === unused) {
+        const persisted = await readUndoTrashEntries(`${root}/.trash`);
+        expect(persisted).toContainEqual(expect.objectContaining({ originalPath: from, stagedPath: to }));
+      }
+      files.delete(from);
+      files.add(to);
+    });
+
+    await deleteNodeFiles([{ filePath: original }, { filePath: unused }], undefined, 'project-b');
+    await recoverUndoTrashReferences(root, new Set([original]), ['分组']);
+
+    expect(files.has(original)).toBe(true);
+    expect(files.has(unused)).toBe(false);
+    expect(await readUndoTrashEntries(`${root}/.trash`)).toEqual([expect.objectContaining({ originalPath: unused })]);
+  });
+
   it('整组删除只移动目录到项目根回收站，包含旧的组内回收站', async () => {
     await deleteNodeFiles([
       { filePath: 'D:/data/project-b/分组/a.png' },
@@ -277,7 +303,7 @@ describe('删除节点文件的项目归属校验', () => {
     expect(fsMocks.mkdir).not.toHaveBeenCalledWith('D:/data/project-b/分组/.trash', expect.anything());
     const staged = fsMocks.rename.mock.calls[0][1];
     fsMocks.exists.mockImplementation(async (path: string) => path !== 'D:/data/project-b/分组');
-    await expect(restoreFromUndoTrash('D:/data/project-b/分组')).resolves.toBe(true);
+    await expect(restoreFromUndoTrash('D:/data/project-b/分组', 'project-b')).resolves.toBe(true);
     expect(fsMocks.rename).toHaveBeenLastCalledWith(staged, 'D:/data/project-b/分组');
   });
 
@@ -306,7 +332,7 @@ describe('删除节点文件的项目归属校验', () => {
     await deleteNodeFiles([], undefined, 'project-b', ['空组']);
     expect(fsMocks.rename).toHaveBeenCalledTimes(1);
     fsMocks.exists.mockResolvedValue(true);
-    await expect(restoreFromUndoTrash('D:/data/project-b/空组')).resolves.toBe(false);
+    await expect(restoreFromUndoTrash('D:/data/project-b/空组', 'project-b')).resolves.toBe(false);
     expect(fsMocks.rename).toHaveBeenCalledTimes(1);
   });
 
@@ -439,7 +465,7 @@ describe('新结构节点逐文件回收', () => {
     expect(coreMocks.invoke).not.toHaveBeenCalled();
     expect(await resolveNodeUndoTrashPaths({ filePath }, projectId)).toEqual([filePath]);
     fsMocks.exists.mockImplementation(async (path: string) => path !== filePath);
-    await expect(restoreFromUndoTrash(filePath)).resolves.toBe(true);
+    await expect(restoreFromUndoTrash(filePath, projectId)).resolves.toBe(true);
     expect(fsMocks.rename).toHaveBeenLastCalledWith(trashPath, filePath);
   });
 

@@ -25,9 +25,12 @@ import type { MediaDownloadAccess } from '../types/aiTypes';
 export { listNativeWorkflowRetainedOutputs } from './nativeWorkflowRepository';
 export { nativeWorkflowDigest, isNativeWorkflowExecution } from './nativeWorkflowExecution';
 export const isNativeWorkflowTask = (record: NativeMediaTaskRecord) => record.recovery?.kind === 'workflow';
-function pending(operationId: string): Error {
+function pending(record: NativeMediaTaskRecord): Error {
+  const { operationId, localResults, remoteTaskId, status } = record;
   const error = new Error(`工作流原操作 ${operationId} 已保留，请在原画布继续查询；提交未知不会重新生成。`);
-  error.name = 'NativeMediaTaskPending'; return error;
+  error.name = 'NativeMediaTaskPending';
+  return Object.assign(error, { nativeOperationId: operationId, localResultAvailable: !!localResults?.length,
+    remoteTaskKnown: status === 'submitted' && !!remoteTaskId });
 }
 function delivered(operationId: string): never {
   const error = new Error('原工作流全部已确认产物已保存并交付'); error.name = 'NativeMediaTaskDelivered';
@@ -128,7 +131,7 @@ export async function submitNativeWorkflowTask(input: {
     }
   }
   if (record.status === 'delivered') return delivered(record.operationId);
-  if (record.status === 'reviewed' || record.lease !== submissionLease) throw pending(record.operationId);
+  if (record.status === 'reviewed' || record.lease !== submissionLease) throw pending(record);
   if (record.status !== 'submitted' || !input.synchronous) {
     ({ record, receipt } = await sealNativeWorkflowSubmissions(record, context));
   }
@@ -140,7 +143,7 @@ export async function submitNativeWorkflowTask(input: {
     if (record.status === 'delivered') return delivered(record.operationId);
     if (record.status === 'failed') throw firstError ?? new Error('原工作流任务均已失败');
   }
-  throw pending(record.operationId);
+  throw pending(record);
   } finally { preparation?.release(); }
 }
 
@@ -258,7 +261,7 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
     if (receipt.syncOutputs) record = await retainNativeMediaOutputs(record, receipt.syncOutputs);
   }
   if (record.status === 'failed') throw new Error('原工作流提交或任务均已明确失败，原回执保留');
-  if (!['submitted', 'reviewed'].includes(record.status)) throw pending(operationId);
+  if (!['submitted', 'reviewed'].includes(record.status)) throw pending(record);
   record = await claimNativeMediaRecovery(operationId, context);
   const controller = new AbortController(), abort = () => controller.abort();
   externalSignal?.addEventListener('abort', abort, { once: true }); if (externalSignal?.aborted) controller.abort();
@@ -289,7 +292,7 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
       }
       const files = receipt.tasks.flatMap((task) => task.outputs ?? []);
       if (!files.length) throw new Error('原工作流任务均已明确失败，原回执保留');
-      if (receipt.tasks.some((task) => task.state === 'submitted') || receipt.submissions.some((slot) => slot.state === 'unknown') && !receipt.uncertainAcknowledged) throw pending(operationId);
+      if (receipt.tasks.some((task) => task.state === 'submitted') || receipt.submissions.some((slot) => slot.state === 'unknown') && !receipt.uncertainAcknowledged) throw pending(record);
       const summary = nativeWorkflowSummary(receipt);
       record = await retainNativeMediaOutputs(record, files, { completion: { taskCount: receipt.tasks.length,
         failedTasks: summary.failedTasks, failedSubmissions: summary.failedSubmissions, unknownSubmissions: summary.unknownSubmissions,

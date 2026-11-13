@@ -88,6 +88,7 @@ import { listProjectCatalog, resolveProjectModel, type ProjectCatalogEntry } fro
 import { readNativeProjectView } from '../services/nativeProjectNavigation';
 import { hydrateNativeProjectView, nativeEpisodeDisplayNumbers, projectNativeCatalogEntry, type NativeProjectViewItem } from './nativeProjectView';
 import { restoreProjectRecord } from '../services/storageService';
+import { waitForPendingNodeFileDeletions } from '../services/fs/trash';
 import { resolveProjectModelSettings } from '../services/projectModelSettings';
 import { configValuesEqual } from '../services/configPatch';
 import { remapStoryGraphBindings } from '../services/projectExchangeDomain';
@@ -149,6 +150,8 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   targetId: string, assertCurrent: () => void, preserveHistory = false): Promise<string> {
   const binding = projectNativeCatalogEntry(entry).find((item) => item.id === targetId)?.nativeView;
   if (!binding) throw new Error('新项目导航身份已变化');
+  await waitForPendingNodeFileDeletions();
+  assertCurrent();
   const loaded = await readNativeProjectView(entry.project.id, binding.canvasId ?? undefined);
   assertCurrent();
   if (!loaded || (loaded.selection.canvas?.id ?? null) !== binding.canvasId) throw new Error('项目画布身份已变化');
@@ -165,7 +168,7 @@ async function activateNativeProject(set: ProjectSliceSet, get: ProjectSliceGet,
   const selected = projected.find((item) => item.id === activeId);
   if (!selected) throw new Error('新项目画布身份已变化');
   const data = await restoreProjectRecord({ ...selected, nodes: canvas?.nodes ?? [], edges: canvas?.edges ?? [], groups: canvas?.groups ?? [],
-    dramaAssets: loaded.content.dramaAssets });
+    dramaAssets: loaded.content.dramaAssets }, { recoverUndoTrash: true, assertCurrent });
   assertCurrent();
   const ids = [entry.project.id, ...entry.episodeIds, ...entry.canvasIds];
   fileService.registerNativeProjectFolders(ids.map((id) => ({ id, projectId: entry.project.id })));
@@ -3129,15 +3132,18 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           }
           return;
         }
-        const data = await fileService.loadProjectData(nextId);
         const isCurrentReplacement = () => projectSwitchSequence === deletionSequence
           && get().currentProjectId === nextId && get().projects.some((project) => project.id === nextId);
+        const loadOptions = { recoverUndoTrash: true, assertCurrent: () => {
+          if (!isCurrentReplacement()) throw new Error('项目已切换');
+        } };
+        const data = await fileService.loadProjectData(nextId, loadOptions);
         if (!isCurrentReplacement()) return;
         const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
         if (!isCurrentReplacement()) return;
         if (hasProjectCanvasData(data)) {
           const ownerId = data.parentId ?? nextId;
-          const ownerData = ownerId === nextId ? data : await fileService.loadProjectData(ownerId);
+          const ownerData = ownerId === nextId ? data : await fileService.loadProjectData(ownerId, loadOptions);
           if (!isCurrentReplacement()) return;
           if (!hasProjectCanvasData(ownerData) || ownerData.parentId || ownerData.id !== ownerId
             || (ownerData.exchangeEpoch ?? 0) < (get().projects.find((item) => item.id === ownerId)?.exchangeEpoch ?? 0)) {
@@ -3208,9 +3214,6 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         }
       }
       if (!isLatestSwitch()) return;
-      // Clean up undo-trash dirs from the old project before switching
-      await fileService.flushUndoTrashDirs();
-      if (!isLatestSwitch()) return;
 
       const project = get().projects.find((p) => p.id === id);
       if (!project) return;
@@ -3233,7 +3236,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
       fileService.ensureProjectDataDir(id).catch((e) => console.warn('[切换项目] 数据目录初始化失败:', e));
 
-      const data = await fileService.loadProjectData(id);
+      const loadOptions = { recoverUndoTrash: true, assertCurrent: () => {
+        if (!isLatestSwitch()) throw new Error('项目切换已取消');
+      } };
+      const data = await fileService.loadProjectData(id, loadOptions);
       if (!isLatestSwitch()) return;
       const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
       if (!isLatestSwitch()) return;
@@ -3248,7 +3254,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       let dramaAssets = get().dramaAssets;
       let ownerData: ProjectSaveData | null = null;
       if (ownerId === id || ownerId !== previousOwnerId) {
-        ownerData = ownerId === id ? data : await fileService.loadProjectData(ownerId);
+        ownerData = ownerId === id ? data : await fileService.loadProjectData(ownerId, loadOptions);
         if (!isLatestSwitch()) return;
         if (!hasProjectCanvasData(ownerData) || ownerData.parentId || ownerData.id !== ownerId
           || (ownerData.exchangeEpoch ?? 0) < (get().projects.find((item) => item.id === ownerId)?.exchangeEpoch ?? 0)) {
@@ -3700,12 +3706,13 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           return;
         }
 
-        const data = await fileService.loadProjectData(targetId);
+        const loadOptions = { recoverUndoTrash: true, assertCurrent };
+        const data = await fileService.loadProjectData(targetId, loadOptions);
         assertCurrent();
         if (hasProjectCanvasData(data)) {
           const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
           const ownerId = data.parentId ?? targetId;
-          const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId);
+          const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId, loadOptions);
           assertCurrent();
           set({
             projects: withLoadedProjectSummaries(mapped, data, ownerData),
@@ -3790,13 +3797,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             activeProjectId = await activateNativeProject(set, get, entry, targetId, assertInitialization);
             rememberActiveProject(activeProjectId);
           } else {
-          const data = await fileService.loadProjectData(targetId);
+          const loadOptions = { recoverUndoTrash: true, assertCurrent: assertInitialization };
+          const data = await fileService.loadProjectData(targetId, loadOptions);
           const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
           assertInitialization();
           if (hasProjectCanvasData(data)) {
             activeProjectId = targetId;
             const ownerId = data.parentId ?? targetId;
-            const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId);
+            const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId, loadOptions);
             assertInitialization();
             set({
               projects: withLoadedProjectSummaries(mapped, data, ownerData),

@@ -6,7 +6,7 @@ import {
   type CharacterVisualCrop, type CharacterVisualView,
 } from '../../services/characterVisualComposition';
 import {
-  generateCharacterVisual, saveCharacterVisualComposite,
+  generateCharacterVisual, readCharacterVisualCandidate, saveCharacterVisualComposite,
   type CharacterVisualCandidate, type CharacterVisualModel, type CharacterVisualReference, type CharacterVisualRun,
   type CharacterVisualTarget,
 } from '../../services/characterVisualWorkbenchService';
@@ -39,17 +39,31 @@ export default function CharacterVisualMultiView({
   const [active, setActive] = useState<CharacterVisualView | 'compose' | 'save'>();
   const [error, setError] = useState('');
   const [preview, setPreview] = useState<{ url: string; key: string }>();
+  const [candidatePreviews, setCandidatePreviews] = useState<{ key: string; candidates: CharacterVisualCandidate[] }>();
   const actionRef = useRef<AbortController | null>(null);
   useEffect(() => () => actionRef.current?.abort(), []);
 
   const compatible = models.filter((model) => model.channel === 'standard' && references.length <= model.maxReferences);
   const model = compatible.find((item) => item.id === modelId) ?? (!modelId ? compatible[0] : undefined);
-  const views = CHARACTER_VISUAL_VIEWS.map((view) => {
-    const candidates = runs.filter((run) => run.viewSlot === view.id).flatMap((run) => run.candidates);
-    const chosenId = versions[view.id];
-    const candidate = chosenId === undefined ? candidates[0] : candidates.find((item) => item.id === chosenId);
-    return { ...view, candidates, candidate, crop: crops[view.id] ?? DEFAULT_CHARACTER_VISUAL_CROP };
+  const selections = CHARACTER_VISUAL_VIEWS.map((view) => {
+    const candidateIds = runs.filter((run) => run.viewSlot === view.id).flatMap((run) => run.candidateIds);
+    const selectedId = versions[view.id] ?? candidateIds[0];
+    return { ...view, candidateIds, selectedId, crop: crops[view.id] ?? DEFAULT_CHARACTER_VISUAL_CROP };
   });
+  const candidateKey = selections.flatMap((view) => view.selectedId || []).join(',');
+  useEffect(() => {
+    if (!candidateKey) return;
+    let current = true;
+    void Promise.all(candidateKey.split(',').map((id) => readCharacterVisualCandidate(target, id).catch(() => null)))
+      .then((candidates) => {
+        if (current) setCandidatePreviews({ key: candidateKey, candidates: candidates.filter((candidate) => candidate !== null) });
+      });
+    return () => { current = false; };
+  }, [target, candidateKey]);
+  const candidatesReady = candidatePreviews?.key === candidateKey;
+  const views = selections.map((view) => ({ ...view,
+    candidate: candidatesReady ? candidatePreviews?.candidates.find((item) => item.id === view.selectedId) : undefined,
+  }));
   const selected = views.flatMap((view) => view.candidate
     ? [{ url: view.candidate.url, id: view.candidate.id, width: view.width, crop: view.crop }] : []);
   const key = JSON.stringify(selected.map(({ id, crop }) => [id, crop]));
@@ -61,7 +75,7 @@ export default function CharacterVisualMultiView({
     const ratios = view.ratio === '1:1' ? ['1:1'] : [view.ratio, '2:3', '4:5'];
     return ratios.find((ratio) => model.ratios.includes(ratio));
   };
-  const missingViews = views.filter((view) => !view.candidates.length);
+  const missingViews = views.filter((view) => !view.candidateIds.length);
 
   const run = async (kind: NonNullable<typeof active>, action: (signal: AbortSignal) => Promise<void>) => {
     if (actionRef.current) return;
@@ -135,17 +149,20 @@ export default function CharacterVisualMultiView({
                 <h3 className="ui-card__title">{t(view.label)}</h3>
                 <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={pending || !generationRatio(view)}
                   onClick={() => void run(view.id, async (signal) => { await generate(view, signal); })}>
-                  {t(active === view.id ? '生成中…' : view.candidates.length ? '重做此图' : '生成此图')}
+                  {t(active === view.id ? '生成中…' : view.candidateIds.length ? '重做此图' : '生成此图')}
                 </button>
               </div>
               {view.candidate && <ViewportImage className="h-40 w-full rounded-md bg-canvas-surface object-contain" src={view.candidate.url} alt={t(view.label)} />}
-              {view.candidates.length > 0 && (
-                <Select aria-label={t('选择定妆版本')} value={view.candidate?.id ?? ''} disabled={pending} onChange={(id) => {
+              {view.selectedId && !view.candidate && <p className="text-xs text-canvas-text-secondary" role="status">
+                {t(candidatesReady ? '原候选图片文件不可用' : '正在读取候选图片…')}
+              </p>}
+              {view.candidateIds.length > 0 && (
+                <Select aria-label={t('选择定妆版本')} value={view.selectedId ?? ''} disabled={pending} onChange={(id) => {
                   setVersions((previous) => ({ ...previous, [view.id]: id }));
                   setCrops((previous) => ({ ...previous, [view.id]: DEFAULT_CHARACTER_VISUAL_CROP }));
                 }}>
                   <option value="">{t('不加入拼接')}</option>
-                  {view.candidates.map((item, index) => <option key={item.id} value={item.id}>{t('版本 {number}', { number: view.candidates.length - index })}</option>)}
+                  {view.candidateIds.map((id, index) => <option key={id} value={id}>{t('版本 {number}', { number: view.candidateIds.length - index })}</option>)}
                 </Select>
               )}
               {view.candidate && (

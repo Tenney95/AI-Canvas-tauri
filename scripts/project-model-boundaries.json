@@ -63,6 +63,7 @@
     {"file":"src/services/dramaAssetTransferService.ts","scope":"completeExportSelection","kind":"facade","operation":"call","target":"getProjectById","max":1},
     {"file":"src/services/chat/teams/teamResultApplyService.ts","scope":"reconcileTeamResult","kind":"facade","operation":"call","target":"loadProjectData","max":1},
     {"file":"src/services/fs/sharedAssetSync.ts","scope":"ownerState","kind":"facade","operation":"call","target":"getAllProjects","max":1},
+    {"file":"src/services/fs/storageHealth.ts","scope":"assertStorageCleanupPath","kind":"facade","operation":"call","target":"getProjectById","max":1},
     {"file":"src/services/fs/storageHealth.ts","scope":"scanStorageHealth","kind":"facade","operation":"call","target":"getAllProjects","max":1},
     {"file":"src/services/fs/storageHealth.ts","scope":"scanStorageHealth","kind":"facade","operation":"call","target":"getProjectById","max":1},
     {"file":"src/services/indexedDb/legacyProjectLifecycleRepository.ts","scope":"deleteLegacyProjectContent","kind":"table","operation":"objectStore","target":"projects","max":1},

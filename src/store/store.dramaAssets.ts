@@ -1400,6 +1400,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
       }
       try {
         if (await get().saveCurrentProjectSilent(() => {
+          assertDramaAssetWriteCurrent({ signal: options.signal });
           const live = get();
           if (live.currentProjectId !== projectId || live.projectLoadStatus !== 'ready'
             || !sameCharacterContent(normalized, findScopedCharacter(live, scope, normalized.id))) {
@@ -1414,7 +1415,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
           item.id !== normalized.id ? [item] : existing ? [{ ...existing, libraryOrder: item.libraryOrder }] : []
         )) } });
       }
-      get().showToast?.(t('角色保存失败，请重试'), 'error');
+      if (!options.signal?.aborted) get().showToast?.(t('角色保存失败，请重试'), 'error');
       return false;
     }
     const controller = new AbortController();

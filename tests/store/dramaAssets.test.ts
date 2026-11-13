@@ -76,6 +76,29 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+it('does not commit a project character save cancelled before the queued write', async () => {
+  const original = sampleCharacter();
+  const gate = deferred<void>();
+  const commit = vi.fn();
+  const controller = new AbortController();
+  useAppStore.setState({
+    dramaAssets: { ...emptyDramaAssetLibrary(), characters: [original] },
+    saveCurrentProjectSilent: async (assertCurrent) => {
+      await gate.promise;
+      assertCurrent?.();
+      commit();
+      return 'p1';
+    },
+  });
+  const save = useAppStore.getState().saveCharacterCard('project', { ...original, name: '未写入的编辑' },
+    { awaitProjectSave: true, signal: controller.signal });
+  controller.abort();
+  gate.resolve();
+  await expect(save).resolves.toBe(false);
+  expect(commit).not.toHaveBeenCalled();
+  expect(useAppStore.getState().dramaAssets.characters[0]).toEqual(original);
+});
+
 describe('创作资产包批量导入', () => {
   beforeEach(() => useAppStore.setState({ projectLoadStatus: 'ready' }));
 

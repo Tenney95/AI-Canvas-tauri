@@ -19,6 +19,7 @@ import {
   inferMediaDataUrlKind,
   saveBinaryToProjectData,
 } from '../services/fileService';
+import { isTauriEnv } from '../services/fs/core';
 import type {
   CharacterActionCategory,
   CharacterCropRect,
@@ -931,6 +932,9 @@ function CharacterAssetEditorDialog({
   const [volcenginePickerMode, setVolcenginePickerMode] = useState<'image' | null>(null);
   const [refmodPickerOpen, setRefmodPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importingMedia, setImportingMedia] = useState(false);
+  const mediaImportActive = useRef(false);
+  const canGenerateVisual = isTauriEnv();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const voiceInputRef = useRef<HTMLInputElement>(null);
   const voicePlayerRef = useRef<HTMLAudioElement>(null);
@@ -969,10 +973,10 @@ function CharacterAssetEditorDialog({
     };
   }, [editorProjectId, scope]);
   const onClose = () => {
+    if (saveController.current) return;
     editorActive.current = false;
     setVisualWorkbenchOpen(false);
     stopVoicePlayback();
-    saveController.current?.abort(); saveController.current = null; setSaving(false);
     closeEditor();
   };
 
@@ -1106,19 +1110,33 @@ function CharacterAssetEditorDialog({
     file: File,
     read: (file: File) => Promise<string>,
   ): Promise<{ url: string; filePath?: string }> => {
+    assertEditorCurrent();
     const mediaKind = inferMediaDataUrlKind(file.type || file.name);
     assertMediaDataUrlSize(file.size, mediaKind, file.name);
-    if (scope === 'project' && currentProjectId && currentProjectId !== 'default') {
-      const stored = await saveBinaryToProjectData(
-        new Uint8Array(await file.arrayBuffer()),
-        currentProjectId,
-        file.name,
-      );
+    if (scope === 'project' && editorProjectId && editorProjectId !== 'default') {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      assertEditorCurrent();
+      const stored = await saveBinaryToProjectData(bytes, editorProjectId, file.name);
       if (stored?.assetUrl) return { url: stored.assetUrl, filePath: stored.filePath };
     }
     const dataUrl = await read(file);
     assertMediaDataUrlWithinLimit(dataUrl, mediaKind, file.name);
     return { url: dataUrl };
+  };
+
+  const importDraftMedia = async (read: () => Promise<void>, failure: string) => {
+    if (saveController.current || mediaImportActive.current) return;
+    mediaImportActive.current = true;
+    setImportingMedia(true);
+    try {
+      assertEditorCurrent();
+      await read();
+    } catch {
+      if (editorActive.current) showToast(t(failure), 'error');
+    } finally {
+      mediaImportActive.current = false;
+      if (editorActive.current) setImportingMedia(false);
+    }
   };
 
   const handleFiles = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -1137,8 +1155,7 @@ function CharacterAssetEditorDialog({
     if (selectedFiles.length > files.length) {
       showToast(t('仅添加前 {count} 张：每个角色最多 {max} 张参考图', { count: files.length, max: MAX_CHARACTER_REFERENCE_IMAGES }));
     }
-    try {
-      assertEditorCurrent();
+    await importDraftMedia(async () => {
       const now = Date.now();
       const references: CharacterReferenceImage[] = [];
       for (const [index, file] of files.entries()) {
@@ -1166,9 +1183,7 @@ function CharacterAssetEditorDialog({
         };
       });
       setSelectedReferenceId(references[0]?.id ?? null);
-    } catch {
-      showToast(t('图片读取失败'), 'error');
-    }
+    }, '图片读取失败');
   };
 
   const patchVoiceClip = (patch: Partial<CharacterVoiceClip>) => {
@@ -1196,7 +1211,7 @@ function CharacterAssetEditorDialog({
     if (selectedFiles.length > files.length) {
       showToast(t('仅添加前 {count} 条：每个角色最多 {max} 条声音', { count: files.length, max: MAX_CHARACTER_VOICE_CLIPS }));
     }
-    try {
+    await importDraftMedia(async () => {
       const now = Date.now();
       const clips: CharacterVoiceClip[] = [];
       for (const [index, file] of files.entries()) {
@@ -1213,16 +1228,15 @@ function CharacterAssetEditorDialog({
           updatedAt: now + index,
         });
       }
-      setDraft((current) => ({
-        ...current,
-        voiceClips: [...(current.voiceClips ?? []), ...clips],
-        primaryVoiceClipId: current.primaryVoiceClipId ?? clips[0]?.id,
-        updatedAt: Date.now(),
-      }));
+      assertEditorCurrent();
+      setDraft((current) => {
+        if (current.id !== draft.id) return current;
+        const previous = current.voiceClips ?? [];
+        const next = [...previous, ...clips.slice(0, MAX_CHARACTER_VOICE_CLIPS - previous.length)];
+        return { ...current, voiceClips: next, primaryVoiceClipId: current.primaryVoiceClipId ?? next[0]?.id, updatedAt: Date.now() };
+      });
       setSelectedVoiceClipId(clips[0]?.id ?? null);
-    } catch {
-      showToast(t('音频读取失败'), 'error');
-    }
+    }, '音频读取失败');
   };
 
   const toggleVoicePlayback = async (clip: CharacterVoiceClip) => {
@@ -1291,7 +1305,7 @@ function CharacterAssetEditorDialog({
   };
 
   const handleSave = async () => {
-    if (saveController.current) return;
+    if (saveController.current || mediaImportActive.current || visualWorkbenchOpen || refmodPickerOpen || volcenginePickerMode) return;
     const name = draft.name.trim();
     if (!name) {
       showToast(t('请填写角色名称'), 'error');
@@ -1354,10 +1368,10 @@ function CharacterAssetEditorDialog({
           <h2>{character ? t('编辑角色') : t('新建角色')}</h2>
           <p>{scope === 'project' ? t('保存到本项目') : t('保存到全局资产')}</p>
         </div>
-        <PopupCloseButton onClick={onClose} />
+        <PopupCloseButton disabled={saving} onClick={onClose} />
       </header>
 
-      <div className="character-dialog-body">
+      <div className="character-dialog-body" inert={saving} aria-busy={saving || importingMedia}>
         <section className="character-dialog-fields" aria-label={t('角色资料')}>
           <label className="character-field character-field-wide">
             <span>{t('角色名称')}</span>
@@ -1433,11 +1447,12 @@ function CharacterAssetEditorDialog({
               <span>{t('{count} 张', { count: draft.referenceImages?.length ?? 0 })}</span>
             </div>
             <div className="flex-wrap justify-end">
-              <button type="button" className="character-button-secondary" onClick={() => fileInputRef.current?.click()}>
+              <button type="button" className="character-button-secondary" disabled={importingMedia} onClick={() => fileInputRef.current?.click()}>
                 <Icon icon="lucide:images" width="15" height="15" aria-hidden="true" />
                 {t('添加图片')}
               </button>
-              <button type="button" className="ui-btn ui-btn--secondary" disabled={saving} onClick={() => {
+              <button type="button" className="ui-btn ui-btn--secondary" disabled={saving || importingMedia || !canGenerateVisual}
+                title={canGenerateVisual ? undefined : t('角色生图仅支持桌面应用')} onClick={() => {
                 try {
                   assertEditorCurrent();
                   setVisualWorkbenchUsed(true);
@@ -1566,7 +1581,7 @@ function CharacterAssetEditorDialog({
                 <h3>{t('角色声音')}</h3>
                 <span>{t('{count} 段', { count: draft.voiceClips?.length ?? 0 })}</span>
               </div>
-              <button type="button" onClick={() => voiceInputRef.current?.click()}>
+              <button type="button" disabled={importingMedia} onClick={() => voiceInputRef.current?.click()}>
                 <Icon icon="lucide:audio-lines" width="15" height="15" aria-hidden="true" />
                 {t('上传音频')}
               </button>
@@ -1584,6 +1599,7 @@ function CharacterAssetEditorDialog({
               <button
                 type="button"
                 className="character-reference-add-empty w-full"
+                disabled={importingMedia}
                 onClick={() => voiceInputRef.current?.click()}
               >
                 <Icon icon="lucide:mic" width="20" height="20" aria-hidden="true" />
@@ -1752,14 +1768,14 @@ function CharacterAssetEditorDialog({
       </div>
 
       <footer className="character-dialog-footer">
-        <button type="button" className="character-button-secondary" onClick={onClose}>{t('取消')}</button>
+        <button type="button" className="character-button-secondary" disabled={saving} onClick={onClose}>{t('取消')}</button>
         <button
           type="button"
           className="character-button-primary"
-          disabled={saving}
+          disabled={saving || importingMedia}
           onClick={() => void handleSave()}
         >
-          {saving ? t('保存中…') : t('保存角色')}
+          {saving ? t('保存中…') : importingMedia ? t('正在添加素材') : t('保存角色')}
         </button>
       </footer>
       <VolcengineAssetPickerDialog

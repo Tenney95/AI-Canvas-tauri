@@ -3,6 +3,7 @@
  */
 import { openDB, STORE_METADATA } from './indexedDb/schema';
 import type { VideoBatch } from '../types/videoBatch';
+import { retainVideoBatches } from './videoBatchRunner';
 
 export const videoBatchKey = (projectId: string) => `video-batches:${projectId}`;
 
@@ -19,7 +20,7 @@ export async function writeVideoBatches(projectId: string, batches: VideoBatch[]
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_METADATA, 'readwrite');
-    tx.objectStore(STORE_METADATA).put({ id: videoBatchKey(projectId), batches: batches.slice(-30) });
+    tx.objectStore(STORE_METADATA).put({ id: videoBatchKey(projectId), batches: retainVideoBatches(batches) });
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);

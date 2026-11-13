@@ -25,7 +25,10 @@ import { readImageSourceBlob } from './fs/imageSourceBlob';
 import { openDB, STORE_METADATA } from './indexedDb/schema';
 import { configValuesEqual } from './configPatch';
 import { MEDIA_DATA_URL_BYTE_LIMITS, sha256BytesHex } from './mediaDataUrl';
-import { createNativeCharacterImageSubmissionGuard, listNativeCharacterImageTasks, reviewNativeCharacterImageTask } from './nativeCharacterImageTask';
+import {
+  createNativeCharacterImageSubmissionGuard, listNativeCharacterImageTasks, listPendingNativeCharacterImageTasks,
+  readNativeCharacterImageTask, reviewNativeCharacterImageTask,
+} from './nativeCharacterImageTask';
 import { captureLegacyProjectExpectedContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { safeExchangePath } from './projectExchangeDomain';
 import {
@@ -49,6 +52,7 @@ export interface CharacterVisualTarget {
   ownerId?: string;
   projectId?: string;
 }
+type CharacterVisualScope = Omit<CharacterVisualTarget, 'characterId'>;
 export interface CharacterVisualReference { id: string; url: string; purpose?: string; sourceUrl?: string }
 export interface CharacterVisualCandidate {
   id: string;
@@ -74,10 +78,11 @@ export interface CharacterVisualRun {
   imageSize?: string;
   createdAt: number;
   status: 'submitting' | 'completed' | 'failed' | 'uncertain' | 'reviewed';
+  candidateIds: string[];
   candidates: CharacterVisualCandidate[];
   references: Array<Pick<CharacterVisualReference, 'id' | 'purpose' | 'sourceUrl'>>;
   error?: string;
-  reviewable?: boolean;
+  reviewStatus?: 'prepared' | 'uncertain';
 }
 export interface CharacterVisualDraft { target: CharacterVisualTarget; name: string; updatedAt: number }
 export interface CharacterVisualModel {
@@ -118,7 +123,17 @@ const MAX_PROMPT_LENGTH = 30_000;
 export const MAX_CHARACTER_VISUAL_REFERENCE_BYTES = 48 * 1024 * 1024;
 const activeTargets = new Map<string, string>();
 const activeRuns = new Set<string>();
+const runListeners = new Set<() => void>();
 const viewSlots = new Set<CharacterVisualViewSlot>(['sheet', 'side', 'front']);
+
+export function subscribeCharacterVisualRuns(listener: () => void): () => void {
+  runListeners.add(listener);
+  return () => { runListeners.delete(listener); };
+}
+
+function notifyCharacterVisualRuns(): void {
+  for (const listener of runListeners) listener();
+}
 
 function characterPrefix(target: CharacterVisualTarget): string {
   if (!safeId(target.characterId)) throw new Error(t('角色素材归属已变化'));
@@ -141,18 +156,22 @@ export async function markCharacterVisualDraftSaved(target: CharacterVisualTarge
 }
 
 export function captureCharacterVisualTarget(scope: CharacterVisualTarget['scope'], characterId: string): CharacterVisualTarget {
+  return { ...captureCharacterVisualScope(scope), characterId };
+}
+
+export function captureCharacterVisualScope(scope: CharacterVisualTarget['scope']): CharacterVisualScope {
   const state = useAppStore.getState();
-  if (scope === 'global') return { scope, characterId };
+  if (scope === 'global') return { scope };
   try {
     const context = captureLegacyProjectExpectedContext(state, 'project');
     if (context.kind === 'project') {
-      return { scope, characterId, ownerId: context.projectId, projectId: state.currentProjectId ?? undefined };
+      return { scope, ownerId: context.projectId, projectId: state.currentProjectId ?? undefined };
     }
   } catch { /* 未准备好时由提交前复核给出提示。 */ }
-  return { scope, characterId };
+  return { scope };
 }
 
-function projectContext(target: CharacterVisualTarget): ProjectContext | undefined {
+function projectContext(target: CharacterVisualScope): ProjectContext | undefined {
   if (target.scope === 'global') return undefined;
   const state = useAppStore.getState();
   const context = captureLegacyProjectExpectedContext(state, 'project');
@@ -223,6 +242,16 @@ function findRuns(target: CharacterVisualTarget): Promise<StoredRun[]> {
       && row.target.characterId === target.characterId) rows.push(row);
     return rows.length < MAX_HISTORY_ITEMS;
   }, () => rows);
+}
+
+function findRun(target: CharacterVisualTarget, operationId: string): Promise<StoredRun | undefined> {
+  let found: StoredRun | undefined;
+  return readRows(characterPrefix(target), (row) => {
+    if (row.target.scope !== target.scope || row.target.ownerId !== target.ownerId
+      || row.target.characterId !== target.characterId || row.operationId !== operationId) return true;
+    found = row;
+    return false;
+  }, () => found);
 }
 
 async function saveRun(row: StoredRun, mode: 'add' | 'claim-submit' | 'update' = 'update'): Promise<void> {
@@ -348,7 +377,7 @@ function displayRun(row: StoredRun, candidates: CharacterVisualCandidate[], over
     createdAt: row.createdAt, status: row.status, references: row.references.map((reference) => ({
       ...reference, sourceUrl: canonicalXiaohongshuReferenceUrl(reference.sourceUrl),
     })), error: row.error,
-    candidates, ...overrides,
+    candidateIds: candidates.map((candidate) => candidate.id), candidates, ...overrides,
   };
 }
 
@@ -356,59 +385,134 @@ export async function listCharacterVisualRuns(target: CharacterVisualTarget): Pr
   const rows = await findRuns(target);
   const nativeTasks = rows.some((row) => row.native) && target.ownerId
     ? await listNativeCharacterImageTasks(target.ownerId, target.characterId, rows.map((row) => row.operationId)) : [];
-  return Promise.all(rows.map(async (row) => {
+  const tasks = new Map(nativeTasks.map((task) => [task.operationId, task]));
+  return rows.map((row) => {
     if (activeRuns.has(row.operationId)) return displayRun(row, [], { status: 'submitting' });
     if (row.native) {
-      const task = nativeTasks.find((item) => item.operationId === row.operationId && item.projectEpoch === row.projectEpoch);
-      const candidates = (task?.candidates ?? []).map((candidate) =>
-        candidateFromPath(row, { id: candidateId(row, candidate.index), relativePath: candidate.relativePath }, candidate.filePath, candidate.url));
+      const found = tasks.get(row.operationId);
+      const task = found?.projectEpoch === row.projectEpoch ? found : undefined;
+      const candidateIds = task?.outputIndexes.map((index) => candidateId(row, index)) ?? [];
       if (task?.status === 'completed') {
-        return displayRun(row, candidates, { status: candidates.length ? 'completed' : 'failed',
-          error: !candidates.length ? t('原候选图片文件不可用')
-            : row.expectedOutputCount && candidates.length < row.expectedOutputCount ? t('本次仅取得部分候选图，已保留可用结果') : row.error });
+        return displayRun(row, [], { status: 'completed', candidateIds,
+          error: row.expectedOutputCount && candidateIds.length < row.expectedOutputCount ? t('本次仅取得部分候选图，已保留可用结果') : undefined });
       }
       if (task?.status === 'outcome-unknown' || task?.status === 'prepared') {
-        return displayRun(row, candidates, { status: 'uncertain', reviewable: true,
+        return displayRun(row, [], { status: 'uncertain', candidateIds,
+          reviewStatus: task.active ? undefined : task.status === 'prepared' ? 'prepared' : 'uncertain',
           error: task.status === 'prepared' ? t('本次图片生成未提交') : t('提交状态未知，请查看服务商原任务记录') });
       }
-      if (task?.status === 'reviewed') return displayRun(row, candidates, { status: 'reviewed', error: undefined });
-      if (task?.status === 'failed' || row.status === 'submitting') {
+      if (task?.status === 'reviewed') return displayRun(row, [], { status: 'reviewed', candidateIds, error: undefined });
+      if (task?.status === 'failed' || !task) {
         return displayRun(row, [], { status: 'failed', error: t('本次图片生成未完成') });
       }
     }
-    const candidates = await readCandidates(row);
-    if (row.status === 'submitting') return displayRun(row, candidates, row.sent
-      ? { status: 'uncertain', reviewable: true, error: t('提交状态未知，请查看服务商原任务记录') }
+    const candidateIds = row.candidates.map((candidate) => candidate.id);
+    if (row.status === 'submitting') return displayRun(row, [], row.sent
+      ? { status: 'uncertain', reviewStatus: 'uncertain', candidateIds,
+        error: t('提交状态未知，请查看服务商原任务记录') }
       : { status: 'failed', error: t('本次图片生成未提交') });
-    if (row.status === 'completed' && !candidates.length) {
-      return displayRun(row, [], { status: 'failed', error: t('原候选图片文件不可用') });
-    }
-    if (row.status === 'completed' && row.expectedOutputCount && candidates.length < row.expectedOutputCount) {
-      return displayRun(row, candidates, { error: t('本次仅取得部分候选图，已保留可用结果') });
-    }
-    return displayRun(row, candidates, { reviewable: row.sent && row.status === 'uncertain' });
-  }));
+    return displayRun(row, [], { candidateIds, reviewStatus: row.sent && row.status === 'uncertain' ? 'uncertain' : undefined });
+  });
 }
 
-export async function reviewCharacterVisualRun(target: CharacterVisualTarget, id: string): Promise<void> {
-  const row = (await findRuns(target)).find((item) => item.operationId === id);
-  if (!row || activeRuns.has(id)) throw new Error(t('原角色生成任务已变化，请刷新后重试'));
-  if (row.native && target.ownerId) await reviewNativeCharacterImageTask(target.ownerId, target.characterId, id);
-  else {
-    if (!row.sent || row.status !== 'uncertain' && row.status !== 'submitting') {
+export interface PendingCharacterVisualRun {
+  id: string;
+  characterId: string;
+  name?: string;
+  model: string;
+  createdAt: number;
+  status: 'active' | 'prepared' | 'uncertain';
+}
+
+export async function listPendingCharacterVisualRuns(target: CharacterVisualScope): Promise<PendingCharacterVisualRun[]> {
+  const context = projectContext(target);
+  const native = context?.modelGeneration === 1 ? await listPendingNativeCharacterImageTasks(context.projectId) : [];
+  const tasks = new Map(native.map((task) => [task.operationId, task]));
+  const pending: PendingCharacterVisualRun[] = [];
+  await readRows(scopePrefix(target), (row) => {
+    if (row.target.scope !== target.scope || row.target.ownerId !== target.ownerId) return true;
+    const task = tasks.get(row.operationId);
+    if (task && task.characterId === row.target.characterId) {
+      pending.push({ id: task.operationId, characterId: task.characterId, name: row.name, model: task.modelRef,
+        createdAt: task.createdAt, status: task.active ? 'active' : task.status === 'prepared' ? 'prepared' : 'uncertain' });
+      tasks.delete(task.operationId);
+    } else if (!row.native && row.sent && (row.status === 'submitting' || row.status === 'uncertain')) {
+      pending.push({ id: row.operationId, characterId: row.target.characterId, name: row.name, model: row.model,
+        createdAt: row.createdAt, status: activeRuns.has(row.operationId) ? 'active' : 'uncertain' });
+    }
+    return true;
+  }, () => undefined);
+  for (const task of tasks.values()) {
+    pending.push({ id: task.operationId, characterId: task.characterId, model: task.modelRef, createdAt: task.createdAt,
+      status: task.active ? 'active' : task.status === 'prepared' ? 'prepared' : 'uncertain' });
+  }
+  return pending.sort((left, right) => right.createdAt - left.createdAt);
+}
+
+export async function reviewCharacterVisualRun(target: CharacterVisualTarget, id: string,
+  assertCurrent: () => void, expectedStatus: 'prepared' | 'uncertain'): Promise<void> {
+  const context = projectContext(target);
+  const guard = () => {
+    assertCurrent();
+    if (activeRuns.has(id) || context && !isProjectExpectedContextCurrent(context, useAppStore.getState())) {
       throw new Error(t('原角色生成任务已变化，请刷新后重试'));
     }
-    await saveRun({ ...row, status: 'reviewed', error: undefined });
+  };
+  const row = await findRun(target, id);
+  guard();
+  if (context?.modelGeneration === 1 && (!row || row.native)) {
+    await reviewNativeCharacterImageTask(context.projectId, target.characterId, id, guard,
+      expectedStatus === 'uncertain' ? 'outcome-unknown' : expectedStatus);
+  } else {
+    if (!row || expectedStatus === 'prepared' || !row.sent || row.status !== 'uncertain' && row.status !== 'submitting') {
+      throw new Error(t('原角色生成任务已变化，请刷新后重试'));
+    }
+    const db = await openDB();
+    guard();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_METADATA, 'readwrite', { durability: 'strict' });
+      const store = tx.objectStore(STORE_METADATA);
+      const current = store.get(row.id);
+      current.onsuccess = () => {
+        try {
+          guard();
+          const latest = current.result as StoredRun | undefined;
+          if (!latest || latest.operationId !== id || !latest.sent || latest.status !== 'uncertain' && latest.status !== 'submitting') {
+            throw new Error(t('原角色生成任务已变化，请刷新后重试'));
+          }
+          store.put({ ...latest, status: 'reviewed', error: undefined });
+          const key = pendingKey(latest);
+          const claim = store.get(key);
+          claim.onsuccess = () => { if (claim.result?.operationId === id) store.delete(key); };
+        } catch { tx.abort(); }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? new Error(t('原角色生成任务已变化，请刷新后重试')));
+    });
   }
+  notifyCharacterVisualRuns();
+}
+
+export async function readCharacterVisualRunCandidates(target: CharacterVisualTarget, id: string): Promise<CharacterVisualCandidate[]> {
+  projectContext(target);
+  const row = await findRun(target, id);
+  if (!row) return [];
+  if (!row.native || !target.ownerId) return readCandidates(row);
+  const task = await readNativeCharacterImageTask(target.ownerId, target.characterId, id);
+  if (!task || task.projectEpoch !== row.projectEpoch) return [];
+  return task.candidates.map((candidate) =>
+    candidateFromPath(row, { id: candidateId(row, candidate.index), relativePath: candidate.relativePath }, candidate.filePath, candidate.url));
 }
 
 /** 采纳时重读原任务，并核对候选图仍属于当前角色和作品。 */
 export async function readCharacterVisualCandidate(target: CharacterVisualTarget, candidateIdValue: string): Promise<CharacterVisualCandidate> {
   projectContext(target);
   const operationId = candidateIdValue.slice(0, 36);
-  const row = (await findRuns(target)).find((item) => item.operationId === operationId);
+  const row = await findRun(target, operationId);
   if (row?.native && target.ownerId) {
-    const [task] = await listNativeCharacterImageTasks(target.ownerId, target.characterId, [operationId]);
+    const index = Number(candidateIdValue.slice(37)) - 1;
+    if (!Number.isSafeInteger(index) || index < 0 || candidateId(row, index) !== candidateIdValue) throw new Error(t('原候选图片文件不可用'));
+    const task = await readNativeCharacterImageTask(target.ownerId, target.characterId, operationId, index);
     const candidate = task?.projectEpoch === row.projectEpoch && task?.candidates?.find((item) =>
       candidateId(row, item.index) === candidateIdValue);
     if (candidate) return candidateFromPath(row, { id: candidateIdValue, relativePath: candidate.relativePath }, candidate.filePath, candidate.url);
@@ -491,6 +595,7 @@ export async function saveCharacterVisualComposite(target: CharacterVisualTarget
     if (!candidate) throw new Error(t('原候选图片文件不可用'));
     guard();
     await saveRun(row, 'add');
+    notifyCharacterVisualRuns();
     return candidate;
   } finally { activeTargets.delete(prefix); }
 }
@@ -601,10 +706,11 @@ export async function generateCharacterVisual(
       ...reference, ...(reference.purpose ? { purpose: safeHistoryText(reference.purpose, secrets) } : {}),
     }));
     await saveRun(row, 'add');
+    notifyCharacterVisualRuns();
     const beforeSubmit = isNative && context
       ? createNativeCharacterImageSubmissionGuard({ ownerProjectId: context.projectId, projectEpoch: context.projectEpoch,
         characterId: target.characterId, operationId: id, fingerprint, assertCurrent: guard,
-        onSubmit: () => { sent = true; } })
+        onSubmit: () => { sent = true; notifyCharacterVisualRuns(); } })
       : async () => {
         guard();
         if (sent) throw new Error(t('本次图片任务已提交'));
@@ -612,6 +718,7 @@ export async function generateCharacterVisual(
         try { await saveRun(row, 'claim-submit'); guard(); }
         catch (error) { row.sent = false; throw error; }
         sent = true;
+        notifyCharacterVisualRuns();
       };
     try {
       const batch = await generateImagesBatch({
@@ -622,9 +729,10 @@ export async function generateCharacterVisual(
       }, 1, controller.signal, beforeSubmit);
       row.sent = true;
       if (isNative) {
-        const task = target.ownerId && (await listNativeCharacterImageTasks(target.ownerId, target.characterId, [id]))
-          .find((item) => item.operationId === id && item.projectEpoch === row.projectEpoch);
-        if (!task || task.status !== 'completed' || !task.candidates?.length) throw new Error(t('原候选图片文件不可用'));
+        const task = target.ownerId && await readNativeCharacterImageTask(target.ownerId, target.characterId, id);
+        if (!task || task.projectEpoch !== row.projectEpoch || task.status !== 'completed' || !task.candidates.length) {
+          throw new Error(t('原候选图片文件不可用'));
+        }
         row.status = 'completed';
         if (batch.expectedOutputCount && task.candidates.length < batch.expectedOutputCount) {
           row.error = t('本次仅取得部分候选图，已保留可用结果');
@@ -656,11 +764,13 @@ export async function generateCharacterVisual(
       row.error = row.status === 'uncertain' ? t('提交状态未知，请查看服务商原任务记录')
         : rejected ? t('服务商拒绝了本次图片请求（HTTP {status}）', { status: rejected.status }) : t('本次图片生成未提交');
       await saveRun(row);
-      return displayRun(row, await readCandidates(row), { reviewable: row.status === 'uncertain' });
+      return displayRun(row, await readCandidates(row), row.status === 'uncertain'
+        ? { reviewStatus: 'uncertain' } : {});
     }
   } finally {
     activeTargets.delete(prefix);
     activeRuns.delete(id);
+    notifyCharacterVisualRuns();
     signal?.removeEventListener('abort', abortPreparation);
   }
 }

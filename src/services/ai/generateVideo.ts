@@ -1127,9 +1127,10 @@ async function generateVolcengineVideo(
 
   } catch (error) {
     if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered', 'NativeMediaTaskFailed'].includes(error.name)) throw error;
+    let retainedNativeTask = nativeTask;
     if (nativeTask) {
-      await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
-        nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || remoteFailed ? { notStarted: true } : { unknown: true }).catch(() => undefined);
+      retainedNativeTask = await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease,
+        nativeRemoteId ? { taskId: nativeRemoteId } : !requestSent || remoteFailed ? { notStarted: true } : { unknown: true }).catch(() => nativeTask);
     }
     await updateBillingRun(billingRun, {
       status: remoteCancelled ? 'cancelled' : remoteFailed || !requestSent ? 'failed' : 'unknown', finishedAt: Date.now(),
@@ -1138,8 +1139,8 @@ async function generateVolcengineVideo(
       amountConfidence: remoteFailed || !requestSent ? 'calculated' : 'unknown',
       errorMessage: error instanceof Error ? error.message.slice(0, 500) : '视频请求失败',
     });
-    if (nativeTask && requestSent && !remoteFailed) {
-      throw createNativeMediaPendingError(nativeTask, error);
+    if (retainedNativeTask && requestSent && !remoteFailed) {
+      throw createNativeMediaPendingError(retainedNativeTask, error);
     }
     if (receipt) {
       if (remoteFailed || !requestSent) {

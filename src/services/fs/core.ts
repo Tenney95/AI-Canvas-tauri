@@ -318,12 +318,14 @@ export async function watchFilePaths(
 // Cross-platform utilities
 // ============================================
 
-/** Cross-platform path join using forward slashes (Tauri FS accepts both / and \ on all platforms) */
+/** Join native paths with forward slashes while preserving a Windows network share root. */
 export function joinPath(...segments: string[]): string {
-  return segments
-    .map((s) => s.replace(/\\/g, '/').replace(/\/+$/, ''))
+  const parts = segments.map((part) => part.replace(/\\/g, '/'));
+  const path = parts
+    .map((part) => part.replace(/\/+$/, ''))
     .join('/')
     .replace(/\/+/g, '/');
+  return /^\/\/[^/]/.test(parts[0] ?? '') ? `/${path}` : path;
 }
 
 /**

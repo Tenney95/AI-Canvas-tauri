@@ -25,7 +25,6 @@ import { useTooltipAutoPlacement } from './hooks/useTooltipAutoPlacement';
 import { parseAspectRatio, useMainWindowSize } from './hooks/useMainWindowSize';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type AppState } from './store/useAppStore';
-import * as fileService from './services/fileService';
 import { checkForUpdate, downloadAndInstallUpdate, isAppUpdateRunning, type UpdateInfo } from './services/updateService';
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 import UpdateBubble from './components/shared/mascot/UpdateBubble';
@@ -364,7 +363,6 @@ export default function App() {
 
             setClosePhase('closing');
             try {
-              await fileService.flushUndoTrashDirs();
               const { stopMcpBridge } = await import('./services/mcp/mcpBridgeService');
               await stopMcpBridge().catch(() => {});
             } catch (error) {

@@ -78,7 +78,10 @@ function contextFor(record?: NativeMediaTaskRecord): CanvasContext {
 }
 function receiptError(record: NativeMediaTaskRecord, delivered = false): Error {
   const error = new Error(delivered ? `原通用媒体已保存并交付（${record.operationId}）` : `原通用媒体操作 ${record.operationId} 已保留，请续查原任务，不要重新生成。`);
-  error.name = delivered ? 'NativeMediaTaskDelivered' : 'NativeMediaTaskPending'; Object.assign(error, { nativeOperationId: record.operationId }); return error;
+  error.name = delivered ? 'NativeMediaTaskDelivered' : 'NativeMediaTaskPending';
+  return Object.assign(error, { nativeOperationId: record.operationId,
+    localResultAvailable: !!(record.localResults?.length || record.localResult),
+    remoteTaskKnown: record.status === 'submitted' && !!record.remoteTaskId });
 }
 async function deliver(record: NativeMediaTaskRecord, signal?: AbortSignal): Promise<void> {
   const { resumeNativeVolcengineTask } = await import('./nativeVolcengineRecovery'); await resumeNativeVolcengineTask(record.operationId, signal);

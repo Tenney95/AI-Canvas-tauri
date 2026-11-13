@@ -109,6 +109,22 @@ it('forwards the optional runtime lease without persisting its signal or callbac
   expect(mocks.write).toHaveBeenCalledWith('project', expect.any(Array));
   expect(JSON.stringify(mocks.write.mock.calls)).not.toMatch(/assertFresh|signal|AbortController/);
 });
+
+it('requires confirmation for the exact unresolved batch item before a new submission', async () => {
+  const prior: VideoBatch = { id: 'prior', projectId: 'project', createdAt: 1,
+    items: [{ nodeId: 'v1', label: 'SH1', fingerprint: 'old', status: 'delivery_pending' }] };
+  mocks.read.mockResolvedValue([prior]);
+  const state = useAppStore.getState();
+  const items = [inspect()[0]];
+  await expect(state.startVideoBatch('project', items)).rejects.toThrow('核对');
+  expect(mocks.execute).not.toHaveBeenCalled();
+
+  const current = useAppStore.getState().videoBatches.project[0].items[0];
+  await expect(state.startVideoBatch('project', items, undefined, new Map([['v1', { ...current }]]))).rejects.toThrow('核对');
+  expect(mocks.execute).not.toHaveBeenCalled();
+  await state.startVideoBatch('project', items, undefined, new Map([['v1', current]]));
+  expect(mocks.execute).toHaveBeenCalledOnce();
+});
 it('rejects an already cancelled lease before creating or submitting a batch', async () => {
   const controller = new AbortController(); controller.abort();
   await expect(useAppStore.getState().startVideoBatch('project', [inspect()[0]], { signal: controller.signal, assertFresh: vi.fn() }))

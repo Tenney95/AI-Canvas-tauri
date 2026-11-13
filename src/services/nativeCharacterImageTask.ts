@@ -47,10 +47,13 @@ export interface NativeCharacterImageTask {
   status: Status;
   createdAt: number;
   updatedAt: number;
-  candidates?: Array<Output & { url: string; filePath: string }>;
+  outputIndexes: number[];
+  active: boolean;
 }
 
-interface Receipt extends Omit<NativeCharacterImageTask, 'candidates'> {
+type Candidate = Output & { url: string; filePath: string };
+
+interface Receipt extends Omit<NativeCharacterImageTask, 'outputIndexes' | 'active'> {
   projectId: string;
   kind: typeof KIND;
   resultRootRef: string;
@@ -143,30 +146,33 @@ async function readRows(store: IDBObjectStore, ownerProjectId: string): Promise<
   return (await request(store.getAll(range)) as Receipt[]).map(validate);
 }
 
-async function changeReceipt(original: Receipt, patch: Partial<Pick<Receipt, 'status' | 'outputs'>>): Promise<Receipt> {
+async function changeReceipt(original: Receipt, patch: Partial<Pick<Receipt, 'status' | 'outputs'>>,
+  assertReviewCurrent?: () => void): Promise<Receipt> {
   return withDatabase(true, async (tx) => {
     const store = tx.objectStore(EXCHANGE);
     const current = validate(await request(store.get(original.projectId)) as Receipt | undefined);
     if (current.revision !== original.revision || current.status !== original.status) throw invalid();
-    const project = await readProject(tx, current.ownerProjectId, current.projectEpoch);
-    if (project.storageRootRef !== current.resultRootRef) throw invalid();
+    const project = await readProject(tx, current.ownerProjectId, assertReviewCurrent ? undefined : current.projectEpoch);
+    if (!assertReviewCurrent && project.storageRootRef !== current.resultRootRef) throw invalid();
     if (patch.status === 'outcome-unknown') await assertNoPendingNativeSharedSync(tx, current.ownerProjectId);
     const next = validate({ ...current, ...patch, revision: increment(current.revision), updatedAt: Date.now() });
     const revisions = tx.objectStore(REVISIONS);
     const revision = await request(revisions.get(project.id)) as { projectId: string; changeRevision: number } | undefined;
     if (revision?.projectId !== project.id) throw invalid();
+    assertReviewCurrent?.();
     await request(store.put(next));
     await request(revisions.put({ ...revision, changeRevision: increment(revision.changeRevision) }));
     return next;
   });
 }
 
-async function projectCandidates(row: Receipt): Promise<NonNullable<NativeCharacterImageTask['candidates']>> {
-  if (!row.outputs.length) return [];
+async function projectCandidates(row: Receipt, outputIndex?: number): Promise<Candidate[]> {
+  const outputs = outputIndex === undefined ? row.outputs : row.outputs.filter((output) => output.index === outputIndex);
+  if (!outputs.length) return [];
   const root = await getProjectDataDir(row.ownerProjectId);
   if (!root) throw invalid();
-  const candidates: NonNullable<NativeCharacterImageTask['candidates']> = [];
-  for (const output of row.outputs) {
+  const candidates: Candidate[] = [];
+  for (const output of outputs) {
     try { await readNativeMediaLocalResult(row.ownerProjectId, output); }
     catch { continue; }
     const filePath = joinPath(root, output.relativePath);
@@ -175,38 +181,61 @@ async function projectCandidates(row: Receipt): Promise<NonNullable<NativeCharac
   return candidates;
 }
 
-export async function listNativeCharacterImageTasks(ownerProjectId: string, characterId: string,
-  operationIds?: readonly string[]): Promise<NativeCharacterImageTask[]> {
+function taskSummary(row: Receipt): NativeCharacterImageTask {
+  const { operationId, ownerProjectId, projectEpoch, characterId, modelRef, status, createdAt, updatedAt } = row;
+  return { operationId, ownerProjectId, projectEpoch, characterId, modelRef, status, createdAt, updatedAt,
+    outputIndexes: row.outputs.map((output) => output.index), active: active.has(row.projectId) };
+}
+
+async function readCharacterReceipts(ownerProjectId: string, characterId: string, operationIds: readonly string[]): Promise<Receipt[]> {
   if (!isNativeProjectId(ownerProjectId) || !validId(characterId)
-    || operationIds && (operationIds.length > 50 || operationIds.some((id) => !UUID.test(id)))) throw invalid();
-  const rows = await withDatabase(false, async (tx) => {
+    || operationIds.length > 50 || operationIds.some((id) => !UUID.test(id))) throw invalid();
+  return withDatabase(false, async (tx) => {
     const project = await readProject(tx, ownerProjectId);
     const store = tx.objectStore(EXCHANGE);
-    const receipts = operationIds ? (await Promise.all([...new Set(operationIds)].map(async (id) => {
+    const receipts = (await Promise.all([...new Set(operationIds)].map(async (id) => {
       const row = await request(store.get(taskKey(ownerProjectId, id))) as Receipt | undefined;
       return row ? [validate(row)] : [];
-    }))).flat() : await readRows(store, ownerProjectId);
+    }))).flat();
     return receipts.filter((row) => row.ownerProjectId === ownerProjectId && row.projectEpoch === project.epoch
       && row.resultRootRef === project.storageRootRef && row.characterId === characterId);
   });
-  const results: NativeCharacterImageTask[] = [];
-  for (const row of rows.sort((left, right) => right.createdAt - left.createdAt).slice(0, 50)) {
-    const { operationId, projectEpoch, modelRef, status, createdAt, updatedAt } = row;
-    results.push({ operationId, ownerProjectId, projectEpoch, characterId, modelRef, status, createdAt, updatedAt,
-      ...(row.outputs.length ? { candidates: await projectCandidates(row).catch(() => []) } : {}) });
-  }
-  return results;
+}
+
+export async function listNativeCharacterImageTasks(ownerProjectId: string, characterId: string,
+  operationIds: readonly string[]): Promise<NativeCharacterImageTask[]> {
+  return (await readCharacterReceipts(ownerProjectId, characterId, operationIds)).map(taskSummary);
+}
+
+export async function readNativeCharacterImageTask(ownerProjectId: string, characterId: string, operationId: string, outputIndex?: number):
+  Promise<(NativeCharacterImageTask & { candidates: Candidate[] }) | undefined> {
+  const [row] = await readCharacterReceipts(ownerProjectId, characterId, [operationId]);
+  return row ? { ...taskSummary(row), candidates: await projectCandidates(row, outputIndex) } : undefined;
+}
+
+/** 作品更新检查所有待处理回执，此列表使用同一范围。 */
+export async function listPendingNativeCharacterImageTasks(ownerProjectId: string): Promise<NativeCharacterImageTask[]> {
+  if (!isNativeProjectId(ownerProjectId)) throw invalid();
+  const rows = await withDatabase(false, async (tx) => {
+    await readProject(tx, ownerProjectId);
+    return readRows(tx.objectStore(EXCHANGE), ownerProjectId);
+  });
+  return rows.filter((row) => row.ownerProjectId === ownerProjectId && pending(row.status)).map(taskSummary);
 }
 
 /** 用户结束原请求跟踪。保留回执和已有产物，不调用厂商。 */
-export async function reviewNativeCharacterImageTask(ownerProjectId: string, characterId: string, operationId: string): Promise<void> {
+export async function reviewNativeCharacterImageTask(ownerProjectId: string, characterId: string, operationId: string,
+  assertCurrent: () => void, expectedStatus: 'prepared' | 'outcome-unknown'): Promise<void> {
   if (!isNativeProjectId(ownerProjectId) || !validId(characterId) || !UUID.test(operationId)
     || active.has(taskKey(ownerProjectId, operationId))) throw invalid();
   const row = await withDatabase(false, async (tx) => validate(await request(tx.objectStore(EXCHANGE)
     .get(taskKey(ownerProjectId, operationId))) as Receipt | undefined));
-  if (row.ownerProjectId !== ownerProjectId || row.characterId !== characterId || !pending(row.status)
-    || active.has(row.projectId)) throw invalid();
-  await changeReceipt(row, { status: row.status === 'prepared' ? 'failed' : 'reviewed' });
+  if (row.ownerProjectId !== ownerProjectId || row.characterId !== characterId
+    || row.status !== expectedStatus || active.has(row.projectId)) throw invalid();
+  await changeReceipt(row, { status: row.status === 'prepared' ? 'failed' : 'reviewed' }, () => {
+    if (active.has(row.projectId)) throw invalid();
+    assertCurrent();
+  });
 }
 
 export async function runNativeCharacterImageTask(input: {

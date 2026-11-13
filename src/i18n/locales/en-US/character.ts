@@ -2,6 +2,12 @@
  * 角色库
  */
 const character = {
+  "结束跟踪": "End tracking",
+  "待处理生图任务": "Pending image tasks",
+  "正在读取待处理任务…": "Loading pending tasks…",
+  "暂无待处理生图任务": "No pending character image tasks",
+  "确认结束这条未提交的任务？": "End tracking for this unsubmitted task?",
+  "正在读取候选图片…": "Loading candidate images…",
   "小红书找参考": "Find Xiaohongshu references",
   "小红书参考图": "Xiaohongshu reference image",
   "小红书照片导入结果无效": "Invalid Xiaohongshu photo import result",

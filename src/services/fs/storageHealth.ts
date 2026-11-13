@@ -22,6 +22,7 @@ import { collectLegacyCharacterVisualPaths, isLegacyCharacterVisualCandidatePath
 import type { ProjectCatalogEntry } from '../projectModelRouter';
 import type { readNativeProjectCapture } from '../indexedDb/nativeProjectRepository';
 import type { NativeProjectViewItem } from '../../store/nativeProjectView';
+import { forgetUndoTrashEntry, isUndoTrashPathProtected, readUndoTrashEntries, relativeUndoTrashPath, type UndoTrashEntry } from './undoTrashJournal';
 import {
   readNativeStorageSnapshot, nativeStorageProjectRows, nativeStorageProjectProtected,
   collectNativeStorageReferences, type NativeStorageSnapshot,
@@ -62,7 +63,7 @@ async function readNativeStorageScopes(catalog: readonly ProjectCatalogEntry[], 
   return scopes;
 }
 
-/** 不可变发布区尚无清理租约；只开放普通文件原件，隐藏元数据始终保留。 */
+/** 不可变发布区和隐藏目录尚无清理租约，仍保留。 */
 function nativeCleanupProtectedPath(filePath: string, root: string): boolean {
   const relative = pathKey(filePath).slice(pathKey(root).replace(/\/+$/, '').length).replace(/^\/+/, '');
   const parts = relative.split('/');
@@ -71,20 +72,31 @@ function nativeCleanupProtectedPath(filePath: string, root: string): boolean {
 }
 
 /** 服务层自行复核原生引用，不相信旧报告或调用方传入的可删标记。 */
-async function assertStorageCleanupPath(filePath: string): Promise<void> {
+async function assertStorageCleanupPath(filePath: string, trashDirectory?: string, entries?: readonly UndoTrashEntry[]): Promise<void> {
   await assertLegacyStorageHealthScope();
   const { listProjectCatalog } = await import('../projectModelRouter');
   const catalog = await listProjectCatalog();
   const scopes = await readNativeStorageScopes(catalog);
   const key = pathKey(filePath).replace(/\/+$/, '');
+  if (trashDirectory && filePath !== trashDirectory && !relativeUndoTrashPath(filePath, trashDirectory)) throw new Error('回收路径已变化');
+  const legacyReferences = new Set<string>();
   for (const entry of catalog) {
-    if (entry.dataModel !== 'legacy' || entry.project.parentId) continue;
+    if (entry.dataModel !== 'legacy') continue;
     const root = await getProjectDataDir(entry.project.id);
+    if (root && entries?.length && trashDirectory && filePath !== trashDirectory) {
+      const record = await getProjectById(entry.project.id);
+      if (!record) throw new Error('回收前无法核对旧项目引用');
+      collectReferences(record, legacyReferences, root);
+    }
+    if (entry.project.parentId) continue;
     const relative = root && getRelativeAssetPath(filePath, root);
     if (root && relative && (isLegacyCharacterVisualCandidatePath(relative)
       || isReferenced(filePath, new Set((await collectLegacyCharacterVisualPaths(entry.project.id, root)).map(pathKey))))) {
       throw new Error('文件仍被角色生成历史引用');
     }
+  }
+  if (trashDirectory && filePath !== trashDirectory && entries && isUndoTrashPathProtected(filePath, trashDirectory, entries, legacyReferences)) {
+    throw new Error('文件仍被旧项目引用');
   }
   const owners = scopes.filter((scope) => [...scope.roots.values()].some((root) => {
     const rootKey = pathKey(root).replace(/\/+$/, ''); return key === rootKey || key.startsWith(`${rootKey}/`);
@@ -726,7 +738,12 @@ export async function scanStorageHealth(
       });
       if (!trashFiles.length) continue;
       const trashSize = trashFiles.reduce((sum, file) => sum + file.size, 0);
-      const checked: TrashInfo['files'] = trashFiles.map((file) => ({ path: file.path, size: file.size, referenced: isReferenced(file.path, references) }));
+      let entriesForTrash: UndoTrashEntry[] | undefined;
+      try { entriesForTrash = await readUndoTrashEntries(trashDir); }
+      catch (error) { checkAbort(signal); addIssue('trash', project.name, '.trash', issueReason(error)); }
+      const checked: TrashInfo['files'] = trashFiles.map((file) => ({ path: file.path, size: file.size,
+        referenced: !entriesForTrash || isReferenced(file.path, references)
+          || isUndoTrashPathProtected(file.path, trashDir, entriesForTrash, references) }));
       // 现有流式摘要器拒绝空文件；空文件保留，不能仅凭大小证明身份。
       const reclaimable = checked.filter((file) => !file.referenced && file.size > 0);
       report.trashes.push({ projectId: project.id, projectName: project.name, trashDir,
@@ -817,7 +834,7 @@ export async function prepareTrashCleanup(entries: readonly TrashInfo[], signal?
   checkAbort(signal);
   await assertLegacyStorageHealthScope();
   for (const entry of entries) {
-    await assertStorageCleanupPath(entry.trashDir);
+    await assertStorageCleanupPath(entry.trashDir, entry.trashDir);
     const files: TrashInfo['files'] = [];
     for (const file of entry.files) {
       checkAbort(signal);
@@ -832,7 +849,7 @@ export async function prepareTrashCleanup(entries: readonly TrashInfo[], signal?
     }
     prepared.push({ ...entry, files });
   }
-  for (const entry of entries) await assertStorageCleanupPath(entry.trashDir);
+  for (const entry of entries) await assertStorageCleanupPath(entry.trashDir, entry.trashDir);
   await assertLegacyStorageHealthScope();
   checkAbort(signal);
   return prepared;
@@ -852,7 +869,7 @@ export async function clearTrashDir(trashDir: string, verify?: (path: string, si
     for (let end = path.lastIndexOf('/'); end > 0; end = path.lastIndexOf('/', end - 1)) confirmedDirectories.add(path.slice(0, end));
   }
   try {
-    await assertStorageCleanupPath(trashDir);
+    await assertStorageCleanupPath(trashDir, trashDir);
     if (!await exists(trashDir)) { result.failedCount += confirmed.size; return result; }
     const info = await lstat(trashDir);
     if (!info.isDirectory || info.isSymlink) throw new Error('回收站不是普通目录');
@@ -860,18 +877,25 @@ export async function clearTrashDir(trashDir: string, verify?: (path: string, si
     result.failedCount++;
     return result;
   }
-  const progress = { seen: new Set<string>(), incomplete: false };
+  const progress = { seen: new Set<string>(), incomplete: false, trashDir };
   const empty = await removeDirContents(trashDir, result, verify, confirmed, confirmedDirectories, progress, signal);
   if (!progress.incomplete) for (const path of confirmed.keys()) if (!progress.seen.has(path)) result.failedCount++;
   if (empty && result.failedCount === 0) {
-    try { await assertStorageCleanupPath(trashDir); checkAbort(signal); await remove(trashDir); } catch { result.failedCount++; }
+    try { await assertStorageCleanupPath(trashDir, trashDir); checkAbort(signal); await remove(trashDir); } catch { result.failedCount++; }
+  }
+  if (result.deletedCount) {
+    try {
+      for (const entry of await readUndoTrashEntries(trashDir)) {
+        if (progress.seen.has(pathKey(entry.stagedPath)) && !await exists(entry.stagedPath)) await forgetUndoTrashEntry(entry);
+      }
+    } catch { /* 原文件清理已结束，保留的记录不会覆盖新文件。 */ }
   }
   return result;
 }
 
 async function removeDirContents(dirPath: string, result: CleanupResult, verify: (path: string, size: number) => Promise<boolean>,
   confirmed: ReadonlyMap<string, { size: number; digest: string }>, confirmedDirectories: ReadonlySet<string>,
-  progress: { seen: Set<string>; incomplete: boolean }, signal?: AbortSignal): Promise<boolean> {
+  progress: { seen: Set<string>; incomplete: boolean; trashDir: string }, signal?: AbortSignal): Promise<boolean> {
   const failuresBefore = result.failedCount;
   let retained = false;
   let entries;
@@ -886,7 +910,9 @@ async function removeDirContents(dirPath: string, result: CleanupResult, verify:
         const directoryKey = pathKey(entryPath).replace(/\/+$/, '');
         if (confirmed.has(directoryKey)) { result.failedCount++; retained = true; continue; }
         if (!confirmedDirectories.has(directoryKey)) { retained = true; continue; }
-        if (await removeDirContents(entryPath, result, verify, confirmed, confirmedDirectories, progress, signal)) { await assertStorageCleanupPath(entryPath); checkAbort(signal); await remove(entryPath); }
+        if (await removeDirContents(entryPath, result, verify, confirmed, confirmedDirectories, progress, signal)) {
+          await assertStorageCleanupPath(entryPath, progress.trashDir); checkAbort(signal); await remove(entryPath);
+        }
         else retained = true;
       } else {
         const expected = confirmed.get(pathKey(entryPath));
@@ -898,7 +924,7 @@ async function removeDirContents(dirPath: string, result: CleanupResult, verify:
         if (fingerprint.bytes !== expected.size || fingerprint.digest !== expected.digest) { result.failedCount++; retained = true; continue; }
         const current = await lstat(entryPath);
         if (!current.isFile || current.isSymlink || current.size !== expected.size) { result.failedCount++; retained = true; continue; }
-        await assertStorageCleanupPath(entryPath);
+        await assertStorageCleanupPath(entryPath, progress.trashDir, await readUndoTrashEntries(progress.trashDir));
         checkAbort(signal);
         await remove(entryPath);
         result.deletedCount++;

@@ -919,7 +919,7 @@ describe('batch canvas history', () => {
     ]);
     expect(useAppStore.getState().groups).toEqual(groups);
     expect(useAppStore.getState()).toMatchObject({ historyIndex: -1 });
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/node-a.png');
+    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/node-a.png', 'project-1');
 
     await expect(useAppStore.getState().redo()).resolves.toBe(true);
 
@@ -952,7 +952,7 @@ describe('batch canvas history', () => {
 
     await expect(useAppStore.getState().undo()).resolves.toBe(true);
     expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith(
-      'project/director/scenes/scene-history',
+      'project/director/scenes/scene-history', 'project-1',
     );
 
     await expect(useAppStore.getState().redo()).resolves.toBe(true);
@@ -998,7 +998,7 @@ describe('batch canvas history', () => {
     ]);
     expect(useAppStore.getState().nodes[0].style).toEqual({ width: 400, height: 300 });
     expect(useAppStore.getState().groups).toEqual(groups);
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/Group');
+    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/Group', expect.anything());
 
     await expect(useAppStore.getState().redo()).resolves.toBe(true);
     expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['node-b']);
@@ -1019,8 +1019,8 @@ describe('batch canvas history', () => {
       expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }));
     fileMocks.restoreFromUndoTrash.mockClear();
     await useAppStore.getState().undo();
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(1, 'project/Folder');
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(2, 'project/Folder/image.png');
+    expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(1, 'project/Folder', 'project-1');
+    expect(fileMocks.restoreFromUndoTrash).toHaveBeenNthCalledWith(2, 'project/Folder/image.png', 'project-1');
     await useAppStore.getState().redo();
     expect(fileMocks.deleteNodeFiles).toHaveBeenLastCalledWith([folder.data, child.data], expect.any(Set), 'project-1', ['Folder'],
       expect.objectContaining({ deletedNodeIds: expect.any(Array), getLiveKeepPaths: expect.any(Function) }));
@@ -1098,7 +1098,7 @@ describe('batch canvas history', () => {
 
     finishStaging();
     await expect(undoResult).resolves.toBe(true);
-    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/clip.mp4');
+    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith('project/clip.mp4', 'project-1');
   });
 
   it('undoes and redoes a node move from the gesture start position', async () => {
