@@ -98,6 +98,16 @@ describe('方舟私有 TOS 上传桥', () => {
     expect((error as Error).message).toBe('火山 TOS 上传失败，请检查 Bucket、AK/SK 权限及网络；不会改用公共图床');
   });
 
+  it('安全提示也不保留含签名链接的原异常 cause', async () => {
+    mocks.invoke.mockRejectedValueOnce(new Error('TOS 上传被拒绝', {
+      cause: new Error('https://private.example/?X-Tos-Signature=sensitive'),
+    }));
+    const error = await uploadVolcengineTosReference(inline, 'image', config).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('TOS 上传被拒绝');
+    expect((error as Error).cause).toBeUndefined();
+  });
+
   it('本地素材只允许北京官方接口，视频与图片/音频使用各自字节边界', () => {
     expect(() => assertVolcengineTosEndpoint()).not.toThrow();
     expect(() => assertVolcengineTosEndpoint('https://ark.cn-beijing.volces.com/api/v3/')).not.toThrow();

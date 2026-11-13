@@ -10,6 +10,14 @@ import { VOLCENGINE_BASE_URL } from '../../../constants/api';
 const NATIVE_INLINE_LIMIT = 32 * 1024 * 1024;
 const MIN_SIGNED_URL_LIFETIME_MS = 3 * 60 * 60 * 1000;
 
+function toVolcengineTosUploadError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  // 只重建已脱敏的诊断；原异常的 cause 也可能包含签名 URL 或本机路径，不能向外保留。
+  const safe = /^(?:火山 TOS|TOS |参考素材上传期间)/.test(message)
+    && !/https?:\/\/|secret:|[a-z]:[\\/]|[\r\n]/i.test(message) && message.length <= 240;
+  return new Error(safe ? message : '火山 TOS 上传失败，请检查 Bucket、AK/SK 权限及网络；不会改用公共图床');
+}
+
 export function assertVolcengineTosMediaSize(bytes: number, kind: MediaDataUrlKind): void {
   const limit = kind === 'video' ? 200_000_000 : NATIVE_INLINE_LIMIT;
   if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > limit) {
@@ -74,11 +82,7 @@ export async function uploadVolcengineTosReference(
     return result.url;
   } catch (error) {
     signal?.throwIfAborted();
-    const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-    // 原生错误须固定且脱敏；不把网络错误中的签名 URL 或本机路径反射给日志。
-    if (/^(?:火山 TOS|TOS |参考素材上传期间)/.test(message)
-      && !/https?:\/\/|secret:|[a-z]:[\\/]|[\r\n]/i.test(message) && message.length <= 240) throw new Error(message);
-    throw new Error('火山 TOS 上传失败，请检查 Bucket、AK/SK 权限及网络；不会改用公共图床');
+    throw toVolcengineTosUploadError(error);
   } finally {
     signal?.removeEventListener('abort', cancel);
   }

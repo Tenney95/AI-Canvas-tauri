@@ -762,7 +762,7 @@ export default function ProviderConnectionDialog({
     }, true);
   };
 
-  const handleSave = async () => {
+  const handleSave = async (savedAt: number) => {
     if (
       !definition
       || savingRef.current
@@ -797,7 +797,7 @@ export default function ProviderConnectionDialog({
           catalogModels: capCatalogModels(models, selectedIds)
             .map((model) => ({ ...model, provider: nextConnectionId })),
           visibleModelCategories: CATEGORY_ORDER.filter((item) => visibleModelCategories.has(item)),
-          catalogUpdatedAt: Date.now(),
+          catalogUpdatedAt: savedAt,
         };
     savingRef.current = true;
     setSaving(true);
@@ -1047,7 +1047,7 @@ export default function ProviderConnectionDialog({
                   || (!isWebSearchProvider && !isWorkflowApi && !workflowOnlyConnection && selectedModels.length === 0)
                   || !protocolValid
                 }
-                onClick={() => void handleSave()}
+                onClick={() => void handleSave(Date.now())}
               >
                 {saving ? t('保存中...') : editing ? t('保存更改') : t('添加厂商')}
               </AnimatedButton>
