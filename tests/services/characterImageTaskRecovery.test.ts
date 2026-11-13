@@ -26,8 +26,13 @@ vi.mock('../../src/services/nativeModelProtocolTask', () => ({
 }));
 import { executeCharacterProtocol, recoverCharacterImageTask } from '../../src/services/characterImageTaskRecovery';
 
-const protocol = { version: 1, mode: 'async', submit: { method: 'POST', path: '/images/generations' },
-  response: { taskIdPath: 'data.task_id' }, poll: { method: 'GET', path: '/tasks/{{submit.data.task_id}}' } } as NormalizedModelExecutionProtocol;
+const protocol: NormalizedModelExecutionProtocol = {
+  version: 2, mode: 'async', submit: { method: 'POST', path: '/images/generations' },
+  response: { type: 'json', taskIdPath: 'data.task_id' },
+  poll: { method: 'GET', path: '/tasks/{{submit.data.task_id}}', response: {
+    statusPath: 'data.status', successValues: ['completed'], failureValues: ['failed'], result: { urlPath: 'data.url' },
+  } },
+};
 const receipt = (): CharacterImageTaskRecovery => ({ version: 1, kind: 'protocol', connectionId: 'gateway',
   providerBase: 'https://gateway.example/v1', modelRef: 'general/image', configurationDigest: 'a'.repeat(64), expectedCount: 1,
   query: { modelId: 'image', digest: 'b'.repeat(64) }, tasks: [{ taskId: 'job-1', recoveryContext: { submit: { data: { task_id: 'job-1' } } } }] });
