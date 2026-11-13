@@ -24,6 +24,7 @@ import { prepareReferenceImageUpload } from '../referenceImageUpload';
 import { redactModelProtocolError, throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
 import { sha256BytesHex } from '../../mediaDataUrl';
 import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
+import { isCharacterImageTaskContext } from '../../characterImageTaskContext';
 import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } from '../../nativeCharacterImageTask';
 import { isOpenAIPaintMaskContract, prepareCharacterImageMask } from '../characterImageMask';
 
@@ -343,10 +344,10 @@ export async function generateImageStandardBatch(
     const requestedCount = Math.max(1, Math.floor(count));
     const characterGuard = isNativeCharacterImageSubmissionGuard(params.beforeSubmit) ? params.beforeSubmit : undefined;
     if (params.characterPaintMask && (!isOpenAIPaintMaskContract(params.baseUrl, params.modelName)
-      || params.imageReferenceRequestMode !== 'edits-multipart' || !characterGuard && !params.characterStandalone)) {
+      || params.imageReferenceRequestMode !== 'edits-multipart' || !characterGuard && !params.characterStandalone && !isCharacterImageTaskContext(params.beforeSubmit))) {
       throw new Error('所选连接不支持画笔蒙版');
     }
-    if (characterGuard || params.characterStandalone) {
+    if (!isCharacterImageTaskContext(params.beforeSubmit) && (characterGuard || params.characterStandalone)) {
       if (params.asyncTaskProvider) throw new Error('角色工作台当前仅支持可直接返回图片的标准接口');
       const connectionId = params.providerConfigId;
       if (!connectionId) throw new Error('角色生图缺少模型连接身份');
@@ -381,7 +382,7 @@ export async function generateImageStandardBatch(
         execute: async (beforePost) => (await execute(beforePost)).map((result) => result.url),
       });
     }
-    if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(params.beforeSubmit)) {
+    if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(params.beforeSubmit) || isCharacterImageTaskContext(params.beforeSubmit)) {
       const { runNativeBuiltinImageTask } = await import('../../nativeBuiltinImageTask');
       const { createMediaDownloadAccess } = await import('../mediaDownloadAccess');
       const connectionId = params.providerConfigId;
@@ -400,7 +401,7 @@ export async function generateImageStandardBatch(
         requestMaterial: [params.modelName, params.prompt, params.dimensions, params.imageQuality, params.imageBackground, params.imageUrls, params.imageReferenceRequestMode, requestedCount, multipartMaterial],
         signal, beforeSubmit: params.beforeSubmit, mediaDownloadAccess: createMediaDownloadAccess(connectionId, params.baseUrl, { type: 'bearer' }),
         execute: async (beforePost) => {
-          const response = await requestStandardImages(params, requestedCount, signal, beforePost, preparedMultipart);
+          const response = await requestStandardImages(params, requestedCount, signal, beforePost, preparedMultipart, isCharacterImageTaskContext(params.beforeSubmit));
           const payload = await readStandardResponse(response);
           const data = Array.isArray(payload.data) ? payload.data : [];
           const taskIds = params.asyncTaskProvider === 'cccapi' ? [...new Set(data.flatMap((item) => item && typeof item === 'object'

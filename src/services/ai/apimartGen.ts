@@ -2,6 +2,7 @@
  * ai/apimartGen — APIMart 图片/视频生成 + 通用异步任务执行器
  */
 import { useAppStore } from '../../store/useAppStore';
+import { isCharacterImageTaskContext } from '../characterImageTaskContext';
 import { captureLegacyCanvasContext } from '../projectExecutionContext';
 import { assertNativeMediaPrepared, prepareNativeMediaTask, recordNativeMediaSubmission, type NativeMediaTaskRecord } from '../indexedDb/nativeMediaTaskRepository';
 import { assertNativeVideoSubmissionInput, captureNativeVideoSubmissionBaseline, isNativeVideoSubmissionGuard, type NativeMediaSubmissionPreparation } from '../nativeVideoSubmission';
@@ -110,7 +111,7 @@ export async function executeGeneralAsyncTask(
   beforeSubmit?: () => void | Promise<void>,
   modelRef?: string,
 ): Promise<{ url: string; taskReceipt?: MediaTaskReceipt; mediaDownloadAccess: MediaDownloadAccess }> {
-  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit)) {
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(beforeSubmit) || isCharacterImageTaskContext(beforeSubmit)) {
     const { executeNativeGeneralAsyncTask } = await import('../nativeGeneralAsyncTask');
     return executeNativeGeneralAsyncTask({ apiKey, baseUrl, modelName, prompt, resultField, providerConfigId, nodeId,
       signal: externalSignal, requestBody, beforeSubmit, modelRef });
@@ -289,7 +290,7 @@ export async function generateApimartImagesBatch(
     ? [nativeSubmitBody]
     : Array.from({ length: requestedCount }, () => ({ ...nativeSubmitBody, n: 1 }));
   try {
-    if (isNativeVideoSubmissionGuard(beforeSubmit) || captureLegacyCanvasContext(useAppStore.getState())?.modelGeneration === 1) {
+    if (isNativeVideoSubmissionGuard(beforeSubmit) || isCharacterImageTaskContext(beforeSubmit) || captureLegacyCanvasContext(useAppStore.getState())?.modelGeneration === 1) {
       const { submitNativeApimartImageBatch } = await import('../nativeApimartImageSubmission');
       return await submitNativeApimartImageBatch({ baseUrl, model, requestedCount, nodeId, imageUrls, bodies: submitBodies,
         requestHeaders: capability?.requestHeaders, signal, beforeSubmit,

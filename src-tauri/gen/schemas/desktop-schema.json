@@ -2277,6 +2277,12 @@
           "markdownDescription": "剪辑窗口仅可解析主窗口绑定的原会话素材根。"
         },
         {
+          "description": "Allows the main window to upload authorized reference media to fixed Beijing TOS endpoints.",
+          "type": "string",
+          "const": "allow-volcengine-tos-upload",
+          "markdownDescription": "Allows the main window to upload authorized reference media to fixed Beijing TOS endpoints."
+        },
+        {
           "description": "Denies the fixed Codex runtime commands.",
           "type": "string",
           "const": "deny-external-agent-commands",
@@ -2293,6 +2299,12 @@
           "type": "string",
           "const": "deny-project-model-maintenance",
           "markdownDescription": "Deny cold-maintenance commands."
+        },
+        {
+          "description": "Denies native Volcengine TOS reference uploads.",
+          "type": "string",
+          "const": "deny-volcengine-tos-upload",
+          "markdownDescription": "Denies native Volcengine TOS reference uploads."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:channel:default`\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

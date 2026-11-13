@@ -2,6 +2,7 @@
 import type { MediaKind, NativeMediaLocalOutput } from '../types/media';
 import type { CanvasContext } from '../types/project';
 import { useAppStore } from '../store/useAppStore';
+import { executeCharacterImageTask, isCharacterImageTaskContext } from './characterImageTaskContext';
 import { resolveGeneralModelConnection, splitCommaSeparatedUrls, toImageDataUrl } from './ai/helpers';
 import { corsSafeFetch } from './ai/httpTransport';
 import { classifyHttpResponseFailure, getHttpResponseError, HttpResponseError } from './ai/httpUtils';
@@ -98,6 +99,33 @@ async function retainUrls(record: NativeMediaTaskRecord, urls: readonly string[]
 export async function executeNativeGeneralAsyncTask(input: { apiKey: string; baseUrl: string; modelName: string; prompt: string;
   resultField: ResultField; providerConfigId: string; nodeId?: string; signal?: AbortSignal; requestBody?: Record<string, unknown>;
   beforeSubmit?: () => void | Promise<void>; modelRef?: string }): Promise<never> {
+  if (isCharacterImageTaskContext(input.beforeSubmit)) {
+    if (input.resultField !== 'images') throw new Error('角色目的地只接受图片结果');
+    const { queryCharacterImageTasks } = await import('./characterImageTaskRecovery');
+    return executeCharacterImageTask(input.beforeSubmit, { recovery: { kind: 'general-async' },
+      mediaDownloadAccess: { providerConfigId: input.providerConfigId, origin: new URL(input.baseUrl).origin, auth: { type: 'bearer' } },
+      execute: async (beforePost, received) => {
+        await beforePost();
+        const response = await corsSafeFetch(`${input.baseUrl.replace(/\/+$/, '')}/images/generations`, {
+          method: 'POST', headers: { Authorization: `Bearer ${input.apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(input.requestBody ?? { model: input.modelName, prompt: input.prompt, n: 1 }), signal: input.signal,
+        });
+        if (!response.ok) {
+          let failure: unknown;
+          try { failure = await response.json(); } catch { /* 固定 HTTP 分类，不保留正文。 */ }
+          throw new HttpResponseError(response.status, `通用媒体提交失败（HTTP ${response.status}）`, classifyHttpResponseFailure(response.status, failure));
+        }
+        const payload: unknown = await response.json(), taskIds = nativeGeneralTaskIds(payload);
+        for (const taskId of taskIds) await received(taskId);
+        if (!taskIds.length) {
+          const urls = nativeGeneralTaskUrls(payload, 'images');
+          if (!urls.length) throwIfDefinitiveModelResponseFailure(payload, response.status, undefined, input.apiKey);
+          return urls.map((url) => ({ url }));
+        }
+        return queryCharacterImageTasks({ kind: 'general-async', connectionId: input.providerConfigId, providerBase: input.baseUrl },
+          taskIds.map((taskId) => ({ taskId })), '', input.signal, input.apiKey);
+      } });
+  }
   if (!input.nodeId || !input.modelRef || !isNativeVideoSubmissionGuard(input.beforeSubmit)) throw new Error('通用媒体缺少原画布受信提交入口');
   const context = contextFor(), category = categoryFor(input.resultField), selected = resolveGeneralModelConnection(input.modelRef);
   if (!selected || selected.model.executionProfile || selected.model.modelId !== input.modelName || selected.providerConfigId !== input.providerConfigId

@@ -1,9 +1,12 @@
 /**
  * QualityRatioSelector — 图像分辨率、生成质量和宽高比选择器
  */
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import AnimatedButton from '../../shared/AnimatedButton';
 import { useT } from '../../../i18n';
+import { bindDialogFocus } from '../../../hooks/useDialogFocus';
+import { calcAnchoredPosition } from '../../../utils/popupPosition';
 
 interface RatioOption {
   value: string;
@@ -11,6 +14,9 @@ interface RatioOption {
 }
 
 interface QualityRatioSelectorProps {
+  disabled?: boolean;
+  /** 滚动弹窗中挂到视口，避免父容器裁切。 */
+  fixedMenu?: boolean;
   imageSize?: string;
   imageQuality?: string;
   imageQualities?: readonly string[];
@@ -29,7 +35,7 @@ interface QualityRatioSelectorProps {
   /** 是否显示"自适应"选项，默认 true */
   showAdaptive?: boolean;
   /** 自定义比例选项列表，不传则使用默认 */
-  ratios?: RatioOption[];
+  ratios?: readonly (RatioOption | string)[];
   /** 自定义分辨率档位，不传则使用通用档位 */
   imageSizes?: readonly string[];
   /** 弹出方向：'top'(默认，向上，适合底部工具栏) | 'bottom'(向下，适合顶部工具栏) */
@@ -37,6 +43,8 @@ interface QualityRatioSelectorProps {
 }
 
 export default function QualityRatioSelector({
+  disabled = false,
+  fixedMenu = false,
   imageSize = '1K',
   imageQuality,
   imageQualities,
@@ -58,12 +66,52 @@ export default function QualityRatioSelector({
 }: QualityRatioSelectorProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  if (disabled && open) setOpen(false);
   const ref = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open || disabled || !fixedMenu) return;
+    const trigger = ref.current?.querySelector<HTMLButtonElement>('.ui-schema-menu-trigger');
+    const popup = popupRef.current;
+    if (!trigger || !popup) return;
+    let layer = 300;
+    for (let parent: HTMLElement | null = ref.current; parent; parent = parent.parentElement) {
+      const value = Number.parseInt(window.getComputedStyle(parent).zIndex, 10);
+      if (Number.isFinite(value)) layer = Math.max(layer, value + 1);
+    }
+    const update = () => {
+      const rect = trigger.getBoundingClientRect();
+      popup.style.position = 'fixed';
+      popup.style.bottom = 'auto';
+      popup.style.right = 'auto';
+      popup.style.margin = '0';
+      popup.style.zIndex = String(layer);
+      popup.style.maxHeight = `${Math.max(0, Math.max(rect.top, window.innerHeight - rect.bottom) - 14)}px`;
+      const position = calcAnchoredPosition(rect, popup.offsetWidth, popup.offsetHeight, 6);
+      popup.style.left = `${position.left}px`;
+      popup.style.top = `${position.top}px`;
+      popup.style.transformOrigin = position.placement === 'above' ? 'bottom left' : 'top left';
+    };
+    update();
+    const unbindFocus = bindDialogFocus(popup, () => setOpen(false), { zIndex: layer });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    observer?.observe(popup);
+    observer?.observe(trigger);
+    window.addEventListener('resize', update);
+    document.addEventListener('scroll', update, true);
+    return () => {
+      unbindFocus();
+      observer?.disconnect();
+      window.removeEventListener('resize', update);
+      document.removeEventListener('scroll', update, true);
+    };
+  }, [open, disabled, fixedMenu]);
 
   // Close popup on outside click (capture phase to beat React Flow event interception)
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      if (ref.current && !ref.current.contains(e.target as Node) && !popupRef.current?.contains(e.target as Node)) {
         setOpen(false);
       }
     };
@@ -105,7 +153,13 @@ export default function QualityRatioSelector({
     { value: '8:1', className: 'img-rp-l81' },
   ];
 
-  const ratios = customRatios || DEFAULT_RATIOS;
+  const ratios = customRatios?.map((ratio) => {
+    if (typeof ratio !== 'string') return ratio;
+    const known = DEFAULT_RATIOS.find((option) => option.value === ratio);
+    const [width, height] = ratio.split(':').map(Number);
+    return known ?? { value: ratio, className: width === height ? 'img-rp-sq'
+      : width >= height * 2 ? 'img-rp-ultra' : width > height ? 'img-rp-wide' : 'img-rp-tall' };
+  }) ?? DEFAULT_RATIOS;
   const selectedQuality = imageQualities?.find((quality) => quality.toLowerCase() === imageQuality?.toLowerCase())
     ?? imageQualities?.find((quality) => quality.toLowerCase() === defaultImageQuality?.toLowerCase());
   const backgroundDefault = imageBackgrounds?.find((background) => background.toLowerCase() === defaultImageBackground?.toLowerCase());
@@ -116,6 +170,7 @@ export default function QualityRatioSelector({
   const backgroundSummaries: Record<string, string> = { auto: t('自动背景'), transparent: t('透明背景'), opaque: t('不透明背景') };
   const summary = [aspectRatio, showImageSize ? imageSize : undefined, selectedQuality,
     selectedBackground ? backgroundSummaries[selectedBackground] ?? selectedBackground : undefined].filter(Boolean).join(' · ');
+  const renderPopup = (content: ReactNode) => fixedMenu ? createPortal(content, document.body) : content;
 
   return (
     <div className="ui-schema-renderer" data-ui-schema-model="apimart/gemini-3.1-flash-image-preview" data-ui-schema-placement="resolution" ref={ref}>
@@ -124,8 +179,9 @@ export default function QualityRatioSelector({
           type="button"
           className="img-pill-btn ui-schema-menu-trigger"
           data-ui-schema-menu-trigger="qualityRatio"
+          disabled={disabled}
           aria-label={summary}
-          aria-expanded={open}
+          aria-expanded={open && !disabled}
           title={summary}
           onClick={(e) => {
             e.stopPropagation();
@@ -142,8 +198,9 @@ export default function QualityRatioSelector({
           </span>
         </AnimatedButton>
 
-        {open && (
-          <div className={`img-ratio-popup ui-schema-popup ui-schema-quality-ratio-popup${placement === 'bottom' ? ' img-ratio-popup--down' : ''}`}>
+        {open && !disabled && renderPopup(
+          <div ref={popupRef} role={fixedMenu ? 'dialog' : undefined} aria-label={fixedMenu ? summary : undefined} tabIndex={-1}
+            className={`img-ratio-popup ui-schema-popup ui-schema-quality-ratio-popup${placement === 'bottom' ? ' img-ratio-popup--down' : ''}`}>
             {showImageSize && (
               <div className="img-rp-quality-area" data-ui-schema-field="imageSize" data-ui-schema-type="segmented" data-ui-schema-default="2K">
                 <div className="img-rp-section-label">{t('分辨率')}</div>

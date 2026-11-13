@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../i18n';
+import type { CharacterVisualGenerationParameters } from '../../types/media';
+import CharacterVisualGenerationSettings from './CharacterVisualGenerationSettings';
 import type { DramaCharacter } from '../../types/dramaAssets';
 import {
   CHARACTER_VISUAL_VIEWS, composeCharacterVisualViews, DEFAULT_CHARACTER_VISUAL_CROP,
   type CharacterVisualCrop, type CharacterVisualView,
 } from '../../services/characterVisualComposition';
 import {
-  generateCharacterVisual, saveCharacterVisualComposite,
+  generateCharacterVisual, saveCharacterVisualComposite, resolveCharacterVisualParameters,
   type CharacterVisualCandidate, type CharacterVisualModel, type CharacterVisualReference, type CharacterVisualRun,
   type CharacterVisualTarget,
 } from '../../services/characterVisualWorkbenchService';
@@ -33,6 +35,7 @@ export default function CharacterVisualMultiView({
 }: Props) {
   const t = useT();
   const [modelId, setModelId] = useState('');
+  const [generationParameters, setGenerationParameters] = useState<CharacterVisualGenerationParameters>({});
   const [style, setStyle] = useState('');
   const [versions, setVersions] = useState<Partial<Record<CharacterVisualView, string>>>({});
   const [crops, setCrops] = useState<Partial<Record<CharacterVisualView, CharacterVisualCrop>>>({});
@@ -58,8 +61,8 @@ export default function CharacterVisualMultiView({
   const generationRatio = (view: typeof CHARACTER_VISUAL_VIEWS[number]) => {
     if (!model) return undefined;
     if (model.ratios.length === 0) return view.ratio;
-    const ratios = view.ratio === '1:1' ? ['1:1'] : [view.ratio, '2:3', '4:5'];
-    return ratios.find((ratio) => model.ratios.includes(ratio));
+    const ratios = [generationParameters.aspectRatio, ...(view.ratio === '1:1' ? ['1:1'] : [view.ratio, '2:3', '4:5'])];
+    return ratios.find((ratio) => ratio !== undefined && model.ratios.includes(ratio));
   };
   const missingViews = views.filter((view) => !view.candidates.length);
 
@@ -90,7 +93,8 @@ export default function CharacterVisualMultiView({
       '保持各图为同一角色，服装、发型、五官和材质一致。统一采用干净中性背景、均匀棚光，不加文字。',
       `本次仅生成 ${view.label}（${aspectRatio}）。${view.requirement}`,
     ].filter(Boolean).join('\n\n');
-    const result = await generateCharacterVisual({ target, characterName: character.name, isNew,
+    const result = await generateCharacterVisual({ ...resolveCharacterVisualParameters(model, generationParameters), target, characterName: character.name, isNew,
+      workflowId: model.workflowId,
       operation: 'appearance', viewSlot: view.id, prompt, model: model.id, provider: model.provider,
       aspectRatio, references, assertCurrent }, signal);
     signal.throwIfAborted();
@@ -114,9 +118,8 @@ export default function CharacterVisualMultiView({
       </header>
       <div className="ui-stack min-h-0 overflow-auto p-3">
         <div className="flex flex-wrap gap-2">
-          <Select aria-label={t('图片模型')} placeholder={t('选择图片模型')} value={model?.id ?? ''} onChange={setModelId} disabled={pending}>
-            {compatible.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-          </Select>
+          <CharacterVisualGenerationSettings models={compatible} model={model} values={generationParameters} disabled={pending}
+            onSelect={(item) => setModelId(item.id)} onChange={(patch) => setGenerationParameters((current) => ({ ...current, ...patch }))} />
           <button type="button" className="ui-btn ui-btn--primary" disabled={pending || !missingViews.length || missingViews.some((view) => !generationRatio(view))}
             onClick={() => void run('sheet', async (signal) => {
               for (const view of missingViews) {

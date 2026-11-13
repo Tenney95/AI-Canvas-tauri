@@ -5,6 +5,7 @@ import { beginNativeImageBatchSubmission, retainNativeImageBatchSubmission, seal
 import { captureNativeVideoSubmissionBaseline, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { captureLegacyCanvasContext } from './projectExecutionContext';
 import { useAppStore } from '../store/useAppStore';
+import { executeCharacterImageTask, isCharacterImageTaskContext } from './characterImageTaskContext';
 import { sha256BytesHex } from './mediaDataUrl';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { getHttpResponseError } from './ai/httpUtils';
@@ -15,6 +16,20 @@ export async function submitNativeApimartImageBatch(input: { baseUrl: string; mo
   nodeId?: string; imageUrls: readonly string[]; bodies: readonly Record<string, unknown>[]; requestHeaders?: Record<string, string>;
   signal?: AbortSignal; beforeSubmit?: () => void | Promise<void>;
   submit: (body: Record<string, unknown>, signal: AbortSignal | undefined, submissionId: string) => Promise<string[]> }): Promise<never> {
+  if (isCharacterImageTaskContext(input.beforeSubmit)) {
+    if (input.bodies.length !== 1) throw new Error('角色工作台每次提交一个图片作业');
+    const { queryCharacterImageTasks } = await import('./characterImageTaskRecovery');
+    return executeCharacterImageTask(input.beforeSubmit, { expectedCount: input.requestedCount,
+      recovery: { kind: 'apimart' },
+      mediaDownloadAccess: { providerConfigId: 'apimart', origin: new URL(input.baseUrl).origin, auth: { type: 'bearer' } },
+      execute: async (beforePost, received) => {
+        await beforePost();
+        const taskIds = await input.submit(input.bodies[0], input.signal, crypto.randomUUID());
+        for (const taskId of taskIds) await received(taskId);
+        return queryCharacterImageTasks({ kind: 'apimart', connectionId: 'apimart', providerBase: input.baseUrl },
+          taskIds.map((taskId) => ({ taskId })), '', input.signal);
+      } });
+  }
   if (!input.nodeId || !isNativeVideoSubmissionGuard(input.beforeSubmit)) throw new Error('新项目图片批次需要原入口冻结的输入与提交守卫，未提交请求');
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1 || !input.bodies.length || input.bodies.length > 32) throw new Error('图片批次缺少原画布身份');

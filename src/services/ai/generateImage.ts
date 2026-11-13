@@ -24,7 +24,7 @@ import { splitRunningHubPrompt } from './providers/runninghubWorkflowInputs';
 import { executeWorkflowApiMedia } from '../workflowApi/workflowApiAdapter';
 import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
 import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
-import type { AIImageGenParams, BatchImageResult, ImageGenerationResult, MediaReference } from '../../types/aiTypes';
+import type { AIImageGenParams, BatchImageResult, ImageGenerationResult, MediaReference, NormalizedModelExecutionProtocol, ModelExecutionProfile } from '../../types/aiTypes';
 import type { AppConfig, GeneralModelConfig, ImageReferenceRequestMode } from '../../types';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
@@ -50,6 +50,7 @@ import { DREAMINA_IMAGE_RATIOS } from './dreaminaModels';
 import { compileVideoReferencePrompt } from './referencePrompt';
 import { isNativeVideoSubmissionGuard } from '../nativeVideoSubmission';
 import { isNativeCharacterImageSubmissionGuard, runNativeCharacterImageTask } from '../nativeCharacterImageTask';
+import { isCharacterImageTaskContext } from '../characterImageTaskContext';
 import { isOpenAIPaintMaskContract } from './characterImageMask';
 
 function hasReferenceImageFile(value: unknown): boolean {
@@ -195,31 +196,50 @@ export function supportsCharacterPaintMask(model: string, provider: string, conf
     && characterImageReferenceMode(route) === 'edits-multipart';
 }
 
-/** 角色工作台只开放已经接入角色回执的同步接口。 */
+/** 从当前真实连接重建候选查询合同；恢复记录本身不能提供请求路径或请求体。 */
+export function characterImageRecoveryProtocols(modelId: string, connectionId: string, modelRef?: string): NormalizedModelExecutionProtocol[] {
+  const config = useAppStore.getState().config, connection = config.providers[connectionId];
+  if (!connection) return [];
+  const definition = getProviderDefinition(connectionId, connection);
+  const selected = connection.selectedModels?.find((item) => item.id === modelId && item.category === 'image');
+  const catalog = definition?.models?.find((item) => item.id === modelId && item.category === 'image');
+  const generals = config.generalModels?.filter((item) => item.providerConfigId === connectionId && item.modelId === modelId && item.category === 'image'
+    && (!modelRef?.startsWith('general/') || `general/${item.id}` === modelRef)) ?? [];
+  const sources = modelRef?.startsWith('general/') && generals.some((item) => item.executionProfile)
+    ? generals.map((item) => item.executionProfile)
+    : [selected?.executionProfile, catalog?.executionProfile, connection.imageProtocolDefault, undefined];
+  const profiles: Array<ModelExecutionProfile | undefined> = [...sources];
+  const add = (resolve: () => ModelExecutionProfile | undefined) => {
+    try { profiles.push(resolve()); } catch { /* 不适用于当前型号的候选不能替换原查询合同。 */ }
+  };
+  for (const source of sources) {
+    if (definition?.id === 'cccapi') add(() => resolveCccGeminiImageExecutionProfile(modelId, source));
+    if (definition?.id === 'toapis') add(() => resolveToapisImageModelContract(modelId, source, selected?.imageCapability)?.executionProfile);
+    if (definition?.id === 'relayonapi') {
+      for (const count of [0, 1]) add(() => resolveRelayonImageExecutionProfile(modelId,
+        resolveRelayonImageModelContract(modelId, source, selected?.imageCapability)?.executionProfile ?? source, count));
+    }
+    if (definition?.id === 'libapi' && usesLibapiModelProtocol(modelId, source)) {
+      for (const count of [0, 1]) add(() => libapiImageExecutionProfile(modelId, count));
+    }
+    if (definition?.id === 'aigc-si' && usesAigcsiModelProtocol(modelId, source)) {
+      for (const count of [0, 1]) add(() => aigcsiImageExecutionProfile(count));
+    }
+  }
+  return profiles.flatMap((profile) => {
+    try { const protocol = resolveModelExecutionProfile(profile); return protocol?.mode === 'async' ? [protocol] : []; }
+    catch { return []; }
+  });
+}
+
+/** 模型能力约束与图片节点一致；角色任务目的地由受信执行上下文校验。 */
 export function supportsCharacterImageModel(
   model: string, provider: string, config: AppConfig = useAppStore.getState().config, referenceCount = 0,
 ): boolean {
-  const route = characterImageConnection(model, provider, config);
-  if (!route) return false;
-  const capability = referenceCount > 0 ? resolveImageExecutionCapability(model, provider, config) : undefined;
-  if (capability?.supportsImageReference === false
-    || (capability?.maxImageReferences !== undefined && referenceCount > capability.maxImageReferences)) return false;
-  const { definition, modelName, profile } = route;
-  if (characterImageChannel(model, provider, config) === 'midjourney') return referenceCount <= 1;
-  if (definition?.id === 'grsai') {
-    const parameters = capability ?? resolveImageExecutionCapability(model, provider, config);
-    try {
-      return resolveBuiltInImageRequestContract(definition, modelName,
-        parameters?.defaultResolution ?? '1K', parameters?.defaultRatio ?? '1:1')?.kind === 'protocol';
-    } catch { return false; }
-  }
-  if (['cccapi', 'toapis', 'libapi', 'relayonapi', 'aigc-si'].includes(definition?.id ?? '')
-    || ['dreamina', 'volcengine', 'localllm', 'comfyui', 'runninghubwf', 'workflow-api'].includes(provider)
-    || mediaProviderRegistry.getImageAdapter(provider)) return false;
-  if (profile && profile.preset !== 'openai-image' && profile.preset !== 'openai-gpt-image') return false;
-  const mode = characterImageReferenceMode(route);
-  return !referenceCount || mode === 'edits-multipart'
-    || (mode === 'generation-json-image-data-urls' && capability?.supportsDataUrlReference !== false);
+  const capability = resolveImageExecutionCapability(model, provider, config);
+  if (referenceCount > 0 && (capability?.supportsImageReference === false
+    || (capability?.maxImageReferences !== undefined && referenceCount > capability.maxImageReferences))) return false;
+  return characterImageChannel(model, provider, config) !== 'midjourney' || referenceCount <= 1;
 }
 
 export async function generateImagesBatch(
@@ -231,14 +251,13 @@ export async function generateImagesBatch(
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
   const { model, provider } = params;
   const characterWorkbench = params.characterWorkbench;
+  const characterContext = isCharacterImageTaskContext(beforeSubmit);
   const characterGuard = isNativeCharacterImageSubmissionGuard(beforeSubmit) ? beforeSubmit : undefined;
-  if (characterWorkbench && (!beforeSubmit || params.workflowId
-    || !supportsCharacterImageModel(model, provider, useAppStore.getState().config, params.image_urls?.length)
-    || characterWorkbench === 'global' && characterGuard)) {
-    throw new Error('此模型尚未接入角色工作台的图片交付');
+  if (characterWorkbench && (!characterContext || params.nodeId)) {
+    throw new Error('角色图片生成缺少受信角色任务目的地');
   }
   if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 && characterWorkbench !== 'global') {
-    if (!isNativeVideoSubmissionGuard(beforeSubmit) && !(characterWorkbench === 'project' && characterGuard)) {
+    if (!isNativeVideoSubmissionGuard(beforeSubmit) && !(characterWorkbench && characterContext)) {
       throw new Error('此原生图片模型或批量合同没有可耐久续查的完整回执，未提交请求');
     }
   }
@@ -349,9 +368,6 @@ export async function generateImagesBatch(
     && imageReferenceRequestMode === 'edits-multipart';
   const usesCustomImageFiles = customProtocol?.submit.bodyEncoding === 'multipart'
     && hasReferenceImageFile(customProtocol.submit.body);
-  if (characterWorkbench && params.image_urls?.length && !usesImageMultipart && !usesImageDataUrls) {
-    throw new Error('此模型无法直接接收角色参考图');
-  }
 
 
   const selectedWorkflow = params.workflowId ? useAppStore.getState().workflows.find((item) => item.id === params.workflowId) : undefined;
@@ -488,6 +504,11 @@ export async function generateImagesBatch(
     const execute = async (markSubmitted?: () => void | Promise<void>) => (await executeModelProtocol({
       apiKey, baseUrl, protocol, variables, signal, beforeSubmit: markSubmitted, sensitive: true,
     })).urls ?? [];
+    if (characterContext) {
+      const { executeCharacterProtocol } = await import('../characterImageTaskRecovery');
+      return executeCharacterProtocol(beforeSubmit, { apiKey, baseUrl, protocol, variables, signal,
+        expectedCount: outputsPerJob, mediaDownloadAccess });
+    }
     if (characterGuard) {
       const batch = await runNativeCharacterImageTask({ guard: characterGuard, modelRef: model, connectionId,
         requestMaterial: [protocol, variables], dimensions, expectedCount: outputsPerJob, signal, mediaDownloadAccess, execute });
@@ -515,7 +536,7 @@ export async function generateImagesBatch(
           return result.urls ?? [];
         } });
     }
-    if (state.projectExecutionContext?.modelGeneration === 1 && !characterWorkbench) {
+    if (characterContext || state.projectExecutionContext?.modelGeneration === 1 && !characterWorkbench) {
       const { runNativeBuiltinImageTask } = await import('../nativeBuiltinImageTask');
       return await runNativeBuiltinImageTask({ nodeId: params.nodeId, mode: 'protocol', modelId: modelName, connectionId, baseUrl,
         secrets: [apiKey],

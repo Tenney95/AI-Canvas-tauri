@@ -3,6 +3,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type { MediaDownloadAccess } from '../types/aiTypes';
 import type { NativeMediaLocalOutput, MediaKind } from '../types/media';
 import { useAppStore } from '../store/useAppStore';
+import { isCharacterImageTaskContext } from './characterImageTaskContext';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { captureNativeVideoSubmissionBaseline, assertNativeVideoSubmissionInput, isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
 import { assertNativeMediaPrepared, assertNativeMediaResultRetention, prepareNativeMediaTask, claimNativeMediaRecovery, failNativeMediaTask,
@@ -110,6 +111,10 @@ export async function runNativeBuiltinImageTask(input: { nodeId?: string; mode: 
   secrets?: readonly string[];
   beforeSubmit?: () => void | Promise<void>; mediaDownloadAccess?: MediaDownloadAccess;
   execute: (beforePost: () => Promise<void>, received: (taskIds: string[]) => Promise<void>) => Promise<{ urls?: string[]; taskIds?: string[] }> }): Promise<never> {
+  if (isCharacterImageTaskContext(input.beforeSubmit)) {
+    const { executeCharacterBuiltinImage } = await import('./characterImageTaskRecovery');
+    return executeCharacterBuiltinImage(input.beforeSubmit, input);
+  }
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1 || !input.nodeId || !isNativeVideoSubmissionGuard(input.beforeSubmit)) throw new Error('原生媒体缺少实际提交守卫');
   const originalSecrets = [...(input.secrets ?? []), useAppStore.getState().config.providers[input.connectionId]?.apiKey ?? ''].filter(Boolean);

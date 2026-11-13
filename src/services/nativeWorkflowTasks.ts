@@ -1,5 +1,6 @@
 /** 新项目工作流始终续取原任务；适配器提供真实提交，回执、查询与完整产物交付由此统一。 */
 import { useAppStore } from '../store/useAppStore';
+import { isCharacterImageTaskContext } from './characterImageTaskContext';
 import type { MediaKind, NativeMediaLocalOutput, NativeMediaSubmissionPreparation } from '../types/media';
 import type { CloudWorkflowOutput } from '../types/workflowApi';
 import type { NativeMediaTaskRecord } from './indexedDb/nativeMediaTaskRepository';
@@ -63,6 +64,10 @@ export async function submitNativeWorkflowTask(input: {
     taskId?: string; outputs?: CloudWorkflowOutput[]; recoveryContext?: Record<string, unknown> }>;
   isDefinitiveFailure?: (error: unknown) => boolean;
 }): Promise<never> {
+  if (isCharacterImageTaskContext(input.beforeSubmit)) {
+    const { executeCharacterWorkflow } = await import('./characterImageTaskRecovery');
+    return executeCharacterWorkflow(input.beforeSubmit, input);
+  }
   const context = captureLegacyCanvasContext(useAppStore.getState());
   if (!context || context.modelGeneration !== 1 || !input.nodeId || !isNativeVideoSubmissionGuard(input.beforeSubmit)) throw new Error('工作流缺少原生画布提交守卫，未提交生成');
   const descriptor = structuredClone(input.descriptor), count = input.count ?? 1;
@@ -144,7 +149,7 @@ export async function submitNativeWorkflowTask(input: {
   } finally { preparation?.release(); }
 }
 
-async function assertWorkflowContract(descriptor: NativeWorkflowDescriptor): Promise<void> {
+export async function assertWorkflowContract(descriptor: NativeWorkflowDescriptor): Promise<void> {
   const state = useAppStore.getState(), workflow = descriptor.workflowId ? state.workflows.find((item) => item.id === descriptor.workflowId) : undefined;
   if (descriptor.adapter === 'muse-webview') {
     const { MUSE_BASE_URL, MUSE_IMAGE_MODEL, MUSE_VIDEO_MODEL } = await import('./ai/museModels');
@@ -180,8 +185,9 @@ async function assertWorkflowContract(descriptor: NativeWorkflowDescriptor): Pro
   if (normalizeNativeMediaProviderBase(base) !== descriptor.providerBase) throw new Error('原工作流服务地址已变化，未提交生成');
 }
 
-async function queryOriginal(receipt: NativeWorkflowReceipt, task: NativeWorkflowTask, signal: AbortSignal): Promise<CloudWorkflowOutput[]> {
-  const descriptor = receipt.descriptor, state = useAppStore.getState();
+export async function queryNativeWorkflowOriginal(descriptor: NativeWorkflowDescriptor, task: Pick<NativeWorkflowTask, 'taskId' | 'recoveryContext'>,
+  operationId: string, signal: AbortSignal): Promise<CloudWorkflowOutput[]> {
+  const state = useAppStore.getState();
   if (descriptor.adapter === 'muse-webview') {
     await assertWorkflowContract(descriptor);
     if (descriptor.category !== 'image' && descriptor.category !== 'video') throw new Error('原 Muse 任务类型无效');
@@ -228,7 +234,7 @@ async function queryOriginal(receipt: NativeWorkflowReceipt, task: NativeWorkflo
     if (!protocol.poll) throw new Error('原异步工作流查询合同缺失');
     poll = resolvePoll(connection.baseUrl, protocol.poll, protocol.auth, resolveNativeProtocolContext(protocol, task.taskId, task.recoveryContext));
   }
-  return queryWorkflowApiTask(connection, task.taskId, { version: 1, adapter: manifest.adapter, attemptId: receipt.operationId,
+  return queryWorkflowApiTask(connection, task.taskId, { version: 1, adapter: manifest.adapter, attemptId: operationId,
     workflowId: workflow.id, remoteWorkflowId: manifest.workflowId, origin: new URL(connection.baseUrl).origin, state: 'disconnected',
     ...(manifest.version === 2 ? { manifest, poll } : {}) }, signal);
 }
@@ -271,7 +277,7 @@ export async function resumeNativeWorkflowTask(operationId: string, externalSign
         if (task.state === 'failed') continue;
         if (task.outputs) { try { for (const file of task.outputs) await readNativeMediaLocalResult(record.canvasId, file); continue; } catch { assertCurrent(); } }
         try {
-          const outputs = await queryOriginal(receipt, task, controller.signal); assertCurrent();
+          const outputs = await queryNativeWorkflowOriginal(receipt.descriptor, task, receipt.operationId, controller.signal); assertCurrent();
           const files = await saveOutputs(record, outputs, controller.signal, assertCurrent, await workflowDownloadAccess(receipt.descriptor));
           if (task.outputs) {
             const signature = (values: NativeMediaLocalOutput[]) => values.map((file) => `${file.category}:${file.sha256}:${file.bytes}`).sort().join('|');

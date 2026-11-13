@@ -17,6 +17,7 @@ import { mapImageParameters } from '../imageParameterMappings';
 import { quoteVolcengineImage } from '../../billing/volcenginePricing';
 import { createBillingRun, updateBillingRun } from '../../billing/volcengineBillingService';
 import { isNativeVideoSubmissionGuard } from '../../nativeVideoSubmission';
+import { isCharacterImageTaskContext } from '../../characterImageTaskContext';
 import { throwIfDefinitiveModelResponseFailure } from '../modelProtocolHttp';
 import { redactVolcengineError } from './volcengineError';
 
@@ -127,7 +128,7 @@ export async function generateVolcengineImagesBatch(
 ): Promise<BatchImageResult> {
   const requestedCount = Math.max(1, Math.floor(count));
   const { useAppStore } = await import('../../../store/useAppStore');
-  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(params.beforeSubmit)) {
+  if (useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(params.beforeSubmit) || isCharacterImageTaskContext(params.beforeSubmit)) {
     const { runNativeBuiltinImageTask } = await import('../../nativeBuiltinImageTask');
     const { createMediaDownloadAccess } = await import('../mediaDownloadAccess');
     return runNativeBuiltinImageTask({ nodeId: params.nodeId, mode: 'volcengine', modelId: extractModelName(params.model, params.provider),

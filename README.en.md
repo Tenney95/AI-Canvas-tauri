@@ -16,7 +16,7 @@ AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, 
 
 **0.11.3 · Assistant Windows & Recent Skills:** Closing or docking the assistant waits for draft handoff and the window to close; failed closes preserve drafts and restore editing. Node `/` menus show the 5 most recently used available Skills, including uploads and enabled agent packages. Assistant selections update the same recent-use record. This update also adds group collapse spacing, unused original-file scanning for new projects, seven team roles and Seedream 5.0 Flash support, with media preview and macOS file handling fixes. Existing projects remain unchanged and automatic migration stays disabled. V4 archives retain v1–v3 compatibility; output history requires 0.11.0 or a compatible reader, and early v4 readers may reject it. See the [release notes](.release-notes.md) for package availability and validation scope.
 
-![Version](https://img.shields.io/badge/version-0.11.3-6366f1)
+![Version](https://img.shields.io/badge/version-0.11.4-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)

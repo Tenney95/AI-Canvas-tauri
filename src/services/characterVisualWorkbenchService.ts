@@ -1,10 +1,12 @@
 import { appDataDir } from '@tauri-apps/api/path';
+import { DEFAULT_BASE_URLS } from '../constants/api';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { fillTemplate, getSlashCommands } from '../components/nodes/shared/slashCommands';
 import { getMediaModelOptions } from '../components/nodes/shared/defaultModels';
 import { useAppStore } from '../store/useAppStore';
-import type { AppConfig } from '../types';
+import type { AppConfig, WorkflowDefinition } from '../types';
 import type { MediaDownloadAccess } from '../types/aiTypes';
+import type { CharacterImageTaskRecovery, CharacterVisualGenerationParameters } from '../types/media';
 import type { DramaCharacter } from '../types/dramaAssets';
 import type { ProjectContext } from '../types/project';
 import { t } from '../i18n';
@@ -12,6 +14,7 @@ import { canonicalXiaohongshuReferenceUrl } from '../utils/xiaohongshuReferenceU
 import { characterImageChannel, generateImagesBatch, supportsCharacterImageModel, supportsCharacterPaintMask } from './ai/generateImage';
 import { isCharacterImageMaskDataUrl } from './ai/characterImageMask';
 import { getHttpResponseError } from './ai/httpUtils';
+import { PollTaskFailedError } from './pollTask';
 import { redactModelProtocolErrorText } from './ai/modelProtocolHttp';
 import { resolveImageOutputsPerJob, resolveImageParameterCapability } from './ai/mediaModelCapabilities';
 import { assertSafeMediaParameterStrings } from './ai/modelCapabilityValidation';
@@ -20,12 +23,19 @@ import { getProjectDataDir, getAssetUrlFromPath, isTauriEnv, joinPath } from './
 import { getRelativeAssetPath, identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import { fingerprintAssetImage } from './fs/assetImageMetadata';
 import { bytePartsToBase64Async, ensureProjectDataDir } from './fs/core';
-import { characterVisualImageFormat, isCharacterVisualInputUrl, saveCharacterVisualResult } from './fs/characterVisualFiles';
+import { CharacterVisualResultConflictError, characterVisualImageFormat, isCharacterVisualInputUrl, saveCharacterVisualResult } from './fs/characterVisualFiles';
 import { readImageSourceBlob } from './fs/imageSourceBlob';
 import { openDB, STORE_METADATA } from './indexedDb/schema';
 import { configValuesEqual } from './configPatch';
 import { MEDIA_DATA_URL_BYTE_LIMITS, sha256BytesHex } from './mediaDataUrl';
 import { createNativeCharacterImageSubmissionGuard, listNativeCharacterImageTasks, reviewNativeCharacterImageTask } from './nativeCharacterImageTask';
+import { runNativeCharacterImageTask, type NativeCharacterImageSubmissionGuard } from './nativeCharacterImageTask';
+import { registerCharacterImageTaskContext, validateCharacterImageTaskRecovery, type CharacterImageExecutionPlan } from './characterImageTaskContext';
+import { characterImageConfigurationDigest, recoverCharacterImageTask } from './characterImageTaskRecovery';
+import { getProviderDefinition } from './ai/providerCatalogService';
+import { mapImageDimensions } from './aiDimensions';
+import { mediaProviderConfigId } from './workflowExecutionService';
+import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from './ai/dreaminaModels';
 import { captureLegacyProjectExpectedContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { safeExchangePath } from './projectExchangeDomain';
 import {
@@ -73,11 +83,18 @@ export interface CharacterVisualRun {
   aspectRatio?: string;
   imageSize?: string;
   createdAt: number;
-  status: 'submitting' | 'completed' | 'failed' | 'uncertain' | 'reviewed';
+  status: 'submitting' | 'completed' | 'failed' | 'uncertain' | 'paused' | 'reviewed';
   candidates: CharacterVisualCandidate[];
   references: Array<Pick<CharacterVisualReference, 'id' | 'purpose' | 'sourceUrl'>>;
   error?: string;
   reviewable?: boolean;
+  recoverable?: boolean;
+  remoteTaskIds?: string[];
+  workflowId?: string;
+  workflowInputs?: Record<string, string>;
+  runninghubModelParameters?: Record<string, string>;
+  imageQuality?: string;
+  imageBackground?: string;
 }
 export interface CharacterVisualDraft { target: CharacterVisualTarget; name: string; updatedAt: number }
 export interface CharacterVisualModel {
@@ -92,6 +109,8 @@ export interface CharacterVisualModel {
   supportsMask: boolean;
   channel: 'standard' | 'midjourney';
   maxReferences: number;
+  workflowId?: string;
+  connectionId?: string;
 }
 interface GenerateCharacterVisualInput {
   target: CharacterVisualTarget;
@@ -105,6 +124,11 @@ interface GenerateCharacterVisualInput {
   provider: string;
   aspectRatio?: string;
   imageSize?: string;
+  workflowId?: string;
+  workflowInputs?: Record<string, string>;
+  runninghubModelParameters?: Record<string, string>;
+  imageQuality?: string;
+  imageBackground?: string;
   references: CharacterVisualReference[];
   assertCurrent?: () => void;
   onBaseSnapshot?: (dataUrl: string) => void;
@@ -163,33 +187,47 @@ function projectContext(target: CharacterVisualTarget): ProjectContext | undefin
 }
 
 export function listCharacterVisualModels(
-  target: CharacterVisualTarget, operation: CharacterVisualOperation, referenceCount = 0,
+  target: CharacterVisualTarget, _operation: CharacterVisualOperation, referenceCount = 0,
   config: AppConfig = useAppStore.getState().config,
+  workflows: WorkflowDefinition[] = useAppStore.getState().workflows,
 ): CharacterVisualModel[] {
   if (!isTauriEnv() || target.scope === 'project' && !target.ownerId) return [];
-  return getMediaModelOptions(config.generalModels, config).flatMap((option) => {
-    if (option.mediaKind !== 'image' || !supportsCharacterImageModel(option.value, option.provider, config)) return [];
+  return getMediaModelOptions(config.generalModels, config, workflows).flatMap((option) => {
+    if (option.mediaKind !== 'image') return [];
     const capability = resolveImageParameterCapability(option.value, option.provider, config);
+    const dreamina = option.provider === 'dreamina' ? getDreaminaImageModel(option.value) : undefined;
     const channel = characterImageChannel(option.value, option.provider, config);
-    if (channel === 'midjourney' && operation !== 'appearance') return [];
-    const maxReferences = supportsCharacterImageModel(option.value, option.provider, config, 1)
-      ? Math.min(channel === 'midjourney' ? 1 : MAX_REFERENCES, capability?.maxImageReferences ?? 1) : 0;
+    const maxReferences = dreamina?.supportsImageReference === false ? 0 : supportsCharacterImageModel(option.value, option.provider, config, 1)
+      ? Math.min(channel === 'midjourney' ? 1 : MAX_REFERENCES, capability?.maxImageReferences ?? MAX_REFERENCES) : 0;
     const supportsMask = maxReferences > 0 && supportsCharacterPaintMask(option.value, option.provider, config);
-    if (Math.max(operation === 'appearance' ? 0 : 1, referenceCount) > maxReferences) return [];
+    if (referenceCount > maxReferences) return [];
     return [{
       id: option.value,
       label: option.label,
       provider: option.provider,
-      ratios: capability?.ratios ?? [],
-      resolutions: capability?.resolutions ?? [],
+      ratios: dreamina ? DREAMINA_IMAGE_RATIOS : capability?.ratios ?? [],
+      resolutions: dreamina?.resolutions ?? capability?.resolutions ?? [],
       defaultRatio: capability?.defaultRatio,
       defaultResolution: capability?.defaultResolution,
       supportsReferences: maxReferences > 0,
       supportsMask,
       channel,
       maxReferences,
+      workflowId: option.workflowId,
+      connectionId: option.providerConfigId ?? mediaProviderConfigId(option.provider, workflows.find((workflow) => workflow.id === option.workflowId)),
     }];
   });
+}
+
+/** 与图片节点派生相同的有效质量／背景，配置刷新不把旧档位继续提交。 */
+export function resolveCharacterVisualParameters(model: CharacterVisualModel, parameters: CharacterVisualGenerationParameters,
+  config: AppConfig = useAppStore.getState().config): CharacterVisualGenerationParameters {
+  const capability = model.workflowId ? undefined : resolveImageParameterCapability(model.id, model.provider, config);
+  return { ...parameters,
+    imageQuality: capability?.qualities?.find((value) => value.toLowerCase() === parameters.imageQuality?.toLowerCase()) ?? capability?.defaultQuality,
+    imageBackground: capability?.backgroundIsFixed ? capability.defaultBackground : parameters.imageBackground === '' ? ''
+      : capability?.backgrounds?.find((value) => value.toLowerCase() === parameters.imageBackground?.toLowerCase()) ?? capability?.defaultBackground,
+  };
 }
 
 export function buildCharacterVisualPrompt(character: DramaCharacter, operation: CharacterVisualOperation): string {
@@ -345,6 +383,10 @@ function displayRun(row: StoredRun, candidates: CharacterVisualCandidate[], over
     id: row.operationId, target: row.target, operation: row.operation, viewSlot: row.viewSlot, maskedEdit: row.maskedEdit,
     prompt: row.prompt, submittedPrompt: row.submittedPrompt, expectedOutputCount: row.expectedOutputCount,
     model: row.model, provider: row.provider, aspectRatio: row.aspectRatio, imageSize: row.imageSize,
+    imageQuality: row.imageQuality, imageBackground: row.imageBackground, workflowId: row.workflowId,
+    workflowInputs: row.workflowInputs, runninghubModelParameters: row.runninghubModelParameters,
+    recoverable: Boolean(row.recovery?.tasks.length && ['submitting', 'uncertain', 'paused'].includes(overrides.status ?? row.status)),
+    remoteTaskIds: row.recovery?.tasks.map((task) => task.taskId),
     createdAt: row.createdAt, status: row.status, references: row.references.map((reference) => ({
       ...reference, sourceUrl: canonicalXiaohongshuReferenceUrl(reference.sourceUrl),
     })), error: row.error,
@@ -360,6 +402,7 @@ export async function listCharacterVisualRuns(target: CharacterVisualTarget): Pr
     if (activeRuns.has(row.operationId)) return displayRun(row, [], { status: 'submitting' });
     if (row.native) {
       const task = nativeTasks.find((item) => item.operationId === row.operationId && item.projectEpoch === row.projectEpoch);
+      if (task?.recovery) row.recovery = task.recovery;
       const candidates = (task?.candidates ?? []).map((candidate) =>
         candidateFromPath(row, { id: candidateId(row, candidate.index), relativePath: candidate.relativePath }, candidate.filePath, candidate.url));
       if (task?.status === 'completed') {
@@ -368,8 +411,10 @@ export async function listCharacterVisualRuns(target: CharacterVisualTarget): Pr
             : row.expectedOutputCount && candidates.length < row.expectedOutputCount ? t('本次仅取得部分候选图，已保留可用结果') : row.error });
       }
       if (task?.status === 'outcome-unknown' || task?.status === 'prepared') {
-        return displayRun(row, candidates, { status: 'uncertain', reviewable: true,
-          error: task.status === 'prepared' ? t('本次图片生成未提交') : t('提交状态未知，请查看服务商原任务记录') });
+        return displayRun(row, candidates, { status: task.recovery?.tasks.length ? 'paused' : 'uncertain', reviewable: true,
+          recoverable: Boolean(task.recovery?.tasks.length),
+          error: task.recovery?.tasks.length ? t('原任务查询或保存尚未完成，可继续查询')
+            : task.status === 'prepared' ? t('本次图片生成未提交') : t('提交状态未知，请查看服务商原任务记录') });
       }
       if (task?.status === 'reviewed') return displayRun(row, candidates, { status: 'reviewed', error: undefined });
       if (task?.status === 'failed' || row.status === 'submitting') {
@@ -378,7 +423,8 @@ export async function listCharacterVisualRuns(target: CharacterVisualTarget): Pr
     }
     const candidates = await readCandidates(row);
     if (row.status === 'submitting') return displayRun(row, candidates, row.sent
-      ? { status: 'uncertain', reviewable: true, error: t('提交状态未知，请查看服务商原任务记录') }
+      ? { status: row.recovery?.tasks.length ? 'paused' : 'uncertain', reviewable: true,
+        error: row.recovery?.tasks.length ? t('原任务查询或保存尚未完成，可继续查询') : t('提交状态未知，请查看服务商原任务记录') }
       : { status: 'failed', error: t('本次图片生成未提交') });
     if (row.status === 'completed' && !candidates.length) {
       return displayRun(row, [], { status: 'failed', error: t('原候选图片文件不可用') });
@@ -386,7 +432,7 @@ export async function listCharacterVisualRuns(target: CharacterVisualTarget): Pr
     if (row.status === 'completed' && row.expectedOutputCount && candidates.length < row.expectedOutputCount) {
       return displayRun(row, candidates, { error: t('本次仅取得部分候选图，已保留可用结果') });
     }
-    return displayRun(row, candidates, { reviewable: row.sent && row.status === 'uncertain' });
+    return displayRun(row, candidates, { reviewable: row.sent && (row.status === 'uncertain' || row.status === 'paused') });
   }));
 }
 
@@ -395,7 +441,7 @@ export async function reviewCharacterVisualRun(target: CharacterVisualTarget, id
   if (!row || activeRuns.has(id)) throw new Error(t('原角色生成任务已变化，请刷新后重试'));
   if (row.native && target.ownerId) await reviewNativeCharacterImageTask(target.ownerId, target.characterId, id);
   else {
-    if (!row.sent || row.status !== 'uncertain' && row.status !== 'submitting') {
+    if (!row.sent || row.status !== 'uncertain' && row.status !== 'submitting' && row.status !== 'paused') {
       throw new Error(t('原角色生成任务已变化，请刷新后重试'));
     }
     await saveRun({ ...row, status: 'reviewed', error: undefined });
@@ -444,17 +490,22 @@ async function freezeReferences(references: CharacterVisualReference[], signal: 
 async function persistCandidate(
   row: StoredRun, index: number, url: string, root: string, access: MediaDownloadAccess | undefined, signal: AbortSignal,
 ): Promise<StoredCandidate> {
-  const id = candidateId(row, index);
   const folder = candidateFolder(row);
-  const stem = row.target.scope === 'global' ? id : `character-visual-${id}`;
   if (row.target.ownerId) await ensureProjectDataDir(row.target.ownerId, { throwOnError: true });
-  const { filePath } = await saveCharacterVisualResult(url, joinPath(root, folder), stem, access, signal);
-  const relativePath = getRelativeAssetPath(filePath, root);
-  if (!relativePath) throw new Error(t('原候选图片文件不可用'));
-  const { bytes, digest } = await fingerprintAssetImage(filePath, signal);
-  if (row.target.scope === 'global') return { id, relativePath, bytes, digest };
-  const identity = await identifyAsset(filePath, { source: 'project', projectId: row.target.ownerId, rootPath: root });
-  return { id, relativePath, bytes, digest, assetId: identity.assetId };
+  for (let ordinal = index; ordinal < 128; ordinal++) {
+    const id = candidateId(row, ordinal);
+    const stem = row.target.scope === 'global' ? id : `character-visual-${id}`;
+    try {
+      const { filePath } = await saveCharacterVisualResult(url, joinPath(root, folder), stem, access, signal);
+      const relativePath = getRelativeAssetPath(filePath, root);
+      if (!relativePath) throw new Error(t('原候选图片文件不可用'));
+      const { bytes, digest } = await fingerprintAssetImage(filePath, signal);
+      if (row.target.scope === 'global') return { id, relativePath, bytes, digest };
+      const identity = await identifyAsset(filePath, { source: 'project', projectId: row.target.ownerId, rootPath: root });
+      return { id, relativePath, bytes, digest, assetId: identity.assetId };
+    } catch (error) { if (!(error instanceof CharacterVisualResultConflictError)) throw error; }
+  }
+  throw new Error(t('角色候选图片数量超过上限'));
 }
 
 /** 定妆拼接只交付本机候选，沿用角色历史和显式采纳，不登记远端作业。 */
@@ -514,6 +565,131 @@ function safeHistoryText(value: string, secrets: string[]): string {
     .replace(/(?:\bBearer\s+|\b(?:api[-_]?key|token|secret|password)\s*[:=]\s*)[^\s"'<>]+/gi, '[凭据]');
 }
 
+const completedCharacterRuns = new WeakMap<Error, CharacterVisualRun>();
+
+async function executeCharacterVisualPlan(row: StoredRun, plan: CharacterImageExecutionPlan, options: {
+  connectionId: string; root: string; signal: AbortSignal; assertCurrent: () => void;
+  beforePost: () => Promise<void>; nativeGuard?: NativeCharacterImageSubmissionGuard; resume?: boolean;
+}): Promise<never> {
+  const { signal } = options;
+  const connectionId = plan.recovery.workflow?.connectionId ?? options.connectionId;
+  const config = useAppStore.getState().config;
+  const connection = config.providers[connectionId];
+  const base = plan.recovery.workflow?.providerBase ?? (connectionId === 'dreamina' ? 'http://dreamina.local'
+    : connection?.baseUrl?.trim() || getProviderDefinition(connectionId, connection)?.defaultBaseUrl || DEFAULT_BASE_URLS[connectionId] || '');
+  const expectedCount = plan.expectedCount ?? row.expectedOutputCount ?? 1;
+  const recovery: CharacterImageTaskRecovery = options.resume && row.recovery ? structuredClone(row.recovery) : {
+    version: 1, ...plan.recovery, connectionId, modelRef: row.model,
+    providerBase: base.replace(/\/+$/, ''), configurationDigest: await characterImageConfigurationDigest(row.model, connectionId, row.workflowId),
+    expectedCount, tasks: [], ...(plan.mediaDownloadAccess ? { mediaDownloadAccess: plan.mediaDownloadAccess } : {}),
+  };
+  if (recovery.workflow?.workflowId !== row.workflowId) throw new Error(t('原图片工作流归属已变化'));
+  if (recovery.configurationDigest !== await characterImageConfigurationDigest(row.model, connectionId, row.workflowId)) {
+    throw new Error(t('模型配置已变化，请恢复原连接后继续查询'));
+  }
+  const secrets = Object.values(config.providers).flatMap((provider) => provider?.apiKey ? [provider.apiKey] : []);
+  validateCharacterImageTaskRecovery(recovery, secrets);
+  row.expectedOutputCount = expectedCount;
+  const execute = async (beforePost: () => Promise<void>, retainNative?: (value: CharacterImageTaskRecovery) => Promise<void>,
+    originalRecovery?: CharacterImageTaskRecovery): Promise<string[] & { incomplete?: true }> => {
+    if (options.resume) {
+      const original = originalRecovery ?? row.recovery;
+      if (!original || original.configurationDigest !== recovery.configurationDigest) throw new Error(t('原图片任务回执已变化'));
+      const outputs = await recoverCharacterImageTask(original, row.operationId, signal);
+      return Object.assign(outputs.filter((item) => !item.kind || item.kind === 'image').map((item) => item.url),
+        outputs.incomplete ? { incomplete: true as const } : {});
+    }
+    const retain = async () => {
+      validateCharacterImageTaskRecovery(recovery, secrets);
+      if (retainNative) await retainNative(structuredClone(recovery));
+      row.recovery = structuredClone(recovery);
+      await saveRun(row);
+    };
+    await retain();
+    const outputs = await plan.execute(beforePost, async (taskId, recoveryContext) => {
+      const prior = recovery.tasks.find((task) => task.taskId === taskId);
+      if (prior && !configValuesEqual(prior.recoveryContext, recoveryContext)) throw new Error(t('原图片任务回执已变化'));
+      if (!prior) recovery.tasks.push({ taskId, ...(recoveryContext ? { recoveryContext } : {}) });
+      await retain();
+    }, row.operationId).catch((error: unknown) => { if (plan.isDefinitiveFailure?.(error)) row.status = 'failed'; throw error; });
+    const images = outputs.filter((output) => !output.kind || output.kind === 'image');
+    if (!images.length || images.length > 128) throw new Error(t('原图片任务没有返回完整候选集合'));
+    return Object.assign(images.map((output) => output.url), outputs.incomplete ? { incomplete: true as const } : {});
+  };
+  let candidates: CharacterVisualCandidate[];
+  if (row.native && options.nativeGuard) {
+    await runNativeCharacterImageTask({ guard: options.nativeGuard, modelRef: row.model, connectionId,
+      requestMaterial: row.fingerprint, dimensions: mapImageDimensions(row.imageSize || '2K', row.aspectRatio || '1:1'),
+      expectedCount, signal, resume: options.resume, mediaDownloadAccess: recovery.mediaDownloadAccess,
+      isDefinitiveFailure: plan.isDefinitiveFailure, execute });
+    const task = row.target.ownerId && (await listNativeCharacterImageTasks(row.target.ownerId, row.target.characterId, [row.operationId]))
+      .find((item) => item.operationId === row.operationId && item.projectEpoch === row.projectEpoch);
+    if (!task || task.status !== 'completed' || !task.candidates?.length) throw new Error(t('原候选图片文件不可用'));
+    candidates = task.candidates.map((candidate) => candidateFromPath(row,
+      { id: candidateId(row, candidate.index), relativePath: candidate.relativePath }, candidate.filePath, candidate.url));
+  } else {
+    const urls = await execute(options.beforePost);
+    let failed = false;
+    for (const url of urls) {
+      try {
+        if (await candidateRoot(row.target) !== options.root) throw new Error(t('角色素材目录不可用'));
+        const candidate = await persistCandidate(row, row.candidates.length, url, options.root, recovery.mediaDownloadAccess, signal);
+        if (!row.candidates.some((item) => item.digest === candidate.digest)) row.candidates.push(candidate);
+        await saveRun(row);
+      } catch { failed = true; }
+    }
+    if (failed || urls.incomplete || !row.candidates.length) throw new Error(t('部分图片未能保存到本机'));
+    candidates = await readCandidates(row);
+  }
+  row.sent = true;
+  row.status = 'completed';
+  row.error = candidates.length < expectedCount ? t('本次仅取得部分候选图，已保留可用结果') : undefined;
+  await saveRun(row);
+  const delivered = new Error('角色图片任务已保存并交付');
+  delivered.name = 'NativeMediaTaskDelivered';
+  completedCharacterRuns.set(delivered, displayRun(row, candidates));
+  throw delivered;
+}
+
+export async function resumeCharacterVisualRun(target: CharacterVisualTarget, id: string, signal?: AbortSignal): Promise<CharacterVisualRun> {
+  const context = projectContext(target), prefix = characterPrefix(target);
+  const row = (await findRuns(target)).find((item) => item.operationId === id);
+  if (!row || activeRuns.has(id) || activeTargets.has(prefix)) throw new Error(t('原角色生成任务已变化，请刷新后重试'));
+  if (['failed', 'reviewed'].includes(row.status)) throw new Error(t('原角色生成任务已结束，不能继续查询'));
+  if (row.native && target.ownerId) {
+    const task = (await listNativeCharacterImageTasks(target.ownerId, target.characterId, [id]))[0];
+    if (!task || !context || task.projectEpoch !== row.projectEpoch || context.projectEpoch !== row.projectEpoch) throw new Error(t('角色素材归属已变化'));
+    row.recovery = task.recovery;
+  }
+  if (!row.recovery?.tasks.length) throw new Error(t('原图片请求没有已保存的任务 ID，请核对服务商原任务'));
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
+  const guard = () => {
+    controller.signal.throwIfAborted(); projectContext(target);
+    if (context?.projectEpoch !== row.projectEpoch && row.native) throw new Error(t('角色素材归属已变化'));
+  };
+  activeTargets.set(prefix, id); activeRuns.add(id);
+  try {
+    const recovery = row.recovery;
+    await executeCharacterVisualPlan(row, { expectedCount: recovery.expectedCount, recovery,
+      mediaDownloadAccess: recovery.mediaDownloadAccess, execute: async () => { throw new Error('恢复不能重新提交生成'); } }, {
+      connectionId: recovery.connectionId, root: await candidateRoot(target), signal: controller.signal, assertCurrent: guard,
+      beforePost: async () => { throw new Error('恢复不能重新提交生成'); }, resume: true,
+      ...(row.native && context ? { nativeGuard: createNativeCharacterImageSubmissionGuard({ ownerProjectId: context.projectId,
+        projectEpoch: context.projectEpoch, characterId: target.characterId, operationId: id, fingerprint: row.fingerprint, assertCurrent: guard }) } : {}),
+    });
+    throw new Error(t('原图片任务没有返回完整候选集合'));
+  } catch (error) {
+    if (error instanceof Error && completedCharacterRuns.has(error)) return completedCharacterRuns.get(error)!;
+    row.status = error instanceof PollTaskFailedError ? 'failed' : row.recovery?.tasks.length ? 'paused' : 'uncertain';
+    row.error = row.status === 'failed' ? t('本次图片生成未完成') : t('原任务查询或保存尚未完成，可继续查询'); await saveRun(row);
+    throw error;
+  } finally {
+    activeTargets.delete(prefix); activeRuns.delete(id); signal?.removeEventListener('abort', abort);
+  }
+}
+
 export async function generateCharacterVisual(
   input: GenerateCharacterVisualInput, signal?: AbortSignal,
 ): Promise<CharacterVisualRun> {
@@ -534,6 +710,10 @@ export async function generateCharacterVisual(
   const selected = listCharacterVisualModels(target, operation, references.length).find((model) =>
     model.id === input.model && model.provider === input.provider);
   if (!selected) throw new Error(t('所选模型未配置，或不支持本次图片操作'));
+  if (input.workflowId !== undefined && input.workflowId !== selected.workflowId) throw new Error(t('模型配置已变化，请重新选择'));
+  const workflow = selected.workflowId ? useAppStore.getState().workflows.find((item) => item.id === selected.workflowId) : undefined;
+  const workflowInputs = { ...input.workflowInputs };
+  const runninghubModelParameters = { ...input.runninghubModelParameters };
   if (selected.channel === 'midjourney' && (operation !== 'appearance' || viewSlot !== undefined)) throw new Error(t('Midjourney 专用通道仅用于角色生图'));
   const mask = input.mask ? { ...input.mask } : undefined;
   if (mask && (operation !== 'edit' || !selected.supportsMask || references[0]?.id !== mask.referenceId
@@ -553,7 +733,7 @@ export async function generateCharacterVisual(
   const state = useAppStore.getState();
   const config = state.config;
   const general = selected.provider === 'general' ? config.generalModels?.find((model) => `general/${model.id}` === selected.id) : undefined;
-  const connectionId = general?.providerConfigId ?? selected.provider;
+  const connectionId = general?.providerConfigId ?? selected.connectionId ?? selected.provider;
   const connection = config.providers[connectionId];
   const guard = () => {
     controller.signal.throwIfAborted();
@@ -562,6 +742,7 @@ export async function generateCharacterVisual(
     if (context && (current.currentProjectId !== target.projectId
       || !isProjectExpectedContextCurrent(context, current))) throw new Error(t('角色素材归属已变化'));
     if (!configValuesEqual(current.config.providers[connectionId], connection)
+      || workflow && !configValuesEqual(current.workflows.find((item) => item.id === workflow.id), workflow)
       || general && !configValuesEqual(current.config.generalModels?.find((model) => model.id === general.id), general)) {
       throw new Error(t('模型配置已变化，请重新选择'));
     }
@@ -581,6 +762,7 @@ export async function generateCharacterVisual(
     const fingerprint = await sha256BytesHex(new TextEncoder().encode(JSON.stringify([operation, prompt, selected.id,
       selected.provider, connectionId, connection?.baseUrl, general?.modelId,
       aspectRatio, imageSize, frozen.map((reference) => [reference.digest, reference.purpose]),
+      input.imageQuality, input.imageBackground, selected.workflowId, workflowInputs, runninghubModelParameters,
       ...(viewSlot || mask ? [viewSlot, mask ? await sha256BytesHex(new TextEncoder().encode(mask.pngDataUrl)) : undefined] : [])])));
     const isNative = context?.modelGeneration === 1;
     const createdAt = Date.now();
@@ -589,6 +771,7 @@ export async function generateCharacterVisual(
       ...(selected.channel === 'midjourney' ? { expectedOutputCount: resolveImageOutputsPerJob(selected.id, selected.provider, config) } : {}),
       name: input.characterName?.trim().slice(0, 128) ?? '', prompt, model: selected.id, provider: selected.provider,
       aspectRatio, imageSize, createdAt, status: 'submitting', candidates: [], sent: false, native: isNative, draft: input.isNew === true,
+      imageQuality: input.imageQuality, imageBackground: input.imageBackground, workflowId: selected.workflowId,
       projectEpoch: context?.projectEpoch, fingerprint,
       references: frozen.map(({ id: referenceId, purpose, sourceUrl }) => ({ id: referenceId, purpose, sourceUrl })),
     };
@@ -597,6 +780,11 @@ export async function generateCharacterVisual(
     row.name = safeHistoryText(row.name, secrets);
     row.prompt = safeHistoryText(row.prompt, secrets);
     row.submittedPrompt = safeHistoryText(requestPrompt, secrets);
+    const historyParameters = (values: Record<string, string>) => Object.fromEntries(Object.entries(values)
+      .filter(([, value]) => typeof value === 'string' && !/^(?:[a-z]:[\\/]|\\\\|file:|asset:|https?:\/\/asset\.localhost)/i.test(value))
+      .map(([key, value]) => [key, safeHistoryText(value, secrets)]));
+    row.workflowInputs = historyParameters(workflowInputs);
+    row.runninghubModelParameters = historyParameters(runninghubModelParameters);
     row.references = row.references.map((reference) => ({
       ...reference, ...(reference.purpose ? { purpose: safeHistoryText(reference.purpose, secrets) } : {}),
     }));
@@ -613,13 +801,21 @@ export async function generateCharacterVisual(
         catch (error) { row.sent = false; throw error; }
         sent = true;
       };
+    const destination = registerCharacterImageTaskContext({ assertCurrent: guard,
+      execute: (plan) => executeCharacterVisualPlan(row, plan, { connectionId, root: originalRoot, signal: controller.signal,
+        assertCurrent: guard, beforePost: async () => { await beforeSubmit(); },
+        ...(isNative && context ? { nativeGuard: beforeSubmit as NativeCharacterImageSubmissionGuard } : {}),
+      }),
+    });
     try {
       const batch = await generateImagesBatch({
         prompt: requestPrompt, model: selected.id, provider: selected.provider,
         characterWorkbench: target.scope, collectCandidates: true, imageSize, aspectRatio,
+        imageQuality: input.imageQuality, imageBackground: input.imageBackground, workflowId: selected.workflowId,
+        workflowInputs, runninghubModelParameters,
         image_urls: frozen.map((reference) => reference.url),
         ...(mask ? { characterPaintMask: mask.pngDataUrl } : {}),
-      }, 1, controller.signal, beforeSubmit);
+      }, 1, controller.signal, destination.beforeSubmit);
       row.sent = true;
       if (isNative) {
         const task = target.ownerId && (await listNativeCharacterImageTasks(target.ownerId, target.characterId, [id]))
@@ -649,15 +845,19 @@ export async function generateCharacterVisual(
       await saveRun(row);
       return displayRun(row, await readCandidates(row));
     } catch (error) {
+      if (error instanceof Error && completedCharacterRuns.has(error)) return completedCharacterRuns.get(error)!;
       row.sent = sent;
       const responseError = getHttpResponseError(error);
       const rejected = responseError?.definitiveFailure ? responseError : undefined;
-      row.status = sent && !rejected ? 'uncertain' : 'failed';
-      row.error = row.status === 'uncertain' ? t('提交状态未知，请查看服务商原任务记录')
-        : rejected ? t('服务商拒绝了本次图片请求（HTTP {status}）', { status: rejected.status }) : t('本次图片生成未提交');
+      row.status = row.status === 'failed' || error instanceof PollTaskFailedError ? 'failed'
+        : sent && !rejected ? row.recovery?.tasks.length ? 'paused' : 'uncertain' : 'failed';
+      row.error = row.status === 'paused' ? t('原任务查询或保存尚未完成，可继续查询')
+        : row.status === 'uncertain' ? t('提交状态未知，请查看服务商原任务记录')
+        : rejected ? t('服务商拒绝了本次图片请求（HTTP {status}）', { status: rejected.status })
+          : sent ? t('本次图片生成未完成') : t('本次图片生成未提交');
       await saveRun(row);
-      return displayRun(row, await readCandidates(row), { reviewable: row.status === 'uncertain' });
-    }
+      return displayRun(row, await readCandidates(row), { reviewable: row.status === 'uncertain' || row.status === 'paused' });
+    } finally { destination.release(); }
   } finally {
     activeTargets.delete(prefix);
     activeRuns.delete(id);

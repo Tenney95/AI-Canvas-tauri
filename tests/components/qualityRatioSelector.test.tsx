@@ -1,7 +1,8 @@
 /**
  * qualityRatioSelector — 回归测试：image resolution and quality selector。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPortal } from 'react-dom';
 
 const driver = vi.hoisted(() => ({ open: false }));
 vi.mock('react', async () => ({
@@ -9,7 +10,9 @@ vi.mock('react', async () => ({
   useState: () => [driver.open, (open: boolean) => { driver.open = open; }],
   useRef: () => ({ current: null }),
   useEffect: () => undefined,
+  useLayoutEffect: () => undefined,
 }));
+vi.mock('react-dom', () => ({ createPortal: vi.fn((content: unknown) => content) }));
 vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
 import QualityRatioSelector from '../../src/components/nodes/shared/QualityRatioSelector';
 
@@ -33,9 +36,46 @@ function backgroundOptions(tree: ElementLike[]) {
   return elements(tree.find((element) => element.props['data-ui-schema-field'] === 'imageBackground'))
     .filter((element) => 'data-ui-schema-value' in element.props);
 }
-beforeEach(() => { driver.open = false; });
+beforeEach(() => { driver.open = false; vi.mocked(createPortal).mockClear(); });
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('image resolution and quality selector', () => {
+  it('accepts capability ratio strings without adding undeclared defaults', () => {
+    driver.open = true;
+    const onChangeAspectRatio = vi.fn();
+    const tree = render({ ratios: ['2:3', '3:1'], imageSizes: ['1k', '4k'], showAdaptive: false, onChangeAspectRatio });
+    const area = tree.find((element) => element.props['data-ui-schema-field'] === 'aspectRatio');
+    const options = elements(area).filter((element) => 'data-ui-schema-value' in element.props);
+    expect(options.map((element) => element.props['data-ui-schema-value'])).toEqual(['2:3', '3:1']);
+    expect(elements(area).map((element) => element.props.className)).toEqual(expect.arrayContaining([
+      'img-rp-icon img-rp-p23', 'img-rp-icon img-rp-ultra',
+    ]));
+    (options[0].props.onClick as () => void)();
+    expect(onChangeAspectRatio).toHaveBeenCalledWith('2:3');
+    const sizes = elements(tree.find((element) => element.props['data-ui-schema-field'] === 'imageSize'))
+      .filter((element) => 'data-ui-schema-value' in element.props);
+    expect(sizes.map((element) => element.props['data-ui-schema-value'])).toEqual(['1k', '4k']);
+  });
+
+  it('disables the trigger and hides an open popup while generation is pending', () => {
+    driver.open = true;
+    const tree = render({ disabled: true });
+    expect(summary(tree).disabled).toBe(true);
+    expect(summary(tree)['aria-expanded']).toBe(false);
+    expect(tree.some((element) => element.props['data-ui-schema-field'] === 'imageSize')).toBe(false);
+    expect(driver.open).toBe(false);
+  });
+
+  it('portals the workbench popup to the viewport while retaining the shared panel', () => {
+    driver.open = true;
+    const body = {};
+    vi.stubGlobal('document', { body });
+    const tree = render({ fixedMenu: true });
+    const popup = tree.find((element) => element.props.role === 'dialog');
+    expect(popup?.props['aria-label']).toBe('16:9 · 2K');
+    expect(createPortal).toHaveBeenCalledWith(popup, body);
+  });
+
   it('retains the shared size/ratio pill and omits undeclared generation quality', () => {
     driver.open = true;
     const tree = render({ imageQuality: 'max' });

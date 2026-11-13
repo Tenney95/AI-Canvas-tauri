@@ -1,11 +1,13 @@
 /** 角色工作台的原生同步生图回执，归作品与角色草稿，不写画布。 */
 import { remove } from '@tauri-apps/plugin-fs';
 import type { BatchImageResult, MediaDownloadAccess } from '../types/aiTypes';
-import { MAX_IMAGE_BATCH_COUNT } from '../types/aiTypes';
 import type { NativeMediaLocalResult } from '../types/media';
 import type { ProjectRecord } from '../types/project';
+import type { CharacterImageTaskRecovery } from '../types/media';
+import { validateCharacterImageTaskRecovery } from './characterImageTaskContext';
 import { hasControlCharacters } from '../utils/controlCharacters';
 import { getHttpResponseError } from './ai/httpUtils';
+import { PollTaskFailedError } from './pollTask';
 import { getAssetUrlFromPath, getProjectDataDir, isTauriEnv, joinPath } from './fileService';
 import { saveCharacterVisualResult } from './fs/characterVisualFiles';
 import { EXCHANGE, REVISIONS, ROOTS, TRANSFER, assertNoPendingNativeSharedSync, increment,
@@ -19,6 +21,7 @@ const PREFIX = 'character-image-task:';
 const KIND = 'native-character-image-v1';
 const MAX_ROWS = 100_000;
 const MAX_PIXELS = 64 * 1024 * 1024;
+const MAX_CHARACTER_OUTPUTS = 128;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const rootRef = /^r2-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -47,6 +50,7 @@ export interface NativeCharacterImageTask {
   status: Status;
   createdAt: number;
   updatedAt: number;
+  recovery?: CharacterImageTaskRecovery;
   candidates?: Array<Output & { url: string; filePath: string }>;
 }
 
@@ -72,7 +76,7 @@ const validSize = ({ width, height }: Size) => integer(width) && integer(height)
 const pending = (status: Status) => status === 'prepared' || status === 'outcome-unknown';
 const invalid = () => new Error('角色生图回执或项目身份已变化');
 const receiptFields = new Set(['projectId', 'kind', 'ownerProjectId', 'projectEpoch', 'characterId', 'operationId',
-  'resultRootRef', 'modelRef', 'providerConfigId', 'requestFingerprint', 'status', 'outputs', 'revision', 'createdAt', 'updatedAt']);
+  'resultRootRef', 'modelRef', 'providerConfigId', 'requestFingerprint', 'status', 'outputs', 'revision', 'createdAt', 'updatedAt', 'recovery']);
 const outputFields = new Set(['relativePath', 'bytes', 'sha256', 'width', 'height', 'index']);
 
 export function createNativeCharacterImageSubmissionGuard(input: {
@@ -101,13 +105,17 @@ function validate(row: Receipt | undefined): Receipt {
     || !isNativeProjectId(row.ownerProjectId) || !rootRef.test(row.resultRootRef)
     || ![row.characterId, row.modelRef, row.providerConfigId].every(validId) || !states.includes(row.status)
     || ![row.projectEpoch, row.revision, row.createdAt, row.updatedAt].every(integer) || !SHA256.test(row.requestFingerprint)
-    || !Array.isArray(row.outputs) || row.outputs.length > MAX_IMAGE_BATCH_COUNT
+    || !Array.isArray(row.outputs) || row.outputs.length > MAX_CHARACTER_OUTPUTS
     || Object.keys(row).some((key) => !receiptFields.has(key))
     || row.status === 'completed' && !row.outputs.length
     || row.outputs.some((output) => !output || Object.keys(output).some((key) => !outputFields.has(key))
-      || !integer(output.index) || output.index >= MAX_IMAGE_BATCH_COUNT || !integer(output.bytes) || output.bytes === 0 || !validSize(output)
+      || !integer(output.index) || output.index >= MAX_CHARACTER_OUTPUTS || !integer(output.bytes) || output.bytes === 0 || !validSize(output)
       || !/\.(?:png|jpg|webp)$/.test(output.relativePath) || !isNativeMediaContentPath(output.relativePath, output.sha256))) throw invalid();
   if (new Set(row.outputs.map((output) => output.index)).size !== row.outputs.length) throw invalid();
+  if (row.recovery) {
+    validateCharacterImageTaskRecovery(row.recovery);
+    if (row.recovery.modelRef !== row.modelRef || row.recovery.connectionId !== row.providerConfigId) throw invalid();
+  }
   return row;
 }
 
@@ -143,7 +151,7 @@ async function readRows(store: IDBObjectStore, ownerProjectId: string): Promise<
   return (await request(store.getAll(range)) as Receipt[]).map(validate);
 }
 
-async function changeReceipt(original: Receipt, patch: Partial<Pick<Receipt, 'status' | 'outputs'>>): Promise<Receipt> {
+async function changeReceipt(original: Receipt, patch: Partial<Pick<Receipt, 'status' | 'outputs' | 'recovery'>>): Promise<Receipt> {
   return withDatabase(true, async (tx) => {
     const store = tx.objectStore(EXCHANGE);
     const current = validate(await request(store.get(original.projectId)) as Receipt | undefined);
@@ -193,6 +201,7 @@ export async function listNativeCharacterImageTasks(ownerProjectId: string, char
   for (const row of rows.sort((left, right) => right.createdAt - left.createdAt).slice(0, 50)) {
     const { operationId, projectEpoch, modelRef, status, createdAt, updatedAt } = row;
     results.push({ operationId, ownerProjectId, projectEpoch, characterId, modelRef, status, createdAt, updatedAt,
+      ...(row.recovery ? { recovery: row.recovery } : {}),
       ...(row.outputs.length ? { candidates: await projectCandidates(row).catch(() => []) } : {}) });
   }
   return results;
@@ -218,11 +227,14 @@ export async function runNativeCharacterImageTask(input: {
   expectedCount: number;
   signal?: AbortSignal;
   mediaDownloadAccess?: MediaDownloadAccess;
-  execute: (beforePost: () => Promise<void>) => Promise<string[]>;
+  resume?: boolean;
+  isDefinitiveFailure?: (error: unknown) => boolean;
+  execute: (beforePost: () => Promise<void>, retainRecovery: (recovery: CharacterImageTaskRecovery) => Promise<void>,
+    originalRecovery?: CharacterImageTaskRecovery) => Promise<string[] & { incomplete?: true }>;
 }): Promise<BatchImageResult> {
   const { guard, modelRef, connectionId, expectedCount, signal } = input;
   if (!isTauriEnv() || !isNativeCharacterImageSubmissionGuard(guard) || !validSize(input.dimensions)
-    || !Number.isSafeInteger(expectedCount) || expectedCount < 1 || expectedCount > MAX_IMAGE_BATCH_COUNT) throw invalid();
+    || !Number.isSafeInteger(expectedCount) || expectedCount < 1 || expectedCount > MAX_CHARACTER_OUTPUTS) throw invalid();
   const { ownerProjectId, projectEpoch, characterId, operationId } = guard;
   const key = taskKey(ownerProjectId, operationId);
   const target = `${ownerProjectId}:${characterId}`;
@@ -240,6 +252,13 @@ export async function runNativeCharacterImageTask(input: {
       const project = await readProject(tx, ownerProjectId, projectEpoch);
       await assertNoPendingNativeSharedSync(tx, ownerProjectId);
       const store = tx.objectStore(EXCHANGE);
+      if (input.resume) {
+        const previous = validate(await request(store.get(key)) as Receipt | undefined);
+        if (previous.ownerProjectId !== ownerProjectId || previous.projectEpoch !== projectEpoch || previous.characterId !== characterId
+          || previous.resultRootRef !== project.storageRootRef || previous.modelRef !== modelRef || previous.providerConfigId !== connectionId
+          || previous.requestFingerprint !== requestFingerprint || !pending(previous.status) && previous.status !== 'completed') throw invalid();
+        return previous;
+      }
       const rows = await readRows(store, ownerProjectId);
       if (rows.some((previous) => previous.characterId === characterId && previous.projectEpoch === projectEpoch
         && previous.requestFingerprint === requestFingerprint && pending(previous.status))) {
@@ -254,7 +273,10 @@ export async function runNativeCharacterImageTask(input: {
       await request(store.add(next));
       return next;
     });
+    if (row.status === 'completed') return { requestedCount: expectedCount, results: await projectCandidates(row), failedCount: 0, allTasksSettled: true };
+    sent = row.status === 'outcome-unknown';
     const urls = await input.execute(async () => {
+      if (input.resume) throw new Error('原角色任务恢复不能重新提交生成');
       if (!row || row.status !== 'prepared') throw invalid();
       signal?.throwIfAborted();
       guard();
@@ -263,31 +285,40 @@ export async function runNativeCharacterImageTask(input: {
       guard();
       proof?.onSubmit?.();
       sent = true;
-    });
-    if (!sent || !urls.length || urls.length > MAX_IMAGE_BATCH_COUNT) {
+    }, async (recovery) => {
+      if (!row || recovery.modelRef !== modelRef || recovery.connectionId !== connectionId) throw invalid();
+      validateCharacterImageTaskRecovery(recovery);
+      row = await changeReceipt(row, { recovery });
+    }, row.recovery);
+    if (!sent || !urls.length || urls.length > MAX_CHARACTER_OUTPUTS) {
       throw new Error('角色生图未返回可保存的图片结果');
     }
     const root = await getProjectDataDir(ownerProjectId);
     if (!root) throw invalid();
-    for (const [index, url] of urls.entries()) {
+    let failedSaves = 0;
+    for (const url of urls) {
       let image: Awaited<ReturnType<typeof saveCharacterVisualResult>>;
-      try { image = await saveCharacterVisualResult(url, root, `character-image-${operationId}-${index}`, input.mediaDownloadAccess); }
-      catch { continue; }
+      try { image = await saveCharacterVisualResult(url, root, `character-image-${operationId}-${crypto.randomUUID().slice(0, 8)}`, input.mediaDownloadAccess); }
+      catch { failedSaves++; continue; }
       const file = await captureNativeMediaLocalResult(ownerProjectId, image.filePath);
-      row = await changeReceipt(row, { outputs: [...row.outputs, { ...file, width: image.width, height: image.height, index }] });
+      if (!row.outputs.some((output) => output.sha256 === file.sha256)) {
+        const ordinal = row.outputs.reduce((next, output) => Math.max(next, output.index + 1), 0);
+        row = await changeReceipt(row, { outputs: [...row.outputs, { ...file, width: image.width, height: image.height, index: ordinal }] });
+      }
       if (image.filePath !== joinPath(root, file.relativePath)) await remove(image.filePath).catch(() => undefined);
     }
     if (!row.outputs.length) throw new Error('角色生图候选未完整保存');
+    if (failedSaves || urls.incomplete) throw new Error('部分角色图片尚未保存，可从原任务继续查询');
     row = await changeReceipt(row, { status: 'completed' });
     return { requestedCount: expectedCount, results: await projectCandidates(row), failedCount: Math.max(0, expectedCount - row.outputs.length), allTasksSettled: true };
   } catch (error) {
     if (!row) throw error;
-    if (!sent || getHttpResponseError(error)?.definitiveFailure) {
+    if (!sent || getHttpResponseError(error)?.definitiveFailure || error instanceof PollTaskFailedError || input.isDefinitiveFailure?.(error)) {
       await changeReceipt(row, { status: 'failed' }).catch(() => undefined);
       throw error;
     }
     if (row.status === 'completed') throw new Error('原角色生图已保存，请从生成历史查看', { cause: error });
-    const unresolved = new Error('原角色生图结果尚未确认，已保留回执与可用候选。请核对生成历史。');
+    const unresolved = new Error('原角色生图结果尚未确认，已保留回执与可用候选。请核对生成历史。', { cause: error });
     unresolved.name = 'NativeMediaTaskPending';
     throw Object.assign(unresolved, { nativeOperationId: operationId });
   } finally { active.delete(key); }

@@ -140,3 +140,24 @@ export interface ResolvedMediaModel {
   /** 选中的是 ComfyUI 工作流时带上，生成入口据此走本地工作流 */
   workflowId?: string;
 }
+/** 角色图片任务只保存原查询身份；提交正文与运行时对象不进入回执。 */
+export type CharacterVisualGenerationParameters = Pick<import('./aiTypes').AIImageGenParams,
+  'aspectRatio' | 'imageSize' | 'imageQuality' | 'imageBackground' | 'workflowInputs' | 'runninghubModelParameters'>;
+
+export interface CharacterImageTaskRecovery {
+  version: 1;
+  kind: 'builtin' | 'apimart' | 'general-async' | 'workflow' | 'protocol';
+  connectionId: string;
+  providerBase: string;
+  modelRef: string;
+  configurationDigest: string;
+  expectedCount: number;
+  tasks: Array<{ taskId: string; recoveryContext?: Record<string, unknown> }>;
+  builtinMode?: 'standard' | 'protocol' | 'volcengine' | 'ccc' | 'dreamina';
+  workflow?: import('../services/nativeWorkflowRepository').NativeWorkflowDescriptor;
+  query?: {
+    modelId: string;
+    digest: string;
+  };
+  mediaDownloadAccess?: import('./aiTypes').MediaDownloadAccess;
+}

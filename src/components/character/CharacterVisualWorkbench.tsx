@@ -4,6 +4,7 @@ import { useT } from '../../i18n';
 import { useAppStore } from '../../store/useAppStore';
 import type { CharacterLibraryScope } from '../../store/store.dramaAssets';
 import type { DramaCharacter } from '../../types/dramaAssets';
+import type { CharacterVisualGenerationParameters } from '../../types/media';
 import { canonicalXiaohongshuReferenceUrl } from '../../utils/xiaohongshuReferenceUrl';
 import { polishCharacterVisualPrompt } from '../../services/characterVisualPromptPolish';
 import {
@@ -25,6 +26,8 @@ import {
   MAX_CHARACTER_VISUAL_REFERENCE_BYTES,
   readCharacterVisualInput,
   reviewCharacterVisualRun,
+  resumeCharacterVisualRun,
+  resolveCharacterVisualParameters,
   type CharacterVisualCandidate,
   type CharacterVisualOperation,
   type CharacterVisualReference,
@@ -32,6 +35,7 @@ import {
   type CharacterVisualTarget,
 } from '../../services/characterVisualWorkbenchService';
 import { getConfiguredModelGroups, getGeneralModelGroups } from '../nodes/shared/defaultModels';
+import CharacterVisualGenerationSettings from './CharacterVisualGenerationSettings';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import Select from '../shared/Select';
@@ -78,6 +82,7 @@ const STATUS_LABELS: Record<CharacterVisualRun['status'], string> = {
   completed: '已生成',
   failed: '生成失败',
   uncertain: '提交状态待核对',
+  paused: '等待续查',
   reviewed: '已核对原任务',
 };
 const PURPOSES = ['脸型', '发型', '服装', '体型', '风格'];
@@ -146,8 +151,9 @@ export default function CharacterVisualWorkbench({
   scope, character, isNew, selectedReferenceId, onClose, onAdopt, onKeepReference, onResumeDraft, onApplyFields, assertCurrent,
 }: CharacterVisualWorkbenchProps) {
   const t = useT();
-  const { config, projectId, projectReady, savedRoles, nodes } = useAppStore(useShallow((state) => ({
+  const { config, workflows, projectId, projectReady, savedRoles, nodes } = useAppStore(useShallow((state) => ({
     config: state.config,
+    workflows: state.workflows,
     projectId: state.currentProjectId,
     projectReady: state.projectLoadStatus === 'ready',
     savedRoles: scope === 'project' ? state.dramaAssets.characters : state.globalCharacters,
@@ -163,6 +169,7 @@ export default function CharacterVisualWorkbench({
   const [modelId, setModelId] = useState('');
   const [aspectRatio, setAspectRatio] = useState('');
   const [imageSize, setImageSize] = useState('');
+  const [generationParameters, setGenerationParameters] = useState<CharacterVisualGenerationParameters>({});
   const [inputs, setInputs] = useState<ReferenceOption[]>([]);
   const [appearanceReferenceIds, setAppearanceReferenceIds] = useState<string[]>([]);
   const [baseReferenceId, setBaseReferenceId] = useState(selectedReferenceId ?? character.primaryReferenceImageId ?? '');
@@ -183,7 +190,7 @@ export default function CharacterVisualWorkbench({
   const [error, setError] = useState('');
   const [historyError, setHistoryError] = useState(false);
   const [draftHistoryError, setDraftHistoryError] = useState(false);
-  const [pending, setPending] = useState<'import' | 'generate' | 'adopt' | 'optimize' | 'review'>();
+  const [pending, setPending] = useState<'import' | 'generate' | 'adopt' | 'optimize' | 'review' | 'resume'>();
   const [textModelId, setTextModelId] = useState('');
   const [optimizeOpen, setOptimizeOpen] = useState(false);
   const [optimizedPrompt, setOptimizedPrompt] = useState('');
@@ -247,9 +254,9 @@ export default function CharacterVisualWorkbench({
     const reference = referenceOptions.find((item) => item.id === id);
     return reference ? [{ ...reference, purpose: purposes[id] || undefined }] : [];
   });
-  const allModels = useMemo(() => isTargetCurrent ? listCharacterVisualModels(target, operation, 0, config) : [],
-    [target, operation, isTargetCurrent, config]);
-  const models = allModels.filter((item) => item.channel === channel);
+  const allModels = useMemo(() => isTargetCurrent ? listCharacterVisualModels(target, operation, 0, config, workflows) : [],
+    [target, operation, isTargetCurrent, config, workflows]);
+  const models = useMemo(() => channel === 'midjourney' ? allModels.filter((item) => item.channel === 'midjourney') : allModels, [allModels, channel]);
   const base = operation === 'edit' ? references[0] : undefined;
   const activeMask = mask && base?.id === mask.referenceId && base.url === mask.baseUrl ? mask : undefined;
   const model = models.find((item) => item.id === modelId) ?? (!modelId
@@ -259,7 +266,9 @@ export default function CharacterVisualWorkbench({
   const sizes = model?.resolutions ?? [];
   const ratio = ratios.includes(aspectRatio) ? aspectRatio
     : operation === 'turnaround' && ratios.includes('16:9') ? '16:9' : model?.defaultRatio ?? ratios[0] ?? '';
-  const size = sizes.includes(imageSize) ? imageSize : model?.defaultResolution ?? sizes[0] ?? '';
+  const size = sizes.find((value) => value.toLowerCase() === imageSize.toLowerCase())
+    ?? model?.defaultResolution ?? sizes[0] ?? '';
+  const generationValues = model ? resolveCharacterVisualParameters(model, generationParameters, config) : generationParameters;
   const textModels = useMemo(() => optimizeOpen ? [
     ...getConfiguredModelGroups(config, 'ai-text'),
     ...getGeneralModelGroups(config.generalModels ?? [], config, 'ai-text'),
@@ -275,6 +284,7 @@ export default function CharacterVisualWorkbench({
   const availableMessage = !isTargetCurrent ? t('原角色工作区已切换，请重新打开')
     : !models.length ? t('当前没有兼容的生图模型，请在「设置 → API Key」中配置')
     : !model ? t('请为本次操作选择图片模型')
+    : model.channel === 'midjourney' && operation !== 'appearance' ? t('Midjourney 专用通道仅用于角色生图')
     : referenceIds.length !== references.length ? t('选中的参考图已不可用，请重新选择')
     : operation !== 'appearance' && references.length !== 1 ? t('请选择一张底图')
     : operation === 'edit' && needsMask && !activeMask ? t('请重画蒙版或切换为文字改图')
@@ -295,6 +305,7 @@ export default function CharacterVisualWorkbench({
     setModelId('');
     setAspectRatio('');
     setImageSize('');
+    setGenerationParameters({});
     setOptimizedPrompt('');
     setError('');
   };
@@ -496,6 +507,7 @@ export default function CharacterVisualWorkbench({
       let baseSnapshot: string | undefined;
       const isDerived = operation !== 'appearance';
       const result = await generateCharacterVisual({
+        ...generationValues, workflowId: model.workflowId,
         target, operation, prompt, model: model.id, provider: model.provider,
         aspectRatio: ratio || undefined, imageSize: size || undefined,
         references: references.map(({ id, url, purpose, sourceUrl }) => ({ id, url, purpose, sourceUrl })),
@@ -547,6 +559,13 @@ export default function CharacterVisualWorkbench({
       await reviewCharacterVisualRun(target, activeRun.id);
       if (!signal.aborted) setHistoryRevision((value) => value + 1);
     }, t('任务核对状态保存失败'));
+  };
+  const resume = () => {
+    if (!activeRun?.recoverable) return;
+    void runAction('resume', async (signal) => {
+      const result = await resumeCharacterVisualRun(target, activeRun.id, signal);
+      if (!signal.aborted) addRun(result);
+    }, t('原任务查询或保存尚未完成，可继续查询'));
   };
 
   return (<>
@@ -665,6 +684,19 @@ export default function CharacterVisualWorkbench({
                 {activeRun.maskedEdit && <p>{t('画笔蒙版')}</p>}
                 {activeRun.references.map((reference) => reference.sourceUrl && <SourceLink key={reference.id} url={reference.sourceUrl} />)}
                 {activeRun.error && <p role="status">{t(activeRun.error)}</p>}
+                <details>
+                  <summary className="cursor-pointer">{t('任务回执')}</summary>
+                  <div className="ui-card ui-stack ui-stack--tight break-all p-2 text-xs">
+                    <p><span className="text-canvas-text-muted">{t('本机任务 ID')}：</span>{activeRun.id}</p>
+                    {activeRun.remoteTaskIds?.map((taskId) => <p key={taskId}>
+                      <span className="text-canvas-text-muted">{t('服务商任务 ID')}：</span>{taskId}
+                    </p>)}
+                  </div>
+                </details>
+                {activeRun.recoverable && <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm self-start"
+                  disabled={Boolean(pending) || !isTargetCurrent} onClick={resume}>
+                  {t(pending === 'resume' ? '正在查询原任务…' : '继续查询并保存')}
+                </button>}
                 {activeRun.reviewable && (
                   <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm self-start"
                     disabled={Boolean(pending) || !isTargetCurrent} onClick={markReviewed}>{t('已核对原任务')}</button>
@@ -690,6 +722,8 @@ export default function CharacterVisualWorkbench({
                     setModelId(activeRun.model);
                     setAspectRatio(activeRun.aspectRatio ?? '');
                     setImageSize(activeRun.imageSize ?? '');
+                    setGenerationParameters({ imageQuality: activeRun.imageQuality, imageBackground: activeRun.imageBackground,
+                      workflowInputs: activeRun.workflowInputs, runninghubModelParameters: activeRun.runninghubModelParameters });
                     const knownIds = activeRun.references.map((reference) => reference.id)
                       .filter((id) => referenceOptions.some((reference) => reference.id === id));
                     if (activeRun.operation === 'appearance') setAppearanceReferenceIds(knownIds);
@@ -808,25 +842,20 @@ export default function CharacterVisualWorkbench({
               placeholder={operation === 'edit' ? t('说明要改哪里、改成什么样，以及希望保留的部分') : undefined}
               onChange={(event) => patchPrompt(event.target.value)} />
           </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <Select value={model?.id ?? ''} aria-label={t('图片模型')} placeholder={t('选择图片模型')}
-              disabled={Boolean(pending) || !models.length} onChange={(value) => { setModelId(value); setAspectRatio(''); setImageSize(''); }}>
-              {models.map((item) => <option key={item.id} value={item.id}>
-                {references.length > 0 && !item.supportsReferences
-                  ? t('{name} · 参考图不可用', { name: item.label }) : item.label}
-              </option>)}
-            </Select>
-            {ratios.length > 0 && (
-              <Select value={ratio} aria-label={t('画面比例')} disabled={Boolean(pending)} onChange={setAspectRatio}>
-                {ratios.map((value) => <option key={value} value={value}>{value}</option>)}
-              </Select>
-            )}
-            {sizes.length > 0 && (
-              <Select value={size} aria-label={t('分辨率')} disabled={Boolean(pending)} onChange={setImageSize}>
-                {sizes.map((value) => <option key={value} value={value}>{value}</option>)}
-              </Select>
-            )}
-            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" aria-expanded={optimizeOpen}
+          <div className="ui-stack ui-stack--tight">
+            <CharacterVisualGenerationSettings models={models} model={model}
+              values={{ ...generationValues, aspectRatio: ratio, imageSize: size }} disabled={Boolean(pending) || !isTargetCurrent}
+              onSelect={(option) => {
+                setModelId(option.id);
+                setAspectRatio(ratio);
+                setImageSize(size);
+                setError('');
+              }} onChange={(patch) => {
+                if (patch.aspectRatio !== undefined) setAspectRatio(patch.aspectRatio);
+                if (patch.imageSize !== undefined) setImageSize(patch.imageSize);
+                setGenerationParameters((current) => ({ ...current, ...patch }));
+              }} />
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm self-start" aria-expanded={optimizeOpen}
               disabled={Boolean(pending) || !isTargetCurrent} onClick={() => setOptimizeOpen((value) => !value)}>{t('优化提示词')}</button>
           </div>
           {optimizeOpen && (

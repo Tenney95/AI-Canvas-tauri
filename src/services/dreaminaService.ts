@@ -14,6 +14,7 @@ import { getDreaminaImageModel, getDreaminaVideoCapability } from './ai/dreamina
 import type { MediaReference } from '../types/aiTypes';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { isNativeVideoSubmissionGuard } from './nativeVideoSubmission';
+import { isCharacterImageTaskContext } from './characterImageTaskContext';
 
 const DREAMINA_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'];
 
@@ -142,7 +143,7 @@ export async function generateDreaminaImage(opts: {
   nodeId?: string;
   beforeSubmit?: () => void | Promise<void>;
 }, externalSignal?: AbortSignal): Promise<{ url: string; width: number; height: number }> {
-  const native = useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(opts.beforeSubmit);
+  const native = useAppStore.getState().projectExecutionContext?.modelGeneration === 1 || isNativeVideoSubmissionGuard(opts.beforeSubmit) || isCharacterImageTaskContext(opts.beforeSubmit);
   const dims = mapImageDimensions(opts.imageSize || '2K', opts.aspectRatio || '1:1');
   const modelVersion = modelVersionOf(opts.model);
   const kind = opts.imageUrls.length > 0 ? 'image2image' : 'text2image';

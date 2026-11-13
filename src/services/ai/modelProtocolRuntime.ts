@@ -1,5 +1,6 @@
 /** Model-level declarative protocol runtime with resumable async polling. */
 import { useAppStore } from '../../store/useAppStore';
+import { isCharacterImageTaskContext } from '../characterImageTaskContext';
 import type { GeneralModelCategory, GeneralModelConfig, NodeType } from '../../types';
 import type { MediaDownloadAccess, MediaProtocolUrls, MediaTaskReceipt, ProtocolJsonValue, VideoModelCapability } from '../../types/aiTypes';
 import {
@@ -395,6 +396,14 @@ export async function runConfiguredModelProtocol(
   if (expansionConflicts.length > 0) throw new Error(expansionConflicts[0]);
   const baseUrl = provider.baseUrl?.trim() || '';
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
+  if (isCharacterImageTaskContext(options.beforeSubmit)) {
+    if (options.category !== 'image') throw new Error('角色目的地只接受图片结果');
+    assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
+    const { executeCharacterProtocol } = await import('../characterImageTaskRecovery');
+    return executeCharacterProtocol(options.beforeSubmit, { apiKey: provider.apiKey, baseUrl, protocol,
+      variables: options.variables, expectedCount: options.expectedImageOutputs ?? 1, signal: options.signal,
+      mediaDownloadAccess: createMediaDownloadAccess(options.model.providerConfigId, baseUrl, protocol.auth) });
+  }
   const usesMinimaxProtocol = catalogId === 'minimax'
     && usesMinimaxModelProtocol(options.model.modelId, options.model.executionProfile);
   // 新项目的同步与异步合同都必须携带原生提交守卫，避免付费后落入旧队列。

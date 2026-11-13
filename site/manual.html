@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.11.3 操作说明书：独立助手关闭与草稿交接、最近使用 Skill、分组开合让位、新项目存储清理、团队与媒体生成。">
-<title>AI Canvas 0.11.3 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.11.4 操作说明书：角色形象工作台、图片模型与任务恢复、全局图床、火山方舟私有 TOS、素材与 Skill。">
+<title>AI Canvas 0.11.4 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -47,6 +47,8 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
+<div class="group">0.11.4 更新入口</div>
+<a href="#character-workbench-0-11-4">↳ 角色形象工作台与模型互通</a><a href="#reference-upload-0-11-4">↳ 全局图床与方舟 TOS</a>
 <div class="group">0.11.3 更新入口</div>
 <a href="#assistant-close-0-11-2">↳ 独立助手关闭与草稿交接</a><a href="#recent-skills-0-11-2">↳ 最近五个 Skill</a><a href="#canvas-storage-0-11-2">↳ 分组让位与新项目清理</a><a href="#models-team-0-11-2">↳ 七角色团队与媒体修复</a>
 <div class="group">0.11.1 更新入口</div>
@@ -90,9 +92,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.11.3 说明书</span><span class="badge">2026-11-12 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.11.4 说明书</span><span class="badge">2026-11-13 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
+<aside class="tip"><b>0.11.4 · 角色形象工作台与模型互通：</b>从角色编辑中的<b>生成角色形象</b>进入<a href="#character-workbench-0-11-4">角色工作台</a>，使用图片节点同一模型与参数，查看原任务回执并续取候选。参考素材上传见<a href="#reference-upload-0-11-4">图床与方舟 TOS</a>。发布状态和未验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.3 · 助手窗口与常用 Skill：</b>查看<a href="#assistant-close-0-11-2">独立助手关闭与草稿交接</a>、<a href="#recent-skills-0-11-2">最近五个上传及包内 Skill</a>、<a href="#canvas-storage-0-11-2">分组开合让位与新项目清理</a>，以及<a href="#models-team-0-11-2">七角色团队与媒体修复</a>。旧项目与兼容限制保留，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.1 · 型号参数与万象视频适配：</b>查看<a href="#model-parameters-0-11-1">同型号参数与万象 H3 四档时长</a>、<a href="#muse-references-0-11-1">Muse 参考图和发送确认</a>，以及<a href="#media-path-0-11-1">复制媒体文件路径</a>。旧项目与任务身份保持，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.0 · 新项目结构与媒体恢复：</b>从<a href="#native-projects-0-11-0">新建项目</a>开始，按分集保存画布和共享素材；已有旧项目保持原结构。查看<a href="#media-history-0-11-0">媒体结果与输出历史</a>，再了解<a href="#project-archive-0-11-0">项目包、更新和恢复点</a>。本版不自动迁移真实旧项目；安装包与验收状态见<a href="#about">版本范围</a>。</aside>
@@ -1137,6 +1140,14 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
+<section id="updates-0-11-4"><h2>0.11.4 · 角色形象工作台与模型互通</h2>
+<h3 id="character-workbench-0-11-4">角色生成、定妆与原任务恢复</h3>
+<ol class="steps"><li>新建或编辑角色，在参考图区域点击<b>生成角色形象</b>。可从角色资料起稿，上传／粘贴图片、从素材库选择，或打开小红书图文笔记，翻到目标图后点击<b>导入当前图片</b>。每张参考可标记本次用途。</li><li>工作台按图片节点相同的启用配置展示完整图片模型和图片工作流。选择比例、分辨率、质量、背景及专用参数；没有某项能力的模型按原合同限制，参考图数量也以当前模型为准。生成期间参数锁定。</li><li>生成角色、三视图，按描述或画笔范围改图，或用多图定妆／拼接保留候选。选中候选后点击<b>加入参考图</b>或设为主视觉，回到角色草稿后仍需点击<b>保存角色</b>。识图设定建议和当前画布引用更新先预览，再勾选应用。</li><li>在历史查看本机回执和服务商任务 ID。已取得原 ID 的查询或保存中断可<b>继续查询并保存</b>，只取原作业、补存候选并去重；没有 ID 的同步中断需先核对原平台，未知提交不会自动重发。切项目、切角色或关闭草稿后，迟到结果保留在原任务。</li></ol>
+<p>候选保存沿用 PNG／JPEG／WebP、大小和像素限制。网页会话、各厂商／工作流真实生成、重启续取与桌面多窗口仍待用户验收；变更原连接配置后可能需要恢复配置才能查询旧任务。小红书登录按网站有效会话保留，macOS 14 以下使用临时浏览资料。</p>
+<h3 id="reference-upload-0-11-4">全局图床与火山方舟私有 TOS</h3>
+<ol class="steps"><li>进入<b>设置 → API Key</b>配置全局图床，可选择模板或自定义上传协议，国内服务优先展示。已有厂商独立上传能力按自己的合同使用。</li><li>火山方舟的本地图片／视频／音频参考需要在对应连接配置<b>北京区域私有 TOS Bucket</b>与独立 AK/SK，具备相应对象读写权限；方舟模型 Key 不能代替 TOS 凭据。</li><li>本地参考通过原生流式上传到私有桶，再将同对象内网签名地址交给方舟。缺配置、取消或失败会停止，不切公共图床。已有公网参考和私域虚拟人像库沿用各自入口，内网签名地址不能在普通浏览器预览。</li></ol>
+<p>预签名到期不会删除桶内对象，按自己的保留需要配置生命周期。真实上传、模型读取与费用需用户在自己的桶中验收。此版还修复素材暂存回收、跨平台路径与离线图标，并调整 Skill 存储及读取授权。</p></section>
+
 <section id="updates-0-11-2"><h2>0.11.3 · 助手窗口与常用 Skill</h2>
 <h3 id="assistant-close-0-11-2">独立助手关闭与草稿交接</h3>
 <p>关闭或<b>收回内嵌</b>会等待草稿交接与实际关窗，等待时输入只读，失败保留草稿并恢复编辑。从工作台准备“优化分镜”等助手草稿也先交接原窗口，不重复打开助手或重新启动任务。具体操作与运行期草稿限制见<a href="#assistant-windows">15.2</a>。</p>
@@ -1251,8 +1262,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.11.3「助手窗口与常用 Skill」</b>，<b>2026-11-12</b> 按源码增量核对独立助手关闭、最近 Skill、分组让位、新项目清理、团队与媒体处理，并保留此前参数模板、项目结构、工作台、模型、工作流、素材与原文写作说明。旧锚点和十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.3">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-12-release-0.11.3.md">0.11.3 发布计划</a>，旧版本门禁不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；本次说明书更新不代表这些检查已通过。</p>
+<p>本说明书面向 <b>0.11.4「角色形象工作台与模型互通」</b>，<b>2026-11-13</b> 按源码增量核对角色工作台、完整图片模型与参数、任务回执续查、全局图床、方舟私有 TOS 及素材／Skill 修复。此前章节、旧锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.4">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
+<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-13-release-0.11.4.md">0.11.4 发布计划</a>，旧版本门禁不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；本次说明书更新不代表这些检查已通过。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>

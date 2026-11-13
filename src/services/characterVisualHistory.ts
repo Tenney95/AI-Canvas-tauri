@@ -1,5 +1,6 @@
 import { t } from '../i18n';
 import type { CharacterVisualRun, CharacterVisualTarget } from './characterVisualWorkbenchService';
+import type { CharacterImageTaskRecovery } from '../types/media';
 import { getRelativeAssetPath, resolveIndexedAssetPath } from './fs/assetIndex';
 import { joinPath } from './fs/core';
 import { openDB, STORE_METADATA } from './indexedDb/schema';
@@ -23,6 +24,7 @@ export interface StoredCharacterVisualRun extends Omit<CharacterVisualRun, 'id' 
   projectEpoch?: number;
   fingerprint: string;
   candidates: StoredCharacterVisualCandidate[];
+  recovery?: CharacterImageTaskRecovery;
 }
 
 const HISTORY_PREFIX = 'character-visual-run-v1:';

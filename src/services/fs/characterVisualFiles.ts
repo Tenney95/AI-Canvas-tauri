@@ -1,4 +1,4 @@
-import { mkdir, remove, writeFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, remove, writeFile } from '@tauri-apps/plugin-fs';
 import type { MediaDownloadAccess } from '../../types/aiTypes';
 import { isRemoteMediaUrl, isTauriAssetUrl } from '../../utils/mediaUrl';
 import { t } from '../../i18n';
@@ -6,6 +6,10 @@ import { downloadGeneratedImageToPath } from '../fileService';
 import { parseRasterImageDimensions } from '../rasterImageDimensions';
 import { getAssetUrlFromPath, joinPath } from './core';
 import { readImageSourceBlob } from './imageSourceBlob';
+
+export class CharacterVisualResultConflictError extends Error {
+  constructor() { super(t('候选文件已被其他内容占用')); this.name = 'CharacterVisualResultConflictError'; }
+}
 
 export function isCharacterVisualInputUrl(value: string | undefined): value is string {
   return !!value && (isTauriAssetUrl(value) || /^(?:blob:|data:image\/(?:png|jpeg|webp|gif|avif);base64,)/i.test(value));
@@ -43,6 +47,11 @@ export async function saveCharacterVisualResult(
     }
     signal.throwIfAborted();
     const filePath = joinPath(directory, `${stem}.${format.extension}`);
+    if (await exists(filePath)) {
+      const previous = new Uint8Array(await (await readImageSourceBlob(await getAssetUrlFromPath(filePath), signal)).arrayBuffer());
+      if (previous.length !== bytes.length || !previous.every((value, index) => value === bytes[index])) throw new CharacterVisualResultConflictError();
+      return { filePath, ...dimensions };
+    }
     await writeFile(filePath, bytes, { createNew: true });
     return { filePath, ...dimensions };
   } finally {
