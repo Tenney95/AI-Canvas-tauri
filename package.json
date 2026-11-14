@@ -14,6 +14,7 @@
         "test:watch": "vitest",
         "check": "npm run lint && npm run typecheck && npm run test:typecheck && npm run test",
         "ci": "npm run check && npm run build",
+        "ci:affected": "node scripts/ci-affected.mjs",
         "build": "tsc -b && vite build",
         "build:mcp-adapter": "node scripts/build-mcp-adapter.mjs",
         "preview": "vite preview",
