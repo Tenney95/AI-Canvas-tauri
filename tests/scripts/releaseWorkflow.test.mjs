@@ -15,14 +15,14 @@ function fixture() {
   const run = { id: 71, workflow_id: 17, path: workflow.path, event: 'push', head_branch: 'master', head_sha: sha,
     repository: { full_name: 'owner/repo' }, head_repository: { full_name: 'owner/repo' },
     status: 'completed', conclusion: 'success', run_attempt: 1 };
-  const jobs = ['Frontend quality', 'Rust check'].map((name) => ({ name, head_sha: sha, status: 'completed', conclusion: 'success' }));
-  const artifact = { id: 90, name: `frontend-dist-${sha}`, expired: false, size_in_bytes: 500,
+  const jobs = ['Frontend quality', 'Rust check', 'Full source quality'].map((name) => ({ name, head_sha: sha, status: 'completed', conclusion: 'success' }));
+  const artifact = { id: 90, name: `frontend-dist-${sha}-1`, expired: false, size_in_bytes: 500,
     digest: `sha256:${'c'.repeat(64)}`, workflow_run: { id: 71, head_sha: sha } };
   const state = { workflow, runs: [run], jobs, artifacts: [artifact], tagSha: sha, release: null };
   const api = vi.fn(async (path) => {
     if (path === '/actions/workflows/ci.yml') return state.workflow;
     if (path.startsWith('/actions/workflows/17/runs?')) return { workflow_runs: state.runs };
-    if (path === '/actions/runs/71/attempts/1/jobs?per_page=100') return { jobs: state.jobs };
+    if (path === `/actions/runs/71/attempts/${state.runs[0].run_attempt}/jobs?per_page=100`) return { jobs: state.jobs };
     if (path === '/actions/runs/71/artifacts?per_page=100') return { artifacts: state.artifacts };
     if (path === '/git/ref/tags/v1.2.3') return { object: { type: 'commit', sha: state.tagSha } };
     if (path === '/releases/tags/v1.2.3') return 'byTag' in state ? state.byTag : state.release;
@@ -123,13 +123,15 @@ describe('可信源码 CI 与前端 artifact 证明', () => {
     await expect(inspectSourceCi(api, context)).rejects.toThrow('源码 CI 未通过');
   });
 
-  it('必须同时有前端与 Rust 成功任务，缺失、重复或错 SHA 都不算完整证明', async () => {
+  it('前端、Rust 和全量模式均须成功，日常 CI、缺失、跳过及错 SHA 都不能发布', async () => {
     const { state, api } = fixture();
     const original = state.jobs;
-    for (const jobs of [[original[0]], [...original, original[0]], [original[0], { ...original[1], head_sha: otherSha }],
-      [original[0], { ...original[1], conclusion: 'skipped' }]]) {
+    for (const jobs of [original.slice(0, 2), [...original, original[0]],
+      [original[0], { ...original[1], head_sha: otherSha }, original[2]],
+      [...original.slice(0, 2), { ...original[2], conclusion: 'skipped' }]]) {
       state.jobs = jobs;
-      await expect(inspectSourceCi(api, context)).rejects.toThrow('完整前端或 Rust');
+      await expect(inspectSourceCi(api, context)).rejects.toThrow('缺少完整前端、Rust 或全量模式成功证明');
+      expect(api).not.toHaveBeenCalledWith('/actions/runs/71/artifacts?per_page=100');
     }
   });
 
@@ -143,6 +145,21 @@ describe('可信源码 CI 与前端 artifact 证明', () => {
     }
     state.artifacts = [artifact, artifact];
     await expect(inspectSourceCi(api, context)).rejects.toThrow('产物缺失');
+  });
+
+  it('重跑必须使用最新尝试的全量证明和新产物', async () => {
+    const { state, api } = fixture();
+    state.runs[0].run_attempt = 2;
+    await expect(inspectSourceCi(api, context)).rejects.toThrow('重跑该源码 CI 的全部任务');
+    expect(api).toHaveBeenCalledWith('/actions/runs/71/attempts/2/jobs?per_page=100');
+
+    state.artifacts.push({ ...state.artifacts[0], id: 91, name: `frontend-dist-${sha}-2` });
+    const jobs = state.jobs;
+    state.jobs = jobs.filter(({ name }) => name !== 'Rust check');
+    await expect(inspectSourceCi(api, context)).rejects.toThrow('全量模式成功证明');
+
+    state.jobs = jobs;
+    await expect(inspectSourceCi(api, context)).resolves.toMatchObject({ runId: 71, runAttempt: 2, artifactId: 91 });
   });
 
   it('原子推送时等待 CI 出现并完成，只读取回执；完成后仍复核标签未移动', async () => {

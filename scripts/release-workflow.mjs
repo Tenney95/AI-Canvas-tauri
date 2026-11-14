@@ -9,7 +9,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const VERSION = '(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)';
 const TAG = new RegExp(`^v${VERSION}$`);
 const FRONTEND_MANIFEST = 'release-frontend.json';
-const requiredJobs = ['Frontend quality', 'Rust check'];
+const requiredJobs = ['Frontend quality', 'Rust check', 'Full source quality'];
 
 export function validateTag(tag) {
   if (typeof tag !== 'string' || !TAG.test(tag) || tag.trim() !== tag || tag.length > 80) throw new Error('只接受 vX.Y.Z 格式的正式版本标签');
@@ -113,7 +113,7 @@ export async function resolveReleaseTarget(api, { tag, defaultBranch, ref }) {
   return { sha, ...validateReleaseMetadata(tag, Object.fromEntries(entries)) };
 }
 
-/** 只检查可信默认分支 push 的最新一次 CI；旧成功不能掩盖新失败。 */
+/** 只接受可信默认分支 push 的最新一次完整 CI 及该次尝试生成的产物。 */
 export async function inspectSourceCi(api, { repository, branch, sha }) {
   validSha(sha);
   if (!branch) throw new Error('默认分支身份不可用');
@@ -132,13 +132,13 @@ export async function inspectSourceCi(api, { repository, branch, sha }) {
   if (requiredJobs.some((name) => {
     const matches = jobs.filter((job) => job.name === name);
     return matches.length !== 1 || matches[0].status !== 'completed' || matches[0].conclusion !== 'success' || matches[0].head_sha !== sha;
-  })) throw new Error('源码 CI 缺少完整前端或 Rust 成功证明');
+  })) throw new Error('源码 CI 缺少完整前端、Rust 或全量模式成功证明，请使用包含完整检查的发布提交');
   const resultArtifacts = await api(`/actions/runs/${run.id}/artifacts?per_page=100`);
-  const artifacts = (resultArtifacts.artifacts ?? []).filter((artifact) => artifact.name === `frontend-dist-${sha}`
+  const artifacts = (resultArtifacts.artifacts ?? []).filter((artifact) => artifact.name === `frontend-dist-${sha}-${run.run_attempt}`
     && artifact.expired === false && artifact.workflow_run?.head_sha === sha && artifact.workflow_run?.id === run.id && Number.isSafeInteger(artifact.id)
     && artifact.size_in_bytes > 0 && artifact.digest?.length === 71 && /^sha256:[a-f0-9]{64}$/.test(artifact.digest));
-  if (artifacts.length !== 1) throw new Error('可信 CI 的前端产物缺失、过期或身份不符，请人工重跑该源码 CI');
-  return { status: 'success', runId: run.id, artifactId: artifacts[0].id, artifactDigest: artifacts[0].digest };
+  if (artifacts.length !== 1) throw new Error('可信 CI 的前端产物缺失、过期或身份不符，请重跑该源码 CI 的全部任务');
+  return { status: 'success', runId: run.id, runAttempt: run.run_attempt, artifactId: artifacts[0].id, artifactDigest: artifacts[0].digest };
 }
 
 export async function waitForSourceCi(api, context, options = {}) {
@@ -230,9 +230,9 @@ async function main(command) {
       { onStatus: (status) => console.log(status === 'missing' ? '等待同一提交的默认分支源码 CI 出现' : '等待同一提交的源码 CI 完成；不重复启动检查') });
     await outputs({ artifact_run_id: proof.runId, artifact_id: proof.artifactId });
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
-      `## 发布 ${tag}\n\n- 源码：\`${sha}\`\n- 可信源码 CI：[${proof.runId}](https://github.com/${repository}/actions/runs/${proof.runId})\n`
+      `## 发布 ${tag}\n\n- 源码：\`${sha}\`\n- 全量源码 CI：[${proof.runId}（第 ${proof.runAttempt} 次尝试）](https://github.com/${repository}/actions/runs/${proof.runId}/attempts/${proof.runAttempt})\n`
       + `- 前端产物：\`${proof.artifactId}\`，来自上述成功 CI；打包前再次核对源码、版本和每个文件哈希。\n`
-      + '- 本次不重复执行全量检查或 Vite 构建。前端 artifact 保留 7 天，过期需人工重跑源码 CI。\n'
+      + '- 本次复用全量检查和 Vite 构建。前端 artifact 保留 7 天，过期需重跑该源码 CI 的全部任务。\n'
       + '- Rust 依赖缓存按平台／标准版／Legacy 隔离；实际发布在默认分支运行以共享跨版本缓存。首次构建、工具链或依赖变更可能冷缓存，尚无本轮加速实测。\n', 'utf8');
     console.log(`已确认源码 CI ${proof.runId} 的完整成功回执与不可变前端产物`);
   } else if (command === 'assert-publishable') {

@@ -1,5 +1,4 @@
 #!/bin/sh
 set -e
 
-# 与 GitHub Frontend quality 覆盖相同的全量检查；失败会阻止推送。
-npm run ci
+exec node "$(dirname "$0")/ci-pre-push.mjs" "$@"
