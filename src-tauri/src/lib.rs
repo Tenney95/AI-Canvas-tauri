@@ -2127,12 +2127,6 @@ pub fn run() {
             comfyui::progress::on_window_event(window, event);
             comfyui::media_source::on_window_event(window, event);
             xiaohongshu_reference::on_window_event(window, event);
-            // 用户把文件拖进自有窗口 = 一次显式授权，登记后复制/读取命令才放行。
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
-                if window.label() == "main" || window.label() == "chat-assistant" {
-                    path_policy::grant_dropped_paths(window.app_handle(), paths);
-                }
-            }
             if window.label() == "chat-assistant" {
                 if let tauri::WindowEvent::Resized(size) = event {
                     let Ok(scale_factor) = window.scale_factor() else {
@@ -2194,6 +2188,7 @@ pub fn run() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
+            path_policy::authorize_native_drop(app_handle, &event);
             if matches!(event, tauri::RunEvent::Exit) {
                 codex_runtime::shutdown(app_handle);
                 comfyui::progress::shutdown_progress(app_handle);

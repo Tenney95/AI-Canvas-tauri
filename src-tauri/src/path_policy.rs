@@ -6,7 +6,7 @@
 //!
 //! 1. 调用方校验：只接受加载本地前端的自有窗口，拒绝远程页面（如即梦登录窗）。
 //! 2. 路径校验：解析真实路径（含符号链接），要求落在应用自有数据目录，
-//!    或用户通过对话框 / 外部素材目录显式授权过的 fs scope 内。
+//!    或用户通过对话框、原生拖放或外部素材目录显式授权过的 fs scope 内。
 
 use std::{
     path::{Component, Path, PathBuf},
@@ -586,21 +586,48 @@ pub fn authorize_path_with_roots<R: Runtime>(
     Ok(resolved)
 }
 
-/// 用户把文件拖入自有窗口，等同于对该文件的一次显式授权（与文件对话框选中同义）。
-/// 登记进 fs scope 后，后续的复制 / 读取命令才能通过路径校验。
-pub fn grant_dropped_paths<R: Runtime>(app: &tauri::AppHandle<R>, paths: &[PathBuf]) {
+/// 在 Wry 通知前端前登记用户实际拖入的路径。启用 Tauri unstable 时，主窗口也收到 WebviewEvent。
+pub(crate) fn authorize_native_drop<R: Runtime>(app: &tauri::AppHandle<R>, event: &tauri::RunEvent) {
+    use tauri::{DragDropEvent, RunEvent, WebviewEvent, WindowEvent};
+
+    let (label, paths) = match event {
+        RunEvent::WebviewEvent {
+            label,
+            event: WebviewEvent::DragDrop(DragDropEvent::Drop { paths, .. }),
+            ..
+        }
+        | RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }),
+            ..
+        } => (label, paths),
+        _ => return,
+    };
+    if !matches!(label.as_str(), "main" | "chat-assistant") || paths.is_empty() {
+        return;
+    }
+    let Some(webview) = app.get_webview(label) else {
+        return;
+    };
+    if ensure_local_frontend_caller(&webview).is_err() {
+        return;
+    }
+
     let scope = app.fs_scope();
     for path in paths {
         let Ok(canonical) = path.canonicalize() else {
             continue;
         };
+        if overlaps_private_app_path(app, &simplify_verbatim(canonical.clone())) {
+            continue;
+        }
         let result = if canonical.is_dir() {
             scope.allow_directory(&canonical, true)
         } else {
             scope.allow_file(&canonical)
         };
-        if let Err(error) = result {
-            eprintln!("[path-policy] 登记拖入路径失败 {}: {error}", canonical.display());
+        if result.is_err() {
+            eprintln!("[path-policy] 登记拖入路径失败");
         }
     }
 }
