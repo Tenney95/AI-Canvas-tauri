@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,7 @@ async function withTemporaryRepository(useRepository) {
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
   };
-  const run = (...args) => execFileSync(process.execPath, [script, ...args], { cwd: root, env, encoding: 'utf8' });
+  const run = (...args) => execFileSync(process.execPath, [script, ...args], { cwd: root, env, encoding: 'utf8', stdio: 'pipe' });
 
   try {
     git('init', '--quiet');
@@ -93,28 +93,93 @@ describe('CI 改动清单', () => {
     });
   }, 15_000);
 
-  it('执行依赖改动文件的 Vitest 用例，同时排除会失败的无关用例', async () => {
+  it('只使用提交树，要求可验证的祖先和干净的已跟踪文件', async () => {
+    await withTemporaryRepository(async ({ git, write, run }) => {
+      await write('src/components/Base.tsx', 'export const base = true;\n');
+      git('add', '.');
+      git('commit', '--quiet', '-m', 'Base');
+      const base = git('rev-parse', 'HEAD').toString().trim();
+      git('checkout', '--quiet', '--detach', base);
+
+      await write('src/components/Committed.tsx', 'export const committed = true;\n');
+      git('add', '.');
+      git('commit', '--quiet', '-m', 'Committed change');
+      const head = git('rev-parse', 'HEAD').toString().trim();
+      await write('src/components/Untracked.tsx', 'export const untracked = true;\n');
+
+      const plan = (sha) => JSON.parse(run('--plan', '--committed-only', '--base', sha));
+      expect(plan(base)).toMatchObject({
+        mode: 'affected',
+        base,
+        lintFiles: ['src/components/Committed.tsx'],
+      });
+      expect(plan(head)).toMatchObject({ mode: 'skip', base: head });
+      expect(() => plan('HEAD')).toThrow('完整的基线提交 SHA');
+
+      await write('src/components/Base.tsx', 'export const base = false;\n');
+      expect(() => plan(base)).toThrow('干净的已跟踪文件和暂存区');
+      git('add', 'src/components/Base.tsx');
+      expect(() => plan(base)).toThrow('干净的已跟踪文件和暂存区');
+      git('reset', '--hard', head);
+
+      git('checkout', '--quiet', '--detach', base);
+      git('commit', '--quiet', '--allow-empty', '-m', 'Other history');
+      const unrelated = git('rev-parse', 'HEAD').toString().trim();
+      git('checkout', '--quiet', '--detach', head);
+      expect(() => plan(unrelated)).toThrow('当前 HEAD 可验证的祖先');
+    });
+  }, 15_000);
+
+  it('提交新增的可执行文件回退完整检查', async () => {
+    await withTemporaryRepository(async ({ git, write, run }) => {
+      git('commit', '--quiet', '--allow-empty', '-m', 'Base');
+      const base = git('rev-parse', 'HEAD').toString().trim();
+      await write('doc/filename.md', 'test\n');
+      git('add', 'doc/filename.md');
+      git('update-index', '--chmod=+x', 'doc/filename.md');
+      git('commit', '--quiet', '-m', 'Executable markdown');
+      const head = git('rev-parse', 'HEAD').toString().trim();
+      git('checkout', '--quiet', '--force', '--detach', base);
+      git('checkout', '--quiet', '--detach', head);
+
+      expect(JSON.parse(run('--plan', '--committed-only', '--base', base))).toMatchObject({ mode: 'full', rust: true });
+    });
+  }, 15_000);
+
+  it('检查提交中的关联用例，通过后运行生产构建', async () => {
     await withTemporaryRepository(async ({ root, git, write, run }) => {
       await write('.gitignore', 'node_modules\nvitest-cache/\n');
-      await write('package.json', '{"type":"module","private":true}\n');
+      await write('package.json', '{"type":"module","private":true,"scripts":{"build":"node build.mjs"}}\n');
+      await write('build.mjs', "import { copyFileSync } from 'node:fs';\ncopyFileSync('selected-result.txt', 'build-result.txt');\n");
       await write('eslint.config.mjs', 'export default [{}];\n');
       await write('vitest.config.mjs', `export default {
         cacheDir: 'vitest-cache',
         test: { globals: true, fileParallelism: false },
       };\n`);
       await write('tests/utils/changed-helper.js', 'export const value = 1;\n');
-      await write('tests/utils/selected.test.js', `import { value } from './changed-helper.js';
-        it('reads the updated value', () => expect(value).toBe(2));\n`);
+      await write('tests/utils/selected.test.js', `import { writeFileSync } from 'node:fs';
+        import { value } from './changed-helper.js';
+        it('reads the updated value', () => {
+          expect(value).toBe(2);
+          writeFileSync('selected-result.txt', String(value));
+        });\n`);
       await write('tests/utils/unrelated.test.js', `it('fails when the file filter is lost', () => {
         throw new Error('Unexpected unrelated test execution');
       });\n`);
       git('add', '.');
       git('commit', '--quiet', '-m', 'Base');
+      const base = git('rev-parse', 'HEAD').toString().trim();
       await symlink(dependencies, join(root, 'node_modules'), 'junction');
       await write('tests/utils/changed-helper.js', 'export const value = 2;\n');
+      git('add', 'tests/utils/changed-helper.js');
+      git('commit', '--quiet', '-m', 'Change helper');
 
-      const output = run('--base', 'HEAD');
-      expect(output).toMatch(/Tests\s+1 passed/);
+      run('--committed-only', '--base', base, '--build');
+      expect(await readFile(join(root, 'selected-result.txt'), 'utf8')).toBe('2');
+      expect(await readFile(join(root, 'build-result.txt'), 'utf8')).toBe('2');
+      await rm(join(root, 'build-result.txt'));
+      run('--committed-only', '--base', git('rev-parse', 'HEAD').toString().trim(), '--build');
+      await expect(readFile(join(root, 'build-result.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     });
   }, 30_000);
 });
@@ -141,7 +206,7 @@ describe('CI 影响范围', () => {
 
   it('普通开发文档可跳过检查，插件开发规范仍触发验证', () => {
     expect(modify('doc/开发指南.md')).toMatchObject({ mode: 'skip', rust: false });
-    expect(modify('doc/插件开发规范.md')).toMatchObject({ mode: 'full' });
+    expect(modify('doc/插件开发规范.md')).toMatchObject({ mode: 'full', rust: false });
   });
 
   it.each([
@@ -167,11 +232,22 @@ describe('CI 影响范围', () => {
   it.each([
     'package-lock.json',
     'tsconfig.test.json',
-    'tests/setup.ts',
     '.github/workflows/ci.yml',
+    '.github/release-title.txt',
+    '.release-notes.md',
+    'src/projectModelFixtureHost.ts',
     'unknown/build-input.json',
   ])('共享输入或无法归类的 %s 回退完整检查', (path) => {
     expect(modify(path)).toMatchObject({ mode: 'full', rust: true });
+  });
+
+  it('共享前端输入保持完整前端检查，并合并其他改动要求的 Rust 检查', () => {
+    const frontend = ['tests/setup.ts', 'src/types/aiTypes.ts', 'src/i18n/locales/en-US/character.ts'];
+    const native = 'src-tauri/permissions/external-agent.toml';
+
+    expect(modify(...frontend)).toMatchObject({ mode: 'full', rust: false });
+    expect(modify(...frontend, native)).toMatchObject({ mode: 'full', rust: true });
+    expect(modify(native, ...frontend)).toMatchObject({ mode: 'full', rust: true });
   });
 
   it('删除源码时不能仅靠当前分支的导入图选测试', () => {
