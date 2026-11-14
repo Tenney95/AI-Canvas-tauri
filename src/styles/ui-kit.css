@@ -848,7 +848,6 @@
   align-items: center;
   justify-content: center;
   margin-left: 6px;
-  margin-right: 4px;
   background: var(--theme-hover);
   border: 1px solid var(--theme-border);
   border-radius: var(--ui-radius-sm);
@@ -907,6 +906,7 @@
 }
 
 .ui-stepper__unit {
+  margin-left: 4px;
   font-size: var(--ui-font-sm);
   font-weight: 500;
   color: var(--theme-text-muted);
@@ -930,12 +930,12 @@
   width: 18px;
   height: 20px;
   margin-left: 4px;
-  margin-right: 2px;
 }
 .ui-stepper--sm .ui-stepper__divider {
   width: 10px;
 }
 .ui-stepper--sm .ui-stepper__unit {
+  margin-left: 2px;
   font-size: 10px;
 }
 
@@ -952,10 +952,13 @@
   width: 26px;
   height: 28px;
   margin-left: 8px;
-  margin-right: 4px;
 }
 .ui-stepper--lg .ui-stepper__divider {
   width: 14px;
+}
+
+.ui-stepper:not(:has(> .ui-stepper__unit)) {
+  padding-right: 3px;
 }
 
 /* ==========================================================================

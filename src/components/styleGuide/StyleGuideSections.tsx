@@ -645,7 +645,7 @@ function NumberStepperDemo() {
       </div>
 
       <div className="ui-card p-3">
-        <label className="ui-label" htmlFor="sg-number-draft">键入草稿与边界</label>
+        <label className="ui-label" htmlFor="sg-number-draft">键入草稿与边界 · 无单位</label>
         <div className="ui-row mt-2">
           <NumberStepper id="sg-number-draft" value={draftValue} onChange={setDraftValue}
             min={-10} max={10} step={0.5} precision={1} />
