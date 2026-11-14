@@ -22,7 +22,7 @@ function snapshot(): ScriptWorkbenchSnapshot {
       creative: { task: '', coreConflict: '', openingHook: '', reversal: '', endingHook: '', beats: '', targetDurationSec: '90', sourceRange: '' } },
     analysis: analyzeEpisodeScript('选中集正文', undefined), isDirty: false, isSaving: false, isStartingTeam: false,
     contextReady: true, editorWriteLocked: false, unsettledEditor: false, pendingAction: null,
-    splitOpen: false, splitSource: 'script', targetEpisodeCount: '24', targetDurationSec: '90', sourceOpen: false,
+    splitOpen: false, splitSource: 'script', sourceOpen: false,
     renamingEpisodeId: null, extractingAssetKind: null, seriesAssetPreview: null, existingAssets: [],
     executionSelection: { kind: 'single' }, teamMode: 'collaborative', teamProfile: createDefaultTeamProfile(),
     modelGroups: [], episodeTeamTasks: [], appearance: createAppearanceUiSnapshot(getBuiltinAppearanceTheme('standard-dark')),

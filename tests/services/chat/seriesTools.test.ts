@@ -17,6 +17,8 @@ vi.mock('../../../src/services/fileService', () => fileMocks);
 
 import { useAppStore } from '../../../src/store/useAppStore';
 import { registerSeriesAgentTools } from '../../../src/services/chat/tools/seriesTools';
+import { readSeriesSource } from '../../../src/services/seriesSourceService';
+import { AGENT_RESULT_PREVIEW_CHARS } from '../../../src/services/chat/agentResultService';
 import {
   clearAgentToolRegistryForTests,
   getAgentTool,
@@ -189,6 +191,31 @@ describe('工作台精确分集读取授权', () => {
 });
 
 describe('series_read', () => {
+  it('按固定版本分页读取指定章节，预览上限内保留当页全部正文', async () => {
+    const body = '车站'.repeat(3100);
+    const script = `第一章\n${body}\n第二章\n未选择的正文\n第三章\n列车抵达`;
+    useAppStore.setState((state) => ({ projects: state.projects.map((project) => (
+      project.id === 'series' ? { ...project, series: { ...project.series, script } } : project
+    )) }));
+    const snapshot = await readSeriesSource('ep-1', 'script', context().signal);
+    const scope = { seriesId: snapshot.seriesId, version: snapshot.version,
+      chapterIds: [snapshot.chapters[2].id, snapshot.chapters[0].id] };
+    const unregisters = registerSeriesAgentTools();
+    try {
+      const read = getAgentTool('series_read')!;
+      const first = await read.execute(context(), { part: 'script', scope });
+      const offset = Number(first.modelContent.match(/offset=(\d+)/)?.[1]);
+      const second = await read.execute(context(), { part: 'script', scope, offset });
+      expect(first.status).toBe('success');
+      expect(first.modelContent.length).toBeLessThanOrEqual(AGENT_RESULT_PREVIEW_CHARS);
+      expect(second.modelContent).toContain('第三章\n列车抵达');
+      const pageText = (content: string) => content.split('--- 正文开始 ---\n')[1]?.split('\n--- 正文结束 ---')[0] ?? '';
+      expect(pageText(first.modelContent) + pageText(second.modelContent)).toBe(`第一章\n${body}\n第三章\n列车抵达`);
+      expect(await read.execute(context(), { part: 'script', scope: { ...scope, version: '0'.repeat(64) } }))
+        .toMatchObject({ status: 'error', errorCode: 'SERIES_SCOPED_READ_FAILED' });
+    } finally { unregisters.forEach((unregister) => unregister()); }
+  });
+
   it('把剧本正文当不可信资料回传，并说明还剩多少', async () => {
     const unregisters = registerSeriesAgentTools();
     const definition = getAgentTool('series_read');

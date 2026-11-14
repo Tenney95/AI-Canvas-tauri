@@ -208,6 +208,19 @@ describe('外部草稿的独立窗口交接', () => {
     expect(chatWindowMocks.close).toHaveBeenCalledWith('old-window-session');
   });
 
+  it('拆分预览在独立助手交接后进入新 Plan 会话并保留旧草稿', async () => {
+    chatWindowMocks.close.mockResolvedValueOnce(undefined);
+    useAppStore.getState().openChatWithDraft('分集参数与章节引用', { planConversationTitle: 'AI 分集拆分预览' });
+
+    await vi.waitFor(() => expect(useAppStore.getState().chatPanelDetached).toBe(false));
+    const state = useAppStore.getState();
+    expect(state.conversations.find((entry) => entry.id === state.activeConversationId))
+      .toMatchObject({ projectId: 'project-1', title: 'AI 分集拆分预览', agentMode: 'plan' });
+    expect(state.conversations.find((entry) => entry.id === 'conv-first')?.agentMode).toBe('collaborative');
+    expect(state.chatComposerDrafts['conv-first']).toBe('原有草稿');
+    expect(state.chatComposerDraft).toBe('分集参数与章节引用');
+  });
+
   it('交接失败不显示内嵌面板、不覆盖草稿，错误不暴露原始细节', async () => {
     chatWindowMocks.close.mockRejectedValueOnce(new Error('untrusted native failure details'));
     useAppStore.getState().openChatWithDraft('不能填入的新草稿');

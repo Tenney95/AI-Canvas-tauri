@@ -83,6 +83,10 @@ function clearPersistedActiveConversation(projectId: string, conversationId: str
 // Slice interface
 // ============================================
 
+interface ChatDraftOptions {
+  planConversationTitle?: string;
+}
+
 export interface ChatSlice {
   // ── 面板状态 ──
   chatOpen: boolean;
@@ -121,7 +125,7 @@ export interface ChatSlice {
 
   // ── Panel Actions ──
   openChat: () => void;
-  openChatWithDraft: (draft: string) => void;
+  openChatWithDraft: (draft: string, options?: ChatDraftOptions) => void;
   clearChatComposerDraft: () => void;
   closeChat: () => void;
   toggleChat: () => void;
@@ -141,7 +145,7 @@ export interface ChatSlice {
   removeConversation: (id: string) => void;
   setActiveConversation: (id: string | null) => void;
   /** 在当前项目创建空会话 */
-  createConversation: (projectId: string, title?: string) => string;
+  createConversation: (projectId: string, title?: string, agentMode?: ChatConversation['agentMode']) => string;
 
   // ── 持久化 Actions ──
   /** 从 IndexedDB 加载当前项目的全部会话 */
@@ -263,7 +267,7 @@ function scheduleMessagePersist(id: string, getState: () => AppState): void {
 
 export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, get, api) => {
   const removedConversationIds = new Set<string>();
-  type DraftRequest = { draft: string; state: AppState; revision: number; invalidated: boolean };
+  type DraftRequest = { draft: string; options?: ChatDraftOptions; state: AppState; revision: number; invalidated: boolean };
   let draftHandoff: { latest: DraftRequest; sessionId: string | undefined } | null = null;
   const sameDraftContext = (request: DraftRequest, current: AppState): boolean => {
     const expected = request.state;
@@ -277,15 +281,18 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       && !!before === !!after && before?.projectId === after?.projectId && !after?.deletedAt
       && configValuesEqual(before?.workbenchTarget, after?.workbenchTarget);
   };
-  const applyDraft = (draft: string) => {
+  const applyDraft = (draft: string, options?: ChatDraftOptions) => {
     const state = get();
-    if (state.conversations.find((conversation) => conversation.id === state.activeConversationId)?.workbenchTarget) {
+    if (options?.planConversationTitle && state.currentProjectId) {
+      state.createConversation(state.currentProjectId, options.planConversationTitle, 'plan');
+    } else if (state.conversations.find((conversation) => conversation.id === state.activeConversationId)?.workbenchTarget) {
       state.createConversation(state.currentProjectId ?? GENERAL_ASSISTANT_SCOPE_ID);
     }
     set({
       chatOpen: true,
       chatPanelDetached: false,
       chatComposerDraft: draft,
+      ...(options?.planConversationTitle ? { chatPanelView: 'chat' as const } : {}),
       settingsOpen: false,
       assetsPanelOpen: false,
       characterLibraryOpen: false,
@@ -340,14 +347,14 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     historyPanelOpen: false,
     dramaAssetsPanelOpen: false,
   }),
-  openChatWithDraft: (draft) => {
+  openChatWithDraft: (draft, options) => {
     const state = get();
     if (!state.chatPanelDetached) {
       if (draftHandoff) draftHandoff.latest.invalidated = true;
-      applyDraft(draft);
+      applyDraft(draft, options);
       return;
     }
-    const request: DraftRequest = { draft, state, revision: state.getCurrentRevision(), invalidated: false };
+    const request: DraftRequest = { draft, options, state, revision: state.getCurrentRevision(), invalidated: false };
     // 同一次正式关窗只保留最后请求；不能为连续点击重复交接或提前显示内嵌助手。
     if (draftHandoff) { draftHandoff.latest = request; return; }
     const handoff = { latest: request, sessionId: getMainChatWindowSessionId() };
@@ -370,7 +377,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
           get().showToast(t('项目或会话已变化，未填入助手草稿'), 'info');
           return;
         }
-        applyDraft(latest.draft);
+        applyDraft(latest.draft, latest.options);
       } catch {
         get().showToast(t('独立窗口尚未完成草稿交接，未打开内嵌助手'), 'error');
       } finally {
@@ -540,7 +547,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     set({ activeConversationId: id, chatComposerLiveDraft: id ? get().chatComposerDrafts[id] ?? '' : '' });
   },
 
-  createConversation: (projectId, title) => {
+  createConversation: (projectId, title, agentMode = 'collaborative') => {
     // 会话按剧集项目归属：同一部剧的分集共用会话，普通项目归自己（seriesOwnerId 对普通项目是恒等）
     const ownerId = seriesOwnerId(get().projects, projectId);
     const id = `conv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -552,7 +559,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       titleSource: title ? 'user' : 'auto',
       pinned: false,
       archived: false,
-      agentMode: 'collaborative',
+      agentMode,
       createdAt: now,
       updatedAt: now,
       messageCount: 0,

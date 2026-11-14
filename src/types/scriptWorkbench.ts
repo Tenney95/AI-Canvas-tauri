@@ -12,6 +12,7 @@ import type { OriginalWritingAction, OriginalWritingHandoff, OriginalWritingSumm
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
   StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
 import type { ProjectWindowContext } from './projectWindow';
+import type { SeriesSplitSkillOption } from '../services/seriesSplitSkillService';
 
 export type WorkbenchEditorTab = 'outline' | 'original' | 'script' | 'creative' | 'characters' | 'scenes' | 'props' | 'story-graph';
 export type WorkbenchPendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
@@ -23,6 +24,16 @@ export interface WorkbenchDraft { outline: string; script: string; creative: Wor
 export type WorkbenchEpisode = Pick<CanvasProject, 'id' | 'parentId' | 'name' | 'episodeOutline' | 'episodeScript' | 'episodeScriptFile' | 'episodeCreative' | 'episodeAssetRoster' | 'creationProfile' | 'teamProfileOverride'>;
 export interface WorkbenchDraftHandoff { episodeId: string; sequence: number; draft: WorkbenchDraft; windowContext?: ProjectWindowContext | null }
 
+export interface WorkbenchSplitRequest {
+  part: SeriesSourcePart;
+  version: string;
+  chapterIds?: string[];
+  episodeDurationSec: number;
+  sizing: { kind: 'fixed'; count: number } | { kind: 'auto'; charactersPerMinute: number; totalDurationSec?: number };
+  skillId?: string;
+  notes: string;
+}
+
 export interface ScriptWorkbenchSnapshot {
   schemaVersion?: 2;
   /** 真实 WebView 实例的会话；业务 sessionId 在收回/重开间保持不变。 */
@@ -30,7 +41,7 @@ export interface ScriptWorkbenchSnapshot {
   acceptedRequestSequence?: number;
   windowContext?: ProjectWindowContext | null;
   sessionId: string; revision: number; acceptedEditSequence: number; draftVersion: number;
-  series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; originalAddedAt?: number; exchangeEpoch?: number } | null;
+  series: { id: string; name: string; hasScript: boolean; hasOriginal: boolean; originalAddedAt?: number; updatedAt?: number; exchangeEpoch?: number } | null;
   episodes: Array<{ id: string; name: string; scriptLength: number; hasOutline: boolean }>;
   currentEpisode: WorkbenchEpisode | null;
   canvasProjectId: string | null;
@@ -38,7 +49,7 @@ export interface ScriptWorkbenchSnapshot {
   isDirty: boolean; isSaving: boolean; isStartingTeam: boolean; contextReady: boolean;
   editorWriteLocked: boolean; unsettledEditor: boolean;
   pendingAction: WorkbenchPendingAction | null;
-  splitOpen: boolean; splitSource: SeriesSourcePart; targetEpisodeCount: string; targetDurationSec: string;
+  splitOpen: boolean; splitSource: SeriesSourcePart; splitSkills?: SeriesSplitSkillOption[];
   sourceOpen: boolean; renamingEpisodeId: string | null;
   originalWriting?: OriginalWritingSummary;
   extractingAssetKind: DramaAssetKind | null;
@@ -69,14 +80,15 @@ export type ScriptWorkbenchAction =
   | { type: 'set_tab'; tab: WorkbenchEditorTab }
   | { type: 'save' } | { type: 'close' } | { type: 'dock' } | { type: 'detach' }
   | { type: 'cancel_pending' } | { type: 'discard_pending' } | { type: 'save_pending' }
-  | { type: 'toggle_split' } | { type: 'set_split_source'; value: SeriesSourcePart }
-  | { type: 'set_split_count'; value: string } | { type: 'set_split_duration'; value: string }
+  | { type: 'open_split' } | { type: 'close_split' }
+  | { type: 'read_split_material'; part: SeriesSourcePart }
+  | { type: 'split_skill_import' }
   | { type: 'open_source' } | { type: 'close_source' }
   | { type: 'read_source'; part: SeriesSourcePart } | { type: 'prepare_chapter'; reference: SeriesSourceReference }
   | { type: 'open_rename'; episodeId: string } | { type: 'close_rename' } | { type: 'rename'; name: string }
   | { type: 'creative'; action: EpisodeCreativeAction }
   | { type: 'polish'; field: CreativeFieldId; label: string; hasValue: boolean }
-  | { type: 'shotlist' } | { type: 'split_draft' }
+  | { type: 'shotlist' } | { type: 'split_draft'; settings: WorkbenchSplitRequest }
   | { type: 'extract_series'; kind: DramaAssetKind; label: string }
   | { type: 'close_asset_preview' } | { type: 'commit_asset_preview'; selectedIds: string[] }
   | { type: 'asset'; episodeId: string; kind: EpisodeAssetKind; action: EpisodeAssetPanelAction }

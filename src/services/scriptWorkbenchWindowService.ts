@@ -11,7 +11,8 @@ const READY_EVENT = 'script-workbench:ready';
 const REQUEST_EVENT = 'script-workbench:request';
 const RESPONSE_EVENT = 'script-workbench:response';
 const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_episode', 'set_tab', 'save', 'close', 'dock', 'detach',
-  'cancel_pending', 'discard_pending', 'save_pending', 'toggle_split', 'set_split_source', 'set_split_count', 'set_split_duration',
+  'cancel_pending', 'discard_pending', 'save_pending', 'open_split', 'close_split', 'read_split_material',
+  'split_skill_import',
   'open_source', 'close_source', 'read_source', 'prepare_chapter', 'open_rename', 'close_rename', 'rename', 'creative', 'polish',
   'original_open', 'original_edit', 'original_save', 'original_reload', 'original_generate', 'original_apply',
   'original_discard_candidate', 'original_cancel',
@@ -178,7 +179,7 @@ export function createScriptWorkbenchWindowHost(options: {
             requestId: payload.requestId, sequence: payload.sequence, ...(response.error ? { error: response.error } : { value: true }) }) });
         }
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。
-        if (['flush_draft', 'read_source', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents',
+        if (['flush_draft', 'read_source', 'read_split_material', 'team_artifact', 'preview_creation_profile', 'refresh_external_agents',
           'story_graph_detail', 'story_graph_resolve_evidence', 'story_graph_filter', 'story_graph_locate'].includes(payload.action.type)) requests.delete(payload.requestId);
         options.onReplySent?.();
       }).catch(() => {});

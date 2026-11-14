@@ -5,7 +5,7 @@
  */
 import { useAppStore } from '../../../store/useAppStore';
 import { listEpisodes, seriesOwnerId } from '../../../store/store.utils';
-import { readSeriesSource } from '../../seriesSourceService';
+import { readScopedSeriesMaterial, readSeriesSource, type SeriesSplitMaterialScope } from '../../seriesSourceService';
 import { registerAgentTool, type AgentToolExecutionResult } from '../toolRegistry';
 import type { AgentToolSchema } from '../agentToolSchemas';
 import {
@@ -17,6 +17,7 @@ import type { NativeProjectViewBinding } from '../../../store/nativeProjectView'
 import { captureLegacyEpisodeContext } from '../../projectExecutionContext';
 import { isWorkbenchAgentTaskInScope } from '../../episodeWorkspaceScope';
 import { EpisodeEditorWriteBlockedError, prepareEpisodeEditorRebase, withEpisodeEditorWrite } from '../../episodeEditorSessionService';
+import { AGENT_RESULT_PREVIEW_CHARS } from '../agentResultService';
 
 /** 单次回给模型的正文上限；原著动辄几十万字，必须分段读。 */
 const MAX_TEXT_CHUNK = 6000;
@@ -25,6 +26,7 @@ const MAX_EPISODES_PER_CALL = 60;
 interface SeriesReadInput {
   part?: 'script' | 'original';
   offset?: number;
+  scope?: SeriesSplitMaterialScope;
 }
 
 interface EpisodeReadInput {
@@ -88,8 +90,8 @@ async function writeEpisodeContent(episodeId: string, write: () => Promise<boole
 }
 
 /** 正文一律按"不可信资料"回传，防止原著或剧本里的句子被当成指令执行。 */
-function wrapUntrustedText(label: string, text: string, offset: number): AgentToolExecutionResult {
-  const chunk = text.slice(offset, offset + MAX_TEXT_CHUNK);
+function wrapUntrustedText(label: string, text: string, offset: number, limit = MAX_TEXT_CHUNK): AgentToolExecutionResult {
+  const chunk = text.slice(offset, offset + limit);
   const nextOffset = offset + chunk.length;
   const hasMore = nextOffset < text.length;
   return {
@@ -113,6 +115,21 @@ const readInputSchema: AgentToolSchema = {
   properties: {
     part: { type: 'string', enum: ['script', 'original'], description: '读剧本还是原著，缺省读剧本' },
     offset: { type: 'number', minimum: 0, description: '从第几个字开始读，用于续读长文' },
+    scope: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['seriesId', 'version'],
+      description: '使用指定材料版本与所选章节。提供 scope 时必须显式传入 part；续读时保持原 part 与 scope。',
+      properties: {
+        seriesId: { type: 'string', minLength: 1, maxLength: 160 },
+        version: { type: 'string', minLength: 64, maxLength: 64 },
+        chapterIds: {
+          type: 'array', minItems: 1,
+          items: { type: 'string', minLength: 1, maxLength: 100 },
+          description: '目录中的所选章节 ID。省略则读取指定版本的全文。',
+        },
+      },
+    },
   },
 };
 
@@ -424,7 +441,8 @@ export function registerSeriesAgentTools(): Array<() => void> {
       title: '读取剧集原著与剧本',
       description:
         '读取当前剧集的剧本正文或原著文件正文，并列出已有分集。'
-        + '正文很长时分段返回，按返回的 offset 续读。拆分分集前必须先读。',
+        + '正文很长时分段返回，按返回的 offset 续读。拆分分集前必须先读。'
+        + '如请求指定材料版本与所选章节，传入 part 和原有 scope，只在该范围读取。',
       inputSchema: readInputSchema,
       effect: 'read',
       authorize: authorizeCurrentProject,
@@ -440,6 +458,25 @@ export function registerSeriesAgentTools(): Array<() => void> {
           };
         }
         const offset = Math.max(0, Math.floor(input.offset ?? 0));
+
+        if (input.scope) {
+          try {
+            if (!input.part) throw new Error('读取指定范围时必须指定素材类型');
+            const snapshot = await readSeriesSource(context.projectId, input.part, context.signal);
+            const text = readScopedSeriesMaterial(snapshot, input.scope);
+            if (offset >= text.length) throw new Error('续读偏移已到所选范围末尾');
+            // 给不可信资料提示和续读偏移留出空间，保证预览层不会截掉当页正文。
+            return wrapUntrustedText(input.part === 'original' ? '所选原著' : '所选剧本', text, offset, AGENT_RESULT_PREVIEW_CHARS - 200);
+          } catch (error) {
+            context.signal.throwIfAborted();
+            return {
+              status: 'error',
+              summary: '读取所选素材失败',
+              modelContent: error instanceof Error ? error.message : '读取所选素材失败',
+              errorCode: 'SERIES_SCOPED_READ_FAILED',
+            };
+          }
+        }
 
         if (input.part === 'original') {
           try {

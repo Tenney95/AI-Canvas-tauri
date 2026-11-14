@@ -7,6 +7,8 @@ import {
   buildCreativeFieldPolishPrompt,
   buildEpisodeCreativePrompt,
   buildSplitDraftPrompt,
+  estimateSeriesSplitDuration,
+  estimateSeriesSplitEpisodeCount,
 } from '../../src/services/seriesCreativeService';
 
 describe('seriesCreativeService', () => {
@@ -76,6 +78,22 @@ describe('seriesCreativeService', () => {
     expect(prompt).toContain('part=script');
     expect(prompt).toContain('不要调用 series_split_episodes');
     expect(prompt).toContain('尚未覆盖的原文范围');
+  });
+
+  it('按所选正文估算时长并向上取整，草案保留材料范围和 Skill 引用', () => {
+    const estimatedDurationSec = estimateSeriesSplitDuration(1650, 330);
+    const targetEpisodeCount = estimateSeriesSplitEpisodeCount(estimatedDurationSec, 90);
+    const material = { seriesId: 'series', version: '1'.repeat(64), chapterIds: ['chapter-10-20'] };
+    const prompt = buildSplitDraftPrompt({
+      seriesName: '月球列车', source: 'original', targetEpisodeCount, targetDurationSec: 90,
+      existingEpisodeCount: 2, material, estimatedDurationSec, skillPrompt: '@skill{my-skill|Skill}',
+    });
+
+    expect(estimatedDurationSec).toBe(300);
+    expect(targetEpisodeCount).toBe(4);
+    expect(prompt).toContain(JSON.stringify({ part: 'original', scope: material }));
+    expect(prompt).toContain('@skill{my-skill|Skill}');
+    expect(prompt).toContain('只处理选定章节');
   });
 
   it('单字段润色先给候选，确认后只允许精确回写目标字段', () => {

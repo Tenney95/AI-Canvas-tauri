@@ -12,13 +12,15 @@ import {
   buildCreativeFieldPolishPrompt,
   buildEpisodeCreativePrompt,
   buildSplitDraftPrompt,
+  estimateSeriesSplitDuration,
+  estimateSeriesSplitEpisodeCount,
+  SPLIT_DRAFT_LIMITS,
   type CreativeFieldId,
   type EpisodeCreativeAction,
 } from '../services/seriesCreativeService';
 import { useT } from '../i18n';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
-import Select from './shared/Select';
 import Tabs from './shared/Tabs';
 import NumberStepper from './shared/NumberStepper';
 import { LazyLoadBoundary, LazyLoadFallback } from './shared/LazyLoadBoundary';
@@ -28,6 +30,7 @@ import OriginalWritingEditor from './OriginalWritingEditor';
 import { createOriginalWritingSession } from '../services/originalWritingService';
 import WorkbenchContextSummary from './series/WorkbenchContextSummary';
 import WorkbenchCollaborationDialog from './series/WorkbenchCollaborationDialog';
+import WorkbenchSplitDialog from './series/WorkbenchSplitDialog';
 import type { DramaAssetKind } from '../types/dramaAssets';
 import { commitSeriesAssetCandidates, extractSeriesAssetsFromFullScript, type SeriesAssetExtractionResult } from '../services/seriesAssetExtractionService';
 import { normalizeEpisodeAssetRoster, type EpisodeAssetKind, type EpisodeAssetPanelActionResult } from '../types/episodeAssets';
@@ -61,10 +64,11 @@ import { getAppearanceForConfig } from '../services/appearance/appearanceMigrati
 import { createScriptWorkbenchWindowHost, type ScriptWorkbenchWindowHost } from '../services/scriptWorkbenchWindowService';
 import { captureProjectWindowContext, isProjectWindowContextCurrent } from '../services/projectWindowContext';
 import { loadProjectAgentTasks } from '../services/chat/agentTaskService';
-import { buildSeriesChapterPrompt, readSeriesChapter, readSeriesSource } from '../services/seriesSourceService';
-import type { SeriesSourceSnapshot } from '../types/seriesSource';
+import { buildSeriesChapterPrompt, indexSeriesSplitMaterial, readSeriesChapter, readSeriesSource } from '../services/seriesSourceService';
+import type { SeriesSourcePart, SeriesSourceSnapshot } from '../types/seriesSource';
+import { getSeriesSplitSkillOptions, getSeriesSplitSkillPrompt } from '../services/seriesSplitSkillService';
 import type { ScriptWorkbenchAction, ScriptWorkbenchDispatch, ScriptWorkbenchRequest, ScriptWorkbenchSnapshot,
-  WorkbenchCreativeDraft, WorkbenchDraft, WorkbenchEditorTab, WorkbenchPendingAction } from '../types/scriptWorkbench';
+  WorkbenchCreativeDraft, WorkbenchDraft, WorkbenchEditorTab, WorkbenchPendingAction, WorkbenchSplitRequest } from '../types/scriptWorkbench';
 import type { StoryGraphAssetOption, StoryGraphCandidates, StoryGraphDetail, StoryGraphEvidence, StoryGraphExtractionState,
   StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSource } from '../types/storyGraph';
 import { STORY_GRAPH_EDGE_KINDS, STORY_GRAPH_NODE_KINDS } from '../types/storyGraph';
@@ -76,6 +80,7 @@ import { sanitizeDomainText } from '../services/chat/subAgentMaterials';
 import { needsEpisodeScriptFileSync } from '../utils/manuscriptFileReference';
 
 const StoryGraphPanel = lazy(() => import('./storyGraph/StoryGraphPanel'));
+const isIntegerInRange = (value: number, min: number, max: number) => Number.isSafeInteger(value) && value >= min && value <= max;
 
 type EditorTab = WorkbenchEditorTab;
 type PendingAction = WorkbenchPendingAction;
@@ -309,6 +314,9 @@ export default function ScriptWorkbench({
     workflows,
     agentTasks,
     updateConfig,
+    userSkills,
+    agentPackageSkills,
+    agentPackages,
   } = useAppStore(useShallow((state) => ({
     projects: state.projects,
     currentProjectId: state.currentProjectId,
@@ -321,6 +329,9 @@ export default function ScriptWorkbench({
     workflows: state.workflows,
     agentTasks: state.agentTasks,
     updateConfig: state.updateConfig,
+    userSkills: state.userSkills,
+    agentPackageSkills: state.agentPackageSkills,
+    agentPackages: state.agentPackages,
   })));
 
   const [seriesId] = useState(() => currentProjectId ? seriesOwnerId(projects, currentProjectId) : null);
@@ -388,13 +399,13 @@ export default function ScriptWorkbench({
     setPreviousOpenRequest({ revision: openRequestRevision, split: requestSplit });
     if (openRequestRevision && requestSplit) setSplitOpen(true);
   }
-  const [splitSource, setSplitSource] = useState<'script' | 'original'>(
-    series?.series?.script?.trim() ? 'script' : 'original',
-  );
-  const [targetEpisodeCount, setTargetEpisodeCount] = useState('24');
+  const splitSource: SeriesSourcePart = series?.series?.script?.trim() ? 'script' : 'original';
+  const splitSkills = useMemo(() => splitOpen ? getSeriesSplitSkillOptions(userSkills, agentPackageSkills, agentPackages) : undefined,
+    [splitOpen, userSkills, agentPackageSkills, agentPackages]);
+  const splitPreparation = useRef<AbortController | null>(null);
+  useEffect(() => () => splitPreparation.current?.abort(), [isOpen, seriesId]);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [renamingEpisodeId, setRenamingEpisodeId] = useState<string | null>(null);
-  const [targetDurationSec, setTargetDurationSec] = useState('90');
   const [extractingAssetKind, setExtractingAssetKind] = useState<DramaAssetKind | null>(null);
   const extractingAssetKindRef = useRef<DramaAssetKind | null>(null);
   const [seriesAssetPreview, setSeriesAssetPreview] = useState<SeriesAssetExtractionResult | null>(null);
@@ -876,18 +887,83 @@ export default function ScriptWorkbench({
     }, hasValue));
   };
 
-  const openSplitDraft = () => {
-    if (!series) return;
-    const count = Math.min(100, Math.max(1, Number.parseInt(targetEpisodeCount, 10) || 24));
-    const duration = Math.min(600, Math.max(15, Number.parseInt(targetDurationSec, 10) || 90));
-    openChatWithDraft(buildSplitDraftPrompt({
-      seriesName: series.name,
-      source: splitSource,
-      targetEpisodeCount: count,
-      targetDurationSec: duration,
-      existingEpisodeCount: episodes.length,
-    }));
-    showToast(t('已准备拆分草案请求，不会直接创建分集'));
+  const readSplitContext = () => {
+    const state = useAppStore.getState();
+    const projectId = state.currentProjectId;
+    const owner = state.projects.find((project) => project.id === seriesId);
+    if (!isOpen || !owner || !projectId || state.projectLoadStatus !== 'ready'
+      || state.isCreatingProject || state.isReturningToStartPage || state.switchingProjectName !== null
+      || seriesOwnerId(state.projects, projectId) !== owner.id) throw new Error(t('当前剧集已变化'));
+    return { state, projectId, owner };
+  };
+
+  const openSplitDraft = async (settings: WorkbenchSplitRequest) => {
+    const limits = SPLIT_DRAFT_LIMITS;
+    const invalid = () => new Error(t('拆分参数无效'));
+    if (!splitOpen || splitPreparation.current || !settings || !settings.sizing
+      || (settings.part !== 'script' && settings.part !== 'original')
+      || typeof settings.version !== 'string' || !/^[a-f0-9]{64}$/.test(settings.version)
+      || !isIntegerInRange(settings.episodeDurationSec, limits.minEpisodeDurationSec, limits.maxEpisodeDurationSec)
+      || typeof settings.notes !== 'string' || settings.notes.length > limits.maxNotesCharacters
+      || (settings.skillId !== undefined
+        && (typeof settings.skillId !== 'string' || settings.skillId.length === 0 || settings.skillId.length > 160))
+      || (settings.chapterIds !== undefined && (!Array.isArray(settings.chapterIds) || !settings.chapterIds.length
+        || settings.chapterIds.some((id) => typeof id !== 'string' || !/^chapter-\d+-\d+$/.test(id))))) throw invalid();
+    const { sizing, episodeDurationSec, chapterIds } = settings;
+    if (sizing.kind === 'fixed') {
+      if (!isIntegerInRange(sizing.count, limits.minEpisodeCount, limits.maxEpisodeCount)) throw invalid();
+    } else if (sizing.kind !== 'auto'
+      || !isIntegerInRange(sizing.charactersPerMinute, limits.minCharactersPerMinute, limits.maxCharactersPerMinute)
+      || (sizing.totalDurationSec !== undefined && (!Number.isSafeInteger(sizing.totalDurationSec) || sizing.totalDurationSec < 1))) {
+      throw invalid();
+    }
+    const previous = readSplitContext();
+    const episodeId = selectedEpisodeRef.current;
+    const expected = captureProjectWindowContext(previous.state, episodeId);
+    const controller = new AbortController();
+    splitPreparation.current = controller;
+    try {
+      const source = await readSeriesSource(previous.projectId, settings.part, controller.signal);
+      controller.signal.throwIfAborted();
+      const { state, owner } = readSplitContext();
+      if (episodeId !== selectedEpisodeRef.current || !isProjectWindowContextCurrent(expected, state)
+        || source.seriesId !== owner.id || source.version !== settings.version) {
+        throw new Error(t('材料已变化，请重新读取章节后重试'));
+      }
+      const index = indexSeriesSplitMaterial(source);
+      const selectedIds = new Set(chapterIds);
+      const selected = chapterIds ? index.chapters.filter((chapter) => selectedIds.has(chapter.id)) : index.chapters;
+      if (chapterIds && (selected.length !== chapterIds.length || selected.some((chapter) => !chapter.characterCount))) throw invalid();
+      const characterCount = chapterIds ? selected.reduce((total, chapter) => total + chapter.characterCount, 0) : index.characterCount;
+      if (!characterCount) throw new Error(t('未找到可拆分的正文'));
+      const estimatedDurationSec = sizing.kind === 'auto'
+        ? sizing.totalDurationSec ?? estimateSeriesSplitDuration(characterCount, sizing.charactersPerMinute)
+        : undefined;
+      const count = sizing.kind === 'fixed' ? sizing.count : estimateSeriesSplitEpisodeCount(estimatedDurationSec ?? 0, episodeDurationSec);
+      if (!isIntegerInRange(count, limits.minEpisodeCount, limits.maxEpisodeCount)) throw invalid();
+      const skillPrompt = settings.skillId ? getSeriesSplitSkillPrompt(settings.skillId) : undefined;
+      if (settings.skillId && !skillPrompt) throw new Error(t('所选 Skill 无法用于拆分，请选择可读取剧集素材的 Skill'));
+      const prompt = buildSplitDraftPrompt({
+        seriesName: owner.name,
+        source: settings.part,
+        targetEpisodeCount: count,
+        targetDurationSec: episodeDurationSec,
+        existingEpisodeCount: listEpisodes(state.projects, owner.id).length,
+        material: { seriesId: owner.id, version: source.version, chapterIds: chapterIds ? selected.map((chapter) => chapter.id) : undefined },
+        chapterLabels: chapterIds ? selected.map((chapter) => `${chapter.ordinal}. ${chapter.title}`) : undefined,
+        estimatedDurationSec,
+        skillPrompt,
+        notes: settings.notes,
+      });
+      if (currentDirty() || originalWriting?.isDirty()) throw new Error(t('请先保存工作台中的修改，再准备拆分草案。'));
+      if (!requestClose()) return false;
+      setSplitOpen(false);
+      openChatWithDraft(prompt, { planConversationTitle: t('AI 分集拆分预览') });
+      showToast(t('已准备拆分草案请求，不会直接创建分集'));
+      return true;
+    } finally {
+      if (splitPreparation.current === controller) splitPreparation.current = null;
+    }
   };
 
   const extractFullScriptAssets = async (kind: DramaAssetKind, label: string) => {
@@ -961,7 +1037,7 @@ export default function ScriptWorkbench({
     sessionId, revision: 0, acceptedEditSequence,
     draftVersion: currentEpisodeId ? draftVersionByEpisode[currentEpisodeId] ?? 0 : 0,
     series: series ? { id: series.id, name: series.name, hasScript: !!series.series?.script?.trim(), hasOriginal: !!series.series?.originalWork,
-      originalAddedAt: series.series?.originalWork?.addedAt, exchangeEpoch: series.exchangeEpoch ?? 0 } : null,
+      originalAddedAt: series.series?.originalWork?.addedAt, updatedAt: series.updatedAt, exchangeEpoch: series.exchangeEpoch ?? 0 } : null,
     episodes: episodes.map((episode) => ({ id: episode.id, name: episode.name, scriptLength: episode.episodeScript?.length ?? 0, hasOutline: !!episode.episodeOutline?.trim() })),
     currentEpisode: currentEpisode ? { id: currentEpisode.id, parentId: currentEpisode.parentId, name: currentEpisode.name,
       episodeOutline: currentEpisode.episodeOutline, episodeScript: currentEpisode.episodeScript, episodeScriptFile: currentEpisode.episodeScriptFile,
@@ -969,7 +1045,7 @@ export default function ScriptWorkbench({
       creationProfile: currentEpisode.creationProfile, teamProfileOverride: currentEpisode.teamProfileOverride } : null,
     canvasProjectId: currentProjectId, activeTab, draft, analysis, isDirty, isSaving, isStartingTeam,
     contextReady, editorWriteLocked, unsettledEditor, pendingAction, splitOpen, splitSource,
-    targetEpisodeCount, targetDurationSec, sourceOpen, renamingEpisodeId, extractingAssetKind,
+    splitSkills, sourceOpen, renamingEpisodeId, extractingAssetKind,
     seriesAssetPreview: seriesAssetPreview && contextReady ? { kind: seriesAssetPreview.kind, assets: seriesAssetPreview.assets } : null,
     existingAssets: (seriesAssetPreview?.kind === 'character' ? dramaAssets.characters : seriesAssetPreview?.kind === 'scene' ? dramaAssets.scenes : dramaAssets.props)
       .map((asset) => ({ name: asset.name, summary: asset.summary })),
@@ -1014,7 +1090,7 @@ export default function ScriptWorkbench({
         setAcceptedEditSequence(handoff.sequence);
       }
     }
-    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate'];
+    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_split', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate'];
     if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
     if (action.type.startsWith('original_')) {
       if (!originalWriting) throw new Error(t('当前没有可编辑的原著文件'));
@@ -1070,10 +1146,24 @@ export default function ScriptWorkbench({
         if (!await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
         performPendingAction(pendingAction); return true;
       }
-      case 'toggle_split': setSplitOpen((value) => !value); return true;
-      case 'set_split_source': if (action.value === 'script' || action.value === 'original') setSplitSource(action.value); return true;
-      case 'set_split_count': setTargetEpisodeCount(String(action.value).slice(0, 8)); return true;
-      case 'set_split_duration': setTargetDurationSec(String(action.value).slice(0, 8)); return true;
+      case 'open_split': setSplitOpen(true); return true;
+      case 'close_split': splitPreparation.current?.abort(); setSplitOpen(false); return true;
+      case 'read_split_material': {
+        const { state, projectId, owner } = readSplitContext();
+        const expected = captureProjectWindowContext(state, selectedEpisodeRef.current);
+        const source = await readSeriesSource(projectId, action.part, new AbortController().signal);
+        const current = readSplitContext();
+        if (current.owner.id !== owner.id || !isProjectWindowContextCurrent(expected, current.state)) {
+          throw new Error(t('材料已变化，请重新读取章节后重试'));
+        }
+        return indexSeriesSplitMaterial(source);
+      }
+      case 'split_skill_import': {
+        const skill = await useAppStore.getState().uploadSkill('file');
+        if (!skill) return null;
+        if (!getSeriesSplitSkillPrompt(skill.id)) throw new Error(t('所选 Skill 无法用于拆分，请选择可读取剧集素材的 Skill'));
+        return skill.id;
+      }
       case 'open_source': setSourceOpen(true); return true;
       case 'close_source': setSourceOpen(false); return true;
       case 'read_source': {
@@ -1112,7 +1202,7 @@ export default function ScriptWorkbench({
       }
       case 'polish': return openFieldPolish(action.field, action.hasValue);
       case 'shotlist': return openEpisodeShotlist();
-      case 'split_draft': openSplitDraft(); return true;
+      case 'split_draft': return openSplitDraft(action.settings);
       case 'extract_series': return extractFullScriptAssets(action.kind, action.label);
       case 'close_asset_preview': setSeriesAssetPreview(null); return true;
       case 'commit_asset_preview': {
@@ -1396,12 +1486,10 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   const graphViewLease = useRef<{ graphId: string; epoch: number } | null>(null);
   const [originalToolsContainer, setOriginalToolsContainer] = useState<HTMLDivElement | null>(null);
   const [collaborationEpisodeId, setCollaborationEpisodeId] = useState<string | null>(null);
-  const splitCountId = useId();
-  const splitDurationId = useId();
   const [error, setError] = useState('');
   const { series, episodes, currentEpisode, activeTab, draft, isDirty, isSaving, isStartingTeam,
-    contextReady, editorWriteLocked, pendingAction, splitOpen, splitSource, targetEpisodeCount,
-    targetDurationSec, sourceOpen, renamingEpisodeId, extractingAssetKind, seriesAssetPreview, executionSelection,
+    contextReady, editorWriteLocked, pendingAction, splitOpen, splitSource,
+    sourceOpen, renamingEpisodeId, extractingAssetKind, seriesAssetPreview, executionSelection,
     episodeTeamTasks } = snapshot;
   const collaborationOpen = !!collaborationEpisodeId && collaborationEpisodeId === currentEpisode?.id && contextReady;
   if (collaborationEpisodeId && (!contextReady || collaborationEpisodeId !== currentEpisode?.id)) setCollaborationEpisodeId(null);
@@ -1417,7 +1505,6 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   })).filter((group) => group.actions.length > 0);
   const extractionActions = SERIES_ASSET_EXTRACTION_ACTIONS.filter((action) => activeTab === 'script'
     || action.kind === activeAssetKind);
-  const splitSourceAvailable = splitSource === 'script' ? !!series?.hasScript : !!series?.hasOriginal;
   const fire = (action: ScriptWorkbenchAction) => { void dispatch(action).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t('工作台操作未完成'))); };
   const report = async (action: ScriptWorkbenchAction) => {
     try { return await dispatch(action); }
@@ -1436,11 +1523,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   const openCreativeAction = (action: EpisodeCreativeAction) => report({ type: 'creative', action });
   const openFieldPolish = (field: CreativeFieldId, label: string, hasValue: boolean) => report({ type: 'polish', field, label, hasValue });
   const openEpisodeShotlist = () => report({ type: 'shotlist' });
-  const openSplitDraft = () => fire({ type: 'split_draft' });
   const extractFullScriptAssets = (kind: DramaAssetKind, label: string) => report({ type: 'extract_series', kind, label });
-  const setSplitSource = (value: 'script' | 'original') => fire({ type: 'set_split_source', value });
-  const setTargetEpisodeCount = (value: string) => fire({ type: 'set_split_count', value });
-  const setTargetDurationSec = (value: string) => fire({ type: 'set_split_duration', value });
   const sourceRemote = useMemo<SeriesSourceBrowserRemote>(() => ({
     contextKey: `${snapshot.sessionId}:${series?.id ?? ''}:${series?.exchangeEpoch ?? 0}:${series?.originalAddedAt ?? 0}`, ready: snapshot.contextReady,
     readSource: async (part, signal) => { signal.throwIfAborted(); const result = await dispatch({ type: 'read_source', part }); signal.throwIfAborted(); return result as SeriesSourceSnapshot; },
@@ -1497,9 +1580,11 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
           </button>
           <button
             type="button"
-            onClick={() => fire({ type: 'toggle_split' })}
+            disabled={!contextReady}
+            onClick={() => fire({ type: 'open_split' })}
             className={`ui-btn ui-btn--sm ui-btn--secondary${splitOpen ? ' is-active' : ''}`}
-            aria-pressed={splitOpen}
+            aria-haspopup="dialog"
+            aria-expanded={splitOpen}
           >
             <Icon icon="lucide:wand-sparkles" className="h-3.5 w-3.5" />
             {t('AI 拆分草案')}
@@ -1562,64 +1647,6 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
               {t('保存并继续')}
             </button>
           </div>
-        ) : null}
-
-        {splitOpen ? (
-          <section className="grid shrink-0 gap-3 border-b border-border-subtle bg-[color-mix(in_srgb,var(--theme-card)_40%,transparent)] p-3
-                              sm:grid-cols-[minmax(0,1fr)_120px_120px_auto] sm:items-end">
-            <div className="grid gap-1">
-              <span className="text-[10px] text-canvas-text-muted">{t('拆分素材')}</span>
-              <Select<'script' | 'original'>
-                value={splitSource}
-                onChange={setSplitSource}
-                options={[
-                  { value: 'script', label: t('全剧剧本') },
-                  { value: 'original', label: t('原著') },
-                ]}
-                aria-label={t('拆分素材')}
-              />
-            </div>
-            <div className="ui-field">
-              <label htmlFor={splitCountId} className="ui-label">{t('目标总集数')}</label>
-              <NumberStepper
-                id={splitCountId}
-                aria-label={t('目标总集数')}
-                min={1}
-                max={100}
-                value={Number.parseInt(targetEpisodeCount, 10) || 24}
-                onChange={(value) => setTargetEpisodeCount(String(value))}
-                disabled={!contextReady}
-              />
-            </div>
-            <div className="ui-field">
-              <label htmlFor={splitDurationId} className="ui-label">{t('单集秒数')}</label>
-              <NumberStepper
-                id={splitDurationId}
-                aria-label={t('单集秒数')}
-                min={15}
-                max={600}
-                value={Number.parseInt(targetDurationSec, 10) || 90}
-                onChange={(value) => setTargetDurationSec(String(value))}
-                disabled={!contextReady}
-              />
-            </div>
-            <button
-              type="button"
-              disabled={!splitSourceAvailable}
-              onClick={openSplitDraft}
-              className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-indigo-500/90 px-3
-                         text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed
-                         disabled:opacity-40"
-            >
-              <Icon icon="lucide:message-square-text" className="h-3.5 w-3.5" />
-              {t('在对话中生成预览')}
-            </button>
-            <p className="text-[10px] text-canvas-text-muted sm:col-span-4">
-              {splitSourceAvailable
-                ? t('只生成可调整的分集草案，不会直接创建、覆盖或删除分集。')
-                : t('请先添加所选素材，再生成拆分草案。')}
-            </p>
-          </section>
         ) : null}
 
         <main className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto]
@@ -1965,6 +1992,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
           </aside>
         </main>
       </div>
+      {splitOpen && <WorkbenchSplitDialog snapshot={snapshot} dispatch={dispatch} onClose={() => fire({ type: 'close_split' })} />}
       {collaborationOpen && <WorkbenchCollaborationDialog key={collaborationEpisodeId} snapshot={snapshot} dispatch={dispatch}
         onClose={() => setCollaborationEpisodeId(null)} />}
       {isOpen && renamingEpisodeId && <WorkbenchRenameDialog key={renamingEpisodeId}
