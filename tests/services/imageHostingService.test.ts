@@ -8,7 +8,7 @@ vi.mock('../../src/services/providerSecretService', () => ({
 vi.mock('../../src/services/ai/httpTransport', () => ({ corsSafeFetch: mocks.fetch }));
 
 import { deleteImageHostingCredential, persistImageHosting, uploadCustomImage, validateImageHosting } from '../../src/services/imageHostingService';
-import { IMAGE_HOSTING_TEMPLATES, PUBLIC_IMAGE_HOSTING_TEMPLATES, SCDN_IMAGE_HOSTING_CDNS, resolveGlobalImageHosting } from '../../src/services/imageHostingTemplates';
+import { IMAGE_HOSTING_TEMPLATES, PUBLIC_IMAGE_HOSTING_TEMPLATES, normalizeGlobalImageHostingConfig, resolveGlobalImageHosting } from '../../src/services/imageHostingTemplates';
 
 const ref = 'secret:image-host/01234567-0123-4123-8123-0123456789ab';
 const base: ImageHostingConfig = {
@@ -25,57 +25,22 @@ beforeEach(() => {
 });
 
 describe('自定义图床合同', () => {
-  it('国内候选位于海外服务之前，排序不改变默认 Uguu', () => {
-    expect(PUBLIC_IMAGE_HOSTING_TEMPLATES.slice(0, 6).map((item) => item.id))
-      .toEqual(['scdn', 'picui', 'helloimg', 'imgurl', 'bohe', 'uguu']);
+  it('只保留图片、视频和音频通用服务，国内会员 API 在前且默认仍为 Uguu', () => {
+    expect(PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => item.id))
+      .toEqual(['bohe', 'uguu', 'catbox', 'imagekit', 'cloudinary']);
     expect(new Set(PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => item.id)).size).toBe(PUBLIC_IMAGE_HOSTING_TEMPLATES.length);
     expect(resolveGlobalImageHosting().uploadUrl).toBe('https://uguu.se/upload');
-    expect(resolveGlobalImageHosting({ provider: 'imgbb', configs: {} }).uploadUrl).toBe('https://api.imgbb.com/1/upload');
+    expect(resolveGlobalImageHosting({ provider: 'bohe', configs: {} }).maxFileBytes).toBe(30_000_000);
   });
 
-  it.each(SCDN_IMAGE_HOSTING_CDNS)('SCDN $label 使用图片字段和大陆 CDN 参数，不传模型密钥', async ({ value }) => {
-    const config = resolveGlobalImageHosting({ provider: 'scdn', configs: {} });
-    config.formFields = config.formFields!.map((field) => field.name === 'cdn_domain' ? { ...field, value } : field);
-    mocks.fetch.mockResolvedValueOnce(json({ success: true, data: { url: `https://${value}/i/image.png` } }));
-    expect(await uploadCustomImage(blob, 'reference.png', config, undefined,
-      { connection: { apiKey: 'unrelated-model-key', baseUrl: 'https://model.example/v1' } })).toBe(`https://${value}/i/image.png`);
-    const [endpoint, init] = mocks.fetch.mock.calls[0] as [string, RequestInit];
-    expect(endpoint).toBe('https://img.scdn.io/api/v1.php');
-    const form = init.body as FormData;
-    expect(form.get('image')).toBeInstanceOf(Blob);
-    expect(form.get('cdn_domain')).toBe(value);
-    expect(form.get('outputFormat')).toBe('png');
-    expect(new Headers(init.headers).has('Authorization')).toBe(false);
+  it.each(['scdn', 'picui', 'helloimg', 'imgurl', 'imgbb', 'freeimage'] as const)('历史图片专用服务 %s 提示重新选择，保留原配置和凭据', (provider) => {
+    const config = { provider, configs: { [provider]: { ...base, credentialRef: ref } } };
+    const snapshot = JSON.stringify(config);
+    expect(() => resolveGlobalImageHosting(config)).toThrow('重新选择');
+    expect(JSON.stringify(config)).toBe(snapshot);
     expect(mocks.read).not.toHaveBeenCalled();
-  });
-
-  it('Hello图床支持游客和独立 Bearer Token，响应必须有真实成功标记', async () => {
-    const config = resolveGlobalImageHosting({ provider: 'helloimg', configs: {} });
-    const payload = { status: true, data: { links: { url: 'https://cdn.example/hello.png' } } };
-    mocks.fetch.mockResolvedValueOnce(json(payload));
-    expect(await uploadCustomImage(blob, 'reference.png', config)).toBe('https://cdn.example/hello.png');
-    expect(mocks.fetch.mock.calls[0][0]).toBe('https://www.helloimg.com/api/v1/upload');
-    expect((mocks.fetch.mock.calls[0][1].body as FormData).get('file')).toBeInstanceOf(Blob);
-    expect(mocks.read).not.toHaveBeenCalled();
-    mocks.fetch.mockResolvedValueOnce(json(payload));
-    await uploadCustomImage(blob, 'reference.png', { ...config, auth: 'bearer', credentialRef: ref });
-    expect(new Headers(mocks.fetch.mock.calls[1][1].headers).get('Authorization')).toBe('Bearer fixture-image-host-key');
-    mocks.fetch.mockResolvedValueOnce(json({ ...payload, status: false }));
-    await expect(uploadCustomImage(blob, 'reference.png', config)).rejects.toThrow('未返回有效');
-  });
-
-  it('ImgURL V3 必须有独立 Token，按 code=200 和 data.url 读取结果', async () => {
-    const config = resolveGlobalImageHosting({ provider: 'imgurl', configs: {} });
-    await expect(uploadCustomImage(blob, 'reference.png', config)).rejects.toThrow('图床密钥');
+    expect(mocks.remove).not.toHaveBeenCalled();
     expect(mocks.fetch).not.toHaveBeenCalled();
-    mocks.fetch.mockResolvedValueOnce(json({ code: 200, data: { url: 'https://cdn.example/imgurl.png' } }));
-    expect(await uploadCustomImage(blob, 'reference.png', { ...config, credentialRef: ref })).toBe('https://cdn.example/imgurl.png');
-    const [endpoint, init] = mocks.fetch.mock.calls[0] as [string, RequestInit];
-    expect(endpoint).toBe('https://www.imgurl.org/api/v3/upload');
-    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer fixture-image-host-key');
-    expect((init.body as FormData).get('file')).toBeInstanceOf(Blob);
-    mocks.fetch.mockResolvedValueOnce(json({ code: -1000, data: { url: 'https://cdn.example/rejected.png' } }));
-    await expect(uploadCustomImage(blob, 'reference.png', { ...config, credentialRef: ref })).rejects.toThrow('未返回有效');
   });
 
   it('薄荷使用用户的会员专用 API 地址、表单 Token 和顶层 url，缺地址不写凭据', async () => {
@@ -99,32 +64,37 @@ describe('自定义图床合同', () => {
 
   it('全局缺省使用 Uguu，配置损坏或沿用模型密钥时不能静默换站', () => {
     expect(resolveGlobalImageHosting().uploadUrl).toBe('https://uguu.se/upload');
-    expect(() => resolveGlobalImageHosting({ provider: 'unknown', configs: {} } as never)).toThrow('类型无效');
+    expect(() => resolveGlobalImageHosting({ provider: 'unknown', configs: {} } as never)).toThrow('重新选择');
     expect(() => resolveGlobalImageHosting({ provider: 'catbox', configs: { catbox: { ...base, enabled: false } } })).toThrow('已停用');
-    expect(() => resolveGlobalImageHosting({ provider: 'imgbb', configs: { imgbb: { ...base, credentialSource: 'connection' } } })).toThrow('自己的密钥');
+    expect(() => resolveGlobalImageHosting({ provider: 'imagekit', configs: { imagekit: { ...base, credentialSource: 'connection' } } })).toThrow('自己的密钥');
     const resolved = resolveGlobalImageHosting({ provider: 'catbox', configs: {} });
     resolved.formFields![0].value = 'changed';
     expect(resolveGlobalImageHosting({ provider: 'catbox', configs: {} }).formFields![0].value).toBe('fileupload');
   });
 
-  it.each([
-    ['imgbb', 'image', { success: true, data: { url: 'https://cdn.example/image.png' } }],
-    ['freeimage', 'source', { status_code: 200, image: { url: 'https://cdn.example/image.png' } }],
-    ['picui', 'file', { status: true, data: { links: { url: 'https://cdn.example/image.png' } } }],
-  ] as const)('%s 公共图床使用各自字段和响应，不携带模型 Key', async (id, fileField, payload) => {
-    const config = structuredClone(PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === id)!.config);
-    if (config.auth !== 'none') config.credentialRef = ref;
-    mocks.fetch.mockResolvedValueOnce(json(payload));
-    expect(await uploadCustomImage(blob, 'reference.png', config, undefined,
-      { connection: { apiKey: 'unrelated-model-key', baseUrl: 'https://model.example/v1' } })).toBe('https://cdn.example/image.png');
-    const [url, init] = mocks.fetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(config.uploadUrl);
-    const form = init.body as FormData;
-    expect(form.get(fileField)).toBeInstanceOf(Blob);
-    expect(new Headers(init.headers).get('Authorization')).toBeNull();
-    expect(form.get('key')).toBe(id === 'picui' ? null : 'fixture-image-host-key');
-    expect(form.get('action')).toBe(id === 'freeimage' ? 'upload' : null);
-    expect(Array.from(form.values())).not.toContain('unrelated-model-key');
+  it.each(['bohe', 'uguu', 'catbox', 'imagekit', 'cloudinary'] as const)('%s 三类素材共用已选服务的上传合同，不携带模型 Key', async (provider) => {
+    let config = resolveGlobalImageHosting({ provider, configs: {} });
+    if (config.auth !== 'none') config = { ...config, credentialRef: ref };
+    if (provider === 'bohe') config = { ...config, uploadUrl: 'https://member.example/api/upload/' };
+    if (provider === 'cloudinary') config = { ...config, uploadUrl: 'https://api.cloudinary.com/v1_1/example/auto/upload',
+      formFields: [{ name: 'upload_preset', value: 'public-media' }] };
+    for (const kind of ['image', 'video', 'audio'] as const) {
+      const extension = kind === 'image' ? 'png' : kind === 'video' ? 'mp4' : 'wav';
+      const url = `https://cdn.example/reference.${extension}`;
+      const payload = provider === 'uguu' ? { success: true, files: [{ url }] }
+        : provider === 'cloudinary' ? { secure_url: url }
+        : provider === 'bohe' ? { status: 'success', url } : { url };
+      mocks.fetch.mockResolvedValueOnce(provider === 'catbox' ? new Response(url) : json(payload));
+      expect(await uploadCustomImage(new Blob([kind], { type: `${kind}/${extension}` }), `reference.${extension}`, config, undefined,
+        { kind, connection: { apiKey: 'unrelated-model-key', baseUrl: 'https://model.example/v1' } })).toBe(url);
+      const [endpoint, init] = mocks.fetch.mock.calls.at(-1)! as [string, RequestInit];
+      expect(endpoint).toBe(config.uploadUrl);
+      const form = init.body as FormData;
+      expect(form.get(config.fileField)).toBeInstanceOf(Blob);
+      expect(Array.from(form.values())).not.toContain('unrelated-model-key');
+      expect(new Headers(init.headers).get('Authorization') ?? '').not.toContain('unrelated-model-key');
+    }
+    expect(mocks.fetch).toHaveBeenCalledTimes(3);
   });
 
   it('Catbox 匿名纯文本与可选 userhash 均按原合同发送，异常文本不能伪装成链接', async () => {
@@ -162,12 +132,57 @@ describe('自定义图床合同', () => {
     await expect(uploadCustomImage(blob, 'reference.png', template)).rejects.toThrow('配置项');
     expect(mocks.fetch).not.toHaveBeenCalled();
     mocks.fetch.mockResolvedValueOnce(json({ secure_url: 'https://res.cloudinary.com/example/image.png' }));
-    const config = { ...template, uploadUrl: 'https://api.cloudinary.com/v1_1/example/image/upload', formFields: [{ name: 'upload_preset', value: 'public-images' }] };
+    const legacy = { ...template, uploadUrl: 'https://api.cloudinary.com/v1_1/example/image/upload', formFields: [{ name: 'upload_preset', value: 'public-media' }] };
+    const config = resolveGlobalImageHosting({ provider: 'cloudinary', configs: { cloudinary: legacy } });
+    expect(config.uploadUrl).toBe('https://api.cloudinary.com/v1_1/example/auto/upload');
+    expect(legacy.uploadUrl).toBe('https://api.cloudinary.com/v1_1/example/image/upload');
     expect(await uploadCustomImage(blob, 'reference.png', config)).toBe('https://res.cloudinary.com/example/image.png');
     const [, init] = mocks.fetch.mock.calls[0] as [string, RequestInit];
-    expect((init.body as FormData).get('upload_preset')).toBe('public-images');
+    expect((init.body as FormData).get('upload_preset')).toBe('public-media');
     expect(new Headers(init.headers).has('Authorization')).toBe(false);
     expect(mocks.read).not.toHaveBeenCalled();
+  });
+
+  it('Cloudinary 仅规范化自己的已知 HTTPS 入口，浅拷贝保留其他配置且不原地改写', () => {
+    const legacy = { ...base, uploadUrl: 'https://api.cloudinary.com/v1_1/example/image/upload', credentialRef: ref,
+      formFields: [{ name: 'upload_preset', value: 'public-media' }], maxFileBytesByKind: { video: 100_000_000 } };
+    const next = normalizeGlobalImageHostingConfig('cloudinary', legacy);
+    expect(next).not.toBe(legacy);
+    expect(next.uploadUrl).toBe('https://api.cloudinary.com/v1_1/example/auto/upload');
+    expect(legacy.uploadUrl).toBe('https://api.cloudinary.com/v1_1/example/image/upload');
+    expect(next.formFields).toBe(legacy.formFields);
+    expect(next.maxFileBytesByKind).toBe(legacy.maxFileBytesByKind);
+    expect(next.credentialRef).toBe(ref);
+    for (const uploadUrl of ['https://relay.example/v1_1/example/image/upload', 'http://api.cloudinary.com/v1_1/example/image/upload',
+      'https://user@api.cloudinary.com/v1_1/example/image/upload', 'https://api.cloudinary.com:8443/v1_1/example/image/upload',
+      'https://api.cloudinary.com/v1_1/example/image/upload?token=private', 'https://api.cloudinary.com/v1_1/example/raw/upload']) {
+      expect(normalizeGlobalImageHostingConfig('cloudinary', { ...legacy, uploadUrl }).uploadUrl).toBe(uploadUrl);
+    }
+    expect(normalizeGlobalImageHostingConfig('catbox', legacy).uploadUrl).toBe(legacy.uploadUrl);
+    expect(normalizeGlobalImageHostingConfig('cloudinary', { ...legacy, uploadUrl: next.uploadUrl }).uploadUrl).toBe(next.uploadUrl);
+  });
+
+  it('图片和音视频的免费套餐大小分别保留，不用图片上限拒绝合规视频', () => {
+    expect(resolveGlobalImageHosting({ provider: 'imagekit', configs: {} }).maxFileBytesByKind)
+      .toEqual({ image: 25_000_000, video: 100_000_000, audio: 25_000_000 });
+    expect(resolveGlobalImageHosting({ provider: 'cloudinary', configs: {} }).maxFileBytesByKind)
+      .toEqual({ image: 10_000_000, video: 100_000_000, audio: 100_000_000 });
+  });
+
+  it('按素材类型覆盖通用上限，默认图片及未声明的类型沿用原限制，空文件仍拒绝', async () => {
+    const config = { ...base, maxFileBytes: blob.size - 1, maxFileBytesByKind: { video: blob.size, audio: blob.size } };
+    await expect(uploadCustomImage(blob, 'reference.png', config)).rejects.toThrow('单文件上传上限');
+    for (const kind of ['video', 'audio'] as const) {
+      expect(await uploadCustomImage(blob, `reference.${kind === 'video' ? 'mp4' : 'wav'}`, config, undefined, { kind }))
+        .toBe('https://cdn.example/image.png');
+    }
+    await expect(uploadCustomImage(blob, 'reference.wav', { ...config, maxFileBytesByKind: { video: blob.size } }, undefined,
+      { kind: 'audio' })).rejects.toThrow('单文件上传上限');
+    await expect(uploadCustomImage(new Blob([]), 'reference.mp4', config, undefined, { kind: 'video' })).rejects.toThrow('参考素材为空');
+    await expect(uploadCustomImage(new Blob(['x'.repeat(blob.size + 1)]), 'reference.mp4', config, undefined,
+      { kind: 'video' })).rejects.toThrow('单文件上传上限');
+    await expect(uploadCustomImage(blob, 'reference.png', base, undefined, { kind: 'other' as never })).rejects.toThrow('素材类型无效');
+    expect(mocks.fetch).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -261,6 +276,10 @@ describe('自定义图床合同', () => {
     { fileNameField: 'image' },
     { fileNameField: 'fileName', formFields: [{ name: 'fileName', value: 'duplicate.png' }] },
     { fileNameField: 'apiKey' },
+    { maxFileBytesByKind: { video: 0 } }, { maxFileBytesByKind: { audio: -1 } },
+    { maxFileBytesByKind: { image: 1.5 } }, { maxFileBytesByKind: { video: Number.MAX_SAFE_INTEGER + 1 } },
+    { maxFileBytesByKind: { other: 10 } as never }, { maxFileBytesByKind: [] as never },
+    { maxFileBytesByKind: null as never },
   ])('无效配置在任何网络操作前失败：%j', async (patch) => {
     await expect(uploadCustomImage(blob, 'reference.png', { ...base, ...patch })).rejects.toThrow();
     expect(mocks.fetch).not.toHaveBeenCalled();

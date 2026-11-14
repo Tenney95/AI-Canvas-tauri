@@ -1,4 +1,6 @@
-/** 自定义连接的图片上传配置；密钥只保存原生凭据引用。 */
+export type ImageHostingMediaKind = 'image' | 'video' | 'audio';
+
+/** 参考素材上传配置；密钥只保存原生凭据引用。 */
 export interface ImageHostingConfig {
   enabled: boolean;
   uploadUrl: string;
@@ -18,9 +20,12 @@ export interface ImageHostingConfig {
   fileNameField?: string;
   /** 模板保留厂商的真实字节限制，不把十进制 MB 与 MiB 混用。 */
   maxFileBytes?: number;
+  /** 对应类型覆盖通用文件上限；未声明的类型沿用 maxFileBytes。 */
+  maxFileBytesByKind?: Partial<Record<ImageHostingMediaKind, number>>;
   allowedExtensions?: string[];
 }
 
+/** 保留历史服务 ID 以读取原配置；当前可选服务由公共模板列表决定。 */
 export type PublicImageHostingProvider = 'scdn' | 'picui' | 'helloimg' | 'imgurl' | 'bohe'
   | 'uguu' | 'imgbb' | 'freeimage' | 'catbox' | 'imagekit' | 'cloudinary';
 

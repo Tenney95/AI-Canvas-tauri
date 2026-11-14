@@ -2,7 +2,7 @@ import { useId, useRef, useState } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
 import type { GlobalImageHostingConfig, ImageHostingConfig, PublicImageHostingProvider } from '../../types/imageHosting';
-import { PUBLIC_IMAGE_HOSTING_TEMPLATES, SCDN_IMAGE_HOSTING_CDNS } from '../../services/imageHostingTemplates';
+import { normalizeGlobalImageHostingConfig, PUBLIC_IMAGE_HOSTING_TEMPLATES } from '../../services/imageHostingTemplates';
 import { deleteImageHostingCredential, persistImageHosting } from '../../services/imageHostingService';
 import { configValuesEqual as sameSettings } from '../../services/configPatch';
 import { openExternal } from './providerConnection/providerConnectionShared';
@@ -32,16 +32,13 @@ export default function GlobalImageHostingSettings() {
   const [error, setError] = useState('');
   const template = PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === draft.provider);
   const selectedLabel = PUBLIC_IMAGE_HOSTING_TEMPLATES.find((item) => item.id === (saved?.provider ?? 'uguu'))?.label;
-  const current = template ? { ...template.config, ...draft.configs[draft.provider] } : undefined;
-  const optionalKey = draft.provider === 'catbox' || draft.provider === 'picui' || draft.provider === 'helloimg';
-  const needsKey = optionalKey || draft.provider === 'imgbb' || draft.provider === 'freeimage' || draft.provider === 'imagekit'
-    || draft.provider === 'imgurl' || draft.provider === 'bohe';
+  const current = template ? normalizeGlobalImageHostingConfig(draft.provider, { ...template.config, ...draft.configs[draft.provider] }) : undefined;
+  const optionalKey = draft.provider === 'catbox';
+  const needsKey = optionalKey || draft.provider === 'imagekit' || draft.provider === 'bohe';
   const keyLabel = draft.provider === 'catbox' ? t('User hash（可选）')
-    : draft.provider === 'picui' || draft.provider === 'helloimg' ? t('Token（可选）')
-    : draft.provider === 'imgurl' ? t('Token') : draft.provider === 'bohe' ? t('API Token')
+    : draft.provider === 'bohe' ? t('API Token')
     : draft.provider === 'imagekit' ? t('Private API Key') : t('图床 API Key');
-  const scdnDomain = current?.formFields?.find((field) => field.name === 'cdn_domain')?.value ?? SCDN_IMAGE_HOSTING_CDNS[0].value;
-  const cloudName = current?.uploadUrl.match(/^https:\/\/api\.cloudinary\.com\/v1_1\/([^/]+)\/image\/upload$/)?.[1] ?? '';
+  const cloudName = current?.uploadUrl.match(/^https:\/\/api\.cloudinary\.com\/v1_1\/([^/]+)\/(?:auto|image)\/upload$/)?.[1] ?? '';
   const uploadPreset = current?.formFields?.find((field) => field.name === 'upload_preset')?.value ?? '';
 
   const begin = () => {
@@ -74,8 +71,8 @@ export default function GlobalImageHostingSettings() {
       const config: ImageHostingConfig = { ...current, enabled: true, credentialSource: 'separate' };
       const key = keys[draft.provider]?.trim() ?? '';
       if (optionalKey) {
-        config.auth = key || config.credentialRef ? draft.provider === 'catbox' ? 'form' : 'bearer' : 'none';
-        config.authField = draft.provider === 'catbox' ? 'userhash' : undefined;
+        config.auth = key || config.credentialRef ? 'form' : 'none';
+        config.authField = 'userhash';
       }
       if (config.auth === 'none') delete config.credentialRef;
       if (draft.provider === 'bohe') {
@@ -130,32 +127,25 @@ export default function GlobalImageHostingSettings() {
     <div className="ui-card__header">
       <div className="min-w-0 flex-1">
         <h3 className="ui-card__title">{t('图床')} · {selectedLabel ?? t('待重新选择')}</h3>
-        <p className="ui-card__desc">{t('中转站未设置自己的图片上传方式时，使用这里的图床。')}</p>
+        <p className="ui-card__desc">{t('本地图片、视频和音频需要公网链接，且当前连接没有对应上传方式时，使用这里的服务。')}</p>
         {(saved?.provider ?? 'uguu') === 'uguu' && <p className="ui-card__desc">{t('Uguu 临时链接约 3 小时后过期。')}</p>}
+        {!selectedLabel && <p role="alert" className="ui-error">{t('已保存的服务不在音视频兼容列表中，请重新选择；原配置和密钥仍保留。')}</p>}
       </div>
       {!editing && <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm shrink-0" disabled={!hydrated}
         aria-expanded={false} aria-controls={`${id}-editor`} onClick={begin}>{t('配置')}</button>}
     </div>
     {editing && <div id={`${id}-editor`} className="ui-card__body space-y-3">
       <label className="ui-field">
-        <span className="ui-label">{t('图片托管服务')}</span>
+        <span className="ui-label">{t('图片、视频与音频托管服务')}</span>
         <Select<PublicImageHostingProvider> fixedMenu value={draft.provider} disabled={busy} onChange={(provider) => {
           setDraft((previous) => ({ ...previous, provider })); setError('');
         }}>
+          {!template && <option value={draft.provider} disabled>{t('请选择兼容图片、视频和音频的服务')}</option>}
           {PUBLIC_IMAGE_HOSTING_TEMPLATES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
         </Select>
         {template ? <small className="ui-hint">{t(template.description)}</small>
           : <small className="ui-error">{t('已保存的图床类型不可用，请重新选择')}</small>}
       </label>
-      {draft.provider === 'scdn' && current && <label className="ui-field">
-        <span className="ui-label">{t('大陆访问线路')}</span>
-        <Select<string> fixedMenu aria-label={t('SCDN 大陆访问线路')} value={scdnDomain} disabled={busy} onChange={(value) => patch({
-          formFields: [...(current.formFields ?? []).filter((field) => field.name !== 'cdn_domain'), { name: 'cdn_domain', value }],
-        })}>
-          {SCDN_IMAGE_HOSTING_CDNS.map((item) => <option key={item.value} value={item.value}>{t(item.label)}</option>)}
-        </Select>
-        <small className="ui-hint">{t('默认使用 ESA 大陆线路，图片统一使用 PNG 输出。')}</small>
-      </label>}
       {needsKey && current && <label className="ui-field">
         <span className="ui-label">{keyLabel}</span>
         <input type="password" autoComplete="new-password" className="ui-input w-full" disabled={busy}
@@ -179,16 +169,17 @@ export default function GlobalImageHostingSettings() {
         <label className="ui-field">
           <span className="ui-label">{t('Cloud name')}</span>
           <input className="ui-input w-full" value={cloudName.includes('{{') ? '' : cloudName} disabled={busy} placeholder="my-cloud"
-            onChange={(event) => patch({ uploadUrl: `https://api.cloudinary.com/v1_1/${event.target.value}/image/upload` })} />
+            onChange={(event) => patch({ uploadUrl: `https://api.cloudinary.com/v1_1/${event.target.value}/auto/upload` })} />
         </label>
         <label className="ui-field">
           <span className="ui-label">{t('Upload preset')}</span>
           <input className="ui-input w-full" value={uploadPreset} disabled={busy} placeholder="unsigned-preset"
             onChange={(event) => patch({ formFields: [{ name: 'upload_preset', value: event.target.value }] })} />
-          <small className="ui-hint">{t('请先在 Cloudinary 控制台创建 unsigned 上传预设。')}</small>
+          <small className="ui-hint">{t('请先创建 unsigned 上传预设，并允许图片、视频和音频格式。')}</small>
         </label>
       </div>}
-      <p className="ui-hint">{t('仅上传需要公网链接的本地图片；中转站自定义上传和专用上传优先。上传失败会停止，不会改传其他图床。')}</p>
+      <p className="ui-hint">{t('只列出兼容图片、视频和音频的服务。厂商对应类型的专用上传优先；连接自定义图片上传仍只处理图片。上传失败会停止，不会改传其他服务。')}</p>
+      <p className="ui-hint">{t('本应用公共上传上限：图片 32 MiB、视频 64 MiB、音频 32 MiB；同时遵循服务和账号的文件限制。')}</p>
       {template && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => void openExternal(template.docsUrl)}>{t('查看服务文档')}</button>}
       {error && <p role="alert" className="ui-error">{error}</p>}
       <div className="flex flex-wrap items-center justify-end gap-2">

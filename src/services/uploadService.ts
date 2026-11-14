@@ -1,6 +1,6 @@
 /**
- * uploadService — 本地图片上传到远端图床
- * 将 asset://localhost/... 或 data:... 等本地图片转为公网可访问的 URL
+ * uploadService — 本地参考媒体上传到远端托管服务
+ * 将 asset://localhost/... 或 data:... 等本地媒体转为模型可读取的 URL
  *
  * 上传策略：
  *  - provider === 'apimart' → APIMart /uploads/images（需 API Key）
@@ -9,7 +9,7 @@
  *  - MiniMax 官方连接 → /v1/files/upload（返回当前连接的 mm_file 素材引用）
  *  - 火山方舟官方连接 → 私有北京 TOS 公网上传、内网预签名链接（只在内存缓存）
  *  - 启用自定义图床的连接 → 图片使用该连接声明的上传接口
- *  - 其他 provider 的图片 → 全局公共图床（默认 Uguu）；音视频沿用 Uguu
+ *  - 其他 provider 的图片、视频、音频 → 全局公共托管（默认 Uguu）
  *
  * 缓存策略：
  *  - 内存缓存：同一进程内即时复用
@@ -78,9 +78,10 @@ function captureUploadConnection(provider: string, kind: MediaDataUrlKind = 'ima
   const config = useAppStore.getState().config;
   const connection = config.providers[provider];
   const upload = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload;
-  // 专用上传接口的错误不能触发公共图床；只有原本需要公共图片链接的分支读取全局设置。
-  const useGlobalHosting = kind === 'image' && !connection?.imageHosting?.enabled
-    && upload !== 'toapis' && upload !== 'libapi' && upload !== 'minimax' && upload !== 'volcengine-tos' && provider !== 'apimart';
+  // 连接自定义图床只声明图片合同；音视频仍读取全局托管，专用上传失败不改传。
+  const useGlobalHosting = kind !== 'other' && !(kind === 'image' && connection?.imageHosting?.enabled)
+    && upload !== 'toapis' && upload !== 'libapi' && upload !== 'minimax' && upload !== 'volcengine-tos'
+    && !(provider === 'apimart' && kind === 'image');
   return { catalogId: connection?.catalogId, baseUrl: connection?.baseUrl, apiKey: connection?.apiKey?.trim() ?? '',
     imageHosting: connection?.imageHosting ? structuredClone(connection.imageHosting) : undefined, kind,
     tosUpload: upload === 'volcengine-tos' && connection?.tosUpload ? structuredClone(connection.tosUpload) : undefined,
@@ -448,6 +449,17 @@ async function urlToBlob(
   return blob === source.blob ? source : { blob, ext: blob.type === 'image/png' ? 'png' : blob.type === 'image/jpeg' ? 'jpg' : source.ext };
 }
 
+/** 公共托管保留媒体 MIME 和原字节，仅把 MIME 别名转换为常见文件后缀。 */
+function publicUploadExtension(url: string, kind: MediaDataUrlKind, ext: string): string {
+  const mimeExtension = ext.toLowerCase().split(';')[0].trim();
+  const pathExtension = localMediaUrlToPath(url)?.match(/\.([a-z0-9]{1,10})$/i)?.[1]?.toLowerCase();
+  const extension = mimeExtension === 'octet-stream' && pathExtension ? pathExtension : mimeExtension;
+  const aliases: Record<string, string> = { jpeg: 'jpg', quicktime: 'mov', 'x-wav': 'wav', wave: 'wav', 'vnd.wave': 'wav', 'x-m4a': 'm4a' };
+  const normalized = kind === 'audio' && extension === 'mp4' ? 'm4a'
+    : kind === 'audio' && extension === 'mpeg' ? 'mp3' : aliases[extension] ?? extension;
+  return normalized.replace(/[^a-z0-9]/g, '') || 'bin';
+}
+
 /** ToAPIs 不回退到其他连接凭据或公共图床；同一 Key 的两站由用户显式选择。 */
 async function uploadToToapis(url: string, connection: UploadConnection, kind: MediaDataUrlKind, signal?: AbortSignal, source?: UploadIdentity['source']): Promise<string> {
   const apiKey = connection?.apiKey?.trim();
@@ -766,7 +778,7 @@ async function uploadToUguu(
   const { blob, ext } = await urlToBlob(url, kind, undefined, signal, source);
 
   const formData = new FormData();
-  formData.append('files[]', blob, `canvas-upload-${Date.now()}.${ext}`);
+  formData.append('files[]', blob, `canvas-upload-${Date.now()}.${publicUploadExtension(url, kind, ext)}`);
 
   // Tauri 环境：走 Rust proxy_fetch 绕过浏览器 CORS
   if (isTauriEnv()) {
@@ -916,11 +928,11 @@ export async function uploadToRemote(
     const customImageHosting = usesTos ? undefined : kind === 'image' && connection.imageHosting?.enabled ? connection.imageHosting
       : connection.globalImageHosting?.provider !== 'uguu' ? connection.globalImageHosting?.config : undefined;
     let customUrl: string | undefined;
-    if (customImageHosting) {
+    if (customImageHosting && kind !== 'other') {
       const { blob, ext } = await urlToBlob(url, kind, undefined, operationSignal, identity.source);
       assertUploadConnection(provider, connection);
-      customUrl = await uploadCustomImage(blob, `reference.${ext.replace(/[^a-z0-9]/gi, '') || 'png'}`, customImageHosting, operationSignal,
-        { connection, beforeUpload: () => assertUploadConnection(provider, connection) });
+      customUrl = await uploadCustomImage(blob, `reference.${publicUploadExtension(url, kind, ext)}`, customImageHosting, operationSignal,
+        { connection, kind, beforeUpload: () => assertUploadConnection(provider, connection) });
     }
     const publicUrl = customUrl ?? (usesTos
       ? await uploadVolcengineTosReference(url, kind, connection.tosUpload, operationSignal, identity.source,
@@ -1014,7 +1026,7 @@ export async function resolveMediaReferenceUrl(
     return kind === 'image' ? prepareReferenceImageDataUrl(dataUrl, signal) : dataUrl;
   }
 
-  // APIMart 的 /uploads/images 只接受图片；uploadToRemote 会让视频/音频走通用图床，
+  // APIMart 的 /uploads/images 只接受图片；uploadToRemote 会让视频/音频走全局托管，
   // 但缓存仍保留原 provider 作用域，避免不同调用方互相污染。
   return uploadToRemote(url, provider, kind, signal);
 }

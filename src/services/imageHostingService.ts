@@ -1,4 +1,4 @@
-import type { ImageHostingConfig } from '../types/imageHosting';
+import type { ImageHostingConfig, ImageHostingMediaKind } from '../types/imageHosting';
 import type { ApiProviderConfig } from '../types';
 import { deleteAppSecret, readAppSecret, writeAppSecret } from './providerSecretService';
 import { corsSafeFetch } from './ai/httpTransport';
@@ -77,6 +77,11 @@ export function validateImageHosting(config: ImageHostingConfig, hasNewKey = fal
     names.add(name);
   }
   if (config.maxFileBytes !== undefined && (!Number.isSafeInteger(config.maxFileBytes) || config.maxFileBytes <= 0)) throw new Error('图床文件大小上限无效');
+  if (config.maxFileBytesByKind !== undefined && (!config.maxFileBytesByKind || typeof config.maxFileBytesByKind !== 'object'
+    || Array.isArray(config.maxFileBytesByKind) || Object.entries(config.maxFileBytesByKind).some(([kind, limit]) =>
+      !['image', 'video', 'audio'].includes(kind) || !Number.isSafeInteger(limit) || limit <= 0))) {
+    throw new Error('图床素材类型或文件大小上限无效');
+  }
   if (config.allowedExtensions !== undefined && (!config.allowedExtensions.length || config.allowedExtensions.length > 20
     || config.allowedExtensions.some((extension) => !/^[a-z0-9]{1,10}$/.test(extension)))) {
     throw new Error('图床文件格式限制无效');
@@ -107,13 +112,18 @@ export async function deleteImageHostingCredential(ref: string | undefined): Pro
 export async function uploadCustomImage(blob: Blob, filename: string, config: ImageHostingConfig, signal?: AbortSignal, options?: {
   connection?: HostingConnection;
   beforeUpload?: () => void;
+  kind?: ImageHostingMediaKind;
 }): Promise<string> {
   validateImageHosting(config, false, options?.connection);
   signal?.throwIfAborted();
-  if (!blob.size || config.maxFileBytes !== undefined && blob.size > config.maxFileBytes) throw new Error('参考图为空或超过当前图床的单张上传上限');
+  const kind = options?.kind ?? 'image';
+  if (!['image', 'video', 'audio'].includes(kind)) throw new Error('参考素材类型无效');
+  const limit = config.maxFileBytesByKind && Object.hasOwn(config.maxFileBytesByKind, kind)
+    ? config.maxFileBytesByKind[kind] : config.maxFileBytes;
+  if (!blob.size || limit !== undefined && blob.size > limit) throw new Error('参考素材为空或超过当前图床的单文件上传上限');
   const extension = filename.split('.').pop()?.toLowerCase();
   const filenameExt = extension === 'jpeg' ? 'jpg' : extension;
-  if (config.allowedExtensions && (!filenameExt || !config.allowedExtensions.includes(filenameExt))) throw new Error('参考图格式不符合当前图床限制');
+  if (config.allowedExtensions && (!filenameExt || !config.allowedExtensions.includes(filenameExt))) throw new Error('参考素材格式不符合当前图床限制');
   const headers = new Headers({ Accept: config.responseFormat === 'text' ? 'text/plain' : 'application/json' });
   const form = new FormData();
   const uploadFilename = extension === 'jpeg' ? filename.replace(/\.jpeg$/i, '.jpg') : filename;
@@ -190,7 +200,7 @@ export async function uploadCustomImage(blob: Blob, filename: string, config: Im
   } catch {
     await reader.cancel().catch(() => undefined);
     signal?.throwIfAborted();
-    throw new Error('自定义图床未返回有效的 HTTP(S) 图片链接，请检查返回链接路径与响应（上限 1 MiB）');
+    throw new Error('自定义图床未返回有效的 HTTP(S) 素材链接，请检查返回链接路径与响应（上限 1 MiB）');
   } finally {
     signal?.removeEventListener('abort', cancel);
     reader.releaseLock();
