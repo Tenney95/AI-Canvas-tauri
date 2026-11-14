@@ -59,6 +59,7 @@ export async function executeTeamModel(input: {
   userPrompt: string;
   maxOutputChars: number;
   signal: AbortSignal;
+  sensitive?: boolean;
   target?: TeamExecutionTarget;
   conversationId?: string;
   taskId?: string;
@@ -113,7 +114,7 @@ export async function executeTeamModel(input: {
     const text = await streamAssistantReply({ projectId: input.projectId, modelId: input.modelId,
       systemPrompt: input.systemPrompt, userMessage: input.userPrompt,
       messages: [{ role: 'system', content: input.systemPrompt }, { role: 'user', content: input.userPrompt }],
-      tools: [], resolveVisualReferences: false, trackAbort: false, signal: controller.signal,
+      tools: [], resolveVisualReferences: false, trackAbort: false, signal: controller.signal, sensitive: input.sensitive,
       onEvent: (event) => {
         if (event.type === 'text.delta') {
           outputChars += event.delta.length;

@@ -1,6 +1,6 @@
 /** 助手与剧本工作台共用团队发起、排队与恢复入口；主窗口是唯一执行源。 */
 import { useAppStore } from '../../../store/useAppStore';
-import { seriesOwnerId } from '../../../store/store.utils';
+import { listEpisodes, seriesOwnerId } from '../../../store/store.utils';
 import type { AgentMode, AgentTask } from '../../../types/agent';
 import type { AgentTeamProfile, TeamInvocationContext, TeamTemplateId } from '../../../types/agentTeam';
 import type { ChatMessage } from '../../../types/chat';
@@ -16,6 +16,7 @@ import { hashTeamText, readTeamArtifactText } from './teamArtifactService';
 import { normalizeTeamProfile, TEAM_TEMPLATE_LABELS } from './teamProfileService';
 import { amendTeamRun, captureTeamModelFingerprints, executeTeamRun, MAX_TEAM_INPUT_CHARS, prepareTeamRun, waitForTeamRunIdle } from './teamRuntime';
 import { captureCreationProfile, intersectCreationTools, resolveCreationTeamProfile } from '../../creationProfiles/creationProfileService';
+import { buildStoryGraphWritingContext } from '../../storyGraphWritingContext';
 import { captureExplicitSkillBindings, expandSkillBindings, SKILL_CONTENT_LIMITS } from '../../skillPromptService';
 import { assertAgentProjectContext, captureAgentProjectScope } from '../agentProjectContext';
 
@@ -241,6 +242,21 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
     if (!currentConversation || currentConversation.projectId !== ownerId) throw new Error('来源对话已移除');
     await saveConversation(currentConversation);
     if (!sourceAvailable()) return;
+    // 同一请求只核对原始提交与稿件。仅新任务投影当前已保存图谱，后续阶段沿用材料快照。
+    const target = runContext.source === 'script-workbench' ? runContext.target : undefined;
+    if (target) {
+      const live = useAppStore.getState();
+      const scope = readEpisodeWorkspaceScope(live, target.episodeId);
+      if (!scope || scope.owner.id !== target.seriesId) throw new Error('工作台分集或剧集已变化，请重新发起');
+      const separator = runMaterials ? '\n\n' : '';
+      const graphContext = buildStoryGraphWritingContext(scope.owner.series?.storyGraph, {
+        episodes: listEpisodes(live.projects, scope.owner.id),
+        episodeId: scope.episode.id,
+        relevantText: [content, scope.episode.episodeOutline, scope.episode.episodeScript].filter(Boolean).join('\n'),
+        maxCharacters: MAX_TEAM_INPUT_CHARS - content.length - runMaterials.length - separator.length,
+      });
+      if (graphContext) runMaterials += separator + graphContext;
+    }
     const task = useAppStore.getState().createAgentTask({ taskId, executionKind: 'team', teamRequestDigest: digest,
       projectId, conversationId: frozen.conversationId, userMessageId: result.userMessageId,
       ...(context.source === 'script-workbench' && context.target ? { initialTeamTarget: context.target } : {}),

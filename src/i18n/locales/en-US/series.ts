@@ -228,6 +228,7 @@ const series = {
   '保存中…': 'Saving…',
   '保存': 'Save',
   '字': 'chars',
+  '目标字数': 'Target character count',
   '关闭{title}': 'Close {title}',
   '原著需要保存到项目目录，请在桌面端添加': 'The original needs to be saved in the project directory; add it from the desktop app',
 
@@ -457,6 +458,8 @@ const series = {
   "搜索故事记录": "Search story records",
   "摘录需在已保存稿件中唯一匹配，请调整摘录": "The excerpt must match one unique passage in saved text. Refine the excerpt.",
   "故事关系图": "Story relationship graph",
+  "AI 创作将参考已保存的故事关系图。": "AI writing uses the saved story graph as a reference.",
+  "添加人物、事件或伏笔后，AI 创作可参考故事关系图。": "Add characters, events, or foreshadowing so AI can refer to the story graph when writing.",
   "图谱显示形态": "Graph appearance",
   "卡片": "Cards",
   "点阵": "Dots",

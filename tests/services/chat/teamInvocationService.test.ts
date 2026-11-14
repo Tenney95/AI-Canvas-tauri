@@ -182,9 +182,17 @@ describe('团队共用发起入口', () => {
     useAppStore.setState({
       currentProjectId: 'episode-canvas',
       projects: [
-        { id: 'series-team', name: '剧集', createdAt: 1, updatedAt: 1 },
-        { id: 'episode-canvas', parentId: 'series-team', name: '画布当前集', createdAt: 1, updatedAt: 1 },
-        { id: 'episode-workbench', parentId: 'series-team', name: '工作台所选集', createdAt: 1, updatedAt: 1 },
+        { id: 'series-team', name: '剧集', createdAt: 1, updatedAt: 1, series: { storyGraph: {
+          schemaVersion: 1, id: 'graph-team', revision: 1, edges: [], positions: {},
+          nodes: [
+            { id: 'event-current', kind: 'event', label: '林夏找到了旧车票', description: '', aliases: [],
+              episodeIds: ['episode-workbench'], evidence: [], origin: 'manual', certainty: 'explicit' },
+            { id: 'event-future', kind: 'event', label: '旧车票主人现身', description: '', aliases: [],
+              episodeIds: ['episode-canvas'], evidence: [], origin: 'manual', certainty: 'explicit' },
+          ],
+        } } },
+        { id: 'episode-canvas', parentId: 'series-team', name: '画布当前集', episodeNo: 2, createdAt: 1, updatedAt: 1 },
+        { id: 'episode-workbench', parentId: 'series-team', name: '工作台所选集', episodeNo: 1, createdAt: 1, updatedAt: 1 },
       ],
     });
     // 会话项目身份不能由 updateConversation 更改；测试直接安排已有同剧会话。
@@ -192,18 +200,31 @@ describe('团队共用发起入口', () => {
       conversation.id === 'conv-team' ? { ...conversation, projectId: 'series-team' } : conversation
     )) }));
     const nodesBefore = useAppStore.getState().nodes;
-    const result = await startTeamInvocation({ content: '处理工作台选中集', projectId: 'episode-workbench',
-      conversationId: 'conv-team', templateId: 'general', requestId: 'request-team-workbench-sibling',
+    const input = { content: '处理工作台选中集', projectId: 'episode-workbench',
+      conversationId: 'conv-team', templateId: 'script' as const, requestId: 'request-team-workbench-sibling',
       context: { source: 'script-workbench', target: { kind: 'episode', seriesId: 'series-team',
-        episodeId: 'episode-workbench', field: 'script', expectedHash: 'a'.repeat(64), label: '工作台所选集正文' } },
+        episodeId: 'episode-workbench', field: 'script', expectedHash: 'a'.repeat(64), label: '工作台所选集正文' } } satisfies TeamInvocationContext,
       materials: '已保存材料', originalText: '原稿',
-    });
+    };
+    const result = await startTeamInvocation(input);
     expect(useAppStore.getState().currentProjectId).toBe('episode-canvas');
     expect(useAppStore.getState().nodes).toBe(nodesBefore);
     expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.projectId).toBe('episode-workbench');
     expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.projectScope).toMatchObject({
       kind: 'episode', projectId: 'series-team', episodeId: 'episode-workbench' });
     expect(runtime.prepare).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'episode-workbench' }));
+    const preparedInput = runtime.prepare.mock.calls[0][0];
+    expect(preparedInput.materials).toContain('林夏找到了旧车票');
+    expect(preparedInput.materials).not.toContain('旧车票主人现身');
+    expect(useAppStore.getState().messages.find((message) => message.id === result.userMessageId)?.content).toBe('处理工作台选中集');
+    expect(useAppStore.getState().agentTasks.find((task) => task.id === result.taskId)?.goal).toBe('处理工作台选中集');
+
+    useAppStore.setState((state) => ({ projects: state.projects.map((project) => (
+      project.id === 'series-team' ? { ...project, series: { ...project.series, storyGraph: undefined } } : project
+    )) }));
+    await expect(startTeamInvocation(input)).resolves.toEqual(result);
+    expect(runtime.prepare).toHaveBeenCalledTimes(1);
+    expect(runtime.scheduled).toHaveLength(1);
   });
 
   it('准备期间同 ID 项目被替换后，不接纳迟到 teamRun 或进入付费队列', async () => {

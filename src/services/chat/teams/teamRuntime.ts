@@ -399,7 +399,7 @@ async function executeStage(taskId: string, revision: number, definition: StageD
       try { result = await executeTeamModel({ projectId: task.projectId, modelId: target.modelId, target,
         conversationId: task.conversationId, taskId, stageId: definition.id, runRevision: revision,
         expectedFingerprint, systemPrompt: SYSTEM, userPrompt,
-        maxOutputChars: run.profile.maxOutputChars, signal, assertCurrent: assertLease }); }
+        maxOutputChars: run.profile.maxOutputChars, signal, assertCurrent: assertLease, sensitive: run.source === 'script-workbench' }); }
       catch (error) {
         if (!(error instanceof TeamModelReturnedError)) throw error;
         materializationBlocked = true;

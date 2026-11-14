@@ -595,9 +595,32 @@ describe('原文主窗口编辑会话', () => {
     const request = mocks.stream.mock.calls[0][0] as StreamingCallOptions;
     expect(request).toMatchObject({ projectId: 'episode-1', tools: [], resolveVisualReferences: false, trackAbort: false });
     expect(request.userMessage.length).toBeLessThan(12_300);
+    expect(request.userMessage).not.toContain('故事关系图参考资料');
     editor.flush({ documentId: opened.documentId, sequence: 1, content: source + '新输入' });
     await expect(editor.handle({ type: 'original_apply', candidateId: generated.candidate!.id })).rejects.toThrow('原文已变化');
     expect(documentResult(await editor.handle({ type: 'original_open' })).content).toBe(source + '新输入');
+    editor.dispose();
+  });
+
+  it('原文起笔只参考本剧已保存的关系图，图谱只进入模型的创作材料', async () => {
+    const owner = mocks.state.projects[0];
+    owner.series = { storyGraph: { schemaVersion: 1, id: 'story', revision: 1, edges: [], positions: {}, nodes: [{
+      id: 'lead', kind: 'character', label: '林夏', description: '负责修理废弃的铁路通讯器',
+      aliases: [], episodeIds: [], evidence: [], origin: 'manual', certainty: 'explicit',
+    }] } };
+    mocks.state.projects.push({ id: 'other-series', name: '其他项目', createdAt: 1, updatedAt: 1,
+      series: { storyGraph: { ...owner.series.storyGraph!, nodes: [{ ...owner.series.storyGraph!.nodes[0], label: '其他项目人物' }] } } });
+    const editor = session();
+    await editor.handle({ type: 'original_open' });
+    const result = documentResult(await editor.handle({ type: 'original_generate', mode: 'continue', start: 0, end: 0,
+      instruction: '以林夏为主角起笔', expectedSequence: 0 }));
+    const request = mocks.stream.mock.calls[0][0] as StreamingCallOptions;
+    expect(request).toMatchObject({ tools: [], sensitive: true });
+    expect(request.userMessage).toContain('负责修理废弃的铁路通讯器');
+    expect(request.userMessage).not.toContain('其他项目人物');
+    expect(result.content).toBe('');
+    expect(result.candidate?.text).toBe('新的正文。');
+    expect(mocks.updateSeries).not.toHaveBeenCalled();
     editor.dispose();
   });
 

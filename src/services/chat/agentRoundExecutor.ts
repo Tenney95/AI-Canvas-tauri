@@ -1052,6 +1052,7 @@ export async function executeAgentRound({
       projectId: task.projectId,
       modelId,
       tools,
+      sensitive: !!task.workbenchTarget,
       resolveVisualReferences: !task.workbenchTarget && !(task.parentTaskId && isGeneralAssistantScope(task.projectId)),
       signal,
       onEvent: (event: AssistantStreamEvent) => {

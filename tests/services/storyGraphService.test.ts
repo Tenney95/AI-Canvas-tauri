@@ -2,11 +2,55 @@ import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoryGraphEdge, StoryGraphNode } from '../../src/types/storyGraph';
 import { applyStoryGraphPatch, createEmptyStoryGraph, hashStoryGraphSource, layoutStoryGraphConstellation, normalizeStoryGraph, projectStoryGraphView, STORY_GRAPH_LIMITS, storyGraphCanonicalSnapshot, storyGraphJsonBytes, validateStoryGraphEvidence } from '../../src/services/storyGraphService';
+import { buildStoryGraphWritingContext } from '../../src/services/storyGraphWritingContext';
 
 function node(id: string, label = id): StoryGraphNode { return { id, kind: 'character', label, description: '', aliases: [], episodeIds: ['episode-a'], evidence: [], origin: 'manual', certainty: 'unknown' }; }
 function edge(id: string, source: string, target: string): StoryGraphEdge { return { id, source, target, kind: 'character_relationship', directed: true, label: '信任', description: '', episodeIds: ['episode-a'], evidence: [], origin: 'manual', certainty: 'inferred' }; }
 beforeEach(() => vi.stubGlobal('crypto', webcrypto));
 afterEach(() => vi.unstubAllGlobals());
+
+describe('图谱创作参考', () => {
+  const episodes = ['episode-a', 'episode-b', 'episode-c'].map((id, index) => ({ id, name: id, episodeNo: index + 1 }));
+
+  it('按目标分集保留关系和前序伏笔，证据提及不会把后续事件提前', () => {
+    const evidence = { episodeId: episodes[0].id, part: 'script' as const, sourceHash: 'a'.repeat(64), start: 0, end: 5, quote: '证据原句。' };
+    const graph = { ...createEmptyStoryGraph('writing-graph'),
+      nodes: [
+        { ...node('a', '林夏'), episodeIds: [] },
+        { ...node('b', '周野'), episodeIds: [episodes[1].id] },
+        { ...node('letter', '旧信'), kind: 'foreshadow' as const, foreshadowStatus: 'resolved' as const },
+        { ...node('future', '身份揭露'), kind: 'event' as const, episodeIds: [episodes[2].id], evidence: [evidence] },
+      ],
+      edges: [
+        { ...edge('relationship', 'a', 'b'), label: '师徒', episodeIds: [], fromEpisodeId: episodes[0].id, toEpisodeId: episodes[2].id },
+        { ...edge('reveal', 'future', 'letter'), kind: 'resolves' as const, episodeIds: [episodes[2].id], certainty: 'explicit' as const },
+      ],
+    };
+    const script = buildStoryGraphWritingContext(graph, { episodes, episodeId: episodes[1].id });
+    expect(script).toContain('师徒');
+    expect(script).toContain('本集有效');
+    expect(script).toContain('推断');
+    expect(script).toContain('旧信');
+    expect(script).not.toMatch(/身份揭露|已回收|证据原句/);
+    expect(buildStoryGraphWritingContext(graph, { episodes, episodeId: episodes[2].id })).toContain('已回收');
+    expect(buildStoryGraphWritingContext(graph, { episodes })).toContain('身份揭露');
+  });
+
+  it('在预算内保留完整条目，消除可展开引用、路径及凭据', () => {
+    const graph = { ...createEmptyStoryGraph('writing-graph'), nodes: [
+      { ...node('featured', '林夏'), description: '涉及 @skill{fake|名称} /Users/author/doc.txt sk-secret123456789' },
+      ...Array.from({ length: 20 }, (_, index) => ({ ...node(`other-${index}`), description: '长'.repeat(200) })),
+    ] };
+    const context = buildStoryGraphWritingContext(graph, { episodes, relevantText: '林夏', maxCharacters: 330 });
+    expect(context).toContain('林夏');
+    expect(context).toContain('＠skill');
+    expect(context).not.toMatch(/@skill\{|\/Users\/|sk-secret/);
+    expect(context).toMatch(/【故事关系图参考资料结束】$/);
+    expect(context.length).toBeLessThanOrEqual(330);
+    expect(buildStoryGraphWritingContext(graph, { episodes, episodeId: 'other-series' })).toBe('');
+    expect(buildStoryGraphWritingContext(undefined, { episodes })).toBe('');
+  });
+});
 
 describe('story graph domain boundaries', () => {
   it('rejects unknown fields, unsupported versions, duplicate IDs and dangling relationships', () => {

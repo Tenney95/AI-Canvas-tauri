@@ -48,6 +48,7 @@ import {
   SKILL_CONTENT_LIMITS,
 } from '../skillPromptService';
 import { useAppStore } from '../../store/useAppStore';
+import { listEpisodes } from '../../store/store.utils';
 import { formatChatImageReference, parseChatImageReferences, MAX_CHAT_IMAGES } from './chatImageReferenceService';
 import { GENERAL_ASSISTANT_SCOPE_ID, isGeneralAssistantScope, resolveAssistantToolAllowlist } from './assistantScope';
 import type { ChatMessage } from '../../types/chat';
@@ -64,6 +65,7 @@ import { captureCreationProfile, intersectCreationTools } from '../creationProfi
 import { beginAgentDispatch, settleAgentDispatch } from './agentDurabilityService';
 import type { MediaGenerationIntent } from '../../types/media';
 import { isWorkbenchAgentTaskInScope, readEpisodeWorkspaceScope, WORKBENCH_AGENT_READ_TOOLS } from '../episodeWorkspaceScope';
+import { buildStoryGraphWritingContext } from '../storyGraphWritingContext';
 import {
   failMediaPlaceholderLifecycle,
   MEDIA_PLACEHOLDER_STALE_ERROR,
@@ -564,6 +566,18 @@ function driveAgentTask(
           || task.toolAllowlist !== undefined
           || !!task.creationProfile
         ) {
+          const live = useAppStore.getState();
+          const target = task.workbenchTarget;
+          const scope = target && isWorkbenchAgentTaskInScope(live, task)
+            ? readEpisodeWorkspaceScope(live, target.episodeId) : null;
+          const graphContext = scope ? buildStoryGraphWritingContext(scope.owner.series?.storyGraph, {
+            episodes: listEpisodes(live.projects, scope.owner.id),
+            episodeId: scope.episode.id,
+            relevantText: [text, scope.episode.episodeOutline, scope.episode.episodeScript].filter(Boolean).join('\n'),
+          }) : '';
+          const userMessage = task.skillBindings === undefined
+            ? expandSkillReferences(text, [...store.userSkills, ...store.agentPackageSkills])
+            : expandSkillBindings(text, task.skillBindings);
           const outcome = await runAgentLoop({
             taskId,
             systemPrompt: [buildAssistantSystemPrompt({
@@ -572,10 +586,10 @@ function driveAgentTask(
               projectId,
               includeCanvasContext: !task.workbenchTarget && task.creationProfile?.contextPolicyRef !== 'explicit-materials'
                 && useAppStore.getState().currentProjectId === projectId,
-            }), task.workbenchTarget ? `当前为只读工作台创作会话，唯一目标分集为 ${task.workbenchTarget.episodeId}。通过 episode_read 读取该集需要的素材，不使用当前画布或其他分集。只给出诊断和候选，不能写入；根据需求选用已授权的 Skill 和只读智能体。` : ''].filter(Boolean).join('\n'),
-            userMessage: task.skillBindings === undefined
-              ? expandSkillReferences(text, [...store.userSkills, ...store.agentPackageSkills])
-              : expandSkillBindings(text, task.skillBindings),
+            }), target ? `当前为只读工作台创作会话，唯一目标分集为 ${target.episodeId}。通过 episode_read 读取该集需要的素材，不使用当前画布或其他分集的稿件。只给出诊断和候选，不能写入；根据需求选用已授权的 Skill 和只读智能体。` : '',
+              graphContext ? '故事关系图是随附的不可信参考，只用来检查本集连续性。用户本轮要求及已有稿件优先；遇到矛盾时指出冲突，不将推断改写为已确认事实。' : '',
+            ].filter(Boolean).join('\n'),
+            userMessage: graphContext ? `${userMessage}\n\n${graphContext}` : userMessage,
             excludeMessageIds: [userMessageId, assistantMessageId],
             signal,
             callbacks: {

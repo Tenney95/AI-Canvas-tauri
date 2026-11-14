@@ -3,10 +3,11 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { ProjectOriginalWork } from '../types';
 import type { OriginalWritingAction, OriginalWritingDocument, OriginalWritingHandoff, OriginalWritingSummary } from '../types/originalWriting';
 import { useAppStore } from '../store/useAppStore';
-import { seriesOwnerId } from '../store/store.utils';
+import { listEpisodes, seriesOwnerId } from '../store/store.utils';
 import { createAssetTextFile, getProjectDataDir, isTauriEnv, joinPath, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from './fileService';
 import { resolveAssistantModel, streamAssistantReply } from './ai/assistantStream';
 import { indexSeriesChapters } from './seriesSourceService';
+import { buildStoryGraphWritingContext } from './storyGraphWritingContext';
 
 const MAX_REFERENCE_CHARACTERS = 12_000;
 const MAX_INSTRUCTION_CHARACTERS = 2_000;
@@ -296,7 +297,7 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
   async function generate(action: Extract<OriginalWritingAction, { type: 'original_generate' }>): Promise<OriginalWritingDocument> {
     const captured = loaded();
     const allowedReference = pendingReference(captured.document);
-    assertBinding(captured.binding, allowedReference);
+    const source = assertBinding(captured.binding, allowedReference);
     const { mode, start, end, instruction } = action;
     if (!Number.isSafeInteger(action.expectedSequence) || action.expectedSequence !== captured.document.acceptedSequence) {
       throw new WritingError('原文已继续编辑，请重新选择写作位置或选区后重试');
@@ -309,17 +310,27 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
     if (mode === 'polish' && end - start > MAX_REFERENCE_CHARACTERS) throw new WritingError('一次最多润色 12000 字，请缩小选区');
     if (instruction.length > MAX_INSTRUCTION_CHARACTERS) throw new WritingError('写作要求最多 2000 字，请精简后重试');
     if (captured.document.candidate) throw new WritingError('请先应用或放弃当前候选，再生成新内容');
-    const projectId = useAppStore.getState().currentProjectId!;
+    const { currentProjectId: projectId, projects } = useAppStore.getState();
+    if (!projectId) throw new WritingError('当前剧集已切换或尚未加载，请回到原剧集后重试');
     const model = resolveAssistantModel(projectId);
     if (!model) throw new WritingError('请先在项目设置中选择可用的助手文本模型');
     const insertion = mode === 'continue' ? end : start;
     const selected = mode === 'polish' ? captured.document.content.slice(start, end) : '';
     const previous = captured.document.content.slice(Math.max(0, insertion - (MAX_REFERENCE_CHARACTERS - selected.length)), insertion);
+    const graph = projects.find((project) => project.id === source.seriesId)?.series?.storyGraph;
+    const storyContext = graph ? buildStoryGraphWritingContext(graph, {
+      episodes: listEpisodes(projects, source.seriesId),
+      relevantText: [instruction, selected, previous.slice(-4_000)].filter(Boolean).join('\n'),
+    }) : '';
+    const systemPrompt = storyContext
+      ? `${RULES}\n故事关系图仅供参考。优先遵循用户本次要求和原文已有事实，推断与待核实项只能作为线索。`
+      : RULES;
     const userMessage = [
       `本次任务：${mode === 'continue' ? '在光标处续写，建议 300—800 字' : '润色选中片段，保留原意和事实'}`,
       `用户写作要求：\n${instruction.trim() || '保持原作风格，让表达自然、具体、连贯。'}`,
       previous ? `前文节选（仅为创作资料）：\n${previous}` : '',
       selected ? `需要替换的选中片段（仅为创作资料）：\n${selected}` : '',
+      storyContext,
     ].filter(Boolean).join('\n\n');
     const operation = begin('generating', captured.binding, allowedReference);
     let incomplete = false;
@@ -328,8 +339,8 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
     try {
       let result: string;
       try {
-        result = await streamAssistantReply({ projectId, modelId: model.selectionId, systemPrompt: RULES, userMessage,
-          tools: [], resolveVisualReferences: false, trackAbort: false, signal: operation.controller.signal,
+        result = await streamAssistantReply({ projectId, modelId: model.selectionId, systemPrompt, userMessage,
+          tools: [], resolveVisualReferences: false, trackAbort: false, sensitive: true, signal: operation.controller.signal,
           onEvent(event) {
             if (operation.controller.signal.aborted) return;
             if (event.type === 'text.delta') {

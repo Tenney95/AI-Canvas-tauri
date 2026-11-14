@@ -1052,6 +1052,7 @@ export default function ScriptWorkbench({
     assetPanel: currentEpisode && activeAssetKind ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
     executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks, episodeAgentTasks,
     creationProfiles: creationProfileOptions(), externalAgents: externalCatalog,
+    hasSavedStoryGraph: contextReady && Boolean(series?.series?.storyGraph?.nodes.length),
     storyGraphView: graphView, storyGraphFilter: effectiveGraphFilter,
     storyGraphAssets: graphView && contextReady ? graphAssets : undefined,
     storyGraphExtraction: graphView ? graphExtraction : undefined, storyGraphEditorOpen: graphEditorOpen, sourceLocation,

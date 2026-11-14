@@ -74,6 +74,10 @@ export default function WorkbenchContextSummary({ snapshot, dispatch }: {
     </div>)}</div>
     {activeTab === 'original' && originalWriting?.fileName && <p className="truncate text-xs text-canvas-text-secondary" title={originalWriting.fileName}>{originalWriting.fileName}</p>}
     {hint && <p className="ui-hint">{t(hint)}</p>}
+    {snapshot.contextReady && (activeTab === 'original' || activeTab === 'script') && <p className="ui-hint flex items-start gap-1.5">
+      <Icon icon="lucide:network" className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      {snapshot.hasSavedStoryGraph ? t('AI 创作将参考已保存的故事关系图。') : t('添加人物、事件或伏笔后，AI 创作可参考故事关系图。')}
+    </p>}
     {activeTab === 'script' && <div className="grid gap-2">{analysis.diagnostics.slice(0, 4).map((item) => <div key={item.id} className="ui-card p-2">
       <p className="text-[11px] font-medium text-canvas-text-secondary">{t(item.title)}</p>
       <p className="mt-1 text-[10px] leading-4 text-canvas-text-muted">{t(item.detail)}</p>

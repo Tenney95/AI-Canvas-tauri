@@ -5,6 +5,7 @@ import { Icon } from '@iconify/react';
 import { useT } from '../i18n';
 import { indexSeriesChapters } from '../services/seriesSourceService';
 import type { OriginalWritingAction, OriginalWritingDocument, OriginalWritingSummary } from '../types/originalWriting';
+import NumberStepper from './shared/NumberStepper';
 import Select from './shared/Select';
 
 interface OriginalWritingEditorProps {
@@ -33,7 +34,7 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
   const [range, setRange] = useState<{ start: number; end: number; title: string } | null>(null);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [instruction, setInstruction] = useState('');
-  const [target, setTarget] = useState('');
+  const [targetCount, setTargetCount] = useState(0);
   const [focused, setFocused] = useState(false);
   const [reloadConfirm, setReloadConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -84,7 +85,6 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
   const chapterTitle = range ? chapters.find((chapter) => chapter.start === range.start)?.title ?? range.title : undefined;
   const count = visibleContent.replace(/\s/g, '').length;
   const wholeCount = content.replace(/\s/g, '').length;
-  const targetCount = Number(target);
   const unavailable = !ready || loading || summary.loading || !document;
   const working = !!busy || summary.saving || summary.generating;
   const candidate = document?.candidate;
@@ -208,6 +208,16 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
     <div className="ui-card m-2 shrink-0">
       <div className="ui-card__header"><Icon icon="lucide:pen-line" className="shrink-0" /><h3 className="ui-card__title">{content.trim() ? t('写作助手') : t('从零起稿')}</h3></div>
       <div className="ui-card__body flex flex-col gap-2">
+        <div className="ui-field">
+          <label htmlFor={targetId} className="ui-label">{t('目标字数')}</label>
+          <div className="flex items-center gap-2">
+            <NumberStepper id={targetId} value={targetCount} onChange={setTargetCount} min={0} max={1000000}
+              step={100} unit={t('字')} size="sm" className="ui-stepper--block min-w-0 flex-1" />
+            {targetCount > 0 && <span className="ui-hint shrink-0 tabular-nums">
+              {Math.min(100, Math.floor(count / targetCount * 100))}%
+            </span>}
+          </div>
+        </div>
         <label htmlFor={instructionId} className="text-xs font-medium text-canvas-text-secondary">{t('写作要求')}</label>
         <textarea id={instructionId} className="ui-textarea min-w-0 resize-y" rows={3} maxLength={2000}
           placeholder={content.trim() ? t('例如：保持人物语气，补充动作与细节') : t('写下题材、人物和开场情境，例如：雨夜，一位快递员收到来自未来的包裹。')}
@@ -274,8 +284,6 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
             onChange={(value) => chooseChapter(Number(value))}
             options={[{ value: '-1', label: t('整篇原文') }, ...chapters.map((chapter, index) => ({ value: String(index), label: chapter.title }))]} />
           <span className="min-w-0 flex-1 truncate">{chapterTitle ?? t('整篇原文')} · {t('{count} 字', { count })}{range && ` / ${t('全文 {count} 字', { count: wholeCount })}`}</span>
-          <label htmlFor={targetId}>{t('目标')}</label><input id={targetId} type="number" className="ui-input ui-input--sm w-20" min={1} max={1000000} step={100} placeholder="—" value={target} onChange={(event) => setTarget(event.target.value)} />
-          <span>{targetCount > 0 ? `${Math.min(100, Math.floor(count / targetCount * 100))}%` : t('字')}</span>
         </div>
         {!document ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-3 text-sm text-canvas-text-secondary" role="status">
           <Icon icon={loading || summary.loading ? 'lucide:loader-circle' : 'lucide:book-open'} />{loading || summary.loading ? t('正在载入原文…') : message ? t('原文暂不可用，请重新打开') : t('等待工作台就绪…')}

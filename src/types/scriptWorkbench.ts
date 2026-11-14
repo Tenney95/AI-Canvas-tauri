@@ -61,6 +61,7 @@ export interface ScriptWorkbenchSnapshot {
   episodeAgentTasks?: Array<Pick<AgentTask, 'id' | 'status'> & { title: string; activity: string }>;
   creationProfiles?: CreationProfileOption[];
   externalAgents?: ExternalAgentDescriptor[];
+  hasSavedStoryGraph?: boolean;
   storyGraphView?: StoryGraphView;
   storyGraphFilter?: StoryGraphFilter;
   storyGraphAssets?: StoryGraphAssetOption[];
