@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,8 +103,12 @@ describe('CI 改动清单', () => {
         test: { globals: true, fileParallelism: false },
       };\n`);
       await write('tests/utils/changed-helper.js', 'export const value = 1;\n');
-      await write('tests/utils/selected.test.js', `import { value } from './changed-helper.js';
-        it('reads the updated value', () => expect(value).toBe(2));\n`);
+      await write('tests/utils/selected.test.js', `import { writeFileSync } from 'node:fs';
+        import { value } from './changed-helper.js';
+        it('reads the updated value', () => {
+          expect(value).toBe(2);
+          writeFileSync('selected-result.txt', String(value));
+        });\n`);
       await write('tests/utils/unrelated.test.js', `it('fails when the file filter is lost', () => {
         throw new Error('Unexpected unrelated test execution');
       });\n`);
@@ -113,8 +117,8 @@ describe('CI 改动清单', () => {
       await symlink(dependencies, join(root, 'node_modules'), 'junction');
       await write('tests/utils/changed-helper.js', 'export const value = 2;\n');
 
-      const output = run('--base', 'HEAD');
-      expect(output).toMatch(/Tests\s+1 passed/);
+      run('--base', 'HEAD');
+      expect(await readFile(join(root, 'selected-result.txt'), 'utf8')).toBe('2');
     });
   }, 30_000);
 });
