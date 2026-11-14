@@ -252,12 +252,15 @@ describe('全局托管覆盖图片、视频和音频', () => {
   ] as const)('本地 $mime 使用 .$extension 文件名且不转码', async ({ kind, mime, path, extension }) => {
     useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'catbox', configs: {} } } }));
     const bytes = new Uint8Array([47, 48, 49]);
-    localFetch.mockResolvedValueOnce(new Response(new Blob([bytes], { type: mime }), { headers: { 'Content-Type': mime } }));
+    const response = new Response(new Blob([bytes], { type: mime }), { headers: { 'Content-Type': mime } });
+    // Fetch 会规范化 MIME 参数空格；上传应保留读取后 Blob 的类型和原字节。
+    const originalBlob = await response.clone().blob();
+    localFetch.mockResolvedValueOnce(response);
     mocks.transport.mockResolvedValueOnce(new Response('https://cdn.example/local-media'));
     await uploadToRemote(`file:///C:/fixture/${path}`, `global-mime-${mime}-${extension}`, kind);
     const file = (mocks.transport.mock.calls[0][1].body as FormData).get('fileToUpload') as File;
     expect(file.name).toBe(`reference.${extension}`);
-    expect(file.type).toBe(mime);
+    expect(file.type).toBe(originalBlob.type);
     expect(new Uint8Array(await file.arrayBuffer())).toEqual(bytes);
     expect(localFetch).toHaveBeenCalledOnce();
     expect(mocks.invoke).not.toHaveBeenCalled();
