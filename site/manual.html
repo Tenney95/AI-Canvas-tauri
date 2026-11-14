@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.11.4 操作说明书：角色形象工作台、图片模型与任务恢复、全局图床、火山方舟私有 TOS、素材与 Skill。">
-<title>AI Canvas 0.11.4 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.11.5 操作说明书：视频音轨提取、剧本拆分、故事关系图写作参考、全局音视频上传。">
+<title>AI Canvas 0.11.5 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -47,7 +47,8 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
-<div class="group">0.11.4 更新入口</div>
+<div class="group">0.11.5 更新入口</div>
+<a href="#updates-0-11-5">↳ 视频提取音频与剧本拆分</a>
 <a href="#character-workbench-0-11-4">↳ 角色形象工作台与模型互通</a><a href="#reference-upload-0-11-4">↳ 全局图床与方舟 TOS</a>
 <div class="group">0.11.3 更新入口</div>
 <a href="#assistant-close-0-11-2">↳ 独立助手关闭与草稿交接</a><a href="#recent-skills-0-11-2">↳ 最近五个 Skill</a><a href="#canvas-storage-0-11-2">↳ 分组让位与新项目清理</a><a href="#models-team-0-11-2">↳ 七角色团队与媒体修复</a>
@@ -92,10 +93,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.11.4 说明书</span><span class="badge">2026-11-13 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.11.5 说明书</span><span class="badge">2026-11-14 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
-<aside class="tip"><b>0.11.4 · 角色形象工作台与模型互通：</b>从角色编辑中的<b>生成角色形象</b>进入<a href="#character-workbench-0-11-4">角色工作台</a>，使用图片节点同一模型与参数，查看原任务回执并续取候选。参考素材上传见<a href="#reference-upload-0-11-4">图床与方舟 TOS</a>。发布状态和未验收边界见<a href="#about">版本范围</a>。</aside>
+<aside class="tip"><b>0.11.5 · 视频音轨提取与剧本拆分：</b>视频节点的<b>提取音频</b>可生成音频节点；剧本拆分可指定章节、时长、集数和 Skill，写作可参考故事关系图。详见<a href="#updates-0-11-5">本版操作入口</a>；发布状态和未验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.3 · 助手窗口与常用 Skill：</b>查看<a href="#assistant-close-0-11-2">独立助手关闭与草稿交接</a>、<a href="#recent-skills-0-11-2">最近五个上传及包内 Skill</a>、<a href="#canvas-storage-0-11-2">分组开合让位与新项目清理</a>，以及<a href="#models-team-0-11-2">七角色团队与媒体修复</a>。旧项目与兼容限制保留，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.1 · 型号参数与万象视频适配：</b>查看<a href="#model-parameters-0-11-1">同型号参数与万象 H3 四档时长</a>、<a href="#muse-references-0-11-1">Muse 参考图和发送确认</a>，以及<a href="#media-path-0-11-1">复制媒体文件路径</a>。旧项目与任务身份保持，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.0 · 新项目结构与媒体恢复：</b>从<a href="#native-projects-0-11-0">新建项目</a>开始，按分集保存画布和共享素材；已有旧项目保持原结构。查看<a href="#media-history-0-11-0">媒体结果与输出历史</a>，再了解<a href="#project-archive-0-11-0">项目包、更新和恢复点</a>。本版不自动迁移真实旧项目；安装包与验收状态见<a href="#about">版本范围</a>。</aside>
@@ -1140,6 +1141,18 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
+<section id="updates-0-11-5"><h2>0.11.5 · 视频音轨提取与剧本拆分</h2>
+<h3 id="video-extract-audio">从视频生成音频节点</h3>
+<p>在画布选中有声音的视频，点击工具栏的<b>提取音频</b>；自定义工具栏未显示时到<b>更多</b>查找。提取期间按钮显示忙碌，完成后在视频右侧生成音频素材节点，可播放、另存、撤销／重做，并随项目保存。分组中的视频会在同一分组内生成音频。</p>
+<p>处理在本机完成，不调用模型。AAC 主音轨原样封装为 M4A，其余可解码音轨输出 WAV；输出上限为 32 MiB，超限请先裁剪视频。没有音轨、设备无法解码或文件保存失败时提示原因且不创建节点；提取中替换视频、删除节点或切换项目后，旧结果不写入新目标。</p>
+<h3>配置剧本拆分并预览草案</h3>
+<p>在剧本工作台发起拆分，选择原著或全剧剧本、全文或指定章节，设置单集时长自动估算集数，或直接指定总集数；可选择可用的自定义 Skill 并补充创作要求。先预览生成的分集草案，再选择应用；材料变化或有未保存编辑时，应先保存并重新确认材料。</p>
+<p>原文 AI 起笔、续写、润色，以及分集智能调度与团队创作，会参考本剧已保存的故事关系图，保留证据与推断标记，并避开仅关联后续分集的信息。该上下文不会自动改写关系图。</p>
+<h3>为音视频选择全媒体上传服务</h3>
+<p>全局图床设置区分图片与全媒体服务。本地视频或音频需要公共链接时使用兼容的全媒体服务；配置不完整、没有兼容连接或上传失败时停止并提示。火山方舟参考素材仍使用独立的北京私有 TOS 配置，不回退公共图床。</p>
+<p>上述功能已写入源码，桌面、真实模型与上传服务仍按发布计划验收；说明书更新不代表安装包已公开。</p>
+</section>
+
 <section id="updates-0-11-4"><h2>0.11.4 · 角色形象工作台与模型互通</h2>
 <p>本版起暂停构建 Linux 安装包，提供 Windows、macOS Apple Silicon 与 Windows Legacy；历史 Linux 安装包保留。</p>
 <h3 id="character-workbench-0-11-4">角色生成、定妆与原任务恢复</h3>
@@ -1263,8 +1276,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.11.4「角色形象工作台与模型互通」</b>，<b>2026-11-13</b> 按源码增量核对角色工作台、完整图片模型与参数、任务回执续查、全局图床、方舟私有 TOS 及素材／Skill 修复。此前章节、旧锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.4">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-13-release-0.11.4.md">0.11.4 发布计划</a>，旧版本门禁不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；本次说明书更新不代表这些检查已通过。</p>
+<p>本说明书面向 <b>0.11.5「视频音轨提取与剧本拆分」</b>，<b>2026-11-14</b> 按源码增量核对视频提取音频、剧本拆分、故事关系图写作参考与全局音视频上传。此前章节、旧锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.5">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
+<p>发版门禁及实际结果记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-14-release-0.11.5.md">0.11.5 发布计划</a>，旧版本门禁不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；本次说明书更新不代表这些检查已通过。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>

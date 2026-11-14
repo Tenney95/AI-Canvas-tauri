@@ -2,6 +2,19 @@
  * 节点与画布节点组件（nodes）
  */
 const nodes = {
+  '提取音频': 'Extract audio',
+  '正在提取音频...': 'Extracting audio...',
+  '该视频没有音轨，无法提取音频': 'This video has no audio track to extract.',
+  '当前设备无法解码该视频的音轨': 'This device cannot decode the audio track in this video.',
+  '当前设备无法导出该视频的音轨': 'This device cannot export the audio track in this video.',
+  '提取的音频为空': 'The extracted audio is empty.',
+  '提取的音频超过 32 MiB，请先裁剪视频': 'The extracted audio exceeds 32 MiB. Trim the video first.',
+  '远程视频下载失败，无法提取音频': 'The remote video could not be downloaded for audio extraction.',
+  '{name} 音频': '{name} audio',
+  '音频保存失败': 'Failed to save audio.',
+  '已提取音频并生成音频节点': 'Audio extracted and added as an audio node.',
+  '提取音频失败': 'Failed to extract audio',
+  '提取音频失败：{message}': 'Failed to extract audio: {message}',
   '已停止本地等待；ComfyUI 任务结束尚未确认，请核对原任务后继续查询': 'Local waiting stopped; the ComfyUI task has not been confirmed finished. Check the original task before continuing to query.',
   '跟随分镜': 'Inherit shot',
   '逐项选择跟随分镜或覆盖；自动表示此视频不指定该项。': 'Inherit or override each field from the shot. Auto leaves that field unspecified for this video.',

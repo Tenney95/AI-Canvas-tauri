@@ -17,6 +17,7 @@ import ViewportImage from '../shared/ViewportImage';
 import { acquireComfyMediaSource } from '../../services/comfyMediaSource';
 import VideoNodeToolbar, { type CaptureFramePosition } from './shared/VideoNodeToolbar';
 import NodeToolbarShell from './shared/NodeToolbarShell';
+import { useVideoAudioExtraction } from './shared/video/useVideoAudioExtraction';
 import {
   acquireCanvasVideoPoster,
   releaseCanvasVideo,
@@ -519,6 +520,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
      Fullscreen State — 双击 / 工具栏按钮打开全屏预览
      ════════════════════════════════════════════ */
   const [isReversingPrompt, setIsReversingPrompt] = useState(false);
+  const { isExtractingAudio, handleExtractAudio } = useVideoAudioExtraction(id, data.videoUrl);
   const handleOpenFullscreen = useCallback(() => {
     if (!data.videoUrl && !data.thumbnailUrl) return;
     const compactVideo = videoRef.current;
@@ -956,7 +958,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   }, [activateCompactVideo, data.videoUrl, id, t]);
 
   useCanvasNodeLodProtection(id, isFullscreen || !!playingSource || !!activatedSource
-    || isUploading || isReversingPrompt || !!failedCover);
+    || isUploading || isReversingPrompt || isExtractingAudio || !!failedCover);
 
   return (
     <div className={`node-wrapper relative ${refmodDragOver ? 'rounded-xl ring-2 ring-brand' : ''}`} style={{ width: nodeWidth }}
@@ -978,6 +980,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <VideoNodeToolbar
             nodeId={id}
             onCaptureFrame={handleCaptureFrame}
+            onExtractAudio={handleExtractAudio}
+            isExtractingAudio={isExtractingAudio}
             onFullscreen={handleOpenFullscreen}
             onCopyFile={handleCopyFile}
             onReversePrompt={handleReversePrompt}

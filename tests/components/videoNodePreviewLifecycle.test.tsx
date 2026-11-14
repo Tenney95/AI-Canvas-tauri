@@ -18,6 +18,7 @@ const driver = vi.hoisted(() => ({
   transitionLoadGate: undefined as Promise<void> | undefined,
   listEditorModels: vi.fn(), runTransition: vi.fn(), postEditorModels: vi.fn(), postTransitionResult: vi.fn(),
   gesture: false,
+  extractAudio: vi.fn(), saveAudio: vi.fn(),
 }));
 
 vi.mock('react', async () => {
@@ -61,7 +62,10 @@ vi.mock('../../src/hooks/useCompletionFlash', () => ({ useCompletionFlash: () =>
 vi.mock('../../src/hooks/useCanvasNodeLod', () => ({ useCanvasNodeLodProtection: vi.fn() }));
 vi.mock('../../src/components/nodes/shared/useNodeRename', () => ({ useNodeRename: () => ({ displayLabel: 'Video', handleRename: vi.fn() }) }));
 vi.mock('../../src/components/nodes/shared/useSourceFileUpload', () => ({ useSourceFileUpload: () => ({ isUploading: false, handleUpload: driver.upload }) }));
-vi.mock('../../src/services/fileService', () => ({ downloadUrlAndSave: vi.fn(), saveDataUrlToProjectData: vi.fn(), buildNodeFileName: () => 'frame.jpg' }));
+vi.mock('../../src/services/fileService', () => ({
+  downloadUrlAndSave: vi.fn(), saveDataUrlToProjectData: vi.fn(), buildNodeFileName: () => 'frame.jpg',
+  isTauriEnv: () => true, saveBinaryToProjectData: driver.saveAudio,
+}));
 vi.mock('../../src/services/clipboardService', () => ({ copyFile: vi.fn() }));
 vi.mock('../../src/services/indexedDbService', () => ({ buildVideoEditorProjectId: () => 'editor' }));
 vi.mock('../../src/services/videoEditorWindowService', async (original) => ({
@@ -160,6 +164,9 @@ beforeEach(async () => {
   driver.ready.mockReset().mockResolvedValue(undefined);
   driver.seek.mockReset().mockImplementation(async (video: FakeVideo, time: number) => { video.currentTime = time; });
   driver.upload.mockReset().mockResolvedValue(null);
+  driver.extractAudio.mockReset();
+  driver.saveAudio.mockReset().mockResolvedValue({ assetUrl: 'asset://extracted.m4a', filePath: 'extracted.m4a' });
+  vi.doMock('../../src/services/videoAudioExtractionService', () => ({ extractVideoAudio: driver.extractAudio }));
   driver.editorSubscriber = undefined; driver.editorBindingCurrent = false;
   driver.transitionImports = 0; driver.transitionLoadStarted = undefined; driver.transitionLoadGate = undefined;
   driver.listEditorModels.mockReset().mockReturnValue([{ value: 'video/model', label: 'Video model', provider: 'video', groupName: 'Video' }]);
@@ -200,6 +207,79 @@ afterEach(() => {
 });
 
 describe('video node demand loading', () => {
+  it('extracts audio once while deselection unloads the player', async () => {
+    const started = deferred<void>();
+    const extracted = deferred<{ bytes: Uint8Array; extension: string; mimeType: string }>();
+    driver.extractAudio.mockImplementation(() => { started.resolve(); return extracted.promise; });
+    selected = true;
+    render();
+    const extract = named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>;
+    const completion = extract();
+    await started.promise;
+    await extract();
+    render();
+    expect(named('VideoNodeToolbar').props.isExtractingAudio).toBe(true);
+    expect(driver.extractAudio).toHaveBeenCalledOnce();
+    selected = false;
+    store.selectedNodeIds = [];
+    render();
+    expect((driver.extractAudio.mock.calls[0][1] as AbortSignal).aborted).toBe(false);
+    extracted.resolve({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    await completion;
+    expect(store.addNode).toHaveBeenCalledOnce();
+    expect(store.addNode.mock.calls[0][0]).toMatchObject({
+      type: 'ai-audio', data: { audioUrl: 'asset://extracted.m4a', role: 'source', status: 'success' },
+    });
+  });
+
+  it.each(['project', 'source', 'revision', 'deleted'])('discards audio after the %s changes during extraction', async (change) => {
+    const started = deferred<void>();
+    const extracted = deferred<{ bytes: Uint8Array; extension: string; mimeType: string }>();
+    driver.extractAudio.mockImplementation(() => { started.resolve(); return extracted.promise; });
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>)();
+    await started.promise;
+    if (change === 'project') store.currentProjectId = 'project-b';
+    if (change === 'source') store.nodes[0].data.videoUrl = 'asset://replacement.mp4';
+    if (change === 'revision') revision++;
+    if (change === 'deleted') store.nodes = [];
+    if (change === 'project' || change === 'source') render();
+    extracted.resolve({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    await completion;
+    expect(driver.saveAudio).not.toHaveBeenCalled();
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('discards saved audio if the canvas changes while the file is being written', async () => {
+    const started = deferred<void>();
+    const saved = deferred<{ assetUrl: string; filePath: string }>();
+    driver.extractAudio.mockResolvedValue({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    driver.saveAudio.mockImplementation(() => { started.resolve(); return saved.promise; });
+    selected = true;
+    render();
+    const completion = (named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>)();
+    await started.promise;
+    revision++;
+    saved.resolve({ assetUrl: 'asset://extracted.m4a', filePath: 'extracted.m4a' });
+    await completion;
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).not.toHaveBeenCalled();
+  });
+
+  it('does not create an audio node when saving fails', async () => {
+    driver.extractAudio.mockResolvedValue({ bytes: new Uint8Array([1]), extension: 'm4a', mimeType: 'audio/mp4' });
+    driver.saveAudio.mockRejectedValue(new Error('磁盘写入失败'));
+    selected = true;
+    render();
+    await (named('VideoNodeToolbar').props.onExtractAudio as () => Promise<void>)();
+    expect(store.addNode).not.toHaveBeenCalled();
+    expect(store.showToast).toHaveBeenCalledWith('提取音频失败：{message}', 'error');
+    render();
+    expect(named('VideoNodeToolbar').props.isExtractingAudio).toBe(false);
+  });
+
   it('does not import the transition runtime while rendering an ordinary video node', () => {
     render();
     expect(driver.editorSubscriber).toBeDefined();

@@ -18,7 +18,7 @@ AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown�
 
 **0.11.3 · 助手窗口与常用 Skill：** 独立助手关闭或收回时等待草稿交接与窗口真正关闭，失败保留草稿并恢复编辑；节点 `/` 一级菜单显示最近使用的 5 个可用 Skill，包含上传项与已启用智能体包，助手选择也更新这份近期记录。另含分组开合自动让位、新项目废弃原件扫描、七角色团队及 Seedream 5.0 Flash 适配，修复素材预览与部分 macOS 文件处理。旧项目保持原样，正式迁移继续关闭；新结构沿用 v4 项目包，兼容旧 v1–v3 包。含输出历史的 v4 包需 0.11.0 或支持该字段的客户端，早期 v4 客户端可能拒绝。安装包与验收范围见 [发布说明](.release-notes.md)。
 
-![Version](https://img.shields.io/badge/version-0.11.4-6366f1)
+![Version](https://img.shields.io/badge/version-0.11.5-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)

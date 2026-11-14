@@ -12,7 +12,7 @@ AI Canvas Tauri は、テキスト・画像・動画・音声・コマ撮りア�
 
 **0.11.3 · アシスタントウィンドウと最近使った Skill：** 独立ウィンドウを閉じる・戻す際は、下書きの受け渡しと実際の終了を待ち、失敗時は下書きを保持して編集に戻れます。ノードの `/` メニューに、アップロード済み・有効なエージェントパッケージから最近使った利用可能な Skill を最大 5 件表示し、アシスタントでの選択も同じ履歴に記録します。グループ開閉時の間隔調整、新プロジェクトの未使用原本のスキャン、7 役割のチーム、Seedream 5.0 Flash に対応し、素材プレビューと macOS の一部ファイル処理も修正しました。既存プロジェクトは自動移行せず、v4 と旧 v1〜v3 の互換性を維持します。出力履歴を含む v4 は 0.11.0 または対応クライアントが必要で、初期の v4 クライアントでは拒否される場合があります。配布状況と検証範囲は[リリースノート](.release-notes.md)をご確認ください。
 
-![Version](https://img.shields.io/badge/version-0.11.4-6366f1)
+![Version](https://img.shields.io/badge/version-0.11.5-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)

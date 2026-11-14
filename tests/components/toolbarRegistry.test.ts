@@ -11,6 +11,13 @@ import {
 } from '../../src/components/nodes/shared/toolbar/toolbarRegistry';
 import type { InstalledPlugin } from '../../src/types/plugin';
 
+it('offers audio extraction in new video layouts and in More for existing layouts', () => {
+  const keys = getDefaultLayout('ai-video').zones.flatMap((zone) => zone.buttonKeys);
+  expect(keys[keys.indexOf('captureFrame') + 1]).toBe('extractAudio');
+  expect(getHiddenDefaultToolbarButtons(getButtonRegistry('ai-video'), new Set(['captureFrame', 'more'])))
+    .toContainEqual(expect.objectContaining({ key: 'extractAudio', label: '提取音频' }));
+});
+
 describe('toolbar layout migration', () => {
   it('registers Camera Studio and history without the superseded angle tool', () => {
     const keys = getButtonRegistry('ai-image').map((button) => button.key);

@@ -48,6 +48,7 @@ export const TEXT_BUTTONS: ToolbarButtonDef[] = [
 export const VIDEO_BUTTONS: ToolbarButtonDef[] = [
   { key: 'copyFile',      label: '复制视频',    icon: 'mdi:content-copy',             defaultZone: '常用' },
   { key: 'captureFrame',   label: '截取帧',      icon: 'mdi:camera-outline',            defaultZone: '常用' },
+  { key: 'extractAudio',   label: '提取音频',    icon: 'mdi:music-note-plus',           defaultZone: '常用' },
   { key: 'showPrompt',     label: '查看提示词',  icon: 'mdi:message-text-outline',      defaultZone: '常用' },
   { key: 'reversePrompt',  label: '反推提示词',  icon: 'mdi:text-search',               defaultZone: '常用' },
   { key: 'fullscreen',     label: '全屏预览',    icon: 'mdi:fullscreen',                defaultZone: '常用' },
