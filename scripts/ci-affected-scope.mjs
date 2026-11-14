@@ -2,12 +2,13 @@
  * 按仓库路径选择开发阶段的检查范围。这里的文件读取关系不在 Vitest 导入图中。
  */
 
-const sharedPaths = [
-  /^src\/(?:App\.tsx|RootView\.tsx|main\.tsx|index\.css|projectModelFixtureHost\.ts|store\/useAppStore\.ts)$/,
+const sharedFrontendPaths = [
+  /^src\/(?:App\.tsx|RootView\.tsx|main\.tsx|index\.css|store\/useAppStore\.ts)$/,
   /^src\/(?:types|i18n|vendor)\//,
   // Worker 入口通过 URL 加载，未必出现在 Vitest 的导入关系中。
   /^src\/services\/(?:.+\/)?[^/]+Worker\.ts$/,
   /^tests\/setup\.ts$/,
+  /^doc\/插件开发规范\.md$/,
 ];
 const lintable = /\.(?:js|mjs|cjs|ts|tsx)$/;
 const typescript = /\.tsx?$/;
@@ -64,7 +65,7 @@ function readerTests(path, rules) {
   return rules.flatMap(([pattern, tests]) => pattern.test(path) ? tests : []);
 }
 
-function emptyScope(mode, reason) {
+function emptyScope(mode, reason, rust = mode === 'full') {
   return {
     mode,
     reason,
@@ -72,7 +73,7 @@ function emptyScope(mode, reason) {
     relatedFiles: [],
     explicitTests: [],
     typecheck: mode === 'full',
-    rust: mode === 'full',
+    rust,
   };
 }
 
@@ -88,13 +89,15 @@ export function classifyAffectedChanges(changes) {
   const explicitTests = new Set();
   let typecheck = false;
   let rust = false;
+  let fullFrontendReason;
 
   for (const { status, path } of changes) {
     if ((status !== 'M' && status !== 'A') || !isUsablePath(path)) {
       return emptyScope('full', '差异包含删除、重命名、类型变化或无法安全处理的路径');
     }
-    if (sharedPaths.some((pattern) => pattern.test(path)) || path === 'doc/插件开发规范.md') {
-      return emptyScope('full', `共享输入发生变化（${path}）`);
+    if (sharedFrontendPaths.some((pattern) => pattern.test(path))) {
+      fullFrontendReason ??= `共享前端输入发生变化（${path}）`;
+      continue;
     }
     if (documentation.test(path)) continue;
 
@@ -123,6 +126,7 @@ export function classifyAffectedChanges(changes) {
     for (const test of readers) explicitTests.add(test);
   }
 
+  if (fullFrontendReason) return emptyScope('full', fullFrontendReason, rust);
   if (!lintFiles.size && !relatedFiles.size && !explicitTests.size && !rust) {
     return emptyScope('skip', changes.length ? '仅改动了独立文档' : '没有文件改动');
   }
