@@ -1682,9 +1682,9 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
           }
         }}
       >
-        <header data-tauri-drag-region={pageHeader ? true : undefined}
+        <header data-tauri-drag-region={pageHeader ? 'deep' : undefined}
           className={pageHeader
-            ? `relative flex min-h-11 shrink-0 flex-wrap items-center gap-3 border-b border-border-subtle py-1 ${macWindowControls ? 'pl-28 pr-3' : nativeWindowControls ? 'pl-3 pr-32' : 'px-3'}`
+            ? `relative flex min-h-11 shrink-0 select-none flex-wrap items-center gap-3 border-b border-border-subtle py-1 ${macWindowControls ? 'pl-28 pr-3' : nativeWindowControls ? 'pl-3 pr-32' : 'px-3'}`
             : 'flex shrink-0 items-center gap-3 border-b border-border-subtle px-2.5 py-2'}>
           {pageHeader ? <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm"
             aria-label={t('返回启动页')} onClick={onBackToStartPage}>
