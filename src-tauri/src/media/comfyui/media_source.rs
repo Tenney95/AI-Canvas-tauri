@@ -99,27 +99,8 @@ fn media_url(value: &str) -> Result<Url, String> {
 fn valid_id(value: &str) -> bool { value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) }
 
 pub(crate) fn new_id() -> Result<String, String> {
-    let mut bytes = [0_u8; 32];
-    #[cfg(windows)]
-    {
-        // RtlGenRandom 是 Windows 系统密码学随机源，不接收 Renderer 提供的种子。
-        #[link(name = "advapi32")]
-        unsafe extern "system" {
-            #[link_name = "SystemFunction036"]
-            fn rtl_gen_random(buffer: *mut std::ffi::c_void, length: u32) -> u8;
-        }
-        if unsafe { rtl_gen_random(bytes.as_mut_ptr().cast(), bytes.len() as u32) } == 0 {
-            return Err("系统随机源不可用，未创建媒体读取授权".into());
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes))
-            .map_err(|_| "系统随机源不可用，未创建媒体读取授权")?;
-    }
-    #[cfg(not(any(windows, unix)))]
-    return Err("当前平台不支持安全的媒体读取授权".into());
+    #[cfg(not(any(windows, unix)))] return Err("当前平台不支持安全的媒体读取授权".into());
+    let bytes = crate::secure_random::random_bytes::<32>().map_err(|_| "系统随机源不可用，未创建媒体读取授权")?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -394,6 +375,11 @@ pub(crate) fn shutdown(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grant_identity_keeps_32_random_bytes_as_lowercase_hex() {
+        assert!(valid_id(&new_id().unwrap()));
+    }
 
     #[test]
     fn source_requires_fixed_view_route_without_embedded_credentials() {

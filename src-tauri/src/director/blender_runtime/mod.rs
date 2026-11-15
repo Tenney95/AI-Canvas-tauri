@@ -16,6 +16,7 @@ pub use job::{BlenderJobCore, BlenderJobStartRequest, BlenderJobStatus};
 pub use project_grant::ProjectGrantState;
 pub use result::BlenderCollectedResult;
 
+use crate::path_policy::is_link_or_reparse;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -818,24 +819,6 @@ fn candidate_location_is_allowed(
     is_within(candidate, root)
         && is_within(candidate, vendor)
         && candidate.parent() == Some(version_directory)
-}
-
-#[cfg(windows)]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_type().is_symlink() || has_windows_reparse_attribute(metadata.file_attributes())
-}
-
-#[cfg(windows)]
-fn has_windows_reparse_attribute(attributes: u32) -> bool {
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 fn is_plain_directory(metadata: &fs::Metadata) -> bool {
@@ -2088,14 +2071,6 @@ mod tests {
         assert!(canonical_root_is_allowed(Path::new(
             r"\\?\C:\Program Files"
         )));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn rejects_windows_reparse_attribute_deterministically() {
-        assert!(!has_windows_reparse_attribute(0));
-        assert!(has_windows_reparse_attribute(0x0400));
-        assert!(has_windows_reparse_attribute(0x0420));
     }
 
     #[test]

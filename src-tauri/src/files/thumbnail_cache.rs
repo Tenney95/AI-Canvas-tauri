@@ -13,6 +13,7 @@ use tauri::ipc::{InvokeBody, Request};
 
 use crate::path_policy::{
     authorize_existing_plain_directory, authorize_existing_plain_file, ensure_trusted_caller,
+    is_link_or_reparse as is_link,
 };
 
 const CACHE_DIRECTORY: &str = ".thumbnail";
@@ -79,18 +80,6 @@ fn validate_edge(max_edge: u32) -> Result<(), String> {
         Ok(())
     } else {
         Err("缩略图尺寸无效".into())
-    }
-}
-
-fn is_link(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
-    }
-    #[cfg(not(windows))]
-    {
-        metadata.file_type().is_symlink()
     }
 }
 

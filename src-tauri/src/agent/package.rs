@@ -4,7 +4,7 @@
 //! Renderer 只持有不透明 `sourceId`。真实目录映射保存在 Rust 私有注册表中；
 //! 后续读取只接受安全相对路径。这里不会执行包内脚本，也不会把智能体内容注册成插件。
 
-use crate::path_policy::{authorize_path, ensure_trusted_caller, PathAccess};
+use crate::path_policy::{authorize_path, ensure_trusted_caller, simplify_verbatim, PathAccess};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -189,20 +189,6 @@ fn managed_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
         .app_local_data_dir()
         .map(|directory| directory.join(MANAGED_ROOT_NAME))
         .map_err(|_| "无法定位智能体托管目录".to_string())
-}
-
-fn simplify_verbatim(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let text = path.to_string_lossy().into_owned();
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return PathBuf::from(
-                rest.strip_prefix(r"UNC\")
-                    .map_or_else(|| rest.to_string(), |unc| format!(r"\\{unc}")),
-            );
-        }
-    }
-    path
 }
 
 fn normalized_for_compare(path: &Path) -> PathBuf {

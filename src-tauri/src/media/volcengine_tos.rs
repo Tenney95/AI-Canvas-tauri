@@ -186,14 +186,7 @@ fn signed_url(method: &str, host: &str, path: &str, credentials: &Credentials, r
 }
 
 fn random_key() -> Result<String, String> {
-    let mut bytes = [0_u8; 24];
-    #[cfg(windows)] {
-        #[link(name = "advapi32")]
-        unsafe extern "system" { #[link_name = "SystemFunction036"] fn rtl_gen_random(buffer: *mut std::ffi::c_void, length: u32) -> u8; }
-        if unsafe { rtl_gen_random(bytes.as_mut_ptr().cast(), bytes.len() as u32) } == 0 { return Err(INVALID.into()); }
-    }
-    #[cfg(unix)] File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes)).map_err(|_| INVALID)?;
-    #[cfg(not(any(windows, unix)))] return Err(INVALID.into());
+    let bytes = crate::secure_random::random_bytes::<24>().map_err(|_| INVALID)?;
     Ok(hex(&bytes))
 }
 
@@ -430,6 +423,13 @@ pub fn cancel_volcengine_tos_upload(webview: Webview, request_id: String) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_keys_keep_24_random_bytes_as_lowercase_hex() {
+        let key = random_key().unwrap();
+        assert_eq!(key.len(), 48);
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
 
     #[test]
     fn signature_matches_official_tos_get_example() {

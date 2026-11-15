@@ -5,6 +5,7 @@
 //! resource-integrity and process-tree checks have succeeded.
 
 use super::result::{
+    is_valid_identifier as is_valid_scene_id, is_valid_sha256,
     validate_blender_collect_candidate, BlenderCollectCandidate, BlenderCollectedResult,
     BlenderResultArtifactKind, BlenderResultBinding,
 };
@@ -1213,13 +1214,6 @@ fn is_positive_safe_integer(value: u64) -> bool {
     value > 0 && value <= JS_SAFE_INTEGER_MAX
 }
 
-fn is_valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-}
-
 fn is_valid_opaque_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_OPAQUE_ID_BYTES
@@ -1228,21 +1222,17 @@ fn is_valid_opaque_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
 }
 
-fn is_valid_scene_id(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.is_empty() || bytes.len() > MAX_OPAQUE_ID_BYTES {
-        return false;
-    }
-    let is_edge = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
-    is_edge(bytes[0])
-        && is_edge(bytes[bytes.len() - 1])
-        && bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
-        })
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scene_ids_keep_a_narrower_contract_than_opaque_job_ids() {
+        assert!(super::is_valid_scene_id("scene-1"));
+        assert!(super::is_valid_opaque_id(".Job:ABC."));
+        assert!(!super::is_valid_scene_id(".Job:ABC."));
+        assert!(super::is_valid_scene_id(&"a".repeat(128)));
+        assert!(!super::is_valid_scene_id(&"a".repeat(129)));
+    }
+
     #[test]
     fn compatibility_failures_expose_only_fixed_public_codes_and_messages() {
         for (kind, code) in [

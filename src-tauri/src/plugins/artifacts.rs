@@ -1,4 +1,5 @@
 //! 可信 Python 的调用私有媒体工作区。真实路径仅注入本轮 Python 进程。
+use crate::path_policy::is_link_or_reparse as is_link;
 use crate::{path_policy, plugin_host_effects::PluginHostIdentity, plugin_registry};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -130,16 +131,6 @@ fn check_authority<R: Runtime>(
         &identity.plugin_id,
         &identity.invocation_id,
     )
-}
-
-#[cfg(windows)]
-fn is_link(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes() & 0x400 != 0 || metadata.file_type().is_symlink()
-}
-#[cfg(not(windows))]
-fn is_link(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 fn ordinary_directory(path: &Path) -> Result<PathBuf, String> {

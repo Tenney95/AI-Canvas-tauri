@@ -3,6 +3,7 @@
 //! 本模块不接收外部脚本、资源路径或清单内容。所有可安装字节均在编译期内嵌，
 //! 并在写入前同时核对固定清单字段、固定资源集合、字节数和 SHA-256。
 
+use crate::path_policy::is_link_or_reparse;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -337,20 +338,6 @@ pub fn validate_embedded_blender_runtime() -> Result<(), BlenderResourceError> {
         validate_manifest_resource(&manifest, resource)?;
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
 }
 
 fn contains_unsafe_component(path: &Path) -> bool {

@@ -214,7 +214,7 @@ fn is_safe_integer(value: u64, allow_zero: bool) -> bool {
     value <= JS_SAFE_INTEGER_MAX && (allow_zero || value > 0)
 }
 
-fn is_valid_identifier(value: &str) -> bool {
+pub(super) fn is_valid_identifier(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() || bytes.len() > MAX_ID_LENGTH {
         return false;
@@ -227,7 +227,7 @@ fn is_valid_identifier(value: &str) -> bool {
         })
 }
 
-fn is_valid_sha256(value: &str) -> bool {
+pub(super) fn is_valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -518,6 +518,22 @@ pub(crate) fn validate_existing_blender_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_identifier_and_digest_validation_preserves_boundaries() {
+        for value in ["a", "scene-1", "a.b_c"] {
+            assert!(is_valid_identifier(value));
+        }
+        assert!(is_valid_identifier(&"a".repeat(MAX_ID_LENGTH)));
+        for value in ["", "Scene", "a:b", ".scene", "scene-", "场景", "a/b"] {
+            assert!(!is_valid_identifier(value));
+        }
+        assert!(!is_valid_identifier(&"a".repeat(MAX_ID_LENGTH + 1)));
+        assert!(is_valid_sha256(&"0a".repeat(32)));
+        for value in ["a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64)] {
+            assert!(!is_valid_sha256(&value));
+        }
+    }
 
     fn binding() -> BlenderResultBinding {
         BlenderResultBinding {

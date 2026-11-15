@@ -4,7 +4,7 @@
 //! runtime 与工具清单保存在 Rust 私有目录中。激活版本和上一版本采用原子注册表切换，
 //! 插件执行前必须重新核对私有快照的 SHA-256。
 
-use crate::path_policy::ensure_trusted_caller;
+use crate::path_policy::{ensure_trusted_caller, is_link_or_reparse, simplify_verbatim};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -1168,17 +1168,6 @@ fn plugin_private_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
     roots
 }
 
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
-            return true;
-        }
-    }
-    metadata.file_type().is_symlink()
-}
-
 fn private_directory_exists(path: &Path) -> Result<bool, String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.is_dir() || is_link_or_reparse(&metadata) => {
@@ -1630,20 +1619,6 @@ fn migrate_legacy_plugin_directory_at(legacy: &Path, target: &Path) -> Result<bo
     }
     let _ = fs::remove_dir(&staging_root);
     result
-}
-
-fn simplify_verbatim(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let text = path.to_string_lossy().into_owned();
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return PathBuf::from(
-                rest.strip_prefix(r"UNC\")
-                    .map_or_else(|| rest.to_string(), |unc| format!(r"\\{unc}")),
-            );
-        }
-    }
-    path
 }
 
 fn normalized_for_compare(path: &Path) -> PathBuf {

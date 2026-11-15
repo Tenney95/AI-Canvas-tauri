@@ -1,4 +1,5 @@
 //! 模型去重写入与中断恢复。IPC 只接受扫描对象 ID；任何原始路径都留在原生侧。
+use crate::path_policy::is_link_or_reparse as is_reparse;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -124,16 +125,6 @@ struct VerifiedPair {
 }
 
 struct TransactionOutcome { reclaimed_bytes: u64, warning: Option<String> }
-
-fn is_reparse(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_type().is_symlink() || metadata.file_attributes() & 0x0400 != 0
-    }
-    #[cfg(not(windows))]
-    { metadata.file_type().is_symlink() }
-}
 
 fn plain_file(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "模型文件不存在或不可访问".to_string())?;

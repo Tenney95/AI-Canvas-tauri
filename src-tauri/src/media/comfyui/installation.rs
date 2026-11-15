@@ -3,6 +3,7 @@
 //! Renderer 配置路径只作为候选或当前授权的匹配值。权威记录位于原生私有目录，
 //! 只允许主窗口通过系统目录选择器更换，旧配置首次迁移需要已有 scope 或原生确认。
 
+use crate::path_policy::{is_link_or_reparse, simplify_verbatim};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -40,18 +41,6 @@ pub(crate) fn private_directory<R: Runtime>(app: &AppHandle<R>) -> Result<PathBu
         .map_err(|_| "无法定位 ComfyUI 安装授权存储".to_string())
 }
 
-fn simplify_verbatim(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let text = path.to_string_lossy().into_owned();
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest.strip_prefix(r"UNC\")
-                .map_or_else(|| rest.to_string(), |unc| format!(r"\\{unc}")));
-        }
-    }
-    path
-}
-
 fn normalized(path: &Path) -> PathBuf {
     path.canonicalize().map(simplify_verbatim)
         .unwrap_or_else(|_| path.components().collect())
@@ -68,16 +57,6 @@ pub(crate) fn overlaps_private_path<R: Runtime>(app: &AppHandle<R>, path: &Path)
         let target = normalized(path);
         target.starts_with(&private) || private.starts_with(&target)
     }).unwrap_or(false)
-}
-
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_type().is_symlink() || metadata.file_attributes() & 0x0400 != 0
-    }
-    #[cfg(not(windows))]
-    { metadata.file_type().is_symlink() }
 }
 
 fn ensure_plain_directory_chain(path: &Path) -> Result<(), String> {

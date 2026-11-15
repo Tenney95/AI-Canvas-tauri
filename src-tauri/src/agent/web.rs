@@ -320,7 +320,7 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-fn is_disallowed_ipv4(ip: std::net::Ipv4Addr) -> bool {
+pub(crate) fn is_disallowed_ipv4(ip: std::net::Ipv4Addr) -> bool {
     let octets = ip.octets();
     ip.is_private()
         || ip.is_loopback()
@@ -347,7 +347,7 @@ fn is_proxy_fake_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn is_disallowed_ipv6(ip: std::net::Ipv6Addr) -> bool {
+pub(crate) fn is_disallowed_ipv6(ip: std::net::Ipv6Addr) -> bool {
     if let Some(mapped) = ip.to_ipv4_mapped() {
         return is_disallowed_ipv4(mapped);
     }
@@ -443,7 +443,7 @@ fn validate_url_shape(raw_url: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn same_origin(expected: &Url, candidate: &Url) -> bool {
+pub(crate) fn same_origin(expected: &Url, candidate: &Url) -> bool {
     expected.scheme() == candidate.scheme()
         && expected.host_str().map(str::to_ascii_lowercase)
             == candidate.host_str().map(str::to_ascii_lowercase)
@@ -1347,6 +1347,7 @@ mod tests {
         assert!(!is_proxy_fake_ip("198.20.0.1".parse().unwrap()));
         assert!(!is_proxy_fake_ip("192.168.1.8".parse().unwrap()));
         assert!(!is_proxy_fake_ip("2606:4700:4700::1111".parse().unwrap()));
+        assert!(!is_proxy_fake_ip("::ffff:198.18.0.1".parse().unwrap()));
     }
 
     #[test]

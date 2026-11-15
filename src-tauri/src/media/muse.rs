@@ -87,17 +87,8 @@ pub struct TaskStatus {
 }
 
 fn random_id() -> Result<String, String> {
-    let mut bytes = [0u8; 24];
-    #[cfg(windows)] {
-        #[link(name = "advapi32")]
-        unsafe extern "system" { #[link_name = "SystemFunction036"] fn rtl_gen_random(buffer: *mut std::ffi::c_void, length: u32) -> u8; }
-        if unsafe { rtl_gen_random(bytes.as_mut_ptr().cast(), bytes.len() as u32) } == 0 { return Err("Muse 随机身份不可用".into()); }
-    }
-    #[cfg(unix)] {
-        use std::io::Read;
-        std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes)).map_err(|_| "Muse 随机身份不可用")?;
-    }
     #[cfg(not(any(windows, unix)))] return Err("当前平台不支持 Muse".into());
+    let bytes = crate::secure_random::random_bytes::<24>().map_err(|_| "Muse 随机身份不可用")?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -814,6 +805,9 @@ mod tests {
 
     #[test]
     fn task_identity_is_uuid_v4() {
+        let identity = random_id().unwrap();
+        assert_eq!(identity.len(), 48);
+        assert!(identity.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
         let id = new_task_id().unwrap();
         assert!(valid_task_id(&id));
         assert!(!valid_task_id("../../private"));

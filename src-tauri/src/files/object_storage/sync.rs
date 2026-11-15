@@ -7,26 +7,7 @@ use tauri::{AppHandle, State, Webview};
 use tokio_util::sync::CancellationToken;
 
 fn random_lock_secret() -> Result<String, StorageError> {
-    let mut bytes = [0_u8; 32];
-    #[cfg(windows)]
-    {
-        #[link(name = "advapi32")]
-        unsafe extern "system" {
-            #[link_name = "SystemFunction036"]
-            fn rtl_gen_random(buffer: *mut std::ffi::c_void, length: u32) -> u8;
-        }
-        if unsafe { rtl_gen_random(bytes.as_mut_ptr().cast(), bytes.len() as u32) } == 0 {
-            return Err(StorageError::new("unavailable"));
-        }
-    }
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        std::fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes))
-            .map_err(|_| StorageError::new("unavailable"))?;
-    }
-    #[cfg(not(any(windows, unix)))]
-    return Err(StorageError::new("unavailable"));
+    let bytes = crate::secure_random::random_bytes::<32>().map_err(|_| StorageError::new("unavailable"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -652,6 +633,13 @@ async fn clean_journal(app: AppHandle, journal: Journal, record: Record, cancel:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lock_secret_keeps_32_random_bytes_as_lowercase_hex() {
+        let secret = random_lock_secret().unwrap();
+        assert_eq!(secret.len(), 64);
+        assert!(secret.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
+
     fn delete_context() -> Context {
         Context { task_id: "task".into(), owner_id: "owner".into(), connection_id: "connection".into(), connection_revision: "revision".into(),
             library_id: "library".into(), shared_project_id: "project".into(), generation: "legacy".into() }

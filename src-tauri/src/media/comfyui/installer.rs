@@ -1,4 +1,5 @@
 //! 固定官方发布包安装；所有目录只从主窗口的原生选择器取得，不开放任意下载或执行能力。
+use crate::path_policy::{canonicalize_simplified, is_link_or_reparse as linked};
 use super::{installation, launch_settings, management, runtime_console};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,21 +104,7 @@ fn plain_parent(path: &Path) -> Result<PathBuf, String> {
         let metadata = fs::symlink_metadata(ancestor).map_err(|_| "安装位置不可访问".to_string())?;
         if !metadata.is_dir() || linked(&metadata) { return Err("安装位置不能经过符号链接或目录联接".into()); }
     }
-    let canonical = path.canonicalize().map_err(|_| "无法确认安装位置".to_string())?;
-    #[cfg(windows)]
-    {
-        let text = canonical.to_string_lossy();
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return Ok(PathBuf::from(rest.strip_prefix(r"UNC\").map_or_else(|| rest.into(), |unc| format!(r"\\{unc}"))));
-        }
-    }
-    Ok(canonical)
-}
-fn linked(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    { use std::os::windows::fs::MetadataExt; metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0 }
-    #[cfg(not(windows))]
-    { metadata.file_type().is_symlink() }
+    canonicalize_simplified(path).map_err(|_| "无法确认安装位置".to_string())
 }
 fn safe_component(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();

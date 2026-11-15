@@ -22,7 +22,7 @@ use tauri::{AppHandle, Webview};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
-use std::os::windows::{io::AsRawHandle, process::CommandExt};
+use std::os::windows::process::CommandExt;
 
 const MAX_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
@@ -229,59 +229,7 @@ pub async fn cancel_node_plugin_tool<R: tauri::Runtime>(
 }
 
 #[cfg(windows)]
-struct PythonProcessJob(windows::Win32::Foundation::HANDLE);
-
-#[cfg(windows)]
-impl PythonProcessJob {
-    fn attach(child: &Child) -> Result<Self, String> {
-        use windows::{
-            core::PCWSTR,
-            Win32::{
-                Foundation::HANDLE,
-                System::JobObjects::{
-                    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                },
-            },
-        };
-
-        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }
-            .map_err(|_| "无法创建 Python 插件 Windows Job Object".to_string())?;
-        let job = Self(handle);
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        unsafe {
-            SetInformationJobObject(
-                job.0,
-                JobObjectExtendedLimitInformation,
-                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        }
-        .map_err(|_| "无法配置 Python 插件 Windows Job Object".to_string())?;
-
-        let process = HANDLE(child.as_raw_handle());
-        unsafe { AssignProcessToJobObject(job.0, process) }
-            .map_err(|_| "无法将 Python 插件进程绑定到 Windows Job Object".to_string())?;
-        Ok(job)
-    }
-
-    fn terminate(&self) {
-        unsafe {
-            let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1223);
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for PythonProcessJob {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(self.0);
-        }
-    }
-}
+use crate::process_job::{AttachError, ProcessJob as PythonProcessJob};
 
 struct PythonProcessTree {
     #[cfg(windows)]
@@ -293,7 +241,11 @@ impl PythonProcessTree {
         #[cfg(windows)]
         {
             Ok(Self {
-                job: PythonProcessJob::attach(child)?,
+                job: PythonProcessJob::attach(child).map_err(|error| match error {
+                    AttachError::Create => "无法创建 Python 插件 Windows Job Object",
+                    AttachError::Configure => "无法配置 Python 插件 Windows Job Object",
+                    AttachError::Assign => "无法将 Python 插件进程绑定到 Windows Job Object",
+                }.to_string())?,
             })
         }
         #[cfg(not(windows))]

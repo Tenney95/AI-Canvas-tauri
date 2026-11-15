@@ -15,7 +15,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use url::Url;
 
 #[cfg(windows)]
-use std::os::windows::{io::AsRawHandle, process::CommandExt};
+use std::os::windows::process::CommandExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
@@ -341,34 +341,19 @@ fn git_command(app: &tauri::AppHandle, path: &Path) -> Result<Command, String> {
 }
 
 #[cfg(windows)]
-pub(super) struct ProcessJob(windows::Win32::Foundation::HANDLE);
+pub(super) struct ProcessJob(crate::process_job::ProcessJob);
 
 #[cfg(windows)]
 impl ProcessJob {
     pub(super) fn attach(child: &std::process::Child) -> Result<Self, String> {
-        use windows::{core::PCWSTR, Win32::{Foundation::HANDLE, System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-            JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        }}};
-        let job = Self(unsafe { CreateJobObjectW(None, PCWSTR::null()) }
-            .map_err(|_| "无法创建 ComfyUI 管理进程边界".to_string())?);
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        unsafe { SetInformationJobObject(job.0, JobObjectExtendedLimitInformation,
-            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) }
-            .map_err(|_| "无法配置 ComfyUI 管理进程边界".to_string())?;
-        unsafe { AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())) }
-            .map_err(|_| "无法绑定 ComfyUI 管理进程".to_string())?;
-        Ok(job)
+        use crate::process_job::AttachError;
+        crate::process_job::ProcessJob::attach(child).map(Self).map_err(|error| match error {
+            AttachError::Create => "无法创建 ComfyUI 管理进程边界",
+            AttachError::Configure => "无法配置 ComfyUI 管理进程边界",
+            AttachError::Assign => "无法绑定 ComfyUI 管理进程",
+        }.to_string())
     }
-    pub(super) fn terminate(&self) { unsafe { let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1223); } }
-}
-
-#[cfg(windows)]
-impl Drop for ProcessJob {
-    fn drop(&mut self) { unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.0); } }
+    pub(super) fn terminate(&self) { self.0.terminate(); }
 }
 
 fn run_command(app: &tauri::AppHandle, command: Command, timeout: Duration) -> Result<String, String> {

@@ -1,5 +1,6 @@
 //! ComfyUI 模型重复扫描。文件内容散列复用 Czkawka Core；授权、会话和结果租约由宿主管理。
 //! 只读取原生安装授权或本窗口显式选择的模型目录，不启用 Czkawka 的配置、缓存、日志或删除工具。
+use crate::path_policy::is_link_or_reparse as is_link;
 use czkawka_core::{
     common::model::HashType,
     tools::duplicate::{hash_calculation, DuplicateEntry},
@@ -318,14 +319,6 @@ fn ensure_active(app: &tauri::AppHandle, scan_id: &str, root: &Path, stop: &Atom
     }
     Ok(())
 }
-
-#[cfg(windows)]
-fn is_link(metadata: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
-}
-#[cfg(not(windows))]
-fn is_link(metadata: &Metadata) -> bool { metadata.file_type().is_symlink() }
 
 /// 每次读取都逐层拒绝链接/目录联接，再复用 path_policy 的真实路径和私有目录保护。
 pub(super) fn authorize_plain_model_file(app: &tauri::AppHandle, root: &Path, path: &Path) -> Result<PathBuf, String> {

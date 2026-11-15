@@ -1,6 +1,6 @@
 # 全仓代码质量审查与精简建议
 
-最新状态：2026-11-15，第一批已本地提交为 `19c6b3b2`；第二批 Q26、Q25、Q28 布局、Q31、Q39 已实现并按用户要求本地提交，两批均待用户验收，未推送。未运行测试或质检。各批实际范围、净减与桌面步骤见文末实施结果；此前基于 `e2023a8b` 的复查快照及早期行号保留当时事实，不代表当前未处理清单。
+最新状态：2026-11-15，第一批已本地提交为 `19c6b3b2`，第二批 Q26、Q25、Q28 布局、Q31、Q39 已本地提交为 `6c46dccc`；第三批 Q33～Q38 已实现并按用户要求本地提交。三批均待用户验收，本任务未推送，未运行本轮测试或质检。各批实际范围、净减与桌面步骤见文末实施结果；此前基于 `e2023a8b` 的复查快照及早期行号保留当时事实，不代表当前未处理清单。
 
 日期：2026-10-30。状态：静态审查完成；Q01 自动回归与部分桌面交互已验证，真实生成等场景待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；Q04 闲置模块及专属样式已清理，Q05 音视频工具栏预设执行、Q06 历史筛选、Q07 参考媒体串行处理、Q08 模型协议基础逻辑及 Q09 四组局部重复已合并，均待用户验收；Q10～Q17 已于 2026-10-31 实现，相关自动回归 535 项通过，桌面验收待完成。
 
@@ -574,9 +574,9 @@ Q30 样例：speech 的 245/246/250 行、mureka 的 346/348/349 行、youchuan 
 
 1. **第一批，直接删除和已有实现复用**：Q23、Q27、Q28 的文本预设部分、Q29、Q30；每项独立提交，保留行为和目录摘要。先迁移真实入口回归再删只验证旧方法的用例。Q30 只做数据提取，不顺带更新厂商目录。
 2. **第二批，节点与 Agent 收敛**：Q26、Q25 分别实施，随后 Q28 布局、Q31、Q39；Q32 收益小，等相关功能修改时顺手处理。两个行为分叉优先安排设计与验收；新增共享函数先限定在所属领域，避免新的“万能服务”。
-3. **第三批，原生基础件**：Q33～Q35 各做最小替换；Q36～Q38 等上述结果稳定后再做。需要重新编译桌面端并在相关系统验收，Web 展示不能替代。
+3. **第三批，原生基础件**：Q33～Q35 各做最小替换，完成静态收敛后再做 Q36～Q38；实现结果与剩余验收见文末。需要重新编译桌面端并在相关系统验收，Web 展示不能替代。
 
-每批从独立测试项目开始；删除/归档/恢复前先导出备份，准备普通项目、剧集多画布、共享素材及至少两个可切换项目。尚未改业务，以下为实施后的验收要求，不是本轮已执行结果：
+每批从独立测试项目开始；删除/归档/恢复前先导出备份，准备普通项目、剧集多画布、共享素材及至少两个可切换项目。以下为实施后的验收要求，不是已执行结果；各批实现状态见文末：
 
 | 范围 | 操作顺序及预期 | 异常与回归 |
 |---|---|---|
@@ -649,7 +649,7 @@ npx vitest run tests/services/projectSnapshotService.test.ts tests/store/project
 
 ## 2026-11-15 第二批实施结果
 
-用户已要求先提交第一批、再实施第二批并保留原有功能，后续要求提交第二批并继续第三批。第一批提交为 `19c6b3b2`（`refactor: 完成首批代码精简与模型参数去重`），仅包含该批 15 个文件；版本同步提示无需写入，未运行测试或质检，其他发版改动保留。以下第二批以此提交为基线，已实现并完成静态交叉复核，按用户要求本地提交、未推送；**本次未运行测试，待用户验收**。Q32 小收益登记与第三批原生候选未纳入本次提交。
+用户已要求先提交第一批、再实施第二批并保留原有功能，后续要求提交第二批并继续第三批。第一批提交为 `19c6b3b2`（`refactor: 完成首批代码精简与模型参数去重`），仅包含该批 15 个文件；版本同步提示无需写入，未运行测试或质检，其他发版改动保留。以下第二批以此提交为基线，已实现并完成静态交叉复核，按用户要求本地提交为 `6c46dccc`（`refactor: 收敛节点操作与工具栏及助手生命周期`），共 33 个文件、未推送；**本次未运行测试，待用户验收**。Q32 小收益登记与第三批原生候选未纳入第二批提交。
 
 ### 完整业务范围与保留边界
 
@@ -701,3 +701,51 @@ npx vitest run tests/services/chat/agentRoundExecutor.test.ts tests/services/cha
 ```
 
 类型、lint 和构建仍须按授权范围另行执行。回滚只撤销本节清单相对 `19c6b3b2` 的对应差异及新增 helper/回归文件，不用全工作区 reset/restore，不回退第一批或其他发版改动；无数据库/归档迁移和用户数据清理。
+
+## 2026-11-15 第三批实施结果
+
+第二批已按用户要求提交为 `6c46dccc`，随后实施 Q33～Q38。第三批已完成源码修改和静态交叉复核，本轮按用户要求单独本地提交、未推送；**本次未运行测试，待用户验收**。未执行 Cargo、lint、构建或桌面实机验证，不以源码对照代替编译及功能验收。Q32 未纳入第三批。
+
+### 业务范围与保留边界
+
+共 28 个 Rust 源文件，包含两个新增内部基础件和 `lib.rs` 注册；排除内联测试后，业务源码净减 **291 行**。含内联回归的源码整体净减 193 行，UTF-8/LF 口径净减 5,458 字节；不表示包体积或性能已实测改善。无新增依赖、原生命令、权限或存储格式迁移。
+
+| 项目 | 源码范围 | 已实现与保留语义 |
+|---|---|---|
+| Q33/Q34，净减 173 行 | [path_policy.rs](../../src-tauri/src/path_policy.rs)、[package.rs](../../src-tauri/src/agent/package.rs)、[registry.rs](../../src-tauri/src/plugins/registry.rs)、[artifacts.rs](../../src-tauri/src/plugins/artifacts.rs)、[native_project_media.rs](../../src-tauri/src/files/native_project_media.rs)、[thumbnail_cache.rs](../../src-tauri/src/files/thumbnail_cache.rs)；Comfy 的 [installation.rs](../../src-tauri/src/media/comfyui/installation.rs)、[installer.rs](../../src-tauri/src/media/comfyui/installer.rs)、[model_dedupe.rs](../../src-tauri/src/media/comfyui/model_dedupe.rs)、[model_dedupe_links.rs](../../src-tauri/src/media/comfyui/model_dedupe_links.rs)、[model_dedupe_history.rs](../../src-tauri/src/media/comfyui/model_dedupe_history.rs)；Blender 的 [mod.rs](../../src-tauri/src/director/blender_runtime/mod.rs)、[resources.rs](../../src-tauri/src/director/blender_runtime/resources.rs)、[runner.rs](../../src-tauri/src/director/blender_runtime/runner.rs) | 12 个本地链接判定委托已有 `is_link_or_reparse`，五组路径转换复用已有 `simplify_verbatim/canonicalize_simplified`。Windows reparse 与 Unix symlink 语义保留；各自目录链、私有目录、授权、身份检查仍在原位，转换不提供授权；规范化失败时的回退和原错误映射保持 |
+| Q35，净减 28 行 | 新增 [secure_random.rs](../../src-tauri/src/platform/secure_random.rs)，[muse.rs](../../src-tauri/src/media/muse.rs)、[volcengine_tos.rs](../../src-tauri/src/media/volcengine_tos.rs)、[media_source.rs](../../src-tauri/src/media/comfyui/media_source.rs)、[sync.rs](../../src-tauri/src/files/object_storage/sync.rs) | 仅共享系统随机字节读取，Windows 仍为 `SystemFunction036`，Unix 仍为 `/dev/urandom` 完整读取；Muse/TOS 24 字节、Comfy/S3 32 字节、小写 hex、Muse UUID v4 位及各业务失败文案不变。无弱随机回退 |
+| Q36，净减 44 行 | [web.rs](../../src-tauri/src/agent/web.rs)、[provider_docs.rs](../../src-tauri/src/agent/provider_docs.rs) | 文档读取器复用已有公网 IP、IPv4/IPv6 和同源纯判定。网页读取遇混合 DNS 整组拒绝，文档读取过滤非公网地址；mapped fake-IP、URL/端口、DoH、重定向、固定地址连接和体积限制仍由原读取器分别处理 |
+| Q37，净减 32 行 | 新增 [process_job.rs](../../src-tauri/src/platform/process_job.rs)，[codex_process.rs](../../src-tauri/src/agent/codex_process.rs)、[runtime.rs](../../src-tauri/src/plugins/runtime.rs)、[management.rs](../../src-tauri/src/media/comfyui/management.rs) | 只共享 Windows Job Object 创建、配置、绑定、终止与 RAII 关闭；配置/绑定失败仍释放句柄，各业务原错误保持。可执行身份、参数、输出预算、取消/超时、父级 Drop 与 Child 回收留原位；无新增 Send/Sync 承诺。Comfy 保留原包装 API，Blender 挂起启动流程独立 |
+| Q38，净减 19 行 | [job.rs](../../src-tauri/src/director/blender_runtime/job.rs)、[result.rs](../../src-tauri/src/director/blender_runtime/result.rs) | Blender 内部复用 64 位小写 SHA256 与最多 128 字节的 scene ID 谓词；首尾及中间字符规则不变。允许大写、冒号与边缘标点的一般 opaque ID 继续独立 |
+| 内部模块注册，增加 5 行 | [lib.rs](../../src-tauri/src/lib.rs) | 用显式 `#[path]` 注册两个基础件，Job Object 模块仅 Windows 编译；不变更既有 crate 根业务模块名与 IPC 注册 |
+
+回归源码补充于既有内联测试：路径转换和普通条目/Unix symlink、Windows reparse 位；四种随机包装的原格式；公网/保留地址和 mapped fake-IP 差异；Blender ID、摘要边界及 opaque ID 宽规则。Job Object 保留既有生命周期回归，没有用仅镜像实现的用例代替真实进程验收。
+
+静态核对包含实际引用、替换前后函数正文、错误映射、平台 cfg、UTF-8 与差异空白；交叉复核未发现阻塞问题。Windows API 句柄签名与当前依赖源码相符、错误路径具有 RAII 所有权，仅是源码结论。随机源实际读取、拒绝分支、链接/UNC 文件系统、进程树和三平台编译均未验证。
+
+### Tauri 桌面验收与回滚
+
+前置条件：准备可丢弃的测试项目与备份、含本批 Rust 改动的 Tauri 构建、已授权普通目录；按需准备 UNC 共享、现有 AgentPackage/插件、Comfy 安装及独立测试账号。涉及费用的真实请求由用户选择执行。
+
+1. 依次导入 AgentPackage、安装/读取插件、保存项目媒体并重开缩略图，再检查 Comfy 安装、模型去重及历史恢复。普通路径和 Windows UNC 应沿用原结果；缺失/不可解析路径保持原错误或原回退。链接、junction/reparse、私有目录及越权祖先仍拒绝，取消不能新增授权或破坏现有素材。
+2. 在 Muse 会话与任务、TOS 上传、Comfy 媒体读取、S3 同步入口各完成一次已有流程，确认身份格式与作用域保持、退出/取消/锁冲突处理正常。随机源故障必须拒绝而非产生身份；故障注入与格式边界另用原生回归核对，不能仅凭一次成功请求推断。
+3. 普通网页与厂商文档分别读取公网地址并检查同源跳转；localhost、私网、保留网段、映射 IPv6 仍按原规则拒绝。混合 DNS、fake-IP 与跨源/端口跳转分别按两读取器的既有合同验收，不要求两入口返回相同错误或采用相同回退。
+4. Windows 分别回归 Codex、可信 Python 插件与 Comfy 管理/依赖/控制台的正常完成、取消、超时和关窗/退出；所属子进程树应回收，创建/配置/绑定失败保留原文案。macOS/Linux 回归原 Unix 进程组路径；Blender 发现/启动/取消/收集继续走独立挂起启动及 Manifest/项目/版本校验，不把进程退出当作成功。
+5. Blender 场景正常保存、收集仍成功；非法/超长 scene ID 和非小写摘要拒绝，合法 opaque job ID 不被误套 scene 规则。保存重开项目，确认结果仍仅写回对应项目、节点与活动 revision。
+
+可选自动化由用户按需执行：运行目录为仓库的 `src-tauri/`；以下命令本轮均未运行。
+
+```powershell
+cargo check --lib
+cargo test --lib path_policy::tests
+cargo test --lib assistant_web::tests
+cargo test --lib provider_docs::tests
+cargo test --lib muse::tests
+cargo test --lib volcengine_tos::tests
+cargo test --lib comfyui::media_source::tests
+cargo test --lib project_asset_storage::sync::tests
+cargo test --lib blender_runtime::job::tests
+cargo test --lib blender_runtime::result::tests
+```
+
+其他原生回归及三平台编译仍按用户授权范围执行，以上单测不能替代真实 Windows Job Object/UNC 与各平台桌面验收。回滚只撤销本节 28 个源码文件相对 `6c46dccc` 的差异、两个新增基础件及本批文档；保留后续并行提交、其他任务和前两批改动，不做全工作区 reset/restore，不清理用户数据。

@@ -6,38 +6,12 @@ use std::{
     thread, time::{Duration, Instant},
 };
 #[cfg(windows)]
-use std::os::windows::{fs::{MetadataExt, OpenOptionsExt}, io::AsRawHandle, process::CommandExt};
+use std::os::windows::{fs::{MetadataExt, OpenOptionsExt}, process::CommandExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 #[cfg(windows)]
-struct ProcessJob(windows::Win32::Foundation::HANDLE);
-#[cfg(windows)]
-impl ProcessJob {
-    fn attach(child: &Child) -> Result<Self, String> {
-        use windows::{core::PCWSTR, Win32::{Foundation::HANDLE, System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-            JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        }}};
-        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.map_err(|_| "CODEX_PROCESS_CONTAINMENT_FAILED")?;
-        let job = Self(handle);
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        unsafe { SetInformationJobObject(job.0, JobObjectExtendedLimitInformation,
-            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) }
-            .map_err(|_| "CODEX_PROCESS_CONTAINMENT_FAILED")?;
-        unsafe { AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())) }
-            .map_err(|_| "CODEX_PROCESS_CONTAINMENT_FAILED")?;
-        Ok(job)
-    }
-    fn terminate(&self) { unsafe { let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1223); } }
-}
-#[cfg(windows)]
-impl Drop for ProcessJob {
-    fn drop(&mut self) { unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.0); } }
-}
+use crate::process_job::ProcessJob;
 
 pub struct CodexProcess {
     child: Option<Child>,
@@ -103,7 +77,7 @@ impl CodexProcess {
         command.process_group(0);
         let mut child = command.spawn().map_err(|_| "CODEX_PROCESS_START_FAILED")?;
         #[cfg(windows)]
-        let job = match ProcessJob::attach(&child) {
+        let job = match ProcessJob::attach(&child).map_err(|_| "CODEX_PROCESS_CONTAINMENT_FAILED".to_string()) {
             Ok(job) => job,
             Err(error) => { let _ = child.kill(); let _ = child.wait(); return Err(error); }
         };

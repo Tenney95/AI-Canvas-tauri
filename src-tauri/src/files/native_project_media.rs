@@ -6,7 +6,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{Manager, Runtime, Webview};
-use crate::path_policy::{authorize_path, ensure_local_frontend_caller, ensure_trusted_caller, verified_user_storage_root, PathAccess};
+use crate::path_policy::{authorize_path, ensure_local_frontend_caller, ensure_trusted_caller, is_link_or_reparse as is_link, verified_user_storage_root, PathAccess};
 
 const ERROR: &str = "新项目素材目录不可用或归属未能确认，原有文件已保留";
 const REGISTRY_DIR: &str = "native-project-media-roots";
@@ -72,12 +72,6 @@ fn valid_id(id: &str, prefix: &str) -> bool {
     parts.len() == 6 && parts[0] == prefix && [8, 4, 4, 4, 12].iter().zip(&parts[1..])
         .all(|(length, part)| part.len() == *length && part.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
         && parts[3].starts_with('4') && matches!(parts[4].as_bytes()[0], b'8' | b'9' | b'a' | b'b')
-}
-
-fn is_link(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    { use std::os::windows::fs::MetadataExt; if metadata.file_attributes() & 0x400 != 0 { return true; } }
-    metadata.file_type().is_symlink()
 }
 
 fn plain_dir(path: &Path) -> Result<(), String> {

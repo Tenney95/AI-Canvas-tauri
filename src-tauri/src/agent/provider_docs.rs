@@ -1,5 +1,6 @@
 //! Provider 文档的受限原生读取器，执行 URL、DNS/IP、重定向和响应体积校验。
 
+use crate::assistant_web::{is_disallowed_ip, is_disallowed_ipv4, is_disallowed_ipv6, same_origin};
 use reqwest::blocking::{Client, ClientBuilder};
 use reqwest::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, USER_AGENT};
 use reqwest::redirect::Policy;
@@ -50,44 +51,6 @@ fn now_millis() -> u64 {
 fn is_fake_proxy_ipv4(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     octets[0] == 198 && (18..=19).contains(&octets[1])
-}
-
-fn is_disallowed_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_multicast()
-        || ip.is_unspecified()
-        || octets[0] == 0
-        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
-        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-        || is_fake_proxy_ipv4(ip)
-        || octets[0] >= 240
-}
-
-fn is_disallowed_ipv6(ip: std::net::Ipv6Addr) -> bool {
-    if let Some(mapped) = ip.to_ipv4_mapped() {
-        return is_disallowed_ipv4(mapped);
-    }
-    let segments = ip.segments();
-    ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || (segments[0] & 0xfe00) == 0xfc00
-        || (segments[0] & 0xffc0) == 0xfe80
-        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
-        || (segments[0] & 0xe000) != 0x2000
-}
-
-fn is_disallowed_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(value) => is_disallowed_ipv4(value),
-        IpAddr::V6(value) => is_disallowed_ipv6(value),
-    }
 }
 
 fn is_fake_proxy_ip(ip: IpAddr) -> bool {
@@ -275,13 +238,6 @@ fn read_limited(response: reqwest::blocking::Response) -> Result<Vec<u8>, String
     Ok(bytes)
 }
 
-fn same_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str().map(str::to_ascii_lowercase)
-            == right.host_str().map(str::to_ascii_lowercase)
-        && left.port_or_known_default() == right.port_or_known_default()
-}
-
 fn read_public_document(raw_url: String) -> Result<ProviderDocsReadResponse, String> {
     let initial_url = validate_url_shape(&raw_url)?;
     let mut current_url = initial_url.clone();
@@ -376,7 +332,19 @@ mod tests {
         let same_site = validate_url_shape("https://docs.example.com/models").unwrap();
         let other_site = validate_url_shape("https://example.com/models").unwrap();
         assert!(same_origin(&start, &same_site));
+        assert!(same_origin(&start, &Url::parse("https://DOCS.example.com:443/other").unwrap()));
         assert!(!same_origin(&start, &other_site));
+    }
+
+    #[test]
+    fn shared_ip_rules_reject_reserved_and_mapped_private_addresses() {
+        for blocked in ["0.0.0.1", "100.64.0.1", "192.0.0.1", "192.88.99.1", "240.0.0.1",
+            "::ffff:127.0.0.1", "::ffff:198.18.0.1", "fc00::1", "fe80::1", "2001:db8::1"] {
+            assert!(is_disallowed_ip(blocked.parse().unwrap()), "{blocked}");
+        }
+        for public in ["8.8.8.8", "::ffff:8.8.8.8", "2606:4700:4700::1111"] {
+            assert!(!is_disallowed_ip(public.parse().unwrap()), "{public}");
+        }
     }
 
     #[test]
@@ -385,6 +353,7 @@ mod tests {
         assert!(is_fake_proxy_ipv4(Ipv4Addr::new(198, 19, 255, 254)));
         assert!(!is_fake_proxy_ipv4(Ipv4Addr::new(198, 17, 255, 255)));
         assert!(!is_fake_proxy_ipv4(Ipv4Addr::new(198, 20, 0, 0)));
+        assert!(is_fake_proxy_ip("::ffff:198.18.0.1".parse().unwrap()));
     }
 
     #[test]

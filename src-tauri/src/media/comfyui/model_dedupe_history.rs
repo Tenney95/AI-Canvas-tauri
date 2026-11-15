@@ -1,4 +1,5 @@
 //! 模型去重参照历史。只保存相对路径；不可变阶段记录不构成文件授权或回滚指令。
+use crate::path_policy::is_link_or_reparse as is_reparse;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -86,16 +87,6 @@ pub struct HistoryEntry {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryList { entries: Vec<HistoryEntry>, warnings: Vec<String> }
-
-fn is_reparse(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_type().is_symlink() || metadata.file_attributes() & 0x0400 != 0
-    }
-    #[cfg(not(windows))]
-    { metadata.file_type().is_symlink() }
-}
 
 fn directory_chain(path: &Path) -> Result<(), String> {
     for ancestor in path.ancestors() {

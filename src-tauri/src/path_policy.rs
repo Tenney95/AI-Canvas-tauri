@@ -327,9 +327,13 @@ fn is_authorized<R: Runtime>(
 pub(crate) fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
+    metadata.file_type().is_symlink() || has_windows_reparse_attribute(metadata.file_attributes())
+}
+
+#[cfg(windows)]
+fn has_windows_reparse_attribute(attributes: u32) -> bool {
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-    metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
@@ -793,6 +797,51 @@ pub fn verified_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_reparse_attribute_deterministically() {
+        assert!(!has_windows_reparse_attribute(0));
+        assert!(!has_windows_reparse_attribute(0x0020));
+        assert!(has_windows_reparse_attribute(0x0400));
+        assert!(has_windows_reparse_attribute(0x0420));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn simplification_preserves_unc_and_plain_windows_paths() {
+        assert_eq!(simplify_verbatim(PathBuf::from(r"\\?\C:\资料\image.png")), PathBuf::from(r"C:\资料\image.png"));
+        assert_eq!(simplify_verbatim(PathBuf::from(r"\\?\UNC\server\share\资料.png")), PathBuf::from(r"\\server\share\资料.png"));
+        let plain = PathBuf::from(r"C:\资料\image.png");
+        assert_eq!(simplify_verbatim(plain.clone()), plain);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn simplification_does_not_reinterpret_windows_prefixes_on_other_platforms() {
+        let path = PathBuf::from(r"\\?\UNC\server\share\image.png");
+        assert_eq!(simplify_verbatim(path.clone()), path);
+    }
+
+    #[test]
+    fn shared_link_predicate_accepts_plain_entries_and_rejects_unix_symlinks() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("ai-canvas-shared-path-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let file = directory.join("plain.bin");
+        std::fs::write(&file, b"plain").unwrap();
+        assert!(!is_link_or_reparse(&std::fs::symlink_metadata(&directory).unwrap()));
+        assert!(!is_link_or_reparse(&std::fs::symlink_metadata(&file).unwrap()));
+        #[cfg(unix)]
+        {
+            let link = directory.join("link");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert!(is_link_or_reparse(&std::fs::symlink_metadata(&link).unwrap()));
+            std::fs::remove_file(link).unwrap();
+        }
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn refuses_paths_inside_the_secret_dir() {

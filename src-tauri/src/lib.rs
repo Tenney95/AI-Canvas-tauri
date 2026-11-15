@@ -167,6 +167,11 @@ pub mod onnx {
     }
 }
 mod path_policy;
+#[path = "platform/secure_random.rs"]
+mod secure_random;
+#[cfg(windows)]
+#[path = "platform/process_job.rs"]
+mod process_job;
 // 源文件按领域归类；crate 根模块名保持稳定，避免改变 IPC、测试与安全调用路径。
 #[path = "plugins/registry.rs"]
 mod plugin_registry;

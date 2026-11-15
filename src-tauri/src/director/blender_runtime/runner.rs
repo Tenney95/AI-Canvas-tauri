@@ -3,6 +3,7 @@
 //! Rust 持有路径、参数、进程树与结果提交权；Blender 只运行编译内嵌的固定 bpy
 //! 适配器。IPC 无法提供 Python、argv、cwd、环境变量或输出路径。
 
+use crate::path_policy::is_link_or_reparse;
 use super::job::{
     BlenderJobCancellation, BlenderJobOperation, BlenderJobProgressPhase,
     BlenderJobProgressReporter, BlenderJobRunner, BlenderJobRunnerFailure,
@@ -1357,32 +1358,8 @@ fn ensure_plain_directory(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(windows)]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_type().is_symlink() || metadata.file_attributes() & 0x0400 != 0
-}
-
-#[cfg(not(windows))]
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
-}
-
 fn canonicalize_simplified(path: &Path) -> Result<PathBuf, String> {
-    let canonical = path
-        .canonicalize()
-        .map_err(|_| "路径无法解析".to_string())?;
-    #[cfg(windows)]
-    {
-        let text = canonical.to_string_lossy().into_owned();
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return Ok(PathBuf::from(
-                rest.strip_prefix(r"UNC\")
-                    .map_or_else(|| rest.to_string(), |unc| format!(r"\\{unc}")),
-            ));
-        }
-    }
-    Ok(canonical)
+    crate::path_policy::canonicalize_simplified(path).map_err(|_| "路径无法解析".to_string())
 }
 
 #[cfg(windows)]
