@@ -29,6 +29,12 @@ interface NativeSkillSource {
 
 export type SkillUploadSource = 'file' | 'folder';
 
+/** 只按原生登记清理安装目录托管副本，原生会保留外部链接目录。 */
+export async function removeSkillSourceFiles(sourceId: string): Promise<boolean> {
+  if (!isTauriEnv()) throw new Error('清理 Skill 托管文件请使用 Tauri 桌面端');
+  return invokeSkillCommand<boolean>('remove_skill_source_files', { sourceId }, 'Skill 文件删除失败，请检查安装目录 skills 的权限或文件占用后重试');
+}
+
 interface SkillFileEntry {
   path: string;
   relativePath: string;

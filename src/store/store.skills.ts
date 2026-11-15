@@ -1,5 +1,5 @@
 /**
- * store.skills — 管理 Skill 的加载、导入、删除与配置。
+ * store.skills — 管理 Skill 的加载、导入、重命名、删除与配置。
  */
 import { t } from '../i18n';
 /**
@@ -16,11 +16,11 @@ import { getSkillDescription } from '../services/chat/skillDescription';
 import { isSkillAvailableOnSurface } from '../services/chat/skillCatalog';
 import { loadRecentSkillIds, saveRecentSkillIds } from '../services/indexedDb/skillUsageRepository';
 
-let usageQueue: Promise<void> = Promise.resolve();
+let skillWriteQueue: Promise<void> = Promise.resolve();
 
-function updateSkillUsage(write: () => Promise<void>): Promise<void> {
-  const pending = usageQueue.then(write);
-  usageQueue = pending.catch(() => undefined);
+function queueSkillWrite<T>(write: () => Promise<T>): Promise<T> {
+  const pending = skillWriteQueue.then(write);
+  skillWriteQueue = pending.then(() => undefined, () => undefined);
   return pending;
 }
 
@@ -35,6 +35,7 @@ export interface SkillSlice {
   markSkillUsed: (id: string) => Promise<void>;
   uploadSkill: (source?: SkillUploadSource) => Promise<UserSkill | null>;
   createSkillFromContent: (fileName: string, content: string) => Promise<UserSkill>;
+  renameSkill: (id: string, name: string) => Promise<void>;
   updateSkillContent: (id: string, content: string) => Promise<UserSkill | null>;
   deleteSkill: (id: string) => Promise<void>;
   loadSkills: () => Promise<void>;
@@ -44,7 +45,7 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
   userSkills: [],
   recentSkillIds: [],
 
-  markSkillUsed: (id) => updateSkillUsage(async () => {
+  markSkillUsed: (id) => queueSkillWrite(async () => {
     const { userSkills, agentPackageSkills, agentPackages, recentSkillIds } = get();
     const skill = [...userSkills, ...agentPackageSkills].find((item) => item.id === id);
     if (!skill || !isSkillAvailableOnSurface(skill, 'assistant-user', agentPackages)) return;
@@ -100,36 +101,64 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
     return skill;
   },
 
-  updateSkillContent: async (id, content) => {
+  renameSkill: (id, name) => queueSkillWrite(async () => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 120 || /[\r\n]/.test(trimmed)) {
+      throw new Error(t('Skill 名称须为 1–120 个字符，且不能换行'));
+    }
+    const existing = get().userSkills.find((skill) => skill.id === id);
+    if (!existing) throw new Error(t('Skill 不存在'));
+    if (existing.name === trimmed) return;
+    const updated = { ...existing, name: trimmed };
+    await fileService.saveSkill(updated);
+    set((state) => ({
+      userSkills: state.userSkills.map((skill) => skill.id === id ? updated : skill),
+    }));
+  }),
+
+  updateSkillContent: (id, content) => queueSkillWrite(async () => {
     const existing = get().userSkills.find((skill) => skill.id === id);
     if (!existing) return null;
     const parsed = parseSkillDocument(content);
     const updated: UserSkill = {
       ...existing,
-      name: parsed.manifest?.name || getSkillName(existing.fileName),
+      // 显示名由用户独立管理，正文声明变化不能覆盖重命名结果。
       description: getSkillDescription({ content, fileName: existing.fileName, manifest: parsed.manifest }),
       content,
       manifest: parsed.manifest,
     };
+    await fileService.saveSkill({ ...updated });
     set((state) => ({
       userSkills: state.userSkills.map((skill) => skill.id === id ? updated : skill),
     }));
-    await fileService.saveSkill({ ...updated });
     return updated;
-  },
+  }),
 
-  deleteSkill: async (id) => {
-    await updateSkillUsage(async () => {
-      const next = get().recentSkillIds.filter((skillId) => skillId !== id);
-      try { await saveRecentSkillIds(next); }
-      catch { get().showToast(t('最近 Skill 使用记录保存失败'), 'error'); }
-      set((state) => ({
-        userSkills: state.userSkills.filter((skill) => skill.id !== id),
-        recentSkillIds: next,
-      }));
-    });
-    await fileService.deleteSkill(id).catch((e) => console.warn('[删除 Skill] 清理失败:', e));
-  },
+  deleteSkill: (id) => queueSkillWrite(async () => {
+    const existing = get().userSkills.find((skill) => skill.id === id);
+    if (!existing) return;
+    // 只有原生登记能决定托管来源；旧记录不按 Renderer 路径猜测或删除文件。
+    const sharedSource = existing.nativeSourceId && get().userSkills.some((skill) => (
+      skill.id !== id && skill.nativeSourceId === existing.nativeSourceId
+    ));
+    const removedManagedFiles = existing.nativeSourceId && !sharedSource
+      ? await fileService.removeSkillSourceFiles(existing.nativeSourceId)
+      : false;
+    try {
+      await fileService.deleteSkill(id);
+    } catch {
+      throw new Error(t(removedManagedFiles
+        ? '托管文件已清理，但 Skill 记录删除失败，请重试'
+        : 'Skill 记录删除失败，请重试'));
+    }
+    const next = get().recentSkillIds.filter((skillId) => skillId !== id);
+    try { await saveRecentSkillIds(next); }
+    catch { get().showToast(t('最近 Skill 使用记录保存失败'), 'error'); }
+    set((state) => ({
+      userSkills: state.userSkills.filter((skill) => skill.id !== id),
+      recentSkillIds: next,
+    }));
+  }),
 
   loadSkills: async () => {
     const records = await fileService.loadSkills();
@@ -145,7 +174,7 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
         }
         return {
           id: r.id,
-          name: manifest?.name || r.name,
+          name: r.name || manifest?.name || getSkillName(r.fileName),
           description: getSkillDescription({ ...r, manifest }),
           fileName: r.fileName,
           content: r.content,
@@ -159,7 +188,7 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
       }),
     });
     try {
-      await updateSkillUsage(async () => {
+      await queueSkillWrite(async () => {
         const stored = await loadRecentSkillIds();
         // 包目录独立异步加载，不能用尚未完整的目录清除已保存的近期记录。
         // 菜单按当前可调用目录投影，无效或停用项只隐藏，不在加载时重写偏好。

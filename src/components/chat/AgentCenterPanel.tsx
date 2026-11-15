@@ -3,7 +3,7 @@
  *
  * 默认助手始终可用；外部智能体上传失败只在本面板提示，不改变聊天、画布或项目状态。
  */
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useId, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useAppStore } from '../../store/useAppStore';
 import type {
@@ -19,6 +19,8 @@ import {
 import { confirmAction } from '../../services/confirmDialog';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import AnimatedButton from '../shared/AnimatedButton';
+import UploadedSkillCard from './UploadedSkillCard';
+import type { SkillUploadSource } from '../../services/fileService';
 import { useT } from '../../i18n';
 
 const CreationProfileManager = lazy(() => import('../shared/creationProfiles/CreationProfileManager'));
@@ -237,6 +239,7 @@ export function AgentPackageCard({
 export default function AgentCenterPanel({ onClose, allowInstall = false }: AgentCenterPanelProps) {
   const t = useT();
   const agentPackages = useAppStore((state) => state.agentPackages);
+  const userSkills = useAppStore((state) => state.userSkills);
   const agentCatalogStatus = useAppStore((state) => state.agentCatalogStatus);
   const agentCatalogErrorCode = useAppStore((state) => state.agentCatalogErrorCode);
   const agentPackageSkillCatalogErrorCode = useAppStore(
@@ -248,10 +251,30 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
     (state) => state.setAgentPackageMcpSkillReadEnabled,
   );
   const removeAgentPackageRecord = useAppStore((state) => state.removeAgentPackageRecord);
+  const uploadSkill = useAppStore((state) => state.uploadSkill);
   const showToast = useAppStore((state) => state.showToast);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [localError, setLocalError] = useState('');
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [skillUploadOpen, setSkillUploadOpen] = useState(false);
+  const skillUploadId = useId();
+  const skillUploadButton = useRef<HTMLButtonElement>(null);
+
+  const importSkill = async (source: SkillUploadSource) => {
+    if (!allowInstall || busyKey) return;
+    setBusyKey(`skill:${source}`);
+    setSkillUploadOpen(false);
+    setLocalError('');
+    try {
+      await uploadSkill(source);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('上传 Skill 失败');
+      setLocalError(message);
+      showToast(message, 'error');
+    } finally {
+      setBusyKey(null);
+    }
+  };
 
   const removeSourceBestEffort = async (sourceId: string) => {
     try {
@@ -352,12 +375,13 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
   return (
     <div className="absolute inset-0 z-10 flex flex-col bg-canvas-bg">
       <div className="flex items-center justify-between border-b border-canvas-border px-2.5 py-2">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <Icon icon="lucide:bot" width="16" className="shrink-0 text-brand" />
           <span className="truncate text-sm font-medium text-canvas-text">{t('智能体中心')}</span>
           <span className="shrink-0 text-[11px] text-canvas-text-muted">
             {t('{count} 个已安装', { count: agentPackages.length })}
           </span>
+          {userSkills.length > 0 && <span className="text-[11px] text-canvas-text-muted">{t('{count} 个 Skill', { count: userSkills.length })}</span>}
         </div>
         <div className="flex items-center gap-2">
           {allowInstall && <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setProfilesOpen(true)}>{t('创作组合包')}</button>}
@@ -389,12 +413,12 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
             <p className="mt-1 text-[11px] leading-4 text-canvas-text-muted">
               {t('文件夹会保持只读链接；压缩包会导入软件管理目录。上传只做预检，不会执行包内脚本。')}
             </p>
-            <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="mt-3 grid grid-cols-3 gap-2">
               <AnimatedButton
                 type="button"
                 disabled={busyKey !== null}
                 onClick={() => void importPackage('folder')}
-                className="flex min-h-16 flex-col items-center justify-center gap-1.5 rounded-xl border border-canvas-border
+                className="flex min-h-16 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-canvas-border
                            bg-canvas-surface px-3 py-2 text-xs text-canvas-text-secondary hover:border-brand/40 hover:text-canvas-text
                            disabled:cursor-wait disabled:opacity-50"
               >
@@ -405,13 +429,43 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
                 type="button"
                 disabled={busyKey !== null}
                 onClick={() => void importPackage('archive')}
-                className="flex min-h-16 flex-col items-center justify-center gap-1.5 rounded-xl border border-canvas-border
+                className="flex min-h-16 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-canvas-border
                            bg-canvas-surface px-3 py-2 text-xs text-canvas-text-secondary hover:border-brand/40 hover:text-canvas-text
                            disabled:cursor-wait disabled:opacity-50"
               >
                 <Icon icon={busyKey === 'import:archive' ? 'mdi:loading' : 'mdi:archive-arrow-up-outline'} width="20" className={busyKey === 'import:archive' ? 'animate-spin' : ''} />
                 {t('选择压缩包')}
               </AnimatedButton>
+              <AnimatedButton
+                ref={skillUploadButton}
+                type="button"
+                disabled={busyKey !== null}
+                aria-expanded={skillUploadOpen}
+                aria-controls={skillUploadId}
+                onClick={() => setSkillUploadOpen((open) => !open)}
+                className="flex min-h-16 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-canvas-border
+                           bg-canvas-surface p-2 text-xs text-canvas-text-secondary hover:border-brand/40 hover:text-canvas-text
+                           disabled:cursor-wait disabled:opacity-50"
+              >
+                <Icon icon={busyKey?.startsWith('skill:') ? 'mdi:loading' : 'mdi:file-plus-outline'} width="20" className={busyKey?.startsWith('skill:') ? 'animate-spin' : ''} />
+                {t('上传 Skill')}
+              </AnimatedButton>
+            </div>
+            <div id={skillUploadId} hidden={!skillUploadOpen}>
+              <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label={t('上传 Skill')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') { event.stopPropagation(); setSkillUploadOpen(false); skillUploadButton.current?.focus(); }
+                }}>
+                <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busyKey !== null}
+                  title={t('上传 Skill 文件（支持 .zip / .tar.gz / .tgz）')} onClick={() => void importSkill('file')}>
+                  <Icon icon="mdi:file-plus-outline" width="14" aria-hidden="true" />{t('上传 Skill 文件')}
+                </button>
+                <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busyKey !== null}
+                  onClick={() => void importSkill('folder')}>
+                  <Icon icon="mdi:folder-plus-outline" width="14" aria-hidden="true" />{t('上传 Skill 文件夹')}
+                </button>
+              </div>
+              <p className="mt-2 text-[10px] leading-4 text-canvas-text-muted">.md / .txt / .json / .zip / .tar.gz / .tgz</p>
             </div>
             <p className="mt-2 text-center text-[10px] text-canvas-text-muted">
               {t('支持 .aicanvas-agent、.tgz 和 .tar.gz')}
@@ -425,6 +479,14 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
               code: agentCatalogErrorCode || agentPackageSkillCatalogErrorCode || 'unknown',
             })}
           </div>
+        )}
+
+        {userSkills.length > 0 && (
+          <section className="space-y-2" aria-label={t('已上传的 Skill')}>
+            <h3 className="text-xs font-medium text-canvas-text-secondary">{t('已上传的 Skill')}</h3>
+            <p className="text-[11px] leading-4 text-canvas-text-muted">{t('重命名只修改显示名称；删除会清理托管副本，外部链接文件夹保留。')}</p>
+            {userSkills.map((skill) => <UploadedSkillCard key={skill.id} skill={skill} allowEdit={allowInstall} />)}
+          </section>
         )}
 
         {agentCatalogStatus === 'loading' && agentPackages.length === 0 ? (

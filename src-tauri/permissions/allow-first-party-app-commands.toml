@@ -44,6 +44,7 @@ commands.allow = [
   "register_skill_folder",
   "list_skill_source_files",
   "read_skill_source_file",
+  "remove_skill_source_files",
   "prepare_project_thumbnail",
   "write_project_thumbnail",
   "copy_file_streamed",

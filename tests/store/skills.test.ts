@@ -8,8 +8,9 @@ const mocks = vi.hoisted(() => ({
   saveRecentSkillIds: vi.fn<(ids: readonly string[]) => Promise<void>>(),
   loadRecentSkillIds: vi.fn<() => Promise<string[]>>(),
   loadSkills: vi.fn<() => Promise<UserSkill[]>>(),
-  saveSkill: vi.fn<() => Promise<void>>(),
+  saveSkill: vi.fn<(record: UserSkill) => Promise<void>>(),
   deleteSkill: vi.fn<() => Promise<void>>(),
+  removeSkillSourceFiles: vi.fn<(sourceId: string) => Promise<boolean>>(),
   uploadSkillFile: vi.fn(),
 }));
 
@@ -21,6 +22,7 @@ vi.mock('../../src/store/store.utils', () => ({ generateId: () => 'new-skill' })
 vi.mock('../../src/services/fileService', () => ({
   loadSkills: mocks.loadSkills, saveSkill: mocks.saveSkill, deleteSkill: mocks.deleteSkill,
   uploadSkillFile: mocks.uploadSkillFile,
+  removeSkillSourceFiles: mocks.removeSkillSourceFiles,
 }));
 vi.mock('../../src/services/indexedDb/skillUsageRepository', () => ({
   loadRecentSkillIds: mocks.loadRecentSkillIds, saveRecentSkillIds: mocks.saveRecentSkillIds,
@@ -64,6 +66,7 @@ beforeEach(() => {
   mocks.loadSkills.mockReset().mockResolvedValue([]);
   mocks.saveSkill.mockReset().mockResolvedValue(undefined);
   mocks.deleteSkill.mockReset().mockResolvedValue(undefined);
+  mocks.removeSkillSourceFiles.mockReset().mockResolvedValue(false);
   mocks.uploadSkillFile.mockReset().mockResolvedValue(null);
 });
 
@@ -243,6 +246,98 @@ describe('Skill 的独立最近使用记录', () => {
     expect(mocks.saveRecentSkillIds).toHaveBeenLastCalledWith(['package-not-loaded', 'b']);
     expect(mocks.deleteSkill).toHaveBeenCalledWith('a');
     if (failed) expect(state.getState().showToast).toHaveBeenCalledWith('最近 Skill 使用记录保存失败', 'error');
+  });
+
+  it('重命名先保存且只修改显示名，重新加载和更新正文保留自定义名称', async () => {
+    const original = { ...skill('a', { name: '原声明名称', userInvocable: false }), nativeSourceId: 'managed-source' };
+    const state = store([original]);
+    let finish!: () => void;
+    mocks.saveSkill.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const pending = state.getState().renameSkill('a', '  我的中文名称  ');
+    await Promise.resolve();
+    expect(state.getState().userSkills).toEqual([original]);
+    finish();
+    await pending;
+    const renamed = { ...original, name: '我的中文名称' };
+    expect(state.getState().userSkills).toEqual([renamed]);
+    expect(mocks.saveSkill).toHaveBeenLastCalledWith(renamed);
+    mocks.loadSkills.mockResolvedValue([renamed]);
+    await state.getState().loadSkills();
+    expect(state.getState().userSkills[0].name).toBe('我的中文名称');
+    await state.getState().updateSkillContent('a', '---\nname: 新正文名称\n---\n新正文');
+    expect(state.getState().userSkills[0]).toMatchObject({ name: '我的中文名称', manifest: { name: '新正文名称' } });
+    expect(mocks.removeSkillSourceFiles).not.toHaveBeenCalled();
+  });
+
+  it('名称非法、来源不是上传记录或保存失败时不修改状态', async () => {
+    const original = skill('a'), state = store([original]);
+    for (const name of ['', '   ', 'a'.repeat(121), '分行\n名称']) {
+      await expect(state.getState().renameSkill('a', name)).rejects.toThrow('Skill 名称');
+    }
+    await expect(state.getState().renameSkill('package-missing', '新名称')).rejects.toThrow('Skill 不存在');
+    expect(mocks.saveSkill).not.toHaveBeenCalled();
+    mocks.saveSkill.mockRejectedValueOnce(new Error('IndexedDB unavailable'));
+    await expect(state.getState().renameSkill('a', '新名称')).rejects.toThrow('IndexedDB unavailable');
+    expect(state.getState().userSkills).toEqual([original]);
+    await state.getState().renameSkill('a', '重试名称');
+    expect(state.getState().userSkills[0].name).toBe('重试名称');
+  });
+
+  it('删除托管来源先清理原生文件，再删除数据库及最近记录', async () => {
+    const state = store([{ ...skill('a'), nativeSourceId: 'managed-source' }]);
+    state.setState({ recentSkillIds: ['a', 'other'] });
+    mocks.removeSkillSourceFiles.mockResolvedValueOnce(true);
+    await state.getState().deleteSkill('a');
+    expect(mocks.removeSkillSourceFiles).toHaveBeenCalledWith('managed-source');
+    expect(mocks.removeSkillSourceFiles.mock.invocationCallOrder[0]).toBeLessThan(mocks.deleteSkill.mock.invocationCallOrder[0]);
+    expect(state.getState().userSkills).toEqual([]);
+    expect(state.getState().recentSkillIds).toEqual(['other']);
+  });
+
+  it('原生权限失败保留目录与近期记录，不提交数据库删除', async () => {
+    const uploaded = { ...skill('a'), nativeSourceId: 'managed-source' }, state = store([uploaded]);
+    state.setState({ recentSkillIds: ['a'] });
+    mocks.removeSkillSourceFiles.mockRejectedValueOnce(new Error('安装目录权限不足'));
+    await expect(state.getState().deleteSkill('a')).rejects.toThrow('安装目录权限不足');
+    expect(state.getState().userSkills).toEqual([uploaded]);
+    expect(state.getState().recentSkillIds).toEqual(['a']);
+    expect(mocks.deleteSkill).not.toHaveBeenCalled();
+    expect(mocks.saveRecentSkillIds).not.toHaveBeenCalled();
+  });
+
+  it('文件已清理但数据库删除失败时保留条目并明确提示，幂等重试后移除', async () => {
+    const uploaded = { ...skill('a'), nativeSourceId: 'managed-source' }, state = store([uploaded]);
+    mocks.removeSkillSourceFiles.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    mocks.deleteSkill.mockRejectedValueOnce(new Error('IndexedDB unavailable'));
+    await expect(state.getState().deleteSkill('a')).rejects.toThrow('托管文件已清理，但 Skill 记录删除失败');
+    expect(state.getState().userSkills).toEqual([uploaded]);
+    await state.getState().deleteSkill('a');
+    expect(state.getState().userSkills).toEqual([]);
+  });
+
+  it('同一来源仅在最后一个记录删除时清理，无来源授权的旧记录不猜测文件路径', async () => {
+    const state = store([
+      { ...skill('a'), nativeSourceId: 'shared-source' },
+      { ...skill('b'), nativeSourceId: 'shared-source' },
+      { ...skill('legacy'), storagePath: 'C:/AI-Canvas/skills/legacy.md' },
+    ]);
+    await state.getState().deleteSkill('a');
+    await state.getState().deleteSkill('legacy');
+    expect(mocks.removeSkillSourceFiles).not.toHaveBeenCalled();
+    await state.getState().deleteSkill('b');
+    expect(mocks.removeSkillSourceFiles).toHaveBeenCalledExactlyOnceWith('shared-source');
+  });
+
+  it('重命名与删除串行执行，已删除记录不能被后续重命名重新写回', async () => {
+    const state = store([skill('a')]);
+    const renamed = state.getState().renameSkill('a', '先改名');
+    const removed = state.getState().deleteSkill('a');
+    const lateRename = state.getState().renameSkill('a', '迟到改名');
+    await renamed;
+    await removed;
+    await expect(lateRename).rejects.toThrow('Skill 不存在');
+    expect(mocks.saveSkill).toHaveBeenCalledTimes(1);
+    expect(state.getState().userSkills).toEqual([]);
   });
 
   it('新上传的 JSON 内容复用简介提取，不把 JSON 声明作为执行权限', async () => {

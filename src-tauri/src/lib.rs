@@ -1969,6 +1969,7 @@ pub fn run() {
             skill_storage::register_skill_folder,
             skill_storage::list_skill_source_files,
             skill_storage::read_skill_source_file,
+            skill_storage::remove_skill_source_files,
             thumbnail_cache::prepare_project_thumbnail,
             thumbnail_cache::write_project_thumbnail,
             file_transfer::copy_file_streamed,

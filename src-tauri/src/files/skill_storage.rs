@@ -2,8 +2,9 @@
 
 use crate::path_policy::{
     authorize_existing_plain_directory, authorize_existing_plain_file_with_roots,
-    authorize_skill_storage_root, canonicalize_simplified, ensure_plain_skill_directory_chain,
+    authorize_path_with_roots, authorize_skill_storage_root, canonicalize_simplified, ensure_plain_skill_directory_chain,
     ensure_trusted_caller, is_link_or_reparse, reauthorize_existing_plain_directory_with_roots,
+    PathAccess,
 };
 use crate::skill_archive::{safe_archive_path, MAX_ENTRIES, MAX_EXPANDED_BYTES, MAX_FILE_BYTES};
 use fs2::FileExt;
@@ -24,6 +25,10 @@ const REGISTRY_BYTES: u64 = 2 * 1024 * 1024;
 const SOURCE_ERROR: &str = "Skill 来源不存在、不可访问或未获授权，请重新选择目录";
 const SAVE_ERROR: &str = "Skill 保存失败，请检查安装目录 skills 的写入权限和存储空间";
 const PRIVATE_STORAGE_ERROR: &str = "Skill 来源授权存储不可访问，请检查应用私有数据目录的读写权限和存储空间";
+const REMOVE_ERROR: &str = "Skill 托管文件删除失败，请关闭占用文件的程序，并检查安装目录 skills 的删除权限；未删除的内容已保留，可重试";
+const REMOVE_CHANGED: &str = "Skill 托管目录或文件在删除期间发生变化，已停止清理，请核对后重试";
+// 上传上限不含本次托管根目录；删除计划额外保留这一项。
+const MAX_REMOVAL_ENTRIES: usize = MAX_ENTRIES + 1;
 static STORAGE_LOCK: Mutex<()> = Mutex::new(());
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -520,11 +525,335 @@ pub async fn read_skill_source_file<R: Runtime>(webview: Webview<R>, app: AppHan
     }).await.map_err(|_| "Skill 资料读取任务失败")?
 }
 
+struct SkillRemovalEntry {
+    path: PathBuf,
+    directory: bool,
+    identity: file_id::FileId,
+}
+
+struct SkillRemovalPlan {
+    root: PathBuf,
+    root_identity: file_id::FileId,
+    entries: Vec<SkillRemovalEntry>,
+}
+
+/// 来源登记是唯一删除权威；名称必须仍然是 skills 根的一个直接子项。
+fn managed_removal_target(root: &Path, source: &SkillSource) -> Result<Option<(PathBuf, bool)>, String> {
+    let (name, directory) = match source {
+        SkillSource::LinkedDirectory { .. } => return Ok(None),
+        SkillSource::ManagedDirectory { name } => (name, true),
+        SkillSource::ManagedFile { name, entry } => {
+            text_path(entry)?;
+            (name, false)
+        },
+    };
+    let target = root.join(leaf_name(name)?);
+    if !root.is_absolute() || target.parent() != Some(root) { return Err(REMOVE_ERROR.into()); }
+    Ok(Some((target, directory)))
+}
+
+/// 整个 skills 目录已被外部移除时，也只核对固定安装位置，不重建目录。
+fn removal_storage_root<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBuf>, String> {
+    let executable = std::env::current_exe().map_err(|_| REMOVE_ERROR)?;
+    let install = canonicalize_simplified(executable.parent().ok_or(REMOVE_ERROR)?)
+        .map_err(|_| REMOVE_ERROR)?;
+    ensure_plain_skill_directory_chain(&install).map_err(|_| REMOVE_ERROR)?;
+    let root = install.join("skills");
+    let resolved = authorize_path_with_roots(app, root.to_str().ok_or(REMOVE_ERROR)?, PathAccess::Write,
+        std::slice::from_ref(&install)).map_err(|_| REMOVE_ERROR)?;
+    if resolved != root { return Err(REMOVE_ERROR.into()); }
+    match fs::symlink_metadata(&root) {
+        Ok(_) => {
+            let authorized = authorize_skill_storage_root(app, false).map_err(|_| REMOVE_ERROR)?;
+            if authorized != root { return Err(REMOVE_ERROR.into()); }
+            Ok(Some(root))
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(REMOVE_ERROR.into()),
+    }
+}
+
+fn removal_metadata(root: &Path, path: &Path, directory: bool) -> Result<fs::Metadata, String> {
+    if path == root || !path.starts_with(root) { return Err(REMOVE_CHANGED.into()); }
+    ensure_plain_skill_directory_chain(path.parent().ok_or(REMOVE_CHANGED)?).map_err(|_| REMOVE_CHANGED)?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| REMOVE_ERROR)?;
+    if is_link_or_reparse(&metadata) || (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err("Skill 托管目录包含符号链接、目录联接或特殊文件，已停止清理，请核对后重试".into());
+    }
+    if canonicalize_simplified(path).map_err(|_| REMOVE_CHANGED)? != path { return Err(REMOVE_CHANGED.into()); }
+    Ok(metadata)
+}
+
+/// 先遍历完整子树并复核每个条目；预检失败前不会删除任何文件。
+fn plan_managed_removal(root: &Path, target: &Path, directory: bool,
+    authorize: &impl Fn(&Path) -> Result<(), String>) -> Result<SkillRemovalPlan, String> {
+    if !root.is_absolute() || target.parent() != Some(root) { return Err(REMOVE_ERROR.into()); }
+    ensure_plain_skill_directory_chain(root).map_err(|_| REMOVE_ERROR)?;
+    if canonicalize_simplified(root).map_err(|_| REMOVE_ERROR)? != root { return Err(REMOVE_ERROR.into()); }
+    authorize(root)?;
+    let root_identity = file_id::get_file_id(root).map_err(|_| REMOVE_ERROR)?;
+    let mut plan = SkillRemovalPlan { root: root.to_path_buf(), root_identity, entries: Vec::new() };
+    match fs::symlink_metadata(target) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(plan),
+        Err(_) => return Err(REMOVE_ERROR.into()),
+        Ok(_) => {},
+    }
+    let mut queue = VecDeque::from([(target.to_path_buf(), directory, 0_usize)]);
+    let mut bytes = 0_u64;
+    while let Some((path, directory, depth)) = queue.pop_front() {
+        if depth > 64 || plan.entries.len() >= MAX_REMOVAL_ENTRIES { return Err("Skill 托管目录超过安全删除的条目或层级上限".into()); }
+        let metadata = removal_metadata(root, &path, directory)?;
+        authorize(&path)?;
+        let identity = file_id::get_file_id(&path).map_err(|_| REMOVE_ERROR)?;
+        if directory {
+            for child in fs::read_dir(&path).map_err(|_| REMOVE_ERROR)? {
+                if plan.entries.len() + queue.len() + 1 >= MAX_REMOVAL_ENTRIES {
+                    return Err("Skill 托管目录超过安全删除的条目上限".into());
+                }
+                let child = child.map_err(|_| REMOVE_ERROR)?;
+                let child_type = child.file_type().map_err(|_| REMOVE_ERROR)?;
+                queue.push_back((child.path(), child_type.is_dir(), depth + 1));
+            }
+        } else {
+            bytes = bytes.checked_add(metadata.len()).ok_or(REMOVE_ERROR)?;
+            if bytes > MAX_EXPANDED_BYTES { return Err("Skill 托管文件超过安全删除的大小上限".into()); }
+        }
+        plan.entries.push(SkillRemovalEntry { path, directory, identity });
+    }
+    Ok(plan)
+}
+
+fn execute_managed_removal(plan: &SkillRemovalPlan,
+    authorize: &impl Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+    let directories: BTreeMap<_, _> = plan.entries.iter().filter(|entry| entry.directory)
+        .map(|entry| (entry.path.as_path(), entry.identity)).collect();
+    // 广度优先预检的逆序保证先删子项；不用 remove_dir_all 跟随后来替换的父目录。
+    for entry in plan.entries.iter().rev() {
+        ensure_plain_skill_directory_chain(&plan.root).map_err(|_| REMOVE_CHANGED)?;
+        authorize(&plan.root)?;
+        if file_id::get_file_id(&plan.root).ok() != Some(plan.root_identity) { return Err(REMOVE_CHANGED.into()); }
+        for ancestor in entry.path.ancestors().skip(1).take_while(|path| *path != plan.root.as_path()) {
+            if let Some(identity) = directories.get(ancestor) {
+                ensure_plain_skill_directory_chain(ancestor).map_err(|_| REMOVE_CHANGED)?;
+                if file_id::get_file_id(ancestor).ok().as_ref() != Some(identity) { return Err(REMOVE_CHANGED.into()); }
+            }
+        }
+        removal_metadata(&plan.root, &entry.path, entry.directory)?;
+        authorize(&entry.path)?;
+        if file_id::get_file_id(&entry.path).ok() != Some(entry.identity) { return Err(REMOVE_CHANGED.into()); }
+        let result = if entry.directory { fs::remove_dir(&entry.path) } else { fs::remove_file(&entry.path) };
+        result.map_err(|_| REMOVE_ERROR)?;
+    }
+    Ok(())
+}
+
+/// 只清理安装目录内的托管副本；外部链接与格式合法的未知来源均幂等保留。
+#[tauri::command]
+pub async fn remove_skill_source_files<R: Runtime>(webview: Webview<R>, app: AppHandle<R>, source_id: String) -> Result<bool, String> {
+    ensure_trusted_caller(&webview)?;
+    if !valid_source_id(&source_id) { return Err("Skill 来源标识无效".into()); }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = STORAGE_LOCK.lock().map_err(|_| REMOVE_ERROR)?;
+        let (registry_directory, _native_lock) = registry_lock(&app)?;
+        let mut registry = read_registry(&registry_directory)?;
+        let Some(source) = registry.sources.get(&source_id).cloned() else { return Ok(false); };
+        if matches!(source, SkillSource::LinkedDirectory { .. }) { return Ok(false); }
+        if let Some(root) = removal_storage_root(&app)? {
+            let (target, directory) = managed_removal_target(&root, &source)?.ok_or(REMOVE_ERROR)?;
+            let authorize = |path: &Path| -> Result<(), String> {
+                let resolved = authorize_path_with_roots(&app, path.to_str().ok_or(REMOVE_ERROR)?,
+                    PathAccess::Write, std::slice::from_ref(&root)).map_err(|_| REMOVE_ERROR)?;
+                if resolved != path { return Err(REMOVE_CHANGED.into()); }
+                Ok(())
+            };
+            let plan = plan_managed_removal(&root, &target, directory, &authorize)?;
+            execute_managed_removal(&plan, &authorize)?;
+        }
+        registry.sources.remove(&source_id);
+        write_registry(&registry_directory, &registry)?;
+        Ok(true)
+    }).await.map_err(|_| "Skill 托管文件删除任务失败")?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn file(path: &str) -> SkillTextFile { SkillTextFile { relative_path: path.into(), content: "# 中文资料".into() } }
+
+    fn removal_root() -> PathBuf {
+        let id = new_source_id();
+        // 保持 macOS 临时目录下 Unix socket 的完整路径小于系统长度限制。
+        let root = std::env::temp_dir().join(format!("sr-{}", &id[6..22]));
+        fs::create_dir(&root).unwrap();
+        canonicalize_simplified(&root).unwrap()
+    }
+
+    #[test]
+    fn managed_removal_uses_native_leaf_names_and_never_targets_linked_sources() {
+        let root = removal_root();
+        let external = SkillSource::LinkedDirectory { root: root.join("external") };
+        assert!(managed_removal_target(&root, &external).unwrap().is_none());
+        for name in ["../outside", "a/b", "a\\b", "C:/outside", "NUL.txt"] {
+            assert!(managed_removal_target(&root, &SkillSource::ManagedDirectory { name: name.into() }).is_err());
+        }
+        let source = SkillSource::ManagedFile { name: "说明 (2).md".into(), entry: "说明.md".into() };
+        let (target, directory) = managed_removal_target(&root, &source).unwrap().unwrap();
+        assert_eq!(target, root.join("说明 (2).md"));
+        assert!(!directory);
+        fs::write(&target, b"owned").unwrap();
+        let keep = root.join("keep.md");
+        fs::write(&keep, b"keep").unwrap();
+        let plan = plan_managed_removal(&root, &target, directory, &|_| Ok(())).unwrap();
+        execute_managed_removal(&plan, &|_| Ok(())).unwrap();
+        assert!(!target.exists());
+        assert_eq!(fs::read(&keep).unwrap(), b"keep");
+        assert!(plan_managed_removal(&root, &target, directory, &|_| Ok(())).unwrap().entries.is_empty());
+        fs::remove_file(keep).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn managed_directory_is_fully_preflighted_before_any_mutation() {
+        let root = removal_root();
+        let target = root.join("owned");
+        let nested = target.join("references");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&nested).unwrap();
+        let entry = target.join("SKILL.md");
+        let resource = nested.join("notes.json");
+        fs::write(&entry, b"entry").unwrap();
+        fs::write(&resource, b"resource").unwrap();
+        let authorize = |path: &Path| {
+            if path == resource { Err("denied".into()) } else { Ok(()) }
+        };
+        assert!(plan_managed_removal(&root, &target, true, &authorize).is_err());
+        assert!(entry.is_file());
+        assert!(resource.is_file());
+        let plan = plan_managed_removal(&root, &target, true, &|_| Ok(())).unwrap();
+        execute_managed_removal(&plan, &|_| Ok(())).unwrap();
+        assert!(!target.exists());
+        assert!(root.is_dir());
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn directory_replacement_is_rejected_even_when_the_leaf_identity_is_shared() {
+        let root = removal_root();
+        let target = root.join("owned");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("SKILL.md"), b"keep").unwrap();
+        let plan = plan_managed_removal(&root, &target, true, &|_| Ok(())).unwrap();
+        let original = root.join("original");
+        fs::rename(&target, &original).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::hard_link(original.join("SKILL.md"), target.join("SKILL.md")).unwrap();
+        assert!(execute_managed_removal(&plan, &|_| Ok(())).is_err());
+        assert_eq!(fs::read(target.join("SKILL.md")).unwrap(), b"keep");
+        assert_eq!(fs::read(original.join("SKILL.md")).unwrap(), b"keep");
+        fs::remove_file(target.join("SKILL.md")).unwrap();
+        fs::remove_file(original.join("SKILL.md")).unwrap();
+        fs::remove_dir(target).unwrap();
+        fs::remove_dir(original).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn unexpected_new_files_are_preserved_and_make_cleanup_fail() {
+        let root = removal_root();
+        let target = root.join("owned");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("SKILL.md"), b"entry").unwrap();
+        let plan = plan_managed_removal(&root, &target, true, &|_| Ok(())).unwrap();
+        let added = target.join("new.txt");
+        fs::write(&added, b"new").unwrap();
+        assert!(execute_managed_removal(&plan, &|_| Ok(())).is_err());
+        assert_eq!(fs::read(&added).unwrap(), b"new");
+        assert!(target.is_dir());
+        // 按当前完整子树重试，而不是递归删除上一轮未预检的条目。
+        let retry = plan_managed_removal(&root, &target, true, &|_| Ok(())).unwrap();
+        execute_managed_removal(&retry, &|_| Ok(())).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_tree_fails_before_deleting_its_entry() {
+        let root = removal_root();
+        let target = root.join("owned");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("SKILL.md"), b"entry").unwrap();
+        let oversized = target.join("large.txt");
+        File::create(&oversized).unwrap().set_len(MAX_EXPANDED_BYTES + 1).unwrap();
+        assert!(plan_managed_removal(&root, &target, true, &|_| Ok(())).is_err());
+        assert!(target.join("SKILL.md").is_file());
+        fs::remove_file(oversized).unwrap();
+        fs::remove_file(target.join("SKILL.md")).unwrap();
+        fs::remove_dir(target).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn maximum_upload_entry_count_remains_removable_with_its_owned_root() {
+        let root = removal_root();
+        let target = root.join("owned");
+        fs::create_dir(&target).unwrap();
+        for index in 0..MAX_ENTRIES { fs::write(target.join(format!("entry-{index}.txt")), b"").unwrap(); }
+        let plan = plan_managed_removal(&root, &target, true, &|_| Ok(())).unwrap();
+        assert_eq!(plan.entries.len(), MAX_ENTRIES + 1);
+        let excess = target.join("excess.txt");
+        fs::write(&excess, b"").unwrap();
+        assert!(plan_managed_removal(&root, &target, true, &|_| Ok(())).is_err());
+        assert_eq!(fs::read_dir(&target).unwrap().count(), MAX_ENTRIES + 1);
+        fs::remove_file(excess).unwrap();
+        execute_managed_removal(&plan, &|_| Ok(())).unwrap();
+        assert!(!target.exists());
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_and_special_descendants_abort_preflight_without_touching_outside_files() {
+        let root = removal_root();
+        let target = root.join("owned");
+        fs::create_dir(&target).unwrap();
+        let outside = root.join("outside.txt");
+        fs::write(&outside, b"outside").unwrap();
+        fs::write(target.join("SKILL.md"), b"entry").unwrap();
+        let link = target.join("linked.txt");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(plan_managed_removal(&root, &target, true, &|_| Ok(())).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside");
+        assert!(target.join("SKILL.md").is_file());
+        fs::remove_file(link).unwrap();
+        let socket_path = target.join("special");
+        let socket = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        assert!(plan_managed_removal(&root, &target, true, &|_| Ok(())).is_err());
+        drop(socket);
+        fs::remove_file(socket_path).unwrap();
+        let plan = plan_managed_removal(&root, &target, true, &|_| Ok(())).unwrap();
+        execute_managed_removal(&plan, &|_| Ok(())).unwrap();
+        fs::remove_file(outside).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_readonly_files_fail_without_changing_their_permissions() {
+        let root = removal_root();
+        let target = root.join("SKILL.md");
+        fs::write(&target, b"entry").unwrap();
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions).unwrap();
+        let plan = plan_managed_removal(&root, &target, false, &|_| Ok(())).unwrap();
+        assert!(execute_managed_removal(&plan, &|_| Ok(())).is_err());
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&target, permissions).unwrap();
+        fs::remove_file(target).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn uploads_accept_only_bounded_relative_text_and_single_file_identity() {

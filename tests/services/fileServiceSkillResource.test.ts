@@ -24,6 +24,7 @@ import {
   assertSafeSkillRelativePath,
   listSkillResourceFiles,
   readSkillResourceFile,
+  removeSkillSourceFiles,
 } from '../../src/services/fileService';
 
 const ROOT = '/Users/tester/Library/Application Support/ai-canvas/skill/audit';
@@ -38,6 +39,28 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('removeSkillSourceFiles', () => {
+  it('仅将原生来源 ID 交给删除命令，不向原生提交 Renderer 路径', async () => {
+    invokeMock.mockResolvedValue(true);
+    await expect(removeSkillSourceFiles('managed-source')).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith('remove_skill_source_files', { sourceId: 'managed-source' });
+    expect(existsMock).not.toHaveBeenCalled();
+    expect(readDirMock).not.toHaveBeenCalled();
+  });
+
+  it('保留外部来源语义，并透传原生脱敏权限错误', async () => {
+    invokeMock.mockResolvedValueOnce(false).mockRejectedValueOnce('Skill 文件删除失败，请检查安装目录 skills 的权限或文件占用后重试');
+    await expect(removeSkillSourceFiles('linked-source')).resolves.toBe(false);
+    await expect(removeSkillSourceFiles('managed-source')).rejects.toThrow('安装目录 skills 的权限');
+  });
+
+  it('非桌面环境不能默默跳过托管文件清理并继续删除记录', async () => {
+    vi.stubGlobal('window', {});
+    await expect(removeSkillSourceFiles('managed-source')).rejects.toThrow('Tauri 桌面端');
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('assertSafeSkillRelativePath', () => {

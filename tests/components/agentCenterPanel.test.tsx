@@ -2,7 +2,7 @@
  * agentCenterPanel — 回归测试：AgentCenterPanel。
  */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AgentCenterPanel, {
   AgentPackageCard,
 } from '../../src/components/chat/AgentCenterPanel';
@@ -10,6 +10,20 @@ import EmptyChatState from '../../src/components/chat/EmptyChatState';
 import { setLocale } from '../../src/i18n';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { AgentPackageInstallation } from '../../src/types/agentPackage';
+
+// SSR 作为客户端界面的轻量渲染器时，读取当前 Store 快照而非初始服务端快照。
+vi.mock('../../src/store/useAppStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/store/useAppStore')>();
+  return {
+    ...actual,
+    useAppStore: Object.assign(
+      <T,>(selector: (state: ReturnType<typeof actual.useAppStore.getState>) => T) => (
+        selector(actual.useAppStore.getState())
+      ),
+      actual.useAppStore,
+    ),
+  };
+});
 
 function installation(
   partial: Partial<AgentPackageInstallation> = {},
@@ -51,6 +65,7 @@ function installation(
 beforeEach(() => {
   setLocale('zh-CN');
   useAppStore.setState({
+    userSkills: [],
     agentPackages: [],
     agentCatalogStatus: 'ready',
     agentCatalogErrorCode: undefined,
@@ -59,7 +74,37 @@ beforeEach(() => {
 });
 
 describe('AgentCenterPanel', () => {
-  it('零智能体时保留默认助手并提供两种上传入口', () => {
+  it('独立上传的文件与文件夹 Skill 和智能体包同时展示，并提供改名和删除入口', () => {
+    useAppStore.setState({ userSkills: [
+      { id: 'uploaded-file', name: '我的 Skill', description: '独立上传说明', fileName: 'story.md',
+        content: '不应展示的正文', sourceType: 'file', createdAt: 1 },
+      { id: 'uploaded-folder', name: '文件夹 Skill', description: '文件夹说明', fileName: 'folder',
+        content: '不应展示的正文', sourceType: 'folder', entryFileName: 'SKILL.md', createdAt: 1 },
+    ], agentPackages: [installation()] });
+    const markup = renderToStaticMarkup(<AgentCenterPanel allowInstall onClose={() => {}} />);
+    expect(markup).toContain('已上传的 Skill');
+    expect(markup).toContain('2 个 Skill');
+    expect(markup).toContain('我的 Skill');
+    expect(markup).toContain('文件夹 Skill');
+    expect(markup).toContain('重命名 Skill「我的 Skill」');
+    expect(markup).toContain('删除 我的 Skill');
+    expect(markup).toContain('独立上传说明');
+    expect(markup).toContain('SKILL.md');
+    expect(markup).toContain('短剧制作助手');
+    expect(markup).not.toContain('不应展示的正文');
+  });
+
+  it('只读智能体中心显示上传 Skill，但不提供改名或删除入口', () => {
+    useAppStore.setState({ userSkills: [{ id: 'uploaded', name: '只读投影', description: '', fileName: 'story.md',
+      content: '正文', sourceType: 'file', createdAt: 1 }] });
+    const markup = renderToStaticMarkup(<AgentCenterPanel onClose={() => {}} />);
+    expect(markup).toContain('只读投影');
+    expect(markup).not.toContain('重命名 Skill「只读投影」');
+    expect(markup).not.toContain('删除 只读投影');
+    expect(markup).not.toContain('上传 Skill');
+  });
+
+  it('零智能体时保留默认助手、两种包导入入口及独立 Skill 上传按钮', () => {
     const markup = renderToStaticMarkup(
       <AgentCenterPanel allowInstall onClose={() => {}} />,
     );
@@ -68,6 +113,8 @@ describe('AgentCenterPanel', () => {
     expect(markup).toContain('始终可用');
     expect(markup).toContain('选择文件夹');
     expect(markup).toContain('选择压缩包');
+    expect(markup).toContain('上传 Skill');
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain('还没有安装外部智能体');
     expect(markup).toContain('这不会影响默认助手和软件其他功能');
   });

@@ -392,7 +392,7 @@ export function registerSkillAgentTools(): Array<() => void> {
     registerAgentTool<SkillReadInput>({
       id: 'skill_delete',
       title: '删除 Skill',
-      description: '永久删除一个用户 Skill；智能体包 Skill 为只读，不能通过此工具删除。',
+      description: '永久删除一个用户 Skill 及安装目录中的托管副本；外部链接文件夹和旧版来源文件保留。智能体包 Skill 为只读，不能通过此工具删除。',
       effect: 'permanent_delete',
       inputSchema: { type: 'object', required: ['skillId'], additionalProperties: false, properties: { skillId: { type: 'string', minLength: 1, maxLength: 160 }, ...pageProperties } },
       isAvailable: (context) => isMcpContext(context),

@@ -9,6 +9,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import { isAgentPackageSkill } from '../../../types/agentPackage';
 import AnimatedButton from '../../shared/AnimatedButton';
 import PopupCloseButton from '../../shared/PopupCloseButton';
+import { confirmAction } from '../../../services/confirmDialog';
 
 interface SkillManagerProps {
   open: boolean;
@@ -49,6 +50,7 @@ export default function SkillManager({ open, onClose }: SkillManagerProps) {
   const deleteSkill = useAppStore((s) => s.deleteSkill);
   const showToast = useAppStore((s) => s.showToast);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const activeSelectedId = selectedId ?? skills[0]?.id ?? null;
 
   const selectedSkill = useMemo(
@@ -58,13 +60,21 @@ export default function SkillManager({ open, onClose }: SkillManagerProps) {
 
   const handleDelete = useCallback(async (id: string) => {
     const skill = userSkills.find((item) => item.id === id);
-    if (!skill) return;
-    await deleteSkill(id);
-    const state = useAppStore.getState();
-    const remaining = [...state.userSkills, ...state.agentPackageSkills];
-    setSelectedId(remaining[0]?.id ?? null);
-    showToast(t('已删除 Skill「{name}」', { name: skill.name }));
-  }, [deleteSkill, showToast, userSkills, t]);
+    if (!skill || deletingId) return;
+    setDeletingId(id);
+    try {
+      if (!(await confirmAction(t('确定删除 Skill「{name}」？安装目录中的托管副本会一并删除，外部链接文件夹和旧版来源文件保留。', { name: skill.name }), { title: t('删除 Skill') }))) return;
+      await deleteSkill(id);
+      const state = useAppStore.getState();
+      const remaining = [...state.userSkills, ...state.agentPackageSkills];
+      setSelectedId(remaining[0]?.id ?? null);
+      showToast(t('已删除 Skill「{name}」', { name: skill.name }));
+    } catch (error) {
+      showToast(error instanceof Error ? t(error.message) : t('删除 Skill 失败，请重试'), 'error');
+    } finally {
+      setDeletingId(null);
+    }
+  }, [deleteSkill, deletingId, showToast, userSkills, t]);
 
   return createPortal(
     <AnimatePresence>
@@ -128,6 +138,7 @@ export default function SkillManager({ open, onClose }: SkillManagerProps) {
                           <AnimatedButton
                             type="button"
                             className="preset-manager-list-delete"
+                            disabled={deletingId !== null}
                             aria-label={t('删除 {name}', { name: skill.name })}
                             onClick={(e) => {
                               e.stopPropagation();
