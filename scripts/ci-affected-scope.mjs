@@ -1,10 +1,19 @@
 /**
  * 按仓库路径选择开发阶段的检查范围。这里的文件读取关系不在 Vitest 导入图中。
  */
+import { isDeepStrictEqual } from 'node:util';
 
 const sharedFrontendPaths = [
   /^src\/(?:App\.tsx|RootView\.tsx|main\.tsx|index\.css|store\/useAppStore\.ts)$/,
-  /^src\/(?:types|i18n|vendor)\//,
+  /^src\/vendor\//,
+  /^src\/types\/(?:index|agent|chat|mcp|plugin|agentPackage)\.ts$/,
+  /^src\/i18n\/(?!locales\/(?:en-US|ja-JP|ko-KR)\/(?!index\.ts$)[^/]+\.ts$)/,
+  /^src\/services\/(?:indexedDb\/|indexedDbService\.ts$|storageService\.ts$|providerSecretService\.ts$|fileService\.ts$|fs\/|plugins\/|mcp\/)/,
+  /^src\/services\/chat\/(?:tools\/|(?:policyEngine|toolRegistry|agentRuntime|agentRoundExecutor|agentTaskControl|agentToolSchemas|skillManifest)\.ts$)/,
+  /^src\/services\/ai\/(?:modelProtocol[^/]*\.ts|chatApiProtocol\.ts|providers\/)/,
+  /^src\/store\/store\.(?:projects|plugins|config|agent|agentPackages)\.ts$/,
+  /^src-tauri\/(?:permissions\/|capabilities\/|gen\/schemas\/|src\/(?:lib\.rs$|main\.rs$|path_policy\.rs$|secret_store\.rs$|plugins\/|mcp\/|agent\/|files\/))/,
+  /^public\/(?:ai-app-|plugin-)/,
   // Worker 入口通过 URL 加载，未必出现在 Vitest 的导入关系中。
   /^src\/services\/(?:.+\/)?[^/]+Worker\.ts$/,
   /^tests\/setup\.ts$/,
@@ -14,7 +23,55 @@ const lintable = /\.(?:js|mjs|cjs|ts|tsx)$/;
 const typescript = /\.tsx?$/;
 const sourceCode = /^src\/(?:components|constants|data|hooks|services|store|utils)\//;
 const testCode = /^tests\/(?:components|hooks|i18n|scripts|services|store|types|utils)\//;
-const documentation = /^(?:doc\/.+\.md|README(?:\.(?:en|ja|ko))?\.md|AGENTS\.md)$/;
+const documentation = /^(?:doc\/.+\.md|README(?:\.(?:en|ja|ko))?\.md|AGENTS\.md|\.release-notes\.md|\.github\/release-title\.txt)$/;
+const translations = /^src\/i18n\/locales\/(?:en-US|ja-JP|ko-KR)\/(?!index\.ts$)[^/]+\.ts$/;
+const domainTypes = /^src\/types\/[^/]+\.ts$/;
+const releaseMetadata = new Set(['package.json', 'package-lock.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock', 'src-tauri/tauri.conf.json']);
+const stableVersion = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+
+export function isReleaseMetadataPath(path) {
+  return releaseMetadata.has(path);
+}
+
+function jsonWithoutVersion(text, path) {
+  const value = JSON.parse(text);
+  if (!value || Array.isArray(value) || typeof value !== 'object' || !stableVersion.test(value.version)) throw new Error('版本字段无效');
+  if (path === 'package-lock.json') {
+    const app = value.packages?.[''];
+    if (!app || app.version !== value.version || !stableVersion.test(app.version)) throw new Error('锁文件应用版本无效');
+    delete app.version;
+  }
+  delete value.version;
+  return value;
+}
+
+function tomlWithoutVersion(text, path) {
+  const normalized = text.replace(/\r\n/g, '\n');
+  const pattern = path.endsWith('Cargo.lock')
+    ? /^\[\[package\]\][ \t]*\n[\s\S]*?(?=^\[\[package\]\]|(?![\s\S]))/gm
+    : /^\[package\][ \t]*\n[\s\S]*?(?=^\[|(?![\s\S]))/gm;
+  const sections = [...normalized.matchAll(pattern)].filter(([section]) => (
+    !path.endsWith('Cargo.lock') || /^name[ \t]*=[ \t]*"ai-canvas-tauri"[ \t]*$/m.test(section)
+  ));
+  if (sections.length !== 1) throw new Error('应用版本区段无效');
+  const section = sections[0];
+  const versions = [...section[0].matchAll(/^version[ \t]*=[ \t]*"([^"]+)"[ \t]*(?:#[^\n]*)?$/gm)];
+  if (versions.length !== 1 || !stableVersion.test(versions[0][1])) throw new Error('应用版本字段无效');
+  const version = versions[0];
+  const start = section.index + version.index;
+  return normalized.slice(0, start) + 'version = "<application-version>"' + normalized.slice(start + version[0].length);
+}
+
+/** 只豁免已比较两个提交且确实仅应用版本变化的已存在文件。 */
+export function isVersionOnlyReleaseChange({ status, path, before, after }) {
+  if (status !== 'M' || !isReleaseMetadataPath(path) || typeof before !== 'string' || typeof after !== 'string') return false;
+  try {
+    if (path.endsWith('.json')) return isDeepStrictEqual(jsonWithoutVersion(before, path), jsonWithoutVersion(after, path));
+    return tomlWithoutVersion(before, path) === tomlWithoutVersion(after, path);
+  } catch {
+    return false;
+  }
+}
 
 const sourceReaderTests = [
   [/\.[cm]?[jt]sx?$/, ['tests/scripts/projectModelBoundaries.test.mjs']],
@@ -91,18 +148,30 @@ export function classifyAffectedChanges(changes) {
   let rust = false;
   let fullFrontendReason;
 
-  for (const { status, path } of changes) {
+  for (const change of changes) {
+    const { status, path } = change;
     if ((status !== 'M' && status !== 'A') || !isUsablePath(path)) {
       return emptyScope('full', '差异包含删除、重命名、类型变化或无法安全处理的路径');
     }
+    if (isReleaseMetadataPath(path)) {
+      if (isVersionOnlyReleaseChange(change)) continue;
+      return emptyScope('full', `版本资料含有依赖、配置或无法确认的变化（${path}）`);
+    }
     if (sharedFrontendPaths.some((pattern) => pattern.test(path))) {
       fullFrontendReason ??= `共享前端输入发生变化（${path}）`;
+      rust ||= path.startsWith('src-tauri/') || path.startsWith('public/');
       continue;
     }
     if (documentation.test(path)) continue;
+    // 官网和演示由独立 Pages 工作流构建，不进入 Tauri 的 src/public 输入。
+    if (path.startsWith('site/')) continue;
 
     let readers;
-    if ((sourceCode.test(path) && lintable.test(path)) || /^src\/styles\/.+\.css$/.test(path)) {
+    if (translations.test(path) || domainTypes.test(path)) {
+      relatedFiles.add(path);
+      typecheck = true;
+      readers = [...readerTests(path, sourceReaderTests), 'tests/i18n/i18n.test.ts'];
+    } else if ((sourceCode.test(path) && lintable.test(path)) || /^src\/styles\/.+\.css$/.test(path)) {
       relatedFiles.add(path);
       typecheck ||= typescript.test(path);
       // Tauri 的原生工具栏直接嵌入这两份 CSS。
@@ -128,7 +197,7 @@ export function classifyAffectedChanges(changes) {
 
   if (fullFrontendReason) return emptyScope('full', fullFrontendReason, rust);
   if (!lintFiles.size && !relatedFiles.size && !explicitTests.size && !rust) {
-    return emptyScope('skip', changes.length ? '仅改动了独立文档' : '没有文件改动');
+    return emptyScope('skip', changes.length ? '仅改动了独立文档、官网或应用版本资料' : '没有文件改动');
   }
   return {
     mode: 'affected',

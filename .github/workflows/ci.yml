@@ -17,10 +17,12 @@ jobs:
     name: Release source CI plan
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
     outputs:
-      mode: ${{ steps.plan.outputs.mode }}
-      rust: ${{ steps.plan.outputs.rust }}
+      mode: ${{ steps.freeze.outputs.mode }}
+      base: ${{ steps.freeze.outputs.base }}
+      rust: ${{ steps.freeze.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,12 +33,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      - name: Require a stable release tag on default branch history
+      - name: Select checks from a trusted full baseline
         id: plan
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: node scripts/ci-source-plan.mjs
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci-source-plan.mjs plan
+
+      - name: Install dependencies to resolve related tests
+        if: steps.plan.outputs.candidate_mode == 'affected'
+        run: npm ci
+
+      - name: Freeze exact check scope
+        id: freeze
+        run: node scripts/ci-source-plan.mjs finalize
+
+      - name: Keep immutable check plan
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-plan-${{ github.sha }}-${{ github.run_attempt }}
+          path: release-ci-plan.json
+          if-no-files-found: error
+          retention-days: 7
 
   frontend-static:
     name: Frontend lint and test types
@@ -108,14 +128,26 @@ jobs:
           FRONTEND_TESTS_RESULT: ${{ needs.frontend-tests.result }}
         run: |
           test "$CI_PLAN_RESULT" = success
-          test "$CI_MODE" = full
-          test "$FRONTEND_STATIC_RESULT" = success
-          test "$FRONTEND_TESTS_RESULT" = success
+          case "$CI_MODE" in
+            full) expected=success ;;
+            affected) expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          test "$FRONTEND_STATIC_RESULT" = "$expected"
+          test "$FRONTEND_TESTS_RESULT" = "$expected"
 
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Download this attempt's frozen check plan
+        if: needs.plan.outputs.mode == 'affected'
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-plan-${{ github.sha }}-${{ github.run_attempt }}
+          path: .
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -127,14 +159,17 @@ jobs:
         run: npm ci
 
       - name: Check application types and build
+        if: needs.plan.outputs.mode == 'full'
         run: npm run build
 
+      - name: Execute related checks and build
+        if: needs.plan.outputs.mode == 'affected'
+        run: npm run ci:affected -- --execute-plan release-ci-plan.json --build
+
       - name: Stamp release frontend artifact
-        if: needs.plan.outputs.mode == 'full'
         run: node scripts/release-workflow.mjs stamp-frontend
 
       - name: Keep verified release frontend
-        if: needs.plan.outputs.mode == 'full'
         uses: actions/upload-artifact@v7
         with:
           name: frontend-dist-${{ github.sha }}-${{ github.run_attempt }}
@@ -208,19 +243,32 @@ jobs:
           RUST_PLATFORM_RESULT: ${{ needs.rust-platform.result }}
         run: |
           test "$CI_PLAN_RESULT" = success
-          test "$CI_MODE" = full
-          test "$CI_RUST" = true
-          test "$RUST_PLATFORM_RESULT" = success
+          case "$CI_MODE:$CI_RUST" in
+            full:true|affected:true) test "$RUST_PLATFORM_RESULT" = success ;;
+            affected:false) test "$RUST_PLATFORM_RESULT" = skipped ;;
+            *) exit 1 ;;
+          esac
 
-  full-source-quality:
-    name: Full source quality
+  source-quality:
+    name: ${{ needs.plan.outputs.mode == 'full' && 'Full source quality' || format('Affected source quality ({0})', needs.plan.outputs.base) }}
     runs-on: ubuntu-latest
     needs: [plan, frontend, rust]
-    if: needs.plan.outputs.mode == 'full' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: ${{ always() }}
     steps:
-      - name: Confirm full source CI
+      - name: Confirm the exact source check mode
         env:
+          CI_PLAN_RESULT: ${{ needs.plan.result }}
+          CI_MODE: ${{ needs.plan.outputs.mode }}
+          CI_BASE: ${{ needs.plan.outputs.base }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           RUST_RESULT: ${{ needs.rust.result }}
           CI_RUST: ${{ needs.plan.outputs.rust }}
-        run: test "$FRONTEND_RESULT" = success && test "$RUST_RESULT" = success && test "$CI_RUST" = true
+        run: |
+          test "$CI_PLAN_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$RUST_RESULT" = success
+          case "$CI_MODE" in
+            full) test "$CI_RUST" = true ;;
+            affected) [[ "$CI_BASE" =~ ^[0-9a-f]{40}$ ]] ;;
+            *) exit 1 ;;
+          esac
