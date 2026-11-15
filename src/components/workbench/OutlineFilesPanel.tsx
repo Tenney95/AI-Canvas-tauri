@@ -172,17 +172,22 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
       </form>}
       <nav aria-label={t('大纲文档列表')} className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
         <button type="button" aria-current={!selected ? 'page' : undefined}
-          className={`ui-btn ui-btn--sm w-full justify-start ${!selected ? 'ui-btn--secondary' : 'ui-btn--ghost'}`}
+          className={`ui-btn ui-btn--sm w-full ${!selected ? 'ui-btn--secondary' : 'ui-btn--ghost'}`}
           disabled={working} onClick={() => { void run({ type: 'outline_select_builtin' }); }}>
-          <Icon icon="lucide:list-tree" className="h-3.5 w-3.5 shrink-0" />{t('本集大纲')}
+          <span className="flex min-w-0 flex-1 items-center gap-2 text-left">
+            <Icon icon="lucide:list-tree" className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{t('本集大纲')}</span>
+          </span>
         </button>
         {summary.files.map((file) => <button key={file.id} type="button" title={file.fileName}
           aria-current={selected && summary.fileId === file.id ? 'page' : undefined}
-          className={`ui-btn ui-btn--sm w-full justify-start ${selected && summary.fileId === file.id ? 'ui-btn--secondary' : 'ui-btn--ghost'}`}
+          className={`ui-btn ui-btn--sm w-full ${selected && summary.fileId === file.id ? 'ui-btn--secondary' : 'ui-btn--ghost'}`}
           disabled={!ready || working} onClick={() => { void run({ type: 'outline_open', id: file.id }); }}>
-          <Icon icon={icons[file.kind]} className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 truncate">{file.fileName}</span>
-          {summary.dirty && summary.fileId === file.id && <span aria-label={t('有未保存修改')} className="ml-auto shrink-0 text-canvas-text-secondary">●</span>}
+          <span className="flex min-w-0 flex-1 items-center gap-2 text-left">
+            <Icon icon={icons[file.kind]} className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">{file.fileName}</span>
+            {summary.dirty && summary.fileId === file.id && <span aria-label={t('有未保存修改')} className="shrink-0 text-canvas-text-secondary">●</span>}
+          </span>
         </button>)}
         {summary.loaded && summary.files.length === 0 && <p className="p-2 text-[11px] leading-relaxed text-canvas-text-muted">{t('新建大纲文档，或上传参考资料。')}</p>}
       </nav>

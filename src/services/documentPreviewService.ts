@@ -31,9 +31,9 @@ function bytesFromBase64(base64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-function checkPages(count: number, max = MAX_PAGES) {
+function checkPages(count: number, max: 200 | 500 = MAX_PAGES) {
   if (!Number.isSafeInteger(count) || count < 1) throw new PreviewError('文件中没有可预览的页面');
-  if (count > max) throw new PreviewError(`文件超过 ${max} 页，请拆分后再预览`);
+  if (count > max) throw new PreviewError(max === 200 ? '文件超过 200 页，请拆分后再预览' : '文件超过 500 页，请拆分后再预览');
 }
 
 function safeDataImage(value: string): boolean {

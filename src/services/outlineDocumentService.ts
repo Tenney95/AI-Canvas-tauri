@@ -340,7 +340,7 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
     } catch (reason) {
       const cancelled = reason instanceof DOMException && reason.name === 'AbortError';
       error = cancelled ? '大纲文件操作已取消，已有草稿和原文件已保留' : safeError(reason);
-      changed(); throw new Error(error);
+      changed(); throw new Error(error, { cause: reason });
     }
   }
 

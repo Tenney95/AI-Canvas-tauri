@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="AI Canvas 0.11.6 操作说明书：全页剧本工作台、大纲资料文件、本地文档只读预览、智能体中心 Skill 管理。">
-<title>AI Canvas 0.11.6 · 操作说明书</title>
+<meta name="description" content="AI Canvas 0.11.7 操作说明书：全页剧本工作台、大纲资料文件、本地文档只读预览、智能体中心 Skill 管理。">
+<title>AI Canvas 0.11.7 · 操作说明书</title>
 <style>
 /* Standalone document: a small copy of the application's base.css color tokens. */
 :root{color-scheme:dark;--theme-bg:#0a0a0f;--theme-surface:#14141c;--theme-card:#1a1a26;--theme-border:#2a2a3a;--theme-hover:#252535;--theme-text:#dddde4;--theme-text-secondary:#8888a0;--brand:#6366f1;--brand-light:#818cf8;--brand-pale:#a5b4fc;--node-markdown:#a855f7;--success:#22c55e;--success-bg:rgba(16,185,129,.15);--warning:#f97316;--warning-bg:rgba(249,115,22,.15);--danger:#ef4444;--white:#fff;--black-alpha-30:rgba(0,0,0,.3)}
@@ -47,8 +47,8 @@ dialog .character-actions-shot{width:1912px}
 <a href="#connection">06 · 添加厂商与模型</a><a href="#provider-sites">↳ 国内 / 国际站切换</a><a href="#image-quick-templates">↳ 图片快速模板</a><a href="#connection-transfer">↳ JSON 文件导入导出</a><a href="#import">07 · 接口说明与手动配置</a><a href="#protocol">08 · 调用协议与视频预设</a><a href="#protocol-json-editor">↳ JSON 变量插入与预览</a><a href="#variables">09 · 变量与结果路径</a><a href="#sync">10 · 同步图像接口示例</a><a href="#async">11 · 异步视频接口示例</a><a href="#async-download">↳ 完成后同源下载</a><a href="#api-check">12 · 验证与接口排错</a>
 <div class="group">日常制作与维护</div>
 <a href="#comfy">13 · 本地与云端工作流</a><a href="#comfy-install">↳ 安装官方 ComfyUI</a><a href="#assets">14 · 资源库、文件夹与创作资产</a><a href="#asset-image-batch-reverse">↳ 批量反推提示词与标签</a><a href="#assistant">15 · AI 助手与任务</a><a href="#ai-app">↳ AI 应用节点</a><a href="#director">16 · 分镜制作与 3D 导演台</a><a href="#plugins">17 · 插件与 MCP 控制</a><a href="#mcp-ai-app">↳ 调用 AI 应用动作</a><a href="#storage">18 · 保存、备份与迁移</a><a href="#shortcuts">19 · 快捷键速查</a><a href="#faq">20 · 常见问题</a><a href="#checklist">21 · 使用前检查单</a><a href="#appearance">22 · 外观主题与预设</a><a href="#about">说明书范围与版本</a>
-<div class="group">0.11.6 更新入口</div>
-<a href="#updates-0-11-6">↳ 全页工作台与大纲资料</a>
+<div class="group">0.11.7 更新入口</div>
+<a href="#updates-0-11-7">↳ 全页工作台与大纲资料</a>
 <a href="#outline-documents">↳ 上传与预览大纲参考资料</a>
 <div class="group">0.11.5 更新入口</div>
 <a href="#updates-0-11-5">↳ 视频提取音频与剧本拆分</a>
@@ -96,10 +96,10 @@ dialog .character-actions-shot{width:1912px}
 <div class="eyebrow">AI CANVAS · USER MANUAL</div>
 <h1>AI Canvas 操作说明书<br>从首次生成到完整创作</h1>
 <p>从启动页选择项目，在资源库整理素材，再用无限画布连接文本、图像、视频与音频。按步骤完成首次出图、剧本分集、逐镜生成和剪辑；需要接入自己的服务时，查阅接口与工作流示例。</p>
-<span class="badge">0.11.6 说明书</span><span class="badge">2026-11-15 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
+<span class="badge">0.11.7 说明书</span><span class="badge">2026-11-15 增量核对</span><span class="badge">截图内嵌 · 可离线阅读</span>
 </header>
 <div class="actions"><button class="action" id="print" type="button">打印 / 保存为 PDF</button><button class="action" id="theme" type="button" aria-pressed="false">切换深色阅读</button><a class="action" href="#project-settings">先看项目设置 →</a><a class="action" href="#connection">直接看自定义接口 →</a></div>
-<aside class="tip"><b>0.11.6 · 全页剧本工作台与大纲资料：</b>启动页右键项目可直达创作页面，顶部切换画布；大纲资料栏支持 MD／TXT 编辑和 PDF、PPT／PPTX、DOCX 本地只读预览，智能体中心可管理上传的 Skill。详见<a href="#updates-0-11-6">本版操作入口</a>；发布状态和未验收边界见<a href="#about">版本范围</a>。</aside>
+<aside class="tip"><b>0.11.7 · 全页剧本工作台与大纲资料：</b>启动页右键项目可直达创作页面，顶部切换画布；大纲资料栏支持 MD／TXT 编辑和 PDF、PPT／PPTX、DOCX 本地只读预览，智能体中心可管理上传的 Skill。详见<a href="#updates-0-11-7">本版操作入口</a>；发布状态和未验收边界见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.3 · 助手窗口与常用 Skill：</b>查看<a href="#assistant-close-0-11-2">独立助手关闭与草稿交接</a>、<a href="#recent-skills-0-11-2">最近五个上传及包内 Skill</a>、<a href="#canvas-storage-0-11-2">分组开合让位与新项目清理</a>，以及<a href="#models-team-0-11-2">七角色团队与媒体修复</a>。旧项目与兼容限制保留，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.1 · 型号参数与万象视频适配：</b>查看<a href="#model-parameters-0-11-1">同型号参数与万象 H3 四档时长</a>、<a href="#muse-references-0-11-1">Muse 参考图和发送确认</a>，以及<a href="#media-path-0-11-1">复制媒体文件路径</a>。旧项目与任务身份保持，安装包和验收状态见<a href="#about">版本范围</a>。</aside>
 <aside class="tip"><b>0.11.0 · 新项目结构与媒体恢复：</b>从<a href="#native-projects-0-11-0">新建项目</a>开始，按分集保存画布和共享素材；已有旧项目保持原结构。查看<a href="#media-history-0-11-0">媒体结果与输出历史</a>，再了解<a href="#project-archive-0-11-0">项目包、更新和恢复点</a>。本版不自动迁移真实旧项目；安装包与验收状态见<a href="#about">版本范围</a>。</aside>
@@ -1151,7 +1151,8 @@ dialog .character-actions-shot{width:1912px}
 <p>ComfyUI H3 低显存优化默认关闭，启用前核对工作流和后端插件。Windows 更新受保护目录时按需请求同账户 UAC，标准用户不能通过另一个管理员账户继续安装。以上能力须在桌面端按实际工作流验收。</p>
 </section>
 
-<section id="updates-0-11-6"><h2>0.11.6 · 全页剧本工作台与大纲资料</h2>
+<span id="updates-0-11-6"></span>
+<section id="updates-0-11-7"><h2>0.11.7 · 全页剧本工作台与大纲资料</h2>
 <p>从启动页项目右键直接打开全页工作台，使用顶部<b>返回启动页</b>或<b>切换到画布</b>导航；工作台与画布往返保留当前编辑草稿，保存仍按当前稿件入口完成。见<a href="#script-workbench">逐集创作操作</a>。</p>
 <p>大纲增加本剧共享资料栏，可命名新建 MD／TXT、上传参考文档，并在本地只读查看 PDF、PPT／PPTX 和 DOCX。旧 DOC 需转换后预览；单文件和文本大小、冲突与权限限制见<a href="#outline-documents">大纲资料文件</a>。</p>
 <p>智能体中心可上传、改名和删除手动 Skill；托管副本与外部链接来源按不同规则清理，见<a href="#assistant-packages">Skill 管理</a>。本版源码门禁与打包仍待 Actions，桌面和安装升级验收尚未完成，不以本说明书更新表示发布成功。</p>
@@ -1292,8 +1293,8 @@ dialog .character-actions-shot{width:1912px}
 </section>
 
 <section id="about"><h2>说明书范围与版本</h2>
-<p>本说明书面向 <b>0.11.6「全页剧本工作台与大纲资料」</b>，<b>2026-11-15</b> 按源码增量核对全页导航、大纲文件与本地文档预览、智能体中心 Skill 管理。此前章节、旧锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.6">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
-<p>发布准备与验收缺口记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-15-release-0.11.6.md">0.11.6 发布计划</a>；本地未运行测试或构建，源码和发布门禁待 Actions，旧版本结果不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；本次说明书更新不代表这些检查已通过。</p>
+<p>本说明书面向 <b>0.11.7「全页剧本工作台与大纲资料」</b>，<b>2026-11-15</b> 按源码增量核对全页导航、大纲文件与本地文档预览、智能体中心 Skill 管理。此前章节、旧锚点与十一张内嵌截图继续保留。安装包是否已公开，以<a href="https://github.com/Tenney95/AI-Canvas-tauri/releases/tag/v0.11.7">对应 GitHub Release</a>为准；截图用于辨认位置，不代表所有按钮与最新界面完全一致。</p>
+<p>发布准备与验收缺口记录在<a href="https://github.com/Tenney95/AI-Canvas-tauri/blob/master/doc/plans/2026-11-15-release-0.11.7.md">0.11.7 发布计划</a>；本地前端检查按用户授权执行，结果以实际回执为准，源码和发布门禁仍由 Actions 决定，旧版本结果不作为本轮通过证据。原有应用数据库沿用 <b>v27</b>，新项目使用独立项目库；新结构项目包为 <b>v4</b>，旧 <b>v1–v3</b> 包继续兼容。正式迁移开关保持关闭，不自动迁移真实旧项目。升级前备份项目与应用数据，安装旧程序不能直接读取新结构或借此回退数据。多窗口、云同步、剪辑、真实模型及各平台安装升级按发布计划分别验收；自动化检查和说明书更新不能代替这些桌面验收。</p>
 <h3 id="source-updates-0-10-19">0.10.19 范围与兼容提示</h3>
 <ul><li>武器仍为道具子类型，数据库维持 v26；旧客户端不支持新武器字段，团队应统一升级。</li><li>本集清单和资产库分别管理；提取不直接入库，角色引用不自动加入武器参考。</li><li>项目云同步仍为手动，不共享全局资产，也未新增自动监听或删除传播。</li></ul>
 <h3 id="source-updates-0-10-18">0.10.18「项目资产云同步与万象分组」范围与兼容提示</h3>
