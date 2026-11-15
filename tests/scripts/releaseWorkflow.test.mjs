@@ -8,23 +8,37 @@ import { assertPublishable, inspectSourceCi, resolveReleaseTarget, resolveTagCom
 
 const sha = 'a'.repeat(40);
 const otherSha = 'b'.repeat(40);
-const context = { repository: 'owner/repo', branch: 'master', sha, tag: 'v1.2.3' };
+const context = { repository: 'owner/repo', sha, tag: 'v1.2.3' };
 
 function fixture() {
   const workflow = { id: 17, path: '.github/workflows/ci.yml', state: 'active' };
-  const run = { id: 71, workflow_id: 17, path: workflow.path, event: 'push', head_branch: 'master', head_sha: sha,
+  const run = { id: 71, workflow_id: 17, path: workflow.path, event: 'push', head_branch: context.tag, head_sha: sha,
     repository: { full_name: 'owner/repo' }, head_repository: { full_name: 'owner/repo' },
     status: 'completed', conclusion: 'success', run_attempt: 1 };
   const jobs = ['Frontend quality', 'Rust check', 'Full source quality'].map((name) => ({ name, head_sha: sha, status: 'completed', conclusion: 'success' }));
   const artifact = { id: 90, name: `frontend-dist-${sha}-1`, expired: false, size_in_bytes: 500,
     digest: `sha256:${'c'.repeat(64)}`, workflow_run: { id: 71, head_sha: sha } };
-  const state = { workflow, runs: [run], jobs, artifacts: [artifact], tagSha: sha, release: null };
+  const comparison = { status: 'ahead', base_commit: { sha }, merge_base_commit: { sha } };
+  const state = { workflow, runs: [run], jobs, artifacts: [artifact], tagSha: sha, release: null, comparison };
+  const files = metadata();
+  const sources = new Map([
+    ['package.json', files.package], ['src-tauri/tauri.conf.json', files.tauri], ['package-lock.json', files.npmLock],
+    ['src-tauri/Cargo.toml', files.cargo], ['src-tauri/Cargo.lock', files.cargoLock],
+    ['.github/release-title.txt', files.title], ['.release-notes.md', files.notes],
+  ]);
   const api = vi.fn(async (path) => {
     if (path === '/actions/workflows/ci.yml') return state.workflow;
     if (path.startsWith('/actions/workflows/17/runs?')) return { workflow_runs: state.runs };
     if (path === `/actions/runs/71/attempts/${state.runs[0].run_attempt}/jobs?per_page=100`) return { jobs: state.jobs };
     if (path === '/actions/runs/71/artifacts?per_page=100') return { artifacts: state.artifacts };
     if (path === '/git/ref/tags/v1.2.3') return { object: { type: 'commit', sha: state.tagSha } };
+    if (path.startsWith(`/compare/${sha}...`)) return state.comparison;
+    if (path.startsWith('/contents/')) {
+      const [file, query] = path.slice('/contents/'.length).split('?');
+      const content = sources.get(file);
+      if (query !== `ref=${sha}` || content === undefined) throw new Error(`Unexpected source fixture: ${path}`);
+      return { type: 'file', encoding: 'base64', content: Buffer.from(content, 'utf8').toString('base64'), size: Buffer.byteLength(content) };
+    }
     if (path === '/releases/tags/v1.2.3') return 'byTag' in state ? state.byTag : state.release;
     if (path === '/releases?per_page=100&page=1') return state.releases ?? (state.release ? [state.release] : []);
     throw new Error(`Unexpected fixture API path: ${path}`);
@@ -70,6 +84,29 @@ describe('发布目标与不可变标签', () => {
     expect(api).not.toHaveBeenCalled();
   });
 
+  it.each(['ahead', 'identical'])('标签属于默认分支历史时接受 %s 证明，并对分支路径编码', async (status) => {
+    const { state, api } = fixture();
+    state.comparison.status = status;
+    await expect(resolveReleaseTarget(api, { tag: context.tag, defaultBranch: 'release/stable', ref: 'refs/heads/release/stable' }))
+      .resolves.toMatchObject({ sha, tag: context.tag, version: '1.2.3' });
+    expect(api).toHaveBeenCalledWith(`/compare/${sha}...release%2Fstable`);
+    expect(api).toHaveBeenCalledWith(`/contents/package.json?ref=${sha}`);
+  });
+
+  it('分叉、标签比默认分支超前以及错误祖先证明均在读取发布资料前拒绝', async () => {
+    const { state, api } = fixture();
+    const original = state.comparison;
+    for (const comparison of [
+      { ...original, status: 'diverged' }, { ...original, status: 'behind' },
+      { ...original, base_commit: { sha: otherSha } }, { ...original, merge_base_commit: { sha: otherSha } },
+    ]) {
+      state.comparison = comparison;
+      await expect(resolveReleaseTarget(api, { tag: context.tag, defaultBranch: 'master', ref: 'refs/heads/master' }))
+        .rejects.toThrow('不属于默认分支历史');
+    }
+    expect(api.mock.calls.some(([path]) => path.startsWith('/contents/'))).toBe(false);
+  });
+
   it('公开版本、错提交的草稿、移动的标签以及缺失标准平台草稿都不能继续写入', async () => {
     const { state, api } = fixture();
     await expect(assertPublishable(api, 'v1.2.3', sha)).resolves.toBeUndefined();
@@ -100,10 +137,12 @@ describe('发布目标与不可变标签', () => {
 });
 
 describe('可信源码 CI 与前端 artifact 证明', () => {
-  it('只接受同仓库默认分支 push 的准确工作流与 SHA', async () => {
+  it('只接受同仓库同版本标签 push 的准确工作流与 SHA', async () => {
     const { state, api } = fixture();
     await expect(inspectSourceCi(api, context)).resolves.toMatchObject({ status: 'success', runId: 71, artifactId: 90 });
-    for (const changes of [{ head_sha: otherSha }, { event: 'pull_request' }, { head_branch: 'fork' },
+    expect(api).toHaveBeenCalledWith(`/actions/workflows/17/runs?head_sha=${sha}&event=push&branch=v1.2.3&per_page=100`);
+    for (const changes of [{ head_sha: otherSha }, { event: 'pull_request' }, { head_branch: 'master' },
+      { head_branch: 'v1.2.4' }, { head_branch: 'fork' },
       { head_repository: { full_name: 'fork/repo' } }, { repository: { full_name: 'other/repo' } },
       { workflow_id: 99 }, { path: '.github/workflows/fake.yml' }]) {
       const original = state.runs[0]; state.runs = [{ ...original, ...changes }];
@@ -112,6 +151,14 @@ describe('可信源码 CI 与前端 artifact 证明', () => {
     }
     state.workflow.path = '.github/workflows/fake.yml';
     await expect(inspectSourceCi(api, context)).rejects.toThrow('工作流身份');
+  });
+
+  it('缺失或无效的版本标签在查询 CI 前拒绝', async () => {
+    const { api } = fixture();
+    for (const tag of [undefined, '', 'master', 'v1.2.3-rc.1', '../v1.2.3']) {
+      await expect(inspectSourceCi(api, { ...context, tag })).rejects.toThrow('正式版本标签');
+    }
+    expect(api).not.toHaveBeenCalled();
   });
 
   it('最新运行未结束时等待，最新失败不能借旧成功继续发布', async () => {
@@ -182,7 +229,7 @@ describe('可信源码 CI 与前端 artifact 证明', () => {
     const { state, api } = fixture(); state.runs = [];
     let time = 0;
     await expect(waitForSourceCi(api, context, { now: () => time, sleep: async (duration) => { time += duration; }, timeoutMs: 60_000 }))
-      .rejects.toThrow('等待同一提交的可信源码 CI 超时');
+      .rejects.toThrow('等待同版本标签的可信源码 CI 超时');
     expect(time).toBe(60_000);
     expect(api.mock.calls.every(([path]) => path.startsWith('/actions/workflows/'))).toBe(true);
   });

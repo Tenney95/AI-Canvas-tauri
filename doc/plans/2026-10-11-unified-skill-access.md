@@ -25,7 +25,7 @@ Skill 从任一现有入口导入后，节点、主窗口与独立窗口的对�
 
 ## 智能体中心管理上传 Skill（2026-11-15）
 
-状态：已实现并补充回归源码。前端检查由本次推送钩子按实际目标 SHA 选择执行，结果以钩子输出与同 SHA CI 为准；未运行 Rust 检查、原生测试或 Tauri 桌面验收，待用户验证。包含新原生命令，需重新编译桌面端。
+状态：已实现并补充回归源码。前端检查结论以对应提交的实际结果为准；后续完整 CI 按发版流程在版本打包时执行，日常推送不自动检查。未运行 Rust 检查、原生测试或 Tauri 桌面验收，待用户验证。包含新原生命令，需重新编译桌面端。
 
 - 智能体中心在原有智能体包列表之外显示全部 `userSkills`，卡片提供名称、简介、来源和入口文件。上传区域增加“上传 Skill”按钮，展开文件／压缩包与文件夹两种入口，复用既有 `uploadSkill` Action、取消和权限失败行为；成功后同一列表立即更新。仅主窗口提供上传、重命名与删除入口，不重复列出包内 Skill。
 - 重命名通过 `store.skills.ts` 修改并持久化现有 `name`，不改文件名、正文、Manifest、来源身份或工具权限；加载和正文更新保留显示名。空名称、换行和超过 120 字符的名称拒绝保存。目录写入、正文更新与近期偏好串行处理，先保存后更新界面，避免重命名或删除失败、过期写入使记录复活。
@@ -41,7 +41,7 @@ Tauri 桌面验收：
 4. 使用测试副本验证只读安装目录、只读文件、其他程序占用文件和失效来源：重命名显示名不依赖安装目录写权限；删除失败须提示权限或占用原因，不能显示成功或擅自提权。恢复权限或释放占用后可重试。替换为 symlink／junction 或指向私有目录时拒绝删除，目录外文件必须保留。
 5. 模拟数据库保存／删除失败，确认重命名不更新列表；托管文件已清理但数据库失败须显示对应提示，重试可以完成。回归两种主题、小窗口长名称滚动、节点 Skill 管理器的确认／失败提示和原有包启停／移除。
 
-用户可在仓库根目录运行 `npx vitest run tests/store/skills.test.ts tests/components/agentCenterPanel.test.tsx tests/services/fileServiceSkillResource.test.ts tests/services/chat/skillTools.test.ts` 与 `npm run typecheck`；在 `src-tauri` 目录运行 `cargo test --lib skill_storage::tests`。前端门禁由推送钩子执行；Rust 命令和桌面验收尚未运行。回滚需同时撤销托管删除接线、原生命令注册与权限声明；不能恢复已经删除的托管副本，原文件需用户从备份重新导入。
+用户可在仓库根目录运行 `npx vitest run tests/store/skills.test.ts tests/components/agentCenterPanel.test.tsx tests/services/fileServiceSkillResource.test.ts tests/services/chat/skillTools.test.ts` 与 `npm run typecheck`；在 `src-tauri` 目录运行 `cargo test --lib skill_storage::tests`。完整前端门禁仅在版本打包时自动执行；Rust 命令和桌面验收尚未运行。回滚需同时撤销托管删除接线、原生命令注册与权限声明；不能恢复已经删除的托管副本，原文件需用户从备份重新导入。
 
 ## 改动前已确认的调用链
 

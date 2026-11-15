@@ -1,4 +1,5 @@
 #!/bin/sh
 set -e
 
+# 推送不执行本地 CI；完整检查由发布标签触发的打包流程负责。
 exec node "$(dirname "$0")/ci-pre-push.mjs" "$@"

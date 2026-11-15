@@ -76,7 +76,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RELEASE_TAG: ${{ inputs.tag }}
-      - name: Wait for exact source CI and verified frontend
+      - name: Wait for exact release tag CI and verified frontend
         id: proof
         run: node scripts/release-workflow.mjs wait-ci
         env:

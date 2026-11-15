@@ -106,6 +106,9 @@ export function validateReleaseMetadata(tag, files) {
 export async function resolveReleaseTarget(api, { tag, defaultBranch, ref }) {
   if (!defaultBranch || ref !== `refs/heads/${defaultBranch}`) throw new Error('实际发布必须从默认分支调度');
   const sha = await resolveTagCommit(api, tag);
+  const comparison = await api(`/compare/${sha}...${encodeURIComponent(defaultBranch)}`);
+  if (!['ahead', 'identical'].includes(comparison?.status) || comparison.base_commit?.sha !== sha
+    || comparison.merge_base_commit?.sha !== sha) throw new Error('发布标签提交不属于默认分支历史，拒绝发布');
   await assertPublishable(api, tag, sha);
   const paths = { package: 'package.json', tauri: 'src-tauri/tauri.conf.json', npmLock: 'package-lock.json',
     cargo: 'src-tauri/Cargo.toml', cargoLock: 'src-tauri/Cargo.lock', title: '.github/release-title.txt', notes: '.release-notes.md' };
@@ -113,19 +116,19 @@ export async function resolveReleaseTarget(api, { tag, defaultBranch, ref }) {
   return { sha, ...validateReleaseMetadata(tag, Object.fromEntries(entries)) };
 }
 
-/** 只接受可信默认分支 push 的最新一次完整 CI 及该次尝试生成的产物。 */
-export async function inspectSourceCi(api, { repository, branch, sha }) {
+/** 只接受同版本标签 push 的最新一次完整 CI 及该次尝试生成的产物。 */
+export async function inspectSourceCi(api, { repository, tag, sha }) {
   validSha(sha);
-  if (!branch) throw new Error('默认分支身份不可用');
+  validateTag(tag);
   const workflow = await api('/actions/workflows/ci.yml');
   if (workflow.path !== '.github/workflows/ci.yml' || workflow.state !== 'active' || !Number.isSafeInteger(workflow.id)) throw new Error('源码 CI 工作流身份无效');
-  const result = await api(`/actions/workflows/${workflow.id}/runs?head_sha=${sha}&event=push&branch=${encodeURIComponent(branch)}&per_page=100`);
-  const runs = (result.workflow_runs ?? []).filter((run) => run.head_sha === sha && run.event === 'push' && run.head_branch === branch
+  const result = await api(`/actions/workflows/${workflow.id}/runs?head_sha=${sha}&event=push&branch=${encodeURIComponent(tag)}&per_page=100`);
+  const runs = (result.workflow_runs ?? []).filter((run) => run.head_sha === sha && run.event === 'push' && run.head_branch === tag
     && run.repository?.full_name === repository && run.head_repository?.full_name === repository
     && run.workflow_id === workflow.id && run.path === '.github/workflows/ci.yml');
   const run = runs.sort((a, b) => b.id - a.id)[0];
   if (!run || run.status !== 'completed') return { status: run ? 'pending' : 'missing' };
-  if (run.conclusion !== 'success') throw new Error('同一提交的源码 CI 未通过，请修复或人工重跑后再发布');
+  if (run.conclusion !== 'success') throw new Error('同版本标签的源码 CI 未通过，请修复或人工重跑后再发布');
   if (!Number.isSafeInteger(run.id) || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) throw new Error('源码 CI 回执无效');
   const resultJobs = await api(`/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`);
   const jobs = resultJobs.jobs ?? [];
@@ -157,7 +160,7 @@ export async function waitForSourceCi(api, context, options = {}) {
     if (now() >= deadline) break;
     await sleep(Math.min(30_000, deadline - now()));
   } while (now() <= deadline);
-  throw new Error('等待同一提交的可信源码 CI 超时，未构建或公开版本');
+  throw new Error('等待同版本标签的可信源码 CI 超时，未构建或公开版本');
 }
 
 async function frontendFiles(directory, prefix = '') {
@@ -226,8 +229,8 @@ async function main(command) {
     const target = await resolveReleaseTarget(api, { tag, defaultBranch: process.env.DEFAULT_BRANCH, ref: process.env.GITHUB_REF });
     await outputs({ tag: target.tag, sha: target.sha, version: target.version, release_name: target.title, release_body: target.notes });
   } else if (command === 'wait-ci') {
-    const proof = await waitForSourceCi(api, { repository, tag: validateTag(tag), sha: validSha(sha), branch: process.env.DEFAULT_BRANCH },
-      { onStatus: (status) => console.log(status === 'missing' ? '等待同一提交的默认分支源码 CI 出现' : '等待同一提交的源码 CI 完成；不重复启动检查') });
+    const proof = await waitForSourceCi(api, { repository, tag: validateTag(tag), sha: validSha(sha) },
+      { onStatus: (status) => console.log(status === 'missing' ? '等待同版本标签、同一提交的源码 CI 出现' : '等待同版本标签的源码 CI 完成；不重复启动检查') });
     await outputs({ artifact_run_id: proof.runId, artifact_id: proof.artifactId });
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
       `## 发布 ${tag}\n\n- 源码：\`${sha}\`\n- 全量源码 CI：[${proof.runId}（第 ${proof.runAttempt} 次尝试）](https://github.com/${repository}/actions/runs/${proof.runId}/attempts/${proof.runAttempt})\n`

@@ -1,98 +1,55 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { planSourceCi } from '../../scripts/ci-source-plan.mjs';
 
-const repository = 'example/ai-canvas';
-const workflowPath = '.github/workflows/ci.yml';
-const head = '1'.repeat(40);
-const before = '2'.repeat(40);
-const ancestor = '3'.repeat(40);
-const unrelated = '4'.repeat(40);
+const sha = '1'.repeat(40);
 
-function run(headSha, overrides = {}) {
+function fixture() {
   return {
-    id: 21, run_attempt: 2, workflow_id: 4, event: 'push', path: workflowPath,
-    head_branch: 'master', head_sha: headSha, repository: { full_name: repository },
-    head_repository: { full_name: repository }, status: 'completed', conclusion: 'success',
-    ...overrides,
+    input: { repository: 'example/ai-canvas', branch: 'master', event: 'push', ref: 'refs/tags/v1.2.3', sha },
+    state: { head: vi.fn(() => sha), isDefaultBranchAncestor: vi.fn(() => true) },
   };
 }
 
-function fixture(runs, output = 'affected') {
-  const api = vi.fn(async (path) => {
-    if (path === '/actions/workflows/ci.yml') return { path: workflowPath, state: 'active', id: 4 };
-    if (path.startsWith('/actions/workflows/4/runs?')) return { workflow_runs: runs };
-    const match = /^\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs\?per_page=100$/.exec(path);
-    const source = runs.find((item) => Number(match[1]) === item.id && Number(match[2]) === item.run_attempt);
-    return { jobs: source?.jobs ?? [{
-      name: 'Source CI baseline', head_sha: source?.head_sha, status: 'completed', conclusion: 'success',
-    }] };
-  });
-  const input = { api, repository, branch: 'master', event: 'push', ref: 'refs/heads/master', sha: head, before, forced: 'false' };
-  const state = {
-    head: () => head,
-    ancestors: vi.fn(() => [before, ancestor]),
-    readPlan: vi.fn((base) => ({ mode: base === ancestor ? output : 'affected', rust: base === ancestor && output !== 'skip' })),
-  };
-  return { input, state, api };
-}
-
-describe('默认分支源码 CI 基线', () => {
-  it('从最后一个可信祖先开始比较，保留失败或取消推送里的改动', async () => {
-    const { input, state } = fixture([
-      run(before, { id: 27, conclusion: 'cancelled' }),
-      run(before, { id: 25, conclusion: 'failure' }),
-      run(before, { id: 24 }), // 旧成功被同 SHA 的新运行替代
-      run(unrelated, { id: 23 }),
-      run(ancestor),
-    ]);
-
-    await expect(planSourceCi(input, state)).resolves.toMatchObject({ mode: 'affected', base: ancestor, rust: true });
-    expect(state.ancestors).toHaveBeenCalledWith(before);
-    expect(state.readPlan.mock.calls).toEqual([[before], [ancestor]]);
+describe('仅在版本打包时运行源码 CI', () => {
+  it('正式版本标签总是执行完整前端与三平台 Rust，不依赖按改动基线', () => {
+    const { input, state } = fixture();
+    expect(planSourceCi(input, state)).toMatchObject({ mode: 'full', rust: true, tag: 'v1.2.3', sha });
+    expect(state.isDefaultBranchAncestor).toHaveBeenCalledExactlyOnceWith(sha, 'master');
   });
 
   it.each([
-    { event: 'pull_request' },
-    { ref: 'refs/heads/feature' },
-    { forced: 'true' },
-    { before: '0'.repeat(40) },
-  ])('特殊事件完整检查（%j）', async (overrides) => {
-    const { input, state, api } = fixture([run(before)]);
-    await expect(planSourceCi({ ...input, ...overrides }, state)).resolves.toMatchObject({ mode: 'full', rust: true });
-    expect(api).not.toHaveBeenCalled();
+    { event: 'pull_request' }, { event: 'workflow_dispatch' }, { ref: 'refs/heads/master' },
+    { ref: 'refs/heads/feature' }, { ref: 'refs/tags/not-a-release' }, { ref: 'refs/tags/v1.2.3-rc.1' },
+    { ref: 'refs/tags/v01.2.3' }, { sha: '0'.repeat(40) }, { repository: '' }, { branch: '' },
+  ])('非正式打包请求直接拒绝，不回退运行全量（%j）', (overrides) => {
+    const { input, state } = fixture();
+    expect(() => planSourceCi({ ...input, ...overrides }, state)).toThrow();
+    expect(state.head).not.toHaveBeenCalled();
+    expect(state.isDefaultBranchAncestor).not.toHaveBeenCalled();
   });
 
-  it('推送包含发版或共享资料时总是全量，独立于近期成功记录', async () => {
-    const { input, state, api } = fixture([run(before)]);
-    state.readPlan.mockReturnValueOnce({ mode: 'full' });
-
-    await expect(planSourceCi(input, state)).resolves.toMatchObject({ mode: 'full', base: '', rust: true });
-    expect(api).not.toHaveBeenCalled();
+  it('错误检出和默认分支以外的提交不能获得打包检查计划', () => {
+    const { input, state } = fixture();
+    state.head.mockReturnValueOnce('2'.repeat(40));
+    expect(() => planSourceCi(input, state)).toThrow('检出 SHA');
+    expect(state.isDefaultBranchAncestor).not.toHaveBeenCalled();
+    state.isDefaultBranchAncestor.mockReturnValueOnce(false);
+    expect(() => planSourceCi(input, state)).toThrow('不属于默认分支历史');
   });
 
-  it('独立文档的受影响回执可作为下一次成功基线', async () => {
-    const { input, state, api } = fixture([run(ancestor)], 'skip');
-
-    await expect(planSourceCi(input, state)).resolves.toMatchObject({ mode: 'skip', base: ancestor, rust: false });
-    expect(api).toHaveBeenCalledWith('/actions/runs/21/attempts/2/jobs?per_page=100');
-  });
-
-  it('排除外部、PR、旧版和当前尝试缺少成功证明的回执', async () => {
-    const { input, state } = fixture([
-      run(before, { id: 24, head_repository: { full_name: 'fork/ai-canvas' } }),
-      run(before, { id: 23, event: 'pull_request' }),
-      run(before, { id: 22, jobs: [] }),
-      run(ancestor, { jobs: [{ name: 'Source CI baseline', head_sha: ancestor, status: 'completed', conclusion: 'skipped' }] }),
-    ]);
-
-    await expect(planSourceCi(input, state)).resolves.toMatchObject({ mode: 'full', base: '', rust: true });
-  });
-
-  it('无法查询 GitHub 或范围计算失败时回退完整 CI', async () => {
-    const { input, state, api } = fixture([run(before)]);
-    api.mockRejectedValueOnce(new Error('unavailable'));
-    await expect(planSourceCi(input, state)).resolves.toMatchObject({ mode: 'full', rust: true });
-    state.readPlan.mockImplementationOnce(() => { throw new Error('history unavailable'); });
-    await expect(planSourceCi(input, state)).resolves.toMatchObject({ mode: 'full', rust: true });
+  it('工作流仅订阅版本标签，保留完整检查与不可变前端产物', () => {
+    const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+    const trigger = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\npermissions:'));
+    expect(trigger).toContain("tags:\n      - 'v*'");
+    expect(trigger).not.toMatch(/pull_request:|branches:|workflow_dispatch:|schedule:/);
+    expect(workflow).toContain('fetch-depth: 0');
+    expect(workflow).toContain('run: node scripts/ci-source-plan.mjs');
+    expect(workflow).toContain('npm run test -- --shard=${{ matrix.shard }}');
+    expect(workflow).toContain('cargo check --lib --locked');
+    expect(workflow).toContain('Full source quality');
+    expect(workflow).toContain('frontend-dist-${{ github.sha }}-${{ github.run_attempt }}');
+    expect(workflow).not.toContain('ci:affected');
+    expect(workflow).not.toContain('Source CI baseline');
   });
 });
