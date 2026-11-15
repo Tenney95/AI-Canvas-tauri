@@ -429,21 +429,30 @@ export function subscribeVideoEditorWindow(
   };
 }
 
+/** 固定两条消息通道；绑定先取快照，消息在 event 模块就绪后才构造。 */
+async function postWindowMessage(
+  instanceId: string,
+  target: 'main' | typeof VIDEO_EDITOR_WINDOW_LABEL,
+  createMessage: () => VideoEditorProtocolMessage,
+  expectedBinding?: VideoEditorWindowBinding,
+): Promise<void> {
+  const toEditor = target === VIDEO_EDITOR_WINDOW_LABEL;
+  const binding = toEditor ? requireBinding(instanceId, expectedBinding) : childBinding(instanceId);
+  const { emitTo } = await import('@tauri-apps/api/event');
+  if (toEditor) requireBinding(instanceId, binding);
+  await emitTo(target, toEditor ? VIDEO_EDITOR_HOST_EVENT : VIDEO_EDITOR_MESSAGE_EVENT, {
+    instanceId, binding, message: createMessage(),
+  } satisfies VideoEditorWindowEnvelope);
+}
+
 /** 编辑器窗口内调用：把导出结果回传主窗口 */
 export async function postVideoEditorExported(
   instanceId: string,
   result: VideoEditorExportResult,
 ): Promise<void> {
-  const binding = childBinding(instanceId);
-  const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
-    instanceId,
-    binding,
-    message: {
-      type: 'storyai:video-editor-exported',
-      payload: { ...result },
-    },
-  } satisfies VideoEditorWindowEnvelope);
+  return postWindowMessage(instanceId, 'main', () => ({
+    type: 'storyai:video-editor-exported', payload: { ...result },
+  }));
 }
 
 /** 编辑器窗口内调用：把当前帧回传主窗口，由节点侧建图片节点 */
@@ -451,38 +460,19 @@ export async function postVideoEditorFrameExported(
   instanceId: string,
   result: VideoEditorFrameExportResult,
 ): Promise<void> {
-  const binding = childBinding(instanceId);
-  const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
-    instanceId,
-    binding,
-    message: {
-      type: 'storyai:video-editor-frame-exported',
-      payload: { ...result },
-    },
-  } satisfies VideoEditorWindowEnvelope);
+  return postWindowMessage(instanceId, 'main', () => ({
+    type: 'storyai:video-editor-frame-exported', payload: { ...result },
+  }));
 }
 
 /** 编辑器窗口内调用：通知主窗口自己已就绪 */
 export async function postVideoEditorReady(instanceId: string): Promise<void> {
-  const binding = childBinding(instanceId);
-  const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
-    instanceId,
-    binding,
-    message: { type: 'storyai:video-editor-ready' },
-  } satisfies VideoEditorWindowEnvelope);
+  return postWindowMessage(instanceId, 'main', () => ({ type: 'storyai:video-editor-ready' }));
 }
 
 /** 编辑器窗口内调用：向主窗口要一份当前可用的视频模型列表 */
 export async function postVideoEditorModelsRequest(instanceId: string): Promise<void> {
-  const binding = childBinding(instanceId);
-  const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
-    instanceId,
-    binding,
-    message: { type: 'storyai:video-editor-models-request' },
-  } satisfies VideoEditorWindowEnvelope);
+  return postWindowMessage(instanceId, 'main', () => ({ type: 'storyai:video-editor-models-request' }));
 }
 
 /** 编辑器窗口内调用：请求主窗口按首/尾帧和提示词生成一段 AI 转场 */
@@ -490,16 +480,9 @@ export async function postVideoEditorAiTransitionRequest(
   instanceId: string,
   request: VideoEditorAiTransitionRequest,
 ): Promise<void> {
-  const binding = childBinding(instanceId);
-  const { emitTo } = await import('@tauri-apps/api/event');
-  await emitTo('main', VIDEO_EDITOR_MESSAGE_EVENT, {
-    instanceId,
-    binding,
-    message: {
-      type: 'storyai:video-editor-ai-transition-request',
-      payload: { ...request },
-    },
-  } satisfies VideoEditorWindowEnvelope);
+  return postWindowMessage(instanceId, 'main', () => ({
+    type: 'storyai:video-editor-ai-transition-request', payload: { ...request },
+  }));
 }
 
 /** 编辑器窗口内调用：订阅主窗口下发的消息 */
@@ -526,17 +509,9 @@ export async function postVideoEditorModels(
   instanceId: string,
   models: VideoEditorModelOption[],
 ): Promise<void> {
-  const binding = requireBinding(instanceId);
-  const { emitTo } = await import('@tauri-apps/api/event');
-  requireBinding(instanceId, binding);
-  await emitTo(VIDEO_EDITOR_WINDOW_LABEL, VIDEO_EDITOR_HOST_EVENT, {
-    instanceId,
-    binding,
-    message: {
-      type: 'storyai:video-editor-models',
-      payload: { models },
-    },
-  } satisfies VideoEditorWindowEnvelope);
+  return postWindowMessage(instanceId, VIDEO_EDITOR_WINDOW_LABEL, () => ({
+    type: 'storyai:video-editor-models', payload: { models },
+  }));
 }
 
 /** 主窗口内调用：把 AI 转场结果回传编辑器 */
@@ -545,17 +520,9 @@ export async function postVideoEditorAiTransitionResult(
   result: VideoEditorAiTransitionResult,
   expectedBinding?: VideoEditorWindowBinding,
 ): Promise<void> {
-  const binding = requireBinding(instanceId, expectedBinding);
-  const { emitTo } = await import('@tauri-apps/api/event');
-  requireBinding(instanceId, binding);
-  await emitTo(VIDEO_EDITOR_WINDOW_LABEL, VIDEO_EDITOR_HOST_EVENT, {
-    instanceId,
-    binding,
-    message: {
-      type: 'storyai:video-editor-ai-transition-result',
-      payload: { ...result },
-    },
-  } satisfies VideoEditorWindowEnvelope);
+  return postWindowMessage(instanceId, VIDEO_EDITOR_WINDOW_LABEL, () => ({
+    type: 'storyai:video-editor-ai-transition-result', payload: { ...result },
+  }), expectedBinding);
 }
 
 export function __resetVideoEditorWindowServiceForTests() {

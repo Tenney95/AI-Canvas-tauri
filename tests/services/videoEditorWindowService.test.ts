@@ -2,7 +2,7 @@
  * videoEditorWindowService — 回归测试：videoEditorWindowService。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VideoEditorWindowBinding } from '../../src/services/videoEditorWindowService';
+import type { VideoEditorWindowBinding, VideoEditorWindowEnvelope } from '../../src/services/videoEditorWindowService';
 import { captureLegacyCanvasContext } from '../../src/services/projectExecutionContext';
 
 const app = vi.hoisted(() => ({
@@ -21,7 +21,7 @@ function setApp(partial: Partial<typeof app.state>): void {
 }
 
 const tauriMocks = vi.hoisted(() => ({
-  emitTo: vi.fn(async () => undefined),
+  emitTo: vi.fn<(target: string, event: string, payload: unknown) => Promise<void>>(async () => undefined),
   eventHandler: null as null | ((event: { payload: unknown }) => void),
   hostHandler: null as null | ((event: { payload: unknown }) => void),
   existingWindow: null as MockWindow | null,
@@ -80,6 +80,8 @@ import {
   postVideoEditorExported,
   postVideoEditorFrameExported,
   postVideoEditorModels,
+  postVideoEditorModelsRequest,
+  postVideoEditorReady,
   subscribeVideoEditorHost,
   subscribeVideoEditorWindow,
 } from '../../src/services/videoEditorWindowService';
@@ -445,6 +447,96 @@ describe('videoEditorWindowService', () => {
         }),
       }),
     );
+  });
+
+  it.each([
+    ['storyai:video-editor-ready', postVideoEditorReady],
+    ['storyai:video-editor-models-request', postVideoEditorModelsRequest],
+  ] as const)('%s 向固定主窗口通道发送无 payload 消息，并保留导入前的 binding', async (type, post) => {
+    const binding = await openEditor();
+    useChildBinding(binding);
+    const pending = post('proj-1::node-7');
+    useChildBinding({ ...binding, sessionId: crypto.randomUUID() });
+    await pending;
+    expect(tauriMocks.emitTo).toHaveBeenCalledExactlyOnceWith('main', VIDEO_EDITOR_MESSAGE_EVENT, {
+      instanceId: 'proj-1::node-7', binding, message: { type },
+    });
+  });
+
+  it.each(['video', 'frame'] as const)('%s 导出在 event 导入让出期间读取更新输入，发送后保留浅副本', async (kind) => {
+    const binding = await openEditor();
+    useChildBinding(binding);
+    const result = { videoUrl: 'asset://out.mp4', imageUrl: 'asset://frame.png', fileName: 'before',
+      duration: 3, time: 1, width: 1920, height: 1080 };
+    const pending = kind === 'video' ? postVideoEditorExported('proj-1::node-7', result)
+      : postVideoEditorFrameExported('proj-1::node-7', result);
+    expect(tauriMocks.emitTo).not.toHaveBeenCalled();
+    result.fileName = 'during-import';
+    await pending;
+    const envelope = tauriMocks.emitTo.mock.calls[0][2] as VideoEditorWindowEnvelope;
+    expect(envelope.message.payload?.fileName).toBe('during-import');
+    expect(envelope.message.payload).not.toBe(result);
+    result.fileName = 'after-emit';
+    expect(envelope.message.payload?.fileName).toBe('during-import');
+  });
+
+  it('AI 转场请求沿用固定主窗口通道，在导入后才复制请求', async () => {
+    const binding = await openEditor();
+    useChildBinding(binding);
+    const request = { requestId: 'request', prompt: 'before', model: 'model', provider: 'provider',
+      firstFrameUrl: 'asset://first.png', lastFrameUrl: 'asset://last.png' };
+    const pending = postVideoEditorAiTransitionRequest('proj-1::node-7', request);
+    request.prompt = 'during-import';
+    await pending;
+    expect(tauriMocks.emitTo).toHaveBeenCalledExactlyOnceWith('main', VIDEO_EDITOR_MESSAGE_EVENT, {
+      instanceId: 'proj-1::node-7', binding,
+      message: { type: 'storyai:video-editor-ai-transition-request', payload: { ...request } },
+    });
+    const envelope = tauriMocks.emitTo.mock.calls[0][2] as VideoEditorWindowEnvelope;
+    request.prompt = 'after-emit';
+    expect(envelope.message.payload?.prompt).toBe('during-import');
+  });
+
+  it('主窗口消息导入后再复制转场结果，模型列表仍保留原数组引用', async () => {
+    const binding = await openEditor();
+    const result = { requestId: 'request', videoUrl: 'asset://before.mp4' };
+    const pending = postVideoEditorAiTransitionResult('proj-1::node-7', result, binding);
+    result.videoUrl = 'asset://during-import.mp4';
+    await pending;
+    const envelope = tauriMocks.emitTo.mock.calls[0][2] as VideoEditorWindowEnvelope;
+    expect(envelope.message.payload).toEqual(result);
+    expect(envelope.message.payload).not.toBe(result);
+    result.videoUrl = 'asset://after-emit.mp4';
+    expect(envelope.message.payload?.videoUrl).toBe('asset://during-import.mp4');
+    const models = [{ value: 'model', label: '模型', provider: 'provider', groupName: '组' }];
+    const modelsPending = postVideoEditorModels('proj-1::node-7', models);
+    models.push({ value: 'second', label: '第二模型', provider: 'provider', groupName: '组' });
+    await modelsPending;
+    const modelsEnvelope = tauriMocks.emitTo.mock.calls[1][2] as VideoEditorWindowEnvelope;
+    expect(modelsEnvelope.message.payload?.models).toBe(models);
+  });
+
+  it.each(['models', 'result'] as const)('%s 在 event 导入期间撤销 binding，不发送也不读取迟到结果', async (kind) => {
+    const binding = await openEditor();
+    const readResult = vi.fn(() => 'asset://result.mp4');
+    const result = { requestId: 'request', get videoUrl() { return readResult(); } };
+    const pending = kind === 'models' ? postVideoEditorModels('proj-1::node-7', [])
+      : postVideoEditorAiTransitionResult('proj-1::node-7', result, binding);
+    setApp({ currentProjectId: 'proj-2' });
+    await expect(pending).rejects.toThrow('已撤销');
+    expect(readResult).not.toHaveBeenCalled();
+    expect(tauriMocks.emitTo).not.toHaveBeenCalled();
+  });
+
+  it.each(['main', 'editor'] as const)('%s 发送失败原样透传且不重试', async (target) => {
+    const binding = await openEditor();
+    useChildBinding(binding);
+    const failure = new Error('emit failed');
+    tauriMocks.emitTo.mockRejectedValueOnce(failure);
+    const pending = target === 'main' ? postVideoEditorReady('proj-1::node-7')
+      : postVideoEditorModels('proj-1::node-7', []);
+    await expect(pending).rejects.toBe(failure);
+    expect(tauriMocks.emitTo).toHaveBeenCalledOnce();
   });
 
   it('ignores envelopes whose message type is not allowed', async () => {
