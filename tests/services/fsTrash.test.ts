@@ -262,6 +262,33 @@ describe('删除节点文件的项目归属校验', () => {
     expect(coreMocks.invoke).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['file', 'invalid'], ['file', 'reference'], ['group', 'invalid'], ['group', 'reference'],
+  ] as const)('旧项目 %s 暂存前重新核对删除上下文：%s', async (kind, condition) => {
+    const filePath = `D:/data/project-b/${kind === 'group' ? 'Folder/' : ''}own.png`;
+    let live: ReadonlySet<string> | null = new Set();
+    const context = { deletedNodeIds: ['removed'], getLiveKeepPaths: vi.fn(() => live) };
+    let resume!: () => void;
+    fsMocks.mkdir.mockImplementationOnce(() => new Promise<void>((resolve) => { resume = resolve; }));
+    const deletion = deleteNodeFiles([{ filePath }], new Set(), 'project-b', kind === 'group' ? ['Folder'] : [], context);
+    await vi.waitFor(() => expect(resume).toBeTypeOf('function'));
+    live = condition === 'invalid' ? null : new Set([filePath.toUpperCase()]);
+    resume();
+    await deletion;
+    expect(context.getLiveKeepPaths).toHaveBeenCalled();
+    expect(fsMocks.rename).not.toHaveBeenCalled();
+    expect(coreMocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('旧项目有效删除上下文仍允许正常暂存文件', async () => {
+    const filePath = 'D:/data/project-b/guarded.png';
+    const context = { deletedNodeIds: ['removed'], getLiveKeepPaths: vi.fn(() => new Set<string>()) };
+    await deleteNodeFiles([{ filePath }], new Set(), 'project-b', [], context);
+    expect(context.getLiveKeepPaths).toHaveBeenCalled();
+    expect(fsMocks.rename).toHaveBeenCalledTimes(1);
+    expect(fsMocks.rename.mock.calls[0][0]).toBe(filePath);
+  });
+
   it('本项目内的文件正常移入 .trash', async () => {
     await deleteNodeFile({ filePath: 'D:/data/project-b/own.png' }, undefined, 'project-b');
 

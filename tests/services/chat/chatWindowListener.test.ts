@@ -1,7 +1,7 @@
 /**
  * chatWindowListener — 回归测试：initMainWindowListener。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectWindowFrame } from '../../../src/types/projectWindow';
 
 const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
@@ -21,7 +21,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   emitTo: vi.fn(async () => undefined),
 }));
 
-import { emit, emitTo } from '@tauri-apps/api/event';
+import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
 import {
@@ -34,6 +34,7 @@ import {
   requestManagedChatOperation,
   CHAT_MANAGED_RESPONSE_EVENT,
   CHAT_SEND_RESPONSE_EVENT,
+  CHAT_TEAM_ARTIFACT_EVENT,
   CHAT_SYNC_EVENT,
   beginChatWindowSession,
   emitAction,
@@ -41,6 +42,7 @@ import {
   getMainChatWindowSessionId,
   initChatWindowListener,
   requestChatMessage,
+  requestTeamArtifactText,
 } from '../../../src/services/chat/chatWindowService';
 
 beforeEach(() => {
@@ -49,6 +51,74 @@ beforeEach(() => {
   nativeWindow.getByLabel.mockReset().mockResolvedValue({});
   vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
   beginChatWindowSession();
+});
+
+describe('chat response waits', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); vi.mocked(emit).mockClear(); });
+  afterEach(() => { vi.useRealTimers(); vi.mocked(listen).mockReset(); });
+
+  it.each(['artifact', 'managed'] as const)('%s 监听同步抛错仍使用固定连接错误', async (kind) => {
+    vi.mocked(listen).mockImplementationOnce(() => { throw new Error('private-native-detail'); });
+    const pending = kind === 'artifact' ? requestTeamArtifactText('task-1', 'artifact-1')
+      : requestManagedChatOperation('project-1', 'conversation-1', { kind: 'refresh_external_agents' });
+    await expect(pending).rejects.toThrow(kind === 'artifact' ? '无法连接主窗口读取团队成果' : '无法连接主窗口；未自动重试');
+    expect(emit).not.toHaveBeenCalled(); expect(emitTo).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { kind: 'message', timeout: 30000 }, { kind: 'artifact', timeout: 20000 }, { kind: 'managed', timeout: 30000 },
+  ] as const)('$kind 超时后不发送，迟到安装的监听仍立即释放', async ({ kind, timeout }) => {
+    let installed!: (dispose: () => void) => void, ready!: () => void;
+    const listening = new Promise<void>((resolve) => { ready = resolve; });
+    vi.mocked(listen).mockImplementationOnce(() => { ready(); return new Promise((resolve) => { installed = resolve; }); });
+    const frame = { sessionId: 'delayed-window' } as ProjectWindowFrame;
+    const pending = kind === 'message' ? requestChatMessage({ type: 'send_message', content: '保留草稿' }, frame)
+      : kind === 'artifact' ? requestTeamArtifactText('task-1', 'artifact-1', frame)
+      : requestManagedChatOperation('project-1', 'conversation-1', { kind: 'refresh_external_agents' }, undefined, frame);
+    let settled = false;
+    const outcome = pending.then((value) => { settled = true; return { value, error: undefined }; },
+      (error: Error) => { settled = true; return { value: undefined, error }; });
+    await listening;
+    await vi.advanceTimersByTimeAsync(timeout - 1); expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await outcome;
+    if (kind === 'message') expect(result).toEqual({ value: false, error: undefined });
+    else expect(result.error?.message).toContain(kind === 'artifact' ? '主窗口未返回团队成果' : '主窗口尚未确认操作结果');
+    const dispose = vi.fn();
+    installed(dispose);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(emit).not.toHaveBeenCalled(); expect(emitTo).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { kind: 'limit', text: 'x'.repeat(120000), hostError: undefined, expectedError: undefined },
+    { kind: 'oversized', text: 'x'.repeat(120001), hostError: undefined, expectedError: '产物超过窗口预览上限' },
+    { kind: 'error', text: '', hostError: '原产物已不可用', expectedError: '原产物已不可用' },
+  ])('产物 $kind 响应逐项校验身份，并清理监听和计时器', async ({ text, hostError, expectedError }) => {
+    const frame = { sessionId: 'artifact-window' } as ProjectWindowFrame;
+    let settled = false;
+    const pending = requestTeamArtifactText('task-1', 'artifact-1', frame).then(
+      (value) => { settled = true; return { value, error: undefined }; },
+      (error: Error) => { settled = true; return { value: undefined, error }; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(emit).toHaveBeenCalledOnce();
+    const request = vi.mocked(emit).mock.lastCall![1] as { requestId: string };
+    const response = { requestId: request.requestId, sessionId: frame.sessionId, taskId: 'task-1', artifactId: 'artifact-1', text, error: hostError };
+    const handlers = [...listeners.get(CHAT_TEAM_ARTIFACT_EVENT)!];
+    for (const wrong of [{ requestId: 'other' }, { sessionId: 'old' }, { taskId: 'other' }, { artifactId: 'other' }]) {
+      handlers.forEach((handler) => handler({ payload: { ...response, ...wrong } }));
+    }
+    await vi.advanceTimersByTimeAsync(0); expect(settled).toBe(false);
+    handlers.forEach((handler) => handler({ payload: response }));
+    const result = await pending;
+    if (expectedError) expect(result.error?.message).toContain(expectedError);
+    else expect(result.value).toBe(text);
+    expect(listeners.get(CHAT_TEAM_ARTIFACT_EVENT)?.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe('initMainWindowListener', () => {

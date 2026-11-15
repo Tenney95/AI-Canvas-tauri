@@ -8,12 +8,9 @@ import type { NodeType, BaseNodeData } from '../../../../types';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../../hooks/useToolbarEdit';
 import ToolbarEditor from '../toolbar/ToolbarEditor';
-import ToolbarMoreMenu from '../toolbar/ToolbarMoreMenu';
+import ToolbarZones from '../toolbar/ToolbarZones';
 import { useNodePluginToolbar } from '../toolbar/NodePluginToolbarButtons';
-import {
-  getHiddenDefaultToolbarButtons,
-  TOOLBAR_MORE_KEY,
-} from '../toolbar/toolbarRegistry';
+import { getHiddenDefaultToolbarButtons } from '../toolbar/toolbarRegistry';
 import { resolvePresetAction, resolvePresetDef, createPresetNode } from '../toolbar/presetAction';
 import { executeGeneration } from '../../../../services/generationService';
 import { requestPresetSequence } from '../../../../services/presetSequenceService';
@@ -344,24 +341,11 @@ function ImageNodeToolbar({
         {...edit.longPressHandlers}
       >
         <div className="img-toolbar-main nodrag">
-          {edit.layout.zones.map((zone, zi) => (
-            <div key={zone.id} className="img-toolbar-zone nodrag">
-              {zone.buttonKeys.map((key) => (
-                key === TOOLBAR_MORE_KEY
-                  ? (
-                    <ToolbarMoreMenu
-                      key={key}
-                      items={hiddenDefaultButtons}
-                      renderItem={renderButton}
-                    />
-                  )
-                  : renderButton(key)
-              ))}
-              {zi < edit.layout.zones.length - 1 && (
-                <div className="ftb-divider img-toolbar-main-divider" />
-              )}
-            </div>
-          ))}
+          <ToolbarZones
+            zones={edit.layout.zones}
+            hiddenButtons={hiddenDefaultButtons}
+            renderButton={renderButton}
+          />
         </div>
       </div>
       {pluginDialog}

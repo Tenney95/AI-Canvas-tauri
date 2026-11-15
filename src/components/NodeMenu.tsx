@@ -11,11 +11,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { generateId } from '../store/store.utils';
 import type { NodeType } from '../types';
-import { NODE_TYPE_CONFIG, SHOTLIST_DEFAULT_COLUMNS, createShotRow } from '../types';
+import { NODE_TYPE_CONFIG } from '../types';
 import { calcFixedPosition } from '../utils/popupPosition';
 import { importSourceFileToCanvas } from '../services/sourceFileImportService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
+import { createUiNodeData } from '../services/uiNodeCreationData';
 import AnimatedButton from './shared/AnimatedButton';
 import { useT } from '../i18n';
 import {
@@ -108,33 +109,10 @@ export default function NodeMenu() {
       type,
       position: pos,
       data: {
-        label: t(menuItems.find((m) => m.type === type)?.label || '节点'),
-        type,
-        prompt: '',
-        status: 'idle' as const,
+        ...createUiNodeData(type, t(menuItems.find((m) => m.type === type)?.label || '节点')),
         ...defaultModel,
         nodeWidth: isShotlist ? 720 : isAnimation || isDirector ? 320 : 280,
         nodeHeight: isShotlist ? 380 : isDirector ? 240 : isImage ? 158 : isAnimation ? 358 : 160,
-        ...(isImage ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
-        ...(isAnimation ? {
-          prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
-          animationAction: 'idle',
-          animationFrames: 8,
-          animationPreviewMode: 'playing',
-          aspectRatio: '1:1',
-          imageSize: '2K',
-        } : {}),
-        ...(isDirector ? {
-          role: 'source',
-          directorStatus: 'idle',
-          directorCaptureUrls: [],
-        } : {}),
-        // 开局给三行，空表让人不知道从哪下手
-        ...(isShotlist ? {
-          role: 'source',
-          shotlistColumns: SHOTLIST_DEFAULT_COLUMNS,
-          shotlistRows: [1, 2, 3].map((no) => createShotRow(`shot-${generateId()}`, no)),
-        } : {}),
       },
     };
     addNode(newNode as never);

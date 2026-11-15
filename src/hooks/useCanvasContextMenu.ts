@@ -7,17 +7,13 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import type { Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
-import { collectKeepPaths, createNodeFileDeletionContext } from '../store/store.nodes';
 import type { BaseNodeData, NodeType } from '../types';
-import { SHOTLIST_DEFAULT_COLUMNS, createShotRow } from '../types';
 import * as fileService from '../services/fileService';
 import { copyFiles as copyFilesToClipboard } from '../services/clipboardService';
-import { cancelNodePolling } from '../services/pollManager';
-import { playNodeExit } from '../utils/nodeAnimations';
 import { createPluginNode, getAvailablePluginNodes } from '../services/plugins/pluginRuntime';
 import type { AvailablePluginNode } from '../types/plugin';
-import { collectCanvasDescendantIds } from '../utils/canvasHierarchy';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
+import { createUiNodeData } from '../services/uiNodeCreationData';
 
 interface ContextMenuState {
   visible: boolean;
@@ -85,55 +81,21 @@ export function useCanvasContextMenu() {
         || grid.rows < 1 || grid.cols < 1 || grid.rows > 20 || grid.cols > 20)) return;
       const pos = menu.flowPosition;
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
-      const isImage = type === 'ai-image';
-      const isPanorama = type === 'ai-panorama';
-      const isAnimation = type === 'ai-animation';
-      const isDirector = type === 'ai-director';
-      const isShotlist = type === 'ai-shotlist';
-      const isStoryboard = type === 'ai-storyboard';
-      const isSource = role === 'source';
-      const newWidth = isShotlist ? 720 : isStoryboard ? Math.max(280, grid!.cols * 56)
-        : isAnimation || isDirector ? 320 : type === 'ai-audio' ? 260 : isPanorama ? 300 : 280;
-      const newHeight = isShotlist ? 380 : isStoryboard ? Math.max(200, grid!.rows * 56)
-        : isDirector ? 240 : isAnimation ? 358 : type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
-      const defaultModel = !isSource && !isDirector ? getPreferredNodeModel(type, useAppStore.getState()) : null;
+      const defaultModel = role !== 'source' && type !== 'ai-director' ? getPreferredNodeModel(type, useAppStore.getState()) : null;
+      const id = `node-${generateId()}`;
+      const data = {
+        ...createUiNodeData(type, label, role),
+        ...(type === 'ai-storyboard' ? {
+          nodeWidth: Math.max(280, grid!.cols * 56), nodeHeight: Math.max(200, grid!.rows * 56),
+          storyboardRows: grid!.rows, storyboardCols: grid!.cols,
+          storyboardExtracted: new Array<boolean>(grid!.rows * grid!.cols).fill(true),
+        } : {}),
+        ...defaultModel,
+      };
       const newNode: RFNode<BaseNodeData> = {
-        id: `node-${generateId()}`,
-        type,
-        position: { x: flowPos.x - newWidth / 2, y: flowPos.y - newHeight / 2 },
-        data: {
-          label,
-          type,
-          role,
-          prompt: '',
-          status: 'idle',
-          nodeWidth: newWidth,
-          nodeHeight: newHeight,
-          ...(isImage && !isSource ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
-          ...(isAnimation && !isSource ? {
-            prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
-            animationAction: 'idle' as const,
-            animationFrames: 8 as const,
-            animationPreviewMode: 'playing' as const,
-            aspectRatio: '1:1',
-            imageSize: '2K',
-          } : {}),
-          ...(isDirector ? {
-            directorStatus: 'idle' as const,
-            directorCaptureUrls: [] as string[],
-          } : {}),
-          // 开局给三行，空表让人不知道从哪下手
-          ...(isShotlist ? {
-            shotlistColumns: SHOTLIST_DEFAULT_COLUMNS,
-            shotlistRows: [1, 2, 3].map((no) => createShotRow(`shot-${generateId()}`, no)),
-          } : {}),
-          ...(isStoryboard ? {
-            storyboardRows: grid!.rows,
-            storyboardCols: grid!.cols,
-            storyboardExtracted: new Array<boolean>(grid!.rows * grid!.cols).fill(true),
-          } : {}),
-          ...defaultModel,
-        },
+        id, type,
+        position: { x: flowPos.x - data.nodeWidth / 2, y: flowPos.y - data.nodeHeight / 2 },
+        data,
       };
       addNode(newNode);
       closeMenu();
@@ -197,48 +159,7 @@ export function useCanvasContextMenu() {
   }, [closeMenu]);
 
   const handleDelete = useCallback(() => {
-    const state = useAppStore.getState();
-    const nodeIds = state.selectedNodeIds;
-    const selectedEdgeIds = state.edges.filter((ed) => ed.selected).map((ed) => ed.id);
-
-    if (selectedEdgeIds.length === 0 && nodeIds.length === 0) return;
-
-    // 立即清空选择 → 即时反馈
-    useAppStore.setState({ selectedNodeIds: [] });
-
-    // Expand to include descendants of any selected group nodes
-    const expandedIds = collectCanvasDescendantIds(state.nodes, nodeIds);
-    const allIds = Array.from(expandedIds);
-
-    // Cancel any active polling for all deleted nodes
-    for (const id of allIds) {
-      cancelNodePolling(id);
-    }
-
-    // Delete associated local files
-    const keepPaths = collectKeepPaths(state.nodes, expandedIds, state.messages);
-    void fileService.deleteNodeFiles(
-      state.nodes.filter((node) => expandedIds.has(node.id) && !node.data.artifactId).map((node) => node.data),
-      keepPaths, state.currentProjectId,
-      fileService.deletedGroupFolderNames(state.groups, expandedIds),
-      createNodeFileDeletionContext(useAppStore.getState, state.nodes, expandedIds, state.currentProjectId),
-    ).catch(() => {});
-
-    useAppStore.getState().commitToHistory();
-    playNodeExit(allIds).then(() => {
-      useAppStore.setState((s) => ({
-        nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
-        edges: s.edges.filter(
-          (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target) && !selectedEdgeIds.includes(ed.id)
-        ),
-        groups: s.groups
-          .filter((g) => !expandedIds.has(g.id))
-          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
-        selectedNodeIds: [],
-      }));
-    });
-
-    closeMenu();
+    if (useAppStore.getState().deleteSelectedCanvasElements()) closeMenu();
   }, [closeMenu]);
 
   // ── 复制选中节点到内部剪贴板 ──

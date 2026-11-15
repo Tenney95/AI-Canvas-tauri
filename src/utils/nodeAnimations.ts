@@ -12,6 +12,7 @@ const NODE_EXIT_MS = 130;
 /** 定位到节点后的聚焦脉冲时长（ms） */
 const NODE_FOCUS_PULSE_MS = 520;
 const pendingNodeExits = new Set<Promise<void>>();
+const activeElementExits = new WeakMap<HTMLElement, number>();
 
 function prefersReducedMotion(): boolean {
   return (
@@ -39,10 +40,24 @@ export function playNodeExit(ids: string[]): Promise<void> {
 
   if (inners.length === 0) return Promise.resolve();
 
-  inners.forEach((el) => el.classList.add('node-exiting'));
+  inners.forEach((el) => {
+    activeElementExits.set(el, (activeElementExits.get(el) ?? 0) + 1);
+    el.classList.add('node-exiting');
+  });
   const exit = new Promise<void>((resolve) => setTimeout(resolve, NODE_EXIT_MS));
   pendingNodeExits.add(exit);
-  void exit.then(() => pendingNodeExits.delete(exit));
+  void exit.then(() => {
+    pendingNodeExits.delete(exit);
+    // 只清理本次捕获的元素；同 ID 重挂载和重叠退出不能互相移除状态。
+    for (const el of inners) {
+      const remaining = (activeElementExits.get(el) ?? 1) - 1;
+      if (remaining > 0) activeElementExits.set(el, remaining);
+      else {
+        activeElementExits.delete(el);
+        el.classList.remove('node-exiting');
+      }
+    }
+  });
   return exit;
 }
 

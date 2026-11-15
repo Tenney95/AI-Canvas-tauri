@@ -16,6 +16,7 @@ import { textNodeHeight } from '../utils/num';
 import { COMFY_REFMOD_MIME } from '../utils/comfyRefmod';
 import { registerCanvasImport, registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from '../services/canvasDerivationGuard';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
+import { createUiNodeData } from '../services/uiNodeCreationData';
 
 import { classifyFile, MIME_MAP } from '../utils/sourceFileType';
 export { classifyFile, FILE_EXT_IMAGE, FILE_EXT_VIDEO, FILE_EXT_AUDIO, FILE_EXT_TEXT } from '../utils/sourceFileType';
@@ -48,10 +49,8 @@ export function useNodeCreation() {
         type: 'ai-text',
         position,
         data: {
-          label: opts?.label ?? '生成文本',
-          type: 'ai-text' as const,
+          ...createUiNodeData('ai-text', opts?.label ?? '生成文本'),
           prompt: opts?.prompt ?? '',
-          status: 'idle' as const,
           nodeWidth: opts?.width ?? 280,
           nodeHeight: opts?.height ?? 160,
           ...defaultModel,

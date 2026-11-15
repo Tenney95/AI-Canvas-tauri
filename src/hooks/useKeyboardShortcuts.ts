@@ -4,21 +4,15 @@
  */
 import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
-import { collectKeepPaths, createNodeFileDeletionContext } from '../store/store.nodes';
-import * as fileService from '../services/fileService';
 import { openAssetSearchWindow } from '../utils/assetSearchWindow';
-import { playNodeExit } from '../utils/nodeAnimations';
 import { hasActiveTextSelection, isEditableTarget } from '../utils/textSelection';
-import { cancelNodePolling } from '../services/pollManager';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import type { Node as RFNode } from '@xyflow/react';
 import type { BaseNodeData, NodeType } from '../types';
-import { SHOTLIST_DEFAULT_COLUMNS, createShotRow } from '../types';
-import { generateId } from '../store/store.utils';
 import { invoke } from '@tauri-apps/api/core';
-import { collectCanvasDescendantIds } from '../utils/canvasHierarchy';
 import { startNodeRename } from '../utils/nodeRename';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
+import { createUiNodeData } from '../services/uiNodeCreationData';
 
 interface NodeShortcutDefinition {
   type: NodeType;
@@ -49,15 +43,7 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
   if (!definition) return false;
 
   const { type, label } = definition;
-  const isImage = type === 'ai-image';
-  const isAudio = type === 'ai-audio';
-  const isPanorama = type === 'ai-panorama';
-  const isAnimation = type === 'ai-animation';
-  const isDirector = type === 'ai-director';
-  const isShotlist = type === 'ai-shotlist';
-  const nodeRole = isSource || isDirector ? 'source' : 'generator';
-  const nodeWidth = isShotlist ? 720 : isAnimation || isDirector ? 320 : isAudio ? 260 : isPanorama ? 300 : 280;
-  const nodeHeight = isShotlist ? 380 : isDirector ? 240 : isAnimation ? 358 : isAudio ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
+  const nodeRole = isSource || type === 'ai-director' ? 'source' : 'generator';
   const state = useAppStore.getState();
   const defaultModel = nodeRole === 'source' ? null : getPreferredNodeModel(type, state);
   const position = getCanvasPointerPosition();
@@ -67,32 +53,8 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
     type,
     position: { ...position },
     data: {
-      label,
-      type,
-      role: nodeRole,
-      prompt: '',
-      status: 'idle',
-      nodeWidth,
-      nodeHeight,
-      ...(isImage && !isSource ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
-      ...(isPanorama && !isSource ? { previewMode: 'image' } : {}),
-      ...(isAnimation && !isSource ? {
-        prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
-        animationAction: 'idle' as const,
-        animationFrames: 8 as const,
-        animationPreviewMode: 'playing' as const,
-        aspectRatio: '1:1',
-        imageSize: '2K',
-      } : {}),
-      ...(isDirector ? {
-        directorStatus: 'idle' as const,
-        directorCaptureUrls: [] as string[],
-      } : {}),
-      // 开局给三行，空表让人不知道从哪下手
-      ...(isShotlist ? {
-        shotlistColumns: SHOTLIST_DEFAULT_COLUMNS,
-        shotlistRows: [1, 2, 3].map((no) => createShotRow(`shot-${generateId()}`, no)),
-      } : {}),
+      ...createUiNodeData(type, label, nodeRole),
+      ...(type === 'ai-panorama' && !isSource ? { previewMode: 'image' } : {}),
       ...(defaultModel ?? {}),
     },
   };
@@ -292,42 +254,7 @@ export function useKeyboardShortcuts() {
         if (selectedEdgeIds.length === 0 && nodeIds.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
-        // 立即清空选择 → 即时反馈，并避免退场动画期间再次按 Delete 重复触发删除
-        useAppStore.setState({ selectedNodeIds: [] });
-
-        // Expand to include descendants of any selected group nodes
-        const expandedIds = collectCanvasDescendantIds(state.nodes, nodeIds);
-        const allIds = Array.from(expandedIds);
-
-        // Cancel any active polling for all deleted nodes
-        for (const id of allIds) {
-          cancelNodePolling(id);
-        }
-
-        // Delete associated local files —— 跳过仍被存活节点引用的共享文件（复制节点场景）
-        const keepPaths = collectKeepPaths(state.nodes, expandedIds, state.messages);
-        void fileService.deleteNodeFiles(
-          state.nodes.filter((node) => expandedIds.has(node.id) && !node.data.artifactId).map((node) => node.data),
-          keepPaths, state.currentProjectId,
-          fileService.deletedGroupFolderNames(state.groups, expandedIds),
-          createNodeFileDeletionContext(useAppStore.getState, state.nodes, expandedIds, state.currentProjectId),
-        ).catch(() => {});
-
-        // Single commit — undo always goes back to the real pre-delete state
-        useAppStore.getState().commitToHistory();
-        // 先播放退场动画，结束后再真正移除节点
-        playNodeExit(allIds).then(() => {
-          useAppStore.setState((s) => ({
-            nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
-            edges: s.edges.filter(
-              (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target) && !selectedEdgeIds.includes(ed.id)
-            ),
-            groups: s.groups
-              .filter((g) => !expandedIds.has(g.id))
-              .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
-            selectedNodeIds: [],
-          }));
-        });
+        state.deleteSelectedCanvasElements();
         return;
       }
 

@@ -46,7 +46,7 @@ import {
   type AgentToolExecutionResult,
   type PreparedAgentToolCall,
 } from './toolRegistry';
-import { evaluateAgentToolPolicy } from './policyEngine';
+import { evaluateAgentToolPolicy, type AgentPolicyDecision } from './policyEngine';
 import {
   estimateModelMessagesTokens,
   resolveAssistantContextSpec,
@@ -900,6 +900,87 @@ export function resolveApprovalSelection(
   }
 }
 
+/** 只记录已计算的策略；模式刷新与授权仍由各执行入口负责。 */
+export function recordToolPolicyDecision(
+  taskId: string, call: ProposedToolCall, effect: AgentToolEffect, policy: AgentPolicyDecision,
+): void {
+  appendAgentEvent(taskId, 'policy_decision', {
+    toolId: call.toolId, callId: call.callId, effect, decision: policy.outcome,
+  });
+  emitAgentLifecycleEvent({ type: 'policy.decision', taskId, toolId: call.toolId, effect, outcome: policy.outcome });
+  addAgentTaskMetrics(taskId, policy.outcome === 'deny' ? { policyDenied: 1 } : {
+    policyAllowed: policy.outcome === 'allow' ? 1 : 0,
+    approvalCount: policy.outcome === 'require_approval' ? 1 : 0,
+  });
+}
+
+export function createAgentToolStep(
+  taskId: string, call: ProposedToolCall, prepared: PreparedAgentToolCall,
+  context: Omit<AgentToolContext, 'signal'>, policy: Exclude<AgentPolicyDecision, { outcome: 'deny' }>,
+  inputRequest?: AgentApprovalInputRequest,
+): AgentStep {
+  const now = Date.now();
+  const index = getTask(taskId).steps.length;
+  const id = createStepId(taskId, index);
+  return {
+    id, taskId, index,
+    kind: policy.outcome === 'require_approval' ? 'approval' : 'tool',
+    title: prepared.definition.title,
+    status: policy.outcome === 'require_approval' ? 'waiting_approval' : 'running',
+    createdAt: now,
+    updatedAt: now,
+    toolCall: {
+      callId: call.callId, toolId: call.toolId,
+      inputSummary: sanitizePersistentSummary(prepared.definition.summarizeInput
+        ? prepared.definition.summarizeInput(prepared.input) : '参数已通过本地 schema 校验').slice(0, 500),
+      inputDisplay: buildToolInputDisplay(prepared, context),
+      retryCount: 0,
+      startedAt: now,
+      effect: prepared.definition.effect,
+    },
+    ...(policy.outcome === 'require_approval' ? { approval: {
+      id: `${id}-approval`, kind: policy.approvalKind, status: 'pending' as const,
+      summary: policy.reason, requestedAt: now, inputRequest,
+    } } : {}),
+  };
+}
+
+export function updateAgentToolApprovalStep(
+  taskId: string, call: ProposedToolCall, stepId: string, approvalId: string, resolution: AgentApprovalResolution,
+  selection: ReturnType<typeof resolveApprovalSelection>, context: Omit<AgentToolContext, 'signal'>,
+): void {
+  const { prepared, error: approvalError } = selection;
+  const canExecute = resolution.approved && !approvalError;
+  appendAgentEvent(taskId, 'approval_resolved', {
+    toolId: call.toolId, callId: call.callId, approved: resolution.approved,
+  });
+  emitAgentLifecycleEvent({ type: 'approval.resolved', taskId, approvalId, approved: resolution.approved });
+  const resolvedAt = Date.now();
+  updateTaskSnapshot(taskId, (current) => ({
+    ...current,
+    steps: current.steps.map((item) => item.id === stepId ? {
+      ...item,
+      status: canExecute ? 'running' : resolution.approved ? 'failed' : 'skipped',
+      updatedAt: resolvedAt,
+      errorCode: approvalError ? 'AGENT_APPROVAL_INPUT_INVALID' : item.errorCode,
+      errorMessage: approvalError?.summary,
+      toolCall: canExecute && item.toolCall ? {
+        ...item.toolCall,
+        inputSummary: sanitizePersistentSummary(prepared.definition.summarizeInput
+          ? prepared.definition.summarizeInput(prepared.input)
+          : item.toolCall.inputSummary || '参数已通过本地 schema 校验').slice(0, 500),
+        inputDisplay: buildToolInputDisplay(prepared, context),
+      } : item.toolCall,
+      approval: item.approval ? {
+        ...item.approval,
+        status: resolution.approved ? 'approved' : 'rejected',
+        resolvedAt,
+        inputRequest: selection.inputRequest,
+      } : undefined,
+    } : item),
+  }));
+}
+
 export async function executeAgentRound({
   taskId,
   projectScope,
@@ -1199,21 +1280,8 @@ export async function executeAgentRound({
       prepared.input,
       roundContext,
     );
-    appendAgentEvent(taskId, 'policy_decision', {
-      toolId: call.toolId,
-      callId: call.callId,
-      effect: prepared.definition.effect,
-      decision: policy.outcome === 'require_approval' ? 'require_approval' : policy.outcome,
-    });
-    emitAgentLifecycleEvent({
-      type: 'policy.decision',
-      taskId,
-      toolId: call.toolId,
-      effect: prepared.definition.effect,
-      outcome: policy.outcome,
-    });
+    recordToolPolicyDecision(taskId, call, prepared.definition.effect, policy);
     if (policy.outcome === 'deny') {
-      addAgentTaskMetrics(taskId, { policyDenied: 1 });
       const denied: ToolResultSummary = {
         callId: call.callId,
         toolId: call.toolId,
@@ -1225,52 +1293,8 @@ export async function executeAgentRound({
       callbacks.onToolResult?.(denied);
       continue;
     }
-    addAgentTaskMetrics(taskId, {
-      policyAllowed: policy.outcome === 'allow' ? 1 : 0,
-      approvalCount: policy.outcome === 'require_approval' ? 1 : 0,
-    });
-
-    const now = Date.now();
-    const stepIndex = getTask(taskId).steps.length;
-    const stepId = createStepId(taskId, stepIndex);
-    const step: AgentStep = {
-      id: stepId,
-      taskId,
-      index: stepIndex,
-      kind: policy.outcome === 'require_approval' ? 'approval' : 'tool',
-      title: prepared.definition.title,
-      status: policy.outcome === 'require_approval' ? 'waiting_approval' : 'running',
-      createdAt: now,
-      updatedAt: now,
-      toolCall: {
-        callId: call.callId,
-        toolId: call.toolId,
-        inputSummary: sanitizePersistentSummary(
-          prepared.definition.summarizeInput
-            ? prepared.definition.summarizeInput(
-                prepared.input,
-              )
-            : '参数已通过本地 schema 校验',
-        ).slice(0, 500),
-        inputDisplay: buildToolInputDisplay(prepared, roundContext),
-        retryCount: 0,
-        startedAt: now,
-        effect: prepared.definition.effect,
-        inputFingerprint: fingerprintToolInput(call.toolId, prepared.input),
-      },
-      ...(policy.outcome === 'require_approval'
-        ? {
-            approval: {
-              id: `${stepId}-approval`,
-              kind: policy.approvalKind,
-              status: 'pending' as const,
-              summary: policy.reason,
-              requestedAt: now,
-              inputRequest: approvalInput.inputRequest,
-            },
-          }
-        : {}),
-    };
+    const step = createAgentToolStep(taskId, call, prepared, roundContext, policy, approvalInput.inputRequest);
+    step.toolCall!.inputFingerprint = fingerprintToolInput(call.toolId, prepared.input);
     appendStep(taskId, step);
 
     if (policy.outcome === 'require_approval') {
@@ -1284,50 +1308,7 @@ export async function executeAgentRound({
       const approvalError = selection.error;
       resolvedCall = selection.call;
       prepared = selection.prepared;
-      const canExecute = resolution.approved && !approvalError;
-      appendAgentEvent(taskId, 'approval_resolved', {
-        toolId: call.toolId,
-        callId: call.callId,
-        approved: resolution.approved,
-      });
-      emitAgentLifecycleEvent({
-        type: 'approval.resolved',
-        taskId,
-        approvalId,
-        approved: resolution.approved,
-      });
-      const resolvedAt = Date.now();
-      updateTaskSnapshot(taskId, (current) => ({
-        ...current,
-        steps: current.steps.map((item) => item.id === step.id
-          ? {
-              ...item,
-              status: canExecute ? 'running' : resolution.approved ? 'failed' : 'skipped',
-              updatedAt: resolvedAt,
-              errorCode: approvalError ? 'AGENT_APPROVAL_INPUT_INVALID' : item.errorCode,
-              errorMessage: approvalError?.summary,
-              toolCall: canExecute && item.toolCall
-                ? {
-                    ...item.toolCall,
-                    inputSummary: sanitizePersistentSummary(
-                      prepared.definition.summarizeInput
-                        ? prepared.definition.summarizeInput(prepared.input)
-                        : item.toolCall.inputSummary || '参数已通过本地 schema 校验',
-                    ).slice(0, 500),
-                    inputDisplay: buildToolInputDisplay(prepared, roundContext),
-                  }
-                : item.toolCall,
-              approval: item.approval
-                ? {
-                    ...item.approval,
-                    status: resolution.approved ? 'approved' : 'rejected',
-                    resolvedAt,
-                    inputRequest: selection.inputRequest,
-                  }
-                : undefined,
-            }
-          : item),
-      }));
+      updateAgentToolApprovalStep(taskId, call, step.id, approvalId, resolution, selection, roundContext);
       if (!resolution.approved) {
         const denied: ToolResultSummary = {
           callId: call.callId,

@@ -436,7 +436,10 @@ export function deleteNodeFiles(
           const live = context!.getLiveKeepPaths();
           return live !== null && !usesTrashPath(path, live) && !isNodeMediaCopySource(path);
         });
-      } else await moveToUndoTrash(path, projectId);
+      } else await moveToUndoTrash(path, projectId, context ? async () => {
+        const live = context.getLiveKeepPaths();
+        return live !== null && !usesTrashPath(path, live);
+      } : undefined);
     }
   })();
   // 删除是即发即忘的（节点退场动画不等文件系统），撤销必须能等它落定，

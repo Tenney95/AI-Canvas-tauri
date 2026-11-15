@@ -7,12 +7,9 @@ import { Icon } from '@iconify/react';
 import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
-import ToolbarMoreMenu from './toolbar/ToolbarMoreMenu';
+import ToolbarZones from './toolbar/ToolbarZones';
 import { useNodePluginToolbar } from './toolbar/NodePluginToolbarButtons';
-import {
-  getHiddenDefaultToolbarButtons,
-  TOOLBAR_MORE_KEY,
-} from './toolbar/toolbarRegistry';
+import { getHiddenDefaultToolbarButtons } from './toolbar/toolbarRegistry';
 import { executeToolbarPreset, resolvePresetDef } from './toolbar/presetAction';
 import { useAppStore } from '../../../store/useAppStore';
 
@@ -179,22 +176,11 @@ function VideoNodeToolbar({
     <>
       <div className="node-floating-toolbar img-toolbar nodrag" {...edit.longPressHandlers}>
         <div className="img-toolbar-main nodrag">
-          {edit.layout.zones.map((zone, zi) => (
-            <div key={zone.id} className="img-toolbar-zone nodrag">
-              {zone.buttonKeys.map((key) => (
-                key === TOOLBAR_MORE_KEY
-                  ? (
-                    <ToolbarMoreMenu
-                      key={key}
-                      items={hiddenDefaultButtons}
-                      renderItem={renderActionButton}
-                    />
-                  )
-                  : renderActionButton(key)
-              ))}
-              {zi < edit.layout.zones.length - 1 && <div className="ftb-divider img-toolbar-main-divider" />}
-            </div>
-          ))}
+          <ToolbarZones
+            zones={edit.layout.zones}
+            hiddenButtons={hiddenDefaultButtons}
+            renderButton={renderActionButton}
+          />
         </div>
       </div>
       {pluginToolbar.dialog}

@@ -43,6 +43,7 @@ function createFromContextMenu(rows: number, cols: number) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'project-grid', nodes: [], edges: [] });
 });
@@ -74,6 +75,37 @@ describe('canvas grid creation', () => {
     expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual([living.id]);
     useAppStore.setState({ nodes: [living, mediaNode('new-reference', 'project/late-reference.png')] });
     expect(context!.getLiveKeepPaths()).toEqual(new Set(['project/shared.png', 'project/late-reference.png']));
+  });
+
+  it.each([
+    ['ai-image', 280, 158], ['ai-audio', 260, 140],
+    ['ai-panorama', 300, 200], ['ai-animation', 320, 358],
+  ] as const)('右键新建 %s 保留角色、初始尺寸及 source 不绑定模型的规则', (type, width, height) => {
+    localStorage.setItem('canvas-model-prefs', JSON.stringify({ [type]: 'general/preferred' }));
+    for (const role of ['generator', 'source'] as const) {
+      contextMenu().addNodeAtCtxPos(type, '测试节点', role);
+      const created = useAppStore.getState().nodes.at(-1)!;
+      expect(created).toMatchObject({ position: { x: -width / 2, y: -height / 2 },
+        data: { type, role, nodeWidth: width, nodeHeight: height, status: 'idle' } });
+      expect(created.data).not.toHaveProperty('previewMode');
+      if (role === 'source') {
+        expect(created.data.model).toBeUndefined();
+        expect(created.data.provider).toBeUndefined();
+        expect(created.data.aspectRatio).toBeUndefined();
+        expect(created.data.animationFrames).toBeUndefined();
+      } else {
+        expect(created.data).toMatchObject({ model: 'general/preferred', provider: 'general' });
+      }
+    }
+  });
+
+  it.each(['generator', 'source'] as const)('右键导演台保留传入的 %s 角色，不自动继承模型', (role) => {
+    localStorage.setItem('canvas-model-prefs', JSON.stringify({ 'ai-director': 'general/implicit' }));
+    contextMenu().addNodeAtCtxPos('ai-director', '导演台', role);
+    const created = useAppStore.getState().nodes[0];
+    expect(created.data).toMatchObject({ role, nodeWidth: 320, nodeHeight: 240,
+      directorStatus: 'idle', directorCaptureUrls: [] });
+    expect(created.data.model).toBeUndefined();
   });
 
   it('creates a 4×9 blank storyboard whose cells accept image drops', () => {

@@ -60,7 +60,9 @@ describe('成功导入后的最近使用记录', () => {
     } as unknown as React.MouseEvent);
     expect(driver.state.addNode).toHaveBeenCalledOnce();
     expect(driver.state.nodes[0]).toMatchObject({ position: { x: 20, y: 40 },
-      data: { type: 'ai-text', model: 'general/text', provider: 'general' } });
+      data: { type: 'ai-text', model: 'general/text', provider: 'general',
+        prompt: '', status: 'idle', nodeWidth: 280, nodeHeight: 160 } });
+    expect(driver.state.nodes[0].data).not.toHaveProperty('role');
   });
 
   it('RefMod 的语义拖放留给视频节点，不显示文件导入或创建媒体节点', async () => {

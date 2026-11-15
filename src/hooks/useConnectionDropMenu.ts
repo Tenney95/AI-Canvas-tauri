@@ -8,6 +8,7 @@ import { useAppStore, generateId } from '../store/useAppStore';
 import { isCanvasConnectionValid } from '../store/store.nodes';
 import type { BaseNodeData, NodeType } from '../types';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
+import { createUiNodeData } from '../services/uiNodeCreationData';
 
 const SELECTION_MENU_TYPE = '__selection__';
 
@@ -261,22 +262,8 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       const { sourceNodeId, sourceHandleId, position } = menu;
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: position.x, y: position.y });
 
-      const isAnimation = option.type === 'ai-animation';
-      const isDirector = option.type === 'ai-director';
-      const newWidth = isAnimation || isDirector ? 320 : option.type === 'ai-audio' ? 260 : option.type === 'ai-panorama' ? 300 : 280;
-      const newHeight = isDirector
-        ? 240
-        : isAnimation
-          ? 358
-          : option.type === 'ai-audio'
-            ? 140
-            : option.type === 'ai-image'
-              ? 158
-              : option.type === 'ai-panorama'
-                ? 200
-                : option.type === 'ai-markdown'
-                  ? 200
-                  : 160;
+      const data = createUiNodeData(option.type, option.label);
+      const { nodeWidth: newWidth, nodeHeight: newHeight } = data;
 
       // 输入/输出语义由开始拖拽的 Handle 决定，不再随空白落点跨过节点而翻转。
       const edgeSourceHandle = sourceHandleId === 'left' ? 'left' : 'right';
@@ -294,33 +281,14 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       const nodeY = flowPos.y - newHeight / 2;
 
       const newNodeId = `node-${generateId()}`;
-      const defaultModel = isDirector ? null : getPreferredNodeModel(option.type, useAppStore.getState());
+      const defaultModel = option.type === 'ai-director' ? null : getPreferredNodeModel(option.type, useAppStore.getState());
       const newNode: RFNode<BaseNodeData> = {
         id: newNodeId,
         type: option.type,
         position: { x: nodeX, y: nodeY },
         data: {
-          label: option.label,
-          type: option.type,
-          prompt: '',
-          status: 'idle',
-          nodeWidth: newWidth,
-          nodeHeight: newHeight,
-          ...(option.type === 'ai-image' ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
+          ...data,
           ...(option.type === 'ai-panorama' ? { previewMode: 'image' } : {}),
-          ...(isAnimation ? {
-            prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
-            animationAction: 'idle' as const,
-            animationFrames: 8 as const,
-            animationPreviewMode: 'playing' as const,
-            aspectRatio: '1:1',
-            imageSize: '2K',
-          } : {}),
-          ...(isDirector ? {
-            role: 'source' as const,
-            directorStatus: 'idle' as const,
-            directorCaptureUrls: [] as string[],
-          } : {}),
           ...defaultModel,
         },
       };

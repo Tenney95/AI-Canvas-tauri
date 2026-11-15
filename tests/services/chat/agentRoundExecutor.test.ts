@@ -47,6 +47,7 @@ import {
 import { useAppStore } from '../../../src/store/useAppStore';
 import { registerProviderConfigAgentTools } from '../../../src/services/chat/tools/providerConfigTools';
 import { clearProviderModelCatalogsForTests, clearProviderModelCatalogsForTask, createProviderModelCatalog } from '../../../src/services/chat/providerModelCatalogService';
+import { subscribeAgentLifecycle, type AgentLifecycleEvent } from '../../../src/services/chat/agentLifecycle';
 
 afterEach(() => { clearProviderModelCatalogsForTests(); vi.restoreAllMocks(); });
 
@@ -392,6 +393,53 @@ function arrangeMedia(kind: 'image' | 'video' | 'audio' = 'image') {
 }
 
 describe('agent round executor', () => {
+  it.each([
+    { entry: 'round', approved: true }, { entry: 'round', approved: false },
+    { entry: 'registered', approved: true }, { entry: 'registered', approved: false },
+  ] as const)('保留 $entry 入口的审批步骤、指纹与事件，批准=$approved', async ({ entry, approved }) => {
+    const execute = vi.fn(async () => ({ status: 'success' as const, summary: 'done', modelContent: 'done' }));
+    registerAgentTool<{ query: string }>({
+      id: 'approval_parity', title: 'Approval parity', description: 'Approval parity', effect: 'file_write',
+      inputSchema: { type: 'object', required: ['query'], additionalProperties: false, properties: { query: { type: 'string' } } },
+      summarizeInput: ({ query }) => query,
+      buildInputDisplay: ({ query }) => ({ fields: [{ label: '查询', value: query }] }), execute,
+    });
+    useAppStore.getState().updateConversation('conversation-1', { agentMode: 'collaborative' });
+    transitionAgentTask('task-round', 'planning');
+    const call = { callId: 'approval-call', toolId: 'approval_parity', input: { query: 'token-abcdefghijklmnop' } };
+    const lifecycle = vi.fn<(event: Readonly<AgentLifecycleEvent>) => void>();
+    const dispose = subscribeAgentLifecycle(lifecycle);
+    const waitForApproval = vi.fn(async (approvalId: string) => {
+      const task = useAppStore.getState().agentTasks[0], step = task.steps[0];
+      expect(task.status).toBe('waiting_approval');
+      expect(step).toMatchObject({ kind: 'approval', status: 'waiting_approval', approval: { id: approvalId, status: 'pending' } });
+      expect(step.createdAt).toBe(step.updatedAt);
+      expect(step.toolCall?.startedAt).toBe(step.createdAt);
+      expect(step.toolCall?.inputSummary).toBe('[已脱敏密钥]');
+      if (entry === 'round') expect(step.toolCall?.inputFingerprint).toEqual(expect.any(String));
+      else expect(step.toolCall).not.toHaveProperty('inputFingerprint');
+      return { approved };
+    });
+    try {
+      if (entry === 'round') {
+        arrangeCalls([call]);
+        await runRound(undefined, {}, () => waitForApproval(useAppStore.getState().agentTasks[0].steps[0].approval!.id));
+      } else await executeRegisteredAgentToolCall({ taskId: 'task-round', call, signal: new AbortController().signal,
+        transitionTask: transitionAgentTask, waitForApproval });
+      const task = useAppStore.getState().agentTasks[0], step = task.steps[0];
+      expect(execute).toHaveBeenCalledTimes(approved ? 1 : 0);
+      expect(waitForApproval).toHaveBeenCalledOnce();
+      expect(task.metrics).toMatchObject({ policyAllowed: 0, policyDenied: 0, approvalCount: 1 });
+      expect(step).toMatchObject({ status: approved ? 'succeeded' : 'skipped',
+        approval: { status: approved ? 'approved' : 'rejected', resolvedAt: expect.any(Number) },
+        toolCall: { inputDisplay: { fields: [{ label: '查询', value: '[已脱敏密钥]' }] } } });
+      expect(task.events?.filter((event) => event.type === 'policy_decision' || event.type === 'approval_resolved')
+        .map((event) => event.type)).toEqual(['policy_decision', 'approval_resolved']);
+      expect(lifecycle.mock.calls.map(([event]) => event).filter((event) => event.type === 'approval.resolved'))
+        .toEqual([expect.objectContaining({ taskId: task.id, approvalId: step.approval!.id, approved })]);
+    } finally { dispose(); }
+  });
+
   it.each([false, true])('pauses a truncated response without completing or executing tools (tools %s)', async (withTools) => {
     arrangeCanvas();
     const execute = vi.spyOn(getAgentTool('canvas_update_nodes')!, 'execute');

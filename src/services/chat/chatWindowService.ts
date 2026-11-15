@@ -637,24 +637,37 @@ export async function emitAction(action: ChatAction, windowFrame?: ProjectWindow
   }
 }
 
+/** 只共享等待与监听清理；响应身份、结果解释和发送仍由各入口负责。 */
+function waitForChatResponse<T>(
+  timeoutMs: number, subscribe: (finish: (value: T, error?: string) => void) => Promise<() => void>,
+  send: () => Promise<void>, fallback: T, timeoutError?: string, connectionError?: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let unlisten: (() => void) | undefined;
+    const finish = (value: T, error?: string) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); unlisten?.();
+      if (error) reject(new Error(error)); else resolve(value);
+    };
+    const timer = setTimeout(() => finish(fallback, timeoutError), timeoutMs);
+    void subscribe(finish).then(async (dispose) => {
+      unlisten = dispose;
+      if (settled) { dispose(); return; }
+      await send();
+    }).catch(() => finish(fallback, connectionError));
+  });
+}
+
 /** 发送成功由主窗口确认；拒绝、超时或断线均保留原输入，不自动重投。 */
 export async function requestChatMessage(action: Extract<ChatAction, { type: 'send_message' | 'dock_window' | 'close_window' }>, windowFrame?: ProjectWindowFrame | null): Promise<boolean> {
   const { listen } = await import('@tauri-apps/api/event');
   const requestId = action.requestId ?? crypto.randomUUID();
-  return new Promise<boolean>((resolve) => {
-    let stop: (() => void) | undefined;
-    let settled = false;
-    const finish = (accepted: boolean) => { if (settled) return; settled = true; clearTimeout(timer); stop?.(); resolve(accepted); };
-    const timer = setTimeout(() => finish(false), 30000);
-    void listen<ChatSendResponse>(CHAT_SEND_RESPONSE_EVENT, ({ payload }) => {
+  return waitForChatResponse<boolean>(30000, (finish) =>
+    listen<ChatSendResponse>(CHAT_SEND_RESPONSE_EVENT, ({ payload }) => {
       const sessionId = (windowFrame ?? action.windowFrame)?.sessionId ?? ('sessionId' in action ? action.sessionId : undefined);
       if (payload.requestId === requestId && payload.sessionId === sessionId) finish(payload.accepted === true);
-    }).then(async (dispose) => {
-      stop = dispose;
-      if (settled) { dispose(); return; }
-      await emitAction({ ...action, requestId }, windowFrame);
-    }).catch(() => finish(false));
-  });
+    }), () => emitAction({ ...action, requestId }, windowFrame), false);
 }
 
 export async function emitChatCloseAcknowledgement(requestId: string, accepted: boolean): Promise<void> {
@@ -673,31 +686,17 @@ export async function requestTeamArtifactText(taskId: string, artifactId: string
   if (!taskId || !artifactId || taskId.length > 160 || artifactId.length > 160) throw new Error('团队产物身份无效');
   const { emit, listen } = await import('@tauri-apps/api/event');
   const requestId = crypto.randomUUID();
-  return new Promise<string>((resolve, reject) => {
-    let settled = false;
-    let unlisten: (() => void) | undefined;
-    const finish = (text?: string, error?: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      unlisten?.();
-      if (error) reject(new Error(error)); else resolve(text ?? '');
-    };
-    const timer = setTimeout(() => finish(undefined, '主窗口未返回团队成果，请回到主窗口核对后重试'), 20000);
-    void (async () => {
-      unlisten = await listen<ChatTeamArtifactResponse>(CHAT_TEAM_ARTIFACT_EVENT, (event) => {
-        const response = event.payload;
-        if (response.requestId !== requestId || response.sessionId !== windowFrame?.sessionId
-          || response.taskId !== taskId || response.artifactId !== artifactId) return;
-        if (typeof response.text === 'string' && response.text.length > 120000) {
-          finish(undefined, '产物超过窗口预览上限，请在主窗口查看');
-        } else finish(response.text, response.error);
-      });
-      if (settled) { unlisten(); return; }
-      await emit(CHAT_ACTION_EVENT, { type: 'read_team_artifact', requestId, taskId, artifactId,
-        windowFrame: windowFrame ?? undefined, sequence: ++clientSequence } satisfies ChatAction);
-    })().catch(() => finish(undefined, '无法连接主窗口读取团队成果'));
-  });
+  return waitForChatResponse<string>(20000, async (finish) =>
+    listen<ChatTeamArtifactResponse>(CHAT_TEAM_ARTIFACT_EVENT, (event) => {
+      const response = event.payload;
+      if (response.requestId !== requestId || response.sessionId !== windowFrame?.sessionId
+        || response.taskId !== taskId || response.artifactId !== artifactId) return;
+      if (typeof response.text === 'string' && response.text.length > 120000) {
+        finish('', '产物超过窗口预览上限，请在主窗口查看');
+      } else finish(response.text ?? '', response.error);
+    }), () => emit(CHAT_ACTION_EVENT, { type: 'read_team_artifact', requestId, taskId, artifactId,
+      windowFrame: windowFrame ?? undefined, sequence: ++clientSequence } satisfies ChatAction), '',
+    '主窗口未返回团队成果，请回到主窗口核对后重试', '无法连接主窗口读取团队成果');
 }
 
 export async function emitTeamArtifactResponse(response: ChatTeamArtifactResponse): Promise<void> {
@@ -710,27 +709,15 @@ export async function requestManagedChatOperation<T = unknown>(scopeId: string, 
   operation: ChatManagedOperation, draft?: string, windowFrame?: ProjectWindowFrame | null): Promise<T> {
   const { emitTo, listen } = await import('@tauri-apps/api/event');
   const requestId = crypto.randomUUID();
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    let unlisten: (() => void) | undefined;
-    const finish = (response?: ChatManagedResponse, error?: string) => {
-      if (settled) return;
-      settled = true; clearTimeout(timer); unlisten?.();
-      if (error || response?.error) reject(new Error(error ?? response!.error)); else resolve(response?.value as T);
-    };
-    const timer = setTimeout(() => finish(undefined, '主窗口尚未确认操作结果，请核对最新状态；未自动重试'), 30000);
-    void (async () => {
-      unlisten = await listen<ChatManagedResponse>(CHAT_MANAGED_RESPONSE_EVENT, ({ payload }) => {
-        if (payload?.requestId !== requestId || payload.sessionId !== windowFrame?.sessionId
-          || payload.scopeId !== scopeId || payload.conversationId !== conversationId) return;
-        finish(payload);
-      });
-      if (settled) { unlisten(); return; }
-      await emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT,
-        { type: 'managed_request', requestId, scopeId, conversationId, operation, draft,
-          windowFrame: windowFrame ?? undefined, sequence: ++clientSequence } satisfies ChatAction);
-    })().catch(() => finish(undefined, '无法连接主窗口；未自动重试'));
-  });
+  return waitForChatResponse<T>(30000, async (finish) =>
+    listen<ChatManagedResponse>(CHAT_MANAGED_RESPONSE_EVENT, ({ payload }) => {
+      if (payload?.requestId !== requestId || payload.sessionId !== windowFrame?.sessionId
+        || payload.scopeId !== scopeId || payload.conversationId !== conversationId) return;
+      finish(payload.error ? undefined as T : payload.value as T, payload.error);
+    }), () => emitTo(CHAT_MAIN_WINDOW_LABEL, CHAT_ACTION_EVENT,
+      { type: 'managed_request', requestId, scopeId, conversationId, operation, draft,
+        windowFrame: windowFrame ?? undefined, sequence: ++clientSequence } satisfies ChatAction), undefined as T,
+    '主窗口尚未确认操作结果，请核对最新状态；未自动重试', '无法连接主窗口；未自动重试');
 }
 
 export async function emitManagedChatResponse(response: ChatManagedResponse): Promise<void> {

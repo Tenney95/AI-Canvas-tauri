@@ -16,6 +16,7 @@ import { NODE_TYPE_CONFIG } from '../types';
 import { importSourceFileToCanvas } from '../services/sourceFileImportService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { getPreferredNodeModel } from '../services/modelPreferenceService';
+import { createUiNodeData } from '../services/uiNodeCreationData';
 import { checkForUpdate, downloadAndInstallUpdate, isAppUpdateRunning } from '../services/updateService';
 import DownloadProgress from './shared/DownloadProgress';
 import AnimatedButton from './shared/AnimatedButton';
@@ -135,34 +136,12 @@ function NodePicker({
     const isPanorama = type === 'ai-panorama';
     const isAnimation = type === 'ai-animation';
     const isDirector = type === 'ai-director';
-    const nodeData: Record<string, unknown> = {
-      label: t(NODE_TYPE_CONFIG[type]?.label || generationItems.find((m) => m.type === type)?.label || '节点'),
-      type,
-      prompt: '',
-      status: 'idle' as const,
+    const nodeData = {
+      ...createUiNodeData(type, t(NODE_TYPE_CONFIG[type]?.label || generationItems.find((m) => m.type === type)?.label || '节点')),
       nodeWidth: isAnimation || isDirector ? 320 : isPanorama ? 300 : 280,
       nodeHeight: isDirector ? 240 : isImage ? 158 : isAnimation ? 358 : isPanorama ? 200 : 160,
+      ...(isPanorama ? { previewMode: 'image' as const } : {}),
     };
-    if (isImage) {
-      nodeData.aspectRatio = '16:9';
-      nodeData.imageSize = '2K';
-    }
-    if (isPanorama) {
-      nodeData.previewMode = 'image';
-    }
-    if (isAnimation) {
-      nodeData.prompt = '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致';
-      nodeData.animationAction = 'idle';
-      nodeData.animationFrames = 8;
-      nodeData.animationPreviewMode = 'playing';
-      nodeData.aspectRatio = '1:1';
-      nodeData.imageSize = '2K';
-    }
-    if (isDirector) {
-      nodeData.role = 'source';
-      nodeData.directorStatus = 'idle';
-      nodeData.directorCaptureUrls = [];
-    }
     if (!isDirector) Object.assign(nodeData, getPreferredNodeModel(type, useAppStore.getState()));
     const pos = getCanvasPointerPosition();
     addNode({

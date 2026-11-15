@@ -1,7 +1,7 @@
 /**
  * imageLosslessCompressionToolbar — 回归测试：image lossless compression toolbar。
  */
-import type { ReactElement } from 'react';
+import type { ComponentProps, ReactElement } from 'react';
 import type { ToolbarLayout } from '../../src/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -66,6 +66,7 @@ vi.mock('../../src/hooks/useToolbarEdit', async () => {
 });
 
 import ImageNodeToolbar from '../../src/components/nodes/shared/image/ImageNodeToolbar';
+import ToolbarZones from '../../src/components/nodes/shared/toolbar/ToolbarZones';
 
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
 
@@ -73,6 +74,9 @@ function elements(value: unknown): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!value || typeof value !== 'object' || !('props' in value)) return [];
   const element = value as Element;
+  if (element.type === ToolbarZones) {
+    return [element, ...elements(ToolbarZones(element.props as unknown as ComponentProps<typeof ToolbarZones>))];
+  }
   return [element, ...elements(element.props.children)];
 }
 

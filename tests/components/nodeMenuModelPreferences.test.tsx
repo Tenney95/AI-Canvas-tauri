@@ -63,7 +63,10 @@ beforeEach(() => {
 describe('浮动菜单新建模型绑定', () => {
   it.each(['ai-text', 'ai-audio'] as const)('%s 将历史偏好写入提交给 Store 的节点', (type) => {
     localStorage.setItem('canvas-model-prefs', JSON.stringify({ [type]: 'general/preferred' }));
-    expect(create(type).data).toMatchObject({ type, model: 'general/preferred', provider: 'general', status: 'idle' });
+    const node = create(type);
+    expect(node.data).toMatchObject({ type, model: 'general/preferred', provider: 'general', status: 'idle',
+      nodeWidth: 280, nodeHeight: 160 });
+    expect(node.data).not.toHaveProperty('role');
     expect(driver.state.hideNodeMenu).toHaveBeenCalledOnce();
   });
 
@@ -72,7 +75,8 @@ describe('浮动菜单新建模型绑定', () => {
     driver.state.projects = [{ id: 'project', name: '项目', createdAt: 0, updatedAt: 0,
       settings: { defaultModels: { image: 'general/project' } } }];
     expect(create('ai-animation').data).toMatchObject({
-      model: 'general/project', provider: 'general', animationAction: 'idle',
+      model: 'general/project', provider: 'general', animationAction: 'idle', animationFrames: 8,
+      animationPreviewMode: 'playing', aspectRatio: '1:1', imageSize: '2K', nodeWidth: 320, nodeHeight: 358,
     });
   });
 
@@ -82,6 +86,17 @@ describe('浮动菜单新建模型绑定', () => {
     expect(create('ai-image').data).toMatchObject({
       model: 'comfyui/workflow', provider: 'comfyui', workflowId: 'image-workflow',
     });
+  });
+
+  it('浮动菜单分镜表保留 source 角色、文本偏好和独立的三行初始数据', () => {
+    localStorage.setItem('canvas-model-prefs', JSON.stringify({ 'ai-text': 'general/text' }));
+    const first = create('ai-shotlist').data;
+    const second = create('ai-shotlist').data;
+    expect(first).toMatchObject({ role: 'source', nodeWidth: 720, nodeHeight: 380,
+      model: 'general/text', provider: 'general', prompt: '' });
+    expect(first.shotlistRows?.map((row) => row.shotNo)).toEqual(['1', '2', '3']);
+    expect(second.shotlistRows).not.toBe(first.shotlistRows);
+    expect(second.shotlistRows?.[0]).not.toBe(first.shotlistRows?.[0]);
   });
 
   it('没有偏好时保持未选，导演台不继承普通模型偏好', () => {

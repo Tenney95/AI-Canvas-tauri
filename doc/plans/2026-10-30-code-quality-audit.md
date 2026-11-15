@@ -1,6 +1,6 @@
 # 全仓代码质量审查与精简建议
 
-最新状态：2026-11-15，第一批 Q23、Q27、Q28 文本预设部分、Q29、Q30 已实现并按用户要求本地提交，待用户验收；未运行测试或质检，未推送。实现范围、实际净减与桌面步骤见文末“第一批实施结果”。此前基于 `e2023a8b` 的复查新增 Q26～Q39，并重核 Q23～Q25；审查快照及早期行号保留当时事实，不代表当前未处理清单。
+最新状态：2026-11-15，第一批已本地提交为 `19c6b3b2`；第二批 Q26、Q25、Q28 布局、Q31、Q39 已实现并按用户要求本地提交，两批均待用户验收，未推送。未运行测试或质检。各批实际范围、净减与桌面步骤见文末实施结果；此前基于 `e2023a8b` 的复查快照及早期行号保留当时事实，不代表当前未处理清单。
 
 日期：2026-10-30。状态：静态审查完成；Q01 自动回归与部分桌面交互已验证，真实生成等场景待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；Q04 闲置模块及专属样式已清理，Q05 音视频工具栏预设执行、Q06 历史筛选、Q07 参考媒体串行处理、Q08 模型协议基础逻辑及 Q09 四组局部重复已合并，均待用户验收；Q10～Q17 已于 2026-10-31 实现，相关自动回归 535 项通过，桌面验收待完成。
 
@@ -646,3 +646,58 @@ npx vitest run tests/services/projectSnapshotService.test.ts tests/store/project
 ```
 
 需要类型/构建检查时再按授权执行 `npm run typecheck`、`npm run test:typecheck` 和 `npm run build`。本批仅按上列 13 个源码/回归文件撤销对应差异即可回滚；已有数据和目录合同不迁移，其他工作区改动不随之回退。
+
+## 2026-11-15 第二批实施结果
+
+用户已要求先提交第一批、再实施第二批并保留原有功能，后续要求提交第二批并继续第三批。第一批提交为 `19c6b3b2`（`refactor: 完成首批代码精简与模型参数去重`），仅包含该批 15 个文件；版本同步提示无需写入，未运行测试或质检，其他发版改动保留。以下第二批以此提交为基线，已实现并完成静态交叉复核，按用户要求本地提交、未推送；**本次未运行测试，待用户验收**。Q32 小收益登记与第三批原生候选未纳入本次提交。
+
+### 完整业务范围与保留边界
+
+共 19 个业务文件，按 UTF-8/LF 统一口径，包含新增共享实现后净减 **306 行、8,758 字节**。节点默认值与删除链共 10 文件净减 130 行；工具栏 6 文件净减 45 行；Agent/聊天窗口 3 文件净减 131 行。该数字不含回归和文档，不表示包体积或运行速度已实测改善。
+
+| 项目 | 完整业务文件 | 已实现与保留语义 |
+|---|---|---|
+| Q26 | [NodeMenu.tsx](../../src/components/NodeMenu.tsx)、[Sidebar.tsx](../../src/components/Sidebar.tsx)、[useCanvasContextMenu.ts](../../src/hooks/useCanvasContextMenu.ts)、[useKeyboardShortcuts.ts](../../src/hooks/useKeyboardShortcuts.ts)、[useConnectionDropMenu.ts](../../src/hooks/useConnectionDropMenu.ts)、[useNodeCreation.ts](../../src/hooks/useNodeCreation.ts)、新增 [uiNodeCreationData.ts](../../src/services/uiNodeCreationData.ts) | 共用初始数据构造，模型读取、落点/连边/历史仍留原入口。保留浮动/侧栏音频 280×160、其他入口 260×140；浮动全景/Markdown 280×160、侧栏全景 300×200、右键等入口 Markdown 280×200；role/previewMode 缺省、source 参数抑制、导演台角色、分镜表偏好及独立三行、宫格维度与数组全部沿用；Agent/MCP 与源文件导入不接 UI 默认值 |
+| Q25 | [store.nodes.ts](../../src/store/store.nodes.ts)、上述右键/快捷键两个 Hook、[fs/trash.ts](../../src/services/fs/trash.ts)、[nodeAnimations.ts](../../src/utils/nodeAnimations.ts) | 手工选区调用新 `deleteSelectedCanvasElements`，与单点/批量 API 共用后代展开、停轮询、文件暂存、组裁剪及历史。手工不限 50，批量 API 仍限 50 根；纯边/混选立即清选择，一次历史；新选择保留，手工空组保留，最后成员与 groupId 映射按原 Store 规则处理 |
+| Q28 布局部分 | [AudioNodeToolbar.tsx](../../src/components/nodes/shared/AudioNodeToolbar.tsx)、[VideoNodeToolbar.tsx](../../src/components/nodes/shared/VideoNodeToolbar.tsx)、[PanoramaNodeToolbar.tsx](../../src/components/nodes/shared/PanoramaNodeToolbar.tsx)、[TextNodeToolbar.tsx](../../src/components/nodes/shared/TextNodeToolbar.tsx)、[image/ImageNodeToolbar.tsx](../../src/components/nodes/shared/image/ImageNodeToolbar.tsx)、新增 [ToolbarZones.tsx](../../src/components/nodes/shared/toolbar/ToolbarZones.tsx) | 只共享分区、按钮/更多菜单与分隔线循环，不增加 DOM 包装。保留各外层 class/长按事件、分隔 class、zone/button key、编辑态和插件/图片历史弹窗；按钮业务与全景预设行为不变，无新增样式 |
+| Q31 | [agentRoundExecutor.ts](../../src/services/chat/agentRoundExecutor.ts)、[agentToolExecution.ts](../../src/services/chat/agentToolExecution.ts) | 共用 Policy 决策记录、步骤构造和审批结果更新；模型入口初始指纹继续单独赋值。模式读取、Policy/authorize、上下文捕获、预算、等待前 approvalId、拒绝/取消、动态导入、read 并发与 write 串行留原位，不合并两个执行生命周期 |
+| Q39 | [chatWindowService.ts](../../src/services/chat/chatWindowService.ts) | 私有等待器共享超时、防重复完成和晚装监听清理；三个语义入口保留完整响应身份、20/30 秒、120,000 字上限、windowFrame/sequence、返回/抛错和监听后发送顺序。Team/Managed 同步 listen 异常仍转固定连接错误，message 保留原来直接调用语义；超时不自动重投 |
+
+Q25 异步守卫绑定原项目、原生 runtime/project/canvas epoch 或旧结构 parent/revisionScope/exchangeEpoch，并观察历史重置/跳转及目标消失。普通画布 revision、位置/进度更新和历史追加/满 50 条裁剪不会误取消。失效立即退订，正常或异步拒绝在文件/退场都落定后退订，同步异常也清理；临时运行状态不持久化。
+
+静态复核补齐了两条实际执行链：旧结构 `deleteNodeFiles` 现在也把可选删除上下文传到真实 rename 前，失效或新增引用时保留文件，无上下文的历史兼容调用不变；退出动画在完成时清理本次捕获的真实元素 class，以小型 WeakMap 计数处理重复/重叠退出，不按当前同 ID 查询新 DOM。正常 130ms、减少动效、无 DOM 及等待退场的合同不变，取消删除后不会永久残留退场样式。
+
+### 回归源码与静态证据
+
+调整/新增 11 个回归文件，测试源码净增 595 行；没有把它们计入业务净减，也没有运行：
+
+- [nodeMenuModelPreferences.test.tsx](../../tests/components/nodeMenuModelPreferences.test.tsx)、[canvasGridCreation.test.tsx](../../tests/components/canvasGridCreation.test.tsx)、[useNodeCreation.test.tsx](../../tests/hooks/useNodeCreation.test.tsx)：补字段/缺省、尺寸、source、导演台/分镜表与双击断言，保留真实右键删除的共享文件用例。
+- [history.test.ts](../../tests/store/history.test.ts)：覆盖手工/单点/批量、纯边、超过 50、分组、同 ID 一次重载、runtime/exchange epoch、切走切回、撤销重做、满容量历史、普通更新、并发删除、ID 重用、新选择及订阅异常清理。
+- [fsTrash.test.ts](../../tests/services/fsTrash.test.ts)：补旧结构文件/整组在 mkdir 等待后失效或出现新引用时不移动，以及有效上下文正常暂存；原新结构、共享、撤销暂存回归保留。
+- 新增 [nodeAnimations.test.ts](../../tests/utils/nodeAnimations.test.ts)：捕获元素、重复/重叠、同 ID 重挂载的两种结束顺序、清理与删除回调/等待顺序、减少动效和无 DOM。
+- 新增 [toolbarZones.test.tsx](../../tests/components/toolbarZones.test.tsx)，调整 [imageLosslessCompressionToolbar.test.tsx](../../tests/components/imageLosslessCompressionToolbar.test.tsx)：布局排序/隐藏/插件/空区/分隔，原压缩手工测试驱动只显式展开新纯组件边界，不泛化执行其他 Hook 组件。
+- 新增 [canvasSelectionDeletion.test.ts](../../tests/hooks/canvasSelectionDeletion.test.ts)：Delete/Backspace/纯边委托，保留拦截顺序，空选区、输入、弹窗、无项目不吞键。
+- [agentRoundExecutor.test.ts](../../tests/services/chat/agentRoundExecutor.test.ts)、[chatWindowListener.test.ts](../../tests/services/chat/chatWindowListener.test.ts)：两个实际工具入口的批准/拒绝、初始指纹、步骤时间/脱敏/事件/指标；三等待器超时后迟到监听释放且不发送、同步监听异常，以及产物完整身份、上限和错误。
+
+已完成引用/调用时序、差异空白、UTF-8 与相关测试桩静态核对，并交叉复核删除生命周期、字段差异和组件边界；这些不是功能实测结论。侧栏/数字快捷键/连线的完整交互、真实模型/文件系统、动画与双窗口时序仍待桌面验收。文档仅更新本文、计划索引和画布模块边界，共 19 个业务文件、11 个回归文件、3 个文档；其他工作区发版改动保留。
+
+### Tauri 桌面验收与回滚
+
+准备独立测试项目和导出备份、普通项目及多画布作品、可播放本地媒体、文本/音频偏好、普通与顺序预设、已有插件和团队产物；按以下顺序验收：
+
+1. 依次通过浮动、侧栏、右键、数字键、连线、双击创建可用节点，核对上表入口差异、真实模型/workflowId、角色和默认字段；图片/动画/导演台/分镜/宫格原参数保留。源媒体拖放不自动绑模型；落点、连边方向、单次撤销及多文件导入历史粒度保持。
+2. 删除单节点、纯边、混选、超过 50 节点、组及最后成员，检查共享文件/分镜/聊天引用、artifact、手工空组、暂存和撤销/重做；API 批量仍限 50。连续删除及动画中新选择不被旧回调清掉；正常移动/生成进度和其他编辑不使合法删除失效。
+3. 在退出/暂存期间切项目并切回、同 ID 导入或重开、撤销重做，预期旧操作不修改新状态或移动仍在使用的文件；取消后存活节点可见可点，无残留 `node-exiting`。普通/减少动效下都检查。纯时序、异常和订阅清理还须运行对应回归，不能仅凭 UI 推断。
+4. 五种工具栏分别检查长按编辑、改分区/顺序、隐藏项的更多菜单、插件、图片历史/压缩及全景切换；深浅主题下结构与原来一致，切选中状态时已有弹窗保持。普通/顺序文本预设沿用第一批语义。
+5. 普通助手与 Registry/MCP/团队入口分别检查 B 批准/拒绝、等待中降级 Plan、C/MCP 自动写入和必答选择；事件/指标一次，停止、只读并发和写入顺序不变。真实模型/媒体调用按需执行并核对费用。
+6. 独立助手发送、收回/关闭、读取团队产物、受管理保存，核对正确 ACK 才完成、草稿保留；旧 session/request/scope 等不匹配和超时不误报成功、不重投。断连/超大产物仍使用原提示，迟到监听释放。
+
+如由用户执行，在仓库根目录按模块运行；本轮助手均未运行：
+
+```powershell
+npx vitest run tests/components/nodeMenuModelPreferences.test.tsx tests/components/canvasGridCreation.test.tsx tests/hooks/useNodeCreation.test.tsx tests/hooks/canvasSelectionDeletion.test.ts tests/store/history.test.ts tests/services/fsTrash.test.ts tests/utils/nodeAnimations.test.ts
+npx vitest run tests/components/toolbarZones.test.tsx tests/components/imageLosslessCompressionToolbar.test.tsx tests/components/nodeToolbarShell.test.tsx tests/components/toolbarRegistry.test.ts tests/components/nodeCriticalInteractions.test.tsx
+npx vitest run tests/services/chat/agentRoundExecutor.test.ts tests/services/chat/agentToolExecution.test.ts tests/services/chat/chatWindowListener.test.ts tests/services/mcp/mcpControlService.test.ts
+```
+
+类型、lint 和构建仍须按授权范围另行执行。回滚只撤销本节清单相对 `19c6b3b2` 的对应差异及新增 helper/回归文件，不用全工作区 reset/restore，不回退第一批或其他发版改动；无数据库/归档迁移和用户数据清理。
