@@ -18,11 +18,12 @@ function checkAbort(signal?: AbortSignal) { signal?.throwIfAborted(); }
 
 /** 首次保存时在目标项目内创建唯一 UTF-8 文本文件，不覆盖同名文件。 */
 export async function createAssetTextFile(projectId: string, content: string, suggestedName: string, options: {
-  signal?: AbortSignal; assertCurrent?: () => void; projectSubdirectory?: 'manuscripts';
+  signal?: AbortSignal; assertCurrent?: () => void; projectSubdirectory?: 'manuscripts' | 'outline-documents';
 } = {}): Promise<{ filePath: string; relativePath: string; fileName: string; snapshot: AssetTextSnapshot }> {
   if (!isTauriEnv()) throw new Error('请在桌面应用中保存原文');
   const check = () => { checkAbort(options.signal); options.assertCurrent?.(); };
-  if (options.projectSubdirectory !== undefined && options.projectSubdirectory !== 'manuscripts') throw new Error('稿件目录无效');
+  if (options.projectSubdirectory !== undefined && options.projectSubdirectory !== 'manuscripts'
+    && options.projectSubdirectory !== 'outline-documents') throw new Error('稿件目录无效');
   const fileName = sanitizeFileName(suggestedName) || '原文.txt';
   if (/[\\/]/.test(fileName)) throw new Error('文本文件名不能包含目录');
   if (getFileCategory(fileName) !== 'text') throw new Error('此文件不是受支持的文本文件');
@@ -35,7 +36,7 @@ export async function createAssetTextFile(projectId: string, content: string, su
   check();
   if (!directory) throw new Error('剧集素材目录不可用，请重新打开剧集');
   if (options.projectSubdirectory !== undefined) {
-    directory = joinPath(directory, 'manuscripts');
+    directory = joinPath(directory, options.projectSubdirectory);
     const present = await exists(directory);
     check();
     if (!present) {
@@ -45,7 +46,7 @@ export async function createAssetTextFile(projectId: string, content: string, su
     check();
     const info = await lstat(directory);
     check();
-    if (!info.isDirectory || info.isSymlink) throw new Error('稿件目录必须是普通文件夹');
+    if (!info.isDirectory || info.isSymlink || ((info.fileAttributes ?? 0) & 0x400) !== 0) throw new Error('稿件目录必须是普通文件夹');
   }
   const filePath = await resolveUniqueDestPath(directory, fileName, true);
   check();
@@ -58,7 +59,7 @@ export async function createAssetTextFile(projectId: string, content: string, su
   catch (reason) { throw new Error('原文文件已创建，但无法读回确认；草稿已保留，请检查项目文件', { cause: reason }); }
   if (snapshot.content !== normalized || snapshot.bom) throw new Error('新建原文读回复核失败，草稿已保留，请检查项目文件');
   const actualName = filePath.split(/[\\/]/).pop()!;
-  const relativePath = options.projectSubdirectory ? `manuscripts/${actualName}` : actualName;
+  const relativePath = options.projectSubdirectory ? `${options.projectSubdirectory}/${actualName}` : actualName;
   return { filePath, relativePath, fileName: actualName, snapshot };
 }
 
@@ -68,7 +69,7 @@ export async function readAssetTextFile(path: string, signal?: AbortSignal): Pro
   if (getFileCategory(path.split(/[\\/]/).pop() ?? '') !== 'text') throw new Error('此文件不是受支持的文本文件');
   checkAbort(signal);
   const info = await lstat(path);
-  if (!info.isFile || info.isSymlink) throw new Error('仅支持普通文本文件');
+  if (!info.isFile || info.isSymlink || ((info.fileAttributes ?? 0) & 0x400) !== 0) throw new Error('仅支持普通文本文件');
   if (info.size > MAX_TEXT_BYTES) throw new Error('文件超过 2 MB，请使用外部编辑器');
   const file = await open(path, { read: true });
   const buffer = new Uint8Array(MAX_TEXT_BYTES + 1);

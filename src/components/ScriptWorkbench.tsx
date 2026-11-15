@@ -2,10 +2,12 @@
  * ScriptWorkbench — 提供剧本创作工作台界面与交互。
  */
 import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EpisodeCreativeInfo } from '../types';
 import { useAppStore } from '../store/useAppStore';
+import { isTauriEnv } from '../services/fs/core';
 import { listEpisodes, seriesOwnerId } from '../store/store.utils';
 import {
   analyzeEpisodeScript,
@@ -20,6 +22,7 @@ import {
 } from '../services/seriesCreativeService';
 import { useT } from '../i18n';
 import ModalOverlay from './shared/ModalOverlay';
+import { ModalPresentationContext } from './shared/modalPresentationContext';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Tabs from './shared/Tabs';
 import NumberStepper from './shared/NumberStepper';
@@ -28,6 +31,8 @@ import { createEpisodeShotlist } from '../services/shotlistService';
 import SeriesSourceBrowser, { type SeriesSourceBrowserRemote } from './SeriesSourceBrowser';
 import OriginalWritingEditor from './OriginalWritingEditor';
 import { createOriginalWritingSession } from '../services/originalWritingService';
+import OutlineFilesPanel from './workbench/OutlineFilesPanel';
+import { createOutlineDocumentSession } from '../services/outlineDocumentService';
 import WorkbenchContextSummary from './series/WorkbenchContextSummary';
 import WorkbenchCollaborationDialog from './series/WorkbenchCollaborationDialog';
 import WorkbenchSplitDialog from './series/WorkbenchSplitDialog';
@@ -84,6 +89,7 @@ const isIntegerInRange = (value: number, min: number, max: number) => Number.isS
 
 type EditorTab = WorkbenchEditorTab;
 type PendingAction = WorkbenchPendingAction;
+type WorkbenchPresentation = 'modal' | 'page';
 type CreativeDraft = WorkbenchCreativeDraft;
 
 // 非持久化恢复副本：宿主因切项目卸载时不把未确认丢弃的稿件当作已经放弃。
@@ -294,12 +300,26 @@ export default function ScriptWorkbench({
   startWithSplit = false,
   openRequestRevision = 0,
   requestSplit = false,
+  presentation = 'modal',
+  visible = true,
+  onSwitchToCanvas,
+  onPageVisibilityChange,
+  onDetachedChange,
+  onReturnToProject,
+  returningToProject = false,
 }: {
   isOpen: boolean;
   onClose: () => void;
   startWithSplit?: boolean;
   openRequestRevision?: number;
   requestSplit?: boolean;
+  presentation?: WorkbenchPresentation;
+  visible?: boolean;
+  onSwitchToCanvas?: () => void;
+  onPageVisibilityChange?: (visible: boolean) => void;
+  onDetachedChange?: (detached: boolean) => void;
+  onReturnToProject?: () => Promise<boolean>;
+  returningToProject?: boolean;
 }) {
   const t = useT();
   const {
@@ -348,11 +368,15 @@ export default function ScriptWorkbench({
   const [, refreshOriginalWriting] = useState(0);
   const [originalWriting] = useState(() => seriesId ? createOriginalWritingSession({ seriesId }) : null);
   useEffect(() => originalWriting?.subscribe(() => refreshOriginalWriting((version) => version + 1)), [originalWriting]);
+  const [, refreshOutlineDocuments] = useState(0);
+  const [outlineDocuments] = useState(() => seriesId ? createOutlineDocumentSession({ seriesId }) : null);
+  useEffect(() => outlineDocuments?.subscribe(() => refreshOutlineDocuments((version) => version + 1)), [outlineDocuments]);
   const [detached, setDetached] = useState(false);
   const [openingWindow, setOpeningWindow] = useState(false);
   const [closingWorkbench, setClosingWorkbench] = useState(false);
   const windowHost = useRef<ScriptWorkbenchWindowHost | null>(null);
   const afterReply = useRef<'close' | 'dock' | null>(null);
+  const pendingCloseDestination = useRef<'canvas' | 'start'>('canvas');
   const acceptedEditSequenceRef = useRef(0);
   const [acceptedEditSequence, setAcceptedEditSequence] = useState(0);
   const workspaceState = useAppStore.getState();
@@ -488,7 +512,12 @@ export default function ScriptWorkbench({
     setDraftsByEpisode(next);
   }, [seriesId, setDraftVersionByEpisode, setDraftsByEpisode]);
 
-  const onClose = () => {
+  const onClose = (destination: 'canvas' | 'start' = 'canvas') => {
+    if (outlineDocuments?.isDirty() || outlineDocuments?.isBusy()) {
+      setActiveTab('outline');
+      showToast(t('请先保存大纲文件或处理未保存修改，再离开工作台'), 'error');
+      return;
+    }
     if (originalWriting?.isDirty() || originalWriting?.isBusy()) {
       setActiveTab('original');
       showToast(t('请先保存原文或处理未保存修改，再离开工作台'), 'error');
@@ -499,6 +528,10 @@ export default function ScriptWorkbench({
     const saved = useAppStore.getState().projects.find((item) => item.id === episodeId);
     if (episodeId && local && draftSignature(local) === draftSignature(createDraft(saved ?? null))) {
       replaceEpisodeDraft(episodeId, undefined);
+    }
+    if (destination === 'start') {
+      void useAppStore.getState().returnToStartPage();
+      return;
     }
     if (detached) afterReply.current = 'close';
     else onCloseRequest();
@@ -516,8 +549,8 @@ export default function ScriptWorkbench({
     return registerEpisodeEditorSession(episodeId, () => {
       const episode = useAppStore.getState().projects.find((item) => item.id === episodeId);
       const local = draftsRef.current[episodeId];
-      return { dirty: (!!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null))) || graphEditorLease.current !== null || !!originalWriting?.isDirty(),
-        saving: savingEpisodeRef.current === episodeId || graphWritesInFlight.current > 0 || !!originalWriting?.isBusy() };
+      return { dirty: (!!local && draftSignature(local) !== draftSignature(createDraft(episode ?? null))) || graphEditorLease.current !== null || !!originalWriting?.isDirty() || !!outlineDocuments?.isDirty(),
+        saving: savingEpisodeRef.current === episodeId || graphWritesInFlight.current > 0 || !!originalWriting?.isBusy() || !!outlineDocuments?.isBusy() };
     }, () => {
       const version = draftVersions.current.get(episodeId) ?? 0;
       const lease = graphEditorLease.current;
@@ -528,7 +561,7 @@ export default function ScriptWorkbench({
         if (lease && graphEditorLease.current === lease) { graphEditorLease.current = null; setGraphEditorOpen(false); }
       };
     });
-  }, [currentEpisodeId, isOpen, replaceEpisodeDraft, originalWriting]);
+  }, [currentEpisodeId, isOpen, replaceEpisodeDraft, originalWriting, outlineDocuments]);
   const analysis = analyzeEpisodeScript(draft.script, toCreativeInfo(draft.creative));
 
   const saveDraft = async (): Promise<boolean> => {
@@ -585,16 +618,24 @@ export default function ScriptWorkbench({
       settleEpisodeEditorSessions(selectedEpisodeRef.current);
     }
     if (action.type === 'close') {
+      const destination = pendingCloseDestination.current;
+      pendingCloseDestination.current = 'canvas';
       originalWriting?.discard();
-      onClose();
+      outlineDocuments?.discard();
+      onClose(destination);
       return;
     }
     selectedEpisodeRef.current = action.episodeId;
     setSelectedEpisodeId(action.episodeId);
   };
 
-  const requestClose = () => {
+  const requestClose = (destination: 'canvas' | 'start' = 'canvas') => {
     if (savingEpisodeRef.current || editorWriteLocked) return false;
+    if (outlineDocuments?.isBusy()) {
+      setActiveTab('outline');
+      showToast(t('请等待大纲文件操作完成后再离开工作台'), 'error');
+      return false;
+    }
     if (originalWriting?.isBusy()) {
       setActiveTab('original');
       showToast(t('请先等待原文保存完成，或停止生成，再关闭工作台'), 'error');
@@ -609,14 +650,16 @@ export default function ScriptWorkbench({
       setActiveTab('story-graph');
       return false;
     }
-    if (currentDirty() || originalWriting?.isDirty()) {
+    if (currentDirty() || originalWriting?.isDirty() || outlineDocuments?.isDirty()) {
       const original = originalWriting?.summary();
-      pendingOriginalVersion.current = JSON.stringify([original?.documentId, original?.revision]);
+      const outline = outlineDocuments?.getSummary();
+      pendingOriginalVersion.current = JSON.stringify([original?.documentId, original?.revision, outline?.documentId, outline?.revision]);
+      pendingCloseDestination.current = destination;
       setPendingAction({ type: 'close' }); return false;
     }
     else {
       setSeriesAssetPreview(null);
-      onClose();
+      onClose(destination);
       return true;
     }
   };
@@ -1057,6 +1100,7 @@ export default function ScriptWorkbench({
     storyGraphAssets: graphView && contextReady ? graphAssets : undefined,
     storyGraphExtraction: graphView ? graphExtraction : undefined, storyGraphEditorOpen: graphEditorOpen, sourceLocation,
     originalWriting: originalWriting?.summary(),
+    outlineDocuments: outlineDocuments?.getSummary(),
     theme: resolveAppearanceMode(config.appearance?.mode ?? config.theme), language: config.language,
     appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
     detached, openingWindow,
@@ -1065,10 +1109,16 @@ export default function ScriptWorkbench({
   const requestRef = useRef<(request: ScriptWorkbenchRequest) => Promise<unknown>>(async () => undefined);
   const actionRef = useRef<(action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest) => Promise<unknown>>(async () => undefined);
   const onCloseRequestRef = useRef(onCloseRequest);
+  const onPageVisibilityChangeRef = useRef(onPageVisibilityChange);
+  const onDetachedChangeRef = useRef(onDetachedChange);
   const dispatchView = useCallback<ScriptWorkbenchDispatch>((action) => actionRef.current(action), []);
 
   const handleAction = async (action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest): Promise<unknown> => {
     if (request) {
+      if (request.outlineHandoff && !(action.type === 'outline_reload' && action.discard)) {
+        try { outlineDocuments?.flush(request.outlineHandoff); }
+        catch (error) { if (action.type !== 'discard_pending') throw error; }
+      }
       if (request.originalHandoff && !(action.type === 'original_reload' && action.discard)) {
         try { originalWriting?.flush(request.originalHandoff); }
         catch (error) {
@@ -1091,20 +1141,26 @@ export default function ScriptWorkbench({
         setAcceptedEditSequence(handoff.sequence);
       }
     }
-    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_split', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate'];
+    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_split', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate', 'outline_edit'];
     if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
+    if (action.type.startsWith('outline_')) {
+      if (!outlineDocuments) throw new Error(t('当前没有可编辑的大纲文件'));
+      return outlineDocuments.handle(action as Parameters<typeof outlineDocuments.handle>[0]);
+    }
     if (action.type.startsWith('original_')) {
       if (!originalWriting) throw new Error(t('当前没有可编辑的原著文件'));
       // 所有原文读取、保存和生成仍由主窗口执行；快照只发布状态与统计。
       return originalWriting.handle(action as Parameters<typeof originalWriting.handle>[0]);
     }
     if (pendingAction?.type === 'close' && (action.type === 'discard_pending' || action.type === 'save_pending')) {
+      if (outlineDocuments?.isBusy()) throw new Error(t('请等待大纲文件操作完成后再离开工作台'));
       if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再关闭工作台'));
       const original = originalWriting?.summary();
-      const version = JSON.stringify([original?.documentId, original?.revision]);
+      const outline = outlineDocuments?.getSummary();
+      const version = JSON.stringify([original?.documentId, original?.revision, outline?.documentId, outline?.revision]);
       if (version !== pendingOriginalVersion.current) {
         pendingOriginalVersion.current = version;
-        throw new Error(t('原文在确认期间有新修改，请核对当前草稿后重试'));
+        throw new Error(t('文档在确认期间有新修改，请核对当前草稿后重试'));
       }
     }
     if ('taskId' in action && !(action.type === 'view_agent_task' ? episodeAgentTasks : episodeTeamTasks)
@@ -1125,26 +1181,36 @@ export default function ScriptWorkbench({
       }
       case 'close': return requestClose();
       case 'dock':
+        if (outlineDocuments?.isBusy()) throw new Error(t('请等待大纲文件操作完成后再切换窗口'));
         if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再切换窗口'));
         if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口'));
         afterReply.current = 'dock'; return true;
       case 'detach': {
+        if (outlineDocuments?.isBusy()) throw new Error(t('请等待大纲文件操作完成后再切换窗口'));
         if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再切换窗口'));
         if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口'));
         if (openingWindow) return false;
         setOpeningWindow(true);
-        try { await windowHost.current?.open(); return true; }
+        try {
+          await windowHost.current?.open();
+          if (presentation === 'page') onPageVisibilityChange?.(false);
+          return true;
+        }
         finally { setOpeningWindow(false); }
       }
-      case 'cancel_pending': setPendingAction(null); return true;
+      case 'cancel_pending': pendingCloseDestination.current = 'canvas'; setPendingAction(null); return true;
       case 'discard_pending': if (pendingAction) performPendingAction(pendingAction); return true;
       case 'save_pending': {
         if (!pendingAction) return false;
+        if (pendingAction.type === 'close' && outlineDocuments?.isDirty()) {
+          await outlineDocuments.handle({ type: 'outline_save' });
+          if (outlineDocuments.isDirty()) throw new Error(t('大纲文件保存期间有新修改，草稿已保留，请重新保存'));
+        }
         if (pendingAction.type === 'close' && originalWriting?.isDirty()) {
           await originalWriting.handle({ type: 'original_save' });
           if (originalWriting.isDirty()) throw new Error(t('原文保存期间有新修改，草稿已保留，请重新保存'));
         }
-        if (!await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
+        if (currentDirty() && !await saveDraft()) throw new Error(t('当前草稿尚未全部保存，请核对后重试'));
         performPendingAction(pendingAction); return true;
       }
       case 'open_split': setSplitOpen(true); return true;
@@ -1316,6 +1382,7 @@ export default function ScriptWorkbench({
         graphScopeGuard(epoch, selectedId);
         if (readGraphSource(evidence.episodeId, evidence.part).text !== text
           || !validateStoryGraphEvidence(evidence, { ...evidence, text, sourceHash })) throw new Error(t('原文来源已变化，请先重新绑定证据'));
+        if (evidence.part === 'outline') await outlineDocuments?.handle({ type: 'outline_select_builtin' });
         selectedEpisodeRef.current = evidence.episodeId;
         setSelectedEpisodeId(evidence.episodeId);
         setActiveTab(evidence.part);
@@ -1424,32 +1491,73 @@ export default function ScriptWorkbench({
   useLayoutEffect(() => {
     snapshotRef.current = snapshot;
     onCloseRequestRef.current = onCloseRequest;
+    onPageVisibilityChangeRef.current = onPageVisibilityChange;
+    onDetachedChangeRef.current = onDetachedChange;
     actionRef.current = handleAction;
     requestRef.current = (request) => handleAction(request.action, request);
   });
   useEffect(() => {
     const host = createScriptWorkbenchWindowHost({ sessionId, getSnapshot: () => snapshotRef.current,
       getContext: () => captureProjectWindowContext(useAppStore.getState(), selectedEpisodeRef.current),
-      onRequest: (request) => requestRef.current(request), onDetachedChange: setDetached,
+      onRequest: (request) => requestRef.current(request), onDetachedChange: (next) => {
+        setDetached(next);
+        onDetachedChangeRef.current?.(next);
+      },
       onReplySent: () => {
         const action = afterReply.current;
         if (!action) return;
         afterReply.current = null;
         if (action === 'close') setClosingWorkbench(true);
-        void host.close().catch(() => {}).finally(() => { if (action === 'close') onCloseRequestRef.current(); });
+        void host.close().catch(() => {}).finally(() => {
+          if (action === 'close') onCloseRequestRef.current();
+          else if (action === 'dock') onPageVisibilityChangeRef.current?.(true);
+        });
       },
     });
     windowHost.current = host;
     return () => { windowHost.current = null; host.dispose(); };
   }, [sessionId]);
   useEffect(() => { void windowHost.current?.publish().catch(() => {}); });
-  return !isOpen || detached || closingWorkbench ? null : <ScriptWorkbenchView snapshot={snapshot} dispatch={dispatchView} />;
+  useEffect(() => {
+    if (presentation !== 'page' || !visible || !isOpen || detached || closingWorkbench) return;
+    const save = () => {
+      const current = snapshotRef.current;
+      const fileVisible = (!current.currentEpisode || current.activeTab === 'outline') && current.outlineDocuments?.selected;
+      if (fileVisible
+        && !/\.(md|txt)$/i.test(current.outlineDocuments?.fileName ?? '')) return;
+      const action: ScriptWorkbenchAction = fileVisible ? { type: 'outline_save' }
+        : current.activeTab === 'original' ? { type: 'original_save' } : { type: 'save' };
+      void actionRef.current(action).catch((error: unknown) => showToast(error instanceof Error ? error.message : t('工作台操作未完成'), 'error'));
+    };
+    window.addEventListener('script-workbench-save', save);
+    return () => window.removeEventListener('script-workbench-save', save);
+  }, [presentation, visible, isOpen, detached, closingWorkbench, showToast, t]);
+  return !isOpen || detached || closingWorkbench ? null : <ScriptWorkbenchView snapshot={snapshot} dispatch={dispatchView}
+    presentation={presentation} visible={visible} onSwitchToCanvas={onSwitchToCanvas}
+    onBackToStartPage={() => { requestClose('start'); }}
+    onReturnToProject={onReturnToProject} returningToProject={returningToProject} />;
 }
 
-function WorkbenchFrame({ standalone, children, ...props }: {
-  standalone: boolean; isOpen: boolean; onClose: () => void; ariaLabel: string; closeOnBackdrop: boolean; className: string; children: ReactNode;
+function WorkbenchFrame({ standalone, presentation, visible, children, ...props }: {
+  standalone: boolean; presentation: WorkbenchPresentation; visible: boolean;
+  isOpen: boolean; onClose: () => void; ariaLabel: string; closeOnBackdrop: boolean; className: string; children: ReactNode;
 }) {
+  const pageRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!standalone && presentation === 'page' && visible && pageRef.current
+      && !pageRef.current.contains(document.activeElement)) pageRef.current.focus({ preventScroll: true });
+  }, [standalone, presentation, visible]);
   if (standalone) return <div className="ui-dialog-surface flex h-screen w-screen flex-col overflow-hidden text-canvas-text">{children}</div>;
+  if (presentation === 'page') {
+    const container = typeof document === 'undefined' ? null : document.getElementById('script-workbench-page');
+    if (!container) return null;
+    return createPortal(<ModalPresentationContext value={visible}>
+      <section ref={pageRef} role="main" tabIndex={-1} aria-label={props.ariaLabel} aria-hidden={!visible} inert={!visible}
+        className={`ui-dialog-surface h-full w-full overflow-hidden bg-canvas-surface text-canvas-text outline-none ${visible ? 'flex flex-col' : 'hidden'}`}>
+        {children}
+      </section>
+    </ModalPresentationContext>, container);
+  }
   return <ModalOverlay {...props}>{children}</ModalOverlay>;
 }
 
@@ -1477,11 +1585,19 @@ function WorkbenchRenameDialog({ name, onClose, onSave }: { name: string; onClos
 }
 
 /** 两种展示共用的纯视图；所有保存、模型与资产能力均通过主窗口 dispatch。 */
-export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, externalError = '', onDismissError }: {
+export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, presentation = 'modal', visible = true,
+  onSwitchToCanvas, onBackToStartPage, onReturnToProject, returningToProject = false, externalError = '', onDismissError }: {
   snapshot: ScriptWorkbenchSnapshot; dispatch: ScriptWorkbenchDispatch; standalone?: boolean;
+  presentation?: WorkbenchPresentation; visible?: boolean; onSwitchToCanvas?: () => void;
+  onBackToStartPage?: () => void;
+  onReturnToProject?: () => Promise<boolean>; returningToProject?: boolean;
   externalError?: string; onDismissError?: () => void;
 }) {
   const t = useT();
+  const pageHeader = !standalone && presentation === 'page';
+  const nativeWindowControls = isTauriEnv();
+  const macWindowControls = nativeWindowControls && typeof navigator !== 'undefined'
+    && /Macintosh|Mac OS X/.test(navigator.userAgent);
   const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
   const locatedSourceSequence = useRef(0);
   const graphViewLease = useRef<{ graphId: string; epoch: number } | null>(null);
@@ -1499,11 +1615,12 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
   const episodeAssetRoster = normalizeEpisodeAssetRoster(currentEpisode?.episodeAssetRoster);
   const activeAssetKind = WORKBENCH_ASSET_KINDS[activeTab];
   const scriptFileSyncNeeded = !!currentEpisode && needsEpisodeScriptFileSync(currentEpisode);
-  const creationToolsVisible = activeTab === 'outline' || activeTab === 'script' || activeTab === 'creative';
+  const outlineFileSelected = (!currentEpisode || activeTab === 'outline') && !!snapshot.outlineDocuments?.selected;
+  const creationToolsVisible = !!currentEpisode && ((activeTab === 'outline' && !outlineFileSelected) || activeTab === 'script' || activeTab === 'creative');
   const creativeActions = WORKBENCH_ACTIONS_BY_TAB[activeTab] ?? [];
   const creativeGroups = CREATIVE_ACTION_GROUPS.map((group) => ({ ...group,
     actions: group.actions.filter((action) => creativeActions.includes(action.id)),
-  })).filter((group) => group.actions.length > 0);
+  })).filter((group) => !outlineFileSelected && group.actions.length > 0);
   const extractionActions = SERIES_ASSET_EXTRACTION_ACTIONS.filter((action) => activeTab === 'script'
     || action.kind === activeAssetKind);
   const fire = (action: ScriptWorkbenchAction) => { void dispatch(action).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t('工作台操作未完成'))); };
@@ -1534,17 +1651,17 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
     const location = snapshot.sourceLocation;
     const editor = sourceEditorRef.current;
     if (!location || !editor || locatedSourceSequence.current === location.sequence
-      || currentEpisode?.id !== location.episodeId || activeTab !== location.part || isDirty) return;
+      || currentEpisode?.id !== location.episodeId || activeTab !== location.part || isDirty || outlineFileSelected) return;
     if (editor.value.slice(location.start, location.end) !== location.quote) return;
     editor.focus({ preventScroll: true });
     editor.setSelectionRange(location.start, location.end);
     locatedSourceSequence.current = location.sequence;
     const lineHeight = Number.parseFloat(getComputedStyle(editor).lineHeight) || 28;
     editor.scrollTop = Math.max(0, editor.value.slice(0, location.start).split('\n').length - 2) * lineHeight;
-  }, [activeTab, currentEpisode?.id, isDirty, snapshot.sourceLocation]);
+  }, [activeTab, currentEpisode?.id, isDirty, outlineFileSelected, snapshot.sourceLocation]);
 
   return (
-    <WorkbenchFrame standalone={standalone}
+    <WorkbenchFrame standalone={standalone} presentation={presentation} visible={visible}
       isOpen={isOpen}
       onClose={requestClose}
       ariaLabel={t('剧本创作工作台')}
@@ -1557,21 +1674,36 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
         onKeyDown={(event) => {
           if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
             event.preventDefault();
-            if (activeTab === 'original') fire({ type: 'original_save' });
+            if (outlineFileSelected) {
+              if (/\.(md|txt)$/i.test(snapshot.outlineDocuments?.fileName ?? '')) fire({ type: 'outline_save' });
+            }
+            else if (activeTab === 'original') fire({ type: 'original_save' });
             else void saveDraft();
           }
         }}
       >
-        <header className="flex shrink-0 items-center gap-3 border-b border-border-subtle px-2.5 py-2">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-indigo-500/15 text-indigo-400">
+        <header data-tauri-drag-region={pageHeader ? true : undefined}
+          className={pageHeader
+            ? `relative flex min-h-11 shrink-0 flex-wrap items-center gap-3 border-b border-border-subtle py-1 ${macWindowControls ? 'pl-28 pr-3' : nativeWindowControls ? 'pl-3 pr-32' : 'px-3'}`
+            : 'flex shrink-0 items-center gap-3 border-b border-border-subtle px-2.5 py-2'}>
+          {pageHeader ? <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm"
+            aria-label={t('返回启动页')} onClick={onBackToStartPage}>
+            <Icon icon="mdi:arrow-left" width="16" aria-hidden="true" />
+            {t('返回启动页')}
+          </button> : <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-indigo-500/15 text-indigo-400">
             <Icon icon="lucide:notebook-pen" className="h-4 w-4" />
-          </span>
+          </span>}
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-sm font-semibold">{t('剧本创作工作台')}</h2>
             <p className="truncate text-[11px] text-canvas-text-muted">
               {series?.name ?? t('当前剧集')} · {currentEpisode?.name ?? t('还没有分集')}
             </p>
           </div>
+          {!standalone && presentation === 'page' && <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+            onClick={onSwitchToCanvas}>
+            <Icon icon="lucide:panels-top-left" className="h-3.5 w-3.5" />
+            {t('切换到画布')}
+          </button>}
           <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
             disabled={!currentEpisode || !contextReady || isSaving || isStartingTeam || editorWriteLocked}
             aria-haspopup="dialog" aria-expanded={collaborationOpen}
@@ -1592,17 +1724,23 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
           </button>
           <button type="button" className="ui-btn ui-btn--sm" disabled={projectLoadStatus !== 'ready'}
             onClick={() => setSourceOpen(true)}>{t('章节浏览')}</button>
-          <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+          {!pageHeader && <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
             disabled={isSaving || editorWriteLocked || snapshot.openingWindow}
             onClick={() => fire({ type: standalone ? 'dock' : 'detach' })}
             aria-label={standalone ? t('收回主窗口') : t('独立窗口显示')}>
             <Icon icon={standalone ? 'lucide:panel-top-close' : 'lucide:external-link'} className="h-3.5 w-3.5" />
             {snapshot.openingWindow ? t('正在打开…') : standalone ? t('收回主窗口') : t('独立窗口')}
-          </button>
-          <PopupCloseButton ariaLabel={t('关闭剧本创作工作台')} onClick={requestClose} />
+          </button>}
+          {!pageHeader && <PopupCloseButton ariaLabel={t('关闭剧本创作工作台')} onClick={requestClose} />}
         </header>
 
-        {!contextReady && <p role="status" className="ui-hint shrink-0 border-b border-canvas-border p-3">{t('画布已离开本剧集，请先回到原剧集处理工作台修改')}</p>}
+        {!contextReady && <div role="status" className="ui-hint flex shrink-0 flex-wrap items-center gap-2 border-b border-canvas-border p-3">
+          <span className="min-w-0 flex-1">{t('画布已离开本剧集，请先回到原剧集处理工作台修改')}</span>
+          {onReturnToProject && <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
+            disabled={returningToProject} aria-busy={returningToProject} onClick={() => { void onReturnToProject(); }}>
+            {t(returningToProject ? '正在打开…' : '返回原剧集')}
+          </button>}
+        </div>}
         {(error || externalError) && <div role="alert" className="ui-error flex shrink-0 items-center gap-2 p-3">
           <span className="min-w-0 flex-1 break-words">{error || externalError}</span>
           <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => { setError(''); onDismissError?.(); }}>{t('关闭')}</button>
@@ -1632,7 +1770,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
             </button>
             <button
               type="button"
-              disabled={isSaving || editorWriteLocked || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating || snapshot.originalWriting?.loading}
+              disabled={isSaving || editorWriteLocked || snapshot.outlineDocuments?.busy || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating || snapshot.originalWriting?.loading}
               onClick={() => performPendingAction(pendingAction)}
               className="h-7 rounded-md px-2.5 text-[11px] text-red-300 hover:bg-red-500/15"
             >
@@ -1640,7 +1778,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
             </button>
             <button
               type="button"
-              disabled={isSaving || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating || snapshot.originalWriting?.loading}
+              disabled={isSaving || snapshot.outlineDocuments?.busy || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating || snapshot.originalWriting?.loading}
               onClick={() => fire({ type: 'save_pending' })}
               className="h-7 rounded-md bg-amber-400/90 px-3 text-[11px] font-medium text-black
                          hover:bg-amber-300 disabled:cursor-wait disabled:opacity-60"
@@ -1728,6 +1866,15 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   }))} />
 
                 <div className="min-h-0 flex-1 overflow-auto">
+                  {snapshot.outlineDocuments && <section className={activeTab === 'outline' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('大纲文件')}>
+                    <OutlineFilesPanel summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady}
+                      active={activeTab === 'outline' && visible}>
+                      <textarea ref={activeTab === 'outline' ? sourceEditorRef : undefined} value={draft.outline} readOnly={editorWriteLocked || !contextReady}
+                        onChange={(event) => setTextDraft('outline', event.target.value)} spellCheck={false}
+                        aria-label={t('本集大纲')} placeholder={t('写下本集任务、核心冲突、主要情节点和结尾卡点…')}
+                        className="block h-full min-h-80 w-full flex-1 resize-none bg-transparent p-3 text-[13px] leading-7 text-canvas-text outline-none placeholder:text-canvas-text-muted" />
+                    </OutlineFilesPanel>
+                  </section>}
                   {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
                     <OriginalWritingEditor summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady} active={activeTab === 'original'} toolsContainer={originalToolsContainer} />
                   </section>}
@@ -1763,7 +1910,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                           kind: activeAssetKind, action }) as EpisodeAssetPanelActionResult }}
                         onBeforeExtract={async () => !isDirty || await saveDraft()} />
                   ) : null}
-                  {activeTab === 'outline' ? (
+                  {activeTab === 'outline' && !snapshot.outlineDocuments ? (
                     <textarea
                       ref={sourceEditorRef}
                       value={draft.outline}
@@ -1856,7 +2003,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                   ) : null}
                 </div>
 
-                {activeTab !== 'original' && <footer className="flex h-12 shrink-0 items-center gap-3 border-t border-border-subtle px-3">
+                {activeTab !== 'original' && !outlineFileSelected && <footer className="flex h-12 shrink-0 items-center gap-3 border-t border-border-subtle px-3">
                   <span className={`text-[11px] ${isDirty ? 'text-amber-300' : 'text-canvas-text-muted'}`}>
                     {editorWriteLocked ? t('团队成果保存中…') : isDirty ? t('有未保存修改') : scriptFileSyncNeeded ? t('待保存 TXT') : t('已保存')}
                   </span>
@@ -1883,7 +2030,11 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
                 </footer>}
               </>
             ) : (
-              <div className="grid min-h-80 flex-1 place-items-center p-6 text-center">
+              snapshot.outlineDocuments ? <OutlineFilesPanel summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady} active={visible}>
+                <div className="grid min-h-80 flex-1 place-items-center p-3 text-center">
+                  <p className="text-xs text-canvas-text-muted">{t('还没有分集，可以先新建大纲文件，或生成拆分草案。')}</p>
+                </div>
+              </OutlineFilesPanel> : <div className="grid min-h-80 flex-1 place-items-center p-6 text-center">
                 <div>
                   <Icon icon="lucide:files" className="mx-auto h-8 w-8 text-canvas-text-muted" />
                   <p className="mt-3 text-sm font-medium">{t('还没有可编辑的分集')}</p>
@@ -1895,7 +2046,10 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, ex
 
           <aside className="min-h-0 overflow-auto border-t border-border-subtle p-3
                             lg:col-span-2 lg:max-h-64 xl:col-span-1 xl:max-h-none xl:border-t-0">
-            <WorkbenchContextSummary snapshot={snapshot} dispatch={report} />
+            {outlineFileSelected ? <div className="ui-card p-3">
+              <h3 className="ui-label">{t('大纲参考资料')}</h3>
+              <p className="mt-2 text-xs leading-relaxed text-canvas-text-secondary">{t('MD、TXT 可编辑保存；PDF、PPT 和 Word 在本地只读预览。')}</p>
+            </div> : <WorkbenchContextSummary snapshot={snapshot} dispatch={report} />}
             {activeTab === 'original' && <div ref={setOriginalToolsContainer} className="mt-3 space-y-3" />}
 
             {extractionActions.length > 0 && <section className="ui-card mt-4 p-3">

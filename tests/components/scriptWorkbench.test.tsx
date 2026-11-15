@@ -8,9 +8,35 @@ import { createDefaultTeamProfile } from '../../src/services/chat/teams/teamProf
 import { createAppearanceUiSnapshot } from '../../src/services/appearance/appearanceWindowSync';
 import { getBuiltinAppearanceTheme } from '../../src/services/appearance/appearanceDefaults';
 
-vi.mock('../../src/components/shared/ModalOverlay', () => ({
-  default: ({ isOpen, children }: { isOpen: boolean; children: ReactNode }) => isOpen ? <div>{children}</div> : null,
+const pageDriver = vi.hoisted(() => ({ tree: null as ReactNode }));
+vi.mock('react-dom', async (importOriginal) => ({
+  ...await importOriginal<typeof import('react-dom')>(),
+  createPortal: (children: ReactNode) => { pageDriver.tree = children; return children; },
 }));
+vi.mock('../../src/components/shared/ModalOverlay', async () => {
+  const { useContext } = await import('react');
+  const { ModalPresentationContext } = await import('../../src/components/shared/modalPresentationContext');
+  return { default: function MockModalOverlay({ isOpen, children, ariaLabel }: {
+    isOpen: boolean; children: ReactNode; ariaLabel?: string;
+  }) {
+    const visible = useContext(ModalPresentationContext);
+    return isOpen && visible ? <div role="dialog" aria-modal="true" aria-label={ariaLabel}>{children}</div> : null;
+  } };
+});
+
+interface ViewElement { type: unknown; props: Record<string, unknown> & { children?: unknown } }
+function pageElements(tree: unknown): ViewElement[] {
+  if (Array.isArray(tree)) return tree.flatMap(pageElements);
+  if (!tree || typeof tree !== 'object' || !('props' in tree)) return [];
+  const element = tree as ViewElement;
+  return [element, ...pageElements(element.props.children)];
+}
+function elementText(tree: unknown): string {
+  if (Array.isArray(tree)) return tree.map(elementText).join('');
+  if (typeof tree === 'string') return tree;
+  if (!tree || typeof tree !== 'object' || !('props' in tree)) return '';
+  return elementText((tree as ViewElement).props.children);
+}
 
 function snapshot(): ScriptWorkbenchSnapshot {
   return { sessionId: 'workbench-session', revision: 1, acceptedEditSequence: 0, draftVersion: 0,
@@ -35,10 +61,90 @@ function shotlistButton(html: string): string | undefined {
 }
 
 describe('剧本工作台共享视图', () => {
+  it('整页用返回和画布导航替代关闭入口，不直接关闭或丢弃未保存正文', () => {
+    const state = { ...snapshot(), isDirty: true,
+      draft: { ...snapshot().draft, outline: '尚未保存的大纲草稿' } };
+    const dispatch = vi.fn(async () => undefined);
+    const onSwitchToCanvas = vi.fn();
+    const onBackToStartPage = vi.fn();
+    vi.stubGlobal('document', { getElementById: () => ({}) });
+    try {
+      const html = renderToStaticMarkup(<ScriptWorkbenchView presentation="page" snapshot={state}
+        dispatch={dispatch} onSwitchToCanvas={onSwitchToCanvas} onBackToStartPage={onBackToStartPage} />);
+      expect(html).toMatch(/<section\b[^>]*aria-label="剧本创作工作台"/);
+      expect(html).toContain('role="main"');
+      expect(html).not.toContain('role="dialog"');
+      expect(html).not.toContain('aria-modal="true"');
+      expect(html).not.toContain('关闭剧本创作工作台');
+      expect(html).not.toContain('独立窗口显示');
+      expect(html).toContain('尚未保存的大纲草稿');
+      const back = pageElements(pageDriver.tree).find((element) => element.type === 'button'
+        && element.props['aria-label'] === '返回启动页');
+      expect(back).toBeDefined();
+      (back!.props.onClick as () => void)();
+      expect(onBackToStartPage).toHaveBeenCalledOnce();
+      expect(dispatch).not.toHaveBeenCalled();
+      const toggle = pageElements(pageDriver.tree).find((element) => element.type === 'button'
+        && elementText(element.props.children) === '切换到画布');
+      expect(toggle).toBeDefined();
+      (toggle!.props.onClick as () => void)();
+      expect(onSwitchToCanvas).toHaveBeenCalledOnce();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(state.draft.outline).toBe('尚未保存的大纲草稿');
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('隐藏整页仍保留正文，后代分集改名弹窗不会在画布上显示', () => {
+    const state = { ...snapshot(), isDirty: true, renamingEpisodeId: 'episode-b',
+      draft: { ...snapshot().draft, outline: '切换画布后仍保留的正文' } };
+    const dispatch = vi.fn(async () => undefined);
+    vi.stubGlobal('document', { getElementById: () => ({}) });
+    try {
+      const hidden = renderToStaticMarkup(<ScriptWorkbenchView presentation="page" visible={false}
+        snapshot={state} dispatch={dispatch} />);
+      expect(hidden).toMatch(/<section\b[^>]*aria-hidden="true"[^>]*inert=""/);
+      expect(hidden).toContain('切换画布后仍保留的正文');
+      expect(hidden).not.toContain('role="dialog"');
+      const shown = renderToStaticMarkup(<ScriptWorkbenchView presentation="page" snapshot={state} dispatch={dispatch} />);
+      expect(shown).toContain('aria-label="修改分集名称"');
+      expect(shown).toContain('切换画布后仍保留的正文');
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('离开原剧集的整页通过恢复入口返回，不关闭或丢弃未保存正文', () => {
+    const state = { ...snapshot(), contextReady: false, isDirty: true,
+      draft: { ...snapshot().draft, outline: '原剧集尚未保存的大纲' } };
+    const dispatch = vi.fn(async () => undefined);
+    const onReturnToProject = vi.fn(async () => true);
+    vi.stubGlobal('document', { getElementById: () => ({}) });
+    try {
+      const html = renderToStaticMarkup(<ScriptWorkbenchView presentation="page" snapshot={state}
+        dispatch={dispatch} onReturnToProject={onReturnToProject} />);
+      expect(html).toContain('原剧集尚未保存的大纲');
+      expect(html).toMatch(/<textarea\b[^>]*\breadonly=/i);
+      const restore = pageElements(pageDriver.tree).find((element) => element.type === 'button'
+        && elementText(element.props.children) === '返回原剧集');
+      expect(restore).toBeDefined();
+      (restore!.props.onClick as () => void)();
+      expect(onReturnToProject).toHaveBeenCalledOnce();
+      expect(dispatch).not.toHaveBeenCalled();
+      const busy = renderToStaticMarkup(<ScriptWorkbenchView presentation="page" returningToProject
+        snapshot={state} dispatch={dispatch} onReturnToProject={onReturnToProject} />);
+      expect(busy).toContain('原剧集尚未保存的大纲');
+      const opening = pageElements(pageDriver.tree).find((element) => element.type === 'button'
+        && elementText(element.props.children) === '正在打开…');
+      expect(opening?.props.disabled).toBe(true);
+      expect(opening?.props['aria-busy']).toBe(true);
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('切换大纲和剧本时显示对应工具，只有剧本展示正文格式诊断', () => {
     const state = snapshot();
     const dispatch = vi.fn(async () => undefined);
     const outline = renderToStaticMarkup(<ScriptWorkbenchView snapshot={state} dispatch={dispatch} />);
+    expect(outline).toContain('关闭剧本创作工作台');
     expect(outline).toContain('大纲助手');
     expect(outline).toContain('优化本集大纲');
     expect(outline).not.toContain('重写本集剧本');
@@ -127,6 +233,8 @@ describe('剧本工作台共享视图', () => {
     expect(shotlistButton(html)).toBeDefined();
     expect(shotlistButton(html)).not.toMatch(/^<button\b[^>]*\bdisabled=/);
     expect(html).toContain('收回主窗口');
+    expect(html).toContain('关闭剧本创作工作台');
+    expect(html).not.toContain('切换到画布');
   });
 
   it('画布离开原剧集时保留原稿，禁止保存旧上下文', () => {

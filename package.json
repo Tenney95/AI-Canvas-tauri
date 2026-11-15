@@ -1,7 +1,7 @@
 {
     "name": "ai-canvas-tauri",
     "private": true,
-    "version": "0.11.5",
+    "version": "0.11.6",
     "type": "module",
     "scripts": {
         "postinstall": "node scripts/setup-hooks.js",
@@ -35,7 +35,9 @@
         "@tauri-apps/plugin-shell": "^2",
         "@tauri-apps/plugin-updater": "^2.10.1",
         "@tenney95/xiaoluo-image-editor": "^1.1.0",
+        "@web-ppt/core": "0.8.0",
         "@xyflow/react": "^12.6.0",
+        "docx-preview": "0.4.1",
         "framer-motion": "^12.40.0",
         "gsap": "^3.15.0",
         "html-to-image": "^1.11.13",
@@ -43,6 +45,7 @@
         "lucide-react": "^0.546.0",
         "mediabunny": "^1.52.1",
         "pannellum": "2.5.7",
+        "pdfjs-dist": "6.5.438",
         "postprocessing": "^6.39.1",
         "react": "^19.2.6",
         "react-dom": "^19.2.6",

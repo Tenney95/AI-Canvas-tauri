@@ -3,16 +3,21 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const driver = vi.hoisted(() => ({ cleanup: undefined as (() => void) | undefined }));
+const driver = vi.hoisted(() => ({
+  cleanup: undefined as (() => void) | undefined,
+  state: { projectWorkspaceView: 'canvas' as 'canvas' | 'script' },
+}));
 vi.mock('react', () => ({
   useRef: <T>(value: T) => ({ current: value }),
   useEffect: (effect: () => () => void) => { driver.cleanup = effect(); },
 }));
+vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => driver.state } }));
 
 import { useCanvasSecondaryClickMenu } from '../../src/hooks/useCanvasSecondaryClickMenu';
 
 afterEach(() => {
   driver.cleanup?.();
+  driver.state.projectWorkspaceView = 'canvas';
   vi.unstubAllGlobals();
 });
 
@@ -40,6 +45,26 @@ function SecondaryClickProbe(expanded = true) {
 }
 
 describe('分组右键命中', () => {
+  it('剧本页不命中后台画布或抑制原生右键，切回画布恢复菜单', () => {
+    const test = SecondaryClickProbe();
+    test.doc.dispatchEvent(Object.assign(new Event('pointerdown'), { button: 2, clientX: 500, clientY: 20 }));
+    driver.state.projectWorkspaceView = 'script';
+    test.rightClick(500, 20);
+    expect(test.doc.elementFromPoint).not.toHaveBeenCalled();
+    expect(test.doc.querySelectorAll).not.toHaveBeenCalled();
+    expect(test.openNodeMenu).not.toHaveBeenCalled();
+    expect(test.openCanvasMenu).not.toHaveBeenCalled();
+    const contextmenu = new Event('contextmenu', { cancelable: true });
+    test.doc.dispatchEvent(contextmenu);
+    expect(contextmenu.defaultPrevented).toBe(false);
+
+    driver.state.projectWorkspaceView = 'canvas';
+    test.doc.dispatchEvent(Object.assign(new Event('pointerup'), { button: 2, clientX: 500, clientY: 20 }));
+    expect(test.openNodeMenu).not.toHaveBeenCalled();
+    test.rightClick(500, 20);
+    expect(test.openNodeMenu).toHaveBeenCalledWith(expect.anything(), { id: 'group' });
+  });
+
   it.each(['.prompt-editor .prompt-chip', '.mention-dropdown'])('引用胶囊及其菜单的右键交给编辑器：%s', (match) => {
     const test = SecondaryClickProbe();
     test.doc.elementFromPoint.mockReturnValue({

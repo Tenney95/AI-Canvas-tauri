@@ -41,6 +41,8 @@ function TitlebarInner({
   const appWindow = getCurrentWindow();
   const sidebarFloating = useAppStore((state) => state.config.sidebarFloating) === true
     && !isWindowExpanded;
+  const projectWorkspaceView = useAppStore((state) => state.projectWorkspaceView);
+  const offsetForSidebar = sidebarFloating && projectWorkspaceView !== 'script';
 
   useEffect(() => {
     const check = () => {
@@ -70,7 +72,7 @@ function TitlebarInner({
       <div
         data-tauri-drag-region
         className={`fixed top-3 z-[200] flex h-6 items-center select-none ${
-          sidebarFloating ? 'left-10' : 'left-3'
+          offsetForSidebar ? 'left-10' : 'left-3'
         }`}
       >
         <div

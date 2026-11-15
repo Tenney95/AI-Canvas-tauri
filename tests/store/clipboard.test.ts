@@ -99,6 +99,20 @@ beforeEach(() => {
 });
 
 describe('canvas clipboard', () => {
+  it('外部粘贴解析期间切到剧本页，不向隐藏画布提交；切回后可正常粘贴', async () => {
+    useAppStore.setState({ currentProjectId: 'a', projectWorkspaceView: 'canvas', nodes: [] });
+    const transfer = { files: [], items: [], types: ['text/plain'], getData: () => '待粘贴的正文' };
+    const pending = useAppStore.getState().pasteExternalFromDataTransfer(transfer, { x: 20, y: 30 });
+    useAppStore.getState().setProjectWorkspaceView('script');
+    await pending;
+    expect(useAppStore.getState().nodes).toHaveLength(0);
+
+    useAppStore.getState().setProjectWorkspaceView('canvas');
+    await useAppStore.getState().pasteExternalFromDataTransfer(transfer, { x: 20, y: 30 });
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    expect(useAppStore.getState().nodes[0].data.output).toBe('待粘贴的正文');
+  });
+
   it('copies nested descendants once for overlapping group selections', () => {
     const root = { ...node('root'), type: 'group' };
     const child = { ...node('child'), type: 'group', parentId: root.id };

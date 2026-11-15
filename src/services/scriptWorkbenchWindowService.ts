@@ -16,6 +16,7 @@ const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_ep
   'open_source', 'close_source', 'read_source', 'prepare_chapter', 'open_rename', 'close_rename', 'rename', 'creative', 'polish',
   'original_open', 'original_edit', 'original_save', 'original_reload', 'original_generate', 'original_apply',
   'original_discard_candidate', 'original_cancel',
+  'outline_list', 'outline_create', 'outline_import', 'outline_open', 'outline_edit', 'outline_save', 'outline_reload', 'outline_select_builtin',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
   'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend', 'view_agent_task',
   'preview_creation_profile', 'apply_creation_profile', 'refresh_external_agents', 'edit_team_graph', 'resolve_dispatch',
@@ -114,8 +115,9 @@ export function createScriptWorkbenchWindowHost(options: {
       const session = windowSessionId!;
       const active = () => !disposed && visible && windowSessionId === session;
       const encoded = new TextEncoder().encode(JSON.stringify(payload));
-      // UTF-8 原文经 JSON 转义可能放大；原文交接留出有界开销，普通请求维持原上限。
-      const maxPayloadBytes = payload.originalHandoff || payload.action.type === 'original_edit'
+      // 文本交接经 JSON 转义可能放大；仅正文交接扩大上限，普通请求维持原限制。
+      const maxPayloadBytes = payload.originalHandoff || payload.outlineHandoff
+        || payload.action.type === 'original_edit' || payload.action.type === 'outline_edit'
         ? 16 * 1024 * 1024 : 2 * 1024 * 1024;
       if (encoded.byteLength > maxPayloadBytes) {
         await emitTo(SCRIPT_WORKBENCH_WINDOW_LABEL, RESPONSE_EVENT, { sessionId: options.sessionId, windowSessionId: session, requestId: payload.requestId,
@@ -157,7 +159,21 @@ export function createScriptWorkbenchWindowHost(options: {
               && (!previous || previous.graphExtraction !== current.graphExtraction))) {
             throw new Error('工作台确认内容已变化，请核对最新内容后重试');
           }
-          return options.onRequest(payload);
+          return options.onRequest(payload).then((value) => {
+            const binary = value !== null && typeof value === 'object' && 'base64' in value;
+            if (payload.action.type.startsWith('outline_') && binary
+              && payload.action.type !== 'outline_open' && payload.action.type !== 'outline_reload') {
+              throw new Error('文件预览仅通过显式打开或重新载入传输');
+            }
+            // 32 MiB 原文件的 Base64 与 JSON 仅可通过显式打开/重载回执，不扩大普通请求或状态广播。
+            if (payload.action.type === 'outline_open' || payload.action.type === 'outline_reload') {
+              const maxResponseBytes = (binary ? 44 : 16) * 1024 * 1024;
+              if (new TextEncoder().encode(JSON.stringify(value) ?? '').byteLength > maxResponseBytes) {
+                throw new Error('文件超过独立窗口预览传输上限，请回到主窗口打开');
+              }
+            }
+            return value;
+          });
         }).then(
           (value): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, windowSessionId: session, requestId: payload.requestId, sequence: payload.sequence, value }),
           (error: unknown): ScriptWorkbenchResponse => ({ sessionId: options.sessionId, windowSessionId: session, requestId: payload.requestId, sequence: payload.sequence,
@@ -175,6 +191,11 @@ export function createScriptWorkbenchWindowHost(options: {
         // 原文只在本次 RPC 中传输；付费/保存的去重记录只留完成标记，不缓存正文或候选。
         if (payload.action.type.startsWith('original_') && requests.get(payload.requestId) === accepted) {
           if (payload.action.type === 'original_open' || payload.action.type === 'original_edit') requests.delete(payload.requestId);
+          else requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId, windowSessionId: session,
+            requestId: payload.requestId, sequence: payload.sequence, ...(response.error ? { error: response.error } : { value: true }) }) });
+        }
+        if (payload.action.type.startsWith('outline_') && requests.get(payload.requestId) === accepted) {
+          if (['outline_list', 'outline_open', 'outline_edit', 'outline_reload'].includes(payload.action.type)) requests.delete(payload.requestId);
           else requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId, windowSessionId: session,
             requestId: payload.requestId, sequence: payload.sequence, ...(response.error ? { error: response.error } : { value: true }) }) });
         }

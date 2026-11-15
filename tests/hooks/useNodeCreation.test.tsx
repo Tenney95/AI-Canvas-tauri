@@ -34,7 +34,7 @@ beforeEach(async () => {
   driver.effects = []; driver.ids = 0; driver.onDrag = undefined;
   driver.copy.mockReset().mockResolvedValue({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
   driver.read.mockReset().mockResolvedValue(new Uint8Array([0])); driver.mark.mockReset().mockResolvedValue(true);
-  driver.state = { getCurrentRevision: () => 0, currentProjectId: 'project', projectLoadStatus: 'ready',
+  driver.state = { getCurrentRevision: () => 0, currentProjectId: 'project', projectLoadStatus: 'ready', projectWorkspaceView: 'canvas',
     projects: [{ id: 'project', name: '项目', createdAt: 1, updatedAt: 1 }, { id: 'other', name: '另一项目', createdAt: 1, updatedAt: 1 }],
     nodes: [], workflowPanelOpen: false, showToast: vi.fn(), markAssetUsed: driver.mark,
     addNode: vi.fn((node: AppState['nodes'][number]) => { driver.state.nodes = [...driver.state.nodes, node]; }),
@@ -51,6 +51,42 @@ function drag(type: DropEvent['payload']['type'], path = '/external/source.mp4')
   driver.onDrag!({ payload: { type, paths: [path], position: { x: 20, y: 30 } } });
 }
 describe('成功导入后的最近使用记录', () => {
+  it('剧本整页的原生及 HTML5 拖放不会往隐藏画布添加节点', async () => {
+    driver.state.projectWorkspaceView = 'script';
+    driver.state.pasteExternalFromDataTransfer = vi.fn(async () => undefined);
+    drag('enter'); drag('drop');
+    const creation = useNodeCreation();
+    const event = { dataTransfer: { types: ['Files'], files: [{}] },
+      preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as React.DragEvent;
+    creation.onDragEnter(event);
+    await creation.onDrop(event);
+    expect(driver.state.addNode).not.toHaveBeenCalled();
+    expect(driver.state.pasteExternalFromDataTransfer).not.toHaveBeenCalled();
+    expect(driver.copy).not.toHaveBeenCalled();
+  });
+
+  it('切换剧本整页后，已放置的媒体占位仍完成复制', async () => {
+    let finish!: (result: unknown) => void;
+    driver.copy.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    drag('drop');
+    expect(driver.state.nodes[0].data.status).toBe('loading');
+    driver.state.projectWorkspaceView = 'script';
+    finish({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
+    await vi.waitFor(() => expect(driver.state.nodes[0].data.status).toBe('success'));
+    expect(driver.state.addNode).toHaveBeenCalledOnce();
+  });
+
+  it('读取文本时切换剧本整页，迟到正文不再创建画布节点', async () => {
+    let finish!: (value: Uint8Array) => void;
+    driver.read.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    drag('drop', '/external/note.txt');
+    driver.state.projectWorkspaceView = 'script';
+    finish(new TextEncoder().encode('迟到正文'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(driver.state.addNode).not.toHaveBeenCalled();
+    expect(driver.mark).not.toHaveBeenCalled();
+  });
+
   it('双击画布新建文本时写入真实历史偏好', () => {
     localStorage.setItem('canvas-model-prefs', JSON.stringify({ 'ai-text': 'general/text' }));
     const creation = useNodeCreation();

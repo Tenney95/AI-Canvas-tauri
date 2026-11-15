@@ -7,6 +7,7 @@ import { getBuiltinAppearanceTheme } from '../services/appearance/appearanceDefa
 import { setLocale, useT } from '../i18n';
 import type { ScriptWorkbenchDispatch, ScriptWorkbenchSnapshot, WorkbenchDraftHandoff } from '../types/scriptWorkbench';
 import type { OriginalWritingHandoff } from '../types/originalWriting';
+import type { OutlineDocumentHandoff } from '../types/outlineDocument';
 import { sameProjectWindowContext } from '../services/projectWindowContext';
 import type { ProjectWindowContext } from '../types/projectWindow';
 
@@ -20,6 +21,8 @@ export default function ScriptWorkbenchWindow() {
   const handoff = useRef<WorkbenchDraftHandoff | undefined>(undefined);
   const originalHandoff = useRef<OriginalWritingHandoff | undefined>(undefined);
   const originalWindowContext = useRef<ProjectWindowContext | null | undefined>(undefined);
+  const outlineHandoff = useRef<OutlineDocumentHandoff | undefined>(undefined);
+  const outlineWindowContext = useRef<ProjectWindowContext | null | undefined>(undefined);
   const [optimisticDraft, setOptimisticDraft] = useState<WorkbenchDraftHandoff | undefined>(undefined);
   const editSequence = useRef(0);
   const [closing, setClosing] = useState(false);
@@ -31,7 +34,8 @@ export default function ScriptWorkbenchWindow() {
     const bridge = connection.current;
     if (!current || !bridge) throw new Error('工作台尚未连接主窗口');
     if ((handoff.current && !sameProjectWindowContext(handoff.current.windowContext, current.windowContext))
-      || (originalHandoff.current && !sameProjectWindowContext(originalWindowContext.current, current.windowContext))) {
+      || (originalHandoff.current && !sameProjectWindowContext(originalWindowContext.current, current.windowContext))
+      || (outlineHandoff.current && !sameProjectWindowContext(outlineWindowContext.current, current.windowContext))) {
       throw new Error('工作台目标已变化，原草稿仍保留在本窗口，请先核对原分集；未将旧修改写入新目标');
     }
     let command = action;
@@ -39,6 +43,13 @@ export default function ScriptWorkbenchWindow() {
       if (!originalHandoff.current || action.handoff.documentId !== originalHandoff.current.documentId
         || action.handoff.sequence > originalHandoff.current.sequence) originalHandoff.current = action.handoff;
       originalWindowContext.current = current.windowContext;
+    }
+    if (action.type === 'outline_edit') {
+      if (outlineHandoff.current && action.handoff.documentId !== outlineHandoff.current.documentId) {
+        throw new Error('上一份大纲文件的修改尚未确认，请先保存或重新载入原文件');
+      }
+      if (!outlineHandoff.current || action.handoff.sequence > outlineHandoff.current.sequence) outlineHandoff.current = action.handoff;
+      outlineWindowContext.current = current.windowContext;
     }
     if (action.type === 'edit_text' || action.type === 'edit_creative') {
       if (!current.currentEpisode || !current.contextReady || current.editorWriteLocked) throw new Error('当前分集暂不能编辑');
@@ -53,17 +64,23 @@ export default function ScriptWorkbenchWindow() {
     const closeIntent = action.type === 'dock' || action.type === 'close'
       || ((action.type === 'discard_pending' || action.type === 'save_pending') && current.pendingAction?.type === 'close');
     const discardedOriginal = action.type === 'original_reload' && action.discard ? originalHandoff.current : undefined;
+    const discardedOutline = action.type === 'outline_reload' && action.discard ? outlineHandoff.current : undefined;
     if (closeIntent) setClosing(true);
     try {
       const submittedHandoff = handoff.current;
+      const submittedOutline = discardedOutline || command.type === 'outline_edit' ? undefined : outlineHandoff.current;
       const value = await bridge.request({ revision: current.revision, episodeId: current.currentEpisode?.id ?? null,
         action: command, handoff: submittedHandoff,
-        originalHandoff: discardedOriginal || command.type === 'original_edit' ? undefined : originalHandoff.current });
+        originalHandoff: discardedOriginal || command.type === 'original_edit' ? undefined : originalHandoff.current,
+        outlineHandoff: submittedOutline });
       if (submittedHandoff && handoff.current === submittedHandoff
         && (snapshotRef.current?.acceptedEditSequence ?? 0) >= submittedHandoff.sequence) {
         handoff.current = undefined; setOptimisticDraft(undefined);
       }
       if (discardedOriginal && originalHandoff.current === discardedOriginal) originalHandoff.current = undefined;
+      // 打开另一文件后摘要已切换 documentId；本次成功回执同样确认此前交接，不能依赖新摘要清理旧稿。
+      if (submittedOutline && outlineHandoff.current === submittedOutline) outlineHandoff.current = undefined;
+      if (discardedOutline && outlineHandoff.current === discardedOutline) outlineHandoff.current = undefined;
       if (closeIntent && (value !== true || snapshotRef.current?.pendingAction)) setClosing(false);
       return value;
     } catch (cause) {
@@ -89,6 +106,9 @@ export default function ScriptWorkbenchWindow() {
       }
       if (originalHandoff.current && next.originalWriting?.documentId === originalHandoff.current.documentId
         && next.originalWriting.acceptedSequence >= originalHandoff.current.sequence) originalHandoff.current = undefined;
+      if (outlineHandoff.current && next.outlineDocuments?.documentId === outlineHandoff.current.documentId
+        && next.outlineDocuments.acceptedSequence >= outlineHandoff.current.sequence
+        && sameProjectWindowContext(outlineWindowContext.current, next.windowContext)) outlineHandoff.current = undefined;
       setSnapshot(next);
     }, windowSessionId).then((bridge) => {
       if (disposed) { bridge.dispose(); return; }
@@ -96,9 +116,11 @@ export default function ScriptWorkbenchWindow() {
     }).catch(() => { if (!disposed) setError('无法连接主窗口，已保留原工作台，请回到主窗口重试'); });
     const beforeUnload = () => {
       const current = snapshotRef.current;
-      if (current && (handoff.current || originalHandoff.current)) connection.current?.handoff({ revision: current.revision,
+      const pendingOutline = outlineHandoff.current && sameProjectWindowContext(outlineWindowContext.current, current?.windowContext)
+        ? outlineHandoff.current : undefined;
+      if (current && (handoff.current || originalHandoff.current || pendingOutline)) connection.current?.handoff({ revision: current.revision,
         episodeId: current.currentEpisode?.id ?? null, action: { type: 'flush_draft' }, handoff: handoff.current,
-        originalHandoff: originalHandoff.current });
+        originalHandoff: originalHandoff.current, outlineHandoff: pendingOutline });
     };
     window.addEventListener('beforeunload', beforeUnload);
     return () => {

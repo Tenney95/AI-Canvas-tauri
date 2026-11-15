@@ -33,6 +33,10 @@ export interface UISlice {
   nodePickerOpen: boolean;
   avatarMenuOpen: boolean;
   projectLibraryOpen: boolean;
+  /** 主窗口项目工作区展示方式；仅当前运行期。 */
+  projectWorkspaceView: 'canvas' | 'script';
+  /** 项目成功打开后的工作台入口请求；仅当前运行期，消费后清空。 */
+  scriptWorkbenchOpenProjectId: string | null;
   /** 帮助中心弹窗；侧边栏菜单和首次引导都从这里打开 */
   helpOpen: boolean;
   /** 首次进入画布及帮助中心重看的入口引导；仅当前运行期。 */
@@ -90,6 +94,9 @@ export interface UISlice {
   toggleAvatarMenu: () => void;
   closeAvatarMenu: () => void;
   setProjectLibraryOpen: (open: boolean) => void;
+  setProjectWorkspaceView: (view: UISlice['projectWorkspaceView']) => void;
+  requestScriptWorkbenchOpen: (projectId: string) => void;
+  clearScriptWorkbenchOpenRequest: () => void;
   setHelpOpen: (open: boolean) => void;
   setCanvasGuideOpen: (open: boolean) => void;
   openNodeDialog: (nodeId: string, position?: { x: number; y: number }) => void;
@@ -139,6 +146,8 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   nodePickerOpen: false,
   avatarMenuOpen: false,
   projectLibraryOpen: false,
+  projectWorkspaceView: 'canvas',
+  scriptWorkbenchOpenProjectId: null,
   helpOpen: false,
   canvasGuideOpen: false,
   activeNodeId: null,
@@ -193,6 +202,9 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   toggleAvatarMenu: () => set((s) => ({ avatarMenuOpen: !s.avatarMenuOpen, nodePickerOpen: false })),
   closeAvatarMenu: () => set({ avatarMenuOpen: false }),
   setProjectLibraryOpen: (open) => set({ projectLibraryOpen: open }),
+  setProjectWorkspaceView: (view) => set({ projectWorkspaceView: view }),
+  requestScriptWorkbenchOpen: (projectId) => set({ scriptWorkbenchOpenProjectId: projectId, projectWorkspaceView: 'script' }),
+  clearScriptWorkbenchOpenRequest: () => set({ scriptWorkbenchOpenProjectId: null }),
   setHelpOpen: (open) => set({ helpOpen: open }),
   setCanvasGuideOpen: (open) => set({ canvasGuideOpen: open }),
   openNodeDialog: (nodeId, position) => set((state) => {

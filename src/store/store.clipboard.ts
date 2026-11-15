@@ -440,9 +440,11 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
   },
 
   pasteExternalFromDataTransfer: async (dt, position, maxItems = 10, actionName = '粘贴') => {
-    if (!dt) return;
+    if (!dt || get().projectWorkspaceView === 'script') return;
     const currentProjectId = get().currentProjectId;
     const projectId = currentProjectId && currentProjectId !== 'default' ? currentProjectId : null;
+    const isSameProject = () => get().currentProjectId === currentProjectId;
+    const canAdd = () => isSameProject() && get().projectWorkspaceView !== 'script';
 
     const offsets = Array.from({ length: maxItems }, (_, i) => ({
       x: (i % 5) * 40, y: Math.floor(i / 5) * 40,
@@ -451,6 +453,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     let pastedCount = 0;
     let historyCommitted = false;
     const addPastedNode = (node: Node<BaseNodeData>) => {
+      if (!canAdd()) return;
       if (!historyCommitted) {
         get().commitToHistory();
         historyCommitted = true;
@@ -529,10 +532,10 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     } finally {
       if (parseGuard) completeCanvasDerivation(parseGuard);
     }
-    if (parsedItems.length === 0) return;
+    if (!canAdd() || parsedItems.length === 0) return;
 
     for (const p of parsedItems) {
-      if (pastedCount >= maxItems) break;
+      if (!canAdd() || pastedCount >= maxItems) break;
       const off = offsets[pastedCount] || { x: pastedCount * 40, y: pastedCount * 40 };
 
       if (p.kind === 'file' && p.filePath && projectId) {
@@ -659,7 +662,8 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
       }
     }
 
-    if (historyCommitted) get().commitToHistory();
+    if (historyCommitted && isSameProject()) get().commitToHistory();
+    if (!canAdd()) return;
     if (pastedCount > 0) {
       get().showToast(t('{action} {count} 个源节点', { action: t(actionName), count: pastedCount }));
     } else {

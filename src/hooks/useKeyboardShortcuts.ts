@@ -66,11 +66,29 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
 export function useKeyboardShortcuts() {
   useEffect(() => {
     let active = true; // guard against callbacks firing after unmount / HMR reload
+    const saveActiveWorkspace = () => {
+      const state = useAppStore.getState();
+      if (state.projectWorkspaceView === 'script') {
+        window.dispatchEvent(new Event('script-workbench-save'));
+        return;
+      }
+      return state.saveCurrentProject();
+    };
 
     // ── Web fallback: JS keyboard events ──
     async function handleKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
       const isEditing = isEditableTarget(target);
+      // 剧本整页保留编辑器原生按键，保存交由工作台当前页签；不操作未显示的画布。
+      if (useAppStore.getState().projectWorkspaceView === 'script') {
+        if ((e.ctrlKey || e.metaKey || e.altKey) && e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          e.stopPropagation();
+          saveActiveWorkspace();
+          return;
+        }
+        if (e.key !== 'F12') return;
+      }
 
       // Tab 在画布表面开关资产抽屉；抽屉内的滚动区和控件获得焦点后仍可收起。
       if (e.key === 'Tab' && !e.defaultPrevented && !e.isComposing
@@ -103,7 +121,7 @@ export function useKeyboardShortcuts() {
       if ((e.ctrlKey || e.metaKey || e.altKey) && e.key === 's') {
         e.preventDefault();
         e.stopPropagation();
-        await useAppStore.getState().saveCurrentProject();
+        await saveActiveWorkspace();
         return;
       }
 
@@ -325,8 +343,8 @@ export function useKeyboardShortcuts() {
     // ── Tauri native: global-shortcut plugin ──
     // Register on focus, unregister on blur — so shortcuts only work in this app.
     const GLB_SHORTCUTS = [
-      { key: 'CommandOrControl+S', action: () => useAppStore.getState().saveCurrentProject() },
-      { key: 'Alt+S', action: () => useAppStore.getState().saveCurrentProject() },
+      { key: 'CommandOrControl+S', action: saveActiveWorkspace },
+      { key: 'Alt+S', action: saveActiveWorkspace },
       // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are handled by the JS keydown handler above;
       // registering them as native shortcuts would double-fire undo/redo.
     ];

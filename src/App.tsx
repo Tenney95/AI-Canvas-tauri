@@ -190,6 +190,9 @@ export default function App() {
   const nativePerformanceSynced = useRef(false);
   const [projectBootReady, setProjectBootReady] = useState(false);
   const showCanvas = projectBootReady && currentProjectId !== null;
+  const projectWorkspaceView = useAppStore((state) => state.projectWorkspaceView);
+  const scriptWorkbenchPageVisible = showCanvas && projectWorkspaceView === 'script';
+  const canvasVisible = showCanvas && !scriptWorkbenchPageVisible;
   const projectLoading = projectLoadStatus === 'loading' || switchingProjectName !== null || isCreatingProject || isReturningToStartPage;
   // 启动页没有挂载画布；再次打开同一项目也必须重新等待本次首帧。
   if (!showCanvas && (canvasReadyProjectId !== null || revealedProjectId !== null)) {
@@ -207,11 +210,11 @@ export default function App() {
     || featureVisibility.assets || featureVisibility.characters || featureVisibility.history || featureVisibility.workflows
     || featureVisibility.presetManager || featureVisibility.presetRunner || featureVisibility.reversePrompt;
   useEffect(() => {
-    if (!onboardingOpen || canvasGuideOpen || !showCanvas || showProjectSplash
+    if (!onboardingOpen || canvasGuideOpen || !canvasVisible || showProjectSplash
       || projectLoadStatus !== 'ready' || freeDistributionNoticeOpen
       || canvasGuideBlocked) return;
     useAppStore.getState().setCanvasGuideOpen(true);
-  }, [onboardingOpen, canvasGuideOpen, showCanvas, showProjectSplash, projectLoadStatus,
+  }, [onboardingOpen, canvasGuideOpen, canvasVisible, showProjectSplash, projectLoadStatus,
     freeDistributionNoticeOpen, canvasGuideBlocked]);
   const mcpAutoStart = useAppStore((state) => state.config.mcpAutoStart === true);
 
@@ -584,7 +587,7 @@ export default function App() {
   // 侧边栏悬浮显示开关（默认关闭）；最大化时强制非悬浮。
   // 同步到 body 属性，供 CSS 切换侧边栏停靠/悬浮位置 + 弹窗蒙层的左偏移
   const sidebarFloatingCfg = useAppStore((s) => s.config.sidebarFloating);
-  const effectiveFloating = showCanvas && sidebarFloatingCfg === true && !isMaximized;
+  const effectiveFloating = canvasVisible && sidebarFloatingCfg === true && !isMaximized;
   const showWindowGlassFrame = windowGlassFrame !== false && !isMaximized && !performanceMode;
   useEffect(() => {
     if (!isTauri) return;
@@ -614,7 +617,10 @@ export default function App() {
       {/* Content area — clip-path clips ALL descendants including fixed-position backdrops */}
       <div className={`app-box app-shell__content absolute ${managedCanvasBackground ? 'bg-transparent' : 'bg-canvas-bg/[0.988]'} shadow-2xl overflow-hidden`}>
         {showCanvas ? (
-          <div className="app-canvas-viewport absolute inset-0">
+          <div
+            inert={!canvasVisible ? true : undefined}
+            aria-hidden={!canvasVisible ? true : undefined}
+            className={`app-canvas-viewport absolute inset-0${canvasVisible ? '' : ' invisible pointer-events-none'}`}>
             <CanvasBackground />
             <Canvas key={currentProjectId} onReady={setCanvasReadyProjectId} />
           </div>
@@ -625,12 +631,19 @@ export default function App() {
             onClose={() => useAppStore.getState().setProjectLibraryOpen(false)}
           />
         ) : <LazyLoadFallback label="项目列表" />}
+        {showCanvas && (
+          <div id="script-workbench-page"
+            hidden={!scriptWorkbenchPageVisible}
+            inert={!scriptWorkbenchPageVisible ? true : undefined}
+            aria-hidden={!scriptWorkbenchPageVisible ? true : undefined}
+            className={`absolute inset-0 z-40 flex-col ${scriptWorkbenchPageVisible ? 'flex' : 'hidden'}`} />
+        )}
         {/* Top drag region */}
         <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-10" />
-        {showCanvas && <Header />}
+        {canvasVisible && <Header />}
         <Titlebar />
-        {showCanvas && <SessionProjectTabs />}
-        {showCanvas && <NodeMenu />}
+        {canvasVisible && <SessionProjectTabs />}
+        {canvasVisible && <NodeMenu />}
         <LazyLoadBoundary label="设置面板">
           <Suspense fallback={<LazyLoadFallback label="设置面板" />}>
             {mountSettings && <SettingsPanel />}
@@ -684,7 +697,7 @@ export default function App() {
         <Toast />
       </div>
       {/* Sidebar — outside the overflow-hidden container so it's not clipped */}
-      {showCanvas && <Sidebar />}
+      {canvasVisible && <Sidebar />}
 
       {/* 剧集栏贴窗口右缘，和侧栏一样必须放在裁剪容器外面 */}
       {showCanvas && <SeriesRail />}
@@ -820,7 +833,7 @@ export default function App() {
         </Suspense>
       )}
 
-      {showCanvas && projectLoadStatus === 'ready' && !showProjectSplash && !freeDistributionNoticeOpen && canvasGuideOpen && (
+      {canvasVisible && projectLoadStatus === 'ready' && !showProjectSplash && !freeDistributionNoticeOpen && canvasGuideOpen && (
         <Suspense fallback={null}>
           <CanvasEntryGuide onClose={closeOnboarding} onOpenTips={() => {
             closeOnboarding();
@@ -829,7 +842,7 @@ export default function App() {
         </Suspense>
       )}
 
-      {showCanvas && !showProjectSplash && onboardingTipsOpen && (
+      {canvasVisible && !showProjectSplash && onboardingTipsOpen && (
         <Suspense fallback={null}>
           <OnboardingDialog
             onClose={() => setOnboardingTipsOpen(false)}

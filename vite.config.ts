@@ -46,6 +46,12 @@ export default defineConfig({
         main: "index.html",
         pluginUiHost: "plugin-ui-host.html",
       },
+      output: {
+        // PDF.js 的无 Wasm 解码器按固定名称加载，保留这两个本地资源名。
+        assetFileNames: (asset) => asset.names.some((name) => /(?:jbig2|openjpeg)_nowasm_fallback\.js$/.test(name))
+          ? "assets/pdf-preview/[name][extname]"
+          : "assets/[name]-[hash][extname]",
+      },
     },
   },
   optimizeDeps: {

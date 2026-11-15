@@ -3335,6 +3335,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (lastCapturedCanvasState?.projectId === projectId) lastCapturedCanvasState = null;
       set({
         currentProjectId: null,
+        projectWorkspaceView: 'canvas',
+        scriptWorkbenchOpenProjectId: null,
         projectExecutionContext: undefined,
         projectName: '',
         projectLoadStatus: 'ready',

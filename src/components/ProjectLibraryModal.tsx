@@ -56,6 +56,7 @@ function formatProjectTimestamp(timestamp: number, t: (text: string, vars?: Reco
 /** 右键菜单估算尺寸，仅用于贴边时的翻转计算。 */
 const PROJECT_MENU_WIDTH = 160;
 const PROJECT_MENU_HEIGHT = 230;
+const START_PAGE_PROJECT_MENU_HEIGHT = 284;
 
 function ProjectMenuItem({ icon, label, danger, disabled, onClick }: {
   icon: string;
@@ -228,10 +229,11 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
     if (!isStartPage) closeLibrary();
   };
 
-  const openProject = async (projectId: string) => {
+  const openProject = async (projectId: string, openWorkbench = false) => {
     if (projectBusy || listUnavailable) return;
     // 在画布中再次点当前剧集时，保留正在编辑的分集，不切回第一集。
     if (projectId === activeProjectId && projectLoadStatus === 'ready') {
+      if (openWorkbench && currentProjectId) useAppStore.getState().requestScriptWorkbenchOpen(currentProjectId);
       closeLibrary();
       return;
     }
@@ -241,7 +243,10 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
       await switchProject(projectId, { captureSnapshot: !isStartPage });
       const state = useAppStore.getState();
       if (state.currentProjectId === resolveOpenTargetId(state.projects, projectId)
-        && state.projectLoadStatus === 'ready') closeLibrary();
+        && state.projectLoadStatus === 'ready') {
+        if (openWorkbench && state.currentProjectId) state.requestScriptWorkbenchOpen(state.currentProjectId);
+        closeLibrary();
+      }
     } catch {
       useAppStore.getState().showToast(t('项目打开失败，请重试'), 'error');
     } finally {
@@ -723,7 +728,7 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
             <div
               role="menu"
               aria-label={t('项目操作')}
-              style={calcFixedPosition(contextMenu.x, contextMenu.y, PROJECT_MENU_WIDTH, PROJECT_MENU_HEIGHT)}
+              style={calcFixedPosition(contextMenu.x, contextMenu.y, PROJECT_MENU_WIDTH, isStartPage ? START_PAGE_PROJECT_MENU_HEIGHT : PROJECT_MENU_HEIGHT)}
               onMouseDown={(event) => event.stopPropagation()}
               className="fixed w-40 select-none overflow-hidden rounded-lg border border-canvas-border bg-canvas-card py-1 shadow-xl"
             >
@@ -732,6 +737,14 @@ export default function ProjectLibraryModal({ isOpen, onClose, presentation = 'm
                 label={t('打开项目')}
                 onClick={() => openProject(contextMenu.project.id)}
               />
+              {isStartPage && (
+                <ProjectMenuItem
+                  icon="lucide:notebook-pen"
+                  label={t('打开剧本创作工作台')}
+                  disabled={projectBusy || listUnavailable}
+                  onClick={() => void openProject(contextMenu.project.id, true)}
+                />
+              )}
               <ProjectMenuItem
                 icon="mdi:folder-search-outline"
                 label={t('打开项目文件夹')}

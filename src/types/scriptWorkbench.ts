@@ -9,6 +9,7 @@ import type { CreativeAnalysis, CreativeFieldId, EpisodeCreativeAction } from '.
 import type { EpisodeAssetKind, EpisodeAssetPanelAction, EpisodeAssetPanelSnapshot } from './episodeAssets';
 import type { SeriesSourcePart, SeriesSourceReference } from './seriesSource';
 import type { OriginalWritingAction, OriginalWritingHandoff, OriginalWritingSummary } from './originalWriting';
+import type { OutlineDocumentAction, OutlineDocumentHandoff, OutlineDocumentSummary } from './outlineDocument';
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
   StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
 import type { ProjectWindowContext } from './projectWindow';
@@ -52,6 +53,7 @@ export interface ScriptWorkbenchSnapshot {
   splitOpen: boolean; splitSource: SeriesSourcePart; splitSkills?: SeriesSplitSkillOption[];
   sourceOpen: boolean; renamingEpisodeId: string | null;
   originalWriting?: OriginalWritingSummary;
+  outlineDocuments?: OutlineDocumentSummary;
   extractingAssetKind: DramaAssetKind | null;
   seriesAssetPreview: { kind: DramaAssetKind; assets: DramaAsset[] } | null;
   existingAssets: Array<Pick<DramaAsset, 'name' | 'summary'>>;
@@ -74,6 +76,7 @@ export interface ScriptWorkbenchSnapshot {
 
 export type ScriptWorkbenchAction =
   | OriginalWritingAction
+  | OutlineDocumentAction
   | { type: 'flush_draft' }
   | { type: 'edit_text'; field: 'outline' | 'script'; value: string }
   | { type: 'edit_creative'; field: keyof WorkbenchCreativeDraft; value: string }
@@ -124,5 +127,6 @@ export interface ScriptWorkbenchRequest {
   sessionId: string; requestId: string; revision: number; episodeId: string | null;
   action: ScriptWorkbenchAction; handoff?: WorkbenchDraftHandoff;
   originalHandoff?: OriginalWritingHandoff;
+  outlineHandoff?: OutlineDocumentHandoff;
 }
 export interface ScriptWorkbenchResponse { sessionId: string; windowSessionId?: string; requestId: string; sequence?: number; value?: unknown; error?: string }

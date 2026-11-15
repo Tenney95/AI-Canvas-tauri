@@ -3,13 +3,14 @@
  * 收起只能通过面板右上角的关闭按钮。分集各自是一张画布，点一下就切过去；
  * 原著与剧本挂在剧集项目上，整部剧共用。
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
-import { listEpisodes, seriesOwnerId } from '../store/store.utils';
+import { listEpisodes, resolveOpenTargetId, seriesOwnerId } from '../store/store.utils';
 import { getProjectDataDir, uploadSourceFileToProject } from '../services/fileService';
 import ModalOverlay from './shared/ModalOverlay';
+import { ModalPresentationContext } from './shared/modalPresentationContext';
 import PopupCloseButton from './shared/PopupCloseButton';
 import EpisodeNameDialog from './shared/EpisodeNameDialog';
 import ProjectAssetsOverlay from './ProjectAssetsOverlay';
@@ -102,18 +103,115 @@ function TextEditorDialog({
 }
 
 export default function SeriesRail() {
+  const t = useT();
+  const { scriptWorkbenchOpenProjectId, currentProjectId, projectLoadStatus, clearScriptWorkbenchOpenRequest,
+    projectWorkspaceView, setProjectWorkspaceView } = useAppStore(useShallow((state) => ({
+    scriptWorkbenchOpenProjectId: state.scriptWorkbenchOpenProjectId,
+    currentProjectId: state.currentProjectId,
+    projectLoadStatus: state.projectLoadStatus,
+    clearScriptWorkbenchOpenRequest: state.clearScriptWorkbenchOpenRequest,
+    projectWorkspaceView: state.projectWorkspaceView,
+    setProjectWorkspaceView: state.setProjectWorkspaceView,
+  })));
   const [workbenchMode, setWorkbenchMode] = useState<'editor' | 'split' | null>(null);
   const [workbenchRequest, setWorkbenchRequest] = useState({ revision: 0, split: false });
-  const closeWorkbench = useCallback(() => setWorkbenchMode(null), []);
-  const openWorkbench = useCallback((mode: 'editor' | 'split') => {
+  const workbenchDetached = useRef(false);
+  const workbenchOwner = useRef<{ seriesId: string; projectId: string; name: string } | null>(null);
+  const returningToWorkbenchRef = useRef(false);
+  const [returningToWorkbench, setReturningToWorkbench] = useState(false);
+  const closeWorkbench = useCallback(() => {
+    workbenchDetached.current = false;
+    workbenchOwner.current = null;
+    setWorkbenchMode(null);
+    setProjectWorkspaceView('canvas');
+  }, [setProjectWorkspaceView]);
+  const switchToCanvas = useCallback(() => setProjectWorkspaceView('canvas'), [setProjectWorkspaceView]);
+  const changeWorkbenchPageVisibility = useCallback((visible: boolean) => {
+    setProjectWorkspaceView(visible ? 'script' : 'canvas');
+  }, [setProjectWorkspaceView]);
+  const trackWorkbenchDetached = useCallback((detached: boolean) => { workbenchDetached.current = detached; }, []);
+  const returnToWorkbenchProject = useCallback(async () => {
+    const owner = workbenchOwner.current;
+    const state = useAppStore.getState();
+    if (!owner || returningToWorkbenchRef.current || state.projectLoadStatus === 'loading'
+      || state.isCreatingProject || state.isReturningToStartPage) return false;
+    if (!state.projects.some((project) => project.id === owner.seriesId)) {
+      state.showToast(t('项目打开失败，请重试'), 'error');
+      return false;
+    }
+    const targetId = state.projects.some((project) => project.id === owner.projectId
+      && seriesOwnerId(state.projects, project.id) === owner.seriesId)
+      ? owner.projectId : resolveOpenTargetId(state.projects, owner.seriesId);
+    returningToWorkbenchRef.current = true;
+    setReturningToWorkbench(true);
+    try {
+      await state.switchProject(targetId, { captureSnapshot: state.projectWorkspaceView !== 'script' });
+      const latest = useAppStore.getState();
+      if (workbenchOwner.current !== owner) return false;
+      if (latest.currentProjectId === targetId && latest.projectLoadStatus === 'ready') return true;
+      latest.showToast(t('项目打开失败，请重试'), 'error');
+      return false;
+    } catch {
+      useAppStore.getState().showToast(t('项目打开失败，请重试'), 'error');
+      return false;
+    } finally {
+      returningToWorkbenchRef.current = false;
+      setReturningToWorkbench(false);
+    }
+  }, [t]);
+  const openWorkbench = useCallback(async (mode: 'editor' | 'split') => {
+    const state = useAppStore.getState();
+    if (!state.currentProjectId || state.projectLoadStatus !== 'ready') return;
+    const ownerId = seriesOwnerId(state.projects, state.currentProjectId);
+    const owner = workbenchOwner.current;
+    if (owner && owner.seriesId !== ownerId) {
+      state.showToast(t('工作台仍属于「{name}」，请先返回原剧集保存或关闭，再打开其他剧集', {
+        name: state.projects.find((project) => project.id === owner.seriesId)?.name ?? owner.name,
+      }), 'error');
+      setProjectWorkspaceView(workbenchDetached.current ? 'canvas' : 'script');
+      if (workbenchDetached.current && await returnToWorkbenchProject()) {
+        void focusScriptWorkbenchWindow().catch(() => {});
+      }
+      return;
+    }
+    if (!owner) workbenchOwner.current = { seriesId: ownerId, projectId: state.currentProjectId,
+      name: state.projects.find((project) => project.id === ownerId)?.name ?? t('当前剧集') };
     setWorkbenchMode((current) => current ?? mode);
     setWorkbenchRequest((current) => ({ revision: current.revision + 1, split: mode === 'split' }));
+    setProjectWorkspaceView(workbenchDetached.current ? 'canvas' : 'script');
     void focusScriptWorkbenchWindow().catch(() => {});
-  }, []);
+  }, [setProjectWorkspaceView, returnToWorkbenchProject, t]);
+  useEffect(() => {
+    if (!scriptWorkbenchOpenProjectId) return;
+    let cancelled = false;
+    // 项目页与画布跨挂载交接，等本轮挂载完成后再消费；卸载或 StrictMode 重挂载可取消。
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const state = useAppStore.getState();
+      if (state.scriptWorkbenchOpenProjectId !== scriptWorkbenchOpenProjectId) return;
+      if (scriptWorkbenchOpenProjectId !== currentProjectId || scriptWorkbenchOpenProjectId !== state.currentProjectId
+        || projectLoadStatus === 'error' || state.projectLoadStatus === 'error') {
+        clearScriptWorkbenchOpenRequest();
+        setProjectWorkspaceView('canvas');
+        return;
+      }
+      if (projectLoadStatus !== 'ready' || state.projectLoadStatus !== 'ready') return;
+      openWorkbench('editor');
+      clearScriptWorkbenchOpenRequest();
+    });
+    return () => { cancelled = true; };
+  }, [scriptWorkbenchOpenProjectId, currentProjectId, projectLoadStatus, clearScriptWorkbenchOpenRequest, openWorkbench, setProjectWorkspaceView]);
   return <>
-    <SeriesRailPanel onOpenWorkbench={openWorkbench} />
+    <ModalPresentationContext value={projectWorkspaceView !== 'script'}>
+      <div className={projectWorkspaceView === 'script' ? 'hidden' : undefined} inert={projectWorkspaceView === 'script'}>
+        <SeriesRailPanel onOpenWorkbench={openWorkbench} />
+      </div>
+    </ModalPresentationContext>
     {workbenchMode && <ScriptWorkbench isOpen startWithSplit={workbenchMode === 'split'}
-      openRequestRevision={workbenchRequest.revision} requestSplit={workbenchRequest.split} onClose={closeWorkbench} />}
+      openRequestRevision={workbenchRequest.revision} requestSplit={workbenchRequest.split} onClose={closeWorkbench}
+      presentation="page" visible={projectWorkspaceView === 'script'} onSwitchToCanvas={switchToCanvas}
+      onPageVisibilityChange={changeWorkbenchPageVisibility} onDetachedChange={trackWorkbenchDetached}
+      onReturnToProject={returnToWorkbenchProject} returningToProject={returningToWorkbench} />}
   </>;
 }
 

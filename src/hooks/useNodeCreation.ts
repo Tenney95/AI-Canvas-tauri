@@ -36,6 +36,12 @@ export function useNodeCreation() {
   // ── Drag-over visual state (shared by browser HTML5 + Tauri native) ──
   const [isDragOver, setIsDragOver] = useState(false);
   const enterCount = useRef(0);
+  const cancelForScriptPage = useCallback(() => {
+    if (useAppStore.getState().projectWorkspaceView !== 'script') return false;
+    enterCount.current = 0;
+    setIsDragOver(false);
+    return true;
+  }, []);
 
   // ===========================
   //  Node creation helpers
@@ -65,22 +71,25 @@ export function useNodeCreation() {
   // ===========================
 
   const onDragEnter = useCallback((e: React.DragEvent) => {
+    if (cancelForScriptPage()) return;
     if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
     e.preventDefault();
     e.stopPropagation();
     if (useAppStore.getState().workflowPanelOpen || isExternalDropCaptured()) return;
     enterCount.current++;
     if (e.dataTransfer?.types?.length > 0) setIsDragOver(true);
-  }, []);
+  }, [cancelForScriptPage]);
 
   const onDragOver = useCallback((e: React.DragEvent) => {
+    if (cancelForScriptPage()) return;
     if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-  }, []);
+  }, [cancelForScriptPage]);
 
   const onDragLeave = useCallback((e: React.DragEvent) => {
+    if (cancelForScriptPage()) return;
     if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -89,10 +98,11 @@ export function useNodeCreation() {
       enterCount.current = 0;
       setIsDragOver(false);
     }
-  }, []);
+  }, [cancelForScriptPage]);
 
   const onDrop = useCallback(
     async (e: React.DragEvent) => {
+      if (cancelForScriptPage()) return;
       if (Array.from(e.dataTransfer?.types ?? []).includes(COMFY_REFMOD_MIME)) return;
       e.preventDefault();
       e.stopPropagation();
@@ -104,7 +114,7 @@ export function useNodeCreation() {
       const pos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       await useAppStore.getState().pasteExternalFromDataTransfer(dt, pos, 20, '已拖入');
     },
-    [rf],
+    [rf, cancelForScriptPage],
   );
 
   // ===========================
@@ -139,7 +149,7 @@ export function useNodeCreation() {
       let lastDropTs = 0;
 
       const handleDrag = async (payload: DragPayload) => {
-        if (cancelled) return;
+        if (cancelled || cancelForScriptPage()) return;
         if (payload.type === 'drop') {
           if (Date.now() - lastDropTs < 400) return;
           lastDropTs = Date.now();
@@ -163,6 +173,10 @@ export function useNodeCreation() {
 
         const flowPos = rf.screenToFlowPosition(nativeDropClientPosition(position));
         const store = useAppStore.getState();
+        const canAdd = () => {
+          const current = useAppStore.getState();
+          return current.projectWorkspaceView !== 'script' && current.currentProjectId === store.currentProjectId;
+        };
         const recordSuccessfulDrop = (path: string, nodeId: string, projectId: string) => {
           const current = useAppStore.getState();
           if (current.currentProjectId === projectId
@@ -183,10 +197,10 @@ export function useNodeCreation() {
           const offX = count * 30;
           const offY = count * 30;
 
-          if (useAppStore.getState().currentProjectId !== store.currentProjectId) break;
+          if (!canAdd()) break;
           const importGuard = registerCanvasImport(useAppStore.getState());
           if (!importGuard) break;
-          const isFresh = () => isCanvasDerivationFresh(importGuard, useAppStore.getState());
+          const isFresh = () => canAdd() && isCanvasDerivationFresh(importGuard, useAppStore.getState());
           try {
             const projectId = store.currentProjectId;
             if (cat !== 'text' && projectId && projectId !== 'default') {
@@ -264,7 +278,7 @@ export function useNodeCreation() {
           } finally { completeCanvasDerivation(importGuard); }
         }
 
-        if (count > 0 && useAppStore.getState().currentProjectId === store.currentProjectId) store.showToast(t('已拖入 {count} 个源节点', { count }));
+        if (count > 0 && canAdd()) store.showToast(t('已拖入 {count} 个源节点', { count }));
       };
 
       type RawPaths = { paths: string[]; position: { x: number; y: number } };
@@ -290,7 +304,7 @@ export function useNodeCreation() {
       unlistenRef.current?.();
       unlistenRef.current = null;
     };
-  }, [rf]);
+  }, [rf, cancelForScriptPage]);
 
   // ===========================
   //  Double-click → text node

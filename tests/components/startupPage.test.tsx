@@ -9,6 +9,11 @@ const driver = vi.hoisted(() => ({
   state: {} as AppState,
   values: [] as unknown[], index: 0,
   effects: [] as Array<() => void | (() => void)>,
+  nativeWindow: null as null | {
+    isFocused: () => Promise<boolean>;
+    onFocusChanged: (listener: (event: { payload: boolean }) => unknown) => Promise<() => void>;
+  },
+  nativeShortcuts: new Map<string, (event: { state?: string }) => void>(),
 }));
 
 vi.mock('react', async () => ({
@@ -45,8 +50,17 @@ vi.mock('../../src/utils/assetSearchWindow', () => ({ openAssetSearchWindow: vi.
 vi.mock('../../src/utils/nodeAnimations', () => ({ playNodeExit: vi.fn() }));
 vi.mock('../../src/services/pollManager', () => ({ cancelNodePolling: vi.fn() }));
 vi.mock('../../src/services/canvasPointerService', () => ({ getCanvasPointerPosition: vi.fn() }));
-vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => { throw new Error('Web test'); } }));
-vi.mock('@tauri-apps/plugin-global-shortcut', () => ({}));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => {
+  if (driver.nativeWindow) return driver.nativeWindow;
+  throw new Error('Web test');
+} }));
+vi.mock('@tauri-apps/plugin-global-shortcut', () => ({
+  register: vi.fn(async (key: string, callback: (event: { state?: string }) => void) => {
+    driver.nativeShortcuts.set(key, callback);
+  }),
+  unregister: vi.fn(async () => {}),
+  unregisterAll: vi.fn(async () => {}),
+}));
 
 import ProjectLibraryModal from '../../src/components/ProjectLibraryModal';
 import Header from '../../src/components/Header';
@@ -87,9 +101,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   driver.values = [];
   driver.effects = [];
+  driver.nativeWindow = null;
+  driver.nativeShortcuts.clear();
   driver.state = {
     projects: [{ id: 'p1', name: '示例项目', createdAt: 1, updatedAt: 2 }],
     currentProjectId: null, projectLoadStatus: 'ready', isCreatingProject: false,
+    projectWorkspaceView: 'canvas',
+    scriptWorkbenchOpenProjectId: null,
+    setProjectWorkspaceView: vi.fn(), requestScriptWorkbenchOpen: vi.fn(),
     isReturningToStartPage: false, switchingProjectName: null,
     returnToStartPage: vi.fn(async () => true),
     createProject: vi.fn(async () => undefined),
@@ -97,7 +116,8 @@ beforeEach(() => {
     importProject: vi.fn(async () => undefined),
     setSettingsOpen: vi.fn(), showToast: vi.fn(), initFromDb: vi.fn(async () => undefined),
     selectedNodeIds: [], clipboard: { nodes: [{ id: 'copied' }], groups: [], projectId: 'p1' },
-    addNode: vi.fn(), pasteNodes: vi.fn(), undo: vi.fn(), saveCurrentProject: vi.fn(),
+    addNode: vi.fn(), pasteNodes: vi.fn(), undo: vi.fn(), redo: vi.fn(),
+    deleteSelectedCanvasElements: vi.fn(), saveCurrentProject: vi.fn(),
   } as unknown as AppState;
 });
 
@@ -271,6 +291,84 @@ describe('header startup page entry', () => {
 });
 
 describe('startup page keyboard boundary', () => {
+  it('剧本整页接管保存与编辑按键，切回画布后恢复画布保存', async () => {
+    driver.state.currentProjectId = 'p1';
+    driver.state.projectWorkspaceView = 'script';
+    let keydown: ((event: unknown) => Promise<void>) | undefined;
+    const dispatchEvent = vi.fn((_event: Event) => true);
+    vi.stubGlobal('window', { dispatchEvent });
+    vi.stubGlobal('document', {
+      body: {}, documentElement: {}, querySelector: () => null,
+      addEventListener: (_: string, handler: typeof keydown) => { keydown = handler; },
+      removeEventListener: vi.fn(),
+    });
+    driver.effects = [];
+    useKeyboardShortcuts();
+    const cleanup = driver.effects[0]();
+    const target = { tagName: 'DIV', closest: () => null };
+    try {
+      for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }]) {
+        const event = { target, key: 's', ...modifiers, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+        await keydown?.(event);
+        expect(event.preventDefault).toHaveBeenCalledOnce();
+        expect(event.stopPropagation).toHaveBeenCalledOnce();
+      }
+      expect(dispatchEvent).toHaveBeenCalledTimes(3);
+      expect(dispatchEvent.mock.calls.every(([event]) => event.type === 'script-workbench-save')).toBe(true);
+      for (const key of [
+        { key: 'Delete' }, { key: '1', code: 'Digit1' }, { key: 'v', ctrlKey: true },
+        { key: 'z', ctrlKey: true }, { key: 'z', ctrlKey: true, shiftKey: true },
+      ]) {
+        const event = { target, ...key, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+        await keydown?.(event);
+        expect(event.preventDefault).not.toHaveBeenCalled();
+        expect(event.stopPropagation).not.toHaveBeenCalled();
+      }
+      expect(driver.state.addNode).not.toHaveBeenCalled();
+      expect(driver.state.pasteNodes).not.toHaveBeenCalled();
+      expect(driver.state.deleteSelectedCanvasElements).not.toHaveBeenCalled();
+      expect(driver.state.undo).not.toHaveBeenCalled();
+      expect(driver.state.redo).not.toHaveBeenCalled();
+      expect(driver.state.saveCurrentProject).not.toHaveBeenCalled();
+
+      driver.state.projectWorkspaceView = 'canvas';
+      await keydown?.({ target, key: 's', ctrlKey: true, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+      expect(driver.state.saveCurrentProject).toHaveBeenCalledOnce();
+      expect(dispatchEvent).toHaveBeenCalledTimes(3);
+    } finally {
+      cleanup?.();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('原生保存快捷键读取当前页态，不误存画布并忽略松键回调', async () => {
+    driver.state.currentProjectId = 'p1';
+    driver.state.projectWorkspaceView = 'script';
+    driver.nativeWindow = { isFocused: async () => true, onFocusChanged: async () => () => {} };
+    const dispatchEvent = vi.fn((_event: Event) => true);
+    vi.stubGlobal('window', { dispatchEvent });
+    vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    driver.effects = [];
+    useKeyboardShortcuts();
+    const cleanup = driver.effects[0]();
+    try {
+      await vi.waitFor(() => expect(driver.nativeShortcuts.has('Alt+S')).toBe(true));
+      driver.nativeShortcuts.get('CommandOrControl+S')?.({ state: 'Pressed' });
+      expect(dispatchEvent).toHaveBeenCalledOnce();
+      expect(dispatchEvent.mock.calls[0][0].type).toBe('script-workbench-save');
+      expect(driver.state.saveCurrentProject).not.toHaveBeenCalled();
+      driver.nativeShortcuts.get('Alt+S')?.({ state: 'Released' });
+      expect(dispatchEvent).toHaveBeenCalledOnce();
+      driver.state.projectWorkspaceView = 'canvas';
+      driver.nativeShortcuts.get('Alt+S')?.({ state: 'Pressed' });
+      expect(driver.state.saveCurrentProject).toHaveBeenCalledOnce();
+      expect(dispatchEvent).toHaveBeenCalledOnce();
+    } finally {
+      cleanup?.();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each([null, 'p1'])('lets the active dialog own keyboard input in project %s', async (projectId) => {
     driver.state.currentProjectId = projectId;
     let keydown: ((event: unknown) => Promise<void>) | undefined;
