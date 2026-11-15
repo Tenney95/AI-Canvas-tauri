@@ -5,6 +5,7 @@
  * 供 buildStandardImageRequestBody 生成图片请求体，避免在调用点散落厂商判断。
  */
 import type { ImageReferenceRequestMode } from '../../types';
+import { mapParameterFields } from './parameterMappings';
 
 export type ImageParameterKey =
   | 'model'
@@ -81,15 +82,7 @@ export function mapImageParameters(
   modelId: string,
   values: Partial<Record<ImageParameterKey, unknown>>,
 ): Record<string, unknown> {
-  const mapping = resolveImageParameterMapping(providerId, modelId);
-  const output: Record<string, unknown> = { ...(mapping.staticFields ?? {}) };
-  for (const [key, field] of Object.entries(mapping.fields)) {
-    const value = values[key as ImageParameterKey];
-    if (field && value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
-      output[field] = value;
-    }
-  }
-  return output;
+  return mapParameterFields(resolveImageParameterMapping(providerId, modelId), values);
 }
 
 export function buildStandardImageRequestBody(input: StandardImageRequestInput): Record<string, unknown> {

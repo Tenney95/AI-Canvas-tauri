@@ -89,4 +89,25 @@ describe('media parameter mappings', () => {
   it('omits undefined fields instead of sending empty provider parameters', () => {
     expect(mapAudioParameters('standard', 'tts', { model: 'tts', input: 'hello', voice: undefined })).toEqual({ model: 'tts', input: 'hello' });
   });
+
+  it('keeps zero and false while omitting empty fields for all media types', () => {
+    expect(mapImageParameters('apimart', 'image', {
+      batchCount: 0, prompt: '', imageSize: null, imageQuality: undefined, referenceImageUrls: [],
+    })).toEqual({ n: 0 });
+    expect(mapAudioParameters('standard', 'tts', {
+      model: 'tts', input: '', voice: null, format: undefined, speed: 0,
+    })).toEqual({ model: 'tts', speed: 0 });
+    expect(mapVideoParameters('standard', 'video', {
+      duration: 0, generateAudio: false, prompt: '', resolution: null, aspectRatio: undefined, imageUrls: [],
+    })).toEqual({ duration: 0, generate_audio: false });
+  });
+
+  it('overrides static defaults without changing them and preserves reference arrays', () => {
+    expect(mapAudioParameters('apimart', 'flowmusic', { model: 'custom' })).toEqual({ model: 'custom' });
+    expect(mapAudioParameters('apimart', 'flowmusic', { model: '' })).toEqual({ model: 'flowmusic' });
+    expect(mapAudioParameters('apimart', 'flowmusic', {})).toEqual({ model: 'flowmusic' });
+    const imageUrls = ['https://example.com/ref.png'];
+    expect(mapImageParameters('apimart', 'image', { referenceImageUrls: imageUrls }).image_urls).toBe(imageUrls);
+    expect(imageUrls).toEqual(['https://example.com/ref.png']);
+  });
 });

@@ -51,15 +51,16 @@ function drag(type: DropEvent['payload']['type'], path = '/external/source.mp4')
   driver.onDrag!({ payload: { type, paths: [path], position: { x: 20, y: 30 } } });
 }
 describe('成功导入后的最近使用记录', () => {
-  it('新建文本与音频把真实历史偏好写入节点，源音频不自动绑定', () => {
-    localStorage.setItem('canvas-model-prefs', JSON.stringify({ 'ai-text': 'general/text', 'ai-audio': 'general/audio' }));
+  it('双击画布新建文本时写入真实历史偏好', () => {
+    localStorage.setItem('canvas-model-prefs', JSON.stringify({ 'ai-text': 'general/text' }));
     const creation = useNodeCreation();
-    creation.addTextNode({ x: 0, y: 0 });
-    creation.addAudioNode({ x: 0, y: 0 });
-    creation.addAudioNode({ x: 0, y: 0 }, { dataUrl: 'asset://source.mp3' });
-    expect(driver.state.nodes.map((node) => [node.data.model, node.data.provider])).toEqual([
-      ['general/text', 'general'], ['general/audio', 'general'], [undefined, undefined],
-    ]);
+    creation.onDoubleClick({
+      target: { classList: { contains: (name: string) => name === 'react-flow__pane' } },
+      clientX: 20, clientY: 40,
+    } as unknown as React.MouseEvent);
+    expect(driver.state.addNode).toHaveBeenCalledOnce();
+    expect(driver.state.nodes[0]).toMatchObject({ position: { x: 20, y: 40 },
+      data: { type: 'ai-text', model: 'general/text', provider: 'general' } });
   });
 
   it('RefMod 的语义拖放留给视频节点，不显示文件导入或创建媒体节点', async () => {
@@ -86,14 +87,19 @@ describe('成功导入后的最近使用记录', () => {
   it('进入后离开、未实际放下文件时不记录', () => {
     drag('enter'); drag('leave'); expect(driver.mark).not.toHaveBeenCalled(); expect(driver.copy).not.toHaveBeenCalled();
   });
-  it.each(['png', 'mp4', 'mp3'])('%s 完成复制和节点更新后才记录原始素材', async (extension) => {
+  it.each(['png', 'mp4', 'mp3'])('%s 源素材不绑定历史模型，完成节点更新后才记录使用', async (extension) => {
+    localStorage.setItem('canvas-model-prefs', JSON.stringify({
+      'ai-image': 'general/image', 'ai-video': 'general/video', 'ai-audio': 'general/audio',
+    }));
     let finish!: (result: unknown) => void;
     driver.copy.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     drag('drop', `/external/source.${extension}`);
     expect(driver.state.nodes[0].data.status).toBe('loading'); expect(driver.mark).not.toHaveBeenCalled();
     finish({ assetUrl: 'asset://copied', fileName: 'copied', filePath: '/project/copied' });
     await vi.waitFor(() => expect(driver.mark).toHaveBeenCalledWith({ path: `/external/source.${extension}` }));
-    expect(driver.state.nodes[0].data.status).toBe('success');
+    expect(driver.state.nodes[0].data).toMatchObject({ role: 'source', status: 'success' });
+    expect(driver.state.nodes[0].data.model).toBeUndefined();
+    expect(driver.state.nodes[0].data.provider).toBeUndefined();
   });
   it('复制失败不记录，也不会把错误节点当作已使用素材', async () => {
     const logger = vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -4,6 +4,7 @@
  * 及参考媒体 imageUrls / videoUrls / audioUrls）按厂商与模型模式换算成各家 API 的真实字段名，
  * 供各生成入口拼装视频请求体，避免在调用点散落 if/switch 硬编码。
  */
+import { mapParameterFields } from './parameterMappings';
 
 export type VideoParameterKey =
   | 'model'
@@ -52,13 +53,5 @@ export function mapVideoParameters(
   modelId: string,
   values: Partial<Record<VideoParameterKey, unknown>>,
 ): Record<string, unknown> {
-  const mapping = resolveVideoParameterMapping(providerId, modelId);
-  const output: Record<string, unknown> = { ...(mapping.staticFields ?? {}) };
-  for (const [key, field] of Object.entries(mapping.fields)) {
-    const value = values[key as VideoParameterKey];
-    if (field && value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
-      output[field] = value;
-    }
-  }
-  return output;
+  return mapParameterFields(resolveVideoParameterMapping(providerId, modelId), values);
 }

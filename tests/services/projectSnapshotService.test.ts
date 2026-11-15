@@ -11,11 +11,9 @@ vi.mock('../../src/services/comfyImageSource', () => ({
 }));
 import {
   captureCurrentCanvasSnapshot,
-  encodeProjectSnapshot,
   getProjectSnapshotBitmapSize,
   isProjectSnapshotDataUrl,
   PROJECT_SNAPSHOT_MAX_DATA_URL_LENGTH,
-  shouldIncludeProjectSnapshotNode,
   toProjectSnapshotRect,
 } from '../../src/services/projectSnapshotService';
 import { createProjectSnapshotGeometry, projectSnapshotGeometry } from '../../src/services/projectSnapshotGeometry';
@@ -24,15 +22,6 @@ import type { ProjectSnapshotWorkerRequest, ProjectSnapshotWorkerResponse } from
 
 function geometryNode(id: string, x: number, y: number, extra: Partial<Node<BaseNodeData>> = {}): Node<BaseNodeData> {
   return { id, type: 'ai-image', position: { x, y }, data: { type: 'ai-image', label: id, nodeWidth: 100, nodeHeight: 80 }, ...extra };
-}
-
-function fakeElement(classes: string[] = [], tagName = 'DIV'): HTMLElement {
-  return {
-    tagName,
-    classList: {
-      contains: (value: string) => classes.includes(value),
-    },
-  } as unknown as HTMLElement;
 }
 
 function installMediaCapture(count = 4, mode: 'hold' | 'blocked' | 'transfer-error' = 'hold') {
@@ -206,37 +195,6 @@ describe('projectSnapshotService', () => {
     expect(isProjectSnapshotDataUrl('data:image/webp;base64,AAAA')).toBe(true);
     expect(isProjectSnapshotDataUrl('https://example.com/preview.webp')).toBe(false);
     expect(isProjectSnapshotDataUrl(`data:image/webp;base64,${'A'.repeat(PROJECT_SNAPSHOT_MAX_DATA_URL_LENGTH)}`)).toBe(false);
-  });
-
-  it('filters React Flow chrome while keeping canvas content', () => {
-    expect(shouldIncludeProjectSnapshotNode(fakeElement(['react-flow__node']))).toBe(true);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement(['react-flow__controls']))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement(['react-flow__minimap']))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement(['react-flow__panel']))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement(['gooey-btn-wrapper']))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement(['node-resize-handles']))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement(['canvas-note-point-handles']))).toBe(false);
-  });
-
-  it('skips media surfaces that can taint the snapshot canvas', () => {
-    expect(shouldIncludeProjectSnapshotNode(fakeElement([], 'VIDEO'))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement([], 'canvas'))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement([], 'IFRAME'))).toBe(false);
-    expect(shouldIncludeProjectSnapshotNode(fakeElement([], 'IMG'))).toBe(true);
-  });
-
-  it('reduces WebP quality until the snapshot fits the persistence limit', () => {
-    const oversized = `data:image/webp;base64,${'A'.repeat(PROJECT_SNAPSHOT_MAX_DATA_URL_LENGTH)}`;
-    const compact = 'data:image/webp;base64,COMPACT';
-    const canvas = {
-      toDataURL: vi.fn((_type: string, quality?: number) => (
-        quality === 0.7 ? oversized : compact
-      )),
-    };
-
-    expect(encodeProjectSnapshot(canvas)).toBe(compact);
-    expect(canvas.toDataURL).toHaveBeenNthCalledWith(1, 'image/webp', 0.7);
-    expect(canvas.toDataURL).toHaveBeenNthCalledWith(2, 'image/webp', 0.5);
   });
 
   it('encodes oversized WebKit PNG fallback as JPEG and reports the actual image format', async () => {

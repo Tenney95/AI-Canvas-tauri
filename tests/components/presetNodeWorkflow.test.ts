@@ -1,5 +1,5 @@
 /**
- * presetNodeWorkflow — 回归用例：预设派生节点的模型、素材引用及音视频工具栏执行边界。
+ * presetNodeWorkflow — 回归用例：预设派生节点的模型、素材引用及文本/音视频工具栏执行边界。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPresetNode, executeToolbarPreset, resolveEffectiveModel, resolvePresetAction, resolvePresetDef } from '../../src/components/nodes/shared/toolbar/presetAction';
@@ -107,7 +107,7 @@ describe('createPresetNode 派生 ComfyUI 工作流节点', () => {
   });
 });
 
-describe.each(['ai-audio', 'ai-video'] as const)('%s 工具栏预设执行', (nodeType) => {
+describe.each(['ai-text', 'ai-audio', 'ai-video'] as const)('%s 工具栏预设执行', (nodeType) => {
   const preset: UserPreset = {
     id: 'toolbar-preset', nodeType, name: '旧预设', description: '',
     promptTemplate: '旧模板', triggerMode: 'direct',

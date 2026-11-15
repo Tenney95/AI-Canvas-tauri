@@ -17,6 +17,21 @@ describe('RunningHub 标准模型目录', () => {
     expect(digest).toBe('4e1743a7cf7a677ef355ca1bf4807458f73b77ab238af59f064829d74428f681');
   });
 
+  it('复用整组参数后各端点仍独占参数及全部嵌套对象', () => {
+    const owners = new Map<object, string>();
+    const visit = (value: unknown, modelId: string): void => {
+      if (value === null || typeof value !== 'object') return;
+      const owner = owners.get(value);
+      if (owner !== undefined) {
+        expect(owner, `${modelId} 的参数对象不能与其他端点共享`).toBe(modelId);
+        return;
+      }
+      owners.set(value, modelId);
+      for (const child of Object.values(value)) visit(child, modelId);
+    };
+    for (const model of RUNNINGHUB_MODEL_MANIFEST) visit(model.parameters, model.id);
+  });
+
   it('同型号基础枚举复用后仍保留渠道独有档位、缺档和默认值', () => {
     const field = (model: string, name: string) => getRunningHubModel(model)!.parameters.find((item) => item.name === name)!;
     expect(field('bytedance/seedance-2.0-global/text-to-video', 'resolution').schema.enum)

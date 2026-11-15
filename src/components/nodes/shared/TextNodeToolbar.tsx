@@ -14,11 +14,8 @@ import {
   getHiddenDefaultToolbarButtons,
   TOOLBAR_MORE_KEY,
 } from './toolbar/toolbarRegistry';
-import { resolvePresetAction, resolvePresetDef, createPresetNode } from './toolbar/presetAction';
-import { executeGeneration } from '../../../services/generationService';
-import { requestPresetSequence } from '../../../services/presetSequenceService';
+import { executeToolbarPreset, resolvePresetDef } from './toolbar/presetAction';
 import { useAppStore } from '../../../store/useAppStore';
-import type { Node } from '@xyflow/react';
 
 interface TextNodeToolbarProps {
   nodeId: string;
@@ -59,25 +56,12 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
     [data.output, onClearEmptyLines],
   );
 
-  const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
-
   const handlePresetClick = useCallback(
     (key: string) => (e: React.MouseEvent) => {
       e.stopPropagation();
-      // 实时从 store 读取，避免闭包过期导致对话框内容/ @引用丢失
-      const liveNode = useAppStore.getState().nodes.find((n) => n.id === nodeId) as Node<BaseNodeData> | undefined;
-      if (!liveNode) return;
-      const livePrompt = (liveNode.data?.prompt as string) ?? '';
-      const livePresets = useAppStore.getState().userPresets;
-      if (requestPresetSequence(key, nodeType as NodeType, nodeId, livePresets)) return;
-      const resolved = resolvePresetAction(key, nodeType as NodeType, livePrompt, livePresets);
-      if (!resolved) return;
-      const { node: newNode, edge } = createPresetNode(liveNode, resolved);
-      addNodeWithEdge(newNode, edge);
-      // 强制用带 @ 引用的 prompt（createPresetNode 已拼好）
-      executeGeneration(newNode.id, newNode.data.prompt as string, resolved.postProcess, newNode.data);
+      executeToolbarPreset(key, nodeType, nodeId);
     },
-    [nodeId, addNodeWithEdge],
+    [nodeId],
   );
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {

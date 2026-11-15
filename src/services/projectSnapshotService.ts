@@ -20,28 +20,11 @@ import type {
 
 const SNAPSHOT_WIDTH = 480;
 const SNAPSHOT_HEIGHT = 270;
-const SNAPSHOT_QUALITIES = [0.7, 0.5, 0.35] as const;
 const SNAPSHOT_TIMEOUT_MS = 8_000;
 const SNAPSHOT_MEDIA_BUDGET_MS = 1_800;
 const SNAPSHOT_MEDIA_MAX_CANDIDATES = 24;
 const SNAPSHOT_MEDIA_MAX_COUNT = 12;
 const SNAPSHOT_MEDIA_MAX_EDGE = Math.max(SNAPSHOT_WIDTH, SNAPSHOT_HEIGHT);
-
-const EXCLUDED_CLASS_NAMES = new Set([
-  'react-flow__controls',
-  'react-flow__minimap',
-  'react-flow__panel',
-  'react-flow__attribution',
-  'react-flow__selection',
-  'react-flow__nodesselection-rect',
-  'react-flow__resize-control',
-  'gooey-btn-wrapper',
-  'node-resize-handles',
-  'canvas-note-point-handles',
-]);
-
-// 保留旧过滤辅助函数的兼容语义；实际截图仅使用几何与有界媒体，不克隆 DOM。
-const EXCLUDED_TAG_NAMES = new Set(['CANVAS', 'IFRAME', 'VIDEO']);
 
 type SnapshotFailureStage = 'context' | 'media-freeze' | 'media-pixels' | 'media-origin' | 'worker-transfer' | 'worker-render' | 'encode-size' | 'capture';
 interface SnapshotDiagnostics {
@@ -89,24 +72,6 @@ if (import.meta.hot) {
     for (const cancel of activeImageLoads) cancel();
     activeImageLoads.clear();
   });
-}
-
-export function shouldIncludeProjectSnapshotNode(node: HTMLElement): boolean {
-  if (EXCLUDED_TAG_NAMES.has(node.tagName?.toUpperCase())) return false;
-  for (const className of EXCLUDED_CLASS_NAMES) {
-    if (node.classList?.contains(className)) return false;
-  }
-  return true;
-}
-
-export function encodeProjectSnapshot(
-  canvas: Pick<HTMLCanvasElement, 'toDataURL'>,
-): string | null {
-  for (const quality of SNAPSHOT_QUALITIES) {
-    const snapshot = canvas.toDataURL('image/webp', quality);
-    if (isProjectSnapshotDataUrl(snapshot)) return snapshot;
-  }
-  return null;
 }
 
 export function toProjectSnapshotRect(

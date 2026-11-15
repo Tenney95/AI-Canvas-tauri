@@ -5,6 +5,7 @@
  * 供 buildAudioSpeechRequestBody / buildAudioMusicRequestBody 生成请求体。
  */
 import type { AIAudioGenParams, AudioOutputFormat, AudioTtsVoice } from '../../types/aiTypes';
+import { mapParameterFields } from './parameterMappings';
 
 export type AudioParameterKey =
   | 'model'
@@ -68,15 +69,7 @@ export function mapAudioParameters(
   modelId: string,
   values: Partial<Record<AudioParameterKey, unknown>>,
 ): Record<string, unknown> {
-  const mapping = resolveAudioParameterMapping(providerId, modelId);
-  const output: Record<string, unknown> = { ...(mapping.staticFields ?? {}) };
-  for (const [key, field] of Object.entries(mapping.fields)) {
-    const value = values[key as AudioParameterKey];
-    if (field && value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
-      output[field] = value;
-    }
-  }
-  return output;
+  return mapParameterFields(resolveAudioParameterMapping(providerId, modelId), values);
 }
 
 export interface AudioSpeechMappingInput {

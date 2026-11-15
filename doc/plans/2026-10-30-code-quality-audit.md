@@ -1,5 +1,7 @@
 # 全仓代码质量审查与精简建议
 
+最新状态：2026-11-15，第一批 Q23、Q27、Q28 文本预设部分、Q29、Q30 已实现并按用户要求本地提交，待用户验收；未运行测试或质检，未推送。实现范围、实际净减与桌面步骤见文末“第一批实施结果”。此前基于 `e2023a8b` 的复查新增 Q26～Q39，并重核 Q23～Q25；审查快照及早期行号保留当时事实，不代表当前未处理清单。
+
 日期：2026-10-30。状态：静态审查完成；Q01 自动回归与部分桌面交互已验证，真实生成等场景待验收；Q02 与 Q03 运行时保护已实现、尚未运行测试；Q04 闲置模块及专属样式已清理，Q05 音视频工具栏预设执行、Q06 历史筛选、Q07 参考媒体串行处理、Q08 模型协议基础逻辑及 Q09 四组局部重复已合并，均待用户验收；Q10～Q17 已于 2026-10-31 实现，相关自动回归 535 项通过，桌面验收待完成。
 
 2026-10-31 续查初稿：以 `e53ddcdf` 所在工作区源码为准，新增 Q12～Q17。随后用户授权全部优化，实施结果见下方“Q10～Q17 实施结果”；问题描述及带行号证据保留为修改前的审查快照。Q12～Q14 的行为风险优先于 Q10／Q11 的低收益统一。初稿阶段仅阅读源码、搜索引用与比对重复片段；实施阶段已修改代码，但未执行测试、lint、类型检查、构建或实机验收。上文各批次的测试状态是当时记录；后续发布门禁另见 [0.10.22 发布专项](./2026-10-31-release-0.10.22.md)，不能代替本轮新增场景的验收。
@@ -487,6 +489,8 @@ Q24 必须保留“先动态导入 event，再构造/浅拷贝 payload”的时�
 
 Q25 是修复行为分叉伴随精简，不能直接调用现有 `deleteNodesBatch`：
 
+> 2026-11-15 复核：下述“Hook 只保留顶层 filePath”的问题已不适用于当前源码；两个 Hook 已共用 `collectKeepPaths` 和 `createNodeFileDeletionContext`。本项尚存的删除编排、组裁剪及异步写回问题以文末复查为准，不再把已解决的引用保护重复列为待实施。
+
 - 两 Hook 仅保留存活节点顶层 `filePath`，Store 的 `collectKeepPaths` 还保护宫格、分镜、导演台和聊天产物引用，并排除 `artifactId` 节点文件。Hook 可能将仍被这些位置引用的同项目文件移入撤销暂存区；这是静态风险，尚未复现，底层项目归属校验仍在。
 - Hook 不处理删除最后成员后的空组及 `data.groupId` 映射，Store 的 `pruneDeletedNodesAndEmptyGroups` 会处理，同时保留手工空组，文件清理也会暂存对应组目录。
 - 既有批量 API 只取前 50 个显式根节点，不处理独立选中边，且选择清空与历史提交时机不同。应单独设计手工选区删除 Action，保留完整节点/边选择、即时清选择及一次撤销，批量 API 的限额继续保留。
@@ -506,3 +510,139 @@ Tauri 桌面验收前准备测试项目、项目与全局各一份角色、可�
 自动回归供用户在仓库根目录执行：`npx vitest run tests/store/dramaAssets.test.ts tests/components/nodeCriticalInteractions.test.tsx tests/services/chatMessageSequence.test.ts tests/services/imageGenerationHistory.test.ts`；按需执行 `npm run typecheck` 与 `npm run test:typecheck`。以上命令本批均未运行，桌面功能与性能仍待用户验收。
 
 回滚仅撤销本批三个业务文件、三个回归文件以及本文 Q20～Q22 状态差异；无数据迁移，不回退 Q18/Q19、Q23～Q25 审查或并行发布准备的改动。Q23～Q25 仍未实施，后续开始前重新核对工作区与范围。
+
+## 2026-11-15 全仓业务精简复查
+
+审查时状态：静态审查完成，以下为实施前快照；当时未修改业务源码，未运行测试、lint、类型检查、构建、性能基准、桌面验收或模型调用。基线 `e2023a8b`，审查开始时工作区干净。第一批后续实现见文末，其他候选仍待实施。目标是保留现有业务能力、减少重复维护；源码行数、打包体积和运行速度分别衡量，不把删除行数当作性能证明。
+
+审查期间另有发版工作流、工程脚本、相关规则和发布文档的并行改动出现；本任务仅修改本文及计划索引，保留其他改动。清点是审查时快照，发版流程后续差异不作为本轮去重结论或验收证据。
+
+### 覆盖与主要结论
+
+- 清点 Git 跟踪的 TS/TSX/JS/JSX/MJS/Rust/Python/CSS：`src/` 1,355 个文件、373,159 行，`src-tauri/src/` 92 个文件、66,217 行，工程脚本 17 个文件、2,721 行；另清点 798 个测试文件、199,788 行及工作流、依赖配置。均为物理行，包含空行、注释、内嵌测试和数据，不等于业务有效代码量。
+- 对非第三方、非翻译、非样式的源码做跨文件连续片段比对；对服务、Store、工具函数用 TypeScript AST 比对函数体；核对本地导入、动态导入及 Worker URL，再人工跟踪下列候选的调用链。样式核对相关公共类与实际组件，未做全仓动态 class 可达性证明。
+- `src/services/` 149,150 行、组件 121,630 行、Store 15,421 行是主要维护面；翻译 24,885 行、第三方源码 11,502 行单列保留。大文件只是定位线索，不以拆文件、压行、批量 memo 或删除翻译作为精简成果。
+- 最值得处理的是节点新建/删除的行为分叉、同领域纯映射、已有公共函数未复用及重复目录数据。没有找到足够证据支持大批删除模块或直接移除大型依赖。
+- 这是全仓静态扫描加重点调用链复核，未逐行人工证明全部源码，也未验证运行时性能、真实模型、跨平台编译或所有外部插件。各条“确认”指源码证据，不代表运行验收。
+
+### 先处理两处行为分叉
+
+**Q26：新建节点默认数据仍有六套入口。** [NodeMenu.tsx:99](../../src/components/NodeMenu.tsx#L99)、[Sidebar.tsx:133](../../src/components/Sidebar.tsx#L133)、[右键:77](../../src/hooks/useCanvasContextMenu.ts#L77)、[快捷键:47](../../src/hooks/useKeyboardShortcuts.ts#L47)、[连线新建:259](../../src/hooks/useConnectionDropMenu.ts#L259)、[双击:43](../../src/hooks/useNodeCreation.ts#L43) 各自拼装初始 data。音频在前两个入口为 280×160，部分其他入口为 260×140；全景 `previewMode` 等字段也有差异。Q01 已共享模型偏好读取，这里是剩余的节点初始数据，不能再把偏好收口算作新成果。
+
+建议仅共享纯 UI 初始数据构造，复用 `getPreferredNodeModel` 和现有 Store 插入路径；定位、连边、入口交互及一次历史提交留在原调用方。先列出每个字段差异，确需保留的入口差异显式覆盖，不在精简时静默统一尺寸。Agent/MCP 显式模型授权、源素材导入和插件节点构造继续走各自合同。估计净减 120～200 行，与 Q27 有重叠，最终只按实际差异计数。
+
+**Q25 复核：四处删除流程仍重复，重点已转为 Store 收口和过期保护。** [右键删除:199](../../src/hooks/useCanvasContextMenu.ts#L199)、[键盘删除:286](../../src/hooks/useKeyboardShortcuts.ts#L286)、[单点 Action:1561](../../src/store/store.nodes.ts#L1561)、[批量 Action:1592](../../src/store/store.nodes.ts#L1592) 仍各自组织后代展开、停轮询、文件暂存、历史与退出动画。两个 Hook 已共享文件保留路径和删除上下文，但仍直接 `useAppStore.setState` 裁剪组；Store 则使用 `pruneDeletedNodesAndEmptyGroups`，规则不同。
+
+四处动画完成回调未见对启动时项目/画布版本的最终复核，旧删除可能对动画结束时的当前状态生效；切项目、导入复用 ID、撤销/重做的影响仍须复现。这是静态风险，不能宣称已复现数据丢失。建议在 Store 增加手工选区删除 Action，内部共享编排并校验操作归属/失效状态，Hook 只提交选区；保留纯边、混合选择、即时清选择及一次撤销。不能直接改调有 50 个根节点限额的 `deleteNodesBatch`，也不能让正常版本变化误取消合法删除。预计纯收敛约 70～110 行，增加必要守卫后实际净减可能更小。
+
+### 新增精简清单
+
+下表行号均为本轮基线；所有行数是扣除拟新增共享代码后的估计，不包含测试/文档。优先级表示实施顺序，安全相关项即使代码很短也须单独验收。
+
+| 编号/顺序 | 真实重复与合并方向 | 收益及必须保留的边界 |
+|---|---|---|
+| Q27 第一批 | [useNodeCreation.ts:64/92/116](../../src/hooks/useNodeCreation.ts#L64) 的 `addImageNode/addVideoNode/addAudioNode` 没有生产调用；[Canvas.tsx:825](../../src/components/Canvas.tsx#L825) 只取拖放/双击入口。删三方法及返回属性 | 约 78 行；音频方法仅有旧偏好测试，需将断言移至真实入口；保留拖放、原生导入及双击。与 Q26 不重复累计 |
+| Q28 第一/二批 | [TextNodeToolbar.tsx:64](../../src/components/nodes/shared/TextNodeToolbar.tsx#L64) 的预设执行委托现有 [executeToolbarPreset:243](../../src/components/nodes/shared/toolbar/presetAction.ts#L243)；五种工具栏的 zone/button/more/divider 展示循环随后共享 | 两部分合计约 65～100 行；文本先接已有函数，布局另做小提交。保留编辑态、隐藏项、插件/图片历史弹窗；全景当前没有相同顺序预设分支，不直接套用 |
+| Q29 第一批 | [imageParameterMappings.ts:79](../../src/services/ai/imageParameterMappings.ts#L79)、[audioParameterMappings.ts:66](../../src/services/ai/audioParameterMappings.ts#L66)、[videoParameterMappings.ts:50](../../src/services/ai/videoParameterMappings.ts#L50) 的字段复制循环同构 | 约 15～25 行，仅共享已解析 mapping 到输出的纯循环；各领域 resolver/键类型/静态字段保留。`false/0` 保留，`null/undefined/空字符串/空数组` 排除；不合并完整生成器 |
+| Q30 第一批 | [runninghubModelManifest.ts:245](../../src/services/ai/providers/runninghubModelManifest.ts#L245) 等多组完整 `parameters` 数组完全相同，抽命名参数组并为每模型复制 | 文件 478,227 字节；301 个可直接解析条目中有 31 组重复，按紧凑 JSON 计多余参数文本 36,052 字节，尚未扣提取开销。保守估计净减约 25～30KB；不是打包收益。保留全部 347 个端点顺序/字段和独立可变引用 |
+| Q31 第二批 | [agentRoundExecutor.ts:1197](../../src/services/chat/agentRoundExecutor.ts#L1197) 与 [agentToolExecution.ts:128](../../src/services/chat/agentToolExecution.ts#L128) 重复 Policy 决策事件、指标及步骤记录 | 约 70～110 行，只共享记录、步骤构造和审批结果更新；模式采样、Policy 计算、审批等待、取消、授权后二次核对、检查点和真实执行继续由各入口负责；不能用一个万能执行器替代两条生命周期 |
+| Q32 顺手/暂缓 | [pluginResourceService.ts:201/237](../../src/services/plugins/pluginResourceService.ts#L201) 的普通资源和包资源 lease 重复登记调用身份 | 仅约 10～15 行，限同模块私有登记函数，不值得单建抽象层；路径/mtime/source 与 packageResourceId/SHA256 分支保持独立。上下文检查、双摘要、调用/项目/节点/版本绑定及读取时复核都保留 |
+| Q33 原生专批 | [path_policy.rs:327/336](../../src-tauri/src/path_policy.rs#L327) 已有 `is_link_or_reparse`；插件 registry/artifacts、原生媒体、缩略图、Comfy 安装/去重、Blender 等至少 11 处仍有等价本地函数 | 约 85～115 行，直接复用现有函数；各调用方的目录链、授权、私有目录、文件身份及业务错误全部保留，不把判定函数当完整路径授权 |
+| Q34 原生专批 | [path_policy.rs:169/174/187](../../src-tauri/src/path_policy.rs#L169) 已有转换；[package.rs:194](../../src-tauri/src/agent/package.rs#L194)、[registry.rs:1635](../../src-tauri/src/plugins/registry.rs#L1635)、[installation.rs:43](../../src-tauri/src/media/comfyui/installation.rs#L43)、[installer.rs:106](../../src-tauri/src/media/comfyui/installer.rs#L106)、[runner.rs:1371](../../src-tauri/src/director/blender_runtime/runner.rs#L1371) 重复 verbatim/UNC 处理 | 约 45～60 行；复用纯路径转换。canonicalize 失败时回退原路径、组件路径或报错的不同合同不能一并改掉 |
+| Q35 原生专批 | [muse.rs:89](../../src-tauri/src/media/muse.rs#L89)、[volcengine_tos.rs:188](../../src-tauri/src/media/volcengine_tos.rs#L188)、[media_source.rs:101](../../src-tauri/src/media/comfyui/media_source.rs#L101)、[sync.rs:9](../../src-tauri/src/files/object_storage/sync.rs#L9) 四套系统安全随机数读取 | 约 35～50 行；共享底层字节读取，各业务保留包装和错误映射。Muse/TOS 24 字节、Comfy/S3 32 字节及 UUID 格式保持；随机源失败继续拒绝，不以弱随机兜底 |
+| Q36 后续 | [web.rs:323/350/364/446](../../src-tauri/src/agent/web.rs#L323) 与 [provider_docs.rs:55/72/86/278](../../src-tauri/src/agent/provider_docs.rs#L55) 重复公网 IP 和同源纯判定 | 约 40～55 行；优先复用已有 `web::is_disallowed_ip`。保留 URL/端口、DNS 混合记录、重定向和 fake-IP 策略差异，不合并完整读取器 |
+| Q37 后续，中风险 | [codex_process.rs:14](../../src-tauri/src/agent/codex_process.rs#L14)、[plugins/runtime.rs:232](../../src-tauri/src/plugins/runtime.rs#L232)、[management.rs:344](../../src-tauri/src/media/comfyui/management.rs#L344) 三份 Windows Job Object 创建/绑定/终止/释放 | 约 50～75 行；仅提取底层句柄。各运行时可执行文件身份、启动参数、输出上限、取消/超时和进程树回收时序独立。Blender suspended-start 不纳入 |
+| Q38 顺手处理 | [Blender job.rs:1216/1231](../../src-tauri/src/director/blender_runtime/job.rs#L1216) 与 [result.rs:217/230](../../src-tauri/src/director/blender_runtime/result.rs#L217) 的 SHA256 和 scene ID 纯校验 | 约 15～25 行，领域内部复用即可；一般 opaque ID 可接受大写/冒号，继续独立，不建立通用验证框架 |
+| Q39 后续，中风险 | [chatWindowService.ts:641/672/709](../../src/services/chat/chatWindowService.ts#L641) 三套请求等待中的 Promise、settled 防重、超时、listener 安装/释放与发送编排 | 约 20～35 行，限同文件私有等待器。保留各自响应身份、20/30 秒超时、返回值/抛错、文本上限与 windowFrame；listener 安装完成后再发送，晚装监听须释放，超时不得自动重投 |
+
+Q28 布局证据为 `AudioNodeToolbar.tsx:148`、`VideoNodeToolbar.tsx:182`、`PanoramaNodeToolbar.tsx:106`、`TextNodeToolbar.tsx:143` 及 `shared/image/ImageNodeToolbar.tsx:347`，均位于 `src/components/nodes/shared/`。只共享展示循环，继续使用 UI Kit 和既有工具栏配置，不再造工具栏框架。
+
+Q30 样例：speech 的 245/246/250 行、mureka 的 346/348/349 行、youchuan 的 195/229 行、wan3 的 386/388 行。统计未包含 46 个含模板函数的条目，也不意味着其余相似字段可强行共享。仓内未找到该快照的生成器，当前 manifest 是共享权威；已存在 [完整目录 SHA256 回归](../../tests/services/runninghubModelManifest.test.ts#L14) 和独立枚举副本断言。提取后最终序列化目录必须保持原摘要，不能更新基线来掩盖行为变化。
+
+### 旧候选与暂缓项
+
+- **Q23 仍成立**：`projectSnapshotService.ts:23/30/44/94/102` 的旧过滤表、DOM 过滤和同步编码只被旧测试使用；实际入口走 Worker。可删约 35 行业务及相应旧专属测试，保留数据 URL 校验、几何/媒体装载与 Worker 回归。
+- **Q24 仍为小收益候选**：视频窗口发送 envelope 可在同模块共享，估计 15～30 行；保持先 await 动态导入 event、后构造 payload 的时机，保留语义化导出及固定窗口/事件对，不扩展任意目标消息入口。
+- 资产搜索窗与主侧栏的标签/分类查询约可减 10～25 行、添加菜单约 15～25 行，但两个窗口的配置保存和加载所有权不同。已有 `AssetThumb` 与视频预览 Hook，后续只顺手复用纯函数/小菜单，不合并整个资产窗口。
+- Aigcsi 与 Relayon 的目录匹配函数体相同，但仅约十行，闭包各自绑定已核对目录；IDB request Promise 包装和存储 CRUD 日志包装也重复但收益有限。先不新增跨模块框架；尤其 `loadPresets` 抛错而 `loadSkills/loadStyles` 降级空列表，不能按外观相似合并错误合同。
+- 没有入边的 `projectRepository.ts`、`projectModelMigration.ts` 仍承担旧源只读/备份准备和演练；`projectModelFixtureHost.ts` 是隔离夹具入口。`scripts/project-model-boundaries.json` 记录其保留/移除条件，不能据生产导入数为零直接删除。`videoEditor/rulerTicks.ts` 只是两行兼容重导出，收益不足。
+- 新旧项目库和 v3/v4 交换路径继续保留，正式迁移仍关闭；目前只共享同一合同的纯逻辑，不以精简为由启用迁移、删旧库或合并恢复流程。现行数据库版本以源码为准，旧规则中的 v22 已落后于 `indexedDb/schema.ts` 的 v27。
+- 网页与厂商文档的 DNS 混合记录处理不同；Blender 先挂起创建、绑定 Job 后恢复线程；归档/凭据/S3 各有耐久和原子发布合同。上述差异是业务和安全边界，保留。
+- 原生大型依赖均发现实际调用；动画库也没有“只因用了两种动画工具就能删其中一种”的证据。CI 已使用平台矩阵，不为合并 checkout/setup 片段改动正式发布门禁。
+
+### 分批实施与验收
+
+1. **第一批，直接删除和已有实现复用**：Q23、Q27、Q28 的文本预设部分、Q29、Q30；每项独立提交，保留行为和目录摘要。先迁移真实入口回归再删只验证旧方法的用例。Q30 只做数据提取，不顺带更新厂商目录。
+2. **第二批，节点与 Agent 收敛**：Q26、Q25 分别实施，随后 Q28 布局、Q31、Q39；Q32 收益小，等相关功能修改时顺手处理。两个行为分叉优先安排设计与验收；新增共享函数先限定在所属领域，避免新的“万能服务”。
+3. **第三批，原生基础件**：Q33～Q35 各做最小替换；Q36～Q38 等上述结果稳定后再做。需要重新编译桌面端并在相关系统验收，Web 展示不能替代。
+
+每批从独立测试项目开始；删除/归档/恢复前先导出备份，准备普通项目、剧集多画布、共享素材及至少两个可切换项目。尚未改业务，以下为实施后的验收要求，不是本轮已执行结果：
+
+| 范围 | 操作顺序及预期 | 异常与回归 |
+|---|---|---|
+| 新建/清理/缩略图 | 依次通过浮动菜单、侧栏、右键、数字快捷键、连线、双击及拖放创建；模型身份/参数与明确的尺寸合同一致，单节点新建保持一次撤销，批量导入保留既有历史粒度；保存重开能恢复 Worker 缩略图 | 源素材不误绑模型，取消拖放无写入；缩略图 Worker/媒体失败沿用降级；删三闲置方法不影响真实拖放 |
+| 选区删除 | 单节点、纯边、混合、超过 50 节点、组后代、最后成员与手工空组依次删除；每次一次撤销/重做，存活引用和共享文件保留 | 连续 Delete、生成中删除、动画期间切项目/撤销/导入同 ID；旧完成回调不得影响新状态，文件暂存/恢复合同保留 |
+| 工具栏/参数/目录 | 五种工具栏检查长按编辑、zone 顺序、更多菜单、插件/历史弹窗；模型参数切换检查必填、枚举、默认值；347 项目录最终 JSON 摘要不变 | `0/false` 不丢失，空值过滤一致；顺序预设取消、目标删除/切项目不触发迟到生成；深浅主题与减少动态效果正常；真实生成另按授权执行 |
+| Agent/插件 | 在 Plan/B/C 和 MCP 入口分别检查允许、拒绝、待确认、取消；事件/指标/步骤恰好一次；插件项目资源和包资源都可按原授权读取 | 变更模式、审批期间切项目、停用/更新插件、双摘要变化、invocation 过期必须拒绝，错误资源不跨版本回写；确认策略不变 |
+| 独立助手等待器 | 独立助手发送、收回/关闭、回读团队产物及受管理操作，核对同请求只完成一次，原返回值与错误保持 | 主窗口关闭、切项目、延迟安装 listener、超时、身份不匹配及迟到 ACK 不完成其他请求；保留草稿和未确认提示，不自动重投 |
+| 原生路径/随机数 | AgentPackage 导入、插件安装、缩略图、Comfy 目录、Muse 会话、TOS/S3 授权依次检查；普通/UNC 路径及原身份格式保持 | 链接/reparse/私有目录仍拒绝；缺文件与 canonicalize 失败错误保持；随机源失败拒绝，业务令牌不能互换；跨平台分别验收 |
+| 后续原生项 | 网页/文档分别读取并检查同源跳转；Codex/Python/Comfy 正常退出、取消、超时及应用退出；Blender 合法 scene ID/摘要成功 | localhost、mapped IPv6、fake-IP、混合 DNS、跨源跳转维持原策略；绑定失败回收子进程；Blender suspended-start 和一般 opaque ID 合同独立 |
+
+已有定向回归入口供后续实施复用；若用户授权执行，在仓库根目录运行以下对应批次命令，本轮均未运行：
+
+```powershell
+npx vitest run tests/services/projectSnapshotService.test.ts tests/hooks/useNodeCreation.test.tsx tests/components/nodeMenuModelPreferences.test.tsx tests/services/mediaParameterMappings.test.ts tests/services/runninghubModelManifest.test.ts
+npx vitest run tests/store/history.test.ts tests/services/gridAssetRoundTrip.test.ts tests/services/fsTrash.test.ts tests/services/videoEditorWindowService.test.ts
+npx vitest run tests/services/chat/agentToolExecution.test.ts tests/services/chat/agentRoundExecutor.test.ts tests/services/pluginResourceService.test.ts
+```
+
+现有下游用例不能替代六种新建入口、两个删除 Hook 的直接回归；实施时需补其调用时序和过期场景。Rust 检查与三平台桌面验收须按实际改动范围另行授权，不因列出建议命令就自动执行。
+
+回滚按批撤销代码与对应回归，不改数据库/归档格式、不清旧数据。只保留实际 diff、行为变化和验收缺口；完成后回填每项净减及验证结果，不以本轮估计提前记为完成。
+
+## 2026-11-15 第一批实施结果
+
+状态：用户已确认按方案实施第一批并保留原有功能，五项已完成源码修改和静态复核，并按后续要求本地提交；本次未运行测试，待用户验收。未运行 lint、类型检查、构建、性能基准、Tauri 或模型调用，未推送。第二批的默认数据/删除流程、工具栏布局及全部原生项尚未纳入本次提交。
+
+### 完整文件范围与实际变化
+
+业务源码共 8 个文件；下表相对本批改动前计算，包含新增共享函数，不含测试/文档。字节统一按 UTF-8、LF 换行统计，避免工作区 CRLF 与 Git LF 的差异影响比较。
+
+| 项目 | 业务文件 | 已实现内容与净变化 |
+|---|---|---|
+| Q23 | [projectSnapshotService.ts](../../src/services/projectSnapshotService.ts) | 删除旧 DOM 过滤表、同步编码及两个无生产消费者的导出，净减 35 行；保留 `captureCurrentCanvasSnapshot`、Worker 编码、媒体读取与失败降级 |
+| Q27 | [useNodeCreation.ts](../../src/hooks/useNodeCreation.ts) | 删除仅暴露但生产未调用的 `addImageNode/addVideoNode/addAudioNode` 及返回属性，净减 79 行；双击、浏览器/原生拖放及其历史粒度保持 |
+| Q28 文本部分 | [TextNodeToolbar.tsx](../../src/components/nodes/shared/TextNodeToolbar.tsx) | 预设执行委托已有 `executeToolbarPreset`，净减 16 行；保留事件拦截、点击时读最新节点/预设、顺序预设优先和节点/边/生成顺序；布局未改 |
+| Q29 | [imageParameterMappings.ts](../../src/services/ai/imageParameterMappings.ts)、[audioParameterMappings.ts](../../src/services/ai/audioParameterMappings.ts)、[videoParameterMappings.ts](../../src/services/ai/videoParameterMappings.ts)、新增 [parameterMappings.ts](../../src/services/ai/parameterMappings.ts) | 三种媒体保留领域解析器/类型/配置表，只共享字段复制循环；合计净减 7 行。保留 `0/false`、空值过滤、静态值覆盖和数组引用，未引入通用生成器 |
+| Q30 | [runninghubModelManifest.ts](../../src/services/ai/providers/runninghubModelManifest.ts) | 31 组完全相同参数以纯字面量工厂复用，64 个端点各自创建独立嵌套对象，不额外保存可变模板数组或引入克隆步骤；净减 30,362 字节，行数增加 33 行 |
+
+业务合计净减 **104 行、35,702 字节**；其中 Q30 是目录数据文本去重，不能用行数衡量收益。没有新增依赖、原生命令或持久化字段，没有迁移或删除用户数据；没有性能或包体积实测结论。
+
+另修改现有 5 个回归文件，合计行数不变：
+
+- [projectSnapshotService.test.ts](../../tests/services/projectSnapshotService.test.ts)：删除三个只验证旧辅助的用例和专属桩，保留 26 个有效用例，包括真实 Worker 编码预算、WebKit 降级、媒体与几何。
+- [useNodeCreation.test.tsx](../../tests/hooks/useNodeCreation.test.tsx)：文本偏好改走实际双击入口，源媒体不绑定历史模型的断言迁到 PNG/MP4/MP3 原生拖放；真实菜单音频偏好已有 `nodeMenuModelPreferences.test.tsx` 覆盖，未重复新增。
+- [presetNodeWorkflow.test.ts](../../tests/components/presetNodeWorkflow.test.ts)：共享执行器的四类既有场景扩展至 `ai-text`；保留源引用、顺序预设、过期来源/预设和派生参数断言。
+- [mediaParameterMappings.test.ts](../../tests/services/mediaParameterMappings.test.ts)：补三类媒体 `0/false` 与空值、动态值覆盖静态默认且不污染默认、参考数组身份回归。
+- [runninghubModelManifest.test.ts](../../tests/services/runninghubModelManifest.test.ts)：保留完整 347 项合同原 SHA-256 基线，新增参数及嵌套对象跨端点独立性的递归回归。
+
+文档只更新本文和 [计划索引](./计划索引.md)。本批共 8 个业务文件、5 个现有回归文件及 2 个文档；工作区其他发版流程和规则改动保留。
+
+### 静态结论与验收缺口
+
+已核对删去方法/导出的生产消费者、文本工具栏与共享预设的调用顺序、参数复制条件、差异空白及 UTF-8/BOM。Q30 将工厂调用在源文本中替回原字面量后，与改动前源码在换行统一后完全一致，347 端点顺序、其他字段及 46 条原模板表达式未改；这属于源码差异核对，**没有执行目录导入或哈希断言**。文本工具栏组件到执行器的委托也只有源码证据，没有运行真实点击验收。
+
+Tauri 桌面验收请准备独立测试项目、有效文本/音频模型偏好、本地 PNG/MP4/MP3、普通及顺序文本预设、RunningHub 配置；按以下顺序操作：
+
+1. 双击画布创建文本，再通过已有菜单创建图片/视频/音频，核对实际模型绑定与原参数；拖入三种本地媒体，预期仍为 source，不被历史模型自动绑定。回归取消、复制失败、复制期间切项目，以及单节点撤销/重做；多文件导入保持原历史粒度。
+2. 在文本节点执行普通、自定义及顺序预设，预期读取最新提示词/预设，派生节点带原来源 `@` 引用，节点与边共同撤销；顺序预设先进入原编排。编辑/清空预设、删除来源后不应借旧闭包执行；真实模型提交会计费，按需单独验收。
+3. 在项目库检查含图片、文字和分镜的画布缩略图，切换画布、保存重开；正常显示，跨域/Comfy 图片失败与 Worker 不可用继续沿原路径降级，不影响保存。
+4. 检查图片/视频/音频参数：`0/false`、空输入、参考媒体、透明 PNG 与音乐默认值按原合同处理；切换 RunningHub speech、mureka、wan3 等相同参数组端点，名称/顺序/默认/必填和旧 ID 恢复保持，修改一端点参数不污染另一端点。真实请求体及完整目录摘要仍需下列回归执行后才能确认。
+
+如由用户执行，在仓库根目录运行以下定向回归；助手本轮未执行：
+
+```powershell
+npx vitest run tests/services/projectSnapshotService.test.ts tests/store/projects.test.ts tests/hooks/useNodeCreation.test.tsx tests/components/nodeMenuModelPreferences.test.tsx tests/components/presetNodeWorkflow.test.ts tests/services/mediaParameterMappings.test.ts tests/services/runninghubModelManifest.test.ts tests/services/runninghubMedia.test.ts tests/services/modelCapabilityTemplateCompatibility.test.ts
+```
+
+需要类型/构建检查时再按授权执行 `npm run typecheck`、`npm run test:typecheck` 和 `npm run build`。本批仅按上列 13 个源码/回归文件撤销对应差异即可回滚；已有数据和目录合同不迁移，其他工作区改动不随之回退。

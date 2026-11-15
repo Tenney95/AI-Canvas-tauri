@@ -1,6 +1,6 @@
 /**
  * useNodeCreation — 节点创建 Hook
- * 封装所有节点创建方法（文本/图片/视频/音频）、文件拖放（浏览器 + Tauri 原生）
+ * 封装双击新建文本、文件拖放（浏览器 + Tauri 原生）
  */
 import { t } from '../i18n';
 
@@ -54,82 +54,6 @@ export function useNodeCreation() {
           status: 'idle' as const,
           nodeWidth: opts?.width ?? 280,
           nodeHeight: opts?.height ?? 160,
-          ...defaultModel,
-        },
-      } as RFNode<BaseNodeData>);
-    },
-    [addNode],
-  );
-
-  const addImageNode = useCallback(
-    async (position: { x: number; y: number }, opts?: { label?: string; dataUrl?: string }) => {
-      const dataUrl = opts?.dataUrl;
-      const isGenerator = !dataUrl;
-      const defaultModel = isGenerator ? getPreferredNodeModel('ai-image', useAppStore.getState()) : null;
-      const dims = dataUrl
-        ? await computeImageNodeDimensions(dataUrl)
-        : { nodeWidth: 280, nodeHeight: 158 };
-      addNode({
-        id: `node-${generateId()}`,
-        type: 'ai-image',
-        position,
-        data: {
-          label: opts?.label ?? '生成图像',
-          type: 'ai-image' as const,
-          role: dataUrl ? ('source' as const) : ('generator' as const),
-          status: dataUrl ? ('success' as const) : ('idle' as const),
-          ...(dataUrl
-            ? { imageUrl: dataUrl }
-            : { prompt: '', aspectRatio: '16:9' as const, imageSize: '2K' as const }),
-          ...dims,
-          ...defaultModel,
-        },
-      } as RFNode<BaseNodeData>);
-    },
-    [addNode],
-  );
-
-  const addVideoNode = useCallback(
-    (position: { x: number; y: number }, opts?: { label?: string; dataUrl?: string }) => {
-      const dataUrl = opts?.dataUrl;
-      const isGenerator = !dataUrl;
-      const defaultModel = isGenerator ? getPreferredNodeModel('ai-video', useAppStore.getState()) : null;
-      addNode({
-        id: `node-${generateId()}`,
-        type: 'ai-video',
-        position,
-        data: {
-          label: opts?.label ?? '生成视频',
-          type: 'ai-video' as const,
-          role: dataUrl ? ('source' as const) : ('generator' as const),
-          status: dataUrl ? ('success' as const) : ('idle' as const),
-          ...(dataUrl ? { videoUrl: dataUrl } : { prompt: '' }),
-          nodeWidth: 280,
-          nodeHeight: 160,
-          ...defaultModel,
-        },
-      } as RFNode<BaseNodeData>);
-    },
-    [addNode],
-  );
-
-  const addAudioNode = useCallback(
-    (position: { x: number; y: number }, opts?: { label?: string; dataUrl?: string }) => {
-      const dataUrl = opts?.dataUrl;
-      const isGenerator = !dataUrl;
-      const defaultModel = isGenerator ? getPreferredNodeModel('ai-audio', useAppStore.getState()) : null;
-      addNode({
-        id: `node-${generateId()}`,
-        type: 'ai-audio',
-        position,
-        data: {
-          label: opts?.label ?? '生成音频',
-          type: 'ai-audio' as const,
-          role: dataUrl ? ('source' as const) : ('generator' as const),
-          status: dataUrl ? ('success' as const) : ('idle' as const),
-          ...(dataUrl ? { audioUrl: dataUrl } : { prompt: '' }),
-          nodeWidth: 260,
-          nodeHeight: 140,
           ...defaultModel,
         },
       } as RFNode<BaseNodeData>);
@@ -385,9 +309,6 @@ export function useNodeCreation() {
 
   return {
     addTextNode,
-    addImageNode,
-    addVideoNode,
-    addAudioNode,
     isDragOver,
     onDragEnter,
     onDragOver,
