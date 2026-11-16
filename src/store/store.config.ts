@@ -23,7 +23,7 @@ import {
   syncAuthorizedDirectories,
   type ProjectSaveData,
 } from '../services/fileService';
-import { setLocale } from '../i18n';
+import { setLocale, t } from '../i18n';
 import { applyConfigPatch, ConfigConflictError, configValuesEqual, configWithoutSecrets, createConfigPatch } from '../services/configPatch';
 import { areSettingsMutationsFrozen, registerSettingsPersistence } from '../services/configPersistenceQueue';
 import { getCanvasZoomRange, MAX_CANVAS_ZOOM, MIN_CANVAS_ZOOM, normalizeCanvasZoom } from '../utils/canvasViewportPreferences';
@@ -34,6 +34,7 @@ import { hydrateRunningHubAliases, isRunningHubCredentialAlias } from '../servic
 import { normalizeComfyRefmodAssets } from '../utils/comfyRefmod';
 import { getProviderPolicy } from '../services/ai/providerPolicies';
 import { parseCreationProfile } from '../services/creationProfiles/creationProfileManifest';
+import { getBillingStorageErrorMessage } from '../services/billing/billingStorageErrors';
 
 const defaultConfig: AppConfig = {
   providers: {},
@@ -680,8 +681,8 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
         try {
           await import('../services/billing/volcengineBillingService')
             .then(({ syncBillingStoragePath }) => syncBillingStoragePath(merged));
-        } catch {
-          get().showToast('设置已保存，但火山方舟账本目录未能同步，原账本已保留；请检查目录权限或同名账本冲突', 'error');
+        } catch (error) {
+          get().showToast(t('设置已保存，但火山方舟账本目录同步失败：{reason}', { reason: t(getBillingStorageErrorMessage(error)) }), 'error');
         }
         if (committedFailure !== undefined) throw committedFailure;
         if (unstored.length) throw new Error('配置已保存，但凭据存储不可用，API Key 仅本次会话有效');
@@ -776,8 +777,8 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (r
       try {
         await import('../services/billing/volcengineBillingService')
           .then(({ syncBillingStoragePath }) => syncBillingStoragePath(merged));
-      } catch {
-        get().showToast('火山方舟账本目录未能同步，原账本已保留；请检查保存根目录或单独设置的账本目录', 'error');
+      } catch (error) {
+        get().showToast(t('火山方舟账本目录同步失败：{reason}', { reason: t(getBillingStorageErrorMessage(error)) }), 'error');
       }
     } catch {
       get().showToast('配置已加载，但文件目录授权同步失败', 'error');

@@ -4,10 +4,10 @@
 use rusqlite::{params, params_from_iter, types::Value, Connection, OpenFlags};
 use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::{Path, PathBuf}, sync::{Mutex, MutexGuard}, time::Duration};
+use std::{fs, path::{Component, Path, PathBuf}, sync::{Mutex, MutexGuard}, time::Duration};
 use tauri::{Manager, Webview};
 
-use crate::path_policy::{authorize_existing_plain_directory, authorize_existing_plain_file, ensure_trusted_caller};
+use crate::path_policy::{authorize_existing_plain_directory, authorize_existing_plain_file, authorize_path, ensure_trusted_caller, is_link_or_reparse, PathAccess};
 
 #[derive(Default)]
 pub struct BillingStoragePath(pub Mutex<Option<PathBuf>>);
@@ -97,6 +97,99 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let directory = selected_directory(app)?;
     fs::create_dir_all(&directory).map_err(|_| "账本目录不可创建，请检查目录权限")?;
     checked_database_path(app, &directory)
+}
+
+fn probe_authorization_error(error: String) -> String {
+    let message = if error.starts_with("应用私有目录") { "账本目录涉及应用私有区域，不能访问" }
+    else if error.starts_with("路径未获授权") { "账本目录未获授权，请重新选择保存根目录或账本目录" }
+    else { "账本目录无法解析或不可访问，请检查目录权限" };
+    message.into()
+}
+
+fn missing_default_history_root(directory: &Path, app_data: &Path) -> bool {
+    (directory == app_data.join("billing") || directory == app_data.join("data").join("billing"))
+        && matches!(fs::symlink_metadata(app_data), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// 不创建缺失目录；只借 Write 路径校验授权第一层缺失子目录，不进行任何写入。
+fn history_probe_directory(app: &tauri::AppHandle, directory: &Path) -> Result<Option<PathBuf>, String> {
+    let raw = directory.to_str().ok_or("账本探测目录格式无效")?;
+    if raw.len() > 32_768 || raw.trim() != raw || raw.chars().any(char::is_control)
+        || !directory.is_absolute() || directory.components().any(|part| matches!(part, Component::ParentDir)) {
+        return Err("账本探测目录格式无效".into());
+    }
+    // 首次安装可能连应用数据目录都不存在；只对两个原生固定默认位置短路。
+    let app_data = app.path().app_data_dir().map_err(|_| "无法确定原账本目录")?;
+    if missing_default_history_root(directory, &app_data) { return Ok(None); }
+    let mut current = directory;
+    let mut first_missing = None;
+    loop {
+        match fs::symlink_metadata(current) {
+            Ok(metadata) => {
+                if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+                    return Err("账本目录不是普通目录或包含链接".into());
+                }
+                if let Some(missing) = first_missing {
+                    authorize_path(app, missing, PathAccess::Write).map_err(probe_authorization_error)?;
+                    return Ok(None);
+                }
+                // 先保留可分类的授权错误，再复用既有普通目录/真实路径校验。
+                authorize_path(app, raw, PathAccess::Read).map_err(probe_authorization_error)?;
+                return authorize_existing_plain_directory(app, raw).map(Some)
+                    .map_err(|_| "账本目录不是普通目录、不可访问或未获授权".into());
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                first_missing = Some(current.to_str().ok_or("账本探测目录格式无效")?);
+                current = current.parent().ok_or("账本目录无法解析或不可访问，请检查目录权限")?;
+            },
+            Err(_) => return Err("账本目录不可访问，请检查目录权限".into()),
+        }
+    }
+}
+
+fn history_probe_files(directory: &Path, mut authorize: impl FnMut(&Path) -> Result<(), String>) -> Result<bool, String> {
+    let mut main_exists = false;
+    let mut sidecar_exists = false;
+    for suffix in ["", "-wal", "-shm"] {
+        let file = directory.join(format!("{DATABASE_FILE}{suffix}"));
+        match fs::symlink_metadata(&file) {
+            Ok(metadata) => {
+                if !metadata.is_file() || is_link_or_reparse(&metadata) {
+                    return Err("账本历史文件不是普通文件或包含链接".into());
+                }
+                authorize(&file)?;
+                if suffix.is_empty() { main_exists = true; } else { sidecar_exists = true; }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => return Err("账本历史文件不可访问，请检查目录权限".into()),
+        }
+    }
+    if !main_exists && sidecar_exists {
+        return Err("账本附属文件存在但主库缺失，请先恢复原账本".into());
+    }
+    Ok(main_exists)
+}
+
+/// 固定账本的只读存在性探测；不打开 SQLite，也不创建目录、空库或切换活动路径。
+#[tauri::command]
+pub fn billing_has_history(webview: Webview, app: tauri::AppHandle, path: Option<String>) -> Result<bool, String> {
+    ensure_trusted_caller(&webview)?;
+    let _operation = lock_operations()?;
+    let mut directories = vec![selected_directory(&app)?];
+    if let Some(path) = path {
+        let target = PathBuf::from(path);
+        if !directories.contains(&target) { directories.push(target); }
+    }
+    let mut found = false;
+    for directory in directories {
+        if let Some(directory) = history_probe_directory(&app, &directory)? {
+            found |= history_probe_files(&directory, |file| {
+                authorize_existing_plain_file(&app, file.to_str().ok_or("账本探测目录格式无效")?)
+                    .map(|_| ()).map_err(|_| "账本历史文件无法读取或未获授权".into())
+            })?;
+        }
+    }
+    Ok(found)
 }
 
 fn verify_database(path: &Path) -> Result<(), String> {
@@ -429,6 +522,60 @@ pub fn billing_export(webview: Webview, app: tauri::AppHandle, filter: BillingFi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_probe_never_creates_or_modifies_a_ledger() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("ai-canvas-billing-probe-{}-{unique}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let missing_app_data = directory.join("uncreated-app-data");
+        assert!(missing_default_history_root(&missing_app_data.join("billing"), &missing_app_data));
+        assert!(missing_default_history_root(&missing_app_data.join("data").join("billing"), &missing_app_data));
+        assert!(!missing_default_history_root(&missing_app_data.join("secrets").join("billing"), &missing_app_data));
+        assert!(!missing_default_history_root(&directory.join("elsewhere").join("billing"), &missing_app_data));
+        assert!(!missing_app_data.exists());
+        assert!(!history_probe_files(&directory, |_| Ok(())).unwrap());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        let database = directory.join(DATABASE_FILE);
+        for bytes in [b"".as_slice(), b"damaged-ledger".as_slice()] {
+            fs::write(&database, bytes).unwrap();
+            let mut authorized = Vec::new();
+            assert!(history_probe_files(&directory, |file| { authorized.push(file.to_path_buf()); Ok(()) }).unwrap());
+            assert_eq!(authorized, vec![database.clone()]);
+            assert_eq!(history_probe_files(&directory, |_| Err("账本历史文件无法读取或未获授权".into())).unwrap_err(),
+                "账本历史文件无法读取或未获授权");
+            assert_eq!(fs::read(&database).unwrap(), bytes);
+            assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        }
+        fs::remove_file(database).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn history_probe_preserves_orphaned_sidecars_and_rejects_non_file_conflicts() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!("ai-canvas-billing-probe-conflict-{}-{unique}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let sidecar = directory.join(format!("{DATABASE_FILE}-wal"));
+        fs::write(&sidecar, b"retained-wal").unwrap();
+        assert_eq!(history_probe_files(&directory, |_| Ok(())).unwrap_err(), "账本附属文件存在但主库缺失，请先恢复原账本");
+        assert_eq!(fs::read(&sidecar).unwrap(), b"retained-wal");
+        fs::remove_file(sidecar).unwrap();
+        let database = directory.join(DATABASE_FILE);
+        fs::create_dir(&database).unwrap();
+        assert_eq!(history_probe_files(&directory, |_| Ok(())).unwrap_err(), "账本历史文件不是普通文件或包含链接");
+        fs::remove_dir(&database).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn history_probe_authorization_errors_do_not_reflect_source_paths() {
+        assert_eq!(probe_authorization_error("路径未获授权，请先在设置中添加该目录: fixture-私有-folder".into()),
+            "账本目录未获授权，请重新选择保存根目录或账本目录");
+        assert_eq!(probe_authorization_error("应用私有目录不允许通过该命令访问".into()), "账本目录涉及应用私有区域，不能访问");
+        assert_eq!(probe_authorization_error("路径不存在或无法访问: fixture-folder".into()),
+            "账本目录无法解析或不可访问，请检查目录权限");
+    }
 
     #[test]
     fn owner_alias_query_binds_original_canvas_ids_and_empty_is_not_global() {

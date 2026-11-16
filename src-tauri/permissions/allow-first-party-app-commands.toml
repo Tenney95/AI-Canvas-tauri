@@ -14,6 +14,7 @@ commands.allow = [
   "billing_export",
   "billing_set_storage_path",
   "billing_get_storage_path",
+  "billing_has_history",
   "fetch_image_data_url",
   "open_comfy_media_source",
   "close_comfy_media_source",

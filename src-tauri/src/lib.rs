@@ -1941,6 +1941,7 @@ pub fn run() {
             billing::billing_export,
             billing::billing_set_storage_path,
             billing::billing_get_storage_path,
+            billing::billing_has_history,
             fetch_image_data_url,
             comfyui::media_source::open_comfy_media_source,
             comfyui::media_source::close_comfy_media_source,

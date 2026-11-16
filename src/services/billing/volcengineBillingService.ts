@@ -9,6 +9,10 @@ import type { AppConfig } from '../../types';
 import type { PriceQuote } from './volcenginePricing';
 import type { LegacyProjectBinding } from '../../types/project';
 import { getLegacyCanvasAliases } from '../projectExecutionCompatibility';
+import { resolveProviderCatalogId } from '../ai/providerPolicies';
+import { getBillingStorageErrorMessage } from './billingStorageErrors';
+
+export { getBillingStorageErrorMessage } from './billingStorageErrors';
 
 export type BillingStatus = 'submitting' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';
 
@@ -59,20 +63,40 @@ export async function setBillingStoragePath(path: string): Promise<string> {
     window.dispatchEvent(new Event(BILLING_STORAGE_CHANGED_EVENT));
     return result;
   } catch (error) {
-    throw new Error(typeof error === 'string' ? error : '账本目录切换失败，原账本已保留', { cause: error });
+    throw new Error(getBillingStorageErrorMessage(error));
   }
 }
 
-/** 配置与目录授权完成后同步；未单独设置账本目录时，跟随文件保存根目录。 */
-export async function syncBillingStoragePath(config: Pick<AppConfig, 'volcengineBillingPath'>): Promise<void> {
-  if (!isTauriEnv()) return;
+type BillingStorageConfig = Pick<AppConfig, 'volcengineBillingPath'> & Partial<Pick<AppConfig, 'providers'>>;
+
+async function resolveBillingDirectory(config: BillingStorageConfig): Promise<string> {
   const customDirectory = config.volcengineBillingPath?.trim();
   const root = customDirectory ? null : await getBaseDir();
   const directory = customDirectory || (root ? joinPath(root, 'billing') : null);
   if (!directory) throw new Error('无法确定账本的文件保存根目录');
-  if (synchronizedDirectory === directory) return;
-  if (!customDirectory) await mkdir(directory, { recursive: true });
-  await setBillingStoragePath(directory);
+  return directory;
+}
+
+/** 只检查已有文件，不能用 billing_query 探测：查询会初始化空库。 */
+export async function hasBillingHistory(config: BillingStorageConfig = {}): Promise<boolean> {
+  if (!isTauriEnv()) return false;
+  try {
+    return await invoke<boolean>('billing_has_history', { path: await resolveBillingDirectory(config) });
+  } catch (error) { throw new Error(getBillingStorageErrorMessage(error)); }
+}
+
+/** 配置与目录授权完成后同步；没有火山连接且没有已有账本时不初始化。 */
+export async function syncBillingStoragePath(config: BillingStorageConfig): Promise<void> {
+  if (!isTauriEnv()) return;
+  try {
+    const directory = await resolveBillingDirectory(config);
+    if (synchronizedDirectory === directory) return;
+    const configured = Object.entries(config.providers ?? {}).some(([id, provider]) =>
+      resolveProviderCatalogId(id, provider) === 'volcengine' && Boolean(provider.apiKey?.trim() || provider.apiKeyRef?.trim()));
+    if (!configured && !await invoke<boolean>('billing_has_history', { path: directory })) return;
+    if (!config.volcengineBillingPath?.trim()) await mkdir(directory, { recursive: true });
+    await setBillingStoragePath(directory);
+  } catch (error) { throw new Error(getBillingStorageErrorMessage(error)); }
 }
 
 export const getBillingStoragePath = () =>

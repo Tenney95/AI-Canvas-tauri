@@ -342,6 +342,36 @@ describe('config hydration guard', () => {
     expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
   });
 
+  it('账本同步失败显示具体原因，但已保存的普通设置仍确认成功', async () => {
+    fileMocks.loadConfig.mockResolvedValue({ providers: {}, theme: 'dark', language: 'zh-CN' });
+    await useAppStore.getState().loadConfig();
+    const billing = await import('../../src/services/billing/volcengineBillingService');
+    const reason = '目标目录中已存在火山方舟账本，请先选择其他目录';
+    const sync = vi.spyOn(billing, 'syncBillingStoragePath').mockRejectedValueOnce(new Error(reason));
+    const toast = vi.spyOn(useAppStore.getState(), 'showToast').mockImplementation(() => {});
+    try {
+      useAppStore.getState().updateConfig({ theme: 'light' });
+      await expect(useAppStore.getState().saveConfig({ silent: true })).resolves.toBeUndefined();
+      expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
+      expect(useAppStore.getState()).toMatchObject({ configDirty: false, configSaveStatus: 'saved', configSaveError: null,
+        config: { theme: 'light' } });
+      expect(toast).toHaveBeenCalledWith(`设置已保存，但火山方舟账本目录同步失败：${reason}`, 'error');
+    } finally { sync.mockRestore(); toast.mockRestore(); }
+  });
+
+  it('加载设置时账本失败保留已加载状态，并显示同一安全错误分类', async () => {
+    const billing = await import('../../src/services/billing/volcengineBillingService');
+    const reason = '账本文件已损坏，原账本已保留';
+    const sync = vi.spyOn(billing, 'syncBillingStoragePath').mockRejectedValueOnce(new Error(reason));
+    const toast = vi.spyOn(useAppStore.getState(), 'showToast').mockImplementation(() => {});
+    fileMocks.loadConfig.mockResolvedValue({ providers: {}, theme: 'light', language: 'zh-CN' });
+    try {
+      await expect(useAppStore.getState().loadConfig()).resolves.toBeUndefined();
+      expect(useAppStore.getState()).toMatchObject({ configHydrated: true, configSaveError: null, config: { theme: 'light' } });
+      expect(toast).toHaveBeenCalledWith(`火山方舟账本目录同步失败：${reason}`, 'error');
+    } finally { sync.mockRestore(); toast.mockRestore(); }
+  });
+
   it('does not hide a session-only credential warning when directory synchronization also fails', async () => {
     useAppStore.setState({ configHydrated: true });
     fileMocks.saveConfig.mockResolvedValue(['private-ref']);

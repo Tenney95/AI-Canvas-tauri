@@ -42,7 +42,7 @@ import ModalOverlay from '../shared/ModalOverlay';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
 import VolcengineBillingSettings from './VolcengineBillingSettings';
 import GlobalImageHostingSettings from './GlobalImageHostingSettings';
-import { queryBillingRuns } from '../../services/billing/volcengineBillingService';
+import { hasBillingHistory } from '../../services/billing/volcengineBillingService';
 import { saveAutodlWorkflowTemplate, saveWorkflowApiDrafts } from '../../services/workflowApi/workflowApiConfig';
 import { invoke } from '@tauri-apps/api/core';
 import { useT } from '../../i18n';
@@ -262,11 +262,11 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (billingOpen || hasVolcengineConnection || !isTauri()) return;
     let cancelled = false;
-    void queryBillingRuns({}, 1, 1).then((page) => {
-      if (!cancelled) setHasBillingHistory(page.total > 0);
+    void hasBillingHistory({ volcengineBillingPath: config.volcengineBillingPath }).then((exists) => {
+      if (!cancelled) setHasBillingHistory(exists);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [billingOpen, hasVolcengineConnection]);
+  }, [billingOpen, hasVolcengineConnection, config.volcengineBillingPath, config.baseDataDir]);
 
   // 补填密钥或节点请求模型参数：在渲染期直接生效，不用 effect 回写本地 state。
   // 任何一次手动开关对话框都视为消费掉该请求（关闭设置面板时 store 也会清空它）。
