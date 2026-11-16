@@ -329,25 +329,6 @@
   color: var(--theme-text);
   margin: 0;
 }
-.wf-panel-close {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  border-radius: 7px;
-  cursor: var(--cursor-pointer, pointer);
-  transition: color var(--transition-base), background var(--transition-base);
-  padding: 0;
-}
-.wf-panel-close:hover {
-  color: var(--theme-text);
-  background: var(--border-subtle);
-}
-
 /* 左卡片上传与添加，右卡片已导入管理；两张卡片各自独立、各自滚动 */
 .wf-panel-card {
   display: flex;
@@ -485,17 +466,6 @@
 .wf-hint > span {
   flex: 1 1 auto;
   min-width: 0;
-}
-.wf-hint-code {
-  display: inline-block;
-  padding: 0 4px;
-  margin: 0 1px;
-  border-radius: 4px;
-  background: var(--warning-bg);
-  color: var(--warning-light);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  font-weight: 600;
 }
 .wf-count {
   display: inline-flex;
@@ -1051,25 +1021,6 @@ button.wf-ionode-badge.is-default {
   font-weight: 400;
   color: var(--theme-text-muted);
 }
-.assets-panel-close {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  border-radius: 7px;
-  cursor: var(--cursor-pointer, pointer);
-  transition: color var(--transition-base), background var(--transition-base);
-  padding: 0;
-}
-.assets-panel-close:hover {
-  color: var(--theme-text);
-  background: var(--border-subtle);
-}
-
 /* Tabs */
 .assets-tabs {
   display: flex;
@@ -1470,12 +1421,6 @@ button.wf-ionode-badge.is-default {
 }
 
 /* Card info below image */
-.assets-card-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px 10px;
-}
 .assets-card-name {
   font-size: 12px;
   font-weight: 500;
@@ -1484,20 +1429,6 @@ button.wf-ionode-badge.is-default {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.assets-card-cat-tag {
-  display: inline-block;
-  align-self: flex-start;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-.assets-card-cat-tag.cat-image { background: var(--node-image-bg); color: var(--node-image-light); }
-.assets-card-cat-tag.cat-video { background: var(--node-video-bg); color: var(--node-video-light); }
-.assets-card-cat-tag.cat-audio { background: var(--node-audio-bg); color: var(--node-audio-light); }
-.assets-card-cat-tag.cat-text  { background: var(--node-text-bg); color: var(--node-text-light); }
-.assets-card-cat-tag.cat-other { background: rgba(136, 136, 160, 0.12); color: var(--theme-text-secondary); }
-
 /* Toast */
 .assets-toast {
   position: absolute;
@@ -1750,14 +1681,12 @@ button.wf-ionode-badge.is-default {
 .assets-panel--drawer .assets-add-wrap { margin-left: auto; }
 .assets-panel--drawer .assets-waterfall-cols,
 .assets-panel--drawer .assets-waterfall-col { gap: 6px; }
-.assets-panel--drawer .assets-card-info { padding: 6px; }
 .assets-panel--drawer .assets-card-name { font-size: 11px; }
 .assets-panel--drawer .assets-card-actions { right: 3px; bottom: 3px; gap: 2px; }
 .assets-panel--drawer .assets-card-action-btn { width: 24px; height: 24px; }
 .assets-panel--drawer .assets-card-size { top: 3px; right: 3px; padding: 1px 3px; }
 .assets-panel--drawer .assets-card-text-wrap { height: 104px; }
 .assets-panel--drawer .assets-card-text-content { font-size: 10px; padding: 6px 8px 18px; }
-.assets-panel--drawer .assets-folder-row { max-height: 80px; overflow-y: auto; }
 .assets-panel--drawer .assets-file-scroll { overscroll-behavior: contain; }
 
 /* 节点预览并排展示，行高跟着内容走，避免滚动区域把卡片压扁。 */
@@ -1783,19 +1712,6 @@ button.wf-ionode-badge.is-default {
   background: var(--theme-bg);
 }
 .assets-node-media img { width: 100%; height: 100%; object-fit: contain; }
-.assets-node-media-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 6px;
-  border-radius: var(--ui-radius-sm);
-  background: var(--theme-card);
-  color: var(--theme-text-secondary);
-  font-size: 11px;
-}
 .assets-node-text, .assets-node-audio {
   aspect-ratio: 16 / 10;
   min-height: 112px;
@@ -1956,12 +1872,6 @@ button.wf-ionode-badge.is-default {
 .assets-add-menu button:hover { background: var(--theme-hover); color: var(--theme-text); }
 
 /* 外部文件夹行 */
-.assets-folder-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 10px 0;
-}
 .assets-folder-chip {
   display: inline-flex;
   align-items: center;
@@ -2134,16 +2044,6 @@ button.wf-ionode-badge.is-default {
 [data-theme='light'] .assets-column-stepper button:disabled {
   opacity: 0.55;
 }
-[data-theme='light'] .assets-card-cat-tag.cat-image {
-  color: color-mix(in srgb, var(--node-image) 62%, var(--theme-text));
-}
-[data-theme='light'] .assets-card-cat-tag.cat-video {
-  color: color-mix(in srgb, var(--node-video) 68%, var(--theme-text));
-}
-[data-theme='light'] .assets-card-cat-tag.cat-audio {
-  color: color-mix(in srgb, var(--node-audio) 70%, var(--theme-text));
-}
-[data-theme='light'] .assets-card-cat-tag.cat-text,
 [data-theme='light'] .assets-card-tag,
 [data-theme='light'] .assets-card-tag button {
   color: color-mix(in srgb, var(--brand) 76%, var(--theme-text));

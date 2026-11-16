@@ -67,13 +67,6 @@ export async function estimateBrowserStorage(): Promise<StorageEstimate | null> 
   }
 }
 
-/** 用量是否已经逼近配额（用于保存前预警） */
-export async function isStorageUnderPressure(): Promise<StorageEstimate | null> {
-  const estimate = await estimateBrowserStorage();
-  if (!estimate || estimate.quota <= 0) return null;
-  return estimate.ratio >= STORAGE_PRESSURE_RATIO ? estimate : null;
-}
-
 /**
  * 把保存异常翻译成一句用户能看懂的原因，配额类错误会附带实际用量。
  */

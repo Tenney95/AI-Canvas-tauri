@@ -228,24 +228,6 @@ export async function mergeImageWithOverlays(
   return canvas.toDataURL('image/png');
 }
 
-/** 上传 content 数组中本地图片 URL 到远端，替换为公网 URL */
-export async function resolveContentImageUrls(
-  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>,
-  provider = '',
-  signal?: AbortSignal,
-): Promise<string | Array<{ type: string; text?: string; image_url?: { url: string } }>> {
-  if (typeof content === 'string') return content;
-  return mapReferenceImagesInOrder(
-    content, async (part) => {
-      if (part.type === 'image_url' && part.image_url?.url && isLocalImageUrl(part.image_url.url)) {
-        const publicUrl = await uploadToRemote(part.image_url.url, provider, 'image', signal);
-        return { ...part, image_url: { url: publicUrl } };
-      }
-      return part;
-    }, signal,
-  );
-}
-
 /** 上传 imageUrls 数组中的本地图片到远端 */
 export async function resolveImageUrlArray(
   urls: string[],

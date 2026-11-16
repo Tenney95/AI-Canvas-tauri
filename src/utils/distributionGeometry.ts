@@ -117,15 +117,3 @@ export function distributeNodesWithEqualGap(
   const layout = prepareDistributionLayout(getDistributionItems(nodes, selectedNodeIds, axis), axis);
   return applyDistributionPositions(nodes, axis, layout.equalGap(requestedGap));
 }
-
-/** Shift 拖拽：只移动当前间距两侧的节点，并保持这两个节点的共同中心不变。 */
-export function adjustAdjacentNodeGap(
-  nodes: RFNode<BaseNodeData>[],
-  selectedNodeIds: string[],
-  axis: DistributionAxis,
-  gapIndex: number,
-  requestedGap: number,
-): RFNode<BaseNodeData>[] {
-  const layout = prepareDistributionLayout(getDistributionItems(nodes, selectedNodeIds, axis), axis);
-  return applyDistributionPositions(nodes, axis, layout.adjacentGap(gapIndex, requestedGap));
-}

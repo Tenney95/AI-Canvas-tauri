@@ -616,12 +616,6 @@ async function pruneOptionalMediaNode(
   for (const nodeId of chain) delete workflowObj[nodeId];
 }
 
-const EMPTY_MEDIA_INPUT_KEYS: Record<Exclude<WorkflowIONodeType, 'prompt'>, string[]> = {
-  image: ['image'],
-  video: ['video', 'file'],
-  audio: ['audio'],
-};
-
 /**
  * 导入的上传节点可以把未选择文件序列化成 null/空字符串。ComfyUI 会先校验这些节点，
  * 即使它们只接到可选参考位也会让整份 prompt 失败。提交前只清理能够证明为可选的空分支；
@@ -636,7 +630,7 @@ async function pruneUnfilledOptionalMediaBranches(
     if (ioNode.type === 'prompt') continue;
     const inputs = workflowObj[ioNode.nodeId]?.inputs as Record<string, unknown> | undefined;
     if (!inputs) continue;
-    const inputKey = EMPTY_MEDIA_INPUT_KEYS[ioNode.type]
+    const inputKey = MEDIA_LOADER_INPUT_KEYS[ioNode.type]
       .find((key) => Object.prototype.hasOwnProperty.call(inputs, key));
     if (!inputKey) continue;
     const value = inputs[inputKey];

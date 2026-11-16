@@ -1,6 +1,6 @@
 # 全仓代码质量审查与精简建议
 
-最新状态：2026-11-16，第五批 Q40～Q41、第六批 Q42 会话仓储拆分、Q43 恢复查询拆分及 Q44 孤儿样式清理已实现，本次按用户要求与六项算法性能优化及既有生成 schema 一并提交；未运行测试，待用户验收。第六批业务源码与样式净减 64 行，两批累计净减 640 行；范围、静态证据与桌面步骤见文末。
+最新状态：2026-11-16，第五批 Q40～Q41、第六批 Q42～Q44 已提交为 `c89b36b9`；本轮第七批 Q45 面板孤儿样式、Q46 闲置导出与 Q47 重复媒体键表清理已实现，按用户要求单独提交。第七批源码与样式净减 153 行，三批累计净减 793 行；本次未运行测试，待用户验收，范围与桌面步骤见文末。
 
 2026-11-15 记录：第一批已提交为 `19c6b3b2`，第二批 Q26、Q25、Q28 布局、Q31、Q39 已提交为 `6c46dccc`，第三批 Q33～Q38 已提交为 `5dbc443a`；第四批 Q24 已实现并按用户要求提交，Q32 经实际核算保留现状。本轮用户要求普通推送 `master`，不发版本标签；各批仍有用户验收缺口，未运行本轮测试或质检。实际范围、净减、桌面步骤和剩余项见文末；此前基于 `e2023a8b` 的复查快照及早期行号保留当时事实，不代表当前未处理清单。
 
@@ -844,3 +844,24 @@ cargo test --lib blender_runtime::result::tests
 4. 深浅主题及窄窗口下打开设置侧栏、外观预设、存储健康、厂商模型和协议编辑器，核对选中/悬浮/禁用/已配置状态、变量按钮和帮助文字等宽字体；键盘聚焦及自定义外观不应出现视觉回退。
 
 供用户按需执行，运行目录为仓库根目录：`npx vitest run tests/services/indexedDbService.test.ts tests/services/chat/workbenchConversationScope.test.ts tests/services/chat/conversationBranchService.test.ts tests/services/pollManager.test.ts tests/components/appearanceSettings.test.tsx`；类型检查入口为 `npm run typecheck` 与 `npm run test:typecheck`。本轮均未执行，真实桌面及厂商异常场景仍待用户验收。回滚仅合回上述两个搬移块、移除两个新模块、恢复本批删除样式及相关文档差异；不回滚第五批、其他任务或用户数据。
+
+
+## 2026-11-16 第七批：无消费者代码与重复声明清理
+
+已实现，基于 `bd242132`，本批按用户要求单独提交。**本次未运行测试，待用户验收**；未运行 lint、类型检查、构建、性能基准、桌面应用或模型。实施只涉及以下 6 个源码/样式文件，不改权限、依赖、数据库或用户数据。
+
+- **Q45 面板孤儿样式**：`panels.css` 2756 → 2656 行，删除 `wf-panel-close`、`wf-hint-code`、`assets-panel-close`、`assets-card-info`、`assets-card-cat-tag`、`assets-folder-row`、`assets-node-media-badge` 及无消费者变体。保留动态工作流类型类、浅色共用的 `assets-card-tag` / `button` 和现行关闭控件样式。
+- **Q46 闲置导出**：删除 `imageUtils.resolveContentImageUrls`（18 行）、`indexedDbService.getLegacyAssetMeta`（10 行）、`storageQuota.isStorageUnderPressure`（7 行）和 `distributionGeometry.adjustAdjacentNodeGap`（12 行）。确认源码/测试/脚本/SDK无调用及按名称访问，也无模块导出枚举或公共包合同。`LegacyAssetMetaRecord`、旧索引迁移、`STORAGE_PRESSURE_RATIO`、图片上传/有序映射和真实 `adjacentGap` 算法仍有使用并保留；这里只删除入口已空的包装。
+- **Q47 ComfyUI 媒体键表**：`comfyWorkflowService.ts` 两份图片/视频/音频输入键表字面量、键顺序完全一致，均只有只读 `.find` 消费者，删除重复表，复用 `MEDIA_LOADER_INPUT_KEYS`，净减 6 行。上传槽的值类型筛选与空参考分支的存在性/空值判断继续各自处理，不合并这两种判定。
+
+按 UTF-8/LF 实际文件计算，本批源码与样式净减 **153 行**，没有新增模块或改动测试。完成调用链、namespace/动态导入与样式动态类核对、其余正文逐字比对、UTF-8 及差异空白静态核对；自动化和实机结果仍待验证。外观控件或全局资产 CRUD 还可按职责拆分，但纯搬移会增加接线代码，本轮优先落地实质删除项；项目模型迁移夹具与既有兼容入口继续保留。
+
+### 第七批 Tauri 验收与回滚
+
+前置：使用包含本批改动的 Tauri 桌面端，准备含不同尺寸节点的测试项目、工作流及素材侧栏，并为 ComfyUI 准备带上传槽/可选参考分支的已有工作流。
+
+1. 深浅主题、窄窗口及自定义外观下打开工作流面板、素材侧栏和外部文件夹，核对关闭按钮、分类/标签、节点媒体预览、文件夹标签及悬浮/聚焦状态；现有标签及动态输入类型配色不应变化。
+2. 对不同尺寸的多个节点执行平均分布，再用 Shift 拖动间距手柄，核对两侧节点与共同中心、撤销/重做和保存重开；已有实际布局算法与调用保持一致。
+3. ComfyUI 分别使用图片、`video` / `file` 视频槽和音频槽，检查显式素材与普通引用的上传、去重与槽位不足提示。无素材的可选分支仍可摘除，必填分支/独立输出及未知结构保留；主机路径或连线不能被上传文件名覆盖。旧资产索引标签迁移和存储健康占用/压力展示一并回归。
+
+供用户执行，运行目录为仓库根目录：`npx vitest run tests/services/comfyDefaultIONodes.test.ts tests/services/comfyWorkflowAudioIO.test.ts tests/services/comfyMediaRouting.test.ts tests/components/distributionGapHandles.test.tsx tests/services/indexedDbService.test.ts tests/services/storageHealth.test.ts`；按需执行 `npm run typecheck` 与 `npm run test:typecheck`。本轮均未运行，自动化不能代替上述桌面和真实 ComfyUI 验收。回滚仅恢复本批 6 个文件的删除块及键表引用和相关文档，不回退前批提交或用户数据。

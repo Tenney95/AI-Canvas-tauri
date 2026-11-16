@@ -1546,16 +1546,6 @@ export interface LegacyAssetMetaRecord {
   updatedAt: number;
 }
 
-export async function getLegacyAssetMeta(path: string): Promise<LegacyAssetMetaRecord | undefined> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_ASSET_META, 'readonly');
-    const request = tx.objectStore(STORE_ASSET_META).get(path);
-    request.onsuccess = () => resolve(request.result as LegacyAssetMetaRecord | undefined);
-    request.onerror = () => reject(request.error);
-  });
-}
-
 export interface AssetIndexRecord {
   assetId: string;
   path: string;
