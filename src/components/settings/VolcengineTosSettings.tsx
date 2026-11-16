@@ -1,5 +1,10 @@
 import { useT } from '../../i18n';
+import { Icon } from '@iconify/react';
+import { useId, useState } from 'react';
 import type { VolcengineTosConfig, VolcengineTosCredentials } from '../../types/volcengineTos';
+import { openExternal } from './providerConnection/providerConnectionShared';
+
+const SAVED_CREDENTIAL_MASK = '••••••••••••••••';
 
 export default function VolcengineTosSettings({ config, onChange, credentials, onCredentialsChange, disabled = false }: {
   config?: VolcengineTosConfig;
@@ -9,11 +14,13 @@ export default function VolcengineTosSettings({ config, onChange, credentials, o
   disabled?: boolean;
 }) {
   const t = useT();
-  return <section className="provider-config-section" aria-label={t('火山方舟 TOS 上传配置')}>
+  const fieldId = useId();
+  const [editing, setEditing] = useState({ accessKeyId: false, secretAccessKey: false });
+  return <section className="provider-config-section mb-3" aria-label={t('火山方舟 TOS 上传配置')}>
     <div className="provider-section-heading">
       <div>
         <h4>{t('私有 TOS 参考素材上传')}</h4>
-        <p>{t('本地图片、视频和音频上传到自己的北京区私有 Bucket，不使用公共图床。')}</p>
+        <p>{t('图片、视频和音频统一上传到自己的北京区私有 Bucket，外部素材链接也通过 TOS 转存。')}</p>
       </div>
     </div>
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -27,25 +34,34 @@ export default function VolcengineTosSettings({ config, onChange, credentials, o
         <span className="ui-label">{t('区域')}</span>
         <input className="ui-input w-full" value={t('北京（cn-beijing）')} readOnly disabled={disabled} />
       </label>
-      <label className="ui-field">
-        <span className="ui-label">{t('TOS Access Key（AK）')}</span>
-        <input type="password" autoComplete="new-password" className="ui-input w-full" disabled={disabled} value={credentials.accessKeyId}
-          placeholder={config?.credentialRef ? t('已保存，留空保留') : t('填写 TOS Access Key')}
-          onChange={(event) => onCredentialsChange({ ...credentials, accessKeyId: event.target.value })} />
-      </label>
-      <label className="ui-field">
-        <span className="ui-label">{t('TOS Secret Key（SK）')}</span>
-        <input type="password" autoComplete="new-password" className="ui-input w-full" disabled={disabled} value={credentials.secretAccessKey}
-          placeholder={config?.credentialRef ? t('已保存，留空保留') : t('填写 TOS Secret Key')}
-          onChange={(event) => onCredentialsChange({ ...credentials, secretAccessKey: event.target.value })} />
-      </label>
+      {([
+        ['accessKeyId', 'TOS Access Key（AK）', '填写 TOS Access Key'],
+        ['secretAccessKey', 'TOS Secret Key（SK）', '填写 TOS Secret Key'],
+      ] as const).map(([field, label, placeholder]) => <div key={field} className="ui-field">
+        <label className="ui-label" htmlFor={`${fieldId}-${field}`}>{t(label)}</label>
+        <input id={`${fieldId}-${field}`} type="password" autoComplete="new-password"
+          className="ui-input w-full" disabled={disabled}
+          value={config?.credentialRef && !editing[field] && !credentials[field] ? SAVED_CREDENTIAL_MASK : credentials[field]}
+          placeholder={t(placeholder)}
+          onFocus={() => setEditing((current) => ({ ...current, [field]: true }))}
+          onBlur={() => setEditing((current) => ({ ...current, [field]: false }))}
+          onChange={(event) => onCredentialsChange({ ...credentials, [field]: event.target.value })} />
+      </div>)}
     </div>
-    <p className="ui-hint">{t('AK/SK 随连接一起保存到本机凭据存储；更新时须同时填写两项。方舟 API Key 不能代替，也不会借用下方虚拟人像库凭据。')}</p>
-    <p className="ui-hint">{t('通过公网 PUT 上传；北京内网签名链接仅交给方舟读取。TOS 存储和请求按云服务计费。')}</p>
-    <p className="ui-hint">{t('未配置时仍可使用已有公网素材链接；生成时遇到本地素材会提示配置 TOS。此设置不自动创建私域素材资产。')}</p>
-    {(config || credentials.accessKeyId || credentials.secretAccessKey) && <button type="button" disabled={disabled}
-      className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { onChange(undefined); onCredentialsChange({ accessKeyId: '', secretAccessKey: '' }); }}>
-      {t('清除 TOS 配置')}
-    </button>}
+    <div className="ui-stack ui-stack--tight mt-3">
+      <p className="ui-hint">{t('AK/SK 保存后仅显示掩码，不支持再次查看；更新时须重新填写两项。方舟 API Key 不能代替，也不会借用下方虚拟人像库凭据。')}</p>
+      <p className="ui-hint">{t('生成参考素材与人像库上传共用这套 TOS 配置。TOS 存储和请求按云服务计费。')}</p>
+      <p className="ui-hint">{t('使用参考素材前请先配置 TOS；人像库仍需单独启用并配置入库 AK/SK，提交后等待素材变为可用。')}</p>
+    </div>
+    <div className="mt-3 flex flex-wrap items-center gap-3">
+      <button type="button" className="provider-external-link" disabled={disabled}
+        onClick={() => void openExternal('https://console.volcengine.com/iam/keymanage/')}>
+        <Icon icon="mdi:open-in-new" width="13" />{t('前往获取 AK/SK')}
+      </button>
+      {(config || credentials.accessKeyId || credentials.secretAccessKey) && <button type="button" disabled={disabled}
+        className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => { onChange(undefined); onCredentialsChange({ accessKeyId: '', secretAccessKey: '' }); }}>
+        {t('清除 TOS 配置')}
+      </button>}
+    </div>
   </section>;
 }

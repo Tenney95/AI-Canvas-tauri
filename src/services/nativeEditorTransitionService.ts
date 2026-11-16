@@ -8,7 +8,7 @@ import type { VideoEditorAiTransitionRequest } from './videoEditorWindowService'
 import { useAppStore } from '../store/useAppStore';
 import { captureLegacyCanvasContext, isProjectExpectedContextCurrent } from './projectExecutionContext';
 import { extractModelName, resolveGeneralModelConnection, splitCommaSeparatedUrls } from './ai/helpers';
-import { resolveProviderCatalogId } from './ai/providerPolicies';
+import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolicies';
 import { buildCanonicalVideoProtocolVariables, buildVolcengineVideoRequestBody } from './ai/generateVideo';
 import { buildModelProtocolRequest, resolveModelExecutionProfile, submitModelProtocol } from './ai/modelProtocol';
 import { resolvePoll, pollResolvedModelProtocol } from './ai/modelProtocolPoll';
@@ -420,7 +420,8 @@ export async function recoverNativeEditorTransition(operationId: string, anchorN
           resolveNativeProtocolContext(selected.protocol, row.remoteTaskId!, row.pollContext));
         if (selected.catalogId === 'relayonapi' && usesRelayonModelProtocol(selected.model.modelId, selected.profile)) poll.resultUrlFallbackPaths = [...RELAYON_VIDEO_RESULT_URL_PATHS];
         return pollResolvedModelProtocol(poll, selected.apiKey, activeSignal, selected.baseUrl,
-          selected.catalogId === 'minimax' && usesMinimaxModelProtocol(selected.model.modelId, selected.profile) ? assertMinimaxQueryResponse : undefined);
+          selected.catalogId === 'minimax' && usesMinimaxModelProtocol(selected.model.modelId, selected.profile) ? assertMinimaxQueryResponse : undefined,
+          getProviderPolicy(selected.catalogId).upload === 'volcengine-tos');
       })();
     assertModelProtocolResult('video', result);
     if (!result.urls?.[0]) throw new Error('原任务尚未取得视频结果');

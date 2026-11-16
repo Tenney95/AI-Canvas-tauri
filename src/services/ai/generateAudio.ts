@@ -69,6 +69,7 @@ function normalizeProtocolAudioResult(url: string): AudioGenerationResult {
 
 async function resolveGeneralAudioReferenceUrls(
   references: readonly MediaReference[],
+  provider: string | undefined,
   signal?: AbortSignal,
 ): Promise<string[]> {
   const budget = createMediaDataUrlBudget('本次音频模型参考媒体');
@@ -77,9 +78,10 @@ async function resolveGeneralAudioReferenceUrls(
   for (const reference of audioReferences) {
     if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
     const url = getMediaReferenceUrl(reference);
-    // 通用协议模型需要 data URL（base64）；公网 / data: 原样返回
+    // 方舟参考音频统一经当前连接的 TOS；其他通用协议沿用已有 data URL 传输。
     results.push(await resolveMediaReferenceUrl(url, {
-      mode: 'dataUrl', kind: 'audio', signal, dataUrlBudget: budget,
+      ...(provider ? { provider } : {}),
+      mode: provider ? 'publicUrl' : 'dataUrl', kind: 'audio', signal, dataUrlBudget: budget,
     }));
   }
   return results;
@@ -266,7 +268,9 @@ export async function generateAudio(
       };
       const effectiveVariables = usesLibapiProtocol ? libapiAudioVariables(gm.modelId, variables)
         : usesMinimaxProtocol ? minimaxAudioVariables(gm.modelId, variables) : variables;
-      const protocolAudioUrls = await resolveGeneralAudioReferenceUrls(references, signal);
+      const referenceProvider = resolveProviderCatalogId(connection.providerConfigId, connection.provider) === 'volcengine'
+        ? connection.providerConfigId : undefined;
+      const protocolAudioUrls = await resolveGeneralAudioReferenceUrls(references, referenceProvider, signal);
       const urls = await runConfiguredModelProtocol({
         model: gm,
         category: 'audio',

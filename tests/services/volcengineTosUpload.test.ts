@@ -43,12 +43,43 @@ describe('方舟私有 TOS 上传桥', () => {
     expect(result).toBe(signedResult().url);
     expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('upload_volcengine_tos_reference', {
       req: { requestId: expect.stringMatching(/^volcengine-tos-/), bucket: config.bucket, credentialRef: config.credentialRef,
-        kind: 'video', source: { path: 'C:/fixture/large-video.mp4' }, expectedSource },
+        kind: 'video', purpose: 'reference', source: { path: 'C:/fixture/large-video.mp4' }, expectedSource },
     });
     expect(mocks.readFile).not.toHaveBeenCalled();
     expect(mocks.assertData).not.toHaveBeenCalled();
     expect(mocks.readSecret).not.toHaveBeenCalled();
     expect(guard).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['image', 'video', 'audio'] as const)('远端 %s 只传原始 URL 给原生，不在 Renderer 下载或转换 Base64', async (kind) => {
+    const remoteUrl = 'https://cdn.example/reference.bin?signature=fixture%2Bencoded';
+    expect(await uploadVolcengineTosReference(remoteUrl, kind, config)).toBe(signedResult().url);
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('upload_volcengine_tos_reference', {
+      req: { requestId: expect.stringMatching(/^volcengine-tos-/), bucket: config.bucket, credentialRef: config.credentialRef,
+        kind, purpose: 'reference', source: { remoteUrl } },
+    });
+    expect(mocks.readFile).not.toHaveBeenCalled(); expect(mocks.assertData).not.toHaveBeenCalled();
+    expect(mocks.readSecret).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('素材入库用途要求同桶公网预签名链接，不能误用内网推理链接', async () => {
+    const publicResult = { ...signedResult(), url: signedResult().url.replace('.ivolces.com', '.volces.com') };
+    mocks.invoke.mockResolvedValueOnce(publicResult);
+    expect(await uploadVolcengineTosReference(inline, 'image', config, undefined, undefined, undefined, 'asset-ingestion'))
+      .toBe(publicResult.url);
+    expect(mocks.invoke).toHaveBeenCalledWith('upload_volcengine_tos_reference', {
+      req: expect.objectContaining({ purpose: 'asset-ingestion', source: { dataUrl: inline } }),
+    });
+    mocks.invoke.mockResolvedValueOnce(signedResult());
+    await expect(uploadVolcengineTosReference(inline, 'image', config, undefined, undefined, undefined, 'asset-ingestion'))
+      .rejects.toThrow('未返回有效的北京素材入库链接');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('未知用途在调用原生前拒绝，不猜测 URL 类型', async () => {
+    await expect(uploadVolcengineTosReference(inline, 'image', config, undefined, undefined, undefined, 'unknown' as never))
+      .rejects.toThrow('上传用途无效');
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('受限 Data URL 交给原生上传，超过 32 MiB 的内联素材不进入 IPC', async () => {
@@ -83,6 +114,7 @@ describe('方舟私有 TOS 上传桥', () => {
     { name: '过期链接', change: () => ({ ...signedResult(), expiresAt: Date.now() - 1 }) },
     { name: '剩余有效期不足三小时', change: () => ({ ...signedResult(), expiresAt: Date.now() + 2 * 60 * 60 * 1000 }) },
     { name: '缺少签名', change: () => ({ ...signedResult(), url: signedResult().url.split('?')[0] }) },
+    { name: '空签名', change: () => ({ ...signedResult(), url: signedResult().url.replace('fixture-signature', '') }) },
     { name: '错误的对象目录', change: () => ({ ...signedResult(), url: signedResult().url.replace('/ai-canvas/ark-reference/', '/other/') }) },
   ])('拒绝 $name，不将链接写入错误消息', async ({ change }) => {
     const result = change(); mocks.invoke.mockResolvedValueOnce(result);

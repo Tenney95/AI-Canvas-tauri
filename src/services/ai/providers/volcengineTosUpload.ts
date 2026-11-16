@@ -3,12 +3,14 @@ import { invoke } from '@tauri-apps/api/core';
 import type { VolcengineTosConfig } from '../../../types/volcengineTos';
 import { isTauriEnv } from '../../fs/core';
 import { assertMediaDataUrlWithinLimitAsync, isMediaDataUrl, readFileToDataUrl, type MediaDataUrlKind } from '../../fileService';
-import { localMediaUrlToPath } from '../../../utils/mediaUrl';
+import { isRemoteMediaUrl, localMediaUrlToPath } from '../../../utils/mediaUrl';
 import { validateVolcengineTosConfig } from '../../volcengineTosConfigService';
 import { VOLCENGINE_BASE_URL } from '../../../constants/api';
 
 const NATIVE_INLINE_LIMIT = 32 * 1024 * 1024;
 const MIN_SIGNED_URL_LIFETIME_MS = 3 * 60 * 60 * 1000;
+
+export type VolcengineTosUploadPurpose = 'reference' | 'asset-ingestion';
 
 function toVolcengineTosUploadError(error: unknown): Error {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
@@ -44,15 +46,18 @@ export async function uploadVolcengineTosReference(
   signal?: AbortSignal,
   expectedSource?: { digest: string; bytes: number },
   beforeUpload?: () => void,
+  purpose: VolcengineTosUploadPurpose = 'reference',
 ): Promise<string> {
   signal?.throwIfAborted();
-  if (!isTauriEnv()) throw new Error('方舟 TOS 本地素材上传仅支持 Tauri 桌面端');
+  if (!isTauriEnv()) throw new Error('方舟 TOS 素材上传仅支持 Tauri 桌面端');
   if (!config?.bucket || !config.credentialRef) throw new Error('请先在「设置 → API Key → 火山方舟」配置北京私有 TOS Bucket 和 AK/SK；不会改用公共图床');
   validateVolcengineTosConfig(config);
   if (kind === 'other') throw new Error('方舟 TOS 参考素材只支持图片、视频和音频');
+  if (!['reference', 'asset-ingestion'].includes(purpose)) throw new Error('火山 TOS 上传用途无效');
   const path = localMediaUrlToPath(url);
+  const remoteUrl = !path && isRemoteMediaUrl(url) ? url : undefined;
   let dataUrl: string | undefined;
-  if (!path) {
+  if (!path && !remoteUrl) {
     // 大视频必须传原生路径；内联素材仍遵守已有内存预算，不扩大 Base64 IPC。
     dataUrl = isMediaDataUrl(url) ? url : ((await readFileToDataUrl(url, { kind, signal })) ?? undefined);
     if (!dataUrl) throw new Error('无法读取方舟本地参考素材，请重新导入文件');
@@ -67,17 +72,18 @@ export async function uploadVolcengineTosReference(
   try {
     signal?.throwIfAborted();
     const result = await invoke<{ url: string; expiresAt: number }>('upload_volcengine_tos_reference', {
-      req: { requestId, bucket: config.bucket, credentialRef: config.credentialRef, kind,
-        source: path ? { path } : { dataUrl }, ...(expectedSource ? { expectedSource } : {}) },
+      req: { requestId, bucket: config.bucket, credentialRef: config.credentialRef, kind, purpose,
+        source: path ? { path } : remoteUrl ? { remoteUrl } : { dataUrl }, ...(expectedSource ? { expectedSource } : {}) },
     });
     signal?.throwIfAborted();
     beforeUpload?.();
     const signed = new URL(result.url);
-    if (signed.protocol !== 'https:' || signed.hostname !== `${config.bucket}.tos-cn-beijing.ivolces.com`
+    const expectedHost = `${config.bucket}.tos-cn-beijing.${purpose === 'asset-ingestion' ? 'volces' : 'ivolces'}.com`;
+    if (signed.protocol !== 'https:' || signed.hostname !== expectedHost
       || signed.port || signed.username || signed.password || signed.hash
-      || !signed.pathname.startsWith('/ai-canvas/ark-reference/') || !signed.searchParams.has('X-Tos-Signature')
+      || !signed.pathname.startsWith('/ai-canvas/ark-reference/') || !signed.searchParams.get('X-Tos-Signature')
       || !Number.isFinite(result.expiresAt) || result.expiresAt < Date.now() + MIN_SIGNED_URL_LIFETIME_MS) {
-      throw new Error('火山 TOS 未返回有效的北京内网素材链接');
+      throw new Error(purpose === 'asset-ingestion' ? '火山 TOS 未返回有效的北京素材入库链接' : '火山 TOS 未返回有效的北京内网素材链接');
     }
     return result.url;
   } catch (error) {

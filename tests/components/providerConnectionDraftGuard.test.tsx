@@ -20,6 +20,7 @@ vi.mock('react', async () => ({
   },
   useRef: <T,>(value: T) => { const scope = driver.scope!; return scope.values[scope.index++] ??= { current: value }; },
   useMemo: <T,>(factory: () => T) => factory(),
+  useId: () => 'tos-field',
   useEffect: () => {},
 }));
 vi.mock('react-dom', () => ({ createPortal: (children: unknown) => children }));
@@ -44,6 +45,8 @@ import type { ProviderModelSelection } from '../../src/types';
 type Element = ReactElement<Record<string, unknown> & { children?: unknown }>;
 let props: ComponentProps<typeof ProviderConnectionDialog>;
 let tree: unknown;
+let tosScope: HookScope;
+let tosKey: string | null | undefined;
 function elements(value: unknown): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
   if (!value || typeof value !== 'object' || !('props' in value)) return [];
@@ -63,6 +66,16 @@ function hosting() {
 function tos() {
   return elements(tree).find((element) => element.type === VolcengineTosSettings)!.props as unknown as ComponentProps<typeof VolcengineTosSettings>;
 }
+function renderTos() {
+  const element = elements(tree).find((item) => item.type === VolcengineTosSettings)!;
+  const mounted = tosKey !== element.key;
+  if (mounted) { tosScope = { values: [], index: 0 }; tosKey = element.key; }
+  const parentScope = driver.scope;
+  driver.scope = tosScope; tosScope.index = 0;
+  const rendered = VolcengineTosSettings(tos());
+  driver.scope = parentScope;
+  return rendered;
+}
 function button(text: string) {
   return elements(tree).find((element) => element.props.children === text && typeof element.props.onClick === 'function')!;
 }
@@ -76,6 +89,7 @@ function invalidateProtocol() {
 
 beforeEach(() => {
   driver.scope = { values: [], index: 0 };
+  tosScope = { values: [], index: 0 }; tosKey = undefined;
   driver.confirm.mockReset().mockResolvedValue(false);
   driver.providers = {};
   driver.persistTos.mockReset().mockImplementation(async (config: VolcengineTosConfig | undefined, keys: VolcengineTosCredentials) =>
@@ -118,8 +132,7 @@ describe('火山 TOS 配置草稿', () => {
 
   it('TOS 字段使用密码输入，区域固定北京，清除只更新本地草稿', () => {
     prepareVolcengine(existing);
-    const current = tos();
-    const rendered = VolcengineTosSettings(current);
+    const rendered = renderTos();
     const inputs = elements(rendered).filter((element) => element.type === 'input');
     expect(inputs.filter((element) => element.props.type === 'password')).toHaveLength(2);
     expect(inputs.some((element) => element.props.readOnly === true && element.props.value === '北京（cn-beijing）')).toBe(true);
@@ -128,6 +141,41 @@ describe('火山 TOS 配置草稿', () => {
     expect(tos().config).toBeUndefined();
     expect(driver.persistTos).not.toHaveBeenCalled();
     expect(driver.removeTos).not.toHaveBeenCalled();
+  });
+
+  it('掩码聚焦和失焦不标记草稿，未编辑保存沿用旧引用且不把占位写入配置', async () => {
+    prepareVolcengine(existing);
+    let rendered = renderTos();
+    let input = elements(rendered).find((item) => item.props.id === 'tos-field-accessKeyId')!;
+    expect(input.props).toMatchObject({ type: 'password', value: '••••••••••••••••' });
+    (input.props.onFocus as () => void)(); rendered = renderTos();
+    input = elements(rendered).find((item) => item.props.id === 'tos-field-accessKeyId')!;
+    expect(input.props.value).toBe('');
+    (input.props.onBlur as () => void)(); rendered = renderTos();
+    expect(elements(rendered).find((item) => item.props.id === 'tos-field-accessKeyId')?.props.value).toBe('••••••••••••••••');
+    expect(tos().credentials).toEqual({ accessKeyId: '', secretAccessKey: '' });
+    click('保存更改'); await settle();
+    expect(driver.persistTos).toHaveBeenLastCalledWith(existing, { accessKeyId: '', secretAccessKey: '' });
+    const saved = vi.mocked(props.onSave).mock.calls[0][1];
+    expect(saved.tosUpload?.credentialRef).toBe(existing.credentialRef);
+    expect(JSON.stringify(saved)).not.toContain('••••');
+    click('取消'); await settle();
+    expect(driver.confirm).not.toHaveBeenCalled();
+    expect(props.onClose).toHaveBeenCalledOnce();
+  });
+
+  it('清除 TOS 后子表单重新挂载，掩码和密钥草稿不残留', () => {
+    prepareVolcengine(existing);
+    const rendered = renderTos();
+    const input = elements(rendered).find((item) => item.props.id === 'tos-field-accessKeyId')!;
+    (input.props.onFocus as () => void)();
+    (input.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'replacement-ak' } }); render();
+    const clear = elements(renderTos()).find((item) => item.props.children === '清除 TOS 配置')!;
+    (clear.props.onClick as () => void)(); render();
+    const cleared = elements(renderTos()).filter((item) => item.props.id === 'tos-field-accessKeyId' || item.props.id === 'tos-field-secretAccessKey');
+    expect(cleared).toHaveLength(2);
+    for (const input of cleared) expect(input.props).toMatchObject({ type: 'password', value: '' });
+    expect(driver.persistTos).not.toHaveBeenCalled();
   });
 
   it('取消含 TOS 凭据的草稿会确认，确认文案不含 AK/SK，取消不保存凭据', async () => {
@@ -146,7 +194,7 @@ describe('火山 TOS 配置草稿', () => {
     expect(driver.persistTos).not.toHaveBeenCalled();
   });
 
-  it('未配置 TOS 可以保存仅使用公网素材的连接；填写一项密钥则阻止保存', async () => {
+  it('未配置 TOS 仍可保存连接；填写一项密钥则阻止保存', async () => {
     prepareVolcengine();
     click('保存更改'); await settle();
     expect(props.onSave).toHaveBeenCalledOnce();

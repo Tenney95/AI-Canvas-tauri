@@ -47,6 +47,7 @@ import { sha256BytesHex } from '../mediaDataUrl';
 import { persistMediaUrlToProjectData } from '../fileService';
 import { captureNativeMediaLocalResult } from '../nativeMediaLocalResult';
 import { continueNativeMediaTask, createNativeMediaPendingError } from '../nativeMediaTaskContinuation';
+import { redactVolcengineError, redactVolcengineErrorText } from './providers/volcengineError';
 
 interface RunConfiguredModelProtocolOptions {
   model: GeneralModelConfig;
@@ -383,6 +384,7 @@ export async function runConfiguredModelProtocol(
   const provider = useAppStore.getState().config.providers[options.model.providerConfigId];
   if (!provider) throw new Error(`模型“${options.model.name}”的连接配置不存在`);
   const catalogId = resolveProviderCatalogId(options.model.providerConfigId, provider);
+  const usesVolcengineTos = getProviderPolicy(catalogId).upload === 'volcengine-tos';
   const usesRelayonProtocol = catalogId === 'relayonapi' && options.category === 'video'
     && usesRelayonModelProtocol(options.model.modelId, options.model.executionProfile);
   const profile = usesRelayonProtocol
@@ -396,13 +398,30 @@ export async function runConfiguredModelProtocol(
   if (expansionConflicts.length > 0) throw new Error(expansionConflicts[0]);
   const baseUrl = provider.baseUrl?.trim() || '';
   if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
+  const assertPrivatePoll = (value: unknown) => {
+    const serialized = JSON.stringify(value);
+    if (serialized && redactVolcengineErrorText(serialized) !== serialized) {
+      throw new Error('火山轮询描述不能保存 TOS 签名素材链接，请将查询仅绑定任务 ID');
+    }
+  };
+  if (usesVolcengineTos && protocol.poll) {
+    // 轮询描述会持久化；在付费提交前拒绝直接引用签名素材的模板。
+    assertPrivatePoll(protocol.poll);
+    for (const path of collectModelProtocolTemplatePaths(JSON.stringify(protocol.poll))) {
+      if (!path.startsWith('submit.')) assertPrivatePoll(readModelProtocolPathValues(options.variables, path));
+    }
+  }
   if (isCharacterImageTaskContext(options.beforeSubmit)) {
     if (options.category !== 'image') throw new Error('角色目的地只接受图片结果');
     assertReferenceMediaDeliverable(options.model.name, JSON.stringify(protocol), options.variables);
     const { executeCharacterProtocol } = await import('../characterImageTaskRecovery');
-    return executeCharacterProtocol(options.beforeSubmit, { apiKey: provider.apiKey, baseUrl, protocol,
-      variables: options.variables, expectedCount: options.expectedImageOutputs ?? 1, signal: options.signal,
-      mediaDownloadAccess: createMediaDownloadAccess(options.model.providerConfigId, baseUrl, protocol.auth) });
+    try {
+      return await executeCharacterProtocol(options.beforeSubmit, { apiKey: provider.apiKey, baseUrl, protocol,
+        variables: options.variables, expectedCount: options.expectedImageOutputs ?? 1, signal: options.signal,
+        mediaDownloadAccess: createMediaDownloadAccess(options.model.providerConfigId, baseUrl, protocol.auth) });
+    } catch (error) {
+      throw usesVolcengineTos ? redactVolcengineError(error, provider.apiKey) : error;
+    }
   }
   const usesMinimaxProtocol = catalogId === 'minimax'
     && usesMinimaxModelProtocol(options.model.modelId, options.model.executionProfile);
@@ -436,6 +455,7 @@ export async function runConfiguredModelProtocol(
   try {
     signal?.throwIfAborted();
     const submitOptions = { apiKey: provider.apiKey || '', baseUrl, protocol, variables: options.variables, signal, validateResponse,
+      ...(usesVolcengineTos ? { sensitive: true } : {}),
       ...(usesRelayonProtocol ? { normalizeSubmitResponse: normalizeRelayonVideoSubmitResponse } : {}),
       ...(nativeOperation && protocol.mode === 'async' ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(protocol, payload, options.variables, [provider.apiKey || '']) } : {}),
       ...(getProviderPolicy(catalogId).submitIdempotency ? { idempotencyKey: crypto.randomUUID() } : {}),
@@ -519,10 +539,17 @@ export async function runConfiguredModelProtocol(
     }
     if (!submitted.poll || !submitted.taskId) throw new Error('异步调用协议未返回轮询配置');
     const poll = { ...submitted.poll, maxDurationMs: submitted.poll.maxDurationMs ?? MEDIA_POLL_MAX_DURATION_MS,
+      ...(usesVolcengineTos ? { sensitive: true } : {}),
       ...(catalogId === 'relayonapi' && options.category === 'video'
         && usesRelayonModelProtocol(options.model.modelId, options.model.executionProfile)
         ? { resultUrlFallbackPaths: [...new Set(RELAYON_VIDEO_RESULT_URL_PATHS)] } : {}),
     };
+    if (usesVolcengineTos) {
+      // 上游也可能回显素材；只保留安全任务身份，签名输入不能随 resolved poll 落盘。
+      assertPrivatePoll(submitted.taskId);
+      if (receipt) receipt = updatePendingTask(receipt.nodeId, { taskId: submitted.taskId, submitted: true }, receipt.taskId, receipt.attemptId);
+      assertPrivatePoll(poll);
+    }
     if (receipt) receipt = updatePendingTask(receipt.nodeId, { taskId: submitted.taskId, protocolPoll: poll, submitted: true }, receipt.taskId, receipt.attemptId);
 
     const result = await pollResolvedModelProtocol(
@@ -531,16 +558,18 @@ export async function runConfiguredModelProtocol(
       signal,
       baseUrl,
       validateResponse ? assertMinimaxQueryResponse : undefined,
+      usesVolcengineTos,
     );
     assertModelProtocolResult(options.category, result);
     if (!result.urls) throw new Error('媒体模型任务完成但未返回结果 URL');
     if (receipt) updatePendingTask(receipt.nodeId, { mediaRecoveryState: 'delivery_pending' }, receipt.taskId, receipt.attemptId);
     // 每类媒体都在本地保存和目标回填后确认，数组携带当次身份而非读取最新节点任务。
     return Object.assign(result.urls, { mediaDownloadAccess, ...(receipt ? { taskReceipt: receipt } : {}) });
-  } catch (error) {
+  } catch (rawError) {
+    const receivedId = rawError instanceof Error ? (rawError as Error & { nativeTaskId?: unknown }).nativeTaskId : undefined;
+    const error = usesVolcengineTos ? redactVolcengineError(rawError, provider.apiKey) : rawError;
     if (error instanceof Error && ['NativeMediaTaskPending', 'NativeMediaTaskDelivered', 'NativeMediaTaskFailed'].includes(error.name)) throw error;
     if (nativeTask) {
-      const receivedId = error instanceof Error ? (error as Error & { nativeTaskId?: unknown }).nativeTaskId : undefined;
       if (!nativeRemoteId && isSafeNativeProtocolTaskId(receivedId, [provider.apiKey || ''])) nativeRemoteId = receivedId;
       await recordNativeMediaSubmission(nativeTask.operationId, nativeTask.lease, nativeRemoteId ? { taskId: nativeRemoteId }
         : !nativeSent || getHttpResponseError(error)?.definitiveFailure ? { notStarted: true } : { unknown: true }).catch(() => undefined);

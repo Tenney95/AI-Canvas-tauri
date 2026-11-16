@@ -285,6 +285,7 @@ export async function generateImagesBatch(
   const modelName = generalModel?.modelId ?? extractModelName(model, provider);
   const providerDefinition = getProviderDefinition(connectionId, providerConfig);
   const isLibapi = !params.workflowId && providerDefinition?.id === 'libapi';
+  const usesVolcengineTos = !params.workflowId && providerDefinition?.id === 'volcengine';
   if (providerDefinition?.id === 'cccapi' && !providerConfig?.apiKey?.trim()) {
     const group = providerConfig?.cccGroup ? `「${providerConfig.cccGroup}」分组` : '连接';
     throw new Error(`未配置 CCC API ${group}的 API Key\n请在「设置 → API Key」中配置对应连接`);
@@ -382,7 +383,7 @@ export async function generateImagesBatch(
     ? { prompt: rawPrompt, imageUrls: [] }
     : localMedia
     ? { prompt: localMedia.prompt, imageUrls: getMediaReferenceUrls(localMedia.references, 'image', 'local') }
-    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || provider === 'volcengine' || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
+    : await resolvePromptWithImageRefs(rawPrompt, { preferLocalImages: usesImageMultipart || usesCustomImageFiles || usesImageDataUrls || usesVolcengineTos || providerDefinition?.id === 'toapis' || isLibapi || !!providerConfig?.imageHosting?.enabled, cameraSettings });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // 仅归一同一节点的来源别名；裸 URL 或其他节点仍可能明确需要未标注的原图。
@@ -482,7 +483,7 @@ export async function generateImagesBatch(
   const aigcsiExecutionProfile = usesAigcsiProtocol ? aigcsiImageExecutionProfile(allImageUrls.length) : undefined;
   // 方舟固定接收 URL；历史模型的 Base64/multipart 偏好不能绕过专用 TOS 上传。
   // multipart 直接读取原始参考图，避免本地图片先上传图床再下载回来的额外网络依赖。
-  allImageUrls = provider === 'volcengine' ? await resolveImageUrlArray(allImageUrls, provider, signal)
+  allImageUrls = usesVolcengineTos ? await resolveImageUrlArray(allImageUrls, connectionId, signal)
     : provider === 'runninghub' || usesImageMultipart ? allImageUrls : usesImageDataUrls || usesCustomImageFiles
     ? await resolveImageDataUrlArray(allImageUrls, signal, usesGoogleImageParts || characterWorkbench ? IMAGE_GENERATION_DATA_URL_BUDGET : undefined)
     : await resolveImageUrlArray(allImageUrls, providerDefinition?.id === 'toapis' || isLibapi || providerDefinition?.id === 'custom-openai' ? connectionId : provider, signal);

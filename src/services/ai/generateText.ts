@@ -13,7 +13,9 @@ import {
 import { parseResponseError } from './httpUtils';
 import { corsSafeFetch } from './httpTransport';
 import { resolvePromptToChatContent, resolvePromptWithMediaRefs } from './promptResolver';
-import { resolveChatContentImageDataUrls } from './imageUtils';
+import { resolveChatContentImageDataUrls, resolveContentImageUrls } from './imageUtils';
+import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
+import { redactVolcengineError } from './providers/volcengineError';
 import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
 import { executeModelProtocol, resolveModelExecutionProfile } from './modelProtocol';
 import {
@@ -100,6 +102,7 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
   let modelName = '';
   let generalModel: ReturnType<typeof resolveGeneralModel> = undefined;
   let chatApiProtocol: ChatApiProtocol;
+  let providerConfigId = provider;
 
   // ── 通用模型 ──
   if (provider === 'general') {
@@ -109,6 +112,7 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
     if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
     if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     apiKey = connection.apiKey;
+    providerConfigId = connection.providerConfigId;
     baseUrl = connection.baseUrl;
     modelName = gm.modelId;
     generalModel = gm;
@@ -148,60 +152,70 @@ export async function generateTextResult(params: AIGenerateParams): Promise<Text
       ]
     : content;
 
-  // 文本/VLM 请求使用 OpenAI 兼容的 Base64 data URL，不经第三方图床泄露视觉素材。
-  const resolvedContent = await resolveChatContentImageDataUrls(contentWithImages);
+  const usesVolcengineTos = getProviderPolicy(resolveProviderCatalogId(providerConfigId,
+    config.providers[providerConfigId])).upload === 'volcengine-tos';
+  // 方舟直接把原始来源交给私有 TOS；其他文本/VLM 连接沿用受限 Base64。
+  const resolvedContent = usesVolcengineTos
+    ? await resolveContentImageUrls(contentWithImages, providerConfigId, params.signal)
+    : await resolveChatContentImageDataUrls(contentWithImages, params.signal);
 
   const messages: ChatApiMessage[] = [];
   messages.push({ role: 'user', content: resolvedContent });
 
-  const nativeTextProtocol = resolveNativeTextChatProtocol(generalModel?.executionProfile);
-  if (nativeTextProtocol) chatApiProtocol = nativeTextProtocol;
-  if (generalModel?.executionProfile && !nativeTextProtocol) {
-    const protocol = resolveModelExecutionProfile(generalModel.executionProfile);
-    if (!protocol) throw new Error(`通用模型 "${generalModel.name}" 未配置调用协议`);
-    const result = await executeModelProtocol({
-      signal: params.signal,
+  try {
+    const nativeTextProtocol = resolveNativeTextChatProtocol(generalModel?.executionProfile);
+    if (nativeTextProtocol) chatApiProtocol = nativeTextProtocol;
+    if (generalModel?.executionProfile && !nativeTextProtocol) {
+      const protocol = resolveModelExecutionProfile(generalModel.executionProfile);
+      if (!protocol) throw new Error(`通用模型 "${generalModel.name}" 未配置调用协议`);
+      const result = await executeModelProtocol({
+        signal: params.signal,
+        apiKey,
+        baseUrl,
+        protocol,
+        ...(usesVolcengineTos ? { sensitive: true } : {}),
+        variables: {
+          model: modelName,
+          prompt: textContent,
+          messages: messages as unknown as ProtocolJsonValue,
+          stream: false,
+        },
+      });
+      if (!result.text) throw new Error('模型返回结果为空');
+      return { text: result.text };
+    }
+
+    // 未配置模型级协议时按连接协议执行；旧连接缺省仍是 OpenAI Chat Completions。
+    const request = buildChatApiRequest({
+      protocol: chatApiProtocol,
       apiKey,
       baseUrl,
-      protocol,
-      variables: {
-        model: modelName,
-        prompt: textContent,
-        messages: messages as unknown as ProtocolJsonValue,
-        stream: false,
-      },
+      model: modelName,
+      messages,
+      stream: false,
+      signal: params.signal,
     });
-    if (!result.text) throw new Error('模型返回结果为空');
-    return { text: result.text };
-  }
+    // 不设超时（仅 ComfyUI 才设超时）
+    const response = await (usesVolcengineTos ? corsSafeFetch(request.url, request.init, { sensitive: true })
+      : corsSafeFetch(request.url, request.init));
 
-  // 未配置模型级协议时按连接协议执行；旧连接缺省仍是 OpenAI Chat Completions。
-  const request = buildChatApiRequest({
-    protocol: chatApiProtocol,
-    apiKey,
-    baseUrl,
-    model: modelName,
-    messages,
-    stream: false,
-    signal: params.signal,
-  });
-  // 不设超时（仅 ComfyUI 才设超时）
-  const response = await corsSafeFetch(request.url, request.init);
+    if (!response.ok) {
+      await parseResponseError(response, `API 请求失败 (${response.status})`);
+    }
 
-  if (!response.ok) {
-    await parseResponseError(response, `API 请求失败 (${response.status})`);
+    const json = await response.json();
+    const parsed = parseChatApiResponse(json, chatApiProtocol);
+    // OpenAI 兼容通用模型保留既有宽松响应提取，原生协议只接受各自规范结构。
+    const replyText = parsed.text || (
+      provider === 'general' && chatApiProtocol === 'openai-compatible'
+        ? parseGeneralTextResponse(json)
+        : ''
+    );
+    if (!replyText) {
+      throw new Error('模型返回结果为空');
+    }
+    return { text: replyText };
+  } catch (error) {
+    throw usesVolcengineTos ? redactVolcengineError(error, apiKey) : error;
   }
-
-  const json = await response.json();
-  const parsed = parseChatApiResponse(json, chatApiProtocol);
-  // OpenAI 兼容通用模型保留既有宽松响应提取，原生协议只接受各自规范结构。
-  const replyText = parsed.text || (
-    provider === 'general' && chatApiProtocol === 'openai-compatible'
-      ? parseGeneralTextResponse(json)
-      : ''
-  );
-  if (!replyText) {
-    throw new Error('模型返回结果为空');
-  }
-  return { text: replyText };
 }

@@ -21,7 +21,7 @@ import { nativeMediaLocalOutputs } from './nativeMediaCollection';
 import { captureNativeMediaLocalResult, readNativeMediaLocalResult } from './nativeMediaLocalResult';
 import { retainNativeMediaOutputs } from './indexedDb/nativeMediaCollectionRepository';
 import { nativeBuiltinVideoProtocolDigest } from './nativeBuiltinVideoProtocol';
-import { resolveProviderCatalogId } from './ai/providerPolicies';
+import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolicies';
 import { assertMinimaxQueryResponse, usesMinimaxModelProtocol } from './ai/providers/minimaxModelManifest';
 import { RELAYON_VIDEO_RESULT_URL_PATHS, usesRelayonModelProtocol } from './ai/providers/relayonModelManifest';
 import { isSafeNativeProtocolTaskId } from './nativeProtocolContext';
@@ -136,7 +136,8 @@ export async function resumeNativeVolcengineTask(operationId: string, externalSi
         ...(catalogId === 'relayonapi' && record.category === 'video' && usesRelayonModelProtocol(general!.model.modelId, general!.model.executionProfile)
           ? { resultUrlFallbackPaths: [...new Set(RELAYON_VIDEO_RESULT_URL_PATHS)] } : {}) };
       const result = await pollResolvedModelProtocol(poll, provider.apiKey!, controller.signal, baseUrl,
-        catalogId === 'minimax' && usesMinimaxModelProtocol(general!.model.modelId, general!.model.executionProfile) ? assertMinimaxQueryResponse : undefined);
+        catalogId === 'minimax' && usesMinimaxModelProtocol(general!.model.modelId, general!.model.executionProfile) ? assertMinimaxQueryResponse : undefined,
+        getProviderPolicy(catalogId).upload === 'volcengine-tos');
       assertModelProtocolResult(record.category, result);
       if (!result.urls?.length || result.urls.length > 128) throw new Error('原媒体产物集合为空或超过安全上限，原任务保留');
       return { urls: result.urls };

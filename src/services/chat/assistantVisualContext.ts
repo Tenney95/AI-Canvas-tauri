@@ -1,6 +1,6 @@
 /**
  * chat/assistantVisualContext — 请求发送前的视觉上下文装配。
- * 解析用户显式 @ 引用的图片，视觉模型收到 Base64、纯文本模型收到项目缓存描述，
+ * 解析用户显式 @ 引用的图片，视觉模型按连接转换图片、纯文本模型收到项目缓存描述，
  * 图片字节只存在于本次请求内，不写入聊天消息或 AgentTask。
  */
 import type {
@@ -26,7 +26,7 @@ function textFromContent(content: AssistantModelContent): string {
 }
 
 /**
- * 请求发送前解析用户显式 @ 的图片。视觉模型收到 Base64；纯文本模型收到项目缓存描述。
+ * 请求发送前解析用户显式 @ 的图片。视觉模型默认收到 Base64；连接可指定专用传输。
  * 图片字节只存在于本次请求内，不写入聊天消息或 AgentTask。
  */
 export async function prepareAssistantVisualMessages(params: {
@@ -34,6 +34,8 @@ export async function prepareAssistantVisualMessages(params: {
   projectId: string | null;
   supportsVision: boolean;
   signal?: AbortSignal;
+  /** 仅生成本次发送副本；例如方舟直接把原始来源交给私有 TOS，避免先读取远端图片。 */
+  resolveImageContent?: (content: AssistantModelContent, signal?: AbortSignal) => Promise<AssistantModelContent>;
 }): Promise<AssistantModelMessage[]> {
   const prepared: AssistantModelMessage[] = [];
   for (const message of params.messages) {
@@ -42,7 +44,9 @@ export async function prepareAssistantVisualMessages(params: {
       || typeof message.content !== 'string'
       || !REFERENCE_MARKER.test(message.content)
     ) {
-      prepared.push(message);
+      prepared.push(params.resolveImageContent && typeof message.content !== 'string'
+        ? { ...message, content: await params.resolveImageContent(message.content, params.signal) }
+        : message);
       continue;
     }
     const resolved = await resolvePromptToChatContent(message.content, { projectId: params.projectId, signal: params.signal });
@@ -50,7 +54,9 @@ export async function prepareAssistantVisualMessages(params: {
       prepared.push({ ...message, content: resolved.content });
       continue;
     }
-    const dataContent = await resolveChatContentImageDataUrls(resolved.content, params.signal);
+    const dataContent = params.supportsVision && params.resolveImageContent
+      ? await params.resolveImageContent(resolved.content, params.signal)
+      : await resolveChatContentImageDataUrls(resolved.content, params.signal);
     if (params.supportsVision) {
       prepared.push({ ...message, content: dataContent });
       continue;

@@ -17,7 +17,9 @@ vi.mock('../../src/services/fs/core', async (original) => ({
 }));
 
 import { generateImagesBatch } from '../../src/services/ai/generateImage';
-import { IMAGE_GENERATION_DATA_URL_BUDGET, resolveImageDataUrlArray, resolveImageUrlArray, resolveNodeImageUrl } from '../../src/services/ai/imageUtils';
+import { generateText } from '../../src/services/ai/generateText';
+import { resolveAssistantModel, streamAssistantReply, type AssistantModelMessage } from '../../src/services/ai/assistantStream';
+import { IMAGE_GENERATION_DATA_URL_BUDGET, resolveContentImageUrls, resolveImageDataUrlArray, resolveImageUrlArray, resolveNodeImageUrl } from '../../src/services/ai/imageUtils';
 import { getMediaReferenceUrl } from '../../src/services/ai/connectedReferenceMedia';
 import { resolvePromptWithMediaRefs } from '../../src/services/ai/promptResolver';
 import { generateImageStandard } from '../../src/services/ai/providers/standardImage';
@@ -90,7 +92,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-describe('方舟本地参考素材的私有 TOS 路由', () => {
+describe('方舟全部参考素材的私有 TOS 路由', () => {
   const initialTos: VolcengineTosConfig = { bucket: 'reference-bucket', region: 'cn-beijing',
     credentialRef: 'secret:provider/volcengine/tos/01234567-0123-4123-8123-0123456789ab' };
   const configure = (provider: string, tosUpload: VolcengineTosConfig | undefined = initialTos) => {
@@ -142,19 +144,57 @@ describe('方舟本地参考素材的私有 TOS 路由', () => {
     expect(mocks.readSecret).not.toHaveBeenCalled();
   });
 
-  it('缺少 TOS 或方舟地址变为中转站时拒绝本地素材，已有公网链接仍直传', async () => {
+  it('缺少 TOS 或方舟地址变为中转站时拒绝本地与远端素材，不以公网地址绕过配置', async () => {
     const provider = 'volcengine-tos-missing-config';
     configure(provider);
     // 显式去除默认配置，模拟已有的仅 API Key 连接。
     useAppStore.getState().setProviderConfig(provider, { tosUpload: undefined });
     const source = await asDataUrl(png(92, 0));
     await expect(resolveMediaReferenceUrl(source, { provider, kind: 'image', mode: 'dataUrl' })).rejects.toThrow('配置北京私有 TOS');
+    const remote = 'https://cdn.example/existing-reference.png';
+    await expect(resolveMediaReferenceUrl(remote, { provider, kind: 'image' })).rejects.toThrow('配置北京私有 TOS');
     useAppStore.getState().setProviderConfig(provider, { tosUpload: initialTos, baseUrl: 'https://relay.example/api/v3' });
     await expect(uploadToRemote(source, provider)).rejects.toThrow('北京区域的方舟官方接口');
-    const remote = 'https://cdn.example/existing-reference.png';
-    expect(await resolveMediaReferenceUrl(remote, { provider, kind: 'image', mode: 'dataUrl' })).toBe(remote);
+    await expect(resolveImageUrlArray([remote], provider)).rejects.toThrow('北京区域的方舟官方接口');
     expect(mocks.invoke).not.toHaveBeenCalled(); expect(mocks.transport).not.toHaveBeenCalled();
     expect(localFetch).not.toHaveBeenCalled(); expect(mocks.readSecret).not.toHaveBeenCalled();
+  });
+
+  it.each(['image', 'video', 'audio'] as const)('已有公网 %s URL 也只走原生 TOS，不读取或持久化公共图床缓存', async (kind) => {
+    const provider = `volcengine-remote-${kind}`;
+    configure(provider);
+    const storage = { getItem: vi.fn(() => null), setItem: vi.fn() }; vi.stubGlobal('localStorage', storage);
+    const remoteUrl = `https://cdn.example/reference-${kind}?download=fixture%2Bsignature`;
+    mocks.invoke.mockResolvedValueOnce(result(initialTos.bucket, 20));
+    const resolved = kind === 'image' ? (await resolveImageUrlArray([remoteUrl], provider))[0]
+      : await resolveMediaReferenceUrl(remoteUrl, { provider, kind, mode: 'dataUrl' });
+    expect(resolved).toBe(result(initialTos.bucket, 20).url);
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('upload_volcengine_tos_reference', {
+      req: expect.objectContaining({ kind, purpose: 'reference', source: { remoteUrl } }),
+    });
+    expect(storage.getItem).not.toHaveBeenCalled(); expect(storage.setItem).not.toHaveBeenCalled();
+    expect(localFetch).not.toHaveBeenCalled(); expect(mocks.transport).not.toHaveBeenCalled();
+  });
+
+  it('content 图片同样经过 TOS，已有官方 Asset ID 保留为逻辑引用', async () => {
+    const provider = 'volcengine-content-reference'; configure(provider);
+    const remoteUrl = 'https://cdn.example/portrait.png';
+    mocks.invoke.mockResolvedValueOnce(result(initialTos.bucket, 21));
+    expect(await resolveContentImageUrls([{ type: 'text', text: '保持人物外观' }, { type: 'image_url', image_url: { url: remoteUrl } }], provider))
+      .toEqual([{ type: 'text', text: '保持人物外观' }, { type: 'image_url', image_url: { url: result(initialTos.bucket, 21).url } }]);
+    expect(await resolveMediaReferenceUrl('asset://asset-fixture-123', { provider, kind: 'image' })).toBe('asset://asset-fixture-123');
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(localFetch).not.toHaveBeenCalled(); expect(mocks.transport).not.toHaveBeenCalled();
+  });
+
+  it('其他厂商与同名自定义连接的公网 URL 仍直传，不读取不可用全局图床', async () => {
+    const remoteUrl = 'https://cdn.example/unchanged.png';
+    useAppStore.setState((state) => ({ config: { ...state.config, imageHosting: { provider: 'imgbb', configs: {} },
+      providers: { volcengine: { name: '同名自定义连接', catalogId: 'custom-openai', apiKey: 'custom-key' } },
+    } }));
+    expect(await resolveImageUrlArray([remoteUrl], 'volcengine')).toEqual([remoteUrl]);
+    expect(await resolveMediaReferenceUrl(remoteUrl, { provider: 'ordinary-relay', kind: 'video' })).toBe(remoteUrl);
+    expect(mocks.invoke).not.toHaveBeenCalled(); expect(localFetch).not.toHaveBeenCalled(); expect(mocks.transport).not.toHaveBeenCalled();
   });
 
   it('火山图片连接保留历史 data-url 标志时仍上传 TOS 并只向模型发送签名 URL', async () => {
@@ -172,6 +212,162 @@ describe('方舟本地参考素材的私有 TOS 路由', () => {
     expect(mocks.transport).toHaveBeenCalledOnce();
     expect(JSON.parse(mocks.transport.mock.calls[0][1].body as string).image).toEqual([signed]);
     expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it('通用火山图片模型以实际连接上传远端素材，历史 data-url 标志不能绕过 TOS', async () => {
+    const provider = 'ark-general-image'; configure(provider);
+    useAppStore.setState((state) => ({ config: { ...state.config, generalModels: [{
+      id: 'ark-image', modelId: 'fixture-image', name: '火山通用图片', category: 'image', providerConfigId: provider,
+      imageReferenceRequestMode: 'generation-json-image-data-urls', executionProfile: { preset: 'custom', protocol: {
+        version: 2, mode: 'sync', submit: { method: 'POST', path: '/images/generations', bodyEncoding: 'json',
+          body: { image: '{{imageUrls}}' } }, response: { type: 'json', result: { urlPath: 'url' } },
+      } },
+    }] } }));
+    const remoteUrl = 'https://outside.example/general-reference.png';
+    const signed = result(initialTos.bucket, 30).url;
+    mocks.invoke.mockResolvedValueOnce(result(initialTos.bucket, 30));
+    mocks.transport.mockResolvedValueOnce(json({ url: 'https://cdn.example/general-result.png' }));
+    await generateImagesBatch({ provider: 'general', model: 'general/ark-image', prompt: '保持人物外观', image_urls: [remoteUrl] }, 1);
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('upload_volcengine_tos_reference', {
+      req: expect.objectContaining({ source: { remoteUrl }, bucket: initialTos.bucket, purpose: 'reference' }),
+    });
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(JSON.parse(mocks.transport.mock.calls[0][1].body as string).image).toEqual([signed]);
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  const configureVision = (general: boolean) => {
+    const provider = general ? 'ark-general-vision' : 'volcengine'; configure(provider);
+    const modelId = 'fixture-ark-vision';
+    useAppStore.setState((state) => ({ currentProjectId: 'tos-vision-project', nodes: [
+      { id: 'tos-visual-node', type: 'ai-image', position: { x: 0, y: 0 },
+        data: { type: 'ai-image', label: '参考图', imageUrl: 'https://outside.example/visual-reference.png' } },
+    ], config: { ...state.config, providers: { ...state.config.providers, [provider]: {
+      ...state.config.providers[provider], selectedModels: [{ id: modelId, name: '火山视觉', category: 'text', provider,
+        inputModalities: ['text', 'image'] }],
+    } }, generalModels: general ? [{ id: 'ark-vision', name: '火山视觉', modelId, category: 'text', providerConfigId: provider,
+      inputModalities: ['text', 'image'] }] : [] } }));
+    return { provider, selectionId: general ? 'general/ark-vision' : `${provider}/${modelId}` };
+  };
+
+  it.each([false, true])('火山节点视觉请求（general=%s）直接将远端引用送 TOS，且模型请求禁用日志', async (general) => {
+    const { selectionId } = configureVision(general);
+    const signed = result(initialTos.bucket, 31).url;
+    mocks.invoke.mockResolvedValueOnce(result(initialTos.bucket, 31));
+    mocks.transport.mockResolvedValueOnce(json({ choices: [{ message: { content: '看到了人物' } }] }));
+    await expect(generateText({ provider: general ? 'general' : 'volcengine', model: selectionId,
+      prompt: '分析 @{tos-visual-node:参考图}' })).resolves.toBe('看到了人物');
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('upload_volcengine_tos_reference', {
+      req: expect.objectContaining({ source: { remoteUrl: 'https://outside.example/visual-reference.png' } }),
+    });
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(mocks.transport.mock.calls[0][2]).toEqual({ sensitive: true });
+    expect(JSON.parse(mocks.transport.mock.calls[0][1].body as string).messages[0].content).toContainEqual({
+      type: 'image_url', image_url: { url: signed },
+    });
+    expect(localFetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().nodes[0].data.imageUrl).toBe('https://outside.example/visual-reference.png');
+  });
+
+  it.each([false, true].flatMap((general) => ['mention', 'array', 'frozen'].map((input) => ({ general, input }))))(
+    '火山助手 general=$general、输入=$input 的视觉素材只生成本轮 TOS 发送副本', async ({ general, input }) => {
+      const { provider, selectionId } = configureVision(general);
+      const remoteUrl = 'https://outside.example/visual-reference.png';
+      const messages: AssistantModelMessage[] = [{ role: 'user', content: [
+        { type: 'text', text: '分析人物' }, { type: 'image_url', image_url: { url: remoteUrl } },
+      ] }];
+      const originalMessages = JSON.stringify(messages);
+      const signed = result(initialTos.bucket, 32).url;
+      mocks.invoke.mockResolvedValueOnce(result(initialTos.bucket, 32));
+      mocks.transport.mockResolvedValueOnce(json({ choices: [{ message: { content: '看到了人物' }, finish_reason: 'stop' }] }));
+      expect(resolveAssistantModel(undefined, selectionId)?.providerConfigId).toBe(provider);
+      await expect(streamAssistantReply({ modelId: selectionId, systemPrompt: '',
+        userMessage: '分析 @{tos-visual-node:参考图}', ...(input === 'mention' ? {} : { messages }),
+        ...(input === 'frozen' ? { resolveVisualReferences: false } : {}),
+        nonStream: true, tools: [], onEvent: vi.fn(),
+      })).resolves.toBe('看到了人物');
+      expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('upload_volcengine_tos_reference', {
+        req: expect.objectContaining({ source: { remoteUrl } }),
+      });
+      expect(mocks.transport).toHaveBeenCalledOnce();
+      expect(mocks.transport.mock.calls[0][2]).toEqual({ sensitive: true });
+      expect(JSON.parse(mocks.transport.mock.calls[0][1].body as string).messages[0].content).toContainEqual({
+        type: 'image_url', image_url: { url: signed },
+      });
+      expect(localFetch).not.toHaveBeenCalled();
+      expect(JSON.stringify(messages)).toBe(originalMessages);
+      expect(useAppStore.getState().messages).toEqual([]);
+      expect(JSON.stringify(useAppStore.getState().nodes)).not.toContain('X-Tos-');
+    });
+
+  it.each(['node', 'assistant'] as const)('火山 %s 视觉请求的上游错误不回显 TOS 签名', async (route) => {
+    const { selectionId } = configureVision(true);
+    const signed = result(initialTos.bucket, 33).url;
+    mocks.invoke.mockResolvedValueOnce(result(initialTos.bucket, 33));
+    mocks.transport.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: `下载失败 ${signed}` } }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    }));
+    const onEvent = vi.fn();
+    const error = await (route === 'node'
+      ? generateText({ provider: 'general', model: selectionId, prompt: '分析 @{tos-visual-node:参考图}' })
+      : streamAssistantReply({ modelId: selectionId, systemPrompt: '', userMessage: '分析 @{tos-visual-node:参考图}',
+        nonStream: true, tools: [], onEvent })).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('[REDACTED]');
+    expect((error as Error).stack).not.toContain('X-Tos-');
+    expect(JSON.stringify(onEvent.mock.calls)).not.toContain('X-Tos-');
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it('通用火山文本自定义协议也只发送 TOS 副本并禁用日志', async () => {
+    const { selectionId } = configureVision(true);
+    useAppStore.setState((state) => ({ config: { ...state.config, generalModels: state.config.generalModels?.map((model) => ({
+      ...model, executionProfile: { preset: 'custom' as const, protocol: { version: 2 as const, mode: 'sync' as const,
+        submit: { method: 'POST' as const, path: '/custom/text', bodyEncoding: 'json' as const, body: { messages: '{{messages}}' } },
+        response: { type: 'json' as const, result: { textPath: 'answer' } },
+      } },
+    })) } }));
+    mocks.invoke.mockResolvedValueOnce(result(initialTos.bucket, 34));
+    mocks.transport.mockResolvedValueOnce(json({ answer: '理解了参考图' }));
+    await expect(generateText({ provider: 'general', model: selectionId, prompt: '分析 @{tos-visual-node:参考图}' }))
+      .resolves.toBe('理解了参考图');
+    expect(mocks.transport).toHaveBeenCalledOnce();
+    expect(mocks.transport.mock.calls[0][0]).toBe(`${VOLCENGINE_BASE_URL}/custom/text`);
+    expect(mocks.transport.mock.calls[0][2]).toEqual({ sensitive: true });
+    expect(JSON.parse(mocks.transport.mock.calls[0][1].body as string).messages[0].content).toContainEqual({
+      type: 'image_url', image_url: { url: result(initialTos.bucket, 34).url },
+    });
+    expect(localFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['node', 'assistant'] as const)('火山 %s 视觉素材上传失败后停止发送，不降级公共图床或 Base64', async (route) => {
+    const { selectionId } = configureVision(true);
+    mocks.invoke.mockRejectedValueOnce(new Error('远端源文件获取失败'));
+    await expect(route === 'node'
+      ? generateText({ provider: 'general', model: selectionId, prompt: '分析 @{tos-visual-node:参考图}' })
+      : streamAssistantReply({ modelId: selectionId, systemPrompt: '', userMessage: '分析 @{tos-visual-node:参考图}',
+        nonStream: true, tools: [], onEvent: vi.fn() })).rejects.toThrow('上传');
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.transport).not.toHaveBeenCalled(); expect(localFetch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().messages).toEqual([]);
+  });
+
+  it('名称恰好为 volcengine 的自定义文本连接沿用 Base64，助手数组保持其原有行为', async () => {
+    configureVision(false);
+    useAppStore.getState().setProviderConfig('volcengine', { catalogId: 'custom-openai', baseUrl: 'https://custom.example/v1' });
+    const dataUrl = await asDataUrl(png(95, 0));
+    mocks.transport.mockImplementation(async () => json({ choices: [{ message: { content: '自定义回复' }, finish_reason: 'stop' }] }));
+    await generateText({ provider: 'volcengine', model: 'volcengine/fixture-ark-vision', prompt: '描述图片', imageUrls: [dataUrl] });
+    await streamAssistantReply({ modelId: 'volcengine/fixture-ark-vision', systemPrompt: '', userMessage: '',
+      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://outside.example/custom.png' } }] }],
+      nonStream: true, tools: [], onEvent: vi.fn() });
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'upload_volcengine_tos_reference')).toBe(false);
+    expect(JSON.parse(mocks.transport.mock.calls[0][1].body as string).messages[0].content).toContainEqual({
+      type: 'image_url', image_url: { url: dataUrl },
+    });
+    expect(JSON.parse(mocks.transport.mock.calls[1][1].body as string).messages[0].content[0].image_url.url)
+      .toBe('https://outside.example/custom.png');
+    expect(mocks.transport.mock.calls.every((call) => call[2] === undefined)).toBe(true);
   });
 
   it('原生上传期间换 Bucket 拒绝旧结果，下一次显式调用使用新配置', async () => {

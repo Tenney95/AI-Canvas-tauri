@@ -381,6 +381,8 @@ export interface AudioModelCapability {
 export interface ResolvedModelProtocolPoll {
   method: ModelProtocolHttpMethod;
   url: string;
+  /** 原提交运行时的隐私标记，恢复查询时继续禁止记录请求；不含素材或凭据。 */
+  sensitive?: boolean;
   /** 只保存鉴权方式，不保存密钥。 */
   auth?: ModelProtocolAuthConfig;
   headers?: Record<string, string>;

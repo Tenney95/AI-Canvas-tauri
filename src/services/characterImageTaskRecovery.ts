@@ -14,6 +14,8 @@ import { getProviderDefinition } from './ai/providerCatalogService';
 import { normalizeNativeMediaProviderBase } from './indexedDb/nativeMediaTaskRepository';
 import { projectModelSourceToken } from './projectModelComparisonMaterial';
 import { sha256BytesHex } from './mediaDataUrl';
+import { getProviderPolicy, resolveProviderCatalogId } from './ai/providerPolicies';
+import { redactVolcengineError } from './ai/providers/volcengineError';
 
 export async function characterImageConfigurationDigest(modelRef: string, connectionId: string, workflowId?: string): Promise<string> {
   const state = useAppStore.getState();
@@ -62,7 +64,8 @@ export async function queryCharacterImageOriginal(query: Query, task: Task, oper
     }
     if (!protocol?.poll) throw new Error('原图片查询合同已变化，未发送原任务 ID');
     const context = resolveNativeProtocolContext(protocol, task.taskId, task.recoveryContext);
-    const result = await pollResolvedModelProtocol(resolvePoll(baseUrl, protocol.poll, protocol.auth, context), apiKey, signal, baseUrl);
+    const sensitive = getProviderPolicy(resolveProviderCatalogId(query.connectionId, provider)).upload === 'volcengine-tos';
+    const result = await pollResolvedModelProtocol(resolvePoll(baseUrl, protocol.poll, protocol.auth, context), apiKey, signal, baseUrl, undefined, sensitive);
     if (!result.urls?.length) throw new Error('原图片任务没有返回可保存的结果');
     return result.urls.map((url) => ({ url }));
   }
@@ -163,6 +166,9 @@ export async function executeCharacterProtocol(guard: unknown, input: {
   apiKey: string; baseUrl: string; protocol: NormalizedModelExecutionProtocol; variables: ModelProtocolVariables;
   expectedCount?: number; mediaDownloadAccess?: MediaDownloadAccess; signal?: AbortSignal;
 }): Promise<never> {
+  const connectionId = input.mediaDownloadAccess?.providerConfigId;
+  const sensitive = !!connectionId && getProviderPolicy(resolveProviderCatalogId(connectionId,
+    useAppStore.getState().config.providers[connectionId])).upload === 'volcengine-tos';
   const modelId = String(input.variables.model ?? '');
   const query = input.protocol.mode === 'async' && input.protocol.poll && input.protocol.response.taskIdPath
     ? { modelId, digest: await nativeProtocolQueryDigest(modelId, input.protocol) } : undefined;
@@ -172,11 +178,12 @@ export async function executeCharacterProtocol(guard: unknown, input: {
     mediaDownloadAccess: input.mediaDownloadAccess,
     execute: async (beforeSubmit, received) => {
       const submitted = await submitModelProtocol({ ...input, beforeSubmit, sensitive: true,
-        ...(query ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(input.protocol, payload, input.variables, [input.apiKey]) } : {}) });
+        ...(query ? { captureRecoveryContext: (payload: unknown) => captureNativeProtocolContext(input.protocol, payload, input.variables, [input.apiKey]) } : {}) })
+        .catch((error: unknown) => { throw sensitive ? redactVolcengineError(error, input.apiKey) : error; });
       if (submitted.urls?.length) return submitted.urls.map((url) => ({ url }));
       if (!submitted.taskId || !submitted.poll) throw new Error('原图片协议没有返回任务身份或完整产物');
       await received(submitted.taskId, submitted.recoveryContext);
-      const result = await pollResolvedModelProtocol(submitted.poll, input.apiKey, input.signal, input.baseUrl);
+      const result = await pollResolvedModelProtocol(submitted.poll, input.apiKey, input.signal, input.baseUrl, undefined, sensitive);
       return (result.urls ?? []).map((url) => ({ url }));
     } });
 }

@@ -936,7 +936,7 @@ export default function ProviderConnectionDialog({
               config={imageHosting} onChange={setImageHosting} apiKey={imageHostingApiKey} onApiKeyChange={setImageHostingApiKey}
             />}
 
-            {definition?.id === 'volcengine' && <VolcengineTosSettings config={tosUpload} onChange={setTosUpload}
+            {definition?.id === 'volcengine' && <VolcengineTosSettings key={tosUpload?.credentialRef || 'new-tos'} config={tosUpload} onChange={setTosUpload}
               credentials={tosCredentials} onCredentialsChange={setTosCredentials} disabled={saving} />}
 
             {definition?.id === 'volcengine' && (

@@ -3,23 +3,42 @@
  */
 import { corsSafeFetch } from '../httpTransport';
 import { signVolcengineRequest } from './volcengineSigner';
-import type { VolcengineAsset, VolcengineAssetGroup } from '../../../types/volcengineAssetLibrary';
+import type { VolcengineAsset, VolcengineAssetCreateInput, VolcengineAssetGroup } from '../../../types/volcengineAssetLibrary';
 import { isRemoteMediaUrl } from '../../../utils/mediaUrl';
 
-export interface AssetLibraryRequestOptions { accessKeyId: string; secretAccessKey: string; projectName?: string; baseUrl?: string; region?: string; signal?: AbortSignal }
+export interface AssetLibraryRequestOptions {
+  accessKeyId: string;
+  secretAccessKey: string;
+  projectName?: string;
+  baseUrl?: string;
+  region?: string;
+  signal?: AbortSignal;
+  /** 仅当前请求持有的内存守卫，签名完成后、网络提交前复核。 */
+  beforeRequest?: () => void;
+}
 export interface VolcenginePage<T> { items: T[]; nextToken?: string; pageNumber?: number; pageSize?: number; totalCount?: number }
 const DEFAULT_ENDPOINT = 'https://ark.cn-beijing.volcengineapi.com/';
 function endpoint(action: string, baseUrl = DEFAULT_ENDPOINT): string { const url = new URL(baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`); url.searchParams.set('Action', action); url.searchParams.set('Version', '2024-01-01'); return url.toString(); }
 async function request<T>(action: string, options: AssetLibraryRequestOptions, body: Record<string, unknown>): Promise<T> {
   options.signal?.throwIfAborted();
+  let prepared: { url: string; body: string; headers: Record<string, string> };
   let response: Response;
   try {
     const url = endpoint(action, options.baseUrl);
     const rawBody = JSON.stringify(body);
     // 方舟 Assets API 仅支持 AK/SK Signature V4 鉴权；正文可能包含带签名的素材 URL。
     const signed = await signVolcengineRequest({ method: 'POST', url, body: rawBody, accessKeyId: options.accessKeyId, secretAccessKey: options.secretAccessKey, region: options.region });
+    prepared = { url, body: rawBody, headers: signed.headers };
+  } catch {
     options.signal?.throwIfAborted();
-    response = await corsSafeFetch(url, { method: 'POST', headers: signed.headers, body: rawBody, signal: options.signal,
+    throw new Error('方舟素材库请求失败，请检查 AK/SK、接口地址和网络');
+  }
+  options.signal?.throwIfAborted();
+  // 配置守卫失败须保留其原因，不能被网络错误提示覆盖。
+  options.beforeRequest?.();
+  options.signal?.throwIfAborted();
+  try {
+    response = await corsSafeFetch(prepared.url, { method: 'POST', headers: prepared.headers, body: prepared.body, signal: options.signal,
       credentials: 'omit', redirect: 'error' }, { sensitive: true });
   } catch {
     options.signal?.throwIfAborted();
@@ -48,7 +67,7 @@ async function request<T>(action: string, options: AssetLibraryRequestOptions, b
   return payload as T;
 }
 
-/** CreateAsset 只接收可公开读取的素材地址，不把 TOS 内网推理链接自动送入素材库。 */
+/** 本应用入库使用 TOS 公网签名链接；内网推理链接不能直接代替此读取地址。 */
 export function validateVolcengineAssetInputUrl(value: string): string {
   const url = typeof value === 'string' ? value.trim() : '';
   let parsed: URL;
@@ -79,4 +98,4 @@ export async function updateAssetGroup(options: AssetLibraryRequestOptions, id: 
 export async function updateAsset(options: AssetLibraryRequestOptions, id: string, input: { name: string }): Promise<VolcengineAsset> { return asset(unwrapOne(await request('UpdateAsset', options, { Id: id, Name: input.name, ProjectName: project(options) }))); }
 export async function deleteAsset(options: AssetLibraryRequestOptions, id: string): Promise<void> { await request('DeleteAsset', options, { Id: id, ProjectName: project(options) }); }
 export async function deleteAssetGroup(options: AssetLibraryRequestOptions, id: string): Promise<void> { await request('DeleteAssetGroup', options, { Id: id, ProjectName: project(options) }); }
-export async function createAsset(options: AssetLibraryRequestOptions, input: { assetType: 'Image' | 'Video' | 'Audio'; groupId: string; name: string; url: string }): Promise<{ id: string }> { const url = validateVolcengineAssetInputUrl(input.url); const result = unwrapOne<Record<string, unknown>>(await request('CreateAsset', options, { AssetType: input.assetType, GroupId: input.groupId, Name: input.name, ProjectName: project(options), URL: url })); return { id: String(result.Id ?? result.id ?? '') }; }
+export async function createAsset(options: AssetLibraryRequestOptions, input: VolcengineAssetCreateInput): Promise<{ id: string }> { const url = validateVolcengineAssetInputUrl(input.url); const result = unwrapOne<Record<string, unknown>>(await request('CreateAsset', options, { AssetType: input.assetType, GroupId: input.groupId, Name: input.name, ProjectName: project(options), URL: url })); return { id: String(result.Id ?? result.id ?? '') }; }

@@ -1,4 +1,4 @@
-//! 方舟参考素材：原生流式上传到北京私有 TOS，再签发仅供方舟读取的内网 URL。
+//! 方舟素材：原生流式上传到北京私有 TOS，分别签发推理内网或素材入库公网 GET URL。
 //! 只允许固定 TOS 主机、受授权的普通文件和独立 TOS 凭据；不记录签名或原始错误。
 
 use base64::Engine;
@@ -6,13 +6,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{File, Metadata, OpenOptions},
-    io::{self, Cursor, Read, Seek, SeekFrom},
+    fs::{self, File, Metadata, OpenOptions},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write},
+    net::{SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::{atomic::{AtomicBool, Ordering}, Arc, LazyLock, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Webview};
+use url::{Host, Url};
 
 const REGION: &str = "cn-beijing";
 const EXPIRES: u64 = 6 * 60 * 60;
@@ -24,14 +26,19 @@ const CANCELLED: &str = "火山 TOS 上传已取消";
 const CHANGED: &str = "参考素材在上传期间发生变化，请重新发起";
 const NETWORK: &str = "火山 TOS 上传失败，请检查网络、桶权限与凭据";
 const CREDENTIALS: &str = "无法读取火山 TOS 凭据，请在火山连接中重新保存 AK/SK";
+const REMOTE_SOURCE: &str = "火山 TOS 无法读取远端参考素材，请检查公共 HTTP(S) 文件地址与文件限制";
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind { Image, Video, Audio }
 
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub enum UploadPurpose { #[default] Reference, AssetIngestion }
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UploadSource { path: Option<String>, data_url: Option<String> }
+pub struct UploadSource { path: Option<String>, data_url: Option<String>, remote_url: Option<String> }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,6 +51,8 @@ pub struct UploadRequest {
     bucket: String,
     credential_ref: String,
     kind: MediaKind,
+    #[serde(default)]
+    purpose: UploadPurpose,
     source: UploadSource,
     expected_source: Option<ExpectedSource>,
 }
@@ -190,6 +199,170 @@ fn random_key() -> Result<String, String> {
     Ok(hex(&bytes))
 }
 
+fn media_limit(kind: MediaKind, purpose: UploadPurpose) -> u64 {
+    match (kind, purpose) {
+        (MediaKind::Image, UploadPurpose::AssetIngestion) => 29_999_999,
+        (MediaKind::Audio, UploadPurpose::AssetIngestion) => 15_000_000,
+        (MediaKind::Video, _) => VIDEO_LIMIT,
+        _ => SMALL_LIMIT,
+    }
+}
+
+fn validate_source(source: &UploadSource, expected: Option<&ExpectedSource>) -> Result<(), String> {
+    let sources = [source.path.is_some(), source.data_url.is_some(), source.remote_url.is_some()];
+    if sources.iter().filter(|present| **present).count() != 1 || source.remote_url.is_some() && expected.is_some() {
+        return Err(INVALID.into());
+    }
+    Ok(())
+}
+
+fn validate_media_size(total: u64, kind: MediaKind, purpose: UploadPurpose) -> Result<(), String> {
+    if total == 0 || total > media_limit(kind, purpose) {
+        return Err(if purpose == UploadPurpose::AssetIngestion {
+            "火山 TOS 人像库素材须非空，图片小于 30 MB、音频不超过 15 MB、视频不超过 200 MB"
+        } else { "火山参考素材超过应用上传上限（图片/音频 32 MiB，视频 200 MB）" }.into());
+    }
+    Ok(())
+}
+
+fn remote_source_url(raw: &str) -> Result<Url, String> {
+    if raw.len() > 16_384 || raw.chars().any(|value| value.is_whitespace() || value.is_control()) {
+        return Err(REMOTE_SOURCE.into());
+    }
+    let url = Url::parse(raw).map_err(|_| REMOTE_SOURCE)?;
+    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some()
+        || url.fragment().is_some() || url.port().is_some() { return Err(REMOTE_SOURCE.into()); }
+    let host = url.host().ok_or(REMOTE_SOURCE)?;
+    match host {
+        Host::Ipv4(ip) if crate::assistant_web::is_disallowed_ip(ip.into()) => return Err(REMOTE_SOURCE.into()),
+        Host::Ipv6(ip) if crate::assistant_web::is_disallowed_ip(ip.into()) => return Err(REMOTE_SOURCE.into()),
+        Host::Domain(domain) => {
+            let host = domain.trim_end_matches('.').to_ascii_lowercase();
+            if host == "localhost" || [".localhost", ".local", ".internal", ".lan", ".home.arpa"].iter().any(|suffix| host.ends_with(suffix)) {
+                return Err(REMOTE_SOURCE.into());
+            }
+        },
+        _ => {},
+    }
+    Ok(url)
+}
+
+fn public_source_addresses(url: &Url) -> Result<Vec<SocketAddr>, String> {
+    let port = url.port_or_known_default().ok_or(REMOTE_SOURCE)?;
+    let addresses = match url.host().ok_or(REMOTE_SOURCE)? {
+        Host::Ipv4(ip) => vec![SocketAddr::new(ip.into(), port)],
+        Host::Ipv6(ip) => vec![SocketAddr::new(ip.into(), port)],
+        Host::Domain(host) => (host, port).to_socket_addrs().map_err(|_| REMOTE_SOURCE)?.collect(),
+    };
+    if addresses.is_empty() || addresses.iter().any(|address| crate::assistant_web::is_disallowed_ip(address.ip())) {
+        return Err(REMOTE_SOURCE.into());
+    }
+    Ok(addresses)
+}
+
+fn object_get_host(bucket: &str, purpose: UploadPurpose) -> String {
+    format!("{bucket}.tos-cn-beijing.{}", if purpose == UploadPurpose::Reference { "ivolces.com" } else { "volces.com" })
+}
+
+/** 已有本桶随机对象只重新签名，不尝试从桌面访问内网 URL，也不转用传入查询参数。 */
+fn reusable_object_path(raw: &str, url: &Url, bucket: &str, kind: MediaKind) -> Result<Option<String>, String> {
+    let public = Some(object_get_host(bucket, UploadPurpose::AssetIngestion).as_str()) == url.host_str();
+    let internal = Some(object_get_host(bucket, UploadPurpose::Reference).as_str()) == url.host_str();
+    if !public && !internal { return Ok(None); }
+    let raw_path = raw.split_once("://").and_then(|(_, rest)| rest.find('/').map(|index| &rest[index..]))
+        .map(|rest| rest.split(['?', '#']).next().unwrap_or_default()).ok_or(INVALID)?;
+    if raw_path != url.path() { return Err(INVALID.into()); }
+    let generated = url.path().strip_prefix("/ai-canvas/ark-reference/").and_then(|object| object.rsplit_once('.'))
+        .filter(|(key, extension)| key.len() == 48 && key.bytes().all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
+            && ["png", "jpg", "webp", "gif", "tiff", "heif", "mp4", "mov", "wav", "mp3"].contains(extension));
+    // A user-supplied public URL elsewhere in the bucket may be imported normally using only its own source query.
+    let Some((_, extension)) = generated else { return if public { Ok(None) } else { Err(INVALID.into()) }; };
+    let supported = match kind {
+        MediaKind::Image => ["png", "jpg", "webp", "gif", "tiff", "heif"].contains(&extension),
+        MediaKind::Video => ["mp4", "mov"].contains(&extension),
+        MediaKind::Audio => ["wav", "mp3"].contains(&extension),
+    };
+    if url.scheme() != "https" || !supported
+        || url.query_pairs().any(|(key, _)| !["X-Tos-Algorithm", "X-Tos-Credential", "X-Tos-Date", "X-Tos-Expires", "X-Tos-SignedHeaders", "X-Tos-Signature"].contains(&key.as_ref())) {
+        return Err(INVALID.into());
+    }
+    Ok(Some(url.path().to_string()))
+}
+
+fn private_download_file(app: &AppHandle) -> Result<(File, Vec<File>), String> {
+    let configured = crate::agent_package::agent_private_dir(app).map_err(|_| INVALID)?;
+    let base = configured.parent().ok_or(INVALID)?;
+    fs::create_dir_all(base).map_err(|_| INVALID)?;
+    let parent = base.canonicalize().map_err(|_| INVALID)?.join(configured.file_name().ok_or(INVALID)?);
+    let root = parent.join("tos-imports");
+    for directory in [&parent, &root] {
+        #[cfg(unix)]
+        let created = { use std::os::unix::fs::DirBuilderExt; fs::DirBuilder::new().mode(0o700).create(directory) };
+        #[cfg(not(unix))]
+        let created = fs::create_dir(directory);
+        match created {
+            Ok(()) => {},
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
+            Err(_) => return Err(INVALID.into()),
+        }
+        let metadata = fs::symlink_metadata(directory).map_err(|_| INVALID)?;
+        if !metadata.is_dir() || crate::path_policy::is_link_or_reparse(&metadata) { return Err(INVALID.into()); }
+    }
+    let root = root.canonicalize().map_err(|_| INVALID)?;
+    let leases = directory_leases(&root.join("source.tmp"))?;
+    let path = root.join(format!("{}.tmp", random_key()?));
+    let mut options = OpenOptions::new(); options.read(true).write(true).create_new(true);
+    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    #[cfg(windows)] {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Delete on the last handle close, including worker cancellation or process exit.
+        options.access_mode(0x80000000 | 0x40000000 | 0x00010000)
+            .custom_flags(0x04000000 | 0x00200000).share_mode(1 | 4);
+    }
+    let file = options.open(&path).map_err(|_| INVALID)?;
+    #[cfg(unix)] fs::remove_file(&path).map_err(|_| INVALID)?;
+    #[cfg(not(any(windows, unix)))] { drop(file); let _ = fs::remove_file(&path); return Err(INVALID.into()); }
+    Ok((file, leases))
+}
+
+fn copy_remote_media(source: &mut impl Read, output: &mut impl Write, limit: u64, task: &Task) -> Result<u64, String> {
+    let mut buffer = vec![0_u8; CHUNK_SIZE]; let mut total = 0_u64;
+    loop {
+        task.check()?;
+        let maximum = buffer.len().min((limit - total + 1) as usize);
+        let count = source.read(&mut buffer[..maximum]).map_err(|_| REMOTE_SOURCE)?;
+        if count == 0 { break; }
+        total += count as u64;
+        if total > limit { return Err(REMOTE_SOURCE.into()); }
+        output.write_all(&buffer[..count]).map_err(|_| INVALID)?;
+    }
+    task.check()?;
+    Ok(total)
+}
+
+fn download_remote_source(app: &AppHandle, raw: &str, kind: MediaKind, purpose: UploadPurpose, task: &Task) -> Result<(File, Vec<File>, u64), String> {
+    let url = remote_source_url(raw)?;
+    let addresses = public_source_addresses(&url)?;
+    let mut addresses = addresses; addresses.sort_by_key(|address| address.is_ipv6());
+    let address = addresses[0];
+    let http = reqwest::blocking::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(300))
+        .resolve(url.host_str().ok_or(REMOTE_SOURCE)?, address).build().map_err(|_| REMOTE_SOURCE)?;
+    task.check()?;
+    // No TOS/Ark authorization, cookies, proxy credentials, redirects, or source URL logging.
+    let mut response = http.get(url).send().map_err(|_| REMOTE_SOURCE)?;
+    task.check()?;
+    if response.status() != reqwest::StatusCode::OK { return Err(REMOTE_SOURCE.into()); }
+    let expected = response.content_length();
+    if let Some(total) = expected { validate_media_size(total, kind, purpose)?; }
+    let (mut file, leases) = private_download_file(app)?;
+    let total = copy_remote_media(&mut response, &mut file, media_limit(kind, purpose), task)?;
+    validate_media_size(total, kind, purpose)?;
+    if expected.is_some_and(|expected| expected != total) { return Err(REMOTE_SOURCE.into()); }
+    file.seek(SeekFrom::Start(0)).map_err(|_| INVALID)?;
+    Ok((file, leases, total))
+}
+
 #[derive(Clone)]
 struct ChainDigest { previous: [u8; 32], pending: Vec<u8>, total: u64 }
 impl ChainDigest {
@@ -302,9 +475,8 @@ impl Prepared {
 }
 
 fn prepare(app: &AppHandle, req: &UploadRequest, task: &Task) -> Result<Prepared, String> {
-    let limit = if matches!(req.kind, MediaKind::Video) { VIDEO_LIMIT } else { SMALL_LIMIT };
-    let (mut source, file, leases, total) = match (&req.source.path, &req.source.data_url) {
-        (Some(path), None) => {
+    let (mut source, file, leases, total) = match (&req.source.path, &req.source.data_url, &req.source.remote_url) {
+        (Some(path), None, None) => {
             let path = crate::path_policy::authorize_existing_plain_file(app, path).map_err(|_| INVALID)?;
             let leases = directory_leases(&path)?;
             if crate::path_policy::authorize_existing_plain_file(app, path.to_str().ok_or(INVALID)?).map_err(|_| INVALID)? != path { return Err(INVALID.into()); }
@@ -314,7 +486,7 @@ fn prepare(app: &AppHandle, req: &UploadRequest, task: &Task) -> Result<Prepared
             let total = metadata.len();
             (Source::File(file), Some((path, cloned, metadata)), leases, total)
         },
-        (None, Some(data_url)) => {
+        (None, Some(data_url), None) => {
             let (header, encoded) = data_url.split_once(',').ok_or(INVALID)?;
             let content_type = header.strip_prefix("data:").and_then(|header| header.strip_suffix(";base64")).ok_or(INVALID)?;
             let allowed = match req.kind {
@@ -328,9 +500,13 @@ fn prepare(app: &AppHandle, req: &UploadRequest, task: &Task) -> Result<Prepared
             let total = bytes.len() as u64;
             (Source::Memory(Cursor::new(bytes)), None, Vec::new(), total)
         },
+        (None, None, Some(remote_url)) => {
+            let (file, leases, total) = download_remote_source(app, remote_url, req.kind, req.purpose, task)?;
+            (Source::File(file), None, leases, total)
+        },
         _ => return Err(INVALID.into()),
     };
-    if total == 0 || total > limit { return Err("火山参考素材超过应用上传上限（图片/音频 32 MiB，视频 200 MB）".into()); }
+    validate_media_size(total, req.kind, req.purpose)?;
     let mut prefix = [0_u8; 64];
     let prefix_length = source.read(&mut prefix).map_err(|_| INVALID)?;
     let (content_type, extension) = mime(&prefix[..prefix_length], req.kind)?;
@@ -372,9 +548,42 @@ impl Read for UploadReader {
     }
 }
 
+fn signed_object_result(bucket: &str, path: &str, purpose: UploadPurpose, credentials: &Credentials) -> Result<UploadResult, String> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| INVALID)?.as_secs();
+    let host = object_get_host(bucket, purpose);
+    Ok(UploadResult { url: signed_url("GET", &host, path, credentials, REGION, &timestamp(now)?, EXPIRES), expires_at: (now + EXPIRES) * 1000 })
+}
+
+fn tos_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder().https_only(true).no_proxy()
+        .redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(300))
+        .build().map_err(|_| NETWORK.into())
+}
+
+fn validate_existing_object(bucket: &str, path: &str, req: &UploadRequest, credentials: &Credentials, task: &Task) -> Result<(), String> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| INVALID)?.as_secs();
+    let head = signed_url("HEAD", &object_get_host(bucket, UploadPurpose::AssetIngestion), path, credentials, REGION, &timestamp(now)?, EXPIRES);
+    task.check()?;
+    let response = tos_client()?.head(head).send().map_err(|_| NETWORK)?;
+    task.check()?;
+    if response.status() != reqwest::StatusCode::OK { return Err(NETWORK.into()); }
+    let total = response.headers().get(reqwest::header::CONTENT_LENGTH).and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok()).ok_or(INVALID)?;
+    validate_media_size(total, req.kind, req.purpose)
+}
+
 fn upload(app: AppHandle, req: UploadRequest, task: Task) -> Result<UploadResult, String> {
     task.check()?; validate_bucket(&req.bucket)?;
+    validate_source(&req.source, req.expected_source.as_ref())?;
     let credentials = credentials(&app, &req.credential_ref)?;
+    if let Some(raw) = &req.source.remote_url {
+        let url = remote_source_url(raw)?;
+        if let Some(path) = reusable_object_path(raw, &url, &req.bucket, req.kind)? {
+            // Only this fixed bucket is contacted. HEAD enforces the purpose's byte limit without copying the object.
+            validate_existing_object(&req.bucket, &path, &req, &credentials, &task)?;
+            return signed_object_result(&req.bucket, &path, req.purpose, &credentials);
+        }
+    }
     let mut prepared = prepare(&app, &req, &task)?;
     let key = format!("/ai-canvas/ark-reference/{}.{}", random_key()?, prepared.extension);
     let host = format!("{}.tos-cn-beijing.volces.com", req.bucket);
@@ -383,9 +592,7 @@ fn upload(app: AppHandle, req: UploadRequest, task: Task) -> Result<UploadResult
     let complete = Arc::new(Mutex::new(None));
     let reader = UploadReader { source: std::mem::replace(&mut prepared.source, Source::Memory(Cursor::new(Vec::new()))), remaining: prepared.total,
         hash: ChainDigest::new(), complete: complete.clone(), cancelled: task.cancelled.clone() };
-    let http = reqwest::blocking::Client::builder().https_only(true).no_proxy()
-        .redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(300))
-        .build().map_err(|_| NETWORK)?;
+    let http = tos_client()?;
     task.check()?; prepared.verify(&app)?;
     // No public-read ACL, redirects, write retry, or remote-response logging.
     let response = http.put(put).header(reqwest::header::CONTENT_TYPE, prepared.content_type)
@@ -396,10 +603,7 @@ fn upload(app: AppHandle, req: UploadRequest, task: Task) -> Result<UploadResult
     drop(response);
     if complete.lock().map_err(|_| CHANGED)?.as_deref() != Some(prepared.digest.as_str()) { return Err(CHANGED.into()); }
     prepared.verify(&app)?; task.check()?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| INVALID)?.as_secs();
-    let host = format!("{}.tos-cn-beijing.ivolces.com", req.bucket);
-    let url = signed_url("GET", &host, &key, &credentials, REGION, &timestamp(now)?, EXPIRES);
-    Ok(UploadResult { url, expires_at: (now + EXPIRES) * 1000 })
+    signed_object_result(&req.bucket, &key, req.purpose, &credentials)
 }
 
 #[tauri::command]
@@ -423,6 +627,108 @@ pub fn cancel_volcengine_tos_upload(webview: Webview, request_id: String) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request_json() -> serde_json::Value {
+        serde_json::json!({ "requestId": "fixture-request", "bucket": "fixture-bucket",
+            "credentialRef": "secret:provider/volcengine/tos/01234567-0123-4123-8123-0123456789ab",
+            "kind": "image", "source": { "remoteUrl": "https://cdn.example/reference.png" } })
+    }
+
+    #[test]
+    fn purposes_are_explicit_and_legacy_requests_remain_internal() {
+        let legacy: UploadRequest = serde_json::from_value(request_json()).unwrap();
+        assert_eq!(legacy.purpose, UploadPurpose::Reference);
+        let mut value = request_json(); value["purpose"] = "asset-ingestion".into();
+        let asset: UploadRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(asset.purpose, UploadPurpose::AssetIngestion);
+        for purpose in ["public", "arbitrary-host", "", "Reference"] {
+            value["purpose"] = purpose.into();
+            assert!(serde_json::from_value::<UploadRequest>(value.clone()).is_err());
+        }
+        let mut value = request_json(); value["source"]["uploadUrl"] = "https://other.example".into();
+        assert!(serde_json::from_value::<UploadRequest>(value).is_err());
+    }
+
+    #[test]
+    fn exactly_one_source_and_no_unverified_remote_fingerprint() {
+        let remote: UploadRequest = serde_json::from_value(request_json()).unwrap();
+        assert!(validate_source(&remote.source, None).is_ok());
+        assert!(validate_source(&remote.source, Some(&ExpectedSource { digest: "a".repeat(64), bytes: 10 })).is_err());
+        for source in [serde_json::json!({}), serde_json::json!({ "path": "/fixture", "remoteUrl": "https://cdn.example/ref.png" }),
+            serde_json::json!({ "dataUrl": "data:image/png;base64,AA==", "remoteUrl": "https://cdn.example/ref.png" })] {
+            assert!(validate_source(&serde_json::from_value::<UploadSource>(source).unwrap(), None).is_err());
+        }
+    }
+
+    #[test]
+    fn remote_urls_reject_private_endpoints_credentials_ports_and_fragments() {
+        for source in ["file:///fixture/ref.png", "ftp://cdn.example/ref.png", "http://127.0.0.1/ref.png",
+            "http://2130706433/ref.png", "https://[::1]/ref.png", "https://[::ffff:127.0.0.1]/ref.png",
+            "https://10.0.0.1/ref.png", "http://169.254.169.254/latest", "https://192.0.2.1/ref.png",
+            "https://localhost/ref.png", "https://asset.localhost/ref.png", "https://machine.local/ref.png",
+            "https://machine.internal/ref.png", "https://user:password@cdn.example/ref.png",
+            "https://cdn.example:8443/ref.png", "https://cdn.example/ref.png#fragment", "https://cdn.example/ref image.png"] {
+            assert!(remote_source_url(source).is_err(), "{source}");
+        }
+        assert!(remote_source_url("https://cdn.example/ref.png?signature=opaque%2Fsource").is_ok());
+        assert!(remote_source_url("http://cdn.example/ref.mp4").is_ok());
+    }
+
+    #[test]
+    fn own_objects_are_reused_only_for_exact_generated_keys_and_matching_media() {
+        let path = format!("/ai-canvas/ark-reference/{}.png", "a".repeat(48));
+        for host in ["fixture-bucket.tos-cn-beijing.ivolces.com", "fixture-bucket.tos-cn-beijing.volces.com"] {
+            let raw = format!("https://{host}{path}?X-Tos-Signature=old&X-Tos-Credential=old%2Fscope");
+            assert_eq!(reusable_object_path(&raw, &remote_source_url(&raw).unwrap(), "fixture-bucket", MediaKind::Image).unwrap(), Some(path.clone()));
+            assert!(reusable_object_path(&raw, &remote_source_url(&raw).unwrap(), "fixture-bucket", MediaKind::Audio).is_err());
+        }
+        for suffix in [format!("/other/{}.png", "a".repeat(48)), format!("/ai-canvas/ark-reference/{}.png?token=secret", "a".repeat(48)),
+            format!("/ai-canvas/ark-reference/../ark-reference/{}.png", "a".repeat(48)),
+            format!("/ai-canvas/ark-reference/%2e%2e/ark-reference/{}.png", "a".repeat(48)),
+            format!("/ai-canvas/ark-reference/{}.png", "A".repeat(48)), "/ai-canvas/ark-reference/short.png".into()] {
+            let raw = format!("https://fixture-bucket.tos-cn-beijing.ivolces.com{suffix}");
+            assert!(reusable_object_path(&raw, &remote_source_url(&raw).unwrap(), "fixture-bucket", MediaKind::Image).is_err());
+        }
+        let raw = format!("https://other-bucket.tos-cn-beijing.volces.com{path}");
+        assert!(reusable_object_path(&raw, &remote_source_url(&raw).unwrap(), "fixture-bucket", MediaKind::Image).unwrap().is_none());
+        let raw = "https://fixture-bucket.tos-cn-beijing.volces.com/user-folder/reference.png?X-Tos-Signature=user-provided";
+        assert!(reusable_object_path(raw, &remote_source_url(raw).unwrap(), "fixture-bucket", MediaKind::Image).unwrap().is_none());
+        let raw = "https://fixture-bucket.tos-cn-beijing.volces.com/ai-canvas/ark-reference/user-file.png?X-Tos-Signature=user-provided";
+        assert!(reusable_object_path(raw, &remote_source_url(raw).unwrap(), "fixture-bucket", MediaKind::Image).unwrap().is_none());
+    }
+
+    #[test]
+    fn public_ingestion_and_internal_inference_use_distinct_get_signatures() {
+        let credentials = Credentials { access_key_id: "testAK".into(), secret_access_key: "testSK".into() };
+        let path = format!("/ai-canvas/ark-reference/{}.png", "a".repeat(48));
+        let internal = signed_url("GET", &object_get_host("fixture-bucket", UploadPurpose::Reference), &path, &credentials, REGION, "20260101T000000Z", EXPIRES);
+        let public = signed_url("GET", &object_get_host("fixture-bucket", UploadPurpose::AssetIngestion), &path, &credentials, REGION, "20260101T000000Z", EXPIRES);
+        let internal = Url::parse(&internal).unwrap(); let public = Url::parse(&public).unwrap();
+        assert_eq!(internal.host_str(), Some("fixture-bucket.tos-cn-beijing.ivolces.com"));
+        assert_eq!(public.host_str(), Some("fixture-bucket.tos-cn-beijing.volces.com"));
+        let signature = |url: &Url| url.query_pairs().find(|(key, _)| key == "X-Tos-Signature").unwrap().1.into_owned();
+        assert_ne!(signature(&internal), signature(&public));
+    }
+
+    #[test]
+    fn ingestion_byte_limits_are_distinct_and_stream_copy_is_bounded_and_cancellable() {
+        assert!(validate_media_size(30_000_000, MediaKind::Image, UploadPurpose::AssetIngestion).is_err());
+        assert!(validate_media_size(29_999_999, MediaKind::Image, UploadPurpose::AssetIngestion).is_ok());
+        assert!(validate_media_size(15_000_000, MediaKind::Audio, UploadPurpose::AssetIngestion).is_ok());
+        assert!(validate_media_size(15_000_001, MediaKind::Audio, UploadPurpose::AssetIngestion).is_err());
+        assert!(validate_media_size(SMALL_LIMIT, MediaKind::Audio, UploadPurpose::Reference).is_ok());
+        assert!(validate_media_size(VIDEO_LIMIT, MediaKind::Video, UploadPurpose::AssetIngestion).is_ok());
+        assert!(validate_media_size(VIDEO_LIMIT + 1, MediaKind::Video, UploadPurpose::Reference).is_err());
+        let task = Task { id: "fixture-copy".into(), cancelled: Arc::new(AtomicBool::new(false)) };
+        let mut output = Vec::new();
+        assert_eq!(copy_remote_media(&mut Cursor::new(vec![1, 2, 3]), &mut output, 3, &task).unwrap(), 3);
+        assert_eq!(output, vec![1, 2, 3]);
+        output.clear();
+        assert!(copy_remote_media(&mut Cursor::new(vec![1, 2, 3, 4]), &mut output, 3, &task).is_err());
+        assert!(output.len() <= 3);
+        task.cancelled.store(true, Ordering::Release);
+        assert!(copy_remote_media(&mut Cursor::new(vec![1]), &mut output, 3, &task).is_err());
+    }
 
     #[test]
     fn object_keys_keep_24_random_bytes_as_lowercase_hex() {

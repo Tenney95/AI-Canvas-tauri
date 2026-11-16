@@ -2,7 +2,7 @@
  * ai/imageUtils — 图片加载、URL 解析、上传辅助
  */
 import { isLocalMediaUrl, isRemoteMediaUrl } from '../../utils/mediaUrl';
-import { uploadToRemote, isLocalImageUrl, prepareReferenceImageDataUrl } from '../uploadService';
+import { resolveMediaReferenceUrl, prepareReferenceImageDataUrl } from '../uploadService';
 import { assertMediaDataUrlSize, getAssetUrlFromPath } from '../fileService';
 import { bytePartsToBase64Async } from '../fs/core';
 import { MEDIA_DATA_URL_BYTE_LIMITS } from '../mediaDataUrl';
@@ -228,19 +228,32 @@ export async function mergeImageWithOverlays(
   return canvas.toDataURL('image/png');
 }
 
-/** 上传 imageUrls 数组中的本地图片到远端 */
+/** 按连接解析参考图片；方舟的本地与外部 URL 都经 TOS。 */
+export async function resolveContentImageUrls(
+  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>,
+  provider = '',
+  signal?: AbortSignal,
+): Promise<string | Array<{ type: string; text?: string; image_url?: { url: string } }>> {
+  if (typeof content === 'string') return content;
+  return mapReferenceImagesInOrder(
+    content, async (part) => {
+      if (part.type === 'image_url' && part.image_url?.url) {
+        const publicUrl = await resolveMediaReferenceUrl(part.image_url.url, { provider, kind: 'image', signal });
+        return { ...part, image_url: { url: publicUrl } };
+      }
+      return part;
+    }, signal,
+  );
+}
+
+/** 所有参考图片复用连接级解析，避免外部 URL 绕过方舟 TOS。 */
 export async function resolveImageUrlArray(
   urls: string[],
   provider = '',
   signal?: AbortSignal,
 ): Promise<string[]> {
   return mapReferenceImagesInOrder(
-    urls, async (url) => {
-      if (isLocalImageUrl(url)) {
-        return await uploadToRemote(url, provider, 'image', signal);
-      }
-      return url;
-    }, signal,
+    urls, (url) => resolveMediaReferenceUrl(url, { provider, kind: 'image', signal }), signal,
   );
 }
 

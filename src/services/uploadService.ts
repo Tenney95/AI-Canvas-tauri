@@ -879,8 +879,8 @@ function setCachedUrl(key: string, remoteUrl: string, persist = true) {
 }
 
 /**
- * 上传单个本地文件到远端图床
- * @param url    本地文件 URL（data: / asset: / file:）
+ * 上传参考文件；方舟同时把外部 HTTP(S) 素材导入自己的 TOS。
+ * @param url    素材 URL（其他连接的已有公网地址仍直接使用）
  * @param provider 连接身份；图片优先使用显式配置的图床，否则沿用厂商上传策略
  * @returns 公网 URL；MiniMax 官方返回仅供该连接生成请求使用的 mm_file 引用
  */
@@ -890,11 +890,17 @@ export async function uploadToRemote(
   kind: MediaDataUrlKind = 'image',
   signal?: AbortSignal,
 ): Promise<string> {
-  if (!isLocalImageUrl(url)) return url;
+  const providerConfig = useAppStore.getState().config.providers[provider];
+  const usesTos = getProviderPolicy(resolveProviderCatalogId(provider, providerConfig)).upload === 'volcengine-tos';
+  // 已入库的方舟 Asset ID 是官方逻辑引用，不是待下载的本地 asset protocol。
+  if (usesTos && /^asset:\/\/(?!localhost$)[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/i.test(url)) {
+    signal?.throwIfAborted();
+    return url;
+  }
+  if (!isLocalImageUrl(url) && !(usesTos && isRemoteMediaUrl(url))) return url;
   if (signal?.aborted) throw abortReason(signal);
   if (uploadQueueQuarantine) throw new UploadQueueQuarantinedError();
   const connection = captureUploadConnection(provider, kind);
-  const usesTos = getProviderPolicy(resolveProviderCatalogId(provider, connection)).upload === 'volcengine-tos';
   if (usesTos) assertVolcengineTosEndpoint(connection.baseUrl);
   if (isMediaDataUrl(url)) {
     await assertMediaDataUrlWithinLimitAsync(url, kind, mediaKindLabel(kind), signal);
@@ -976,7 +982,7 @@ export async function uploadToRemote(
  *  - `dataUrl`   → 读取本地文件转 base64 data URL（general 通用协议等）
  *  - `publicUrl` → 按当前连接上传；MiniMax 返回 mm_file，其他返回公网 URL
  *
- * @param url     原始 URL（公网原样返回；data: 按目标 mode 保留或上传）
+ * @param url     原始 URL（方舟统一经 TOS；其他连接公网原样返回）
  * @param options.provider 提供商标识，决定上传图床
  * @param options.mode     目标形态：'publicUrl'（默认）| 'dataUrl'
  * @param options.kind     媒体类型（image / video / audio），用于 apimart 图床分流
@@ -995,13 +1001,13 @@ export async function resolveMediaReferenceUrl(
     provider = '', mode = 'publicUrl', kind = 'image', signal, dataUrlBudget,
   } = options;
   if (signal?.aborted) throw abortReason(signal);
-  // Windows 的 Tauri asset URL 也使用 HTTP，仍需读取并上传本地素材。
-  if (isRemoteMediaUrl(url)) return url;
-  // 方舟本地参考统一上传为 TOS URL，不向上游发送 Base64；内联只作受限原生传输。
+  // 方舟本地与远端参考统一经 TOS；内联只作受限原生传输，不向上游发送 Base64。
   const providerConfig = useAppStore.getState().config.providers[provider];
   if (getProviderPolicy(resolveProviderCatalogId(provider, providerConfig)).upload === 'volcengine-tos') {
     return uploadToRemote(url, provider, kind, signal);
   }
+  // Windows 的 Tauri asset URL 也使用 HTTP，仍需读取并上传本地素材。
+  if (isRemoteMediaUrl(url)) return url;
   if (isMediaDataUrl(url) && mode === 'dataUrl') {
     const bytes = await assertMediaDataUrlWithinLimitAsync(
       url,

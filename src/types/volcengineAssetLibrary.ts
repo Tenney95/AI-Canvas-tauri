@@ -3,6 +3,14 @@
  */
 export type VolcengineAssetStatus = 'Creating' | 'Active' | 'Failed' | 'Deleting' | string;
 
+/** url 在界面中可为本地来源；提交 CreateAsset 前统一转换为 TOS 限时读取链接。 */
+export interface VolcengineAssetCreateInput {
+  assetType: 'Image' | 'Video' | 'Audio';
+  groupId: string;
+  name: string;
+  url: string;
+}
+
 export interface VolcengineAssetGroup {
   id: string;
   name: string;

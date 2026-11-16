@@ -362,6 +362,7 @@ export async function fetchSameOriginResultUrls(
   fallbackMimeType?: string,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
+  sensitive = false,
 ): Promise<string[]> {
   signal?.throwIfAborted();
   if (urls.length > RESULT_MAX_COUNT) throw new Error('模型结果下载数量超过 32 个，请收窄结果 URL 映射');
@@ -386,7 +387,9 @@ export async function fetchSameOriginResultUrls(
       const index = nextIndex++;
       try {
         downloadSignal.throwIfAborted();
-        const request = corsSafeFetch(resultUrls[index], { method: 'GET', headers, signal: downloadSignal });
+        const init = { method: 'GET', headers, signal: downloadSignal };
+        const request = sensitive ? corsSafeFetch(resultUrls[index], init, { sensitive: true })
+          : corsSafeFetch(resultUrls[index], init);
         void request.then((response) => {
           if (downloadSignal.aborted) void response.body?.cancel().catch(() => undefined);
         }, () => undefined);

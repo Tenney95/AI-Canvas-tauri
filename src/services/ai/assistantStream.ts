@@ -22,6 +22,9 @@ import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { extractModelName, resolveGeneralModelConnection } from './helpers';
 import { corsSafeFetch } from './httpTransport';
 import { redactModelProtocolError, redactModelProtocolErrorText } from './modelProtocolHttp';
+import { redactVolcengineError, redactVolcengineErrorText } from './providers/volcengineError';
+import { getProviderPolicy, resolveProviderCatalogId } from './providerPolicies';
+import { resolveContentImageUrls } from './imageUtils';
 import { buildAssistantToolGuidance, buildMediaPrompt } from '../chat/agentPromptGuidance';
 import {
   buildModelProtocolRequest,
@@ -40,6 +43,7 @@ import { MUSE_BASE_URL, MUSE_TEXT_MODEL } from './museModels';
 
 interface ResolvedModelConfig {
   selectionId: string;
+  providerConfigId: string;
   baseUrl: string;
   apiKey: string;
   modelName: string;
@@ -96,6 +100,7 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
 
     return {
       selectionId: assistantModelId,
+      providerConfigId: connection.providerConfigId,
       baseUrl: baseUrl.replace(/\/+$/, ''),
       apiKey: provider.apiKey || '',
       modelName: gm.modelId,
@@ -116,6 +121,7 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
       || extractModelName(builtInModel.value, 'muse') !== MUSE_TEXT_MODEL) return null;
     return {
       selectionId: assistantModelId,
+      providerConfigId: builtInModel.provider,
       baseUrl: MUSE_BASE_URL,
       apiKey: '',
       modelName: MUSE_TEXT_MODEL,
@@ -133,6 +139,7 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
 
   return {
     selectionId: assistantModelId,
+    providerConfigId: builtInModel.provider,
     baseUrl: baseUrl.replace(/\/+$/, ''),
     apiKey: provider.apiKey,
     modelName,
@@ -277,6 +284,8 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   if (!modelConfig.usesChatApiProtocol && modelConfig.protocol.streamFormat !== 'openai-sse') {
     throw new Error('当前助手模型协议未声明 OpenAI SSE 兼容能力，不能用于对话助手或 Agent 工具调用');
   }
+  const usesVolcengineTos = getProviderPolicy(resolveProviderCatalogId(modelConfig.providerConfigId,
+    useAppStore.getState().config.providers[modelConfig.providerConfigId])).upload === 'volcengine-tos';
 
   const {
     systemPrompt,
@@ -293,7 +302,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
 
   // 解析器会先发错误事件，再抛异常；两条出口都要在交给消息层前脱敏。
   const onEvent = (event: AssistantStreamEvent) => emitEvent(event.type === 'error'
-    ? { ...event, message: redactModelProtocolErrorText(event.message, modelConfig.apiKey) }
+    ? { ...event, message: (usesVolcengineTos ? redactVolcengineErrorText : redactModelProtocolErrorText)(event.message, modelConfig.apiKey) }
     : event);
 
   const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -323,12 +332,23 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
       throw new Error('Muse 当前仅支持普通文本/图片问答，不支持工具调用；请选择支持工具的模型执行工具');
     }
     const state = useAppStore.getState();
-    const requestMessages = options.resolveVisualReferences === false ? messages : await prepareAssistantVisualMessages({
-      messages,
-      projectId: projectId ?? state.currentProjectId,
-      supportsVision: modelConfig.supportsVision,
-      signal: controller.signal,
-    });
+    const resolveImageContent = usesVolcengineTos
+      ? (content: AssistantModelContent, uploadSignal?: AbortSignal) => resolveContentImageUrls(content, modelConfig.providerConfigId, uploadSignal)
+      : undefined;
+    let requestMessages: AssistantModelMessage[];
+    if (options.resolveVisualReferences === false) {
+      requestMessages = resolveImageContent ? await Promise.all(messages.map(async (message) => ({
+        ...message, content: await resolveImageContent(message.content, controller.signal),
+      }))) : messages;
+    } else {
+      requestMessages = await prepareAssistantVisualMessages({
+        messages,
+        projectId: projectId ?? state.currentProjectId,
+        supportsVision: modelConfig.supportsVision,
+        signal: controller.signal,
+        resolveImageContent,
+      });
+    }
     if (modelConfig.transport === 'muse-webview') {
       const { streamMuseText } = await import('./museTextService');
       controller.signal.throwIfAborted();
@@ -371,7 +391,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
             toolChoice: tools.length > 0 ? 'auto' : undefined,
           },
         });
-    const response = await (options.sensitive
+    const response = await (options.sensitive || usesVolcengineTos
       ? corsSafeFetch(builtRequest.url, builtRequest.init, { sensitive: true })
       : corsSafeFetch(builtRequest.url, builtRequest.init));
     const responseProtocol = modelConfig.usesChatApiProtocol
@@ -396,7 +416,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
       // eslint-disable-next-line preserve-caught-error
       throw new Error('请求已取消');
     }
-    const safeError = redactModelProtocolError(error, modelConfig.apiKey);
+    const safeError = (usesVolcengineTos ? redactVolcengineError : redactModelProtocolError)(error, modelConfig.apiKey);
     const msg = safeError instanceof Error ? safeError.message : typeof safeError === 'string' ? safeError : '未知错误';
     onEvent({ type: 'error', code: 'FETCH_ERROR', message: msg, retryable: true });
     onEvent({ type: 'done', finishReason: 'error' });

@@ -41,6 +41,7 @@ import {
 } from '../../src/services/ai/modelCapabilityValidation';
 import { RELAYON_MODEL_MANIFEST, RELAYON_VIDEO_RESULT_URL_PATHS, getRelayonVideoRecoveryProfiles } from '../../src/services/ai/providers/relayonModelManifest';
 import { getHttpResponseError, HttpResponseError } from '../../src/services/ai/httpUtils';
+import * as httpTransport from '../../src/services/ai/httpTransport';
 
 it('结构化批项拒绝使用数值下标errorPath保留上游原文与失败元数据', () => {
   const message = 'Non posso generare questa immagine per motivi di sicurezza.';
@@ -68,6 +69,111 @@ beforeEach(() => {
 const pngResult = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/vYkAAAAASUVORK5CYII='), (char) => char.charCodeAt(0));
 const wavResult = Uint8Array.from(pcmS16LeToWav(new Uint8Array([0, 0]), 24000, 1));
 const encodedResult = (bytes: Uint8Array, mime: string) => `data:${mime};base64,${btoa(String.fromCharCode(...bytes))}`;
+
+describe('火山声明式协议的 TOS 隐私边界', () => {
+  const signed = 'https://reference-bucket.tos-cn-beijing.ivolces.com/ai-canvas/ark-reference/input.png?X-Tos-Signature=private-fixture-signature';
+  const asyncProtocol = (): ModelExecutionProtocol => ({ version: 2, mode: 'async',
+    submit: { method: 'POST', path: '/generate', body: { image: '{{imageUrls}}' } },
+    response: { type: 'json', taskIdPath: 'id' }, poll: { method: 'GET', path: '/tasks/{{submit.id}}',
+      retry: { maxRetries: 0 }, response: { statusPath: 'status', successValues: ['completed'], failureValues: ['failed'],
+        errorPath: 'error.message', result: { urlPath: 'url' } } } });
+  const configure = (connectionId = 'ark-protocol', catalogId = 'volcengine') => {
+    const previous = useAppStore.getState(); localStorage.clear();
+    useAppStore.setState({ currentProjectId: 'ark-protocol-project', projectExecutionContext: undefined, nodes: [],
+      config: { ...previous.config, providers: { ...previous.config.providers, [connectionId]: {
+        name: 'Protocol fixture', catalogId, baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiKey: 'private-ark-key',
+      } } } });
+    return () => { localStorage.clear(); useAppStore.setState(previous, true); };
+  };
+  const model = (protocol: ModelExecutionProtocol, providerConfigId = 'ark-protocol') => ({
+    id: 'ark-model', name: 'Ark fixture', modelId: 'ark-image', category: 'image' as const, providerConfigId,
+    executionProfile: { preset: 'custom' as const, protocol },
+  });
+
+  it.each([true, false])('按真实catalog开启敏感传输，custom同名连接保持原行为：official=%s', async (official) => {
+    const restore = configure('volcengine', official ? 'volcengine' : 'custom-openai');
+    const transport = vi.spyOn(httpTransport, 'corsSafeFetch');
+    const protocol: ModelExecutionProtocol = { version: 2, mode: 'sync', submit: asyncProtocol().submit,
+      response: { type: 'json', result: { urlPath: 'url' } } };
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ url: 'https://cdn.example/result.png' }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await runConfiguredModelProtocol({ category: 'image', model: model(protocol, 'volcengine'), variables: { imageUrls: [signed] } });
+      expect(transport).toHaveBeenCalledOnce();
+      expect(transport.mock.calls[0][2]).toEqual(official ? { sensitive: true } : undefined);
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).image).toEqual([signed]);
+    } finally { transport.mockRestore(); restore(); }
+  });
+
+  it('已提交火山查询中断时保留ID与敏感标记，恢复查询错误也在出口脱敏', async () => {
+    const restore = configure(); const transport = vi.spyOn(httpTransport, 'corsSafeFetch');
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 'accepted-ark-task' }))
+      .mockRejectedValueOnce(new TypeError(`network error ${signed}`));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(runConfiguredModelProtocol({ category: 'image', nodeId: 'ark-node', model: model(asyncProtocol()),
+        variables: { imageUrls: [signed] } })).rejects.toMatchObject({ name: 'MediaTaskPausedError',
+        taskReceipt: { taskId: 'accepted-ark-task' } });
+      const saved = getPendingTasksForProject('ark-protocol-project')[0];
+      expect(saved).toMatchObject({ taskId: 'accepted-ark-task', submitted: true, protocolPoll: { sensitive: true } });
+      expect(JSON.stringify(saved)).not.toContain('X-Tos-');
+      fetchMock.mockResolvedValueOnce(jsonResponse({ status: 'failed', error: { message: `下载失败 ${signed}` } }));
+      const error = await pollResolvedModelProtocol(saved.protocolPoll!, 'private-ark-key', undefined,
+        'https://ark.cn-beijing.volces.com/api/v3').catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(PollTaskFailedError);
+      expect((error as Error).message).toContain('[REDACTED]');
+      expect((error as Error).stack).not.toContain('X-Tos-');
+      expect(transport.mock.calls.every((call) => call[2]?.sensitive === true)).toBe(true);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    } finally { transport.mockRestore(); restore(); }
+  });
+
+  it.each(['variable', 'literal'] as const)('提交前拒绝会将签名素材写入持久化轮询的%s模板', async (source) => {
+    const restore = configure(); const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const protocol = asyncProtocol();
+    protocol.poll = { ...protocol.poll!, method: 'POST', body: { source: source === 'variable' ? '{{imageUrls}}' : signed } };
+    try {
+      await expect(runConfiguredModelProtocol({ category: 'image', nodeId: 'ark-node', model: model(protocol),
+        variables: { imageUrls: [signed] } })).rejects.toThrow('轮询描述不能保存 TOS 签名');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getPendingTasksForProject('ark-protocol-project')).toEqual([]);
+    } finally { restore(); }
+  });
+
+  it('响应回显签名素材时仅保留已付费任务ID，不落盘轮询输入或重新提交', async () => {
+    const restore = configure(); const protocol = asyncProtocol();
+    protocol.poll!.headers = { 'X-Reference': '{{submit.reference}}' };
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 'known-ark-task', reference: signed }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(runConfiguredModelProtocol({ category: 'image', nodeId: 'ark-node', model: model(protocol),
+        variables: { imageUrls: [signed] } })).rejects.toMatchObject({ name: 'MediaTaskPausedError',
+        taskReceipt: { taskId: 'known-ark-task' } });
+      const saved = getPendingTasksForProject('ark-protocol-project')[0];
+      expect(saved).toMatchObject({ submitted: true, taskId: 'known-ark-task', mediaRecoveryState: 'query_paused' });
+      expect(saved.protocolPoll).toBeUndefined();
+      expect(JSON.stringify(saved)).not.toContain('X-Tos-');
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { restore(); }
+  });
+
+  it('敏感的异步文本协议把隐私标记传至提交、轮询和同源结果下载', async () => {
+    const protocol = asyncProtocol();
+    protocol.poll!.response.result = { mimeType: 'image/png', download: { method: 'GET', path: '/tasks/{{submit.id}}/content' } };
+    const transport = vi.spyOn(httpTransport, 'corsSafeFetch');
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: 'private-task' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'completed' }))
+      .mockResolvedValueOnce(new Response(pngResult, { headers: { 'Content-Type': 'image/png' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await executeModelProtocol({ apiKey: 'private-key', baseUrl: 'https://gateway.example/v1', protocol,
+        variables: { imageUrls: [signed] }, sensitive: true });
+      expect(result.urls).toEqual([encodedResult(pngResult, 'image/png')]);
+      expect(transport).toHaveBeenCalledTimes(3);
+      expect(transport.mock.calls.every((call) => call[2]?.sensitive === true)).toBe(true);
+    } finally { transport.mockRestore(); }
+  });
+});
 
 describe('structured submission failures', () => {
   const protocol: ModelExecutionProtocol = { version: 2, mode: 'async',

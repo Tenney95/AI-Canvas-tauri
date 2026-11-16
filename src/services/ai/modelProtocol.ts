@@ -179,6 +179,8 @@ export async function submitModelProtocol(
         options.apiKey,
         resultConfig.mimeType,
         options.signal,
+        undefined,
+        options.sensitive,
       );
     }
     const base64Urls = resultConfig.base64Path
@@ -242,6 +244,8 @@ export async function executeModelProtocol(
       options.apiKey,
       options.signal,
       options.baseUrl,
+      undefined,
+      options.sensitive,
     ),
     taskId: submitted.taskId,
   };

@@ -40,6 +40,7 @@ import {
 } from './modelProtocolShared';
 import type { ExecuteModelProtocolResult } from './modelProtocolTypes';
 import { validateAuthentication } from './modelProtocolValidation';
+import { redactVolcengineError } from './providers/volcengineError';
 
 export function resolvePoll(
   baseUrl: string,
@@ -197,12 +198,13 @@ function buildResolvedRequestInit(
   };
 }
 
-export async function pollResolvedModelProtocol(
+async function pollResolvedModelProtocolRequest(
   poll: ResolvedModelProtocolPoll,
   apiKey: string,
   signal?: AbortSignal,
   allowedBaseUrl?: string,
   validateResponse?: (payload: unknown) => void,
+  sensitive = poll.sensitive === true,
 ): Promise<ExecuteModelProtocolResult> {
   if (poll.resultDownload) {
     if (!allowedBaseUrl) throw new Error('同源结果下载缺少厂商连接地址');
@@ -240,13 +242,10 @@ export async function pollResolvedModelProtocol(
         await waitForRetryDelay(delayMs, querySignal);
       }
       try {
-        const response = await corsSafeFetch(
-          applyQueryAuthentication(poll.url, poll.auth, apiKey),
-          {
-            ...buildResolvedRequestInit(poll, apiKey),
-            signal: querySignal,
-          },
-        );
+        const requestUrl = applyQueryAuthentication(poll.url, poll.auth, apiKey);
+        const requestInit = { ...buildResolvedRequestInit(poll, apiKey), signal: querySignal };
+        const response = await (sensitive ? corsSafeFetch(requestUrl, requestInit, { sensitive: true })
+          : corsSafeFetch(requestUrl, requestInit));
         const payload = await readJsonResponse(response, '模型任务查询失败', poll.errorPath, apiKey);
         try {
           validateResponse?.(payload);
@@ -328,7 +327,7 @@ export async function pollResolvedModelProtocol(
     return {
       urls: await withPollRequestDeadline((querySignal) => fetchSameOriginResultUrls(
         [download.url], allowedBaseUrl!, poll.auth, apiKey,
-        poll.resultMimeType, querySignal, download.headers,
+        poll.resultMimeType, querySignal, download.headers, sensitive,
       ), signal),
     };
   }
@@ -344,8 +343,26 @@ export async function pollResolvedModelProtocol(
         apiKey,
         poll.resultMimeType,
         querySignal,
+        undefined,
+        sensitive,
       ), signal),
     };
   }
   return result;
+}
+
+/** 隐私标记沿原查询描述恢复；错误在进入任务诊断、消息或暂停回执前脱敏。 */
+export async function pollResolvedModelProtocol(
+  poll: ResolvedModelProtocolPoll,
+  apiKey: string,
+  signal?: AbortSignal,
+  allowedBaseUrl?: string,
+  validateResponse?: (payload: unknown) => void,
+  sensitive = poll.sensitive === true,
+): Promise<ExecuteModelProtocolResult> {
+  try {
+    return await pollResolvedModelProtocolRequest(poll, apiKey, signal, allowedBaseUrl, validateResponse, sensitive);
+  } catch (error) {
+    throw sensitive ? redactVolcengineError(error, apiKey) : error;
+  }
 }
