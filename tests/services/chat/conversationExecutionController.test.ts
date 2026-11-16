@@ -726,14 +726,16 @@ function arrangePausedTask(partial: Partial<AgentTask> = {}): AgentTask {
 }
 
 describe('agent task resume budget', () => {
-  it('counts the resume and widens the segment budget within the lifetime cap', () => {
+  it('counts ordinary task resumes without changing or resetting legacy budget counters', () => {
     arrangePausedTask();
 
     expect(resumeAgentTaskExecution('task-paused')).toEqual({ ok: true });
 
     const task = useAppStore.getState().agentTasks[0];
     expect(task.resumeCount).toBe(1);
-    expect(task.budget).toMatchObject({ maxModelRounds: 24, maxToolCalls: 48 });
+    expect(task.budget).toMatchObject({ maxModelRounds: 12, maxToolCalls: 24 });
+    expect(task.modelRounds).toBe(12);
+    expect(task.toolCallCount).toBe(24);
     expect(schedulerMocks.schedule).toHaveBeenCalledTimes(1);
   });
 
@@ -750,7 +752,7 @@ describe('agent task resume budget', () => {
     expect(schedulerMocks.schedule).toHaveBeenCalledTimes(1);
     const task = useAppStore.getState().agentTasks[0];
     expect(task.resumeCount).toBe(1);
-    expect(task.budget.maxModelRounds).toBe(24);
+    expect(task.budget.maxModelRounds).toBe(12);
   });
 
   it('marks a queued resume as queued so the UI stops offering 继续', () => {
@@ -766,22 +768,21 @@ describe('agent task resume budget', () => {
     expect(useAppStore.getState().messages[0].status).toBe('queued');
   });
 
-  it('refuses to resume and stops widening the budget at the lifetime cap', () => {
+  it('resumes an ordinary task at its former lifetime cap without clearing its spent usage', () => {
     const spent = DEFAULT_AGENT_TASK_BUDGET.maxTotalModelRounds;
     arrangePausedTask({
       modelRounds: spent,
-      resumeCount: 4,
+      resumeCount: 8,
+      pausedReason: 'lifetime_budget_exhausted',
       budget: { ...DEFAULT_AGENT_TASK_BUDGET, maxModelRounds: spent },
     });
 
-    expect(resumeAgentTaskExecution('task-paused')).toMatchObject({
-      ok: false,
-      errorCode: 'AGENT_LIFETIME_BUDGET_EXHAUSTED',
-    });
+    expect(resumeAgentTaskExecution('task-paused')).toEqual({ ok: true });
 
     const task = useAppStore.getState().agentTasks[0];
-    expect(task.resumeCount).toBe(4);
+    expect(task.resumeCount).toBe(9);
+    expect(task.modelRounds).toBe(spent);
     expect(task.budget.maxModelRounds).toBe(spent);
-    expect(schedulerMocks.schedule).not.toHaveBeenCalled();
+    expect(schedulerMocks.schedule).toHaveBeenCalledOnce();
   });
 });

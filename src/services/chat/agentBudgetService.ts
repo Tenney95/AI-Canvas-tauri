@@ -1,9 +1,8 @@
 /**
- * Agent 任务的终身成本上限。
+ * 受限子任务与显式团队任务的执行预算。
  *
- * budget.maxModelRounds / maxToolCalls 只约束单次执行段，用户每按一次「继续」或
- * 「重新规划」都会重新放宽额度，单靠它们无法限制任务总开销。本模块在其之上提供
- * 跨全部执行段累计的硬上限（轮次、工具调用、token、继续次数），
+ * 普通交互任务不因累计轮次、工具调用、token 或继续次数自动暂停；历史预算字段
+ * 保留用于兼容与用量展示。只读子任务和用户显式配置的团队继续遵守各自预算，
  * 由 validateTaskResumable（继续前）和 executeAgentRound（每轮前）共同执行。
  */
 import {
@@ -20,6 +19,11 @@ export interface AgentLifetimeBudgetStatus {
   exceeded: boolean;
   errorCode?: string;
   message?: string;
+}
+
+/** 普通任务及其旧记录不启用自动额度暂停；执行身份由宿主创建任务时确定。 */
+export function isAgentTaskBudgetLimited(task: AgentTask): boolean {
+  return !!task.parentTaskId || task.executionKind === 'team' || !!task.teamRun;
 }
 
 /** 读取任务的终身上限；旧记录缺省字段时回退到默认值。 */
@@ -48,6 +52,7 @@ function exhausted(message: string): AgentLifetimeBudgetStatus {
  * 执行中每轮复核，因此不能把「继续次数」算进来：当前这一段本身就是某次继续的产物。
  */
 export function evaluateAgentLifetimeUsage(task: AgentTask): AgentLifetimeBudgetStatus {
+  if (!isAgentTaskBudgetLimited(task)) return { exceeded: false };
   const limits = resolveAgentLifetimeBudget(task.budget);
   if (task.modelRounds >= limits.maxTotalModelRounds) {
     return exhausted(`任务累计模型轮次已达上限（${limits.maxTotalModelRounds} 轮），请基于当前结果新建任务`);
@@ -75,6 +80,7 @@ export function evaluateAgentGroupUsage(
   parentTask: AgentTask,
   childTasks: AgentTask[],
 ): AgentLifetimeBudgetStatus {
+  if (!isAgentTaskBudgetLimited(parentTask)) return { exceeded: false };
   const limits = resolveAgentLifetimeBudget(parentTask.budget);
   const groupLimit = limits.maxTotalTokens * AGENT_GROUP_TOKEN_MULTIPLIER;
   const tokens = totalAgentTaskTokens(parentTask)
@@ -89,6 +95,7 @@ export function evaluateAgentGroupUsage(
 
 /** 继续前的完整校验：累计用量 + 继续次数。 */
 export function evaluateAgentResumeBudget(task: AgentTask): AgentLifetimeBudgetStatus {
+  if (!isAgentTaskBudgetLimited(task)) return { exceeded: false };
   const usage = evaluateAgentLifetimeUsage(task);
   if (usage.exceeded) return usage;
 
@@ -104,6 +111,7 @@ export function evaluateAgentResumeBudget(task: AgentTask): AgentLifetimeBudgetS
  * 调用前应已通过 evaluateAgentResumeBudget，否则额度可能无法真正增长。
  */
 export function extendAgentSegmentBudget(task: AgentTask): AgentTaskBudget {
+  if (!isAgentTaskBudgetLimited(task)) return { ...task.budget };
   const limits = resolveAgentLifetimeBudget(task.budget);
   const budget = { ...task.budget };
 

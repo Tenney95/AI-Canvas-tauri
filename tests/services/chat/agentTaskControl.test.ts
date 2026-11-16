@@ -276,28 +276,30 @@ describe('agent resume validation', () => {
     running.resolve();
   });
 
-  it('refuses to resume once the lifetime budget is exhausted', () => {
+  it.each([false, true])('only explicit teams refuse resume at the lifetime budget (team %s)', (team) => {
     arrangeTask({
       ...createTask('task-spent', 'project-1', 'conversation-1', 'paused'),
+      ...(team ? { executionKind: 'team' as const } : {}),
       modelRounds: DEFAULT_AGENT_TASK_BUDGET.maxTotalModelRounds,
     });
 
-    expect(validateTaskResumable('task-spent')).toMatchObject({
+    expect(validateTaskResumable('task-spent')).toMatchObject(team ? {
       ok: false,
       errorCode: 'AGENT_LIFETIME_BUDGET_EXHAUSTED',
-    });
+    } : { ok: true });
   });
 
-  it('refuses to resume after the maximum number of resumes', () => {
+  it.each([false, true])('only explicit teams refuse resume after the configured count (team %s)', (team) => {
     arrangeTask({
       ...createTask('task-looped', 'project-1', 'conversation-1', 'failed'),
+      ...(team ? { executionKind: 'team' as const } : {}),
       resumeCount: DEFAULT_AGENT_TASK_BUDGET.maxResumes,
     });
 
-    expect(validateTaskResumable('task-looped')).toMatchObject({
+    expect(validateTaskResumable('task-looped')).toMatchObject(team ? {
       ok: false,
       errorCode: 'AGENT_LIFETIME_BUDGET_EXHAUSTED',
-    });
+    } : { ok: true });
   });
 });
 

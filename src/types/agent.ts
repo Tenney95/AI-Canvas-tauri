@@ -63,8 +63,8 @@ export type AgentApprovalStatus =
   | 'expired';
 
 /**
- * 任务终身上限：跨全部执行段（含每次「继续」与「重新规划」）累计。
- * 单段预算每次继续都会重新放宽，只有这层上限能约束任务的总成本。
+ * 受限子任务、显式团队任务的终身上限：跨全部执行段（含继续与重新规划）累计。
+ * 普通交互任务保留兼容字段与累计统计，不据此自动暂停。
  * 本改动之前持久化的任务不带这些字段，读取时用 resolveAgentLifetimeBudget 回退到默认值。
  */
 export interface AgentTaskLifetimeBudget {
@@ -76,7 +76,7 @@ export interface AgentTaskLifetimeBudget {
   maxResumes: number;
 }
 
-/** 单段执行预算；终身上限见 AgentTaskLifetimeBudget。 */
+/** 受限任务的单段执行预算；并发与重试限制对普通任务同样适用。 */
 export interface AgentTaskBudget extends Partial<AgentTaskLifetimeBudget> {
   maxModelRounds: number;
   maxToolCalls: number;
@@ -444,7 +444,7 @@ export interface AgentTask {
   currentStepId?: string;
   modelRounds: number;
   toolCallCount: number;
-  /** 已执行的「继续 / 重新规划」次数，受 maxResumes 约束（历史记录可能缺省）。 */
+  /** 已执行的继续/重新规划次数；仅受限子任务、团队受 maxResumes 约束，历史记录可能缺省。 */
   resumeCount?: number;
   /** 用户请求重新规划后待模型消费的指令；消费后清除。 */
   replanRequest?: AgentReplanRequest;

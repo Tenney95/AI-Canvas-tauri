@@ -10,8 +10,10 @@ import {
 } from '../../../src/types/agent';
 import {
   evaluateAgentLifetimeUsage,
+  evaluateAgentGroupUsage,
   evaluateAgentResumeBudget,
   extendAgentSegmentBudget,
+  isAgentTaskBudgetLimited,
   resolveAgentLifetimeBudget,
   totalAgentTaskTokens,
 } from '../../../src/services/chat/agentBudgetService';
@@ -64,14 +66,17 @@ describe('agent lifetime budget', () => {
 
   it('stops the task once cumulative rounds, tool calls or tokens hit the lifetime cap', () => {
     expect(evaluateAgentLifetimeUsage(createTask({
+      parentTaskId: 'parent-1',
       modelRounds: DEFAULT_AGENT_TASK_BUDGET.maxTotalModelRounds,
     }))).toMatchObject({ exceeded: true, errorCode: 'AGENT_LIFETIME_BUDGET_EXHAUSTED' });
 
     expect(evaluateAgentLifetimeUsage(createTask({
+      parentTaskId: 'parent-1',
       toolCallCount: DEFAULT_AGENT_TASK_BUDGET.maxTotalToolCalls,
     }))).toMatchObject({ exceeded: true, errorCode: 'AGENT_LIFETIME_BUDGET_EXHAUSTED' });
 
     expect(evaluateAgentLifetimeUsage(createTask({
+      parentTaskId: 'parent-1',
       metrics: {
         ...DEFAULT_AGENT_TASK_METRICS,
         inputTokens: DEFAULT_AGENT_TASK_BUDGET.maxTotalTokens,
@@ -81,7 +86,7 @@ describe('agent lifetime budget', () => {
   });
 
   it('counts resumes only when validating a new resume, not while a segment runs', () => {
-    const task = createTask({ resumeCount: DEFAULT_AGENT_TASK_BUDGET.maxResumes });
+    const task = createTask({ parentTaskId: 'parent-1', resumeCount: DEFAULT_AGENT_TASK_BUDGET.maxResumes });
 
     // 运行中的这一段本身就是最后一次继续的产物，逐轮复核不能把它掐断
     expect(evaluateAgentLifetimeUsage(task).exceeded).toBe(false);
@@ -93,6 +98,7 @@ describe('agent lifetime budget', () => {
 
   it('clamps the widened segment budget to the lifetime cap', () => {
     const task = createTask({
+      parentTaskId: 'parent-1',
       modelRounds: 58,
       toolCallCount: 118,
       budget: { ...DEFAULT_AGENT_TASK_BUDGET, maxModelRounds: 58, maxToolCalls: 118 },
@@ -106,6 +112,7 @@ describe('agent lifetime budget', () => {
 
   it('still widens the segment budget while far below the lifetime cap', () => {
     const task = createTask({
+      parentTaskId: 'parent-1',
       modelRounds: 12,
       toolCallCount: 24,
       budget: { ...DEFAULT_AGENT_TASK_BUDGET, maxModelRounds: 12, maxToolCalls: 24 },
@@ -115,5 +122,45 @@ describe('agent lifetime budget', () => {
       maxModelRounds: 24,
       maxToolCalls: 48,
     });
+  });
+
+  it('keeps ordinary persisted tasks resumable beyond all former cumulative limits', () => {
+    const task = createTask({
+      modelRounds: 120,
+      toolCallCount: 240,
+      resumeCount: 16,
+      pausedReason: 'lifetime_budget_exhausted',
+      metrics: { ...DEFAULT_AGENT_TASK_METRICS, inputTokens: 3_000_000, outputTokens: 42 },
+    });
+    const before = structuredClone(task);
+
+    expect(isAgentTaskBudgetLimited(task)).toBe(false);
+    expect(evaluateAgentLifetimeUsage(task)).toEqual({ exceeded: false });
+    expect(evaluateAgentResumeBudget(task)).toEqual({ exceeded: false });
+    expect(extendAgentSegmentBudget(task)).toEqual(task.budget);
+    expect(task).toEqual(before);
+  });
+
+  it('keeps explicit teams subject to their configured budget', () => {
+    const task = createTask({
+      executionKind: 'team',
+      budget: { ...DEFAULT_AGENT_TASK_BUDGET, maxTotalTokens: 500 },
+      metrics: { ...DEFAULT_AGENT_TASK_METRICS, inputTokens: 500 },
+    });
+    expect(isAgentTaskBudgetLimited(task)).toBe(true);
+    expect(evaluateAgentLifetimeUsage(task).exceeded).toBe(true);
+  });
+
+  it('does not reject new experts because an ordinary task group exceeded its old token cap', () => {
+    const parent = createTask({
+      metrics: { ...DEFAULT_AGENT_TASK_METRICS, inputTokens: 3_000_000 },
+    });
+    const children = [createTask({
+      parentTaskId: parent.id,
+      metrics: { ...DEFAULT_AGENT_TASK_METRICS, inputTokens: 3_000_000 },
+    })];
+
+    expect(evaluateAgentGroupUsage(parent, children)).toEqual({ exceeded: false });
+    expect(evaluateAgentGroupUsage({ ...parent, executionKind: 'team' }, children).exceeded).toBe(true);
   });
 });

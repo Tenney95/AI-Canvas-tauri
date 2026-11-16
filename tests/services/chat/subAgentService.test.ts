@@ -218,7 +218,7 @@ describe('权限与嵌套边界', () => {
       .rejects.toThrow(`最多派出 ${SUB_AGENT_LIMITS.maxTasksPerParent} 个`);
   });
 
-  it('任务组预算耗尽后拒绝派出', async () => {
+  it('普通父任务超过旧任务组预算后仍可派出受限子智能体', async () => {
     const exhausted = parentTask({
       metrics: {
         inputTokens: DEFAULT_AGENT_TASK_BUDGET.maxTotalTokens * 2,
@@ -226,8 +226,10 @@ describe('权限与嵌套边界', () => {
       } as never,
     });
     useAppStore.setState({ agentTasks: [exhausted] });
-    await expect(runSubAgent('parent-1', profile(), '分析', signal()))
-      .rejects.toThrow('累计 token');
+    const result = await runSubAgent('parent-1', profile(), '分析', signal());
+    const child = useAppStore.getState().agentTasks.find((task) => task.id === result.childTaskId);
+    expect(child?.parentTaskId).toBe('parent-1');
+    expect(child?.budget.maxModelRounds).toBe(profile().maxRounds);
   });
 });
 

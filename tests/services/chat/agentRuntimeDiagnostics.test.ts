@@ -167,20 +167,28 @@ describe('agent runtime diagnostics', () => {
     expect(enqueueAgentInterjection('task-diagnostics', '任务已结束')).toBeNull();
   });
 
-  it('still pauses at the round budget when a late requirement needs another response', async () => {
-    useAppStore.getState().updateAgentTask('task-diagnostics', { budget: { ...createTask().budget, maxModelRounds: 1 } });
+  it.each([false, true])('handles a late requirement beyond the old round budget (bounded %s)', async (bounded) => {
+    useAppStore.getState().updateAgentTask('task-diagnostics', {
+      ...(bounded ? { parentTaskId: 'parent-1' } : {}),
+      budget: { ...createTask().budget, maxModelRounds: 1 },
+    });
     streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
-      onEvent({ type: 'text.delta', delta: '首轮回复' });
-      enqueueAgentInterjection('task-diagnostics', '补充要求');
+      const firstRound = streamAssistantReplyMock.mock.calls.length === 1;
+      onEvent({ type: 'text.delta', delta: firstRound ? '首轮回复' : '已按补充要求完成' });
+      if (firstRound) enqueueAgentInterjection('task-diagnostics', '补充要求');
     });
     const onComplete = vi.fn();
     expect(await runAgentLoop({
       taskId: 'task-diagnostics', systemPrompt: 'system', userMessage: 'update canvas',
       signal: new AbortController().signal, callbacks: { onComplete },
-    })).toBe('paused');
-    expect(streamAssistantReplyMock).toHaveBeenCalledTimes(1);
-    expect(onComplete).not.toHaveBeenCalled();
-    expect(useAppStore.getState().agentTasks[0].pausedReason).toBe('model_round_budget_exhausted');
+    })).toBe(bounded ? 'paused' : 'completed');
+    expect(streamAssistantReplyMock).toHaveBeenCalledTimes(bounded ? 1 : 2);
+    if (bounded) {
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(useAppStore.getState().agentTasks[0].pausedReason).toBe('model_round_budget_exhausted');
+    } else {
+      expect(onComplete).toHaveBeenCalledExactlyOnceWith('首轮回复\n\n已按补充要求完成');
+    }
   });
 
   it('refreshes mode and available tool instructions each round without accumulating system messages', async () => {
@@ -218,7 +226,7 @@ describe('agent runtime diagnostics', () => {
     const snapshot = await readWebSession(options, load);
     const catalog = createProviderModelCatalog(options.scope, [{ id: 'm', name: 'M', category: 'text' }]);
     streamAssistantReplyMock.mockResolvedValue(undefined);
-    if (outcome === 'paused') useAppStore.setState({ agentTasks: [{ ...task, budget: { ...task.budget, maxModelRounds: 0 } }] });
+    if (outcome === 'paused') useAppStore.setState({ agentTasks: [{ ...task, parentTaskId: 'parent-1', budget: { ...task.budget, maxModelRounds: 0 } }] });
     const controller = new AbortController();
     if (outcome === 'aborted') controller.abort();
     if (outcome === 'context_error') assembleAgentContextMock.mockRejectedValue(new Error('context failed'));

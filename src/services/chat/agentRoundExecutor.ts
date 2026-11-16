@@ -54,6 +54,7 @@ import {
 import {
   AGENT_LIFETIME_BUDGET_PAUSE_REASON,
   evaluateAgentLifetimeUsage,
+  isAgentTaskBudgetLimited,
 } from './agentBudgetService';
 import { drainAgentInterjections } from './agentInterjection';
 import { buildAssistantToolGuidance } from './agentPromptGuidance';
@@ -65,7 +66,7 @@ import {
 import { emitAgentLifecycleEvent } from './agentLifecycle';
 import { createSkillReadBudget } from './skillReadService';
 import { AgentDurabilityError, beginAgentDispatch, digestAgentDispatchInput, settleAgentDispatch } from './agentDurabilityService';
-import { AGENT_RESULT_PREVIEW_CHARS, captureAgentResult } from './agentResultService';
+import { AGENT_RESULT_PAGE_CHARS, AGENT_RESULT_PREVIEW_CHARS, captureAgentResult } from './agentResultService';
 import { assertAgentProjectContext, captureAgentProjectScope } from './agentProjectContext';
 import { isProjectExpectedContextCurrent, ProjectExecutionContextError } from '../projectExecutionContext';
 
@@ -1062,7 +1063,7 @@ export async function executeAgentRound({
     return { outcome: 'paused', fullText, totalToolResultChars };
   }
 
-  if (task.modelRounds >= task.budget.maxModelRounds) {
+  if (isAgentTaskBudgetLimited(task) && task.modelRounds >= task.budget.maxModelRounds) {
     transitionTask(taskId, 'paused', { pausedReason: 'model_round_budget_exhausted' });
     callbacks.onError?.('已达到模型规划轮次上限，任务已暂停');
     return { outcome: 'paused', fullText, totalToolResultChars };
@@ -1216,7 +1217,8 @@ export async function executeAgentRound({
   }
 
   const currentTask = getTask(taskId);
-  if (currentTask.toolCallCount + proposedCalls.length > currentTask.budget.maxToolCalls) {
+  if (isAgentTaskBudgetLimited(currentTask)
+    && currentTask.toolCallCount + proposedCalls.length > currentTask.budget.maxToolCalls) {
     transitionTask(taskId, 'paused', { pausedReason: 'tool_call_budget_exhausted' });
     callbacks.onError?.('已达到工具调用上限，任务已暂停');
     return { outcome: 'paused', fullText, totalToolResultChars };
@@ -1397,16 +1399,15 @@ export async function executeAgentRound({
   }
 
   assertAgentTaskActive(taskId, signal);
+  // 每轮结果有界并为每个已执行调用保留回执；跨轮累计量仅作统计，不再耗尽后暂停。
+  const maxResultChars = Math.min(AGENT_RESULT_PAGE_CHARS, Math.floor(200_000 / Math.max(1, results.size)));
   for (const call of proposedCalls) {
     const result = results.get(call.callId);
     if (!result) continue;
-    const remainingToolResultChars = 200_000 - totalToolResultChars;
-    if (remainingToolResultChars <= 0) {
-      transitionTask(taskId, 'paused', { pausedReason: 'tool_result_budget_exhausted' });
-      callbacks.onError?.('工具结果上下文已达到 200 KB 上限，任务已暂停');
-      return { outcome: 'paused', fullText, totalToolResultChars };
-    }
-    const modelContent = result.modelContent.slice(0, remainingToolResultChars);
+    // 结果回读已在原服务按页和任务限制；保留完整 JSON，不能截断正文后仍返回跳过内容的 nextOffset。
+    const modelContent = call.toolId === 'agent_result_read'
+      ? result.modelContent
+      : result.modelContent.slice(0, maxResultChars);
     totalToolResultChars += modelContent.length;
     messages.push({
       role: 'tool',
@@ -1415,6 +1416,7 @@ export async function executeAgentRound({
         status: result.summary.status,
         summary: result.summary.summary,
         result: modelContent,
+        ...(result.summary.resultReference ? { resultId: result.summary.resultReference.id } : {}),
         truncated: result.summary.truncated || modelContent.length < result.modelContent.length,
       }),
     });

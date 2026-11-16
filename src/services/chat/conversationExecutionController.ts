@@ -491,7 +491,7 @@ export function resumeAgentTaskExecution(
     };
   }
 
-  // 单段额度放宽后仍夹在终身上限内；继续次数计入 maxResumes（validateTaskResumable 已校验）
+  // 普通任务不因用量限额暂停；受限子任务仍沿用增额校验，继续次数只累计真实操作。
   store.updateAgentTask(taskId, {
     budget: extendAgentSegmentBudget(task),
     resumeCount: (task.resumeCount ?? 0) + 1,

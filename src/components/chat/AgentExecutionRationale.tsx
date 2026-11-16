@@ -17,8 +17,6 @@ interface AgentExecutionRationaleProps {
   task: AgentTask;
 }
 
-const ACTIVE_STATUSES = new Set(['queued', 'planning', 'running', 'waiting_tool', 'waiting_approval']);
-
 const KIND_ICONS: Record<AgentRationaleKind, string> = {
   analysis: 'mdi:head-cog-outline',
   decision: 'mdi:shield-check-outline',
@@ -38,7 +36,13 @@ const TONE_CLASSES: Record<AgentRationaleTone, string> = {
 export default function AgentExecutionRationale({ task }: AgentExecutionRationaleProps) {
   const t = useT();
   const entries = buildAgentExecutionRationale(task);
-  const [expanded, setExpanded] = useState(() => ACTIVE_STATUSES.has(task.status));
+  const settled = task.status === 'completed' || task.status === 'stopped';
+  const disclosurePhase = settled ? 'settled'
+    : ['paused', 'failed', 'waiting_approval'].includes(task.status) ? task.status : 'active';
+  const disclosureScope = `${task.id}\u0000${disclosurePhase}`;
+  const [disclosure, setDisclosure] = useState({ scope: disclosureScope, expanded: !settled });
+  if (disclosure.scope !== disclosureScope) setDisclosure({ scope: disclosureScope, expanded: !settled });
+  const expanded = disclosure.scope === disclosureScope ? disclosure.expanded : !settled;
   if (entries.length === 0) return null;
   const latest = entries.at(-1);
 
@@ -47,7 +51,7 @@ export default function AgentExecutionRationale({ task }: AgentExecutionRational
       <button
         type="button"
         aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => setDisclosure({ scope: disclosureScope, expanded: !expanded })}
         className="flex min-h-8 w-full items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-canvas-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
       >
         <Icon icon="mdi:timeline-text-outline" width="14" className="shrink-0 text-brand-light" />

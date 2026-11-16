@@ -4,6 +4,7 @@
  * 展示工具调用的输入摘要、结果或错误、重试次数和耗时。
  * 状态用图标 + 文字表达，不只依赖颜色。不展示模型隐藏推理过程。
  */
+import { useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { AgentStep, AgentStepStatus } from '../../types/agent';
 import AgentToolDetails from './AgentToolDetails';
@@ -40,6 +41,11 @@ export default function AgentStepCard({ step, animateActivity = true }: AgentSte
   const duration = formatDuration(step);
   const retryCount = step.toolCall?.retryCount ?? 0;
   const detail = step.errorMessage || step.outputSummary || step.toolCall?.resultSummary;
+  const compact = step.status === 'succeeded' || step.status === 'skipped';
+  const disclosureScope = `${step.id}\u0000${step.status}`;
+  const [disclosure, setDisclosure] = useState({ scope: disclosureScope, expanded: !compact });
+  if (disclosure.scope !== disclosureScope) setDisclosure({ scope: disclosureScope, expanded: !compact });
+  const expanded = disclosure.scope === disclosureScope ? disclosure.expanded : !compact;
 
   return (
     <div className="agent-step-card flex gap-2 rounded-md px-0.5 py-1.5 transition-colors hover:bg-canvas-hover/25">
@@ -51,7 +57,12 @@ export default function AgentStepCard({ step, animateActivity = true }: AgentSte
         )}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[17px]">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setDisclosure({ scope: disclosureScope, expanded: !expanded })}
+          className="ui-btn ui-btn--ghost ui-btn--sm ui-btn--block min-w-0 justify-start text-left"
+        >
           <span className="truncate text-[12px] text-canvas-text-secondary">{step.title}</span>
           <span className={`shrink-0 text-[10px] ${meta.className}`}>{t(meta.label)}</span>
           {retryCount > 0 && (
@@ -60,21 +71,27 @@ export default function AgentStepCard({ step, animateActivity = true }: AgentSte
           {duration && (
             <span className="ml-auto shrink-0 text-[10px] tabular-nums text-canvas-text-muted">{duration}</span>
           )}
-        </div>
-        {step.toolCall?.inputSummary && (
-          <p className="break-words text-[11px] leading-[17px] text-canvas-text-muted">
-            {step.toolCall.inputSummary}
-          </p>
+          <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width="13"
+            className={`shrink-0 text-canvas-text-muted ${duration ? '' : 'ml-auto'}`} aria-hidden="true" />
+        </button>
+        {expanded && (
+          <>
+            {step.toolCall?.inputSummary && (
+              <p className="break-words text-[11px] leading-[17px] text-canvas-text-muted">
+                {step.toolCall.inputSummary}
+              </p>
+            )}
+            {detail && detail !== step.toolCall?.inputSummary && (
+              <p className={`break-words text-[11px] leading-[17px] ${step.status === 'failed' ? 'text-red-400/85' : 'text-canvas-text-secondary'}`}>
+                {detail}
+              </p>
+            )}
+            <AgentToolDetails
+              input={step.toolCall?.inputDisplay}
+              result={step.toolCall?.resultDisplay}
+            />
+          </>
         )}
-        {detail && detail !== step.toolCall?.inputSummary && (
-          <p className={`break-words text-[11px] leading-[17px] ${step.status === 'failed' ? 'text-red-400/85' : 'text-canvas-text-secondary'}`}>
-            {detail}
-          </p>
-        )}
-        <AgentToolDetails
-          input={step.toolCall?.inputDisplay}
-          result={step.toolCall?.resultDisplay}
-        />
       </div>
     </div>
   );

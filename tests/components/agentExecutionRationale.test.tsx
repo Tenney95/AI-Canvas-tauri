@@ -58,4 +58,10 @@ describe('AgentExecutionRationale', () => {
   it('renders nothing for tasks without journal events', () => {
     expect(renderToStaticMarkup(<AgentExecutionRationale task={task(false)} />)).toBe('');
   });
+
+  it.each(['paused', 'failed', 'waiting_approval'] as const)('keeps %s rationale visible', (status) => {
+    const html = renderToStaticMarkup(<AgentExecutionRationale task={{ ...task(), status }} />);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('来自可验证的任务事件');
+  });
 });

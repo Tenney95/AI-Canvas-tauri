@@ -199,7 +199,14 @@ export default function AgentTaskTimeline({
   const t = useT();
   const isTerminal = AGENT_TERMINAL_STATUSES.has(task.status);
   const isExpertTask = !!task.parentTaskId;
-  const [expanded, setExpanded] = useState(!isTerminal);
+  const settled = task.status === 'completed' || task.status === 'stopped';
+  const disclosurePhase = settled ? 'settled'
+    : ['paused', 'failed', 'waiting_approval'].includes(task.status) ? task.status : 'active';
+  const disclosureScope = `${task.id}\u0000${disclosurePhase}`;
+  const [disclosure, setDisclosure] = useState({ scope: disclosureScope, expanded: !settled });
+  // 新任务或新阶段恢复默认展示；同阶段仍允许用户手动重新展开。
+  if (disclosure.scope !== disclosureScope) setDisclosure({ scope: disclosureScope, expanded: !settled });
+  const expanded = disclosure.scope === disclosureScope ? disclosure.expanded : !settled;
   const [resolving, setResolving] = useState<string | null>(null);
   const [resolutionError, setResolutionError] = useState('');
   const unknownDispatches = (task.dispatches ?? []).filter((dispatch) => !dispatch.recovery
@@ -268,7 +275,7 @@ export default function AgentTaskTimeline({
       {/* 当前活动：只展示可验证的任务和工具状态，不展示模型隐藏推理。 */}
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => setDisclosure({ scope: disclosureScope, expanded: !expanded })}
         aria-expanded={expanded}
         className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-0.5 text-left transition-colors hover:bg-canvas-hover/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
       >
@@ -335,28 +342,21 @@ export default function AgentTaskTimeline({
         </p>
       )}
 
-      {expanded && (
-        <>
-          {task.steps.length > 0 && (
-            <div className="mt-1 space-y-0.5">
-              {task.steps.map((step) => (
-                <AgentStepCard key={step.id} step={step} animateActivity={animateActivity && isActive && task.status !== 'waiting_approval'} />
-              ))}
-            </div>
-          )}
-
-          {pendingApprovalStep && (
-            <AgentApprovalCard
-              key={pendingApprovalStep.approval?.id}
-              step={pendingApprovalStep}
-              mediaModelOptions={mediaModelOptions}
-              mediaModelAvailability={mediaModelAvailability}
-              onResolve={onResolveApproval}
-            />
-          )}
-
-
-        </>
+      {expanded && task.steps.length > 0 && (
+        <div className="mt-1 space-y-0.5">
+          {task.steps.map((step) => (
+            <AgentStepCard key={step.id} step={step} animateActivity={animateActivity && isActive && task.status !== 'waiting_approval'} />
+          ))}
+        </div>
+      )}
+      {pendingApprovalStep && (
+        <AgentApprovalCard
+          key={pendingApprovalStep.approval?.id}
+          step={pendingApprovalStep}
+          mediaModelOptions={mediaModelOptions}
+          mediaModelAvailability={mediaModelAvailability}
+          onResolve={onResolveApproval}
+        />
       )}
       {/* 控制操作 */}
           {!isTerminal && !isExpertTask && (

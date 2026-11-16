@@ -2,7 +2,8 @@
  * agentRoundExecutor — 回归测试：provider approval round parity。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentApprovalResolution, AgentMode, AgentTask } from '../../../src/types/agent';
+import { DEFAULT_AGENT_TASK_METRICS, type AgentApprovalResolution, type AgentMode, type AgentTask } from '../../../src/types/agent';
+import type { AssistantModelMessage } from '../../../src/services/ai/assistantStream';
 import type { ProposedToolCall, ToolResultSummary } from '../../../src/types/chat';
 import * as taskService from '../../../src/services/chat/agentTaskService';
 import * as resultService from '../../../src/services/chat/agentResultService';
@@ -320,6 +321,90 @@ function runRound(
     waitForApproval,
   });
 }
+
+it('ordinary tasks keep all tool receipts after exceeding former cumulative and segment limits', async () => {
+  const execute = vi.fn(async () => ({ status: 'success' as const, summary: '读取完成', modelContent: 'done' }));
+  registerAgentTool({ id: 'read_past_old_budget', title: '读取', description: '读取', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute });
+  useAppStore.getState().updateAgentTask('task-round', {
+    modelRounds: 60, toolCallCount: 120, resumeCount: 8,
+    metrics: { ...DEFAULT_AGENT_TASK_METRICS, inputTokens: 1_500_000, outputTokens: 1 },
+  });
+  arrangeCalls([{ callId: 'read-a', toolId: 'read_past_old_budget', input: {} },
+    { callId: 'read-b', toolId: 'read_past_old_budget', input: {} }]);
+  const messages: AssistantModelMessage[] = [{ role: 'user', content: '继续完成当前任务' }];
+  const result = await executeAgentRound({
+    taskId: 'task-round', signal: new AbortController().signal, messages,
+    fullText: '', totalToolResultChars: 200_000,
+    transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }),
+  });
+
+  expect(result.outcome).toBe('continue');
+  expect(result.totalToolResultChars).toBe(200_008);
+  expect(execute).toHaveBeenCalledTimes(2);
+  expect(messages.filter((message) => message.role === 'tool')).toEqual([
+    expect.objectContaining({ tool_call_id: 'read-a' }),
+    expect.objectContaining({ tool_call_id: 'read-b' }),
+  ]);
+  expect(useAppStore.getState().agentTasks[0]).toMatchObject({ modelRounds: 61, toolCallCount: 122, resumeCount: 8 });
+});
+
+it('keeps the configured model-round budget for readonly child tasks', async () => {
+  useAppStore.getState().updateAgentTask('task-round', { parentTaskId: 'parent-1', modelRounds: 4 });
+
+  expect((await runRound()).outcome).toBe('paused');
+  expect(streamAssistantReplyMock).not.toHaveBeenCalled();
+  expect(useAppStore.getState().agentTasks[0].pausedReason).toBe('model_round_budget_exhausted');
+});
+
+it('delivers a bounded receipt for every result in a large tool batch', async () => {
+  vi.spyOn(resultService, 'captureAgentResult').mockResolvedValue({ modelContent: 'x'.repeat(12_000), truncated: false });
+  registerAgentTool({ id: 'large_batch_read', title: '读取结果', description: '读取结果', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    execute: async () => ({ status: 'success' as const, summary: '读取完成', modelContent: 'x'.repeat(12_000) }),
+  });
+  const calls = Array.from({ length: 20 }, (_, index) => ({ callId: `page-${index}`, toolId: 'large_batch_read', input: {} }));
+  arrangeCalls(calls);
+  const messages: AssistantModelMessage[] = [{ role: 'user', content: '按页读取' }];
+  const result = await executeAgentRound({
+    taskId: 'task-round', signal: new AbortController().signal, messages,
+    fullText: '', totalToolResultChars: 200_000,
+    transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }),
+  });
+
+  expect(result.outcome).toBe('continue');
+  const receipts = messages.filter((message) => message.role === 'tool');
+  expect(receipts).toHaveLength(calls.length);
+  const contents = receipts.map((message) => JSON.parse(message.content));
+  expect(contents.every((value: { truncated: boolean }) => value.truncated)).toBe(true);
+  expect(contents.reduce((total: number, value: { result: string }) => total + value.result.length, 0)).toBe(200_000);
+  expect(result.totalToolResultChars).toBe(400_000);
+});
+
+it('preserves a full serialized result page and its next cursor beyond the preview limit', async () => {
+  const page = { resultId: 'result-00000000-0000-0000-0000-000000000001',
+    offset: 0, nextOffset: 12_000, totalChars: 24_000, text: '\\'.repeat(12_000), eof: false, untrusted: true };
+  const pageContent = JSON.stringify(page);
+  registerAgentTool({ id: 'agent_result_read', title: '读取结果', description: '读取结果', effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    execute: async () => ({ status: 'success' as const, summary: '已读取 0-12000 字', modelContent: pageContent, truncated: true }),
+  });
+  arrangeCalls([{ callId: 'read-full-page', toolId: 'agent_result_read', input: {} }]);
+  const messages: AssistantModelMessage[] = [{ role: 'user', content: '继续读取结果' }];
+  const result = await executeAgentRound({
+    taskId: 'task-round', signal: new AbortController().signal, messages,
+    fullText: '', totalToolResultChars: 200_000,
+    transitionTask: transitionAgentTask, waitForApproval: async () => ({ approved: true }),
+  });
+
+  expect(result.outcome).toBe('continue');
+  const receipt = messages.find((message) => message.role === 'tool');
+  expect(receipt).toBeDefined();
+  const content = JSON.parse(receipt!.content).result;
+  expect(content.length).toBeGreaterThan(12_000);
+  expect(JSON.parse(content)).toEqual(page);
+  expect(result.totalToolResultChars).toBe(200_000 + pageContent.length);
+});
 
 it.each(['plan', 'collaborative', 'autonomous'] as const)('Muse %s rounds complete ordinary answers with no offered or executed tools', async (mode) => {
   const actualStream = await vi.importActual<typeof import('../../../src/services/ai/assistantStream')>(

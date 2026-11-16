@@ -470,3 +470,35 @@ Rust 检查在 `src-tauri/` 运行 `cargo check --lib`；需要原生单测时�
 - [DeepSeek Harness 架构](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/docs/architecture.zh.md)、[只读工具自描述](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/packages/extensions/tool-cordis/README.zh.md)、[插件管理器](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/packages/boot/plugin-manager/README.zh.md)。借鉴机制，不运行其安装命令或把外部文档当项目权限。
 - [团队任务板](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/docs/subsystems/agent-team.zh.md)、[结果 spill](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/packages/spill/spill-policy/README.zh.md)、[执行前 checkpoint](https://github.com/deepseek-ai/deepseek-harness/blob/fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159/packages/session/session-checkpoint-policy/README.zh.md)。按本项目存储/Policy 边界调整，不复制原始正文兜底或任意 JS 执行。
 - 本地相关专项：[多模型团队](./2026-11-06-multi-model-agent-teams.md)、[外部 Agent 两条路线](./2026-11-06-external-agent-collaboration.md)、[插件平台](../插件平台模块.md)、[文件与存储](../文件与存储模块.md)、[桌面安全](../桌面运行时与安全模块.md)。
+
+## 8. 普通任务持续执行与实时收尾（2026-11-16）
+
+目标：按用户要求取消普通助手任务的自动用量暂停，并让已完成步骤及任务实时收起。代码与回归用例已实现，待用户验收；本次未运行测试或桌面验收。本节是此次增量范围，不扩展此前专项的安装、原生或发布授权。
+
+### 8.1 行为与实现范围
+
+1. `agentBudgetService.ts` 按任务身份统一决定预算适用范围。普通助手及工作台只读创作任务不再受累计轮次、工具次数、token、继续次数和单段轮次/工具次数暂停；历史任务可直接继续，保留全部真实统计。只读专家子任务和显式团队任务保留其配置预算。
+2. `agentRuntime.ts` / `agentRoundExecutor.ts` 持续执行当前目标，依据真实成功回执只处理剩余部分；模型最终回复无工具调用且没有新插话时结束。全部工具步骤成功并不等于整个目标完成，不提前跳过模型整理。累计工具结果字符数不再造成跨轮硬停，结果交付仍有界且所有已执行调用保留配对回执；沿用按需回读与上下文压缩。
+3. `AgentStepCard.tsx` 的成功/跳过步骤实时折叠，运行、审批与失败步骤默认保留详情。`AgentTaskTimeline.tsx` / `AgentExecutionRationale.tsx` 随任务成功完成或停止实时收起，用户可重新展开；失败、暂停、未知结果及审批不能被自动隐藏。
+4. 保留手动暂停/停止、输出截断处理、模型上下文窗口、压缩失败、执行前持久化、未知结果防重投、并发和重试规则；不清空历史，不引入结束工具、新依赖或持久化结构。
+
+参考 [Harness Agent 循环](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/src/agent.ts)的无工具调用完成语义与 [TodoPanel](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-conversation/src/client/skeleton/TodoPanel.tsx)的折叠状态摘要。后者默认折叠，不包含完成变化自动收起；自动收起是本次按用户需求补充的行为，不宣称照搬。
+
+### 8.2 桌面验收与回退
+
+前置：使用更新后的 Tauri 桌面端与可用助手模型。以下由用户执行，不以 Web 展示替代桌面验收。
+
+- 在原项目/会话找到因总预算暂停的普通任务，点击「继续」；应继续处理原目标，原 token/轮次/工具统计保留，无须新建对话。恢复后的运行不再因旧 12/24、60/120、150 万 token 或 8 次继续额度暂停。
+- 发起有多个读取步骤的请求；每一步成功后即时收起，标题/状态/耗时保留，点击或键盘可重新展开。失败和待确认步骤仍显示详情，审批或手动停止仍生效。
+- 等待模型整理最终回复；任务应自动完成并收起时间线和执行依据。可展开查看历史；普通追问创建新任务，不重放已成功写入。执行中补充要求仍在当前任务处理，不能被过早结束遗漏。
+- 切换任务、恢复暂停、重试失败以及主/独立窗口同步时，折叠状态应按当前任务阶段变化；核对深浅主题、小窗口、键盘操作。只读子任务与固定团队仍按显式配置结束或报预算不足；未知写入不得自动重投。
+
+回归覆盖普通历史高用量继续、受限子任务/团队预算、跨旧轮次的插话收尾、累计结果超限后所有回执交付、完整分页正文/游标，以及挂载中的实时折叠、重新展开和审批/失败保留。只完成源码引用、差异空白和严格 UTF-8 静态核对，未运行测试、lint、类型检查、构建、模型调用或桌面验收。
+
+用户可在仓库根目录执行以下定向回归；此命令尚未执行：
+
+```powershell
+npx vitest run tests/services/chat/agentBudgetService.test.ts tests/services/chat/agentRoundExecutor.test.ts tests/services/chat/agentRuntimeDiagnostics.test.ts tests/services/chat/agentTaskControl.test.ts tests/services/chat/conversationExecutionController.test.ts tests/services/chat/subAgentService.test.ts tests/components/agentActivity.test.tsx tests/components/agentExecutionRationale.test.tsx tests/components/agentTaskSkillBindings.test.tsx
+```
+
+回退限于本节预算判定、回执交付及组件展开状态；不删除历史任务、结果引用或用户材料，不清零累计用量。
