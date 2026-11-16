@@ -61,6 +61,7 @@ function hasContentChange(before: BaseNodeData, after: BaseNodeData): boolean {
   keys.delete('groupCollapsed');
   keys.delete('groupExpandedSize');
   keys.delete('groupLayoutOffsetX');
+  keys.delete('groupLayoutOffsetY');
   keys.delete('groupCollapseLayout');
   for (const key of keys) {
     const left = (before as Record<string, unknown>)?.[key];

@@ -10,7 +10,8 @@ import type { BaseNodeData, NodeGroup } from '../types';
 import * as fileService from '../services/fileService';
 import { waitForPendingNodeExits } from '../utils/nodeAnimations';
 import { getHistoryGroupSize } from '../utils/historyOperationLabels';
-import { getGroupLayoutComparisonPosition, getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
+import { getGroupLayoutComparisonPosition, getGroupLayoutOffsetX, getGroupLayoutOffsetY,
+  getGroupLayoutPosition, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
 import { COLLAPSED_GROUP_SIZE } from './store.groups';
 import { createNodeFileDeletionContext } from './store.nodes';
 import type { CharacterVisualReferenceChange } from '../services/characterVisualReferencePlan';
@@ -278,12 +279,14 @@ function restoreStructuralNode(
     const restored = cloneNode(target);
     restored.position = getGroupLayoutPosition(target);
     delete restored.data.groupLayoutOffsetX;
+    delete restored.data.groupLayoutOffsetY;
     return restored;
   }
 
   if (target.type === 'canvas-note') {
     const data = { ...current.data, ...target.data };
     delete data.groupLayoutOffsetX;
+    delete data.groupLayoutOffsetY;
     if (current.data.groupCollapseLayout) data.groupCollapseLayout = current.data.groupCollapseLayout;
     else delete data.groupCollapseLayout;
     return {
@@ -345,8 +348,19 @@ function restoreStructuralNode(
   }
   const parentChanged = current.parentId !== target.parentId;
   const restorePosition = restoreLayout || parentChanged;
-  // 历史位置先还原为用户布局；本轮当前的开合位移在整张图恢复后统一重投影。
-  if (restorePosition) delete data.groupLayoutOffsetX;
+  const position = restorePosition ? getGroupLayoutPosition(target) : { ...current.position };
+  // 同层冻结节点不会参与后续重投影，须将当前冻结偏移保留在历史用户位置上。
+  const frozen = !parentChanged && (current.draggable === false || current.hidden || current.data.hiddenByCharacterLibrary);
+  if (restorePosition) {
+    if (frozen) {
+      position.x += getGroupLayoutOffsetX(current);
+      position.y += getGroupLayoutOffsetY(current);
+    } else {
+      // 其他节点先还原为用户布局，再在整张图恢复后统一重投影。
+      delete data.groupLayoutOffsetX;
+      delete data.groupLayoutOffsetY;
+    }
+  }
   const expandedSize = restoreLayout && target.type === 'group' ? getHistoryGroupSize(target) : undefined;
   const visibleSize = expandedSize && (current.data.groupCollapsed ? COLLAPSED_GROUP_SIZE : expandedSize);
   // 保留当前开合状态；真实缩放撤销后，收起的分组下次展开也要使用还原后的尺寸。
@@ -357,7 +371,7 @@ function restoreStructuralNode(
     parentId: target.parentId,
     extent: target.extent,
     expandParent: target.expandParent,
-    position: restorePosition ? getGroupLayoutPosition(target) : { ...current.position },
+    position,
     style: visibleSize ? { ...current.style, ...visibleSize }
       : restoreLayout ? restoreNodeStyleDimensions(target, current) : current.style,
     ...(visibleSize ? {
@@ -408,26 +422,57 @@ function restoreStructuralSnapshot(
   )).map((node) => node.id));
   const targetNodes = new Map(target.nodes.map((node) => [node.id, node]));
   const restoredById = new Map(restoredNodes.map((node) => [node.id, node]));
+  const validVertical = (vertical: NonNullable<BaseNodeData['groupCollapseLayout']>['vertical']) => vertical === undefined
+    || !!vertical && Number.isFinite(vertical.deltaY) && Array.isArray(vertical.nodeIds)
+      && (vertical.expandedNodeIds === undefined || Array.isArray(vertical.expandedNodeIds));
   const nodesWithLayouts = restoredNodes.map((node) => {
-    if (node.type !== 'group' || !node.data.groupCollapsed || !returningNodes.size) return node;
+    if (node.type !== 'group' || !returningNodes.size) return node;
     const targetNode = targetNodes.get(node.id);
     const targetLayout = targetNode?.data.groupCollapseLayout;
-    if (!targetNode?.data.groupCollapsed || !targetLayout || !Array.isArray(targetLayout.nodeIds)
+    if (!targetLayout || !Array.isArray(targetLayout.nodeIds)
+      || (targetLayout.expandedNodeIds !== undefined && !Array.isArray(targetLayout.expandedNodeIds))
+      || !validVertical(targetLayout.vertical)
       || !Number.isFinite(targetLayout.deltaX) || targetLayout.parentId !== node.parentId) return node;
     const sourceReturning = returningNodes.has(node.id);
     const currentLayout = node.data.groupCollapseLayout;
     const layout = sourceReturning ? targetLayout
       : currentLayout && Array.isArray(currentLayout.nodeIds) && Number.isFinite(currentLayout.deltaX)
+        && (currentLayout.expandedNodeIds === undefined || Array.isArray(currentLayout.expandedNodeIds))
+        && validVertical(currentLayout.vertical)
         && currentLayout.parentId === node.parentId
-        ? currentLayout : { ...targetLayout, nodeIds: [] };
+        ? currentLayout : { ...targetLayout, nodeIds: [], expandedNodeIds: [],
+          ...(targetLayout.vertical ? { vertical: { ...targetLayout.vertical, nodeIds: [], expandedNodeIds: [] } } : {}),
+        };
     const members = new Set(layout.nodeIds);
+    const expandedMembers = new Set(layout.expandedNodeIds ?? []);
+    const vertical = layout.vertical ?? (targetLayout.vertical
+      ? { ...targetLayout.vertical, nodeIds: [], expandedNodeIds: [] } : undefined);
+    const verticalMembers = new Set(vertical?.nodeIds ?? []);
+    const verticalExpandedMembers = new Set(vertical?.expandedNodeIds ?? []);
     for (const id of targetLayout.nodeIds) {
       if (returningNodes.has(id) && restoredById.get(id)?.parentId === node.parentId) members.add(id);
     }
-    if (!sourceReturning && members.size === layout.nodeIds.length) return node;
+    for (const id of targetLayout.expandedNodeIds ?? []) {
+      if (returningNodes.has(id) && restoredById.get(id)?.parentId === node.parentId) expandedMembers.add(id);
+    }
+    for (const id of targetLayout.vertical?.nodeIds ?? []) {
+      if (returningNodes.has(id) && restoredById.get(id)?.parentId === node.parentId) verticalMembers.add(id);
+    }
+    for (const id of targetLayout.vertical?.expandedNodeIds ?? []) {
+      if (returningNodes.has(id) && restoredById.get(id)?.parentId === node.parentId) verticalExpandedMembers.add(id);
+    }
+    if (!sourceReturning && members.size === layout.nodeIds.length
+      && expandedMembers.size === (layout.expandedNodeIds?.length ?? 0)
+      && verticalMembers.size === (layout.vertical?.nodeIds.length ?? 0)
+      && verticalExpandedMembers.size === (layout.vertical?.expandedNodeIds?.length ?? 0)) return node;
     // 换/脱组会解除展示关系；撤销只接回本次回到原层的节点，其他浏览状态沿用当前记录。
     return { ...node, data: { ...node.data,
-      groupCollapseLayout: { ...layout, nodeIds: [...members] },
+      groupCollapseLayout: { ...layout, nodeIds: [...members],
+        ...(expandedMembers.size ? { expandedNodeIds: [...expandedMembers] } : {}),
+        ...(vertical ? { vertical: { ...vertical, nodeIds: [...verticalMembers],
+          ...(verticalExpandedMembers.size ? { expandedNodeIds: [...verticalExpandedMembers] } : {}),
+        } } : {}),
+      },
     } };
   });
   return {
@@ -462,12 +507,15 @@ function appendHistoryCheckpoint(
   characterVisualChanges?: readonly CharacterVisualReferenceChange[],
 ) {
   const { nodes, edges, groups, history, historyIndex } = state;
-  const previous = historyIndex >= 0 ? history[Math.min(historyIndex, history.length - 1)] : undefined;
+  // 撤销／重做后当前画布对应 index + 1 的已恢复检查点，纯展示提交不能截断剩余重做。
+  const restoredCheckpoint = history[historyIndex + 1]?.characterVisualChanges ? undefined : history[historyIndex + 1];
+  const previous = restoredCheckpoint ?? (historyIndex >= 0 ? history[Math.min(historyIndex, history.length - 1)] : undefined);
   if (!characterVisualChanges?.length && previous && !previous.characterVisualChanges
     && !history[historyIndex + 1]?.characterVisualChanges && isSameStructure(previous, { nodes, edges, groups })) return;
   const snapshot = createSnapshot(nodes, edges, groups);
   if (characterVisualChanges?.length) snapshot.characterVisualChanges = structuredClone(characterVisualChanges);
-  const newHistory = history.slice(0, historyIndex + 1);
+  // 真实修改发生后保留恢复基线，使新分支仍能撤销回该检查点。
+  const newHistory = history.slice(0, historyIndex + (restoredCheckpoint ? 2 : 1));
   newHistory.push(snapshot);
   if (newHistory.length > MAX_HISTORY) newHistory.shift();
   return { history: newHistory, historyIndex: newHistory.length - 1 };
@@ -482,7 +530,9 @@ export interface HistorySlice {
   commitCharacterVisualHistory: (changes: readonly CharacterVisualReferenceChange[]) => void;
 }
 
-export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = (set, get) => ({
+export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = (set, get, api) => {
+  let stopWatchingRestore: (() => void) | undefined;
+  return {
   history: [],
   historyIndex: -1,
 
@@ -496,10 +546,14 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     if (options?.isCurrent?.() === false) return false;
 
     const { historyIndex, history, nodes, edges, groups, currentProjectId } = get();
-    if (historyIndex < 0 || history.length === 0) return false;
+    if (history.length === 0) return false;
 
     const current = createSnapshot(nodes, edges, groups);
-    let checkpointIndex = Math.min(historyIndex, history.length - 1);
+    const restoredCheckpoint = history[historyIndex + 1];
+    const changedSinceRestore = restoredCheckpoint && !restoredCheckpoint.characterVisualChanges
+      && !isSameStructure(restoredCheckpoint, current);
+    if (historyIndex < 0 && !changedSinceRestore) return false;
+    let checkpointIndex = Math.min(historyIndex + (changedSinceRestore ? 1 : 0), history.length - 1);
     // 兼容少数在操作结束后额外提交的快照，撤销时跳过与当前画布完全相同的记录。
     while (checkpointIndex >= 0 && !history[checkpointIndex].characterVisualChanges && isSameStructure(history[checkpointIndex], current)) {
       checkpointIndex -= 1;
@@ -581,6 +635,12 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
       return updated !== nodes;
     }
     const current = createSnapshot(nodes, edges, groups);
+    const restoredCheckpoint = history[historyIndex + 1];
+    if (restoredCheckpoint && !restoredCheckpoint.characterVisualChanges && !isSameStructure(restoredCheckpoint, current)) {
+      // 动作前的重复提交可能只保留了基线；真实修改后旧分支不能覆盖新画布。
+      set({ history: history.slice(0, historyIndex + 2), historyIndex: historyIndex + 1 });
+      return false;
+    }
     let targetIndex = historyIndex + 2;
     while (targetIndex < history.length && isSameStructure(history[targetIndex], current)) {
       targetIndex += 1;
@@ -623,6 +683,27 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     return true;
   }),
 
-  commitToHistory: () => set((state) => appendHistoryCheckpoint(state) ?? state),
+  commitToHistory: () => {
+    stopWatchingRestore?.();
+    stopWatchingRestore = undefined;
+    set((state) => {
+      const patch = appendHistoryCheckpoint(state);
+      const checkpoint = state.history[state.historyIndex + 1];
+      if (!patch && checkpoint && !checkpoint.characterVisualChanges && state.history[state.historyIndex + 2]) {
+        // 动作前的重复提交先保留 redo；真实结构变化后再复用基线，让界面立即可以撤销新动作。
+        const unsubscribe = api.subscribe((next) => {
+          const sameBranch = next.history === state.history && next.historyIndex === state.historyIndex
+            && next.currentProjectId === state.currentProjectId && next.commitToHistory === state.commitToHistory;
+          if (sameBranch && isSameStructure(checkpoint, next)) return;
+          unsubscribe();
+          stopWatchingRestore = undefined;
+          if (sameBranch) set({ history: state.history.slice(0, state.historyIndex + 2), historyIndex: state.historyIndex + 1 });
+        });
+        stopWatchingRestore = unsubscribe;
+      }
+      return patch ?? state;
+    });
+  },
   commitCharacterVisualHistory: (changes) => set((state) => appendHistoryCheckpoint(state, changes) ?? state),
-});
+  };
+};

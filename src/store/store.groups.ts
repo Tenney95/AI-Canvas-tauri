@@ -10,7 +10,7 @@ import { GROUP_COLOR_PALETTE } from '../types';
 import { generateId } from './store.utils';
 import { layoutEpisodeShots } from '../utils/episodeLayout';
 import { getNodeSize } from '../utils/nodeBounds';
-import { createGroupCollapseLayout, detachGroupLayoutNodes, reconcileGroupLayoutOffsets } from '../utils/groupCollapseLayout';
+import { detachGroupLayoutNodes, toggleGroupLayout } from '../utils/groupCollapseLayout';
 import { isNodeMediaCopySource } from '../services/nodeMediaCopy';
 import { persistMissingNodeTextFiles } from '../services/nodeTextFilePersistence';
 import { registerCanvasImport, isCanvasDerivationFresh, completeCanvasDerivation, type CanvasDerivationGuard } from '../services/canvasDerivationGuard';
@@ -425,39 +425,18 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
     if (!groupNode) return;
     const collapsed = groupNode.data.groupCollapsed === true;
     const childIds = new Set(get().nodes.filter((n) => n.parentId === groupId).map((n) => n.id));
-    const expanded = groupNode.data.groupExpandedSize;
-    const currentSize = {
-      width: Number(groupNode.width ?? groupNode.style?.width ?? groupNode.measured?.width) || 320,
-      height: Number(groupNode.height ?? groupNode.style?.height ?? groupNode.measured?.height) || 200,
-    };
-    const nextSize = collapsed ? expanded ?? currentSize : COLLAPSED_GROUP_SIZE;
-    const layout = collapsed ? undefined
-      : createGroupCollapseLayout(get().nodes, groupNode, currentSize.width, nextSize.width - currentSize.width);
-
     // 开合只改变浏览状态，不创建历史记录或截断重做分支。
-    set((state) => ({
-      nodes: reconcileGroupLayoutOffsets(state.nodes.map((n) => {
-        if (n.id !== groupId) {
-          // 折叠后组内节点看不见了，不能继续留在选区里
-          return collapsed || !childIds.has(n.id) || !n.selected ? n : { ...n, selected: false };
-        }
-        return {
-          ...n,
-          width: nextSize.width,
-          height: nextSize.height,
-          style: { ...n.style, ...nextSize },
-          data: {
-            ...n.data,
-            groupCollapsed: collapsed ? undefined : true,
-            groupExpandedSize: collapsed ? expanded : currentSize,
-            groupCollapseLayout: layout,
-          },
-        };
-      })),
-      selectedNodeIds: collapsed
-        ? state.selectedNodeIds
-        : state.selectedNodeIds.filter((id) => !childIds.has(id)),
-    }));
+    set((state) => {
+      // 几何统一求解；收起后组内不可见节点退出选区。
+      const nodes = toggleGroupLayout(state.nodes, groupId, COLLAPSED_GROUP_SIZE).map((node) =>
+        !collapsed && childIds.has(node.id) && node.selected ? { ...node, selected: false } : node);
+      return {
+        nodes,
+        selectedNodeIds: collapsed
+          ? state.selectedNodeIds
+          : state.selectedNodeIds.filter((id) => !childIds.has(id)),
+      };
+    });
   },
 
   setGroupColor: (groupId, color) => {

@@ -121,6 +121,34 @@ describe('从快照差异推断操作名', () => {
     expect(describeCanvasChange(after, before).title).toBe('画布修改');
   });
 
+  it('文件夹开合及下方自动位移不误报内容、尺寸或移动', () => {
+    const source = { ...node('vertical-g', 'group', { x: 0, y: 100 }, { type: 'comment', groupId: 'vertical-g' }),
+      width: 1000, height: 600, style: { width: 1000, height: 600 } };
+    const follower = node('vertical-n', 'ai-image', { x: 0, y: 968 });
+    const before = snapshot({ nodes: [source, follower], groups: [group(source.id, [])] });
+    const after = snapshot({ nodes: [
+      { ...source, width: 220, height: 152, style: { width: 220, height: 152 }, data: { ...source.data,
+        groupCollapsed: true, groupExpandedSize: { width: 1000, height: 600 },
+        groupCollapseLayout: { deltaX: -780, nodeIds: [], vertical: { deltaY: -448, nodeIds: [follower.id] } },
+      } },
+      { ...follower, position: { x: 0, y: 520 }, data: { ...follower.data, groupLayoutOffsetY: -448 } },
+    ], groups: before.groups });
+    expect(describeCanvasChange(before, after).title).toBe('画布修改');
+    expect(describeCanvasChange(after, before).title).toBe('画布修改');
+  });
+
+  it.each([-448, 448])('正负自动Y位移都不误报移动，额外的手动Y增量仍可识别：%s', (offsetY) => {
+    const original = node('vertical-offset', 'canvas-note', { x: 20, y: -0.100000123456 });
+    const shifted = { ...original, position: { ...original.position, y: original.position.y + offsetY },
+      data: { ...original.data, groupLayoutOffsetY: offsetY } };
+    const before = snapshot({ nodes: [original] });
+    const after = snapshot({ nodes: [shifted] });
+    expect(describeCanvasChange(before, after).title).toBe('画布修改');
+    expect(describeCanvasChange(after, before).title).toBe('画布修改');
+    const moved = { ...shifted, position: { ...shifted.position, y: shifted.position.y + 0.00123 } };
+    expect(describeCanvasChange(before, snapshot({ nodes: [moved] })).title).toBe('移动节点位置');
+  });
+
   it.each(['ai-image', 'canvas-note', 'group'])('仍能识别自动偏移后的手动移动：%s', (type) => {
     const before = snapshot({ nodes: [node('n1', type, { x: 1200, y: 0 })] });
     const after = snapshot({ nodes: [node('n1', type, { x: 470, y: 0 }, { groupLayoutOffsetX: -780 })] });
@@ -150,6 +178,15 @@ describe('从快照差异推断操作名', () => {
 
     expect(describeCanvasChange(snapshot({ nodes: [beforeNode] }), snapshot({ nodes: [afterNode] })).title)
       .toBe('画布修改');
+  });
+
+  it('纵向两相让位名单变化不算节点正文编辑', () => {
+    const original = node('vertical-record', 'group', { x: 0, y: 100 }, { type: 'comment', groupId: 'vertical-record',
+      groupCollapseLayout: { deltaX: -780, nodeIds: [], vertical: { deltaY: -448, nodeIds: ['a'] } } });
+    const changed = { ...original, data: { ...original.data,
+      groupCollapseLayout: { deltaX: -780, nodeIds: [], vertical: { deltaY: -448, nodeIds: ['a'], expandedNodeIds: ['b'] } },
+    } };
+    expect(describeCanvasChange(snapshot({ nodes: [original] }), snapshot({ nodes: [changed] })).title).toBe('画布修改');
   });
 
   it('只有尺寸变化时报告调整尺寸，且不算作内容编辑', () => {

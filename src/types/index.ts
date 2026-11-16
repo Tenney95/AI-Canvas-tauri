@@ -277,8 +277,13 @@ export interface BaseNodeData {
   groupExpandedSize?: { width: number; height: number };
   /** 开合分组造成的水平展示偏移；历史位置比较时扣除，不是用户拖动。 */
   groupLayoutOffsetX?: number;
-  /** 本次收起实际移动的同层后继；展开时撤销该贡献，旧折叠数据没有此项。 */
-  groupCollapseLayout?: { deltaX: number; nodeIds: string[]; parentId?: string };
+  /** 开合分组造成的垂直展示偏移，与水平偏移共用历史及持久化语义。 */
+  groupLayoutOffsetY?: number;
+  /** 开合的可逆让位；横向保持旧记录兼容，纵向按高度差分相应用。 */
+  groupCollapseLayout?: {
+    deltaX: number; nodeIds: string[]; parentId?: string; expandedNodeIds?: string[];
+    vertical?: { deltaY: number; nodeIds: string[]; expandedNodeIds?: string[] };
+  };
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   outpaintInput?: import('./media').OutpaintInput; // 扩图垫图独立于结果图片保存，重试仍使用原输入
   annotation?: string;        // 旧版标注数据（data URL，透明 PNG；仅用于兼容读取）

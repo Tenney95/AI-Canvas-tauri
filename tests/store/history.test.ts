@@ -1771,6 +1771,83 @@ describe('history snapshot sharing', () => {
   });
 });
 
+describe('恢复基线后的新历史分支', () => {
+  async function restoredBranch() {
+    useAppStore.setState({ nodes: [node('branch-a')], edges: [], groups: [] });
+    const state = useAppStore.getState();
+    state.commitToHistory();
+    useAppStore.setState({ nodes: [{ ...node('branch-a'), position: { x: 20, y: 0 } }] });
+    state.commitToHistory();
+    expect(await state.undo()).toBe(true);
+    return state;
+  }
+
+  it('动作前去重恢复基线后，新动作立即满足界面撤销判据，且可撤销', async () => {
+    const state = await restoredBranch();
+    const restored = useAppStore.getState();
+    expect(restored.historyIndex >= 0 && restored.history.length > 0).toBe(false);
+    state.addNode(node('branch-b'));
+    const edited = useAppStore.getState();
+    // HistoryTimelinePanel 的按钮判据，不能仅检查 undo() 最终返回 true。
+    expect(edited.historyIndex >= 0 && edited.history.length > 0).toBe(true);
+    expect(await state.undo()).toBe(true);
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['branch-a']);
+  });
+
+  it('新动作截断旧重做且保留恢复基线，不让旧分支覆盖新内容', async () => {
+    const state = await restoredBranch();
+    const checkpoint = useAppStore.getState().history[0];
+    state.addNode(node('branch-b'));
+    expect(useAppStore.getState().history).toEqual([checkpoint]);
+    expect(await state.redo()).toBe(false);
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['branch-a', 'branch-b']);
+    expect(await state.undo()).toBe(true);
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['branch-a']);
+  });
+
+  it('先完成修改再提交时仍保留恢复基线，且新分支能撤销重做', async () => {
+    const state = await restoredBranch();
+    useAppStore.setState({ nodes: [{ ...node('branch-a'), position: { x: 50, y: 0 } }] });
+    state.commitToHistory();
+    const edited = useAppStore.getState();
+    expect(edited.historyIndex >= 0 && edited.history.length > 0).toBe(true);
+    expect(await state.undo()).toBe(true);
+    expect(useAppStore.getState().nodes[0].position.x).toBe(0);
+    expect(await state.redo()).toBe(true);
+    expect(useAppStore.getState().nodes[0].position.x).toBe(50);
+  });
+});
+
+describe('冻结自动让位后的布局历史', () => {
+  it.each(['locked', 'hidden'] as const)('其他节点的撤销重做保留%s目标的可见坐标与自动偏移', async (frozen) => {
+    const source = { ...groupNode('frozen-layout-source'), position: { x: 0, y: 100 }, width: 220, height: 152,
+      style: { width: 220, height: 152 }, data: { ...groupNode('frozen-layout-source').data,
+        groupCollapsed: true, groupExpandedSize: { width: 1000, height: 600 } } };
+    const target = { ...node('frozen-layout-target'), position: { x: 320, y: 100 }, width: 220, height: 152 };
+    const other = { ...node('frozen-layout-other'), position: { x: -1000, y: -1000 } };
+    useAppStore.setState({ nodes: [source, target, other], edges: [], groups: [] });
+    const state = useAppStore.getState();
+    const current = (id: string) => useAppStore.getState().nodes.find((item) => item.id === id)!;
+    state.commitToHistory();
+    state.toggleGroupCollapsed(source.id);
+    expect(current(target.id)).toMatchObject({ position: { x: 1100, y: 100 }, data: { groupLayoutOffsetX: 780 } });
+    useAppStore.setState({ nodes: useAppStore.getState().nodes.map((item) => item.id === target.id
+      ? { ...item, ...(frozen === 'locked' ? { draggable: false } : { hidden: true }) } : item) });
+    state.onNodesChange([{ id: other.id, type: 'position', position: { x: -950, y: -1000 } }]);
+    expect(await state.undo()).toBe(true);
+    expect(current(other.id).position).toEqual(other.position);
+    expect(current(target.id)).toMatchObject({ position: { x: 1100, y: 100 }, data: { groupLayoutOffsetX: 780 } });
+    expect(await state.redo()).toBe(true);
+    expect(current(other.id).position).toEqual({ x: -950, y: -1000 });
+    expect(current(target.id)).toMatchObject({ position: { x: 1100, y: 100 }, data: { groupLayoutOffsetX: 780 } });
+    useAppStore.setState({ nodes: useAppStore.getState().nodes.map((item) => item.id === target.id
+      ? { ...item, ...(frozen === 'locked' ? { draggable: true } : { hidden: false }) } : item) });
+    state.toggleGroupCollapsed(source.id);
+    expect(current(target.id).position).toEqual(target.position);
+    expect(current(target.id).data.groupLayoutOffsetX ?? 0).toBe(0);
+  });
+});
+
 
 it('does not write a late undo result into another project with matching node ids', async () => {
   const original = node('same');
