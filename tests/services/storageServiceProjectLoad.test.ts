@@ -2,6 +2,7 @@
  * storageServiceProjectLoad — 回归测试：project loading tolerates asset recovery failures。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
 
 const mocks = vi.hoisted(() => ({
   exists: vi.fn(async (_path: string) => true),
@@ -74,6 +75,8 @@ import { resolveDramaAssetImageRef } from '../../src/services/dramaAssetPrompt';
 import type { ProjectExchangeIdentity, ProjectExchangeState } from '../../src/types/projectExchange';
 import type { AssetDirectoryScanResult } from '../../src/services/fs/assetLibrary';
 import { createEmptyStoryGraph } from '../../src/services/storyGraphService';
+import { mergeDramaExtractIntoLibrary, parseDramaExtractResponse } from '../../src/services/dramaAssetExtract';
+import { createNativeProject, readNativeProjectCapture, saveNativeProjectView } from '../../src/services/indexedDb/nativeProjectRepository';
 
 function scanResult(overrides: Partial<AssetDirectoryScanResult> = {}): AssetDirectoryScanResult {
   return { files: [], folders: [], truncated: false, complete: true, failedDirectories: 0, failedFiles: 0, ...overrides };
@@ -122,6 +125,68 @@ describe('project loading tolerates asset recovery failures', () => {
     mocks.readDir.mockReset();
     mocks.nativeSelection.mockReset(); mocks.invoke.mockReset();
     mocks.copyFileToProjectData.mockReset().mockResolvedValue(null);
+  });
+
+  it.each([
+    { label: '未关联参考包', refmods: undefined },
+    { label: '已关联参考包', refmods: [{ serverId: 'comfy-server', endpointFingerprint: 'a'.repeat(64),
+      loaderType: 'minimax-h3' as const, fileName: '人物/沈砚.refmod', strength: 0.8 }] },
+  ])('新提取人物序列化后可原子保存到新项目，保留参考包且不改变输入（$label）', async ({ refmods }) => {
+    const factory = new IDBFactory();
+    const initial = await createNativeProject({ name: '人物保存',
+      projectId: 'p2-11111111-1111-4111-8111-111111111111', canvasId: 'c2-22222222-2222-4222-8222-222222222222' }, { factory });
+    mocks.getNativeProjectOwner.mockReturnValue(initial.project.id);
+    const extracted = mergeDramaExtractIntoLibrary({ version: 2, characters: [], scenes: [], props: [] },
+      parseDramaExtractResponse(JSON.stringify({ kind: 'character', items: [{ name: '沈砚', identity: '侦探' }] })));
+    expect(extracted.characters[0].refmods).toBeUndefined();
+    const library = { ...extracted, characters: extracted.characters.map((character) => (
+      refmods === undefined ? character : { ...character, refmods }
+    )) };
+    const record: ProjectSaveData = { id: initial.canvas!.id, name: '人物保存', createdAt: 1, updatedAt: 2,
+      nodes: [{ id: 'text', type: 'ai-text', position: { x: 0, y: 0 }, data: { type: 'ai-text', prompt: '保留画布内容' } }],
+      edges: [], groups: [], dramaAssets: library };
+    const before = structuredClone(record);
+
+    const serialized = await serializeProjectRecord(record);
+    const persistedCharacter = serialized.dramaAssets!.characters[0];
+    expect(persistedCharacter.refmods).toEqual(refmods ?? []);
+    if (refmods !== undefined) expect(persistedCharacter.refmods).toBe(refmods);
+    expect(record).toEqual(before);
+    const saved = await saveNativeProjectView({ projectId: initial.project.id, expectedProjectEpoch: initial.project.epoch,
+      canvasId: initial.canvas!.id, episodeId: null, expectedCanvasEpoch: initial.canvas!.epoch,
+      expectedCanvasRevision: initial.canvas!.revision, document: { nodes: serialized.nodes, edges: serialized.edges, groups: serialized.groups ?? [] },
+      shared: { expectedRevisions: { assets: 0 }, patch: { dramaAssets: serialized.dramaAssets } } }, { factory });
+
+    const loaded = await readNativeProjectCapture(initial.project.id, { factory });
+    expect(saved.canvas.revision).toBe(1);
+    expect(loaded?.aggregate.content.dramaAssets).toEqual(serialized.dramaAssets);
+    expect(loaded?.aggregate.content.dramaAssets?.characters[0]).toMatchObject({ name: '沈砚', identity: '侦探', refmods: refmods ?? [] });
+    expect(loaded?.aggregate.canvases[0].nodes).toEqual(serialized.nodes);
+    expect(record).toEqual(before);
+  });
+
+  it('人物已有参考包字段畸形时仍拒绝新项目保存，画布和共享资料均不部分提交', async () => {
+    const factory = new IDBFactory();
+    const initial = await createNativeProject({ name: '拒绝有损清洗',
+      projectId: 'p2-11111111-1111-4111-8111-111111111111', canvasId: 'c2-22222222-2222-4222-8222-222222222222' }, { factory });
+    mocks.getNativeProjectOwner.mockReturnValue(initial.project.id);
+    const before = await readNativeProjectCapture(initial.project.id, { factory });
+    const extracted = mergeDramaExtractIntoLibrary({ version: 2, characters: [], scenes: [], props: [] },
+      parseDramaExtractResponse(JSON.stringify({ kind: 'character', items: [{ name: '沈砚', identity: '侦探' }] })));
+    for (const refmods of [null, [{ fileName: '../invalid.refmod' }]]) {
+      const library = { ...extracted, characters: extracted.characters.map((character) => ({ ...character,
+        refmods: refmods as unknown as typeof character.refmods })) };
+      const serialized = await serializeProjectRecord({ id: initial.canvas!.id, name: '拒绝有损清洗', createdAt: 1, updatedAt: 2,
+        nodes: [{ id: 'unsaved', type: 'ai-text', position: { x: 0, y: 0 }, data: { type: 'ai-text', prompt: '不应部分提交' } }],
+        edges: [], groups: [], dramaAssets: library });
+      expect(serialized.dramaAssets!.characters[0].refmods).toBe(refmods);
+      await expect(saveNativeProjectView({ projectId: initial.project.id, expectedProjectEpoch: initial.project.epoch,
+        canvasId: initial.canvas!.id, episodeId: null, expectedCanvasEpoch: initial.canvas!.epoch,
+        expectedCanvasRevision: initial.canvas!.revision, document: { nodes: serialized.nodes, edges: serialized.edges, groups: serialized.groups ?? [] },
+        shared: { expectedRevisions: { assets: 0 }, patch: { dramaAssets: serialized.dramaAssets } } }, { factory }))
+        .rejects.toThrow('invalid-drama-assets');
+      expect(await readNativeProjectCapture(initial.project.id, { factory })).toEqual(before);
+    }
   });
 
   it('新结构将本地展示地址保存为相对素材引用并恢复同一画布的地址', async () => {

@@ -1002,6 +1002,8 @@ async function serializeProjectDramaAssets(
       referenceImages,
       voiceClips,
       actions,
+      // 新提取的人物可缺少参考包；只补缺省空集合，异常值仍交给仓储严格校验。
+      refmods: character.refmods === undefined ? [] : character.refmods,
       imageUrl: primaryReference?.imageUrl ?? topLevel.imageUrl,
     };
   });
