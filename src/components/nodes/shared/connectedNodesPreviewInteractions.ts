@@ -140,13 +140,20 @@ export function getConnectedPreviewEdgeIds(
   const target = nodes.find((node) => node.id === targetId);
   const targetIds = new Set([targetId, ...(target?.parentId ? [target.parentId] : [])]);
   const byId = new Map(nodes.map((node) => [node.id, node]));
+  const childrenByParent = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const children = childrenByParent.get(node.parentId) ?? [];
+    children.push(node.id);
+    childrenByParent.set(node.parentId, children);
+  }
   const edgeIdsBySource = new Map<string, string[]>();
 
   for (const edge of edges) {
     if (!targetIds.has(edge.target)) continue;
     const source = byId.get(edge.source);
     const sourceIds = source?.type === 'group'
-      ? nodes.filter((node) => node.parentId === source.id).map((node) => node.id)
+      ? childrenByParent.get(source.id) ?? []
       : [edge.source];
     for (const sourceId of sourceIds) {
       const ids = edgeIdsBySource.get(sourceId) ?? [];
@@ -156,6 +163,49 @@ export function getConnectedPreviewEdgeIds(
   }
 
   return edgeIdsBySource;
+}
+
+interface ConnectedPreviewSource extends PreviewNodeRef {
+  data: BaseNodeData;
+  edgeIds: string[];
+}
+
+/** 几何变化不影响引用条；只在成员、连线或上游 data 变化时发布新结果。 */
+export function createConnectedPreviewSelector() {
+  let previousNodes: readonly (PreviewNodeRef & { data: BaseNodeData })[] | undefined;
+  let previousEdges: readonly PreviewEdgeRef[] | undefined;
+  let previousTargetId: string | undefined;
+  let memberIndexes: number[] = [];
+  let edgeIdsBySource = new Map<string, string[]>();
+  let result: ConnectedPreviewSource[] = [];
+
+  return (nodes: readonly (PreviewNodeRef & { data: BaseNodeData })[], edges: readonly PreviewEdgeRef[], targetId?: string) => {
+    if (nodes === previousNodes && edges === previousEdges && targetId === previousTargetId) return result;
+    const sameMembership = previousNodes?.length === nodes.length && nodes.every((node, index) => {
+      const previous = previousNodes![index];
+      return node.id === previous.id && node.type === previous.type && node.parentId === previous.parentId;
+    });
+    if (!sameMembership || edges !== previousEdges || targetId !== previousTargetId) {
+      edgeIdsBySource = targetId ? getConnectedPreviewEdgeIds(nodes, edges, targetId) : new Map();
+      memberIndexes = [];
+      nodes.forEach((node, index) => {
+        if (node.id !== targetId && node.type !== 'group' && edgeIdsBySource.has(node.id)) memberIndexes.push(index);
+      });
+    }
+    const unchanged = result.length === memberIndexes.length && memberIndexes.every((index, ordinal) => {
+      const node = nodes[index], previous = result[ordinal];
+      return node.id === previous.id && node.type === previous.type && node.data === previous.data
+        && edgeIdsBySource.get(node.id) === previous.edgeIds;
+    });
+    if (!unchanged) result = memberIndexes.map((index) => {
+      const node = nodes[index];
+      return { id: node.id, type: node.type, data: node.data, edgeIds: edgeIdsBySource.get(node.id)! };
+    });
+    previousNodes = nodes;
+    previousEdges = edges;
+    previousTargetId = targetId;
+    return result;
+  };
 }
 
 export function calculateDockOffset(

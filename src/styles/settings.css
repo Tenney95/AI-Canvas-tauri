@@ -2,22 +2,6 @@
    Settings Panel — API Key Configuration
    ============================================ */
 
-/* 设置侧栏使用主题色的不同透明度区分选中与悬浮状态。 */
-.settings-navigation-tab {
-  color: var(--theme-text-secondary);
-}
-
-.settings-navigation-tab--active {
-  background: color-mix(in srgb, var(--brand) 24%, var(--theme-card));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 34%, transparent);
-  color: var(--brand-light);
-}
-
-.settings-navigation-tab:not(.settings-navigation-tab--active):hover {
-  background: color-mix(in srgb, var(--brand) 14%, var(--theme-card));
-  color: var(--theme-text);
-}
-
 /* Subtle dot grid pattern for canvas preview cards */
 .bg-dot-pattern {
   background-image: radial-gradient(var(--theme-text-muted, #94a3b8) 1px, transparent 1px);
@@ -155,26 +139,6 @@
   color: var(--theme-text-muted);
 }
 
-/* 7. Action Button */
-.settings-action-btn {
-  background-color: var(--theme-card);
-  border: 1px solid var(--theme-border);
-  color: var(--theme-text);
-}
-.settings-action-btn:hover {
-  background-color: var(--theme-hover);
-}
-
-/* 8. Overwrite Button */
-.settings-overwrite-btn {
-  background-color: color-mix(in srgb, var(--theme-card) 60%, transparent);
-  border: 1px solid var(--theme-border);
-  color: var(--theme-text-secondary);
-}
-.settings-overwrite-btn:hover:not(:disabled) {
-  background-color: var(--theme-hover);
-}
-
 /* 11. Sub Card (e.g. ColorCardInput container) */
 .settings-sub-card {
   background-color: var(--theme-card);
@@ -213,18 +177,6 @@
 .settings-preset-card--active {
   border: 2px solid var(--brand);
   background-color: var(--brand-alpha-05);
-}
-
-/* 14. Badge tags inside Preset Cards */
-.settings-tag-badge {
-  background-color: var(--theme-hover);
-  border: 1px solid var(--theme-border);
-  color: var(--theme-text-muted);
-}
-
-.settings-tag-active {
-  background-color: var(--brand-alpha-15);
-  color: var(--brand-light);
 }
 
 /* ── Pane layout ── */
@@ -899,15 +851,6 @@
 }
 [data-theme='light'] .sidebar-pref-card.is-floating .sidebar-pref-switch span {
   background: var(--brand-contrast);
-}
-
-/* ============================================
-   Storage health state controls
-   ============================================ */
-.storage-health-selection.is-active {
-  color: color-mix(in srgb, var(--brand) 78%, var(--theme-text));
-  background: var(--brand-alpha-15);
-  box-shadow: inset 0 0 0 1px var(--brand-alpha-30);
 }
 
 /* ============================================
@@ -1672,26 +1615,6 @@
   flex-direction: column;
   gap: 2px;
 }
-.provider-model-protocol-btn {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--theme-text-muted);
-  background: transparent;
-  cursor: var(--cursor-pointer, pointer);
-  transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
-}
-.provider-model-protocol-btn:hover,
-.provider-model-protocol-btn.is-configured {
-  color: var(--brand-light);
-  border-color: var(--brand-alpha-25);
-  background: var(--brand-alpha-10);
-}
 .provider-protocol-editor {
   display: flex;
   flex-direction: column;
@@ -1927,22 +1850,8 @@
   font-size: 12px;
   font-weight: 600;
 }
-.provider-protocol-json-variable-list {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-.provider-protocol-json-variable-list code,
 .provider-protocol-json-help code {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-}
-.provider-protocol-json-variable-list code {
-  padding: 2px 5px;
-  border-radius: 4px;
-  color: var(--theme-text-secondary);
-  background: var(--white-alpha-05);
-  font-size: 12px;
 }
 .provider-protocol-json-help dl {
   display: grid;

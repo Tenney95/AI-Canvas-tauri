@@ -1,7 +1,7 @@
 /**
  * SettingsPanel 设置面板 — 模态弹窗，管理常规、文件与应用、API Key、快捷键、ComfyUI 等设置
  */
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Icon } from '@iconify/react';
 import '../styles/settings.css';
 import { useShallow } from 'zustand/react/shallow';
@@ -21,16 +21,12 @@ import ComfyUISettings from './settings/ComfyUISettings';
 import FileAppSettings from './settings/FileAppSettings';
 import PluginSettings from './settings/PluginSettings';
 import AppearanceSettings from './settings/AppearanceSettings';
-import { BACKGROUND_OPTIONS } from './backgrounds/backgroundOptions';
-import { detectBackgroundBrightness, compressImageLossless } from '../services/backgroundService';
 import type {
-  CanvasBackground as CanvasBg,
   InteractionMode,
   NodeToolbarMode,
   StartupView,
   WindowAspectRatio,
 } from '../types';
-import type { BackgroundDetection } from '../services/backgroundService';
 
 import type { SettingsTab } from '../store/store.ui';
 import { LOCALES, LOCALE_LABELS, getLocale, useT } from '../i18n';
@@ -49,9 +45,6 @@ const WINDOW_ASPECT_OPTIONS: {
   { id: '16:10', presets: [{ w: 1280, h: 800, label: '紧凑' }, { w: 1440, h: 900, label: '标准' }, { w: 1680, h: 1050, label: '大屏' }] },
   { id: '4:3',   presets: [{ w: 1024, h: 768, label: '紧凑' }, { w: 1280, h: 960, label: '标准' }, { w: 1440, h: 1080, label: '大屏' }] },
 ];
-
-const DARK_SHADE_PRESETS = [0, 15, 20, 33, 58] as const;
-const OFF_WHITE_PRESETS = ['#FFFFFF', '#FAFBFD', '#F4F6FB', '#ECEFF5', '#E4E9F2'] as const;
 
 /** 把主窗口设成指定逻辑尺寸；超出当前显示器可视范围时等比缩小，避免窗口大到没法操作 */
 async function applyWindowSize(width: number, height: number): Promise<void> {
@@ -150,13 +143,6 @@ const STARTUP_VIEW_OPTIONS: {
   },
 ];
 
-/** 格式化字节为可读大小 */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
 export default function SettingsPanel() {
   const t = useT();
   const locale = getLocale();
@@ -236,104 +222,12 @@ export default function SettingsPanel() {
   const activeInteractionMode = INTERACTION_MODE_OPTIONS.find((option) => option.id === interactionMode)
     ?? INTERACTION_MODE_OPTIONS[0];
   const [selectedTab, setSelectedTab] = useState<SettingsTab>('general');
-  const [bgUploading, setBgUploading] = useState(false);
-  const [bgDetection, setBgDetection] = useState<BackgroundDetection | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const darkShade = Math.min(58, Math.max(0, config.defaultDarkBackgroundShade ?? 20));
-  const darkDotColor = `rgb(${darkShade + 68} ${darkShade + 68} ${darkShade + 84})`;
-  const offWhiteColor = config.offWhiteBackgroundColor ?? '#F4F6FB';
-  // Legacy background controls remain in source only for migration reference; the new appearance page owns this UI.
-  const legacyBackgroundUiEnabled = false;
-  const applyDarkShade = (shade: number) => {
-    if (shade === darkShade && (config.canvasBackground ?? 'default') === 'default') return;
-    updateConfig({ canvasBackground: 'default', theme: 'dark', defaultDarkBackgroundShade: shade });
-    setBgDetection(null);
-    void persist();
-  };
-  const applyOffWhiteColor = (color: string) => {
-    if (color === offWhiteColor && config.canvasBackground === 'off-white') return;
-    updateConfig({ canvasBackground: 'off-white', theme: 'light', offWhiteBackgroundColor: color });
-    setBgDetection(null);
-    void persist();
-  };
-
   // 外部（如 Agent 保存厂商配置后）请求的标签页在渲染期直接生效，不用 effect 回写 state；
   // 用户手动切换即视为消费掉该请求（关闭面板时 store 也会清空它）
   const activeTab = (settingsOpen ? settingsInitialTab : null) ?? selectedTab;
   const selectTab = (tab: SettingsTab) => {
     setSelectedTab(tab);
     setSettingsInitialTab(null);
-  };
-
-  /** 处理背景图片文件选择：无损压缩 → 自动识别深色/浅色 */
-  const handleBgFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // 只允许图片格式
-    if (!file.type.startsWith('image/')) {
-      showToast(t('请选择图片文件'), 'error');
-      return;
-    }
-
-    setBgUploading(true);
-    setBgDetection(null);
-    try {
-      // 1. 无损压缩
-      const compression = await compressImageLossless(file);
-      if (import.meta.env.DEV) {
-        console.log(
-          `[背景压缩] 原始: ${formatBytes(compression.originalSize)} → 最终: ${formatBytes(compression.compressedSize)}` +
-          (compression.keptOriginal
-            ? ` (保留原图, 重编码会增大)`
-            : compression.compressionRatio > 0
-              ? ` (缩减 ${compression.compressionRatio}%, 格式: ${compression.format.toUpperCase()})`
-              : ` (已最优, 格式: ${compression.format.toUpperCase()})`),
-        );
-      }
-
-      // 2. 自动识别深色/浅色
-      const detection = await detectBackgroundBrightness(compression.dataUrl);
-      setBgDetection(detection);
-
-      updateConfig({
-        canvasBackground: 'custom',
-        customBackgroundUrl: compression.dataUrl,
-        customBackgroundIsDark: detection.isDark,
-        theme: detection.isDark ? config.theme : 'light',
-      });
-      if (!await persist()) return;
-
-      const sizeLabel = formatBytes(compression.compressedSize);
-      const ratioLabel = compression.keptOriginal
-        ? t('（保留原图，重编码会增大）')
-        : compression.compressionRatio > 0
-          ? t('（缩减 {ratio}%，{format}）', { ratio: compression.compressionRatio, format: compression.format.toUpperCase() })
-          : t('（已最优，{format}）', { format: compression.format.toUpperCase() });
-      showToast(t('{tone}背景 · {size} {ratio}', {
-        tone: detection.isDark ? t('深色') : t('浅色'),
-        size: sizeLabel,
-        ratio: ratioLabel,
-      }), 'success');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : t('背景图片处理失败'), 'error');
-    } finally {
-      setBgUploading(false);
-      // 重置 input 以允许重复选择同一文件
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  /** 移除自定义背景 */
-  const handleRemoveCustomBg = async () => {
-    updateConfig({
-      canvasBackground: 'default',
-      customBackgroundUrl: undefined,
-      customBackgroundIsDark: undefined,
-    });
-    setBgDetection(null);
-    if (!await persist()) return;
-    showToast(t('已恢复默认背景'));
   };
 
   return (
@@ -552,237 +446,6 @@ export default function SettingsPanel() {
                     </div>
                   </button>
                 </section>
-
-                {legacyBackgroundUiEnabled && (<>
-                {/* 旧版画布背景入口由外观页接管，保留迁移逻辑但不再展示。 */}
-                <div>
-                  <h3 className="text-sm font-medium text-canvas-text mb-2">{t('画布背景')}</h3>
-                  <div className="grid grid-cols-3 gap-2">
-                    {BACKGROUND_OPTIONS.map(({ value, label, theme }) => {
-                      const isActive = (config.canvasBackground || 'default') === value;
-                      return (
-                        <div key={value} className="relative rounded-lg focus-within:ring-2 focus-within:ring-brand-light">
-                        <AnimatedButton
-                          onClick={async () => {
-                            if (value === 'custom') {
-                              if (config.customBackgroundUrl) {
-                                updateConfig({
-                                  canvasBackground: 'custom',
-                                  theme: config.customBackgroundIsDark ? config.theme : 'light',
-                                });
-                                if (!await persist()) return;
-                              } else {
-                                fileInputRef.current?.click();
-                              }
-                              return;
-                            }
-                            updateConfig({ canvasBackground: value as CanvasBg, theme });
-                            setBgDetection(null);
-                            if (!await persist()) return;
-                          }}
-                          className={`flex h-full w-full flex-col items-center gap-1.5 p-1 rounded-lg border transition-colors ${
-                            isActive
-                              ? 'border-brand bg-brand/10 text-brand-light'
-                              : 'border-canvas-border bg-canvas-card text-canvas-text-secondary hover:border-canvas-hover'
-                          }`}
-                        >
-                          {/* 预览缩略图 */}
-                          <div className={`relative w-full h-12 rounded overflow-hidden border border-canvas-border flex items-center justify-center ${
-                            value === 'default'
-                              ? ''
-                              : value === 'solar-system'
-                              ? 'bg-[#000000]'
-                              : value === 'nebula'
-                              ? 'bg-gradient-to-b from-[#0a0514] via-[#14081e] to-[#0a0514]'
-                              : value === 'off-white'
-                              ? ''
-                              : value === 'frosted-glass'
-                              ? 'canvas-bg-frosted-preview'
-                              : value === 'custom'
-                              ? (config.customBackgroundUrl
-                                ? ''
-                                : 'bg-canvas-surface')
-                              : 'bg-canvas-bg'
-                          }`}
-                          style={
-                            value === 'default'
-                              ? { backgroundColor: `rgb(${darkShade} ${darkShade} ${darkShade})` }
-                              : value === 'off-white'
-                                ? { backgroundColor: offWhiteColor }
-                              : value === 'custom' && config.customBackgroundUrl
-                                ? { backgroundImage: `url(${config.customBackgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-                                : undefined
-                          }>
-                            {value === 'default' && (
-                              <div className="w-full h-full" style={{
-                                backgroundImage: `radial-gradient(circle, ${darkDotColor} 1px, transparent 1px)`,
-                                backgroundSize: '8px 8px',
-                              }} />
-                            )}
-                            {value === 'solar-system' && (
-                              <div className="w-full h-full flex items-center justify-center relative">
-                                <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-400 to-orange-400 opacity-80 shadow-lg shadow-orange-500/30" />
-                                <div className="absolute bottom-1 left-0 right-0 flex justify-center">
-                                  <div className="w-8 h-1 rounded-full" style={{ borderRadius: '50% 50% 0 0', borderTop: '1px solid var(--white-alpha-15)' }} />
-                                </div>
-                              </div>
-                            )}
-                            {value === 'nebula' && (
-                              <div className="w-full h-full flex items-center justify-center gap-1.5 relative">
-                                <div className="flex gap-1.5 opacity-60">
-                                  <div className="w-2 h-3 rounded-sm bg-purple-600/60 blur-[2px]" />
-                                  <div className="w-2 h-3 rounded-sm bg-fuchsia-600/50 blur-[2px]" />
-                                  <div className="w-2 h-3 rounded-sm bg-violet-600/40 blur-[2px]" />
-                                </div>
-                                <div className="absolute inset-0" style={{
-                                  backgroundImage: 'radial-gradient(1px 1px, rgba(180,150,255,0.3) 0%, transparent 100%)',
-                                  backgroundSize: '12px 12px',
-                                }} />
-                              </div>
-                            )}
-                            {value === 'off-white' && (
-                              <div className="w-full h-full" style={{
-                                backgroundImage: 'radial-gradient(circle, rgba(51,54,77,0.22) 1px, transparent 1px)',
-                                backgroundSize: '8px 8px',
-                              }} />
-                            )}
-                            {value === 'custom' && !config.customBackgroundUrl && (
-                              <>
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-canvas-text-muted">
-                                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                                  <polyline points="17 8 12 3 7 8" />
-                                  <line x1="12" y1="3" x2="12" y2="15" />
-                                </svg>
-                              </>
-                            )}
-                          </div>
-                          <span className="text-[11px] font-medium">{t(label)}</span>
-                        </AnimatedButton>
-                        {value === 'default' && (
-                          <div className="absolute inset-x-2 top-7 flex justify-between gap-1">
-                            {DARK_SHADE_PRESETS.map((shade) => {
-                              const hex = `#${shade.toString(16).padStart(2, '0').repeat(3).toUpperCase()}`;
-                              return (
-                                <button
-                                  key={shade}
-                                  type="button"
-                                  title={hex}
-                                  aria-label={hex}
-                                  aria-pressed={isActive && darkShade === shade}
-                                  onClick={() => applyDarkShade(shade)}
-                                  className={`h-5 w-5 shrink-0 rounded border border-canvas-text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-light ${
-                                    isActive && darkShade === shade ? 'ring-2 ring-brand-light' : ''
-                                  }`}
-                                  style={{ backgroundColor: hex }}
-                                />
-                              );
-                            })}
-                          </div>
-                        )}
-                        {value === 'off-white' && (
-                          <div className="absolute inset-x-2 top-7 flex justify-between gap-1">
-                            {OFF_WHITE_PRESETS.map((color) => (
-                              <button
-                                key={color}
-                                type="button"
-                                title={color}
-                                aria-label={color}
-                                aria-pressed={isActive && offWhiteColor === color}
-                                onClick={() => applyOffWhiteColor(color)}
-                                className={`h-5 w-5 shrink-0 rounded border border-canvas-text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-light ${
-                                  isActive && offWhiteColor === color ? 'ring-2 ring-brand-light' : ''
-                                }`}
-                                style={{ backgroundColor: color }}
-                              />
-                            ))}
-                          </div>
-                        )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* 自定义背景上传 & 检测结果 */}
-                  {config.canvasBackground === 'custom' && config.customBackgroundUrl && (
-                    <div className="mt-3 bg-canvas-card border border-canvas-border rounded-lg p-2 space-y-3">
-                      {/* 预览图 + 移除按钮 */}
-                      <div className="flex items-center gap-3">
-                        <div
-                          className="w-20 h-14 rounded border border-canvas-border shrink-0"
-                          style={{
-                            backgroundImage: `url(${config.customBackgroundUrl})`,
-                            backgroundSize: 'cover',
-                            backgroundPosition: 'center',
-                          }}
-                        />
-                        <div className="flex-1 min-w-0 space-y-1.5">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <AnimatedButton
-                              type="button"
-                              className="settings-save-btn text-xs"
-                              onClick={() => fileInputRef.current?.click()}
-                              disabled={bgUploading}
-                            >
-                              {bgUploading ? t('识别中…') : t('更换图片')}
-                            </AnimatedButton>
-                            <AnimatedButton
-                              type="button"
-                              className="text-xs px-3 py-1 rounded-md text-red-400 hover:bg-red-500/10 transition-colors"
-                              onClick={handleRemoveCustomBg}
-                            >
-                              {t('移除背景')}
-                            </AnimatedButton>
-                          </div>
-                          {/* 深色/浅色检测结果 */}
-                          <div className="flex items-center gap-2">
-                            <div
-                              className={`w-2 h-2 rounded-full shrink-0 ${
-                                bgDetection ? (bgDetection?.isDark ? 'bg-brand-light' : 'bg-amber-400') : 'bg-canvas-border'
-                              }`}
-                            />
-                            <span className="text-[11px] text-canvas-text-secondary">
-                              {bgDetection
-                                ? t('已识别为{tone}背景（亮度: {brightness}/255）', { tone: bgDetection?.isDark ? t('深色') : t('浅色'), brightness: bgDetection?.brightness ?? 0 })
-                                : config.customBackgroundIsDark !== undefined
-                                  ? t('已识别为{tone}背景', { tone: config.customBackgroundIsDark ? t('深色') : t('浅色') })
-                                  : t('未检测')}
-                            </span>
-                          </div>
-                          {/* 透明度滑块 */}
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] text-canvas-text-muted shrink-0">{t('透明度')}</span>
-                            <input
-                              type="range"
-                              min="5"
-                              max="100"
-                              value={Math.round((config.customBackgroundOpacity ?? 0.3) * 100)}
-                              onChange={(e) => {
-                                updateConfig({ customBackgroundOpacity: Number(e.target.value) / 100 });
-                                void persist();
-                              }}
-                              className="flex-1 h-1 cursor-pointer"
-                              style={{ accentColor: 'var(--brand)' }}
-                            />
-                            <span className="text-[11px] text-canvas-text-secondary w-8 text-right tabular-nums">
-                              {Math.round((config.customBackgroundOpacity ?? 0.3) * 100)}%
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 隐藏的文件选择器 */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleBgFileChange}
-                  />
-                </div>
-
-                </>)}
 
                 {/* Mac 也能切换模式，鼠标和触摸板按各自习惯选择。 */}
                 <section className="canvas-interaction-settings">

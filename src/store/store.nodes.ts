@@ -733,22 +733,30 @@ function syncShotlistVideoResults(
   return result;
 }
 
+function indexShotlistRows(rows: readonly ShotRow[]): Map<string, ShotRow> {
+  const byId = new Map<string, ShotRow>();
+  // 和原来的 find 一样取首项，旧数据里即使有重复 ID 也不换到另一行。
+  for (const row of rows) if (!byId.has(row.id)) byId.set(row.id, row);
+  return byId;
+}
+
 /** 在同一次 Store 更新中同步镜头视频与时长，沿用调用方的历史快照。 */
 function mergeNodeDataWithShotDurations(nodes: Node<BaseNodeData>[], targetIds: Set<string>, patch: Partial<BaseNodeData>) {
   let next = nodes.map((node) => targetIds.has(node.id)
     ? { ...node, data: mergeShotlistReferenceSource(node.data, mergeNodeData(node.data, patch), patch, nodes) } : node);
   next = syncShotlistVideoResults(nodes, next, targetIds, patch);
   if (!Array.isArray(patch.shotlistRows)) return next;
+  const rowsById = indexShotlistRows(patch.shotlistRows);
   const sheets = new Map(nodes.filter((node) => targetIds.has(node.id) && node.data.type === 'ai-shotlist')
-    .map((node) => [node.id, node.data.shotlistRows ?? []]));
+    .map((node) => [node.id, indexShotlistRows(node.data.shotlistRows ?? [])]));
   return next.map((node) => {
     const source = node.data.shotlistProductionSource;
     if (getGenerationNodeType(node.data.type) !== 'ai-video' || source?.kind !== 'video' || source.durationSync === 'manual'
       || targetIds.has(node.id)) return node;
     const previousRows = sheets.get(source.nodeId);
     if (!previousRows) return node;
-    const previous = previousRows.find((row) => row.id === source.rowId);
-    const row = patch.shotlistRows!.find((item) => item.id === source.rowId);
+    const previous = previousRows.get(source.rowId);
+    const row = rowsById.get(source.rowId);
     if (!previous || !row || previous.duration === row.duration) return node;
     const duration = resolveShotVideoDuration(row.duration);
     if (duration === undefined) return node;

@@ -220,6 +220,33 @@ describe('batchExecuteNodes', () => {
     expect(mocks.liveState.nodes.find((item) => item.id === 'a')?.data.prompt).toBe('用户的新输入');
   });
 
+  it.each(['removed', 'edited', 'replaced'] as const)('rechecks the latest nodes before normalizing the next native node: %s', async (change) => {
+    const nodes = [createNode('a'), createNode('b')];
+    const ctx = createContext(), gate = deferred<void>();
+    mocks.nativeContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'native-batch',
+      projectId: 'owner', projectEpoch: 1, canvasId: 'default', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    mocks.normalizeMedia.mockImplementation(async (nodeId: string) => {
+      if (nodeId === 'a') await gate.promise;
+      return { targetPatch: {}, nodePatches: new Map() };
+    });
+    mocks.generateImagesBatch.mockImplementation(async (_params: unknown, _count: number, _signal: unknown, guard: () => Promise<void>) => {
+      await guard(); throw Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' });
+    });
+
+    const pending = batchExecuteNodes(['a', 'b'], nodes, [], ctx);
+    await vi.waitFor(() => expect(mocks.normalizeMedia).toHaveBeenCalledOnce());
+    if (change === 'removed') mocks.liveState.nodes = [nodes[0]];
+    else if (change === 'edited') ctx.updateNodeDataTransient('b', { prompt: '用户的新输入' });
+    else mocks.liveState.nodes = [nodes[0], createNode('replacement')];
+    gate.resolve();
+
+    expect(await pending).toEqual({ ok: 1, fail: 0, skipped: 1 });
+    expect(mocks.normalizeMedia.mock.calls.every(([nodeId]) => nodeId === 'a')).toBe(true);
+    expect(mocks.generateImagesBatch).toHaveBeenCalledOnce();
+    expect(mocks.generateImagesBatch).toHaveBeenCalledWith(expect.objectContaining({ nodeId: 'a' }), 1, undefined, expect.any(Function));
+    expect(ctx.commitToHistory).toHaveBeenCalledOnce();
+  });
+
   it.each(['character', 'scene', 'prop'].flatMap((kind) => (
     ['invalid-json', 'empty-items'].map((failure) => ({ kind: kind as keyof typeof DRAMA_EXTRACT_MARKER, failure }))
   )))('保留旧版源文本的原文并报告 $kind 提取失败：$failure', async ({ kind, failure }) => {

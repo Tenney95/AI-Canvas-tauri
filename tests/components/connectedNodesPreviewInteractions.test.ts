@@ -9,6 +9,7 @@ import {
   CONNECTED_PREVIEW_THUMB_SIZE,
   REFERENCE_FAN_THUMB_SIZE,
   createConnectedPreviewLongPressController,
+  createConnectedPreviewSelector,
   getConnectedPreviewEdgeIds,
   resolveMentionPreview,
 } from '../../src/components/nodes/shared/connectedNodesPreviewInteractions';
@@ -162,6 +163,48 @@ describe('ConnectedNodesPreview 交互', () => {
     expect(edgeIds.get('source')).toEqual(['direct-1', 'direct-2']);
     expect(edgeIds.get('group-child')).toEqual(['inherited']);
     expect(edgeIds.has('unrelated')).toBe(false);
+  });
+
+  it('位置和无关内容变化复用引用结果，上游内容、成员与断连仍实时更新', () => {
+    const data = { type: 'ai-text', label: '素材' } as BaseNodeData;
+    const nodes = [
+      { id: 'child-2', parentId: 'source-group', data },
+      { id: 'target', parentId: 'target-group', data },
+      { id: 'target-group', type: 'group', data },
+      { id: 'source', data },
+      { id: 'source-group', type: 'group', data },
+      { id: 'child-1', parentId: 'source-group', data },
+      { id: 'unrelated', data },
+    ];
+    const edges = [
+      { id: 'direct', source: 'source', target: 'target' },
+      { id: 'group-1', source: 'source-group', target: 'target-group' },
+      { id: 'group-2', source: 'source-group', target: 'target' },
+    ];
+    const select = createConnectedPreviewSelector();
+    const initial = select(nodes, edges, 'target');
+    expect(initial.map((node) => node.id)).toEqual(['child-2', 'source', 'child-1']);
+    expect(initial[0].edgeIds).toEqual(['group-1', 'group-2']);
+    expect(initial[1].edgeIds).toEqual(['direct']);
+
+    const moved = nodes.map((node) => ({ ...node, position: { x: 100, y: 200 } }));
+    expect(select(moved, edges, 'target')).toBe(initial);
+    const unrelatedChanged = moved.map((node) => node.id === 'unrelated'
+      ? { ...node, data: { ...data, output: '无关输出' } } : node);
+    expect(select(unrelatedChanged, edges, 'target')).toBe(initial);
+    const updated = unrelatedChanged.map((node) => node.id === 'source'
+      ? { ...node, data: { ...data, output: '最新输出' } } : node);
+    const refreshed = select(updated, edges, 'target');
+    expect(refreshed).not.toBe(initial);
+    expect(refreshed[1].data.output).toBe('最新输出');
+    expect(refreshed[0].edgeIds).toBe(initial[0].edgeIds);
+
+    const reparented = updated.map((node) => node.id === 'child-1' ? { ...node, parentId: undefined } : node);
+    expect(select(reparented, edges, 'target').map((node) => node.id)).toEqual(['child-2', 'source']);
+    const disconnected = select(reparented, edges.slice(0, 2), 'target');
+    expect(disconnected[0].edgeIds).toEqual(['group-1']);
+    expect(select(reparented, edges, 'unrelated')).toEqual([]);
+    expect(select([...reparented].reverse(), edges, 'target').map((node) => node.id)).toEqual(['source', 'child-2']);
   });
 
   it('长按达到阈值后触发全屏', () => {

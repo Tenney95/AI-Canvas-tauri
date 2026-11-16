@@ -646,6 +646,41 @@ describe('precise shot duration references', () => {
     expect(video().videoUrl).toBe('keep.mp4');
   });
 
+  it('matches reordered rows within each sheet and leaves text-only edits and manual timing alone', () => {
+    const binding = { nodeId: 'sheet', rowId: 'row-1', kind: 'video' as const };
+    const automatic = node('video', { type: 'ai-video', seedanceDuration: 5,
+      shotlistProductionSource: { ...binding, durationSync: 'auto' } });
+    const legacy = node('legacy', { type: 'ai-video', seedanceDuration: 9,
+      shotlistProductionSource: { ...binding, nodeId: 'other' } });
+    const manual = node('manual', { type: 'ai-video', seedanceDuration: 12,
+      shotlistProductionSource: { ...binding, durationSync: 'manual' } });
+    const overridden = node('overridden', { type: 'ai-video', seedanceDuration: 3,
+      shotlistProductionSource: { ...binding, nodeId: 'other' } });
+    const unrelated = node('unrelated', { type: 'ai-video', seedanceDuration: 5,
+      shotlistProductionSource: { ...binding, nodeId: 'untouched', durationSync: 'auto' } });
+    const sheet = source();
+    useAppStore.setState({ nodes: [sheet,
+      node('other', { type: 'ai-shotlist', shotlistRows: [{ id: 'row-1', shotNo: '1', duration: 8.4 }] }),
+      automatic, legacy, manual, overridden, unrelated] });
+
+    useAppStore.getState().updateNodeDataTransient('sheet', {
+      shotlistRows: sheet.data.shotlistRows!.map((row) => ({ ...row, content: '只修改文字' })),
+    });
+    expect(useAppStore.getState().nodes.slice(2)).toEqual([automatic, legacy, manual, overridden, unrelated]);
+    expect(useAppStore.getState().nodes[2]).toBe(automatic);
+
+    useAppStore.getState().updateNodesDataBatch(['sheet', 'other'], { shotlistRows: [
+      { id: 'row-2', shotNo: '1', duration: 7.2 },
+      { id: 'row-1', shotNo: '2', duration: 6.1 },
+    ] });
+    const updated = useAppStore.getState().nodes;
+    expect(updated[2].data.seedanceDuration).toBe(7);
+    expect(updated[3].data.seedanceDuration).toBe(7);
+    expect(updated[4]).toBe(manual);
+    expect(updated[5]).toBe(overridden);
+    expect(updated[6]).toBe(unrelated);
+  });
+
   it('replaces an auto-mentioned whole sheet with the selected shot while keeping other references and prose', () => {
     useAppStore.setState({ nodes: [source(), node('other', { type: 'ai-shotlist' }),
       node('video', { type: 'ai-video', prompt: '保留补充要求 @{other:其他表}' })] });

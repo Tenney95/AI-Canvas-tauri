@@ -54,7 +54,6 @@ vi.mock('../../src/components/settings/ShortcutSettings', () => ({ default: 'sho
 vi.mock('../../src/components/settings/ComfyUISettings', () => ({ default: 'comfyui-settings' }));
 vi.mock('../../src/components/settings/FileAppSettings', () => ({ default: 'file-settings' }));
 vi.mock('../../src/components/settings/PluginSettings', () => ({ default: 'plugin-settings' }));
-vi.mock('../../src/services/backgroundService', () => ({}));
 vi.mock('../../src/services/fileService', () => ({
   loadConfigWithoutSecrets: driver.readOrdinary, saveConfig: driver.saveOrdinary, pickAssetFolder: driver.pick,
   loadProjectsList: async () => [], listGlobalFiles: async () => [], listExternalFolderFiles: async () => [],

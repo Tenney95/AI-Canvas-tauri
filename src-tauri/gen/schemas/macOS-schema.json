@@ -2217,16 +2217,94 @@
           "markdownDescription": "Allows only scoped local ComfyUI management commands."
         },
         {
+          "description": "Allows the fixed user-trusted Codex adviser through the local main window only.",
+          "type": "string",
+          "const": "allow-external-agent-commands",
+          "markdownDescription": "Allows the fixed user-trusted Codex adviser through the local main window only."
+        },
+        {
           "description": "Allows registered AI Canvas application commands for trusted first-party windows.",
           "type": "string",
           "const": "allow-first-party-app-commands",
           "markdownDescription": "Allows registered AI Canvas application commands for trusted first-party windows."
         },
         {
+          "description": "Allows the main window to consume its one-shot WebContent recovery status.",
+          "type": "string",
+          "const": "allow-main-webview-recovery",
+          "markdownDescription": "Allows the main window to consume its one-shot WebContent recovery status."
+        },
+        {
+          "description": "主窗口的新项目素材目录绑定；命令内部核验用户配置及原生目录归属。",
+          "type": "string",
+          "const": "allow-native-project-media",
+          "markdownDescription": "主窗口的新项目素材目录绑定；命令内部核验用户配置及原生目录归属。"
+        },
+        {
+          "description": "资源搜索窗口只可解析已绑定的新项目素材根。",
+          "type": "string",
+          "const": "allow-native-project-media-root-read",
+          "markdownDescription": "资源搜索窗口只可解析已绑定的新项目素材根。"
+        },
+        {
           "description": "Allows only the native-registered plugin window session bridge.",
           "type": "string",
           "const": "allow-plugin-ui-window-request",
           "markdownDescription": "Allows only the native-registered plugin window session bridge."
+        },
+        {
+          "description": "Allows main-window project-scoped storage configuration, checks, manual sync and confirmed cloud-only cleanup.",
+          "type": "string",
+          "const": "allow-project-asset-storage",
+          "markdownDescription": "Allows main-window project-scoped storage configuration, checks, manual sync and confirmed cloud-only cleanup."
+        },
+        {
+          "description": "主窗口项目归档摘要与隔离素材发布；命令内部仍校验来源和路径授权。",
+          "type": "string",
+          "const": "allow-project-import",
+          "markdownDescription": "主窗口项目归档摘要与隔离素材发布；命令内部仍校验来源和路径授权。"
+        },
+        {
+          "description": "Only the native cold-maintenance window may inspect its exclusive fixture lease and managed backup materials.",
+          "type": "string",
+          "const": "allow-project-model-maintenance",
+          "markdownDescription": "Only the native cold-maintenance window may inspect its exclusive fixture lease and managed backup materials."
+        },
+        {
+          "description": "剪辑窗口仅可解析主窗口绑定的原会话素材根。",
+          "type": "string",
+          "const": "allow-video-editor-native-root-read",
+          "markdownDescription": "剪辑窗口仅可解析主窗口绑定的原会话素材根。"
+        },
+        {
+          "description": "Allows the main window to upload authorized reference media to fixed Beijing TOS endpoints.",
+          "type": "string",
+          "const": "allow-volcengine-tos-upload",
+          "markdownDescription": "Allows the main window to upload authorized reference media to fixed Beijing TOS endpoints."
+        },
+        {
+          "description": "Denies the fixed Codex runtime commands.",
+          "type": "string",
+          "const": "deny-external-agent-commands",
+          "markdownDescription": "Denies the fixed Codex runtime commands."
+        },
+        {
+          "description": "Denies all project-scoped object storage commands.",
+          "type": "string",
+          "const": "deny-project-asset-storage",
+          "markdownDescription": "Denies all project-scoped object storage commands."
+        },
+        {
+          "description": "Deny cold-maintenance commands.",
+          "type": "string",
+          "const": "deny-project-model-maintenance",
+          "markdownDescription": "Deny cold-maintenance commands."
+        },
+        {
+          "description": "Denies native Volcengine TOS reference uploads.",
+          "type": "string",
+          "const": "deny-volcengine-tos-upload",
+          "markdownDescription": "Denies native Volcengine TOS reference uploads."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:channel:default`\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

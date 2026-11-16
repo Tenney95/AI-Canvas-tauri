@@ -189,7 +189,13 @@ function collectReferences(value: unknown, paths: Set<string>, root?: string): v
 
 function isReferenced(path: string, paths: Set<string>): boolean {
   const key = pathKey(path);
-  return paths.has(key) || [...paths].some((reference) => reference.endsWith('/') && key.startsWith(reference));
+  if (paths.has(key)) return true;
+  // 目录引用只可能落在路径的某一级祖先上，不必遍历全部文件引用。
+  for (let end = key.lastIndexOf('/'); end >= 0; end = key.lastIndexOf('/', end - 1)) {
+    if (paths.has(key.slice(0, end + 1))) return true;
+    if (end === 0) break;
+  }
+  return false;
 }
 
 /** 新库回执、恢复材料及旧库历史都要参与核对；不调用会同步写入历史的归档捕获。 */
@@ -539,38 +545,13 @@ export function collectNodeFilePaths(allNodeData: Array<{ data?: Record<string, 
   return paths;
 }
 
-/**
- * 执行完整的存储健康扫描
- */
-export async function scanStorageHealth(
-  projects: CanvasProject[],
-  nodeFilePaths: Set<string> | (() => Set<string> | Promise<Set<string>>),
-  assetFolders: { path: string; label: string }[] = [],
-  options: StorageHealthScanOptions = {},
-): Promise<StorageHealthReport> {
-  const { signal, includeDuplicates = true } = options;
-  checkAbort(signal);
-  const report: StorageHealthReport = {
-    complete: true,
-    issues: [],
-    projects: [],
-    trashes: [],
-    orphans: [],
-    duplicates: [],
-    offlineFolders: [],
-    scannedAt: 0,
-    projectSize: 0,
-    trashSize: 0,
-    totalSize: 0,
-    reclaimableSize: 0,
-  };
-  const addIssue = (area: StorageHealthIssue['area'], projectName: string, name: string, reason: StorageHealthIssueReason) => {
-    if (reason !== 'native-protected') report.complete = false;
-    report.issues.push({ area, projectName: displayName(projectName), name: name ? displayName(name) : '', reason });
-  };
+type StorageIssueHandler = (area: StorageHealthIssue['area'], projectName: string, name: string, reason: StorageHealthIssueReason) => void;
 
-  if (!isTauriEnv()) return { ...report, scannedAt: Date.now() };
-
+/** 引用核对与目录盘点分开，删除单个文件时不用重新列出所有素材。 */
+async function readStorageReferences(
+  projects: CanvasProject[], nodeFilePaths: Set<string> | (() => Set<string> | Promise<Set<string>>),
+  signal: AbortSignal | undefined, onIssue: StorageIssueHandler,
+) {
   // 项目列表只有摘要；必须读取所有完整项目，不能用当前画布推断其他项目无引用。
   // 任何读取失败或记录缺失都终止扫描，不能将未知引用视为空集合。
   const references = new Set<string>();
@@ -652,7 +633,7 @@ export async function scanStorageHealth(
         checkAbort(signal);
         // 状态未知只保护所属目录，不让其他项目的完整引用核对失效。
         for (const root of scope.roots.values()) references.add(`${pathKey(root).replace(/\/+$/, '')}/`);
-        addIssue('project', project.name, '', 'native-protected');
+        onIssue('project', project.name, '', 'native-protected');
       }
     }
     checkAbort(signal);
@@ -663,6 +644,84 @@ export async function scanStorageHealth(
     checkAbort(signal);
     throw new StorageHealthScanError(issueReason(error));
   }
+
+  return { projects, references, roots, projectRoots, nativeScopes, nativeSnapshot };
+}
+
+async function assertStorageReferencesCurrent(
+  snapshot: Awaited<ReturnType<typeof readStorageReferences>>, signal: AbortSignal | undefined, onIssue: StorageIssueHandler,
+): Promise<void> {
+  const { projects, roots, nativeScopes, nativeSnapshot } = snapshot;
+  for (const project of projects) {
+    checkAbort(signal);
+    if (nativeScopes.some((scope) => scope.entry.project.id === project.id)) continue;
+    try {
+      if (roots.get(project.id) !== await getProjectDataDir(project.id)) onIssue('project', project.name, project.name, 'changed');
+    } catch (error) {
+      checkAbort(signal);
+      onIssue('project', project.name, project.name, issueReason(error));
+    }
+  }
+  let latestNativeSnapshot: NativeStorageSnapshot | undefined;
+  if (nativeScopes.length) {
+    try { latestNativeSnapshot = await readNativeStorageSnapshot({ signal }); }
+    catch { checkAbort(signal); throw new StorageHealthScanError('changed'); }
+  }
+  for (const scope of nativeScopes) {
+    checkAbort(signal);
+    try {
+      const [latest] = await readNativeStorageScopes([scope.entry], signal);
+      if (!latest || latest.capture.changeRevision !== scope.capture.changeRevision
+        || !configValuesEqual(latest.capture, scope.capture)
+        || !nativeSnapshot || !latestNativeSnapshot || !configValuesEqual(nativeStorageProjectRows(latestNativeSnapshot, scope.entry.project.id),
+          nativeStorageProjectRows(nativeSnapshot, scope.entry.project.id))
+        || !configValuesEqual([...latest.roots].map(([id, root]) => [id, pathKey(root)]), [...scope.roots].map(([id, root]) => [id, pathKey(root)]))) {
+        onIssue('project', scope.entry.project.name, '', 'changed');
+      }
+    } catch (error) {
+      checkAbort(signal);
+      onIssue('project', scope.entry.project.name, '', issueReason(error));
+    }
+  }
+  try { await assertLegacyStorageHealthScope(); }
+  catch { throw new StorageHealthScanError('changed'); }
+}
+
+/**
+ * 执行完整的存储健康扫描
+ */
+export async function scanStorageHealth(
+  projects: CanvasProject[],
+  nodeFilePaths: Set<string> | (() => Set<string> | Promise<Set<string>>),
+  assetFolders: { path: string; label: string }[] = [],
+  options: StorageHealthScanOptions = {},
+): Promise<StorageHealthReport> {
+  const { signal, includeDuplicates = true } = options;
+  checkAbort(signal);
+  const report: StorageHealthReport = {
+    complete: true,
+    issues: [],
+    projects: [],
+    trashes: [],
+    orphans: [],
+    duplicates: [],
+    offlineFolders: [],
+    scannedAt: 0,
+    projectSize: 0,
+    trashSize: 0,
+    totalSize: 0,
+    reclaimableSize: 0,
+  };
+  const addIssue = (area: StorageHealthIssue['area'], projectName: string, name: string, reason: StorageHealthIssueReason) => {
+    if (reason !== 'native-protected') report.complete = false;
+    report.issues.push({ area, projectName: displayName(projectName), name: name ? displayName(name) : '', reason });
+  };
+
+  if (!isTauriEnv()) return { ...report, scannedAt: Date.now() };
+
+  const snapshot = await readStorageReferences(projects, nodeFilePaths, signal, addIssue);
+  const { references, roots, projectRoots, nativeScopes } = snapshot;
+  projects = snapshot.projects;
 
   // 分集可能共用一个素材目录。目录只扫描一次，所有统计再按文件路径去重。
   const scannedRoots = new Set<string>();
@@ -786,42 +845,85 @@ export async function scanStorageHealth(
     }
   }
 
-  for (const project of projects) {
-    checkAbort(signal);
-    if (nativeScopes.some((scope) => scope.entry.project.id === project.id)) continue;
-    try {
-      if (roots.get(project.id) !== await getProjectDataDir(project.id)) addIssue('project', project.name, project.name, 'changed');
-    } catch (error) {
-      checkAbort(signal);
-      addIssue('project', project.name, project.name, issueReason(error));
-    }
-  }
-  let latestNativeSnapshot: NativeStorageSnapshot | undefined;
-  if (nativeScopes.length) {
-    try { latestNativeSnapshot = await readNativeStorageSnapshot({ signal }); }
-    catch { checkAbort(signal); throw new StorageHealthScanError('changed'); }
-  }
-  for (const scope of nativeScopes) {
-    checkAbort(signal);
-    try {
-      const [latest] = await readNativeStorageScopes([scope.entry], signal);
-      if (!latest || latest.capture.changeRevision !== scope.capture.changeRevision
-        || !configValuesEqual(latest.capture, scope.capture)
-        || !nativeSnapshot || !latestNativeSnapshot || !configValuesEqual(nativeStorageProjectRows(latestNativeSnapshot, scope.entry.project.id),
-          nativeStorageProjectRows(nativeSnapshot, scope.entry.project.id))
-        || !configValuesEqual([...latest.roots].map(([id, root]) => [id, pathKey(root)]), [...scope.roots].map(([id, root]) => [id, pathKey(root)]))) {
-        addIssue('project', scope.entry.project.name, '', 'changed');
-      }
-    } catch (error) {
-      checkAbort(signal);
-      addIssue('project', scope.entry.project.name, '', issueReason(error));
-    }
-  }
-  try { await assertLegacyStorageHealthScope(); }
-  catch { throw new StorageHealthScanError('changed'); }
+  await assertStorageReferencesCurrent(snapshot, signal, addIssue);
   checkAbort(signal);
   report.scannedAt = Date.now();
   return report;
+}
+
+/** 每次删除仍读取当前引用，但只检查目标文件；重复删除另外核对保留副本。 */
+export async function verifyStorageCleanupFile(
+  projects: CanvasProject[], nodeFilePaths: Set<string> | (() => Set<string> | Promise<Set<string>>),
+  expected: Pick<OrphanFileInfo, 'path' | 'name' | 'size'>,
+  options: { signal?: AbortSignal; trashDir?: string;
+    duplicate?: { key: string; keeper: Pick<OrphanFileInfo, 'path' | 'name' | 'size'> } } = {},
+): Promise<boolean> {
+  if (!isTauriEnv()) return false;
+  const { signal, trashDir, duplicate } = options;
+  const fail: StorageIssueHandler = () => { throw new StorageHealthScanError('changed'); };
+  try {
+    checkAbort(signal);
+    const snapshot = await readStorageReferences(projects, nodeFilePaths, signal, (_area, _project, _name, reason) => {
+      // 未知原生操作已把所属整根加入保护集合，其他项目仍可核对。
+      if (reason !== 'native-protected') throw new StorageHealthScanError(reason);
+    });
+    const roots = [...new Set(snapshot.projects.flatMap((project) => snapshot.projectRoots(project.id)))].sort((left, right) => right.length - left.length);
+    const nativeRoots = new Set(snapshot.nativeScopes.flatMap((scope) => [...scope.roots.values()].map(pathKey)));
+    const inspect = async (file: Pick<OrphanFileInfo, 'path' | 'size'>, trash?: string) => {
+      const owner = roots.map((root) => ({ root, relative: getRelativeAssetPath(file.path, root) }))
+        .find((owner): owner is { root: string; relative: string } => !!owner.relative);
+      if (!owner || !Number.isSafeInteger(file.size) || file.size < 0) throw new Error('文件身份无法确认');
+      const parts = owner.relative.split('/');
+      if (parts.some((part) => !part || part === '.' || part === '..')) throw new Error('文件路径已变化');
+      if (trash) {
+        if (pathKey(trash) !== pathKey(joinPath(owner.root, '.trash')) || !relativeUndoTrashPath(file.path, trash)) {
+          throw new Error('回收路径已变化');
+        }
+      } else {
+        const native = nativeRoots.has(pathKey(owner.root));
+        if (parts.some(isSystemMetadata) || parts.slice(0, -1).some((part, index) => part === '.trash' || part === 'AppData'
+          || index === 0 && part === '.thumbnail') || native && nativeCleanupProtectedPath(file.path, owner.root)) {
+          throw new Error('文件不在可清理范围');
+        }
+      }
+      let path = owner.root;
+      // 直接定位文件时也逐级检查目录，不能绕过原递归扫描的链接保护。
+      for (const part of parts) {
+        checkAbort(signal);
+        const directory = await lstat(path);
+        if (!directory.isDirectory || directory.isSymlink) throw new Error('文件目录已变化');
+        path = joinPath(path, part);
+      }
+      const info = await lstat(file.path);
+      checkAbort(signal);
+      if (!info.isFile || info.isSymlink || info.size !== file.size) throw new Error('文件已变化');
+    };
+    await inspect(expected, trashDir);
+    if (isReferenced(expected.path, snapshot.references)) return false;
+    if (trashDir && isUndoTrashPathProtected(expected.path, trashDir, await readUndoTrashEntries(trashDir), snapshot.references)) return false;
+    if (duplicate) {
+      const { keeper, key } = duplicate;
+      if (pathKey(keeper.path) === pathKey(expected.path) || keeper.name !== expected.name || keeper.size !== expected.size) return false;
+      await inspect(keeper);
+      const [targetContent, keeperContent] = await Promise.all([
+        fingerprintAssetImage(expected.path, signal), fingerprintAssetImage(keeper.path, signal),
+      ]);
+      if (!/^[a-f0-9]{64}$/.test(targetContent.digest) || key !== `${expected.size}|${expected.name}|${targetContent.digest}`
+        || targetContent.bytes !== expected.size || keeperContent.bytes !== keeper.size || keeperContent.digest !== targetContent.digest) return false;
+    }
+    await assertStorageReferencesCurrent(snapshot, signal, fail);
+    const live = typeof nodeFilePaths === 'function' ? await nodeFilePaths() : nodeFilePaths;
+    const currentReferences = snapshot.references;
+    for (const path of live) currentReferences.add(pathKey(path));
+    if (isReferenced(expected.path, currentReferences)) return false;
+    if (trashDir && isUndoTrashPathProtected(expected.path, trashDir, await readUndoTrashEntries(trashDir), currentReferences)) return false;
+    const { isNodeMediaCopySource } = await import('../nodeMediaCopy');
+    if (isNodeMediaCopySource(expected.path)) return false;
+    await inspect(expected, trashDir);
+    if (duplicate) await inspect(duplicate.keeper);
+    checkAbort(signal);
+    return true;
+  } catch { return false; }
 }
 
 // ============================================

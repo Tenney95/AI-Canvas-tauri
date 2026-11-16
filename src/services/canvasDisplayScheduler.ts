@@ -122,8 +122,17 @@ export function createCanvasDisplayScheduler(clock: CanvasDisplayClock = {
         job.commit();
       }
     } finally {
-      refreshDue();
-      if (cursor >= ordered.length) dirty = true;
+      // 现成批次还能继续时，下一帧直接接着取；别为少量提交反复扫整条队列。
+      while (cursor < ordered.length) {
+        const job = ordered[cursor];
+        if (jobs.get(job.key) === job && (!job.preparation || preparing < budget.maxPreparing)) break;
+        cursor++;
+      }
+      if (cursor < ordered.length) nextDue = start;
+      else {
+        refreshDue();
+        dirty = true;
+      }
       schedule();
     }
   }

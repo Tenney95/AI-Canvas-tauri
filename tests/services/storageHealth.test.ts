@@ -77,7 +77,7 @@ vi.mock('../../src/services/indexedDb/projectImportRepository', () => ({ listPro
 vi.mock('../../src/services/indexedDb/schema', () => ({ openDB: mocks.openDB, STORE_METADATA: 'metadata' }));
 vi.mock('../../src/services/indexedDb/legacyProjectWriteGuard', () => ({ assertLegacyProjectWritesAllowed: mocks.assertLegacyProjectWritesAllowed }));
 
-import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth } from '../../src/services/fs/storageHealth';
+import { clearTrashDir, collectNodeFilePaths, collectStorageLiveFilePaths, deleteOrphanFile, prepareTrashCleanup, scanStorageHealth, verifyStorageCleanupFile } from '../../src/services/fs/storageHealth';
 import { stageUndoTrashMove } from '../../src/services/fs/undoTrashJournal';
 
 function project(id: string): CanvasProject {
@@ -170,6 +170,82 @@ describe('storage health accounting and cleanup', () => {
     const view: NativeProjectViewItem = { ...project(canvasId), nativeView: { projectId, canvasId, episodeId: null } };
     return { projectId, canvasId, aggregate, view, primary, secondary, secondaryPath };
   }
+
+  it('逐文件清理重读当前引用，不枚举目录或读取无关文件摘要', async () => {
+    addFiles('/p', { 'image.png': 10, 'unrelated.mp4': 100 });
+    const file = { path: '/p/image.png', name: 'image.png', size: 10 };
+    expect(await verifyStorageCleanupFile([project('p')], new Set(), file)).toBe(true);
+    mocks.getProjectById.mockResolvedValue({ ...project('p'), nodes: [{ data: { filePath: file.path } }] });
+    expect(await verifyStorageCleanupFile([project('p')], new Set(), file)).toBe(false);
+    expect(mocks.getProjectById).toHaveBeenCalledTimes(2);
+    expect(mocks.readDir).not.toHaveBeenCalled();
+    expect(mocks.fingerprintAssetImage).not.toHaveBeenCalled();
+    expect(mocks.lstat).not.toHaveBeenCalledWith('/p/unrelated.mp4');
+  });
+
+  it('引用核对期间新增实时引用或目标祖先变为链接时保留文件', async () => {
+    addFiles('/p', { 'image.png': 10 });
+    const file = { path: '/p/image.png', name: 'image.png', size: 10 };
+    const live = vi.fn().mockResolvedValueOnce(new Set()).mockResolvedValueOnce(new Set([file.path]));
+    expect(await verifyStorageCleanupFile([project('p')], live, file)).toBe(false);
+    mocks.lstat.mockImplementation(async () => ({ isDirectory: true, isSymlink: true, isFile: false, size: 0 }));
+    expect(await verifyStorageCleanupFile([project('p')], new Set(), file)).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('重复清理只读取目标和保留副本，副本消失或内容变化则拒绝', async () => {
+    addFiles('/a', { 'image.png': 10 }); addFiles('/b', { 'image.png': 10 });
+    addFiles('/other', { 'large.mp4': 100 });
+    const projects = [project('a'), project('b'), project('other')];
+    const file = { path: '/b/image.png', name: 'image.png', size: 10 };
+    const keeper = { ...file, path: '/a/image.png' };
+    const options = { duplicate: { key: `10|image.png|${'f'.repeat(64)}`, keeper } };
+    expect(await verifyStorageCleanupFile(projects, new Set(), file, options)).toBe(true);
+    expect(mocks.fingerprintAssetImage.mock.calls.map(([path]) => path)).toEqual([file.path, keeper.path]);
+    mocks.digests.set(keeper.path, 'e'.repeat(64));
+    expect(await verifyStorageCleanupFile(projects, new Set(), file, options)).toBe(false);
+    mocks.sizes.delete(keeper.path);
+    expect(await verifyStorageCleanupFile(projects, new Set(), file, options)).toBe(false);
+    expect(mocks.readDir).not.toHaveBeenCalled();
+  });
+
+  it('目录引用只保护目录本身的后代，文件系统根引用仍保护整根', async () => {
+    mocks.directories.set('/p', ['kept', 'kept-too']);
+    addFiles('/p/kept', { 'image.png': 10 }); addFiles('/p/kept-too', { 'image.png': 10 });
+    const report = await scanStorageHealth([project('p')], new Set(['/p/kept/']), [], { includeDuplicates: false });
+    expect(report.orphans.map((file) => file.path)).toEqual(['/p/kept-too/image.png']);
+    const rootProtected = await scanStorageHealth([project('p')], new Set(['/']), [], { includeDuplicates: false });
+    expect(rootProtected.orphans).toEqual([]);
+  });
+
+  it('回收站目标按日志原位置核对后来新增的实时引用', async () => {
+    const staged = '123-11111111-1111-4111-8111-111111111111-image.png';
+    mocks.directories.set('/p', ['.trash']);
+    addFiles('/p/.trash', { [staged]: 10 });
+    await stageUndoTrashMove('/p/.trash', 'nested/image.png', staged, async () => true);
+    const file = { path: `/p/.trash/${staged}`, name: staged, size: 10 };
+    expect(await verifyStorageCleanupFile([project('p')], new Set(), file, { trashDir: '/p/.trash' })).toBe(true);
+    const live = vi.fn().mockResolvedValueOnce(new Set()).mockResolvedValueOnce(new Set(['/p/nested/image.png']));
+    expect(await verifyStorageCleanupFile([project('p')], live, file, { trashDir: '/p/.trash' })).toBe(false);
+    expect(mocks.readDir).not.toHaveBeenCalled();
+  });
+
+  it('目标核对仍拒绝原生待续操作、保护目录和扫描期间的 revision 变化', async () => {
+    const native = nativeProject();
+    addFiles('/native', { 'image.png': 10 }); addFiles(native.secondaryPath, {});
+    const file = { path: '/native/image.png', name: 'image.png', size: 10 };
+    mocks.readNativeStorageSnapshot.mockResolvedValue({ exchange: [{
+      kind: 'native-media-task-v1', ownerProjectId: native.projectId, status: 'outcome-unknown',
+    }], transfers: [], retired: [] });
+    expect(await verifyStorageCleanupFile([native.view], new Set(), file)).toBe(false);
+    mocks.readNativeStorageSnapshot.mockResolvedValue({ exchange: [], transfers: [], retired: [] });
+    mocks.readNativeProjectCapture.mockResolvedValueOnce({ aggregate: native.aggregate, changeRevision: 0 })
+      .mockResolvedValue({ aggregate: native.aggregate, changeRevision: 1 });
+    expect(await verifyStorageCleanupFile([native.view], new Set(), file)).toBe(false);
+    addFiles('/native/media', { 'image.png': 10 });
+    expect(await verifyStorageCleanupFile([native.view], new Set(), { ...file, path: '/native/media/image.png' })).toBe(false);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
 
   it('新结构按权威目录读取全部素材根；活动任务保护原作品且不将扫描标为不完整', async () => {
     const native = nativeProject();

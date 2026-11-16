@@ -10,7 +10,6 @@ import { useMemo, useState, useCallback, useRef, useEffect, useId } from 'react'
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { useShallow } from 'zustand/react/shallow';
 import closeCircleIcon from '../../../assets/close-circle.svg';
 import { useAppStore } from '../../../store/useAppStore';
 import type { BaseNodeData, StoryboardCellOverride } from '../../../types';
@@ -28,7 +27,7 @@ import {
   calculateReferenceFan,
   CONNECTED_PREVIEW_THUMB_SIZE,
   createConnectedPreviewLongPressController,
-  getConnectedPreviewEdgeIds,
+  createConnectedPreviewSelector,
 } from './connectedNodesPreviewInteractions';
 
 const IMAGE_HOVER_PREVIEW_DELAY_MS = 500;
@@ -92,10 +91,8 @@ export default function ConnectedNodesPreview({
   const fanCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fanOpen, setFanOpen] = useState(false);
   const [fanLayout, setFanLayout] = useState(() => calculateReferenceFan({ x: 0, y: 0 }, { width: 320, height: 640 }, 0));
-  // 只订阅画布数据：对话框打开期间的聊天流式、轮询进度等无关变更不再触发重渲染
-  const { nodes, edges } = useAppStore(
-    useShallow((s) => ({ nodes: s.nodes, edges: s.edges })),
-  );
+  const [selectConnectedSources] = useState(createConnectedPreviewSelector);
+  const connectedSources = useAppStore((s) => selectConnectedSources(s.nodes, s.edges, nodeId));
   const hoveredMentionNodeId = useAppStore((s) => s.hoveredMentionNodeId);
   const currentProjectId = useAppStore((s) => s.currentProjectId);
   const [fullscreenPreview, setFullscreenPreview] = useState<FullscreenPreviewItem | null>(null);
@@ -146,11 +143,7 @@ export default function ConnectedNodesPreview({
   useEffect(() => () => { if (sbCloseTimer.current) clearTimeout(sbCloseTimer.current); }, []);
 
   const connectedNodes = useMemo(() => {
-    if (!nodeId) return [];
-    const edgeIdsBySource = getConnectedPreviewEdgeIds(nodes, edges, nodeId);
-    return nodes
-      .filter((n) => n.id !== nodeId && n.type !== 'group' && edgeIdsBySource.has(n.id))
-      .map((n) => {
+    return connectedSources.map((n) => {
         const data = n.data as BaseNodeData;
         // 分镜表没有 output/媒体，落到 text 分支就只剩一个「T」，和文本节点分不开
         const isShotlist = data.type === 'ai-shotlist';
@@ -229,7 +222,7 @@ export default function ConnectedNodesPreview({
 
         return {
           id: n.id,
-          edgeIds: edgeIdsBySource.get(n.id) ?? [],
+          edgeIds: n.edgeIds,
           label: data.label || t('节点'),
           displayId: data.displayId,
           outputType,
@@ -247,7 +240,7 @@ export default function ConnectedNodesPreview({
           sbRows,
         };
       });
-  }, [nodeId, nodes, edges, t]);
+  }, [connectedSources, t]);
 
   // ── Dock 动效状态 ──
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);

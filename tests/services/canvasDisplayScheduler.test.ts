@@ -97,6 +97,25 @@ describe('shared canvas display budget', () => {
     queue.enqueue({}, () => calls.push('near'), () => 0);
     cancel(); await tick(); expect(calls).toEqual(['near', 'latest']);
   });
+  it('sleeps until delayed work is due after the rest of a ready batch is canceled', async () => {
+    const { queue, tick, frames } = fixture({ maxPreparing: 1, maxPerFrame: 1, workMs: 3, idleMs: 0 });
+    const calls: string[] = [];
+    queue.enqueue({}, () => calls.push('first'));
+    const cancelSecond = queue.enqueue({}, () => calls.push('second'));
+    const cancelThird = queue.enqueue({}, () => calls.push('third'));
+    queue.enqueue({}, () => calls.push('delayed'), undefined, 1000);
+    await tick();
+    expect(calls).toEqual(['first']);
+    cancelSecond(); cancelThird();
+    await tick();
+    expect(frames.size).toBe(0);
+    await tick(967);
+    expect(calls).toEqual(['first']);
+    expect(frames.size).toBe(0);
+    await tick(1);
+    expect(calls).toEqual(['first', 'delayed']);
+    expect(frames.size).toBe(0);
+  });
   it('shares the frame budget between node and media commits and waits through renewed input', async () => {
     const { queue, frames, tick } = fixture(); const calls = vi.fn();
     for (let i = 0; i < 20; i++) queue.enqueue({}, calls);

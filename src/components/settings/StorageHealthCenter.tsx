@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import { isTauriEnv, revealFileInFolder } from '../../services/fileService';
 import {
-  scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, collectNodeFilePaths, collectStorageLiveFilePaths, StorageHealthScanError,
+  scanStorageHealth, prepareTrashCleanup, clearTrashDir, deleteOrphanFile, deleteDuplicateFile, verifyStorageCleanupFile, collectStorageLiveFilePaths, StorageHealthScanError,
   type StorageHealthReport, type TrashInfo, type OrphanFileInfo, type DuplicateFileGroup, type CleanupResult,
 } from '../../services/fs/storageHealth';
 import { estimateBrowserStorage, formatBytes, STORAGE_PRESSURE_RATIO, type StorageEstimate } from '../../services/storageQuota';
@@ -236,26 +236,36 @@ export default function StorageHealthCenter() {
     setCleanupResult(null);
     const result: CleanupResult & { failedNames: string[] } = { deletedCount: 0, failedCount: 0, reclaimedSize: 0, failedNames: [] };
     const request = pendingCleanup;
-    // 确认窗口打开后引用仍可能变化，每个文件真正删除前都再核对一次。
+    // 整批盘点一次；每个文件删除前仍重读引用，只跳过无关目录和内容摘要。
+    let fresh: StorageHealthReport | null = null;
     let verifiedSize = 0;
+    const selectedPaths = new Set(request.entries.filter((entry) => 'path' in entry).map((entry) => entry.path));
     const verifyUnreferenced = async (path: string) => {
-      if (!mounted.current || useAppStore.getState().currentProjectId !== request.projectId) return false;
-      const fresh = await scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), [], {
-        includeDuplicates: request.kind === 'duplicates', signal: controller.signal,
-      });
-      if (!fresh.complete) return false;
-      const key = [...collectNodeFilePaths([{ data: { filePath: path } }])][0];
-      const live = await collectLiveReferences(request.projectId);
+      if (!fresh || request.kind === 'trash' || !mounted.current || useAppStore.getState().currentProjectId !== request.projectId) return false;
+      const expected = request.entries.find((file) => file.path === path);
       const orphan = fresh.orphans.find((file) => file.path === path);
-      const expected = request.kind === 'trash' ? undefined : request.entries.find((file) => file.path === path);
-      const duplicateEligible = request.kind !== 'duplicates'
-        || fresh.duplicates.some((group) => group.key === request.groupKey
-          && group.files.some((file) => file.path === path && file.canDelete));
-      verifiedSize = orphan?.size ?? 0;
-      return mounted.current && useAppStore.getState().currentProjectId === request.projectId
-        && !live.has(key) && !!orphan && orphan.size === expected?.size && duplicateEligible;
+      if (!expected || !orphan || orphan.size !== expected.size) return false;
+      const group = request.kind === 'duplicates' ? fresh.duplicates.find((group) => group.key === request.groupKey) : undefined;
+      const keeper = group?.files.find((file) => !selectedPaths.has(file.path) && !file.canDelete);
+      if (request.kind === 'duplicates' && (!keeper || !group?.files.some((file) => file.path === path && file.canDelete))) return false;
+      const verified = await verifyStorageCleanupFile(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), expected, {
+        signal: controller.signal,
+        ...(request.kind === 'duplicates' && keeper ? { duplicate: { key: request.groupKey, keeper } } : {}),
+      });
+      verifiedSize = verified ? expected.size : 0;
+      return verified && mounted.current && useAppStore.getState().currentProjectId === request.projectId;
     };
     try {
+      fresh = await scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), [], {
+        includeDuplicates: request.kind === 'duplicates', signal: controller.signal,
+      }).catch(() => null);
+      if (!fresh?.complete || !mounted.current || useAppStore.getState().currentProjectId !== request.projectId) {
+        for (const entry of request.entries) {
+          result.failedCount += 'fileCount' in entry ? Math.max(1, entry.reclaimableCount) : 1;
+          result.failedNames.push('name' in entry ? entry.name : entry.projectName);
+        }
+        return;
+      }
       for (const entry of request.entries) {
         const name = 'name' in entry ? entry.name : entry.projectName;
         if (!mounted.current || useAppStore.getState().currentProjectId !== request.projectId) {
@@ -265,10 +275,7 @@ export default function StorageHealthCenter() {
         }
         try {
           if (request.kind === 'trash' && 'trashDir' in entry) {
-            const fresh = await scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), [], {
-              includeDuplicates: false, signal: controller.signal,
-            });
-            if (!fresh.complete || !fresh.trashes.some((trash) => trash.trashDir === entry.trashDir)) {
+            if (!fresh.trashes.some((trash) => trash.trashDir === entry.trashDir)) {
               result.failedCount += Math.max(1, entry.reclaimableCount);
               result.failedNames.push(name);
               continue;
@@ -277,17 +284,12 @@ export default function StorageHealthCenter() {
               !file.referenced && typeof file.digest === 'string');
             const cleared = await clearTrashDir(entry.trashDir, async (path, size) => {
               if (!mounted.current || useAppStore.getState().currentProjectId !== request.projectId) return false;
-              const freshCheck = await scanStorageHealth(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), [], {
-                includeDuplicates: false, signal: controller.signal,
-              });
-              if (!freshCheck.complete) return false;
-              const current = freshCheck.trashes.find((trash) => trash.trashDir === entry.trashDir)?.files.find((file) => file.path === path);
-              const live = await collectLiveReferences(request.projectId);
-              const key = [...collectNodeFilePaths([{ data: { filePath: path } }])][0];
-              if (!key) return false;
-              const referencedLive = live.has(key) || [...live].some((reference) => reference.endsWith('/') && key.startsWith(reference));
-              return mounted.current && useAppStore.getState().currentProjectId === request.projectId
-                && !!current && !current.referenced && current.size === size && !referencedLive;
+              const expected = confirmedFiles.find((file) => file.path === path);
+              if (!expected || expected.size !== size) return false;
+              const verified = await verifyStorageCleanupFile(useAppStore.getState().projects, () => collectLiveReferences(request.projectId), {
+                ...expected, name: path.replace(/\\/g, '/').split('/').at(-1) ?? '',
+              }, { signal: controller.signal, trashDir: entry.trashDir });
+              return verified && mounted.current && useAppStore.getState().currentProjectId === request.projectId;
             }, confirmedFiles, controller.signal);
             result.deletedCount += cleared.deletedCount;
             result.failedCount += cleared.failedCount;
