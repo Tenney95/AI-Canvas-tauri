@@ -332,8 +332,9 @@ function buildMessages(
   const rawHistoryTokens = costs.reduce((sum, cost) => sum + cost, 0);
   let firstIncluded = history.length;
   while (firstIncluded > 0) {
-    const start = findHistoryCutIndex(history.slice(0, firstIncluded), 1);
-    const tokens = costs.slice(start, firstIncluded).reduce((sum, cost) => sum + cost, 0);
+    const start = findHistoryCutIndex(history, 1, firstIncluded);
+    let tokens = 0;
+    for (let index = start; index < firstIncluded; index++) tokens += costs[index];
     if (fixedTokens + historyTokens + tokens > inputBudget) break;
     historyTokens += tokens;
     firstIncluded = start;

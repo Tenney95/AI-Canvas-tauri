@@ -387,6 +387,31 @@ describe('conversation continuity', () => {
     expect(stream).not.toHaveBeenCalled();
   });
 
+  it.each([0, 1])('keeps or drops the whole latest turn at the exact token boundary (%s token over)', async (overflow) => {
+    const history = [
+      chat(1, 'user', '最早问题'), chat(2, 'assistant', '最早答案'),
+      chat(3, 'user', '中间问题'), chat(4, 'assistant', '中间答案'),
+      chat(5, 'user', '最近问题'), chat(6, 'assistant', '最近答案'),
+    ];
+    const recent = history.slice(-2).map(({ role, content }) => ({ role, content }));
+    const userMessage = '继续';
+    const inputBudget = resolveAssistantContextSpec('project-1').inputBudget;
+    const reserved = estimateModelMessagesTokens([...recent, { role: 'user', content: userMessage }]);
+    const systemPrompt = '规'.repeat(inputBudget - reserved - 8 + overflow);
+    loadMessages.mockResolvedValue({ messages: history, total: history.length });
+
+    const assembled = await assembleAgentContext({
+      conversationId: 'conversation-1', projectId: 'project-1', systemPrompt, userMessage,
+    });
+    expect(assembled.messages.map((message) => message.content)).toEqual([
+      systemPrompt, ...(overflow ? [] : ['最近问题', '最近答案']), userMessage,
+    ]);
+    expect(assembled.usage.estimatedTokens).toBe(estimateModelMessagesTokens(assembled.messages));
+    expect(assembled.usage.estimatedTokens).toBeLessThanOrEqual(inputBudget);
+    expect(assembled.forcedCompression).toBe(false);
+    expect(stream).not.toHaveBeenCalled();
+  });
+
   it('does not compress a previous conversation after the active project changes', async () => {
     useAppStore.setState({ currentProjectId: 'other-project' });
     const messages = Array.from({ length: 12 }, (_, i) => chat(i + 1, i % 2 ? 'assistant' : 'user', `消息${i}`,
@@ -423,6 +448,17 @@ describe('Pi compaction boundaries', () => {
     expect(findHistoryCutIndex(messages, 2)).toBe(3);
     messages[3].timestamp = messages[2].timestamp;
     expect(findHistoryCutIndex(messages, 2)).toBe(0);
+  });
+
+  it('finds cuts inside a prefix without reading the later user turn', () => {
+    const messages = [chat(1, 'user', 'a'), chat(2, 'assistant', 'b'),
+      chat(3, 'user', 'c'), chat(4, 'assistant', 'd'), chat(5, 'user', 'e')];
+    expect(findHistoryCutIndex(messages, 1, 4)).toBe(2);
+    expect(findHistoryCutIndex(messages, 0, 4)).toBe(2);
+    expect(findHistoryCutIndex(messages, 1, 2)).toBe(0);
+    expect(findHistoryCutIndex(messages, 1, 0)).toBe(0);
+    messages[2].timestamp = messages[1].timestamp;
+    expect(findHistoryCutIndex(messages, 1, 4)).toBe(0);
   });
 
   it('keeps a large trailing tool result with its assistant call', () => {

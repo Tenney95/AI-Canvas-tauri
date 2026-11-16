@@ -857,9 +857,11 @@ Tauri 桌面验收：
 
 <a id="algorithm-performance-20261116"></a>
 
-## 六项算法性能收敛（2026-11-16）
+## 算法性能收敛（2026-11-16）
 
 状态：六项均已实现并补充定向回归源码，完成调用链、差异与 UTF-8 静态核对；本次按用户要求与代码精简一并提交。本次未运行测试，待用户验收；未运行 lint、类型检查、构建、性能基准或桌面应用，不填写实测提速数字。
+
+用户随后要求把审查列出的内容全部收敛，补齐下表末尾三项次优先候选，共九项。补充三项已实现并补充回归源码，按用户要求单独提交；本次只做静态核对，未运行测试，待用户验收，不把提交状态视为验收通过。
 
 | 范围 | 实现与保留边界 |
 | --- | --- |
@@ -869,6 +871,9 @@ Tauri 桌面验收：
 | 媒体显示调度 | `canvasDisplayScheduler.ts` 在已有就绪批次中续取，避免每帧全扫剩余任务；批次耗尽、准备槽位释放及预算改变时仍重算下一截止时间。保留优先级、取消、交互静默期、延迟唤醒和准备并发预算。 |
 | 批量存储清理 | `StorageHealthCenter.tsx` 批前完整盘点，批后沿用完整刷新；逐文件通过 `verifyStorageCleanupFile` 重读跨项目当前引用，核对目标祖先目录、普通文件身份、大小、原生前后快照和实时复制源。重复清理仅对目标和未选中的保留副本计算摘要，回收站仍核对撤销记录与确认摘要。未知引用／状态、链接、保留副本消失或变更时拒绝删除。 |
 | 批量生成预检 | `batchExecute.ts` 复用既有 `getCanvasNodeById`，预检、正规化回写及执行前查询不再反复全数组 find。每次 await 后仍读取最新节点数组，保留项目、revision、执行上下文和 data 身份检查；额外预检分支仅作用于 `modelGeneration === 1`。 |
+| Agent 历史裁剪 | `contextTranscript.ts` 的轮次切点接受原数组前缀终点，`contextManager.ts` 用倒序游标与索引累计成本，去掉每轮前缀／成本数组复制，整体 O(H)。保留完整用户轮次、同时间戳不分割、预算临界判断与原压缩策略；磁盘默认读取上限仍为 200 条，组装还合并已加载内存历史。 |
+| 原生存储快照分组 | `nativeStorageReferences.ts` 为自身读取、验证并冻结的事务快照一次建立项目索引，同一快照不再为每个项目过滤全部账本并重复解析 owner。索引按快照弱引用释放；每次查询仍返回独立数组，外部构造的可变材料继续按原逻辑核对，前后快照不共用索引。保留原身份与体积上限、未知状态保护及快照比较。 |
+| 小地图统计 | `MiniMapNodeStats.tsx` 仅在悬浮时挂载统计子组件，收起后不订阅和统计全量节点。原 MiniMap、类型顺序、未知类型排序、空态与总数保持原样，重新打开读取当前节点。 |
 
 复杂度变化是源码推导：引用判断由文件数乘引用数变为按路径深度查询；分镜时长查询由视频数乘镜头数变为建表后直接查询；上游分组展开由分组连线数乘全图节点数变为单次索引加实际展开量；稳定显示批次去掉按帧重复扫描；批量预检由 O(K²N) 收敛至 O(KN + K²)。这些不等于整次交互或生成耗时的实测倍数。
 
@@ -879,7 +884,7 @@ Tauri 桌面验收：
 在仓库根目录运行：
 
 ```sh
-npx vitest run tests/services/storageHealth.test.ts tests/services/projectThumbnailExclusion.test.ts tests/store/history.test.ts tests/services/batchExecute.test.ts tests/services/canvasDisplayScheduler.test.ts tests/components/connectedNodesPreviewInteractions.test.ts tests/components/canvasNodeLodPreview.test.tsx tests/components/nodeCriticalInteractions.test.tsx
+npx vitest run tests/services/storageHealth.test.ts tests/services/projectThumbnailExclusion.test.ts tests/store/history.test.ts tests/services/batchExecute.test.ts tests/services/canvasDisplayScheduler.test.ts tests/components/connectedNodesPreviewInteractions.test.ts tests/components/canvasNodeLodPreview.test.tsx tests/components/nodeCriticalInteractions.test.tsx tests/services/chat/agentConversationContext.test.ts tests/services/chat/contextCompression.test.ts tests/services/nativeStorageReferences.test.ts tests/services/nativeNodeTrash.test.ts tests/components/miniMapNodeStats.test.tsx
 ```
 
 Tauri 桌面端使用独立测试项目与可丢弃文件验收：
@@ -889,5 +894,7 @@ Tauri 桌面端使用独立测试项目与可丢弃文件验收：
 3. 在含大量图片／视频的画布切换远近景、平移并快速重复操作，普通／性能模式均应逐批恢复全部可见内容。加载期间切换模式或项目，不应丢任务、卡在空白、提前显示未到期内容或突破准备并发限制；回归取消、加载失败和深浅主题。
 4. 在「设置 → 存储健康」准备多项目共享目录、未引用文件、目录保护引用、回收站和同名同大小的重复副本。批量清理只删除选中且当前仍可清理的文件；确认后新增节点／历史引用、开始复制、删除或改写保留副本、替换祖先为链接、切项目或取消时，应保留不再符合条件的目标并报告未清理项。被引用文件、原生保护目录与未知操作所属根继续保留，批后报告与实际文件一致。
 5. 在支持原生新数据模型的项目里启动分组批量生成，等待输入正规化期间编辑、删除或替换后续节点，旧输入不得继续生成。回归项目／revision 变化中止、工作流顺序、普通旧项目批量执行及单次历史提交。
+6. 在长会话里连续追问并触发上下文裁剪／压缩，近期历史必须成轮保留，不留下只有回答的半轮；超预算仍按原策略暂停或压缩，同时间戳消息不跨摘要切点，切会话／项目不串历史。真实模型调用由用户自行选择并执行。
+7. 多个原生项目分别准备完成与待续的任务、不同素材根和撤销记录，再扫描并清理；保护仅归对应项目，新一轮状态变化仍及时反映。反复悬浮／离开小地图并在中间增删节点，统计应使用最新节点，固定／未知类型顺序、空态、总数、拖动与深浅主题保持正常。
 
-性能采样需另行授权，使用同一设备、相同项目数据与操作分别比较冷／热状态。回滚按以上六个范围恢复源码及直接回归即可，存储引用提取与 UI 目标核对须成组恢复，保留工作区其他任务的修改。
+性能采样需另行授权，使用同一设备、相同项目数据与操作分别比较冷／热状态。回滚按以上九个范围恢复源码及直接回归即可，存储引用提取与 UI 目标核对须成组恢复，保留工作区其他任务的修改。

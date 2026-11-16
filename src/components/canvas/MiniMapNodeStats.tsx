@@ -100,10 +100,9 @@ function getNodeTypeLabel(type: string): string {
   return EXTRA_NODE_LABELS[type] ?? getNodeTypeConfig(type).label;
 }
 
-export default function MiniMapNodeStats({ onClick }: Pick<MiniMapProps, 'onClick'>) {
+function MiniMapStatsCard() {
   const t = useT();
-  const [hovered, setHovered] = useState(false);
-  // 直接读 React Flow 内部节点，保证统计与小地图渲染的是同一批节点
+  // 只有浮层打开时才订阅，平时拖动节点不用为隐藏的统计重算。
   const flowNodes = useStore((s) => s.nodes);
 
   const rows = useMemo<NodeStatsRow[]>(() => {
@@ -125,6 +124,33 @@ export default function MiniMapNodeStats({ onClick }: Pick<MiniMapProps, 'onClic
   }, [flowNodes]);
 
   const total = flowNodes.length;
+
+  return (
+    <div className="minimap-stats-card" role="tooltip">
+      <div className="minimap-stats-card__title">{t('画布节点统计')}</div>
+      {rows.length === 0 ? (
+        <div className="minimap-stats-card__empty">{t('画布暂无节点')}</div>
+      ) : (
+        <ul className="minimap-stats-card__list">
+          {rows.map((row) => (
+            <li key={row.key} className="minimap-stats-card__row">
+              <span className={`minimap-stats-card__dot ${row.dotClass}`} />
+              <span className="minimap-stats-card__label">{t(row.label)}</span>
+              <span className="minimap-stats-card__count">{row.count}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="minimap-stats-card__total">
+        <span>{t('总计')}</span>
+        <span className="minimap-stats-card__count">{total}</span>
+      </div>
+    </div>
+  );
+}
+
+export default function MiniMapNodeStats({ onClick }: Pick<MiniMapProps, 'onClick'>) {
+  const [hovered, setHovered] = useState(false);
 
   return (
     <div
@@ -149,28 +175,7 @@ export default function MiniMapNodeStats({ onClick }: Pick<MiniMapProps, 'onClic
         maskStrokeWidth={2}
         style={MINIMAP_STYLE}
       />
-      {hovered && (
-        <div className="minimap-stats-card" role="tooltip">
-          <div className="minimap-stats-card__title">{t('画布节点统计')}</div>
-          {rows.length === 0 ? (
-            <div className="minimap-stats-card__empty">{t('画布暂无节点')}</div>
-          ) : (
-            <ul className="minimap-stats-card__list">
-              {rows.map((row) => (
-                <li key={row.key} className="minimap-stats-card__row">
-                  <span className={`minimap-stats-card__dot ${row.dotClass}`} />
-                  <span className="minimap-stats-card__label">{t(row.label)}</span>
-                  <span className="minimap-stats-card__count">{row.count}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="minimap-stats-card__total">
-            <span>{t('总计')}</span>
-            <span className="minimap-stats-card__count">{total}</span>
-          </div>
-        </div>
-      )}
+      {hovered && <MiniMapStatsCard />}
     </div>
   );
 }

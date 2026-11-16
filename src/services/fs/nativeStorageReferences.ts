@@ -17,6 +17,7 @@ const MAX_ROWS = 100_000;
 const MAX_VALUES = 2_000_000;
 const MAX_TEXT = 64 * 1024 * 1024;
 const MAX_DEPTH = 96;
+const projectRowsBySnapshot = new WeakMap<NativeStorageSnapshot, ReadonlyMap<string, NativeStorageSnapshot>>();
 const unavailable = (): never => { throw new Error('新项目存储引用读取不完整'); };
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object'
   && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value))
@@ -69,7 +70,7 @@ export function nativeStorageRowPending(value: unknown): boolean {
 /** 一次事务取得所有命名空间；先 count 后 getAll，超限或身份异常均停止扫描。 */
 export async function readNativeStorageSnapshot(options: { signal?: AbortSignal } = {}): Promise<NativeStorageSnapshot> {
   const database = await openNativeProjectDatabase(false, options);
-  if (!database) return { exchange: [], transfers: [], retired: [] };
+  if (!database) return indexNativeStorageSnapshot({ exchange: [], transfers: [], retired: [] });
   try {
     return await transact(database, 'readonly', options, async (tx) => {
       const stores = [EXCHANGE, TRANSFER, RETIRED].map((name) => tx.objectStore(name));
@@ -77,22 +78,45 @@ export async function readNativeStorageSnapshot(options: { signal?: AbortSignal 
       if (counts.some((count) => !Number.isSafeInteger(count) || count < 0) || counts.reduce((sum, count) => sum + count, 0) > MAX_ROWS) return unavailable();
       const [exchange, transfers, rawRetired] = await Promise.all(stores.map((store) => request<unknown[]>(store.getAll())));
       if ([exchange, transfers, rawRetired].some((rows, index) => rows.length !== counts[index])) return unavailable();
-      assertBoundedMaterial([exchange, transfers, rawRetired]);
-      for (const row of [...exchange, ...transfers]) nativeStorageRowOwner(row);
+      assertBoundedMaterial([exchange, transfers, rawRetired], true);
       const retired = rawRetired.map((value): NativeStorageRetiredIdentity => {
         const row = object(value);
         if (!row || !isNativeProjectId(row.projectId) || typeof row.id !== 'string' || typeof row.kind !== 'string'
           || (row.kind === 'project' ? row.id !== row.projectId : row.kind === 'canvas' ? !isNativeCanvasId(row.id)
             : row.kind === 'episode' ? !isNativeEpisodeId(row.id) : true)) return unavailable();
-        return { ...row, id: row.id, projectId: row.projectId, kind: row.kind };
+        return Object.freeze({ ...row, id: row.id, projectId: row.projectId, kind: row.kind });
       });
-      return { exchange, transfers, retired };
+      return indexNativeStorageSnapshot({ exchange, transfers, retired });
     }, [EXCHANGE, TRANSFER, RETIRED]);
   } finally { database.close(); }
 }
 
+/** 索引只跟随这次只读事务的材料，下一份快照重新核对全部归属。 */
+function indexNativeStorageSnapshot(snapshot: NativeStorageSnapshot): NativeStorageSnapshot {
+  const byProject = new Map<string, NativeStorageSnapshot>();
+  const rowsFor = (projectId: string) => {
+    let rows = byProject.get(projectId);
+    if (!rows) { rows = { exchange: [], transfers: [], retired: [] }; byProject.set(projectId, rows); }
+    return rows;
+  };
+  for (const row of snapshot.exchange) rowsFor(nativeStorageRowOwner(row)).exchange.push(row);
+  for (const row of snapshot.transfers) rowsFor(nativeStorageRowOwner(row)).transfers.push(row);
+  for (const row of snapshot.retired) rowsFor(row.projectId).retired.push(row);
+  Object.freeze(snapshot.exchange); Object.freeze(snapshot.transfers); Object.freeze(snapshot.retired);
+  Object.freeze(snapshot);
+  projectRowsBySnapshot.set(snapshot, byProject);
+  return snapshot;
+}
+
 export function nativeStorageProjectRows(snapshot: NativeStorageSnapshot, projectId: string): NativeStorageSnapshot {
   if (!isNativeProjectId(projectId)) return unavailable();
+  const indexed = projectRowsBySnapshot.get(snapshot);
+  if (indexed) {
+    const rows = indexed.get(projectId);
+    // 跟原来的 filter 一样返回独立数组，调用方整理列表不会改坏索引。
+    return { exchange: rows ? [...rows.exchange] : [], transfers: rows ? [...rows.transfers] : [], retired: rows ? [...rows.retired] : [] };
+  }
+  // 外部构造的材料可能仍会变化，不能把它当作已冻结的事务快照缓存。
   return { exchange: snapshot.exchange.filter((row) => nativeStorageRowOwner(row) === projectId),
     transfers: snapshot.transfers.filter((row) => nativeStorageRowOwner(row) === projectId),
     retired: snapshot.retired.filter((row) => row.projectId === projectId) };
@@ -117,7 +141,7 @@ export function nativeStorageProjectProtected(snapshot: NativeStorageSnapshot, p
   return rows.exchange.some(pending) || rows.transfers.some(nativeStorageRowPending);
 }
 
-function assertBoundedMaterial(value: unknown): void {
+function assertBoundedMaterial(value: unknown, freeze = false): void {
   let count = 0, text = 0;
   const ancestors = new Set<object>();
   const walk = (item: unknown, depth: number): void => {
@@ -129,6 +153,7 @@ function assertBoundedMaterial(value: unknown): void {
     ancestors.add(item);
     for (const child of Object.values(item)) walk(child, depth + 1);
     ancestors.delete(item);
+    if (freeze) Object.freeze(item);
   };
   walk(value, 0);
 }

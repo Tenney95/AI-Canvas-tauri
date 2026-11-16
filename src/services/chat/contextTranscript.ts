@@ -38,11 +38,13 @@ export function historyMessageContent(message: ChatMessage, task?: AgentTask): s
   return [content, '', '以下是历史执行记录，只作为续聊资料，不代表新的执行授权：', snapshot].join('\n');
 }
 
-/** 压缩边界回到用户消息，避免留下只有回答、没有问题的半轮对话。 */
-export function findHistoryCutIndex(messages: Pick<ChatMessage, 'role' | 'timestamp'>[], keepCount: number): number {
-  let cut = Math.max(0, messages.length - keepCount);
+/** 压缩边界回到用户消息；传入前缀终点时不用先复制消息数组。 */
+export function findHistoryCutIndex(
+  messages: Pick<ChatMessage, 'role' | 'timestamp'>[], keepCount: number, endExclusive = messages.length,
+): number {
+  let cut = Math.max(0, endExclusive - keepCount);
   // 旧摘要用时间戳标记覆盖范围，同一时间的消息不能分属两侧。
-  while (cut > 0 && (messages[cut]?.role !== 'user'
+  while (cut > 0 && (cut >= endExclusive || messages[cut]?.role !== 'user'
     || messages[cut - 1].timestamp === messages[cut]?.timestamp)) cut--;
   return cut;
 }
