@@ -115,7 +115,7 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
     }
   };
   const ensureClean = () => { if (isDirty()) throw new OutlineError('请先保存当前草稿，或重新载入并明确放弃草稿后再切换文件'); };
-  const textSnapshot = (): OutlineOpenedDocument => {
+  const textSnapshot = (): Extract<OutlineOpenedDocument, { kind: 'text' }> => {
     if (!document || document.content === undefined) throw new OutlineError('请先打开 Markdown 或 TXT 文件');
     return { kind: 'text', documentId: document.documentId, fileName: document.file.fileName,
       revision: document.revision, acceptedSequence: document.acceptedSequence, content: document.content };
@@ -345,6 +345,12 @@ export function createOutlineDocumentSession(options: { seriesId: string; onChan
   }
 
   return {
+    readDraft(): Extract<OutlineOpenedDocument, { kind: 'text' }> {
+      live();
+      if (!selected || !document || document.content === undefined) throw new OutlineError('请先选择 Markdown 或 TXT 文件');
+      assertStorage(document.binding);
+      return textSnapshot();
+    },
     getSummary(): OutlineDocumentSummary {
       return { files: files.map((file) => ({ ...file })), loaded, selected, busy: !!active, dirty: isDirty(),
         fileId: document?.file.id, documentId: document?.documentId, revision: document?.revision ?? 0, acceptedSequence: document?.acceptedSequence ?? 0,

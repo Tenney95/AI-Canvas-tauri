@@ -16,6 +16,7 @@ const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_ep
   'open_source', 'close_source', 'read_source', 'prepare_chapter', 'open_rename', 'close_rename', 'rename', 'creative', 'polish',
   'original_open', 'original_edit', 'original_save', 'original_reload', 'original_generate', 'original_apply',
   'original_discard_candidate', 'original_cancel',
+  'article_generate', 'article_apply', 'article_cancel', 'article_discard_candidate',
   'outline_list', 'outline_create', 'outline_import', 'outline_open', 'outline_edit', 'outline_save', 'outline_reload', 'outline_select_builtin',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
   'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend', 'view_agent_task',
@@ -197,6 +198,11 @@ export function createScriptWorkbenchWindowHost(options: {
         if (payload.action.type.startsWith('outline_') && requests.get(payload.requestId) === accepted) {
           if (['outline_list', 'outline_open', 'outline_edit', 'outline_reload'].includes(payload.action.type)) requests.delete(payload.requestId);
           else requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId, windowSessionId: session,
+            requestId: payload.requestId, sequence: payload.sequence, ...(response.error ? { error: response.error } : { value: true }) }) });
+        }
+        if (payload.action.type.startsWith('article_') && requests.get(payload.requestId) === accepted) {
+          // 候选正文只随这次回执返回，去重记录只保留操作是否完成。
+          requests.set(payload.requestId, { signature, result: Promise.resolve({ sessionId: options.sessionId, windowSessionId: session,
             requestId: payload.requestId, sequence: payload.sequence, ...(response.error ? { error: response.error } : { value: true }) }) });
         }
         // 读取可重读，编辑已由单调序号防重；付费和写入请求身份保留至本窗口会话结束。

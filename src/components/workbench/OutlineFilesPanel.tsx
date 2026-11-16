@@ -12,12 +12,14 @@ function openedDocument(value: unknown): OutlineOpenedDocument | undefined {
   return value as OutlineOpenedDocument;
 }
 
-export default function OutlineFilesPanel({ summary, dispatch, ready, active, children }: {
+export default function OutlineFilesPanel({ summary, dispatch, ready, active, children, fileListVisible = true, onArticleContainer }: {
   summary: OutlineDocumentSummary;
   dispatch: (action: OutlineDocumentAction) => Promise<unknown>;
   ready: boolean;
   active: boolean;
   children: ReactNode;
+  fileListVisible?: boolean;
+  onArticleContainer?: (element: HTMLDivElement | null) => void;
 }) {
   const t = useT();
   const nameId = useId();
@@ -141,7 +143,7 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
       if (documentMatches && document?.kind === 'text') void run({ type: 'outline_save' });
     }
   }}>
-    <aside aria-label={t('大纲文件')} className="flex w-40 shrink-0 flex-col border-r border-border-subtle bg-canvas-bg/30 sm:w-44">
+    <aside aria-label={t('大纲文件')} className={`${fileListVisible ? 'flex' : 'hidden'} w-40 shrink-0 flex-col border-r border-border-subtle bg-canvas-bg/30 sm:w-44`}>
       <div className="flex items-center gap-1 p-2">
         <span className="min-w-0 flex-1 truncate text-xs font-medium">{t('大纲文件')}</span>
         <button type="button" className="ui-icon-btn ui-icon-btn--ghost ui-icon-btn--sm" disabled={!ready || working}
@@ -195,7 +197,7 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
     </aside>
     <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label={t('大纲文档内容')}>
       {message && <div className="ui-alert ui-alert--danger m-2 shrink-0 text-xs" role="alert">{t(message)}</div>}
-      {selected ? <>
+      {selected && <>
         <div className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border-subtle px-3 text-xs">
           <span className="min-w-0 flex-1 truncate" title={summary.fileName}>{summary.fileName}</span>
           {documentMatches && document?.kind === 'text' && <>
@@ -211,19 +213,21 @@ export default function OutlineFilesPanel({ summary, dispatch, ready, active, ch
           <button type="button" className="ui-btn ui-btn--sm" disabled={working} onClick={() => { void run({ type: 'outline_reload', discard: true }); }}>{t('放弃并重新载入')}</button>
           <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setDiscardConfirm(false)}>{t('取消')}</button>
         </div>}
-        {!documentMatches && document ? <div className="grid min-h-48 flex-1 place-items-center p-3 text-center text-xs text-canvas-text-secondary">
+      </>}
+      <div ref={onArticleContainer} className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {selected ? (!documentMatches && document ? <div className="grid min-h-48 flex-1 place-items-center p-3 text-center text-xs text-canvas-text-secondary">
           <div><p>{t('选中文件已变化，请重新打开以核对内容。')}</p>
             <button type="button" className="ui-btn ui-btn--sm mt-2" disabled={!ready || working || !summary.fileId}
               onClick={() => { if (summary.fileId) void run({ type: 'outline_open', id: summary.fileId }); }}>{t('重新打开所选文件')}</button>
           </div>
-        </div> : document?.kind === 'text' ? <textarea aria-label={document.fileName} className="ui-textarea min-h-0 w-full flex-1 resize-none rounded-none border-0 p-3 font-mono text-[13px] leading-7"
+        </div> : document?.kind === 'text' ? <textarea aria-label={document.fileName} className="ui-textarea script-workbench-article-text min-h-0 w-full flex-1 resize-none rounded-none border-0 p-3 font-mono text-[13px] leading-7"
           value={document.content} readOnly={!ready || working} spellCheck={false} onChange={(event) => changeContent(event.target.value)} />
           : document ? <LazyLoadBoundary label={t('文档预览')} resetKey={document.documentId}>
             <Suspense fallback={<LazyLoadFallback label={t('文档预览')} />}>
               <DocumentPreview fileName={document.fileName} kind={document.kind} base64={document.base64} active={active && ready} />
             </Suspense>
-          </LazyLoadBoundary> : <div className="grid flex-1 place-items-center p-3 text-xs text-canvas-text-muted" role="status">{t('正在读取文件…')}</div>}
-      </> : children}
+          </LazyLoadBoundary> : <div className="grid flex-1 place-items-center p-3 text-xs text-canvas-text-muted" role="status">{t('正在读取文件…')}</div>) : children}
+      </div>
     </section>
   </div>;
 }

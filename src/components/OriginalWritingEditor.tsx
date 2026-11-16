@@ -14,6 +14,7 @@ interface OriginalWritingEditorProps {
   ready: boolean;
   active: boolean;
   toolsContainer?: HTMLElement | null;
+  onArticleContainer?: (element: HTMLDivElement | null) => void;
 }
 
 function writingDocument(value: unknown): OriginalWritingDocument {
@@ -25,7 +26,7 @@ function writingDocument(value: unknown): OriginalWritingDocument {
   return document as OriginalWritingDocument;
 }
 
-export default function OriginalWritingEditor({ summary, dispatch, ready, active, toolsContainer }: OriginalWritingEditorProps) {
+export default function OriginalWritingEditor({ summary, dispatch, ready, active, toolsContainer, onArticleContainer }: OriginalWritingEditorProps) {
   const t = useT();
   const instructionId = useId();
   const targetId = useId();
@@ -285,12 +286,13 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
             options={[{ value: '-1', label: t('整篇原文') }, ...chapters.map((chapter, index) => ({ value: String(index), label: chapter.title }))]} />
           <span className="min-w-0 flex-1 truncate">{chapterTitle ?? t('整篇原文')} · {t('{count} 字', { count })}{range && ` / ${t('全文 {count} 字', { count: wholeCount })}`}</span>
         </div>
-        {!document ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-3 text-sm text-canvas-text-secondary" role="status">
-          <Icon icon={loading || summary.loading ? 'lucide:loader-circle' : 'lucide:book-open'} />{loading || summary.loading ? t('正在载入原文…') : message ? t('原文暂不可用，请重新打开') : t('等待工作台就绪…')}
-          {ready && !loading && !summary.loading && <button type="button" className="ui-btn ui-btn--sm" onClick={() => setOpenAttempt((attempt) => attempt + 1)}>{t('重试打开')}</button>}
-        </div> : <>
+        <div ref={onArticleContainer} className="relative flex min-h-0 min-w-0 flex-1">
+          {!document ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-3 text-sm text-canvas-text-secondary" role="status">
+            <Icon icon={loading || summary.loading ? 'lucide:loader-circle' : 'lucide:book-open'} />{loading || summary.loading ? t('正在载入原文…') : message ? t('原文暂不可用，请重新打开') : t('等待工作台就绪…')}
+            {ready && !loading && !summary.loading && <button type="button" className="ui-btn ui-btn--sm" onClick={() => setOpenAttempt((attempt) => attempt + 1)}>{t('重试打开')}</button>}
+          </div> :
           <textarea key={`${document.documentId}:${range?.start ?? 'all'}`} ref={sourceInput}
-            className="ui-textarea min-h-0 flex-1 resize-none p-3 font-sans text-base leading-loose"
+            className="ui-textarea script-workbench-article-text min-h-0 min-w-0 flex-1 resize-none p-3 font-sans text-base leading-loose"
             aria-label={range ? t('编辑原文章节：{title}', { title: chapterTitle ?? range.title }) : t('编辑整篇原文')}
             aria-describedby={statusId} value={visibleContent} spellCheck
             readOnly={!ready || summary.saving || busy === 'save' || busy === 'reload' || busy === 'apply'}
@@ -306,12 +308,12 @@ export default function OriginalWritingEditor({ summary, dispatch, ready, active
                 event.preventDefault(); event.stopPropagation();
                 if (!working) void run({ type: 'original_save' }, 'save');
               }
-            }} />
-          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 pt-2 text-xs text-canvas-text-secondary">
-            <span>{t('{characters} 字符 · {lines} 行', { characters: visibleContent.length.toLocaleString(), lines: visibleContent.split('\n').length.toLocaleString() })}</span>
-            <span id={statusId} role="status">{summary.saving || busy === 'save' ? t('正在保存…') : isNew ? t('新原文草稿 · Ctrl+S 创建并保存') : dirty ? t('草稿未保存 · Ctrl+S 保存原文') : t('已保存 · Ctrl+S 保存原文')}</span>
-          </footer>
-        </>}
+            }} />}
+        </div>
+        {document && <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 pt-2 text-xs text-canvas-text-secondary">
+          <span>{t('{characters} 字符 · {lines} 行', { characters: visibleContent.length.toLocaleString(), lines: visibleContent.split('\n').length.toLocaleString() })}</span>
+          <span id={statusId} role="status">{summary.saving || busy === 'save' ? t('正在保存…') : isNew ? t('新原文草稿 · Ctrl+S 创建并保存') : dirty ? t('草稿未保存 · Ctrl+S 保存原文') : t('已保存 · Ctrl+S 保存原文')}</span>
+        </footer>}
       </div>
     </div>
   </section>;

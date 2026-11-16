@@ -6,3 +6,9 @@
   border-color: var(--theme-border);
   border-style: dashed;
 }
+
+/* 浮动输入框变高时，正文末尾仍能滚动到它的上方。 */
+.script-workbench-article-text {
+  padding-bottom: calc(var(--workbench-article-overlay-height, 0px) + var(--ui-pad));
+  scroll-padding-bottom: calc(var(--workbench-article-overlay-height, 0px) + var(--ui-pad));
+}

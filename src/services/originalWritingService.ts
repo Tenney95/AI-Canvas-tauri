@@ -417,6 +417,11 @@ export function createOriginalWritingSession(options: { seriesId: string; onChan
   }
 
   return {
+    readDraft(): OriginalWritingDocument {
+      const captured = loaded();
+      assertBinding(captured.binding, pendingReference(captured.document));
+      return snapshot();
+    },
     subscribe(listener: () => void): () => void {
       live();
       listeners.add(listener);

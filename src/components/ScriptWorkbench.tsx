@@ -2,7 +2,7 @@
  * ScriptWorkbench — 提供剧本创作工作台界面与交互。
  */
 import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import type { EpisodeCreativeInfo } from '../types';
@@ -33,6 +33,9 @@ import OriginalWritingEditor from './OriginalWritingEditor';
 import { createOriginalWritingSession } from '../services/originalWritingService';
 import OutlineFilesPanel from './workbench/OutlineFilesPanel';
 import { createOutlineDocumentSession } from '../services/outlineDocumentService';
+import WorkbenchArticleAssistant from './workbench/WorkbenchArticleAssistant';
+import { createWorkbenchArticleSession } from '../services/workbenchArticleService';
+import type { WorkbenchArticleCapture, WorkbenchArticleTarget } from '../types/workbenchArticle';
 import WorkbenchContextSummary from './series/WorkbenchContextSummary';
 import WorkbenchCollaborationDialog from './series/WorkbenchCollaborationDialog';
 import WorkbenchSplitDialog from './series/WorkbenchSplitDialog';
@@ -1075,6 +1078,85 @@ export default function ScriptWorkbench({
     ...dramaAssets.props.map((asset) => ({ kind: 'prop' as const, id: asset.id, label: asset.name })),
   ].slice(0, 500), [dramaAssets]);
 
+  const readArticleTarget = (target: WorkbenchArticleTarget): WorkbenchArticleCapture => {
+    const state = useAppStore.getState();
+    const owner = state.projects.find((project) => project.id === seriesId);
+    const episodeId = selectedEpisodeRef.current;
+    const expected = captureProjectWindowContext(state, episodeId);
+    const assertCurrent = () => {
+      const latest = useAppStore.getState();
+      if (!isOpen || !owner || !expected || !isProjectWindowContextCurrent(expected, latest)
+        || latest.projectLoadStatus !== 'ready' || latest.isCreatingProject || latest.isReturningToStartPage
+        || latest.switchingProjectName !== null || !latest.currentProjectId
+        || seriesOwnerId(latest.projects, latest.currentProjectId) !== seriesId
+        || selectedEpisodeRef.current !== episodeId || snapshotRef.current.activeTab !== activeTab) {
+        throw new Error(t('文章所在的项目或编辑位置已变化，请重新选择文章'));
+      }
+      if (savingEpisodeRef.current || isEpisodeEditorWriteLocked(episodeId ?? undefined)) throw new Error(t('文章正在保存，请稍候'));
+    };
+    assertCurrent();
+    const key = JSON.stringify([sessionId, expected, target]);
+    if (target.kind === 'outline' || target.kind === 'script') {
+      const episode = state.projects.find((project) => project.id === target.episodeId);
+      if (activeTab !== target.kind || target.episodeId !== episodeId || !episode
+        || (target.kind === 'outline' && outlineDocuments?.getSummary().selected)) {
+        throw new Error(t('请先打开要修改的本集文章'));
+      }
+      const current = draftsRef.current[episode.id] ?? createDraft(episode);
+      return { target, projectId: episode.id, key, label: `${episode.name} · ${t(target.kind === 'outline' ? '本集大纲' : '本集剧本')}`,
+        content: current[target.kind], version: JSON.stringify([episode.updatedAt, draftVersions.current.get(episode.id) ?? 0]) };
+    }
+    if (target.kind === 'original') {
+      const summary = originalWriting?.summary();
+      if (activeTab !== 'original' || !originalWriting || !summary?.loaded || summary.documentId !== target.documentId
+        || originalWriting.isBusy() || summary.error) throw new Error(t('请先载入原文并处理未同步的编辑或错误'));
+      const document = originalWriting.readDraft();
+      return { target, projectId: state.currentProjectId!, key, label: document.fileName, content: document.content,
+        version: JSON.stringify([document.revision, document.acceptedSequence]) };
+    }
+    const summary = outlineDocuments?.getSummary();
+    if ((currentEpisode && activeTab !== 'outline') || !outlineDocuments || !summary?.selected || summary.busy || summary.error
+      || summary.documentId !== target.documentId) throw new Error(t('请先打开可编辑的大纲文件并处理未同步的编辑或错误'));
+    const document = outlineDocuments.readDraft();
+    if (document.kind !== 'text' || document.documentId !== target.documentId) throw new Error(t('只有 Markdown 和 TXT 文章可以修改'));
+    return { target, projectId: state.currentProjectId!, key, label: document.fileName, content: document.content,
+      version: JSON.stringify([document.revision, document.acceptedSequence]) };
+  };
+  const [articleRevision, setArticleRevision] = useState({ original: 0, outlineDocument: 0 });
+  const articleApplyingRef = useRef(false);
+  const applyArticleTarget = (captured: WorkbenchArticleCapture, text: string): void => {
+    // 先让新稿与编辑版本同步到视图，再向独立窗口回复，避免旧编辑器抢先继续输入。
+    flushSync(() => {
+      const latest = articleAccessRef.current.readTarget(captured.target);
+      if (latest.key !== captured.key || latest.version !== captured.version || latest.content !== captured.content) {
+        throw new Error(t('文章已变化，请重新生成，当前草稿已保留'));
+      }
+      const target = captured.target;
+      if (target.kind === 'outline' || target.kind === 'script') {
+        const episode = useAppStore.getState().projects.find((project) => project.id === target.episodeId);
+        if (!episode) throw new Error(t('分集已变化，请重新打开文章'));
+        replaceEpisodeDraft(episode.id, { ...(draftsRef.current[episode.id] ?? createDraft(episode)), [target.kind]: text });
+        setSourceLocation(undefined);
+      } else if (target.kind === 'original') {
+        originalWriting!.flush({ documentId: target.documentId, sequence: originalWriting!.summary().acceptedSequence + 1, content: text });
+        setArticleRevision((previous) => ({ ...previous, original: previous.original + 1 }));
+      } else {
+        outlineDocuments!.flush({ documentId: target.documentId, sequence: outlineDocuments!.getSummary().acceptedSequence + 1, content: text });
+        setArticleRevision((previous) => ({ ...previous, outlineDocument: previous.outlineDocument + 1 }));
+      }
+    });
+  };
+  const articleAccessRef = useRef({ readTarget: readArticleTarget, applyTarget: applyArticleTarget });
+  const [articleAssistant] = useState(() => createWorkbenchArticleSession({
+    readTarget: (target) => articleAccessRef.current.readTarget(target),
+    applyTarget: (captured, text) => articleAccessRef.current.applyTarget(captured, text),
+  }));
+  const [, refreshArticleAssistant] = useState(0);
+  useEffect(() => articleAssistant.subscribe(() => refreshArticleAssistant((version) => version + 1)), [articleAssistant]);
+  useEffect(() => () => articleAssistant.cancel(), [articleAssistant]);
+  useEffect(() => { articleAssistant.cancel(); }, [articleAssistant, contextReady, currentEpisodeId, activeTab, series?.exchangeEpoch,
+    outlineDocuments?.getSummary().documentId, outlineDocuments?.getSummary().selected, originalWriting?.summary().documentId]);
+
   const snapshot: ScriptWorkbenchSnapshot = {
     schemaVersion: 2, windowContext: captureProjectWindowContext(useAppStore.getState(), currentEpisodeId),
     sessionId, revision: 0, acceptedEditSequence,
@@ -1101,6 +1183,7 @@ export default function ScriptWorkbench({
     storyGraphExtraction: graphView ? graphExtraction : undefined, storyGraphEditorOpen: graphEditorOpen, sourceLocation,
     originalWriting: originalWriting?.summary(),
     outlineDocuments: outlineDocuments?.getSummary(),
+    articleAssistant: articleAssistant.summary(), articleRevision,
     theme: resolveAppearanceMode(config.appearance?.mode ?? config.theme), language: config.language,
     appearance: createAppearanceUiSnapshot(config.appearance ?? getAppearanceForConfig(config)),
     detached, openingWindow,
@@ -1114,6 +1197,7 @@ export default function ScriptWorkbench({
   const dispatchView = useCallback<ScriptWorkbenchDispatch>((action) => actionRef.current(action), []);
 
   const handleAction = async (action: ScriptWorkbenchAction, request?: ScriptWorkbenchRequest): Promise<unknown> => {
+    if (articleApplyingRef.current) throw new Error(t('正在采用文章修改，请稍候'));
     if (request) {
       if (request.outlineHandoff && !(action.type === 'outline_reload' && action.discard)) {
         try { outlineDocuments?.flush(request.outlineHandoff); }
@@ -1141,8 +1225,19 @@ export default function ScriptWorkbench({
         setAcceptedEditSequence(handoff.sequence);
       }
     }
-    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_split', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate', 'outline_edit'];
+    const uiOnly = ['flush_draft', 'close', 'dock', 'detach', 'cancel_pending', 'discard_pending', 'close_source', 'close_split', 'close_rename', 'close_asset_preview', 'story_graph_cancel', 'story_graph_discard', 'story_graph_editor', 'original_edit', 'original_cancel', 'original_discard_candidate', 'outline_edit', 'article_cancel', 'article_discard_candidate'];
     if (!contextReady && !uiOnly.includes(action.type)) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
+    if (action.type.startsWith('article_')) {
+      if (action.type === 'article_apply') {
+        articleApplyingRef.current = true;
+        try { return await articleAssistant.handle(action); }
+        finally { articleApplyingRef.current = false; }
+      }
+      return articleAssistant.handle(action as Parameters<typeof articleAssistant.handle>[0]);
+    }
+    if ((action.type === 'set_tab' && action.tab !== activeTab)
+      || (action.type === 'select_episode' && action.episodeId !== selectedEpisodeRef.current)
+      || ['outline_open', 'outline_create', 'outline_select_builtin', 'outline_reload', 'original_reload'].includes(action.type)) articleAssistant.cancel();
     if (action.type.startsWith('outline_')) {
       if (!outlineDocuments) throw new Error(t('当前没有可编辑的大纲文件'));
       return outlineDocuments.handle(action as Parameters<typeof outlineDocuments.handle>[0]);
@@ -1181,11 +1276,13 @@ export default function ScriptWorkbench({
       }
       case 'close': return requestClose();
       case 'dock':
+        articleAssistant.cancel();
         if (outlineDocuments?.isBusy()) throw new Error(t('请等待大纲文件操作完成后再切换窗口'));
         if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再切换窗口'));
         if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口'));
         afterReply.current = 'dock'; return true;
       case 'detach': {
+        articleAssistant.cancel();
         if (outlineDocuments?.isBusy()) throw new Error(t('请等待大纲文件操作完成后再切换窗口'));
         if (originalWriting?.isBusy()) throw new Error(t('请先等待原文保存完成，或停止生成，再切换窗口'));
         if (graphEditorLease.current || graphWritesInFlight.current > 0) throw new Error(t('请先保存或关闭关系图详情，再切换窗口'));
@@ -1489,6 +1586,7 @@ export default function ScriptWorkbench({
     }
   };
   useLayoutEffect(() => {
+    articleAccessRef.current = { readTarget: readArticleTarget, applyTarget: applyArticleTarget };
     snapshotRef.current = snapshot;
     onCloseRequestRef.current = onCloseRequest;
     onPageVisibilityChangeRef.current = onPageVisibilityChange;
@@ -1585,7 +1683,7 @@ function WorkbenchRenameDialog({ name, onClose, onSave }: { name: string; onClos
 }
 
 /** 两种展示共用的纯视图；所有保存、模型与资产能力均通过主窗口 dispatch。 */
-export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, presentation = 'modal', visible = true,
+export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standalone = false, presentation = 'modal', visible = true,
   onSwitchToCanvas, onBackToStartPage, onReturnToProject, returningToProject = false, externalError = '', onDismissError }: {
   snapshot: ScriptWorkbenchSnapshot; dispatch: ScriptWorkbenchDispatch; standalone?: boolean;
   presentation?: WorkbenchPresentation; visible?: boolean; onSwitchToCanvas?: () => void;
@@ -1602,12 +1700,31 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
   const locatedSourceSequence = useRef(0);
   const graphViewLease = useRef<{ graphId: string; epoch: number } | null>(null);
   const [originalToolsContainer, setOriginalToolsContainer] = useState<HTMLDivElement | null>(null);
+  const [outlineArticleContainer, setOutlineArticleContainer] = useState<HTMLDivElement | null>(null);
+  const [originalArticleContainer, setOriginalArticleContainer] = useState<HTMLDivElement | null>(null);
+  const [plainArticleContainer, setPlainArticleContainer] = useState<HTMLDivElement | null>(null);
+  const [articleOverlay, setArticleOverlay] = useState<HTMLElement | null>(null);
   const [collaborationEpisodeId, setCollaborationEpisodeId] = useState<string | null>(null);
+  const [episodesVisible, setEpisodesVisible] = useState(true);
+  const [filesVisible, setFilesVisible] = useState(true);
+  const [toolsVisible, setToolsVisible] = useState(true);
+  const [articleVisible, setArticleVisible] = useState(true);
+  const [articleApplying, setArticleApplying] = useState(false);
+  const articleApplyingRef = useRef(false);
+  const dispatch = useCallback<ScriptWorkbenchDispatch>(async (action) => {
+    if (articleApplyingRef.current) throw new Error(t('正在采用文章修改，请稍候'));
+    if (action.type !== 'article_apply') return dispatchAction(action);
+    articleApplyingRef.current = true;
+    setArticleApplying(true);
+    try { return await dispatchAction(action); }
+    finally { articleApplyingRef.current = false; setArticleApplying(false); }
+  }, [dispatchAction, t]);
   const [error, setError] = useState('');
   const { series, episodes, currentEpisode, activeTab, draft, isDirty, isSaving, isStartingTeam,
-    contextReady, editorWriteLocked, pendingAction, splitOpen, splitSource,
+    contextReady, editorWriteLocked: snapshotEditorWriteLocked, pendingAction, splitOpen, splitSource,
     sourceOpen, renamingEpisodeId, extractingAssetKind, seriesAssetPreview, executionSelection,
     episodeTeamTasks } = snapshot;
+  const editorWriteLocked = snapshotEditorWriteLocked || articleApplying;
   const collaborationOpen = !!collaborationEpisodeId && collaborationEpisodeId === currentEpisode?.id && contextReady;
   if (collaborationEpisodeId && (!contextReady || collaborationEpisodeId !== currentEpisode?.id)) setCollaborationEpisodeId(null);
   const isOpen = true;
@@ -1616,6 +1733,30 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
   const activeAssetKind = WORKBENCH_ASSET_KINDS[activeTab];
   const scriptFileSyncNeeded = !!currentEpisode && needsEpisodeScriptFileSync(currentEpisode);
   const outlineFileSelected = (!currentEpisode || activeTab === 'outline') && !!snapshot.outlineDocuments?.selected;
+  const articleTarget: WorkbenchArticleTarget | null = outlineFileSelected
+    ? snapshot.outlineDocuments?.documentId && /\.(md|txt)$/i.test(snapshot.outlineDocuments.fileName ?? '')
+      ? { kind: 'outline-document', documentId: snapshot.outlineDocuments.documentId } : null
+    : activeTab === 'original' && snapshot.originalWriting?.documentId
+      ? { kind: 'original', documentId: snapshot.originalWriting.documentId }
+      : currentEpisode && (activeTab === 'outline' || activeTab === 'script')
+        ? { kind: activeTab, episodeId: currentEpisode.id } : null;
+  const articleTargetKey = JSON.stringify([snapshot.sessionId, series?.id, series?.exchangeEpoch, currentEpisode?.id, activeTab, articleTarget]);
+  const articleTargetLabel = outlineFileSelected ? snapshot.outlineDocuments?.fileName ?? t('大纲文件')
+    : activeTab === 'original' ? snapshot.originalWriting?.fileName ?? t('原文')
+      : currentEpisode ? `${currentEpisode.name} · ${t(activeTab === 'script' ? '本集剧本' : '本集大纲')}` : t('未选择文章');
+  const articleUnavailable = !contextReady || isSaving || editorWriteLocked
+    || (articleTarget?.kind === 'original' && (!!snapshot.originalWriting?.error || snapshot.originalWriting?.loading || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating))
+    || (articleTarget?.kind === 'outline-document' && (!!snapshot.outlineDocuments?.error || snapshot.outlineDocuments?.busy));
+  const articleContainer = (!currentEpisode || activeTab === 'outline') && snapshot.outlineDocuments ? outlineArticleContainer
+    : activeTab === 'original' && snapshot.originalWriting ? originalArticleContainer : plainArticleContainer;
+  useLayoutEffect(() => {
+    if (!articleContainer || !articleOverlay) return;
+    const update = () => articleContainer.style.setProperty('--workbench-article-overlay-height', `${articleOverlay.offsetHeight}px`);
+    update();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    observer?.observe(articleOverlay);
+    return () => { observer?.disconnect(); articleContainer.style.removeProperty('--workbench-article-overlay-height'); };
+  }, [articleContainer, articleOverlay, articleVisible, visible]);
   const creationToolsVisible = !!currentEpisode && ((activeTab === 'outline' && !outlineFileSelected) || activeTab === 'script' || activeTab === 'creative');
   const creativeActions = WORKBENCH_ACTIONS_BY_TAB[activeTab] ?? [];
   const creativeGroups = CREATIVE_ACTION_GROUPS.map((group) => ({ ...group,
@@ -1684,13 +1825,15 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
       >
         <header data-tauri-drag-region={pageHeader ? 'deep' : undefined}
           className={pageHeader
-            ? `relative flex min-h-11 shrink-0 select-none flex-wrap items-center gap-3 border-b border-border-subtle py-1 ${macWindowControls ? 'pl-28 pr-3' : nativeWindowControls ? 'pl-3 pr-32' : 'px-3'}`
+            ? `relative flex min-h-11 shrink-0 select-none flex-wrap items-center gap-3 border-b border-border-subtle py-1 ${nativeWindowControls && !macWindowControls ? 'pr-32' : 'pr-3'}`
             : 'flex shrink-0 items-center gap-3 border-b border-border-subtle px-2.5 py-2'}>
-          {pageHeader ? <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm"
-            aria-label={t('返回启动页')} onClick={onBackToStartPage}>
-            <Icon icon="mdi:arrow-left" width="16" aria-hidden="true" />
-            {t('返回启动页')}
-          </button> : <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-indigo-500/15 text-indigo-400">
+          {pageHeader ? <div className={`flex min-w-0 shrink-0 items-center ${episodesVisible ? 'w-[calc(190px-0.75rem)] xl:w-[calc(210px-0.75rem)]' : ''} ${macWindowControls ? 'pl-20' : 'pl-3'}`}>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm min-w-0 max-w-full"
+              aria-label={t('返回启动页')} title={t('返回启动页')} onClick={onBackToStartPage}>
+              <Icon icon="mdi:arrow-left" width="16" className="shrink-0" aria-hidden="true" />
+              <span className="truncate">{t('返回启动页')}</span>
+            </button>
+          </div> : <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-indigo-500/15 text-indigo-400">
             <Icon icon="lucide:notebook-pen" className="h-4 w-4" />
           </span>}
           <div className="min-w-0 flex-1">
@@ -1724,6 +1867,19 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
           </button>
           <button type="button" className="ui-btn ui-btn--sm" disabled={projectLoadStatus !== 'ready'}
             onClick={() => setSourceOpen(true)}>{t('章节浏览')}</button>
+          <div className="flex shrink-0 items-center gap-1 border-l border-border-subtle pl-2" role="group" aria-label={t('分栏显示')}>
+            {([
+              { label: t('分集列表'), icon: 'lucide:panel-left', shown: episodesVisible, toggle: () => setEpisodesVisible((value) => !value) },
+              { label: t('大纲文件列表'), icon: 'lucide:files', shown: filesVisible, toggle: () => setFilesVisible((value) => !value) },
+              { label: t('右侧工具'), icon: 'lucide:panel-right', shown: toolsVisible, toggle: () => setToolsVisible((value) => !value) },
+              { label: t('AI 修改区'), icon: 'lucide:panel-bottom', shown: articleVisible, toggle: () => setArticleVisible((value) => !value) },
+            ]).map((panel) => <button key={panel.icon} type="button"
+              className={`ui-icon-btn ui-icon-btn--sm ui-icon-btn--ghost ${panel.shown ? 'bg-canvas-hover text-canvas-text' : 'text-canvas-text-muted'}`}
+              aria-pressed={panel.shown} aria-label={t('{action}{panel}', { action: t(panel.shown ? '隐藏' : '显示'), panel: panel.label })}
+              title={t('{action}{panel}', { action: t(panel.shown ? '隐藏' : '显示'), panel: panel.label })} onClick={panel.toggle}>
+              <Icon icon={panel.icon} className="h-4 w-4" aria-hidden="true" />
+            </button>)}
+          </div>
           {!pageHeader && <button type="button" className="ui-btn ui-btn--sm ui-btn--secondary"
             disabled={isSaving || editorWriteLocked || snapshot.openingWindow}
             onClick={() => fire({ type: standalone ? 'dock' : 'detach' })}
@@ -1788,21 +1944,19 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
           </div>
         ) : null}
 
-        <main className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto]
-                         lg:grid-cols-[190px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)_auto]
-                         xl:grid-cols-[210px_minmax(0,1fr)_300px] xl:grid-rows-1">
-          <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-border-subtle p-3 lg:border-b-0 lg:border-r">
+        <main className="flex min-h-0 flex-1">
+          <aside className={`${episodesVisible ? 'flex' : 'hidden'} min-h-0 w-[190px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle p-3 xl:w-[210px]`}>
             <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-canvas-text-secondary">{t('分集')}</span>
               <span className="text-[10px] text-canvas-text-muted">{episodes.length}</span>
             </div>
-            <div className="ui-scroll ui-scroll--both flex min-h-0 max-h-28 gap-1.5 lg:max-h-none lg:flex-1 lg:flex-col">
+            <div className="ui-scroll ui-scroll--both flex min-h-0 flex-1 flex-col gap-1.5">
               {episodes.map((episode) => {
                 const active = episode.id === currentEpisode?.id;
                 return (
                   <div
                     key={episode.id}
-                    className={`flex w-44 shrink-0 items-center gap-1 rounded-lg border p-2 text-left transition-colors lg:w-auto ${
+                    className={`flex shrink-0 items-center gap-1 rounded-lg border p-2 text-left transition-colors ${
                       active
                         ? 'border-indigo-400/40 bg-indigo-500/10'
                         : 'border-transparent hover:border-canvas-border hover:bg-canvas-hover'
@@ -1845,7 +1999,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
             </div>
           </aside>
 
-          <section className="flex min-h-0 min-w-0 flex-col border-border-subtle xl:border-r">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
             {currentEpisode ? (
               <>
                 <Tabs value={activeTab} onChange={setActiveTab} size="sm" aria-label={t('剧本创作工作台')}
@@ -1865,18 +2019,23 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
                         : id === 'props' ? episodeAssetRoster.props.length : undefined,
                   }))} />
 
-                <div className="min-h-0 flex-1 overflow-auto">
+                <div ref={setPlainArticleContainer} className="relative min-h-0 flex-1">
+                <div className={`h-full overflow-auto ${activeTab !== 'outline' && activeTab !== 'original' && activeTab !== 'script' ? 'script-workbench-article-text' : ''}`}>
                   {snapshot.outlineDocuments && <section className={activeTab === 'outline' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('大纲文件')}>
-                    <OutlineFilesPanel summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady}
+                    <OutlineFilesPanel key={snapshot.articleRevision?.outlineDocument ?? 0}
+                      summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady && !articleApplying} fileListVisible={filesVisible}
+                      onArticleContainer={setOutlineArticleContainer}
                       active={activeTab === 'outline' && visible}>
                       <textarea ref={activeTab === 'outline' ? sourceEditorRef : undefined} value={draft.outline} readOnly={editorWriteLocked || !contextReady}
                         onChange={(event) => setTextDraft('outline', event.target.value)} spellCheck={false}
                         aria-label={t('本集大纲')} placeholder={t('写下本集任务、核心冲突、主要情节点和结尾卡点…')}
-                        className="block h-full min-h-80 w-full flex-1 resize-none bg-transparent p-3 text-[13px] leading-7 text-canvas-text outline-none placeholder:text-canvas-text-muted" />
+                        className="script-workbench-article-text block h-full min-h-80 w-full flex-1 resize-none bg-transparent p-3 text-[13px] leading-7 text-canvas-text outline-none placeholder:text-canvas-text-muted" />
                     </OutlineFilesPanel>
                   </section>}
                   {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
-                    <OriginalWritingEditor summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady} active={activeTab === 'original'} toolsContainer={originalToolsContainer} />
+                    <OriginalWritingEditor key={snapshot.articleRevision?.original ?? 0}
+                      summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady && !articleApplying} active={activeTab === 'original'} toolsContainer={originalToolsContainer}
+                      onArticleContainer={setOriginalArticleContainer} />
                   </section>}
                   {activeTab === 'story-graph' && snapshot.storyGraphView ? (
                     <LazyLoadBoundary label={t('故事关系图')} resetKey={snapshot.sessionId}>
@@ -1918,7 +2077,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
                       onChange={(event) => setTextDraft('outline', event.target.value)}
                       spellCheck={false}
                       placeholder={t('写下本集任务、核心冲突、主要情节点和结尾卡点…')}
-                      className="block h-full min-h-80 w-full resize-none bg-transparent p-4 text-[13px] leading-7
+                      className="script-workbench-article-text block h-full min-h-80 w-full resize-none bg-transparent p-4 text-[13px] leading-7
                                  text-canvas-text outline-none placeholder:text-canvas-text-muted"
                     />
                   ) : null}
@@ -1930,7 +2089,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
                       onChange={(event) => setTextDraft('script', event.target.value)}
                       spellCheck={false}
                       placeholder={t('按场号、场景、人物、动作和对白写本集完整正文…')}
-                      className="block h-full min-h-80 w-full resize-none bg-transparent p-4 font-mono text-[13px]
+                      className="script-workbench-article-text block h-full min-h-80 w-full resize-none bg-transparent p-4 font-mono text-[13px]
                                  leading-7 text-canvas-text outline-none placeholder:text-canvas-text-muted"
                     />
                   ) : null}
@@ -2002,6 +2161,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
                     </fieldset>
                   ) : null}
                 </div>
+                </div>
 
                 {activeTab !== 'original' && !outlineFileSelected && <footer className="flex h-12 shrink-0 items-center gap-3 border-t border-border-subtle px-3">
                   <span className={`text-[11px] ${isDirty ? 'text-amber-300' : 'text-canvas-text-muted'}`}>
@@ -2030,22 +2190,32 @@ export function ScriptWorkbenchView({ snapshot, dispatch, standalone = false, pr
                 </footer>}
               </>
             ) : (
-              snapshot.outlineDocuments ? <OutlineFilesPanel summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady} active={visible}>
-                <div className="grid min-h-80 flex-1 place-items-center p-3 text-center">
+              snapshot.outlineDocuments ? <OutlineFilesPanel key={snapshot.articleRevision?.outlineDocument ?? 0}
+                summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady && !articleApplying} active={visible} fileListVisible={filesVisible}
+                onArticleContainer={setOutlineArticleContainer}>
+                <div className="script-workbench-article-text grid min-h-80 flex-1 place-items-center p-3 text-center">
                   <p className="text-xs text-canvas-text-muted">{t('还没有分集，可以先新建大纲文件，或生成拆分草案。')}</p>
                 </div>
-              </OutlineFilesPanel> : <div className="grid min-h-80 flex-1 place-items-center p-6 text-center">
+              </OutlineFilesPanel> : <div ref={setPlainArticleContainer} className="relative min-h-0 flex-1">
+                <div className="script-workbench-article-text grid h-full min-h-80 place-items-center p-6 text-center">
                 <div>
                   <Icon icon="lucide:files" className="mx-auto h-8 w-8 text-canvas-text-muted" />
                   <p className="mt-3 text-sm font-medium">{t('还没有可编辑的分集')}</p>
                   <p className="mt-1 text-xs text-canvas-text-muted">{t('先新增分集，或使用 AI 拆分草案。')}</p>
                 </div>
               </div>
+              </div>
             )}
+            {articleContainer && createPortal(
+              <WorkbenchArticleAssistant containerRef={setArticleOverlay} hidden={!articleVisible}
+                targetKey={articleTargetKey} targetLabel={articleTargetLabel} target={articleTarget}
+                disabled={!!articleUnavailable} generating={snapshot.articleAssistant?.generating ?? false} dispatch={dispatch}
+                unavailableReason={outlineFileSelected && !articleTarget ? t('PDF、PPT 和 Word 为只读资料，请选择 Markdown 或 TXT 文章。')
+                  : !articleTarget ? t('请选择本集大纲、剧本、原文，或新建并选择 Markdown / TXT 文章。')
+                    : t('请等待当前操作完成，并先处理文章的编辑错误。')} />, articleContainer)}
           </section>
 
-          <aside className="min-h-0 overflow-auto border-t border-border-subtle p-3
-                            lg:col-span-2 lg:max-h-64 xl:col-span-1 xl:max-h-none xl:border-t-0">
+          <aside className={`${toolsVisible ? '' : 'hidden'} min-h-0 w-[300px] min-w-0 shrink-0 overflow-auto border-l border-border-subtle p-3`}>
             {outlineFileSelected ? <div className="ui-card p-3">
               <h3 className="ui-label">{t('大纲参考资料')}</h3>
               <p className="mt-2 text-xs leading-relaxed text-canvas-text-secondary">{t('MD、TXT 可编辑保存；PDF、PPT 和 Word 在本地只读预览。')}</p>

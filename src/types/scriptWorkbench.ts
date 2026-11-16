@@ -10,6 +10,7 @@ import type { EpisodeAssetKind, EpisodeAssetPanelAction, EpisodeAssetPanelSnapsh
 import type { SeriesSourcePart, SeriesSourceReference } from './seriesSource';
 import type { OriginalWritingAction, OriginalWritingHandoff, OriginalWritingSummary } from './originalWriting';
 import type { OutlineDocumentAction, OutlineDocumentHandoff, OutlineDocumentSummary } from './outlineDocument';
+import type { WorkbenchArticleAction, WorkbenchArticleSummary } from './workbenchArticle';
 import type { StoryGraphAssetOption, StoryGraphCandidateSelection, StoryGraphEvidence, StoryGraphEvidenceQuery,
   StoryGraphExtractionState, StoryGraphExtractRequest, StoryGraphFilter, StoryGraphPatch, StoryGraphSelection, StoryGraphView } from './storyGraph';
 import type { ProjectWindowContext } from './projectWindow';
@@ -54,6 +55,8 @@ export interface ScriptWorkbenchSnapshot {
   sourceOpen: boolean; renamingEpisodeId: string | null;
   originalWriting?: OriginalWritingSummary;
   outlineDocuments?: OutlineDocumentSummary;
+  articleAssistant?: WorkbenchArticleSummary;
+  articleRevision?: { original: number; outlineDocument: number };
   extractingAssetKind: DramaAssetKind | null;
   seriesAssetPreview: { kind: DramaAssetKind; assets: DramaAsset[] } | null;
   existingAssets: Array<Pick<DramaAsset, 'name' | 'summary'>>;
@@ -77,6 +80,7 @@ export interface ScriptWorkbenchSnapshot {
 export type ScriptWorkbenchAction =
   | OriginalWritingAction
   | OutlineDocumentAction
+  | WorkbenchArticleAction
   | { type: 'flush_draft' }
   | { type: 'edit_text'; field: 'outline' | 'script'; value: string }
   | { type: 'edit_creative'; field: keyof WorkbenchCreativeDraft; value: string }
