@@ -1296,11 +1296,10 @@ export default function ChatPanel({
                       assistantModelHint={workbenchTarget ? t('模型沿用目标分集设置；如需修改，请切到该分集的项目设置。') : undefined}
                       assistantModelGroups={effectiveAssistantModelGroups}
                       executionSelection={effectiveExecutionSelection}
-                      teamConfiguration={<div className="flex min-w-0 flex-wrap items-center gap-2">
+                      teamConfiguration={effectiveExecutionSelection.kind === 'team' ? <div className="flex min-w-0 flex-wrap items-center gap-2">
                         {!workbenchTarget && <CreationProfilePicker profiles={effectiveCreationProfiles} selection={effectiveActiveConversation?.creationProfile}
                           projectId={chatScopeId} disabled={!detachedInitialized || hasActiveConversationTask}
                           onPreview={handleCreationPreview} onChange={handleCreationChange} />}
-                        {effectiveExecutionSelection.kind === 'team' ? (
                         <TeamExecutionPicker
                           value={effectiveExecutionSelection}
                           onChange={handleExecutionSelectionChange}
@@ -1314,7 +1313,7 @@ export default function ChatPanel({
                           externalAgents={effectiveExternalAgents}
                           onRefreshExternalAgents={refreshExternalAgents}
                         />
-                      ) : null}</div>}
+                      </div> : undefined}
                       teamContextHint={teamContextHint}
                       appearanceMode={appearanceMode}
                       mediaModels={effectiveGeneralModels}

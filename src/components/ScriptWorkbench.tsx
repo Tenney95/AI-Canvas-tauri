@@ -48,6 +48,8 @@ import AssetExtractionPreviewDialog from './series/AssetExtractionPreviewDialog'
 import type { AgentMode } from '../types/agent';
 import type { AssistantExecutionSelection, TeamTemplateId } from '../types/agentTeam';
 import TeamRunCard from './shared/agentTeams/TeamRunCard';
+import TeamExecutionPicker from './shared/agentTeams/TeamExecutionPicker';
+import ModelSelector from './nodes/shared/ModelSelector';
 import type { CreationProfileChoicePreview } from '../types/creationProfile';
 import { creationProfileOptions, captureCreationProfile, previewCreationProfileOption, resolveCreationTeamProfile } from '../services/creationProfiles/creationProfileService';
 import { getExternalAgentCatalog, readExternalAgentCatalog } from '../services/chat/externalAgents/externalAgentService';
@@ -62,7 +64,7 @@ import { captureEpisodeTeamContext, applyTeamResult, restoreTeamResult, reconcil
 import { pauseAgentTask, stopAgentTask } from '../services/chat/agentTaskControl';
 import { cancelScheduledAgentExecution } from '../services/chat/agentScheduler';
 import { resumeAgentTaskExecution } from '../services/chat/conversationExecutionController';
-import { buildChatModelCatalog, projectChatNodes } from '../services/chat/detachedChatSyncController';
+import { buildChatModelCatalog, executeManagedChatOperation, projectChatNodes } from '../services/chat/detachedChatSyncController';
 import { hasUnsettledEpisodeEditorSession, isEpisodeEditorWriteLocked, registerEpisodeEditorSession, settleEpisodeEditorSessions,
   subscribeEpisodeEditorWrites } from '../services/episodeEditorSessionService';
 import { readEpisodeWorkspaceScope } from '../services/episodeWorkspaceScope';
@@ -84,6 +86,7 @@ import { applyStoryGraphPatch, createEmptyStoryGraph, hashStoryGraphSource, proj
   validateStoryGraphEvidence } from '../services/storyGraphService';
 import { buildStoryGraphCandidatePatch, extractStoryGraphCandidates } from '../services/storyGraphExtractionService';
 import { resolveAssistantModel } from '../services/ai/assistantStream';
+import { getAssistantTextModelCandidates } from '../services/projectSettingsService';
 import { sanitizeDomainText } from '../services/chat/subAgentMaterials';
 import { needsEpisodeScriptFileSync } from '../utils/manuscriptFileReference';
 
@@ -336,6 +339,8 @@ export default function ScriptWorkbench({
     config,
     workflows,
     agentTasks,
+    conversations,
+    activeConversationId,
     updateConfig,
     userSkills,
     agentPackageSkills,
@@ -351,6 +356,8 @@ export default function ScriptWorkbench({
     config: state.config,
     workflows: state.workflows,
     agentTasks: state.agentTasks,
+    conversations: state.conversations,
+    activeConversationId: state.activeConversationId,
     updateConfig: state.updateConfig,
     userSkills: state.userSkills,
     agentPackageSkills: state.agentPackageSkills,
@@ -414,7 +421,28 @@ export default function ScriptWorkbench({
   const [draftVersionByEpisode, setDraftVersionByEpisode] = useState<Record<string, number>>({});
   const savingEpisodeRef = useRef<string | null>(null);
   const startingTeamRef = useRef(false);
-  const [executionSelection, setExecutionSelection] = useState<AssistantExecutionSelection>({ kind: 'single' });
+  const assistantConversation = conversations.find((conversation) => conversation.id === activeConversationId
+    && conversation.projectId === seriesId && !conversation.deletedAt);
+  const executionSelection = normalizeExecutionSelection(assistantConversation?.executionSelection);
+  const setExecutionSelection = (value: AssistantExecutionSelection) => {
+    const state = useAppStore.getState();
+    if (!state.currentProjectId || !seriesId || state.projectLoadStatus !== 'ready'
+      || seriesOwnerId(state.projects, state.currentProjectId) !== seriesId) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
+    const conversation = state.conversations.find((entry) => entry.id === state.activeConversationId
+      && entry.projectId === seriesId && !entry.deletedAt);
+    const conversationId = conversation?.id ?? state.createConversation(state.currentProjectId);
+    state.updateConversation(conversationId, { executionSelection: normalizeExecutionSelection(value) });
+  };
+  const assistantModelProject = projects.find((project) => project.id === (assistantConversation?.workbenchTarget?.episodeId ?? currentProjectId));
+  const assistantModelId = getAssistantTextModelCandidates(assistantModelProject?.settings, config.assistantModelId)[0];
+  const assistantTeamProfile = useMemo(() => {
+    const selection = assistantConversation?.creationProfile;
+    if (selection && !config.creationProfiles?.some((profile) => profile.id === selection.id && profile.version === selection.version)) {
+      return normalizeTeamProfile(config.agentTeamProfile);
+    }
+    try { return resolveCreationTeamProfile(selection, assistantConversation?.teamProfileOverride); }
+    catch { return normalizeTeamProfile(config.agentTeamProfile); }
+  }, [assistantConversation?.creationProfile, assistantConversation?.teamProfileOverride, config.agentTeamProfile, config.creationProfiles]);
   const [teamMode, setTeamMode] = useState<AgentMode>('collaborative');
   const [isStartingTeam, setIsStartingTeam] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -1146,10 +1174,19 @@ export default function ScriptWorkbench({
       }
     });
   };
-  const articleAccessRef = useRef({ readTarget: readArticleTarget, applyTarget: applyArticleTarget });
+  const readArticleExecution = () => {
+    const state = useAppStore.getState();
+    if (!contextReady || !state.currentProjectId || state.currentProjectId !== currentProjectId
+      || seriesOwnerId(state.projects, state.currentProjectId) !== seriesId) throw new Error(t('画布已离开本剧集，请先回到原剧集处理工作台修改'));
+    return { projectId: state.currentProjectId, conversationId: assistantConversation?.id,
+      selection: executionSelection, modelId: assistantModelId, profile: assistantTeamProfile,
+      mode: assistantConversation?.agentMode ?? teamMode };
+  };
+  const articleAccessRef = useRef({ readTarget: readArticleTarget, applyTarget: applyArticleTarget, readExecution: readArticleExecution });
   const [articleAssistant] = useState(() => createWorkbenchArticleSession({
     readTarget: (target) => articleAccessRef.current.readTarget(target),
     applyTarget: (captured, text) => articleAccessRef.current.applyTarget(captured, text),
+    getExecution: () => articleAccessRef.current.readExecution(),
   }));
   const [, refreshArticleAssistant] = useState(0);
   useEffect(() => articleAssistant.subscribe(() => refreshArticleAssistant((version) => version + 1)), [articleAssistant]);
@@ -1176,6 +1213,8 @@ export default function ScriptWorkbench({
       .map((asset) => ({ name: asset.name, summary: asset.summary })),
     assetPanel: currentEpisode && activeAssetKind ? buildEpisodeAssetPanelSnapshot(assetSource, currentEpisode.id) : undefined,
     executionSelection, teamMode, teamProfile, modelGroups: modelCatalog.assistantModelGroups, episodeTeamTasks, episodeAgentTasks,
+    assistantConversationId: assistantConversation?.id, assistantModelId,
+    assistantModelDisabled: !!assistantConversation?.workbenchTarget, assistantTeamProfile, performanceMode: config.performanceMode === true,
     creationProfiles: creationProfileOptions(), externalAgents: externalCatalog,
     hasSavedStoryGraph: contextReady && Boolean(series?.series?.storyGraph?.nodes.length),
     storyGraphView: graphView, storyGraphFilter: effectiveGraphFilter,
@@ -1380,6 +1419,22 @@ export default function ScriptWorkbench({
       }
       case 'settle_editor': if (currentEpisode && !currentDirty() && !savingEpisodeRef.current && !graphEditorLease.current) settleEpisodeEditorSessions(currentEpisode.id); return true;
       case 'set_execution': setExecutionSelection(normalizeExecutionSelection(action.value)); return true;
+      case 'select_assistant_model': {
+        if (articleAssistant.isBusy() || assistantConversation?.workbenchTarget) throw new Error(t('请等待当前操作完成，并先处理文章的编辑错误。'));
+        const state = useAppStore.getState();
+        const project = state.projects.find((entry) => entry.id === state.currentProjectId);
+        if (!project || typeof action.modelId !== 'string' || !modelCatalog.assistantModelGroups.some((group) => group.models.some((model) => model.value === action.modelId))
+          || !resolveAssistantModel(project.id, action.modelId)) throw new Error(t('请选择可用的文本模型'));
+        if (!await state.updateProjectSettings({ ...project.settings,
+          defaultModels: { ...project.settings?.defaultModels, text: action.modelId } })) throw new Error(t('项目设置保存失败'));
+        return true;
+      }
+      case 'save_assistant_team_profile': {
+        if (articleAssistant.isBusy()) throw new Error(t('请等待当前操作完成，并先处理文章的编辑错误。'));
+        await executeManagedChatOperation({ kind: 'save_team_profile', profile: normalizeTeamProfile(action.profile) },
+          currentProjectId!, assistantConversation?.id);
+        return true;
+      }
       case 'set_team_mode': if (['plan', 'collaborative', 'autonomous'].includes(action.value)) setTeamMode(action.value); return true;
       case 'preview_creation_profile': {
         if (!currentEpisodeId) throw new Error(t('请选择工作台分集'));
@@ -1586,7 +1641,7 @@ export default function ScriptWorkbench({
     }
   };
   useLayoutEffect(() => {
-    articleAccessRef.current = { readTarget: readArticleTarget, applyTarget: applyArticleTarget };
+    articleAccessRef.current = { readTarget: readArticleTarget, applyTarget: applyArticleTarget, readExecution: readArticleExecution };
     snapshotRef.current = snapshot;
     onCloseRequestRef.current = onCloseRequest;
     onPageVisibilityChangeRef.current = onPageVisibilityChange;
@@ -1720,6 +1775,16 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
     finally { articleApplyingRef.current = false; setArticleApplying(false); }
   }, [dispatchAction, t]);
   const [error, setError] = useState('');
+  const [assistantConfigPending, setAssistantConfigPending] = useState(false);
+  const assistantConfigInFlight = useRef(false);
+  const configureAssistant = async (action: ScriptWorkbenchAction): Promise<void> => {
+    if (assistantConfigInFlight.current) throw new Error(t('配置正在更新，请稍候'));
+    assistantConfigInFlight.current = true;
+    setAssistantConfigPending(true); setError('');
+    try { await dispatch(action); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : t('工作台操作未完成')); throw reason; }
+    finally { assistantConfigInFlight.current = false; setAssistantConfigPending(false); }
+  };
   const { series, episodes, currentEpisode, activeTab, draft, isDirty, isSaving, isStartingTeam,
     contextReady, editorWriteLocked: snapshotEditorWriteLocked, pendingAction, splitOpen, splitSource,
     sourceOpen, renamingEpisodeId, extractingAssetKind, seriesAssetPreview, executionSelection,
@@ -1747,7 +1812,8 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
   const articleUnavailable = !contextReady || isSaving || editorWriteLocked
     || (articleTarget?.kind === 'original' && (!!snapshot.originalWriting?.error || snapshot.originalWriting?.loading || snapshot.originalWriting?.saving || snapshot.originalWriting?.generating))
     || (articleTarget?.kind === 'outline-document' && (!!snapshot.outlineDocuments?.error || snapshot.outlineDocuments?.busy));
-  const articleContainer = (!currentEpisode || activeTab === 'outline') && snapshot.outlineDocuments ? outlineArticleContainer
+  const articleContainer = activeTab !== 'outline' && activeTab !== 'original' && activeTab !== 'script' ? null
+    : (!currentEpisode || activeTab === 'outline') && snapshot.outlineDocuments ? outlineArticleContainer
     : activeTab === 'original' && snapshot.originalWriting ? originalArticleContainer : plainArticleContainer;
   useLayoutEffect(() => {
     if (!articleContainer || !articleOverlay) return;
@@ -2020,8 +2086,8 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
                   }))} />
 
                 <div ref={setPlainArticleContainer} className="relative min-h-0 flex-1">
-                <div className={`h-full overflow-auto ${activeTab !== 'outline' && activeTab !== 'original' && activeTab !== 'script' ? 'script-workbench-article-text' : ''}`}>
-                  {snapshot.outlineDocuments && <section className={activeTab === 'outline' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('大纲文件')}>
+                <div className={`h-full ${activeTab !== 'outline' && activeTab !== 'original' && activeTab !== 'script' ? 'overflow-auto script-workbench-article-text' : 'script-workbench-article-viewport overflow-hidden'}`}>
+                  {snapshot.outlineDocuments && <section className={activeTab === 'outline' ? 'h-full min-h-0 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('大纲文件')}>
                     <OutlineFilesPanel key={snapshot.articleRevision?.outlineDocument ?? 0}
                       summary={snapshot.outlineDocuments} dispatch={dispatch} ready={contextReady && !articleApplying} fileListVisible={filesVisible}
                       onArticleContainer={setOutlineArticleContainer}
@@ -2032,7 +2098,7 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
                         className="script-workbench-article-text block h-full min-h-80 w-full flex-1 resize-none bg-transparent p-3 text-[13px] leading-7 text-canvas-text outline-none placeholder:text-canvas-text-muted" />
                     </OutlineFilesPanel>
                   </section>}
-                  {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-80 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
+                  {snapshot.originalWriting && <section className={activeTab === 'original' ? 'h-full min-h-0 min-w-0 overflow-hidden' : 'hidden'} aria-label={t('原文')}>
                     <OriginalWritingEditor key={snapshot.articleRevision?.original ?? 0}
                       summary={snapshot.originalWriting} dispatch={dispatch} ready={contextReady && !articleApplying} active={activeTab === 'original'} toolsContainer={originalToolsContainer}
                       onArticleContainer={setOriginalArticleContainer} />
@@ -2209,7 +2275,20 @@ export function ScriptWorkbenchView({ snapshot, dispatch: dispatchAction, standa
             {articleContainer && createPortal(
               <WorkbenchArticleAssistant containerRef={setArticleOverlay} hidden={!articleVisible}
                 targetKey={articleTargetKey} targetLabel={articleTargetLabel} target={articleTarget}
-                disabled={!!articleUnavailable} generating={snapshot.articleAssistant?.generating ?? false} dispatch={dispatch}
+                disabled={!!articleUnavailable || assistantConfigPending} generating={snapshot.articleAssistant?.generating ?? false} dispatch={dispatch}
+                theme={snapshot.theme ?? 'dark'} performanceMode={snapshot.performanceMode}
+                executionControls={executionSelection.kind === 'team' ? <TeamExecutionPicker
+                  value={executionSelection} profile={snapshot.assistantTeamProfile ?? snapshot.teamProfile}
+                  onChange={(value) => { void configureAssistant({ type: 'set_execution', value }).catch(() => {}); }}
+                  onProfileChange={(profile) => configureAssistant({ type: 'save_assistant_team_profile', profile })}
+                  modelGroups={snapshot.modelGroups} generalModels={[]} theme={snapshot.theme ?? 'dark'}
+                  controls="configuration" compact externalAgents={snapshot.externalAgents}
+                  onRefreshExternalAgents={async () => { await dispatch({ type: 'refresh_external_agents' }); }}
+                  disabled={!!articleUnavailable || assistantConfigPending || !!snapshot.articleAssistant?.generating || snapshot.assistantModelDisabled} />
+                  : <ModelSelector nodeType="ai-text" appearance="pill" theme={snapshot.theme ?? 'dark'} persistPreference={false}
+                    selectedModel={snapshot.assistantModelId ?? ''} configuredGroupsOverride={snapshot.modelGroups} generalModelsOverride={[]}
+                    disabled={!!articleUnavailable || assistantConfigPending || !!snapshot.articleAssistant?.generating || snapshot.assistantModelDisabled}
+                    onSelect={(model) => { void configureAssistant({ type: 'select_assistant_model', modelId: model.value }).catch(() => {}); }} />}
                 unavailableReason={outlineFileSelected && !articleTarget ? t('PDF、PPT 和 Word 为只读资料，请选择 Markdown 或 TXT 文章。')
                   : !articleTarget ? t('请选择本集大纲、剧本、原文，或新建并选择 Markdown / TXT 文章。')
                     : t('请等待当前操作完成，并先处理文章的编辑错误。')} />, articleContainer)}

@@ -1,8 +1,12 @@
-import { useEffect, useId, useRef, useState, type Ref } from 'react';
+import { lazy, Suspense, useEffect, useId, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useT } from '../../i18n';
+import LazyLoadBoundary from '../shared/LazyLoadBoundary';
 import type { ScriptWorkbenchDispatch } from '../../types/scriptWorkbench';
 import type { WorkbenchArticleCandidate, WorkbenchArticleTarget } from '../../types/workbenchArticle';
+
+const MetalFx = lazy(() => import('../nodes/shared/PolishMetalFx'));
 
 interface WorkbenchArticleAssistantProps {
   targetKey: string;
@@ -14,11 +18,16 @@ interface WorkbenchArticleAssistantProps {
   dispatch: ScriptWorkbenchDispatch;
   containerRef?: Ref<HTMLElement>;
   hidden?: boolean;
+  executionControls?: ReactNode;
+  theme?: 'dark' | 'light';
+  performanceMode?: boolean;
 }
 
 export default function WorkbenchArticleAssistant({ targetKey, targetLabel, target, disabled, generating,
-  unavailableReason, dispatch, containerRef, hidden = false }: WorkbenchArticleAssistantProps) {
+  unavailableReason, dispatch, containerRef, hidden = false, executionControls, theme = 'dark',
+  performanceMode = false }: WorkbenchArticleAssistantProps) {
   const t = useT();
+  const reduceMotion = useReducedMotion();
   const inputId = useId();
   const [instruction, setInstruction] = useState('');
   const [candidate, setCandidate] = useState<{ key: string; value: WorkbenchArticleCandidate } | null>(null);
@@ -94,7 +103,15 @@ export default function WorkbenchArticleAssistant({ targetKey, targetLabel, targ
     }
   };
 
-  return <section ref={containerRef} className={`${hidden ? 'hidden' : ''} absolute inset-x-0 bottom-0 z-10 max-h-[50%] overflow-y-auto p-1.5`} aria-label={t('文章 AI 修改')}>
+  const sendDisabled = running ? pending === 'cancel' : unavailable || busy || !!visibleCandidate || !instruction.trim();
+  const sendButton = <button type="button" className="ui-ai-input__icon-btn ui-ai-input__submit" disabled={sendDisabled}
+    aria-label={running ? t('停止修改文章') : t('按要求修改当前文章')}
+    title={running ? t('停止修改文章') : t('按要求修改当前文章')}
+    onClick={() => { if (running) void act('cancel'); else void generate(); }}>
+    <Icon icon={running ? 'lucide:square' : 'lucide:arrow-up'} width={running ? 14 : 16} aria-hidden="true" />
+  </button>;
+
+  return <section ref={containerRef} className={`${hidden ? 'hidden' : ''} absolute inset-x-0 bottom-0 z-10 min-w-0 p-1.5`} aria-label={t('文章 AI 修改')}>
     {visibleCandidate && <div className="ui-card mb-2 max-h-56" aria-label={t('文章修改候选')}>
       <div className="ui-card__header shrink-0 flex-wrap">
         <h3 className="ui-card__title">{t('修改预览')}</h3>
@@ -111,7 +128,7 @@ export default function WorkbenchArticleAssistant({ targetKey, targetLabel, targ
     <div className="ui-ai-input" aria-busy={running}>
       <div className="ui-ai-input__body">
         <label htmlFor={inputId} className="sr-only">{t('文章修改要求')}</label>
-        <textarea id={inputId} className="ui-ai-input__editor resize-none" rows={3} maxLength={2000}
+        <textarea id={inputId} className="ui-ai-input__editor resize-none" rows={3} maxLength={2000} title={targetLabel}
           value={instruction} disabled={unavailable || busy || !!visibleCandidate} aria-disabled={unavailable || busy || !!visibleCandidate}
           placeholder={status || (unavailable ? unavailableReason || t('请先选择或载入可编辑的文章。')
             : t('输入修改要求，例如：保留情节，精简对白，增强结尾悬念…\nAI 先生成修改预览，采用后进入当前文章草稿。'))}
@@ -122,23 +139,23 @@ export default function WorkbenchArticleAssistant({ targetKey, targetLabel, targ
           }} />
       </div>
       <div className="ui-ai-input__footer ui-ai-input__footer--single-row">
-        <span className="min-w-0 flex-1 truncate text-[11px] text-canvas-text-muted" title={targetLabel}>
+        {executionControls ?? <span className="min-w-0 flex-1 truncate text-[11px] text-canvas-text-muted" title={targetLabel}>
           {target ? t('修改：{target}', { target: targetLabel }) : t('请选择可编辑的文章')}
-        </span>
+        </span>}
         <div className="ui-ai-input__tools">
           <span className="ui-ai-input__shortcut-hint text-[10px] text-canvas-text-muted">Ctrl / ⌘ + Enter</span>
-          {running ? <button type="button" className="ui-ai-input__icon-btn ui-ai-input__submit" disabled={pending === 'cancel'}
-            aria-label={t('停止修改文章')} title={t('停止修改文章')} onClick={() => { void act('cancel'); }}>
-            <Icon icon="lucide:square" width="14" aria-hidden="true" />
-          </button> : <button type="button" className="ui-ai-input__icon-btn ui-ai-input__submit"
-            disabled={unavailable || busy || !!visibleCandidate || !instruction.trim()}
-            aria-label={t('按要求修改当前文章')} title={t('按要求修改当前文章')} onClick={() => { void generate(); }}>
-            <Icon icon="lucide:arrow-up" width="16" aria-hidden="true" />
-          </button>}
+          {performanceMode || reduceMotion ? sendButton : <LazyLoadBoundary label={t('助手发送按钮特效')} errorFallback={sendButton}>
+            <Suspense fallback={sendButton}>
+              <MetalFx className="ui-ai-input__send-metal" variant="circle"
+                preset={theme === 'light' ? 'silver' : 'chromatic'} theme={theme}
+                strength={theme === 'light' ? 0.65 : 0.81} paused={hidden || sendDisabled}
+                normalizeHostStyles={false} innerShadow>{sendButton}</MetalFx>
+            </Suspense>
+          </LazyLoadBoundary>}
         </div>
       </div>
     </div>
-    {error && <p className="ui-error mt-2 break-words" role="alert">{error}</p>}
+    {error && <p className="ui-error mt-2 break-words" role="alert">{t(error)}</p>}
     <span className="sr-only" role="status" aria-live="polite">{running ? t('正在按要求修改文章…')
       : status || (unavailable ? unavailableReason || t('当前内容暂不可编辑，请先选择或载入文章。')
         : visibleCandidate ? t('预览后采用到当前文章草稿，再保存文章。') : t('AI 先生成修改预览，采用后进入当前文章草稿。'))}</span>

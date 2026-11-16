@@ -80,6 +80,42 @@ beforeEach(() => {
 });
 
 describe('团队共用发起入口', () => {
+  it.each([false, true])('工作台仅在显式沿用会话组合包时继承其Skill和权限交集（%s）', async (inheritConversation) => {
+    const profile: CreationProfile = { schemaVersion: 1, id: 'conversation-creation', version: '1.0.0', name: '助手组合',
+      pluginRefs: [], agentPackageRefs: [], skillRefs: [{ skillId: 'article-skill' }], contextPolicyRef: 'explicit-materials',
+      teamTemplateId: 'general', teamProfile: createDefaultTeamProfile('general/conversation-model'),
+      toolAllowlist: ['agent_team_apply_result', 'unrelated_tool'] };
+    const selection = { id: profile.id, version: profile.version, sha256: 'b'.repeat(64) };
+    const snapshot: CreationProfileSnapshot = { ...selection, name: profile.name, contextPolicyRef: profile.contextPolicyRef,
+      pluginRefs: [], agentPackageRefs: [], skillRefs: profile.skillRefs, toolAllowlist: profile.toolAllowlist };
+    const skillBinding = { skillId: 'article-skill', name: '文章改写', content: '保持原文事实并精简表达。', allowedTools: [] };
+    useAppStore.setState({ config: { ...useAppStore.getState().config, creationProfiles: [profile] },
+      conversations: useAppStore.getState().conversations.map((conversation) => ({ ...conversation, creationProfile: selection })) });
+    runtime.creationCapture.mockImplementationOnce(async (value) => value
+      ? { profile, snapshot, skillBindings: [skillBinding] } : { skillBindings: [] });
+    const result = await startTeamInvocation({ content: '修改当前文章', projectId: 'project-team', conversationId: 'conv-team',
+      templateId: 'general', requestId: `request-workbench-creation-${inheritConversation}`, context: { source: 'script-workbench' },
+      ...(inheritConversation ? { creationProfileSource: 'conversation' as const } : {}) });
+    expect(runtime.creationCapture).toHaveBeenCalledWith(inheritConversation ? selection : undefined, 'project-team');
+    const task = useAppStore.getState().agentTasks.find((item) => item.id === result.taskId)!;
+    expect(task.creationProfile).toEqual(inheritConversation ? snapshot : undefined);
+    expect(task.skillBindings).toEqual(inheritConversation ? [skillBinding] : []);
+    expect(task.toolAllowlist).toEqual(inheritConversation ? ['agent_team_apply_result'] : ['agent_team_apply_result', 'agent_team_restore_result']);
+    expect(runtime.prepare).toHaveBeenCalledWith(expect.objectContaining({ profile: expect.objectContaining({ roles: expect.objectContaining({
+      writer: inheritConversation ? 'general/conversation-model' : 'general/test-model',
+    }) }), ...(inheritConversation ? { materials: expect.stringContaining(skillBinding.content) } : {}) }));
+    expect(runtime.execute).not.toHaveBeenCalled();
+  });
+
+  it('显式沿用组合包仍拒绝其他项目的来源会话，不扩张来源范围', async () => {
+    useAppStore.setState((state) => ({ conversations: state.conversations.map((conversation) => ({ ...conversation, projectId: 'other-project' })) }));
+    await expect(startTeamInvocation({ content: '修改当前文章', projectId: 'project-team', conversationId: 'conv-team',
+      templateId: 'general', requestId: 'request-workbench-creation-owner', context: { source: 'script-workbench' },
+      creationProfileSource: 'conversation' })).rejects.toThrow('来源对话与任务项目不一致');
+    expect(runtime.creationCapture).not.toHaveBeenCalled(); expect(runtime.prepare).not.toHaveBeenCalled();
+    expect(runtime.scheduled).toHaveLength(0);
+  });
+
   it('省略conversationId时仍冻结实际活动会话的组合包默认团队', async () => {
     const profile: CreationProfile = { schemaVersion: 1, id: 'creation', version: '1.0.0', name: '组合',
       pluginRefs: [], agentPackageRefs: [], skillRefs: [], contextPolicyRef: 'explicit-materials',

@@ -62,6 +62,11 @@ export interface ScriptWorkbenchSnapshot {
   existingAssets: Array<Pick<DramaAsset, 'name' | 'summary'>>;
   assetPanel?: EpisodeAssetPanelSnapshot;
   executionSelection: AssistantExecutionSelection; teamMode: AgentMode; teamProfile: AgentTeamProfile;
+  assistantConversationId?: string;
+  assistantModelId?: string;
+  assistantModelDisabled?: boolean;
+  assistantTeamProfile?: AgentTeamProfile;
+  performanceMode?: boolean;
   modelGroups: ModelGroup[]; episodeTeamTasks: AgentTask[];
   episodeAgentTasks?: Array<Pick<AgentTask, 'id' | 'status'> & { title: string; activity: string }>;
   creationProfiles?: CreationProfileOption[];
@@ -102,6 +107,8 @@ export type ScriptWorkbenchAction =
   | { type: 'asset'; episodeId: string; kind: EpisodeAssetKind; action: EpisodeAssetPanelAction }
   | { type: 'settle_editor' }
   | { type: 'set_execution'; value: AssistantExecutionSelection }
+  | { type: 'select_assistant_model'; modelId: string }
+  | { type: 'save_assistant_team_profile'; profile: AgentTeamProfile }
   | { type: 'set_team_mode'; value: AgentMode } | { type: 'save_team_profile'; profile: AgentTeamProfile }
   | { type: 'preview_creation_profile'; profile: CreationProfileOption }
   | { type: 'apply_creation_profile'; selection: CreationProfileSelection | null }

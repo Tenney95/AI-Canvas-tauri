@@ -2,6 +2,7 @@ import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScriptWorkbenchRequest, ScriptWorkbenchSnapshot } from '../../src/types/scriptWorkbench';
 import type { ProjectWindowContext } from '../../src/types/projectWindow';
+import { createDefaultTeamProfile } from '../../src/services/chat/teams/teamProfileService';
 
 const events = vi.hoisted(() => ({
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
@@ -353,6 +354,64 @@ describe('关系图宿主写入边界', () => {
     deliverRequest({ sessionId: 'graph-host-session', requestId: 'old_graph_write_001', revision: 1,
       episodeId: 'episode-b', action: { type: 'story_graph_patch', patch: { graphId: 'graph', positions: {} }, expectedRevision: 1 } });
     expect((await replied).error).toContain('确认内容已变化');
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  it.each(['select_assistant_model', 'save_assistant_team_profile'] as const)('转交当前助手配置请求 %s，由主窗口执行', async (type) => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    const state: ScriptWorkbenchSnapshot = { ...graphFrame(1), assistantConversationId: 'assistant-current',
+      assistantModelId: 'text/current', executionSelection: { kind: 'single' }, assistantTeamProfile: createDefaultTeamProfile('text/current') };
+    const onRequest = vi.fn(async (_request: ScriptWorkbenchRequest) => true);
+    let respond!: (value: { error?: string; value?: unknown }) => void;
+    const replied = new Promise<{ error?: string; value?: unknown }>((resolve) => { respond = resolve; });
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
+      if (event === 'script-workbench:response') respond(payload as { error?: string; value?: unknown });
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => state,
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    const action: ScriptWorkbenchRequest['action'] = type === 'select_assistant_model'
+      ? { type, modelId: 'text/selected' } : { type, profile: createDefaultTeamProfile('text/selected') };
+    const sent = deliverRequest({ sessionId: state.sessionId, requestId: `assistant_${type}`, revision: latestHostFrame().revision,
+      episodeId: 'episode-b', action });
+    expect(await replied).toMatchObject({ value: true });
+    expect(onRequest).toHaveBeenCalledExactlyOnceWith(sent);
+  });
+
+  it.each(['conversation', 'model', 'selection', 'profile'] as const)('助手 %s 已变化时拒绝旧快照生成或更新配置', async (boundary) => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    let current: ScriptWorkbenchSnapshot = { ...graphFrame(1), assistantConversationId: 'assistant-before',
+      assistantModelId: 'text/before', executionSelection: { kind: 'single' }, assistantTeamProfile: createDefaultTeamProfile('text/before') };
+    const onRequest = vi.fn(async (_request: ScriptWorkbenchRequest) => true);
+    let respond!: (value: { error?: string }) => void;
+    events.emitTo.mockImplementation(async (_target, event, payload) => {
+      if (event === 'script-workbench:state') deliver('script-workbench:ready', payload);
+      if (event === 'script-workbench:response') respond(payload as { error?: string });
+    });
+    const host = createScriptWorkbenchWindowHost({ sessionId: 'graph-host-session', getSnapshot: () => current,
+      onRequest, onDetachedChange: vi.fn() });
+    cleanups.push(host.dispose);
+    await host.open();
+    const originalRevision = latestHostFrame().revision;
+    current = boundary === 'conversation' ? { ...current, assistantConversationId: 'assistant-after' }
+      : boundary === 'model' ? { ...current, assistantModelId: 'text/after' }
+        : boundary === 'selection' ? { ...current, executionSelection: { kind: 'team', templateId: 'script' } }
+          : { ...current, assistantTeamProfile: createDefaultTeamProfile('text/after') };
+    await host.publish();
+    const actions: ScriptWorkbenchRequest['action'][] = [
+      { type: 'article_generate', target: { kind: 'script', episodeId: 'episode-b' }, instruction: '精简对白' },
+      { type: 'select_assistant_model', modelId: 'text/selected' },
+      { type: 'save_assistant_team_profile', profile: createDefaultTeamProfile('text/selected') },
+      { type: 'set_execution', value: { kind: 'team', templateId: 'review' } },
+    ];
+    for (const action of actions) {
+      const replied = new Promise<{ error?: string }>((resolve) => { respond = resolve; });
+      deliverRequest({ sessionId: current.sessionId, requestId: `old_assistant_${action.type}`, revision: originalRevision,
+        episodeId: 'episode-b', action });
+      expect((await replied).error).toContain('确认内容已变化');
+    }
     expect(onRequest).not.toHaveBeenCalled();
   });
 

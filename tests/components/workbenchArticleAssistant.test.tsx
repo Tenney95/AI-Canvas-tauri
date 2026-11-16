@@ -7,6 +7,7 @@ const effects: Array<{ deps?: readonly unknown[]; cleanup?: () => void }> = [];
 const pendingEffects: Array<() => void> = [];
 let stateIndex = 0;
 let effectIndex = 0;
+const motion = vi.hoisted(() => ({ reduced: false }));
 
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
@@ -33,6 +34,7 @@ vi.mock('../../src/i18n', async (original) => {
   const actual = await original<typeof import('../../src/i18n')>();
   return { ...actual, useT: () => actual.t };
 });
+vi.mock('framer-motion', () => ({ useReducedMotion: () => motion.reduced }));
 
 import WorkbenchArticleAssistant from '../../src/components/workbench/WorkbenchArticleAssistant';
 
@@ -87,6 +89,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   values.length = effects.length = pendingEffects.length = 0;
+  motion.reduced = false;
   dispatch.mockReset().mockImplementation(async (action) => action.type === 'article_generate' ? candidate : true);
   props = { targetKey: 'article-a', targetLabel: candidate.targetLabel,
     target: { kind: 'script', episodeId: 'episode-a' }, disabled: false, generating: false, dispatch };
@@ -94,6 +97,38 @@ beforeEach(() => {
 afterEach(() => { effects.forEach((effect) => effect.cleanup?.()); });
 
 describe('工作台文章 AI 修改', () => {
+  it('由父组件提供当前模型或团队入口，同时保留文章目标提示', () => {
+    const onChoose = vi.fn();
+    props = { ...props, executionControls: <button type="button" aria-label="选择模型" onClick={onChoose}>文本模型</button> };
+    render();
+    click('选择模型');
+    expect(onChoose).toHaveBeenCalledOnce();
+    expect(editor().title).toBe(candidate.targetLabel);
+    expect(text(tree)).not.toContain(`修改：${candidate.targetLabel}`);
+    props = { ...props, executionControls: <button type="button" aria-label="团队配置">创作团队</button> };
+    render();
+    expect(button('团队配置')).toBeDefined();
+    expect(elements(tree).some((element) => element.props['aria-label'] === '选择模型')).toBe(false);
+  });
+
+  it('减少动态或性能模式保留可用发送按钮，隐藏时暂停金属效果', () => {
+    render(); writeInstruction('调整节奏');
+    props = { ...props, theme: 'light', hidden: true };
+    render();
+    const metal = elements(tree).find((element) => element.props.className === 'ui-ai-input__send-metal');
+    expect(metal?.props).toMatchObject({ theme: 'light', preset: 'silver', paused: true });
+    expect(button('按要求修改当前文章').props.disabled).toBe(false);
+    props = { ...props, hidden: false, performanceMode: true };
+    render();
+    expect(elements(tree).some((element) => element.props.className === 'ui-ai-input__send-metal')).toBe(false);
+    expect(button('按要求修改当前文章').props.disabled).toBe(false);
+    props = { ...props, performanceMode: false };
+    motion.reduced = true;
+    render();
+    expect(elements(tree).some((element) => element.props.className === 'ui-ai-input__send-metal')).toBe(false);
+    expect(button('按要求修改当前文章').props.disabled).toBe(false);
+  });
+
   it('按当前文章和需求生成预览，明确采用后只写入草稿而不自动保存', async () => {
     render();
     expect(button('按要求修改当前文章').props.disabled).toBe(true);

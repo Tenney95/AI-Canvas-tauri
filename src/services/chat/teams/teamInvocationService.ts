@@ -31,6 +31,8 @@ export interface TeamInvocationInput {
   originalText?: string;
   requestId?: string;
   profile?: AgentTeamProfile;
+  /** 文章改写显式沿用已校验来源会话的组合包；其他工作台入口仍读取分集配置。 */
+  creationProfileSource?: 'conversation';
   onProgress?: () => void;
 }
 
@@ -160,15 +162,16 @@ function acceptInvocation(input: TeamInvocationInput): PendingInvocation {
   assertCurrent();
   if (!conversation) conversation = state.conversations.find((item) => item.id === state.activeConversationId
     && item.projectId === ownerId && !item.deletedAt && item.id.startsWith('conv-'));
-  const creationOwner = context.source === 'script-workbench'
-    ? state.projects.find((item) => item.id === projectId && !!item.parentId) : conversation;
+  const creationOwner = input.creationProfileSource === 'conversation' ? conversation
+    : context.source === 'script-workbench' ? state.projects.find((item) => item.id === projectId && !!item.parentId) : conversation;
   const creationSelection = creationOwner?.creationProfile ? structuredClone(creationOwner.creationProfile) : undefined;
   const profile = normalizeTeamProfile(structuredClone(input.profile
     ?? resolveCreationTeamProfile(creationSelection, creationOwner?.teamProfileOverride)));
   const materials = input.materials ?? explicitNodeMaterials(content, projectId);
   if (content.length + materials.length > MAX_TEAM_INPUT_CHARS) throw new Error('团队目标与材料超过总上限，请按场景或章节拆分，不会截断原稿');
   const signature = JSON.stringify({ projectId, conversationId: input.conversationId, content,
-    profile, creationSelection, templateId: input.templateId, context, materials, originalText: input.originalText, mode: input.mode });
+    profile, creationSelection, creationProfileSource: input.creationProfileSource,
+    templateId: input.templateId, context, materials, originalText: input.originalText, mode: input.mode });
   const previous = invocations.get(requestId);
   if (previous) {
     if (previous.signature !== signature) throw new Error('同一请求身份不能用于不同的团队任务');

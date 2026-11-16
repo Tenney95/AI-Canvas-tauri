@@ -20,6 +20,7 @@ const ACTIONS = new Set(['flush_draft', 'edit_text', 'edit_creative', 'select_ep
   'outline_list', 'outline_create', 'outline_import', 'outline_open', 'outline_edit', 'outline_save', 'outline_reload', 'outline_select_builtin',
   'shotlist', 'split_draft', 'extract_series', 'close_asset_preview', 'commit_asset_preview', 'asset', 'settle_editor',
   'set_execution', 'set_team_mode', 'save_team_profile', 'team_control', 'team_artifact', 'team_amend', 'view_agent_task',
+  'select_assistant_model', 'save_assistant_team_profile',
   'preview_creation_profile', 'apply_creation_profile', 'refresh_external_agents', 'edit_team_graph', 'resolve_dispatch',
   'story_graph_filter', 'story_graph_detail', 'story_graph_patch', 'story_graph_resolve_evidence', 'story_graph_locate',
   'story_graph_extract', 'story_graph_cancel', 'story_graph_discard', 'story_graph_adopt', 'story_graph_editor']);
@@ -64,7 +65,7 @@ export function createScriptWorkbenchWindowHost(options: {
   const requests = new Map<string, { signature: string; result: Promise<ScriptWorkbenchResponse> }>();
   let acceptedSequence = 0;
   const bases = new Map<number, { context: ProjectWindowContext | null; episodeId: string | null; canvasId: string | null;
-    pending: string; draftVersion: number; rename: string; preview: number; graph: string; graphEpoch: string; graphCandidate: string; graphExtraction: string }>();
+    pending: string; draftVersion: number; rename: string; preview: number; graph: string; graphEpoch: string; graphCandidate: string; graphExtraction: string; assistant: string }>();
   const previews = new WeakMap<object, number>();
   let previewSequence = 0;
   const basis = (snapshot: ScriptWorkbenchSnapshot) => {
@@ -73,6 +74,7 @@ export function createScriptWorkbenchWindowHost(options: {
     return { context: options.getContext ? options.getContext() : snapshot.windowContext ?? null,
       episodeId: snapshot.currentEpisode?.id ?? null, canvasId: snapshot.canvasProjectId,
       pending: JSON.stringify(snapshot.pendingAction), draftVersion: snapshot.draftVersion,
+      assistant: JSON.stringify([snapshot.assistantConversationId, snapshot.assistantModelId, snapshot.executionSelection, snapshot.assistantTeamProfile]),
       rename: JSON.stringify([snapshot.renamingEpisodeId, snapshot.episodes.find((episode) => episode.id === snapshot.renamingEpisodeId)?.name]),
       preview: assets ? previews.get(assets)! : 0,
       graph: JSON.stringify([snapshot.series?.id, snapshot.series?.exchangeEpoch ?? 0, snapshot.storyGraphView?.id, snapshot.storyGraphView?.revision]),
@@ -150,6 +152,8 @@ export function createScriptWorkbenchWindowHost(options: {
             && !['story_graph_cancel', 'story_graph_discard'].includes(payload.action.type)
             && !(payload.action.type === 'story_graph_editor' && !payload.action.open);
           if ((['discard_pending', 'save_pending'].includes(payload.action.type) && (!previous || previous.pending !== current.pending || previous.draftVersion !== current.draftVersion))
+            || (['select_assistant_model', 'save_assistant_team_profile', 'set_execution', 'article_generate'].includes(payload.action.type)
+              && previous.assistant !== current.assistant)
             || (graphScoped && (!previous || previous.graphEpoch !== current.graphEpoch))
             || (payload.action.type === 'rename' && (!previous || previous.rename !== current.rename))
             || (payload.action.type === 'commit_asset_preview' && (!previous || previous.preview !== current.preview))
@@ -367,7 +371,8 @@ export async function connectScriptWorkbenchWindow(
       if (disposed || !revision) { reject(new Error('工作台尚未连接主窗口')); return; }
       const value = envelope(request);
       if (!value.windowContext) { reject(new Error('窗口协议需要刷新，修改仍保留在本窗口')); return; }
-      const timer = setTimeout(() => { pending.delete(value.requestId); reject(new Error('主窗口未确认完成，请核对当前状态后再操作')); }, 200000);
+      const responseTimeout = value.action.type === 'article_generate' ? 30 * 60 * 1000 : 200000;
+      const timer = setTimeout(() => { pending.delete(value.requestId); reject(new Error('主窗口未确认完成，请核对当前状态后再操作')); }, responseTimeout);
       pending.set(value.requestId, { sequence: value.sequence!, context: value.windowContext,
         allowsContextChange: ['select_episode', 'story_graph_locate', 'save_pending', 'discard_pending', 'close', 'dock'].includes(value.action.type),
         resolve, reject, timer });

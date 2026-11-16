@@ -12,3 +12,23 @@
   padding-bottom: calc(var(--workbench-article-overlay-height, 0px) + var(--ui-pad));
   scroll-padding-bottom: calc(var(--workbench-article-overlay-height, 0px) + var(--ui-pad));
 }
+
+.script-workbench-article-viewport > section > :first-child,
+textarea.script-workbench-article-text {
+  min-height: 0;
+}
+
+textarea.script-workbench-article-text {
+  overflow-x: hidden;
+  resize: none;
+}
+
+/* 正文保持无框编辑，底部 AI 浮层不再叠在另一层表单外框中。 */
+.ui-textarea.script-workbench-article-text,
+.ui-textarea.script-workbench-article-text:hover:not(:disabled):not(:focus),
+.ui-textarea.script-workbench-article-text:focus {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
