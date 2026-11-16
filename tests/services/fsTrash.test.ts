@@ -254,6 +254,16 @@ describe('删除节点文件的项目归属校验', () => {
     expect(fsMocks.rename).not.toHaveBeenCalled();
   });
 
+  it('扩图垫图参与共享引用保护，删除扩图节点可沿原路径暂存', async () => {
+    const path = 'D:/data/project-b/padding.png';
+    const input = { url: `asset://localhost/${path}`, width: 1024, height: 768 };
+    const keep = collectNodeFileReferences({ outpaintInput: input });
+    expect(keep).toEqual(new Set([path]));
+    await deleteNodeFiles([{ filePath: path }], keep, 'project-b');
+    expect(fsMocks.rename).not.toHaveBeenCalled();
+    expect(await resolveNodeUndoTrashPaths({ outpaintInput: input }, 'project-b')).toEqual([path]);
+  });
+
   it('跨项目复制来的文件不会被删除', async () => {
     // 当前项目是 B，但节点的 filePath 仍指向源项目 A
     await deleteNodeFile({ filePath: 'D:/data/project-a/original.png' }, undefined, 'project-b');

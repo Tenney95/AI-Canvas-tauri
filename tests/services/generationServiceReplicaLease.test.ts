@@ -111,6 +111,57 @@ beforeEach(() => {
   mocks.processText.mockReset().mockImplementation((_prompt: string, text: string) => ({ ok: true, output: text }));
 });
 
+describe('节点扩图的独立输入', () => {
+  const outpaintData = (): BaseNodeData => ({ type: 'ai-image', label: '扩图', prompt: 'Extend the scene',
+    provider: 'general', model: 'general/image', imageUrl: 'previous-result.png',
+    outpaintInput: { url: 'asset://localhost/project/padded.png', relativePath: 'padded.png', width: 1600, height: 900 } });
+
+  it.each(['general', 'comfyui'])('%s 始终使用内部垫图，结果回填不覆盖该输入', async (provider) => {
+    const input = { ...outpaintData(), provider, ...(provider === 'comfyui'
+      ? { model: 'comfyui/workflow', workflowId: 'wf-image', workflowInputs: { 'comfy-param::2::steps': '30' } } : {}) };
+    const originalInput = structuredClone(input.outpaintInput);
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    mocks.image.mockReset().mockResolvedValue({ url: 'generated.png', width: 1600, height: 900 });
+    expect((await run()).success).toBe(true);
+    expect(mocks.image.mock.calls[0][0]).toMatchObject({ image_urls: [input.outpaintInput!.url],
+      provider, workflowId: input.workflowId, workflowInputs: input.workflowInputs });
+    expect(mocks.store.nodes[0].data.outpaintInput).toEqual(originalInput);
+    expect(mocks.store.updateNodeData.mock.calls.every(([, patch]) => !('outpaintInput' in patch))).toBe(true);
+    expect(mocks.prepareBatch).not.toHaveBeenCalled();
+  });
+
+  it('新结构先持久化垫图，再将已解析的地址传给原生生成入口', async () => {
+    mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',
+      projectId: 'p', projectEpoch: 1, canvasId: 'p', episodeId: null, canvasEpoch: 1, canvasRevision: 0 };
+    const input = outpaintData(); input.outpaintInput = { url: 'data:image/png;base64,AA==', width: 1600, height: 900 };
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    const normalized = { ...input.outpaintInput, url: 'asset://localhost/project/padded.png', relativePath: 'padded.png' };
+    mocks.store.normalizeNativeMediaGenerationInputs.mockImplementationOnce(async () => {
+      mocks.store.nodes = [{ id: 'video', data: { ...input, outpaintInput: normalized } }];
+      return { targetPatch: { outpaintInput: normalized }, nodePatches: new Map() };
+    });
+    mocks.imageBatch.mockRejectedValueOnce(Object.assign(new Error('fixture delivered'), { name: 'NativeMediaTaskDelivered' }));
+    expect(await run()).toEqual({ success: true });
+    expect(mocks.imageBatch.mock.calls[0][0]).toMatchObject({ image_urls: [normalized.url] });
+  });
+
+  it('垫图缺失时拒绝生成，不退回上次结果或重新提交', async () => {
+    const input = outpaintData(); input.outpaintInput!.url = undefined;
+    mocks.store.nodes = [{ id: 'video', data: input }];
+    expect(await run()).toEqual({ success: false, message: '扩图垫图不可用，请重新打开原图创建扩图' });
+    expect(mocks.image).not.toHaveBeenCalled(); expect(mocks.imageBatch).not.toHaveBeenCalled();
+    expect(mocks.prepareMedia).not.toHaveBeenCalled();
+  });
+
+  it('固定多候选模型不会破坏只新增一个结果节点的约定', async () => {
+    mocks.store.nodes = [{ id: 'video', data: outpaintData() }];
+    mocks.imageOutputs.mockReturnValue(4);
+    expect(await run()).toEqual({ success: false, message: '扩图请选择单图输出模型' });
+    expect(mocks.image).not.toHaveBeenCalled(); expect(mocks.imageBatch).not.toHaveBeenCalled();
+    expect(mocks.prepareBatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('节点视频生成的宿主任务租约', () => {
   it('新项目先规范化参考素材，再冻结原生提交守卫；同一次生成不会因身份补齐自行失效', async () => {
     mocks.store.projectExecutionContext = { kind: 'canvas', schemaVersion: 2, modelGeneration: 1, runtimeEpoch: 'runtime',

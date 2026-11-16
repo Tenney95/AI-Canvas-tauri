@@ -39,6 +39,15 @@ describe('asset usage identity matching', () => {
     expect(matchesAssetUsage({ imageRelativePath: 'a b.png' }, file, { root: 'D:/media' })).toBe(true);
     expect(matchesAssetUsage({ name: 'a b.png' }, file)).toBe(false);
   });
+
+  it('扩图垫图的独立素材根覆盖画布根，未知根不按当前画布路径猜测', () => {
+    const roots = new Map([['primary', 'D:/media'], ['child', 'D:/child']]);
+    const value = { storageRootRef: 'child', outpaintInput: { storageRootRef: 'primary', relativePath: 'a b.png' } };
+    expect(matchesAssetUsage(value, file, { root: 'D:/child', roots })).toBe(true);
+    expect(matchesAssetUsage(value, { ...file, path: 'D:/child/a b.png' }, { root: 'D:/child', roots })).toBe(false);
+    expect(matchesAssetUsage({ outpaintInput: { storageRootRef: 'unknown', relativePath: 'a b.png' } },
+      file, { root: 'D:/media', roots })).toBe(false);
+  });
   it('resolves same-ID creative mentions by the real kind priority and project owner', () => {
     const character: AssetUsageTarget = { kind: 'creative', scope: 'project', ownerId: 'series', assetKind: 'character', assetId: 'same', name: '人物' };
     const scene: AssetUsageTarget = { ...character, assetKind: 'scene' };

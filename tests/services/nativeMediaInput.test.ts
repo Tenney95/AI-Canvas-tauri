@@ -29,3 +29,16 @@ it('v3引用节点的产物和工作流变更撤销旧输入，v2仍使用原算
   expect(nativeMediaInputMaterial({ ...target, data: { ...target.data, audioUrl: 'result.wav', status: 'success' } }, state, 'media-input-v3')).toBe(original);
   expect(nativeMediaInputMaterial(target, { ...state, edges: [] }, 'media-input-v3')).not.toBe(original);
 });
+
+it.each(['media-input-v2', 'media-input-v3'] as const)('%s 将独立扩图垫图作为输入，结果回填不改变输入', (scheme) => {
+  const state = fixture(), target: Node<BaseNodeData> = { ...node(), type: 'ai-image', data: {
+    type: 'ai-image', label: '扩图结果', prompt: '补全背景', outpaintInput: {
+      url: 'asset://localhost/project/padding.png', assetId: 'padding', relativePath: 'padding.png', width: 1024, height: 768,
+    },
+  } };
+  const baseline = nativeMediaInputMaterial(target, state, scheme);
+  expect(nativeMediaInputMaterial({ ...target, data: { ...target.data, imageUrl: 'result.png', output: 'result.png', status: 'success' } }, state, scheme)).toBe(baseline);
+  expect(nativeMediaInputMaterial({ ...target, data: { ...target.data, outpaintInput: { ...target.data.outpaintInput!, url: 'new-padding.png' } } }, state, scheme)).not.toBe(baseline);
+  expect(nativeMediaInputMaterial({ ...target, data: { ...target.data, outpaintInput: { ...target.data.outpaintInput!, width: 2048 } } }, state, scheme)).not.toBe(baseline);
+  expect(nativeMediaInputMaterial({ ...target, data: { ...target.data, outpaintInput: undefined } }, state, scheme)).not.toBe(baseline);
+});

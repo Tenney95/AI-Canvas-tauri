@@ -41,6 +41,7 @@ interface NodeFileReferences {
   directorResultManifest?: unknown;
   storyboardOverrides?: unknown;
   shotlistRows?: unknown;
+  outpaintInput?: unknown;
 }
 
 const DIRECTOR_SCENE_REFERENCE_PREFIX = 'director-scene:';
@@ -77,6 +78,11 @@ export function collectNodeFileReferences(nodeData: NodeFileReferences): Set<str
   const references = new Set<string>();
   const filePath = stringPath(nodeData.filePath);
   if (filePath) references.add(filePath);
+  if (nodeData.outpaintInput && typeof nodeData.outpaintInput === 'object' && !Array.isArray(nodeData.outpaintInput)) {
+    const input = nodeData.outpaintInput as { filePath?: unknown; url?: unknown };
+    const path = stringPath(input.filePath) ?? localMediaUrlToPath(typeof input.url === 'string' ? input.url : undefined);
+    if (path) references.add(path);
+  }
   if (Array.isArray(nodeData.directorCaptureFilePaths)) {
     nodeData.directorCaptureFilePaths.forEach((value) => {
       const path = stringPath(value);

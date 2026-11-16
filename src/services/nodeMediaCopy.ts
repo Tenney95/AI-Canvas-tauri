@@ -4,6 +4,7 @@
 import type { BaseNodeData } from '../types';
 import * as files from './fileService';
 import { isTauriEnv } from './fs/core';
+import { localMediaUrlToPath } from '../utils/mediaUrl';
 
 // Serialize allocation + native copy: concurrent pastes must not select the same destination.
 let copyQueue: Promise<unknown> = Promise.resolve();
@@ -21,8 +22,8 @@ async function discardFiles(paths: string[]): Promise<void> {
 export async function discardCopiedNodeMedia(data: BaseNodeData, source: BaseNodeData): Promise<void> {
   const staged = stagedPaths.get(data);
   if (staged) { stagedPaths.delete(data); await discardFiles(staged); return; }
-  const original = new Set([source.filePath, ...(source.storyboardOverrides ?? []).map((cell) => cell?.filePath)]);
-  await discardFiles([data.filePath, ...(data.storyboardOverrides ?? []).map((cell) => cell?.filePath)]
+  const original = new Set([source.filePath, localMediaUrlToPath(source.outpaintInput?.url), ...(source.storyboardOverrides ?? []).map((cell) => cell?.filePath)]);
+  await discardFiles([data.filePath, localMediaUrlToPath(data.outpaintInput?.url), ...(data.storyboardOverrides ?? []).map((cell) => cell?.filePath)]
     .filter((path): path is string => !!path && !original.has(path)));
 }
 
@@ -30,12 +31,13 @@ export function needsNodeMediaCopy(data: BaseNodeData): boolean {
   if (data.type === 'ai-director') return false; // Director snapshots have their own insertion lifecycle.
   return !!(data.filePath || data.storyboardOverrides?.some((cell) => cell?.filePath)
     || (isTauriEnv() && (data.imageUrl || data.videoUrl || data.audioUrl || data.thumbnailUrl
+      || data.outpaintInput
       || data.storyboardOverrides?.some((cell) => cell?.url))));
 }
 
 /** Stage independent files before publishing any copied node. Failure never falls back to sharing. */
 export async function copyNodeMedia(data: BaseNodeData, projectId: string): Promise<BaseNodeData> {
-  const paths = [data.filePath, ...(data.storyboardOverrides ?? []).map((cell) => cell?.filePath)]
+  const paths = [data.filePath, localMediaUrlToPath(data.outpaintInput?.url), ...(data.storyboardOverrides ?? []).map((cell) => cell?.filePath)]
     .filter((path): path is string => !!path);
   for (const path of paths) pinnedPaths.set(keyOf(path), (pinnedPaths.get(keyOf(path)) ?? 0) + 1);
   const task = copyQueue.then(async () => {
@@ -88,6 +90,11 @@ export async function copyNodeMedia(data: BaseNodeData, projectId: string): Prom
           const result = await copy(cell.filePath, cell.url);
           if (result) Object.assign(cell, { filePath: result.filePath, relativePath: undefined, url: result.url });
         }
+      }
+      if (next.outpaintInput) {
+        const result = await copy(localMediaUrlToPath(next.outpaintInput.url), next.outpaintInput.url);
+        if (!result) throw new Error('素材复制失败，请重试');
+        next.outpaintInput = { url: result.url, width: next.outpaintInput.width, height: next.outpaintInput.height };
       }
       if (next.status === 'loading') next.status = saved ? 'success' : 'idle';
       stagedPaths.set(next, created);

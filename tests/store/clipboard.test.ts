@@ -266,6 +266,7 @@ describe('modifier-drag duplication', () => {
       runninghubModelParameters: { strength: '0.8' },
       cameraSettings: { lens: '50mm' },
       mattingMask: 'data:mask', annotation: 'data:annotation',
+      outpaintInput: { url: 'asset://localhost/data/a/padding.png', assetId: 'padding-a', relativePath: 'padding.png', width: 1440, height: 2560 },
       imageWidth: 1440, imageHeight: 2560, sourceUrl: 'https://example.test/result.png',
       fileName: 'original.png', output: 'https://example.test/result.png',
       artifactId: 'artifact', mediaVersion: 3, batchGroupId: 'old-batch',
@@ -293,7 +294,7 @@ describe('modifier-drag duplication', () => {
         runninghubModelParameters: { strength: '0.8' }, cameraSettings: { lens: '50mm' } } });
     for (const field of ['output', 'filePath', 'fileName', 'imageUrl', 'thumbnailUrl', 'sourceUrl',
       'assetId', 'relativePath', 'artifactId', 'mediaVersion', 'batchGroupId',
-      'imageWidth', 'imageHeight', 'mattingMask', 'annotation', 'dramaAssetId', 'characterLibraryLinks',
+      'imageWidth', 'imageHeight', 'mattingMask', 'annotation', 'outpaintInput', 'dramaAssetId', 'characterLibraryLinks',
       'runninghubOutputs', 'runninghubStage', 'workflowApiOutputs', 'workflowApiStage']) {
       expect(clone?.data[field], field).toBeUndefined();
     }

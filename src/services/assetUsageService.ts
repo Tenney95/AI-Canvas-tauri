@@ -29,13 +29,13 @@ const check = (signal?: AbortSignal) => { if (signal?.aborted) throw new DOMExce
 
 /** 只匹配稳定身份、精确路径及真实 @drama 协议，不按名称猜测。 */
 export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | readonly AssetUsageTarget[], context: {
-  root?: string; ownerId?: string; global?: boolean; nodeIds?: ReadonlySet<string>;
+  root?: string; roots?: ReadonlyMap<string, string>; ownerId?: string; global?: boolean; nodeIds?: ReadonlySet<string>;
   projectKinds?: ReadonlyMap<string, DramaAssetKind>; globalKinds?: ReadonlyMap<string, DramaAssetKind>;
   projectAssets?: ReadonlyMap<string, unknown>; globalAssets?: ReadonlyMap<string, unknown>; nodes?: ReadonlyMap<string, unknown>;
 } = {}): boolean {
   if (!('kind' in target)) return target.some((entry) => matchesAssetUsage(value, entry, context));
   const seen = new WeakSet<object>();
-  const visit = (item: unknown): boolean => {
+  const visit = (item: unknown, inheritedRoot: string | undefined): boolean => {
     if (typeof item === 'string') {
       if (target.kind === 'file') {
         if (assetUsagePathKey(item) === assetUsagePathKey(target.path)) return true;
@@ -70,7 +70,7 @@ export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | rea
             const fallback = pick === asset ? { assetId: asset.assetId, imageAssetId: asset.imageAssetId,
               relativePath: asset.relativePath, imageRelativePath: asset.imageRelativePath, imageUrl: asset.imageUrl } : pick;
             const value = resolved ? { assetId: node.assetId, filePath: node.filePath, url: resolved } : fallback;
-            if (matchesAssetUsage(value, target, { root: context.root, global })) return true;
+            if (matchesAssetUsage(value, target, { root: inheritedRoot, global })) return true;
           }
         }
         return false;
@@ -85,13 +85,14 @@ export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | rea
     }
     if (!item || typeof item !== 'object' || seen.has(item)) return false;
     seen.add(item);
-    if (Array.isArray(item)) return item.some(visit);
+    if (Array.isArray(item)) return item.some((value) => visit(value, inheritedRoot));
     const data = record(item);
+    const root = typeof data.storageRootRef === 'string' && context.roots ? context.roots.get(data.storageRootRef) : inheritedRoot;
     if (target.kind === 'file') {
       if (target.assetId && (data.assetId === target.assetId || data.imageAssetId === target.assetId)) return true;
       for (const relative of [data.relativePath, data.imageRelativePath]) {
-        if (context.root && typeof relative === 'string' && !relative.split(/[\\/]/).some((part) => !part || part === '..' || part === '.' || part.includes(':'))
-          && assetUsagePathKey(joinPath(context.root, relative)) === assetUsagePathKey(target.path)) return true;
+        if (root && typeof relative === 'string' && !relative.split(/[\\/]/).some((part) => !part || part === '..' || part === '.' || part.includes(':'))
+          && assetUsagePathKey(joinPath(root, relative)) === assetUsagePathKey(target.path)) return true;
       }
       if (!context.global && context.nodeIds && [data.imageNodeId, data.sourceNodeId].some((id) => typeof id === 'string' && context.nodeIds!.has(id))) return true;
     } else {
@@ -113,9 +114,9 @@ export function matchesAssetUsage(value: unknown, target: AssetUsageTarget | rea
         if (inScope && (idSuffix === '' || idSuffix === ':voice' || idSuffix?.startsWith(':volcengine:'))) return true;
       }
     }
-    return Object.values(data).some(visit);
+    return Object.values(data).some((value) => visit(value, root));
   };
-  return visit(value);
+  return visit(value, context.root);
 }
 
 /** 读取失败即失败，不将未知持久化记录当作“未使用”。 */
@@ -217,7 +218,7 @@ export async function loadAssetUsage(target: AssetUsageTarget | readonly AssetUs
     rootsByProject.set(project.id, root ?? undefined);
     const ownerId = project.parentId ?? project.id;
     const library = record(storedProjects.get(ownerId)).dramaAssets;
-    const context = { root: root ?? undefined, ownerId, projectKinds: kinds(library), globalKinds, globalAssets, projectAssets: assetMap(library),
+    const context = { root: root ?? undefined, roots, ownerId, projectKinds: kinds(library), globalKinds, globalAssets, projectAssets: assetMap(library),
       nodes: new Map((stored.nodes as unknown[]).map((node) => [String(record(node).id), node] as const)), nodeIds: new Set<string>() };
     const outputIds = (nodes: unknown[]) => new Set(nodes.filter((item) => {
       const node = record(item); const data = record(node.data); const type = String(node.type ?? data.type ?? '');

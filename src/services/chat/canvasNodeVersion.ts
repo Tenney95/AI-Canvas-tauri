@@ -19,6 +19,7 @@ export function generationInputSnapshot(data: BaseNodeData, projectSettings: unk
     data.shotlistRows, data.shotlistColumns, data.shotlistCinematography,
     data.directorRuntimeKind, data.directorInstanceId, data.directorPrevisPrompt, data.directorPrevisModel,
     data.directorPrevisProvider, projectSettings,
+    ...(data.outpaintInput ? [['outpaintInput', data.outpaintInput]] : []),
   ]);
 }
 

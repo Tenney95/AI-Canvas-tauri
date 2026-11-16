@@ -130,6 +130,7 @@ interface AssetReferenceLike {
   filePath?: string;
   directorCaptureRelativePaths?: string[];
   storyboardOverrides?: (AssetReferenceLike | null)[];
+  outpaintInput?: AssetReferenceLike;
   directorScene?: AssetReferenceLike;
   directorPrevisScene?: AssetReferenceLike;
   directorResultManifest?: AssetReferenceLike;
@@ -177,6 +178,7 @@ function collectAssetReferences(record: ProjectSaveData): AssetReferenceLike[] {
   const pushReference = (value: unknown) => {
     if (!isRecord(value)) return;
     references.push(value);
+    if (isRecord(value.outpaintInput)) references.push(value.outpaintInput);
     if (Array.isArray(value.storyboardOverrides)) {
       value.storyboardOverrides.forEach((override) => {
         if (isRecord(override)) references.push(override);

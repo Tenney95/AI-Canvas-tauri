@@ -538,7 +538,7 @@ function prepareDuplicateNodeData(
       'output', 'imageUrl', 'videoUrl', 'audioUrl', 'sourceUrl', 'thumbnailUrl',
       'fileName', 'filePath', 'assetId', 'relativePath', 'artifactId', 'mediaVersion',
       'imageWidth', 'imageHeight', 'videoWidth', 'videoHeight', 'videoDuration', 'videoBatchFingerprint',
-      'mattingMask', 'annotation', 'annotationLayer', 'batchGroupId',
+      'mattingMask', 'annotation', 'annotationLayer', 'outpaintInput', 'batchGroupId',
       'runninghubOutputs', 'runninghubStage', 'workflowApiOutputs', 'workflowApiStage', 'pluginOutputs',
       'musicClipId', 'animationSheet', 'animationEdits',
       'storyboardExtracted', 'storyboardOverrides', 'shotlistRows',

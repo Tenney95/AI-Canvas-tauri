@@ -280,6 +280,7 @@ export interface BaseNodeData {
   /** 本次收起实际移动的同层后继；展开时撤销该贡献，旧折叠数据没有此项。 */
   groupCollapseLayout?: { deltaX: number; nodeIds: string[]; parentId?: string };
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
+  outpaintInput?: import('./media').OutpaintInput; // 扩图垫图独立于结果图片保存，重试仍使用原输入
   annotation?: string;        // 旧版标注数据（data URL，透明 PNG；仅用于兼容读取）
   annotationLayer?: ImageAnnotationLayer; // 可编辑矢量标注层，独立于原图存储
   imageWidth?: number;        // 生成图片实际宽度

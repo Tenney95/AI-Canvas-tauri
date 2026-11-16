@@ -1,7 +1,7 @@
 /** P5 原生 IPC 适配回归源；不触碰真实文件或原生服务，尚未运行。 */
 import { webcrypto } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createBoundProjectModelArchiveExportPort, createBoundProjectModelArchiveImportPort, createNativeProjectModelArchivePort } from '../../src/services/projectModelArchiveNativePort';
+import { createBoundProjectModelArchiveExportPort, createBoundProjectModelArchiveImportPort, createNativeProjectModelArchivePort, currentStoragePaths } from '../../src/services/projectModelArchiveNativePort';
 import { buildProjectExchangeSnapshotV2 } from '../../src/services/projectArchiveV4';
 import { createProjectExchangeRevisionV2 } from '../../src/services/projectExchangeV2Format';
 import type { ProjectArchiveBusinessV4, ValidatedProjectArchiveV4 } from '../../src/types/projectArchiveV4';
@@ -61,6 +61,16 @@ beforeEach(() => {
   });
 });
 describe('P5 native file projection', () => {
+  it('扩图垫图按自身主根进入归档闭包，不沿结果画布子根定位', async () => {
+    const { capture } = await setup();
+    capture.aggregate.canvases = [{ id: 'canvas-pad', projectId: capture.aggregate.project.id, episodeId: null,
+      epoch: 0, revision: 0, storageRootRef: 'legacy-root:B', edges: [], groups: [], nodes: [{ id: 'expanded',
+        data: { outpaintInput: { relativePath: 'media/padding.png', storageRootRef: 'legacy-root:A', width: 1024, height: 768 } } }] }];
+    const paths = currentStoragePaths(capture, new Map([['legacy-root:A', 'fixture/primary'], ['legacy-root:B', 'fixture/secondary']]));
+    expect(paths.get('legacy-root:A')).toContain('media/padding.png');
+    expect(paths.get('legacy-root:B')).not.toContain('media/padding.png');
+  });
+
   it('新项目导出只使用原生绑定的主根和逻辑子根，不接受其他目录', async () => {
     const { capture, files } = await setup();
     const projectId = 'p2-00000000-0000-4000-8000-000000000001';
@@ -163,6 +173,7 @@ describe('P5 native file projection', () => {
   it.each([
     { field: 'data.relativePath', data: { relativePath: 'missing.png' } },
     { field: 'data.referenceImages[0].relativePath', data: { referenceImages: [{ id: 'ref-one', label: '正面参考', relativePath: 'missing.png' }] } },
+    { field: 'data.outpaintInput.relativePath', data: { outpaintInput: { relativePath: 'missing.png', width: 1024, height: 768 } } },
     { field: 'data.shotlistRows[0].relativePath', data: { shotlistRows: [{ id: 'shot-one', shotNo: 'S003', relativePath: 'missing.png' }] } },
   ])('新项目缺失引用定位到分集、节点和$field，不静默跳过', async ({ field, data }) => {
     const { capture } = await setup();

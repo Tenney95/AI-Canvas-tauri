@@ -259,7 +259,8 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
   it('生成前只规范化目标与本轮引用，回补媒体身份但保留运行态、标签、位置与历史', async () => {
     const { store, context } = await fixture('ai-image');
     const target = { ...store.getState().nodes[0], data: { ...store.getState().nodes[0].data,
-      prompt: '@{source:参考图}', imageUrl: 'asset://localhost/fixture/native/old.png', filePath: '/fixture/native/old.png' } };
+      prompt: '@{source:参考图}', imageUrl: 'asset://localhost/fixture/native/old.png', filePath: '/fixture/native/old.png',
+      outpaintInput: { url: 'data:image/png;base64,cGFk', width: 1024, height: 768 } } };
     const source: Node<BaseNodeData> = { id: 'source', type: 'ai-image', position: { x: 20, y: 30 }, data: {
       type: 'ai-image', label: '参考图', status: 'success', imageUrl: 'asset://localhost/fixture/native/ref.png', filePath: '/fixture/native/ref.png',
     } };
@@ -274,18 +275,25 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     } : node) });
     gate.resolve([target, source].map((node) => ({ ...node, data: { ...node.data,
       assetId: `asset-${node.id}`, relativePath: node.id === source.id ? 'ref.png' : 'old.png',
+      ...(node.id === target.id ? { outpaintInput: { ...target.data.outpaintInput,
+        url: 'asset://localhost/fixture/native/padding.png', assetId: 'padding', relativePath: 'padding.png' } } : {}),
     } })));
-    await preparing;
+    const { targetPatch, nodePatches } = await preparing;
     expect(store.getState().nodes[0]).toMatchObject({ selected: true, position: { x: 35, y: 45 }, data: {
       label: '准备期间的新标签', status: 'idle', prompt: target.data.prompt, assetId: `asset-${target.id}`, relativePath: 'old.png',
     } });
     expect(store.getState().nodes[1].data).toMatchObject({ assetId: 'asset-source', relativePath: 'ref.png', imageUrl: source.data.imageUrl });
     expect(store.getState().nodes[2]).toBe(unrelated);
+    expect(store.getState().nodes[0].data.outpaintInput).toEqual({
+      url: 'asset://localhost/fixture/native/padding.png', assetId: 'padding', relativePath: 'padding.png', width: 1024, height: 768,
+    });
+    expect(targetPatch.outpaintInput).toEqual(store.getState().nodes[0].data.outpaintInput);
+    expect(nodePatches.get(target.id)?.outpaintInput).toEqual(targetPatch.outpaintInput);
     expect(store.getState().history).toBe(history); expect(store.getState().historyIndex).toBe(historyIndex);
     expect((await listNativeMediaTasks(projectId))[0].status).toBe('submitted');
   });
 
-  it.each(['prompt', 'media', 'source-media', 'source-input', 'switch', 'revision'] as const)('身份规范化期间%s变化时不覆盖真实编辑或回写另一画布', async (change) => {
+  it.each(['prompt', 'media', 'outpaint', 'source-media', 'source-input', 'switch', 'revision'] as const)('身份规范化期间%s变化时不覆盖真实编辑或回写另一画布', async (change) => {
     const { store } = await fixture('ai-image');
     const target = { ...store.getState().nodes[0], data: { ...store.getState().nodes[0].data,
       prompt: '@{source:参考图}', imageUrl: 'asset://localhost/fixture/native/original.png', filePath: '/fixture/native/original.png' } };
@@ -295,8 +303,9 @@ describe('新项目 Store 媒体投递与自动保存串行', () => {
     store.setState({ nodes: [target, source], edges: [{ id: 'reference', source: source.id, target: target.id }] });
     const gate = deferred<Node<BaseNodeData>[]>(); nativeDisplayIo.normalizeMedia.mockReturnValueOnce(gate.promise);
     const pending = store.getState().normalizeNativeMediaGenerationInputs(target.id);
-    if (change === 'prompt' || change === 'media') store.setState({ nodes: [{ ...target, data: { ...target.data,
-      ...(change === 'prompt' ? { prompt: '用户的新提示词' } : { imageUrl: 'asset://localhost/fixture/native/replaced.png' }),
+    if (change === 'prompt' || change === 'media' || change === 'outpaint') store.setState({ nodes: [{ ...target, data: { ...target.data,
+      ...(change === 'prompt' ? { prompt: '用户的新提示词' } : change === 'media' ? { imageUrl: 'asset://localhost/fixture/native/replaced.png' }
+        : { outpaintInput: { url: 'data:image/png;base64,bmV3', width: 2048, height: 1024 } }),
     } }, source] });
     else if (change === 'source-media' || change === 'source-input') store.setState({ nodes: [target, { ...source, data: { ...source.data,
       ...(change === 'source-media' ? { imageUrl: 'asset://localhost/fixture/native/replaced-ref.png' } : { workflowInputs: { changed: '用户修改' } }),

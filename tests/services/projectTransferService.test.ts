@@ -772,6 +772,22 @@ describe('projectTransferService', () => {
     expect(row.video).toEqual({ nodeId: 'deleted-video', kind: 'video', relativePath: 'final.mp4', sourceDuration: 5 });
   });
 
+  it.each([false, true])('旧项目归档扩图垫图解除源资产身份并计入素材缺失（文件存在=%s）', async (present) => {
+    const project = { ...PROJECT_RECORD, nodes: [{ id: 'expanded', data: { type: 'ai-image',
+      outpaintInput: { assetId: 'source-padding', relativePath: 'padding.png', width: 1024, height: 768 },
+    } }] };
+    mocks.open.mockResolvedValue('/in/扩图.aicanvas');
+    mocks.invoke.mockResolvedValue({ texts: archiveTexts({ project }),
+      assetPaths: present ? ['padding.png'] : [], assetBytes: present ? 3 : 0 });
+
+    const result = (await importProjectArchive())!;
+
+    expect(result.missingAssetCount).toBe(present ? 0 : 1);
+    const saved = mocks.saveProject.mock.calls[0][0];
+    expect(saved.nodes).toHaveLength(1);
+    expect(saved.nodes[0].data.outpaintInput).toEqual({ relativePath: 'padding.png', width: 1024, height: 768 });
+  });
+
   it('allocates independent project and episode ids on repeated import and includes episode missing assets', async () => {
     mocks.open.mockResolvedValue('/in/整部剧.aicanvas');
     mocks.invoke.mockResolvedValue({

@@ -9,7 +9,7 @@ vi.mock('../../src/services/fileService', () => ({
   copyFileToProjectData: mock.copy, persistMediaUrlToProjectData: mock.persist, moveToUndoTrash: mock.trash,
 }));
 vi.mock('../../src/services/fs/core', () => ({ isTauriEnv: () => true }));
-import { copyNodeMedia, isNodeMediaCopySource } from '../../src/services/nodeMediaCopy';
+import { copyNodeMedia, discardCopiedNodeMedia, isNodeMediaCopySource, needsNodeMediaCopy } from '../../src/services/nodeMediaCopy';
 
 const source: BaseNodeData = { type: 'ai-image', label: 'image', filePath: '/p/source.png',
   imageUrl: 'asset:///p/source.png', thumbnailUrl: 'asset:///p/source.png', assetId: 'old', relativePath: 'source.png' };
@@ -72,5 +72,33 @@ describe('independent node media files', () => {
     const result = await copyNodeMedia({ type: 'ai-image', label: 'remote', imageUrl: 'https://example.com/image.png' }, 'p');
     expect(result.filePath).toBe('/p/download.png');
     expect(mock.persist).toHaveBeenCalledWith(expect.any(String), 'p', 'copy', undefined, { deduplicateByContent: false, redactErrors: true });
+  });
+
+  it('copies and pins an internal outpaint input without inheriting the source project identity', async () => {
+    const original: BaseNodeData = { type: 'ai-image', label: 'expanded', outpaintInput: {
+      url: 'asset://localhost/p/padding.png', assetId: 'source-padding', relativePath: 'padding.png', storageRootRef: 'source-root', width: 1024, height: 768,
+    } };
+    Object.assign(original.outpaintInput!, { filePath: '/p/padding.png' });
+    expect(needsNodeMediaCopy(original)).toBe(true);
+    let finish!: (value: unknown) => void;
+    mock.copy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = copyNodeMedia(original, 'other-project');
+    expect(isNodeMediaCopySource('/p/padding.png')).toBe(true);
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    finish({ filePath: '/other/padding-copy.png', assetUrl: 'asset://localhost/other/padding-copy.png' });
+    const result = await pending;
+    expect(mock.copy).toHaveBeenCalledWith('/p/padding.png', 'other-project', { redactErrors: true });
+    expect(result.outpaintInput).toEqual({ url: 'asset://localhost/other/padding-copy.png', width: 1024, height: 768 });
+    expect(original.outpaintInput).toMatchObject({ assetId: 'source-padding', relativePath: 'padding.png', storageRootRef: 'source-root', filePath: '/p/padding.png' });
+    expect(isNodeMediaCopySource('/p/padding.png')).toBe(false);
+    await discardCopiedNodeMedia(result, original);
+    expect(mock.trash).toHaveBeenCalledExactlyOnceWith('/other/padding-copy.png');
+  });
+
+  it('does not publish a copy with an unavailable internal outpaint input', async () => {
+    const original = { ...source, outpaintInput: { assetId: 'missing-padding', relativePath: 'missing.png', width: 1024, height: 768 } };
+    await expect(copyNodeMedia(original, 'p')).rejects.toThrow('素材复制失败');
+    expect(mock.trash).toHaveBeenCalledExactlyOnceWith('/p/copy-1.png');
+    expect(original.outpaintInput.assetId).toBe('missing-padding');
   });
 });

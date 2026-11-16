@@ -410,14 +410,17 @@ pub fn resolve_native_project_media_subroot<R: Runtime>(webview: Webview<R>, pro
     authorized.to_str().map(str::to_owned).ok_or_else(|| ERROR.into())
 }
 
-// Windows: keep every directory open without FILE_SHARE_WRITE or FILE_SHARE_DELETE, from the filesystem
-// root to the final directory. OPEN_REPARSE_POINT inspects the entry itself; if an
-// existing DELETE handle prevents acquiring the lease, fail closed.
+// Windows: keep every ancestor open without FILE_SHARE_WRITE or FILE_SHARE_DELETE.
+// The media directory may share writes only while a no-share staging file pins it
+// nonempty for publication; it never shares DELETE. OPEN_REPARSE_POINT inspects
+// the entry itself; conflicting existing handles fail closed.
 #[cfg(windows)]
-fn lease_directory(path: &Path) -> Result<File, String> {
+fn lease_directory(path: &Path, share_write: bool) -> Result<File, String> {
     use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    let sharing = FILE_SHARE_READ.0 | if share_write { FILE_SHARE_WRITE.0 } else { 0 };
     let file = OpenOptions::new().read(true).custom_flags(0x02000000 | 0x00200000)
-        .share_mode(0x00000001).open(path).map_err(|_| ERROR)?;
+        .share_mode(sharing).open(path).map_err(|_| ERROR)?;
     let metadata = file.metadata().map_err(|_| ERROR)?;
     if is_link(&metadata) || !metadata.is_dir() { return Err(ERROR.into()); }
     Ok(file)
@@ -428,14 +431,14 @@ fn lease_media_directory<R: Runtime>(webview: &Webview<R>, project_id: &str, cre
     let root = PathBuf::from(media_root(webview, project_id, false, false, None)?);
     let mut leases = Vec::new();
     for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev().filter(|p| !p.as_os_str().is_empty()) {
-        leases.push(lease_directory(ancestor)?);
+        leases.push(lease_directory(ancestor, false)?);
     }
     // Once all ancestors are leased, the ownership marker is rechecked against the
     // current native configuration before any project content is touched.
     if media_root(webview, project_id, false, false, None)? != root.to_str().ok_or(ERROR)? { return Err(ERROR.into()); }
     let media = root.join("media");
     if create { directory(&media)?; }
-    leases.push(lease_directory(&media)?);
+    leases.push(lease_directory(&media, false)?);
     plain_chain(&media)?;
     if media_root(webview, project_id, false, false, None)? != root.to_str().ok_or(ERROR)? { return Err(ERROR.into()); }
     Ok((media, leases))
@@ -510,7 +513,7 @@ fn isolate_windows_media_partial(target: &Path, data: &[u8]) -> Result<bool, Str
 }
 
 #[cfg(windows)]
-fn write_windows_media_file(media: &Path, name: &str, reference: &NativeMediaReference, data: &[u8],
+fn write_windows_media_file(media: &Path, media_lease: &mut File, name: &str, reference: &NativeMediaReference, data: &[u8],
     verify_binding: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     use std::{io::Seek, os::windows::fs::OpenOptionsExt};
     use windows::Win32::Storage::FileSystem::{
@@ -527,16 +530,28 @@ fn write_windows_media_file(media: &Path, name: &str, reference: &NativeMediaRef
     if verify_windows_media_file(&file, reference)? != data { return Err(ERROR.into()); }
     verify_binding()?;
 
-    // A different writer can publish valid identical bytes while this stage is open.
-    let existing = match isolate_windows_media_partial(&target, data) {
-        Ok(existing) => existing,
-        Err(_) if read_media_file(&target, reference).is_ok_and(|bytes| bytes == data) => true,
-        Err(error) => return Err(error),
-    };
-    let published = !existing && rename_windows_media_file(&file, &target).is_ok();
-    if published {
-        file.sync_all().map_err(|_| ERROR)?;
-    }
+    // Rename opens its target directory with FILE_WRITE_DATA. A read-only share
+    // lease would block our own publication. The no-share staging handle keeps
+    // media nonempty (so it cannot become a reparse point) throughout this phase.
+    // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+    // https://learn.microsoft.com/windows/win32/fileio/reparse-points
+    // Open each replacement before dropping the previous directory lease.
+    *media_lease = lease_directory(media, true)?;
+    let publication = (|| {
+        // A different writer can publish valid identical bytes while this stage is open.
+        let existing = match isolate_windows_media_partial(&target, data) {
+            Ok(existing) => existing,
+            Err(_) if read_media_file(&target, reference).is_ok_and(|bytes| bytes == data) => true,
+            Err(error) => return Err(error),
+        };
+        let published = !existing && rename_windows_media_file(&file, &target).is_ok();
+        if published { file.sync_all().map_err(|_| ERROR)?; }
+        Ok(())
+    })();
+    // Restore the strong lease even after publication fails, before releasing
+    // the pinned file or doing another path-based read. Failure stops all I/O.
+    *media_lease = lease_directory(media, false)?;
+    publication?;
     drop(file);
     if read_media_file(&target, reference)? == data { Ok(()) } else { Err(ERROR.into()) }
 }
@@ -753,13 +768,13 @@ pub fn write_native_project_media<R: Runtime>(webview: Webview<R>, project_id: S
     let name = validate_media_reference(&reference)?;
     #[cfg(windows)]
     {
-        let (media, _leases) = lease_media_directory(&webview, &project_id, true)?;
+        let (media, mut leases) = lease_media_directory(&webview, &project_id, true)?;
         let verify_binding = || {
             let root = media_root(&webview, &project_id, false, false, None)?;
             if media.parent() != Some(Path::new(&root)) { return Err(ERROR.into()); }
             Ok(())
         };
-        write_windows_media_file(&media, &name, &reference, &data, &verify_binding)?;
+        write_windows_media_file(&media, leases.last_mut().ok_or(ERROR)?, &name, &reference, &data, &verify_binding)?;
         verify_binding()?;
         Ok(reference)
     }
@@ -831,8 +846,36 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_media_publishes_into_an_empty_directory_with_production_leases() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{FILE_ADD_FILE, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let root = crate::path_policy::simplify_verbatim(fixture());
+        let media = root.join("media");
+        fs::create_dir(&media).unwrap();
+        let mut leases = Vec::new();
+        for ancestor in media.ancestors().collect::<Vec<_>>().into_iter().rev().filter(|path| !path.as_os_str().is_empty()) {
+            leases.push(lease_directory(ancestor, false).unwrap());
+        }
+        let bytes = b"first mask in an empty media directory";
+        let (name, reference) = windows_media_reference(bytes);
+        write_windows_media_file(&media, leases.last_mut().unwrap(), &name, &reference, bytes, || Ok(())).unwrap();
+        assert_eq!(read_media_file(&media.join(&name), &reference).unwrap().as_slice(), bytes);
+        assert_eq!(fs::read_dir(&media).unwrap().count(), 1);
+        // Publication must restore the no-write lease before closing the staging file.
+        assert!(OpenOptions::new().access_mode(FILE_ADD_FILE.0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0).open(&media).is_err());
+        assert!(fs::rename(&media, root.join("replaced-media")).is_err());
+        write_windows_media_file(&media, leases.last_mut().unwrap(), &name, &reference, bytes, || Ok(())).unwrap();
+        assert_eq!(fs::read_dir(&media).unwrap().count(), 1);
+        drop(leases);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_media_recovers_a_verified_short_write_and_reuses_the_published_copy() {
         let media = fixture();
+        let mut media_lease = lease_directory(&media, false).unwrap();
         let bytes = b"full native image bytes";
         let (name, reference) = windows_media_reference(bytes);
         let old = &bytes[..5];
@@ -840,7 +883,7 @@ mod tests {
         let pending = media.join(".native-media-interrupted.pending");
         fs::write(&pending, b"interrupted stage").unwrap();
 
-        write_windows_media_file(&media, &name, &reference, bytes, || Ok(())).unwrap();
+        write_windows_media_file(&media, &mut media_lease, &name, &reference, bytes, || Ok(())).unwrap();
         assert_eq!(read_media_file(&media.join(&name), &reference).unwrap().as_slice(), bytes);
         assert_eq!(fs::read(&pending).unwrap().as_slice(), b"interrupted stage");
         let files: Vec<_> = fs::read_dir(&media).unwrap().map(|entry| entry.unwrap().path()).collect();
@@ -848,27 +891,34 @@ mod tests {
         assert_eq!(fs::read(recovered).unwrap().as_slice(), old);
         assert_eq!(files.len(), 3);
 
-        write_windows_media_file(&media, &name, &reference, bytes, || Ok(())).unwrap();
+        write_windows_media_file(&media, &mut media_lease, &name, &reference, bytes, || Ok(())).unwrap();
         assert_eq!(fs::read_dir(&media).unwrap().count(), files.len());
+        drop(media_lease);
         fs::remove_dir_all(media).unwrap();
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_media_preserves_a_destination_with_unrelated_bytes() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{FILE_ADD_FILE, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE};
         let media = fixture();
+        let mut media_lease = lease_directory(&media, false).unwrap();
         let bytes = b"expected content";
         let (name, reference) = windows_media_reference(bytes);
         let original = b"unrelated";
         let target = media.join(&name);
         fs::write(&target, original).unwrap();
 
-        assert!(write_windows_media_file(&media, &name, &reference, bytes, || Ok(())).is_err());
+        assert!(write_windows_media_file(&media, &mut media_lease, &name, &reference, bytes, || Ok(())).is_err());
+        assert!(OpenOptions::new().access_mode(FILE_ADD_FILE.0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0).open(&media).is_err());
         assert_eq!(fs::read(&target).unwrap().as_slice(), original);
         let paths: Vec<_> = fs::read_dir(&media).unwrap().map(|entry| entry.unwrap().path()).collect();
         assert_eq!(paths.len(), 2);
         let staged = paths.iter().find(|path| *path != &target).unwrap();
         assert_eq!(fs::read(staged).unwrap().as_slice(), bytes);
+        drop(media_lease);
         fs::remove_dir_all(media).unwrap();
     }
 
@@ -876,14 +926,16 @@ mod tests {
     #[test]
     fn windows_media_binding_change_cannot_publish_or_move_existing_bytes() {
         let media = fixture();
+        let mut media_lease = lease_directory(&media, false).unwrap();
         let bytes = b"expected content";
         let (name, reference) = windows_media_reference(bytes);
         let target = media.join(&name);
         fs::write(&target, &bytes[..4]).unwrap();
 
-        let result = write_windows_media_file(&media, &name, &reference, bytes, || Err(ERROR.into()));
+        let result = write_windows_media_file(&media, &mut media_lease, &name, &reference, bytes, || Err(ERROR.into()));
         assert!(result.is_err());
         assert_eq!(fs::read(&target).unwrap().as_slice(), &bytes[..4]);
+        drop(media_lease);
         fs::remove_dir_all(media).unwrap();
     }
 

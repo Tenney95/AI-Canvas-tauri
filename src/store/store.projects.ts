@@ -252,7 +252,7 @@ function rebaseCommittedMediaNodes(before: Node<BaseNodeData>[], current: Node<B
   const previous = before.find((node) => node.id === nodeId), next = delivered.find((node) => node.id === nodeId), target = current.find((node) => node.id === nodeId);
   if (!previous || !next || !target || target.data.type !== previous.data.type) return current;
   const original = previous.data as unknown as Record<string, unknown>, result = next.data as unknown as Record<string, unknown>, live = target.data as unknown as Record<string, unknown>;
-  if (['imageUrl', 'audioUrl', 'videoUrl', 'relativePath', 'filePath', 'assetId', 'sourceUrl', 'output', 'storageRootRef', 'artifactId', 'animationSheet', 'animationEdits']
+  if (['imageUrl', 'audioUrl', 'videoUrl', 'relativePath', 'filePath', 'assetId', 'sourceUrl', 'output', 'storageRootRef', 'artifactId', 'animationSheet', 'animationEdits', 'outpaintInput']
     .some((field) => !configValuesEqual(live[field], original[field]))) return current;
   const data = { ...live };
   for (const field of new Set([...Object.keys(original), ...Object.keys(result)])) {
@@ -266,7 +266,7 @@ function rebaseCommittedMediaNodes(before: Node<BaseNodeData>[], current: Node<B
 
 const NORMALIZED_MEDIA_FIELDS = [
   'assetId', 'relativePath', 'filePath', 'storageRootRef',
-  'imageUrl', 'videoUrl', 'audioUrl', 'thumbnailUrl', 'sourceUrl', 'output', 'mattingMask', 'annotation',
+  'imageUrl', 'videoUrl', 'audioUrl', 'thumbnailUrl', 'sourceUrl', 'output', 'mattingMask', 'annotation', 'outpaintInput',
   'storyboardOverrides', 'shotlistRows', 'videoReferences', 'runninghubOutputs', 'workflowApiOutputs',
   'directorCaptureUrls', 'directorCaptureFilePaths', 'directorCaptureRelativePaths', '__nativeUnavailableMediaFields',
 ] as const satisfies readonly (keyof BaseNodeData)[];

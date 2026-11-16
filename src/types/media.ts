@@ -1,6 +1,28 @@
-/** 对话助手媒体生成领域类型。 */
+/** 媒体生成与图片编辑领域类型。 */
 import type { AudioOutputFormat, AudioTtsVoice } from './aiTypes';
 import type { CanvasContext } from './project';
+
+/** 扩图编辑器确认的画幅、模型和工作流参数。 */
+export interface OutpaintSettings {
+  size: string;
+  width: number;
+  height: number;
+  model: string;
+  provider: string;
+  prompt: string;
+  workflowId?: string;
+  workflowInputs?: Record<string, string>;
+}
+
+/** 结果节点保留的独立扩图垫图；生成回填不能替换该输入身份。 */
+export interface OutpaintInput {
+  url?: string;
+  assetId?: string;
+  relativePath?: string;
+  storageRootRef?: string;
+  width: number;
+  height: number;
+}
 
 /** 只在内存中持有同一保存队列的位置，不得放入媒体回执或其它持久化对象。 */
 export interface NativeMediaSubmissionPreparation {

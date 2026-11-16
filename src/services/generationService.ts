@@ -134,6 +134,7 @@ function imageBatchInputSignature(data: BaseNodeData): string {
     data.type, data.prompt, data.provider, data.model, data.workflowId, data.workflowInputs,
     data.imageSize, data.imageQuality, data.imageBackground, data.aspectRatio,
     data.cameraSettings, data.runninghubModelParameters, data.batchCount,
+    ...(data.outpaintInput ? [data.outpaintInput] : []),
   ]);
 }
 
@@ -294,6 +295,12 @@ export async function executeGeneration(
   const updateResult = batchOptions?.history === 'transient' ? store.updateNodeDataTransient : store.updateNodeData;
   const data = resolveGenerationNodeData(passData ?? store.nodes.find((n) => n.id === nodeId)?.data);
   if (!data) return { success: false, message: '节点不存在' };
+  if (data.type === 'ai-image' && data.outpaintInput
+    && (typeof data.outpaintInput.url !== 'string' || !data.outpaintInput.url.trim())) {
+    const message = '扩图垫图不可用，请重新打开原图创建扩图';
+    notify(message, 'error');
+    return { success: false, message };
+  }
 
   const nodeType = data?.type;
   const rawPrompt = overridePrompt ?? (data?.prompt as string) ?? '';
@@ -355,6 +362,12 @@ export async function executeGeneration(
   if (inputError || !nodeModel || !nodeProvider) {
     notify(inputError === '提示词为空' ? '请输入提示词' : '请先在底部模型选择器中选择一个模型', 'error');
     return { success: false, message: inputError ?? '未选择模型' };
+  }
+  if (nodeType === 'ai-image' && data.outpaintInput && !workflowId
+    && resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config) > 1) {
+    const message = '扩图请选择单图输出模型';
+    notify(message, 'error');
+    return { success: false, message };
   }
   let effectivePrompt = resolveProjectGenerationPrompt({
     prompt: rawPrompt, data, settings: projectSettings, customStyles: store.customStyles,
@@ -460,11 +473,13 @@ export async function executeGeneration(
       if (isAnimation) effectivePrompt = buildAnimationSpritePrompt(effectivePrompt, animationAction, animationFrames, aspectRatio, spriteProcessing);
       const batchCount = cloudWorkflow || isAnimation ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
       const outputsPerJob = workflowId || isAnimation ? 1 : resolveImageOutputsPerJob(nodeModel, nodeProvider, store.config);
+      const outpaintReferences = data.outpaintInput?.url ? { image_urls: [data.outpaintInput.url] } : {};
       if (nativeMediaGuard) {
         if (postProcess) throw new Error('请先生成原媒体，再执行图片后处理，避免将后处理误记为生成回执');
         await generateImagesBatch({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
+          ...outpaintReferences,
           ...(outputsPerJob > 1 ? { collectCandidates: true } : {}) },
         batchCount, lease?.signal, nativeMediaGuard);
         throw new Error('原生图片生成缺少耐久原回执，未确认交付');
@@ -487,6 +502,7 @@ export async function executeGeneration(
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
           workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
+          ...outpaintReferences,
           ...(outputsPerJob > 1 ? { collectCandidates: true } : {}),
         };
         if (lease) await assertLease();
@@ -520,6 +536,7 @@ export async function executeGeneration(
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         imageSize, imageQuality, imageBackground: data.imageBackground === '' ? '' : imageBackground, aspectRatio, nodeId,
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
+        ...outpaintReferences,
       };
       if (lease) await assertLease();
       const result = nativeMediaGuard ? await generateImage(imageOptions, lease?.signal, nativeMediaGuard)

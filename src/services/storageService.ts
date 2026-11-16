@@ -111,7 +111,7 @@ interface MaterializedInlineMedia {
 
 interface ProjectFileLookup {
   existsByPath: Map<string, Promise<boolean>>;
-  nativeMediaDisplay?: Promise<{ defaultRootRef: string; resolve: NativeMediaDisplayResolver }>;
+  nativeMediaDisplay?: Promise<{ defaultRootRef: string; primaryRootRef: string; resolve: NativeMediaDisplayResolver }>;
 }
 
 function nativeMediaDisplayContext(projectId: string, lookup: ProjectFileLookup): NonNullable<ProjectFileLookup['nativeMediaDisplay']> {
@@ -121,7 +121,8 @@ function nativeMediaDisplayContext(projectId: string, lookup: ProjectFileLookup)
     const { readNativeProjectSelection } = await import('./indexedDb/nativeProjectRepository');
     const selection = await readNativeProjectSelection(owner, projectId);
     if (!selection?.canvas || selection.canvas.id !== projectId || selection.project.id !== owner) throw new Error('原媒体画布归属不可用');
-    return { defaultRootRef: selection.canvas.storageRootRef, resolve: createNativeMediaDisplayResolver(selection.project) };
+    return { defaultRootRef: selection.canvas.storageRootRef, primaryRootRef: selection.project.storageRootRef,
+      resolve: createNativeMediaDisplayResolver(selection.project) };
   })();
   return lookup.nativeMediaDisplay;
 }
@@ -402,6 +403,7 @@ function assetReferenceContainsInlineMedia(data: unknown): boolean {
 function nodeDataContainsInlineMedia(data: BaseNodeData | undefined): boolean {
   if (!data) return false;
   if (NODE_MEDIA_URL_KEYS.some((key) => isTransientMediaValue(data[key]))) return true;
+  if (assetReferenceContainsInlineMedia(data.outpaintInput)) return true;
   if ((data.storyboardOverrides ?? []).some(assetReferenceContainsInlineMedia)) return true;
   if ((data.shotlistRows ?? []).some((row) => assetReferenceContainsInlineMedia(row.frame)
     || assetReferenceContainsInlineMedia(row.video))) return true;
@@ -453,6 +455,25 @@ async function serializeProjectNodes(
         const path = typeof value === 'string' ? assetUrlToPath(value) : undefined;
         if (path && projectFileLookupKey(path) === projectFileLookupKey(expectedPath)) data = { ...data, [key]: data.relativePath };
       }
+    }
+    if (data.outpaintInput) {
+      const native = Boolean(getNativeProjectOwner(context.projectId));
+      let inputContext = context;
+      let storageRootRef = data.outpaintInput.storageRootRef;
+      if (native) {
+        const display = await nativeMediaDisplayContext(context.projectId, context);
+        storageRootRef ??= display.primaryRootRef;
+        if (isTransientMediaValue(data.outpaintInput.url) && storageRootRef !== display.primaryRootRef) {
+          throw new Error('新扩图垫图必须保存至作品主素材根');
+        }
+        inputContext = { ...context, projectDir: await display.resolve.directory(storageRootRef) };
+      }
+      const input = await serializeAssetReference(await materializeAssetReference(data.outpaintInput, inputContext), inputContext);
+      if (native && (!input.relativePath || !nativePortablePath(input.relativePath)
+        || (input as AssetReferenceLike).filePath || input.url !== undefined && input.url !== input.relativePath)) {
+        throw new Error('扩图垫图未能保存为项目素材');
+      }
+      data = { ...data, outpaintInput: { ...input, ...(native ? { storageRootRef } : {}) } };
     }
     if (Array.isArray(data.storyboardOverrides)) {
       const storyboardOverrides = await mapWithConcurrency(data.storyboardOverrides, 4, async (override) => {
@@ -743,7 +764,8 @@ function nodeAssetReferences(node: PersistedNodeLike): AssetReferenceLike[] {
     ? node.data.shotlistRows.flatMap((row) => [row.frame, row.video]).filter(Boolean)
     : [];
   const videoReferences = Array.isArray(node.data.videoReferences) ? node.data.videoReferences : [];
-  return [node.data, ...overrides, ...shotBindings, ...videoReferences] as AssetReferenceLike[];
+  return [node.data, ...(node.data.outpaintInput ? [node.data.outpaintInput] : []),
+    ...overrides, ...shotBindings, ...videoReferences] as AssetReferenceLike[];
 }
 
 /** 旧视频引用按同一素材 URL 补齐身份，不按角色当前主图或文件名替换已选素材。 */
@@ -848,6 +870,18 @@ async function restoreProjectNodes(nodes: unknown, projectId: string, lookup: Pr
       for (const key of NODE_MEDIA_URL_KEYS) {
         if (data[key] === data.relativePath) data = { ...data, [key]: url };
       }
+    }
+    if (data.outpaintInput) {
+      if (getNativeProjectOwner(projectId)) {
+        try {
+          const display = await nativeMediaDisplayContext(projectId, lookup);
+          const storageRootRef = data.outpaintInput.storageRootRef ?? display.primaryRootRef;
+          const directory = await display.resolve.directory(storageRootRef);
+          data = { ...data, outpaintInput: { ...await restoreAssetReferenceSafely(data.outpaintInput, projectId, directory, lookup, 'url'), storageRootRef } };
+        } catch {
+          data = { ...data, outpaintInput: { ...data.outpaintInput, url: undefined } };
+        }
+      } else data = { ...data, outpaintInput: await restoreAssetReferenceSafely(data.outpaintInput, projectId, projectDir, lookup, 'url') };
     }
     if (Array.isArray(data.storyboardOverrides)) {
       const storyboardOverrides = await mapWithConcurrency(data.storyboardOverrides, 4, async (override) => (
@@ -1156,14 +1190,28 @@ async function recoverStagedProjectMedia(record: ProjectSaveData, root: string, 
     if (isPathInsideDir(path, root)) references.add(path);
   };
   const relativeFields = new Set(['filePath', 'imageFilePath', 'relativePath', 'imageRelativePath', 'directorCaptureFilePaths', 'directorCaptureRelativePaths']);
-  const collect = (value: unknown, field = ''): void => {
+  let nativeDisplay: ProjectFileLookup['nativeMediaDisplay'];
+  const inputRoots = new Map<string, string>();
+  if (getNativeProjectOwner(record.id) && Array.isArray(record.nodes)) {
+    for (const node of record.nodes as PersistedNodeLike[]) {
+      const rootRef = node.data?.outpaintInput?.storageRootRef;
+      if (!rootRef || inputRoots.has(rootRef)) continue;
+      nativeDisplay ??= nativeMediaDisplayContext(record.id, { existsByPath: new Map() });
+      inputRoots.set(rootRef, await (await nativeDisplay).resolve.directory(rootRef));
+    }
+  }
+  const collect = (value: unknown, field = '', directory = root): void => {
     if (typeof value === 'string') {
-      if (relativeFields.has(field) && value && !/^(?:[a-z][a-z0-9+.-]*:|[/\\])/i.test(value)) add(joinPath(root, value));
+      if (relativeFields.has(field) && value && !/^(?:[a-z][a-z0-9+.-]*:|[/\\])/i.test(value)) add(joinPath(directory, value));
       else add(value);
     } else if (Array.isArray(value)) {
-      for (const item of value) collect(item, field);
+      for (const item of value) collect(item, field, directory);
     } else if (value && typeof value === 'object') {
-      for (const [key, item] of Object.entries(value)) collect(item, key);
+      const row = value as Record<string, unknown>;
+      if (field === 'outpaintInput' && typeof row.storageRootRef === 'string' && inputRoots.has(row.storageRootRef)) {
+        directory = inputRoots.get(row.storageRootRef)!;
+      }
+      for (const [key, item] of Object.entries(row)) collect(item, key, directory);
     }
   };
   collect([record.nodes, record.dramaAssets, record.settings]);

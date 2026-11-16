@@ -1062,6 +1062,8 @@ const nodes = {
   '扩图中 {progress}%...': 'Outpainting {progress}%…',
   '扩图完成，已创建新节点': 'Outpaint complete, a new node was created',
   '扩图失败': 'Outpaint failed',
+  '扩图垫图不可用，请重新打开原图创建扩图': 'The outpainting input is unavailable. Open the original image to create a new outpaint.',
+  '扩图请选择单图输出模型': 'Choose a model with one image per output for outpainting.',
   '没有可用的图片': 'No image available',
   '已复制图像到剪贴板': 'Image copied to clipboard',
   '没有可反推的图片': 'No image to reverse',

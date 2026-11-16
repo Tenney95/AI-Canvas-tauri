@@ -4,13 +4,17 @@
  * 选择目标画幅 → 原图居中放入更大的目标画布 → 四周透明留白交给 AI 补全。
  */
 import { useT } from '../../../../i18n';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import FullscreenOverlay from '../../../shared/FullscreenOverlay';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import ModelSelector from '../ModelSelector';
+import CloudWorkflowParamSelector from '../CloudWorkflowParamSelector';
 import { springGentle } from '../../../../utils/motion';
 import type { ModelGroup, ModelOption } from '../../../../types';
+import type { OutpaintSettings } from '../../../../types/media';
+import { useAppStore } from '../../../../store/useAppStore';
+import { workflowExecution } from '../../../../services/workflowExecutionService';
 import {
   assertEditorCanvasBudget,
   canvasToDataUrl,
@@ -28,7 +32,7 @@ export interface ExpandEditorProps {
   /** 确认后回调：传出合成好的"垫图"data URL、目标画幅 size 字符串、模型与补充提示词 */
   onGenerate: (
     compositeDataUrl: string,
-    meta: { size: string; width: number; height: number; model: string; provider: string; prompt: string },
+    meta: OutpaintSettings,
   ) => void;
 }
 
@@ -81,6 +85,10 @@ function nearestSize(ratio: number): string {
    ════════════════════════════════════════════ */
 export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: ExpandEditorProps) {
   const t = useT();
+  const workflows = useAppStore((state) => state.workflows);
+  const imageWorkflows = useMemo(() => workflows.filter((workflow) => workflow.category === 'ai-image'
+    && (!workflow.adapterType || workflow.adapterType === 'comfyui')
+    && workflow.ioNodes?.some((input) => input.type === 'image')), [workflows]);
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const operationEpochRef = useRef(0);
@@ -98,10 +106,15 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
 
   const [selectedModel, setSelectedModel] = useState('apimart/gemini-3.1-flash-image-preview');
   const [selectedProvider, setSelectedProvider] = useState('apimart');
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>();
+  const [workflowInputs, setWorkflowInputs] = useState<Record<string, string>>({});
+  const selectedWorkflow = imageWorkflows.find((workflow) => workflow.id === selectedWorkflowId);
 
-  useEffect(() => {
-    if (!isOpen) operationEpochRef.current += 1;
-  }, [isOpen]);
+  // 在新来源提交到界面时立即撤销旧合成，异步编码完成也不能回调旧垫图。
+  useLayoutEffect(() => {
+    operationEpochRef.current += 1;
+    setBusy(false);
+  }, [isOpen, imageUrl]);
 
   useEffect(() => () => {
     operationEpochRef.current += 1;
@@ -201,11 +214,12 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
   /* ── 拖拽原图重定位 ── */
   const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number } | null>(null);
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (busy) return;
     e.preventDefault();
     e.stopPropagation();
     dragRef.current = { startX: e.clientX, startY: e.clientY, ox: offset.x, oy: offset.y };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, [offset]);
+  }, [offset, busy]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const d = dragRef.current;
@@ -239,9 +253,29 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
   }, [onClose]);
 
   const handleSelectModel = useCallback((model: ModelOption) => {
+    if (busy) return;
     setSelectedModel(model.value);
     setSelectedProvider(model.provider);
-  }, []);
+    setSelectedWorkflowId(undefined);
+    setWorkflowInputs({});
+  }, [busy]);
+
+  const handleSelectWorkflow = useCallback((workflowId: string | undefined) => {
+    if (busy) return;
+    // 普通模型选择也会通知清空工作流；保留刚刚选择的模型与厂商。
+    if (!workflowId) {
+      setSelectedWorkflowId(undefined);
+      setWorkflowInputs({});
+      return;
+    }
+    const workflow = imageWorkflows.find((item) => item.id === workflowId);
+    if (!workflow) return;
+    const selection = workflowExecution(workflow);
+    setSelectedModel(selection.model);
+    setSelectedProvider(selection.provider);
+    setSelectedWorkflowId(selection.workflowId);
+    setWorkflowInputs({});
+  }, [imageWorkflows, busy]);
 
   const handleZoomChange = useCallback((val: number) => {
     setZoom(val);
@@ -253,6 +287,10 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
   const handleConfirm = useCallback(async () => {
     const img = imgRef.current;
     if (!target || !img || !img.complete || readySourceUrl !== imageUrl || busy) return;
+    if (selectedWorkflowId && !selectedWorkflow) {
+      setFailure('所选工作流未找到，请重新导入');
+      return;
+    }
     if (budgetError) {
       setFailure(budgetError);
       return;
@@ -263,7 +301,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
     setBusy(true);
     setFailure(null);
     let canvas: HTMLCanvasElement | null = null;
-    let result: { dataUrl: string; meta: { size: string; width: number; height: number; model: string; provider: string; prompt: string } } | null = null;
+    let result: { dataUrl: string; meta: OutpaintSettings } | null = null;
     try {
       const { tw, th, sw, sh, maxOffX, maxOffY } = target;
       assertEditorCanvasBudget(tw, th, '扩图输出');
@@ -284,7 +322,8 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
       const size = aspect === 'original' ? nearestSize(tw / th)
         : (ASPECT_OPTIONS.find((o) => o.key === aspect)?.ratio ? aspect : nearestSize(tw / th));
 
-      const meta = { size, width: tw, height: th, model: selectedModel, provider: selectedProvider, prompt };
+      const meta: OutpaintSettings = { size, width: tw, height: th, model: selectedModel, provider: selectedProvider, prompt,
+        ...(selectedWorkflow ? { workflowId: selectedWorkflow.id, workflowInputs: { ...workflowInputs } } : {}) };
       result = { dataUrl, meta };
     } catch (err) {
       console.error('[ExpandEditor] composite failed:', err);
@@ -307,7 +346,8 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
       setFailure(null);
       onGenerate(result.dataUrl, result.meta);
     }
-  }, [target, busy, budgetError, readySourceUrl, imageUrl, offset, aspect, selectedModel, selectedProvider, prompt, onGenerate]);
+  }, [target, busy, budgetError, readySourceUrl, imageUrl, offset, aspect, selectedModel, selectedProvider,
+    selectedWorkflowId, selectedWorkflow, workflowInputs, prompt, onGenerate]);
 
   return (
     <FullscreenOverlay
@@ -331,6 +371,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
             <button
               key={opt.key}
               type="button"
+              disabled={busy}
               className={`crop-aspect-btn${aspect === opt.key ? ' active' : ''}`}
               onClick={() => handleAspectChange(opt.key)}
             >
@@ -407,6 +448,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
               max={1}
               step={0.02}
               value={zoom}
+              disabled={busy}
               onChange={(e) => handleZoomChange(Number(e.target.value))}
             />
             <span className="expand-value">{Math.round((1 - zoom) * 100)}%</span>
@@ -416,6 +458,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
             className="expand-prompt-input"
             placeholder={t('补充描述（可选）：希望补全区域出现什么…')}
             value={prompt}
+            disabled={busy}
             onChange={(e) => setPrompt(e.target.value)}
           />
           {(failure || budgetError) && (
@@ -425,15 +468,28 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
           )}
           <ModelSelector
             nodeType="ai-image"
+            persistPreference={false}
+            disabled={busy}
             selectedModel={selectedModel}
             selectedProvider={selectedProvider}
+            selectedWorkflowId={selectedWorkflowId}
             onSelect={handleSelectModel}
+            onWorkflowSelect={handleSelectWorkflow}
+            workflows={imageWorkflows}
             groups={EXPAND_MODEL_GROUPS.map((group) => ({ ...group,
               description: group.description ? t(group.description) : group.description,
               models: group.models.map((model) => ({ ...model, description: model.description ? t(model.description) : model.description })),
             }))}
             defaultExpandedGroupIds={['apimart']}
           />
+          {selectedWorkflow && (
+            <div className="flex flex-wrap items-center gap-2">
+              <CloudWorkflowParamSelector key={selectedWorkflow.id} workflow={selectedWorkflow}
+                values={workflowInputs} disabled={busy} onChange={(values) => {
+                  if (!busy) setWorkflowInputs(values);
+                }} />
+            </div>
+          )}
         </div>
       </motion.div>
     </FullscreenOverlay>
